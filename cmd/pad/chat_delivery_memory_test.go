@@ -74,9 +74,19 @@ func TestMonitorChatDeliveryMemoryOutlivesSeenChat(t *testing.T) {
 	stream.WriteString(chatSSE("m1", 1, false))
 	stream.WriteString(chatSSE("m301", 301, false))
 	var out bytes.Buffer
-	streamWatchEventsTo(&out, fakeSSEResponse(stream.String()), "", f)
+	c := newMonitorChat(f, seenChat)
+	c.stream(&out, fakeSSEResponse(stream.String()), "")
 	if strings.Count(out.String(), "fetched ") != 301 || strings.Count(out.String(), "fetched m1\n") != 1 || strings.Count(out.String(), "fetched m301\n") != 1 || f.after[len(f.after)-1] != 300 || f.seq != 301 {
 		t.Fatalf("delivery memory lost: after=%v acks=%v printed=%d", f.after, f.ackSeqs, strings.Count(out.String(), "fetched "))
+	}
+	// A new SSE connection reuses the process's monitor, even after every
+	// remaining printed id expires and the summary still has a lower marker.
+	f.beforeUnread = nil
+	now = now.Add(11 * time.Minute)
+	f.messages = append(f.messages, chatMsg("m302", 302))
+	c.stream(&out, fakeSSEResponse(chatSSE("m1", 1, false)+chatSSE("m302", 302, false)), "")
+	if strings.Count(out.String(), "fetched ") != 302 || strings.Count(out.String(), "fetched m1\n") != 1 || f.after[len(f.after)-1] != 301 || c.delivered[1] != 302 {
+		t.Fatalf("reconnect lost local delivery: cursor=%d delivered=%d printed=%d", c.last[1], c.delivered[1], strings.Count(out.String(), "fetched "))
 	}
 }
 

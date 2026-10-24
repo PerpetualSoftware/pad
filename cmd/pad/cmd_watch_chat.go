@@ -93,18 +93,28 @@ func formatChatLine(m monitorChatMessage, direction bool) string {
 	return strings.Join(strings.Fields(line), " ")
 }
 
-// Printed ids survive reconnect; sequence baselines belong to one connection.
+// Printed ids support retractions and recent-id dedupe across reconnects.
+// Delivery memory is the monitor's unbounded per-conversation high-water below.
 var seenChat = newRecentSet(256, 10*time.Minute)
 
 type monitorChat struct {
 	sink         chatSink
 	printed      *recentSet
 	last         map[int]int64
+	delivered    map[int]int64
 	summaryReady bool
 }
 
 func newMonitorChat(sink chatSink, printed *recentSet) *monitorChat {
-	return &monitorChat{sink: sink, printed: printed, last: map[int]int64{}}
+	return &monitorChat{sink: sink, printed: printed, last: map[int]int64{}, delivered: map[int]int64{}}
+}
+
+func (c *monitorChat) acknowledge(number int) {
+	// Invariant: an ack only ever sends a value at or below local delivered.
+	// A fill-cursor seed is not delivery; only handled rows advance delivered.
+	if seq := c.delivered[number]; seq > 0 {
+		_ = c.sink.delivered(number, seq)
+	}
 }
 
 func (s *recentSet) contains(id string) bool {
@@ -114,14 +124,19 @@ func (s *recentSet) contains(id string) bool {
 	return ok && s.now().Sub(at) <= s.ttl
 }
 
-func (c *monitorChat) retract(w io.Writer, p watchStreamPayload) {
+func (c *monitorChat) retract(w io.Writer, p watchStreamPayload) bool {
 	key := "retracted:" + p.MessageID
-	if !c.printed.contains(p.MessageID) || c.printed.contains(key) || !cli.ResolveAnnouncedArmed() {
-		return
+	if !cli.ResolveAnnouncedArmed() {
+		return false
 	}
-	if _, err := fmt.Fprintln(w, formatChatLine(monitorChatMessage{ID: p.MessageID, Conversation: p.Conversation, Deleted: true}, false)); err == nil {
-		c.printed.seen(key)
+	if !c.printed.contains(p.MessageID) || c.printed.contains(key) {
+		return true
 	}
+	if _, err := fmt.Fprintln(w, formatChatLine(monitorChatMessage{ID: p.MessageID, Conversation: p.Conversation, Deleted: true}, false)); err != nil {
+		return false // Leave an owed retraction retryable.
+	}
+	c.printed.seen(key)
+	return true
 }
 
 func (c *monitorChat) handle(w io.Writer, p watchStreamPayload) {
@@ -129,29 +144,30 @@ func (c *monitorChat) handle(w io.Writer, p watchStreamPayload) {
 		return
 	}
 	if p.Deleted {
-		c.retract(w, p)
+		if !c.retract(w, p) {
+			return
+		}
 		// A final tombstone has no later event to trigger a gap fill.
 		// Only consume it directly when it is the next contiguous seq.
 		if p.MessageSeq == c.last[p.Conversation]+1 {
 			c.last[p.Conversation] = p.MessageSeq
-			_ = c.sink.delivered(p.Conversation, p.MessageSeq)
+			c.delivered[p.Conversation] = max(c.delivered[p.Conversation], p.MessageSeq)
+			c.acknowledge(p.Conversation)
 		}
 		return
 	}
-	if c.printed.contains(p.MessageID) {
+	if p.MessageSeq <= c.delivered[p.Conversation] || c.printed.contains(p.MessageID) {
 		// The previous acknowledgement may have failed after printing.
-		// Retry only the contiguous cursor; the server marker is monotonic.
-		if last := c.last[p.Conversation]; last > 0 {
-			_ = c.sink.delivered(p.Conversation, last)
-		}
+		// Neither cache expiry nor a cursor seed can change local delivery.
+		c.acknowledge(p.Conversation)
 		return
 	}
 	last, baseline := c.last[p.Conversation]
 	if !baseline {
 		// TASK-4041, DOC-4036: absence from a successful unread summary
 		// means zero unread. Without a summary, fetch history fail-closed.
-		// This assumes ordered events: sync_required discards baselines
-		// and re-seeds from /me/chat/unread so the next event refetches.
+		// This assumes ordered events: sync_required re-seeds from a fresh
+		// summary, retaining the previous baseline when that read fails.
 		if c.summaryReady {
 			last = p.MessageSeq - 1
 		}
@@ -164,7 +180,7 @@ func (c *monitorChat) handle(w io.Writer, p watchStreamPayload) {
 	var highest int64
 	defer func() {
 		if highest > 0 {
-			_ = c.sink.delivered(p.Conversation, highest)
+			c.acknowledge(p.Conversation)
 		}
 	}()
 	messages, err := c.sink.messagesAfter(p.Conversation, after, limit)
@@ -181,8 +197,17 @@ func (c *monitorChat) handle(w io.Writer, p watchStreamPayload) {
 		if m.Seq == p.MessageSeq && m.ID != p.MessageID {
 			return
 		}
+		if m.Seq <= c.delivered[p.Conversation] {
+			// Refetching a handled row must not depend on seenChat's TTL.
+			after = m.Seq
+			c.last[p.Conversation] = m.Seq
+			highest = m.Seq
+			continue
+		}
 		if m.Deleted {
-			c.retract(w, watchStreamPayload{MessageID: m.ID, Conversation: p.Conversation})
+			if !c.retract(w, watchStreamPayload{MessageID: m.ID, Conversation: p.Conversation}) {
+				return
+			}
 		} else if !m.Mine && !c.printed.contains(m.ID) {
 			m.Conversation = p.Conversation
 			direction := cli.ChatDirectionOn()
@@ -199,6 +224,7 @@ func (c *monitorChat) handle(w io.Writer, p watchStreamPayload) {
 		}
 		after = m.Seq
 		c.last[p.Conversation] = m.Seq
+		c.delivered[p.Conversation] = m.Seq
 		highest = m.Seq
 	}
 	if after < p.MessageSeq && len(messages) == 20 && cli.ResolveAnnouncedArmed() {
@@ -206,21 +232,36 @@ func (c *monitorChat) handle(w io.Writer, p watchStreamPayload) {
 	}
 }
 
-func (c *monitorChat) summary(w io.Writer) {
+// resync replaces fill baselines only after a successful summary. Local
+// delivery is process memory: neither reconnect nor sync_required resets it.
+func (c *monitorChat) resync(w io.Writer) {
+	previous, ready := c.last, c.summaryReady
+	c.last = map[int]int64{}
+	c.summaryReady = false
+	if !c.summary(w) {
+		c.last, c.summaryReady = previous, ready
+	}
+}
+
+func (c *monitorChat) summary(w io.Writer) bool {
 	if c.sink == nil || !cli.ResolveAnnouncedArmed() {
-		return
+		return false
 	}
 	summary, err := c.sink.unread(cli.ResolveAgentName())
 	if err != nil || !cli.ResolveAnnouncedArmed() {
-		return
+		return false
 	}
 	for _, row := range summary.Conversations {
 		if _, exists := c.last[row.Number]; !exists {
-			c.last[row.Number] = row.DeliveredSeq
+			c.last[row.Number] = max(row.DeliveredSeq, c.delivered[row.Number])
 		}
+	}
+	for number, seq := range c.delivered {
+		c.last[number] = max(c.last[number], seq)
 	}
 	c.summaryReady = true
 	if summary.Total > 0 {
 		fmt.Fprintf(w, "Pad chat: %d unread messages — use pad chat show to read them.\n", summary.Total)
 	}
+	return true
 }

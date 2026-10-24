@@ -472,6 +472,7 @@ func runWatchMonitor(ctx context.Context) error {
 
 	var lastEventID string
 	attempt := 0
+	chat := newMonitorChat(nil, seenChat)
 
 	for {
 		if sigCtx.Err() != nil {
@@ -578,7 +579,8 @@ func runWatchMonitor(ctx context.Context) error {
 
 		attempt = 0 // connected — reset backoff for the NEXT disconnect
 
-		lastEventID = streamWatchEventsTo(os.Stdout, resp, lastEventID, httpChatSink{client: client})
+		chat.sink = httpChatSink{client: client}
+		lastEventID = chat.stream(os.Stdout, resp, lastEventID)
 		resp.Body.Close()
 		cancelStream()
 
@@ -649,8 +651,11 @@ func streamWatchEventsTo(w io.Writer, resp *http.Response, lastEventID string, s
 	if len(sinks) > 0 {
 		sink = sinks[0]
 	}
-	chat := newMonitorChat(sink, seenChat)
-	chat.summary(w)
+	return newMonitorChat(sink, seenChat).stream(w, resp, lastEventID)
+}
+
+func (chat *monitorChat) stream(w io.Writer, resp *http.Response, lastEventID string) string {
+	chat.resync(w)
 	scanner := bufio.NewScanner(resp.Body)
 	var eventType, data string
 	resyncAnnounced := false
@@ -694,9 +699,7 @@ func streamWatchEventsTo(w io.Writer, resp *http.Response, lastEventID string, s
 				}
 			case "sync_required":
 				lastEventID = ""
-				clear(chat.last)
-				chat.summaryReady = false
-				chat.summary(w)
+				chat.resync(w)
 				if !resyncAnnounced {
 					// The same consent gate a notification takes: a disarmed
 					// session is told nothing, including this.

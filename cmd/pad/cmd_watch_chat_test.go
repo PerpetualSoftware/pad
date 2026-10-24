@@ -365,17 +365,30 @@ func TestMonitorChatSyncRequiredReseedsBaselines(t *testing.T) {
 			streamWatchEventsTo(&out, fakeSSEResponse(stream), "", f)
 			firstAfter := int64(2)
 			firstLimit := 1
+			secondAfter := int64(0)
+			secondLimit := 20
 			wantAcks := []int64{4}
 			if name == "failed-ack" {
 				firstAfter = 0
 				firstLimit = 20
+				secondAfter = 3 // local delivery is the re-seed floor
+				secondLimit = 1
 				wantAcks = []int64{3, 4}
+			} else if name == "summary-unavailable" {
+				secondAfter = 2 // a failed summary restores even an unhandled seed
 			}
-			if f.totals != 2 || !slices.Equal(f.after, []int64{firstAfter, 0}) || !slices.Equal(f.limits, []int{firstLimit, 20}) || !slices.Equal(f.ackSeqs, wantAcks) || f.deliveredSeq != 4 {
+			if f.totals != 2 || !slices.Equal(f.after, []int64{firstAfter, secondAfter}) || !slices.Equal(f.limits, []int{firstLimit, secondLimit}) || !slices.Equal(f.ackSeqs, wantAcks) || f.deliveredSeq != 4 {
 				t.Fatalf("totals=%d after=%v limits=%v acks=%v delivered=%d output=%q", f.totals, f.after, f.limits, f.ackSeqs, f.deliveredSeq, out.String())
 			}
 			previous := -1
-			for _, id := range []string{"a", "b", "c", "d"} {
+			ids := []string{"a", "b", "c", "d"}
+			if name == "summary-unavailable" {
+				ids = []string{"c", "d"}
+				if strings.Contains(out.String(), "fetched a\n") || strings.Contains(out.String(), "fetched b\n") {
+					t.Fatal("failed summary discarded the prior seed", out.String())
+				}
+			}
+			for _, id := range ids {
 				line := "fetched " + id + "\n"
 				at := strings.Index(out.String(), line)
 				if strings.Count(out.String(), line) != 1 || at <= previous {
