@@ -118,7 +118,7 @@ func TestMonitorChatFailedFloorIsolatedAndRetries(t *testing.T) {
 		c.handle(&out, floorEvent(1, 2))
 	}
 	// Both sync_required and a new connection must preserve the deadline.
-	c.stream(&out, fakeSSEResponse("event: sync_required\ndata: {}\n\n"), "")
+	c.stream(io.Discard, fakeSSEResponse("event: sync_required\ndata: {}\n\n"), "")
 	c.handle(&out, floorEvent(1, 2))
 	if reads[1] != 1 || out.Len() != 0 || f.acks != 0 || f.fetches != 0 || len(c.last) != 0 {
 		t.Fatalf("failure/backoff handled rows: reads=%v last=%v acks=%v output=%q", reads, c.last, f.ackSeqs, out.String())
@@ -182,13 +182,10 @@ func TestMonitorChatSyncRequiredRefetchesFloor(t *testing.T) {
 	if len(c.last) != 0 || c.delivered[1] != 3 || !c.printedIDs["m3"] {
 		t.Fatal("sync kept floor or lost delivery memory")
 	}
-	if !c.attemptFloor(1) {
-		t.Fatal("floor unavailable")
-	}
-	if f.floorReads.Load() != 2 || c.delivered[1] != 3 {
-		t.Fatal("next event did not refetch or floor advanced delivery")
-	}
 	c.handle(&out, floorEvent(1, 8))
+	if f.floorReads.Load() != 2 || c.delivered[1] != 8 {
+		t.Fatal("next event did not refetch and deliver")
+	}
 	if !slices.Equal(f.after, []int64{2, 7}) || !slices.Equal(f.ackSeqs, []int64{3, 8}) {
 		t.Fatalf("after=%v acks=%v", f.after, f.ackSeqs)
 	}

@@ -2207,8 +2207,13 @@ func (c *Client) Logout() error {
 
 // GetCurrentUser returns the authenticated user's profile.
 func (c *Client) GetCurrentUser() (*LoginUser, error) {
+	return c.GetCurrentUserContext(context.Background())
+}
+
+// GetCurrentUserContext allows callers to bound identity resolution.
+func (c *Client) GetCurrentUserContext(ctx context.Context) (*LoginUser, error) {
 	var result LoginUser
-	return &result, c.get("/auth/me", &result)
+	return &result, c.getContext(ctx, "/auth/me", &result)
 }
 
 // CheckSession returns the current auth status.
@@ -3038,11 +3043,20 @@ func (c *Client) get(path string, result interface{}) error {
 // getWithHeader is get that also returns the response headers (nil when no
 // response arrived).
 func (c *Client) getWithHeader(path string, result interface{}) (http.Header, error) {
+	return c.getWithHeaderContext(context.Background(), path, result)
+}
+
+func (c *Client) getContext(ctx context.Context, path string, result interface{}) error {
+	_, err := c.getWithHeaderContext(ctx, path, result)
+	return err
+}
+
+func (c *Client) getWithHeaderContext(ctx context.Context, path string, result interface{}) (http.Header, error) {
 	req, err := c.newRequest("GET", path, nil)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.httpClient.Do(req.WithContext(ctx))
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
@@ -3417,8 +3431,14 @@ func (c *Client) ListChatConversations() (json.RawMessage, error) {
 }
 
 func (c *Client) ChatConversation(number int) (json.RawMessage, error) {
+	return c.ChatConversationContext(context.Background(), number)
+}
+
+// ChatConversationContext allows the monitor's floor GET to share its deadline
+// with identity resolution, including reading the response body.
+func (c *Client) ChatConversationContext(ctx context.Context, number int) (json.RawMessage, error) {
 	var result json.RawMessage
-	err := c.get(fmt.Sprintf("/me/conversations/%d", number), &result)
+	err := c.getContext(ctx, fmt.Sprintf("/me/conversations/%d", number), &result)
 	return result, err
 }
 

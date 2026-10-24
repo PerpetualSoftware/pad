@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,7 +13,7 @@ import (
 )
 
 type chatSink interface {
-	conversationFloor(number int) (int64, error)
+	conversationFloor(ctx context.Context, number int) (int64, error)
 	messagesAfter(number int, after int64, limit int) ([]monitorChatMessage, error)
 	delivered(number int, seq int64) error
 	unread(agent string) (monitorChatUnread, error)
@@ -44,8 +45,8 @@ func (s httpChatSink) messagesAfter(number int, after int64, limit int) ([]monit
 	}
 	return out.Messages, nil
 }
-func (s httpChatSink) conversationFloor(number int) (int64, error) {
-	data, err := s.client.ChatConversation(number)
+func (s httpChatSink) conversationFloor(ctx context.Context, number int) (int64, error) {
+	data, err := s.client.ChatConversationContext(ctx, number)
 	if err != nil {
 		return 0, err
 	}
@@ -113,22 +114,29 @@ func formatChatLine(m monitorChatMessage, direction bool) string {
 // seenChat is only the bounded event-dedupe memory across reconnects.
 var seenChat = newRecentSet(256, 10*time.Minute)
 
+const (
+	monitorChatFloorTimeout = 3 * time.Second
+	monitorChatFloorBackoff = 10 * time.Second
+)
+
 type monitorChatIdentity struct{ baseURL, userID string }
 
 type monitorChat struct {
-	sink            chatSink
-	printed         *recentSet
-	printedIDs      map[string]bool // True until its retraction is written; retain every id.
-	last            map[int]int64
-	delivered       map[int]int64
-	identity        monitorChatIdentity
-	resolveIdentity func() (monitorChatIdentity, chatSink)
-	generation      uint64
-	pendingFloor    map[int]chan floorResult
+	sink               chatSink
+	printed            *recentSet
+	printedIDs         map[string]bool // True until its retraction is written; retain every id.
+	last               map[int]int64
+	delivered          map[int]int64
+	identity           monitorChatIdentity
+	resolveIdentity    func(context.Context) (monitorChatIdentity, chatSink)
+	floorTimeout       time.Duration
+	now                func() time.Time
+	retryAfter         map[int]time.Time
+	identityRetryAfter time.Time
 }
 
 func newMonitorChat(sink chatSink, printed *recentSet) *monitorChat {
-	return &monitorChat{sink: sink, printed: printed, printedIDs: map[string]bool{}, last: map[int]int64{}, delivered: map[int]int64{}, pendingFloor: map[int]chan floorResult{}}
+	return &monitorChat{sink: sink, printed: printed, printedIDs: map[string]bool{}, last: map[int]int64{}, delivered: map[int]int64{}, floorTimeout: monitorChatFloorTimeout, now: time.Now, retryAfter: map[int]time.Time{}}
 }
 
 func (c *monitorChat) setIdentity(baseURL, userID string) {
@@ -137,6 +145,8 @@ func (c *monitorChat) setIdentity(baseURL, userID string) {
 		return
 	}
 	c.identity = identity
+	clear(c.retryAfter)
+	c.identityRetryAfter = time.Time{}
 	c.resetFloors()
 	clear(c.delivered)
 	clear(c.printedIDs)
@@ -183,7 +193,7 @@ func (c *monitorChat) handle(w io.Writer, p watchStreamPayload) {
 	}
 	if _, fetched := c.last[p.Conversation]; !fetched {
 		if !c.attemptFloor(p.Conversation) {
-			return // First contact defers: no output, ack, or stored floor.
+			return // Failed or backed off: no output, ack, or stored floor.
 		}
 	}
 	if c.sink == nil {
@@ -272,12 +282,10 @@ func (c *monitorChat) handle(w io.Writer, p watchStreamPayload) {
 	}
 }
 
-// Discard every connection's floor and pending read, retaining handled rows
-// and retraction ownership for the same identity.
+// Discard the connection's floors, retaining delivery, retraction ownership,
+// and time-based backoff for the same identity.
 func (c *monitorChat) resetFloors() {
-	c.generation++
 	clear(c.last)
-	clear(c.pendingFloor)
 }
 
 func (c *monitorChat) resync(w io.Writer) {
@@ -285,58 +293,40 @@ func (c *monitorChat) resync(w io.Writer) {
 	c.summary(w)
 }
 
-// A result carries both the requesting identity and the resolved identity.
-// Resolving an unknown identity may adopt a new identity, but an obsolete
-// request can never adopt its sink or install its floor.
-type floorResult struct {
-	identity         monitorChatIdentity
-	generation       uint64
-	resolvedIdentity monitorChatIdentity
-	sink             chatSink
-	floor            int64
-	ok               bool
-}
-
+// The stream goroutine resolves identity and fetches the floor within one
+// deadline. Failed attempts cannot block subsequent events during backoff.
 func (c *monitorChat) attemptFloor(number int) bool {
-	if pending := c.pendingFloor[number]; pending != nil {
-		select {
-		case result := <-pending:
-			delete(c.pendingFloor, number)
-			if result.identity == c.identity && result.generation == c.generation {
-				if result.sink != nil && c.resolveIdentity != nil {
-					c.setIdentity(result.resolvedIdentity.baseURL, result.resolvedIdentity.userID)
-					c.sink = result.sink
-					c.resolveIdentity = nil
-				}
-				if result.ok {
-					c.last[number] = max(result.floor, c.delivered[number])
-					return true
-				}
-			}
-		default:
+	now := c.now()
+	if now.Before(c.identityRetryAfter) || now.Before(c.retryAfter[number]) {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), c.floorTimeout)
+	defer cancel()
+	if c.resolveIdentity != nil {
+		identity, sink := c.resolveIdentity(ctx)
+		if sink == nil || ctx.Err() != nil {
+			c.identityRetryAfter = c.now().Add(monitorChatFloorBackoff)
 			return false
 		}
+		c.setIdentity(identity.baseURL, identity.userID)
+		c.sink = sink
+		c.resolveIdentity = nil
 	}
-	pending := make(chan floorResult, 1)
-	c.pendingFloor[number] = pending
-	sink, identity, generation, resolve := c.sink, c.identity, c.generation, c.resolveIdentity
-	go func() {
-		result := floorResult{identity: identity, generation: generation, resolvedIdentity: identity, sink: sink}
-		if resolve != nil {
-			result.resolvedIdentity, result.sink = resolve()
-		}
-		if result.sink != nil {
-			var err error
-			result.floor, err = result.sink.conversationFloor(number)
-			result.ok = err == nil
-		}
-		pending <- result
-	}()
-	return false
+	if c.sink == nil {
+		c.retryAfter[number] = c.now().Add(monitorChatFloorBackoff)
+		return false
+	}
+	floor, err := c.sink.conversationFloor(ctx, number)
+	if err != nil || ctx.Err() != nil {
+		c.retryAfter[number] = c.now().Add(monitorChatFloorBackoff)
+		return false
+	}
+	delete(c.retryAfter, number)
+	c.last[number] = max(floor, c.delivered[number])
+	return true
 }
 
-// Only the stream goroutine applies results or writes output. An event starts
-// at most one read, with the client's normal timeout and no retry loop.
+// The synchronous summary supplies identity and an unread line only.
 type monitorChatSummary struct {
 	identity monitorChatIdentity
 	sink     chatSink
@@ -344,9 +334,9 @@ type monitorChatSummary struct {
 	ok       bool
 }
 
-func readMonitorChatSummary(sink chatSink, identity monitorChatIdentity, resolve func() (monitorChatIdentity, chatSink), agent string) monitorChatSummary {
+func readMonitorChatSummary(sink chatSink, identity monitorChatIdentity, resolve func(context.Context) (monitorChatIdentity, chatSink), agent string) monitorChatSummary {
 	if resolve != nil {
-		identity, sink = resolve()
+		identity, sink = resolve(context.Background())
 	}
 	result := monitorChatSummary{identity: identity, sink: sink}
 	if sink == nil {
@@ -359,7 +349,7 @@ func readMonitorChatSummary(sink chatSink, identity monitorChatIdentity, resolve
 }
 
 func (c *monitorChat) summary(w io.Writer) bool {
-	if !cli.ResolveAnnouncedArmed() {
+	if !cli.ResolveAnnouncedArmed() || (c.resolveIdentity != nil && c.now().Before(c.identityRetryAfter)) {
 		return false
 	}
 	return c.applySummary(w, readMonitorChatSummary(c.sink, c.identity, c.resolveIdentity, cli.ResolveAgentName()))

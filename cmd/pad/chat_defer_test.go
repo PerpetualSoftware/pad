@@ -35,6 +35,7 @@ func TestMonitorChatFailedIdentityDefersDeliveredHistory(t *testing.T) {
 			}
 			var out bytes.Buffer
 			c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "owed", MessageSeq: 3})
+			c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "owed", MessageSeq: 3})
 			wantAttempts := 1
 			if attempts != wantAttempts || out.Len() != 0 || f.fetches != 0 || f.acks != 0 || len(c.last) != 0 || len(c.delivered) != 0 {
 				t.Fatalf("unresolved floor replayed history: attempts=%d output=%q after=%v acks=%v last=%v delivered=%v", attempts, out.String(), f.after, f.ackSeqs, c.last, c.delivered)
@@ -47,8 +48,6 @@ func TestMonitorChatIdentityRecoveryPrintsOnlyOwedMessages(t *testing.T) {
 	chatSessionEnv(t)
 	f := &fakeChatSink{messages: []monitorChatMessage{chatMsg("old1", 1), chatMsg("old2", 2), chatMsg("owed3", 3), chatMsg("owed4", 4)}, floor: 2, total: 2}
 	c := newMonitorChat(nil, newRecentSet(256, 10*time.Minute))
-	now := time.Unix(1000, 0)
-	c.now = func() time.Time { return now }
 	attempts := 0
 	c.resolveIdentity = func(context.Context) (monitorChatIdentity, chatSink) {
 		attempts++
@@ -61,7 +60,6 @@ func TestMonitorChatIdentityRecoveryPrintsOnlyOwedMessages(t *testing.T) {
 	if c.summary(&out) {
 		t.Fatal("connect should fail identity lookup")
 	}
-	now = now.Add(monitorChatFloorBackoff)
 	p := watchStreamPayload{Conversation: 1, MessageID: "owed4", MessageSeq: 4}
 	c.handle(&out, p)
 	// The successful first-contact step fills from the server floor immediately.
@@ -130,12 +128,17 @@ func TestMonitorChatFirstContactSharesDeadline(t *testing.T) {
 }
 
 func TestMonitorChatFirstContactHTTPDeadline(t *testing.T) {
-	for _, hang := range []string{"identity", "floor"} {
+	for _, hang := range []string{"identity", "floor", "floor-body"} {
 		t.Run(hang, func(t *testing.T) {
 			chatSessionEnv(t)
 			requests := 0
 			h := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if hang == "identity" || strings.Contains(r.URL.Path, "conversations") {
+					if hang == "floor-body" {
+						w.Header().Set("Content-Type", "application/json")
+						fmt.Fprint(w, `{"delivered_seq":`)
+						w.(http.Flusher).Flush()
+					}
 					<-r.Context().Done()
 					return
 				}
