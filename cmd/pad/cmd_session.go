@@ -401,6 +401,10 @@ and only armed sessions receive pushes (the consent gate). Run
 'pad session disarm' to withdraw consent, or 'pad session status' to see
 the current state.
 
+Re-running 'pad session arm' creates a new arm generation and ends chat
+direction. To accept chat instructions again, the user must re-run
+'pad chat arm --accept-instructions'.
+
 Arming is per-session and transient. To opt a whole REPOSITORY in without
 arming each session by hand, set 'push.auto_arm = true' under a [push]
 table in the repo's .pad.toml (a deliberate, committed choice).
