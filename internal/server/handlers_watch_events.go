@@ -251,6 +251,11 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 	// a delivery preference of this connection, not presence metadata.
 	access := r.URL.Query().Get(watchAccessQueryParam) == "true"
 	prefs := watchStreamPrefs{armed: armed, access: access, chat: r.URL.Query().Get(watchChatQueryParam) == "true", agentKey: normalizeAgentName(ident.Agent)}
+	// Like chatActor, cookie sessions have no agent identity for chat delivery.
+	// Keep the parsed identity intact for presence and all other stream behavior.
+	if !isBearerAuth(r) {
+		prefs.agentKey = ""
+	}
 	// sessionID hoisted out of the if-block (PLAN-2558 S5, TASK-2588): a
 	// targeted push's predicate (Notification.TargetSessionID) is
 	// evaluated in the select loop below, which needs this connection's
