@@ -200,6 +200,10 @@ func (c *monitorChat) handle(w io.Writer, p watchStreamPayload) {
 	if !cli.ResolveAnnouncedArmed() || p.MessageID == "" || p.Conversation <= 0 || p.MessageSeq <= 0 {
 		return
 	}
+	// Retraction ownership is local: pay it before floor fetches or backoff.
+	if p.Deleted && c.printedIDs[p.MessageID] && !c.retract(w, p) {
+		return
+	}
 	// Gate the entire fill path, including dedupe re-ack and existing floors.
 	now := c.now()
 	if now.Before(c.identityRetryAfter) || now.Before(c.retryAfter[p.Conversation]) {
