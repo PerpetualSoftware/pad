@@ -292,3 +292,25 @@ func TestConfigurePush_SendsToConfiguredGateway(t *testing.T) {
 		t.Fatalf("send requests arriving at the configured gateway = %d, want exactly 1", got)
 	}
 }
+
+// TASK-4051: stopping the whole server stops its configured dispatcher too.
+// The cleanup repeats Stop, exercising its idempotent shutdown. Kills: M2.
+func TestConfigurePush_ServerStopStopsDispatcher(t *testing.T) {
+	_, srv, _, _ := task4051PushServer(t)
+	if err := configurePush(srv, &config.Config{PushGatewayURL: "http://gateway.test/send", PushGatewaySecret: "test-secret"}); err != nil {
+		t.Fatal(err)
+	}
+	if !srv.PushDispatchRunning() {
+		t.Fatal("configured dispatcher is not running")
+	}
+	done := make(chan struct{})
+	go func() { srv.Stop(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Error("Server.Stop did not drain the dispatcher before the deadline")
+	}
+	if srv.PushDispatchRunning() {
+		t.Error("dispatcher is still running after Server.Stop")
+	}
+}
