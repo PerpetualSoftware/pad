@@ -29,7 +29,12 @@ func TestBUG4061_NumericInputRefusesWhatItWouldChange(t *testing.T) {
 		{name: "above int64", in: 1e19, wantErr: "is out of range"},
 		{name: "below int64", in: -1e19, wantErr: "is out of range"},
 		{name: "2^63 is out of range", in: float64(1 << 63), wantErr: "is out of range"},
-		{name: "-2^63 is in range", in: -float64(1 << 63), want: -1 << 63, present: true},
+		// r3 (lead ruling on Q3): above 2^53 a float64 may already be rounded.
+		{name: "float64 2^53 is accepted", in: float64(1 << 53), want: 1 << 53, present: true},
+		{name: "float64 -2^53 is accepted", in: -float64(1 << 53), want: -(1 << 53), present: true},
+		{name: "float64 2^53+2 is refused", in: float64(1<<53 + 2), wantErr: "is beyond the exact integer range of a JSON number"},
+		{name: "float64 -2^63 is refused", in: -float64(1 << 63), wantErr: "is beyond the exact integer range"},
+		{name: "json.Number 2^53+1 is exact", in: json.Number("9007199254740993"), want: 9007199254740993, present: true},
 		{name: "int", in: 7, want: 7, present: true},
 		{name: "int64", in: int64(8), want: 8, present: true},
 		{name: "json.Number whole", in: json.Number("42"), want: 42, present: true},

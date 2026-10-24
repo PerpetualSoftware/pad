@@ -1773,12 +1773,20 @@ func jsonNumberInt64(x json.Number) (int64, error) {
 // other: a fraction, or a value outside int64. 2^63 itself is out of range
 // (MaxInt64 is 2^63-1, and float64(MaxInt64) rounds up to 2^63). NaN fails
 // the Trunc comparison; ±Inf fails the range check.
+//
+// BUG-4061 r3 (lead ruling on Q3): a float64 above 2^53 is refused too. The
+// JSON decoder has already rounded such an integer (2^53+1 arrives as 2^53),
+// so the value cannot prove it is the number the caller sent. A json.Number
+// is parsed exactly instead (jsonNumberInt64) and keeps the int64 range.
 func wholeInt64(x float64) (int64, error) {
 	if x != math.Trunc(x) {
 		return 0, fmt.Errorf("must be a whole number, got %v", x)
 	}
 	if x >= 1<<63 || x < -(1<<63) {
 		return 0, fmt.Errorf("is out of range, got %v", x)
+	}
+	if x > 1<<53 || x < -(1<<53) {
+		return 0, fmt.Errorf("is beyond the exact integer range of a JSON number, got %v", x)
 	}
 	return int64(x), nil
 }

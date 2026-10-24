@@ -2236,7 +2236,9 @@ const CmdhelpVersion = "0.1"
 // backlinks, item context's budget, project activity, item search, project
 // standup and changelog), whose server parsers used to default a forwarded
 // "1.5" silently, and expected_seq (range and json.Number; fractions were
-// already refused). A whole json.Number in exponent form ("1e6") is accepted.
+// already refused). A whole json.Number in exponent form ("1e6") is accepted,
+// and is parsed exactly. A JSON number decoded as float64 above 2^53 is
+// refused: the decoder has already rounded it.
 // The schemas declare these as "number", so the refused inputs were valid
 // under the advertised shape: the bump is owed by the behaviour, not by a
 // schema change (the precedent is the multi_relation DSL refusal).
