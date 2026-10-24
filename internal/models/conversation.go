@@ -6,6 +6,9 @@ import (
 	"unicode"
 )
 
+// MaxAgentNameRunes bounds self-declared agent names and chat agent keys (BUG-4055).
+const MaxAgentNameRunes = 64
+
 // ConversationExcerptRunes caps a quoted message's excerpt (TASK-4038).
 const ConversationExcerptRunes = 100
 

@@ -55,6 +55,39 @@ func chatLastSeq(t *testing.T, s *Store, convID string) int64 {
 	return n
 }
 
+// BUG-4055: agent keys share the self-declared name's rune bound, not
+// op_key's independent byte bound. Malformed UTF-8 must be rejected first.
+func TestValidateConversationAgentKey(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		key        string
+		allowEmpty bool
+		want       string
+	}{
+		{name: "64 four-byte runes", key: strings.Repeat("😀", 64)},
+		{name: "65 runes", key: strings.Repeat("x", 65), want: "agent key is longer than 64 characters"},
+		{name: "65 four-byte runes", key: strings.Repeat("😀", 65), want: "agent key is longer than 64 characters"},
+		{name: "invalid UTF-8", key: "agent\xff", want: "agent key is not valid UTF-8"},
+		{name: "invalid UTF-8 before length", key: strings.Repeat("x", 65) + "\xff", want: "agent key is not valid UTF-8"},
+		{name: "control character", key: "agent\n", want: "agent key contains a control character"},
+		{name: "empty human", allowEmpty: true},
+		{name: "empty agent", want: "agent key is required"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateConversationAgentKey(tc.key, tc.allowEmpty)
+			if tc.want == "" {
+				if err != nil {
+					t.Fatalf("valid key refused: %v", err)
+				}
+				return
+			}
+			if !errors.Is(err, ErrInvalidConversationInput) || err.Error() != ErrInvalidConversationInput.Error()+": "+tc.want {
+				t.Fatalf("error = %v, want ErrInvalidConversationInput: %s", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestChatTimestampsAreFixedWidth(t *testing.T) {
 	t.Run("format", func(t *testing.T) {
 		instant := time.Date(2026, 10, 23, 5, 0, 5, 123456780, time.UTC)
