@@ -96,7 +96,7 @@ func TestMonitorChatRetractionOutlivesSeenChat(t *testing.T) {
 }
 
 func TestMonitorChatIdentityChangeResetsMemory(t *testing.T) {
-	for _, change := range []string{"same", "base-url", "user", "profile-error", "empty-user"} {
+	for _, change := range []string{"same", "base-url", "user", "profile-error", "empty-user", "profile-once"} {
 		t.Run(change, func(t *testing.T) {
 			chatSessionEnv(t)
 			t.Setenv("PAD_URL", "")
@@ -109,7 +109,7 @@ func TestMonitorChatIdentityChangeResetsMemory(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 			defer cancel()
 			var mu sync.Mutex
-			connections := 0
+			connections, profileReads := 0, 0
 			var afters, acks []int64
 			var serverURL string
 			writeURL := func(base string) error {
@@ -121,6 +121,11 @@ func TestMonitorChatIdentityChangeResetsMemory(t *testing.T) {
 				path := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/first"), "/second")
 				switch path {
 				case "/api/v1/auth/me":
+					profileReads++
+					if change == "profile-once" && profileReads == 1 {
+						http.Error(w, "temporary failure", http.StatusServiceUnavailable)
+						return
+					}
 					if change == "profile-error" || change == "empty-user" {
 						time.AfterFunc(500*time.Millisecond, cancel)
 						if change == "profile-error" {
@@ -206,7 +211,7 @@ func TestMonitorChatIdentityChangeResetsMemory(t *testing.T) {
 				return
 			}
 			wantAfters, wantShared := []int64{0, 0}, 2
-			if change == "same" {
+			if change == "same" || change == "profile-once" {
 				wantAfters, wantShared = []int64{0, 2}, 1
 			}
 			if connections != 2 || !slices.Equal(afters, wantAfters) || !slices.Equal(acks, []int64{2, 3}) || strings.Count(out, "fetched shared\n") != wantShared || strings.Count(out, "fetched next\n") != 1 || strings.Contains(out, "retracted") {
