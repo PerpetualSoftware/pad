@@ -152,6 +152,8 @@ func (c *monitorChat) handle(w io.Writer, p watchStreamPayload) {
 	if !baseline {
 		// TASK-4041, DOC-4036: absence from a successful unread summary
 		// means zero unread. Without a summary, fetch history fail-closed.
+		// This assumes ordered events: sync_required discards baselines
+		// and re-seeds from /me/chat/unread so the next event refetches.
 		if c.summaryReady {
 			last = p.MessageSeq - 1
 		}

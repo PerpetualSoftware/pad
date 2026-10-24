@@ -631,9 +631,9 @@ func runWatchMonitor(ctx context.Context) error {
 // too large to replay, stop trying.
 //
 // It is also delivered MID-STREAM since BUG-2730, on a connection that never
-// dropped. Clearing the cursor is this PROCESS's whole response there too —
-// this loop keeps the connection open and the next notification starts a
-// fresh coverage span — so a growing cause list costs it no request.
+// dropped. This loop clears the cursor and chat baselines, re-seeds chat from
+// /me/chat/unread, and keeps printed ids so refetched rows are not printed twice.
+// The connection stays open and the next notification starts a fresh coverage span.
 //
 // It is NOT the consumer's whole response: whoever reads stdout has to be
 // told it may have missed something, so each sync_required also prints
@@ -694,6 +694,8 @@ func streamWatchEventsTo(w io.Writer, resp *http.Response, lastEventID string, s
 				}
 			case "sync_required":
 				lastEventID = ""
+				clear(chat.last)
+				chat.summaryReady = false
 				chat.summary(w)
 				if !resyncAnnounced {
 					// The same consent gate a notification takes: a disarmed
