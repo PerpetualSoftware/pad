@@ -53,9 +53,11 @@ func TestMonitorChatDeliveryMemoryOutlivesSeenChat(t *testing.T) {
 	}
 	f.before = func() { f.failAck = true }
 	c := newSeededMonitorChat(f, seen)
+	c.now = func() time.Time { return now }
 	var out bytes.Buffer
 	for seq := int64(1); seq <= 300; seq++ {
 		c.handle(&out, floorEvent(1, seq))
+		now = now.Add(monitorChatFloorBackoff)
 	}
 	if seen.contains("m1") || !seen.contains("m300") || f.deliveredSeq != 0 {
 		t.Fatal("test needs eviction and failed acks")
@@ -153,7 +155,7 @@ func TestMonitorChatAdapterQueryShape(t *testing.T) {
 		after int64
 		limit int
 	}{{0, 1}, {7, 20}} {
-		messages, err := sink.messagesAfter(12, query.after, query.limit)
+		messages, err := sink.messagesAfter(context.Background(), 12, query.after, query.limit)
 		if err != nil || len(messages) != 1 || messages[0].Seq != 8 {
 			t.Fatalf("messages=%v err=%v", messages, err)
 		}
@@ -162,7 +164,7 @@ func TestMonitorChatAdapterQueryShape(t *testing.T) {
 	if err != nil || floor != 7 {
 		t.Fatalf("floor=%d err=%v", floor, err)
 	}
-	summary, err := sink.unread("seat +&/name")
+	summary, err := sink.unread(context.Background(), "seat +&/name")
 	if err != nil || summary.Total != 1 || len(summary.Conversations) != 1 || summary.Conversations[0].DeliveredSeq != 7 {
 		t.Fatalf("summary=%+v err=%v", summary, err)
 	}

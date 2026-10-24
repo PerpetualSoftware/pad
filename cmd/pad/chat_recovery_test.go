@@ -107,7 +107,7 @@ func TestMonitorChatIdentityChangeResetsMemory(t *testing.T) {
 			oldSeen := seenChat
 			seenChat = newRecentSet(256, 10*time.Minute)
 			t.Cleanup(func() { seenChat = oldSeen })
-			ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 			defer cancel()
 			var mu sync.Mutex
 			connections, profileReads := 0, 0
@@ -154,6 +154,14 @@ func TestMonitorChatIdentityChangeResetsMemory(t *testing.T) {
 					mu.Unlock()
 					fmt.Fprint(w, event)
 					w.(http.Flusher).Flush()
+					if change == "profile-once" && connections == 1 {
+						// The failed connect identity lookup now backs off globally. Deliver
+						// a fresh event after expiry to exercise recovery on this connection.
+						if sleepOrDone(ctx, monitorChatFloorBackoff) {
+							fmt.Fprint(w, event)
+							w.(http.Flusher).Flush()
+						}
+					}
 					// Hold the stream until this single event has been acknowledged.
 					for {
 						mu.Lock()

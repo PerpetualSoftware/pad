@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -44,7 +45,7 @@ func (f *fakeChatSink) conversationFloor(context.Context, int) (int64, error) {
 	return f.floor, f.floorErr
 }
 
-func (f *fakeChatSink) messagesAfter(n int, after int64, limit int) ([]monitorChatMessage, error) {
+func (f *fakeChatSink) messagesAfter(_ context.Context, n int, after int64, limit int) ([]monitorChatMessage, error) {
 	f.fetches++
 	f.after = append(f.after, after)
 	f.limits = append(f.limits, limit)
@@ -66,7 +67,7 @@ func (f *fakeChatSink) messagesAfter(n int, after int64, limit int) ([]monitorCh
 	}
 	return out, nil
 }
-func (f *fakeChatSink) delivered(n int, seq int64) error {
+func (f *fakeChatSink) delivered(_ context.Context, n int, seq int64) error {
 	f.acks++
 	f.seq = seq
 	f.ackSeqs = append(f.ackSeqs, seq)
@@ -79,7 +80,7 @@ func (f *fakeChatSink) delivered(n int, seq int64) error {
 	}
 	return nil
 }
-func (f *fakeChatSink) unread(agent string) (monitorChatUnread, error) {
+func (f *fakeChatSink) unread(_ context.Context, agent string) (monitorChatUnread, error) {
 	f.totals++
 	if f.beforeUnread != nil {
 		f.beforeUnread()
@@ -180,6 +181,8 @@ func TestMonitorDedupeAndDeliveredAck(t *testing.T) {
 	}
 	f.messages = append(f.messages, chatMsg("d", 4))
 	f.fail = true
+	now := time.Now()
+	c.now = func() time.Time { return now }
 	before := out.String()
 	acks := f.acks
 	p.MessageID = "d"
@@ -188,6 +191,7 @@ func TestMonitorDedupeAndDeliveredAck(t *testing.T) {
 	if out.String() != before || f.acks != acks {
 		t.Fatal("fetch failure printed/acked")
 	}
+	now = now.Add(monitorChatFloorBackoff)
 	c.handle(&out, p)
 	if f.seq != 4 || !strings.Contains(out.String(), "fetched d") {
 		t.Fatal("failed fetch deduped")
@@ -337,7 +341,10 @@ func TestMonitorChatDedupeRetriesFailedAck(t *testing.T) {
 	if c.last[1] != 2 || f.deliveredSeq != 0 || !slices.Equal(f.ackSeqs, []int64{2}) {
 		t.Fatalf("failed ack: cursor=%d delivered=%d acks=%v", c.last[1], f.deliveredSeq, f.ackSeqs)
 	}
-	// An older duplicate retries the contiguous cursor, not the event seq.
+	now := time.Now()
+	c.now = func() time.Time { return now }
+	now = now.Add(monitorChatFloorBackoff)
+	// An older duplicate after backoff retries the contiguous cursor, not the event seq.
 	c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "a", MessageSeq: 1})
 	if c.last[1] != 2 || f.deliveredSeq != 2 || !slices.Equal(f.ackSeqs, []int64{2, 2}) || f.fetches != 1 || strings.Count(out.String(), "fetched ") != 2 {
 		t.Fatalf("dedupe retry: cursor=%d delivered=%d acks=%v fetches=%d output=%q", c.last[1], f.deliveredSeq, f.ackSeqs, f.fetches, out.String())
@@ -371,6 +378,7 @@ func TestMonitorChatSyncRequiredReseedsBaselines(t *testing.T) {
 			if len(c.last) != 0 {
 				t.Fatal("sync retained old floor")
 			}
+			c.now = func() time.Time { return time.Now().Add(monitorChatFloorBackoff) }
 			p := watchStreamPayload{Conversation: 1, MessageID: "d", MessageSeq: 4}
 			c.handle(&out, p)
 			after := int64(0)

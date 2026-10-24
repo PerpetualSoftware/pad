@@ -57,9 +57,12 @@ func TestMonitorChatIdentityRecoveryPrintsOnlyOwedMessages(t *testing.T) {
 		return monitorChatIdentity{"server", "user"}, f
 	}
 	var out bytes.Buffer
+	now := time.Now()
+	c.now = func() time.Time { return now }
 	if c.summary(&out) {
 		t.Fatal("connect should fail identity lookup")
 	}
+	now = now.Add(monitorChatFloorBackoff)
 	p := watchStreamPayload{Conversation: 1, MessageID: "owed4", MessageSeq: 4}
 	c.handle(&out, p)
 	// The successful first-contact step fills from the server floor immediately.
