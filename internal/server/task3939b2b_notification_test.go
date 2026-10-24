@@ -414,3 +414,56 @@ func TestNotificationEnrichment_AppTokenGetsOneAnswerForEveryId(t *testing.T) {
 	sameBytes(t, "an app token's real id", real, unknown)
 	t.Logf("app token on /api/v1/me/notifications/{id}: %d %s", real.Code, real.Body.String())
 }
+
+// TASK-4051: an unreadable owner must produce 500 in the name fallback.
+// internal/store/workspaces.go:308 uses COALESCE on the owner username,
+// so an existing owner with an empty username reaches it. Kills: M4a.
+func TestNotificationEnrichment_OwnerGetUserErrorReturns500(t *testing.T) {
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		task4051EnrichmentScanFault(t, srv, true)
+	})
+}
+
+// TASK-4051: an unreadable actor is an operational error after the recipient
+// passes the access gate, so enrichment returns 500. Kills: M4b.
+func TestNotificationEnrichment_ActorGetUserErrorReturns500(t *testing.T) {
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		task4051EnrichmentScanFault(t, srv, false)
+	})
+}
+
+func task4051EnrichmentScanFault(t *testing.T, srv *Server, ownerFault bool) {
+	t.Helper()
+	if srv.store.D().Driver() == store.DriverPostgres {
+		t.Skip("scan fault needs SQLite's loose typing; the 500 branch is dialect-independent")
+	}
+	f := newPdx(t, srv)
+	actor := f.user("actor")
+	tok := f.bobSession()
+	id := f.row("comment")
+	f.exec(`UPDATE user_notifications SET actor_user_id = ? WHERE id = ?`, actor.ID, id)
+	if rr := getNotif(srv, tok, id); rr.Code != http.StatusOK {
+		t.Fatalf("healthy control = %d %s, want 200", rr.Code, rr.Body.String())
+	}
+	faulted := actor
+	if ownerFault {
+		faulted = f.owner
+		f.exec(`UPDATE users SET username = '' WHERE id = ?`, faulted.ID)
+		ws, err := srv.store.GetWorkspaceByID(f.ws.ID)
+		if err != nil || ws == nil || ws.OwnerUsername != "" {
+			t.Fatalf("owner fallback premise: workspace=%+v err=%v", ws, err)
+		}
+	}
+	f.exec(`UPDATE users SET credential_epoch = 'not-a-number' WHERE id = ?`, faulted.ID)
+	if _, err := srv.store.GetUser(faulted.ID); err == nil {
+		t.Fatal("GetUser did not report the injected INTEGER scan fault")
+	}
+	n, err := srv.store.GetNotificationForUser(f.bob.ID, id)
+	must(t, err)
+	if _, reason, err := srv.notificationAccess(newPushGateCache(), *n); err != nil || reason != "" {
+		t.Fatalf("recipient's access gate must pass before enrichment: reason=%q err=%v", reason, err)
+	}
+	if rr := getNotif(srv, tok, id); rr.Code != http.StatusInternalServerError {
+		t.Fatalf("enrichment = %d %s, want 500 for GetUser failure", rr.Code, rr.Body.String())
+	}
+}
