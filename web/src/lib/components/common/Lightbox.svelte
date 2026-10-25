@@ -641,12 +641,26 @@
 	// shows (`displaySrc`, the canonical attachment URL) and the load phase; this
 	// component drives it from the shown image and reports each decode / error.
 	const loader = createViewerImageLoader();
-	// The TEXT arm's loader (IDEA-2712). A separate instance rather than a mode on
+	// The TEXT/TABLE loader (IDEA-2712 / TASK-4074). A separate instance rather than a mode on
 	// the image loader: the two have no shared state, opposite cancellation models
 	// (an `<img>` src reassignment vs an AbortController) and disjoint arms, so
 	// merging them would be one object with two unrelated halves. Exactly one is
 	// ever armed — the load effect below disposes the other.
 	const textLoader = createViewerTextLoader();
+	let markdownAttachment = $derived(isMarkdownAttachment(resolvedMime, headerMeta.fields.filename));
+	// Choices belong to this surface, with fresh defaults for each document.
+	// A retry/size fill keeps them; navigation or MIME reclassification resets
+	// them synchronously through overridable derived state (Svelte 5).
+	let textIdentity = $derived(`${img?.id ?? ''}:${resolvedMime ?? ''}:${headerMeta.fields.filename ?? ''}`);
+	let markdownRaw = $derived.by(() => {
+		void textIdentity;
+		return false;
+	});
+	let wrapText = $derived.by(() => {
+		void textIdentity;
+		return markdownAttachment || resolvedMime?.split(';')[0].trim().toLowerCase() === 'text/plain';
+	});
+
 	// The id AND the pixel dimensions, as ONE stable primitive string — never the
 	// `img` object. A prop re-emit with the same VALUES (a re-derived `navigable`
 	// array) must not re-fire the load effect, but a genuine dimension change (an
@@ -2051,7 +2065,7 @@
 				// discipline rather than the fallback's: the RESOLVED mime and the
 				// RESOLVED size (never the seed — see `resolvedSize`), both in
 				// `loadKey`, and the image loader disposed so the two can never both
-				// hold bytes for one entry. Its own gates (`canPreviewAsText` + the
+				// hold bytes for one entry. Its own gates (exact text/table MIME sets + the
 				// size bound) are the backstop at the request chokepoint; this is the
 				// Lightbox deciding the arm.
 				loader.dispose();
@@ -2638,7 +2652,7 @@
 		{/if}
 
 		<!--
-			THE TEXT ARM (IDEA-2712 / GitHub #1169). A markdown or plain-text document,
+			THE BYTE PREVIEW ARMS (IDEA-2712 / TASK-4074). Text or a delimited table,
 			fetched by `textLoader` and rendered by US — never handed to the browser to
 			inline. This arm LOADS BYTES, so it takes the raster arm's discipline
 			rather than the fallback's: it is re-derived from the resolved MIME every
@@ -2743,12 +2757,23 @@
 				{:else if textLoader.phase === 'ready'}
 					{#if shownRenderer === 'table'}
 						<AttachmentTablePreview text={textLoader.text} mime={resolvedMime!} compact={isSheet} />
-					{:else if isMarkdownAttachment(resolvedMime, headerMeta.fields.filename)}
-						<div class="lightbox-text-body markdown-body">
-							{@html renderMarkdownDocument(textLoader.text)}
-						</div>
 					{:else}
-						<pre class="lightbox-text-body lightbox-text-plain">{textLoader.text}</pre>
+						<div class="lightbox-text-controls" role="group" aria-label="Preview display">
+							{#if markdownAttachment}
+								<button type="button" aria-pressed={!markdownRaw} onclick={() => markdownRaw = false}>Rendered</button>
+								<button type="button" aria-pressed={markdownRaw} onclick={() => markdownRaw = true}>Raw</button>
+							{/if}
+							{#if !markdownAttachment || markdownRaw}
+								<button type="button" aria-pressed={wrapText} onclick={() => wrapText = !wrapText}>Wrap</button>
+							{/if}
+						</div>
+						{#if markdownAttachment && !markdownRaw}
+							<div class="lightbox-text-body markdown-body">
+								{@html renderMarkdownDocument(textLoader.text)}
+							</div>
+						{:else}
+							<pre class="lightbox-text-body lightbox-text-plain" class:lightbox-text-wrap={wrapText}>{textLoader.text}</pre>
+						{/if}
 					{/if}
 				{/if}
 				</div>
@@ -3064,14 +3089,37 @@
 		overflow-wrap: anywhere;
 	}
 
-	/* Plain text keeps its own line breaks and spacing (that is what makes it
-	   plain text), but still wraps rather than forcing a horizontal scrollbar
-	   across the whole stage. */
+	/* Raw bytes keep their line breaks. Prose wraps by default; configuration
+	   files start unwrapped, with horizontal scrolling inside the card. */
 	.lightbox-text-plain {
-		white-space: pre-wrap;
+		white-space: pre;
+		overflow-wrap: normal;
 		font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
 		font-size: 0.875rem;
 		line-height: 1.6;
+	}
+
+	.lightbox-text-plain.lightbox-text-wrap {
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
+	}
+	.lightbox-text-controls {
+		display: flex;
+		gap: var(--space-2);
+		padding: var(--space-2);
+		background: var(--bg-primary, #fff);
+	}
+	.lightbox-text-controls button {
+		padding: 0.35rem 0.65rem;
+		border: 1px solid var(--border-color, #ddd);
+		border-radius: var(--radius-sm, 4px);
+		background: var(--bg-primary, #fff);
+		color: var(--text-primary, #111);
+		cursor: pointer;
+	}
+	.lightbox-text-controls button[aria-pressed='true'] {
+		background: var(--bg-secondary, #eee);
+		font-weight: 600;
 	}
 
 	/* Wide content INSIDE a rendered document scrolls in its own box rather than

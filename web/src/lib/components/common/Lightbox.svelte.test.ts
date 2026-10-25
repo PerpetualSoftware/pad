@@ -5128,6 +5128,65 @@ describe('Lightbox — the text arm', () => {
 		expect(body!.querySelector('em')?.textContent).toBe('emphasis');
 	});
 
+	function toggle(label: string): HTMLButtonElement {
+		const button = [...root().querySelectorAll('button')].find((b) => b.textContent?.trim() === label);
+		expect(button).toBeDefined();
+		return button!;
+	}
+
+	it.each([
+		['text/plain', true], ['application/json', false],
+		['application/yaml', false], ['application/toml', false]
+	])('wrap toggles the pre class for %s, starting at its MIME default', async (mime, wrapped) => {
+		mountViewer({ images: [{ ...image(IMG_A, 'source', mime as string), size_bytes: 128 }] });
+		await settleAsync();
+		const pre = root().querySelector('pre')!;
+		expect(pre).not.toBeNull();
+		expect(pre.textContent).toBe('# Heading\n\nSome *emphasis*.');
+		expect(pre.classList.contains('lightbox-text-wrap')).toBe(wrapped);
+		expect(toggle('Wrap').getAttribute('aria-pressed')).toBe(String(wrapped));
+		toggle('Wrap').click();
+		flushSync();
+		expect(pre.classList.contains('lightbox-text-wrap')).toBe(!wrapped);
+		expect(toggle('Wrap').getAttribute('aria-pressed')).toBe(String(!wrapped));
+	});
+
+	it('Raw renders markdown SOURCE in the plain text pre; Rendered returns to sanitized HTML', async () => {
+		mountViewer({ images: [{ ...image(IMG_A, 'notes.md', 'text/markdown'), size_bytes: 128 }] });
+		await settleAsync();
+		expect(toggle('Rendered').getAttribute('aria-pressed')).toBe('true');
+		toggle('Raw').click();
+		flushSync();
+		expect(toggle('Raw').getAttribute('aria-pressed')).toBe('true');
+		expect(toggle('Rendered').getAttribute('aria-pressed')).toBe('false');
+		const pre = root().querySelector('pre.lightbox-text-plain')!;
+		expect(pre).not.toBeNull();
+		expect(pre.textContent).toBe('# Heading\n\nSome *emphasis*.');
+		expect(pre.classList.contains('lightbox-text-wrap')).toBe(true);
+		expect(root().querySelector('.lightbox-text-body h1')).toBeNull();
+		toggle('Rendered').click();
+		flushSync();
+		expect(root().querySelector('.lightbox-text-body h1')?.textContent).toBe('Heading');
+		expect(root().querySelector('pre.lightbox-text-plain')).toBeNull();
+	});
+
+	it('keeps toggle choices in this surface and resets defaults when navigating to another document', async () => {
+		mountViewer({ images: [
+			{ ...image(IMG_A, 'one', 'application/json'), size_bytes: 128 },
+			{ ...image(IMG_B, 'two', 'text/plain'), size_bytes: 128 }
+		] });
+		await settleAsync();
+		toggle('Wrap').click();
+		flushSync();
+		expect(toggle('Wrap').getAttribute('aria-pressed')).toBe('true');
+		root().querySelector<HTMLButtonElement>('.lightbox-nav.next')!.click();
+		await settleAsync();
+		expect(toggle('Wrap').getAttribute('aria-pressed')).toBe('true');
+		root().querySelector<HTMLButtonElement>('.lightbox-nav.prev')!.click();
+		await settleAsync();
+		expect(toggle('Wrap').getAttribute('aria-pressed')).toBe('false');
+	});
+
 	it.each(['text/plain', 'text/csv'])('mounts %s inside the filling sheet stage and uses the phone table budget', async (mime) => {
 		mobileFlag = true;
 		try {

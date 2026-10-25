@@ -441,8 +441,8 @@ export function canPreviewAsText(mime: string | null | undefined): boolean {
 /**
  * Within the text-preview set, is this the MARKDOWN one? (IDEA-2712)
  *
- * The arm needs to tell the two members apart — markdown goes through the
- * shared `marked` pipeline, plain text goes into a `<pre>` as text.
+ * Markdown goes through the shared `marked` pipeline; the other text
+ * members go into a `<pre>` as text.
  *
  * THE EXTENSION IS CONSULTED, AND IT IS NOT BELT-AND-BRACES — IT IS THE PATH
  * THAT FIRES FOR EVERY ROW UPLOADED BEFORE BUG-2963 F5. Until that change, an
@@ -468,7 +468,7 @@ export function canPreviewAsText(mime: string | null | undefined): boolean {
  * an explicitly-typed row (a CLI upload that declares the type, or a future
  * server that trusts the extension) should be honoured regardless of filename.
  * The extension is the fallback, and it is gated on the MIME already being in
- * the text-preview set so a filename can never widen what previews.
+ * the legacy text/plain MIME so a configuration file cannot become markdown.
  */
 const MARKDOWN_EXTENSIONS: ReadonlySet<string> = new Set(['md', 'markdown']);
 
@@ -477,9 +477,9 @@ export function isMarkdownAttachment(
 	filename?: string | null
 ): boolean {
 	if (normalizeMime(mime) === 'text/markdown') return true;
-	// Gate on the set, never on the filename alone: the extension chooses a
-	// RENDERER among types already admitted, and must not admit anything.
-	if (!canPreviewAsText(mime)) return false;
+	// Only legacy text/plain needs the extension bridge. A declared JSON, YAML
+	// or TOML document stays raw even if its filename ends in .md.
+	if (normalizeMime(mime) !== 'text/plain') return false;
 	return MARKDOWN_EXTENSIONS.has(extensionOf(filename));
 }
 
