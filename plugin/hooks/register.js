@@ -1238,9 +1238,9 @@ let toastStart = 0
 
 // Chat text is another party's words, drawn on the person's terminal: drop
 // control characters (C0, DEL, C1, so no escape sequence reaches it) and the
-// bidirectional overrides that can make a line read as something else. The
+// bidirectional controls that can make a line read as something else. The
 // log itself stays byte for byte what the agent got.
-const UNSAFE = /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g
+const UNSAFE = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g
 export const displayLine = (s) => String(s).replace(UNSAFE, '')
 
 // Cut by code points, so an emoji at the edge is never split in half.
@@ -1287,6 +1287,7 @@ async function startSeen($) {
 function stopSeen() {
   seenEpoch++
   seenStarting = false
+  seenPolling = false // a poll still in flight finishes under the old epoch
   if (seenTimer) seenTimer.cancel()
   seenTimer = null
   if (toastTimer) toastTimer.cancel()
@@ -1306,14 +1307,23 @@ async function pollSeen($) {
   const path = seenPath
   seenPolling = true
   try {
-    let size = 0
+    let size = -1 // unknown: the stat failed, or the path is a symlink
     try {
       const st = await $.fs.stat(path)
-      size = st.kind === 'file' && !st.isLink ? st.size : 0
-    } catch {
-      size = 0 // no file yet: a first line will create it
+      if (st.kind === 'file' && !st.isLink) size = st.size
+    } catch {}
+    if (epoch !== seenEpoch) return
+    if (size < 0) {
+      // Nothing there at the first look: every line from now on is new. Later,
+      // an unreadable moment changes nothing, so it cannot cause a replay.
+      if (!seenPrimed) {
+        seenSize = 0
+        seenChars = 0
+        seenPrimed = true
+      }
+      return
     }
-    if (epoch !== seenEpoch || size === seenSize) return
+    if (size === seenSize) return
     if (!size) {
       seenSize = 0
       seenChars = 0
@@ -1324,24 +1334,41 @@ async function pollSeen($) {
     try {
       text = await $.fs.read(path)
     } catch {
-      return // seenSize unchanged: the next poll tries again
+      return // nothing advanced: the next poll tries again
     }
     if (epoch !== seenEpoch) return
     seenSize = size
-    const priming = !seenPrimed
-    seenPrimed = true
+    if (!seenPrimed) {
+      // The first look skips what the file held at the stat; a line written
+      // between that stat and this read is new, and shows.
+      const cut = charIndexAtByte(text, size)
+      seenChars = text.lastIndexOf('\n', cut - 1) + 1
+      seenPrimed = true
+    }
     if (text.length < seenChars) seenChars = 0 // rotated: read the new log from its start
     const end = text.lastIndexOf('\n') + 1 // a line still being written waits for its newline
     if (end <= seenChars) return
     const fresh = text.slice(seenChars, end).split('\n').map(displayLine).filter((l) => l.trim())
     seenChars = end
-    if (priming || !fresh.length) return // the first look only finds the end
+    if (!fresh.length) return
     seenBand = [...seenBand, ...fresh].slice(-SEEN_BAND_LINES).map((l) => clipLine(l, SEEN_LINE_MAX))
     redraw($)
     await queueToast($, fresh, epoch)
   } finally {
     if (epoch === seenEpoch) seenPolling = false
   }
+}
+
+// The index in text (UTF-16 units) where its first `bytes` UTF-8 bytes end.
+export function charIndexAtByte(text, bytes) {
+  let b = 0
+  let i = 0
+  while (i < text.length && b < bytes) {
+    const cp = text.codePointAt(i)
+    b += cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4
+    i += cp > 0xffff ? 2 : 1
+  }
+  return i
 }
 
 // One toast per burst, on the same clock as the lines relayed to Claude: a

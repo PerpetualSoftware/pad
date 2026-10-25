@@ -1,5 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
-import { clipLine, displayLine, isPersonPrompt } from '../hooks/register.js'
+import { charIndexAtByte, clipLine, displayLine, isPersonPrompt } from '../hooks/register.js'
 
 // TASK-4071: chat delivered to the agent is shown to the person too. `pad watch`
 // appends each chat line to ~/.pad/chat-seen/<harness pid>.log; the mod tails
@@ -16,7 +16,7 @@ const BAND = {
   props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 115, scroll: { offset: 0, bodyRows: 10 }, view: {} },
 } as const
 
-function stubs(on: any, initial: string | null = null, opts: { failReads?: number; holdHome?: Promise<void> } = {}) {
+function stubs(on: any, initial: string | null = null, opts: { failReads?: number; holdHome?: Promise<void>; growOnFirstRead?: string; holdFirstRead?: Promise<void> } = {}) {
   const file = { text: initial as string | null, isLink: false }
   let failReads = opts.failReads || 0
   const toasts: string[] = []
@@ -50,6 +50,17 @@ function stubs(on: any, initial: string | null = null, opts: { failReads?: numbe
   on('fs.read', ($: any, e: any) => {
     if (e.path !== LOG || file.text === null) return { deny: 'ENOENT' }
     if (failReads > 0) { failReads--; return { deny: 'EIO' } }
+    if (opts.growOnFirstRead !== undefined) {
+      // a line the writer appends between the reader's stat and its read
+      file.text += opts.growOnFirstRead
+      opts.growOnFirstRead = undefined
+    }
+    if (opts.holdFirstRead) {
+      const held = opts.holdFirstRead
+      opts.holdFirstRead = undefined
+      const text = file.text
+      return held.then(() => ({ value: text }))
+    }
     return { value: file.text }
   })
   return { file, toasts, statted }
@@ -236,7 +247,11 @@ test('control characters and direction overrides never reach the terminal', asyn
 })
 
 test('displayLine and clipLine', () => {
-  expect(displayLine('a\u001b[31mb\u007fc\u200fd\u2066e')).toBe('a[31mbcde')
+  expect(displayLine('a\u001b[31mb\u007fc\u200fd\u2066e\u061cf')).toBe('a[31mbcdef')
+  const mixed = 'aé😀b' // UTF-8 bytes: 1, 2, 4, 1
+  expect(charIndexAtByte(mixed, 3)).toBe(2)
+  expect(charIndexAtByte(mixed, 7)).toBe(4)
+  expect(charIndexAtByte(mixed, 8)).toBe(5)
   expect(clipLine('😀😀😀', 2)).toBe('😀…')
   expect(clipLine('a😀b', 3)).toBe('a😀b')
 })
@@ -266,6 +281,48 @@ test('a first read that fails does not replay the log later', async ($, on) => {
   await usePad($)
   await settle()
   await poll(clock)
+  s.file.text += 'new\n'
+  await poll(clock)
+  expect(s.toasts).toEqual(['new'])
+})
+
+test('a line written between the first stat and the first read still shows', async ($, on) => {
+  const clock = mock.clock(on)
+  const s = stubs(on, 'old\n', { growOnFirstRead: 'arrived during the first look\n' })
+  await $.session.start({ cwd: '/work/demo' })
+  await usePad($)
+  await settle()
+  await poll(clock)
+  expect(s.toasts).toEqual(['arrived during the first look'])
+})
+
+test('a session that ends during a poll can read again after its next wake', async ($, on) => {
+  const clock = mock.clock(on)
+  let release = () => {}
+  const holdFirstRead = new Promise<void>((r) => { release = r })
+  const s = stubs(on, 'old\n', { holdFirstRead })
+  await $.session.start({ cwd: '/work/demo' })
+  await usePad($)
+  await settle()
+  await $.session.end({ reason: 'prompt_input_exit' })
+  release()
+  await settle()
+  await usePad($)
+  await settle()
+  s.file.text += 'after the second wake\n'
+  await poll(clock)
+  expect(s.toasts).toEqual(['after the second wake'])
+})
+
+test('a moment the log cannot be read does not replay it', async ($, on) => {
+  const clock = mock.clock(on)
+  const s = stubs(on, 'old one\nold two\n')
+  await $.session.start({ cwd: '/work/demo' })
+  await usePad($)
+  await settle()
+  s.file.isLink = true
+  await poll(clock)
+  s.file.isLink = false
   s.file.text += 'new\n'
   await poll(clock)
   expect(s.toasts).toEqual(['new'])
