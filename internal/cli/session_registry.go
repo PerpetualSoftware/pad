@@ -133,16 +133,12 @@ func SessionsDir() (string, error) {
 		return "", fmt.Errorf("get home directory: %w", err)
 	}
 	dir := filepath.Join(homeDir, ".pad", "sessions")
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return "", fmt.Errorf("create sessions directory: %w", err)
-	}
-	// MkdirAll applies the mode only on creation; a directory that already
-	// existed with a looser mode keeps it. The registry's records are
-	// 0600 each, but a permissive directory would let another local user
-	// see the filenames (pids) and plant files — tighten it every time
+	// The registry's records are 0600 each, but a permissive directory
+	// would let another local user see the filenames (pids) and plant
+	// files, so ensurePrivateDir tightens an existing one every time
 	// (codex round 3). Best effort: the caller's own directory.
-	if info, err := os.Stat(dir); err == nil && info.Mode().Perm() != 0700 {
-		_ = os.Chmod(dir, 0700)
+	if err := ensurePrivateDir(dir); err != nil {
+		return "", fmt.Errorf("create sessions directory: %w", err)
 	}
 	return dir, nil
 }
@@ -515,8 +511,8 @@ type PruneReport struct {
 }
 
 // PruneSessions removes DEAD records, and — only when olderThan > 0 —
-// UNKNOWN records whose timestamp is older than now-olderThan. It never
-// removes an ALIVE record. The age bound is the only way a registry on a
+// UNKNOWN records whose timestamp is older than now-olderThan, each with
+// its chat-seen log (TASK-4071). It never removes an ALIVE record. The age bound is the only way a registry on a
 // platform that cannot probe pids ever shrinks, and it is deliberately an
 // explicit choice: register passes 0.
 //
@@ -569,6 +565,10 @@ func pruneLocked(olderThan time.Duration, now time.Time) (PruneReport, error) {
 		if err := os.Remove(rec.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return rep, fmt.Errorf("remove %s: %w", rec.Path, err)
 		}
+		// The session's chat-seen log goes with its record (TASK-4071).
+		// Best effort: a log left behind is display state, not a reason to
+		// fail the prune.
+		_ = removeChatSeen(rec.SessionPID)
 		rep.Removed = append(rep.Removed, rec)
 		if rec.Liveness == LivenessDead {
 			rep.DeadRemoved++
