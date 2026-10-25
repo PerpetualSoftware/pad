@@ -60,14 +60,18 @@ func testTempBase(t *testing.T) string {
 }
 
 // tempScope is where THIS test's temp dirs live: the shared base and the
-// test's top-level name. t.TempDir() names its dirs "<Name><random>", and a
-// subtest's "<Parent>_<sub><random>", so the top-level name is a prefix of
-// both and of no other test's (BUG-4066 r2).
+// test's top-level name. t.TempDir() names its dir for the FULL test name cut
+// to 64 bytes, symbols such as "/" dropped, then random digits (Go's
+// testing.go makeTempDir). So a subtest's is "<Parent><sub…>" and digits, and
+// a top-level name of 64 bytes or more appears only as its first 64. top is
+// cut the same way, or a long test name is refused by its own temp dir
+// (BUG-4068, found when its tests first ran under this guard).
 type tempScope struct{ base, top string }
 
 func testTempScope(t *testing.T) tempScope {
 	t.Helper()
-	return tempScope{testTempBase(t), strings.SplitN(t.Name(), "/", 2)[0]}
+	top := strings.SplitN(t.Name(), "/", 2)[0]
+	return tempScope{testTempBase(t), top[:min(len(top), 64)]}
 }
 
 // insideTestTempDir reports whether p is inside this test's temp dir: under

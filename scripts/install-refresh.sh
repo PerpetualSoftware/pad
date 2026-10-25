@@ -397,6 +397,7 @@ listener_pids() {
 }
 
 TARGET_PID=""
+STOPPED_PID=""
 LISTENERS=()
 HIDDEN=""
 while read -r lp; do
@@ -710,7 +711,13 @@ if [ -n "$TARGET_PID" ]; then
 			die "pid $TARGET_PID no longer runs the captured server.
   Nothing was stopped or installed; re-run."
 		fi
-		kill -TERM "$TARGET_PID" 2>/dev/null || true
+		# The pid this refresh signalled: the only pid whose pad.pid record
+		# section 4 may treat as its own (BUG-4068). Recorded only when the
+		# signal was delivered, so a pid that exited and was reused after
+		# still_target is never claimed.
+		if kill -TERM "$TARGET_PID" 2>/dev/null; then
+			STOPPED_PID="$TARGET_PID"
+		fi
 		for _ in 1 2 3 4 5; do
 			kill -0 "$TARGET_PID" 2>/dev/null || break
 			sleep 1
@@ -727,7 +734,104 @@ STAGED=""
 # cfg.PIDFile() is <data dir>/pad.pid (config.go), claimed by `pad server
 # start` (cmd/pad/cmd_server.go); not $HOME/.pad under PAD_DATA_DIR (BUG-4064).
 # DATA_DIR is section 2a's, anchored like the log.
-rm -f "$DATA_DIR/pad.pid"
+#
+# The file is removed only when it is provably not someone else's (BUG-4068):
+# it names the pid this refresh stopped, or a pid that is provably DEAD. It is
+# kept when it names any live process, a sibling server sharing the data dir
+# or a reused pid, and when its liveness is unknown (EPERM) or it does not
+# parse. A kept stale file is the safe failure: `pad server stop` refuses a
+# record it cannot prove (BUG-2969).
+pid_file_pid() {
+	# The pid in pad.pid, read by checking each line against the SHAPE that
+	# internal/cli/pidfile.go writes (BUG-4068 r1, r2). This is a line-shape
+	# check, not full JSON validation:
+	#   - the MarshalIndent record: first non-blank line exactly "{", last
+	#     exactly "}", and each line between must START like a two-space-indent
+	#     quoted key ('  "' and a key character); the rest of such a line is
+	#     unchecked. Exactly one of them is "  \"pid\": N" (with or without a
+	#     trailing comma), and "pid" appears nowhere else in the file;
+	#   - or the legacy bare integer: one non-blank line, surrounding space only.
+	# A "\r" is dropped only at a line end. The pid is at most 10 digits,
+	# checked before any arithmetic, and at most 4194304 (Linux's largest
+	# pid_max; macOS's is 99999), so it never wraps as a pid_t. Anything else
+	# does not parse, and the file is kept.
+	local raw line pid="" n=0 lines=()
+	raw="$(cat "$1" 2>/dev/null)" || return 1
+	while IFS= read -r line || [ -n "$line" ]; do
+		line="${line%$'\r'}"
+		case "$line" in *[![:space:]]*) lines+=("$line") ;; esac
+	done <<<"$raw"
+	[ ${#lines[@]} -gt 0 ] || return 1
+	case "$raw" in *'"pid"'*'"pid"'*) return 1 ;; esac
+	if [ "${lines[0]}" = "{" ]; then
+		[ ${#lines[@]} -ge 3 ] && [ "${lines[${#lines[@]} - 1]}" = "}" ] || return 1
+		local i
+		for ((i = 1; i < ${#lines[@]} - 1; i++)); do
+			line="${lines[i]}"
+			case "$line" in
+			'  "pid": '*)
+				pid="${line#'  "pid": '}"
+				pid="${pid%,}"
+				n=$((n + 1))
+				;;
+			'  "'[!\ \"]*) ;;
+			*) return 1 ;;
+			esac
+		done
+		[ "$n" -eq 1 ] || return 1
+	else
+		[ ${#lines[@]} -eq 1 ] || return 1
+		pid="${lines[0]}"
+		while case "$pid" in [[:space:]]*) true ;; *) false ;; esac; do pid="${pid#?}"; done
+		while case "$pid" in *[[:space:]]) true ;; *) false ;; esac; do pid="${pid%?}"; done
+	fi
+	numeric "$pid" && [ ${#pid} -le 10 ] || return 1
+	pid=$((10#$pid))
+	[ "$pid" -gt 0 ] && [ "$pid" -le 4194304 ] || return 1
+	printf '%s' "$pid"
+}
+pid_liveness() {
+	# alive, dead or unknown. DEAD is ESRCH only: kill -0 also fails with EPERM
+	# for a live process this user may not signal (BUG-4068 r1), so the
+	# builtin's own message is read under LC_ALL=C. ps is not asked: a missing,
+	# busybox or hidepid-restricted ps would read a live process as gone.
+	# ESRCH is per pid namespace: a sibling in another container that shares
+	# the data dir reads as dead here (ruled inherent, f8009dad).
+	local out
+	if out="$(LC_ALL=C kill -0 "$1" 2>&1)"; then
+		echo alive
+		return
+	fi
+	case "$out" in
+	*'No such process'*) echo dead ;;
+	*) echo unknown ;;
+	esac
+}
+pid_file_removable() {
+	# pid_file_removable <pad.pid> <stopped pid, or empty>: succeeds when the
+	# file is provably not a live sibling's, the pid this refresh stopped or a
+	# dead one. Otherwise it prints why the file is kept, and fails.
+	local file_pid
+	if ! file_pid="$(pid_file_pid "$1")"; then
+		echo "it does not parse as a pid record"
+		return 1
+	fi
+	[ -n "$2" ] && [ "$file_pid" = "$2" ] && return 0
+	case "$(pid_liveness "$file_pid")" in
+	dead) return 0 ;;
+	alive) echo "it names pid $file_pid, which is alive and is not the server this refresh stopped" ;;
+	*) echo "it names pid $file_pid, whose liveness is unknown" ;;
+	esac
+	return 1
+}
+pid_file="$DATA_DIR/pad.pid"
+if [ -e "$pid_file" ]; then
+	if kept_why="$(pid_file_removable "$pid_file" "$STOPPED_PID")"; then
+		rm -f "$pid_file"
+	else
+		note "kept $pid_file: $kept_why"
+	fi
+fi
 
 # The check TASK-2787 asks for, and it is deliberately on the installed file
 # rather than on any step: read what is now at the install path and require it
