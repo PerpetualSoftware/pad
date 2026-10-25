@@ -119,7 +119,8 @@ func TestInstallRefresh_PIDFile_RemovesALegacyBareIntegerNamingTheStoppedServer(
 
 func TestInstallRefresh_PIDFile_RemovesADeadPidWhenNothingWasStopped(t *testing.T) {
 	requireScriptDeps(t)
-	f, _ := runPidFileRefresh(t, pidFileCase{body: func(int) string { return jsonRecord(999999, "/x/pad") }})
+	dead := reapedPid(t)
+	f, _ := runPidFileRefresh(t, pidFileCase{body: func(int) string { return jsonRecord(dead, "/x/pad") }})
 	wantRemoved(t, f)
 }
 
@@ -142,35 +143,29 @@ func TestInstallRefresh_PIDFile_RemovesTheStoppedPidEvenWhenTheExeDiffersBecause
 	wantRemoved(t, f)
 }
 
-// pidIsDeadWith runs the script's own numeric and pid_is_dead (extracted, the
-// rest of the script never runs) with fakePS first on PATH when non-empty.
-func pidIsDeadWith(t *testing.T, fakePS string, pid int) bool {
+// scriptFns runs prog after the script's own numeric, pid_file_pid,
+// pid_liveness and pid_file_removable, extracted with sed: the rest of the
+// script never runs. pre is bash placed between the functions and prog, used
+// to stand in a fake kill for the builtin.
+func scriptFns(t *testing.T, pre, prog string) string {
 	t.Helper()
 	requireScriptDeps(t)
 	script := scriptPath(t)
 	var fns strings.Builder
-	for _, expr := range []string{`/^numeric() /p`, `/^pid_is_dead() {/,/^}/p`} {
+	for _, expr := range []string{`/^numeric() /p`, `/^pid_file_pid() {/,/^}/p`, `/^pid_liveness() {/,/^}/p`, `/^pid_file_removable() {/,/^}/p`} {
 		out, err := exec.Command("sed", "-n", expr, script).Output()
 		if err != nil || len(out) == 0 {
 			t.Fatalf("extract %q from the script: %v", expr, err)
 		}
 		fns.Write(out)
 	}
-	prog := fns.String() + fmt.Sprintf("\nif pid_is_dead %d; then echo DEAD; else echo ALIVE; fi\n", pid)
-	cmd := exec.Command("bash", "-c", prog)
+	cmd := exec.Command("bash", "-c", fns.String()+"\n"+pre+"\n"+prog)
 	cmd.Env = os.Environ()
-	if fakePS != "" {
-		bin := t.TempDir()
-		if err := os.WriteFile(filepath.Join(bin, "ps"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		cmd.Env = append(cmd.Env, "PATH="+bin+":"+os.Getenv("PATH"))
-	}
 	out, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("run extracted functions: %v", err)
 	}
-	return strings.TrimSpace(string(out)) == "DEAD"
+	return strings.TrimSpace(string(out))
 }
 
 // reapedPid is a pid that existed and is gone now.
@@ -183,18 +178,74 @@ func reapedPid(t *testing.T) int {
 	return cmd.Process.Pid
 }
 
-func TestInstallRefresh_PIDFile_UnknownLivenessIsNotDead(t *testing.T) {
-	requireScriptDeps(t)
-	pid := reapedPid(t)
-	if pidIsDeadWith(t, "fake", pid) {
-		t.Errorf("pid_is_dead called pid %d dead although ps reports it exists (the EPERM case)", pid)
+// The reader is no looser than internal/cli/pidfile.go's parsePIDRecord
+// (BUG-4068 r1 item 1, 3): MarshalIndent's shape or a bare integer, one pid,
+// at most 10 digits. Anything else does not parse, and the file is kept.
+func TestInstallRefresh_PIDFile_ReadsOnlyWhatPadWrites(t *testing.T) {
+	for _, tc := range []struct{ name, body, want string }{
+		{"MarshalIndent", jsonRecord(4242, "/x/pad"), "4242"},
+		{"CRLF", strings.ReplaceAll(jsonRecord(4242, "/x/pad"), "\n", "\r\n"), "4242"},
+		{"bare", " 777 \n", "777"},
+		{"bare leading zeros", "007\n", "7"},
+		{"duplicate pid keys", "{\n  \"pid\": 5,\n  \"pid\": 6\n}\n", "REFUSED"},
+		{"nested pid", "{\n  \"x\": {\n    \"pid\": 5\n  }\n}\n", "REFUSED"},
+		{"compact one-line JSON is not what pad writes", "{\"pid\": 4242}\n", "REFUSED"},
+		{"inner whitespace", "1 2\n", "REFUSED"},
+		{"more than 10 digits", "12345678901\n", "REFUSED"},
+		{"zero", "0\n", "REFUSED"},
+		{"negative", "-5\n", "REFUSED"},
+		{"garbage", "garbage\n", "REFUSED"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := filepath.Join(t.TempDir(), "pad.pid")
+			if err := os.WriteFile(f, []byte(tc.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			got := scriptFns(t, "", fmt.Sprintf("pid_file_pid %q || printf REFUSED", f))
+			if got != tc.want {
+				t.Errorf("pid_file_pid(%q) = %q, want %q", tc.body, got, tc.want)
+			}
+		})
 	}
 }
 
-func TestInstallRefresh_PIDFile_ANonexistentPidIsDeadWithTheRealPS(t *testing.T) {
-	requireScriptDeps(t)
-	pid := reapedPid(t)
-	if !pidIsDeadWith(t, "", pid) {
-		t.Errorf("pid_is_dead did not call the nonexistent pid %d dead", pid)
+// DEAD is ESRCH only (BUG-4068 r1 item 2): a fake kill prints each message
+// the builtin can, so EPERM and anything unrecognised are not dead.
+func TestInstallRefresh_PIDFile_OnlyESRCHIsDead(t *testing.T) {
+	for _, tc := range []struct{ name, msg, want string }{
+		{"EPERM", "kill: (5) - Operation not permitted", "unknown"},
+		{"ESRCH", "kill: (5) - No such process", "dead"},
+		{"unrecognised", "kill: something else", "unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := fmt.Sprintf("kill() { echo %q >&2; return 1; }", tc.msg)
+			if got := scriptFns(t, fake, "pid_liveness 5"); got != tc.want {
+				t.Errorf("pid_liveness with %q = %q, want %q", tc.msg, got, tc.want)
+			}
+		})
+	}
+	if got := scriptFns(t, "", fmt.Sprintf("pid_liveness %d", reapedPid(t))); got != "dead" {
+		t.Errorf("the real kill on a reaped pid: %q, want dead", got)
+	}
+	if got := scriptFns(t, "", fmt.Sprintf("pid_liveness %d", os.Getpid())); got != "alive" {
+		t.Errorf("the real kill on this test's own pid: %q, want alive", got)
+	}
+}
+
+// The stopped-pid leg on its own (BUG-4068 r1 item 5): after a real stop the
+// pid is dead, so every e2e row also passes through the dead leg. A LIVE pid
+// stands in for a zombie or a quick reuse: named as the stopped pid it is
+// removed, and with no stopped pid the same file is kept.
+func TestInstallRefresh_PIDFile_TheStoppedPidLegRemovesEvenALivePid(t *testing.T) {
+	sib := liveSibling(t)
+	f := filepath.Join(t.TempDir(), "pad.pid")
+	if err := os.WriteFile(f, []byte(jsonRecord(sib, "/x/pad")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := scriptFns(t, "", fmt.Sprintf("pid_file_removable %q %d && echo REMOVE", f, sib)); got != "REMOVE" {
+		t.Errorf("a file naming the stopped pid %d was not removable: %q", sib, got)
+	}
+	if got := scriptFns(t, "", fmt.Sprintf("pid_file_removable %q '' && echo REMOVE; true", f)); !strings.Contains(got, "is alive") {
+		t.Errorf("with no stopped pid, a live pid's file was not kept as alive: %q", got)
 	}
 }

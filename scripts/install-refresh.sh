@@ -712,9 +712,12 @@ if [ -n "$TARGET_PID" ]; then
   Nothing was stopped or installed; re-run."
 		fi
 		# The pid this refresh signalled: the only pid whose pad.pid record
-		# section 4 may treat as its own (BUG-4068).
-		STOPPED_PID="$TARGET_PID"
-		kill -TERM "$TARGET_PID" 2>/dev/null || true
+		# section 4 may treat as its own (BUG-4068). Recorded only when the
+		# signal was delivered, so a pid that exited and was reused after
+		# still_target is never claimed.
+		if kill -TERM "$TARGET_PID" 2>/dev/null; then
+			STOPPED_PID="$TARGET_PID"
+		fi
 		for _ in 1 2 3 4 5; do
 			kill -0 "$TARGET_PID" 2>/dev/null || break
 			sleep 1
@@ -739,37 +742,79 @@ STAGED=""
 # parse. A kept stale file is the safe failure: `pad server stop` refuses a
 # record it cannot prove (BUG-2969).
 pid_file_pid() {
-	# The pid in pad.pid, in either form internal/cli/pidfile.go reads: the
-	# JSON record ("pid": N) or the legacy bare integer.
-	local body
+	# The pid in pad.pid, read no more loosely than internal/cli/pidfile.go's
+	# parsePIDRecord (BUG-4068 r1): either the JSON record MarshalIndent writes
+	# (`{`, then `  "pid": N,` at the two-space top-level indent), with exactly
+	# ONE "pid" anywhere in the file, or the legacy bare integer with nothing
+	# but surrounding whitespace. Anything else does not parse, and the file is
+	# kept. At most 10 digits, checked before any arithmetic.
+	local body pid line n=0
 	body="$(cat "$1" 2>/dev/null)" || return 1
+	body="${body//$'\r'/}"
 	case "$body" in
-	*'"pid"'*) body="$(printf '%s\n' "$body" | sed -n 's/^[[:space:]]*"pid":[[:space:]]*\([0-9][0-9]*\),\{0,1\}[[:space:]]*$/\1/p' | head -1)" ;;
-	*) body="$(printf '%s' "$body" | tr -d '[:space:]')" ;;
+	*'"pid"'*'"pid"'*) return 1 ;;
+	*'"pid"'*)
+		case "$(printf '%s' "$body" | sed -n '/[^[:space:]]/{p;q;}')" in '{'*) ;; *) return 1 ;; esac
+		while IFS= read -r line; do
+			case "$line" in
+			'  "pid": '*)
+				pid="${line#'  "pid": '}"
+				pid="${pid%,}"
+				n=$((n + 1))
+				;;
+			esac
+		done <<<"$body"
+		[ "$n" -eq 1 ] || return 1
+		;;
+	*)
+		pid="$body"
+		while case "$pid" in [[:space:]]*) true ;; *) false ;; esac; do pid="${pid#?}"; done
+		while case "$pid" in *[[:space:]]) true ;; *) false ;; esac; do pid="${pid%?}"; done
+		;;
 	esac
-	numeric "$body" && [ "$body" -gt 0 ] || return 1
-	printf '%s' "$body"
+	numeric "$pid" && [ ${#pid} -le 10 ] || return 1
+	pid=$((10#$pid))
+	[ "$pid" -gt 0 ] || return 1
+	printf '%s' "$pid"
 }
-pid_is_dead() {
-	# DEAD only when kill -0 fails AND ps finds no such process: kill -0 also
-	# fails with EPERM for a live process this user may not signal, and the
-	# error text is locale-dependent, so ps is the ESRCH test.
-	kill -0 "$1" 2>/dev/null && return 1
-	ps -p "$1" >/dev/null 2>&1 && return 1
-	return 0
+pid_liveness() {
+	# alive, dead or unknown. DEAD is ESRCH only: kill -0 also fails with EPERM
+	# for a live process this user may not signal (BUG-4068 r1), so the
+	# builtin's own message is read under LC_ALL=C. ps is not asked: a missing,
+	# busybox or hidepid-restricted ps would read a live process as gone.
+	local out
+	if out="$(LC_ALL=C kill -0 "$1" 2>&1)"; then
+		echo alive
+		return
+	fi
+	case "$out" in
+	*'No such process'*) echo dead ;;
+	*) echo unknown ;;
+	esac
+}
+pid_file_removable() {
+	# pid_file_removable <pad.pid> <stopped pid, or empty>: succeeds when the
+	# file is provably not a live sibling's, the pid this refresh stopped or a
+	# dead one. Otherwise it prints why the file is kept, and fails.
+	local file_pid
+	if ! file_pid="$(pid_file_pid "$1")"; then
+		echo "it does not parse as a pid record"
+		return 1
+	fi
+	[ -n "$2" ] && [ "$file_pid" = "$2" ] && return 0
+	case "$(pid_liveness "$file_pid")" in
+	dead) return 0 ;;
+	alive) echo "it names pid $file_pid, which is alive and is not the server this refresh stopped" ;;
+	*) echo "it names pid $file_pid, whose liveness is unknown" ;;
+	esac
+	return 1
 }
 pid_file="$DATA_DIR/pad.pid"
 if [ -e "$pid_file" ]; then
-	if file_pid="$(pid_file_pid "$pid_file")"; then
-		if [ -n "$STOPPED_PID" ] && [ "$file_pid" = "$STOPPED_PID" ]; then
-			rm -f "$pid_file"
-		elif pid_is_dead "$file_pid"; then
-			rm -f "$pid_file"
-		else
-			note "kept $pid_file: it names pid $file_pid, which is alive (or its liveness is unknown) and is not the server this refresh stopped"
-		fi
+	if kept_why="$(pid_file_removable "$pid_file" "$STOPPED_PID")"; then
+		rm -f "$pid_file"
 	else
-		note "kept $pid_file: it does not parse as a pid record"
+		note "kept $pid_file: $kept_why"
 	fi
 fi
 
