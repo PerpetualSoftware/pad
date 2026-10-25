@@ -673,9 +673,10 @@ func rejectUndeclaredKeys(def ToolDef, declared map[string]bool, input map[strin
 // BUG-4065). A float64 was formatted and forwarded too, so 2^53 and beyond,
 // which remote refuses as possibly rounded (wholeInt64, BUG-4061 / ba981cb4f),
 // reached the CLI as a number. Only strings and floats are checked: other
-// types keep their path, where the CLI's own parse refuses them. A value that
-// passes is forwarded unchanged; it has no prefix, sign or leading zero, so
-// both bases read it as the same number. Nil result means the input is clean.
+// types keep their path, where intParam (pad_item list and history limit) or
+// the CLI's own parse refuses them (BUG-4070 r1). A value that passes is
+// forwarded unchanged; it has no prefix, sign or leading zero, so both bases
+// read it as the same number. Nil result means the input is clean.
 func rejectMalformedNumbers(def ToolDef, action string, input map[string]any) *CallToolResult {
 	for _, p := range def.Schema.Params {
 		if p.Type != "number" {

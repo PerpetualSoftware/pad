@@ -92,6 +92,40 @@ func TestBUG4070_StdioNumberStringsAndFloats(t *testing.T) {
 		}
 	})
 
+	// Other types are not this check's to refuse (r1 ruling, row 1): they keep
+	// their path, and these rows pin where it goes. At a flag, encodeFlagValue
+	// sends text that pflag's ParseInt(s, 0, 64) refuses; at the positional
+	// seq, fmt.Sprint sends text that cmd_chat.go's ParseInt(s, 10, 64)
+	// refuses. (pad_item list and history read limit through intParam, which
+	// refuses them before the CLI.)
+	passedThrough := []struct{ value, flagWire, positionalWire string }{
+		{`true`, "true", "true"},
+		{`false`, "false", "false"},
+		{`null`, "", "<nil>"},
+		{`[1]`, "[1]", "[1]"},
+		{`{}`, "{}", "map[]"},
+	}
+	for _, tc := range passedThrough {
+		t.Run("flag passes through "+tc.value, func(t *testing.T) {
+			text, isErr, d := stdioNumberCall(t, padChatTool, `{"action":"show","target":"C1","limit":`+tc.value+`}`)
+			if isErr {
+				t.Fatalf("refused here, not by the CLI: %s", text)
+			}
+			if !containsPair(d.gotArgs, "--limit", tc.flagWire) {
+				t.Fatalf("want --limit %q, got %q", tc.flagWire, d.gotArgs)
+			}
+		})
+		t.Run("positional passes through "+tc.value, func(t *testing.T) {
+			text, isErr, d := stdioNumberCall(t, padChatTool, `{"action":"delete","target":"C1","seq":`+tc.value+`}`)
+			if isErr {
+				t.Fatalf("refused here, not by the CLI: %s", text)
+			}
+			if n := len(d.gotArgs); n < 3 || d.gotArgs[n-3] != "--" || d.gotArgs[n-2] != "C1" || d.gotArgs[n-1] != tc.positionalWire {
+				t.Fatalf("want positionals -- C1 %q, got %q", tc.positionalWire, d.gotArgs)
+			}
+		})
+	}
+
 	accepted := []struct{ value, wire string }{
 		{`"10"`, "10"},
 		{`"0"`, "0"},
