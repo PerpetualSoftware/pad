@@ -550,8 +550,15 @@ var decisionSQLStateRe = regexp.MustCompile(`^[0-9A-Z]{5}$`)
 // one fallback UPDATE with the same WHERE and lease records the attempt with
 // a fixed last_error instead. Without it a refused message left attempts at 0,
 // so the backoff never grew, the permanent drop never fired, and the job was
-// re-run (a paid provider call) every lease, forever. Only if the fallback
-// also fails are both errors returned.
+// re-run (a paid provider call) every lease, forever. If the fallback also
+// fails, both errors are returned.
+//
+// The fallback also requires attempts to still be the value read at claim.
+// An error from the first UPDATE does not prove it did not commit (a reply
+// lost after the commit); if it did, attempts has already moved and the
+// fallback matches nothing rather than counting the attempt twice. A
+// fallback that matches nothing returns the first error, as before BUG-4022,
+// so the runner still logs an outcome it could not confirm.
 func (s *Store) recordDecisionFailure(j DecisionJob, failure string, retryAfter time.Duration) error {
 	const q = `
 		UPDATE decision_jobs
@@ -560,28 +567,38 @@ func (s *Store) recordDecisionFailure(j DecisionJob, failure string, retryAfter 
 	lease := decisionTime(time.Now().Add(retryAfter))
 	res, err := s.db.Exec(s.q(q), truncateDecisionError(failure), lease,
 		j.ItemID, j.QuestionSet, j.Generation, j.ClaimedBy)
-	if err != nil {
-		fallback := unrecordableDecisionError
-		if code := decisionSQLState(err); code != "" {
-			fallback += " (SQLSTATE " + code + ")"
+	if err == nil {
+		if n, _ := res.RowsAffected(); n == 1 {
+			return nil
 		}
-		var ferr error
-		res, ferr = s.db.Exec(s.q(q), fallback, lease,
-			j.ItemID, j.QuestionSet, j.Generation, j.ClaimedBy)
-		if ferr != nil {
-			return errors.Join(
-				fmt.Errorf("fail decision job %s/%s: %w", j.ItemID, j.QuestionSet, err),
-				fmt.Errorf("fail decision job %s/%s (fallback): %w", j.ItemID, j.QuestionSet, ferr))
-		}
-		slog.Warn("decision failure message not stored; recorded a fixed one",
-			"item_id", j.ItemID, "question_set", j.QuestionSet)
+		// Zero rows means the job was re-enqueued; the enqueue already reset
+		// its failure history, so release the claim for the new generation.
+		return s.releaseSupersededDecisionJob(j)
+	}
+	firstErr := fmt.Errorf("fail decision job %s/%s: %w", j.ItemID, j.QuestionSet, err)
+	fallback := unrecordableDecisionError
+	if code := decisionSQLState(err); code != "" {
+		fallback += " (SQLSTATE " + code + ")"
+	}
+	res, ferr := s.db.Exec(s.q(q+` AND attempts = ?`), fallback, lease,
+		j.ItemID, j.QuestionSet, j.Generation, j.ClaimedBy, j.Attempts)
+	if ferr != nil {
+		return errors.Join(firstErr,
+			fmt.Errorf("fail decision job %s/%s (fallback): %w", j.ItemID, j.QuestionSet, ferr))
 	}
 	if n, _ := res.RowsAffected(); n == 1 {
+		slog.Warn("decision failure message not stored; recorded a fixed one",
+			"item_id", j.ItemID, "question_set", j.QuestionSet)
 		return nil
 	}
-	// Zero rows means the job was re-enqueued; the enqueue already reset its
-	// failure history, so release the claim for the new generation.
-	return s.releaseSupersededDecisionJob(j)
+	// Zero rows: either the first UPDATE committed after all (attempts has
+	// moved) or the job was re-enqueued. The superseded release covers the
+	// second and is a no-op for the first; the first error is returned either
+	// way, since this call cannot confirm what was recorded.
+	if rerr := s.releaseSupersededDecisionJob(j); rerr != nil {
+		return errors.Join(firstErr, rerr)
+	}
+	return firstErr
 }
 
 func (s *Store) releaseSupersededDecisionJob(j DecisionJob) error {

@@ -170,3 +170,32 @@ func TestDecisionSQLState(t *testing.T) {
 		}
 	}
 }
+
+// An error from the first UPDATE does not prove it did not commit (a reply
+// lost after the commit). The fallback must then not count the attempt again,
+// and FailDecisionJob must return the first error rather than report success
+// (BUG-4022 r1 H1). A trigger cannot both commit a write and fail it, since
+// an error raised in a trigger aborts its own statement, so the row is put in
+// the state a committed first write leaves (attempts moved, its message
+// stored) and the poison trigger then refuses FailDecisionJob's first UPDATE.
+func TestFailDecisionJob_FirstWriteCommittedIsNotCountedTwice(t *testing.T) {
+	s, ws, col := decisionFixture(t)
+	s.SetDecisionSetResolver(func(string) []string { return nil })
+	item := createTestItem(t, s, ws.ID, col.ID, "Committed", "")
+	j := claimOneAttentionJob(t, s, ws.ID, item.ID)
+	const committed = "the message the first write stored"
+	s.mustExec(t, `UPDATE decision_jobs SET attempts = attempts + 1, last_error = ? WHERE item_id = ? AND question_set = 'attention'`, committed, item.ID)
+	installDecisionJobTrigger(t, s, poisonPrefix)
+
+	err := s.FailDecisionJob(j, errors.New(poisonPrefix+"provider body"), time.Hour)
+	if err == nil {
+		t.Fatal("an unconfirmed failure write reported success")
+	}
+	if msg := err.Error(); !strings.Contains(msg, "fail decision job") || !strings.Contains(msg, "poisoned decision_jobs update") || strings.Contains(msg, "(fallback)") {
+		t.Fatalf("want the first write's error alone, got: %v", err)
+	}
+	got := mustJob(t, s, item.ID, "attention")
+	if got.Attempts != 1 || got.LastError != committed {
+		t.Fatalf("attempts=%d last_error=%q; want 1 and %q (counted once, not overwritten)", got.Attempts, got.LastError, committed)
+	}
+}

@@ -1087,11 +1087,12 @@ func (r *Runner) runJob(ctx context.Context, j store.DecisionJob) {
 		serr = r.store.FailDecisionJob(j, err, decisionBackoff(j.Attempts))
 	}
 	if serr != nil {
-		// Reached only when the store refused the write itself: FailDecisionJob
-		// already falls back to a fixed message when only the text is refused
-		// (BUG-4022), so a failure is counted either way. What is left is a
-		// store that refuses everything, or a failed complete or drop; the
-		// claim's lease still bounds it, and the job is re-run when it lapses.
+		// FailDecisionJob already falls back to a fixed message when only the
+		// text is refused (BUG-4022), so a failure is counted either way. What
+		// is left is a store that refuses everything, a failed complete or
+		// drop, or a failure write whose outcome is unknown (its error came
+		// back but the attempt was already counted). The claim's lease still
+		// bounds it, and the job is re-run when it lapses.
 		slog.Error("decision job outcome not recorded", "item_id", j.ItemID, "question_set", j.QuestionSet, "error", serr)
 	}
 }
