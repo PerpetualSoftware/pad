@@ -80,6 +80,31 @@ describe('AttachmentTablePreview', () => {
 		expect(more()).toBeUndefined();
 	});
 
+	it.each(['document', 'layout'])('U5: resets expanded rows to the first step on a new %s', (change) => {
+		const props = $state({
+			text: Array(220).fill(Array(50).fill('old').join(',')).join('\n'),
+			mime: 'text/csv',
+			compact: false
+		});
+		component = mount(AttachmentTablePreview, { target: document.body, props });
+		flushSync();
+		expect(document.querySelectorAll('tr')).toHaveLength(100);
+		clickMore();
+		expect(document.querySelectorAll('tr')).toHaveLength(200);
+		if (change === 'document') {
+			props.text = Array(210).fill(Array(50).fill('new').join(',')).join('\n');
+		} else {
+			props.compact = true;
+		}
+		flushSync();
+		const firstStep = change === 'document' ? 100 : 50;
+		const total = change === 'document' ? 210 : 220;
+		expect(document.querySelectorAll('tr')).toHaveLength(firstStep);
+		expect(document.querySelector('[role="status"]')?.textContent).toContain(`Showing ${firstStep} of ${total} rows`);
+		if (change === 'document') expect(document.querySelector('td')?.textContent).toBe('new');
+		expect(more()).toBeDefined();
+	});
+
 	it('uses the phone layout prop to bound the first mount and each step to 2500 cells', () => {
 		preview(Array(101).fill(Array(50).fill('x').join(',')).join('\n'), 'text/csv', true);
 		expect(document.querySelectorAll('tr')).toHaveLength(50);
