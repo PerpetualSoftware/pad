@@ -5128,6 +5128,38 @@ describe('Lightbox — the text arm', () => {
 		expect(body!.querySelector('em')?.textContent).toBe('emphasis');
 	});
 
+	it.each(['text/plain', 'text/csv'])('mounts %s inside the filling sheet stage and uses the phone table budget', async (mime) => {
+		mobileFlag = true;
+		try {
+			textFetch.mockResolvedValue({ ok: true, body: null,
+				text: async () => Array(101).fill(Array(50).fill('x').join(',')).join('\n') });
+			mountViewer({ images: [{ ...image(IMG_A, 'file', mime), size_bytes: 128 }] });
+			await settleAsync();
+			expect(hasSheet()).toBe(true);
+			// jsdom cannot measure geometry. Assert the sheet selector and stage
+			// containment the fill CSS depends on, as in the existing sheet tests.
+			const stage = root().querySelector('.lightbox-stage')!;
+			const arm = stage.querySelector(mime === 'text/csv' ? '.lightbox-table' : '.lightbox-text');
+			expect(arm).not.toBeNull();
+			expect(arm!.querySelector('[role="document"]')).not.toBeNull();
+			if (mime === 'text/csv') {
+				expect(arm!.querySelectorAll('tr')).toHaveLength(50);
+				expect(arm!.querySelectorAll('th,td')).toHaveLength(2500);
+				expect(root().querySelector('.lightbox-fallback')).toBeNull();
+			}
+		} finally {
+			mobileFlag = false;
+			flushSync();
+		}
+	});
+
+	it('routes a parameterized TSV MIME to tab-delimited cells through the shared loader', async () => {
+		textFetch.mockResolvedValue({ ok: true, body: null, text: async () => 'one\ttwo\nx\ty' });
+		mountViewer({ images: [{ ...image(IMG_A, 'file', 'text/tab-separated-values; charset=utf-8'), size_bytes: 128 }] });
+		await settleAsync();
+		expect([...root().querySelectorAll('td')].map((cell) => cell.textContent)).toEqual(['x', 'y']);
+	});
+
 	it('routes text/plain + a .md filename to the markdown renderer', async () => {
 		// A SYNTHETIC row in the shape the system actually stores — not a real
 		// upload; the metadata and download are both mocked here. What it pins is
@@ -5176,7 +5208,7 @@ describe('Lightbox — the text arm', () => {
 			ok: true,
 			status: 200,
 			body: null,
-			text: async () => 'before\n\n<script>window.__pwned = true;</script>\n\n<img src=x onerror="window.__pwned = true">\n\nafter'
+			text: async () => 'before\n\n<script>alert(1)</script>\n\n[x](javascript:alert(1))\n\n<img src=x onerror=alert(1)>\n\n<a href="#" onclick="alert(1)">x</a>\n\nafter'
 		});
 		mountViewer({ images: [image(IMG_A, 'evil.md', 'text/markdown')] });
 		await settleAsync();
@@ -5185,7 +5217,10 @@ describe('Lightbox — the text arm', () => {
 		// Assert what the WRONG behaviour would leave behind (CONVE-12), not just
 		// that the page looks fine: no script element, and no inline handler.
 		expect(body!.querySelector('script')).toBeNull();
-		expect(body!.innerHTML).not.toContain('onerror');
+		for (const element of body!.querySelectorAll('*')) {
+			expect([...element.attributes].some((a) => /^on/i.test(a.name))).toBe(false);
+			expect(element.getAttribute('href') ?? '').not.toMatch(/^javascript:/i);
+		}
 		expect((window as unknown as { __pwned?: boolean }).__pwned).toBeUndefined();
 		// ...and the surrounding document still rendered, so this is sanitization
 		// rather than the arm having failed to render at all.

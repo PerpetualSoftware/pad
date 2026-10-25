@@ -44,6 +44,7 @@
 	import { getSurfaceRenderer, type SurfaceRendererId } from '$lib/attachments/surfaceRenderers';
 	import { createViewerTextLoader } from '$lib/attachments/viewerTextLoader.svelte';
 	import { renderMarkdownDocument } from '$lib/utils/markdown';
+	import AttachmentTablePreview from '$lib/components/attachments/AttachmentTablePreview.svelte';
 	import { formatAttachmentSize } from '$lib/markdown/attachments';
 	import {
 		reset as resetZoom,
@@ -690,7 +691,7 @@
 	// original the user had already triggered. Reading a value is not the only way
 	// to depend on it; being in the key is.
 	let loadKey = $derived(
-		`${img?.id ?? ''}:${img?.width ?? ''}:${img?.height ?? ''}:${shownRenderer ?? ''}:${soleMissing}:${shownRenderer === 'text' ? `${resolvedSize ?? ''}:${revalidateToken}` : ''}`
+		`${img?.id ?? ''}:${img?.width ?? ''}:${img?.height ?? ''}:${shownRenderer ?? ''}:${soleMissing}:${(shownRenderer === 'text' || shownRenderer === 'table') ? `${resolvedSize ?? ''}:${revalidateToken}` : ''}`
 	);
 	// Captured NON-reactively at load time (see the effect): a breakpoint flip
 	// alone must not reload — desktop→mobile must not abort an in-flight original,
@@ -2045,7 +2046,7 @@
 			// safe→unsafe flip actually re-runs this and reaches the dispose. The
 			// loader's own DR-16 gate (`start()`) is the backstop; the Lightbox
 			// decides no-bytes explicitly here.
-			if (shownRenderer === 'text' && !soleMissing) {
+			if ((shownRenderer === 'text' || shownRenderer === 'table') && !soleMissing) {
 				// The TEXT arm loads bytes too, so it takes the raster arm's whole
 				// discipline rather than the fallback's: the RESOLVED mime and the
 				// RESOLVED size (never the seed — see `resolvedSize`), both in
@@ -2663,8 +2664,8 @@
 			worked; it did not, and nothing tested it. Both are fixed and both are
 			now asserted.
 		-->
-		{#if shownRenderer === 'text' && !soleMissing}
-			<div class="lightbox-text">
+		{#if (shownRenderer === 'text' || shownRenderer === 'table') && !soleMissing}
+			<div class="lightbox-text" class:lightbox-table={shownRenderer === 'table'}>
 				<!--
 					THE CARD IS THE INTERACTIVE SURFACE, the layer around it is not
 					(IDEA-2712, codex R1 #4). `.lightbox-text` spans the stage for
@@ -2740,7 +2741,9 @@
 						</button>
 					</div>
 				{:else if textLoader.phase === 'ready'}
-					{#if isMarkdownAttachment(resolvedMime, headerMeta.fields.filename)}
+					{#if shownRenderer === 'table'}
+						<AttachmentTablePreview text={textLoader.text} mime={resolvedMime!} compact={isSheet} />
+					{:else if isMarkdownAttachment(resolvedMime, headerMeta.fields.filename)}
 						<div class="lightbox-text-body markdown-body">
 							{@html renderMarkdownDocument(textLoader.text)}
 						</div>
@@ -3026,9 +3029,20 @@
 		max-height: 100%;
 		overflow: auto;
 		overscroll-behavior: contain;
-		touch-action: pan-y;
+		touch-action: pan-x pan-y;
 		user-select: text;
 		-webkit-user-select: text;
+	}
+
+	.lightbox-table .lightbox-text-scroll {
+		width: min(1200px, 100%);
+		height: 100%;
+		min-height: 0;
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
+		background: var(--bg-primary, #fff);
+		color: var(--text-primary, #111);
 	}
 
 	.lightbox-text-status {
@@ -3491,6 +3505,19 @@
 		flex: 1 1 auto;
 		min-height: 0;
 		order: 0;
+	}
+
+	/* Documents fill the sheet's stage rather than remaining a centred 80ch
+	   card. The stage already supplies the containing block and flex height. */
+	.lightbox-sheet .lightbox-text {
+		padding: 0;
+		align-items: stretch;
+		justify-content: stretch;
+	}
+	.lightbox-sheet .lightbox-text-scroll {
+		width: 100%;
+		height: 100%;
+		min-height: 0;
 	}
 
 	/* META + TOOLBAR become flow items in the column so they dock, stacked, at the

@@ -1,9 +1,18 @@
 <script lang="ts">
 	import { parseDelimited, COL_CAP } from '$lib/attachments/csv';
 
-	let { text, mime }: { text: string; mime: string } = $props();
-	let preview = $derived(parseDelimited(text, mime === 'text/tab-separated-values' ? '\t' : ','));
+	let { text, mime, compact = false }: { text: string; mime: string; compact?: boolean } = $props();
+	let preview = $derived(parseDelimited(text, mime.split(';')[0].trim().toLowerCase() === 'text/tab-separated-values' ? '\t' : ','));
 	let columns = $derived(Array.from({ length: Math.min(preview.totalColumns, COL_CAP) }, (_, i) => i));
+	// Budget actual mounted cells, including the sticky header and ragged-row
+	// padding. Lightbox owns the layout selector; a second media query here could
+	// disagree with its sheet class. Totals still come from the FULL parser scan.
+	let rowsPerStep = $derived(Math.max(1, Math.floor((compact ? 2500 : 5000) / Math.max(1, columns.length))));
+	// An overridable derived resets on a new document/layout, without an effect
+	// that briefly paints the old document's expanded row count. Clicking only
+	// grows the slice; stable row indices below preserve the existing DOM nodes.
+	let visibleRows = $derived(Math.min(rowsPerStep, preview.rows.length));
+
 </script>
 
 <div class="attachment-table-preview">
@@ -20,7 +29,7 @@
 					</tr>
 				</thead>
 				<tbody>
-					{#each preview.rows.slice(1) as row}
+					{#each preview.rows.slice(1, visibleRows) as row, index (index)}
 						<tr>
 							{#each columns as column (column)}
 								<td>{row[column] ?? ''}</td>
@@ -32,8 +41,13 @@
 		</table>
 	</div>
 	<p class="attachment-table-count" role="status">
-		Showing {preview.rows.length} of {preview.totalRows} rows · {columns.length} of {preview.totalColumns} columns
+		Showing {visibleRows} of {preview.totalRows} rows · {columns.length} of {preview.totalColumns} columns
 	</p>
+	{#if visibleRows < preview.rows.length}
+		<button type="button" onclick={() => visibleRows = Math.min(visibleRows + rowsPerStep, preview.rows.length)}>
+			Show more rows
+		</button>
+	{/if}
 	{#if preview.error}
 		<p class="attachment-table-error">Could not parse past row {preview.error.row}.</p>
 	{/if}
