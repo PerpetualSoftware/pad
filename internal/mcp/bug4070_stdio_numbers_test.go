@@ -80,6 +80,18 @@ func TestBUG4070_StdioNumberStringsAndFloats(t *testing.T) {
 		}
 	}
 
+	// Every number param is checked, not only the first present one: since is
+	// declared before limit, and a valid since must not let limit through.
+	t.Run("a valid earlier param does not end the check", func(t *testing.T) {
+		text, isErr, d := stdioNumberCall(t, padChatTool, `{"action":"show","target":"C1","since":"5","limit":"010"}`)
+		if !isErr || !strings.Contains(text, "limit must be a whole number") {
+			t.Fatalf("want limit refused, got %s", text)
+		}
+		if d.gotPath != nil {
+			t.Fatalf("dispatched: %v", d.gotArgs)
+		}
+	})
+
 	accepted := []struct{ value, wire string }{
 		{`"10"`, "10"},
 		{`"0"`, "0"},
