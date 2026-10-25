@@ -37,8 +37,11 @@ describe('attachment CSV parser', () => {
 		expect(result).toEqual({ rows: [['a', 'b'], ['x', 'y']], totalRows: 2, totalColumns: 2, error: { row: 2 } });
 	});
 
-	it.each(['a,b\nx"y,z', 'a,b\n"x"oops,z'])('refuses malformed quote syntax and keeps prior records: %s', (source) => {
-		expect(parseDelimited(source, ',')).toEqual({ rows: [['a', 'b']], totalRows: 1, totalColumns: 2, error: { row: 1 } });
+	it('S1: keeps mid-field quotes and characters after a closing quote literally, with RFC escaped quotes intact', () => {
+		expect(parseDelimited('name,note\n5" monitor,a"b\n"abc"def,"say ""hi"""', ',')).toEqual({
+			rows: [['name', 'note'], ['5" monitor', 'a"b'], ['abcdef', 'say "hi"']],
+			totalRows: 3, totalColumns: 2, error: null
+		});
 	});
 
 	it('caps retained rows at exactly 1000 while counting records and columns past both caps', () => {

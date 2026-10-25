@@ -15,7 +15,7 @@ export interface DelimitedPreview {
 
 /**
  * RFC 4180 fields, also accepting LF records and a MIME-selected tab delimiter.
- * Malformed quoting returns the complete records so far, never an exception.
+ * An unterminated quoted field returns complete records so far, never an exception.
  * Ragged records are retained: a missing cell is different from a parse failure.
  *
  * WHY KEEP SCANNING AFTER THE CAPS. A preview must tell the truth about what it
@@ -86,11 +86,13 @@ export function parseDelimited(source: string, delimiter: ',' | '\t'): Delimited
 			if (recordStarted) finishRecord();
 			if (char === '\r' && source[i + 1] === '\n') i++;
 		} else if (char === '"') {
-			if (fieldLength !== 0 || closed) return malformed();
-			quoted = true;
+			// Only a quote at the start of a field opens RFC quoting. Elsewhere
+			// it is literal. After a closing quote, append any suffix literally
+			// (including quotes): leniently, "abc"def becomes abcdef.
+			if (fieldLength !== 0 || closed) append(char);
+			else quoted = true;
 			recordStarted = true;
 		} else {
-			if (closed) return malformed();
 			append(char);
 			recordStarted = true;
 		}
