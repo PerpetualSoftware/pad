@@ -23,7 +23,7 @@
 			{#if preview.rows.length > 0}
 				<thead>
 					<tr>
-						{#each columns as column (column)}
+						{#each columns as column}
 							<th scope="col">{preview.rows[0][column] ?? ''}</th>
 						{/each}
 					</tr>
@@ -31,7 +31,7 @@
 				<tbody>
 					{#each preview.rows.slice(1, visibleRows) as row, index (index)}
 						<tr>
-							{#each columns as column (column)}
+							{#each columns as column}
 								<td>{row[column] ?? ''}</td>
 							{/each}
 						</tr>

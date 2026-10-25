@@ -34,6 +34,9 @@ describe('AttachmentTablePreview', () => {
 		flushSync();
 	}
 
+	// This case deliberately reaches the 50,000-cell ceiling across every step.
+	// Allow jsdom's mount/teardown cost under the FULL suite's contention; this
+	// asserts exact counts, not a wall-clock performance budget.
 	it('reports exact row and column totals after EVERY step even when the widest record is past the ceiling', () => {
 		preview(Array.from({ length: 1002 }, (_, i) => Array(i === 1001 ? 53 : 2).fill('x').join(',')).join('\n'));
 		// Ragged records are padded to the rendered width: the budget must count
@@ -46,7 +49,7 @@ describe('AttachmentTablePreview', () => {
 			if (rows < 1000) clickMore();
 		}
 		expect(more()).toBeUndefined();
-	});
+	}, 15_000);
 
 	it('bounds the desktop first mount to 5000 cells: 100 rows at 50 columns', () => {
 		preview(Array(1001).fill(Array(50).fill('x').join(',')).join('\n'));
