@@ -8,17 +8,17 @@
  * own markup arm internally, so a new renderer is a new id here plus an arm
  * there, nothing wired across a boundary.
  *
- * TODAY THERE ARE TWO. `'raster-image'` is exactly the DR-16 raster allowlist
+ * TODAY THERE ARE THREE. `'raster-image'` is exactly the DR-16 raster allowlist
  * (`canOpenInViewer`). `'text'` is the in-app text preview (`canPreviewAsText`,
- * IDEA-2712 / GitHub #1169) — markdown and plain text, rendered by us from bytes
+ * IDEA-2712 / GitHub #1169) — prose and raw code/configuration, rendered by us from bytes
  * we fetch, never handed to the browser to inline. Everything else — an
  * unsafe/active type like SVG, an office document, an archive, or an UNRESOLVED
  * (null) MIME — returns `null`, which the consumer renders as its no-bytes ICON
- * FALLBACK. `'pdf'` remains reserved for PLAN-2393; the `null` arm stays the
+ * FALLBACK. `'table'` claims exactly CSV/TSV through `canPreviewAsTable`,
+ * rendered as text cells. `'pdf'` remains reserved for PLAN-2393; the `null` arm stays the
  * fallback for what no renderer claims.
  *
- * ORDER IS NOT ARBITRARY: the two predicates are disjoint by construction (one
- * is a raster-image allowlist, the other a text allowlist), so the sequence below
+ * ORDER IS NOT ARBITRARY: the three predicates are disjoint exact allowlists, so the sequence below
  * cannot change an answer. It is written image-first only to match the union's
  * declaration order.
  *
@@ -32,14 +32,14 @@
  * IT FAILS CLOSED, like the predicate it wraps: a null / unknown / unresolved
  * MIME is not a renderer, so the caller shows the fallback, never a guessed arm.
  */
-import { canOpenInViewer, canPreviewAsText } from '$lib/attachments/display';
+import { canOpenInViewer, canPreviewAsText, canPreviewAsTable } from '$lib/attachments/display';
 
 /**
  * The renderers a surface can draw an attachment through. A string-id union so
  * a renderer can be added without a component contract; the consumer switches on
  * the id. `'text'` arrived that way (IDEA-2712); `'pdf'` is still PLAN-2393's.
  */
-export type SurfaceRendererId = 'raster-image' | 'text';
+export type SurfaceRendererId = 'raster-image' | 'text' | 'table';
 
 /**
  * The renderer for a MIME, or `null` when none claims it (→ the icon fallback).
@@ -54,5 +54,6 @@ export type SurfaceRendererId = 'raster-image' | 'text';
 export function getSurfaceRenderer(mime: string | null): SurfaceRendererId | null {
 	if (canOpenInViewer(mime)) return 'raster-image';
 	if (canPreviewAsText(mime)) return 'text';
+	if (canPreviewAsTable(mime)) return 'table';
 	return null;
 }

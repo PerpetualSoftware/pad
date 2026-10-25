@@ -1,5 +1,5 @@
 /**
- * The attachment surface's TEXT loader (IDEA-2712 / GitHub #1169) — the
+ * The attachment surface's TEXT/TABLE loader (IDEA-2712 / GitHub #1169) — the
  * markdown / plain-text counterpart to {@link ./viewerImageLoader}.
  *
  * MODEL, and how it differs from the image loader. The image loader hands a URL
@@ -38,7 +38,7 @@
  * subsumes the other:
  *
  *  - The METADATA gate (before any request) reads `size_bytes` and refuses to
- *    fetch at all above {@link TEXT_PREVIEW_MAX_BYTES}. This is the one that
+ *    fetch at all above the renderer cap (text 1 MiB, table 2 MiB). This is the one that
  *    saves the transfer.
  *  - The RESPONSE gate (while reading) bounds the bytes actually accepted.
  *    `LightboxImage.size_bytes` is `number | null` BY DECLARATION — an emitter
@@ -50,7 +50,7 @@
  */
 import { attachmentDownloadUrl } from '$lib/markdown/attachments';
 import { withRequestDeadline } from '$lib/api/client';
-import { canPreviewAsText, TEXT_PREVIEW_MAX_BYTES } from '$lib/attachments/display';
+import { canPreviewAsText, canPreviewAsTable, TEXT_PREVIEW_MAX_BYTES, TABLE_PREVIEW_MAX_BYTES } from '$lib/attachments/display';
 import type { LightboxImage } from './events';
 
 export type TextLoadPhase =
@@ -165,12 +165,16 @@ export function createViewerTextLoader(): ViewerTextLoader {
 		// request for a type this renderer does not claim. The image loader states
 		// the reason and it holds identically: the renderer showing nothing is not
 		// the same as the loader asking for nothing.
-		if (!canPreviewAsText(a.img.mime_type)) {
+		if (!canPreviewAsText(a.img.mime_type) && !canPreviewAsTable(a.img.mime_type)) {
 			toIdle();
 			return;
 		}
+		// SAME gates for both byte renderers. The table budget is larger, but its
+		// null/lying metadata and streaming cancellation obligations are identical.
+		const maxBytes = canPreviewAsTable(a.img.mime_type)
+			? TABLE_PREVIEW_MAX_BYTES : TEXT_PREVIEW_MAX_BYTES;
 		const declared = a.img.size_bytes;
-		if (typeof declared === 'number' && declared > TEXT_PREVIEW_MAX_BYTES) {
+		if (typeof declared === 'number' && declared > maxBytes) {
 			// Terminal, and no request is made at all.
 			active = null;
 			a.controller.abort();
@@ -195,7 +199,7 @@ export function createViewerTextLoader(): ViewerTextLoader {
 					async (signal) => {
 						const res = await fetch(attachmentDownloadUrl(a.wsSlug, id), { signal });
 						if (!res.ok) throw new Error(`HTTP ${res.status}`);
-						return await readBounded(res, TEXT_PREVIEW_MAX_BYTES);
+						return await readBounded(res, maxBytes);
 					},
 					{ idempotent: true, signal: a.controller.signal }
 				);
