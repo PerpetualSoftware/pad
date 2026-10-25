@@ -488,6 +488,11 @@ func runWatchMonitor(ctx context.Context) error {
 	var lastEventID string
 	attempt := 0
 	chat := newMonitorChat(nil, seenChat)
+	// TASK-4071: chat lines also go to ~/.pad/chat-seen/<harness-pid>.log
+	// for the human at this agent's terminal. Disabled, with one stderr
+	// line, when there is no harness pid to key it by.
+	owner, ownerErr := cli.CaptureSessionOwner()
+	chat.seen = cli.OpenChatSeen(owner, ownerErr, os.Stderr)
 	ensureDM := newMonitorEnsureDM(os.Stderr)
 
 	for {

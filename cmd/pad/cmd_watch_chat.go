@@ -143,10 +143,24 @@ type monitorChat struct {
 	retryAfter         map[int]time.Time
 	identityRetryAfter time.Time
 	summaryRetryAfter  time.Time
+	// seen tees every chat line to the session's chat-seen log so the human
+	// at the agent's terminal sees it too (TASK-4071). Nil writes nothing.
+	seen *cli.ChatSeenLog
 }
 
 func newMonitorChat(sink chatSink, printed *recentSet) *monitorChat {
 	return &monitorChat{sink: sink, printed: printed, printedIDs: map[string]bool{}, last: map[int]int64{}, delivered: map[int]int64{}, floorTimeout: monitorChatFloorTimeout, now: time.Now, retryAfter: map[int]time.Time{}}
+}
+
+// emit prints one chat line to the agent and, once that write succeeded,
+// appends the same line to the chat-seen log. Every chat line goes through
+// here and nothing else does: item, push and resync lines are not chat.
+func (c *monitorChat) emit(w io.Writer, line string) error {
+	if _, err := fmt.Fprintln(w, line); err != nil {
+		return err
+	}
+	c.seen.Append(line)
+	return nil
 }
 
 func (c *monitorChat) setIdentity(baseURL, userID string) {
@@ -194,7 +208,7 @@ func (c *monitorChat) retract(w io.Writer, p watchStreamPayload) bool {
 	if !c.printedIDs[p.MessageID] || c.printed.contains(key) {
 		return true
 	}
-	if _, err := fmt.Fprintln(w, formatChatLine(monitorChatMessage{ID: p.MessageID, Conversation: p.Conversation, Deleted: true}, false)); err != nil {
+	if err := c.emit(w, formatChatLine(monitorChatMessage{ID: p.MessageID, Conversation: p.Conversation, Deleted: true}, false)); err != nil {
 		return false // Leave an owed retraction retryable.
 	}
 	c.printedIDs[p.MessageID] = false
@@ -291,7 +305,7 @@ func (c *monitorChat) handle(w io.Writer, p watchStreamPayload) {
 			if !cli.ResolveAnnouncedArmed() {
 				return
 			}
-			if _, err := fmt.Fprintln(w, formatChatLine(m, direction)); err != nil {
+			if err := c.emit(w, formatChatLine(m, direction)); err != nil {
 				return
 			}
 			c.printed.seen(m.ID)
@@ -306,7 +320,7 @@ func (c *monitorChat) handle(w io.Writer, p watchStreamPayload) {
 		highest = m.Seq
 	}
 	if after < p.MessageSeq && len(messages) == 20 && cli.ResolveAnnouncedArmed() {
-		fmt.Fprintf(w, "up to %d more in C%d: pad chat show C%d --since %d\n", p.MessageSeq-after, p.Conversation, p.Conversation, after)
+		_ = c.emit(w, fmt.Sprintf("up to %d more in C%d: pad chat show C%d --since %d", p.MessageSeq-after, p.Conversation, p.Conversation, after))
 	}
 }
 
@@ -411,7 +425,7 @@ func (c *monitorChat) applySummary(w io.Writer, result monitorChatSummary) bool 
 	}
 	summary := result.unread
 	if summary.Total > 0 {
-		fmt.Fprintf(w, "Pad chat: %d unread messages — use pad chat show to read them.\n", summary.Total)
+		_ = c.emit(w, fmt.Sprintf("Pad chat: %d unread messages — use pad chat show to read them.", summary.Total))
 	}
 	return true
 }
