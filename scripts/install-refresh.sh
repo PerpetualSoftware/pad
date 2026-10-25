@@ -141,11 +141,17 @@ warn_relative_data_dir() {
 	fi
 	case "$dir" in /*) return 0 ;; esac
 	base="${SERVER_CWD:-$PWD}"
-	echo "Warning: $name is relative ($value); this process resolves $what to $(normalize_path "$base/$dir"). A CLI and a server in different directories will use different data. Set an absolute path; relative values will be refused in a future release." >&2
+	# ONE line, like config.Load's: phase 1's contract is one warning per
+	# process, so the shell's-directory note and the ~ hint ride in it
+	# (BUG-4066 r4 item 1).
+	local msg resolved
+	resolved="$(normalize_path "$base/$dir")"
 	if [ -n "${SERVER_CWD:-}" ] && [ "$SERVER_CWD" != "$PWD" ]; then
-		echo "Warning: that is the server's directory; from this shell's directory it would be $(normalize_path "$PWD/$dir")." >&2
+		resolved="$resolved (the server's directory; from this shell's directory it would be $(normalize_path "$PWD/$dir"))"
 	fi
-	case "$value" in "~"*) echo "Warning: the leading ~ in $name was not expanded by your shell, so it names a directory literally called ~." >&2 ;; esac
+	msg="Warning: $name is relative ($value); this process resolves $what to $resolved. A CLI and a server in different directories will use different data. Set an absolute path; relative values will be refused in a future release."
+	case "$value" in "~"*) msg="$msg The leading ~ was not expanded by your shell, so it names a directory literally called ~." ;; esac
+	echo "$msg" >&2
 }
 
 # config_value prints a top-level key from the pad config file, or nothing.

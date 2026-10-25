@@ -63,11 +63,11 @@ func TestBUG4066_RefreshMarkerIsAnchoredAndCleanedUp(t *testing.T) {
 // caller's (BUG-4066 r1: the caller's cwd here differs from the server's).
 func TestBUG4066_ScriptWarnsAboutARelativeDataDirBeforeStopping(t *testing.T) {
 	for _, tc := range []struct{ name, dataDir, dbPath, serverRel, want string }{
-		{"data", "data", "", "data", "PAD_DATA_DIR is relative (data); this process resolves it to %s."},
-		{"./data", "./data", "", "data", "PAD_DATA_DIR is relative (./data); this process resolves it to %s."},
-		{"./x/../data", "./x/../data", "", "data", "PAD_DATA_DIR is relative (./x/../data); this process resolves it to %s."},
-		{"PAD_DB_PATH names the dir", "", "x/pad.db", "x", "PAD_DB_PATH is relative (x/pad.db); this process resolves the data dir to %s."},
-		{"PAD_DB_PATH with dots", "", "./y/../x/pad.db", "x", "PAD_DB_PATH is relative (./y/../x/pad.db); this process resolves the data dir to %s."},
+		{"data", "data", "", "data", "PAD_DATA_DIR is relative (data); this process resolves it to %s (the server's directory; from this shell's directory it would be %s)."},
+		{"./data", "./data", "", "data", "PAD_DATA_DIR is relative (./data); this process resolves it to %s (the server's directory; from this shell's directory it would be %s)."},
+		{"./x/../data", "./x/../data", "", "data", "PAD_DATA_DIR is relative (./x/../data); this process resolves it to %s (the server's directory; from this shell's directory it would be %s)."},
+		{"PAD_DB_PATH names the dir", "", "x/pad.db", "x", "PAD_DB_PATH is relative (x/pad.db); this process resolves the data dir to %s (the server's directory; from this shell's directory it would be %s)."},
+		{"PAD_DB_PATH with dots", "", "./y/../x/pad.db", "x", "PAD_DB_PATH is relative (./y/../x/pad.db); this process resolves the data dir to %s (the server's directory; from this shell's directory it would be %s)."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			requireScriptDeps(t)
@@ -103,12 +103,23 @@ func TestBUG4066_ScriptWarnsAboutARelativeDataDirBeforeStopping(t *testing.T) {
 			if res.err == nil {
 				t.Fatalf("refresh succeeded with an unwritable log\nstdout=%s\nstderr=%s", res.stdout, res.stderr)
 			}
-			want := fmt.Sprintf(tc.want, filepath.Join(serverDir, tc.serverRel))
-			if !strings.Contains(res.stderr, want) {
-				t.Errorf("the warning does not name the server's anchored path; want %q in stderr=%s", want, res.stderr)
+			// Both paths in ONE line, and that line once: phase 1's contract is
+			// one warning per process (BUG-4066 r4 item 1).
+			want := fmt.Sprintf(tc.want, filepath.Join(serverDir, tc.serverRel), filepath.Join(callerDir, tc.serverRel))
+			line := ""
+			for _, l := range strings.Split(res.stderr, "\n") {
+				if strings.Contains(l, "is relative (") {
+					if line != "" {
+						t.Errorf("the relative data-dir warning printed twice; stderr=%s", res.stderr)
+					}
+					line = l
+				}
 			}
-			if !strings.Contains(res.stderr, "from this shell's directory it would be "+filepath.Join(callerDir, tc.serverRel)+".") {
-				t.Errorf("the warning does not name the caller's reading too; stderr=%s", res.stderr)
+			if !strings.Contains(line, want) {
+				t.Errorf("the warning line does not name the server's anchored path and the caller's reading; want %q in %q", want, line)
+			}
+			if n := strings.Count(res.stderr, "directory it would be"); n != 1 {
+				t.Errorf("the shell's-directory note printed %d times, want once, inside the warning; stderr=%s", n, res.stderr)
 			}
 			if got, err := pidAnswersAt(port); err != nil || got != prePid {
 				t.Fatalf("the running server did not survive: %q, %v; want %s", got, err, prePid)

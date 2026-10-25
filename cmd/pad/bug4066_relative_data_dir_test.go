@@ -26,36 +26,29 @@ func TestMain_BUG4066Child(t *testing.T) {
 		root.SetArgs([]string{"mcp", "serve"})
 		_ = root.Execute()
 	case "complete":
-		args := []string{"__complete", "item", "list", "--workspace", ""}
-		silenceWarningsForCompletion(args)
-		root := newRootCmd()
-		root.SetArgs(args)
-		_ = root.Execute()
+		runMainWith([]string{"__complete", "item", "list", "--workspace", ""}...)
 	case "complete-collections":
 		// completeCollectionNames loads config with no sink of its own.
-		args := []string{"__complete", "item", "list", ""}
-		silenceWarningsForCompletion(args)
-		root := newRootCmd()
-		root.SetArgs(args)
-		_ = root.Execute()
+		runMainWith([]string{"__complete", "item", "list", ""}...)
 	case "complete-nodesc":
-		args := []string{"__completeNoDesc", "item", "list", ""}
-		silenceWarningsForCompletion(args)
-		root := newRootCmd()
-		root.SetArgs(args)
-		_ = root.Execute()
+		runMainWith([]string{"__completeNoDesc", "item", "list", ""}...)
 	case "not-complete":
 		// A look-alike that is NOT the completion command still warns.
-		args := []string{"item", "list", "__complete"}
-		silenceWarningsForCompletion(args)
-		root := newRootCmd()
-		root.SetArgs(args)
-		_ = root.Execute()
+		runMainWith([]string{"item", "list", "__complete"}...)
 	case "server":
 		root := newRootCmd()
 		root.SetArgs([]string{"server", "start", "--host", "127.0.0.1", "--port", os.Getenv("BUG4066_PORT")})
 		_ = root.Execute()
 	}
+}
+
+// runMainWith runs the real main() with these arguments, so a test of what
+// main() does before Execute (the completion silence) tests main() itself and
+// not a copy of its steps (BUG-4066 r4 item 6). main may os.Exit; this is a
+// child process, and the parent reads only its output.
+func runMainWith(args ...string) {
+	os.Args = append([]string{os.Args[0]}, args...)
+	main()
 }
 
 func runBUG4066Child(t *testing.T, which string, extra ...string) string {
