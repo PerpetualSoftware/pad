@@ -85,6 +85,8 @@ import type {
 	AttachmentTransformResult,
 	ServerCapabilities,
 	LiveSessionsResponse,
+	ChatConversationSummary,
+	ChatConversationsResponse,
 	ChatUnreadResponse,
 	ItemPushResult,
 	WorkspaceStorageInfo,
@@ -2436,6 +2438,14 @@ export const api = {
 	},
 
 	chat: {
+		listConversations: () => request<ChatConversationsResponse>('/me/conversations'),
+
+
+		getConversation: (n: number) =>
+			request<ChatConversationSummary>(`/me/conversations/${n}`),
+
+
+
 		unread: () => request<ChatUnreadResponse>('/me/chat/unread')
 	},
 

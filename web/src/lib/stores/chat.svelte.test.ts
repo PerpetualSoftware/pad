@@ -249,4 +249,47 @@ describe('chat store (TASK-4044)', () => {
 		expect(h.unread).not.toHaveBeenCalled();
 		expect(fn).not.toHaveBeenCalled();
 	});
+
+	it('version starts at 0 and is bumped once per successful fetch', async () => {
+		expect(store.version).toBe(0);
+		store.start();
+		await flush();
+		expect(store.version).toBe(1);
+		store.resync();
+		await flush();
+		expect(store.version).toBe(2);
+	});
+
+	it('a burst of hints bumps version once', async () => {
+		store.start();
+		await flush();
+		for (let i = 0; i < 4; i++) store.onHint(notice);
+		await vi.advanceTimersByTimeAsync(CHAT_HINT_DEBOUNCE_MS + 1);
+		await flush();
+		expect(store.version).toBe(2);
+	});
+
+	it('a failed fetch does not bump version', async () => {
+		store.start();
+		await flush();
+		h.unread.mockRejectedValue(new Error('boom'));
+		store.resync();
+		await flush();
+		expect(h.unread).toHaveBeenCalledTimes(2);
+		expect(store.version).toBe(1);
+	});
+
+	it('an answer discarded by an identity change does not bump version', async () => {
+		let resolveOld!: (v: unknown) => void;
+		h.unread.mockImplementationOnce(() => new Promise((r) => (resolveOld = r)));
+		store.start();
+		await flush();
+		h.state.epoch++;
+		h.unread.mockRejectedValue(new Error('new account fetch fails'));
+		for (const fn of h.state.listeners) fn('previous-user');
+		resolveOld(resp([[1, 5]]));
+		await flush();
+		expect(store.version).toBe(0);
+		expect(store.unreadTotal).toBe(0);
+	});
 });

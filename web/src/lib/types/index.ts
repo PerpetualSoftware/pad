@@ -3569,6 +3569,38 @@ export type NeedsSnoozeRequest =
 
 // ── Chat (TASK-4039 / TASK-4044) ─────────────────────────────────────────────
 
+/** `Conv`: a conversation as the create route returns it. */
+export interface ChatConversation {
+	id: string;
+	number: number;
+	kind: string;
+	title: string;
+	agent_key: string;
+	last_seq: number;
+	created_at: string;
+	updated_at: string;
+}
+
+/** `ConvDetail` plus `delivered_seq` (single-conversation GET only) and the
+ *  optional `last_message` (inbox rows only). */
+export interface ChatConversationSummary extends ChatConversation {
+	read_seq: number;
+	unread: number;
+	/** Present on `GET /me/conversations/{n}`; inbox rows omit it. */
+	delivered_seq?: number;
+	/** Inbox rows only; excerpt, never a full body. */
+	last_message?: ChatLastMessage;
+}
+
+export interface ChatLastMessage {
+	seq: number;
+	author_agent_key: string;
+	author_is_human: boolean;
+	excerpt: string;
+	deleted: boolean;
+	created_at: string;
+}
+
 /** One row of `GET /me/chat/unread` (only rows with unread > 0). */
 export interface ChatUnread {
 	conversation_id: string;
@@ -3583,4 +3615,9 @@ export interface ChatUnread {
 export interface ChatUnreadResponse {
 	conversations: ChatUnread[];
 	total: number;
+}
+
+export interface ChatConversationsResponse {
+	conversations: ChatConversationSummary[];
+	unread_total: number;
 }

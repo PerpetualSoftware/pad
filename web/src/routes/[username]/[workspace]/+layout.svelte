@@ -4,6 +4,7 @@
 	import { onMount, onDestroy, untrack } from 'svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { tabsStore } from '$lib/stores/tabs.svelte';
+	import { lastWorkspace } from '$lib/stores/lastWorkspace.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { editorStore } from '$lib/stores/editor.svelte';
 	import { sseService } from '$lib/services/sse.svelte';
@@ -210,6 +211,8 @@
 		// The store reads `tabs`, which must not become a dependency here: a
 		// tabs commit would re-note the same route.
 		untrack(() => tabsStore.noteRoute(wsSlug, route));
+		// /messages sits outside any workspace; its Back link returns here.
+		untrack(() => lastWorkspace.note(username, wsSlug));
 	});
 
 	// Initialize workspace, load collections, and reconnect SSE when the

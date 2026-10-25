@@ -39,6 +39,10 @@ type Listener = (notice: ChatNotice) => void;
 class ChatStore {
 	unreadTotal = $state(0);
 	unreadByNumber = $state<Record<number, number>>({});
+	// Bumped after each SUCCESSFUL fetch whose answer was applied, so the
+	// conversation list can reload from one signal that coalesced hints,
+	// resyncs and focus all share. A failed or discarded fetch never bumps it.
+	version = $state(0);
 
 	// Orders answers: an older fetch cannot overwrite a newer one, and an
 	// identity change outdates whatever is in flight.
@@ -135,6 +139,7 @@ class ChatStore {
 				for (const r of rows) byNumber[r.number] = r.unread;
 				this.unreadByNumber = byNumber;
 				this.unreadTotal = res.total ?? 0;
+				this.version++;
 			}
 		} catch {
 			// Keep the last counts: a failed refetch is not "nothing unread".
