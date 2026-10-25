@@ -397,6 +397,7 @@ listener_pids() {
 }
 
 TARGET_PID=""
+STOPPED_PID=""
 LISTENERS=()
 HIDDEN=""
 while read -r lp; do
@@ -710,6 +711,9 @@ if [ -n "$TARGET_PID" ]; then
 			die "pid $TARGET_PID no longer runs the captured server.
   Nothing was stopped or installed; re-run."
 		fi
+		# The pid this refresh signalled: the only pid whose pad.pid record
+		# section 4 may treat as its own (BUG-4068).
+		STOPPED_PID="$TARGET_PID"
 		kill -TERM "$TARGET_PID" 2>/dev/null || true
 		for _ in 1 2 3 4 5; do
 			kill -0 "$TARGET_PID" 2>/dev/null || break
@@ -727,7 +731,47 @@ STAGED=""
 # cfg.PIDFile() is <data dir>/pad.pid (config.go), claimed by `pad server
 # start` (cmd/pad/cmd_server.go); not $HOME/.pad under PAD_DATA_DIR (BUG-4064).
 # DATA_DIR is section 2a's, anchored like the log.
-rm -f "$DATA_DIR/pad.pid"
+#
+# The file is removed only when it is provably not someone else's (BUG-4068):
+# it names the pid this refresh stopped, or a pid that is provably DEAD. It is
+# kept when it names any live process, a sibling server sharing the data dir
+# or a reused pid, and when its liveness is unknown (EPERM) or it does not
+# parse. A kept stale file is the safe failure: `pad server stop` refuses a
+# record it cannot prove (BUG-2969).
+pid_file_pid() {
+	# The pid in pad.pid, in either form internal/cli/pidfile.go reads: the
+	# JSON record ("pid": N) or the legacy bare integer.
+	local body
+	body="$(cat "$1" 2>/dev/null)" || return 1
+	case "$body" in
+	*'"pid"'*) body="$(printf '%s\n' "$body" | sed -n 's/^[[:space:]]*"pid":[[:space:]]*\([0-9][0-9]*\),\{0,1\}[[:space:]]*$/\1/p' | head -1)" ;;
+	*) body="$(printf '%s' "$body" | tr -d '[:space:]')" ;;
+	esac
+	numeric "$body" && [ "$body" -gt 0 ] || return 1
+	printf '%s' "$body"
+}
+pid_is_dead() {
+	# DEAD only when kill -0 fails AND ps finds no such process: kill -0 also
+	# fails with EPERM for a live process this user may not signal, and the
+	# error text is locale-dependent, so ps is the ESRCH test.
+	kill -0 "$1" 2>/dev/null && return 1
+	ps -p "$1" >/dev/null 2>&1 && return 1
+	return 0
+}
+pid_file="$DATA_DIR/pad.pid"
+if [ -e "$pid_file" ]; then
+	if file_pid="$(pid_file_pid "$pid_file")"; then
+		if [ -n "$STOPPED_PID" ] && [ "$file_pid" = "$STOPPED_PID" ]; then
+			rm -f "$pid_file"
+		elif pid_is_dead "$file_pid"; then
+			rm -f "$pid_file"
+		else
+			note "kept $pid_file: it names pid $file_pid, which is alive (or its liveness is unknown) and is not the server this refresh stopped"
+		fi
+	else
+		note "kept $pid_file: it does not parse as a pid record"
+	fi
+fi
 
 # The check TASK-2787 asks for, and it is deliberately on the installed file
 # rather than on any step: read what is now at the install path and require it
