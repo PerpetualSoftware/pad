@@ -62,7 +62,8 @@ var padItemTool = ToolDef{
 		"get":    actionItemGet,
 
 		// PLAN-3578: content-anchored body edits, answered with the diff.
-		"patch": passThrough([]string{"item", "patch"}),
+		// CUSTOM (BUG-4082) so each edit's line_hint gets remote's rule.
+		"patch": actionItemPatch,
 		// list is CUSTOM (not passThrough) so a bare agent list stays
 		// bounded: it injects a default limit and clamps an oversized one
 		// before dispatch, mirroring the backlinks default/max. See
@@ -769,6 +770,31 @@ const (
 	mcpItemListDefaultLimit = 50
 	mcpItemListMaxLimit     = 300
 )
+
+// actionItemPatch handles pad_item.action=patch on stdio. It gives each edit's
+// line_hint remote's rule (editsWithLineHints, shared with mapItemPatch) and
+// then forwards to `item patch` as passThrough did (BUG-4082). edits used to
+// reach the CLI unread: its JSON decode into an int refused a string hint that
+// remote coerces, and took a JSON number of 2^53 or more, which the decoder
+// may already have rounded, as a line number. A refusal is validation_failed
+// with remote's message. The caller's map is not modified.
+func actionItemPatch(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error) {
+	edits, isList := input["edits"].([]any)
+	if !isList {
+		return env.Dispatch(ctx, []string{"item", "patch"}, input)
+	}
+	out, err := editsWithLineHints(edits)
+	if err != nil {
+		return validationFailedResult("item patch", err.Error(),
+			"Pass each line_hint as a whole JSON number below 2^53, or a string of decimal digits with no leading zero."), nil
+	}
+	in := make(map[string]any, len(input))
+	for k, v := range input {
+		in[k] = v
+	}
+	in["edits"] = out
+	return env.Dispatch(ctx, []string{"item", "patch"}, in)
+}
 
 // actionItemList handles pad_item.action=list. It forwards to `item list`
 // but first applies a default limit (when the agent didn't ask for one) and
