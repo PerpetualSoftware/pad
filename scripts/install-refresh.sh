@@ -107,27 +107,43 @@ anchored_data_dir() {
 	esac
 }
 
+# normalize_path collapses "." and ".." segments of an absolute path in pure
+# shell (no realpath -m, which macOS lacks; no arrays, for bash 3.2), so the
+# warning names a clean path for "./x/../data".
+normalize_path() {
+	local rest="$1/" seg out=""
+	while [ -n "$rest" ]; do
+		seg="${rest%%/*}"
+		rest="${rest#*/}"
+		case "$seg" in
+		"" | .) ;;
+		..) out="${out%/*}" ;;
+		*) out="$out/$seg" ;;
+		esac
+	done
+	printf '%s' "${out:-/}"
+}
+
 # warn_relative_data_dir prints config.Load's BUG-4066 warning for a relative
 # PAD_DATA_DIR or PAD_DB_PATH (the value still resolves; a future release
-# refuses it, TASK-4072). It names the path the server and this refresh
-# actually use, anchored like anchored_data_dir, so it runs once SERVER_CWD
-# is captured (BUG-4066 r1), and still before the marker or the stop.
+# refuses it, TASK-4072). It names the DATA DIR the server and this refresh
+# actually use (the directory of a PAD_DB_PATH, not the db file), anchored
+# like anchored_data_dir, so it runs once SERVER_CWD is captured (BUG-4066
+# r1), and still before the marker or the stop.
 warn_relative_data_dir() {
-	local name value dir rel base
+	local name value dir what base
 	if [ -n "${PAD_DB_PATH:-}" ]; then
-		name=PAD_DB_PATH value="$PAD_DB_PATH" dir="$(dirname "$PAD_DB_PATH")"
+		name=PAD_DB_PATH value="$PAD_DB_PATH" dir="$(dirname "$PAD_DB_PATH")" what="the data dir"
 	elif [ -n "${PAD_DATA_DIR:-}" ]; then
-		name=PAD_DATA_DIR value="$PAD_DATA_DIR" dir="$PAD_DATA_DIR"
+		name=PAD_DATA_DIR value="$PAD_DATA_DIR" dir="$PAD_DATA_DIR" what="it"
 	else
 		return 0
 	fi
 	case "$dir" in /*) return 0 ;; esac
-	rel="$value"
-	while [ "${rel#./}" != "$rel" ]; do rel="${rel#./}"; done
 	base="${SERVER_CWD:-$PWD}"
-	echo "Warning: $name is relative ($value); this process resolves it to $base/$rel. A CLI and a server in different directories will use different data. Set an absolute path; relative values will be refused in a future release." >&2
+	echo "Warning: $name is relative ($value); this process resolves $what to $(normalize_path "$base/$dir"). A CLI and a server in different directories will use different data. Set an absolute path; relative values will be refused in a future release." >&2
 	if [ -n "${SERVER_CWD:-}" ] && [ "$SERVER_CWD" != "$PWD" ]; then
-		echo "Warning: that is the server's directory; from this shell's directory it would be $PWD/$rel." >&2
+		echo "Warning: that is the server's directory; from this shell's directory it would be $(normalize_path "$PWD/$dir")." >&2
 	fi
 	case "$value" in "~"*) echo "Warning: the leading ~ in $name was not expanded by your shell, so it names a directory literally called ~." >&2 ;; esac
 }

@@ -59,19 +59,28 @@ func testTempBase(t *testing.T) string {
 	return filepath.Dir(filepath.Dir(t.TempDir()))
 }
 
-// insideTestTempDir reports whether p is inside a Go test's temp dir: under
-// base, in a top-level directory named for a test (t.TempDir()'s
-// "<TestName><random>"). Any test's counts, so a subtest may use its
-// parent's.
-func insideTestTempDir(base, p string) bool {
+// tempScope is where THIS test's temp dirs live: the shared base and the
+// test's top-level name. t.TempDir() names its dirs "<Name><random>", and a
+// subtest's "<Parent>_<sub><random>", so the top-level name is a prefix of
+// both and of no other test's (BUG-4066 r2).
+type tempScope struct{ base, top string }
+
+func testTempScope(t *testing.T) tempScope {
+	t.Helper()
+	return tempScope{testTempBase(t), strings.SplitN(t.Name(), "/", 2)[0]}
+}
+
+// insideTestTempDir reports whether p is inside this test's temp dir: under
+// sc.base, in a top-level directory named for sc.top.
+func insideTestTempDir(sc tempScope, p string) bool {
 	// Both sides symlink-resolved (BUG-4066 r1): on macOS t.TempDir() is
 	// under /var/folders, a symlink to /private/var/folders, and the tests
 	// anchor under realDir()'s resolved path.
-	rel, err := filepath.Rel(resolveExisting(base), resolveExisting(p))
+	rel, err := filepath.Rel(resolveExisting(sc.base), resolveExisting(p))
 	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
 		return false
 	}
-	return strings.HasPrefix(strings.SplitN(rel, string(filepath.Separator), 2)[0], "Test")
+	return strings.HasPrefix(strings.SplitN(rel, string(filepath.Separator), 2)[0], sc.top)
 }
 
 // requireSafeScriptEnv is the harness guard every install-refresh exec in
@@ -80,7 +89,7 @@ func insideTestTempDir(base, p string) bool {
 // script target the box's REAL shared server fails here, without running.
 func requireSafeScriptEnv(t *testing.T, env []string, dir string) {
 	t.Helper()
-	if err := scriptEnvHazard(env, dir, testTempBase(t)); err != nil {
+	if err := scriptEnvHazard(env, dir, testTempScope(t)); err != nil {
 		t.Fatalf("HARNESS GUARD (BUG-4066): refusing to run install-refresh: %v", err)
 	}
 }
@@ -95,7 +104,7 @@ var configPortLine = regexp.MustCompile(`(?m)^[[:space:]]*port[[:space:]]*=[[:sp
 //   - a resolved port that answers on a LAN address and is not this test's
 //     own stub (the stub serves /stub/pid; a real pad does not). A stub bound
 //     to 0.0.0.0 by a test answers on the LAN address legitimately.
-func scriptEnvHazard(env []string, dir, tempBase string) error {
+func scriptEnvHazard(env []string, dir string, scope tempScope) error {
 	get := func(key string) string {
 		v := ""
 		for _, kv := range env {
@@ -129,11 +138,18 @@ func scriptEnvHazard(env []string, dir, tempBase string) error {
 			return fmt.Errorf("HOME (%s) or the data dir (%s) is the real user's", home, dataDir)
 		}
 	}
-	if !insideTestTempDir(tempBase, home) {
+	if !insideTestTempDir(scope, home) {
 		return fmt.Errorf("HOME %q is not inside a test temp dir", home)
 	}
-	if !insideTestTempDir(tempBase, dataDir) {
+	if !insideTestTempDir(scope, dataDir) {
 		return fmt.Errorf("the data dir %q is not inside a test temp dir", dataDir)
+	}
+	// PAD_HOST is inherited from the developer's shell; only empty or
+	// loopback keeps the script on this machine's own stub (BUG-4066 r2).
+	if h := strings.Trim(get("PAD_HOST"), "[]"); h != "" && h != "localhost" {
+		if ip := net.ParseIP(h); ip == nil || !ip.IsLoopback() {
+			return fmt.Errorf("PAD_HOST is %q: not empty or loopback, so the script could target another host", get("PAD_HOST"))
+		}
 	}
 	port := get("PAD_PORT")
 	if !numeric(port) && relativeDataDir {
@@ -149,6 +165,8 @@ func scriptEnvHazard(env []string, dir, tempBase string) error {
 		}
 		port = string(m[1])
 	}
+	// Numeric, so "07777" is refused too, and before any dial: this guard
+	// never dials port 7777 under any input (BUG-4066 r2).
 	if n, err := strconv.Atoi(port); err != nil || n == 7777 {
 		return fmt.Errorf("the resolved port %q is 7777 (or unreadable): the box's real server", port)
 	}
@@ -194,17 +212,30 @@ func TestHarnessGuard_RefusesAHazardousScriptEnv(t *testing.T) {
 	home := t.TempDir()
 	free := fmt.Sprint(freePort(t))
 	base := []string{"HOME=" + home, "PAD_DATA_DIR=", "PAD_DB_PATH="}
-	if err := scriptEnvHazard(append(base, "PAD_PORT="), "", testTempBase(t)); err == nil {
+	if err := scriptEnvHazard(append(base, "PAD_PORT="), "", testTempScope(t)); err == nil {
 		t.Errorf("PAD_PORT unset with no config port was allowed")
 	}
-	if err := scriptEnvHazard(append(base, "PAD_PORT=not-a-number"), "", testTempBase(t)); err == nil {
+	if err := scriptEnvHazard(append(base, "PAD_PORT=not-a-number"), "", testTempScope(t)); err == nil {
 		t.Errorf("a non-numeric PAD_PORT with no config port was allowed")
 	}
-	if err := scriptEnvHazard(append(base, "PAD_PORT=7777"), "", testTempBase(t)); err == nil {
-		t.Errorf("PAD_PORT=7777 was allowed")
+	// Asserted by message, so the result does not depend on what listens on
+	// 7777 (a string compare would reach the LAN dial and be refused there).
+	for _, p := range []string{"7777", "07777", "0007777"} {
+		err := scriptEnvHazard(append(base, "PAD_PORT="+p), "", testTempScope(t))
+		if err == nil || !strings.Contains(err.Error(), "is 7777 (or unreadable)") {
+			t.Errorf("PAD_PORT=%s: want the numeric 7777 refusal, got %v", p, err)
+		}
 	}
-	if err := scriptEnvHazard(append(base, "PAD_PORT=07777"), "", testTempBase(t)); err == nil {
-		t.Errorf("PAD_PORT=07777 (numerically 7777) was allowed")
+	for _, h := range []string{"192.0.2.1", "0.0.0.0", "example.com", "::"} {
+		err := scriptEnvHazard(append(base, "PAD_PORT="+free, "PAD_HOST="+h), "", testTempScope(t))
+		if err == nil || !strings.Contains(err.Error(), "PAD_HOST") {
+			t.Errorf("PAD_HOST=%s: want the PAD_HOST refusal, got %v", h, err)
+		}
+	}
+	for _, h := range []string{"", "127.0.0.1", "localhost", "::1", "[::1]"} {
+		if err := scriptEnvHazard(append(base, "PAD_PORT="+free, "PAD_HOST="+h), "", testTempScope(t)); err != nil {
+			t.Errorf("PAD_HOST=%q was refused: %v", h, err)
+		}
 	}
 	// A relative data dir with the port left to config.toml: the script reads
 	// it from the server's cwd, which the guard cannot see (BUG-4066 r1).
@@ -215,10 +246,10 @@ func TestHarnessGuard_RefusesAHazardousScriptEnv(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(relHome, "data", "config.toml"), []byte("port = "+free+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := scriptEnvHazard([]string{"HOME=" + relHome, "PAD_DATA_DIR=data", "PAD_DB_PATH=", "PAD_PORT="}, relHome, testTempBase(t)); err == nil {
+	if err := scriptEnvHazard([]string{"HOME=" + relHome, "PAD_DATA_DIR=data", "PAD_DB_PATH=", "PAD_PORT="}, relHome, testTempScope(t)); err == nil {
 		t.Errorf("a relative data dir with a config-sourced port was allowed")
 	}
-	if err := scriptEnvHazard(append(base, "PAD_PORT="+free), "", testTempBase(t)); err != nil {
+	if err := scriptEnvHazard(append(base, "PAD_PORT="+free), "", testTempScope(t)); err != nil {
 		t.Errorf("a free private port was refused: %v", err)
 	}
 	// A port from the test's own config file is a resolved port.
@@ -229,13 +260,13 @@ func TestHarnessGuard_RefusesAHazardousScriptEnv(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(cfg, "config.toml"), []byte("port = "+free+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := scriptEnvHazard(append(base, "PAD_PORT="), "", testTempBase(t)); err != nil {
+	if err := scriptEnvHazard(append(base, "PAD_PORT="), "", testTempScope(t)); err != nil {
 		t.Errorf("a config-file port was refused: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(cfg, "config.toml"), []byte("port = 7777\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := scriptEnvHazard(append(base, "PAD_PORT="), "", testTempBase(t)); err == nil {
+	if err := scriptEnvHazard(append(base, "PAD_PORT="), "", testTempScope(t)); err == nil {
 		t.Errorf("a config-file port of 7777 was allowed")
 	}
 	// Something that is not a stub, answering on a LAN address.
@@ -266,7 +297,7 @@ func TestHarnessGuard_RefusesAHazardousScriptEnv(t *testing.T) {
 		}
 	}()
 	lport := fmt.Sprint(ln.Addr().(*net.TCPAddr).Port)
-	if err := scriptEnvHazard(append(base, "PAD_PORT="+lport), "", testTempBase(t)); err == nil {
+	if err := scriptEnvHazard(append(base, "PAD_PORT="+lport), "", testTempScope(t)); err == nil {
 		t.Errorf("a non-stub answering on the LAN address %s:%s was allowed", lan, lport)
 	}
 }
@@ -290,12 +321,12 @@ func TestHarnessGuard_RefusesARealOrForeignHome(t *testing.T) {
 		{"relative data dir against the package cwd", []string{"HOME=" + tmp, "PAD_DATA_DIR=data", "PAD_DB_PATH=", "PAD_PORT=" + free}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := scriptEnvHazard(tc.env, "", testTempBase(t)); err == nil {
+			if err := scriptEnvHazard(tc.env, "", testTempScope(t)); err == nil {
 				t.Fatalf("allowed: %v", tc.env)
 			}
 		})
 	}
-	if err := scriptEnvHazard([]string{"HOME=" + tmp, "PAD_DATA_DIR=data", "PAD_DB_PATH=", "PAD_PORT=" + free}, tmp, testTempBase(t)); err != nil {
+	if err := scriptEnvHazard([]string{"HOME=" + tmp, "PAD_DATA_DIR=data", "PAD_DB_PATH=", "PAD_PORT=" + free}, tmp, testTempScope(t)); err != nil {
 		t.Fatalf("a relative data dir anchored in the test's own dir was refused: %v", err)
 	}
 }
@@ -327,13 +358,13 @@ func TestHarnessGuard_StubTokenMustMatch(t *testing.T) {
 	}
 	home := t.TempDir()
 	base := []string{"HOME=" + home, "PAD_DATA_DIR=", "PAD_DB_PATH=", "PAD_PORT=" + port}
-	if err := scriptEnvHazard(append(base, "STUB_TOKEN=this-tests-token"), "", testTempBase(t)); err == nil {
+	if err := scriptEnvHazard(append(base, "STUB_TOKEN=this-tests-token"), "", testTempScope(t)); err == nil {
 		t.Errorf("a LAN answer with another test's token was allowed")
 	}
-	if err := scriptEnvHazard(base, "", testTempBase(t)); err == nil {
+	if err := scriptEnvHazard(base, "", testTempScope(t)); err == nil {
 		t.Errorf("a LAN answer with no token at all was allowed")
 	}
-	if err := scriptEnvHazard(append(base, "STUB_TOKEN="+served), "", testTempBase(t)); err != nil {
+	if err := scriptEnvHazard(append(base, "STUB_TOKEN="+served), "", testTempScope(t)); err != nil {
 		t.Errorf("this test's own token was refused: %v", err)
 	}
 }
@@ -348,7 +379,7 @@ func TestHarnessGuard_ResolvesSymlinkedTempPaths(t *testing.T) {
 	free := fmt.Sprint(freePort(t))
 	// HOME through the symlink, the data dir anchored under the resolved path.
 	env := []string{"HOME=" + link, "PAD_DATA_DIR=data", "PAD_DB_PATH=", "PAD_PORT=" + free}
-	if err := scriptEnvHazard(env, real, testTempBase(t)); err != nil {
+	if err := scriptEnvHazard(env, real, testTempScope(t)); err != nil {
 		t.Fatalf("a symlinked test temp path was refused: %v", err)
 	}
 	// The layout t.TempDir() makes: <base>/<TestName><random>/... . With the
@@ -361,12 +392,59 @@ func TestHarnessGuard_ResolvesSymlinkedTempPaths(t *testing.T) {
 	if err := os.Symlink(base, baseLink); err != nil {
 		t.Fatal(err)
 	}
-	if !insideTestTempDir(baseLink, filepath.Join(base, "TestSomething123", "x")) {
+	if !insideTestTempDir(tempScope{baseLink, "TestSomething"}, filepath.Join(base, "TestSomething123", "x")) {
 		t.Fatalf("a resolved path is not inside the same base reached through a symlink")
 	}
-	if !insideTestTempDir(base, filepath.Join(baseLink, "TestSomething123", "x")) {
+	if !insideTestTempDir(tempScope{base, "TestSomething"}, filepath.Join(baseLink, "TestSomething123", "x")) {
 		t.Fatalf("a symlinked path is not inside its resolved base")
 	}
+}
+
+// unguardedScriptExecs scans Go source for every exec.Command or
+// exec.CommandContext whose arguments include scriptPath( and returns the
+// 1-based line of each one that is not guarded: requireSafeScriptEnv( must
+// appear in the SAME function, after the exec and before that exec's
+// variable runs (Run, Output, CombinedOutput or Start). An exec that is never
+// assigned to a variable has no later run to wait for, so it is always
+// flagged. found counts every install-refresh exec seen.
+func unguardedScriptExecs(src string) (bad []int, found int) {
+	execRe := regexp.MustCompile(`(?:(\w+)\s*:?=\s*)?exec\.Command(?:Context)?\(.*\bscriptPath\(`)
+	lines := strings.Split(src, "\n")
+	fnEnd := func(from int) int {
+		for j := from + 1; j < len(lines); j++ {
+			if strings.HasPrefix(lines[j], "func ") {
+				return j
+			}
+		}
+		return len(lines)
+	}
+	for i, line := range lines {
+		m := execRe.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		found++
+		v := m[1]
+		if v == "" {
+			bad = append(bad, i+1)
+			continue
+		}
+		runRe := regexp.MustCompile(`\b` + regexp.QuoteMeta(v) + `\.(Run|Output|CombinedOutput|Start)\(`)
+		guarded := false
+		for _, next := range lines[i+1 : fnEnd(i)] {
+			if strings.Contains(next, "requireSafeScriptEnv(") {
+				guarded = true
+				break
+			}
+			if runRe.MatchString(next) {
+				break
+			}
+		}
+		if !guarded {
+			bad = append(bad, i+1)
+		}
+	}
+	return bad, found
 }
 
 // Every exec of install-refresh in this package passes the guard before it
@@ -376,37 +454,69 @@ func TestHarnessGuard_EveryScriptExecIsGuarded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	execRe := regexp.MustCompile(`exec\.Command\("bash",\s*scriptPath\(t\)`)
-	runRe := regexp.MustCompile(`\bcmd\.(Run|Output|CombinedOutput|Start)\(\)`)
 	total := 0
 	for _, f := range files {
 		b, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)
 		}
-		lines := strings.Split(string(b), "\n")
-		for i, line := range lines {
-			if !execRe.MatchString(line) || strings.Contains(line, "execRe") {
-				continue
-			}
-			total++
-			guarded := false
-			for _, next := range lines[i+1:] {
-				if strings.Contains(next, "requireSafeScriptEnv(") {
-					guarded = true
-					break
-				}
-				if runRe.MatchString(next) {
-					break
-				}
-			}
-			if !guarded {
-				t.Errorf("%s:%d execs install-refresh without requireSafeScriptEnv before it runs", f, i+1)
-			}
+		bad, found := unguardedScriptExecs(string(b))
+		total += found
+		for _, ln := range bad {
+			t.Errorf("%s:%d execs install-refresh without requireSafeScriptEnv before it runs", f, ln)
 		}
 	}
 	if total < 14 {
 		t.Fatalf("found only %d install-refresh execs; the scan is not seeing them", total)
+	}
+}
+
+// The scanner itself (BUG-4066 r2): a differently named variable, the
+// CommandContext form, and a guard that only appears in a LATER function must
+// all be flagged; a guarded one must not. The snippets spell the exec call as
+// EXEC so this file's own scan does not see them.
+func TestHarnessGuard_ScannerFlagsAnUnguardedExec(t *testing.T) {
+	snip := func(s string) string {
+		return strings.ReplaceAll(s, "EXEC", "exec.Command")
+	}
+	for _, tc := range []struct {
+		name, src string
+		want      int
+	}{
+		{"other variable name, guard in a later function", snip(`func a(t *testing.T) {
+	c := EXEC("bash", scriptPath(t), x)
+	c.Env = env
+	_ = c.Run()
+}
+
+func b(t *testing.T) {
+	requireSafeScriptEnv(t, nil, "")
+}
+`), 1},
+		{"CommandContext form", snip(`func a(t *testing.T) {
+	c := EXECContext(ctx, "bash", scriptPath(t), x)
+	out, _ := c.CombinedOutput()
+}
+`), 1},
+		{"guard after the run", snip(`func a(t *testing.T) {
+	cmd := EXEC("bash", scriptPath(t))
+	cmd.Start()
+	requireSafeScriptEnv(t, nil, "")
+}
+`), 1},
+		{"guarded", snip(`func a(t *testing.T) {
+	c := EXEC("bash", scriptPath(t))
+	requireSafeScriptEnv(t, c.Env, c.Dir)
+	_ = c.Run()
+}
+`), 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bad, found := unguardedScriptExecs(tc.src)
+			if found != 1 || len(bad) != tc.want {
+				t.Fatalf("found=%d flagged=%v, want 1 found and %d flagged", found, bad, tc.want)
+			}
+		})
 	}
 }
 
@@ -446,7 +556,7 @@ func TestHarnessGuard_TokenIsAskedWhereTheLANAnswered(t *testing.T) {
 	go func() { _ = stubSrv.Serve(stub) }()
 	defer stubSrv.Close()
 	env := []string{"HOME=" + t.TempDir(), "PAD_DATA_DIR=", "PAD_DB_PATH=", "PAD_PORT=" + port, "STUB_TOKEN=" + token}
-	if err := scriptEnvHazard(env, "", testTempBase(t)); err == nil {
+	if err := scriptEnvHazard(env, "", testTempScope(t)); err == nil {
 		t.Fatalf("a non-stub on %s:%s passed on a loopback stub's token", lan, port)
 	}
 }

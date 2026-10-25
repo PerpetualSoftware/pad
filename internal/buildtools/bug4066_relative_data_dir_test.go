@@ -1,6 +1,7 @@
 package buildtools
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,9 +36,16 @@ func TestBUG4066_RefreshMarkerIsAnchoredAndCleanedUp(t *testing.T) {
 	pre.Dir = serverDir
 	startPreServer(t, pre, "127.0.0.1", port)
 
-	res := runScriptIn(t, e, callerDir, built, installed, commit)
+	// The restarted stub records whether the marker exists where the SERVER
+	// looks, at the moment it starts inside the stop-to-restart window.
+	probeOut := filepath.Join(home, "probe.out")
+	res := runScriptIn(t, e, callerDir, built, installed, commit,
+		"STUB_MARKER_PROBE="+filepath.Join(serverDir, "data", "refresh.lock"), "STUB_PROBE_OUT="+probeOut)
 	if res.err != nil {
 		t.Fatalf("refresh failed: %v\nstdout=%s\nstderr=%s", res.err, res.stdout, res.stderr)
+	}
+	if b, err := os.ReadFile(probeOut); err != nil || strings.TrimSpace(string(b)) != "present" {
+		t.Errorf("the marker was not present at <server cwd>/data/refresh.lock when the restart started: %q (err=%v)", b, err)
 	}
 	for _, p := range []string{filepath.Join(callerDir, "data", "refresh.lock"), filepath.Join(serverDir, "data", "refresh.lock")} {
 		if _, err := os.Stat(p); !os.IsNotExist(err) {
@@ -54,8 +62,14 @@ func TestBUG4066_RefreshMarkerIsAnchoredAndCleanedUp(t *testing.T) {
 // carries the warning. It names the SERVER's anchored, cleaned path, not the
 // caller's (BUG-4066 r1: the caller's cwd here differs from the server's).
 func TestBUG4066_ScriptWarnsAboutARelativeDataDirBeforeStopping(t *testing.T) {
-	for _, value := range []string{"data", "./data"} {
-		t.Run(value, func(t *testing.T) {
+	for _, tc := range []struct{ name, dataDir, dbPath, serverRel, want string }{
+		{"data", "data", "", "data", "PAD_DATA_DIR is relative (data); this process resolves it to %s."},
+		{"./data", "./data", "", "data", "PAD_DATA_DIR is relative (./data); this process resolves it to %s."},
+		{"./x/../data", "./x/../data", "", "data", "PAD_DATA_DIR is relative (./x/../data); this process resolves it to %s."},
+		{"PAD_DB_PATH names the dir", "", "x/pad.db", "x", "PAD_DB_PATH is relative (x/pad.db); this process resolves the data dir to %s."},
+		{"PAD_DB_PATH with dots", "", "./y/../x/pad.db", "x", "PAD_DB_PATH is relative (./y/../x/pad.db); this process resolves the data dir to %s."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			requireScriptDeps(t)
 			home, dir := t.TempDir(), t.TempDir()
 			serverDir, callerDir := realDir(t, t.TempDir()), realDir(t, t.TempDir())
@@ -70,26 +84,30 @@ func TestBUG4066_ScriptWarnsAboutARelativeDataDirBeforeStopping(t *testing.T) {
 				t.Fatal(err)
 			}
 			e := stubEnv{version: "pad version dev (" + commit + " x)", healthy: "1",
-				argvLog: filepath.Join(home, "argv.log"), port: port, home: home, dataDir: value}
+				argvLog: filepath.Join(home, "argv.log"), port: port, home: home, dataDir: tc.dataDir}
+			var extra []string
+			if tc.dbPath != "" {
+				extra = []string{"PAD_DB_PATH=" + tc.dbPath}
+			}
 			// A directory where the log file goes, under the server's anchored data dir.
-			if err := os.MkdirAll(filepath.Join(serverDir, "data", "logs", "server.log"), 0o755); err != nil {
+			if err := os.MkdirAll(filepath.Join(serverDir, tc.serverRel, "logs", "server.log"), 0o755); err != nil {
 				t.Fatal(err)
 			}
 			pre := exec.Command(built, "server", "start", "--host", "127.0.0.1")
-			pre.Env = e.env()
+			pre.Env = append(e.env(), extra...)
 			pre.Dir = serverDir
 			startPreServer(t, pre, "127.0.0.1", port)
 			prePid := strconv.Itoa(pre.Process.Pid)
 
-			res := runScriptIn(t, e, callerDir, built, installed, commit)
+			res := runScriptIn(t, e, callerDir, built, installed, commit, extra...)
 			if res.err == nil {
 				t.Fatalf("refresh succeeded with an unwritable log\nstdout=%s\nstderr=%s", res.stdout, res.stderr)
 			}
-			want := "PAD_DATA_DIR is relative (" + value + "); this process resolves it to " + filepath.Join(serverDir, "data") + "."
+			want := fmt.Sprintf(tc.want, filepath.Join(serverDir, tc.serverRel))
 			if !strings.Contains(res.stderr, want) {
 				t.Errorf("the warning does not name the server's anchored path; want %q in stderr=%s", want, res.stderr)
 			}
-			if !strings.Contains(res.stderr, "from this shell's directory it would be "+filepath.Join(callerDir, "data")+".") {
+			if !strings.Contains(res.stderr, "from this shell's directory it would be "+filepath.Join(callerDir, tc.serverRel)+".") {
 				t.Errorf("the warning does not name the caller's reading too; stderr=%s", res.stderr)
 			}
 			if got, err := pidAnswersAt(port); err != nil || got != prePid {

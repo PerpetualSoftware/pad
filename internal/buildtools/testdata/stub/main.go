@@ -95,6 +95,20 @@ func main() {
 			f.Close()
 		}
 	}
+	// STUB_MARKER_PROBE=<path> with STUB_PROBE_OUT=<file>: record whether
+	// <path> exists as this server starts (BUG-4066 r2). Set only in the
+	// script's environment, so the one line is the RESTART's, taken inside
+	// the stop-to-restart window the refresh marker covers.
+	if probe, out := os.Getenv("STUB_MARKER_PROBE"), os.Getenv("STUB_PROBE_OUT"); probe != "" && out != "" {
+		line := "present"
+		if _, err := os.Stat(probe); err != nil {
+			line = "absent"
+		}
+		if f, err := os.OpenFile(out, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+			fmt.Fprintln(f, line)
+			f.Close()
+		}
+	}
 	// STUB_STRAY_ON_START=1: this start is beaten to the port by a stray
 	// (BUG-3215, the post-probe check). The stray binds first; this process
 	// then fails its own bind and exits, as the refresh's restart did on

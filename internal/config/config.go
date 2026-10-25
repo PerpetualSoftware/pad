@@ -373,11 +373,17 @@ func warnRelativeDataDir(name, value string) {
 	if os.Getenv(InternalNoDataDirWarningEnv) == "1" {
 		return
 	}
-	abs, err := filepath.Abs(value)
-	if err != nil {
-		abs = value
+	// The data dir is what splits (config, attachments, key), so a relative
+	// PAD_DB_PATH names the directory of the file, not the file.
+	target, what := value, "it"
+	if name == "PAD_DB_PATH" {
+		target, what = filepath.Dir(value), "the data dir"
 	}
-	msg := fmt.Sprintf("%s is relative (%s); this process resolves it to %s. A CLI and a server in different directories will use different data. Set an absolute path; relative values will be refused in a future release.", name, value, abs)
+	abs, err := filepath.Abs(target)
+	if err != nil {
+		abs = target
+	}
+	msg := fmt.Sprintf("%s is relative (%s); this process resolves %s to %s. A CLI and a server in different directories will use different data. Set an absolute path; relative values will be refused in a future release.", name, value, what, abs)
 	if strings.HasPrefix(value, "~") {
 		msg += " The leading ~ was not expanded by your shell, so it names a directory literally called ~."
 	}

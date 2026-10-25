@@ -90,6 +90,7 @@ func (f *ExecResourceFetcher) run(ctx context.Context, args []string, limit int6
 		return nil, fmt.Errorf("resource fetcher: binary path not configured")
 	}
 	cmd := exec.CommandContext(ctx, f.Binary, args...)
+	cmd.Env = dispatchChildEnv()
 	var stdout bytes.Buffer
 	var stderr strings.Builder
 	var capped *cappedWriter
@@ -162,6 +163,7 @@ func (f *ExecBootstrapFetcher) Bootstrap(ctx context.Context, workspace string) 
 	}
 	args := append([]string{"bootstrap", "--workspace", workspace, "--format", "json"}, f.RootArgs...)
 	cmd := exec.CommandContext(ctx, f.Binary, args...)
+	cmd.Env = dispatchChildEnv()
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

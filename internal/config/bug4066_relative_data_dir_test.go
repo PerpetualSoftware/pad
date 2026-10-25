@@ -71,8 +71,8 @@ func TestBUG4066_RelativeDataDirWarningRule(t *testing.T) {
 	}{
 		{"relative PAD_DATA_DIR", "data", "", "PAD_DATA_DIR is relative (data); this process resolves it to " + abs("data") + "."},
 		{"dot-relative PAD_DATA_DIR", "./data", "", "PAD_DATA_DIR is relative (./data); this process resolves it to " + abs("./data") + "."},
-		{"relative PAD_DB_PATH", "", "pad.db", "PAD_DB_PATH is relative (pad.db); this process resolves it to " + abs("pad.db") + "."},
-		{"relative PAD_DB_PATH beats an absolute PAD_DATA_DIR", cwd, "x/pad.db", "PAD_DB_PATH is relative (x/pad.db)"},
+		{"relative PAD_DB_PATH", "", "pad.db", "PAD_DB_PATH is relative (pad.db); this process resolves the data dir to " + abs(".") + "."},
+		{"relative PAD_DB_PATH beats an absolute PAD_DATA_DIR", cwd, "x/pad.db", "PAD_DB_PATH is relative (x/pad.db); this process resolves the data dir to " + abs("x") + "."},
 		{"absolute PAD_DB_PATH makes a relative PAD_DATA_DIR moot", "data", filepath.Join(cwd, "pad.db"), ""},
 		{"absolute PAD_DATA_DIR is silent", filepath.Join(cwd, "d"), "", ""},
 		{"neither set is silent", "", "", ""},
@@ -143,6 +143,7 @@ func TestBUG4066_RelativeDataDirWarningRule(t *testing.T) {
 		resetRelativeDataDirWarning()
 		var got string
 		SetRelativeDataDirWarningSink(func(m string) { got = m })
+		t.Cleanup(func() { SetRelativeDataDirWarningSink(nil) })
 		out := captureStderr(t, func() {
 			if _, err := Load(); err != nil {
 				t.Fatal(err)

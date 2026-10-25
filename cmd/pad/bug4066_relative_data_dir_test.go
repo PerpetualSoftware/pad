@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"net"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The relative data-dir warning is once per process, so each case runs in a
@@ -24,8 +26,30 @@ func TestMain_BUG4066Child(t *testing.T) {
 		root.SetArgs([]string{"mcp", "serve"})
 		_ = root.Execute()
 	case "complete":
+		args := []string{"__complete", "item", "list", "--workspace", ""}
+		silenceWarningsForCompletion(args)
 		root := newRootCmd()
-		root.SetArgs([]string{"__complete", "item", "list", "--workspace", ""})
+		root.SetArgs(args)
+		_ = root.Execute()
+	case "complete-collections":
+		// completeCollectionNames loads config with no sink of its own.
+		args := []string{"__complete", "item", "list", ""}
+		silenceWarningsForCompletion(args)
+		root := newRootCmd()
+		root.SetArgs(args)
+		_ = root.Execute()
+	case "complete-nodesc":
+		args := []string{"__completeNoDesc", "item", "list", ""}
+		silenceWarningsForCompletion(args)
+		root := newRootCmd()
+		root.SetArgs(args)
+		_ = root.Execute()
+	case "not-complete":
+		// A look-alike that is NOT the completion command still warns.
+		args := []string{"item", "list", "__complete"}
+		silenceWarningsForCompletion(args)
+		root := newRootCmd()
+		root.SetArgs(args)
 		_ = root.Execute()
 	case "server":
 		root := newRootCmd()
@@ -36,7 +60,9 @@ func TestMain_BUG4066Child(t *testing.T) {
 
 func runBUG4066Child(t *testing.T, which string, extra ...string) string {
 	t.Helper()
-	cmd := exec.Command(os.Args[0], "-test.run", "^TestMain_BUG4066Child$", "-test.count=1")
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run", "^TestMain_BUG4066Child$", "-test.count=1")
 	cmd.Dir = t.TempDir()
 	cmd.Env = append(os.Environ(), "BUG4066_CHILD="+which, "HOME="+t.TempDir(), "PAD_DATA_DIR=data", "PAD_DB_PATH=")
 	cmd.Env = append(cmd.Env, extra...)
@@ -85,10 +111,25 @@ func TestBUG4066_MCPServeWarnsOnce(t *testing.T) {
 	}
 }
 
-// Tab completion prints no warning in the middle of the user's line.
+// Tab completion prints no warning in the middle of the user's line: the
+// --workspace completion, and (at the root, in main) every other completion
+// function, including the ones that load config themselves.
 func TestBUG4066_CompletionDoesNotWarn(t *testing.T) {
-	out := runBUG4066Child(t, "complete")
-	if strings.Contains(out, "is relative") {
-		t.Fatalf("shell completion printed the relative data-dir warning:\n%s", out)
+	for _, which := range []string{"complete", "complete-collections", "complete-nodesc"} {
+		t.Run(which, func(t *testing.T) {
+			out := runBUG4066Child(t, which)
+			if strings.Contains(out, "is relative") {
+				t.Fatalf("shell completion printed the relative data-dir warning:\n%s", out)
+			}
+		})
+	}
+}
+
+// The silence is NARROW: a command that merely mentions __complete, or any
+// other, still warns.
+func TestBUG4066_OnlyTheCompletionCommandIsSilenced(t *testing.T) {
+	out := runBUG4066Child(t, "not-complete")
+	if !strings.Contains(out, "PAD_DATA_DIR is relative (data)") {
+		t.Fatalf("a non-completion command did not warn:\n%s", out)
 	}
 }
