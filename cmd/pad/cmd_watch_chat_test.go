@@ -137,6 +137,46 @@ func TestFormatChatLineEnvelopes(t *testing.T) {
 		t.Fatal("bad cut")
 	}
 }
+
+// TASK-4043: fetched quote previews stay separate from the body budget.
+// Kills: Q-a (omit quote); Q-b (print m.Body as the quote, since the DTO has no body).
+func TestFormatChatLineQuoteIsReferenceAndExcerpt(t *testing.T) {
+	for _, direction := range []bool{false, true} {
+		for _, tc := range []struct {
+			name, body, quote, suffix string
+		}{
+			{"reference and excerpt", strings.Repeat("DISTINCT-BODY ", 180), `{"seq":17,"excerpt":"server preview"}`, ` (replying to #17: "server preview")`},
+			{"whitespace", "current body", `{"seq":17,"excerpt":"  server\n\t preview  "}`, ` (replying to #17: "server preview")`},
+			{"body cut before quote", strings.Repeat("界", 2100), `{"seq":17,"excerpt":"server preview"}`, ` (replying to #17: "server preview")`},
+			{"nil quote", "current body", `null`, ""},
+			{"deleted quote", "current body", `{"seq":17,"excerpt":"DELETED-SECRET","deleted":true}`, ""},
+		} {
+			t.Run(fmt.Sprintf("%s/direction=%t", tc.name, direction), func(t *testing.T) {
+				bodyJSON, _ := json.Marshal(tc.body)
+				var m monitorChatMessage
+				if err := json.Unmarshal([]byte(`{"author_is_human":true,"body":`+string(bodyJSON)+`,"reply_to_seq":17,"reply_to":`+tc.quote+`}`), &m); err != nil {
+					t.Fatal(err)
+				}
+				if m.ReplyToSeq == nil || *m.ReplyToSeq != 17 {
+					t.Fatal("reply_to_seq did not decode")
+				}
+				m.Conversation = 9
+				line := formatChatLine(m, direction)
+				body := strings.Join(strings.Fields(tc.body), " ")
+				if len([]rune(body)) > 2000 {
+					body = string([]rune(body)[:2000]) + "… (pad chat show 9)"
+				}
+				if !strings.HasSuffix(line, ": "+body+tc.suffix) && !strings.HasSuffix(line, " — "+body+tc.suffix) {
+					t.Fatalf("line has wrong body/quote suffix: %q", line)
+				}
+				if strings.ContainsAny(line, "\n\r\t") || !utf8.ValidString(line) {
+					t.Fatalf("not a single valid UTF-8 line: %q", line)
+				}
+			})
+		}
+	}
+}
+
 func TestChatFramingByAuthor(t *testing.T) {
 	chatSessionEnv(t)
 	cli.WriteChatDirection()
@@ -226,7 +266,7 @@ func TestMonitorChatUsesOwnCredentialNotEventBody(t *testing.T) {
 		if r.URL.Query().Get("after_seq") != "6" || r.URL.Query().Get("limit") != "1" {
 			t.Error(r.URL)
 		}
-		fmt.Fprint(w, `{"messages":[{"id":"m","seq":7,"author_is_human":true,"body":"OWN-CREDENTIAL-BODY"}]}`)
+		fmt.Fprint(w, `{"messages":[{"id":"m","seq":7,"author_is_human":true,"body":"OWN-CREDENTIAL-BODY","reply_to_seq":3,"reply_to":{"seq":3,"author_agent_key":"rook","author_is_human":false,"excerpt":"fetched quote","deleted":false}}]}`)
 	}))
 	defer h.Close()
 	client := cli.NewClientFromURLWithAgentName(h.URL, "rook")
@@ -236,7 +276,7 @@ func TestMonitorChatUsesOwnCredentialNotEventBody(t *testing.T) {
 	c := newMonitorChat(sink, newRecentSet(256, 10*60*1e9))
 	c.summary(&out)
 	c.handle(&out, watchStreamPayload{Conversation: 1, MessageID: "m", MessageSeq: 7, Excerpt: "EVENT-SECRET"})
-	if gotAuth != "Bearer monitor-token" || gotAgent != "rook" || acks != 1 || !strings.Contains(out.String(), "OWN-CREDENTIAL-BODY") || strings.Contains(out.String(), "EVENT-SECRET") {
+	if gotAuth != "Bearer monitor-token" || gotAgent != "rook" || acks != 1 || !strings.Contains(out.String(), "OWN-CREDENTIAL-BODY") || !strings.Contains(out.String(), ` (replying to #3: "fetched quote")`) || strings.Contains(out.String(), "EVENT-SECRET") {
 		t.Fatal(gotAuth, gotAgent, out.String())
 	}
 }

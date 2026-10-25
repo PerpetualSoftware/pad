@@ -20,14 +20,16 @@ type chatSink interface {
 }
 
 type monitorChatMessage struct {
-	ID             string `json:"id"`
-	Seq            int64  `json:"seq"`
-	AuthorAgentKey string `json:"author_agent_key"`
-	AuthorIsHuman  bool   `json:"author_is_human"`
-	Body           string `json:"body"`
-	Deleted        bool   `json:"deleted"`
-	Mine           bool   `json:"mine"`
-	Conversation   int    `json:"-"`
+	ID             string                    `json:"id"`
+	Seq            int64                     `json:"seq"`
+	AuthorAgentKey string                    `json:"author_agent_key"`
+	AuthorIsHuman  bool                      `json:"author_is_human"`
+	Body           string                    `json:"body"`
+	Deleted        bool                      `json:"deleted"`
+	Mine           bool                      `json:"mine"`
+	ReplyToSeq     *int64                    `json:"reply_to_seq"`
+	ReplyTo        *models.ConversationQuote `json:"reply_to"`
+	Conversation   int                       `json:"-"`
 }
 
 type httpChatSink struct{ client *cli.Client }
@@ -95,6 +97,10 @@ func formatChatLine(m monitorChatMessage, direction bool) string {
 	runes := []rune(body)
 	if len(runes) > 2000 {
 		body = string(runes[:2000]) + "… (" + pointer + ")"
+	}
+	if m.ReplyTo != nil && !m.ReplyTo.Deleted {
+		excerpt := strings.Join(strings.Fields(m.ReplyTo.Excerpt), " ")
+		body += fmt.Sprintf(" (replying to #%d: \"%s\")", m.ReplyTo.Seq, excerpt)
 	}
 	name := m.AuthorAgentKey
 	if m.AuthorIsHuman {
