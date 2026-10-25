@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"sort"
 	"strings"
 
 	"github.com/PerpetualSoftware/pad/internal/cmdhelp"
+	"github.com/PerpetualSoftware/pad/internal/config"
 )
 
 // Dispatcher executes a pad CLI command on behalf of a tool call. It
@@ -143,6 +145,7 @@ func (d *ExecDispatcher) Dispatch(ctx context.Context, cmdPath []string, cliArgs
 	}
 	full := append(append([]string{}, cmdPath...), cliArgs...)
 	cmd := exec.CommandContext(ctx, d.Binary, full...)
+	cmd.Env = dispatchChildEnv()
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -159,6 +162,15 @@ func (d *ExecDispatcher) Dispatch(ctx context.Context, cmdPath []string, cliArgs
 	// pad commands; clients that parse structured content (Claude
 	// Desktop, Cursor) get richer rendering.
 	return packageJSONResult(out), nil
+}
+
+// dispatchChildEnv is the environment of every `pad` child this dispatcher
+// execs: the parent's, with the relative data-dir warning silenced
+// (config.InternalNoDataDirWarningEnv). A failed child's stderr becomes the
+// agent-facing error text, and `pad mcp serve` has already warned once on
+// its own stderr (BUG-4066 r1).
+func dispatchChildEnv() []string {
+	return append(os.Environ(), config.InternalNoDataDirWarningEnv+"=1")
 }
 
 // packageJSONResult converts a CLI stdout string into an MCP tool
@@ -313,6 +325,7 @@ func (d *ExecDispatcher) ListWorkspaces(ctx context.Context) ([]WorkspaceHint, e
 	args := []string{"workspace", "list", "--format", "json"}
 	args = append(args, d.RootArgs...)
 	cmd := exec.CommandContext(ctx, d.Binary, args...)
+	cmd.Env = dispatchChildEnv()
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

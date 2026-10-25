@@ -95,6 +95,20 @@ func main() {
 			f.Close()
 		}
 	}
+	// STUB_MARKER_PROBE=<path> with STUB_PROBE_OUT=<file>: record whether
+	// <path> exists as this server starts (BUG-4066 r2). Set only in the
+	// script's environment, so the one line is the RESTART's, taken inside
+	// the stop-to-restart window the refresh marker covers.
+	if probe, out := os.Getenv("STUB_MARKER_PROBE"), os.Getenv("STUB_PROBE_OUT"); probe != "" && out != "" {
+		line := "present"
+		if _, err := os.Stat(probe); err != nil {
+			line = "absent"
+		}
+		if f, err := os.OpenFile(out, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+			fmt.Fprintln(f, line)
+			f.Close()
+		}
+	}
 	// STUB_STRAY_ON_START=1: this start is beaten to the port by a stray
 	// (BUG-3215, the post-probe check). The stray binds first; this process
 	// then fails its own bind and exits, as the refresh's restart did on
@@ -131,6 +145,12 @@ func main() {
 	// (TASK-3146). A real pad has no such route, and the script never asks.
 	mux.HandleFunc("/stub/pid", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, os.Getpid())
+	})
+	// The per-test token (BUG-4066 harness guard): the guard only treats a
+	// LAN-answering port as this test's own stub when it echoes the random
+	// STUB_TOKEN the test generated. A real pad has no such route.
+	mux.HandleFunc("/stub/token", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, os.Getenv("STUB_TOKEN"))
 	})
 	// A port that cannot be bound exits the process, as ListenAndServe did.
 	ln, err := net.Listen("tcp", net.JoinHostPort(host, port))

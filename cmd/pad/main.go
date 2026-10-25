@@ -55,9 +55,21 @@ func main() {
 		return
 	}
 
+	silenceWarningsForCompletion(os.Args[1:])
 	if err := newRootCmd().Execute(); err != nil {
 		writeRootStructuredError(os.Stderr, err)
 		os.Exit(1)
+	}
+}
+
+// silenceWarningsForCompletion routes the relative data-dir warning nowhere
+// when this process is cobra's hidden shell-completion command, so no
+// completion function, present or future, prints it in the middle of a Tab
+// (BUG-4066 r2). NARROW on purpose: only args[0] being __complete or
+// __completeNoDesc; every other command still warns.
+func silenceWarningsForCompletion(args []string) {
+	if len(args) > 0 && (args[0] == cobra.ShellCompRequestCmd || args[0] == cobra.ShellCompNoDescRequestCmd) {
+		config.SetRelativeDataDirWarningSink(func(string) {})
 	}
 }
 
@@ -202,6 +214,8 @@ func newRootCmd() *cobra.Command {
 	rootCmd.SetHelpCommand(helpCmd())
 
 	rootCmd.RegisterFlagCompletionFunc("workspace", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		// No relative data-dir warning here: main() silences it for every
+		// completion request (silenceWarningsForCompletion, BUG-4066 r2).
 		cfg, err := config.Load()
 		if err != nil || !cfg.IsConfigured() {
 			return nil, cobra.ShellCompDirectiveNoFileComp

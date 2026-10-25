@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/config"
@@ -76,6 +77,22 @@ func awaitServing(cfg *config.Config) error {
 // did not happen.
 var spawnServer = startBackgroundServer
 
+// serverStartCommand is the auto-started server's command. Its env is this
+// process's, minus config.InternalNoDataDirWarningEnv: an MCP tool-call child
+// carries that variable so its own warning stays out of an agent-facing error,
+// and it is often the process that auto-starts the server, which is
+// long-lived and must still log the warning (BUG-4066 r3 item 2).
+func serverStartCommand(exePath string) *exec.Cmd {
+	cmd := exec.Command(exePath, "server", "start")
+	prefix := config.InternalNoDataDirWarningEnv + "="
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, prefix) {
+			cmd.Env = append(cmd.Env, kv)
+		}
+	}
+	return cmd
+}
+
 func startBackgroundServer(cfg *config.Config) error {
 	// Start server as background process
 	exePath, err := os.Executable()
@@ -83,7 +100,7 @@ func startBackgroundServer(cfg *config.Config) error {
 		return fmt.Errorf("find executable: %w", err)
 	}
 
-	cmd := exec.Command(exePath, "server", "start")
+	cmd := serverStartCommand(exePath)
 	setSysProcAttr(cmd)
 
 	// Redirect stdout/stderr to log file

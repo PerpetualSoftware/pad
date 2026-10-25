@@ -92,6 +92,68 @@ data_dir() {
 	fi
 }
 
+# anchored_data_dir is data_dir with a RELATIVE value anchored where the
+# restarted server resolves it: config.Load takes the value verbatim, so the
+# server reads it against its own cwd. The restart runs in SERVER_CWD (the cd
+# in section 5) or, before one is captured or when none is, here
+# (BUG-4064 r2 for the log and the pid file; BUG-4066 for the refresh marker
+# and config_value, so every path the script touches is resolved one way).
+anchored_data_dir() {
+	local dir
+	dir="$(data_dir)"
+	case "$dir" in
+	/*) printf '%s' "$dir" ;;
+	*) printf '%s' "${SERVER_CWD:-$PWD}/$dir" ;;
+	esac
+}
+
+# normalize_path collapses "." and ".." segments of an absolute path in pure
+# shell (no realpath -m, which macOS lacks; no arrays, for bash 3.2), so the
+# warning names a clean path for "./x/../data".
+normalize_path() {
+	local rest="$1/" seg out=""
+	while [ -n "$rest" ]; do
+		seg="${rest%%/*}"
+		rest="${rest#*/}"
+		case "$seg" in
+		"" | .) ;;
+		..) out="${out%/*}" ;;
+		*) out="$out/$seg" ;;
+		esac
+	done
+	printf '%s' "${out:-/}"
+}
+
+# warn_relative_data_dir prints config.Load's BUG-4066 warning for a relative
+# PAD_DATA_DIR or PAD_DB_PATH (the value still resolves; a future release
+# refuses it, TASK-4072). It names the DATA DIR the server and this refresh
+# actually use (the directory of a PAD_DB_PATH, not the db file), anchored
+# like anchored_data_dir, so it runs once SERVER_CWD is captured (BUG-4066
+# r1), and still before the marker or the stop.
+warn_relative_data_dir() {
+	local name value dir what base
+	if [ -n "${PAD_DB_PATH:-}" ]; then
+		name=PAD_DB_PATH value="$PAD_DB_PATH" dir="$(dirname "$PAD_DB_PATH")" what="the data dir"
+	elif [ -n "${PAD_DATA_DIR:-}" ]; then
+		name=PAD_DATA_DIR value="$PAD_DATA_DIR" dir="$PAD_DATA_DIR" what="it"
+	else
+		return 0
+	fi
+	case "$dir" in /*) return 0 ;; esac
+	base="${SERVER_CWD:-$PWD}"
+	# ONE line, like config.Load's: phase 1's contract is one warning per
+	# process, so the shell's-directory note and the ~ hint ride in it
+	# (BUG-4066 r4 item 1).
+	local msg resolved
+	resolved="$(normalize_path "$base/$dir")"
+	if [ -n "${SERVER_CWD:-}" ] && [ "$SERVER_CWD" != "$PWD" ]; then
+		resolved="$resolved (the server's directory; from this shell's directory it would be $(normalize_path "$PWD/$dir"))"
+	fi
+	msg="Warning: $name is relative ($value); this process resolves $what to $resolved. A CLI and a server in different directories will use different data. Set an absolute path; relative values will be refused in a future release."
+	case "$value" in "~"*) msg="$msg The leading ~ was not expanded by your shell, so it names a directory literally called ~." ;; esac
+	echo "$msg" >&2
+}
+
 # config_value prints a top-level key from the pad config file, or nothing.
 #
 # The file is FLAT TOML (internal/config/config.go: Host, Port, Mode, ... are
@@ -105,7 +167,7 @@ data_dir() {
 # closing it is a grep and the cost of leaving it is a permanent false alarm.
 config_value() {
 	local key="$1" path
-	path="$(data_dir)/config.toml"
+	path="$(anchored_data_dir)/config.toml"
 	[ -r "$path" ] || return 1
 	# Strip an inline comment before taking the value: `port = 8080 # dev`
 	# is valid TOML and the Go parser accepts it, so a regex that swallows
@@ -467,6 +529,9 @@ if [ -n "$TARGET_PID" ]; then
 	# directory whose NAME ends in one is not captured exactly.
 	note "captured server cwd: $SERVER_CWD"
 fi
+# BUG-4066: after the capture, so the warning names the anchored path; still
+# before the marker and the stop.
+warn_relative_data_dir
 
 # --- 2. SNAPSHOT the artifact, then check the snapshot ------------------------
 #
@@ -560,11 +625,7 @@ PORT="${PORT:-7777}"
 # its own cwd. The restart runs in SERVER_CWD (the cd in section 5) or, when
 # none was captured, here. Proving the file relative to THIS cwd instead
 # would check one file and then open another after the stop.
-DATA_DIR="$(data_dir)"
-case "$DATA_DIR" in
-/*) ;;
-*) DATA_DIR="${SERVER_CWD:-$PWD}/$DATA_DIR" ;;
-esac
+DATA_DIR="$(anchored_data_dir)"
 LOG_FILE="$DATA_DIR/logs/server.log"
 mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null &&
 	{ : >>"$LOG_FILE"; } 2>/dev/null ||
@@ -593,7 +654,9 @@ LEGACY_LOG="$HOME/.pad/server.log"
 # waiting CLI returns the moment the server answers; the deadline only
 # decides how long a CLI waits on a refresh that is failing, after which it
 # errors naming this pid rather than spawning.
-REFRESH_MARKER="$(data_dir)/refresh.lock"
+# Anchored like the log (BUG-4066): written here and removed by cleanup()
+# after the cd into SERVER_CWD, so both must name the same file.
+REFRESH_MARKER="$DATA_DIR/refresh.lock"
 MARKER_WRITTEN=""
 probe_budget="$PROBE_TIMEOUT"
 numeric "$probe_budget" || probe_budget=20

@@ -276,6 +276,10 @@ pad watch --stream --for-session
 				if len(args) > 0 {
 					return fmt.Errorf("--stream --for-session does not take a ref argument")
 				}
+				// BUG-4066: the relative data-dir warning never reaches the
+				// plugin monitor; this process is read by a machine, line by
+				// line, and every other pad command still warns the human.
+				config.SetRelativeDataDirWarningSink(func(string) {})
 				return runWatchMonitor(cmd.Context())
 			}
 			if len(args) != 1 {
