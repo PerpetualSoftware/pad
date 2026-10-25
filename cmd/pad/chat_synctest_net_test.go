@@ -63,10 +63,17 @@ func (m *memNet) dial(ctx context.Context, _, _ string) (net.Conn, error) {
 // Every client on the monitor's path uses http.DefaultTransport (the stream's
 // &http.Client{} and cli.newClientFromURL's clients), so the bubble swaps it
 // for a memNet transport and restores it in Cleanup. A process-global swap is
-// safe only in a test that never calls t.Parallel: Go runs a package's
-// parallel tests after its sequential top-level tests have returned.
+// safe only from a sequential top-level test with no parallel subtests (a
+// caller that uses t.Setenv, as the monitor tests do, cannot be parallel). No
+// other test can run during it: a top-level t.Parallel test is resumed only
+// after every sequential top-level test has returned, and a parallel subtest
+// finishes inside its own parent, which returns before the next top-level
+// test starts. The helper enforces the precondition with t.Setenv.
 func runMonitorInBubble(t *testing.T, timeout time.Duration, handler http.Handler, setup func(ctx context.Context, cancel context.CancelFunc, serverURL string) error) (out string, elapsed time.Duration, runErr error) {
 	t.Helper()
+	// Enforces the no-parallel precondition above: t.Setenv panics in a
+	// parallel test (or one with a parallel ancestor).
+	t.Setenv("PAD_TEST_DEFAULT_TRANSPORT_SWAPPED", "1")
 	// os/signal starts its process-wide watcher goroutine on the first
 	// Notify. Started inside a bubble, that goroutine would belong to it
 	// and block forever in a receive that is not durable, so the bubble
