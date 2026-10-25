@@ -2278,6 +2278,12 @@
 			return;
 		}
 
+		if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+			const region = document.activeElement?.closest<HTMLElement>('.attachment-table-scroll');
+			// Native horizontal scrolling owns both arrows, even at a scroll edge.
+			if (region && el.contains(region) && region.scrollWidth > region.clientWidth) return;
+		}
+
 		if (e.key === 'ArrowLeft' && hasMultiple) {
 			e.preventDefault();
 			prev();

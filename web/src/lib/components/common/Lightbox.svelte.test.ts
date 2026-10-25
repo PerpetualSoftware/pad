@@ -5242,6 +5242,39 @@ describe('Lightbox — the text arm', () => {
 		}
 	});
 
+	it('U1: reserves Left/Right for a focused wide table, including edges, and pages otherwise', async () => {
+		mountViewer({ images: [
+			{ ...image(IMG_A, 'first.csv', 'text/csv'), size_bytes: 128 },
+			{ ...image(IMG_B, 'second.csv', 'text/csv'), size_bytes: 128 }
+		] });
+		await settleAsync();
+		const region = root().querySelector<HTMLElement>('.attachment-table-scroll')!;
+		Object.defineProperty(region, 'scrollWidth', { configurable: true, value: 2000 });
+		Object.defineProperty(region, 'clientWidth', { value: 500 });
+		region.focus();
+		for (const key of ['ArrowRight', 'ArrowLeft']) {
+			expect(press(key)).toBe(false);
+			expect(region.getAttribute('aria-label')).toBe('first.csv table');
+			expect(root().querySelector('.attachment-table-scroll')).toBe(region);
+		}
+		region.scrollLeft = 1500;
+		expect(press('ArrowRight')).toBe(false);
+		expect(root().querySelector('.attachment-table-scroll')).toBe(region);
+
+		// A table without horizontal overflow keeps gallery navigation.
+		Object.defineProperty(region, 'scrollWidth', { configurable: true, value: 500 });
+		expect(press('ArrowRight')).toBe(true);
+		await settleAsync();
+		const second = root().querySelector<HTMLElement>('.attachment-table-scroll')!;
+		expect(second.getAttribute('aria-label')).toBe('second.csv table');
+		Object.defineProperty(second, 'scrollWidth', { value: 2000 });
+		Object.defineProperty(second, 'clientWidth', { value: 500 });
+		closeButton().focus();
+		expect(press('ArrowRight')).toBe(true);
+		await settleAsync();
+		expect(root().querySelector('.attachment-table-scroll')?.getAttribute('aria-label')).toBe('first.csv table');
+	});
+
 	it('T2: exposes one focusable, labelled table scroll region', async () => {
 		mountViewer({ images: [{ ...image(IMG_A, 'fallback', 'text/csv'), filename: 'report.csv', size_bytes: 128 }] });
 		await settleAsync();
