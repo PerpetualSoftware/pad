@@ -186,6 +186,19 @@ describe('chatInbox (TASK-4044)', () => {
 		expect(inbox.loaded).toBe(false);
 	});
 
+	it('an answer that outlives its identity fence is dropped even before the change is announced', async () => {
+		// The fence (authStore.identityFence) flips with the epoch; the listener
+		// that bumps the seq may run later. The answer must not land in between.
+		let resolveOld!: (v: unknown) => void;
+		h.list.mockImplementationOnce(() => new Promise((r) => (resolveOld = r)));
+		const inFlight = inbox.load();
+		h.state.epoch++;
+		resolveOld(listResp(9));
+		await inFlight;
+		expect(inbox.conversations).toEqual([]);
+		expect(inbox.loaded).toBe(false);
+	});
+
 	it('does not fetch when signed out', async () => {
 		h.state.authenticated = false;
 		await inbox.load();
