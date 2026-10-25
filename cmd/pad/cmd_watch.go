@@ -473,6 +473,7 @@ func runWatchMonitor(ctx context.Context) error {
 	var lastEventID string
 	attempt := 0
 	chat := newMonitorChat(nil, seenChat)
+	ensureDM := newMonitorEnsureDM(os.Stderr)
 
 	for {
 		if sigCtx.Err() != nil {
@@ -550,6 +551,10 @@ func runWatchMonitor(ctx context.Context) error {
 				if identityErr != nil || user.ID == "" {
 					return monitorChatIdentity{}, nil
 				}
+				ensureDM.start(sigCtx, req.Header.Get("X-Pad-Agent"), func(ctx context.Context, agent string) error {
+					_, err := client.EnsureChatDMContext(ctx, agent)
+					return err
+				})
 				baseURL := req.URL.Scheme + "://" + req.URL.Host + strings.TrimSuffix(req.URL.EscapedPath(), "/api/v1/events/stream")
 				return monitorChatIdentity{baseURL, user.ID}, httpChatSink{client: client}
 			}

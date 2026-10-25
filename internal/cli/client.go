@@ -3080,6 +3080,10 @@ func (c *Client) getWithHeaderContext(ctx context.Context, path string, result i
 }
 
 func (c *Client) post(path string, body interface{}, result interface{}) error {
+	return c.postContext(context.Background(), path, body, result)
+}
+
+func (c *Client) postContext(ctx context.Context, path string, body interface{}, result interface{}) error {
 	var bodyReader io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)
@@ -3093,7 +3097,7 @@ func (c *Client) post(path string, body interface{}, result interface{}) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.httpClient.Do(req.WithContext(ctx))
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
 	}
@@ -3458,8 +3462,13 @@ func (c *Client) ChatConversationContext(ctx context.Context, number int) (json.
 }
 
 func (c *Client) EnsureChatDM(agent string) (json.RawMessage, error) {
+	return c.EnsureChatDMContext(context.Background(), agent)
+}
+
+// EnsureChatDMContext lets the monitor cancel its background DM ensure on exit.
+func (c *Client) EnsureChatDMContext(ctx context.Context, agent string) (json.RawMessage, error) {
 	var result json.RawMessage
-	err := c.post("/me/conversations", map[string]string{"agent_key": agent}, &result)
+	err := c.postContext(ctx, "/me/conversations", map[string]string{"agent_key": agent}, &result)
 	return result, err
 }
 
