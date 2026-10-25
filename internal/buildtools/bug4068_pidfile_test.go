@@ -178,10 +178,12 @@ func reapedPid(t *testing.T) int {
 	return cmd.Process.Pid
 }
 
-// The reader accepts no more than the SHAPE internal/cli/pidfile.go writes
-// (BUG-4068 r1 items 1 and 3, r2 items 1 and 2): MarshalIndent's lines or a
-// bare integer, one pid, at most 4194304. It is a line-shape check, not full
-// JSON validation. Anything else does not parse, and the file is kept.
+// The reader checks lines against the SHAPE internal/cli/pidfile.go writes
+// (BUG-4068 r1 items 1 and 3, r2 items 1 and 2): braces on their own lines,
+// each inner line STARTING like a two-space-indent quoted key (the rest of
+// the line is unchecked), one pid, at most 4194304; or a bare integer. It is a
+// line-shape check, not full JSON validation. The REFUSED rows do not parse,
+// and the file is kept.
 func TestInstallRefresh_PIDFile_ReadsOnlyWhatPadWrites(t *testing.T) {
 	for _, tc := range []struct{ name, body, want string }{
 		{"MarshalIndent", jsonRecord(4242, "/x/pad"), "4242"},

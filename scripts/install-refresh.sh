@@ -742,13 +742,14 @@ STAGED=""
 # parse. A kept stale file is the safe failure: `pad server stop` refuses a
 # record it cannot prove (BUG-2969).
 pid_file_pid() {
-	# The pid in pad.pid, read no more loosely than the SHAPE that
+	# The pid in pad.pid, read by checking each line against the SHAPE that
 	# internal/cli/pidfile.go writes (BUG-4068 r1, r2). This is a line-shape
 	# check, not full JSON validation:
 	#   - the MarshalIndent record: first non-blank line exactly "{", last
-	#     exactly "}", every line between a two-space-indent key line, exactly
-	#     one of them "  \"pid\": N" (with or without a trailing comma), and
-	#     "pid" nowhere else in the file;
+	#     exactly "}", and each line between must START like a two-space-indent
+	#     quoted key ('  "' and a key character); the rest of such a line is
+	#     unchecked. Exactly one of them is "  \"pid\": N" (with or without a
+	#     trailing comma), and "pid" appears nowhere else in the file;
 	#   - or the legacy bare integer: one non-blank line, surrounding space only.
 	# A "\r" is dropped only at a line end. The pid is at most 10 digits,
 	# checked before any arithmetic, and at most 4194304 (Linux's largest
