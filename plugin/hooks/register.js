@@ -1282,7 +1282,6 @@ async function pollSeen($) {
     }
     const first = seenSize < 0
     if (size === seenSize) return
-    if (size < seenSize) seenChars = 0 // rotated (or removed): read the new log from its start
     seenSize = size
     if (!size) { seenChars = 0; return }
     let text
@@ -1291,7 +1290,7 @@ async function pollSeen($) {
     } catch {
       return
     }
-    if (text.length < seenChars) seenChars = 0
+    if (text.length < seenChars) seenChars = 0 // rotated: read the new log from its start
     const end = text.lastIndexOf('\n') + 1 // a line still being written waits for its newline
     if (end <= seenChars) return
     const fresh = text.slice(seenChars, end).split('\n').filter((l) => l.trim())
