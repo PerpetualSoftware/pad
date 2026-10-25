@@ -51,43 +51,51 @@ func TestBUG4066_RefreshMarkerIsAnchoredAndCleanedUp(t *testing.T) {
 
 // The script warns about a relative data dir BEFORE anything is stopped: a
 // refusal that happens before the stop (the unwritable-log check) still
-// carries the warning.
+// carries the warning. It names the SERVER's anchored, cleaned path, not the
+// caller's (BUG-4066 r1: the caller's cwd here differs from the server's).
 func TestBUG4066_ScriptWarnsAboutARelativeDataDirBeforeStopping(t *testing.T) {
-	requireScriptDeps(t)
-	home, dir := t.TempDir(), t.TempDir()
-	serverDir := realDir(t, t.TempDir())
-	name := uniqueName(t)
-	defer killStub(t, name)
-	port := freePort(t)
-	const commit = "abc1234"
+	for _, value := range []string{"data", "./data"} {
+		t.Run(value, func(t *testing.T) {
+			requireScriptDeps(t)
+			home, dir := t.TempDir(), t.TempDir()
+			serverDir, callerDir := realDir(t, t.TempDir()), realDir(t, t.TempDir())
+			name := uniqueName(t)
+			defer killStub(t, name)
+			port := freePort(t)
+			const commit = "abc1234"
 
-	built := installStub(t, dir, name)
-	installed := filepath.Join(home, "bin", name)
-	if err := os.MkdirAll(filepath.Dir(installed), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	e := stubEnv{version: "pad version dev (" + commit + " x)", healthy: "1",
-		argvLog: filepath.Join(home, "argv.log"), port: port, home: home, dataDir: "data"}
-	// A directory where the log file goes, under the server's anchored data dir.
-	if err := os.MkdirAll(filepath.Join(serverDir, "data", "logs", "server.log"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	pre := exec.Command(built, "server", "start", "--host", "127.0.0.1")
-	pre.Env = e.env()
-	pre.Dir = serverDir
-	startPreServer(t, pre, "127.0.0.1", port)
-	prePid := strconv.Itoa(pre.Process.Pid)
+			built := installStub(t, dir, name)
+			installed := filepath.Join(home, "bin", name)
+			if err := os.MkdirAll(filepath.Dir(installed), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			e := stubEnv{version: "pad version dev (" + commit + " x)", healthy: "1",
+				argvLog: filepath.Join(home, "argv.log"), port: port, home: home, dataDir: value}
+			// A directory where the log file goes, under the server's anchored data dir.
+			if err := os.MkdirAll(filepath.Join(serverDir, "data", "logs", "server.log"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			pre := exec.Command(built, "server", "start", "--host", "127.0.0.1")
+			pre.Env = e.env()
+			pre.Dir = serverDir
+			startPreServer(t, pre, "127.0.0.1", port)
+			prePid := strconv.Itoa(pre.Process.Pid)
 
-	res := runScriptIn(t, e, serverDir, built, installed, commit)
-	if res.err == nil {
-		t.Fatalf("refresh succeeded with an unwritable log\nstdout=%s\nstderr=%s", res.stdout, res.stderr)
-	}
-	want := "PAD_DATA_DIR is relative (data); this process resolves it to " + filepath.Join(serverDir, "data") + "."
-	if !strings.Contains(res.stderr, want) {
-		t.Errorf("no relative-data-dir warning before the refusal; want %q in stderr=%s", want, res.stderr)
-	}
-	if got, err := pidAnswersAt(port); err != nil || got != prePid {
-		t.Fatalf("the running server did not survive: %q, %v; want %s", got, err, prePid)
+			res := runScriptIn(t, e, callerDir, built, installed, commit)
+			if res.err == nil {
+				t.Fatalf("refresh succeeded with an unwritable log\nstdout=%s\nstderr=%s", res.stdout, res.stderr)
+			}
+			want := "PAD_DATA_DIR is relative (" + value + "); this process resolves it to " + filepath.Join(serverDir, "data") + "."
+			if !strings.Contains(res.stderr, want) {
+				t.Errorf("the warning does not name the server's anchored path; want %q in stderr=%s", want, res.stderr)
+			}
+			if !strings.Contains(res.stderr, "from this shell's directory it would be "+filepath.Join(callerDir, "data")+".") {
+				t.Errorf("the warning does not name the caller's reading too; stderr=%s", res.stderr)
+			}
+			if got, err := pidAnswersAt(port); err != nil || got != prePid {
+				t.Fatalf("the running server did not survive: %q, %v; want %s", got, err, prePid)
+			}
+		})
 	}
 }
 

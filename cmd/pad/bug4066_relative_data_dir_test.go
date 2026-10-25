@@ -19,6 +19,14 @@ func TestMain_BUG4066Child(t *testing.T) {
 		root := newRootCmd()
 		root.SetArgs([]string{"watch", "--stream", "--for-session"})
 		_ = root.Execute()
+	case "mcp":
+		root := newRootCmd()
+		root.SetArgs([]string{"mcp", "serve"})
+		_ = root.Execute()
+	case "complete":
+		root := newRootCmd()
+		root.SetArgs([]string{"__complete", "item", "list", "--workspace", ""})
+		_ = root.Execute()
 	case "server":
 		root := newRootCmd()
 		root.SetArgs([]string{"server", "start", "--host", "127.0.0.1", "--port", os.Getenv("BUG4066_PORT")})
@@ -64,5 +72,23 @@ func TestBUG4066_ServerWarnsThroughSlog(t *testing.T) {
 	}
 	if n := strings.Count(out, "is relative"); n != 1 {
 		t.Fatalf("want one warning, got %d:\n%s", n, out)
+	}
+}
+
+// `pad mcp serve` never loads config, so it checks the data dir itself and
+// warns once on its own stderr (BUG-4066 r1, Q1). stdin is closed, so the
+// server sees EOF and returns.
+func TestBUG4066_MCPServeWarnsOnce(t *testing.T) {
+	out := runBUG4066Child(t, "mcp")
+	if n := strings.Count(out, "PAD_DATA_DIR is relative (data)"); n != 1 {
+		t.Fatalf("want exactly one warning from mcp serve, got %d:\n%s", n, out)
+	}
+}
+
+// Tab completion prints no warning in the middle of the user's line.
+func TestBUG4066_CompletionDoesNotWarn(t *testing.T) {
+	out := runBUG4066Child(t, "complete")
+	if strings.Contains(out, "is relative") {
+		t.Fatalf("shell completion printed the relative data-dir warning:\n%s", out)
 	}
 }

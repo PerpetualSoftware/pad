@@ -329,6 +329,21 @@ func envDataDir() (dataDir, dbPath string, set bool) {
 	return dataDir, dbPath, set
 }
 
+// InternalNoDataDirWarningEnv, set to "1", silences the relative data-dir
+// warning in a process. It is set ONLY by the MCP stdio dispatcher on the
+// `pad` children it execs per tool call: their stderr is folded into the
+// agent-facing error text, and `pad mcp serve` has already warned once on its
+// own stderr. It is deliberately NOT a user setting and is not documented
+// for users, so the deprecation cannot be silenced before phase 2
+// (TASK-4072; lead ruling on BUG-4066 r1).
+const InternalNoDataDirWarningEnv = "PAD_INTERNAL_NO_DATA_DIR_WARNING"
+
+// WarnOnRelativeDataDir runs the relative data-dir check without loading the
+// config, for a process that never calls Load (`pad mcp serve`).
+func WarnOnRelativeDataDir() {
+	envDataDir()
+}
+
 var (
 	relativeDataDirMu     sync.Mutex
 	relativeDataDirWarned bool
@@ -355,6 +370,9 @@ func warnRelativeDataDir(name, value string) {
 		return
 	}
 	relativeDataDirWarned = true
+	if os.Getenv(InternalNoDataDirWarningEnv) == "1" {
+		return
+	}
 	abs, err := filepath.Abs(value)
 	if err != nil {
 		abs = value

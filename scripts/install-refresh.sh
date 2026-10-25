@@ -109,9 +109,11 @@ anchored_data_dir() {
 
 # warn_relative_data_dir prints config.Load's BUG-4066 warning for a relative
 # PAD_DATA_DIR or PAD_DB_PATH (the value still resolves; a future release
-# refuses it, TASK-4072). It runs before anything is read or stopped.
+# refuses it, TASK-4072). It names the path the server and this refresh
+# actually use, anchored like anchored_data_dir, so it runs once SERVER_CWD
+# is captured (BUG-4066 r1), and still before the marker or the stop.
 warn_relative_data_dir() {
-	local name value dir
+	local name value dir rel base
 	if [ -n "${PAD_DB_PATH:-}" ]; then
 		name=PAD_DB_PATH value="$PAD_DB_PATH" dir="$(dirname "$PAD_DB_PATH")"
 	elif [ -n "${PAD_DATA_DIR:-}" ]; then
@@ -120,7 +122,13 @@ warn_relative_data_dir() {
 		return 0
 	fi
 	case "$dir" in /*) return 0 ;; esac
-	echo "Warning: $name is relative ($value); this process resolves it to $PWD/$value. A CLI and a server in different directories will use different data. Set an absolute path; relative values will be refused in a future release." >&2
+	rel="$value"
+	while [ "${rel#./}" != "$rel" ]; do rel="${rel#./}"; done
+	base="${SERVER_CWD:-$PWD}"
+	echo "Warning: $name is relative ($value); this process resolves it to $base/$rel. A CLI and a server in different directories will use different data. Set an absolute path; relative values will be refused in a future release." >&2
+	if [ -n "${SERVER_CWD:-}" ] && [ "$SERVER_CWD" != "$PWD" ]; then
+		echo "Warning: that is the server's directory; from this shell's directory it would be $PWD/$rel." >&2
+	fi
 	case "$value" in "~"*) echo "Warning: the leading ~ in $name was not expanded by your shell, so it names a directory literally called ~." >&2 ;; esac
 }
 
@@ -334,7 +342,6 @@ fi
 # The listener is read with `ss` (Linux) or `lsof` (macOS). Where neither can
 # see listeners, only the unambiguous one-server case proceeds.
 numeric() { case "$1" in '' | *[!0-9]*) return 1 ;; *) return 0 ;; esac; }
-warn_relative_data_dir
 TARGET_PORT=""
 for candidate in "${PAD_PORT:-}" "$(config_value port || true)"; do
 	if numeric "$candidate"; then
@@ -500,6 +507,9 @@ if [ -n "$TARGET_PID" ]; then
 	# directory whose NAME ends in one is not captured exactly.
 	note "captured server cwd: $SERVER_CWD"
 fi
+# BUG-4066: after the capture, so the warning names the anchored path; still
+# before the marker and the stop.
+warn_relative_data_dir
 
 # --- 2. SNAPSHOT the artifact, then check the snapshot ------------------------
 #

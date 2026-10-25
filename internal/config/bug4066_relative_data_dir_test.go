@@ -38,7 +38,7 @@ func TestBUG4066_RelativeDataDirWarnsNamingTheAbsolutePath(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("PAD_DB_PATH", "")
 	t.Setenv("PAD_DATA_DIR", "data")
-	a, b := t.TempDir(), t.TempDir()
+	a := t.TempDir()
 	resetRelativeDataDirWarning()
 
 	var cfgA *Config
@@ -57,13 +57,6 @@ func TestBUG4066_RelativeDataDirWarnsNamingTheAbsolutePath(t *testing.T) {
 		t.Fatalf("no warning naming %s; stderr = %q", absA, out)
 	}
 
-	// The split the warning is about: the same value from another cwd is
-	// another directory.
-	t.Chdir(b)
-	absB, _ := filepath.Abs("data")
-	if absA == absB {
-		t.Fatalf("the two cwds resolved the same directory %s; the test is not exercising the split", absA)
-	}
 }
 
 // The rest of the rule (4b4cb4ff): which variable is named, silence for an

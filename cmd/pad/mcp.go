@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/PerpetualSoftware/pad/internal/cmdhelp"
+	"github.com/PerpetualSoftware/pad/internal/config"
 	mcpserver "github.com/PerpetualSoftware/pad/internal/mcp"
 )
 
@@ -287,6 +288,10 @@ Shuts down cleanly on EOF, SIGINT, or SIGTERM.`,
 			if structuredOnly && textOnly {
 				return fmt.Errorf("--structured-only and --text-only are mutually exclusive")
 			}
+			// BUG-4066: this process never loads config, so it checks the data
+			// dir itself and warns once on its own stderr (the host's log). Its
+			// tool-call children are silenced (dispatchChildEnv).
+			config.WarnOnRelativeDataDir()
 			srv := mcpserver.NewServer(mcpserver.Options{
 				Version: fullVersion(),
 				Debug:   debug,

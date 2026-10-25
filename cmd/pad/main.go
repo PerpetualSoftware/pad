@@ -202,6 +202,8 @@ func newRootCmd() *cobra.Command {
 	rootCmd.SetHelpCommand(helpCmd())
 
 	rootCmd.RegisterFlagCompletionFunc("workspace", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		// BUG-4066: no relative data-dir warning in the middle of a Tab.
+		config.SetRelativeDataDirWarningSink(func(string) {})
 		cfg, err := config.Load()
 		if err != nil || !cfg.IsConfigured() {
 			return nil, cobra.ShellCompDirectiveNoFileComp
