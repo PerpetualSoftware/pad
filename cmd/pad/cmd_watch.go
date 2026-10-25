@@ -264,8 +264,9 @@ pad watch --stream --for-session
     ~/.pad/chat-seen/<harness pid>.log (0600), so the person at the agent's
     terminal can see it: the Claude Code plugin shows it above the prompt,
     and any other harness can tail the file. The pid is PAD_SESSION_PID,
-    else CLAUDE_PID; with neither set there is no log, and the first chat
-    line writes one stderr line saying so. The log holds 256 KiB, then moves
+    else CLAUDE_PID; with neither set, or with one that is not a pid,
+    there is no log, and the first chat line writes one stderr line saying
+    so. The log holds 256 KiB, then moves
     to <pid>.log.1; pad session prune removes both with the session.
 
     Silent on startup in three cases, and silence does not distinguish

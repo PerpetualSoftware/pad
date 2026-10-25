@@ -155,6 +155,13 @@ func (l *ChatSeenLog) Append(line string) {
 }
 
 func (l *ChatSeenLog) append(data string) error {
+	// A log removed under us (pad session prune --older-than on a record
+	// whose liveness was unknown) would otherwise take every later line
+	// into an unlinked file nobody can read: reopen at the path instead.
+	if l.f != nil && !l.stillAtPath() {
+		_ = l.f.Close()
+		l.f = nil
+	}
 	if l.f == nil {
 		if err := l.open(); err != nil {
 			return err
@@ -166,6 +173,10 @@ func (l *ChatSeenLog) append(data string) error {
 		// shown. The agent's stdout already carried them.
 		_ = l.f.Close()
 		l.f = nil
+		// Rename does not replace an existing file on Windows.
+		if err := os.Remove(l.path + ".1"); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("rotate %s: %w", l.path, err)
+		}
 		if err := os.Rename(l.path, l.path+".1"); err != nil {
 			return fmt.Errorf("rotate %s: %w", l.path, err)
 		}
@@ -181,11 +192,27 @@ func (l *ChatSeenLog) append(data string) error {
 	return nil
 }
 
+// stillAtPath reports whether the open file is still the one at l.path.
+func (l *ChatSeenLog) stillAtPath() bool {
+	open, err := l.f.Stat()
+	if err != nil {
+		return false
+	}
+	at, err := os.Lstat(l.path)
+	return err == nil && os.SameFile(open, at)
+}
+
 // open opens (creating) the log 0600 in a 0700 directory. It refuses a
-// symlink and anything but a regular file, and tightens a looser file.
+// symlinked directory, a symlink at the log's path and anything but a
+// regular file, and tightens a looser file.
 func (l *ChatSeenLog) open() error {
-	if err := ensurePrivateDir(filepath.Dir(l.path)); err != nil {
-		return fmt.Errorf("create %s: %w", filepath.Dir(l.path), err)
+	dir := filepath.Dir(l.path)
+	// ensurePrivateDir follows a symlink, and would chmod its target.
+	if info, err := os.Lstat(dir); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s is a symlink", dir)
+	}
+	if err := ensurePrivateDir(dir); err != nil {
+		return fmt.Errorf("create %s: %w", dir, err)
 	}
 	f, err := os.OpenFile(l.path, chatSeenOpenFlags, 0600)
 	if err != nil {

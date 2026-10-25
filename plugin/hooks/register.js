@@ -1224,13 +1224,30 @@ const SEEN_POLL_MS = 1000
 const SEEN_BAND_LINES = 3
 const SEEN_LINE_MAX = 300
 let seenTimer = null
+let seenStarting = false
+let seenEpoch = 0 // bumped by stopSeen: a start or poll still awaiting then changes nothing
 let seenPath = ''
-let seenSize = -1 // bytes at the last poll; -1 until the first, which only finds the end
+let seenSize = -1 // bytes at the last successful look; -1 until the first
 let seenChars = 0 // characters of the file already handled, up to its last newline
+let seenPrimed = false // the first look only finds the end
 let seenPolling = false
 let seenBand = [] // the lines the band shows
+let toastLines = [] // new lines not yet toasted: one toast per burst
+let toastTimer = null
+let toastStart = 0
 
-const clipLine = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s)
+// Chat text is another party's words, drawn on the person's terminal: drop
+// control characters (C0, DEL, C1, so no escape sequence reaches it) and the
+// bidirectional overrides that can make a line read as something else. The
+// log itself stays byte for byte what the agent got.
+const UNSAFE = /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g
+export const displayLine = (s) => String(s).replace(UNSAFE, '')
+
+// Cut by code points, so an emoji at the edge is never split in half.
+export function clipLine(s, n) {
+  const cps = Array.from(s)
+  return cps.length > n ? cps.slice(0, n - 1).join('') + '…' : s
+}
 
 // The person's own prompt, typed here or through Remote Control: what clears
 // the band. A prompt this mod relays, or a background task's, does not.
@@ -1252,57 +1269,99 @@ async function chatSeenPath($) {
 }
 
 async function startSeen($) {
-  if (seenTimer || seenPath) return
-  const path = await chatSeenPath($)
-  if (!path || seenTimer) return
-  seenPath = path
-  await pollSeen($)
-  seenTimer = $.clock.every(SEEN_POLL_MS, () => { pollSeen($).catch(() => {}) })
+  if (seenTimer || seenStarting) return
+  seenStarting = true
+  const epoch = seenEpoch
+  try {
+    const path = await chatSeenPath($)
+    if (!path || epoch !== seenEpoch) return
+    seenPath = path
+    await pollSeen($)
+    if (epoch !== seenEpoch) return
+    seenTimer = $.clock.every(SEEN_POLL_MS, () => { pollSeen($).catch(() => {}) })
+  } finally {
+    if (epoch === seenEpoch) seenStarting = false
+  }
 }
 
 function stopSeen() {
+  seenEpoch++
+  seenStarting = false
   if (seenTimer) seenTimer.cancel()
   seenTimer = null
+  if (toastTimer) toastTimer.cancel()
+  toastTimer = null
+  toastLines = []
+  toastStart = 0
   seenPath = ''
   seenSize = -1
   seenChars = 0
+  seenPrimed = false
   seenBand = []
 }
 
 async function pollSeen($) {
   if (seenPolling || !seenPath) return
+  const epoch = seenEpoch
+  const path = seenPath
   seenPolling = true
   try {
     let size = 0
     try {
-      const st = await $.fs.stat(seenPath)
+      const st = await $.fs.stat(path)
       size = st.kind === 'file' && !st.isLink ? st.size : 0
     } catch {
       size = 0 // no file yet: a first line will create it
     }
-    const first = seenSize < 0
-    if (size === seenSize) return
-    seenSize = size
-    if (!size) { seenChars = 0; return }
-    let text
-    try {
-      text = await $.fs.read(seenPath)
-    } catch {
+    if (epoch !== seenEpoch || size === seenSize) return
+    if (!size) {
+      seenSize = 0
+      seenChars = 0
+      seenPrimed = true
       return
     }
+    let text
+    try {
+      text = await $.fs.read(path)
+    } catch {
+      return // seenSize unchanged: the next poll tries again
+    }
+    if (epoch !== seenEpoch) return
+    seenSize = size
+    const priming = !seenPrimed
+    seenPrimed = true
     if (text.length < seenChars) seenChars = 0 // rotated: read the new log from its start
     const end = text.lastIndexOf('\n') + 1 // a line still being written waits for its newline
     if (end <= seenChars) return
-    const fresh = text.slice(seenChars, end).split('\n').filter((l) => l.trim())
+    const fresh = text.slice(seenChars, end).split('\n').map(displayLine).filter((l) => l.trim())
     seenChars = end
-    if (first || !fresh.length) return // the first poll only finds the end
+    if (priming || !fresh.length) return // the first look only finds the end
     seenBand = [...seenBand, ...fresh].slice(-SEEN_BAND_LINES).map((l) => clipLine(l, SEEN_LINE_MAX))
-    const last = clipLine(fresh[fresh.length - 1], 120)
-    $.ui.toast(fresh.length > 1 ? last + ' (+' + (fresh.length - 1) + ' more)' : last)
     redraw($)
+    await queueToast($, fresh, epoch)
   } finally {
-    seenPolling = false
+    if (epoch === seenEpoch) seenPolling = false
   }
+}
+
+// One toast per burst, on the same clock as the lines relayed to Claude: a
+// burst ends after WATCH_BURST_MS of quiet, or WATCH_BURST_MAX_MS after it began.
+async function queueToast($, lines, epoch) {
+  toastLines.push(...lines)
+  const now = await $.clock.now()
+  if (epoch !== seenEpoch) return
+  if (!toastStart) toastStart = now
+  if (toastTimer) toastTimer.cancel()
+  const wait = Math.max(0, Math.min(WATCH_BURST_MS, toastStart + WATCH_BURST_MAX_MS - now))
+  toastTimer = $.clock.after(wait, () => {
+    toastTimer = null
+    toastStart = 0
+    const burst = toastLines
+    toastLines = []
+    if (!burst.length) return
+    const last = clipLine(burst[burst.length - 1], 120)
+    $.ui.toast(burst.length > 1 ? last + ' (+' + (burst.length - 1) + ' more)' : last)
+  })
 }
 
 function drawSeenBand($, e) {

@@ -257,3 +257,50 @@ func TestPruneRemovesDeadSessionsChatSeen(t *testing.T) {
 		t.Fatalf("a live session's log must stay: %q", got)
 	}
 }
+
+// r1: ensurePrivateDir follows a symlink, so a symlinked chat-seen directory
+// would have its target chmodded and the log written into it.
+func TestChatSeenRefusesSymlinkedDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks")
+	}
+	t.Setenv("HOME", t.TempDir())
+	path, _ := ChatSeenPath(13)
+	target := t.TempDir()
+	if err := os.Chmod(target, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(filepath.Dir(path)), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Dir(path)); err != nil {
+		t.Fatal(err)
+	}
+	var warn bytes.Buffer
+	OpenChatSeen(chatSeenOwner(13), nil, &warn).Append("x")
+	if !strings.Contains(warn.String(), "is a symlink") {
+		t.Fatalf("warn %q", warn.String())
+	}
+	if info, _ := os.Stat(target); info.Mode().Perm() != 0755 {
+		t.Fatalf("the symlink's target was chmodded to %v", info.Mode().Perm())
+	}
+	if entries, _ := os.ReadDir(target); len(entries) != 0 {
+		t.Fatalf("wrote into the symlink's target: %v", entries)
+	}
+}
+
+// r1: a log removed under the writer (a prune of an unknown-liveness record)
+// is recreated at its path rather than written into an unlinked file.
+func TestChatSeenReopensAfterRemoval(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	var warn bytes.Buffer
+	l := OpenChatSeen(chatSeenOwner(14), nil, &warn)
+	l.Append("before")
+	if err := removeChatSeen(14); err != nil {
+		t.Fatal(err)
+	}
+	l.Append("after")
+	if got := readChatSeen(t, l.Path()); got != "after\n" || warn.Len() != 0 {
+		t.Fatalf("log %q warn %q", got, warn.String())
+	}
+}

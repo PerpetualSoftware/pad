@@ -1,5 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
-import { isPersonPrompt } from '../hooks/register.js'
+import { clipLine, displayLine, isPersonPrompt } from '../hooks/register.js'
 
 // TASK-4071: chat delivered to the agent is shown to the person too. `pad watch`
 // appends each chat line to ~/.pad/chat-seen/<harness pid>.log; the mod tails
@@ -16,8 +16,9 @@ const BAND = {
   props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 115, scroll: { offset: 0, bodyRows: 10 }, view: {} },
 } as const
 
-function stubs(on: any, initial: string | null = null) {
+function stubs(on: any, initial: string | null = null, opts: { failReads?: number; holdHome?: Promise<void> } = {}) {
   const file = { text: initial as string | null, isLink: false }
+  let failReads = opts.failReads || 0
   const toasts: string[] = []
   const statted: string[] = []
   on('tool.call', () => ({ result: { stdout: '', stderr: '' }, text: '' }))
@@ -33,7 +34,10 @@ function stubs(on: any, initial: string | null = null) {
   on('process.run', ($: any, e: any) => {
     const argv = e.argv.join(' ')
     if (argv.includes('$PPID')) return { value: { exitCode: 0, stdout: '4242\n', stderr: '' } }
-    if (argv.includes('$HOME')) return { value: { exitCode: 0, stdout: '/home/t', stderr: '' } }
+    if (argv.includes('$HOME')) {
+      const answer = { value: { exitCode: 0, stdout: '/home/t', stderr: '' } }
+      return opts.holdHome ? opts.holdHome.then(() => answer) : answer
+    }
     // pad session register / should-arm: unarmed, so no stream is spawned and
     // the reader is what is under test.
     return { value: { exitCode: 1, stdout: '', stderr: '' } }
@@ -45,6 +49,7 @@ function stubs(on: any, initial: string | null = null) {
   })
   on('fs.read', ($: any, e: any) => {
     if (e.path !== LOG || file.text === null) return { deny: 'ENOENT' }
+    if (failReads > 0) { failReads--; return { deny: 'EIO' } }
     return { value: file.text }
   })
   return { file, toasts, statted }
@@ -60,7 +65,16 @@ async function bandTexts($: any) {
   return found.map((t: any) => t.text).filter((t: string) => t !== 'engine')
 }
 
+// One poll, then the burst's quiet: a toast shows once a burst ends.
 async function poll(clock: any) {
+  await clock.advance(1000)
+  await settle()
+  await clock.advance(1500)
+  await settle()
+}
+
+// One poll inside a burst.
+async function pollQuick(clock: any) {
   await clock.advance(1000)
   await settle()
 }
@@ -98,10 +112,11 @@ test('a burst is one toast, and the band keeps the last three lines', async ($, 
   await usePad($)
   await settle()
   s.file.text += 'one\ntwo\n'
-  await poll(clock)
+  await pollQuick(clock)
+  expect(s.toasts).toEqual([])
   s.file.text += 'three\nfour\nfive\n'
   await poll(clock)
-  expect(s.toasts).toEqual(['two (+1 more)', 'five (+2 more)'])
+  expect(s.toasts).toEqual(['five (+4 more)'])
   const texts = await bandTexts($)
   expect(texts.filter((t: string) => !/Pad chat/.test(t))).toEqual(['three', 'four', 'five'])
 })
@@ -206,4 +221,52 @@ test('only the person’s own prompt clears the band', () => {
     expect(isPersonPrompt({ origin: { kind } })).toBe(false)
   }
   expect(isPersonPrompt({})).toBe(false)
+})
+
+test('control characters and direction overrides never reach the terminal', async ($, on) => {
+  const clock = mock.clock(on)
+  const s = stubs(on, '')
+  await $.session.start({ cwd: '/work/demo' })
+  await usePad($)
+  await settle()
+  s.file.text += 'hi \u001b]52;c;ZXZpbA==\u0007 there \u202egnp.exe\u009b\n'
+  await poll(clock)
+  expect(s.toasts).toEqual(['hi ]52;c;ZXZpbA== there gnp.exe'])
+  expect(await bandTexts($)).toContain('hi ]52;c;ZXZpbA== there gnp.exe')
+})
+
+test('displayLine and clipLine', () => {
+  expect(displayLine('a\u001b[31mb\u007fc\u200fd\u2066e')).toBe('a[31mbcde')
+  expect(clipLine('😀😀😀', 2)).toBe('😀…')
+  expect(clipLine('a😀b', 3)).toBe('a😀b')
+})
+
+test('a session that ends while the reader is starting reads nothing', async ($, on) => {
+  const clock = mock.clock(on)
+  let release = () => {}
+  const holdHome = new Promise<void>((r) => { release = r })
+  const s = stubs(on, '', { holdHome })
+  await $.session.start({ cwd: '/work/demo' })
+  await usePad($)
+  await settle()
+  await $.session.end({ reason: 'prompt_input_exit' })
+  release()
+  await settle()
+  s.file.text += 'after the end\n'
+  await poll(clock)
+  await poll(clock)
+  expect(s.statted).toEqual([])
+  expect(s.toasts).toEqual([])
+})
+
+test('a first read that fails does not replay the log later', async ($, on) => {
+  const clock = mock.clock(on)
+  const s = stubs(on, 'old one\nold two\n', { failReads: 1 })
+  await $.session.start({ cwd: '/work/demo' })
+  await usePad($)
+  await settle()
+  await poll(clock)
+  s.file.text += 'new\n'
+  await poll(clock)
+  expect(s.toasts).toEqual(['new'])
 })
