@@ -82,7 +82,14 @@ class ChatStore {
 	onHint(notice: ChatNotice): void {
 		if (!authStore.authenticated) return;
 		this.#schedule();
-		for (const fn of [...this.#listeners]) fn(notice);
+		// One subscriber throwing must not cost the others this hint (TASK-4044 r1).
+		for (const fn of [...this.#listeners]) {
+			try {
+				fn(notice);
+			} catch (err) {
+				console.error('chat: hint subscriber threw', err);
+			}
+		}
 	}
 
 	/** The stream cannot vouch for what it missed: refetch now. */

@@ -3568,9 +3568,6 @@ export type NeedsSnoozeRequest =
 	| { kind: 'defer'; defer_until: string; marker?: NeedsSnoozeMarker };
 
 // ── Chat (TASK-4039 / TASK-4044) ─────────────────────────────────────────────
-// Wire shapes of /api/v1/me/conversations*, mirroring internal/server/handlers_chat_dto.go
-// and handlers_chat_enrich.go. Chat is global (no workspace); `number` is the
-// owner's namespace, not a global id.
 
 /** One row of `GET /me/chat/unread` (only rows with unread > 0). */
 export interface ChatUnread {

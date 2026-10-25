@@ -2435,11 +2435,6 @@ export const api = {
 		list: () => request<LiveSessionsResponse>('/sessions')
 	},
 
-	/**
-	 * Chat (TASK-4039): global conversations between the signed-in human and
-	 * their agents. Not workspace-scoped. `n` is the owner's conversation
-	 * number. A send with `op_key` is idempotent: retry with the SAME key.
-	 */
 	chat: {
 		unread: () => request<ChatUnreadResponse>('/me/chat/unread')
 	},

@@ -210,6 +210,21 @@ describe('chat store (TASK-4044)', () => {
 		expect(fn).toHaveBeenCalledTimes(2);
 	});
 
+	it('a subscriber that throws does not cost later subscribers the hint', async () => {
+		const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+		const bad = vi.fn(() => {
+			throw new Error('boom');
+		});
+		const good = vi.fn();
+		store.subscribe(bad);
+		store.subscribe(good);
+		expect(() => store.onHint(notice)).not.toThrow();
+		expect(bad).toHaveBeenCalledTimes(1);
+		expect(good).toHaveBeenCalledWith(notice);
+		expect(err).toHaveBeenCalled();
+		err.mockRestore();
+	});
+
 	it('start() fetches once however often it is called, and refetches on focus', async () => {
 		store.start();
 		store.start();
