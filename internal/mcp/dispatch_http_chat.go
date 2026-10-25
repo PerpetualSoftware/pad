@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -101,25 +100,13 @@ func chatSequence(input map[string]any, name string, min int64) (int64, error) {
 	if !ok {
 		return 0, fmt.Errorf("%s is required", name)
 	}
-	var n int64
-	var err error
-	if x, ok := v.(float64); ok {
-		// The upper bound is exclusive: float64(MaxInt64) is 2^63.
-		if math.Trunc(x) != x || x < math.MinInt64 || x >= 0x1p63 {
-			return 0, fmt.Errorf("%s must be an integer of at least %d", name, min)
-		}
-		n = int64(x)
-	} else {
-		// Every other type: the native integers and a plain-digit json.Number
-		// parse here. A json.Number in exponent form ("1e6") and a float32
-		// (fmt.Sprint(float32(1e6)) is "1e+06") are refused, not changed. Neither
-		// reaches this today, since the JSON transports deliver only float64
-		// (BUG-4061 note). A producer of either should be routed through the
-		// same whole-number and range check numericInput uses; this path does
-		// not do that today.
-		n, err = strconv.ParseInt(fmt.Sprint(v), 10, 64)
-	}
-	if err != nil || n < min {
+	// BUG-4065: numericInput's one rule, so a float64 gets the exclusive 2^53
+	// bound (above it a seq could be forwarded as its rounded neighbour), a
+	// json.Number is exact ("1e6" is 1000000), and a string is admitted only as
+	// a plain decimal integer. A present null is refused, as before. The
+	// message is unchanged.
+	n, present, err := numericInput(v)
+	if err != nil || !present || n < min {
 		return 0, fmt.Errorf("%s must be an integer of at least %d", name, min)
 	}
 	return n, nil

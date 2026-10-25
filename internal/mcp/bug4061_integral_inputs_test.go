@@ -59,7 +59,10 @@ func TestBUG4061_NumericInputRefusesWhatItWouldChange(t *testing.T) {
 		{name: "json.Number fraction syntax", in: json.Number("4/2"), wantErr: "must be a whole number in range, got 4/2"},
 		{name: "json.Number signed exponent", in: json.Number("12e+0"), want: 12, present: true},
 		{name: "nil is absent", in: nil},
-		{name: "a string is absent, as before", in: "10"},
+		// BUG-4065 (lead ruling af4bff40, Q1): a plain decimal string is the
+		// number it spells; it used to read as absent. The full string table is
+		// TestBUG4065_NumericInputAdmitsOrRefusesEveryType.
+		{name: "a plain decimal string is its number (BUG-4065)", in: "10", want: 10, present: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

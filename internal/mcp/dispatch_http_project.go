@@ -128,7 +128,7 @@ func (d *HTTPHandlerDispatcher) dispatchProjectStandup(
 		return noWorkspaceResult(ctx, d.Lister), nil
 	}
 	path := "/api/v1/workspaces/" + url.PathEscape(workspace) + "/standup"
-	q, err := buildQuery(input, map[string]string{"days": "days"})
+	q, err := buildQuery(input, map[string]string{"days": "days"}, "days")
 	if err != nil {
 		return validationFailedResult(cmdKey, err.Error(), "Pass numeric parameters as whole numbers."), nil
 	}
@@ -166,7 +166,7 @@ func (d *HTTPHandlerDispatcher) dispatchProjectChangelog(
 		return noWorkspaceResult(ctx, d.Lister), nil
 	}
 	path := "/api/v1/workspaces/" + url.PathEscape(workspace) + "/changelog"
-	q, err := buildQuery(input, map[string]string{"days": "days", "since": "since", "parent": "parent"})
+	q, err := buildQuery(input, map[string]string{"days": "days", "since": "since", "parent": "parent"}, "days")
 	if err != nil {
 		return validationFailedResult(cmdKey, err.Error(), "Pass numeric parameters as whole numbers."), nil
 	}

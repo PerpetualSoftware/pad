@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -51,6 +52,16 @@ type routeSpec struct {
 	// from "only set --flag if it has a value."
 	queryParams map[string]string
 
+	// numericQuery lists the INPUT keys among queryParams' values that are
+	// integers (the catalog declares them "number"). buildQuery reads them
+	// through numericInput, so a bool, an object or a string that is not a
+	// plain decimal integer is refused naming the key; the server would
+	// otherwise Atoi it, fail and silently use its default (BUG-4065 r1, lead
+	// ruling 5a06782e). TestBUG4065_NoRouteForwardsANonNumberForANumberParam
+	// walks every route against the catalog so a new numeric key cannot be
+	// left off.
+	numericQuery []string
+
 	// bodyKeys lists input keys that pass through into a flat JSON
 	// body. Empty-string values are omitted (matches the CLI's
 	// "only-when-set" semantic). For nested or transformed bodies use
@@ -63,13 +74,14 @@ func (s routeSpec) toRouteMapper() RouteMapper {
 	method := s.method
 	template := s.pathTemplate
 	queryParams := s.queryParams
+	numericQuery := s.numericQuery
 	bodyKeys := s.bodyKeys
 	return func(input map[string]any) (string, string, []byte, error) {
 		path, err := expandPath(template, input)
 		if err != nil {
 			return "", "", nil, err
 		}
-		q, err := buildQuery(input, queryParams)
+		q, err := buildQuery(input, queryParams, numericQuery...)
 		if err != nil {
 			return "", "", nil, err
 		}
@@ -145,7 +157,14 @@ func expandPath(template string, input map[string]any) (string, error) {
 // days, budget), and the server's parsers read "1.5" as absent and use their
 // default (parseDaysParam, the limit parsers), so forwarding it silently
 // replaced the caller's number exactly as numericInput's truncation did.
-func buildQuery(input map[string]any, mapping map[string]string) (string, error) {
+//
+// BUG-4065 r1 (lead ruling 5a06782e): the input keys named in numeric are
+// integers. Each is read through numericInput whatever its type, so "7" and 7
+// both forward 7, and a bool, an object, an array, "7.5" or "abc" is refused
+// naming the key. The server's parsers Atoi these and keep their default on
+// error, so forwarding them verbatim was this bug's silent default. Every
+// other key keeps the switch below: a string verbatim, a bool when true.
+func buildQuery(input map[string]any, mapping map[string]string, numeric ...string) (string, error) {
 	if len(mapping) == 0 {
 		return "", nil
 	}
@@ -153,6 +172,14 @@ func buildQuery(input map[string]any, mapping map[string]string) (string, error)
 	for dst, src := range mapping {
 		v, ok := input[src]
 		if !ok || v == nil {
+			continue
+		}
+		if slices.Contains(numeric, src) {
+			n, _, err := numericInput(v)
+			if err != nil {
+				return "", fmt.Errorf("%s %w", src, err)
+			}
+			q.Set(dst, strconv.FormatInt(n, 10))
 			continue
 		}
 		switch x := v.(type) {
@@ -164,14 +191,20 @@ func buildQuery(input map[string]any, mapping map[string]string) (string, error)
 			if x {
 				q.Set(dst, "true")
 			}
-		case float64, json.Number:
+		case float64, json.Number,
+			int, int8, int16, int32, int64,
+			uint, uint8, uint16, uint32, uint64:
+			// BUG-4065: the native integers share numericInput's checks, so a
+			// uint64 above MaxInt64 is refused, not forwarded for the server
+			// to default. float32 stays on formatNumber below (unreachable).
 			n, _, err := numericInput(x)
 			if err != nil {
 				return "", fmt.Errorf("%s %w", src, err)
 			}
 			q.Set(dst, strconv.FormatInt(n, 10))
 		default:
-			// BUG-4056 r1: float32 and the integer types share formatNumber.
+			// BUG-4056 r1: float32 shares formatNumber (the integer types moved
+			// to the case above in BUG-4065).
 			if number, ok := formatNumber(v); ok {
 				q.Set(dst, number)
 			} else {
@@ -232,6 +265,7 @@ func init() {
 			method:       http.MethodGet,
 			pathTemplate: "/api/v1/workspaces/{workspace}/items/{ref}/context",
 			queryParams:  map[string]string{"intent": "intent", "role": "role", "budget": "budget"},
+			numericQuery: []string{"budget"},
 		}.toRouteMapper(),
 		"item delete": routeSpec{
 			method:       http.MethodDelete,
@@ -292,6 +326,7 @@ func init() {
 			method:       http.MethodGet,
 			pathTemplate: "/api/v1/workspaces/{workspace}/items/{ref}/backlinks",
 			queryParams:  map[string]string{"limit": "limit", "offset": "offset"},
+			numericQuery: []string{"limit", "offset"},
 		}.toRouteMapper(),
 
 		// --- Read-only workspace surfaces ---
@@ -328,6 +363,7 @@ func init() {
 			method:       http.MethodGet,
 			pathTemplate: "/api/v1/workspaces/{workspace}/activity",
 			queryParams:  map[string]string{"limit": "limit", "actor": "actor", "since": "since"},
+			numericQuery: []string{"limit"},
 		}.toRouteMapper(),
 
 		// `pad bootstrap` shells out to `pad_meta.action=bootstrap` and
@@ -451,11 +487,9 @@ func init() {
 		// takes ttl_seconds. `item release` fits the declarative shape.
 		"item claim": mapItemClaim,
 		// PLAN-3578: content-anchored patch writes.
-		"item patch": routeSpec{
-			method:       http.MethodPost,
-			pathTemplate: "/api/v1/workspaces/{workspace}/items/{ref}/patch",
-			bodyKeys:     []string{"edits", "expected_seq", "undo", "op_key"},
-		}.toRouteMapper(),
+		// BUG-4065 (Q9): validates expected_seq and each edit's line_hint
+		// before forwarding; see mapItemPatch.
+		"item patch": mapItemPatch,
 		"item release": routeSpec{
 			method:       http.MethodPost,
 			pathTemplate: "/api/v1/workspaces/{workspace}/items/{ref}/release",
@@ -824,6 +858,59 @@ func mapItemStarred(input map[string]any) (string, string, []byte, error) {
 	return http.MethodGet, urlPath, nil, nil
 }
 
+// itemPatchRoute is the declarative half of `item patch` (PLAN-3578).
+var itemPatchRoute = routeSpec{
+	method:       http.MethodPost,
+	pathTemplate: "/api/v1/workspaces/{workspace}/items/{ref}/patch",
+	bodyKeys:     []string{"edits", "expected_seq", "undo", "op_key"},
+}.toRouteMapper()
+
+// mapItemPatch is itemPatchRoute with its two numeric inputs validated here
+// (BUG-4065, folded from BUG-4061's Q9, lead ruling 63360424). They used to be
+// forwarded raw, so a fraction or a non-number answered the server decode's
+// 400 bad_request rather than validation_failed naming the field. A string
+// expected_seq gets numericInput's rule here, as on update, so "123" is a
+// guarded write. Each edit's line_hint is checked the same way; an edit that
+// is not an object is left for the server to refuse, since its shape is the
+// server's to define. The caller's input map is not modified.
+func mapItemPatch(input map[string]any) (string, string, []byte, error) {
+	in := make(map[string]any, len(input))
+	for k, v := range input {
+		in[k] = v
+	}
+	seq, ok, err := itemExpectedSeqParam(input)
+	if err != nil {
+		return "", "", nil, err
+	}
+	if ok {
+		in["expected_seq"] = seq
+	}
+	if edits, isList := input["edits"].([]any); isList {
+		out := make([]any, len(edits))
+		for i, e := range edits {
+			out[i] = e
+			edit, isObj := e.(map[string]any)
+			if !isObj {
+				continue
+			}
+			hint, present, err := intParam(edit, "line_hint")
+			if err != nil {
+				return "", "", nil, fmt.Errorf("%w (in edits[%d])", err, i)
+			}
+			if present {
+				copied := make(map[string]any, len(edit))
+				for k, v := range edit {
+					copied[k] = v
+				}
+				copied["line_hint"] = hint
+				out[i] = copied
+			}
+		}
+		in["edits"] = out
+	}
+	return itemPatchRoute(in)
+}
+
 // mapItemClaim dispatches `pad item claim <ref> [--holder] [--ttl]`.
 //
 // POST /api/v1/workspaces/{ws}/items/{ref}/claim with an optional body
@@ -923,11 +1010,14 @@ func mapCollectionUpdate(input map[string]any) (string, string, []byte, error) {
 			payload[key] = s
 		}
 	}
-	if v, ok := input["sort_order"]; ok && v != nil {
-		// JSON numbers arrive as float64; CollectionUpdate.SortOrder
-		// is *int, but encoding/json on the receiving side coerces
-		// fine since the field's tag is plain integer.
-		payload["sort_order"] = v
+	// BUG-4065 (Q4): validated here, so a fraction, a string that is not a
+	// plain integer or any other type answers validation_failed naming
+	// sort_order, not the server decode's 400 bad_request. CollectionUpdate.
+	// SortOrder is *int; the whole int64 is forwarded.
+	if so, ok, err := intParam(input, "sort_order"); err != nil {
+		return "", "", nil, err
+	} else if ok {
+		payload["sort_order"] = so
 	}
 	// schema vs fields: the catalog advertises both forms as mutually
 	// exclusive (matching `pad collection create`/`update`). The CLI
@@ -1026,8 +1116,11 @@ func mapRoleUpdate(input map[string]any) (string, string, []byte, error) {
 			payload["slug"] = s
 		}
 	}
-	if v, ok := input["sort_order"]; ok && v != nil {
-		payload["sort_order"] = v
+	// BUG-4065 (Q4): validated here, as in mapCollectionUpdate.
+	if so, ok, err := intParam(input, "sort_order"); err != nil {
+		return "", "", nil, err
+	} else if ok {
+		payload["sort_order"] = so
 	}
 
 	body, err := json.Marshal(payload)
@@ -1707,8 +1800,8 @@ func (d *HTTPHandlerDispatcher) dispatchItemHistory(
 
 // numericInput pulls an int64 out of a JSON-typed input value. JSON
 // decoders deliver numbers as float64 (or json.Number when
-// UseNumber()); we accept both. Returns (0, false, nil) for nil or
-// non-numeric inputs so callers can short-circuit.
+// UseNumber()); we accept both. Returns (0, false, nil) for nil only, so
+// callers can short-circuit on an absent parameter.
 //
 // BUG-4061: a number that is not a whole int64 is REFUSED, never changed.
 // int64(1.5) is 1 and int64(-2.7) is -2, and a float64 outside int64 converts
@@ -1716,28 +1809,108 @@ func (d *HTTPHandlerDispatcher) dispatchItemHistory(
 // silently replaced by a different one. A json.Number that does not parse as
 // an int64 used to read as absent, so the parameter was silently dropped.
 // Both are now an error, and callers name the parameter (intParam).
+//
+// BUG-4065: only nil is absent. A value of any other type used to read as
+// absent too, so a string, a bool or an object was silently replaced by the
+// default, and a string expected_seq made the write unguarded. Now:
+//   - every Go integer type is admitted, widened exactly; an unsigned value
+//     above MaxInt64 is refused as out of range;
+//   - a float32 widens exactly to float64 and gets wholeInt64's rules;
+//   - a string is admitted only as a plain decimal integer (decimalIntString),
+//     a form stdio's CLI flags read as the same number (lead ruling af4bff40,
+//     Q1; leading zeros refused per 5a06782e). Strings and float64 are
+//     bounded at |x| < 2^53; the native Go integers keep their int64 range;
+//   - anything else is refused, naming its JSON type.
 func numericInput(v any) (int64, bool, error) {
+	var n int64
+	var err error
 	switch x := v.(type) {
 	case nil:
 		return 0, false, nil
 	case float64:
-		n, err := wholeInt64(x)
-		if err != nil {
-			return 0, false, err
-		}
-		return n, true, nil
+		n, err = wholeInt64(x)
+	case float32:
+		n, err = wholeInt64(float64(x))
 	case int:
-		return int64(x), true, nil
+		n = int64(x)
+	case int8:
+		n = int64(x)
+	case int16:
+		n = int64(x)
+	case int32:
+		n = int64(x)
 	case int64:
-		return x, true, nil
+		n = x
+	case uint:
+		n, err = uint64Int64(uint64(x))
+	case uint8:
+		n = int64(x)
+	case uint16:
+		n = int64(x)
+	case uint32:
+		n = int64(x)
+	case uint64:
+		n, err = uint64Int64(x)
+	case uintptr:
+		n, err = uint64Int64(uint64(x))
 	case json.Number:
-		n, err := jsonNumberInt64(x)
-		if err != nil {
-			return 0, false, err
-		}
-		return n, true, nil
+		n, err = jsonNumberInt64(x)
+	case string:
+		n, err = decimalIntString(x)
+	default:
+		return 0, false, fmt.Errorf("must be a number, got %s", jsonTypeName(v))
 	}
-	return 0, false, nil
+	if err != nil {
+		return 0, false, err
+	}
+	return n, true, nil
+}
+
+// uint64Int64 converts an unsigned value that fits int64 and refuses a larger
+// one, rather than wrapping it negative (BUG-4065, from BUG-4061's Q6 note).
+func uint64Int64(x uint64) (int64, error) {
+	if x > math.MaxInt64 {
+		return 0, fmt.Errorf("is out of range, got %d", x)
+	}
+	return int64(x), nil
+}
+
+// decimalIntString admits a string only when it is a plain decimal integer,
+// ^-?(0|[1-9][0-9]*)$: an optional '-', then "0" or digits with no leading
+// zero, nothing else (no whitespace, no '+', no '.', no exponent, not empty).
+// It is parsed exactly by ParseInt and then gets the float64 path's bound,
+// |x| < 2^53, so a string accepts no value a JSON number would not (lead
+// ruling af4bff40, Q1). A leading zero ("010", "00", "-010") is refused, not
+// read as decimal: stdio's CLI flags parse base 0, so "010" is 8 there, and
+// accepting it here as 10 would make one string two numbers (BUG-4065 r1,
+// lead ruling 5a06782e). "-0" is 0.
+func decimalIntString(s string) (int64, error) {
+	digits := strings.TrimPrefix(s, "-")
+	if digits == "" || strings.TrimLeft(digits, "0123456789") != "" ||
+		(len(digits) > 1 && digits[0] == '0') {
+		return 0, fmt.Errorf("must be a whole number, got the string %q", s)
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("is out of range, got the string %q", s)
+	}
+	if n >= 1<<53 || n <= -(1<<53) {
+		return 0, fmt.Errorf("is beyond the exact integer range of a JSON number, got the string %q", s)
+	}
+	return n, nil
+}
+
+// jsonTypeName names v's type in the caller's vocabulary (JSON), for a refusal.
+func jsonTypeName(v any) string {
+	switch v.(type) {
+	case bool:
+		return "a boolean"
+	case map[string]any:
+		return "an object"
+	case []any:
+		return "an array"
+	}
+	return fmt.Sprintf("a value of type %T", v)
 }
 
 // jsonNumberInt64 is wholeInt64 for a json.Number. Int64() alone refuses a
@@ -1927,7 +2100,7 @@ func mapItemSearch(input map[string]any) (string, string, []byte, error) {
 		"sort":       "sort",
 		"limit":      "limit",
 		"offset":     "offset",
-	})
+	}, "limit", "offset")
 	if err != nil {
 		return "", "", nil, err
 	}
