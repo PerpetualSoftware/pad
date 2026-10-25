@@ -36,7 +36,8 @@ export function parseDelimited(source: string, delimiter: ',' | '\t'): Delimited
 	let recordStarted = false;
 
 	function append(char: string) {
-		// Count all field characters, but allocate only what can be displayed.
+		// Count code points, preserving surrogate pairs (not grapheme clusters).
+		// Keep scanning all characters, but allocate only what can be displayed.
 		if (result.totalRows < ROW_CAP && columns < COL_CAP && fieldLength < CELL_CAP) field += char;
 		fieldLength++;
 	}
@@ -64,7 +65,8 @@ export function parseDelimited(source: string, delimiter: ',' | '\t'): Delimited
 	}
 
 	for (let i = source.charCodeAt(0) === 0xfeff ? 1 : 0; i < source.length; i++) {
-		const char = source[i];
+		const char = String.fromCodePoint(source.codePointAt(i)!);
+		i += char.length - 1;
 		if (quoted) {
 			if (char === '"') {
 				if (source[i + 1] === '"') {

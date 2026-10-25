@@ -62,6 +62,21 @@ describe('attachment CSV parser', () => {
 		expect(parseDelimited(Array(53).fill('x').join(','), ',').rows[0]).toHaveLength(50);
 	});
 
+	it('U4: never splits a surrogate pair at the cell cap and retains the ellipsis', () => {
+		const source = 'a'.repeat(499) + '😀' + 'tail';
+		for (const cell of [source, `"${source}"`]) {
+			const result = parseDelimited(`${cell},next\nlast,row`, ',');
+			const retained = result.rows[0][0];
+			expect(retained.endsWith('…')).toBe(true);
+			expect(retained.slice(0, -1)).not.toMatch(/[\uD800-\uDBFF]$/);
+			expect(retained).toBe('a'.repeat(499) + '😀…');
+			expect(result.rows).toEqual([[retained, 'next'], ['last', 'row']]);
+			expect(result.totalRows).toBe(2);
+			expect(result.totalColumns).toBe(2);
+			expect(result.error).toBeNull();
+		}
+	});
+
 	it('truncates displayed cells at 500 characters with an ellipsis', () => {
 		expect(CELL_CAP).toBe(500);
 		expect(parseDelimited('x'.repeat(501), ',').rows[0][0]).toBe('x'.repeat(500) + '…');
