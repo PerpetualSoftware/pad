@@ -99,7 +99,24 @@ func requireSafeScriptEnv(t *testing.T, env []string, dir string) {
 	}
 }
 
-var configPortLine = regexp.MustCompile(`(?m)^[[:space:]]*port[[:space:]]*=[[:space:]]*"?([0-9]+)`)
+var configPortLine = regexp.MustCompile(`(?m)^[[:space:]]*port[[:space:]]*=[[:space:]]*(.*)$`)
+
+// configPortValue reads config.toml's port the way the script's config_value
+// does: the FIRST port line, unquoted, an inline comment and trailing space
+// stripped. Taking leading digits instead read "8080abc" as 8080 where the
+// script rejects it and falls back to 7777 (BUG-4066 r3 item 7).
+func configPortValue(b []byte) (string, bool) {
+	m := configPortLine.FindSubmatch(b)
+	if m == nil {
+		return "", false
+	}
+	v := string(m[1])
+	if q := regexp.MustCompile(`^"([^"]*)".*$`).FindStringSubmatch(v); q != nil {
+		v = q[1]
+	}
+	v = regexp.MustCompile(`[[:space:]]*#.*$`).ReplaceAllString(v, "")
+	return strings.TrimRight(v, " \t\r"), true
+}
 
 // scriptEnvHazard reports why env is unsafe for an install-refresh run:
 //   - no port the script would resolve without falling back to its default
@@ -164,11 +181,11 @@ func scriptEnvHazard(env []string, dir string, scope tempScope) error {
 	}
 	if !numeric(port) {
 		b, _ := os.ReadFile(filepath.Join(dataDir, "config.toml"))
-		m := configPortLine.FindSubmatch(b)
-		if m == nil {
+		v, ok := configPortValue(b)
+		if !ok {
 			return fmt.Errorf("PAD_PORT is %q and %s names no port, so the script would fall back to its default 7777: the box's real server", port, filepath.Join(dataDir, "config.toml"))
 		}
-		port = string(m[1])
+		port = v
 	}
 	// Numeric, so "07777" is refused too, and before any dial: this guard
 	// never dials port 7777 under any input (BUG-4066 r2).
@@ -585,5 +602,39 @@ func TestHarnessGuard_TokenIsAskedWhereTheLANAnswered(t *testing.T) {
 	env := []string{"HOME=" + t.TempDir(), "PAD_DATA_DIR=", "PAD_DB_PATH=", "PAD_PORT=" + port, "STUB_TOKEN=" + token}
 	if err := scriptEnvHazard(env, "", testTempScope(t)); err == nil {
 		t.Fatalf("a non-stub on %s:%s passed on a loopback stub's token", lan, port)
+	}
+}
+
+// The guard reads config.toml's port as the script does (BUG-4066 r3 item 7),
+// so a value the script rejects, and falls back to 7777 for, is unreadable to
+// the guard too, and refused.
+func TestHarnessGuard_ReadsTheConfigPortLikeTheScript(t *testing.T) {
+	for _, tc := range []struct{ file, want string }{
+		{"port = 8080\n", "8080"},
+		{"port = 8080 # dev\n", "8080"},
+		{"port = \"8080\"\n", "8080"},
+		{"  port=8080  \n", "8080"},
+		{"port = 8080abc\n", "8080abc"},
+		{"port = abc\nport = 8080\n", "abc"},
+	} {
+		got, ok := configPortValue([]byte(tc.file))
+		if !ok || got != tc.want {
+			t.Errorf("%q: got %q (found %v), want %q", tc.file, got, ok, tc.want)
+		}
+	}
+	if _, ok := configPortValue([]byte("host = x\n")); ok {
+		t.Errorf("a file with no port line read as having one")
+	}
+	home := t.TempDir()
+	cfg := filepath.Join(home, ".pad")
+	if err := os.MkdirAll(cfg, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg, "config.toml"), []byte("port = 8080abc\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := scriptEnvHazard([]string{"HOME=" + home, "PAD_PORT="}, "", testTempScope(t))
+	if err == nil || !strings.Contains(err.Error(), "is 7777 (or unreadable)") {
+		t.Fatalf("a config port of 8080abc: want the unreadable refusal, got %v", err)
 	}
 }
