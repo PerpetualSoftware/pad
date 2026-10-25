@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -111,17 +112,23 @@ func TestMonitorEnsureDM_429WithoutRetryAfterWaitsDefault(t *testing.T) {
 	maxFits := monitorEnsureDMMaxRetryAfterSeconds
 	for _, tc := range []struct {
 		name    string
-		viaHTTP bool // a real 429 with no Retry-After header, through the client
-		secs    int  // otherwise: the injected APIError's RetryAfterSeconds
+		viaHTTP bool  // a real 429 with no Retry-After header, through the client
+		secs    int64 // otherwise: the injected APIError's RetryAfterSeconds
 		want    time.Duration
 	}{
 		{name: "zero", secs: 0, want: 120 * time.Second},
 		{name: "negative", secs: -5, want: 120 * time.Second},
 		{name: "absent", viaHTTP: true, want: 120 * time.Second},
 		{name: "wraps", secs: 9223372037, want: 120 * time.Second},
-		{name: "largest that fits", secs: int(maxFits), want: time.Duration(maxFits) * time.Second},
+		{name: "largest that fits", secs: maxFits, want: time.Duration(maxFits) * time.Second},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// RetryAfterSeconds is an int: on a 32-bit GOARCH these rows cannot
+			// be represented, so the overflow they test cannot arise there.
+			if tc.secs > math.MaxInt {
+				t.Skip("value exceeds int on this GOARCH")
+			}
+			t.Setenv("HOME", t.TempDir())
 			var stderr bytes.Buffer
 			d := newMonitorEnsureDM(&stderr)
 			var waits []time.Duration
@@ -129,7 +136,7 @@ func TestMonitorEnsureDM_429WithoutRetryAfterWaitsDefault(t *testing.T) {
 			var calls atomic.Int32
 			ensure := func(context.Context, string) error {
 				if calls.Add(1) == 1 {
-					return &cli.APIError{Status: 429, RetryAfterSeconds: tc.secs, Message: "slow down"}
+					return &cli.APIError{Status: 429, RetryAfterSeconds: int(tc.secs), Message: "slow down"}
 				}
 				return nil
 			}
