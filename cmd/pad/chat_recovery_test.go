@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -107,16 +106,25 @@ func TestMonitorChatIdentityChangeResetsMemory(t *testing.T) {
 			oldSeen := seenChat
 			seenChat = newRecentSet(256, 10*time.Minute)
 			t.Cleanup(func() { seenChat = oldSeen })
-			ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
-			defer cancel()
+			// Assigned inside the bubble by runMonitorInBubble's setup.
+			var ctx context.Context
+			var cancel context.CancelFunc
 			var mu sync.Mutex
 			connections, profileReads := 0, 0
+			// Closed and replaced on every acknowledgement, so the stream
+			// handler waits for one without polling (exact virtual time).
+			// Made in setup: a channel made outside the bubble never blocks
+			// durably, and the bubble's clock would stop on it.
+			var ackSignal chan struct{}
+			// Virtual time of the first acknowledgement, from the monitor's start.
+			var bubbleStart time.Time
+			firstAck := time.Duration(-1)
 			var afters, acks []int64
 			var serverURL string
 			writeURL := func(base string) error {
 				return os.WriteFile(filepath.Join(".", ".pad.toml"), []byte(fmt.Sprintf("workspace = \"test\"\nurl = %q\n", base)), 0600)
 			}
-			h := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				mu.Lock()
 				defer mu.Unlock()
 				path := strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/first"), "/second")
@@ -165,14 +173,14 @@ func TestMonitorChatIdentityChangeResetsMemory(t *testing.T) {
 					// Hold the stream until this single event has been acknowledged.
 					for {
 						mu.Lock()
-						handled := len(acks) >= connections
+						handled, acked := len(acks) >= connections, ackSignal
 						mu.Unlock()
 						if handled {
 							break
 						}
 						select {
 						case <-ctx.Done():
-						case <-time.After(time.Millisecond):
+						case <-acked:
 							continue
 						}
 						break
@@ -213,6 +221,11 @@ func TestMonitorChatIdentityChangeResetsMemory(t *testing.T) {
 						t.Error(err)
 					}
 					acks = append(acks, body.Seq)
+					if firstAck < 0 {
+						firstAck = time.Since(bubbleStart)
+					}
+					close(ackSignal)
+					ackSignal = make(chan struct{})
 					if connections == 1 && change == "base-url" {
 						if err := writeURL(serverURL + "/second"); err != nil {
 							t.Error(err)
@@ -226,19 +239,48 @@ func TestMonitorChatIdentityChangeResetsMemory(t *testing.T) {
 					t.Error("unexpected request", r.URL)
 					http.NotFound(w, r)
 				}
-			}))
-			defer h.Close()
-			serverURL = h.URL
-			if err := writeURL(serverURL + "/first"); err != nil {
-				t.Fatal(err)
-			}
-			out := captureStdoutDraining(t, func() {
-				if err := runWatchMonitor(ctx); err != nil {
-					t.Error(err)
-				}
 			})
+			out, elapsed, err := runMonitorInBubble(t, 25*time.Second, handler, func(bubbleCtx context.Context, bubbleCancel context.CancelFunc, url string) error {
+				ctx, cancel, serverURL = bubbleCtx, bubbleCancel, url
+				ackSignal = make(chan struct{})
+				bubbleStart = time.Now()
+				return writeURL(serverURL + "/first")
+			})
+			if err != nil {
+				t.Error(err)
+			}
 			mu.Lock()
 			defer mu.Unlock()
+			// TASK-4067: exact virtual time. One reconnect backoff (padddBackoff(1),
+			// 5s) between the two connections; profile-once also waits out the
+			// identity backoff (monitorChatFloorBackoff, 10s) plus 1s before its
+			// handler re-sends; the unresolved cases end at the handler's own
+			// 500ms cancel, with no reconnect. Literals, not the constants, so a
+			// change to either backoff turns this red rather than moving with it.
+			wantElapsed := 5 * time.Second
+			switch change {
+			case "profile-error", "empty-user":
+				wantElapsed = 500 * time.Millisecond
+			case "profile-once":
+				wantElapsed = 16 * time.Second
+			}
+			if elapsed != wantElapsed {
+				t.Fatalf("identity %s: virtual elapsed %v, want %v", change, elapsed, wantElapsed)
+			}
+			// The first connection's event is acknowledged at once, except in
+			// profile-once: its failed connect lookup backs identity off globally,
+			// so only the handler's re-send at 11s (10s backoff + 1s) is handled.
+			// The unresolved cases never acknowledge.
+			wantFirstAck := time.Duration(0)
+			switch change {
+			case "profile-error", "empty-user":
+				wantFirstAck = -1
+			case "profile-once":
+				wantFirstAck = 11 * time.Second
+			}
+			if firstAck != wantFirstAck {
+				t.Fatalf("identity %s: first acknowledgement at virtual %v, want %v", change, firstAck, wantFirstAck)
+			}
 			if change == "profile-error" || change == "empty-user" {
 				if connections != 1 || len(afters) != 0 || len(acks) != 0 || !strings.Contains(out, "push-survives") || strings.Contains(out, "fetched ") {
 					t.Fatalf("unresolved identity affected push or handled chat: connections=%d after=%v acks=%v output=%q", connections, afters, acks, out)
