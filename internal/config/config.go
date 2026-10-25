@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -294,15 +295,79 @@ func (c *Config) PushAutoArm() *bool {
 // precedence Load() uses (PAD_DATA_DIR, then PAD_DB_PATH's directory,
 // overriding), so a strict reader lands on exactly the file Load would.
 func userConfigPath() string {
+	if dir, _, set := envDataDir(); set {
+		return filepath.Join(dir, "config.toml")
+	}
 	home, _ := os.UserHomeDir()
-	path := filepath.Join(home, ".pad", "config.toml")
+	return filepath.Join(home, ".pad", "config.toml")
+}
+
+// envDataDir is the ONE reader of PAD_DATA_DIR and PAD_DB_PATH (Load and
+// userConfigPath both call it): PAD_DATA_DIR sets the data dir and its
+// pad.db; PAD_DB_PATH, applied second, wins, and its directory is the data
+// dir. set is false when neither is set.
+//
+// BUG-4066 phase 1 (lead ruling 4b4cb4ff): a relative value still resolves
+// verbatim, against this process's own cwd, exactly as before. Because a CLI
+// and a server in different directories then use different data, the
+// process warns once (warnRelativeDataDir). Phase 2 (TASK-4072) refuses it.
+func envDataDir() (dataDir, dbPath string, set bool) {
+	var name, value string
 	if v := os.Getenv("PAD_DATA_DIR"); v != "" {
-		path = filepath.Join(v, "config.toml")
+		dataDir, dbPath, set = v, filepath.Join(v, "pad.db"), true
+		name, value = "PAD_DATA_DIR", v
 	}
 	if v := os.Getenv("PAD_DB_PATH"); v != "" {
-		path = filepath.Join(filepath.Dir(v), "config.toml")
+		dataDir, dbPath, set = filepath.Dir(v), v, true
+		name, value = "PAD_DB_PATH", v
 	}
-	return path
+	// The data dir is what decides the database, the attachments and the key;
+	// an absolute PAD_DB_PATH makes a relative PAD_DATA_DIR irrelevant.
+	if set && !filepath.IsAbs(dataDir) {
+		warnRelativeDataDir(name, value)
+	}
+	return dataDir, dbPath, set
+}
+
+var (
+	relativeDataDirMu     sync.Mutex
+	relativeDataDirWarned bool
+	// relativeDataDirSink receives the warning; nil writes it to stderr.
+	relativeDataDirSink func(msg string)
+)
+
+// SetRelativeDataDirWarningSink routes the relative data-dir warning: the
+// server sets it so the line goes through slog; a machine-read stream (the
+// plugin monitor's `pad watch --stream`) sets a no-op so nothing reaches it.
+// Call it before the first Load.
+func SetRelativeDataDirWarningSink(fn func(msg string)) {
+	relativeDataDirMu.Lock()
+	defer relativeDataDirMu.Unlock()
+	relativeDataDirSink = fn
+}
+
+// warnRelativeDataDir emits the warning once per process, naming the
+// absolute path this process resolved, however many times config is read.
+func warnRelativeDataDir(name, value string) {
+	relativeDataDirMu.Lock()
+	defer relativeDataDirMu.Unlock()
+	if relativeDataDirWarned {
+		return
+	}
+	relativeDataDirWarned = true
+	abs, err := filepath.Abs(value)
+	if err != nil {
+		abs = value
+	}
+	msg := fmt.Sprintf("%s is relative (%s); this process resolves it to %s. A CLI and a server in different directories will use different data. Set an absolute path; relative values will be refused in a future release.", name, value, abs)
+	if strings.HasPrefix(value, "~") {
+		msg += " The leading ~ was not expanded by your shell, so it names a directory literally called ~."
+	}
+	if relativeDataDirSink != nil {
+		relativeDataDirSink(msg)
+		return
+	}
+	fmt.Fprintln(os.Stderr, "Warning: "+msg)
 }
 
 // LoadPushConfigAutoArm reads ONLY the [push] auto_arm value from the
@@ -370,15 +435,10 @@ func Load() (*Config, error) {
 	cfg := DefaultConfig()
 
 	// Data-dir overrides affect where config.toml lives, so apply them first.
-	if v := os.Getenv("PAD_DATA_DIR"); v != "" {
-		cfg.DataDir = v
-		cfg.DBPath = filepath.Join(v, "pad.db")
-		cfg.ConfigPath = filepath.Join(v, "config.toml")
-	}
-	if v := os.Getenv("PAD_DB_PATH"); v != "" {
-		cfg.DBPath = v
-		cfg.DataDir = filepath.Dir(cfg.DBPath)
-		cfg.ConfigPath = filepath.Join(cfg.DataDir, "config.toml")
+	if dir, db, set := envDataDir(); set {
+		cfg.DataDir = dir
+		cfg.DBPath = db
+		cfg.ConfigPath = filepath.Join(dir, "config.toml")
 	}
 
 	// Ensure data directory exists

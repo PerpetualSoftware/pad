@@ -132,6 +132,12 @@ func main() {
 	mux.HandleFunc("/stub/pid", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintln(w, os.Getpid())
 	})
+	// The per-test token (BUG-4066 harness guard): the guard only treats a
+	// LAN-answering port as this test's own stub when it echoes the random
+	// STUB_TOKEN the test generated. A real pad has no such route.
+	mux.HandleFunc("/stub/token", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, os.Getenv("STUB_TOKEN"))
+	})
 	// A port that cannot be bound exits the process, as ListenAndServe did.
 	ln, err := net.Listen("tcp", net.JoinHostPort(host, port))
 	if err != nil {

@@ -86,7 +86,7 @@ All configuration is via environment variables or a config file (`~/.pad/config.
 | `PAD_PORT` | `7777` | Listen port |
 | `PAD_URL` | — | Public-facing base URL (e.g., `https://pad.example.com`). Used for invitation, password-reset, and share-link emails, and as the public origin for [MCP](#mcp-for-agents-self-hosted). **Required when `PAD_HOST=0.0.0.0`** — otherwise emailed links point at `http://0.0.0.0:port` and are unreachable to recipients. |
 | `PUBLIC_URL` | — | Alternative to `PAD_URL` using the generic env-var convention. Server-side only — does not affect CLI mode, does not influence the CLI's API endpoint, and is not persisted to `config.toml`. Precedence: `PAD_URL` > `PUBLIC_URL` > constructed `http://host:port`. |
-| `PAD_DATA_DIR` | `~/.pad` | Data directory for SQLite DB, logs, and config |
+| `PAD_DATA_DIR` | `~/.pad` | Data directory for SQLite DB, logs, and config. Must be absolute: a relative value is deprecated and warns (it resolves against each process's own directory, so a CLI and a server started in different places use different data), and a future release refuses it |
 | `PAD_LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error` |
 | `PAD_MODE` | `local` | Mode: `local`, `remote`, `cloud` |
 
@@ -95,7 +95,7 @@ All configuration is via environment variables or a config file (`~/.pad/config.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PAD_DB_DRIVER` | `sqlite` | Database driver: `sqlite` or `postgres` |
-| `PAD_DB_PATH` | `~/.pad/pad.db` | SQLite database path (ignored when using PostgreSQL) |
+| `PAD_DB_PATH` | `~/.pad/pad.db` | SQLite database path (ignored when using PostgreSQL). Its directory is the data dir, so it must be absolute too: a relative value is deprecated and warns |
 | `PAD_DATABASE_URL` | — | PostgreSQL connection string (required when `PAD_DB_DRIVER=postgres`) |
 
 ### Real-time Events

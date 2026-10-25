@@ -56,6 +56,11 @@ func serveCmd() *cobra.Command {
 		Short:   "Start the Pad API server",
 		Example: `  pad server start --port 7777`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// BUG-4066: a relative data dir warns once, through slog (the
+			// server's log), not as a bare stderr line. Logging is set up
+			// below from the config, so the line is held until then.
+			var relativeDataDirWarning string
+			config.SetRelativeDataDirWarningSink(func(msg string) { relativeDataDirWarning = msg })
 			cfg := getConfig()
 
 			// Initialize structured logging
@@ -68,6 +73,9 @@ func serveCmd() *cobra.Command {
 				logFormat = "text"
 			}
 			logging.Setup(logLevel, logFormat)
+			if relativeDataDirWarning != "" {
+				slog.Warn(relativeDataDirWarning)
+			}
 
 			if cmd.Flags().Changed("host") {
 				cfg.Host = host

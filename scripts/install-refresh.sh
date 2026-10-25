@@ -92,6 +92,38 @@ data_dir() {
 	fi
 }
 
+# anchored_data_dir is data_dir with a RELATIVE value anchored where the
+# restarted server resolves it: config.Load takes the value verbatim, so the
+# server reads it against its own cwd. The restart runs in SERVER_CWD (the cd
+# in section 5) or, before one is captured or when none is, here
+# (BUG-4064 r2 for the log and the pid file; BUG-4066 for the refresh marker
+# and config_value, so every path the script touches is resolved one way).
+anchored_data_dir() {
+	local dir
+	dir="$(data_dir)"
+	case "$dir" in
+	/*) printf '%s' "$dir" ;;
+	*) printf '%s' "${SERVER_CWD:-$PWD}/$dir" ;;
+	esac
+}
+
+# warn_relative_data_dir prints config.Load's BUG-4066 warning for a relative
+# PAD_DATA_DIR or PAD_DB_PATH (the value still resolves; a future release
+# refuses it, TASK-4072). It runs before anything is read or stopped.
+warn_relative_data_dir() {
+	local name value dir
+	if [ -n "${PAD_DB_PATH:-}" ]; then
+		name=PAD_DB_PATH value="$PAD_DB_PATH" dir="$(dirname "$PAD_DB_PATH")"
+	elif [ -n "${PAD_DATA_DIR:-}" ]; then
+		name=PAD_DATA_DIR value="$PAD_DATA_DIR" dir="$PAD_DATA_DIR"
+	else
+		return 0
+	fi
+	case "$dir" in /*) return 0 ;; esac
+	echo "Warning: $name is relative ($value); this process resolves it to $PWD/$value. A CLI and a server in different directories will use different data. Set an absolute path; relative values will be refused in a future release." >&2
+	case "$value" in "~"*) echo "Warning: the leading ~ in $name was not expanded by your shell, so it names a directory literally called ~." >&2 ;; esac
+}
+
 # config_value prints a top-level key from the pad config file, or nothing.
 #
 # The file is FLAT TOML (internal/config/config.go: Host, Port, Mode, ... are
@@ -105,7 +137,7 @@ data_dir() {
 # closing it is a grep and the cost of leaving it is a permanent false alarm.
 config_value() {
 	local key="$1" path
-	path="$(data_dir)/config.toml"
+	path="$(anchored_data_dir)/config.toml"
 	[ -r "$path" ] || return 1
 	# Strip an inline comment before taking the value: `port = 8080 # dev`
 	# is valid TOML and the Go parser accepts it, so a regex that swallows
@@ -302,6 +334,7 @@ fi
 # The listener is read with `ss` (Linux) or `lsof` (macOS). Where neither can
 # see listeners, only the unambiguous one-server case proceeds.
 numeric() { case "$1" in '' | *[!0-9]*) return 1 ;; *) return 0 ;; esac; }
+warn_relative_data_dir
 TARGET_PORT=""
 for candidate in "${PAD_PORT:-}" "$(config_value port || true)"; do
 	if numeric "$candidate"; then
@@ -560,11 +593,7 @@ PORT="${PORT:-7777}"
 # its own cwd. The restart runs in SERVER_CWD (the cd in section 5) or, when
 # none was captured, here. Proving the file relative to THIS cwd instead
 # would check one file and then open another after the stop.
-DATA_DIR="$(data_dir)"
-case "$DATA_DIR" in
-/*) ;;
-*) DATA_DIR="${SERVER_CWD:-$PWD}/$DATA_DIR" ;;
-esac
+DATA_DIR="$(anchored_data_dir)"
 LOG_FILE="$DATA_DIR/logs/server.log"
 mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null &&
 	{ : >>"$LOG_FILE"; } 2>/dev/null ||
@@ -593,7 +622,9 @@ LEGACY_LOG="$HOME/.pad/server.log"
 # waiting CLI returns the moment the server answers; the deadline only
 # decides how long a CLI waits on a refresh that is failing, after which it
 # errors naming this pid rather than spawning.
-REFRESH_MARKER="$(data_dir)/refresh.lock"
+# Anchored like the log (BUG-4066): written here and removed by cleanup()
+# after the cd into SERVER_CWD, so both must name the same file.
+REFRESH_MARKER="$DATA_DIR/refresh.lock"
 MARKER_WRITTEN=""
 probe_budget="$PROBE_TIMEOUT"
 numeric "$probe_budget" || probe_budget=20

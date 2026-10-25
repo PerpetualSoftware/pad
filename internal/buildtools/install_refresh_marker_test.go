@@ -26,6 +26,7 @@ func markerRun(t *testing.T, e stubEnv, built, installed, commit string, extraEn
 	cmd.Env = append(e.env(), extraEnv...)
 	var out, errb strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &errb
+	requireSafeScriptEnv(t, cmd.Env, cmd.Dir)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start script: %v", err)
 	}

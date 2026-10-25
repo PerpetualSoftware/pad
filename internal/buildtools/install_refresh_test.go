@@ -250,6 +250,7 @@ func (e stubEnv) env() []string {
 		fmt.Sprintf("STUB_PORT=%d", e.port),
 		"STUB_INSTALLED_PATH="+e.installedPath,
 		"STUB_VERSION_INSTALLED="+e.installedVersion,
+		"STUB_TOKEN="+stubTokenFor(e.home),
 	)
 }
 
@@ -264,6 +265,7 @@ func runScript(t *testing.T, e stubEnv, built, installed, commit string) runResu
 	cmd.Env = e.env()
 	var out, errb strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &errb
+	requireSafeScriptEnv(t, cmd.Env, cmd.Dir)
 	err := cmd.Run()
 	return runResult{stdout: out.String(), stderr: errb.String(), err: err}
 }
@@ -627,6 +629,7 @@ func TestInstallRefresh_ToleratesDifferingCommitAbbreviationWidths(t *testing.T)
 	cmd.Dir = repo // the script resolves ids in ITS cwd
 	var out, errb strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &errb
+	requireSafeScriptEnv(t, cmd.Env, cmd.Dir)
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("script rejected a build whose commit differs only in abbreviation width: %v\nstdout=%s\nstderr=%s",
 			err, out.String(), errb.String())
@@ -693,6 +696,7 @@ func TestInstallRefresh_ProbesThePortFromTheCapturedArgv(t *testing.T) {
 	cmd.Env = env
 	var out, errb strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &errb
+	requireSafeScriptEnv(t, cmd.Env, cmd.Dir)
 	err := cmd.Run()
 	if err != nil {
 		t.Fatalf("script failed a healthy restart on a non-default port: %v\nstdout=%s\nstderr=%s", err, out.String(), errb.String())
@@ -738,6 +742,7 @@ func TestInstallRefresh_ParsesEqualsSeparatedFlags(t *testing.T) {
 	cmd.Env = env
 	var out, errb strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &errb
+	requireSafeScriptEnv(t, cmd.Env, cmd.Dir)
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("script failed on --flag=value argv: %v\nstdout=%s\nstderr=%s", err, out.String(), errb.String())
 	}
@@ -773,6 +778,7 @@ func TestInstallRefresh_RestartsWithoutSetsid(t *testing.T) {
 	cmd.Env = append(e.env(), "PAD_NO_SETSID=1")
 	var out, errb strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &errb
+	requireSafeScriptEnv(t, cmd.Env, cmd.Dir)
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("script failed without setsid: %v\nstdout=%s\nstderr=%s", err, out.String(), errb.String())
 	}
@@ -822,6 +828,7 @@ func TestInstallRefresh_ResolvesHostAndPortFromTheConfigFile(t *testing.T) {
 	cmd.Env = filtered
 	var out, errb strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &errb
+	requireSafeScriptEnv(t, cmd.Env, cmd.Dir)
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("script ignored the config file's port: %v\nstdout=%s\nstderr=%s", err, out.String(), errb.String())
 	}
@@ -968,6 +975,7 @@ func TestInstallRefresh_ConfigValuesIgnoreInlineComments(t *testing.T) {
 	cmd.Env = env
 	var out, errb strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &errb
+	requireSafeScriptEnv(t, cmd.Env, cmd.Dir)
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("inline comments broke config resolution: %v\nstdout=%s\nstderr=%s", err, out.String(), errb.String())
 	}
@@ -1010,6 +1018,7 @@ func TestInstallRefresh_CapturesArgvWithoutProc(t *testing.T) {
 	cmd.Env = append(e.env(), "PAD_NO_PROC=1")
 	var out, errb strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &errb
+	requireSafeScriptEnv(t, cmd.Env, cmd.Dir)
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("script failed without /proc: %v\nstdout=%s\nstderr=%s", err, out.String(), errb.String())
 	}
@@ -1064,6 +1073,7 @@ func TestInstallRefresh_IgnoresNonNumericPortValues(t *testing.T) {
 	cmd.Env = env
 	var out, errb strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &errb
+	requireSafeScriptEnv(t, cmd.Env, cmd.Dir)
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("a bad PAD_PORT failed the refresh: %v\nstdout=%s\nstderr=%s", err, out.String(), errb.String())
 	}
@@ -1124,6 +1134,7 @@ func TestInstallRefresh_FailsClosedWhenTheLANAddressIsUnknown(t *testing.T) {
 	cmd.Env = env
 	var out, errb strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &errb
+	requireSafeScriptEnv(t, cmd.Env, cmd.Dir)
 	err := cmd.Run()
 	if err == nil {
 		t.Fatalf("script reported success without verifying the external bind; stdout=%s", out.String())
@@ -1670,6 +1681,7 @@ func runScriptIn(t *testing.T, e stubEnv, dir, built, installed, commit string, 
 	cmd.Dir = dir
 	var out, errb strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &errb
+	requireSafeScriptEnv(t, cmd.Env, cmd.Dir)
 	err := cmd.Run()
 	return runResult{stdout: out.String(), stderr: errb.String(), err: err}
 }
@@ -1897,6 +1909,7 @@ func TestInstallRefresh_RefusesAnUnreadableCwdNamingWhatWasRead(t *testing.T) {
 	cmd.Env = env
 	var out, errb strings.Builder
 	cmd.Stdout, cmd.Stderr = &out, &errb
+	requireSafeScriptEnv(t, cmd.Env, cmd.Dir)
 	if err := cmd.Run(); err == nil {
 		t.Fatalf("script proceeded without being able to read the server's cwd; stdout=%s", out.String())
 	}
@@ -2060,6 +2073,7 @@ func TestInstallRefresh_RestartedServerLogsToTheConfiguredLogFile(t *testing.T) 
 			}
 			var out, errb strings.Builder
 			cmd.Stdout, cmd.Stderr = &out, &errb
+			requireSafeScriptEnv(t, cmd.Env, cmd.Dir)
 			if err := cmd.Run(); err != nil {
 				t.Fatalf("refresh failed: %v\nstdout=%s\nstderr=%s", err, out.String(), errb.String())
 			}
@@ -2255,8 +2269,8 @@ func TestInstallRefresh_AnchorsARelativeDataDirToTheServersCwd(t *testing.T) {
 		t.Errorf("the report does not name %s; stdout=%s", wantLog, res.stdout)
 	}
 	// Neither the log nor the pid file is resolved against the caller's cwd.
-	// (refresh.lock still is, as every CLI reader of a relative data dir is:
-	// BUG-4066, so callerDir/data itself may exist.)
+	// (Nor, since BUG-4066, the refresh marker or config.toml:
+	// TestBUG4066_RefreshMarkerIsAnchoredAndCleanedUp pins that.)
 	for _, p := range []string{filepath.Join(callerDir, "data", "logs"), filepath.Join(callerDir, "data", "pad.pid")} {
 		if _, err := os.Stat(p); !os.IsNotExist(err) {
 			t.Errorf("the refresh resolved %s against the caller's cwd (stat err=%v)", p, err)
