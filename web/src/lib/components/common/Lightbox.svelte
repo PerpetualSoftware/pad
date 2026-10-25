@@ -649,11 +649,13 @@
 	const textLoader = createViewerTextLoader();
 	let markdownAttachment = $derived(isMarkdownAttachment(resolvedMime, headerMeta.fields.filename));
 	// Choices belong to this surface, with fresh defaults for each document.
-	// A retry/size fill keeps them; navigation or MIME reclassification resets
-	// them synchronously through overridable derived state (Svelte 5).
-	let textIdentity = $derived(`${img?.id ?? ''}:${resolvedMime ?? ''}:${headerMeta.fields.filename ?? ''}`);
+	// A late metadata fill keeps them; navigation resets both synchronously
+	// through overridable derived state (Svelte 5). Renderer/MIME defaults
+	// below still reset when the preview is reclassified.
+	let textIdentity = $derived(img?.id ?? '');
 	let markdownRaw = $derived.by(() => {
 		void textIdentity;
+		void markdownAttachment;
 		return false;
 	});
 	let wrapText = $derived.by(() => {

@@ -5170,6 +5170,38 @@ describe('Lightbox — the text arm', () => {
 		expect(root().querySelector('pre.lightbox-text-plain')).toBeNull();
 	});
 
+	it.each(['application/json', 'text/markdown'])('T3: keeps Wrap and Raw choices after a late filename fill for %s and applies MIME defaults', async (mime) => {
+		liveProps.images = [{ ...image(IMG_A, 'source', mime), size_bytes: 128 }];
+		mounted.push(mount(Lightbox, { target: appRoot, props: liveProps }));
+		flushSync();
+		await settleAsync();
+		const markdown = mime === 'text/markdown';
+		if (markdown) {
+			toggle('Raw').click();
+			flushSync();
+		}
+		toggle('Wrap').click();
+		flushSync();
+		expect(toggle('Wrap').getAttribute('aria-pressed')).toBe(String(!markdown));
+		liveProps.images = [{ ...liveProps.images[0], filename: markdown ? 'notes.md' : 'source.json' }];
+		await settleAsync();
+		expect(toggle('Wrap').getAttribute('aria-pressed')).toBe(String(!markdown));
+		if (markdown) expect(toggle('Raw').getAttribute('aria-pressed')).toBe('true');
+		// The same attachment can be reclassified: its new renderer/MIME still
+		// supplies the right default even though its identity did not change.
+		liveProps.images = [{ ...liveProps.images[0], mime_type: 'application/yaml' }];
+		await settleAsync();
+		expect(toggle('Wrap').getAttribute('aria-pressed')).toBe('false');
+		expect(root().querySelector('pre')!.classList.contains('lightbox-text-wrap')).toBe(false);
+		liveProps.images = [{ ...liveProps.images[0], mime_type: 'text/csv' }];
+		await settleAsync();
+		expect(root().querySelector('.attachment-table-scroll')).not.toBeNull();
+		liveProps.images = [{ ...liveProps.images[0], mime_type: 'text/markdown' }];
+		await settleAsync();
+		expect(toggle('Rendered').getAttribute('aria-pressed')).toBe('true');
+		expect(root().querySelector('.lightbox-text-body h1')?.textContent).toBe('Heading');
+	});
+
 	it('keeps toggle choices in this surface and resets defaults when navigating to another document', async () => {
 		mountViewer({ images: [
 			{ ...image(IMG_A, 'one', 'application/json'), size_bytes: 128 },
