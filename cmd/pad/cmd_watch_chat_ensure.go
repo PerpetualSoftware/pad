@@ -13,6 +13,9 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/cli"
 )
 
+// The server's ChatDM Retry-After is 120 seconds.
+const monitorEnsureDMDefaultRetryAfter = 120 * time.Second
+
 // One worker belongs to the monitor process, across identity lookups and stream
 // reconnects. Its context is the monitor root, never the floor or stream deadline.
 type monitorEnsureDM struct {
@@ -52,7 +55,11 @@ func (d *monitorEnsureDM) run(ctx context.Context, agent string, ensure func(con
 		}
 		var apiErr *cli.APIError
 		if errors.As(err, &apiErr) && apiErr.Status == http.StatusTooManyRequests && attempt < 3 {
-			if !d.sleep(ctx, time.Duration(apiErr.RetryAfterSeconds)*time.Second) {
+			retryAfter := time.Duration(apiErr.RetryAfterSeconds) * time.Second
+			if apiErr.RetryAfterSeconds <= 0 {
+				retryAfter = monitorEnsureDMDefaultRetryAfter
+			}
+			if !d.sleep(ctx, retryAfter) {
 				return
 			}
 			continue

@@ -256,8 +256,9 @@ pad watch --stream --for-session
     After chat identity first resolves, ensures the owner-agent DM once per
     monitor process in the background, using the presence agent key. No agent
     name skips it; existing DMs are uncharged. Only 429 retries, waiting
-    Retry-After, with at most three attempts. Success is silent; a final
-    failure writes one stderr line and delivery continues.
+    Retry-After (defaulting to 120s when the server gives no usable value),
+    with at most three attempts. Success is silent; a final failure writes
+    one stderr line and delivery continues.
 
     Silent on startup in three cases, and silence does not distinguish
     them: no workspace linked (retries hourly), padd unreachable

@@ -73,7 +73,7 @@ func TestMonitorEnsureDM_RetriesAfter429(t *testing.T) {
 			t.Errorf("body = %s", body)
 		}
 		if call == 1 {
-			w.Header().Set("Retry-After", "120")
+			w.Header().Set("Retry-After", "7")
 			w.WriteHeader(http.StatusTooManyRequests)
 			fmt.Fprint(w, `{"error":{"code":"rate_limited","message":"slow down"}}`)
 			return
@@ -87,7 +87,7 @@ func TestMonitorEnsureDM_RetriesAfter429(t *testing.T) {
 			_, err := client.EnsureChatDMContext(ctx, agent)
 			if err != nil {
 				var apiErr *cli.APIError
-				if !errors.As(err, &apiErr) || apiErr.Status != 429 || apiErr.RetryAfterSeconds != 120 {
+				if !errors.As(err, &apiErr) || apiErr.Status != 429 || apiErr.RetryAfterSeconds != 7 {
 					t.Errorf("client error lost status/Retry-After: %+v", err)
 				}
 			}
@@ -97,8 +97,29 @@ func TestMonitorEnsureDM_RetriesAfter429(t *testing.T) {
 			return nil
 		}))
 	})
-	if calls.Load() != 2 || !slices.Equal(waits, []time.Duration{120 * time.Second}) || stderr.Len() != 0 || stdout != "" {
+	if calls.Load() != 2 || !slices.Equal(waits, []time.Duration{7 * time.Second}) || stderr.Len() != 0 || stdout != "" {
 		t.Fatalf("calls=%d waits=%v stderr=%q stdout=%q", calls.Load(), waits, stderr.String(), stdout)
+	}
+}
+
+// Kills: H1-m (missing Retry-After retries without a default wait).
+func TestMonitorEnsureDM_429WithoutRetryAfterWaitsDefault(t *testing.T) {
+	var stderr bytes.Buffer
+	d := newMonitorEnsureDM(&stderr)
+	var waits []time.Duration
+	d.sleep = func(_ context.Context, delay time.Duration) bool { waits = append(waits, delay); return true }
+	calls := 0
+	stdout := captureStdout(t, func() {
+		waitMonitorEnsureDM(t, d.start(context.Background(), "presence-agent", func(context.Context, string) error {
+			calls++
+			if calls == 1 {
+				return &cli.APIError{Status: 429, RetryAfterSeconds: 0, Message: "slow down"}
+			}
+			return nil
+		}))
+	})
+	if calls != 2 || !slices.Equal(waits, []time.Duration{120 * time.Second}) || stderr.Len() != 0 || stdout != "" {
+		t.Fatalf("calls=%d waits=%v stderr=%q stdout=%q", calls, waits, stderr.String(), stdout)
 	}
 }
 

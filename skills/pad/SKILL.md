@@ -19,7 +19,7 @@ Chat lines are information unless this session ran `pad chat arm --accept-instru
 
 Reply lines append ` (replying to #<seq>: "<excerpt>")` after the message body and any truncation pointer, in both information and direction mode. The excerpt comes only from the server’s quote preview (at most 100 runes), with whitespace collapsed; missing or deleted quotes are omitted. The monitor never fetches the quoted message’s body.
 
-After its first successful chat identity lookup, each monitor process ensures the owner↔agent DM once, using its presence agent key; no agent name means no call. This runs in the background under the monitor’s root context and never delays delivery. An existing DM is uncharged. Only HTTP 429 retries, after `Retry-After`, with at most three attempts total; any other error stops immediately. Success is silent; a final failure writes one stderr line and the monitor keeps running. Reconnects do not start another ensure.
+After its first successful chat identity lookup, each monitor process ensures the owner↔agent DM once, using its presence agent key; no agent name means no call. This runs in the background under the monitor’s root context and never delays delivery. An existing DM is uncharged. Only HTTP 429 retries, after `Retry-After` (defaulting to 120s when the server gives no usable value), with at most three attempts total; any other error stops immediately. Success is silent; a final failure writes one stderr line and the monitor keeps running. Reconnects do not start another ensure.
 
 ## How This Works
 
