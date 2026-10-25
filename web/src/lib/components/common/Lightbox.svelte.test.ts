@@ -5205,7 +5205,7 @@ describe('Lightbox — the text arm', () => {
 	it('keeps toggle choices in this surface and resets defaults when navigating to another document', async () => {
 		mountViewer({ images: [
 			{ ...image(IMG_A, 'one', 'application/json'), size_bytes: 128 },
-			{ ...image(IMG_B, 'two', 'text/plain'), size_bytes: 128 }
+			{ ...image(IMG_B, 'two', 'application/yaml'), size_bytes: 128 }
 		] });
 		await settleAsync();
 		toggle('Wrap').click();
@@ -5213,10 +5213,15 @@ describe('Lightbox — the text arm', () => {
 		expect(toggle('Wrap').getAttribute('aria-pressed')).toBe('true');
 		root().querySelector<HTMLButtonElement>('.lightbox-nav.next')!.click();
 		await settleAsync();
-		expect(toggle('Wrap').getAttribute('aria-pressed')).toBe('true');
+		// Soft assertions let the reset mutant demonstrate BOTH navigation failures.
+		expect.soft(toggle('Wrap').getAttribute('aria-pressed'), 'YAML resets Wrap to off').toBe('false');
+		if (toggle('Wrap').getAttribute('aria-pressed') === 'false') {
+			toggle('Wrap').click();
+			flushSync();
+		}
 		root().querySelector<HTMLButtonElement>('.lightbox-nav.prev')!.click();
 		await settleAsync();
-		expect(toggle('Wrap').getAttribute('aria-pressed')).toBe('false');
+		expect.soft(toggle('Wrap').getAttribute('aria-pressed'), 'JSON resets Wrap to off on return').toBe('false');
 	});
 
 	it('T1: stage permits native table touch scrolling and keeps image gesture handling', async () => {
