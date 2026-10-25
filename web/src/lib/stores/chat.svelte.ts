@@ -98,7 +98,6 @@ class ChatStore {
 		void this.#run();
 	}
 
-	/** Called once per hint, for a thread that is open. Returns the unsubscribe. */
 	subscribe(fn: Listener): () => void {
 		this.#listeners.add(fn);
 		return () => {
