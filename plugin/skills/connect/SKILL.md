@@ -19,6 +19,7 @@ Do these in order:
 1. **Arm the session.** Run `pad session arm`. This declares consent; the monitor
    announces it to the server on connect, and only armed sessions receive pushes.
    Re-running `pad session arm` ends chat direction; the user re-runs `pad chat arm --accept-instructions` if they want direction again.
+   After the monitor first resolves chat identity, it ensures your owner↔agent DM in the background once per monitor process (existing DMs are uncharged). Reconnects do not repeat it; a final failure prints one stderr line without stopping delivery.
 
 2. **First-connect check + boot ritual.** Run `pad session first-connect --format json`.
    - If `first_connect` is **true**: load the workspace context with `pad bootstrap

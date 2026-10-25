@@ -251,6 +251,14 @@ pad watch --stream --for-session
     stream may have missed notifications it cannot replay: after that line,
     re-check watched items rather than assuming nothing changed.
 
+    Chat replies append a reference and server-supplied quote excerpt after
+    the body (and its truncation pointer); missing/deleted quotes are omitted.
+    After chat identity first resolves, ensures the owner-agent DM once per
+    monitor process in the background, using the presence agent key. No agent
+    name skips it; existing DMs are uncharged. Only 429 retries, waiting
+    Retry-After, with at most three attempts. Success is silent; a final
+    failure writes one stderr line and delivery continues.
+
     Silent on startup in three cases, and silence does not distinguish
     them: no workspace linked (retries hourly), padd unreachable
     (backoff from 5s, capped at 5min), and the server refusing the
@@ -407,6 +415,8 @@ func monitorClient() (*cli.Client, error) {
 //     for exactly which conditions this folds into "unreachable" rather
 //     than treating as fatal.
 //   - a matching event → exactly one stdout line, formatMonitorLine.
+//   - after chat identity resolves, a background owner-agent DM ensure runs
+//     once per process; success is silent, final failure is one stderr line.
 //
 // Runs until ctx is cancelled (Ctrl+C / SIGTERM) or, on the initial
 // call from Cobra's cmd.Context(), forever. The .pad.toml check and
@@ -425,8 +435,8 @@ func monitorClient() (*cli.Client, error) {
 //
 // Failures are silent by construction: os.Getwd can fail (a deleted
 // cwd), and the answer is an unlabelled session, not a dead monitor.
-// This whole file's contract is "print nothing, keep running" (see
-// runWatchMonitor's doc comment).
+// Identity-label failures keep the monitor silent and running (see
+// runWatchMonitor's doc comment for the separate DM-ensure diagnostic).
 func monitorSessionIdentity() cli.StreamSessionIdentity {
 	ident := cli.StreamSessionIdentity{PID: os.Getpid()}
 	if cwd, err := os.Getwd(); err == nil {
