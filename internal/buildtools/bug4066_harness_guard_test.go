@@ -266,8 +266,8 @@ func TestHarnessGuard_RefusesAHazardousScriptEnv(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(cfg, "config.toml"), []byte("port = 7777\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := scriptEnvHazard(append(base, "PAD_PORT="), "", testTempScope(t)); err == nil {
-		t.Errorf("a config-file port of 7777 was allowed")
+	if err := scriptEnvHazard(append(base, "PAD_PORT="), "", testTempScope(t)); err == nil || !strings.Contains(err.Error(), "is 7777 (or unreadable)") {
+		t.Errorf("a config-file port of 7777: want the numeric 7777 refusal, got %v", err)
 	}
 	// Something that is not a stub, answering on a LAN address.
 	var lan string
