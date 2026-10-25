@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"sync"
@@ -15,6 +16,10 @@ import (
 
 // The server's ChatDM Retry-After is 120 seconds.
 const monitorEnsureDMDefaultRetryAfter = 120 * time.Second
+
+// The largest Retry-After, in seconds, that a time.Duration can hold
+// (TASK-4043 r2 J1); a larger one would wrap negative.
+const monitorEnsureDMMaxRetryAfterSeconds = math.MaxInt64 / int64(time.Second)
 
 // One worker belongs to the monitor process, across identity lookups and stream
 // reconnects. Its context is the monitor root, never the floor or stream deadline.
@@ -55,9 +60,11 @@ func (d *monitorEnsureDM) run(ctx context.Context, agent string, ensure func(con
 		}
 		var apiErr *cli.APIError
 		if errors.As(err, &apiErr) && apiErr.Status == http.StatusTooManyRequests && attempt < 3 {
-			retryAfter := time.Duration(apiErr.RetryAfterSeconds) * time.Second
-			if apiErr.RetryAfterSeconds <= 0 {
-				retryAfter = monitorEnsureDMDefaultRetryAfter
+			// No usable header (0 or negative) or one too large for a Duration
+			// waits the default, so no input can make the retry hot.
+			retryAfter := monitorEnsureDMDefaultRetryAfter
+			if secs := int64(apiErr.RetryAfterSeconds); secs > 0 && secs <= monitorEnsureDMMaxRetryAfterSeconds {
+				retryAfter = time.Duration(secs) * time.Second
 			}
 			if !d.sleep(ctx, retryAfter) {
 				return

@@ -102,24 +102,60 @@ func TestMonitorEnsureDM_RetriesAfter429(t *testing.T) {
 	}
 }
 
-// Kills: H1-m (missing Retry-After retries without a default wait).
+// TASK-4043 r1 H1 and r2 J1: a 429 with no usable Retry-After, or one too
+// large for a Duration, waits the 120s default; the largest value that fits is
+// honoured as sent. The absent row goes through the real client, so the
+// header-to-zero mapping and the worker's default are tested together.
+// Kills: H1-m (no default for 0); J1-m (no overflow bound, 9223372037 wraps).
 func TestMonitorEnsureDM_429WithoutRetryAfterWaitsDefault(t *testing.T) {
-	var stderr bytes.Buffer
-	d := newMonitorEnsureDM(&stderr)
-	var waits []time.Duration
-	d.sleep = func(_ context.Context, delay time.Duration) bool { waits = append(waits, delay); return true }
-	calls := 0
-	stdout := captureStdout(t, func() {
-		waitMonitorEnsureDM(t, d.start(context.Background(), "presence-agent", func(context.Context, string) error {
-			calls++
-			if calls == 1 {
-				return &cli.APIError{Status: 429, RetryAfterSeconds: 0, Message: "slow down"}
+	maxFits := monitorEnsureDMMaxRetryAfterSeconds
+	for _, tc := range []struct {
+		name    string
+		viaHTTP bool // a real 429 with no Retry-After header, through the client
+		secs    int  // otherwise: the injected APIError's RetryAfterSeconds
+		want    time.Duration
+	}{
+		{name: "zero", secs: 0, want: 120 * time.Second},
+		{name: "negative", secs: -5, want: 120 * time.Second},
+		{name: "absent", viaHTTP: true, want: 120 * time.Second},
+		{name: "wraps", secs: 9223372037, want: 120 * time.Second},
+		{name: "largest that fits", secs: int(maxFits), want: time.Duration(maxFits) * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stderr bytes.Buffer
+			d := newMonitorEnsureDM(&stderr)
+			var waits []time.Duration
+			d.sleep = func(_ context.Context, delay time.Duration) bool { waits = append(waits, delay); return true }
+			var calls atomic.Int32
+			ensure := func(context.Context, string) error {
+				if calls.Add(1) == 1 {
+					return &cli.APIError{Status: 429, RetryAfterSeconds: tc.secs, Message: "slow down"}
+				}
+				return nil
 			}
-			return nil
-		}))
-	})
-	if calls != 2 || !slices.Equal(waits, []time.Duration{120 * time.Second}) || stderr.Len() != 0 || stdout != "" {
-		t.Fatalf("calls=%d waits=%v stderr=%q stdout=%q", calls, waits, stderr.String(), stdout)
+			if tc.viaHTTP {
+				h := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if calls.Add(1) == 1 {
+						w.WriteHeader(http.StatusTooManyRequests) // no Retry-After header at all
+						fmt.Fprint(w, `{"error":{"code":"rate_limited","message":"slow down"}}`)
+						return
+					}
+					fmt.Fprint(w, `{"number":1}`)
+				}))
+				defer h.Close()
+				client := cli.NewClientFromURLWithAgentName(h.URL, "presence-agent")
+				ensure = func(ctx context.Context, agent string) error {
+					_, err := client.EnsureChatDMContext(ctx, agent)
+					return err
+				}
+			}
+			stdout := captureStdout(t, func() {
+				waitMonitorEnsureDM(t, d.start(context.Background(), "presence-agent", ensure))
+			})
+			if calls.Load() != 2 || !slices.Equal(waits, []time.Duration{tc.want}) || stderr.Len() != 0 || stdout != "" {
+				t.Fatalf("calls=%d waits=%v want [%v] stderr=%q stdout=%q", calls.Load(), waits, tc.want, stderr.String(), stdout)
+			}
+		})
 	}
 }
 
