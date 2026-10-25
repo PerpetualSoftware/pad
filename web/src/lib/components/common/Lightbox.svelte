@@ -2965,7 +2965,7 @@
 	}
 
 	/* TOUCH-ACTION INTERSECTS DOWN THE ANCESTOR CHAIN (codex R2 #2). The card's
-	   `pan-y` cannot override an ancestor's `none` — the allowed behaviours for a
+	   `pan-x pan-y` cannot override an ancestor's `none` — the allowed behaviours for a
 	   touch are the INTERSECTION along the chain, so `none` on the stage wins and
 	   a phone could not scroll the document at all. The stage claims `none` for
 	   the pan/zoom gesture, and on the text and table arms there is no such gesture (no
@@ -3056,9 +3056,10 @@
 	     - `overscroll-behavior: contain` — a scroll at the end of the document
 	       does NOT chain to the inert page behind, which is the guarantee the
 	       wheel handler's `preventDefault` was providing before this arm existed
-	     - `touch-action: pan-y` / `user-select: text` — the stage sets
+	     - `touch-action: pan-x pan-y` / `user-select: text` — the stage sets
 	       `touch-action: none` and the backdrop `user-select: none` for the pan
-	       gesture; a document has to opt back out of both. */
+	       gesture; a document has to opt back out of both. Both axes (TASK-4074):
+	       a wide table or an unwrapped line pans sideways as well as down. */
 	.lightbox-text-scroll {
 		pointer-events: auto;
 		width: min(80ch, 100%);
