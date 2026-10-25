@@ -1,7 +1,8 @@
 // The Pad pane inside Claude Code (IDEA-3477; folded into the pad plugin by TASK-3486).
 //
-// One command, /pad-pane, opens a pane on the linked workspace. Nothing else:
-// no blocking, no band, no changes to what Claude sees. Session start runs
+// One command, /pad-pane, opens a pane on the linked workspace. Nothing else
+// changes what Claude sees, and nothing blocks. The one band is the chat-seen
+// band (TASK-4071): chat delivered to the agent, shown to the person too. Session start runs
 // nothing (TASK-3970); after a plugin reload it only picks back up a pane that
 // was already open. Otherwise the mod listens for Claude touching Pad: the
 // first touch wakes the session (presence, live events; see wake), and an
@@ -1098,6 +1099,10 @@ function wake($) {
   let registered = () => {}
   woken = new Promise((r) => { registered = r })
   startWatch($, registered).catch(() => {}).finally(registered)
+  // TASK-4071: the chat-seen reader starts with the session's first use of
+  // Pad too, armed or not: /pad:connect may arm the session later, and its
+  // monitor writes the same file.
+  startSeen($).catch(() => {})
   return woken
 }
 
@@ -1200,6 +1205,118 @@ function stopRefresh() {
   refresh = null
 }
 
+// ---------------------------------------------------------------- chat seen
+
+// TASK-4071: a chat line delivered to the agent is shown to the person at this
+// terminal too. `pad watch --stream --for-session` appends each chat line it
+// prints to ~/.pad/chat-seen/<harness pid>.log; this tails that file into a band
+// above the prompt (the last few lines, until the person's next prompt) and a
+// toast per burst. One reader for both launch paths: the mod's own stream and
+// the /pad:connect monitor write the same file, keyed by the same pid.
+//
+// It is a display cue, never a record (the agent's stdout is). Reading starts
+// at the end of whatever the file holds, so a /clear or a recycled pid never
+// replays old lines. A rotation (the writer moves a full log to .1) is seen as
+// the file shrinking; lines that rotated away between two polls are not shown,
+// and nothing catches them up (TASK-4071 C3). A rotated log that grows back past
+// the old position within one poll is misread as a continuation, for one poll.
+const SEEN_POLL_MS = 1000
+const SEEN_BAND_LINES = 3
+const SEEN_LINE_MAX = 300
+let seenTimer = null
+let seenPath = ''
+let seenSize = -1 // bytes at the last poll; -1 until the first, which only finds the end
+let seenChars = 0 // characters of the file already handled, up to its last newline
+let seenPolling = false
+let seenBand = [] // the lines the band shows
+
+const clipLine = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s)
+
+// The person's own prompt, typed here or through Remote Control: what clears
+// the band. A prompt this mod relays, or a background task's, does not.
+export function isPersonPrompt(e) {
+  const kind = e?.origin?.kind
+  return kind === 'composer' || kind === 'bridge'
+}
+
+async function chatSeenPath($) {
+  const pid = await sessionPid($)
+  if (!pid) return ''
+  try {
+    const r = await $.process.run(['sh', '-c', 'printf %s "$HOME"'], { timeoutMs: 5000 })
+    const home = String(r.stdout || '')
+    return home.startsWith('/') ? home.replace(/\/+$/, '') + '/.pad/chat-seen/' + pid + '.log' : ''
+  } catch {
+    return ''
+  }
+}
+
+async function startSeen($) {
+  if (seenTimer || seenPath) return
+  const path = await chatSeenPath($)
+  if (!path || seenTimer) return
+  seenPath = path
+  await pollSeen($)
+  seenTimer = $.clock.every(SEEN_POLL_MS, () => { pollSeen($).catch(() => {}) })
+}
+
+function stopSeen() {
+  if (seenTimer) seenTimer.cancel()
+  seenTimer = null
+  seenPath = ''
+  seenSize = -1
+  seenChars = 0
+  seenBand = []
+}
+
+async function pollSeen($) {
+  if (seenPolling || !seenPath) return
+  seenPolling = true
+  try {
+    let size = 0
+    try {
+      const st = await $.fs.stat(seenPath)
+      size = st.kind === 'file' && !st.isLink ? st.size : 0
+    } catch {
+      size = 0 // no file yet: a first line will create it
+    }
+    const first = seenSize < 0
+    if (size === seenSize) return
+    if (size < seenSize) seenChars = 0 // rotated (or removed): read the new log from its start
+    seenSize = size
+    if (!size) { seenChars = 0; return }
+    let text
+    try {
+      text = await $.fs.read(seenPath)
+    } catch {
+      return
+    }
+    if (text.length < seenChars) seenChars = 0
+    const end = text.lastIndexOf('\n') + 1 // a line still being written waits for its newline
+    if (end <= seenChars) return
+    const fresh = text.slice(seenChars, end).split('\n').filter((l) => l.trim())
+    seenChars = end
+    if (first || !fresh.length) return // the first poll only finds the end
+    seenBand = [...seenBand, ...fresh].slice(-SEEN_BAND_LINES).map((l) => clipLine(l, SEEN_LINE_MAX))
+    const last = clipLine(fresh[fresh.length - 1], 120)
+    $.ui.toast(fresh.length > 1 ? last + ' (+' + (fresh.length - 1) + ' more)' : last)
+    redraw($)
+  } finally {
+    seenPolling = false
+  }
+}
+
+function drawSeenBand($, e) {
+  const { Box, Text } = $.ui.resolve(e)
+  return Box({
+    flexDirection: 'column',
+    children: [
+      Text({ dimColor: true, children: ['Pad chat (delivered to the agent)'] }),
+      ...seenBand.map((l) => Text({ wrap: 'truncate-end', children: [l] })),
+    ],
+  })
+}
+
 // ---------------------------------------------------------------- hooks
 
 export function register(on) {
@@ -1226,7 +1343,10 @@ export function register(on) {
   // what consent is keyed on, and session.start does not fire again after
   // them: the stream stays. Any other end stops it.
   on('session.end', async ($, e, next) => {
-    if (e.reason !== 'clear' && e.reason !== 'resume') stopWatch()
+    if (e.reason !== 'clear' && e.reason !== 'resume') {
+      stopWatch()
+      stopSeen()
+    }
     return next(e)
   })
 
@@ -1299,6 +1419,21 @@ export function register(on) {
     remember(to)
     $.ui.focus({ requestId: PANE, key: to }).catch(() => {})
     return {}
+  })
+
+  // The chat-seen band (TASK-4071) stays until the person's own next prompt;
+  // a prompt this mod or anything else submits does not clear it.
+  on('prompt.submit', async ($, e, next) => {
+    if (seenBand.length && isPersonPrompt(e)) {
+      seenBand = []
+      redraw($)
+    }
+    return next(e)
+  })
+
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (!seenBand.length || e.props?.hasSurvey) return next(e)
+    return drawSeenBand($, e)
   })
 
   on('ui.render', { component: 'Pane' }, async ($, e, next) => {
