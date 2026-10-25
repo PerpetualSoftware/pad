@@ -505,6 +505,9 @@ func makeFanOutHandler(def ToolDef, env ActionEnv) server.ToolHandlerFunc {
 		if errRes := rejectUndeclaredKeys(def, declared, input); errRes != nil {
 			return errRes, nil
 		}
+		if errRes := rejectMalformedNumbers(def, action, input); errRes != nil {
+			return errRes, nil
+		}
 		// Clone before stripping so we don't mutate req.Params.Arguments
 		// — defensive against any future mcp-go change that re-reads the
 		// request map after dispatch.
@@ -659,6 +662,40 @@ func rejectUndeclaredKeys(def ToolDef, declared map[string]bool, input map[strin
 		Hint: "Undeclared keys are rejected rather than silently dropped (ToolSurfaceVersion 0.24). Declared parameters: " +
 			strings.Join(declaredNames, ", "),
 	})
+}
+
+// rejectMalformedNumbers gives a "number" param on stdio the rule remote
+// applies (numericInput), before the value becomes CLI text (BUG-4070).
+// Every "number" param is an integer, and stdio forwarded a string verbatim:
+// an int flag parses it base 0 (pflag's ParseInt(s, 0, 64)), so "010" was 8,
+// "0x10" 16 and "1_000" 1000, and chat delete's positional seq parses base 10,
+// so "010" was 10 and "+5" 5. Remote refuses all of them (decimalIntString,
+// BUG-4065). A float64 was formatted and forwarded too, so 2^53 and beyond,
+// which remote refuses as possibly rounded (wholeInt64, BUG-4061 / ba981cb4f),
+// reached the CLI as a number. Only strings and floats are checked: other
+// types keep their path (BUG-4070 r1, r2). intParam (pad_item list and
+// history limit) reads null as absent, so the default applies (v0.104), and
+// refuses a bool, an array or an object; everywhere else the CLI's own parse
+// refuses all of them. A value that passes is forwarded unchanged; it has no
+// prefix, sign or leading zero, so both bases read it as the same number. Nil
+// result means the input is clean.
+func rejectMalformedNumbers(def ToolDef, action string, input map[string]any) *CallToolResult {
+	for _, p := range def.Schema.Params {
+		if p.Type != "number" {
+			continue
+		}
+		v := input[p.Name]
+		switch v.(type) {
+		case string, float64, float32, json.Number:
+		default:
+			continue
+		}
+		if _, _, err := numericInput(v); err != nil {
+			return validationFailedResult(def.Name+" "+action, fmt.Sprintf("%s %s", p.Name, err),
+				fmt.Sprintf("Pass %s as a whole JSON number below 2^53, or a string of decimal digits with no leading zero.", p.Name))
+		}
+	}
+	return nil
 }
 
 // sortedActionNames returns def.Actions' keys in lexical order. Used

@@ -2267,7 +2267,24 @@ const CmdhelpVersion = "0.1"
 // message). Non-numeric query keys are still forwarded verbatim. These
 // parameters are declared "number", so the bump is owed by behaviour, as for
 // v0.103.
-const ToolSurfaceVersion = "0.104"
+//
+// v0.105 — BUG-4070: stdio applies v0.104's rule to every top-level parameter
+// declared "number", before the value becomes CLI text. A string used to reach
+// the CLI verbatim: an int flag parses base 0, so "010" was 8, "0x10" 16,
+// "1_000" 1000 and "+5" 5, and pad_chat delete's positional seq parses base
+// 10, so "010" was 10. Now a string is accepted only as a plain decimal
+// integer with no leading zero, bounded |x| < 2^53, and forwarded unchanged;
+// every other string is refused (validation_failed, naming the parameter). A
+// JSON number used to be formatted and forwarded whatever its size; now one
+// that is not whole, or of magnitude 2^53 or more (which the decoder may
+// already have rounded), is refused the same way, as remote has since v0.103.
+// For a string or a JSON number, stdio now accepts and refuses what remote
+// does. Other types keep their path: intParam (pad_item list and history
+// limit) reads null as absent, so the default applies (v0.104), and refuses a
+// bool, an array or an object; everywhere else the CLI's own parse refuses
+// all of them. The nested pad_item.patch edits[].line_hint is BUG-4082.
+// Behaviour only; the schemas are unchanged, as for v0.103 and v0.104.
+const ToolSurfaceVersion = "0.105"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a
