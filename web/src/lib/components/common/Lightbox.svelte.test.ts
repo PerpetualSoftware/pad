@@ -5187,12 +5187,12 @@ describe('Lightbox — the text arm', () => {
 		await settleAsync();
 		expect(toggle('Wrap').getAttribute('aria-pressed')).toBe(String(!markdown));
 		if (markdown) expect(toggle('Raw').getAttribute('aria-pressed')).toBe('true');
-		// The same attachment can be reclassified: its new renderer/MIME still
-		// supplies the right default even though its identity did not change.
+		// A new default class resets Wrap; JSON -> YAML stays in the same class
+		// and preserves the choice, even though the MIME itself changed.
 		liveProps.images = [{ ...liveProps.images[0], mime_type: 'application/yaml' }];
 		await settleAsync();
-		expect(toggle('Wrap').getAttribute('aria-pressed')).toBe('false');
-		expect(root().querySelector('pre')!.classList.contains('lightbox-text-wrap')).toBe(false);
+		expect(toggle('Wrap').getAttribute('aria-pressed')).toBe(String(!markdown));
+		expect(root().querySelector('pre')!.classList.contains('lightbox-text-wrap')).toBe(!markdown);
 		liveProps.images = [{ ...liveProps.images[0], mime_type: 'text/csv' }];
 		await settleAsync();
 		expect(root().querySelector('.attachment-table-scroll')).not.toBeNull();
@@ -5200,6 +5200,24 @@ describe('Lightbox — the text arm', () => {
 		await settleAsync();
 		expect(toggle('Rendered').getAttribute('aria-pressed')).toBe('true');
 		expect(root().querySelector('.lightbox-text-body h1')?.textContent).toBe('Heading');
+	});
+
+	it('U2: keeps Wrap off when a text/plain attachment receives a late .md filename', async () => {
+		liveProps.images = [{ ...image(IMG_A, 'source', 'text/plain'), size_bytes: 128 }];
+		mounted.push(mount(Lightbox, { target: appRoot, props: liveProps }));
+		await settleAsync();
+		expect(toggle('Wrap').getAttribute('aria-pressed')).toBe('true');
+		toggle('Wrap').click();
+		flushSync();
+		expect(toggle('Wrap').getAttribute('aria-pressed')).toBe('false');
+		liveProps.images = [{ ...liveProps.images[0], filename: 'notes.md' }];
+		await settleAsync();
+		// markdownRaw still resets to Rendered on the new markdown classification.
+		expect(toggle('Rendered').getAttribute('aria-pressed')).toBe('true');
+		toggle('Raw').click();
+		flushSync();
+		expect(toggle('Wrap').getAttribute('aria-pressed')).toBe('false');
+		expect(root().querySelector('pre')!.classList.contains('lightbox-text-wrap')).toBe(false);
 	});
 
 	it('keeps toggle choices in this surface and resets defaults when navigating to another document', async () => {

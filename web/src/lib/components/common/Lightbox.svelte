@@ -658,9 +658,12 @@
 		void markdownAttachment;
 		return false;
 	});
+	let wrapDefault = $derived(!['application/json', 'application/yaml', 'application/toml'].includes(
+		resolvedMime?.split(';')[0].trim().toLowerCase() ?? ''
+	));
 	let wrapText = $derived.by(() => {
 		void textIdentity;
-		return markdownAttachment || resolvedMime?.split(';')[0].trim().toLowerCase() === 'text/plain';
+		return wrapDefault;
 	});
 
 	// The id AND the pixel dimensions, as ONE stable primitive string — never the
