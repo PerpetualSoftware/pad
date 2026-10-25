@@ -775,9 +775,10 @@ const (
 // line_hint remote's rule (editsWithLineHints, shared with mapItemPatch) and
 // then forwards to `item patch` as passThrough did (BUG-4082). edits used to
 // reach the CLI unread: its JSON decode into an int refused a string hint that
-// remote coerces, and took a JSON number of 2^53 or more, which the decoder
-// may already have rounded, as a line number. A refusal is validation_failed
-// with remote's message. The caller's map is not modified.
+// remote coerces, and took a JSON number of 2^53 or more, which mcp-go's
+// float64 decode of the request may already have rounded, as a line number. A
+// refusal is validation_failed with remote's message. The caller's map is not
+// modified.
 func actionItemPatch(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error) {
 	edits, isList := input["edits"].([]any)
 	if !isList {

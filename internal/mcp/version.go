@@ -2289,7 +2289,8 @@ const CmdhelpVersion = "0.1"
 // remote's rule (v0.104), through the one helper both transports now call.
 // stdio used to forward edits to the CLI unread, so its JSON decode refused a
 // string hint that remote coerces ("5" is now 5 on stdio too), and took 2^53
-// or more, which the decoder may already have rounded, as a line number. Now
+// or more, which mcp-go's float64 decode of the request may already have
+// rounded, as a line number. Now
 // a hint that is not a whole number below 2^53 (a fraction, "010", a bool, an
 // object) is refused on stdio with remote's validation_failed, naming the
 // edit ("(in edits[1])"); null is absent, and an edit that is not an object
