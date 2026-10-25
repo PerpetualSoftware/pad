@@ -2491,7 +2491,7 @@
 	-->
 	<div
 		class="lightbox-stage"
-		class:lightbox-stage-text={shownRenderer === 'text'}
+		class:lightbox-stage-text={shownRenderer === 'text' || shownRenderer === 'table'}
 		bind:this={stageEl}
 	>
 		{#if hasMultiple}
@@ -2957,9 +2957,9 @@
 	   `pan-y` cannot override an ancestor's `none` — the allowed behaviours for a
 	   touch are the INTERSECTION along the chain, so `none` on the stage wins and
 	   a phone could not scroll the document at all. The stage claims `none` for
-	   the pan/zoom gesture, and on the text arm there is no such gesture (no
+	   the pan/zoom gesture, and on the text and table arms there is no such gesture (no
 	   bitmap, zoom disabled), so it gives the claim up for the duration. Scoped to
-	   the arm rather than relaxed globally: every other arm still needs it. */
+	   these arms rather than relaxed globally: every other arm still needs it. */
 	.lightbox-stage-text {
 		touch-action: auto;
 	}

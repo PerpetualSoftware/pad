@@ -5187,6 +5187,24 @@ describe('Lightbox — the text arm', () => {
 		expect(toggle('Wrap').getAttribute('aria-pressed')).toBe('false');
 	});
 
+	it('T1: stage permits native table touch scrolling and keeps image gesture handling', async () => {
+		mobileFlag = true;
+		try {
+			mountViewer({ images: [
+				{ ...image(IMG_A, 'report.csv', 'text/csv'), size_bytes: 128 },
+				{ ...image(IMG_B, 'photo.png', 'image/png'), size_bytes: 128 }
+			] });
+			await settleAsync();
+			expect(root().querySelector('.lightbox-stage')!.classList.contains('lightbox-stage-text')).toBe(true);
+			root().querySelector<HTMLButtonElement>('.lightbox-nav.next')!.click();
+			await settleAsync();
+			expect(root().querySelector('.lightbox-stage')!.classList.contains('lightbox-stage-text')).toBe(false);
+		} finally {
+			mobileFlag = false;
+			flushSync();
+		}
+	});
+
 	it.each(['text/plain', 'text/csv'])('mounts %s inside the filling sheet stage and uses the phone table budget', async (mime) => {
 		mobileFlag = true;
 		try {
