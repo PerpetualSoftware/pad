@@ -256,6 +256,7 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 	if !isBearerAuth(r) {
 		prefs.agentKey = ""
 	}
+	prefs.chatInbox = chatInboxPref(r, user)
 	// sessionID hoisted out of the if-block (PLAN-2558 S5, TASK-2588): a
 	// targeted push's predicate (Notification.TargetSessionID) is
 	// evaluated in the select loop below, which needs this connection's
@@ -867,9 +868,25 @@ func watchNotificationVisible(watches map[string]string, vis watchAccessVisibili
 const watchAccessQueryParam = "access"
 const watchChatQueryParam = "chat"
 
+// watchChatInboxQueryParam opts a cookie stream into the ref-only chat
+// notices addressed to its own user (TASK-4044).
+const watchChatInboxQueryParam = "chat_inbox"
+
+// chatInboxPref reads chat_inbox. It is honoured only for a cookie session of
+// a person: on any bearer or PAT stream, or for an app principal, it is
+// ignored (not refused), like chat=true on a cookie stream.
+func chatInboxPref(r *http.Request, user *models.User) bool {
+	if r.URL.Query().Get(watchChatInboxQueryParam) != "true" {
+		return false
+	}
+	return !isBearerAuth(r) && user != nil && !user.IsApp() && appContextFrom(r) == nil
+}
+
 type watchStreamPrefs struct {
 	armed, access, chat bool
-	agentKey            string
+	// chatInbox: TASK-4044, see chatInboxPref.
+	chatInbox bool
+	agentKey  string
 }
 
 func (c *watchVisCache) denied() bool { return c.deny }
@@ -898,6 +915,11 @@ func (c *watchVisCache) delivers(watches map[string]string, userID, sessionID st
 // against PAD_SSE_MAX_PER_USER like any other.
 func watchStreamDelivers(watches map[string]string, vis watchAccessVisibility, userID string, sessionID string, prefs watchStreamPrefs, n watchevents.Notification) bool {
 	if n.Kind == watchevents.KindChat {
+		// TASK-4044: an empty agent key is a human-target (inbox) notice; the
+		// two cases are disjoint, so nothing is delivered twice.
+		if n.TargetAgentKey == "" {
+			return prefs.chatInbox && n.TargetUserID != "" && n.TargetUserID == userID
+		}
 		return prefs.chat && prefs.armed && n.TargetUserID != "" && n.TargetUserID == userID && n.TargetAgentKey != "" && n.TargetAgentKey == prefs.agentKey
 	}
 	if n.Kind == watchevents.KindWorkspaceAccessChanged {
