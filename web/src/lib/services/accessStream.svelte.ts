@@ -1,7 +1,9 @@
 // The workspace-access stream (PLAN-3002 U7b, TASK-3275): ONE EventSource per
 // browser and user (per tab before BUG-3318, see below) on
 // GET /api/v1/events/stream?access=true, whose only job is to hear
-// `workspace_access_changed` (TASK-3272) and refetch.
+// `workspace_access_changed` (TASK-3272) and refetch. It also carries the chat
+// inbox hints (`chat_inbox=true`, TASK-4044), which it hands to the chat store
+// and never to refetch(): a chat hint says nothing about workspace access.
 //
 // The event is a REFETCH HINT and is never applied as state. Correctness lives
 // on the read-filtered GET /me/workspace-tabs and the workspace list, so a
@@ -32,6 +34,7 @@ import { goto } from '$app/navigation';
 import { api, isWorkspaceNotFoundBody } from '$lib/api/client';
 import { page } from '$app/state';
 import { authStore } from '$lib/stores/auth.svelte';
+import { chatStore, type ChatNotice } from '$lib/stores/chat.svelte';
 import { tabsStore } from '$lib/stores/tabs.svelte';
 import { workspaceStore } from '$lib/stores/workspace.svelte';
 import { uiStore } from '$lib/stores/ui.svelte';
@@ -39,9 +42,10 @@ import { tabLanding } from '$lib/utils/tabLanding';
 import { workspaceRestoreTarget } from '$lib/utils/workspace-route';
 import { probeRefusal, reconnectDelayMs } from './sseReconnect';
 
-export const ACCESS_STREAM_URL = '/api/v1/events/stream?access=true';
+export const ACCESS_STREAM_URL = '/api/v1/events/stream?access=true&chat_inbox=true';
 
 const ACCESS_KIND = 'workspace_access_changed';
+const CHAT_KIND = 'chat';
 // Changes after which the workspace no longer reaches this user.
 const GONE_CHANGES = new Set(['lost', 'deleted', 'purged']);
 
@@ -50,6 +54,8 @@ interface AccessHint {
 	workspace_id?: string;
 	change?: string;
 }
+
+type AnyHint = AccessHint | ChatNotice;
 
 function createAccessStream() {
 	let source: EventSource | null = null;
@@ -103,7 +109,10 @@ function createAccessStream() {
 		return `pad-access-${authStore.userId ?? ''}`;
 	}
 
-	type Relay = { kind: 'hint'; hint: AccessHint } | { kind: 'resync' };
+	type Relay =
+		| { kind: 'hint'; hint: AccessHint }
+		| { kind: 'chat'; notice: ChatNotice }
+		| { kind: 'resync' };
 
 	// Act on a hint here, and relay it to the other tabs, which act on it for
 	// their own routes.
@@ -121,6 +130,11 @@ function createAccessStream() {
 	function receive(msg: Relay) {
 		if (msg.kind === 'resync') {
 			void refetch();
+			chatStore.resync();
+			return;
+		}
+		if (msg.kind === 'chat') {
+			if (msg.notice?.kind === CHAT_KIND) chatStore.onHint(msg.notice);
 			return;
 		}
 		const hint = msg.hint;
@@ -293,14 +307,18 @@ function createAccessStream() {
 		});
 		s.addEventListener('notification', (ev) => {
 			if (!current()) return;
-			let hint: AccessHint;
+			let hint: AnyHint;
 			try {
 				hint = JSON.parse((ev as MessageEvent).data);
 			} catch {
 				return;
 			}
-			if (hint.kind !== ACCESS_KIND) return;
-			deliver({ kind: 'hint', hint });
+			if (hint?.kind === CHAT_KIND) {
+				deliver({ kind: 'chat', notice: hint as ChatNotice });
+				return;
+			}
+			if (hint?.kind !== ACCESS_KIND) return;
+			deliver({ kind: 'hint', hint: hint as AccessHint });
 		});
 		s.addEventListener('sync_required', () => {
 			if (!current()) return;

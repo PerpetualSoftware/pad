@@ -7,6 +7,7 @@
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { tabsStore } from '$lib/stores/tabs.svelte';
 	import { accessStream } from '$lib/services/accessStream.svelte';
+	import { chatStore } from '$lib/stores/chat.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import {
 		reloadForIdentityChange,
@@ -275,6 +276,8 @@
 				// Live gain/loss of workspaces (TASK-3275). One per tab; start()
 				// is idempotent and follows identity changes itself.
 				accessStream.start();
+				// The chat unread count (TASK-4044); idempotent, follows identity itself.
+				chatStore.start();
 			}
 		}
 	});

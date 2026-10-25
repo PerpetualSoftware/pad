@@ -25,6 +25,8 @@ const h = vi.hoisted(() => {
 			if (state.nextTabs) state.tabs = state.nextTabs;
 		}),
 		highlight: vi.fn(),
+		chatHint: vi.fn(),
+		chatResync: vi.fn(),
 		// GET /workspaces/{slug}: resolves = still reachable.
 		getWs: vi.fn(async () => ({}))
 	};
@@ -57,6 +59,9 @@ vi.mock('$lib/stores/tabs.svelte', () => ({
 }));
 vi.mock('$lib/stores/workspace.svelte', () => ({
 	workspaceStore: { get current() { return h.state.current; }, loadAll: h.loadAll }
+}));
+vi.mock('$lib/stores/chat.svelte', () => ({
+	chatStore: { onHint: h.chatHint, resync: h.chatResync }
 }));
 vi.mock('$lib/stores/ui.svelte', () => ({ uiStore: { highlightAddWorkspace: h.highlight } }));
 vi.mock('$lib/utils/workspace-route', () => ({
@@ -132,6 +137,8 @@ beforeEach(() => {
 	h.load.mockClear();
 	h.loadAll.mockClear();
 	h.highlight.mockClear();
+	h.chatHint.mockClear();
+	h.chatResync.mockClear();
 	h.getWs.mockReset();
 	h.getWs.mockResolvedValue({});
 });
@@ -148,7 +155,7 @@ describe('accessStream (TASK-3275)', () => {
 		s.start();
 		s.start();
 		expect(sources).toHaveLength(1);
-		expect(sources[0].url).toBe('/api/v1/events/stream?access=true');
+		expect(sources[0].url).toBe('/api/v1/events/stream?access=true&chat_inbox=true');
 	});
 
 	it('refetches the open set and the workspace list on a hint, and applies nothing from it', async () => {
@@ -167,6 +174,42 @@ describe('accessStream (TASK-3275)', () => {
 		sources[0].fire('notification', { kind: 'status-change', item_ref: 'TASK-1' });
 		await flush();
 		expect(h.load).not.toHaveBeenCalled();
+	});
+
+	it('hands a chat notice to the chat store and refetches no workspace read', async () => {
+		const s = await freshStream();
+		s.start();
+		const notice = { kind: 'chat', conversation_id: 'c1', conversation: 3, message_seq: 7, author_is_human: false };
+		sources[0].fire('notification', notice);
+		await flush();
+		expect(h.chatHint).toHaveBeenCalledTimes(1);
+		expect(h.chatHint).toHaveBeenCalledWith(notice);
+		expect(h.load).not.toHaveBeenCalled();
+		expect(h.loadAll).not.toHaveBeenCalled();
+		expect(h.goto).not.toHaveBeenCalled();
+	});
+
+	it('does not hand an access hint or an unknown kind to the chat store', async () => {
+		const s = await freshStream();
+		s.start();
+		sources[0].fire('notification', hint('gained'));
+		sources[0].fire('notification', { kind: 'status-change', item_ref: 'TASK-1' });
+		await flush();
+		expect(h.chatHint).not.toHaveBeenCalled();
+	});
+
+	it('drops a chat hint that arrives after an identity change or once stopped', async () => {
+		const s = await freshStream();
+		s.start();
+		const old = sources[0];
+		changeIdentity();
+		old.fire('notification', { kind: 'chat', conversation_id: 'c1', conversation: 3 });
+		await flush();
+		expect(h.chatHint).not.toHaveBeenCalled();
+		s.stop();
+		sources[1].fire('notification', { kind: 'chat', conversation_id: 'c1', conversation: 3 });
+		await flush();
+		expect(h.chatHint).not.toHaveBeenCalled();
 	});
 
 	it('drops a hint that arrives after an identity change', async () => {
@@ -310,9 +353,12 @@ describe('accessStream (TASK-3275)', () => {
 		await flush();
 		expect(h.load).not.toHaveBeenCalled();
 
+		expect(h.chatResync).not.toHaveBeenCalled();
+
 		sources[0].fire('sync_required');
 		await flush();
 		expect(h.load).toHaveBeenCalledTimes(1);
+		expect(h.chatResync).toHaveBeenCalledTimes(1);
 
 		sources[0].fireDropped();
 		await vi.runOnlyPendingTimersAsync();
@@ -320,6 +366,7 @@ describe('accessStream (TASK-3275)', () => {
 		sources[1].fire('connected');
 		await flush();
 		expect(h.load).toHaveBeenCalledTimes(2);
+		expect(h.chatResync).toHaveBeenCalledTimes(2);
 	});
 
 	it('stops for good on unauthorized', async () => {
@@ -432,10 +479,25 @@ describe('accessStream election (BUG-3318)', () => {
 		sources[1].fire('connected');
 		await flush();
 		expect(h.load).toHaveBeenCalledTimes(2);
+		expect(h.chatResync).toHaveBeenCalledTimes(2);
 
 		sources[1].fire('notification', hint('gained'));
 		await flush();
 		expect(h.load).toHaveBeenCalledTimes(4);
+	});
+
+	it('relays a chat notice to a follower, which hands it to its own chat store', async () => {
+		const a = await freshStream();
+		const b = await freshStream();
+		a.start();
+		await flush();
+		b.start();
+		await flush();
+		sources[0].fire('notification', { kind: 'chat', conversation_id: 'c1', conversation: 3 });
+		await flush();
+		// Leader and follower each hold their own chat store.
+		expect(h.chatHint).toHaveBeenCalledTimes(2);
+		expect(h.load).not.toHaveBeenCalled();
 	});
 
 	it("the first leader's first connect is not a resync", async () => {
