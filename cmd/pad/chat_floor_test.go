@@ -54,6 +54,40 @@ func TestMonitorChatServerFloorHunter(t *testing.T) {
 	}
 }
 
+// T1 with local delivery: the first-contact floor is max(server floor, local
+// delivered) (cmd_watch_chat.go attemptFloor). Each row pins one side: below
+// the floor, local must not reopen rows the server says are delivered; above
+// it, the server floor must not re-acknowledge what this process already did
+// (TASK-4067). The event is the same out-of-order tombstone, seq 3.
+func TestMonitorChatServerFloorHunterLocalDelivered(t *testing.T) {
+	for _, row := range []struct {
+		name         string
+		local        int64
+		wantAcks     []int64
+		wantFloor    int64
+		wantDelivery int64
+	}{
+		// Floor 2: seq 3 is the next contiguous tombstone, consumed directly.
+		{name: "local-below-floor", local: 1, wantAcks: []int64{3}, wantFloor: 3, wantDelivery: 3},
+		// Floor 3: seq 3 is already delivered, so nothing is acknowledged.
+		{name: "local-above-floor", local: 3, wantAcks: nil, wantFloor: 3, wantDelivery: 3},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			chatSessionEnv(t)
+			f := &fakeChatSink{floor: 2, messages: []monitorChatMessage{chatMsg("m1", 1), chatMsg("m2", 2)}}
+			c := newMonitorChat(f, newRecentSet(256, 10*time.Minute))
+			c.delivered[2] = row.local
+			var out bytes.Buffer
+			p := floorEvent(2, 3)
+			p.Deleted = true
+			c.handle(&out, p)
+			if f.floorReads.Load() != 1 || c.last[2] != row.wantFloor || c.delivered[2] != row.wantDelivery || !slices.Equal(f.ackSeqs, row.wantAcks) || f.fetches != 0 || out.Len() != 0 {
+				t.Fatalf("floor reads=%d last=%v delivered=%v acks=%v fetches=%d after=%v output=%q", f.floorReads.Load(), c.last, c.delivered, f.ackSeqs, f.fetches, f.after, out.String())
+			}
+		})
+	}
+}
+
 // B2: a lone DM must be delivered during this call, with no second event.
 func TestMonitorChatFirstContactDeliversSameEvent(t *testing.T) {
 	chatSessionEnv(t)
