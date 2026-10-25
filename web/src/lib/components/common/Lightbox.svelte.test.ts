@@ -5205,6 +5205,19 @@ describe('Lightbox — the text arm', () => {
 		}
 	});
 
+	it('T2: exposes one focusable, labelled table scroll region', async () => {
+		mountViewer({ images: [{ ...image(IMG_A, 'fallback', 'text/csv'), filename: 'report.csv', size_bytes: 128 }] });
+		await settleAsync();
+		const region = root().querySelector<HTMLElement>('.attachment-table-scroll')!;
+		expect(region).not.toBeNull();
+		expect(region.getAttribute('tabindex')).toBe('0');
+		expect(region.getAttribute('role')).toBe('region');
+		expect(region.getAttribute('aria-label')).toBe('report.csv table');
+		region.focus();
+		expect(document.activeElement).toBe(region);
+		expect(root().querySelector('[role="document"]')!.hasAttribute('tabindex')).toBe(false);
+	});
+
 	it.each(['text/plain', 'text/csv'])('mounts %s inside the filling sheet stage and uses the phone table budget', async (mime) => {
 		mobileFlag = true;
 		try {

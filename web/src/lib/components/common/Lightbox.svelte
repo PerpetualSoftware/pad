@@ -2696,14 +2696,14 @@
 					the document does not chain to the inert page behind.
 				-->
 				<!--
-					`tabindex="0"` because this is a SCROLLABLE REGION and nothing else
+					`tabindex="0"` on the text arm because this is a SCROLLABLE REGION and nothing else
 					in the viewer can scroll it. Without a tab stop a keyboard-only
 					user can open a document and never reach past its first screen —
 					the arrow keys are owned by the viewer's own next/previous
 					navigation, so there is no fallback. It joins the focus trap by
 					design (it is a real destination), and `role="document"` with the
 					filename as its accessible name is what a screen reader announces
-					on arrival.
+					on arrival. The table arm instead focuses its inner scroll region.
 				-->
 				<!--
 					svelte-ignore a11y_no_noninteractive_tabindex — the rule's premise
@@ -2720,7 +2720,7 @@
 					class="lightbox-text-scroll"
 					role="document"
 					aria-label={displayName}
-					tabindex="0"
+					tabindex={shownRenderer === 'table' ? undefined : 0}
 				>
 				{#if textLoader.phase === 'loading'}
 					<p class="lightbox-text-status" role="status">Loading preview…</p>
@@ -2756,7 +2756,7 @@
 					</div>
 				{:else if textLoader.phase === 'ready'}
 					{#if shownRenderer === 'table'}
-						<AttachmentTablePreview text={textLoader.text} mime={resolvedMime!} compact={isSheet} />
+						<AttachmentTablePreview text={textLoader.text} mime={resolvedMime!} compact={isSheet} label={`${displayName} table`} />
 					{:else}
 						<div class="lightbox-text-controls" role="group" aria-label="Preview display">
 							{#if markdownAttachment}

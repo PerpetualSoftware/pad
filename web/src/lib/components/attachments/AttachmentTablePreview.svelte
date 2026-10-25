@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { parseDelimited, COL_CAP } from '$lib/attachments/csv';
 
-	let { text, mime, compact = false }: { text: string; mime: string; compact?: boolean } = $props();
+	let { text, mime, compact = false, label = 'Attachment table' }: { text: string; mime: string; compact?: boolean; label?: string } = $props();
 	let preview = $derived(parseDelimited(text, mime.split(';')[0].trim().toLowerCase() === 'text/tab-separated-values' ? '\t' : ','));
 	let columns = $derived(Array.from({ length: Math.min(preview.totalColumns, COL_CAP) }, (_, i) => i));
 	// Budget actual mounted cells, including the sticky header and ragged-row
@@ -16,7 +16,8 @@
 </script>
 
 <div class="attachment-table-preview">
-	<div class="attachment-table-scroll">
+	<!-- svelte-ignore a11y_no_noninteractive_tabindex — the scroll region needs keyboard focus for native scrolling. -->
+	<div class="attachment-table-scroll" tabindex="0" role="region" aria-label={label}>
 		<!-- Foreign attachment cells are TEXT ONLY. In particular, HTML and spreadsheet
 		     formulas have no interpretation here, even when they resemble links. -->
 		<table>
