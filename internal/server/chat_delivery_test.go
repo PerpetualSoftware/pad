@@ -88,10 +88,11 @@ func TestChatPublishRefOnlyNoBody(t *testing.T) {
 			mark := f.mark()
 			f.must(f.request("POST", p+"/messages", "", map[string]any{"body": body}), 201, "send")
 			ns := f.srv.watchEvents.EventsSince(mark)
-			if len(ns) != 1 {
+			// TASK-4044: the agent notice plus the human author's self-notice.
+			if len(ns) != 2 {
 				t.Fatalf("notices=%v", ns)
 			}
-			n := ns[0]
+			n := chatNoticeFor(t, ns, "rook")
 			b, _ := json.Marshal(n)
 			wire, _ := json.Marshal(watchEventPayloadFor(nil, n))
 			if strings.Contains(string(b)+string(wire), "SECRET-BODY-xyz") || strings.Contains(string(b)+string(wire), "SECOND-LINE-SECRET") || len([]rune(n.Excerpt)) > 100 || n.Excerpt != models.QuoteExcerpt(body) || n.Summary != "" {
@@ -108,20 +109,24 @@ func TestChatPublishSkipsAuthorAndHuman(t *testing.T) {
 	p := f.ensure("rook")
 	mark := f.mark()
 	f.must(f.request("POST", p+"/messages", "rook", map[string]any{"body": "agent"}), 201, "agent send")
-	if ns := f.srv.watchEvents.EventsSince(mark); len(ns) != 0 {
+	// TASK-4044: an agent's send reaches its owner's inbox, not the author.
+	if ns := f.srv.watchEvents.EventsSince(mark); len(ns) != 1 || ns[0].TargetAgentKey != "" || ns[0].TargetUserID != f.owner.ID {
 		t.Fatal(ns)
 	}
+	mark = f.mark()
 	f.must(f.request("POST", p+"/messages", "", map[string]any{"body": "human"}), 201, "human send")
 	ns := f.srv.watchEvents.EventsSince(mark)
-	if len(ns) != 1 || ns[0].TargetAgentKey != "rook" {
+	if len(ns) != 2 || chatNoticeFor(t, ns, "rook").TargetAgentKey != "rook" {
 		t.Fatal(ns)
 	}
 	// TASK-4041: defend the author pair even if a caller includes it.
 	c, _, _ := f.srv.store.EnsureAgentDM(f.owner.ID, "rook")
 	mark = f.mark()
 	f.srv.notifyChatMessage(c, models.ConversationMessage{AuthorUserID: f.owner.ID, AuthorAgentKey: "rook"}, []models.ConversationActor{{UserID: f.owner.ID, AgentKey: "rook"}, {UserID: f.owner.ID}}, false)
-	if len(f.srv.watchEvents.EventsSince(mark)) != 0 {
-		t.Fatal("author/human notified")
+	// The author pair gets nothing; the human member gets exactly one inbox
+	// notice (TASK-4044), deduplicated against the author's own user.
+	if ns := f.srv.watchEvents.EventsSince(mark); len(ns) != 1 || ns[0].TargetAgentKey != "" {
+		t.Fatalf("author notified or duplicated: %+v", ns)
 	}
 }
 func TestChatReplayDoesNotPublish(t *testing.T) {
@@ -147,7 +152,7 @@ func TestChatDeletePublishesRetractionOnce(t *testing.T) {
 	}
 	f.must(f.request("DELETE", p+"/messages/1", "", nil), 200, "delete")
 	ns := f.srv.watchEvents.EventsSince(mark)
-	if len(ns) != 1 || !ns[0].ChatDeleted || ns[0].Excerpt != "" || ns[0].MessageID == "" {
+	if len(ns) != 2 || !ns[0].ChatDeleted || ns[0].Excerpt != "" || ns[0].MessageID == "" {
 		t.Fatal(ns)
 	}
 	mark = f.mark()
@@ -354,4 +359,20 @@ func TestChatStreamTickDeniesAndRecovers(t *testing.T) {
 	if e := waitForWatchEvent(t, ch, time.Second); !strings.Contains(e.Data, `"message_id":"after-enable"`) {
 		t.Fatal(e)
 	}
+}
+
+// chatNoticeFor returns the one notice targeting agentKey ("" for the human
+// inbox notice) and fails if there is not exactly one.
+func chatNoticeFor(t *testing.T, ns []watchevents.Notification, agentKey string) watchevents.Notification {
+	t.Helper()
+	var out []watchevents.Notification
+	for _, n := range ns {
+		if n.TargetAgentKey == agentKey {
+			out = append(out, n)
+		}
+	}
+	if len(out) != 1 {
+		t.Fatalf("want one notice for agent %q, got %+v", agentKey, ns)
+	}
+	return out[0]
 }
