@@ -2279,10 +2279,11 @@ const CmdhelpVersion = "0.1"
 // that is not whole, or of magnitude 2^53 or more (which the decoder may
 // already have rounded), is refused the same way, as remote has since v0.103.
 // For a string or a JSON number, stdio now accepts and refuses what remote
-// does. Other types keep their path, where intParam (pad_item list and
-// history limit) or the CLI's own parse refuses them; the nested
-// pad_item.patch edits[].line_hint is BUG-4082. Behaviour only; the schemas
-// are unchanged, as for v0.103 and v0.104.
+// does. Other types keep their path: intParam (pad_item list and history
+// limit) reads null as absent, so the default applies (v0.104), and refuses a
+// bool, an array or an object; everywhere else the CLI's own parse refuses
+// all of them. The nested pad_item.patch edits[].line_hint is BUG-4082.
+// Behaviour only; the schemas are unchanged, as for v0.103 and v0.104.
 const ToolSurfaceVersion = "0.105"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
