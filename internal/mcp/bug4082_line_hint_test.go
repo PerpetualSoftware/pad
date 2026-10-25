@@ -117,6 +117,12 @@ func TestBUG4082_LineHintSameOnBothTransports(t *testing.T) {
 					!strings.Contains(sRef, "item patch: "+strings.Trim(string(escaped), `"`)) {
 					t.Errorf("stdio: want validation_failed with remote's message %q, got %q (forwarded %s)", rRef, sRef, sFwd)
 				}
+				// Checked on its own too, so a helper change that alters both
+				// messages alike still turns stdio red (C1). tc.refuse is written
+				// in the envelope's escaped form.
+				if !strings.Contains(sRef, tc.refuse) {
+					t.Errorf("stdio: want refusal containing %q, got %q", tc.refuse, sRef)
+				}
 				return
 			}
 			want := canonicalJSON(t, tc.want)
@@ -154,6 +160,18 @@ func TestBUG4082_CallerMapUnmodified(t *testing.T) {
 			}
 			if !reflect.DeepEqual(in, before) {
 				t.Fatalf("caller's map modified: %v, was %v", in, before)
+			}
+		})
+		// The fan-out handler hands actions a private copy, so the row above
+		// cannot see actionItemPatch touch its own input. Call it directly.
+		t.Run("stdio action "+edits, func(t *testing.T) {
+			in, before := bug4082Input(t, edits), bug4082Input(t, edits)
+			env := ActionEnv{Doc: liveCmdhelpDoc(t), Workspace: NewWorkspaceState("docapp"), Dispatcher: &fakeDispatcher{}}
+			if _, err := actionItemPatch(context.Background(), in, env); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(in, before) {
+				t.Fatalf("actionItemPatch modified its input: %v, was %v", in, before)
 			}
 		})
 	}
