@@ -886,29 +886,50 @@ func mapItemPatch(input map[string]any) (string, string, []byte, error) {
 		in["expected_seq"] = seq
 	}
 	if edits, isList := input["edits"].([]any); isList {
-		out := make([]any, len(edits))
-		for i, e := range edits {
-			out[i] = e
-			edit, isObj := e.(map[string]any)
-			if !isObj {
-				continue
-			}
-			hint, present, err := intParam(edit, "line_hint")
-			if err != nil {
-				return "", "", nil, fmt.Errorf("%w (in edits[%d])", err, i)
-			}
-			if present {
-				copied := make(map[string]any, len(edit))
-				for k, v := range edit {
-					copied[k] = v
-				}
-				copied["line_hint"] = hint
-				out[i] = copied
-			}
+		out, err := editsWithLineHints(edits)
+		if err != nil {
+			return "", "", nil, err
 		}
 		in["edits"] = out
 	}
 	return itemPatchRoute(in)
+}
+
+// editsWithLineHints returns a copy of a patch's edits with each object edit's
+// line_hint read through intParam (numericInput's rule) and replaced by its
+// int64. A refusal names the edit, e.g. `line_hint must be a whole number, got
+// the string "010" (in edits[0])`. An edit that is not an object is left as it
+// is, for the server or the CLI to refuse, since its shape is theirs to
+// define; a null line_hint is absent and left as it is. Neither edits nor any
+// edit in it is modified: a changed edit is a copy.
+//
+// Both transports call it (BUG-4082): remote's mapItemPatch, where the loop
+// was inline (BUG-4065), and stdio's patch action, which used to forward edits
+// to the CLI unread, so a string hint was refused there where remote coerced
+// it, and a JSON number of 2^53 or more, already rounded by the decoder,
+// reached bodypatch as a line number.
+func editsWithLineHints(edits []any) ([]any, error) {
+	out := make([]any, len(edits))
+	for i, e := range edits {
+		out[i] = e
+		edit, isObj := e.(map[string]any)
+		if !isObj {
+			continue
+		}
+		hint, present, err := intParam(edit, "line_hint")
+		if err != nil {
+			return nil, fmt.Errorf("%w (in edits[%d])", err, i)
+		}
+		if present {
+			copied := make(map[string]any, len(edit))
+			for k, v := range edit {
+				copied[k] = v
+			}
+			copied["line_hint"] = hint
+			out[i] = copied
+		}
+	}
+	return out, nil
 }
 
 // mapItemClaim dispatches `pad item claim <ref> [--holder] [--ttl]`.

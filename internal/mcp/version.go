@@ -2284,7 +2284,19 @@ const CmdhelpVersion = "0.1"
 // bool, an array or an object; everywhere else the CLI's own parse refuses
 // all of them. The nested pad_item.patch edits[].line_hint is BUG-4082.
 // Behaviour only; the schemas are unchanged, as for v0.103 and v0.104.
-const ToolSurfaceVersion = "0.105"
+//
+// v0.106 — BUG-4082: stdio's pad_item.patch gives each edit's line_hint
+// remote's rule (v0.104), through the one helper both transports now call.
+// stdio used to forward edits to the CLI unread, so its JSON decode refused a
+// string hint that remote coerces ("5" is now 5 on stdio too), and took 2^53
+// or more, which mcp-go's float64 decode of the request may already have
+// rounded, as a line number. Now
+// a hint that is not a whole number below 2^53 (a fraction, "010", a bool, an
+// object) is refused on stdio with remote's validation_failed, naming the
+// edit ("(in edits[1])"); null is absent, and an edit that is not an object
+// keeps its path. Remote is unchanged. Behaviour only; the schemas are
+// unchanged.
+const ToolSurfaceVersion = "0.106"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a
