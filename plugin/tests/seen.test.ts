@@ -7,6 +7,17 @@ import { charIndexAtByte, clipLine, displayLine, isPersonPrompt } from '../hooks
 // for the CLI, the shell and the file.
 
 const LOG = '/home/t/.pad/chat-seen/4242.log'
+const DIR = '/home/t/.pad/chat-seen'
+
+// What the log's stat reports: UTF-8 bytes, not characters.
+function utf8Bytes(s: string) {
+  let n = 0
+  for (const ch of s) {
+    const cp = ch.codePointAt(0) as number
+    n += cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4
+  }
+  return n
+}
 
 const BAND = {
   plugin: 'pad',
@@ -16,7 +27,7 @@ const BAND = {
   props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 115, scroll: { offset: 0, bodyRows: 10 }, view: {} },
 } as const
 
-function stubs(on: any, initial: string | null = null, opts: { failReads?: number; holdHome?: Promise<void>; growOnFirstRead?: string; holdFirstRead?: Promise<void> } = {}) {
+function stubs(on: any, initial: string | null = null, opts: { failReads?: number; failStats?: number; holdHome?: Promise<void>; growOnFirstRead?: string; holdFirstRead?: Promise<void> } = {}) {
   const file = { text: initial as string | null, isLink: false }
   let failReads = opts.failReads || 0
   const toasts: string[] = []
@@ -42,10 +53,16 @@ function stubs(on: any, initial: string | null = null, opts: { failReads?: numbe
     // the reader is what is under test.
     return { value: { exitCode: 1, stdout: '', stderr: '' } }
   })
+  let failStats = opts.failStats || 0
   on('fs.stat', ($: any, e: any) => {
     statted.push(e.path)
+    if (failStats > 0) { failStats--; return { deny: 'EIO' } }
     if (e.path !== LOG || file.text === null) return { deny: 'ENOENT' }
-    return { value: { kind: 'file', size: file.text.length, mtimeMs: 0, isLink: file.isLink } }
+    return { value: { kind: 'file', size: utf8Bytes(file.text), mtimeMs: 0, isLink: file.isLink } }
+  })
+  on('fs.list', ($: any, e: any) => {
+    if (e.path !== DIR) return { deny: 'ENOENT' }
+    return { value: file.text === null ? [] : [{ name: '4242.log', kind: file.isLink ? 'other' : 'file', size: 0, mtimeMs: 0 }] }
   })
   on('fs.read', ($: any, e: any) => {
     if (e.path !== LOG || file.text === null) return { deny: 'ENOENT' }
@@ -326,4 +343,38 @@ test('a moment the log cannot be read does not replay it', async ($, on) => {
   s.file.text += 'new\n'
   await poll(clock)
   expect(s.toasts).toEqual(['new'])
+})
+
+test('a first look that only failed does not start the log at zero (r3)', async ($, on) => {
+  const clock = mock.clock(on)
+  const s = stubs(on, 'old one\nold two\n', { failStats: 1 })
+  await $.session.start({ cwd: '/work/demo' })
+  await usePad($)
+  await settle()
+  await poll(clock)
+  s.file.text += 'new\n'
+  await poll(clock)
+  expect(s.toasts).toEqual(['new'])
+})
+
+test('a rotation that shrinks the log in bytes shows the new log whole (r3)', async ($, on) => {
+  const clock = mock.clock(on)
+  const s = stubs(on, 'é'.repeat(20) + '\n') // 41 bytes, 21 characters
+  await $.session.start({ cwd: '/work/demo' })
+  await usePad($)
+  await settle()
+  s.file.text = 'abcdefghijklmnopqrstuvwxyz0123\n' // 31 bytes, 31 characters
+  await poll(clock)
+  expect(s.toasts).toEqual(['abcdefghijklmnopqrstuvwxyz0123'])
+})
+
+test('a rotation that shrinks the log in characters shows the new log whole (r3)', async ($, on) => {
+  const clock = mock.clock(on)
+  const s = stubs(on, 'abcdefghijklmnopqrstuvwxyz0123\n') // 31 bytes, 31 characters
+  await $.session.start({ cwd: '/work/demo' })
+  await usePad($)
+  await settle()
+  s.file.text = 'é'.repeat(20) + '\n' // 41 bytes, 21 characters
+  await poll(clock)
+  expect(s.toasts).toEqual(['é'.repeat(20)])
 })

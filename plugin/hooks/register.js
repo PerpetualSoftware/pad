@@ -1314,9 +1314,11 @@ async function pollSeen($) {
     } catch {}
     if (epoch !== seenEpoch) return
     if (size < 0) {
-      // Nothing there at the first look: every line from now on is new. Later,
-      // an unreadable moment changes nothing, so it cannot cause a replay.
-      if (!seenPrimed) {
+      // No log at the first look: every line from now on is new. A look that
+      // only FAILED proves nothing, so it leaves the start to the first good
+      // read; and once started, an unreadable moment changes nothing. Either
+      // way it cannot cause a replay.
+      if (!seenPrimed && (await logAbsent($, path)) && epoch === seenEpoch) {
         seenSize = 0
         seenChars = 0
         seenPrimed = true
@@ -1337,6 +1339,10 @@ async function pollSeen($) {
       return // nothing advanced: the next poll tries again
     }
     if (epoch !== seenEpoch) return
+    // Rotated (or removed and recreated): read the new log from its start. In
+    // bytes here and in characters below, since a log of multi-byte text can
+    // shrink in one while it grows in the other.
+    if (size < seenSize) seenChars = 0
     seenSize = size
     if (!seenPrimed) {
       // The first look skips what the file held at the stat; a line written
@@ -1345,7 +1351,7 @@ async function pollSeen($) {
       seenChars = text.lastIndexOf('\n', cut - 1) + 1
       seenPrimed = true
     }
-    if (text.length < seenChars) seenChars = 0 // rotated: read the new log from its start
+    if (text.length < seenChars) seenChars = 0
     const end = text.lastIndexOf('\n') + 1 // a line still being written waits for its newline
     if (end <= seenChars) return
     const fresh = text.slice(seenChars, end).split('\n').map(displayLine).filter((l) => l.trim())
@@ -1356,6 +1362,22 @@ async function pollSeen($) {
     await queueToast($, fresh, epoch)
   } finally {
     if (epoch === seenEpoch) seenPolling = false
+  }
+}
+
+// True only when the listing shows no log at path (or no directory for it).
+async function logAbsent($, path) {
+  const cut = path.lastIndexOf('/')
+  const dir = path.slice(0, cut)
+  const name = path.slice(cut + 1)
+  try {
+    return !(await $.fs.list(dir)).some((e) => e.name === name)
+  } catch {}
+  const up = dir.lastIndexOf('/')
+  try {
+    return !(await $.fs.list(dir.slice(0, up))).some((e) => e.name === dir.slice(up + 1))
+  } catch {
+    return false
   }
 }
 
