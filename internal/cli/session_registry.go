@@ -511,8 +511,8 @@ type PruneReport struct {
 }
 
 // PruneSessions removes DEAD records, and — only when olderThan > 0 —
-// UNKNOWN records whose timestamp is older than now-olderThan. It never
-// removes an ALIVE record. The age bound is the only way a registry on a
+// UNKNOWN records whose timestamp is older than now-olderThan, each with
+// its chat-seen log (TASK-4071). It never removes an ALIVE record. The age bound is the only way a registry on a
 // platform that cannot probe pids ever shrinks, and it is deliberately an
 // explicit choice: register passes 0.
 //

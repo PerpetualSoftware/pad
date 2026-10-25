@@ -185,10 +185,11 @@ func TestChatSeenOffWithoutHarnessPid(t *testing.T) {
 	}
 	var warn bytes.Buffer
 	l := OpenChatSeen(owner, err, &warn)
-	l.Append("x") // a nil log is a no-op
-	if l != nil {
-		t.Fatalf("want no log for a self pid, got %q", l.Path())
+	if l.Path() != "" || warn.Len() != 0 {
+		t.Fatalf("want no log and a silent start for a self pid, got %q, warn %q", l.Path(), warn.String())
 	}
+	l.Append("x")
+	l.Append("y")
 	if strings.Count(warn.String(), "\n") != 1 || !strings.Contains(warn.String(), "PAD_SESSION_PID") {
 		t.Fatalf("want one stderr line naming PAD_SESSION_PID, got %q", warn.String())
 	}
@@ -202,8 +203,10 @@ func TestChatSeenOffOnInvalidSessionPid(t *testing.T) {
 	t.Setenv("PAD_SESSION_PID", "nope")
 	owner, err := CaptureSessionOwner()
 	var warn bytes.Buffer
-	if l := OpenChatSeen(owner, err, &warn); l != nil || !strings.Contains(warn.String(), "PAD_SESSION_PID") {
-		t.Fatalf("log %v warn %q", l, warn.String())
+	l := OpenChatSeen(owner, err, &warn)
+	l.Append("x")
+	if l.Path() != "" || !strings.Contains(warn.String(), "PAD_SESSION_PID") {
+		t.Fatalf("log %q warn %q", l.Path(), warn.String())
 	}
 }
 
@@ -217,13 +220,13 @@ func TestChatSeenKeyedByPadSessionPidFirst(t *testing.T) {
 	owner, err := CaptureSessionOwner()
 	var warn bytes.Buffer
 	l := OpenChatSeen(owner, err, &warn)
-	if l == nil || filepath.Base(l.Path()) != strconv.Itoa(ppid)+".log" {
+	if filepath.Base(l.Path()) != strconv.Itoa(ppid)+".log" {
 		t.Fatalf("log %v warn %q", l, warn.String())
 	}
 	t.Setenv("PAD_SESSION_PID", "")
 	owner, err = CaptureSessionOwner()
-	if l := OpenChatSeen(owner, err, &warn); l == nil || filepath.Base(l.Path()) != "1.log" {
-		t.Fatalf("CLAUDE_PID fallback: log %v", l)
+	if l := OpenChatSeen(owner, err, &warn); filepath.Base(l.Path()) != "1.log" {
+		t.Fatalf("CLAUDE_PID fallback: log %q", l.Path())
 	}
 }
 

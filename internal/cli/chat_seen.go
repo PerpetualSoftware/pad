@@ -89,36 +89,41 @@ type ChatSeenLog struct {
 	f        *os.File
 	size     int64
 	disabled bool
+	// off is why this process keeps no log at all. It is reported on the
+	// first line that would have been written, not at start: the monitor
+	// prints nothing until it has something to deliver (DOC-2479).
+	off string
 }
 
 // OpenChatSeen decides whether this process keeps a chat-seen log. It
 // writes nothing yet: the file is created on the first line, so a session
-// that never receives chat leaves no file.
+// that never receives chat leaves no file, and a log that is off says so on
+// that first line too.
 //
 // A pid that came from os.Getpid() (PIDSource "self", neither
 // PAD_SESSION_PID nor CLAUDE_PID set) disables it (TASK-4071 C2): the log
 // would be keyed by pad watch's own pid, which no reader looks for and no
 // session record names, so nothing would ever read or prune it.
 func OpenChatSeen(owner SessionOwner, ownerErr error, warn io.Writer) *ChatSeenLog {
-	if ownerErr != nil {
-		fmt.Fprintf(warn, "Pad chat: not showing chat lines to the human: %s\n", ownerErr)
-		return nil
+	l := &ChatSeenLog{max: ChatSeenMaxBytes, warn: warn}
+	switch {
+	case ownerErr != nil:
+		l.off = ownerErr.Error()
+	case owner.PIDSource == "self" || owner.PID <= 0:
+		l.off = "no harness pid (set PAD_SESSION_PID to the agent harness's pid)"
+	default:
+		path, err := ChatSeenPath(owner.PID)
+		if err != nil {
+			l.off = err.Error()
+		}
+		l.path = path
 	}
-	if owner.PIDSource == "self" || owner.PID <= 0 {
-		fmt.Fprintln(warn, "Pad chat: not showing chat lines to the human: no harness pid (set PAD_SESSION_PID to the agent harness's pid).")
-		return nil
-	}
-	path, err := ChatSeenPath(owner.PID)
-	if err != nil {
-		fmt.Fprintf(warn, "Pad chat: not showing chat lines to the human: %s\n", err)
-		return nil
-	}
-	return &ChatSeenLog{path: path, max: ChatSeenMaxBytes, warn: warn}
+	return l
 }
 
-// Path is the log's path, or "" for a nil log.
+// Path is the log's path, or "" when there is none.
 func (l *ChatSeenLog) Path() string {
-	if l == nil {
+	if l == nil || l.off != "" {
 		return ""
 	}
 	return l.path
@@ -132,6 +137,11 @@ func (l *ChatSeenLog) Append(line string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.disabled {
+		return
+	}
+	if l.off != "" {
+		l.disabled = true
+		fmt.Fprintf(l.warn, "Pad chat: not showing chat lines to the human: %s.\n", l.off)
 		return
 	}
 	if err := l.append(line + "\n"); err != nil {

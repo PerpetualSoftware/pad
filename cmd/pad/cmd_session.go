@@ -340,8 +340,9 @@ func sessionPruneCmd() *cobra.Command {
 		Use:     "prune",
 		Short:   "Remove dead sessions' records from the local session registry",
 		Example: `  pad session prune --older-than 72h`,
-		Long: `Deletes registry records whose session is dead. Never deletes a record
-it can see is alive.
+		Long: `Deletes registry records whose session is dead, with each one's chat-seen
+log (~/.pad/chat-seen/<pid>.log and .log.1). Never deletes a record it can
+see is alive.
 
 Records whose liveness is unknown (this platform cannot probe the owner,
 or the file is malformed) are kept unless --older-than is given, in which

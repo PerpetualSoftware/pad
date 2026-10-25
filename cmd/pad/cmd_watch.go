@@ -260,6 +260,14 @@ pad watch --stream --for-session
     with at most three attempts. Success is silent; a final failure writes
     one stderr line and delivery continues.
 
+    Every chat line is also appended, byte for byte, to
+    ~/.pad/chat-seen/<harness pid>.log (0600), so the person at the agent's
+    terminal can see it: the Claude Code plugin shows it above the prompt,
+    and any other harness can tail the file. The pid is PAD_SESSION_PID,
+    else CLAUDE_PID; with neither set there is no log, and the first chat
+    line writes one stderr line saying so. The log holds 256 KiB, then moves
+    to <pid>.log.1; pad session prune removes both with the session.
+
     Silent on startup in three cases, and silence does not distinguish
     them: no workspace linked (retries hourly), padd unreachable
     (backoff from 5s, capped at 5min), and the server refusing the
