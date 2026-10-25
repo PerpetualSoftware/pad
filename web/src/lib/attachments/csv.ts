@@ -81,7 +81,9 @@ export function parseDelimited(source: string, delimiter: ',' | '\t'): Delimited
 			finishField();
 			recordStarted = true;
 		} else if (char === '\r' || char === '\n') {
-			finishRecord();
+			// A bare line ending outside quotes is not a record. Delimiters
+			// and opening quotes set recordStarted, even for empty cells.
+			if (recordStarted) finishRecord();
 			if (char === '\r' && source[i + 1] === '\n') i++;
 		} else if (char === '"') {
 			if (fieldLength !== 0 || closed) return malformed();

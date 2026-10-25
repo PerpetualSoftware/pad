@@ -23,6 +23,14 @@ describe('attachment CSV parser', () => {
 		expect(parseDelimited('a,', ',').rows).toEqual([['a', '']]);
 	});
 
+	it('T6: skips leading, intervening and trailing blank lines without counting them, keeping delimiter-only and quoted records', () => {
+		const source = '\r\n\nname\r\n\r\nvalue\n\n,,\r\n"line\n\nbreak"\r\n""\r\n\r\n';
+		expect(parseDelimited(source, ',')).toEqual({
+			rows: [['name'], ['value'], ['', '', ''], ['line\n\nbreak'], ['']],
+			totalRows: 5, totalColumns: 3, error: null
+		});
+	});
+
 	it('returns complete records and an error without throwing on an unterminated quote at EOF', () => {
 		let result: ReturnType<typeof parseDelimited> | undefined;
 		expect(() => { result = parseDelimited('a,b\nx,y\n"unfinished', ','); }).not.toThrow();
