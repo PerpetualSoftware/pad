@@ -178,6 +178,12 @@ func TestMonitorChatIdentityChangeResetsMemory(t *testing.T) {
 						break
 					}
 					mu.Lock()
+				case "/api/v1/me/conversations":
+					// TASK-4043: the background session-start ensure reuses this DM.
+					if r.Method != http.MethodPost {
+						t.Errorf("ensure DM method = %s, want POST", r.Method)
+					}
+					fmt.Fprint(w, `{"number":1}`)
 				case "/api/v1/me/chat/unread":
 					if connections == 1 || change == "profile-once" || change == "base-url" || change == "user" {
 						fmt.Fprint(w, `{"total":2,"conversations":[{"number":1,"delivered_seq":0}]}`)
