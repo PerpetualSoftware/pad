@@ -742,39 +742,51 @@ STAGED=""
 # parse. A kept stale file is the safe failure: `pad server stop` refuses a
 # record it cannot prove (BUG-2969).
 pid_file_pid() {
-	# The pid in pad.pid, read no more loosely than internal/cli/pidfile.go's
-	# parsePIDRecord (BUG-4068 r1): either the JSON record MarshalIndent writes
-	# (`{`, then `  "pid": N,` at the two-space top-level indent), with exactly
-	# ONE "pid" anywhere in the file, or the legacy bare integer with nothing
-	# but surrounding whitespace. Anything else does not parse, and the file is
-	# kept. At most 10 digits, checked before any arithmetic.
-	local body pid line n=0
-	body="$(cat "$1" 2>/dev/null)" || return 1
-	body="${body//$'\r'/}"
-	case "$body" in
-	*'"pid"'*'"pid"'*) return 1 ;;
-	*'"pid"'*)
-		case "$(printf '%s' "$body" | sed -n '/[^[:space:]]/{p;q;}')" in '{'*) ;; *) return 1 ;; esac
-		while IFS= read -r line; do
+	# The pid in pad.pid, read no more loosely than the SHAPE that
+	# internal/cli/pidfile.go writes (BUG-4068 r1, r2). This is a line-shape
+	# check, not full JSON validation:
+	#   - the MarshalIndent record: first non-blank line exactly "{", last
+	#     exactly "}", every line between a two-space-indent key line, exactly
+	#     one of them "  \"pid\": N" (with or without a trailing comma), and
+	#     "pid" nowhere else in the file;
+	#   - or the legacy bare integer: one non-blank line, surrounding space only.
+	# A "\r" is dropped only at a line end. The pid is at most 10 digits,
+	# checked before any arithmetic, and at most 4194304 (Linux's largest
+	# pid_max; macOS's is 99999), so it never wraps as a pid_t. Anything else
+	# does not parse, and the file is kept.
+	local raw line pid="" n=0 lines=()
+	raw="$(cat "$1" 2>/dev/null)" || return 1
+	while IFS= read -r line || [ -n "$line" ]; do
+		line="${line%$'\r'}"
+		case "$line" in *[![:space:]]*) lines+=("$line") ;; esac
+	done <<<"$raw"
+	[ ${#lines[@]} -gt 0 ] || return 1
+	case "$raw" in *'"pid"'*'"pid"'*) return 1 ;; esac
+	if [ "${lines[0]}" = "{" ]; then
+		[ ${#lines[@]} -ge 3 ] && [ "${lines[${#lines[@]} - 1]}" = "}" ] || return 1
+		local i
+		for ((i = 1; i < ${#lines[@]} - 1; i++)); do
+			line="${lines[i]}"
 			case "$line" in
 			'  "pid": '*)
 				pid="${line#'  "pid": '}"
 				pid="${pid%,}"
 				n=$((n + 1))
 				;;
+			'  "'[!\ \"]*) ;;
+			*) return 1 ;;
 			esac
-		done <<<"$body"
+		done
 		[ "$n" -eq 1 ] || return 1
-		;;
-	*)
-		pid="$body"
+	else
+		[ ${#lines[@]} -eq 1 ] || return 1
+		pid="${lines[0]}"
 		while case "$pid" in [[:space:]]*) true ;; *) false ;; esac; do pid="${pid#?}"; done
 		while case "$pid" in *[[:space:]]) true ;; *) false ;; esac; do pid="${pid%?}"; done
-		;;
-	esac
+	fi
 	numeric "$pid" && [ ${#pid} -le 10 ] || return 1
 	pid=$((10#$pid))
-	[ "$pid" -gt 0 ] || return 1
+	[ "$pid" -gt 0 ] && [ "$pid" -le 4194304 ] || return 1
 	printf '%s' "$pid"
 }
 pid_liveness() {
@@ -782,6 +794,8 @@ pid_liveness() {
 	# for a live process this user may not signal (BUG-4068 r1), so the
 	# builtin's own message is read under LC_ALL=C. ps is not asked: a missing,
 	# busybox or hidepid-restricted ps would read a live process as gone.
+	# ESRCH is per pid namespace: a sibling in another container that shares
+	# the data dir reads as dead here (ruled inherent, f8009dad).
 	local out
 	if out="$(LC_ALL=C kill -0 "$1" 2>&1)"; then
 		echo alive

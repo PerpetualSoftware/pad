@@ -178,9 +178,10 @@ func reapedPid(t *testing.T) int {
 	return cmd.Process.Pid
 }
 
-// The reader is no looser than internal/cli/pidfile.go's parsePIDRecord
-// (BUG-4068 r1 item 1, 3): MarshalIndent's shape or a bare integer, one pid,
-// at most 10 digits. Anything else does not parse, and the file is kept.
+// The reader accepts no more than the SHAPE internal/cli/pidfile.go writes
+// (BUG-4068 r1 items 1 and 3, r2 items 1 and 2): MarshalIndent's lines or a
+// bare integer, one pid, at most 4194304. It is a line-shape check, not full
+// JSON validation. Anything else does not parse, and the file is kept.
 func TestInstallRefresh_PIDFile_ReadsOnlyWhatPadWrites(t *testing.T) {
 	for _, tc := range []struct{ name, body, want string }{
 		{"MarshalIndent", jsonRecord(4242, "/x/pad"), "4242"},
@@ -195,6 +196,12 @@ func TestInstallRefresh_PIDFile_ReadsOnlyWhatPadWrites(t *testing.T) {
 		{"zero", "0\n", "REFUSED"},
 		{"negative", "-5\n", "REFUSED"},
 		{"garbage", "garbage\n", "REFUSED"},
+		{"missing closing brace", "{\n  \"pid\": 5,\n garbage\n", "REFUSED"},
+		{"garbage after the pid line", "{\n  \"pid\": 5,\ngarbage\n}\n", "REFUSED"},
+		{"a CR inside a bare pid", "1\r2\n", "REFUSED"},
+		{"Linux's largest pid_max", "4194304\n", "4194304"},
+		{"above any pid_max", "4194305\n", "REFUSED"},
+		{"would wrap as a pid_t", "2147483648\n", "REFUSED"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := filepath.Join(t.TempDir(), "pad.pid")
@@ -232,10 +239,12 @@ func TestInstallRefresh_PIDFile_OnlyESRCHIsDead(t *testing.T) {
 	}
 }
 
-// The stopped-pid leg on its own (BUG-4068 r1 item 5): after a real stop the
-// pid is dead, so every e2e row also passes through the dead leg. A LIVE pid
-// stands in for a zombie or a quick reuse: named as the stopped pid it is
-// removed, and with no stopped pid the same file is kept.
+// The stopped-pid leg on its own (BUG-4068 r1 item 5). The e2e stopped-server
+// rows reach it too: their pre-server is this test's own child, a zombie
+// after the TERM until cleanup reaps it, and kill -0 on a zombie succeeds, so
+// the dead leg cannot answer for them. This row does not depend on reaping: a
+// LIVE pid named as the stopped pid is removed, and with no stopped pid the
+// same file is kept.
 func TestInstallRefresh_PIDFile_TheStoppedPidLegRemovesEvenALivePid(t *testing.T) {
 	sib := liveSibling(t)
 	f := filepath.Join(t.TempDir(), "pad.pid")
