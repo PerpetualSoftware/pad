@@ -5128,6 +5128,216 @@ describe('Lightbox — the text arm', () => {
 		expect(body!.querySelector('em')?.textContent).toBe('emphasis');
 	});
 
+	function toggle(label: string): HTMLButtonElement {
+		const button = [...root().querySelectorAll('button')].find((b) => b.textContent?.trim() === label);
+		expect(button).toBeDefined();
+		return button!;
+	}
+
+	it.each([
+		['text/plain', true], ['application/json', false],
+		['application/yaml', false], ['application/toml', false]
+	])('wrap toggles the pre class for %s, starting at its MIME default', async (mime, wrapped) => {
+		mountViewer({ images: [{ ...image(IMG_A, 'source', mime as string), size_bytes: 128 }] });
+		await settleAsync();
+		const pre = root().querySelector('pre')!;
+		expect(pre).not.toBeNull();
+		expect(pre.textContent).toBe('# Heading\n\nSome *emphasis*.');
+		expect(pre.classList.contains('lightbox-text-wrap')).toBe(wrapped);
+		expect(toggle('Wrap').getAttribute('aria-pressed')).toBe(String(wrapped));
+		toggle('Wrap').click();
+		flushSync();
+		expect(pre.classList.contains('lightbox-text-wrap')).toBe(!wrapped);
+		expect(toggle('Wrap').getAttribute('aria-pressed')).toBe(String(!wrapped));
+	});
+
+	it('Raw renders markdown SOURCE in the plain text pre; Rendered returns to sanitized HTML', async () => {
+		mountViewer({ images: [{ ...image(IMG_A, 'notes.md', 'text/markdown'), size_bytes: 128 }] });
+		await settleAsync();
+		expect(toggle('Rendered').getAttribute('aria-pressed')).toBe('true');
+		toggle('Raw').click();
+		flushSync();
+		expect(toggle('Raw').getAttribute('aria-pressed')).toBe('true');
+		expect(toggle('Rendered').getAttribute('aria-pressed')).toBe('false');
+		const pre = root().querySelector('pre.lightbox-text-plain')!;
+		expect(pre).not.toBeNull();
+		expect(pre.textContent).toBe('# Heading\n\nSome *emphasis*.');
+		expect(pre.classList.contains('lightbox-text-wrap')).toBe(true);
+		expect(root().querySelector('.lightbox-text-body h1')).toBeNull();
+		toggle('Rendered').click();
+		flushSync();
+		expect(root().querySelector('.lightbox-text-body h1')?.textContent).toBe('Heading');
+		expect(root().querySelector('pre.lightbox-text-plain')).toBeNull();
+	});
+
+	it.each(['application/json', 'text/markdown'])('T3: keeps Wrap and Raw choices after a late filename fill for %s and applies MIME defaults', async (mime) => {
+		liveProps.images = [{ ...image(IMG_A, 'source', mime), size_bytes: 128 }];
+		mounted.push(mount(Lightbox, { target: appRoot, props: liveProps }));
+		flushSync();
+		await settleAsync();
+		const markdown = mime === 'text/markdown';
+		if (markdown) {
+			toggle('Raw').click();
+			flushSync();
+		}
+		toggle('Wrap').click();
+		flushSync();
+		expect(toggle('Wrap').getAttribute('aria-pressed')).toBe(String(!markdown));
+		liveProps.images = [{ ...liveProps.images[0], filename: markdown ? 'notes.md' : 'source.json' }];
+		await settleAsync();
+		expect(toggle('Wrap').getAttribute('aria-pressed')).toBe(String(!markdown));
+		if (markdown) expect(toggle('Raw').getAttribute('aria-pressed')).toBe('true');
+		// A new default class resets Wrap; JSON -> YAML stays in the same class
+		// and preserves the choice, even though the MIME itself changed.
+		liveProps.images = [{ ...liveProps.images[0], mime_type: 'application/yaml' }];
+		await settleAsync();
+		expect(toggle('Wrap').getAttribute('aria-pressed')).toBe(String(!markdown));
+		expect(root().querySelector('pre')!.classList.contains('lightbox-text-wrap')).toBe(!markdown);
+		liveProps.images = [{ ...liveProps.images[0], mime_type: 'text/csv' }];
+		await settleAsync();
+		expect(root().querySelector('.attachment-table-scroll')).not.toBeNull();
+		liveProps.images = [{ ...liveProps.images[0], mime_type: 'text/markdown' }];
+		await settleAsync();
+		expect(toggle('Rendered').getAttribute('aria-pressed')).toBe('true');
+		expect(root().querySelector('.lightbox-text-body h1')?.textContent).toBe('Heading');
+	});
+
+	it('U2: keeps Wrap off when a text/plain attachment receives a late .md filename', async () => {
+		liveProps.images = [{ ...image(IMG_A, 'source', 'text/plain'), size_bytes: 128 }];
+		mounted.push(mount(Lightbox, { target: appRoot, props: liveProps }));
+		await settleAsync();
+		expect(toggle('Wrap').getAttribute('aria-pressed')).toBe('true');
+		toggle('Wrap').click();
+		flushSync();
+		expect(toggle('Wrap').getAttribute('aria-pressed')).toBe('false');
+		liveProps.images = [{ ...liveProps.images[0], filename: 'notes.md' }];
+		await settleAsync();
+		// markdownRaw still resets to Rendered on the new markdown classification.
+		expect(toggle('Rendered').getAttribute('aria-pressed')).toBe('true');
+		toggle('Raw').click();
+		flushSync();
+		expect(toggle('Wrap').getAttribute('aria-pressed')).toBe('false');
+		expect(root().querySelector('pre')!.classList.contains('lightbox-text-wrap')).toBe(false);
+	});
+
+	it('keeps toggle choices in this surface and resets defaults when navigating to another document', async () => {
+		mountViewer({ images: [
+			{ ...image(IMG_A, 'one', 'application/json'), size_bytes: 128 },
+			{ ...image(IMG_B, 'two', 'application/yaml'), size_bytes: 128 }
+		] });
+		await settleAsync();
+		toggle('Wrap').click();
+		flushSync();
+		expect(toggle('Wrap').getAttribute('aria-pressed')).toBe('true');
+		root().querySelector<HTMLButtonElement>('.lightbox-nav.next')!.click();
+		await settleAsync();
+		// Soft assertions let the reset mutant demonstrate BOTH navigation failures.
+		expect.soft(toggle('Wrap').getAttribute('aria-pressed'), 'YAML resets Wrap to off').toBe('false');
+		if (toggle('Wrap').getAttribute('aria-pressed') === 'false') {
+			toggle('Wrap').click();
+			flushSync();
+		}
+		root().querySelector<HTMLButtonElement>('.lightbox-nav.prev')!.click();
+		await settleAsync();
+		expect.soft(toggle('Wrap').getAttribute('aria-pressed'), 'JSON resets Wrap to off on return').toBe('false');
+	});
+
+	it('T1: stage permits native table touch scrolling and keeps image gesture handling', async () => {
+		mobileFlag = true;
+		try {
+			mountViewer({ images: [
+				{ ...image(IMG_A, 'report.csv', 'text/csv'), size_bytes: 128 },
+				{ ...image(IMG_B, 'photo.png', 'image/png'), size_bytes: 128 }
+			] });
+			await settleAsync();
+			expect(root().querySelector('.lightbox-stage')!.classList.contains('lightbox-stage-text')).toBe(true);
+			root().querySelector<HTMLButtonElement>('.lightbox-nav.next')!.click();
+			await settleAsync();
+			expect(root().querySelector('.lightbox-stage')!.classList.contains('lightbox-stage-text')).toBe(false);
+		} finally {
+			mobileFlag = false;
+			flushSync();
+		}
+	});
+
+	it('U1: reserves Left/Right for a focused wide table, including edges, and pages otherwise', async () => {
+		mountViewer({ images: [
+			{ ...image(IMG_A, 'first.csv', 'text/csv'), size_bytes: 128 },
+			{ ...image(IMG_B, 'second.csv', 'text/csv'), size_bytes: 128 }
+		] });
+		await settleAsync();
+		const region = root().querySelector<HTMLElement>('.attachment-table-scroll')!;
+		Object.defineProperty(region, 'scrollWidth', { configurable: true, value: 2000 });
+		Object.defineProperty(region, 'clientWidth', { value: 500 });
+		region.focus();
+		for (const key of ['ArrowRight', 'ArrowLeft']) {
+			expect(press(key)).toBe(false);
+			expect(region.getAttribute('aria-label')).toBe('first.csv table');
+			expect(root().querySelector('.attachment-table-scroll')).toBe(region);
+		}
+		region.scrollLeft = 1500;
+		expect(press('ArrowRight')).toBe(false);
+		expect(root().querySelector('.attachment-table-scroll')).toBe(region);
+
+		// A table without horizontal overflow keeps gallery navigation.
+		Object.defineProperty(region, 'scrollWidth', { configurable: true, value: 500 });
+		expect(press('ArrowRight')).toBe(true);
+		await settleAsync();
+		const second = root().querySelector<HTMLElement>('.attachment-table-scroll')!;
+		expect(second.getAttribute('aria-label')).toBe('second.csv table');
+		Object.defineProperty(second, 'scrollWidth', { value: 2000 });
+		Object.defineProperty(second, 'clientWidth', { value: 500 });
+		closeButton().focus();
+		expect(press('ArrowRight')).toBe(true);
+		await settleAsync();
+		expect(root().querySelector('.attachment-table-scroll')?.getAttribute('aria-label')).toBe('first.csv table');
+	});
+
+	it('T2: exposes one focusable, labelled table scroll region', async () => {
+		mountViewer({ images: [{ ...image(IMG_A, 'fallback', 'text/csv'), filename: 'report.csv', size_bytes: 128 }] });
+		await settleAsync();
+		const region = root().querySelector<HTMLElement>('.attachment-table-scroll')!;
+		expect(region).not.toBeNull();
+		expect(region.getAttribute('tabindex')).toBe('0');
+		expect(region.getAttribute('role')).toBe('region');
+		expect(region.getAttribute('aria-label')).toBe('report.csv table');
+		region.focus();
+		expect(document.activeElement).toBe(region);
+		expect(root().querySelector('[role="document"]')!.hasAttribute('tabindex')).toBe(false);
+	});
+
+	it.each(['text/plain', 'text/csv'])('mounts %s inside the filling sheet stage and uses the phone table budget', async (mime) => {
+		mobileFlag = true;
+		try {
+			textFetch.mockResolvedValue({ ok: true, body: null,
+				text: async () => Array(101).fill(Array(50).fill('x').join(',')).join('\n') });
+			mountViewer({ images: [{ ...image(IMG_A, 'file', mime), size_bytes: 128 }] });
+			await settleAsync();
+			expect(hasSheet()).toBe(true);
+			// jsdom cannot measure geometry. Assert the sheet selector and stage
+			// containment the fill CSS depends on, as in the existing sheet tests.
+			const stage = root().querySelector('.lightbox-stage')!;
+			const arm = stage.querySelector(mime === 'text/csv' ? '.lightbox-table' : '.lightbox-text');
+			expect(arm).not.toBeNull();
+			expect(arm!.querySelector('[role="document"]')).not.toBeNull();
+			if (mime === 'text/csv') {
+				expect(arm!.querySelectorAll('tr')).toHaveLength(50);
+				expect(arm!.querySelectorAll('th,td')).toHaveLength(2500);
+				expect(root().querySelector('.lightbox-fallback')).toBeNull();
+			}
+		} finally {
+			mobileFlag = false;
+			flushSync();
+		}
+	});
+
+	it('routes a parameterized TSV MIME to tab-delimited cells through the shared loader', async () => {
+		textFetch.mockResolvedValue({ ok: true, body: null, text: async () => 'one\ttwo\nx\ty' });
+		mountViewer({ images: [{ ...image(IMG_A, 'file', 'text/tab-separated-values; charset=utf-8'), size_bytes: 128 }] });
+		await settleAsync();
+		expect([...root().querySelectorAll('td')].map((cell) => cell.textContent)).toEqual(['x', 'y']);
+	});
+
 	it('routes text/plain + a .md filename to the markdown renderer', async () => {
 		// A SYNTHETIC row in the shape the system actually stores — not a real
 		// upload; the metadata and download are both mocked here. What it pins is
@@ -5176,7 +5386,7 @@ describe('Lightbox — the text arm', () => {
 			ok: true,
 			status: 200,
 			body: null,
-			text: async () => 'before\n\n<script>window.__pwned = true;</script>\n\n<img src=x onerror="window.__pwned = true">\n\nafter'
+			text: async () => 'before\n\n<script>alert(1)</script>\n\n[x](javascript:alert(1))\n\n<img src=x onerror=alert(1)>\n\n<a href="#" onclick="alert(1)">x</a>\n\nafter'
 		});
 		mountViewer({ images: [image(IMG_A, 'evil.md', 'text/markdown')] });
 		await settleAsync();
@@ -5185,7 +5395,10 @@ describe('Lightbox — the text arm', () => {
 		// Assert what the WRONG behaviour would leave behind (CONVE-12), not just
 		// that the page looks fine: no script element, and no inline handler.
 		expect(body!.querySelector('script')).toBeNull();
-		expect(body!.innerHTML).not.toContain('onerror');
+		for (const element of body!.querySelectorAll('*')) {
+			expect([...element.attributes].some((a) => /^on/i.test(a.name))).toBe(false);
+			expect(element.getAttribute('href') ?? '').not.toMatch(/^javascript:/i);
+		}
 		expect((window as unknown as { __pwned?: boolean }).__pwned).toBeUndefined();
 		// ...and the surrounding document still rendered, so this is sanitization
 		// rather than the arm having failed to render at all.

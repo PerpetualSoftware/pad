@@ -152,10 +152,15 @@ test.describe('attachment viewer — text preview (IDEA-2712)', () => {
 		});
 		expect(style.userSelect).toBe('text');
 
-		// `touch-action` INTERSECTS down the ancestor chain, so the card's `pan-y`
-		// is worthless if an ancestor still says `none`. Assert the effective
-		// chain, not just this element: the stage must have given up its claim.
-		expect(style.touchAction).toBe('pan-y');
+		// The card allows touch panning on BOTH axes (TASK-4074): a wide table or
+		// an unwrapped JSON/YAML/TOML line must pan sideways as well as scroll
+		// down. That collides with no viewer gesture: pan/pinch and double-tap
+		// arm only over a decoded bitmap (`touchOnImage`), and nothing swipes
+		// between attachments. `touch-action` INTERSECTS down the ancestor chain,
+		// so the card's value is worthless if an ancestor still says `none`.
+		// Assert the effective chain, not just this element: the stage must have
+		// given up its claim.
+		expect(style.touchAction).toBe('pan-x pan-y');
 		const stage = await page
 			.locator(`${VIEWER} .lightbox-stage`)
 			.evaluate((el) => getComputedStyle(el).touchAction);

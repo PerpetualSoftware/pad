@@ -223,6 +223,55 @@ describe('createViewerTextLoader', () => {
 		expect(loader.phase).toBe('too-large');
 	});
 
+	it.each(['text/csv', 'text/tab-separated-values'])('table METADATA gate refuses %s over 2 MiB without ANY request', async (mime) => {
+		const loader = createViewerTextLoader();
+		loader.load(entry({ mime_type: mime, size_bytes: (2 << 20) + 1 }), 'ws');
+		await settle();
+		expect(loader.phase).toBe('too-large');
+		expect(loader.oversizeBytes).toBe((2 << 20) + 1);
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it('table RESPONSE gate cancels a CSV past 2 MiB when metadata cannot protect it', async () => {
+		// Further bytes remain unread: phase alone would also pass if the loader
+		// drained the stream and only then measured it.
+		const stream = streamedResponse('x'.repeat(4 << 20), (2 << 20) + 1);
+		fetchMock.mockResolvedValue(stream.response);
+		const loader = createViewerTextLoader();
+		loader.load(entry({ mime_type: 'text/csv', size_bytes: null }), 'ws');
+		await settle();
+		expect(loader.phase).toBe('too-large');
+		expect(loader.text).toBe('');
+		expect(loader.oversizeBytes).toBeNull();
+		expect(stream.state.cancelled).toBe(true);
+		expect(stream.state.reads).toBe(1);
+	});
+
+	it.each(['text/csv', 'text/tab-separated-values'])('admits %s at exactly 2 MiB through BOTH gates', async (mime) => {
+		const body = 'x'.repeat(2 << 20);
+		fetchMock.mockResolvedValue(plainResponse(body));
+		const loader = createViewerTextLoader();
+		loader.load(entry({ mime_type: mime, size_bytes: 2 << 20 }), 'ws');
+		await settle();
+		expect(loader.phase).toBe('ready');
+		expect(loader.text).toBe(body);
+	});
+
+	it.each(['text/plain', 'text/markdown', 'application/json', 'application/yaml', 'application/toml'])(
+		'%s retains the 1 MiB metadata and response gates', async (mime) => {
+			const loader = createViewerTextLoader();
+			loader.load(entry({ mime_type: mime, size_bytes: (1 << 20) + 1 }), 'ws');
+			await settle();
+			expect(loader.phase).toBe('too-large');
+			expect(fetchMock).not.toHaveBeenCalled();
+			fetchMock.mockResolvedValue(plainResponse('x'.repeat((1 << 20) + 1)));
+			loader.load(entry({ mime_type: mime, size_bytes: null }), 'ws');
+			await settle();
+			expect(loader.phase).toBe('too-large');
+			expect(loader.text).toBe('');
+		}
+	);
+
 	// ── Staleness and cancellation ────────────────────────────────────────────
 
 	it('drops a completion for an entry the user has already left', async () => {

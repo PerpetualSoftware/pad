@@ -44,6 +44,7 @@
 	import { getSurfaceRenderer, type SurfaceRendererId } from '$lib/attachments/surfaceRenderers';
 	import { createViewerTextLoader } from '$lib/attachments/viewerTextLoader.svelte';
 	import { renderMarkdownDocument } from '$lib/utils/markdown';
+	import AttachmentTablePreview from '$lib/components/attachments/AttachmentTablePreview.svelte';
 	import { formatAttachmentSize } from '$lib/markdown/attachments';
 	import {
 		reset as resetZoom,
@@ -640,12 +641,31 @@
 	// shows (`displaySrc`, the canonical attachment URL) and the load phase; this
 	// component drives it from the shown image and reports each decode / error.
 	const loader = createViewerImageLoader();
-	// The TEXT arm's loader (IDEA-2712). A separate instance rather than a mode on
+	// The TEXT/TABLE loader (IDEA-2712 / TASK-4074). A separate instance rather than a mode on
 	// the image loader: the two have no shared state, opposite cancellation models
 	// (an `<img>` src reassignment vs an AbortController) and disjoint arms, so
 	// merging them would be one object with two unrelated halves. Exactly one is
 	// ever armed — the load effect below disposes the other.
 	const textLoader = createViewerTextLoader();
+	let markdownAttachment = $derived(isMarkdownAttachment(resolvedMime, headerMeta.fields.filename));
+	// Choices belong to this surface, with fresh defaults for each document.
+	// A late metadata fill keeps them; navigation resets both synchronously
+	// through overridable derived state (Svelte 5). Renderer/MIME defaults
+	// below still reset when the preview is reclassified.
+	let textIdentity = $derived(img?.id ?? '');
+	let markdownRaw = $derived.by(() => {
+		void textIdentity;
+		void markdownAttachment;
+		return false;
+	});
+	let wrapDefault = $derived(!['application/json', 'application/yaml', 'application/toml'].includes(
+		resolvedMime?.split(';')[0].trim().toLowerCase() ?? ''
+	));
+	let wrapText = $derived.by(() => {
+		void textIdentity;
+		return wrapDefault;
+	});
+
 	// The id AND the pixel dimensions, as ONE stable primitive string — never the
 	// `img` object. A prop re-emit with the same VALUES (a re-derived `navigable`
 	// array) must not re-fire the load effect, but a genuine dimension change (an
@@ -690,7 +710,7 @@
 	// original the user had already triggered. Reading a value is not the only way
 	// to depend on it; being in the key is.
 	let loadKey = $derived(
-		`${img?.id ?? ''}:${img?.width ?? ''}:${img?.height ?? ''}:${shownRenderer ?? ''}:${soleMissing}:${shownRenderer === 'text' ? `${resolvedSize ?? ''}:${revalidateToken}` : ''}`
+		`${img?.id ?? ''}:${img?.width ?? ''}:${img?.height ?? ''}:${shownRenderer ?? ''}:${soleMissing}:${(shownRenderer === 'text' || shownRenderer === 'table') ? `${resolvedSize ?? ''}:${revalidateToken}` : ''}`
 	);
 	// Captured NON-reactively at load time (see the effect): a breakpoint flip
 	// alone must not reload — desktop→mobile must not abort an in-flight original,
@@ -2045,12 +2065,12 @@
 			// safe→unsafe flip actually re-runs this and reaches the dispose. The
 			// loader's own DR-16 gate (`start()`) is the backstop; the Lightbox
 			// decides no-bytes explicitly here.
-			if (shownRenderer === 'text' && !soleMissing) {
+			if ((shownRenderer === 'text' || shownRenderer === 'table') && !soleMissing) {
 				// The TEXT arm loads bytes too, so it takes the raster arm's whole
 				// discipline rather than the fallback's: the RESOLVED mime and the
 				// RESOLVED size (never the seed — see `resolvedSize`), both in
 				// `loadKey`, and the image loader disposed so the two can never both
-				// hold bytes for one entry. Its own gates (`canPreviewAsText` + the
+				// hold bytes for one entry. Its own gates (exact text/table MIME sets + the
 				// size bound) are the backstop at the request chokepoint; this is the
 				// Lightbox deciding the arm.
 				loader.dispose();
@@ -2259,6 +2279,12 @@
 				e.preventDefault();
 			}
 			return;
+		}
+
+		if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+			const region = document.activeElement?.closest<HTMLElement>('.attachment-table-scroll');
+			// Native horizontal scrolling owns both arrows, even at a scroll edge.
+			if (region && el.contains(region) && region.scrollWidth > region.clientWidth) return;
 		}
 
 		if (e.key === 'ArrowLeft' && hasMultiple) {
@@ -2476,7 +2502,7 @@
 	-->
 	<div
 		class="lightbox-stage"
-		class:lightbox-stage-text={shownRenderer === 'text'}
+		class:lightbox-stage-text={shownRenderer === 'text' || shownRenderer === 'table'}
 		bind:this={stageEl}
 	>
 		{#if hasMultiple}
@@ -2637,7 +2663,7 @@
 		{/if}
 
 		<!--
-			THE TEXT ARM (IDEA-2712 / GitHub #1169). A markdown or plain-text document,
+			THE BYTE PREVIEW ARMS (IDEA-2712 / TASK-4074). Text or a delimited table,
 			fetched by `textLoader` and rendered by US — never handed to the browser to
 			inline. This arm LOADS BYTES, so it takes the raster arm's discipline
 			rather than the fallback's: it is re-derived from the resolved MIME every
@@ -2663,8 +2689,8 @@
 			worked; it did not, and nothing tested it. Both are fixed and both are
 			now asserted.
 		-->
-		{#if shownRenderer === 'text' && !soleMissing}
-			<div class="lightbox-text">
+		{#if (shownRenderer === 'text' || shownRenderer === 'table') && !soleMissing}
+			<div class="lightbox-text" class:lightbox-table={shownRenderer === 'table'}>
 				<!--
 					THE CARD IS THE INTERACTIVE SURFACE, the layer around it is not
 					(IDEA-2712, codex R1 #4). `.lightbox-text` spans the stage for
@@ -2681,14 +2707,14 @@
 					the document does not chain to the inert page behind.
 				-->
 				<!--
-					`tabindex="0"` because this is a SCROLLABLE REGION and nothing else
+					`tabindex="0"` on the text arm because this is a SCROLLABLE REGION and nothing else
 					in the viewer can scroll it. Without a tab stop a keyboard-only
 					user can open a document and never reach past its first screen —
 					the arrow keys are owned by the viewer's own next/previous
 					navigation, so there is no fallback. It joins the focus trap by
 					design (it is a real destination), and `role="document"` with the
 					filename as its accessible name is what a screen reader announces
-					on arrival.
+					on arrival. The table arm instead focuses its inner scroll region.
 				-->
 				<!--
 					svelte-ignore a11y_no_noninteractive_tabindex — the rule's premise
@@ -2705,7 +2731,7 @@
 					class="lightbox-text-scroll"
 					role="document"
 					aria-label={displayName}
-					tabindex="0"
+					tabindex={shownRenderer === 'table' ? undefined : 0}
 				>
 				{#if textLoader.phase === 'loading'}
 					<p class="lightbox-text-status" role="status">Loading preview…</p>
@@ -2740,12 +2766,25 @@
 						</button>
 					</div>
 				{:else if textLoader.phase === 'ready'}
-					{#if isMarkdownAttachment(resolvedMime, headerMeta.fields.filename)}
-						<div class="lightbox-text-body markdown-body">
-							{@html renderMarkdownDocument(textLoader.text)}
-						</div>
+					{#if shownRenderer === 'table'}
+						<AttachmentTablePreview text={textLoader.text} mime={resolvedMime!} compact={isSheet} label={`${displayName} table`} />
 					{:else}
-						<pre class="lightbox-text-body lightbox-text-plain">{textLoader.text}</pre>
+						<div class="lightbox-text-controls" role="group" aria-label="Preview display">
+							{#if markdownAttachment}
+								<button type="button" aria-pressed={!markdownRaw} onclick={() => markdownRaw = false}>Rendered</button>
+								<button type="button" aria-pressed={markdownRaw} onclick={() => markdownRaw = true}>Raw</button>
+							{/if}
+							{#if !markdownAttachment || markdownRaw}
+								<button type="button" aria-pressed={wrapText} onclick={() => wrapText = !wrapText}>Wrap</button>
+							{/if}
+						</div>
+						{#if markdownAttachment && !markdownRaw}
+							<div class="lightbox-text-body markdown-body">
+								{@html renderMarkdownDocument(textLoader.text)}
+							</div>
+						{:else}
+							<pre class="lightbox-text-body lightbox-text-plain" class:lightbox-text-wrap={wrapText}>{textLoader.text}</pre>
+						{/if}
 					{/if}
 				{/if}
 				</div>
@@ -2926,12 +2965,12 @@
 	}
 
 	/* TOUCH-ACTION INTERSECTS DOWN THE ANCESTOR CHAIN (codex R2 #2). The card's
-	   `pan-y` cannot override an ancestor's `none` — the allowed behaviours for a
+	   `pan-x pan-y` cannot override an ancestor's `none` — the allowed behaviours for a
 	   touch are the INTERSECTION along the chain, so `none` on the stage wins and
 	   a phone could not scroll the document at all. The stage claims `none` for
-	   the pan/zoom gesture, and on the text arm there is no such gesture (no
+	   the pan/zoom gesture, and on the text and table arms there is no such gesture (no
 	   bitmap, zoom disabled), so it gives the claim up for the duration. Scoped to
-	   the arm rather than relaxed globally: every other arm still needs it. */
+	   these arms rather than relaxed globally: every other arm still needs it. */
 	.lightbox-stage-text {
 		touch-action: auto;
 	}
@@ -3017,18 +3056,30 @@
 	     - `overscroll-behavior: contain` — a scroll at the end of the document
 	       does NOT chain to the inert page behind, which is the guarantee the
 	       wheel handler's `preventDefault` was providing before this arm existed
-	     - `touch-action: pan-y` / `user-select: text` — the stage sets
+	     - `touch-action: pan-x pan-y` / `user-select: text` — the stage sets
 	       `touch-action: none` and the backdrop `user-select: none` for the pan
-	       gesture; a document has to opt back out of both. */
+	       gesture; a document has to opt back out of both. Both axes (TASK-4074):
+	       a wide table or an unwrapped line pans sideways as well as down. */
 	.lightbox-text-scroll {
 		pointer-events: auto;
 		width: min(80ch, 100%);
 		max-height: 100%;
 		overflow: auto;
 		overscroll-behavior: contain;
-		touch-action: pan-y;
+		touch-action: pan-x pan-y;
 		user-select: text;
 		-webkit-user-select: text;
+	}
+
+	.lightbox-table .lightbox-text-scroll {
+		width: min(1200px, 100%);
+		height: 100%;
+		min-height: 0;
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
+		background: var(--bg-primary, #fff);
+		color: var(--text-primary, #111);
 	}
 
 	.lightbox-text-status {
@@ -3050,14 +3101,37 @@
 		overflow-wrap: anywhere;
 	}
 
-	/* Plain text keeps its own line breaks and spacing (that is what makes it
-	   plain text), but still wraps rather than forcing a horizontal scrollbar
-	   across the whole stage. */
+	/* Raw bytes keep their line breaks. Prose wraps by default; configuration
+	   files start unwrapped, with horizontal scrolling inside the card. */
 	.lightbox-text-plain {
-		white-space: pre-wrap;
+		white-space: pre;
+		overflow-wrap: normal;
 		font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
 		font-size: 0.875rem;
 		line-height: 1.6;
+	}
+
+	.lightbox-text-plain.lightbox-text-wrap {
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
+	}
+	.lightbox-text-controls {
+		display: flex;
+		gap: var(--space-2);
+		padding: var(--space-2);
+		background: var(--bg-primary, #fff);
+	}
+	.lightbox-text-controls button {
+		padding: 0.35rem 0.65rem;
+		border: 1px solid var(--border-color, #ddd);
+		border-radius: var(--radius-sm, 4px);
+		background: var(--bg-primary, #fff);
+		color: var(--text-primary, #111);
+		cursor: pointer;
+	}
+	.lightbox-text-controls button[aria-pressed='true'] {
+		background: var(--bg-secondary, #eee);
+		font-weight: 600;
 	}
 
 	/* Wide content INSIDE a rendered document scrolls in its own box rather than
@@ -3491,6 +3565,19 @@
 		flex: 1 1 auto;
 		min-height: 0;
 		order: 0;
+	}
+
+	/* Documents fill the sheet's stage rather than remaining a centred 80ch
+	   card. The stage already supplies the containing block and flex height. */
+	.lightbox-sheet .lightbox-text {
+		padding: 0;
+		align-items: stretch;
+		justify-content: stretch;
+	}
+	.lightbox-sheet .lightbox-text-scroll {
+		width: 100%;
+		height: 100%;
+		min-height: 0;
 	}
 
 	/* META + TOOLBAR become flow items in the column so they dock, stacked, at the

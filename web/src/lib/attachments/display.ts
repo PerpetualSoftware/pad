@@ -410,15 +410,21 @@ export function canBrowserPreview(mime: string | null | undefined): boolean {
  * the allowlists below, because the string can still reach this client from
  * somewhere that is not our upload door.
  *
- * SMALLER THAN WHAT WE COULD RENDER, on purpose. `text/csv`,
- * `text/tab-separated-values`, JSON, XML, YAML and TOML are all
- * allowlisted uploads and all renderable as raw text — and all left out,
- * because each has an obviously better rendering (a table; syntax
- * highlighting) that this unit does not build. Shipping them as raw text
- * now would make that better rendering a REGRESSION for anyone who got
- * used to the raw view.
+ * TEXT AND TABLE HAVE SEPARATE EXACT SETS (TASK-4074). JSON, YAML and TOML
+ * use the raw text renderer without parsing or pretty-printing. CSV and TSV
+ * have their own bounded, text-only table renderer. XML stays excluded: XML
+ * spellings can carry SVG or XHTML, so neither a text category nor a filename
+ * may admit them. These client sets are still NOT PART OF THE SERVER MIRROR.
  */
-const TEXT_PREVIEW_MIMES: ReadonlySet<string> = new Set(['text/markdown', 'text/plain']);
+const TEXT_PREVIEW_MIMES: ReadonlySet<string> = new Set([
+	'text/plain', 'text/markdown', 'application/json', 'application/yaml', 'application/toml'
+]);
+const TABLE_PREVIEW_MIMES: ReadonlySet<string> = new Set(['text/csv', 'text/tab-separated-values']);
+
+/** May we fetch this MIME for the bounded, text-only table renderer? Never by category. */
+export function canPreviewAsTable(mime: string | null | undefined): boolean {
+	return TABLE_PREVIEW_MIMES.has(normalizeMime(mime));
+}
 
 /**
  * May the in-app text preview render this MIME? See
@@ -435,8 +441,8 @@ export function canPreviewAsText(mime: string | null | undefined): boolean {
 /**
  * Within the text-preview set, is this the MARKDOWN one? (IDEA-2712)
  *
- * The arm needs to tell the two members apart — markdown goes through the
- * shared `marked` pipeline, plain text goes into a `<pre>` as text.
+ * Markdown goes through the shared `marked` pipeline; the other text
+ * members go into a `<pre>` as text.
  *
  * THE EXTENSION IS CONSULTED, AND IT IS NOT BELT-AND-BRACES — IT IS THE PATH
  * THAT FIRES FOR EVERY ROW UPLOADED BEFORE BUG-2963 F5. Until that change, an
@@ -462,7 +468,7 @@ export function canPreviewAsText(mime: string | null | undefined): boolean {
  * an explicitly-typed row (a CLI upload that declares the type, or a future
  * server that trusts the extension) should be honoured regardless of filename.
  * The extension is the fallback, and it is gated on the MIME already being in
- * the text-preview set so a filename can never widen what previews.
+ * the legacy text/plain MIME so a configuration file cannot become markdown.
  */
 const MARKDOWN_EXTENSIONS: ReadonlySet<string> = new Set(['md', 'markdown']);
 
@@ -471,9 +477,9 @@ export function isMarkdownAttachment(
 	filename?: string | null
 ): boolean {
 	if (normalizeMime(mime) === 'text/markdown') return true;
-	// Gate on the set, never on the filename alone: the extension chooses a
-	// RENDERER among types already admitted, and must not admit anything.
-	if (!canPreviewAsText(mime)) return false;
+	// Only legacy text/plain needs the extension bridge. A declared JSON, YAML
+	// or TOML document stays raw even if its filename ends in .md.
+	if (normalizeMime(mime) !== 'text/plain') return false;
 	return MARKDOWN_EXTENSIONS.has(extensionOf(filename));
 }
 
@@ -519,3 +525,6 @@ export function isMarkdownAttachment(
  * the common seeding (codex R1 #1).
  */
 export const TEXT_PREVIEW_MAX_BYTES = 1 << 20; // 1 MiB
+
+/** CSV/TSV share the text loader's metadata and streaming response gates. */
+export const TABLE_PREVIEW_MAX_BYTES = 2 << 20; // 2 MiB

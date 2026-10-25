@@ -363,6 +363,14 @@ describe('isMarkdownAttachment — IDEA-2712', () => {
 		expect(isMarkdownAttachment('text/plain', 'data.csv')).toBe(false);
 	});
 
+	it('a markdown filename cannot reinterpret JSON, YAML or TOML as markdown', () => {
+		// The legacy extension bridge is only for old text/plain uploads. Widening
+		// the raw text set must not turn a declared configuration file into HTML.
+		for (const mime of ['application/json', 'application/yaml', 'application/toml']) {
+			expect(isMarkdownAttachment(mime, 'notes.md')).toBe(false);
+		}
+	});
+
 	it('the extension can never ADMIT a type the set excludes', () => {
 		// The filename chooses a RENDERER among admitted types; it must not widen
 		// what previews. A .md name on an HTML or PDF row stays false.

@@ -27,7 +27,7 @@ describe('getSurfaceRenderer', () => {
 		// IDEA-2712 / GitHub #1169. text/plain moved from the null arm to here —
 		// a deliberate contract change, not a widened raster set: it is the
 		// in-app renderer claiming it, and canBrowserPreview is untouched.
-		for (const mime of ['text/markdown', 'text/plain']) {
+		for (const mime of ['text/markdown', 'text/plain', 'application/json', 'application/yaml', 'application/toml']) {
 			expect(getSurfaceRenderer(mime)).toBe('text');
 		}
 	});
@@ -55,23 +55,17 @@ describe('getSurfaceRenderer', () => {
 		}
 	});
 
-	it('fails closed on allowlisted text types this unit deliberately excludes', () => {
-		// Renderable as raw text, left out because each has an obviously better
-		// rendering (a table; syntax highlighting) that shipping raw now would
-		// turn into a regression later.
-		for (const mime of [
-			'text/csv',
-			'text/tab-separated-values',
-			'application/json',
-			'application/xml',
-			'text/xml',
-			'application/yaml',
-			'text/yaml',
-			'application/toml',
-		]) {
-			expect(getSurfaceRenderer(mime)).toBeNull();
+	it("returns 'table' for exactly the CSV and TSV allowlist", () => {
+		for (const mime of ['text/csv', 'text/tab-separated-values']) {
+			expect(getSurfaceRenderer(mime)).toBe('table');
 		}
 	});
+
+	it.each(['text/xml', 'application/xhtml+xml', 'text/html', 'text/javascript',
+		'image/svg+xml', 'application/xml', 'text/yaml', 'text/unknown', null])(
+		'privacy boundary: %s claims no renderer even though text categories might admit it',
+		(mime) => expect(getSurfaceRenderer(mime)).toBeNull()
+	);
 
 	it('fails closed on an unresolved (null) MIME', () => {
 		expect(getSurfaceRenderer(null)).toBeNull();

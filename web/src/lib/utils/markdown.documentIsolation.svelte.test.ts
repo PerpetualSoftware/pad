@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { renderMarkdownDocument, renderMarkedWithAttachments } from './markdown';
+import { renderMarkdownDocument, renderMarkedWithAttachments, renderMarkdown, sanitizeMarkdownHtml } from './markdown';
 
 /**
  * `renderMarkdownDocument`'s ISOLATION contract (IDEA-2712, codex R3 #3).
@@ -93,5 +93,25 @@ describe('renderMarkdownDocument — context isolation', () => {
 		// DOMPurify does not know that scheme, so the src is removed.
 		const html = renderMarkdownDocument(ATTACHMENT_MD);
 		expect(html).not.toContain('pad-attachment:');
+	});
+});
+
+// A sentinel outside the markdown allowlist proves this is OUR shared sanitizer,
+// rather than merely marked's URL escaping (which strips some bad links itself).
+describe('attachment and item content share sanitizeMarkdownHtml', () => {
+	it('strips the same sentinel and active HTML in both rendering entry points', () => {
+		const payload = '<script>alert(1)</script>\n\n[x](javascript:alert(1))\n\n<img src=x onerror=alert(1)>\n\n<a href="#" onclick="alert(1)">x</a>\n\n<form><input value="sentinel"></form>\n\n**safe**';
+		const sanitizedSentinel = sanitizeMarkdownHtml('<form><input value="sentinel"></form>');
+		expect(sanitizedSentinel).not.toContain('<form');
+		for (const html of [renderMarkdownDocument(payload), renderMarkdown(payload, [], 'ws')]) {
+			const dom = document.createElement('div');
+			dom.innerHTML = html;
+			expect(dom.querySelector('strong')?.textContent).toBe('safe');
+			expect(dom.querySelector('script,form')).toBeNull();
+			for (const element of dom.querySelectorAll('*')) {
+				expect([...element.attributes].some((a) => /^on/i.test(a.name))).toBe(false);
+				expect(element.getAttribute('href') ?? '').not.toMatch(/^javascript:/i);
+			}
+		}
 	});
 });
