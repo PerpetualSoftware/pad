@@ -80,6 +80,11 @@ func insideTestTempDir(sc tempScope, p string) bool {
 	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
 		return false
 	}
+	// A prefix, not an exact name: t.TempDir drops a subtest's "/" and
+	// truncates the name, so a subtest's directory is "<Parent><sub…>" and
+	// digits. That also admits a longer test name sharing the prefix
+	// (TestFoo's scope accepts TestFooBar's directory), which no separator
+	// in the directory name can rule out.
 	return strings.HasPrefix(strings.SplitN(rel, string(filepath.Separator), 2)[0], sc.top)
 }
 
@@ -398,6 +403,19 @@ func TestHarnessGuard_ResolvesSymlinkedTempPaths(t *testing.T) {
 	if !insideTestTempDir(tempScope{base, "TestSomething"}, filepath.Join(baseLink, "TestSomething123", "x")) {
 		t.Fatalf("a symlinked path is not inside its resolved base")
 	}
+	// Only THIS test's directory (BUG-4066 r2 item 9): another test's is
+	// refused; a subtest's, which t.TempDir names "<Parent><sub…>", passes.
+	for _, tc := range []struct {
+		dir  string
+		want bool
+	}{
+		{"TestOther123", false},
+		{"TestSomethingsub456", true},
+	} {
+		if got := insideTestTempDir(tempScope{base, "TestSomething"}, filepath.Join(base, tc.dir, "x")); got != tc.want {
+			t.Errorf("%s: inside = %v, want %v", tc.dir, got, tc.want)
+		}
+	}
 }
 
 // unguardedScriptExecs scans Go source for every exec.Command or
@@ -487,6 +505,15 @@ func TestHarnessGuard_ScannerFlagsAnUnguardedExec(t *testing.T) {
 	c := EXEC("bash", scriptPath(t), x)
 	c.Env = env
 	_ = c.Run()
+}
+
+func b(t *testing.T) {
+	requireSafeScriptEnv(t, nil, "")
+}
+`), 1},
+		{"never run in its function, guard in a later function", snip(`func a(t *testing.T) *exec.Cmd {
+	c := EXEC("bash", scriptPath(t), x)
+	return c
 }
 
 func b(t *testing.T) {
