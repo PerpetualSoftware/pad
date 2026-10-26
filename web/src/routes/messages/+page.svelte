@@ -19,6 +19,9 @@
 
 {#if !chatInbox.loaded && chatInbox.failed}
 	<p class="status">Could not load your conversations.</p>
+	<!-- The list reloads only when chatStore's unread fetch succeeds, so a failed
+	     list fetch beside a good unread fetch has no other way back (TASK-4044 r1). -->
+	<button type="button" onclick={() => void chatInbox.load()}>Try again</button>
 {:else if !chatInbox.loaded}
 	<p class="status">Loading...</p>
 {:else}

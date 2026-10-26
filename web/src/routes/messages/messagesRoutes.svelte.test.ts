@@ -144,6 +144,19 @@ describe('/messages page (TASK-4044)', () => {
 		await settle();
 		expect(getByText('Could not load your conversations.')).toBeTruthy();
 	});
+
+	// Nothing else retries a failed list while the unread fetch is fine (r1).
+	it('Try again reloads the list once and shows it', async () => {
+		h.listConversations.mockRejectedValueOnce(new Error('boom'));
+		const { container, getByText } = render(MessagesPage);
+		await settle();
+		expect(h.listConversations).toHaveBeenCalledTimes(1);
+		getByText('Try again').click();
+		await settle();
+		expect(h.listConversations).toHaveBeenCalledTimes(2);
+		expect(container.querySelector('a[href="/messages/3"]')).not.toBeNull();
+		expect(container.textContent).not.toContain('Could not load');
+	});
 });
 
 describe('/messages/[n] placeholder (TASK-4044)', () => {
