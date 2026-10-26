@@ -20,6 +20,7 @@
 	import MenuItem from '$lib/components/common/MenuItem.svelte';
 	import { workspaceRestoreTarget } from '$lib/utils/workspace-route';
 	import { tabLanding } from '$lib/utils/tabLanding';
+	import ChatLink from '$lib/components/chat/ChatLink.svelte';
 	import { pendingInvitations } from '$lib/stores/pendingInvitations.svelte';
 
 	let { mobile = false }: { mobile?: boolean } = $props();
@@ -548,6 +549,8 @@
 					<a href="/console/settings" class="menu-link" role="menuitem" onclick={closeUserMenu}>
 						Account settings
 					</a>
+					<!-- TASK-4044: no unread dot on the avatar; the count shows here. -->
+					<ChatLink class="menu-link" role="menuitem" onclick={closeUserMenu} />
 					<!-- Hidden in the mobile apps: no purchase path there (PLAN-3291 DR-3). -->
 					{#if authStore.commerceAllowed}
 						<a href="/console/billing" class="menu-link" role="menuitem" onclick={closeUserMenu}>
@@ -1431,7 +1434,8 @@
 	   keyboard nav), so they can't be MenuItem buttons — mirror
 	   MenuItem's .mi metrics here so link rows and button rows read
 	   as one set. */
-	.menu-link {
+	.menu-link,
+	.user-dropdown-body :global(.menu-link) {
 		display: flex;
 		align-items: center;
 		width: 100%;
@@ -1442,13 +1446,16 @@
 		text-decoration: none;
 	}
 	.menu-link:hover,
-	.menu-link:focus-visible {
+	.menu-link:focus-visible,
+	.user-dropdown-body :global(.menu-link:hover),
+	.user-dropdown-body :global(.menu-link:focus-visible) {
 		background: var(--bg-hover);
 		text-decoration: none;
 		outline: none;
 	}
 	@media (pointer: coarse) {
-		.menu-link {
+		.menu-link,
+		.user-dropdown-body :global(.menu-link) {
 			padding: 11px 10px;
 		}
 	}
