@@ -93,7 +93,7 @@ async function settle() {
 const conv = (n: number) => ({
 	id: `c${n}`,
 	number: n,
-	kind: 'dm',
+	kind: 'direct',
 	title: '',
 	agent_key: `agent-${n}`,
 	last_seq: 0,
@@ -126,7 +126,10 @@ beforeEach(() => {
 
 afterEach(() => {
 	cleanup();
-	for (let i = 0; i < 5; i++) chatInbox.stopPresence();
+	// cleanup() unmounts every page, which releases its presence owner; an armed
+	// poll after it is a leaked owner (fake timers only: real ones cannot be counted).
+	if (vi.isFakeTimers()) expect(vi.getTimerCount(), 'a page left a presence owner started').toBe(0);
+	chatInbox.stopPresence();
 	vi.useRealTimers();
 	page.params = {};
 });

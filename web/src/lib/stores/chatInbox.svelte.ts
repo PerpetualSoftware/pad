@@ -59,13 +59,13 @@ class ChatInboxStore {
 	checkedAt = $state<number | null>(null);
 
 	/**
-	 * Presence per agent key over the current DMs (a non-dm conversation's key is
+	 * Presence per agent key over the current DMs (a group conversation's key is
 	 * not an agent to chat with, ruling 018faf64 Q3), plus session-only agents
 	 * while the sessions read is good. It feeds the roster.
 	 */
 	presences = $derived(
 		rollupPresence(
-			this.conversations.filter((c) => c.kind === 'dm').map((c) => c.agent_key),
+			this.conversations.filter((c) => c.kind === 'direct').map((c) => c.agent_key),
 			this.sessions ?? 'unavailable'
 		)
 	);
@@ -77,7 +77,7 @@ class ChatInboxStore {
 	roster = $derived.by((): RosterEntry[] => {
 		const numbers = new Map<string, number>();
 		for (const c of this.conversations) {
-			if (c.kind !== 'dm') continue;
+			if (c.kind !== 'direct') continue;
 			const k = normalizeAgentName(c.agent_key);
 			if (k !== '' && !numbers.has(k)) numbers.set(k, c.number);
 		}

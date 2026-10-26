@@ -20,7 +20,7 @@ function conv(n: number, over: Partial<ChatConversationSummary> = {}): ChatConve
 	return {
 		id: `c${n}`,
 		number: n,
-		kind: 'dm',
+		kind: 'direct',
 		title: '',
 		agent_key: `agent-${n}`,
 		last_seq: 1,

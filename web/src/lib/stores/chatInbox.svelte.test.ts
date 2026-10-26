@@ -44,7 +44,7 @@ let inbox: Inbox;
 const conv = (n: number) => ({
 	id: `c${n}`,
 	number: n,
-	kind: 'dm',
+	kind: 'direct',
 	title: '',
 	agent_key: `a${n}`,
 	last_seq: 1,
@@ -102,11 +102,21 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+	// The list and the unread store hold their own timers: end them first, so
+	// the only timer left standing can be a presence poll.
 	inbox.stop();
-	// startPresence is reference counted: release every owner a test left behind.
-	for (let i = 0; i < 5; i++) inbox.stopPresence();
 	chat.stop();
-	vi.useRealTimers();
+	try {
+		// startPresence is reference counted. Every test releases the owners it took
+		// (the describes that start presence do it in their own afterEach, which runs
+		// before this one), so an armed presence poll here is a leaked owner.
+		expect(vi.getTimerCount(), 'a test left a presence owner started').toBe(0);
+	} finally {
+		// One drain for safety only; the assertion above ran first. Its failure must
+		// not leave the fake clock behind for the next test.
+		inbox.stopPresence();
+		vi.useRealTimers();
+	}
 });
 
 describe('chatInbox (TASK-4044)', () => {
@@ -270,6 +280,11 @@ describe('chatInbox (TASK-4044)', () => {
 });
 
 describe('chatInbox presence (TASK-4044 2b-i)', () => {
+	afterEach(() => {
+		// These tests start one presence owner each and do not stop it themselves.
+		inbox.stopPresence();
+	});
+
 	it('startPresence fires no list fetch', async () => {
 		inbox.startPresence();
 		await flush();
@@ -322,6 +337,8 @@ describe('chatInbox presence (TASK-4044 2b-i)', () => {
 		expect(h.sessions).toHaveBeenCalledTimes(1);
 		await vi.advanceTimersByTimeAsync(PRESENCE_POLL_MS);
 		expect(h.sessions).toHaveBeenCalledTimes(2);
+		// Two owners were taken; the describe's afterEach releases one.
+		inbox.stopPresence();
 	});
 
 	it('reads online from a matching session, offline only after a successful read without one', async () => {
@@ -477,6 +494,11 @@ const rateErr = (retryAfterMs?: number) =>
 const rosterKeys = () => inbox.roster.map((r) => r.key);
 
 describe('chatInbox roster (TASK-4044 2b-ii)', () => {
+	afterEach(() => {
+		// These tests start one presence owner each and do not stop it themselves.
+		inbox.stopPresence();
+	});
+
 	async function loadWith(convs: ReturnType<typeof conv>[], sessions: ReturnType<typeof sess>[] | 'down') {
 		h.list.mockResolvedValue({ conversations: convs, unread_total: 0 });
 		if (sessions === 'down') h.sessions.mockRejectedValue(apiErr('unavailable'));
@@ -543,7 +565,7 @@ describe('chatInbox roster (TASK-4044 2b-ii)', () => {
 	});
 
 	// Q3
-	it('keeps a non-dm conversation key off the roster', async () => {
+	it("a group conversation (kind 'group') is not on the roster", async () => {
 		await loadWith([conv(1), { ...conv(2), kind: 'group', agent_key: 'notadm' }], []);
 		expect(rosterKeys()).toEqual(['a1']);
 	});
