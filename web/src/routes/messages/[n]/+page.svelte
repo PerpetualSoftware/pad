@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import ChatBackLink from '$lib/components/chat/ChatBackLink.svelte';
 	import { api, isNotFoundError } from '$lib/api/client';
 	import type { ChatConversationSummary } from '$lib/types';
 
@@ -39,7 +38,6 @@
 </svelte:head>
 
 <header class="chat-header">
-	<ChatBackLink />
 	<a class="all-chats" href="/messages">All conversations</a>
 </header>
 

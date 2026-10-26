@@ -55,7 +55,6 @@ import MessagesLayout from './+layout.svelte';
 import MessagesPage from './+page.svelte';
 import ThreadPage from './[n]/+page.svelte';
 import { page } from '$app/state';
-import { lastWorkspace } from '$lib/stores/lastWorkspace.svelte';
 import { chatInbox } from '$lib/stores/chatInbox.svelte';
 
 const child = createRawSnippet(() => ({ render: () => `<div data-testid="child">child</div>` }));
@@ -87,7 +86,6 @@ beforeEach(() => {
 	h.listConversations.mockResolvedValue({ conversations: [conv(3)], unread_total: 0 });
 	h.getConversation.mockResolvedValue(conv(3));
 	page.params = {};
-	lastWorkspace.clear();
 	// The inbox is a singleton: start each test from a cold one.
 	chatInbox.conversations = [];
 	chatInbox.loaded = false;
@@ -145,20 +143,6 @@ describe('/messages page (TASK-4044)', () => {
 		const { getByText } = render(MessagesPage);
 		await settle();
 		expect(getByText('Could not load your conversations.')).toBeTruthy();
-	});
-
-	it('Back goes to /console when no workspace is remembered', async () => {
-		const { getByText } = render(MessagesPage);
-		await settle();
-		expect(getByText('Back').getAttribute('href')).toBe('/console');
-	});
-
-	it('Back returns to the remembered workspace', async () => {
-		lastWorkspace.note('alice', 'proj');
-		const { getByText } = render(MessagesPage);
-		await settle();
-		const a = getByText('Back to proj');
-		expect(a.getAttribute('href')).toBe('/alice/proj');
 	});
 });
 

@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import ChatBackLink from '$lib/components/chat/ChatBackLink.svelte';
 	import ConversationList from '$lib/components/chat/ConversationList.svelte';
 	import { chatInbox } from '$lib/stores/chatInbox.svelte';
 
@@ -15,7 +14,6 @@
 </svelte:head>
 
 <header class="chat-header">
-	<ChatBackLink />
 	<h1>Chat</h1>
 </header>
 
