@@ -102,6 +102,12 @@ class ChatStore {
 		void this.#run();
 	}
 
+	/**
+	 * Call `fn` once per hint, synchronously from onHint(); returns the unsubscribe.
+	 * Nothing in the inbox list uses it: chatInbox reloads from `version`, which
+	 * covers hints, resyncs and focus through the one coalesced fetch. It is for a
+	 * consumer that needs each hint itself (for example an open thread).
+	 */
 	subscribe(fn: Listener): () => void {
 		this.#listeners.add(fn);
 		return () => {
