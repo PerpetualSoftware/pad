@@ -5644,33 +5644,92 @@ describe('Lightbox — the PDF arm (TASK-4075)', () => {
 		for (const tag of ['a', 'iframe', 'embed', 'object', 'img']) expect(arm.querySelector(tag), tag).toBeNull();
 	});
 
-	it('U3: exactly one loader is armed — leaving the PDF for markdown aborts the PDF request, and back', async () => {
-		const signals: { url: string; signal: AbortSignal }[] = [];
+	// U3 — exactly one loader is armed. Each leg records the signal of every request and
+	// asserts which one an arm flip aborted: an arm that failed to dispose the other
+	// loader leaves that request running, holding bytes the user has left.
+	function recordSignals() {
+		const calls: { url: string; signal: AbortSignal }[] = [];
 		pdfFetch.mockImplementation((url: string, init: RequestInit) => {
-			signals.push({ url, signal: init.signal as AbortSignal });
+			calls.push({ url, signal: init.signal as AbortSignal });
 			return new Promise(() => {});
 		});
-		mountViewer({ images: [pdfImage(IMG_A), { ...image(IMG_B, 'notes.md', 'text/markdown'), size_bytes: 128 }, { ...image(IMG_C, 'p.png'), size_bytes: 128 }] });
+		return calls;
+	}
+	const sized = (id: string, name: string, mime: string) => ({ ...image(id, name, mime), size_bytes: 128 });
+	const IMG_Z = 'dddddddd-4444-4444-8444-dddddddddddd';
+	const next = () => root().querySelector<HTMLButtonElement>('.lightbox-nav.next')!.click();
+	const prev = () => root().querySelector<HTMLButtonElement>('.lightbox-nav.prev')!.click();
+
+	it('U3: leaving the PDF for markdown aborts the PDF request and starts the text one', async () => {
+		const calls = recordSignals();
+		mountViewer({ images: [sized(IMG_Z, 'z.zip', 'application/zip'), sized(IMG_A, 'a.pdf', 'application/pdf'), sized(IMG_B, 'b.md', 'text/markdown')], index: 1 });
 		await settleAsync();
-		expect(signals).toHaveLength(1);
-		expect(signals[0].signal.aborted).toBe(false);
-		// PDF -> markdown: the bytes loader's request is aborted, the text loader's begins.
-		root().querySelector<HTMLButtonElement>('.lightbox-nav.next')!.click();
+		expect(calls).toHaveLength(1);
+		next();
 		await settleAsync();
-		expect(signals[0].signal.aborted).toBe(true);
-		expect(signals).toHaveLength(2);
-		expect(signals[1].signal.aborted).toBe(false);
+		expect(calls[0].signal.aborted).toBe(true);
+		expect(calls).toHaveLength(2);
+		expect(calls[1].url.endsWith(IMG_B)).toBe(true);
+		expect(calls[1].signal.aborted).toBe(false);
+	});
+
+	it('U3: leaving markdown for the PDF aborts the TEXT request and starts the PDF one', async () => {
+		const calls = recordSignals();
+		mountViewer({ images: [sized(IMG_Z, 'z.zip', 'application/zip'), sized(IMG_A, 'a.pdf', 'application/pdf'), sized(IMG_B, 'b.md', 'text/markdown')], index: 2 });
+		await settleAsync();
+		expect(calls).toHaveLength(1);
+		prev();
+		await settleAsync();
+		expect(calls[0].signal.aborted).toBe(true);
+		expect(calls).toHaveLength(2);
+		expect(calls[1].url.endsWith(IMG_A)).toBe(true);
+		expect(calls[1].signal.aborted).toBe(false);
+	});
+
+	it('U3: leaving the PDF for a raster aborts the PDF request and makes no request of its own', async () => {
+		const calls = recordSignals();
+		mountViewer({ images: [sized(IMG_C, 'p.png', 'image/png'), sized(IMG_A, 'a.pdf', 'application/pdf')], index: 1 });
+		await settleAsync();
+		expect(calls).toHaveLength(1);
+		prev();
+		await settleAsync();
+		expect(calls[0].signal.aborted).toBe(true);
+		// The raster arm hands the browser an <img>: no fetch() of ours.
+		expect(calls).toHaveLength(1);
 		expect(root().querySelector('.lightbox-pdf')).toBeNull();
-		// markdown -> raster: the text loader's request is aborted, and no PDF request is made.
-		root().querySelector<HTMLButtonElement>('.lightbox-nav.next')!.click();
+	});
+
+	it('U3: leaving the PDF for a no-renderer file (the fallback arm) aborts the PDF request', async () => {
+		const calls = recordSignals();
+		mountViewer({ images: [sized(IMG_Z, 'z.zip', 'application/zip'), sized(IMG_A, 'a.pdf', 'application/pdf')], index: 1 });
 		await settleAsync();
-		expect(signals[1].signal.aborted).toBe(true);
-		expect(signals.every((s) => !s.url.endsWith(IMG_C))).toBe(true);
-		// raster -> PDF (wrap around): a fresh PDF request.
-		root().querySelector<HTMLButtonElement>('.lightbox-nav.next')!.click();
+		next();
 		await settleAsync();
-		expect(signals).toHaveLength(3);
-		expect(signals[2].url.endsWith(IMG_A)).toBe(true);
+		expect(calls[0].signal.aborted).toBe(true);
+		expect(calls).toHaveLength(1);
+		expect(root().querySelector('.lightbox-fallback')).not.toBeNull();
+	});
+
+	it('U3: closing the viewer aborts the PDF request', async () => {
+		const calls = recordSignals();
+		const app = mountViewer({ images: [sized(IMG_A, 'a.pdf', 'application/pdf')] });
+		await settleAsync();
+		expect(calls[0].signal.aborted).toBe(false);
+		await unmount(app);
+		mounted.splice(mounted.indexOf(app), 1);
+		expect(calls[0].signal.aborted).toBe(true);
+	});
+
+	it('a size that arrives LATE re-decides the load: a seed with no size, a probe that says 30 MiB, no body kept', async () => {
+		// The metadata gate is a function of the size, so `resolvedSize` is in the load key.
+		const calls = recordSignals();
+		metaFetch.mockResolvedValue({ status: 'ok', mime: 'application/pdf', size: 30 << 20 });
+		metaRevalidate.mockResolvedValue({ status: 'ok', mime: 'application/pdf', size: 30 << 20 });
+		mountViewer({ images: [image(IMG_A, 'big.pdf', 'application/pdf')] });
+		await settleAsync();
+		expect(root().querySelector('.lightbox-pdf')!.textContent).toContain('too large to preview');
+		// The request begun before the size was known was aborted by the re-decision.
+		expect(calls.every((c) => c.signal.aborted)).toBe(true);
 	});
 
 	it('refuses an oversize PDF from metadata with the existing copy and makes no request', async () => {
