@@ -139,6 +139,12 @@ type ArmState struct {
 	// in another namespace cannot examine the pid, and must neither reap
 	// the file nor trust it. Zero when socket-keyed.
 	PIDNamespace uint64 `json:"pid_ns,omitempty"`
+	// MountNamespace is the mount namespace the socket was seen in, as the
+	// session registry records it (SessionOwner.MountNamespace): set only
+	// when the socket was stat'ed with its identity (lead ruling C1). A
+	// reader with another view of the filesystem cannot take the socket's
+	// absence as the session's. Zero when headless.
+	MountNamespace uint64 `json:"mnt_ns,omitempty"`
 	// Cwd is the working directory at arm time — the fallback key's source
 	// and useful human context when inspecting the file.
 	Cwd string `json:"cwd"`
@@ -248,6 +254,9 @@ func writeArmStateFile(disarmed bool) (path string, err error) {
 			st.SocketMtimeUnixNano = info.ModTime().UnixNano()
 			if ino, dev, ok := statIdentity(info); ok {
 				st.SocketIno, st.SocketDev = ino, dev
+				if ns, err := mountNamespaceFn(); err == nil {
+					st.MountNamespace = ns
+				}
 			}
 		}
 	} else {
@@ -394,6 +403,7 @@ func armStateOwnerVerdict(st *ArmState) Liveness {
 		SocketMtimeUnixNano: st.SocketMtimeUnixNano,
 		SocketIno:           st.SocketIno,
 		SocketDev:           st.SocketDev,
+		MountNamespace:      st.MountNamespace,
 	}
 	if st.Socket != "" {
 		// Socket-keyed: the recorded pid is the short-lived `pad session

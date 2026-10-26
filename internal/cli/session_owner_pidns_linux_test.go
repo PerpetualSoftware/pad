@@ -109,39 +109,80 @@ func TestSessionRegistry_ReadFromForeignPIDNamespace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(bwrap, append(nsArgs, self, "-test.run=^TestPIDNamespaceHelper$")...)
-	cmd.Env = append(os.Environ(), pidnsHelperEnv+"=1")
-	cmd.Stderr = os.Stderr
-	raw, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("namespaced reader: %v\n%s", err, raw)
+	readFromNamespace := func(t *testing.T) pidnsHelperOutput {
+		t.Helper()
+		cmd := exec.Command(bwrap, append(nsArgs, self, "-test.run=^TestPIDNamespaceHelper$")...)
+		cmd.Env = append(os.Environ(), pidnsHelperEnv+"=1")
+		cmd.Stderr = os.Stderr
+		raw, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("namespaced reader: %v\n%s", err, raw)
+		}
+		var out pidnsHelperOutput
+		if err := json.Unmarshal(raw, &out); err != nil {
+			t.Fatalf("namespaced reader output: %v\n%s", err, raw)
+		}
+		if out.Err != "" {
+			t.Fatalf("namespaced reader: %s", out.Err)
+		}
+		return out
 	}
-	var out pidnsHelperOutput
-	if err := json.Unmarshal(raw, &out); err != nil {
-		t.Fatalf("namespaced reader output: %v\n%s", err, raw)
+	assertKept := func(t *testing.T, out pidnsHelperOutput) {
+		t.Helper()
+		if len(out.Listed) != 1 {
+			t.Fatalf("namespaced reader listed %d rows, want 1: %+v", len(out.Listed), out.Listed)
+		}
+		if got := out.Listed[0].Liveness; got != LivenessUnknown {
+			t.Errorf("a live host row read from a foreign PID namespace is %s, want unknown", got)
+		}
+		if out.Removed != 0 {
+			t.Errorf("prune from a foreign PID namespace removed %d live host row(s), want 0", out.Removed)
+		}
+		if _, err := os.Stat(rec.Path); err != nil {
+			t.Errorf("the live row's file is gone after the namespaced prune: %v", err)
+		}
 	}
-	if out.Err != "" {
-		t.Fatalf("namespaced reader: %s", out.Err)
-	}
-	if len(out.Listed) != 1 {
-		t.Fatalf("namespaced reader listed %d rows, want 1: %+v", len(out.Listed), out.Listed)
-	}
-	if got := out.Listed[0].Liveness; got != LivenessUnknown {
-		t.Errorf("a live host row read from a foreign PID namespace is %s, want unknown", got)
-	}
-	if out.Removed != 0 {
-		t.Errorf("prune from a foreign PID namespace removed %d live host row(s), want 0", out.Removed)
-	}
-	if _, err := os.Stat(rec.Path); err != nil {
-		t.Errorf("the live row's file is gone after the namespaced prune: %v", err)
-	}
+
+	t.Run("stamped row", func(t *testing.T) {
+		assertKept(t, readFromNamespace(t))
+	})
+
+	// P3: the same live row in its pre-fix shape, with no pid_ns or mnt_ns.
+	// The reader is not in the init namespace, so its ESRCH is not evidence
+	// (option (a)), and the socket is judged by the old rule, under which it
+	// is still there with its identity.
+	t.Run("unstamped row", func(t *testing.T) {
+		raw, err := os.ReadFile(rec.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var row map[string]any
+		if err := json.Unmarshal(raw, &row); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := row["pid_ns"]; !ok {
+			t.Fatalf("fixture: the registered row has no pid_ns to strip: %s", raw)
+		}
+		delete(row, "pid_ns")
+		delete(row, "mnt_ns")
+		stripped, err := json.Marshal(row)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(rec.Path, stripped, 0600); err != nil {
+			t.Fatal(err)
+		}
+		assertKept(t, readFromNamespace(t))
+	})
 }
 
 // Namespace inodes for the seam tables. Arbitrary, distinct, and neither is
 // the init namespace.
 const (
-	recordedNS uint64 = 4026530001
-	foreignNS  uint64 = 4026530002
+	recordedNS  uint64 = 4026530001
+	foreignNS   uint64 = 4026530002
+	recordedMnt uint64 = 4026530011
+	foreignMnt  uint64 = 4026530012
 )
 
 // stubReaderNS pins the reader's PID namespace for one test.
@@ -150,6 +191,14 @@ func stubReaderNS(t *testing.T, ns uint64, err error) {
 	prev := pidNamespaceFn
 	pidNamespaceFn = func() (uint64, error) { return ns, err }
 	t.Cleanup(func() { pidNamespaceFn = prev })
+}
+
+// stubReaderMountNS pins the reader's mount namespace for one test.
+func stubReaderMountNS(t *testing.T, ns uint64, err error) {
+	t.Helper()
+	prev := mountNamespaceFn
+	mountNamespaceFn = func() (uint64, error) { return ns, err }
+	t.Cleanup(func() { mountNamespaceFn = prev })
 }
 
 // TestOwnerLiveness_PIDNamespace is BUG-4090's verdict table. Across a
@@ -195,43 +244,65 @@ func TestOwnerLiveness_PIDNamespace(t *testing.T) {
 	reused.ProcStart = "0"
 	errNS := errors.New("no /proc/self/ns/pid")
 
+	mntStamped := func(o SessionOwner) SessionOwner { o.MountNamespace = recordedMnt; return o }
+	sockOnly := SessionOwner{}
+
+	type reader struct {
+		pid    uint64
+		pidErr error
+		mnt    uint64
+		mntErr error
+	}
+	home := reader{pid: recordedNS, mnt: recordedMnt}           // the recorder's own namespaces
+	pidAway := reader{pid: foreignNS, mnt: recordedMnt}         // another PID ns, same filesystem view
+	away := reader{pid: foreignNS, mnt: foreignMnt}             // another PID ns and mount ns (bwrap)
+	initHome := reader{pid: initPIDNamespace, mnt: recordedMnt} // the host
 	tests := []struct {
-		name     string
-		owner    SessionOwner
-		readerNS uint64
-		readerEr error
-		want     Liveness
+		name  string
+		owner SessionOwner
+		r     reader
+		want  Liveness
 	}{
 		// Same namespace: every probe means what it says (unchanged).
-		{"same ns, dead pid", stamped(dead), recordedNS, nil, LivenessDead},
-		{"same ns, live pid", stamped(live), recordedNS, nil, LivenessAlive},
-		{"same ns, reused pid", stamped(reused), recordedNS, nil, LivenessDead},
-		{"same ns, socket gone", withGoneSocket(stamped(live)), recordedNS, nil, LivenessDead},
+		{"same ns, dead pid", stamped(dead), home, LivenessDead},
+		{"same ns, live pid", stamped(live), home, LivenessAlive},
+		{"same ns, reused pid", stamped(reused), home, LivenessDead},
+		{"same ns, socket gone", withGoneSocket(stamped(live)), home, LivenessDead},
 
-		// Crossed: the pid cannot be examined, so it never decides.
-		{"crossed, dead pid", stamped(dead), foreignNS, nil, LivenessUnknown},
-		{"crossed, live pid is not probed", stamped(live), foreignNS, nil, LivenessUnknown},
-		{"crossed, socket gone is unknown (R1)", withGoneSocket(stamped(dead)), foreignNS, nil, LivenessUnknown},
-		{"crossed, socket rebound is dead", withReboundSocket(stamped(live)), foreignNS, nil, LivenessDead},
-		{"crossed, socket matches", withSocket(stamped(dead)), foreignNS, nil, LivenessUnknown},
-		{"stamped, reader ns unreadable", stamped(dead), 0, errNS, LivenessUnknown},
-		{"stamped, reader in init ns", stamped(dead), initPIDNamespace, nil, LivenessUnknown},
+		// PID ns crossed: the pid cannot be examined, so it never decides.
+		{"pid crossed, dead pid", stamped(dead), pidAway, LivenessUnknown},
+		{"pid crossed, live pid is not probed", stamped(live), pidAway, LivenessUnknown},
+		{"pid crossed, socket matches", withSocket(stamped(dead)), pidAway, LivenessUnknown},
+		{"pid stamped, reader pid ns unreadable", stamped(dead), reader{pidErr: errNS, mnt: recordedMnt}, LivenessUnknown},
+		{"pid stamped, reader in init ns", stamped(dead), initHome, LivenessUnknown},
 
-		// Unstamped, reader in the init ns: today's rule.
-		{"unstamped, init reader, dead pid", dead, initPIDNamespace, nil, LivenessDead},
-		{"unstamped, init reader, socket gone", withGoneSocket(live), initPIDNamespace, nil, LivenessDead},
-		// Unstamped, reader NOT in the init ns: option (a).
-		{"unstamped, foreign reader, dead pid", dead, foreignNS, nil, LivenessUnknown},
-		{"unstamped, foreign reader, live pid", live, foreignNS, nil, LivenessAlive},
-		{"unstamped, foreign reader, reused pid", reused, foreignNS, nil, LivenessDead},
-		{"unstamped, foreign reader, socket gone", withGoneSocket(SessionOwner{}), foreignNS, nil, LivenessUnknown},
-		{"unstamped, foreign reader, socket rebound", withReboundSocket(SessionOwner{}), foreignNS, nil, LivenessDead},
-		// Unstamped, reader cannot tell: the platform-without-namespaces rule.
-		{"unstamped, reader ns unreadable, dead pid", dead, 0, errNS, LivenessDead},
+		// Unstamped pid, reader in the init ns: today's rule.
+		{"pid unstamped, init reader, dead pid", dead, initHome, LivenessDead},
+		// Unstamped pid, reader NOT in the init ns: option (a).
+		{"pid unstamped, foreign reader, dead pid", dead, away, LivenessUnknown},
+		{"pid unstamped, foreign reader, live pid", live, away, LivenessAlive},
+		{"pid unstamped, foreign reader, reused pid", reused, away, LivenessDead},
+		// Unstamped pid, reader cannot tell: the platform-without-namespaces rule.
+		{"pid unstamped, reader pid ns unreadable, dead pid", dead, reader{pidErr: errNS, mnt: recordedMnt}, LivenessDead},
+
+		// The socket is judged by the MOUNT namespace (P1).
+		{"mnt same, socket gone", withGoneSocket(mntStamped(sockOnly)), home, LivenessDead},
+		{"mnt same, socket rebound", withReboundSocket(mntStamped(sockOnly)), home, LivenessDead},
+		{"mnt same, other pid ns, socket gone", withGoneSocket(mntStamped(sockOnly)), pidAway, LivenessDead},
+		{"mnt crossed, socket gone is unknown (R1)", withGoneSocket(mntStamped(sockOnly)), away, LivenessUnknown},
+		{"mnt crossed, socket rebound is unknown (H3)", withReboundSocket(mntStamped(sockOnly)), away, LivenessUnknown},
+		{"mnt crossed, socket matches", withSocket(mntStamped(sockOnly)), away, LivenessAlive},
+		{"mnt stamped, reader mnt ns unreadable, socket gone", withGoneSocket(mntStamped(sockOnly)), reader{pid: foreignNS, mntErr: errNS}, LivenessUnknown},
+		// Unstamped socket: the pre-fix rule, whoever reads (H1: a container
+		// reading its own rows did not cross anything).
+		{"mnt unstamped, foreign reader, socket gone (H1)", withGoneSocket(sockOnly), away, LivenessDead},
+		{"mnt unstamped, foreign reader, socket rebound", withReboundSocket(sockOnly), away, LivenessDead},
+		{"mnt unstamped, init reader, socket gone", withGoneSocket(live), initHome, LivenessDead},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			stubReaderNS(t, tc.readerNS, tc.readerEr)
+			stubReaderNS(t, tc.r.pid, tc.r.pidErr)
+			stubReaderMountNS(t, tc.r.mnt, tc.r.mntErr)
 			o := tc.owner
 			if got := OwnerLiveness(&o); got != tc.want {
 				t.Fatalf("got %s, want %s (owner %+v)", got, tc.want, o)
@@ -367,5 +438,87 @@ func TestWriteArmState_HeadlessRecordsPIDNamespace(t *testing.T) {
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("headless arm file reaped from another namespace: %v", err)
+	}
+}
+
+// TestCaptureSessionOwner_MountNamespace: mnt_ns is stamped only beside a
+// socket the recorder stat'ed with its identity (lead ruling C1). A pad
+// started inside a sandbox by a harness outside it may not see the
+// harness's socket; stamping its own mount namespace on that row would let
+// a later reader in the same sandbox trust an ENOENT.
+func TestCaptureSessionOwner_MountNamespace(t *testing.T) {
+	clearSessionEnv(t)
+	stubReaderMountNS(t, recordedMnt, nil)
+
+	sock := filepath.Join(t.TempDir(), "s.sock")
+	if err := os.WriteFile(sock, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLAUDE_CODE_MESSAGING_SOCKET", sock)
+	o, err := CaptureSessionOwner()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.Socket != sock || o.MountNamespace != recordedMnt {
+		t.Fatalf("a visible socket: socket=%q mnt_ns=%d, want %q and %d", o.Socket, o.MountNamespace, sock, recordedMnt)
+	}
+
+	t.Setenv("CLAUDE_CODE_MESSAGING_SOCKET", filepath.Join(t.TempDir(), "unseen.sock"))
+	if o, err = CaptureSessionOwner(); err != nil {
+		t.Fatal(err)
+	}
+	if o.Socket != "" || o.MountNamespace != 0 {
+		t.Fatalf("a socket not visible at capture: socket=%q mnt_ns=%d, want neither", o.Socket, o.MountNamespace)
+	}
+
+	t.Setenv("CLAUDE_CODE_MESSAGING_SOCKET", "")
+	if o, err = CaptureSessionOwner(); err != nil {
+		t.Fatal(err)
+	}
+	if o.MountNamespace != 0 {
+		t.Fatalf("no socket at all: mnt_ns=%d, want 0", o.MountNamespace)
+	}
+}
+
+// TestArmState_SocketKeyedMountNamespace: a socket-keyed arm file carries
+// the mount namespace its socket was seen in. Read from that namespace a
+// gone socket reaps it, as before; read from another it is kept and does
+// not arm (H1 and R1 together).
+func TestArmState_SocketKeyedMountNamespace(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "s.sock")
+	if err := os.WriteFile(sock, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	armStateTestEnv(t, sock)
+	stubReaderMountNS(t, recordedMnt, nil)
+	path, err := WriteArmState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, _, err := readArmState()
+	if err != nil || st == nil {
+		t.Fatalf("readArmState: %v", err)
+	}
+	if st.MountNamespace != recordedMnt {
+		t.Fatalf("socket-keyed arm file: mnt_ns=%d, want %d", st.MountNamespace, recordedMnt)
+	}
+	if err := os.Remove(sock); err != nil {
+		t.Fatal(err)
+	}
+
+	stubReaderMountNS(t, foreignMnt, nil)
+	if got := SessionArmState(); got != LocalArmUnverifiable {
+		t.Fatalf("gone socket read from another mount namespace: got %v, want unverifiable", got)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("arm file reaped from another mount namespace: %v", err)
+	}
+
+	stubReaderMountNS(t, recordedMnt, nil)
+	if got := SessionArmState(); got != LocalArmAbsent {
+		t.Fatalf("gone socket read from its own mount namespace: got %v, want absent (reaped)", got)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("arm file not reaped from its own mount namespace: %v", err)
 	}
 }

@@ -292,7 +292,7 @@ pad github unlink <item-ref>  # Remove PR link from item
 pad item bulk-update --status done TASK-5 TASK-8  # Batch operations
 pad webhook list/create/delete/test               # Webhook management
 pad session register [--agent NAME]   # Record this session (harness pid + agent name) in ~/.pad/sessions; the plugin runs it on the session's first use of Pad, never at start (TASK-3970)
-pad session list [--agent X] [--cwd D] [--all]  # Registered sessions on this machine with a liveness verdict each (alive/dead/unknown; an owner registered in another PID namespace, e.g. read from a sandbox, is unknown, never dead — BUG-4090); --format json is the stable shape
+pad session list [--agent X] [--cwd D] [--all]  # Registered sessions on this machine with a liveness verdict each (alive/dead/unknown; an owner registered in another PID or mount namespace, e.g. read from a sandbox, is unknown, never dead — BUG-4090); --format json is the stable shape
 pad session prune [--older-than DUR]  # Remove dead sessions' records; unknown-liveness ones only under an explicit age bound
 pad auth setup                # Initialize a fresh instance with the first admin
 pad auth login                # Log in

@@ -55,7 +55,7 @@ const (
 	// different owner (a rebound socket, a reused pid).
 	LivenessDead Liveness = "dead"
 	// LivenessUnknown: the owner cannot be examined from here — this
-	// platform cannot probe it, or it lives in another PID namespace
+	// platform cannot probe it, or it lives in another PID or mount namespace
 	// (BUG-4090). Not dead — a reaper must not act on it — and not alive —
 	// a gate must not trust it.
 	LivenessUnknown Liveness = "unknown"
@@ -105,6 +105,15 @@ type SessionOwner struct {
 	SocketMtimeUnixNano int64  `json:"socket_mtime_unix_nano,omitempty"`
 	SocketIno           uint64 `json:"socket_ino,omitempty"`
 	SocketDev           uint64 `json:"socket_dev,omitempty"`
+	// MountNamespace is the inode of the mount namespace the socket was
+	// seen in (currentMountNamespace — Linux), recorded only when the
+	// recorder could stat the socket and read its identity (lead ruling C1,
+	// mirroring PIDNamespace's visibility rule). A path's absence, or a
+	// different node at it, is evidence only to a reader with the same view
+	// of the filesystem; elsewhere the socket verdict is unknown (BUG-4090
+	// r1, H1/H3). An additive on-disk key; a row without it keeps the
+	// pre-BUG-4090 socket rule.
+	MountNamespace uint64 `json:"mnt_ns,omitempty"`
 }
 
 // CaptureSessionOwner reads this process's session owner from the
@@ -159,6 +168,9 @@ func CaptureSessionOwner() (SessionOwner, error) {
 			o.SocketMtimeUnixNano = info.ModTime().UnixNano()
 			if ino, dev, ok := statIdentity(info); ok {
 				o.SocketIno, o.SocketDev = ino, dev
+				if ns, err := mountNamespaceFn(); err == nil {
+					o.MountNamespace = ns
+				}
 			}
 		}
 	}
@@ -186,15 +198,15 @@ func CaptureSessionOwner() (SessionOwner, error) {
 //
 // A record with NO signal at all (no socket, no pid) is dead.
 //
-// PID NAMESPACES (BUG-4090). A pid means something only inside one PID
+// NAMESPACES (BUG-4090). A pid means something only inside one PID
 // namespace, and a reader in another one (a bwrap sandbox, a container)
-// gets ESRCH for every pid outside it. So the reader's namespace is
-// compared with the record's first (pidNamespaceRelation), and where they
-// differ — or may differ — absence is not evidence: neither the pid probe
-// nor a missing socket can say dead, since a pid namespace says nothing
-// about whether the reader sees the recorder's /run either. The one dead
-// verdict that survives the boundary is a socket that answers with a
-// DIFFERENT identity: that is positive evidence of another session.
+// gets ESRCH for every pid outside it; a path means something only inside
+// one mount namespace, and a reader with another view of the filesystem
+// may see a missing socket, or a different one, where the session's own
+// is live. So each signal is judged against the namespace that gives it
+// meaning — the pid against pid_ns (pidNamespaceRelation), the socket
+// against mnt_ns (mountNamespaceCrossed) — and where the reader's differs,
+// absence and mismatch are not evidence: the verdict is unknown.
 func OwnerLiveness(o *SessionOwner) Liveness {
 	if o == nil || (o.Socket == "" && o.PID <= 0) {
 		return LivenessDead
@@ -202,7 +214,7 @@ func OwnerLiveness(o *SessionOwner) Liveness {
 	rel := pidNamespaceRelation(o)
 	verdict := LivenessAlive
 	if o.Socket != "" {
-		switch socketLiveness(o, rel) {
+		switch socketLiveness(o, mountNamespaceCrossed(o)) {
 		case LivenessDead:
 			return LivenessDead
 		case LivenessUnknown:
@@ -247,6 +259,9 @@ const (
 // `go test` itself runs in a sandbox (the Nix build does). See TestMain.
 var pidNamespaceFn = currentPIDNamespace
 
+// mountNamespaceFn is currentMountNamespace behind the same kind of seam.
+var mountNamespaceFn = currentMountNamespace
+
 func pidNamespaceRelation(o *SessionOwner) pidNSRelation {
 	reader, err := pidNamespaceFn()
 	if o.PIDNamespace != 0 {
@@ -261,36 +276,51 @@ func pidNamespaceRelation(o *SessionOwner) pidNSRelation {
 	return pidNSSame
 }
 
-// socketLiveness judges the recorded socket instance. Across a possible
-// namespace boundary only a socket that answers with a different identity
-// is dead; a missing or unidentifiable one is unknown (see OwnerLiveness).
-func socketLiveness(o *SessionOwner, rel pidNSRelation) Liveness {
-	absent := LivenessDead
-	if rel != pidNSSame {
-		absent = LivenessUnknown
+// mountNamespaceCrossed reports whether the reader may not share the
+// filesystem view the socket was recorded in: the record names a mount
+// namespace and the reader is in another one, or cannot read its own. A
+// row without mnt_ns (written before it existed, or off Linux) is judged
+// as it always was — the disclosed residual for pre-fix rows read across a
+// mount boundary, transient because sessions re-register on first use.
+func mountNamespaceCrossed(o *SessionOwner) bool {
+	if o.MountNamespace == 0 {
+		return false
+	}
+	reader, err := mountNamespaceFn()
+	return err != nil || reader != o.MountNamespace
+}
+
+// socketLiveness judges the recorded socket instance. Across a mount
+// namespace boundary only a socket that answers with the RECORDED identity
+// says anything (alive); a missing, unidentifiable or different node is
+// unknown, since the reader may simply be looking at another filesystem.
+func socketLiveness(o *SessionOwner, crossed bool) Liveness {
+	negative := LivenessDead
+	if crossed {
+		negative = LivenessUnknown
 	}
 	info, err := os.Stat(o.Socket)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return absent // socket vanished — session gone, if we see its /run
+			return negative // socket vanished — session gone, if we see its filesystem
 		}
 		return LivenessUnknown // could not examine (EACCES, EIO, ...)
 	}
 	if o.SocketMtimeUnixNano == 0 {
-		return absent // no identity recorded — cannot prove it is ours
+		return negative // no identity recorded — cannot prove it is ours
 	}
 	if o.SocketIno != 0 {
 		if ino, dev, ok := statIdentity(info); ok {
 			if ino == o.SocketIno && dev == o.SocketDev {
 				return LivenessAlive
 			}
-			return LivenessDead // rebound at the same path — a different session
+			return negative // rebound at the same path — a different session
 		}
 	}
 	if info.ModTime().UnixNano() == o.SocketMtimeUnixNano {
 		return LivenessAlive
 	}
-	return LivenessDead
+	return negative
 }
 
 // pidLiveness judges the recorded owner pid. A live pid with no token

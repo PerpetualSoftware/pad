@@ -17,14 +17,21 @@ const initPIDNamespace uint64 = 0xEFFFFFFC
 // the identity behind `readlink /proc/self/ns/pid` ("pid:[<inode>]"). A
 // pid means something only inside one namespace, so two records — or a
 // record and its reader — agree about a pid only when this agrees.
-func currentPIDNamespace() (uint64, error) {
-	info, err := os.Stat("/proc/self/ns/pid")
+func currentPIDNamespace() (uint64, error) { return currentNamespace("pid") }
+
+// currentMountNamespace is the same for the mount namespace: a path, and
+// so a socket's absence or identity, means something only to a reader
+// with the recorder's view of the filesystem (BUG-4090 r1, H1/H3).
+func currentMountNamespace() (uint64, error) { return currentNamespace("mnt") }
+
+func currentNamespace(kind string) (uint64, error) {
+	info, err := os.Stat("/proc/self/ns/" + kind)
 	if err != nil {
 		return 0, err
 	}
 	st, ok := info.Sys().(*syscall.Stat_t)
 	if !ok || st.Ino == 0 {
-		return 0, errors.New("pid namespace identity unavailable")
+		return 0, errors.New(kind + " namespace identity unavailable")
 	}
 	return st.Ino, nil
 }
