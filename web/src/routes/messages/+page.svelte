@@ -6,11 +6,15 @@
 	import ConversationList from '$lib/components/chat/ConversationList.svelte';
 	import { chatInbox } from '$lib/stores/chatInbox.svelte';
 
+	// A late POST answer must not pull the user back after they leave (TASK-4044).
+	let mounted = true;
+
 	// The roster's dots poll sessions only while this page is open.
 	onMount(() => {
 		chatInbox.start();
 		chatInbox.startPresence();
 		return () => {
+			mounted = false;
 			chatInbox.stop();
 			chatInbox.stopPresence();
 		};
@@ -19,7 +23,7 @@
 	// Open the chat only once the POST has answered: a null means nothing started.
 	async function ensure(key: string): Promise<void> {
 		const n = await chatInbox.ensureDM(key);
-		if (n !== null) await goto(`/messages/${n}`);
+		if (n !== null && mounted) await goto(`/messages/${n}`);
 	}
 </script>
 

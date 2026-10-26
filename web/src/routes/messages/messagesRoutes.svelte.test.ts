@@ -288,6 +288,19 @@ describe('/messages roster (TASK-4044 2b-ii)', () => {
 		expect(h.goto).toHaveBeenCalledWith('/messages/7');
 	});
 
+	it('does not navigate when the page was left before the POST resolved', async () => {
+		let resolve!: (v: unknown) => void;
+		h.ensure.mockReturnValue(new Promise((r) => (resolve = r)));
+		const { container, unmount } = render(MessagesPage);
+		await settle();
+		ghostButton(container).click();
+		await settle();
+		unmount();
+		resolve({ conversation: conv(7), created: true });
+		await settle();
+		expect(h.goto).not.toHaveBeenCalled();
+	});
+
 	it('does not navigate when the ensure fails', async () => {
 		h.ensure.mockRejectedValue(new Error('500'));
 		const { container } = render(MessagesPage);
