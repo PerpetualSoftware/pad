@@ -69,6 +69,12 @@ export class ChatStore {
 	#retryTimer: ReturnType<typeof setTimeout> | null = null;
 	#listeners = new Set<Listener>();
 	#started = false;
+	// Bumped by stop(). A fetch in flight at stop() that then fails must not arm
+	// a retry (TASK-4044 2a-ii r1 #1). This is not a #started check because a
+	// never-started store driven by resync()/onHint() is the supported test seam,
+	// and its retries must still arm. The #dirty re-run and onHint/resync after
+	// stop() stay with the PR (1) carry-forward (rulings f05fd7c4, db5556a5).
+	#stops = 0;
 	#onFocus = () => this.#schedule();
 
 	constructor() {
@@ -95,6 +101,7 @@ export class ChatStore {
 
 	stop(): void {
 		this.#started = false;
+		this.#stops++;
 		this.#cancelTimer();
 		this.#cancelRetry();
 		if (typeof window !== 'undefined') window.removeEventListener('focus', this.#onFocus);
@@ -174,6 +181,7 @@ export class ChatStore {
 		}
 		this.#inFlight = true;
 		const mine = ++this.#seq;
+		const stops = this.#stops;
 		const isSameIdentity = authStore.identityFence();
 		try {
 			const res = await api.chat.unread();
@@ -188,8 +196,9 @@ export class ChatStore {
 			}
 		} catch {
 			// Keep the last counts: a failed refetch is not "nothing unread".
-			// Retry only if the answer was still wanted (not outdated or re-fenced).
-			if (mine === this.#seq && isSameIdentity()) this.#armRetry();
+			// Retry only if the answer was still wanted: not outdated, re-fenced
+			// or stopped.
+			if (mine === this.#seq && stops === this.#stops && isSameIdentity()) this.#armRetry();
 		} finally {
 			this.#inFlight = false;
 		}

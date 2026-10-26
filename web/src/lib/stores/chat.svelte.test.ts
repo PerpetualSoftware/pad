@@ -379,6 +379,21 @@ describe('chat store (TASK-4044)', () => {
 			expect(h.unread).toHaveBeenCalledTimes(1);
 		});
 
+		it('a fetch in flight at stop() that then fails arms no retry', async () => {
+			let rejectFirst!: (e: Error) => void;
+			h.unread.mockImplementationOnce(() => new Promise((_, rej) => (rejectFirst = rej)));
+			store.start();
+			await flush();
+			expect(h.unread).toHaveBeenCalledTimes(1);
+			store.stop();
+			rejectFirst(new Error('boom'));
+			await flush();
+			expect(vi.getTimerCount()).toBe(0);
+			await vi.advanceTimersByTimeAsync(CHAT_RETRY_MS);
+			await flush();
+			expect(h.unread).toHaveBeenCalledTimes(1);
+		});
+
 		it('an identity change cancels it', async () => {
 			h.unread.mockRejectedValueOnce(new Error('boom'));
 			store.resync();
