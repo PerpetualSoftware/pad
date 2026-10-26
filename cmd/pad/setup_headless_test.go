@@ -168,6 +168,7 @@ func TestHeadlessSetupSuccess(t *testing.T) {
 // the missing flag(s), rather than falling through to an interactive prompt
 // or a panic.
 func TestHeadlessSetupMissingFlag(t *testing.T) {
+	preserveRootFlagGlobals(t)
 	cases := []struct {
 		name    string
 		email   string
@@ -351,6 +352,7 @@ func TestHeadlessSetupAlreadyInitialised(t *testing.T) {
 // return after the bootstrap would mean the workspace step never runs, and
 // this test catches that.
 func TestHeadlessInitPathSuccess(t *testing.T) {
+	preserveRootFlagGlobals(t)
 	project := isolateHome(t)
 
 	workspaceCreated := false

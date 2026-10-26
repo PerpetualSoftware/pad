@@ -13,6 +13,7 @@ import (
 )
 
 func TestSessionActivityChildExplicitIdentity(t *testing.T) {
+	preserveRootFlagGlobals(t)
 	record := sessionActivityRegistry(t)
 	t.Chdir(t.TempDir())
 	oldResolve := sessionActivityResolveIdentity
