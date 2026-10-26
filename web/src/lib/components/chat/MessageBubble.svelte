@@ -1,13 +1,43 @@
 <script lang="ts">
+	import { longPress } from '$lib/chat/longPress';
+	import MessageMenu from '$lib/components/chat/MessageMenu.svelte';
 	import type { ChatMessage } from '$lib/types';
 
 	// One confirmed message (TASK-4044 PR 3a). The body is Svelte text
 	// interpolation, never {@html}: bodies are plain text (IDEA-4083 tracks
 	// markdown). A tombstone shows "Message deleted" and nothing of the body.
+	//
+	// PR 3b: with `onReply` and `onDelete` a live message has an action menu. It
+	// opens on hover or focus (a pointer device) and on a 500 ms long-press (touch);
+	// a short tap opens nothing. A tombstone never has one.
 	let {
 		message,
-		onJumpToQuote
-	}: { message: ChatMessage; onJumpToQuote?: (seq: number) => void } = $props();
+		onJumpToQuote,
+		onReply,
+		onDelete
+	}: {
+		message: ChatMessage;
+		onJumpToQuote?: (seq: number) => void;
+		onReply?: (m: ChatMessage) => void;
+		onDelete?: (m: ChatMessage) => void;
+	} = $props();
+
+	let el = $state<HTMLElement | null>(null);
+	let hovered = $state(false);
+	let focused = $state(false);
+	let pinned = $state(false);
+	let hasMenu = $derived(!message.deleted && !!onReply && !!onDelete);
+	let menuOpen = $derived(hasMenu && (hovered || focused || pinned));
+
+	// A pinned (long-pressed) menu closes on a press anywhere else.
+	$effect(() => {
+		if (!pinned) return;
+		const away = (e: PointerEvent) => {
+			if (!el?.contains(e.target as Node)) pinned = false;
+		};
+		window.addEventListener('pointerdown', away, true);
+		return () => window.removeEventListener('pointerdown', away, true);
+	});
 
 	let author = $derived(message.mine ? 'You' : message.author_agent_key || 'Unknown');
 	let time = $derived(
@@ -16,12 +46,31 @@
 	let quote = $derived(message.reply_to);
 </script>
 
+<!-- The article is the hover/focus/long-press target for the menu; the menu's own buttons are the interactive controls. -->
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_no_noninteractive_tabindex -->
 <article
 	class="bubble"
 	class:mine={message.mine}
 	class:deleted={message.deleted}
 	id="msg-{message.seq}"
 	data-seq={message.seq}
+	tabindex={hasMenu ? 0 : undefined}
+	bind:this={el}
+	use:longPress={() => {
+		if (hasMenu) pinned = true;
+	}}
+	onpointerenter={(e) => (hovered = e.pointerType !== 'touch')}
+	onpointerleave={() => (hovered = false)}
+	onfocusin={() => (focused = true)}
+	onfocusout={(e) => {
+		if (!el?.contains(e.relatedTarget as Node | null)) focused = false;
+	}}
+	onkeydown={(e) => {
+		if (e.key === 'Escape') pinned = focused = hovered = false;
+	}}
+	oncontextmenu={(e) => {
+		if (pinned) e.preventDefault();
+	}}
 >
 	<header class="meta">
 		<span class="author">{author}</span>
@@ -45,6 +94,14 @@
 			</button>
 		{/if}
 		<p class="body">{message.body}</p>
+	{/if}
+	{#if menuOpen && onReply && onDelete}
+		<MessageMenu
+			{message}
+			{onReply}
+			{onDelete}
+			onDone={() => (pinned = focused = hovered = false)}
+		/>
 	{/if}
 </article>
 

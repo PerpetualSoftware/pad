@@ -2,15 +2,19 @@
 	import { onDestroy, onMount, tick, untrack } from 'svelte';
 	import { page } from '$app/state';
 	import ChatBackLink from '$lib/components/chat/ChatBackLink.svelte';
+	import Composer from '$lib/components/chat/Composer.svelte';
 	import MessageBubble from '$lib/components/chat/MessageBubble.svelte';
+	import PendingBubble from '$lib/components/chat/PendingBubble.svelte';
 	import PresenceDot from '$lib/components/chat/PresenceDot.svelte';
 	import UnreadDivider from '$lib/components/chat/UnreadDivider.svelte';
 	import { chatInbox } from '$lib/stores/chatInbox.svelte';
 	import { ChatThread } from '$lib/stores/chatThread.svelte';
+	import { toastStore } from '$lib/stores/toast.svelte';
+	import type { ChatMessage } from '$lib/types';
 
-	// The read-only thread (TASK-4044 PR 3a, rulings 4cf4d4b9 and 2de240d9). The
-	// store owns the window; this page owns the scroll container and the bottom
-	// sentinel that says what the reader has seen.
+	// The thread (TASK-4044 PR 3a and 3b, rulings 4cf4d4b9 and 2de240d9). The
+	// store owns the window; this page owns the scroll container, the bottom
+	// sentinel that says what the reader has seen, and the reply target.
 	let raw = $derived(page.params.n ?? '');
 	let n = $derived(/^[1-9][0-9]*$/.test(raw) ? Number(raw) : null);
 
@@ -22,6 +26,8 @@
 	let sentinel = $state<HTMLElement | null>(null);
 	let positioned = false;
 	let lastNewest = 0;
+	let replyTo = $state<ChatMessage | null>(null);
+	let lastOwnSend = 0;
 
 	// The presence dot polls only while this page is open.
 	onMount(() => chatInbox.startPresence());
@@ -35,7 +41,10 @@
 		void retry;
 		positioned = false;
 		lastNewest = 0;
-		untrack(() => void thread.open(target));
+		untrack(() => {
+			replyTo = null;
+			void thread.open(target);
+		});
 	});
 
 	// First paint of a window: at the "N new" divider when there is one, else the end.
@@ -62,6 +71,17 @@
 				if (scroller) scroller.scrollTop = scroller.scrollHeight;
 			});
 		}
+	});
+
+	// An own send, shown or confirmed, scrolls to the end even from further up
+	// (ruling d87482de Q-d); a row from elsewhere only follows a reader at the end.
+	$effect(() => {
+		const sendTick = thread.ownSendTick;
+		if (!positioned || !scroller || sendTick === lastOwnSend) return;
+		lastOwnSend = sendTick;
+		void tick().then(() => {
+			if (scroller) scroller.scrollTop = scroller.scrollHeight;
+		});
 	});
 
 	// The sentinel at the end of the window: in view means the reader has seen the end.
@@ -102,6 +122,13 @@
 
 	function jumpToUnread() {
 		scroller?.querySelector('#unread-divider')?.scrollIntoView?.({ block: 'start' });
+	}
+
+	async function deleteMessage(m: ChatMessage) {
+		if (replyTo?.seq === m.seq) replyTo = null;
+		if (!(await thread.remove(m.seq)) && thread.status === 'ready') {
+			toastStore.show("Couldn't delete that message. Try again.", 'error');
+		}
 	}
 
 	function jumpToQuote(seq: number) {
@@ -162,11 +189,24 @@
 				</div>
 			{/if}
 			<div class="messages">
-				{#each thread.messages as m, i (m.seq)}
-					{#if i === dividerAt}
-						<UnreadDivider count={thread.unreadCount} more={thread.hasNewer} />
+				{#each thread.items as item, i (item.kind === 'message' ? `m${item.message.seq}` : `p${item.pending.op_key}`)}
+					{#if item.kind === 'message'}
+						{#if i === dividerAt}
+							<UnreadDivider count={thread.unreadCount} more={thread.hasNewer} />
+						{/if}
+						<MessageBubble
+							message={item.message}
+							onJumpToQuote={jumpToQuote}
+							onReply={(m) => (replyTo = m)}
+							onDelete={deleteMessage}
+						/>
+					{:else}
+						<PendingBubble
+							pending={item.pending}
+							onRetry={(k) => void thread.retry(k)}
+							onDiscard={(k) => thread.discard(k)}
+						/>
 					{/if}
-					<MessageBubble message={m} onJumpToQuote={jumpToQuote} />
 				{:else}
 					<p class="empty">No messages yet.</p>
 				{/each}
@@ -186,6 +226,16 @@
 			{/if}
 			<div class="sentinel" bind:this={sentinel} aria-hidden="true"></div>
 		</div>
+		{#if n !== null}
+			{#key n}
+				<Composer
+					{n}
+					{replyTo}
+					onClearReply={() => (replyTo = null)}
+					onSend={(body, replyToSeq) => thread.send(body, replyToSeq)}
+				/>
+			{/key}
+		{/if}
 	{/if}
 {/if}
 

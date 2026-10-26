@@ -13,6 +13,8 @@ const h = vi.hoisted(() => ({
 	getConversation: vi.fn(),
 	markRead: vi.fn(),
 	listMessages: vi.fn(),
+	sendMessage: vi.fn(),
+	deleteMessage: vi.fn(),
 	listConversations: vi.fn(),
 	sessions: vi.fn(),
 	ensure: vi.fn(),
@@ -37,11 +39,15 @@ vi.mock('$lib/api/client', () => ({
 			markRead: h.markRead,
 			listMessages: h.listMessages,
 			listConversations: h.listConversations,
-			ensureConversation: h.ensure
+			ensureConversation: h.ensure,
+			sendMessage: h.sendMessage,
+			deleteMessage: h.deleteMessage
 		},
 		sessions: { list: h.sessions }
 	},
-	isNotFoundError: (e: unknown) => e instanceof NotFound
+	isNotFoundError: (e: unknown) => e instanceof NotFound,
+	isReplyTargetDeletedError: () => false,
+	isReplyTargetNotFoundError: () => false
 }));
 vi.mock('$lib/stores/auth.svelte', () => ({
 	authStore: {
@@ -659,5 +665,81 @@ describe('/messages/[n] thread (TASK-4044 PR 3a)', () => {
 		const { container } = render(ThreadPage);
 		await settle();
 		expect(container.querySelector('header .presence-dot')!.getAttribute('aria-label')).toBe('May be working');
+	});
+});
+
+describe('/messages/[n] thread write path (TASK-4044 PR 3b)', () => {
+	async function openThread() {
+		page.params = { n: '3' };
+		h.listMessages.mockResolvedValue(pageOf([message(1), message(2)], { read_seq: 2 }));
+		const r = render(ThreadPage);
+		await settle();
+		return r;
+	}
+	const box = (c: HTMLElement) => c.querySelector('textarea')!;
+	const sendBtn = (c: HTMLElement) => c.querySelector<HTMLButtonElement>('button.send')!;
+
+	it('a typed message is a Sending bubble and then the confirmed row', async () => {
+		const { container } = await openThread();
+		let answer!: (v: unknown) => void;
+		h.sendMessage.mockReturnValue(new Promise((r) => (answer = r)));
+		box(container).value = 'hello there';
+		box(container).dispatchEvent(new Event('input', { bubbles: true }));
+		await settle();
+		sendBtn(container).click();
+		await settle();
+		expect(container.querySelector('article.pending')!.textContent).toContain('hello there');
+		expect(container.querySelector('article.pending')!.textContent).toContain('Sending…');
+		expect(h.sendMessage).toHaveBeenCalledWith(3, { body: 'hello there', op_key: expect.any(String) });
+		answer({
+			message: message(3, { mine: true, author_agent_key: '', author_is_human: true, source: 'web', body: 'hello there' }),
+			replayed: false,
+			refs: [],
+			refs_truncated: false
+		});
+		await settle();
+		expect(container.querySelector('article.pending')).toBeNull();
+		expect([...container.querySelectorAll('article')].map((a) => a.getAttribute('data-seq'))).toEqual(['1', '2', '3']);
+	});
+
+	it('Reply from the menu quotes the row and sends its seq, then clears the bar', async () => {
+		const { container } = await openThread();
+		const row = container.querySelector('article[data-seq="2"]')!;
+		row.dispatchEvent(new PointerEvent('pointerenter', { bubbles: true, pointerType: 'mouse' }));
+		await settle();
+		[...row.querySelectorAll('button')].find((b) => b.textContent === 'Reply')!.click();
+		await settle();
+		expect(container.querySelector('.reply')!.textContent).toContain('body 2');
+		h.sendMessage.mockResolvedValue({
+			message: message(3, { mine: true, body: 'answer' }),
+			replayed: false,
+			refs: [],
+			refs_truncated: false
+		});
+		box(container).value = 'answer';
+		box(container).dispatchEvent(new Event('input', { bubbles: true }));
+		await settle();
+		sendBtn(container).click();
+		await settle();
+		expect(h.sendMessage.mock.calls[0][1]).toMatchObject({ body: 'answer', reply_to_seq: 2 });
+		expect(container.querySelector('.reply')).toBeNull();
+	});
+
+	it('Delete tombstones the row, and a failure toasts and keeps it', async () => {
+		const { container } = await openThread();
+		const del = async (seq: number) => {
+			const row = container.querySelector(`article[data-seq="${seq}"]`)!;
+			row.dispatchEvent(new PointerEvent('pointerenter', { bubbles: true, pointerType: 'mouse' }));
+			await settle();
+			[...row.querySelectorAll('button')].find((b) => b.textContent === 'Delete')!.click();
+			await settle();
+		};
+		h.deleteMessage.mockRejectedValueOnce(new Error('500'));
+		await del(1);
+		expect(container.querySelector('article[data-seq="1"]')!.textContent).toContain('body 1');
+		h.deleteMessage.mockResolvedValueOnce({ message: message(1, { deleted: true, body: '' }), deleted: true });
+		await del(1);
+		expect(h.deleteMessage).toHaveBeenLastCalledWith(3, 1);
+		expect(container.querySelector('article[data-seq="1"]')!.textContent).toContain('Message deleted');
 	});
 });

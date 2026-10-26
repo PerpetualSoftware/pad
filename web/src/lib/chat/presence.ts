@@ -14,7 +14,7 @@ const MAX_AGENT_NAME_RUNES = 64;
 // Go's strings.TrimSpace trims unicode.IsSpace, which is exactly the White_Space
 // property. JS String.trim() differs in one place: it also trims U+FEFF (BOM),
 // which Go keeps. BUG-4092 (TASK-4044).
-function trimSpace(s: string): string {
+export function trimSpace(s: string): string {
 	return s.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, '');
 }
 

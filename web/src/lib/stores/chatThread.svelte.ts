@@ -31,10 +31,20 @@
 // the gap case, further than 200 rows from the window's oldest) shows on reopen,
 // not live. A tombstone is the only change an older row can undergo.
 //
+// WRITES (PR 3b, rulings 4cf4d4b9, 2de240d9 and d87482de). A send is an
+// optimistic bubble keyed by an op_key; a failure keeps the bubble and Retry
+// re-sends with the SAME key, so the server's idempotency collapses a send that
+// had in fact landed. A refresh that would start while a send is in flight is
+// deferred and runs once after the last one settles. Known, disclosed (N4): if a
+// send times out AFTER the server committed it, the refresh shows the confirmed
+// row beside the failed bubble until Retry; op_key is not echoed, so the two
+// cannot be paired, and there is no auto-retry.
+//
 // Identity: every answer is fenced by a seq and authStore.identityFence().
 import { untrack } from 'svelte';
-import { api, isNotFoundError } from '$lib/api/client';
-import { ChatWindow, unreadDividerIndex } from '$lib/chat/model';
+import { api, isNotFoundError, isReplyTargetDeletedError, isReplyTargetNotFoundError } from '$lib/api/client';
+import { isRequestTooLargeError, validateDraft, type SendBlock } from '$lib/chat/compose';
+import { ChatWindow, unreadDividerIndex, type WindowItem } from '$lib/chat/model';
 import { authStore } from '$lib/stores/auth.svelte';
 import { chatStore } from '$lib/stores/chat.svelte';
 import type { ChatConversationSummary, ChatMessage } from '$lib/types';
@@ -48,10 +58,22 @@ export const REFRESH_MAX_PAGES = 5;
 
 export type ThreadStatus = 'loading' | 'ready' | 'notFound' | 'failed';
 
+/**
+ * How a send ended. `sent`: confirmed. `failed`: the bubble stays for Retry.
+ * `stale`: the thread moved on (reopened, disposed, another identity); nothing
+ * is left to show. The rest are definite refusals with no bubble: the caller
+ * gets its text back.
+ */
+export type SendOutcome = 'sent' | 'failed' | 'stale' | SendBlock | 'reply_deleted' | 'reply_missing';
+
 export class ChatThread {
 	conversation = $state<ChatConversationSummary | null>(null);
 	/** The confirmed window, ascending by seq; REPLACED on change. */
 	messages = $state.raw<ChatMessage[]>([]);
+	/** The window as rendered: confirmed rows, then this reader's pending sends. */
+	items = $state.raw<WindowItem[]>([]);
+	/** Bumped when an own send is shown or confirmed; the page scrolls to the end. */
+	ownSendTick = $state(0);
 	/** read_seq as of open, frozen for the mount: the divider never moves. */
 	openReadSeq = $state(0);
 	status = $state<ThreadStatus>('loading');
@@ -116,6 +138,7 @@ export class ChatThread {
 		this.status = 'loading';
 		this.conversation = null;
 		this.messages = [];
+		this.items = [];
 		this.#win = new ChatWindow();
 		this.openReadSeq = 0;
 		this.refreshFailed = this.olderFailed = this.newerFailed = false;
@@ -136,6 +159,7 @@ export class ChatThread {
 	// its append.
 	#publish(beyond: number | null) {
 		this.messages = this.#win.messages;
+		this.items = this.#win.items();
 		this.#lastSeq = beyond ?? this.newestSeq;
 		const oldest = this.messages.length ? this.messages[0].seq : 0;
 		this.hasOlder = oldest > 1;
@@ -236,7 +260,7 @@ export class ChatThread {
 	async refresh(): Promise<void> {
 		const n = this.#n;
 		if (n === null) return;
-		if (this.status === 'loading' || this.#refreshing) {
+		if (this.status === 'loading' || this.#refreshing || this.#win.hasInFlight()) {
 			this.#dirty = true;
 			return;
 		}
@@ -278,6 +302,114 @@ export class ChatThread {
 					void this.refresh();
 				}
 			}
+		}
+	}
+
+	/** After a send settles: run the refresh that was deferred while it was in flight. */
+	#settled() {
+		if (this.#dirty && this.status === 'ready' && !this.#refreshing && !this.#win.hasInFlight()) {
+			this.#dirty = false;
+			void this.refresh();
+		}
+	}
+
+	/** Publish after a pending change; the window beyond stays beyond. */
+	#publishAfterWrite() {
+		this.#publish(this.hasNewer ? this.#lastSeq : null);
+	}
+
+	/**
+	 * Send `body`. The bubble is shown at once; the outcome says what the caller
+	 * should do (see SendOutcome). Nothing is sent for a draft the server would
+	 * refuse (validateDraft), and a 400 for an over-size request or a 409/422 for
+	 * a reply target maps to our own outcome, with no bubble left behind.
+	 */
+	async send(body: string, replyToSeq?: number): Promise<SendOutcome> {
+		const n = this.#n;
+		if (n === null || this.status !== 'ready') return 'stale';
+		const opKey = crypto.randomUUID();
+		const block = validateDraft(body, replyToSeq, opKey);
+		if (block) return block;
+		this.#win.addPending(opKey, body, replyToSeq);
+		this.#publishAfterWrite();
+		this.ownSendTick++;
+		return this.#post(n, opKey, body, replyToSeq);
+	}
+
+	/** Send a failed bubble again with the SAME op_key. */
+	async retry(opKey: string): Promise<SendOutcome> {
+		const n = this.#n;
+		if (n === null || this.status !== 'ready') return 'stale';
+		const p = this.#win.retryPending(opKey);
+		if (!p) return 'stale';
+		this.#publishAfterWrite();
+		return this.#post(n, opKey, p.body, p.reply_to_seq);
+	}
+
+	/** Give up on a failed send. */
+	discard(opKey: string): void {
+		this.#win.discardPending(opKey);
+		this.#publishAfterWrite();
+		this.#settled();
+	}
+
+	async #post(n: number, opKey: string, body: string, replyToSeq?: number): Promise<SendOutcome> {
+		const current = this.#guard();
+		const win = this.#win;
+		const refused = (outcome: SendOutcome): SendOutcome => {
+			win.discardPending(opKey);
+			this.#publishAfterWrite();
+			this.#settled();
+			return outcome;
+		};
+		try {
+			const res = await api.chat.sendMessage(n, {
+				body,
+				op_key: opKey,
+				...(replyToSeq !== undefined ? { reply_to_seq: replyToSeq } : {})
+			});
+			if (!current()) return 'stale';
+			if (this.hasNewer) {
+				// The row belongs beyond a gap: merging it would hide the gap.
+				win.discardPending(opKey);
+				this.#lastSeq = Math.max(this.#lastSeq, res.message.seq);
+				this.#publish(this.#lastSeq);
+			} else {
+				win.resolvePending(opKey, res.message);
+				this.#publish(null);
+			}
+			this.ownSendTick++;
+			this.#settled();
+			return 'sent';
+		} catch (err) {
+			if (!current()) return 'stale';
+			if (isReplyTargetDeletedError(err)) return refused('reply_deleted');
+			if (isReplyTargetNotFoundError(err)) return refused('reply_missing');
+			if (isRequestTooLargeError(err)) return refused('too_large');
+			win.failPending(opKey);
+			this.#publishAfterWrite();
+			this.#settled();
+			return 'failed';
+		}
+	}
+
+	/**
+	 * Delete a message (V6, V7: idempotent, a repeat answers 200 with the same
+	 * tombstone) and merge the tombstone in place. True when it is gone.
+	 */
+	async remove(seq: number): Promise<boolean> {
+		const n = this.#n;
+		if (n === null || this.status !== 'ready') return false;
+		const current = this.#guard();
+		try {
+			const res = await api.chat.deleteMessage(n, seq);
+			if (!current()) return false;
+			this.#win.merge([res.message]);
+			this.#publish(this.#lastSeq);
+			return true;
+		} catch (err) {
+			if (current() && isNotFoundError(err)) this.status = 'notFound';
+			return false;
 		}
 	}
 

@@ -88,7 +88,9 @@ import type {
 	ChatConversation,
 	ChatConversationSummary,
 	ChatConversationsResponse,
+	ChatMessage,
 	ChatMessagesResponse,
+	ChatSendResponse,
 	ChatUnreadResponse,
 	ItemPushResult,
 	WorkspaceStorageInfo,
@@ -361,6 +363,16 @@ function isContentPendingFlushError(err: unknown): err is PadApiError {
  */
 function isNotFoundError(err: unknown): err is PadApiError {
 	return err instanceof PadApiError && err.code === 'not_found';
+}
+
+/** A chat reply refused because the quoted message was deleted (409 `reply_target_deleted`). */
+export function isReplyTargetDeletedError(err: unknown): err is PadApiError {
+	return err instanceof PadApiError && err.code === 'reply_target_deleted';
+}
+
+/** A chat reply refused because the quoted message does not exist (422 `reply_target_not_found`). */
+export function isReplyTargetNotFoundError(err: unknown): err is PadApiError {
+	return err instanceof PadApiError && err.code === 'reply_target_not_found';
 }
 
 /**
@@ -2468,6 +2480,20 @@ export const api = {
 			const qs = params.toString();
 			return request<ChatMessagesResponse>(`/me/conversations/${n}/messages${qs ? `?${qs}` : ''}`);
 		},
+
+		sendMessage: (
+			n: number,
+			body: { body: string; reply_to_seq?: number; op_key?: string; context_workspace?: string }
+		) =>
+			request<ChatSendResponse>(`/me/conversations/${n}/messages`, {
+				method: 'POST',
+				body: JSON.stringify(body)
+			}),
+
+		deleteMessage: (n: number, seq: number) =>
+			request<{ message: ChatMessage; deleted: boolean }>(`/me/conversations/${n}/messages/${seq}`, {
+				method: 'DELETE'
+			}),
 
 		/** `seq` is the sequence the client DISPLAYED; the server clamps and never moves backward. */
 		markRead: (n: number, seq: number) =>

@@ -12,6 +12,8 @@ const h = vi.hoisted(() => ({
 	listMessages: vi.fn(),
 	markRead: vi.fn(),
 	unread: vi.fn(),
+	sendMessage: vi.fn(),
+	deleteMessage: vi.fn(),
 	state: { authenticated: true, epoch: 0, listeners: [] as Array<(prev: string) => void> }
 }));
 
@@ -25,10 +27,14 @@ vi.mock('$lib/api/client', () => ({
 			getConversation: h.getConversation,
 			listMessages: h.listMessages,
 			markRead: h.markRead,
-			unread: h.unread
+			unread: h.unread,
+			sendMessage: h.sendMessage,
+			deleteMessage: h.deleteMessage
 		}
 	},
-	isNotFoundError: (e: unknown) => e instanceof NotFound
+	isNotFoundError: (e: unknown) => e instanceof NotFound,
+	isReplyTargetDeletedError: (e: unknown) => (e as { code?: string })?.code === 'reply_target_deleted',
+	isReplyTargetNotFoundError: (e: unknown) => (e as { code?: string })?.code === 'reply_target_not_found'
 }));
 vi.mock('$lib/stores/auth.svelte', () => ({
 	authStore: {
@@ -157,6 +163,8 @@ beforeEach(() => {
 	h.listMessages.mockReset();
 	h.markRead.mockReset();
 	h.markRead.mockResolvedValue({ read_seq: 0 });
+	h.sendMessage.mockReset();
+	h.deleteMessage.mockReset();
 	Object.assign(h.state, { authenticated: true, epoch: 0, listeners: [] });
 	server = new FakeServer();
 	h.getConversation.mockImplementation(async () => server.summary());
@@ -622,5 +630,247 @@ describe('mark read', () => {
 		thread.tryMarkRead();
 		await flush();
 		expect(h.markRead).toHaveBeenCalledTimes(1);
+	});
+});
+
+// ── PR 3b: the write path ────────────────────────────────────────────────────
+
+/** A server that stores a send under its op_key, like the real one (V10: a replay returns the stored row). */
+function wireSend() {
+	const byKey = new Map<string, ChatMessage>();
+	h.sendMessage.mockImplementation(async (_n: number, body: { body: string; op_key: string; reply_to_seq?: number }) => {
+		const seen = byKey.get(body.op_key);
+		if (seen) return { message: { ...seen }, replayed: true, refs: [], refs_truncated: false };
+		const m = msg(server.lastSeq + 1, {
+			mine: true,
+			author_agent_key: '',
+			author_is_human: true,
+			source: 'web',
+			body: body.body
+		});
+		server.add(m);
+		byKey.set(body.op_key, m);
+		return { message: { ...m }, replayed: false, refs: [], refs_truncated: false };
+	});
+	return byKey;
+}
+
+const apiError = (code: string, message = code) => Object.assign(new Error(message), { code });
+const pendingOf = () => thread.items.filter((i) => i.kind === 'pending');
+
+async function readyThread(rows = 3) {
+	server.fill(rows);
+	await thread.open(1);
+}
+
+describe('send', () => {
+	// U21: red if resolvePending appends instead of merging by seq (B2).
+	it('shows a sending bubble at once and replaces it with the confirmed row', async () => {
+		await readyThread();
+		wireSend();
+		let release!: () => void;
+		const real = h.sendMessage.getMockImplementation()!;
+		h.sendMessage.mockImplementationOnce(
+			(n: number, b: never) => new Promise((res) => (release = () => res(real(n, b))))
+		);
+		const done = thread.send('hello');
+		expect(pendingOf()).toHaveLength(1);
+		expect(thread.items.at(-1)).toMatchObject({ kind: 'pending', pending: { body: 'hello', status: 'sending' } });
+		release();
+		expect(await done).toBe('sent');
+		expect(pendingOf()).toHaveLength(0);
+		expect(seqs()).toEqual([1, 2, 3, 4]);
+		expect(thread.messages.at(-1)).toMatchObject({ body: 'hello', mine: true, source: 'web', author_agent_key: '' });
+	});
+
+	it('never sends a context_workspace (Q6)', async () => {
+		await readyThread();
+		wireSend();
+		await thread.send('hi');
+		expect(Object.keys(h.sendMessage.mock.calls[0][1]).sort()).toEqual(['body', 'op_key']);
+	});
+
+	it('leaves one row when a refresh got the message first (replayed)', async () => {
+		await readyThread();
+		wireSend();
+		const real = h.sendMessage.getMockImplementation()!;
+		let release!: () => void;
+		h.sendMessage.mockImplementationOnce(
+			(n: number, b: never) => new Promise((res) => (release = () => res(real(n, b))))
+		);
+		const done = thread.send('hello');
+		await flush();
+		release();
+		await done;
+		await thread.refresh();
+		expect(seqs()).toEqual([1, 2, 3, 4]);
+	});
+
+	// U22: red if a retry makes a new key (B1).
+	it('keeps a failed bubble and retries with the SAME op_key', async () => {
+		await readyThread();
+		wireSend();
+		h.sendMessage.mockRejectedValueOnce(new Error('network'));
+		expect(await thread.send('hello')).toBe('failed');
+		expect(pendingOf()).toMatchObject([{ pending: { status: 'failed', body: 'hello' } }]);
+		const key = (pendingOf()[0] as { pending: { op_key: string } }).pending.op_key;
+		expect(await thread.retry(key)).toBe('sent');
+		expect(h.sendMessage.mock.calls[1][1].op_key).toBe(h.sendMessage.mock.calls[0][1].op_key);
+		expect(pendingOf()).toHaveLength(0);
+		expect(seqs()).toEqual([1, 2, 3, 4]);
+	});
+
+	// N4: the write committed, the answer was lost, a refresh shows the row beside the failed bubble.
+	it('collapses to one row when Retry replays a send whose answer was lost', async () => {
+		await readyThread();
+		const byKey = wireSend();
+		const real = h.sendMessage.getMockImplementation()!;
+		h.sendMessage.mockImplementationOnce(async (n: number, b: never) => {
+			await real(n, b); // committed on the server
+			throw new Error('timeout');
+		});
+		expect(await thread.send('hello')).toBe('failed');
+		await thread.refresh();
+		expect(seqs()).toEqual([1, 2, 3, 4]);
+		expect(pendingOf()).toHaveLength(1); // the disclosed duplicate
+		const key = (pendingOf()[0] as { pending: { op_key: string } }).pending.op_key;
+		expect(await thread.retry(key)).toBe('sent');
+		expect((await h.sendMessage.mock.results[1].value).replayed).toBe(true);
+		expect(byKey.size).toBe(1);
+		expect(seqs()).toEqual([1, 2, 3, 4]);
+		expect(pendingOf()).toHaveLength(0);
+	});
+
+	it('discards a failed bubble', async () => {
+		await readyThread();
+		h.sendMessage.mockRejectedValueOnce(new Error('network'));
+		await thread.send('hello');
+		thread.discard((pendingOf()[0] as { pending: { op_key: string } }).pending.op_key);
+		expect(pendingOf()).toHaveLength(0);
+	});
+
+	// U23
+	it('sends reply_to_seq, and a deleted or missing target leaves no bubble', async () => {
+		await readyThread();
+		wireSend();
+		await thread.send('re', 2);
+		expect(h.sendMessage.mock.calls[0][1].reply_to_seq).toBe(2);
+		h.sendMessage.mockRejectedValueOnce(apiError('reply_target_deleted', 'Reply target was deleted'));
+		expect(await thread.send('again', 3)).toBe('reply_deleted');
+		h.sendMessage.mockRejectedValueOnce(apiError('reply_target_not_found'));
+		expect(await thread.send('again', 3)).toBe('reply_missing');
+		expect(pendingOf()).toHaveLength(0);
+	});
+
+	// N1, N2, N3: refused before the network, so the call count is the assertion.
+	it.each([
+		['\u0085', 'empty'],
+		['😀'.repeat(20_000), 'too_long'],
+		['"'.repeat(65_536), 'too_large'],
+		['\u0001'.repeat(22_000), 'too_large']
+	] as const)('does not send a draft the server would refuse (%#)', async (body, outcome) => {
+		await readyThread();
+		expect(await thread.send(body)).toBe(outcome);
+		expect(h.sendMessage).not.toHaveBeenCalled();
+		expect(pendingOf()).toHaveLength(0);
+	});
+
+	it('sends a body of only U+FEFF, which the server does not trim', async () => {
+		await readyThread();
+		wireSend();
+		expect(await thread.send('﻿')).toBe('sent');
+	});
+
+	// N3, defence in depth: the server's own 400 maps to the same outcome.
+	it('maps the server 400 for an over-size request to too_large, with no bubble', async () => {
+		await readyThread();
+		h.sendMessage.mockRejectedValueOnce(apiError('validation_error', 'Invalid JSON body (maximum 128 KiB)'));
+		expect(await thread.send('x')).toBe('too_large');
+		expect(pendingOf()).toHaveLength(0);
+	});
+
+	it('does not put a row beyond a gap into the window', async () => {
+		server.fill(400);
+		server.readSeq = 0;
+		await thread.open(1); // unread 400 > 200: the window ends at 200, hasNewer
+		expect(thread.hasNewer).toBe(true);
+		wireSend();
+		expect(await thread.send('hello')).toBe('sent');
+		expect(thread.newestSeq).toBe(200);
+		expect(thread.hasNewer).toBe(true);
+		expect(pendingOf()).toHaveLength(0);
+	});
+
+	it('is stale after an identity change, with nothing of the old bubble left', async () => {
+		await readyThread();
+		wireSend();
+		let release!: () => void;
+		const real = h.sendMessage.getMockImplementation()!;
+		h.sendMessage.mockImplementationOnce((n: number, b: never) => new Promise((res) => (release = () => res(real(n, b)))));
+		const done = thread.send('hello');
+		h.state.epoch++;
+		for (const fn of [...h.state.listeners]) fn('old');
+		release();
+		expect(await done).toBe('stale');
+		expect(thread.items).toEqual([]);
+	});
+});
+
+describe('refresh during a send', () => {
+	// U-defer: red if the in-flight deferral is removed (B12).
+	it('defers a realtime refresh until the send settles, then refreshes once', async () => {
+		await readyThread();
+		wireSend();
+		const real = h.sendMessage.getMockImplementation()!;
+		let release!: () => void;
+		h.sendMessage.mockImplementationOnce((n: number, b: never) => new Promise((res) => (release = () => res(real(n, b)))));
+		const done = thread.send('hello');
+		h.listMessages.mockClear();
+		await bump();
+		await bump();
+		expect(h.listMessages).not.toHaveBeenCalled();
+		release();
+		await done;
+		await flush();
+		const calls = h.listMessages.mock.calls.length;
+		expect(calls).toBeGreaterThan(0);
+		await flush();
+		expect(h.listMessages.mock.calls.length).toBe(calls);
+		expect(seqs()).toEqual([1, 2, 3, 4]);
+	});
+});
+
+describe('remove', () => {
+	// U24, N6: red if the tombstone is not merged (B5).
+	it('replaces the row with the tombstone in place', async () => {
+		await readyThread();
+		server.tombstone(2);
+		h.deleteMessage.mockResolvedValue({ message: { ...server.rows[1] }, deleted: true });
+		expect(await thread.remove(2)).toBe(true);
+		expect(h.deleteMessage).toHaveBeenCalledWith(1, 2);
+		expect(thread.messages[1]).toMatchObject({ seq: 2, deleted: true, body: '' });
+	});
+
+	it('treats deleted:false with the tombstone as success', async () => {
+		await readyThread();
+		server.tombstone(2);
+		h.deleteMessage.mockResolvedValue({ message: { ...server.rows[1] }, deleted: false });
+		expect(await thread.remove(2)).toBe(true);
+		expect(thread.messages[1].deleted).toBe(true);
+	});
+
+	it('keeps the row when the delete fails', async () => {
+		await readyThread();
+		h.deleteMessage.mockRejectedValue(apiError('forbidden'));
+		expect(await thread.remove(2)).toBe(false);
+		expect(thread.messages[1]).toMatchObject({ seq: 2, deleted: false, body: 'body 2' });
+		expect(thread.status).toBe('ready');
+	});
+
+	it('says not found when the conversation is gone', async () => {
+		await readyThread();
+		h.deleteMessage.mockRejectedValue(new NotFound());
+		expect(await thread.remove(2)).toBe(false);
+		expect(thread.status).toBe('notFound');
 	});
 });
