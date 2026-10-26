@@ -13,7 +13,9 @@ import { ADMIN_EMAIL, ADMIN_PASSWORD } from './global-setup';
  * The browser contexts here carry a Bearer header, and the server ignores
  * `chat_inbox` on a bearer stream (docs/api.md), so the realtime specs open a
  * COOKIE session in their own context. PAD_DISABLE_RATE_LIMITS is on for the
- * e2e server, so the "no 429" leg of the request-count spec cannot fire here.
+ * e2e server, so no spec here can observe a 429: the request-count spec pins
+ * reads only, and the burst was checked against real limits once, out of band
+ * (TASK-4044 ruling 488a43af).
  */
 
 type Fixture = { apiToken: string; baseURL: string };
@@ -182,7 +184,7 @@ test('E2: a new message and a retraction reach the open thread without a reload'
 	}
 });
 
-test('E8: a ten-message burst costs at most four reads per message per tab, and no 429', async ({
+test('E8: a ten-message burst costs at most four reads per message per tab', async ({
 	browser,
 	request,
 	fixture
@@ -202,9 +204,7 @@ test('E8: a ten-message burst costs at most four reads per message per tab, and 
 		await expect(rows(b)).toHaveCount(1);
 
 		let reads = 0;
-		let limited = 0;
 		a.on('response', (r) => {
-			if (r.status() === 429) limited++;
 			const u = new URL(r.url());
 			if (r.request().method() === 'GET' && u.pathname === `/api/v1/me/conversations/${n}/messages`) reads++;
 		});
@@ -220,7 +220,6 @@ test('E8: a ten-message burst costs at most four reads per message per tab, and 
 		// more (partly coalesced). So the bound is 4 per message; the agent send bucket
 		// (20/min) keeps a sustained burst under 80 reads/min against the 600/min API bucket.
 		expect(reads).toBeLessThanOrEqual(10 * 4 + 4);
-		expect(limited).toBe(0);
 	} finally {
 		await ctx.close();
 	}

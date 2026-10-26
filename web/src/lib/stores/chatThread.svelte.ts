@@ -108,7 +108,12 @@ export class ChatThread {
 		return unreadDividerIndex(this.messages, this.openReadSeq);
 	}
 
+	// Also closes the thread: with no #n and status 'loading', a version bump after
+	// an identity change fetches nothing until the page opens it again (TASK-4044
+	// r1 H1, ruling on triage ba47338c). open() sets both straight after.
 	#reset() {
+		this.#n = null;
+		this.status = 'loading';
 		this.conversation = null;
 		this.messages = [];
 		this.#win = new ChatWindow();

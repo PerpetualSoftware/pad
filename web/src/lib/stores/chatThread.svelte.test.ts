@@ -416,6 +416,30 @@ describe('fences', () => {
 		expect(thread.status).toBe('loading');
 	});
 
+	// U14b (r1 H1): an identity change closes the thread, so the next bump reads nothing
+	// as the new identity. Red with #reset() not clearing #n and the status.
+	it('fetches nothing on a bump after an identity change', async () => {
+		server.fill(3);
+		server.readSeq = 3;
+		await thread.open(1);
+		expect(thread.status).toBe('ready');
+		h.state.epoch++;
+		for (const fn of [...h.state.listeners]) fn('previous');
+		h.listMessages.mockClear();
+		h.getConversation.mockClear();
+		await bump();
+		thread.atBottom = true;
+		thread.tryMarkRead();
+		await thread.loadOlder();
+		await thread.loadNewer();
+		await flush();
+		expect(h.listMessages).not.toHaveBeenCalled();
+		expect(h.getConversation).not.toHaveBeenCalled();
+		expect(h.markRead).not.toHaveBeenCalled();
+		expect(thread.messages).toEqual([]);
+		expect(thread.status).toBe('loading');
+	});
+
 	it('drops an answer that resolves after dispose()', async () => {
 		server.fill(3);
 		let release!: () => void;
