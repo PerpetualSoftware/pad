@@ -3171,7 +3171,8 @@
 		flex-direction: column;
 		align-items: center;
 		justify-content: center;
-		padding: var(--space-4);
+		/* Top room for the desktop toolbar, which floats over the stage's top centre. */
+		padding: 3.5rem var(--space-4) var(--space-4);
 		pointer-events: none;
 		overflow: hidden;
 		background: transparent;
