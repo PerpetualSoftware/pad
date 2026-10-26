@@ -13,6 +13,7 @@ const h = vi.hoisted(() => ({
 	markRead: vi.fn(),
 	listMessages: vi.fn(),
 	listConversations: vi.fn(),
+	sessions: vi.fn(),
 	load: vi.fn(),
 	goto: vi.fn(),
 	// Bumped by a test to stand for an identity change: fences taken earlier fail.
@@ -31,7 +32,8 @@ vi.mock('$lib/api/client', () => ({
 			markRead: h.markRead,
 			listMessages: h.listMessages,
 			listConversations: h.listConversations
-		}
+		},
+		sessions: { list: h.sessions }
 	},
 	isNotFoundError: (e: unknown) => e instanceof NotFound
 }));
@@ -63,6 +65,9 @@ import { page } from '$app/state';
 import { lastWorkspace } from '$lib/stores/lastWorkspace.svelte';
 import { chatInbox } from '$lib/stores/chatInbox.svelte';
 
+// jsdom reports the document as not visible; the presence poll only runs while it is.
+Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
+
 const child = createRawSnippet(() => ({ render: () => `<div data-testid="child">child</div>` }));
 
 async function settle() {
@@ -91,12 +96,15 @@ beforeEach(() => {
 	h.load.mockResolvedValue({ authenticated: true });
 	h.listConversations.mockResolvedValue({ conversations: [conv(3)], unread_total: 0 });
 	h.getConversation.mockResolvedValue(conv(3));
+	h.sessions.mockResolvedValue({ sessions: [], count: 0 });
 	page.params = {};
 	lastWorkspace.clear();
 	// The inbox is a singleton: start each test from a cold one.
 	chatInbox.conversations = [];
 	chatInbox.loaded = false;
 	chatInbox.failed = false;
+	chatInbox.sessions = null;
+	chatInbox.checkedAt = null;
 });
 
 afterEach(() => {
@@ -230,6 +238,68 @@ describe('/messages/[n] placeholder (TASK-4044)', () => {
 		await settle();
 		expect(container.textContent).toContain('Could not load this conversation');
 		expect(container.textContent).not.toContain('Conversation not found');
+	});
+
+	it('shows a presence dot for the agent in the header', async () => {
+		page.params = { n: '3' };
+		h.sessions.mockResolvedValue({
+			sessions: [{ id: 's', agent: 'agent-3', state: 'online', armed: true, connected_at: '' }],
+			count: 1
+		});
+		const { container } = render(ThreadPage);
+		await settle();
+		const dot = container.querySelector('header .presence-dot');
+		expect(dot).not.toBeNull();
+		expect(dot!.getAttribute('aria-label')).toBe('Online');
+	});
+
+	it('the dot reads unknown until the first sessions read lands', async () => {
+		page.params = { n: '3' };
+		h.sessions.mockReturnValue(new Promise(() => {}));
+		const { container } = render(ThreadPage);
+		await settle();
+		expect(container.querySelector('header .presence-dot')!.getAttribute('aria-label')).toBe('Status unknown');
+	});
+
+	// Row H (TASK-4044 2b-i): a failed load needs a way back that is not a reload.
+	it('Try again refetches once after a failure and shows the conversation', async () => {
+		page.params = { n: '3' };
+		h.getConversation.mockRejectedValueOnce(new Error('500'));
+		const { container, getByText } = render(ThreadPage);
+		await settle();
+		expect(container.textContent).toContain('Could not load this conversation');
+		expect(h.getConversation).toHaveBeenCalledTimes(1);
+		getByText('Try again').click();
+		await settle();
+		expect(h.getConversation).toHaveBeenCalledTimes(2);
+		expect(container.textContent).not.toContain('Could not load');
+		expect(container.textContent).toContain('agent-3');
+	});
+
+	it('a Try again answer that outlives its identity is dropped', async () => {
+		page.params = { n: '3' };
+		h.getConversation.mockRejectedValueOnce(new Error('500'));
+		const { container, getByText } = render(ThreadPage);
+		await settle();
+		let resolve!: (c: ReturnType<typeof conv>) => void;
+		h.getConversation.mockReturnValue(new Promise((r) => (resolve = r)));
+		getByText('Try again').click();
+		await settle();
+		h.identityGen++;
+		resolve(conv(3));
+		await settle();
+		expect(container.textContent).not.toContain('agent-3');
+	});
+
+	it('leaving the page stops the presence poll', async () => {
+		page.params = { n: '3' };
+		const { unmount } = render(ThreadPage);
+		await settle();
+		expect(h.sessions).toHaveBeenCalledTimes(1);
+		unmount();
+		document.dispatchEvent(new Event('visibilitychange'));
+		await settle();
+		expect(h.sessions).toHaveBeenCalledTimes(1);
 	});
 
 	it('drops an answer that outlives its identity', async () => {
