@@ -43,9 +43,7 @@ func WriteChatDirection() (string, error) {
 		// The socket's mount namespace, under the same visibility rule as
 		// the registry and the arm file (BUG-4090 r2): a reader with another
 		// view of the filesystem must not reap this on a missing node.
-		if ns, err := mountNamespaceFn(); err == nil {
-			st.MountNamespace = ns
-		}
+		st.MountNamespace = namespaceStamp(mountNamespaceFn)
 	}
 	data, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {

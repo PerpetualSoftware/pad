@@ -109,9 +109,9 @@ func TestSessionRegistry_ReadFromForeignPIDNamespace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	readFromNamespace := func(t *testing.T) pidnsHelperOutput {
+	readFrom := func(t *testing.T, args []string) pidnsHelperOutput {
 		t.Helper()
-		cmd := exec.Command(bwrap, append(nsArgs, self, "-test.run=^TestPIDNamespaceHelper$")...)
+		cmd := exec.Command(bwrap, append(append([]string{}, args...), self, "-test.run=^TestPIDNamespaceHelper$")...)
 		cmd.Env = append(os.Environ(), pidnsHelperEnv+"=1")
 		cmd.Stderr = os.Stderr
 		raw, err := cmd.Output()
@@ -144,7 +144,7 @@ func TestSessionRegistry_ReadFromForeignPIDNamespace(t *testing.T) {
 	}
 
 	t.Run("stamped row", func(t *testing.T) {
-		assertKept(t, readFromNamespace(t))
+		assertKept(t, readFrom(t, nsArgs))
 	})
 
 	// P3: the same live row in its pre-fix shape, with no pid_ns or mnt_ns.
@@ -172,7 +172,31 @@ func TestSessionRegistry_ReadFromForeignPIDNamespace(t *testing.T) {
 		if err := os.WriteFile(rec.Path, stripped, 0600); err != nil {
 			t.Fatal(err)
 		}
-		assertKept(t, readFromNamespace(t))
+		assertKept(t, readFrom(t, nsArgs))
+	})
+
+	// r3 R-1: the same unstamped row, read from a sandbox with NO procfs.
+	// There /proc/self/ns/pid cannot be read at all, so the reader cannot
+	// tell whether it is in the host's namespace, and must not treat its
+	// ESRCH as evidence (F1). Runs after "unstamped row", which leaves the
+	// file without pid_ns/mnt_ns.
+	t.Run("unstamped row, reader without procfs", func(t *testing.T) {
+		noProc := []string{"--dev-bind", "/", "/", "--unshare-pid", "--tmpfs", "/proc"}
+		if err := exec.Command(bwrap, append(append([]string{}, noProc...), "true")...).Run(); err != nil {
+			t.Skipf("bwrap cannot run without a procfs here: %v", err)
+		}
+		raw, err := os.ReadFile(rec.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var row map[string]any
+		if err := json.Unmarshal(raw, &row); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := row["pid_ns"]; ok {
+			t.Fatalf("fixture: the row should be unstamped by now: %s", raw)
+		}
+		assertKept(t, readFrom(t, noProc))
 	})
 }
 
@@ -248,6 +272,8 @@ func TestOwnerLiveness_PIDNamespace(t *testing.T) {
 	errNS := errors.New("no /proc/self/ns/pid")
 
 	mntStamped := func(o SessionOwner) SessionOwner { o.MountNamespace = recordedMnt; return o }
+	sentinelPID := func(o SessionOwner) SessionOwner { o.PIDNamespace = unidentifiedNamespace; return o }
+	sentinelMnt := func(o SessionOwner) SessionOwner { o.MountNamespace = unidentifiedNamespace; return o }
 	sockOnly := SessionOwner{}
 
 	type reader struct {
@@ -292,8 +318,13 @@ func TestOwnerLiveness_PIDNamespace(t *testing.T) {
 		{"pid unstamped, init reader, reused pid", reused, initHome, LivenessDead},
 		{"pid unstamped, init reader, zombie", zombie, initHome, LivenessDead},
 		{"same ns, zombie", stamped(zombie), home, LivenessDead},
-		// Unstamped pid, reader cannot tell: the platform-without-namespaces rule.
-		{"pid unstamped, reader pid ns unreadable, dead pid", dead, reader{pidErr: errNS, mnt: recordedMnt}, LivenessDead},
+		// Unstamped pid, reader cannot name its namespace (no procfs): on
+		// Linux that is a possible boundary, so no negative is evidence (F1).
+		{"pid unstamped, reader pid ns unreadable, dead pid", dead, reader{pidErr: errNS, mnt: recordedMnt}, LivenessUnknown},
+		{"pid unstamped, reader pid ns unreadable, live pid", live, reader{pidErr: errNS, mnt: recordedMnt}, LivenessAlive},
+		// A row stamped with the unidentified sentinel (F2) matches no reader.
+		{"pid sentinel, dead pid, any reader", sentinelPID(dead), home, LivenessUnknown},
+		{"pid sentinel, live pid, any reader", sentinelPID(live), home, LivenessUnknown},
 
 		// The socket is judged by the MOUNT namespace (P1).
 		{"mnt same, socket gone", withGoneSocket(mntStamped(sockOnly)), home, LivenessDead},
@@ -308,6 +339,9 @@ func TestOwnerLiveness_PIDNamespace(t *testing.T) {
 		{"mnt unstamped, foreign reader, socket gone (H1)", withGoneSocket(sockOnly), away, LivenessDead},
 		{"mnt unstamped, foreign reader, socket rebound", withReboundSocket(sockOnly), away, LivenessDead},
 		{"mnt unstamped, init reader, socket gone", withGoneSocket(live), initHome, LivenessDead},
+		{"mnt unstamped, reader mnt ns unreadable, socket gone (F1)", withGoneSocket(sockOnly), reader{pid: recordedNS, mntErr: errNS}, LivenessUnknown},
+		{"mnt unstamped, reader mnt ns unreadable, socket matches", withSocket(sockOnly), reader{pid: recordedNS, mntErr: errNS}, LivenessAlive},
+		{"mnt sentinel, socket gone, any reader", withGoneSocket(sentinelMnt(sockOnly)), home, LivenessUnknown},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -352,8 +386,8 @@ func TestCaptureSessionOwner_PIDNamespace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if o.PIDNamespace != 0 {
-		t.Fatalf("an unreadable namespace: pid_ns=%d, want 0", o.PIDNamespace)
+	if o.PIDNamespace != unidentifiedNamespace {
+		t.Fatalf("an unreadable namespace (no procfs): pid_ns=%d, want the sentinel %d", o.PIDNamespace, unidentifiedNamespace)
 	}
 }
 
@@ -472,6 +506,17 @@ func TestCaptureSessionOwner_MountNamespace(t *testing.T) {
 	if o.Socket != sock || o.MountNamespace != recordedMnt {
 		t.Fatalf("a visible socket: socket=%q mnt_ns=%d, want %q and %d", o.Socket, o.MountNamespace, sock, recordedMnt)
 	}
+
+	// A visible socket in a mount namespace this process cannot name (no
+	// procfs): the sentinel, so no reader trusts its absence later (F2).
+	stubReaderMountNS(t, 0, errors.New("no /proc/self/ns/mnt"))
+	if o, err = CaptureSessionOwner(); err != nil {
+		t.Fatal(err)
+	}
+	if o.MountNamespace != unidentifiedNamespace {
+		t.Fatalf("a visible socket, unreadable mount ns: mnt_ns=%d, want the sentinel %d", o.MountNamespace, unidentifiedNamespace)
+	}
+	stubReaderMountNS(t, recordedMnt, nil)
 
 	t.Setenv("CLAUDE_CODE_MESSAGING_SOCKET", filepath.Join(t.TempDir(), "unseen.sock"))
 	if o, err = CaptureSessionOwner(); err != nil {

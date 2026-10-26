@@ -90,7 +90,9 @@ type SessionOwner struct {
 	// visible there. A reader in a different namespace cannot examine the
 	// pid at all, and must say unknown rather than dead (BUG-4090). Zero
 	// off Linux, in rows written before it existed, and for a harness pid
-	// inherited from outside a sandbox, which the recorder cannot see.
+	// inherited from outside a sandbox, which the recorder cannot see. A
+	// Linux recorder that cannot read its own namespace (no procfs) writes
+	// unidentifiedNamespace instead, which no reader matches (r3, F2).
 	// An additive on-disk key: older readers ignore it, and a row without
 	// it is judged by pidNamespaceRelation's unstamped rule.
 	PIDNamespace uint64 `json:"pid_ns,omitempty"`
@@ -111,7 +113,8 @@ type SessionOwner struct {
 	// mirroring PIDNamespace's visibility rule). A path's absence, or a
 	// different node at it, is evidence only to a reader with the same view
 	// of the filesystem; elsewhere the socket verdict is unknown (BUG-4090
-	// r1, H1/H3). An additive on-disk key; a row without it keeps the
+	// r1, H1/H3). unidentifiedNamespace when Linux would not name it (r3,
+	// F2). An additive on-disk key; a row without it keeps the
 	// pre-BUG-4090 socket rule.
 	MountNamespace uint64 `json:"mnt_ns,omitempty"`
 }
@@ -158,8 +161,8 @@ func CaptureSessionOwner() (SessionOwner, error) {
 	// kill(2) resolves pids in the caller's namespace, so a pid it cannot
 	// reach belongs to some other one, and stamping ours on it would be a
 	// claim the record cannot back (BUG-4090).
-	if ns, err := pidNamespaceFn(); err == nil && pidAlive(o.PID) {
-		o.PIDNamespace = ns
+	if pidAlive(o.PID) {
+		o.PIDNamespace = namespaceStamp(pidNamespaceFn)
 	}
 
 	if sock := os.Getenv("CLAUDE_CODE_MESSAGING_SOCKET"); sock != "" {
@@ -168,9 +171,7 @@ func CaptureSessionOwner() (SessionOwner, error) {
 			o.SocketMtimeUnixNano = info.ModTime().UnixNano()
 			if ino, dev, ok := statIdentity(info); ok {
 				o.SocketIno, o.SocketDev = ino, dev
-				if ns, err := mountNamespaceFn(); err == nil {
-					o.MountNamespace = ns
-				}
+				o.MountNamespace = namespaceStamp(mountNamespaceFn)
 			}
 		}
 	}
@@ -263,6 +264,26 @@ var pidNamespaceFn = currentPIDNamespace
 // mountNamespaceFn is currentMountNamespace behind the same kind of seam.
 var mountNamespaceFn = currentMountNamespace
 
+// unidentifiedNamespace is the stamp a Linux recorder writes when it could
+// not read its own namespace (no procfs): "recorded somewhere I could not
+// name". nsfs inodes come from the proc inum allocator and are never 1, so
+// it equals no reader's namespace and every reader treats the row as
+// crossed (BUG-4090 r3, F2).
+const unidentifiedNamespace uint64 = 1
+
+// namespaceStamp is the value a writer records for the namespace it just
+// observed something in: the namespace's inode, the unidentified sentinel
+// when Linux will not say, or zero (no stamp) off Linux.
+func namespaceStamp(fn func() (uint64, error)) uint64 {
+	if ns, err := fn(); err == nil {
+		return ns
+	}
+	if namespacesSupported {
+		return unidentifiedNamespace
+	}
+	return 0
+}
+
 func pidNamespaceRelation(o *SessionOwner) pidNSRelation {
 	reader, err := pidNamespaceFn()
 	if o.PIDNamespace != 0 {
@@ -271,7 +292,15 @@ func pidNamespaceRelation(o *SessionOwner) pidNSRelation {
 		}
 		return pidNSSame
 	}
-	if err == nil && reader != initPIDNamespace {
+	if err != nil {
+		// A reader that cannot name its own namespace may be in any of them
+		// on Linux (F1); off Linux there is nothing to be across.
+		if namespacesSupported {
+			return pidNSUnstampedForeign
+		}
+		return pidNSSame
+	}
+	if reader != initPIDNamespace {
 		return pidNSUnstampedForeign
 	}
 	return pidNSSame
@@ -284,10 +313,12 @@ func pidNamespaceRelation(o *SessionOwner) pidNSRelation {
 // as it always was — the disclosed residual for pre-fix rows read across a
 // mount boundary, transient because sessions re-register on first use.
 func mountNamespaceCrossed(o *SessionOwner) bool {
-	if o.MountNamespace == 0 {
-		return false
-	}
 	reader, err := mountNamespaceFn()
+	if o.MountNamespace == 0 {
+		// The pre-fix rule — unless this reader cannot name its own mount
+		// namespace, which on Linux makes it a possible boundary (F1).
+		return err != nil && namespacesSupported
+	}
 	return err != nil || reader != o.MountNamespace
 }
 

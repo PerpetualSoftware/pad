@@ -13,6 +13,11 @@ import (
 // the host's namespace without anyone having recorded it (BUG-4090).
 const initPIDNamespace uint64 = 0xEFFFFFFC
 
+// namespacesSupported: on Linux every process is in some PID and mount
+// namespace, so a namespace this process cannot identify (no procfs) is a
+// possible boundary, not proof of none (BUG-4090 r3, F1/F2).
+const namespacesSupported = true
+
 // currentPIDNamespace returns the inode of this process's PID namespace,
 // the identity behind `readlink /proc/self/ns/pid` ("pid:[<inode>]"). A
 // pid means something only inside one namespace, so two records — or a

@@ -254,9 +254,7 @@ func writeArmStateFile(disarmed bool) (path string, err error) {
 			st.SocketMtimeUnixNano = info.ModTime().UnixNano()
 			if ino, dev, ok := statIdentity(info); ok {
 				st.SocketIno, st.SocketDev = ino, dev
-				if ns, err := mountNamespaceFn(); err == nil {
-					st.MountNamespace = ns
-				}
+				st.MountNamespace = namespaceStamp(mountNamespaceFn)
 			}
 		}
 	} else {

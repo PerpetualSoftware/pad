@@ -8,6 +8,10 @@ import "errors"
 // because currentPIDNamespace never succeeds here.
 const initPIDNamespace uint64 = 0
 
+// namespacesSupported is false off Linux: there is no namespace to be
+// across, so a failed read is not a possible boundary.
+const namespacesSupported = false
+
 var errNoNamespaces = errors.New("namespaces are a Linux concept")
 
 // currentPIDNamespace and currentMountNamespace are unavailable off Linux.
