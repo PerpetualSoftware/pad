@@ -14,8 +14,7 @@ import {
 	VIEWER_SHEET,
 	itemUrl,
 	uploadAttachment,
-	viewerDialog,
-	viewerNext
+	viewerDialog
 } from './lib/attachment-viewer';
 import {
 	buildHostilePdf,
@@ -66,10 +65,12 @@ interface Instrument {
 	popups: string[];
 	navigations: string[];
 	requests: string[];
+	/** Responses >= 400 for the viewer's own assets and downloads. */
+	badResponses: string[];
 }
 
 async function instrument(page: Page, opts: { forceWasm?: boolean } = {}): Promise<Instrument & { wasmRewrites: () => number }> {
-	const inst: Instrument = { violations: [], errors: [], workerUrls: [], dialogs: [], popups: [], navigations: [], requests: [] };
+	const inst: Instrument = { violations: [], errors: [], workerUrls: [], dialogs: [], popups: [], navigations: [], requests: [], badResponses: [] };
 	let rewrites = 0;
 	await page.addInitScript(() => {
 		(window as unknown as { __csp: string[] }).__csp = [];
@@ -105,7 +106,12 @@ async function instrument(page: Page, opts: { forceWasm?: boolean } = {}): Promi
 		if (m.type() !== 'error') return;
 		const t = m.text();
 		if (/Content Security Policy|Refused to/i.test(t)) inst.violations.push(`console:${t.slice(0, 160)}`);
-		else inst.errors.push(`console: ${t.slice(0, 160)}`);
+		// A bare "Failed to load resource" names no URL and the app makes unrelated 404s of
+		// its own (an item's `/builtin` probe): the responses are checked by URL below.
+		else if (!/^Failed to load resource/.test(t)) inst.errors.push(`console: ${t.slice(0, 160)}`);
+	});
+	page.on('response', (r) => {
+		if (r.status() >= 400 && /\/_app\/|\/attachments\//.test(r.url())) inst.badResponses.push(`${r.status()} ${r.url()}`);
 	});
 	page.on('pageerror', (e) => inst.errors.push(`pageerror: ${String(e).slice(0, 160)}`));
 	page.on('dialog', async (d) => {
@@ -218,6 +224,7 @@ test.describe('attachment viewer — in-pane PDF (TASK-4075), desktop', () => {
 
 		expect(await allViolations(page, inst), 'CSP violations (document + worker scope)').toEqual([]);
 		expect(inst.errors, 'console / page errors').toEqual([]);
+		expect(inst.badResponses, 'failed asset or download responses').toEqual([]);
 		// Never navigated, framed or blob'd.
 		await expect(page.locator(`${ARM} :is(iframe, embed, object, a)`)).toHaveCount(0);
 		expect(inst.requests.filter((r) => r.includes('blob:'))).toEqual([]);
@@ -248,7 +255,22 @@ test.describe('attachment viewer — in-pane PDF (TASK-4075), desktop', () => {
 		const inst = await instrument(page);
 		await openPdf(page, fixture, request, 'PDF E2', [{ name: 'hostile.pdf', bytes: buildHostilePdf() }]);
 		await painted(page);
+		// CONTROL: the dialog and popup instruments can see what they claim to. Without this,
+		// "no dialog, no popup" below would hold just as well with the listeners unwired.
+		await page.evaluate(() => {
+			setTimeout(() => {
+				alert('control');
+				window.open('about:blank');
+			}, 0);
+		});
+		await expect.poll(() => inst.dialogs.length, { timeout: 5000 }).toBe(1);
+		await expect.poll(() => inst.popups.length, { timeout: 5000 }).toBeGreaterThan(0);
+		inst.dialogs.length = 0;
+		inst.popups.length = 0;
+		for (const p of page.context().pages()) if (p !== page) await p.close();
 		const url = page.url();
+		const navigationsBefore = inst.navigations.length;
+		const requestsBefore = inst.requests.length;
 		// Click where the URI link and the JavaScript link sit on the page.
 		const box = (await page.locator(CANVAS).boundingBox())!;
 		await page.mouse.click(box.x + box.width * 0.4, box.y + box.height * 0.45);
@@ -257,8 +279,10 @@ test.describe('attachment viewer — in-pane PDF (TASK-4075), desktop', () => {
 		expect(inst.dialogs).toEqual([]);
 		expect(inst.popups).toEqual([]);
 		expect(page.url()).toBe(url);
-		expect(inst.navigations.filter((u) => u !== url && !u.endsWith(new URL(url).pathname))).toEqual([]);
-		expect(inst.requests.filter((r) => r.includes('example.invalid'))).toEqual([]);
+		expect(inst.navigations.slice(navigationsBefore), 'no navigation after the document opened').toEqual([]);
+		expect(inst.requests.filter((r) => r.includes('example.invalid')), 'the link target was never requested').toEqual([]);
+		// Nothing at all was requested by clicking the page (no link activation, no fetch).
+		expect(inst.requests.slice(requestsBefore).filter((r) => !/\/(events|sse)|\/api\/v1\/.*\/(presence|heartbeat)/.test(r)), 'requests after the clicks').toEqual([]);
 		await expect(page.locator(`${ARM} a`)).toHaveCount(0);
 		expect(await allViolations(page, inst)).toEqual([]);
 		// The viewer is still the viewer.
@@ -345,29 +369,35 @@ test.describe('attachment viewer — in-pane PDF (TASK-4075), desktop', () => {
 		await expect(page.locator(`${ARM} canvas`)).toHaveCount(0);
 	});
 
-	test('zoom and the page box work, and Left/Right keep gallery paging across two PDFs', async ({ page, fixture, request }) => {
+	test('zoom and the page box work, and the arrow keys stay out of the way', async ({ page, fixture, request }) => {
 		await instrument(page);
-		await openPdf(page, fixture, request, 'PDF paging', [
-			{ name: 'one.pdf', bytes: buildMultiPagePdf(2) },
-			{ name: 'two.pdf', bytes: buildMultiPagePdf(2) }
-		]);
+		// A PDF tile emits a single-entry set (the file route), so there is no gallery to
+		// page here: Left/Right must simply be inert, and typing in the page box must not
+		// close or move the viewer. Gallery paging over a multi-entry set is the unit suite's (U6).
+		await openPdf(page, fixture, request, 'PDF paging', [{ name: 'one.pdf', bytes: buildMultiPagePdf(2) }]);
 		await painted(page);
+		await expect(page.locator(VIEWER_COUNTER)).toHaveCount(0);
 		const before = await paint(page);
 		await page.getByRole('button', { name: 'Zoom in' }).click();
 		await expect.poll(async () => (await paint(page)).w, { timeout: 15_000 }).toBeGreaterThan(before.w);
-		await page.getByRole('textbox', { name: 'Page number' }).fill('2');
+		await page.getByRole('button', { name: 'Zoom out' }).click();
+		await expect.poll(async () => (await paint(page)).w, { timeout: 15_000 }).toBe(before.w);
+		const box = page.getByRole('textbox', { name: 'Page number' });
+		await box.fill('2');
 		await page.keyboard.press('Enter');
 		await expect(page.locator(STATUS)).toHaveText('Page 2 of 2');
-		// Arrows inside the page box move the caret, not the gallery.
-		await page.getByRole('textbox', { name: 'Page number' }).press('ArrowLeft');
+		await box.fill('99');
+		await page.keyboard.press('Enter');
+		await expect(page.locator(STATUS)).toHaveText('Page 2 of 2');
+		await box.press('ArrowLeft');
+		await box.press('ArrowRight');
 		await expect(viewerDialog(page, 'one.pdf')).toHaveCount(1);
-		// Focus off the box: ArrowRight pages the gallery to the second PDF.
 		await page.locator(VIEWER).getByRole('button', { name: 'Close' }).focus();
 		await page.keyboard.press('ArrowRight');
-		await expect(viewerDialog(page, 'two.pdf')).toHaveCount(1);
-		await expect(page.locator(STATUS)).toHaveText('Page 1 of 2');
-		await viewerNext(page).count();
-	});
+		await page.keyboard.press('ArrowLeft');
+		await expect(viewerDialog(page, 'one.pdf')).toHaveCount(1);
+		await expect(page.locator(STATUS)).toHaveText('Page 2 of 2');
+		});
 });
 
 test.describe('attachment viewer — in-pane PDF (TASK-4075), phone sheet', () => {
@@ -377,11 +407,10 @@ test.describe('attachment viewer — in-pane PDF (TASK-4075), phone sheet', () =
 
 	test('E4: the sheet is full-screen, the page fits the width, and a touch pan scrolls the page without paging the gallery', async ({ page, fixture, request }) => {
 		const inst = await instrument(page);
-		// A tall page, so there is something to pan; and a second PDF, so a swipe COULD page.
-		await openPdf(page, fixture, request, 'PDF E4', [
-			{ name: 'tall.pdf', bytes: buildMultiPagePdf(2, 2400) },
-			{ name: 'other.pdf', bytes: buildMultiPagePdf(1) }
-		]);
+		// A tall page, so there is something to pan. (A PDF tile emits a single-entry set, so
+		// there is no neighbour a swipe could page to: what is pinned is that the pan scrolls
+		// the page and nothing else moves: no close, no page change, no sideways scroll.)
+		await openPdf(page, fixture, request, 'PDF E4', [{ name: 'tall.pdf', bytes: buildMultiPagePdf(2, 2400) }]);
 		await expect(page.locator(VIEWER_SHEET)).toHaveCount(1);
 		await painted(page);
 		const vp = page.viewportSize()!;
@@ -408,13 +437,14 @@ test.describe('attachment viewer — in-pane PDF (TASK-4075), phone sheet', () =
 		for (let i = 1; i <= 10; i++) await touch.move(0, x, y0 - i * 30);
 		await touch.lift(0);
 		await expect.poll(() => page.locator(SCROLL).evaluate((el) => el.scrollTop), { timeout: 5000 }).toBeGreaterThan(50);
-		// ...and a sideways swipe does not page the gallery.
+		// ...and a sideways swipe moves nothing: the viewer stays, on the same page, unscrolled sideways.
 		await touch.down(0, region.x + region.width * 0.85, region.y + region.height * 0.5);
 		for (let i = 1; i <= 10; i++) await touch.move(0, region.x + region.width * 0.85 - i * 25, region.y + region.height * 0.5);
 		await touch.lift(0);
 		await page.waitForTimeout(400);
 		await expect(viewerDialog(page, 'tall.pdf')).toHaveCount(1);
-		await expect(page.locator(VIEWER_COUNTER)).toContainText('1');
+		await expect(page.locator(STATUS)).toHaveText('Page 1 of 2');
+		expect(await page.locator(SCROLL).evaluate((el) => el.scrollLeft)).toBe(0);
 		expect(await allViolations(page, inst)).toEqual([]);
 	});
 });
