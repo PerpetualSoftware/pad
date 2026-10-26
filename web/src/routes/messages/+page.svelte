@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import ChatBackLink from '$lib/components/chat/ChatBackLink.svelte';
 	import ConversationList from '$lib/components/chat/ConversationList.svelte';
 	import { chatInbox } from '$lib/stores/chatInbox.svelte';
 
@@ -14,11 +15,13 @@
 </svelte:head>
 
 <header class="chat-header">
+	<ChatBackLink />
 	<h1>Chat</h1>
 </header>
 
 <!-- The list reloads only when chatStore's unread fetch succeeds, so a failed
-     list fetch beside a good unread fetch has no other way back (TASK-4044 r1).
+     list fetch beside a good unread fetch has no other way back (TASK-4044 r1):
+     chatStore's retry re-arms only for a failed UNREAD fetch.
      A failed reload keeps the last list, and says so (r2). -->
 {#if chatInbox.failed}
 	<p class="status">

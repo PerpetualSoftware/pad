@@ -17,6 +17,7 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { api } from '$lib/api/client';
 	import { avatarColor, avatarInitial } from '$lib/utils/avatar';
+	import ChatLink from '$lib/components/chat/ChatLink.svelte';
 	import DockedSheet from '$lib/components/layout/DockedSheet.svelte';
 	import UserMenuResources from '$lib/components/layout/UserMenuResources.svelte';
 	import ConnectWorkspaceModal from '$lib/components/ConnectWorkspaceModal.svelte';
@@ -100,6 +101,10 @@
 					<span class="row-label">Account settings</span>
 					<span class="row-chev" aria-hidden="true">›</span>
 				</a>
+				<ChatLink class="row" onclick={onclose}>
+					{#snippet lead()}<span class="row-icon" aria-hidden="true">💬</span>{/snippet}
+					{#snippet trail()}<span class="row-chev" aria-hidden="true">›</span>{/snippet}
+				</ChatLink>
 				<a class="row" href="/console" onclick={onclose}>
 					<span class="row-icon" aria-hidden="true">🗂️</span>
 					<span class="row-label">Workspaces</span>
@@ -208,7 +213,8 @@
 		flex-direction: column;
 		gap: 2px;
 	}
-	.row {
+	.row,
+	.rows :global(.row) {
 		display: flex;
 		align-items: center;
 		gap: var(--space-3);
@@ -224,7 +230,8 @@
 		font-size: 0.98em;
 		font-family: var(--font-ui);
 	}
-	.row:hover {
+	.row:hover,
+	.rows :global(.row:hover) {
 		background: var(--bg-hover);
 		color: var(--text-primary);
 	}
