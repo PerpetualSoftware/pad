@@ -74,6 +74,7 @@
 		"lowlight": "^3.3.0",
 		"mermaid": "^12.1.0",
 		"minisearch": "7.2.0",
+		"pdfjs-dist": "6.4.299",
 		"qrcode": "^1.5.4",
 		"svelte-dnd-action": "^0.9.80",
 		"three-spritetext": "1.10.0",
