@@ -12,6 +12,7 @@ import (
 )
 
 func TestSessionActivityParentNeverReports(t *testing.T) {
+	preserveRootFlagGlobals(t)
 	oldBody := sessionActivityBody
 	oldSpawn := sessionActivitySpawn
 	t.Cleanup(func() { sessionActivityBody, sessionActivitySpawn = oldBody, oldSpawn })
