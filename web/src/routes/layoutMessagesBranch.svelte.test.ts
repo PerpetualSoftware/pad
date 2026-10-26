@@ -131,9 +131,9 @@ describe('TASK-4044: the root layout gives /messages no workspace shell', () => 
 		expect({ sidebar: hasSidebar(), topbar: hasTopBar() }).toEqual({ sidebar: true, topbar: true });
 	});
 
-	it('/messages keeps the global dialogs and the toast surface', async () => {
+	it('/messages keeps the toast surface', async () => {
 		await mountAt('/messages');
-		expect(document.querySelector('[role="status"], .toast-container, [aria-live]')).not.toBeNull();
+		expect(document.querySelector('.toast-container [data-toast-region="polite"]')).not.toBeNull();
 	});
 
 	it('has-mobile-topbar is on for a mobile shell page and off on /messages', async () => {

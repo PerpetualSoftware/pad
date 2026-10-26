@@ -17,15 +17,19 @@
 	<h1>Chat</h1>
 </header>
 
-{#if !chatInbox.loaded && chatInbox.failed}
-	<p class="status">Could not load your conversations.</p>
-	<!-- The list reloads only when chatStore's unread fetch succeeds, so a failed
-	     list fetch beside a good unread fetch has no other way back (TASK-4044 r1). -->
+<!-- The list reloads only when chatStore's unread fetch succeeds, so a failed
+     list fetch beside a good unread fetch has no other way back (TASK-4044 r1).
+     A failed reload keeps the last list, and says so (r2). -->
+{#if chatInbox.failed}
+	<p class="status">
+		{chatInbox.loaded ? "Couldn't refresh your conversations." : 'Could not load your conversations.'}
+	</p>
 	<button type="button" onclick={() => void chatInbox.load()}>Try again</button>
-{:else if !chatInbox.loaded}
-	<p class="status">Loading...</p>
-{:else}
+{/if}
+{#if chatInbox.loaded}
 	<ConversationList conversations={chatInbox.conversations} />
+{:else if !chatInbox.failed}
+	<p class="status">Loading...</p>
 {/if}
 
 <style>

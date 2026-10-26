@@ -15,6 +15,8 @@ const h = vi.hoisted(() => ({
 	listConversations: vi.fn(),
 	load: vi.fn(),
 	goto: vi.fn(),
+	// Bumped by a test to stand for an identity change: fences taken earlier fail.
+	identityGen: 0,
 	chat: { unreadByNumber: {} as Record<number, number> }
 }));
 
@@ -37,7 +39,10 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 	authStore: {
 		load: h.load,
 		authenticated: true,
-		identityFence: () => () => true,
+		identityFence: () => {
+			const gen = h.identityGen;
+			return () => h.identityGen === gen;
+		},
 		onIdentityChange: () => () => {}
 	}
 }));
@@ -157,6 +162,21 @@ describe('/messages page (TASK-4044)', () => {
 		expect(container.querySelector('a[href="/messages/3"]')).not.toBeNull();
 		expect(container.textContent).not.toContain('Could not load');
 	});
+
+	// A failed reload keeps the last list, and must say so (r2).
+	it('a failed reload keeps the list, says so, and Try again clears it', async () => {
+		const { container, getByText } = render(MessagesPage);
+		await settle();
+		h.listConversations.mockRejectedValueOnce(new Error('boom'));
+		await chatInbox.load();
+		await settle();
+		expect(container.querySelector('a[href="/messages/3"]')).not.toBeNull();
+		expect(container.textContent).toContain("Couldn't refresh your conversations.");
+		getByText('Try again').click();
+		await settle();
+		expect(container.querySelector('a[href="/messages/3"]')).not.toBeNull();
+		expect(container.textContent).not.toContain("Couldn't refresh");
+	});
 });
 
 describe('/messages/[n] placeholder (TASK-4044)', () => {
@@ -194,6 +214,18 @@ describe('/messages/[n] placeholder (TASK-4044)', () => {
 		await settle();
 		expect(container.textContent).toContain('Could not load this conversation');
 		expect(container.textContent).not.toContain('Conversation not found');
+	});
+
+	it('drops an answer that outlives its identity', async () => {
+		page.params = { n: '3' };
+		let resolve!: (c: ReturnType<typeof conv>) => void;
+		h.getConversation.mockReturnValue(new Promise((r) => (resolve = r)));
+		const { container } = render(ThreadPage);
+		await settle();
+		h.identityGen++;
+		resolve(conv(3));
+		await settle();
+		expect(container.textContent).not.toContain('agent-3');
 	});
 
 	it('never marks anything read and never loads messages', async () => {

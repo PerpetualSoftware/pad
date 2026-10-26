@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { api, isNotFoundError } from '$lib/api/client';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import type { ChatConversationSummary } from '$lib/types';
 
 	// A placeholder: the thread itself arrives in a later change. It reads the
@@ -20,13 +21,14 @@
 		failed = false;
 		notFound = target === null;
 		if (target === null) return;
+		const isSameIdentity = authStore.identityFence();
 		api.chat
 			.getConversation(target)
 			.then((c) => {
-				if (mine === seq) conversation = c;
+				if (mine === seq && isSameIdentity()) conversation = c;
 			})
 			.catch((err: unknown) => {
-				if (mine !== seq) return;
+				if (mine !== seq || !isSameIdentity()) return;
 				if (isNotFoundError(err)) notFound = true;
 				else failed = true;
 			});
