@@ -208,6 +208,36 @@ describe('createViewerBytesLoader', () => {
 		expect(loader.bytes).toEqual(pdfBytes(3, 0x32));
 	});
 
+	it('drops a completion that arrives after dispose() (the id half of the fence: no new request, so the token is unchanged)', async () => {
+		// dispose() starts no request, so `loadToken` still equals the late request's token;
+		// only `active` being gone tells the completion it is stale. A fetch that ignores the
+		// abort (a mock, or a response already in flight) is exactly the late arrival.
+		let resolveLate: (r: Response) => void = () => {};
+		fetchMock.mockImplementationOnce(() => new Promise<Response>((r) => (resolveLate = r)));
+		const loader = createViewerBytesLoader();
+		loader.load(entry(), 'ws');
+		loader.dispose();
+		resolveLate(plainResponse(pdfBytes(9)));
+		await settle();
+		expect(loader.phase).toBe('idle');
+		expect(loader.bytes).toBeNull();
+	});
+
+	it('an AbortError that reaches the loader while it is still the active load is SILENT, not an error', async () => {
+		// The browser (or an extension) can abort a request the loader did not: there is no
+		// dispose and no repoint, so the staleness fence passes. The spec is that an abort
+		// never reads as a failure; the loader keeps showing its loading state.
+		fetchMock.mockImplementationOnce(() => {
+			const e = new Error('aborted');
+			e.name = 'AbortError';
+			return Promise.reject(e);
+		});
+		const loader = createViewerBytesLoader();
+		loader.load(entry(), 'ws');
+		await settle();
+		expect(loader.phase).toBe('loading');
+	});
+
 	it('ABORTS the in-flight request when repointed, and on dispose()', async () => {
 		const signals: AbortSignal[] = [];
 		fetchMock.mockImplementation((_url: string, init: RequestInit) => {
