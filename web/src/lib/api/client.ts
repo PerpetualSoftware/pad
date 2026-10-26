@@ -88,6 +88,7 @@ import type {
 	ChatConversation,
 	ChatConversationSummary,
 	ChatConversationsResponse,
+	ChatMessagesResponse,
 	ChatUnreadResponse,
 	ItemPushResult,
 	WorkspaceStorageInfo,
@@ -2438,6 +2439,11 @@ export const api = {
 		list: () => request<LiveSessionsResponse>('/sessions')
 	},
 
+	/**
+	 * Chat (TASK-4039): global conversations between the signed-in human and
+	 * their agents. Not workspace-scoped. `n` is the owner's conversation
+	 * number. A send with `op_key` is idempotent: retry with the SAME key.
+	 */
 	chat: {
 		listConversations: () => request<ChatConversationsResponse>('/me/conversations'),
 
@@ -2451,7 +2457,24 @@ export const api = {
 		getConversation: (n: number) =>
 			request<ChatConversationSummary>(`/me/conversations/${n}`),
 
+		listMessages: (
+			n: number,
+			opts?: { before_seq?: number; after_seq?: number; limit?: number }
+		) => {
+			const params = new URLSearchParams();
+			if (opts?.before_seq !== undefined) params.set('before_seq', String(opts.before_seq));
+			if (opts?.after_seq !== undefined) params.set('after_seq', String(opts.after_seq));
+			if (opts?.limit !== undefined) params.set('limit', String(opts.limit));
+			const qs = params.toString();
+			return request<ChatMessagesResponse>(`/me/conversations/${n}/messages${qs ? `?${qs}` : ''}`);
+		},
 
+		/** `seq` is the sequence the client DISPLAYED; the server clamps and never moves backward. */
+		markRead: (n: number, seq: number) =>
+			request<{ read_seq: number }>(`/me/conversations/${n}/read`, {
+				method: 'POST',
+				body: JSON.stringify({ seq })
+			}),
 
 		unread: () => request<ChatUnreadResponse>('/me/chat/unread')
 	},

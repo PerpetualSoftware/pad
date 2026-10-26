@@ -8,7 +8,7 @@
 	// siblings. A parent's scoped styles do not reach into this element, so the
 	// parent styles it with :global(.<class>), and the lead/trail snippets carry
 	// the parent's own scope for its icon and chevron. Not the Sidebar footer
-	// row: it overflows on desktop (TASK-4044, lead ruling day 37 04:38Z).
+	// row: it overflows on desktop (TASK-4044, comment 89264cdd, posted 04:36:46Z).
 	let {
 		class: className = '',
 		role,

@@ -73,8 +73,11 @@ export class ChatStore {
 	// a retry (TASK-4044 2a-ii r1 #1). This is not a #started check because a
 	// never-started store driven by resync()/onHint() is the supported test seam,
 	// and its retries must still arm. The #dirty re-run and onHint/resync after
-	// stop() stay with the PR (1) carry-forward (rulings f05fd7c4, db5556a5).
+	// stop() are inert since TASK-4044 PR (3), via #stopped below.
 	#stops = 0;
+	// True between stop() and the next start(). A never-started store is NOT
+	// stopped, so resync()/onHint() on a fresh store keep working as the test seam.
+	#stopped = false;
 	#onFocus = () => this.#schedule();
 
 	constructor() {
@@ -95,13 +98,19 @@ export class ChatStore {
 	start(): void {
 		if (this.#started) return;
 		this.#started = true;
+		this.#stopped = false;
 		if (typeof window !== 'undefined') window.addEventListener('focus', this.#onFocus);
 		void this.#run();
 	}
 
 	stop(): void {
 		this.#started = false;
+		this.#stopped = true;
 		this.#stops++;
+		// Outdate a fetch in flight and drop its queued follow-up: a late answer
+		// after stop() must not apply or bump version (TASK-4044 rulings f05fd7c4, db5556a5).
+		this.#seq++;
+		this.#dirty = false;
 		this.#cancelTimer();
 		this.#cancelRetry();
 		if (typeof window !== 'undefined') window.removeEventListener('focus', this.#onFocus);
@@ -109,7 +118,7 @@ export class ChatStore {
 
 	/** A chat notice arrived: schedule a coalesced refetch and tell subscribers. */
 	onHint(notice: ChatNotice): void {
-		if (!authStore.authenticated) return;
+		if (!authStore.authenticated || this.#stopped) return;
 		this.#schedule();
 		// One subscriber throwing must not cost the others this hint (TASK-4044 r1).
 		for (const fn of [...this.#listeners]) {
@@ -123,6 +132,7 @@ export class ChatStore {
 
 	/** The stream cannot vouch for what it missed: refetch now. */
 	resync(): void {
+		if (this.#stopped) return;
 		this.#cancelTimer();
 		this.#cancelRetry();
 		void this.#run();

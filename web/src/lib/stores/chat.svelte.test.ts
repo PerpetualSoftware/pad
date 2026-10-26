@@ -488,3 +488,56 @@ describe('chat store (TASK-4044)', () => {
 		});
 	});
 });
+
+// A production stop() is inert (TASK-4044 PR (3), rulings f05fd7c4, db5556a5).
+describe('chat store after stop()', () => {
+	it('a fetch in flight at stop() that then resolves applies nothing and bumps no version', async () => {
+		let release!: () => void;
+		h.unread.mockImplementationOnce(
+			() => new Promise((res) => (release = () => res(resp([[1, 9]]))))
+		);
+		store.start();
+		await flush();
+		store.stop();
+		release();
+		await flush();
+		expect(store.unreadTotal).toBe(0);
+		expect(store.version).toBe(0);
+	});
+
+	it('onHint after stop() arms no timer', async () => {
+		store.start();
+		await flush();
+		store.stop();
+		store.onHint(notice);
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it('resync after stop() fetches nothing', async () => {
+		store.start();
+		await flush();
+		h.unread.mockClear();
+		store.stop();
+		store.resync();
+		await flush();
+		expect(h.unread).not.toHaveBeenCalled();
+	});
+
+	it('start after stop() works again', async () => {
+		store.start();
+		await flush();
+		store.stop();
+		store.start();
+		await flush();
+		store.onHint(notice);
+		await vi.advanceTimersByTimeAsync(CHAT_HINT_DEBOUNCE_MS);
+		await flush();
+		expect(h.unread).toHaveBeenCalledTimes(3);
+	});
+
+	it('a never-started store still fetches on resync', async () => {
+		store.resync();
+		await flush();
+		expect(h.unread).toHaveBeenCalledTimes(1);
+	});
+});

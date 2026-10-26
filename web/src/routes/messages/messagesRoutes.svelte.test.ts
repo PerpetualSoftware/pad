@@ -2,8 +2,9 @@
 //
 // TASK-4044: the /messages routes. The layout redirects the signed-out and does
 // not redirect a guest; the list page renders the inbox; the /messages/[n]
-// placeholder says "not found" for a bad number or a 404, never marks read, and
-// never loads messages.
+// thread (PR 3a) says "not found" for a bad number or a 404, shows the window,
+// the "N new" divider and the Row H states, and marks read only from its bottom
+// sentinel.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 import { createRawSnippet, tick, flushSync } from 'svelte';
@@ -21,7 +22,8 @@ const h = vi.hoisted(() => ({
 	goto: vi.fn(),
 	// Bumped by a test to stand for an identity change: fences taken earlier fail.
 	identityGen: 0,
-	chat: { unreadByNumber: {} as Record<number, number> }
+	chat: { unreadByNumber: {} as Record<number, number> },
+	resync: vi.fn()
 }));
 
 class NotFound extends Error {
@@ -62,13 +64,31 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 }));
 vi.mock('$lib/stores/chat.svelte', () => ({
 	chatStore: {
-		version: 0,
+		get version() {
+			return live.version;
+		},
+		resync: h.resync,
 		get unreadByNumber() {
 			return h.chat.unreadByNumber;
 		}
 	}
 }));
 vi.mock('$app/navigation', () => ({ goto: h.goto }));
+
+// An IntersectionObserver double: the test fires the callback by hand.
+type IOCallback = (e: Array<{ isIntersecting: boolean }>) => void;
+let lastIO: { cb: IOCallback } | null = null;
+class FakeIO {
+	constructor(cb: IOCallback) {
+		lastIO = { cb };
+	}
+	observe() {}
+	disconnect() {}
+}
+
+// chatStore.version as a rune, so a bump re-runs the thread's refresh effect.
+// Read lazily by the mock above, after this line has run.
+const live = $state({ version: 0 });
 
 import MessagesLayout from './+layout.svelte';
 import MessagesPage from './+page.svelte';
@@ -90,6 +110,32 @@ async function settle() {
 	}
 }
 
+// The shape the server sends; mine is false for an agent (X-Pad-Agent), true for the human.
+const message = (seq: number, over: Record<string, unknown> = {}) => ({
+	id: `m${seq}`,
+	conversation_id: 'c3',
+	seq,
+	author_agent_key: 'agent-3',
+	author_is_human: false,
+	mine: false,
+	source: 'cli',
+	body: `body ${seq}`,
+	created_at: '2026-10-26T12:00:00.000000000Z',
+	deleted: false,
+	...over
+});
+const pageOf = (messages: ReturnType<typeof message>[], over: Record<string, unknown> = {}) => ({
+	messages,
+	oldest_seq: messages[0]?.seq ?? 0,
+	newest_seq: messages.at(-1)?.seq ?? 0,
+	last_seq: messages.at(-1)?.seq ?? 0,
+	read_seq: 0,
+	has_more: false,
+	refs: [],
+	refs_truncated: false,
+	...over
+});
+
 const conv = (n: number) => ({
 	id: `c${n}`,
 	number: n,
@@ -110,6 +156,7 @@ beforeEach(() => {
 	h.load.mockResolvedValue({ authenticated: true });
 	h.listConversations.mockResolvedValue({ conversations: [conv(3)], unread_total: 0 });
 	h.getConversation.mockResolvedValue(conv(3));
+	h.listMessages.mockResolvedValue(pageOf([]));
 	h.sessions.mockResolvedValue({ sessions: [], count: 0 });
 	page.params = {};
 	lastWorkspace.clear();
@@ -384,15 +431,25 @@ describe('presence ref count across a navigation (TASK-4044 2b-ii)', () => {
 	});
 });
 
-describe('/messages/[n] placeholder (TASK-4044)', () => {
-	it('shows the notice and the agent for a real conversation', async () => {
+describe('/messages/[n] thread (TASK-4044 PR 3a)', () => {
+	it('names the agent and shows the window in seq order', async () => {
 		page.params = { n: '3' };
+		h.getConversation.mockResolvedValue({ ...conv(3), last_seq: 2, read_seq: 2, unread: 0 });
+		h.listMessages.mockResolvedValue(
+			pageOf([message(1), message(2, { mine: true, author_agent_key: '', author_is_human: true })], {
+				read_seq: 2
+			})
+		);
 		const { container } = render(ThreadPage);
 		await settle();
 		expect(h.getConversation).toHaveBeenCalledWith(3);
 		expect(container.textContent).toContain('agent-3');
-		expect(container.textContent).toContain('Messages open here in the next update.');
-		expect(container.textContent).toContain('pad chat show C3');
+		const rows = [...container.querySelectorAll('article')];
+		expect(rows.map((r) => r.getAttribute('data-seq'))).toEqual(['1', '2']);
+		expect(rows[1].classList.contains('mine')).toBe(true);
+		expect(rows[1].textContent).toContain('You');
+		expect(container.querySelector('#unread-divider')).toBeNull();
+		expect(container.textContent).not.toContain('Jump to unread');
 	});
 
 	it.each(['abc', '0', '-1', '1.5', '3x', ''])('"%s" is not a conversation number: not found, no request', async (raw) => {
@@ -409,7 +466,7 @@ describe('/messages/[n] placeholder (TASK-4044)', () => {
 		const { container } = render(ThreadPage);
 		await settle();
 		expect(container.textContent).toContain('Conversation not found');
-		expect(container.textContent).not.toContain('Messages open here');
+		
 	});
 
 	it('another failure is not reported as not found', async () => {
@@ -419,6 +476,7 @@ describe('/messages/[n] placeholder (TASK-4044)', () => {
 		await settle();
 		expect(container.textContent).toContain('Could not load this conversation');
 		expect(container.textContent).not.toContain('Conversation not found');
+		expect(container.textContent).toContain('Try again');
 	});
 
 	it('shows a presence dot for the agent in the header', async () => {
@@ -495,11 +553,111 @@ describe('/messages/[n] placeholder (TASK-4044)', () => {
 		expect(container.textContent).not.toContain('agent-3');
 	});
 
-	it('never marks anything read and never loads messages', async () => {
+	// U8: the divider is where the reader left off, and the chip scrolls to it.
+	describe('with unread', () => {
+		let scrolled: Element[];
+		beforeEach(() => {
+			scrolled = [];
+			lastIO = null;
+			Element.prototype.scrollIntoView = function (this: Element) {
+				scrolled.push(this);
+			};
+			vi.stubGlobal('IntersectionObserver', FakeIO);
+			page.params = { n: '3' };
+			h.getConversation.mockResolvedValue({ ...conv(3), last_seq: 4, read_seq: 2, unread: 2 });
+			h.listMessages.mockResolvedValue(pageOf([message(3), message(4)], { read_seq: 2 }));
+			h.markRead.mockResolvedValue({ read_seq: 4 });
+		});
+		afterEach(() => {
+			vi.unstubAllGlobals();
+			delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+		});
+
+		it('shows "2 new" before the first unread row and scrolls to it on open and on Jump to unread', async () => {
+			const { container, getByText } = render(ThreadPage);
+			await settle();
+			expect(h.listMessages).toHaveBeenCalledWith(3, { after_seq: 2, limit: 200 });
+			const divider = container.querySelector('#unread-divider')!;
+			expect(divider.textContent).toContain('2 new');
+			expect(divider.nextElementSibling!.getAttribute('data-seq')).toBe('3');
+			expect(scrolled).toContain(divider);
+			scrolled.length = 0;
+			getByText('Jump to unread').click();
+			expect(scrolled).toEqual([divider]);
+		});
+
+		it('marks read only once the bottom sentinel is in view, with the displayed seq', async () => {
+			render(ThreadPage);
+			await settle();
+			expect(h.markRead).not.toHaveBeenCalled();
+			lastIO!.cb([{ isIntersecting: true }]);
+			await settle();
+			expect(h.markRead).toHaveBeenCalledWith(3, 4);
+			expect(h.resync).toHaveBeenCalledTimes(1);
+		});
+
+		it('keeps the divider after the read marker advances', async () => {
+			const { container } = render(ThreadPage);
+			await settle();
+			lastIO!.cb([{ isIntersecting: true }]);
+			await settle();
+			expect(container.querySelector('#unread-divider')!.textContent).toContain('2 new');
+		});
+	});
+
+	it('Load earlier appears when older rows exist and a failure keeps the window with a retry', async () => {
 		page.params = { n: '3' };
-		render(ThreadPage);
+		h.getConversation.mockResolvedValue({ ...conv(3), last_seq: 60, read_seq: 60, unread: 0 });
+		h.listMessages.mockResolvedValueOnce(pageOf([message(59), message(60)], { read_seq: 60, last_seq: 60 }));
+		const { container, getByText } = render(ThreadPage);
 		await settle();
-		expect(h.markRead).not.toHaveBeenCalled();
-		expect(h.listMessages).not.toHaveBeenCalled();
+		h.listMessages.mockRejectedValueOnce(new Error('500'));
+		getByText('Load earlier').click();
+		await settle();
+		expect(container.querySelectorAll('article')).toHaveLength(2);
+		expect(container.textContent).toContain("Couldn't load earlier messages");
+		h.listMessages.mockResolvedValueOnce(pageOf([message(58)], { read_seq: 60, last_seq: 60 }));
+		getByText('Load earlier').click();
+		await settle();
+		expect(container.querySelectorAll('article')).toHaveLength(3);
+		expect(container.textContent).not.toContain("Couldn't load earlier");
+	});
+
+	it('a failed refresh keeps the rows and shows Try again', async () => {
+		page.params = { n: '3' };
+		h.getConversation.mockResolvedValue({ ...conv(3), last_seq: 1, read_seq: 1, unread: 0 });
+		h.listMessages.mockResolvedValueOnce(pageOf([message(1)], { read_seq: 1 }));
+		const { container, getByText } = render(ThreadPage);
+		await settle();
+		h.listMessages.mockRejectedValueOnce(new Error('500'));
+		live.version++;
+		await settle();
+		expect(container.textContent).toContain("Couldn't refresh this conversation");
+		expect(container.querySelectorAll('article')).toHaveLength(1);
+		h.listMessages.mockResolvedValue(pageOf([message(1)], { read_seq: 1 }));
+		getByText('Try again').click();
+		await settle();
+		expect(container.textContent).not.toContain("Couldn't refresh");
+	});
+
+	it('a 404 offers no Try again', async () => {
+		page.params = { n: '99' };
+		h.getConversation.mockRejectedValue(new NotFound('nope'));
+		const { container } = render(ThreadPage);
+		await settle();
+		expect(container.textContent).toContain('Conversation not found');
+		expect([...container.querySelectorAll('button')].some((b) => b.textContent === 'Try again')).toBe(false);
+	});
+
+	// U19: busy is never certain.
+	it('a busy agent reads "May be working", never "Online"', async () => {
+		page.params = { n: '3' };
+		h.sessions.mockResolvedValue({
+			sessions: [{ id: 's', agent: 'agent-3', state: 'busy', armed: false, connected_at: '' }],
+			count: 1
+		});
+		const { container } = render(ThreadPage);
+		await settle();
+		expect(container.querySelector('header .presence-dot')!.getAttribute('aria-label')).toBe('May be working');
 	});
 });
