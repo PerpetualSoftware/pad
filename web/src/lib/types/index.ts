@@ -3568,12 +3568,15 @@ export type NeedsSnoozeRequest =
 	| { kind: 'defer'; defer_until: string; marker?: NeedsSnoozeMarker };
 
 // ── Chat (TASK-4039 / TASK-4044) ─────────────────────────────────────────────
+// Wire shapes of /api/v1/me/conversations*, mirroring internal/server/handlers_chat_dto.go
+// and handlers_chat_enrich.go. Chat is global (no workspace); `number` is the
+// owner's namespace, not a global id.
 
 /** `Conv`: a conversation as the create route returns it. */
 export interface ChatConversation {
 	id: string;
 	number: number;
-	kind: string;
+	kind: 'direct' | 'group';
 	title: string;
 	agent_key: string;
 	last_seq: number;
@@ -3599,6 +3602,54 @@ export interface ChatLastMessage {
 	excerpt: string;
 	deleted: boolean;
 	created_at: string;
+}
+
+/** The store's bounded preview of the message a reply quotes. */
+export interface ChatQuote {
+	seq: number;
+	author_agent_key: string;
+	author_is_human: boolean;
+	excerpt: string;
+	deleted: boolean;
+}
+
+export interface ChatMessage {
+	id: string;
+	conversation_id: string;
+	seq: number;
+	author_agent_key: string;
+	author_is_human: boolean;
+	mine: boolean;
+	source: string;
+	/** Empty for a tombstone (`deleted: true`). */
+	body: string;
+	reply_to_seq?: number;
+	reply_to?: ChatQuote;
+	/** Omitted when absent or no longer visible to the reader. */
+	context_workspace?: { slug: string; name: string };
+	created_at: string;
+	deleted: boolean;
+	deleted_at?: string;
+}
+
+/** `restricted` and `unresolved` carry neither title nor collection_slug. */
+export interface ChatRef {
+	workspace: string;
+	ref: string;
+	state: 'visible' | 'restricted' | 'unresolved';
+	title?: string;
+	collection_slug?: string;
+}
+
+export interface ChatMessagesResponse {
+	messages: ChatMessage[];
+	oldest_seq: number;
+	newest_seq: number;
+	last_seq: number;
+	read_seq: number;
+	has_more: boolean;
+	refs: ChatRef[];
+	refs_truncated: boolean;
 }
 
 /** One row of `GET /me/chat/unread` (only rows with unread > 0). */
