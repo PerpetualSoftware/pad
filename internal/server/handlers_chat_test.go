@@ -981,3 +981,22 @@ func TestChat_EnsureDM_EmptyBody(t *testing.T) {
 		})
 	}
 }
+
+// BUG-4092 / TASK-4044: the web client re-applies this normalizer to agent
+// names (web/src/lib/chat/presence.ts, its test "trims exactly what Go
+// TrimSpace trims"). These are the same five inputs. Test-only: a change to
+// the Go side must fail here so the web copy does not drift silently.
+func TestNormalizeAgentNameTrimParity(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"﻿codex﻿", "﻿codex﻿"}, // Go keeps U+FEFF; JS trim() would not
+		{"  codex　", "codex"},
+		{"\u0085 codex", "codex"},
+		{"​codex", "​codex"}, // ZWSP is not White_Space
+		{strings.Repeat("a", 63) + " b", strings.Repeat("a", 63)},
+	}
+	for _, c := range cases {
+		if got := normalizeAgentName(c.in); got != c.want {
+			t.Errorf("normalizeAgentName(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}

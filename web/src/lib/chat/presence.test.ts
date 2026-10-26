@@ -54,4 +54,14 @@ describe('normalizeAgentName', () => {
 		expect(normalizeAgentName('é'.repeat(70))).toBe('é'.repeat(64));
 		expect(normalizeAgentName('')).toBe('');
 	});
+
+	// Go's TrimSpace is the White_Space property, not JS trim() (BUG-4092). The
+	// same inputs are pinned on the Go side in TestNormalizeAgentNameTrimParity.
+	it('trims exactly what Go TrimSpace trims', () => {
+		expect(normalizeAgentName('\uFEFFcodex\uFEFF')).toBe('\uFEFFcodex\uFEFF');
+		expect(normalizeAgentName('  codex\u3000')).toBe('codex');
+		expect(normalizeAgentName('\u0085 codex')).toBe('codex');
+		expect(normalizeAgentName('\u200Bcodex')).toBe('\u200Bcodex');
+		expect(normalizeAgentName('a'.repeat(63) + ' b')).toBe('a'.repeat(63));
+	});
 });
