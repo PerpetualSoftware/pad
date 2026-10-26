@@ -266,6 +266,7 @@ func TestOwnerLiveness_PIDNamespace(t *testing.T) {
 	stamped := func(o SessionOwner) SessionOwner { o.PIDNamespace = recordedNS; return o }
 	reused := live
 	reused.ProcStart = "0"
+	bare := SessionOwner{PID: os.Getpid()} // live, no token recorded
 	// A zombie: signalable (kill(pid, 0) succeeds) but exited, so the token
 	// read reports errProcZombie. Any recorded token reaches that branch.
 	zombie := SessionOwner{PID: zombiePID(t), ProcStart: "1"}
@@ -310,6 +311,13 @@ func TestOwnerLiveness_PIDNamespace(t *testing.T) {
 		// Unstamped pid, reader NOT in the init ns: option (a).
 		{"pid unstamped, foreign reader, dead pid", dead, away, LivenessUnknown},
 		{"pid unstamped, foreign reader, live pid", live, away, LivenessAlive},
+		// No token to match: a live number in a reader that may be elsewhere
+		// is not the owner by any evidence (r4, A-1). The bare-probe residual
+		// stays for the init and same-namespace readers.
+		{"pid unstamped, foreign reader, live pid, no token", bare, away, LivenessUnknown},
+		{"pid unstamped, reader pid ns unreadable, live pid, no token", bare, reader{pidErr: errNS, mnt: recordedMnt}, LivenessUnknown},
+		{"pid unstamped, init reader, live pid, no token", bare, initHome, LivenessAlive},
+		{"same ns, live pid, no token", stamped(bare), home, LivenessAlive},
 		// ...and a reader that may be elsewhere never manufactures dead: a
 		// token mismatch or a zombie at the number describes THIS namespace
 		// (lead r2 ruling, Q3).
@@ -637,5 +645,22 @@ func TestChatDirection_MountNamespace(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("chat-direction file not reaped from its own mount namespace: %v", err)
+	}
+}
+
+// TestArmStateOwnerVerdict_HeadlessNoTokenForeign: a headless arm file with
+// no start token — what capture writes for a harness pid it could not see —
+// is not honoured by a reader that may be in another namespace, even when
+// some live process answers at its number there (r4, A-1).
+func TestArmStateOwnerVerdict_HeadlessNoTokenForeign(t *testing.T) {
+	armStateTestEnv(t, "")
+	st := &ArmState{PID: os.Getpid()} // live here, unstamped, no token
+	stubReaderNS(t, foreignNS, nil)
+	if got := armStateOwnerVerdict(st); got != LivenessUnknown {
+		t.Fatalf("headless arm, no token, foreign reader: got %s, want unknown", got)
+	}
+	stubReaderNS(t, initPIDNamespace, nil)
+	if got := armStateOwnerVerdict(st); got != LivenessAlive {
+		t.Fatalf("headless arm, no token, init reader: got %s, want alive (the bare-probe residual)", got)
 	}
 }

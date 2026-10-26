@@ -358,7 +358,9 @@ func socketLiveness(o *SessionOwner, crossed bool) Liveness {
 // pidLiveness judges the recorded owner pid. A live pid with no token
 // recorded is alive on bare liveness — the documented residual for records
 // written where no start token exists (non-Linux) and for legacy rows,
-// which never had one; pid reuse cannot be excluded there.
+// which never had one; pid reuse cannot be excluded there. That residual
+// holds only for a reader in the recorder's namespace or the init one: a
+// reader that may be elsewhere has no token to match and says unknown.
 func pidLiveness(o *SessionOwner, rel pidNSRelation) Liveness {
 	if runtime.GOOS == "windows" {
 		// pidAlive cannot probe here (Signal(0) is unsupported), so a
@@ -382,6 +384,11 @@ func pidLiveness(o *SessionOwner, rel pidNSRelation) Liveness {
 		return negative
 	}
 	if o.ProcStart == "" {
+		if rel == pidNSUnstampedForeign {
+			// No token, so nothing to match: whatever answers at this number
+			// here may be any process at all (r4 ruling, A-1).
+			return LivenessUnknown
+		}
 		return LivenessAlive
 	}
 	now, err := procStartTokenErr(o.PID)
