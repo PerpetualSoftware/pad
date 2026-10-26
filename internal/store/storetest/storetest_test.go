@@ -8,6 +8,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
+	"github.com/PerpetualSoftware/pad/internal/testtmp"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -38,9 +39,9 @@ func TestNewSQLite_TemplateBuildsOnce(t *testing.T) {
 }
 
 // TestNewSQLite_NoWALSidecars asserts the template directory contains
-// only the template file itself — the checkpoint + journal_mode=DELETE
-// sequence in buildTemplate must leave no -wal/-shm sidecars for
-// NewSQLite's plain file copy to lose track of.
+// only the template file itself, beside testtmp's owner lock (BUG-4088) —
+// the checkpoint + journal_mode=DELETE sequence in buildTemplate must leave
+// no -wal/-shm sidecars for NewSQLite's plain file copy to lose track of.
 func TestNewSQLite_NoWALSidecars(t *testing.T) {
 	_ = NewSQLite(t)
 
@@ -51,12 +52,14 @@ func TestNewSQLite_NoWALSidecars(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read template dir: %v", err)
 	}
-	if len(entries) != 1 || entries[0].Name() != filepath.Base(templatePath) {
-		names := make([]string, len(entries))
-		for i, e := range entries {
-			names[i] = e.Name()
+	var names []string
+	for _, e := range entries {
+		if e.Name() != testtmp.LockName {
+			names = append(names, e.Name())
 		}
-		t.Fatalf("template dir contains %v, want exactly [%s]", names, filepath.Base(templatePath))
+	}
+	if len(names) != 1 || names[0] != filepath.Base(templatePath) {
+		t.Fatalf("template dir contains %v besides %s, want exactly [%s]", names, testtmp.LockName, filepath.Base(templatePath))
 	}
 }
 
