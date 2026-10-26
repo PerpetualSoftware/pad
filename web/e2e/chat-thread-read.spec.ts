@@ -1,0 +1,222 @@
+import { test, expect } from './fixtures';
+import type { APIRequestContext, Browser, BrowserContext, Page } from '@playwright/test';
+import { ADMIN_EMAIL, ADMIN_PASSWORD } from './global-setup';
+
+/**
+ * TASK-4044 PR 3a (rulings 4cf4d4b9, 2de240d9): the read-only /messages/[n]
+ * thread against the REAL server. Every value below is one the server sends:
+ * a bearer POST with NO X-Pad-Agent is authored AS THE HUMAN (mine true,
+ * author_agent_key "", source "cli"); with X-Pad-Agent it is that agent
+ * (mine false). Unit fixtures cannot see a wrong literal, which is why this
+ * runs on a binary built from this tree (CONVE-34).
+ *
+ * The browser contexts here carry a Bearer header, and the server ignores
+ * `chat_inbox` on a bearer stream (docs/api.md), so the realtime specs open a
+ * COOKIE session in their own context. PAD_DISABLE_RATE_LIMITS is on for the
+ * e2e server, so the "no 429" leg of the request-count spec cannot fire here.
+ */
+
+type Fixture = { apiToken: string; baseURL: string };
+
+const headers = (f: Fixture, agent?: string) => ({
+	Authorization: `Bearer ${f.apiToken}`,
+	'Content-Type': 'application/json',
+	...(agent ? { 'X-Pad-Agent': agent } : {})
+});
+
+const uniqueAgent = (tag: string) =>
+	`e2e-${tag}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+
+async function createDM(request: APIRequestContext, f: Fixture, agent: string): Promise<number> {
+	const res = await request.post('/api/v1/me/conversations', {
+		headers: headers(f),
+		data: { agent_key: agent }
+	});
+	expect(res.ok(), await res.text()).toBe(true);
+	return ((await res.json()) as { conversation: { number: number } }).conversation.number;
+}
+
+async function send(
+	request: APIRequestContext,
+	f: Fixture,
+	n: number,
+	body: string,
+	agent?: string
+): Promise<{ seq: number; mine: boolean }> {
+	const res = await request.post(`/api/v1/me/conversations/${n}/messages`, {
+		headers: headers(f, agent),
+		data: { body }
+	});
+	expect(res.status(), await res.text()).toBe(201);
+	return ((await res.json()) as { message: { seq: number; mine: boolean } }).message;
+}
+
+async function summary(request: APIRequestContext, f: Fixture, n: number) {
+	const res = await request.get(`/api/v1/me/conversations/${n}`, { headers: headers(f) });
+	expect(res.ok(), await res.text()).toBe(true);
+	return (await res.json()) as { read_seq: number; last_seq: number; unread: number };
+}
+
+/** A context with a cookie session (the stream only relays chat_inbox hints to one). */
+async function cookieContext(browser: Browser, f: Fixture): Promise<BrowserContext> {
+	const ctx = await browser.newContext({ baseURL: f.baseURL });
+	const login = await ctx.request.post('/api/v1/auth/login', {
+		data: { email: ADMIN_EMAIL, password: ADMIN_PASSWORD }
+	});
+	expect(login.ok(), await login.text()).toBe(true);
+	return ctx;
+}
+
+const rows = (page: Page) => page.locator('article.bubble');
+
+test('E1: orders by seq, puts the divider before the first unread, and counts like the server', async ({
+	page,
+	request,
+	fixture
+}) => {
+	const agent = uniqueAgent('read');
+	const n = await createDM(request, fixture, agent);
+	const m1 = await send(request, fixture, n, 'one from the agent', agent);
+	const m2 = await send(request, fixture, n, 'two from the human');
+	await send(request, fixture, n, 'three from the agent', agent);
+	await send(request, fixture, n, 'four from the agent', agent);
+	expect(m1.mine).toBe(false);
+	expect(m2.mine).toBe(true);
+	const mark = await request.post(`/api/v1/me/conversations/${n}/read`, {
+		headers: headers(fixture),
+		data: { seq: 1 }
+	});
+	expect(mark.ok(), await mark.text()).toBe(true);
+	// Read BEFORE opening: opening marks the conversation read.
+	const before = await summary(request, fixture, n);
+	expect(before.unread).toBe(2);
+
+	await page.goto(`/messages/${n}`);
+	await expect(rows(page)).toHaveCount(4);
+	expect(await rows(page).evaluateAll((els) => els.map((e) => e.getAttribute('data-seq')))).toEqual([
+		'1',
+		'2',
+		'3',
+		'4'
+	]);
+	const divider = page.locator('#unread-divider');
+	await expect(divider).toContainText(`${before.unread} new`);
+	await expect(divider.locator('xpath=following-sibling::article[1]')).toHaveAttribute('data-seq', '3');
+	await expect(rows(page).nth(0).locator('.author')).toHaveText(agent);
+	await expect(rows(page).nth(1)).toHaveClass(/mine/);
+	await expect(rows(page).nth(1).locator('.author')).toHaveText('You');
+	await expect(rows(page).nth(0)).not.toHaveClass(/mine/);
+});
+
+test('E3: opening marks the displayed seq read, the badge clears, the divider stays', async ({
+	page,
+	request,
+	fixture
+}) => {
+	const agent = uniqueAgent('mark');
+	const n = await createDM(request, fixture, agent);
+	await send(request, fixture, n, 'a', agent);
+	await send(request, fixture, n, 'b', agent);
+	expect((await summary(request, fixture, n)).unread).toBe(2);
+
+	await page.goto(`/messages/${n}`);
+	await expect(rows(page)).toHaveCount(2);
+	await expect
+		.poll(async () => (await summary(request, fixture, n)).read_seq, { timeout: 10_000 })
+		.toBe(2);
+	const unread = await request.get('/api/v1/me/chat/unread', { headers: headers(fixture) });
+	const body = (await unread.json()) as { conversations: Array<{ number: number }> };
+	expect(body.conversations.find((c) => c.number === n)).toBeUndefined();
+	await expect(page.locator('#unread-divider')).toContainText('2 new');
+});
+
+test('E4: a failed load shows Try again, and Try again loads the thread', async ({
+	page,
+	request,
+	fixture
+}) => {
+	const agent = uniqueAgent('retry');
+	const n = await createDM(request, fixture, agent);
+	await send(request, fixture, n, 'still here', agent);
+	const detail = new RegExp(`/api/v1/me/conversations/${n}$`);
+	await page.route(detail, (route) => route.fulfill({ status: 500, body: '{}' }));
+	await page.goto(`/messages/${n}`);
+	await expect(page.getByRole('button', { name: 'Try again' })).toBeVisible();
+	await expect(rows(page)).toHaveCount(0);
+	await page.unroute(detail);
+	await page.getByRole('button', { name: 'Try again' }).click();
+	await expect(rows(page)).toHaveCount(1);
+	await expect(rows(page).first()).toContainText('still here');
+});
+
+test('E2: a new message and a retraction reach the open thread without a reload', async ({
+	browser,
+	request,
+	fixture
+}, testInfo) => {
+	test.skip(testInfo.project.name !== 'desktop-chromium', 'one project is enough');
+	const agent = uniqueAgent('live');
+	const n = await createDM(request, fixture, agent);
+	await send(request, fixture, n, 'first', agent);
+	const ctx = await cookieContext(browser, fixture);
+	try {
+		const page = await ctx.newPage();
+		await page.goto(`/messages/${n}`);
+		await expect(rows(page)).toHaveCount(1);
+
+		const second = await send(request, fixture, n, 'arrived live', agent);
+		await expect(rows(page)).toHaveCount(2, { timeout: 15_000 });
+		await expect(page.locator(`article[data-seq="${second.seq}"]`)).toContainText('arrived live');
+
+		const del = await request.delete(`/api/v1/me/conversations/${n}/messages/${second.seq}`, {
+			headers: headers(fixture, agent)
+		});
+		expect(del.ok(), await del.text()).toBe(true);
+		const row = page.locator(`article[data-seq="${second.seq}"]`);
+		await expect(row).toContainText('Message deleted', { timeout: 15_000 });
+		await expect(row).not.toContainText('arrived live');
+		await expect(rows(page)).toHaveCount(2);
+	} finally {
+		await ctx.close();
+	}
+});
+
+test('E8: a ten-message burst costs a bounded number of reads per tab and no 429', async ({
+	browser,
+	request,
+	fixture
+}, testInfo) => {
+	test.skip(testInfo.project.name !== 'desktop-chromium', 'one project is enough');
+	test.setTimeout(60_000);
+	const agent = uniqueAgent('burst');
+	const n = await createDM(request, fixture, agent);
+	await send(request, fixture, n, 'seed', agent);
+	const ctx = await cookieContext(browser, fixture);
+	try {
+		const a = await ctx.newPage();
+		const b = await ctx.newPage();
+		await a.goto(`/messages/${n}`);
+		await b.goto(`/messages/${n}`);
+		await expect(rows(a)).toHaveCount(1);
+		await expect(rows(b)).toHaveCount(1);
+
+		let reads = 0;
+		let limited = 0;
+		a.on('response', (r) => {
+			if (r.status() === 429) limited++;
+			const u = new URL(r.url());
+			if (r.request().method() === 'GET' && u.pathname === `/api/v1/me/conversations/${n}/messages`) reads++;
+		});
+		for (let i = 1; i <= 10; i++) {
+			await send(request, fixture, n, `burst ${i}`, agent);
+			await a.waitForTimeout(450);
+		}
+		await expect(rows(a)).toHaveCount(11, { timeout: 15_000 });
+		await expect(rows(b)).toHaveCount(11, { timeout: 15_000 });
+		// Each coalesced hint is two reads (the newest-anchored page and the tombstone page).
+		expect(reads).toBeLessThanOrEqual(20);
+		expect(limited).toBe(0);
+	} finally {
+		await ctx.close();
+	}
+});
