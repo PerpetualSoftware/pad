@@ -44,7 +44,9 @@
 	import { getSurfaceRenderer, type SurfaceRendererId } from '$lib/attachments/surfaceRenderers';
 	import { createViewerTextLoader } from '$lib/attachments/viewerTextLoader.svelte';
 	import { renderMarkdownDocument } from '$lib/utils/markdown';
+	import { createViewerBytesLoader } from '$lib/attachments/viewerBytesLoader.svelte';
 	import AttachmentTablePreview from '$lib/components/attachments/AttachmentTablePreview.svelte';
+	import AttachmentPdfPreview from '$lib/components/attachments/AttachmentPdfPreview.svelte';
 	import { formatAttachmentSize } from '$lib/markdown/attachments';
 	import {
 		reset as resetZoom,
@@ -647,6 +649,10 @@
 	// merging them would be one object with two unrelated halves. Exactly one is
 	// ever armed — the load effect below disposes the other.
 	const textLoader = createViewerTextLoader();
+	// The BYTES loader (TASK-4075) for the PDF arm: a sibling of the text loader,
+	// one per byte shape. Still exactly one loader armed at a time.
+	const bytesLoader = createViewerBytesLoader();
+	let pdfPreview = $state<{ pageBy(delta: number): void } | undefined>();
 	let markdownAttachment = $derived(isMarkdownAttachment(resolvedMime, headerMeta.fields.filename));
 	// Choices belong to this surface, with fresh defaults for each document.
 	// A late metadata fill keeps them; navigation resets both synchronously
@@ -710,7 +716,7 @@
 	// original the user had already triggered. Reading a value is not the only way
 	// to depend on it; being in the key is.
 	let loadKey = $derived(
-		`${img?.id ?? ''}:${img?.width ?? ''}:${img?.height ?? ''}:${shownRenderer ?? ''}:${soleMissing}:${(shownRenderer === 'text' || shownRenderer === 'table') ? `${resolvedSize ?? ''}:${revalidateToken}` : ''}`
+		`${img?.id ?? ''}:${img?.width ?? ''}:${img?.height ?? ''}:${shownRenderer ?? ''}:${soleMissing}:${(shownRenderer === 'text' || shownRenderer === 'table' || shownRenderer === 'pdf') ? `${resolvedSize ?? ''}:${revalidateToken}` : ''}`
 	);
 	// Captured NON-reactively at load time (see the effect): a breakpoint flip
 	// alone must not reload — desktop→mobile must not abort an in-flight original,
@@ -862,7 +868,7 @@
 		// page behind is stopped by `overscroll-behavior: contain` on the card
 		// rather than by consuming the event here: the CSS keeps the guarantee
 		// (nothing behind scrolls) while still letting the card scroll itself.
-		if ((e.target as Element | null)?.closest?.('.lightbox-text-scroll')) return;
+		if ((e.target as Element | null)?.closest?.('.lightbox-text-scroll, .lightbox-pdf-scroll')) return;
 		e.preventDefault();
 		e.stopPropagation();
 		// A wheel over any viewer CONTROL (close, nav, the toolbar or its delete
@@ -2074,12 +2080,23 @@
 				// size bound) are the backstop at the request chokepoint; this is the
 				// Lightbox deciding the arm.
 				loader.dispose();
+				bytesLoader.dispose();
 				textLoader.load(
+					{ ...img, mime_type: resolvedMime, size_bytes: resolvedSize },
+					openWsSlug
+				);
+			} else if (shownRenderer === 'pdf' && !soleMissing) {
+				// The PDF arm takes the same discipline as text/table: the RESOLVED
+				// mime and size, and the other two loaders disposed.
+				loader.dispose();
+				textLoader.dispose();
+				bytesLoader.load(
 					{ ...img, mime_type: resolvedMime, size_bytes: resolvedSize },
 					openWsSlug
 				);
 			} else if (shownRenderer === 'raster-image' && !soleMissing) {
 				textLoader.dispose();
+				bytesLoader.dispose();
 				// Pass the RESOLVED MIME, not the seed. A null-seed entry that
 				// reclassified to raster (its HEAD resolved an image) still carries a
 				// null seed `mime_type`, and the loader's own DR-16 gate (`start()`)
@@ -2092,6 +2109,7 @@
 			} else {
 				loader.dispose();
 				textLoader.dispose();
+				bytesLoader.dispose();
 			}
 		});
 	});
@@ -2099,6 +2117,7 @@
 	$effect(() => () => {
 		loader.dispose();
 		textLoader.dispose();
+		bytesLoader.dispose();
 	});
 
 	// Reactively abort a live gesture the instant the bitmap goes away (TASK-2476), or
@@ -2226,6 +2245,7 @@
 		// Tracking `loader.phase` alone missed all of it: that is the IMAGE loader,
 		// and on this arm it is disposed and never changes phase.
 		void textLoader.phase;
+		void bytesLoader.phase;
 		const el = rootEl;
 		if (!el || !isViewerFrontmost(el) || isBlockedByModal(el)) return;
 		handoffFocus(el);
@@ -2282,9 +2302,28 @@
 		}
 
 		if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-			const region = document.activeElement?.closest<HTMLElement>('.attachment-table-scroll');
+			const region = document.activeElement?.closest<HTMLElement>('.attachment-table-scroll, .attachment-pdf-scroll');
 			// Native horizontal scrolling owns both arrows, even at a scroll edge.
 			if (region && el.contains(region) && region.scrollWidth > region.clientWidth) return;
+			// The PDF page-number box: the arrows move its caret, not the gallery.
+			const field = document.activeElement;
+			if (field instanceof HTMLInputElement && el.contains(field) && field.closest('.attachment-pdf-preview')) return;
+		}
+
+		// PDF paging (TASK-4075, Q7): PageUp/PageDown turn the document's pages;
+		// Left/Right stay gallery paging (unless a zoomed page scrolls sideways,
+		// above). Only while the PDF arm is shown and ready, and never with a
+		// modifier, so the browser's own shortcuts are left alone.
+		if (
+			(e.key === 'PageUp' || e.key === 'PageDown') &&
+			shownRenderer === 'pdf' &&
+			bytesLoader.phase === 'ready' &&
+			pdfPreview &&
+			!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey
+		) {
+			e.preventDefault();
+			pdfPreview.pageBy(e.key === 'PageDown' ? 1 : -1);
+			return;
 		}
 
 		if (e.key === 'ArrowLeft' && hasMultiple) {
@@ -2502,7 +2541,7 @@
 	-->
 	<div
 		class="lightbox-stage"
-		class:lightbox-stage-text={shownRenderer === 'text' || shownRenderer === 'table'}
+		class:lightbox-stage-text={shownRenderer === 'text' || shownRenderer === 'table' || shownRenderer === 'pdf'}
 		bind:this={stageEl}
 	>
 		{#if hasMultiple}
@@ -2792,6 +2831,56 @@
 		{/if}
 
 		<!--
+			THE PDF ARM (TASK-4075). Bytes fetched by `bytesLoader` and drawn to a
+			canvas by pdf.js inside AttachmentPdfPreview, which holds all of the PDF
+			logic. No PDF-derived markup reaches this template: no `{@html}`, `<a>`,
+			`<iframe>`, `<embed>` or `<object>`. The layer is `pointer-events: none`
+			and the card interactive, for the same backdrop-click reason as the text
+			arm. Too-large and error reuse the text arm's copy and Retry.
+		-->
+		{#if shownRenderer === 'pdf' && !soleMissing}
+			<div class="lightbox-pdf">
+				<div class="lightbox-pdf-scroll" role="document" aria-label={displayName}>
+					{#if bytesLoader.phase === 'loading'}
+						<p class="lightbox-text-status" role="status">Loading preview…</p>
+					{:else if bytesLoader.phase === 'too-large'}
+						<p class="lightbox-text-status" role="status">
+							{#if bytesLoader.oversizeBytes !== null}
+								This file is {formatAttachmentSize(bytesLoader.oversizeBytes)} — too large to preview.
+							{:else}
+								This file is too large to preview.
+							{/if}
+							Use Download to open it.
+						</p>
+					{:else if bytesLoader.phase === 'error'}
+						<div class="lightbox-status lightbox-error" role="alert">
+							<p class="lightbox-error-text">This file couldn't be loaded.</p>
+							<button
+								class="lightbox-retry"
+								type="button"
+								onclick={() => {
+									handoffFocus(rootEl!, rootEl?.querySelector('.lightbox-pdf .lightbox-retry') ?? null);
+									bytesLoader.retry();
+								}}
+							>
+								Retry
+							</button>
+						</div>
+					{:else if bytesLoader.phase === 'ready' && bytesLoader.bytes}
+						{#key bytesLoader.loadToken}
+							<AttachmentPdfPreview
+								bind:this={pdfPreview}
+								bytes={bytesLoader.bytes}
+								compact={isSheet}
+								label={`${displayName} PDF`}
+							/>
+						{/key}
+					{/if}
+				</div>
+			</div>
+		{/if}
+
+		<!--
 			THE FALLBACK ARM (TASK-2476). A navigable entry NO RENDERER CLAIMS — an
 			unsafe/active type that flipped or was added while open, a file, or a
 			still-unresolved MIME. NO BYTES: no `<img>`, no `src`, no request (the
@@ -2807,7 +2896,7 @@
 			and the negated form would have claimed the text arm's entries and drawn
 			"No preview available" over a document that was loading fine. `null` IS
 			the registry's "no renderer claims this" answer, so this arm now says what
-			it means and stays correct when `'pdf'` lands.
+			it means and stays correct now that `'pdf'` has landed.
 		-->
 		{#if img && shownRenderer === null && !soleMissing}
 			<div class="lightbox-fallback" role="group" aria-label="No preview available">
@@ -3069,6 +3158,36 @@
 		touch-action: pan-x pan-y;
 		user-select: text;
 		-webkit-user-select: text;
+	}
+
+	/* THE PDF ARM (TASK-4075). Like `.lightbox-text`, the layer spans the stage for
+	   centring only and takes no pointer events, so a click on the empty area
+	   still closes the viewer; the card is the interactive surface and the scroll
+	   container the wheel handler excludes by class. */
+	.lightbox-pdf {
+		position: absolute;
+		inset: 0;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		padding: var(--space-4);
+		pointer-events: none;
+		overflow: hidden;
+		background: transparent;
+	}
+	.lightbox-pdf-scroll {
+		pointer-events: auto;
+		width: min(1000px, 100%);
+		height: 100%;
+		min-height: 0;
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
+		overscroll-behavior: contain;
+		touch-action: pan-x pan-y;
+		/* No background: the status lines are light-on-dark like the text arm's, and
+		   the preview component paints its own. */
 	}
 
 	.lightbox-table .lightbox-text-scroll {
@@ -3578,6 +3697,14 @@
 		width: 100%;
 		height: 100%;
 		min-height: 0;
+	}
+	.lightbox-sheet .lightbox-pdf {
+		padding: 0;
+		align-items: stretch;
+		justify-content: stretch;
+	}
+	.lightbox-sheet .lightbox-pdf-scroll {
+		width: 100%;
 	}
 
 	/* META + TOOLBAR become flow items in the column so they dock, stacked, at the
