@@ -6,6 +6,14 @@
 	let { children } = $props();
 	let ready = $state(false);
 
+	// A sign-out, or a swap to a signed-out identity, while /messages is open sends
+	// the visitor to /login (TASK-4044 2b-ii, row J). Read-only on authStore.
+	onMount(() =>
+		authStore.onIdentityChange(() => {
+			if (!authStore.authenticated) goto('/login', { replaceState: true });
+		})
+	);
+
 	// The root layout gives /messages no app shell, so signed-out visitors are
 	// sent to /login here, as the console layout does. A guest is not redirected:
 	// the API is owner-scoped and the page leaks nothing.

@@ -14,6 +14,9 @@ const h = vi.hoisted(() => ({
 	listMessages: vi.fn(),
 	listConversations: vi.fn(),
 	sessions: vi.fn(),
+	ensure: vi.fn(),
+	authenticated: true,
+	listeners: [] as Array<(prev: string) => void>,
 	load: vi.fn(),
 	goto: vi.fn(),
 	// Bumped by a test to stand for an identity change: fences taken earlier fail.
@@ -31,7 +34,8 @@ vi.mock('$lib/api/client', () => ({
 			getConversation: h.getConversation,
 			markRead: h.markRead,
 			listMessages: h.listMessages,
-			listConversations: h.listConversations
+			listConversations: h.listConversations,
+			ensureConversation: h.ensure
 		},
 		sessions: { list: h.sessions }
 	},
@@ -40,12 +44,20 @@ vi.mock('$lib/api/client', () => ({
 vi.mock('$lib/stores/auth.svelte', () => ({
 	authStore: {
 		load: h.load,
-		authenticated: true,
+		get authenticated() {
+			return h.authenticated;
+		},
 		identityFence: () => {
 			const gen = h.identityGen;
 			return () => h.identityGen === gen;
 		},
-		onIdentityChange: () => () => {}
+		onIdentityChange: (fn: (prev: string) => void) => {
+			h.listeners.push(fn);
+			return () => {
+				const i = h.listeners.indexOf(fn);
+				if (i >= 0) h.listeners.splice(i, 1);
+			};
+		}
 	}
 }));
 vi.mock('$lib/stores/chat.svelte', () => ({
@@ -81,7 +93,7 @@ async function settle() {
 const conv = (n: number) => ({
 	id: `c${n}`,
 	number: n,
-	kind: 'dm',
+	kind: 'direct',
 	title: '',
 	agent_key: `agent-${n}`,
 	last_seq: 0,
@@ -93,6 +105,8 @@ const conv = (n: number) => ({
 
 beforeEach(() => {
 	for (const f of Object.values(h)) if (typeof f === 'function' && 'mockReset' in f) (f as ReturnType<typeof vi.fn>).mockReset();
+	h.authenticated = true;
+	h.chat.unreadByNumber = {};
 	h.load.mockResolvedValue({ authenticated: true });
 	h.listConversations.mockResolvedValue({ conversations: [conv(3)], unread_total: 0 });
 	h.getConversation.mockResolvedValue(conv(3));
@@ -105,10 +119,18 @@ beforeEach(() => {
 	chatInbox.failed = false;
 	chatInbox.sessions = null;
 	chatInbox.checkedAt = null;
+	chatInbox.ensuring = new Set();
+	chatInbox.rateLimited = {};
+	chatInbox.ensureFailed = {};
 });
 
 afterEach(() => {
 	cleanup();
+	// cleanup() unmounts every page, which releases its presence owner; an armed
+	// poll after it is a leaked owner (fake timers only: real ones cannot be counted).
+	if (vi.isFakeTimers()) expect(vi.getTimerCount(), 'a page left a presence owner started').toBe(0);
+	chatInbox.stopPresence();
+	vi.useRealTimers();
 	page.params = {};
 });
 
@@ -200,6 +222,165 @@ describe('/messages page (TASK-4044)', () => {
 		await settle();
 		const a = getByText('Back to proj');
 		expect(a.getAttribute('href')).toBe('/alice/proj');
+	});
+});
+
+// Row J (TASK-4044 2b-ii): an identity change to signed-out leaves the page.
+describe('/messages layout identity change (TASK-4044 2b-ii)', () => {
+	async function mountAndChange(authenticated: boolean) {
+		render(MessagesLayout, { props: { children: child } });
+		await settle();
+		h.goto.mockClear();
+		h.authenticated = authenticated;
+		for (const fn of [...h.listeners]) fn('previous-user');
+	}
+
+	it('redirects to /login when the new identity is signed out', async () => {
+		await mountAndChange(false);
+		expect(h.goto).toHaveBeenCalledWith('/login', { replaceState: true });
+	});
+
+	it('does not redirect on a swap to another signed-in user', async () => {
+		await mountAndChange(true);
+		expect(h.goto).not.toHaveBeenCalled();
+	});
+
+	it('stops listening when the layout unmounts', async () => {
+		const base = h.listeners.length;
+		const { unmount } = render(MessagesLayout, { props: { children: child } });
+		await settle();
+		expect(h.listeners.length).toBe(base + 1);
+		unmount();
+		expect(h.listeners.length).toBe(base);
+	});
+});
+
+describe('/messages roster (TASK-4044 2b-ii)', () => {
+	const live = (agent: string) => ({ id: `s-${agent}`, agent, state: 'online', armed: true, connected_at: '' });
+	const ghostButton = (c: HTMLElement) => [...c.querySelectorAll('button')].find((b) => b.textContent?.includes('ghost')) as HTMLButtonElement;
+
+	beforeEach(() => {
+		h.sessions.mockResolvedValue({ sessions: [live('ghost')], count: 1 });
+	});
+
+	it('shows a link with the store unread badge for a DM, and a Start chat button for a session-only agent', async () => {
+		h.chat.unreadByNumber = { 3: 5 };
+		const { container } = render(MessagesPage);
+		await settle();
+		const link = container.querySelector('ul[aria-label="Agents"] a[href="/messages/3"]')!;
+		expect(link.querySelector('.unread-badge')!.textContent).toBe('5');
+		expect(link.querySelector('.presence-dot')).not.toBeNull();
+		const btn = ghostButton(container);
+		expect(btn.textContent).toContain('Start chat');
+		expect(btn.disabled).toBe(false);
+	});
+
+	it('goes to the new chat only after the POST resolves, and not on a failure', async () => {
+		let resolve!: (v: unknown) => void;
+		h.ensure.mockReturnValue(new Promise((r) => (resolve = r)));
+		const { container } = render(MessagesPage);
+		await settle();
+		ghostButton(container).click();
+		await settle();
+		expect(h.goto).not.toHaveBeenCalled();
+		resolve({ conversation: conv(7), created: true });
+		await settle();
+		expect(h.goto).toHaveBeenCalledWith('/messages/7');
+	});
+
+	it('does not navigate when the page was left before the POST resolved', async () => {
+		let resolve!: (v: unknown) => void;
+		h.ensure.mockReturnValue(new Promise((r) => (resolve = r)));
+		const { container, unmount } = render(MessagesPage);
+		await settle();
+		ghostButton(container).click();
+		await settle();
+		unmount();
+		resolve({ conversation: conv(7), created: true });
+		await settle();
+		expect(h.goto).not.toHaveBeenCalled();
+	});
+
+	it('does not navigate when the ensure fails', async () => {
+		h.ensure.mockRejectedValue(new Error('500'));
+		const { container } = render(MessagesPage);
+		await settle();
+		ghostButton(container).click();
+		await settle();
+		expect(h.goto).not.toHaveBeenCalled();
+		expect(container.textContent).toContain("Couldn't start the chat. Try again.");
+		expect(ghostButton(container).disabled).toBe(false);
+	});
+
+	it('a double click posts once and the button is disabled meanwhile', async () => {
+		h.ensure.mockReturnValue(new Promise(() => {}));
+		const { container } = render(MessagesPage);
+		await settle();
+		const btn = ghostButton(container);
+		btn.click();
+		await settle();
+		expect(btn.disabled).toBe(true);
+		btn.click();
+		await settle();
+		expect(h.ensure).toHaveBeenCalledTimes(1);
+	});
+
+	// K3: the button must come back in the DOM once the ensure settles.
+	it('re-enables the button in the DOM after a settled ensure', async () => {
+		let resolve!: (v: unknown) => void;
+		h.ensure.mockReturnValue(new Promise((r) => (resolve = r)));
+		const { container } = render(MessagesPage);
+		await settle();
+		ghostButton(container).click();
+		await settle();
+		expect(ghostButton(container).disabled).toBe(true);
+		h.ensure.mockReset();
+		resolve({ conversation: conv(7), created: true });
+		await settle();
+		expect(ghostButton(container).disabled).toBe(false);
+	});
+
+	it('a 429 shows the copy and keeps the button off until the cool-down ends', async () => {
+		vi.useFakeTimers();
+		h.ensure.mockRejectedValue(Object.assign(new Error('rl'), { code: 'rate_limited' }));
+		const { container } = render(MessagesPage);
+		await settle();
+		ghostButton(container).click();
+		await settle();
+		expect(container.textContent).toContain('Too many new chats right now. Try again in a few seconds.');
+		expect(ghostButton(container).disabled).toBe(true);
+		await vi.advanceTimersByTimeAsync(5000);
+		await settle();
+		expect(ghostButton(container).disabled).toBe(false);
+		expect(container.textContent).not.toContain('Too many new chats');
+	});
+});
+
+describe('presence ref count across a navigation (TASK-4044 2b-ii)', () => {
+	it.each([
+		['start before stop', true],
+		['stop before start', false]
+	])('/messages to /messages/[n], %s: one timer, one poll per tick', async (_n, startFirst) => {
+		vi.useFakeTimers();
+		page.params = { n: '3' };
+		const list = render(MessagesPage);
+		await settle();
+		expect(vi.getTimerCount()).toBe(1);
+		let thread!: ReturnType<typeof render>;
+		if (startFirst) {
+			thread = render(ThreadPage);
+			list.unmount();
+		} else {
+			list.unmount();
+			thread = render(ThreadPage);
+		}
+		await settle();
+		expect(vi.getTimerCount()).toBe(1);
+		const before = h.sessions.mock.calls.length;
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(h.sessions.mock.calls.length - before).toBe(1);
+		thread.unmount();
+		expect(vi.getTimerCount()).toBe(0);
 	});
 });
 
