@@ -988,10 +988,10 @@ func TestChat_EnsureDM_EmptyBody(t *testing.T) {
 // the Go side must fail here so the web copy does not drift silently.
 func TestNormalizeAgentNameTrimParity(t *testing.T) {
 	cases := []struct{ in, want string }{
-		{"﻿codex﻿", "﻿codex﻿"}, // Go keeps U+FEFF; JS trim() would not
-		{"  codex　", "codex"},
+		{"\uFEFFcodex\uFEFF", "\uFEFFcodex\uFEFF"}, // Go keeps U+FEFF; JS trim() would not
+		{"  codex\u3000", "codex"},
 		{"\u0085 codex", "codex"},
-		{"​codex", "​codex"}, // ZWSP is not White_Space
+		{"\u200Bcodex", "\u200Bcodex"}, // ZWSP is not White_Space
 		{strings.Repeat("a", 63) + " b", strings.Repeat("a", 63)},
 	}
 	for _, c := range cases {
