@@ -25,7 +25,6 @@
 	import CreateCollectionModal from '$lib/components/collections/CreateCollectionModal.svelte';
 	import { isBlockedByModal } from '$lib/a11y/viewerBackdrop';
 	import Modal from '$lib/components/common/Modal.svelte';
-	import ChatLink from '$lib/components/chat/ChatLink.svelte';
 	import { coveredPage } from '$lib/stores/coveredPage.svelte';
 
 	let notificationPanelOpen = $state(false);
@@ -766,11 +765,6 @@
 						⚙ Settings
 					</a>
 				{/if}
-				<!-- Chat is global, not workspace-scoped: outside the wsSlug gate. A
-				     workspace guest has no chat entry (TASK-4044 Q-f). -->
-				{#if !isGuest}
-					<ChatLink class="chat-btn" onclick={() => uiStore.onNavigate()} />
-				{/if}
 				{#if !uiStore.isMobile}
 					<button
 						class="collapse-sidebar-btn"
@@ -1501,20 +1495,6 @@
 		text-decoration: none;
 	}
 	.settings-btn:hover { background: var(--bg-hover); color: var(--text-secondary); text-decoration: none; }
-	/* TASK-4044: the Chat link rides this row beside .settings-btn, sized like it
-	   but not shrinkable, so .settings-btn stays the row's one flexible item. */
-	.footer-row :global(.chat-btn) {
-		flex-shrink: 0;
-		display: flex;
-		align-items: center;
-		gap: var(--space-1);
-		padding: var(--space-2);
-		border-radius: var(--radius);
-		color: var(--text-muted);
-		font-size: 0.85em;
-		text-decoration: none;
-	}
-	.footer-row :global(.chat-btn:hover) { background: var(--bg-hover); color: var(--text-secondary); text-decoration: none; }
 	/* IDEA-2711: sized and coloured off the sibling icon controls in this row so
 	   the mark reads as one of them rather than as content. */
 	.github-btn {
