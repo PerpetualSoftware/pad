@@ -85,6 +85,7 @@ import type {
 	AttachmentTransformResult,
 	ServerCapabilities,
 	LiveSessionsResponse,
+	ChatUnreadResponse,
 	ItemPushResult,
 	WorkspaceStorageInfo,
 	AttachmentListFilters,
@@ -2432,6 +2433,10 @@ export const api = {
 		 * re-read it rather than hold one.
 		 */
 		list: () => request<LiveSessionsResponse>('/sessions')
+	},
+
+	chat: {
+		unread: () => request<ChatUnreadResponse>('/me/chat/unread')
 	},
 
 	// ── Versions ──────────────────────────────────────────────────────────────

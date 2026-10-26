@@ -3566,3 +3566,21 @@ export interface NeedsListParams {
 export type NeedsSnoozeRequest =
 	| { kind: 'dismiss'; marker?: NeedsSnoozeMarker }
 	| { kind: 'defer'; defer_until: string; marker?: NeedsSnoozeMarker };
+
+// ── Chat (TASK-4039 / TASK-4044) ─────────────────────────────────────────────
+
+/** One row of `GET /me/chat/unread` (only rows with unread > 0). */
+export interface ChatUnread {
+	conversation_id: string;
+	number: number;
+	agent_key: string;
+	unread: number;
+	last_seq: number;
+	read_seq: number;
+	delivered_seq: number;
+}
+
+export interface ChatUnreadResponse {
+	conversations: ChatUnread[];
+	total: number;
+}
