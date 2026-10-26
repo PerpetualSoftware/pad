@@ -90,20 +90,23 @@ test('E1: orders by seq, puts the divider before the first unread, and counts li
 	expect(before.unread).toBe(2);
 
 	await page.goto(`/messages/${n}`);
-	await expect(rows(page)).toHaveCount(4);
-	expect(await rows(page).evaluateAll((els) => els.map((e) => e.getAttribute('data-seq')))).toEqual([
-		'1',
-		'2',
-		'3',
-		'4'
-	]);
+	// With unread the window opens AFTER the marker (seq 1 is above it), so the
+	// divider is always inside the window; the read row is one tap away.
+	await expect(rows(page)).toHaveCount(3);
+	expect(await rows(page).evaluateAll((els) => els.map((e) => e.getAttribute('data-seq')))).toEqual(['2', '3', '4']);
 	const divider = page.locator('#unread-divider');
 	await expect(divider).toContainText(`${before.unread} new`);
 	await expect(divider.locator('xpath=following-sibling::article[1]')).toHaveAttribute('data-seq', '3');
+	await expect(rows(page).nth(0)).toHaveClass(/mine/);
+	await expect(rows(page).nth(0).locator('.author')).toHaveText('You');
+	await expect(rows(page).nth(1).locator('.author')).toHaveText(agent);
+	await expect(rows(page).nth(1)).not.toHaveClass(/mine/);
+
+	await page.getByRole('button', { name: 'Load earlier' }).click();
+	await expect(rows(page)).toHaveCount(4);
+	expect(await rows(page).evaluateAll((els) => els.map((e) => e.getAttribute('data-seq')))).toEqual(['1', '2', '3', '4']);
 	await expect(rows(page).nth(0).locator('.author')).toHaveText(agent);
-	await expect(rows(page).nth(1)).toHaveClass(/mine/);
-	await expect(rows(page).nth(1).locator('.author')).toHaveText('You');
-	await expect(rows(page).nth(0)).not.toHaveClass(/mine/);
+	await expect(page.getByRole('button', { name: 'Load earlier' })).toHaveCount(0);
 });
 
 test('E3: opening marks the displayed seq read, the badge clears, the divider stays', async ({
