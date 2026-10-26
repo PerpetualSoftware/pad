@@ -3,8 +3,8 @@
 // here computes them.
 //
 // Reload: start() runs one effect on chatStore.version, which chatStore bumps
-// after each successful unread fetch. A hint, a resync, a focus and a retry all
-// end in that fetch, so this store does not subscribe to hints as well: that
+// after each successful unread fetch. A hint, a resync, a focus and chatStore's
+// 15s retry of a failed unread fetch all end in that fetch, so this store does not subscribe to hints as well: that
 // would reload twice for one hint.
 //
 // Identity: every answer is fenced by authStore.identityFence() and ordered by

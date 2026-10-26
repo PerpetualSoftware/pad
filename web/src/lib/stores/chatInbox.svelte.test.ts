@@ -29,7 +29,7 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 	}
 }));
 
-import { CHAT_HINT_DEBOUNCE_MS } from './chat.svelte';
+import { CHAT_HINT_DEBOUNCE_MS, CHAT_RETRY_MS } from './chat.svelte';
 
 type Chat = (typeof import('./chat.svelte'))['chatStore'];
 type Inbox = (typeof import('./chatInbox.svelte'))['chatInbox'];
@@ -212,5 +212,31 @@ describe('chatInbox (TASK-4044)', () => {
 		chat.resync();
 		await flush();
 		expect(h.list).toHaveBeenCalledTimes(1);
+	});
+
+	// CONDITION ROW (TASK-4044 c00bdf74 / 5b0cd91b): the unread fetch after an
+	// identity change fails, its retry succeeds, and the list reloads ONCE, from
+	// the retry's version bump. The failed fetch bumped nothing.
+	it('identity change, a failed unread fetch, then a successful retry: ONE list reload', async () => {
+		chat.start();
+		inbox.start();
+		await flush();
+		const before = h.list.mock.calls.length;
+
+		h.unread.mockRejectedValueOnce(new Error('boom'));
+		changeIdentity();
+		await flush();
+		expect(h.unread).toHaveBeenCalledTimes(2);
+		expect(h.list.mock.calls.length).toBe(before);
+
+		await vi.advanceTimersByTimeAsync(CHAT_RETRY_MS);
+		await flush();
+		expect(h.unread).toHaveBeenCalledTimes(3);
+		expect(h.list.mock.calls.length).toBe(before + 1);
+
+		await vi.advanceTimersByTimeAsync(CHAT_RETRY_MS * 3);
+		await flush();
+		expect(h.unread).toHaveBeenCalledTimes(3);
+		expect(h.list.mock.calls.length).toBe(before + 1);
 	});
 });

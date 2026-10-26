@@ -20,7 +20,8 @@
 </header>
 
 <!-- The list reloads only when chatStore's unread fetch succeeds, so a failed
-     list fetch beside a good unread fetch has no other way back (TASK-4044 r1).
+     list fetch beside a good unread fetch has no other way back (TASK-4044 r1):
+     chatStore's retry re-arms only for a failed UNREAD fetch.
      A failed reload keeps the last list, and says so (r2). -->
 {#if chatInbox.failed}
 	<p class="status">

@@ -12,6 +12,15 @@
 // A reconnect, a `sync_required` or a takeover cannot vouch for what the
 // stream missed, so resync() fetches at once.
 //
+// Retry (TASK-4044 P1): a FAILED fetch whose answer is still current arms ONE
+// fixed 15s retry, with no backoff; each failure re-arms. A success, a hint, a
+// focus, resync(), an identity change and stop() all cancel it, because each
+// either supersedes the fetch or ends it. It fires only while the tab is
+// visible: a hidden tab re-arms instead of fetching, and the focus refetch
+// covers the return. The timers are per tab and independent of the #timer
+// debounce; a relayed hint reaching several tabs cancels each tab's own retry
+// and costs each one debounced fetch, which is not lockstep.
+//
 // Identity: every answer is fenced by authStore.identityFence() and ordered by
 // a seq, so an answer for the previous account never lands, and an identity
 // change clears the counts and cancels a pending fetch.
@@ -21,6 +30,9 @@ import type { ChatUnread } from '$lib/types';
 
 /** The trailing debounce between the last hint and the fetch it causes. */
 export const CHAT_HINT_DEBOUNCE_MS = 400;
+
+/** The fixed wait between a failed unread fetch and its retry. */
+export const CHAT_RETRY_MS = 15_000;
 
 /** A `kind: 'chat'` notice as the access stream relays it: ids only, no body. */
 export interface ChatNotice {
@@ -36,7 +48,9 @@ export interface ChatNotice {
 
 type Listener = (notice: ChatNotice) => void;
 
-class ChatStore {
+// Exported so a test can build two independent stores (one per tab); the app
+// uses the chatStore singleton.
+export class ChatStore {
 	unreadTotal = $state(0);
 	unreadByNumber = $state<Record<number, number>>({});
 	// Bumped after each SUCCESSFUL fetch whose answer was applied, so the
@@ -51,6 +65,8 @@ class ChatStore {
 	// A hint (or resync) arrived while a fetch was in flight.
 	#dirty = false;
 	#timer: ReturnType<typeof setTimeout> | null = null;
+	// The pending failure retry; at most one.
+	#retryTimer: ReturnType<typeof setTimeout> | null = null;
 	#listeners = new Set<Listener>();
 	#started = false;
 	#onFocus = () => this.#schedule();
@@ -62,6 +78,7 @@ class ChatStore {
 			this.#seq++;
 			this.#dirty = false;
 			this.#cancelTimer();
+			this.#cancelRetry();
 			this.unreadTotal = 0;
 			this.unreadByNumber = {};
 			if (this.#started && authStore.authenticated) void this.#run();
@@ -79,6 +96,7 @@ class ChatStore {
 	stop(): void {
 		this.#started = false;
 		this.#cancelTimer();
+		this.#cancelRetry();
 		if (typeof window !== 'undefined') window.removeEventListener('focus', this.#onFocus);
 	}
 
@@ -99,6 +117,7 @@ class ChatStore {
 	/** The stream cannot vouch for what it missed: refetch now. */
 	resync(): void {
 		this.#cancelTimer();
+		this.#cancelRetry();
 		void this.#run();
 	}
 
@@ -120,8 +139,27 @@ class ChatStore {
 		this.#timer = null;
 	}
 
+	#cancelRetry() {
+		if (this.#retryTimer) clearTimeout(this.#retryTimer);
+		this.#retryTimer = null;
+	}
+
+	#armRetry() {
+		this.#cancelRetry();
+		this.#retryTimer = setTimeout(() => {
+			this.#retryTimer = null;
+			// A hidden tab does not poll; the focus refetch covers the return.
+			if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
+				this.#armRetry();
+				return;
+			}
+			void this.#run();
+		}, CHAT_RETRY_MS);
+	}
+
 	#schedule() {
 		this.#cancelTimer();
+		this.#cancelRetry();
 		this.#timer = setTimeout(() => {
 			this.#timer = null;
 			void this.#run();
@@ -146,9 +184,12 @@ class ChatStore {
 				this.unreadByNumber = byNumber;
 				this.unreadTotal = res.total ?? 0;
 				this.version++;
+				this.#cancelRetry();
 			}
 		} catch {
 			// Keep the last counts: a failed refetch is not "nothing unread".
+			// Retry only if the answer was still wanted (not outdated or re-fenced).
+			if (mine === this.#seq && isSameIdentity()) this.#armRetry();
 		} finally {
 			this.#inFlight = false;
 		}

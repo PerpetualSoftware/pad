@@ -24,7 +24,7 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 	}
 }));
 
-import { CHAT_HINT_DEBOUNCE_MS } from './chat.svelte';
+import { CHAT_HINT_DEBOUNCE_MS, CHAT_RETRY_MS } from './chat.svelte';
 
 type Store = (typeof import('./chat.svelte'))['chatStore'];
 let store: Store;
@@ -291,5 +291,150 @@ describe('chat store (TASK-4044)', () => {
 		await flush();
 		expect(store.version).toBe(0);
 		expect(store.unreadTotal).toBe(0);
+	});
+
+	describe('retry after a failed fetch (TASK-4044 P1)', () => {
+		let visibility: 'visible' | 'hidden' = 'visible';
+		beforeEach(() => {
+			visibility = 'visible';
+			vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visibility);
+		});
+		afterEach(() => vi.restoreAllMocks());
+
+		it('refetches once after the fixed wait, not before', async () => {
+			h.unread.mockRejectedValueOnce(new Error('boom'));
+			store.resync();
+			await flush();
+			expect(h.unread).toHaveBeenCalledTimes(1);
+			await vi.advanceTimersByTimeAsync(CHAT_RETRY_MS - 1);
+			expect(h.unread).toHaveBeenCalledTimes(1);
+			await vi.advanceTimersByTimeAsync(1);
+			await flush();
+			expect(h.unread).toHaveBeenCalledTimes(2);
+			expect(store.unreadTotal).toBe(2);
+		});
+
+		it('fail, fail, succeed is exactly 3 fetches and then idle', async () => {
+			h.unread.mockRejectedValueOnce(new Error('1')).mockRejectedValueOnce(new Error('2'));
+			store.resync();
+			await flush();
+			await vi.advanceTimersByTimeAsync(CHAT_RETRY_MS);
+			await flush();
+			await vi.advanceTimersByTimeAsync(CHAT_RETRY_MS);
+			await flush();
+			expect(h.unread).toHaveBeenCalledTimes(3);
+			expect(store.unreadTotal).toBe(2);
+			expect(vi.getTimerCount()).toBe(0);
+			await vi.advanceTimersByTimeAsync(CHAT_RETRY_MS * 4);
+			expect(h.unread).toHaveBeenCalledTimes(3);
+		});
+
+		it('a hint replaces a pending retry: one fetch, not two', async () => {
+			h.unread.mockRejectedValueOnce(new Error('boom'));
+			store.resync();
+			await flush();
+			store.onHint(notice);
+			await vi.advanceTimersByTimeAsync(CHAT_HINT_DEBOUNCE_MS);
+			await flush();
+			expect(h.unread).toHaveBeenCalledTimes(2);
+			await vi.advanceTimersByTimeAsync(CHAT_RETRY_MS * 2);
+			expect(h.unread).toHaveBeenCalledTimes(2);
+		});
+
+		it('a resync replaces a pending retry', async () => {
+			h.unread.mockRejectedValueOnce(new Error('boom'));
+			store.resync();
+			await flush();
+			store.resync();
+			await flush();
+			expect(h.unread).toHaveBeenCalledTimes(2);
+			await vi.advanceTimersByTimeAsync(CHAT_RETRY_MS * 2);
+			expect(h.unread).toHaveBeenCalledTimes(2);
+		});
+
+		it('stop() cancels a pending retry', async () => {
+			h.unread.mockRejectedValueOnce(new Error('boom'));
+			store.start();
+			await flush();
+			store.stop();
+			await vi.advanceTimersByTimeAsync(CHAT_RETRY_MS * 2);
+			expect(h.unread).toHaveBeenCalledTimes(1);
+		});
+
+		it('an identity change cancels it', async () => {
+			h.unread.mockRejectedValueOnce(new Error('boom'));
+			store.resync();
+			await flush();
+			// Signed out: nothing may fetch for the previous account.
+			changeIdentity(false);
+			await vi.advanceTimersByTimeAsync(CHAT_RETRY_MS * 2);
+			expect(h.unread).toHaveBeenCalledTimes(1);
+		});
+
+		it('a hidden tab defers it: no fetch while hidden, one on return', async () => {
+			h.unread.mockRejectedValueOnce(new Error('boom'));
+			store.resync();
+			await flush();
+			visibility = 'hidden';
+			await vi.advanceTimersByTimeAsync(CHAT_RETRY_MS * 3);
+			expect(h.unread).toHaveBeenCalledTimes(1);
+			visibility = 'visible';
+			await vi.advanceTimersByTimeAsync(CHAT_RETRY_MS);
+			await flush();
+			expect(h.unread).toHaveBeenCalledTimes(2);
+		});
+
+		it('keeps the last good counts across the failure and its failed retries', async () => {
+			store.resync();
+			await flush();
+			expect(store.unreadTotal).toBe(2);
+			h.unread.mockRejectedValue(new Error('down'));
+			store.resync();
+			await flush();
+			await vi.advanceTimersByTimeAsync(CHAT_RETRY_MS);
+			await flush();
+			expect(h.unread).toHaveBeenCalledTimes(3);
+			expect(store.unreadTotal).toBe(2);
+			expect(store.unreadByNumber).toEqual({ 1: 2 });
+		});
+
+		it('an answer discarded by an identity change arms no retry', async () => {
+			let rejectOld!: (e: Error) => void;
+			h.unread.mockImplementationOnce(() => new Promise((_, rej) => (rejectOld = rej)));
+			store.resync();
+			await flush();
+			changeIdentity(false);
+			rejectOld(new Error('late'));
+			await flush();
+			expect(vi.getTimerCount()).toBe(0);
+		});
+
+		// Q-e PIN. Each tab has its own store and its own timers, by construction.
+		// A relayed hint reaching both cancels each one's own retry and costs each
+		// ONE debounced fetch: one fetch per tab per hint, which is not lockstep.
+		it('two stores: a relayed hint lands in both, one fetch each, no retry left', async () => {
+			const { ChatStore } = await import('./chat.svelte');
+			const a = new ChatStore();
+			const b = new ChatStore();
+			h.unread.mockRejectedValue(new Error('down'));
+			a.resync();
+			b.resync();
+			await flush();
+			expect(h.unread).toHaveBeenCalledTimes(2);
+			expect(vi.getTimerCount()).toBe(2);
+
+			h.unread.mockReset();
+			h.unread.mockResolvedValue(resp([[1, 1]]));
+			a.onHint(notice);
+			b.onHint(notice);
+			await vi.advanceTimersByTimeAsync(CHAT_HINT_DEBOUNCE_MS);
+			await flush();
+			expect(h.unread).toHaveBeenCalledTimes(2);
+			expect(a.unreadTotal).toBe(1);
+			expect(b.unreadTotal).toBe(1);
+			expect(vi.getTimerCount()).toBe(0);
+			await vi.advanceTimersByTimeAsync(CHAT_RETRY_MS * 2);
+			expect(h.unread).toHaveBeenCalledTimes(2);
+		});
 	});
 });
