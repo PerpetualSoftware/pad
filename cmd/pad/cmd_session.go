@@ -171,7 +171,8 @@ prune').`,
 // one row per registered session with a liveness verdict. Deterministic
 // and local: it stats sockets and probes pids, it does not ask the server.
 // By default shows sessions that are alive or unknown (a platform that
-// cannot probe); --all adds the dead ones a prune would remove.
+// cannot probe, or an owner in another PID or mount namespace — BUG-4090); --all
+// adds the dead ones a prune would remove.
 func sessionListCmd() *cobra.Command {
 	var (
 		agentFilter string
@@ -191,7 +192,10 @@ signal the record carries — its messaging socket, its owner pid, and the
 identity captured for each at registration where the platform supplies
 one — still checks out; "dead" means one is gone or has been reused by
 something else; "unknown" means one could not be examined (a platform
-that cannot probe pids, a socket that cannot be stat'ed). A legacy row
+that cannot probe pids, a socket that cannot be stat'ed, or an owner that
+this version registered in a different PID or mount namespace from this
+reader's, such as a host session read from inside a sandbox or container;
+a row registered before this version may still read dead there). A legacy row
 (registered before sessions carried an agent name) is judged by its pid
 alone: it can say a session exists but not who it is, and it matches no
 --agent filter.
@@ -331,7 +335,8 @@ func printableCell(s string) string {
 
 // sessionPruneCmd is `pad session prune` (TASK-2767): removes the records
 // of dead sessions. Alive records are never touched. Unknown ones — a
-// platform that cannot probe pids, or a malformed file — are removed only
+// platform that cannot probe pids, an owner in another PID or mount namespace
+// (BUG-4090), or a malformed file — are removed only
 // under an explicit --older-than bound, because "cannot tell" is not
 // "dead" and deleting on it would empty a live registry on such a platform.
 func sessionPruneCmd() *cobra.Command {
@@ -345,7 +350,9 @@ log (~/.pad/chat-seen/<pid>.log and .log.1). Never deletes a record it can
 see is alive.
 
 Records whose liveness is unknown (this platform cannot probe the owner,
-or the file is malformed) are kept unless --older-than is given, in which
+this version registered the owner in a different PID or mount namespace
+from this reader's, or the file is malformed) are kept unless --older-than
+is given, in which
 case those older than the bound are deleted too — live or not, since
 unknown means exactly that; it is the only way such a registry ever
 shrinks, and an explicit choice for that reason.
@@ -435,7 +442,7 @@ command exits non-zero.`,
 				})
 			}
 			if state == cli.LocalArmUnverifiable {
-				fmt.Println("NOT armed: this session cannot be verified on this platform, so a local arm cannot take effect.")
+				fmt.Println("NOT armed: this session cannot be verified from here (this platform, or another namespace), so a local arm cannot take effect.")
 				fmt.Println("Use 'push.auto_arm = true' in the repo's .pad.toml instead; 'pad session reset' removes the file just written.")
 				return nil
 			}
@@ -509,7 +516,7 @@ Idempotent.`,
 			if cli.SessionArmState() == cli.LocalArmUnverifiable {
 				// The file is kept rather than reaped (BUG-2771), so here the
 				// disarm outlives the session: say so and name the way out.
-				fmt.Println("(This session cannot be verified on this platform, so the disarm stays in force for this directory until 'pad session reset'.)")
+				fmt.Println("(This session cannot be verified from here (this platform, or another namespace), so the disarm stays in force for this directory until 'pad session reset'.)")
 			} else if autoArm {
 				fmt.Println("(This repo has push.auto_arm=true; a NEW session will arm again. Remove it from .pad.toml to stop that.)")
 			}
@@ -573,7 +580,7 @@ type sessionStatusJSON struct {
 	// session disarm`, which beats auto_arm for this session), "none"
 	// (no live override — auto_arm decides), "error" (a file that cannot
 	// be read — fails closed), or "unverifiable" (a file whose session
-	// cannot be verified on this platform — fails closed and is kept until
+	// cannot be verified from here (this platform, or another namespace) — fails closed and is kept until
 	// `pad session reset`, BUG-2771). It reflects intent on this machine,
 	// not server state.
 	LocalState string `json:"local_state"`
@@ -730,7 +737,7 @@ func printSessionStatus(st sessionStatusJSON) {
 	case "error":
 		local = "unreadable local state — failing closed (run pad session arm to reset)"
 	case "unverifiable":
-		local = "cannot verify this session on this platform — failing closed; local arm/disarm cannot take effect here (use .pad.toml push.auto_arm; pad session reset clears this file)"
+		local = "cannot verify this session from here (this platform, or another namespace) — failing closed; local arm/disarm cannot take effect here (use .pad.toml push.auto_arm; pad session reset clears this file)"
 	}
 	fmt.Fprintf(tw, "Local state:\t%s\n", local)
 	fmt.Fprintf(tw, "Chat direction:\t%t\n", st.ChatDirection)

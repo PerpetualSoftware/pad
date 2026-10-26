@@ -54,9 +54,10 @@ const (
 	// LivenessDead: the owner is gone, or the thing at its address is a
 	// different owner (a rebound socket, a reused pid).
 	LivenessDead Liveness = "dead"
-	// LivenessUnknown: this platform cannot probe the owner at all. Not
-	// dead — a reaper must not act on it — and not alive — a gate must not
-	// trust it.
+	// LivenessUnknown: the owner cannot be examined from here — this
+	// platform cannot probe it, or it lives in another PID or mount namespace
+	// (BUG-4090). Not dead — a reaper must not act on it — and not alive —
+	// a gate must not trust it.
 	LivenessUnknown Liveness = "unknown"
 )
 
@@ -84,6 +85,17 @@ type SessionOwner struct {
 	// ProcStart is the owner's process start token (procStartToken) when
 	// the platform supplies one — the pid-reuse defence. Empty elsewhere.
 	ProcStart string `json:"proc_start,omitempty"`
+	// PIDNamespace is the inode of the PID namespace PID was captured in
+	// (currentPIDNamespace — Linux), recorded only when PID named a process
+	// visible there. A reader in a different namespace cannot examine the
+	// pid at all, and must say unknown rather than dead (BUG-4090). Zero
+	// off Linux, in rows written before it existed, and for a harness pid
+	// inherited from outside a sandbox, which the recorder cannot see. A
+	// Linux recorder that cannot read its own namespace (no procfs) writes
+	// unidentifiedNamespace instead, which no reader matches (r3, F2).
+	// An additive on-disk key: older readers ignore it, and a row without
+	// it is judged by pidNamespaceRelation's unstamped rule.
+	PIDNamespace uint64 `json:"pid_ns,omitempty"`
 	// Socket is CLAUDE_CODE_MESSAGING_SOCKET at capture time, recorded only
 	// when the socket existed then (its identity below is what makes it a
 	// liveness signal; a path alone proves nothing).
@@ -95,6 +107,16 @@ type SessionOwner struct {
 	SocketMtimeUnixNano int64  `json:"socket_mtime_unix_nano,omitempty"`
 	SocketIno           uint64 `json:"socket_ino,omitempty"`
 	SocketDev           uint64 `json:"socket_dev,omitempty"`
+	// MountNamespace is the inode of the mount namespace the socket was
+	// seen in (currentMountNamespace — Linux), recorded only when the
+	// recorder could stat the socket and read its identity (lead ruling C1,
+	// mirroring PIDNamespace's visibility rule). A path's absence, or a
+	// different node at it, is evidence only to a reader with the same view
+	// of the filesystem; elsewhere the socket verdict is unknown (BUG-4090
+	// r1, H1/H3). unidentifiedNamespace when Linux would not name it (r3,
+	// F2). An additive on-disk key; a row without it keeps the
+	// pre-BUG-4090 socket rule.
+	MountNamespace uint64 `json:"mnt_ns,omitempty"`
 }
 
 // CaptureSessionOwner reads this process's session owner from the
@@ -135,6 +157,13 @@ func CaptureSessionOwner() (SessionOwner, error) {
 	// the pid cannot be read (a harness pid we cannot see is recorded
 	// without a token and judged by bare liveness, the documented residual).
 	o.ProcStart, _ = procStartToken(o.PID)
+	// The namespace is recorded only for a pid this namespace can signal:
+	// kill(2) resolves pids in the caller's namespace, so a pid it cannot
+	// reach belongs to some other one, and stamping ours on it would be a
+	// claim the record cannot back (BUG-4090).
+	if pidAlive(o.PID) {
+		o.PIDNamespace = namespaceStamp(pidNamespaceFn)
+	}
 
 	if sock := os.Getenv("CLAUDE_CODE_MESSAGING_SOCKET"); sock != "" {
 		if info, err := os.Stat(sock); err == nil {
@@ -142,6 +171,7 @@ func CaptureSessionOwner() (SessionOwner, error) {
 			o.SocketMtimeUnixNano = info.ModTime().UnixNano()
 			if ino, dev, ok := statIdentity(info); ok {
 				o.SocketIno, o.SocketDev = ino, dev
+				o.MountNamespace = namespaceStamp(mountNamespaceFn)
 			}
 		}
 	}
@@ -168,13 +198,24 @@ func CaptureSessionOwner() (SessionOwner, error) {
 // leaves it alone.
 //
 // A record with NO signal at all (no socket, no pid) is dead.
+//
+// NAMESPACES (BUG-4090). A pid means something only inside one PID
+// namespace, and a reader in another one (a bwrap sandbox, a container)
+// gets ESRCH for every pid outside it; a path means something only inside
+// one mount namespace, and a reader with another view of the filesystem
+// may see a missing socket, or a different one, where the session's own
+// is live. So each signal is judged against the namespace that gives it
+// meaning — the pid against pid_ns (pidNamespaceRelation), the socket
+// against mnt_ns (mountNamespaceCrossed) — and where the reader's differs,
+// absence and mismatch are not evidence: the verdict is unknown.
 func OwnerLiveness(o *SessionOwner) Liveness {
 	if o == nil || (o.Socket == "" && o.PID <= 0) {
 		return LivenessDead
 	}
+	rel := pidNamespaceRelation(o)
 	verdict := LivenessAlive
 	if o.Socket != "" {
-		switch socketLiveness(o) {
+		switch socketLiveness(o, mountNamespaceCrossed(o)) {
 		case LivenessDead:
 			return LivenessDead
 		case LivenessUnknown:
@@ -182,7 +223,7 @@ func OwnerLiveness(o *SessionOwner) Liveness {
 		}
 	}
 	if o.PID > 0 {
-		switch pidLiveness(o) {
+		switch pidLiveness(o, rel) {
 		case LivenessDead:
 			return LivenessDead
 		case LivenessUnknown:
@@ -192,46 +233,162 @@ func OwnerLiveness(o *SessionOwner) Liveness {
 	return verdict
 }
 
-// socketLiveness judges the recorded socket instance.
-func socketLiveness(o *SessionOwner) Liveness {
+// pidNSRelation is how the reader's PID namespace stands to the one a
+// record's pid was captured in (BUG-4090).
+type pidNSRelation int
+
+const (
+	// pidNSSame: the same namespace, or no reason to doubt it (an
+	// unstamped row read from the init namespace, or a platform without
+	// namespaces). Every probe means what it says.
+	pidNSSame pidNSRelation = iota
+	// pidNSCrossed: the record names a namespace and the reader is in a
+	// different one, or cannot read its own to compare. The pid cannot be
+	// examined at all.
+	pidNSCrossed
+	// pidNSUnstampedForeign: the record names no namespace (written before
+	// pid_ns existed, or for a pid the recorder could not see) and the
+	// reader is not in the init namespace, so the boundary may or may not
+	// be there. Only a token match stands (alive); every negative —
+	// ESRCH, a token mismatch, ENOENT, a zombie — is unknown (lead
+	// ruling, option (a), as corrected at r2).
+	pidNSUnstampedForeign
+)
+
+// pidNamespaceFn is currentPIDNamespace behind a seam, so the namespace
+// cases are testable from a single namespace — and so this package's
+// tests, which build owners by hand without a pid_ns, keep one answer when
+// `go test` itself runs in a sandbox (the Nix build does). See TestMain.
+var pidNamespaceFn = currentPIDNamespace
+
+// mountNamespaceFn is currentMountNamespace behind the same kind of seam.
+var mountNamespaceFn = currentMountNamespace
+
+// unidentifiedNamespace is the stamp a Linux recorder writes when it could
+// not read its own namespace (no procfs): "recorded somewhere I could not
+// name". nsfs inodes come from the proc inum allocator and are never 1, so
+// it equals no reader's namespace and every reader treats the row as
+// crossed (BUG-4090 r3, F2).
+const unidentifiedNamespace uint64 = 1
+
+// namespaceStamp is the value a writer records for the namespace it just
+// observed something in: the namespace's inode, the unidentified sentinel
+// when Linux will not say, or zero (no stamp) off Linux.
+func namespaceStamp(fn func() (uint64, error)) uint64 {
+	if ns, err := fn(); err == nil {
+		return ns
+	}
+	if namespacesSupported {
+		return unidentifiedNamespace
+	}
+	return 0
+}
+
+func pidNamespaceRelation(o *SessionOwner) pidNSRelation {
+	reader, err := pidNamespaceFn()
+	if o.PIDNamespace != 0 {
+		if err != nil || reader != o.PIDNamespace {
+			return pidNSCrossed
+		}
+		return pidNSSame
+	}
+	if err != nil {
+		// A reader that cannot name its own namespace may be in any of them
+		// on Linux (F1); off Linux there is nothing to be across.
+		if namespacesSupported {
+			return pidNSUnstampedForeign
+		}
+		return pidNSSame
+	}
+	if reader != initPIDNamespace {
+		return pidNSUnstampedForeign
+	}
+	return pidNSSame
+}
+
+// mountNamespaceCrossed reports whether the reader may not share the
+// filesystem view the socket was recorded in: the record names a mount
+// namespace and the reader is in another one, or cannot read its own. A
+// row without mnt_ns (written before it existed, or off Linux) is judged
+// as it always was — the disclosed residual for pre-fix rows read across a
+// mount boundary, transient because sessions re-register on first use.
+func mountNamespaceCrossed(o *SessionOwner) bool {
+	reader, err := mountNamespaceFn()
+	if o.MountNamespace == 0 {
+		// The pre-fix rule — unless this reader cannot name its own mount
+		// namespace, which on Linux makes it a possible boundary (F1).
+		return err != nil && namespacesSupported
+	}
+	return err != nil || reader != o.MountNamespace
+}
+
+// socketLiveness judges the recorded socket instance. Across a mount
+// namespace boundary only a socket that answers with the RECORDED identity
+// says anything (alive); a missing, unidentifiable or different node is
+// unknown, since the reader may simply be looking at another filesystem.
+func socketLiveness(o *SessionOwner, crossed bool) Liveness {
+	negative := LivenessDead
+	if crossed {
+		negative = LivenessUnknown
+	}
 	info, err := os.Stat(o.Socket)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return LivenessDead // socket vanished — session gone
+			return negative // socket vanished — session gone, if we see its filesystem
 		}
 		return LivenessUnknown // could not examine (EACCES, EIO, ...)
 	}
 	if o.SocketMtimeUnixNano == 0 {
-		return LivenessDead // no identity recorded — cannot prove it is ours
+		return negative // no identity recorded — cannot prove it is ours
 	}
 	if o.SocketIno != 0 {
 		if ino, dev, ok := statIdentity(info); ok {
 			if ino == o.SocketIno && dev == o.SocketDev {
 				return LivenessAlive
 			}
-			return LivenessDead // rebound at the same path — a different session
+			return negative // rebound at the same path — a different session
 		}
 	}
 	if info.ModTime().UnixNano() == o.SocketMtimeUnixNano {
 		return LivenessAlive
 	}
-	return LivenessDead
+	return negative
 }
 
 // pidLiveness judges the recorded owner pid. A live pid with no token
 // recorded is alive on bare liveness — the documented residual for records
 // written where no start token exists (non-Linux) and for legacy rows,
-// which never had one; pid reuse cannot be excluded there.
-func pidLiveness(o *SessionOwner) Liveness {
+// which never had one; pid reuse cannot be excluded there. That residual
+// holds only for a reader in the recorder's namespace or the init one: a
+// reader that may be elsewhere has no token to match and says unknown.
+func pidLiveness(o *SessionOwner, rel pidNSRelation) Liveness {
 	if runtime.GOOS == "windows" {
 		// pidAlive cannot probe here (Signal(0) is unsupported), so a
 		// verdict either way would be invented.
 		return LivenessUnknown
 	}
+	if rel == pidNSCrossed {
+		// The pid names a process in another namespace: probing it here
+		// would ask about whatever this namespace has at that number.
+		return LivenessUnknown
+	}
+	// A reader that may be in another namespace never manufactures dead:
+	// ESRCH, a different process at the number, or one that vanished or is
+	// a zombie all describe whatever THIS namespace holds there. Only a
+	// token match — positive evidence — stands (lead r2 ruling on (a)).
+	negative := LivenessDead
+	if rel == pidNSUnstampedForeign {
+		negative = LivenessUnknown
+	}
 	if !pidAlive(o.PID) {
-		return LivenessDead
+		return negative
 	}
 	if o.ProcStart == "" {
+		if rel == pidNSUnstampedForeign {
+			// No token, so nothing to match: whatever answers at this number
+			// here may be any process at all (r4 ruling, A-1).
+			return LivenessUnknown
+		}
 		return LivenessAlive
 	}
 	now, err := procStartTokenErr(o.PID)
@@ -240,9 +397,10 @@ func pidLiveness(o *SessionOwner) Liveness {
 		if now == o.ProcStart {
 			return LivenessAlive
 		}
-		return LivenessDead // a reused pid — a different process
+		return negative // a reused pid — a different process
 	case errors.Is(err, os.ErrNotExist), errors.Is(err, errProcZombie):
-		return LivenessDead // gone between the signal probe and the read, or exited awaiting reap
+		return negative // gone between the signal probe and the read, or exited awaiting reap
+
 	default:
 		return LivenessUnknown // /proc unreadable or unsupported here — not evidence of absence
 	}

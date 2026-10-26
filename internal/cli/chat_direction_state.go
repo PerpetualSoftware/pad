@@ -40,6 +40,10 @@ func WriteChatDirection() (string, error) {
 	st := ArmState{Armed: true, Generation: arm.Generation, PID: os.Getpid(), Socket: socket, Cwd: cwd, StartedAt: time.Now().UTC().Format(time.RFC3339), SocketMtimeUnixNano: info.ModTime().UnixNano()}
 	if ino, dev, ok := statIdentity(info); ok {
 		st.SocketIno, st.SocketDev = ino, dev
+		// The socket's mount namespace, under the same visibility rule as
+		// the registry and the arm file (BUG-4090 r2): a reader with another
+		// view of the filesystem must not reap this on a missing node.
+		st.MountNamespace = namespaceStamp(mountNamespaceFn)
 	}
 	data, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
