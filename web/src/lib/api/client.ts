@@ -85,6 +85,7 @@ import type {
 	AttachmentTransformResult,
 	ServerCapabilities,
 	LiveSessionsResponse,
+	ChatConversation,
 	ChatConversationSummary,
 	ChatConversationsResponse,
 	ChatUnreadResponse,
@@ -2440,6 +2441,12 @@ export const api = {
 	chat: {
 		listConversations: () => request<ChatConversationsResponse>('/me/conversations'),
 
+		/** Create-or-reuse the DM with `agent_key`; 201 when created, 200 when reused. */
+		ensureConversation: (agent_key: string) =>
+			request<{ conversation: ChatConversation; created: boolean }>('/me/conversations', {
+				method: 'POST',
+				body: JSON.stringify({ agent_key })
+			}),
 
 		getConversation: (n: number) =>
 			request<ChatConversationSummary>(`/me/conversations/${n}`),
