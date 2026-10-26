@@ -365,8 +365,9 @@ describe('chat store (TASK-4044)', () => {
 			h.unread.mockRejectedValueOnce(new Error('boom'));
 			store.resync();
 			await flush();
-			// Signed out: nothing may fetch for the previous account.
-			changeIdentity(false);
+			// Signed in as someone else: a retry armed for the previous account
+			// must not fetch for this one.
+			changeIdentity(true);
 			await vi.advanceTimersByTimeAsync(CHAT_RETRY_MS * 2);
 			expect(h.unread).toHaveBeenCalledTimes(1);
 		});
@@ -396,6 +397,22 @@ describe('chat store (TASK-4044)', () => {
 			expect(h.unread).toHaveBeenCalledTimes(3);
 			expect(store.unreadTotal).toBe(2);
 			expect(store.unreadByNumber).toEqual({ 1: 2 });
+		});
+
+		it('a success cancels a retry armed by a failure it overlapped', async () => {
+			let rejectFirst!: (e: Error) => void;
+			h.unread.mockImplementationOnce(() => new Promise((_, rej) => (rejectFirst = rej)));
+			store.resync();
+			await flush();
+			// A second ask during the flight: one follow-up once the first settles.
+			store.resync();
+			rejectFirst(new Error('boom'));
+			await flush();
+			expect(h.unread).toHaveBeenCalledTimes(2);
+			expect(store.unreadTotal).toBe(2);
+			expect(vi.getTimerCount()).toBe(0);
+			await vi.advanceTimersByTimeAsync(CHAT_RETRY_MS * 2);
+			expect(h.unread).toHaveBeenCalledTimes(2);
 		});
 
 		it('an answer discarded by an identity change arms no retry', async () => {
