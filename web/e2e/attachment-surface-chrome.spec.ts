@@ -1,10 +1,10 @@
 import { test, expect } from './fixtures';
 import type { Page, Request } from '@playwright/test';
 import { browserLogin, seedDoc } from './lib/collab-helpers';
+import { buildMultiPagePdf } from './lib/pdf-fixtures';
 import {
 	BIG_PNG,
 	DESKTOP,
-	REAL_PDF,
 	REAL_PNG,
 	REAL_ZIP,
 	TILE,
@@ -299,7 +299,7 @@ test.describe('attachment viewer — 3c-i surface chrome (TASK-2484)', () => {
 		await expect(page.locator(VIEWER)).toHaveCount(1); // and it did not dismiss
 	});
 
-	test('a PDF and a ZIP open the fallback arm through a REAL producer — Open for the PDF, none for the ZIP (PLAN-2392 3c-ii)', async ({
+	test('a ZIP opens the fallback arm through a REAL producer, and a PDF its own arm — Open for the PDF, none for the ZIP (PLAN-2392 3c-ii, TASK-4075)', async ({
 		page,
 		fixture,
 		request
@@ -317,21 +317,18 @@ test.describe('attachment viewer — 3c-i surface chrome (TASK-2484)', () => {
 		const doc = await seedDoc(fixture, request, 'Fallback integration');
 		// Real magic bytes so the server's sniff-against-allowlist accepts them and
 		// stores the canonical MIME (the multipart Content-Type is not trusted).
-		await uploadAttachment(fixture, request, doc.id, 'report.pdf', 'application/pdf', REAL_PDF);
+		await uploadAttachment(fixture, request, doc.id, 'report.pdf', 'application/pdf', buildMultiPagePdf(2));
 		await uploadAttachment(fixture, request, doc.id, 'logs.zip', 'application/zip', REAL_ZIP);
 		await page.goto(itemUrl(fixture, doc.slug));
 		await expect(page.locator(TILE)).toHaveCount(2);
 
-		// ── The PDF: fallback arm, honest note, and Open IS offered ──
+		// ── The PDF: since TASK-4075 it has its own arm, not the fallback. Open IS
+		// still offered (a PDF is browser-previewable), and Download always is ──
 		await page.locator(`${TILE}[aria-label*="report.pdf"]`).click();
 		await expect(viewerDialog(page, 'report.pdf')).toHaveCount(1);
-		await expect(page.locator(VIEWER_FALLBACK)).toBeVisible();
-		await expect(page.locator(VIEWER_FALLBACK_NAME)).toHaveText('report.pdf');
-		await expect(page.locator(VIEWER_FALLBACK_NOTE)).toHaveText('No preview available');
-		// NO BYTES: the raster arm never mounted, so there is no <img> on the stage.
+		await expect(page.locator(`${VIEWER} .lightbox-pdf canvas`)).toBeVisible();
+		await expect(page.locator(VIEWER_FALLBACK)).toHaveCount(0);
 		await expect(page.locator(VIEWER_IMAGE)).toHaveCount(0);
-		// A PDF is browser-previewable, so Open in new tab is offered — and Download
-		// always is, carrying the filename.
 		await expect(viewerOpenAnchor(page)).toBeVisible();
 		await expect(viewerDownloadAnchor(page)).toHaveAttribute('download', 'report.pdf');
 		await page.keyboard.press('Escape');

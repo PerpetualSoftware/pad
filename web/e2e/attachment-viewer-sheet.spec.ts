@@ -2,7 +2,7 @@ import { test, expect } from './fixtures';
 import { browserLogin, seedDoc } from './lib/collab-helpers';
 import {
 	DESKTOP,
-	REAL_PDF,
+	REAL_ZIP,
 	TILE,
 	VIEWER,
 	VIEWER_SHEET,
@@ -247,15 +247,15 @@ test.describe('attachment viewer — mobile phone-sheet layout (PLAN-2392 3c-ii 
 		// tile reaches the converged surface at the phone breakpoint.
 		await browserLogin(page);
 		const doc = await seedDoc(fixture, request, 'Sheet file route');
-		await uploadAttachment(fixture, request, doc.id, 'phone.pdf', 'application/pdf', REAL_PDF);
+		await uploadAttachment(fixture, request, doc.id, 'phone.zip', 'application/zip', REAL_ZIP);
 		await page.goto(itemUrl(fixture, doc.slug));
-		await page.locator(`${TILE}[aria-label*="phone.pdf"]`).click();
+		await page.locator(`${TILE}[aria-label*="phone.zip"]`).click();
 
-		await expect(viewerDialog(page, 'phone.pdf')).toHaveCount(1);
+		await expect(viewerDialog(page, 'phone.zip')).toHaveCount(1);
 		// The phone-sheet layout, with the fallback arm and no bytes.
 		await expect(page.locator(VIEWER_SHEET)).toHaveCount(1);
 		await expect(page.locator(VIEWER_FALLBACK)).toBeVisible();
-		await expect(page.locator(VIEWER_FALLBACK_NAME)).toHaveText('phone.pdf');
+		await expect(page.locator(VIEWER_FALLBACK_NAME)).toHaveText('phone.zip');
 		await expect(page.locator(VIEWER_FALLBACK_NOTE)).toHaveText('No preview available');
 		await expect(page.locator(VIEWER_IMAGE)).toHaveCount(0);
 
