@@ -171,7 +171,8 @@ prune').`,
 // one row per registered session with a liveness verdict. Deterministic
 // and local: it stats sockets and probes pids, it does not ask the server.
 // By default shows sessions that are alive or unknown (a platform that
-// cannot probe); --all adds the dead ones a prune would remove.
+// cannot probe, or an owner in another PID namespace — BUG-4090); --all
+// adds the dead ones a prune would remove.
 func sessionListCmd() *cobra.Command {
 	var (
 		agentFilter string
@@ -191,7 +192,9 @@ signal the record carries — its messaging socket, its owner pid, and the
 identity captured for each at registration where the platform supplies
 one — still checks out; "dead" means one is gone or has been reused by
 something else; "unknown" means one could not be examined (a platform
-that cannot probe pids, a socket that cannot be stat'ed). A legacy row
+that cannot probe pids, a socket that cannot be stat'ed, or an owner
+registered in a different PID namespace from this reader's, such as a
+host session read from inside a sandbox or container). A legacy row
 (registered before sessions carried an agent name) is judged by its pid
 alone: it can say a session exists but not who it is, and it matches no
 --agent filter.
@@ -331,7 +334,8 @@ func printableCell(s string) string {
 
 // sessionPruneCmd is `pad session prune` (TASK-2767): removes the records
 // of dead sessions. Alive records are never touched. Unknown ones — a
-// platform that cannot probe pids, or a malformed file — are removed only
+// platform that cannot probe pids, an owner in another PID namespace
+// (BUG-4090), or a malformed file — are removed only
 // under an explicit --older-than bound, because "cannot tell" is not
 // "dead" and deleting on it would empty a live registry on such a platform.
 func sessionPruneCmd() *cobra.Command {
@@ -345,6 +349,7 @@ log (~/.pad/chat-seen/<pid>.log and .log.1). Never deletes a record it can
 see is alive.
 
 Records whose liveness is unknown (this platform cannot probe the owner,
+the owner was registered in a different PID namespace from this reader's,
 or the file is malformed) are kept unless --older-than is given, in which
 case those older than the bound are deleted too — live or not, since
 unknown means exactly that; it is the only way such a registry ever
