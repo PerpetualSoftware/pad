@@ -574,6 +574,47 @@ describe('mark read', () => {
 		expect(resync).toHaveBeenCalledTimes(1);
 	});
 
+	// U17b (r2 hunter): rows that land while a mark is in flight are marked when it settles.
+	it('marks rows that arrived while a mark was in flight', async () => {
+		await opened();
+		let release!: () => void;
+		h.markRead.mockImplementationOnce(() => new Promise((res) => (release = () => res({ read_seq: 3 }))));
+		thread.tryMarkRead();
+		await flush();
+		server.add(msg(4));
+		await bump();
+		expect(thread.newestSeq).toBe(4);
+		expect(h.markRead).toHaveBeenCalledTimes(1);
+		release();
+		await flush();
+		expect(h.markRead).toHaveBeenCalledTimes(2);
+		expect(h.markRead).toHaveBeenLastCalledWith(1, 4);
+	});
+
+	// U17c: red when the retry is not gated on success.
+	it('a failed mark does not retry by itself, even when rows arrived', async () => {
+		await opened();
+		let fail!: () => void;
+		h.markRead.mockImplementationOnce(() => new Promise((_res, rej) => (fail = () => rej(new Error('500')))));
+		thread.tryMarkRead();
+		await flush();
+		server.add(msg(4));
+		await bump();
+		fail();
+		await flush();
+		expect(h.markRead).toHaveBeenCalledTimes(1);
+	});
+
+	// U17d: red when the retry is not gated on the window having grown past the marked seq.
+	it('a successful mark with nothing new does not try again', async () => {
+		await opened();
+		const again = vi.spyOn(thread, 'tryMarkRead');
+		thread.tryMarkRead();
+		await flush();
+		expect(h.markRead).toHaveBeenCalledTimes(1);
+		expect(again).toHaveBeenCalledTimes(1);
+	});
+
 	it('does not repeat a seq the server already has', async () => {
 		await opened();
 		thread.tryMarkRead();

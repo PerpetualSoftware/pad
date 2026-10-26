@@ -294,19 +294,24 @@ export class ChatThread {
 		if (seq <= this.#readSeq) return;
 		const current = this.#guard();
 		this.#marking = true;
+		let marked = false;
 		api.chat
 			.markRead(n, seq)
 			.then(() => {
 				if (!current()) return;
+				marked = true;
 				this.#readSeq = Math.max(this.#readSeq, seq);
 				// POST /read publishes no notice, so the badge is stale until this.
 				chatStore.resync();
-				// The window may have grown while this was in flight.
-				if (this.newestSeq > this.#readSeq) queueMicrotask(() => this.tryMarkRead());
 			})
 			.catch(() => {})
 			.finally(() => {
-				if (current()) this.#marking = false;
+				if (!current()) return;
+				this.#marking = false;
+				// Rows that landed while this was in flight. Only after a success, so a
+				// failing mark cannot loop, and only when the window grew past `seq`
+				// (TASK-4044 r2, ruling on the r2 triage).
+				if (marked && this.newestSeq > seq) this.tryMarkRead();
 			});
 	}
 

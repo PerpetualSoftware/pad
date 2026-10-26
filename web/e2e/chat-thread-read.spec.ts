@@ -203,11 +203,13 @@ test('E8: a ten-message burst costs at most four reads per message per tab', asy
 		await expect(rows(a)).toHaveCount(1);
 		await expect(rows(b)).toHaveCount(1);
 
-		let reads = 0;
-		a.on('response', (r) => {
-			const u = new URL(r.url());
-			if (r.request().method() === 'GET' && u.pathname === `/api/v1/me/conversations/${n}/messages`) reads++;
-		});
+		const reads = { a: 0, b: 0 };
+		for (const [tab, page] of [['a', a], ['b', b]] as const) {
+			page.on('response', (r) => {
+				const u = new URL(r.url());
+				if (r.request().method() === 'GET' && u.pathname === `/api/v1/me/conversations/${n}/messages`) reads[tab]++;
+			});
+		}
 		for (let i = 1; i <= 10; i++) {
 			await send(request, fixture, n, `burst ${i}`, agent);
 			await a.waitForTimeout(450);
@@ -217,9 +219,12 @@ test('E8: a ten-message burst costs at most four reads per message per tab', asy
 		// Measured on this server: 36 reads for 10 messages in one tab. A hint costs two
 		// reads (the newest-anchored page and the tombstone page), and the mark-read it
 		// triggers resyncs the badge, whose unread fetch bumps the version and costs two
-		// more (partly coalesced). So the bound is 4 per message; the agent send bucket
-		// (20/min) keeps a sustained burst under 80 reads/min against the 600/min API bucket.
-		expect(reads).toBeLessThanOrEqual(10 * 4 + 4);
+		// more (partly coalesced). So the bound is 4 per message, plus 4 of slack for one
+		// coalesced refresh, in EACH tab; the agent send bucket (20/min) keeps a sustained
+		// burst under 80 reads/min per tab against the 600/min API bucket.
+		console.log(`E8 reads: tab a ${reads.a}, tab b ${reads.b}`);
+		expect(reads.a).toBeLessThanOrEqual(10 * 4 + 4);
+		expect(reads.b).toBeLessThanOrEqual(10 * 4 + 4);
 	} finally {
 		await ctx.close();
 	}
