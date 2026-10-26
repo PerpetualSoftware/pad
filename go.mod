@@ -29,7 +29,7 @@ require (
 	github.com/disintegration/imaging v1.6.2
 	github.com/dop251/goja v0.0.0-20260926152631-39ec2650adc9
 	github.com/fatih/color v1.19.0
-	github.com/go-chi/chi/v5 v5.4.0
+	github.com/go-chi/chi/v5 v5.5.0
 	github.com/go-chi/cors v1.2.2
 	github.com/go-json-experiment/json v0.0.0-20260820222146-c27c302e5fc3
 	github.com/go-shiori/go-readability v0.0.0-20251205110129-5db1dc9836f0
