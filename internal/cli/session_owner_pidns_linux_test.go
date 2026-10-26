@@ -242,6 +242,9 @@ func TestOwnerLiveness_PIDNamespace(t *testing.T) {
 	stamped := func(o SessionOwner) SessionOwner { o.PIDNamespace = recordedNS; return o }
 	reused := live
 	reused.ProcStart = "0"
+	// A zombie: signalable (kill(pid, 0) succeeds) but exited, so the token
+	// read reports errProcZombie. Any recorded token reaches that branch.
+	zombie := SessionOwner{PID: zombiePID(t), ProcStart: "1"}
 	errNS := errors.New("no /proc/self/ns/pid")
 
 	mntStamped := func(o SessionOwner) SessionOwner { o.MountNamespace = recordedMnt; return o }
@@ -281,7 +284,14 @@ func TestOwnerLiveness_PIDNamespace(t *testing.T) {
 		// Unstamped pid, reader NOT in the init ns: option (a).
 		{"pid unstamped, foreign reader, dead pid", dead, away, LivenessUnknown},
 		{"pid unstamped, foreign reader, live pid", live, away, LivenessAlive},
-		{"pid unstamped, foreign reader, reused pid", reused, away, LivenessDead},
+		// ...and a reader that may be elsewhere never manufactures dead: a
+		// token mismatch or a zombie at the number describes THIS namespace
+		// (lead r2 ruling, Q3).
+		{"pid unstamped, foreign reader, reused pid", reused, away, LivenessUnknown},
+		{"pid unstamped, foreign reader, zombie", zombie, away, LivenessUnknown},
+		{"pid unstamped, init reader, reused pid", reused, initHome, LivenessDead},
+		{"pid unstamped, init reader, zombie", zombie, initHome, LivenessDead},
+		{"same ns, zombie", stamped(zombie), home, LivenessDead},
 		// Unstamped pid, reader cannot tell: the platform-without-namespaces rule.
 		{"pid unstamped, reader pid ns unreadable, dead pid", dead, reader{pidErr: errNS, mnt: recordedMnt}, LivenessDead},
 
@@ -520,5 +530,67 @@ func TestArmState_SocketKeyedMountNamespace(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("arm file not reaped from its own mount namespace: %v", err)
+	}
+}
+
+// zombiePID returns the pid of an exited child that has not been reaped:
+// it still answers kill(pid, 0), and its /proc state is 'Z'.
+func zombiePID(t *testing.T) int {
+	t.Helper()
+	cmd := exec.Command("sh", "-c", "exit 0")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Wait() })
+	pid := cmd.Process.Pid
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		if fields, err := procStatFields(pid); err == nil && len(fields) > 0 && fields[0] == "Z" {
+			return pid
+		}
+	}
+	t.Fatalf("child %d never became a zombie", pid)
+	return 0
+}
+
+// TestChatDirection_MountNamespace: the chat-direction file is the third
+// socket-identity writer (after the registry capture and the arm write;
+// BUG-4090 r2, Codex C1). It carries the socket's mount namespace, so a
+// gone socket read from another one keeps the file and stays off, and read
+// from its own reaps it.
+func TestChatDirection_MountNamespace(t *testing.T) {
+	socket := directionEnv(t)
+	stubReaderMountNS(t, recordedMnt, nil)
+	if _, err := WriteArmState(); err != nil {
+		t.Fatal(err)
+	}
+	path, err := WriteChatDirection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := readChatDirection(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.MountNamespace != recordedMnt {
+		t.Fatalf("chat-direction file: mnt_ns=%d, want %d", st.MountNamespace, recordedMnt)
+	}
+	if err := os.Remove(socket); err != nil {
+		t.Fatal(err)
+	}
+
+	stubReaderMountNS(t, foreignMnt, nil)
+	if ChatDirectionOn() {
+		t.Fatal("chat direction on with its socket gone, read from another mount namespace")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("chat-direction file reaped from another mount namespace: %v", err)
+	}
+
+	stubReaderMountNS(t, recordedMnt, nil)
+	if ChatDirectionOn() {
+		t.Fatal("chat direction on with its socket gone, read from its own mount namespace")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("chat-direction file not reaped from its own mount namespace: %v", err)
 	}
 }

@@ -248,8 +248,9 @@ const (
 	// pidNSUnstampedForeign: the record names no namespace (written before
 	// pid_ns existed, or for a pid the recorder could not see) and the
 	// reader is not in the init namespace, so the boundary may or may not
-	// be there. A positive pid probe still stands, token-checked; a
-	// negative one is not evidence (lead ruling, option (a)).
+	// be there. Only a token match stands (alive); every negative —
+	// ESRCH, a token mismatch, ENOENT, a zombie — is unknown (lead
+	// ruling, option (a), as corrected at r2).
 	pidNSUnstampedForeign
 )
 
@@ -338,12 +339,16 @@ func pidLiveness(o *SessionOwner, rel pidNSRelation) Liveness {
 		// would ask about whatever this namespace has at that number.
 		return LivenessUnknown
 	}
-	absent := LivenessDead
+	// A reader that may be in another namespace never manufactures dead:
+	// ESRCH, a different process at the number, or one that vanished or is
+	// a zombie all describe whatever THIS namespace holds there. Only a
+	// token match — positive evidence — stands (lead r2 ruling on (a)).
+	negative := LivenessDead
 	if rel == pidNSUnstampedForeign {
-		absent = LivenessUnknown
+		negative = LivenessUnknown
 	}
 	if !pidAlive(o.PID) {
-		return absent
+		return negative
 	}
 	if o.ProcStart == "" {
 		return LivenessAlive
@@ -354,9 +359,9 @@ func pidLiveness(o *SessionOwner, rel pidNSRelation) Liveness {
 		if now == o.ProcStart {
 			return LivenessAlive
 		}
-		return LivenessDead // a reused pid — a different process
+		return negative // a reused pid — a different process
 	case errors.Is(err, os.ErrNotExist), errors.Is(err, errProcZombie):
-		return LivenessDead // gone between the signal probe and the read, or exited awaiting reap
+		return negative // gone between the signal probe and the read, or exited awaiting reap
 
 	default:
 		return LivenessUnknown // /proc unreadable or unsupported here — not evidence of absence

@@ -192,9 +192,10 @@ signal the record carries — its messaging socket, its owner pid, and the
 identity captured for each at registration where the platform supplies
 one — still checks out; "dead" means one is gone or has been reused by
 something else; "unknown" means one could not be examined (a platform
-that cannot probe pids, a socket that cannot be stat'ed, or an owner
-registered in a different PID or mount namespace from this reader's, such as a
-host session read from inside a sandbox or container). A legacy row
+that cannot probe pids, a socket that cannot be stat'ed, or an owner that
+this version registered in a different PID or mount namespace from this
+reader's, such as a host session read from inside a sandbox or container;
+a row registered before this version may still read dead there). A legacy row
 (registered before sessions carried an agent name) is judged by its pid
 alone: it can say a session exists but not who it is, and it matches no
 --agent filter.
@@ -349,8 +350,9 @@ log (~/.pad/chat-seen/<pid>.log and .log.1). Never deletes a record it can
 see is alive.
 
 Records whose liveness is unknown (this platform cannot probe the owner,
-the owner was registered in a different PID or mount namespace from this reader's,
-or the file is malformed) are kept unless --older-than is given, in which
+this version registered the owner in a different PID or mount namespace
+from this reader's, or the file is malformed) are kept unless --older-than
+is given, in which
 case those older than the bound are deleted too — live or not, since
 unknown means exactly that; it is the only way such a registry ever
 shrinks, and an explicit choice for that reason.
