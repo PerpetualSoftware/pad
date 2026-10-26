@@ -664,3 +664,46 @@ func TestArmStateOwnerVerdict_HeadlessNoTokenForeign(t *testing.T) {
 		t.Fatalf("headless arm, no token, init reader: got %s, want alive (the bare-probe residual)", got)
 	}
 }
+
+// TestListSessions_LegacyRowByReaderNamespace drives both branches of the
+// v1 legacy row's verdict by seam, so the non-init branch runs on an
+// ordinary runner and not only under Nix (lead ruling 8af75879). A v1 file
+// has no session_pid, pid_ns or token; its owner is the socket-derived pid.
+// cmd/pad's table test asserts the same rule from whatever namespace it is
+// in.
+func TestListSessions_LegacyRowByReaderNamespace(t *testing.T) {
+	isolateHome(t, t.TempDir())
+	clearSessionEnv(t)
+	dir, err := SessionsDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := `{"pid": 1, "cwd": "/legacy", "messaging_socket_path": "/run/x/` + itoa(os.Getpid()) + `.sock", "registered_at": "2026-08-20T00:00:00Z"}`
+	if err := os.WriteFile(filepath.Join(dir, "1.json"), []byte(legacy), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		ns   uint64
+		err  error
+		want Liveness
+	}{
+		{"init reader: bare-probe residual", initPIDNamespace, nil, LivenessAlive},
+		{"non-init reader: no token to match", foreignNS, nil, LivenessUnknown},
+		{"reader without procfs: no token to match", 0, errors.New("no /proc/self/ns/pid"), LivenessUnknown},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stubReaderNS(t, tc.ns, tc.err)
+			recs, err := ListSessions()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(recs) != 1 || !recs[0].Legacy || recs[0].SessionPID != os.Getpid() {
+				t.Fatalf("want the one legacy row owned by pid %d: %+v", os.Getpid(), recs)
+			}
+			if recs[0].Liveness != tc.want {
+				t.Fatalf("legacy row: got %s, want %s", recs[0].Liveness, tc.want)
+			}
+		})
+	}
+}

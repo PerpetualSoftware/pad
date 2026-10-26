@@ -195,6 +195,11 @@ func TestSessionList_FiltersOrderAndAll(t *testing.T) {
 	dead := exitedPID(t)
 	dir := filepath.Join(os.Getenv("HOME"), ".pad", "sessions")
 	deadRec := map[string]any{"session_pid": dead, "session_pid_source": "CLAUDE_PID", "agent": "ghost", "cwd": dirA, "pid": 1, "registered_at": "2026-08-01T00:00:00Z"}
+	// Stamped with our own namespace, as a real registration would be, so
+	// the dead pid reads dead wherever the test runs (BUG-4090).
+	if ns := testPIDNamespace(t); ns != 0 {
+		deadRec["pid_ns"] = ns
+	}
 	data, _ := json.Marshal(deadRec)
 	if err := os.WriteFile(filepath.Join(dir, strconv.Itoa(dead)+".json"), data, 0600); err != nil {
 		t.Fatal(err)
@@ -254,7 +259,14 @@ func TestSessionList_TableMarksLegacyAndAnonymous(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := runSessionCmd(t, "list")
-	if !strings.Contains(out, "alive (legacy)") || !strings.Contains(out, "\n-\t") && !strings.Contains(out, "\n-  ") {
+	// A v1 row carries no pid_ns and no start token. From the init namespace
+	// its live pid reads alive (the bare-probe residual); from any other, the
+	// number may be anyone's, so it reads unknown (BUG-4090 r4, A-1).
+	wantState := "alive (legacy)"
+	if !inInitPIDNamespace(t) {
+		wantState = "unknown (legacy)"
+	}
+	if !strings.Contains(out, wantState) || !strings.Contains(out, "\n-\t") && !strings.Contains(out, "\n-  ") {
 		t.Fatalf("table must mark the legacy row and show '-' for its missing agent:\n%s", out)
 	}
 	// The PID column is the socket-derived owner (ours), not the v1 file's
@@ -273,6 +285,9 @@ func TestSessionPrune_Verb(t *testing.T) {
 	dir := filepath.Join(os.Getenv("HOME"), ".pad", "sessions")
 	dead := exitedPID(t)
 	deadRec := map[string]any{"session_pid": dead, "agent": "ghost", "cwd": "/x", "pid": 1, "registered_at": "2026-08-01T00:00:00Z"}
+	if ns := testPIDNamespace(t); ns != 0 {
+		deadRec["pid_ns"] = ns // a same-namespace row in any namespace (BUG-4090)
+	}
 	data, _ := json.Marshal(deadRec)
 	deadPath := filepath.Join(dir, strconv.Itoa(dead)+".json")
 	if err := os.WriteFile(deadPath, data, 0600); err != nil {
