@@ -341,14 +341,32 @@ describe('chat store (TASK-4044)', () => {
 			expect(h.unread).toHaveBeenCalledTimes(2);
 		});
 
-		it('a resync replaces a pending retry', async () => {
+		it('a hint just before the retry is due still gives one fetch, not two', async () => {
 			h.unread.mockRejectedValueOnce(new Error('boom'));
 			store.resync();
 			await flush();
-			store.resync();
+			// The debounce would land AFTER the retry's due time, so only the
+			// cancel keeps the two from both fetching.
+			await vi.advanceTimersByTimeAsync(CHAT_RETRY_MS - 100);
+			store.onHint(notice);
+			await vi.advanceTimersByTimeAsync(CHAT_HINT_DEBOUNCE_MS + 100);
 			await flush();
 			expect(h.unread).toHaveBeenCalledTimes(2);
-			await vi.advanceTimersByTimeAsync(CHAT_RETRY_MS * 2);
+		});
+
+		it('a resync just before the retry is due still gives one fetch, not two', async () => {
+			h.unread.mockRejectedValueOnce(new Error('boom'));
+			store.resync();
+			await flush();
+			await vi.advanceTimersByTimeAsync(CHAT_RETRY_MS - 100);
+			// The resync's own fetch is in flight when the retry would be due.
+			let release!: () => void;
+			h.unread.mockImplementationOnce(() => new Promise((res) => (release = () => res(resp([[1, 2]])))));
+			store.resync();
+			await flush();
+			await vi.advanceTimersByTimeAsync(200);
+			release();
+			await flush();
 			expect(h.unread).toHaveBeenCalledTimes(2);
 		});
 
