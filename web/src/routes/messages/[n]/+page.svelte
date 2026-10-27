@@ -28,6 +28,9 @@
 	let lastNewest = 0;
 	let replyTo = $state<ChatMessage | null>(null);
 	let lastOwnSend = 0;
+	// Loading newer messages while a send is in flight would race the send's own
+	// confirmed row into the window (TASK-4044 ruling 2a03a442).
+	let sending = $derived(thread.items.some((it) => it.kind === 'pending' && it.pending.status === 'sending'));
 
 	// The presence dot polls only while this page is open.
 	onMount(() => chatInbox.startPresence());
@@ -216,7 +219,8 @@
 					<button
 						type="button"
 						class="newer"
-						disabled={thread.loadingNewer}
+						disabled={thread.loadingNewer || sending}
+						aria-busy={sending ? 'true' : undefined}
 						onclick={() => void thread.loadNewer()}>Show newer messages</button
 					>
 					{#if thread.newerFailed}

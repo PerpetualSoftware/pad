@@ -702,6 +702,43 @@ describe('/messages/[n] thread write path (TASK-4044 PR 3b)', () => {
 		expect([...container.querySelectorAll('article')].map((a) => a.getAttribute('data-seq'))).toEqual(['1', '2', '3']);
 	});
 
+	it('Show newer messages is disabled and busy while a send is in flight, and works once it settles', async () => {
+		page.params = { n: '3' };
+		h.getConversation.mockResolvedValue({ ...conv(3), last_seq: 400, read_seq: 0, unread: 400 });
+		h.listMessages.mockImplementation(async (_n: number, q: { after_seq?: number }) =>
+			q.after_seq === 0
+				? pageOf([message(199), message(200)], { read_seq: 0, has_more: true, last_seq: 400 })
+				: pageOf([message(201)], { read_seq: 0, last_seq: 400 })
+		);
+		const { container } = render(ThreadPage);
+		await settle();
+		const newer = () => container.querySelector<HTMLButtonElement>('button.newer')!;
+		expect(newer().disabled).toBe(false);
+		expect(newer().hasAttribute('aria-busy')).toBe(false);
+		let answer!: (v: unknown) => void;
+		h.sendMessage.mockReturnValue(new Promise((r) => (answer = r)));
+		box(container).value = 'hi';
+		box(container).dispatchEvent(new Event('input', { bubbles: true }));
+		await settle();
+		sendBtn(container).click();
+		await settle();
+		expect(container.querySelector('article.pending')).not.toBeNull();
+		expect(newer().disabled).toBe(true);
+		expect(newer().getAttribute('aria-busy')).toBe('true');
+		const before = h.listMessages.mock.calls.length;
+		newer().click();
+		await settle();
+		expect(h.listMessages.mock.calls.length).toBe(before);
+		// The send fails: it settles, and the control works again.
+		answer(Promise.reject(new Error('500')));
+		await settle();
+		expect(newer().disabled).toBe(false);
+		expect(newer().hasAttribute('aria-busy')).toBe(false);
+		newer().click();
+		await settle();
+		expect(h.listMessages.mock.calls.length).toBeGreaterThan(before);
+	});
+
 	// B15: red if the confirmed row is discarded while a gap is open. The page
 	// shows the sender's row and none of the old window beside it.
 	it('an own send beyond a gap shows the sent row, with no gap row shown as contiguous', async () => {

@@ -396,7 +396,7 @@ afterEach(() => {
 });
 
 describe('window ops (property)', () => {
-	it(`holds I1-I9 over ${ONLY === null ? SEEDS : 1} seeded walks of ${STEPS} steps`, async () => {
+	it(`holds I1-I10 over ${ONLY === null ? SEEDS : 1} seeded walks of ${STEPS} steps`, async () => {
 		const seeds = ONLY === null ? Array.from({ length: SEEDS }, (_, i) => i + 1) : [ONLY];
 		for (const seed of seeds) {
 			const trace: string[] = [];
