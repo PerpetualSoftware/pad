@@ -44,7 +44,7 @@
 import { untrack } from 'svelte';
 import { api, isNotFoundError, isReplyTargetDeletedError, isReplyTargetNotFoundError } from '$lib/api/client';
 import { isRequestTooLargeError, validateDraft, type SendBlock } from '$lib/chat/compose';
-import { ChatWindow, unreadDividerIndex, type WindowItem } from '$lib/chat/model';
+import { ChatWindow, mergeBySeq, unreadDividerIndex, type WindowItem } from '$lib/chat/model';
 import { authStore } from '$lib/stores/auth.svelte';
 import { chatStore } from '$lib/stores/chat.svelte';
 import type { ChatConversationSummary, ChatMessage } from '$lib/types';
@@ -94,6 +94,8 @@ export class ChatThread {
 	#readSeq = 0;
 	#refreshing = false;
 	#dirty = false;
+	/** Bumped when the window moves to the newest page; older answers are dropped. */
+	#epoch = 0;
 	#marking = false;
 	#stopRoot: () => void;
 	#stopIdentity: () => void;
@@ -213,6 +215,7 @@ export class ChatThread {
 		const n = this.#n;
 		if (n === null || this.status !== 'ready' || this.loadingOlder || !this.hasOlder) return;
 		const current = this.#guard();
+		const epoch = this.#epoch;
 		this.loadingOlder = true;
 		this.olderFailed = false;
 		try {
@@ -220,7 +223,7 @@ export class ChatThread {
 				before_seq: this.messages[0].seq,
 				limit: THREAD_PAGE
 			});
-			if (!current()) return;
+			if (!current() || epoch !== this.#epoch) return;
 			this.#win.merge(page.messages);
 			this.#publish(this.#lastSeq);
 		} catch {
@@ -235,6 +238,7 @@ export class ChatThread {
 		const n = this.#n;
 		if (n === null || this.status !== 'ready' || this.loadingNewer || !this.hasNewer) return;
 		const current = this.#guard();
+		const epoch = this.#epoch;
 		this.loadingNewer = true;
 		this.newerFailed = false;
 		try {
@@ -242,7 +246,7 @@ export class ChatThread {
 				after_seq: this.newestSeq,
 				limit: THREAD_MAX_PAGE
 			});
-			if (!current()) return;
+			if (!current() || epoch !== this.#epoch) return;
 			this.#win.merge(page.messages);
 			this.#publish(page.has_more ? page.last_seq : null);
 		} catch {
@@ -266,6 +270,7 @@ export class ChatThread {
 		}
 		if (this.status !== 'ready') return;
 		const current = this.#guard();
+		const epoch = this.#epoch;
 		this.#refreshing = true;
 		this.refreshFailed = false;
 		try {
@@ -274,7 +279,7 @@ export class ChatThread {
 				let cursor = this.newestSeq;
 				for (let pages = 0; pages < REFRESH_MAX_PAGES; pages++) {
 					const page = await api.chat.listMessages(n, { after_seq: cursor, limit: THREAD_MAX_PAGE });
-					if (!current()) return;
+					if (!current() || epoch !== this.#epoch) return;
 					this.#win.merge(page.messages);
 					this.#publish(page.has_more ? page.last_seq : null);
 					if (!page.has_more || page.messages.length === 0) break;
@@ -287,7 +292,7 @@ export class ChatThread {
 				const page = gap
 					? await api.chat.listMessages(n, { after_seq: lo - 1, limit: THREAD_MAX_PAGE })
 					: await api.chat.listMessages(n, { limit: THREAD_MAX_PAGE });
-				if (!current()) return;
+				if (!current() || epoch !== this.#epoch) return;
 				this.#win.merge(page.messages.filter((m) => m.seq >= lo && m.seq <= hi));
 				this.#publish(this.#lastSeq);
 			}
@@ -353,6 +358,34 @@ export class ChatThread {
 		this.#settled();
 	}
 
+	/**
+	 * Move the window to the newest page after an own send confirmed beyond a gap.
+	 * The bubble stays until the page lands. If the fetch fails the window becomes
+	 * the confirmed row alone, still anchored at the end. The epoch bump makes any
+	 * older fetch (loadNewer, loadOlder, refresh) drop its answer, so nothing from
+	 * the old window is merged into the new one.
+	 */
+	async #reanchor(
+		n: number,
+		current: () => boolean,
+		win: ChatWindow,
+		opKey: string,
+		sent: ChatMessage
+	): Promise<void> {
+		let rows: ChatMessage[] = [];
+		try {
+			const page = await api.chat.listMessages(n, { limit: THREAD_PAGE });
+			if (!current()) return;
+			rows = page.messages;
+		} catch {
+			if (!current()) return;
+		}
+		this.#epoch++;
+		win.discardPending(opKey);
+		win.messages = mergeBySeq([], [...rows, sent]);
+		this.#publish(null);
+	}
+
 	async #post(n: number, opKey: string, body: string, replyToSeq?: number): Promise<SendOutcome> {
 		const current = this.#guard();
 		const win = this.#win;
@@ -370,10 +403,10 @@ export class ChatThread {
 			});
 			if (!current()) return 'stale';
 			if (this.hasNewer) {
-				// The row belongs beyond a gap: merging it would hide the gap.
-				win.discardPending(opKey);
-				this.#lastSeq = Math.max(this.#lastSeq, res.message.seq);
-				this.#publish(this.#lastSeq);
+				// The row belongs beyond a gap, so the window moves to the newest page
+				// and nothing is merged across the gap (3b pre-r1 ruling b3dd1e54).
+				await this.#reanchor(n, current, win, opKey, res.message);
+				if (!current()) return 'stale';
 			} else {
 				win.resolvePending(opKey, res.message);
 				this.#publish(null);

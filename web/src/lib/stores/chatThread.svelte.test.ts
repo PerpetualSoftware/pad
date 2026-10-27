@@ -789,15 +789,38 @@ describe('send', () => {
 		expect(pendingOf()).toHaveLength(0);
 	});
 
-	it('does not put a row beyond a gap into the window', async () => {
+	// U-gap (B15): red if the confirmed row is discarded when a gap is open. The
+	// window moves to the newest page, so the sender sees the row and no row of
+	// the old window sits beside it as if contiguous.
+	it('re-anchors at the newest page after a send beyond a gap, so the sender sees it', async () => {
 		server.fill(400);
 		server.readSeq = 0;
 		await thread.open(1); // unread 400 > 200: the window ends at 200, hasNewer
 		expect(thread.hasNewer).toBe(true);
+		const scrollBefore = thread.ownSendTick;
 		wireSend();
 		expect(await thread.send('hello')).toBe('sent');
-		expect(thread.newestSeq).toBe(200);
-		expect(thread.hasNewer).toBe(true);
+		const seqs = thread.messages.map((m) => m.seq);
+		const sent = thread.messages.find((m) => m.body === 'hello');
+		expect(sent).toBeDefined();
+		expect(thread.newestSeq).toBe(sent!.seq);
+		for (let i = 1; i < seqs.length; i++) expect(seqs[i]).toBe(seqs[i - 1] + 1);
+		expect(seqs).not.toContain(200);
+		expect(thread.hasNewer).toBe(false);
+		expect(thread.hasOlder).toBe(true);
+		expect(pendingOf()).toHaveLength(0);
+		expect(thread.ownSendTick).toBeGreaterThan(scrollBefore);
+	});
+
+	it('falls back to the confirmed row alone when the newest page cannot be fetched', async () => {
+		server.fill(400);
+		server.readSeq = 0;
+		await thread.open(1);
+		wireSend();
+		h.listMessages.mockRejectedValueOnce(new Error('offline'));
+		expect(await thread.send('hello')).toBe('sent');
+		expect(thread.messages.map((m) => m.body)).toEqual(['hello']);
+		expect(thread.hasNewer).toBe(false);
 		expect(pendingOf()).toHaveLength(0);
 	});
 

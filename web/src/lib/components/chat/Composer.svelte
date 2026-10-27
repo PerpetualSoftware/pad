@@ -96,12 +96,6 @@
 			placeholder="Message"
 			aria-label="Message"
 			oninput={() => (notice = '')}
-			onkeydown={(e) => {
-				if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-					e.preventDefault();
-					void send();
-				}
-			}}
 		></textarea>
 		<button type="submit" class="send" disabled={block !== null}>Send</button>
 	</div>

@@ -702,6 +702,36 @@ describe('/messages/[n] thread write path (TASK-4044 PR 3b)', () => {
 		expect([...container.querySelectorAll('article')].map((a) => a.getAttribute('data-seq'))).toEqual(['1', '2', '3']);
 	});
 
+	// B15: red if the confirmed row is discarded while a gap is open. The page
+	// shows the sender's row and none of the old window beside it.
+	it('an own send beyond a gap shows the sent row, with no gap row shown as contiguous', async () => {
+		page.params = { n: '3' };
+		h.getConversation.mockResolvedValue({ ...conv(3), last_seq: 400, read_seq: 0, unread: 400 });
+		h.listMessages.mockImplementation(async (_n: number, q: { after_seq?: number; limit?: number }) =>
+			q.after_seq === 0
+				? pageOf([message(199), message(200)], { read_seq: 0, has_more: true, last_seq: 400 })
+				: pageOf([message(400), message(401, { mine: true, body: 'hello' })], { read_seq: 0 })
+		);
+		const { container } = render(ThreadPage);
+		await settle();
+		expect(container.textContent).toContain('Show newer messages');
+		h.sendMessage.mockResolvedValue({
+			message: message(401, { mine: true, author_agent_key: '', author_is_human: true, source: 'web', body: 'hello' }),
+			replayed: false,
+			refs: [],
+			refs_truncated: false
+		});
+		box(container).value = 'hello';
+		box(container).dispatchEvent(new Event('input', { bubbles: true }));
+		await settle();
+		sendBtn(container).click();
+		await settle();
+		const seqs = [...container.querySelectorAll('article')].map((a) => a.getAttribute('data-seq'));
+		expect(seqs).toContain('401');
+		expect(seqs).not.toContain('200');
+		expect(container.textContent).not.toContain('Show newer messages');
+	});
+
 	it('Reply from the menu quotes the row and sends its seq, then clears the bar', async () => {
 		const { container } = await openThread();
 		const row = container.querySelector('article[data-seq="2"]')!;

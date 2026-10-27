@@ -106,13 +106,6 @@ describe('sending', () => {
 		expect(onClearReply).toHaveBeenCalledTimes(1);
 	});
 
-	it('Ctrl+Enter sends', async () => {
-		const { box, onSend } = mount();
-		await type(box, 'hi');
-		await fireEvent.keyDown(box, { key: 'Enter', ctrlKey: true });
-		expect(onSend).toHaveBeenCalledWith('hi', undefined);
-	});
-
 	// U23: red if a deleted reply target stays set (B3). The draft comes back.
 	it('on a deleted reply target: drops the target, keeps the draft, says why', async () => {
 		const { box, send, onSend, onClearReply, container } = mount({ replyTo: target });
