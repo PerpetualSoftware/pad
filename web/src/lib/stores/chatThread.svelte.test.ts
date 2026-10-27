@@ -812,15 +812,18 @@ describe('send', () => {
 		expect(thread.ownSendTick).toBeGreaterThan(scrollBefore);
 	});
 
-	it('falls back to the confirmed row alone when the newest page cannot be fetched', async () => {
+	// 3b r4 C1 (ruling ec6bbe31), N15: red with the window replaced by the confirmed row alone.
+	it('keeps the window and detaches the row when the newest page cannot be fetched', async () => {
 		server.fill(400);
 		server.readSeq = 0;
 		await thread.open(1);
+		const before = seqs();
 		wireSend();
 		h.listMessages.mockRejectedValueOnce(new Error('offline'));
 		expect(await thread.send('hello')).toBe('sent');
-		expect(thread.messages.map((m) => m.body)).toEqual(['hello']);
-		expect(thread.hasNewer).toBe(false);
+		expect(seqs()).toEqual(before);
+		expect(thread.hasNewer).toBe(true);
+		expect(thread.detached.map((m) => m.body)).toEqual(['hello']);
 		expect(pendingOf()).toHaveLength(0);
 	});
 
@@ -926,6 +929,64 @@ describe('refresh during a send', () => {
 		await flush();
 		expect(seqs()).toEqual(Array.from({ length: 205 }, (_, i) => i + 1));
 		expect(thread.hasNewer).toBe(false);
+	});
+});
+
+describe('deferred refresh release (3b r4 C2)', () => {
+	/** A send held in flight, a bump deferred behind it, and a peer row the deferred refresh must fetch. */
+	async function deferredBehindSend() {
+		await readyThread();
+		wireSend();
+		let settle!: (v: 'ok' | Error) => void;
+		const real = h.sendMessage.getMockImplementation()!;
+		h.sendMessage.mockImplementationOnce(
+			(n: number, b: never) => new Promise((res, rej) => (settle = (v) => (v === 'ok' ? res(real(n, b)) : rej(v))))
+		);
+		const done = thread.send('mine');
+		await flush();
+		server.add(msg(4, { body: 'peer' }));
+		h.listMessages.mockClear();
+		await bump();
+		expect(h.listMessages).not.toHaveBeenCalled();
+		return { done, settle };
+	}
+
+	// N17: red with the call in discard() deleted.
+	it('runs after Discard of the send it waited for', async () => {
+		const { done, settle } = await deferredBehindSend();
+		thread.discard((pendingOf()[0] as { pending: { op_key: string } }).pending.op_key);
+		await flush();
+		expect(h.listMessages).toHaveBeenCalled();
+		expect(seqs()).toContain(4);
+		settle(new Error('late'));
+		await done;
+	});
+
+	// N18: red with the call after a successful send deleted.
+	it('runs after the send is confirmed', async () => {
+		const { done, settle } = await deferredBehindSend();
+		settle('ok');
+		expect(await done).toBe('sent');
+		await flush();
+		expect(seqs()).toContain(4);
+	});
+
+	// N19: red with the call after a refusal deleted.
+	it('runs after the send is refused', async () => {
+		const { done, settle } = await deferredBehindSend();
+		settle(apiError('reply_target_deleted'));
+		expect(await done).toBe('reply_deleted');
+		await flush();
+		expect(seqs()).toEqual([1, 2, 3, 4]);
+	});
+
+	// N20: red with the call after a failed send deleted.
+	it('runs after the send fails', async () => {
+		const { done, settle } = await deferredBehindSend();
+		settle(new Error('network'));
+		expect(await done).toBe('failed');
+		await flush();
+		expect(seqs()).toEqual([1, 2, 3, 4]);
 	});
 });
 
@@ -1318,6 +1379,38 @@ describe('S1 serialized window', () => {
 		await flush();
 		expect(seqs()).toEqual([1, 2, 3, 4]);
 		expect(pendingOf()).toHaveLength(0);
+	});
+
+	// 3b r4 H1 (ruling ec6bbe31), N16: red with #fill not rechecking for a send in flight after its await.
+	it('detaches rather than fill a page that carries the row of a send retried meanwhile (I9, N16)', async () => {
+		await readyThread(3);
+		wireSend();
+		const real = h.sendMessage.getMockImplementation()!;
+		h.sendMessage.mockImplementationOnce(async (n: number, b: never) => {
+			await real(n, b); // F commits as 4, the answer is lost
+			throw new Error('timeout');
+		});
+		expect(await thread.send('F')).toBe('failed');
+		const keyF = (pendingOf()[0] as { pending: { op_key: string } }).pending.op_key;
+		let land!: () => void;
+		h.listMessages.mockImplementationOnce((_n: number, o: object) => new Promise((res) => (land = () => res(server.list(o)))));
+		const a = thread.send('A'); // commits as 5: past the end, so the fill page after 3 is held
+		await flush();
+		expect(typeof land).toBe('function');
+		const answerF = heldCommittedSend();
+		const f = thread.retry(keyF);
+		await flush();
+		land(); // the page carries F's row 4 while F's bubble is sending
+		await flush();
+		expect(seqs()).toEqual([1, 2, 3]);
+		expect(expectNoRowBesideItsBubble()).toEqual({ sending: 1, own: 1 });
+		answerF()();
+		expect(await f).toBe('sent');
+		expect(await a).toBe('sent');
+		await flush();
+		expect(pendingOf()).toHaveLength(0);
+		const own = [...thread.messages, ...thread.detached].filter((m) => m.mine).map((m) => m.seq);
+		expect(own.sort()).toEqual([4, 5]);
 	});
 
 	// Red with the chain kept across a reset (N10): the reopen would wait for the old fetch.

@@ -364,16 +364,16 @@ export class ChatThread {
 		if (this.hasNewer || sent.seq > this.newestSeq + 1) {
 			at = 'detach';
 			if (!others() && this.hasNewer) {
-				let rows: ChatMessage[] = [];
+				let rows: ChatMessage[] | null = null;
 				try {
 					rows = (await api.chat.listMessages(n, { limit: THREAD_PAGE })).messages;
-				} catch {} // the window becomes the confirmed row alone
+				} catch {} // a failed fetch keeps the window; the row detaches (ruling ec6bbe31)
 				if (!current()) return;
-				if (!others()) {
+				if (rows && !others()) {
 					win.messages = mergeBySeq([], rows.length && sent.seq < rows[0].seq ? rows : [...rows, sent]);
 					at = 'moved';
 				}
-			} else if (!others() && !this.hasNewer && (await this.#fill(n, sent.seq, current))) {
+			} else if (!others() && !this.hasNewer && (await this.#fill(n, sent.seq, current, others))) {
 				at = 'resolve';
 			}
 		}
@@ -385,11 +385,11 @@ export class ChatThread {
 	}
 
 	/** Page after_seq from the newest up to the row before `upTo` (bounded), publishing each page. */
-	async #fill(n: number, upTo: number, current: () => boolean): Promise<boolean> {
+	async #fill(n: number, upTo: number, current: () => boolean, others: () => boolean): Promise<boolean> {
 		try {
 			for (let pages = 0; pages < REFRESH_MAX_PAGES && this.newestSeq < upTo - 1; pages++) {
 				const page = await api.chat.listMessages(n, { after_seq: this.newestSeq, limit: THREAD_MAX_PAGE });
-				if (!current() || page.messages.length === 0) return false;
+				if (!current() || page.messages.length === 0 || others()) return false; // a send began: its row could ride this page
 				this.#win.merge(page.messages.filter((m) => m.seq < upTo));
 				this.#publish(null);
 			}
