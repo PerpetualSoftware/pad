@@ -15,8 +15,9 @@
 //   I7 at most one window fetch is outstanding per identity
 //   I8 nothing of an earlier identity survives (rows are tagged per server)
 //   I9 a committed own row and its pending bubble are never both visible
-//   I10 an own row detaches only with a cause: a refused list, overlapping sends,
-//       or a gap wider than the fill bound; a fill never pages past its bound
+//   I10 an own row detaches only with a cause recorded FOR THAT ROW (3b r4 C2): a
+//       refused list while its bubble waited, overlapping sends, or a gap wider
+//       than the fill bound; a fill never pages past its bound
 //
 // PROP_SEED=k replays one seed; PROP_SEEDS=n sets how many (deep runs). No
 // Date, no Math.random: mulberry32 and a counter for crypto.randomUUID.
@@ -33,20 +34,25 @@ const h = vi.hoisted(() => ({
 	state: { authenticated: true, epoch: 0, listeners: [] as Array<(prev: string) => void> }
 }));
 
-vi.mock('$lib/api/client', () => ({
-	api: {
-		chat: {
-			getConversation: h.getConversation,
-			listMessages: h.listMessages,
-			markRead: h.markRead,
-			sendMessage: h.sendMessage,
-			deleteMessage: h.deleteMessage
-		}
-	},
-	isNotFoundError: () => false,
-	isReplyTargetDeletedError: () => false,
-	isReplyTargetNotFoundError: () => false
-}));
+vi.mock('$lib/api/client', async (orig) => {
+	const actual = await orig<typeof import('$lib/api/client')>();
+	return {
+		...actual,
+		api: {
+			chat: {
+				getConversation: h.getConversation,
+				listMessages: h.listMessages,
+				markRead: h.markRead,
+				sendMessage: h.sendMessage,
+				deleteMessage: h.deleteMessage
+			}
+		},
+		// the REAL predicates (3b r4 C2): the refusals the walk throws must be ones they recognise
+		isNotFoundError: actual.isNotFoundError,
+		isReplyTargetDeletedError: actual.isReplyTargetDeletedError,
+		isReplyTargetNotFoundError: actual.isReplyTargetNotFoundError
+	};
+});
 vi.mock('$lib/stores/auth.svelte', () => ({
 	authStore: {
 		get authenticated() {
@@ -66,6 +72,8 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 	}
 }));
 
+import { networkUnreachableError, isNotFoundError, isReplyTargetDeletedError, isReplyTargetNotFoundError } from '$lib/api/client';
+import { isRequestTooLargeError } from '$lib/chat/compose';
 import { chatStore } from './chat.svelte';
 import { ChatThread, REFRESH_MAX_PAGES } from './chatThread.svelte';
 
@@ -154,7 +162,20 @@ let immediate = true;
 let inflight = new Map<number, number>();
 let deleted = new Set<number>();
 let uuid = 0;
-let causes = { rejected: false, overlap: false, wideGap: false };
+let causes = new Map<string, Set<string>>();
+const addCause = (key: string, why: string) => causes.set(key, (causes.get(key) ?? new Set()).add(why));
+
+/** An error the real predicates accept: the class is not exported, so borrow its constructor. */
+function apiErr(code: string, message = code): Error {
+	const Ctor = networkUnreachableError(true).constructor as new (e: { code: string; message: string }) => Error;
+	return new Ctor({ code, message });
+}
+const REFUSALS = [
+	() => new Error('network'),
+	() => apiErr('reply_target_deleted'),
+	() => apiErr('reply_target_not_found'),
+	() => apiErr('validation_error', 'Invalid JSON body (maximum 128 KiB)')
+];
 const answered = new Set<string>();
 const fillCalls = new Map<string, number>();
 let rng: () => number;
@@ -174,6 +195,8 @@ const fail = (rule: string): never => {
 };
 
 function check(where: string) {
+	const sending = thread.items.flatMap((i) => (i.kind === 'pending' && i.pending.status === 'sending' ? [i.pending.op_key] : []));
+	if (sending.length > 1) for (const k of sending) addCause(k, 'overlap');
 	const m = thread.messages;
 	for (let i = 1; i < m.length; i++) if (m[i].seq !== m[i - 1].seq + 1) fail(`I1 ${where}: ${m[i - 1].seq}->${m[i].seq}`);
 	const newest = m.length ? m[m.length - 1].seq : 0;
@@ -184,7 +207,10 @@ function check(where: string) {
 		if (i > 0 && d[i].seq <= d[i - 1].seq) fail(`I2 ${where}: detached not ascending`);
 	}
 	if (d.length && !thread.hasNewer) fail(`I4 ${where}: detached without hasNewer`);
-	if (d.length && !(causes.rejected || causes.overlap || causes.wideGap)) fail(`I10 ${where}: detached ${d[0].seq} with no cause`);
+	for (const row of d) {
+		const key = [...server.byKey].find(([, r]) => r.seq === row.seq)?.[0];
+		if (!key || !causes.get(key)?.size) fail(`I10 ${where}: detached ${row.seq} with no cause of its own`);
+	}
 	if (m.length && thread.hasOlder !== m[0].seq > 1) fail(`I4 ${where}: hasOlder ${thread.hasOlder} oldest ${m[0].seq}`);
 	const bubbles = thread.items.flatMap((i) => (i.kind === 'pending' ? [i.pending] : []));
 	const keys = bubbles.map((p) => p.op_key);
@@ -202,21 +228,23 @@ function check(where: string) {
 	if (thread.unreadCount !== unread) fail(`I6 ${where}: unreadCount`);
 }
 
-function deliver<T>(kind: string, value: T, rejectIt = false, key?: string): Promise<T> {
+function deliver<T>(kind: string, value: T, rejectIt: Error | false = false, key?: string): Promise<T> {
 	if (immediate) return rejectIt ? Promise.reject(new Error('x')) : Promise.resolve(value);
 	return new Promise<T>((res, rej) =>
 		held.push({
 			kind,
 			key,
 			release: (ok) => {
-				if (!ok && kind === 'list') causes.rejected = true;
+				if (!ok && kind === 'list') {
+					for (const i of thread.items) if (i.kind === 'pending' && i.pending.status === 'sending' && answered.has(i.pending.op_key)) addCause(i.pending.op_key, 'rejected');
+				}
 				if (ok && !rejectIt && kind === 'send') {
 					answered.add(key!);
 					const seq = (value as { message: ChatMessage }).message.seq;
-					if (seq - thread.newestSeq - 1 > 200 * REFRESH_MAX_PAGES) causes.wideGap = true;
+					if (seq - thread.newestSeq - 1 > 200 * REFRESH_MAX_PAGES) addCause(key!, 'wideGap');
 				}
 				if (ok && !rejectIt) res(value);
-				else rej(new Error('rejected'));
+				else rej(rejectIt || new Error('rejected'));
 			}
 		})
 	);
@@ -252,10 +280,9 @@ function wire() {
 	});
 	h.sendMessage.mockImplementation((_n: number, b: { body: string; op_key: string }) => {
 		check('send');
-		if (thread.items.filter((i) => i.kind === 'pending' && i.pending.status === 'sending').length > 1) causes.overlap = true;
 		const seen = server.byKey.get(b.op_key);
 		if (seen) return deliver('send', { message: { ...seen }, replayed: true, refs: [], refs_truncated: false }, false, b.op_key);
-		if (!immediate && rng() < 0.05) return deliver('send', null as never, true, b.op_key); // refused before the commit
+		if (!immediate && rng() < 0.05) return deliver('send', null as never, REFUSALS[Math.floor(rng() * REFUSALS.length)](), b.op_key); // refused before the commit
 		const m = msg(server.last + 1, server.tag, { mine: true, author_agent_key: '', author_is_human: true, source: 'web', body: b.body });
 		server.rows.push(m);
 		server.byKey.set(b.op_key, m);
@@ -291,7 +318,7 @@ async function walk(seed: number, trace: string[]) {
 	rng = mulberry32(seed);
 	held = [];
 	violations = [];
-	causes = { rejected: false, overlap: false, wideGap: false };
+	causes = new Map();
 	answered.clear();
 	fillCalls.clear();
 	inflight = new Map();
@@ -301,7 +328,11 @@ async function walk(seed: number, trace: string[]) {
 	const fired: Promise<unknown>[] = [];
 	const visibleSeqs = () => [...thread.messages, ...thread.detached].map((m) => m.seq);
 	const actions: Action[] = [
-		[22, 'send', () => void fired.push(thread.send(`b${uuid++}`))],
+		[22, 'send', () => {
+			const all = visibleSeqs();
+			const reply = all.length && rng() < 0.2 ? all[Math.floor(rng() * all.length)] : undefined;
+			fired.push(thread.send(`b${uuid++}`, reply));
+		}],
 		[8, 'remove', () => {
 			const all = visibleSeqs();
 			if (!all.length) return;
@@ -321,6 +352,10 @@ async function walk(seed: number, trace: string[]) {
 		[4, 'retry', () => {
 			const f = thread.items.find((i) => i.kind === 'pending' && i.pending.status === 'failed');
 			if (f && f.kind === 'pending') fired.push(thread.retry(f.pending.op_key));
+		}],
+		[4, 'discard', () => {
+			const f = thread.items.find((i) => i.kind === 'pending' && i.pending.status === 'failed');
+			if (f && f.kind === 'pending') thread.discard(f.pending.op_key);
 		}],
 		[15, 'peer+', () => server.add(1 + Math.floor(rng() * 3))],
 		[2, 'burst', () => server.add(210 + Math.floor(rng() * 991))],
@@ -396,6 +431,14 @@ afterEach(() => {
 });
 
 describe('window ops (property)', () => {
+	it('throws refusals the real predicates recognise', () => {
+		expect(isReplyTargetDeletedError(REFUSALS[1]())).toBe(true);
+		expect(isReplyTargetNotFoundError(REFUSALS[2]())).toBe(true);
+		expect(isRequestTooLargeError(REFUSALS[3]())).toBe(true);
+		expect(isNotFoundError(apiErr('not_found'))).toBe(true);
+		expect(isReplyTargetDeletedError(REFUSALS[0]())).toBe(false);
+	});
+
 	it(`holds I1-I10 over ${ONLY === null ? SEEDS : 1} seeded walks of ${STEPS} steps`, async () => {
 		const seeds = ONLY === null ? Array.from({ length: SEEDS }, (_, i) => i + 1) : [ONLY];
 		for (const seed of seeds) {
