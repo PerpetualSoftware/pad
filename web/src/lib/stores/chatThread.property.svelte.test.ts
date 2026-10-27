@@ -356,7 +356,7 @@ async function walk(seed: number, trace: string[]) {
 	await Promise.allSettled(fired);
 	await flush();
 	for (const i of thread.items) if (i.kind === 'pending' && i.pending.status === 'failed') thread.discard(i.pending.op_key);
-	for (let r = 0; r < 30; r++) {
+	for (let r = 0; r < 200; r++) {
 		await thread.refresh();
 		await flush();
 		if (!thread.hasNewer) break;
