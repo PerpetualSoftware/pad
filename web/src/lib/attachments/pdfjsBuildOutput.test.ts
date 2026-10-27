@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { findCodeFromString, read, walk } from './pdfjsBuildOutput';
+import { findCodeFromString, walk } from './pdfjsBuildOutput';
 import { PDFJS_FALLBACK_DIR, PDFJS_FALLBACK_FILES } from './pdfjsAssets';
 
 // TASK-4075 U8 — the invariants on the EMITTED bundle, which no source-level test
@@ -22,12 +22,36 @@ import { PDFJS_FALLBACK_DIR, PDFJS_FALLBACK_FILES } from './pdfjsAssets';
 
 const BUILD = resolve(fileURLToPath(new URL('../../..', import.meta.url)), 'build');
 
+// The build is walked once and each file read once, shared by every test below.
+// The @napi-rs scan used to re-walk the tree and re-decode every .js/.mjs as UTF-8
+// per test; that took 4060 ms against the 5000 ms default and timed out once in a
+// full run (TASK-4075 r2, S1).
+let walked: string[] | undefined;
+const bytes = new Map<string, Buffer>();
+const texts = new Map<string, string>();
+
+function allFiles(): string[] {
+	return (walked ??= walk(BUILD));
+}
+
+function buf(rel: string): Buffer {
+	let b = bytes.get(rel);
+	if (!b) bytes.set(rel, (b = readFileSync(resolve(BUILD, rel))));
+	return b;
+}
+
+function text(rel: string): string {
+	let t = texts.get(rel);
+	if (t === undefined) texts.set(rel, (t = buf(rel).toString('utf8')));
+	return t;
+}
+
 function emitted() {
 	if (!existsSync(BUILD)) {
 		throw new Error(`web/build is missing. Run \`npm run build\` in web/ first: this test reads the emitted bundle (${BUILD}).`);
 	}
-	const files = walk(BUILD).filter((f) => /\.(m?js)$/.test(f));
-	const main = files.filter((f) => f.startsWith('_app/immutable/') && /workerSrc/.test(read(BUILD, f)) && /getDocument/.test(read(BUILD, f)));
+	const files = allFiles().filter((f) => /\.(m?js)$/.test(f));
+	const main = files.filter((f) => f.startsWith('_app/immutable/') && buf(f).includes('workerSrc') && buf(f).includes('getDocument'));
 	const worker = files.filter((f) => /(^|\/)pdf\.worker\.min[^/]*\.mjs$/.test(f));
 	const fallbacks = PDFJS_FALLBACK_FILES.map((n) => `${PDFJS_FALLBACK_DIR.replace(/^\//, '')}${n}`);
 	return { files, main, worker, fallbacks };
@@ -44,24 +68,31 @@ describe('the emitted pdf.js bundle (U8)', () => {
 
 	it('has no eval( / Function( call site in the main chunk, the worker or either fallback', () => {
 		const { main, worker, fallbacks } = emitted();
-		const hits = [...main, ...worker, ...fallbacks].flatMap((f) => findCodeFromString(f, read(BUILD, f)));
+		const hits = [...main, ...worker, ...fallbacks].flatMap((f) => findCodeFromString(f, text(f)));
 		expect(hits.map((h) => `${h.file}@${h.index}: ${h.excerpt}`)).toEqual([]);
 	});
 
 	it('ships no wasm, qcms or quickjs under the pdf.js directory, and no wasm anywhere', () => {
 		const { files } = emitted();
-		const all = walk(BUILD);
+		const all = allFiles();
 		expect(all.filter((f) => f.endsWith('.wasm')), 'wasm files in the build').toEqual([]);
 		expect(all.filter((f) => f.startsWith('_app/pdfjs/')).sort()).toEqual([...PDFJS_FALLBACK_FILES].map((n) => `_app/pdfjs/${n}`).sort());
 		expect(files.filter((f) => /quickjs|qcms|sandbox/i.test(f))).toEqual([]);
 	});
 
-	it('bundles no @napi-rs module: no native binary, no package path, and the lone reference is the inert Node-only require', () => {
-		const all = walk(BUILD);
+	// Measured at this head: <duration>. The explicit timeout is headroom for a cold
+	// disk cache or a loaded box, not a licence to grow: if this is near it, the scan
+	// has got slower.
+	it('bundles no @napi-rs module: no native binary, no package path, and the lone reference is the inert Node-only require', { timeout: 20_000 }, () => {
+		// Paths first: they need no file read at all.
+		const all = allFiles();
 		expect(all.filter((f) => f.endsWith('.node') || f.includes('@napi-rs'))).toEqual([]);
+		// Then the contents of each .js/.mjs, read once (and shared with the tests above); only a
+		// file whose bytes contain the needle is decoded and matched.
+		const needle = Buffer.from('@napi-rs');
 		const refs = all
-			.filter((f) => /\.(m?js)$/.test(f))
-			.flatMap((f) => [...read(BUILD, f).matchAll(/.{0,60}@napi-rs.{0,40}/g)].map((m) => ({ f, text: m[0] })));
+			.filter((f) => /\.(m?js)$/.test(f) && buf(f).includes(needle))
+			.flatMap((f) => [...text(f).matchAll(/.{0,60}@napi-rs.{0,40}/g)].map((m) => ({ f, text: m[0] })));
 		// pdf.js reaches it only as `process.getBuiltinModule("module").createRequire(import.meta.url)("@napi-rs/canvas")`
 		// inside its Node canvas factory: a run-time require, not an import the bundler follows.
 		for (const r of refs) expect(r.text, r.f).toMatch(/createRequire\(import\.meta\.url\)\(`?["']?@napi-rs\/canvas/);
