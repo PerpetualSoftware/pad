@@ -570,6 +570,26 @@ describe('mark read', () => {
 		expect(h.markRead).toHaveBeenCalledWith(1, 210);
 	});
 
+	// Pins the behaviour ruled in b3dd1e54 / ec6bbe31 (3b r4 H3, r5 A1): after an own send
+	// re-anchors the window, the reader has seen the NEW newest row, so markRead names it,
+	// which also covers the peer rows the re-anchor skipped. Changing that is a decision.
+	it('after a re-anchor marks the new newest seq', async () => {
+		server.fill(400);
+		server.readSeq = 0;
+		await thread.open(1);
+		thread.atBottom = true;
+		thread.tryMarkRead();
+		await flush();
+		expect(h.markRead).toHaveBeenLastCalledWith(1, 200);
+		wireSend();
+		expect(await thread.send('hello')).toBe('sent');
+		await flush();
+		expect(thread.newestSeq).toBe(401);
+		thread.tryMarkRead(); // the page's effect, on the newestSeq change
+		await flush();
+		expect(h.markRead).toHaveBeenLastCalledWith(1, 401);
+	});
+
 	it('marks nothing locally on a failure and retries on the next call', async () => {
 		await opened();
 		h.markRead.mockRejectedValueOnce(new Error('500'));
@@ -739,6 +759,40 @@ describe('send', () => {
 		expect(byKey.size).toBe(1);
 		expect(seqs()).toEqual([1, 2, 3, 4]);
 		expect(pendingOf()).toHaveLength(0);
+	});
+
+	// 3b r5 A2 (I5, tombstone wins): red with the replayed live row written over the held tombstone.
+	it('a replayed send does not resurrect a row deleted meanwhile (window)', async () => {
+		await readyThread();
+		wireSend();
+		const real = h.sendMessage.getMockImplementation()!;
+		h.sendMessage.mockImplementationOnce(async (n: number, b: never) => {
+			await real(n, b); // committed, the answer is lost
+			throw new Error('timeout');
+		});
+		expect(await thread.send('hello')).toBe('failed');
+		await thread.refresh();
+		server.tombstone(4); // deleted elsewhere meanwhile
+		await thread.refresh();
+		expect(thread.messages.find((m) => m.seq === 4)).toMatchObject({ deleted: true, body: '' });
+		const key = (pendingOf()[0] as { pending: { op_key: string } }).pending.op_key;
+		expect(await thread.retry(key)).toBe('sent'); // the replay answers the live row
+		expect(thread.messages.find((m) => m.seq === 4)).toMatchObject({ deleted: true, body: '' });
+	});
+
+	it('a send answered after its row was deleted does not resurrect it in the re-anchored page', async () => {
+		server.fill(400);
+		server.readSeq = 0;
+		await thread.open(1); // hasNewer: the own row re-anchors at the newest page
+		wireSend();
+		const real = h.sendMessage.getMockImplementation()!;
+		h.sendMessage.mockImplementationOnce(async (n: number, b: never) => {
+			const res = await real(n, b);
+			server.tombstone(res.message.seq); // deleted before the answer is applied
+			return res;
+		});
+		expect(await thread.send('hello')).toBe('sent');
+		expect(thread.messages.at(-1)).toMatchObject({ seq: 401, deleted: true, body: '' });
 	});
 
 	it('discards a failed bubble', async () => {

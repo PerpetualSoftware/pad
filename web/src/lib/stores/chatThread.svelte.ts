@@ -13,15 +13,14 @@
 // subscribes to hints and never reads a notice field (carry-forward 2.7).
 //
 // WINDOW OPS (TASK-4044 3b S1, rulings 3293b1c6 and 5c95ef40). Every op that
-// fetches and then writes the window (open, loadOlder, loadNewer, refresh, an
-// own row's placement, a delete's tombstone) runs through ONE promise chain,
-// fetch and apply in the same step, so none interleave. The published window is
-// always contiguous: an own row past unfetched peer rows is reached by paging
-// from the window's newest (#fill); if that fails or hits REFRESH_MAX_PAGES the
-// row is DETACHED: `detached` holds it, `hasNewer` is true, the page shows it
-// after "Show newer messages", and newestSeq, mark-read, the divider and
-// loadNewer's cursor ignore it. Send and delete POSTs stay concurrent; only
-// their apply is queued.
+// fetches and then writes the window (a load, an own row's placement, a delete's
+// tombstone) runs through ONE promise chain, fetch and apply in the same step,
+// so none interleave. The published window is always contiguous: an own row past
+// unfetched peer rows is reached by paging from the window's newest (#fill); if
+// that fails or hits REFRESH_MAX_PAGES the row is DETACHED: `detached` holds it,
+// `hasNewer` is true, the page shows it after "Show newer messages", and
+// newestSeq, mark-read, the divider and loadNewer's cursor ignore it. Send and
+// delete POSTs stay concurrent; only their apply is queued.
 //
 // REFRESH (R1, ruling 4cf4d4b9). Rows newer than the window's newest are
 // fetched ANCHORED AT THE NEWEST end: after_seq = newest, ASC, at most
@@ -357,8 +356,9 @@ export class ChatThread {
 	 * committed row beside its bubble). With hasNewer true: move the window to the
 	 * newest page (ruling b3dd1e54; a row older than it is history). Else #fill.
 	 */
-	async #applyOwn(n: number, opKey: string, sent: ChatMessage, current: () => boolean): Promise<void> {
+	async #applyOwn(n: number, opKey: string, answer: ChatMessage, current: () => boolean): Promise<void> {
 		const win = this.#win;
+		const sent = [...win.messages, ...this.detached].find((m) => m.seq === answer.seq) ?? answer; // a held row (maybe a tombstone) beats a replayed answer (I5)
 		const others = () => win.pending.some((p) => p.status === 'sending' && p.op_key !== opKey);
 		let at: 'resolve' | 'moved' | 'detach' = 'resolve';
 		if (this.hasNewer || sent.seq > this.newestSeq + 1) {
@@ -370,7 +370,7 @@ export class ChatThread {
 				} catch {} // a failed fetch keeps the window; the row detaches (ruling ec6bbe31)
 				if (!current()) return;
 				if (rows && !others()) {
-					win.messages = mergeBySeq([], rows.length && sent.seq < rows[0].seq ? rows : [...rows, sent]);
+					win.messages = mergeBySeq([], rows.length && sent.seq < rows[0].seq ? rows : [sent, ...rows]);
 					at = 'moved';
 				}
 			} else if (!others() && !this.hasNewer && (await this.#fill(n, sent.seq, current, others))) {
