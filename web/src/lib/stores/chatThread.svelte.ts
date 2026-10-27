@@ -372,6 +372,7 @@ export class ChatThread {
 		opKey: string,
 		sent: ChatMessage
 	): Promise<void> {
+		const epoch = this.#epoch;
 		let rows: ChatMessage[] = [];
 		try {
 			const page = await api.chat.listMessages(n, { limit: THREAD_PAGE });
@@ -379,6 +380,15 @@ export class ChatThread {
 			rows = page.messages;
 		} catch {
 			if (!current()) return;
+		}
+		if (epoch !== this.#epoch) {
+			// A later send's re-anchor landed first, on a page fetched after this row
+			// committed: keep that window, and merge this row only where it is
+			// contiguous (TASK-4044 3b r1, hunter finding 2).
+			if (win.messages.length && sent.seq >= win.messages[0].seq) win.resolvePending(opKey, sent);
+			else win.discardPending(opKey);
+			this.#publish(null);
+			return;
 		}
 		this.#epoch++;
 		win.discardPending(opKey);

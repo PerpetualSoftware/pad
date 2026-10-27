@@ -824,6 +824,33 @@ describe('send', () => {
 		expect(pendingOf()).toHaveLength(0);
 	});
 
+	// 3b r1 hunter finding 2: red if a re-anchor whose fetch lands last replaces the
+	// window a later send's re-anchor already moved (B16).
+	it('keeps both own rows when two re-anchors land out of order', async () => {
+		server.fill(400);
+		server.readSeq = 0;
+		await thread.open(1);
+		expect(thread.hasNewer).toBe(true);
+		wireSend();
+		let releaseA!: () => void;
+		h.listMessages.mockImplementationOnce((_n: number, o: object) => {
+			const page = server.list(o);
+			return new Promise((res) => (releaseA = () => res(page)));
+		});
+		const a = thread.send('A');
+		await flush();
+		expect(typeof releaseA).toBe('function');
+		expect(await thread.send('B')).toBe('sent');
+		releaseA();
+		expect(await a).toBe('sent');
+		await flush();
+		const bodies = thread.messages.map((m) => m.body);
+		expect(bodies.slice(-2)).toEqual(['A', 'B']);
+		const s = seqs();
+		for (let i = 1; i < s.length; i++) expect(s[i]).toBe(s[i - 1] + 1);
+		expect(pendingOf()).toHaveLength(0);
+	});
+
 	it('is stale after an identity change, with nothing of the old bubble left', async () => {
 		await readyThread();
 		wireSend();
@@ -860,6 +887,23 @@ describe('refresh during a send', () => {
 		await flush();
 		expect(h.listMessages.mock.calls.length).toBe(calls);
 		expect(seqs()).toEqual([1, 2, 3, 4]);
+	});
+
+	// 3b r1 hunter finding 1 (refuted): the deferred refresh's cursor starts past a
+	// peer row committed during the send, and the sweep leg brings it in.
+	it('does not skip a peer row committed while a send was in flight', async () => {
+		await readyThread();
+		wireSend();
+		const real = h.sendMessage.getMockImplementation()!;
+		let release!: () => void;
+		h.sendMessage.mockImplementationOnce((n: number, b: never) => new Promise((res) => (release = () => res(real(n, b)))));
+		const done = thread.send('hello');
+		server.add(msg(4));
+		await bump();
+		release();
+		await done;
+		await flush();
+		expect(seqs()).toEqual([1, 2, 3, 4, 5]);
 	});
 });
 
