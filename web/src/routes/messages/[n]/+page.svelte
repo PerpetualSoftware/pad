@@ -27,6 +27,7 @@
 	let positioned = false;
 	let lastNewest = 0;
 	let replyTo = $state<ChatMessage | null>(null);
+	let composer = $state<Composer | null>(null);
 	let lastOwnSend = 0;
 	// Loading newer messages while a send is in flight would race the send's own
 	// confirmed row into the window (TASK-4044 ruling 2a03a442).
@@ -127,6 +128,12 @@
 		scroller?.querySelector('#unread-divider')?.scrollIntoView?.({ block: 'start' });
 	}
 
+	// Reply puts the reader into the composer (r5 H3); the bar is there after the tick.
+	function startReply(m: ChatMessage) {
+		replyTo = m;
+		void tick().then(() => composer?.focus());
+	}
+
 	async function deleteMessage(m: ChatMessage) {
 		if (replyTo?.seq === m.seq) replyTo = null;
 		if (!(await thread.remove(m.seq)) && thread.status === 'ready') {
@@ -200,7 +207,7 @@
 						<MessageBubble
 							message={item.message}
 							onJumpToQuote={jumpToQuote}
-							onReply={(m) => (replyTo = m)}
+							onReply={startReply}
 							onDelete={deleteMessage}
 						/>
 					{:else}
@@ -232,7 +239,7 @@
 				<MessageBubble
 					message={m}
 					onJumpToQuote={jumpToQuote}
-					onReply={(r) => (replyTo = r)}
+					onReply={startReply}
 					onDelete={deleteMessage}
 				/>
 			{/each}
@@ -241,6 +248,7 @@
 		{#if n !== null}
 			{#key n}
 				<Composer
+					bind:this={composer}
 					{n}
 					{replyTo}
 					onClearReply={() => (replyTo = null)}

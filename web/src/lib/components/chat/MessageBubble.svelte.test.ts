@@ -129,11 +129,51 @@ describe('MessageBubble menu', () => {
 		expect(menu(container)).toBeNull();
 	});
 
-	it('opens on keyboard focus', async () => {
+	// jsdom has no focus-visible heuristic, so the match is stubbed: true is what a
+	// browser reports after keyboard focus, false after a tap or click (r5 H1).
+	const focusVisible = (on: boolean) => {
+		const real = Element.prototype.matches;
+		return vi.spyOn(Element.prototype, 'matches').mockImplementation(function (
+			this: Element,
+			sel: string
+		) {
+			return sel === ':focus-visible' ? on : real.call(this, sel);
+		});
+	};
+
+	it('opens on keyboard focus (:focus-visible)', async () => {
+		const spy = focusVisible(true);
 		const { container, bubble } = mount();
 		bubble.focus();
 		await tick();
 		expect(menu(container)).not.toBeNull();
+		spy.mockRestore();
+	});
+
+	// Red if a plain tap, which focuses the bubble but is not focus-visible, opens
+	// the menu (r5 H1: Delete would be one tap away).
+	it('a focus that is not focus-visible (a tap) opens nothing', async () => {
+		const spy = focusVisible(false);
+		const { container, bubble } = mount();
+		bubble.focus();
+		await tick();
+		expect(menu(container)).toBeNull();
+		spy.mockRestore();
+	});
+
+	// Red if only a press outside the whole bubble unpins (r5 Codex M).
+	it('a pinned menu closes on a press inside the bubble but outside the menu', async () => {
+		vi.useFakeTimers();
+		const { container, bubble } = mount();
+		fire(bubble, 'pointerdown', { pointerType: 'touch' });
+		vi.advanceTimersByTime(500);
+		await tick();
+		fire(container.querySelector('.menu button')!, 'pointerdown', { pointerType: 'touch' });
+		await tick();
+		expect(menu(container)).not.toBeNull();
+		fire(container.querySelector('.body')!, 'pointerdown', { pointerType: 'touch' });
+		await tick();
+		expect(menu(container)).toBeNull();
 	});
 
 	// Red if a short tap opens it (B4).
@@ -153,6 +193,39 @@ describe('MessageBubble menu', () => {
 		vi.advanceTimersByTime(1);
 		await tick();
 		expect(menu(container)).not.toBeNull();
+	});
+
+	// Red if the native callout / context menu can open while a touch press is armed (r5 H4).
+	it('suppresses the native context menu while a touch press is armed, not for a mouse', async () => {
+		vi.useFakeTimers();
+		const { bubble } = mount();
+		const ctx = () => {
+			const e = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+			bubble.dispatchEvent(e);
+			return e.defaultPrevented;
+		};
+		expect(ctx()).toBe(false);
+		fire(bubble, 'pointerdown', { pointerType: 'touch' });
+		vi.advanceTimersByTime(200);
+		expect(ctx()).toBe(true);
+		fire(bubble, 'pointerup', { pointerType: 'touch' });
+		expect(ctx()).toBe(false);
+	});
+
+	// Red if focus drops to the body when the menu unmounts (r5 H3). Returning it to the
+	// bubble must not reopen the menu, even when the browser calls that focus visible.
+	it.each([['Copy', 1], ['Delete', 2]])('after %s focus returns to the bubble and the menu stays shut', async (_name, idx) => {
+		const writeText = vi.fn().mockResolvedValue(undefined);
+		Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+		const spy = focusVisible(true);
+		const { container, bubble } = mount();
+		fire(bubble, 'pointerenter', { pointerType: 'mouse' });
+		await tick();
+		await fireEvent.click(container.querySelectorAll<HTMLButtonElement>('.menu button')[idx]);
+		await tick();
+		expect(document.activeElement).toBe(bubble);
+		expect(menu(container)).toBeNull();
+		spy.mockRestore();
 	});
 
 	it('a press that moves is a scroll, not a long-press', async () => {
@@ -238,5 +311,17 @@ describe('PendingBubble', () => {
 		await fireEvent.click(discard);
 		expect(onRetry).toHaveBeenCalledWith('k1');
 		expect(onDiscard).toHaveBeenCalledWith('k1');
+	});
+
+	// Red if the live region is inserted with its text, or replaced when the state changes (r5 H5).
+	it('keeps one live region mounted and changes only its text', async () => {
+		const pending = { op_key: 'k1', body: 'hello', status: 'sending' as const };
+		const props = { pending, onRetry: vi.fn(), onDiscard: vi.fn() };
+		const r = render(PendingBubble, { props });
+		const region = r.container.querySelector('[role=status]');
+		expect(region!.textContent).toContain('Sending');
+		await r.rerender({ ...props, pending: { ...pending, status: 'failed' as const } });
+		expect(r.container.querySelector('[role=status]')).toBe(region);
+		expect(region!.textContent).toContain('Failed to send');
 	});
 });

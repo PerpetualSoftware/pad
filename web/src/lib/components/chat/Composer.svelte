@@ -35,9 +35,16 @@
 	let notice = $state('');
 	let inset = $state(0);
 
+	let box = $state<HTMLTextAreaElement | null>(null);
+	/** Reply puts the reader straight into the box (r5 H3). */
+	export function focus() {
+		box?.focus();
+	}
+
 	let bytes = $derived(utf8Bytes(text));
 	let block = $derived(validateDraft(text, replyTo?.seq, PLACEHOLDER_OP_KEY));
 	let showCount = $derived(bytes > MAX_BODY_BYTES * 0.75);
+	let live = $derived(!!notice || showCount || block === 'too_large');
 
 	onMount(() => {
 		// A draft kept across a session-expiry redirect comes back for the same
@@ -91,6 +98,7 @@
 	{/if}
 	<div class="row">
 		<textarea
+			bind:this={box}
 			bind:value={text}
 			rows="2"
 			placeholder="Message"
@@ -99,18 +107,17 @@
 		></textarea>
 		<button type="submit" class="send" disabled={block !== null}>Send</button>
 	</div>
-	{#if notice || showCount || block === 'too_large'}
-		<p class="status" class:over={block === 'too_long' || block === 'too_large'} role="status">
-			{#if block === 'too_long'}
-				{NOTICE.too_long}
-			{:else if block === 'too_large'}
-				{NOTICE.too_large}
-			{:else if notice}
-				{notice}
-			{/if}
-			{#if showCount}<span class="count">{bytes.toLocaleString()} / {MAX_BODY_BYTES.toLocaleString()} bytes</span>{/if}
-		</p>
-	{/if}
+	<!-- Mounted from the start, only its text changes: a region inserted with its text is not announced by some screen readers (r5 H5). -->
+	<p class="status" class:idle={!live} class:over={block === 'too_long' || block === 'too_large'} role="status">
+		{#if block === 'too_long'}
+			{NOTICE.too_long}
+		{:else if block === 'too_large'}
+			{NOTICE.too_large}
+		{:else if notice}
+			{notice}
+		{/if}
+		{#if showCount}<span class="count">{bytes.toLocaleString()} / {MAX_BODY_BYTES.toLocaleString()} bytes</span>{/if}
+	</p>
 </form>
 
 <style>
@@ -156,6 +163,10 @@
 		margin: 0;
 		font-size: 0.75rem;
 		color: var(--text-secondary);
+	}
+	/* Empty, but kept in the page: cancel the form's flex gap above it. */
+	.status.idle {
+		margin-top: calc(-1 * var(--space-1));
 	}
 	.status.over {
 		color: var(--accent-red, var(--text-primary));

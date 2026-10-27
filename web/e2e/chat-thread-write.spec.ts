@@ -199,9 +199,8 @@ test('E5c: a send past a gap shows below the Show newer marker while the marker 
 	const m = (await marker.boundingBox())!;
 	const s = (await sent.boundingBox())!;
 	expect(s.y).toBeGreaterThan(m.y);
-	await page.screenshot({
-		path: '/home/dave/.cache/wren/impl-TASK-4044-pr3/3b/s1-build/evidence/q3-detached.png'
-	});
+	// Under web/test-results/<test dir>/; the gate script copies it to the evidence folder.
+	await page.screenshot({ path: testInfo.outputPath('q3-detached.png') });
 });
 
 test('E6: the composer rides above the emulated keyboard, and a touch long-press is the only way in', async ({
@@ -241,9 +240,15 @@ test('E6: the composer rides above the emulated keyboard, and a touch long-press
 	});
 	await expect.poll(bottomOf).toBeLessThanOrEqual(viewportH);
 
-	// A short tap opens nothing; a 500 ms press opens the menu. The lift that ends
-	// the press does not press a button (Q-c).
+	// A REAL tap (touch events, which move focus, unlike the synthetic pointer events
+	// below) opens nothing: no menu and none of its buttons (r5 H1, the Q-c instrument).
+	// A 500 ms press then opens the menu, and the lift that ends it presses nothing.
 	const bubble = row(page, line.seq);
+	const menuButtons = bubble.getByRole('button', { name: /^(Reply|Copy|Delete)$/ });
+	await bubble.locator('.body').tap();
+	await page.waitForTimeout(700);
+	await expect(bubble.locator('.menu')).toHaveCount(0);
+	await expect(menuButtons).toHaveCount(0);
 	const touch = (type: string) =>
 		bubble.dispatchEvent(type, { pointerType: 'touch', bubbles: true, clientX: 50, clientY: 50 });
 	await touch('pointerdown');
@@ -264,6 +269,12 @@ test('E6: the composer rides above the emulated keyboard, and a touch long-press
 		})
 	);
 	console.log(`Q-c menu geometry (touch): ${JSON.stringify(boxes)}`);
+	// A real tap on the bubble body, outside the menu, closes it again; the long-press reopens it.
+	await bubble.locator('.body').tap();
+	await expect(bubble.locator('.menu')).toHaveCount(0);
+	await touch('pointerdown');
+	await expect(bubble.locator('.menu')).toBeVisible({ timeout: 2000 });
+	await touch('pointerup');
 	// Delete is its own deliberate tap, set apart from Copy.
 	await bubble.getByRole('button', { name: 'Delete', exact: true }).tap();
 	await expect(bubble).toContainText('Message deleted');

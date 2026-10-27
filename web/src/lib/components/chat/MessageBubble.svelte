@@ -8,8 +8,9 @@
 	// markdown). A tombstone shows "Message deleted" and nothing of the body.
 	//
 	// PR 3b: with `onReply` and `onDelete` a live message has an action menu. It
-	// opens on hover or focus (a pointer device) and on a 500 ms long-press (touch);
-	// a short tap opens nothing. A tombstone never has one.
+	// opens on hover or keyboard focus (:focus-visible; a tap focuses the bubble
+	// too, and must open nothing) and on a 500 ms long-press (touch). A tombstone
+	// never has one.
 	let {
 		message,
 		onJumpToQuote,
@@ -27,13 +28,16 @@
 	let focused = $state(false);
 	let pinned = $state(false);
 	let hasMenu = $derived(!message.deleted && !!onReply && !!onDelete);
+	// Set while focus is handed back to the bubble after an action: that focus is
+	// programmatic and must not reopen the menu it just closed.
+	let returning = false;
 	let menuOpen = $derived(hasMenu && (hovered || focused || pinned));
 
-	// A pinned (long-pressed) menu closes on a press anywhere else.
+	// A pinned (long-pressed) menu closes on a press anywhere but the menu itself.
 	$effect(() => {
 		if (!pinned) return;
 		const away = (e: PointerEvent) => {
-			if (!el?.contains(e.target as Node)) pinned = false;
+			if (!(e.target as Element).closest?.('.menu')) pinned = false;
 		};
 		window.addEventListener('pointerdown', away, true);
 		return () => window.removeEventListener('pointerdown', away, true);
@@ -54,14 +58,16 @@
 	class:deleted={message.deleted}
 	id="msg-{message.seq}"
 	data-seq={message.seq}
-	tabindex={hasMenu ? 0 : undefined}
+	tabindex={hasMenu ? 0 : message.deleted ? -1 : undefined}
 	bind:this={el}
 	use:longPress={() => {
 		if (hasMenu) pinned = true;
 	}}
 	onpointerenter={(e) => (hovered = e.pointerType !== 'touch')}
 	onpointerleave={() => (hovered = false)}
-	onfocusin={() => (focused = true)}
+	onfocusin={(e) => {
+		if (!returning && (e.target as Element).matches(':focus-visible')) focused = true;
+	}}
 	onfocusout={(e) => {
 		if (!el?.contains(e.relatedTarget as Node | null)) focused = false;
 	}}
@@ -100,7 +106,14 @@
 			{message}
 			{onReply}
 			{onDelete}
-			onDone={() => (pinned = focused = hovered = false)}
+			onDone={() => {
+				pinned = focused = hovered = false;
+				// The menu is about to unmount: keep focus on the bubble, not the body (r5 H3).
+				// A deleted row keeps tabindex -1, so it still holds focus as the tombstone.
+				returning = true;
+				el?.focus();
+				returning = false;
+			}}
 		/>
 	{/if}
 </article>
@@ -113,6 +126,7 @@
 		border: 1px solid var(--border);
 		border-radius: var(--radius-lg);
 		background: var(--bg-secondary);
+		-webkit-touch-callout: none;
 	}
 	.bubble.mine {
 		align-self: flex-end;

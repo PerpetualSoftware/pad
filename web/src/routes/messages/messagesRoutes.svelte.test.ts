@@ -777,6 +777,8 @@ describe('/messages/[n] thread write path (TASK-4044 PR 3b)', () => {
 		[...row.querySelectorAll('button')].find((b) => b.textContent === 'Reply')!.click();
 		await settle();
 		expect(container.querySelector('.reply')!.textContent).toContain('body 2');
+		// Red if Reply leaves focus on the body (r5 H3): the reader types next.
+		expect(document.activeElement).toBe(box(container));
 		h.sendMessage.mockResolvedValue({
 			message: message(3, { mine: true, body: 'answer' }),
 			replayed: false,

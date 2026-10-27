@@ -88,6 +88,21 @@ describe('Send enable', () => {
 		expect(container.querySelector('[role=status]')!.textContent).toContain('too large to send');
 	});
 
+	// Red if the live region is inserted together with its text (r5 H5): some screen
+	// readers announce only a change to a region that was already in the page.
+	it('keeps its live region mounted, empty at first, and only changes its text', async () => {
+		const { box, container } = mount();
+		const region = container.querySelector('[role=status]');
+		expect(region).not.toBeNull();
+		expect(region!.textContent!.trim()).toBe('');
+		await type(box, '"'.repeat(65_536));
+		expect(container.querySelector('[role=status]')).toBe(region);
+		expect(region!.textContent).toContain('too large to send');
+		await type(box, 'ok');
+		expect(container.querySelector('[role=status]')).toBe(region);
+		expect(region!.textContent!.trim()).toBe('');
+	});
+
 	it('shows no count for a short body', async () => {
 		const { box, container } = mount();
 		await type(box, 'hello');

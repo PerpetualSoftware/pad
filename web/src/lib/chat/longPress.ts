@@ -26,7 +26,13 @@ export function longPress(node: HTMLElement, onLong: () => void) {
 	const move = (e: PointerEvent) => {
 		if (timer !== null && Math.hypot(e.clientX - x, e.clientY - y) > MOVE_SLOP_PX) cancel();
 	};
+	// The OS may raise its own callout / context menu on the same press (r5 H4);
+	// while a press is armed that would sit on top of ours.
+	const ctx = (e: Event) => {
+		if (timer !== null) e.preventDefault();
+	};
 	node.addEventListener('pointerdown', down);
+	node.addEventListener('contextmenu', ctx);
 	node.addEventListener('pointermove', move);
 	node.addEventListener('pointerup', cancel);
 	node.addEventListener('pointercancel', cancel);
@@ -37,6 +43,7 @@ export function longPress(node: HTMLElement, onLong: () => void) {
 		destroy() {
 			cancel();
 			node.removeEventListener('pointerdown', down);
+			node.removeEventListener('contextmenu', ctx);
 			node.removeEventListener('pointermove', move);
 			node.removeEventListener('pointerup', cancel);
 			node.removeEventListener('pointercancel', cancel);

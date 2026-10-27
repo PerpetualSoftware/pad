@@ -14,11 +14,10 @@
 
 <article class="bubble mine pending" class:failed={pending.status === 'failed'} data-op-key={pending.op_key}>
 	<p class="body">{pending.body}</p>
-	{#if pending.status === 'sending'}
-		<p class="state" role="status">Sending…</p>
-	{:else}
-		<p class="state" role="alert">
-			Failed to send.
+	<!-- Mounted for the bubble's life, only its text changes (r5 H5). -->
+	<p class="state" role="status">{pending.status === 'sending' ? 'Sending…' : 'Failed to send.'}</p>
+	{#if pending.status === 'failed'}
+		<p class="state">
 			<button type="button" onclick={() => onRetry(pending.op_key)}>Retry</button>
 			<button type="button" onclick={() => onDiscard(pending.op_key)}>Discard</button>
 		</p>
