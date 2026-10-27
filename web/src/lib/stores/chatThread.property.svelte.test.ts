@@ -467,8 +467,10 @@ async function walk(seed: number, trace: string[]) {
 		for (const row of m) {
 			const s = server.rows[row.seq - 1];
 			const fresh = row.seq > server.last - 200;
-			if (fresh) expect({ seq: row.seq, body: row.body, deleted: row.deleted }, `I3 row ${row.seq}`).toEqual({ seq: s.seq, body: s.body, deleted: s.deleted });
-			else if (row.deleted) expect(s.deleted, `I3 row ${row.seq} deleted only on the server's say`).toBe(true);
+			// Row for row over the whole window. The one disclosed exception (store header, RESIDUAL):
+			// a retraction of a row older than the newest 200 shows on reopen, not live.
+			const residual = !fresh && !row.deleted && s.deleted;
+			if (!residual) expect({ seq: row.seq, body: row.body, deleted: row.deleted }, `I3 row ${row.seq}`).toEqual({ seq: s.seq, body: s.body, deleted: s.deleted });
 		}
 	}
 	// I8: a thread of the older identity left behind nothing in the window
