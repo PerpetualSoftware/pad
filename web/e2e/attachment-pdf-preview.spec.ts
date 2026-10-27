@@ -134,6 +134,24 @@ async function allViolations(page: Page, inst: Instrument): Promise<string[]> {
 	return [...doc, ...inst.violations];
 }
 
+/**
+ * The E6 control: the same PDF without its embedded TrueType program. A same-length
+ * rename of the one `/FontFile2` key leaves every byte offset in place.
+ */
+function stripFontProgram(pdf: Buffer): Buffer {
+	const key = Buffer.from('/FontFile2', 'latin1');
+	const out = Buffer.from(pdf);
+	let at = out.indexOf(key);
+	let n = 0;
+	while (at !== -1) {
+		out.write('/FontFileX', at, 'latin1');
+		n++;
+		at = out.indexOf(key, at + key.length);
+	}
+	expect(n, 'the fixture carries exactly one embedded TrueType program').toBe(1);
+	return out;
+}
+
 interface Paint {
 	w: number;
 	h: number;
@@ -141,22 +159,26 @@ interface Paint {
 	ink: number;
 	/** Mean red of the inked pixels (0 when none): tells one page's fill from another's. */
 	meanRed: number;
+	/** FNV-1a over every pixel byte: equal only for identical bitmaps. */
+	hash: number;
 }
 
 function paint(page: Page, selector = CANVAS): Promise<Paint> {
 	return page.evaluate((sel) => {
 		const c = document.querySelector<HTMLCanvasElement>(sel);
-		if (!c) return { w: 0, h: 0, ink: 0, meanRed: 0 };
+		if (!c) return { w: 0, h: 0, ink: 0, meanRed: 0, hash: 0 };
 		const { data } = c.getContext('2d')!.getImageData(0, 0, c.width, c.height);
 		let ink = 0;
 		let red = 0;
+		let hash = 2166136261;
 		for (let i = 0; i < data.length; i += 4) {
+			hash = Math.imul(hash ^ data[i] ^ (data[i + 1] << 8) ^ (data[i + 2] << 16), 16777619) >>> 0;
 			if (data[i] < 245 || data[i + 1] < 245 || data[i + 2] < 245) {
 				ink++;
 				red += data[i];
 			}
 		}
-		return { w: c.width, h: c.height, ink, meanRed: ink ? red / ink : 0 };
+		return { w: c.width, h: c.height, ink, meanRed: ink ? red / ink : 0, hash };
 	}, selector);
 }
 
@@ -332,6 +354,48 @@ test.describe('attachment viewer — in-pane PDF (TASK-4075), desktop', () => {
 			expect(await allViolations(page, inst)).toEqual([]);
 		});
 	}
+
+	/**
+	 * E6: an EMBEDDED TrueType font program (FontFile2). pdf.js hands the font bytes
+	 * to the FontFace API, which the CSP's `font-src` governs; nothing else in this
+	 * suite draws a PDF-embedded font, so without this a `font-src` refusal would
+	 * ship green. `issue3025.pdf` is a pdf.js corpus file (see fixtures/pdf/ORIGIN.md).
+	 *
+	 * CONTROL: the SAME file with its font program removed. `/FontFile2` is renamed to
+	 * a same-length unknown key, so every xref offset still holds and pdf.js finds no
+	 * program and substitutes a fallback face. If the embedded program were not being
+	 * drawn (blocked by the CSP, or ignored), the two pages would ink identically; the
+	 * assertion is that they do not. (`disableFontFace` is NOT a valid control: pdf.js
+	 * then draws the same glyphs as paths and the ink would not change.)
+	 */
+	test('E6: an embedded TrueType font draws its own glyphs under the real CSP, and differs from the stripped-program control', async ({ page, fixture, request }) => {
+		const original = readFileSync(resolve(PDF_FIXTURES, 'issue3025.pdf'));
+		const stripped = stripFontProgram(original);
+		expect(stripped.length, 'same length, so the xref offsets still hold').toBe(original.length);
+		expect(stripped.equals(original)).toBe(false);
+
+		const inst = await instrument(page);
+		await openPdf(page, fixture, request, 'PDF E6 embedded', [{ name: 'embedded.pdf', bytes: original }]);
+		const withFont = await painted(page, 20);
+		expect(await allViolations(page, inst), 'CSP violations with the embedded font (document + worker scope)').toEqual([]);
+		expect(inst.errors).toEqual([]);
+
+		// A fresh page: the first one has the instrument's routes and init script installed.
+		const page2 = await page.context().newPage();
+		await page2.setViewportSize(DESKTOP);
+		const inst2 = await instrument(page2);
+		await openPdf(page2, fixture, request, 'PDF E6 stripped', [{ name: 'stripped.pdf', bytes: stripped }]);
+		const without = await painted(page2, 0).catch(() => paint(page2));
+		expect(await allViolations(page2, inst2), 'CSP violations with the program removed').toEqual([]);
+
+		test.info().annotations.push({ type: 'ink', description: `E6 ink: embedded=${withFont.ink} (${withFont.w}x${withFont.h}) hash=${withFont.hash} stripped=${without.ink} (${without.w}x${without.h}) hash=${without.hash}` });
+		expect(withFont.ink).toBeGreaterThan(20);
+		// The page has the same size either way; only the glyph source differs.
+		expect(without.w).toBe(withFont.w);
+		expect(without.h).toBe(withFont.h);
+		expect(withFont.hash, 'a different bitmap').not.toBe(without.hash);
+		expect(Math.abs(withFont.ink - without.ink) / withFont.ink, 'the embedded program drew different ink from the fallback').toBeGreaterThan(0.1);
+	});
 
 	test('E3: only the two fallbacks ship: the wasm files and qcms are not served', async ({ page, fixture }) => {
 		await browserLogin(page);
