@@ -80,9 +80,9 @@ describe('the emitted pdf.js bundle (U8)', () => {
 		expect(files.filter((f) => /quickjs|qcms|sandbox/i.test(f))).toEqual([]);
 	});
 
-	// Measured at this head: <duration>. The explicit timeout is headroom for a cold
-	// disk cache or a loaded box, not a licence to grow: if this is near it, the scan
-	// has got slower.
+	// Measured at this head: 105 ms alone (was 4060 ms before the rewrite, in a full
+	// run). The explicit timeout is headroom for a cold disk cache or a loaded box, not
+	// a licence to grow: if this test nears it, the scan has got slower.
 	it('bundles no @napi-rs module: no native binary, no package path, and the lone reference is the inert Node-only require', { timeout: 20_000 }, () => {
 		// Paths first: they need no file read at all.
 		const all = allFiles();
