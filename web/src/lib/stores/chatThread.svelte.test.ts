@@ -960,3 +960,81 @@ describe('remove', () => {
 		expect(thread.status).toBe('notFound');
 	});
 });
+
+describe('3b r2 ordering', () => {
+	const contiguous = () => {
+		const s = seqs();
+		for (let i = 1; i < s.length; i++) if (s[i] !== s[i - 1] + 1) return `break at ${s[i - 1]}->${s[i]}`;
+		return 'ok';
+	};
+
+	// r2 H1: red if a refresh clears a floor it did not start from (B19).
+	it('keeps a floor that a send set while a refresh was in flight', async () => {
+		await readyThread();
+		wireSend();
+		let release!: () => void;
+		h.listMessages.mockImplementationOnce((_n: number, o: object) => {
+			const page = server.list(o);
+			return new Promise((res) => (release = () => res(page)));
+		});
+		await bump();
+		for (let seq = 4; seq <= 204; seq++) server.add(msg(seq));
+		expect(await thread.send('hello')).toBe('sent');
+		release();
+		await flush();
+		await flush();
+		expect(contiguous()).toBe('ok');
+		expect(thread.newestSeq).toBe(205);
+	});
+
+	// r2 C1/H2: red if a late re-anchor merges its row past unfetched peer rows
+	// without a floor (B20).
+	it('fills the peer row between when a late re-anchor merges a newer own row', async () => {
+		server.fill(400);
+		server.readSeq = 0;
+		await thread.open(1);
+		wireSend();
+		const holds: Array<() => void> = [];
+		h.listMessages.mockImplementation((_n: number, o: object) => {
+			const page = server.list(o);
+			return new Promise((res) => holds.push(() => res(page)));
+		});
+		const b = thread.send('B');
+		await flush();
+		server.add(msg(402));
+		const a = thread.send('A');
+		await flush();
+		expect(holds).toHaveLength(2);
+		holds[0]();
+		await flush();
+		h.listMessages.mockImplementation(async (_n: number, o: object) => server.list(o));
+		holds[1]();
+		expect(await b).toBe('sent');
+		expect(await a).toBe('sent');
+		await flush();
+		await flush();
+		expect(contiguous()).toBe('ok');
+		expect(thread.messages.slice(-3).map((m) => m.seq)).toEqual([401, 402, 403]);
+		expect(pendingOf()).toHaveLength(0);
+	});
+
+	// r2 H3: red if a delete answer merges a row the window no longer holds (B21).
+	it('does not insert a tombstone below a window that a re-anchor moved', async () => {
+		server.fill(400);
+		server.readSeq = 0;
+		await thread.open(1);
+		wireSend();
+		server.tombstone(5);
+		let release!: () => void;
+		h.deleteMessage.mockImplementation(
+			() => new Promise((res) => (release = () => res({ message: { ...server.rows[4] }, deleted: true })))
+		);
+		const d = thread.remove(5);
+		expect(await thread.send('hello')).toBe('sent');
+		release();
+		expect(await d).toBe(true);
+		await flush();
+		expect(contiguous()).toBe('ok');
+		expect(seqs()).not.toContain(5);
+	});
+});

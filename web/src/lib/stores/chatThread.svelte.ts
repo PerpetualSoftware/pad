@@ -281,7 +281,8 @@ export class ChatThread {
 		try {
 			const gap = this.hasNewer;
 			if (!gap) {
-				let cursor = this.#floor ?? this.newestSeq;
+				const floor = this.#floor;
+				let cursor = floor ?? this.newestSeq;
 				for (let pages = 0; pages < REFRESH_MAX_PAGES; pages++) {
 					const page = await api.chat.listMessages(n, { after_seq: cursor, limit: THREAD_MAX_PAGE });
 					if (!current() || epoch !== this.#epoch) return;
@@ -290,7 +291,8 @@ export class ChatThread {
 					if (!page.has_more || page.messages.length === 0) break;
 					cursor = page.newest_seq;
 				}
-				this.#floor = null;
+				// A floor set by a send that confirmed meanwhile is not this one (r2 H1).
+				if (this.#floor === floor) this.#floor = null;
 			}
 			if (this.messages.length > 0) {
 				const lo = this.messages[0].seq;
@@ -388,18 +390,36 @@ export class ChatThread {
 			if (!current()) return;
 		}
 		if (epoch !== this.#epoch) {
-			// A later send's re-anchor landed first, on a page fetched after this row
-			// committed: keep that window, and merge this row only where it is
-			// contiguous (TASK-4044 3b r1, hunter finding 2).
-			if (win.messages.length && sent.seq >= win.messages[0].seq) win.resolvePending(opKey, sent);
-			else win.discardPending(opKey);
-			this.#publish(null);
+			// Another send's re-anchor landed first and the window now ends at the
+			// newest it saw. Keep it: a row older than the window is history, and a
+			// newer one merges like any own row at the end (r1 hunter 2, r2 C1/H2).
+			if (win.messages.length && sent.seq >= win.messages[0].seq) {
+				this.#mergeOwn(win, opKey, sent);
+			} else {
+				win.discardPending(opKey);
+				this.#publish(null);
+			}
 			return;
 		}
 		this.#epoch++;
 		this.#floor = null;
 		win.discardPending(opKey);
 		win.messages = mergeBySeq([], [...rows, sent]);
+		this.#publish(null);
+	}
+
+	/**
+	 * Merge a confirmed own row into a window that ends at the newest. Peer rows
+	 * committed before it were never fetched, so the next refresh's step 1 starts
+	 * below them and the R1 invariant above holds (r1 ruling a61ca213, r2 C1/H2).
+	 */
+	#mergeOwn(win: ChatWindow, opKey: string, sent: ChatMessage) {
+		const before = this.newestSeq;
+		win.resolvePending(opKey, sent);
+		if (before > 0 && sent.seq > before + 1) {
+			this.#floor = Math.min(this.#floor ?? before, before);
+			this.#dirty = true;
+		}
 		this.#publish(null);
 	}
 
@@ -425,15 +445,7 @@ export class ChatThread {
 				await this.#reanchor(n, current, win, opKey, res.message);
 				if (!current()) return 'stale';
 			} else {
-				// Peer rows committed before this one were never fetched: the next refresh's
-				// step 1 starts below them, so the R1 invariant above holds (r1 ruling a61ca213).
-				const before = this.newestSeq;
-				win.resolvePending(opKey, res.message);
-				if (before > 0 && res.message.seq > before + 1) {
-					this.#floor = Math.min(this.#floor ?? before, before);
-					this.#dirty = true;
-				}
-				this.#publish(null);
+				this.#mergeOwn(win, opKey, res.message);
 			}
 			this.ownSendTick++;
 			this.#settled();
@@ -461,7 +473,8 @@ export class ChatThread {
 		try {
 			const res = await api.chat.deleteMessage(n, seq);
 			if (!current()) return false;
-			this.#win.merge([res.message]);
+			// Only a row the window holds: a re-anchor meanwhile may have moved it (r2 H3).
+			if (this.#win.messages.some((m) => m.seq === seq)) this.#win.merge([res.message]);
 			this.#publish(this.#lastSeq);
 			return true;
 		} catch (err) {
