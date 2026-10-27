@@ -68,10 +68,31 @@ interface Instrument {
 	requests: string[];
 	/** Responses >= 400 for the viewer's own assets and downloads. */
 	badResponses: string[];
+	/**
+	 * Console WARNINGS, page and worker. Filled only when the caller opts in
+	 * (`collectWarnings`): pdf.js warns about plenty that is harmless, so no spec's pass
+	 * condition may depend on this list except through a filter naming one message.
+	 */
+	warnings: string[];
 }
 
-async function instrument(page: Page, opts: { forceWasm?: boolean } = {}): Promise<Instrument & { wasmRewrites: () => number }> {
-	const inst: Instrument = { violations: [], errors: [], workerUrls: [], dialogs: [], popups: [], navigations: [], requests: [], badResponses: [] };
+interface InstrumentOpts {
+	forceWasm?: boolean;
+	/** Record console warnings into `warnings` (E6 only). */
+	collectWarnings?: boolean;
+	/** CONTROL for E6: make every FontFace fail to load, as a blocked or corrupt font would. */
+	rejectFontFace?: boolean;
+}
+
+/** The one warning E6 asserts on: pdf.js logs it when `FontFace.loaded` rejects. */
+const FONT_LOAD_FAILURE = 'Warning: Failed to load font';
+
+function fontLoadFailures(inst: Instrument): string[] {
+	return inst.warnings.filter((w) => w.includes(FONT_LOAD_FAILURE));
+}
+
+async function instrument(page: Page, opts: InstrumentOpts = {}): Promise<Instrument & { wasmRewrites: () => number }> {
+	const inst: Instrument = { violations: [], errors: [], workerUrls: [], dialogs: [], popups: [], navigations: [], requests: [], badResponses: [], warnings: [] };
 	let rewrites = 0;
 	await page.addInitScript(() => {
 		(window as unknown as { __csp: string[] }).__csp = [];
@@ -79,6 +100,21 @@ async function instrument(page: Page, opts: { forceWasm?: boolean } = {}): Promi
 			(window as unknown as { __csp: string[] }).__csp.push(`doc:${e.violatedDirective} ${e.blockedURI}`);
 		});
 	});
+	if (opts.rejectFontFace) {
+		// Both promises a consumer can wait on reject, and `document.fonts.add` is untouched.
+		await page.addInitScript(() => {
+			const Native = window.FontFace;
+			class RejectingFontFace extends Native {
+				get loaded(): Promise<FontFace> {
+					return Promise.reject(new Error('injected font load failure'));
+				}
+				load(): Promise<FontFace> {
+					return Promise.reject(new Error('injected font load failure'));
+				}
+			}
+			window.FontFace = RejectingFontFace as unknown as typeof FontFace;
+		});
+	}
 	// The worker-scope listener. Fetch the real asset (under the real CSP headers)
 	// and prepend the probe: nothing else about the response changes.
 	await page.route(/pdf\.worker\.min.*\.mjs/, async (route) => {
@@ -99,11 +135,13 @@ async function instrument(page: Page, opts: { forceWasm?: boolean } = {}): Promi
 		inst.workerUrls.push(w.url());
 		w.on('console', (m) => {
 			const t = m.text();
+			if (opts.collectWarnings && m.type() === 'warning') inst.warnings.push(`worker: ${t}`);
 			if (t.startsWith('PADCSP ')) inst.violations.push(`worker:${t.slice(7)}`);
 			else if (m.type() === 'error') inst.errors.push(`worker console: ${t}`);
 		});
 	});
 	page.on('console', (m) => {
+		if (opts.collectWarnings && m.type() === 'warning') inst.warnings.push(m.text());
 		if (m.type() !== 'error') return;
 		const t = m.text();
 		if (/Content Security Policy|Refused to/i.test(t)) inst.violations.push(`console:${t.slice(0, 160)}`);
@@ -356,29 +394,39 @@ test.describe('attachment viewer — in-pane PDF (TASK-4075), desktop', () => {
 	}
 
 	/**
-	 * E6: an EMBEDDED TrueType font program (FontFile2). pdf.js hands the font bytes
-	 * to the FontFace API, which the CSP's `font-src` governs; nothing else in this
-	 * suite draws a PDF-embedded font, so without this a `font-src` refusal would
-	 * ship green. `issue3025.pdf` is a pdf.js corpus file (see fixtures/pdf/ORIGIN.md).
+	 * E6: an EMBEDDED TrueType font program (FontFile2) loads without a font-load
+	 * failure under the real CSP. pdf.js hands the font bytes to the FontFace API; if
+	 * `FontFace.loaded` rejects, pdf.js logs `Warning: Failed to load font ...` and
+	 * redraws the SAME glyphs as paths (pdf.mjs, `bind`), so the render does not change
+	 * and cannot be the signal. The signal is that warning, collected here and asserted
+	 * ABSENT (only that message: other pdf.js warnings are ignored). The E6 control leg
+	 * below injects a rejecting FontFace and asserts the warning IS recorded, so the
+	 * instrument is proven live on every run.
 	 *
-	 * CONTROL: the SAME file with its font program removed. `/FontFile2` is renamed to
-	 * a same-length unknown key, so every xref offset still holds and pdf.js finds no
-	 * program and substitutes a fallback face. If the embedded program were not being
-	 * drawn (blocked by the CSP, or ignored), the two pages would ink identically; the
-	 * assertion is that they do not. (`disableFontFace` is NOT a valid control: pdf.js
-	 * then draws the same glyphs as paths and the ink would not change.)
+	 * NOT CLAIMED: that this detects a `font-src` refusal specifically. Whether
+	 * `font-src` governs an ArrayBuffer-sourced FontFace at all is UNMEASURED.
+	 *
+	 * FIXTURE VALIDITY (not the CSP claim): the SAME file with its font program removed.
+	 * `/FontFile2` is renamed to a same-length unknown key, so every xref offset still
+	 * holds and pdf.js finds no program and substitutes a fallback face. The two pages
+	 * must ink differently, or the fixture's font program would not be doing anything.
+	 * The >10% ink threshold is EMPIRICAL: measured 4375 (embedded) vs 5204 (stripped),
+	 * a 19% difference. It depends on pdf.js's substitute-font choice, and the ink
+	 * difference carries that claim more than the bitmap hash does.
+	 * `issue3025.pdf` is a pdf.js corpus file (see fixtures/pdf/ORIGIN.md).
 	 */
-	test('E6: an embedded TrueType font draws its own glyphs under the real CSP, and differs from the stripped-program control', async ({ page, fixture, request }) => {
+	test('E6: the embedded TrueType font program loads without a font-load failure under the real CSP (fixture check: it differs from the stripped-program control)', async ({ page, fixture, request }) => {
 		const original = readFileSync(resolve(PDF_FIXTURES, 'issue3025.pdf'));
 		const stripped = stripFontProgram(original);
 		expect(stripped.length, 'same length, so the xref offsets still hold').toBe(original.length);
 		expect(stripped.equals(original)).toBe(false);
 
-		const inst = await instrument(page);
+		const inst = await instrument(page, { collectWarnings: true });
 		await openPdf(page, fixture, request, 'PDF E6 embedded', [{ name: 'embedded.pdf', bytes: original }]);
 		const withFont = await painted(page, 20);
 		expect(await allViolations(page, inst), 'CSP violations with the embedded font (document + worker scope)').toEqual([]);
 		expect(inst.errors).toEqual([]);
+		expect(fontLoadFailures(inst), 'pdf.js font-load failure warnings for the embedded font').toEqual([]);
 
 		// A fresh page: the first one has the instrument's routes and init script installed.
 		const page2 = await page.context().newPage();
@@ -395,6 +443,15 @@ test.describe('attachment viewer — in-pane PDF (TASK-4075), desktop', () => {
 		expect(without.h).toBe(withFont.h);
 		expect(withFont.hash, 'a different bitmap').not.toBe(without.hash);
 		expect(Math.abs(withFont.ink - without.ink) / withFont.ink, 'the embedded program drew different ink from the fallback').toBeGreaterThan(0.1);
+	});
+
+	test('E6 control: the warning instrument DOES record a font-load failure when FontFace loading is made to reject', async ({ page, fixture, request }) => {
+		const original = readFileSync(resolve(PDF_FIXTURES, 'issue3025.pdf'));
+		const inst = await instrument(page, { collectWarnings: true, rejectFontFace: true });
+		await openPdf(page, fixture, request, 'PDF E6 control rejecting', [{ name: 'embedded.pdf', bytes: original }]);
+		await painted(page, 20);
+		await expect.poll(() => fontLoadFailures(inst).length, { timeout: 15_000 }).toBeGreaterThan(0);
+		expect(fontLoadFailures(inst).join('\n')).toContain(FONT_LOAD_FAILURE);
 	});
 
 	test('E3: only the two fallbacks ship: the wasm files and qcms are not served', async ({ page, fixture }) => {

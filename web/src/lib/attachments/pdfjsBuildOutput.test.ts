@@ -16,6 +16,11 @@ import { PDFJS_FALLBACK_DIR, PDFJS_FALLBACK_FILES } from './pdfjsAssets';
 // is what keeps that true across a dependency bump: any `eval(` / `Function(`
 // call site appearing in what ships fails it.
 //
+// It is a TRIPWIRE for direct eval/Function call sites, not a proof of no dynamic
+// code. The wall is the CSP (`script-src 'self'`, no 'unsafe-eval'; in the P2 probe
+// `new Function` in the worker threw EvalError). `.constructor("...")` is a
+// disclosed gap: a regex for it would match ordinary code.
+//
 // IT READS THE BUILD, so it needs one: the web job runs `npm run build` before
 // `npm run test`. A missing build FAILS rather than skips — a test that skips
 // when its subject is absent cannot go red.
@@ -107,7 +112,10 @@ describe('the code-from-string scanner (can it fail?)', () => {
 		['bare Function(', 'const f=Function("return 1")'],
 		['member Function(', 'globalThis.Function("return 1")()'],
 		['indirect eval', '(0, eval)("1")'],
-		['spaced', 'eval  ("1")']
+		['spaced', 'eval  ("1")'],
+		['optional-call eval?.(', 'eval?.("1")'],
+		['optional-call Function?.(', 'globalThis.Function?.("return 1")'],
+		['tagged-template Function`', 'const f=Function`return 1`']
 	])('flags %s', (_n, src) => {
 		expect(findCodeFromString('x.js', src).length).toBeGreaterThan(0);
 	});

@@ -8,14 +8,22 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
- * A call site that turns a string into code: `eval(`, `new Function(`,
- * `Function(` and a bare `(0, eval)(`. The lookbehind keeps identifiers that
- * merely END in these words (`buildPostScriptFunction(`, `retrieval(`) out, and
- * a leading `.` is NOT excluded: `globalThis.Function("...")` is a real call
- * site. pdf.js 6.4.299 has none (CVE-2024-4367 was this class), so any hit in
- * the emitted chunks is an addition worth a human's eyes.
+ * A TRIPWIRE for direct call sites that turn a string into code: `eval(`,
+ * `eval?.(`, `new Function(`, `Function(`, `Function?.(`, tagged-template
+ * Function`...` and a bare `(0, eval)(`. It is NOT a proof that the bundle has no
+ * dynamic code. The wall is the CSP: `script-src 'self'` with no 'unsafe-eval',
+ * which makes `new Function` throw EvalError (measured in the pdf.js worker, the
+ * P2 probe). Disclosed gap: `.constructor("...")` is not scanned, because a regex
+ * for it would match ordinary code.
+ *
+ * The lookbehind keeps identifiers that merely END in these words
+ * (`buildPostScriptFunction(`, `retrieval(`) out, and a leading `.` is NOT
+ * excluded: `globalThis.Function("...")` is a real call site. pdf.js 6.4.299 has
+ * none (CVE-2024-4367 was this class), so any hit in the emitted chunks is an
+ * addition worth a human's eyes.
  */
-const CODE_FROM_STRING = /(?<![\w$])(?:eval|Function)\s*\(|\(\s*0\s*,\s*eval\s*\)\s*\(/g;
+const CODE_FROM_STRING =
+	/(?<![\w$])(?:eval|Function)\s*(?:\?\.\s*)?\(|(?<![\w$])Function\s*`|\(\s*0\s*,\s*eval\s*\)\s*\(/g;
 
 export interface Hit {
 	file: string;
