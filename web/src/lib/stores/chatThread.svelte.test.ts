@@ -1248,6 +1248,78 @@ describe('S1 serialized window', () => {
 		expect(pendingOf()).toHaveLength(0);
 	});
 
+	/** A send that commits at once and answers when `answer()` is called. */
+	function heldCommittedSend() {
+		const real = h.sendMessage.getMockImplementation()!;
+		let answer!: () => void;
+		h.sendMessage.mockImplementationOnce((n: number, b: never) => {
+			const committed = real(n, b);
+			return new Promise((res) => (answer = () => res(committed)));
+		});
+		return () => answer;
+	}
+
+	/** Invariant I9: no own row is visible both as a row (window or detached) and as a sending bubble. */
+	function expectNoRowBesideItsBubble() {
+		const sending = pendingOf().length;
+		const own = [...thread.messages, ...thread.detached].filter((m) => m.mine).length;
+		return { sending, own };
+	}
+
+	// TASK-4044 ruling 2a03a442, N12: red with the own apply fetching while another send is in flight.
+	it('detaches the first own row without fetching while a second send is in flight (I9, N12)', async () => {
+		server.fill(400);
+		server.readSeq = 0;
+		await thread.open(1);
+		expect(thread.hasNewer).toBe(true);
+		wireSend();
+		const aGet = heldCommittedSend();
+		const a = thread.send('A');
+		await flush();
+		const answerA = aGet();
+		const bGet = heldCommittedSend();
+		const b = thread.send('B'); // commits as 402 while its answer is held
+		await flush();
+		const answerB = bGet();
+		expect(server.lastSeq).toBe(402);
+		answerA();
+		expect(await a).toBe('sent');
+		await flush();
+		// B's committed row 402 must not be in the window while B's bubble still shows.
+		expect(seqs()).not.toContain(402);
+		expect(thread.detached.map((m) => m.seq)).toEqual([401]);
+		expect(expectNoRowBesideItsBubble()).toEqual({ sending: 1, own: 1 });
+		answerB();
+		expect(await b).toBe('sent');
+		await flush();
+		expect(pendingOf()).toHaveLength(0);
+		const all = [...thread.messages, ...thread.detached].filter((m) => m.mine).map((m) => m.seq);
+		expect(all.sort()).toEqual([401, 402]);
+	});
+
+	// TASK-4044 ruling 2a03a442, N14: red with the refresh merging a page that landed during a send.
+	it('drops a refresh page that lands while a send is in flight rather than show its row twice (I9, N14)', async () => {
+		await readyThread(3);
+		wireSend();
+		let land!: () => void;
+		h.listMessages.mockImplementationOnce((_n: number, o: object) => new Promise((res) => (land = () => res(server.list(o)))));
+		await bump();
+		const answer = heldCommittedSend();
+		const sending = thread.send('mine'); // commits as 4 while the refresh page is still out
+		await flush();
+		expect(server.lastSeq).toBe(4);
+		land(); // the page now carries row 4
+		await flush();
+		expect(seqs()).toEqual([1, 2, 3]);
+		expect(pendingOf()).toHaveLength(1);
+		expect(expectNoRowBesideItsBubble()).toEqual({ sending: 1, own: 0 });
+		answer()();
+		expect(await sending).toBe('sent');
+		await flush();
+		expect(seqs()).toEqual([1, 2, 3, 4]);
+		expect(pendingOf()).toHaveLength(0);
+	});
+
 	// Red with the chain kept across a reset (N10): the reopen would wait for the old fetch.
 	it('does not wait for, or apply, a fetch that began under the previous identity', async () => {
 		await readyThread(3);
