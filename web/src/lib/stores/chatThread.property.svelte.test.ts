@@ -15,6 +15,8 @@
 //   I7 at most one window fetch is outstanding per identity
 //   I8 nothing of an earlier identity survives (rows are tagged per server)
 //   I9 a committed own row and its pending bubble are never both visible
+//   I10 an own row detaches only with a cause: a refused list, overlapping sends,
+//       or a gap wider than the fill bound; a fill never pages past its bound
 //
 // PROP_SEED=k replays one seed; PROP_SEEDS=n sets how many (deep runs). No
 // Date, no Math.random: mulberry32 and a counter for crypto.randomUUID.
@@ -65,7 +67,7 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 }));
 
 import { chatStore } from './chat.svelte';
-import { ChatThread } from './chatThread.svelte';
+import { ChatThread, REFRESH_MAX_PAGES } from './chatThread.svelte';
 
 Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
 
@@ -143,7 +145,7 @@ class Server {
 	}
 }
 
-type Held = { kind: string; release: (ok: boolean) => void };
+type Held = { kind: string; key?: string; release: (ok: boolean) => void };
 
 let server: Server;
 let thread: ChatThread;
@@ -152,6 +154,9 @@ let immediate = true;
 let inflight = new Map<number, number>();
 let deleted = new Set<number>();
 let uuid = 0;
+let causes = { rejected: false, overlap: false, wideGap: false };
+const answered = new Set<string>();
+const fillCalls = new Map<string, number>();
 let rng: () => number;
 
 async function flush() {
@@ -179,6 +184,7 @@ function check(where: string) {
 		if (i > 0 && d[i].seq <= d[i - 1].seq) fail(`I2 ${where}: detached not ascending`);
 	}
 	if (d.length && !thread.hasNewer) fail(`I4 ${where}: detached without hasNewer`);
+	if (d.length && !(causes.rejected || causes.overlap || causes.wideGap)) fail(`I10 ${where}: detached ${d[0].seq} with no cause`);
 	if (m.length && thread.hasOlder !== m[0].seq > 1) fail(`I4 ${where}: hasOlder ${thread.hasOlder} oldest ${m[0].seq}`);
 	const bubbles = thread.items.flatMap((i) => (i.kind === 'pending' ? [i.pending] : []));
 	const keys = bubbles.map((p) => p.op_key);
@@ -196,10 +202,23 @@ function check(where: string) {
 	if (thread.unreadCount !== unread) fail(`I6 ${where}: unreadCount`);
 }
 
-function deliver<T>(kind: string, value: T, rejectIt = false): Promise<T> {
+function deliver<T>(kind: string, value: T, rejectIt = false, key?: string): Promise<T> {
 	if (immediate) return rejectIt ? Promise.reject(new Error('x')) : Promise.resolve(value);
 	return new Promise<T>((res, rej) =>
-		held.push({ kind, release: (ok) => (ok && !rejectIt ? res(value) : rej(new Error('rejected'))) })
+		held.push({
+			kind,
+			key,
+			release: (ok) => {
+				if (!ok && kind === 'list') causes.rejected = true;
+				if (ok && !rejectIt && kind === 'send') {
+					answered.add(key!);
+					const seq = (value as { message: ChatMessage }).message.seq;
+					if (seq - thread.newestSeq - 1 > 200 * REFRESH_MAX_PAGES) causes.wideGap = true;
+				}
+				if (ok && !rejectIt) res(value);
+				else rej(new Error('rejected'));
+			}
+		})
 	);
 }
 
@@ -210,6 +229,15 @@ function wire() {
 		const ep = h.state.epoch;
 		if (thread.status === 'ready' && thread.messages.length && o.after_seq !== undefined && o.after_seq > thread.newestSeq) {
 			fail(`I6 list: after_seq ${o.after_seq} past the window's newest ${thread.newestSeq}`);
+		}
+		if (o.after_seq !== undefined) {
+			// a fill (or anything else paging forward) while an answered send waits for its apply
+			for (const i of thread.items) {
+				if (i.kind !== 'pending' || i.pending.status !== 'sending' || !answered.has(i.pending.op_key)) continue;
+				const k = i.pending.op_key;
+				fillCalls.set(k, (fillCalls.get(k) ?? 0) + 1);
+				if (fillCalls.get(k)! > REFRESH_MAX_PAGES + 3) fail(`I10 list: ${fillCalls.get(k)} forward pages while ${k} waits to be placed`);
+			}
 		}
 		const n = inflight.get(ep) ?? 0;
 		if (n > 0) fail('I7 list: a second window fetch while one is outstanding');
@@ -224,13 +252,14 @@ function wire() {
 	});
 	h.sendMessage.mockImplementation((_n: number, b: { body: string; op_key: string }) => {
 		check('send');
+		if (thread.items.filter((i) => i.kind === 'pending' && i.pending.status === 'sending').length > 1) causes.overlap = true;
 		const seen = server.byKey.get(b.op_key);
-		if (seen) return deliver('send', { message: { ...seen }, replayed: true, refs: [], refs_truncated: false });
-		if (!immediate && rng() < 0.05) return deliver('send', null as never, true); // refused before the commit
+		if (seen) return deliver('send', { message: { ...seen }, replayed: true, refs: [], refs_truncated: false }, false, b.op_key);
+		if (!immediate && rng() < 0.05) return deliver('send', null as never, true, b.op_key); // refused before the commit
 		const m = msg(server.last + 1, server.tag, { mine: true, author_agent_key: '', author_is_human: true, source: 'web', body: b.body });
 		server.rows.push(m);
 		server.byKey.set(b.op_key, m);
-		return deliver('send', { message: { ...m }, replayed: false, refs: [], refs_truncated: false });
+		return deliver('send', { message: { ...m }, replayed: false, refs: [], refs_truncated: false }, false, b.op_key);
 	});
 	h.deleteMessage.mockImplementation((_n: number, seq: number) => {
 		check('delete');
@@ -262,6 +291,9 @@ async function walk(seed: number, trace: string[]) {
 	rng = mulberry32(seed);
 	held = [];
 	violations = [];
+	causes = { rejected: false, overlap: false, wideGap: false };
+	answered.clear();
+	fillCalls.clear();
 	inflight = new Map();
 	h.state.epoch = 0;
 	h.state.listeners = [];
@@ -292,6 +324,7 @@ async function walk(seed: number, trace: string[]) {
 		}],
 		[15, 'peer+', () => server.add(1 + Math.floor(rng() * 3))],
 		[2, 'burst', () => server.add(210 + Math.floor(rng() * 991))],
+		[2, 'wide-burst', () => server.add(1100 + Math.floor(rng() * 1400))],
 		[5, 'peer-tombstone', () => server.last && server.tombstone(1 + Math.floor(rng() * server.last))],
 		[35, 'release', () => held.length && releaseOne(true)],
 		[3, 'reject-list', () => {
