@@ -824,9 +824,10 @@ describe('send', () => {
 		expect(pendingOf()).toHaveLength(0);
 	});
 
-	// 3b r1 hunter finding 2: red if a re-anchor whose fetch lands last replaces the
-	// window a later send's re-anchor already moved (B16).
-	it('keeps both own rows when two re-anchors land out of order', async () => {
+	// 3b r1 hunter finding 2 (B16 retired in S1): both own rows end up in the window.
+	// Rewritten for the sequential queue: B's apply waits behind A's held fetch, so
+	// awaiting B's send before releasing A's fetch would never settle.
+	it('keeps both own rows when two sends land during a held re-anchor', async () => {
 		server.fill(400);
 		server.readSeq = 0;
 		await thread.open(1);
@@ -840,9 +841,11 @@ describe('send', () => {
 		const a = thread.send('A');
 		await flush();
 		expect(typeof releaseA).toBe('function');
-		expect(await thread.send('B')).toBe('sent');
+		const b = thread.send('B');
+		await flush();
 		releaseA();
 		expect(await a).toBe('sent');
+		expect(await b).toBe('sent');
 		await flush();
 		const bodies = thread.messages.map((m) => m.body);
 		expect(bodies.slice(-2)).toEqual(['A', 'B']);
@@ -968,8 +971,10 @@ describe('3b r2 ordering', () => {
 		return 'ok';
 	};
 
-	// r2 H1: red if a refresh clears a floor it did not start from (B19).
-	it('keeps a floor that a send set while a refresh was in flight', async () => {
+	// r2 H1 (the floor is gone in S1): 201 peer rows skipped by an own row are still
+	// filled when a refresh is in flight. The send's apply queues behind the held
+	// refresh, so the send is awaited only after the refresh is released.
+	it('fills 201 skipped peer rows when the send lands during a held refresh', async () => {
 		await readyThread();
 		wireSend();
 		let release!: () => void;
@@ -979,17 +984,20 @@ describe('3b r2 ordering', () => {
 		});
 		await bump();
 		for (let seq = 4; seq <= 204; seq++) server.add(msg(seq));
-		expect(await thread.send('hello')).toBe('sent');
+		const sent = thread.send('hello');
+		await flush();
 		release();
+		expect(await sent).toBe('sent');
 		await flush();
 		await flush();
 		expect(contiguous()).toBe('ok');
 		expect(thread.newestSeq).toBe(205);
 	});
 
-	// r2 C1/H2: red if a late re-anchor merges its row past unfetched peer rows
-	// without a floor (B20).
-	it('fills the peer row between when a late re-anchor merges a newer own row', async () => {
+	// r2 C1/H2 (late re-anchor gone in S1): two sends around a peer row all land
+	// contiguous. Rewritten: window fetches are sequential now, so the holds are
+	// released one at a time instead of two fetches being outstanding together.
+	it('fills the peer row between two own rows sent around it', async () => {
 		server.fill(400);
 		server.readSeq = 0;
 		await thread.open(1);
@@ -1004,11 +1012,9 @@ describe('3b r2 ordering', () => {
 		server.add(msg(402));
 		const a = thread.send('A');
 		await flush();
-		expect(holds).toHaveLength(2);
-		holds[0]();
-		await flush();
+		expect(holds).toHaveLength(1);
 		h.listMessages.mockImplementation(async (_n: number, o: object) => server.list(o));
-		holds[1]();
+		holds[0]();
 		expect(await b).toBe('sent');
 		expect(await a).toBe('sent');
 		await flush();
@@ -1016,6 +1022,7 @@ describe('3b r2 ordering', () => {
 		expect(contiguous()).toBe('ok');
 		expect(thread.messages.slice(-3).map((m) => m.seq)).toEqual([401, 402, 403]);
 		expect(pendingOf()).toHaveLength(0);
+		expect(thread.detached).toEqual([]);
 	});
 
 	// r2 H3: red if a delete answer merges a row the window no longer holds (B21).
@@ -1036,5 +1043,199 @@ describe('3b r2 ordering', () => {
 		await flush();
 		expect(contiguous()).toBe('ok');
 		expect(seqs()).not.toContain(5);
+	});
+});
+
+// ── S1: serialized window ops and a contiguous window (rulings 3293b1c6, 5c95ef40) ──
+describe('S1 serialized window', () => {
+	const contiguous = () => seqs().every((q, i, all) => i === 0 || q === all[i - 1] + 1);
+
+	/** Window [1,2,3], a send held while peers 4-6 commit, then the own row 7 with the fill failing: it detaches. */
+	async function detachedThread() {
+		await readyThread(3);
+		thread.atBottom = true;
+		wireSend();
+		const real = h.sendMessage.getMockImplementation()!;
+		let release!: () => void;
+		h.sendMessage.mockImplementationOnce((n: number, b: never) => new Promise((res) => (release = () => res(real(n, b)))));
+		const done = thread.send('mine');
+		for (let seq = 4; seq <= 6; seq++) server.add(msg(seq));
+		h.listMessages.mockRejectedValue(new Error('offline'));
+		release();
+		expect(await done).toBe('sent');
+		h.listMessages.mockImplementation(async (_n: number, o: object) => server.list(o));
+		await flush();
+	}
+
+	// r3 #1: mark-read never passes a hole. Red with the fill skipped (N4).
+	it('marks only a contiguous window and fills the skipped peer rows before the own row', async () => {
+		await readyThread(3);
+		thread.atBottom = true;
+		wireSend();
+		const marks: Array<{ seq: number; newest: number; ok: boolean }> = [];
+		h.markRead.mockImplementation(async (_n: number, seq: number) => {
+			marks.push({ seq, newest: thread.newestSeq, ok: contiguous() });
+			return { read_seq: seq };
+		});
+		const real = h.sendMessage.getMockImplementation()!;
+		let release!: () => void;
+		h.sendMessage.mockImplementationOnce((n: number, b: never) => new Promise((res) => (release = () => res(real(n, b)))));
+		const done = thread.send('mine');
+		for (let seq = 4; seq <= 6; seq++) server.add(msg(seq));
+		release();
+		expect(await done).toBe('sent');
+		await flush();
+		await flush();
+		expect(seqs()).toEqual([1, 2, 3, 4, 5, 6, 7]);
+		thread.tryMarkRead(); // the page's effect keys on newestSeq
+		await flush();
+		expect(marks.length).toBeGreaterThan(0);
+		for (const m of marks) expect(m).toMatchObject({ seq: m.newest, ok: true });
+		expect(marks.at(-1)?.seq).toBe(7);
+	});
+
+	// r3 #3: a stale page cannot un-delete a row. Red with the delete applied outside the queue (N3).
+	it('applies a delete after the refresh page that was fetched before it', async () => {
+		await readyThread(5);
+		let release!: () => void;
+		let calls = 0;
+		h.listMessages.mockImplementation((_n: number, o: object) => {
+			const page = server.list(o);
+			if (++calls !== 2) return Promise.resolve(page);
+			return new Promise((res) => (release = () => res(page)));
+		});
+		await bump();
+		expect(typeof release).toBe('function');
+		server.tombstone(2);
+		h.deleteMessage.mockResolvedValue({ message: { ...server.rows[1] }, deleted: true });
+		const d = thread.remove(2);
+		await flush();
+		release();
+		expect(await d).toBe(true);
+		await flush();
+		expect(thread.messages[1]).toMatchObject({ seq: 2, deleted: true });
+	});
+
+	// Hunter #2: more skipped rows than the fill bound detach the own row. Red with the
+	// bound removed (N6) or the row published inside the window (N7).
+	it('detaches an own row 1,200 peer rows away, then Show newer reaches it once', async () => {
+		await readyThread(3);
+		wireSend();
+		const real = h.sendMessage.getMockImplementation()!;
+		let release!: () => void;
+		h.sendMessage.mockImplementationOnce((n: number, b: never) => new Promise((res) => (release = () => res(real(n, b)))));
+		const done = thread.send('mine');
+		for (let seq = 4; seq <= 1203; seq++) server.add(msg(seq));
+		release();
+		expect(await done).toBe('sent');
+		await flush();
+		expect(contiguous()).toBe(true);
+		expect(thread.newestSeq).toBe(3 + 200 * REFRESH_MAX_PAGES);
+		expect(thread.detached.map((m) => m.seq)).toEqual([1204]);
+		expect(thread.hasNewer).toBe(true);
+		expect(pendingOf()).toHaveLength(0);
+		expect(thread.refreshFailed).toBe(false);
+		for (let i = 0; i < 5 && thread.hasNewer; i++) await thread.loadNewer();
+		expect(thread.hasNewer).toBe(false);
+		expect(thread.detached).toEqual([]);
+		expect(seqs()).toEqual(Array.from({ length: 1204 }, (_, i) => i + 1));
+	});
+
+	// Q2 pin (ruling 3293b1c6): a detached row is outside the window for every reader.
+	it('keeps a detached row out of newestSeq, mark-read, the divider and the loadNewer cursor', async () => {
+		await detachedThread();
+		expect(seqs()).toEqual([1, 2, 3]);
+		expect(thread.detached.map((m) => m.seq)).toEqual([7]);
+		expect(thread.newestSeq).toBe(3);
+		expect(thread.unreadCount).toBe(3);
+		expect(thread.dividerIndex).toBe(0);
+		h.markRead.mockClear();
+		thread.tryMarkRead();
+		await flush();
+		expect(h.markRead.mock.calls).toEqual([[1, 3]]);
+		h.listMessages.mockClear();
+		await thread.loadNewer();
+		expect(h.listMessages.mock.calls[0]).toEqual([1, { after_seq: 3, limit: 200 }]);
+	});
+
+	// A failed fill keeps the send a success and the row reachable.
+	it('detaches the own row when the fill fails, with the outcome sent and no refresh error', async () => {
+		await detachedThread();
+		expect(thread.hasNewer).toBe(true);
+		expect(pendingOf()).toHaveLength(0);
+		expect(thread.refreshFailed).toBe(false);
+	});
+
+	it('tombstones a detached row in the detached list', async () => {
+		await detachedThread();
+		server.tombstone(7);
+		h.deleteMessage.mockResolvedValue({ message: { ...server.rows[6] }, deleted: true });
+		expect(await thread.remove(7)).toBe(true);
+		expect(thread.detached).toMatchObject([{ seq: 7, deleted: true }]);
+		expect(seqs()).toEqual([1, 2, 3]);
+	});
+
+	// Red with the window ops not chained (N1): at most one window fetch at a time.
+	it('never has two window fetches outstanding', async () => {
+		server.fill(400);
+		server.readSeq = 100;
+		await thread.open(1);
+		wireSend();
+		h.deleteMessage.mockImplementation(async () => ({ message: { ...server.rows[149] }, deleted: true }));
+		let live = 0;
+		let max = 0;
+		h.listMessages.mockImplementation(async (_n: number, o: object) => {
+			live++;
+			max = Math.max(max, live);
+			await Promise.resolve();
+			await Promise.resolve();
+			const page = server.list(o);
+			live--;
+			return page;
+		});
+		await Promise.all([thread.loadOlder(), thread.loadNewer(), thread.refresh(), thread.send('x'), thread.remove(150)]);
+		await flush();
+		expect(max).toBe(1);
+	});
+
+	// Red with the own apply outside the queue (N2): the bubble stays until the held refresh lets go.
+	it('applies an own row after a refresh that is already running', async () => {
+		await readyThread(3);
+		wireSend();
+		let release!: () => void;
+		h.listMessages.mockImplementationOnce((_n: number, o: object) => {
+			const page = server.list(o);
+			return new Promise((res) => (release = () => res(page)));
+		});
+		await bump();
+		const done = thread.send('mine');
+		await flush();
+		expect(pendingOf()).toHaveLength(1);
+		expect(seqs()).toEqual([1, 2, 3]);
+		release();
+		expect(await done).toBe('sent');
+		await flush();
+		expect(seqs()).toEqual([1, 2, 3, 4]);
+		expect(pendingOf()).toHaveLength(0);
+	});
+
+	// Red with the chain kept across a reset (N10): the reopen would wait for the old fetch.
+	it('does not wait for, or apply, a fetch that began under the previous identity', async () => {
+		await readyThread(3);
+		server.add(msg(4, { body: 'stale' }));
+		let release!: () => void;
+		h.listMessages.mockImplementationOnce((_n: number, o: object) => {
+			const page = server.list(o);
+			return new Promise((res) => (release = () => res(page)));
+		});
+		await bump();
+		h.state.epoch++;
+		for (const fn of [...h.state.listeners]) fn('previous');
+		server.rows = [msg(1, { body: 'new1' })];
+		await thread.open(1);
+		release();
+		await flush();
+		expect(thread.status).toBe('ready');
+		expect(thread.messages.map((m) => m.body)).toEqual(['new1']);
 	});
 });

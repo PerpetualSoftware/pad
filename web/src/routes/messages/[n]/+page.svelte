@@ -224,6 +224,14 @@
 					{/if}
 				</div>
 			{/if}
+			{#each thread.detached as m (m.seq)}
+				<MessageBubble
+					message={m}
+					onJumpToQuote={jumpToQuote}
+					onReply={(r) => (replyTo = r)}
+					onDelete={deleteMessage}
+				/>
+			{/each}
 			<div class="sentinel" bind:this={sentinel} aria-hidden="true"></div>
 		</div>
 		{#if n !== null}
