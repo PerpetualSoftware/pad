@@ -1175,6 +1175,35 @@ describe('S1 serialized window', () => {
 		expect(seqs()).toEqual([1, 2, 3]);
 	});
 
+	// Red with loadNewer merging a page that landed during a send (N13): the server
+	// answers late, after the own row committed, so the page carries it beside its bubble.
+	it('does not merge a Show-newer page that carries the row of a send still in flight', async () => {
+		server.fill(250);
+		server.readSeq = 0;
+		await thread.open(1); // window 1..200, hasNewer
+		expect(thread.hasNewer).toBe(true);
+		wireSend();
+		let page!: () => void;
+		h.listMessages.mockImplementationOnce((_n: number, o: object) => new Promise((res) => (page = () => res(server.list(o)))));
+		const newer = thread.loadNewer();
+		await flush();
+		const real = h.sendMessage.getMockImplementation()!;
+		let answer!: () => void;
+		h.sendMessage.mockImplementationOnce((n: number, b: never) => {
+			const committed = real(n, b); // committed now, answered later
+			return new Promise((res) => (answer = () => res(committed)));
+		});
+		const sending = thread.send('mine');
+		await flush();
+		page();
+		await newer;
+		await flush();
+		expect(seqs()).not.toContain(251);
+		expect(pendingOf()).toHaveLength(1);
+		answer();
+		expect(await sending).toBe('sent');
+	});
+
 	// Red with the window ops not chained (N1): at most one window fetch at a time.
 	it('never has two window fetches outstanding', async () => {
 		server.fill(400);
