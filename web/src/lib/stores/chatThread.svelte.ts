@@ -19,6 +19,8 @@
 //      REFRESH_MAX_PAGES pages (1,000 rows). If the bound is hit the rest stays
 //      on the server, `hasNewer` is true and the page offers "Show newer
 //      messages"; nothing scrolls.
+//      Once after an own send committed past unfetched peer rows, step 1
+//      starts from the newest before that send instead (the one-shot #floor).
 //   2. tombstones: one DESC newest-200 page, merged only for seqs inside the
 //      window's own [oldest, newest] range, so it can neither open a gap nor
 //      prepend.
@@ -94,6 +96,8 @@ export class ChatThread {
 	#readSeq = 0;
 	#refreshing = false;
 	#dirty = false;
+	/** One-shot step-1 cursor below newestSeq after an own row skipped peer rows (r1 hunter 1). */
+	#floor: number | null = null;
 	/** Bumped when the window moves to the newest page; older answers are dropped. */
 	#epoch = 0;
 	#marking = false;
@@ -150,6 +154,7 @@ export class ChatThread {
 		this.#lastSeq = 0;
 		this.#readSeq = 0;
 		this.#dirty = false;
+		this.#floor = null;
 		this.#refreshing = false;
 		this.#marking = false;
 	}
@@ -276,7 +281,7 @@ export class ChatThread {
 		try {
 			const gap = this.hasNewer;
 			if (!gap) {
-				let cursor = this.newestSeq;
+				let cursor = this.#floor ?? this.newestSeq;
 				for (let pages = 0; pages < REFRESH_MAX_PAGES; pages++) {
 					const page = await api.chat.listMessages(n, { after_seq: cursor, limit: THREAD_MAX_PAGE });
 					if (!current() || epoch !== this.#epoch) return;
@@ -285,6 +290,7 @@ export class ChatThread {
 					if (!page.has_more || page.messages.length === 0) break;
 					cursor = page.newest_seq;
 				}
+				this.#floor = null;
 			}
 			if (this.messages.length > 0) {
 				const lo = this.messages[0].seq;
@@ -391,6 +397,7 @@ export class ChatThread {
 			return;
 		}
 		this.#epoch++;
+		this.#floor = null;
 		win.discardPending(opKey);
 		win.messages = mergeBySeq([], [...rows, sent]);
 		this.#publish(null);
@@ -418,7 +425,14 @@ export class ChatThread {
 				await this.#reanchor(n, current, win, opKey, res.message);
 				if (!current()) return 'stale';
 			} else {
+				// Peer rows committed before this one were never fetched: the next refresh's
+				// step 1 starts below them, so the R1 invariant above holds (r1 ruling a61ca213).
+				const before = this.newestSeq;
 				win.resolvePending(opKey, res.message);
+				if (before > 0 && res.message.seq > before + 1) {
+					this.#floor = Math.min(this.#floor ?? before, before);
+					this.#dirty = true;
+				}
 				this.#publish(null);
 			}
 			this.ownSendTick++;

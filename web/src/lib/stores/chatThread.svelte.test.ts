@@ -905,6 +905,25 @@ describe('refresh during a send', () => {
 		await flush();
 		expect(seqs()).toEqual([1, 2, 3, 4, 5]);
 	});
+
+	// r1 hunter 1 (ruling a61ca213): red if the one-shot cursor floor is dropped (B18).
+	// More than the sweep's 200: only step 1 from below the own row can fetch them.
+	it('does not skip any of 201 peer rows committed while a send was in flight', async () => {
+		await readyThread();
+		wireSend();
+		const real = h.sendMessage.getMockImplementation()!;
+		let release!: () => void;
+		h.sendMessage.mockImplementationOnce((n: number, b: never) => new Promise((res) => (release = () => res(real(n, b)))));
+		const done = thread.send('hello');
+		for (let seq = 4; seq <= 204; seq++) server.add(msg(seq));
+		await bump();
+		release();
+		await done;
+		await flush();
+		await flush();
+		expect(seqs()).toEqual(Array.from({ length: 205 }, (_, i) => i + 1));
+		expect(thread.hasNewer).toBe(false);
+	});
 });
 
 describe('remove', () => {
