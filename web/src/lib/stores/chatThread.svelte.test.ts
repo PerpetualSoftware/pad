@@ -795,6 +795,29 @@ describe('send', () => {
 		expect(thread.messages.at(-1)).toMatchObject({ seq: 401, deleted: true, body: '' });
 	});
 
+	// 3b r5a2 R1 (I1): red with the replayed row merged across the hole below the moved window.
+	it('a replayed send below the re-anchored window is history: bubble dropped, row not merged', async () => {
+		server.fill(400);
+		server.readSeq = 0;
+		await thread.open(1); // window 1..200, hasNewer
+		wireSend();
+		const real = h.sendMessage.getMockImplementation()!;
+		h.sendMessage.mockImplementationOnce(async (n: number, b: never) => {
+			await real(n, b); // A commits as 401, the answer is lost
+			throw new Error('timeout');
+		});
+		expect(await thread.send('A')).toBe('failed');
+		for (let i = 0; i < 60; i++) server.add(msg(server.lastSeq + 1)); // peers land: 402..461
+		expect(await thread.send('B')).toBe('sent'); // re-anchors to the newest 50
+		expect(thread.messages[0].seq).toBeGreaterThan(401);
+		const key = (pendingOf()[0] as { pending: { op_key: string } }).pending.op_key;
+		expect(await thread.retry(key)).toBe('sent'); // the replay answers seq 401
+		const all = seqs();
+		for (let i = 1; i < all.length; i++) expect(all[i]).toBe(all[i - 1] + 1);
+		expect(all).not.toContain(401);
+		expect(pendingOf()).toHaveLength(0);
+	});
+
 	it('discards a failed bubble', async () => {
 		await readyThread();
 		h.sendMessage.mockRejectedValueOnce(new Error('network'));

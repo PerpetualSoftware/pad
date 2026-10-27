@@ -378,7 +378,7 @@ export class ChatThread {
 			}
 		}
 		if (!current()) return;
-		if (at === 'resolve') win.resolvePending(opKey, sent);
+		if (at === 'resolve' && !(win.messages.length && sent.seq < win.messages[0].seq)) win.resolvePending(opKey, sent); // below the window is history (R1)
 		else win.discardPending(opKey);
 		if (at === 'detach') this.detached = [...this.detached.filter((m) => m.seq !== sent.seq), sent].sort((a, b) => a.seq - b.seq);
 		this.#publish(null);
