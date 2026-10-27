@@ -11,13 +11,20 @@
 //   I3 at rest the window equals the server, row for row, detached empty
 //   I4 detached rows imply hasNewer; hasOlder is oldest > 1
 //   I5 a row the reader deleted never reads as live again
-//   I6 mark-read marks the window's newest; no cursor reaches a detached row
+//   I6 mark-read marks the window's newest and the server's recorded marker never
+//       passes the window's end; it passes an undisplayed unread row only after a
+//       re-anchor (the ruled behaviour, b3dd1e54/ec6bbe31); no cursor reaches a
+//       detached row
 //   I7 at most one window fetch is outstanding per identity
 //   I8 nothing of an earlier identity survives (rows are tagged per server)
 //   I9 a committed own row and its pending bubble are never both visible
 //   I10 an own row detaches only with a cause recorded FOR THAT ROW (3b r4 C2): a
 //       refused list while its bubble waited, overlapping sends, or a gap wider
-//       than the fill bound; a fill never pages past its bound
+//       than the fill bound; a fill never pages past its bound. 'rejected' is
+//       recorded for the one bubble whose own apply fetch was refused
+//   PATHS (3b r5 A3): the run counts how often the walk reached a detach, a
+//       re-anchor, a fill that resolved and a fill that detached, and fails when
+//       any count is 0, so a walk that never reaches a path cannot pass
 //
 // PROP_SEED=k replays one seed; PROP_SEEDS=n sets how many (deep runs). No
 // Date, no Math.random: mulberry32 and a counter for crypto.randomUUID.
@@ -163,6 +170,12 @@ let inflight = new Map<number, number>();
 let deleted = new Set<number>();
 let uuid = 0;
 let causes = new Map<string, Set<string>>();
+/** How often the walks reached each placement path, summed over the run (A3 b). */
+const hits = { detach: 0, moved: 0, fillResolved: 0, fillDetach: 0 };
+/** The window as the last check() saw it, to spot a re-anchor, a new detach, a resolve. */
+let snap: { tag: string; lo: number; hi: number; detached: Set<number>; sending: Set<string> } | null = null;
+let reanchored = false;
+const filled = new Set<string>();
 const addCause = (key: string, why: string) => causes.set(key, (causes.get(key) ?? new Set()).add(why));
 
 /** An error the real predicates accept: the class is not exported, so borrow its constructor. */
@@ -194,13 +207,44 @@ const fail = (rule: string): never => {
 	throw new Error(rule);
 };
 
+/** Count the placement paths from what changed since the last look (A3 b). */
+function observe(where: string) {
+	if (thread.status !== 'ready') return;
+	const m = thread.messages;
+	const lo = m.length ? m[0].seq : 0;
+	const hi = m.length ? m[m.length - 1].seq : 0;
+	const detached = new Set(thread.detached.map((r) => r.seq));
+	const sending = new Set(thread.items.flatMap((i) => (i.kind === 'pending' && i.pending.status === 'sending' ? [i.pending.op_key] : [])));
+	if (snap && snap.tag === server.tag) {
+		if (m.length && snap.lo > 0 && lo > snap.lo) {
+			hits.moved++; // the window's start only ever moves down (load earlier), so up is the re-anchor
+			reanchored = true;
+		}
+		for (const seq of detached) {
+			if (snap.detached.has(seq)) continue;
+			hits.detach++;
+			const key = [...server.byKey].find(([, r]) => r.seq === seq)?.[0];
+			if (key && filled.has(key)) hits.fillDetach++;
+		}
+		for (const key of snap.sending) {
+			const row = server.byKey.get(key);
+			if (sending.has(key) || !row || !filled.has(key)) continue;
+			if (m.some((r) => r.seq === row.seq) && lo <= snap.lo) hits.fillResolved++; // a fill closed the gap, the window kept its start
+		}
+	}
+	snap = { tag: server.tag, lo, hi, detached, sending };
+	void where;
+}
+
 function check(where: string) {
 	const sending = thread.items.flatMap((i) => (i.kind === 'pending' && i.pending.status === 'sending' ? [i.pending.op_key] : []));
 	if (sending.length > 1) for (const k of sending) addCause(k, 'overlap');
 	const m = thread.messages;
 	for (let i = 1; i < m.length; i++) if (m[i].seq !== m[i - 1].seq + 1) fail(`I1 ${where}: ${m[i - 1].seq}->${m[i].seq}`);
 	const newest = m.length ? m[m.length - 1].seq : 0;
-	if (thread.newestSeq !== newest) fail(`I6 ${where}: newestSeq ${thread.newestSeq} != window end ${newest}`);
+	// the server's own recorded marker, not the store's view of itself (A3 c)
+	if (thread.status === 'ready' && server.readSeq > newest) fail(`I6 ${where}: server marker ${server.readSeq} past the window end ${newest}`);
+	observe(where);
 	const d = thread.detached;
 	for (let i = 0; i < d.length; i++) {
 		if (d[i].seq <= newest) fail(`I2 ${where}: detached ${d[i].seq} <= newest ${newest}`);
@@ -228,16 +272,14 @@ function check(where: string) {
 	if (thread.unreadCount !== unread) fail(`I6 ${where}: unreadCount`);
 }
 
-function deliver<T>(kind: string, value: T, rejectIt: Error | false = false, key?: string): Promise<T> {
+function deliver<T>(kind: string, value: T, rejectIt: Error | false = false, key?: string, owner?: string): Promise<T> {
 	if (immediate) return rejectIt ? Promise.reject(new Error('x')) : Promise.resolve(value);
 	return new Promise<T>((res, rej) =>
 		held.push({
 			kind,
 			key,
 			release: (ok) => {
-				if (!ok && kind === 'list') {
-					for (const i of thread.items) if (i.kind === 'pending' && i.pending.status === 'sending' && answered.has(i.pending.op_key)) addCause(i.pending.op_key, 'rejected');
-				}
+				if (!ok && kind === 'list' && owner) addCause(owner, 'rejected'); // only the bubble this fetch belonged to
 				if (ok && !rejectIt && kind === 'send') {
 					answered.add(key!);
 					const seq = (value as { message: ChatMessage }).message.seq;
@@ -267,14 +309,22 @@ function wire() {
 				if (fillCalls.get(k)! > REFRESH_MAX_PAGES + 3) fail(`I10 list: ${fillCalls.get(k)} forward pages while ${k} waits to be placed`);
 			}
 		}
+		// The bubble whose apply this fetch is: the first answered one still waiting. A refresh
+		// and a Show-newer do not fetch while a send is in flight, and a load-earlier is no apply.
+		const owner = o.before_seq === undefined ? [...answered].find((k) => thread.items.some((i) => i.kind === 'pending' && i.pending.status === 'sending' && i.pending.op_key === k)) : undefined;
+		if (owner && o.after_seq !== undefined) filled.add(owner);
 		const n = inflight.get(ep) ?? 0;
 		if (n > 0) fail('I7 list: a second window fetch while one is outstanding');
 		inflight.set(ep, n + 1);
-		return deliver('list', server.list(o)).finally(() => inflight.set(ep, (inflight.get(ep) ?? 1) - 1));
+		return deliver('list', server.list(o), false, undefined, owner).finally(() => inflight.set(ep, (inflight.get(ep) ?? 1) - 1));
 	});
 	h.markRead.mockImplementation(async (_n: number, seq: number) => {
 		check('markRead');
 		if (seq !== thread.newestSeq) fail(`I6 markRead: ${seq} != window newest ${thread.newestSeq}`);
+		// Past an unread row the window skipped: only a re-anchor may do that (A3 c).
+		const lo = thread.messages[0]?.seq ?? 0;
+		const skipped = server.rows.filter((r) => r.seq > server.readSeq && r.seq < lo && !r.mine && !r.deleted);
+		if (skipped.length && !reanchored) fail(`I6 markRead ${seq}: skips unread row ${skipped[0].seq} below the window start ${lo} with no re-anchor`);
 		server.readSeq = Math.max(server.readSeq, seq);
 		return { read_seq: seq };
 	});
@@ -307,6 +357,7 @@ async function openFresh() {
 	server.add(Math.floor(rng() * 451));
 	server.readSeq = Math.floor(rng() * (server.last + 1));
 	deleted = new Set();
+	reanchored = false;
 	immediate = true;
 	await thread.open(1);
 	immediate = false;
@@ -321,6 +372,9 @@ async function walk(seed: number, trace: string[]) {
 	causes = new Map();
 	answered.clear();
 	fillCalls.clear();
+	filled.clear();
+	snap = null;
+	reanchored = false;
 	inflight = new Map();
 	h.state.epoch = 0;
 	h.state.listeners = [];
@@ -450,6 +504,10 @@ describe('window ops (property)', () => {
 				thread?.dispose();
 				throw new Error(`seed=${seed} (replay: PROP_SEED=${seed})\n${(e as Error).message}\n--- last 40 steps ---\n${trace.slice(-40).join('\n')}`);
 			}
+		}
+		if (ONLY === null) {
+			console.log(`property paths over ${SEEDS} seeds: ${JSON.stringify(hits)}`);
+			for (const [path, n] of Object.entries(hits)) expect(n, `the walks never reached the ${path} path`).toBeGreaterThan(0);
 		}
 	}, 600_000);
 });
