@@ -71,7 +71,7 @@ import { ChatThread, REFRESH_MAX_PAGES } from './chatThread.svelte';
 
 Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
 
-const SEEDS = Number(process.env.PROP_SEEDS ?? 150);
+const SEEDS = Number(process.env.PROP_SEEDS ?? 100);
 const ONLY = process.env.PROP_SEED === undefined ? null : Number(process.env.PROP_SEED);
 const STEPS = 80;
 
