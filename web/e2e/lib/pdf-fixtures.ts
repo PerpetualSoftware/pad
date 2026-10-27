@@ -103,7 +103,7 @@ export function buildPaddedPdf(bytes: number): Buffer {
 	return Buffer.concat([base, Buffer.alloc(Math.max(0, bytes - base.length), 0x20)]);
 }
 
-/** The declared side of the oversize image: 10000 x 10000 = 100 MP, over the 64 MP maxImageSize. */
+/** The declared side of the oversize image: 10000 x 10000 = 100 MP, over the 64 MP maxImageSize (which does not bound JPX: TASK-4106). */
 export const OVERSIZE_IMAGE_SIDE = 10_000;
 
 /**

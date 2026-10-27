@@ -83,12 +83,19 @@
 					// 'wasm-unsafe-eval' and none is added. JPX/JBIG2 take their JS
 					// fallbacks, served from our own origin (see pdfjsAssets.ts).
 					useWasm: false,
-					// Decompression-bomb bound, NOT a memory budget: pdf.js leaves decoded
-					// image size unbounded by default (maxImageSize -1). Counted in
-					// pixels (w*h); an image over it is skipped with a warning and the
-					// rest of the page still draws. 64 MP keeps a 600 dpi US-letter scan
-					// (5100 x 6600 = 33.7 MP) that 16 MP would blank; one image at the
-					// cap costs ~256 MiB to decode at 4 B/px.
+					// Decompression-bomb bound on every image EXCEPT JPX, and NOT a memory
+					// budget. pdf.js leaves decoded image size unbounded by default
+					// (maxImageSize -1). Counted in pixels (w*h) from the image DICTIONARY's
+					// W/H (pdf.worker.mjs:34283-34289): an image over it is skipped with a
+					// warning and the rest of the page still draws. 64 MP keeps a 600 dpi
+					// US-letter scan (5100 x 6600 = 33.7 MP) that 16 MP would blank; one
+					// image at the cap costs ~256 MiB to decode at 4 B/px.
+					// JPX IS NOT BOUNDED BY THIS: for JPXDecode the size is then re-read from
+					// the CODESTREAM (:33055-33061) and replaces the dictionary's (:33084), so
+					// a JPX whose dictionary says 1x1 passes this check whatever its SIZ
+					// marker declares. What pdf.js does there is request a reduced decode
+					// (getReducePowerForJPX) sized to about 2^30 bytes of OUTPUT; the
+					// decoder's peak allocation is UNMEASURED. The real bound is TASK-4106.
 					maxImageSize: PDF_MAX_IMAGE_PIXELS,
 					wasmUrl: `${location.origin}${PDFJS_FALLBACK_DIR}`
 				});

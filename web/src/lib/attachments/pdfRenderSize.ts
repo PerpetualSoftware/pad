@@ -18,8 +18,9 @@ export const PDF_MAX_PIXELS = 16_000_000;
 export const PDF_MAX_SIDE = 16384;
 
 /**
- * pdf.js `maxImageSize`, in pixels (w*h): a decompression-bomb bound, not a
- * memory budget. See the call site in AttachmentPdfPreview.svelte.
+ * pdf.js `maxImageSize`, in pixels (w*h): a decompression-bomb bound on every
+ * image EXCEPT JPX (whose size pdf.js re-reads from the codestream), not a
+ * memory budget. See the call site in AttachmentPdfPreview.svelte and TASK-4106.
  */
 export const PDF_MAX_IMAGE_PIXELS = 64 * 1024 * 1024;
 
