@@ -5784,6 +5784,41 @@ describe('Lightbox — the PDF arm (TASK-4075)', () => {
 		expect(root().querySelector('.lightbox-pdf-scroll')!.getAttribute('aria-label')).toBe('doc.pdf');
 	});
 
+	it('H8: 0, -, + and = reach the page-number box instead of being swallowed as zoom keys', async () => {
+		mountViewer({ images: [pdfImage(IMG_A)] });
+		await settleAsync();
+		const box = root().querySelector<HTMLInputElement>('.attachment-pdf-page-input')!;
+		box.focus();
+		for (const key of ['0', '-', '+', '=']) expect(press(key), `${key} in the box`).toBe(false);
+		// Control: with focus on a button (not a text field) the same key is still a consumed zoom key.
+		root().querySelector<HTMLButtonElement>('.lightbox-close, [aria-label="Close"]')!.focus();
+		expect(press('0')).toBe(true);
+	});
+
+	it('re-key: PageUp/PageDown during the Retry {#key} swap never reach the destroyed instance', async () => {
+		pdfFetch.mockImplementationOnce(async () => bodyResp('', 500));
+		mountViewer({ images: [pdfImage(IMG_A)] });
+		await settleAsync();
+		// Retry: the second request never answers, so the swap is held open.
+		pdfFetch.mockImplementation(() => new Promise(() => {}));
+		root().querySelector<HTMLButtonElement>('.lightbox-pdf .lightbox-retry')!.click();
+		flushSync();
+		expect(root().querySelector('.attachment-pdf-preview')).toBeNull();
+		expect(press('PageDown')).toBe(false);
+		expect(press('PageUp')).toBe(false);
+	});
+
+	it('re-key: a ready PDF replaced by another is not pageable through the destroyed instance', async () => {
+		mountViewer({ images: [pdfImage(IMG_B, 'b.pdf'), pdfImage(IMG_C, 'c.pdf')] });
+		await settleAsync();
+		expect(status()).toBe('Page 1 of 3');
+		pdfFetch.mockImplementation(() => new Promise(() => {}));
+		root().querySelector<HTMLButtonElement>('.lightbox-nav.next')!.click();
+		flushSync();
+		expect(root().querySelector('.attachment-pdf-preview')).toBeNull();
+		expect(press('PageDown')).toBe(false);
+	});
+
 	it('U6: PageUp/PageDown turn the PDF pages, and only on a ready PDF, never with a modifier', async () => {
 		mountViewer({ images: [pdfImage(IMG_A), { ...image(IMG_B, 'p.png'), size_bytes: 128 }] });
 		await settleAsync();

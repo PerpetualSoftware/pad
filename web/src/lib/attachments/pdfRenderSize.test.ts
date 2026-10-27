@@ -37,9 +37,13 @@ describe('pageRenderSize', () => {
 		expect(s.pixelWidth / s.pixelHeight).toBeCloseTo(612 / 792, 2);
 	});
 
-	it('caps a hostile page size (a 14400 x 14400 pt page) too', () => {
-		const s = pageRenderSize(14400, 14400, 800, 2)!;
+	it('caps a hostile page size (a 14400 x 14400 pt page zoomed to 8000 css px, 256 MP uncapped) at 16 MP', () => {
+		// 8000 css px at DPR 2 is 16000 x 16000 = 256 MP: over the area cap, while the
+		// longest side (16000) is UNDER the side cap, so only the area cap can bring it down.
+		const s = pageRenderSize(14400, 14400, 8000, 2)!;
 		expect(s.pixelWidth * s.pixelHeight).toBeLessThanOrEqual(PDF_MAX_PIXELS);
+		expect(s.pixelWidth * s.pixelHeight).toBeGreaterThan(PDF_MAX_PIXELS * 0.99);
+		expect(s.pixelWidth).toBe(4000);
 	});
 
 	it('does not touch a page already under the cap', () => {

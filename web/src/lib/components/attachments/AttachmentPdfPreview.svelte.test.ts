@@ -15,7 +15,8 @@ const pdf = vi.hoisted(() => {
 		renders: [] as { canvas: HTMLCanvasElement; scale: number; cancelled: boolean }[],
 		cleanups: 0,
 		fail: null as null | { name: string },
-		pageSize: { width: 612, height: 792 }
+		pageSize: { width: 612, height: 792 },
+		hang: false
 	};
 	const getDocument = (params: { data: Uint8Array }) => {
 		const task = { destroyed: false, params: params as unknown as Record<string, unknown> };
@@ -26,7 +27,9 @@ const pdf = vi.hoisted(() => {
 			? Promise.reject(Object.assign(new Error('x'), state.fail))
 			: Promise.resolve({
 					numPages: state.numPages,
-					getPage: async () => ({
+					getPage: async () => {
+						if (state.hang) return new Promise<never>(() => {});
+						return {
 						getViewport: ({ scale }: { scale: number }) => ({
 							width: state.pageSize.width * scale,
 							height: state.pageSize.height * scale
@@ -39,7 +42,8 @@ const pdf = vi.hoisted(() => {
 						cleanup: () => {
 							state.cleanups++;
 						}
-					})
+						};
+					}
 				});
 		return {
 			promise,
@@ -87,6 +91,7 @@ beforeEach(() => {
 	pdf.state.numPages = 3;
 	pdf.state.fail = null;
 	pdf.state.pageSize = { width: 612, height: 792 };
+	pdf.state.hang = false;
 	// jsdom has no layout: give the scroll region a width so the render effect runs.
 	Object.defineProperty(HTMLElement.prototype, 'clientWidth', { configurable: true, get: () => 800 });
 });
@@ -215,6 +220,38 @@ describe('AttachmentPdfPreview — render caps (U4, Q4)', () => {
 		await open();
 		expect(document.body.textContent).toContain("This page couldn't be drawn.");
 		expect(pdf.state.renders).toHaveLength(0);
+	});
+});
+
+describe('AttachmentPdfPreview — a failed page leaves no stale pixels (r5b-L1, L2)', () => {
+	it('L1: a page with no honest size clears the previous page\'s canvas and box before the alert', async () => {
+		await open();
+		const canvas = q<HTMLCanvasElement>('canvas');
+		expect(canvas.width).toBe(800);
+		expect(canvas.style.width).toBe('800px');
+		pdf.state.pageSize = { width: 0, height: 792 };
+		button('Next page').click();
+		flushSync();
+		await settle();
+		expect(document.body.textContent).toContain("This page couldn't be drawn.");
+		expect(canvas.width).toBe(0);
+		expect(canvas.height).toBe(0);
+		expect(canvas.style.width).toBe('');
+		expect(canvas.style.height).toBe('');
+	});
+
+	it('L2: opening new bytes resets the failed flag and the canvas box', async () => {
+		pdf.state.pageSize = { width: 0, height: 792 };
+		await open(pdfBytes(10));
+		expect(document.body.textContent).toContain("This page couldn't be drawn.");
+		// Seed a box, then open a document whose first page never resolves.
+		q<HTMLCanvasElement>('canvas').style.width = '800px';
+		pdf.state.hang = true;
+		props.bytes = pdfBytes(20);
+		flushSync();
+		await settle();
+		expect(document.body.textContent).not.toContain("This page couldn't be drawn.");
+		expect(q<HTMLCanvasElement>('canvas').style.width).toBe('');
 	});
 });
 

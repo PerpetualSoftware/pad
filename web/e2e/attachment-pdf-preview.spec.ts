@@ -515,7 +515,11 @@ test.describe('attachment viewer — in-pane PDF (TASK-4075), desktop', () => {
 		expect(gets, 'no download request was made for the over-cap file').toEqual([]);
 	});
 
-	test('E5: a body that outruns the cap is refused by the response gate with the same copy', async ({ page, fixture, request }) => {
+	// Covers the Content-Length PRECHECK only: route.fulfill sets Content-Length, so the
+	// declared length is what trips the cap. The STREAMING count (a body with no usable
+	// Content-Length) is covered by unit tests only (boundedBytes.test.ts, a real
+	// ReadableStream in jsdom); there is no real-browser test of it.
+	test('E5: a body whose Content-Length exceeds the cap is refused by the PRECHECK with the same copy', async ({ page, fixture, request }) => {
 		await instrument(page);
 		await page.route(/\/api\/v1\/workspaces\/[^/]+\/attachments\/[0-9a-f-]+$/, async (route) => {
 			if (route.request().method() !== 'GET') return route.continue();
@@ -524,6 +528,21 @@ test.describe('attachment viewer — in-pane PDF (TASK-4075), desktop', () => {
 		await openPdf(page, fixture, request, 'PDF E5 body', [{ name: 'liar.pdf', bytes: buildMultiPagePdf(1) }]);
 		await expect(page.locator(ARM)).toContainText('too large to preview');
 		await expect(page.locator(`${ARM} canvas`)).toHaveCount(0);
+	});
+
+	test('H8: the page box takes 0 (and the other zoom characters): typing 1, 0, Enter reaches page 10', async ({ page, fixture, request }) => {
+		await instrument(page);
+		await openPdf(page, fixture, request, 'PDF page ten', [{ name: 'twelve.pdf', bytes: buildMultiPagePdf(12) }]);
+		await painted(page);
+		await expect(page.locator(STATUS)).toHaveText('Page 1 of 12');
+		const box = page.getByRole('textbox', { name: 'Page number' });
+		await box.click();
+		await box.press('Control+a');
+		await page.keyboard.press('1');
+		await page.keyboard.press('0');
+		await expect(box).toHaveValue('10');
+		await page.keyboard.press('Enter');
+		await expect(page.locator(STATUS)).toHaveText('Page 10 of 12');
 	});
 
 	test('zoom and the page box work, and the arrow keys stay out of the way', async ({ page, fixture, request }) => {

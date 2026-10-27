@@ -66,6 +66,8 @@
 		pageNo = 1;
 		pageInput = '1';
 		zoom = 1;
+		renderFailed = false;
+		cssSize = { width: 0, height: 0 };
 		(async () => {
 			try {
 				const [pdfjs, worker] = await Promise.all([
@@ -141,7 +143,13 @@
 				if (cancelled) return;
 				const base = page.getViewport({ scale: 1 });
 				const size = pageRenderSize(base.width, base.height, w * z, window.devicePixelRatio || 1);
-				if (!size) throw new Error('page has no drawable size');
+				if (!size) {
+					// Clear the previous page's pixels so the alert does not sit over them.
+					canvas.width = 0;
+					canvas.height = 0;
+					cssSize = { width: 0, height: 0 };
+					throw new Error('page has no drawable size');
+				}
 				const viewport = page.getViewport({ scale: size.pixelWidth / base.width });
 				canvas.width = size.pixelWidth;
 				canvas.height = size.pixelHeight;

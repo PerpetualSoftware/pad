@@ -2350,6 +2350,19 @@
 		// `shiftKey` is fine (on most layouts `+` IS Shift+`=`), so it is absent
 		// from the guard.
 		if (e.ctrlKey || e.metaKey || e.altKey) return;
+		// A text field inside the viewer (the PDF page-number box) owns every
+		// character typed into it. Placed ahead of characterKey() so `0`, `-`, `+`
+		// and `=` reach the box instead of being consumed as zoom keys (a page
+		// number like 10 could not be typed). Tab, Left/Right and PageUp/PageDown
+		// are decided above and are unaffected.
+		const typing = document.activeElement;
+		if (
+			typing instanceof HTMLElement &&
+			el.contains(typing) &&
+			(typing instanceof HTMLInputElement || typing instanceof HTMLTextAreaElement || typing.isContentEditable)
+		) {
+			return;
+		}
 		// They are single-character shortcuts, so they come through
 		// characterKey(): the single-key switch (WCAG 2.1.4, BUG-3465) turns them
 		// off, and the zoom buttons remain.
