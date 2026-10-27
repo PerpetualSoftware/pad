@@ -173,6 +173,37 @@ test('E5b: an own send scrolls to the end even from further up', async ({ page, 
 	await expect(page.locator('article.mine', { hasText: 'from the top of the page' })).toBeInViewport();
 });
 
+// 3b r4 Q3 (ruling ec6bbe31): with a gap open and the newest page unreachable, the sent
+// row is DETACHED: it shows below the 'Show newer messages' marker and the marker stays.
+test('E5c: a send past a gap shows below the Show newer marker while the marker stays', async ({
+	page,
+	request,
+	fixture
+}, testInfo) => {
+	test.skip(testInfo.project.name !== 'desktop-chromium', 'the mobile project has E6');
+	const agent = uniqueAgent('gap');
+	const n = await createDM(request, fixture, agent);
+	for (let i = 1; i <= 210; i++) await agentSays(request, fixture, n, agent, `gap ${i}`);
+	await page.goto(`/messages/${n}`);
+	const marker = page.getByRole('button', { name: 'Show newer messages' });
+	await expect(marker).toBeVisible();
+	// The re-anchor's newest-page read (no after_seq) fails; every other read goes through.
+	await page.route(`**/api/v1/me/conversations/${n}/messages?*`, (route) =>
+		new URL(route.request().url()).searchParams.has('after_seq') ? route.continue() : route.abort()
+	);
+	await typeAndSend(page, 'sent past the gap');
+	await expect(page.locator('article.pending')).toHaveCount(0);
+	const sent = page.locator('article.bubble', { hasText: 'sent past the gap' });
+	await expect(sent).toBeVisible();
+	await expect(marker).toBeVisible();
+	const m = (await marker.boundingBox())!;
+	const s = (await sent.boundingBox())!;
+	expect(s.y).toBeGreaterThan(m.y);
+	await page.screenshot({
+		path: '/home/dave/.cache/wren/impl-TASK-4044-pr3/3b/s1-build/evidence/q3-detached.png'
+	});
+});
+
 test('E6: the composer rides above the emulated keyboard, and a touch long-press is the only way in', async ({
 	page,
 	request,
