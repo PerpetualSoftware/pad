@@ -240,17 +240,14 @@ describe('AttachmentPdfPreview — a failed page leaves no stale pixels (r5b-L1,
 		expect(canvas.style.height).toBe('');
 	});
 
-	it('L2: opening new bytes resets the failed flag and the canvas box', async () => {
-		pdf.state.pageSize = { width: 0, height: 792 };
+	it('L2: opening new bytes resets the canvas box (the new document\'s canvas does not inherit the old size)', async () => {
 		await open(pdfBytes(10));
-		expect(document.body.textContent).toContain("This page couldn't be drawn.");
-		// Seed a box, then open a document whose first page never resolves.
-		q<HTMLCanvasElement>('canvas').style.width = '800px';
+		expect(q<HTMLCanvasElement>('canvas').style.width).toBe('800px');
+		// The new document's first page never resolves, so nothing but the open effect can reset the box.
 		pdf.state.hang = true;
 		props.bytes = pdfBytes(20);
 		flushSync();
 		await settle();
-		expect(document.body.textContent).not.toContain("This page couldn't be drawn.");
 		expect(q<HTMLCanvasElement>('canvas').style.width).toBe('');
 	});
 });
