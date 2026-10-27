@@ -105,7 +105,8 @@ describe('AttachmentPdfPreview — pdf.js options (U4)', () => {
 		await open();
 		expect(pdf.state.tasks).toHaveLength(1);
 		const p = pdf.state.tasks[0].params;
-		expect(Object.keys(p).sort()).toEqual(['data', 'useWasm', 'wasmUrl']);
+		expect(Object.keys(p).sort()).toEqual(['data', 'maxImageSize', 'useWasm', 'wasmUrl']);
+		expect(p.maxImageSize).toBe(64 * 1024 * 1024);
 		expect(p.useWasm).toBe(false);
 		expect(p.url).toBeUndefined();
 		expect(p.enableScripting).toBeUndefined();
@@ -207,6 +208,13 @@ describe('AttachmentPdfPreview — render caps (U4, Q4)', () => {
 		await settle();
 		expect(canvas.width * canvas.height).toBeLessThanOrEqual(PDF_MAX_PIXELS);
 		expect(canvas.width * canvas.height).toBeGreaterThan(PDF_MAX_PIXELS * 0.9);
+	});
+
+	it('a page with no honest size shows "couldn\'t be drawn" and never sizes the canvas', async () => {
+		pdf.state.pageSize = { width: 0, height: 792 };
+		await open();
+		expect(document.body.textContent).toContain("This page couldn't be drawn.");
+		expect(pdf.state.renders).toHaveLength(0);
 	});
 });
 

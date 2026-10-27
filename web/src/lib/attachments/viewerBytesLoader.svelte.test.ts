@@ -23,14 +23,14 @@ function entry(over: Partial<LightboxImage> = {}): LightboxImage {
 
 const pdfBytes = (n: number, fill = 0x25) => new Uint8Array(n).fill(fill);
 
-/** A Response with no stream: exercises the arrayBuffer() fallback leg. */
+/** A real Response over a real ReadableStream (there is no non-stream fallback to exercise). */
 function plainResponse(body: Uint8Array, ok = true, status = 200): Response {
-	return {
-		ok,
-		status,
-		body: null,
-		arrayBuffer: async () => body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength)
-	} as unknown as Response;
+	return new Response(body as BodyInit, { status: ok ? status : status === 200 ? 500 : status });
+}
+
+/** A Response whose body is absent: the shared reader refuses it as an error. */
+function bodylessResponse(): Response {
+	return { ok: true, status: 200, body: null, arrayBuffer: async () => new ArrayBuffer(4) } as unknown as Response;
 }
 
 /**
@@ -164,12 +164,35 @@ describe('createViewerBytesLoader', () => {
 		expect(loader.oversizeBytes).toBeNull();
 	});
 
-	it('RESPONSE gate on the non-stream fallback bounds what is delivered', async () => {
+	it('RESPONSE gate: a real stream past the cap is too-large', async () => {
 		fetchMock.mockResolvedValue(plainResponse(new Uint8Array(PDF_PREVIEW_MAX_BYTES + 1)));
 		const loader = createViewerBytesLoader();
 		loader.load(entry({ size_bytes: null }), 'ws');
 		await settle();
 		expect(loader.phase).toBe('too-large');
+		expect(loader.bytes).toBeNull();
+	});
+
+	it('RESPONSE gate: a declared Content-Length over the cap refuses BEFORE reading', async () => {
+		const stream = streamedResponse(pdfBytes(100), 10);
+		(stream.response as unknown as { headers: Headers }).headers = new Headers({
+			'content-length': String(PDF_PREVIEW_MAX_BYTES + 1)
+		});
+		fetchMock.mockResolvedValue(stream.response);
+		const loader = createViewerBytesLoader();
+		loader.load(entry({ size_bytes: null }), 'ws');
+		await settle();
+		expect(loader.phase).toBe('too-large');
+		expect(loader.bytes).toBeNull();
+		expect(stream.state.reads).toBe(0);
+	});
+
+	it('RESPONSE gate: a missing body is the error phase, not a buffered read', async () => {
+		fetchMock.mockResolvedValue(bodylessResponse());
+		const loader = createViewerBytesLoader();
+		loader.load(entry({ size_bytes: null }), 'ws');
+		await settle();
+		expect(loader.phase).toBe('error');
 		expect(loader.bytes).toBeNull();
 	});
 

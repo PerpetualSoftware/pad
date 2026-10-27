@@ -299,6 +299,9 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 
+/** A real Response over a real stream: the shared bounded reader has no non-stream fallback. */
+const bodyResp = (body: string | Uint8Array, status = 200): Response => new Response(body as BodyInit, { status });
+
 describe('Lightbox — dialog semantics', () => {
 	it('is an aria-modal dialog named after the image, plus its type', () => {
 		mountViewer();
@@ -5109,12 +5112,7 @@ describe('Lightbox — the text arm', () => {
 	beforeEach(() => {
 		metaFetch.mockResolvedValue({ status: 'ok', mime: 'text/markdown', size: 128 });
 		metaRevalidate.mockResolvedValue({ status: 'ok', mime: 'text/markdown', size: 128 });
-		textFetch = vi.fn().mockResolvedValue({
-			ok: true,
-			status: 200,
-			body: null,
-			text: async () => '# Heading\n\nSome *emphasis*.'
-		});
+		textFetch = vi.fn().mockImplementation(async () => bodyResp('# Heading\n\nSome *emphasis*.'));
 		vi.stubGlobal('fetch', textFetch);
 	});
 
@@ -5334,8 +5332,7 @@ describe('Lightbox — the text arm', () => {
 	it.each(['text/plain', 'text/csv'])('mounts %s inside the filling sheet stage and uses the phone table budget', async (mime) => {
 		mobileFlag = true;
 		try {
-			textFetch.mockResolvedValue({ ok: true, body: null,
-				text: async () => Array(101).fill(Array(50).fill('x').join(',')).join('\n') });
+			textFetch.mockImplementation(async () => bodyResp(Array(101).fill(Array(50).fill('x').join(',')).join('\n')));
 			mountViewer({ images: [{ ...image(IMG_A, 'file', mime), size_bytes: 128 }] });
 			await settleAsync();
 			expect(hasSheet()).toBe(true);
@@ -5357,7 +5354,7 @@ describe('Lightbox — the text arm', () => {
 	});
 
 	it('routes a parameterized TSV MIME to tab-delimited cells through the shared loader', async () => {
-		textFetch.mockResolvedValue({ ok: true, body: null, text: async () => 'one\ttwo\nx\ty' });
+		textFetch.mockImplementation(async () => bodyResp('one\ttwo\nx\ty'));
 		mountViewer({ images: [{ ...image(IMG_A, 'file', 'text/tab-separated-values; charset=utf-8'), size_bytes: 128 }] });
 		await settleAsync();
 		expect([...root().querySelectorAll('td')].map((cell) => cell.textContent)).toEqual(['x', 'y']);
@@ -5387,12 +5384,7 @@ describe('Lightbox — the text arm', () => {
 	});
 
 	it('renders PLAIN text as text, never as markdown', async () => {
-		textFetch.mockResolvedValue({
-			ok: true,
-			status: 200,
-			body: null,
-			text: async () => '# not a heading\n*not emphasis*'
-		});
+		textFetch.mockImplementation(async () => bodyResp('# not a heading\n*not emphasis*'));
 		mountViewer({
 			images: [{ ...image(IMG_A, 'notes', 'text/plain'), filename: 'notes.txt' }]
 		});
@@ -5407,12 +5399,7 @@ describe('Lightbox — the text arm', () => {
 	});
 
 	it('SANITIZES a document carrying active content', async () => {
-		textFetch.mockResolvedValue({
-			ok: true,
-			status: 200,
-			body: null,
-			text: async () => 'before\n\n<script>alert(1)</script>\n\n[x](javascript:alert(1))\n\n<img src=x onerror=alert(1)>\n\n<a href="#" onclick="alert(1)">x</a>\n\nafter'
-		});
+		textFetch.mockImplementation(async () => bodyResp('before\n\n<script>alert(1)</script>\n\n[x](javascript:alert(1))\n\n<img src=x onerror=alert(1)>\n\n<a href="#" onclick="alert(1)">x</a>\n\nafter'));
 		mountViewer({ images: [image(IMG_A, 'evil.md', 'text/markdown')] });
 		await settleAsync();
 		const body = root().querySelector('.lightbox-text-body');
@@ -5589,7 +5576,7 @@ describe('Lightbox — the text arm', () => {
 	});
 
 	it('offers a retry when the fetch fails', async () => {
-		textFetch.mockResolvedValue({ ok: false, status: 500, body: null, text: async () => '' });
+		textFetch.mockImplementation(async () => bodyResp('', 500));
 		mountViewer({ images: [image(IMG_A, 'notes.md', 'text/markdown')] });
 		await settleAsync();
 		expect(root().querySelector('.lightbox-text .lightbox-retry')).not.toBeNull();
@@ -5606,13 +5593,7 @@ describe('Lightbox — the PDF arm (TASK-4075)', () => {
 	const PDF_BYTES = new Uint8Array(32).fill(0x25);
 
 	beforeEach(() => {
-		pdfFetch = vi.fn().mockResolvedValue({
-			ok: true,
-			status: 200,
-			body: null,
-			arrayBuffer: async () => PDF_BYTES.buffer.slice(0),
-			text: async () => '# md'
-		});
+		pdfFetch = vi.fn().mockImplementation(async () => bodyResp(PDF_BYTES.slice()));
 		vi.stubGlobal('fetch', pdfFetch);
 	});
 	afterEach(() => {
@@ -5744,7 +5725,7 @@ describe('Lightbox — the PDF arm (TASK-4075)', () => {
 	});
 
 	it('offers Retry when the fetch fails, and Retry recovers', async () => {
-		pdfFetch.mockResolvedValueOnce({ ok: false, status: 500, body: null, arrayBuffer: async () => new ArrayBuffer(0) });
+		pdfFetch.mockImplementationOnce(async () => bodyResp('', 500));
 		mountViewer({ images: [pdfImage(IMG_A)] });
 		await settleAsync();
 		const retry = root().querySelector<HTMLButtonElement>('.lightbox-pdf .lightbox-retry');

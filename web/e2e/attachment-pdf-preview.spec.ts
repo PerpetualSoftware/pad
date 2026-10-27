@@ -19,6 +19,7 @@ import {
 import {
 	buildHostilePdf,
 	buildMultiPagePdf,
+	buildOversizeImagePdf,
 	buildPaddedPdf,
 	buildPostScriptFunctionPdf
 } from './lib/pdf-fixtures';
@@ -241,6 +242,19 @@ test.describe('attachment viewer — in-pane PDF (TASK-4075), desktop', () => {
 		// ...and what it saw is a WORKER-scope wasm refusal, which the document listener cannot see.
 		expect(inst.violations.join('\n')).toMatch(/worker:script-src wasm-eval/);
 		expect(await page.evaluate(() => (window as unknown as { __csp: string[] }).__csp)).toEqual([]);
+	});
+
+	test('F2: a PDF declaring an image over maxImageSize still draws the page, without the image', async ({ page, fixture, request }) => {
+		const inst = await instrument(page);
+		await openPdf(page, fixture, request, 'PDF F2', [{ name: 'bomb.pdf', bytes: buildOversizeImagePdf() }]);
+		const p = await painted(page);
+		// The red rectangle is 400 x 300 of 612 x 792 (~25% of the page). A decoded
+		// 100 MP black underlay would ink ~100%.
+		expect(p.ink / (p.w * p.h)).toBeGreaterThan(0.15);
+		expect(p.ink / (p.w * p.h)).toBeLessThan(0.4);
+		expect(p.meanRed).toBeGreaterThan(200);
+		await expect(page.locator(`${ARM} [role="alert"]`)).toHaveCount(0);
+		expect(await allViolations(page, inst)).toEqual([]);
 	});
 
 	test('E1 interpreter: the same PostScript-function PDF paints with wasm OFF, as shipped, and no violation', async ({ page, fixture, request }) => {

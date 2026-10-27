@@ -1,3 +1,5 @@
+import { deflateSync } from 'node:zlib';
+
 /**
  * Hand-assembled PDFs for the in-pane PDF viewer's browser specs (TASK-4075).
  *
@@ -99,4 +101,26 @@ export function buildPaddedPdf(bytes: number): Buffer {
 	const base = buildMultiPagePdf(1);
 	// Trailing bytes after %%EOF are ignored by readers; the server sniffs the head.
 	return Buffer.concat([base, Buffer.alloc(Math.max(0, bytes - base.length), 0x20)]);
+}
+
+/** The declared side of the oversize image: 10000 x 10000 = 100 MP, over the 64 MP maxImageSize. */
+export const OVERSIZE_IMAGE_SIDE = 10_000;
+
+/**
+ * F2: a page that paints a page-sized image DECLARED at 10000 x 10000 px (100 MP)
+ * and then a red rectangle on top. The image data is a Flate stream of zeros, so
+ * the file is ~100 KB, not 100 MB. With `maxImageSize` in force pdf.js skips the
+ * image and the page is white with the rectangle; without it the image decodes
+ * to a black underlay and the page is almost entirely inked.
+ */
+export function buildOversizeImagePdf(): Buffer {
+	const data = deflateSync(Buffer.alloc(OVERSIZE_IMAGE_SIDE * OVERSIZE_IMAGE_SIDE)).toString('latin1');
+	const objects = [
+		'<< /Type /Catalog /Pages 2 0 R >>',
+		'<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+		'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /XObject << /Im0 5 0 R >> >> /Contents 4 0 R >>',
+		stream('q 612 0 0 792 0 0 cm /Im0 Do Q 1 0 0 rg 40 300 400 300 re f'),
+		`<< /Type /XObject /Subtype /Image /Width ${OVERSIZE_IMAGE_SIDE} /Height ${OVERSIZE_IMAGE_SIDE} /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode /Length ${data.length} >>\nstream\n${data}\nendstream`
+	];
+	return assemble(objects, 1);
 }

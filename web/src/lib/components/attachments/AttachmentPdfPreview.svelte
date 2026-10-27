@@ -11,7 +11,7 @@
 	// chunk does not grow. The worker is our own Vite asset, served by the same
 	// origin under the baseline CSP (`script-src 'self'`), so no CSP changes.
 	import { PDFJS_FALLBACK_DIR } from '$lib/attachments/pdfjsAssets';
-	import { pageRenderSize, stepZoom } from '$lib/attachments/pdfRenderSize';
+	import { pageRenderSize, stepZoom, PDF_MAX_IMAGE_PIXELS } from '$lib/attachments/pdfRenderSize';
 	import type { PDFDocumentLoadingTask, PDFDocumentProxy, RenderTask } from 'pdfjs-dist';
 
 	let {
@@ -83,6 +83,13 @@
 					// 'wasm-unsafe-eval' and none is added. JPX/JBIG2 take their JS
 					// fallbacks, served from our own origin (see pdfjsAssets.ts).
 					useWasm: false,
+					// Decompression-bomb bound, NOT a memory budget: pdf.js leaves decoded
+					// image size unbounded by default (maxImageSize -1). Counted in
+					// pixels (w*h); an image over it is skipped with a warning and the
+					// rest of the page still draws. 64 MP keeps a 600 dpi US-letter scan
+					// (5100 x 6600 = 33.7 MP) that 16 MP would blank; one image at the
+					// cap costs ~256 MiB to decode at 4 B/px.
+					maxImageSize: PDF_MAX_IMAGE_PIXELS,
 					wasmUrl: `${location.origin}${PDFJS_FALLBACK_DIR}`
 				});
 				const opened = await task.promise;
@@ -127,6 +134,7 @@
 				if (cancelled) return;
 				const base = page.getViewport({ scale: 1 });
 				const size = pageRenderSize(base.width, base.height, w * z, window.devicePixelRatio || 1);
+				if (!size) throw new Error('page has no drawable size');
 				const viewport = page.getViewport({ scale: size.pixelWidth / base.width });
 				canvas.width = size.pixelWidth;
 				canvas.height = size.pixelHeight;

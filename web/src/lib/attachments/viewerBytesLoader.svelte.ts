@@ -22,10 +22,11 @@
  *
  *  - METADATA gate: `size_bytes` above {@link PDF_PREVIEW_MAX_BYTES} makes no
  *    request at all. It passes vacuously for an entry that arrived without a size.
- *  - RESPONSE gate: bounds the bytes actually accepted while streaming, and
- *    cancels the reader past the cap. Where the body is not a stream (jsdom) the
- *    fallback measures after buffering: the render bound holds, the memory bound
- *    does not. Every browser this ships to streams.
+ *  - RESPONSE gate ({@link readBoundedBytes}, shared with the text loader): a
+ *    declared Content-Length over the cap refuses before reading; otherwise the
+ *    bytes accepted while streaming are counted and the reader is cancelled past
+ *    the cap. A body that is not a stream is an `error`. The one-chunk overshoot
+ *    that remains is disclosed in boundedBytes.ts.
  *
  * THE BYTES ARE THE LOADER'S, NOT PDF.JS'S. `getDocument({ data })` DETACHES
  * the buffer it is handed (measured: `byteLength` reads 0 afterwards), so the
@@ -35,6 +36,7 @@
 import { attachmentDownloadUrl } from '$lib/markdown/attachments';
 import { withRequestDeadline } from '$lib/api/client';
 import { canPreviewAsPdf, PDF_PREVIEW_MAX_BYTES } from '$lib/attachments/display';
+import { readBoundedBytes } from './boundedBytes';
 import type { LightboxImage } from './events';
 import type { TextLoadPhase } from './viewerTextLoader.svelte';
 
@@ -59,39 +61,6 @@ interface ActiveLoad {
 	img: LightboxImage;
 	wsSlug: string;
 	controller: AbortController;
-}
-
-/**
- * Read a response body into one buffer, refusing more than `max` bytes.
- * Streams, so an oversize body is abandoned mid-flight. Returns `null` when the
- * bound is exceeded.
- */
-async function readBoundedBytes(response: Response, max: number): Promise<Uint8Array | null> {
-	const body = response.body;
-	if (!body || typeof body.getReader !== 'function') {
-		const whole = new Uint8Array(await response.arrayBuffer());
-		return whole.byteLength > max ? null : whole;
-	}
-	const reader = body.getReader();
-	const chunks: Uint8Array[] = [];
-	let seen = 0;
-	for (;;) {
-		const { done, value } = await reader.read();
-		if (done) break;
-		seen += value?.byteLength ?? 0;
-		if (seen > max) {
-			await reader.cancel();
-			return null;
-		}
-		if (value) chunks.push(value);
-	}
-	const out = new Uint8Array(seen);
-	let at = 0;
-	for (const c of chunks) {
-		out.set(c, at);
-		at += c.byteLength;
-	}
-	return out;
 }
 
 export function createViewerBytesLoader(): ViewerBytesLoader {
