@@ -3,7 +3,7 @@
 Three real-world PDFs from the pdf.js project's own test corpus, used by
 `web/e2e/attachment-pdf-preview.spec.ts` to prove that JPEG2000 (JPX) and
 JBIG2 images decode through the no-wasm fallbacks under Pad's CSP (E3), and that
-an embedded TrueType font program draws under it (E6).
+an embedded TrueType font program loads with no pdf.js font-load failure, meaning the FontFace load did not reject (E6).
 
 | file | what it exercises | bytes | sha256 |
 |---|---|---|---|

@@ -91,6 +91,17 @@ function fontLoadFailures(inst: Instrument): string[] {
 	return inst.warnings.filter((w) => w.includes(FONT_LOAD_FAILURE));
 }
 
+/**
+ * The ONE point at which E6 and its control read the warnings: right after
+ * `painted()`, with a single read (no poll). The setTimeout(0) flush is
+ * belt-and-braces only; what proves the read is not early is the control leg,
+ * which asserts the warning at this same point on the same path.
+ */
+async function fontLoadFailuresAfterPaint(page: Page, inst: Instrument): Promise<string[]> {
+	await page.evaluate(() => new Promise<void>((r) => setTimeout(r, 0)));
+	return fontLoadFailures(inst);
+}
+
 async function instrument(page: Page, opts: InstrumentOpts = {}): Promise<Instrument & { wasmRewrites: () => number }> {
 	const inst: Instrument = { violations: [], errors: [], workerUrls: [], dialogs: [], popups: [], navigations: [], requests: [], badResponses: [], warnings: [] };
 	let rewrites = 0;
@@ -394,14 +405,15 @@ test.describe('attachment viewer — in-pane PDF (TASK-4075), desktop', () => {
 	}
 
 	/**
-	 * E6: an EMBEDDED TrueType font program (FontFile2) loads without a font-load
-	 * failure under the real CSP. pdf.js hands the font bytes to the FontFace API; if
+	 * E6: an EMBEDDED TrueType font program (FontFile2) loads with no pdf.js font-load
+	 * failure (the FontFace load did not reject). pdf.js hands the font bytes to the FontFace API; if
 	 * `FontFace.loaded` rejects, pdf.js logs `Warning: Failed to load font ...` and
 	 * redraws the SAME glyphs as paths (pdf.mjs, `bind`), so the render does not change
 	 * and cannot be the signal. The signal is that warning, collected here and asserted
 	 * ABSENT (only that message: other pdf.js warnings are ignored). The E6 control leg
-	 * below injects a rejecting FontFace and asserts the warning IS recorded, so the
-	 * instrument is proven live on every run.
+	 * below injects a rejecting FontFace and asserts the warning IS recorded at the
+	 * SAME point in the flow (same open, same painted() wait, one read), so it is the
+	 * proof that the instrument sees the warning in time on this path.
 	 *
 	 * NOT CLAIMED: that this detects a `font-src` refusal specifically. Whether
 	 * `font-src` governs an ArrayBuffer-sourced FontFace at all is UNMEASURED.
@@ -415,7 +427,7 @@ test.describe('attachment viewer — in-pane PDF (TASK-4075), desktop', () => {
 	 * difference carries that claim more than the bitmap hash does.
 	 * `issue3025.pdf` is a pdf.js corpus file (see fixtures/pdf/ORIGIN.md).
 	 */
-	test('E6: the embedded TrueType font program loads without a font-load failure under the real CSP (fixture check: it differs from the stripped-program control)', async ({ page, fixture, request }) => {
+	test('E6: the embedded TrueType font program loads with no pdf.js font-load failure (the FontFace load did not reject) (fixture check: it differs from the stripped-program control)', async ({ page, fixture, request }) => {
 		const original = readFileSync(resolve(PDF_FIXTURES, 'issue3025.pdf'));
 		const stripped = stripFontProgram(original);
 		expect(stripped.length, 'same length, so the xref offsets still hold').toBe(original.length);
@@ -426,14 +438,15 @@ test.describe('attachment viewer — in-pane PDF (TASK-4075), desktop', () => {
 		const withFont = await painted(page, 20);
 		expect(await allViolations(page, inst), 'CSP violations with the embedded font (document + worker scope)').toEqual([]);
 		expect(inst.errors).toEqual([]);
-		expect(fontLoadFailures(inst), 'pdf.js font-load failure warnings for the embedded font').toEqual([]);
+		// Same point in the flow as the control leg's assertion: after painted(), one read.
+		expect(await fontLoadFailuresAfterPaint(page, inst), 'pdf.js font-load failure warnings for the embedded font').toEqual([]);
 
 		// A fresh page: the first one has the instrument's routes and init script installed.
 		const page2 = await page.context().newPage();
 		await page2.setViewportSize(DESKTOP);
 		const inst2 = await instrument(page2);
 		await openPdf(page2, fixture, request, 'PDF E6 stripped', [{ name: 'stripped.pdf', bytes: stripped }]);
-		const without = await painted(page2, 0).catch(() => paint(page2));
+		const without = await painted(page2, 20);
 		expect(await allViolations(page2, inst2), 'CSP violations with the program removed').toEqual([]);
 
 		test.info().annotations.push({ type: 'ink', description: `E6 ink: embedded=${withFont.ink} (${withFont.w}x${withFont.h}) hash=${withFont.hash} stripped=${without.ink} (${without.w}x${without.h}) hash=${without.hash}` });
@@ -450,8 +463,11 @@ test.describe('attachment viewer — in-pane PDF (TASK-4075), desktop', () => {
 		const inst = await instrument(page, { collectWarnings: true, rejectFontFace: true });
 		await openPdf(page, fixture, request, 'PDF E6 control rejecting', [{ name: 'embedded.pdf', bytes: original }]);
 		await painted(page, 20);
-		await expect.poll(() => fontLoadFailures(inst).length, { timeout: 15_000 }).toBeGreaterThan(0);
-		expect(fontLoadFailures(inst).join('\n')).toContain(FONT_LOAD_FAILURE);
+		// A single read at the same point as E6's absence check, not a poll: a poll would
+		// wait far beyond it and prove less than this leg claims.
+		const failures = await fontLoadFailuresAfterPaint(page, inst);
+		expect(failures.length, 'the rejecting FontFace must have logged a font-load failure by the time painted() returns').toBeGreaterThan(0);
+		expect(failures.join('\n')).toContain(FONT_LOAD_FAILURE);
 	});
 
 	test('E3: only the two fallbacks ship: the wasm files and qcms are not served', async ({ page, fixture }) => {
