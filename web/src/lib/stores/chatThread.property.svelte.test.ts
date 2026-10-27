@@ -216,8 +216,10 @@ function observe(where: string) {
 	const detached = new Set(thread.detached.map((r) => r.seq));
 	const sending = new Set(thread.items.flatMap((i) => (i.kind === 'pending' && i.pending.status === 'sending' ? [i.pending.op_key] : [])));
 	if (snap && snap.tag === server.tag) {
-		if (m.length && snap.lo > 0 && lo > snap.lo) {
-			hits.moved++; // the window's start only ever moves down (load earlier), so up is the re-anchor
+		if (m.length && lo > (snap.lo || 1)) {
+			// The window's start only ever moves down (load earlier), and a window that was
+			// empty grows from seq 1, so a start above either is the re-anchor.
+			hits.moved++;
 			reanchored = true;
 		}
 		for (const seq of detached) {
