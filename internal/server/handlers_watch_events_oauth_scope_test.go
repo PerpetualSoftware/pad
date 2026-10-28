@@ -122,11 +122,14 @@ func TestWatchEventsStream_OAuthShapedTokenCannotAuthenticate(t *testing.T) {
 		}()
 
 		// The handler holds the connection open; the ctx timeout closes
-		// it. Either way, what matters is that it did NOT 401.
+		// it. Either way, what matters is that it did NOT 401. The bound
+		// only catches a handler that ignores its context: it used to sit
+		// 1s past the 3s timeout, and a slow scheduler tick inside that
+		// second failed the test under CI load (BUG-4126).
 		select {
 		case <-done:
-		case <-time.After(4 * time.Second):
-			t.Fatal("stream handler did not return after context expiry")
+		case <-time.After(3*time.Second + 30*time.Second):
+			t.Fatal("stream handler did not return within 30s of context expiry")
 		}
 		if rr.Code != http.StatusOK {
 			t.Fatalf("negative control failed: a valid PAT did not open the stream (%d) — "+
