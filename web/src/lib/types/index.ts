@@ -3652,6 +3652,13 @@ export interface ChatMessagesResponse {
 	refs_truncated: boolean;
 }
 
+export interface ChatSendResponse {
+	message: ChatMessage;
+	replayed: boolean;
+	refs: ChatRef[];
+	refs_truncated: boolean;
+}
+
 /** One row of `GET /me/chat/unread` (only rows with unread > 0). */
 export interface ChatUnread {
 	conversation_id: string;

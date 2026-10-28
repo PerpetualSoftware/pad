@@ -6,6 +6,7 @@
 // the "N new" divider and the Row H states, and marks read only from its bottom
 // sentinel.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { NOTICE } from '$lib/chat/compose';
 import { render, cleanup } from '@testing-library/svelte';
 import { createRawSnippet, tick, flushSync } from 'svelte';
 
@@ -13,6 +14,8 @@ const h = vi.hoisted(() => ({
 	getConversation: vi.fn(),
 	markRead: vi.fn(),
 	listMessages: vi.fn(),
+	sendMessage: vi.fn(),
+	deleteMessage: vi.fn(),
 	listConversations: vi.fn(),
 	sessions: vi.fn(),
 	ensure: vi.fn(),
@@ -29,6 +32,9 @@ const h = vi.hoisted(() => ({
 class NotFound extends Error {
 	code = 'not_found';
 }
+class ReplyDeleted extends Error {
+	code = 'reply_target_deleted';
+}
 
 vi.mock('$lib/api/client', () => ({
 	api: {
@@ -37,11 +43,15 @@ vi.mock('$lib/api/client', () => ({
 			markRead: h.markRead,
 			listMessages: h.listMessages,
 			listConversations: h.listConversations,
-			ensureConversation: h.ensure
+			ensureConversation: h.ensure,
+			sendMessage: h.sendMessage,
+			deleteMessage: h.deleteMessage
 		},
 		sessions: { list: h.sessions }
 	},
-	isNotFoundError: (e: unknown) => e instanceof NotFound
+	isNotFoundError: (e: unknown) => e instanceof NotFound,
+	isReplyTargetDeletedError: (e: unknown) => e instanceof ReplyDeleted,
+	isReplyTargetNotFoundError: () => false
 }));
 vi.mock('$lib/stores/auth.svelte', () => ({
 	authStore: {
@@ -659,5 +669,206 @@ describe('/messages/[n] thread (TASK-4044 PR 3a)', () => {
 		const { container } = render(ThreadPage);
 		await settle();
 		expect(container.querySelector('header .presence-dot')!.getAttribute('aria-label')).toBe('May be working');
+	});
+});
+
+describe('/messages/[n] thread write path (TASK-4044 PR 3b)', () => {
+	async function openThread() {
+		page.params = { n: '3' };
+		h.listMessages.mockResolvedValue(pageOf([message(1), message(2)], { read_seq: 2 }));
+		const r = render(ThreadPage);
+		await settle();
+		return r;
+	}
+	const box = (c: HTMLElement) => c.querySelector('textarea')!;
+	const sendBtn = (c: HTMLElement) => c.querySelector<HTMLButtonElement>('button.send')!;
+
+	it('a typed message is a Sending bubble and then the confirmed row', async () => {
+		const { container } = await openThread();
+		let answer!: (v: unknown) => void;
+		h.sendMessage.mockReturnValue(new Promise((r) => (answer = r)));
+		box(container).value = 'hello there';
+		box(container).dispatchEvent(new Event('input', { bubbles: true }));
+		await settle();
+		sendBtn(container).click();
+		await settle();
+		expect(container.querySelector('article.pending')!.textContent).toContain('hello there');
+		expect(container.querySelector('article.pending')!.textContent).toContain('Sending…');
+		expect(h.sendMessage).toHaveBeenCalledWith(3, { body: 'hello there', op_key: expect.any(String) });
+		answer({
+			message: message(3, { mine: true, author_agent_key: '', author_is_human: true, source: 'web', body: 'hello there' }),
+			replayed: false,
+			refs: [],
+			refs_truncated: false
+		});
+		await settle();
+		expect(container.querySelector('article.pending')).toBeNull();
+		expect([...container.querySelectorAll('article')].map((a) => a.getAttribute('data-seq'))).toEqual(['1', '2', '3']);
+	});
+
+	it('Show newer messages is disabled and busy while a send is in flight, and works once it settles', async () => {
+		page.params = { n: '3' };
+		h.getConversation.mockResolvedValue({ ...conv(3), last_seq: 400, read_seq: 0, unread: 400 });
+		h.listMessages.mockImplementation(async (_n: number, q: { after_seq?: number }) =>
+			q.after_seq === 0
+				? pageOf([message(199), message(200)], { read_seq: 0, has_more: true, last_seq: 400 })
+				: pageOf([message(201)], { read_seq: 0, last_seq: 400 })
+		);
+		const { container } = render(ThreadPage);
+		await settle();
+		const newer = () => container.querySelector<HTMLButtonElement>('button.newer')!;
+		expect(newer().disabled).toBe(false);
+		expect(newer().hasAttribute('aria-busy')).toBe(false);
+		let answer!: (v: unknown) => void;
+		h.sendMessage.mockReturnValue(new Promise((r) => (answer = r)));
+		box(container).value = 'hi';
+		box(container).dispatchEvent(new Event('input', { bubbles: true }));
+		await settle();
+		sendBtn(container).click();
+		await settle();
+		expect(container.querySelector('article.pending')).not.toBeNull();
+		expect(newer().disabled).toBe(true);
+		expect(newer().getAttribute('aria-busy')).toBe('true');
+		const before = h.listMessages.mock.calls.length;
+		newer().click();
+		await settle();
+		expect(h.listMessages.mock.calls.length).toBe(before);
+		// The send fails: it settles, and the control works again.
+		answer(Promise.reject(new Error('500')));
+		await settle();
+		expect(newer().disabled).toBe(false);
+		expect(newer().hasAttribute('aria-busy')).toBe(false);
+		newer().click();
+		await settle();
+		expect(h.listMessages.mock.calls.length).toBeGreaterThan(before);
+	});
+
+	// B15: red if the confirmed row is discarded while a gap is open. The page
+	// shows the sender's row and none of the old window beside it.
+	it('an own send beyond a gap shows the sent row, with no gap row shown as contiguous', async () => {
+		page.params = { n: '3' };
+		h.getConversation.mockResolvedValue({ ...conv(3), last_seq: 400, read_seq: 0, unread: 400 });
+		h.listMessages.mockImplementation(async (_n: number, q: { after_seq?: number; limit?: number }) =>
+			q.after_seq === 0
+				? pageOf([message(199), message(200)], { read_seq: 0, has_more: true, last_seq: 400 })
+				: pageOf([message(400), message(401, { mine: true, body: 'hello' })], { read_seq: 0 })
+		);
+		const { container } = render(ThreadPage);
+		await settle();
+		expect(container.textContent).toContain('Show newer messages');
+		h.sendMessage.mockResolvedValue({
+			message: message(401, { mine: true, author_agent_key: '', author_is_human: true, source: 'web', body: 'hello' }),
+			replayed: false,
+			refs: [],
+			refs_truncated: false
+		});
+		box(container).value = 'hello';
+		box(container).dispatchEvent(new Event('input', { bubbles: true }));
+		await settle();
+		sendBtn(container).click();
+		await settle();
+		const seqs = [...container.querySelectorAll('article')].map((a) => a.getAttribute('data-seq'));
+		expect(seqs).toContain('401');
+		expect(seqs).not.toContain('200');
+		expect(container.textContent).not.toContain('Show newer messages');
+	});
+
+	it('Reply from the menu quotes the row and sends its seq, then clears the bar', async () => {
+		const { container } = await openThread();
+		const row = container.querySelector('article[data-seq="2"]')!;
+		row.dispatchEvent(new PointerEvent('pointerenter', { bubbles: true, pointerType: 'mouse' }));
+		await settle();
+		[...row.querySelectorAll('button')].find((b) => b.textContent === 'Reply')!.click();
+		await settle();
+		expect(container.querySelector('.reply')!.textContent).toContain('body 2');
+		// Red if Reply leaves focus on the body (r5 H3): the reader types next.
+		expect(document.activeElement).toBe(box(container));
+		h.sendMessage.mockResolvedValue({
+			message: message(3, { mine: true, body: 'answer' }),
+			replayed: false,
+			refs: [],
+			refs_truncated: false
+		});
+		box(container).value = 'answer';
+		box(container).dispatchEvent(new Event('input', { bubbles: true }));
+		await settle();
+		sendBtn(container).click();
+		await settle();
+		expect(h.sendMessage.mock.calls[0][1]).toMatchObject({ body: 'answer', reply_to_seq: 2 });
+		expect(container.querySelector('.reply')).toBeNull();
+	});
+
+	it('Delete tombstones the row, and a failure toasts and keeps it', async () => {
+		const { container } = await openThread();
+		const del = async (seq: number) => {
+			const row = container.querySelector(`article[data-seq="${seq}"]`)!;
+			row.dispatchEvent(new PointerEvent('pointerenter', { bubbles: true, pointerType: 'mouse' }));
+			await settle();
+			[...row.querySelectorAll('button')].find((b) => b.textContent === 'Delete')!.click();
+			await settle();
+		};
+		h.deleteMessage.mockRejectedValueOnce(new Error('500'));
+		await del(1);
+		expect(container.querySelector('article[data-seq="1"]')!.textContent).toContain('body 1');
+		h.deleteMessage.mockResolvedValueOnce({ message: message(1, { deleted: true, body: '' }), deleted: true });
+		await del(1);
+		expect(h.deleteMessage).toHaveBeenLastCalledWith(3, 1);
+		expect(container.querySelector('article[data-seq="1"]')!.textContent).toContain('Message deleted');
+	});
+
+	// r6 L3 (N36): red with replyTo cleared before the delete resolves.
+	it('deleting the reply target clears the reply bar only when the delete succeeds', async () => {
+		const { container } = await openThread();
+		const menu = async (seq: number, label: string) => {
+			const row = container.querySelector(`article[data-seq="${seq}"]`)!;
+			row.dispatchEvent(new PointerEvent('pointerenter', { bubbles: true, pointerType: 'mouse' }));
+			await settle();
+			[...row.querySelectorAll('button')].find((b) => b.textContent === label)!.click();
+			await settle();
+		};
+		await menu(2, 'Reply');
+		expect(container.querySelector('.reply')).not.toBeNull();
+		h.deleteMessage.mockRejectedValueOnce(new Error('500'));
+		await menu(2, 'Delete');
+		expect(container.querySelector('.reply'), 'the delete failed: the reply bar stays').not.toBeNull();
+		h.deleteMessage.mockResolvedValueOnce({ message: message(2, { deleted: true, body: '' }), deleted: true });
+		await menu(2, 'Delete');
+		expect(container.querySelector('.reply'), 'the delete succeeded: the bar goes').toBeNull();
+	});
+
+	// r6 L4 (N37): red with focus left to fall to body when Retry/Discard unmount.
+	it.each(['Retry', 'Discard'])('%s on a failed bubble puts focus in the composer', async (label) => {
+		const { container } = await openThread();
+		h.sendMessage.mockRejectedValueOnce(new Error('network'));
+		box(container).value = 'will fail';
+		box(container).dispatchEvent(new Event('input', { bubbles: true }));
+		await settle();
+		sendBtn(container).click();
+		await settle();
+		const btn = [...container.querySelectorAll('article.pending button')].find((b) => b.textContent === label) as HTMLButtonElement;
+		h.sendMessage.mockReturnValue(new Promise(() => {}));
+		btn.focus();
+		btn.click();
+		await settle();
+		expect(document.activeElement).toBe(box(container));
+	});
+
+	// r7 M1: red with the page dropping Retry's outcome. A refused Retry discards the bubble,
+	// so without the restore its text was gone with no notice.
+	it('a Retry refused because the quoted message was deleted puts the text back with its notice', async () => {
+		const { container } = await openThread();
+		h.sendMessage.mockRejectedValueOnce(new Error('network'));
+		box(container).value = 'kept on refusal';
+		box(container).dispatchEvent(new Event('input', { bubbles: true }));
+		await settle();
+		sendBtn(container).click();
+		await settle();
+		expect(box(container).value).toBe('');
+		h.sendMessage.mockRejectedValueOnce(new ReplyDeleted('409'));
+		([...container.querySelectorAll('article.pending button')].find((b) => b.textContent === 'Retry') as HTMLButtonElement).click();
+		await settle();
+		expect(container.querySelector('article.pending'), 'the refused bubble is discarded').toBeNull();
+		expect(box(container).value).toBe('kept on refusal');
+		expect(container.textContent).toContain(NOTICE.reply_deleted);
 	});
 });

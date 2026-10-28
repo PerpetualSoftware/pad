@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { rollupPresence, normalizeAgentName } from './presence';
+import { rollupPresence, normalizeAgentName, trimSpace } from './presence';
 import type { LiveSession } from '$lib/types';
 
 function sess(agent: string | undefined, state: LiveSession['state'], id = Math.random().toString()): LiveSession {
@@ -63,5 +63,25 @@ describe('normalizeAgentName', () => {
 		expect(normalizeAgentName('\u0085 codex')).toBe('codex');
 		expect(normalizeAgentName('\u200Bcodex')).toBe('\u200Bcodex');
 		expect(normalizeAgentName('a'.repeat(63) + ' b')).toBe('a'.repeat(63));
+	});
+});
+
+describe('trimSpace', () => {
+	it('trims both ends with the White_Space set and keeps U+FEFF', () => {
+		expect(trimSpace(' \t\u00a0\u3000x y\n ')).toBe('x y');
+		expect(trimSpace('\uFEFFx\uFEFF')).toBe('\uFEFFx\uFEFF');
+		expect(trimSpace('   ')).toBe('');
+		expect(trimSpace('')).toBe('');
+	});
+
+	// r6 B2-M1: the regex form took ~2.8 s on this input; the composer runs it per keystroke.
+	it('is linear on a long interior whitespace run', () => {
+		const run = ' '.repeat(64000);
+		const t0 = performance.now();
+		expect(trimSpace('a' + run + 'b')).toBe('a' + run + 'b');
+		expect(trimSpace(run + 'a' + run + 'b' + run)).toBe('a' + run + 'b');
+		expect(trimSpace(run + 'a')).toBe('a');
+		expect(trimSpace('a' + run)).toBe('a');
+		expect(performance.now() - t0).toBeLessThan(200);
 	});
 });

@@ -12,29 +12,33 @@
 // resync and focus shares through one coalesced unread fetch, so it never
 // subscribes to hints and never reads a notice field (carry-forward 2.7).
 //
-// REFRESH (R1, ruling 4cf4d4b9). A refresh must never miss a row newer than the
-// window's newest confirmed seq, whatever the window's size, so the new rows are
-// fetched ANCHORED AT THE NEWEST end:
-//   1. after_seq = newest, ASC, paging while has_more, at most
-//      REFRESH_MAX_PAGES pages (1,000 rows). If the bound is hit the rest stays
-//      on the server, `hasNewer` is true and the page offers "Show newer
-//      messages"; nothing scrolls.
-//   2. tombstones: one DESC newest-200 page, merged only for seqs inside the
-//      window's own [oldest, newest] range, so it can neither open a gap nor
-//      prepend.
-// When the window was opened with unread > 200 (`hasNewer` already true) a
-// refresh does NOT append past the gap: step 1 is skipped, and step 2 becomes an
-// ASC page from the window's oldest row, merged only up to the window's newest.
-// The reader reaches the newer rows through "Show newer messages", which pages
-// ASC from the window's newest.
-// RESIDUAL, disclosed: a retraction of a row older than the newest 200 (or, in
-// the gap case, further than 200 rows from the window's oldest) shows on reopen,
-// not live. A tombstone is the only change an older row can undergo.
+// WINDOW OPS (TASK-4044 3b S1, rulings 3293b1c6 and 5c95ef40). Every op that
+// fetches and then writes the window (a load, an own row's placement, a delete's
+// tombstone) runs through ONE promise chain, fetch and apply in the same step,
+// so none interleave. The published window is always contiguous: an own row past
+// unfetched peer rows is reached by paging from the window's newest (#fill); if
+// that fails or hits REFRESH_MAX_PAGES the row is DETACHED: `detached` holds it,
+// `hasNewer` is true, the page shows it after "Show newer messages", and
+// newestSeq, mark-read, the divider and loadNewer's cursor ignore it. Send and
+// delete POSTs stay concurrent; only their apply is queued.
+//
+// REFRESH (R1, ruling 4cf4d4b9). Rows newer than the window's newest are
+// fetched ANCHORED AT THE NEWEST end: after_seq = newest, ASC, at most
+// REFRESH_MAX_PAGES pages (1,000 rows), then hasNewer is set. Then tombstones:
+// one DESC newest-200 page merged only inside the window's [oldest, newest].
+// With `hasNewer` already true step 1 is skipped and step 2 is an ASC page from
+// the window's oldest row. At most one refresh is queued. A refresh never merges
+// while a send is in flight (the committed row would show beside its bubble;
+// op_key is not echoed): it sets #refreshDeferred and each send settle runs one.
+// RESIDUAL, disclosed: a retraction of a row older than the newest 200 shows on
+// reopen, not live. Known (N4): a send that times out AFTER the server committed
+// it shows the row beside the failed bubble after a refresh, until Retry.
 //
 // Identity: every answer is fenced by a seq and authStore.identityFence().
 import { untrack } from 'svelte';
-import { api, isNotFoundError } from '$lib/api/client';
-import { ChatWindow, unreadDividerIndex } from '$lib/chat/model';
+import { api, isNotFoundError, isReplyTargetDeletedError, isReplyTargetNotFoundError } from '$lib/api/client';
+import { isRequestTooLargeError, validateDraft, type SendBlock } from '$lib/chat/compose';
+import { ChatWindow, mergeBySeq, unreadDividerIndex, type WindowItem } from '$lib/chat/model';
 import { authStore } from '$lib/stores/auth.svelte';
 import { chatStore } from '$lib/stores/chat.svelte';
 import type { ChatConversationSummary, ChatMessage } from '$lib/types';
@@ -48,10 +52,22 @@ export const REFRESH_MAX_PAGES = 5;
 
 export type ThreadStatus = 'loading' | 'ready' | 'notFound' | 'failed';
 
+/**
+ * How a send ended. `sent`: confirmed. `failed`: the bubble stays for Retry.
+ * `stale`: the thread moved on (reopened, disposed, another identity); nothing
+ * is left to show. The rest are definite refusals with no bubble: the caller
+ * gets its text back.
+ */
+export type SendOutcome = 'sent' | 'failed' | 'stale' | SendBlock | 'reply_deleted' | 'reply_missing';
+
 export class ChatThread {
 	conversation = $state<ChatConversationSummary | null>(null);
 	/** The confirmed window, ascending by seq; REPLACED on change. */
 	messages = $state.raw<ChatMessage[]>([]);
+	/** The window as rendered: confirmed rows, then this reader's pending sends. */
+	items = $state.raw<WindowItem[]>([]);
+	/** Bumped when an own send is shown or confirmed; the page scrolls to the end. */
+	ownSendTick = $state(0);
 	/** read_seq as of open, frozen for the mount: the divider never moves. */
 	openReadSeq = $state(0);
 	status = $state<ThreadStatus>('loading');
@@ -62,6 +78,8 @@ export class ChatThread {
 	loadingNewer = $state(false);
 	hasOlder = $state(false);
 	hasNewer = $state(false);
+	/** Own rows confirmed past the window's contiguous end, shown after the "Show newer" marker. */
+	detached = $state.raw<ChatMessage[]>([]);
 	/** Set by the page from its bottom sentinel. */
 	atBottom = $state(false);
 
@@ -70,8 +88,10 @@ export class ChatThread {
 	#seq = 0;
 	#lastSeq = 0;
 	#readSeq = 0;
-	#refreshing = false;
-	#dirty = false;
+	/** The window-op chain (see WINDOW OPS above). */
+	#ops: Promise<void> = Promise.resolve();
+	#refreshQueued: Promise<void> | null = null;
+	#refreshDeferred = false;
 	#marking = false;
 	#stopRoot: () => void;
 	#stopIdentity: () => void;
@@ -116,6 +136,7 @@ export class ChatThread {
 		this.status = 'loading';
 		this.conversation = null;
 		this.messages = [];
+		this.items = [];
 		this.#win = new ChatWindow();
 		this.openReadSeq = 0;
 		this.refreshFailed = this.olderFailed = this.newerFailed = false;
@@ -124,8 +145,10 @@ export class ChatThread {
 		this.atBottom = false;
 		this.#lastSeq = 0;
 		this.#readSeq = 0;
-		this.#dirty = false;
-		this.#refreshing = false;
+		this.detached = [];
+		this.#ops = Promise.resolve();
+		this.#refreshQueued = null;
+		this.#refreshDeferred = false;
 		this.#marking = false;
 	}
 
@@ -136,7 +159,9 @@ export class ChatThread {
 	// its append.
 	#publish(beyond: number | null) {
 		this.messages = this.#win.messages;
-		this.#lastSeq = beyond ?? this.newestSeq;
+		this.items = this.#win.items();
+		if (this.detached.length) this.detached = this.detached.filter((m) => m.seq > this.newestSeq);
+		this.#lastSeq = Math.max(beyond ?? this.newestSeq, this.detached.at(-1)?.seq ?? 0);
 		const oldest = this.messages.length ? this.messages[0].seq : 0;
 		this.hasOlder = oldest > 1;
 		this.hasNewer = this.newestSeq < this.#lastSeq;
@@ -159,29 +184,30 @@ export class ChatThread {
 		}
 		this.status = 'loading';
 		const current = this.#guard();
-		try {
-			const conv = await api.chat.getConversation(n);
-			if (!current()) return;
-			this.conversation = conv;
-			const page =
-				conv.unread > 0
-					? await api.chat.listMessages(n, { after_seq: conv.read_seq, limit: THREAD_MAX_PAGE })
-					: await api.chat.listMessages(n, { limit: THREAD_PAGE });
-			if (!current()) return;
-			this.openReadSeq = page.read_seq;
-			this.#readSeq = page.read_seq;
-			this.#win.merge(page.messages);
-			this.#publish(conv.unread > 0 && page.has_more ? page.last_seq : null);
-			this.status = 'ready';
-		} catch (err) {
-			if (!current()) return;
-			this.status = isNotFoundError(err) ? 'notFound' : 'failed';
-			return;
-		}
-		if (this.#dirty) {
-			this.#dirty = false;
-			void this.refresh();
-		}
+		await this.#enqueue(current, async () => {
+			try {
+				const conv = await api.chat.getConversation(n);
+				if (!current()) return;
+				this.conversation = conv;
+				const page =
+					conv.unread > 0
+						? await api.chat.listMessages(n, { after_seq: conv.read_seq, limit: THREAD_MAX_PAGE })
+						: await api.chat.listMessages(n, { limit: THREAD_PAGE });
+				if (!current()) return;
+				this.openReadSeq = page.read_seq;
+				this.#readSeq = page.read_seq;
+				this.#win.merge(page.messages);
+				this.#publish(conv.unread > 0 && page.has_more ? page.last_seq : null);
+				this.status = 'ready';
+			} catch (err) {
+				if (current()) this.status = isNotFoundError(err) ? 'notFound' : 'failed';
+			}
+		});
+	}
+
+	#enqueue(current: () => boolean, run: () => Promise<void>): Promise<void> {
+		this.#ops = this.#ops.then(() => (current() ? run() : undefined)).catch(() => {});
+		return this.#ops;
 	}
 
 	/** Fetch the page before the window's oldest row. A failure keeps the window. */
@@ -191,58 +217,61 @@ export class ChatThread {
 		const current = this.#guard();
 		this.loadingOlder = true;
 		this.olderFailed = false;
-		try {
-			const page = await api.chat.listMessages(n, {
-				before_seq: this.messages[0].seq,
-				limit: THREAD_PAGE
-			});
-			if (!current()) return;
-			this.#win.merge(page.messages);
-			this.#publish(this.#lastSeq);
-		} catch {
-			if (current()) this.olderFailed = true;
-		} finally {
-			if (current()) this.loadingOlder = false;
-		}
+		await this.#enqueue(current, async () => {
+			try {
+				const page = await api.chat.listMessages(n, { before_seq: this.messages[0].seq, limit: THREAD_PAGE });
+				if (!current()) return;
+				this.#win.merge(page.messages);
+				this.#publish(this.#lastSeq);
+			} catch {
+				if (current()) this.olderFailed = true;
+			} finally {
+				if (current()) this.loadingOlder = false;
+			}
+		});
 	}
 
-	/** Fetch one page after the window's newest row (the gap left by a long unread run). */
+	/** Fetch one page after the window's newest row. */
 	async loadNewer(): Promise<void> {
 		const n = this.#n;
 		if (n === null || this.status !== 'ready' || this.loadingNewer || !this.hasNewer) return;
 		const current = this.#guard();
 		this.loadingNewer = true;
 		this.newerFailed = false;
-		try {
-			const page = await api.chat.listMessages(n, {
-				after_seq: this.newestSeq,
-				limit: THREAD_MAX_PAGE
-			});
-			if (!current()) return;
-			this.#win.merge(page.messages);
-			this.#publish(page.has_more ? page.last_seq : null);
-		} catch {
-			if (current()) this.newerFailed = true;
-		} finally {
-			if (current()) this.loadingNewer = false;
-		}
+		await this.#enqueue(current, async () => {
+			try {
+				if (!this.hasNewer || this.#win.hasInFlight()) return;
+				const page = await api.chat.listMessages(n, { after_seq: this.newestSeq, limit: THREAD_MAX_PAGE });
+				// A send in flight: its committed row may be in this page beside its bubble.
+				if (!current() || this.#win.hasInFlight()) return;
+				this.#win.merge(page.messages);
+				this.#publish(page.has_more ? page.last_seq : null);
+			} catch {
+				if (current()) this.newerFailed = true;
+			} finally {
+				if (current()) this.loadingNewer = false;
+			}
+		});
 	}
 
-	/**
-	 * Bring new rows and tombstones into the window (see the REFRESH note on top).
-	 * A refresh while one is in flight, or while the open is still loading, sets a
-	 * dirty flag and runs ONCE more after.
-	 */
+	/** Bring new rows and tombstones into the window (see the REFRESH note on top). */
 	async refresh(): Promise<void> {
 		const n = this.#n;
-		if (n === null) return;
-		if (this.status === 'loading' || this.#refreshing) {
-			this.#dirty = true;
-			return;
-		}
-		if (this.status !== 'ready') return;
+		if (n === null || this.#held()) return;
+		if (this.#refreshQueued) return this.#refreshQueued;
 		const current = this.#guard();
-		this.#refreshing = true;
+		return (this.#refreshQueued = this.#enqueue(current, () => this.#refresh(n, current)));
+	}
+
+	#held(): boolean {
+		if (!this.#win.hasInFlight()) return false;
+		this.#refreshDeferred = true;
+		return true;
+	}
+
+	async #refresh(n: number, current: () => boolean): Promise<void> {
+		this.#refreshQueued = null;
+		if (this.status !== 'ready' || this.#held()) return;
 		this.refreshFailed = false;
 		try {
 			const gap = this.hasNewer;
@@ -250,7 +279,7 @@ export class ChatThread {
 				let cursor = this.newestSeq;
 				for (let pages = 0; pages < REFRESH_MAX_PAGES; pages++) {
 					const page = await api.chat.listMessages(n, { after_seq: cursor, limit: THREAD_MAX_PAGE });
-					if (!current()) return;
+					if (!current() || this.#held()) return;
 					this.#win.merge(page.messages);
 					this.#publish(page.has_more ? page.last_seq : null);
 					if (!page.has_more || page.messages.length === 0) break;
@@ -263,21 +292,167 @@ export class ChatThread {
 				const page = gap
 					? await api.chat.listMessages(n, { after_seq: lo - 1, limit: THREAD_MAX_PAGE })
 					: await api.chat.listMessages(n, { limit: THREAD_MAX_PAGE });
-				if (!current()) return;
+				if (!current() || this.#held()) return;
 				this.#win.merge(page.messages.filter((m) => m.seq >= lo && m.seq <= hi));
 				this.#publish(this.#lastSeq);
 			}
 			this.tryMarkRead();
 		} catch {
 			if (current()) this.refreshFailed = true;
-		} finally {
-			if (current()) {
-				this.#refreshing = false;
-				if (this.#dirty) {
-					this.#dirty = false;
-					void this.refresh();
+		}
+	}
+
+	/** After a send settles: run the refresh that was deferred while it was in flight. */
+	#settled() {
+		if (this.#refreshDeferred && !this.#win.hasInFlight()) {
+			this.#refreshDeferred = false;
+			void this.refresh();
+		}
+	}
+
+	/** Publish after a pending change; the window beyond stays beyond. */
+	#publishAfterWrite() {
+		this.#publish(this.hasNewer ? this.#lastSeq : null);
+	}
+
+	/**
+	 * Send `body`. The bubble is shown at once; the outcome says what the caller
+	 * should do (see SendOutcome). Nothing is sent for a draft the server would
+	 * refuse (validateDraft), and a 400 for an over-size request or a 409/422 for
+	 * a reply target maps to our own outcome, with no bubble left behind.
+	 */
+	async send(body: string, replyToSeq?: number): Promise<SendOutcome> {
+		const n = this.#n;
+		if (n === null || this.status !== 'ready') return 'stale';
+		const opKey = crypto.randomUUID();
+		const block = validateDraft(body, replyToSeq, opKey);
+		if (block) return block;
+		this.#win.addPending(opKey, body, replyToSeq);
+		this.#publishAfterWrite();
+		this.ownSendTick++;
+		return this.#post(n, opKey, body, replyToSeq);
+	}
+
+	/** Send a failed bubble again with the SAME op_key. */
+	async retry(opKey: string): Promise<SendOutcome> {
+		const n = this.#n;
+		if (n === null || this.status !== 'ready') return 'stale';
+		const p = this.#win.retryPending(opKey);
+		if (!p) return 'stale';
+		this.#publishAfterWrite();
+		return this.#post(n, opKey, p.body, p.reply_to_seq);
+	}
+
+	/** Give up on a failed send. */
+	discard(opKey: string): void {
+		this.#win.discardPending(opKey);
+		this.#publishAfterWrite();
+		this.#settled();
+	}
+
+	/**
+	 * Place a confirmed own row (queued). Contiguous with the end: resolve. Past it,
+	 * with another send in flight: detach, fetching nothing (a page could carry its
+	 * committed row beside its bubble). With hasNewer true: move the window to the
+	 * newest page (ruling b3dd1e54; a row older than it is history). Else #fill.
+	 */
+	async #applyOwn(n: number, opKey: string, answer: ChatMessage, current: () => boolean): Promise<void> {
+		const win = this.#win;
+		const sent = [...win.messages, ...this.detached].find((m) => m.seq === answer.seq) ?? answer; // a held row (maybe a tombstone) beats a replayed answer (I5)
+		const others = () => win.pending.some((p) => p.status === 'sending' && p.op_key !== opKey);
+		let at: 'resolve' | 'moved' | 'detach' = 'resolve';
+		if (this.hasNewer || sent.seq > this.newestSeq + 1) {
+			at = 'detach';
+			if (!others() && this.hasNewer) {
+				let rows: ChatMessage[] | null = null;
+				try {
+					rows = (await api.chat.listMessages(n, { limit: THREAD_PAGE })).messages;
+				} catch {} // a failed fetch keeps the window; the row detaches (ruling ec6bbe31)
+				if (!current()) return;
+				if (rows && !others()) {
+					win.messages = mergeBySeq([], rows.length && sent.seq < rows[0].seq ? rows : [sent, ...rows]);
+					at = 'moved';
 				}
+			} else if (!others() && !this.hasNewer && (await this.#fill(n, sent.seq, current, others))) {
+				at = 'resolve';
 			}
+		}
+		if (!current()) return;
+		if (at === 'resolve' && !(win.messages.length && sent.seq < win.messages[0].seq)) win.resolvePending(opKey, sent); // below the window is history (R1)
+		else win.discardPending(opKey);
+		if (at === 'detach') this.detached = [...this.detached.filter((m) => m.seq !== sent.seq), sent].sort((a, b) => a.seq - b.seq);
+		if (at === 'moved') this.#publish(null); else this.#publishAfterWrite(); // a detach keeps the window beyond (r6 A-L1)
+	}
+
+	/** Page after_seq from the newest up to the row before `upTo` (bounded), publishing each page. */
+	async #fill(n: number, upTo: number, current: () => boolean, others: () => boolean): Promise<boolean> {
+		try {
+			for (let pages = 0; pages < REFRESH_MAX_PAGES && this.newestSeq < upTo - 1; pages++) {
+				const page = await api.chat.listMessages(n, { after_seq: this.newestSeq, limit: THREAD_MAX_PAGE });
+				if (!current() || page.messages.length === 0 || others()) return false; // a send began: its row could ride this page
+				this.#win.merge(page.messages.filter((m) => m.seq < upTo));
+				this.#publish(null);
+			}
+		} catch {
+			return false;
+		}
+		return this.newestSeq >= upTo - 1;
+	}
+
+	async #post(n: number, opKey: string, body: string, replyToSeq?: number): Promise<SendOutcome> {
+		const current = this.#guard();
+		const win = this.#win;
+		const refused = (outcome: SendOutcome): SendOutcome => {
+			win.discardPending(opKey);
+			this.#publishAfterWrite();
+			this.#settled();
+			return outcome;
+		};
+		try {
+			const res = await api.chat.sendMessage(n, {
+				body,
+				op_key: opKey,
+				...(replyToSeq !== undefined ? { reply_to_seq: replyToSeq } : {})
+			});
+			if (!current()) return 'stale';
+			await this.#enqueue(current, () => this.#applyOwn(n, opKey, res.message, current));
+			if (!current()) return 'stale';
+			this.ownSendTick++;
+			this.#settled();
+			return 'sent';
+		} catch (err) {
+			if (!current()) return 'stale';
+			if (isReplyTargetDeletedError(err)) return refused('reply_deleted');
+			if (isReplyTargetNotFoundError(err)) return refused('reply_missing');
+			if (isRequestTooLargeError(err)) return refused('too_large');
+			win.failPending(opKey);
+			this.#publishAfterWrite();
+			this.#settled();
+			return 'failed';
+		}
+	}
+
+	/**
+	 * Delete a message (V6, V7: idempotent, a repeat answers 200 with the same
+	 * tombstone) and merge the tombstone in place. True when it is gone.
+	 */
+	async remove(seq: number): Promise<boolean> {
+		const n = this.#n;
+		if (n === null || this.status !== 'ready') return false;
+		const current = this.#guard();
+		try {
+			const res = await api.chat.deleteMessage(n, seq);
+			if (!current()) return false;
+			await this.#enqueue(current, async () => {
+				// Only a row the window or the detached list holds: a re-anchor meanwhile may have moved it (r2 H3).
+				if (this.#win.messages.some((m) => m.seq === seq)) this.#win.merge([res.message]);
+				else this.detached = this.detached.map((m) => (m.seq === seq ? res.message : m));
+				this.#publish(this.#lastSeq);
+			});
+			return current();
+		} catch (err) {
+			if (current() && isNotFoundError(err)) this.status = 'notFound';
+			return false;
 		}
 	}
 

@@ -12,6 +12,8 @@ const h = vi.hoisted(() => ({
 	listMessages: vi.fn(),
 	markRead: vi.fn(),
 	unread: vi.fn(),
+	sendMessage: vi.fn(),
+	deleteMessage: vi.fn(),
 	state: { authenticated: true, epoch: 0, listeners: [] as Array<(prev: string) => void> }
 }));
 
@@ -25,10 +27,14 @@ vi.mock('$lib/api/client', () => ({
 			getConversation: h.getConversation,
 			listMessages: h.listMessages,
 			markRead: h.markRead,
-			unread: h.unread
+			unread: h.unread,
+			sendMessage: h.sendMessage,
+			deleteMessage: h.deleteMessage
 		}
 	},
-	isNotFoundError: (e: unknown) => e instanceof NotFound
+	isNotFoundError: (e: unknown) => e instanceof NotFound,
+	isReplyTargetDeletedError: (e: unknown) => (e as { code?: string })?.code === 'reply_target_deleted',
+	isReplyTargetNotFoundError: (e: unknown) => (e as { code?: string })?.code === 'reply_target_not_found'
 }));
 vi.mock('$lib/stores/auth.svelte', () => ({
 	authStore: {
@@ -157,6 +163,8 @@ beforeEach(() => {
 	h.listMessages.mockReset();
 	h.markRead.mockReset();
 	h.markRead.mockResolvedValue({ read_seq: 0 });
+	h.sendMessage.mockReset();
+	h.deleteMessage.mockReset();
 	Object.assign(h.state, { authenticated: true, epoch: 0, listeners: [] });
 	server = new FakeServer();
 	h.getConversation.mockImplementation(async () => server.summary());
@@ -562,6 +570,26 @@ describe('mark read', () => {
 		expect(h.markRead).toHaveBeenCalledWith(1, 210);
 	});
 
+	// Pins the behaviour ruled in b3dd1e54 / ec6bbe31 (3b r4 H3, r5 A1): after an own send
+	// re-anchors the window, the reader has seen the NEW newest row, so markRead names it,
+	// which also covers the peer rows the re-anchor skipped. Changing that is a decision.
+	it('after a re-anchor marks the new newest seq', async () => {
+		server.fill(400);
+		server.readSeq = 0;
+		await thread.open(1);
+		thread.atBottom = true;
+		thread.tryMarkRead();
+		await flush();
+		expect(h.markRead).toHaveBeenLastCalledWith(1, 200);
+		wireSend();
+		expect(await thread.send('hello')).toBe('sent');
+		await flush();
+		expect(thread.newestSeq).toBe(401);
+		thread.tryMarkRead(); // the page's effect, on the newestSeq change
+		await flush();
+		expect(h.markRead).toHaveBeenLastCalledWith(1, 401);
+	});
+
 	it('marks nothing locally on a failure and retries on the next call', async () => {
 		await opened();
 		h.markRead.mockRejectedValueOnce(new Error('500'));
@@ -622,5 +650,910 @@ describe('mark read', () => {
 		thread.tryMarkRead();
 		await flush();
 		expect(h.markRead).toHaveBeenCalledTimes(1);
+	});
+});
+
+// ── PR 3b: the write path ────────────────────────────────────────────────────
+
+/** A server that stores a send under its op_key, like the real one (V10: a replay returns the stored row). */
+function wireSend() {
+	const byKey = new Map<string, ChatMessage>();
+	h.sendMessage.mockImplementation(async (_n: number, body: { body: string; op_key: string; reply_to_seq?: number }) => {
+		const seen = byKey.get(body.op_key);
+		if (seen) return { message: { ...seen }, replayed: true, refs: [], refs_truncated: false };
+		const m = msg(server.lastSeq + 1, {
+			mine: true,
+			author_agent_key: '',
+			author_is_human: true,
+			source: 'web',
+			body: body.body
+		});
+		server.add(m);
+		byKey.set(body.op_key, m);
+		return { message: { ...m }, replayed: false, refs: [], refs_truncated: false };
+	});
+	return byKey;
+}
+
+const apiError = (code: string, message = code) => Object.assign(new Error(message), { code });
+const pendingOf = () => thread.items.filter((i) => i.kind === 'pending');
+
+async function readyThread(rows = 3) {
+	server.fill(rows);
+	await thread.open(1);
+}
+
+describe('send', () => {
+	// U21: red if resolvePending appends instead of merging by seq (B2).
+	it('shows a sending bubble at once and replaces it with the confirmed row', async () => {
+		await readyThread();
+		wireSend();
+		let release!: () => void;
+		const real = h.sendMessage.getMockImplementation()!;
+		h.sendMessage.mockImplementationOnce(
+			(n: number, b: never) => new Promise((res) => (release = () => res(real(n, b))))
+		);
+		const done = thread.send('hello');
+		expect(pendingOf()).toHaveLength(1);
+		expect(thread.items.at(-1)).toMatchObject({ kind: 'pending', pending: { body: 'hello', status: 'sending' } });
+		release();
+		expect(await done).toBe('sent');
+		expect(pendingOf()).toHaveLength(0);
+		expect(seqs()).toEqual([1, 2, 3, 4]);
+		expect(thread.messages.at(-1)).toMatchObject({ body: 'hello', mine: true, source: 'web', author_agent_key: '' });
+	});
+
+	it('never sends a context_workspace (Q6)', async () => {
+		await readyThread();
+		wireSend();
+		await thread.send('hi');
+		expect(Object.keys(h.sendMessage.mock.calls[0][1]).sort()).toEqual(['body', 'op_key']);
+	});
+
+	it('leaves one row when a refresh got the message first (replayed)', async () => {
+		await readyThread();
+		wireSend();
+		const real = h.sendMessage.getMockImplementation()!;
+		let release!: () => void;
+		h.sendMessage.mockImplementationOnce(
+			(n: number, b: never) => new Promise((res) => (release = () => res(real(n, b))))
+		);
+		const done = thread.send('hello');
+		await flush();
+		release();
+		await done;
+		await thread.refresh();
+		expect(seqs()).toEqual([1, 2, 3, 4]);
+	});
+
+	// U22: red if a retry makes a new key (B1).
+	it('keeps a failed bubble and retries with the SAME op_key', async () => {
+		await readyThread();
+		wireSend();
+		h.sendMessage.mockRejectedValueOnce(new Error('network'));
+		expect(await thread.send('hello')).toBe('failed');
+		expect(pendingOf()).toMatchObject([{ pending: { status: 'failed', body: 'hello' } }]);
+		const key = (pendingOf()[0] as { pending: { op_key: string } }).pending.op_key;
+		expect(await thread.retry(key)).toBe('sent');
+		expect(h.sendMessage.mock.calls[1][1].op_key).toBe(h.sendMessage.mock.calls[0][1].op_key);
+		expect(pendingOf()).toHaveLength(0);
+		expect(seqs()).toEqual([1, 2, 3, 4]);
+	});
+
+	// N4: the write committed, the answer was lost, a refresh shows the row beside the failed bubble.
+	it('collapses to one row when Retry replays a send whose answer was lost', async () => {
+		await readyThread();
+		const byKey = wireSend();
+		const real = h.sendMessage.getMockImplementation()!;
+		h.sendMessage.mockImplementationOnce(async (n: number, b: never) => {
+			await real(n, b); // committed on the server
+			throw new Error('timeout');
+		});
+		expect(await thread.send('hello')).toBe('failed');
+		await thread.refresh();
+		expect(seqs()).toEqual([1, 2, 3, 4]);
+		expect(pendingOf()).toHaveLength(1); // the disclosed duplicate
+		const key = (pendingOf()[0] as { pending: { op_key: string } }).pending.op_key;
+		expect(await thread.retry(key)).toBe('sent');
+		expect((await h.sendMessage.mock.results[1].value).replayed).toBe(true);
+		expect(byKey.size).toBe(1);
+		expect(seqs()).toEqual([1, 2, 3, 4]);
+		expect(pendingOf()).toHaveLength(0);
+	});
+
+	// 3b r5 A2 (I5, tombstone wins): red with the replayed live row written over the held tombstone.
+	it('a replayed send does not resurrect a row deleted meanwhile (window)', async () => {
+		await readyThread();
+		wireSend();
+		const real = h.sendMessage.getMockImplementation()!;
+		h.sendMessage.mockImplementationOnce(async (n: number, b: never) => {
+			await real(n, b); // committed, the answer is lost
+			throw new Error('timeout');
+		});
+		expect(await thread.send('hello')).toBe('failed');
+		await thread.refresh();
+		server.tombstone(4); // deleted elsewhere meanwhile
+		await thread.refresh();
+		expect(thread.messages.find((m) => m.seq === 4)).toMatchObject({ deleted: true, body: '' });
+		const key = (pendingOf()[0] as { pending: { op_key: string } }).pending.op_key;
+		expect(await thread.retry(key)).toBe('sent'); // the replay answers the live row
+		expect(thread.messages.find((m) => m.seq === 4)).toMatchObject({ deleted: true, body: '' });
+	});
+
+	it('a send answered after its row was deleted does not resurrect it in the re-anchored page', async () => {
+		server.fill(400);
+		server.readSeq = 0;
+		await thread.open(1); // hasNewer: the own row re-anchors at the newest page
+		wireSend();
+		const real = h.sendMessage.getMockImplementation()!;
+		h.sendMessage.mockImplementationOnce(async (n: number, b: never) => {
+			const res = await real(n, b);
+			server.tombstone(res.message.seq); // deleted before the answer is applied
+			return res;
+		});
+		expect(await thread.send('hello')).toBe('sent');
+		expect(thread.messages.at(-1)).toMatchObject({ seq: 401, deleted: true, body: '' });
+	});
+
+	// 3b r5a2 R1 (I1): red with the replayed row merged across the hole below the moved window.
+	it('a replayed send below the re-anchored window is history: bubble dropped, row not merged', async () => {
+		server.fill(400);
+		server.readSeq = 0;
+		await thread.open(1); // window 1..200, hasNewer
+		wireSend();
+		const real = h.sendMessage.getMockImplementation()!;
+		h.sendMessage.mockImplementationOnce(async (n: number, b: never) => {
+			await real(n, b); // A commits as 401, the answer is lost
+			throw new Error('timeout');
+		});
+		expect(await thread.send('A')).toBe('failed');
+		for (let i = 0; i < 60; i++) server.add(msg(server.lastSeq + 1)); // peers land: 402..461
+		expect(await thread.send('B')).toBe('sent'); // re-anchors to the newest 50
+		expect(thread.messages[0].seq).toBeGreaterThan(401);
+		const key = (pendingOf()[0] as { pending: { op_key: string } }).pending.op_key;
+		expect(await thread.retry(key)).toBe('sent'); // the replay answers seq 401
+		const all = seqs();
+		for (let i = 1; i < all.length; i++) expect(all[i]).toBe(all[i - 1] + 1);
+		expect(all).not.toContain(401);
+		expect(pendingOf()).toHaveLength(0);
+	});
+
+	// r6 A-L1 (N34): red with #applyOwn ending in #publish(null) - the replayed row is already
+	// in the window, the re-anchor fetch fails, so hasNewer fell to false and Show newer vanished.
+	it('keeps hasNewer when a replayed answer already in the window detaches after a failed re-anchor', async () => {
+		server.fill(400);
+		server.readSeq = 0;
+		await thread.open(1); // window 1..200, hasNewer
+		expect(thread.hasNewer).toBe(true);
+		h.sendMessage.mockRejectedValueOnce(new Error('timeout'));
+		expect(await thread.send('A')).toBe('failed');
+		const key = (pendingOf()[0] as { pending: { op_key: string } }).pending.op_key;
+		const own = msg(150, { mine: true, author_agent_key: '', author_is_human: true, source: 'web', body: 'A' });
+		h.sendMessage.mockResolvedValueOnce({ message: own, replayed: true, refs: [], refs_truncated: false });
+		h.listMessages.mockRejectedValueOnce(new Error('offline')); // the re-anchor fetch fails
+		expect(await thread.retry(key)).toBe('sent');
+		expect(pendingOf()).toHaveLength(0);
+		expect(thread.hasNewer).toBe(true);
+		expect(thread.messages.at(-1)!.seq).toBe(200);
+	});
+
+	// r6 A-M1 (N33): red with the held-row lookup at #applyOwn reading the window only. The detached
+	// row is the reader's tombstone; a replayed answer for its seq carries the live text and must not win (I5).
+	it('a held DETACHED tombstone beats a replayed answer for the same seq', async () => {
+		server.fill(400);
+		server.readSeq = 0;
+		await thread.open(1); // window 1..200, hasNewer
+		wireSend();
+		const real = h.sendMessage.getMockImplementation()!;
+		let releaseB!: () => void;
+		h.sendMessage.mockImplementationOnce((n: number, b: never) => {
+			return new Promise((res) => (releaseB = () => res(real(n, b)))); // B stays 'sending': nothing re-anchors
+		});
+		h.sendMessage.mockImplementationOnce(real);
+		const sendingB = thread.send('B');
+		await flush();
+		expect(await thread.send('X')).toBe('sent'); // commits as 401 and detaches beside B
+		expect(thread.detached.map((m) => m.seq)).toEqual([401]);
+		h.deleteMessage.mockResolvedValueOnce({ message: { ...server.rows[400], body: '', deleted: true }, deleted: true });
+		expect(await thread.remove(401)).toBe(true);
+		expect(thread.detached).toMatchObject([{ seq: 401, deleted: true, body: '' }]);
+		const live = msg(401, { mine: true, author_agent_key: '', author_is_human: true, source: 'web', body: 'live again' });
+		h.sendMessage.mockResolvedValueOnce({ message: live, replayed: true, refs: [], refs_truncated: false });
+		expect(await thread.send('Y')).toBe('sent');
+		expect(thread.detached).toMatchObject([{ seq: 401, deleted: true, body: '' }]);
+		releaseB();
+		await sendingB;
+	});
+
+	it('discards a failed bubble', async () => {
+		await readyThread();
+		h.sendMessage.mockRejectedValueOnce(new Error('network'));
+		await thread.send('hello');
+		thread.discard((pendingOf()[0] as { pending: { op_key: string } }).pending.op_key);
+		expect(pendingOf()).toHaveLength(0);
+	});
+
+	// U23
+	it('sends reply_to_seq, and a deleted or missing target leaves no bubble', async () => {
+		await readyThread();
+		wireSend();
+		await thread.send('re', 2);
+		expect(h.sendMessage.mock.calls[0][1].reply_to_seq).toBe(2);
+		h.sendMessage.mockRejectedValueOnce(apiError('reply_target_deleted', 'Reply target was deleted'));
+		expect(await thread.send('again', 3)).toBe('reply_deleted');
+		h.sendMessage.mockRejectedValueOnce(apiError('reply_target_not_found'));
+		expect(await thread.send('again', 3)).toBe('reply_missing');
+		expect(pendingOf()).toHaveLength(0);
+	});
+
+	// N1, N2, N3: refused before the network, so the call count is the assertion.
+	it.each([
+		['\u0085', 'empty'],
+		['😀'.repeat(20_000), 'too_long'],
+		['"'.repeat(65_536), 'too_large'],
+		['\u0001'.repeat(22_000), 'too_large']
+	] as const)('does not send a draft the server would refuse (%#)', async (body, outcome) => {
+		await readyThread();
+		expect(await thread.send(body)).toBe(outcome);
+		expect(h.sendMessage).not.toHaveBeenCalled();
+		expect(pendingOf()).toHaveLength(0);
+	});
+
+	it('sends a body of only U+FEFF, which the server does not trim', async () => {
+		await readyThread();
+		wireSend();
+		expect(await thread.send('﻿')).toBe('sent');
+	});
+
+	// N3, defence in depth: the server's own 400 maps to the same outcome.
+	it('maps the server 400 for an over-size request to too_large, with no bubble', async () => {
+		await readyThread();
+		h.sendMessage.mockRejectedValueOnce(apiError('validation_error', 'Invalid JSON body (maximum 128 KiB)'));
+		expect(await thread.send('x')).toBe('too_large');
+		expect(pendingOf()).toHaveLength(0);
+	});
+
+	// U-gap (B15): red if the confirmed row is discarded when a gap is open. The
+	// window moves to the newest page, so the sender sees the row and no row of
+	// the old window sits beside it as if contiguous.
+	it('re-anchors at the newest page after a send beyond a gap, so the sender sees it', async () => {
+		server.fill(400);
+		server.readSeq = 0;
+		await thread.open(1); // unread 400 > 200: the window ends at 200, hasNewer
+		expect(thread.hasNewer).toBe(true);
+		const scrollBefore = thread.ownSendTick;
+		wireSend();
+		expect(await thread.send('hello')).toBe('sent');
+		const seqs = thread.messages.map((m) => m.seq);
+		const sent = thread.messages.find((m) => m.body === 'hello');
+		expect(sent).toBeDefined();
+		expect(thread.newestSeq).toBe(sent!.seq);
+		for (let i = 1; i < seqs.length; i++) expect(seqs[i]).toBe(seqs[i - 1] + 1);
+		expect(seqs).not.toContain(200);
+		expect(thread.hasNewer).toBe(false);
+		expect(thread.hasOlder).toBe(true);
+		expect(pendingOf()).toHaveLength(0);
+		expect(thread.ownSendTick).toBeGreaterThan(scrollBefore);
+	});
+
+	// 3b r4 C1 (ruling ec6bbe31), N15: red with the window replaced by the confirmed row alone.
+	it('keeps the window and detaches the row when the newest page cannot be fetched', async () => {
+		server.fill(400);
+		server.readSeq = 0;
+		await thread.open(1);
+		const before = seqs();
+		wireSend();
+		h.listMessages.mockRejectedValueOnce(new Error('offline'));
+		expect(await thread.send('hello')).toBe('sent');
+		expect(seqs()).toEqual(before);
+		expect(thread.hasNewer).toBe(true);
+		expect(thread.detached.map((m) => m.body)).toEqual(['hello']);
+		expect(pendingOf()).toHaveLength(0);
+	});
+
+	// 3b r1 hunter finding 2 (B16 retired in S1): both own rows end up in the window.
+	// Rewritten for the sequential queue: B's apply waits behind A's held fetch, so
+	// awaiting B's send before releasing A's fetch would never settle.
+	it('keeps both own rows when two sends land during a held re-anchor', async () => {
+		server.fill(400);
+		server.readSeq = 0;
+		await thread.open(1);
+		expect(thread.hasNewer).toBe(true);
+		wireSend();
+		let releaseA!: () => void;
+		h.listMessages.mockImplementationOnce((_n: number, o: object) => {
+			const page = server.list(o);
+			return new Promise((res) => (releaseA = () => res(page)));
+		});
+		const a = thread.send('A');
+		await flush();
+		expect(typeof releaseA).toBe('function');
+		const b = thread.send('B');
+		await flush();
+		releaseA();
+		expect(await a).toBe('sent');
+		expect(await b).toBe('sent');
+		await flush();
+		const bodies = thread.messages.map((m) => m.body);
+		expect(bodies.slice(-2)).toEqual(['A', 'B']);
+		const s = seqs();
+		for (let i = 1; i < s.length; i++) expect(s[i]).toBe(s[i - 1] + 1);
+		expect(pendingOf()).toHaveLength(0);
+	});
+
+	it('is stale after an identity change, with nothing of the old bubble left', async () => {
+		await readyThread();
+		wireSend();
+		let release!: () => void;
+		const real = h.sendMessage.getMockImplementation()!;
+		h.sendMessage.mockImplementationOnce((n: number, b: never) => new Promise((res) => (release = () => res(real(n, b)))));
+		const done = thread.send('hello');
+		h.state.epoch++;
+		for (const fn of [...h.state.listeners]) fn('old');
+		release();
+		expect(await done).toBe('stale');
+		expect(thread.items).toEqual([]);
+	});
+});
+
+describe('refresh during a send', () => {
+	// U-defer: red if the in-flight deferral is removed (B12).
+	it('defers a realtime refresh until the send settles, then refreshes once', async () => {
+		await readyThread();
+		wireSend();
+		const real = h.sendMessage.getMockImplementation()!;
+		let release!: () => void;
+		h.sendMessage.mockImplementationOnce((n: number, b: never) => new Promise((res) => (release = () => res(real(n, b)))));
+		const done = thread.send('hello');
+		h.listMessages.mockClear();
+		await bump();
+		await bump();
+		expect(h.listMessages).not.toHaveBeenCalled();
+		release();
+		await done;
+		await flush();
+		const calls = h.listMessages.mock.calls.length;
+		expect(calls).toBeGreaterThan(0);
+		await flush();
+		expect(h.listMessages.mock.calls.length).toBe(calls);
+		expect(seqs()).toEqual([1, 2, 3, 4]);
+	});
+
+	// 3b r1 hunter finding 1 (refuted): the deferred refresh's cursor starts past a
+	// peer row committed during the send, and the sweep leg brings it in.
+	it('does not skip a peer row committed while a send was in flight', async () => {
+		await readyThread();
+		wireSend();
+		const real = h.sendMessage.getMockImplementation()!;
+		let release!: () => void;
+		h.sendMessage.mockImplementationOnce((n: number, b: never) => new Promise((res) => (release = () => res(real(n, b)))));
+		const done = thread.send('hello');
+		server.add(msg(4));
+		await bump();
+		release();
+		await done;
+		await flush();
+		expect(seqs()).toEqual([1, 2, 3, 4, 5]);
+	});
+
+	// r1 hunter 1 (ruling a61ca213): red if the one-shot cursor floor is dropped (B18).
+	// More than the sweep's 200: only step 1 from below the own row can fetch them.
+	it('does not skip any of 201 peer rows committed while a send was in flight', async () => {
+		await readyThread();
+		wireSend();
+		const real = h.sendMessage.getMockImplementation()!;
+		let release!: () => void;
+		h.sendMessage.mockImplementationOnce((n: number, b: never) => new Promise((res) => (release = () => res(real(n, b)))));
+		const done = thread.send('hello');
+		for (let seq = 4; seq <= 204; seq++) server.add(msg(seq));
+		await bump();
+		release();
+		await done;
+		await flush();
+		await flush();
+		expect(seqs()).toEqual(Array.from({ length: 205 }, (_, i) => i + 1));
+		expect(thread.hasNewer).toBe(false);
+	});
+});
+
+describe('deferred refresh release (3b r4 C2)', () => {
+	/** A send held in flight, a bump deferred behind it, and a peer row the deferred refresh must fetch. */
+	async function deferredBehindSend() {
+		await readyThread();
+		wireSend();
+		let settle!: (v: 'ok' | Error) => void;
+		const real = h.sendMessage.getMockImplementation()!;
+		h.sendMessage.mockImplementationOnce(
+			(n: number, b: never) => new Promise((res, rej) => (settle = (v) => (v === 'ok' ? res(real(n, b)) : rej(v))))
+		);
+		const done = thread.send('mine');
+		await flush();
+		server.add(msg(4, { body: 'peer' }));
+		h.listMessages.mockClear();
+		await bump();
+		expect(h.listMessages).not.toHaveBeenCalled();
+		return { done, settle };
+	}
+
+	// N17: red with the call in discard() deleted.
+	it('runs after Discard of the send it waited for', async () => {
+		const { done, settle } = await deferredBehindSend();
+		thread.discard((pendingOf()[0] as { pending: { op_key: string } }).pending.op_key);
+		await flush();
+		expect(h.listMessages).toHaveBeenCalled();
+		expect(seqs()).toContain(4);
+		settle(new Error('late'));
+		await done;
+	});
+
+	// N18: red with the call after a successful send deleted.
+	it('runs after the send is confirmed', async () => {
+		const { done, settle } = await deferredBehindSend();
+		settle('ok');
+		expect(await done).toBe('sent');
+		await flush();
+		expect(seqs()).toContain(4);
+	});
+
+	// N19: red with the call after a refusal deleted.
+	it('runs after the send is refused', async () => {
+		const { done, settle } = await deferredBehindSend();
+		settle(apiError('reply_target_deleted'));
+		expect(await done).toBe('reply_deleted');
+		await flush();
+		expect(seqs()).toEqual([1, 2, 3, 4]);
+	});
+
+	// N20: red with the call after a failed send deleted.
+	it('runs after the send fails', async () => {
+		const { done, settle } = await deferredBehindSend();
+		settle(new Error('network'));
+		expect(await done).toBe('failed');
+		await flush();
+		expect(seqs()).toEqual([1, 2, 3, 4]);
+	});
+});
+
+describe('remove', () => {
+	// U24, N6: red if the tombstone is not merged (B5).
+	it('replaces the row with the tombstone in place', async () => {
+		await readyThread();
+		server.tombstone(2);
+		h.deleteMessage.mockResolvedValue({ message: { ...server.rows[1] }, deleted: true });
+		expect(await thread.remove(2)).toBe(true);
+		expect(h.deleteMessage).toHaveBeenCalledWith(1, 2);
+		expect(thread.messages[1]).toMatchObject({ seq: 2, deleted: true, body: '' });
+	});
+
+	it('treats deleted:false with the tombstone as success', async () => {
+		await readyThread();
+		server.tombstone(2);
+		h.deleteMessage.mockResolvedValue({ message: { ...server.rows[1] }, deleted: false });
+		expect(await thread.remove(2)).toBe(true);
+		expect(thread.messages[1].deleted).toBe(true);
+	});
+
+	it('keeps the row when the delete fails', async () => {
+		await readyThread();
+		h.deleteMessage.mockRejectedValue(apiError('forbidden'));
+		expect(await thread.remove(2)).toBe(false);
+		expect(thread.messages[1]).toMatchObject({ seq: 2, deleted: false, body: 'body 2' });
+		expect(thread.status).toBe('ready');
+	});
+
+	it('says not found when the conversation is gone', async () => {
+		await readyThread();
+		h.deleteMessage.mockRejectedValue(new NotFound());
+		expect(await thread.remove(2)).toBe(false);
+		expect(thread.status).toBe('notFound');
+	});
+});
+
+describe('3b r2 ordering', () => {
+	const contiguous = () => {
+		const s = seqs();
+		for (let i = 1; i < s.length; i++) if (s[i] !== s[i - 1] + 1) return `break at ${s[i - 1]}->${s[i]}`;
+		return 'ok';
+	};
+
+	// r2 H1 (the floor is gone in S1): 201 peer rows skipped by an own row are still
+	// filled when a refresh is in flight. The send's apply queues behind the held
+	// refresh, so the send is awaited only after the refresh is released.
+	it('fills 201 skipped peer rows when the send lands during a held refresh', async () => {
+		await readyThread();
+		wireSend();
+		let release!: () => void;
+		h.listMessages.mockImplementationOnce((_n: number, o: object) => {
+			const page = server.list(o);
+			return new Promise((res) => (release = () => res(page)));
+		});
+		await bump();
+		for (let seq = 4; seq <= 204; seq++) server.add(msg(seq));
+		const sent = thread.send('hello');
+		await flush();
+		release();
+		expect(await sent).toBe('sent');
+		await flush();
+		await flush();
+		expect(contiguous()).toBe('ok');
+		expect(thread.newestSeq).toBe(205);
+	});
+
+	// r2 C1/H2 (late re-anchor gone in S1): two sends around a peer row all land
+	// contiguous. Rewritten: window fetches are sequential now, so the holds are
+	// released one at a time instead of two fetches being outstanding together.
+	it('fills the peer row between two own rows sent around it', async () => {
+		server.fill(400);
+		server.readSeq = 0;
+		await thread.open(1);
+		wireSend();
+		const holds: Array<() => void> = [];
+		h.listMessages.mockImplementation((_n: number, o: object) => {
+			const page = server.list(o);
+			return new Promise((res) => holds.push(() => res(page)));
+		});
+		const b = thread.send('B');
+		await flush();
+		server.add(msg(402));
+		const a = thread.send('A');
+		await flush();
+		expect(holds).toHaveLength(1);
+		h.listMessages.mockImplementation(async (_n: number, o: object) => server.list(o));
+		holds[0]();
+		expect(await b).toBe('sent');
+		expect(await a).toBe('sent');
+		await flush();
+		await flush();
+		expect(contiguous()).toBe('ok');
+		expect(thread.messages.slice(-3).map((m) => m.seq)).toEqual([401, 402, 403]);
+		expect(pendingOf()).toHaveLength(0);
+		expect(thread.detached).toEqual([]);
+	});
+
+	// r2 H3: red if a delete answer merges a row the window no longer holds (B21).
+	it('does not insert a tombstone below a window that a re-anchor moved', async () => {
+		server.fill(400);
+		server.readSeq = 0;
+		await thread.open(1);
+		wireSend();
+		server.tombstone(5);
+		let release!: () => void;
+		h.deleteMessage.mockImplementation(
+			() => new Promise((res) => (release = () => res({ message: { ...server.rows[4] }, deleted: true })))
+		);
+		const d = thread.remove(5);
+		expect(await thread.send('hello')).toBe('sent');
+		release();
+		expect(await d).toBe(true);
+		await flush();
+		expect(contiguous()).toBe('ok');
+		expect(seqs()).not.toContain(5);
+	});
+});
+
+// ── S1: serialized window ops and a contiguous window (rulings 3293b1c6, 5c95ef40) ──
+describe('S1 serialized window', () => {
+	const contiguous = () => seqs().every((q, i, all) => i === 0 || q === all[i - 1] + 1);
+
+	/** Window [1,2,3], a send held while peers 4-6 commit, then the own row 7 with the fill failing: it detaches. */
+	async function detachedThread() {
+		await readyThread(3);
+		thread.atBottom = true;
+		wireSend();
+		const real = h.sendMessage.getMockImplementation()!;
+		let release!: () => void;
+		h.sendMessage.mockImplementationOnce((n: number, b: never) => new Promise((res) => (release = () => res(real(n, b)))));
+		const done = thread.send('mine');
+		for (let seq = 4; seq <= 6; seq++) server.add(msg(seq));
+		h.listMessages.mockRejectedValue(new Error('offline'));
+		release();
+		expect(await done).toBe('sent');
+		h.listMessages.mockImplementation(async (_n: number, o: object) => server.list(o));
+		await flush();
+	}
+
+	// r3 #1: mark-read never passes a hole. Red with the fill skipped (N4).
+	it('marks only a contiguous window and fills the skipped peer rows before the own row', async () => {
+		await readyThread(3);
+		thread.atBottom = true;
+		wireSend();
+		const marks: Array<{ seq: number; newest: number; ok: boolean }> = [];
+		h.markRead.mockImplementation(async (_n: number, seq: number) => {
+			marks.push({ seq, newest: thread.newestSeq, ok: contiguous() });
+			return { read_seq: seq };
+		});
+		const real = h.sendMessage.getMockImplementation()!;
+		let release!: () => void;
+		h.sendMessage.mockImplementationOnce((n: number, b: never) => new Promise((res) => (release = () => res(real(n, b)))));
+		const done = thread.send('mine');
+		for (let seq = 4; seq <= 6; seq++) server.add(msg(seq));
+		release();
+		expect(await done).toBe('sent');
+		await flush();
+		await flush();
+		expect(seqs()).toEqual([1, 2, 3, 4, 5, 6, 7]);
+		thread.tryMarkRead(); // the page's effect keys on newestSeq
+		await flush();
+		expect(marks.length).toBeGreaterThan(0);
+		for (const m of marks) expect(m).toMatchObject({ seq: m.newest, ok: true });
+		expect(marks.at(-1)?.seq).toBe(7);
+	});
+
+	// r3 #3: a stale page cannot un-delete a row. Red with the delete applied outside the queue (N3).
+	it('applies a delete after the refresh page that was fetched before it', async () => {
+		await readyThread(5);
+		let release!: () => void;
+		let calls = 0;
+		h.listMessages.mockImplementation((_n: number, o: object) => {
+			const page = server.list(o);
+			if (++calls !== 2) return Promise.resolve(page);
+			return new Promise((res) => (release = () => res(page)));
+		});
+		await bump();
+		expect(typeof release).toBe('function');
+		server.tombstone(2);
+		h.deleteMessage.mockResolvedValue({ message: { ...server.rows[1] }, deleted: true });
+		const d = thread.remove(2);
+		await flush();
+		release();
+		expect(await d).toBe(true);
+		await flush();
+		expect(thread.messages[1]).toMatchObject({ seq: 2, deleted: true });
+	});
+
+	// Hunter #2: more skipped rows than the fill bound detach the own row. Red with the
+	// bound removed (N6) or the row published inside the window (N7).
+	it('detaches an own row 1,200 peer rows away, then Show newer reaches it once', async () => {
+		await readyThread(3);
+		wireSend();
+		const real = h.sendMessage.getMockImplementation()!;
+		let release!: () => void;
+		h.sendMessage.mockImplementationOnce((n: number, b: never) => new Promise((res) => (release = () => res(real(n, b)))));
+		const done = thread.send('mine');
+		for (let seq = 4; seq <= 1203; seq++) server.add(msg(seq));
+		release();
+		expect(await done).toBe('sent');
+		await flush();
+		expect(contiguous()).toBe(true);
+		expect(thread.newestSeq).toBe(3 + 200 * REFRESH_MAX_PAGES);
+		expect(thread.detached.map((m) => m.seq)).toEqual([1204]);
+		expect(thread.hasNewer).toBe(true);
+		expect(pendingOf()).toHaveLength(0);
+		expect(thread.refreshFailed).toBe(false);
+		for (let i = 0; i < 5 && thread.hasNewer; i++) await thread.loadNewer();
+		expect(thread.hasNewer).toBe(false);
+		expect(thread.detached).toEqual([]);
+		expect(seqs()).toEqual(Array.from({ length: 1204 }, (_, i) => i + 1));
+	});
+
+	// Q2 pin (ruling 3293b1c6): a detached row is outside the window for every reader.
+	it('keeps a detached row out of newestSeq, mark-read, the divider and the loadNewer cursor', async () => {
+		await detachedThread();
+		expect(seqs()).toEqual([1, 2, 3]);
+		expect(thread.detached.map((m) => m.seq)).toEqual([7]);
+		expect(thread.newestSeq).toBe(3);
+		expect(thread.unreadCount).toBe(3);
+		expect(thread.dividerIndex).toBe(0);
+		h.markRead.mockClear();
+		thread.tryMarkRead();
+		await flush();
+		expect(h.markRead.mock.calls).toEqual([[1, 3]]);
+		h.listMessages.mockClear();
+		await thread.loadNewer();
+		expect(h.listMessages.mock.calls[0]).toEqual([1, { after_seq: 3, limit: 200 }]);
+	});
+
+	// A failed fill keeps the send a success and the row reachable.
+	it('detaches the own row when the fill fails, with the outcome sent and no refresh error', async () => {
+		await detachedThread();
+		expect(thread.hasNewer).toBe(true);
+		expect(pendingOf()).toHaveLength(0);
+		expect(thread.refreshFailed).toBe(false);
+	});
+
+	it('tombstones a detached row in the detached list', async () => {
+		await detachedThread();
+		server.tombstone(7);
+		h.deleteMessage.mockResolvedValue({ message: { ...server.rows[6] }, deleted: true });
+		expect(await thread.remove(7)).toBe(true);
+		expect(thread.detached).toMatchObject([{ seq: 7, deleted: true }]);
+		expect(seqs()).toEqual([1, 2, 3]);
+	});
+
+	// Red with loadNewer merging a page that landed during a send (N13): the server
+	// answers late, after the own row committed, so the page carries it beside its bubble.
+	it('does not merge a Show-newer page that carries the row of a send still in flight', async () => {
+		server.fill(250);
+		server.readSeq = 0;
+		await thread.open(1); // window 1..200, hasNewer
+		expect(thread.hasNewer).toBe(true);
+		wireSend();
+		let page!: () => void;
+		h.listMessages.mockImplementationOnce((_n: number, o: object) => new Promise((res) => (page = () => res(server.list(o)))));
+		const newer = thread.loadNewer();
+		await flush();
+		const real = h.sendMessage.getMockImplementation()!;
+		let answer!: () => void;
+		h.sendMessage.mockImplementationOnce((n: number, b: never) => {
+			const committed = real(n, b); // committed now, answered later
+			return new Promise((res) => (answer = () => res(committed)));
+		});
+		const sending = thread.send('mine');
+		await flush();
+		page();
+		await newer;
+		await flush();
+		expect(seqs()).not.toContain(251);
+		expect(pendingOf()).toHaveLength(1);
+		answer();
+		expect(await sending).toBe('sent');
+	});
+
+	// Red with the window ops not chained (N1): at most one window fetch at a time.
+	it('never has two window fetches outstanding', async () => {
+		server.fill(400);
+		server.readSeq = 100;
+		await thread.open(1);
+		wireSend();
+		h.deleteMessage.mockImplementation(async () => ({ message: { ...server.rows[149] }, deleted: true }));
+		let live = 0;
+		let max = 0;
+		h.listMessages.mockImplementation(async (_n: number, o: object) => {
+			live++;
+			max = Math.max(max, live);
+			await Promise.resolve();
+			await Promise.resolve();
+			const page = server.list(o);
+			live--;
+			return page;
+		});
+		await Promise.all([thread.loadOlder(), thread.loadNewer(), thread.refresh(), thread.send('x'), thread.remove(150)]);
+		await flush();
+		expect(max).toBe(1);
+	});
+
+	// Red with the own apply outside the queue (N2): the bubble stays until the held refresh lets go.
+	it('applies an own row after a refresh that is already running', async () => {
+		await readyThread(3);
+		wireSend();
+		let release!: () => void;
+		h.listMessages.mockImplementationOnce((_n: number, o: object) => {
+			const page = server.list(o);
+			return new Promise((res) => (release = () => res(page)));
+		});
+		await bump();
+		const done = thread.send('mine');
+		await flush();
+		expect(pendingOf()).toHaveLength(1);
+		expect(seqs()).toEqual([1, 2, 3]);
+		release();
+		expect(await done).toBe('sent');
+		await flush();
+		expect(seqs()).toEqual([1, 2, 3, 4]);
+		expect(pendingOf()).toHaveLength(0);
+	});
+
+	/** A send that commits at once and answers when `answer()` is called. */
+	function heldCommittedSend() {
+		const real = h.sendMessage.getMockImplementation()!;
+		let answer!: () => void;
+		h.sendMessage.mockImplementationOnce((n: number, b: never) => {
+			const committed = real(n, b);
+			return new Promise((res) => (answer = () => res(committed)));
+		});
+		return () => answer;
+	}
+
+	/** Invariant I9: no own row is visible both as a row (window or detached) and as a sending bubble. */
+	function expectNoRowBesideItsBubble() {
+		const sending = pendingOf().length;
+		const own = [...thread.messages, ...thread.detached].filter((m) => m.mine).length;
+		return { sending, own };
+	}
+
+	// TASK-4044 ruling 2a03a442, N12: red with the own apply fetching while another send is in flight.
+	it('detaches the first own row without fetching while a second send is in flight (I9, N12)', async () => {
+		server.fill(400);
+		server.readSeq = 0;
+		await thread.open(1);
+		expect(thread.hasNewer).toBe(true);
+		wireSend();
+		const aGet = heldCommittedSend();
+		const a = thread.send('A');
+		await flush();
+		const answerA = aGet();
+		const bGet = heldCommittedSend();
+		const b = thread.send('B'); // commits as 402 while its answer is held
+		await flush();
+		const answerB = bGet();
+		expect(server.lastSeq).toBe(402);
+		answerA();
+		expect(await a).toBe('sent');
+		await flush();
+		// B's committed row 402 must not be in the window while B's bubble still shows.
+		expect(seqs()).not.toContain(402);
+		expect(thread.detached.map((m) => m.seq)).toEqual([401]);
+		expect(expectNoRowBesideItsBubble()).toEqual({ sending: 1, own: 1 });
+		answerB();
+		expect(await b).toBe('sent');
+		await flush();
+		expect(pendingOf()).toHaveLength(0);
+		const all = [...thread.messages, ...thread.detached].filter((m) => m.mine).map((m) => m.seq);
+		expect(all.sort()).toEqual([401, 402]);
+	});
+
+	// TASK-4044 ruling 2a03a442, N14: red with the refresh merging a page that landed during a send.
+	it('drops a refresh page that lands while a send is in flight rather than show its row twice (I9, N14)', async () => {
+		await readyThread(3);
+		wireSend();
+		let land!: () => void;
+		h.listMessages.mockImplementationOnce((_n: number, o: object) => new Promise((res) => (land = () => res(server.list(o)))));
+		await bump();
+		const answer = heldCommittedSend();
+		const sending = thread.send('mine'); // commits as 4 while the refresh page is still out
+		await flush();
+		expect(server.lastSeq).toBe(4);
+		land(); // the page now carries row 4
+		await flush();
+		expect(seqs()).toEqual([1, 2, 3]);
+		expect(pendingOf()).toHaveLength(1);
+		expect(expectNoRowBesideItsBubble()).toEqual({ sending: 1, own: 0 });
+		answer()();
+		expect(await sending).toBe('sent');
+		await flush();
+		expect(seqs()).toEqual([1, 2, 3, 4]);
+		expect(pendingOf()).toHaveLength(0);
+	});
+
+	// 3b r4 H1 (ruling ec6bbe31), N16: red with #fill not rechecking for a send in flight after its await.
+	it('detaches rather than fill a page that carries the row of a send retried meanwhile (I9, N16)', async () => {
+		await readyThread(3);
+		wireSend();
+		const real = h.sendMessage.getMockImplementation()!;
+		h.sendMessage.mockImplementationOnce(async (n: number, b: never) => {
+			await real(n, b); // F commits as 4, the answer is lost
+			throw new Error('timeout');
+		});
+		expect(await thread.send('F')).toBe('failed');
+		const keyF = (pendingOf()[0] as { pending: { op_key: string } }).pending.op_key;
+		let land!: () => void;
+		h.listMessages.mockImplementationOnce((_n: number, o: object) => new Promise((res) => (land = () => res(server.list(o)))));
+		const a = thread.send('A'); // commits as 5: past the end, so the fill page after 3 is held
+		await flush();
+		expect(typeof land).toBe('function');
+		const answerF = heldCommittedSend();
+		const f = thread.retry(keyF);
+		await flush();
+		land(); // the page carries F's row 4 while F's bubble is sending
+		await flush();
+		expect(seqs()).toEqual([1, 2, 3]);
+		expect(expectNoRowBesideItsBubble()).toEqual({ sending: 1, own: 1 });
+		answerF()();
+		expect(await f).toBe('sent');
+		expect(await a).toBe('sent');
+		await flush();
+		expect(pendingOf()).toHaveLength(0);
+		const own = [...thread.messages, ...thread.detached].filter((m) => m.mine).map((m) => m.seq);
+		expect(own.sort()).toEqual([4, 5]);
+	});
+
+	// Red with the chain kept across a reset (N10): the reopen would wait for the old fetch.
+	it('does not wait for, or apply, a fetch that began under the previous identity', async () => {
+		await readyThread(3);
+		server.add(msg(4, { body: 'stale' }));
+		let release!: () => void;
+		h.listMessages.mockImplementationOnce((_n: number, o: object) => {
+			const page = server.list(o);
+			return new Promise((res) => (release = () => res(page)));
+		});
+		await bump();
+		h.state.epoch++;
+		for (const fn of [...h.state.listeners]) fn('previous');
+		server.rows = [msg(1, { body: 'new1' })];
+		await thread.open(1);
+		release();
+		await flush();
+		expect(thread.status).toBe('ready');
+		expect(thread.messages.map((m) => m.body)).toEqual(['new1']);
 	});
 });

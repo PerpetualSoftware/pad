@@ -2,15 +2,19 @@
 	import { onDestroy, onMount, tick, untrack } from 'svelte';
 	import { page } from '$app/state';
 	import ChatBackLink from '$lib/components/chat/ChatBackLink.svelte';
+	import Composer from '$lib/components/chat/Composer.svelte';
 	import MessageBubble from '$lib/components/chat/MessageBubble.svelte';
+	import PendingBubble from '$lib/components/chat/PendingBubble.svelte';
 	import PresenceDot from '$lib/components/chat/PresenceDot.svelte';
 	import UnreadDivider from '$lib/components/chat/UnreadDivider.svelte';
 	import { chatInbox } from '$lib/stores/chatInbox.svelte';
 	import { ChatThread } from '$lib/stores/chatThread.svelte';
+	import { toastStore } from '$lib/stores/toast.svelte';
+	import type { ChatMessage } from '$lib/types';
 
-	// The read-only thread (TASK-4044 PR 3a, rulings 4cf4d4b9 and 2de240d9). The
-	// store owns the window; this page owns the scroll container and the bottom
-	// sentinel that says what the reader has seen.
+	// The thread (TASK-4044 PR 3a and 3b, rulings 4cf4d4b9 and 2de240d9). The
+	// store owns the window; this page owns the scroll container, the bottom
+	// sentinel that says what the reader has seen, and the reply target.
 	let raw = $derived(page.params.n ?? '');
 	let n = $derived(/^[1-9][0-9]*$/.test(raw) ? Number(raw) : null);
 
@@ -22,6 +26,12 @@
 	let sentinel = $state<HTMLElement | null>(null);
 	let positioned = false;
 	let lastNewest = 0;
+	let replyTo = $state<ChatMessage | null>(null);
+	let composer = $state<Composer | null>(null);
+	let lastOwnSend = 0;
+	// Loading newer messages while a send is in flight would race the send's own
+	// confirmed row into the window (TASK-4044 ruling 2a03a442).
+	let sending = $derived(thread.items.some((it) => it.kind === 'pending' && it.pending.status === 'sending'));
 
 	// The presence dot polls only while this page is open.
 	onMount(() => chatInbox.startPresence());
@@ -35,7 +45,10 @@
 		void retry;
 		positioned = false;
 		lastNewest = 0;
-		untrack(() => void thread.open(target));
+		untrack(() => {
+			replyTo = null;
+			void thread.open(target);
+		});
 	});
 
 	// First paint of a window: at the "N new" divider when there is one, else the end.
@@ -62,6 +75,17 @@
 				if (scroller) scroller.scrollTop = scroller.scrollHeight;
 			});
 		}
+	});
+
+	// An own send, shown or confirmed, scrolls to the end even from further up
+	// (ruling d87482de Q-d); a row from elsewhere only follows a reader at the end.
+	$effect(() => {
+		const sendTick = thread.ownSendTick;
+		if (!positioned || !scroller || sendTick === lastOwnSend) return;
+		lastOwnSend = sendTick;
+		void tick().then(() => {
+			if (scroller) scroller.scrollTop = scroller.scrollHeight;
+		});
 	});
 
 	// The sentinel at the end of the window: in view means the reader has seen the end.
@@ -102,6 +126,26 @@
 
 	function jumpToUnread() {
 		scroller?.querySelector('#unread-divider')?.scrollIntoView?.({ block: 'start' });
+	}
+
+	// Reply puts the reader into the composer (r5 H3); the bar is there after the tick.
+	function startReply(m: ChatMessage) {
+		replyTo = m;
+		void tick().then(() => composer?.focus());
+	}
+
+	// Retry and Discard unmount with the status flip, so focus would fall to body (r6 L4).
+	function refocusComposer() {
+		void tick().then(() => composer?.focus());
+	}
+
+	// The reply bar goes only once the delete went through, and only if it still quotes this row (r6 L3).
+	async function deleteMessage(m: ChatMessage) {
+		if (await thread.remove(m.seq)) {
+			if (replyTo?.seq === m.seq) replyTo = null;
+		} else if (thread.status === 'ready') {
+			toastStore.show("Couldn't delete that message. Try again.", 'error');
+		}
 	}
 
 	function jumpToQuote(seq: number) {
@@ -162,11 +206,34 @@
 				</div>
 			{/if}
 			<div class="messages">
-				{#each thread.messages as m, i (m.seq)}
-					{#if i === dividerAt}
-						<UnreadDivider count={thread.unreadCount} more={thread.hasNewer} />
+				{#each thread.items as item, i (item.kind === 'message' ? `m${item.message.seq}` : `p${item.pending.op_key}`)}
+					{#if item.kind === 'message'}
+						{#if i === dividerAt}
+							<UnreadDivider count={thread.unreadCount} more={thread.hasNewer} />
+						{/if}
+						<MessageBubble
+							message={item.message}
+							onJumpToQuote={jumpToQuote}
+							onReply={startReply}
+							onDelete={deleteMessage}
+						/>
+					{:else}
+						<PendingBubble
+							pending={item.pending}
+							onRetry={(k) => {
+								const body = item.pending.body;
+								// A refused Retry discards its bubble: the text comes back with its notice, as for a refused send (r7 M1).
+								void thread.retry(k).then((outcome) => {
+									if (outcome !== 'sent' && outcome !== 'failed' && outcome !== 'stale') composer?.restore(body, outcome);
+								});
+								refocusComposer();
+							}}
+							onDiscard={(k) => {
+								thread.discard(k);
+								refocusComposer();
+							}}
+						/>
 					{/if}
-					<MessageBubble message={m} onJumpToQuote={jumpToQuote} />
 				{:else}
 					<p class="empty">No messages yet.</p>
 				{/each}
@@ -176,7 +243,8 @@
 					<button
 						type="button"
 						class="newer"
-						disabled={thread.loadingNewer}
+						disabled={thread.loadingNewer || sending}
+						aria-busy={sending ? 'true' : undefined}
 						onclick={() => void thread.loadNewer()}>Show newer messages</button
 					>
 					{#if thread.newerFailed}
@@ -184,8 +252,30 @@
 					{/if}
 				</div>
 			{/if}
+			<!-- A flex column like .messages, so .bubble.mine { align-self: flex-end } applies (r6 L1). -->
+			<div class="detached">
+				{#each thread.detached as m (m.seq)}
+					<MessageBubble
+						message={m}
+						onJumpToQuote={jumpToQuote}
+						onReply={startReply}
+						onDelete={deleteMessage}
+					/>
+				{/each}
+			</div>
 			<div class="sentinel" bind:this={sentinel} aria-hidden="true"></div>
 		</div>
+		{#if n !== null}
+			{#key n}
+				<Composer
+					bind:this={composer}
+					{n}
+					{replyTo}
+					onClearReply={() => (replyTo = null)}
+					onSend={(body, replyToSeq) => thread.send(body, replyToSeq)}
+				/>
+			{/key}
+		{/if}
 	{/if}
 {/if}
 
@@ -216,7 +306,8 @@
 		overflow-y: auto;
 		padding-bottom: var(--space-3);
 	}
-	.messages {
+	.messages,
+	.detached {
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-2);
