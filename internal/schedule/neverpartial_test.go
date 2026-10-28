@@ -31,6 +31,9 @@ var neverSteps = []int64{1, 2, 5, 50, 1000, 0} // 0 is the default
 // (oracle_test.go) OR be a CapStall with Limit MaxSteps, and a CapStall is a
 // failure where the rule alone gives no reason for it: any satisfiable case at
 // the default MaxSteps, and any answer final below the rule's stall position.
+// The oracle (oracle_test.go) runs the same vendored generator unbudgeted, so
+// this test holds the merge, the stall position and the budget against the
+// generator, not its recurrence output; that is the conformance table's job.
 func TestNeverAPartialAnswer(t *testing.T) {
 	day := 24 * time.Hour
 	all := []time.Duration{0, 400 * day, -3} // -3: three years, by calendar

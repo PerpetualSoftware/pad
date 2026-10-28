@@ -17,8 +17,10 @@ type Limits struct {
 	// MaxSteps bounds the rule expander's period-loop steps between two
 	// candidates it produces (TASK-4100 H1, r2): the count restarts at every
 	// candidate, so it ends a no-match stretch and nothing else. A stall is a
-	// CapStall only when an answer could lie past the examined part (r3). Total
-	// work is bounded by MaxScan and MaxDuration.
+	// CapStall only when an answer could lie past the examined part (r3).
+	// MaxDuration is the only bound on a whole call; MaxScan additionally refuses
+	// a wall-clock query far from Start, except for COUNT rules and rules whose
+	// UNTIL is already spent, which end on their own (TASK-4100 r4).
 	MaxSteps int64
 }
 
@@ -82,10 +84,11 @@ var periodUnit = map[string]time.Duration{
 // from Start would take more than MaxScan periods. Only the wall-clock path
 // walks from Start; the elapsed path fast-forwards. base is the query start
 // and q its far end. A rule whose UNTIL is spent before base, or that ends by
-// COUNT, is not estimated: it ends on its own, bounded by MaxDuration and
-// MaxInstances, not by MaxSteps (that bounds only a no-match stretch, and the
-// count of steps restarts at every candidate), so a spent rule reads as
-// exhausted rather than as a CapScan (TASK-4100 r1, r3).
+// COUNT, is not estimated: it ends on its own and only MaxDuration bounds the
+// walk. MaxInstances counts only what Between returns inside its window, and
+// NextAfter never applies it; MaxSteps bounds only a no-match stretch because
+// the count restarts at every candidate. A spent rule therefore reads as
+// exhausted rather than as a CapScan (TASK-4100 r1, r3, r4).
 func (c *Compiled) checkScan(loc *time.Location, base, q time.Time, lim Limits) error {
 	if c.rule == nil || c.elapsed || c.rule.Count > 0 || c.untilSpent(loc, base) {
 		return nil
@@ -100,10 +103,10 @@ func (c *Compiled) checkScan(loc *time.Location, base, q time.Time, lim Limits) 
 	return nil
 }
 
-// guard runs fn in the calling goroutine. A panic in the library becomes a
-// MalformedError instead of crashing the caller. Nothing is abandoned: every
-// expansion is bounded by Limits.MaxSteps inside the vendored generator
-// (TASK-4100 H1), so there is no goroutine to leak.
+// guard runs fn in the calling goroutine, so nothing can be abandoned or leak.
+// A panic in the library becomes a MalformedError instead of crashing the caller.
+// The expansion is bounded by MaxDuration overall, with MaxSteps ending a
+// no-match stretch inside the vendored generator (TASK-4100 H1, r2, r4).
 func guard(fn func() error) (err error) {
 	defer func() {
 		if recover() != nil {

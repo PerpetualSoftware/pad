@@ -12,8 +12,18 @@ inside one Next() until year 9999. The caller cannot interrupt it. Upstream has
 been unmaintained since 2023-01. The conformance suite in internal/schedule is
 the contract. Do not "upgrade" this back to the module.
 
-Only the step budget added in the TASK-4100 H1 fix commit (marked in the
-source) differs from upstream.
+The differences from upstream marked TASK-4100 in rrule.go are:
+
+- The per-iterator step budget: the `budget` field, SetBudget and Exhausted
+  (TASK-4100 H1).
+- The `steps` counter, which resets at every produced candidate so the budget
+  bounds a no-match stretch (TASK-4100 r2).
+- The `stall` position, StallPos and spend(adv), which record a conservative
+  lower bound on every occurrence an exhausted iterator did not yield
+  (TASK-4100 r3).
+
+rruleset.go, str.go, util.go and LICENSE are byte-identical to upstream: their
+sha256 matches the table below. rrule.go is the only modified file.
 
 ## File count
 
