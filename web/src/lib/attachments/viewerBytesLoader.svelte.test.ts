@@ -174,8 +174,9 @@ describe('createViewerBytesLoader', () => {
 	});
 
 	it('RESPONSE gate: past the cap is too-large even when the stream REJECTS the cancel (r6a2-L1)', async () => {
-		// A real stream whose release fails, as an errored fetch body's does: the
-		// over-cap result must not turn into the generic error.
+		// A real stream whose release fails (its underlying cancel rejects; an
+		// errored fetch body is one way that happens): the over-cap result must
+		// not turn into the generic error.
 		const state = { cancelAttempts: 0 };
 		const body = new ReadableStream<Uint8Array>({
 			pull(c) {
