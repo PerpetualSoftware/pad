@@ -13,12 +13,20 @@
  *  - STREAMING CHECK: counts the bytes accepted and cancels the reader once the
  *    total passes `max`.
  *
- * RESIDUAL OVERSHOOT, STATED RATHER THAN PAPERED OVER. The streaming check runs
- * after `reader.read()` has returned, so the chunk that crosses the cap is
- * already in memory when it is refused, and the contract sets no limit on chunk
- * size. Peak memory is therefore at most `max` plus one chunk, and one chunk is
- * bounded by what the network delivers, not by this module. The gate bounds what
- * is KEPT and RENDERED exactly; it does not bound peak memory exactly.
+ * RESIDUAL OVERSHOOT, STATED RATHER THAN PAPERED OVER. The gate bounds what is
+ * KEPT and RENDERED exactly; it does not bound peak memory, which is a small
+ * multiple of `max` (TASK-4075 r8):
+ *  - REFUSED: the streaming check runs after `reader.read()` has returned, so
+ *    the chunk that crosses the cap is already in memory when it is refused, and
+ *    the contract sets no limit on chunk size. Peak is up to `max` plus one
+ *    chunk, and one chunk is bounded by what the network delivers, not by this
+ *    module.
+ *  - ACCEPTED: the join copies every chunk into one buffer while the chunks are
+ *    still referenced, so peak here is about 2 x `max`.
+ *  - THE PDF CALLER adds a third: AttachmentPdfPreview hands getDocument a
+ *    `.slice()` copy (getDocument detaches its input), so up to about 3 x `max`
+ *    can be resident until the chunks are collected and the worker takes the
+ *    copy.
  *
  * THERE IS NO WHOLE-BUFFER FALLBACK. A response with no readable stream
  * (`body` null, or no `getReader`) is an ERROR here: the old fallback buffered
