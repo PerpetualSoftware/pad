@@ -2312,12 +2312,13 @@
 
 		// PDF paging (TASK-4075, Q7): PageUp/PageDown turn the document's pages;
 		// Left/Right stay gallery paging (unless a zoomed page scrolls sideways,
-		// above). Only while the PDF arm is shown and ready, and never with a
-		// modifier, so the browser's own shortcuts are left alone.
+		// above). Only while the PDF arm is shown with a mounted preview, and never
+		// with a modifier, so the browser's own shortcuts are left alone. No phase
+		// check: the preview mounts only in the `ready` branch, and bind:this nulls
+		// `pdfPreview` in the same flush that unmounts it (TASK-4075 trail, day 40).
 		if (
 			(e.key === 'PageUp' || e.key === 'PageDown') &&
 			shownRenderer === 'pdf' &&
-			bytesLoader.phase === 'ready' &&
 			pdfPreview &&
 			!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey
 		) {

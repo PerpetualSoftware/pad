@@ -250,6 +250,21 @@ describe('AttachmentPdfPreview — a failed page leaves no stale pixels (r5b-L1,
 		await settle();
 		expect(q<HTMLCanvasElement>('canvas').style.width).toBe('');
 	});
+
+	it("opening new bytes clears the old document's \"couldn't be drawn\" even when the new one never renders", async () => {
+		pdf.state.pageSize = { width: 0, height: 792 };
+		await open(pdfBytes(10));
+		expect(document.body.textContent).toContain("This page couldn't be drawn.");
+		// The new document's scroll region measures 0 wide, so the render effect
+		// returns before its own reset: only the open effect can clear the alert.
+		pdf.state.pageSize = { width: 612, height: 792 };
+		Object.defineProperty(HTMLElement.prototype, 'clientWidth', { configurable: true, get: () => 0 });
+		props.bytes = pdfBytes(20);
+		flushSync();
+		await settle();
+		expect(status()).toBe('Page 1 of 3');
+		expect(document.body.textContent).not.toContain("This page couldn't be drawn.");
+	});
 });
 
 describe('AttachmentPdfPreview — lifecycle (U4)', () => {
