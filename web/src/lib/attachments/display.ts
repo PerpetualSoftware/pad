@@ -388,15 +388,20 @@ export function canBrowserPreview(mime: string | null | undefined): boolean {
  *  - this one — do WE fetch the bytes and render them ourselves? That is
  *    a question about our own renderer, and it is the only one #1169 asks.
  *
- * NOT PART OF THE SERVER MIRROR. `internal/attachments/mime.go`'s
+ * NOT A WIDENING OF THE SERVER MIRROR. `internal/attachments/mime.go`'s
  * `inlineSafe` declares itself the mirror of `VIEWER_MIMES` +
  * `BROWSER_PREVIEW_MIMES` — the set the server may send with
- * `Content-Disposition: inline`. This set is deliberately outside that
- * pair and must never be added to it: we never ask the browser to inline
- * these bytes, we `fetch()` them (which a download disposition does not
- * impede) and render sanitized HTML ourselves. Keeping it out of the
- * mirror is what lets `text/markdown` preview in-app while still being
- * served as an attachment.
+ * `Content-Disposition: inline`. Membership in THIS set never adds anything
+ * to that pair: we never ask the browser to inline these bytes, we `fetch()`
+ * them (which a download disposition does not impede) and render sanitized
+ * HTML ourselves. Most of this set is outside the pair, which is what lets
+ * `text/markdown` preview in-app while still being served as an attachment.
+ * `text/plain` is the exception, and always was: it is in
+ * `BROWSER_PREVIEW_MIMES` (so the server inlines it) AND here (so we render
+ * it ourselves), and that is harmless for the same reason as before — the
+ * renderer fetches bytes and never navigates to the URL. PDF joins it as a
+ * second renderer whose MIME is also server-inline-safe, see
+ * {@link PDF_PREVIEW_MIMES}.
  *
  * MIME-EXACT, NEVER BY CATEGORY. `CategoryText` server-side CONTAINS the
  * force-download bucket — `text/html` and `text/javascript` are both
@@ -420,6 +425,29 @@ const TEXT_PREVIEW_MIMES: ReadonlySet<string> = new Set([
 	'text/plain', 'text/markdown', 'application/json', 'application/yaml', 'application/toml'
 ]);
 const TABLE_PREVIEW_MIMES: ReadonlySet<string> = new Set(['text/csv', 'text/tab-separated-values']);
+
+/**
+ * The one type the IN-APP PDF viewer renders (TASK-4075, IDEA-4073, which
+ * supersedes PLAN-2393 DR-6 for the in-pane viewer).
+ *
+ * EXACTLY `application/pdf`: never by category, extension or a `.pdf` name on
+ * an `application/octet-stream` row. `x-pdf` and `text/pdf` spellings are not
+ * claimed either, since the server stores whatever the sniffer says and the
+ * client claims only what it has been shown to render.
+ *
+ * Like `text/plain` (see {@link TEXT_PREVIEW_MIMES}), this MIME is ALSO in
+ * `BROWSER_PREVIEW_MIMES` and the server's `inlineSafe`, which is what drives
+ * the toolbar's Open-in-new-tab. That is harmless here: the viewer fetches the
+ * bytes and hands them to pdf.js, drawing to a canvas. It never navigates to
+ * the URL, never frames it (the server refuses framing, and no CSP here allows
+ * `blob:`), and never creates a `blob:` URL.
+ */
+const PDF_PREVIEW_MIMES: ReadonlySet<string> = new Set(['application/pdf']);
+
+/** May we fetch this MIME for the canvas-only PDF renderer? Exact, never by category. */
+export function canPreviewAsPdf(mime: string | null | undefined): boolean {
+	return PDF_PREVIEW_MIMES.has(normalizeMime(mime));
+}
 
 /** May we fetch this MIME for the bounded, text-only table renderer? Never by category. */
 export function canPreviewAsTable(mime: string | null | undefined): boolean {
@@ -528,3 +556,42 @@ export const TEXT_PREVIEW_MAX_BYTES = 1 << 20; // 1 MiB
 
 /** CSV/TSV share the text loader's metadata and streaming response gates. */
 export const TABLE_PREVIEW_MAX_BYTES = 2 << 20; // 2 MiB
+
+/**
+ * Byte ceiling above which the PDF viewer offers the existing download
+ * affordance instead of rendering (TASK-4075).
+ *
+ * THE RECEIPT. Measured 2026-10-26, Chromium 153, pdf.js 6.4.299 (the real
+ * build files, `useWasm: false`) under Pad's real CSP strings. Scan-shaped
+ * fixtures (one incompressible 1.08 MB image per page, so file size tracks page
+ * count). Fetch, open, render page 1 then the last page at 800 CSS px
+ * fit-width; every row painted non-blank with no CSP violation.
+ *
+ *   | profile             | fixture  | open ms | page 1 ms | last pg ms | renderer RSS MiB |
+ *   |---------------------|----------|---------|-----------|------------|------------------|
+ *   | desktop, DPR 1      | 5.2 MiB  |      99 |        54 |         27 |         88 -> 162 |
+ *   | desktop             | 10.3 MiB |     119 |        54 |         25 |         87 -> 171 |
+ *   | desktop             | 20.6 MiB |      92 |        50 |         29 |         88 -> 170 |
+ *   | desktop             | 25.8 MiB |     102 |        59 |         27 |         88 -> 178 |
+ *   | desktop             | 400 pg text, 1.3 MiB | 101 | 43 |         35 |         88 -> 144 |
+ *   | Pixel 7, DPR 2, 4x  | 5.2 MiB  |     103 |       192 |        188 |         90 -> 229 |
+ *   | Pixel 7             | 10.3 MiB |     105 |       195 |        185 |         89 -> 245 |
+ *   | Pixel 7             | 20.6 MiB |     103 |       221 |        196 |         90 -> 239 |
+ *   | Pixel 7             | 25.8 MiB |     132 |       208 |        198 |         90 -> 247 |
+ *   | Pixel 7             | 400 pg text, 1.3 MiB | 125 | 227 | 139 |         90 -> 216 |
+ *
+ * The cost is flat from 5 to 26 MiB: the buffer is transferred to the worker and
+ * pages render one at a time, so the driver is the canvas (1600x2070 at DPR 2),
+ * not the file. 25 MiB equals today's default upload cap
+ * (`defaultAttachmentMaxBytes`, handlers_attachments.go), but it is its OWN
+ * constant: an operator who raises uploads must not silently raise the in-pane
+ * parse budget.
+ *
+ * WHAT IT DOES NOT COVER: one image per page, Chromium only, loopback fetch (no
+ * network time). A file whose cost is per page (huge vector pages, many images
+ * on one page) is bounded by the canvas cap in AttachmentPdfPreview, not by this.
+ *
+ * Enforced like the text cap: from `size_bytes` metadata where the surface has
+ * it (no request at all), else by the response gate while streaming.
+ */
+export const PDF_PREVIEW_MAX_BYTES = 25 << 20; // 25 MiB

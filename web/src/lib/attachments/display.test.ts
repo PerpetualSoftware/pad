@@ -2,11 +2,14 @@ import { describe, expect, it } from 'vitest';
 import {
 	canBrowserPreview,
 	canOpenInViewer,
+	canPreviewAsPdf,
 	describeAttachmentType,
 	formatBytes,
 	iconForAttachment,
 	isImage,
-	isMarkdownAttachment
+	isMarkdownAttachment,
+	PDF_PREVIEW_MAX_BYTES,
+	TEXT_PREVIEW_MAX_BYTES
 } from './display';
 import {
 	ACTION_ICON_IDS,
@@ -378,5 +381,29 @@ describe('isMarkdownAttachment — IDEA-2712', () => {
 		expect(isMarkdownAttachment('text/javascript', 'payload.md')).toBe(false);
 		expect(isMarkdownAttachment('application/pdf', 'doc.md')).toBe(false);
 		expect(isMarkdownAttachment(null, 'notes.md')).toBe(false);
+	});
+});
+
+// TASK-4075: the PDF predicate is MIME-exact, and a sibling of (not an edit to)
+// canBrowserPreview, which keeps admitting PDF for the toolbar's Open action.
+describe('canPreviewAsPdf', () => {
+	it.each(['application/pdf', 'APPLICATION/PDF', ' application/pdf ; charset=binary'])('admits %s', (mime) => {
+		expect(canPreviewAsPdf(mime)).toBe(true);
+	});
+	it.each(['application/x-pdf', 'text/pdf', 'application/pdfx', 'application/octet-stream', 'text/plain', 'image/png', '', null, undefined])(
+		'refuses %s',
+		(mime) => {
+			expect(canPreviewAsPdf(mime)).toBe(false);
+		}
+	);
+	it('leaves canBrowserPreview (the Open action) admitting PDF unchanged', () => {
+		expect(canBrowserPreview('application/pdf')).toBe(true);
+	});
+});
+
+describe('PDF_PREVIEW_MAX_BYTES', () => {
+	it('is 25 MiB: the measured receipt, its own constant, above the text cap', () => {
+		expect(PDF_PREVIEW_MAX_BYTES).toBe(25 * 1024 * 1024);
+		expect(PDF_PREVIEW_MAX_BYTES).toBeGreaterThan(TEXT_PREVIEW_MAX_BYTES);
 	});
 });

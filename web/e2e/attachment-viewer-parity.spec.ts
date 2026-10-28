@@ -3,7 +3,7 @@ import type { APIRequestContext, Page } from '@playwright/test';
 import { browserLogin, seedDoc } from './lib/collab-helpers';
 import {
 	DESKTOP,
-	REAL_PDF,
+	REAL_ZIP,
 	REAL_PNG,
 	TILE,
 	VIEWER,
@@ -236,17 +236,17 @@ test.describe('attachment viewer — four-surface parity (TASK-2436)', () => {
 		// image, because the modal chrome is shared.
 		await browserLogin(page);
 		const doc = await seedDoc(fixture, request, 'Parity file route');
-		await uploadAttachment(fixture, request, doc.id, 'route.pdf', 'application/pdf', REAL_PDF);
+		await uploadAttachment(fixture, request, doc.id, 'route.zip', 'application/zip', REAL_ZIP);
 		await page.goto(itemUrl(fixture, doc.slug));
-		const tile = page.locator(`${TILE}[aria-label*="route.pdf"]`);
+		const tile = page.locator(`${TILE}[aria-label*="route.zip"]`);
 		await expect(tile).toBeVisible();
 
 		const open = async () => {
 			await tile.click();
-			await expect(viewerDialog(page, 'route.pdf')).toHaveCount(1);
+			await expect(viewerDialog(page, 'route.zip')).toHaveCount(1);
 			// The fallback arm, not the raster arm: name + honest note, no <img>.
 			await expect(page.locator(VIEWER_FALLBACK)).toBeVisible();
-			await expect(page.locator(VIEWER_FALLBACK_NAME)).toHaveText('route.pdf');
+			await expect(page.locator(VIEWER_FALLBACK_NAME)).toHaveText('route.zip');
 			await expect(page.locator(VIEWER_FALLBACK_NOTE)).toHaveText('No preview available');
 			await expect(page.locator(VIEWER_IMAGE)).toHaveCount(0);
 		};

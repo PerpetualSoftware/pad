@@ -33,8 +33,7 @@ describe('getSurfaceRenderer', () => {
 	});
 
 	it('returns null for types no renderer claims', () => {
-		// PDF is still PLAN-2393's reserved slot, not ours.
-		for (const mime of ['application/pdf', 'application/zip', 'image/tiff']) {
+		for (const mime of ['application/zip', 'image/tiff']) {
 			expect(getSurfaceRenderer(mime)).toBeNull();
 		}
 	});
@@ -60,6 +59,21 @@ describe('getSurfaceRenderer', () => {
 			expect(getSurfaceRenderer(mime)).toBe('table');
 		}
 	});
+
+	it("returns 'pdf' for exactly application/pdf (TASK-4075), parameters and case ignored", () => {
+		for (const mime of ['application/pdf', 'Application/PDF', 'application/pdf; charset=binary']) {
+			expect(getSurfaceRenderer(mime)).toBe('pdf');
+		}
+	});
+
+	// MIME-exact: never by prefix, category, spelling variant or extension. The
+	// octet-stream row is the extension case: a `.pdf` NAME cannot reach this
+	// function at all, which is the point.
+	it.each(['application/x-pdf', 'text/pdf', 'application/pdf-x', 'application/pdfa',
+		'application/octet-stream', 'application/postscript', 'image/vnd.adobe.photoshop', null])(
+		'%s does not claim the pdf renderer',
+		(mime) => expect(getSurfaceRenderer(mime)).toBeNull()
+	);
 
 	it.each(['text/xml', 'application/xhtml+xml', 'text/html', 'text/javascript',
 		'image/svg+xml', 'application/xml', 'text/yaml', 'text/unknown', null])(

@@ -58,6 +58,26 @@ vi.mock('$lib/stores/breakpoint.svelte', () => ({
 let mobileFlag = $state(false);
 mobileHolder.read = () => mobileFlag;
 
+// TASK-4075 — jsdom cannot run pdf.js. The PDF arm's component imports it lazily,
+// so mocking the two specifiers gives the arm a document it can open: three pages,
+// a render that resolves. The component's own behaviour is
+// AttachmentPdfPreview.svelte.test.ts; here only the Lightbox's wiring is asserted.
+vi.mock('pdfjs-dist', () => ({
+	GlobalWorkerOptions: {},
+	getDocument: () => ({
+		promise: Promise.resolve({
+			numPages: 3,
+			getPage: async () => ({
+				getViewport: ({ scale }: { scale: number }) => ({ width: 612 * scale, height: 792 * scale }),
+				render: () => ({ promise: Promise.resolve(), cancel: () => {} }),
+				cleanup: () => {}
+			})
+		}),
+		destroy: async () => {}
+	})
+}));
+vi.mock('pdfjs-dist/build/pdf.worker.min.mjs?url', () => ({ default: '/worker.mjs' }));
+
 // TASK-2475 — the metadata header's B-module fetch. The viewer's images seed
 // `size_bytes: null` by default (the `image()` fixture), so the header module
 // fires a HEAD to fill it; controlling the result lets the header tests assert
@@ -278,6 +298,9 @@ afterEach(() => {
 	// restore the setup-file's global inert shim so it can't leak into a later test.
 	vi.unstubAllGlobals();
 });
+
+/** A real Response over a real stream: the shared bounded reader has no non-stream fallback. */
+const bodyResp = (body: string | Uint8Array, status = 200): Response => new Response(body as BodyInit, { status });
 
 describe('Lightbox — dialog semantics', () => {
 	it('is an aria-modal dialog named after the image, plus its type', () => {
@@ -568,10 +591,13 @@ describe('Lightbox — the file route and reclassification (3c-ii T3)', () => {
 		}
 	}
 
-	it('opens a PDF on the fallback arm WITH an Open action', () => {
+	it('opens a PDF on the PDF arm (not the fallback) WITH an Open action', () => {
+		// TASK-4075: PDF has a renderer now. The bytes request never resolves here.
+		vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})));
 		mountViewer({ images: [image(IMG_A, 'doc.pdf', 'application/pdf')] });
 		expect(root().querySelector('.lightbox-image')).toBeNull();
-		expect(root().querySelector('.lightbox-fallback')).not.toBeNull();
+		expect(root().querySelector('.lightbox-fallback')).toBeNull();
+		expect(root().querySelector('.lightbox-pdf')).not.toBeNull();
 		// canBrowserPreview(pdf) → Open present; Download always present.
 		expect(openTool()).not.toBeNull();
 		expect(downloadTool()).not.toBeNull();
@@ -601,15 +627,17 @@ describe('Lightbox — the file route and reclassification (3c-ii T3)', () => {
 		expect(root().querySelector('.lightbox-image')).not.toBeNull();
 	});
 
-	it('reclassifies a null-seed entry to a PDF fallback WITH Open when the probe resolves PDF', async () => {
+	it('reclassifies a null-seed entry to the PDF arm WITH Open when the probe resolves PDF', async () => {
+		vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})));
 		metaRevalidate.mockResolvedValue({ status: 'ok', mime: 'application/pdf', size: 2048 });
 		mountViewer({ images: [image(IMG_A, 'unprobed', null)] });
 		// Null MIME → Open not applicable yet.
 		expect(openTool()).toBeNull();
 		await settleAsync();
-		// Resolved PDF: stays the fallback (PDF is not raster) but now offers Open.
+		// Resolved PDF: the PDF arm (not raster, not the fallback), and it offers Open.
 		expect(root().querySelector('.lightbox-image')).toBeNull();
-		expect(root().querySelector('.lightbox-fallback')).not.toBeNull();
+		expect(root().querySelector('.lightbox-fallback')).toBeNull();
+		expect(root().querySelector('.lightbox-pdf')).not.toBeNull();
 		expect(openTool()).not.toBeNull();
 	});
 
@@ -5084,12 +5112,7 @@ describe('Lightbox — the text arm', () => {
 	beforeEach(() => {
 		metaFetch.mockResolvedValue({ status: 'ok', mime: 'text/markdown', size: 128 });
 		metaRevalidate.mockResolvedValue({ status: 'ok', mime: 'text/markdown', size: 128 });
-		textFetch = vi.fn().mockResolvedValue({
-			ok: true,
-			status: 200,
-			body: null,
-			text: async () => '# Heading\n\nSome *emphasis*.'
-		});
+		textFetch = vi.fn().mockImplementation(async () => bodyResp('# Heading\n\nSome *emphasis*.'));
 		vi.stubGlobal('fetch', textFetch);
 	});
 
@@ -5309,8 +5332,7 @@ describe('Lightbox — the text arm', () => {
 	it.each(['text/plain', 'text/csv'])('mounts %s inside the filling sheet stage and uses the phone table budget', async (mime) => {
 		mobileFlag = true;
 		try {
-			textFetch.mockResolvedValue({ ok: true, body: null,
-				text: async () => Array(101).fill(Array(50).fill('x').join(',')).join('\n') });
+			textFetch.mockImplementation(async () => bodyResp(Array(101).fill(Array(50).fill('x').join(',')).join('\n')));
 			mountViewer({ images: [{ ...image(IMG_A, 'file', mime), size_bytes: 128 }] });
 			await settleAsync();
 			expect(hasSheet()).toBe(true);
@@ -5332,7 +5354,7 @@ describe('Lightbox — the text arm', () => {
 	});
 
 	it('routes a parameterized TSV MIME to tab-delimited cells through the shared loader', async () => {
-		textFetch.mockResolvedValue({ ok: true, body: null, text: async () => 'one\ttwo\nx\ty' });
+		textFetch.mockImplementation(async () => bodyResp('one\ttwo\nx\ty'));
 		mountViewer({ images: [{ ...image(IMG_A, 'file', 'text/tab-separated-values; charset=utf-8'), size_bytes: 128 }] });
 		await settleAsync();
 		expect([...root().querySelectorAll('td')].map((cell) => cell.textContent)).toEqual(['x', 'y']);
@@ -5362,12 +5384,7 @@ describe('Lightbox — the text arm', () => {
 	});
 
 	it('renders PLAIN text as text, never as markdown', async () => {
-		textFetch.mockResolvedValue({
-			ok: true,
-			status: 200,
-			body: null,
-			text: async () => '# not a heading\n*not emphasis*'
-		});
+		textFetch.mockImplementation(async () => bodyResp('# not a heading\n*not emphasis*'));
 		mountViewer({
 			images: [{ ...image(IMG_A, 'notes', 'text/plain'), filename: 'notes.txt' }]
 		});
@@ -5382,12 +5399,7 @@ describe('Lightbox — the text arm', () => {
 	});
 
 	it('SANITIZES a document carrying active content', async () => {
-		textFetch.mockResolvedValue({
-			ok: true,
-			status: 200,
-			body: null,
-			text: async () => 'before\n\n<script>alert(1)</script>\n\n[x](javascript:alert(1))\n\n<img src=x onerror=alert(1)>\n\n<a href="#" onclick="alert(1)">x</a>\n\nafter'
-		});
+		textFetch.mockImplementation(async () => bodyResp('before\n\n<script>alert(1)</script>\n\n[x](javascript:alert(1))\n\n<img src=x onerror=alert(1)>\n\n<a href="#" onclick="alert(1)">x</a>\n\nafter'));
 		mountViewer({ images: [image(IMG_A, 'evil.md', 'text/markdown')] });
 		await settleAsync();
 		const body = root().querySelector('.lightbox-text-body');
@@ -5406,15 +5418,19 @@ describe('Lightbox — the text arm', () => {
 		expect(body!.textContent).toContain('after');
 	});
 
-	// Also a guard rather than a discriminator: PDF stayed on the fallback before
-	// this branch too. It pins that widening the union did not accidentally claim
-	// PLAN-2393's reserved slot.
-	it('does not FETCH for a type the arm does not claim (PDF stays on the fallback)', async () => {
-		mountViewer({ images: [image(IMG_A, 'doc.pdf', 'application/pdf')] });
+	// TASK-4075: PDF used to be this guard's example of "a type no arm claims".
+	// It now has its own arm, so the guard pins the OTHER direction: the text arm
+	// still does not claim it (its loader refuses PDF), and the PDF arm, not the
+	// fallback, makes the one request.
+	it('keeps PDF out of the TEXT arm: the pdf arm mounts and makes the one request', async () => {
+		// A seeded size, so the late metadata size does not re-decide (and reload) the load.
+		mountViewer({ images: [{ ...image(IMG_A, 'doc.pdf', 'application/pdf'), size_bytes: 128 }] });
 		await settleAsync();
 		expect(root().querySelector('.lightbox-text')).toBeNull();
-		expect(root().querySelector('.lightbox-fallback')).not.toBeNull();
-		expect(textFetch).not.toHaveBeenCalled();
+		expect(root().querySelector('.lightbox-fallback')).toBeNull();
+		expect(root().querySelector('.lightbox-pdf')).not.toBeNull();
+		expect(textFetch).toHaveBeenCalledTimes(1);
+		expect(String(textFetch.mock.calls[0][0])).toBe(`/api/v1/workspaces/ws-one/attachments/${IMG_A}`);
 	});
 
 	it('keeps the force-download bucket on the fallback arm, with no request', async () => {
@@ -5560,10 +5576,267 @@ describe('Lightbox — the text arm', () => {
 	});
 
 	it('offers a retry when the fetch fails', async () => {
-		textFetch.mockResolvedValue({ ok: false, status: 500, body: null, text: async () => '' });
+		textFetch.mockImplementation(async () => bodyResp('', 500));
 		mountViewer({ images: [image(IMG_A, 'notes.md', 'text/markdown')] });
 		await settleAsync();
 		expect(root().querySelector('.lightbox-text .lightbox-retry')).not.toBeNull();
+	});
+});
+
+// TASK-4075 — the PDF arm's WIRING in the Lightbox (U3, U6). pdf.js itself is
+// mocked at the top of this file; the component's behaviour is covered by
+// AttachmentPdfPreview.svelte.test.ts. What is asserted here is what only the
+// Lightbox decides: which loader is armed, the stage class, the wheel, the arrow
+// and the PageUp/PageDown rules, and the too-large / error / Retry arms.
+describe('Lightbox — the PDF arm (TASK-4075)', () => {
+	let pdfFetch: ReturnType<typeof vi.fn>;
+	const PDF_BYTES = new Uint8Array(32).fill(0x25);
+
+	beforeEach(() => {
+		pdfFetch = vi.fn().mockImplementation(async () => bodyResp(PDF_BYTES.slice()));
+		vi.stubGlobal('fetch', pdfFetch);
+	});
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	async function settleAsync() {
+		for (let i = 0; i < 16; i++) {
+			await Promise.resolve();
+			await new Promise((r) => setTimeout(r, 0));
+			flushSync();
+		}
+	}
+	const pdfImage = (id: string, name = 'doc.pdf') => ({ ...image(id, name, 'application/pdf'), size_bytes: 128 });
+	const status = () => root().querySelector('.attachment-pdf-sr')?.textContent?.trim();
+
+	it('mounts the paged canvas view from the fetched bytes, with no fallback and no text arm', async () => {
+		mountViewer({ images: [pdfImage(IMG_A)] });
+		await settleAsync();
+		expect(root().querySelector('.lightbox-pdf .attachment-pdf-preview canvas')).not.toBeNull();
+		expect(status()).toBe('Page 1 of 3');
+		expect(root().querySelector('.lightbox-fallback')).toBeNull();
+		expect(root().querySelector('.lightbox-text')).toBeNull();
+		// One request, to the attachment URL: no variant, no blob.
+		expect(pdfFetch).toHaveBeenCalledTimes(1);
+		expect(String(pdfFetch.mock.calls[0][0])).toBe(`/api/v1/workspaces/ws-one/attachments/${IMG_A}`);
+		// No PDF-derived markup in the arm.
+		const arm = root().querySelector('.lightbox-pdf')!;
+		for (const tag of ['a', 'iframe', 'embed', 'object', 'img']) expect(arm.querySelector(tag), tag).toBeNull();
+	});
+
+	// U3 — exactly one loader is armed. Each leg records the signal of every request and
+	// asserts which one an arm flip aborted: an arm that failed to dispose the other
+	// loader leaves that request running, holding bytes the user has left.
+	function recordSignals() {
+		const calls: { url: string; signal: AbortSignal }[] = [];
+		pdfFetch.mockImplementation((url: string, init: RequestInit) => {
+			calls.push({ url, signal: init.signal as AbortSignal });
+			return new Promise(() => {});
+		});
+		return calls;
+	}
+	const sized = (id: string, name: string, mime: string) => ({ ...image(id, name, mime), size_bytes: 128 });
+	const IMG_Z = 'dddddddd-4444-4444-8444-dddddddddddd';
+	const next = () => root().querySelector<HTMLButtonElement>('.lightbox-nav.next')!.click();
+	const prev = () => root().querySelector<HTMLButtonElement>('.lightbox-nav.prev')!.click();
+
+	it('U3: leaving the PDF for markdown aborts the PDF request and starts the text one', async () => {
+		const calls = recordSignals();
+		mountViewer({ images: [sized(IMG_Z, 'z.zip', 'application/zip'), sized(IMG_A, 'a.pdf', 'application/pdf'), sized(IMG_B, 'b.md', 'text/markdown')], index: 1 });
+		await settleAsync();
+		expect(calls).toHaveLength(1);
+		next();
+		await settleAsync();
+		expect(calls[0].signal.aborted).toBe(true);
+		expect(calls).toHaveLength(2);
+		expect(calls[1].url.endsWith(IMG_B)).toBe(true);
+		expect(calls[1].signal.aborted).toBe(false);
+	});
+
+	it('U3: leaving markdown for the PDF aborts the TEXT request and starts the PDF one', async () => {
+		const calls = recordSignals();
+		mountViewer({ images: [sized(IMG_Z, 'z.zip', 'application/zip'), sized(IMG_A, 'a.pdf', 'application/pdf'), sized(IMG_B, 'b.md', 'text/markdown')], index: 2 });
+		await settleAsync();
+		expect(calls).toHaveLength(1);
+		prev();
+		await settleAsync();
+		expect(calls[0].signal.aborted).toBe(true);
+		expect(calls).toHaveLength(2);
+		expect(calls[1].url.endsWith(IMG_A)).toBe(true);
+		expect(calls[1].signal.aborted).toBe(false);
+	});
+
+	it('U3: leaving the PDF for a raster aborts the PDF request and makes no request of its own', async () => {
+		const calls = recordSignals();
+		mountViewer({ images: [sized(IMG_C, 'p.png', 'image/png'), sized(IMG_A, 'a.pdf', 'application/pdf')], index: 1 });
+		await settleAsync();
+		expect(calls).toHaveLength(1);
+		prev();
+		await settleAsync();
+		expect(calls[0].signal.aborted).toBe(true);
+		// The raster arm hands the browser an <img>: no fetch() of ours.
+		expect(calls).toHaveLength(1);
+		expect(root().querySelector('.lightbox-pdf')).toBeNull();
+	});
+
+	it('U3: leaving the PDF for a no-renderer file (the fallback arm) aborts the PDF request', async () => {
+		const calls = recordSignals();
+		mountViewer({ images: [sized(IMG_Z, 'z.zip', 'application/zip'), sized(IMG_A, 'a.pdf', 'application/pdf')], index: 1 });
+		await settleAsync();
+		next();
+		await settleAsync();
+		expect(calls[0].signal.aborted).toBe(true);
+		expect(calls).toHaveLength(1);
+		expect(root().querySelector('.lightbox-fallback')).not.toBeNull();
+	});
+
+	it('U3: closing the viewer aborts the PDF request', async () => {
+		const calls = recordSignals();
+		const app = mountViewer({ images: [sized(IMG_A, 'a.pdf', 'application/pdf')] });
+		await settleAsync();
+		expect(calls[0].signal.aborted).toBe(false);
+		await unmount(app);
+		mounted.splice(mounted.indexOf(app), 1);
+		expect(calls[0].signal.aborted).toBe(true);
+	});
+
+	it('a size that arrives LATE re-decides the load: a seed with no size, a probe that says 30 MiB, no body kept', async () => {
+		// The metadata gate is a function of the size, so `resolvedSize` is in the load key.
+		const calls = recordSignals();
+		metaFetch.mockResolvedValue({ status: 'ok', mime: 'application/pdf', size: 30 << 20 });
+		metaRevalidate.mockResolvedValue({ status: 'ok', mime: 'application/pdf', size: 30 << 20 });
+		mountViewer({ images: [image(IMG_A, 'big.pdf', 'application/pdf')] });
+		await settleAsync();
+		expect(root().querySelector('.lightbox-pdf')!.textContent).toContain('too large to preview');
+		// The request begun before the size was known was aborted by the re-decision.
+		expect(calls.every((c) => c.signal.aborted)).toBe(true);
+	});
+
+	it('refuses an oversize PDF from metadata with the existing copy and makes no request', async () => {
+		mountViewer({ images: [{ ...pdfImage(IMG_A), size_bytes: 30 << 20 }] });
+		await settleAsync();
+		expect(pdfFetch).not.toHaveBeenCalled();
+		const arm = root().querySelector('.lightbox-pdf')!;
+		expect(arm.textContent).toContain('too large to preview');
+		expect(arm.textContent).toContain('Use Download');
+		expect(arm.querySelector('canvas')).toBeNull();
+		expect(arm.querySelector('.lightbox-retry')).toBeNull();
+	});
+
+	it('offers Retry when the fetch fails, and Retry recovers', async () => {
+		pdfFetch.mockImplementationOnce(async () => bodyResp('', 500));
+		mountViewer({ images: [pdfImage(IMG_A)] });
+		await settleAsync();
+		const retry = root().querySelector<HTMLButtonElement>('.lightbox-pdf .lightbox-retry');
+		expect(retry).not.toBeNull();
+		retry!.click();
+		await settleAsync();
+		expect(root().querySelector('.lightbox-pdf canvas')).not.toBeNull();
+		expect(pdfFetch).toHaveBeenCalledTimes(2);
+	});
+
+	it('U6: the stage gives up its touch-action claim for a PDF, and keeps it for a raster', async () => {
+		mountViewer({ images: [pdfImage(IMG_A), { ...image(IMG_B, 'p.png'), size_bytes: 128 }] });
+		await settleAsync();
+		expect(root().querySelector('.lightbox-stage')!.classList.contains('lightbox-stage-text')).toBe(true);
+		root().querySelector<HTMLButtonElement>('.lightbox-nav.next')!.click();
+		await settleAsync();
+		expect(root().querySelector('.lightbox-stage')!.classList.contains('lightbox-stage-text')).toBe(false);
+	});
+
+	it('U6: leaves the wheel to the PDF card and its scroller, and still owns it elsewhere', async () => {
+		mountViewer({ images: [pdfImage(IMG_A)] });
+		await settleAsync();
+		for (const sel of ['.lightbox-pdf-scroll', '.attachment-pdf-scroll']) {
+			const e = new WheelEvent('wheel', { deltaY: 40, bubbles: true, cancelable: true });
+			root().querySelector(sel)!.dispatchEvent(e);
+			expect(e.defaultPrevented, sel).toBe(false);
+		}
+		const overStage = new WheelEvent('wheel', { deltaY: 40, bubbles: true, cancelable: true });
+		root().dispatchEvent(overStage);
+		expect(overStage.defaultPrevented).toBe(true);
+	});
+
+	it('U6: Left/Right belong to a focused PDF scroller that scrolls sideways, and page the gallery otherwise', async () => {
+		mountViewer({ images: [pdfImage(IMG_A, 'first.pdf'), pdfImage(IMG_B, 'second.pdf')] });
+		await settleAsync();
+		const region = root().querySelector<HTMLElement>('.attachment-pdf-scroll')!;
+		Object.defineProperty(region, 'scrollWidth', { configurable: true, value: 2000 });
+		Object.defineProperty(region, 'clientWidth', { configurable: true, value: 500 });
+		region.focus();
+		for (const key of ['ArrowRight', 'ArrowLeft']) expect(press(key), key).toBe(false);
+		expect(root().querySelector('.lightbox-pdf-scroll')!.getAttribute('aria-label')).toBe('first.pdf');
+		// Without horizontal overflow the arrows page the gallery.
+		Object.defineProperty(region, 'scrollWidth', { configurable: true, value: 500 });
+		expect(press('ArrowRight')).toBe(true);
+		await settleAsync();
+		expect(root().querySelector('.lightbox-pdf-scroll')!.getAttribute('aria-label')).toBe('second.pdf');
+	});
+
+	it('U6: the arrows move the caret in the page-number box instead of paging the gallery', async () => {
+		mountViewer({ images: [pdfImage(IMG_A), pdfImage(IMG_B)] });
+		await settleAsync();
+		const box = root().querySelector<HTMLInputElement>('.attachment-pdf-page-input')!;
+		box.focus();
+		expect(press('ArrowRight')).toBe(false);
+		expect(press('ArrowLeft')).toBe(false);
+		expect(root().querySelector('.lightbox-pdf-scroll')!.getAttribute('aria-label')).toBe('doc.pdf');
+	});
+
+	it('H8: 0, -, + and = reach the page-number box instead of being swallowed as zoom keys', async () => {
+		mountViewer({ images: [pdfImage(IMG_A)] });
+		await settleAsync();
+		const box = root().querySelector<HTMLInputElement>('.attachment-pdf-page-input')!;
+		box.focus();
+		for (const key of ['0', '-', '+', '=']) expect(press(key), `${key} in the box`).toBe(false);
+		// Control: with focus on a button (not a text field) the same key is still a consumed zoom key.
+		root().querySelector<HTMLButtonElement>('.lightbox-close, [aria-label="Close"]')!.focus();
+		expect(press('0')).toBe(true);
+	});
+
+	it('re-key: PageUp/PageDown during the Retry {#key} swap never reach the destroyed instance', async () => {
+		pdfFetch.mockImplementationOnce(async () => bodyResp('', 500));
+		mountViewer({ images: [pdfImage(IMG_A)] });
+		await settleAsync();
+		// Retry: the second request never answers, so the swap is held open.
+		pdfFetch.mockImplementation(() => new Promise(() => {}));
+		root().querySelector<HTMLButtonElement>('.lightbox-pdf .lightbox-retry')!.click();
+		flushSync();
+		expect(root().querySelector('.attachment-pdf-preview')).toBeNull();
+		expect(press('PageDown')).toBe(false);
+		expect(press('PageUp')).toBe(false);
+	});
+
+	it('re-key: a ready PDF replaced by another is not pageable through the destroyed instance', async () => {
+		mountViewer({ images: [pdfImage(IMG_B, 'b.pdf'), pdfImage(IMG_C, 'c.pdf')] });
+		await settleAsync();
+		expect(status()).toBe('Page 1 of 3');
+		pdfFetch.mockImplementation(() => new Promise(() => {}));
+		root().querySelector<HTMLButtonElement>('.lightbox-nav.next')!.click();
+		flushSync();
+		expect(root().querySelector('.attachment-pdf-preview')).toBeNull();
+		expect(press('PageDown')).toBe(false);
+	});
+
+	it('U6: PageUp/PageDown turn the PDF pages, and only on a ready PDF, never with a modifier', async () => {
+		mountViewer({ images: [pdfImage(IMG_A), { ...image(IMG_B, 'p.png'), size_bytes: 128 }] });
+		await settleAsync();
+		expect(press('PageDown')).toBe(true);
+		expect(status()).toBe('Page 2 of 3');
+		expect(press('PageDown')).toBe(true);
+		expect(status()).toBe('Page 3 of 3');
+		expect(press('PageUp')).toBe(true);
+		expect(status()).toBe('Page 2 of 3');
+		// A modified press is left to the browser.
+		expect(press('PageDown', { ctrlKey: true })).toBe(false);
+		expect(status()).toBe('Page 2 of 3');
+		// The gallery did not move.
+		expect(root().querySelector('.lightbox-pdf-scroll')).not.toBeNull();
+		// On a raster the keys are not claimed.
+		root().querySelector<HTMLButtonElement>('.lightbox-nav.next')!.click();
+		await settleAsync();
+		expect(press('PageDown')).toBe(false);
 	});
 });
 

@@ -16,12 +16,13 @@
  *     token that issued it AND the currently-active id; a stale one is dropped
  *     without touching state.
  *  3. **We own the size bound.** The browser will happily stream a 20 MB "log
- *     file" renamed `.md` into memory. See the two gates below — with one honest
- *     limit: the non-streaming fallback in {@link readBounded} measures AFTER
- *     buffering, so on an environment with no `ReadableStream` the bytes are
- *     held before they are refused. It bounds what is RENDERED everywhere; it
- *     bounds what is HELD only on the streaming path, which is every real
- *     browser. jsdom is the fallback's practical audience.
+ *     file" renamed `.md` into memory. See the two gates below. The
+ *     response gate is the shared reader in boundedBytes.ts: it refuses a
+ *     declared Content-Length over the cap before reading, streams otherwise,
+ *     and has NO whole-buffer fallback (a body that is not a stream is an
+ *     error). One honest limit: the chunk that crosses the cap is already in
+ *     memory when it is refused, so peak memory is the cap plus one network
+ *     chunk, not the cap exactly.
  *
  * WHY FETCHING IS SAFE FOR TYPES THE SERVER WILL NOT INLINE. `text/markdown` is
  * served `Content-Disposition: attachment` (`internal/attachments/mime.go`'s
@@ -51,6 +52,7 @@
 import { attachmentDownloadUrl } from '$lib/markdown/attachments';
 import { withRequestDeadline } from '$lib/api/client';
 import { canPreviewAsText, canPreviewAsTable, TEXT_PREVIEW_MAX_BYTES, TABLE_PREVIEW_MAX_BYTES } from '$lib/attachments/display';
+import { readBoundedText } from './boundedBytes';
 import type { LightboxImage } from './events';
 
 export type TextLoadPhase =
@@ -94,49 +96,6 @@ interface ActiveLoad {
 	img: LightboxImage;
 	wsSlug: string;
 	controller: AbortController;
-}
-
-/**
- * Read a response body, refusing more than `max` bytes.
- *
- * Streams so an oversize body is abandoned mid-flight rather than buffered and
- * then measured — the point is not to hold 20 MB in memory long enough to
- * decide we did not want it.
- *
- * THE FALLBACK IS WEAKER, AND KNOWINGLY SO. Where the body is not a readable
- * stream (jsdom, and any environment without `getReader`) this reads the whole
- * response and then measures it: the RENDER bound still holds, the MEMORY bound
- * does not. Stated rather than papered over, because the module header claims
- * to own the size bound and that claim is only fully true on the streaming path
- * (codex R1 #2). Every browser this ships to has streams; the fallback's real
- * audience is the test environment.
- *
- * Returns `null` when the bound is exceeded.
- */
-async function readBounded(response: Response, max: number): Promise<string | null> {
-	const body = response.body;
-	if (!body || typeof body.getReader !== 'function') {
-		const whole = await response.text();
-		// Byte length, not string length: the bound is a byte bound, and a
-		// multi-byte document would otherwise be measured short.
-		return new TextEncoder().encode(whole).length > max ? null : whole;
-	}
-	const reader = body.getReader();
-	const decoder = new TextDecoder();
-	let seen = 0;
-	let out = '';
-	for (;;) {
-		const { done, value } = await reader.read();
-		if (done) break;
-		seen += value?.byteLength ?? 0;
-		if (seen > max) {
-			await reader.cancel();
-			return null;
-		}
-		out += decoder.decode(value, { stream: true });
-	}
-	out += decoder.decode();
-	return out;
 }
 
 export function createViewerTextLoader(): ViewerTextLoader {
@@ -199,7 +158,7 @@ export function createViewerTextLoader(): ViewerTextLoader {
 					async (signal) => {
 						const res = await fetch(attachmentDownloadUrl(a.wsSlug, id), { signal });
 						if (!res.ok) throw new Error(`HTTP ${res.status}`);
-						return await readBounded(res, maxBytes);
+						return await readBoundedText(res, maxBytes);
 					},
 					{ idempotent: true, signal: a.controller.signal }
 				);

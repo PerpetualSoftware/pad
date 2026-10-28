@@ -26,14 +26,14 @@ function entry(over: Partial<LightboxImage> = {}): LightboxImage {
 	};
 }
 
-/** A Response whose body is NOT a stream — exercises the `response.text()` leg. */
+/** A real Response over a real ReadableStream (there is no non-stream fallback to exercise). */
 function plainResponse(body: string, ok = true, status = 200): Response {
-	return {
-		ok,
-		status,
-		body: null,
-		text: async () => body
-	} as unknown as Response;
+	return new Response(body, { status: ok ? status : status === 200 ? 500 : status });
+}
+
+/** A Response whose body is absent: the shared reader refuses it as an error. */
+function bodylessResponse(): Response {
+	return { ok: true, status: 200, body: null, text: async () => 'whole' } as unknown as Response;
 }
 
 /**
@@ -212,7 +212,7 @@ describe('createViewerTextLoader', () => {
 		expect(loader.oversizeBytes).toBeNull();
 	});
 
-	it('measures the bound in BYTES, not characters, on the non-streaming leg', async () => {
+	it('measures the bound in BYTES, not characters, on a real stream', async () => {
 		// A multi-byte document just under the cap in characters but over it in
 		// bytes must be refused. `String.length` would admit it.
 		const chars = Math.floor(TEXT_PREVIEW_MAX_BYTES / 2) + 5; // 2 bytes each
@@ -271,6 +271,29 @@ describe('createViewerTextLoader', () => {
 			expect(loader.text).toBe('');
 		}
 	);
+
+	it('a missing body is the error phase, not a buffered read', async () => {
+		fetchMock.mockResolvedValue(bodylessResponse());
+		const loader = createViewerTextLoader();
+		loader.load(entry({ size_bytes: null }), 'ws');
+		await settle();
+		expect(loader.phase).toBe('error');
+		expect(loader.text).toBe('');
+	});
+
+	it('a declared Content-Length over the cap refuses BEFORE reading', async () => {
+		const stream = streamedResponse('x'.repeat(64), 8);
+		(stream.response as unknown as { headers: Headers }).headers = new Headers({
+			'content-length': String(TEXT_PREVIEW_MAX_BYTES + 1)
+		});
+		fetchMock.mockResolvedValue(stream.response);
+		const loader = createViewerTextLoader();
+		loader.load(entry({ size_bytes: null }), 'ws');
+		await settle();
+		expect(loader.phase).toBe('too-large');
+		expect(loader.text).toBe('');
+		expect(stream.state.reads).toBe(0);
+	});
 
 	// ── Staleness and cancellation ────────────────────────────────────────────
 

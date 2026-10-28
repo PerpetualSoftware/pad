@@ -3,14 +3,13 @@ import { browserLogin, seedDoc } from './lib/collab-helpers';
 import type { APIRequestContext, Page } from '@playwright/test';
 import type { SuiteFixture } from './fixtures';
 import {
-	REAL_PDF,
+	REAL_ZIP,
 	VIEWER,
 	VIEWER_FALLBACK,
 	VIEWER_FALLBACK_NAME,
 	VIEWER_FALLBACK_NOTE,
 	viewerDialog,
-	viewerDownloadAnchor,
-	viewerOpenAnchor
+	viewerDownloadAnchor
 } from './lib/attachment-viewer';
 
 /**
@@ -81,19 +80,15 @@ async function uploadTo(
  * Upload a NON-image bound to `itemId`, of a type NO RENDERER CLAIMS — so the
  * surface it opens is the no-bytes fallback arm.
  *
- * WAS `text/plain` (IDEA-2712). That stopped being a fallback fixture when the
- * viewer gained an in-app text renderer: a `.txt` now previews, which is the
- * point of that change, so a test asserting "No preview available" over one
- * would be asserting the bug. PDF is the replacement because it keeps every
- * property this fixture was chosen for — allowlisted, non-image, and
- * `canBrowserPreview`, so the toolbar still offers Open in new tab — while
- * remaining unclaimed by any renderer (`'pdf'` is PLAN-2393's reserved slot,
- * not built).
+ * WAS `text/plain` (IDEA-2712), THEN PDF. Each stopped being a fallback fixture
+ * when the viewer gained its in-app renderer (text in IDEA-2712, PDF in
+ * TASK-4075): a `.txt` or a PDF now previews, which is the point of those
+ * changes, so a test asserting "No preview available" over one would be
+ * asserting the bug. A ZIP is the archive the previous note named as the next
+ * candidate. The cost is that an archive is not `canBrowserPreview`, so this
+ * fixture no longer carries an Open-in-new-tab action; that assertion moved to
+ * `attachment-pdf-preview.spec.ts`, where the PDF arm keeps it.
  *
- * WHEN PLAN-2393 BUILDS THAT SLOT, THESE TESTS WILL GO RED, AND THAT IS THE
- * DESIGN. A PDF will then preview and stop being a fallback fixture, exactly as
- * text did here. The failure is the signal to pick the next type no renderer
- * claims — an archive is the obvious candidate — not to weaken the assertion.
  * A fallback-arm test is only ever as durable as the emptiness of the renderer
  * registry, so it is written to fail loudly when that changes rather than to
  * survive by asserting less.
@@ -113,7 +108,7 @@ async function uploadFallbackFileTo(
 		{
 			headers: { Authorization: `Bearer ${fixture.apiToken}` },
 			multipart: {
-				file: { name: filename, mimeType: 'application/pdf', buffer: REAL_PDF }
+				file: { name: filename, mimeType: 'application/zip', buffer: REAL_ZIP }
 			}
 		}
 	);
@@ -360,7 +355,7 @@ test.describe('item attachment strip', () => {
 		await browserLogin(page);
 
 		const doc = await seedDoc(fixture, request, 'Surface wiring');
-		await uploadFallbackFileTo(fixture, request, doc.id, 'notes.pdf');
+		await uploadFallbackFileTo(fixture, request, doc.id, 'notes.zip');
 
 		await page.goto(itemUrl(fixture, doc.slug));
 		const tile = page.locator(TILE).first();
@@ -369,24 +364,22 @@ test.describe('item attachment strip', () => {
 		// A file tile is a real button naming its action, not a download link —
 		// the whole point of the change (DR-1, DR-12).
 		await expect(tile).toHaveJSProperty('tagName', 'BUTTON');
-		await expect(tile).toHaveAttribute('aria-label', /^Options for notes\.pdf/);
+		await expect(tile).toHaveAttribute('aria-label', /^Options for notes\.zip/);
 
 		await tile.click();
 		// The converged surface opens — a role="dialog" naming the file, NOT a menu.
-		const surface = viewerDialog(page, 'notes.pdf');
+		const surface = viewerDialog(page, 'notes.zip');
 		await expect(surface).toHaveCount(1);
 		await expect(page.locator('[role="menu"]')).toHaveCount(0);
 		// The no-bytes fallback arm: the family icon, the file's name, an honest
 		// "No preview available" — no <img>, no bytes for a non-raster type.
 		await expect(page.locator(VIEWER_FALLBACK)).toBeVisible();
-		await expect(page.locator(VIEWER_FALLBACK_NAME)).toHaveText('notes.pdf');
+		await expect(page.locator(VIEWER_FALLBACK_NAME)).toHaveText('notes.zip');
 		await expect(page.locator(VIEWER_FALLBACK_NOTE)).toHaveText('No preview available');
 		await expect(page.locator(`${VIEWER} .lightbox-image`)).toHaveCount(0);
 		// The toolbar carries the real Download anchor with the filename — the DR-16
-		// save semantics a plain navigation would lose. PDF is browser-previewable,
-		// so Open in new tab is offered too.
-		await expect(viewerDownloadAnchor(page)).toHaveAttribute('download', 'notes.pdf');
-		await expect(viewerOpenAnchor(page)).toBeVisible();
+		// save semantics a plain navigation would lose.
+		await expect(viewerDownloadAnchor(page)).toHaveAttribute('download', 'notes.zip');
 
 		await page.keyboard.press('Escape');
 		await expect(page.locator(VIEWER)).toHaveCount(0);
@@ -399,7 +392,7 @@ test.describe('item attachment strip', () => {
 		for (const key of ['Enter', ' ']) {
 			await tile.focus();
 			await page.keyboard.press(key);
-			await expect(viewerDialog(page, 'notes.pdf')).toHaveCount(1);
+			await expect(viewerDialog(page, 'notes.zip')).toHaveCount(1);
 			await expect(page.locator(VIEWER)).toHaveCount(1);
 			await expect(page.locator('[role="menu"]')).toHaveCount(0);
 			await page.keyboard.press('Escape');
@@ -432,9 +425,9 @@ test.describe('item attachment strip', () => {
 		// longer can: it previews in-app since IDEA-2712.
 		await dropFileIntoEditor(
 			page,
-			'handbook.pdf',
-			REAL_PDF.toString('base64'),
-			'application/pdf'
+			'handbook.zip',
+			REAL_ZIP.toString('base64'),
+			'application/zip'
 		);
 
 		const chip = page.locator('.editor-content .ProseMirror button.file-chip').first();
@@ -445,11 +438,11 @@ test.describe('item attachment strip', () => {
 
 		await chip.click();
 		// The same converged surface, addressed by the file's own name.
-		await expect(viewerDialog(page, 'handbook.pdf')).toHaveCount(1);
+		await expect(viewerDialog(page, 'handbook.zip')).toHaveCount(1);
 		await expect(page.locator('[role="menu"]')).toHaveCount(0);
-		await expect(page.locator(VIEWER_FALLBACK_NAME)).toHaveText('handbook.pdf');
+		await expect(page.locator(VIEWER_FALLBACK_NAME)).toHaveText('handbook.zip');
 		// The Download anchor carries the filename — even though a dropped chip's
 		// metadata may be partial, the download attribute is never dropped (DR-16).
-		await expect(viewerDownloadAnchor(page)).toHaveAttribute('download', 'handbook.pdf');
+		await expect(viewerDownloadAnchor(page)).toHaveAttribute('download', 'handbook.zip');
 	});
 });
