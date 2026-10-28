@@ -134,9 +134,16 @@
 		void tick().then(() => composer?.focus());
 	}
 
+	// Retry and Discard unmount with the status flip, so focus would fall to body (r6 L4).
+	function refocusComposer() {
+		void tick().then(() => composer?.focus());
+	}
+
+	// The reply bar goes only once the delete went through, and only if it still quotes this row (r6 L3).
 	async function deleteMessage(m: ChatMessage) {
-		if (replyTo?.seq === m.seq) replyTo = null;
-		if (!(await thread.remove(m.seq)) && thread.status === 'ready') {
+		if (await thread.remove(m.seq)) {
+			if (replyTo?.seq === m.seq) replyTo = null;
+		} else if (thread.status === 'ready') {
 			toastStore.show("Couldn't delete that message. Try again.", 'error');
 		}
 	}
@@ -213,8 +220,14 @@
 					{:else}
 						<PendingBubble
 							pending={item.pending}
-							onRetry={(k) => void thread.retry(k)}
-							onDiscard={(k) => thread.discard(k)}
+							onRetry={(k) => {
+								void thread.retry(k);
+								refocusComposer();
+							}}
+							onDiscard={(k) => {
+								thread.discard(k);
+								refocusComposer();
+							}}
 						/>
 					{/if}
 				{:else}
@@ -235,14 +248,17 @@
 					{/if}
 				</div>
 			{/if}
-			{#each thread.detached as m (m.seq)}
-				<MessageBubble
-					message={m}
-					onJumpToQuote={jumpToQuote}
-					onReply={startReply}
-					onDelete={deleteMessage}
-				/>
-			{/each}
+			<!-- A flex column like .messages, so .bubble.mine { align-self: flex-end } applies (r6 L1). -->
+			<div class="detached">
+				{#each thread.detached as m (m.seq)}
+					<MessageBubble
+						message={m}
+						onJumpToQuote={jumpToQuote}
+						onReply={startReply}
+						onDelete={deleteMessage}
+					/>
+				{/each}
+			</div>
 			<div class="sentinel" bind:this={sentinel} aria-hidden="true"></div>
 		</div>
 		{#if n !== null}
@@ -286,7 +302,8 @@
 		overflow-y: auto;
 		padding-bottom: var(--space-3);
 	}
-	.messages {
+	.messages,
+	.detached {
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-2);
