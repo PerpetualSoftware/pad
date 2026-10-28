@@ -221,7 +221,11 @@
 						<PendingBubble
 							pending={item.pending}
 							onRetry={(k) => {
-								void thread.retry(k);
+								const body = item.pending.body;
+								// A refused Retry discards its bubble: the text comes back with its notice, as for a refused send (r7 M1).
+								void thread.retry(k).then((outcome) => {
+									if (outcome !== 'sent' && outcome !== 'failed' && outcome !== 'stale') composer?.restore(body, outcome);
+								});
 								refocusComposer();
 							}}
 							onDiscard={(k) => {

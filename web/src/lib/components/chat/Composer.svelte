@@ -44,6 +44,12 @@
 		box?.focus();
 	}
 
+	/** A refused send's text comes back, ahead of anything typed since, with its notice. The page uses it for a refused Retry too (r7 M1). */
+	export function restore(body: string, outcome: Exclude<SendOutcome, 'sent' | 'failed' | 'stale'>) {
+		text = text ? `${body}\n${text}` : body;
+		if (outcome !== 'empty') notice = NOTICE[outcome];
+	}
+
 	let bytes = $derived(utf8Bytes(text));
 	let block = $derived(validateDraft(text, replyTo?.seq, PLACEHOLDER_OP_KEY));
 	let showCount = $derived(bytes > MAX_BODY_BYTES * 0.75);
@@ -85,8 +91,7 @@
 		}
 		if (outcome === 'sent' || outcome === 'failed') return;
 		// A definite refusal: the text comes back, ahead of anything typed since.
-		text = text ? `${body}\n${text}` : body;
-		if (outcome !== 'empty') notice = NOTICE[outcome];
+		restore(body, outcome);
 	}
 </script>
 

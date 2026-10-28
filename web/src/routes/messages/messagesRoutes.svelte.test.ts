@@ -6,6 +6,7 @@
 // the "N new" divider and the Row H states, and marks read only from its bottom
 // sentinel.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { NOTICE } from '$lib/chat/compose';
 import { render, cleanup } from '@testing-library/svelte';
 import { createRawSnippet, tick, flushSync } from 'svelte';
 
@@ -31,6 +32,9 @@ const h = vi.hoisted(() => ({
 class NotFound extends Error {
 	code = 'not_found';
 }
+class ReplyDeleted extends Error {
+	code = 'reply_target_deleted';
+}
 
 vi.mock('$lib/api/client', () => ({
 	api: {
@@ -46,7 +50,7 @@ vi.mock('$lib/api/client', () => ({
 		sessions: { list: h.sessions }
 	},
 	isNotFoundError: (e: unknown) => e instanceof NotFound,
-	isReplyTargetDeletedError: () => false,
+	isReplyTargetDeletedError: (e: unknown) => e instanceof ReplyDeleted,
 	isReplyTargetNotFoundError: () => false
 }));
 vi.mock('$lib/stores/auth.svelte', () => ({
@@ -847,5 +851,24 @@ describe('/messages/[n] thread write path (TASK-4044 PR 3b)', () => {
 		btn.click();
 		await settle();
 		expect(document.activeElement).toBe(box(container));
+	});
+
+	// r7 M1: red with the page dropping Retry's outcome. A refused Retry discards the bubble,
+	// so without the restore its text was gone with no notice.
+	it('a Retry refused because the quoted message was deleted puts the text back with its notice', async () => {
+		const { container } = await openThread();
+		h.sendMessage.mockRejectedValueOnce(new Error('network'));
+		box(container).value = 'kept on refusal';
+		box(container).dispatchEvent(new Event('input', { bubbles: true }));
+		await settle();
+		sendBtn(container).click();
+		await settle();
+		expect(box(container).value).toBe('');
+		h.sendMessage.mockRejectedValueOnce(new ReplyDeleted('409'));
+		([...container.querySelectorAll('article.pending button')].find((b) => b.textContent === 'Retry') as HTMLButtonElement).click();
+		await settle();
+		expect(container.querySelector('article.pending'), 'the refused bubble is discarded').toBeNull();
+		expect(box(container).value).toBe('kept on refusal');
+		expect(container.textContent).toContain(NOTICE.reply_deleted);
 	});
 });
