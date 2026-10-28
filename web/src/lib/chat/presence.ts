@@ -15,7 +15,15 @@ const MAX_AGENT_NAME_RUNES = 64;
 // property. JS String.trim() differs in one place: it also trims U+FEFF (BOM),
 // which Go keeps. BUG-4092 (TASK-4044).
 export function trimSpace(s: string): string {
-	return s.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, '');
+	// An index scan from both ends: the old `^ws+|ws+$` regex was quadratic on an
+	// interior whitespace run, and the composer runs this per keystroke (r6 B2-M1).
+	const isWs = (c: string) => /\p{White_Space}/u.test(c);
+	const cps = Array.from(s);
+	let lo = 0;
+	let hi = cps.length;
+	while (lo < hi && isWs(cps[lo])) lo++;
+	while (hi > lo && isWs(cps[hi - 1])) hi--;
+	return cps.slice(lo, hi).join('');
 }
 
 /**
