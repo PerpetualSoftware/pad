@@ -231,6 +231,30 @@ function paint(page: Page, selector = CANVAS): Promise<Paint> {
 	}, selector);
 }
 
+/**
+ * Click the page canvas at the fraction (fx, fy) of its size, after scrolling that
+ * point to the middle of the scroll region, and first prove the point IS the canvas
+ * (TASK-4075 r6a-L2): a click off the canvas or below the viewport hits nothing, and
+ * every negative asserted after it would then hold vacuously.
+ */
+async function clickCanvasAt(page: Page, fx: number, fy: number): Promise<void> {
+	await page.locator(CANVAS).evaluate((el, fy) => {
+		const scroller = el.closest('.attachment-pdf-scroll') as HTMLElement;
+		const r = el.getBoundingClientRect();
+		const s = scroller.getBoundingClientRect();
+		scroller.scrollTop += r.top + r.height * fy - (s.top + s.height / 2);
+	}, fy);
+	const box = (await page.locator(CANVAS).boundingBox())!;
+	const x = box.x + box.width * fx;
+	const y = box.y + box.height * fy;
+	const onCanvas = await page.evaluate(
+		([x, y]) => document.elementFromPoint(x, y)?.matches('.lightbox-pdf canvas') ?? false,
+		[x, y]
+	);
+	expect(onCanvas, `the click point (${fx}, ${fy}) is on the canvas, in view`).toBe(true);
+	await page.mouse.click(x, y);
+}
+
 /** Wait for the current page to be painted, not merely mounted. */
 async function painted(page: Page, min = 500): Promise<Paint> {
 	await expect.poll(async () => (await paint(page)).ink, { timeout: 15_000 }).toBeGreaterThan(min);
@@ -356,10 +380,12 @@ test.describe('attachment viewer — in-pane PDF (TASK-4075), desktop', () => {
 		const url = page.url();
 		const navigationsBefore = inst.navigations.length;
 		const requestsBefore = inst.requests.length;
-		// Click where the URI link and the JavaScript link sit on the page.
-		const box = (await page.locator(CANVAS).boundingBox())!;
-		await page.mouse.click(box.x + box.width * 0.4, box.y + box.height * 0.45);
-		await page.mouse.click(box.x + box.width * 0.4, box.y + box.height * 0.87);
+		// Click the CENTRE of each link's rect (buildHostilePdf, 612 x 792 pt page): the URI
+		// link [40 300 440 600] is x 0.39, y 0.43; the JavaScript link [40 100 440 200] is
+		// x 0.39, y 0.81. The proof stops at the source pins: the viewer has no annotation
+		// layer, so these clicks are inert by construction.
+		await clickCanvasAt(page, 0.39, 0.43);
+		await clickCanvasAt(page, 0.39, 0.81);
 		await page.waitForTimeout(500);
 		expect(inst.dialogs).toEqual([]);
 		expect(inst.popups).toEqual([]);
@@ -573,7 +599,7 @@ test.describe('attachment viewer — in-pane PDF (TASK-4075), desktop', () => {
 		await page.keyboard.press('ArrowLeft');
 		await expect(viewerDialog(page, 'one.pdf')).toHaveCount(1);
 		await expect(page.locator(STATUS)).toHaveText('Page 2 of 2');
-		});
+	});
 });
 
 test.describe('attachment viewer — in-pane PDF (TASK-4075), phone sheet', () => {

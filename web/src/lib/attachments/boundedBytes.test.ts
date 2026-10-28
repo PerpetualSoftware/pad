@@ -32,6 +32,18 @@ describe('readBoundedBytes', () => {
 		expect(state.reads).toBe(1);
 	});
 
+	it('past max returns null even when the reader\'s cancel REJECTS (r6a2-L1)', async () => {
+		const { response, state } = streamed([new Uint8Array(1000)]);
+		const reader = response.body!.getReader();
+		reader.cancel = async () => {
+			state.cancelled = true;
+			throw new Error('stream errored');
+		};
+		(response.body as unknown as { getReader: () => typeof reader }).getReader = () => reader;
+		expect(await readBoundedBytes(response, 100)).toBeNull();
+		expect(state.cancelled).toBe(true);
+	});
+
 	it('a declared Content-Length over max refuses before any read', async () => {
 		const { response, state } = streamed([new Uint8Array(5)], { 'content-length': '101' });
 		expect(await readBoundedBytes(response, 100)).toBeNull();

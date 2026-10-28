@@ -60,7 +60,13 @@ export async function readBoundedBytes(response: Response, max: number): Promise
 		if (done) break;
 		seen += value?.byteLength ?? 0;
 		if (seen > max) {
-			await reader.cancel();
+			// Best effort, as above: an errored stream rejects the cancel, and the
+			// over-cap result must stay "too large" whatever the release does.
+			try {
+				await reader.cancel();
+			} catch {
+				// The refusal does not depend on the release.
+			}
 			return null;
 		}
 		if (value) chunks.push(value);

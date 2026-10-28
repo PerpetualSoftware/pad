@@ -173,6 +173,28 @@ describe('createViewerBytesLoader', () => {
 		expect(loader.bytes).toBeNull();
 	});
 
+	it('RESPONSE gate: past the cap is too-large even when the stream REJECTS the cancel (r6a2-L1)', async () => {
+		// A real stream whose release fails, as an errored fetch body's does: the
+		// over-cap result must not turn into the generic error.
+		const state = { cancelAttempts: 0 };
+		const body = new ReadableStream<Uint8Array>({
+			pull(c) {
+				c.enqueue(new Uint8Array(1 << 20));
+			},
+			cancel() {
+				state.cancelAttempts++;
+				return Promise.reject(new Error('stream errored'));
+			}
+		});
+		fetchMock.mockResolvedValue({ ok: true, status: 200, body } as unknown as Response);
+		const loader = createViewerBytesLoader();
+		loader.load(entry({ size_bytes: null }), 'ws');
+		for (let i = 0; i < 40 && loader.phase === 'loading'; i++) await settle();
+		expect(state.cancelAttempts).toBe(1);
+		expect(loader.phase).toBe('too-large');
+		expect(loader.bytes).toBeNull();
+	});
+
 	it('RESPONSE gate: a declared Content-Length over the cap refuses BEFORE reading', async () => {
 		const stream = streamedResponse(pdfBytes(100), 10);
 		(stream.response as unknown as { headers: Headers }).headers = new Headers({
