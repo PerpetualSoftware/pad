@@ -44,12 +44,19 @@ func (s *Server) handleDismissUI(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Authentication required")
 		return
 	}
-	// chi hands back the still-escaped segment; a tz-mismatch key carries
-	// slashes (America/New_York) that a client sends as %2F.
-	key, err := url.PathUnescape(chi.URLParam(r, "key"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "bad_request", "Unknown dismissal key")
-		return
+	// A tz-mismatch key carries slashes (America/New_York) that a client sends
+	// as %2F. chi routes on r.URL.RawPath when net/url kept one, and then hands
+	// back the still-escaped segment. When RawPath is empty (the decoded path
+	// re-encodes to the request's own form, as a double-encoded %252F does) it
+	// routes on the decoded Path, and unescaping again would read %252F as a
+	// slash (TASK-4101 PR1 ruling 1431c980 item 3).
+	key := chi.URLParam(r, "key")
+	if r.URL.RawPath != "" {
+		var err error
+		if key, err = url.PathUnescape(key); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", "Unknown dismissal key")
+			return
+		}
 	}
 	if !models.IsUIDismissalKey(key) {
 		writeError(w, http.StatusBadRequest, "bad_request", "Unknown dismissal key")

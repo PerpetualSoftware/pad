@@ -3,13 +3,16 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 	_ "time/tzdata"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/needs"
 )
 
 // TASK-4101: users.timezone. The zone is a user setting; an unset one computes
@@ -153,12 +156,105 @@ func TestTASK4101_TZMismatchDismissals(t *testing.T) {
 			}
 		}
 		over := "tz-mismatch:Pacific/Auckland|Africa/Cairo"
-		if r := put(over); r.code != http.StatusBadRequest {
-			t.Fatalf("pair #%d: %d %s, want 400", models.MaxTZMismatchDismissals+1, r.code, r.body)
+		if r := put(over); r.code != http.StatusBadRequest || !strings.Contains(r.body, `"code":"too_many_dismissals"`) {
+			t.Fatalf("pair #%d: %d %s, want 400 too_many_dismissals", models.MaxTZMismatchDismissals+1, r.code, r.body)
 		}
 		if r := put(pair); r.code != 200 {
 			t.Errorf("re-dismissing an existing pair at the cap: %d, want 200", r.code)
 		}
+	})
+}
+
+func TestTASK4101_DismissalKeyUnescape(t *testing.T) {
+	bothBackends(t, func(t *testing.T, srv *Server) {
+		u, token := tz4101User(t, srv, "tz4101escape")
+		const pair = "tz-mismatch:America/New_York|Europe/London"
+		for _, tc := range []struct {
+			name, key string
+			status    int
+		}{
+			{"single encoded", "tz-mismatch:America%2FNew_York%7CEurope%2FLondon", http.StatusOK},
+			{"double encoded", "tz-mismatch:America%252FNew_York%7CEurope%252FLondon", http.StatusBadRequest},
+			{"malformed escape", "tz-mismatch:America%zzNew_York%7CEurope%2FLondon", http.StatusBadRequest},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				// Build a valid request first: net/url refuses malformed escapes before
+				// they reach the router. RawPath exercises the handler's error branch.
+				req := httptest.NewRequest("PUT", "/api/v1/me/ui-dismissals/"+url.PathEscape(pair), nil)
+				if tc.name == "malformed escape" {
+					req.URL.RawPath = "/api/v1/me/ui-dismissals/" + tc.key
+				} else {
+					req = httptest.NewRequest("PUT", "/api/v1/me/ui-dismissals/"+tc.key, nil)
+				}
+				req.AddCookie(&http.Cookie{Name: "pad_session", Value: token})
+				csrf := strings.Repeat("a", 64)
+				req.AddCookie(&http.Cookie{Name: "pad_csrf", Value: csrf})
+				req.Header.Set("X-CSRF-Token", csrf)
+				rr := httptest.NewRecorder()
+				srv.ServeHTTP(rr, req)
+				if rr.Code != tc.status {
+					t.Fatalf("status = %d, want %d: %s", rr.Code, tc.status, rr.Body.String())
+				}
+				keys, err := srv.store.ListUIDismissals(u.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(keys) != 1 || keys[0] != pair {
+					t.Fatalf("stored keys = %v, want decoded pair only", keys)
+				}
+			})
+		}
+	})
+}
+
+// CONVE-19: the HTTP scorer must receive the viewer's zone. The cursor pins
+// as_of to 23:30 UTC (tomorrow in Kiritimati) using the existing paging seam.
+func TestTASK4101_NeedsOverdueUsesViewerZone(t *testing.T) {
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		u, token := tz4101User(t, srv, "tz4101needs")
+		zone := "Pacific/Kiritimati"
+		if _, err := srv.store.UpdateUser(u.ID, models.UserUpdate{Timezone: &zone}); err != nil {
+			t.Fatal(err)
+		}
+		f := newNfx(t, srv)
+		ws := f.workspace("Timezone needs", f.user("tz4101owner"))
+		f.member(ws, u, "editor")
+		// An asks collection that declares the due date, so the row is on the
+		// viewer's page and the deadline scorer has a date to read.
+		yes := true
+		coll, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{Name: "Asks", AwaitsHuman: &yes, Schema: `{"fields":[{"key":"status","label":"Status","type":"select","options":["open","done"],"default":"open","required":true},{"key":"due_date","label":"Due","type":"date"}]}`})
+		if err != nil {
+			t.Fatal(err)
+		}
+		it, err := srv.store.CreateItem(ws.ID, coll.ID, models.ItemCreate{Title: "Due today UTC", AssignedUserID: &u.ID, Fields: `{"status":"open","due_date":"2026-03-10"}`})
+		if err != nil {
+			t.Fatal(err)
+		}
+		now := time.Date(2026, 3, 10, 23, 30, 0, 0, time.UTC)
+		// created before the pinned as_of, or the row is not yet waiting at it
+		f.setCreated(it, now.AddDate(0, 0, -2))
+		cursor := needs.NewCursor(needs.SortAge, needsViewActive, "", now, &needs.Row{ItemID: "start", WaitingSince: nfxT0, Item: needs.ItemInfo{CreatedAt: nfxT0}}).Encode()
+		get := func(want string) {
+			rr := doRequestWithCookie(srv, "GET", "/api/v1/me/needs?cursor="+url.QueryEscape(cursor), nil, token)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("needs: %d %s", rr.Code, rr.Body.String())
+			}
+			var resp needsResponse
+			parseJSON(t, rr, &resp)
+			if len(resp.Rows) != 1 || resp.Rows[0].Item.Ref != it.Ref {
+				t.Fatalf("needs rows: %s", rr.Body.String())
+			}
+			score := resp.Rows[0].Importance
+			if score == nil || !slices.Contains(score.Why, want) {
+				t.Fatalf("zone %s: importance = %+v, want %s", zone, score, want)
+			}
+		}
+		get(whyOverdue)
+		zone = "UTC"
+		if _, err := srv.store.UpdateUser(u.ID, models.UserUpdate{Timezone: &zone}); err != nil {
+			t.Fatal(err)
+		}
+		get(whyDueToday)
 	})
 }
 
