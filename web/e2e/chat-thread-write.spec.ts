@@ -122,6 +122,7 @@ async function e5(page: Page, request: APIRequestContext, fixture: Fixture) {
 	await pick(page, first.seq, 'Reply');
 	await expect(page.locator('.reply')).toContainText('agent line one');
 	await typeAndSend(page, 'a reply');
+	await expect(page.locator('article.pending')).toHaveCount(0); // r6 L2: the POST has been answered before the API read
 	const replied = (await listAll(request, fixture, n)).find((m) => m.body === 'a reply')!;
 	expect(replied.reply_to!.seq).toBe(first.seq);
 	await expect(row(page, replied.seq).locator('.quote-text')).toHaveText(replied.reply_to!.excerpt);
@@ -199,6 +200,11 @@ test('E5c: a send past a gap shows below the Show newer marker while the marker 
 	const m = (await marker.boundingBox())!;
 	const s = (await sent.boundingBox())!;
 	expect(s.y).toBeGreaterThan(m.y);
+	// r6 L1: the own detached row is right-aligned like any own row, not left-aligned and full width.
+	const agentRow = (await page.locator('article.bubble:not(.mine)').last().boundingBox())!;
+	const col = (await page.locator('.scroller').boundingBox())!;
+	expect(s.x).toBeGreaterThan(agentRow.x + 100);
+	expect(col.x + col.width - (s.x + s.width)).toBeLessThan(40);
 	// Under web/test-results/<test dir>/; the gate script copies it to the evidence folder.
 	await page.screenshot({ path: testInfo.outputPath('q3-detached.png') });
 });
