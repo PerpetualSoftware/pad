@@ -381,7 +381,7 @@ export class ChatThread {
 		if (at === 'resolve' && !(win.messages.length && sent.seq < win.messages[0].seq)) win.resolvePending(opKey, sent); // below the window is history (R1)
 		else win.discardPending(opKey);
 		if (at === 'detach') this.detached = [...this.detached.filter((m) => m.seq !== sent.seq), sent].sort((a, b) => a.seq - b.seq);
-		this.#publish(null);
+		if (at === 'moved') this.#publish(null); else this.#publishAfterWrite(); // a detach keeps the window beyond (r6 A-L1)
 	}
 
 	/** Page after_seq from the newest up to the row before `upTo` (bounded), publishing each page. */

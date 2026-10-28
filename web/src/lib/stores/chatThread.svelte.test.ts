@@ -818,6 +818,25 @@ describe('send', () => {
 		expect(pendingOf()).toHaveLength(0);
 	});
 
+	// r6 A-L1 (N34): red with #applyOwn ending in #publish(null) - the replayed row is already
+	// in the window, the re-anchor fetch fails, so hasNewer fell to false and Show newer vanished.
+	it('keeps hasNewer when a replayed answer already in the window detaches after a failed re-anchor', async () => {
+		server.fill(400);
+		server.readSeq = 0;
+		await thread.open(1); // window 1..200, hasNewer
+		expect(thread.hasNewer).toBe(true);
+		h.sendMessage.mockRejectedValueOnce(new Error('timeout'));
+		expect(await thread.send('A')).toBe('failed');
+		const key = (pendingOf()[0] as { pending: { op_key: string } }).pending.op_key;
+		const own = msg(150, { mine: true, author_agent_key: '', author_is_human: true, source: 'web', body: 'A' });
+		h.sendMessage.mockResolvedValueOnce({ message: own, replayed: true, refs: [], refs_truncated: false });
+		h.listMessages.mockRejectedValueOnce(new Error('offline')); // the re-anchor fetch fails
+		expect(await thread.retry(key)).toBe('sent');
+		expect(pendingOf()).toHaveLength(0);
+		expect(thread.hasNewer).toBe(true);
+		expect(thread.messages.at(-1)!.seq).toBe(200);
+	});
+
 	it('discards a failed bubble', async () => {
 		await readyThread();
 		h.sendMessage.mockRejectedValueOnce(new Error('network'));
