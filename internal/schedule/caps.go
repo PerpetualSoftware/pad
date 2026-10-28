@@ -14,10 +14,10 @@ type Limits struct {
 	MaxInstances int           // Between only
 	MaxScan      int64         // FREQ periods between Start and the query point that a call may walk
 	MaxDuration  time.Duration // wall-clock check between occurrences of one call
-	// MaxSteps bounds the rule expander's period-loop steps in one call,
-	// matched or not (TASK-4100 H1). It is what stops a rule that never
-	// matches, or matches only far away, inside a single step of the library.
-	// At the default a call spends well under MaxDuration.
+	// MaxSteps bounds the rule expander's period-loop steps between two
+	// candidates it produces (TASK-4100 H1, r2): the count restarts at every
+	// candidate, so it ends a no-match stretch (CapStall) and nothing else.
+	// Total work is bounded by MaxScan and MaxDuration.
 	MaxSteps int64
 }
 
@@ -50,7 +50,8 @@ type CapKind string
 const (
 	CapWindow    CapKind = "window"    // to-from > MaxWindow; nothing expanded
 	CapInstances CapKind = "instances" // more than MaxInstances occurrences in the window
-	CapScan      CapKind = "scan"      // query point too far from Start, or the rule matches too rarely, for MaxSteps
+	CapScan      CapKind = "scan"      // total work from Start to the query exceeds MaxScan periods; Limit is MaxScan
+	CapStall     CapKind = "stall"     // no generator candidate within MaxSteps library steps; Limit is MaxSteps (TASK-4100 r2)
 	CapTime      CapKind = "time"      // MaxDuration exceeded between two occurrences
 )
 

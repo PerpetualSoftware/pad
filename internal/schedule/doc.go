@@ -47,6 +47,8 @@
 // PROVENANCE.md) because its Next() is unbounded on a no-match stretch: UNTIL
 // is checked only against produced candidates, so a rule that never matches
 // spins inside one call until year 9999 (TASK-4100 H1). The vendored copy
-// carries a step budget (Limits.MaxSteps) that ends the walk with a CapScan.
-// Do not "upgrade" it back to the module: that removes the bound.
+// carries a step budget (Limits.MaxSteps) that restarts at every candidate it
+// produces, so it ends only a no-match stretch, with a CapStall. CapScan is a
+// different bound: the total work from Start to the query exceeds Limits.MaxScan
+// periods. Do not "upgrade" the copy back to the module: that removes the bound.
 package schedule

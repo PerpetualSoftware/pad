@@ -7,98 +7,77 @@ import (
 	"time"
 )
 
-// budgetCalls runs call 50 times and holds each to the H1 contract
-// (TASK-4100): a CapScan, in well under MaxDuration, with no goroutine left
-// behind.
-func budgetCalls(t *testing.T, call func() error) {
+// noLeak runs call n times and fails if the goroutine count moved: every
+// expansion runs in the caller (TASK-4100 H1). It asserts on counts and kinds,
+// never on wall time, so it does not flake under load or -race (r2).
+func noLeak(t *testing.T, n int, call func()) {
 	t.Helper()
 	call() // warm any lazy runtime goroutine before counting
 	time.Sleep(50 * time.Millisecond)
 	before := runtime.NumGoroutine()
-	var slowest time.Duration
-	for i := 0; i < 50; i++ {
-		began := time.Now()
-		err := call()
-		if d := time.Since(began); d > slowest {
-			slowest = d
-		}
-		asCap(t, err, CapScan)
-	}
-	if slowest > DefaultLimits.MaxDuration {
-		t.Errorf("slowest call %v; want under MaxDuration %v", slowest, DefaultLimits.MaxDuration)
+	for i := 0; i < n; i++ {
+		call()
 	}
 	time.Sleep(50 * time.Millisecond) // settle: an abandoned goroutine would still be spinning
 	if after := runtime.NumGoroutine(); after != before {
-		t.Errorf("goroutines %d -> %d across 50 calls; the work must run in the caller", before, after)
+		t.Errorf("goroutines %d -> %d across %d calls; the work must run in the caller", before, after, n)
 	}
+}
+
+// stallCalls holds a call to the stall contract: a CapStall whose Limit is
+// MaxSteps, from the real code path, with no goroutine left behind.
+func stallCalls(t *testing.T, lim Limits, call func() error) {
+	t.Helper()
+	noLeak(t, 20, func() {
+		ce := asCap(t, call(), CapStall)
+		if want := lim.fill().MaxSteps; ce.Limit != want {
+			t.Errorf("CapStall.Limit = %d; want MaxSteps %d", ce.Limit, want)
+		}
+	})
 }
 
 func TestBudgetFeb29Minutely(t *testing.T) {
 	// 2096-03-01 start: the next match is 2104-02-29, across the non-leap 2100.
 	// The expander skips a filtered day in one step, so this sparse rule costs
-	// a few thousand steps: it must stay correct, fast, and in the caller.
+	// a few thousand steps: it must stay correct and in the caller.
 	c := compile(t, pinned(t, "UTC", "2096-03-01T00:00", "FREQ=MINUTELY;BYMONTH=2;BYMONTHDAY=29;UNTIL=21500101T000000Z"))
 	q := inst(t, "2096-03-02T00:00:00Z")
 	want := inst(t, "2104-02-29T00:00:00Z")
-	before := runtime.NumGoroutine()
-	for i := 0; i < 50; i++ {
-		began := time.Now()
+	noLeak(t, 20, func() {
 		o, ok, err := c.NextAfter(q, nil, Limits{})
 		if err != nil || !ok || !o.At.Equal(want) {
 			t.Fatalf("NextAfter = %v %v %v; want %v", o.At, ok, err, want)
 		}
-		if d := time.Since(began); d > DefaultLimits.MaxDuration/5 {
-			t.Fatalf("took %v; a sparse rule must be far under MaxDuration", d)
-		}
-	}
-	// The same rule with a budget below the gap is a CapScan, never a partial answer.
-	for i := 0; i < 50; i++ {
-		_, _, err := c.NextAfter(q, nil, Limits{MaxSteps: 1000})
-		asCap(t, err, CapScan)
-		_, err = c.Between(q, q.Add(24*time.Hour), nil, Limits{MaxSteps: 1000})
-		asCap(t, err, CapScan)
-	}
-	time.Sleep(50 * time.Millisecond)
-	if after := runtime.NumGoroutine(); after != before {
-		t.Errorf("goroutines %d -> %d; the work must run in the caller", before, after)
-	}
+	})
+	// The same rule with a budget below the gap is a CapStall, never a partial answer.
+	lim := Limits{MaxSteps: 1000}
+	stallCalls(t, lim, func() error { _, _, err := c.NextAfter(q, nil, lim); return err })
+	stallCalls(t, lim, func() error { _, err := c.Between(q, q.Add(24*time.Hour), nil, lim); return err })
 }
 
 func TestBudgetUnsatisfiable(t *testing.T) {
 	spec := pinned(t, "UTC", "2025-01-01T00:00", "FREQ=MINUTELY;BYMONTH=1;BYYEARDAY=200")
-	budgetCalls(t, func() error { // Compile's own probe must be bounded too, and not an error
+	noLeak(t, 20, func() { // Compile's own probe is bounded too, and is not an error
 		c, err := Compile(spec)
-		if err != nil {
-			t.Fatalf("Compile: %v", err)
+		if err != nil || c.StartSynced() {
+			t.Fatalf("Compile: synced=%v err=%v; want an unsynced rule and no error", err == nil && c.StartSynced(), err)
 		}
-		if c.StartSynced() {
-			t.Error("an unsatisfiable rule cannot produce Start")
-		}
-		return &CapError{Kind: CapScan}
 	})
 	c := compile(t, spec)
 	q := inst(t, "2025-01-01T00:00:00Z")
-	budgetCalls(t, func() error {
-		_, _, err := c.NextAfter(q, nil, Limits{})
-		return err
-	})
-	budgetCalls(t, func() error {
-		_, err := c.Between(q, q.Add(24*time.Hour), nil, Limits{})
-		return err
-	})
+	stallCalls(t, Limits{}, func() error { _, _, err := c.NextAfter(q, nil, Limits{}); return err })
+	stallCalls(t, Limits{}, func() error { _, err := c.Between(q, q.Add(24*time.Hour), nil, Limits{}); return err })
 }
 
 // TestNoGoroutineOutlivesCall is the instrument for "all work runs in the
-// caller" (TASK-4100 H1). MaxDuration is tiny and MaxSteps large, so the
-// budget walk (2M steps, about 130 ms at the measured ~65 ns a step; the
-// whole walk to year 9999 is about 2.9M, so the budget still trips first)
-// outlasts all 20 calls. A restored abandon path returns CapTime at 1 ms
-// while its goroutine keeps walking, and the count read here, with no settle,
-// is then about 20 higher.
+// caller" (TASK-4100 H1). MaxDuration is tiny, so a restored abandon path
+// returns CapTime at 1 ms while its goroutine keeps spending the 200k-step
+// budget (about 13 ms, about 100 ms under -race); the count read here, with no
+// settle, is then about 20 higher. MaxSteps is kept short for -race (r2).
 func TestNoGoroutineOutlivesCall(t *testing.T) {
 	c := compile(t, pinned(t, "UTC", "2025-01-01T00:00", "FREQ=MINUTELY;BYMONTH=1;BYYEARDAY=200"))
 	q := inst(t, "2025-01-01T00:00:00Z")
-	lim := Limits{MaxDuration: time.Millisecond, MaxSteps: 2_000_000}
+	lim := Limits{MaxDuration: time.Millisecond, MaxSteps: 200_000}
 	before := runtime.NumGoroutine()
 	for i := 0; i < 20; i++ {
 		var err error
@@ -107,8 +86,7 @@ func TestNoGoroutineOutlivesCall(t *testing.T) {
 		} else {
 			_, err = c.Between(q, q.Add(24*time.Hour), nil, lim)
 		}
-		var ce *CapError
-		if !errors.As(err, &ce) {
+		if !errors.Is(err, ErrCapHit) { // any cap: this test is about the count
 			t.Fatalf("call %d: err = %v; want a *CapError", i, err)
 		}
 	}

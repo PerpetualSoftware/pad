@@ -136,6 +136,7 @@ type RRule struct {
 	len                     int
 	budget                  int64 // TASK-4100 H1: step budget per iterator; 0 = unbounded (upstream behaviour)
 	exhausted               bool  // TASK-4100 H1: an iterator ran out of budget
+	reached                 time.Time
 }
 
 // SetBudget bounds every iterator of r to n period-loop steps, matched or not.
@@ -146,6 +147,10 @@ func (r *RRule) SetBudget(n int64) { r.budget = n }
 // Exhausted reports whether an iterator of r stopped on its step budget, in
 // which case its output is incomplete. TASK-4100 H1.
 func (r *RRule) Exhausted() bool { return r.exhausted }
+
+// Reached is where the iterator stood when it stopped on its budget: nothing
+// before it was left unexamined. TASK-4100 r2.
+func (r *RRule) Reached() time.Time { return r.reached }
 
 // NewRRule construct a new RRule instance
 func NewRRule(arg ROption) (*RRule, error) {
@@ -583,7 +588,7 @@ type rIterator struct {
 	remain   reusingRemainSlice
 	finished bool
 	dayset   []optInt
-	steps    int64 // TASK-4100 H1
+	steps    int64 // TASK-4100 H1: since the last candidate (r2)
 }
 
 // spend charges one step against the budget and reports true when it is
@@ -596,6 +601,7 @@ func (iterator *rIterator) spend() bool {
 	iterator.steps++
 	if iterator.steps > r.budget {
 		r.exhausted, iterator.finished = true, true
+		r.reached = time.Date(iterator.year, iterator.month, iterator.day, iterator.hour, iterator.minute, iterator.second, 0, r.dtstart.Location())
 		return true
 	}
 	return false
@@ -680,6 +686,7 @@ func (iterator *rIterator) generate() {
 				} else if !res.Before(r.dtstart) {
 					iterator.total++
 					iterator.remain.Append(res)
+					iterator.steps = 0 // TASK-4100 r2: the budget bounds a no-match stretch
 					if iterator.count != 0 {
 						iterator.count--
 						if iterator.count == 0 {
@@ -709,6 +716,7 @@ func (iterator *rIterator) generate() {
 					} else if !res.Before(r.dtstart) {
 						iterator.total++
 						iterator.remain.Append(res)
+						iterator.steps = 0 // TASK-4100 r2
 						if iterator.count != 0 {
 							iterator.count--
 							if iterator.count == 0 {

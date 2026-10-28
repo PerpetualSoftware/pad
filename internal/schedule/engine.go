@@ -1,6 +1,7 @@
 package schedule
 
 import (
+	"errors"
 	"sort"
 	"time"
 
@@ -178,14 +179,14 @@ func (c *Compiled) probeSynced() (bool, error) {
 	if loc == nil {
 		loc = time.UTC
 	}
-	set, rr, err := c.newSet(loc, time.Time{}, false, DefaultLimits.MaxSteps)
+	set, _, err := c.newSet(loc, time.Time{}, false, DefaultLimits.MaxSteps)
 	if err != nil {
 		return false, err
 	}
 	synced := false
 	err = guard(func() error {
 		t, ok := set.Iterator()()
-		synced = ok && !rr.Exhausted() && t.Equal(c.spec.Start.naive()) &&
+		synced = ok && t.Equal(c.spec.Start.naive()) &&
 			!c.afterUntil(Occurrence{At: Resolve(loc, c.spec.Start), Wall: c.spec.Start})
 		return nil
 	})
@@ -196,34 +197,36 @@ func (c *Compiled) probeSynced() (bool, error) {
 // is bounded on: the wall reading (wall-clock path) or the instant (elapsed
 // path). visit returns true to stop. The wall-clock order is not the instant
 // order inside a DST gap, so callers sort and de-duplicate what they keep.
-func (c *Compiled) walk(loc *time.Location, base time.Time, lim Limits, visit func(o Occurrence, key time.Time) bool) error {
+// A stalled expander (CapStall) stopped early, so what it yielded is
+// incomplete, except an occurrence the iterator already held when its prefetch
+// of the successor stalled: that one is visited, and walk returns the stall
+// after it together with where the expander stood (reached), so a caller whose
+// window ends before that can set the stall aside (covers). With RDATEs the
+// set drops the stalled rule and may reorder what follows, so there a stall is
+// always an error (TASK-4100 r2).
+func (c *Compiled) walk(loc *time.Location, base time.Time, lim Limits, visit func(o Occurrence, key time.Time) bool) (time.Time, error) {
 	set, rr, err := c.newSet(loc, base, true, lim.MaxSteps)
 	if err != nil {
-		return err
+		return time.Time{}, err
 	}
 	deadline := time.Now().Add(lim.MaxDuration)
-	// An exhausted step budget means the expander stopped early, so what it
-	// yielded is incomplete: a CapScan, never a partial result (TASK-4100 H1).
-	spent := func() error {
-		if rr != nil && rr.Exhausted() {
-			return &CapError{Kind: CapScan, Limit: lim.MaxSteps}
-		}
-		return nil
-	}
+	stalled := func() bool { return rr != nil && rr.Exhausted() }
+	stall := &CapError{Kind: CapStall, Limit: lim.MaxSteps}
 	next := set.Iterator()
-	if err := spent(); err != nil {
-		return err
+	if stalled() {
+		return time.Time{}, stall
 	}
 	for {
 		if time.Now().After(deadline) {
-			return &CapError{Kind: CapTime, Limit: int64(lim.MaxDuration)}
+			return time.Time{}, &CapError{Kind: CapTime, Limit: int64(lim.MaxDuration)}
 		}
 		t, ok := next()
-		if err := spent(); err != nil {
-			return err
+		held := ok && stalled() && len(c.spec.RDates) == 0
+		if stalled() && !held {
+			return time.Time{}, stall
 		}
 		if !ok {
-			return nil
+			return time.Time{}, nil
 		}
 		var o Occurrence
 		if c.elapsed {
@@ -233,10 +236,13 @@ func (c *Compiled) walk(loc *time.Location, base time.Time, lim Limits, visit fu
 			o = Occurrence{At: Resolve(loc, w), Wall: w}
 		}
 		if o.Wall.Year > maxYear {
-			return nil
+			return time.Time{}, nil
 		}
 		if !c.afterUntil(o) && visit(o, t) {
-			return nil
+			return time.Time{}, nil
+		}
+		if held {
+			return rr.Reached(), stall
 		}
 	}
 }
@@ -254,8 +260,9 @@ func (c *Compiled) NextAfter(t time.Time, view *time.Location, lim Limits) (Occu
 	}
 	var best Occurrence
 	found := false
-	err = guard(func() error {
-		return c.walk(loc, t, lim, func(o Occurrence, key time.Time) bool {
+	var reached time.Time
+	err = guard(func() (err error) {
+		reached, err = c.walk(loc, t, lim, func(o Occurrence, key time.Time) bool {
 			if found && key.After(c.bound(best.At, loc)) {
 				return true
 			}
@@ -264,8 +271,9 @@ func (c *Compiled) NextAfter(t time.Time, view *time.Location, lim Limits) (Occu
 			}
 			return false
 		})
+		return err
 	})
-	if err != nil {
+	if err != nil && !(found && covers(err, reached, c.bound(best.At, loc))) {
 		return Occurrence{}, false, err
 	}
 	return best, found, nil
@@ -292,9 +300,10 @@ func (c *Compiled) Between(from, to time.Time, view *time.Location, lim Limits) 
 	// that resolves earlier (a DST gap) still makes the cut (TASK-4100 r1).
 	var stop time.Time
 	settleAt := lim.MaxInstances
-	err = guard(func() error {
-		end := c.bound(to, loc)
-		return c.walk(loc, from, lim, func(o Occurrence, key time.Time) bool {
+	var reached time.Time
+	end := c.bound(to, loc)
+	err = guard(func() (err error) {
+		reached, err = c.walk(loc, from, lim, func(o Occurrence, key time.Time) bool {
 			if key.After(end) || (!stop.IsZero() && key.After(stop)) {
 				return true
 			}
@@ -310,8 +319,9 @@ func (c *Compiled) Between(from, to time.Time, view *time.Location, lim Limits) 
 			}
 			return false
 		})
+		return err
 	})
-	if err != nil {
+	if err != nil && !covers(err, reached, end) {
 		return nil, err
 	}
 	out = settle(out)
@@ -319,6 +329,13 @@ func (c *Compiled) Between(from, to time.Time, view *time.Location, lim Limits) 
 		return out[:lim.MaxInstances], &CapError{Kind: CapInstances, Limit: int64(lim.MaxInstances)}
 	}
 	return out, nil
+}
+
+// covers says err is the stall after a held occurrence and the expander had
+// examined everything up to end, so the answer ending there is complete.
+func covers(err error, reached, end time.Time) bool {
+	var ce *CapError
+	return errors.As(err, &ce) && ce.Kind == CapStall && !reached.Before(end)
 }
 
 // settle sorts by instant and drops a repeated instant.
