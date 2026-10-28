@@ -30,13 +30,16 @@ type User struct {
 	CredentialEpoch int64 `json:"-"`
 	// Kind is "human", or "app" for an installed app's bot principal
 	// (SPEC-6 §3, TASK-3392). Not serialized: no payload carries it.
-	Kind            string    `json:"-"`
-	DisabledAt      string    `json:"disabled_at,omitempty"`       // Non-empty = account disabled
-	EmailVerifiedAt string    `json:"email_verified_at,omitempty"` // Non-empty = email verified (mirror DisabledAt). Empty/NULL = unverified. PLAN-1933 / TASK-1935.
-	LastActiveAt    string    `json:"last_active_at,omitempty"`    // Last authenticated API request (any read or write)
-	LastWriteAt     string    `json:"last_write_at,omitempty"`     // Last mutating action (item/comment/attachment); see Store.TouchUserWrite. PLAN-1542 / TASK-1543.
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	Kind            string `json:"-"`
+	DisabledAt      string `json:"disabled_at,omitempty"`       // Non-empty = account disabled
+	EmailVerifiedAt string `json:"email_verified_at,omitempty"` // Non-empty = email verified (mirror DisabledAt). Empty/NULL = unverified. PLAN-1933 / TASK-1935.
+	LastActiveAt    string `json:"last_active_at,omitempty"`    // Last authenticated API request (any read or write)
+	LastWriteAt     string `json:"last_write_at,omitempty"`     // Last mutating action (item/comment/attachment); see Store.TouchUserWrite. PLAN-1542 / TASK-1543.
+	// Timezone is the IANA zone the user wants days computed in; nil = never
+	// set (computed in UTC). Always validated by internal/usertz (TASK-4101).
+	Timezone  *string   `json:"timezone"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // UserKindHuman and UserKindApp are the values of users.kind.
@@ -155,6 +158,9 @@ type UserUpdate struct {
 	Username  *string `json:"username,omitempty"`
 	Password  *string `json:"password,omitempty"` // Plaintext, will be hashed
 	AvatarURL *string `json:"avatar_url,omitempty"`
+	// Timezone is written unconditionally; the caller validates it with
+	// usertz.Validate. Use Store.SetUserTimezoneIfUnset for the conditional write.
+	Timezone *string `json:"timezone,omitempty"`
 	// ExpectedEpoch, when set with Password, makes the password write
 	// conditional on the account's credential_epoch still being this value:
 	// the epoch the caller's authority (the current password, a reset token)
