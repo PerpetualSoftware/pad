@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"net/url"
 
 	"github.com/go-chi/chi/v5"
 
@@ -43,7 +44,13 @@ func (s *Server) handleDismissUI(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Authentication required")
 		return
 	}
-	key := chi.URLParam(r, "key")
+	// chi hands back the still-escaped segment; a tz-mismatch key carries
+	// slashes (America/New_York) that a client sends as %2F.
+	key, err := url.PathUnescape(chi.URLParam(r, "key"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "Unknown dismissal key")
+		return
+	}
 	if !models.IsUIDismissalKey(key) {
 		writeError(w, http.StatusBadRequest, "bad_request", "Unknown dismissal key")
 		return
@@ -53,6 +60,8 @@ func (s *Server) handleDismissUI(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, store.ErrUnknownUIDismissal):
 			writeError(w, http.StatusBadRequest, "bad_request", "Unknown dismissal key")
+		case errors.Is(err, store.ErrTooManyUIDismissals):
+			writeError(w, http.StatusBadRequest, "too_many_dismissals", "Too many time zone notices dismissed")
 		case errors.Is(err, sql.ErrNoRows):
 			writeError(w, http.StatusUnauthorized, "unauthorized", "Authentication required")
 		default:

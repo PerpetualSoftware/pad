@@ -12,6 +12,10 @@ import (
 // ErrUnknownUIDismissal is returned for a key outside models.UIDismissalKeys.
 var ErrUnknownUIDismissal = fmt.Errorf("unknown UI dismissal key")
 
+// ErrTooManyUIDismissals is returned when adding a tz-mismatch pair key would
+// pass models.MaxTZMismatchDismissals.
+var ErrTooManyUIDismissals = fmt.Errorf("too many tz-mismatch dismissals")
+
 // decodeUIDismissals reads the stored set. Keys no longer in the allow-list
 // (a suggestion that was retired) are dropped, so they never reach a client.
 func decodeUIDismissals(raw string) []string {
@@ -67,6 +71,17 @@ func (s *Store) DismissUI(userID, key string) ([]string, error) {
 	for _, k := range keys {
 		if k == key {
 			return keys, tx.Commit()
+		}
+	}
+	if models.IsTZMismatchKey(key) {
+		n := 0
+		for _, k := range keys {
+			if models.IsTZMismatchKey(k) {
+				n++
+			}
+		}
+		if n >= models.MaxTZMismatchDismissals {
+			return nil, ErrTooManyUIDismissals
 		}
 	}
 	keys = append(keys, key)
