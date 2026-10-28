@@ -195,8 +195,14 @@ const REFUSALS = [
 	() => apiErr('validation_error', 'Invalid JSON body (maximum 128 KiB)')
 ];
 const answered = new Set<string>();
-/** Keys whose commit had its answer lost: their row may be visible beside the bubble (the disclosed N4). */
+/**
+ * Keys whose commit had its answer lost AND whose held answer has been released as the
+ * rejection: the bubble has failed once, so a retry may sit beside its own committed row
+ * (the disclosed N4). I9 exempts only these (r6fix F-L1).
+ */
 const lost = new Set<string>();
+/** Keys committed with the answer still held: the FIRST flight, which I9 must still police (the #held window). */
+const losing = new Set<string>();
 const fillCalls = new Map<string, number>();
 let rng: () => number;
 
@@ -266,7 +272,7 @@ function check(where: string) {
 	const bubbles = thread.items.flatMap((i) => (i.kind === 'pending' ? [i.pending] : []));
 	const keys = bubbles.map((p) => p.op_key);
 	if (new Set(keys).size !== keys.length) fail(`I2 ${where}: duplicate op_key`);
-	// a bubble beside a row whose answer was lost is the disclosed N4 (r6 A-M1: now in the walk), so lost keys are exempt
+	// a bubble beside a row whose answer was lost is the disclosed N4 (r6 A-M1: now in the walk), so a key whose lost answer was already rejected is exempt
 	for (const k of bubbles.filter((p) => p.status === 'sending' && !lost.has(p.op_key)).map((p) => p.op_key)) {
 		const row = server.byKey.get(k);
 		if (row && (m.some((x) => x.seq === row.seq) || d.some((x) => x.seq === row.seq))) fail(`I9 ${where}: seq ${row.seq} and its bubble both visible`);
@@ -286,6 +292,7 @@ function deliver<T>(kind: string, value: T, rejectIt: Error | false = false, key
 			kind,
 			key,
 			release: (ok) => {
+				if (kind === 'send' && key && losing.delete(key)) lost.add(key); // r6fix F-L1: exempt only once the lost answer is rejected
 				if (!ok && kind === 'list' && owner) addCause(owner, 'rejected'); // only the bubble this fetch belonged to
 				if (ok && !rejectIt && kind === 'send') {
 					if ((value as { replayed?: boolean }).replayed) hits.replayed++; // r6 A-M1: a retry answered from the server's op_key record
@@ -346,7 +353,7 @@ function wire() {
 		server.byKey.set(b.op_key, m);
 		// r6 A-M1: the commit happened and the answer is LOST (the N4 shape): the bubble fails, a later retry replays
 		if (!immediate && rng() < 0.08) {
-			lost.add(b.op_key);
+			losing.add(b.op_key);
 			return deliver('send', null as never, new Error('answer lost'), b.op_key);
 		}
 		return deliver('send', { message: { ...m }, replayed: false, refs: [], refs_truncated: false }, false, b.op_key);
@@ -385,6 +392,7 @@ async function walk(seed: number, trace: string[]) {
 	causes = new Map();
 	answered.clear();
 	lost.clear();
+	losing.clear();
 	fillCalls.clear();
 	filled.clear();
 	snap = null;
