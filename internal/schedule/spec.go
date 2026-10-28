@@ -98,6 +98,9 @@ func Compile(s Spec) (*Compiled, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(s.RDates) == 0 && r.neverFires(s.Start) { // an RDATE still fires
+		return nil, malformed(CodeUnsatisfiable, "INTERVAL", "", "INTERVAL never reaches the BYHOUR and BYMINUTE values from Start, so the rule never produces an occurrence")
+	}
 	c.rule, c.spec.Rule = &r, r.String()
 	c.elapsed = (r.Freq == freqHourly || r.Freq == freqMinutely) && len(r.ByMonth)+len(r.ByWeekNo)+len(r.ByYearDay)+
 		len(r.ByMonthDay)+len(r.ByDay)+len(r.ByHour)+len(r.ByMinute)+len(r.BySecond)+len(r.BySetPos) == 0

@@ -318,6 +318,63 @@ func (r *Rule) checkSatisfiable() error {
 	return malformed(CodeUnsatisfiable, "BYMONTHDAY", "", "no month in scope has such a day, so the rule never produces an occurrence")
 }
 
+// neverFires says an HOURLY or MINUTELY rule, stepped from start, provably
+// never lands on its BYHOUR and BYMINUTE values (TASK-4100 r1). The library
+// steps naive walls, so the offsets reachable from the start time-of-day are
+// exact: with INTERVAL i and g = gcd(i, 24) hours or gcd(i, 1440) minutes,
+// a time-of-day is reachable iff it is congruent to the start's modulo g.
+// It only answers for a rule made of FREQ, INTERVAL, BYHOUR and BYMINUTE; any
+// other part (a BY filter, BYSECOND, COUNT, UNTIL) can change what fires, and
+// the caller leaves RDATEs out, so those rules are never refused here.
+func (r *Rule) neverFires(start Wall) bool {
+	if (r.Freq != freqHourly && r.Freq != freqMinutely) || len(r.ByHour)+len(r.ByMinute) == 0 ||
+		r.Count != 0 || r.Until != nil || len(r.ByMonth)+len(r.ByWeekNo)+len(r.ByYearDay)+len(r.ByMonthDay)+
+		len(r.ByDay)+len(r.BySecond)+len(r.BySetPos) > 0 {
+		return false
+	}
+	hours, minutes := r.ByHour, r.ByMinute
+	if len(hours) == 0 {
+		hours = seq(24)
+	}
+	if r.Freq == freqHourly { // the minute is free; only the hour is stepped
+		g := gcd(max(r.Interval, 1), 24)
+		for _, h := range hours {
+			if (h-start.Hour)%g == 0 {
+				return false
+			}
+		}
+		return true
+	}
+	if len(minutes) == 0 {
+		minutes = seq(60)
+	}
+	g := gcd(max(r.Interval, 1), 1440)
+	for _, h := range hours {
+		for _, m := range minutes {
+			if (60*(h-start.Hour)+m-start.Minute)%g == 0 {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// seq is 0..n-1.
+func seq(n int) []int {
+	out := make([]int, n)
+	for i := range out {
+		out[i] = i
+	}
+	return out
+}
+
+func gcd(a, b int) int {
+	for b != 0 {
+		a, b = b, a%b
+	}
+	return a
+}
+
 // Validate runs the checks that need the schedule's Start. loc is the pinned
 // zone, or nil for a floating schedule. It refuses an all-day schedule with a
 // sub-daily FREQ or a BYHOUR, BYMINUTE or BYSECOND, a Z UNTIL on a floating

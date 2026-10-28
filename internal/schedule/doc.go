@@ -31,7 +31,7 @@
 //	floating                    resolved in the view zone of each call
 //	RDATE                       resolved forward             earlier
 //	EXDATE                      matched on the wall reading
-//	UNTIL                       compared on the wall (elapsed rules: on the instant)
+//	UNTIL                       compared on the wall; a Z UNTIL and elapsed rules: on the instant
 //
 // RULES. ParseRule is strict. It refuses what RFC 5545 forbids (COUNT with
 // UNTIL, BYWEEKNO off YEARLY, an ordinal BYDAY off MONTHLY and YEARLY,

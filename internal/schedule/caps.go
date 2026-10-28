@@ -2,6 +2,7 @@ package schedule
 
 import (
 	"errors"
+	"math"
 	"strconv"
 	"time"
 )
@@ -77,12 +78,18 @@ var periodUnit = map[string]time.Duration{
 
 // checkScan refuses a query point so far from Start that walking the rule
 // from Start would take more than MaxScan periods. Only the wall-clock path
-// walks from Start; the elapsed path fast-forwards.
-func (c *Compiled) checkScan(loc *time.Location, q time.Time, lim Limits) error {
-	if c.rule == nil || c.elapsed {
+// walks from Start; the elapsed path fast-forwards. base is the query start
+// and q its far end. A rule whose UNTIL is spent before base, or that ends by
+// COUNT, is not estimated: the walk is bounded by MaxSteps and ends on its own,
+// so a spent rule reads as exhausted rather than as a CapScan (TASK-4100 r1).
+func (c *Compiled) checkScan(loc *time.Location, base, q time.Time, lim Limits) error {
+	if c.rule == nil || c.elapsed || c.rule.Count > 0 || c.untilSpent(loc, base) {
 		return nil
 	}
-	step := periodUnit[c.rule.Freq] * time.Duration(max(c.rule.Interval, 1))
+	step, n := time.Duration(math.MaxInt64), time.Duration(max(c.rule.Interval, 1))
+	if per := periodUnit[c.rule.Freq]; per <= step/n { // saturate: period*INTERVAL must not wrap
+		step = per * n
+	}
 	if int64(readingOf(q, loc).Sub(c.spec.Start.naive())/step) > lim.MaxScan {
 		return &CapError{Kind: CapScan, Limit: lim.MaxScan}
 	}

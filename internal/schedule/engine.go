@@ -11,10 +11,7 @@ import (
 // Resolve is not monotonic inside a DST gap, and the offsets of a zone differ
 // by at most 26 hours, so a wall reading 48 hours past a bound resolves past it
 // (TASK-4100). The walk is bounded on the wall reading, never on an instant.
-const (
-	wallMargin = 48 * time.Hour
-	sortSlack  = 200 // walls collected past MaxInstances before the walk stops
-)
+const wallMargin = 48 * time.Hour
 
 var (
 	rruleFreq = map[string]rrule.Frequency{
@@ -58,14 +55,17 @@ func (c *Compiled) bound(t time.Time, loc *time.Location) time.Time {
 }
 
 // until converts UNTIL into the engine's time space: the instant for an
-// elapsed rule, a UTC-labelled wall for the wall-clock path.
+// elapsed rule, a UTC-labelled wall for the wall-clock path. A Z UNTIL is an
+// instant bound, so on the wall-clock path the library gets a generous wall
+// (the UNTIL reading plus wallMargin) and afterUntil filters each resolved
+// instant exactly (TASK-4100 r1).
 func (c *Compiled) until(loc *time.Location) time.Time {
 	u := c.rule.Until
 	if u.Kind == untilKindInst {
 		if c.elapsed {
 			return u.Instant
 		}
-		return wallOf(u.Instant.In(loc), false).naive()
+		return readingOf(u.Instant, loc).Add(wallMargin)
 	}
 	w := u.Wall
 	if u.Kind == untilKindDate { // inclusive through the end of that day
@@ -75,6 +75,34 @@ func (c *Compiled) until(loc *time.Location) time.Time {
 		return Resolve(loc, w)
 	}
 	return w.naive()
+}
+
+// untilSpent says the rule's UNTIL lies wholly before q, so the rule can add
+// nothing at or after it (TASK-4100 r1). The wall-clock test carries a
+// wallMargin of slack for the non-monotonic gap.
+func (c *Compiled) untilSpent(loc *time.Location, q time.Time) bool {
+	if c.rule == nil || c.rule.Until == nil {
+		return false
+	}
+	if c.elapsed {
+		return c.until(loc).Before(q)
+	}
+	return c.until(loc).Add(wallMargin).Before(readingOf(q, loc))
+}
+
+// afterUntil says an occurrence of the rule falls past a Z UNTIL, compared on
+// the resolved instant, inclusive. An RDATE is not bound by UNTIL. Elapsed
+// rules compare instants in the library already (TASK-4100 r1).
+func (c *Compiled) afterUntil(o Occurrence) bool {
+	if c.elapsed || c.rule == nil || c.rule.Until == nil || c.rule.Until.Kind != untilKindInst || !o.At.After(c.rule.Until.Instant) {
+		return false
+	}
+	for _, d := range c.spec.RDates {
+		if d == o.Wall {
+			return false
+		}
+	}
+	return true
 }
 
 // newSet builds a fresh library set. The wall-clock path hands the library
@@ -89,7 +117,7 @@ func (c *Compiled) newSet(loc *time.Location, base time.Time, withDates bool, st
 		conv = func(w Wall) time.Time { return Resolve(loc, w) }
 	}
 	if r := c.rule; r != nil {
-		dtstart, count, skip := conv(c.spec.Start), r.Count, false
+		dtstart, count, skip := conv(c.spec.Start), r.Count, c.untilSpent(loc, base)
 		if c.elapsed && base.After(dtstart) {
 			step := time.Duration(max(r.Interval, 1)) * periodUnit[r.Freq]
 			k := int64(base.Sub(dtstart) / step)
@@ -146,14 +174,19 @@ func (c *Compiled) options(loc *time.Location, dtstart time.Time, count int) rru
 // instance. A rule that exhausts its step budget before any instance (it never
 // matches, or only far away) counts as unsynced, not as an error.
 func (c *Compiled) probeSynced() (bool, error) {
-	set, rr, err := c.newSet(time.UTC, time.Time{}, false, DefaultLimits.MaxSteps)
+	loc := c.zone
+	if loc == nil {
+		loc = time.UTC
+	}
+	set, rr, err := c.newSet(loc, time.Time{}, false, DefaultLimits.MaxSteps)
 	if err != nil {
 		return false, err
 	}
 	synced := false
 	err = guard(func() error {
 		t, ok := set.Iterator()()
-		synced = ok && !rr.Exhausted() && t.Equal(c.spec.Start.naive())
+		synced = ok && !rr.Exhausted() && t.Equal(c.spec.Start.naive()) &&
+			!c.afterUntil(Occurrence{At: Resolve(loc, c.spec.Start), Wall: c.spec.Start})
 		return nil
 	})
 	return err == nil && synced, err
@@ -199,7 +232,10 @@ func (c *Compiled) walk(loc *time.Location, base time.Time, lim Limits, visit fu
 			w := wallOf(t, c.spec.Start.AllDay)
 			o = Occurrence{At: Resolve(loc, w), Wall: w}
 		}
-		if o.Wall.Year > maxYear || visit(o, t) {
+		if o.Wall.Year > maxYear {
+			return nil
+		}
+		if !c.afterUntil(o) && visit(o, t) {
 			return nil
 		}
 	}
@@ -213,7 +249,7 @@ func (c *Compiled) NextAfter(t time.Time, view *time.Location, lim Limits) (Occu
 		return Occurrence{}, false, err
 	}
 	lim = lim.fill()
-	if err := c.checkScan(loc, t, lim); err != nil {
+	if err := c.checkScan(loc, t, t, lim); err != nil {
 		return Occurrence{}, false, err
 	}
 	var best Occurrence
@@ -247,25 +283,46 @@ func (c *Compiled) Between(from, to time.Time, view *time.Location, lim Limits) 
 	if to.Sub(from) > lim.MaxWindow {
 		return nil, &CapError{Kind: CapWindow, Limit: int64(lim.MaxWindow)}
 	}
-	if err := c.checkScan(loc, to, lim); err != nil {
+	if err := c.checkScan(loc, from, to, lim); err != nil {
 		return nil, err
 	}
 	var out []Occurrence
+	// Once MaxInstances+1 distinct instants are held, the walk goes on until its
+	// key is past the bound of the (MaxInstances+1)-th smallest, so a later wall
+	// that resolves earlier (a DST gap) still makes the cut (TASK-4100 r1).
+	var stop time.Time
+	settleAt := lim.MaxInstances
 	err = guard(func() error {
 		end := c.bound(to, loc)
 		return c.walk(loc, from, lim, func(o Occurrence, key time.Time) bool {
-			if key.After(end) {
+			if key.After(end) || (!stop.IsZero() && key.After(stop)) {
 				return true
 			}
 			if !o.At.Before(from) && o.At.Before(to) {
 				out = append(out, o)
 			}
-			return len(out) > lim.MaxInstances+sortSlack
+			if len(out) > settleAt {
+				if out = settle(out); len(out) > lim.MaxInstances {
+					out = out[:lim.MaxInstances+1]
+					stop = c.bound(out[lim.MaxInstances].At, loc)
+				}
+				settleAt = max(lim.MaxInstances, 2*len(out))
+			}
+			return false
 		})
 	})
 	if err != nil {
 		return nil, err
 	}
+	out = settle(out)
+	if len(out) > lim.MaxInstances {
+		return out[:lim.MaxInstances], &CapError{Kind: CapInstances, Limit: int64(lim.MaxInstances)}
+	}
+	return out, nil
+}
+
+// settle sorts by instant and drops a repeated instant.
+func settle(out []Occurrence) []Occurrence {
 	sort.SliceStable(out, func(i, j int) bool { return out[i].At.Before(out[j].At) })
 	kept := out[:0]
 	for _, o := range out {
@@ -273,8 +330,5 @@ func (c *Compiled) Between(from, to time.Time, view *time.Location, lim Limits) 
 			kept = append(kept, o)
 		}
 	}
-	if len(kept) > lim.MaxInstances {
-		return kept[:lim.MaxInstances], &CapError{Kind: CapInstances, Limit: int64(lim.MaxInstances)}
-	}
-	return kept, nil
+	return kept
 }

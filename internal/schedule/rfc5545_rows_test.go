@@ -3,8 +3,9 @@ package schedule
 // RFCRows: every example of RFC 5545 section 3.8.5.3, transcribed from the RFC
 // text (rfc5545.txt, lines 6872-7253). All use DTSTART;TZID=America/New_York.
 // Rows suffixed a/b are the "or" alternative forms the RFC prints.
-// (UNTIL 17:00Z is 13:00 EDT, so the printed 15:00 cannot be produced); rfc33b
-// is the corrected form (UNTIL 19:00Z).
+// Row rfc33 is the RFC's example as printed (erratum 3883): UNTIL 17:00Z is
+// 13:00 EDT, so the printed 15:00 cannot be produced. rfc33b is the corrected
+// form (UNTIL 19:00Z).
 var RFCRows = []Row{
 	{"rfc01-daily-count10", hdr + "19970902T090000\nRRULE:FREQ=DAILY;COUNT=10", "19970902..19970911", false},
 	{"rfc02-daily-until-1224", hdr + "19970902T090000\nRRULE:FREQ=DAILY;UNTIL=19971224T000000Z", "19970902..19971223", false},

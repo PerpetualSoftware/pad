@@ -169,21 +169,30 @@ func TestBetweenEqualsChainedNextAfter(t *testing.T) {
 		"FREQ=DAILY;UNTIL=20250320T120000Z", "FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1",
 	}
 	windows := [][2]string{{"2025-03-07T00:00:00Z", "2025-03-12T00:00:00Z"}, {"2025-10-31T00:00:00Z", "2025-11-04T00:00:00Z"}, {"2025-01-01T00:00:00Z", "2025-01-08T00:00:00Z"}}
+	// MaxInstances 5, 50 and 500 exercise the truncation (TASK-4100 r1): the
+	// first N of Between must be the first N of the chain, not just agree when
+	// nothing is cut.
 	for _, rule := range rules {
 		c := compile(t, pinned(t, nyZone, "2025-01-01T01:30", rule))
 		for _, w := range windows {
 			from, to := inst(t, w[0]), inst(t, w[1])
-			got, err := c.Between(from, to, nil, Limits{MaxDuration: 20 * time.Second, MaxInstances: 100000})
-			if err != nil {
-				t.Fatalf("%s: %v", rule, err)
-			}
-			chain := chainBetween(t, c, from, to, nil, Limits{MaxDuration: 20 * time.Second, MaxInstances: 100000})
-			if len(got) != len(chain) {
-				t.Fatalf("%s %v: Between %d vs chained %d", rule, w, len(got), len(chain))
-			}
-			for i := range got {
-				if got[i] != chain[i] {
-					t.Fatalf("%s %v #%d: Between %v vs chained %v", rule, w, i, got[i], chain[i])
+			chain := chainBetween(t, c, from, to, nil, Limits{MaxDuration: 20 * time.Second})
+			for _, mi := range []int{5, 50, 500, 100000} {
+				got, err := c.Between(from, to, nil, Limits{MaxDuration: 20 * time.Second, MaxInstances: mi})
+				want := chain
+				if len(chain) > mi {
+					want = chain[:mi]
+					asCap(t, err, CapInstances)
+				} else if err != nil {
+					t.Fatalf("%s %v max %d: %v", rule, w, mi, err)
+				}
+				if len(got) != len(want) {
+					t.Fatalf("%s %v max %d: Between %d vs chained %d", rule, w, mi, len(got), len(want))
+				}
+				for i := range got {
+					if got[i] != want[i] {
+						t.Fatalf("%s %v max %d #%d: Between %v vs chained %v", rule, w, mi, i, got[i], want[i])
+					}
 				}
 			}
 		}
