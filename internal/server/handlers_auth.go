@@ -15,6 +15,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
+	"github.com/PerpetualSoftware/pad/internal/usertz"
 )
 
 const (
@@ -75,6 +76,7 @@ func sessionUserPayload(user *models.User) map[string]interface{} {
 		"totp_enabled":   user.TOTPEnabled,
 		"plan":           user.EffectivePlan(time.Now()), // expiry enforced (BUG-3356)
 		"email_verified": user.IsEmailVerified(),
+		"timezone":       user.Timezone,
 	}
 }
 
@@ -1505,6 +1507,7 @@ func (s *Server) handleGetCurrentUser(w http.ResponseWriter, r *http.Request) {
 		"avatar_url":   user.AvatarURL,
 		"totp_enabled": user.TOTPEnabled,
 		"password_set": user.HasPassword(),
+		"timezone":     user.Timezone,
 		"created_at":   user.CreatedAt,
 		"updated_at":   user.UpdatedAt,
 	}
@@ -1545,9 +1548,23 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 		Username        *string `json:"username,omitempty"`
 		CurrentPassword string  `json:"current_password,omitempty"`
 		NewPassword     string  `json:"new_password,omitempty"`
+		// Timezone is an IANA name (null/absent = leave it). It cannot be
+		// cleared: "" is invalid_tz. IfUnset makes the write conditional on
+		// the zone being NULL, for a client's first-sign-in default.
+		Timezone *string `json:"timezone,omitempty"`
+		IfUnset  bool    `json:"if_unset,omitempty"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
+		return
+	}
+	if input.Timezone != nil {
+		if _, err := usertz.Validate(*input.Timezone); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_tz", "`timezone` must be an IANA time zone name, such as America/Los_Angeles")
+			return
+		}
+	} else if input.IfUnset {
+		writeError(w, http.StatusBadRequest, "bad_request", "`if_unset` needs a `timezone`")
 		return
 	}
 	// A password change rotates every session and mints a new one, so it is
@@ -1637,6 +1654,9 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 		Name:     input.Name,
 		Username: input.Username,
 	}
+	if !input.IfUnset {
+		update.Timezone = input.Timezone
+	}
 	if input.NewPassword != "" {
 		update.Password = &input.NewPassword
 		// Fenced on the epoch the current password was checked under, so a
@@ -1655,6 +1675,16 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	if input.IfUnset {
+		// One atomic UPDATE ... WHERE timezone IS NULL; the response carries
+		// the zone that won, whoever set it.
+		updated, err = s.store.SetUserTimezoneIfUnset(user.ID, *input.Timezone)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to update profile")
+			return
+		}
+	}
+
 	resp := map[string]interface{}{
 		"id":         updated.ID,
 		"email":      updated.Email,
@@ -1662,6 +1692,7 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 		"name":       updated.Name,
 		"role":       updated.Role,
 		"avatar_url": updated.AvatarURL,
+		"timezone":   updated.Timezone,
 		"created_at": updated.CreatedAt,
 		"updated_at": updated.UpdatedAt,
 	}

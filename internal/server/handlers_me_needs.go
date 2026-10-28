@@ -556,7 +556,7 @@ func (s *Server) needsForWorkspace(r *http.Request, user *models.User, ws *model
 	// for this call alone (see needsMemo).
 	sctx := withNeedsMemo(r.Context(), s.newNeedsMemo(ws.ID))
 	for _, sc := range s.needsScorers {
-		deg, serr := sc.Score(sctx, needs.Viewer{UserID: user.ID, AuthIsBearer: isBearerAuth(r), Now: asOf}, nscope, rows)
+		deg, serr := sc.Score(sctx, needs.Viewer{UserID: user.ID, AuthIsBearer: isBearerAuth(r), Now: asOf, Loc: viewerZone(r).Loc}, nscope, rows)
 		if serr != nil {
 			slog.Error("needs: scorer failed; workspace degraded", "scorer", sc.Name(), "workspace_id", ws.ID, "error", serr)
 		}

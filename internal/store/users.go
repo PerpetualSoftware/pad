@@ -29,7 +29,7 @@ var usernameCleanRe = regexp.MustCompile(`[^a-z0-9-]+`)
 var bcryptCost = 12
 
 // user SELECT columns — used by all user queries.
-const userColumns = `id, email, username, name, password_hash, role, avatar_url, totp_secret, totp_enabled, recovery_codes, plan, plan_expires_at, plan_source, stripe_customer_id, plan_overrides, oauth_providers, password_set, disabled_at, email_verified_at, last_active_at, last_write_at, created_at, updated_at, credential_epoch, kind`
+const userColumns = `id, email, username, name, password_hash, role, avatar_url, totp_secret, totp_enabled, recovery_codes, plan, plan_expires_at, plan_source, stripe_customer_id, plan_overrides, oauth_providers, password_set, disabled_at, email_verified_at, last_active_at, last_write_at, created_at, updated_at, credential_epoch, kind, timezone`
 
 // scanUser scans a user row into a User struct.
 // The TOTP secret column is read and discarded: the User struct does not carry
@@ -39,7 +39,7 @@ func scanUser(row interface{ Scan(...interface{}) error }) (*models.User, error)
 	var u models.User
 	var createdAt, updatedAt string
 
-	var disabledAt, emailVerifiedAt, lastActiveAt, lastWriteAt sql.NullString
+	var disabledAt, emailVerifiedAt, lastActiveAt, lastWriteAt, timezone sql.NullString
 	var totpSecretUnused string
 	err := row.Scan(
 		&u.ID, &u.Email, &u.Username, &u.Name, &u.PasswordHash, &u.Role, &u.AvatarURL,
@@ -47,7 +47,7 @@ func scanUser(row interface{ Scan(...interface{}) error }) (*models.User, error)
 		&u.Plan, &u.PlanExpiresAt, &u.PlanSource, &u.StripeCustomerID, &u.PlanOverrides, &u.OAuthProviders,
 		&u.PasswordSet,
 		&disabledAt, &emailVerifiedAt, &lastActiveAt, &lastWriteAt, &createdAt, &updatedAt,
-		&u.CredentialEpoch, &u.Kind,
+		&u.CredentialEpoch, &u.Kind, &timezone,
 	)
 	if disabledAt.Valid {
 		u.DisabledAt = disabledAt.String
@@ -60,6 +60,10 @@ func scanUser(row interface{ Scan(...interface{}) error }) (*models.User, error)
 	}
 	if lastWriteAt.Valid {
 		u.LastWriteAt = lastWriteAt.String
+	}
+	if timezone.Valid {
+		tz := timezone.String
+		u.Timezone = &tz
 	}
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -220,6 +224,10 @@ func (s *Store) UpdateUser(id string, input models.UserUpdate) (*models.User, er
 		sets = append(sets, "avatar_url = ?")
 		args = append(args, *input.AvatarURL)
 	}
+	if input.Timezone != nil {
+		sets = append(sets, "timezone = ?")
+		args = append(args, *input.Timezone)
+	}
 
 	if len(sets) == 0 {
 		return s.GetUser(id)
@@ -275,6 +283,26 @@ func (s *Store) UpdateUser(id string, input models.UserUpdate) (*models.User, er
 		u.CredentialEpoch = *input.ExpectedEpoch + 1
 	}
 	return u, err
+}
+
+// SetUserTimezoneIfUnset sets users.timezone to tz only while it is NULL, as one
+// atomic UPDATE, so a browser's first-sign-in default can never overwrite a zone
+// the user chose elsewhere (TASK-4101). It returns the user as stored afterwards,
+// so the caller learns the winning zone either way. An unknown user is
+// sql.ErrNoRows. The caller validates tz.
+func (s *Store) SetUserTimezoneIfUnset(id, tz string) (*models.User, error) {
+	if _, err := s.db.Exec(s.q(`UPDATE users SET timezone = ?, updated_at = ? WHERE id = ? AND timezone IS NULL`),
+		tz, now(), id); err != nil {
+		return nil, fmt.Errorf("set user timezone if unset: %w", err)
+	}
+	u, err := s.GetUser(id)
+	if err != nil {
+		return nil, err
+	}
+	if u == nil {
+		return nil, sql.ErrNoRows
+	}
+	return u, nil
 }
 
 // ValidatePassword checks an email/password combination. Returns the user
@@ -548,7 +576,7 @@ func (s *Store) SearchUsers(params AdminUserSearchParams) (*AdminUserSearchResul
 	for rows.Next() {
 		var entry AdminUserListEntry
 		var createdAt, updatedAt string
-		var disabledAt, emailVerifiedAt, lastActiveAt, lastWriteAt sql.NullString
+		var disabledAt, emailVerifiedAt, lastActiveAt, lastWriteAt, timezone sql.NullString
 		var workspaceCount int
 		var storageBytes int64
 		var totpSecretUnused string
@@ -558,7 +586,7 @@ func (s *Store) SearchUsers(params AdminUserSearchParams) (*AdminUserSearchResul
 			&entry.Plan, &entry.PlanExpiresAt, &entry.PlanSource, &entry.StripeCustomerID, &entry.PlanOverrides, &entry.OAuthProviders,
 			&entry.PasswordSet,
 			&disabledAt, &emailVerifiedAt, &lastActiveAt, &lastWriteAt, &createdAt, &updatedAt,
-			&entry.CredentialEpoch, &entry.Kind,
+			&entry.CredentialEpoch, &entry.Kind, &timezone,
 			&workspaceCount, &storageBytes,
 		); err != nil {
 			return nil, fmt.Errorf("search users scan: %w", err)
@@ -574,6 +602,10 @@ func (s *Store) SearchUsers(params AdminUserSearchParams) (*AdminUserSearchResul
 		}
 		if lastWriteAt.Valid {
 			entry.LastWriteAt = lastWriteAt.String
+		}
+		if timezone.Valid {
+			tz := timezone.String
+			entry.Timezone = &tz
 		}
 		entry.CreatedAt = parseTime(createdAt)
 		entry.UpdatedAt = parseTime(updatedAt)

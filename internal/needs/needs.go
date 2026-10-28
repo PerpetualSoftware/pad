@@ -239,6 +239,9 @@ type Viewer struct {
 	// request's as_of, so every page of one listing scores at one instant.
 	// The zero value means the wall clock.
 	Now time.Time
+	// Loc is the viewer's zone, the calendar a deadline's "today" is read in.
+	// Nil means UTC.
+	Loc *time.Location
 }
 
 // Scope is what the viewer may see in one workspace, in the shape the stores

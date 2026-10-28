@@ -172,6 +172,7 @@ var nulColumns = []nulColumn{
 	{"users", "email", classText},
 	{"users", "username", classText},
 	{"users", "avatar_url", classText},
+	{"users", "timezone", classText},
 	// users.recovery_codes is deliberately absent: newline-joined bcrypt
 	// hashes of server-generated codes. It LOOKS like JSON and is not.
 
@@ -349,6 +350,7 @@ var nulTriggerMigrations = []string{
 	"152_nul_invariant_triggers_post151.sql",
 	"156_nul_invariant_triggers_post155.sql",
 	"159_nul_invariant_triggers_post158.sql",
+	"161_nul_invariant_triggers_post160.sql",
 }
 
 // nulColumnTriggerFile assigns a column to a trigger file other than the
@@ -388,6 +390,8 @@ var nulColumnTriggerFile = map[string]string{
 	"conversation_messages.author_agent_key":     "159_nul_invariant_triggers_post158.sql",
 	"conversation_messages.op_key":               "159_nul_invariant_triggers_post158.sql",
 	"conversation_messages.deleted_by_agent_key": "159_nul_invariant_triggers_post158.sql",
+	// 160 added the column (TASK-4101).
+	"users.timezone": "161_nul_invariant_triggers_post160.sql",
 }
 
 // nulTriggerFileFor names the trigger file a column's triggers are rendered
