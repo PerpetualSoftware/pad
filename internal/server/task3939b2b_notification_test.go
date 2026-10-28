@@ -467,3 +467,36 @@ func task4051EnrichmentScanFault(t *testing.T, srv *Server, ownerFault bool) {
 		t.Fatalf("enrichment = %d %s, want 500 for GetUser failure", rr.Code, rr.Body.String())
 	}
 }
+
+// BUG-4050: a live workspace whose owner_id names no users row has no owner
+// to put in the route. The notification is still legitimate, so it reads 200
+// with an empty path, never the network-path reference "//<ws>/...".
+func TestNotificationEnrichment_UnresolvableOwnerHasNoDeepLink(t *testing.T) {
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		f := newPdx(t, srv)
+		tok := f.bobSession()
+		id := f.row("assigned")
+		f.exec(`UPDATE workspaces SET owner_id = ? WHERE id = ?`, "ghost-owner-bug-4050", f.ws.ID)
+		ws, err := srv.store.GetWorkspaceByID(f.ws.ID)
+		if err != nil || ws == nil || ws.OwnerUsername != "" || ws.OwnerID == "" {
+			t.Fatalf("premise: workspace=%+v err=%v", ws, err)
+		}
+		if u, err := srv.store.GetUser(ws.OwnerID); err != nil || u != nil {
+			t.Fatalf("premise: owner row must be absent: user=%+v err=%v", u, err)
+		}
+		rr := getNotif(srv, tok, id)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%d %s", rr.Code, rr.Body.String())
+		}
+		if strings.Contains(rr.Body.String(), "//") {
+			t.Fatalf("body contains //: %s", rr.Body.String())
+		}
+		var raw map[string]any
+		if err := json.Unmarshal(rr.Body.Bytes(), &raw); err != nil {
+			t.Fatal(err)
+		}
+		if p, ok := raw["path"]; !ok || p != "" {
+			t.Fatalf("path = %#v (present=%v), want the empty string", p, ok)
+		}
+	})
+}
