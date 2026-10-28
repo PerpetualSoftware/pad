@@ -837,6 +837,34 @@ describe('send', () => {
 		expect(thread.messages.at(-1)!.seq).toBe(200);
 	});
 
+	// r6 A-M1 (N33): red with the held-row lookup at #applyOwn reading the window only. The detached
+	// row is the reader's tombstone; a replayed answer for its seq carries the live text and must not win (I5).
+	it('a held DETACHED tombstone beats a replayed answer for the same seq', async () => {
+		server.fill(400);
+		server.readSeq = 0;
+		await thread.open(1); // window 1..200, hasNewer
+		wireSend();
+		const real = h.sendMessage.getMockImplementation()!;
+		let releaseB!: () => void;
+		h.sendMessage.mockImplementationOnce((n: number, b: never) => {
+			return new Promise((res) => (releaseB = () => res(real(n, b)))); // B stays 'sending': nothing re-anchors
+		});
+		h.sendMessage.mockImplementationOnce(real);
+		const sendingB = thread.send('B');
+		await flush();
+		expect(await thread.send('X')).toBe('sent'); // commits as 401 and detaches beside B
+		expect(thread.detached.map((m) => m.seq)).toEqual([401]);
+		h.deleteMessage.mockResolvedValueOnce({ message: { ...server.rows[400], body: '', deleted: true }, deleted: true });
+		expect(await thread.remove(401)).toBe(true);
+		expect(thread.detached).toMatchObject([{ seq: 401, deleted: true, body: '' }]);
+		const live = msg(401, { mine: true, author_agent_key: '', author_is_human: true, source: 'web', body: 'live again' });
+		h.sendMessage.mockResolvedValueOnce({ message: live, replayed: true, refs: [], refs_truncated: false });
+		expect(await thread.send('Y')).toBe('sent');
+		expect(thread.detached).toMatchObject([{ seq: 401, deleted: true, body: '' }]);
+		releaseB();
+		await sendingB;
+	});
+
 	it('discards a failed bubble', async () => {
 		await readyThread();
 		h.sendMessage.mockRejectedValueOnce(new Error('network'));
