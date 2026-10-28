@@ -44,7 +44,12 @@
 
 <li class="needs-row" data-testid="needs-row" data-ref={row.item.ref}>
 	<div class="main">
-		<a class="title" href={row.item.path}>{row.item.title}</a>
+		<!-- An empty path means the workspace owner no longer resolves (BUG-4050): no route, so no link (href="" would reload this page). -->
+		{#if row.item.path}
+			<a class="title" href={row.item.path}>{row.item.title}</a>
+		{:else}
+			<span class="title">{row.item.title}</span>
+		{/if}
 		<div class="meta">
 			<span class="ref">{row.item.ref}</span>
 			<span>{row.item.collection}</span>
@@ -107,7 +112,7 @@
 		color: var(--text-primary);
 		text-decoration: none;
 	}
-	.title:hover {
+	a.title:hover {
 		text-decoration: underline;
 	}
 	.meta {

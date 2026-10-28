@@ -970,3 +970,38 @@ func TestNeedsMe_ForgedFutureAsOfClamped(t *testing.T) {
 		}
 	})
 }
+
+// BUG-4050: a live workspace whose owner_id names no users row has no owner
+// to put in the route. The row is still the caller's, so it is returned with
+// an empty path, never the network-path reference "//<ws>/...".
+func TestNeedsMe_UnresolvableOwnerHasNoDeepLink(t *testing.T) {
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		f := newNfx(t, srv)
+		owner, alice := f.user("owner"), f.user("alice")
+		ws := f.workspace("Orphan", owner)
+		f.member(ws, alice, "editor")
+		asks := f.collection(ws, "Asks", true)
+		f.item(ws, asks, "orphan ask", alice, nfxDay(1))
+		if _, err := srv.store.DB().Exec(`UPDATE workspaces SET owner_id = ? WHERE id = ?`, "ghost-owner-bug-4050", ws.ID); err != nil {
+			t.Fatal(err)
+		}
+		if u, err := srv.store.GetUser("ghost-owner-bug-4050"); err != nil || u != nil {
+			t.Fatalf("premise: owner row must be absent: user=%+v err=%v", u, err)
+		}
+		rr := f.get(alice, "")
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%d %s", rr.Code, rr.Body.String())
+		}
+		if strings.Contains(rr.Body.String(), "//") {
+			t.Fatalf("body contains //: %s", rr.Body.String())
+		}
+		var resp needsResponse
+		if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		wantTitles(t, "alice", resp.Rows, "orphan ask")
+		if p := resp.Rows[0].Item.Path; p != "" {
+			t.Fatalf("path = %q, want empty", p)
+		}
+	})
+}

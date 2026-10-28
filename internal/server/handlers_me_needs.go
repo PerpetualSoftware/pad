@@ -502,12 +502,20 @@ func (s *Server) needsForWorkspace(r *http.Request, user *models.User, ws *model
 	}
 	for _, it := range kept {
 		rt := routed[it.ID]
+		// A workspace whose owner no longer resolves has no route to link to:
+		// "/" + "" + "/" + slug would be "//<slug>/...", a network-path
+		// reference. The row is still the caller's, so it stays, with an
+		// empty path (BUG-4050).
+		path := ""
+		if label.OwnerUsername != "" {
+			path = "/" + label.OwnerUsername + "/" + ws.Slug + "/" + it.CollectionSlug + "/" + it.Slug
+		}
 		row := &needs.Row{
 			Workspace: label,
 			Item: needs.ItemInfo{
 				Ref: it.Ref, Title: it.Title, Collection: it.CollectionName, CollectionSlug: it.CollectionSlug,
 				CreatedAt: it.CreatedAt, UpdatedAt: it.UpdatedAt,
-				Path: "/" + label.OwnerUsername + "/" + ws.Slug + "/" + it.CollectionSlug + "/" + it.Slug,
+				Path: path,
 			},
 			Why: rt.Why, Because: rt.Because, WaitingSince: rt.WaitingSince,
 			ItemID: it.ID, WorkspaceID: ws.ID,
