@@ -40,6 +40,15 @@ linters:
       - ^docs/
       - ^deploy/
       - ^skills/
+    rules:
+      # Upstream rrule-go v1.8.2's own dead store (`lno1wkst = 0`), vendored
+      # verbatim. Excluded narrowly instead of editing upstream code, so every
+      # other linter still checks our budget/stall delta in the same file
+      # (TASK-4100 lint ruling; see the package's PROVENANCE.md).
+      - path: ^internal/schedule/internal/rrule/rrule\.go$
+        linters:
+          - ineffassign
+        text: lno1wkst
 
 formatters:
   enable:

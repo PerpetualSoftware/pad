@@ -25,6 +25,10 @@ The differences from upstream marked TASK-4100 in rrule.go are:
 rruleset.go, str.go, util.go and LICENSE are byte-identical to upstream: their
 sha256 matches the table below. rrule.go is the only modified file.
 
+Lint: .golangci.yml excludes one upstream finding, ineffassign on `lno1wkst = 0`
+in rrule.go (upstream's own dead store), rather than editing upstream code. Every
+other linter still runs on this package, including our delta (TASK-4100 lint ruling).
+
 ## File count
 
 The brief for this work said 3 library files; there are 4 (rrule.go, rruleset.go,
