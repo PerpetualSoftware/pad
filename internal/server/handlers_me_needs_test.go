@@ -982,7 +982,7 @@ func TestNeedsMe_UnresolvableOwnerHasNoDeepLink(t *testing.T) {
 		f.member(ws, alice, "editor")
 		asks := f.collection(ws, "Asks", true)
 		f.item(ws, asks, "orphan ask", alice, nfxDay(1))
-		if _, err := srv.store.DB().Exec(`UPDATE workspaces SET owner_id = ? WHERE id = ?`, "ghost-owner-bug-4050", ws.ID); err != nil {
+		if _, err := srv.store.DB().Exec(srv.store.D().Rebind(`UPDATE workspaces SET owner_id = ? WHERE id = ?`), "ghost-owner-bug-4050", ws.ID); err != nil {
 			t.Fatal(err)
 		}
 		if u, err := srv.store.GetUser("ghost-owner-bug-4050"); err != nil || u != nil {
@@ -1019,10 +1019,10 @@ func TestNeedsMe_OwnerLookupErrorFailsTheRequest(t *testing.T) {
 		f.member(ws, alice, "editor")
 		asks := f.collection(ws, "Asks", true)
 		f.item(ws, asks, "faulty ask", alice, nfxDay(1))
-		if _, err := srv.store.DB().Exec(`UPDATE workspaces SET owner_id = ? WHERE id = ?`, owner.ID, ws.ID); err != nil {
+		if _, err := srv.store.DB().Exec(srv.store.D().Rebind(`UPDATE workspaces SET owner_id = ? WHERE id = ?`), owner.ID, ws.ID); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := srv.store.DB().Exec(`UPDATE users SET username = '', avatar_url = NULL WHERE id = ?`, owner.ID); err != nil {
+		if _, err := srv.store.DB().Exec(srv.store.D().Rebind(`UPDATE users SET username = '', avatar_url = NULL WHERE id = ?`), owner.ID); err != nil {
 			t.Fatal(err)
 		}
 		if u, err := srv.store.GetUser(owner.ID); err == nil || u != nil {
