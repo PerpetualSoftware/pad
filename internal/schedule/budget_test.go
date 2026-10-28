@@ -52,7 +52,13 @@ func TestBudgetFeb29Minutely(t *testing.T) {
 	// The same rule with a budget below the gap is a CapStall, never a partial answer.
 	lim := Limits{MaxSteps: 1000}
 	stallCalls(t, lim, func() error { _, _, err := c.NextAfter(q, nil, lim); return err })
-	stallCalls(t, lim, func() error { _, err := c.Between(q, q.Add(24*time.Hour), nil, lim); return err })
+	// A window the rule is known to be empty through is a final, empty answer; one
+	// reaching past what the budget examined is a CapStall (TASK-4100 r3).
+	if occ, err := c.Between(q, q.Add(24*time.Hour), nil, lim); err != nil || len(occ) != 0 {
+		t.Errorf("Between inside the examined stretch = %v %v; want an empty answer", occ, err)
+	}
+	short := Limits{MaxSteps: 20}
+	stallCalls(t, short, func() error { _, err := c.Between(q, q.Add(30*24*time.Hour), nil, short); return err })
 }
 
 func TestBudgetUnsatisfiable(t *testing.T) {
@@ -66,7 +72,12 @@ func TestBudgetUnsatisfiable(t *testing.T) {
 	c := compile(t, spec)
 	q := inst(t, "2025-01-01T00:00:00Z")
 	stallCalls(t, Limits{}, func() error { _, _, err := c.NextAfter(q, nil, Limits{}); return err })
-	stallCalls(t, Limits{}, func() error { _, err := c.Between(q, q.Add(24*time.Hour), nil, Limits{}); return err })
+	// Between a day: the rule is examined well past it, so the empty answer is final.
+	if occ, err := c.Between(q, q.Add(24*time.Hour), nil, Limits{}); err != nil || len(occ) != 0 {
+		t.Errorf("Between = %v %v; want an empty answer", occ, err)
+	}
+	short := Limits{MaxSteps: 20}
+	stallCalls(t, short, func() error { _, err := c.Between(q, q.Add(30*24*time.Hour), nil, short); return err })
 }
 
 // TestNoGoroutineOutlivesCall is the instrument for "all work runs in the
@@ -86,8 +97,8 @@ func TestNoGoroutineOutlivesCall(t *testing.T) {
 		} else {
 			_, err = c.Between(q, q.Add(24*time.Hour), nil, lim)
 		}
-		if !errors.Is(err, ErrCapHit) { // any cap: this test is about the count
-			t.Fatalf("call %d: err = %v; want a *CapError", i, err)
+		if err != nil && !errors.Is(err, ErrCapHit) { // any cap, or a final answer: this test is about the count
+			t.Fatalf("call %d: err = %v; want a *CapError or none", i, err)
 		}
 	}
 	if after := runtime.NumGoroutine(); after != before {

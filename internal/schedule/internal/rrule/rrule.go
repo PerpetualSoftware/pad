@@ -135,22 +135,17 @@ type RRule struct {
 	timeset                 []time.Time
 	len                     int
 	budget                  int64 // TASK-4100 H1: step budget per iterator; 0 = unbounded (upstream behaviour)
-	exhausted               bool  // TASK-4100 H1: an iterator ran out of budget
-	reached                 time.Time
+	stall                   time.Time
 }
 
-// SetBudget bounds every iterator of r to n period-loop steps, matched or not.
-// Past n the iterator finishes and Exhausted reports true. 0 is unbounded.
-// TASK-4100 H1: upstream's Next() cannot otherwise be stopped on a no-match stretch.
+// SetBudget bounds every iterator of r to n period-loop steps (0: unbounded). TASK-4100 H1.
 func (r *RRule) SetBudget(n int64) { r.budget = n }
 
-// Exhausted reports whether an iterator of r stopped on its step budget, in
-// which case its output is incomplete. TASK-4100 H1.
-func (r *RRule) Exhausted() bool { return r.exhausted }
+// Exhausted reports whether an iterator of r stopped on its budget. TASK-4100 H1.
+func (r *RRule) Exhausted() bool { return !r.stall.IsZero() }
 
-// Reached is where the iterator stood when it stopped on its budget: nothing
-// before it was left unexamined. TASK-4100 r2.
-func (r *RRule) Reached() time.Time { return r.reached }
+// StallPos bounds below every occurrence an exhausted iterator did not yield. TASK-4100 r3.
+func (r *RRule) StallPos() time.Time { return r.stall }
 
 // NewRRule construct a new RRule instance
 func NewRRule(arg ROption) (*RRule, error) {
@@ -591,20 +586,23 @@ type rIterator struct {
 	steps    int64 // TASK-4100 H1: since the last candidate (r2)
 }
 
-// spend charges one step against the budget and reports true when it is
-// spent, after marking the iterator finished. TASK-4100 H1.
-func (iterator *rIterator) spend() bool {
+// spend charges one step; true when the budget is spent. It is the one place
+// the stall position is set: the start of the first period not fully examined,
+// adv further on from a skip loop that has examined this one. TASK-4100 r3.
+func (iterator *rIterator) spend(adv int) bool {
 	r := iterator.ii.rrule
-	if r.budget <= 0 {
+	if iterator.steps++; r.budget <= 0 || iterator.steps <= r.budget {
 		return false
 	}
-	iterator.steps++
-	if iterator.steps > r.budget {
-		r.exhausted, iterator.finished = true, true
-		r.reached = time.Date(iterator.year, iterator.month, iterator.day, iterator.hour, iterator.minute, iterator.second, 0, r.dtstart.Location())
-		return true
+	iterator.finished = true
+	p := [6]int{iterator.year, int(iterator.month), iterator.day, iterator.hour, iterator.minute, iterator.second}
+	u := [...]int{0, 1, 2, 2, 3, 4, 5}[r.freq] // the field FREQ steps
+	for i := u + 1; i < 6; i++ {
+		p[i] = 1 - i/3 // month and day restart at 1
 	}
-	return false
+	p[u] += adv
+	r.stall = time.Date(p[0], time.Month(p[1]), p[2], p[3], p[4], p[5], 0, r.dtstart.Location())
+	return true
 }
 
 func (iterator *rIterator) generate() {
@@ -614,7 +612,7 @@ func (iterator *rIterator) generate() {
 
 	r := iterator.ii.rrule
 	for iterator.remain.Len() == 0 {
-		if iterator.spend() { // TASK-4100 H1
+		if iterator.spend(0) { // TASK-4100 H1
 			return
 		}
 		// Get dayset with the right frequency
@@ -773,7 +771,7 @@ func (iterator *rIterator) generate() {
 				iterator.hour += ((23 - iterator.hour) / r.interval) * r.interval
 			}
 			for {
-				if iterator.spend() { // TASK-4100 H1
+				if iterator.spend(r.interval) { // TASK-4100 H1
 					return
 				}
 				iterator.hour += r.interval
@@ -794,7 +792,7 @@ func (iterator *rIterator) generate() {
 				iterator.minute += ((1439 - (iterator.hour*60 + iterator.minute)) / r.interval) * r.interval
 			}
 			for {
-				if iterator.spend() { // TASK-4100 H1
+				if iterator.spend(r.interval) { // TASK-4100 H1
 					return
 				}
 				iterator.minute += r.interval
@@ -821,7 +819,7 @@ func (iterator *rIterator) generate() {
 				iterator.second += (((86399 - (iterator.hour*3600 + iterator.minute*60 + iterator.second)) / r.interval) * r.interval)
 			}
 			for {
-				if iterator.spend() { // TASK-4100 H1
+				if iterator.spend(r.interval) { // TASK-4100 H1
 					return
 				}
 				iterator.second += r.interval

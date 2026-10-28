@@ -48,7 +48,11 @@
 // is checked only against produced candidates, so a rule that never matches
 // spins inside one call until year 9999 (TASK-4100 H1). The vendored copy
 // carries a step budget (Limits.MaxSteps) that restarts at every candidate it
-// produces, so it ends only a no-match stretch, with a CapStall. CapScan is a
+// produces, so it ends only a no-match stretch. The engine merges the rule, the
+// RDATEs and the EXDATEs itself (the library's Set is a test oracle only): a
+// rule that stalls is a stream state with a lower-bound position, the RDATEs
+// below it still flow, and a CapStall is returned only when an answer could lie
+// in the part of the rule not examined (TASK-4100 r3). CapScan is a
 // different bound: the total work from Start to the query exceeds Limits.MaxScan
 // periods. Do not "upgrade" the copy back to the module: that removes the bound.
 package schedule

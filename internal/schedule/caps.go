@@ -16,8 +16,9 @@ type Limits struct {
 	MaxDuration  time.Duration // wall-clock check between occurrences of one call
 	// MaxSteps bounds the rule expander's period-loop steps between two
 	// candidates it produces (TASK-4100 H1, r2): the count restarts at every
-	// candidate, so it ends a no-match stretch (CapStall) and nothing else.
-	// Total work is bounded by MaxScan and MaxDuration.
+	// candidate, so it ends a no-match stretch and nothing else. A stall is a
+	// CapStall only when an answer could lie past the examined part (r3). Total
+	// work is bounded by MaxScan and MaxDuration.
 	MaxSteps int64
 }
 
@@ -51,7 +52,7 @@ const (
 	CapWindow    CapKind = "window"    // to-from > MaxWindow; nothing expanded
 	CapInstances CapKind = "instances" // more than MaxInstances occurrences in the window
 	CapScan      CapKind = "scan"      // total work from Start to the query exceeds MaxScan periods; Limit is MaxScan
-	CapStall     CapKind = "stall"     // no generator candidate within MaxSteps library steps; Limit is MaxSteps (TASK-4100 r2)
+	CapStall     CapKind = "stall"     // the rule stalled on MaxSteps before the answer was final; Limit is MaxSteps (TASK-4100 r3)
 	CapTime      CapKind = "time"      // MaxDuration exceeded between two occurrences
 )
 
@@ -81,8 +82,10 @@ var periodUnit = map[string]time.Duration{
 // from Start would take more than MaxScan periods. Only the wall-clock path
 // walks from Start; the elapsed path fast-forwards. base is the query start
 // and q its far end. A rule whose UNTIL is spent before base, or that ends by
-// COUNT, is not estimated: the walk is bounded by MaxSteps and ends on its own,
-// so a spent rule reads as exhausted rather than as a CapScan (TASK-4100 r1).
+// COUNT, is not estimated: it ends on its own, bounded by MaxDuration and
+// MaxInstances, not by MaxSteps (that bounds only a no-match stretch, and the
+// count of steps restarts at every candidate), so a spent rule reads as
+// exhausted rather than as a CapScan (TASK-4100 r1, r3).
 func (c *Compiled) checkScan(loc *time.Location, base, q time.Time, lim Limits) error {
 	if c.rule == nil || c.elapsed || c.rule.Count > 0 || c.untilSpent(loc, base) {
 		return nil

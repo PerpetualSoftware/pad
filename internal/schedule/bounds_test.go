@@ -85,7 +85,7 @@ func TestStallFilteredCandidatesBounded(t *testing.T) {
 	// between yields ends it, and it does, after visiting some.
 	c := compile(t, pinned(t, "UTC", "2025-01-01T00:00", "FREQ=MINUTELY;BYSECOND=0"))
 	seen := 0
-	_, err := c.walk(time.UTC, inst(t, "2025-01-01T00:00:00Z"), Limits{MaxDuration: 20 * time.Millisecond}.fill(), func(Occurrence, time.Time) bool {
+	err := c.walk(time.UTC, inst(t, "2025-01-01T00:00:00Z"), Limits{MaxDuration: 20 * time.Millisecond}.fill(), func() (time.Time, bool) { return time.Time{}, false }, func(Occurrence, time.Time) bool {
 		seen++
 		return false
 	})
@@ -104,7 +104,7 @@ func TestStallFilteredCandidatesBounded(t *testing.T) {
 		t.Errorf("at UNTIL: NextAfter = %v %v %v; want none", o.At, ok, err)
 	}
 
-	// 500 consecutive EXDATEs on a dense rule: skipped inside the set.
+	// 500 consecutive EXDATEs on a dense rule: skipped in the merge, which checks CapTime on each.
 	spec := pinned(t, "UTC", "2025-01-01T00:00", "FREQ=MINUTELY;BYSECOND=0")
 	for i := 0; i < maxDates; i++ {
 		spec.ExDates = append(spec.ExDates, mustWall(t, time.Date(2025, 1, 1, 0, i, 0, 0, time.UTC).Format("2006-01-02T15:04:05")))
@@ -121,9 +121,10 @@ func TestStallFilteredCandidatesBounded(t *testing.T) {
 	}
 }
 
-// TestStallPrefetchKeepsAnswer (R2-L1): the set prefetches each successor, so
-// the stall after the last reachable occurrence (the next Feb 29 is four years
-// on) must not turn that occurrence into an error (TASK-4100 r2).
+// TestStallPrefetchKeepsAnswer (R2-L1): the stall after the last reachable
+// occurrence (the next Feb 29 is four years on) must not turn that occurrence
+// into an error: the rule stalls at a position past the answer's bound, so the
+// answer is final (TASK-4100 r2, r3).
 func TestStallPrefetchKeepsAnswer(t *testing.T) {
 	c := compile(t, pinned(t, "UTC", "2103-03-01T00:00", "FREQ=MINUTELY;BYMONTH=2;BYMONTHDAY=29;BYHOUR=0;BYMINUTE=0"))
 	lim := Limits{MaxSteps: 2000} // covers 2103-03 to 2104-02-29, not the four years after
@@ -160,60 +161,6 @@ func TestStallKinds(t *testing.T) {
 	}
 }
 
-// refWindow is the vendored engine's own answer with an effectively unlimited
-// budget (0 is unbounded): every occurrence in [q, q+w), settled, plus the
-// first one strictly after q when w is 0 (NextAfter's contract) (TASK-4100 r2).
-func refWindow(t *testing.T, c *Compiled, q time.Time, w time.Duration) []Occurrence {
-	t.Helper()
-	loc := c.zone
-	set, _, err := c.newSet(loc, q, true, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var out []Occurrence
-	next := set.Iterator()
-	for {
-		tm, ok := next()
-		if !ok {
-			break
-		}
-		var o Occurrence
-		if c.elapsed {
-			o = Occurrence{At: tm.UTC(), Wall: wallOf(tm.In(loc), c.spec.Start.AllDay)}
-		} else {
-			wl := wallOf(tm, c.spec.Start.AllDay)
-			o = Occurrence{At: Resolve(loc, wl), Wall: wl}
-		}
-		if o.Wall.Year > maxYear || c.afterUntil(o) {
-			continue
-		}
-		if !o.At.Before(q) && (w != 0 || o.At.After(q)) {
-			out = append(out, o)
-		}
-		end := c.bound(q.Add(w), loc)
-		if w == 0 && len(out) > 0 {
-			end = c.bound(settle(append([]Occurrence(nil), out...))[0].At, loc)
-		}
-		if tm.After(end) {
-			break
-		}
-	}
-	out = settle(out)
-	if w == 0 {
-		if len(out) > 1 {
-			out = out[:1]
-		}
-		return out
-	}
-	kept := out[:0]
-	for _, o := range out {
-		if o.At.Before(q.Add(w)) {
-			kept = append(kept, o)
-		}
-	}
-	return kept
-}
-
 // boundsCheck holds one compiled schedule to the bound: at default Limits (but
 // for the wall-clock check) NextAfter and Between from q return what the
 // unlimited engine returns. A CapScan is allowed only where MaxScan really
@@ -236,7 +183,7 @@ func boundsCheck(t *testing.T, name string, c *Compiled, q time.Time) (scanned b
 		capOK(err, q)
 		return
 	}
-	ref := refWindow(t, c, q, 0)
+	ref := refWindow(t, c, q, 0, true)
 	if ok != (len(ref) == 1) || (ok && !o.At.Equal(ref[0].At)) {
 		t.Errorf("%s: NextAfter(%s) = %v %v; the unlimited engine has %v", name, q.Format(time.RFC3339), o.At, ok, gotTimes(ref))
 	}
@@ -249,7 +196,7 @@ func boundsCheck(t *testing.T, name string, c *Compiled, q time.Time) (scanned b
 		occ, err := c.Between(from, from.Add(w), nil, patient)
 		if err != nil {
 			capOK(err, from)
-		} else if ref := refWindow(t, c, from, w); !sameTimes(gotTimes(occ), gotTimes(ref)) {
+		} else if ref := refWindow(t, c, from, w, true); !sameTimes(gotTimes(occ), gotTimes(ref)) {
 			t.Errorf("%s: Between(%s, +6h) = %v; the unlimited engine has %v", name, from.Format(time.RFC3339), gotTimes(occ), gotTimes(ref))
 		}
 	}

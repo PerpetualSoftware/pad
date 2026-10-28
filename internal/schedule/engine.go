@@ -1,7 +1,6 @@
 package schedule
 
 import (
-	"errors"
 	"sort"
 	"time"
 
@@ -106,49 +105,42 @@ func (c *Compiled) afterUntil(o Occurrence) bool {
 	return true
 }
 
-// newSet builds a fresh library set. The wall-clock path hands the library
-// UTC-labelled walls, so time.Date never guesses in a gap, and Resolve maps
-// each result. The elapsed path hands it real instants, fast-forwarded to
-// base so the distance from Start costs nothing.
-func (c *Compiled) newSet(loc *time.Location, base time.Time, withDates bool, steps int64) (*rrule.Set, *rrule.RRule, error) {
-	set := &rrule.Set{}
-	var rr *rrule.RRule
-	conv := func(w Wall) time.Time { return w.naive() }
+// conv maps a wall reading into the library's time space: a UTC-labelled wall
+// on the wall-clock path (so time.Date never guesses in a gap and Resolve maps
+// each result), a real instant on the elapsed path.
+func (c *Compiled) conv(loc *time.Location) func(Wall) time.Time {
 	if c.elapsed {
-		conv = func(w Wall) time.Time { return Resolve(loc, w) }
+		return func(w Wall) time.Time { return Resolve(loc, w) }
 	}
-	if r := c.rule; r != nil {
-		dtstart, count, skip := conv(c.spec.Start), r.Count, c.untilSpent(loc, base)
-		if c.elapsed && base.After(dtstart) {
-			step := time.Duration(max(r.Interval, 1)) * periodUnit[r.Freq]
-			k := int64(base.Sub(dtstart) / step)
-			if r.Count > 0 {
-				skip, count = k >= int64(r.Count), r.Count-int(k)
+	return func(w Wall) time.Time { return w.naive() }
+}
+
+// newRule builds the library's rule generator alone, budgeted at steps (TASK-4100
+// H1). The elapsed path fast-forwards it to base so the distance from Start costs
+// nothing. It is nil when there is no rule or the rule is spent before base.
+func (c *Compiled) newRule(loc *time.Location, base time.Time, steps int64) (*rrule.RRule, error) {
+	r := c.rule
+	if r == nil || c.untilSpent(loc, base) {
+		return nil, nil
+	}
+	dtstart, count := c.conv(loc)(c.spec.Start), r.Count
+	if c.elapsed && base.After(dtstart) {
+		step := time.Duration(max(r.Interval, 1)) * periodUnit[r.Freq]
+		k := int64(base.Sub(dtstart) / step)
+		if r.Count > 0 {
+			if k >= int64(r.Count) {
+				return nil, nil
 			}
-			dtstart = dtstart.Add(time.Duration(k) * step)
+			count = r.Count - int(k)
 		}
-		if !skip {
-			var err error
-			rr, err = rrule.NewRRule(c.options(loc, dtstart, count))
-			if err != nil {
-				return nil, nil, malformed(CodeUnsupported, "", "", "the rule could not be expanded")
-			}
-			rr.SetBudget(steps) // TASK-4100 H1
-			set.RRule(rr)
-		}
+		dtstart = dtstart.Add(time.Duration(k) * step)
 	}
-	if withDates {
-		for _, w := range c.spec.RDates {
-			set.RDate(conv(w))
-		}
-		for _, w := range c.spec.ExDates {
-			set.ExDate(conv(w))
-		}
-		if c.rule == nil {
-			set.RDate(conv(c.spec.Start))
-		}
+	rr, err := rrule.NewRRule(c.options(loc, dtstart, count))
+	if err != nil {
+		return nil, malformed(CodeUnsupported, "", "", "the rule could not be expanded")
 	}
-	return set, rr, nil
+	rr.SetBudget(steps)
+	return rr, nil
 }
 
 func (c *Compiled) options(loc *time.Location, dtstart time.Time, count int) rrule.ROption {
@@ -179,13 +171,13 @@ func (c *Compiled) probeSynced() (bool, error) {
 	if loc == nil {
 		loc = time.UTC
 	}
-	set, _, err := c.newSet(loc, time.Time{}, false, DefaultLimits.MaxSteps)
-	if err != nil {
+	rr, err := c.newRule(loc, time.Time{}, DefaultLimits.MaxSteps)
+	if err != nil || rr == nil {
 		return false, err
 	}
 	synced := false
 	err = guard(func() error {
-		t, ok := set.Iterator()()
+		t, ok := rr.Iterator()()
 		synced = ok && t.Equal(c.spec.Start.naive()) &&
 			!c.afterUntil(Occurrence{At: Resolve(loc, c.spec.Start), Wall: c.spec.Start})
 		return nil
@@ -193,40 +185,118 @@ func (c *Compiled) probeSynced() (bool, error) {
 	return err == nil && synced, err
 }
 
-// walk feeds visit every occurrence in library order, with the key the walk
-// is bounded on: the wall reading (wall-clock path) or the instant (elapsed
-// path). visit returns true to stop. The wall-clock order is not the instant
-// order inside a DST gap, so callers sort and de-duplicate what they keep.
-// A stalled expander (CapStall) stopped early, so what it yielded is
-// incomplete, except an occurrence the iterator already held when its prefetch
-// of the successor stalled: that one is visited, and walk returns the stall
-// after it together with where the expander stood (reached), so a caller whose
-// window ends before that can set the stall aside (covers). With RDATEs the
-// set drops the stalled rule and may reorder what follows, so there a stall is
-// always an error (TASK-4100 r2).
-func (c *Compiled) walk(loc *time.Location, base time.Time, lim Limits, visit func(o Occurrence, key time.Time) bool) (time.Time, error) {
-	set, rr, err := c.newSet(loc, base, true, lim.MaxSteps)
+// merger merges the three streams of a schedule in library order: the rule's
+// generator, budgeted, alone; the RDATEs, a sorted slice; and the EXDATEs, a set.
+// The library's rrule.Set is not used to expand, so the schedule's correctness
+// does not rest on what the set does inside (TASK-4100 r3).
+type merger struct {
+	rule     rrule.Next
+	rr       *rrule.RRule // nil: no rule stream
+	head     time.Time    // the rule's next candidate, when has
+	has      bool
+	ruleDone bool // the rule stream returned nothing more: it ended, or it stalled
+	rdates   []time.Time
+	ex       map[int64]bool
+	last     time.Time
+	lim      Limits
+	deadline time.Time
+}
+
+func (c *Compiled) newMerger(loc *time.Location, base time.Time, lim Limits) (*merger, error) {
+	rr, err := c.newRule(loc, base, lim.MaxSteps)
 	if err != nil {
-		return time.Time{}, err
+		return nil, err
 	}
-	deadline := time.Now().Add(lim.MaxDuration)
-	stalled := func() bool { return rr != nil && rr.Exhausted() }
-	stall := &CapError{Kind: CapStall, Limit: lim.MaxSteps}
-	next := set.Iterator()
-	if stalled() {
-		return time.Time{}, stall
+	conv := c.conv(loc)
+	m := &merger{rr: rr, ex: map[int64]bool{}, lim: lim, deadline: time.Now().Add(lim.MaxDuration)}
+	if rr != nil {
+		m.rule = rr.Iterator()
+	} else {
+		m.ruleDone = true
+	}
+	for _, w := range c.spec.RDates {
+		m.rdates = append(m.rdates, conv(w))
+	}
+	if c.rule == nil {
+		m.rdates = append(m.rdates, conv(c.spec.Start))
+	}
+	sort.Slice(m.rdates, func(i, j int) bool { return m.rdates[i].Before(m.rdates[j]) })
+	for _, w := range c.spec.ExDates {
+		m.ex[conv(w).Unix()] = true // exact instant, in the space the candidates are in
+	}
+	return m, nil
+}
+
+// next is the next occurrence in library order, rule and RDATE merged, a repeat
+// dropped, an EXDATE skipped. final is the key past which the caller stops
+// reading, when bounded. A stalled rule is a state, not a failure: the RDATEs
+// below its stall position still flow, and the stream is stuck only when the
+// next thing in it could lie in the unexamined part. CapTime is checked on every
+// pass, so a long run of skipped EXDATEs is bounded too (TASK-4100 r3 D1).
+func (m *merger) next(final time.Time, bounded bool) (time.Time, bool, error) {
+	for {
+		if time.Now().After(m.deadline) {
+			return time.Time{}, false, &CapError{Kind: CapTime, Limit: int64(m.lim.MaxDuration)}
+		}
+		if !m.has && !m.ruleDone {
+			if m.head, m.has = m.rule(); !m.has {
+				m.ruleDone = true
+			}
+		}
+		var t time.Time
+		switch {
+		case m.has && (len(m.rdates) == 0 || !m.rdates[0].Before(m.head)):
+			t, m.has = m.head, false
+			if len(m.rdates) > 0 && m.rdates[0].Equal(t) {
+				m.rdates = m.rdates[1:]
+			}
+		case len(m.rdates) > 0 && (m.has || !m.stalled() || m.rdates[0].Before(m.rr.StallPos())):
+			t, m.rdates = m.rdates[0], m.rdates[1:]
+		case m.stalled():
+			return m.stuck(final, bounded)
+		default:
+			return time.Time{}, false, nil
+		}
+		if !m.last.IsZero() && t.Equal(m.last) {
+			continue
+		}
+		m.last = t
+		if !m.ex[t.Unix()] {
+			return t, true, nil
+		}
+	}
+}
+
+func (m *merger) stalled() bool { return m.rr != nil && m.ruleDone && m.rr.Exhausted() }
+
+// stuck is the only place a CapStall comes from (TASK-4100 r3 D3). The stream
+// has nothing below the rule's stall position that it has not yielded. If the
+// caller stops reading before that position, what it has is final and the stream
+// ends for it; otherwise an occurrence may be hiding in the unexamined part, and
+// the answer is a CapStall, never a partial one.
+func (m *merger) stuck(final time.Time, bounded bool) (time.Time, bool, error) {
+	if bounded && m.rr.StallPos().After(final) {
+		return time.Time{}, false, nil
+	}
+	return time.Time{}, false, &CapError{Kind: CapStall, Limit: m.lim.MaxSteps}
+}
+
+// walk feeds visit every occurrence in library order, with the key the walk is
+// bounded on: the wall reading (wall-clock path) or the instant (elapsed path).
+// visit returns true to stop. final is the key past which the caller reads no
+// further, when bounded; it is asked before each read, since the caller's bound
+// tightens as it finds answers. The wall-clock order is not the instant order
+// inside a DST gap, so callers sort and de-duplicate what they keep.
+func (c *Compiled) walk(loc *time.Location, base time.Time, lim Limits, final func() (time.Time, bool), visit func(o Occurrence, key time.Time) bool) error {
+	m, err := c.newMerger(loc, base, lim)
+	if err != nil {
+		return err
 	}
 	for {
-		if time.Now().After(deadline) {
-			return time.Time{}, &CapError{Kind: CapTime, Limit: int64(lim.MaxDuration)}
-		}
-		t, ok := next()
-		held := ok && stalled() && len(c.spec.RDates) == 0
-		if stalled() && !held {
-			return time.Time{}, stall
-		}
-		if !ok {
-			return time.Time{}, nil
+		fin, bounded := final()
+		t, ok, err := m.next(fin, bounded)
+		if err != nil || !ok {
+			return err
 		}
 		var o Occurrence
 		if c.elapsed {
@@ -236,13 +306,10 @@ func (c *Compiled) walk(loc *time.Location, base time.Time, lim Limits, visit fu
 			o = Occurrence{At: Resolve(loc, w), Wall: w}
 		}
 		if o.Wall.Year > maxYear {
-			return time.Time{}, nil
+			return nil
 		}
 		if !c.afterUntil(o) && visit(o, t) {
-			return time.Time{}, nil
-		}
-		if held {
-			return rr.Reached(), stall
+			return nil
 		}
 	}
 }
@@ -260,9 +327,9 @@ func (c *Compiled) NextAfter(t time.Time, view *time.Location, lim Limits) (Occu
 	}
 	var best Occurrence
 	found := false
-	var reached time.Time
-	err = guard(func() (err error) {
-		reached, err = c.walk(loc, t, lim, func(o Occurrence, key time.Time) bool {
+	err = guard(func() error {
+		final := func() (time.Time, bool) { return c.bound(best.At, loc), found }
+		return c.walk(loc, t, lim, final, func(o Occurrence, key time.Time) bool {
 			if found && key.After(c.bound(best.At, loc)) {
 				return true
 			}
@@ -271,9 +338,8 @@ func (c *Compiled) NextAfter(t time.Time, view *time.Location, lim Limits) (Occu
 			}
 			return false
 		})
-		return err
 	})
-	if err != nil && !(found && covers(err, reached, c.bound(best.At, loc))) {
+	if err != nil {
 		return Occurrence{}, false, err
 	}
 	return best, found, nil
@@ -300,10 +366,15 @@ func (c *Compiled) Between(from, to time.Time, view *time.Location, lim Limits) 
 	// that resolves earlier (a DST gap) still makes the cut (TASK-4100 r1).
 	var stop time.Time
 	settleAt := lim.MaxInstances
-	var reached time.Time
 	end := c.bound(to, loc)
-	err = guard(func() (err error) {
-		reached, err = c.walk(loc, from, lim, func(o Occurrence, key time.Time) bool {
+	final := func() (time.Time, bool) {
+		if !stop.IsZero() && stop.Before(end) {
+			return stop, true
+		}
+		return end, true
+	}
+	err = guard(func() error {
+		return c.walk(loc, from, lim, final, func(o Occurrence, key time.Time) bool {
 			if key.After(end) || (!stop.IsZero() && key.After(stop)) {
 				return true
 			}
@@ -319,9 +390,8 @@ func (c *Compiled) Between(from, to time.Time, view *time.Location, lim Limits) 
 			}
 			return false
 		})
-		return err
 	})
-	if err != nil && !covers(err, reached, end) {
+	if err != nil {
 		return nil, err
 	}
 	out = settle(out)
@@ -331,14 +401,10 @@ func (c *Compiled) Between(from, to time.Time, view *time.Location, lim Limits) 
 	return out, nil
 }
 
-// covers says err is the stall after a held occurrence and the expander had
-// examined everything up to end, so the answer ending there is complete.
-func covers(err error, reached, end time.Time) bool {
-	var ce *CapError
-	return errors.As(err, &ce) && ce.Kind == CapStall && !reached.Before(end)
-}
-
-// settle sorts by instant and drops a repeated instant.
+// settle sorts by instant and drops a repeated instant. It also masks a repeat
+// the merge itself might yield, so nothing at the public API shows one; the merge
+// is held to yielding each instant once by TestMergeYieldsEachInstantOnce
+// (TASK-4100 r3 f3).
 func settle(out []Occurrence) []Occurrence {
 	sort.SliceStable(out, func(i, j int) bool { return out[i].At.Before(out[j].At) })
 	kept := out[:0]
