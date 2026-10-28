@@ -2,10 +2,9 @@ package schedule
 
 import (
 	"sort"
-	"sync/atomic"
 	"time"
 
-	"github.com/teambition/rrule-go"
+	"github.com/PerpetualSoftware/pad/internal/schedule/internal/rrule"
 )
 
 // wallMargin is how far past the query bound the wall-clock walk continues.
@@ -82,8 +81,9 @@ func (c *Compiled) until(loc *time.Location) time.Time {
 // UTC-labelled walls, so time.Date never guesses in a gap, and Resolve maps
 // each result. The elapsed path hands it real instants, fast-forwarded to
 // base so the distance from Start costs nothing.
-func (c *Compiled) newSet(loc *time.Location, base time.Time, withDates bool) (*rrule.Set, error) {
+func (c *Compiled) newSet(loc *time.Location, base time.Time, withDates bool, steps int64) (*rrule.Set, *rrule.RRule, error) {
 	set := &rrule.Set{}
+	var rr *rrule.RRule
 	conv := func(w Wall) time.Time { return w.naive() }
 	if c.elapsed {
 		conv = func(w Wall) time.Time { return Resolve(loc, w) }
@@ -99,10 +99,12 @@ func (c *Compiled) newSet(loc *time.Location, base time.Time, withDates bool) (*
 			dtstart = dtstart.Add(time.Duration(k) * step)
 		}
 		if !skip {
-			rr, err := rrule.NewRRule(c.options(loc, dtstart, count))
+			var err error
+			rr, err = rrule.NewRRule(c.options(loc, dtstart, count))
 			if err != nil {
-				return nil, malformed(CodeUnsupported, "", "", "the rule could not be expanded")
+				return nil, nil, malformed(CodeUnsupported, "", "", "the rule could not be expanded")
 			}
+			rr.SetBudget(steps) // TASK-4100 H1
 			set.RRule(rr)
 		}
 	}
@@ -117,7 +119,7 @@ func (c *Compiled) newSet(loc *time.Location, base time.Time, withDates bool) (*
 			set.RDate(conv(c.spec.Start))
 		}
 	}
-	return set, nil
+	return set, rr, nil
 }
 
 func (c *Compiled) options(loc *time.Location, dtstart time.Time, count int) rrule.ROption {
@@ -141,38 +143,52 @@ func (c *Compiled) options(loc *time.Location, dtstart time.Time, count int) rru
 }
 
 // probeSynced says whether the rule alone produces Start as its first
-// instance. A rule the guard cannot finish counts as unsynced.
+// instance. A rule that exhausts its step budget before any instance (it never
+// matches, or only far away) counts as unsynced, not as an error.
 func (c *Compiled) probeSynced() (bool, error) {
-	set, err := c.newSet(time.UTC, time.Time{}, false)
+	set, rr, err := c.newSet(time.UTC, time.Time{}, false, DefaultLimits.MaxSteps)
 	if err != nil {
 		return false, err
 	}
 	synced := false
-	err = guard(DefaultLimits.MaxDuration, func(*atomic.Bool) error {
+	err = guard(func() error {
 		t, ok := set.Iterator()()
-		synced = ok && t.Equal(c.spec.Start.naive())
+		synced = ok && !rr.Exhausted() && t.Equal(c.spec.Start.naive())
 		return nil
 	})
-	if err != nil && !isCap(err) {
-		return false, err
-	}
-	return err == nil && synced, nil
+	return err == nil && synced, err
 }
-
-func isCap(err error) bool { _, ok := err.(*CapError); return ok }
 
 // walk feeds visit every occurrence in library order, with the key the walk
 // is bounded on: the wall reading (wall-clock path) or the instant (elapsed
 // path). visit returns true to stop. The wall-clock order is not the instant
 // order inside a DST gap, so callers sort and de-duplicate what they keep.
-func (c *Compiled) walk(loc *time.Location, base time.Time, stop *atomic.Bool, visit func(o Occurrence, key time.Time) bool) error {
-	set, err := c.newSet(loc, base, true)
+func (c *Compiled) walk(loc *time.Location, base time.Time, lim Limits, visit func(o Occurrence, key time.Time) bool) error {
+	set, rr, err := c.newSet(loc, base, true, lim.MaxSteps)
 	if err != nil {
 		return err
 	}
+	deadline := time.Now().Add(lim.MaxDuration)
+	// An exhausted step budget means the expander stopped early, so what it
+	// yielded is incomplete: a CapScan, never a partial result (TASK-4100 H1).
+	spent := func() error {
+		if rr != nil && rr.Exhausted() {
+			return &CapError{Kind: CapScan, Limit: lim.MaxSteps}
+		}
+		return nil
+	}
 	next := set.Iterator()
-	for !stop.Load() {
+	if err := spent(); err != nil {
+		return err
+	}
+	for {
+		if time.Now().After(deadline) {
+			return &CapError{Kind: CapTime, Limit: int64(lim.MaxDuration)}
+		}
 		t, ok := next()
+		if err := spent(); err != nil {
+			return err
+		}
 		if !ok {
 			return nil
 		}
@@ -187,7 +203,6 @@ func (c *Compiled) walk(loc *time.Location, base time.Time, stop *atomic.Bool, v
 			return nil
 		}
 	}
-	return nil
 }
 
 // NextAfter returns the first occurrence strictly after t, or found=false
@@ -203,8 +218,8 @@ func (c *Compiled) NextAfter(t time.Time, view *time.Location, lim Limits) (Occu
 	}
 	var best Occurrence
 	found := false
-	err = guard(lim.MaxDuration, func(stop *atomic.Bool) error {
-		return c.walk(loc, t, stop, func(o Occurrence, key time.Time) bool {
+	err = guard(func() error {
+		return c.walk(loc, t, lim, func(o Occurrence, key time.Time) bool {
 			if found && key.After(c.bound(best.At, loc)) {
 				return true
 			}
@@ -236,9 +251,9 @@ func (c *Compiled) Between(from, to time.Time, view *time.Location, lim Limits) 
 		return nil, err
 	}
 	var out []Occurrence
-	err = guard(lim.MaxDuration, func(stop *atomic.Bool) error {
+	err = guard(func() error {
 		end := c.bound(to, loc)
-		return c.walk(loc, from, stop, func(o Occurrence, key time.Time) bool {
+		return c.walk(loc, from, lim, func(o Occurrence, key time.Time) bool {
 			if key.After(end) {
 				return true
 			}

@@ -134,7 +134,18 @@ type RRule struct {
 	byeaster                []int
 	timeset                 []time.Time
 	len                     int
+	budget                  int64 // TASK-4100 H1: step budget per iterator; 0 = unbounded (upstream behaviour)
+	exhausted               bool  // TASK-4100 H1: an iterator ran out of budget
 }
+
+// SetBudget bounds every iterator of r to n period-loop steps, matched or not.
+// Past n the iterator finishes and Exhausted reports true. 0 is unbounded.
+// TASK-4100 H1: upstream's Next() cannot otherwise be stopped on a no-match stretch.
+func (r *RRule) SetBudget(n int64) { r.budget = n }
+
+// Exhausted reports whether an iterator of r stopped on its step budget, in
+// which case its output is incomplete. TASK-4100 H1.
+func (r *RRule) Exhausted() bool { return r.exhausted }
 
 // NewRRule construct a new RRule instance
 func NewRRule(arg ROption) (*RRule, error) {
@@ -572,6 +583,22 @@ type rIterator struct {
 	remain   reusingRemainSlice
 	finished bool
 	dayset   []optInt
+	steps    int64 // TASK-4100 H1
+}
+
+// spend charges one step against the budget and reports true when it is
+// spent, after marking the iterator finished. TASK-4100 H1.
+func (iterator *rIterator) spend() bool {
+	r := iterator.ii.rrule
+	if r.budget <= 0 {
+		return false
+	}
+	iterator.steps++
+	if iterator.steps > r.budget {
+		r.exhausted, iterator.finished = true, true
+		return true
+	}
+	return false
 }
 
 func (iterator *rIterator) generate() {
@@ -581,6 +608,9 @@ func (iterator *rIterator) generate() {
 
 	r := iterator.ii.rrule
 	for iterator.remain.Len() == 0 {
+		if iterator.spend() { // TASK-4100 H1
+			return
+		}
 		// Get dayset with the right frequency
 		setStart, setEnd := iterator.ii.calcDaySet(r.freq, iterator.year, iterator.month, iterator.day)
 		iterator.fillDaySetMonotonic(setStart, setEnd)
@@ -735,6 +765,9 @@ func (iterator *rIterator) generate() {
 				iterator.hour += ((23 - iterator.hour) / r.interval) * r.interval
 			}
 			for {
+				if iterator.spend() { // TASK-4100 H1
+					return
+				}
 				iterator.hour += r.interval
 				div, mod := divmod(iterator.hour, 24)
 				if div != 0 {
@@ -753,6 +786,9 @@ func (iterator *rIterator) generate() {
 				iterator.minute += ((1439 - (iterator.hour*60 + iterator.minute)) / r.interval) * r.interval
 			}
 			for {
+				if iterator.spend() { // TASK-4100 H1
+					return
+				}
 				iterator.minute += r.interval
 				div, mod := divmod(iterator.minute, 60)
 				if div != 0 {
@@ -777,6 +813,9 @@ func (iterator *rIterator) generate() {
 				iterator.second += (((86399 - (iterator.hour*3600 + iterator.minute*60 + iterator.second)) / r.interval) * r.interval)
 			}
 			for {
+				if iterator.spend() { // TASK-4100 H1
+					return
+				}
 				iterator.second += r.interval
 				div, mod := divmod(iterator.second, 60)
 				if div != 0 {

@@ -41,4 +41,12 @@
 // A DTSTART the rule does not produce is not emitted (dateutil semantics, ruling
 // Q1). Every refusal is a *MalformedError carrying a Code and the offending Part;
 // no third-party error text ever reaches a caller.
+//
+// VENDORED EXPANDER. The library that expands a rule is vendored at
+// internal/schedule/internal/rrule (teambition/rrule-go v1.8.2, MIT; see its
+// PROVENANCE.md) because its Next() is unbounded on a no-match stretch: UNTIL
+// is checked only against produced candidates, so a rule that never matches
+// spins inside one call until year 9999 (TASK-4100 H1). The vendored copy
+// carries a step budget (Limits.MaxSteps) that ends the walk with a CapScan.
+// Do not "upgrade" it back to the module: that removes the bound.
 package schedule

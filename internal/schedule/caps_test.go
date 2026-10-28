@@ -111,17 +111,16 @@ func TestElapsedFastForwardCount(t *testing.T) {
 }
 
 func TestCapTimeGuard(t *testing.T) {
-	// BYYEARDAY=200 never falls in January: the library walks to year 9999.
-	c := compile(t, pinned(t, "UTC", "2025-01-01T00:00", "FREQ=MINUTELY;BYMONTH=1;BYYEARDAY=200"))
-	began := time.Now()
-	_, _, err := c.NextAfter(inst(t, "2025-01-01T00:00:00Z"), nil, Limits{MaxDuration: 50 * time.Millisecond})
-	ce := asCap(t, err, CapTime)
-	if ce.Limit != int64(50*time.Millisecond) {
-		t.Errorf("Limit = %d; want 50ms in ns", ce.Limit)
+	// A wall-clock check between yields, in the calling goroutine (TASK-4100 H1).
+	// The elapsed rule yields on every minute, so a 1ns budget trips on the first.
+	c := compile(t, pinned(t, "UTC", "2025-01-01T00:00", "FREQ=MINUTELY"))
+	from := inst(t, "2025-01-01T00:00:00Z")
+	_, err := c.Between(from, from.Add(24*time.Hour), nil, Limits{MaxDuration: time.Nanosecond})
+	if ce := asCap(t, err, CapTime); ce.Limit != 1 {
+		t.Errorf("Limit = %d; want 1ns", ce.Limit)
 	}
-	if d := time.Since(began); d > 500*time.Millisecond {
-		t.Errorf("returned after %v; the guard must not wait for the library", d)
-	}
+	_, _, err = c.NextAfter(from, nil, Limits{MaxDuration: time.Nanosecond})
+	asCap(t, err, CapTime)
 }
 
 func TestCapZeroFieldsUseDefaults(t *testing.T) {

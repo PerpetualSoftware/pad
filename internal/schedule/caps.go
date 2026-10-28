@@ -3,7 +3,6 @@ package schedule
 import (
 	"errors"
 	"strconv"
-	"sync/atomic"
 	"time"
 )
 
@@ -13,11 +12,16 @@ type Limits struct {
 	MaxWindow    time.Duration // Between only
 	MaxInstances int           // Between only
 	MaxScan      int64         // FREQ periods between Start and the query point that a call may walk
-	MaxDuration  time.Duration // wall-clock guard on one call
+	MaxDuration  time.Duration // wall-clock check between occurrences of one call
+	// MaxSteps bounds the rule expander's period-loop steps in one call,
+	// matched or not (TASK-4100 H1). It is what stops a rule that never
+	// matches, or matches only far away, inside a single step of the library.
+	// At the default a call spends well under MaxDuration.
+	MaxSteps int64
 }
 
 // DefaultLimits is what a zero Limits field falls back to.
-var DefaultLimits = Limits{MaxWindow: 92 * 24 * time.Hour, MaxInstances: 500, MaxScan: 2_000_000, MaxDuration: 250 * time.Millisecond}
+var DefaultLimits = Limits{MaxWindow: 92 * 24 * time.Hour, MaxInstances: 500, MaxScan: 2_000_000, MaxDuration: 250 * time.Millisecond, MaxSteps: 200_000}
 
 func (l Limits) fill() Limits {
 	d := DefaultLimits
@@ -33,6 +37,9 @@ func (l Limits) fill() Limits {
 	if l.MaxDuration > 0 {
 		d.MaxDuration = l.MaxDuration
 	}
+	if l.MaxSteps > 0 {
+		d.MaxSteps = l.MaxSteps
+	}
 	return d
 }
 
@@ -42,8 +49,8 @@ type CapKind string
 const (
 	CapWindow    CapKind = "window"    // to-from > MaxWindow; nothing expanded
 	CapInstances CapKind = "instances" // more than MaxInstances occurrences in the window
-	CapScan      CapKind = "scan"      // query point too far from Start for the rule's step
-	CapTime      CapKind = "time"      // MaxDuration exceeded
+	CapScan      CapKind = "scan"      // query point too far from Start, or the rule matches too rarely, for MaxSteps
+	CapTime      CapKind = "time"      // MaxDuration exceeded between two occurrences
 )
 
 // ErrCapHit matches every *CapError through errors.Is.
@@ -82,28 +89,15 @@ func (c *Compiled) checkScan(loc *time.Location, q time.Time, lim Limits) error 
 	return nil
 }
 
-// guard runs fn and gives up on it after limit. The library cannot be
-// interrupted, so a timed-out fn is told to stop through the flag and left to
-// finish on its own; the caller must not read what it wrote. A panic in the
-// library becomes a MalformedError instead of crashing the caller.
-func guard(limit time.Duration, fn func(stop *atomic.Bool) error) error {
-	var stop atomic.Bool
-	done := make(chan error, 1)
-	go func() {
-		defer func() {
-			if recover() != nil {
-				done <- malformed(CodeUnsupported, "", "", "the rule could not be expanded")
-			}
-		}()
-		done <- fn(&stop)
+// guard runs fn in the calling goroutine. A panic in the library becomes a
+// MalformedError instead of crashing the caller. Nothing is abandoned: every
+// expansion is bounded by Limits.MaxSteps inside the vendored generator
+// (TASK-4100 H1), so there is no goroutine to leak.
+func guard(fn func() error) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = malformed(CodeUnsupported, "", "", "the rule could not be expanded")
+		}
 	}()
-	timer := time.NewTimer(limit)
-	defer timer.Stop()
-	select {
-	case err := <-done:
-		return err
-	case <-timer.C:
-		stop.Store(true)
-		return &CapError{Kind: CapTime, Limit: int64(limit)}
-	}
+	return fn()
 }
