@@ -1,6 +1,7 @@
 package schedule
 
 import (
+	"errors"
 	"runtime"
 	"testing"
 	"time"
@@ -85,4 +86,33 @@ func TestBudgetUnsatisfiable(t *testing.T) {
 		_, err := c.Between(q, q.Add(24*time.Hour), nil, Limits{})
 		return err
 	})
+}
+
+// TestNoGoroutineOutlivesCall is the instrument for "all work runs in the
+// caller" (TASK-4100 H1). MaxDuration is tiny and MaxSteps large, so the
+// budget walk (2M steps, about 130 ms at the measured ~65 ns a step; the
+// whole walk to year 9999 is about 2.9M, so the budget still trips first)
+// outlasts all 20 calls. A restored abandon path returns CapTime at 1 ms
+// while its goroutine keeps walking, and the count read here, with no settle,
+// is then about 20 higher.
+func TestNoGoroutineOutlivesCall(t *testing.T) {
+	c := compile(t, pinned(t, "UTC", "2025-01-01T00:00", "FREQ=MINUTELY;BYMONTH=1;BYYEARDAY=200"))
+	q := inst(t, "2025-01-01T00:00:00Z")
+	lim := Limits{MaxDuration: time.Millisecond, MaxSteps: 2_000_000}
+	before := runtime.NumGoroutine()
+	for i := 0; i < 20; i++ {
+		var err error
+		if i%2 == 0 {
+			_, _, err = c.NextAfter(q, nil, lim)
+		} else {
+			_, err = c.Between(q, q.Add(24*time.Hour), nil, lim)
+		}
+		var ce *CapError
+		if !errors.As(err, &ce) {
+			t.Fatalf("call %d: err = %v; want a *CapError", i, err)
+		}
+	}
+	if after := runtime.NumGoroutine(); after != before {
+		t.Errorf("goroutines %d -> %d right after 20 calls; none may outlive a call", before, after)
+	}
 }
