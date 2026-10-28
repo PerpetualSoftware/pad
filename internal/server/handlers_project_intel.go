@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/usertz"
 )
 
 // This file implements the browser/REST surface for the "project
@@ -308,6 +309,9 @@ type StandupItem struct {
 // exactly; the MCP HTTP transport proxies to this endpoint (TASK-1916) and
 // passes the encoded response through verbatim.
 type StandupResponse struct {
+	// Timezone and TimezoneNote: see DashboardResponse (TASK-4101).
+	Timezone      string        `json:"timezone,omitempty"`
+	TimezoneNote  string        `json:"timezone_note,omitempty"`
 	Date          string        `json:"date"`
 	Days          int           `json:"days"`
 	Completed     []StandupItem `json:"completed"`
@@ -374,8 +378,11 @@ func (s *Server) handleGetProjectStandup(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
+	zone := viewerZone(r)
 	resp := StandupResponse{
-		Date:          time.Now().Format("2006-01-02"),
+		Timezone:      zone.Name,
+		TimezoneNote:  usertz.Note(zone),
+		Date:          time.Now().In(zone.Loc).Format("2006-01-02"),
 		Days:          days,
 		Completed:     make([]StandupItem, 0, len(completed)),
 		InProgress:    make([]StandupItem, 0, len(inProgress)),

@@ -726,7 +726,7 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 	for k, v := range fieldMap {
 		beforeAuto[k] = v
 	}
-	autoPopulateDates(fieldMap, item.Fields, schema)
+	autoPopulateDates(fieldMap, item.Fields, schema, viewerToday(r))
 	autoDateKeys := make([]string, 0, 2)
 	for k, v := range fieldMap {
 		if old, had := beforeAuto[k]; !had || !reflect.DeepEqual(old, v) {

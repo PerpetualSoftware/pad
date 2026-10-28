@@ -257,8 +257,8 @@ func nowOr(v needs.Viewer) time.Time {
 
 // ---- importance ----
 
-// loc is the calendar the deadline part reads "today" in; nil means time.Local,
-// the dashboard's own (overdueToday). A field so a test needs no global.
+// loc is the calendar the deadline part reads "today" in when the viewer carries
+// none (needs.Viewer.Loc); nil means UTC. A field so a test needs no global.
 type importanceScorer struct {
 	s   *Server
 	loc *time.Location
@@ -291,8 +291,12 @@ func (sc *importanceScorer) Score(ctx context.Context, v needs.Viewer, scope nee
 	}
 	now := nowOr(v)
 	vis := newScopeSet(scope)
+	loc := sc.loc
+	if v.Loc != nil {
+		loc = v.Loc
+	}
 	for _, r := range rows {
-		r.Importance = importanceIn(sc.loc, r, items[r.ItemID], g.fanout(r.ItemID, vis), withCurrentHuman(decs[r.ItemID], hc[r.ItemID]), qh, now)
+		r.Importance = importanceIn(loc, r, items[r.ItemID], g.fanout(r.ItemID, vis), withCurrentHuman(decs[r.ItemID], hc[r.ItemID]), qh, now)
 	}
 	return false, nil
 }
@@ -359,13 +363,13 @@ func importanceDetail(loc *time.Location, r *needs.Row, it store.NeedsScoringIte
 
 // deadlinePart is D: 1 when overdue or due today, falling to 0 over 14 days,
 // 0 with no date. "Overdue" is decided by the dashboard's own itemOverdue over
-// the server-local day (overdueToday), so the two agree for every stored value,
+// the viewer's day (overdueToday), so the two agree for every stored value,
 // timestamps and malformed dates included. Date parsing only separates "due
 // today" from the slope among rows that are not overdue; the earliest of
-// due_date and end_date counts. A nil loc is time.Local.
+// due_date and end_date counts. A nil loc is UTC (TASK-4101).
 func deadlinePart(fieldsJSON string, now time.Time, loc *time.Location) (float64, string) {
 	if loc == nil {
-		loc = time.Local
+		loc = time.UTC
 	}
 	todayStr := overdueToday(now.In(loc))
 	if _, _, ok := itemOverdue(fieldsJSON, todayStr); ok {

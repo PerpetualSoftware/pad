@@ -14,11 +14,16 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/decision"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
+	"github.com/PerpetualSoftware/pad/internal/usertz"
 )
 
 // Dashboard response types
 
 type DashboardResponse struct {
+	// Timezone is the zone this response's days were computed in; the note
+	// explains an unset one (TASK-4101).
+	Timezone       string                `json:"timezone,omitempty"`
+	TimezoneNote   string                `json:"timezone_note,omitempty"`
 	Summary        DashboardSummary      `json:"summary"`
 	ActiveItems    []DashboardActiveItem `json:"active_items"`
 	ActivePlans    []DashboardPlan       `json:"active_plans"`
@@ -749,7 +754,9 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 	// filters this very list) and `ready` / `next` (which rank on it below).
 	// Before IDEA-2641 the rule WAS this loop, so the recommendation surface
 	// had no deadline awareness at all.
-	todayStr := overdueToday(now)
+	zone := viewerZone(r)
+	resp.Timezone, resp.TimezoneNote = zone.Name, usertz.Note(zone)
+	todayStr := overdueToday(now.In(zone.Loc))
 	for _, item := range workItems {
 		if isItemDone(item.Fields, item.CollectionID, ctxMap) {
 			continue

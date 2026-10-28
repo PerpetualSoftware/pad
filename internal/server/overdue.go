@@ -18,13 +18,10 @@ import (
 // Extracting it is what makes "all four surfaces agree" a property of the code
 // rather than a thing four call sites happen to do the same way.
 //
-// WHAT IS DELIBERATELY UNCHANGED: the comparison is still a lexicographic
-// string compare against the SERVER'S LOCAL calendar day. That is wrong for a
-// multi-timezone deployment and known to be — it is filed as its own item with
-// the cloud case stated. Fixing it here would have changed what "overdue"
-// means on every existing self-hosted instance inside a change whose subject
-// is where the rule LIVES, and a behaviour change smuggled into a refactor is
-// the kind nobody reviews.
+// THE DAY (TASK-4101): the comparison is a lexicographic string compare against
+// the VIEWER'S calendar day, in their users.timezone, UTC when they set none.
+// It used to be the server's local day, which is wrong for any viewer in another
+// zone; callers pass now.In(viewerZone(r).Loc).
 
 // overdueDateFields are the field keys that carry a deadline, in report
 // priority order.
@@ -37,8 +34,9 @@ import (
 // cannot silently disarm itself.
 var overdueDateFields = []string{"due_date", "end_date"}
 
-// overdueToday renders the calendar day deadlines are measured against.
-// Server-local, matching the behaviour this preserves.
+// overdueToday renders the calendar day deadlines are measured against: the
+// day now falls on in now's own location, so callers convert to the viewer's
+// zone first.
 func overdueToday(now time.Time) string { return now.Format("2006-01-02") }
 
 // itemOverdue reports whether an item has a deadline in the past, and which

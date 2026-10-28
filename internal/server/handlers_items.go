@@ -1874,7 +1874,7 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 		input.UniqueCheck = &models.UniqueCheck{Schema: schema.Fields, Fields: fieldMap}
 
 		// Auto-populate date fields on status changes
-		autoPopulateDates(fieldMap, item.Fields, schema)
+		autoPopulateDates(fieldMap, item.Fields, schema, viewerToday(r))
 
 		// IDEA-1494 open-children guard. The actual check runs INSIDE
 		// the store transaction (see Store.UpdateItemWithPreCheck) so
@@ -2109,7 +2109,7 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 			}
 			mergedForDates[k] = v
 		}
-		autoPopulateDates(mergedForDates, item.Fields, schema)
+		autoPopulateDates(mergedForDates, item.Fields, schema, viewerToday(r))
 		for _, dk := range []string{"start_date", "end_date"} {
 			if _, inPatch := patchMap[dk]; inPatch {
 				continue // caller set it explicitly — respect that
@@ -4334,7 +4334,9 @@ func isUUID(s string) bool {
 
 // autoPopulateDates auto-fills start_date/end_date when status changes to active/completed.
 // Only sets dates if the schema defines those date fields and the field is currently empty.
-func autoPopulateDates(newFields map[string]any, existingFieldsJSON string, schema models.CollectionSchema) {
+// today is the ACTOR's calendar day (viewerToday), so a stamped date is the day the
+// person made the change, not the server's (TASK-4101).
+func autoPopulateDates(newFields map[string]any, existingFieldsJSON string, schema models.CollectionSchema, today string) {
 	// Check if schema has date fields named start_date and/or end_date
 	hasStartDate := false
 	hasEndDate := false
@@ -4365,8 +4367,6 @@ func autoPopulateDates(newFields map[string]any, existingFieldsJSON string, sche
 	if newStatus == oldStatus {
 		return
 	}
-
-	today := time.Now().Format("2006-01-02")
 
 	// Auto-set start_date when moving to active
 	if hasStartDate && newStatus == "active" {
