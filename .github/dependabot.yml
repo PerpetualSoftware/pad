@@ -74,8 +74,16 @@ updates:
       prefix: "chore(deps)"
       include: scope
     groups:
+      # The three Tiptap packages must move together, exact-pinned (CLAUDE.md).
+      # A Tiptap minor must never ride a tooling group (TASK-4107, dependabot #2327).
+      tiptap:
+        applies-to: version-updates
+        patterns:
+          - "@tiptap/*"
       npm-minor-and-patch:
         applies-to: version-updates
+        exclude-patterns:
+          - "@tiptap/*"
         update-types:
           - minor
           - patch
