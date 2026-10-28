@@ -1029,8 +1029,8 @@ func TestNeedsMe_OwnerLookupErrorFailsTheRequest(t *testing.T) {
 			t.Fatalf("premise: GetUser must fail: user=%+v err=%v", u, err)
 		}
 		rr := f.get(alice, "")
-		if rr.Code == http.StatusOK {
-			t.Fatalf("owner lookup error returned 200: %s", rr.Body.String())
+		if rr.Code != http.StatusInternalServerError {
+			t.Fatalf("owner lookup error: status = %d, want 500: %s", rr.Code, rr.Body.String())
 		}
 	})
 }
