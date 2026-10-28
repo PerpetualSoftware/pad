@@ -18,8 +18,9 @@ type Limits struct {
 	// candidates it produces (TASK-4100 H1, r2): the count restarts at every
 	// candidate, so it ends a no-match stretch and nothing else. A stall is a
 	// CapStall only when an answer could lie past the examined part (r3).
-	// MaxDuration is checked between yields, bounding a call to within one
-	// period expansion, limited by maxPeriodCandidates (TASK-4100 final round H1).
+	// MaxDuration is checked between yields, so a call can overrun it by one
+	// period expansion (limited by maxPeriodCandidates) or one no-match stretch of
+	// MaxSteps steps; MaxSteps has no ceiling (TASK-4100 final round H1, 3a H-L1).
 	// MaxScan additionally refuses a wall-clock query far from Start, except
 	// for COUNT rules and rules whose UNTIL is already spent (TASK-4100 r4).
 	MaxSteps int64
@@ -106,9 +107,8 @@ func (c *Compiled) checkScan(loc *time.Location, base, q time.Time, lim Limits) 
 
 // guard runs fn in the calling goroutine, so nothing can be abandoned or leak.
 // A panic in the library becomes a MalformedError instead of crashing the caller.
-// MaxDuration is checked between yields, bounding a call to within one period
-// expansion, limited by maxPeriodCandidates (TASK-4100 final round H1).
-// MaxSteps ends a no-match stretch inside the vendored generator (r2, r4).
+// MaxDuration is checked between yields and MaxSteps ends a no-match stretch inside the
+// vendored generator (r2, r4); Limits.MaxSteps states what the two bound together.
 func guard(fn func() error) (err error) {
 	defer func() {
 		if recover() != nil {

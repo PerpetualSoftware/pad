@@ -35,11 +35,12 @@
 //	EXDATE                      matched on the wall reading
 //	UNTIL                       compared on the wall; a Z UNTIL and elapsed rules: on the instant
 //
-// RULES. ParseRule is strict. It refuses what RFC 5545 forbids (COUNT with
-// UNTIL, BYWEEKNO off YEARLY, an ordinal BYDAY off MONTHLY and YEARLY,
-// BYSETPOS alone, BYMONTHDAY on WEEKLY, BYYEARDAY on DAILY, WEEKLY or MONTHLY),
-// rules that can never fire (Feb 30), FREQ=SECONDLY (the tick is 30 s), and
-// rules over 512 bytes, INTERVAL over 1,000,000 or years outside 1970..2200.
+// RULES. ParseRule refuses what RFC 5545 forbids (COUNT with UNTIL, BYWEEKNO off YEARLY,
+// an ordinal BYDAY off MONTHLY and YEARLY, BYSETPOS alone, BYMONTHDAY on WEEKLY, BYYEARDAY
+// on DAILY, WEEKLY or MONTHLY), except that an UNTIL whose type differs from DTSTART's is
+// accepted as Until defines it (untilbounds_test.go). It also refuses rules that never fire
+// (Feb 30), FREQ=SECONDLY (the tick is 30 s), over 10,000 candidates per FREQ period
+// (density.go), over 512 bytes, INTERVAL over 1,000,000 or years outside 1970..2200.
 // A DTSTART the rule does not produce is not emitted (dateutil semantics, ruling
 // Q1). Every refusal is a *MalformedError carrying a Code and the offending Part;
 // no third-party error text ever reaches a caller.
