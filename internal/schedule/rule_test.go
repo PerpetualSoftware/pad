@@ -190,10 +190,40 @@ func TestUnsatisfiableRules(t *testing.T) {
 	}
 }
 
-// TestMalformedSpecFields covers the rule-level half: the UNTIL forms, their
-// year bounds and their relation to Start. Zone, RDATE and the rest are
-// Compile's and are tested with it.
+// TestMalformedSpecFields covers the UNTIL forms, their year bounds and their
+// relation to Start, then the Spec fields Compile checks: zone, Start year,
+// and the RDATE and EXDATE count and kind.
 func TestMalformedSpecFields(t *testing.T) {
+	ok := mustWall(t, "2025-03-02T09:00")
+	many := make([]Wall, 501)
+	for i := range many {
+		many[i] = ok
+	}
+	for _, tc := range []struct {
+		name string
+		spec Spec
+		code Code
+		part string
+	}{
+		{"bad zone", Spec{Start: ok, Zone: "Mars/Olympus"}, CodeZone, "Zone"},
+		{"Local is not a zone", Spec{Start: ok, Zone: "Local"}, CodeZone, "Zone"},
+		{"start 1969", Spec{Start: Wall{Year: 1969, Month: 12, Day: 31}, Zone: "UTC"}, CodeWall, "Start"},
+		{"start 2201", Spec{Start: Wall{Year: 2201, Month: 1, Day: 1}, Zone: "UTC"}, CodeWall, "Start"},
+		{"start Feb 30", Spec{Start: Wall{Year: 2025, Month: 2, Day: 30}, Zone: "UTC"}, CodeWall, "Start"},
+		{"501 rdates", Spec{Start: ok, Zone: "UTC", RDates: many}, CodeRange, "RDATE"},
+		{"501 exdates", Spec{Start: ok, Zone: "UTC", ExDates: many}, CodeRange, "EXDATE"},
+		{"rdate all-day vs timed", Spec{Start: ok, Zone: "UTC", RDates: []Wall{mustWall(t, "2025-03-03")}}, CodeCombination, "RDATE"},
+		{"rdate year 1969", Spec{Start: ok, Zone: "UTC", RDates: []Wall{{Year: 1969, Month: 1, Day: 1}}}, CodeWall, "RDATE"},
+	} {
+		_, err := Compile(tc.spec)
+		var me *MalformedError
+		if !errors.As(err, &me) || me.Code != tc.code || me.Part != tc.part {
+			t.Errorf("%s: err = %v; want %s on %s", tc.name, err, tc.code, tc.part)
+		}
+	}
+	if _, err := Compile(Spec{Start: ok, Zone: "UTC", RDates: many[:500]}); err != nil {
+		t.Errorf("500 RDATEs must be accepted: %v", err)
+	}
 	for _, in := range []string{"FREQ=DAILY;UNTIL=19691231", "FREQ=DAILY;UNTIL=22010101", "FREQ=DAILY;UNTIL=19971330"} {
 		_, err := ParseRule(in)
 		var me *MalformedError
