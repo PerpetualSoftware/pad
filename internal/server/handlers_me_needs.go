@@ -451,7 +451,14 @@ func (s *Server) needsForWorkspace(r *http.Request, user *models.User, ws *model
 
 	label := needs.WorkspaceLabel{Slug: ws.Slug, Name: ws.Name, OwnerUsername: ws.OwnerUsername}
 	if label.OwnerUsername == "" && ws.OwnerID != "" {
-		if u, err := s.store.GetUser(ws.OwnerID); err == nil && u != nil {
+		// BUG-4050: a store error is not a missing owner. GetUser maps
+		// sql.ErrNoRows to (nil, nil), which leaves the label empty (an
+		// unlinked row); any other error fails the request like the rest.
+		u, err := s.store.GetUser(ws.OwnerID)
+		if err != nil {
+			return nil, false, err
+		}
+		if u != nil {
 			label.OwnerUsername = u.Username
 		}
 	}
@@ -502,12 +509,20 @@ func (s *Server) needsForWorkspace(r *http.Request, user *models.User, ws *model
 	}
 	for _, it := range kept {
 		rt := routed[it.ID]
+		// A workspace whose owner no longer resolves has no route to link to:
+		// "/" + "" + "/" + slug would be "//<slug>/...", a network-path
+		// reference. The row is still the caller's, so it stays, with an
+		// empty path (BUG-4050).
+		path := ""
+		if label.OwnerUsername != "" {
+			path = "/" + label.OwnerUsername + "/" + ws.Slug + "/" + it.CollectionSlug + "/" + it.Slug
+		}
 		row := &needs.Row{
 			Workspace: label,
 			Item: needs.ItemInfo{
 				Ref: it.Ref, Title: it.Title, Collection: it.CollectionName, CollectionSlug: it.CollectionSlug,
 				CreatedAt: it.CreatedAt, UpdatedAt: it.UpdatedAt,
-				Path: "/" + label.OwnerUsername + "/" + ws.Slug + "/" + it.CollectionSlug + "/" + it.Slug,
+				Path: path,
 			},
 			Why: rt.Why, Because: rt.Because, WaitingSince: rt.WaitingSince,
 			ItemID: it.ID, WorkspaceID: ws.ID,

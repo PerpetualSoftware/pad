@@ -105,6 +105,15 @@ func (s *Server) handleGetMyNotification(w http.ResponseWriter, r *http.Request)
 	if cm := cache.comments[n.CommentID]; cm != nil && n.CommentID != "" {
 		excerpt = notificationExcerpt(cm.Body)
 	}
+	// A workspace whose owner no longer resolves to a user has no route to
+	// link to: "/" + "" + "/" + slug would be "//<slug>/...", a network-path
+	// reference a browser or deep-link resolver may read as a host. The row
+	// is legitimate and the 404 is reserved for the gate's refusals, so the
+	// key stays and the path is empty (BUG-4050).
+	path := ""
+	if owner != "" {
+		path = "/" + owner + "/" + ws.Slug + "/" + item.CollectionSlug + "/" + item.Slug
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":         n.ID,
 		"kind":       n.Kind,
@@ -112,7 +121,7 @@ func (s *Server) handleGetMyNotification(w http.ResponseWriter, r *http.Request)
 		"item":       map[string]string{"ref": item.Ref, "title": item.Title},
 		"actor_name": actor,
 		"excerpt":    excerpt,
-		"path":       "/" + owner + "/" + ws.Slug + "/" + item.CollectionSlug + "/" + item.Slug,
+		"path":       path,
 	})
 }
 

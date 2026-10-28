@@ -151,6 +151,21 @@ describe('needs page: hints', () => {
 	});
 });
 
+describe('needs page: item link', () => {
+	// BUG-4050: a row whose workspace owner no longer resolves arrives with an
+	// empty path; href="" would be a link to the current page.
+	it('renders the title as text, not a link, when the path is empty, and links a normal row', async () => {
+		const orphan = row('alpha', 'TASK-1');
+		orphan.item.path = '';
+		await mountWith(resp([orphan, row('beta', 'TASK-2')]));
+		expect(host.querySelectorAll('a[href=""]').length).toBe(0);
+		const [first, second] = [...host.querySelectorAll('[data-testid="needs-row"]')];
+		expect(first.querySelector('a.title')).toBeNull();
+		expect(first.querySelector('span.title')?.textContent).toBe('Title TASK-1');
+		expect(second.querySelector('a.title')?.getAttribute('href')).toBe('/dave/beta/tasks/task-2');
+	});
+});
+
 describe('needs page: sort', () => {
 	it('defaults to age and sends the toggle server-side', async () => {
 		await mountWith(resp([row('a', 'TASK-1')]));
