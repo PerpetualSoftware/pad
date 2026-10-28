@@ -10,6 +10,7 @@
   "password_set": false,
   "role": "<string>",
   "stripe_customer_id": "<string>",
+  "timezone": null,
   "totp_enabled": false,
   "updated_at": "<string>",
   "username": "<string>"

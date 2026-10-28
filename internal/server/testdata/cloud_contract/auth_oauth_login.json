@@ -8,6 +8,7 @@
     "name": "<string>",
     "plan": "<string>",
     "role": "<string>",
+    "timezone": null,
     "totp_enabled": false,
     "username": "<string>"
   },
