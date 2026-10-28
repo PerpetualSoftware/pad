@@ -32,6 +32,9 @@
 	} = $props();
 
 	let text = $state('');
+	// Bodies sent and not yet answered. send() empties `text` before the POST, so on a 401 they
+	// would be in neither the box nor the stash; the keeper adds them (r6 B2-L1).
+	const inFlight: { body: string }[] = [];
 	let notice = $state('');
 	let inset = $state(0);
 
@@ -58,7 +61,7 @@
 	$effect(() =>
 		registerSessionExpiryKeeper(() => {
 			if (signOutDiscarding()) return;
-			keepDraft(authStore.userId, n, text);
+			keepDraft(authStore.userId, n, [...inFlight.map((f) => f.body), text].filter((p) => p !== '').join('\n'));
 		})
 	);
 
@@ -68,7 +71,14 @@
 		const target = replyTo;
 		text = '';
 		notice = '';
-		const outcome = await onSend(body, target?.seq);
+		const pending = { body };
+		inFlight.push(pending);
+		let outcome: SendOutcome;
+		try {
+			outcome = await onSend(body, target?.seq);
+		} finally {
+			inFlight.splice(inFlight.indexOf(pending), 1);
+		}
 		if (outcome === 'stale') return;
 		if (outcome === 'sent' || outcome === 'failed' || outcome === 'reply_deleted' || outcome === 'reply_missing') {
 			if (replyTo?.seq === target?.seq) onClearReply();

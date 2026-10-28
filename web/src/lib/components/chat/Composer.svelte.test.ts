@@ -246,6 +246,31 @@ describe('draft keeper', () => {
 		expect(sessionStorage.length).toBe(0);
 	});
 
+	// r6 B2-L1 (N38): red with the keeper stashing only `text`, which send() has already emptied.
+	it('stashes a body whose send has not answered yet, ahead of what was typed since', async () => {
+		const first = mount();
+		first.onSend.mockReturnValue(new Promise(() => {})); // a 401 is on its way: the send never answers
+		await type(first.box, 'in flight');
+		await fireEvent.click(first.send);
+		flushSync();
+		expect(first.box.value).toBe('');
+		await type(first.box, 'typed since');
+		runSessionExpiryKeepers();
+		first.unmount();
+		const again = mount();
+		await tick();
+		expect(again.box.value).toBe('in flight\ntyped since');
+	});
+
+	it('stops stashing a body once its send has answered', async () => {
+		const first = mount();
+		await type(first.box, 'delivered');
+		await fireEvent.click(first.send);
+		await tick();
+		runSessionExpiryKeepers();
+		expect(sessionStorage.length).toBe(0);
+	});
+
 	it('stops keeping once the composer is gone', async () => {
 		const first = mount();
 		await type(first.box, 'x');
