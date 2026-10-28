@@ -14,10 +14,13 @@ const MAX_AGENT_NAME_RUNES = 64;
 // Go's strings.TrimSpace trims unicode.IsSpace, which is exactly the White_Space
 // property. JS String.trim() differs in one place: it also trims U+FEFF (BOM),
 // which Go keeps. BUG-4092 (TASK-4044).
+// One module-level regex, no g or y flag so `.test` carries no lastIndex state (r6fix R-L4).
+const WHITE_SPACE = /\p{White_Space}/u;
+
 export function trimSpace(s: string): string {
 	// An index scan from both ends: the old `^ws+|ws+$` regex was quadratic on an
 	// interior whitespace run, and the composer runs this per keystroke (r6 B2-M1).
-	const isWs = (c: string) => /\p{White_Space}/u.test(c);
+	const isWs = (c: string) => WHITE_SPACE.test(c);
 	const cps = Array.from(s);
 	let lo = 0;
 	let hi = cps.length;
