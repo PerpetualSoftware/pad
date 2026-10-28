@@ -1005,3 +1005,32 @@ func TestNeedsMe_UnresolvableOwnerHasNoDeepLink(t *testing.T) {
 		}
 	})
 }
+
+// BUG-4050: a store ERROR reading the workspace owner (not an absent owner row)
+// must fail the request like the builder's other store errors, not read as a
+// missing owner and ship an unlinked row. A NULL avatar_url makes scanUser
+// fail for that one row on both backends; the empty username is what sends the
+// builder to the GetUser fallback at all (the workspace join supplies it otherwise).
+func TestNeedsMe_OwnerLookupErrorFailsTheRequest(t *testing.T) {
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		f := newNfx(t, srv)
+		owner, alice := f.user("owner"), f.user("alice")
+		ws := f.workspace("Faulty", owner)
+		f.member(ws, alice, "editor")
+		asks := f.collection(ws, "Asks", true)
+		f.item(ws, asks, "faulty ask", alice, nfxDay(1))
+		if _, err := srv.store.DB().Exec(`UPDATE workspaces SET owner_id = ? WHERE id = ?`, owner.ID, ws.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := srv.store.DB().Exec(`UPDATE users SET username = '', avatar_url = NULL WHERE id = ?`, owner.ID); err != nil {
+			t.Fatal(err)
+		}
+		if u, err := srv.store.GetUser(owner.ID); err == nil || u != nil {
+			t.Fatalf("premise: GetUser must fail: user=%+v err=%v", u, err)
+		}
+		rr := f.get(alice, "")
+		if rr.Code == http.StatusOK {
+			t.Fatalf("owner lookup error returned 200: %s", rr.Body.String())
+		}
+	})
+}
