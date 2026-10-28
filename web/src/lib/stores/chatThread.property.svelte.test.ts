@@ -22,8 +22,8 @@
 //       refused list while its bubble waited, overlapping sends, or a gap wider
 //       than the fill bound; a fill never pages past its bound. 'rejected' is
 //       recorded for the one bubble whose own apply fetch was refused
-//   PATHS (3b r5 A3): the run counts how often the walk reached a detach, a
-//       re-anchor, a fill that resolved and a fill that detached, and fails when
+//   PATHS (3b r5 A3, r6 A-M1): the run counts how often the walk reached a detach, a
+//       re-anchor, a fill that resolved, a fill that detached and a replayed answer, and fails when
 //       any count is 0, so a walk that never reaches a path cannot pass
 //
 // PROP_SEED=k replays one seed; PROP_SEEDS=n sets how many (deep runs). No
@@ -171,12 +171,17 @@ let deleted = new Set<number>();
 let uuid = 0;
 let causes = new Map<string, Set<string>>();
 /** How often the walks reached each placement path, summed over the run (A3 b). */
-const hits = { detach: 0, moved: 0, fillResolved: 0, fillDetach: 0 };
+const hits = { detach: 0, moved: 0, fillResolved: 0, fillDetach: 0, replayed: 0 };
 /** The window as the last check() saw it, to spot a re-anchor, a new detach, a resolve. */
 let snap: { tag: string; lo: number; hi: number; detached: Set<number>; sending: Set<string> } | null = null;
 let reanchored = false;
 const filled = new Set<string>();
 const addCause = (key: string, why: string) => causes.set(key, (causes.get(key) ?? new Set()).add(why));
+/** r6 A2-L1: the cause is tagged at the OP that overlaps two sends, not whenever check() happens to sample two. */
+function tagOverlap() {
+	const sending = thread.items.flatMap((i) => (i.kind === 'pending' && i.pending.status === 'sending' ? [i.pending.op_key] : []));
+	if (sending.length > 1) for (const k of sending) addCause(k, 'overlap');
+}
 
 /** An error the real predicates accept: the class is not exported, so borrow its constructor. */
 function apiErr(code: string, message = code): Error {
@@ -190,6 +195,8 @@ const REFUSALS = [
 	() => apiErr('validation_error', 'Invalid JSON body (maximum 128 KiB)')
 ];
 const answered = new Set<string>();
+/** Keys whose commit had its answer lost: their row may be visible beside the bubble (the disclosed N4). */
+const lost = new Set<string>();
 const fillCalls = new Map<string, number>();
 let rng: () => number;
 
@@ -239,8 +246,6 @@ function observe(where: string) {
 }
 
 function check(where: string) {
-	const sending = thread.items.flatMap((i) => (i.kind === 'pending' && i.pending.status === 'sending' ? [i.pending.op_key] : []));
-	if (sending.length > 1) for (const k of sending) addCause(k, 'overlap');
 	const m = thread.messages;
 	for (let i = 1; i < m.length; i++) if (m[i].seq !== m[i - 1].seq + 1) fail(`I1 ${where}: ${m[i - 1].seq}->${m[i].seq}`);
 	const newest = m.length ? m[m.length - 1].seq : 0;
@@ -261,8 +266,8 @@ function check(where: string) {
 	const bubbles = thread.items.flatMap((i) => (i.kind === 'pending' ? [i.pending] : []));
 	const keys = bubbles.map((p) => p.op_key);
 	if (new Set(keys).size !== keys.length) fail(`I2 ${where}: duplicate op_key`);
-	// a failed bubble beside a row whose answer was lost is the disclosed N4; this walk only refuses before the commit
-	for (const k of bubbles.filter((p) => p.status === 'sending').map((p) => p.op_key)) {
+	// a bubble beside a row whose answer was lost is the disclosed N4 (r6 A-M1: now in the walk), so lost keys are exempt
+	for (const k of bubbles.filter((p) => p.status === 'sending' && !lost.has(p.op_key)).map((p) => p.op_key)) {
 		const row = server.byKey.get(k);
 		if (row && (m.some((x) => x.seq === row.seq) || d.some((x) => x.seq === row.seq))) fail(`I9 ${where}: seq ${row.seq} and its bubble both visible`);
 	}
@@ -283,6 +288,7 @@ function deliver<T>(kind: string, value: T, rejectIt: Error | false = false, key
 			release: (ok) => {
 				if (!ok && kind === 'list' && owner) addCause(owner, 'rejected'); // only the bubble this fetch belonged to
 				if (ok && !rejectIt && kind === 'send') {
+					if ((value as { replayed?: boolean }).replayed) hits.replayed++; // r6 A-M1: a retry answered from the server's op_key record
 					answered.add(key!);
 					const seq = (value as { message: ChatMessage }).message.seq;
 					if (seq - thread.newestSeq - 1 > 200 * REFRESH_MAX_PAGES) addCause(key!, 'wideGap');
@@ -338,6 +344,11 @@ function wire() {
 		const m = msg(server.last + 1, server.tag, { mine: true, author_agent_key: '', author_is_human: true, source: 'web', body: b.body });
 		server.rows.push(m);
 		server.byKey.set(b.op_key, m);
+		// r6 A-M1: the commit happened and the answer is LOST (the N4 shape): the bubble fails, a later retry replays
+		if (!immediate && rng() < 0.08) {
+			lost.add(b.op_key);
+			return deliver('send', null as never, new Error('answer lost'), b.op_key);
+		}
 		return deliver('send', { message: { ...m }, replayed: false, refs: [], refs_truncated: false }, false, b.op_key);
 	});
 	h.deleteMessage.mockImplementation((_n: number, seq: number) => {
@@ -373,6 +384,7 @@ async function walk(seed: number, trace: string[]) {
 	violations = [];
 	causes = new Map();
 	answered.clear();
+	lost.clear();
 	fillCalls.clear();
 	filled.clear();
 	snap = null;
@@ -388,6 +400,7 @@ async function walk(seed: number, trace: string[]) {
 			const all = visibleSeqs();
 			const reply = all.length && rng() < 0.2 ? all[Math.floor(rng() * all.length)] : undefined;
 			fired.push(thread.send(`b${uuid++}`, reply));
+			tagOverlap();
 		}],
 		[8, 'remove', () => {
 			const all = visibleSeqs();
@@ -407,7 +420,10 @@ async function walk(seed: number, trace: string[]) {
 		}],
 		[4, 'retry', () => {
 			const f = thread.items.find((i) => i.kind === 'pending' && i.pending.status === 'failed');
-			if (f && f.kind === 'pending') fired.push(thread.retry(f.pending.op_key));
+			if (f && f.kind === 'pending') {
+				fired.push(thread.retry(f.pending.op_key));
+				tagOverlap();
+			}
 		}],
 		[4, 'discard', () => {
 			const f = thread.items.find((i) => i.kind === 'pending' && i.pending.status === 'failed');
