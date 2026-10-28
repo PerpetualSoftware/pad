@@ -52,5 +52,7 @@ func Note(z Zone) string {
 	if z.Set {
 		return ""
 	}
-	return "No time zone is set, so days are computed in UTC. Set yours in the web UI settings or with `pad auth timezone <IANA>`."
+	// The surfaces that set a zone (the web settings and `pad auth timezone`) land with
+	// TASK-4101 PR2; until then the note names none (ruling 00877b60, C-L1).
+	return "No time zone is set, so days are computed in UTC."
 }

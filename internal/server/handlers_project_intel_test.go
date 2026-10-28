@@ -112,8 +112,9 @@ func TestProjectStandupEndpoint_HappyPath(t *testing.T) {
 	if resp.Days != 1 {
 		t.Errorf("expected default days=1, got %d", resp.Days)
 	}
-	if resp.Date != time.Now().Format("2006-01-02") {
-		t.Errorf("expected date=%s, got %s", time.Now().Format("2006-01-02"), resp.Date)
+	// A user with no zone gets the UTC day, not the server's local one (TASK-4101).
+	if want := time.Now().UTC().Format("2006-01-02"); resp.Date != want {
+		t.Errorf("expected date=%s, got %s", want, resp.Date)
 	}
 	if len(resp.Completed) != 1 || resp.Completed[0].Ref != done.Ref {
 		t.Fatalf("expected 1 completed item (%s), got %+v", done.Ref, resp.Completed)
