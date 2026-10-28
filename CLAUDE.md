@@ -66,6 +66,7 @@ internal/
   webhooks/              — Webhook dispatcher with HMAC signing
   email/                 — Transactional email via Maileroo
   links/                 — Wiki-link parsing
+  schedule/              — RFC 5545 recurrence expansion (pure; TASK-4100)
 web/src/
   routes/                — SvelteKit pages
   lib/api/client.ts      — TypeScript API client
