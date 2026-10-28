@@ -105,3 +105,24 @@ func TestResolveMonotonic(t *testing.T) {
 		}
 	}
 }
+
+// Apia jumped from UTC-10 DST to UTC+14 DST at 2011-12-30T10:00Z,
+// skipping December 30. Gap readings use the offset before that jump.
+func TestResolveApia2011(t *testing.T) {
+	loc := mustLoc(t, "Pacific/Apia")
+	for _, row := range []struct{ wall, want string }{
+		{"2011-12-29T12:00", "2011-12-29T22:00:00Z"},
+		{"2011-12-29T23:30", "2011-12-30T09:30:00Z"},
+		{"2011-12-30T00:00", "2011-12-30T10:00:00Z"},
+		{"2011-12-30T12:00", "2011-12-30T22:00:00Z"},
+		{"2011-12-31T00:00", "2011-12-30T10:00:00Z"},
+		{"2011-12-31T12:00", "2011-12-30T22:00:00Z"},
+	} {
+		t.Run(row.wall, func(t *testing.T) {
+			got := Resolve(loc, mustWall(t, row.wall))
+			if want := inst(t, row.want); !got.Equal(want) {
+				t.Errorf("Resolve(%s) = %s; want %s", row.wall, got.Format(time.RFC3339), row.want)
+			}
+		})
+	}
+}

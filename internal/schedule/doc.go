@@ -1,6 +1,8 @@
-// Package schedule expands RFC 5545 recurrence rules into instants. It is pure:
-// no store, no HTTP, no clock, no state (TASK-4100). A caller hands it a Wall
-// reading plus a rule and gets UTC instants back.
+// Package schedule expands RFC 5545 recurrence rules into instants, with no
+// store or HTTP (TASK-4100). It reads the clock only for the MaxDuration
+// deadline in engine.go, so whether a call returns an answer or CapTime can
+// depend on machine load. A caller supplies a Wall reading and a rule and
+// gets UTC instants back.
 //
 // WALL TIMES. A schedule's Start, RDATEs, EXDATEs and UNTIL are Walls, civil
 // readings with no zone ("2025-03-09T02:30:00"). The zone is separate: pinned

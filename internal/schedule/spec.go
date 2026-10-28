@@ -22,7 +22,7 @@ type Spec struct {
 // Occurrence is one instance of a schedule.
 type Occurrence struct {
 	At   time.Time // UTC instant; all-day: 00:00 of Wall's date in the effective zone
-	Wall Wall      // the wall reading that produced At: the identity key
+	Wall Wall      // the wall reading that produced At; elapsed rules may repeat it
 }
 
 // AllDay reports whether the occurrence is a date.
@@ -91,6 +91,8 @@ func Compile(s Spec) (*Compiled, error) {
 	if s.Rule == "" {
 		return c, nil
 	}
+	// ParseRule enforces maxPeriodCandidates before probeSynced can create
+	// and advance a generator below (TASK-4100 F1).
 	r, err := ParseRule(s.Rule)
 	if err == nil {
 		err = r.Validate(s.Start, c.zone)

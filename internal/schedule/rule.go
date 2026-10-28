@@ -1,7 +1,7 @@
 package schedule
 
 import (
-	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -95,6 +95,9 @@ func ParseRule(s string) (Rule, error) {
 	if err := r.checkCombinations(seen); err != nil {
 		return r, err
 	}
+	if n := periodDensity(&r); n > maxPeriodCandidates {
+		return r, malformed(CodeRange, "FREQ", r.Freq, fmt.Sprintf("the rule can produce up to %d occurrences per %s period; the limit is %d", n, r.Freq, maxPeriodCandidates))
+	}
 	return r, nil
 }
 
@@ -112,9 +115,9 @@ func (r *Rule) setPart(name, val string) error {
 			return malformed(CodeRange, "FREQ", val, "want DAILY, WEEKLY, MONTHLY, YEARLY, HOURLY or MINUTELY")
 		}
 	case "INTERVAL":
-		r.Interval, err = parseBounded("INTERVAL", val, 1, maxInterval)
+		r.Interval, err = parseBounded("INTERVAL", val, false, 0, 1, maxInterval)
 	case "COUNT":
-		r.Count, err = parseBounded("COUNT", val, 1, maxCount)
+		r.Count, err = parseBounded("COUNT", val, false, 0, 1, maxCount)
 	case "UNTIL":
 		r.Until, err = parseUntil(val)
 	case "WKST":
@@ -123,23 +126,23 @@ func (r *Rule) setPart(name, val string) error {
 		}
 		r.Wkst = strings.ToUpper(val)
 	case "BYMONTH":
-		r.ByMonth, err = parseList(name, val, false, 1, 12)
+		r.ByMonth, err = parseList(name, val, false, 2, 1, 12)
 	case "BYWEEKNO":
-		r.ByWeekNo, err = parseList(name, val, true, 1, 53)
+		r.ByWeekNo, err = parseList(name, val, true, 2, 1, 53)
 	case "BYYEARDAY":
-		r.ByYearDay, err = parseList(name, val, true, 1, 366)
+		r.ByYearDay, err = parseList(name, val, true, 3, 1, 366)
 	case "BYMONTHDAY":
-		r.ByMonthDay, err = parseList(name, val, true, 1, 31)
+		r.ByMonthDay, err = parseList(name, val, true, 2, 1, 31)
 	case "BYDAY":
-		r.ByDay, err = parseByDay(val)
+		r.ByDay, err = parseByDay(val, 2)
 	case "BYHOUR":
-		r.ByHour, err = parseList(name, val, false, 0, 23)
+		r.ByHour, err = parseList(name, val, false, 2, 0, 23)
 	case "BYMINUTE":
-		r.ByMinute, err = parseList(name, val, false, 0, 59)
+		r.ByMinute, err = parseList(name, val, false, 2, 0, 59)
 	case "BYSECOND":
-		r.BySecond, err = parseList(name, val, false, 0, 59)
+		r.BySecond, err = parseList(name, val, false, 2, 0, 59)
 	case "BYSETPOS":
-		r.BySetPos, err = parseList(name, val, true, 1, 366)
+		r.BySetPos, err = parseList(name, val, true, 3, 1, 366)
 	case "RSCALE", "SKIP":
 		return malformed(CodeUnsupported, name, val, "calendar scales other than Gregorian are not supported")
 	default:
@@ -148,19 +151,31 @@ func (r *Rule) setPart(name, val string) error {
 	return err
 }
 
-// atoi parses a base-10 integer and says whether it was out of int range
-// rather than not a number.
-func atoi(s string) (n int, ok, overflow bool) {
+// rfcInt reads RFC 5545 3.3.10 integers. Check the whole grammar before
+// conversion so a malformed suffix remains syntax even after huge digits.
+// maxDigits == 0 allows unlimited digits (COUNT and INTERVAL).
+func rfcInt(s string, signed bool, maxDigits int) (n int, ok, overflow bool) {
+	digits := s
+	if signed && len(digits) > 0 && (digits[0] == '+' || digits[0] == '-') {
+		digits = digits[1:]
+	}
+	if len(digits) == 0 || (maxDigits > 0 && len(digits) > maxDigits) {
+		return 0, false, false
+	}
+	for i := range digits {
+		if digits[i] < '0' || digits[i] > '9' {
+			return 0, false, false
+		}
+	}
 	n, err := strconv.Atoi(s)
 	if err == nil {
 		return n, true, false
 	}
-	var ne *strconv.NumError
-	return 0, false, errors.As(err, &ne) && ne.Err == strconv.ErrRange
+	return 0, false, true // valid decimal grammar: only int overflow remains
 }
 
-func parseBounded(part, val string, lo, hi int) (int, error) {
-	n, ok, over := atoi(val)
+func parseBounded(part, val string, signed bool, maxDigits, lo, hi int) (int, error) {
+	n, ok, over := rfcInt(val, signed, maxDigits)
 	switch {
 	case !ok && !over:
 		return 0, malformed(CodeSyntax, part, val, "want an integer")
@@ -172,11 +187,11 @@ func parseBounded(part, val string, lo, hi int) (int, error) {
 
 // parseList reads a comma list. signed lists accept -hi..-lo as well and
 // refuse 0; unsigned lists accept lo..hi.
-func parseList(part, val string, signed bool, lo, hi int) ([]int, error) {
+func parseList(part, val string, signed bool, maxDigits, lo, hi int) ([]int, error) {
 	items := strings.Split(val, ",")
 	out := make([]int, 0, len(items))
 	for _, it := range items {
-		n, ok, over := atoi(it)
+		n, ok, over := rfcInt(it, signed, maxDigits)
 		if !ok && !over {
 			return nil, malformed(CodeSyntax, part, it, "want a comma-separated list of integers")
 		}
@@ -196,7 +211,7 @@ func parseList(part, val string, signed bool, lo, hi int) ([]int, error) {
 	return out, nil
 }
 
-func parseByDay(val string) ([]ByDay, error) {
+func parseByDay(val string, maxDigits int) ([]ByDay, error) {
 	var out []ByDay
 	for _, it := range strings.Split(val, ",") {
 		u := strings.ToUpper(it)
@@ -209,7 +224,7 @@ func parseByDay(val string) ([]ByDay, error) {
 		}
 		bd := ByDay{Day: day}
 		if pre := u[:len(u)-2]; pre != "" {
-			n, ok, over := atoi(pre)
+			n, ok, over := rfcInt(pre, true, maxDigits)
 			if !ok && !over {
 				return nil, malformed(CodeSyntax, "BYDAY", it, "want [ordinal]weekday, e.g. MO or -1FR")
 			}

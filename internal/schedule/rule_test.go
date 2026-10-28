@@ -41,9 +41,9 @@ func TestMalformedRulesTable(t *testing.T) {
 		{rule: "FREQ=DAILY;COUNT=2;COUNT=3", code: CodeDuplicatePart, part: "COUNT"},
 		{rule: "FREQ=DAILY;COUNT=3;UNTIL=19971224T000000Z", code: CodeCombination, part: "UNTIL"},
 		{rule: "FREQ=DAILY;COUNT=0", code: CodeRange, part: "COUNT"},
-		{rule: "FREQ=DAILY;COUNT=-1", code: CodeRange, part: "COUNT"},
+		{rule: "FREQ=DAILY;COUNT=-1", code: CodeSyntax, part: "COUNT"},
 		{rule: "FREQ=DAILY;INTERVAL=0", code: CodeRange, part: "INTERVAL"},
-		{rule: "FREQ=DAILY;INTERVAL=-2", code: CodeRange, part: "INTERVAL"},
+		{rule: "FREQ=DAILY;INTERVAL=-2", code: CodeSyntax, part: "INTERVAL"},
 		{rule: "FREQ=DAILY;INTERVAL=x", code: CodeSyntax, part: "INTERVAL"},
 		{rule: "FREQ=YEARLY;BYMONTH=13", code: CodeRange, part: "BYMONTH"},
 		{rule: "FREQ=YEARLY;BYMONTH=0", code: CodeRange, part: "BYMONTH"},
@@ -245,5 +245,49 @@ func TestMalformedSpecFields(t *testing.T) {
 	}
 	if _, err := check(t, "FREQ=DAILY;UNTIL=19970902", true, false); err != nil {
 		t.Errorf("all-day UNTIL on the Start date: %v", err)
+	}
+}
+
+func TestRFCIntegerGrammar(t *testing.T) {
+	for _, part := range []string{
+		"INTERVAL=+2", "COUNT=+3", "BYHOUR=+5", "BYHOUR=-0",
+		"BYMONTH=001", "BYMINUTE=007", "BYMONTHDAY=001", "BYYEARDAY=0001",
+		"BYDAY=001MO", "COUNT=1e3", "INTERVAL= 2",
+		"BYSECOND=001", "BYWEEKNO=001", "BYSETPOS=0001", "BYHOUR=５",
+		"COUNT=999999999999999999999999x",
+	} {
+		t.Run(part, func(t *testing.T) {
+			rule := "FREQ=YEARLY;" + part
+			if strings.HasPrefix(part, "BYSETPOS=") {
+				rule += ";BYDAY=MO"
+			}
+			_, err := ParseRule(rule)
+			var me *MalformedError
+			if !errors.As(err, &me) || me.Code != CodeSyntax {
+				t.Fatalf("want CodeSyntax; got %v", err)
+			}
+		})
+	}
+	for _, part := range []string{
+		"BYHOUR=05", "COUNT=007", "INTERVAL=010", "BYMONTHDAY=+1",
+		"BYMONTHDAY=-31", "BYYEARDAY=+366", "BYDAY=+1MO", "BYSETPOS=-1",
+	} {
+		t.Run(part, func(t *testing.T) {
+			rule := "FREQ=YEARLY;" + part
+			if strings.HasPrefix(part, "BYSETPOS=") {
+				rule += ";BYDAY=MO"
+			}
+			if _, err := ParseRule(rule); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	// Unlimited digit grammar still distinguishes range overflow from syntax.
+	for _, part := range []string{"COUNT=999999999999999999999999", "INTERVAL=999999999999999999999999", "BYMONTHDAY=-0"} {
+		_, err := ParseRule("FREQ=YEARLY;" + part)
+		var me *MalformedError
+		if !errors.As(err, &me) || me.Code != CodeRange {
+			t.Errorf("%s: want CodeRange; got %v", part, err)
+		}
 	}
 }

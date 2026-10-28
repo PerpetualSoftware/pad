@@ -11,9 +11,9 @@ const (
 	maxYear = 2200
 )
 
-// Wall is a civil reading with no zone: what a clock on the wall says. It is
-// the unit of identity for a schedule, because the same Wall means a different
-// instant in a different zone.
+// Wall is a civil reading with no zone: what a clock on the wall says.
+// An occurrence is identified by its At (or Wall plus offset): bare HOURLY
+// and MINUTELY rules can repeat a Wall across a fall-back.
 type Wall struct {
 	Year                 int
 	Month                time.Month
