@@ -708,6 +708,17 @@ func isUniqueViolation(err error) bool {
 		strings.Contains(msg, "duplicate key value violates unique constraint")
 }
 
+// isForeignKeyViolation is isUniqueViolation's twin for a foreign-key refusal
+// (SQLite: FOREIGN KEY constraint failed; PostgreSQL: violates foreign key constraint).
+func isForeignKeyViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "FOREIGN KEY constraint failed") ||
+		strings.Contains(msg, "violates foreign key constraint")
+}
+
 func (s *Store) GetItem(id string) (*models.Item, error) {
 	return s.GetItemQ(s.db, id)
 }

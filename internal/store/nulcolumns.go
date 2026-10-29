@@ -321,6 +321,20 @@ var nulColumns = []nulColumn{
 	{"conversation_messages", "author_agent_key", classText},
 	{"conversation_messages", "op_key", classText},
 	{"conversation_messages", "deleted_by_agent_key", classText},
+
+	// schedules (TASK-4102). Machine-normalised walls and rule text derived from
+	// request text, the same posture as users.timezone. rdates and exdates are
+	// TEXT, not jsonb, so no decoded-escape check applies.
+	{"item_schedules", "dtstart", classText},
+	{"item_schedules", "dtend", classText},
+	{"item_schedules", "tz", classText},
+	{"item_schedules", "rrule", classText},
+	{"item_schedules", "rdates", classText},
+	{"item_schedules", "exdates", classText},
+	{"item_schedules", "next_wall", classText},
+	{"item_schedules", "anchor_wall", classText},
+	{"schedule_occurrences", "occurrence_wall", classText},
+	{"schedule_occurrences", "actor", classText},
 }
 
 // nulTriggerMigrations are the generated trigger files, in migration order.
@@ -351,6 +365,7 @@ var nulTriggerMigrations = []string{
 	"156_nul_invariant_triggers_post155.sql",
 	"159_nul_invariant_triggers_post158.sql",
 	"161_nul_invariant_triggers_post160.sql",
+	"163_nul_invariant_triggers_post162.sql",
 }
 
 // nulColumnTriggerFile assigns a column to a trigger file other than the
@@ -392,6 +407,17 @@ var nulColumnTriggerFile = map[string]string{
 	"conversation_messages.deleted_by_agent_key": "159_nul_invariant_triggers_post158.sql",
 	// 160 added the column (TASK-4101).
 	"users.timezone": "161_nul_invariant_triggers_post160.sql",
+	// 162 introduced the tables (TASK-4102).
+	"item_schedules.dtstart":               "163_nul_invariant_triggers_post162.sql",
+	"item_schedules.dtend":                 "163_nul_invariant_triggers_post162.sql",
+	"item_schedules.tz":                    "163_nul_invariant_triggers_post162.sql",
+	"item_schedules.rrule":                 "163_nul_invariant_triggers_post162.sql",
+	"item_schedules.rdates":                "163_nul_invariant_triggers_post162.sql",
+	"item_schedules.exdates":               "163_nul_invariant_triggers_post162.sql",
+	"item_schedules.next_wall":             "163_nul_invariant_triggers_post162.sql",
+	"item_schedules.anchor_wall":           "163_nul_invariant_triggers_post162.sql",
+	"schedule_occurrences.occurrence_wall": "163_nul_invariant_triggers_post162.sql",
+	"schedule_occurrences.actor":           "163_nul_invariant_triggers_post162.sql",
 }
 
 // nulTriggerFileFor names the trigger file a column's triggers are rendered
@@ -468,6 +494,27 @@ func NULProtectedColumns() []nulColumn {
 // dispatcher's claim and send columns (TASK-3939) do not exist yet.
 // user_notification_settings is written by PutNotificationSettings.
 var nulExcluded = map[string]string{
+	"item_schedules.id":                      "server-minted schedule UUID (TASK-4102, migration 162)",
+	"item_schedules.workspace_id":            "server-minted workspace UUID from the resolved item (TASK-4102, migration 162)",
+	"item_schedules.item_id":                 "server-minted item UUID, a foreign key to items(id) (TASK-4102, migration 162)",
+	"item_schedules.kind":                    "fixed enum, a CHECK constraint (TASK-4102, migration 162)",
+	"item_schedules.floating":                "boolean (TASK-4102, migration 162)",
+	"item_schedules.anchor":                  "fixed enum, a CHECK constraint (TASK-4102, migration 162)",
+	"item_schedules.audience":                "fixed enum, a CHECK constraint (TASK-4102, migration 162)",
+	"item_schedules.lead_minutes":            "integer, range-checked by a CHECK constraint (TASK-4102, migration 162)",
+	"item_schedules.next_at":                 "re-formatted from a computed time, never the request's text (TASK-4102, migration 162)",
+	"item_schedules.next_override_at":        "re-formatted from a parsed RFC3339 time, never the request's text (TASK-4102, migration 162)",
+	"item_schedules.ended_at":                "server timestamp from now() (TASK-4102, migration 162)",
+	"item_schedules.error_code":              "a fixed schedule.Code or cap code constant, never third-party text (TASK-4102, migration 162)",
+	"item_schedules.created_at":              "server timestamp from now() (TASK-4102, migration 162)",
+	"item_schedules.updated_at":              "server timestamp from now() (TASK-4102, migration 162)",
+	"schedule_occurrences.id":                "server-minted occurrence UUID (TASK-4102, migration 162)",
+	"schedule_occurrences.schedule_id":       "server-minted schedule UUID, a foreign key to item_schedules(id) (TASK-4102, migration 162)",
+	"schedule_occurrences.occurrence_at":     "re-formatted from a computed time, never the request's text (TASK-4102, migration 162)",
+	"schedule_occurrences.state":             "fixed enum, a CHECK constraint (TASK-4102, migration 162)",
+	"schedule_occurrences.comment_id":        "server-minted comment UUID (TASK-4102, migration 162)",
+	"schedule_occurrences.resolved_at":       "server timestamp from now() (TASK-4102, migration 162)",
+	"item_reminders.schedule_id":             "server-minted schedule UUID, a foreign key to item_schedules(id) (TASK-4102, migration 162)",
 	"push_devices.id":                        "server-minted device UUID (TASK-3938, migration 155)",
 	"push_devices.user_id":                   "the authenticated user's server-minted UUID (TASK-3938)",
 	"push_devices.session_id":                "server-minted session id read from the authenticated session (TASK-3938)",
