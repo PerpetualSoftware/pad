@@ -285,6 +285,16 @@ func (s *Store) tryCreateItem(workspaceID, collectionID string, input models.Ite
 	return item, nil
 }
 
+// topSortOrder is the sort_order of a new item landing above min. The reorder
+// API accepts the INTEGER floor -2147483648, and min - 1 would overflow
+// Postgres; at the floor the value stays min, a tie created_at breaks.
+func topSortOrder(min int) int {
+	if v := int64(min) - 1; v >= math.MinInt32 {
+		return int(v)
+	}
+	return math.MinInt32
+}
+
 // insertItemTx is the write half of item creation: the items INSERT
 // (item_number, workspace seq, content-flush watermarks), the initial
 // item_versions row, wiki-link indexing + broken-title resolution, and the
@@ -304,16 +314,6 @@ func (s *Store) tryCreateItem(workspaceID, collectionID string, input models.Ite
 // same mistake in this file family. If you are adding a creation side effect,
 // grep `INSERT INTO items` and confirm which of the TWO write paths you need,
 // rather than trusting that this is the only one.
-// topSortOrder is the sort_order of a new item landing above min. The reorder
-// API accepts the INTEGER floor -2147483648, and min - 1 would overflow
-// Postgres; at the floor the value stays min, a tie created_at breaks.
-func topSortOrder(min int) int {
-	if v := int64(min) - 1; v >= math.MinInt32 {
-		return int(v)
-	}
-	return math.MinInt32
-}
-
 func (s *Store) insertItemTx(tx *sql.Tx, id, workspaceID, collectionID, slug, ts, fields, tags, createdBy, source string, input models.ItemCreate) error {
 	var err error
 
@@ -5558,7 +5558,7 @@ func (s *Store) getChildItems(q childQueryer, parentItemID string, includeDelete
 		LEFT JOIN users au ON au.id = i.assigned_user_id
 		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
 		WHERE i.deleted_at IS NULL%s
-		ORDER BY i.sort_order ASC, i.created_at ASC, i.item_number ASC
+		ORDER BY i.sort_order ASC, i.created_at ASC, i.item_number ASC, i.id ASC
 	`, childLinkTypeSQL(), collFilter)), parentItemID)
 	if err != nil {
 		return nil, fmt.Errorf("get child items: %w", err)
@@ -5635,7 +5635,7 @@ func (s *Store) ListChildItems(parentItemID string, p ChildListParams) ([]models
 			query += " AND (" + strings.Join(alts, " OR ") + ")"
 		}
 	}
-	query += " ORDER BY i.sort_order ASC, i.created_at ASC, i.item_number ASC"
+	query += " ORDER BY i.sort_order ASC, i.created_at ASC, i.item_number ASC, i.id ASC"
 	if p.Limit > 0 {
 		query += " LIMIT ? OFFSET ?"
 		args = append(args, p.Limit, max(p.Offset, 0))
@@ -5690,7 +5690,7 @@ func (s *Store) GetChildItemsForParents(parentIDs []string) (map[string][]models
 		LEFT JOIN users au ON au.id = i.assigned_user_id
 		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
 		WHERE i.deleted_at IS NULL AND c.deleted_at IS NULL
-		ORDER BY i.sort_order ASC, i.created_at ASC, i.item_number ASC
+		ORDER BY i.sort_order ASC, i.created_at ASC, i.item_number ASC, i.id ASC
 	`, childLinkTypeSQL(), strings.Join(placeholders, ","))), args...)
 	if err != nil {
 		return nil, fmt.Errorf("get child items for parents: %w", err)
