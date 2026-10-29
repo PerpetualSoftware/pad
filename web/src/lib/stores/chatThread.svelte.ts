@@ -37,8 +37,10 @@
 // REFS (TASK-4044 3c, ruling 687eb810). `refs` collects the verdicts every page and
 // every send response carried, so the body renderer can link them. Refs past the
 // server's 200 cap (refs_truncated) are not surfaced: they stay literal text,
-// which fails safe. A link stays until its page is re-fetched; /-/r re-checks
-// access on every click.
+// which fails safe. Verdicts merge in arrival order (a send's refs land outside
+// the op chain), so a link stays until a later response re-judges its ref, up to
+// a re-fetch of its page; /-/r re-checks access on every click (3c r1 H1/H2,
+// ruling 83cb9a50).
 //
 // Identity: every answer is fenced by a seq and authStore.identityFence().
 import { untrack } from 'svelte';
