@@ -362,8 +362,9 @@ func (s *Store) insertItemTx(tx *sql.Tx, id, workspaceID, collectionID, slug, ts
 	// the MIN(sort_order) - 1 of the collection's parentless live items, so it
 	// lands on top of a lane; two concurrent creates must not read the same
 	// MIN. A child (UnderParent, or a ParentID column value) is created at 0
-	// and appends under its parent by created_at ASC, the order ship and
-	// decompose rely on (BUG-3527).
+	// and appends under its parent by created_at ASC then item_number ASC (the
+	// workspace sequence, so same-second siblings keep creation order), the
+	// order ship and decompose rely on (BUG-3527, BUG-4005).
 	sortOrder := 0
 	if !input.UnderParent && (input.ParentID == nil || *input.ParentID == "") {
 		if err := tx.QueryRow(s.q(`SELECT COALESCE(MIN(i.sort_order), 0) FROM items i
@@ -5557,7 +5558,7 @@ func (s *Store) getChildItems(q childQueryer, parentItemID string, includeDelete
 		LEFT JOIN users au ON au.id = i.assigned_user_id
 		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
 		WHERE i.deleted_at IS NULL%s
-		ORDER BY i.sort_order ASC, i.created_at ASC
+		ORDER BY i.sort_order ASC, i.created_at ASC, i.item_number ASC
 	`, childLinkTypeSQL(), collFilter)), parentItemID)
 	if err != nil {
 		return nil, fmt.Errorf("get child items: %w", err)
@@ -5585,8 +5586,10 @@ type ChildListParams struct {
 // ListChildItems is GetChildItems with the caller's visibility applied in the
 // query and an optional window over it (BUG-3789). Visibility is in the
 // query, not after it, so a window and its has-more probe count only rows the
-// caller may see. The order ends on the id, so offset pages neither repeat
-// nor skip children that tie on sort_order and created_at.
+// caller may see. The order ends on item_number (unique per workspace, and
+// monotonic in creation order), so offset pages neither repeat nor skip
+// children that tie on sort_order and created_at, and same-second siblings
+// keep their creation order (BUG-4005).
 func (s *Store) ListChildItems(parentItemID string, p ChildListParams) ([]models.Item, error) {
 	if p.CollectionIDs != nil && len(p.CollectionIDs) == 0 {
 		return nil, nil
@@ -5632,7 +5635,7 @@ func (s *Store) ListChildItems(parentItemID string, p ChildListParams) ([]models
 			query += " AND (" + strings.Join(alts, " OR ") + ")"
 		}
 	}
-	query += " ORDER BY i.sort_order ASC, i.created_at ASC, i.id ASC"
+	query += " ORDER BY i.sort_order ASC, i.created_at ASC, i.item_number ASC"
 	if p.Limit > 0 {
 		query += " LIMIT ? OFFSET ?"
 		args = append(args, p.Limit, max(p.Offset, 0))
@@ -5654,7 +5657,7 @@ func (s *Store) ListChildItems(parentItemID string, p ChildListParams) ([]models
 // column.
 //
 // Ordering within each parent's slice matches GetChildItems (sort_order ASC,
-// created_at ASC). A child linked to more than one requested parent appears
+// created_at ASC, item_number ASC). A child linked to more than one requested parent appears
 // under each. Parents with no live children are simply absent from the map.
 func (s *Store) GetChildItemsForParents(parentIDs []string) (map[string][]models.Item, error) {
 	result := make(map[string][]models.Item, len(parentIDs))
@@ -5687,7 +5690,7 @@ func (s *Store) GetChildItemsForParents(parentIDs []string) (map[string][]models
 		LEFT JOIN users au ON au.id = i.assigned_user_id
 		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
 		WHERE i.deleted_at IS NULL AND c.deleted_at IS NULL
-		ORDER BY i.sort_order ASC, i.created_at ASC
+		ORDER BY i.sort_order ASC, i.created_at ASC, i.item_number ASC
 	`, childLinkTypeSQL(), strings.Join(placeholders, ","))), args...)
 	if err != nil {
 		return nil, fmt.Errorf("get child items for parents: %w", err)

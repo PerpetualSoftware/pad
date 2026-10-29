@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"math"
+	"slices"
 	"sync"
 	"testing"
 
@@ -105,15 +106,47 @@ func createChild(t *testing.T, s *Store, wsID, colID, parentID, title string) mo
 	return *it
 }
 
-// A new child JOINS THE END of its siblings: ship and decompose rely on it.
+// tiedChildren creates one child per title under a new parent and forces the
+// same-second tie decompose produces: every child gets ONE created_at value
+// (it has one-second resolution), and the ids are random v4 UUIDs, so it
+// retries on fresh parents until the ids sort in the REVERSE of creation
+// order. Only the item_number tie-break then returns creation order; an id
+// or arbitrary order fails (BUG-4005). Returns the parent and the children
+// in creation order.
+func tiedChildren(t *testing.T, s *Store, wsID, colID string, names ...string) (models.Item, []models.Item) {
+	t.Helper()
+	for attempt := 0; attempt < 500; attempt++ {
+		parent := createTestItem(t, s, wsID, colID, "parent", "")
+		kids := make([]models.Item, len(names))
+		reversed := true
+		for i, n := range names {
+			kids[i] = createChild(t, s, wsID, colID, parent.ID, n)
+			if i > 0 && kids[i].ID >= kids[i-1].ID {
+				reversed = false
+			}
+		}
+		if !reversed {
+			continue
+		}
+		for _, k := range kids[1:] {
+			if _, err := s.db.Exec(s.q(`UPDATE items SET created_at = (SELECT created_at FROM items WHERE id = ?) WHERE id = ?`), kids[0].ID, k.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return *parent, kids
+	}
+	t.Fatal("no id set in reverse creation order after 500 attempts")
+	return models.Item{}, nil
+}
+
+// A new child JOINS THE END of its siblings: ship and decompose rely on it,
+// including for children created in the same second.
 func TestNewItemTop_ChildJoinsTheEnd(t *testing.T) {
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Top Children")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
-	parent := createTestItem(t, s, ws.ID, col.ID, "parent", "")
-	createChild(t, s, ws.ID, col.ID, parent.ID, "c1")
-	createChild(t, s, ws.ID, col.ID, parent.ID, "c2")
-	fresh := createChild(t, s, ws.ID, col.ID, parent.ID, "fresh")
+	parent, kids3 := tiedChildren(t, s, ws.ID, col.ID, "c1", "c2", "fresh")
+	fresh := kids3[2]
 	if got := sortOrderOf(t, s, fresh.ID); got != 0 {
 		t.Errorf("child sort_order = %d, want 0", got)
 	}
@@ -139,19 +172,32 @@ func TestNewItemTop_ShipOrderAfterDecompose(t *testing.T) {
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Ship Order")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
-	plan := createTestItem(t, s, ws.ID, col.ID, "plan", "")
 	// Parentless siblings elsewhere in the collection at very negative orders.
 	other := createTestItem(t, s, ws.ID, col.ID, "other", "")
 	setSortOrder(t, s, other.ID, -50)
-	for _, n := range []string{"T1", "T2", "T3"} {
-		createChild(t, s, ws.ID, col.ID, plan.ID, n)
-	}
+	// Same created_at, ids in reverse creation order: only item_number orders them.
+	plan, _ := tiedChildren(t, s, ws.ID, col.ID, "T1", "T2", "T3")
+	want := []string{"T1", "T2", "T3"}
 	kids, err := s.getChildItems(s.db, plan.ID, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := titles(kids); len(got) != 3 || got[0] != "T1" || got[1] != "T2" || got[2] != "T3" {
-		t.Errorf("children in sort_order, created_at order = %v, want [T1 T2 T3]", got)
+	if got := titles(kids); !slices.Equal(got, want) {
+		t.Errorf("getChildItems order = %v, want %v", got, want)
+	}
+	byParent, err := s.GetChildItemsForParents([]string{plan.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := titles(byParent[plan.ID]); !slices.Equal(got, want) {
+		t.Errorf("GetChildItemsForParents order = %v, want %v", got, want)
+	}
+	listed, err := s.ListChildItems(plan.ID, ChildListParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := titles(listed); !slices.Equal(got, want) {
+		t.Errorf("ListChildItems order = %v, want %v", got, want)
 	}
 }
 
@@ -265,5 +311,32 @@ func TestNewItemTop_ClampsAtTheIntegerFloor(t *testing.T) {
 	}
 	if got := sortOrderOf(t, s, fresh.ID); got != math.MinInt32 {
 		t.Errorf("sort_order = %d, want the floor %d", got, math.MinInt32)
+	}
+}
+
+// The fenced create path clamps at the INTEGER floor too.
+func TestNewItemTop_FencedCreateClampsAtTheIntegerFloor(t *testing.T) {
+	f := newFenceFixture(t)
+	u := createTestUser(t, f.s, "fencefloor@example.com", "Fence Floor", "pw-123456789")
+	old := createTestItem(t, f.s, f.ws.ID, f.companion.ID, "floor", "")
+	setSortOrder(t, f.s, old.ID, math.MinInt32)
+	ftx, err := f.s.BeginFenced(context.Background(), f.spec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ftx.Rollback()
+	it, err := ftx.CreateItem(FencedItemCreate{
+		CollectionID: f.companion.ID, Title: "app", Fields: "{}",
+		Actor: FencedActor{Kind: "user", UserID: u.ID},
+	})
+	if err != nil {
+		t.Fatalf("fenced create at the floor: %v", err)
+	}
+	var n int
+	if err := ftx.tx.QueryRow(f.s.q(`SELECT sort_order FROM items WHERE id = ?`), it.ID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != math.MinInt32 {
+		t.Errorf("fenced create sort_order = %d, want the floor %d", n, math.MinInt32)
 	}
 }
