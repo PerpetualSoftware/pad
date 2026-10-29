@@ -6,7 +6,8 @@ import { tick } from 'svelte';
 import MessageBubble from './MessageBubble.svelte';
 import PendingBubble from './PendingBubble.svelte';
 import UnreadDivider from './UnreadDivider.svelte';
-import type { ChatMessage } from '$lib/types';
+import { refKey } from '$lib/chat/refs';
+import type { ChatMessage, ChatRef } from '$lib/types';
 
 const base: ChatMessage = {
 	id: 'm5',
@@ -323,5 +324,95 @@ describe('PendingBubble', () => {
 		await r.rerender({ ...props, pending: { ...pending, status: 'failed' as const } });
 		expect(r.container.querySelector('[role=status]')).toBe(region);
 		expect(region!.textContent).toContain('Failed to send');
+	});
+});
+
+// TASK-4044 3c (U29, corrected by N9): how a body renders its refs.
+describe('MessageBubble refs', () => {
+	const entry = (r: ChatRef) => [refKey(r.workspace, r.ref), r] as const;
+	const map = (...rs: ChatRef[]) => new Map(rs.map(entry));
+	const withBody = (body: string, over: Partial<ChatMessage> = {}): ChatMessage => ({ ...base, body, ...over });
+	const body = (c: HTMLElement) => c.querySelector('.body') as HTMLElement;
+
+	it('a visible ref is a link to /-/r with the title and a hard reload', () => {
+		const refs = map({ workspace: 'docapp', ref: 'TASK-1', state: 'visible', title: 'Ship it', collection_slug: 'tasks' });
+		const r = render(MessageBubble, { props: { message: withBody('see [[docapp::TASK-1]] now'), refs } });
+		const a = body(r.container).querySelector('a')!;
+		expect(a.getAttribute('href')).toBe('/-/r/docapp/TASK-1');
+		expect(a.getAttribute('title')).toBe('Ship it');
+		expect(a.hasAttribute('data-sveltekit-reload')).toBe(true);
+		expect(a.textContent).toBe('TASK-1');
+		expect(body(r.container).textContent).toBe('see TASK-1 now');
+	});
+
+	it('a bare visible ref links through the context workspace', () => {
+		const refs = map({ workspace: 'docapp', ref: 'TASK-1', state: 'visible', title: 'Ship it' });
+		const message = withBody('[[task-1]]', { context_workspace: { slug: 'docapp', name: 'DocApp' } });
+		const r = render(MessageBubble, { props: { message, refs } });
+		expect(body(r.container).querySelector('a')!.getAttribute('href')).toBe('/-/r/docapp/TASK-1');
+	});
+
+	it('a restricted ref is a span with no href and no title attribute', () => {
+		const refs = map({ workspace: 'other', ref: 'BUG-2', state: 'restricted' });
+		const r = render(MessageBubble, { props: { message: withBody('x [[other::BUG-2]] y'), refs } });
+		const b = body(r.container);
+		expect(b.querySelector('a')).toBeNull();
+		const span = b.querySelector('span.ref-restricted')!;
+		expect(span.textContent).toBe('restricted item');
+		expect(span.hasAttribute('href')).toBe(false);
+		expect(span.hasAttribute('title')).toBe(false);
+		expect(span.getAttributeNames()).toEqual(['class']);
+		expect(b.textContent).toBe('x restricted item y');
+		expect(b.innerHTML).not.toContain('BUG-2');
+	});
+
+	it('unresolved and missing refs stay the raw text, brackets kept, with no link', () => {
+		const refs = map({ workspace: 'docapp', ref: 'TASK-3', state: 'unresolved' });
+		const text = 'a [[docapp::TASK-3]] b [[docapp::TASK-99]] c [[TASK-3]]';
+		const r = render(MessageBubble, { props: { message: withBody(text), refs } });
+		const b = body(r.container);
+		expect(b.textContent).toBe(text);
+		expect(b.querySelector('a, span')).toBeNull();
+	});
+
+	it('with no refs at all the body is the raw text', () => {
+		const r = render(MessageBubble, { props: { message: withBody('[[docapp::TASK-1]]') } });
+		expect(body(r.container).textContent).toBe('[[docapp::TASK-1]]');
+		expect(body(r.container).querySelector('a')).toBeNull();
+	});
+
+	it('keeps newlines and spacing as text, and renders markup in the body as text', () => {
+		const refs = map({ workspace: 'docapp', ref: 'TASK-1', state: 'visible', title: '<b>t</b>' });
+		const text = 'line one\n  <b>bold</b> [[docapp::TASK-1]]\nend';
+		const r = render(MessageBubble, { props: { message: withBody(text), refs } });
+		const b = body(r.container);
+		expect(b.textContent).toBe('line one\n  <b>bold</b> TASK-1\nend');
+		expect(b.querySelector('b')).toBeNull();
+		expect(b.querySelector('a')!.getAttribute('title')).toBe('<b>t</b>');
+	});
+
+	it('a tombstone renders no body and no ref', () => {
+		const refs = map({ workspace: 'docapp', ref: 'TASK-1', state: 'visible', title: 'Ship it' });
+		const message = withBody('', { deleted: true });
+		const r = render(MessageBubble, { props: { message, refs } });
+		expect(r.container.textContent).toContain('Message deleted');
+		expect(r.container.querySelector('a')).toBeNull();
+	});
+
+	it('PendingBubble and the quote chip keep the raw text', () => {
+		const p = render(PendingBubble, {
+			props: { pending: { op_key: 'k', body: 'see [[docapp::TASK-1]]', status: 'sending' as const }, onRetry: vi.fn(), onDiscard: vi.fn() }
+		});
+		expect(p.container.querySelector('a')).toBeNull();
+		expect(p.container.textContent).toContain('[[docapp::TASK-1]]');
+		p.unmount();
+		const message = withBody('x', {
+			reply_to_seq: 2,
+			reply_to: { seq: 2, author_agent_key: 'codex', author_is_human: false, excerpt: 'see [[docapp::TASK-1]]', deleted: false }
+		});
+		const refs = map({ workspace: 'docapp', ref: 'TASK-1', state: 'visible', title: 'Ship it' });
+		const q = render(MessageBubble, { props: { message, refs } });
+		expect(q.container.querySelector('.quote a')).toBeNull();
+		expect(q.container.querySelector('.quote-text')!.textContent).toBe('see [[docapp::TASK-1]]');
 	});
 });
