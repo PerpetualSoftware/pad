@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/appfetch"
+	"github.com/PerpetualSoftware/pad/internal/logging"
 )
 
 // App webhook delivery (SPEC-6 U10b, DOC-3371 §5; TASK-3408).
@@ -197,10 +198,10 @@ func (d *Dispatcher) attemptApp(parent context.Context, adm AppAdmitter, poster 
 		// started going out (codex r3 on U10c).
 		sent := !errors.Is(err, appfetch.ErrRefused) && !errors.Is(err, appfetch.ErrNotSent)
 		if errors.Is(err, appfetch.ErrRefused) {
-			slog.Warn("app webhook refused by policy", "webhook_id", dv.WebhookID, "error", err)
+			slog.Warn("app webhook refused by policy", "webhook_id", dv.WebhookID, "error_type", logging.ErrorType(err))
 			return AppPermanent, sent
 		}
-		slog.Warn("app webhook delivery failed", "webhook_id", dv.WebhookID, "error", err)
+		slog.Warn("app webhook delivery failed", "webhook_id", dv.WebhookID, "error_type", logging.ErrorType(err))
 		return AppTransient, sent
 	}
 	switch {

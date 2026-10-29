@@ -1763,12 +1763,9 @@ func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
 			}
 		})
 	} else if !s.cloudMode {
-		// Self-host with no email provider: the server log is the recovery
-		// channel. Emit the path an operator pastes after the base URL to
-		// complete the reset by hand. Gated on !cloudMode so a cloud
-		// deployment never writes a live reset token to its logs.
-		slog.Info("password reset generated (email not configured) — open this path on the server to finish",
-			"reset_path", "/reset-password/"+token)
+		// Recovery credentials belong in the host-side CLI response, never
+		// in application logs where readers could redeem them.
+		slog.Info("password reset generated (email not configured) — use pad auth reset-password on the server host")
 	} else {
 		slog.Info("password reset token generated (email not configured)")
 	}

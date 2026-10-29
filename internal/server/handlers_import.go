@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/logging"
 	"github.com/PerpetualSoftware/pad/internal/urlimport"
 )
 
@@ -110,7 +111,7 @@ func (s *Server) handleImportURL(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusGatewayTimeout
 			code = "fetch_timeout"
 		}
-		slog.Info("import url fetch failed", "user", userID, "url", input.URL, "error", err)
+		slog.Info("import url fetch failed", "user", userID, "host", logging.URLHost(input.URL), "error_type", logging.ErrorType(err))
 		writeError(w, status, code, err.Error())
 		return
 	}
@@ -128,7 +129,7 @@ func (s *Server) handleImportURL(w http.ResponseWriter, r *http.Request) {
 			// user at least gets the raw textual content. Re-classify
 			// the response accordingly so the UI can show the right
 			// affordance.
-			slog.Info("openapi conversion fell back to generic", "user", userID, "url", input.URL, "error", err)
+			slog.Info("openapi conversion fell back to generic", "user", userID, "host", logging.URLHost(input.URL), "error_type", logging.ErrorType(err))
 			result, err = urlimport.ConvertGeneric(fetched.Body, fetched.URL)
 			detected = urlimport.TypeGeneric
 		}
@@ -136,7 +137,7 @@ func (s *Server) handleImportURL(w http.ResponseWriter, r *http.Request) {
 		result, err = urlimport.ConvertGeneric(fetched.Body, fetched.URL)
 	}
 	if err != nil {
-		slog.Info("import url conversion failed", "user", userID, "url", input.URL, "error", err)
+		slog.Info("import url conversion failed", "user", userID, "host", logging.URLHost(input.URL), "error_type", logging.ErrorType(err))
 		writeError(w, http.StatusUnprocessableEntity, "conversion_failed", err.Error())
 		return
 	}
