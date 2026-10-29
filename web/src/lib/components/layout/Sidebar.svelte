@@ -10,6 +10,8 @@
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { GITHUB_REPO_URL } from '$lib/brand/links';
 	import { authStore } from '$lib/stores/auth.svelte';
+	import { chatStore } from '$lib/stores/chat.svelte';
+	import UnreadBadge from '$lib/components/chat/UnreadBadge.svelte';
 	import { goto } from '$app/navigation';
 	import { api, isPlanLimitError } from '$lib/api/client';
 	import { showPlanLimitToast } from '$lib/billing/planLimitToast';
@@ -59,6 +61,7 @@
 	let isActivityPage = $derived(activeKey === 'activity');
 	let isStarredPage = $derived(activeKey === 'starred');
 	let isTagsPage = $derived(activeKey === 'tags');
+	let isMessagesPage = $derived(page.url.pathname === '/messages' || page.url.pathname.startsWith('/messages/'));
 
 	let activeCollectionSlug = $derived(
 		activeKey && activeKey.startsWith('collection:') ? activeKey.slice('collection:'.length) : null
@@ -635,6 +638,25 @@
 					<span class="nav-icon">🏷</span>
 					<span class="nav-label">Tags</span>
 				</a>
+				{/if}
+				<!--
+					TASK-4044 3c (Option C, ruling 687eb810 Q-e): the Chat entry. Chat is
+					per user, not per workspace, so it is gated on being signed in and
+					sits OUTSIDE the `!isGuest` block: a guest member of this workspace
+					still has their own chat. href is global, not wsPrefix.
+				-->
+				{#if authStore.authenticated}
+					<a
+						href="/messages"
+						class="nav-item"
+						class:active={isMessagesPage}
+						aria-label={chatStore.unreadTotal > 0 ? `Chat, ${chatStore.unreadTotal} unread` : 'Chat'}
+						onclick={() => uiStore.onNavigate()}
+					>
+						<span class="nav-icon">💬</span>
+						<span class="nav-label">Chat</span>
+						<UnreadBadge count={chatStore.unreadTotal} />
+					</a>
 				{/if}
 
 				{#if isGuest}
