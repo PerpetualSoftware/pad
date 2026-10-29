@@ -251,6 +251,7 @@ func loadDashboard(client *cli.Client, ws string) (*server.DashboardResponse, er
 	if err != nil {
 		return nil, err
 	}
+	seedDashboardZone(dashJSON)
 	var dash server.DashboardResponse
 	if err := json.Unmarshal(dashJSON, &dash); err != nil {
 		return nil, err

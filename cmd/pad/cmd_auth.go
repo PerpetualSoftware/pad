@@ -19,6 +19,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/cli"
 	"github.com/PerpetualSoftware/pad/internal/config"
+	"github.com/PerpetualSoftware/pad/internal/usertz"
 
 	"golang.org/x/term"
 )
@@ -971,6 +972,7 @@ func whoamiCmd() *cobra.Command {
 				fmt.Printf("Name:  %s\n", user.Name)
 				fmt.Printf("Email: %s\n", user.Email)
 				fmt.Printf("Role:  %s\n", user.Role)
+				fmt.Printf("Zone:  %s\n", timezoneLabel(user.Timezone))
 				if envToken != "" {
 					fmt.Println("Auth:  PAD_TOKEN environment override")
 				}
@@ -1055,3 +1057,49 @@ Rotate it right after you log in.`,
 }
 
 // --- init ---
+
+func timezoneLabel(zone *string) string {
+	if zone == nil {
+		return "not set (UTC)"
+	}
+	return *zone
+}
+
+func timezoneCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:     "timezone [zone]",
+		Short:   "Show or set your IANA time zone",
+		Example: "  pad auth timezone America/New_York",
+		Args:    cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 1 {
+				if _, err := usertz.Validate(args[0]); err != nil {
+					return err
+				}
+			}
+			client, _ := getClient()
+			var user *cli.LoginUser
+			var err error
+			if len(args) == 0 {
+				user, err = client.GetCurrentUser()
+			} else {
+				user, err = client.SetTimezone(args[0])
+			}
+			if err != nil {
+				return err
+			}
+			if formatFlag == "json" {
+				return cli.PrintJSON(map[string]any{"timezone": user.Timezone})
+			}
+			if len(args) == 1 {
+				fmt.Printf("Time zone set to %s\n", timezoneLabel(user.Timezone))
+			} else {
+				fmt.Printf("Time zone: %s\n", timezoneLabel(user.Timezone))
+				if user.Timezone == nil {
+					fmt.Println("Set yours with pad auth timezone <IANA>.")
+				}
+			}
+			return nil
+		},
+	}
+}

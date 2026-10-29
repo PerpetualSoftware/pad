@@ -1783,7 +1783,7 @@ Items can be referenced by issue ID (e.g. TASK-5) or slug.`,
 					summary = "-"
 				}
 				fmt.Printf("%-20s  %-14s  %-16s  %s\n",
-					v.CreatedAt.Format("2006-01-02 15:04:05"),
+					cli.FormatInstant(v.CreatedAt, "2006-01-02 15:04:05"),
 					truncateField(v.CreatedBy, 14),
 					truncateField(v.Source, 16),
 					summary,
