@@ -8,6 +8,7 @@
 	import { tabsStore } from '$lib/stores/tabs.svelte';
 	import { accessStream } from '$lib/services/accessStream.svelte';
 	import { chatStore } from '$lib/stores/chat.svelte';
+	import TimezoneSync from '$lib/components/TimezoneSync.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import {
 		reloadForIdentityChange,
@@ -405,6 +406,7 @@
 	<CreateWorkspaceModal
 		onWorkspaceCreated={(ws) => uiStore.requestConnectAfterNavigate(ws.slug)}
 	/>
+	<TimezoneSync />
 	<ToastContainer />
 	<PlanLimitPrompt />
 	<OpenChildrenDialog />
@@ -493,6 +495,7 @@
 	<CreateWorkspaceModal
 		onWorkspaceCreated={(ws) => uiStore.requestConnectAfterNavigate(ws.slug)}
 	/>
+	<TimezoneSync />
 	<ToastContainer />
 	<PlanLimitPrompt />
 	<OpenChildrenDialog />

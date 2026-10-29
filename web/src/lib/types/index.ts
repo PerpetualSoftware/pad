@@ -3,6 +3,7 @@ import { uniqueBy, uniqueStrings } from '$lib/utils/unique';
 // ─── User & Auth ──────────────────────────────────────────────────────────────
 
 export interface User {
+	timezone?: string | null;
 	id: string;
 	email: string;
 	username: string;
@@ -34,6 +35,8 @@ export interface TOTPDisableResponse {
 }
 
 export interface UserProfileUpdate {
+	timezone?: string;
+	if_unset?: boolean;
 	name?: string;
 	username?: string;
 	current_password?: string;
@@ -3413,7 +3416,7 @@ export interface TutorialsResponse {
 }
 
 /** One-time UI suggestions the user dismissed (models.UIDismissalKeys). */
-export type UIDismissalKey = 'tutorials.console' | 'tutorials.launchpad';
+export type UIDismissalKey = 'tutorials.console' | 'tutorials.launchpad' | `tz-mismatch:${string}|${string}`;
 
 /**
  * The caller's push notification settings (models.NotificationSettings).

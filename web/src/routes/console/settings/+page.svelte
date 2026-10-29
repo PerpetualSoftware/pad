@@ -5,6 +5,7 @@
 	import { onMount } from 'svelte';
 	import { api, isPlanLimitError, PadApiError } from '$lib/api/client';
 	import { showPlanLimitToast } from '$lib/billing/planLimitToast';
+	import { browserZone, noteExplicitTimezoneWrite, zoneOptions } from '$lib/timezone';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
@@ -23,6 +24,37 @@
 	let profileSaving = $state(false);
 	let profileMsg = $state('');
 	let profileError = $state('');
+
+	let timezone = $state('');
+	let timezoneSaving = $state(false);
+	let timezoneError = $state('');
+	let timezoneMsg = $state('');
+	const browserTimezone = browserZone();
+	const timezones = zoneOptions();
+	async function saveTimezone() {
+		const userId = authStore.userId;
+		const isSameIdentity = authStore.identityFence();
+		timezoneSaving = true;
+		timezoneError = '';
+		timezoneMsg = '';
+		try {
+			const updated = await api.auth.setTimezone(timezone.trim());
+			// Counted only once it has succeeded: a failed write changed nothing a late default could clobber (TASK-4101 PR2a r2 H2-M2).
+			noteExplicitTimezoneWrite();
+			if (!isSameIdentity()) return;
+			if (updated.timezone !== undefined) {
+				authStore.setTimezone(userId, updated.timezone);
+				timezone = updated.timezone ?? '';
+			}
+			// Merge: the PATCH answer lacks totp_enabled, oauth_providers and password_set (TASK-4101 PR2a r1 H-L1).
+			profile = profile ? { ...profile, ...updated } : updated;
+			timezoneMsg = 'Time zone updated.';
+		} catch (err) {
+			if (isSameIdentity()) timezoneError = err instanceof Error ? err.message : 'Failed to set time zone';
+		} finally {
+			if (isSameIdentity()) timezoneSaving = false;
+		}
+	}
 
 	// Password
 	let currentPassword = $state('');
@@ -179,22 +211,53 @@
 		history.replaceState(history.state, '', url.pathname + (url.search || '') + url.hash);
 	}
 
-	onMount(async () => {
-		readOAuthQueryStatus();
+	// The identity epoch the form's profile was loaded under. Saves are enabled only while it is the
+	// current one, so no save is built from another identity's load, or from none (TASK-4101 PR2a r2 H2-M1).
+	let loadedEpoch = $state<number | null>(null);
+	const profileReady = $derived(loadedEpoch === authStore.identityEpoch);
+
+	async function loadProfile() {
+		const epoch = authStore.identityEpoch;
+		const isSameIdentity = authStore.identityFence();
 		try {
 			const [me, tokenList] = await Promise.all([
 				api.auth.me(),
 				api.auth.tokens.list()
 			]);
+			// A load that settles after an identity change belongs to the previous user. Drop it untouched:
+			// the identity listener has started the load for the current one.
+			if (!isSameIdentity()) return;
 			profile = me;
 			profileName = me.name;
 			profileUsername = me.username;
+			timezone = me.timezone ?? '';
 			tokens = tokenList;
+			loadedEpoch = epoch;
 		} catch {
+			if (!isSameIdentity()) return;
 			profileError = 'Failed to load profile';
-		} finally {
-			loading = false;
 		}
+		loading = false;
+	}
+
+	onMount(() => {
+		readOAuthQueryStatus();
+		// The listener runs after the epoch bump, so this reload is for the identity signed in now.
+		const stopListening = authStore.onIdentityChange(() => {
+			profile = null;
+			profileName = '';
+			profileUsername = '';
+			timezone = '';
+			tokens = [];
+			// A zone Save in flight belonged to the previous identity; its fenced finally will not clear these.
+			timezoneSaving = false;
+			timezoneError = '';
+			timezoneMsg = '';
+			// Signed out: nothing to load, and its 401s would race the caller's own navigation (#2342 E2E).
+			if (authStore.userId) void loadProfile();
+		});
+		void loadProfile();
+		return stopListening;
 	});
 
 	async function saveProfile() {
@@ -206,7 +269,8 @@
 				name: profileName.trim(),
 				username: profileUsername.trim()
 			});
-			profile = updated;
+			// Merge, as in saveTimezone (TASK-4101 PR2a r1 H-L1).
+			profile = profile ? { ...profile, ...updated } : updated;
 			profileMsg = 'Profile updated.';
 			await authStore.load();
 		} catch (err) {
@@ -662,6 +726,18 @@
 					<label for="profile-email">Email</label>
 					<input id="profile-email" type="email" value={profile?.email ?? ''} disabled readonly />
 				</div>
+				<div class="field">
+					<label for="timezone">Time zone</label>
+					<input id="timezone" list="timezones" bind:value={timezone} disabled={timezoneSaving} />
+					<datalist id="timezones">{#each timezones as tz}<option value={tz}></option>{/each}</datalist>
+					{#if profile?.timezone === null}<p>Not set, times use UTC</p>{/if}
+					{#if browserTimezone}
+						<button onclick={() => timezone = browserTimezone} disabled={timezoneSaving}>Use browser zone ({browserTimezone})</button>
+					{/if}
+					<Button onclick={saveTimezone} disabled={!profileReady || timezoneSaving || !timezone.trim()}>Save time zone</Button>
+					{#if timezoneError}<p class="error" role="alert">{timezoneError}</p>{/if}
+					{#if timezoneMsg}<p class="success" role="status">{timezoneMsg}</p>{/if}
+				</div>
 				{#if profileError}
 					<p class="error">{profileError}</p>
 				{/if}
@@ -669,7 +745,7 @@
 					<p class="success">{profileMsg}</p>
 				{/if}
 				<div class="btn-row">
-					<Button variant="primary" onclick={saveProfile} disabled={profileSaving}>
+					<Button variant="primary" onclick={saveProfile} disabled={!profileReady || profileSaving}>
 						{profileSaving ? 'Saving...' : 'Save Changes'}
 					</Button>
 				</div>
