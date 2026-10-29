@@ -166,7 +166,7 @@
 		></textarea>
 		<PlanLimitPrompt scope="new-item-sheet" />
 		<div class="capture-actions">
-			<button class="capture-cancel" type="button" onclick={close}>Cancel</button>
+			<button class="capture-cancel" type="button" onclick={close}>Close</button>
 			<button
 				class="capture-open"
 				type="button"

@@ -84,6 +84,17 @@ describe('QuickCaptureSheet keeps your place (TASK-3590)', () => {
 		expect(goto).not.toHaveBeenCalled();
 	});
 
+	it('the dismiss button reads Close, not Cancel, and closes without creating (BUG-4004)', async () => {
+		const onclose = mount();
+		await tick();
+		expect(screen.queryByRole('button', { name: 'Cancel' }), 'the dismiss button still reads Cancel').toBeNull();
+		await fireEvent.input(title(), { target: { value: 'never mind' } });
+		await fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+		await settle();
+		expect(onclose).toHaveBeenCalled();
+		expect(api.items.create).not.toHaveBeenCalled();
+	});
+
 	it('Add and open closes the sheet and navigates to the new item', async () => {
 		const onclose = mount();
 		await tick();

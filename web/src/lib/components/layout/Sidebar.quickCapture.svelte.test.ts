@@ -117,13 +117,15 @@ describe('Sidebar quick-add keeps your place (TASK-3590)', () => {
 		expect(document.querySelector('.quick-add-modal'), 'add and open left the dialog up').toBeNull();
 	});
 
-	it('the Cancel button closes the dialog without creating anything (TASK-3972)', async () => {
+	it('the Close button closes the dialog without creating anything (TASK-3972, BUG-4004)', async () => {
 		render(Sidebar);
 		await open();
+		// BUG-4004: labelled Close, not Cancel, since Add keeps the dialog open.
+		expect(document.querySelector('.quick-add-cancel')!.textContent?.trim()).toBe('Close');
 		await fireEvent.input(input(), { target: { value: 'never mind' } });
 		await fireEvent.click(document.querySelector<HTMLButtonElement>('.quick-add-cancel')!);
 		await settle();
-		expect(document.querySelector('.quick-add-modal'), 'Cancel left the dialog up').toBeNull();
+		expect(document.querySelector('.quick-add-modal'), 'Close left the dialog up').toBeNull();
 		expect(api.items.create).not.toHaveBeenCalled();
 		await open();
 		expect(input().value, 'the cancelled text came back on reopen').toBe('');
