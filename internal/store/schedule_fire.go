@@ -86,11 +86,13 @@ func storedSpecInput(sc *models.ItemSchedule, start string) scheduleSpecInput {
 // caller should emit the event and notification. false means the transaction is
 // to be committed as it stands with no event:
 //
+//   - a stored rule that no longer compiles: the row stays fired, error_code
+//     says why, and the next tick does not see it. Never ended silently. This is
+//     checked first, so a broken floating rule is not deferred before it is
+//     recorded;
 //   - a floating schedule whose exact instant, in the recipient's zone, is still
 //     ahead: the row was armed at the UTC+14 bound and is moved to the exact
-//     instant and un-fired (the deferral write);
-//   - a stored rule that no longer compiles: the row stays fired, error_code
-//     says why, and the next tick does not see it. Never ended silently.
+//     instant and un-fired (the deferral write).
 //
 // On true, r.OccurrenceAt is set and the schedule's start has been re-anchored
 // when it may be.
@@ -115,24 +117,6 @@ func (s *Store) fireManagedTx(tx *sql.Tx, r *models.Reminder, nowTS string) (boo
 		override = &o
 	}
 
-	var loc *time.Location
-	var at time.Time
-	if sc.Floating {
-		// The recipient's zone NOW, not when the row was armed: reassignment and
-		// zone edits since then are honoured here.
-		if loc, err = s.scheduleRecipientZone(tx, r.ItemID); err != nil {
-			return false, err
-		}
-		at = schedule.Resolve(loc, wall)
-		if precise := NormalizeInstant(fireInstant(at, wall, loc, sc.LeadMinutes, override)); precise > nowTS {
-			if _, err := tx.Exec(s.q(`UPDATE item_reminders SET remind_at = ?, fired_at = NULL, updated_at = ? WHERE id = ?`),
-				precise, now(), r.ID); err != nil {
-				return false, fmt.Errorf("defer floating reminder: %w", err)
-			}
-			return false, nil
-		}
-	}
-
 	start := sc.Dtstart
 	if sc.AnchorWall != nil {
 		start = *sc.AnchorWall
@@ -153,6 +137,24 @@ func (s *Store) fireManagedTx(tx *sql.Tx, r *models.Reminder, nowTS string) (boo
 		return false, nil
 	}
 	spec := c.Spec()
+
+	var loc *time.Location
+	var at time.Time
+	if sc.Floating {
+		// The recipient's zone NOW, not when the row was armed: reassignment and
+		// zone edits since then are honoured here.
+		if loc, err = s.scheduleRecipientZone(tx, r.ItemID); err != nil {
+			return false, err
+		}
+		at = schedule.Resolve(loc, wall)
+		if precise := NormalizeInstant(fireInstant(at, wall, loc, sc.LeadMinutes, override)); precise > nowTS {
+			if _, err := tx.Exec(s.q(`UPDATE item_reminders SET remind_at = ?, fired_at = NULL, updated_at = ? WHERE id = ?`),
+				precise, now(), r.ID); err != nil {
+				return false, fmt.Errorf("defer floating reminder: %w", err)
+			}
+			return false, nil
+		}
+	}
 
 	if !sc.Floating {
 		if loc, err = time.LoadLocation(spec.Zone); err != nil {

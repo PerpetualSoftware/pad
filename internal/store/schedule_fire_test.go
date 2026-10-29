@@ -880,3 +880,40 @@ func TestScheduleUpdateWaitsOnTheItemBeforeTheSchedule(t *testing.T) {
 		t.Errorf("lead_minutes = %d, want %d", got.LeadMinutes, sc.LeadMinutes+5)
 	}
 }
+
+// A broken floating rule records error_code on the FIRST fire attempt: the
+// compile runs before the floating deferral, so the row is not deferred (and
+// remind_at not moved) once before the failure is recorded.
+func TestScheduleBrokenFloatingRuleRecordsErrorCodeWithoutDeferral(t *testing.T) {
+	t.Parallel()
+	f := newSchedFixture(t)
+	la := f.user(t, "labroken4102@example.com", "America/Los_Angeles")
+	f.assign(t, f.item.ID, la.ID)
+	sc := f.create(t, models.ScheduleCreate{Kind: "check", Dtstart: "2026-11-02T09:00", Floating: true, Rrule: "FREQ=DAILY"})
+	rid := *sc.ReminderID
+	armed := f.reminder(t, rid).RemindAt
+	if armed != "2026-11-01T19:00:00Z" {
+		t.Fatalf("armed at %s, want the +14 bound", armed)
+	}
+	f.exec(t, `UPDATE item_schedules SET rrule = ? WHERE id = ?`, "FREQ=DAILY;BOGUS=1", sc.ID)
+
+	// 20:00Z on the 1st is past the bound, but the exact instant (17:00Z on the
+	// 2nd, in Los Angeles) is still ahead.
+	if got := f.fire(t, "2026-11-01T20:00:00Z"); len(got) != 0 {
+		t.Fatalf("a broken rule fired %v", got)
+	}
+	if n := f.events(t); n != 0 {
+		t.Fatalf("a broken rule wrote %d events", n)
+	}
+	got := f.reload(t, f.item.ID)
+	if got.ErrorCode == nil || *got.ErrorCode != string(schedule.CodeUnknownPart) {
+		t.Fatalf("error_code = %v, want %s on the first attempt", got.ErrorCode, schedule.CodeUnknownPart)
+	}
+	r := f.reminder(t, rid)
+	if r.RemindAt != armed {
+		t.Errorf("remind_at = %s, want %s: the row was deferred", r.RemindAt, armed)
+	}
+	if r.FiredAt == nil {
+		t.Errorf("the row is not left fired")
+	}
+}
