@@ -18,13 +18,13 @@ var viewerZone struct {
 	load   sync.Once
 	notice sync.Once
 	loc    *time.Location
-	unset  bool
+	note   string // the stderr notice; "" when the zone is set and loads
 }
 
 func installViewerZone() {
 	viewerZone.load = sync.Once{}
 	viewerZone.notice = sync.Once{}
-	viewerZone.loc, viewerZone.unset = time.UTC, false
+	viewerZone.loc, viewerZone.note = time.UTC, ""
 	cli.SetDisplayLocationResolver(func() *time.Location {
 		viewerZone.load.Do(func() {
 			// Never exit or prompt from a renderer: unconfigured means UTC, quietly.
@@ -35,12 +35,11 @@ func installViewerZone() {
 			}
 			client := cli.NewClientFromURL(cfg.BaseURL())
 			if user, err := client.GetCurrentUser(); err == nil {
-				viewerZone.loc = usertz.Resolve(user.Timezone).Loc
-				viewerZone.unset = user.Timezone == nil
+				noteViewerZone(user.Timezone, user.Timezone == nil)
 			}
 		})
-		if viewerZone.unset && formatFlag != "json" {
-			viewerZone.notice.Do(func() { fmt.Fprintln(os.Stderr, timezoneNotice) })
+		if viewerZone.note != "" && formatFlag != "json" {
+			viewerZone.notice.Do(func() { fmt.Fprintln(os.Stderr, viewerZone.note) })
 		}
 		return viewerZone.loc
 	})
@@ -57,8 +56,18 @@ func seedDashboardZone(raw json.RawMessage) {
 		return
 	}
 	viewerZone.load.Do(func() {
-		viewerZone.loc = usertz.Resolve(&d.Timezone).Loc
-		viewerZone.unset = d.Note != ""
+		noteViewerZone(&d.Timezone, d.Note != "")
 	})
 	_ = cli.DisplayLocation()
+}
+
+// A zone this machine's tzdata cannot load renders in UTC, and the notice names it (r4-C1).
+func noteViewerZone(name *string, unset bool) {
+	z := usertz.Resolve(name)
+	viewerZone.loc, viewerZone.note = z.Loc, ""
+	if unset {
+		viewerZone.note = timezoneNotice
+	} else if !z.Set {
+		viewerZone.note = "times shown in UTC; your time zone " + *name + " is not available on this machine"
+	}
 }

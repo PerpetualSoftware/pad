@@ -17,6 +17,7 @@ import (
 )
 
 const tzNotice = "times shown in UTC; set yours with pad auth timezone <IANA>\n"
+const tzMissing = "times shown in UTC; your time zone Mars/Olympus is not available on this machine\n"
 
 func tzCLI(t *testing.T, handler http.HandlerFunc) *cobra.Command {
 	t.Helper()
@@ -131,15 +132,12 @@ func TestTZ4101_JSONHasNoNotice(t *testing.T) {
 
 func TestTZ4101_NextNoticeFromDashboard(t *testing.T) {
 	for _, command := range []string{"next", "dashboard", "ready", "stale", "standup"} {
-		for _, zone := range []string{"null", `"Pacific/Kiritimati"`} {
+		for _, zone := range []string{"null", `"Pacific/Kiritimati"`, `"Mars/Olympus"`} {
 			t.Run(command+zone, func(t *testing.T) {
 				hits := 0
 				root := tzCLI(t, tzStub(zone, &hits))
 				_, stderr, err := tzRun(t, root, "project", command)
-				want := ""
-				if zone == "null" {
-					want = tzNotice
-				}
+				want := map[string]string{"null": tzNotice, `"Mars/Olympus"`: tzMissing}[zone]
 				if err != nil || stderr != want || hits != 0 {
 					t.Fatalf("dashboard seeding/notice: stderr=%q want=%q hits=%d err=%v", stderr, want, hits, err)
 				}
@@ -149,11 +147,14 @@ func TestTZ4101_NextNoticeFromDashboard(t *testing.T) {
 }
 
 func TestTZ4101_NoticeOncePerProcess(t *testing.T) {
-	hits := 0
-	root := tzCLI(t, tzStub("null", &hits))
-	_, stderr, err := tzRun(t, root, "token", "list")
-	if err != nil || stderr != tzNotice || hits != 1 {
-		t.Fatalf("once notice: stderr=%q hits=%d err=%v", stderr, hits, err)
+	for zone, want := range map[string]string{"null": tzNotice, `"Mars/Olympus"`: tzMissing} {
+		t.Run(zone, func(t *testing.T) { // a subtest, so its server closes before the next time.Local write
+			hits := 0
+			_, stderr, err := tzRun(t, tzCLI(t, tzStub(zone, &hits)), "token", "list")
+			if err != nil || stderr != want || hits != 1 {
+				t.Fatalf("once notice: stderr=%q hits=%d err=%v", stderr, hits, err)
+			}
+		})
 	}
 }
 
