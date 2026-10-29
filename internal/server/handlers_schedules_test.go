@@ -505,6 +505,8 @@ func TestScheduleStrictBody(t *testing.T) {
 		"NUL":              `{"kind":"check","dtstart":"2099-01-01T09:00","tz":"UT\u0000C"}`,
 		"wrong type":       `{"kind":"check","dtstart":"2099-01-01T09:00","tz":"UTC","lead_minutes":"soon"}`,
 		"not an object":    `[]`,
+		"null":             `null`,
+		"a number":         `5`,
 		"list wrong type":  `{"kind":"check","dtstart":"2099-01-01T09:00","tz":"UTC","rdates":"x"}`,
 		"floating as text": `{"kind":"check","dtstart":"2099-01-01T09:00","floating":"yes"}`,
 	}
@@ -517,10 +519,10 @@ func TestScheduleStrictBody(t *testing.T) {
 	for name, body := range map[string]string{
 		"misspelt": `{"rrulee":"FREQ=DAILY"}`, "repeated": `{"lead_minutes":1,"lead_minutes":2}`,
 		"NUL": `{"kind":"ch\u0000eck"}`, "wrong type": `{"lead_minutes":"x"}`, "bool as text": `{"floating":"no"}`,
-		"list wrong type": `{"rdates":5}`,
+		"list wrong type": `{"rdates":5}`, "not an object": `[]`, "null": `null`, "a number": `5`,
 	} {
 		rr := f.do("PATCH", body)
-		if rr.Code != 400 {
+		if c, _ := schedErrDetails(t, rr); rr.Code != 400 || c != "invalid_body" {
 			t.Errorf("PATCH %s = %d %s", name, rr.Code, rr.Body.String())
 		}
 	}

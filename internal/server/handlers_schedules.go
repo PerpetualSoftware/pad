@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -165,7 +166,25 @@ func defaultScheduleZone(r *http.Request) (name, note string) {
 // decodeJSON caller gets, then refuses a member T does not declare, so a typo
 // such as `rrulee` is a 400 rather than a one-shot schedule.
 func strictScheduleBody[T any](r *http.Request) (T, error) {
-	return strictPushBody[T](r)
+	raw, err := readBodyForDecode(r, defaultJSONBodyLimit)
+	if err != nil {
+		var out T
+		return out, err
+	}
+	return scheduleBodyBytes[T](raw)
+}
+
+var errScheduleBodyNotObject = errors.New("schedule body is not a JSON object")
+
+// scheduleBodyBytes also refuses a body that is not an object: a top-level
+// null decodes into a struct as a no-op, so it would read as {} (TASK-4102
+// PR2 r2, H-Q1). strictBodyBytes is shared with push devices and left as is.
+func scheduleBodyBytes[T any](raw []byte) (T, error) {
+	if t := bytes.TrimLeft(raw, " \t\r\n"); len(t) == 0 || t[0] != '{' {
+		var out T
+		return out, errScheduleBodyNotObject
+	}
+	return strictBodyBytes[T](raw)
 }
 
 // strictScheduleCreateBody is strictScheduleBody for POST, which also reports
@@ -178,7 +197,7 @@ func strictScheduleCreateBody(r *http.Request) (req models.ScheduleCreate, nullF
 	if err != nil {
 		return req, "", err
 	}
-	if req, err = strictBodyBytes[models.ScheduleCreate](raw); err != nil {
+	if req, err = scheduleBodyBytes[models.ScheduleCreate](raw); err != nil {
 		return req, "", err
 	}
 	var required struct {
