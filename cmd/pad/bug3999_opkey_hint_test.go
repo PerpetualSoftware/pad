@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	pad "github.com/PerpetualSoftware/pad"
+	"github.com/PerpetualSoftware/pad/internal/cli"
 	"net/http"
 	"os"
 	"strings"
@@ -80,14 +82,40 @@ func TestBUG3999_SuccessAndKeylessPrintNothing(t *testing.T) {
 	}
 }
 
+// Both copies of the skill: the one embedded in the binary (pad agent guide,
+// pad agent install) and the separately maintained one the Claude Code plugin
+// ships, which is not synced from it (BUG-3999 r1 H1).
 func TestBUG3999_SkillNoLongerPromisesAutomaticRetrySafety(t *testing.T) {
-	s := string(pad.PadSkill)
-	if strings.Contains(s, "never applies it twice") {
-		t.Fatal("SKILL.md still claims a re-run never applies a patch twice")
+	plugin, err := os.ReadFile("../../plugin/skills/pad/SKILL.md")
+	if err != nil {
+		t.Fatalf("read the plugin skill: %v", err)
 	}
-	for _, want := range []string{"choose the key before the first attempt", "--op-key"} {
-		if !strings.Contains(s, want) {
-			t.Fatalf("SKILL.md must say %q", want)
+	for _, f := range []struct{ name, body string }{
+		{"skills/pad/SKILL.md (embedded)", string(pad.PadSkill)},
+		{"plugin/skills/pad/SKILL.md", string(plugin)},
+	} {
+		if strings.Contains(f.body, "never applies it twice") {
+			t.Fatalf("%s still claims a re-run never applies a patch twice", f.name)
+		}
+		for _, want := range []string{"choose the key before the first attempt", "--op-key"} {
+			if !strings.Contains(f.body, want) {
+				t.Fatalf("%s must say %q", f.name, want)
+			}
+		}
+	}
+}
+
+// A failed write that sent NO op_key has no key to reuse, so it prints no
+// hint (BUG-3999 r1 H2). The body is what the client marshalled; WrapOpKey is
+// the transport's own decision.
+func TestBUG3999_KeylessFailedWritePrintsNoHint(t *testing.T) {
+	failed := errors.New("server error (503)")
+	for _, body := range []string{`{"fields":"{}"}`, `{"op_key":""}`, ``} {
+		err := cli.WrapOpKey([]byte(body), failed)
+		var buf bytes.Buffer
+		writeRootStructuredError(&buf, err)
+		if strings.Contains(buf.String(), "idempotency key") || strings.Contains(buf.String(), "--op-key") {
+			t.Fatalf("a keyless failed write (body %q) printed a hint: %q", body, buf.String())
 		}
 	}
 }
