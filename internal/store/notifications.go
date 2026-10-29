@@ -293,6 +293,12 @@ func (s *Store) enqueueReminderNotificationTx(tx *sql.Tx, r *models.Reminder, it
 	if r.FiredAt != nil {
 		fired = *r.FiredAt
 	}
+	// A managed row is re-armed in place for each occurrence, so two occurrences
+	// can fire inside one second (catch-up, then the next one); the occurrence
+	// instant is what tells them apart.
+	if r.OccurrenceAt != nil {
+		fired = *r.OccurrenceAt
+	}
 	return s.enqueueNotificationsTx(tx, []notifyFact{{
 		UserID: to, WorkspaceID: r.WorkspaceID, ItemID: r.ItemID, Kind: notifyReminder,
 		DedupeKey: "reminder:" + r.ID + ":" + fired,

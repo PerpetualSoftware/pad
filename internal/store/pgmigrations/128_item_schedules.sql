@@ -33,9 +33,11 @@ CREATE TABLE IF NOT EXISTS item_schedules (
     next_override_at TEXT,                       -- UTC; snooze/move replaces the base instant before the lead
     anchor_wall      TEXT,                       -- re-anchor: wall of the last fired occurrence, NULL = use dtstart
     ended_at         TEXT,
-    -- NULL = healthy. Otherwise a schedule.Code or cap code (never third-party
-    -- text) saying why the stored rule could not be advanced; cleared by any
-    -- timing edit that compiles.
+    -- NULL = healthy. Otherwise why the stored rule could not be advanced, never
+    -- third-party text: a schedule.Code (syntax, unknown_part, duplicate_part,
+    -- missing_part, range, combination, unsupported, unsatisfiable, zone, wall) or
+    -- a cap code (cap_scan, cap_stall, cap_time, cap_window, cap_instances).
+    -- Cleared by any timing edit that compiles.
     error_code       TEXT,
     created_at       TEXT NOT NULL,
     updated_at       TEXT NOT NULL,

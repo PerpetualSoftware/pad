@@ -39,9 +39,12 @@ type ItemSchedule struct {
 	NextOverrideAt *string `json:"next_override_at,omitempty"`
 	AnchorWall     *string `json:"anchor_wall,omitempty"`
 	EndedAt        *string `json:"ended_at,omitempty"`
-	// ErrorCode is nil while healthy. Otherwise it is a schedule.Code or cap
-	// code saying why the stored rule could not be advanced, never
-	// third-party text. A timing edit that compiles clears it.
+	// ErrorCode is nil while healthy. Otherwise it says why the stored rule
+	// could not be advanced, never third-party text: a schedule.Code (syntax,
+	// unknown_part, duplicate_part, missing_part, range, combination,
+	// unsupported, unsatisfiable, zone, wall) or a cap code (cap_scan,
+	// cap_stall, cap_time, cap_window, cap_instances). A timing edit that
+	// compiles clears it.
 	ErrorCode *string `json:"error_code,omitempty"`
 
 	// ReminderID is the managed item_reminders row, nil once the schedule ended.
