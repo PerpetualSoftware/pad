@@ -213,6 +213,7 @@
 						{/if}
 						<MessageBubble
 							message={item.message}
+							refs={thread.refs}
 							onJumpToQuote={jumpToQuote}
 							onReply={startReply}
 							onDelete={deleteMessage}
@@ -257,6 +258,7 @@
 				{#each thread.detached as m (m.seq)}
 					<MessageBubble
 						message={m}
+						refs={thread.refs}
 						onJumpToQuote={jumpToQuote}
 						onReply={startReply}
 						onDelete={deleteMessage}

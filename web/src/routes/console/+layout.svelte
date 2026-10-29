@@ -7,6 +7,7 @@
 	import { onMount } from 'svelte';
 	import { isBlockedByModal } from '$lib/a11y/viewerBackdrop';
 	import { clickOutside } from '$lib/utils/clickOutside';
+	import ChatLink from '$lib/components/chat/ChatLink.svelte';
 
 	let { children } = $props();
 	let ready = $state(false);
@@ -161,6 +162,9 @@
 					>
 						Needs you
 					</a>
+					<!-- TASK-4044 3c: the Chat entry. ChatLink owns its element, so the
+					     sibling look comes from the :global(.chat-nav-link) rules below. -->
+					<ChatLink class="nav-link chat-nav-link" onclick={closeMobileMenu} />
 					<a
 						href="/console/settings"
 						class="nav-link"
@@ -341,6 +345,26 @@
 		background: var(--bg-tertiary);
 	}
 
+	/* ChatLink's own <a>: scoped .nav-link rules do not reach it (TASK-4044 3c). */
+	.nav-links :global(.chat-nav-link) {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		padding: var(--space-2) var(--space-3);
+		border-radius: var(--radius);
+		color: var(--text-secondary);
+		font-size: 0.9rem;
+		font-weight: 500;
+		text-decoration: none;
+		transition: color 0.15s, background 0.15s;
+	}
+
+	.nav-links :global(.chat-nav-link:hover) {
+		color: var(--text-primary);
+		background: var(--bg-hover);
+		text-decoration: none;
+	}
+
 	.nav-right {
 		display: flex;
 		align-items: center;
@@ -457,6 +481,12 @@
 
 		.nav-link:hover {
 			background: var(--bg-hover);
+		}
+
+		.nav-links :global(.chat-nav-link) {
+			width: 100%;
+			padding: var(--space-3) var(--space-4);
+			border-radius: 0;
 		}
 
 		.nav-link.active {
