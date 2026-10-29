@@ -17,6 +17,7 @@ import (
 	"github.com/gorilla/websocket"
 	"golang.org/x/time/rate"
 
+	"github.com/PerpetualSoftware/pad/internal/logging"
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
@@ -741,7 +742,7 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 		}
 		if oauthLimiter != nil {
 			if !oauthLimiter.allow(addr) {
-				slog.Warn("rate limited", "ip", ip, "path", path, "limiter", oauthLabel)
+				slog.Warn("rate limited", "ip", ip, "path", logging.RedactPath(path), "limiter", oauthLabel)
 				writeRateLimitResponse(w, oauthLimiter.config)
 				return
 			}
@@ -794,7 +795,7 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 
 			if limiter != nil {
 				if !limiter.allow(key) {
-					slog.Warn("rate limited", "ip", ip, "path", path, "limiter", "auth")
+					slog.Warn("rate limited", "ip", ip, "path", logging.RedactPath(path), "limiter", "auth")
 					writeRateLimitResponse(w, limiter.config)
 					return
 				}
@@ -808,7 +809,7 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 			switch path {
 			case "/api/v1/admin/plan", "/api/v1/admin/stripe-customer-id", "/api/v1/admin/user-by-customer", "/api/v1/admin/user-by-id", "/api/v1/admin/billing-users", "/api/v1/admin/stripe-event-processed", "/api/v1/admin/stripe-event-unmark", "/api/v1/admin/stripe-event-complete", "/api/v1/admin/payment-failed":
 				if !s.rateLimiters.CloudAdmin.allow(addr) {
-					slog.Warn("rate limited", "ip", ip, "path", path, "limiter", "cloud_admin")
+					slog.Warn("rate limited", "ip", ip, "path", logging.RedactPath(path), "limiter", "cloud_admin")
 					writeRateLimitResponse(w, s.rateLimiters.CloudAdmin.config)
 					return
 				}
@@ -825,7 +826,7 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 		// authenticated and falls through to the general API limit.
 		if strings.HasPrefix(path, "/api/v1/invitations/") && strings.HasSuffix(path, "/preview") {
 			if !s.rateLimiters.InvitationPreview.allow(addr) {
-				slog.Warn("rate limited", "ip", ip, "path", path, "limiter", "invitation_preview")
+				slog.Warn("rate limited", "ip", ip, "path", logging.RedactPath(path), "limiter", "invitation_preview")
 				writeRateLimitResponse(w, s.rateLimiters.InvitationPreview.config)
 				return
 			}
@@ -844,7 +845,7 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 		if strings.HasPrefix(path, "/api/v1/collab/") && websocket.IsWebSocketUpgrade(r) {
 			key := rateLimitKey(r, addr)
 			if !s.rateLimiters.CollabDial.allow(key) {
-				slog.Warn("rate limited", "key", key, "path", path, "limiter", "collab_dial")
+				slog.Warn("rate limited", "key", key, "path", logging.RedactPath(path), "limiter", "collab_dial")
 				writeRateLimitResponse(w, s.rateLimiters.CollabDial.config)
 				return
 			}
@@ -861,7 +862,7 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 			if user := currentUser(r); user != nil {
 				key := "user:" + user.ID
 				if !s.rateLimiters.OAuthClaim.allow(key) {
-					slog.Warn("rate limited", "key", key, "path", path, "limiter", "oauth_claim")
+					slog.Warn("rate limited", "key", key, "path", logging.RedactPath(path), "limiter", "oauth_claim")
 					writeRateLimitResponse(w, s.rateLimiters.OAuthClaim.config)
 					return
 				}
@@ -875,7 +876,7 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 		// so a user's probes and their API calls never share a bucket.
 		if r.Method == http.MethodGet && (path == "/api/v1/health" || path == "/api/v1/health/live" || path == "/api/v1/health/ready") {
 			if !s.rateLimiters.Health.allow(addr) {
-				slog.Warn("rate limited", "ip", ip, "path", path, "limiter", "health")
+				slog.Warn("rate limited", "ip", ip, "path", logging.RedactPath(path), "limiter", "health")
 				writeRateLimitResponse(w, s.rateLimiters.Health.config)
 				return
 			}
@@ -886,7 +887,7 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 		if path == "/api/v1/search" {
 			key := rateLimitKey(r, addr)
 			if !s.rateLimiters.Search.allow(key) {
-				slog.Warn("rate limited", "key", key, "path", path, "limiter", "search")
+				slog.Warn("rate limited", "key", key, "path", logging.RedactPath(path), "limiter", "search")
 				writeRateLimitResponse(w, s.rateLimiters.Search.config)
 				return
 			}
@@ -897,7 +898,7 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 		// General API rate limit
 		key := rateLimitKey(r, addr)
 		if !s.rateLimiters.API.allow(key) {
-			slog.Warn("rate limited", "key", key, "path", path, "limiter", "api")
+			slog.Warn("rate limited", "key", key, "path", logging.RedactPath(path), "limiter", "api")
 			writeRateLimitResponse(w, s.rateLimiters.API.config)
 			return
 		}
@@ -946,7 +947,7 @@ func (s *Server) allowDecisionProviderCall(w http.ResponseWriter, r *http.Reques
 	}
 	key := rateLimitKey(r, rateLimitAddr(clientIP(r)))
 	if !s.rateLimiters.DecisionProvider.allow(key) {
-		slog.Warn("rate limited", "key", key, "path", r.URL.Path, "limiter", "decision_provider")
+		slog.Warn("rate limited", "key", key, "path", logging.RedactPath(r.URL.Path), "limiter", "decision_provider")
 		writeRateLimitResponse(w, s.rateLimiters.DecisionProvider.config)
 		return false
 	}
@@ -1035,7 +1036,7 @@ func (s *Server) checkMCPRateLimit(w http.ResponseWriter, r *http.Request, beare
 	}
 	key := hashTokenForLimiter(bearer)
 	if !s.rateLimiters.MCPPerToken.allow(key) {
-		slog.Warn("mcp rate limited", "path", r.URL.Path, "limiter", "mcp_per_token")
+		slog.Warn("mcp rate limited", "path", logging.RedactPath(r.URL.Path), "limiter", "mcp_per_token")
 		writeMCPRateLimit(w, r, s.rateLimiters.MCPPerToken.config)
 		return false
 	}

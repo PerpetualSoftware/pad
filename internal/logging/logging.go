@@ -31,7 +31,8 @@ func SetupWriter(w io.Writer, level, format string) {
 	lvl := parseLevel(level)
 
 	opts := &slog.HandlerOptions{
-		Level: lvl,
+		Level:       lvl,
+		ReplaceAttr: redactAttr,
 	}
 
 	var handler slog.Handler
