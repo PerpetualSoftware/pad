@@ -438,6 +438,13 @@ func TestSchedulePatchNullClears(t *testing.T) {
 	if m = schedMap(t, rr); rr.Code != 200 || m["rrule"] != nil {
 		t.Fatalf("clear rrule: %d %s", rr.Code, rr.Body.String())
 	}
+	if rr = f.do("PATCH", map[string]any{"rrule": "FREQ=DAILY"}); schedMap(t, rr)["rrule"] == nil {
+		t.Fatalf("re-set rrule: %d %s", rr.Code, rr.Body.String())
+	}
+	rr = f.do("PATCH", map[string]any{"rrule": ""})
+	if m = schedMap(t, rr); rr.Code != 200 || m["rrule"] != nil {
+		t.Fatalf("empty rrule: %d %s", rr.Code, rr.Body.String())
+	}
 	// dtend is required on a window: clearing it is the store's `required`.
 	f.expectErr(f.do("PATCH", map[string]any{"dtend": nil}), 400, "validation_error", "required")
 
@@ -451,6 +458,41 @@ func TestSchedulePatchNullClears(t *testing.T) {
 	rr = f.do("PATCH", `{}`)
 	if rr.Code != 200 || f.do("GET", nil).Body.String() != before {
 		t.Errorf("empty PATCH = %d, and the schedule changed", rr.Code)
+	}
+}
+
+// On POST, null on a required member is `required`, as on PATCH; null on an
+// optional one is the member left out (TASK-4102 PR2 r1, C-M1).
+func TestSchedulePostNullMembers(t *testing.T) {
+	t.Parallel()
+	for _, field := range []string{"kind", "dtstart"} {
+		f := newSchedHTTP(t)
+		body := map[string]any{"kind": "check", "dtstart": "2099-01-01T09:00", "tz": "UTC"}
+		body[field] = nil
+		d := f.expectErr(f.do("POST", body), 400, "validation_error", "required")
+		if d["field"] != field {
+			t.Errorf("%s: details.field = %v", field, d["field"])
+		}
+		f.nothingStored()
+	}
+
+	view := func(body map[string]any) map[string]any {
+		m := newSchedHTTP(t).create(body)
+		for _, k := range []string{"id", "item_ref", "reminder_id", "created_at", "updated_at"} {
+			delete(m, k)
+		}
+		return m
+	}
+	base := map[string]any{"kind": "check", "dtstart": "2099-01-01T09:00"}
+	want := view(base)
+	for _, field := range []string{"dtend", "tz", "floating", "rrule", "rdates", "exdates", "anchor", "audience", "lead_minutes"} {
+		body := map[string]any{field: nil}
+		for k, v := range base {
+			body[k] = v
+		}
+		if got := view(body); fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Errorf("%s: null = %v, want the absent view %v", field, got, want)
+		}
 	}
 }
 

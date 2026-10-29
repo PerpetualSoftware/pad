@@ -168,6 +168,35 @@ func strictScheduleBody[T any](r *http.Request) (T, error) {
 	return strictPushBody[T](r)
 }
 
+// strictScheduleCreateBody is strictScheduleBody for POST, which also reports
+// a required member sent as null: decoding null into a string leaves it
+// unset, so without this `kind: null` read as an enum error and `dtstart:
+// null` as a wall error rather than PATCH's `required`. Null on an optional
+// member stays the member left out (TASK-4102 PR2 r1, C-M1).
+func strictScheduleCreateBody(r *http.Request) (req models.ScheduleCreate, nullField string, err error) {
+	raw, err := readBodyForDecode(r, defaultJSONBodyLimit)
+	if err != nil {
+		return req, "", err
+	}
+	if req, err = strictBodyBytes[models.ScheduleCreate](raw); err != nil {
+		return req, "", err
+	}
+	var required struct {
+		Kind    json.RawMessage `json:"kind"`
+		Dtstart json.RawMessage `json:"dtstart"`
+	}
+	if err := json.Unmarshal(raw, &required); err != nil {
+		return req, "", err
+	}
+	switch {
+	case string(required.Kind) == "null":
+		return req, "kind", nil
+	case string(required.Dtstart) == "null":
+		return req, "dtstart", nil
+	}
+	return req, "", nil
+}
+
 // scheduleActivityMeta is the names-only metadata of a schedule write.
 func scheduleActivityMeta(kind string, fields []string) string {
 	m := map[string]any{"kind": kind}
@@ -233,9 +262,13 @@ func (s *Server) handleCreateItemSchedule(w http.ResponseWriter, r *http.Request
 	if !s.requireEditPermission(w, r, workspaceID, item.ID, item.CollectionID) {
 		return
 	}
-	req, err := strictScheduleBody[models.ScheduleCreate](r)
+	req, nullField, err := strictScheduleCreateBody(r)
 	if err != nil {
 		writeScheduleBodyError(w)
+		return
+	}
+	if nullField != "" {
+		writeScheduleRequired(w, nullField)
 		return
 	}
 	note := ""
