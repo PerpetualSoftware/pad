@@ -5,6 +5,7 @@
 	import { onMount } from 'svelte';
 	import { api, isPlanLimitError, PadApiError } from '$lib/api/client';
 	import { showPlanLimitToast } from '$lib/billing/planLimitToast';
+	import { browserZone, zoneOptions } from '$lib/timezone';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
@@ -23,6 +24,34 @@
 	let profileSaving = $state(false);
 	let profileMsg = $state('');
 	let profileError = $state('');
+
+	let timezone = $state('');
+	let timezoneSaving = $state(false);
+	let timezoneError = $state('');
+	let timezoneMsg = $state('');
+	const browserTimezone = browserZone();
+	const timezones = zoneOptions();
+	async function saveTimezone() {
+		const userId = authStore.userId;
+		const isSameIdentity = authStore.identityFence();
+		timezoneSaving = true;
+		timezoneError = '';
+		timezoneMsg = '';
+		try {
+			const updated = await api.auth.setTimezone(timezone.trim());
+			if (!isSameIdentity()) return;
+			if (updated.timezone !== undefined) {
+				authStore.setTimezone(userId, updated.timezone);
+				timezone = updated.timezone ?? '';
+			}
+			profile = updated;
+			timezoneMsg = 'Time zone updated.';
+		} catch (err) {
+			if (isSameIdentity()) timezoneError = err instanceof Error ? err.message : 'Failed to set time zone';
+		} finally {
+			if (isSameIdentity()) timezoneSaving = false;
+		}
+	}
 
 	// Password
 	let currentPassword = $state('');
@@ -189,6 +218,7 @@
 			profile = me;
 			profileName = me.name;
 			profileUsername = me.username;
+			timezone = me.timezone ?? '';
 			tokens = tokenList;
 		} catch {
 			profileError = 'Failed to load profile';
@@ -661,6 +691,18 @@
 				<div class="field">
 					<label for="profile-email">Email</label>
 					<input id="profile-email" type="email" value={profile?.email ?? ''} disabled readonly />
+				</div>
+				<div class="field">
+					<label for="timezone">Time zone</label>
+					<input id="timezone" list="timezones" bind:value={timezone} disabled={timezoneSaving} />
+					<datalist id="timezones">{#each timezones as tz}<option value={tz}></option>{/each}</datalist>
+					{#if profile?.timezone === null}<p>Not set, times use UTC</p>{/if}
+					{#if browserTimezone}
+						<button onclick={() => timezone = browserTimezone} disabled={timezoneSaving}>Use browser zone ({browserTimezone})</button>
+					{/if}
+					<Button onclick={saveTimezone} disabled={timezoneSaving || !timezone.trim()}>Save time zone</Button>
+					{#if timezoneError}<p class="error" role="alert">{timezoneError}</p>{/if}
+					{#if timezoneMsg}<p class="success" role="status">{timezoneMsg}</p>{/if}
 				</div>
 				{#if profileError}
 					<p class="error">{profileError}</p>
