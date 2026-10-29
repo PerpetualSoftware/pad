@@ -761,6 +761,14 @@ func TestScheduleActivityAndSSE(t *testing.T) {
 	if n := drain(); n != 1 {
 		t.Errorf("update published %d", n)
 	}
+	// An empty PATCH is a read (TASK-4102 PR2 ruling, P2): no publish here, and
+	// the one-row schedule_updated check below proves it logged nothing.
+	if rr := f.do("PATCH", `{}`); rr.Code != 200 {
+		t.Errorf("empty PATCH %d %s", rr.Code, rr.Body.String())
+	}
+	if n := drain(); n != 0 {
+		t.Errorf("empty PATCH published %d", n)
+	}
 	f.do("DELETE", nil)
 	if n := drain(); n != 1 {
 		t.Errorf("delete published %d", n)
