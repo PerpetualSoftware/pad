@@ -940,3 +940,43 @@ func TestScheduleAuthMatrix(t *testing.T) {
 		f.expectErr(f.do(m, okSchedule), 409, "archived", "")
 	}
 }
+
+// The view carries missed_count, missed_truncated and stale (TASK-4103 C2a): the
+// instances that passed after the outstanding occurrence, which is not counted.
+// A healthy schedule carries none of the three members.
+func TestScheduleViewCarriesMissedCountAndStale(t *testing.T) {
+	t.Parallel()
+	f := newSchedHTTP(t)
+	f.create(map[string]any{"kind": "check", "dtstart": "2099-01-01T09:00", "tz": "UTC", "rrule": "FREQ=HOURLY"})
+	get := func() map[string]any {
+		rr := f.do("GET", nil)
+		if rr.Code != 200 {
+			t.Fatalf("GET %d %s", rr.Code, rr.Body.String())
+		}
+		return schedMap(t, rr)
+	}
+	for _, k := range []string{"missed_count", "missed_truncated", "stale"} {
+		if _, ok := get()[k]; ok {
+			t.Errorf("a future schedule carries %s", k)
+		}
+	}
+	// Put the outstanding occurrence `ago` back (an hourly rule from there): the
+	// instances after it that are behind now are counted, the next is ahead.
+	setBack := func(ago time.Duration) {
+		o := time.Now().UTC().Add(-ago).Truncate(time.Minute)
+		if _, err := f.srv.store.DB().Exec(f.srv.store.D().Rebind(`UPDATE item_schedules SET dtstart = ?, next_wall = ?, next_at = ? WHERE item_id = ?`),
+			o.Format("2006-01-02T15:04:05"), o.Format("2006-01-02T15:04:05"), o.Format(time.RFC3339), f.item.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setBack(90 * time.Minute)
+	v := get()
+	if v["missed_count"] != float64(1) || v["stale"] != nil || v["missed_truncated"] != nil {
+		t.Errorf("one passed: %v", v)
+	}
+	setBack(150 * time.Minute)
+	v = get()
+	if v["missed_count"] != float64(2) || v["stale"] != true {
+		t.Errorf("two passed: %v", v)
+	}
+}

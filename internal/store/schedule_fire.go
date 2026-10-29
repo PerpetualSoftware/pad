@@ -166,6 +166,18 @@ func (s *Store) fireManagedTx(tx *sql.Tx, r *models.Reminder, nowTS string) (boo
 	}
 	r.OccurrenceAt = ptr(at.UTC().Format(time.RFC3339))
 
+	if sc.Floating {
+		// The exact instant replaces the early bound, so every later read of
+		// this fired row (reads, the view, a resolve's stale check) agrees with
+		// the event payload and the dedupe key even after the recipient's zone
+		// moves. Only fired_at IS NULL readers treat next_at as a bound
+		// (models.ItemSchedule.NextAt; TASK-4103).
+		if _, err := tx.Exec(s.q(`UPDATE item_schedules SET next_at = ? WHERE id = ?`),
+			NormalizeInstant(at), sc.ID); err != nil {
+			return false, fmt.Errorf("record fired occurrence instant: %w", err)
+		}
+	}
+
 	if err := s.reanchorTx(tx, sc, spec, wall, at, loc); err != nil {
 		return false, err
 	}
@@ -210,9 +222,11 @@ func (s *Store) reanchorTx(tx *sql.Tx, sc *models.ItemSchedule, spec schedule.Sp
 }
 
 // fillOccurrenceAt sets OccurrenceAt on the managed rows among rs in one query:
-// the outstanding occurrence's instant. A pinned schedule stores it; a floating
-// one stores only the early bound, so it is read from next_wall in the current
-// recipient's zone, the instant it will fire at.
+// the outstanding occurrence's instant, through outstandingInstant. A fired
+// floating row reports the instant it fired for (next_at, overwritten in the
+// fire transaction), so a read after a zone change still equals the event
+// payload and the dedupe key (TASK-4103). An armed floating row is read from
+// next_wall in the current recipient's zone, the instant it will fire at.
 func (s *Store) fillOccurrenceAt(q Queryer, rs ...*models.Reminder) error {
 	byID := map[string][]*models.Reminder{}
 	var ids []any
@@ -229,7 +243,7 @@ func (s *Store) fillOccurrenceAt(q Queryer, rs ...*models.Reminder) error {
 		return nil
 	}
 	rows, err := q.Query(s.q(`
-		SELECT sc.id, sc.next_at, sc.next_wall, sc.floating, u.timezone
+		SELECT sc.id, sc.next_at, sc.next_wall, sc.next_override_at, sc.floating, u.timezone
 		FROM item_schedules sc
 		JOIN items i ON i.id = sc.item_id AND i.workspace_id = sc.workspace_id
 		LEFT JOIN users u ON u.id = COALESCE(NULLIF(i.assigned_user_id, ''), NULLIF(i.created_by_user_id, ''))
@@ -240,36 +254,32 @@ func (s *Store) fillOccurrenceAt(q Queryer, rs ...*models.Reminder) error {
 	defer rows.Close()
 	for rows.Next() {
 		var id string
-		var nextAt, nextWall, tz sql.NullString
+		var nextAt, nextWall, override, tz sql.NullString
 		var floating bool
-		if err := rows.Scan(&id, &nextAt, &nextWall, &floating, &tz); err != nil {
+		if err := rows.Scan(&id, &nextAt, &nextWall, &override, &floating, &tz); err != nil {
 			return fmt.Errorf("scan occurrence instant: %w", err)
 		}
-		var occ *string
-		switch {
-		case !nextAt.Valid:
-		case !floating:
-			occ = &nextAt.String
-		case nextWall.Valid:
-			w, err := schedule.ParseWall(nextWall.String)
-			if err != nil {
-				return fmt.Errorf("parse next_wall: %w", err)
-			}
-			var stored *string
-			if tz.Valid {
-				stored = &tz.String
-			}
-			occ = ptr(schedule.Resolve(usertz.Resolve(stored).Loc, w).UTC().Format(time.RFC3339))
+		var stored *string
+		if tz.Valid {
+			stored = &tz.String
+		}
+		view := usertz.Resolve(stored).Loc
+		var at, wall *string
+		if nextAt.Valid {
+			at = &nextAt.String
+		}
+		if nextWall.Valid {
+			wall = &nextWall.String
 		}
 		for _, r := range byID[id] {
-			// A FIRED floating row keeps no reading: the zone it fired in is
-			// gone from this row, and today's would disagree with the event
-			// payload and dedupe key after a zone change. Resolve (TASK-4103)
-			// reads schedule_occurrences and removes this guard.
-			if floating && r.FiredAt != nil {
-				continue
+			t, ok, err := outstandingInstant(at, wall, floating, r.FiredAt != nil, override.Valid, view)
+			if err != nil {
+				return err
 			}
-			r.OccurrenceAt = occ
+			r.OccurrenceAt = nil
+			if ok {
+				r.OccurrenceAt = ptr(t.Format(time.RFC3339))
+			}
 		}
 	}
 	return rows.Err()

@@ -30,10 +30,12 @@ type ItemSchedule struct {
 	Audience    string   `json:"audience"` // human | agent | both
 	LeadMinutes int      `json:"lead_minutes"`
 
-	// NextAt is the outstanding occurrence's instant. For a pinned schedule it
-	// is the occurrence itself; for a floating one it is the EARLIEST instant
-	// any zone could give NextWall (the wall read at UTC+14), an internal bound
-	// that surfaces must not show as the fire time.
+	// NextAt is the outstanding occurrence's exact instant once it is fired or
+	// overridden; while a floating schedule is armed with no override, it is the
+	// early bound (the wall read at UTC+14), an internal value that surfaces must
+	// not show as the fire time. A pinned schedule's is always the occurrence
+	// itself. The fire transaction overwrites a floating bound with the exact
+	// instant it fired for (TASK-4103). Readers go through store.OutstandingInstant.
 	NextAt         *string `json:"next_at,omitempty"`
 	NextWall       *string `json:"next_wall,omitempty"`
 	NextOverrideAt *string `json:"next_override_at,omitempty"`
@@ -49,6 +51,9 @@ type ItemSchedule struct {
 
 	// ReminderID is the managed item_reminders row, nil once the schedule ended.
 	ReminderID *string `json:"reminder_id,omitempty"`
+	// ReminderFired is whether that row is fired (read, never stored on the
+	// schedule). It decides how the outstanding instant is read.
+	ReminderFired bool `json:"-"`
 
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`

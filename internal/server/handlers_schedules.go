@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -52,18 +53,25 @@ type scheduleView struct {
 	LeadMinutes    int                     `json:"lead_minutes"`
 	NextOccurrence *scheduleOccurrenceView `json:"next_occurrence,omitempty"`
 	NextOverrideAt *string                 `json:"next_override_at,omitempty"`
-	EndedAt        *string                 `json:"ended_at,omitempty"`
-	ErrorCode      *string                 `json:"error_code,omitempty"`
-	ReminderID     *string                 `json:"reminder_id,omitempty"`
-	CreatedAt      string                  `json:"created_at"`
-	UpdatedAt      string                  `json:"updated_at"`
-	TimezoneNote   string                  `json:"timezone_note,omitempty"`
+	// MissedCount is the occurrences that passed unresolved AFTER the
+	// outstanding one (it is not counted), computed on read. Stale is
+	// MissedCount >= 2. Truncated says the count is a floor (TASK-4103).
+	MissedCount     int     `json:"missed_count,omitempty"`
+	MissedTruncated bool    `json:"missed_truncated,omitempty"`
+	Stale           bool    `json:"stale,omitempty"`
+	EndedAt         *string `json:"ended_at,omitempty"`
+	ErrorCode       *string `json:"error_code,omitempty"`
+	ReminderID      *string `json:"reminder_id,omitempty"`
+	CreatedAt       string  `json:"created_at"`
+	UpdatedAt       string  `json:"updated_at"`
+	TimezoneNote    string  `json:"timezone_note,omitempty"`
 }
 
 // buildScheduleView renders a stored schedule. A pinned schedule's next_at is
-// the occurrence itself. A floating one stores only the earliest instant any
-// zone could give next_wall, which is never shown: next_occurrence.at is the
-// wall read in the CALLER's zone (the tick uses the recipient's).
+// the occurrence itself. An ARMED floating one stores only the earliest instant
+// any zone could give next_wall, which is never shown: next_occurrence.at is
+// the wall read in the CALLER's zone (the tick uses the recipient's). Once
+// fired, next_at is the exact instant and is what is shown.
 func buildScheduleView(r *http.Request, item *models.Item, sc *models.ItemSchedule) scheduleView {
 	ref := item.Ref
 	if ref == "" {
@@ -78,14 +86,18 @@ func buildScheduleView(r *http.Request, item *models.Item, sc *models.ItemSchedu
 		ReminderID: sc.ReminderID, CreatedAt: sc.CreatedAt, UpdatedAt: sc.UpdatedAt,
 	}
 	if sc.EndedAt == nil && sc.NextWall != nil {
-		switch {
-		case !sc.Floating && sc.NextAt != nil:
-			v.NextOccurrence = &scheduleOccurrenceView{At: *sc.NextAt, Wall: *sc.NextWall}
-		case sc.Floating:
-			if w, err := schedule.ParseWall(*sc.NextWall); err == nil {
-				at := schedule.Resolve(viewerZone(r).Loc, w).UTC().Format(time.RFC3339)
-				v.NextOccurrence = &scheduleOccurrenceView{At: at, Wall: *sc.NextWall}
-			}
+		// One reading with the reminder reads (store.OutstandingInstant): a
+		// FIRED floating schedule shows the instant it fired for, not today's
+		// reading of the wall.
+		view := viewerZone(r).Loc
+		if at, ok, err := store.OutstandingInstant(sc, view); err == nil && ok {
+			v.NextOccurrence = &scheduleOccurrenceView{At: at.Format(time.RFC3339), Wall: *sc.NextWall}
+		}
+		if n, truncated, err := store.ScheduleMissed(sc, view, time.Now()); err != nil {
+			// The view still answers without the count.
+			slog.Warn("schedule view: missed count failed", "schedule_id", sc.ID, "error", err)
+		} else {
+			v.MissedCount, v.MissedTruncated, v.Stale = n, truncated, n >= 2
 		}
 	}
 	return v
