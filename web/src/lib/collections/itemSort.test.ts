@@ -42,6 +42,18 @@ describe('itemComparator manual mode', () => {
 		expect([newer, older].sort(comparator).map((i) => i.id)).toEqual(['older', 'newer']);
 	});
 
+	// BUG-4005: created_at has one-second resolution, so siblings created
+	// together tie on it; item_number (monotonic per workspace) orders them,
+	// whatever their (random v4) ids sort like.
+	it('breaks a sort_order and created_at tie by item_number, regardless of id order', () => {
+		const comparator = itemComparator('manual', collection);
+		const first = { ...item('z-id', 0, '2026-01-01T00:00:00Z'), item_number: 7 } as Item;
+		const second = { ...item('m-id', 0, '2026-01-01T00:00:00Z'), item_number: 8 } as Item;
+		const third = { ...item('a-id', 0, '2026-01-01T00:00:00Z'), item_number: 9 } as Item;
+		expect([third, first, second].sort(comparator).map((i) => i.id)).toEqual(['z-id', 'm-id', 'a-id']);
+		expect([second, third, first].sort(comparator).map((i) => i.id)).toEqual(['z-id', 'm-id', 'a-id']);
+	});
+
 	it('falls back to id when sort_order and created_at both tie', () => {
 		const comparator = itemComparator('manual', collection);
 		const b = item('b-item', 0, '2026-01-01T00:00:00Z');
