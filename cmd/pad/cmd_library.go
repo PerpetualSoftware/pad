@@ -259,7 +259,7 @@ read end-to-end before activating.`,
 			entry, err := client.GetLibraryEntry(title)
 			if err != nil {
 				// Surface 404 as a clean exit-1 instead of the raw envelope.
-				if apiErr, ok := err.(*cli.APIError); ok && apiErr.Code == "not_found" {
+				if apiErr := cli.AsAPIError(err); apiErr != nil && apiErr.Code == "not_found" {
 					return fmt.Errorf("not found in library: %q", title)
 				}
 				return err
@@ -342,7 +342,7 @@ in the appropriate collection (conventions or playbooks) with all fields set.`,
 			if client.ServerSupportsLibraryActivate() {
 				item, err := client.ActivateLibraryEntry(ws, title)
 				if err != nil {
-					if apiErr, ok := err.(*cli.APIError); ok && apiErr.AsPlanLimit() != nil {
+					if apiErr := cli.AsAPIError(err); apiErr != nil && apiErr.AsPlanLimit() != nil {
 						cli.WritePlanLimitError(os.Stderr, apiErr)
 						return fmt.Errorf("library activation blocked: plan limit reached")
 					}
@@ -407,7 +407,7 @@ in the appropriate collection (conventions or playbooks) with all fields set.`,
 				}
 				item, err := client.CreateItem(ws, target, input)
 				if err != nil {
-					if apiErr, ok := err.(*cli.APIError); ok {
+					if apiErr := cli.AsAPIError(err); apiErr != nil {
 						if apiErr.AsPlanLimit() != nil {
 							cli.WritePlanLimitError(os.Stderr, apiErr)
 							return fmt.Errorf("convention activation blocked: plan limit reached")
@@ -478,7 +478,7 @@ in the appropriate collection (conventions or playbooks) with all fields set.`,
 				}
 				item, err := client.CreateItem(ws, target, input)
 				if err != nil {
-					if apiErr, ok := err.(*cli.APIError); ok {
+					if apiErr := cli.AsAPIError(err); apiErr != nil {
 						if apiErr.AsPlanLimit() != nil {
 							cli.WritePlanLimitError(os.Stderr, apiErr)
 							return fmt.Errorf("playbook activation blocked: plan limit reached")
@@ -534,7 +534,7 @@ func readBuiltinState(client *cli.Client, ws, ref string) (*cli.BuiltinState, er
 	}
 	st, err := client.GetItemBuiltin(ws, ref)
 	if err != nil {
-		if apiErr, ok := err.(*cli.APIError); ok && apiErr.Code == "not_builtin" {
+		if apiErr := cli.AsAPIError(err); apiErr != nil && apiErr.Code == "not_builtin" {
 			return nil, fmt.Errorf("%s was not made from a convention or playbook Pad ships, so there is nothing to compare", ref)
 		}
 		return nil, err
@@ -672,7 +672,7 @@ in between, it is refused rather than applied over the change.`,
 			}
 			item, err := client.UpdateItemBuiltin(ws, ref, st.Seq, overwrite)
 			if err != nil {
-				if apiErr, ok := err.(*cli.APIError); ok {
+				if apiErr := cli.AsAPIError(err); apiErr != nil {
 					switch apiErr.Code {
 					case "content_pending_flush":
 						// The shared rendering names set-aside rows apart from an

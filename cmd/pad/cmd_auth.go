@@ -1025,7 +1025,7 @@ Rotate it right after you log in.`,
 				Email        string `json:"email"`
 			}
 			if err := client.PostRaw("/auth/local-reset", body, &result); err != nil {
-				if apiErr, ok := err.(*cli.APIError); ok && apiErr.Code == "forbidden" {
+				if apiErr := cli.AsAPIError(err); apiErr != nil && apiErr.Code == "forbidden" {
 					return fmt.Errorf("%s\n\nThis command must run on the server host — it uses a loopback-only recovery endpoint.\nIf you still have a working admin account, reset other users from the web UI under Admin → Users instead", apiErr.Message)
 				}
 				return fmt.Errorf("failed to reset password: %w", err)

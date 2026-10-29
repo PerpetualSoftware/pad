@@ -75,7 +75,7 @@ func tokenCreateCmd() *cobra.Command {
 			if err != nil {
 				// Same structured marker as webhook create (TASK-788) so
 				// callers can tell a plan limit from a server fault.
-				if apiErr, ok := err.(*cli.APIError); ok {
+				if apiErr := cli.AsAPIError(err); apiErr != nil {
 					if apiErr.AsPlanLimit() != nil {
 						cli.WritePlanLimitError(os.Stderr, apiErr)
 						return fmt.Errorf("token creation blocked: plan limit reached")
