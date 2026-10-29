@@ -262,6 +262,13 @@ func (s *Store) fillOccurrenceAt(q Queryer, rs ...*models.Reminder) error {
 			occ = ptr(schedule.Resolve(usertz.Resolve(stored).Loc, w).UTC().Format(time.RFC3339))
 		}
 		for _, r := range byID[id] {
+			// A FIRED floating row keeps no reading: the zone it fired in is
+			// gone from this row, and today's would disagree with the event
+			// payload and dedupe key after a zone change. Resolve (TASK-4103)
+			// reads schedule_occurrences and removes this guard.
+			if floating && r.FiredAt != nil {
+				continue
+			}
 			r.OccurrenceAt = occ
 		}
 	}

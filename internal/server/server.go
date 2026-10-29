@@ -2398,6 +2398,12 @@ func (s *Server) setupRouter() {
 						// about the item it names.
 						r.Get("/reminders", s.handleListItemReminders)
 						r.Post("/reminders", s.handleCreateItemReminder)
+						// Item schedules (TASK-4102): the time trigger whose
+						// outstanding occurrence is a managed reminder row.
+						r.Get("/schedule", s.handleGetItemSchedule)
+						r.Post("/schedule", s.handleCreateItemSchedule)
+						r.Patch("/schedule", s.handleUpdateItemSchedule)
+						r.Delete("/schedule", s.handleDeleteItemSchedule)
 						// Verifications (TASK-3617): per-criterion verdicts
 						// on the item that carries the acceptance criteria,
 						// judged against its present text at read time.
