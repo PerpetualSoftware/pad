@@ -6142,6 +6142,14 @@ func buildItemSort(sort string, dialect Dialect) string {
 			parts = append(parts, fmt.Sprintf("i.updated_at %s", dir))
 		case "sort_order":
 			parts = append(parts, fmt.Sprintf("i.sort_order %s", dir))
+		case "_num":
+			// The item number: the manual order's same-second tie-break
+			// (BUG-4005), as the web comparator's item_number. created_at has
+			// one-second resolution and ids are random, so without it rows
+			// tied on sort_order and created_at order differently on a shared
+			// page and on the board. Underscore-prefixed like `_id`, so no
+			// field key can collide.
+			parts = append(parts, fmt.Sprintf("i.item_number %s", dir))
 		case "_id":
 			// The item's id: the last tie-break of the manual order (BUG-3530),
 			// as the web comparator's a.id.localeCompare(b.id). Spelled `_id`
