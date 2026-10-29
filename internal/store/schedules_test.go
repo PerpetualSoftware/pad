@@ -467,7 +467,11 @@ func TestScheduleLeadWriteDoesNotUnfireARowFiredInBetween(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The tick fires the row after the schedule was read and before the write.
-	f.exec(t, `UPDATE item_reminders SET fired_at = ? WHERE id = ?`, "2026-10-30T09:00:00Z", *sc.ReminderID)
+	fired, err := f.s.FireDueReminders("2026-10-30T10:00:00Z", 10)
+	if err != nil || len(fired) != 1 {
+		t.Fatalf("first tick fired %d rows, err %v; want exactly 1", len(fired), err)
+	}
+	before := f.managed(t, sc)
 
 	tx, err := f.s.db.Begin()
 	if err != nil {
@@ -480,8 +484,49 @@ func TestScheduleLeadWriteDoesNotUnfireARowFiredInBetween(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := f.managed(t, sc)
-	if r.FiredAt == nil || r.RemindAt != "2026-10-30T09:00:00Z" {
-		t.Fatalf("a fired row was re-armed or retimed: %+v", r)
+	if r.FiredAt == nil || r.RemindAt != "2026-10-30T09:00:00Z" ||
+		*r.FiredAt != *before.FiredAt || r.AckedAt != nil {
+		t.Fatalf("a fired row was re-armed or retimed: before %+v after %+v", before, r)
+	}
+	// Exactly one fire: the tick has nothing left to fire.
+	again, err := f.s.FireDueReminders("2026-10-30T10:00:00Z", 10)
+	if err != nil || len(again) != 0 {
+		t.Fatalf("second tick fired %d rows, err %v; want 0", len(again), err)
+	}
+}
+
+// dtend is not timing: a dtend-only edit on a fired one-shot window writes the
+// dtend and leaves the fire state, override and anchor alone; it does not end
+// the schedule. A bad dtend is refused.
+func TestScheduleDtendOnlyEditIsNotATimingEdit(t *testing.T) {
+	t.Parallel()
+	f := newSchedFixture(t)
+	sc := f.create(t, models.ScheduleCreate{Kind: "window", Dtstart: "2026-10-30T09:00", Dtend: "2026-10-30T10:00", Tz: "UTC"})
+	f.exec(t, `UPDATE item_reminders SET fired_at = ?, acked_at = ? WHERE id = ?`, "2026-10-30T09:00:00Z", "2026-10-30T09:05:00Z", *sc.ReminderID)
+	f.exec(t, `UPDATE item_schedules SET next_override_at = ?, anchor_wall = ? WHERE id = ?`, "2026-10-30T20:00:00Z", "2026-10-30T09:00:00", sc.ID)
+
+	end := "2026-10-30T12:00"
+	got := f.update(t, models.ScheduleUpdate{Dtend: &end})
+	if got.Dtend == nil || *got.Dtend != "2026-10-30T12:00:00" {
+		t.Fatalf("dtend = %v", got.Dtend)
+	}
+	if got.EndedAt != nil || got.ReminderID == nil || got.NextOverrideAt == nil || got.AnchorWall == nil {
+		t.Fatalf("a dtend-only edit disturbed the schedule: %+v", got)
+	}
+	r := f.managed(t, got)
+	if r.FiredAt == nil || *r.FiredAt != "2026-10-30T09:00:00Z" || r.AckedAt == nil || *r.AckedAt != "2026-10-30T09:05:00Z" {
+		t.Fatalf("fire state disturbed: %+v", r)
+	}
+
+	before := "2026-10-30T08:00"
+	if _, err := f.s.updateScheduleAt(f.ws.ID, f.item.ID, models.ScheduleUpdate{Dtend: &before}, schedNow); err == nil {
+		t.Fatal("dtend before dtstart accepted")
+	}
+	// A non-window has no dtend.
+	f2 := newSchedFixture(t)
+	f2.create(t, models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-30T09:00", Tz: "UTC"})
+	if _, err := f2.s.updateScheduleAt(f2.ws.ID, f2.item.ID, models.ScheduleUpdate{Dtend: &end}, schedNow); err == nil {
+		t.Fatal("dtend on a non-window accepted")
 	}
 }
 

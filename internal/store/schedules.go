@@ -484,7 +484,7 @@ func (s *Store) deleteManagedReminderTx(tx *sql.Tx, scheduleID string) error {
 // UpdateSchedule applies a partial update. It returns (nil, nil) when the item
 // has no schedule.
 //
-// A timing edit (dtstart, dtend, tz, floating, rrule, rdates, exdates or anchor
+// A timing edit (dtstart, tz, floating, rrule, rdates, exdates or anchor
 // named in the update, with a value that differs, or on a schedule in an error
 // state) recomputes the outstanding occurrence from now, clears anchor_wall,
 // next_override_at and error_code, and re-arms the managed row. An edit that
@@ -556,7 +556,7 @@ func (s *Store) updateScheduleAt(workspaceID, itemID string, upd models.Schedule
 		next.ExDates = *upd.ExDates
 	}
 
-	timingNamed := upd.Dtstart != nil || upd.Dtend != nil || upd.Tz != nil || upd.Floating != nil ||
+	timingNamed := upd.Dtstart != nil || upd.Tz != nil || upd.Floating != nil ||
 		upd.Rrule != nil || upd.RDates != nil || upd.ExDates != nil || upd.Anchor != nil
 
 	// A non-timing edit never compiles: the stored rule is carried as it is, so a
