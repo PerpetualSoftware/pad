@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -79,6 +80,7 @@ func silenceWarningsForCompletion(args []string) {
 // already printed "Error: <message>" for a person, and the stdio MCP transport
 // lifts this line instead of guessing a code from that prose.
 func writeRootStructuredError(w io.Writer, err error) {
+	defer writeOpKeyHint(w, err)
 	if apiErr, ok := cli.IsRateLimited(err); ok {
 		cli.WriteRateLimitedError(w, apiErr)
 		return
@@ -112,6 +114,17 @@ func writeRootStructuredError(w io.Writer, err error) {
 	// BUG-3864: a 403 refusing the caller, with the server's details.reason.
 	if apiErr, ok := cli.IsPermissionDenied(err); ok {
 		cli.WritePermissionDeniedError(w, apiErr)
+	}
+}
+
+// writeOpKeyHint prints the idempotency key a failed write sent (BUG-3999), so
+// a retry after an unclear outcome can reuse it. It prints on any failure of a
+// write that carried a key: the wording is conditional, and one rule beats a
+// status-code table. stderr only, so --format json stdout stays parseable.
+func writeOpKeyHint(w io.Writer, err error) {
+	var oe *cli.OpKeyError
+	if errors.As(err, &oe) {
+		fmt.Fprintf(w, "pad: this write's idempotency key was %s; if the outcome is unclear, re-run the same command with --op-key %s (the same request with the same key is applied at most once)\n", oe.Key, oe.Key)
 	}
 }
 

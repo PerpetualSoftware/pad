@@ -440,6 +440,13 @@ func (c *Client) postCopyJSON(hc *http.Client, path string, body any, mutating b
 	if err != nil {
 		return nil, err
 	}
+	raw, err := c.postCopyData(hc, path, data, mutating)
+	// BUG-3999: a failed copy that sent an op_key names it for the retry.
+	return raw, WrapOpKey(data, err)
+}
+
+// postCopyData is postCopyJSON after the body is marshalled.
+func (c *Client) postCopyData(hc *http.Client, path string, data []byte, mutating bool) (json.RawMessage, error) {
 
 	req, err := c.newCopyRequest(path, data, mutating)
 	if err != nil {
