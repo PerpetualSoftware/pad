@@ -3,7 +3,7 @@
 	import { relationGroupingRefusal, relationGroupingRefusalMessage } from '$lib/collections/relationGroups';
 	import type { Item, Collection } from '$lib/types';
 	import { parseSchema, parseFields } from '$lib/types';
-	import { itemComparator, type SortMode } from '$lib/collections/itemSort';
+	import { itemComparator, isReorderable, type SortMode } from '$lib/collections/itemSort';
 	import { formatLaneLabel, isUngrouped, laneKey, laneValue } from '$lib/collections/boardColumns';
 	import { laneOrderAfterMove, disabledDirections, type ReorderDirection } from '$lib/collections/reorder';
 	import {
@@ -111,6 +111,7 @@
 		 * group would be meaningless.
 		 */
 		sortMode?: SortMode;
+		sortReversed?: boolean;
 		/**
 		 * Opt-in split-pane open (PLAN-2105 / TASK-2111). Threaded straight
 		 * through to each ItemCard; omitted everywhere except the collection
@@ -153,6 +154,7 @@
 		canEdit = true,
 		preserveOrder = false,
 		sortMode = 'manual',
+		sortReversed = false,
 		onItemOpen,
 		onOrderRendered
 	}: Props = $props();
@@ -380,7 +382,7 @@
 		// Otherwise sort each group by the page-wide sort mode
 		// (TASK-1670); 'manual' resolves to the stored sort_order.
 		if (!preserveOrder) {
-			const cmp = itemComparator(sortMode, collection);
+			const cmp = itemComparator(sortMode, collection, sortReversed);
 			for (const key of Object.keys(result)) {
 				result[key].sort(cmp);
 			}
@@ -428,6 +430,7 @@
 	}
 
 	async function handleFinalize(groupName: string, e: CustomEvent<DndEvent<Item>>) {
+		if (sortReversed) return;
 		groupData[laneKey(groupName)] = e.detail.items;
 
 		// Capture the desired order BEFORE setting isDragging = false or awaiting,
@@ -498,7 +501,7 @@
 	// the same conditions as item drag: edit permission, manual sort
 	// (sort_order is only honored then), and not while search is
 	// preserving relevance order.
-	let canReorderItems = $derived(canEdit && sortMode === 'manual' && !preserveOrder);
+	let canReorderItems = $derived(canEdit && isReorderable(sortMode, sortReversed) && !preserveOrder);
 	// Per card, the menu also needs canEditItem (BUG-3259): an item grant beats
 	// a collection grant, so a card in an editable collection can be view-only.
 
@@ -683,7 +686,8 @@
 							// BUG-3158: this zone had no touch gate at all, so a held
 							// finger moved a row into another group — on a status-
 							// grouped list, another status — at any width.
-							dragDisabled: viewport.dragDisabled || !canEdit || preserveOrder || sortMode !== 'manual'
+							dropFromOthersDisabled: sortReversed,
+							dragDisabled: viewport.dragDisabled || !canEdit || preserveOrder || !isReorderable(sortMode, sortReversed)
 						}}
 						onconsider={(e) => handleConsider(groupName, e)}
 						onfinalize={(e) => handleFinalize(groupName, e)}

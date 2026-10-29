@@ -93,3 +93,23 @@ export function loadSortMode(ws: string, coll: string): SortMode {
 export function storeSortMode(ws: string, coll: string, mode: SortMode): void {
 	write(sortModeKey(ws, coll), mode);
 }
+
+export function sortReversedKey(ws: string, coll: string): string {
+	return `pad-sort-reversed:${ws}:${coll}`;
+}
+
+export function loadSortReversed(ws: string, coll: string): boolean {
+	return read(sortReversedKey(ws, coll)) === '1';
+}
+
+export function storeSortReversed(ws: string, coll: string, reversed: boolean): void {
+	if (reversed) {
+		write(sortReversedKey(ws, coll), '1');
+	} else {
+		try {
+			localStorage.removeItem(sortReversedKey(ws, coll));
+		} catch {
+			/* not remembered; the page still works */
+		}
+	}
+}

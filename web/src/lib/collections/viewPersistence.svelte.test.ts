@@ -1,6 +1,9 @@
 // TASK-2212 (audit C34 + C95). Runs in jsdom for localStorage.
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import {
+	loadSortReversed,
+	storeSortReversed,
+	sortReversedKey,
 	isViewMode,
 	isSortMode,
 	loadViewMode,
@@ -77,5 +80,30 @@ describe('view and sort persistence is per workspace (C95)', () => {
 		expect(loadSortMode('alpha', 'tasks')).toBe('manual');
 		expect(() => storeViewMode('alpha', 'tasks', 'table')).not.toThrow();
 		expect(() => storeSortMode('alpha', 'tasks', 'title')).not.toThrow();
+	});
+});
+
+
+describe('sort reversal persistence (BUG-3994)', () => {
+	it('defaults to false, round trips and stays scoped to workspace and collection', () => {
+		expect(loadSortReversed('alpha', 'tasks')).toBe(false);
+		storeSortMode('alpha', 'tasks', 'created');
+		storeSortReversed('alpha', 'tasks', true);
+		expect(localStorage.getItem(sortReversedKey('alpha', 'tasks'))).toBe('1');
+		expect(loadSortReversed('alpha', 'tasks')).toBe(true);
+		expect(loadSortReversed('beta', 'tasks')).toBe(false);
+		expect(loadSortReversed('alpha', 'bugs')).toBe(false);
+		expect(loadSortMode('alpha', 'tasks')).toBe('created');
+		storeSortReversed('alpha', 'tasks', false);
+		expect(loadSortReversed('alpha', 'tasks')).toBe(false);
+		expect(localStorage.getItem(sortReversedKey('alpha', 'tasks'))).toBeNull();
+	});
+	it('tolerates blocked storage for reads, writes and removal', () => {
+		for (const method of ['getItem', 'setItem', 'removeItem'] as const) {
+			vi.spyOn(localStorage, method).mockImplementation(() => { throw new Error('blocked'); });
+		}
+		expect(loadSortReversed('alpha', 'tasks')).toBe(false);
+		expect(() => storeSortReversed('alpha', 'tasks', true)).not.toThrow();
+		expect(() => storeSortReversed('alpha', 'tasks', false)).not.toThrow();
 	});
 });

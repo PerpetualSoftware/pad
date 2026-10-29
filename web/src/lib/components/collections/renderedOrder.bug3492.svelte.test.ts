@@ -73,13 +73,13 @@ const listDom = (c: HTMLElement) =>
 const tableDom = (c: HTMLElement) =>
 	[...c.querySelectorAll('.table-row:not(.table-header) .title-link')].map((el) => el.textContent?.trim() ?? '');
 
-function mount(view: 'list' | 'table', sortMode: SortMode) {
+function mount(view: 'list' | 'table', sortMode: SortMode, sortReversed = false, preserveOrder = false) {
 	let reported: string[] = [];
 	const onOrderRendered = (ids: string[]) => {
 		reported = ids;
 	};
 	const props = {
-		items: FILTERED, collection: collection(), wsSlug: 'ws', sortMode, canEdit: true,
+		items: FILTERED, collection: collection(), wsSlug: 'ws', sortMode, sortReversed, preserveOrder, canEdit: true,
 		onOrderRendered, groupField: 'status', statusOptions: ['open', 'done'],
 	};
 	const r = render((view === 'list' ? ListView : TableView) as never, { props: props as never });
@@ -107,6 +107,25 @@ describe('the views report the order they render (BUG-3492)', () => {
 				}
 			});
 		}
+	}
+
+	for (const view of ['list', 'table'] as const) {
+		it(`${view}: reversed manual order and keyboard navigation follow the DOM`, async () => {
+			const { r, reported } = mount(view, 'manual', true);
+			await tick();
+			const dom = view === 'list' ? listDom(r.container) : tableDom(r.container);
+			expect(dom).toEqual(view === 'list'
+				? ['newest', 'middle', 'old-edited', 'oldest']
+				: ['newest', 'middle', 'oldest', 'old-edited']);
+			expect(reported()).toEqual(dom);
+			expect(listKeyNav(reported(), 'newest', 1)).toBe('middle');
+		});
+		it(`${view}: search relevance overrides reversal`, async () => {
+			const { r, reported } = mount(view, 'manual', true, true);
+			await tick();
+			expect(reported()).toEqual(['newest', 'old-edited', 'middle', 'oldest']);
+			expect(reported()).toEqual(view === 'list' ? listDom(r.container) : tableDom(r.container));
+		});
 	}
 
 	it('the regression itself: in manual order, j from the row above the edited older item is not that item', async () => {
@@ -146,7 +165,7 @@ describe('the views report the order they render (BUG-3492)', () => {
 	});
 
 	it('table: a column-header sort is reported in the order it renders', async () => {
-		const { r, reported } = mount('table', 'manual');
+		const { r, reported } = mount('table', 'manual', true);
 		await tick();
 		const before = tableDom(r.container);
 		const header = r.container.querySelector('.sort-btn[title="Priority"]') as HTMLElement;

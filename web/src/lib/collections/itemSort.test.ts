@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { Collection, Item } from '$lib/types';
-import { itemComparator } from './itemSort';
+import { itemComparator, isReorderable, type SortMode } from './itemSort';
 
 // Minimal Item stand-in — the manual comparator only touches sort_order,
 // created_at, and id.
@@ -55,5 +55,54 @@ describe('itemComparator manual mode', () => {
 			'without-date',
 			'with-date',
 		]);
+	});
+});
+
+
+describe('reversed sorting (BUG-3994)', () => {
+	const collection = { schema: JSON.stringify({ fields: [
+		{ key: 'priority', type: 'select', options: ['high', 'medium', 'low'] },
+	] }) } as Collection;
+	const items = ['a', 'b', 'c'].map((id, i) => ({
+		...item(id, i, `2026-0${i + 1}-01T00:00:00Z`), title: id,
+		updated_at: `2026-0${i + 1}-01T00:00:00Z`,
+		fields: JSON.stringify({ priority: ['high', 'medium', 'low'][i] }),
+	}));
+	for (const mode of ['manual', 'priority', 'updated', 'created', 'title'] as SortMode[]) {
+		it(`reverses ${mode}`, () => {
+			const normal = [...items].sort(itemComparator(mode, collection));
+			expect([...items].sort(itemComparator(mode, collection, true))).toEqual(normal.reverse());
+		});
+	}
+	it('reverses the creation tiebreak for never-dragged manual items', () => {
+		const tied = items.map((i) => ({ ...i, sort_order: 0 }));
+		expect(tied.sort(itemComparator('manual', collection, true)).map((i) => i.id)).toEqual(['c', 'b', 'a']);
+	});
+	it('keeps missing and unknown priorities last in both directions', () => {
+		const missing = { ...items[0], id: 'missing', fields: '{}' };
+		const unknown = { ...missing, id: 'unknown', fields: '{"priority":"other"}' };
+		for (const reversed of [false, true]) {
+			const sorted = [missing, ...items, unknown].sort(itemComparator('priority', collection, reversed));
+			expect(sorted.slice(0, 3).map((i) => i.id)).toEqual(reversed ? ['c', 'b', 'a'] : ['a', 'b', 'c']);
+			expect(sorted.slice(3).map((i) => i.id)).toEqual(['missing', 'unknown']);
+		}
+	});
+	for (const mode of ['updated', 'created'] as const) {
+		it(`keeps missing and invalid ${mode} timestamps last in both directions`, () => {
+			const missing = { ...items[0], id: 'missing', [`${mode}_at`]: '' };
+			const invalid = { ...missing, id: 'invalid', [`${mode}_at`]: 'invalid' };
+			for (const reversed of [false, true]) {
+				const sorted = [missing, invalid, ...items].sort(itemComparator(mode, collection, reversed));
+				expect(sorted.slice(0, 3).map((i) => i.id)).toEqual(reversed ? ['a', 'b', 'c'] : ['c', 'b', 'a']);
+				expect(new Set(sorted.slice(3).map((i) => i.id))).toEqual(new Set(['missing', 'invalid']));
+			}
+		});
+	}
+	it('only allows reordering in forward manual order', () => {
+		expect(isReorderable('manual', false)).toBe(true);
+		for (const mode of ['manual', 'priority', 'updated', 'created', 'title'] as SortMode[]) {
+			expect(isReorderable(mode, true)).toBe(false);
+			if (mode !== 'manual') expect(isReorderable(mode, false)).toBe(false);
+		}
 	});
 });

@@ -7,7 +7,7 @@
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { parseSchema, parseFields, formatItemRef, itemUrlId } from '$lib/types';
-	import { itemComparator, type SortMode } from '$lib/collections/itemSort';
+	import { itemComparator, isReorderable, type SortMode } from '$lib/collections/itemSort';
 	import { laneOrderAfterMove, disabledDirections, type ReorderDirection } from '$lib/collections/reorder';
 	import { page } from '$app/state';
 	import { canonicalValueColor, formatFieldLabel as formatLabel } from '$lib/utils/fieldColors';
@@ -35,6 +35,7 @@
 		canEdit?: boolean;
 		preserveOrder?: boolean;
 		sortMode?: SortMode;
+		sortReversed?: boolean;
 		/**
 		 * Opt-in split-pane open (PLAN-2105 / TASK-2111). When set, a plain
 		 * left-click on the title link opens the item in the collection page's
@@ -70,6 +71,7 @@
 		canEdit = true,
 		preserveOrder = false,
 		sortMode = 'manual',
+		sortReversed = false,
 		onItemOpen,
 		onOrderRendered,
 		focusedItemId = null
@@ -131,7 +133,7 @@
 		// sort_order). `preserveOrder` (search active) keeps the parent's
 		// relevance order untouched.
 		if (!sortKey) {
-			return preserveOrder ? items : [...items].sort(itemComparator(sortMode, collection));
+			return preserveOrder ? items : [...items].sort(itemComparator(sortMode, collection, sortReversed));
 		}
 
 		const sorted = [...items].sort((a, b) => {
@@ -183,7 +185,7 @@
 	// transparently hides the menu until the user clears it back to the
 	// default (manual) order. The table is a flat list, so the group is the
 	// whole displayed set.
-	let canReorder = $derived(canEdit && sortMode === 'manual' && !sortKey && !preserveOrder && !!onReorder);
+	let canReorder = $derived(canEdit && isReorderable(sortMode, sortReversed) && !sortKey && !preserveOrder && !!onReorder);
 
 	function reorderItem(item: Item, dir: ReorderDirection) {
 		if (!onReorder) return;

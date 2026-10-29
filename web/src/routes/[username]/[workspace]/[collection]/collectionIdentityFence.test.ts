@@ -319,6 +319,7 @@ describe('the collection page fences every async commit point', () => {
 			// restricted caller's carried-over intent filters nothing.
 			viewMode: 'URL/preference — belongs to the address, not the session',
 			sortMode: 'URL/preference',
+			sortReversed: 'browser preference, like sortMode; re-read on collection load (BUG-3994)',
 			showArchived: 'URL/preference',
 			activeFilters: 'URL-derived',
 			selectedTags: 'URL-derived',

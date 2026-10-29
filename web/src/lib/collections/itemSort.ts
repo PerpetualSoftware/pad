@@ -50,22 +50,37 @@ function timeValue(s: string | undefined): number {
 // `sort_order`, preserving drag ordering.
 export function itemComparator(
 	mode: SortMode,
-	collection: Collection
+	collection: Collection,
+	reversed = false
 ): (a: Item, b: Item) => number {
+	const direction = reversed ? -1 : 1;
 	switch (mode) {
 		case 'priority': {
 			const options = priorityField(collection)?.options ?? [];
-			return (a, b) =>
-				priorityWeight(a, options) - priorityWeight(b, options) ||
-				a.sort_order - b.sort_order;
+			return (a, b) => {
+				const aWeight = priorityWeight(a, options);
+				const bWeight = priorityWeight(b, options);
+				// Unset/unknown values stay last in either direction.
+				return Number(aWeight === Number.MAX_SAFE_INTEGER) - Number(bWeight === Number.MAX_SAFE_INTEGER) ||
+					direction * (aWeight - bWeight) || a.sort_order - b.sort_order;
+			};
 		}
 		case 'updated':
-			return (a, b) => timeValue(b.updated_at) - timeValue(a.updated_at);
-		case 'created':
-			return (a, b) => timeValue(b.created_at) - timeValue(a.created_at);
+		case 'created': {
+			const key = mode === 'updated' ? 'updated_at' : 'created_at';
+			return (a, b) => {
+				const aTime = Date.parse(a[key]);
+				const bTime = Date.parse(b[key]);
+				const aMissing = Number.isNaN(aTime);
+				const bMissing = Number.isNaN(bTime);
+				// A missing date has no rank, even in oldest-first order.
+				return Number(aMissing) - Number(bMissing) ||
+					(aMissing ? 0 : direction * (bTime - aTime));
+			};
+		}
 		case 'title':
 			return (a, b) =>
-				(a.title || '').localeCompare(b.title || '', undefined, {
+				direction * (a.title || '').localeCompare(b.title || '', undefined, {
 					sensitivity: 'base'
 				});
 		case 'manual':
@@ -88,8 +103,14 @@ export function itemComparator(
 			// new item now joins the END of an un-dragged lane; dragging it
 			// places it anywhere.
 			return (a, b) =>
-				a.sort_order - b.sort_order ||
-				timeValue(a.created_at) - timeValue(b.created_at) ||
+				direction * (a.sort_order - b.sort_order) ||
+				direction * (timeValue(a.created_at) - timeValue(b.created_at)) ||
 				a.id.localeCompare(b.id);
 	}
+}
+
+// Reversed manual order is a viewing preference; saving its rendered indexes
+// would overwrite the stored order for everyone (BUG-3994).
+export function isReorderable(mode: SortMode, reversed: boolean): boolean {
+	return mode === 'manual' && !reversed;
 }

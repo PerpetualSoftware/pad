@@ -78,6 +78,7 @@
 	import { provideCardPriorityWriter } from '$lib/collections/cardPriority';
 	import { parentFilterOptions } from '$lib/collections/parentFilter';
 	import { type ViewMode, isViewMode, loadViewMode, storeViewMode, loadSortMode, storeSortMode } from '$lib/collections/viewPersistence';
+	import { loadSortReversed, storeSortReversed } from '$lib/collections/viewPersistence';
 
 	// TASK-2212: one ViewMode predicate for the URL, storage and saved views,
 	// and workspace-scoped persistence.
@@ -109,6 +110,7 @@
 	// Page-wide within-group sort (TASK-1670 / IDEA-1648). 'manual' is the
 	// stored sort_order (drag order). Persisted per collection.
 	let sortMode = $state<SortMode>('manual');
+	let sortReversed = $state(false);
 	let activeFilters = $state<Record<string, string>>({});
 	// Multi-select tag filter (OR semantics). Tags live on the top-level
 	// `tags` column, not in `fields` JSON, so they're tracked separately
@@ -606,6 +608,11 @@
 	function saveSortMode(mode: SortMode) {
 		sortMode = mode;
 		if (wsSlug && collSlug) storeSortMode(wsSlug, collSlug, mode);
+	}
+
+	function saveSortReversed(reversed: boolean) {
+		sortReversed = reversed;
+		if (wsSlug && collSlug) storeSortReversed(wsSlug, collSlug, reversed);
 	}
 
 	// Sort options available for this collection: hide "Priority" when the
@@ -1708,6 +1715,7 @@
 			const defaultMode: ViewMode = isViewMode(settings.default_view) ? settings.default_view : 'board';
 			viewMode = loadViewMode(ws, coll, defaultMode);
 			sortMode = loadSortMode(ws, coll);
+			sortReversed = loadSortReversed(ws, coll);
 
 			// Override with URL params if present
 			loadUrlFilters();
@@ -4385,40 +4393,45 @@
 						</div>
 					{/if}
 
-					{#if viewMode !== 'table'}
-						<div class="menu-anchor">
-							<button
-								class="toolbar-icon-btn"
-								bind:this={sortMenuTrigger}
-								onclick={() => (sortMenuOpen = !sortMenuOpen)}
-								aria-haspopup="menu"
-								aria-expanded={sortMenuOpen}
-								aria-label="Sort items"
-								title="Sort items"
-							>
-								<svg width="15" height="15" viewBox="0 0 15 15" fill="none" aria-hidden="true"><path d="M4 2v10M4 12l-2.2-2.4M4 12l2.2-2.4M11 13V3M11 3 8.8 5.4M11 3l2.2 2.4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
-							</button>
-							<Menu
-								open={sortMenuOpen}
-								onclose={() => (sortMenuOpen = false)}
-								trigger={sortMenuTrigger}
-								mode="anchored"
-								sheetOnMobile
-								sheetTitle="Sort items"
-								ariaLabel="Sort items"
-							>
-								<div class="menu-label">Sort within groups</div>
-								{#each sortOptions as opt (opt.value)}
-									<MenuItem
-										checked={sortMode === opt.value}
-										onclick={() => { saveSortMode(opt.value as SortMode); sortMenuOpen = false; }}
-									>
-										{opt.label}
-									</MenuItem>
-								{/each}
-							</Menu>
-						</div>
-					{/if}
+					<div class="menu-anchor">
+						<button
+							class="toolbar-icon-btn"
+							bind:this={sortMenuTrigger}
+							onclick={() => (sortMenuOpen = !sortMenuOpen)}
+							aria-haspopup="menu"
+							aria-expanded={sortMenuOpen}
+							aria-label="Sort items"
+							title="Sort within groups; table column sorting takes precedence"
+						>
+							<svg width="15" height="15" viewBox="0 0 15 15" fill="none" aria-hidden="true"><path d="M4 2v10M4 12l-2.2-2.4M4 12l2.2-2.4M11 13V3M11 3 8.8 5.4M11 3l2.2 2.4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+						</button>
+						<Menu
+							open={sortMenuOpen}
+							onclose={() => (sortMenuOpen = false)}
+							trigger={sortMenuTrigger}
+							mode="anchored"
+							sheetOnMobile
+							sheetTitle="Sort items"
+							ariaLabel="Sort items"
+						>
+							<div class="menu-label">Sort within groups</div>
+							{#each sortOptions as opt (opt.value)}
+								<MenuItem
+									checked={sortMode === opt.value}
+									onclick={() => { saveSortMode(opt.value as SortMode); sortMenuOpen = false; }}
+								>
+									{opt.label}
+								</MenuItem>
+							{/each}
+							<div class="menu-divider" role="separator"></div>
+							<MenuItem checked={sortReversed} onclick={() => saveSortReversed(!sortReversed)}>
+								Reverse order
+							</MenuItem>
+							{#if viewMode === 'table'}
+								<div class="menu-label">Column sorting takes precedence</div>
+							{/if}
+						</Menu>
+					</div>
 
 					<button
 						class="toolbar-icon-btn filter-toggle-btn"
@@ -4696,6 +4709,7 @@
 				canEdit={canEditThisCollection}
 				preserveOrder={searchQuery.trim() !== ''}
 				{sortMode}
+				{sortReversed}
 				onItemOpen={openItemPane}
 				onColumnsRendered={handleBoardColumnsRendered}
 			/>
@@ -4713,6 +4727,7 @@
 				canEdit={canEditThisCollection}
 				preserveOrder={searchQuery.trim() !== ''}
 				{sortMode}
+				{sortReversed}
 				onItemOpen={openItemPane}
 				onOrderRendered={handleListOrderRendered}
 			/>
@@ -4743,6 +4758,7 @@
 				canEdit={canEditThisCollection}
 				preserveOrder={searchQuery.trim() !== ''}
 				{sortMode}
+				{sortReversed}
 				onItemOpen={openItemPane}
 				onOrderRendered={handleListOrderRendered}
 			/>

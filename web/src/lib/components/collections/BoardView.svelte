@@ -5,7 +5,7 @@
 	import { getStatusOptions, parseSchema, parseFields } from '$lib/types';
 	import { doneFieldKey, doneFieldTerminalOptions } from '$lib/types';
 	import { laneCap, laneWindow, rebuildLane } from '$lib/collections/laneWindow';
-	import { itemComparator, type SortMode } from '$lib/collections/itemSort';
+	import { itemComparator, isReorderable, type SortMode } from '$lib/collections/itemSort';
 	import { laneOrderAfterMove, disabledDirections, adjacentColumn, type ReorderDirection } from '$lib/collections/reorder';
 	import {
 		bucketByColumn,
@@ -145,6 +145,7 @@
 		 * lane would be meaningless (the comparator would re-sort it).
 		 */
 		sortMode?: SortMode;
+		sortReversed?: boolean;
 		/**
 		 * Opt-in split-pane open (PLAN-2105 / TASK-2111). Threaded straight
 		 * through to each ItemCard; omitted everywhere except the collection
@@ -161,7 +162,7 @@
 		onColumnsRendered?: (columns: { value: string; items: Item[] }[]) => void;
 	}
 
-	let { items, collection, wsSlug = '', groupField = 'status', focusedItemId = null, onLaneChange, onStatusChange, onReorder, onArchiveColumn, onGroupReorder, oncreate, onCreateInColumn, onMoveColumn, onTagColumn, onUntagColumn, onSetPriorityColumn, onAssignColumn, members = [], tagSuggestions = [], filtered = false, itemProgress, progressLabel = 'tasks', canEdit = true, preserveOrder = false, sortMode = 'manual', draftText = $bindable({}), draftOpen = $bindable({}), draftPlacement = {}, blockedDraftNotices = [], onDiscardDraft, onItemOpen, onColumnsRendered }: Props = $props();
+	let { items, collection, wsSlug = '', groupField = 'status', focusedItemId = null, onLaneChange, onStatusChange, onReorder, onArchiveColumn, onGroupReorder, oncreate, onCreateInColumn, onMoveColumn, onTagColumn, onUntagColumn, onSetPriorityColumn, onAssignColumn, members = [], tagSuggestions = [], filtered = false, itemProgress, progressLabel = 'tasks', canEdit = true, preserveOrder = false, sortMode = 'manual', sortReversed = false, draftText = $bindable({}), draftOpen = $bindable({}), draftPlacement = {}, blockedDraftNotices = [], onDiscardDraft, onItemOpen, onColumnsRendered }: Props = $props();
 
 	// Local — disables the draft card while its Enter-create is in flight.
 	let savingDraft = $state(false);
@@ -185,16 +186,19 @@
 	// INHERITED member for every Object.prototype name, so a lane named
 	// `constructor` read a function as its override, ignored the page sort and
 	// lost its reorder menu.
-	let laneSortOverrides = $state<Record<string, SortMode>>({});
+	let laneSortOverrides = $state<Record<string, { mode: SortMode; reversed: boolean }>>({});
 	function setLaneSort(colValue: string, mode: SortMode | null) {
 		if (mode === null) {
 			delete laneSortOverrides[laneKey(colValue)];
 		} else {
-			laneSortOverrides[laneKey(colValue)] = mode;
+			laneSortOverrides[laneKey(colValue)] = { mode, reversed: laneSortFor(colValue).reversed };
 		}
 	}
-	const laneSortFor = (colValue: string): SortMode =>
-		laneSortOverrides[laneKey(colValue)] ?? sortMode;
+	const laneSortFor = (colValue: string) =>
+		laneSortOverrides[laneKey(colValue)] ?? { mode: sortMode, reversed: sortReversed };
+	function setLaneReversed(colValue: string, reversed: boolean) {
+		laneSortOverrides[laneKey(colValue)] = { mode: laneSortFor(colValue).mode, reversed };
+	}
 
 	// ── Inline draft cards (TASK-1676) ──────────────────────────────────
 	// Trello/GitHub-style: the `+` opens an editable draft card in the
@@ -520,7 +524,8 @@
 		// resolves to the stored sort_order, preserving prior behavior.
 		if (!preserveOrder) {
 			for (const [value, list] of buckets) {
-				list.sort(itemComparator(laneSortFor(value), collection));
+				const { mode, reversed } = laneSortFor(value);
+				list.sort(itemComparator(mode, collection, reversed));
 			}
 		}
 		const result: Record<string, Item[]> = {};
@@ -637,6 +642,7 @@
 	}
 
 	async function handleFinalize(columnValue: string, e: CustomEvent<DndEvent<Item>>) {
+		if (laneSortFor(columnValue).reversed) return;
 		// The FULL lane, not the window: every write below numbers the whole
 		// lane, and numbering the window alone would collide with the hidden
 		// tail (TASK-2230).
@@ -760,8 +766,8 @@
 		}
 
 		if (moveSucceeded) {
-			// Only persist reorder after a successful move.
-			if (onReorder) {
+			// Only persist reorder after a successful move into a non-reversed lane.
+			if (onReorder && !laneSortFor(targetColumn).reversed) {
 				const order = placement === 'top' ? (columnData[laneKey(targetColumn)] ?? []) : placement;
 				const reorderUpdates = order
 					.filter((i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME])
@@ -831,7 +837,7 @@
 	// NOT gated on isMobile — unlike drag (disabled on mobile), the menu IS
 	// the mobile reorder mechanism.
 	function canReorderLane(columnValue: string): boolean {
-		return canEdit && !preserveOrder && laneSortFor(columnValue) === 'manual';
+		return canEdit && !preserveOrder && isReorderable(laneSortFor(columnValue).mode, laneSortFor(columnValue).reversed);
 	}
 
 	// Combined hidden-direction set for a card's reorder menu: the vertical
@@ -1021,7 +1027,10 @@
 									{members}
 									{tagSuggestions}
 									{sortMode}
-									laneSort={laneSortOverrides[laneKey(colValue)]}
+									{sortReversed}
+									laneSort={laneSortOverrides[laneKey(colValue)]?.mode}
+									laneReversed={laneSortFor(colValue).reversed}
+									onSetLaneReversed={(reversed) => setLaneReversed(colValue, reversed)}
 									onSetLaneSort={(m) => setLaneSort(colValue, m)}
 									onClose={closeMenu}
 									onAddItem={onCreateInColumn && !isUncategorized && !isRelationGroup && !groupingRefusal
@@ -1083,7 +1092,8 @@
 					// phone is wider than the mobile breakpoint, and a finger held
 					// past delayTouchStart while scrolling picked the card up and
 					// dropped it in another lane. The card menu's move stays.
-					dragDisabled: noTouchDrag || !canEdit || preserveOrder || laneSortFor(colValue) !== 'manual'
+					dropFromOthersDisabled: laneSortFor(colValue).reversed,
+					dragDisabled: noTouchDrag || !canEdit || preserveOrder || !isReorderable(laneSortFor(colValue).mode, laneSortFor(colValue).reversed)
 				}}
 				onconsider={(e) => handleConsider(colValue, e)}
 				onfinalize={(e) => handleFinalize(colValue, e)}
