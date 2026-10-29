@@ -588,11 +588,7 @@ func (s *Store) updateScheduleAt(workspaceID, itemID string, upd models.Schedule
 	}
 
 	// Compare canonical forms: the stored rule and walls are canonical.
-	endText := ""
-	if hasEnd {
-		endText = end.String()
-	}
-	timingChanged := spec.Start.String() != cur.Dtstart || endText != deref(cur.Dtend) ||
+	timingChanged := spec.Start.String() != cur.Dtstart ||
 		spec.Floating != cur.Floating || (!spec.Floating && spec.Zone != deref(cur.Tz)) ||
 		spec.Rule != deref(cur.Rrule) || anchor != cur.Anchor ||
 		!equalStringSlices(wallStrings(spec.RDates), cur.RDates) || !equalStringSlices(wallStrings(spec.ExDates), cur.ExDates)

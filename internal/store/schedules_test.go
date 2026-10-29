@@ -840,3 +840,58 @@ func TestScheduleErrorCode(t *testing.T) {
 		}
 	}
 }
+
+// A dtend-only edit on an armed window moves nothing the tick reads.
+func TestScheduleDtendOnlyEditOnArmedWindowLeavesArmingAlone(t *testing.T) {
+	t.Parallel()
+	f := newSchedFixture(t)
+	sc := f.create(t, models.ScheduleCreate{Kind: "window", Dtstart: "2026-10-30T09:00", Dtend: "2026-10-30T10:00", Tz: "UTC", Rrule: "FREQ=DAILY"})
+	before := f.managed(t, sc)
+	end := "2026-10-30T13:00:00"
+	got := f.update(t, models.ScheduleUpdate{Dtend: &end})
+	if got.Dtend == nil || *got.Dtend != end {
+		t.Fatalf("dtend = %v", *got.Dtend)
+	}
+	r := f.managed(t, got)
+	if r.RemindAt != before.RemindAt || r.FiredAt != nil {
+		t.Fatalf("remind_at moved: before %+v after %+v", before, r)
+	}
+	if *got.NextAt != *sc.NextAt || *got.NextWall != *sc.NextWall {
+		t.Fatalf("next moved: %v/%v -> %v/%v", *sc.NextAt, *sc.NextWall, *got.NextAt, *got.NextWall)
+	}
+}
+
+// A dtend-only edit never compiles: it works on a schedule whose rule is broken
+// and leaves error_code set.
+func TestScheduleDtendOnlyEditOnBrokenRuleSucceeds(t *testing.T) {
+	t.Parallel()
+	f := newSchedFixture(t)
+	sc := f.create(t, models.ScheduleCreate{Kind: "window", Dtstart: "2026-10-30T09:00", Dtend: "2026-10-30T10:00", Tz: "UTC", Rrule: "FREQ=DAILY"})
+	f.breakStoredRule(t, sc)
+	end := "2026-10-30T11:00:00"
+	got := f.update(t, models.ScheduleUpdate{Dtend: &end})
+	if got.Dtend == nil || *got.Dtend != end {
+		t.Fatalf("dtend = %v", *got.Dtend)
+	}
+	if got.ErrorCode == nil || *got.ErrorCode != "malformed" || got.Rrule == nil || *got.Rrule != "FREQ=DAILY;BOGUS=1" {
+		t.Fatalf("error_code/rrule disturbed: %v %v", got.ErrorCode, got.Rrule)
+	}
+}
+
+// A dtend change sent with a timing field whose value is unchanged is not a
+// timing edit: a fired window stays fired.
+func TestScheduleDtendWithUnchangedTimingFieldDoesNotRearm(t *testing.T) {
+	t.Parallel()
+	f := newSchedFixture(t)
+	sc := f.create(t, models.ScheduleCreate{Kind: "window", Dtstart: "2026-10-30T09:00", Dtend: "2026-10-30T10:00", Tz: "UTC"})
+	f.exec(t, `UPDATE item_reminders SET fired_at = ?, acked_at = ? WHERE id = ?`, "2026-10-30T09:00:00Z", "2026-10-30T09:05:00Z", *sc.ReminderID)
+	end, tz := "2026-10-30T12:00:00", "UTC"
+	got := f.update(t, models.ScheduleUpdate{Dtend: &end, Tz: &tz})
+	if got.Dtend == nil || *got.Dtend != end || got.EndedAt != nil {
+		t.Fatalf("dtend/ended_at: %v %v", *got.Dtend, got.EndedAt)
+	}
+	r := f.managed(t, got)
+	if r.FiredAt == nil || *r.FiredAt != "2026-10-30T09:00:00Z" || r.AckedAt == nil || *r.AckedAt != "2026-10-30T09:05:00Z" {
+		t.Fatalf("re-armed: %+v", r)
+	}
+}
