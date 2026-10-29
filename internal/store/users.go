@@ -267,6 +267,10 @@ func (s *Store) UpdateUser(id string, input models.UserUpdate) (*models.User, er
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("update user: commit: %w", err)
 	}
+	if n > 0 && input.Timezone != nil {
+		// A zone edit can move the recipient of floating schedules east (TASK-4102).
+		s.resetFloatingForUser(id)
+	}
 	if n == 0 {
 		if fenced {
 			if u, err := s.GetUser(id); err == nil && u != nil {
@@ -291,9 +295,14 @@ func (s *Store) UpdateUser(id string, input models.UserUpdate) (*models.User, er
 // so the caller learns the winning zone either way. An unknown user is
 // sql.ErrNoRows. The caller validates tz.
 func (s *Store) SetUserTimezoneIfUnset(id, tz string) (*models.User, error) {
-	if _, err := s.db.Exec(s.q(`UPDATE users SET timezone = ?, updated_at = ? WHERE id = ? AND timezone IS NULL`),
-		tz, now(), id); err != nil {
+	res, err := s.db.Exec(s.q(`UPDATE users SET timezone = ?, updated_at = ? WHERE id = ? AND timezone IS NULL`),
+		tz, now(), id)
+	if err != nil {
 		return nil, fmt.Errorf("set user timezone if unset: %w", err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n > 0 {
+		// Unset reads as UTC, so setting a zone can move floating schedules east (TASK-4102).
+		s.resetFloatingForUser(id)
 	}
 	u, err := s.GetUser(id)
 	if err != nil {

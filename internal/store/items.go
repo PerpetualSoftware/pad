@@ -3623,6 +3623,10 @@ func (s *Store) updateItemWithParentLinkOnce(
 	if err := commit(); err != nil {
 		return nil, err
 	}
+	if mutSignal.AssignmentChanged {
+		// The recipient of a floating schedule on this item changed (TASK-4102).
+		s.resetFloatingForItem(id)
+	}
 
 	return updated, nil
 }

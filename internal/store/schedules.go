@@ -74,9 +74,14 @@ func fieldErr(field, code, msg string) error {
 }
 
 // ScheduleErrorCode names an error from compiling or advancing a rule as the
-// stable code item_schedules.error_code stores: the schedule.Code of a
-// malformed rule, or cap_scan / cap_stall / cap_time for a cap. It is "" for any
-// other error, and never carries third-party text.
+// stable code item_schedules.error_code stores. The full set is the ten
+// schedule.Code values (syntax, unknown_part, duplicate_part, missing_part,
+// range, combination, unsupported, unsatisfiable, zone, wall) and the five cap
+// codes (cap_scan, cap_stall, cap_time, cap_window, cap_instances). The fire path
+// compiles the stored rule, so it can store a Code or a cap code Compile raises;
+// cap_window and cap_instances come only from expanding a window, which a later
+// writer may do. It is "" for any other error, and never carries third-party
+// text.
 func ScheduleErrorCode(err error) string {
 	var m *schedule.MalformedError
 	if errors.As(err, &m) {
