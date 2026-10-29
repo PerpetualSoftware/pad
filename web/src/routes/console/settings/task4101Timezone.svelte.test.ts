@@ -4,7 +4,7 @@ import { render, screen, waitFor, fireEvent } from '@testing-library/svelte';
 /** TASK-4101: independent time zone Save uses the unconditional API path. */
 const state = vi.hoisted(() => ({
 	push: false, gets: 0, zone: null as string | null, set: vi.fn(), update: vi.fn(),
-	epoch: 0, signalCount: 0,
+	epoch: 0, signalCount: 0, userId: 'u1',
 	// Set by the authStore mock: reading identityEpoch subscribes to it, as the store's $state epoch does.
 	epochSignal: null as null | { set(key: string, value: number): unknown },
 	// Queued /auth/me answers, consumed in call order; the default answer applies once it is empty.
@@ -62,7 +62,7 @@ vi.mock('$lib/stores/auth.svelte', async () => {
 		get emailConfigured() { return true; },
 		get pushAvailable() { return state.push; },
 		get user() { return { id: 'u1', name: 'Pat', email: 'pat@example.com' }; },
-		get userId() { return 'u1'; },
+		get userId() { return state.userId; },
 		get identityEpoch() { signal.get('epoch'); return state.epoch; },
 		identityFence() { const captured = state.epoch; return () => state.epoch === captured; },
 		onIdentityChange(fn: () => void) { state.listeners.add(fn); return () => state.listeners.delete(fn); },
@@ -77,7 +77,7 @@ const { default: AccountSettings } = await import('./+page.svelte');
 
 beforeEach(() => {
 	state.set.mockReset(); state.update.mockReset();
-	state.epoch = 0; state.zone = null; state.meQueue = []; state.listeners.clear();
+	state.epoch = 0; state.zone = null; state.meQueue = []; state.listeners.clear(); state.userId = 'u1';
 });
 afterEach(() => { vi.unstubAllGlobals(); });
 it.each([null, 'Asia/Tokyo'])('settings shows current zone %s and saves an unconditional zone', async (zone) => {
@@ -195,4 +195,17 @@ it('a zone Save in flight across an identity change does not leave Save disabled
 	await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue('Pat'));
 	await fireEvent.input(screen.getByLabelText('Time zone'), { target: { value: 'Asia/Tokyo' } });
 	await waitFor(() => expect(screen.getByRole('button', { name: 'Save time zone' })).toBeEnabled());
+});
+
+// #2342 E2E (account-delete.spec.ts:99): a sign-out's reload 401s raced the delete's navigation.
+it('a sign-out does not reload the profile, and the next sign-in does', async () => {
+	const { api } = await import('$lib/api/client');
+	render(AccountSettings);
+	await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue('Pat'));
+	const calls = vi.mocked(api.auth.me).mock.calls.length;
+	state.userId = ''; changeIdentity(); await new Promise((r) => setTimeout(r, 0));
+	expect(api.auth.me).toHaveBeenCalledTimes(calls);
+	state.userId = 'u1'; changeIdentity();
+	await waitFor(() => expect(api.auth.me).toHaveBeenCalledTimes(calls + 1));
+	await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue('Pat'));
 });

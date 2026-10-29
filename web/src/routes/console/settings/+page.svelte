@@ -253,7 +253,8 @@
 			timezoneSaving = false;
 			timezoneError = '';
 			timezoneMsg = '';
-			void loadProfile();
+			// Signed out: nothing to load, and its 401s would race the caller's own navigation (#2342 E2E).
+			if (authStore.userId) void loadProfile();
 		});
 		void loadProfile();
 		return stopListening;
