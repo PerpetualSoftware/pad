@@ -155,7 +155,7 @@ function swapWith(order: string[], mover: string, dir: -1 | 1): string[] {
  * on an absent entry waits out the whole test budget and reports only the
  * name it waited for. `where` describes the list the entry was chosen from.
  */
-async function clickMenuEntry(page: Page, trigger: Locator, entry: Locator, where: () => Promise<string>): Promise<void> {
+async function clickMenuEntry(page: Page, trigger: Locator, entry: Locator, where: () => Promise<string>): Promise<string> {
 	await trigger.click();
 	await expect(trigger, 'the card menu opened').toHaveAttribute('aria-expanded', 'true', { timeout: 5_000 });
 	try {
@@ -164,7 +164,9 @@ async function clickMenuEntry(page: Page, trigger: Locator, entry: Locator, wher
 		const rendered = (await page.getByRole('menuitem').allTextContents()).map((t) => t.trim());
 		throw new Error(`menu entry ${entry} not rendered; the open menu has [${rendered.join(', ')}]; ${await where()}`);
 	}
+	const label = ((await entry.first().textContent()) ?? '').trim();
 	await entry.first().click();
+	return label;
 }
 
 /** GET a workspace path as the owner, to read stored state the page does not show. */
@@ -309,19 +311,42 @@ test.describe('guestPrecedence: a view-only card does not move (BUG-3259)', () =
 			const control = peers[0];
 			await expect(holder(control).locator('.iam-trigger'), 'control: an editable card has the menu').toHaveCount(1);
 			await expect(holder(A()).locator('.iam-trigger'), 'A has no move menu').toHaveCount(0);
-			// The control's menu still MOVES it: a named Move entry, and a write
-			// that names the control lands. Nothing sent is refused.
+			// The control's menu still MOVES it: a named Move entry, and the
+			// move lands. Nothing sent is refused.
 			const move = view === 'board' ? /Move (right|left)/ : /Move (down|up|to top|to bottom)/;
-			await clickMenuEntry(
+			const screenOrder = async () => (await scope.locator(titleSel).allTextContents()).map((t) => t.trim());
+			const orderBefore = await screenOrder();
+			const before = writes.length;
+			const label = await clickMenuEntry(
 				page,
 				holder(control).locator('.iam-trigger'),
 				page.getByRole('menuitem', { name: move }).and(page.locator(':not([disabled])')),
 				async () => `control ${control} among ${peers.join(', ')}`
 			);
-			const controlId = idByTitle.get(control)!;
-			await expect
-				.poll(() => writes.some((w) => w.startsWith('200 ') && w.includes(controlId)), { timeout: 5_000 })
-				.toBe(true);
+			if (view === 'board') {
+				// Move right/left is a status write, and it names the control.
+				const controlId = idByTitle.get(control)!;
+				await expect
+					.poll(() => writes.some((w) => w.startsWith('200 ') && w.includes(controlId)), { timeout: 5_000 })
+					.toBe(true);
+			} else {
+				// A reorder persists as a sort_order write, which need not name the
+				// control: with distinct stored values the plan may lift a neighbour
+				// past it and leave the control's value alone (BUG-4005). So assert
+				// the order the entry promised, read after a reload so it is the
+				// persisted order and not the optimistic one.
+				await expectMoved(writes, before);
+				await page.reload();
+				await waitForAccessSettled(page);
+				const from = orderBefore.indexOf(control);
+				const up = /up|to top/.test(label);
+				await expect
+					.poll(async () => {
+						const to = (await screenOrder()).indexOf(control);
+						return to >= 0 && (up ? to < from : to > from);
+					}, { message: `${control} moved per "${label}" from index ${from} in [${orderBefore.join(', ')}]`, timeout: 5_000 })
+					.toBe(true);
+			}
 			expect(refused(writes)).toEqual([]);
 		});
 	}
