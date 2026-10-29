@@ -37,9 +37,10 @@
 		timezoneSaving = true;
 		timezoneError = '';
 		timezoneMsg = '';
-		noteExplicitTimezoneWrite();
 		try {
 			const updated = await api.auth.setTimezone(timezone.trim());
+			// Counted only once it has succeeded: a failed write changed nothing a late default could clobber (TASK-4101 PR2a r2 H2-M2).
+			noteExplicitTimezoneWrite();
 			if (!isSameIdentity()) return;
 			if (updated.timezone !== undefined) {
 				authStore.setTimezone(userId, updated.timezone);
@@ -210,26 +211,52 @@
 		history.replaceState(history.state, '', url.pathname + (url.search || '') + url.hash);
 	}
 
-	onMount(async () => {
-		readOAuthQueryStatus();
+	// The identity epoch the form's profile was loaded under. Saves are enabled only while it is the
+	// current one, so no save is built from another identity's load, or from none (TASK-4101 PR2a r2 H2-M1).
+	let loadedEpoch = $state<number | null>(null);
+	const profileReady = $derived(loadedEpoch === authStore.identityEpoch);
+
+	async function loadProfile() {
+		const epoch = authStore.identityEpoch;
 		const isSameIdentity = authStore.identityFence();
 		try {
 			const [me, tokenList] = await Promise.all([
 				api.auth.me(),
 				api.auth.tokens.list()
 			]);
-			// A load that settles after an identity change belongs to the previous user (TASK-4101 PR2a r1 C-M1).
+			// A load that settles after an identity change belongs to the previous user. Drop it untouched:
+			// the identity listener has started the load for the current one.
 			if (!isSameIdentity()) return;
 			profile = me;
 			profileName = me.name;
 			profileUsername = me.username;
 			timezone = me.timezone ?? '';
 			tokens = tokenList;
+			loadedEpoch = epoch;
 		} catch {
+			if (!isSameIdentity()) return;
 			profileError = 'Failed to load profile';
-		} finally {
-			loading = false;
 		}
+		loading = false;
+	}
+
+	onMount(() => {
+		readOAuthQueryStatus();
+		// The listener runs after the epoch bump, so this reload is for the identity signed in now.
+		const stopListening = authStore.onIdentityChange(() => {
+			profile = null;
+			profileName = '';
+			profileUsername = '';
+			timezone = '';
+			tokens = [];
+			// A zone Save in flight belonged to the previous identity; its fenced finally will not clear these.
+			timezoneSaving = false;
+			timezoneError = '';
+			timezoneMsg = '';
+			void loadProfile();
+		});
+		void loadProfile();
+		return stopListening;
 	});
 
 	async function saveProfile() {
@@ -706,7 +733,7 @@
 					{#if browserTimezone}
 						<button onclick={() => timezone = browserTimezone} disabled={timezoneSaving}>Use browser zone ({browserTimezone})</button>
 					{/if}
-					<Button onclick={saveTimezone} disabled={timezoneSaving || !timezone.trim()}>Save time zone</Button>
+					<Button onclick={saveTimezone} disabled={!profileReady || timezoneSaving || !timezone.trim()}>Save time zone</Button>
 					{#if timezoneError}<p class="error" role="alert">{timezoneError}</p>{/if}
 					{#if timezoneMsg}<p class="success" role="status">{timezoneMsg}</p>{/if}
 				</div>
@@ -717,7 +744,7 @@
 					<p class="success">{profileMsg}</p>
 				{/if}
 				<div class="btn-row">
-					<Button variant="primary" onclick={saveProfile} disabled={profileSaving}>
+					<Button variant="primary" onclick={saveProfile} disabled={!profileReady || profileSaving}>
 						{profileSaving ? 'Saving...' : 'Save Changes'}
 					</Button>
 				</div>

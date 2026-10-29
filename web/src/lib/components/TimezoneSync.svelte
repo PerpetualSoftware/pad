@@ -28,7 +28,7 @@
 				const isSameIdentity = authStore.identityFence();
 				const writesBefore = explicitTimezoneWrites();
 				void api.auth.setTimezoneIfUnset(browser).then((res) => {
-					// An explicit write that began after this one wins, whatever order the answers arrive in (TASK-4101 PR2a r1 H-L2).
+					// An explicit write that succeeded after this one began wins, whatever order the answers arrive in (TASK-4101 PR2a r1 H-L2).
 					if (explicitTimezoneWrites() !== writesBefore) return;
 					if (isSameIdentity() && res.timezone !== undefined) authStore.setTimezone(userId, res.timezone);
 				}).catch(() => {}); // Unsupported browser zone: no retry this page load.
@@ -45,9 +45,10 @@
 		const isSameIdentity = authStore.identityFence();
 		saving = true;
 		error = '';
-		noteExplicitTimezoneWrite();
 		try {
 			const res = await api.auth.setTimezone(browser);
+			// Counted only once it has succeeded (TASK-4101 PR2a r2 H2-M2).
+			noteExplicitTimezoneWrite();
 			if (isSameIdentity() && res.timezone !== undefined) authStore.setTimezone(userId, res.timezone);
 		} catch (err) {
 			if (isSameIdentity()) error = err instanceof Error ? err.message : 'Failed to set time zone';

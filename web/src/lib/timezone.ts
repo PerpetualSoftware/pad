@@ -17,8 +17,9 @@ export function zoneOptions(): string[] {
 }
 
 // TASK-4101 PR2a r1 H-L2: explicit zone writes (settings Save, notice Switch) bump
-// this counter before their PATCH. The browser default adopts its response only
-// if no explicit write began after it, so a reordered late default answer cannot
+// this counter after their PATCH succeeds (r2 H2-M2: a failed write must not make
+// a default answer in flight get dropped). The browser default adopts its response only
+// if no explicit write succeeded after it began, so a reordered late default answer cannot
 // overwrite a zone the user chose a moment later.
 let explicitWrites = 0;
 export function noteExplicitTimezoneWrite(): void { explicitWrites++; }
