@@ -28,7 +28,8 @@ describe('itemComparator manual mode', () => {
 	// reorder them — the tiebreak has to be independent of updated_at.
 	// The tie direction is created_at ASC (oldest first): the server's order
 	// for child lists and the dashboard, which render it as delivered
-	// (BUG-3527). A new item joins the end of an un-dragged lane.
+	// (BUG-3527). Only never-dragged legacy rows tie at 0 now: new items are
+	// created at collection MIN(sort_order) - 1 and sort first (BUG-4005).
 	it('breaks a sort_order tie by created_at ascending, ignoring updated_at entirely', () => {
 		const comparator = itemComparator('manual', collection);
 		const older = { ...item('older', 0, '2026-01-01T00:00:00Z'), updated_at: '2026-01-01T00:00:00Z' } as Item;

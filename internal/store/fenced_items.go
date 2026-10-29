@@ -245,17 +245,21 @@ func (f *FencedTx) CreateItem(in FencedItemCreate) (*models.Item, error) {
 		flushedAt, flushedOpLogID = ts, int64(0)
 	}
 	actor := in.Actor
+	// sort_order: collection MIN - 1, so the item lands on top (BUG-4005); the
+	// workspace seq lock held by this tx serializes the MIN read.
 	if _, err := f.tx.Exec(f.s.q(`
 		INSERT INTO items (id, workspace_id, collection_id, title, slug, content, fields, tags,
 		                   pinned, sort_order, role_sort_order,
 		                   created_by, last_modified_by, source, item_number, created_at, updated_at,
 		                   content_flushed_at, content_flushed_op_log_id, seq,
 		                   created_by_user_id, last_modified_by_user_id, via_app, created_via_app)
-		VALUES (?, ?, ?, ?, ?, ?, ?, '[]', ?, 0, 0, ?, ?, ?,
+		VALUES (?, ?, ?, ?, ?, ?, ?, '[]', ?,
+		        (SELECT COALESCE(MIN(sort_order), 0) - 1 FROM items WHERE collection_id = ? AND deleted_at IS NULL),
+		        0, ?, ?, ?,
 		        (SELECT COALESCE(MAX(item_number), 0) + 1 FROM items WHERE workspace_id = ?),
 		        ?, ?, ?, ?, `+nextWorkspaceSeqSubquery+`, ?, ?, ?, ?)
 	`), id, f.workspaceID, in.CollectionID, in.Title, slug, in.Content, fields,
-		f.s.dialect.BoolToInt(false), actor.Kind, actor.Kind, appSource, f.workspaceID,
+		f.s.dialect.BoolToInt(false), in.CollectionID, actor.Kind, actor.Kind, appSource, f.workspaceID,
 		ts, ts, flushedAt, flushedOpLogID, f.workspaceID,
 		actor.UserID, actor.UserID, f.installID, f.installID); err != nil {
 		return nil, fmt.Errorf("fenced item insert: %w", err)

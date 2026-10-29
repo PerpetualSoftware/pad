@@ -73,20 +73,23 @@ export function itemComparator(
 			// Deterministic tiebreak on equal sort_order (created_at ASC —
 			// oldest first — then id) so a stray updated_at bump (e.g. a
 			// spurious collab-flush PATCH, BUG-1941) can't reorder cards that
-			// were never actually dragged. Every un-dragged card in a lane
-			// shares sort_order = 0 (every create path writes 0), so without a
-			// tiebreak the comparator was a no-op there and silently inherited
-			// whatever order the input array arrived in (updated_at DESC from
-			// the API).
+			// were never actually dragged. Legacy un-dragged cards in a lane
+			// share sort_order = 0, so without a tiebreak the comparator was a
+			// no-op there and silently inherited whatever order the input array
+			// arrived in (updated_at DESC from the API).
 			//
 			// The direction is the SERVER's (BUG-3527, lead ruling 2026-10-09):
 			// child lists and the dashboard order `sort_order ASC, created_at
 			// ASC` (internal/store/items.go getChildItems and
 			// GetChildItemsForParents) and render that order as delivered. This
 			// used to be DESC, so the same two never-dragged children read in
-			// opposite orders on an item's page and on its collection board. A
-			// new item now joins the END of an un-dragged lane; dragging it
-			// places it anywhere.
+			// opposite orders on an item's page and on its collection board.
+			// BUG-4005 (lead ruling, Dave confirmed) reversed the DIRECTION of
+			// new items, not that principle: every create path now writes
+			// collection MIN(sort_order) - 1, so a new item sorts FIRST in a
+			// lane and under a parent. The created_at ASC tie-break now orders
+			// only never-dragged legacy rows (all at 0); dragging places a
+			// card anywhere.
 			return (a, b) =>
 				a.sort_order - b.sort_order ||
 				timeValue(a.created_at) - timeValue(b.created_at) ||

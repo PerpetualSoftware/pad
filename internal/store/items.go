@@ -346,18 +346,23 @@ func (s *Store) insertItemTx(tx *sql.Tx, id, workspaceID, collectionID, slug, ts
 
 	// The workspace advisory lock acquired above for item_number
 	// assignment ALSO serializes the seq subquery below — both read
-	// MAX(...) per workspace and would otherwise race in Postgres.
+	// MAX(...) per workspace and would otherwise race in Postgres. It covers
+	// the sort_order subquery too (BUG-4005): a new item is created at the
+	// collection's MIN(sort_order) - 1 so it lands on top of a lane and of a
+	// parent's children; two concurrent creates must not read the same MIN.
 	_, err = tx.Exec(s.q(`
 		INSERT INTO items (id, workspace_id, collection_id, title, slug, content, fields, tags,
 		                   pinned, sort_order, parent_id, assigned_user_id, agent_role_id, role_sort_order,
 		                   created_by, last_modified_by, source, item_number, created_at, updated_at,
 		                   content_flushed_at, content_flushed_op_log_id, seq,
 		                   created_by_user_id, last_modified_by_user_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 0, ?, ?, ?,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
+		        (SELECT COALESCE(MIN(sort_order), 0) - 1 FROM items WHERE collection_id = ? AND deleted_at IS NULL),
+		        ?, ?, ?, 0, ?, ?, ?,
 		        (SELECT COALESCE(MAX(item_number), 0) + 1 FROM items WHERE workspace_id = ?),
 		        ?, ?, ?, ?, `+nextWorkspaceSeqSubquery+`, ?, ?)
 	`), id, workspaceID, collectionID, input.Title, slug, input.Content, fields, tags,
-		s.dialect.BoolToInt(input.Pinned), input.ParentID, nullIfEmptyID(input.AssignedUserID), nullIfEmptyID(input.AgentRoleID),
+		s.dialect.BoolToInt(input.Pinned), collectionID, input.ParentID, nullIfEmptyID(input.AssignedUserID), nullIfEmptyID(input.AgentRoleID),
 		createdBy, createdBy, source, workspaceID, ts, ts, contentFlushedAt, contentFlushedOpLogID, workspaceID,
 		// BUG-3372: the canonical user columns record WHICH account wrote the
 		// row; created_by/last_modified_by only say user or agent. Empty for
