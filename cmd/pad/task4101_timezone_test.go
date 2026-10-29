@@ -280,16 +280,16 @@ func TestTZ4101_AuthTimezoneRefusesUnsavedZone(t *testing.T) {
 // test binary and every command, configured or not.
 func TestTZ4101_ResolverUnconfiguredNeverExits(t *testing.T) {
 	if os.Getenv("TZ4101_SUBPROCESS") == "1" {
-		hits := 0
-		srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits++ }))
-		defer srv.Close()
 		setTempHomeMain(t)
-		t.Setenv("PAD_URL", "")
-		t.Setenv("PAD_TOKEN", "")
+		// Every env var that can make an install read as configured (config.go), so the child
+		// takes the unconfigured path wherever the suite runs (PR2b r2).
+		for _, k := range []string{"PAD_URL", "PAD_TOKEN", "PAD_MODE", "PAD_HOST", "PAD_PORT", "PAD_CLOUD", "PAD_DATA_DIR", "PAD_DB_PATH"} {
+			t.Setenv(k, "")
+		}
 		time.Local = time.FixedZone("Machine", 9*3600)
 		newRootCmd()
 		old := time.Date(2026, 1, 15, 2, 30, 0, 0, time.UTC)
-		fmt.Printf("INSTANT=%s HITS=%d\n", cli.FormatInstant(old, "2006-01-02 15:04"), hits)
+		fmt.Printf("INSTANT=%s\n", cli.FormatInstant(old, "2006-01-02 15:04"))
 		fmt.Printf("RELATIVE=%s\n", cli.RelativeTime(time.Now().Add(-30*24*time.Hour)))
 		return
 	}
@@ -298,7 +298,7 @@ func TestTZ4101_ResolverUnconfiguredNeverExits(t *testing.T) {
 	var stdout, stderr strings.Builder
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
-	if err != nil || !strings.Contains(stdout.String(), "INSTANT=2026-01-15 02:30 HITS=0") || strings.Contains(stderr.String(), "times shown") || strings.Contains(stderr.String(), "not configured") {
+	if err != nil || !strings.Contains(stdout.String(), "INSTANT=2026-01-15 02:30") || strings.Contains(stderr.String(), "times shown") || strings.Contains(stderr.String(), "not configured") {
 		t.Fatalf("resolver exited, prompted or left UTC: err=%v stdout=%q stderr=%q", err, stdout.String(), stderr.String())
 	}
 }
