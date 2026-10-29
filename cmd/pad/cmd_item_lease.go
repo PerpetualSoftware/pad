@@ -85,7 +85,7 @@ worker has leased, by the same identity a claim uses.`,
 			fmt.Printf("%s Lease acquired on %s\n", green.Sprint("✓"), args[0])
 			fmt.Printf("  Holder:  %s\n", lease.Holder)
 			fmt.Printf("  Expires: %s (%s)\n",
-				lease.ExpiresAt.Local().Format("2006-01-02 15:04:05"),
+				cli.FormatInstant(lease.ExpiresAt, "2006-01-02 15:04:05"),
 				cli.LeaseCountdown(lease.ExpiresAt))
 			return nil
 		},

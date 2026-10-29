@@ -143,6 +143,7 @@ func handleCmdhelpCapabilitiesFallback(args []string, w io.Writer) bool {
 // package-level vars (workspaceFlag, formatFlag, urlFlag) — fine for
 // tests as long as they don't run concurrently with the real CLI flow.
 func newRootCmd() *cobra.Command {
+	installViewerZone()
 	rootCmd := &cobra.Command{
 		Use:     "pad",
 		Short:   "Pad — project management for developers and AI agents",

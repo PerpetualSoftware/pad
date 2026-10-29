@@ -276,5 +276,5 @@ func formatTokenExpiry(t *time.Time) string {
 	if t == nil {
 		return "never"
 	}
-	return t.Format("2006-01-02")
+	return cli.FormatInstant(*t, "2006-01-02")
 }

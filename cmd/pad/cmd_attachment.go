@@ -648,7 +648,7 @@ resolves it to a UUID before calling the API.`,
 				}
 				created := row.CreatedAt
 				if t, err := time.Parse(time.RFC3339, row.CreatedAt); err == nil {
-					created = t.Format("2006-01-02 15:04")
+					created = cli.FormatInstant(t, "2006-01-02 15:04")
 				}
 				if markdown {
 					mdRows = append(mdRows, []string{

@@ -404,7 +404,7 @@ func workspaceDeletedCmd() *cobra.Command {
 			for _, ws := range deleted {
 				deletedAt := "—"
 				if ws.DeletedAt != nil {
-					deletedAt = ws.DeletedAt.Format("Jan 2, 2006")
+					deletedAt = cli.FormatInstant(*ws.DeletedAt, "Jan 2, 2006")
 				}
 				fmt.Fprintf(w, "%s\t%s\t%s\t%d\n", ws.Name, ws.Slug, deletedAt, ws.DaysLeft)
 			}
@@ -1457,7 +1457,7 @@ func auditLogCmd() *cobra.Command {
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 			fmt.Fprintln(w, "TIME\tACTION\tACTOR\tIP\tDETAILS")
 			for _, a := range activities {
-				ts := a.CreatedAt.Format("2006-01-02 15:04")
+				ts := cli.FormatInstant(a.CreatedAt, "2006-01-02 15:04")
 				actorName := a.ActorName
 				if actorName == "" {
 					actorName = a.UserID
