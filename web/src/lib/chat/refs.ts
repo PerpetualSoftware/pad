@@ -268,7 +268,8 @@ export type RefSegment =
 	| { type: 'link'; text: string; href: string; title: string; workspace: string; ref: string }
 	| { type: 'restricted'; text: 'restricted item'; workspace: string; ref: string };
 
-function refKey(workspace: string, ref: string): string {
+/** The (workspace, canonical ref) key a verdict is held under (3c D4: exported). */
+export function refKey(workspace: string, ref: string): string {
 	return `${workspace}\u0000${ref}`;
 }
 

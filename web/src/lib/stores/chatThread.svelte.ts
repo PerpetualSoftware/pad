@@ -34,6 +34,12 @@
 // reopen, not live. Known (N4): a send that times out AFTER the server committed
 // it shows the row beside the failed bubble after a refresh, until Retry.
 //
+// REFS (TASK-4044 3c, ruling 687eb810). `refs` collects the verdicts every page and
+// every send response carried, so the body renderer can link them. Refs past the
+// server's 200 cap (refs_truncated) are not surfaced: they stay literal text,
+// which fails safe. A link stays until its page is re-fetched; /-/r re-checks
+// access on every click.
+//
 // Identity: every answer is fenced by a seq and authStore.identityFence().
 import { untrack } from 'svelte';
 import { api, isNotFoundError, isReplyTargetDeletedError, isReplyTargetNotFoundError } from '$lib/api/client';
@@ -41,7 +47,8 @@ import { isRequestTooLargeError, validateDraft, type SendBlock } from '$lib/chat
 import { ChatWindow, mergeBySeq, unreadDividerIndex, type WindowItem } from '$lib/chat/model';
 import { authStore } from '$lib/stores/auth.svelte';
 import { chatStore } from '$lib/stores/chat.svelte';
-import type { ChatConversationSummary, ChatMessage } from '$lib/types';
+import { refKey } from '$lib/chat/refs';
+import type { ChatConversationSummary, ChatMessage, ChatMessagesResponse, ChatRef } from '$lib/types';
 
 /** Rows in the first page when nothing is unread, and in a load-earlier page. */
 export const THREAD_PAGE = 50;
@@ -49,6 +56,8 @@ export const THREAD_PAGE = 50;
 export const THREAD_MAX_PAGE = 200;
 /** Pages one refresh will follow from the newest end before it sets hasNewer. */
 export const REFRESH_MAX_PAGES = 5;
+
+type ListOpts = Parameters<typeof api.chat.listMessages>[1];
 
 export type ThreadStatus = 'loading' | 'ready' | 'notFound' | 'failed';
 
@@ -82,6 +91,11 @@ export class ChatThread {
 	detached = $state.raw<ChatMessage[]>([]);
 	/** Set by the page from its bottom sentinel. */
 	atBottom = $state(false);
+	/**
+	 * The ref verdicts this reader has been shown, by refKey (workspace, REF).
+	 * Verdicts are per reader, so #reset clears them (TASK-4044 3c M32).
+	 */
+	refs = $state.raw<ReadonlyMap<string, ChatRef>>(new Map());
 
 	#win = new ChatWindow();
 	#n: number | null = null;
@@ -146,6 +160,7 @@ export class ChatThread {
 		this.#lastSeq = 0;
 		this.#readSeq = 0;
 		this.detached = [];
+		this.refs = new Map();
 		this.#ops = Promise.resolve();
 		this.#refreshQueued = null;
 		this.#refreshDeferred = false;
@@ -174,6 +189,35 @@ export class ChatThread {
 		return () => mine === this.#seq && same();
 	}
 
+	/**
+	 * Every list read goes through here. The page's refs are absorbed only while
+	 * `current` holds, so a page that resolves after a reopen, a dispose or an
+	 * identity change leaves no verdict behind (TASK-4044 3c, M32 and M33).
+	 */
+	async #list(n: number, opts: ListOpts, current: () => boolean): Promise<ChatMessagesResponse> {
+		const page = await api.chat.listMessages(n, opts);
+		if (current()) this.#absorbRefs(page.refs);
+		return page;
+	}
+
+	/**
+	 * Merge a response's refs (Q-h, ruling 687eb810). A `visible` or `restricted`
+	 * entry is a verdict and REPLACES the held one, so a later page can upgrade or
+	 * downgrade a link. `unresolved` is the server not looking (its 50-lookup
+	 * cap), not a verdict: it only fills an empty key.
+	 */
+	#absorbRefs(incoming: ChatRef[] | undefined) {
+		if (!incoming?.length) return;
+		let next: Map<string, ChatRef> | null = null;
+		for (const r of incoming) {
+			const key = refKey(r.workspace, r.ref);
+			const held = (next ?? this.refs).get(key);
+			if (r.state === 'unresolved' && held) continue;
+			(next ??= new Map(this.refs)).set(key, r);
+		}
+		if (next) this.refs = next;
+	}
+
 	async open(n: number | null): Promise<void> {
 		this.#seq++;
 		this.#reset();
@@ -191,8 +235,8 @@ export class ChatThread {
 				this.conversation = conv;
 				const page =
 					conv.unread > 0
-						? await api.chat.listMessages(n, { after_seq: conv.read_seq, limit: THREAD_MAX_PAGE })
-						: await api.chat.listMessages(n, { limit: THREAD_PAGE });
+						? await this.#list(n, { after_seq: conv.read_seq, limit: THREAD_MAX_PAGE }, current)
+						: await this.#list(n, { limit: THREAD_PAGE }, current);
 				if (!current()) return;
 				this.openReadSeq = page.read_seq;
 				this.#readSeq = page.read_seq;
@@ -219,7 +263,7 @@ export class ChatThread {
 		this.olderFailed = false;
 		await this.#enqueue(current, async () => {
 			try {
-				const page = await api.chat.listMessages(n, { before_seq: this.messages[0].seq, limit: THREAD_PAGE });
+				const page = await this.#list(n, { before_seq: this.messages[0].seq, limit: THREAD_PAGE }, current);
 				if (!current()) return;
 				this.#win.merge(page.messages);
 				this.#publish(this.#lastSeq);
@@ -241,7 +285,7 @@ export class ChatThread {
 		await this.#enqueue(current, async () => {
 			try {
 				if (!this.hasNewer || this.#win.hasInFlight()) return;
-				const page = await api.chat.listMessages(n, { after_seq: this.newestSeq, limit: THREAD_MAX_PAGE });
+				const page = await this.#list(n, { after_seq: this.newestSeq, limit: THREAD_MAX_PAGE }, current);
 				// A send in flight: its committed row may be in this page beside its bubble.
 				if (!current() || this.#win.hasInFlight()) return;
 				this.#win.merge(page.messages);
@@ -278,7 +322,7 @@ export class ChatThread {
 			if (!gap) {
 				let cursor = this.newestSeq;
 				for (let pages = 0; pages < REFRESH_MAX_PAGES; pages++) {
-					const page = await api.chat.listMessages(n, { after_seq: cursor, limit: THREAD_MAX_PAGE });
+					const page = await this.#list(n, { after_seq: cursor, limit: THREAD_MAX_PAGE }, current);
 					if (!current() || this.#held()) return;
 					this.#win.merge(page.messages);
 					this.#publish(page.has_more ? page.last_seq : null);
@@ -290,8 +334,8 @@ export class ChatThread {
 				const lo = this.messages[0].seq;
 				const hi = this.newestSeq;
 				const page = gap
-					? await api.chat.listMessages(n, { after_seq: lo - 1, limit: THREAD_MAX_PAGE })
-					: await api.chat.listMessages(n, { limit: THREAD_MAX_PAGE });
+					? await this.#list(n, { after_seq: lo - 1, limit: THREAD_MAX_PAGE }, current)
+					: await this.#list(n, { limit: THREAD_MAX_PAGE }, current);
 				if (!current() || this.#held()) return;
 				this.#win.merge(page.messages.filter((m) => m.seq >= lo && m.seq <= hi));
 				this.#publish(this.#lastSeq);
@@ -366,7 +410,7 @@ export class ChatThread {
 			if (!others() && this.hasNewer) {
 				let rows: ChatMessage[] | null = null;
 				try {
-					rows = (await api.chat.listMessages(n, { limit: THREAD_PAGE })).messages;
+					rows = (await this.#list(n, { limit: THREAD_PAGE }, current)).messages;
 				} catch {} // a failed fetch keeps the window; the row detaches (ruling ec6bbe31)
 				if (!current()) return;
 				if (rows && !others()) {
@@ -388,7 +432,7 @@ export class ChatThread {
 	async #fill(n: number, upTo: number, current: () => boolean, others: () => boolean): Promise<boolean> {
 		try {
 			for (let pages = 0; pages < REFRESH_MAX_PAGES && this.newestSeq < upTo - 1; pages++) {
-				const page = await api.chat.listMessages(n, { after_seq: this.newestSeq, limit: THREAD_MAX_PAGE });
+				const page = await this.#list(n, { after_seq: this.newestSeq, limit: THREAD_MAX_PAGE }, current);
 				if (!current() || page.messages.length === 0 || others()) return false; // a send began: its row could ride this page
 				this.#win.merge(page.messages.filter((m) => m.seq < upTo));
 				this.#publish(null);
@@ -415,6 +459,7 @@ export class ChatThread {
 				...(replyToSeq !== undefined ? { reply_to_seq: replyToSeq } : {})
 			});
 			if (!current()) return 'stale';
+			this.#absorbRefs(res.refs);
 			await this.#enqueue(current, () => this.#applyOwn(n, opKey, res.message, current));
 			if (!current()) return 'stale';
 			this.ownSendTick++;

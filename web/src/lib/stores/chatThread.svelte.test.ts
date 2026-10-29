@@ -5,7 +5,8 @@
 // store is visible here rather than only in a browser.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync } from 'svelte';
-import type { ChatMessage } from '$lib/types';
+import type { ChatMessage, ChatRef } from '$lib/types';
+import { refKey } from '$lib/chat/refs';
 
 const h = vi.hoisted(() => ({
 	getConversation: vi.fn(),
@@ -1555,5 +1556,261 @@ describe('S1 serialized window', () => {
 		await flush();
 		expect(thread.status).toBe('ready');
 		expect(thread.messages.map((m) => m.body)).toEqual(['new1']);
+	});
+});
+
+// TASK-4044 3c: the ref verdicts the thread collects (rulings 687eb810, Q-h).
+describe('refs (3c)', () => {
+	const key = (ref: string, workspace = 'w') => refKey(workspace, ref);
+	const vis = (ref: string, workspace = 'w'): ChatRef => ({ workspace, ref, state: 'visible', title: `t ${ref}` });
+	const restricted = (ref: string): ChatRef => ({ workspace: 'w', ref, state: 'restricted' });
+	const unresolved = (ref: string): ChatRef => ({ workspace: 'w', ref, state: 'unresolved' });
+
+	/** Every list read answers one ref of its own: T-<call index>. */
+	function tagEachCall() {
+		let i = 0;
+		h.listMessages.mockClear();
+		h.listMessages.mockImplementation(async (_n: number, o: object) => ({
+			...server.list(o),
+			refs: [vis(`T-${++i}`)]
+		}));
+	}
+	const tagged = () => Array.from({ length: h.listMessages.mock.calls.length }, (_, i) => key(`T-${i + 1}`));
+	function expectEveryCallAbsorbed() {
+		expect(h.listMessages.mock.calls.length).toBeGreaterThan(0);
+		for (const k of tagged()) expect(thread.refs.has(k), k).toBe(true);
+	}
+
+	// U33: one row per list site; a site that skips the absorb leaves its call's ref out (M33a-g).
+	describe('every list site absorbs the page refs (U33)', () => {
+		it('a: open with unread (after_seq)', async () => {
+			tagEachCall();
+			server.fill(5);
+			server.readSeq = 2;
+			await thread.open(1);
+			expect(h.listMessages.mock.calls[0][1]).toMatchObject({ after_seq: 2 });
+			expectEveryCallAbsorbed();
+		});
+
+		it('a: open with nothing unread (newest page)', async () => {
+			tagEachCall();
+			server.fill(3);
+			server.readSeq = 3;
+			await thread.open(1);
+			expect(h.listMessages.mock.calls[0][1]).toMatchObject({ limit: 50 });
+			expectEveryCallAbsorbed();
+		});
+
+		it('b: loadOlder', async () => {
+			tagEachCall();
+			server.fill(120);
+			server.readSeq = 120;
+			await thread.open(1);
+			await thread.loadOlder();
+			expect(h.listMessages.mock.calls[1][1]).toHaveProperty('before_seq');
+			expectEveryCallAbsorbed();
+			expect(h.listMessages.mock.calls).toHaveLength(2);
+		});
+
+		it('c: loadNewer', async () => {
+			tagEachCall();
+			server.fill(400);
+			server.readSeq = 0;
+			await thread.open(1);
+			expect(thread.hasNewer).toBe(true);
+			await thread.loadNewer();
+			expect(h.listMessages.mock.calls).toHaveLength(2);
+			expectEveryCallAbsorbed();
+		});
+
+		it('d: refresh, the rows after the newest', async () => {
+			server.fill(3);
+			server.readSeq = 3;
+			await thread.open(1);
+			tagEachCall();
+			server.add(msg(4));
+			await bump();
+			expect(h.listMessages.mock.calls[0][1]).toMatchObject({ after_seq: 3 });
+			expect(thread.refs.has(key('T-1'))).toBe(true);
+		});
+
+		it('e: refresh, the tombstone page', async () => {
+			server.fill(3);
+			server.readSeq = 3;
+			await thread.open(1);
+			tagEachCall();
+			await bump();
+			expect(h.listMessages.mock.calls).toHaveLength(2);
+			expect(thread.refs.has(key('T-2'))).toBe(true);
+		});
+
+		it('e: refresh, the tombstone page with a gap (after_seq = oldest - 1)', async () => {
+			server.fill(400);
+			server.readSeq = 0;
+			await thread.open(1);
+			expect(thread.hasNewer).toBe(true);
+			tagEachCall();
+			await bump();
+			expect(h.listMessages.mock.calls).toHaveLength(1);
+			expect(h.listMessages.mock.calls[0][1]).toMatchObject({ after_seq: 0 });
+			expectEveryCallAbsorbed();
+		});
+
+		it('f: applyOwn re-anchor at the newest page', async () => {
+			server.fill(400);
+			server.readSeq = 0;
+			await thread.open(1);
+			wireSend();
+			tagEachCall();
+			expect(await thread.send('hello')).toBe('sent');
+			expect(h.listMessages.mock.calls).toHaveLength(1);
+			expectEveryCallAbsorbed();
+		});
+
+		it('g: fill of the skipped peer rows', async () => {
+			server.fill(3);
+			server.readSeq = 3;
+			await thread.open(1);
+			wireSend();
+			for (const seq of [4, 5, 6]) server.add(msg(seq));
+			tagEachCall();
+			expect(await thread.send('hello')).toBe('sent');
+			expect(h.listMessages.mock.calls.length).toBeGreaterThan(0);
+			expectEveryCallAbsorbed();
+		});
+	});
+
+	it('the send response refs are absorbed (M33h)', async () => {
+		await readyThread();
+		wireSend();
+		const real = h.sendMessage.getMockImplementation()!;
+		h.sendMessage.mockImplementation(async (n: number, b: never) => ({
+			...(await real(n, b)),
+			refs: [vis('S-1')]
+		}));
+		expect(await thread.send('see [[w::S-1]]')).toBe('sent');
+		expect(thread.refs.get(key('S-1'))).toMatchObject({ state: 'visible' });
+	});
+
+	it('a ref first seen on an older page still links after a refresh', async () => {
+		server.fill(120);
+		server.readSeq = 120;
+		await thread.open(1);
+		h.listMessages.mockImplementation(async (_n: number, o: { before_seq?: number }) => ({
+			...server.list(o),
+			refs: o.before_seq !== undefined ? [vis('OLD-1')] : []
+		}));
+		await thread.loadOlder();
+		expect(thread.refs.has(key('OLD-1'))).toBe(true);
+		server.add(msg(121));
+		await bump();
+		expect(thread.refs.get(key('OLD-1'))).toMatchObject({ state: 'visible' });
+	});
+
+	// U34: verdicts are per reader (M32).
+	describe('identity (U34)', () => {
+		const change = () => {
+			h.state.epoch++;
+			for (const fn of [...h.state.listeners]) fn('previous');
+		};
+
+		it('an identity change clears refs', async () => {
+			tagEachCall();
+			await readyThread();
+			expect(thread.refs.size).toBeGreaterThan(0);
+			change();
+			expect(thread.refs.size).toBe(0);
+		});
+
+		it('a reopen clears refs', async () => {
+			tagEachCall();
+			await readyThread();
+			h.listMessages.mockImplementation(async (_n: number, o: object) => ({ ...server.list(o), refs: [] }));
+			await thread.open(1);
+			expect(thread.refs.size).toBe(0);
+		});
+
+		it('a page that resolves after the reset absorbs nothing', async () => {
+			await readyThread();
+			let release!: () => void;
+			h.listMessages.mockImplementationOnce((_n: number, o: object) => {
+				const page = { ...server.list(o), refs: [vis('LATE-1')] };
+				return new Promise((res) => (release = () => res(page)));
+			});
+			server.add(msg(4));
+			await bump();
+			change();
+			release();
+			await flush();
+			expect(thread.refs.size).toBe(0);
+		});
+
+		it('a send answered after the reset absorbs nothing', async () => {
+			await readyThread();
+			wireSend();
+			const real = h.sendMessage.getMockImplementation()!;
+			let release!: () => void;
+			h.sendMessage.mockImplementationOnce(
+				(n: number, b: never) =>
+					new Promise((res) => (release = () => res(real(n, b).then((r: object) => ({ ...r, refs: [vis('LATE-2')] })))))
+			);
+			const done = thread.send('x');
+			change();
+			release();
+			expect(await done).toBe('stale');
+			expect(thread.refs.size).toBe(0);
+		});
+	});
+
+	// U35: the merge rule (Q-h, M34).
+	describe('merge rule (U35)', () => {
+		async function serve(refs: ChatRef[]) {
+			h.listMessages.mockImplementation(async (_n: number, o: object) => ({ ...server.list(o), refs }));
+			await bump();
+		}
+		const state = (ref: string) => thread.refs.get(key(ref))?.state;
+
+		it('visible then restricted gives restricted', async () => {
+			await readyThread();
+			await serve([vis('A-1')]);
+			expect(state('A-1')).toBe('visible');
+			await serve([restricted('A-1')]);
+			expect(state('A-1')).toBe('restricted');
+			expect(thread.refs.get(key('A-1'))?.title).toBeUndefined();
+		});
+
+		it('restricted then visible gives visible', async () => {
+			await readyThread();
+			await serve([restricted('A-1')]);
+			await serve([vis('A-1')]);
+			expect(thread.refs.get(key('A-1'))).toMatchObject({ state: 'visible', title: 't A-1' });
+		});
+
+		it('visible then unresolved stays visible', async () => {
+			await readyThread();
+			await serve([vis('A-1')]);
+			await serve([unresolved('A-1')]);
+			expect(state('A-1')).toBe('visible');
+		});
+
+		it('restricted then unresolved stays restricted', async () => {
+			await readyThread();
+			await serve([restricted('A-1')]);
+			await serve([unresolved('A-1')]);
+			expect(state('A-1')).toBe('restricted');
+		});
+
+		it('empty then unresolved gives unresolved', async () => {
+			await readyThread();
+			await serve([unresolved('A-1')]);
+			expect(state('A-1')).toBe('unresolved');
+		});
+
+		it('keys by workspace as well as ref', async () => {
+			await readyThread();
+			await serve([vis('A-1', 'w'), restricted('A-1')].map((r, i) => (i ? { ...r, workspace: 'other' } : r)));
+			expect(thread.refs.get(key('A-1', 'w'))?.state).toBe('visible');
+			expect(thread.refs.get(key('A-1', 'other'))?.state).toBe('restricted');
+		});
 	});
 });
