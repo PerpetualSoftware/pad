@@ -23,6 +23,9 @@
 		// everyone (including viewers) — not gated on edit permission.
 		sortMode?: SortMode;
 		laneSort?: SortMode;
+		sortReversed?: boolean;
+		laneReversed?: boolean;
+		onSetLaneReversed?: (reversed: boolean) => void;
 		onSetLaneSort?: (mode: SortMode | null) => void;
 		onClose: () => void;
 		// Each action is optional: the caller passes only the ones the
@@ -47,6 +50,9 @@
 		members,
 		tagSuggestions,
 		sortMode = 'manual',
+		sortReversed = false,
+		laneReversed,
+		onSetLaneReversed,
 		laneSort = undefined,
 		onSetLaneSort,
 		onClose,
@@ -101,6 +107,7 @@
 		priorityField(collection) ? SORT_OPTIONS : SORT_OPTIONS.filter((o) => o.value !== 'priority')
 	);
 	let effectiveSort = $derived(laneSort ?? sortMode);
+	let effectiveReversed = $derived(laneReversed ?? sortReversed);
 	let sortLabel = $derived(
 		SORT_OPTIONS.find((o) => o.value === effectiveSort)?.label ?? 'Manual'
 	);
@@ -168,7 +175,7 @@
 			{#if onAddItem}<div class="lane-menu-sep"></div>{/if}
 			<button class="lane-menu-item" role="menuitem" onclick={(e) => run(e, () => (view = 'sort'))}>
 				<span class="lmi-icon" aria-hidden="true">↕</span> Sort lane by
-				<span class="lmi-chevron">{sortLabel} ›</span>
+				<span class="lmi-chevron">{sortLabel}{effectiveReversed ? ' (reversed)' : ''} ›</span>
 			</button>
 		{/if}
 
@@ -280,7 +287,7 @@
 		>
 			<span class="lmi-check" aria-hidden="true">{laneSort === undefined ? '✓' : ''}</span>
 			Page default
-			<span class="lmi-chevron">{SORT_OPTIONS.find((o) => o.value === sortMode)?.label}</span>
+			<span class="lmi-chevron">{SORT_OPTIONS.find((o) => o.value === sortMode)?.label}{sortReversed ? ' (reversed)' : ''}</span>
 		</button>
 		<div class="lane-menu-sep"></div>
 		{#each sortOptions as opt (opt.value)}
@@ -294,6 +301,18 @@
 				{opt.label}
 			</button>
 		{/each}
+		{#if onSetLaneReversed}
+			<div class="lane-menu-sep"></div>
+			<button
+				class="lane-menu-item"
+				role="menuitemcheckbox"
+				aria-checked={effectiveReversed}
+				onclick={(e) => run(e, () => onSetLaneReversed?.(!effectiveReversed))}
+			>
+				<span class="lmi-check" aria-hidden="true">{effectiveReversed ? '✓' : ''}</span>
+				Reverse order
+			</button>
+		{/if}
 	{/if}
 </div>
 

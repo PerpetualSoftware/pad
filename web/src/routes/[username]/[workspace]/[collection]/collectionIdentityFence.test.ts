@@ -320,6 +320,7 @@ describe('the collection page fences every async commit point', () => {
 			viewMode: 'URL/preference — belongs to the address, not the session',
 			calendarConfig: 'URL/preference; loaded with the mode from collection-scoped storage',
 			sortMode: 'URL/preference',
+			sortReversed: 'browser preference, like sortMode; re-read on collection load (BUG-3994)',
 			showArchived: 'URL/preference',
 			activeFilters: 'URL-derived',
 			selectedTags: 'URL-derived',

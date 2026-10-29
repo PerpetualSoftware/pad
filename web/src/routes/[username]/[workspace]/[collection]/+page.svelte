@@ -84,6 +84,7 @@
 	import { provideCardPriorityWriter } from '$lib/collections/cardPriority';
 	import { parentFilterOptions } from '$lib/collections/parentFilter';
 	import { type ViewMode, isViewMode, loadViewMode, storeViewMode, loadSortMode, storeSortMode } from '$lib/collections/viewPersistence';
+	import { loadSortReversed, storeSortReversed } from '$lib/collections/viewPersistence';
 
 	// TASK-2212: one ViewMode predicate for the URL, storage and saved views,
 	// and workspace-scoped persistence.
@@ -129,6 +130,7 @@
 	// Page-wide within-group sort (TASK-1670 / IDEA-1648). 'manual' is the
 	// stored sort_order (drag order). Persisted per collection.
 	let sortMode = $state<SortMode>('manual');
+	let sortReversed = $state(false);
 	let activeFilters = $state<Record<string, string>>({});
 	// Multi-select tag filter (OR semantics). Tags live on the top-level
 	// `tags` column, not in `fields` JSON, so they're tracked separately
@@ -618,6 +620,11 @@
 	function saveSortMode(mode: SortMode) {
 		sortMode = mode;
 		if (wsSlug && collSlug) storeSortMode(wsSlug, collSlug, mode);
+	}
+
+	function saveSortReversed(reversed: boolean) {
+		sortReversed = reversed;
+		if (wsSlug && collSlug) storeSortReversed(wsSlug, collSlug, reversed);
 	}
 
 	// Sort options available for this collection: hide "Priority" when the
@@ -1744,6 +1751,7 @@
 			viewMode = loadViewMode(ws, coll, defaultMode);
 			calendarConfig = loadCalendarConfig(ws, coll);
 			sortMode = loadSortMode(ws, coll);
+			sortReversed = loadSortReversed(ws, coll);
 
 			// Override with URL params if present
 			loadUrlFilters();
@@ -4467,6 +4475,10 @@
 										{opt.label}
 									</MenuItem>
 								{/each}
+								<div class="menu-divider" role="separator"></div>
+								<MenuItem checked={sortReversed} onclick={() => saveSortReversed(!sortReversed)}>
+									Reverse order
+								</MenuItem>
 							</Menu>
 						</div>
 					{/if}
@@ -4753,6 +4765,7 @@
 				canEdit={canEditThisCollection}
 				preserveOrder={searchQuery.trim() !== ''}
 				{sortMode}
+				{sortReversed}
 				onItemOpen={openItemPane}
 				onColumnsRendered={handleBoardColumnsRendered}
 			/>
@@ -4770,6 +4783,7 @@
 				canEdit={canEditThisCollection}
 				preserveOrder={searchQuery.trim() !== ''}
 				{sortMode}
+				{sortReversed}
 				onItemOpen={openItemPane}
 				onOrderRendered={handleListOrderRendered}
 			/>
@@ -4800,6 +4814,7 @@
 				canEdit={canEditThisCollection}
 				preserveOrder={searchQuery.trim() !== ''}
 				{sortMode}
+				{sortReversed}
 				onItemOpen={openItemPane}
 				onOrderRendered={handleListOrderRendered}
 			/>
