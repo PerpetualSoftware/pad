@@ -958,9 +958,11 @@
 			<div class="quick-add-actions">
 				<span class="quick-add-hint">Enter to add · {modKeyLabel('Enter')} to add and open · Esc to close</span>
 				<!-- Every key path has a button too (TASK-3972), in the mobile
-				     capture sheet's order: Cancel, Add and open, Add. -->
+				     capture sheet's order: Close, Add and open, Add. Close, not
+				     Cancel (BUG-4004): Add keeps the dialog open for the next item,
+				     so this button ends the session rather than undoing anything. -->
 				<div class="quick-add-buttons">
-					<button class="quick-add-btn secondary quick-add-cancel" type="button" onclick={cancelQuickAdd}>Cancel</button>
+					<button class="quick-add-btn secondary quick-add-cancel" type="button" onclick={cancelQuickAdd}>Close</button>
 					<button
 						class="quick-add-btn secondary quick-add-open"
 						type="button"
