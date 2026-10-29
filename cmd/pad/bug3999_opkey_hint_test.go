@@ -2,8 +2,10 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	pad "github.com/PerpetualSoftware/pad"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 )
@@ -28,6 +30,20 @@ func TestBUG3999_FailedWritesPrintTheirKey(t *testing.T) {
 		{"comment", func(t *testing.T, st int) (error, string) {
 			commentServer(t, true, st, st)
 			return runComment(t, "--op-key", "kk"), "kk"
+		}},
+		{"decide", func(t *testing.T, st int) (error, string) {
+			appendServer(t, true, st, st)
+			return runDecide(t, "--op-key", "kk"), "kk"
+		}},
+		{"push", func(t *testing.T, st int) (error, string) {
+			setupPushTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(st)
+				_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"code": "x", "message": "m"}})
+			}))
+			cmd := pushCmd()
+			cmd.SetArgs([]string{"TASK-5", "-m", "hi", "--op-key", "kk"})
+			return cmd.Execute(), "kk"
 		}},
 		{"note", func(t *testing.T, st int) (error, string) {
 			appendServer(t, true, st, st)
@@ -73,5 +89,81 @@ func TestBUG3999_SkillNoLongerPromisesAutomaticRetrySafety(t *testing.T) {
 		if !strings.Contains(s, want) {
 			t.Fatalf("SKILL.md must say %q", want)
 		}
+	}
+}
+
+func runDecide(t *testing.T, args ...string) error {
+	t.Helper()
+	cmd := decideCmd()
+	cmd.SetArgs(append([]string{"TASK-5", "d"}, args...))
+	var err error
+	_ = captureStdout(t, func() { err = cmd.Execute() })
+	return err
+}
+
+// BUG-3999 F1: a keyed create comes back wrapped in *OpKeyError. The plan-limit
+// branch asserted *cli.APIError directly and stopped matching, which lost the
+// structured marker the MCP stdio classifier reads.
+func TestBUG3999_KeyedCreatePlanLimitKeepsItsStructuredMarker(t *testing.T) {
+	setupFormatRoutingTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/capabilities") {
+			_ = json.NewEncoder(w).Encode(map[string]any{"collection_resolution": true})
+			return
+		}
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{
+			"code": "plan_limit_exceeded", "message": "item limit reached",
+			"details": map[string]any{"feature": "items", "limit": 10, "current": 10, "plan": "free", "upgrade_url": "https://example.test/up"},
+		}})
+	}))
+	formatFlag = "table"
+	var err error
+	stderr := captureStderr(t, func() {
+		cmd := createCmd()
+		cmd.SetArgs([]string{"tasks", "Keyed", "--op-key", "kk"})
+		_ = captureStdout(t, func() { err = cmd.Execute() })
+	})
+	if err == nil {
+		t.Fatal("the create must fail")
+	}
+	if !strings.Contains(stderr, "pad-structured-error/v1:") || !strings.Contains(stderr, "plan_limit_exceeded") {
+		t.Fatalf("the plan-limit marker is missing from stderr: %q", stderr)
+	}
+	var buf bytes.Buffer
+	writeRootStructuredError(&buf, err)
+	if !strings.Contains(buf.String(), "--op-key kk") {
+		t.Fatalf("the key hint is missing: %q", buf.String())
+	}
+}
+
+// BUG-3999 F2: under --format json the key line goes to stderr only, so stdout
+// stays empty or valid JSON.
+func TestBUG3999_FormatJSONFailedWriteKeepsStdoutParseable(t *testing.T) {
+	createServer(t, true, http.StatusConflict)
+	var err error
+	var stdout string
+	stderr := captureStderr(t, func() {
+		stdout = captureStdout(t, func() {
+			formatFlag = "json"
+			cmd := createCmd()
+			cmd.SetArgs([]string{"tasks", "Keyed", "--op-key", "kk"})
+			err = cmd.Execute()
+		})
+		if err != nil {
+			writeRootStructuredError(os.Stderr, err)
+		}
+	})
+	if err == nil {
+		t.Fatal("the write must fail")
+	}
+	if strings.TrimSpace(stdout) != "" && !json.Valid([]byte(stdout)) {
+		t.Fatalf("stdout must be empty or valid JSON: %q", stdout)
+	}
+	if strings.Contains(stdout, "idempotency key") {
+		t.Fatalf("the key line leaked to stdout: %q", stdout)
+	}
+	if !strings.Contains(stderr, "--op-key kk") {
+		t.Fatalf("stderr must carry the key line: %q", stderr)
 	}
 }

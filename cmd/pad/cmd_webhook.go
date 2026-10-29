@@ -148,7 +148,7 @@ func webhooksCreateCmd() *cobra.Command {
 			if err != nil {
 				// TASK-788: emit structured marker so MCP stdio classifier
 				// can surface ErrPlanLimitExceeded instead of ErrServerError.
-				if apiErr, ok := err.(*cli.APIError); ok {
+				if apiErr := cli.AsAPIError(err); apiErr != nil {
 					if apiErr.AsPlanLimit() != nil {
 						cli.WritePlanLimitError(os.Stderr, apiErr)
 						return fmt.Errorf("webhook creation blocked: plan limit reached")

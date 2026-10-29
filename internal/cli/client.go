@@ -643,7 +643,8 @@ func (c *Client) DeleteItem(wsSlug, itemSlug string) error {
 // *APIError (same Code/Details, enriched Message) rather than a wrapper type,
 // so the concrete type stays *APIError — both errors.As AND direct
 // err.(*APIError) assertions (e.g. bulk-update's per-row code capture) keep
-// matching. Any other error (or nil) passes through unchanged.
+// matching. (That holds for the read endpoints this wraps; a write that sent an
+// op_key comes back as *OpKeyError, so callers use AsAPIError.) Any other error (or nil) passes through unchanged.
 func wrapItemNotFound(err error, itemSlug, wsSlug string) error {
 	if err == nil {
 		return nil
@@ -3105,6 +3106,18 @@ func (c *Client) postContext(ctx context.Context, path string, body interface{},
 	}
 	defer resp.Body.Close()
 	return WrapOpKey(data, c.handleResponse(resp, result))
+}
+
+// AsAPIError returns the *APIError in err's chain, or nil. Use it instead of a
+// direct err.(*APIError) assertion: a write that sent an op_key comes back
+// wrapped in *OpKeyError (BUG-3999), which a direct assertion does not see
+// through.
+func AsAPIError(err error) *APIError {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return apiErr
+	}
+	return nil
 }
 
 // OpKeyError carries the idempotency key a failed write sent (BUG-3999), so

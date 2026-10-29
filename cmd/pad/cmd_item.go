@@ -362,7 +362,7 @@ Run with --help-collections to see available collections and their status values
 			if err != nil {
 				// TASK-788: emit structured marker so MCP stdio classifier
 				// can surface ErrPlanLimitExceeded instead of ErrServerError.
-				if apiErr, ok := err.(*cli.APIError); ok {
+				if apiErr := cli.AsAPIError(err); apiErr != nil {
 					if apiErr.AsPlanLimit() != nil {
 						cli.WritePlanLimitError(os.Stderr, apiErr)
 						return fmt.Errorf("item creation blocked: plan limit reached")
@@ -1550,7 +1550,7 @@ A body write with neither prints a warning, and a future release refuses it
 				// non-terminal children. The detailed list comes from
 				// the same structured payload MCP clients consume so
 				// the human and machine views agree.
-				if apiErr, ok := err.(*cli.APIError); ok {
+				if apiErr := cli.AsAPIError(err); apiErr != nil {
 					if oc := apiErr.AsOpenChildren(); oc != nil {
 						cli.WriteOpenChildrenError(os.Stderr, apiErr, oc)
 						// Return a bare error so cobra exits non-zero
@@ -1984,7 +1984,7 @@ Items can be referenced by issue ID (e.g. TASK-5) or slug.`,
 				// the same way the regular update path does, so
 				// `pad item move ... --field status=completed` against
 				// a plan with open children fails informatively.
-				if apiErr, ok := err.(*cli.APIError); ok {
+				if apiErr := cli.AsAPIError(err); apiErr != nil {
 					if oc := apiErr.AsOpenChildren(); oc != nil {
 						cli.WriteOpenChildrenError(os.Stderr, apiErr, oc)
 						return fmt.Errorf("move rejected: open children present")
@@ -4144,7 +4144,7 @@ func saveEditRecovery(item *models.Item, edited string, cause error) error {
 // optimistic-concurrency refusal, the same two-track shape `pad item update`
 // uses (TASK-2022), so the MCP stdio classifier and a human read one payload.
 func renderEditSaveError(err error) {
-	if apiErr, ok := err.(*cli.APIError); ok {
+	if apiErr := cli.AsAPIError(err); apiErr != nil {
 		if uc := apiErr.AsUpdateConflict(); uc != nil {
 			cli.WriteUpdateConflictError(os.Stderr, apiErr, uc)
 		}
@@ -4274,7 +4274,7 @@ Items can be referenced by issue ID (e.g. TASK-5) or slug.`,
 					// human text output continues to show the bare
 					// message.
 					row := updateFailure{Ref: slug, Error: err.Error()}
-					if apiErr, ok := err.(*cli.APIError); ok && apiErr.Code != "" {
+					if apiErr := cli.AsAPIError(err); apiErr != nil && apiErr.Code != "" {
 						row.Code = apiErr.Code
 						if len(apiErr.Details) > 0 {
 							row.Details = apiErr.Details
@@ -4286,7 +4286,7 @@ Items can be referenced by issue ID (e.g. TASK-5) or slug.`,
 						// blocking-child list inline so the human
 						// reader doesn't have to switch to --format
 						// json to see what blocked.
-						if apiErr, ok := err.(*cli.APIError); ok {
+						if apiErr := cli.AsAPIError(err); apiErr != nil {
 							if oc := apiErr.AsOpenChildren(); oc != nil {
 								for _, c := range oc.OpenChildren {
 									fmt.Printf("      %s — %s (status=%s)\n", c.Ref, c.Title, c.Status)

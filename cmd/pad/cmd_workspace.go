@@ -214,7 +214,7 @@ func inviteCmd() *cobra.Command {
 			if err := client.PostRaw("/workspaces/"+url.PathEscape(ws)+"/members/invite", raw, &result); err != nil {
 				// TASK-788: emit structured marker so MCP stdio classifier
 				// can surface ErrPlanLimitExceeded instead of ErrServerError.
-				if apiErr, ok := err.(*cli.APIError); ok {
+				if apiErr := cli.AsAPIError(err); apiErr != nil {
 					if apiErr.AsPlanLimit() != nil {
 						cli.WritePlanLimitError(os.Stderr, apiErr)
 						return fmt.Errorf("invite blocked: plan limit reached")
@@ -468,7 +468,7 @@ re-authorizing or by enabling the flag on the existing connection at
 			if err != nil {
 				// TASK-788: emit structured marker before wrapping so the MCP
 				// stdio classifier can surface ErrPlanLimitExceeded with details.
-				if apiErr, ok := err.(*cli.APIError); ok {
+				if apiErr := cli.AsAPIError(err); apiErr != nil {
 					if apiErr.AsPlanLimit() != nil {
 						cli.WritePlanLimitError(os.Stderr, apiErr)
 						return fmt.Errorf("workspace creation blocked: plan limit reached")
