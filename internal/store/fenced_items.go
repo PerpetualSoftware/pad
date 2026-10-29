@@ -248,6 +248,11 @@ func (f *FencedTx) CreateItem(in FencedItemCreate) (*models.Item, error) {
 	// sort_order: parentless MIN - 1, so the item lands on top (BUG-4005); an
 	// app item never has a parent. The workspace seq lock held by this tx
 	// serializes the MIN read.
+	var topMin int
+	if err := f.tx.QueryRow(f.s.q(`SELECT COALESCE(MIN(i.sort_order), 0) FROM items i
+		WHERE i.collection_id = ? AND i.deleted_at IS NULL AND `+unparentedItemPredicate), in.CollectionID).Scan(&topMin); err != nil {
+		return nil, fmt.Errorf("fenced item top sort_order: %w", err)
+	}
 	if _, err := f.tx.Exec(f.s.q(`
 		INSERT INTO items (id, workspace_id, collection_id, title, slug, content, fields, tags,
 		                   pinned, sort_order, role_sort_order,
@@ -255,12 +260,12 @@ func (f *FencedTx) CreateItem(in FencedItemCreate) (*models.Item, error) {
 		                   content_flushed_at, content_flushed_op_log_id, seq,
 		                   created_by_user_id, last_modified_by_user_id, via_app, created_via_app)
 		VALUES (?, ?, ?, ?, ?, ?, ?, '[]', ?,
-		        (SELECT COALESCE(MIN(i.sort_order), 0) - 1 FROM items i WHERE i.collection_id = ? AND i.deleted_at IS NULL AND `+unparentedItemPredicate+`),
+		        ?,
 		        0, ?, ?, ?,
 		        (SELECT COALESCE(MAX(item_number), 0) + 1 FROM items WHERE workspace_id = ?),
 		        ?, ?, ?, ?, `+nextWorkspaceSeqSubquery+`, ?, ?, ?, ?)
 	`), id, f.workspaceID, in.CollectionID, in.Title, slug, in.Content, fields,
-		f.s.dialect.BoolToInt(false), in.CollectionID, actor.Kind, actor.Kind, appSource, f.workspaceID,
+		f.s.dialect.BoolToInt(false), topSortOrder(topMin), actor.Kind, actor.Kind, appSource, f.workspaceID,
 		ts, ts, flushedAt, flushedOpLogID, f.workspaceID,
 		actor.UserID, actor.UserID, f.installID, f.installID); err != nil {
 		return nil, fmt.Errorf("fenced item insert: %w", err)

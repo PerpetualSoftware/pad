@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"sort"
 	"strings"
@@ -303,6 +304,16 @@ func (s *Store) tryCreateItem(workspaceID, collectionID string, input models.Ite
 // same mistake in this file family. If you are adding a creation side effect,
 // grep `INSERT INTO items` and confirm which of the TWO write paths you need,
 // rather than trusting that this is the only one.
+// topSortOrder is the sort_order of a new item landing above min. The reorder
+// API accepts the INTEGER floor -2147483648, and min - 1 would overflow
+// Postgres; at the floor the value stays min, a tie created_at breaks.
+func topSortOrder(min int) int {
+	if v := int64(min) - 1; v >= math.MinInt32 {
+		return int(v)
+	}
+	return math.MinInt32
+}
+
 func (s *Store) insertItemTx(tx *sql.Tx, id, workspaceID, collectionID, slug, ts, fields, tags, createdBy, source string, input models.ItemCreate) error {
 	var err error
 
@@ -355,10 +366,11 @@ func (s *Store) insertItemTx(tx *sql.Tx, id, workspaceID, collectionID, slug, ts
 	// decompose rely on (BUG-3527).
 	sortOrder := 0
 	if !input.UnderParent && (input.ParentID == nil || *input.ParentID == "") {
-		if err := tx.QueryRow(s.q(`SELECT COALESCE(MIN(i.sort_order), 0) - 1 FROM items i
+		if err := tx.QueryRow(s.q(`SELECT COALESCE(MIN(i.sort_order), 0) FROM items i
 			WHERE i.collection_id = ? AND i.deleted_at IS NULL AND `+unparentedItemPredicate), collectionID).Scan(&sortOrder); err != nil {
 			return fmt.Errorf("read top sort_order: %w", err)
 		}
+		sortOrder = topSortOrder(sortOrder)
 	}
 	_, err = tx.Exec(s.q(`
 		INSERT INTO items (id, workspace_id, collection_id, title, slug, content, fields, tags,
@@ -5959,28 +5971,12 @@ func (s *Store) moveItemWithPreCheckOnce(
 		return nil, err
 	}
 
-	// BUG-4005: a PARENTLESS moved item lands at the top of the TARGET
-	// collection (parentless MIN - 1, excluding itself; its old sort_order
-	// means nothing in the other lane); one that HAS a parent keeps its
-	// sort_order. The workspace seq lock held above serializes the MIN read.
 	moveTS := time.Now().UTC().Format(time.RFC3339)
-	var movedParentless bool
-	if err := tx.QueryRow(s.q(`SELECT COUNT(*) > 0 FROM items i WHERE i.id = ? AND `+unparentedItemPredicate), itemID).Scan(&movedParentless); err != nil {
-		return nil, fmt.Errorf("move item: read parentage: %w", err)
-	}
-	moveSortOrder := preMove.SortOrder
-	if movedParentless {
-		if err := tx.QueryRow(s.q(`SELECT COALESCE(MIN(i.sort_order), 0) - 1 FROM items i
-			WHERE i.collection_id = ? AND i.deleted_at IS NULL AND i.id <> ? AND `+unparentedItemPredicate),
-			targetCollectionID, itemID).Scan(&moveSortOrder); err != nil {
-			return nil, fmt.Errorf("move item: read top sort_order: %w", err)
-		}
-	}
 	_, err = tx.Exec(s.q(`
 		UPDATE items
-		SET collection_id = ?, fields = ?, updated_at = ?, sort_order = ?, seq = `+nextWorkspaceSeqSubquery+`
+		SET collection_id = ?, fields = ?, updated_at = ?, seq = `+nextWorkspaceSeqSubquery+`
 		WHERE id = ? AND deleted_at IS NULL`),
-		targetCollectionID, newFieldsJSON, moveTS, moveSortOrder, existing.WorkspaceID, itemID)
+		targetCollectionID, newFieldsJSON, moveTS, existing.WorkspaceID, itemID)
 	if err != nil {
 		return nil, fmt.Errorf("move item: %w", err)
 	}

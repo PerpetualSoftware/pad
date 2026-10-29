@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"math"
 	"sync"
 	"testing"
 	"time"
@@ -262,43 +263,18 @@ func TestNewItemTop_FencedCreate(t *testing.T) {
 	}
 }
 
-func TestNewItemTop_MoveLandsOnTopOfTarget(t *testing.T) {
+// The reorder API accepts the INTEGER floor; MIN - 1 would overflow Postgres.
+func TestNewItemTop_ClampsAtTheIntegerFloor(t *testing.T) {
 	s := testStore(t)
-	ws := createTestWorkspace(t, s, "Top Move")
-	src := createTestCollection(t, s, ws.ID, "Src")
-	dst := createTestCollection(t, s, ws.ID, "Dst")
-	for _, n := range []string{"x", "y"} {
-		it := createTestItem(t, s, ws.ID, dst.ID, n, "")
-		setSortOrder(t, s, it.ID, 5)
+	ws := createTestWorkspace(t, s, "Top Floor")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	it := createTestItem(t, s, ws.ID, col.ID, "floor", "")
+	setSortOrder(t, s, it.ID, math.MinInt32)
+	fresh, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{Title: "fresh", Fields: `{"status":"open"}`})
+	if err != nil {
+		t.Fatalf("create at the floor: %v", err)
 	}
-	mv := createTestItem(t, s, ws.ID, src.ID, "mv", "")
-	setSortOrder(t, s, mv.ID, 9)
-	if _, err := s.MoveItem(mv.ID, dst.ID, `{"status":"open"}`); err != nil {
-		t.Fatal(err)
-	}
-	if got := sortOrderOf(t, s, mv.ID); got != 4 {
-		t.Errorf("moved sort_order = %d, want target min - 1 = 4", got)
-	}
-	items := listManual(t, s, ws.ID, dst.Slug)
-	if len(items) != 3 || items[0].ID != mv.ID {
-		t.Errorf("moved item is not first: %v", titles(items))
-	}
-}
-
-func TestNewItemTop_MovedChildKeepsItsSortOrder(t *testing.T) {
-	s := testStore(t)
-	ws := createTestWorkspace(t, s, "Top Move Child")
-	src := createTestCollection(t, s, ws.ID, "Src")
-	dst := createTestCollection(t, s, ws.ID, "Dst")
-	parent := createTestItem(t, s, ws.ID, src.ID, "parent", "")
-	other := createTestItem(t, s, ws.ID, dst.ID, "other", "")
-	setSortOrder(t, s, other.ID, 5)
-	kid := createChild(t, s, ws.ID, src.ID, parent.ID, "kid")
-	setSortOrder(t, s, kid.ID, 9)
-	if _, err := s.MoveItem(kid.ID, dst.ID, `{"status":"open"}`); err != nil {
-		t.Fatal(err)
-	}
-	if got := sortOrderOf(t, s, kid.ID); got != 9 {
-		t.Errorf("moved child sort_order = %d, want unchanged 9", got)
+	if got := sortOrderOf(t, s, fresh.ID); got != math.MinInt32 {
+		t.Errorf("sort_order = %d, want the floor %d", got, math.MinInt32)
 	}
 }

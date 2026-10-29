@@ -187,9 +187,6 @@ pad item show <ref>           # e.g. pad item show TASK-5
 pad item update <ref> [--status X] [--priority X]
 pad item delete <ref>
 pad item move <ref> <target-collection>
-                              # A PARENTLESS moved item lands at the top of the target collection (the min
-                              # sort_order of its parentless items - 1, like a new item, BUG-4005); one that has
-                              # a parent keeps its sort_order.
                               # Collection change WITHIN a workspace (cross-workspace is `item copy`).
                               # Field values the target schema has no home for are dropped — and since
                               # BUG-2674 the move REPORTS them, in its activity entry's `dropped_fields`
