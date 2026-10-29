@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -84,25 +86,26 @@ func TestTZ4101_LeaseUnsetIsUTCWithNotice(t *testing.T) {
 func TestTZ4101_JSONHasNoNotice(t *testing.T) {
 	t.Run("standup-user-day", func(t *testing.T) {
 		hits := 0
-		root := tzCLI(t, tzStub(`"Pacific/Pago_Pago"`, &hits))
-		// Pick a viewer day distinguishable from the machine day at any hour.
-		zone := "Pacific/Pago_Pago"
-		loc, _ := time.LoadLocation(zone)
-		if time.Now().In(loc).Format("2006-01-02") == time.Now().Format("2006-01-02") {
-			zone = "Pacific/Kiritimati"
-			loc, _ = time.LoadLocation(zone)
+		// A viewer day that differs from UTC's at any hour: Kiritimati is a day
+		// ahead from 10:00 UTC, Pago_Pago a day behind before 11:00 UTC.
+		zone := "Pacific/Kiritimati"
+		if time.Now().UTC().Hour() < 10 {
+			zone = "Pacific/Pago_Pago"
 		}
-		srv := httptest.NewServer(tzStub(fmt.Sprintf("%q", zone), &hits))
-		defer srv.Close()
-		t.Setenv("PAD_URL", srv.URL)
+		loc, _ := time.LoadLocation(zone)
+		root := tzCLI(t, tzStub(fmt.Sprintf("%q", zone), &hits))
+		// The machine day equals the UTC day, so one date excludes both.
+		time.Local = time.UTC
+		utcBefore := time.Now().UTC().Format("2006-01-02")
 		before := time.Now().In(loc).Format("2006-01-02")
 		out, stderr, err := tzRun(t, root, "project", "standup", "--format", "json")
 		after := time.Now().In(loc).Format("2006-01-02")
+		utcAfter := time.Now().UTC().Format("2006-01-02")
 		var result struct {
 			Date string `json:"date"`
 		}
-		if json.Unmarshal([]byte(out), &result) != nil || err != nil || stderr != "" || hits != 0 || (result.Date != before && result.Date != after) {
-			t.Fatalf("standup JSON day: out=%q stderr=%q hits=%d err=%v", out, stderr, hits, err)
+		if json.Unmarshal([]byte(out), &result) != nil || err != nil || stderr != "" || hits != 0 || (result.Date != before && result.Date != after) || result.Date == utcBefore || result.Date == utcAfter {
+			t.Fatalf("standup JSON day: out=%q stderr=%q hits=%d err=%v utc=%s", out, stderr, hits, err, utcBefore)
 		}
 	})
 	for _, args := range [][]string{{"item", "claim", "TASK-1"}, {"project", "next"}} {
@@ -255,5 +258,47 @@ func TestTZ4101_InstantPopulation(t *testing.T) {
 				t.Fatalf("instant population: out=%q stderr=%q hits=%d err=%v", out, stderr, hits, err)
 			}
 		})
+	}
+}
+
+func TestTZ4101_AuthTimezoneRefusesUnsavedZone(t *testing.T) {
+	for name, answer := range map[string]string{
+		"omitted":   `{"name":"Viewer"}`,
+		"different": `{"timezone":"Asia/Tokyo"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := tzCLI(t, func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, answer) })
+			out, _, err := tzRun(t, root, "auth", "timezone", "Europe/Paris")
+			if err == nil || !strings.Contains(err.Error(), "did not save the time zone") || strings.Contains(out, "set to") {
+				t.Fatalf("unsaved zone reported as set: out=%q err=%v", out, err)
+			}
+		})
+	}
+}
+
+// The resolver must never exit or prompt: newRootCmd installs it in every
+// test binary and every command, configured or not.
+func TestTZ4101_ResolverUnconfiguredNeverExits(t *testing.T) {
+	if os.Getenv("TZ4101_SUBPROCESS") == "1" {
+		hits := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits++ }))
+		defer srv.Close()
+		setTempHomeMain(t)
+		t.Setenv("PAD_URL", "")
+		t.Setenv("PAD_TOKEN", "")
+		time.Local = time.FixedZone("Machine", 9*3600)
+		newRootCmd()
+		old := time.Date(2026, 1, 15, 2, 30, 0, 0, time.UTC)
+		fmt.Printf("INSTANT=%s HITS=%d\n", cli.FormatInstant(old, "2006-01-02 15:04"), hits)
+		fmt.Printf("RELATIVE=%s\n", cli.RelativeTime(time.Now().Add(-30*24*time.Hour)))
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestTZ4101_ResolverUnconfiguredNeverExits$")
+	cmd.Env = append(os.Environ(), "TZ4101_SUBPROCESS=1")
+	var stdout, stderr strings.Builder
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	if err != nil || !strings.Contains(stdout.String(), "INSTANT=2026-01-15 02:30 HITS=0") || strings.Contains(stderr.String(), "times shown") || strings.Contains(stderr.String(), "not configured") {
+		t.Fatalf("resolver exited, prompted or left UTC: err=%v stdout=%q stderr=%q", err, stdout.String(), stderr.String())
 	}
 }
