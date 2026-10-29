@@ -980,3 +980,34 @@ func TestScheduleViewCarriesMissedCountAndStale(t *testing.T) {
 		t.Errorf("two passed: %v", v)
 	}
 }
+
+// A floating row with a rule that no longer compiles fires into a fired row; the
+// view's next_occurrence.at is the instant in the recipient's zone, not the
+// UTC+14 bound (TASK-4103 C2a r1 H-M2).
+func TestScheduleViewOfBrokenFiredFloatingRowIsExact(t *testing.T) {
+	t.Parallel()
+	f := newSchedHTTP(t)
+	tokyo := f.member("sched-brk-tokyo@example.com", "editor")
+	db, d := f.srv.store.DB(), f.srv.store.D()
+	if _, err := db.Exec(d.Rebind(`UPDATE users SET timezone = ? WHERE id = ?`), "Asia/Tokyo", tokyo.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(d.Rebind(`UPDATE items SET assigned_user_id = ? WHERE id = ?`), tokyo.ID, f.item.ID); err != nil {
+		t.Fatal(err)
+	}
+	f.create(map[string]any{"kind": "check", "dtstart": "2099-01-01T09:00", "floating": true, "rrule": "FREQ=DAILY"})
+	if _, err := db.Exec(d.Rebind(`UPDATE item_schedules SET rrule = ? WHERE item_id = ?`), "FREQ=DAILY;BOGUS=1", f.item.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.srv.store.FireDueReminders("2099-01-01T12:00:00Z", 0); err != nil {
+		t.Fatal(err)
+	}
+	rr := f.do("GET", nil)
+	if rr.Code != 200 {
+		t.Fatalf("GET %d %s", rr.Code, rr.Body.String())
+	}
+	occ, _ := schedMap(t, rr)["next_occurrence"].(map[string]any)
+	if occ == nil || occ["at"] != "2099-01-01T00:00:00Z" {
+		t.Errorf("next_occurrence = %v, want at 2099-01-01T00:00:00Z (Tokyo 09:00), not the 2098-12-31T19:00:00Z bound", occ)
+	}
+}

@@ -228,3 +228,78 @@ func TestScheduleMissedIsZeroWhenNothingPassed(t *testing.T) {
 		t.Errorf("broken: %d %v", n, err)
 	}
 }
+
+// firedFloating makes a fired floating schedule for a recipient in zone, whose
+// outstanding occurrence is the wall 2026-11-02T09:00.
+func firedFloating(t *testing.T, f *schedFixture, zone, rrule, fireAt string) *models.ItemSchedule {
+	t.Helper()
+	u := f.user(t, "c2a-missed-"+zone[:3]+"@example.com", zone)
+	f.assign(t, f.item.ID, u.ID)
+	f.create(t, models.ScheduleCreate{Kind: "check", Dtstart: "2026-11-02T09:00", Floating: true, Rrule: rrule})
+	if got := f.fire(t, fireAt); len(got) != 1 {
+		t.Fatalf("setup: fired %v", got)
+	}
+	sc := f.reload(t, f.item.ID)
+	if !sc.ReminderFired {
+		t.Fatal("setup: not fired")
+	}
+	return sc
+}
+
+func wallIn(t *testing.T, zone string, y int, m time.Month, d, h, min, s int) (time.Time, *time.Location) {
+	t.Helper()
+	loc, err := time.LoadLocation(zone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return time.Date(y, m, d, h, min, s, 0, loc).UTC(), loc
+}
+
+// A floating row is walked by WALL in the reader's zone: O is next_wall resolved
+// in the reader's zone, not the recipient's stored instant. RED (TASK-4103 C2a r1
+// H-M1) when O is the stored instant: the walk's floor (the reader's dtstart) then
+// lies after O and the dtstart instance, O's own wall, is counted.
+func TestScheduleMissedFloatingTokyoFiredLARead(t *testing.T) {
+	t.Parallel()
+	f := newSchedFixture(t)
+	sc := firedFloating(t, f, "Asia/Tokyo", "FREQ=DAILY", "2026-11-02T01:00:00Z")
+	if sc.NextAt == nil || *sc.NextAt != "2026-11-02T00:00:00Z" {
+		t.Fatalf("setup: next_at = %v, want Tokyo's 09:00", sc.NextAt)
+	}
+	laNine, la := wallIn(t, "America/Los_Angeles", 2026, 11, 2, 9, 0, 0)
+
+	// Just after LA's 09:00 of the same date: O's own wall, not missed.
+	n, trunc, err := ScheduleMissed(sc, la, laNine.Add(time.Second))
+	if err != nil || n != 0 || trunc {
+		t.Errorf("same date: count %d truncated %v err %v, want 0", n, trunc, err)
+	}
+	// One later instance (the next LA 09:00) has really passed: 1, so not stale.
+	next, _ := wallIn(t, "America/Los_Angeles", 2026, 11, 3, 9, 0, 0)
+	n, trunc, err = ScheduleMissed(sc, la, next.Add(time.Second))
+	if err != nil || n != 1 || trunc {
+		t.Errorf("one later: count %d truncated %v err %v, want 1 (stale is count >= 2)", n, trunc, err)
+	}
+}
+
+// The reverse: the recipient is west of the reader. Walls after O's wall that
+// resolve BEFORE O's stored instant in the reader's zone are counted, not
+// dropped. RED when the walk starts at the stored instant.
+func TestScheduleMissedFloatingWestRecipientEastReader(t *testing.T) {
+	t.Parallel()
+	f := newSchedFixture(t)
+	sc := firedFloating(t, f, "America/Los_Angeles", "FREQ=HOURLY", "2026-11-02T18:00:00Z")
+	if sc.NextAt == nil || *sc.NextAt != "2026-11-02T17:00:00Z" {
+		t.Fatalf("setup: next_at = %v, want LA's 09:00", sc.NextAt)
+	}
+	// Tokyo's 10:00 of the same date, a wall one hour after O's wall.
+	tenJST, tokyo := wallIn(t, "Asia/Tokyo", 2026, 11, 2, 10, 0, 0)
+	n, _, err := ScheduleMissed(sc, tokyo, tenJST.Add(time.Second))
+	if err != nil || n != 1 {
+		t.Errorf("one passed: count %d err %v, want 1", n, err)
+	}
+	elevenJST, _ := wallIn(t, "Asia/Tokyo", 2026, 11, 2, 11, 0, 0)
+	n, _, err = ScheduleMissed(sc, tokyo, elevenJST.Add(time.Second))
+	if err != nil || n != 2 {
+		t.Errorf("two passed: count %d err %v, want 2", n, err)
+	}
+}

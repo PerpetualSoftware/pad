@@ -121,6 +121,21 @@ func (s *Store) fireManagedTx(tx *sql.Tx, r *models.Reminder, nowTS string) (boo
 	if sc.AnchorWall != nil {
 		start = *sc.AnchorWall
 	}
+	// A floating schedule's exact instant needs only the wall and the
+	// recipient's zone now, not the rule, so it is known before the compile and
+	// the compile-error branch can overwrite next_at too: a fired row's next_at
+	// is exact on every write path (TASK-4103 C2a r1 H-M2).
+	var loc *time.Location
+	var at time.Time
+	if sc.Floating {
+		// The recipient's zone NOW, not when the row was armed: reassignment and
+		// zone edits since then are honoured here.
+		if loc, err = s.scheduleRecipientZone(tx, r.ItemID); err != nil {
+			return false, err
+		}
+		at = schedule.Resolve(loc, wall)
+	}
+
 	c, err := compileScheduleSpec(storedSpecInput(sc, start))
 	if err != nil {
 		code := ScheduleErrorCode(err)
@@ -134,19 +149,17 @@ func (s *Store) fireManagedTx(tx *sql.Tx, r *models.Reminder, nowTS string) (boo
 			code, now(), sc.ID); err != nil {
 			return false, fmt.Errorf("record schedule error_code: %w", err)
 		}
+		if sc.Floating {
+			if _, err := tx.Exec(s.q(`UPDATE item_schedules SET next_at = ? WHERE id = ?`),
+				NormalizeInstant(at), sc.ID); err != nil {
+				return false, fmt.Errorf("record fired occurrence instant: %w", err)
+			}
+		}
 		return false, nil
 	}
 	spec := c.Spec()
 
-	var loc *time.Location
-	var at time.Time
 	if sc.Floating {
-		// The recipient's zone NOW, not when the row was armed: reassignment and
-		// zone edits since then are honoured here.
-		if loc, err = s.scheduleRecipientZone(tx, r.ItemID); err != nil {
-			return false, err
-		}
-		at = schedule.Resolve(loc, wall)
 		if precise := NormalizeInstant(fireInstant(at, wall, loc, sc.LeadMinutes, override)); precise > nowTS {
 			if _, err := tx.Exec(s.q(`UPDATE item_reminders SET remind_at = ?, fired_at = NULL, updated_at = ? WHERE id = ?`),
 				precise, now(), r.ID); err != nil {

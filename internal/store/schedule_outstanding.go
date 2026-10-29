@@ -55,9 +55,14 @@ func OutstandingInstant(sc *models.ItemSchedule, view *time.Location) (time.Time
 }
 
 // ScheduleMissed counts the occurrences that passed unresolved AFTER the
-// outstanding one: instances strictly after it and at or before nowT-1s. The
-// outstanding occurrence itself is not counted. It is computed on read and never
-// stored. truncated is true when the count is a floor: the window is capped at
+// outstanding one: instances whose wall is after O's wall and which have passed
+// for the reader (at or before nowT-1s). The outstanding occurrence itself is
+// not counted. It is computed on read and never stored.
+//
+// A floating schedule is walked in the reader's zone, so O is taken by its WALL
+// there (next_wall resolved in view), whatever the row's state; its stored
+// instant is in the recipient's zone and would mix zones with the walk
+// (TASK-4103 C2a r1 H-M1). A pinned schedule has one zone, so O is its instant. truncated is true when the count is a floor: the window is capped at
 // 92 days past the outstanding occurrence (or the anchor floor), and at 500 instances.
 //
 // The walk never starts before the schedule's anchor: the rule is compiled from
@@ -72,6 +77,16 @@ func ScheduleMissed(sc *models.ItemSchedule, view *time.Location, nowT time.Time
 	o, ok, err := OutstandingInstant(sc, view)
 	if err != nil || !ok {
 		return 0, false, err
+	}
+	if sc.Floating {
+		if sc.NextWall == nil {
+			return 0, false, nil
+		}
+		w, err := schedule.ParseWall(*sc.NextWall)
+		if err != nil {
+			return 0, false, fmt.Errorf("parse next_wall: %w", err)
+		}
+		o = schedule.Resolve(view, w).UTC()
 	}
 	cut := nowT.UTC().Add(-time.Second)
 	if !cut.After(o) {

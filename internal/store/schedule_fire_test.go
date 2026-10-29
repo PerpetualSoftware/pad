@@ -1022,3 +1022,39 @@ func TestFiredFloatingReminderKeepsOccurrenceAfterZoneChange(t *testing.T) {
 		t.Errorf("fired pinned row = %+v, want its stored instant", r)
 	}
 }
+
+// A floating row whose stored rule no longer compiles still fires into a fired
+// row, and "fired means next_at is exact" holds on that path too: next_at is the
+// instant in the recipient's zone, not the UTC+14 bound it was armed at
+// (TASK-4103 C2a r1 H-M2). RED when the compile-error branch leaves the bound.
+func TestFloatingFireWithBrokenRuleRecordsTheExactInstant(t *testing.T) {
+	t.Parallel()
+	f := newSchedFixture(t)
+	u := f.user(t, "c2a-broken@example.com", "Asia/Tokyo")
+	f.assign(t, f.item.ID, u.ID)
+	sc := f.create(t, models.ScheduleCreate{Kind: "check", Dtstart: "2026-11-02T09:00", Floating: true, Rrule: "FREQ=DAILY"})
+	if sc.NextAt == nil || *sc.NextAt != "2026-11-01T19:00:00Z" {
+		t.Fatalf("setup: next_at = %v, want the UTC+14 bound", sc.NextAt)
+	}
+	f.exec(t, `UPDATE item_schedules SET rrule = ? WHERE id = ?`, "FREQ=DAILY;BOGUS=1", sc.ID)
+	if got := f.fire(t, "2026-11-02T01:00:00Z"); len(got) != 0 {
+		t.Fatalf("a broken rule produced an event: %v", got)
+	}
+	cur := f.reload(t, f.item.ID)
+	if cur.ErrorCode == nil || !cur.ReminderFired {
+		t.Fatalf("setup: error_code %v fired %v", cur.ErrorCode, cur.ReminderFired)
+	}
+	if cur.NextAt == nil || *cur.NextAt != "2026-11-02T00:00:00Z" {
+		t.Errorf("next_at = %v, want Tokyo's 09:00 = 2026-11-02T00:00:00Z", deref(cur.NextAt))
+	}
+	if r := f.reminder(t, *sc.ReminderID); r.OccurrenceAt == nil || *r.OccurrenceAt != "2026-11-02T00:00:00Z" {
+		t.Errorf("reminder occurrence_at = %v, want 2026-11-02T00:00:00Z", deref(r.OccurrenceAt))
+	}
+}
+
+func deref(p *string) string {
+	if p == nil {
+		return "<nil>"
+	}
+	return *p
+}
