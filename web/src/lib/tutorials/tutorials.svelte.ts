@@ -16,6 +16,13 @@ let catalogLoading: Promise<void> | null = null;
 let dismissed = $state<Set<UIDismissalKey> | null>(null);
 let dismissedLoading: Promise<void> | null = null;
 
+authStore.onIdentityChange(() => {
+	catalog = null;
+	catalogLoading = null;
+	dismissed = null;
+	dismissedLoading = null;
+});
+
 export const tutorialsStore = {
 	/** The catalog, or null before it loads, on self-hosted, or on failure. */
 	get catalog(): TutorialsResponse | null {
@@ -32,38 +39,41 @@ export const tutorialsStore = {
 		// Started inside a promise so that nothing, not even a synchronous throw,
 		// escapes into the caller's onMount: a tutorial card must never break
 		// the page that hosts it.
+		const isSameIdentity = authStore.identityFence();
 		catalogLoading ??= Promise.resolve()
 			.then(() => api.tutorials.list())
 			.then((c) => {
-				catalog = c;
+				if (isSameIdentity()) catalog = c;
 			})
 			.catch(() => {
-				catalog = null;
+				if (isSameIdentity()) catalog = null;
 			});
 		return catalogLoading;
 	},
 
 	loadDismissed(): Promise<void> {
+		const isSameIdentity = authStore.identityFence();
 		dismissedLoading ??= Promise.resolve()
 			.then(() => api.uiDismissals.list())
 			.then((r) => {
-				dismissed = new Set(r.dismissed);
+				if (isSameIdentity()) dismissed = new Set(r.dismissed);
 			})
 			.catch(() => {
 				// Unknown state: treat as nothing dismissed is the nagging
 				// failure, so show nothing instead.
-				dismissed = null;
+				if (isSameIdentity()) dismissed = null;
 			});
 		return dismissedLoading;
 	},
 
 	async dismiss(key: UIDismissalKey): Promise<void> {
+		const isSameIdentity = authStore.identityFence();
 		dismissed = new Set([...(dismissed ?? []), key]);
 		try {
 			const r = await api.uiDismissals.dismiss(key);
 			// Merge, never replace: dismissals only grow, and an older answer
 			// arriving after a newer one must not bring a card back (codex r1).
-			dismissed = new Set([...(dismissed ?? []), ...r.dismissed]);
+			if (isSameIdentity()) dismissed = new Set([...(dismissed ?? []), ...r.dismissed]);
 		} catch {
 			// Keep it hidden for this page load; the next load asks again.
 		}
