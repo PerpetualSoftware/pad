@@ -5951,12 +5951,17 @@ func (s *Store) moveItemWithPreCheckOnce(
 		return nil, err
 	}
 
+	// BUG-4005: the moved item lands at the top of the TARGET collection
+	// (its old sort_order means nothing in the other lane); the workspace
+	// seq lock held above serializes the MIN read.
 	moveTS := time.Now().UTC().Format(time.RFC3339)
 	_, err = tx.Exec(s.q(`
 		UPDATE items
-		SET collection_id = ?, fields = ?, updated_at = ?, seq = `+nextWorkspaceSeqSubquery+`
+		SET collection_id = ?, fields = ?, updated_at = ?, seq = `+nextWorkspaceSeqSubquery+`,
+		    sort_order = (SELECT COALESCE(MIN(sort_order), 0) - 1 FROM items
+		                  WHERE collection_id = ? AND deleted_at IS NULL AND id <> ?)
 		WHERE id = ? AND deleted_at IS NULL`),
-		targetCollectionID, newFieldsJSON, moveTS, existing.WorkspaceID, itemID)
+		targetCollectionID, newFieldsJSON, moveTS, existing.WorkspaceID, targetCollectionID, itemID, itemID)
 	if err != nil {
 		return nil, fmt.Errorf("move item: %w", err)
 	}

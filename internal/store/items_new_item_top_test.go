@@ -201,3 +201,26 @@ func TestNewItemTop_FencedCreate(t *testing.T) {
 		t.Errorf("fenced create sort_order = %d, want -1", n)
 	}
 }
+
+func TestNewItemTop_MoveLandsOnTopOfTarget(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Top Move")
+	src := createTestCollection(t, s, ws.ID, "Src")
+	dst := createTestCollection(t, s, ws.ID, "Dst")
+	for _, n := range []string{"x", "y"} {
+		it := createTestItem(t, s, ws.ID, dst.ID, n, "")
+		setSortOrder(t, s, it.ID, 5)
+	}
+	mv := createTestItem(t, s, ws.ID, src.ID, "mv", "")
+	setSortOrder(t, s, mv.ID, 9)
+	if _, err := s.MoveItem(mv.ID, dst.ID, `{"status":"open"}`); err != nil {
+		t.Fatal(err)
+	}
+	if got := sortOrderOf(t, s, mv.ID); got != 4 {
+		t.Errorf("moved sort_order = %d, want target min - 1 = 4", got)
+	}
+	items := listManual(t, s, ws.ID, dst.Slug)
+	if len(items) != 3 || items[0].ID != mv.ID {
+		t.Errorf("moved item is not first: %v", titles(items))
+	}
+}
