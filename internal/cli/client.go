@@ -3085,8 +3085,10 @@ func (c *Client) post(path string, body interface{}, result interface{}) error {
 
 func (c *Client) postContext(ctx context.Context, path string, body interface{}, result interface{}) error {
 	var bodyReader io.Reader
+	var data []byte
 	if body != nil {
-		data, err := json.Marshal(body)
+		var err error
+		data, err = json.Marshal(body)
 		if err != nil {
 			return err
 		}
@@ -3099,10 +3101,39 @@ func (c *Client) postContext(ctx context.Context, path string, body interface{},
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.httpClient.Do(req.WithContext(ctx))
 	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
+		return WrapOpKey(data, fmt.Errorf("request failed: %w", err))
 	}
 	defer resp.Body.Close()
-	return c.handleResponse(resp, result)
+	return WrapOpKey(data, c.handleResponse(resp, result))
+}
+
+// OpKeyError carries the idempotency key a failed write sent (BUG-3999), so
+// the root error writer can print it and a person or agent can re-run the
+// command with --op-key after an unclear outcome. Error and Unwrap pass the
+// cause through unchanged: errors.As on *APIError and the retry classifiers
+// see the same error as before.
+type OpKeyError struct {
+	Key string
+	Err error
+}
+
+func (e *OpKeyError) Error() string { return e.Err.Error() }
+func (e *OpKeyError) Unwrap() error { return e.Err }
+
+// WrapOpKey wraps err in an OpKeyError when the marshalled request body has a
+// non-empty top-level op_key. It returns err unchanged when err is nil or the
+// body carries no key.
+func WrapOpKey(body []byte, err error) error {
+	if err == nil || !bytes.Contains(body, []byte(`"op_key"`)) {
+		return err
+	}
+	var k struct {
+		OpKey string `json:"op_key"`
+	}
+	if json.Unmarshal(body, &k) != nil || k.OpKey == "" {
+		return err
+	}
+	return &OpKeyError{Key: k.OpKey, Err: err}
 }
 
 func (c *Client) patch(path string, body interface{}, result interface{}) error {
@@ -3117,10 +3148,10 @@ func (c *Client) patch(path string, body interface{}, result interface{}) error 
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
+		return WrapOpKey(data, fmt.Errorf("request failed: %w", err))
 	}
 	defer resp.Body.Close()
-	return c.handleResponse(resp, result)
+	return WrapOpKey(data, c.handleResponse(resp, result))
 }
 
 func (c *Client) delete(path string) error {
@@ -3514,6 +3545,12 @@ func (c *Client) SendChatMessage(number int, input ChatSendInput) (json.RawMessa
 	var result json.RawMessage
 	// The caller owns idempotency. Never generate op_key or retry a send.
 	err := c.post(fmt.Sprintf("/me/conversations/%d/messages", number), input, &result)
+	// The key is the caller's own, so the BUG-3999 "re-run with this key"
+	// line would only repeat what they passed.
+	var oe *OpKeyError
+	if errors.As(err, &oe) {
+		err = oe.Err
+	}
 	return result, err
 }
 
