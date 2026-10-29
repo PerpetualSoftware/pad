@@ -84,12 +84,12 @@ export function itemComparator(
 			// GetChildItemsForParents) and render that order as delivered. This
 			// used to be DESC, so the same two never-dragged children read in
 			// opposite orders on an item's page and on its collection board.
-			// BUG-4005 (lead ruling, Dave confirmed) reversed the DIRECTION of
-			// new items, not that principle: every create path now writes
-			// collection MIN(sort_order) - 1, so a new item sorts FIRST in a
-			// lane and under a parent. The created_at ASC tie-break now orders
-			// only never-dragged legacy rows (all at 0); dragging places a
-			// card anywhere.
+			// BUG-4005 (Dave's ruling): a PARENTLESS create path writes the
+			// MIN(sort_order) - 1 of the collection's parentless items, so it
+			// sorts FIRST in a lane; a child is created at 0 and still appends
+			// under its parent (created_at ASC, which ship and decompose rely
+			// on). The created_at ASC tie-break therefore orders children and
+			// never-dragged legacy rows; dragging places a card anywhere.
 			return (a, b) =>
 				a.sort_order - b.sort_order ||
 				timeValue(a.created_at) - timeValue(b.created_at) ||

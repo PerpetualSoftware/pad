@@ -1319,6 +1319,12 @@ type UniqueCheck struct {
 }
 
 type ItemCreate struct {
+	// UnderParent is set by the caller that links the new item to a parent
+	// right after the create (the parent is an item_links edge written in a
+	// second step, so the store cannot see it at insert time). A child is
+	// created at sort_order 0 and appends under its parent; a parentless item
+	// is created on top of its collection (BUG-4005). Internal-only.
+	UnderParent bool `json:"-"`
 	// ActorUserID is the request's user, stamped on the create's version row
 	// (PLAN-2348 U2). Internal-only.
 	ActorUserID string `json:"-"`

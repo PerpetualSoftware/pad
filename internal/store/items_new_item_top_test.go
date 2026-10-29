@@ -8,9 +8,10 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// BUG-4005: every create path writes sort_order = MIN(sort_order) - 1 over the
-// collection's live items, so a new item lands on top of a lane and of a
-// parent's children. Dispositions: export.go import keeps the exported
+// BUG-4005: every create path writes a PARENTLESS item at sort_order =
+// MIN(sort_order) - 1 over the collection's parentless live items, so it lands
+// on top of a lane; a child is created at 0 and appends under its parent.
+// Dispositions: export.go import keeps the exported
 // sort_order (a restore keeps the order); drag writes are explicit; the
 // role_sort_order column is out of scope.
 
@@ -89,35 +90,83 @@ func TestNewItemTop_DraggedLane(t *testing.T) {
 	}
 }
 
-func TestNewItemTop_ChildLists(t *testing.T) {
+// createChild mirrors createItemChecked: the create is told it is a child
+// (UnderParent), then the parent link is written as a second step.
+func createChild(t *testing.T, s *Store, wsID, colID, parentID, title string) models.Item {
+	t.Helper()
+	it, err := s.CreateItem(wsID, colID, models.ItemCreate{Title: title, Fields: `{"status":"open"}`, UnderParent: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetParentLink(wsID, it.ID, parentID, "test"); err != nil {
+		t.Fatal(err)
+	}
+	return *it
+}
+
+// A new child JOINS THE END of its siblings: ship and decompose rely on it.
+func TestNewItemTop_ChildJoinsTheEnd(t *testing.T) {
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Top Children")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
 	parent := createTestItem(t, s, ws.ID, col.ID, "parent", "")
-	for _, n := range []string{"c1", "c2"} {
-		it := createTestItem(t, s, ws.ID, col.ID, n, "")
-		if _, err := s.SetParentLink(ws.ID, it.ID, parent.ID, "test"); err != nil {
-			t.Fatal(err)
-		}
-		setSortOrder(t, s, it.ID, 0)
-	}
-	fresh := createTestItem(t, s, ws.ID, col.ID, "fresh", "")
-	if _, err := s.SetParentLink(ws.ID, fresh.ID, parent.ID, "test"); err != nil {
-		t.Fatal(err)
+	createChild(t, s, ws.ID, col.ID, parent.ID, "c1")
+	createChild(t, s, ws.ID, col.ID, parent.ID, "c2")
+	fresh := createChild(t, s, ws.ID, col.ID, parent.ID, "fresh")
+	if got := sortOrderOf(t, s, fresh.ID); got != 0 {
+		t.Errorf("child sort_order = %d, want 0", got)
 	}
 	kids, err := s.getChildItems(s.db, parent.ID, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(kids) != 3 || kids[0].ID != fresh.ID {
-		t.Errorf("getChildItems: new child not first: %v", titles(kids))
+	if len(kids) != 3 || kids[2].ID != fresh.ID {
+		t.Errorf("getChildItems: new child not last: %v", titles(kids))
 	}
 	byParent, err := s.GetChildItemsForParents([]string{parent.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if k := byParent[parent.ID]; len(k) != 3 || k[0].ID != fresh.ID {
-		t.Errorf("GetChildItemsForParents: new child not first: %v", titles(k))
+	if k := byParent[parent.ID]; len(k) != 3 || k[2].ID != fresh.ID {
+		t.Errorf("GetChildItemsForParents: new child not last: %v", titles(k))
+	}
+}
+
+// The ship playbook expands a plan into its children "ordered by sort_order"
+// and works them in that order; decompose creates them in sequence.
+func TestNewItemTop_ShipOrderAfterDecompose(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Ship Order")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	plan := createTestItem(t, s, ws.ID, col.ID, "plan", "")
+	// Parentless siblings elsewhere in the collection at very negative orders.
+	other := createTestItem(t, s, ws.ID, col.ID, "other", "")
+	setSortOrder(t, s, other.ID, -50)
+	for _, n := range []string{"T1", "T2", "T3"} {
+		createChild(t, s, ws.ID, col.ID, plan.ID, n)
+	}
+	kids, err := s.getChildItems(s.db, plan.ID, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := titles(kids); len(got) != 3 || got[0] != "T1" || got[1] != "T2" || got[2] != "T3" {
+		t.Errorf("children in sort_order, created_at order = %v, want [T1 T2 T3]", got)
+	}
+}
+
+// The MIN covers PARENTLESS live items only: children with very negative
+// sort_order do not push a parentless create further down.
+func TestNewItemTop_ParentlessMinIgnoresChildren(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Top Mixed")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	parent := createTestItem(t, s, ws.ID, col.ID, "parent", "")
+	setSortOrder(t, s, parent.ID, 4)
+	kid := createChild(t, s, ws.ID, col.ID, parent.ID, "kid")
+	setSortOrder(t, s, kid.ID, -100)
+	fresh := createTestItem(t, s, ws.ID, col.ID, "fresh", "")
+	if got := sortOrderOf(t, s, fresh.ID); got != 3 {
+		t.Errorf("parentless sort_order = %d, want parentless min - 1 = 3", got)
 	}
 }
 
@@ -222,5 +271,23 @@ func TestNewItemTop_MoveLandsOnTopOfTarget(t *testing.T) {
 	items := listManual(t, s, ws.ID, dst.Slug)
 	if len(items) != 3 || items[0].ID != mv.ID {
 		t.Errorf("moved item is not first: %v", titles(items))
+	}
+}
+
+func TestNewItemTop_MovedChildKeepsItsSortOrder(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Top Move Child")
+	src := createTestCollection(t, s, ws.ID, "Src")
+	dst := createTestCollection(t, s, ws.ID, "Dst")
+	parent := createTestItem(t, s, ws.ID, src.ID, "parent", "")
+	other := createTestItem(t, s, ws.ID, dst.ID, "other", "")
+	setSortOrder(t, s, other.ID, 5)
+	kid := createChild(t, s, ws.ID, src.ID, parent.ID, "kid")
+	setSortOrder(t, s, kid.ID, 9)
+	if _, err := s.MoveItem(kid.ID, dst.ID, `{"status":"open"}`); err != nil {
+		t.Fatal(err)
+	}
+	if got := sortOrderOf(t, s, kid.ID); got != 9 {
+		t.Errorf("moved child sort_order = %d, want unchanged 9", got)
 	}
 }

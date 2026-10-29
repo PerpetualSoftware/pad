@@ -347,22 +347,30 @@ func (s *Store) insertItemTx(tx *sql.Tx, id, workspaceID, collectionID, slug, ts
 	// The workspace advisory lock acquired above for item_number
 	// assignment ALSO serializes the seq subquery below — both read
 	// MAX(...) per workspace and would otherwise race in Postgres. It covers
-	// the sort_order subquery too (BUG-4005): a new item is created at the
-	// collection's MIN(sort_order) - 1 so it lands on top of a lane and of a
-	// parent's children; two concurrent creates must not read the same MIN.
+	// the sort_order read too (BUG-4005): a PARENTLESS new item is created at
+	// the MIN(sort_order) - 1 of the collection's parentless live items, so it
+	// lands on top of a lane; two concurrent creates must not read the same
+	// MIN. A child (UnderParent, or a ParentID column value) is created at 0
+	// and appends under its parent by created_at ASC, the order ship and
+	// decompose rely on (BUG-3527).
+	sortOrder := 0
+	if !input.UnderParent && (input.ParentID == nil || *input.ParentID == "") {
+		if err := tx.QueryRow(s.q(`SELECT COALESCE(MIN(i.sort_order), 0) - 1 FROM items i
+			WHERE i.collection_id = ? AND i.deleted_at IS NULL AND `+unparentedItemPredicate), collectionID).Scan(&sortOrder); err != nil {
+			return fmt.Errorf("read top sort_order: %w", err)
+		}
+	}
 	_, err = tx.Exec(s.q(`
 		INSERT INTO items (id, workspace_id, collection_id, title, slug, content, fields, tags,
 		                   pinned, sort_order, parent_id, assigned_user_id, agent_role_id, role_sort_order,
 		                   created_by, last_modified_by, source, item_number, created_at, updated_at,
 		                   content_flushed_at, content_flushed_op_log_id, seq,
 		                   created_by_user_id, last_modified_by_user_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
-		        (SELECT COALESCE(MIN(sort_order), 0) - 1 FROM items WHERE collection_id = ? AND deleted_at IS NULL),
-		        ?, ?, ?, 0, ?, ?, ?,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?,
 		        (SELECT COALESCE(MAX(item_number), 0) + 1 FROM items WHERE workspace_id = ?),
 		        ?, ?, ?, ?, `+nextWorkspaceSeqSubquery+`, ?, ?)
 	`), id, workspaceID, collectionID, input.Title, slug, input.Content, fields, tags,
-		s.dialect.BoolToInt(input.Pinned), collectionID, input.ParentID, nullIfEmptyID(input.AssignedUserID), nullIfEmptyID(input.AgentRoleID),
+		s.dialect.BoolToInt(input.Pinned), sortOrder, input.ParentID, nullIfEmptyID(input.AssignedUserID), nullIfEmptyID(input.AgentRoleID),
 		createdBy, createdBy, source, workspaceID, ts, ts, contentFlushedAt, contentFlushedOpLogID, workspaceID,
 		// BUG-3372: the canonical user columns record WHICH account wrote the
 		// row; created_by/last_modified_by only say user or agent. Empty for
@@ -5951,17 +5959,28 @@ func (s *Store) moveItemWithPreCheckOnce(
 		return nil, err
 	}
 
-	// BUG-4005: the moved item lands at the top of the TARGET collection
-	// (its old sort_order means nothing in the other lane); the workspace
-	// seq lock held above serializes the MIN read.
+	// BUG-4005: a PARENTLESS moved item lands at the top of the TARGET
+	// collection (parentless MIN - 1, excluding itself; its old sort_order
+	// means nothing in the other lane); one that HAS a parent keeps its
+	// sort_order. The workspace seq lock held above serializes the MIN read.
 	moveTS := time.Now().UTC().Format(time.RFC3339)
+	var movedParentless bool
+	if err := tx.QueryRow(s.q(`SELECT COUNT(*) > 0 FROM items i WHERE i.id = ? AND `+unparentedItemPredicate), itemID).Scan(&movedParentless); err != nil {
+		return nil, fmt.Errorf("move item: read parentage: %w", err)
+	}
+	moveSortOrder := preMove.SortOrder
+	if movedParentless {
+		if err := tx.QueryRow(s.q(`SELECT COALESCE(MIN(i.sort_order), 0) - 1 FROM items i
+			WHERE i.collection_id = ? AND i.deleted_at IS NULL AND i.id <> ? AND `+unparentedItemPredicate),
+			targetCollectionID, itemID).Scan(&moveSortOrder); err != nil {
+			return nil, fmt.Errorf("move item: read top sort_order: %w", err)
+		}
+	}
 	_, err = tx.Exec(s.q(`
 		UPDATE items
-		SET collection_id = ?, fields = ?, updated_at = ?, seq = `+nextWorkspaceSeqSubquery+`,
-		    sort_order = (SELECT COALESCE(MIN(sort_order), 0) - 1 FROM items
-		                  WHERE collection_id = ? AND deleted_at IS NULL AND id <> ?)
+		SET collection_id = ?, fields = ?, updated_at = ?, sort_order = ?, seq = `+nextWorkspaceSeqSubquery+`
 		WHERE id = ? AND deleted_at IS NULL`),
-		targetCollectionID, newFieldsJSON, moveTS, existing.WorkspaceID, targetCollectionID, itemID, itemID)
+		targetCollectionID, newFieldsJSON, moveTS, moveSortOrder, existing.WorkspaceID, itemID)
 	if err != nil {
 		return nil, fmt.Errorf("move item: %w", err)
 	}
