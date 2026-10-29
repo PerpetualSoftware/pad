@@ -1088,6 +1088,9 @@ func timezoneCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if len(args) == 1 && (user.Timezone == nil || *user.Timezone != args[0]) {
+				return fmt.Errorf("the server did not save the time zone (it may predate time zone support)")
+			}
 			if formatFlag == "json" {
 				return cli.PrintJSON(map[string]any{"timezone": user.Timezone})
 			}

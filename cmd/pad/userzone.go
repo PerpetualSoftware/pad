@@ -27,7 +27,13 @@ func installViewerZone() {
 	viewerZone.loc, viewerZone.unset = time.UTC, false
 	cli.SetDisplayLocationResolver(func() *time.Location {
 		viewerZone.load.Do(func() {
-			client := cli.NewClientFromURL(getConfiguredConfig().BaseURL())
+			// Never exit or prompt from a renderer: unconfigured means UTC, quietly.
+			cfg := getConfig()
+			applyPadTomlOverride(cfg)
+			if !cfg.IsConfigured() {
+				return
+			}
+			client := cli.NewClientFromURL(cfg.BaseURL())
 			if user, err := client.GetCurrentUser(); err == nil {
 				viewerZone.loc = usertz.Resolve(user.Timezone).Loc
 				viewerZone.unset = user.Timezone == nil
