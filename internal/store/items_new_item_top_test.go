@@ -5,7 +5,6 @@ import (
 	"math"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -103,18 +102,8 @@ func createChild(t *testing.T, s *Store, wsID, colID, parentID, title string) mo
 	if _, err := s.SetParentLink(wsID, it.ID, parentID, "test"); err != nil {
 		t.Fatal(err)
 	}
-	// created_at has one-second resolution, so children created in one test
-	// second tie, and a tie is ordered arbitrarily on Postgres. Space them a
-	// second apart, as sequential creates in real use are.
-	childSeq++
-	stamp := time.Date(2026, 1, 1, 0, 0, childSeq, 0, time.UTC).Format(time.RFC3339)
-	if _, err := s.db.Exec(s.q(`UPDATE items SET created_at = ? WHERE id = ?`), stamp, it.ID); err != nil {
-		t.Fatal(err)
-	}
 	return *it
 }
-
-var childSeq int
 
 // A new child JOINS THE END of its siblings: ship and decompose rely on it.
 func TestNewItemTop_ChildJoinsTheEnd(t *testing.T) {
