@@ -7,7 +7,7 @@
 	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { tutorialsStore } from '$lib/tutorials/tutorials.svelte';
-	import { browserZone, sameZone } from '$lib/timezone';
+	import { browserZone, explicitTimezoneWrites, noteExplicitTimezoneWrite, sameZone } from '$lib/timezone';
 	import type { UIDismissalKey } from '$lib/types';
 
 	const browser = browserZone();
@@ -26,7 +26,10 @@
 			attempted.add(userId);
 			if (zone === null && browser) {
 				const isSameIdentity = authStore.identityFence();
+				const writesBefore = explicitTimezoneWrites();
 				void api.auth.setTimezoneIfUnset(browser).then((res) => {
+					// An explicit write that began after this one wins, whatever order the answers arrive in (TASK-4101 PR2a r1 H-L2).
+					if (explicitTimezoneWrites() !== writesBefore) return;
 					if (isSameIdentity() && res.timezone !== undefined) authStore.setTimezone(userId, res.timezone);
 				}).catch(() => {}); // Unsupported browser zone: no retry this page load.
 			}
@@ -42,6 +45,7 @@
 		const isSameIdentity = authStore.identityFence();
 		saving = true;
 		error = '';
+		noteExplicitTimezoneWrite();
 		try {
 			const res = await api.auth.setTimezone(browser);
 			if (isSameIdentity() && res.timezone !== undefined) authStore.setTimezone(userId, res.timezone);

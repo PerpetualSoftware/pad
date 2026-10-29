@@ -15,3 +15,11 @@ export function zoneOptions(): string[] {
 	try { return ['UTC', ...Intl.supportedValuesOf('timeZone')]; }
 	catch { return ['UTC', ...fallback]; }
 }
+
+// TASK-4101 PR2a r1 H-L2: explicit zone writes (settings Save, notice Switch) bump
+// this counter before their PATCH. The browser default adopts its response only
+// if no explicit write began after it, so a reordered late default answer cannot
+// overwrite a zone the user chose a moment later.
+let explicitWrites = 0;
+export function noteExplicitTimezoneWrite(): void { explicitWrites++; }
+export function explicitTimezoneWrites(): number { return explicitWrites; }

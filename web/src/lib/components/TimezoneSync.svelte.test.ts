@@ -3,6 +3,7 @@ import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/sv
 import { tick } from 'svelte';
 import { api } from '$lib/api/client';
 import { authStore } from '$lib/stores/auth.svelte';
+import { noteExplicitTimezoneWrite } from '$lib/timezone';
 let sequence = 0;
 let currentA: string;
 let currentB: string;
@@ -105,4 +106,35 @@ it('account switch never reuses the previous users dismissals', async () => {
 	await signIn(currentA, 'Europe/Paris'); await mount();
 	await fireEvent.click(await screen.findByRole('button', { name: 'Keep' }));
 	await signIn(currentB, 'Europe/Paris'); await screen.findByRole('button', { name: 'Switch' });
+});
+// TASK-4101 PR2a r1 H-T: the identity fence, not only setTimezone's id check, guards
+// the default: A signs out and back in while A's default PATCH is in flight.
+it('late default response from A cannot write into A after sign-out and back in', async () => {
+	let resolve!: (r: Response) => void;
+	patchReply = () => new Promise((r) => { resolve = r; });
+	await mount(); await waitFor(() => expect(patches).toHaveLength(1));
+	authStore.clear(); await tick();
+	await signIn(currentA, 'America/New_York');
+	const response = reply({ timezone: 'Asia/Tokyo' }); const parsed = vi.spyOn(response, 'json');
+	resolve(response); await waitFor(() => expect(parsed).toHaveBeenCalledOnce()); await tick();
+	expect(authStore.user?.timezone).toBe('America/New_York');
+	expect(patches).toHaveLength(1);
+});
+// TASK-4101 PR2a r1 H-L2: an explicit write that begins while the default is in
+// flight wins, even when the default's answer arrives last.
+it('a late default response does not overwrite an explicit write made after it', async () => {
+	let resolve!: (r: Response) => void;
+	patchReply = () => new Promise((r) => { resolve = r; });
+	await mount(); await waitFor(() => expect(patches).toHaveLength(1));
+	noteExplicitTimezoneWrite(); authStore.setTimezone(currentA, 'Europe/Paris');
+	const response = reply({ timezone: 'Asia/Tokyo' }); const parsed = vi.spyOn(response, 'json');
+	resolve(response); await waitFor(() => expect(parsed).toHaveBeenCalledOnce()); await tick();
+	expect(authStore.user?.timezone).toBe('Europe/Paris');
+});
+it('Switch counts as an explicit write', async () => {
+	const { explicitTimezoneWrites } = await import('$lib/timezone');
+	await signIn(currentA, 'Europe/Paris'); winner = 'Asia/Tokyo'; await mount();
+	const before = explicitTimezoneWrites();
+	await fireEvent.click(await screen.findByRole('button', { name: 'Switch' }));
+	await waitFor(() => expect(explicitTimezoneWrites()).toBe(before + 1));
 });

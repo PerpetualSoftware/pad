@@ -5,7 +5,7 @@
 	import { onMount } from 'svelte';
 	import { api, isPlanLimitError, PadApiError } from '$lib/api/client';
 	import { showPlanLimitToast } from '$lib/billing/planLimitToast';
-	import { browserZone, zoneOptions } from '$lib/timezone';
+	import { browserZone, noteExplicitTimezoneWrite, zoneOptions } from '$lib/timezone';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
@@ -37,6 +37,7 @@
 		timezoneSaving = true;
 		timezoneError = '';
 		timezoneMsg = '';
+		noteExplicitTimezoneWrite();
 		try {
 			const updated = await api.auth.setTimezone(timezone.trim());
 			if (!isSameIdentity()) return;
@@ -44,7 +45,8 @@
 				authStore.setTimezone(userId, updated.timezone);
 				timezone = updated.timezone ?? '';
 			}
-			profile = updated;
+			// Merge: the PATCH answer lacks totp_enabled, oauth_providers and password_set (TASK-4101 PR2a r1 H-L1).
+			profile = profile ? { ...profile, ...updated } : updated;
 			timezoneMsg = 'Time zone updated.';
 		} catch (err) {
 			if (isSameIdentity()) timezoneError = err instanceof Error ? err.message : 'Failed to set time zone';
@@ -210,11 +212,14 @@
 
 	onMount(async () => {
 		readOAuthQueryStatus();
+		const isSameIdentity = authStore.identityFence();
 		try {
 			const [me, tokenList] = await Promise.all([
 				api.auth.me(),
 				api.auth.tokens.list()
 			]);
+			// A load that settles after an identity change belongs to the previous user (TASK-4101 PR2a r1 C-M1).
+			if (!isSameIdentity()) return;
 			profile = me;
 			profileName = me.name;
 			profileUsername = me.username;
@@ -236,7 +241,8 @@
 				name: profileName.trim(),
 				username: profileUsername.trim()
 			});
-			profile = updated;
+			// Merge, as in saveTimezone (TASK-4101 PR2a r1 H-L1).
+			profile = profile ? { ...profile, ...updated } : updated;
 			profileMsg = 'Profile updated.';
 			await authStore.load();
 		} catch (err) {
