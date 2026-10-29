@@ -295,10 +295,12 @@ func TestTASK4101_OverdueUsesViewerZone(t *testing.T) {
 		t.Fatal(err)
 	}
 	pagoLoc, _ := time.LoadLocation("Pacific/Pago_Pago")
-	due := time.Now().In(pagoLoc).Format("2006-01-02")
-	if _, err := srv.store.CreateItem(ws.ID, coll.ID, models.ItemCreate{Title: "Due in Pago", Fields: `{"status":"open","priority":"low","due_date":"` + due + `"}`}); err != nil {
+	item, err := srv.store.CreateItem(ws.ID, coll.ID, models.ItemCreate{Title: "Due in Pago", Fields: `{"status":"open","priority":"low"}`})
+	if err != nil {
 		t.Fatal(err)
 	}
+	var due, utcDay string
+	var k, d, u DashboardResponse
 	dash := func(token string) DashboardResponse {
 		rr := doRequestWithCookie(srv, "GET", "/api/v1/workspaces/"+ws.Slug+"/dashboard", nil, token)
 		if rr.Code != http.StatusOK {
@@ -308,10 +310,20 @@ func TestTASK4101_OverdueUsesViewerZone(t *testing.T) {
 		parseJSON(t, rr, &d)
 		return d
 	}
-	if got := len(filterAttention(dash(kiriTok).Attention, "overdue")); got != 1 {
+	tz4101StableDay(t, func() string {
+		return time.Now().In(pagoLoc).Format("2006-01-02") + "/" + time.Now().UTC().Format("2006-01-02")
+	}, func() {
+		due = time.Now().In(pagoLoc).Format("2006-01-02")
+		utcDay = time.Now().UTC().Format("2006-01-02")
+		fields := `{"status":"open","priority":"low","due_date":"` + due + `"}`
+		if _, err := srv.store.UpdateItem(item.ID, models.ItemUpdate{Fields: &fields}); err != nil {
+			t.Fatal(err)
+		}
+		k, d, u = dash(kiriTok), dash(pagoTok), dash(unsetTok)
+	})
+	if got := len(filterAttention(k.Attention, "overdue")); got != 1 {
 		t.Errorf("Kiritimati viewer: %d overdue entries, want 1", got)
 	}
-	d := dash(pagoTok)
 	if got := len(filterAttention(d.Attention, "overdue")); got != 0 {
 		t.Errorf("Pago_Pago viewer: %d overdue entries, want 0", got)
 	}
@@ -319,8 +331,7 @@ func TestTASK4101_OverdueUsesViewerZone(t *testing.T) {
 		t.Errorf("set zone: timezone=%q note=%q", d.Timezone, d.TimezoneNote)
 	}
 	// Unset computes in UTC and says so.
-	d = dash(unsetTok)
-	utcDay := time.Now().UTC().Format("2006-01-02")
+	d = u
 	wantOverdue := 0
 	if due < utcDay {
 		wantOverdue = 1
@@ -369,23 +380,25 @@ func TestTASK4101_AutoStampsActorsDay(t *testing.T) {
 		t.Fatal(err)
 	}
 	stamp := func(token, zone, title string) string {
-		it, err := srv.store.CreateItem(ws.ID, coll.ID, models.ItemCreate{Title: title, Fields: `{"status":"open"}`})
-		if err != nil {
-			t.Fatal(err)
-		}
 		loc, _ := time.LoadLocation(zone)
-		before := time.Now().In(loc).Format("2006-01-02")
-		rr := doRequestWithCookie(srv, "PATCH", "/api/v1/workspaces/"+ws.Slug+"/items/"+it.Slug, map[string]any{"fields": `{"status":"active"}`}, token)
-		if rr.Code != http.StatusOK {
-			t.Fatalf("PATCH: %d %s", rr.Code, rr.Body.String())
-		}
-		after := time.Now().In(loc).Format("2006-01-02")
+		var it *models.Item
+		day := tz4101StableDay(t, func() string { return time.Now().In(loc).Format("2006-01-02") }, func() {
+			var err error
+			it, err = srv.store.CreateItem(ws.ID, coll.ID, models.ItemCreate{Title: title, Fields: `{"status":"open"}`})
+			if err != nil {
+				t.Fatal(err)
+			}
+			rr := doRequestWithCookie(srv, "PATCH", "/api/v1/workspaces/"+ws.Slug+"/items/"+it.Slug, map[string]any{"fields": `{"status":"active"}`}, token)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("PATCH: %d %s", rr.Code, rr.Body.String())
+			}
+		})
 		got, _ := srv.store.GetItem(it.ID)
 		var f map[string]any
 		_ = json.Unmarshal([]byte(got.Fields), &f)
 		sd, _ := f["start_date"].(string)
-		if sd != before && sd != after {
-			t.Errorf("%s: start_date = %q, want %q", zone, sd, before)
+		if sd != day {
+			t.Errorf("%s: start_date = %q, want %q", zone, sd, day)
 		}
 		return sd
 	}
@@ -394,4 +407,27 @@ func TestTASK4101_AutoStampsActorsDay(t *testing.T) {
 	if k == p {
 		t.Errorf("both actors stamped %q; the zones are 25h apart", k)
 	}
+}
+
+func TestTZ4101_DayBracketRetries(t *testing.T) {
+	days := []string{"old", "new", "new", "new"}
+	reads, requests := 0, 0
+	day := tz4101StableDay(t, func() string { d := days[reads]; reads++; return d }, func() { requests++ })
+	if day != "new" || requests != 2 {
+		t.Fatalf("boundary retry: day=%s requests=%d", day, requests)
+	}
+}
+
+// Retry the request once across midnight, then assert only a stable day's result.
+func tz4101StableDay(t *testing.T, day func() string, request func()) string {
+	t.Helper()
+	for range 2 {
+		before := day()
+		request()
+		if before == day() {
+			return before
+		}
+	}
+	t.Fatal("day changed during both request attempts")
+	return ""
 }
