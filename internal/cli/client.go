@@ -3133,6 +3133,16 @@ type OpKeyError struct {
 func (e *OpKeyError) Error() string { return e.Err.Error() }
 func (e *OpKeyError) Unwrap() error { return e.Err }
 
+// KeepOpKey returns to wrapped in the OpKeyError from's chain carries, so a
+// command that replaces a refusal with its own error still names the key.
+func KeepOpKey(from, to error) error {
+	var oe *OpKeyError
+	if errors.As(from, &oe) {
+		return &OpKeyError{Key: oe.Key, Err: to}
+	}
+	return to
+}
+
 // WrapOpKey wraps err in an OpKeyError when the marshalled request body has a
 // non-empty top-level op_key. It returns err unchanged when err is nil or the
 // body carries no key.

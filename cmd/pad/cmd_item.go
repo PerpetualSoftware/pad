@@ -365,7 +365,7 @@ Run with --help-collections to see available collections and their status values
 				if apiErr := cli.AsAPIError(err); apiErr != nil {
 					if apiErr.AsPlanLimit() != nil {
 						cli.WritePlanLimitError(os.Stderr, apiErr)
-						return fmt.Errorf("item creation blocked: plan limit reached")
+						return cli.KeepOpKey(err, fmt.Errorf("item creation blocked: plan limit reached"))
 					}
 				}
 				return err
