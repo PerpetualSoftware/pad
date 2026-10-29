@@ -62,8 +62,10 @@ func OutstandingInstant(sc *models.ItemSchedule, view *time.Location) (time.Time
 // A floating schedule is walked in the reader's zone, so O is taken by its WALL
 // there (next_wall resolved in view), whatever the row's state; its stored
 // instant is in the recipient's zone and would mix zones with the walk
-// (TASK-4103 C2a r1 H-M1). A pinned schedule has one zone, so O is its instant. truncated is true when the count is a floor: the window is capped at
-// 92 days past the outstanding occurrence (or the anchor floor), and at 500 instances.
+// (TASK-4103 C2a r1 H-M1). A pinned schedule has one zone, so O is its instant.
+//
+// truncated is true when the count is a floor: the window is capped at 92 days
+// past the outstanding occurrence (or the anchor floor), and at 500 instances.
 //
 // The walk never starts before the schedule's anchor: the rule is compiled from
 // anchor_wall when there is one (history before it is not preserved) and the
