@@ -508,6 +508,20 @@ func (s *Store) updateScheduleAt(workspaceID, itemID string, upd models.Schedule
 	}
 	defer tx.Rollback()
 
+	// Item before schedule, like every other writer (fire pins item, workspace,
+	// schedule). FOR KEY SHARE is enough: it waits for a writer holding the item
+	// FOR UPDATE and keeps the item from being deleted under the revive path's
+	// managed-row insert. A missing item is not an error here; the schedule read
+	// below then finds nothing.
+	if s.dialect.Driver() == DriverPostgres {
+		var one int
+		err := tx.QueryRow(s.q(`SELECT 1 FROM items WHERE id = ? AND workspace_id = ? FOR KEY SHARE`),
+			itemID, workspaceID).Scan(&one)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("update schedule: lock item: %w", err)
+		}
+	}
+
 	cur, err := s.getScheduleQ(tx, workspaceID, itemID, true)
 	if err != nil || cur == nil {
 		return nil, err

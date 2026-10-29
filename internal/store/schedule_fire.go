@@ -32,6 +32,11 @@ import (
 // statement (the rows are locked in the order of the OF list). It reports false
 // when the item or workspace was archived, or the row or schedule is gone, since
 // the scan.
+//
+// The item, workspace, schedule order relies on Postgres taking the rowmarks of
+// FOR NO KEY UPDATE OF in OF-list order. That is planner behaviour, not a
+// documented guarantee; the tests pin the observable result (a held schedule
+// blocks the fire before it touches the reminder), not the planner.
 func (s *Store) pinManagedReminderTx(tx *sql.Tx, id string) (bool, error) {
 	var pinned string
 	err := tx.QueryRow(s.q(`
@@ -296,6 +301,11 @@ func (s *Store) resetFloatingForItem(itemID string) {
 }
 
 func (s *Store) resetFloatingBound(match string, arg string) error {
+	if s.resetFloatingFault != nil {
+		if err := s.resetFloatingFault(); err != nil {
+			return err
+		}
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err

@@ -793,3 +793,90 @@ func TestScheduleReanchorAvoidsCapScan(t *testing.T) {
 		t.Fatalf("re-anchored walk: %v %v %v", next, ok, err)
 	}
 }
+
+// The recipient hook is an optimisation, not a dependency: with it failing (or
+// never running, e.g. a crash between the user commit and the hook), the zone
+// write still lands and an armed floating row fires with its occurrence in the
+// NEW zone, because the fire re-resolves the zone.
+func TestScheduleFloatingFiresInTheNewZoneWhenTheTimezoneHookFails(t *testing.T) {
+	t.Parallel()
+	f := newSchedFixture(t)
+	la := f.user(t, "tz-fault4102@example.com", "America/Los_Angeles")
+	f.assign(t, f.item.ID, la.ID)
+	sc := f.create(t, models.ScheduleCreate{Kind: "check", Dtstart: "2026-11-02T09:00", Floating: true})
+	f.fire(t, "2026-11-01T20:00:00Z") // defers to 09:00 in Los Angeles
+	if r := f.reminder(t, *sc.ReminderID); r.RemindAt != "2026-11-02T17:00:00Z" {
+		t.Fatalf("setup: %s", r.RemindAt)
+	}
+
+	f.s.resetFloatingFault = func() error { return errors.New("injected hook failure") }
+	tz := "Pacific/Kiritimati"
+	if _, err := f.s.UpdateUser(la.ID, models.UserUpdate{Timezone: &tz}); err != nil {
+		t.Fatalf("the user write failed with the hook: %v", err)
+	}
+	u, err := f.s.GetUser(la.ID)
+	if err != nil || u == nil || u.Timezone == nil || *u.Timezone != tz {
+		t.Fatalf("the zone was not persisted: %+v (%v)", u, err)
+	}
+	if r := f.reminder(t, *sc.ReminderID); r.RemindAt != "2026-11-02T17:00:00Z" {
+		t.Fatalf("the failed hook still moved the row to %s", r.RemindAt)
+	}
+
+	fired := f.fire(t, "2026-11-02T18:00:00Z")
+	if len(fired) != 1 {
+		t.Fatalf("fired %d, want 1", len(fired))
+	}
+	if got := fired[0].OccurrenceAt; got == nil || *got != "2026-11-01T19:00:00Z" {
+		t.Errorf("occurrence = %v, want 2026-11-01T19:00:00Z (09:00 in Kiritimati)", got)
+	}
+}
+
+// Postgres: UpdateSchedule takes the item before the schedule, like every other
+// writer. With another transaction holding the item FOR UPDATE it waits at the
+// item and the schedule row is still free.
+func TestScheduleUpdateWaitsOnTheItemBeforeTheSchedule(t *testing.T) {
+	pgURL := os.Getenv("PAD_TEST_POSTGRES_URL")
+	if pgURL == "" {
+		t.Skip("PAD_TEST_POSTGRES_URL not set: lock order only exists on Postgres")
+	}
+	t.Parallel()
+	f := newSchedFixture(t)
+	sc := f.create(t, models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-01T09:00", Tz: "UTC", Rrule: "FREQ=DAILY"})
+
+	holder, err := f.s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Rollback()
+	if _, err := holder.Exec(f.s.q(`SELECT 1 FROM items WHERE id = ? FOR UPDATE`), f.item.ID); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		l := sc.LeadMinutes + 5
+		_, err := f.s.updateScheduleAt(f.ws.ID, f.item.ID, models.ScheduleUpdate{LeadMinutes: &l}, schedNow)
+		done <- err
+	}()
+	waitForLockWait(t, f.s, "FOR KEY SHARE", done)
+
+	// The schedule row is still free: the update has not reached it.
+	probe, err := f.s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := probe.Exec(f.s.q(`SELECT 1 FROM item_schedules WHERE id = ? FOR UPDATE NOWAIT`), sc.ID); err != nil {
+		probe.Rollback()
+		t.Fatalf("the schedule row was already held by the waiting update: %v", err)
+	}
+	probe.Rollback()
+
+	if err := holder.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if got := f.reload(t, f.item.ID); got.LeadMinutes != sc.LeadMinutes+5 {
+		t.Errorf("lead_minutes = %d, want %d", got.LeadMinutes, sc.LeadMinutes+5)
+	}
+}
