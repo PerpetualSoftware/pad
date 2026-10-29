@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"errors"
 	"testing"
 	"time"
@@ -318,21 +319,169 @@ func TestScheduleOnePerItemAndLiveItemOnly(t *testing.T) {
 }
 
 // Both rows or neither: a failure inserting the managed reminder leaves no
-// schedule behind. SQLite only: the injected failure is a trigger.
+// schedule behind. The failure is injected with a trigger on item_reminders
+// (SQLite) or a plpgsql function plus BEFORE INSERT trigger (Postgres), created
+// in this test's own database.
 func TestScheduleCreateIsAtomic(t *testing.T) {
 	t.Parallel()
 	f := newSchedFixture(t)
-	if f.s.dialect.Driver() != DriverSQLite {
-		t.Skip("failure injected with a SQLite trigger")
+	switch f.s.dialect.Driver() {
+	case DriverSQLite:
+		f.exec(t, `CREATE TRIGGER fail_managed BEFORE INSERT ON item_reminders WHEN NEW.schedule_id IS NOT NULL
+			BEGIN SELECT RAISE(ABORT, 'injected'); END`)
+	case DriverPostgres:
+		f.exec(t, `CREATE FUNCTION fail_managed_fn() RETURNS trigger AS $$
+			BEGIN RAISE EXCEPTION 'injected'; END; $$ LANGUAGE plpgsql`)
+		f.exec(t, `CREATE TRIGGER fail_managed BEFORE INSERT ON item_reminders
+			FOR EACH ROW WHEN (NEW.schedule_id IS NOT NULL) EXECUTE FUNCTION fail_managed_fn()`)
+		t.Cleanup(func() {
+			f.s.db.Exec(`DROP TRIGGER IF EXISTS fail_managed ON item_reminders`)
+			f.s.db.Exec(`DROP FUNCTION IF EXISTS fail_managed_fn()`)
+		})
+	default:
+		t.Skip("no failure injection for this driver")
 	}
-	f.exec(t, `CREATE TRIGGER fail_managed BEFORE INSERT ON item_reminders WHEN NEW.schedule_id IS NOT NULL
-		BEGIN SELECT RAISE(ABORT, 'injected'); END`)
 	_, err := f.s.createScheduleAt(f.ws.ID, f.item.ID, models.ScheduleCreate{Kind: "check", Dtstart: "2026-11-02T09:00", Tz: "UTC"}, schedNow)
 	if err == nil {
 		t.Fatal("create succeeded through an injected failure")
 	}
 	if n := f.count(t, `SELECT COUNT(*) FROM item_schedules`); n != 0 {
 		t.Fatalf("schedule row survived a failed reminder insert: %d", n)
+	}
+}
+
+// An item removed after the locked liveness check must not leave a half-row:
+// the INSERT is refused by the item foreign key and reported as item-gone.
+func TestScheduleCreateItemDeletedAfterLivenessCheck(t *testing.T) {
+	t.Parallel()
+	f := newSchedFixture(t)
+	f.s.afterScheduleLiveCheck = func(tx *sql.Tx) {
+		if _, err := tx.Exec(f.s.q(`DELETE FROM items WHERE id = ?`), f.item.ID); err != nil {
+			t.Errorf("competing delete: %v", err)
+		}
+	}
+	_, err := f.s.createScheduleAt(f.ws.ID, f.item.ID, models.ScheduleCreate{Kind: "check", Dtstart: "2026-11-02T09:00", Tz: "UTC"}, schedNow)
+	if !errors.Is(err, ErrScheduleItemGone) {
+		t.Fatalf("err = %v, want ErrScheduleItemGone", err)
+	}
+	if n := f.count(t, `SELECT COUNT(*) FROM item_schedules`); n != 0 {
+		t.Fatalf("schedule rows = %d", n)
+	}
+	if n := f.count(t, `SELECT COUNT(*) FROM item_reminders WHERE schedule_id IS NOT NULL`); n != 0 {
+		t.Fatalf("managed reminder rows = %d", n)
+	}
+}
+
+// breakStoredRule makes the stored rule uncompilable by writing the row
+// directly, the way a rule that aged out of the grammar would look.
+func (f *schedFixture) breakStoredRule(t *testing.T, sc *models.ItemSchedule) {
+	t.Helper()
+	f.exec(t, `UPDATE item_schedules SET rrule = ?, error_code = ? WHERE id = ?`, "FREQ=DAILY;BOGUS=1", "malformed", sc.ID)
+}
+
+// error_code clears only when the merged spec compiles: re-sending a rule that
+// is still broken keeps it and returns the compile error.
+func TestScheduleUpdateErrorCodeClearsOnlyWhenMergedSpecCompiles(t *testing.T) {
+	t.Parallel()
+	f := newSchedFixture(t)
+	sc := f.create(t, models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-30T09:00", Tz: "UTC", Rrule: "FREQ=DAILY"})
+	f.breakStoredRule(t, sc)
+
+	broken := "FREQ=DAILY;BOGUS=1"
+	_, err := f.s.updateScheduleAt(f.ws.ID, f.item.ID, models.ScheduleUpdate{Rrule: &broken}, schedNow)
+	if err == nil || ScheduleErrorCode(err) == "" {
+		t.Fatalf("re-sent broken rule: err = %v, want a compile error", err)
+	}
+	got, _ := f.s.GetSchedule(f.ws.ID, f.item.ID)
+	if got.ErrorCode == nil || *got.ErrorCode != "malformed" {
+		t.Fatalf("error_code after a refused resend = %v", got.ErrorCode)
+	}
+	good := "FREQ=WEEKLY"
+	if got := f.update(t, models.ScheduleUpdate{Rrule: &good}); got.ErrorCode != nil {
+		t.Fatalf("error_code survived a compiling timing edit: %v", *got.ErrorCode)
+	}
+}
+
+// A non-timing edit never recompiles: it works on a schedule whose stored rule
+// no longer compiles, and leaves error_code and the rule as they are.
+func TestScheduleUpdateNonTimingNeverRecompiles(t *testing.T) {
+	t.Parallel()
+	f := newSchedFixture(t)
+	sc := f.create(t, models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-30T09:00", Tz: "UTC", Rrule: "FREQ=DAILY"})
+	f.breakStoredRule(t, sc)
+
+	assertBroken := func(step string, got *models.ItemSchedule) {
+		t.Helper()
+		if got.ErrorCode == nil || *got.ErrorCode != "malformed" || got.Rrule == nil || *got.Rrule != "FREQ=DAILY;BOGUS=1" {
+			t.Fatalf("%s: error_code/rrule disturbed: %v %v", step, got.ErrorCode, got.Rrule)
+		}
+	}
+	kind := "deadline_soft"
+	got := f.update(t, models.ScheduleUpdate{Kind: &kind})
+	if got.Kind != kind {
+		t.Fatalf("kind = %s", got.Kind)
+	}
+	assertBroken("kind", got)
+
+	aud := "agent"
+	got = f.update(t, models.ScheduleUpdate{Audience: &aud})
+	if got.Audience != aud {
+		t.Fatalf("audience = %s", got.Audience)
+	}
+	assertBroken("audience", got)
+
+	lead := 60
+	got = f.update(t, models.ScheduleUpdate{LeadMinutes: &lead})
+	assertBroken("lead", got)
+	if r := f.managed(t, got); r.RemindAt != "2026-10-30T08:00:00Z" || r.FiredAt != nil {
+		t.Fatalf("armed row not retimed from the stored occurrence: %+v", r)
+	}
+}
+
+// A lead edit on a fired row leaves remind_at, fired_at and acked_at alone.
+func TestScheduleLeadEditLeavesAFiredRowAlone(t *testing.T) {
+	t.Parallel()
+	f := newSchedFixture(t)
+	sc := f.create(t, models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-30T09:00", Tz: "UTC"})
+	f.exec(t, `UPDATE item_reminders SET fired_at = ?, acked_at = ? WHERE id = ?`, "2026-10-30T09:00:00Z", "2026-10-30T09:05:00Z", *sc.ReminderID)
+	lead := 45
+	got := f.update(t, models.ScheduleUpdate{LeadMinutes: &lead})
+	if got.LeadMinutes != lead {
+		t.Fatalf("lead = %d", got.LeadMinutes)
+	}
+	r := f.managed(t, got)
+	if r.RemindAt != "2026-10-30T09:00:00Z" || r.FiredAt == nil || *r.FiredAt != "2026-10-30T09:00:00Z" || r.AckedAt == nil || *r.AckedAt != "2026-10-30T09:05:00Z" {
+		t.Fatalf("fired row disturbed: %+v", r)
+	}
+}
+
+// The lead write is conditional on the row still being armed. Interleave: the
+// instant is computed from an armed row, the row then fires, then the write
+// runs; it must stay fired with its instant, not be re-armed.
+func TestScheduleLeadWriteDoesNotUnfireARowFiredInBetween(t *testing.T) {
+	t.Parallel()
+	f := newSchedFixture(t)
+	sc := f.create(t, models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-30T09:00", Tz: "UTC"})
+	at, err := storedFireInstant(sc, 60)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The tick fires the row after the schedule was read and before the write.
+	f.exec(t, `UPDATE item_reminders SET fired_at = ? WHERE id = ?`, "2026-10-30T09:00:00Z", *sc.ReminderID)
+
+	tx, err := f.s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.retimeArmedReminderTx(tx, sc.ID, NormalizeInstant(at)); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	r := f.managed(t, sc)
+	if r.FiredAt == nil || r.RemindAt != "2026-10-30T09:00:00Z" {
+		t.Fatalf("a fired row was re-armed or retimed: %+v", r)
 	}
 }
 

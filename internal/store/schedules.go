@@ -390,6 +390,9 @@ func (s *Store) createScheduleAt(workspaceID, itemID string, in models.ScheduleC
 	if err := s.requireLiveItemTx(tx, workspaceID, itemID); err != nil {
 		return nil, err
 	}
+	if s.afterScheduleLiveCheck != nil {
+		s.afterScheduleLiveCheck(tx)
+	}
 	id, ts := newID(), now()
 	var dtend, tzVal, rrule any
 	if hasEnd {
@@ -410,6 +413,9 @@ func (s *Store) createScheduleAt(workspaceID, itemID string, in models.ScheduleC
 		NormalizeInstant(arm.NextAt), arm.NextWall.String(), ts, ts); err != nil {
 		if isUniqueViolation(err) {
 			return nil, ErrScheduleExists
+		}
+		if isForeignKeyViolation(err) { // the item went away after the liveness check
+			return nil, ErrScheduleItemGone
 		}
 		return nil, fmt.Errorf("create schedule: %w", err)
 	}
@@ -550,11 +556,32 @@ func (s *Store) updateScheduleAt(workspaceID, itemID string, upd models.Schedule
 		next.ExDates = *upd.ExDates
 	}
 
-	c, err := compileScheduleSpec(next)
-	if err != nil {
-		return nil, err
+	timingNamed := upd.Dtstart != nil || upd.Dtend != nil || upd.Tz != nil || upd.Floating != nil ||
+		upd.Rrule != nil || upd.RDates != nil || upd.ExDates != nil || upd.Anchor != nil
+
+	// A non-timing edit never compiles: the stored rule is carried as it is, so a
+	// schedule whose rule no longer compiles can still change its label-level
+	// fields and keeps its error_code. Only a timing edit goes through the door.
+	var c *schedule.Compiled
+	var spec schedule.Spec
+	if timingNamed {
+		if c, err = compileScheduleSpec(next); err != nil {
+			return nil, err
+		}
+		spec = c.Spec()
+	} else {
+		start, err := schedule.ParseWall(cur.Dtstart)
+		if err != nil {
+			return nil, fmt.Errorf("parse stored dtstart: %w", err)
+		}
+		spec = schedule.Spec{Start: start, Floating: cur.Floating, Zone: deref(cur.Tz), Rule: deref(cur.Rrule)}
+		if spec.RDates, err = parseWalls(cur.RDates); err != nil {
+			return nil, err
+		}
+		if spec.ExDates, err = parseWalls(cur.ExDates); err != nil {
+			return nil, err
+		}
 	}
-	spec := c.Spec()
 	end, hasEnd, err := validateScheduleFields(kind, anchor, audience, lead, spec.Start, dtend)
 	if err != nil {
 		return nil, err
@@ -565,8 +592,6 @@ func (s *Store) updateScheduleAt(workspaceID, itemID string, upd models.Schedule
 	if hasEnd {
 		endText = end.String()
 	}
-	timingNamed := upd.Dtstart != nil || upd.Dtend != nil || upd.Tz != nil || upd.Floating != nil ||
-		upd.Rrule != nil || upd.RDates != nil || upd.ExDates != nil || upd.Anchor != nil
 	timingChanged := spec.Start.String() != cur.Dtstart || endText != deref(cur.Dtend) ||
 		spec.Floating != cur.Floating || (!spec.Floating && spec.Zone != deref(cur.Tz)) ||
 		spec.Rule != deref(cur.Rrule) || anchor != cur.Anchor ||
@@ -577,6 +602,7 @@ func (s *Store) updateScheduleAt(workspaceID, itemID string, upd models.Schedule
 	nextAt, nextWall, override := cur.NextAt, cur.NextWall, cur.NextOverrideAt
 	anchorWall, endedAt, errCode := cur.AnchorWall, cur.EndedAt, cur.ErrorCode
 	var rearm *time.Time
+	leadRetime := false
 	deleteRow := false
 
 	switch {
@@ -609,13 +635,12 @@ func (s *Store) updateScheduleAt(workspaceID, itemID string, upd models.Schedule
 		r := arm.RemindAt
 		rearm = &r
 	case lead != cur.LeadMinutes && cur.EndedAt == nil && nextAt != nil && nextWall != nil:
-		r, ok, err := s.armedReminderInstantTx(tx, c, cur, lead)
+		r, err := storedFireInstant(cur, lead)
 		if err != nil {
 			return nil, err
 		}
-		if ok {
-			rearm = &r
-		}
+		rearm = &r
+		leadRetime = true
 	}
 
 	var tzVal, rrule, dtendVal any
@@ -645,6 +670,13 @@ func (s *Store) updateScheduleAt(workspaceID, itemID string, upd models.Schedule
 		if err := s.deleteManagedReminderTx(tx, cur.ID); err != nil {
 			return nil, err
 		}
+	case leadRetime:
+		// Only an armed row moves, and the write itself is conditional, so a tick
+		// that fires the row between our read of the schedule and this statement
+		// is never un-fired. fired_at and acked_at are not touched.
+		if err := s.retimeArmedReminderTx(tx, cur.ID, NormalizeInstant(*rearm)); err != nil {
+			return nil, err
+		}
 	case rearm != nil:
 		at := NormalizeInstant(*rearm)
 		ok, err := s.rearmManagedReminderTx(tx, cur.ID, at)
@@ -663,42 +695,60 @@ func (s *Store) updateScheduleAt(workspaceID, itemID string, upd models.Schedule
 	return s.GetSchedule(workspaceID, itemID)
 }
 
-// armedReminderInstantTx recomputes the instant of a still-armed managed row
-// after a lead change, from the stored outstanding occurrence. ok is false when
-// the row is fired (its occurrence has already gone out) or absent.
-func (s *Store) armedReminderInstantTx(tx *sql.Tx, c *schedule.Compiled, cur *models.ItemSchedule, lead int) (time.Time, bool, error) {
-	var one int
-	err := tx.QueryRow(s.q(`SELECT 1 FROM item_reminders WHERE schedule_id = ? AND fired_at IS NULL`), cur.ID).Scan(&one)
-	if errors.Is(err, sql.ErrNoRows) {
-		return time.Time{}, false, nil
-	}
-	if err != nil {
-		return time.Time{}, false, fmt.Errorf("read managed reminder: %w", err)
-	}
+// storedFireInstant recomputes a managed row's instant after a lead change from
+// the stored outstanding occurrence, its zone and any override, through
+// fireInstant. It never compiles the rule.
+func storedFireInstant(cur *models.ItemSchedule, lead int) (time.Time, error) {
 	wall, err := schedule.ParseWall(*cur.NextWall)
 	if err != nil {
-		return time.Time{}, false, err
+		return time.Time{}, err
 	}
 	at, err := time.Parse(time.RFC3339, *cur.NextAt)
 	if err != nil {
-		return time.Time{}, false, fmt.Errorf("parse next_at: %w", err)
+		return time.Time{}, fmt.Errorf("parse next_at: %w", err)
 	}
 	var override *time.Time
 	if cur.NextOverrideAt != nil {
 		o, err := time.Parse(time.RFC3339, *cur.NextOverrideAt)
 		if err != nil {
-			return time.Time{}, false, fmt.Errorf("parse next_override_at: %w", err)
+			return time.Time{}, fmt.Errorf("parse next_override_at: %w", err)
 		}
 		override = &o
 	}
-	spec := c.Spec()
 	loc := boundZone
-	if !spec.Floating {
-		if loc, err = time.LoadLocation(spec.Zone); err != nil {
-			return time.Time{}, false, fmt.Errorf("load schedule zone: %w", err)
+	if !cur.Floating {
+		if cur.Tz == nil {
+			return time.Time{}, errors.New("pinned schedule has no zone")
+		}
+		if loc, err = time.LoadLocation(*cur.Tz); err != nil {
+			return time.Time{}, fmt.Errorf("load schedule zone: %w", err)
 		}
 	}
-	return fireInstant(at, wall, loc, lead, override), true, nil
+	return fireInstant(at, wall, loc, lead, override), nil
+}
+
+// retimeArmedReminderTx moves the managed row's instant only while it is still
+// armed. It returns nil on 0 rows (fired or absent): a fired row's occurrence
+// has already gone out and is left alone.
+func (s *Store) retimeArmedReminderTx(tx *sql.Tx, scheduleID, remindAt string) error {
+	if _, err := tx.Exec(s.q(`
+		UPDATE item_reminders SET remind_at = ?, updated_at = ?
+		WHERE schedule_id = ? AND fired_at IS NULL`), remindAt, now(), scheduleID); err != nil {
+		return fmt.Errorf("retime managed reminder: %w", err)
+	}
+	return nil
+}
+
+func parseWalls(ws []string) ([]schedule.Wall, error) {
+	var out []schedule.Wall
+	for _, w := range ws {
+		p, err := schedule.ParseWall(w)
+		if err != nil {
+			return nil, fmt.Errorf("parse stored wall: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, nil
 }
 
 // DeleteSchedule removes an item's schedule, its managed reminder row and its
