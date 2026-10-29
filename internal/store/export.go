@@ -468,11 +468,16 @@ func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExpor
 	// item_links can carry soft-deleted endpoints because a link is a row
 	// ABOUT two items and the graph is worth round-tripping raw; a reminder
 	// whose item is absent is not a relationship, it is a dangling schedule.
+	//
+	// MANAGED ROWS ARE SKIPPED (TASK-4102): a reminder with schedule_id set is the
+	// outstanding occurrence of a schedule the bundle does not carry yet, and
+	// import would resurrect it as a free-standing reminder firing on its own.
+	// The schedule is lost on export, copy and migrate-to-pg until it is carried.
 	reminderRows, err := q.Query(s.q(`
 		SELECT r.item_id, r.remind_at, COALESCE(r.fired_at, ''), COALESCE(r.acked_at, ''), r.created_at, r.updated_at
 		FROM item_reminders r
 		JOIN items i ON i.id = r.item_id AND i.workspace_id = r.workspace_id
-		WHERE r.workspace_id = ? AND i.deleted_at IS NULL
+		WHERE r.workspace_id = ? AND i.deleted_at IS NULL AND r.schedule_id IS NULL
 		ORDER BY r.created_at, r.id`), ws.ID)
 	if err != nil {
 		return nil, fmt.Errorf("export reminders: %w", err)

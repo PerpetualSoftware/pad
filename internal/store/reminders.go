@@ -245,13 +245,13 @@ func (s *Store) RearmReminder(workspaceID, id, remindAt string) (*models.Reminde
 	res, err := s.db.Exec(s.q(`
 		UPDATE item_reminders
 		SET remind_at = ?, fired_at = NULL, acked_at = NULL, updated_at = ?
-		WHERE id = ? AND workspace_id = ?
+		WHERE id = ? AND workspace_id = ? AND schedule_id IS NULL
 	`), remindAt, now(), id, workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("rearm reminder: %w", err)
 	}
 	if n, err := res.RowsAffected(); err == nil && n == 0 {
-		return nil, nil
+		return nil, s.refuseIfManaged(workspaceID, id)
 	}
 	return s.GetReminder(workspaceID, id)
 }
@@ -284,13 +284,13 @@ func (s *Store) AckReminder(workspaceID, id string) (*models.Reminder, error) {
 		UPDATE item_reminders
 		SET updated_at = CASE WHEN acked_at IS NULL THEN ? ELSE updated_at END,
 		    acked_at = COALESCE(acked_at, ?)
-		WHERE id = ? AND workspace_id = ? AND fired_at IS NOT NULL
+		WHERE id = ? AND workspace_id = ? AND fired_at IS NOT NULL AND schedule_id IS NULL
 	`), ts, ts, id, workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("ack reminder: %w", err)
 	}
 	if n, err := res.RowsAffected(); err == nil && n == 0 {
-		return nil, nil
+		return nil, s.refuseIfManaged(workspaceID, id)
 	}
 	return s.GetReminder(workspaceID, id)
 }
@@ -299,7 +299,7 @@ func (s *Store) AckReminder(workspaceID, id string) (*models.Reminder, error) {
 // only disarm: there is no "cancelled" state, because a cancelled reminder and
 // an absent one are indistinguishable to every surface that reads them.
 func (s *Store) DeleteReminder(workspaceID, id string) (bool, error) {
-	res, err := s.db.Exec(s.q(`DELETE FROM item_reminders WHERE id = ? AND workspace_id = ?`), id, workspaceID)
+	res, err := s.db.Exec(s.q(`DELETE FROM item_reminders WHERE id = ? AND workspace_id = ? AND schedule_id IS NULL`), id, workspaceID)
 	if err != nil {
 		return false, fmt.Errorf("delete reminder: %w", err)
 	}
@@ -307,7 +307,30 @@ func (s *Store) DeleteReminder(workspaceID, id string) (bool, error) {
 	if err != nil {
 		return false, nil
 	}
-	return n > 0, nil
+	if n == 0 {
+		return false, s.refuseIfManaged(workspaceID, id)
+	}
+	return true, nil
+}
+
+// refuseIfManaged is what RearmReminder, AckReminder and DeleteReminder answer
+// when their statement matched nothing: ErrReminderManaged if the row exists and
+// belongs to a schedule, nil otherwise (not found, or not yet fired, as before).
+//
+// THE PREDICATE IS IN THE STORE, not only at the HTTP door, for the reason
+// normalizeRemindAt gives: the store is callable from anywhere in the process.
+// A managed row changes only through its schedule's own writers (create,
+// update, delete, the tick), which use statements that do not carry it.
+func (s *Store) refuseIfManaged(workspaceID, id string) error {
+	var one int
+	err := s.db.QueryRow(s.q(`SELECT 1 FROM item_reminders WHERE id = ? AND workspace_id = ? AND schedule_id IS NOT NULL AND `+reminderOwned), id, workspaceID).Scan(&one)
+	switch {
+	case err == sql.ErrNoRows:
+		return nil
+	case err != nil:
+		return fmt.Errorf("check managed reminder: %w", err)
+	}
+	return ErrReminderManaged
 }
 
 // ListPendingReminders returns a workspace's fired-and-unacked reminders,
