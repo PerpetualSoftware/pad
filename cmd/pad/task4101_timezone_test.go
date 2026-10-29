@@ -20,9 +20,16 @@ const tzNotice = "times shown in UTC; set yours with pad auth timezone <IANA>\n"
 
 func tzCLI(t *testing.T, handler http.HandlerFunc) *cobra.Command {
 	t.Helper()
+	return tzCLIWithLocal(t, handler, time.FixedZone("Machine", 9*3600))
+}
+
+// tzCLIWithLocal sets the machine zone BEFORE the stub server starts: its
+// goroutines read time.Local, so a later write is a data race (TASK-4101).
+func tzCLIWithLocal(t *testing.T, handler http.HandlerFunc, local *time.Location) *cobra.Command {
+	t.Helper()
 	t.Setenv("TZ", "UTC")
 	old := time.Local
-	time.Local = time.FixedZone("Machine", 9*3600)
+	time.Local = local
 	t.Cleanup(func() { time.Local = old })
 	setTempHomeMain(t)
 	srv := httptest.NewServer(handler)
@@ -93,9 +100,8 @@ func TestTZ4101_JSONHasNoNotice(t *testing.T) {
 			zone = "Pacific/Pago_Pago"
 		}
 		loc, _ := time.LoadLocation(zone)
-		root := tzCLI(t, tzStub(fmt.Sprintf("%q", zone), &hits))
 		// The machine day equals the UTC day, so one date excludes both.
-		time.Local = time.UTC
+		root := tzCLIWithLocal(t, tzStub(fmt.Sprintf("%q", zone), &hits), time.UTC)
 		utcBefore := time.Now().UTC().Format("2006-01-02")
 		before := time.Now().In(loc).Format("2006-01-02")
 		out, stderr, err := tzRun(t, root, "project", "standup", "--format", "json")
