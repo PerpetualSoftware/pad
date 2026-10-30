@@ -137,16 +137,19 @@ func TestTASK4137_PKCEBound_WrongOrMissingVerifier_401(t *testing.T) {
 }
 
 func TestTASK4137_IPBound_WithVerifier_401(t *testing.T) {
-	f := newT4137Fixture(t)
-	ch := f.challengeFor(t, t4137IPA, nil)
-	code := validTOTPCode(t, t4137Secret)
-	// a verifier on an IP-bound token is refused, even from the minting IP
-	for _, remote := range []string{t4137IPA, t4137IPB} {
-		rr := f.verify(remote, map[string]interface{}{"challenge_token": ch, "code": code, "code_verifier": t4137Verifier})
-		if rr.Code != http.StatusUnauthorized {
-			t.Fatalf("IP-bound + verifier from %s: %d %s", remote, rr.Code, rr.Body.String())
+	// Absent and JSON null both mint IP-bound (docs/api.md): the right verifier is refused.
+	for _, extra := range []map[string]interface{}{nil, {"two_factor_pkce_challenge": nil}} {
+		f := newT4137Fixture(t)
+		ch := f.challengeFor(t, t4137IPA, extra)
+		code := validTOTPCode(t, t4137Secret)
+		// a verifier on an IP-bound token is refused, even from the minting IP
+		for _, remote := range []string{t4137IPA, t4137IPB} {
+			rr := f.verify(remote, map[string]interface{}{"challenge_token": ch, "code": code, "code_verifier": t4137Verifier})
+			if rr.Code != http.StatusUnauthorized {
+				t.Fatalf("IP-bound (%v) + verifier from %s: %d %s", extra, remote, rr.Code, rr.Body.String())
+			}
+			t4137NoSession(t, rr)
 		}
-		t4137NoSession(t, rr)
 	}
 }
 
