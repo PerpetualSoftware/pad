@@ -150,13 +150,15 @@ func TestScheduleFireWritesExactlyOneOutboxEvent(t *testing.T) {
 	key := func(k string) int {
 		return f.count(t, `SELECT COUNT(*) FROM user_notifications WHERE user_id = ? AND dedupe_key = ?`, u.ID, k)
 	}
-	if key("reminder:"+*sc.ReminderID+":2026-10-28T09:00:00Z") != 1 {
-		t.Fatalf("no notification keyed on the occurrence")
+	firedAt := f.reminder(t, *sc.ReminderID).FiredAt
+	if firedAt == nil || key("reminder:"+*sc.ReminderID+":2026-10-28T09:00:00Z:"+*firedAt) != 1 {
+		t.Fatalf("no notification keyed on the occurrence and the arming")
 	}
 	f.exec(t, `UPDATE item_reminders SET fired_at = NULL, remind_at = ? WHERE id = ?`, "2026-10-28T10:00:00Z", *sc.ReminderID)
 	f.exec(t, `UPDATE item_schedules SET next_at = ?, next_wall = ? WHERE id = ?`, "2026-10-28T10:00:00Z", "2026-10-28T10:00:00", sc.ID)
 	f.fire(t, "2026-10-29T12:00:00Z")
-	if key("reminder:"+*sc.ReminderID+":2026-10-28T10:00:00Z") != 1 {
+	firedAt = f.reminder(t, *sc.ReminderID).FiredAt
+	if firedAt == nil || key("reminder:"+*sc.ReminderID+":2026-10-28T10:00:00Z:"+*firedAt) != 1 {
 		t.Errorf("the second occurrence was collapsed into the first notification")
 	}
 	if n := f.count(t, `SELECT COUNT(*) FROM user_notifications WHERE user_id = ? AND kind = 'reminder'`, u.ID); n != 2 {
@@ -611,7 +613,8 @@ func TestScheduleCascadeOnItemDeleteStopsFiring(t *testing.T) {
 }
 
 // The reads fill occurrence_at: stored for a pinned schedule, read in the
-// recipient's zone for an armed floating one (a fired floating row carries none).
+// recipient's zone for an armed floating one, and the instant it fired for on a
+// fired floating one.
 func TestScheduleReadsCarryScheduleIDAndOccurrenceAt(t *testing.T) {
 	t.Parallel()
 	f := newSchedFixture(t)
@@ -645,9 +648,10 @@ func TestScheduleReadsCarryScheduleIDAndOccurrenceAt(t *testing.T) {
 		}
 		seen++
 		if *pr.ScheduleID == sc.ID {
-			// Fired and floating: no reading (the H-L2 fallback, TASK-4102 PR2).
-			if pr.OccurrenceAt != nil {
-				t.Errorf("pending fired floating occurrence_at = %v, want none", *pr.OccurrenceAt)
+			// Fired and floating: the instant it fired for (LA 09:00), read from
+			// next_at, which the fire transaction overwrote (TASK-4103).
+			if pr.OccurrenceAt == nil || *pr.OccurrenceAt != "2026-11-02T17:00:00Z" {
+				t.Errorf("pending fired floating occurrence_at = %v, want 2026-11-02T17:00:00Z", pr.OccurrenceAt)
 			}
 			continue
 		}
@@ -924,12 +928,13 @@ func TestScheduleBrokenFloatingRuleRecordsErrorCodeWithoutDeferral(t *testing.T)
 	}
 }
 
-// H-L2 fallback (TASK-4102 PR2): a FIRED floating managed row has no
-// occurrence_at on a read. The zone it fired in is gone from the row, so
-// recomputing from next_wall in the recipient's CURRENT zone would disagree
-// with the event payload and the dedupe key after a zone change. Fails if the
-// guard in fillOccurrenceAt is removed (the read then shows the Tokyo reading).
-func TestFiredFloatingReminderOmitsOccurrenceAfterZoneChange(t *testing.T) {
+// A FIRED floating managed row reports the instant it fired for (TASK-4103,
+// replacing the PR2 H-L2 omit fallback): the fire transaction overwrites next_at
+// with it, so after the recipient's zone moves the read still equals the event
+// payload and the dedupe key. Fails if the fire does not overwrite next_at (the
+// read then falls back to the early bound) or if the read recomputes in the
+// current zone (the Tokyo reading, 2026-11-02T00:00:00Z).
+func TestFiredFloatingReminderKeepsOccurrenceAfterZoneChange(t *testing.T) {
 	t.Parallel()
 	f := newSchedFixture(t)
 	la := f.user(t, "hl2-la4102@example.com", "America/Los_Angeles")
@@ -954,8 +959,8 @@ func TestFiredFloatingReminderOmitsOccurrenceAfterZoneChange(t *testing.T) {
 		if r == nil || r.ScheduleID == nil || *r.ScheduleID != sc.ID {
 			t.Fatalf("%s: managed row missing or lost schedule_id: %+v", name, r)
 		}
-		if r.OccurrenceAt != nil {
-			t.Errorf("%s: fired floating row reports occurrence_at %s after a zone change; want none", name, *r.OccurrenceAt)
+		if r.OccurrenceAt == nil || *r.OccurrenceAt != "2026-11-02T17:00:00Z" {
+			t.Errorf("%s: fired floating row occurrence_at = %v after a zone change; want the instant it fired for, 2026-11-02T17:00:00Z", name, r.OccurrenceAt)
 		}
 	}
 	check("GetReminder", f.reminder(t, rid))
@@ -1016,4 +1021,40 @@ func TestFiredFloatingReminderOmitsOccurrenceAfterZoneChange(t *testing.T) {
 	if r := f.reminder(t, *psc.ReminderID); r.FiredAt == nil || r.OccurrenceAt == nil || *r.OccurrenceAt != "2026-11-03T09:00:00Z" {
 		t.Errorf("fired pinned row = %+v, want its stored instant", r)
 	}
+}
+
+// A floating row whose stored rule no longer compiles still fires into a fired
+// row, and "fired means next_at is exact" holds on that path too: next_at is the
+// instant in the recipient's zone, not the UTC+14 bound it was armed at
+// (TASK-4103 C2a r1 H-M2). RED when the compile-error branch leaves the bound.
+func TestFloatingFireWithBrokenRuleRecordsTheExactInstant(t *testing.T) {
+	t.Parallel()
+	f := newSchedFixture(t)
+	u := f.user(t, "c2a-broken@example.com", "Asia/Tokyo")
+	f.assign(t, f.item.ID, u.ID)
+	sc := f.create(t, models.ScheduleCreate{Kind: "check", Dtstart: "2026-11-02T09:00", Floating: true, Rrule: "FREQ=DAILY"})
+	if sc.NextAt == nil || *sc.NextAt != "2026-11-01T19:00:00Z" {
+		t.Fatalf("setup: next_at = %v, want the UTC+14 bound", sc.NextAt)
+	}
+	f.exec(t, `UPDATE item_schedules SET rrule = ? WHERE id = ?`, "FREQ=DAILY;BOGUS=1", sc.ID)
+	if got := f.fire(t, "2026-11-02T01:00:00Z"); len(got) != 0 {
+		t.Fatalf("a broken rule produced an event: %v", got)
+	}
+	cur := f.reload(t, f.item.ID)
+	if cur.ErrorCode == nil || !cur.ReminderFired {
+		t.Fatalf("setup: error_code %v fired %v", cur.ErrorCode, cur.ReminderFired)
+	}
+	if cur.NextAt == nil || *cur.NextAt != "2026-11-02T00:00:00Z" {
+		t.Errorf("next_at = %v, want Tokyo's 09:00 = 2026-11-02T00:00:00Z", deref(cur.NextAt))
+	}
+	if r := f.reminder(t, *sc.ReminderID); r.OccurrenceAt == nil || *r.OccurrenceAt != "2026-11-02T00:00:00Z" {
+		t.Errorf("reminder occurrence_at = %v, want 2026-11-02T00:00:00Z", deref(r.OccurrenceAt))
+	}
+}
+
+func deref(p *string) string {
+	if p == nil {
+		return "<nil>"
+	}
+	return *p
 }

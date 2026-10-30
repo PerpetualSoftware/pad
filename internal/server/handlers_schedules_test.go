@@ -940,3 +940,74 @@ func TestScheduleAuthMatrix(t *testing.T) {
 		f.expectErr(f.do(m, okSchedule), 409, "archived", "")
 	}
 }
+
+// The view carries missed_count, missed_truncated and stale (TASK-4103 C2a): the
+// instances that passed after the outstanding occurrence, which is not counted.
+// A healthy schedule carries none of the three members.
+func TestScheduleViewCarriesMissedCountAndStale(t *testing.T) {
+	t.Parallel()
+	f := newSchedHTTP(t)
+	f.create(map[string]any{"kind": "check", "dtstart": "2099-01-01T09:00", "tz": "UTC", "rrule": "FREQ=HOURLY"})
+	get := func() map[string]any {
+		rr := f.do("GET", nil)
+		if rr.Code != 200 {
+			t.Fatalf("GET %d %s", rr.Code, rr.Body.String())
+		}
+		return schedMap(t, rr)
+	}
+	for _, k := range []string{"missed_count", "missed_truncated", "stale"} {
+		if _, ok := get()[k]; ok {
+			t.Errorf("a future schedule carries %s", k)
+		}
+	}
+	// Put the outstanding occurrence `ago` back (an hourly rule from there): the
+	// instances after it that are behind now are counted, the next is ahead.
+	setBack := func(ago time.Duration) {
+		o := time.Now().UTC().Add(-ago).Truncate(time.Minute)
+		if _, err := f.srv.store.DB().Exec(f.srv.store.D().Rebind(`UPDATE item_schedules SET dtstart = ?, next_wall = ?, next_at = ? WHERE item_id = ?`),
+			o.Format("2006-01-02T15:04:05"), o.Format("2006-01-02T15:04:05"), o.Format(time.RFC3339), f.item.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setBack(90 * time.Minute)
+	v := get()
+	if v["missed_count"] != float64(1) || v["stale"] != nil || v["missed_truncated"] != nil {
+		t.Errorf("one passed: %v", v)
+	}
+	setBack(150 * time.Minute)
+	v = get()
+	if v["missed_count"] != float64(2) || v["stale"] != true {
+		t.Errorf("two passed: %v", v)
+	}
+}
+
+// A floating row with a rule that no longer compiles fires into a fired row; the
+// view's next_occurrence.at is the instant in the recipient's zone, not the
+// UTC+14 bound (TASK-4103 C2a r1 H-M2).
+func TestScheduleViewOfBrokenFiredFloatingRowIsExact(t *testing.T) {
+	t.Parallel()
+	f := newSchedHTTP(t)
+	tokyo := f.member("sched-brk-tokyo@example.com", "editor")
+	db, d := f.srv.store.DB(), f.srv.store.D()
+	if _, err := db.Exec(d.Rebind(`UPDATE users SET timezone = ? WHERE id = ?`), "Asia/Tokyo", tokyo.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(d.Rebind(`UPDATE items SET assigned_user_id = ? WHERE id = ?`), tokyo.ID, f.item.ID); err != nil {
+		t.Fatal(err)
+	}
+	f.create(map[string]any{"kind": "check", "dtstart": "2099-01-01T09:00", "floating": true, "rrule": "FREQ=DAILY"})
+	if _, err := db.Exec(d.Rebind(`UPDATE item_schedules SET rrule = ? WHERE item_id = ?`), "FREQ=DAILY;BOGUS=1", f.item.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.srv.store.FireDueReminders("2099-01-01T12:00:00Z", 0); err != nil {
+		t.Fatal(err)
+	}
+	rr := f.do("GET", nil)
+	if rr.Code != 200 {
+		t.Fatalf("GET %d %s", rr.Code, rr.Body.String())
+	}
+	occ, _ := schedMap(t, rr)["next_occurrence"].(map[string]any)
+	if occ == nil || occ["at"] != "2099-01-01T00:00:00Z" {
+		t.Errorf("next_occurrence = %v, want at 2099-01-01T00:00:00Z (Tokyo 09:00), not the 2098-12-31T19:00:00Z bound", occ)
+	}
+}

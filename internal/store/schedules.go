@@ -273,15 +273,16 @@ func nextOccurrence(c *schedule.Compiled, view *time.Location, nowT time.Time) (
 
 const scheduleColumns = `id, workspace_id, item_id, kind, dtstart, dtend, tz, floating, rrule, rdates, exdates,
 	anchor, audience, lead_minutes, next_at, next_wall, next_override_at, anchor_wall, ended_at, error_code,
-	(SELECT r.id FROM item_reminders r WHERE r.schedule_id = item_schedules.id), created_at, updated_at`
+	(SELECT r.id FROM item_reminders r WHERE r.schedule_id = item_schedules.id),
+	(SELECT r.fired_at FROM item_reminders r WHERE r.schedule_id = item_schedules.id), created_at, updated_at`
 
 func scanSchedule(row interface{ Scan(...any) error }) (*models.ItemSchedule, error) {
 	var sc models.ItemSchedule
-	var dtend, tz, rrule, nextAt, nextWall, override, anchorWall, endedAt, errCode, reminderID sql.NullString
+	var dtend, tz, rrule, nextAt, nextWall, override, anchorWall, endedAt, errCode, reminderID, reminderFired sql.NullString
 	var rdates, exdates string
 	if err := row.Scan(&sc.ID, &sc.WorkspaceID, &sc.ItemID, &sc.Kind, &sc.Dtstart, &dtend, &tz, &sc.Floating,
 		&rrule, &rdates, &exdates, &sc.Anchor, &sc.Audience, &sc.LeadMinutes, &nextAt, &nextWall, &override,
-		&anchorWall, &endedAt, &errCode, &reminderID, &sc.CreatedAt, &sc.UpdatedAt); err != nil {
+		&anchorWall, &endedAt, &errCode, &reminderID, &reminderFired, &sc.CreatedAt, &sc.UpdatedAt); err != nil {
 		return nil, err
 	}
 	for _, f := range []struct {
@@ -295,6 +296,7 @@ func scanSchedule(row interface{ Scan(...any) error }) (*models.ItemSchedule, er
 			*f.dst = &v
 		}
 	}
+	sc.ReminderFired = reminderFired.Valid
 	if err := json.Unmarshal([]byte(rdates), &sc.RDates); err != nil {
 		return nil, fmt.Errorf("decode rdates: %w", err)
 	}
