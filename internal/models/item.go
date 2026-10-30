@@ -1325,6 +1325,11 @@ type ItemCreate struct {
 	// created at sort_order 0 and appends under its parent; a parentless item
 	// is created on top of its collection (BUG-4005). Internal-only.
 	UnderParent bool `json:"-"`
+	// Append keeps the pre-BUG-4005 create position, sort_order 0, for the
+	// bulk, ordered, non-interactive creates (template seeds, an app's
+	// artifacts), so they list in the order they were made (r7-H1).
+	// Internal-only.
+	Append bool `json:"-"`
 	// ActorUserID is the request's user, stamped on the create's version row
 	// (PLAN-2348 U2). Internal-only.
 	ActorUserID string `json:"-"`

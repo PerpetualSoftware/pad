@@ -19,6 +19,10 @@ import (
 
 const manualSort = "sort_order:asc,created_at:asc,_id:asc"
 
+// boardSort is the order the board and the share link render (itemSort.ts,
+// handlers_share_links.go): same-second rows break by item_number.
+const boardSort = "sort_order:asc,created_at:asc,_num:asc,_id:asc"
+
 func listManual(t *testing.T, s *Store, wsID, colID string) []models.Item {
 	t.Helper()
 	items, err := s.ListItems(wsID, models.ItemListParams{CollectionSlug: colID, Sort: manualSort})
@@ -338,5 +342,52 @@ func TestNewItemTop_FencedCreateClampsAtTheIntegerFloor(t *testing.T) {
 	}
 	if n != math.MinInt32 {
 		t.Errorf("fenced create sort_order = %d, want the floor %d", n, math.MinInt32)
+	}
+}
+
+// Template seeds append, so a fresh workspace lists them in the order the
+// template defines: first seeded, first listed (BUG-4005 r7-H1). Seeds are
+// created in sequence, so that order is item_number order.
+func TestNewItemTop_TemplateSeedsKeepTheirOrder(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Seed Order")
+	if err := s.SeedCollectionsFromTemplate(ws.ID, "startup"); err != nil {
+		t.Fatalf("seed template: %v", err)
+	}
+	for _, coll := range []string{"conventions", "playbooks"} {
+		items, err := s.ListItems(ws.ID, models.ItemListParams{CollectionSlug: coll, Sort: boardSort})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(items) < 2 {
+			t.Fatalf("%s: want at least two seeds, got %d", coll, len(items))
+		}
+		for i := 1; i < len(items); i++ {
+			if *items[i-1].ItemNumber > *items[i].ItemNumber {
+				t.Fatalf("%s: seeds out of template order: %v", coll, titles(items))
+			}
+		}
+	}
+}
+
+// An app's artifacts append, so they list in manifest order (BUG-4005 r7-H1).
+func TestNewItemTop_ProvisionedArtifactsKeepManifestOrder(t *testing.T) {
+	f := task3397Fixture(t)
+	d := f.derived("n1")
+	want := []string{"First", "Second", "Third"}
+	d.Artifacts = nil
+	for i, title := range want {
+		d.Artifacts = append(d.Artifacts, ProvisionArtifact{Key: string(rune('a' + i)), CollectionID: f.dest.ID, Title: title,
+			Fields: map[string]any{"owner": f.target.ID}, RawSHA256: "raw", NormalizedSHA256: "n1"})
+	}
+	if _, err := f.s.ProvisionAppInstall(f.req, func(Queryer) (*ProvisionDerived, error) { return d, nil }); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	items, err := f.s.ListItems(f.ws.ID, models.ItemListParams{CollectionSlug: f.dest.Slug, Sort: boardSort})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := titles(items); !slices.Equal(got, want) {
+		t.Fatalf("artifacts out of manifest order: %v", got)
 	}
 }
