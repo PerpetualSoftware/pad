@@ -237,6 +237,7 @@ var noRemoteEquivalent = map[string]string{
 	// `github link` / `unlink` are no longer here: pad_item link-pr /
 	// unlink-pr write the PR metadata the agent supplies through the typed
 	// github_pr member, on both transports (TASK-3611).
+	"auth timezone": "personal auth setting; use pad auth timezone in the CLI",
 	"github status": "needs the agent's local git branch + `gh` CLI; query GitHub directly via the agent's tools",
 	// `project reconcile` shells out to `gh` CLI to compare stored
 	// PR metadata against live GitHub state — same locality argument.

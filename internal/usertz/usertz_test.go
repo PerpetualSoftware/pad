@@ -29,6 +29,9 @@ func TestResolve(t *testing.T) {
 			t.Errorf("unset/bad resolved to %+v", z)
 		}
 	}
+	if !strings.Contains(Note(Resolve(nil)), "pad auth timezone") {
+		t.Error("unset Note must name pad auth timezone")
+	}
 	if Note(Resolve(&ny)) != "" || Note(Resolve(nil)) == "" {
 		t.Error("Note must be empty when set and non-empty when unset")
 	}

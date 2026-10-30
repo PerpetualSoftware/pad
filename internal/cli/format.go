@@ -144,7 +144,7 @@ func RelativeTime(t time.Time) string {
 		}
 		return fmt.Sprintf("%d days ago", days)
 	default:
-		return t.Format("Jan 2, 2006")
+		return FormatInstant(t, "Jan 2, 2006")
 	}
 }
 
