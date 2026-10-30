@@ -90,8 +90,8 @@ func TestScheduleResolveStrictBodyAndFields(t *testing.T) {
 	}{
 		{"no occurrence_at", map[string]any{"state": "done"}, "occurrence_at", "required"},
 		{"no state", map[string]any{"occurrence_at": resolveX}, "state", "required"},
-		{"bad occurrence_at", map[string]any{"occurrence_at": "tomorrow", "state": "done"}, "occurrence_at", "range"},
-		{"bad until", map[string]any{"occurrence_at": resolveX, "state": "snooze", "until": "soon"}, "until", "range"},
+		{"bad occurrence_at", map[string]any{"occurrence_at": "tomorrow", "state": "done"}, "occurrence_at", "format"},
+		{"bad until", map[string]any{"occurrence_at": resolveX, "state": "snooze", "until": "soon"}, "until", "format"},
 		{"bad state", map[string]any{"occurrence_at": resolveX, "state": "later"}, "state", "enum"},
 		{"snooze without until", map[string]any{"occurrence_at": resolveX, "state": "snooze"}, "until", "required"},
 		{"done with until", map[string]any{"occurrence_at": resolveX, "state": "done", "until": resolveX}, "until", "combination"},
