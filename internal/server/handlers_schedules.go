@@ -591,7 +591,7 @@ func writeResolveError(w http.ResponseWriter, r *http.Request, err error) bool {
 func parseResolveInstant(w http.ResponseWriter, field string, raw *string) (time.Time, bool) {
 	t, err := time.Parse(time.RFC3339, *raw)
 	if err != nil {
-		writeResolveField(w, field, "range", field+" must be an RFC3339 instant")
+		writeResolveField(w, field, "format", field+" must be an RFC3339 instant")
 		return time.Time{}, false
 	}
 	return t, true
