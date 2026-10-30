@@ -90,7 +90,11 @@ check)
 	((total > 0)) || die "$pkg lists no tests"
 	: >"$tmp/union"
 	for ((k = 1; k <= n; k++)); do
-		list_tests "$pkg" "$(shard_regex "$pkg" "$n" "$k" "$@")" "$@" >"$tmp/shard$k"
+		# Its own assignment, not an argument: set -e ignores a die inside a
+		# substitution used as an argument, and -list "" then selects nothing,
+		# so an empty shard read as 0 tests and the guard passed.
+		re=$(shard_regex "$pkg" "$n" "$k" "$@")
+		list_tests "$pkg" "$re" "$@" >"$tmp/shard$k"
 		echo "shard $k/$n: $(wc -l <"$tmp/shard$k") tests"
 		cat "$tmp/shard$k" >>"$tmp/union"
 	done
