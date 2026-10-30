@@ -98,7 +98,9 @@ func (s *Store) ResolveOccurrence(workspaceID, itemID string, in ResolveInput) (
 }
 
 func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput, nowT time.Time) (*ResolveResult, error) {
-	nowT = nowT.UTC()
+	// Every stamp and walk of a resolve is a whole second: the engine's walls
+	// are, and an elapsed grid must read back exactly from its start.
+	nowT = nowT.UTC().Truncate(time.Second)
 	switch in.State {
 	case "done", "skip":
 		if in.Until != nil {
@@ -263,6 +265,16 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 	}
 
 	occ, found, anchorWall, c, err := s.nextAfterResolve(sc, rec, x, nowT)
+	if errors.Is(err, errNoExactStart) {
+		// Unreachable for a real zone (see exactElapsedStart): the schedule goes
+		// to its error state, like a stored rule that no longer compiles, not a 500.
+		tx.Rollback()
+		code := string(schedule.CodeUnsupported)
+		if _, uerr := s.db.Exec(s.q(`UPDATE item_schedules SET error_code = ?, updated_at = ? WHERE id = ?`), code, ts, sc.ID); uerr != nil {
+			return nil, fmt.Errorf("record schedule error_code: %w", uerr)
+		}
+		return nil, &ErrScheduleBroken{Code: code}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -385,15 +397,13 @@ func (s *Store) nextAfterCompletion(sc *models.ItemSchedule, rule schedule.Rule,
 		return schedule.Occurrence{}, false, nil, c, err
 	}
 	// The grid is re-phased to the completion. A calendar-unit rule starts at
-	// the candidate; an elapsed grid starts at an instant whose wall reads back exactly (the
-	// engine reads Start as the earlier half of a repeated wall), so a done in
-	// the second half of a fall-back hour phases from k spans earlier, in the
-	// first half, and the grid still contains done+span.
+	// the candidate; an elapsed grid starts at an instant whose wall reads back
+	// exactly (see exactElapsedStart), and still contains done+span.
 	span := completionSpan(rule)
 	if span > 0 {
-		st := nowT
-		for i := 0; i < 3 && schedule.Resolve(loc, wallOf(st.In(loc))) != st; i++ {
-			st = st.Add(-span * ((time.Hour + span - 1) / span))
+		st, ok := exactElapsedStart(loc, span, nowT)
+		if !ok {
+			return none(errNoExactStart)
 		}
 		w = wallOf(st.In(loc))
 	}
@@ -425,6 +435,23 @@ func (s *Store) nextAfterCompletion(sc *models.ItemSchedule, rule schedule.Rule,
 		return none(err)
 	}
 	return occ, true, &start, c, nil
+}
+
+var errNoExactStart = errors.New("no elapsed start reads back exactly")
+
+// exactElapsedStart is the start of an HOURLY or MINUTELY completion grid. The
+// engine reads a Start as Resolve(loc, wall), the EARLIER half of a repeated
+// wall, so a start must read back to itself. The first of done, done+span and
+// done-k*span (k*span >= 1h, one step back out of a repeated hour) that does is
+// taken; each has done+span on its grid. None can fail for a real zone, whose
+// repeated walls are at most an hour wide.
+func exactElapsedStart(loc *time.Location, span time.Duration, done time.Time) (time.Time, bool) {
+	for _, s := range []time.Time{done, done.Add(span), done.Add(-span * ((time.Hour + span - 1) / span))} {
+		if schedule.Resolve(loc, wallOf(s.In(loc))).Equal(s) {
+			return s, true
+		}
+	}
+	return time.Time{}, false
 }
 
 func derefStr(p *string) string {
