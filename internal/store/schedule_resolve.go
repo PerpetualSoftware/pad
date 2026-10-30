@@ -76,7 +76,8 @@ type ResolveInput struct {
 	OccurrenceAt time.Time
 	State        string     // done | skip | snooze | move
 	Until        *time.Time // snooze: the re-fire instant. move: the new due instant
-	// View is the caller's own zone. A floating occurrence that has not fired is
+	// View is the caller's own zone: the caller must pass ITS zone, not the
+	// recipient's (the HTTP handler passes viewerZone(r).Loc). A floating occurrence that has not fired is
 	// read in the zone of whoever looks, so the instant the caller saw is
 	// accepted in either its zone or the recipient's.
 	View    *time.Location
@@ -156,12 +157,15 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 		cands = append(cands, in.View)
 	}
 	want := in.OccurrenceAt.UTC().Truncate(time.Second)
-	var x time.Time
+	var x, xRec time.Time // xRec: the recipient's reading, the first candidate
 	matched := false
-	for _, v := range cands {
+	for i, v := range cands {
 		cur, ok, err := OutstandingInstant(sc, v)
 		if err != nil {
 			return nil, err
+		}
+		if i == 0 && ok {
+			xRec = cur.Truncate(time.Second)
 		}
 		if ok && cur.Truncate(time.Second).Equal(want) {
 			x, matched = cur.Truncate(time.Second), true
@@ -249,11 +253,16 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 	if in.State == "skip" {
 		state = "skipped"
 	}
+	// The history row is the recipient's reading; the caller's zone only gated
+	// acceptance (D2), and snooze/move above keep the matched instant.
+	if !xRec.IsZero() {
+		x, xAt = xRec, xRec.Format(time.RFC3339)
+	}
 	if err := s.upsertOccurrenceTx(tx, sc.ID, xAt, xWall, state, commentID, in.Actor, ts); err != nil {
 		return nil, err
 	}
 
-	occ, found, anchorWall, c, err := s.nextAfterResolve(sc, rec, nowT)
+	occ, found, anchorWall, c, err := s.nextAfterResolve(sc, rec, x, nowT)
 	if err != nil {
 		return nil, err
 	}
@@ -304,7 +313,7 @@ func (s *Store) commitResolve(tx *sql.Tx, workspaceID, itemID string, res *Resol
 // occurrence it just closed, and an instance at exactly now-1s is missed, never
 // also next). A completion schedule takes a recurrence interval from now. Both
 // walk the Compiled built from anchor_wall, never from a dtstart years back.
-func (s *Store) nextAfterResolve(sc *models.ItemSchedule, rec *time.Location, nowT time.Time) (schedule.Occurrence, bool, *string, *schedule.Compiled, error) {
+func (s *Store) nextAfterResolve(sc *models.ItemSchedule, rec *time.Location, x, nowT time.Time) (schedule.Occurrence, bool, *string, *schedule.Compiled, error) {
 	anchorWall := sc.AnchorWall
 	if sc.Anchor == "completion" {
 		var hasDates = len(sc.RDates) > 0 || len(sc.ExDates) > 0
@@ -325,6 +334,20 @@ func (s *Store) nextAfterResolve(sc *models.ItemSchedule, rec *time.Location, no
 	c, err := compileScheduleSpec(storedSpecInput(sc, start))
 	if err != nil {
 		return schedule.Occurrence{}, false, nil, nil, err
+	}
+	// Like the fire, a calendar resolve moves the start to the occurrence it
+	// closes where that provably changes nothing, so a rule that is always
+	// resolved early still walks from near now, not from a dtstart years back.
+	loc := rec
+	if !sc.Floating {
+		if loc, err = time.LoadLocation(c.Spec().Zone); err != nil {
+			return schedule.Occurrence{}, false, nil, nil, fmt.Errorf("load schedule zone: %w", err)
+		}
+	}
+	if w, err := schedule.ParseWall(*sc.NextWall); err == nil {
+		if cand := reanchorCandidate(sc, c.Spec(), w, x, loc); cand != nil {
+			c, anchorWall = cand, ptr(w.String())
+		}
 	}
 	o, _, err := walkOrigin(sc, rec)
 	if err != nil {
@@ -372,7 +395,14 @@ func (s *Store) nextAfterCompletion(sc *models.ItemSchedule, rule schedule.Rule,
 	if err != nil {
 		return none(err)
 	}
-	occ, found, err := c.NextAfter(schedule.Resolve(loc, w).Add(-time.Second), rec, schedule.DefaultLimits)
+	// HOURLY and MINUTELY are exact: the floor is the candidate instant itself,
+	// since Resolve of its wall reads a fall-back hour's wall as the earlier
+	// half and would floor at the done instant.
+	floor := schedule.Resolve(loc, w)
+	if span := completionSpan(rule); span > 0 {
+		floor = nowT.Add(span)
+	}
+	occ, found, err := c.NextAfter(floor.Add(-time.Second), rec, schedule.DefaultLimits)
 	if err != nil || !found {
 		return none(err)
 	}
@@ -426,22 +456,25 @@ func (s *Store) pinScheduleTx(tx *sql.Tx, workspaceID, itemID string) error {
 // occurrence is also identified by its date, because its instant shifts with the
 // zone (the partial unique index).
 func (s *Store) upsertOccurrenceTx(tx *sql.Tx, scheduleID, at, wall, state, commentID, actor, ts string) error {
-	match := `occurrence_at = ?`
-	args := []any{wall, state, nilIfEmpty(commentID), actor, ts, scheduleID, at}
+	// An all-day row is matched on its date first and on the instant only when
+	// no row has that date, so the UPDATE can never meet two rows (one by
+	// instant, one by date) and set a duplicate wall.
+	keys := []struct{ col, val string }{{"occurrence_at", at}}
 	if len(wall) == 10 {
-		match += ` OR occurrence_wall = ?`
-		args = append(args, wall)
+		keys = []struct{ col, val string }{{"occurrence_wall", wall}, {"occurrence_at", at}}
 	}
-	res, err := tx.Exec(s.q(`
-		UPDATE schedule_occurrences SET occurrence_wall = ?, state = ?, comment_id = ?, actor = ?, resolved_at = ?
-		WHERE schedule_id = ? AND (`+match+`)`), args...)
-	if err != nil {
-		return fmt.Errorf("update occurrence: %w", err)
-	}
-	if n, err := res.RowsAffected(); err != nil {
-		return err
-	} else if n > 0 {
-		return nil
+	for _, k := range keys {
+		res, err := tx.Exec(s.q(`
+			UPDATE schedule_occurrences SET occurrence_wall = ?, state = ?, comment_id = ?, actor = ?, resolved_at = ?
+			WHERE schedule_id = ? AND `+k.col+` = ?`), wall, state, nilIfEmpty(commentID), actor, ts, scheduleID, k.val)
+		if err != nil {
+			return fmt.Errorf("update occurrence: %w", err)
+		}
+		if n, err := res.RowsAffected(); err != nil {
+			return err
+		} else if n > 0 {
+			return nil
+		}
 	}
 	if _, err := tx.Exec(s.q(`
 		INSERT INTO schedule_occurrences (id, schedule_id, occurrence_at, occurrence_wall, state, comment_id, actor, resolved_at)
