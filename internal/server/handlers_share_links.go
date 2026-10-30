@@ -671,11 +671,13 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 		// updated_at DESC) reshuffled a shared collection on every edit.
 		// Bounded and paged (BUG-3792): an anonymous reader used to get every
 		// item with its body in one response. The order ends on the id, so
-		// offset pages neither repeat nor skip rows.
+		// offset pages neither repeat nor skip rows. _num (the item number)
+		// comes first, so same-second ties match the board's manual order
+		// (BUG-4005).
 		limit, offset := parseListWindow(r)
 		items, err := s.store.ListItems(link.WorkspaceID, models.ItemListParams{
 			ScopeCollectionID: coll.ID,
-			Sort:              "sort_order:asc,created_at:asc,_id:asc",
+			Sort:              "sort_order:asc,created_at:asc,_num:asc,_id:asc",
 			Limit:             limit + 1,
 			Offset:            offset,
 		})

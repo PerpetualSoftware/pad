@@ -42,11 +42,12 @@ func TestBUG3530_SharedCollectionKeepsTheManualOrder(t *testing.T) {
 	a, b, c, d, e := create("A"), create("B"), create("C"), create("D"), create("E")
 
 	// Arranged order: B (-2048), C (-1024), D and E tied at 0 with D older,
-	// then A (1024).
+	// then A (1024). D and E are set to 0 explicitly: a create no longer
+	// writes 0 (BUG-4005), so the tie is no longer the default.
 	for _, w := range []struct {
 		it models.Item
 		v  int
-	}{{a, 1024}, {b, -2048}, {c, -1024}} {
+	}{{a, 1024}, {b, -2048}, {c, -1024}, {d, 0}, {e, 0}} {
 		v := w.v
 		if _, err := srv.store.UpdateItem(w.it.ID, models.ItemUpdate{SortOrder: &v}); err != nil {
 			t.Fatalf("set sort_order of %s: %v", w.it.Title, err)

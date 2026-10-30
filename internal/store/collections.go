@@ -1373,6 +1373,7 @@ func (s *Store) SeedCollectionsFromTemplate(workspaceID string, templateName str
 			Fields:    fields,
 			CreatedBy: "system",
 			Source:    "template",
+			Append:    true,
 			BuiltinOrigin: func() *models.BuiltinOrigin {
 				if builtinKey == "" {
 					return nil

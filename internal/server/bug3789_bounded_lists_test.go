@@ -304,12 +304,13 @@ func TestBUG3792_SharedCollectionIsBoundedAndPaged(t *testing.T) {
 	})
 }
 
-// Rows that tie on every leading sort key come back in id order. The links and
+// Rows that tie on every leading sort key come back in a total order: item
+// number for children (creation order, BUG-4005), id for stars. The links and
 // stars are written in DESCENDING id order, so the scan order the database
 // would fall back to without the id tie-break is the reverse: an order that is
 // not total lets offset pages repeat or skip rows (SQLite happens to keep
 // paging consistent by scan order; Postgres does not promise it).
-func TestBUG3789_TiesComeBackInIDOrder(t *testing.T) {
+func TestBUG3789_TiesComeBackInATotalOrder(t *testing.T) {
 	srv := testServer(t)
 	ownerCookie := bootstrapFirstUser(t, srv, "owner@test.com", "Owner")
 	rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces", map[string]string{"name": "Ties 3789"}, ownerCookie)
@@ -324,7 +325,7 @@ func TestBUG3789_TiesComeBackInIDOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var ids []string
+	var ids, creationOrder []string
 	for i := 0; i < 6; i++ {
 		it, err := srv.store.CreateItem(ws.ID, tasks.ID, models.ItemCreate{Title: fmt.Sprintf("Tie %d", i)})
 		if err != nil {
@@ -332,6 +333,7 @@ func TestBUG3789_TiesComeBackInIDOrder(t *testing.T) {
 		}
 		ids = append(ids, it.ID)
 	}
+	creationOrder = append(creationOrder, ids...)
 	sort.Strings(ids)
 	for i := len(ids) - 1; i >= 0; i-- {
 		if _, err := srv.store.CreateItemLink(ws.ID, models.ItemLinkCreate{TargetID: parent.ID, LinkType: "parent"}, ids[i]); err != nil {
@@ -347,17 +349,17 @@ func TestBUG3789_TiesComeBackInIDOrder(t *testing.T) {
 	if _, err := srv.store.DB().Exec(`UPDATE item_stars SET created_at = '2026-01-01T00:00:00Z'`); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{
-		"/api/v1/workspaces/" + ws.Slug + "/items/" + parent.Slug + "/children",
-		"/api/v1/workspaces/" + ws.Slug + "/starred",
+	for path, want := range map[string][]string{
+		"/api/v1/workspaces/" + ws.Slug + "/items/" + parent.Slug + "/children": creationOrder,
+		"/api/v1/workspaces/" + ws.Slug + "/starred":                            ids,
 	} {
 		all, pages := bug3789Walk(t, srv, path, ownerCookie, 2)
 		var got []string
 		for _, it := range all {
 			got = append(got, it.ID)
 		}
-		if pages != 3 || fmt.Sprint(got) != fmt.Sprint(ids) {
-			t.Fatalf("%s: %d pages, order %v; want 3 pages in id order %v", path, pages, got, ids)
+		if pages != 3 || fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Fatalf("%s: %d pages, order %v; want 3 pages in order %v", path, pages, got, want)
 		}
 	}
 }

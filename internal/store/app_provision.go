@@ -355,7 +355,7 @@ func (s *Store) ProvisionAppInstall(req ProvisionRequest, derive ProvisionDerive
 		}
 		item, err := s.createItemTxWithID(tx, newID(), req.WorkspaceID, a.CollectionID, models.ItemCreate{
 			Title: a.Title, Content: a.Content, Fields: string(fieldsJSON),
-			CreatedBy: "user", Source: "web", ActorUserID: req.OwnerID,
+			CreatedBy: "user", Source: "web", ActorUserID: req.OwnerID, Append: true,
 		}, mintOptions{})
 		if err != nil {
 			if isUniqueViolation(err) {

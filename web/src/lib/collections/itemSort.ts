@@ -71,25 +71,34 @@ export function itemComparator(
 		case 'manual':
 		default:
 			// Deterministic tiebreak on equal sort_order (created_at ASC —
-			// oldest first — then id) so a stray updated_at bump (e.g. a
+			// oldest first — then item_number, then id) so a stray updated_at bump (e.g. a
 			// spurious collab-flush PATCH, BUG-1941) can't reorder cards that
-			// were never actually dragged. Every un-dragged card in a lane
-			// shares sort_order = 0 (every create path writes 0), so without a
-			// tiebreak the comparator was a no-op there and silently inherited
-			// whatever order the input array arrived in (updated_at DESC from
-			// the API).
+			// were never actually dragged. Legacy un-dragged cards in a lane
+			// share sort_order = 0, so without a tiebreak the comparator was a
+			// no-op there and silently inherited whatever order the input array
+			// arrived in (updated_at DESC from the API).
 			//
 			// The direction is the SERVER's (BUG-3527, lead ruling 2026-10-09):
 			// child lists and the dashboard order `sort_order ASC, created_at
-			// ASC` (internal/store/items.go getChildItems and
-			// GetChildItemsForParents) and render that order as delivered. This
-			// used to be DESC, so the same two never-dragged children read in
-			// opposite orders on an item's page and on its collection board. A
-			// new item now joins the END of an un-dragged lane; dragging it
-			// places it anywhere.
+			// ASC, item_number ASC` (internal/store/items.go getChildItems,
+			// ListChildItems and GetChildItemsForParents) and render that order
+			// as delivered; this comparator is the same order, one everywhere.
+			// created_at has one-second resolution, so siblings created in the
+			// same second (decompose does) tie on it; item_number, the
+			// workspace sequence, is monotonic in creation order and breaks
+			// that tie (BUG-4005). id is only the last resort for an item
+			// without a number. The direction used to be DESC here, so the same two never-dragged children read in
+			// opposite orders on an item's page and on its collection board.
+			// BUG-4005 (Dave's ruling): a PARENTLESS create path writes the
+			// MIN(sort_order) - 1 of the collection's parentless items, so it
+			// sorts FIRST in a lane; a child is created at 0 and still appends
+			// under its parent (created_at ASC, which ship and decompose rely
+			// on). The created_at ASC tie-break therefore orders children and
+			// never-dragged legacy rows; dragging places a card anywhere.
 			return (a, b) =>
 				a.sort_order - b.sort_order ||
 				timeValue(a.created_at) - timeValue(b.created_at) ||
+				(a.item_number ?? 0) - (b.item_number ?? 0) ||
 				a.id.localeCompare(b.id);
 	}
 }

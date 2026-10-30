@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"sort"
 	"strings"
@@ -284,6 +285,16 @@ func (s *Store) tryCreateItem(workspaceID, collectionID string, input models.Ite
 	return item, nil
 }
 
+// topSortOrder is the sort_order of a new item landing above min. The reorder
+// API accepts the INTEGER floor -2147483648, and min - 1 would overflow
+// Postgres; at the floor the value stays min, a tie created_at breaks.
+func topSortOrder(min int) int {
+	if v := int64(min) - 1; v >= math.MinInt32 {
+		return int(v)
+	}
+	return math.MinInt32
+}
+
 // insertItemTx is the write half of item creation: the items INSERT
 // (item_number, workspace seq, content-flush watermarks), the initial
 // item_versions row, wiki-link indexing + broken-title resolution, and the
@@ -346,18 +357,33 @@ func (s *Store) insertItemTx(tx *sql.Tx, id, workspaceID, collectionID, slug, ts
 
 	// The workspace advisory lock acquired above for item_number
 	// assignment ALSO serializes the seq subquery below — both read
-	// MAX(...) per workspace and would otherwise race in Postgres.
+	// MAX(...) per workspace and would otherwise race in Postgres. It covers
+	// the sort_order read too (BUG-4005): a PARENTLESS new item is created at
+	// the MIN(sort_order) - 1 of the collection's parentless live items, so it
+	// lands on top of a lane; two concurrent creates must not read the same
+	// MIN. A child (UnderParent, or a ParentID column value) is created at 0
+	// and appends under its parent by created_at ASC then item_number ASC (the
+	// workspace sequence, so same-second siblings keep creation order), the
+	// order ship and decompose rely on (BUG-3527, BUG-4005).
+	sortOrder := 0
+	if !input.UnderParent && !input.Append && (input.ParentID == nil || *input.ParentID == "") {
+		if err := tx.QueryRow(s.q(`SELECT COALESCE(MIN(i.sort_order), 0) FROM items i
+			WHERE i.collection_id = ? AND i.deleted_at IS NULL AND `+unparentedItemPredicate), collectionID).Scan(&sortOrder); err != nil {
+			return fmt.Errorf("read top sort_order: %w", err)
+		}
+		sortOrder = topSortOrder(sortOrder)
+	}
 	_, err = tx.Exec(s.q(`
 		INSERT INTO items (id, workspace_id, collection_id, title, slug, content, fields, tags,
 		                   pinned, sort_order, parent_id, assigned_user_id, agent_role_id, role_sort_order,
 		                   created_by, last_modified_by, source, item_number, created_at, updated_at,
 		                   content_flushed_at, content_flushed_op_log_id, seq,
 		                   created_by_user_id, last_modified_by_user_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 0, ?, ?, ?,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?,
 		        (SELECT COALESCE(MAX(item_number), 0) + 1 FROM items WHERE workspace_id = ?),
 		        ?, ?, ?, ?, `+nextWorkspaceSeqSubquery+`, ?, ?)
 	`), id, workspaceID, collectionID, input.Title, slug, input.Content, fields, tags,
-		s.dialect.BoolToInt(input.Pinned), input.ParentID, nullIfEmptyID(input.AssignedUserID), nullIfEmptyID(input.AgentRoleID),
+		s.dialect.BoolToInt(input.Pinned), sortOrder, input.ParentID, nullIfEmptyID(input.AssignedUserID), nullIfEmptyID(input.AgentRoleID),
 		createdBy, createdBy, source, workspaceID, ts, ts, contentFlushedAt, contentFlushedOpLogID, workspaceID,
 		// BUG-3372: the canonical user columns record WHICH account wrote the
 		// row; created_by/last_modified_by only say user or agent. Empty for
@@ -5517,7 +5543,7 @@ func (s *Store) getChildItems(q childQueryer, parentItemID string, includeDelete
 		LEFT JOIN users au ON au.id = i.assigned_user_id
 		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
 		WHERE i.deleted_at IS NULL%s
-		ORDER BY i.sort_order ASC, i.created_at ASC
+		ORDER BY i.sort_order ASC, i.created_at ASC, i.item_number ASC, i.id ASC
 	`, childLinkTypeSQL(), collFilter)), parentItemID)
 	if err != nil {
 		return nil, fmt.Errorf("get child items: %w", err)
@@ -5545,8 +5571,10 @@ type ChildListParams struct {
 // ListChildItems is GetChildItems with the caller's visibility applied in the
 // query and an optional window over it (BUG-3789). Visibility is in the
 // query, not after it, so a window and its has-more probe count only rows the
-// caller may see. The order ends on the id, so offset pages neither repeat
-// nor skip children that tie on sort_order and created_at.
+// caller may see. item_number breaks a sort_order and created_at tie, so
+// same-second siblings keep their creation order (BUG-4005). It is unique per
+// workspace but nullable, so id ends the order and offset pages neither repeat
+// nor skip.
 func (s *Store) ListChildItems(parentItemID string, p ChildListParams) ([]models.Item, error) {
 	if p.CollectionIDs != nil && len(p.CollectionIDs) == 0 {
 		return nil, nil
@@ -5592,7 +5620,7 @@ func (s *Store) ListChildItems(parentItemID string, p ChildListParams) ([]models
 			query += " AND (" + strings.Join(alts, " OR ") + ")"
 		}
 	}
-	query += " ORDER BY i.sort_order ASC, i.created_at ASC, i.id ASC"
+	query += " ORDER BY i.sort_order ASC, i.created_at ASC, i.item_number ASC, i.id ASC"
 	if p.Limit > 0 {
 		query += " LIMIT ? OFFSET ?"
 		args = append(args, p.Limit, max(p.Offset, 0))
@@ -5614,7 +5642,7 @@ func (s *Store) ListChildItems(parentItemID string, p ChildListParams) ([]models
 // column.
 //
 // Ordering within each parent's slice matches GetChildItems (sort_order ASC,
-// created_at ASC). A child linked to more than one requested parent appears
+// created_at ASC, item_number ASC, id ASC). A child linked to more than one requested parent appears
 // under each. Parents with no live children are simply absent from the map.
 func (s *Store) GetChildItemsForParents(parentIDs []string) (map[string][]models.Item, error) {
 	result := make(map[string][]models.Item, len(parentIDs))
@@ -5647,7 +5675,7 @@ func (s *Store) GetChildItemsForParents(parentIDs []string) (map[string][]models
 		LEFT JOIN users au ON au.id = i.assigned_user_id
 		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
 		WHERE i.deleted_at IS NULL AND c.deleted_at IS NULL
-		ORDER BY i.sort_order ASC, i.created_at ASC
+		ORDER BY i.sort_order ASC, i.created_at ASC, i.item_number ASC, i.id ASC
 	`, childLinkTypeSQL(), strings.Join(placeholders, ","))), args...)
 	if err != nil {
 		return nil, fmt.Errorf("get child items for parents: %w", err)
@@ -6099,6 +6127,14 @@ func buildItemSort(sort string, dialect Dialect) string {
 			parts = append(parts, fmt.Sprintf("i.updated_at %s", dir))
 		case "sort_order":
 			parts = append(parts, fmt.Sprintf("i.sort_order %s", dir))
+		case "_num":
+			// The item number: the manual order's same-second tie-break
+			// (BUG-4005), as the web comparator's item_number. created_at has
+			// one-second resolution and ids are random, so without it rows
+			// tied on sort_order and created_at order differently on a shared
+			// page and on the board. Underscore-prefixed like `_id`, so no
+			// field key can collide.
+			parts = append(parts, fmt.Sprintf("i.item_number %s", dir))
 		case "_id":
 			// The item's id: the last tie-break of the manual order (BUG-3530),
 			// as the web comparator's a.id.localeCompare(b.id). Spelled `_id`
