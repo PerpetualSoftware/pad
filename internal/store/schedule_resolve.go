@@ -324,7 +324,7 @@ func (s *Store) nextAfterResolve(sc *models.ItemSchedule, rec *time.Location, x,
 		if plain {
 			// A legacy row that is not a plain interval falls through to the
 			// calendar path rather than being stranded.
-			return s.nextAfterCompletion(sc, rule, rec, nowT)
+			return s.nextAfterCompletion(sc, rule, rec, x, nowT)
 		}
 	}
 	start := sc.Dtstart
@@ -361,7 +361,7 @@ func (s *Store) nextAfterResolve(sc *models.ItemSchedule, rec *time.Location, x,
 	return occ, found, anchorWall, c, err
 }
 
-func (s *Store) nextAfterCompletion(sc *models.ItemSchedule, rule schedule.Rule, rec *time.Location, nowT time.Time) (schedule.Occurrence, bool, *string, *schedule.Compiled, error) {
+func (s *Store) nextAfterCompletion(sc *models.ItemSchedule, rule schedule.Rule, rec *time.Location, x, nowT time.Time) (schedule.Occurrence, bool, *string, *schedule.Compiled, error) {
 	none := func(err error) (schedule.Occurrence, bool, *string, *schedule.Compiled, error) {
 		return schedule.Occurrence{}, false, nil, nil, err
 	}
@@ -385,7 +385,20 @@ func (s *Store) nextAfterCompletion(sc *models.ItemSchedule, rule schedule.Rule,
 		return schedule.Occurrence{}, false, nil, c, err
 	}
 	// The grid is re-phased to the completion: the candidate is the new start.
-	c, err := compileScheduleSpec(storedSpecInput(sc, w.String()))
+	// An elapsed grid starts at an instant whose wall reads back exactly (the
+	// engine reads Start as the earlier half of a repeated wall), so a done in
+	// the second half of a fall-back hour phases from k spans earlier, in the
+	// first half, and the grid still contains done+span.
+	span := completionSpan(rule)
+	if span > 0 {
+		st := nowT
+		for i := 0; i < 3 && schedule.Resolve(loc, wallOf(st.In(loc))) != st; i++ {
+			st = st.Add(-span * ((time.Hour + span - 1) / span))
+		}
+		w = wallOf(st.In(loc))
+	}
+	start := w.String()
+	c, err := compileScheduleSpec(storedSpecInput(sc, start))
 	var mal *schedule.MalformedError
 	if errors.As(err, &mal) && mal.Part == "UNTIL" {
 		// The candidate is already past the rule's UNTIL: nothing follows.
@@ -395,19 +408,23 @@ func (s *Store) nextAfterCompletion(sc *models.ItemSchedule, rule schedule.Rule,
 	if err != nil {
 		return none(err)
 	}
-	// HOURLY and MINUTELY are exact: the floor is the candidate instant itself,
-	// since Resolve of its wall reads a fall-back hour's wall as the earlier
-	// half and would floor at the done instant.
+	// HOURLY and MINUTELY are exact: the floor is done+span itself, since
+	// Resolve of its wall reads a fall-back hour's wall as the earlier half.
+	// Every search is also floored at X, so the next is strictly after the
+	// occurrence this resolve closed, as on the calendar path.
 	floor := schedule.Resolve(loc, w)
-	if span := completionSpan(rule); span > 0 {
+	if span > 0 {
 		floor = nowT.Add(span)
 	}
-	occ, found, err := c.NextAfter(floor.Add(-time.Second), rec, schedule.DefaultLimits)
+	floor = floor.Add(-time.Second)
+	if x.After(floor) {
+		floor = x
+	}
+	occ, found, err := c.NextAfter(floor, rec, schedule.DefaultLimits)
 	if err != nil || !found {
 		return none(err)
 	}
-	aw := w.String()
-	return occ, true, &aw, c, nil
+	return occ, true, &start, c, nil
 }
 
 func derefStr(p *string) string {

@@ -220,7 +220,7 @@ func TestCompletionAnchor(t *testing.T) {
 		{name: "all-day stays a date", in: models.ScheduleCreate{Kind: "check", Dtstart: "2026-11-02", Tz: "UTC", Rrule: "FREQ=DAILY", Anchor: "completion"},
 			created: "2026-10-29T12:00:00Z", x: "2026-11-02T00:00:00Z", done: "2026-11-05T15:00:00Z", wantAt: "2026-11-06T00:00:00Z", wantWall: "2026-11-06"},
 		{name: "hourly is exact", in: models.ScheduleCreate{Kind: "check", Dtstart: "2026-11-02T09:00", Tz: "UTC", Rrule: "FREQ=HOURLY;INTERVAL=2", Anchor: "completion"},
-			created: "2026-10-29T12:00:00Z", x: "2026-11-02T09:00:00Z", done: "2026-11-02T10:17:23Z", wantAt: "2026-11-02T12:17:23Z", wantWall: "2026-11-02T12:17:23"},
+			created: "2026-10-29T12:00:00Z", x: "2026-11-02T09:00:00Z", done: "2026-11-02T10:17:23Z", wantAt: "2026-11-02T12:17:23Z", wantWall: "2026-11-02T12:17:23", wantAnchor: "2026-11-02T10:17:23"},
 		{name: "UNTIL passed ends it", in: models.ScheduleCreate{Kind: "check", Dtstart: "2026-11-02T09:00", Tz: "UTC", Rrule: "FREQ=WEEKLY;UNTIL=20261110T000000Z", Anchor: "completion"},
 			created: "2026-10-29T12:00:00Z", x: "2026-11-02T09:00:00Z", done: "2026-11-05T15:00:00Z"},
 		{name: "floating recipient zone", in: models.ScheduleCreate{Kind: "check", Dtstart: "2026-11-02T09:00", Floating: true, Rrule: "FREQ=WEEKLY", Anchor: "completion"},
@@ -246,8 +246,12 @@ func TestCompletionAnchor(t *testing.T) {
 		if c.wantAt != "" && (got.NextAt == nil || *got.NextAt != c.wantAt) {
 			t.Errorf("%s: next_at = %v, want %s", c.name, deref(got.NextAt), c.wantAt)
 		}
-		if got.AnchorWall == nil || *got.AnchorWall != c.wantWall {
-			t.Errorf("%s: anchor_wall = %v, want the candidate %s", c.name, deref(got.AnchorWall), c.wantWall)
+		wantAnchor := c.wantWall
+		if c.wantAnchor != "" {
+			wantAnchor = c.wantAnchor
+		}
+		if got.AnchorWall == nil || *got.AnchorWall != wantAnchor {
+			t.Errorf("%s: anchor_wall = %v, want %s", c.name, deref(got.AnchorWall), wantAnchor)
 		}
 		if c.controlWall != "" {
 			cal := c.in
