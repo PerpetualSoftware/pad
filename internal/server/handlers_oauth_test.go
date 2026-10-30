@@ -682,30 +682,15 @@ func TestOAuth_Authorize_AcceptsResourceOnly(t *testing.T) {
 	}
 }
 
-// TestOAuth_Authorize_AcceptsNoResource_DefaultsToCanonical pins the
-// fix for the "code: Field required" error Claude Desktop's MCP
-// connector flow surfaces against pad: real MCP clients (Claude
-// Desktop, Cursor as of 2026-05) don't send the RFC 8707 resource=
-// parameter at all on /oauth/authorize. Before this fix,
-// translateResourceToAudience only translated resource→audience when
-// resource was present, so empty-resource requests reached fosite's
-// audienceMatchingStrategy with an empty needle and got rejected
-// with "resource parameter is required (RFC 8707)". fosite then
-// redirected to the client's redirect_uri with ?error=invalid_request,
-// and Claude's callback failed with a missing-`code`-field error
-// (Anthropic's pydantic-style "code: Field required" envelope).
-//
-// RFC 8707 §2 marks the resource parameter OPTIONAL; servers with
-// a single canonical audience are expected to default to it. This
-// test sends NEITHER resource= NOR audience= and asserts the
-// authorize request reaches the consent stub — proof that the
-// translation injected the canonical audience instead of erroring.
-//
-// Pairs with TestOAuth_Authorize_AcceptsResourceOnly above (the
-// resource-only path) and the existing TestOAuth_Authorize_*
-// audience-mismatch tests (the wrong-audience path) to lock in the
-// full matrix of what /authorize accepts for the audience parameter.
-func TestOAuth_Authorize_AcceptsNoResource_DefaultsToCanonical(t *testing.T) {
+// TestOAuth_Authorize_RefusesNoResource pins TASK-3363 phase 2 (Dave's
+// ruling on TASK-3345 #1). From 2026-05 until phase 2, /oauth/authorize
+// DEFAULTED a request with neither resource= nor audience= to the canonical
+// audience, because Claude Desktop and Cursor did not send resource= then.
+// That default let a client registered through DCR replay a token
+// cross-server. Phase 1 measured who omitted it (cloud read #1: 0 of 322
+// requests), and phase 2 refuses it with RFC 8707's invalid_target, returned
+// at the client's redirect_uri as RFC 6749 §4.1.2.1 requires.
+func TestOAuth_Authorize_RefusesNoResource(t *testing.T) {
 	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	clientID := registerTestClient(t, srv, "https://app.test/cb")
@@ -714,8 +699,7 @@ func TestOAuth_Authorize_AcceptsNoResource_DefaultsToCanonical(t *testing.T) {
 	verifier := "verifier-the-quick-brown-fox-1234567890-abcdef"
 	challenge := s256Challenge(verifier)
 
-	// Note: NO resource= AND NO audience= — exactly Claude Desktop's
-	// real-world authorize-request shape.
+	// NO resource= AND NO audience=.
 	q := url.Values{
 		"client_id":             {clientID},
 		"response_type":         {"code"},
@@ -726,9 +710,21 @@ func TestOAuth_Authorize_AcceptsNoResource_DefaultsToCanonical(t *testing.T) {
 		"state":                 {"no-resource-state"},
 	}
 	rr := doAuthedRequest(srv, "GET", "/oauth/authorize?"+q.Encode(), nil, sessionToken)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected 200 (consent stub) for no-resource request; got %d (Location: %s, Body: %s)",
-			rr.Code, rr.Header().Get("Location"), rr.Body.String())
+	if rr.Code != http.StatusSeeOther && rr.Code != http.StatusFound {
+		t.Fatalf("expected a redirect carrying the error; got %d (Body: %s)", rr.Code, rr.Body.String())
+	}
+	loc, err := url.Parse(rr.Header().Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := loc.Scheme + "://" + loc.Host + loc.Path; got != "https://app.test/cb" {
+		t.Fatalf("the error went to %q, not the client's redirect_uri", got)
+	}
+	if loc.Query().Get("error") != "invalid_target" || loc.Query().Get("code") != "" {
+		t.Fatalf("want error=invalid_target and no code, got %s", loc.RawQuery)
+	}
+	if loc.Query().Get("state") != "no-resource-state" {
+		t.Fatalf("the error lost the client's state: %s", loc.RawQuery)
 	}
 }
 
@@ -770,6 +766,7 @@ func TestOAuth_ConsentScreen_NonceCSPLetsInlineScriptRun(t *testing.T) {
 		"code_challenge":        {challenge},
 		"code_challenge_method": {"S256"},
 		"state":                 {"nonce-csp-state"},
+		"resource":              {testCanonicalAudience},
 	}
 	rr := doAuthedRequest(srv, "GET", "/oauth/authorize?"+q.Encode(), nil, sessionToken)
 	if rr.Code != http.StatusOK {
