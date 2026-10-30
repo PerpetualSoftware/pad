@@ -611,7 +611,7 @@ func TestScheduleCascadeOnItemDeleteStopsFiring(t *testing.T) {
 }
 
 // The reads fill occurrence_at: stored for a pinned schedule, read in the
-// recipient's zone for a floating one.
+// recipient's zone for an armed floating one (a fired floating row carries none).
 func TestScheduleReadsCarryScheduleIDAndOccurrenceAt(t *testing.T) {
 	t.Parallel()
 	f := newSchedFixture(t)
@@ -627,7 +627,7 @@ func TestScheduleReadsCarryScheduleIDAndOccurrenceAt(t *testing.T) {
 	}
 
 	other := f.another(t, "Pinned reads")
-	p, err := f.s.createScheduleAt(f.ws.ID, other.ID, models.ScheduleCreate{Kind: "check", Dtstart: "2026-11-02T09:00", Tz: "America/New_York"}, schedNow)
+	_, err = f.s.createScheduleAt(f.ws.ID, other.ID, models.ScheduleCreate{Kind: "check", Dtstart: "2026-11-02T09:00", Tz: "America/New_York"}, schedNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -644,9 +644,15 @@ func TestScheduleReadsCarryScheduleIDAndOccurrenceAt(t *testing.T) {
 			continue
 		}
 		seen++
-		want := map[string]string{sc.ID: "2026-11-02T17:00:00Z", p.ID: "2026-11-02T14:00:00Z"}[*pr.ScheduleID]
-		if pr.OccurrenceAt == nil || *pr.OccurrenceAt != want {
-			t.Errorf("pending %s occurrence_at = %v, want %s", *pr.ScheduleID, pr.OccurrenceAt, want)
+		if *pr.ScheduleID == sc.ID {
+			// Fired and floating: no reading (the H-L2 fallback, TASK-4102 PR2).
+			if pr.OccurrenceAt != nil {
+				t.Errorf("pending fired floating occurrence_at = %v, want none", *pr.OccurrenceAt)
+			}
+			continue
+		}
+		if pr.OccurrenceAt == nil || *pr.OccurrenceAt != "2026-11-02T14:00:00Z" {
+			t.Errorf("pending pinned occurrence_at = %v, want 2026-11-02T14:00:00Z", pr.OccurrenceAt)
 		}
 	}
 	if seen != 2 {
@@ -915,5 +921,99 @@ func TestScheduleBrokenFloatingRuleRecordsErrorCodeWithoutDeferral(t *testing.T)
 	}
 	if r.FiredAt == nil {
 		t.Errorf("the row is not left fired")
+	}
+}
+
+// H-L2 fallback (TASK-4102 PR2): a FIRED floating managed row has no
+// occurrence_at on a read. The zone it fired in is gone from the row, so
+// recomputing from next_wall in the recipient's CURRENT zone would disagree
+// with the event payload and the dedupe key after a zone change. Fails if the
+// guard in fillOccurrenceAt is removed (the read then shows the Tokyo reading).
+func TestFiredFloatingReminderOmitsOccurrenceAfterZoneChange(t *testing.T) {
+	t.Parallel()
+	f := newSchedFixture(t)
+	la := f.user(t, "hl2-la4102@example.com", "America/Los_Angeles")
+	f.assign(t, f.item.ID, la.ID)
+	sc := f.create(t, models.ScheduleCreate{Kind: "check", Dtstart: "2026-11-02T09:00", Floating: true})
+	rid := *sc.ReminderID
+
+	// Armed: the reading is in the recipient's zone.
+	if r := f.reminder(t, rid); r.OccurrenceAt == nil || *r.OccurrenceAt != "2026-11-02T17:00:00Z" {
+		t.Fatalf("armed floating row occurrence_at = %v, want 2026-11-02T17:00:00Z", r.OccurrenceAt)
+	}
+
+	f.fire(t, "2026-11-01T20:00:00Z") // defers to the exact instant
+	got := f.fire(t, "2026-11-02T17:00:00Z")
+	if len(got) != 1 || got[0].OccurrenceAt == nil || *got[0].OccurrenceAt != "2026-11-02T17:00:00Z" {
+		t.Fatalf("fired %+v", got)
+	}
+	f.exec(t, `UPDATE users SET timezone = ? WHERE id = ?`, "Asia/Tokyo", la.ID)
+
+	check := func(name string, r *models.Reminder) {
+		t.Helper()
+		if r == nil || r.ScheduleID == nil || *r.ScheduleID != sc.ID {
+			t.Fatalf("%s: managed row missing or lost schedule_id: %+v", name, r)
+		}
+		if r.OccurrenceAt != nil {
+			t.Errorf("%s: fired floating row reports occurrence_at %s after a zone change; want none", name, *r.OccurrenceAt)
+		}
+	}
+	check("GetReminder", f.reminder(t, rid))
+	list, err := f.s.ListRemindersForItem(f.ws.ID, f.item.ID)
+	if err != nil || len(list) != 1 {
+		t.Fatalf("ListRemindersForItem: %v %v", list, err)
+	}
+	check("ListRemindersForItem", list[0])
+	pending, _, err := f.s.ListPendingReminders(f.ws.ID, PendingReminderScope{}, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, p := range pending {
+		if p.ID == rid {
+			found = true
+			check("ListPendingReminders", &p.Reminder)
+		}
+	}
+	if !found {
+		t.Fatalf("the fired managed row is not pending: %+v", pending)
+	}
+
+	// The event payload still carries the reading it fired with.
+	var payload string
+	if err := f.s.db.QueryRow(f.s.q(`SELECT payload FROM event_outbox WHERE event_type = ?`), kernelevents.ItemReminderDue).Scan(&payload); err != nil {
+		t.Fatalf("outbox: %v", err)
+	}
+	var pl struct {
+		Reminder struct {
+			OccurrenceAt *string `json:"occurrence_at"`
+		} `json:"reminder"`
+	}
+	if err := json.Unmarshal([]byte(payload), &pl); err != nil {
+		t.Fatalf("payload: %v", err)
+	}
+	if pl.Reminder.OccurrenceAt == nil || *pl.Reminder.OccurrenceAt != "2026-11-02T17:00:00Z" {
+		t.Errorf("payload lost the fired occurrence: %s", payload)
+	}
+
+	// Controls: an armed floating row follows the recipient's zone, and a
+	// fired pinned row keeps its stored instant.
+	armed := f.another(t, "Armed")
+	f.assign(t, armed.ID, la.ID)
+	asc, err := f.s.createScheduleAt(f.ws.ID, armed.ID, models.ScheduleCreate{Kind: "check", Dtstart: "2026-11-09T09:00", Floating: true}, schedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := f.reminder(t, *asc.ReminderID); r.OccurrenceAt == nil || *r.OccurrenceAt != "2026-11-09T00:00:00Z" {
+		t.Errorf("armed floating row = %v, want the Tokyo reading 2026-11-09T00:00:00Z", r.OccurrenceAt)
+	}
+	pinned := f.another(t, "Pinned")
+	psc, err := f.s.createScheduleAt(f.ws.ID, pinned.ID, models.ScheduleCreate{Kind: "check", Dtstart: "2026-11-03T09:00", Tz: "UTC"}, schedNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.fire(t, "2026-11-03T09:00:00Z")
+	if r := f.reminder(t, *psc.ReminderID); r.FiredAt == nil || r.OccurrenceAt == nil || *r.OccurrenceAt != "2026-11-03T09:00:00Z" {
+		t.Errorf("fired pinned row = %+v, want its stored instant", r)
 	}
 }

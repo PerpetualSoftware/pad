@@ -83,11 +83,18 @@ func writePushUnavailable(w http.ResponseWriter) {
 // decodeJSON caller gets (NUL, a repeated member, trailing bytes), then a
 // second pass that refuses a member T does not declare.
 func strictPushBody[T any](r *http.Request) (T, error) {
-	var out T
 	raw, err := readBodyForDecode(r, defaultJSONBodyLimit)
 	if err != nil {
+		var out T
 		return out, err
 	}
+	return strictBodyBytes[T](raw)
+}
+
+// strictBodyBytes is strictPushBody's decoding, for a caller that keeps the
+// raw body for a second look.
+func strictBodyBytes[T any](raw []byte) (T, error) {
+	var out T
 	if err := decodeJSONBytes(raw, &out); err != nil {
 		return out, err
 	}
