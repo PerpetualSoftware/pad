@@ -150,6 +150,9 @@ func TestTASK4137_IPBound_WithVerifier_401(t *testing.T) {
 			}
 			t4137NoSession(t, rr)
 		}
+		if rr := f.verify(t4137IPA, map[string]interface{}{"challenge_token": ch, "code": code}); rr.Code != http.StatusOK {
+			t.Fatalf("IP-bound (%v) without a verifier from the minting IP: %d %s", extra, rr.Code, rr.Body.String())
+		}
 	}
 }
 
