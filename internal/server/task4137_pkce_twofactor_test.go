@@ -281,9 +281,10 @@ func TestTASK4137_LegacyBareIPBinding(t *testing.T) {
 	f := newT4137Fixture(t)
 	sec := f.srv.twoFAChallengeSecret
 	code := validTOTPCode(t, t4137Secret)
-	// not an address, and not a recognised kind
-	for i, b := range []string{"garbage", "xyz:192.0.2.10", "192.0.2.10 ", ""} {
-		rr := f.verify(fmt.Sprintf("203.0.113.%d:1", i+1), map[string]interface{}{"challenge_token": t4137Legacy(f.user.ID, b, f.user.CredentialEpoch, sec), "code": code})
+	// Not an address, and not a recognised kind. Each comes from a RemoteAddr
+	// that clientIP reads as the binding itself, so only ParseIP refuses it.
+	for b, remote := range map[string]string{"garbage": "garbage", "xyz:192.0.2.10": "[xyz:192.0.2.10]:1", "192.0.2.10 ": "192.0.2.10 ", "": ""} {
+		rr := f.verify(remote, map[string]interface{}{"challenge_token": t4137Legacy(f.user.ID, b, f.user.CredentialEpoch, sec), "code": code})
 		if rr.Code != http.StatusUnauthorized {
 			t.Errorf("binding %q: %d %s", b, rr.Code, rr.Body.String())
 		}

@@ -262,8 +262,8 @@ func (s *Server) handleTOTPDisable(w http.ResponseWriter, r *http.Request) {
 
 // handleTOTPLoginVerify completes a login that requires 2FA verification.
 // Requires a valid challenge token (from the login response) plus a TOTP
-// code or recovery code. The challenge token is HMAC-signed, IP-bound,
-// and short-lived to prove the user already passed password verification.
+// code or recovery code. The challenge token is HMAC-signed, bound to the
+// caller's IP or to a PKCE challenge (TASK-4137), and short-lived.
 func (s *Server) handleTOTPLoginVerify(w http.ResponseWriter, r *http.Request) {
 	if s.refuseCrossSiteSignIn(w, r) { // BUG-3350, as handleLogin
 		return
