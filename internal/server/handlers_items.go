@@ -1046,6 +1046,9 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 	// schema moved since.
 	validatedSchema := coll.Schema
 	input.ValidatedSchema = &validatedSchema
+	// BUG-4005: the parent link is written after the create, so tell the
+	// store now that this item is a child (it appends, it is not put on top).
+	input.UnderParent = parentValue != ""
 	item, err := s.store.CreateItem(workspaceID, coll.ID, input, s.workspaceLimitMintOpts()...)
 	if err != nil {
 		// BUG-2808: the cap, counted under the insert's lock, was reached after

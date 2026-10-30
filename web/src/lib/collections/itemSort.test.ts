@@ -28,7 +28,9 @@ describe('itemComparator manual mode', () => {
 	// reorder them — the tiebreak has to be independent of updated_at.
 	// The tie direction is created_at ASC (oldest first): the server's order
 	// for child lists and the dashboard, which render it as delivered
-	// (BUG-3527). A new item joins the end of an un-dragged lane.
+	// (BUG-3527). Children and never-dragged legacy rows tie at 0; a new
+	// parentless item is created at the parentless MIN - 1 and sorts first
+	// (BUG-4005), while a new child still joins the end of its siblings.
 	it('breaks a sort_order tie by created_at ascending, ignoring updated_at entirely', () => {
 		const comparator = itemComparator('manual', collection);
 		const older = { ...item('older', 0, '2026-01-01T00:00:00Z'), updated_at: '2026-01-01T00:00:00Z' } as Item;
@@ -38,6 +40,18 @@ describe('itemComparator manual mode', () => {
 		// sorts ahead regardless of the updated_at values.
 		expect([older, newer].sort(comparator).map((i) => i.id)).toEqual(['older', 'newer']);
 		expect([newer, older].sort(comparator).map((i) => i.id)).toEqual(['older', 'newer']);
+	});
+
+	// BUG-4005: created_at has one-second resolution, so siblings created
+	// together tie on it; item_number (monotonic per workspace) orders them,
+	// whatever their (random v4) ids sort like.
+	it('breaks a sort_order and created_at tie by item_number, regardless of id order', () => {
+		const comparator = itemComparator('manual', collection);
+		const first = { ...item('z-id', 0, '2026-01-01T00:00:00Z'), item_number: 7 } as Item;
+		const second = { ...item('m-id', 0, '2026-01-01T00:00:00Z'), item_number: 8 } as Item;
+		const third = { ...item('a-id', 0, '2026-01-01T00:00:00Z'), item_number: 9 } as Item;
+		expect([third, first, second].sort(comparator).map((i) => i.id)).toEqual(['z-id', 'm-id', 'a-id']);
+		expect([second, third, first].sort(comparator).map((i) => i.id)).toEqual(['z-id', 'm-id', 'a-id']);
 	});
 
 	it('falls back to id when sort_order and created_at both tie', () => {
