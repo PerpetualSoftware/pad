@@ -215,14 +215,20 @@ jobs:
         #
         # internal/server is NOT in this step: it runs as the three
         # go-server-race shards below (TASK-4141). Alone it took 2519.644s
-        # of this step's 2700s budget on main. The grep can only fail
-        # safe: if the path moves, nothing is excluded and server runs here
-        # AND in the shards.
+        # of this step's 2700s budget on main. The exclusion is asserted,
+        # not trusted: the step fails unless exactly one package was
+        # removed and it is internal/server. That catches a grep that
+        # over-excludes (internal/server/render must stay here) and a
+        # path move (which would exclude nothing). The PostgreSQL race
+        # step carries the same assertion.
         env:
           PAD_TEST_REQUIRE_PS: "1"
         run: |
-          pkgs=$(go list ./... | grep -v '^github.com/PerpetualSoftware/pad/internal/server$')
+          all=$(go list ./...)
+          pkgs=$(printf '%s\n' "$all" | grep -v '^github.com/PerpetualSoftware/pad/internal/server$')
           test -n "$pkgs"
+          removed=$(LC_ALL=C comm -23 <(printf '%s\n' "$all" | LC_ALL=C sort) <(printf '%s\n' "$pkgs" | LC_ALL=C sort))
+          [ "$removed" = github.com/PerpetualSoftware/pad/internal/server ] || { printf '::error::the race step must exclude exactly internal/server; it excluded:\n%s\n' "${removed:-(nothing)}"; exit 1; }
           go test $GO_RACE_FLAGS -timeout=45m $pkgs
 
       - name: Build binary
@@ -591,11 +597,15 @@ jobs:
         # variant failed main at f235a04 with the same timeout panic).
         # checkptr off for modernc.org/... only: see the SQLite race step (BUG-3483).
         # internal/server runs as the go-server-race-postgres shards instead
-        # (TASK-4141; it took 2658.534s of 2700s here on main). See the SQLite
-        # race step for why the grep fails safe.
+        # (TASK-4141; it took 2658.534s of 2700s here on main). The exclusion
+        # is asserted as in the SQLite race step: exactly one package
+        # removed, and it is internal/server.
         run: |
-          pkgs=$(go list ./... | grep -v '^github.com/PerpetualSoftware/pad/internal/server$')
+          all=$(go list ./...)
+          pkgs=$(printf '%s\n' "$all" | grep -v '^github.com/PerpetualSoftware/pad/internal/server$')
           test -n "$pkgs"
+          removed=$(LC_ALL=C comm -23 <(printf '%s\n' "$all" | LC_ALL=C sort) <(printf '%s\n' "$pkgs" | LC_ALL=C sort))
+          [ "$removed" = github.com/PerpetualSoftware/pad/internal/server ] || { printf '::error::the race step must exclude exactly internal/server; it excluded:\n%s\n' "${removed:-(nothing)}"; exit 1; }
           go test $GO_RACE_FLAGS -timeout=45m -count=1 $pkgs
 
   # internal/server under -race, as 3 shards per driver (TASK-4141). In the
