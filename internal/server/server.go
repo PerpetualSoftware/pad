@@ -2414,6 +2414,7 @@ func (s *Server) setupRouter() {
 						r.Post("/schedule", s.handleCreateItemSchedule)
 						r.Patch("/schedule", s.handleUpdateItemSchedule)
 						r.Delete("/schedule", s.handleDeleteItemSchedule)
+						r.Post("/schedule/resolve", s.handleResolveItemSchedule)
 						// Verifications (TASK-3617): per-criterion verdicts
 						// on the item that carries the acceptance criteria,
 						// judged against its present text at read time.

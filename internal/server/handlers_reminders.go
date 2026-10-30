@@ -365,7 +365,7 @@ func writeReminderManaged(w http.ResponseWriter, scheduleID string) {
 		details["schedule_id"] = scheduleID
 	}
 	writeError2(w, http.StatusConflict, "reminder_managed",
-		"This reminder is managed by the item's schedule; change or delete the schedule instead", details)
+		"This reminder is managed by the item's schedule; resolve it with POST .../schedule/resolve, or change or delete the schedule instead", details)
 }
 
 // Bounds for the pending-reminder read (IDEA-2641, codex round 4).

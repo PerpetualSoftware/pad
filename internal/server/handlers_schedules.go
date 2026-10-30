@@ -6,12 +6,14 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/schedule"
 	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/PerpetualSoftware/pad/internal/usertz"
+	"github.com/PerpetualSoftware/pad/internal/watchevents"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -539,4 +541,149 @@ func (s *Server) handleDeleteItemSchedule(w http.ResponseWriter, r *http.Request
 	s.missedWarned.Delete(cur.ID)
 	s.recordScheduleWrite(r, workspaceID, item, "schedule_deleted", scheduleActivityMeta(cur.Kind, nil))
 	writeJSON(w, http.StatusOK, map[string]any{"id": cur.ID, "deleted": true})
+}
+
+// scheduleResolveBody is POST .../schedule/resolve. Every member is a pointer so
+// a missing one is told apart from an empty one.
+type scheduleResolveBody struct {
+	OccurrenceAt *string `json:"occurrence_at"`
+	State        *string `json:"state"`
+	Comment      *string `json:"comment"`
+	Until        *string `json:"until"`
+}
+
+func writeResolveField(w http.ResponseWriter, field, code, msg string) {
+	writeError2(w, http.StatusBadRequest, "validation_error", msg,
+		map[string]interface{}{"field": field, "code": code})
+}
+
+// writeResolveError maps the errors only a resolve raises, then the shared
+// schedule vocabulary. A stale answer carries the CURRENT outstanding
+// occurrence so the caller can retry with it; a floating one is read in the
+// caller's zone, like the view.
+func writeResolveError(w http.ResponseWriter, r *http.Request, err error) bool {
+	var stale *store.ErrStaleOccurrence
+	var broken *store.ErrScheduleBroken
+	switch {
+	case errors.As(err, &stale):
+		details := map[string]interface{}{"ended": stale.Ended()}
+		if !stale.Ended() && stale.Schedule.NextWall != nil {
+			if at, ok, err := store.OutstandingInstant(stale.Schedule, viewerZone(r).Loc); err == nil && ok {
+				details["next_occurrence"] = scheduleOccurrenceView{At: at.Format(time.RFC3339), Wall: *stale.Schedule.NextWall}
+			}
+		}
+		writeError2(w, http.StatusConflict, "stale",
+			"That is not the schedule's outstanding occurrence; it was resolved, moved or ended since you read it", details)
+		return true
+	case errors.As(err, &broken):
+		writeError2(w, http.StatusConflict, "schedule_error",
+			"The schedule's rule no longer works; change its timing to repair it",
+			map[string]interface{}{"error_code": broken.Code})
+		return true
+	case errors.Is(err, store.ErrScheduleNotFound):
+		writeScheduleNotFound(w)
+		return true
+	}
+	return writeScheduleError(w, err)
+}
+
+// parseResolveInstant reads an RFC3339 instant member.
+func parseResolveInstant(w http.ResponseWriter, field string, raw *string) (time.Time, bool) {
+	t, err := time.Parse(time.RFC3339, *raw)
+	if err != nil {
+		writeResolveField(w, field, "range", field+" must be an RFC3339 instant")
+		return time.Time{}, false
+	}
+	return t, true
+}
+
+// handleResolveItemSchedule resolves the outstanding occurrence of an item's
+// schedule: done and skip advance it, snooze and move keep it outstanding.
+// POST /api/v1/workspaces/{slug}/items/{itemSlug}/schedule/resolve
+func (s *Server) handleResolveItemSchedule(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := s.getWorkspaceID(w, r)
+	if !ok {
+		return
+	}
+	item := s.resolveVisibleItem(w, r, workspaceID)
+	if item == nil {
+		return
+	}
+	if !s.requireEditPermission(w, r, workspaceID, item.ID, item.CollectionID) {
+		return
+	}
+	body, err := strictScheduleBody[scheduleResolveBody](r)
+	if err != nil {
+		writeScheduleBodyError(w)
+		return
+	}
+	if body.OccurrenceAt == nil {
+		writeResolveField(w, "occurrence_at", "required", "occurrence_at is required")
+		return
+	}
+	if body.State == nil {
+		writeResolveField(w, "state", "required", "state is required")
+		return
+	}
+	in := store.ResolveInput{State: *body.State, View: viewerZone(r).Loc}
+	if in.OccurrenceAt, ok = parseResolveInstant(w, "occurrence_at", body.OccurrenceAt); !ok {
+		return
+	}
+	if body.Until != nil {
+		u, ok := parseResolveInstant(w, "until", body.Until)
+		if !ok {
+			return
+		}
+		in.Until = &u
+	}
+	in.Actor, _ = actorFromRequest(r)
+	var commentInput models.CommentCreate
+	if body.Comment != nil && strings.TrimSpace(*body.Comment) != "" {
+		commentInput.Body = *body.Comment
+		stampCommentAttribution(r, &commentInput)
+		in.Actor = commentInput.CreatedBy
+		in.Comment = &store.ResolveComment{
+			UserID:   currentUserID(r),
+			Input:    commentInput,
+			Activity: s.activityForRequest(workspaceID, item.ID, "commented", r, ""),
+		}
+	}
+
+	res, err := s.store.ResolveOccurrence(workspaceID, item.ID, in)
+	if writeResolveError(w, r, err) {
+		return
+	}
+
+	s.recordScheduleWrite(r, workspaceID, item, "schedule_resolved", resolveActivityMeta(res.Schedule.Kind, in.State))
+	resolution := map[string]any{
+		"occurrence_at":   in.OccurrenceAt.UTC().Format(time.RFC3339),
+		"state":           in.State,
+		"missed_recorded": res.MissedRecorded,
+	}
+	if res.Comment != nil {
+		resolution["comment_id"] = res.Comment.ID
+		s.touchUserWrite(r, writeKindComment)
+		s.publishCommentEvent(sseCommentCreated, workspaceID, item.ID, res.Comment.ID, item.Title, item.CollectionSlug, commentInput.CreatedBy, commentInput.Source)
+		s.publishWatchNotification(watchevents.Notification{
+			WorkspaceID:  workspaceID,
+			ItemID:       item.ID,
+			CollectionID: item.CollectionID,
+			ItemRef:      item.Ref,
+			Kind:         watchevents.KindComment,
+			Actor:        commentInput.CreatedBy,
+			ActorName:    actorNameFromRequest(r),
+			Summary:      truncateForSummary(res.Comment.Body, 120),
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"schedule":   s.buildScheduleView(r, item, res.Schedule),
+		"resolution": resolution,
+	})
+}
+
+// resolveActivityMeta is the names-only metadata of a resolution: the schedule's
+// kind and the state chosen. No comment text, wall, instant or rule.
+func resolveActivityMeta(kind, state string) string {
+	b, _ := json.Marshal(map[string]string{"kind": kind, "state": state})
+	return string(b)
 }
