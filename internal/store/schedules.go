@@ -369,6 +369,9 @@ func (s *Store) createScheduleAt(workspaceID, itemID string, in models.ScheduleC
 	if err != nil {
 		return nil, err
 	}
+	if err := validateAnchorRule(anchor, spec); err != nil {
+		return nil, err
+	}
 
 	var view *time.Location
 	if spec.Floating {
@@ -606,6 +609,11 @@ func (s *Store) updateScheduleAt(workspaceID, itemID string, upd models.Schedule
 	end, hasEnd, err := validateScheduleFields(kind, anchor, audience, lead, spec.Start, dtend)
 	if err != nil {
 		return nil, err
+	}
+	if timingNamed { // spec is the compiled canonical timing only then
+		if err := validateAnchorRule(anchor, spec); err != nil {
+			return nil, err
+		}
 	}
 
 	// Compare canonical forms: the stored rule and walls are canonical.
