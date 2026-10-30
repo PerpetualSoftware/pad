@@ -33,9 +33,13 @@ func (f *schedFixture) mk(t *testing.T, in models.ScheduleCreate, created string
 	return item, sc
 }
 
+// testClockNanos makes the resolve clock carry what production's time.Now()
+// does: sub-second digits. A whole-second clock cannot go red for them (r3).
+const testClockNanos = 500 * time.Millisecond
+
 func (f *schedFixture) resolve(t *testing.T, item *models.Item, in ResolveInput, now string) (*ResolveResult, error) {
 	t.Helper()
-	return f.s.resolveOccurrenceAt(f.ws.ID, item.ID, in, rt(now))
+	return f.s.resolveOccurrenceAt(f.ws.ID, item.ID, in, rt(now).Add(testClockNanos))
 }
 
 func (f *schedFixture) mustResolve(t *testing.T, item *models.Item, in ResolveInput, now string) *ResolveResult {
