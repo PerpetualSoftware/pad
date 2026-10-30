@@ -150,15 +150,14 @@ func TestScheduleFireWritesExactlyOneOutboxEvent(t *testing.T) {
 	key := func(k string) int {
 		return f.count(t, `SELECT COUNT(*) FROM user_notifications WHERE user_id = ? AND dedupe_key = ?`, u.ID, k)
 	}
-	firedAt := f.reminder(t, *sc.ReminderID).FiredAt
-	if firedAt == nil || key("reminder:"+*sc.ReminderID+":2026-10-28T09:00:00Z:"+*firedAt) != 1 {
-		t.Fatalf("no notification keyed on the occurrence and the arming")
+	stamp := fired[0].FireStamp
+	if stamp == nil || key("reminder:"+*sc.ReminderID+":2026-10-28T09:00:00Z:"+*stamp) != 1 {
+		t.Fatalf("no notification keyed on the occurrence and the fire stamp")
 	}
 	f.exec(t, `UPDATE item_reminders SET fired_at = NULL, remind_at = ? WHERE id = ?`, "2026-10-28T10:00:00Z", *sc.ReminderID)
 	f.exec(t, `UPDATE item_schedules SET next_at = ?, next_wall = ? WHERE id = ?`, "2026-10-28T10:00:00Z", "2026-10-28T10:00:00", sc.ID)
-	f.fire(t, "2026-10-29T12:00:00Z")
-	firedAt = f.reminder(t, *sc.ReminderID).FiredAt
-	if firedAt == nil || key("reminder:"+*sc.ReminderID+":2026-10-28T10:00:00Z:"+*firedAt) != 1 {
+	second := f.fire(t, "2026-10-29T12:00:00Z")
+	if len(second) != 1 || second[0].FireStamp == nil || key("reminder:"+*sc.ReminderID+":2026-10-28T10:00:00Z:"+*second[0].FireStamp) != 1 {
 		t.Errorf("the second occurrence was collapsed into the first notification")
 	}
 	if n := f.count(t, `SELECT COUNT(*) FROM user_notifications WHERE user_id = ? AND kind = 'reminder'`, u.ID); n != 2 {

@@ -274,9 +274,11 @@ func (s *Store) mentionRecipientsTx(tx *sql.Tx, c *models.Comment, users []strin
 }
 
 // enqueueReminderNotificationTx tells the item's assignee, or its creator when
-// nobody holds it, that a reminder fired. A reminder has no owner column, and
-// the key carries fired_at so a re-armed reminder that fires again is a new
-// notification. There is no actor: the clock fired it.
+// nobody holds it, that a reminder fired. A reminder has no owner column. The
+// key carries the fire stamp, taken once in the winning fire transaction, so a
+// re-armed reminder that fires again is a new notification even inside the same
+// second, and a redelivery of the same fire is the same one. There is no actor:
+// the clock fired it.
 func (s *Store) enqueueReminderNotificationTx(tx *sql.Tx, r *models.Reminder, item *models.Item) error {
 	to := ""
 	if item.AssignedUserID != nil {
@@ -289,23 +291,21 @@ func (s *Store) enqueueReminderNotificationTx(tx *sql.Tx, r *models.Reminder, it
 		}
 		to = creator.String
 	}
-	fired := ""
-	if r.FiredAt != nil {
-		fired = *r.FiredAt
+	stamp := ""
+	switch {
+	case r.FireStamp != nil:
+		stamp = *r.FireStamp
+	case r.FiredAt != nil:
+		stamp = *r.FiredAt // a snapshot with no stamp (never from the fire path)
 	}
-	// A managed row is re-armed in place for each occurrence, so two occurrences
-	// can fire inside one second (catch-up, then the next one); the occurrence
-	// instant is what tells them apart. A snooze re-fires the SAME occurrence,
-	// so the key also carries fired_at: each arming of the row is one
-	// notification (TASK-4103).
+	// A managed row is re-armed in place for each occurrence, so the key names
+	// the occurrence as well as the arming: reminder:<id>:<occurrence_at>:<stamp>.
+	key := "reminder:" + r.ID + ":" + stamp
 	if r.OccurrenceAt != nil {
-		fired = *r.OccurrenceAt
-		if r.ScheduleID != nil && r.FiredAt != nil {
-			fired += ":" + *r.FiredAt
-		}
+		key = "reminder:" + r.ID + ":" + *r.OccurrenceAt + ":" + stamp
 	}
 	return s.enqueueNotificationsTx(tx, []notifyFact{{
 		UserID: to, WorkspaceID: r.WorkspaceID, ItemID: r.ItemID, Kind: notifyReminder,
-		DedupeKey: "reminder:" + r.ID + ":" + fired,
+		DedupeKey: key,
 	}})
 }

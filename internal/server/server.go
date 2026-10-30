@@ -65,6 +65,16 @@ type Server struct {
 	// otherwise looks the same from outside as the request's context ending.
 	sseStreamFailedForTesting func(err error)
 
+	// missedWarned rate-limits the schedule view's "missed count failed" warning
+	// (TASK-4103 C2b-4): schedule_id -> the updated_at it last warned at. An
+	// edit changes updated_at and so logs once more. A read whose count
+	// succeeds, and a schedule DELETE, remove the entry, so it holds the
+	// schedules capped now; the residue is a capped schedule removed by an item
+	// hard-delete or purge cascade, which never reaches this server's handler
+	// and keeps its entry for the process lifetime. Per server so tests do not
+	// share it.
+	missedWarned sync.Map
+
 	// responseWriteTimeoutOverride, when non-zero, replaces
 	// responseWriteTimeout for this server's bounded responses. Tests only
 	// (BUG-3821).
