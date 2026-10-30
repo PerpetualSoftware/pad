@@ -270,7 +270,8 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 		// to its error state, like a stored rule that no longer compiles, not a 500.
 		tx.Rollback()
 		code := string(schedule.CodeUnsupported)
-		if _, uerr := s.db.Exec(s.q(`UPDATE item_schedules SET error_code = ?, updated_at = ? WHERE id = ?`), code, ts, sc.ID); uerr != nil {
+		// Guarded by the snapshot read: a timing edit landing after the rollback is not marked broken (r4-1).
+		if _, uerr := s.db.Exec(s.q(`UPDATE item_schedules SET error_code = ?, updated_at = ? WHERE id = ? AND updated_at = ?`), code, ts, sc.ID, sc.UpdatedAt); uerr != nil {
 			return nil, fmt.Errorf("record schedule error_code: %w", uerr)
 		}
 		return nil, &ErrScheduleBroken{Code: code}
