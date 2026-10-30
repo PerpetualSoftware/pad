@@ -142,11 +142,11 @@ func TestTASK4137_IPBound_WithVerifier_401(t *testing.T) {
 		f := newT4137Fixture(t)
 		ch := f.challengeFor(t, t4137IPA, extra)
 		code := validTOTPCode(t, t4137Secret)
-		// a verifier on an IP-bound token is refused, even from the minting IP
-		for _, remote := range []string{t4137IPA, t4137IPB} {
-			rr := f.verify(remote, map[string]interface{}{"challenge_token": ch, "code": code, "code_verifier": t4137Verifier})
+		// a verifier is refused even from the minting IP; with none (null), another IP is refused
+		for remote, v := range map[string]interface{}{t4137IPA: t4137Verifier, t4137IPB: nil} {
+			rr := f.verify(remote, map[string]interface{}{"challenge_token": ch, "code": code, "code_verifier": v})
 			if rr.Code != http.StatusUnauthorized {
-				t.Fatalf("IP-bound (%v) + verifier from %s: %d %s", extra, remote, rr.Code, rr.Body.String())
+				t.Fatalf("IP-bound (%v), verifier %v, from %s: %d %s", extra, v, remote, rr.Code, rr.Body.String())
 			}
 			t4137NoSession(t, rr)
 		}
