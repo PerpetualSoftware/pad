@@ -262,8 +262,8 @@ func (s *Server) handleTOTPDisable(w http.ResponseWriter, r *http.Request) {
 
 // handleTOTPLoginVerify completes a login that requires 2FA verification.
 // Requires a valid challenge token (from the login response) plus a TOTP
-// code or recovery code. The challenge token is HMAC-signed, IP-bound,
-// and short-lived to prove the user already passed password verification.
+// code or recovery code. The challenge token is HMAC-signed, bound to the
+// caller's IP or to a PKCE challenge (TASK-4137), and short-lived.
 func (s *Server) handleTOTPLoginVerify(w http.ResponseWriter, r *http.Request) {
 	if s.refuseCrossSiteSignIn(w, r) { // BUG-3350, as handleLogin
 		return
@@ -272,10 +272,22 @@ func (s *Server) handleTOTPLoginVerify(w http.ResponseWriter, r *http.Request) {
 		ChallengeToken string `json:"challenge_token"`
 		Code           string `json:"code"`
 		RecoveryCode   string `json:"recovery_code"`
+		// CodeVerifier completes a challenge bound to a PKCE S256 challenge
+		// (oauth-login's two_factor_pkce_challenge, TASK-4137).
+		CodeVerifier *string `json:"code_verifier"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
 		return
+	}
+
+	verifier := ""
+	if input.CodeVerifier != nil {
+		if !isPKCEVerifier(*input.CodeVerifier) {
+			writeError(w, http.StatusBadRequest, "validation_error", "code_verifier must be 43-128 characters of A-Z a-z 0-9 - . _ ~")
+			return
+		}
+		verifier = *input.CodeVerifier
 	}
 
 	if input.ChallengeToken == "" {
@@ -291,8 +303,9 @@ func (s *Server) handleTOTPLoginVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate the challenge token (proves password was verified, checks IP + expiry)
-	userID, challengeEpoch, err := validateTwoFAChallengeEpoch(input.ChallengeToken, clientIP(r), s.twoFAChallengeSecret)
+	// Validate the challenge token (proves the first factor passed; checks its
+	// IP or PKCE binding and expiry)
+	userID, challengeEpoch, err := validateTwoFAChallengeBound(input.ChallengeToken, clientIP(r), verifier, s.twoFAChallengeSecret)
 	if err != nil {
 		time.Sleep(500 * time.Millisecond)
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid or expired 2FA challenge")

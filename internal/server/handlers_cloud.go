@@ -218,6 +218,11 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 		// Only GitHub's matters (TASK-3351 ruling 2): an account claim from
 		// GitHub requires it to be true, so an absent value claims nothing.
 		EmailPrimary *bool `json:"email_primary"`
+		// TwoFactorPKCEChallenge: an RFC 7636 S256 code_challenge. When the
+		// account has 2FA, the challenge is then bound to it instead of the
+		// caller's address, and login-verify needs the matching code_verifier
+		// (TASK-4137), for a native app whose address is not the sidecar's.
+		TwoFactorPKCEChallenge *string `json:"two_factor_pkce_challenge"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
@@ -227,6 +232,12 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 	// 1. Validate cloud secret
 	if !s.validateCloudSecret(input.CloudSecret, w) {
 		slog.Warn("oauth-login: invalid cloud secret", "provider", input.Provider, "email", input.Email)
+		return
+	}
+	// Before any account lookup, so a malformed value answers the same for
+	// every email (no 2FA oracle).
+	if input.TwoFactorPKCEChallenge != nil && !isS256Challenge(*input.TwoFactorPKCEChallenge) {
+		writeError(w, http.StatusBadRequest, "validation_error", "two_factor_pkce_challenge must be 43 base64url characters (S256)")
 		return
 	}
 
@@ -444,7 +455,12 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 			"email":    input.Email,
 			"reason":   "two_factor_required",
 		}))
-		challenge := generateTwoFAChallengeAt(user.ID, clientIP(r), user.CredentialEpoch, s.twoFAChallengeSecret)
+		var challenge string
+		if input.TwoFactorPKCEChallenge != nil {
+			challenge = generateTwoFAChallengePKCE(user.ID, *input.TwoFactorPKCEChallenge, user.CredentialEpoch, s.twoFAChallengeSecret)
+		} else {
+			challenge = generateTwoFAChallengeAt(user.ID, clientIP(r), user.CredentialEpoch, s.twoFAChallengeSecret)
+		}
 		writeError2(w, http.StatusForbidden, "two_factor_required",
 			"This account has two-factor authentication turned on. Sign in on the web to finish with your 2FA code.",
 			map[string]interface{}{"challenge_token": challenge})
