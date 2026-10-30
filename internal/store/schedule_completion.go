@@ -98,8 +98,7 @@ func completionWall(sc *models.ItemSchedule, rule schedule.Rule, loc *time.Locat
 	var d int
 	switch rule.Freq {
 	case "HOURLY", "MINUTELY":
-		at := done.Add(completionSpan(rule)).In(loc)
-		w := schedule.Wall{Year: at.Year(), Month: at.Month(), Day: at.Day(), Hour: at.Hour(), Minute: at.Minute(), Second: at.Second()}
+		w := wallOf(done.Add(completionSpan(rule)).In(loc))
 		return w, w.Year <= 2200, nil
 	case "DAILY", "WEEKLY":
 		days := n
@@ -126,4 +125,9 @@ func completionWall(sc *models.ItemSchedule, rule schedule.Rule, loc *time.Locat
 		w.Hour, w.Minute, w.Second = start.Hour, start.Minute, start.Second
 	}
 	return w, y <= 2200, nil
+}
+
+// wallOf is the wall reading of an instant already in its zone.
+func wallOf(at time.Time) schedule.Wall {
+	return schedule.Wall{Year: at.Year(), Month: at.Month(), Day: at.Day(), Hour: at.Hour(), Minute: at.Minute(), Second: at.Second()}
 }
