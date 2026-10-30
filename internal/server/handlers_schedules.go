@@ -97,15 +97,35 @@ func (s *Server) buildScheduleView(r *http.Request, item *models.Item, sc *model
 			// The view still answers without the count. A rule that compiles but
 			// hits a cap fails the same way on every read, so the warning is
 			// logged once per schedule edit, not once per GET (TASK-4103 C2b-4).
-			if prev, seen := s.missedWarned.Load(sc.ID); !seen || prev != sc.UpdatedAt {
-				s.missedWarned.Store(sc.ID, sc.UpdatedAt)
+			if s.firstMissedWarning(sc.ID, sc.UpdatedAt) {
 				slog.Warn("schedule view: missed count failed", "schedule_id", sc.ID, "error", err)
 			}
 		} else {
+			s.missedWarned.LoadAndDelete(sc.ID) // recovered: a later failure warns afresh
 			v.MissedCount, v.MissedTruncated, v.Stale = n, truncated, n >= 2
 		}
 	}
 	return v
+}
+
+// firstMissedWarning reports whether this read is the first to see the missed
+// count fail at this edit of the schedule, recording it if so. Atomic, so
+// concurrent reads log once; and it only moves forward, so a read of an older
+// snapshot (updated_at is RFC3339 to the second, which orders as a string)
+// neither logs nor undoes a newer edit's record (TASK-4103 C2b-i r1-1).
+func (s *Server) firstMissedWarning(scheduleID, updatedAt string) bool {
+	for {
+		prev, loaded := s.missedWarned.LoadOrStore(scheduleID, updatedAt)
+		if !loaded {
+			return true
+		}
+		if p, _ := prev.(string); p >= updatedAt {
+			return false
+		}
+		if s.missedWarned.CompareAndSwap(scheduleID, prev, updatedAt) {
+			return true
+		}
+	}
 }
 
 // writeScheduleNotFound is the 404 for an item with no schedule.
@@ -516,6 +536,7 @@ func (s *Server) handleDeleteItemSchedule(w http.ResponseWriter, r *http.Request
 		writeScheduleNotFound(w)
 		return
 	}
+	s.missedWarned.Delete(cur.ID)
 	s.recordScheduleWrite(r, workspaceID, item, "schedule_deleted", scheduleActivityMeta(cur.Kind, nil))
 	writeJSON(w, http.StatusOK, map[string]any{"id": cur.ID, "deleted": true})
 }
