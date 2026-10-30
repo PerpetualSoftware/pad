@@ -223,6 +223,19 @@ func ptr[T any](v T) *T { return &v }
 //
 // Otherwise the old anchor stays. spec is the compiled stored spec.
 func (s *Store) reanchorTx(tx *sql.Tx, sc *models.ItemSchedule, spec schedule.Spec, wall schedule.Wall, at time.Time, loc *time.Location) error {
+	if reanchorCandidate(sc, spec, wall, at, loc) == nil {
+		return nil
+	}
+	if _, err := tx.Exec(s.q(`UPDATE item_schedules SET anchor_wall = ? WHERE id = ?`), wall.String(), sc.ID); err != nil {
+		return fmt.Errorf("re-anchor schedule: %w", err)
+	}
+	return nil
+}
+
+// reanchorCandidate is the eligibility predicate above, shared by the fire and a
+// calendar resolve so the two cannot drift. It returns the spec compiled with
+// wall as its start, or nil when the start must stay.
+func reanchorCandidate(sc *models.ItemSchedule, spec schedule.Spec, wall schedule.Wall, at time.Time, loc *time.Location) *schedule.Compiled {
 	if spec.Rule == "" || spec.Start.String() == wall.String() {
 		return nil
 	}
@@ -237,10 +250,7 @@ func (s *Store) reanchorTx(tx *sql.Tx, sc *models.ItemSchedule, spec schedule.Sp
 	if err != nil || !cand.StartSynced() {
 		return nil
 	}
-	if _, err := tx.Exec(s.q(`UPDATE item_schedules SET anchor_wall = ? WHERE id = ?`), wall.String(), sc.ID); err != nil {
-		return fmt.Errorf("re-anchor schedule: %w", err)
-	}
-	return nil
+	return cand
 }
 
 // fillOccurrenceAt sets OccurrenceAt on the managed rows among rs in one query:

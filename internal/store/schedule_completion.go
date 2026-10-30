@@ -62,6 +62,22 @@ func addMonths(t time.Time, n int) (year int, month time.Month, day int) {
 	return y, time.Month(mm), d
 }
 
+// completionSpan is the exact interval of an HOURLY or MINUTELY rule, and 0 for
+// the others (which keep the schedule's time of day).
+func completionSpan(rule schedule.Rule) time.Duration {
+	n := time.Duration(rule.Interval)
+	if n == 0 {
+		n = 1
+	}
+	switch rule.Freq {
+	case "HOURLY":
+		return n * time.Hour
+	case "MINUTELY":
+		return n * time.Minute
+	}
+	return 0
+}
+
 // completionWall is the wall the next occurrence of a plain-interval schedule
 // starts from when it was completed at done: the completion date in loc plus the
 // interval, at the schedule's time of day (an all-day schedule stays a date).
@@ -82,11 +98,7 @@ func completionWall(sc *models.ItemSchedule, rule schedule.Rule, loc *time.Locat
 	var d int
 	switch rule.Freq {
 	case "HOURLY", "MINUTELY":
-		unit := time.Hour
-		if rule.Freq == "MINUTELY" {
-			unit = time.Minute
-		}
-		at := done.Add(time.Duration(n) * unit).In(loc)
+		at := done.Add(completionSpan(rule)).In(loc)
 		w := schedule.Wall{Year: at.Year(), Month: at.Month(), Day: at.Day(), Hour: at.Hour(), Minute: at.Minute(), Second: at.Second()}
 		return w, w.Year <= 2200, nil
 	case "DAILY", "WEEKLY":
