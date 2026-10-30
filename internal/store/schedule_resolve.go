@@ -384,8 +384,8 @@ func (s *Store) nextAfterCompletion(sc *models.ItemSchedule, rule schedule.Rule,
 		c, err := compileScheduleSpec(storedSpecInput(sc, sc.Dtstart))
 		return schedule.Occurrence{}, false, nil, c, err
 	}
-	// The grid is re-phased to the completion: the candidate is the new start.
-	// An elapsed grid starts at an instant whose wall reads back exactly (the
+	// The grid is re-phased to the completion. A calendar-unit rule starts at
+	// the candidate; an elapsed grid starts at an instant whose wall reads back exactly (the
 	// engine reads Start as the earlier half of a repeated wall), so a done in
 	// the second half of a fall-back hour phases from k spans earlier, in the
 	// first half, and the grid still contains done+span.
