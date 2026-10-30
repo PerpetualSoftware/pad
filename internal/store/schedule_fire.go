@@ -134,6 +134,15 @@ func (s *Store) fireManagedTx(tx *sql.Tx, r *models.Reminder, nowTS string) (boo
 			return false, err
 		}
 		at = schedule.Resolve(loc, wall)
+		if override != nil {
+			// A snoozed or moved occurrence was frozen at the instant the caller
+			// saw (next_at, TASK-4103 resolve), so a zone change since then does
+			// not re-read its wall: occurrence_at, the event payload and the
+			// dedupe key all carry that instant.
+			if at, err = time.Parse(time.RFC3339, *sc.NextAt); err != nil {
+				return false, fmt.Errorf("parse next_at: %w", err)
+			}
+		}
 	}
 
 	c, err := compileScheduleSpec(storedSpecInput(sc, start))

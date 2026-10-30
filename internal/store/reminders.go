@@ -790,6 +790,8 @@ func (s *Store) fireOneReminder(id, nowTS string) (*models.Reminder, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reload fired reminder %s: %w", id, err)
 	}
+	// One stamp per won fire, carried by the event payload and the dedupe key.
+	r.FireStamp = ptr(nowNano())
 
 	// READ THE ITEM ON THE TRANSACTION, never on s.db. A pool read inside a
 	// transaction that holds a write lock deadlocks on a single-connection

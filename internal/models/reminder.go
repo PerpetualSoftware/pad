@@ -51,6 +51,14 @@ type Reminder struct {
 	ScheduleID   *string `json:"schedule_id,omitempty"`
 	OccurrenceAt *string `json:"occurrence_at,omitempty"`
 
+	// FireStamp is a nanosecond UTC stamp taken once in the transaction that
+	// wins a fire. It is not a column: it is set on the fired snapshot only,
+	// so it travels in the item.reminder_due payload, and the notification
+	// dedupe key is built from it. A second fire inside the same second (a
+	// re-armed row, a snooze) therefore has its own key, and a redelivery of
+	// THIS fire re-derives the same one (TASK-4103).
+	FireStamp *string `json:"fire_stamp,omitempty"`
+
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
 }
