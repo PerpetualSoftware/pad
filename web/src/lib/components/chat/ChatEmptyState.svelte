@@ -1,6 +1,7 @@
 <script lang="ts">
+	import { tick } from 'svelte';
 	import { chatInbox } from '$lib/stores/chatInbox.svelte';
-	import { chatEmptyKind, NAME_ORDER } from '$lib/chat/emptyState';
+	import { chatEmptyKind, NAME_ORDER, ARM_COMMAND } from '$lib/chat/emptyState';
 
 	const kind = $derived(
 		chatEmptyKind({
@@ -33,6 +34,10 @@
 		try {
 			await navigator.clipboard.writeText(cmd);
 			copied[cmd] = true;
+			// A live region announces a change; 'Copied' -> 'Copied' is none. Clear,
+			// let the DOM update, then set, so every copy is announced.
+			status = '';
+			await tick();
 			status = 'Copied';
 			timers.set(
 				cmd,
@@ -78,9 +83,9 @@
 		</ul>
 		<p class="status" role="status" aria-live="polite">{status}</p>
 		<p class="note">
-			The monitor runs from a directory linked to this workspace (.pad.toml); without a link it
-			stays silent. The agent's name comes from its {NAME_ORDER}. Only Claude Code is detected
-			without one.
+			Other agents need an armed session ({ARM_COMMAND}), the monitor above running from a
+			directory linked to this workspace (.pad.toml), and a name: {NAME_ORDER}. Details: docs/api.md,
+			"Agent chat identity and arming".
 		</p>
 	</section>
 {/if}

@@ -403,8 +403,14 @@ func TestAgentNameCopyMatchesResolverOrder(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", rel, err)
 		}
-		if !strings.Contains(strings.ReplaceAll(string(data), "`", ""), phrase) {
+		text := strings.ReplaceAll(string(data), "`", "")
+		if !strings.Contains(text, phrase) {
 			t.Errorf("%s does not state the name order %q", rel, phrase)
+		}
+		// Arming comes first in runWatchMonitor (an unarmed monitor exits at
+		// once), so every copy must name it.
+		if !strings.Contains(text, "pad session arm") {
+			t.Errorf("%s does not mention arming (pad session arm)", rel)
 		}
 	}
 }

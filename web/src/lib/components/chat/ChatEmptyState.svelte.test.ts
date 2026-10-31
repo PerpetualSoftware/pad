@@ -49,6 +49,9 @@ describe('ChatEmptyState', () => {
 		// Only the slash command is copyable; the monitor line is run by the harness.
 		expect(container.querySelectorAll('button').length).toBe(1);
 		expect(text).toContain('linked to this workspace (.pad.toml)');
+		// Under another harness the session must be armed; the detail is in docs/api.md.
+		expect(text).toContain('pad session arm');
+		expect(text).toContain('Agent chat identity and arming');
 		expect(text).not.toContain('PAD_AGENT=<name>');
 	});
 
@@ -127,6 +130,24 @@ describe('ChatEmptyState', () => {
 			expect(container.querySelector('[aria-live="polite"]')!.textContent).toContain(
 				"Couldn't copy"
 			);
+		});
+
+		it('each quick copy re-announces: the live region clears, then says Copied again', async () => {
+			writeText.mockResolvedValue(undefined);
+			const { getByRole, container } = render(ChatEmptyState);
+			const live = container.querySelector('[aria-live="polite"]')!;
+			const seen: string[] = [];
+			const mo = new MutationObserver(() => seen.push(live.textContent ?? ''));
+			mo.observe(live, { childList: true, characterData: true, subtree: true });
+			const btn = getByRole('button', { name: 'Copy Claude Code command' });
+			await fireEvent.click(btn);
+			await fireEvent.click(btn);
+			await Promise.resolve(); // let observer callbacks flush
+			mo.disconnect();
+			expect(live.textContent).toBe('Copied');
+			// Without the clear, the second copy changes nothing and seen has one entry.
+			expect(seen.filter((t) => t === 'Copied').length).toBe(2);
+			expect(seen).toContain('');
 		});
 
 		it('a second quick copy is not reset by the first timer', async () => {

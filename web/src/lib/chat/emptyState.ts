@@ -8,6 +8,11 @@ import type { ChatConversationSummary, LiveSession } from '$lib/types';
 // TestAgentNameCopyMatchesResolverOrder pins this phrase in the docs too.
 export const NAME_ORDER = 'registered name, then agent_name in .pad.toml, then PAD_AGENT';
 
+// Under a harness other than Claude Code the session must be armed first (an
+// unarmed monitor exits at once). Detail lives in docs/api.md, "Agent chat
+// identity and arming"; keep this copy to the three conditions.
+export const ARM_COMMAND = 'pad session arm';
+
 export type ChatEmptyKind =
 	| 'has-conversations'
 	| 'unknown' // a read is pending, failed, or could not be trusted
