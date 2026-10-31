@@ -98,15 +98,19 @@
 	}
 
 	async function unlinkProvider(provider: string) {
+		const isSameIdentity = authStore.identityFence();
 		providerMsg = '';
 		providerError = '';
 		try {
 			await api.auth.unlinkProvider(provider);
+			if (!isSameIdentity()) return;
 			// Refresh profile to get updated providers list
-			profile = await api.auth.me();
+			const refreshed = await api.auth.me();
+			if (!isSameIdentity()) return;
+			profile = refreshed;
 			providerMsg = `${providerName(provider)} unlinked.`;
 		} catch (err) {
-			providerError = err instanceof Error ? err.message : 'Failed to unlink provider';
+			if (isSameIdentity()) providerError = err instanceof Error ? err.message : 'Failed to unlink provider';
 		}
 	}
 
@@ -240,10 +244,66 @@
 		loading = false;
 	}
 
+	// Everything the previous identity typed, was shown, or had in flight (TASK-4129). The fenced settles
+	// do not clear their busy flags once the identity has changed, so this is what returns the buttons to idle.
+	function resetIdentityState(previousUserId: string) {
+		profileSaving = false;
+		profileMsg = '';
+		profileError = '';
+		currentPassword = '';
+		newPassword = '';
+		confirmPassword = '';
+		newPasswordError = '';
+		passwordSaving = false;
+		passwordMsg = '';
+		passwordError = '';
+		setPasswordSending = false;
+		setPasswordMsg = '';
+		setPasswordError = '';
+		// Not on the first sign-in: the OAuth redirect banner was set at mount, before any identity was known.
+		if (previousUserId) {
+			providerMsg = '';
+			providerError = '';
+		}
+		totpStep = 'idle';
+		totpSetup = null;
+		totpCode = '';
+		totpSaving = false;
+		totpMsg = '';
+		totpError = '';
+		recoveryCodes = [];
+		disablePassword = '';
+		showDisableConfirm = false;
+		newTokenName = '';
+		newTokenAccess = 'write';
+		createdToken = null;
+		rotatedFrom = null;
+		tokenCopied = false;
+		tokenCreating = false;
+		tokenError = '';
+		tokenToDelete = null;
+		tokenDeleting = false;
+		tokenDeleteError = '';
+		tokenToRotate = null;
+		tokenRotating = false;
+		tokenRotateError = '';
+		exportSaving = false;
+		exportMsg = '';
+		exportError = '';
+		showDeleteConfirm = false;
+		deletePassword = '';
+		deleteConfirmText = '';
+		deleteTotpCode = '';
+		deleteSaving = false;
+		deleteError = '';
+		deleteNeedsReauth = false;
+	}
+
 	onMount(() => {
 		readOAuthQueryStatus();
 		// The listener runs after the epoch bump, so this reload is for the identity signed in now.
-		const stopListening = authStore.onIdentityChange(() => {
+		const stopListening = authStore.onIdentityChange((previousUserId) => {
+			resetIdentityState(previousUserId);
 			profile = null;
 			profileName = '';
 			profileUsername = '';
@@ -261,6 +321,7 @@
 	});
 
 	async function saveProfile() {
+		const isSameIdentity = authStore.identityFence();
 		profileError = '';
 		profileMsg = '';
 		profileSaving = true;
@@ -269,14 +330,15 @@
 				name: profileName.trim(),
 				username: profileUsername.trim()
 			});
+			if (!isSameIdentity()) return;
 			// Merge, as in saveTimezone (TASK-4101 PR2a r1 H-L1).
 			profile = profile ? { ...profile, ...updated } : updated;
 			profileMsg = 'Profile updated.';
 			await authStore.load();
 		} catch (err) {
-			profileError = err instanceof Error ? err.message : 'Failed to update profile';
+			if (isSameIdentity()) profileError = err instanceof Error ? err.message : 'Failed to update profile';
 		} finally {
-			profileSaving = false;
+			if (isSameIdentity()) profileSaving = false;
 		}
 	}
 
@@ -293,16 +355,20 @@
 
 	async function sendSetPasswordEmail() {
 		if (!profile?.email || setPasswordSending) return;
+		const isSameIdentity = authStore.identityFence();
+		// Read before the await: an identity change nulls the profile.
+		const email = profile.email;
 		setPasswordSending = true;
 		setPasswordMsg = '';
 		setPasswordError = '';
 		try {
-			await api.auth.forgotPassword(profile.email);
-			setPasswordMsg = `We sent a link to ${profile.email}. Open it to choose a password. Setting it signs you out everywhere, so sign in again afterwards.`;
+			await api.auth.forgotPassword(email);
+			if (!isSameIdentity()) return;
+			setPasswordMsg = `We sent a link to ${email}. Open it to choose a password. Setting it signs you out everywhere, so sign in again afterwards.`;
 		} catch (err) {
-			setPasswordError = err instanceof Error ? err.message : 'Failed to send the email';
+			if (isSameIdentity()) setPasswordError = err instanceof Error ? err.message : 'Failed to send the email';
 		} finally {
-			setPasswordSending = false;
+			if (isSameIdentity()) setPasswordSending = false;
 		}
 	}
 
@@ -321,38 +387,48 @@
 		newPasswordError = localPasswordProblem(newPassword) ?? '';
 		if (newPasswordError) return;
 
+		const isSameIdentity = authStore.identityFence();
 		passwordSaving = true;
 		try {
 			await api.auth.updateProfile({
 				current_password: currentPassword,
 				new_password: newPassword
 			});
+			if (!isSameIdentity()) return;
 			passwordMsg = 'Password changed successfully.';
 			currentPassword = '';
 			newPassword = '';
 			confirmPassword = '';
 		} catch (err) {
+			if (!isSameIdentity()) return;
 			// A refusal for the NEW password shows on its field (TASK-2260).
 			if (err instanceof Error && isPasswordRuleError(err.message)) newPasswordError = err.message;
 			else passwordError = err instanceof Error ? err.message : 'Failed to change password';
 		} finally {
-			passwordSaving = false;
+			if (isSameIdentity()) passwordSaving = false;
 		}
 	}
 
 	async function startTOTPSetup() {
+		const isSameIdentity = authStore.identityFence();
 		totpError = '';
 		totpMsg = '';
 		totpSaving = true;
+		let url: string;
 		try {
-			totpSetup = await api.auth.totp.setup();
+			const setup = await api.auth.totp.setup();
+			if (!isSameIdentity()) return;
+			totpSetup = setup;
+			// Read here: the page's copy is cleared by an identity change during the QR phase.
+			url = setup.url;
 			totpStep = 'setup';
 		} catch (err) {
+			if (!isSameIdentity()) return;
 			totpError = err instanceof Error ? err.message : 'Failed to start 2FA setup';
 			totpStep = 'idle';
 			return;
 		} finally {
-			totpSaving = false;
+			if (isSameIdentity()) totpSaving = false;
 		}
 
 		// Render QR code separately — failure here should not abort setup
@@ -360,9 +436,10 @@
 		try {
 			const QRCode = (await import('qrcode')).default;
 			await new Promise(r => setTimeout(r, 50));
+			if (!isSameIdentity()) return;
 			const el = document.getElementById('qr-canvas') as HTMLCanvasElement;
 			if (el) {
-				await QRCode.toCanvas(el, totpSetup.url, { width: 200, margin: 2 });
+				await QRCode.toCanvas(el, url, { width: 200, margin: 2 });
 			}
 		} catch {
 			// QR rendering failed — manual entry still available
@@ -388,18 +465,22 @@
 			return;
 		}
 
+		const isSameIdentity = authStore.identityFence();
 		totpSaving = true;
 		try {
 			const result = await api.auth.totp.verify(code, totpSetup.secret);
+			if (!isSameIdentity()) return;
 			recoveryCodes = result.recovery_codes;
 			totpStep = 'recovery';
 			totpCode = '';
 			// Refresh profile to get updated totp_enabled
-			profile = await api.auth.me();
+			const refreshed = await api.auth.me();
+			if (!isSameIdentity()) return;
+			profile = refreshed;
 		} catch (err) {
-			totpError = err instanceof Error ? err.message : 'Invalid code. Please try again.';
+			if (isSameIdentity()) totpError = err instanceof Error ? err.message : 'Invalid code. Please try again.';
 		} finally {
-			totpSaving = false;
+			if (isSameIdentity()) totpSaving = false;
 		}
 	}
 
@@ -415,6 +496,7 @@
 			return;
 		}
 
+		const isSameIdentity = authStore.identityFence();
 		totpSaving = true;
 		try {
 			await api.auth.totp.disable(
@@ -424,6 +506,7 @@
 						: { recovery_code: factor }
 					: disablePassword
 			);
+			if (!isSameIdentity()) return;
 			totpMsg = 'Two-factor authentication has been disabled.';
 			showDisableConfirm = false;
 			disablePassword = '';
@@ -431,11 +514,13 @@
 			totpSetup = null;
 			recoveryCodes = [];
 			// Refresh profile
-			profile = await api.auth.me();
+			const refreshed = await api.auth.me();
+			if (!isSameIdentity()) return;
+			profile = refreshed;
 		} catch (err) {
-			totpError = err instanceof Error ? err.message : 'Failed to disable 2FA';
+			if (isSameIdentity()) totpError = err instanceof Error ? err.message : 'Failed to disable 2FA';
 		} finally {
-			totpSaving = false;
+			if (isSameIdentity()) totpSaving = false;
 		}
 	}
 
@@ -483,9 +568,11 @@
 			return;
 		}
 
+		const isSameIdentity = authStore.identityFence();
 		tokenCreating = true;
 		try {
 			const token = await api.auth.tokens.create(newTokenName.trim(), TOKEN_ACCESS_SCOPES[newTokenAccess]);
+			if (!isSameIdentity()) return;
 			createdToken = token;
 			rotatedFrom = null;
 			tokenCopied = false;
@@ -493,13 +580,14 @@
 			newTokenName = '';
 			newTokenAccess = 'write';
 		} catch (err) {
+			if (!isSameIdentity()) return;
 			if (isPlanLimitError(err)) {
 				showPlanLimitToast(err);
 			} else {
 				tokenError = err instanceof Error ? err.message : 'Failed to create token';
 			}
 		} finally {
-			tokenCreating = false;
+			if (isSameIdentity()) tokenCreating = false;
 		}
 	}
 
@@ -585,14 +673,16 @@
 	async function exportData() {
 		exportError = '';
 		exportMsg = '';
+		const isSameIdentity = authStore.identityFence();
 		exportSaving = true;
 		try {
 			await exportAndDownloadAccountData();
+			if (!isSameIdentity()) return;
 			exportMsg = 'Your data export has downloaded.';
 		} catch (err) {
-			exportError = err instanceof Error ? err.message : 'Failed to export your data. Please try again.';
+			if (isSameIdentity()) exportError = err instanceof Error ? err.message : 'Failed to export your data. Please try again.';
 		} finally {
-			exportSaving = false;
+			if (isSameIdentity()) exportSaving = false;
 		}
 	}
 
@@ -659,13 +749,17 @@
 			opts.totp_code = code;
 		}
 
+		const isSameIdentity = authStore.identityFence();
 		deleteSaving = true;
 		try {
 			await api.auth.deleteAccount(opts);
+			// Unfenced on purpose (TASK-4129): the account is gone server-side, and the worst a late
+			// clear() and redirect can do is sign a newer identity out of the UI, which fails safe.
 			// Success: hard reset, no further API calls.
 			authStore.clear();
 			window.location.href = '/login';
 		} catch (err) {
+			if (!isSameIdentity()) return;
 			deleteNeedsReauth = err instanceof PadApiError && err.code === 'reauth_required';
 			// Render the server message VERBATIM. billing_cancel_failed /
 			// partial_delete carry account-state truth ("your account was NOT
