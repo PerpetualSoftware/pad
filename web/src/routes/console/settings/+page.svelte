@@ -5,10 +5,11 @@
 	import { onMount } from 'svelte';
 	import { api, isPlanLimitError, PadApiError } from '$lib/api/client';
 	import { showPlanLimitToast } from '$lib/billing/planLimitToast';
+	import { browserZone, noteExplicitTimezoneWrite, zoneOptions } from '$lib/timezone';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
-	import { exportAndDownloadAccountData } from '$lib/utils/artifacts';
+	import { downloadTextFile } from '$lib/utils/artifacts';
 	import Button from '$lib/components/common/Button.svelte';
 	import Modal from '$lib/components/common/Modal.svelte';
 	import NotificationSettings from '$lib/components/settings/NotificationSettings.svelte';
@@ -23,6 +24,37 @@
 	let profileSaving = $state(false);
 	let profileMsg = $state('');
 	let profileError = $state('');
+
+	let timezone = $state('');
+	let timezoneSaving = $state(false);
+	let timezoneError = $state('');
+	let timezoneMsg = $state('');
+	const browserTimezone = browserZone();
+	const timezones = zoneOptions();
+	async function saveTimezone() {
+		const userId = authStore.userId;
+		const isSameIdentity = authStore.identityFence();
+		timezoneSaving = true;
+		timezoneError = '';
+		timezoneMsg = '';
+		try {
+			const updated = await api.auth.setTimezone(timezone.trim());
+			// Counted only once it has succeeded: a failed write changed nothing a late default could clobber (TASK-4101 PR2a r2 H2-M2).
+			noteExplicitTimezoneWrite();
+			if (!isSameIdentity()) return;
+			if (updated.timezone !== undefined) {
+				authStore.setTimezone(userId, updated.timezone);
+				timezone = updated.timezone ?? '';
+			}
+			// Merge: the PATCH answer lacks totp_enabled, oauth_providers and password_set (TASK-4101 PR2a r1 H-L1).
+			profile = profile ? { ...profile, ...updated } : updated;
+			timezoneMsg = 'Time zone updated.';
+		} catch (err) {
+			if (isSameIdentity()) timezoneError = err instanceof Error ? err.message : 'Failed to set time zone';
+		} finally {
+			if (isSameIdentity()) timezoneSaving = false;
+		}
+	}
 
 	// Password
 	let currentPassword = $state('');
@@ -66,15 +98,19 @@
 	}
 
 	async function unlinkProvider(provider: string) {
+		const isSameIdentity = authStore.identityFence();
 		providerMsg = '';
 		providerError = '';
 		try {
 			await api.auth.unlinkProvider(provider);
+			if (!isSameIdentity()) return;
 			// Refresh profile to get updated providers list
-			profile = await api.auth.me();
+			const refreshed = await api.auth.me();
+			if (!isSameIdentity()) return;
+			profile = refreshed;
 			providerMsg = `${providerName(provider)} unlinked.`;
 		} catch (err) {
-			providerError = err instanceof Error ? err.message : 'Failed to unlink provider';
+			if (isSameIdentity()) providerError = err instanceof Error ? err.message : 'Failed to unlink provider';
 		}
 	}
 
@@ -179,25 +215,113 @@
 		history.replaceState(history.state, '', url.pathname + (url.search || '') + url.hash);
 	}
 
-	onMount(async () => {
-		readOAuthQueryStatus();
+	// The identity epoch the form's profile was loaded under. Saves are enabled only while it is the
+	// current one, so no save is built from another identity's load, or from none (TASK-4101 PR2a r2 H2-M1).
+	let loadedEpoch = $state<number | null>(null);
+	const profileReady = $derived(loadedEpoch === authStore.identityEpoch);
+
+	async function loadProfile() {
+		const epoch = authStore.identityEpoch;
+		const isSameIdentity = authStore.identityFence();
 		try {
 			const [me, tokenList] = await Promise.all([
 				api.auth.me(),
 				api.auth.tokens.list()
 			]);
+			// A load that settles after an identity change belongs to the previous user. Drop it untouched:
+			// the identity listener has started the load for the current one.
+			if (!isSameIdentity()) return;
 			profile = me;
 			profileName = me.name;
 			profileUsername = me.username;
+			timezone = me.timezone ?? '';
 			tokens = tokenList;
+			loadedEpoch = epoch;
 		} catch {
+			if (!isSameIdentity()) return;
 			profileError = 'Failed to load profile';
-		} finally {
-			loading = false;
 		}
+		loading = false;
+	}
+
+	// Everything the previous identity typed, was shown, or had in flight (TASK-4129). The fenced settles
+	// do not clear their busy flags once the identity has changed, so this is what returns the buttons to idle.
+	function resetIdentityState(previousUserId: string) {
+		profileSaving = false;
+		profileMsg = '';
+		profileError = '';
+		currentPassword = '';
+		newPassword = '';
+		confirmPassword = '';
+		newPasswordError = '';
+		passwordSaving = false;
+		passwordMsg = '';
+		passwordError = '';
+		setPasswordSending = false;
+		setPasswordMsg = '';
+		setPasswordError = '';
+		// Not on the first sign-in: the OAuth redirect banner was set at mount, before any identity was known.
+		if (previousUserId) {
+			providerMsg = '';
+			providerError = '';
+		}
+		totpStep = 'idle';
+		totpSetup = null;
+		totpCode = '';
+		totpSaving = false;
+		totpMsg = '';
+		totpError = '';
+		recoveryCodes = [];
+		disablePassword = '';
+		showDisableConfirm = false;
+		newTokenName = '';
+		newTokenAccess = 'write';
+		createdToken = null;
+		rotatedFrom = null;
+		tokenCopied = false;
+		tokenCreating = false;
+		tokenError = '';
+		tokenToDelete = null;
+		tokenDeleting = false;
+		tokenDeleteError = '';
+		tokenToRotate = null;
+		tokenRotating = false;
+		tokenRotateError = '';
+		exportSaving = false;
+		exportMsg = '';
+		exportError = '';
+		showDeleteConfirm = false;
+		deletePassword = '';
+		deleteConfirmText = '';
+		deleteTotpCode = '';
+		deleteSaving = false;
+		deleteError = '';
+		deleteNeedsReauth = false;
+	}
+
+	onMount(() => {
+		readOAuthQueryStatus();
+		// The listener runs after the epoch bump, so this reload is for the identity signed in now.
+		const stopListening = authStore.onIdentityChange((previousUserId) => {
+			resetIdentityState(previousUserId);
+			profile = null;
+			profileName = '';
+			profileUsername = '';
+			timezone = '';
+			tokens = [];
+			// A zone Save in flight belonged to the previous identity; its fenced finally will not clear these.
+			timezoneSaving = false;
+			timezoneError = '';
+			timezoneMsg = '';
+			// Signed out: nothing to load, and its 401s would race the caller's own navigation (#2342 E2E).
+			if (authStore.userId) void loadProfile();
+		});
+		void loadProfile();
+		return stopListening;
 	});
 
 	async function saveProfile() {
+		const isSameIdentity = authStore.identityFence();
 		profileError = '';
 		profileMsg = '';
 		profileSaving = true;
@@ -206,13 +330,15 @@
 				name: profileName.trim(),
 				username: profileUsername.trim()
 			});
-			profile = updated;
+			if (!isSameIdentity()) return;
+			// Merge, as in saveTimezone (TASK-4101 PR2a r1 H-L1).
+			profile = profile ? { ...profile, ...updated } : updated;
 			profileMsg = 'Profile updated.';
 			await authStore.load();
 		} catch (err) {
-			profileError = err instanceof Error ? err.message : 'Failed to update profile';
+			if (isSameIdentity()) profileError = err instanceof Error ? err.message : 'Failed to update profile';
 		} finally {
-			profileSaving = false;
+			if (isSameIdentity()) profileSaving = false;
 		}
 	}
 
@@ -229,16 +355,20 @@
 
 	async function sendSetPasswordEmail() {
 		if (!profile?.email || setPasswordSending) return;
+		const isSameIdentity = authStore.identityFence();
+		// Read before the await: an identity change nulls the profile.
+		const email = profile.email;
 		setPasswordSending = true;
 		setPasswordMsg = '';
 		setPasswordError = '';
 		try {
-			await api.auth.forgotPassword(profile.email);
-			setPasswordMsg = `We sent a link to ${profile.email}. Open it to choose a password. Setting it signs you out everywhere, so sign in again afterwards.`;
+			await api.auth.forgotPassword(email);
+			if (!isSameIdentity()) return;
+			setPasswordMsg = `We sent a link to ${email}. Open it to choose a password. Setting it signs you out everywhere, so sign in again afterwards.`;
 		} catch (err) {
-			setPasswordError = err instanceof Error ? err.message : 'Failed to send the email';
+			if (isSameIdentity()) setPasswordError = err instanceof Error ? err.message : 'Failed to send the email';
 		} finally {
-			setPasswordSending = false;
+			if (isSameIdentity()) setPasswordSending = false;
 		}
 	}
 
@@ -257,38 +387,48 @@
 		newPasswordError = localPasswordProblem(newPassword) ?? '';
 		if (newPasswordError) return;
 
+		const isSameIdentity = authStore.identityFence();
 		passwordSaving = true;
 		try {
 			await api.auth.updateProfile({
 				current_password: currentPassword,
 				new_password: newPassword
 			});
+			if (!isSameIdentity()) return;
 			passwordMsg = 'Password changed successfully.';
 			currentPassword = '';
 			newPassword = '';
 			confirmPassword = '';
 		} catch (err) {
+			if (!isSameIdentity()) return;
 			// A refusal for the NEW password shows on its field (TASK-2260).
 			if (err instanceof Error && isPasswordRuleError(err.message)) newPasswordError = err.message;
 			else passwordError = err instanceof Error ? err.message : 'Failed to change password';
 		} finally {
-			passwordSaving = false;
+			if (isSameIdentity()) passwordSaving = false;
 		}
 	}
 
 	async function startTOTPSetup() {
+		const isSameIdentity = authStore.identityFence();
 		totpError = '';
 		totpMsg = '';
 		totpSaving = true;
+		let url: string;
 		try {
-			totpSetup = await api.auth.totp.setup();
+			const setup = await api.auth.totp.setup();
+			if (!isSameIdentity()) return;
+			totpSetup = setup;
+			// Read here: the page's copy is cleared by an identity change during the QR phase.
+			url = setup.url;
 			totpStep = 'setup';
 		} catch (err) {
+			if (!isSameIdentity()) return;
 			totpError = err instanceof Error ? err.message : 'Failed to start 2FA setup';
 			totpStep = 'idle';
 			return;
 		} finally {
-			totpSaving = false;
+			if (isSameIdentity()) totpSaving = false;
 		}
 
 		// Render QR code separately — failure here should not abort setup
@@ -296,9 +436,10 @@
 		try {
 			const QRCode = (await import('qrcode')).default;
 			await new Promise(r => setTimeout(r, 50));
+			if (!isSameIdentity()) return;
 			const el = document.getElementById('qr-canvas') as HTMLCanvasElement;
 			if (el) {
-				await QRCode.toCanvas(el, totpSetup.url, { width: 200, margin: 2 });
+				await QRCode.toCanvas(el, url, { width: 200, margin: 2 });
 			}
 		} catch {
 			// QR rendering failed — manual entry still available
@@ -324,18 +465,22 @@
 			return;
 		}
 
+		const isSameIdentity = authStore.identityFence();
 		totpSaving = true;
 		try {
 			const result = await api.auth.totp.verify(code, totpSetup.secret);
+			if (!isSameIdentity()) return;
 			recoveryCodes = result.recovery_codes;
 			totpStep = 'recovery';
 			totpCode = '';
 			// Refresh profile to get updated totp_enabled
-			profile = await api.auth.me();
+			const refreshed = await api.auth.me();
+			if (!isSameIdentity()) return;
+			profile = refreshed;
 		} catch (err) {
-			totpError = err instanceof Error ? err.message : 'Invalid code. Please try again.';
+			if (isSameIdentity()) totpError = err instanceof Error ? err.message : 'Invalid code. Please try again.';
 		} finally {
-			totpSaving = false;
+			if (isSameIdentity()) totpSaving = false;
 		}
 	}
 
@@ -351,6 +496,7 @@
 			return;
 		}
 
+		const isSameIdentity = authStore.identityFence();
 		totpSaving = true;
 		try {
 			await api.auth.totp.disable(
@@ -360,6 +506,7 @@
 						: { recovery_code: factor }
 					: disablePassword
 			);
+			if (!isSameIdentity()) return;
 			totpMsg = 'Two-factor authentication has been disabled.';
 			showDisableConfirm = false;
 			disablePassword = '';
@@ -367,11 +514,13 @@
 			totpSetup = null;
 			recoveryCodes = [];
 			// Refresh profile
-			profile = await api.auth.me();
+			const refreshed = await api.auth.me();
+			if (!isSameIdentity()) return;
+			profile = refreshed;
 		} catch (err) {
-			totpError = err instanceof Error ? err.message : 'Failed to disable 2FA';
+			if (isSameIdentity()) totpError = err instanceof Error ? err.message : 'Failed to disable 2FA';
 		} finally {
-			totpSaving = false;
+			if (isSameIdentity()) totpSaving = false;
 		}
 	}
 
@@ -419,9 +568,11 @@
 			return;
 		}
 
+		const isSameIdentity = authStore.identityFence();
 		tokenCreating = true;
 		try {
 			const token = await api.auth.tokens.create(newTokenName.trim(), TOKEN_ACCESS_SCOPES[newTokenAccess]);
+			if (!isSameIdentity()) return;
 			createdToken = token;
 			rotatedFrom = null;
 			tokenCopied = false;
@@ -429,13 +580,14 @@
 			newTokenName = '';
 			newTokenAccess = 'write';
 		} catch (err) {
+			if (!isSameIdentity()) return;
 			if (isPlanLimitError(err)) {
 				showPlanLimitToast(err);
 			} else {
 				tokenError = err instanceof Error ? err.message : 'Failed to create token';
 			}
 		} finally {
-			tokenCreating = false;
+			if (isSameIdentity()) tokenCreating = false;
 		}
 	}
 
@@ -467,7 +619,7 @@
 			if (!isSameIdentity()) return;
 			tokenDeleteError = err instanceof Error ? err.message : 'Failed to delete the token.';
 		} finally {
-			tokenDeleting = false;
+			if (isSameIdentity()) tokenDeleting = false;
 		}
 	}
 
@@ -503,7 +655,7 @@
 			if (!isSameIdentity()) return;
 			tokenRotateError = err instanceof Error ? err.message : 'Failed to rotate the token.';
 		} finally {
-			tokenRotating = false;
+			if (isSameIdentity()) tokenRotating = false;
 		}
 	}
 
@@ -521,14 +673,18 @@
 	async function exportData() {
 		exportError = '';
 		exportMsg = '';
+		const isSameIdentity = authStore.identityFence();
 		exportSaving = true;
 		try {
-			await exportAndDownloadAccountData();
+			const { filename, text } = await api.auth.exportAccountData();
+			// The download is the identity-bound effect, so the fence sits before it.
+			if (!isSameIdentity()) return;
+			downloadTextFile(filename, text, 'application/json');
 			exportMsg = 'Your data export has downloaded.';
 		} catch (err) {
-			exportError = err instanceof Error ? err.message : 'Failed to export your data. Please try again.';
+			if (isSameIdentity()) exportError = err instanceof Error ? err.message : 'Failed to export your data. Please try again.';
 		} finally {
-			exportSaving = false;
+			if (isSameIdentity()) exportSaving = false;
 		}
 	}
 
@@ -595,13 +751,17 @@
 			opts.totp_code = code;
 		}
 
+		const isSameIdentity = authStore.identityFence();
 		deleteSaving = true;
 		try {
 			await api.auth.deleteAccount(opts);
+			// Unfenced on purpose (TASK-4129): the account is gone server-side, and the worst a late
+			// clear() and redirect can do is sign a newer identity out of the UI, which fails safe.
 			// Success: hard reset, no further API calls.
 			authStore.clear();
 			window.location.href = '/login';
 		} catch (err) {
+			if (!isSameIdentity()) return;
 			deleteNeedsReauth = err instanceof PadApiError && err.code === 'reauth_required';
 			// Render the server message VERBATIM. billing_cancel_failed /
 			// partial_delete carry account-state truth ("your account was NOT
@@ -662,6 +822,18 @@
 					<label for="profile-email">Email</label>
 					<input id="profile-email" type="email" value={profile?.email ?? ''} disabled readonly />
 				</div>
+				<div class="field">
+					<label for="timezone">Time zone</label>
+					<input id="timezone" list="timezones" bind:value={timezone} disabled={timezoneSaving} />
+					<datalist id="timezones">{#each timezones as tz}<option value={tz}></option>{/each}</datalist>
+					{#if profile?.timezone === null}<p>Not set, times use UTC</p>{/if}
+					{#if browserTimezone}
+						<button onclick={() => timezone = browserTimezone} disabled={timezoneSaving}>Use browser zone ({browserTimezone})</button>
+					{/if}
+					<Button onclick={saveTimezone} disabled={!profileReady || timezoneSaving || !timezone.trim()}>Save time zone</Button>
+					{#if timezoneError}<p class="error" role="alert">{timezoneError}</p>{/if}
+					{#if timezoneMsg}<p class="success" role="status">{timezoneMsg}</p>{/if}
+				</div>
 				{#if profileError}
 					<p class="error">{profileError}</p>
 				{/if}
@@ -669,7 +841,7 @@
 					<p class="success">{profileMsg}</p>
 				{/if}
 				<div class="btn-row">
-					<Button variant="primary" onclick={saveProfile} disabled={profileSaving}>
+					<Button variant="primary" onclick={saveProfile} disabled={!profileReady || profileSaving}>
 						{profileSaving ? 'Saving...' : 'Save Changes'}
 					</Button>
 				</div>

@@ -48,6 +48,13 @@ type Store struct {
 	// production, that fails an attempt just before its commit.
 	deadlockRetryObserver func(site string)
 	deadlockInjector      func(site string, attempt int) bool
+	// afterScheduleLiveCheck is a TEST-ONLY hook, nil in production, run inside
+	// CreateSchedule's transaction right after the item liveness check, to
+	// interleave a competing delete deterministically.
+	afterScheduleLiveCheck func(tx *sql.Tx)
+	// resetFloatingFault is a TEST-ONLY hook, nil in production, run first in the
+	// recipient hooks; an error from it makes the hook fail as if it never ran.
+	resetFloatingFault func() error
 	// usernameValidator, when set, is the rule a generated username must
 	// pass (the server's ValidateUsername: format, length, reserved names).
 	// An account claim regenerates one (TASK-3351).

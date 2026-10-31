@@ -9,7 +9,7 @@ import { render, cleanup } from '@testing-library/svelte';
 import { createRawSnippet, tick } from 'svelte';
 
 const api = vi.hoisted(() => ({
-	auth: { session: vi.fn() },
+	auth: { session: vi.fn(), setTimezoneIfUnset: vi.fn(async () => ({ timezone: 'UTC' })) },
 	workspaces: { list: vi.fn() },
 	chat: { unread: vi.fn() },
 }));
@@ -146,4 +146,11 @@ describe('TASK-4044: the root layout gives /messages no workspace shell', () => 
 		await mountAt('/messages');
 		expect(document.body.classList.contains('has-mobile-topbar')).toBe(false);
 	});
+});
+
+it.each(['/console', '/'])('TASK-4101: %s starts browser timezone sync', async (path) => {
+	api.auth.session.mockResolvedValue({ authenticated: true, user: { id: `timezone-${path}`, name: 'Pat', email: 'pat@example.com', timezone: null } });
+	await mountAt(path);
+	expect(api.auth.setTimezoneIfUnset).toHaveBeenCalledOnce();
+	expect(api.auth.setTimezoneIfUnset).toHaveBeenCalledWith(expect.any(String));
 });

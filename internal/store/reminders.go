@@ -62,7 +62,7 @@ const reminderFireable = `EXISTS (
 		  AND w.deleted_at IS NULL
 	)`
 
-const reminderColumns = `id, workspace_id, item_id, remind_at, fired_at, acked_at, created_at, updated_at`
+const reminderColumns = `id, workspace_id, item_id, remind_at, fired_at, acked_at, created_at, updated_at, schedule_id`
 
 // reminderOwned is the identity half of reminderFireable on its own — "this
 // row's workspace is its item's workspace" — for the reads that do not care
@@ -98,9 +98,12 @@ const defaultPendingReminderLimit = 50
 
 func scanReminder(row interface{ Scan(...any) error }) (*models.Reminder, error) {
 	var r models.Reminder
-	var firedAt, ackedAt sql.NullString
-	if err := row.Scan(&r.ID, &r.WorkspaceID, &r.ItemID, &r.RemindAt, &firedAt, &ackedAt, &r.CreatedAt, &r.UpdatedAt); err != nil {
+	var firedAt, ackedAt, scheduleID sql.NullString
+	if err := row.Scan(&r.ID, &r.WorkspaceID, &r.ItemID, &r.RemindAt, &firedAt, &ackedAt, &r.CreatedAt, &r.UpdatedAt, &scheduleID); err != nil {
 		return nil, err
+	}
+	if scheduleID.Valid {
+		r.ScheduleID = &scheduleID.String
 	}
 	if firedAt.Valid {
 		r.FiredAt = &firedAt.String
@@ -196,6 +199,9 @@ func (s *Store) GetReminder(workspaceID, id string) (*models.Reminder, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get reminder: %w", err)
 	}
+	if err := s.fillOccurrenceAt(s.db, r); err != nil {
+		return nil, err
+	}
 	return r, nil
 }
 
@@ -226,6 +232,9 @@ func (s *Store) ListRemindersForItem(workspaceID, itemID string) ([]*models.Remi
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate reminders: %w", err)
 	}
+	if err := s.fillOccurrenceAt(s.db, out...); err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 
@@ -245,13 +254,13 @@ func (s *Store) RearmReminder(workspaceID, id, remindAt string) (*models.Reminde
 	res, err := s.db.Exec(s.q(`
 		UPDATE item_reminders
 		SET remind_at = ?, fired_at = NULL, acked_at = NULL, updated_at = ?
-		WHERE id = ? AND workspace_id = ?
+		WHERE id = ? AND workspace_id = ? AND schedule_id IS NULL
 	`), remindAt, now(), id, workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("rearm reminder: %w", err)
 	}
 	if n, err := res.RowsAffected(); err == nil && n == 0 {
-		return nil, nil
+		return nil, s.refuseIfManaged(workspaceID, id)
 	}
 	return s.GetReminder(workspaceID, id)
 }
@@ -284,13 +293,13 @@ func (s *Store) AckReminder(workspaceID, id string) (*models.Reminder, error) {
 		UPDATE item_reminders
 		SET updated_at = CASE WHEN acked_at IS NULL THEN ? ELSE updated_at END,
 		    acked_at = COALESCE(acked_at, ?)
-		WHERE id = ? AND workspace_id = ? AND fired_at IS NOT NULL
+		WHERE id = ? AND workspace_id = ? AND fired_at IS NOT NULL AND schedule_id IS NULL
 	`), ts, ts, id, workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("ack reminder: %w", err)
 	}
 	if n, err := res.RowsAffected(); err == nil && n == 0 {
-		return nil, nil
+		return nil, s.refuseIfManaged(workspaceID, id)
 	}
 	return s.GetReminder(workspaceID, id)
 }
@@ -299,7 +308,7 @@ func (s *Store) AckReminder(workspaceID, id string) (*models.Reminder, error) {
 // only disarm: there is no "cancelled" state, because a cancelled reminder and
 // an absent one are indistinguishable to every surface that reads them.
 func (s *Store) DeleteReminder(workspaceID, id string) (bool, error) {
-	res, err := s.db.Exec(s.q(`DELETE FROM item_reminders WHERE id = ? AND workspace_id = ?`), id, workspaceID)
+	res, err := s.db.Exec(s.q(`DELETE FROM item_reminders WHERE id = ? AND workspace_id = ? AND schedule_id IS NULL`), id, workspaceID)
 	if err != nil {
 		return false, fmt.Errorf("delete reminder: %w", err)
 	}
@@ -307,7 +316,30 @@ func (s *Store) DeleteReminder(workspaceID, id string) (bool, error) {
 	if err != nil {
 		return false, nil
 	}
-	return n > 0, nil
+	if n == 0 {
+		return false, s.refuseIfManaged(workspaceID, id)
+	}
+	return true, nil
+}
+
+// refuseIfManaged is what RearmReminder, AckReminder and DeleteReminder answer
+// when their statement matched nothing: ErrReminderManaged if the row exists and
+// belongs to a schedule, nil otherwise (not found, or not yet fired, as before).
+//
+// THE PREDICATE IS IN THE STORE, not only at the HTTP door, for the reason
+// normalizeRemindAt gives: the store is callable from anywhere in the process.
+// A managed row changes only through its schedule's own writers (create,
+// update, delete, the tick), which use statements that do not carry it.
+func (s *Store) refuseIfManaged(workspaceID, id string) error {
+	var one int
+	err := s.db.QueryRow(s.q(`SELECT 1 FROM item_reminders WHERE id = ? AND workspace_id = ? AND schedule_id IS NOT NULL AND `+reminderOwned), id, workspaceID).Scan(&one)
+	switch {
+	case err == sql.ErrNoRows:
+		return nil
+	case err != nil:
+		return fmt.Errorf("check managed reminder: %w", err)
+	}
+	return ErrReminderManaged
 }
 
 // ListPendingReminders returns a workspace's fired-and-unacked reminders,
@@ -330,6 +362,32 @@ func (s *Store) DeleteReminder(workspaceID, id string) (bool, error) {
 type PendingReminderScope struct {
 	CollectionIDs []string
 	ItemIDs       []string
+}
+
+// scopeClause is the visibility predicate on the item alias, as " AND ..." (empty
+// when scope is unrestricted). The same three-way shape as models.ItemListParams:
+// a guest may hold collection-level grants, item-level grants, or both, and
+// "both" is an OR rather than an AND, so an item in a fully granted collection
+// qualifies even when it is not individually granted. One predicate for every
+// reader that must agree on who sees an item (pending reminders, the agenda).
+func scopeClause(alias string, scope PendingReminderScope) (string, []any) {
+	var args []any
+	for _, ids := range [][]string{scope.CollectionIDs, scope.ItemIDs} {
+		for _, id := range ids {
+			args = append(args, id)
+		}
+	}
+	coll := alias + ".collection_id IN (" + placeholders(len(scope.CollectionIDs)) + ")"
+	item := alias + ".id IN (" + placeholders(len(scope.ItemIDs)) + ")"
+	switch {
+	case len(scope.CollectionIDs) > 0 && len(scope.ItemIDs) > 0:
+		return " AND (" + coll + " OR " + item + ")", args
+	case len(scope.CollectionIDs) > 0:
+		return " AND " + coll, args
+	case len(scope.ItemIDs) > 0:
+		return " AND " + item, args
+	}
+	return "", nil
 }
 
 // The window is BOUNDED because this list feeds a payload that is otherwise
@@ -370,7 +428,7 @@ func (s *Store) ListPendingReminders(workspaceID string, scope PendingReminderSc
 		return nil, false, nil
 	}
 	query := `
-		SELECT r.id, r.workspace_id, r.item_id, r.remind_at, r.fired_at, r.acked_at, r.created_at, r.updated_at,
+		SELECT r.id, r.workspace_id, r.item_id, r.remind_at, r.fired_at, r.acked_at, r.created_at, r.updated_at, r.schedule_id,
 		       i.slug, i.title, i.fields, i.collection_id, c.slug, c.prefix, i.item_number
 		FROM item_reminders r
 		JOIN items i ON i.id = r.item_id AND i.workspace_id = r.workspace_id
@@ -383,31 +441,9 @@ func (s *Store) ListPendingReminders(workspaceID string, scope PendingReminderSc
 		  AND w.deleted_at IS NULL`
 	args := []any{workspaceID}
 
-	// Same three-way shape as models.ItemListParams: a guest may hold
-	// collection-level grants, item-level grants, or both, and "both" is an OR
-	// rather than an AND — an item in a fully granted collection qualifies
-	// even when it is not individually granted.
-	switch {
-	case len(scope.CollectionIDs) > 0 && len(scope.ItemIDs) > 0:
-		query += " AND (i.collection_id IN (" + placeholders(len(scope.CollectionIDs)) +
-			") OR i.id IN (" + placeholders(len(scope.ItemIDs)) + "))"
-		for _, id := range scope.CollectionIDs {
-			args = append(args, id)
-		}
-		for _, id := range scope.ItemIDs {
-			args = append(args, id)
-		}
-	case len(scope.CollectionIDs) > 0:
-		query += " AND i.collection_id IN (" + placeholders(len(scope.CollectionIDs)) + ")"
-		for _, id := range scope.CollectionIDs {
-			args = append(args, id)
-		}
-	case len(scope.ItemIDs) > 0:
-		query += " AND i.id IN (" + placeholders(len(scope.ItemIDs)) + ")"
-		for _, id := range scope.ItemIDs {
-			args = append(args, id)
-		}
-	}
+	clause, scopeArgs := scopeClause("i", scope)
+	query += clause
+	args = append(args, scopeArgs...)
 
 	query += " ORDER BY r.fired_at, r.id LIMIT ? OFFSET ?"
 	args = append(args, limit+1, offset)
@@ -421,7 +457,7 @@ func (s *Store) ListPendingReminders(workspaceID string, scope PendingReminderSc
 	var out []*models.PendingReminder
 	for rows.Next() {
 		var p models.PendingReminder
-		var firedAt, ackedAt sql.NullString
+		var firedAt, ackedAt, scheduleID sql.NullString
 		var prefix string
 		// items.item_number IS NULLABLE (migration 006 added the column to
 		// existing rows), and scanning NULL into an int fails the Scan — which
@@ -432,7 +468,7 @@ func (s *Store) ListPendingReminders(workspaceID string, scope PendingReminderSc
 		// handles the column's actual nullability.
 		var number sql.NullInt64
 		if err := rows.Scan(
-			&p.ID, &p.WorkspaceID, &p.ItemID, &p.RemindAt, &firedAt, &ackedAt, &p.CreatedAt, &p.UpdatedAt,
+			&p.ID, &p.WorkspaceID, &p.ItemID, &p.RemindAt, &firedAt, &ackedAt, &p.CreatedAt, &p.UpdatedAt, &scheduleID,
 			&p.ItemSlug, &p.ItemTitle, &p.ItemFields, &p.CollectionID, &p.CollectionSlug, &prefix, &number,
 		); err != nil {
 			return nil, false, fmt.Errorf("scan pending reminder: %w", err)
@@ -442,6 +478,9 @@ func (s *Store) ListPendingReminders(workspaceID string, scope PendingReminderSc
 		}
 		if ackedAt.Valid {
 			p.AckedAt = &ackedAt.String
+		}
+		if scheduleID.Valid {
+			p.ScheduleID = &scheduleID.String
 		}
 		// No ref rather than a wrong one: "PREFIX-0" would name a different
 		// item, and every consumer of this list can render a title without a
@@ -453,6 +492,13 @@ func (s *Store) ListPendingReminders(workspaceID string, scope PendingReminderSc
 	}
 	if err := rows.Err(); err != nil {
 		return nil, false, fmt.Errorf("iterate pending reminders: %w", err)
+	}
+	rs := make([]*models.Reminder, 0, len(out))
+	for _, p := range out {
+		rs = append(rs, &p.Reminder)
+	}
+	if err := s.fillOccurrenceAt(s.db, rs...); err != nil {
+		return nil, false, err
 	}
 	// The extra row is the probe, never a result.
 	if len(out) > limit {
@@ -654,6 +700,18 @@ func (s *Store) fireOneReminder(id, nowTS string) (*models.Reminder, error) {
 	}
 	defer tx.Rollback()
 
+	// A managed row (TASK-4102) is the outstanding occurrence of an item schedule
+	// and takes the schedule lock too. schedule_id never changes on a row, so a
+	// plain read decides which pin applies.
+	var scheduleID sql.NullString
+	switch err := tx.QueryRow(s.q(`SELECT schedule_id FROM item_reminders WHERE id = ?`), id).Scan(&scheduleID); {
+	case err == sql.ErrNoRows:
+		return nil, nil
+	case err != nil:
+		return nil, fmt.Errorf("read reminder %s: %w", id, err)
+	}
+	managed := scheduleID.Valid
+
 	// PIN THE ITEM AND WORKSPACE ROWS FOR THE REST OF THE TRANSACTION on
 	// Postgres (codex round 12). The predicate below READS liveness, and a read
 	// is not a hold: under READ COMMITTED the UPDATE locks only the reminder
@@ -676,7 +734,15 @@ func (s *Store) fireOneReminder(id, nowTS string) (*models.Reminder, error) {
 	// SQLite skips the pin: its DSN sets _txlock=immediate, so db.Begin() is a
 	// BEGIN IMMEDIATE and writers already serialize — the interleaving is
 	// unrepresentable there, and the locking clause is a syntax error.
-	if s.dialect.Driver() == DriverPostgres {
+	if s.dialect.Driver() == DriverPostgres && managed {
+		pinned, err := s.pinManagedReminderTx(tx, id)
+		switch {
+		case err != nil:
+			return nil, fmt.Errorf("pin reminder %s item, workspace and schedule: %w", id, err)
+		case !pinned:
+			return nil, nil
+		}
+	} else if s.dialect.Driver() == DriverPostgres {
 		var pinned string
 		err := tx.QueryRow(s.q(`
 			SELECT i.id FROM item_reminders r
@@ -728,6 +794,8 @@ func (s *Store) fireOneReminder(id, nowTS string) (*models.Reminder, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reload fired reminder %s: %w", id, err)
 	}
+	// One stamp per won fire, carried by the event payload and the dedupe key.
+	r.FireStamp = ptr(nowNano())
 
 	// READ THE ITEM ON THE TRANSACTION, never on s.db. A pool read inside a
 	// transaction that holds a write lock deadlocks on a single-connection
@@ -742,6 +810,21 @@ func (s *Store) fireOneReminder(id, nowTS string) (*models.Reminder, error) {
 		// consumer cannot fetch: the deferred Rollback does it, and the
 		// reminder stays armed. A hard delete cascades the row away instead.
 		return nil, nil
+	}
+
+	if r.ScheduleID != nil {
+		emit, err := s.fireManagedTx(tx, r, nowTS)
+		if err != nil {
+			return nil, fmt.Errorf("fire managed reminder %s: %w", id, err)
+		}
+		if !emit {
+			// Deferred to its exact instant, or its rule no longer compiles
+			// (error_code set): either way the write stands and no event goes out.
+			if err := tx.Commit(); err != nil {
+				return nil, fmt.Errorf("fire reminder %s: %w", id, err)
+			}
+			return nil, nil
+		}
 	}
 
 	if err := s.emitReminderEventTx(tx, r, item); err != nil {

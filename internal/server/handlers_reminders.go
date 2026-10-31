@@ -159,6 +159,10 @@ func (s *Server) handleRearmReminder(w http.ResponseWriter, r *http.Request) {
 	}
 
 	updated, err := s.store.RearmReminder(workspaceID, reminder.ID, remindAt)
+	if errors.Is(err, store.ErrReminderManaged) {
+		writeReminderManaged(w, "")
+		return
+	}
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -183,6 +187,10 @@ func (s *Server) handleAckReminder(w http.ResponseWriter, r *http.Request) {
 	}
 
 	acked, err := s.store.AckReminder(workspaceID, reminder.ID)
+	if errors.Is(err, store.ErrReminderManaged) {
+		writeReminderManaged(w, "")
+		return
+	}
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -225,6 +233,10 @@ func (s *Server) handleDeleteReminder(w http.ResponseWriter, r *http.Request) {
 	}
 
 	removed, err := s.store.DeleteReminder(workspaceID, reminder.ID)
+	if errors.Is(err, store.ErrReminderManaged) {
+		writeReminderManaged(w, "")
+		return
+	}
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -334,7 +346,26 @@ func (s *Server) resolveReminderForWrite(w http.ResponseWriter, r *http.Request,
 	if !s.requireEditPermission(w, r, workspaceID, item.ID, item.CollectionID) {
 		return nil, nil
 	}
+	// A reminder that belongs to a schedule is changed through the schedule.
+	// The check runs last, so only a caller who may edit the item learns the
+	// row is managed, and before any body decode, because no body can make
+	// the request succeed.
+	if reminder.ScheduleID != nil {
+		writeReminderManaged(w, *reminder.ScheduleID)
+		return nil, nil
+	}
 	return reminder, item
+}
+
+// writeReminderManaged answers 409 reminder_managed. scheduleID is "" when the
+// caller only has the store's refusal (a caller that skipped the door).
+func writeReminderManaged(w http.ResponseWriter, scheduleID string) {
+	details := map[string]interface{}{}
+	if scheduleID != "" {
+		details["schedule_id"] = scheduleID
+	}
+	writeError2(w, http.StatusConflict, "reminder_managed",
+		"This reminder is managed by the item's schedule; resolve it with POST .../schedule/resolve, or change or delete the schedule instead", details)
 }
 
 // Bounds for the pending-reminder read (IDEA-2641, codex round 4).

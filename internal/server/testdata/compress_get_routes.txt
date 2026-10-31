@@ -82,6 +82,7 @@ compress /api/v1/workspaces/deleted
 compress /api/v1/workspaces/import-status
 compress /api/v1/workspaces/{slug}/
 compress /api/v1/workspaces/{slug}/activity
+compress /api/v1/workspaces/{slug}/agenda
 compress /api/v1/workspaces/{slug}/agent-roles/
 compress /api/v1/workspaces/{slug}/agent-roles/{roleID}/
 compress /api/v1/workspaces/{slug}/agent/bootstrap
@@ -132,6 +133,7 @@ compress /api/v1/workspaces/{slug}/items/{itemSlug}/links
 compress /api/v1/workspaces/{slug}/items/{itemSlug}/progress
 compress /api/v1/workspaces/{slug}/items/{itemSlug}/relation-backlinks
 compress /api/v1/workspaces/{slug}/items/{itemSlug}/reminders
+compress /api/v1/workspaces/{slug}/items/{itemSlug}/schedule
 compress /api/v1/workspaces/{slug}/items/{itemSlug}/share-links
 compress /api/v1/workspaces/{slug}/items/{itemSlug}/star
 compress /api/v1/workspaces/{slug}/items/{itemSlug}/tasks

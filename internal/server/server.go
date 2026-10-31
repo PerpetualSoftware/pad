@@ -65,6 +65,18 @@ type Server struct {
 	// otherwise looks the same from outside as the request's context ending.
 	sseStreamFailedForTesting func(err error)
 
+	// missedWarned rate-limits the schedule view's "missed count failed" warning
+	// (TASK-4103 C2b-4): schedule_id -> the updated_at it last warned at. An
+	// edit changes updated_at and so logs once more. A read whose count
+	// succeeds, and a schedule DELETE, remove the entry, so it holds the
+	// schedules capped now. The residue keeps its entry for the process
+	// lifetime: a capped schedule removed by an item hard-delete or purge
+	// cascade, which never reaches this server's handler, and one whose entry
+	// an in-flight read of an older broken snapshot re-adds after the DELETE
+	// evicted it (TASK-4103 C2b-i r2-1, declined: bounded, and log-only). Per
+	// server so tests do not share it.
+	missedWarned sync.Map
+
 	// responseWriteTimeoutOverride, when non-zero, replaces
 	// responseWriteTimeout for this server's bounded responses. Tests only
 	// (BUG-3821).
@@ -2398,6 +2410,13 @@ func (s *Server) setupRouter() {
 						// about the item it names.
 						r.Get("/reminders", s.handleListItemReminders)
 						r.Post("/reminders", s.handleCreateItemReminder)
+						// Item schedules (TASK-4102): the time trigger whose
+						// outstanding occurrence is a managed reminder row.
+						r.Get("/schedule", s.handleGetItemSchedule)
+						r.Post("/schedule", s.handleCreateItemSchedule)
+						r.Patch("/schedule", s.handleUpdateItemSchedule)
+						r.Delete("/schedule", s.handleDeleteItemSchedule)
+						r.Post("/schedule/resolve", s.handleResolveItemSchedule)
 						// Verifications (TASK-3617): per-criterion verdicts
 						// on the item that carries the acceptance criteria,
 						// judged against its present text at read time.
@@ -2536,6 +2555,7 @@ func (s *Server) setupRouter() {
 					r.Post("/reminders/{reminderID}/ack", s.handleAckReminder)
 					r.Delete("/reminders/{reminderID}", s.handleDeleteReminder)
 					r.Get("/dashboard", s.handleGetDashboard)
+					r.Get("/agenda", s.handleGetAgenda) // TASK-4104: schedules + dated items in a window
 
 					// Workspace graph — {nodes, edges} for the 3D
 					// graph view (PLAN-1730 / TASK-1731). Active

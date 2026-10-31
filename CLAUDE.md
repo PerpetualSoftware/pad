@@ -300,6 +300,7 @@ pad auth setup                # Initialize a fresh instance with the first admin
 pad auth login                # Log in
 pad auth logout               # Sign out
 pad auth whoami               # Show current user
+pad auth timezone [zone]       # Show or set your IANA time zone
 pad workspace members         # List workspace members
 pad workspace invite <email> [--role X] # Invite user to workspace
 pad workspace join <code>     # Accept workspace invitation

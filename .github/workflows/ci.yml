@@ -13,6 +13,16 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # The -race build flags, in ONE place (TASK-4141). The shard coverage
+  # guard lists internal/server's tests from the binary these flags build,
+  # so the shards and the guard must use the same value or the guard checks
+  # a different binary from the one the shards run. checkptr is off for
+  # modernc.org/... only (BUG-3483; see the "Run tests with race detector"
+  # step). Expanded unquoted on purpose: no spaces or glob characters inside
+  # a flag.
+  GO_RACE_FLAGS: "-race -gcflags=modernc.org/...=-d=checkptr=0"
+
 # All third-party Actions are pinned to a 40-char commit SHA with a trailing
 # '# vX.Y.Z' comment so a compromised maintainer or moved tag cannot silently
 # execute attacker code in CI. Bump the SHA + comment together when updating.
@@ -190,9 +200,9 @@ jobs:
         # fast local machine; no single test exceeds 14s — aggregate
         # weight, not a hang), turning most main runs red. 45m restores
         # headroom; genuine deadlocks still hit this and produce the
-        # goroutine-dump panic, just up to 15m later. The real fix
-        # (cheaper suite: shared fixtures / sharding) is tracked on
-        # BUG-1913.
+        # goroutine-dump panic, just up to 15m later. The server package
+        # reached that budget again and is now sharded out of this step
+        # (TASK-4141, below).
         #
         # checkptr is OFF for modernc.org/... only (BUG-3483). -race turns on
         # checkptr, which checks unsafe.Pointer arithmetic, and modernc's
@@ -202,9 +212,24 @@ jobs:
         # our code. Race detection itself stays on everywhere, modernc
         # included, and checkptr stays on for every other package.
         # Measured: -25% on 267 serial server tests, -40% on a 40-test probe.
+        #
+        # internal/server is NOT in this step: it runs as the three
+        # go-server-race shards below (TASK-4141). Alone it took 2519.644s
+        # of this step's 2700s budget on main. The exclusion is asserted,
+        # not trusted: the step fails unless exactly one package was
+        # removed and it is internal/server. That catches a grep that
+        # over-excludes (internal/server/render must stay here) and a
+        # path move (which would exclude nothing). The PostgreSQL race
+        # step carries the same assertion.
         env:
           PAD_TEST_REQUIRE_PS: "1"
-        run: go test -race -gcflags='modernc.org/...=-d=checkptr=0' -timeout=45m ./...
+        run: |
+          all=$(go list ./...)
+          pkgs=$(printf '%s\n' "$all" | grep -v '^github.com/PerpetualSoftware/pad/internal/server$')
+          test -n "$pkgs"
+          removed=$(LC_ALL=C comm -23 <(printf '%s\n' "$all" | LC_ALL=C sort) <(printf '%s\n' "$pkgs" | LC_ALL=C sort))
+          [ "$removed" = github.com/PerpetualSoftware/pad/internal/server ] || { printf '::error::the race step must exclude exactly internal/server; it excluded:\n%s\n' "${removed:-(nothing)}"; exit 1; }
+          go test $GO_RACE_FLAGS -timeout=45m $pkgs
 
       - name: Build binary
         run: go build -o pad ./cmd/pad
@@ -571,7 +596,159 @@ jobs:
         # suite's aggregate runtime crossed the old budget (this job
         # variant failed main at f235a04 with the same timeout panic).
         # checkptr off for modernc.org/... only: see the SQLite race step (BUG-3483).
-        run: go test -race -gcflags='modernc.org/...=-d=checkptr=0' -timeout=45m ./... -count=1
+        # internal/server runs as the go-server-race-postgres shards instead
+        # (TASK-4141; it took 2658.534s of 2700s here on main). The exclusion
+        # is asserted as in the SQLite race step: exactly one package
+        # removed, and it is internal/server.
+        run: |
+          all=$(go list ./...)
+          pkgs=$(printf '%s\n' "$all" | grep -v '^github.com/PerpetualSoftware/pad/internal/server$')
+          test -n "$pkgs"
+          removed=$(LC_ALL=C comm -23 <(printf '%s\n' "$all" | LC_ALL=C sort) <(printf '%s\n' "$pkgs" | LC_ALL=C sort))
+          [ "$removed" = github.com/PerpetualSoftware/pad/internal/server ] || { printf '::error::the race step must exclude exactly internal/server; it excluded:\n%s\n' "${removed:-(nothing)}"; exit 1; }
+          go test $GO_RACE_FLAGS -timeout=45m -count=1 $pkgs
+
+  # internal/server under -race, as 3 shards per driver (TASK-4141). In the
+  # ./... race steps it took 2519.644s (SQLite) and 2658.534s (PostgreSQL) of
+  # the 2700s per-binary budget on main, sharing ~4 vCPU with every other
+  # package. No test or family is more than ~4% of its wall and ~88% of it is
+  # serial tests, so there is no slow test to fix; splitting it is the lever.
+  # scripts/test-shard.sh says how tests are assigned, and go-server-shards
+  # proves the shards cover the package exactly once.
+  go-server-race:
+    # Backstop only, as on the go job: -timeout=45m fires first.
+    timeout-minutes: 75
+    name: Go race internal/server (SQLite ${{ matrix.shard }}/3)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26"
+
+      - name: Allow Go to fetch the toolchain go.mod pins
+        # See the identical step in the `go` job.
+        run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
+
+      - name: Create web build placeholder for embed
+        run: mkdir -p web/build && echo "placeholder" > web/build/.gitkeep
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
+
+      # Built for real, as in the `go` job: internal/server's tests run it.
+      - name: Build the materializer bundle for embed
+        working-directory: web
+        run: npm ci && node scripts/build-materializer.mjs
+
+      - name: Run internal/server shard with race detector
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          run=$(scripts/test-shard.sh regex ./internal/server/ 3 "$SHARD" $GO_RACE_FLAGS)
+          go test $GO_RACE_FLAGS -timeout=45m -run "$run" ./internal/server/
+
+  go-server-race-postgres:
+    # Backstop only, as on the go-postgres job: -timeout=45m fires first.
+    timeout-minutes: 75
+    name: Go race internal/server (PostgreSQL ${{ matrix.shard }}/3)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    services:
+      postgres:
+        # Same image and digest as the go-postgres job; bump them together.
+        image: mirror.gcr.io/library/postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+        env:
+          POSTGRES_USER: pad
+          POSTGRES_PASSWORD: pad
+          POSTGRES_DB: pad
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U pad"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26"
+
+      - name: Allow Go to fetch the toolchain go.mod pins
+        # See the identical step in the `go` job.
+        run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
+
+      - name: Create web build placeholder for embed
+        run: mkdir -p web/build && echo "placeholder" > web/build/.gitkeep
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
+
+      # Built for real, as in the `go` job: internal/server's tests run it.
+      - name: Build the materializer bundle for embed
+        working-directory: web
+        run: npm ci && node scripts/build-materializer.mjs
+
+      # internal/server's tests need no PostgreSQL client tools (no pg_dump
+      # or psql), so the PGDG install the go-postgres job does is not here.
+      - name: Run internal/server shard with race detector against PostgreSQL
+        env:
+          PAD_TEST_POSTGRES_URL: "postgres://pad:pad@localhost:5432/pad?sslmode=disable"
+          SHARD: ${{ matrix.shard }}
+        run: |
+          run=$(scripts/test-shard.sh regex ./internal/server/ 3 "$SHARD" $GO_RACE_FLAGS)
+          go test $GO_RACE_FLAGS -timeout=45m -count=1 -run "$run" ./internal/server/
+
+  go-server-shards:
+    # The shards are only a gate if together they run every test exactly
+    # once. A shard bug drops tests SILENTLY, which is worse than the timeout
+    # it replaces, so this job fails the workflow unless Go's own -run
+    # matcher reads the 3 shard regexes as pairwise disjoint and together
+    # equal to `go test -list .` for the same binary. It lists with
+    # GO_RACE_FLAGS, the shards' build flags, so build-tagged files are
+    # counted exactly when the shards compile them. One check covers both
+    # drivers: the driver is a runtime env var, not a build flag, so the
+    # SQLite and PostgreSQL shards run the same binary.
+    timeout-minutes: 30
+    name: Go internal/server shard coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26"
+
+      - name: Allow Go to fetch the toolchain go.mod pins
+        # See the identical step in the `go` job.
+        run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
+
+      # -list links the test binary, so the embeds must resolve. Placeholders
+      # are enough here: -list runs no tests.
+      - name: Create embed placeholders
+        run: |
+          mkdir -p web/build web/build-materializer
+          echo "placeholder" > web/build/.gitkeep
+          echo "placeholder" > web/build-materializer/materializer.js
+
+      - name: Check the shards cover internal/server exactly once
+        run: scripts/test-shard.sh check ./internal/server/ 3 $GO_RACE_FLAGS
 
   web:
     name: Web

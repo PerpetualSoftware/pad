@@ -231,6 +231,11 @@ export const authStore = {
 	get emailVerified() { return session?.user?.email_verified ?? true; },
 	get loading() { return loading; },
 
+	setTimezone(userId: string, timezone: string | null) {
+		if (!session?.user || session.user.id !== userId) return;
+		session.user.timezone = timezone;
+	},
+
 	async load() {
 		if (inflight) return inflight;
 		loading = true;

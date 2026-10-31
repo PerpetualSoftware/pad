@@ -38,6 +38,9 @@ var wsChildTables = []string{
 	// item_needs_snoozes (TASK-3918) has no line in purgeWorkspaceChildDeletes:
 	// its FKs to items and workspaces cascade. Listed so the purge tests prove it.
 	"item_needs_snoozes",
+	// item_schedules (TASK-4102): same, its composite FK to items cascades;
+	// schedule_occurrences and the managed item_reminders row cascade from it.
+	"item_schedules",
 	// comment_mentions (TASK-3917): same, its FKs to comments, items and
 	// workspaces cascade.
 	"comment_mentions",

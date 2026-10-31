@@ -9,6 +9,8 @@ import (
 var ValidActions = []string{
 	"created", "updated", "archived", "restored", "moved", "read", "searched",
 	"verified", // TASK-3617: a batch of acceptance-criteria verdicts
+	// TASK-4102: item schedule writes. Metadata holds names only.
+	"schedule_created", "schedule_updated", "schedule_deleted", "schedule_resolved",
 }
 
 // Audit action constants for auth/admin events

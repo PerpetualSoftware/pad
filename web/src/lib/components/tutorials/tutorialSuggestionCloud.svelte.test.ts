@@ -17,7 +17,7 @@ vi.mock('$lib/api/client', () => ({
 		uiDismissals: { list: vi.fn(async () => ({ dismissed: [] })), dismiss }
 	}
 }));
-vi.mock('$lib/stores/auth.svelte', () => ({ authStore: { cloudMode: true } }));
+vi.mock('$lib/stores/auth.svelte', () => ({ authStore: { cloudMode: true, identityFence: () => () => true, onIdentityChange: () => () => {} } }));
 
 const TutorialSuggestion = (await import('./TutorialSuggestion.svelte')).default;
 

@@ -2043,10 +2043,11 @@ type LoginResponse struct {
 
 // LoginUser is the user info returned from auth endpoints.
 type LoginUser struct {
-	ID    string `json:"id"`
-	Email string `json:"email"`
-	Name  string `json:"name"`
-	Role  string `json:"role"`
+	Timezone *string `json:"timezone"`
+	ID       string  `json:"id"`
+	Email    string  `json:"email"`
+	Name     string  `json:"name"`
+	Role     string  `json:"role"`
 }
 
 // SessionResponse is the response from GET /auth/session.
@@ -2230,6 +2231,12 @@ func (c *Client) GetCurrentUser() (*LoginUser, error) {
 func (c *Client) GetCurrentUserContext(ctx context.Context) (*LoginUser, error) {
 	var result LoginUser
 	return &result, c.getContext(ctx, "/auth/me", &result)
+}
+
+// SetTimezone unconditionally updates the authenticated user's time zone.
+func (c *Client) SetTimezone(zone string) (*LoginUser, error) {
+	var result LoginUser
+	return &result, c.patch("/auth/me", map[string]string{"timezone": zone}, &result)
 }
 
 // CheckSession returns the current auth status.

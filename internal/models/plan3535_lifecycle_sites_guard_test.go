@@ -39,15 +39,16 @@ var lifecycleHelpers = map[string]bool{
 
 var lifecycleSites = map[string]string{
 	// The helpers themselves, composed of each other.
-	"internal/models/close_state.go::ItemCloseState::IsTerminalItem":             "keep: an item's own close state (open/done/abandoned), not a count",
-	"internal/models/close_state.go::ItemCloseState::IsAbandonedItem":            "keep: an item's own close state, not a count",
-	"internal/server/handlers_dashboard.go::isItemDone::IsTerminalItem":          "keep: the done predicate itself; each caller below is classified",
-	"internal/server/handlers_dashboard.go::childProgressState::IsAbandonedItem": "exclude: the progress predicate; isReferenceCollection answers first",
-	"internal/server/handlers_dashboard.go::childProgressState::IsTerminalItem":  "exclude: the progress predicate; isReferenceCollection answers first",
-	"internal/store/items.go::nonTerminalFilter::doneFiltersForWorkspace":        "keep: the list filter for an item list's own open items (a doc's status filters its own list)",
-	"internal/store/items.go::nonTerminalFilter::buildChildrenDoneExpr":          "keep: as above",
-	"internal/store/items.go::listItemsQ::nonTerminalFilter":                     "keep: `pad item list` / MCP list's default open filter, a list's own items (ListItems delegates here; ListItemsQ refuses NonTerminal, BUG-3659)",
-	"internal/store/items.go::listItemsFTS::nonTerminalFilter":                   "keep: the same filter on the search-backed list",
+	"internal/models/close_state.go::ItemCloseState::IsTerminalItem":               "keep: an item's own close state (open/done/abandoned), not a count",
+	"internal/models/close_state.go::ItemCloseState::IsAbandonedItem":              "keep: an item's own close state, not a count",
+	"internal/server/handlers_dashboard.go::isItemDone::IsTerminalItem":            "keep: the done predicate itself; each caller below is classified",
+	"internal/server/handlers_dashboard.go::childProgressState::IsAbandonedItem":   "exclude: the progress predicate; isReferenceCollection answers first",
+	"internal/server/handlers_dashboard.go::childProgressState::IsTerminalItem":    "exclude: the progress predicate; isReferenceCollection answers first",
+	"internal/store/items.go::nonTerminalFilter::doneFiltersForWorkspace":          "keep: the list filter for an item list's own open items (a doc's status filters its own list)",
+	"internal/store/items.go::nonTerminalFilter::buildChildrenDoneExpr":            "keep: as above",
+	"internal/store/items.go::listItemsQ::nonTerminalFilter":                       "keep: `pad item list` / MCP list's default open filter, a list's own items (ListItems delegates here; ListItemsQ refuses NonTerminal, BUG-3659)",
+	"internal/store/items.go::listItemsFTS::nonTerminalFilter":                     "keep: the same filter on the search-backed list",
+	"internal/store/schedule_agenda.go::ListSchedulesForAgenda::nonTerminalFilter": "keep: lists the time triggers someone attached to an item, not open work; a schedule on a reference item is deliberate (TASK-4104)",
 
 	// Progress.
 	"internal/store/items.go::GetItemProgress::buildChildrenDoneExpr":                   "exclude: counted only where buildChildrenUncountedExpr is false",

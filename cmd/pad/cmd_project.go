@@ -36,6 +36,7 @@ func statusCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			seedDashboardZone(dashJSON)
 
 			if formatFlag == "json" {
 				return cli.PrintJSON(dashJSON)
@@ -222,6 +223,7 @@ func nextCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			seedDashboardZone(dashJSON)
 
 			// Decode once; both the JSON branch and the human-readable
 			// branch use the same suggested_next slice.
@@ -406,6 +408,7 @@ func standupCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			seedDashboardZone(dashJSON)
 
 			// Parse dashboard
 			var dash struct {
@@ -472,7 +475,7 @@ func standupCmd() *cobra.Command {
 				}
 
 				output := standupJSON{
-					Date:          time.Now().Format("2006-01-02"),
+					Date:          cli.FormatInstant(time.Now(), "2006-01-02"),
 					Days:          days,
 					Completed:     []standupItem{},
 					InProgress:    []standupItem{},
@@ -520,7 +523,7 @@ func standupCmd() *cobra.Command {
 			blue := color.New(color.FgBlue)
 			green := color.New(color.FgGreen)
 
-			dateStr := time.Now().Format("January 2, 2006")
+			dateStr := cli.FormatInstant(time.Now(), "January 2, 2006")
 			headerColor.Printf("📋 Standup — %s\n", dateStr)
 			fmt.Println(dim.Sprint(strings.Repeat("═", 40)))
 
@@ -1222,7 +1225,7 @@ enriched activity feed the web UI uses (item refs, titles, change details).`,
 					}
 
 					rows = append(rows, []string{
-						a.CreatedAt.Format("2006-01-02 15:04"),
+						cli.FormatInstant(a.CreatedAt, "2006-01-02 15:04"),
 						actorName,
 						a.Action,
 						target,
@@ -1239,7 +1242,7 @@ enriched activity feed the web UI uses (item refs, titles, change details).`,
 			cyan := color.New(color.FgCyan)
 
 			for _, a := range cli.CollapseReorderBatches(activities) {
-				timeStr := dim.Sprint(a.CreatedAt.Format("2006-01-02 15:04"))
+				timeStr := dim.Sprint(cli.FormatInstant(a.CreatedAt, "2006-01-02 15:04"))
 
 				actorName := a.ActorName
 				if actorName == "" {
@@ -1404,7 +1407,7 @@ func watchCmd() *cobra.Command {
 					if evt.Timestamp > 0 {
 						ts = time.UnixMilli(evt.Timestamp)
 					}
-					timeStr := dim.Sprintf("%s", ts.Format("15:04:05"))
+					timeStr := dim.Sprintf("%s", cli.FormatInstant(ts, "15:04:05"))
 
 					// Determine emoji and color based on event type
 					var emoji string

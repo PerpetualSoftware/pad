@@ -164,6 +164,11 @@ var migratedRefusalTables = []string{
 	// A person's needs-you dismissals and deferrals (TASK-3918), the same
 	// class as item_stars: per-user workspace state the bundle does not carry.
 	"item_needs_snoozes",
+	// Time-trigger schedules and their resolved occurrences (TASK-4102): the
+	// bundle does not carry them yet, and export skips their managed reminder
+	// rows, so a write to the abandoned file must refuse rather than be lost.
+	"item_schedules",
+	"schedule_occurrences",
 	// A person's "mark caught up" cursor per workspace (TASK-3615 PR A),
 	// the same class: the bundle does not carry it (BUG-3958).
 	"workspace_read_cursors",

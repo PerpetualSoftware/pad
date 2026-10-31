@@ -734,6 +734,17 @@ func isUniqueViolation(err error) bool {
 		strings.Contains(msg, "duplicate key value violates unique constraint")
 }
 
+// isForeignKeyViolation is isUniqueViolation's twin for a foreign-key refusal
+// (SQLite: FOREIGN KEY constraint failed; PostgreSQL: violates foreign key constraint).
+func isForeignKeyViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "FOREIGN KEY constraint failed") ||
+		strings.Contains(msg, "violates foreign key constraint")
+}
+
 func (s *Store) GetItem(id string) (*models.Item, error) {
 	return s.GetItemQ(s.db, id)
 }
@@ -2444,6 +2455,21 @@ func (s *Store) appendFieldFilters(workspaceID string, params models.ItemListPar
 	if key := params.FieldKeyPresent; key != "" && isValidFieldKey(key) {
 		query += " AND " + s.dialect.JSONExtractText("i.fields", key) + " IS NOT NULL"
 	}
+	if win := params.FieldDateWindow; win != nil {
+		// A date field is `YYYY-MM-DD` or RFC3339; the first ten characters are
+		// the day in the value's own offset on both shapes and both dialects.
+		var conds []string
+		for _, key := range win.Keys {
+			if isValidFieldKey(key) {
+				conds = append(conds, "substr("+s.dialect.JSONExtractText("i.fields", key)+", 1, 10) BETWEEN ? AND ?")
+				args = append(args, win.From, win.To)
+			}
+		}
+		if len(conds) == 0 {
+			conds = []string{"1 = 0"} // no key to match is no match, not no filter
+		}
+		query += " AND (" + strings.Join(conds, " OR ") + ")"
+	}
 	return query, args
 }
 
@@ -3637,6 +3663,10 @@ func (s *Store) updateItemWithParentLinkOnce(
 	}
 	if err := commit(); err != nil {
 		return nil, err
+	}
+	if mutSignal.AssignmentChanged {
+		// The recipient of a floating schedule on this item changed (TASK-4102).
+		s.resetFloatingForItem(id)
 	}
 
 	return updated, nil

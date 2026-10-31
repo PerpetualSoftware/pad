@@ -883,7 +883,7 @@ func TestDispatch_GithubCommandsRejectedAsCLIOnly(t *testing.T) {
 	}
 	// github link / unlink have a remote mapper since TASK-3611 (pad_item
 	// link-pr / unlink-pr); status still needs a local checkout and `gh`.
-	for _, cmd := range []string{"github status"} {
+	for _, cmd := range []string{"github status", "auth timezone"} {
 		t.Run(cmd, func(t *testing.T) {
 			ctx := WithDispatchInput(context.Background(), map[string]any{
 				"workspace": "docapp",
