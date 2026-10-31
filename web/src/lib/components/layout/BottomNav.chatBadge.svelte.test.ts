@@ -34,7 +34,10 @@ beforeEach(() => {
 	cleanup();
 	chatStore.unreadTotal = 0;
 });
-afterEach(() => cleanup());
+afterEach(() => {
+	cleanup();
+	chatStore.unreadTotal = 0;
+});
 
 describe('BottomNav You-slot chat badge (TASK-4186)', () => {
 	it('shows the unread count on the You slot and in its label', async () => {

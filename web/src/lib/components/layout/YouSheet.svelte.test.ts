@@ -32,7 +32,10 @@ beforeEach(() => {
 	cleanup();
 	chatStore.unreadTotal = 4;
 });
-afterEach(() => cleanup());
+afterEach(() => {
+	cleanup();
+	chatStore.unreadTotal = 0;
+});
 
 describe('YouSheet chat row (TASK-4044)', () => {
 	it('has a Chat row to /messages with the unread count', async () => {
