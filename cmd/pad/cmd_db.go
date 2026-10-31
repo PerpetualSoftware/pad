@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/url"
 	"os"
@@ -346,7 +347,7 @@ Uses application-level export/import to transfer all workspace data.
 This reads each workspace from the SQLite database and imports it into
 the PostgreSQL database. Users, platform settings, and auth data are
 NOT migrated — only workspace content (collections, items, comments,
-links, versions).
+links, versions). A schedule the import refuses is reported, not migrated.
 
 Steps:
   1. Set up a fresh PostgreSQL database
@@ -597,6 +598,7 @@ Steps:
 			}
 
 			migrated := 0
+			var droppedAll []migrateDropped
 			for _, ws := range workspaces {
 				fmt.Fprintf(os.Stderr, "Migrating workspace: %s...\n", ws.Name)
 
@@ -654,11 +656,15 @@ Steps:
 				// What this unit does guarantee is the half it can: the
 				// SOURCE is unmarked, so the operator still has a working
 				// database to re-run from.
-				if _, err := migrateImportWorkspace(dstStore, data); err != nil {
+				_, drops, err := migrateImportWorkspaceReporting(dstStore, data, os.Stderr)
+				if err != nil {
 					return fmt.Errorf("import %s: %w (nothing has been marked; the SQLite database is unchanged, "+
 						"but PostgreSQL is now PARTIALLY populated — drop and recreate it before re-running)", ws.Slug, err)
 				}
 
+				if len(drops) > 0 {
+					droppedAll = append(droppedAll, migrateDropped{Workspace: ws.Name, Drops: drops})
+				}
 				fmt.Fprintf(os.Stderr, "  OK: %s\n", stats)
 				migrated++
 			}
@@ -734,6 +740,7 @@ Steps:
 			fmt.Fprintln(os.Stderr, "  2. Start the server: pad server start")
 			fmt.Fprintln(os.Stderr, "  3. Run 'pad auth setup' to create an admin account on the new database")
 			fmt.Fprintln(os.Stderr, "  4. Verify your data in the web UI")
+			printMigrateDropSummary(os.Stderr, droppedAll, fromPath)
 
 			return nil
 		},
@@ -1012,5 +1019,40 @@ func preflightNULForMigration(src *store.Store, fromPath string) error {
 // canonicalizes it, but this is the same workspace on a new database, and its
 // slug is already in URLs, bookmarks and .pad.toml links.
 func migrateImportWorkspace(dst *store.Store, data *models.WorkspaceExport) (*models.Workspace, error) {
-	return dst.ImportWorkspace(data, "", "", "", store.WithPreservedSlug())
+	ws, _, err := migrateImportWorkspaceReporting(dst, data, io.Discard)
+	return ws, err
+}
+
+// migrateDropped is one workspace's refused schedules, for the closing summary.
+type migrateDropped struct {
+	Workspace string
+	Drops     []models.ImportScheduleDrop
+}
+
+// migrateImportWorkspaceReporting is migrateImportWorkspace that also prints
+// each schedule the import refused, as it happens, and returns them (TASK-4104
+// D2 r1-1). Print-only: the SQLite source is untouched, so nothing is lost.
+func migrateImportWorkspaceReporting(dst *store.Store, data *models.WorkspaceExport, w io.Writer) (*models.Workspace, []models.ImportScheduleDrop, error) {
+	ws, rep, err := dst.ImportWorkspaceWithReport(data, "", "", "", store.WithPreservedSlug())
+	if err != nil {
+		return nil, nil, err
+	}
+	printImportScheduleDrops(w, rep.DroppedSchedules)
+	return ws, rep.DroppedSchedules, nil
+}
+
+// printMigrateDropSummary closes the run, where an operator looks, saying how
+// many schedules were not carried and where they still are.
+func printMigrateDropSummary(w io.Writer, dropped []migrateDropped, fromPath string) {
+	total := 0
+	for _, d := range dropped {
+		total += len(d.Drops)
+	}
+	if total == 0 {
+		return
+	}
+	fmt.Fprintf(w, "\n%d schedule(s) were NOT carried to PostgreSQL; they remain in %s:\n", total, fromPath)
+	for _, d := range dropped {
+		fmt.Fprintf(w, "  %s: %d\n", d.Workspace, len(d.Drops))
+	}
 }

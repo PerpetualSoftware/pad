@@ -1427,7 +1427,7 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 	}
 
 	// Import comments
-	commentMap := make(map[string]string, len(data.Comments)) // source comment id -> new id, for schedule history
+	commentMap := make(map[string]string, len(data.Comments)) // source item id + NUL + source comment id -> new id, for schedule history
 	for _, cm := range data.Comments {
 		newItemID := itemMap[cm.ItemID]
 		// insertedItems, NOT `newItemID == ""` (BUG-2884). That test cannot
@@ -1460,7 +1460,11 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 		if err != nil {
 			return nil, fmt.Errorf("import comment: %w", err)
 		}
-		commentMap[cm.ID] = newCommentID
+		// Keyed by the owning item too, and never by an empty id: an
+		// occurrence binds only a comment of its own item (TASK-4104 D2 r1-3).
+		if cm.ID != "" {
+			commentMap[cm.ItemID+"\x00"+cm.ID] = newCommentID
+		}
 		// No comment_mentions rows for imported comments (TASK-3917 lead
 		// ruling bb0c9fc6): history would stay open for good, and a bundle's
 		// @handles name SOURCE-instance users that could bind to a different
@@ -1620,8 +1624,9 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 		default:
 			var in carriedSchedule
 			if in, err = carriedFromExport(sx, commentMap); err == nil {
-				scheduled[newItemID] = true
-				_, err = s.insertCarriedScheduleTx(tx, ws.ID, newItemID, in)
+				if _, err = s.insertCarriedScheduleTx(tx, ws.ID, newItemID, in); err == nil {
+					scheduled[newItemID] = true
+				}
 			}
 		}
 		var drop *scheduleCarryDrop

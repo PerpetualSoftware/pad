@@ -125,6 +125,9 @@ func (s *Store) insertCarriedScheduleTx(tx *sql.Tx, workspaceID, itemID string, 
 		if err != nil {
 			return "", err
 		}
+		if aw.AllDay != spec.Start.AllDay {
+			return "", dropf("anchor_wall", "combination")
+		}
 		// The fire path compiles from the anchor, so it must compile.
 		if _, err := compileScheduleSpec(scheduleSpecInput{Dtstart: aw.String(), Tz: in.Tz, Floating: in.Floating, Rrule: in.Rrule, RDates: in.RDates, ExDates: in.ExDates}); err != nil {
 			return "", &scheduleCarryDrop{Reason: "anchor_wall:" + carryReason(err)}
@@ -342,7 +345,7 @@ func carriedFromExport(x models.ScheduleExport, commentIDs map[string]string) (c
 	}
 	for _, o := range x.Occurrences {
 		in.Occurrences = append(in.Occurrences, carriedOccurrence{
-			At: o.OccurrenceAt, Wall: o.OccurrenceWall, State: o.State, CommentID: commentIDs[o.CommentID],
+			At: o.OccurrenceAt, Wall: o.OccurrenceWall, State: o.State, CommentID: commentIDs[x.ItemID+"\x00"+o.CommentID],
 			Actor: o.Actor, ResolvedAt: o.ResolvedAt,
 		})
 	}

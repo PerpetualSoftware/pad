@@ -1,0 +1,70 @@
+package main
+
+import (
+	"bytes"
+	"strings"
+	"testing"
+
+	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store/storetest"
+)
+
+// TASK-4104 D2 r1-1: `pad db migrate-to-pg` drops a schedule the import
+// refuses, so it must say so: a line per drop as it happens, then a closing
+// summary naming the SQLite file the schedule is still in. Print-only.
+func TestTASK4104_MigrateReportsDroppedSchedules(t *testing.T) {
+	src := storetest.NewSQLite(t)
+	ws, err := src.CreateWorkspace(models.WorkspaceCreate{Name: "Migrate Drop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	col, err := src.CreateCollection(ws.ID, models.CollectionCreate{Name: "Tasks",
+		Schema: `{"fields":[{"key":"status","label":"Status","type":"select","options":["open","done"],"default":"open","required":true}]}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, title := range []string{"good", "bad"} {
+		it, err := src.CreateItem(ws.ID, col.ID, models.ItemCreate{Title: title})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := src.CreateSchedule(ws.ID, it.ID, models.ScheduleCreate{Kind: "check", Dtstart: "2030-01-01T09:00", Tz: "UTC", Rrule: "FREQ=WEEKLY"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	data, err := src.ExportWorkspace(ws.Slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var badID string
+	for _, it := range data.Items {
+		if it.Title == "bad" {
+			badID = it.ID
+		}
+	}
+	for i := range data.Schedules {
+		if data.Schedules[i].ItemID == badID {
+			data.Schedules[i].Rrule = "FREQ=HOURLY;BYSETPOS=1"
+		}
+	}
+
+	var out bytes.Buffer
+	dst := storetest.NewSQLite(t)
+	got, drops, err := migrateImportWorkspaceReporting(dst, data, &out)
+	if err != nil || got == nil {
+		t.Fatalf("migrate import: %v", err)
+	}
+	if len(drops) != 1 {
+		t.Fatalf("drops %+v, want 1", drops)
+	}
+	if !strings.Contains(out.String(), "dropped schedule: ") {
+		t.Errorf("no per-drop line in %q", out.String())
+	}
+	var sum bytes.Buffer
+	printMigrateDropSummary(&sum, []migrateDropped{{Workspace: "Migrate Drop", Drops: drops}}, "/data/pad.db")
+	for _, want := range []string{"Migrate Drop", "1 schedule", "NOT carried", "/data/pad.db"} {
+		if !strings.Contains(sum.String(), want) {
+			t.Errorf("summary lacks %q: %q", want, sum.String())
+		}
+	}
+}
