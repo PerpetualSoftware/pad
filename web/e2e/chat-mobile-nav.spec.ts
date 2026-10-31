@@ -43,7 +43,7 @@ test('the You slot badge matches the server, opens the sheet, and Chat lands on 
 	request,
 	fixture
 }, testInfo) => {
-	test.skip(testInfo.project.name !== 'mobile-chromium', 'the bottom nav exists only on the phone project');
+	test.skip(testInfo.project.name !== 'mobile-chromium', 'this spec targets the real phone project (Pixel 7)');
 	await seedUnread(request, fixture);
 	await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}`);
 	const you = page.locator('.bottom-nav button.bn-item', { hasText: 'You' });
