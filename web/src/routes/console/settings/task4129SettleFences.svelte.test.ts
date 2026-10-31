@@ -324,6 +324,7 @@ describe('2FA writers', () => {
 		vi.spyOn(document, 'getElementById').mockImplementation((id) => id === 'qr-canvas' ? canvas : real(id));
 		const held: Array<() => void> = [];
 		vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, ms?: number, ...rest: unknown[]) => {
+			// Coupled to the page's `setTimeout(r, 50)` QR wait: if that delay changes, nothing is held and the waitFor below fails loudly.
 			if (ms === 50) { held.push(fn); return 0; }
 			return realSetTimeout(fn, ms, ...rest);
 		}) as typeof setTimeout);
