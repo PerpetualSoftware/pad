@@ -69,10 +69,12 @@ type Server struct {
 	// (TASK-4103 C2b-4): schedule_id -> the updated_at it last warned at. An
 	// edit changes updated_at and so logs once more. A read whose count
 	// succeeds, and a schedule DELETE, remove the entry, so it holds the
-	// schedules capped now; the residue is a capped schedule removed by an item
-	// hard-delete or purge cascade, which never reaches this server's handler
-	// and keeps its entry for the process lifetime. Per server so tests do not
-	// share it.
+	// schedules capped now. The residue keeps its entry for the process
+	// lifetime: a capped schedule removed by an item hard-delete or purge
+	// cascade, which never reaches this server's handler, and one whose entry
+	// an in-flight read of an older broken snapshot re-adds after the DELETE
+	// evicted it (TASK-4103 C2b-i r2-1, declined: bounded, and log-only). Per
+	// server so tests do not share it.
 	missedWarned sync.Map
 
 	// responseWriteTimeoutOverride, when non-zero, replaces
@@ -2414,6 +2416,7 @@ func (s *Server) setupRouter() {
 						r.Post("/schedule", s.handleCreateItemSchedule)
 						r.Patch("/schedule", s.handleUpdateItemSchedule)
 						r.Delete("/schedule", s.handleDeleteItemSchedule)
+						r.Post("/schedule/resolve", s.handleResolveItemSchedule)
 						// Verifications (TASK-3617): per-criterion verdicts
 						// on the item that carries the acceptance criteria,
 						// judged against its present text at read time.

@@ -73,26 +73,23 @@ func OutstandingInstant(sc *models.ItemSchedule, view *time.Location) (time.Time
 // re-anchor cannot hit CapScan from the original dtstart (TASK-4102 PR1b r1).
 // view is the zone a floating schedule is read in.
 func ScheduleMissed(sc *models.ItemSchedule, view *time.Location, nowT time.Time) (count int, truncated bool, err error) {
+	occs, truncated, err := missedOccurrences(sc, view, nowT)
+	return len(occs), truncated, err
+}
+
+// missedOccurrences is the walk ScheduleMissed counts and a resolve records, so
+// the count a reader saw and the rows a done/skip writes cannot disagree.
+func missedOccurrences(sc *models.ItemSchedule, view *time.Location, nowT time.Time) (occs []schedule.Occurrence, truncated bool, err error) {
 	if sc.EndedAt != nil || sc.ErrorCode != nil {
-		return 0, false, nil
+		return nil, false, nil
 	}
-	o, ok, err := OutstandingInstant(sc, view)
+	o, ok, err := walkOrigin(sc, view)
 	if err != nil || !ok {
-		return 0, false, err
-	}
-	if sc.Floating {
-		if sc.NextWall == nil {
-			return 0, false, nil
-		}
-		w, err := schedule.ParseWall(*sc.NextWall)
-		if err != nil {
-			return 0, false, fmt.Errorf("parse next_wall: %w", err)
-		}
-		o = schedule.Resolve(view, w).UTC()
+		return nil, false, err
 	}
 	cut := nowT.UTC().Add(-time.Second)
 	if !cut.After(o) {
-		return 0, false, nil
+		return nil, false, nil
 	}
 	start := sc.Dtstart
 	if sc.AnchorWall != nil {
@@ -100,12 +97,12 @@ func ScheduleMissed(sc *models.ItemSchedule, view *time.Location, nowT time.Time
 	}
 	c, err := compileScheduleSpec(storedSpecInput(sc, start))
 	if err != nil {
-		return 0, false, err
+		return nil, false, err
 	}
 	loc := view
 	if !sc.Floating {
 		if loc, err = time.LoadLocation(c.Spec().Zone); err != nil {
-			return 0, false, fmt.Errorf("load schedule zone: %w", err)
+			return nil, false, fmt.Errorf("load schedule zone: %w", err)
 		}
 	}
 	from := o.Add(time.Nanosecond)
@@ -116,13 +113,37 @@ func ScheduleMissed(sc *models.ItemSchedule, view *time.Location, nowT time.Time
 	if limit := from.Add(maxMissedWindow); to.After(limit) {
 		to, truncated = limit, true
 	}
-	occs, err := c.Between(from, to, view, schedule.DefaultLimits)
+	occs, err = c.Between(from, to, view, schedule.DefaultLimits)
 	var capErr *schedule.CapError
 	if errors.As(err, &capErr) && capErr.Kind == schedule.CapInstances {
-		return len(occs), true, nil
+		return occs, true, nil
 	}
 	if err != nil {
-		return 0, false, err
+		return nil, false, err
 	}
-	return len(occs), truncated, nil
+	return occs, truncated, nil
+}
+
+// walkOrigin is the outstanding occurrence's instant as the walk reads it: a
+// floating schedule by its WALL in view, whatever the row's state or override
+// (its stored instant is in the recipient's zone and would mix zones with the
+// walk, TASK-4103 C2a r1 H-M1; a snooze or move defers the occurrence and does
+// not move the grid, C2b-3). A pinned schedule has one zone, so it is its
+// instant. ok is false when there is none.
+func walkOrigin(sc *models.ItemSchedule, view *time.Location) (time.Time, bool, error) {
+	o, ok, err := OutstandingInstant(sc, view)
+	if err != nil || !ok {
+		return time.Time{}, false, err
+	}
+	if sc.Floating {
+		if sc.NextWall == nil {
+			return time.Time{}, false, nil
+		}
+		w, err := schedule.ParseWall(*sc.NextWall)
+		if err != nil {
+			return time.Time{}, false, fmt.Errorf("parse next_wall: %w", err)
+		}
+		o = schedule.Resolve(view, w).UTC()
+	}
+	return o, true, nil
 }
