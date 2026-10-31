@@ -36,36 +36,50 @@
 		timers.clear();
 	});
 
+	// Per-command attempt counter. Clipboard writes can settle out of order, so
+	// only the latest attempt for a command may touch status, copied or timers; an
+	// earlier one that settles late (resolve or reject) would otherwise wipe or
+	// overwrite what the newer attempt did.
+	const attempt: Record<string, number> = {};
+
+	// A live region announces a change; 'Copied' -> 'Copied' is none. Clear, let
+	// the DOM update, then set, so every outcome is announced.
+	async function announce(cmd: string, n: number, text: string) {
+		status = '';
+		await tick();
+		if (destroyed || attempt[cmd] !== n) return;
+		status = text;
+	}
+
 	async function copy(cmd: string) {
+		const n = (attempt[cmd] = (attempt[cmd] ?? 0) + 1);
+		const live = () => !destroyed && attempt[cmd] === n;
 		try {
 			await navigator.clipboard.writeText(cmd);
-			if (destroyed) return;
+			if (!live()) return;
 			copied[cmd] = true;
-			// A live region announces a change; 'Copied' -> 'Copied' is none. Clear,
-			// let the DOM update, then set, so every copy is announced.
-			status = '';
-			await tick();
-			if (destroyed) return;
-			status = 'Copied';
+			await announce(cmd, n, 'Copied');
+			if (!live()) return;
 			// Clear here, after the awaits: two clicks while writeText is pending
 			// would otherwise both clear before either timer exists, orphaning one.
 			clearTimeout(timers.get(cmd));
 			timers.set(
 				cmd,
 				setTimeout(() => {
+					if (!live()) return;
 					copied[cmd] = false;
 					status = '';
 				}, 1500)
 			);
 		} catch {
 			// Rejected, or navigator.clipboard is undefined (plain http).
-			if (destroyed) return;
+			if (!live()) return;
 			// A pending success timer would wipe this message early, unannounced.
 			// The message itself persists until the next copy.
 			clearTimeout(timers.get(cmd));
 			timers.delete(cmd);
 			copied[cmd] = false;
-			status = "Couldn't copy \u2014 select the command";
+			await announce(cmd, n, "Couldn't copy \u2014 select the command");
 		}
 	}
 </script>
