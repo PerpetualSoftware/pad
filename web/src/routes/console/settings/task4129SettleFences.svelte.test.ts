@@ -310,17 +310,24 @@ describe('2FA writers', () => {
 	});
 	it('a QR render that wakes after an identity change does not draw the old secret', async () => {
 		state.extra = { totp_enabled: false };
-		// The reset would hide the canvas; give the render a canvas so only the fence can stop it.
-		const canvas = document.createElement('canvas');
-		const real = document.getElementById.bind(document);
-		vi.spyOn(document, 'getElementById').mockImplementation((id) => id === 'qr-canvas' ? canvas : real(id));
-		mocked.setup.mockResolvedValueOnce(SETUP as never);
-		await ready();
-		await fireEvent.click(button('Enable 2FA'));
-		await waitFor(() => expect(screen.getByText('SECRET123')).toBeInTheDocument());
-		changeIdentity();
-		await new Promise((r) => setTimeout(r, 120));
-		expect(state.toCanvas).not.toHaveBeenCalled();
+		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+		try {
+			// The reset would hide the canvas; give the render a canvas so only the fence can stop it.
+			const canvas = document.createElement('canvas');
+			const real = document.getElementById.bind(document);
+			vi.spyOn(document, 'getElementById').mockImplementation((id) => id === 'qr-canvas' ? canvas : real(id));
+			mocked.setup.mockResolvedValueOnce(SETUP as never);
+			await ready();
+			await fireEvent.click(button('Enable 2FA'));
+			await waitFor(() => expect(screen.getByText('SECRET123')).toBeInTheDocument());
+			// The page is now parked on its 50ms QR timer (or the import before it). Change identity
+			// first, then let every pending timer fire: no wall-clock wait, so the order is fixed.
+			changeIdentity();
+			await vi.advanceTimersByTimeAsync(1000);
+			expect(state.toCanvas).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 	it('a QR render with no identity change still draws', async () => {
 		state.extra = { totp_enabled: false };
@@ -533,6 +540,45 @@ describe('token and danger-zone writers', () => {
 		await screen.findByText('pad_BSECRET');
 	});
 
+	const rowToken = { id: 't9', name: 'ci', prefix: 'pad_xx', created_at: '2026-10-01T00:00:00Z' };
+	describe('token delete and rotate settles', () => {
+		beforeEach(() => { vi.mocked(api.auth.tokens.list).mockResolvedValue([rowToken] as never); });
+		afterEach(() => { vi.mocked(api.auth.tokens.list).mockResolvedValue([]); });
+		it('a token delete the old identity left late does not clear the new identity\'s Deleting state', async () => {
+			const a = deferred(); const b = deferred();
+			vi.mocked(api.auth.tokens.delete).mockReturnValueOnce(a.promise as Promise<never>).mockReturnValueOnce(b.promise as Promise<never>);
+			await ready();
+			await fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+			await fireEvent.click(button('Delete token'));
+			await bump();
+			await fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+			await fireEvent.click(button('Delete token'));
+			expect(button('Deleting…')).toBeDisabled();
+			a.resolve(undefined);
+			await flush();
+			expect(button('Deleting…')).toBeDisabled();
+			b.resolve(undefined);
+			await waitFor(() => expect(screen.queryByRole('button', { name: 'Deleting…' })).toBeNull());
+		});
+		it('a token rotate the old identity left late does not clear the new identity\'s Rotating state', async () => {
+			const a = deferred(); const b = deferred();
+			vi.mocked(api.auth.tokens.rotate).mockReturnValueOnce(a.promise as Promise<never>).mockReturnValueOnce(b.promise as Promise<never>);
+			await ready();
+			await fireEvent.click(await screen.findByRole('button', { name: 'Rotate' }));
+			await fireEvent.click(button('Rotate token'));
+			await bump();
+			await fireEvent.click(await screen.findByRole('button', { name: 'Rotate' }));
+			await fireEvent.click(button('Rotate token'));
+			expect(button('Rotating…')).toBeDisabled();
+			a.resolve({ ...rowToken, token: 'pad_AOLD' });
+			await flush();
+			expect(button('Rotating…')).toBeDisabled();
+			expect(text()).not.toContain('pad_AOLD');
+			b.resolve({ ...rowToken, token: 'pad_BNEW' });
+			await screen.findByText('pad_BNEW');
+		});
+	});
+
 	async function toDeleteConfirm() {
 		await fireEvent.click(button('Delete my account'));
 		await fireEvent.input(document.getElementById('delete-password')!, { target: { value: 'pw' } });
@@ -573,8 +619,15 @@ describe('token and danger-zone writers', () => {
 		await toDeleteConfirm();
 		await fireEvent.click(button('Permanently delete my account'));
 		await bump();
-		held.resolve(undefined);
-		await waitFor(() => expect(state.clear).toHaveBeenCalledOnce());
+		const loc = { href: '/console/settings' };
+		vi.stubGlobal('location', loc);
+		try {
+			held.resolve(undefined);
+			await waitFor(() => expect(state.clear).toHaveBeenCalledOnce());
+			expect(loc.href).toBe('/login');
+		} finally {
+			vi.unstubAllGlobals();
+		}
 	});
 
 	it('an export that lands after an identity change writes no message and leaves Export idle', async () => {

@@ -619,7 +619,7 @@
 			if (!isSameIdentity()) return;
 			tokenDeleteError = err instanceof Error ? err.message : 'Failed to delete the token.';
 		} finally {
-			tokenDeleting = false;
+			if (isSameIdentity()) tokenDeleting = false;
 		}
 	}
 
@@ -655,7 +655,7 @@
 			if (!isSameIdentity()) return;
 			tokenRotateError = err instanceof Error ? err.message : 'Failed to rotate the token.';
 		} finally {
-			tokenRotating = false;
+			if (isSameIdentity()) tokenRotating = false;
 		}
 	}
 
