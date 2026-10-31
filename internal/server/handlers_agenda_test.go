@@ -285,21 +285,20 @@ func TestAgendaOneRunawayScheduleDoesNotTakeItDown(t *testing.T) {
 	}
 	un, _ := m["unavailable"].([]any)
 	var names []string
-	runawayUnavailable := false
 	for _, u := range un {
 		names = append(names, fmt.Sprint(u))
 		if um, ok := u.(map[string]any); ok && um["item_ref"] == runawayRef {
-			runawayUnavailable = true
+			t.Errorf("the runaway is listed under unavailable (%v); the code gives it a capped listing", um)
 		}
 	}
-	if !strings.Contains(strings.Join(names, ";"), "cap_scan") {
-		t.Errorf("unavailable = %v, want the broken schedule with cap_scan", un)
+	if len(un) != 1 || !strings.Contains(strings.Join(names, ";"), "cap_scan") {
+		t.Errorf("unavailable = %v, want only the broken schedule with cap_scan", un)
 	}
-	if !runawayUnavailable && !(m["truncated"] == true && runaway > 0 && runaway <= 100) {
-		t.Errorf("the runaway (%s) is neither unavailable nor listed (%d entries) and truncated: %v", runawayRef, runaway, m)
-	}
-	if runaway > 100 {
-		t.Errorf("the runaway schedule lists %d entries, over the per-schedule cap of 100", runaway)
+	// The one outcome for a MINUTELY rule over the window: Between hits the
+	// instance cap with partial occurrences, and the entries are cut to the
+	// per-schedule cap, flagged truncated.
+	if runaway != 100 || m["truncated"] != true {
+		t.Errorf("the runaway (%s) lists %d entries, truncated=%v; want exactly 100 and truncated", runawayRef, runaway, m["truncated"])
 	}
 }
 
@@ -468,7 +467,10 @@ func TestAgendaDatabaseFailureDuringExpansionIs500(t *testing.T) {
 	t.Parallel()
 	w := newAgendaWorld(t, "tasks")
 	w.item(t, "tasks", "AG db", `{"status":"open"}`, oneShot())
-	if _, err := w.srv.store.DB().Exec(`DROP TABLE schedule_occurrences`); err != nil {
+	// Rename a column only agendaOccurrences selects: the list query (its EXISTS
+	// reads schedule_id and occurrence_at) still succeeds, so the 500 can only
+	// come from ExpandAgenda's history read. Valid on SQLite and Postgres.
+	if _, err := w.srv.store.DB().Exec(`ALTER TABLE schedule_occurrences RENAME COLUMN actor TO actor_renamed`); err != nil {
 		t.Fatal(err)
 	}
 	if code, m := w.get(t, w.owner, agendaWindow); code != http.StatusInternalServerError {
