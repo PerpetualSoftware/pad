@@ -7,7 +7,7 @@ import { test, expect } from './fixtures';
  * context). The export endpoint is read-only, so exercising it as the suite
  * admin is safe and touches no other spec's state.
  *
- * The client (web/src/lib/utils/artifacts.ts::exportAndDownloadAccountData)
+ * The client (web/src/routes/console/settings/+page.svelte::exportData)
  * GETs /api/v1/auth/export, then triggers a Blob download named from the
  * server's Content-Disposition. We assert the download fires with the
  * contract filename and that the success line renders — proving the client
