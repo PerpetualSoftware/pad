@@ -1052,9 +1052,13 @@ func printMigrateDropSummary(w io.Writer, dropped []migrateDropped, fromPath str
 		return
 	}
 	fmt.Fprintf(w, "\n%d schedule(s) were NOT carried to PostgreSQL. Their rows are still in %s, which is now marked\n", total, fromPath)
-	fmt.Fprintf(w, "as migrated, so pad will not open it: read them with sqlite3 %s (tables item_schedules and\n", fromPath)
+	fmt.Fprintf(w, "as migrated, so pad will not open it: read them with sqlite3 %s (tables item_schedules and\n", shellQuote(fromPath))
 	fmt.Fprintln(w, "schedule_occurrences), or from a `pad db backup` copy taken before the migration. Per workspace:")
 	for _, d := range dropped {
 		fmt.Fprintf(w, "  %s: %d\n", d.Workspace, len(d.Drops))
 	}
 }
+
+// shellQuote single-quotes s for a POSIX shell, so a printed command pastes as
+// one argument whatever s holds (TASK-4104 D2 r3-1).
+func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
