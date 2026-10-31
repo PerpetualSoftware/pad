@@ -1,6 +1,8 @@
 package server
 
 import (
+	"fmt"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
@@ -111,7 +113,7 @@ func (s *Server) handleGetAgenda(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	zone, note := viewerZone(r), ""
-	if tz := strings.TrimSpace(r.URL.Query().Get("tz")); tz != "" {
+	if tz := strings.TrimSpace(r.URL.Query().Get("tz")); tz != "" || r.URL.Query().Has("tz") {
 		loc, err := usertz.Validate(tz)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_tz", "`tz` must be an IANA time zone name, such as America/Los_Angeles")
@@ -141,7 +143,7 @@ func (s *Server) handleGetAgenda(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now()
 	resp := agendaResponse{From: from.Format(time.RFC3339), To: to.Format(time.RFC3339), Tz: zone.Name, TimezoneNote: note, Entries: []agendaEntry{}}
-	schedules, more, err := s.store.ListSchedulesForAgenda(workspaceID, scope, agendaMaxScan)
+	schedules, more, err := s.store.ListSchedulesForAgenda(workspaceID, scope, from, agendaMaxScan)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -156,8 +158,8 @@ func (s *Server) handleGetAgenda(w http.ResponseWriter, r *http.Request) {
 		sc := as.Schedule
 		es, cut, unavailable, err := s.store.ExpandAgenda(sc, loc, from, to, now)
 		if err != nil {
-			writeInternalError(w, err)
-			return
+			slog.Warn("agenda: schedule unreadable", "schedule_id", sc.ID, "error_class", fmt.Sprintf("%T", err))
+			unavailable = "internal"
 		}
 		if unavailable != "" {
 			resp.Unavailable = append(resp.Unavailable, agendaUnavailable{ItemRef: as.ItemRef, Code: unavailable})

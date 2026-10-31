@@ -1,9 +1,11 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"sort"
 	"strings"
 	"testing"
@@ -179,6 +181,8 @@ func TestAgendaWindowAndParameterRefusals(t *testing.T) {
 		"to < from":    {"from=2031-03-11T00:00:00Z&to=2031-03-10T00:00:00Z", "validation_error", "range"},
 		"tz Local":     {agendaWindow + "&tz=Local", "invalid_tz", ""},
 		"tz unknown":   {agendaWindow + "&tz=Nope/Zone", "invalid_tz", ""},
+		"tz empty":     {agendaWindow + "&tz=", "invalid_tz", ""},
+		"tz blank":     {agendaWindow + "&tz=%20", "invalid_tz", ""},
 	} {
 		code, m := w.get(t, w.owner, c.q)
 		e, _ := m["error"].(map[string]any)
@@ -285,11 +289,11 @@ func TestAgendaOneRunawayScheduleDoesNotTakeItDown(t *testing.T) {
 	if !strings.Contains(strings.Join(names, ";"), "cap_scan") {
 		t.Errorf("unavailable = %v, want the broken schedule with cap_scan", un)
 	}
-	if runaway == 0 && len(un) < 2 {
-		t.Errorf("the runaway schedule is neither listed nor unavailable: %v", m)
+	if m["truncated"] != true && len(un) < 2 { // truncated, or unavailable beside the broken one
+		t.Errorf("the runaway schedule is neither truncated nor unavailable: %v", m)
 	}
-	if m["truncated"] != true && runaway > 0 {
-		t.Errorf("a MINUTELY schedule over 90 days must report truncated")
+	if runaway > 100 {
+		t.Errorf("the runaway schedule lists %d entries, over the per-schedule cap of 100", runaway)
 	}
 }
 
@@ -359,5 +363,146 @@ func TestAgendaOrderIsDeterministic(t *testing.T) {
 	if !(strings.HasPrefix(order[0], "date:") && strings.HasPrefix(order[1], "date:") && strings.HasPrefix(order[2], "schedule:") && strings.HasPrefix(order[3], "schedule:")) ||
 		order[0] > order[1] || order[2] > order[3] {
 		t.Errorf("order = %v, want the 00:00 dates first (by ref), then the 09:00 schedules (by ref)", order)
+	}
+}
+
+// hourlyWindow holds 120 occurrences of an HOURLY schedule.
+const hourlyWindow = "from=2031-03-10T00:00:00Z&to=2031-03-15T00:00:00Z" // 120 hours
+
+func hourly() *models.ScheduleCreate {
+	return &models.ScheduleCreate{Kind: "check", Dtstart: "2031-03-01T00:00", Tz: "UTC", Rrule: "FREQ=HOURLY"}
+}
+
+func TestAgendaPerScheduleCutIs100(t *testing.T) {
+	t.Parallel()
+	w := newAgendaWorld(t, "tasks")
+	w.item(t, "tasks", "AG hourly", `{"status":"open"}`, hourly())
+	m := w.ok(t, w.owner, hourlyWindow)
+	if n := len(entriesOf(m)); n != 100 || m["truncated"] != true {
+		t.Fatalf("120 occurrences: %d entries, truncated=%v, want 100 and truncated", n, m["truncated"])
+	}
+}
+
+func TestAgendaResponseCutIs500(t *testing.T) {
+	t.Parallel()
+	w := newAgendaWorld(t, "tasks")
+	for i := 0; i < 6; i++ {
+		w.item(t, "tasks", fmt.Sprintf("AG hourly %d", i), `{"status":"open"}`, hourly())
+	}
+	m := w.ok(t, w.owner, hourlyWindow)
+	if n := len(entriesOf(m)); n != 500 || m["truncated"] != true {
+		t.Fatalf("600 entries: %d returned, truncated=%v, want 500 and truncated", n, m["truncated"])
+	}
+}
+
+// r1-1: the scan bound must not be spent on schedules that cannot appear. 1001
+// ended one-shots precede (by id) one live schedule; it is still listed.
+func TestAgendaScanBoundIsNotSpentOnEndedSchedules(t *testing.T) {
+	t.Parallel()
+	w := newAgendaWorld(t, "tasks")
+	for i := 0; i < 1002; i++ {
+		w.item(t, "tasks", fmt.Sprintf("AG s%04d", i), `{"status":"open"}`, oneShot())
+	}
+	db, d := w.srv.store.DB(), w.srv.store.D()
+	var liveItem, liveID string
+	if err := db.QueryRow(`SELECT item_id, id FROM item_schedules WHERE workspace_id = '`+w.ws.ID+`' ORDER BY id DESC LIMIT 1`).Scan(&liveItem, &liveID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(d.Rebind(`UPDATE item_schedules SET ended_at = '2031-01-01T00:00:00Z', next_at = NULL WHERE workspace_id = ? AND id <> ?`), w.ws.ID, liveID); err != nil {
+		t.Fatal(err)
+	}
+	m := w.ok(t, w.owner, agendaWindow)
+	var found bool
+	for _, e := range entriesOf(m) {
+		found = found || e["schedule_id"] == liveID
+	}
+	if !found || m["truncated"] == true {
+		t.Fatalf("the live schedule with the highest id is listed=%v, truncated=%v; want listed and not truncated (%d entries)", found, m["truncated"], len(entriesOf(m)))
+	}
+}
+
+// r1-2: one schedule whose stored state cannot be read is that schedule's
+// problem, not a 500 for the agenda.
+func TestAgendaCorruptScheduleIsUnavailableNotA500(t *testing.T) {
+	t.Parallel()
+	w := newAgendaWorld(t, "tasks")
+	w.item(t, "tasks", "AG good one", `{"status":"open"}`, oneShot())
+	bad := w.item(t, "tasks", "AG corrupt", `{"status":"open"}`, oneShot())
+	w.item(t, "tasks", "AG good two", `{"status":"open"}`, oneShot())
+	if _, err := w.srv.store.DB().Exec(w.srv.store.D().Rebind(`UPDATE item_schedules SET next_at = 'not-an-instant' WHERE item_id = ?`), bad.ID); err != nil {
+		t.Fatal(err)
+	}
+	code, m := w.get(t, w.owner, agendaWindow)
+	if code != http.StatusOK {
+		t.Fatalf("a corrupt schedule gave %d %v, want 200", code, m)
+	}
+	if got, want := seen(m), "schedule:AG good one,schedule:AG good two"; got != want {
+		t.Errorf("entries = %s, want %s", got, want)
+	}
+	un, _ := m["unavailable"].([]any)
+	wantRef := fmt.Sprintf("P0-%d", *bad.ItemNumber)
+	if len(un) != 1 || fmt.Sprint(un[0]) != fmt.Sprintf("map[code:internal item_ref:%s]", wantRef) {
+		t.Errorf("unavailable = %v, want the corrupt schedule (%s) with code internal", un, wantRef)
+	}
+}
+
+// A read-scoped app token sees what its item list shows, no more.
+func TestAgendaAppTokenCeilingMatchesItemList(t *testing.T) {
+	t.Parallel()
+	w := newAgendaWorld(t, "tasks", "secret")
+	for _, c := range []string{"tasks", "secret"} {
+		w.item(t, c, "AG "+c+" sched", `{"status":"open"}`, oneShot())
+		w.item(t, c, "AG "+c+" dated", `{"status":"open","due_date":"2031-03-10"}`, nil)
+	}
+	member := mustUser(t, w.srv, "agenda-app@example.com", "agendaapp", "")
+	if err := w.srv.store.AddWorkspaceMember(w.ws.ID, member.ID, "editor"); err != nil {
+		t.Fatal(err)
+	}
+	call := func(ceiling []string, h http.HandlerFunc, target string) []byte {
+		t.Helper()
+		req := httptest.NewRequest("GET", target, nil)
+		ctx := WithCurrentUser(req.Context(), member)
+		ctx = WithAPITokenAuth(ctx)
+		ctx = context.WithValue(ctx, ctxResolvedWorkspaceID, w.ws.ID)
+		ctx = context.WithValue(ctx, ctxWorkspaceRole, "editor")
+		if ceiling != nil {
+			ctx = context.WithValue(ctx, appCtxKey{}, &appContext{WorkspaceID: w.ws.ID, ReadCeiling: ceiling})
+		}
+		rr := httptest.NewRecorder()
+		h(rr, req.WithContext(ctx))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", target, rr.Code, rr.Body.String())
+		}
+		return rr.Body.Bytes()
+	}
+	titles := func(ceiling []string) (agenda, list string) {
+		var a map[string]any
+		_ = json.Unmarshal(call(ceiling, w.srv.handleGetAgenda, "/x?"+agendaWindow), &a)
+		seenTitles := map[string]bool{}
+		for _, e := range entriesOf(a) {
+			seenTitles[fmt.Sprint(e["item_title"])] = true
+		}
+		var items []models.Item
+		_ = json.Unmarshal(call(ceiling, w.srv.handleListItems, "/x"), &items)
+		listTitles := map[string]bool{}
+		for _, it := range items {
+			listTitles[it.Title] = true
+		}
+		join := func(m map[string]bool) string {
+			var out []string
+			for k := range m {
+				out = append(out, k)
+			}
+			sort.Strings(out)
+			return strings.Join(out, ",")
+		}
+		return join(seenTitles), join(listTitles)
+	}
+	if a, l := titles(nil); a != l || !strings.Contains(a, "AG secret sched") {
+		t.Fatalf("control, no ceiling: agenda %q, list %q; want both to show everything", a, l)
+	}
+	a, l := titles([]string{w.colls["tasks"].ID})
+	if a != l || a != "AG tasks dated,AG tasks sched" {
+		t.Errorf("ceiling on tasks: agenda %q, list %q, want both AG tasks dated,AG tasks sched", a, l)
 	}
 }

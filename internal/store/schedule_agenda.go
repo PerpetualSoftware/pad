@@ -28,17 +28,18 @@ type AgendaSchedule struct {
 // ListSchedulesForAgenda returns the schedules of the open, live items scope
 // allows, by id, and whether there were more than limit. The scope and the
 // terminal filter are applied in SQL, BEFORE the bound, so rows the caller
-// cannot see or that are done never push a visible schedule past it.
-func (s *Store) ListSchedulesForAgenda(workspaceID string, scope PendingReminderScope, limit int) ([]AgendaSchedule, bool, error) {
+// cannot see, that are done, or that ended before from (nothing on or after
+// the end can be in the window) never push a visible schedule past it.
+func (s *Store) ListSchedulesForAgenda(workspaceID string, scope PendingReminderScope, from time.Time, limit int) ([]AgendaSchedule, bool, error) {
 	if scope.CollectionIDs != nil && len(scope.CollectionIDs) == 0 && len(scope.ItemIDs) == 0 {
 		return nil, false, nil
 	}
 	scopeSQL, scopeArgs := scopeClause("i", scope)
 	open, openArgs := s.nonTerminalFilter(workspaceID, "i")
-	args := append(append([]any{workspaceID, workspaceID}, scopeArgs...), openArgs...)
+	args := append(append([]any{workspaceID, from.UTC().Format(time.RFC3339), workspaceID}, scopeArgs...), openArgs...)
 	// item_id IN (...), not a join: scheduleColumns names item_schedules.id.
 	rows, err := s.db.Query(s.q(`SELECT `+scheduleColumns+` FROM item_schedules
-		WHERE workspace_id = ? AND item_id IN (
+		WHERE workspace_id = ? AND (ended_at IS NULL OR ended_at >= ?) AND item_id IN (
 			SELECT i.id FROM items i JOIN collections c ON c.id = i.collection_id
 			WHERE i.workspace_id = ? AND i.deleted_at IS NULL AND c.deleted_at IS NULL`+scopeSQL+` AND `+open+`)
 		ORDER BY id LIMIT ?`), append(args, limit+1)...)

@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -203,5 +204,56 @@ func TestAgendaDegradesPerSchedule(t *testing.T) {
 	sc, _ = f.s.GetSchedule(f.ws.ID, broken.ID)
 	if es, _, unavailable, err = f.s.ExpandAgenda(sc, time.UTC, rt("2026-10-01T00:00:00Z"), rt("2026-10-05T00:00:00Z"), rt("2026-10-01T00:00:00Z")); err != nil || unavailable != "cap_scan" || len(es) != 0 {
 		t.Errorf("stored error_code: entries=%d unavailable=%q err=%v, want none and cap_scan", len(es), unavailable, err)
+	}
+}
+
+// A pinned HOURLY rule across New York's 2026-11-01 fall-back (06:00Z is 01:00
+// EST, the second 01:xx hour), with a window edge inside the repeated hour: every
+// instant is listed once, the edge selects by instant, none is doubled or lost.
+func TestAgendaPinnedHourlyAcrossFallBack(t *testing.T) {
+	t.Parallel()
+	f := newSchedFixture(t)
+	item, _ := f.mk(t, models.ScheduleCreate{Kind: "check", Dtstart: "2026-11-01T00:00", Tz: "America/New_York", Rrule: "FREQ=HOURLY"}, "2026-10-31T00:00:00Z")
+	ny, _ := time.LoadLocation("America/New_York")
+	got := func(from, to string) []string {
+		var out []string
+		for _, e := range f.expand(t, item, ny, from, to, "2026-10-31T00:00:00Z") {
+			out = append(out, e.At.UTC().Format("15:04")+" "+e.At.In(ny).Format("15:04 MST"))
+		}
+		return out
+	}
+	// 05:30Z is inside the first 01:xx hour (EDT); 07:30Z inside the second (EST).
+	want := []string{"06:00 01:00 EST", "07:00 02:00 EST"}
+	if g := got("2026-11-01T05:30:00Z", "2026-11-01T07:30:00Z"); strings.Join(g, ",") != strings.Join(want, ",") {
+		t.Errorf("window edges in the repeated hour: %v, want %v", g, want)
+	}
+	want = []string{"05:00 01:00 EDT", "06:00 01:00 EST", "07:00 02:00 EST"}
+	if g := got("2026-11-01T04:30:00Z", "2026-11-01T07:30:00Z"); strings.Join(g, ",") != strings.Join(want, ",") {
+		t.Errorf("both 01:00 instants: %v, want %v", g, want)
+	}
+}
+
+// Hunter Q (TASK-4104 D1 r1): a FLOATING daily 09:00 viewed in New York across
+// the 2026-11-01 fall-back. now is 08:30 EST on 11-02 (13:30Z), which a stuck
+// EDT offset would read as already past 09:00 (13:00Z). The outstanding wall is
+// 10-29; 10-30, 10-31 and 11-01 passed, 11-02 has not.
+func TestAgendaFloatingMissedAcrossFallBack(t *testing.T) {
+	t.Parallel()
+	f := newSchedFixture(t)
+	item, _ := f.mk(t, models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-29T09:00", Floating: true, Rrule: "FREQ=DAILY"}, "2026-10-29T00:00:00Z")
+	ny, _ := time.LoadLocation("America/New_York")
+	es := f.expand(t, item, ny, "2026-10-29T00:00:00Z", "2026-11-04T00:00:00Z", "2026-11-02T13:30:00Z")
+	var found bool
+	for _, e := range es {
+		if e.State != "outstanding" {
+			continue
+		}
+		found = true
+		if e.Wall.String() != "2026-10-29T09:00:00" || e.MissedCount != 3 || !e.Stale {
+			t.Errorf("outstanding = wall %s missed %d stale %v, want 2026-10-29T09:00:00, 3, true", e.Wall, e.MissedCount, e.Stale)
+		}
+	}
+	if !found {
+		t.Fatalf("no outstanding entry: %+v", es)
 	}
 }
