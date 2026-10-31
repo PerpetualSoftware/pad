@@ -24,12 +24,18 @@ vi.mock('$lib/stores/auth.svelte', async (orig) => {
 		})
 	};
 });
-vi.mock('$lib/stores/chat.svelte', () => ({ chatStore: { unreadTotal: 4 } }));
 
 import YouSheet from './YouSheet.svelte';
+import { chatStore } from '$lib/stores/chat.svelte';
 
-beforeEach(() => cleanup());
-afterEach(() => cleanup());
+beforeEach(() => {
+	cleanup();
+	chatStore.unreadTotal = 4;
+});
+afterEach(() => {
+	cleanup();
+	chatStore.unreadTotal = 0;
+});
 
 describe('YouSheet chat row (TASK-4044)', () => {
 	it('has a Chat row to /messages with the unread count', async () => {
@@ -40,6 +46,21 @@ describe('YouSheet chat row (TASK-4044)', () => {
 		expect(a).not.toBeNull();
 		expect(a?.classList.contains('row')).toBe(true);
 		expect(a?.getAttribute('aria-label')).toBe('Chat, 4 unread');
+	});
+
+	it('updates the Chat row badge live', async () => {
+		render(YouSheet, { props: { open: true, onclose: vi.fn() } });
+		await tick();
+		flushSync();
+		const a = document.querySelector<HTMLAnchorElement>('.rows a[href="/messages"]')!;
+		chatStore.unreadTotal = 7;
+		flushSync();
+		expect(a.querySelector('.unread-badge')?.textContent).toBe('7');
+		expect(a.getAttribute('aria-label')).toBe('Chat, 7 unread');
+		chatStore.unreadTotal = 0;
+		flushSync();
+		expect(a.querySelector('.unread-badge')).toBeNull();
+		expect(a.getAttribute('aria-label')).toBe('Chat');
 	});
 
 	it('closes the sheet when tapped', async () => {

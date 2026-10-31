@@ -20,6 +20,8 @@
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { avatarColor, avatarInitial } from '$lib/utils/avatar';
 	import { getActiveKey } from '$lib/nav/destinations';
+	import UnreadBadge from '$lib/components/chat/UnreadBadge.svelte';
+	import { chatStore } from '$lib/stores/chat.svelte';
 	import QuickCaptureSheet from '$lib/components/layout/QuickCaptureSheet.svelte';
 	import WorkspaceSheet from '$lib/components/layout/WorkspaceSheet.svelte';
 	import YouSheet from '$lib/components/layout/YouSheet.svelte';
@@ -29,6 +31,8 @@
 	let wsPrefix = $derived(wsUsername && wsSlug ? `/${wsUsername}/${wsSlug}` : '');
 	let wsName = $derived(workspaceStore.current?.name ?? 'Workspace');
 	let activeKey = $derived(getActiveKey(page.url.pathname, wsPrefix));
+
+	let chatUnread = $derived(chatStore.unreadTotal);
 
 	let workspaceOpen = $state(false);
 	let youOpen = $state(false);
@@ -150,8 +154,12 @@
 			onclick={toggleYou}
 			aria-haspopup="dialog"
 			aria-expanded={youOpen}
+			aria-label={chatUnread > 0 ? `You, ${chatUnread} unread chat` : undefined}
 		>
-			<span class="bn-icon" aria-hidden="true">👤</span>
+			<span class="bn-icon bn-you-icon" aria-hidden="true">
+				👤
+				<span class="bn-badge"><UnreadBadge count={chatUnread} /></span>
+			</span>
 			<span class="bn-label">You</span>
 		</button>
 	</nav>
@@ -204,6 +212,17 @@
 	.bn-icon {
 		font-size: 1.2em;
 		line-height: 1;
+	}
+	/* The You icon anchors the chat unread badge (TASK-4186). */
+	.bn-you-icon {
+		position: relative;
+	}
+	.bn-badge {
+		position: absolute;
+		top: -6px;
+		left: 55%;
+		font-size: 1rem;
+		pointer-events: none;
 	}
 	.bn-avatar {
 		width: 22px;
