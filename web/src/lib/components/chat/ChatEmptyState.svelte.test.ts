@@ -4,6 +4,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render } from '@testing-library/svelte';
 import { flushSync } from 'svelte';
 
+// tick() is the component's only call after the clipboard write that is not a
+// plain state write, so a spy on it observes whether copy() kept running after
+// unmount (Svelte 5 does not warn on writes to a destroyed component).
+const tickSpy = vi.hoisted(() => vi.fn());
+vi.mock('svelte', async (importOriginal) => {
+	const orig = await importOriginal<typeof import('svelte')>();
+	return {
+		...orig,
+		tick: (...a: Parameters<typeof orig.tick>) => {
+			tickSpy();
+			return orig.tick(...a);
+		}
+	};
+});
 vi.mock('$lib/api/client', () => ({ api: { chat: {}, sessions: { list: vi.fn() } } }));
 vi.mock('$lib/stores/auth.svelte', () => ({
 	authStore: {
@@ -91,6 +105,7 @@ describe('ChatEmptyState', () => {
 		const writeText = vi.fn();
 		beforeEach(() => {
 			writeText.mockReset();
+			tickSpy.mockClear();
 			vi.useFakeTimers();
 			Object.defineProperty(navigator, 'clipboard', {
 				value: { writeText },
@@ -190,8 +205,36 @@ describe('ChatEmptyState', () => {
 			writeText.mockResolvedValue(undefined);
 			const { getByRole, unmount } = render(ChatEmptyState);
 			await fireEvent.click(getByRole('button', { name: 'Copy Claude Code command' }));
+			await vi.advanceTimersByTimeAsync(0); // settle writeText and tick()
 			expect(vi.getTimerCount()).toBe(1);
 			unmount();
+			expect(vi.getTimerCount()).toBe(0);
+		});
+
+		it('a copy failure keeps its message past an earlier success timer', async () => {
+			const { getByRole, container } = render(ChatEmptyState);
+			const live = container.querySelector('[aria-live="polite"]')!;
+			const btn = getByRole('button', { name: 'Copy Claude Code command' });
+			writeText.mockResolvedValueOnce(undefined);
+			await fireEvent.click(btn);
+			await vi.advanceTimersByTimeAsync(500); // success timer expires at ~1500
+			writeText.mockRejectedValueOnce(new Error('denied'));
+			await fireEvent.click(btn);
+			await vi.advanceTimersByTimeAsync(2000); // well past the first timer
+			flushSync();
+			expect(live.textContent).toBe("Couldn't copy \u2014 select the command");
+			expect(vi.getTimerCount()).toBe(0);
+		});
+
+		it('writes no state and calls no tick() when writeText settles after unmount', async () => {
+			let resolve!: () => void;
+			writeText.mockImplementation(() => new Promise<void>((r) => (resolve = r)));
+			const { getByRole, unmount } = render(ChatEmptyState);
+			await fireEvent.click(getByRole('button', { name: 'Copy Claude Code command' }));
+			unmount();
+			resolve();
+			await vi.advanceTimersByTimeAsync(0);
+			expect(tickSpy).not.toHaveBeenCalled();
 			expect(vi.getTimerCount()).toBe(0);
 		});
 	});

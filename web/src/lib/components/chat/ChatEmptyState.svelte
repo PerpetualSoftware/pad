@@ -39,16 +39,17 @@
 	async function copy(cmd: string) {
 		try {
 			await navigator.clipboard.writeText(cmd);
+			if (destroyed) return;
 			copied[cmd] = true;
 			// A live region announces a change; 'Copied' -> 'Copied' is none. Clear,
 			// let the DOM update, then set, so every copy is announced.
 			status = '';
 			await tick();
+			if (destroyed) return;
 			status = 'Copied';
 			// Clear here, after the awaits: two clicks while writeText is pending
 			// would otherwise both clear before either timer exists, orphaning one.
 			clearTimeout(timers.get(cmd));
-			if (destroyed) return;
 			timers.set(
 				cmd,
 				setTimeout(() => {
@@ -58,6 +59,11 @@
 			);
 		} catch {
 			// Rejected, or navigator.clipboard is undefined (plain http).
+			if (destroyed) return;
+			// A pending success timer would wipe this message early, unannounced.
+			// The message itself persists until the next copy.
+			clearTimeout(timers.get(cmd));
+			timers.delete(cmd);
 			copied[cmd] = false;
 			status = "Couldn't copy \u2014 select the command";
 		}
