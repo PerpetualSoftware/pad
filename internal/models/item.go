@@ -1937,6 +1937,12 @@ func flexJSONToString(raw json.RawMessage, expectedStart byte, errInvalid error)
 	}
 }
 
+// FieldDateWindow is ItemListParams.FieldDateWindow.
+type FieldDateWindow struct {
+	Keys     []string
+	From, To string
+}
+
 type ItemListParams struct {
 	CollectionSlug string
 	// ScopeCollectionID restricts to exactly one collection by ID, ANDed
@@ -1967,6 +1973,10 @@ type ItemListParams struct {
 	// filter key (BUG-3480), through ListItems so it shares the
 	// scope/permission clauses.
 	FieldKeyPresent string
+	// FieldDateWindow keeps only items where ANY of Keys holds a date whose first
+	// ten characters (the day, in the value's own offset) are within [From, To],
+	// both `YYYY-MM-DD`. The agenda's dated half; the P2 calendar's shape.
+	FieldDateWindow *FieldDateWindow
 	Sort            string // e.g. "priority:desc,created_at:asc"
 	GroupBy         string
 	Search          string // FTS query
