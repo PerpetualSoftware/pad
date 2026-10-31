@@ -45,5 +45,12 @@ func MigratedTables() map[string]bool {
 		// attribution), which is why four of its columns are NUL-protected;
 		// the preflight scans them before a migration copies the table.
 		"item_verifications": true,
+		// item_schedules and its history joined the export in TASK-4104 D2.
+		// Both carry text a caller can supply (the rule, the walls, the
+		// occurrence actor) and have NUL-protected columns, so the preflight
+		// scans them before a migration copies them. schedule_occurrences rides
+		// inside WorkspaceExport.Schedules rather than a section of its own.
+		"item_schedules":       true,
+		"schedule_occurrences": true,
 	}
 }

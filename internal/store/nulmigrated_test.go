@@ -34,7 +34,11 @@ func TestMigratedTablesCoversTheExport(t *testing.T) {
 		"Reminders":    "item_reminders",
 		// TASK-3617 r4.
 		"Verifications": "item_verifications",
+		// TASK-4104 D2; its occurrences ride inside it (nestedTables).
+		"Schedules": "item_schedules",
 	}
+	// Tables carried inside another section rather than a section of their own.
+	nestedTables := map[string]bool{"schedule_occurrences": true}
 
 	migrated := MigratedTables()
 
@@ -69,7 +73,7 @@ func TestMigratedTablesCoversTheExport(t *testing.T) {
 		if table == "workspaces" {
 			continue
 		}
-		found := false
+		found := nestedTables[table]
 		for _, mapped := range sectionTables {
 			if mapped == table {
 				found = true
