@@ -391,26 +391,101 @@ func TestResolveAgentNamePrecedenceChain(t *testing.T) {
 // the resolver test above pins. SOURCE OF TRUTH: ResolveAgentName in
 // agent_identity.go. If the order changes, change the resolver chain test, this
 // phrase, and web/src/lib/chat/emptyState.ts NAME_ORDER together.
+//
+// Arming must be named beside the order because runWatchMonitor
+// (cmd/pad/cmd_watch.go) checks arming first and an unarmed monitor exits at
+// once. Both checks run on the chat-identity span only: "pad session arm" also
+// appears in unrelated sections of these files, so a whole-file search stays
+// green after the clause is deleted from the chat text.
 func TestAgentNameCopyMatchesResolverOrder(t *testing.T) {
 	const phrase = "registered name, then agent_name in .pad.toml, then PAD_AGENT"
-	for _, rel := range []string{
-		"web/src/lib/chat/emptyState.ts",
-		"docs/api.md",
-		"skills/pad/SKILL.md",
-		"plugin/skills/pad/SKILL.md",
-	} {
-		data, err := os.ReadFile(filepath.Join("..", "..", rel))
+	const arm = "pad session arm"
+
+	// lineWith returns the single line of text starting with prefix.
+	lineWith := func(text, prefix string) (string, bool) {
+		for _, l := range strings.Split(text, "\n") {
+			if strings.HasPrefix(l, prefix) {
+				return l, true
+			}
+		}
+		return "", false
+	}
+	// paragraph returns the blank-line-bounded paragraph containing anchor.
+	paragraph := func(text, anchor string) (string, bool) {
+		for _, p := range strings.Split(text, "\n\n") {
+			if strings.Contains(p, anchor) {
+				return p, true
+			}
+		}
+		return "", false
+	}
+	// section returns the text from heading to the next heading of the same or
+	// higher level.
+	section := func(text, heading string) (string, bool) {
+		lines := strings.Split(text, "\n")
+		level := len(heading) - len(strings.TrimLeft(heading, "#"))
+		start := -1
+		for i, l := range lines {
+			if l == heading {
+				start = i
+				break
+			}
+		}
+		if start < 0 {
+			return "", false
+		}
+		end := len(lines)
+		for i := start + 1; i < len(lines); i++ {
+			l := lines[i]
+			n := len(l) - len(strings.TrimLeft(l, "#"))
+			if n > 0 && n <= level && strings.HasPrefix(l[n:], " ") {
+				end = i
+				break
+			}
+		}
+		return strings.Join(lines[start:end], "\n"), true
+	}
+
+	skillAnchor := "An agent gets a chat identity"
+	cases := []struct {
+		rel     string
+		orderIn func(text string) (string, bool)
+		armIn   func(text string) (string, bool)
+	}{
+		// emptyState.ts also holds logic, so take just the two constants that
+		// carry the setup copy, by their declarations.
+		{"web/src/lib/chat/emptyState.ts",
+			func(x string) (string, bool) { return lineWith(x, "export const NAME_ORDER") },
+			func(x string) (string, bool) { return lineWith(x, "export const ARM_COMMAND") }},
+		{"docs/api.md",
+			func(x string) (string, bool) { return section(x, "### Agent chat identity and arming") },
+			func(x string) (string, bool) { return section(x, "### Agent chat identity and arming") }},
+		{"skills/pad/SKILL.md",
+			func(x string) (string, bool) { return paragraph(x, skillAnchor) },
+			func(x string) (string, bool) { return paragraph(x, skillAnchor) }},
+		{"plugin/skills/pad/SKILL.md",
+			func(x string) (string, bool) { return paragraph(x, skillAnchor) },
+			func(x string) (string, bool) { return paragraph(x, skillAnchor) }},
+	}
+	for _, c := range cases {
+		data, err := os.ReadFile(filepath.Join("..", "..", c.rel))
 		if err != nil {
-			t.Fatalf("read %s: %v", rel, err)
+			t.Fatalf("read %s: %v", c.rel, err)
 		}
 		text := strings.ReplaceAll(string(data), "`", "")
-		if !strings.Contains(text, phrase) {
-			t.Errorf("%s does not state the name order %q", rel, phrase)
+		orderSpan, ok := c.orderIn(text)
+		if !ok {
+			t.Fatalf("%s: chat-identity order text not found; was it renamed? the guard would be disabled", c.rel)
 		}
-		// Arming comes first in runWatchMonitor (an unarmed monitor exits at
-		// once), so every copy must name it.
-		if !strings.Contains(text, "pad session arm") {
-			t.Errorf("%s does not mention arming (pad session arm)", rel)
+		armSpan, ok := c.armIn(text)
+		if !ok {
+			t.Fatalf("%s: chat-identity arming text not found; was it renamed? the guard would be disabled", c.rel)
+		}
+		if !strings.Contains(orderSpan, phrase) {
+			t.Errorf("%s: chat-identity text does not state the name order %q", c.rel, phrase)
+		}
+		if !strings.Contains(armSpan, arm) {
+			t.Errorf("%s: chat-identity text does not mention arming (%s)", c.rel, arm)
 		}
 	}
 }
