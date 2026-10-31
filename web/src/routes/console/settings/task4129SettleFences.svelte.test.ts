@@ -15,6 +15,7 @@ const state = vi.hoisted(() => ({
 	listeners: new Set<(previousUserId: string) => void>(),
 	toCanvas: vi.fn(),
 	exportData: vi.fn(),
+	download: vi.fn(),
 	planToast: vi.fn(),
 	clear: vi.fn(),
 	load: vi.fn(async () => {}),
@@ -36,7 +37,7 @@ const flush = () => new Promise((r) => setTimeout(r, 30));
 const profileOf = (name: string, extra: Record<string, unknown> = {}) => ({ id: 'u1', name, email: 'pat@example.com', username: 'pat', password_set: true, totp_enabled: true, oauth_providers: ['github'], timezone: null, ...state.extra, ...extra });
 
 vi.mock('qrcode', () => ({ default: { toCanvas: state.toCanvas } }));
-vi.mock('$lib/utils/artifacts', () => ({ exportAndDownloadAccountData: state.exportData }));
+vi.mock('$lib/utils/artifacts', () => ({ downloadTextFile: state.download }));
 vi.mock('$lib/billing/planLimitToast', () => ({ showPlanLimitToast: state.planToast }));
 vi.mock('$lib/api/client', () => ({
 	PadApiError: class extends Error {},
@@ -55,7 +56,8 @@ vi.mock('$lib/api/client', () => ({
 			unlinkProvider: vi.fn(),
 			deleteAccount: vi.fn(),
 			logout: vi.fn(),
-			forgotPassword: vi.fn()
+			forgotPassword: vi.fn(),
+			exportAccountData: state.exportData
 		}
 	}
 }));
@@ -95,7 +97,7 @@ const mocked = {
 };
 
 beforeEach(() => {
-	for (const m of [mocked.unlink, mocked.forgot, mocked.setup, mocked.verify, mocked.disable, mocked.create, mocked.del, state.update, state.exportData, state.toCanvas, state.planToast, state.clear, state.load]) m.mockReset();
+	for (const m of [mocked.unlink, mocked.forgot, mocked.setup, mocked.verify, mocked.disable, mocked.create, mocked.del, state.update, state.exportData, state.download, state.toCanvas, state.planToast, state.clear, state.load]) m.mockReset();
 	state.load.mockImplementation(async () => {});
 	state.epoch = 0; state.userId = 'u1'; state.cloud = false; state.planLimit = false; state.extra = {};
 	state.meQueue = []; state.listeners.clear();
@@ -112,6 +114,7 @@ async function bump(previousUserId = 'u1') {
 	await flush();
 	await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue('Pat'));
 }
+const EXPORT = { filename: 'pad-account.json', text: '{"user":"u1"}' };
 const text = () => document.body.textContent ?? '';
 const button = (name: string) => screen.getByRole('button', { name });
 
@@ -226,10 +229,10 @@ describe('password writers', () => {
 		await bump();
 		await fireEvent.click(button('Email me a link to set a password'));
 		expect(button('Sending...')).toBeDisabled();
-		a.resolve(undefined);
+		a.resolve(EXPORT);
 		await flush();
 		expect(button('Sending...')).toBeDisabled();
-		b.resolve(undefined);
+		b.resolve(EXPORT);
 		await waitFor(() => expect(button('Email me a link to set a password')).toBeEnabled());
 	});
 
@@ -486,10 +489,10 @@ describe('2FA writers', () => {
 		await toDisableConfirmAgain();
 		await fireEvent.click(button('Confirm Disable'));
 		expect(button('Disabling...')).toBeDisabled();
-		a.resolve(undefined);
+		a.resolve(EXPORT);
 		await flush();
 		expect(button('Disabling...')).toBeDisabled();
-		b.resolve(undefined);
+		b.resolve(EXPORT);
 		await screen.findByText('Two-factor authentication has been disabled.');
 	});
 	async function toDisableConfirmAgain() {
@@ -573,10 +576,10 @@ describe('token and danger-zone writers', () => {
 			await fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
 			await fireEvent.click(button('Delete token'));
 			expect(button('Deleting…')).toBeDisabled();
-			a.resolve(undefined);
+			a.resolve(EXPORT);
 			await flush();
 			expect(button('Deleting…')).toBeDisabled();
-			b.resolve(undefined);
+			b.resolve(EXPORT);
 			await waitFor(() => expect(screen.queryByRole('button', { name: 'Deleting…' })).toBeNull());
 		});
 		it('a token rotate the old identity left late does not clear the new identity\'s Rotating state', async () => {
@@ -656,10 +659,19 @@ describe('token and danger-zone writers', () => {
 		await fireEvent.click(button('Export my data'));
 		await bump();
 		expect(button('Export my data')).toBeEnabled();
-		held.resolve(undefined);
+		held.resolve(EXPORT);
 		await flush();
+		expect(state.download).not.toHaveBeenCalled();
 		expect(screen.queryByText('Your data export has downloaded.')).toBeNull();
 		expect(button('Export my data')).toBeEnabled();
+	});
+	it('an export that lands under the same identity downloads once and shows the message', async () => {
+		state.exportData.mockResolvedValueOnce(EXPORT);
+		await ready();
+		await fireEvent.click(button('Export my data'));
+		await screen.findByText('Your data export has downloaded.');
+		expect(state.download).toHaveBeenCalledTimes(1);
+		expect(state.download).toHaveBeenCalledWith('pad-account.json', '{"user":"u1"}', 'application/json');
 	});
 	it('a failed export that lands after an identity change shows no error', async () => {
 		const held = deferred();
@@ -679,10 +691,10 @@ describe('token and danger-zone writers', () => {
 		await bump();
 		await fireEvent.click(button('Export my data'));
 		expect(button('Exporting...')).toBeDisabled();
-		a.resolve(undefined);
+		a.resolve(EXPORT);
 		await flush();
 		expect(button('Exporting...')).toBeDisabled();
-		b.resolve(undefined);
+		b.resolve(EXPORT);
 		await screen.findByText('Your data export has downloaded.');
 	});
 });
@@ -735,7 +747,7 @@ describe('per-identity form state reset', () => {
 		expect(document.getElementById('delete-password')).toBeNull();
 	});
 	it('an export message does not survive an identity change', async () => {
-		state.exportData.mockResolvedValueOnce(undefined);
+		state.exportData.mockResolvedValueOnce(EXPORT);
 		await ready();
 		await fireEvent.click(button('Export my data'));
 		await screen.findByText('Your data export has downloaded.');

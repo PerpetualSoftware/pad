@@ -9,7 +9,7 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
-	import { exportAndDownloadAccountData } from '$lib/utils/artifacts';
+	import { downloadTextFile } from '$lib/utils/artifacts';
 	import Button from '$lib/components/common/Button.svelte';
 	import Modal from '$lib/components/common/Modal.svelte';
 	import NotificationSettings from '$lib/components/settings/NotificationSettings.svelte';
@@ -676,8 +676,10 @@
 		const isSameIdentity = authStore.identityFence();
 		exportSaving = true;
 		try {
-			await exportAndDownloadAccountData();
+			const { filename, text } = await api.auth.exportAccountData();
+			// The download is the identity-bound effect, so the fence sits before it.
 			if (!isSameIdentity()) return;
+			downloadTextFile(filename, text, 'application/json');
 			exportMsg = 'Your data export has downloaded.';
 		} catch (err) {
 			if (isSameIdentity()) exportError = err instanceof Error ? err.message : 'Failed to export your data. Please try again.';
