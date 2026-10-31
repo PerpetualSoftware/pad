@@ -364,6 +364,32 @@ type PendingReminderScope struct {
 	ItemIDs       []string
 }
 
+// scopeClause is the visibility predicate on the item alias, as " AND ..." (empty
+// when scope is unrestricted). The same three-way shape as models.ItemListParams:
+// a guest may hold collection-level grants, item-level grants, or both, and
+// "both" is an OR rather than an AND, so an item in a fully granted collection
+// qualifies even when it is not individually granted. One predicate for every
+// reader that must agree on who sees an item (pending reminders, the agenda).
+func scopeClause(alias string, scope PendingReminderScope) (string, []any) {
+	var args []any
+	for _, ids := range [][]string{scope.CollectionIDs, scope.ItemIDs} {
+		for _, id := range ids {
+			args = append(args, id)
+		}
+	}
+	coll := alias + ".collection_id IN (" + placeholders(len(scope.CollectionIDs)) + ")"
+	item := alias + ".id IN (" + placeholders(len(scope.ItemIDs)) + ")"
+	switch {
+	case len(scope.CollectionIDs) > 0 && len(scope.ItemIDs) > 0:
+		return " AND (" + coll + " OR " + item + ")", args
+	case len(scope.CollectionIDs) > 0:
+		return " AND " + coll, args
+	case len(scope.ItemIDs) > 0:
+		return " AND " + item, args
+	}
+	return "", nil
+}
+
 // The window is BOUNDED because this list feeds a payload that is otherwise
 // capped: every pending reminder became a suggestion prepended to a
 // three-entry list, so a workspace with five hundred unacknowledged reminders
@@ -415,31 +441,9 @@ func (s *Store) ListPendingReminders(workspaceID string, scope PendingReminderSc
 		  AND w.deleted_at IS NULL`
 	args := []any{workspaceID}
 
-	// Same three-way shape as models.ItemListParams: a guest may hold
-	// collection-level grants, item-level grants, or both, and "both" is an OR
-	// rather than an AND — an item in a fully granted collection qualifies
-	// even when it is not individually granted.
-	switch {
-	case len(scope.CollectionIDs) > 0 && len(scope.ItemIDs) > 0:
-		query += " AND (i.collection_id IN (" + placeholders(len(scope.CollectionIDs)) +
-			") OR i.id IN (" + placeholders(len(scope.ItemIDs)) + "))"
-		for _, id := range scope.CollectionIDs {
-			args = append(args, id)
-		}
-		for _, id := range scope.ItemIDs {
-			args = append(args, id)
-		}
-	case len(scope.CollectionIDs) > 0:
-		query += " AND i.collection_id IN (" + placeholders(len(scope.CollectionIDs)) + ")"
-		for _, id := range scope.CollectionIDs {
-			args = append(args, id)
-		}
-	case len(scope.ItemIDs) > 0:
-		query += " AND i.id IN (" + placeholders(len(scope.ItemIDs)) + ")"
-		for _, id := range scope.ItemIDs {
-			args = append(args, id)
-		}
-	}
+	clause, scopeArgs := scopeClause("i", scope)
+	query += clause
+	args = append(args, scopeArgs...)
 
 	query += " ORDER BY r.fired_at, r.id LIMIT ? OFFSET ?"
 	args = append(args, limit+1, offset)

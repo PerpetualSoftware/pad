@@ -82,6 +82,7 @@ compress /api/v1/workspaces/deleted
 compress /api/v1/workspaces/import-status
 compress /api/v1/workspaces/{slug}/
 compress /api/v1/workspaces/{slug}/activity
+compress /api/v1/workspaces/{slug}/agenda
 compress /api/v1/workspaces/{slug}/agent-roles/
 compress /api/v1/workspaces/{slug}/agent-roles/{roleID}/
 compress /api/v1/workspaces/{slug}/agent/bootstrap
