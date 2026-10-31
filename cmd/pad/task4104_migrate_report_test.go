@@ -62,7 +62,10 @@ func TestTASK4104_MigrateReportsDroppedSchedules(t *testing.T) {
 	}
 	var sum bytes.Buffer
 	printMigrateDropSummary(&sum, []migrateDropped{{Workspace: "Migrate Drop", Drops: drops}}, "/data/pad.db")
-	for _, want := range []string{"Migrate Drop", "1 schedule", "NOT carried", "/data/pad.db"} {
+	// The source is marked migrated (pad refuses to open it), so the summary
+	// must say how the rows can still be read (TASK-4104 D2 r2-2).
+	for _, want := range []string{"Migrate Drop", "1 schedule", "NOT carried", "/data/pad.db",
+		"marked\nas migrated, so pad will not open it", "sqlite3 /data/pad.db", "item_schedules", "schedule_occurrences", "pad db backup"} {
 		if !strings.Contains(sum.String(), want) {
 			t.Errorf("summary lacks %q: %q", want, sum.String())
 		}
