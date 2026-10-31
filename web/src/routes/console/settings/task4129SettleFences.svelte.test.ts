@@ -30,6 +30,8 @@ function deferred<T = unknown>() {
 	const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
 	return { promise, resolve, reject };
 }
+// Captured before any test intercepts setTimeout.
+const realSetTimeout = globalThis.setTimeout;
 const flush = () => new Promise((r) => setTimeout(r, 30));
 const profileOf = (name: string, extra: Record<string, unknown> = {}) => ({ id: 'u1', name, email: 'pat@example.com', username: 'pat', password_set: true, totp_enabled: true, oauth_providers: ['github'], timezone: null, ...state.extra, ...extra });
 
@@ -308,26 +310,42 @@ describe('2FA writers', () => {
 		await flush();
 		expect(screen.queryByText('2FA is unavailable')).toBeNull();
 	});
-	it('a QR render that wakes after an identity change does not draw the old secret', async () => {
+	/**
+	 * Click Enable 2FA and hold the page's QR phase at its 50ms wait. The page does `await import('qrcode')`
+	 * and then `setTimeout(r, 50)`; this intercepts that one timer and keeps its callback. Waiting for the
+	 * callback to be captured proves the import is done and the page is parked on the timer, so the test
+	 * can change identity (or not) before firing it. Every other timer, including waitFor's, runs for real.
+	 */
+	async function toHeldQrTimer() {
 		state.extra = { totp_enabled: false };
-		vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-		try {
-			// The reset would hide the canvas; give the render a canvas so only the fence can stop it.
-			const canvas = document.createElement('canvas');
-			const real = document.getElementById.bind(document);
-			vi.spyOn(document, 'getElementById').mockImplementation((id) => id === 'qr-canvas' ? canvas : real(id));
-			mocked.setup.mockResolvedValueOnce(SETUP as never);
-			await ready();
-			await fireEvent.click(button('Enable 2FA'));
-			await waitFor(() => expect(screen.getByText('SECRET123')).toBeInTheDocument());
-			// The page is now parked on its 50ms QR timer (or the import before it). Change identity
-			// first, then let every pending timer fire: no wall-clock wait, so the order is fixed.
-			changeIdentity();
-			await vi.advanceTimersByTimeAsync(1000);
-			expect(state.toCanvas).not.toHaveBeenCalled();
-		} finally {
-			vi.useRealTimers();
-		}
+		// The reset would hide the canvas; give the render a canvas so only the fence can stop it.
+		const canvas = document.createElement('canvas');
+		const real = document.getElementById.bind(document);
+		vi.spyOn(document, 'getElementById').mockImplementation((id) => id === 'qr-canvas' ? canvas : real(id));
+		const held: Array<() => void> = [];
+		vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, ms?: number, ...rest: unknown[]) => {
+			if (ms === 50) { held.push(fn); return 0; }
+			return realSetTimeout(fn, ms, ...rest);
+		}) as typeof setTimeout);
+		mocked.setup.mockResolvedValueOnce(SETUP as never);
+		await ready();
+		await fireEvent.click(button('Enable 2FA'));
+		await waitFor(() => expect(held.length).toBe(1));
+		expect(state.toCanvas).not.toHaveBeenCalled();
+		return held[0];
+	}
+	it('a QR render that wakes after an identity change does not draw the old secret', async () => {
+		const wake = await toHeldQrTimer();
+		changeIdentity();
+		wake();
+		await flush();
+		expect(state.toCanvas).not.toHaveBeenCalled();
+	});
+	it('control: the same held-timer path with no identity change draws once', async () => {
+		const wake = await toHeldQrTimer();
+		wake();
+		await waitFor(() => expect(state.toCanvas).toHaveBeenCalledOnce());
+		expect(state.toCanvas.mock.calls[0][1]).toBe(SETUP.url);
 	});
 	it('a QR render with no identity change still draws', async () => {
 		state.extra = { totp_enabled: false };
