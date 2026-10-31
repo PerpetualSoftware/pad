@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -342,5 +343,68 @@ func TestRegisteredAgentRequiresAVerifiableOwner(t *testing.T) {
 	}
 	if got := ResolveAgentName(); got != "env-name" {
 		t.Errorf("a row owned by a live non-ancestor pid named us: ResolveAgentName() = %q, want %q", got, "env-name")
+	}
+}
+
+// TASK-4186 PR B r1. The /messages empty state, docs/api.md and both SKILL.md
+// files tell people how an agent's name is resolved. The order is pinned here
+// in one chain, peeling one source at a time: registry row, then .pad.toml
+// agent_name, then $PAD_AGENT, then runtime detection. (TestResolveAgentName
+// and TestRegisteredAgentWinsForThisSession pin the same order in pieces.)
+//
+// MUTANT: swapping any two adjacent steps in ResolveAgentName fails a step
+// below.
+func TestResolveAgentNamePrecedenceChain(t *testing.T) {
+	registryEnv(t)
+	clearSessionEnv(t)
+	dir := t.TempDir()
+	tomlPath := filepath.Join(dir, ".pad.toml")
+	if err := os.WriteFile(tomlPath, []byte("workspace = \"w\"\nagent_name = \"toml-name\"\n"), 0o600); err != nil {
+		t.Fatalf("write .pad.toml: %v", err)
+	}
+	chdir(t, dir)
+	t.Setenv("PAD_AGENT", "env-name")
+	t.Setenv("CLAUDECODE", "1")
+
+	if _, err := RegisterSession(dir, "registry-name"); err != nil {
+		t.Fatalf("RegisterSession: %v", err)
+	}
+	steps := []struct {
+		drop func()
+		want string
+	}{
+		{func() {}, "registry-name"},
+		{func() { _, _ = RegisterSession(dir, "") }, "toml-name"}, // anonymous row defers
+		{func() { _ = os.Remove(tomlPath) }, "env-name"},
+		{func() { t.Setenv("PAD_AGENT", "") }, "claude-code"},
+		{func() { t.Setenv("CLAUDECODE", "") }, ""},
+	}
+	for i, st := range steps {
+		st.drop()
+		if got := ResolveAgentName(); got != st.want {
+			t.Fatalf("step %d: ResolveAgentName() = %q, want %q", i, got, st.want)
+		}
+	}
+}
+
+// The user-facing copy states the order; this pins that copy to the phrase
+// the resolver test above pins. SOURCE OF TRUTH: ResolveAgentName in
+// agent_identity.go. If the order changes, change the resolver chain test, this
+// phrase, and web/src/lib/chat/emptyState.ts NAME_ORDER together.
+func TestAgentNameCopyMatchesResolverOrder(t *testing.T) {
+	const phrase = "registered name, then agent_name in .pad.toml, then PAD_AGENT"
+	for _, rel := range []string{
+		"web/src/lib/chat/emptyState.ts",
+		"docs/api.md",
+		"skills/pad/SKILL.md",
+		"plugin/skills/pad/SKILL.md",
+	} {
+		data, err := os.ReadFile(filepath.Join("..", "..", rel))
+		if err != nil {
+			t.Fatalf("read %s: %v", rel, err)
+		}
+		if !strings.Contains(strings.ReplaceAll(string(data), "`", ""), phrase) {
+			t.Errorf("%s does not state the name order %q", rel, phrase)
+		}
 	}
 }

@@ -2,6 +2,12 @@
 // "no one to message" is said only when both reads answered and found nothing.
 import type { ChatConversationSummary, LiveSession } from '$lib/types';
 
+// How an agent's name is resolved, in precedence order. Source of truth:
+// internal/cli/agent_identity.go ResolveAgentName (registry row, .pad.toml
+// agent_name, $PAD_AGENT, then runtime detection). The Go test
+// TestAgentNameCopyMatchesResolverOrder pins this phrase in the docs too.
+export const NAME_ORDER = 'registered name, then agent_name in .pad.toml, then PAD_AGENT';
+
 export type ChatEmptyKind =
 	| 'has-conversations'
 	| 'unknown' // a read is pending, failed, or could not be trusted

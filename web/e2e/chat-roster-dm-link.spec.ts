@@ -46,7 +46,5 @@ test('a user with no agents sees the empty-state help', async ({ page }) => {
 	await page.goto('/messages');
 	await expect(page.getByRole('heading', { name: 'No one to message yet' })).toBeVisible();
 	await expect(page.locator('code', { hasText: '/pad:connect' })).toBeVisible();
-	await expect(
-	  page.locator('code', { hasText: 'PAD_AGENT=<name> pad watch --stream --for-session' })
-	).toBeVisible();
+	await expect(page.locator('code', { hasText: 'pad watch --stream --for-session' })).toBeVisible();
 });

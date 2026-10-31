@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { chatInbox } from '$lib/stores/chatInbox.svelte';
-	import { chatEmptyKind } from '$lib/chat/emptyState';
+	import { chatEmptyKind, NAME_ORDER } from '$lib/chat/emptyState';
 
 	const kind = $derived(
 		chatEmptyKind({
@@ -12,20 +12,39 @@
 		})
 	);
 
+	// The monitor line is what an agent harness runs, not something a person
+	// pastes: `pad watch --stream` is "Not meant to be run by hand", so it gets
+	// no Copy button (a copy affordance invites pasting it into a shell).
 	const snippets = [
-		{ label: 'Claude Code', cmd: '/pad:connect' },
-		{ label: 'Other agents', cmd: 'PAD_AGENT=<name> pad watch --stream --for-session' }
+		{ label: 'Claude Code', cmd: '/pad:connect', copyable: true },
+		{
+			label: "Other agents (your harness's Pad monitor runs)",
+			cmd: 'pad watch --stream --for-session',
+			copyable: false
+		}
 	];
 
-	let copied = $state<string | null>(null);
+	let copied = $state<Record<string, boolean>>({});
+	let status = $state('');
+	const timers = new Map<string, ReturnType<typeof setTimeout>>();
 
 	async function copy(cmd: string) {
+		clearTimeout(timers.get(cmd));
 		try {
 			await navigator.clipboard.writeText(cmd);
-			copied = cmd;
-			setTimeout(() => (copied = null), 1500);
+			copied[cmd] = true;
+			status = 'Copied';
+			timers.set(
+				cmd,
+				setTimeout(() => {
+					copied[cmd] = false;
+					status = '';
+				}, 1500)
+			);
 		} catch {
-			// Clipboard API not available
+			// Rejected, or navigator.clipboard is undefined (plain http).
+			copied[cmd] = false;
+			status = "Couldn't copy \u2014 select the command";
 		}
 	}
 </script>
@@ -40,17 +59,29 @@
 			name — then you can start a conversation.
 		</p>
 		<ul class="snippets">
-			{#each snippets as s, i (i)}
+			{#each snippets as s (s.cmd)}
 				<li>
 					<span class="label">{s.label}</span>
 					<code>{s.cmd}</code>
-					<button type="button" class="copy-btn" onclick={() => void copy(s.cmd)}>
-						{copied === s.cmd ? 'Copied' : 'Copy'}
-					</button>
+					{#if s.copyable}
+						<button
+							type="button"
+							class="copy-btn"
+							aria-label={`Copy ${s.label} command`}
+							onclick={() => void copy(s.cmd)}
+						>
+							{copied[s.cmd] ? 'Copied' : 'Copy'}
+						</button>
+					{/if}
 				</li>
 			{/each}
 		</ul>
-		<p class="note">Name an agent with PAD_AGENT or agent_name in .pad.toml.</p>
+		<p class="status" role="status" aria-live="polite">{status}</p>
+		<p class="note">
+			The monitor runs from a directory linked to this workspace (.pad.toml); without a link it
+			stays silent. The agent's name comes from its {NAME_ORDER}. Only Claude Code is detected
+			without one.
+		</p>
 	</section>
 {/if}
 
@@ -85,6 +116,11 @@
 	}
 	.copy-btn {
 		font-size: 0.85rem;
+	}
+	.status {
+		margin: 0 0 var(--space-2);
+		min-height: 1.2em;
+		font-size: 0.9rem;
 	}
 	.note {
 		color: var(--text-muted);

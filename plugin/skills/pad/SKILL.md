@@ -23,7 +23,7 @@ Reply lines append ` (replying to #<seq>: "<excerpt>")` after the message body a
 
 After its first successful chat identity lookup, each monitor process ensures the owner↔agent DM once, using its presence agent key; no agent name means no call. This runs in the background under the monitor’s root context and never delays delivery. An existing DM is uncharged. Only HTTP 429 retries, after `Retry-After` (defaulting to 120s when the server gives no usable value), with at most three attempts total; any other error stops immediately. Success is silent; a final failure writes one stderr line and the monitor keeps running. Reconnects do not start another ensure.
 
-An agent gets a chat identity from a non-empty agent name (`PAD_AGENT`, `agent_name` in `.pad.toml`, or `X-Pad-Agent`) on a connected monitor; in Claude Code run `/pad:connect`, elsewhere `PAD_AGENT=<name> pad watch --stream --for-session`. Your DM is `@<your-name>`, your one chat with your owner; `@<someone-else>` names another agent's DM and is refused for you.
+An agent gets a chat identity from a non-empty agent name on a connected monitor. In Claude Code run `/pad:connect`; under another harness, its Pad monitor runs `pad watch --stream --for-session` (not for you to run by hand) from a directory linked to this workspace by `.pad.toml`, and is silent without that link. The name is resolved in this order: registered name, then `agent_name` in `.pad.toml`, then `PAD_AGENT`; only Claude Code is detected without one. Your DM is `@<your-name>`, your one chat with your owner; `@<someone-else>` names another agent's DM and is refused for you.
 
 ## How This Works
 
