@@ -472,7 +472,8 @@ func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExpor
 	// MANAGED ROWS ARE SKIPPED (TASK-4102): a reminder with schedule_id set is the
 	// outstanding occurrence of a schedule the bundle does not carry yet, and
 	// import would resurrect it as a free-standing reminder firing on its own.
-	// The schedule is lost on export, copy and migrate-to-pg until it is carried.
+	// Its schedule is carried in WorkspaceExport.Schedules, which rebuilds the
+	// row on import.
 	reminderRows, err := q.Query(s.q(`
 		SELECT r.item_id, r.remind_at, COALESCE(r.fired_at, ''), COALESCE(r.acked_at, ''), r.created_at, r.updated_at
 		FROM item_reminders r
@@ -491,6 +492,12 @@ func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExpor
 		export.Reminders = append(export.Reminders, rm)
 	}
 	if err := reminderRows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Schedules (TASK-4104 D2): the managed reminder rows skipped above travel
+	// inside these, with the schedule they belong to.
+	if export.Schedules, err = s.exportSchedules(q, ws.ID); err != nil {
 		return nil, err
 	}
 
@@ -617,6 +624,10 @@ type ImportReport struct {
 	// An import creates a new workspace, so a duplicate can only come from
 	// inside the archive. The first item in archive order keeps the value.
 	DroppedUniqueValues []models.ImportUniqueDrop
+	// DroppedSchedules lists each bundled schedule the import did not store
+	// because its rule or state failed validation (TASK-4104 D2). The item and
+	// the rest of the import are unaffected.
+	DroppedSchedules []models.ImportScheduleDrop
 }
 
 // ImportWorkspace is ImportWorkspaceWithReport for callers with no use for the
@@ -1109,6 +1120,7 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 	// right reason rather than letting the database refuse it for an
 	// incidental one.
 	insertedItems := make(map[string]bool, len(data.Items))
+	itemRefs := make(map[string]string, len(data.Items)) // new item id -> ref in the new workspace
 	var nextItemNumber int
 	for _, it := range data.Items {
 		newItemID := newID()
@@ -1266,6 +1278,7 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 			return nil, fmt.Errorf("import item %s: %w", it.Title, err)
 		}
 		insertedItems[newItemID] = true
+		itemRefs[newItemID] = itemRef
 	}
 
 	// items_per_workspace, compared here against the limit resolved before the
@@ -1414,6 +1427,7 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 	}
 
 	// Import comments
+	commentMap := make(map[string]string, len(data.Comments)) // source comment id -> new id, for schedule history
 	for _, cm := range data.Comments {
 		newItemID := itemMap[cm.ItemID]
 		// insertedItems, NOT `newItemID == ""` (BUG-2884). That test cannot
@@ -1437,14 +1451,16 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 		if err := stampAttachmentRefsTx(tx, s, ws.ID, cm.Body); err != nil {
 			return nil, err
 		}
+		newCommentID := newID()
 		_, err := tx.Exec(s.q(`
 			INSERT INTO comments (id, item_id, workspace_id, author, body, created_by, source, created_at, updated_at, imported)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`),
-			newID(), newItemID, ws.ID, cm.Author, cm.Body, cm.CreatedBy, cm.Source,
+			newCommentID, newItemID, ws.ID, cm.Author, cm.Body, cm.CreatedBy, cm.Source,
 			cm.CreatedAt, cm.UpdatedAt)
 		if err != nil {
 			return nil, fmt.Errorf("import comment: %w", err)
 		}
+		commentMap[cm.ID] = newCommentID
 		// No comment_mentions rows for imported comments (TASK-3917 lead
 		// ruling bb0c9fc6): history would stay open for good, and a bundle's
 		// @handles name SOURCE-instance users that could bind to a different
@@ -1583,6 +1599,39 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 			slog.Warn("workspace import: skipping reminder that failed to insert",
 				"workspace_id", ws.ID, "item_id", newItemID, "error", err)
 			continue
+		}
+	}
+
+	// Import schedules (TASK-4104 D2), after the comments they point at and
+	// before anything reads them. Each is CHECKED BEFORE its insert, never
+	// skipped on a failed one (BUG-2884: a failed statement poisons a Postgres
+	// transaction), by insertCarriedScheduleTx, which also rebuilds the managed
+	// reminder row export left out and recomputes the instants. A schedule that
+	// fails is dropped, counted and reported; its item and the import survive.
+	scheduled := map[string]bool{}
+	for _, sx := range data.Schedules {
+		newItemID := itemMap[sx.ItemID]
+		var err error
+		switch {
+		case !insertedItems[newItemID]:
+			err = dropf("item", "not_imported")
+		case scheduled[newItemID]:
+			err = dropf("item", "duplicate")
+		default:
+			var in carriedSchedule
+			if in, err = carriedFromExport(sx, commentMap); err == nil {
+				scheduled[newItemID] = true
+				_, err = s.insertCarriedScheduleTx(tx, ws.ID, newItemID, in)
+			}
+		}
+		var drop *scheduleCarryDrop
+		if errors.As(err, &drop) {
+			slog.Warn("workspace import: dropped a schedule", "workspace_id", ws.ID, "item", itemRefs[newItemID], "reason", drop.Reason)
+			report.DroppedSchedules = append(report.DroppedSchedules, models.ImportScheduleDrop{Item: itemRefs[newItemID], Reason: drop.Reason})
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("import schedule: %w", err)
 		}
 	}
 

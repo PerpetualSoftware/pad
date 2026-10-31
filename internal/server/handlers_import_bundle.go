@@ -476,6 +476,7 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 		Workspace:           ws,
 		ImportSummary:       s.importSummary(ws, bundled),
 		DroppedUniqueValues: importReport.DroppedUniqueValues,
+		DroppedSchedules:    importReport.DroppedSchedules,
 	})
 }
 
@@ -487,6 +488,9 @@ type importedWorkspaceResponse struct {
 	*models.Workspace
 	ImportSummary       *importSummary            `json:"import_summary,omitempty"`
 	DroppedUniqueValues []models.ImportUniqueDrop `json:"dropped_unique_values,omitempty"`
+	// DroppedSchedules (TASK-4104 D2) lists each bundled schedule the import
+	// refused; the item imported without it.
+	DroppedSchedules []models.ImportScheduleDrop `json:"dropped_schedules,omitempty"`
 }
 
 // importSummary pairs what the bundle carried with what the new workspace

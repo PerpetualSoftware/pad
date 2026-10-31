@@ -1086,6 +1086,7 @@ func (s *Server) handleImportWorkspace(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, importedWorkspaceResponse{
 		Workspace:           ws,
 		DroppedUniqueValues: importReport.DroppedUniqueValues,
+		DroppedSchedules:    importReport.DroppedSchedules,
 	})
 }
 

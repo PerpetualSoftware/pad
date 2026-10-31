@@ -164,9 +164,10 @@ var migratedRefusalTables = []string{
 	// A person's needs-you dismissals and deferrals (TASK-3918), the same
 	// class as item_stars: per-user workspace state the bundle does not carry.
 	"item_needs_snoozes",
-	// Time-trigger schedules and their resolved occurrences (TASK-4102): the
-	// bundle does not carry them yet, and export skips their managed reminder
-	// rows, so a write to the abandoned file must refuse rather than be lost.
+	// Time-trigger schedules and their resolved occurrences (TASK-4102): carried
+	// by models.WorkspaceExport.Schedules since TASK-4104 D2 (their managed
+	// reminder rows ride inside it), so these rows now live in PostgreSQL and a
+	// write here edits a copy that is gone.
 	"item_schedules",
 	"schedule_occurrences",
 	// A person's "mark caught up" cursor per workspace (TASK-3615 PR A),
