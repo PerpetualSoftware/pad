@@ -2555,6 +2555,7 @@ func (s *Server) setupRouter() {
 					r.Post("/reminders/{reminderID}/ack", s.handleAckReminder)
 					r.Delete("/reminders/{reminderID}", s.handleDeleteReminder)
 					r.Get("/dashboard", s.handleGetDashboard)
+					r.Get("/agenda", s.handleGetAgenda) // TASK-4104: schedules + dated items in a window
 
 					// Workspace graph — {nodes, edges} for the 3D
 					// graph view (PLAN-1730 / TASK-1731). Active
