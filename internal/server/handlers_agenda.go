@@ -1,8 +1,6 @@
 package server
 
 import (
-	"fmt"
-	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
@@ -143,7 +141,7 @@ func (s *Server) handleGetAgenda(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now()
 	resp := agendaResponse{From: from.Format(time.RFC3339), To: to.Format(time.RFC3339), Tz: zone.Name, TimezoneNote: note, Entries: []agendaEntry{}}
-	schedules, more, err := s.store.ListSchedulesForAgenda(workspaceID, scope, from, agendaMaxScan)
+	schedules, more, err := s.store.ListSchedulesForAgenda(workspaceID, scope, from, to, agendaMaxScan)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -158,8 +156,8 @@ func (s *Server) handleGetAgenda(w http.ResponseWriter, r *http.Request) {
 		sc := as.Schedule
 		es, cut, unavailable, err := s.store.ExpandAgenda(sc, loc, from, to, now)
 		if err != nil {
-			slog.Warn("agenda: schedule unreadable", "schedule_id", sc.ID, "error_class", fmt.Sprintf("%T", err))
-			unavailable = "internal"
+			writeInternalError(w, err)
+			return
 		}
 		if unavailable != "" {
 			resp.Unavailable = append(resp.Unavailable, agendaUnavailable{ItemRef: as.ItemRef, Code: unavailable})

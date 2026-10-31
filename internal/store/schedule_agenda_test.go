@@ -257,3 +257,24 @@ func TestAgendaFloatingMissedAcrossFallBack(t *testing.T) {
 		t.Fatalf("no outstanding entry: %+v", es)
 	}
 }
+
+// r2-2: ExpandAgenda classifies. A stored-state parse failure is that schedule's
+// `internal` outcome with a nil error; only a database failure is an error.
+func TestAgendaExpandClassifiesStoredStateVersusDatabase(t *testing.T) {
+	t.Parallel()
+	f := newSchedFixture(t)
+	item, _ := f.mk(t, models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-01T09:00", Tz: "UTC", Rrule: "FREQ=DAILY"}, "2026-10-01T00:00:00Z")
+	f.exec(t, `UPDATE item_schedules SET next_at = 'not-an-instant' WHERE item_id = ?`, item.ID)
+	sc, _ := f.s.GetSchedule(f.ws.ID, item.ID)
+	es, _, unavailable, err := f.s.ExpandAgenda(sc, time.UTC, rt("2026-10-01T00:00:00Z"), rt("2026-10-05T00:00:00Z"), rt("2026-10-01T00:00:00Z"))
+	if err != nil || unavailable != "internal" || len(es) != 0 {
+		t.Errorf("corrupt next_at: entries=%d unavailable=%q err=%v, want none, internal, nil", len(es), unavailable, err)
+	}
+	f.exec(t, `UPDATE item_schedules SET next_at = ? WHERE item_id = ?`, "2026-10-01T09:00:00Z", item.ID)
+	sc, _ = f.s.GetSchedule(f.ws.ID, item.ID)
+	f.exec(t, `DROP TABLE schedule_occurrences`)
+	es, _, unavailable, err = f.s.ExpandAgenda(sc, time.UTC, rt("2026-10-01T00:00:00Z"), rt("2026-10-05T00:00:00Z"), rt("2026-10-01T00:00:00Z"))
+	if err == nil || unavailable != "" || len(es) != 0 {
+		t.Errorf("failing history read: entries=%d unavailable=%q err=%v, want an error and no code", len(es), unavailable, err)
+	}
+}

@@ -3,6 +3,7 @@ package store
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"time"
 
@@ -28,21 +29,24 @@ type AgendaSchedule struct {
 // ListSchedulesForAgenda returns the schedules of the open, live items scope
 // allows, by id, and whether there were more than limit. The scope and the
 // terminal filter are applied in SQL, BEFORE the bound, so rows the caller
-// cannot see, that are done, or that ended before from (nothing on or after
-// the end can be in the window) never push a visible schedule past it.
-func (s *Store) ListSchedulesForAgenda(workspaceID string, scope PendingReminderScope, from time.Time, limit int) ([]AgendaSchedule, bool, error) {
+// cannot see, that are done, or that ended before from with no history row near
+// [from, to) (an early resolve ends a schedule before its due instant) never
+// push a visible schedule past it.
+func (s *Store) ListSchedulesForAgenda(workspaceID string, scope PendingReminderScope, from, to time.Time, limit int) ([]AgendaSchedule, bool, error) {
 	if scope.CollectionIDs != nil && len(scope.CollectionIDs) == 0 && len(scope.ItemIDs) == 0 {
 		return nil, false, nil
 	}
 	scopeSQL, scopeArgs := scopeClause("i", scope)
 	open, openArgs := s.nonTerminalFilter(workspaceID, "i")
-	args := append(append([]any{workspaceID, from.UTC().Format(time.RFC3339), workspaceID}, scopeArgs...), openArgs...)
+	f := time.RFC3339
+	args := append(append([]any{workspaceID, from.UTC().Format(f), from.UTC().Add(-36 * time.Hour).Format(f), to.UTC().Add(36 * time.Hour).Format(f), workspaceID}, scopeArgs...), openArgs...)
 	// item_id IN (...), not a join: scheduleColumns names item_schedules.id.
 	rows, err := s.db.Query(s.q(`SELECT `+scheduleColumns+` FROM item_schedules
-		WHERE workspace_id = ? AND (ended_at IS NULL OR ended_at >= ?) AND item_id IN (
+		WHERE workspace_id = ? AND (ended_at IS NULL OR ended_at >= ? OR EXISTS (SELECT 1 FROM schedule_occurrences o
+			WHERE o.schedule_id = item_schedules.id AND o.occurrence_at >= ? AND o.occurrence_at < ?)) AND item_id IN (
 			SELECT i.id FROM items i JOIN collections c ON c.id = i.collection_id
 			WHERE i.workspace_id = ? AND i.deleted_at IS NULL AND c.deleted_at IS NULL`+scopeSQL+` AND `+open+`)
-		ORDER BY id LIMIT ?`), append(args, limit+1)...)
+		ORDER BY item_schedules.id LIMIT ?`), append(args, limit+1)...)
 	if err != nil {
 		return nil, false, fmt.Errorf("list schedules for agenda: %w", err)
 	}
@@ -136,9 +140,10 @@ func (s *Store) agendaOccurrences(scheduleID string, from, to time.Time) ([]agen
 // schedule is read in; a pinned one ignores it.
 //
 // unavailable is a stable code when the schedule cannot be expanded (a stored
-// error_code, a rule that no longer compiles, a cap): one such schedule is a
-// per-schedule outcome, never an error for the whole agenda. truncated says more
-// existed than the entries show.
+// error_code, a rule that no longer compiles, a cap, `internal` for stored state
+// that will not parse): one such schedule is a per-schedule outcome, never an
+// error for the whole agenda. err is a database failure only. truncated says
+// more existed than the entries show.
 //
 // A history row is matched by the WALL for a floating or all-day schedule (a
 // resolve stores the recipient's reading, and the same wall is another instant
@@ -152,15 +157,20 @@ func (s *Store) ExpandAgenda(sc *models.ItemSchedule, view *time.Location, from,
 	if sc.AnchorWall != nil {
 		start = *sc.AnchorWall // a re-phased rule never walks from dtstart
 	}
+	rows, err := s.agendaOccurrences(sc.ID, from, to)
+	if err != nil {
+		return nil, false, "", err
+	}
 	c, err := compileScheduleSpec(storedSpecInput(sc, start))
 	if err == nil {
-		entries, truncated, err = s.expandCompiled(c, sc, view, from, to, now)
+		entries, truncated, err = s.expandCompiled(c, sc, rows, view, from, to, now)
 	}
 	if code := ScheduleErrorCode(err); code != "" {
 		return nil, false, code, nil
 	}
 	if err != nil {
-		return nil, false, "", err
+		slog.Warn("agenda: schedule unreadable", "schedule_id", sc.ID, "error_class", fmt.Sprintf("%T", err))
+		return nil, false, "internal", nil
 	}
 	if len(entries) > AgendaMaxPerSchedule {
 		entries, truncated = entries[:AgendaMaxPerSchedule], true
@@ -168,7 +178,7 @@ func (s *Store) ExpandAgenda(sc *models.ItemSchedule, view *time.Location, from,
 	return entries, truncated, "", nil
 }
 
-func (s *Store) expandCompiled(c *schedule.Compiled, sc *models.ItemSchedule, view *time.Location, from, to, now time.Time) ([]AgendaEntry, bool, error) {
+func (s *Store) expandCompiled(c *schedule.Compiled, sc *models.ItemSchedule, rows []agendaRow, view *time.Location, from, to, now time.Time) ([]AgendaEntry, bool, error) {
 	loc := view
 	if !sc.Floating {
 		var err error
@@ -189,7 +199,7 @@ func (s *Store) expandCompiled(c *schedule.Compiled, sc *models.ItemSchedule, vi
 	if err != nil {
 		return nil, false, err
 	}
-	entries, err := s.agendaEntries(sc, occs, view, loc, lo, from, to, now)
+	entries, err := s.agendaEntries(sc, occs, rows, view, loc, lo, from, to, now)
 	return entries, truncated, err
 }
 
@@ -197,11 +207,7 @@ func (s *Store) expandCompiled(c *schedule.Compiled, sc *models.ItemSchedule, vi
 // resolve in and lo where the walk began (the later of from and the rule's start,
 // which a re-anchor moves up): history rows between from and lo are listed from
 // the rows themselves, since the walk does not reach them.
-func (s *Store) agendaEntries(sc *models.ItemSchedule, occs []schedule.Occurrence, view, loc *time.Location, lo, from, to, now time.Time) ([]AgendaEntry, error) {
-	rows, err := s.agendaOccurrences(sc.ID, from, to)
-	if err != nil {
-		return nil, err
-	}
+func (s *Store) agendaEntries(sc *models.ItemSchedule, occs []schedule.Occurrence, rows []agendaRow, view, loc *time.Location, lo, from, to, now time.Time) ([]AgendaEntry, error) {
 	byKey := map[string]agendaRow{}
 	key := func(at time.Time, w schedule.Wall) string {
 		if sc.Floating || w.AllDay {
@@ -218,6 +224,7 @@ func (s *Store) agendaEntries(sc *models.ItemSchedule, occs []schedule.Occurrenc
 	}
 	var o time.Time
 	var hasO bool
+	var err error
 	if sc.EndedAt == nil {
 		if o, hasO, err = walkOrigin(sc, view); err != nil {
 			return nil, err

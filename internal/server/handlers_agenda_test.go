@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // TASK-4104 D1: GET /workspaces/{ws}/agenda.
@@ -267,6 +268,7 @@ func TestAgendaOneRunawayScheduleDoesNotTakeItDown(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("one runaway schedule must not fail the agenda: %d %v", code, m)
 	}
+	runawayRef := fmt.Sprintf("P0-%d", *w.items["AG runaway"].ItemNumber)
 	var normal, runaway int
 	for _, e := range entriesOf(m) {
 		switch e["item_title"] {
@@ -283,14 +285,18 @@ func TestAgendaOneRunawayScheduleDoesNotTakeItDown(t *testing.T) {
 	}
 	un, _ := m["unavailable"].([]any)
 	var names []string
+	runawayUnavailable := false
 	for _, u := range un {
 		names = append(names, fmt.Sprint(u))
+		if um, ok := u.(map[string]any); ok && um["item_ref"] == runawayRef {
+			runawayUnavailable = true
+		}
 	}
 	if !strings.Contains(strings.Join(names, ";"), "cap_scan") {
 		t.Errorf("unavailable = %v, want the broken schedule with cap_scan", un)
 	}
-	if m["truncated"] != true && len(un) < 2 { // truncated, or unavailable beside the broken one
-		t.Errorf("the runaway schedule is neither truncated nor unavailable: %v", m)
+	if !runawayUnavailable && !(m["truncated"] == true && runaway > 0 && runaway <= 100) {
+		t.Errorf("the runaway (%s) is neither unavailable nor listed (%d entries) and truncated: %v", runawayRef, runaway, m)
 	}
 	if runaway > 100 {
 		t.Errorf("the runaway schedule lists %d entries, over the per-schedule cap of 100", runaway)
@@ -399,6 +405,18 @@ func TestAgendaResponseCutIs500(t *testing.T) {
 // ended one-shots precede (by id) one live schedule; it is still listed.
 func TestAgendaScanBoundIsNotSpentOnEndedSchedules(t *testing.T) {
 	t.Parallel()
+	scanBoundHolds(t, false)
+}
+
+// r2-1 (a pin): the same when the ended schedules' only history lies AFTER the
+// window, which the history lookup must not count as reaching it.
+func TestAgendaScanBoundIsNotSpentOnEndedSchedulesWithLaterHistory(t *testing.T) {
+	t.Parallel()
+	scanBoundHolds(t, true)
+}
+
+func scanBoundHolds(t *testing.T, laterHistory bool) {
+	t.Helper()
 	w := newAgendaWorld(t, "tasks")
 	for i := 0; i < 1002; i++ {
 		w.item(t, "tasks", fmt.Sprintf("AG s%04d", i), `{"status":"open"}`, oneShot())
@@ -411,6 +429,13 @@ func TestAgendaScanBoundIsNotSpentOnEndedSchedules(t *testing.T) {
 	if _, err := db.Exec(d.Rebind(`UPDATE item_schedules SET ended_at = '2031-01-01T00:00:00Z', next_at = NULL WHERE workspace_id = ? AND id <> ?`), w.ws.ID, liveID); err != nil {
 		t.Fatal(err)
 	}
+	if laterHistory {
+		if _, err := db.Exec(d.Rebind(`INSERT INTO schedule_occurrences (id, schedule_id, occurrence_at, occurrence_wall, state, actor, resolved_at)
+			SELECT 'o' || id, id, '2031-06-01T09:00:00Z', '2031-06-01T09:00', 'done', 'user', '2031-01-01T00:00:00Z'
+			FROM item_schedules WHERE workspace_id = ? AND id <> ?`), w.ws.ID, liveID); err != nil {
+			t.Fatal(err)
+		}
+	}
 	m := w.ok(t, w.owner, agendaWindow)
 	var found bool
 	for _, e := range entriesOf(m) {
@@ -418,6 +443,36 @@ func TestAgendaScanBoundIsNotSpentOnEndedSchedules(t *testing.T) {
 	}
 	if !found || m["truncated"] == true {
 		t.Fatalf("the live schedule with the highest id is listed=%v, truncated=%v; want listed and not truncated (%d entries)", found, m["truncated"], len(entriesOf(m)))
+	}
+}
+
+// r2-1: marking a deadline done EARLY ends the schedule at the resolve time,
+// while its history row keeps the due instant. The window around the due
+// instant still lists it, as done.
+func TestAgendaListsAnEarlyResolvedScheduleAsDone(t *testing.T) {
+	t.Parallel()
+	w := newAgendaWorld(t, "tasks")
+	it := w.item(t, "tasks", "AG early", `{"status":"open"}`, oneShot())
+	if _, err := w.srv.store.ResolveOccurrence(w.ws.ID, it.ID, store.ResolveInput{OccurrenceAt: time.Date(2031, 3, 10, 9, 0, 0, 0, time.UTC), State: "done", Actor: "user"}); err != nil {
+		t.Fatalf("resolve early: %v", err)
+	}
+	m := w.ok(t, w.owner, agendaWindow)
+	es := entriesOf(m)
+	if len(es) != 1 || es[0]["item_title"] != "AG early" || es[0]["state"] != "done" {
+		t.Fatalf("entries = %v, want the early-resolved schedule listed as done", es)
+	}
+}
+
+// r2-2: a database failure while expanding is a 500, not an incomplete 200.
+func TestAgendaDatabaseFailureDuringExpansionIs500(t *testing.T) {
+	t.Parallel()
+	w := newAgendaWorld(t, "tasks")
+	w.item(t, "tasks", "AG db", `{"status":"open"}`, oneShot())
+	if _, err := w.srv.store.DB().Exec(`DROP TABLE schedule_occurrences`); err != nil {
+		t.Fatal(err)
+	}
+	if code, m := w.get(t, w.owner, agendaWindow); code != http.StatusInternalServerError {
+		t.Fatalf("a failing history read gave %d %v, want 500", code, m)
 	}
 }
 
