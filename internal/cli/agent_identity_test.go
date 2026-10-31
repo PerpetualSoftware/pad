@@ -401,51 +401,6 @@ func TestAgentNameCopyMatchesResolverOrder(t *testing.T) {
 	const phrase = "registered name, then agent_name in .pad.toml, then PAD_AGENT"
 	const arm = "pad session arm"
 
-	// lineWith returns the single line of text starting with prefix.
-	lineWith := func(text, prefix string) (string, bool) {
-		for _, l := range strings.Split(text, "\n") {
-			if strings.HasPrefix(l, prefix) {
-				return l, true
-			}
-		}
-		return "", false
-	}
-	// paragraph returns the blank-line-bounded paragraph containing anchor.
-	paragraph := func(text, anchor string) (string, bool) {
-		for _, p := range strings.Split(text, "\n\n") {
-			if strings.Contains(p, anchor) {
-				return p, true
-			}
-		}
-		return "", false
-	}
-	// section returns the text from heading to the next heading of the same or
-	// higher level.
-	section := func(text, heading string) (string, bool) {
-		lines := strings.Split(text, "\n")
-		level := len(heading) - len(strings.TrimLeft(heading, "#"))
-		start := -1
-		for i, l := range lines {
-			if l == heading {
-				start = i
-				break
-			}
-		}
-		if start < 0 {
-			return "", false
-		}
-		end := len(lines)
-		for i := start + 1; i < len(lines); i++ {
-			l := lines[i]
-			n := len(l) - len(strings.TrimLeft(l, "#"))
-			if n > 0 && n <= level && strings.HasPrefix(l[n:], " ") {
-				end = i
-				break
-			}
-		}
-		return strings.Join(lines[start:end], "\n"), true
-	}
-
 	skillAnchor := "An agent gets a chat identity"
 	cases := []struct {
 		rel     string
@@ -455,24 +410,24 @@ func TestAgentNameCopyMatchesResolverOrder(t *testing.T) {
 		// emptyState.ts also holds logic, so take just the two constants that
 		// carry the setup copy, by their declarations.
 		{"web/src/lib/chat/emptyState.ts",
-			func(x string) (string, bool) { return lineWith(x, "export const NAME_ORDER") },
-			func(x string) (string, bool) { return lineWith(x, "export const ARM_COMMAND") }},
+			func(x string) (string, bool) { return guardLineWith(x, "export const NAME_ORDER") },
+			func(x string) (string, bool) { return guardLineWith(x, "export const ARM_COMMAND") }},
 		{"docs/api.md",
-			func(x string) (string, bool) { return section(x, "### Agent chat identity and arming") },
-			func(x string) (string, bool) { return section(x, "### Agent chat identity and arming") }},
+			func(x string) (string, bool) { return guardSection(x, "### Agent chat identity and arming") },
+			func(x string) (string, bool) { return guardSection(x, "### Agent chat identity and arming") }},
 		{"skills/pad/SKILL.md",
-			func(x string) (string, bool) { return paragraph(x, skillAnchor) },
-			func(x string) (string, bool) { return paragraph(x, skillAnchor) }},
+			func(x string) (string, bool) { return guardParagraph(x, skillAnchor) },
+			func(x string) (string, bool) { return guardParagraph(x, skillAnchor) }},
 		{"plugin/skills/pad/SKILL.md",
-			func(x string) (string, bool) { return paragraph(x, skillAnchor) },
-			func(x string) (string, bool) { return paragraph(x, skillAnchor) }},
+			func(x string) (string, bool) { return guardParagraph(x, skillAnchor) },
+			func(x string) (string, bool) { return guardParagraph(x, skillAnchor) }},
 	}
 	for _, c := range cases {
 		data, err := os.ReadFile(filepath.Join("..", "..", c.rel))
 		if err != nil {
 			t.Fatalf("read %s: %v", c.rel, err)
 		}
-		text := strings.ReplaceAll(string(data), "`", "")
+		text := strings.ReplaceAll(guardLF(string(data)), "`", "")
 		orderSpan, ok := c.orderIn(text)
 		if !ok {
 			t.Fatalf("%s: chat-identity order text not found; was it renamed? the guard would be disabled", c.rel)
@@ -487,5 +442,101 @@ func TestAgentNameCopyMatchesResolverOrder(t *testing.T) {
 		if !strings.Contains(armSpan, arm) {
 			t.Errorf("%s: chat-identity text does not mention arming (%s)", c.rel, arm)
 		}
+	}
+}
+
+// guardLF normalises CRLF to LF. Every extraction below splits on "\n" or
+// "\n\n", so a CRLF checkout would otherwise turn a paragraph into the whole file.
+func guardLF(text string) string { return strings.ReplaceAll(text, "\r\n", "\n") }
+
+// guardLineWith returns the single line of text starting with prefix.
+func guardLineWith(text, prefix string) (string, bool) {
+	text = guardLF(text)
+	for _, l := range strings.Split(text, "\n") {
+		if strings.HasPrefix(l, prefix) {
+			return l, true
+		}
+	}
+	return "", false
+}
+
+// guardParagraph returns the blank-line-bounded paragraph containing anchor.
+func guardParagraph(text, anchor string) (string, bool) {
+	text = guardLF(text)
+	for _, p := range strings.Split(text, "\n\n") {
+		if strings.Contains(p, anchor) {
+			return p, true
+		}
+	}
+	return "", false
+}
+
+// guardSection returns the text from heading to the next heading of ANY level,
+// so text under a following (or nested) heading cannot satisfy the guard.
+func guardSection(text, heading string) (string, bool) {
+	text = guardLF(text)
+	lines := strings.Split(text, "\n")
+	start := -1
+	for i, l := range lines {
+		if l == heading {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		return "", false
+	}
+	end := len(lines)
+	for i := start + 1; i < len(lines); i++ {
+		l := lines[i]
+		n := len(l) - len(strings.TrimLeft(l, "#"))
+		if n > 0 && strings.HasPrefix(l[n:], " ") {
+			end = i
+			break
+		}
+	}
+	return strings.Join(lines[start:end], "\n"), true
+}
+
+// A CRLF checkout must extract the same span as LF. Without normalising,
+// guardParagraph never sees "\n\n" and returns the whole file, which would let
+// a clause deleted from the paragraph be found elsewhere in the file.
+func TestGuardExtractionIsCRLFSafe(t *testing.T) {
+	lf := "intro\n\nAn agent gets a chat identity. Run x.\n\nOther text with pad session arm.\n"
+	crlf := strings.ReplaceAll(lf, "\n", "\r\n")
+
+	wantP, ok := guardParagraph(lf, "An agent gets a chat identity")
+	if !ok {
+		t.Fatal("LF paragraph not found")
+	}
+	gotP, ok := guardParagraph(crlf, "An agent gets a chat identity")
+	if !ok || gotP != wantP {
+		t.Errorf("CRLF paragraph = %q (ok=%v), want %q", gotP, ok, wantP)
+	}
+	if strings.Contains(gotP, "pad session arm") {
+		t.Errorf("CRLF paragraph leaked the next paragraph: %q", gotP)
+	}
+
+	lfDoc := "### A\n\nbody\n\n### B\n\nother pad session arm\n"
+	wantS, ok := guardSection(lfDoc, "### A")
+	if !ok {
+		t.Fatal("LF section not found")
+	}
+	gotS, ok := guardSection(strings.ReplaceAll(lfDoc, "\n", "\r\n"), "### A")
+	if !ok || gotS != wantS {
+		t.Errorf("CRLF section = %q (ok=%v), want %q", gotS, ok, wantS)
+	}
+}
+
+// A section ends at the next heading of ANY level, so text under a following
+// sub- or sibling heading cannot satisfy the guard for this one.
+func TestGuardSectionEndsAtAnyHeading(t *testing.T) {
+	doc := "### A\n\nbody\n\n#### Sub\n\npad session arm\n"
+	got, ok := guardSection(doc, "### A")
+	if !ok {
+		t.Fatal("section not found")
+	}
+	if strings.Contains(got, "pad session arm") {
+		t.Errorf("section ran past a deeper heading: %q", got)
 	}
 }

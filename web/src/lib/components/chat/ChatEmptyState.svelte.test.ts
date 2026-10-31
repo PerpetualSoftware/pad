@@ -164,5 +164,35 @@ describe('ChatEmptyState', () => {
 			flushSync();
 			expect(btn.textContent?.trim()).toBe('Copy');
 		});
+
+		it('two clicks while writeText is pending: the first timer cannot reset the second copy early', async () => {
+			const resolvers: Array<() => void> = [];
+			writeText.mockImplementation(() => new Promise<void>((r) => resolvers.push(r)));
+			const { getByRole, container } = render(ChatEmptyState);
+			const live = container.querySelector('[aria-live="polite"]')!;
+			const btn = getByRole('button', { name: 'Copy Claude Code command' });
+			await fireEvent.click(btn);
+			await fireEvent.click(btn);
+			expect(resolvers.length).toBe(2);
+			resolvers[0](); // first copy lands at t=0: its timer expires at 1500
+			await vi.advanceTimersByTimeAsync(1000);
+			resolvers[1](); // second lands at t=1000: its timer expires at 2500
+			await vi.advanceTimersByTimeAsync(1400); // t=2400, past the first timer
+			flushSync();
+			expect(live.textContent).toBe('Copied');
+			expect(btn.textContent?.trim()).toBe('Copied');
+			await vi.advanceTimersByTimeAsync(200);
+			flushSync();
+			expect(btn.textContent?.trim()).toBe('Copy');
+		});
+
+		it('clears its timers on destroy', async () => {
+			writeText.mockResolvedValue(undefined);
+			const { getByRole, unmount } = render(ChatEmptyState);
+			await fireEvent.click(getByRole('button', { name: 'Copy Claude Code command' }));
+			expect(vi.getTimerCount()).toBe(1);
+			unmount();
+			expect(vi.getTimerCount()).toBe(0);
+		});
 	});
 });

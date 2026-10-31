@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { tick } from 'svelte';
+	import { onDestroy, tick } from 'svelte';
 	import { chatInbox } from '$lib/stores/chatInbox.svelte';
 	import { chatEmptyKind, NAME_ORDER, ARM_COMMAND } from '$lib/chat/emptyState';
 
@@ -29,8 +29,14 @@
 	let status = $state('');
 	const timers = new Map<string, ReturnType<typeof setTimeout>>();
 
+	let destroyed = false;
+	onDestroy(() => {
+		destroyed = true;
+		for (const t of timers.values()) clearTimeout(t);
+		timers.clear();
+	});
+
 	async function copy(cmd: string) {
-		clearTimeout(timers.get(cmd));
 		try {
 			await navigator.clipboard.writeText(cmd);
 			copied[cmd] = true;
@@ -39,6 +45,10 @@
 			status = '';
 			await tick();
 			status = 'Copied';
+			// Clear here, after the awaits: two clicks while writeText is pending
+			// would otherwise both clear before either timer exists, orphaning one.
+			clearTimeout(timers.get(cmd));
+			if (destroyed) return;
 			timers.set(
 				cmd,
 				setTimeout(() => {
