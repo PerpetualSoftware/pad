@@ -31,3 +31,22 @@ test('the roster shows an agent with a DM as a link to its conversation', async 
 	await expect(row).toHaveCount(1);
 	await expect(row).toHaveAttribute('href', `/messages/${conversation.number}`);
 });
+
+/**
+ * TASK-4186 PR B: a user with no agents and no conversations sees why, and how
+ * to connect one, instead of a bare "No conversations yet."
+ */
+test('a user with no agents sees the empty-state help', async ({ page }) => {
+	// The suite shares one user whose sessions and DMs other specs create, so a truly
+	// fresh account cannot be had here: the two reads are answered empty instead.
+	await page.route('**/api/v1/me/conversations*', (r) =>
+		r.fulfill({ json: { conversations: [], unread_total: 0 } })
+	);
+	await page.route('**/api/v1/sessions*', (r) => r.fulfill({ json: { sessions: [], count: 0 } }));
+	await page.goto('/messages');
+	await expect(page.getByRole('heading', { name: 'No one to message yet' })).toBeVisible();
+	await expect(page.locator('code', { hasText: '/pad:connect' })).toBeVisible();
+	await expect(
+	  page.locator('code', { hasText: 'PAD_AGENT=<name> pad watch --stream --for-session' })
+	).toBeVisible();
+});
