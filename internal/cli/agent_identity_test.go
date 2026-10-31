@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -342,5 +343,149 @@ func TestRegisteredAgentRequiresAVerifiableOwner(t *testing.T) {
 	}
 	if got := ResolveAgentName(); got != "env-name" {
 		t.Errorf("a row owned by a live non-ancestor pid named us: ResolveAgentName() = %q, want %q", got, "env-name")
+	}
+}
+
+// TASK-4186 PR B r1. The /messages empty state, docs/api.md and both SKILL.md
+// files tell people how an agent's name is resolved. The order is pinned here
+// in one chain, peeling one source at a time: registry row, then .pad.toml
+// agent_name, then $PAD_AGENT, then runtime detection. (TestResolveAgentName
+// and TestRegisteredAgentWinsForThisSession pin the same order in pieces.)
+//
+// MUTANT: swapping any two adjacent steps in ResolveAgentName fails a step
+// below.
+func TestResolveAgentNamePrecedenceChain(t *testing.T) {
+	registryEnv(t)
+	clearSessionEnv(t)
+	dir := t.TempDir()
+	tomlPath := filepath.Join(dir, ".pad.toml")
+	if err := os.WriteFile(tomlPath, []byte("workspace = \"w\"\nagent_name = \"toml-name\"\n"), 0o600); err != nil {
+		t.Fatalf("write .pad.toml: %v", err)
+	}
+	chdir(t, dir)
+	t.Setenv("PAD_AGENT", "env-name")
+	t.Setenv("CLAUDECODE", "1")
+
+	if _, err := RegisterSession(dir, "registry-name"); err != nil {
+		t.Fatalf("RegisterSession: %v", err)
+	}
+	steps := []struct {
+		drop func()
+		want string
+	}{
+		{func() {}, "registry-name"},
+		{func() { _, _ = RegisterSession(dir, "") }, "toml-name"}, // anonymous row defers
+		{func() { _ = os.Remove(tomlPath) }, "env-name"},
+		{func() { t.Setenv("PAD_AGENT", "") }, "claude-code"},
+		{func() { t.Setenv("CLAUDECODE", "") }, ""},
+	}
+	for i, st := range steps {
+		st.drop()
+		if got := ResolveAgentName(); got != st.want {
+			t.Fatalf("step %d: ResolveAgentName() = %q, want %q", i, got, st.want)
+		}
+	}
+}
+
+// The user-facing copy states the order; this pins that copy to the phrase
+// the resolver test above pins. SOURCE OF TRUTH: ResolveAgentName in
+// agent_identity.go. If the order changes, change the resolver chain test, this
+// phrase, and web/src/lib/chat/emptyState.ts NAME_ORDER together.
+//
+// Arming must be named beside the order because runWatchMonitor
+// (cmd/pad/cmd_watch.go) checks arming first and an unarmed monitor exits at
+// once. Both checks run on the chat-identity span only: "pad session arm" also
+// appears in unrelated sections of these files, so a whole-file search stays
+// green after the clause is deleted from the chat text.
+func TestAgentNameCopyMatchesResolverOrder(t *testing.T) {
+	const phrase = "registered name, then agent_name in .pad.toml, then PAD_AGENT"
+	const arm = "pad session arm"
+
+	// lineWith returns the single line of text starting with prefix.
+	lineWith := func(text, prefix string) (string, bool) {
+		for _, l := range strings.Split(text, "\n") {
+			if strings.HasPrefix(l, prefix) {
+				return l, true
+			}
+		}
+		return "", false
+	}
+	// paragraph returns the blank-line-bounded paragraph containing anchor.
+	paragraph := func(text, anchor string) (string, bool) {
+		for _, p := range strings.Split(text, "\n\n") {
+			if strings.Contains(p, anchor) {
+				return p, true
+			}
+		}
+		return "", false
+	}
+	// section returns the text from heading to the next heading of the same or
+	// higher level.
+	section := func(text, heading string) (string, bool) {
+		lines := strings.Split(text, "\n")
+		level := len(heading) - len(strings.TrimLeft(heading, "#"))
+		start := -1
+		for i, l := range lines {
+			if l == heading {
+				start = i
+				break
+			}
+		}
+		if start < 0 {
+			return "", false
+		}
+		end := len(lines)
+		for i := start + 1; i < len(lines); i++ {
+			l := lines[i]
+			n := len(l) - len(strings.TrimLeft(l, "#"))
+			if n > 0 && n <= level && strings.HasPrefix(l[n:], " ") {
+				end = i
+				break
+			}
+		}
+		return strings.Join(lines[start:end], "\n"), true
+	}
+
+	skillAnchor := "An agent gets a chat identity"
+	cases := []struct {
+		rel     string
+		orderIn func(text string) (string, bool)
+		armIn   func(text string) (string, bool)
+	}{
+		// emptyState.ts also holds logic, so take just the two constants that
+		// carry the setup copy, by their declarations.
+		{"web/src/lib/chat/emptyState.ts",
+			func(x string) (string, bool) { return lineWith(x, "export const NAME_ORDER") },
+			func(x string) (string, bool) { return lineWith(x, "export const ARM_COMMAND") }},
+		{"docs/api.md",
+			func(x string) (string, bool) { return section(x, "### Agent chat identity and arming") },
+			func(x string) (string, bool) { return section(x, "### Agent chat identity and arming") }},
+		{"skills/pad/SKILL.md",
+			func(x string) (string, bool) { return paragraph(x, skillAnchor) },
+			func(x string) (string, bool) { return paragraph(x, skillAnchor) }},
+		{"plugin/skills/pad/SKILL.md",
+			func(x string) (string, bool) { return paragraph(x, skillAnchor) },
+			func(x string) (string, bool) { return paragraph(x, skillAnchor) }},
+	}
+	for _, c := range cases {
+		data, err := os.ReadFile(filepath.Join("..", "..", c.rel))
+		if err != nil {
+			t.Fatalf("read %s: %v", c.rel, err)
+		}
+		text := strings.ReplaceAll(string(data), "`", "")
+		orderSpan, ok := c.orderIn(text)
+		if !ok {
+			t.Fatalf("%s: chat-identity order text not found; was it renamed? the guard would be disabled", c.rel)
+		}
+		armSpan, ok := c.armIn(text)
+		if !ok {
+			t.Fatalf("%s: chat-identity arming text not found; was it renamed? the guard would be disabled", c.rel)
+		}
+		if !strings.Contains(orderSpan, phrase) {
+			t.Errorf("%s: chat-identity text does not state the name order %q", c.rel, phrase)
+		}
+		if !strings.Contains(armSpan, arm) {
+			t.Errorf("%s: chat-identity text does not mention arming (%s)", c.rel, arm)
+		}
 	}
 }

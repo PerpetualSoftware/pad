@@ -225,6 +225,24 @@ describe('/messages layout (TASK-4044)', () => {
 });
 
 describe('/messages page (TASK-4044)', () => {
+	// TASK-4186 PR B: the bare line is replaced by the help, but only on a known-empty inbox.
+	it('renders the empty-state help when there are no agents and no conversations', async () => {
+		h.listConversations.mockResolvedValue({ conversations: [], unread_total: 0 });
+		const { container } = render(MessagesPage);
+		await settle();
+		expect(container.textContent).toContain('No one to message yet');
+		expect(container.textContent).toContain('/pad:connect');
+		expect(container.textContent).not.toContain('No conversations yet.');
+	});
+
+	it('does not say no one to message when the sessions read is unavailable', async () => {
+		h.listConversations.mockResolvedValue({ conversations: [], unread_total: 0 });
+		h.sessions.mockRejectedValue(Object.assign(new Error('503'), { code: 'unavailable' }));
+		const { container } = render(MessagesPage);
+		await settle();
+		expect(container.textContent).not.toContain('No one to message yet');
+	});
+
 	it('lists the conversations', async () => {
 		const { container, getByText } = render(MessagesPage);
 		await settle();

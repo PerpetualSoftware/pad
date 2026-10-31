@@ -4,6 +4,8 @@
 	import ChatBackLink from '$lib/components/chat/ChatBackLink.svelte';
 	import RosterRow from '$lib/components/chat/RosterRow.svelte';
 	import ConversationList from '$lib/components/chat/ConversationList.svelte';
+	import ChatEmptyState from '$lib/components/chat/ChatEmptyState.svelte';
+	import { chatEmptyKind } from '$lib/chat/emptyState';
 	import { chatInbox } from '$lib/stores/chatInbox.svelte';
 
 	// A late POST answer must not pull the user back after they leave (TASK-4044).
@@ -20,6 +22,17 @@
 		};
 	});
 
+	// The help replaces the bare "No conversations yet." only when both reads answered.
+	const emptyKind = $derived(
+		chatEmptyKind({
+			loaded: chatInbox.loaded,
+			failed: chatInbox.failed,
+			conversations: chatInbox.conversations,
+			sessions: chatInbox.sessions,
+			rosterLength: chatInbox.roster.length
+		})
+	);
+
 	// Open the chat only once the POST has answered: a null means nothing started.
 	async function ensure(key: string): Promise<void> {
 		const n = await chatInbox.ensureDM(key);
@@ -35,6 +48,8 @@
 	<ChatBackLink />
 	<h1>Chat</h1>
 </header>
+
+<ChatEmptyState />
 
 {#if chatInbox.roster.length > 0}
 	<ul class="roster" aria-label="Agents">
@@ -63,9 +78,9 @@
 	</p>
 	<button type="button" onclick={() => void chatInbox.load()}>Try again</button>
 {/if}
-{#if chatInbox.loaded}
+{#if chatInbox.loaded && emptyKind !== 'no-agents'}
 	<ConversationList conversations={chatInbox.conversations} />
-{:else if !chatInbox.failed}
+{:else if !chatInbox.loaded && !chatInbox.failed}
 	<p class="status">Loading...</p>
 {/if}
 
