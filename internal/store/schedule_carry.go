@@ -355,7 +355,7 @@ func carriedFromExport(x models.ScheduleExport, commentIDs map[string]string) (c
 func (s *Store) exportSchedules(q Queryer, workspaceID string) ([]models.ScheduleExport, error) {
 	rows, err := q.Query(s.q(`SELECT `+scheduleColumns+` FROM item_schedules
 		WHERE workspace_id = ? AND item_id IN (SELECT i.id FROM items i WHERE i.workspace_id = ? AND i.deleted_at IS NULL)
-		ORDER BY created_at, id`), workspaceID, workspaceID)
+		ORDER BY item_schedules.created_at, item_schedules.id`), workspaceID, workspaceID) // qualified: scheduleColumns also yields the reminder's id, so a bare id is ambiguous on Postgres
 	if err != nil {
 		return nil, fmt.Errorf("export schedules: %w", err)
 	}
