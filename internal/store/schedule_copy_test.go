@@ -611,13 +611,15 @@ func TestMoveRefusesALiveScheduleItCannotCarry(t *testing.T) {
 
 // D3 r1-3, terminal reasons: nothing is left to fire, so a move ends the source
 // (when it is not already) and reports it; a copy skips and reports.
+// Since D3 r2-2 the outstanding occurrence is still AHEAD here: a due one is
+// carried by a move, so "exhausted" needs a rule with nothing after it.
 func TestMoveOfATerminalScheduleEndsItAndReports(t *testing.T) {
 	t.Parallel()
 	for _, reason := range []string{"exhausted", "ended"} {
 		t.Run(reason, func(t *testing.T) {
 			t.Parallel()
 			c := newSchedCopy(t)
-			sc := c.schedule(t, daily())
+			sc := c.scheduleFuture(t, daily())
 			var endedAt string
 			if reason == "exhausted" {
 				c.exhaust(t, sc)
@@ -635,7 +637,7 @@ func TestMoveOfATerminalScheduleEndsItAndReports(t *testing.T) {
 			}
 
 			c2 := newSchedCopy(t)
-			sc2 := c2.schedule(t, daily())
+			sc2 := c2.scheduleFuture(t, daily())
 			if reason == "exhausted" {
 				c2.exhaust(t, sc2)
 			} else {
