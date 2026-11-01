@@ -84,7 +84,7 @@ describe('attachment-upload (sites 7, 16)', () => {
 		expect(msg.startsWith(FSI + EVIL_NAME + PDI + ' was uploaded')).toBe(true);
 	});
 	// Site 17 (TASK-4195 r1-L2): the upload-error toast in Editor and
-	// CommentEditor. The name is isolated; the server's message is ours and is not.
+	// CommentEditor. The name is isolated; the message is shown as received.
 	it('the upload-failed toast isolates the name only', () => {
 		const msg = uploadFailedMessage(EVIL_NAME, 'too large');
 		expectFsiPdi(msg, EVIL_NAME);
