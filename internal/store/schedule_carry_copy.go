@@ -18,9 +18,10 @@ import (
 // history and snooze do not, and its outstanding occurrence is the first one
 // strictly after the copy instant. A copy never fires an occurrence that is
 // already due or past. The one exception is a MOVE of a source whose current
-// occurrence has FIRED and is still unresolved: the move ends the source, so the
-// destination carries that occurrence once and fires it, instead of the user's
-// open reminder vanishing. A copy leaves it to the source, which still holds it.
+// occurrence is OUTSTANDING and due, whether it has fired (and is unresolved) or
+// not yet (the tick lags): the move ends the source, so the destination carries
+// that occurrence once and fires it, instead of it vanishing or being reported
+// "exhausted". A copy leaves it to the source, which still holds it.
 //
 // A MOVE also ENDS the source schedule (ended_at set, next_* cleared, history
 // kept, managed row deleted), so restoring the archived source cannot fire a
@@ -94,9 +95,10 @@ func carriedFromLive(sc *models.ItemSchedule, move bool, view *time.Location, no
 		Rrule: derefStr(sc.Rrule), RDates: sc.RDates, ExDates: sc.ExDates, Anchor: sc.Anchor, Audience: sc.Audience,
 		LeadMinutes: sc.LeadMinutes, AnchorWall: derefStr(sc.AnchorWall),
 	}
-	if move && sc.ReminderFired {
-		// The one catch-up: the fired, unresolved occurrence, armed in the
-		// destination so the next tick fires it once.
+	if move && (sc.ReminderFired || scheduleOccurrenceDue(sc, nowT)) {
+		// The one catch-up: the outstanding occurrence that has fired, or is due
+		// and has not fired yet (a lagging tick), armed in the destination so the
+		// next tick fires it once.
 		in.NextWall, in.NextAt = *sc.NextWall, derefStr(sc.NextAt)
 		return in, ""
 	}
@@ -117,6 +119,13 @@ func carriedFromLive(sc *models.ItemSchedule, move bool, view *time.Location, no
 	}
 	in.NextWall, in.NextAt = occ.Wall.String(), NormalizeInstant(occ.At)
 	return in, ""
+}
+
+// scheduleOccurrenceDue reports whether the schedule's outstanding occurrence is
+// at or before nowT, fired or not.
+func scheduleOccurrenceDue(sc *models.ItemSchedule, nowT time.Time) bool {
+	at, err := time.Parse(time.RFC3339, derefStr(sc.NextAt))
+	return err == nil && !at.After(nowT)
 }
 
 // planScheduleCarry reads the source schedule on q (FOR UPDATE when lock, on

@@ -193,6 +193,17 @@ func writeScheduleError(w http.ResponseWriter, err error) bool {
 	return true
 }
 
+// writeScheduleItemGone answers a write whose item went away under it (a move
+// archived it while the write waited): the answer the door's own pre-check gives,
+// 409 archived; 404 only if it is truly gone. It reports whether it answered.
+func (s *Server) writeScheduleItemGone(w http.ResponseWriter, r *http.Request, workspaceID string, err error) bool {
+	if !errors.Is(err, store.ErrScheduleItemGone) {
+		return false
+	}
+	s.writeItemResolveError(w, r, workspaceID, chi.URLParam(r, "itemSlug"))
+	return true
+}
+
 // defaultScheduleZone is the creator's zone for a schedule that names neither
 // a zone nor floating. It returns the zone name and the note that explains an
 // unset account zone ("" when one is set).
@@ -334,7 +345,7 @@ func (s *Server) handleCreateItemSchedule(w http.ResponseWriter, r *http.Request
 		req.Tz, note = defaultScheduleZone(r)
 	}
 	sc, err := s.store.CreateSchedule(workspaceID, item.ID, req)
-	if writeScheduleError(w, err) {
+	if s.writeScheduleItemGone(w, r, workspaceID, err) || writeScheduleError(w, err) {
 		return
 	}
 	s.recordScheduleWrite(r, workspaceID, item, "schedule_created", scheduleActivityMeta(sc.Kind, nil))
@@ -493,13 +504,7 @@ func (s *Server) handleUpdateItemSchedule(w http.ResponseWriter, r *http.Request
 		}
 	}
 	sc, err := s.store.UpdateSchedule(workspaceID, item.ID, upd)
-	if errors.Is(err, store.ErrScheduleItemGone) {
-		// Archived while the write waited (a move won the race): the answer the
-		// door's own pre-check gives, 409 archived; 404 only if it is truly gone.
-		s.writeItemResolveError(w, r, workspaceID, chi.URLParam(r, "itemSlug"))
-		return
-	}
-	if writeScheduleError(w, err) {
+	if s.writeScheduleItemGone(w, r, workspaceID, err) || writeScheduleError(w, err) {
 		return
 	}
 	if sc == nil {
@@ -656,7 +661,7 @@ func (s *Server) handleResolveItemSchedule(w http.ResponseWriter, r *http.Reques
 	}
 
 	res, err := s.store.ResolveOccurrence(workspaceID, item.ID, in)
-	if writeResolveError(w, r, err) {
+	if s.writeScheduleItemGone(w, r, workspaceID, err) || writeResolveError(w, r, err) {
 		return
 	}
 

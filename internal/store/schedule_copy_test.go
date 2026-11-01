@@ -63,6 +63,17 @@ func (c *schedCopy) schedule(t *testing.T, in models.ScheduleCreate) *models.Ite
 	return sc
 }
 
+// scheduleFuture creates the source's schedule as of the copy instant, so its
+// outstanding occurrence is still ahead (nothing due to catch up).
+func (c *schedCopy) scheduleFuture(t *testing.T, in models.ScheduleCreate) *models.ItemSchedule {
+	t.Helper()
+	sc, err := c.s.createScheduleAt(c.wsA.ID, c.src.ID, in, copyNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sc
+}
+
 // forcePast moves the outstanding occurrence to the 28th at 09:00 UTC.
 func (c *schedCopy) forcePast(t *testing.T, sc *models.ItemSchedule) {
 	t.Helper()
@@ -260,26 +271,10 @@ func TestMoveCatchesUpAFiredUnresolvedOccurrenceOnce(t *testing.T) {
 	}
 }
 
-// A move with nothing fired and unresolved carries no catch-up: an overdue
-// occurrence that never fired, and one that fired and was then resolved.
+// A move with nothing outstanding carries no catch-up: an occurrence that fired
+// and was then resolved.
 func TestMoveDoesNotCatchUpWhenNothingIsOutstanding(t *testing.T) {
 	t.Parallel()
-	t.Run("not fired", func(t *testing.T) {
-		c := newSchedCopy(t)
-		sc := c.schedule(t, daily())
-		c.forcePast(t, sc)
-		res := c.do(t, true)
-		b := c.sched(t, c.wsB.ID, res.Item.ID)
-		if b == nil {
-			t.Fatal("no schedule in the destination")
-		}
-		if n, at, fired := c.managed(t, b.ID); n != 1 || fired || at <= copyNowTS {
-			t.Errorf("managed row = %d %s fired=%v, want armed in the future", n, at, fired)
-		}
-		if got := c.tick(t, "2026-10-29T12:01:00Z", c.wsB.ID); len(got) != 0 {
-			t.Errorf("the destination fired %d, want no catch-up", len(got))
-		}
-	})
 	t.Run("fired then resolved", func(t *testing.T) {
 		c := newSchedCopy(t)
 		sc := c.schedule(t, daily())
@@ -679,7 +674,7 @@ func TestCapTimeRefusesTheCopyAndTheMoveWithNothingWritten(t *testing.T) {
 	for _, move := range []bool{false, true} {
 		t.Run(fmt.Sprintf("move=%v", move), func(t *testing.T) {
 			c := newSchedCopy(t)
-			sc := c.schedule(t, daily())
+			sc := c.scheduleFuture(t, daily())
 			before := c.sched(t, c.wsA.ID, c.src.ID)
 			itemsB := countItemsIn(t, c.s, c.wsB.ID)
 
@@ -929,5 +924,254 @@ func TestPGMoveParkedBehindAReArmingPatchDoesNotCatchUp(t *testing.T) {
 	}
 	if got := c.tick(t, "2026-10-29T12:01:00Z", c.wsB.ID); len(got) != 0 {
 		t.Fatalf("the move caught up a re-armed occurrence in B: %+v", got)
+	}
+}
+
+// oneShot is a single occurrence on the 28th 09:00 UTC (30 minute lead).
+func oneShot() models.ScheduleCreate {
+	return models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-28T09:00", Tz: "UTC", LeadMinutes: 30}
+}
+
+// D3 r2-2: an occurrence that is DUE but has not fired (the tick lags) is still
+// outstanding. A move carries it: the destination fires it once, late, and the
+// source is ended and fires nothing. A one-shot is not "exhausted" and a
+// recurring schedule does not skip to the next day.
+func TestMoveCarriesADueButUnfiredOccurrence(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		in   models.ScheduleCreate
+	}{{"one-shot", oneShot()}, {"recurring", daily()}} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			c := newSchedCopy(t)
+			sc := c.schedule(t, tc.in)
+			c.forcePast(t, sc)
+			if n, _, fired := c.managed(t, sc.ID); n != 1 || fired {
+				t.Fatalf("source managed row = %d fired=%v, want armed unfired", n, fired)
+			}
+
+			res := c.do(t, true)
+			if !res.Schedule.Carried || res.Schedule.Skipped != "" {
+				t.Fatalf("move report = %+v, want carried", res.Schedule)
+			}
+			b := c.sched(t, c.wsB.ID, res.Item.ID)
+			if b == nil || b.NextWall == nil || *b.NextWall != "2026-10-28T09:00:00" {
+				t.Fatalf("destination schedule = %+v, want the due 28th outstanding", b)
+			}
+			got := c.tick(t, "2026-10-29T12:01:00Z", c.wsB.ID)
+			if len(got) != 1 || got[0].OccurrenceAt == nil || *got[0].OccurrenceAt != "2026-10-28T09:00:00Z" {
+				t.Fatalf("destination fired %+v, want the 28th once", got)
+			}
+			if again := c.tick(t, "2026-10-29T12:02:00Z", c.wsB.ID); len(again) != 0 {
+				t.Errorf("the carried occurrence fired twice: %+v", again)
+			}
+			if a := c.tick(t, "2026-12-31T00:00:00Z", c.wsA.ID); len(a) != 0 {
+				t.Errorf("the source fired after the move: %+v", a)
+			}
+			a := c.sched(t, c.wsA.ID, c.src.ID)
+			if a == nil || a.EndedAt == nil || a.NextWall != nil {
+				t.Errorf("source schedule = %+v, want ended", a)
+			}
+			if n, _, _ := c.managed(t, sc.ID); n != 0 {
+				t.Errorf("source managed rows = %d", n)
+			}
+
+			// Resolved in the destination, a recurring schedule continues on its
+			// grid and a one-shot is done.
+			if _, err := c.s.resolveOccurrenceAt(c.wsB.ID, res.Item.ID, ResolveInput{State: "done", OccurrenceAt: rt("2026-10-28T09:00:00Z"), Actor: "user"}, copyNow); err != nil {
+				t.Fatal(err)
+			}
+			b = c.sched(t, c.wsB.ID, res.Item.ID)
+			if tc.name == "recurring" {
+				if b == nil || b.NextWall == nil || *b.NextWall != "2026-10-30T09:00:00" {
+					t.Errorf("recurring destination after resolve: next_wall = %v, want the 30th (the grid after now)", derefStr(b.NextWall))
+				}
+			} else if b != nil && b.NextWall != nil {
+				t.Errorf("one-shot destination after resolve = %+v, want nothing outstanding", b)
+			}
+		})
+	}
+}
+
+// D3 r2-2, the other door: a plain COPY of a due-but-unfired schedule catches
+// nothing up. The recurring destination arms the next occurrence after now; a
+// one-shot has none, so it is skipped as exhausted. The source is untouched.
+func TestCopyDoesNotCatchUpADueButUnfiredOccurrence(t *testing.T) {
+	t.Parallel()
+	t.Run("recurring", func(t *testing.T) {
+		t.Parallel()
+		c := newSchedCopy(t)
+		sc := c.schedule(t, daily())
+		c.forcePast(t, sc)
+		res := c.do(t, false)
+		b := c.sched(t, c.wsB.ID, res.Item.ID)
+		if b == nil {
+			t.Fatal("no schedule in the destination")
+		}
+		if n, at, fired := c.managed(t, b.ID); n != 1 || fired || at <= copyNowTS {
+			t.Errorf("managed row = %d %s fired=%v, want armed in the future", n, at, fired)
+		}
+		if got := c.tick(t, "2026-10-29T12:01:00Z", c.wsB.ID); len(got) != 0 {
+			t.Errorf("the destination fired %d, want no catch-up on a copy", len(got))
+		}
+	})
+	t.Run("one-shot", func(t *testing.T) {
+		t.Parallel()
+		c := newSchedCopy(t)
+		sc := c.schedule(t, oneShot())
+		c.forcePast(t, sc)
+		res := c.do(t, false)
+		if res.Schedule.Carried || res.Schedule.Skipped != "exhausted" {
+			t.Errorf("copy report = %+v, want skipped exhausted", res.Schedule)
+		}
+		if a := c.sched(t, c.wsA.ID, c.src.ID); a == nil || a.EndedAt != nil || a.NextWall == nil {
+			t.Errorf("a plain copy changed the source schedule: %+v", a)
+		}
+	})
+}
+
+// D3 r2-2, PG order: a fire tick racing a move for a due-but-unfired occurrence.
+// Move first: the source fires nothing and the destination fires it once. Fire
+// first: the source fires it once, then the move carries it as the fired,
+// unresolved catch-up (Q3) and the destination fires it once; the source never
+// fires again.
+func TestPGDueUnfiredFireVersusMoveFiresOncePerDoor(t *testing.T) {
+	if os.Getenv("PAD_TEST_POSTGRES_URL") == "" {
+		t.Skip("PAD_TEST_POSTGRES_URL not set: row locks only exist on Postgres")
+	}
+	t.Run("move first", func(t *testing.T) {
+		t.Parallel()
+		c := newSchedCopy(t)
+		sc := c.schedule(t, daily())
+		c.forcePast(t, sc)
+		rid := *c.sched(t, c.wsA.ID, c.src.ID).ReminderID
+		release, moved := c.holdMove(t)
+		fireDone := make(chan error, 1)
+		var fired *models.Reminder
+		go func() {
+			var err error
+			fired, err = c.s.fireOneReminder(rid, copyNowTS)
+			fireDone <- err
+		}()
+		waitForLockWait(t, c.s, "FOR NO KEY UPDATE OF", fireDone)
+		release()
+		if err := <-moved; err != nil {
+			t.Fatalf("move: %v", err)
+		}
+		if err := <-fireDone; err != nil {
+			t.Fatalf("fire: %v", err)
+		}
+		if fired != nil {
+			t.Errorf("the source fired after the move archived it: %+v", fired)
+		}
+		got := c.tick(t, "2026-10-29T12:01:00Z", c.wsB.ID)
+		if len(got) != 1 || *got[0].OccurrenceAt != "2026-10-28T09:00:00Z" {
+			t.Fatalf("destination fired %+v, want the due occurrence once", got)
+		}
+		if n := c.count(t, `SELECT COUNT(*) FROM event_outbox WHERE event_type = ?`, kernelevents.ItemReminderDue); n != 1 {
+			t.Errorf("%d reminder events across both doors, want exactly 1", n)
+		}
+	})
+	t.Run("fire first", func(t *testing.T) {
+		t.Parallel()
+		c := newSchedCopy(t)
+		sc := c.schedule(t, daily())
+		c.forcePast(t, sc)
+		rid := *c.sched(t, c.wsA.ID, c.src.ID).ReminderID
+		if fired, err := c.s.fireOneReminder(rid, copyNowTS); err != nil || fired == nil {
+			t.Fatalf("source fire = %+v %v", fired, err)
+		}
+		res := c.do(t, true)
+		if !res.Schedule.Carried {
+			t.Fatalf("report = %+v", res.Schedule)
+		}
+		if got := c.tick(t, "2026-10-29T12:01:00Z", c.wsB.ID); len(got) != 1 || *got[0].OccurrenceAt != "2026-10-28T09:00:00Z" {
+			t.Fatalf("destination fired %+v, want the carried occurrence once", got)
+		}
+		if got := c.tick(t, "2026-12-31T00:00:00Z", c.wsA.ID); len(got) != 0 {
+			t.Errorf("the source fired after the move: %+v", got)
+		}
+		if n := c.count(t, `SELECT COUNT(*) FROM event_outbox WHERE event_type = ?`, kernelevents.ItemReminderDue); n != 2 {
+			t.Errorf("%d reminder events, want one per door (the source's fire, the destination's catch-up)", n)
+		}
+	})
+}
+
+// D3 fold-in: cap_scan and cap_stall are deterministic work caps of the rule,
+// not load, so a retry cannot help: a MOVE is refused as not carried (409
+// schedule_not_carried) and a COPY skips and reports the reason. Only cap_time
+// is the 503. SEAM: carryLimits (serial, like the cap_time row).
+func TestCapScanIsNotCarriedNotBusy(t *testing.T) {
+	old := carryLimits
+	carryLimits.MaxScan = 1
+	defer func() { carryLimits = old }()
+	t.Run("copy skips", func(t *testing.T) {
+		c := newSchedCopy(t)
+		c.scheduleFuture(t, models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-01T09:00", Floating: true, Rrule: "FREQ=DAILY"})
+		res := c.do(t, false)
+		if res.Schedule.Carried || res.Schedule.Skipped != "timing:cap_scan" {
+			t.Fatalf("copy report = %+v, want skipped timing:cap_scan", res.Schedule)
+		}
+	})
+	t.Run("move is refused", func(t *testing.T) {
+		c := newSchedCopy(t)
+		sc := c.scheduleFuture(t, models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-01T09:00", Floating: true, Rrule: "FREQ=DAILY"})
+		itemsB := countItemsIn(t, c.s, c.wsB.ID)
+		req := c.req()
+		req.SourceItemID, req.ArchiveSource, req.scheduleNow = c.src.ID, true, copyNow
+		_, err := c.s.CopyItemAcrossWorkspaces(req)
+		var nc *ScheduleNotCarriedError
+		if !errors.As(err, &nc) || nc.Reason != "timing:cap_scan" {
+			t.Fatalf("err = %v, want ScheduleNotCarriedError timing:cap_scan", err)
+		}
+		var capErr *schedule.CapError
+		if errors.As(err, &capErr) {
+			t.Errorf("a deterministic cap surfaced as a retryable CapError: %v", err)
+		}
+		if got := countItemsIn(t, c.s, c.wsB.ID); got != itemsB {
+			t.Errorf("destination items %d -> %d", itemsB, got)
+		}
+		if a := c.sched(t, c.wsA.ID, c.src.ID); a == nil || a.EndedAt != nil {
+			t.Errorf("source schedule ended: %+v", a)
+		}
+		if n, _, _ := c.managed(t, sc.ID); n != 1 {
+			t.Errorf("source managed rows = %d", n)
+		}
+	})
+}
+
+// D3 r2-1: the live read of a floating schedule's zone is the item's assignee,
+// else its creator, in one statement. (The interleaving the single statement
+// closes, a reassignment between two reads, is not deterministic to test.)
+func TestScheduleRecipientZoneIsTheAssigneeElseTheCreator(t *testing.T) {
+	t.Parallel()
+	c := newSchedCopy(t)
+	mk := func(email, name, zone string) *models.User {
+		u := createTestUser(t, c.s, email, name, "password123")
+		if _, err := c.s.SetUserTimezoneIfUnset(u.ID, zone); err != nil {
+			t.Fatal(err)
+		}
+		return u
+	}
+	la := mk("r21-la@example.com", "r21la", "America/Los_Angeles")
+	tokyo := mk("r21-tk@example.com", "r21tk", "Asia/Tokyo")
+	zone := func() string {
+		loc, err := c.s.scheduleRecipientZone(c.s.db, c.src.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return loc.String()
+	}
+	if got := zone(); got != "UTC" {
+		t.Errorf("nobody: %s, want UTC", got)
+	}
+	c.exec(t, `UPDATE items SET created_by_user_id = ? WHERE id = ?`, tokyo.ID, c.src.ID)
+	if got := zone(); got != "Asia/Tokyo" {
+		t.Errorf("creator only: %s, want Asia/Tokyo", got)
+	}
+	c.exec(t, `UPDATE items SET assigned_user_id = ? WHERE id = ?`, la.ID, c.src.ID)
+	if got := zone(); got != "America/Los_Angeles" {
+		t.Errorf("assignee and creator: %s, want the assignee's America/Los_Angeles", got)
 	}
 }

@@ -250,16 +250,25 @@ func armSchedule(c *schedule.Compiled, occ schedule.Occurrence, lead int, overri
 // enqueueReminderNotificationTx uses, so whose zone and who is notified cannot
 // disagree. Unset, deleted or unloadable is UTC.
 func (s *Store) scheduleRecipientZone(q Queryer, itemID string) (*time.Location, error) {
-	var assignee, creator sql.NullString
-	err := q.QueryRow(s.q(`SELECT assigned_user_id, created_by_user_id FROM items WHERE id = ?`), itemID).Scan(&assignee, &creator)
+	// One statement: a reassignment committing between a read of the assignee
+	// and a read of the zone would arm in the former assignee's zone.
+	var tz sql.NullString
+	err := q.QueryRow(s.q(`
+		SELECT u.timezone FROM items i
+		LEFT JOIN users u ON u.id = COALESCE(NULLIF(i.assigned_user_id, ''), NULLIF(i.created_by_user_id, ''))
+		WHERE i.id = ?`), itemID).Scan(&tz)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("read schedule recipient: %w", err)
+		return nil, fmt.Errorf("read schedule recipient zone: %w", err)
 	}
-	return s.scheduleZoneOf(q, assignee.String, creator.String)
+	var stored *string
+	if tz.Valid {
+		stored = &tz.String
+	}
+	return usertz.Resolve(stored).Loc, nil
 }
 
 // scheduleZoneOf is the zone of the assignee, else of the creator: the one rule
-// scheduleRecipientZone and the cross-workspace copy and its preview share.
+// the cross-workspace copy and its preview use, which already hold both ids.
 func (s *Store) scheduleZoneOf(q Queryer, assignee, creator string) (*time.Location, error) {
 	uid := assignee
 	if uid == "" {

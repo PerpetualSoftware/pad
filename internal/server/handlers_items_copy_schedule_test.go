@@ -131,6 +131,13 @@ func TestWriteCopyErrorMapsTheScheduleRefusals(t *testing.T) {
 	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "schedule_not_carried") || !strings.Contains(rr.Body.String(), "timing:zone") {
 		t.Errorf("not carried: %d %s", rr.Code, rr.Body.String())
 	}
+	// cap_scan is a deterministic cap of the rule, not load: 409, never the 503.
+	rr = httptest.NewRecorder()
+	f.srv.writeCopyError(rr, r, &store.ScheduleNotCarriedError{Reason: "timing:cap_scan"})
+	if rr.Code != http.StatusConflict || rr.Header().Get("Retry-After") != "" ||
+		!strings.Contains(rr.Body.String(), "schedule_not_carried") || !strings.Contains(rr.Body.String(), "timing:cap_scan") {
+		t.Errorf("cap_scan: %d %q %s", rr.Code, rr.Header().Get("Retry-After"), rr.Body.String())
+	}
 }
 
 // D3-f: the preflight reads a floating schedule in the zone the COPY will: the
@@ -269,4 +276,170 @@ func mustSchedule(t *testing.T, f *copyPreflightFixture) *models.ItemSchedule {
 		t.Fatalf("CreateSchedule: %v", err)
 	}
 	return sc
+}
+
+// scheduleReq builds a schedule request the way the router would, for a handler
+// called directly.
+func (f *copyPreflightFixture) scheduleReq(method, itemSlug, suffix, body string) *http.Request {
+	r := httptest.NewRequest(method, "/api/v1/workspaces/"+f.wsA.Slug+"/items/"+itemSlug+"/schedule"+suffix, strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	ctx := WithCurrentUser(r.Context(), f.owner)
+	ctx = contextWithWorkspaceRoleForTest(ctx, "owner")
+	ctx = contextWithResolvedWorkspaceIDForTest(ctx, f.wsA.ID)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("slug", f.wsA.Slug)
+	rctx.URLParams.Add("itemSlug", itemSlug)
+	return r.WithContext(context.WithValue(ctx, chi.RouteCtxKey, rctx))
+}
+
+const (
+	createScheduleBody  = `{"kind":"check","dtstart":"2099-01-01T09:00","tz":"UTC","rrule":"FREQ=DAILY"}`
+	resolveScheduleBody = `{"occurrence_at":"2099-01-01T09:00:00Z","state":"done"}`
+	patchScheduleBody   = `{"dtstart":"2099-02-01T09:00"}`
+)
+
+// D3 fix1-e: a schedule write on an ARCHIVED item answers 409 archived and on a
+// missing one 404, for create, PATCH and resolve alike (the door's pre-check).
+func TestScheduleWritesAnswer409ForAnArchivedItemAnd404ForAMissingOne(t *testing.T) {
+	f := newCopyPreflightFixture(t)
+	mustSchedule(t, f)
+	if err := f.srv.store.DeleteItem(f.source.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, method, suffix, body string
+		h                          func(http.ResponseWriter, *http.Request)
+	}{
+		{"create", "POST", "", createScheduleBody, f.srv.handleCreateItemSchedule},
+		{"patch", "PATCH", "", patchScheduleBody, f.srv.handleUpdateItemSchedule},
+		{"resolve", "POST", "/resolve", resolveScheduleBody, f.srv.handleResolveItemSchedule},
+	} {
+		rr := httptest.NewRecorder()
+		tc.h(rr, f.scheduleReq(tc.method, f.source.Slug, tc.suffix, tc.body))
+		if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), `"archived"`) {
+			t.Errorf("%s on an archived item = %d %s, want 409 archived", tc.name, rr.Code, rr.Body.String())
+		}
+		rr = httptest.NewRecorder()
+		tc.h(rr, f.scheduleReq(tc.method, "no-such-item", tc.suffix, tc.body))
+		if rr.Code != http.StatusNotFound {
+			t.Errorf("%s on a missing item = %d %s, want 404", tc.name, rr.Code, rr.Body.String())
+		}
+	}
+}
+
+// D3 fix1-e, deterministic seam: the store answers ErrScheduleItemGone when the
+// item went away under the write. writeScheduleItemGone re-reads the item, so an
+// archived one is 409 and a truly gone one 404, and any other error is left to
+// the caller. The parked PG rows below drive the same answer through the real
+// handlers.
+func TestWriteScheduleItemGoneRereadsTheItem(t *testing.T) {
+	f := newCopyPreflightFixture(t)
+	if err := f.srv.store.DeleteItem(f.source.ID); err != nil {
+		t.Fatal(err)
+	}
+	rr := httptest.NewRecorder()
+	if !f.srv.writeScheduleItemGone(rr, f.scheduleReq("POST", f.source.Slug, "", ""), f.wsA.ID, store.ErrScheduleItemGone) ||
+		rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), `"archived"`) {
+		t.Errorf("archived: %d %s, want 409 archived", rr.Code, rr.Body.String())
+	}
+	rr = httptest.NewRecorder()
+	if !f.srv.writeScheduleItemGone(rr, f.scheduleReq("POST", "no-such-item", "", ""), f.wsA.ID, store.ErrScheduleItemGone) ||
+		rr.Code != http.StatusNotFound {
+		t.Errorf("gone: %d %s, want 404", rr.Code, rr.Body.String())
+	}
+	rr = httptest.NewRecorder()
+	if f.srv.writeScheduleItemGone(rr, f.scheduleReq("POST", f.source.Slug, "", ""), f.wsA.ID, errors.New("other")) {
+		t.Error("an unrelated error was handled")
+	}
+}
+
+// parkedScheduleWrite runs a move of f.source that holds at its commit, issues
+// the schedule write through the real handler, waits until it is parked on a
+// Postgres lock whose statement contains needle, lets the move commit, and
+// returns the write's answer.
+func (f *copyPreflightFixture) parkedScheduleWrite(h func(http.ResponseWriter, *http.Request), method, suffix, body, needle string) *httptest.ResponseRecorder {
+	t, srv := f.t, f.srv
+	t.Helper()
+	atHook, rel := make(chan struct{}), make(chan struct{})
+	moved := make(chan error, 1)
+	go func() {
+		_, err := srv.store.CopyItemAcrossWorkspaces(store.CrossWorkspaceCopyRequest{
+			SourceItemID: f.source.ID, TargetWorkspaceID: f.wsB.ID, TargetCollectionID: f.collB.ID,
+			FieldOverrides: map[string]any{"ticket": "T-1", "code": "123"},
+			Actor:          f.owner.ID, ArchiveSource: true,
+			AfterWriteTx: func(tx *sql.Tx, _ *store.CrossWorkspaceCopyResult) error {
+				close(atHook)
+				<-rel
+				return nil
+			},
+		})
+		moved <- err
+	}()
+	select {
+	case <-atHook:
+	case err := <-moved:
+		t.Fatalf("the move finished before the hook: %v", err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("the move never reached its commit")
+	}
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		rr := httptest.NewRecorder()
+		h(rr, f.scheduleReq(method, f.source.Slug, suffix, body))
+		answered <- rr
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiting bool
+		if err := srv.store.DB().QueryRow(`SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid <> pg_backend_pid()
+			AND datname = current_database() AND state = 'active' AND wait_event_type = 'Lock' AND query LIKE '%' || $1 || '%')`,
+			needle).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting {
+			break
+		}
+		select {
+		case rr := <-answered:
+			t.Fatalf("the write finished instead of parking: %d %s", rr.Code, rr.Body.String())
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the write never parked")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	close(rel)
+	if err := <-moved; err != nil {
+		t.Fatalf("move: %v", err)
+	}
+	return <-answered
+}
+
+// PG, fix1-e: a schedule CREATE and a RESOLVE that passed the door's pre-check,
+// then parked behind a move that archived the item, answer 409 archived (the
+// answer a later request gets), not 404.
+func TestPGParkedScheduleCreateAndResolveAnswer409WhenAMoveArchivesTheItem(t *testing.T) {
+	if os.Getenv("PAD_TEST_POSTGRES_URL") == "" {
+		t.Skip("PAD_TEST_POSTGRES_URL not set: row locks only exist on Postgres")
+	}
+	t.Run("create", func(t *testing.T) {
+		srv := New(storetest.NewPostgres(t))
+		t.Cleanup(srv.Stop)
+		f := newCopyPreflightFixtureOn(t, srv)
+		rr := f.parkedScheduleWrite(srv.handleCreateItemSchedule, "POST", "", createScheduleBody, "FOR SHARE")
+		if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), `"archived"`) {
+			t.Fatalf("parked create = %d %s, want 409 archived", rr.Code, rr.Body.String())
+		}
+	})
+	t.Run("resolve", func(t *testing.T) {
+		srv := New(storetest.NewPostgres(t))
+		t.Cleanup(srv.Stop)
+		f := newCopyPreflightFixtureOn(t, srv)
+		mustSchedule(t, f)
+		rr := f.parkedScheduleWrite(srv.handleResolveItemSchedule, "POST", "/resolve", resolveScheduleBody, "FOR NO KEY UPDATE")
+		if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), `"archived"`) {
+			t.Fatalf("parked resolve = %d %s, want 409 archived", rr.Code, rr.Body.String())
+		}
+	})
 }
