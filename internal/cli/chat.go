@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // ParseChatTarget accepts an owner-scoped conversation number (C12 or 12)
@@ -20,6 +22,28 @@ func ParseChatTarget(target string) (number int, agent string, err error) {
 		}
 	}
 	return 0, "", fmt.Errorf("invalid chat target %q: use C<n>, <n>, or @<name>", target)
+}
+
+// CheckAgentChatTarget refuses, before any request, an @<name> send target
+// that names a DM other than the calling agent's own. An agent has one chat,
+// with its owner, and the server enforces that on send
+// (handleEnsureChatConversation: agent_key must match the normalised
+// X-Pad-Agent); this only replaces that refusal with a message naming the
+// right target. Callers run it for send only: show, read and delete keep their
+// truthful "not found". It compares exactly as the server does: the caller is
+// normalised, the typed name is not, and case is not folded. A human (an empty
+// normalised caller) and C<n> / <n> targets pass. It echoes only the caller's
+// own name and the target typed, never another agent's.
+func CheckAgentChatTarget(callerAgent, target string) error {
+	caller := models.NormalizeAgentName(callerAgent)
+	if caller == "" {
+		return nil
+	}
+	_, agent, err := ParseChatTarget(target)
+	if err != nil || agent == "" || agent == caller {
+		return nil
+	}
+	return fmt.Errorf("as agent %q you have one chat, with your owner: use @%s or C<n> (pad chat list); @%s is another agent's DM", caller, caller, agent)
 }
 
 // ChatReadSeq returns the highest displayed sequence only when the page reaches

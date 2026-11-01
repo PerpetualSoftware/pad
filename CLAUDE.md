@@ -159,6 +159,7 @@ PAD_EMAIL_FROM_NAME=Pad                 # Sender display name (default: Pad)
 ## CLI
 
 Global chat targets are `C<n>`, `<n>`, or `@<name>` for your DM with an agent.
+An agent (one that sends X-Pad-Agent) has one chat, with its owner: for it `@<name>` is its OWN name, and `pad chat send @x` to another agent is refused before any request (show, read and delete keep their not_found).
 All chat commands support `--format json`.
 
 ```bash

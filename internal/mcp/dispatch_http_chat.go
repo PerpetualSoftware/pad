@@ -68,6 +68,13 @@ func (d *HTTPHandlerDispatcher) resolveChatTarget(ctx context.Context, key strin
 	if agent == "" {
 		return n, nil
 	}
+	// TASK-4186 PR C: send only (ensure); show, read and delete keep not_found.
+	// The name is the one the dispatcher sends as X-Pad-Agent.
+	if ensure {
+		if err := cli.CheckAgentChatTarget(d.Clients.resolveRemoteCaller(ctx).Name, target); err != nil {
+			return 0, validationFailedResult(key, err.Error(), "Use your own @<name> or C<n> from pad_chat list.")
+		}
+	}
 	res := d.chatRequest(ctx, key, user, http.MethodGet, "/api/v1/me/conversations", nil)
 	if res.IsError {
 		return 0, res
