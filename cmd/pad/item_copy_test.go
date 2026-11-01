@@ -1220,6 +1220,7 @@ func TestRunItemCopy_AmbiguousFailureNeverSuggestsARetry(t *testing.T) {
 	}
 	opts := baseOpts()
 	opts.ArchiveSource = true
+	opts.OpKey = "key-keyless"
 
 	var out, errOut bytes.Buffer
 	err := runItemCopy(opts, d.deps(), &out, &errOut)
@@ -1243,7 +1244,7 @@ func TestRunItemCopy_AmbiguousFailureNeverSuggestsARetry(t *testing.T) {
 		}
 	}
 	// The whole point: nothing here may read as "try again".
-	for _, forbidden := range []string{"retry the command", "run it again", "re-run the copy", "--op-key", "no idempotency key"} {
+	for _, forbidden := range []string{"retry the command", "run it again", "re-run the copy", "--op-key", "no idempotency key", "key-keyless"} {
 		if strings.Contains(strings.ToLower(stderr), forbidden) {
 			t.Errorf("ambiguous-failure message on a keyless server must not say %q\n--- stderr ---\n%s", forbidden, stderr)
 		}
@@ -1257,10 +1258,11 @@ func TestRunItemCopy_AmbiguousFailureNeverSuggestsARetry(t *testing.T) {
 	}
 }
 
-// TASK-4131: on a server that honours idempotency keys, the client has already
-// made its one keyed retry. Re-running with the SAME key is the safe recovery
-// (a stored answer replays; nothing is copied twice), so the message names the
-// key and the returned error carries it for main's BUG-3999 hint.
+// TASK-4131: on a server that honours idempotency keys a same-key request is
+// applied at most once, so the message names the key on exactly ONE line and
+// promises no replay (a re-run meets the preflight first, r1-M1). The error
+// is plain: main's BUG-3999 hint would print the key a second time with
+// different advice (r1-M2).
 func TestRunItemCopy_AmbiguousFailureOnAKeyedServerNamesTheKey(t *testing.T) {
 	d := &recordingDeps{
 		t:          t,
@@ -1269,6 +1271,7 @@ func TestRunItemCopy_AmbiguousFailureOnAKeyedServerNamesTheKey(t *testing.T) {
 		honorsKeys: true,
 	}
 	opts := baseOpts()
+	opts.ArchiveSource = true
 	opts.OpKey = "key-4131"
 
 	var out, errOut bytes.Buffer
@@ -1280,25 +1283,35 @@ func TestRunItemCopy_AmbiguousFailureOnAKeyedServerNamesTheKey(t *testing.T) {
 		t.Fatalf("one keyed copy call expected; got %+v", d.copyCalls)
 	}
 	stderr := errOut.String()
+	var keyLines []string
+	for _, line := range strings.Split(stderr, "\n") {
+		if strings.Contains(line, d.copyCalls[0].OpKey) {
+			keyLines = append(keyLines, line)
+		}
+	}
+	if len(keyLines) != 1 || !strings.Contains(keyLines[0], "--op-key "+d.copyCalls[0].OpKey) {
+		t.Errorf("exactly one stderr line must carry the sent key as --op-key; got %q\n--- stderr ---\n%s", keyLines, stderr)
+	}
 	for _, w := range []string{
 		"UNKNOWN outcome",
-		"honours idempotency keys",
-		"--op-key key-4131",
-		"within 24 hours",
+		"Check the destination first",
 		"pad item list tasks --workspace pad-web",
+		"within 24 hours",
+		"cannot make a",
+		"still in progress",
 	} {
 		if !strings.Contains(stderr, w) {
 			t.Errorf("keyed ambiguous-failure message missing %q\n--- stderr ---\n%s", w, stderr)
 		}
 	}
-	for _, forbidden := range []string{"no idempotency key", "DUPLICATE"} {
+	for _, forbidden := range []string{"no idempotency key", "DUPLICATE", "returns the first copy"} {
 		if strings.Contains(stderr, forbidden) {
 			t.Errorf("keyed ambiguous-failure message must not say %q\n--- stderr ---\n%s", forbidden, stderr)
 		}
 	}
 	var oe *cli.OpKeyError
-	if !errors.As(err, &oe) || oe.Key != "key-4131" {
-		t.Errorf("the returned error must carry the key for the BUG-3999 hint; got %v", err)
+	if errors.As(err, &oe) {
+		t.Errorf("the error must be plain, or main's hint prints the key again; got key %q", oe.Key)
 	}
 	if !strings.Contains(err.Error(), "check workspace") {
 		t.Errorf("the returned error should point at the destination; got %v", err)

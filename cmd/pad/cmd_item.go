@@ -2126,10 +2126,11 @@ Every copy carries an idempotency key: --op-key, or a fresh one per
 invocation. If the outcome is unknown (the connection dropped, say), the copy
 is retried ONCE with that key, and only when the server honours idempotency
 keys; such a server answers a same-key retry with the first copy instead of
-making another. Nothing else retries it. If the outcome is still unknown, the
-command says what to do: on a server that honours keys, re-run with the same
---op-key within 24 hours; on one that does not, check the destination
-workspace first, because a re-run there would create a duplicate item.
+making another. Nothing else retries it. If the outcome is still unknown,
+check the destination workspace first. On a server that honours keys the
+command prints the key, and a re-run with the same --op-key within 24 hours
+cannot make a second copy; on one that does not, a re-run would create a
+duplicate item.
 
 Items can be referenced by issue ID (e.g. TASK-5) or slug.`,
 		Example: `  pad item copy IDEA-12 --to-workspace pad-web --collection tasks --dry-run
@@ -2302,24 +2303,31 @@ func runItemCopy(opts itemCopyOptions, deps itemCopyDeps, stdout, stderr io.Writ
 			return nil
 		}
 		if cli.CopyOutcomeUnknown(err) {
-			// DR-13: never suggest a KEYLESS re-run. Only a server that honours
-			// idempotency keys makes a same-key re-run safe (TASK-4131): the
-			// client has already made its one keyed retry against it, and a
-			// stored answer replays instead of copying again.
+			// DR-13: never suggest a KEYLESS re-run (TASK-4131). Only a server
+			// that honours idempotency keys applies a same-key request at most
+			// once, so only there is a re-run with the key advised. The advice
+			// promises no replay: a re-run goes through the preflight first,
+			// which refuses (e.g. 409 archived for a landed move) rather than
+			// replaying. The probe here is a fresh one and may differ from the
+			// retry gate's; both answers are safe.
 			fmt.Fprintf(stderr, "The copy failed with an UNKNOWN outcome: %v\n\n", err)
 			fmt.Fprintf(stderr, "The item may or may not have been created in workspace %q.\n", targetWorkspace)
 			if opts.ArchiveSource {
 				fmt.Fprintf(stderr, "The source may or may not have been archived.\n")
 			}
+			// A plain error either way: the key line below is the copy's own,
+			// complete advice, so main's generic BUG-3999 hint must not repeat
+			// it (r1-M2).
 			unknown := fmt.Errorf("copy outcome unknown: check workspace %q before re-running", targetWorkspace)
 			if deps.ServerHonorsKeys != nil && deps.ServerHonorsKeys() {
-				fmt.Fprintf(stderr, "This server honours idempotency keys. Re-running the same command with\n")
-				fmt.Fprintf(stderr, "--op-key %s within 24 hours returns the first copy if it landed and makes\n", req.OpKey)
-				fmt.Fprintf(stderr, "it if it did not; it never makes a second one.\n\n")
-				fmt.Fprintf(stderr, "Or check the destination:\n")
-				fmt.Fprintf(stderr, "  pad item list %s --workspace %s\n", targetCollection, targetWorkspace)
-				// Carried for main's BUG-3999 hint, which names the key.
-				return &cli.OpKeyError{Key: req.OpKey, Err: unknown}
+				fmt.Fprintf(stderr, "Check the destination first:\n")
+				fmt.Fprintf(stderr, "  pad item list %s --workspace %s\n\n", targetCollection, targetWorkspace)
+				fmt.Fprintf(stderr, "If the copy is not there, re-run the same command with --op-key %s\n", req.OpKey)
+				fmt.Fprintf(stderr, "within 24 hours. This server applies a request with the same key at most\n")
+				fmt.Fprintf(stderr, "once in that window, so a re-run after a copy that did land cannot make a\n")
+				fmt.Fprintf(stderr, "second one. If the first attempt is still in progress, the re-run is\n")
+				fmt.Fprintf(stderr, "refused; wait and run it again with the same key.\n")
+				return unknown
 			}
 			fmt.Fprintf(stderr, "This server does not honour idempotency keys, so a re-run would create\n")
 			fmt.Fprintf(stderr, "a DUPLICATE item.\n\n")
