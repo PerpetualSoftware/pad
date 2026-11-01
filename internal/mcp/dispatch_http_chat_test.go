@@ -114,10 +114,8 @@ func TestChatRemoteStoredIdentity(t *testing.T) {
 	}
 	call(fmt.Sprintf(`{"action":"read","target":"%d","to":5}`, convs[0].Number))
 	assertRead(5)
-	// TASK-4186 PR C: for an agent, @missing is another agent's DM, refused
-	// before the lookup (it was not_found); the no-ensure property still holds.
 	raw = world.call("pad_chat", `{"action":"show","target":"@missing"}`, session)
-	if !strings.Contains(raw, `"isError":true`) || !strings.Contains(raw, `"code":"validation_failed"`) {
+	if !strings.Contains(raw, `"isError":true`) || !strings.Contains(raw, `"code":"not_found"`) {
 		t.Fatalf("unknown DM show: %s", raw)
 	}
 	if rows, err := s.ListConversations(models.ConversationActor{UserID: owner.ID}); err != nil || len(rows) != 1 {

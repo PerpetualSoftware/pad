@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -8,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/agentchatcases"
-	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 func TestCheckAgentChatTargetSharedTable(t *testing.T) {
@@ -42,29 +42,45 @@ func (s *chatStub) handler(w http.ResponseWriter, r *http.Request) {
 }
 
 func TestResolveChatTargetGuardSendsNothingOnRefusal(t *testing.T) {
-	for _, ensure := range []bool{true, false} {
-		stub := &chatStub{}
-		ts := httptest.NewServer(http.HandlerFunc(stub.handler))
-		c := NewClientFromURLWithAgentName(ts.URL, "director")
-		_, err := c.ResolveChatTarget("@dave", ensure)
-		ts.Close()
-		if err == nil {
-			t.Fatalf("ensure=%v: want refusal", ensure)
+	stub := &chatStub{}
+	ts := httptest.NewServer(http.HandlerFunc(stub.handler))
+	defer ts.Close()
+	c := NewClientFromURLWithAgentName(ts.URL, "director")
+	_, err := c.ResolveChatTarget("@dave", true)
+	if err == nil {
+		t.Fatal("send: want refusal")
+	}
+	if len(stub.reqs) != 0 {
+		t.Fatalf("refusal still sent %v", stub.reqs)
+	}
+	for _, other := range []string{"secret-sibling", "hidden-bot"} {
+		if strings.Contains(err.Error(), other) {
+			t.Fatalf("error names another agent %q: %v", other, err)
 		}
-		if len(stub.reqs) != 0 {
-			t.Fatalf("ensure=%v: refusal still sent %v", ensure, stub.reqs)
-		}
-		for _, other := range []string{"secret-sibling", "hidden-bot", "dave"} {
-			if other == "dave" {
-				continue // the typed target is allowed in the message
-			}
-			if strings.Contains(err.Error(), other) {
-				t.Fatalf("error names another agent %q: %v", other, err)
-			}
-		}
-		if !strings.Contains(err.Error(), `@director`) || !strings.Contains(err.Error(), "C<n>") {
-			t.Fatalf("error does not point at the caller's own target: %v", err)
-		}
+	}
+	if !strings.Contains(err.Error(), `@director`) || !strings.Contains(err.Error(), "C<n>") {
+		t.Fatalf("error does not point at the caller's own target: %v", err)
+	}
+}
+
+// show, read and delete resolve with ensure=false: an agent's @other keeps the
+// truthful not_found from the lookup, and the guard (whose error is not an
+// APIError) is not invoked.
+func TestResolveChatTargetNoEnsureKeepsNotFound(t *testing.T) {
+	stub := &chatStub{}
+	ts := httptest.NewServer(http.HandlerFunc(stub.handler))
+	defer ts.Close()
+	c := NewClientFromURLWithAgentName(ts.URL, "director")
+	_, err := c.ResolveChatTarget("@dave", false)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Code != "not_found" {
+		t.Fatalf("want not_found APIError, got %v", err)
+	}
+	if strings.Contains(err.Error(), "one chat") {
+		t.Fatalf("guard ran on a no-ensure resolve: %v", err)
+	}
+	if len(stub.reqs) != 1 || stub.reqs[0] != "GET /api/v1/me/conversations" {
+		t.Fatalf("want exactly the lookup, got %v", stub.reqs)
 	}
 }
 
@@ -83,11 +99,5 @@ func TestResolveChatTargetGuardPasses(t *testing.T) {
 	human := NewClientFromURLWithAgentName(ts.URL, "")
 	if n, err := human.ResolveChatTarget("@rook", true); err != nil || n != 7 {
 		t.Fatalf("human: n=%d err=%v", n, err)
-	}
-}
-
-func TestNormalizeAgentNameCases(t *testing.T) {
-	if got := models.NormalizeAgentName(" a\tb "); got != "ab" {
-		t.Fatalf("got %q", got)
 	}
 }

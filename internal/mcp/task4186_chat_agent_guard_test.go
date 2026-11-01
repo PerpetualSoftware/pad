@@ -32,8 +32,14 @@ func (c *chatRecorder) count() int {
 	return len(c.reqs)
 }
 
-// TASK-4186 PR C: the remote resolveChatTarget refuses another agent's @name
-// before any list or POST, and does not name any other agent.
+func (c *chatRecorder) since(n int) []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.reqs[n:]...)
+}
+
+// TASK-4186 PR C: the remote resolveChatTarget refuses send to another agent's @name
+// before any list or POST (show, read and delete keep not_found), and does not name any other agent.
 func TestChatRemoteAgentTargetGuard(t *testing.T) {
 	s := storetest.NewSQLite(t)
 	srv := padserver.New(s)
@@ -60,31 +66,51 @@ func TestChatRemoteAgentTargetGuard(t *testing.T) {
 	world := &bug2772World{t: t, s: s, srv: srv, owner: owner, url: ts.URL + "/mcp"}
 	session := world.initialize("director")
 
+	// Send is guarded: a validation_failed refusal from the guard's own text,
+	// and no request to /me/conversations.
+	sendArgs := `{"action":"send","target":"@dave","body":"hi"}`
+	before := rec.count()
+	raw := world.call("pad_chat", sendArgs, session)
+	if !strings.Contains(raw, `"isError":true`) {
+		t.Fatalf("send: want an error result, got %s", raw)
+	}
+	if !strings.Contains(raw, "validation") {
+		t.Fatalf("send: want a validation code, got %s", raw)
+	}
+	if !strings.Contains(raw, "one chat") {
+		t.Fatalf("send: refusal is not the guard's text: %s", raw)
+	}
+	if strings.Contains(raw, "secret-sibling") {
+		t.Fatalf("send: refusal names another agent: %s", raw)
+	}
+	if !strings.Contains(raw, "@director") {
+		t.Fatalf("send: refusal does not name the caller's own DM: %s", raw)
+	}
+	if n := rec.count(); n != before {
+		t.Fatalf("send: refusal still sent %v", rec.since(before))
+	}
+
+	// show, read and delete keep the truthful not_found: the guard is not
+	// invoked, so the lookup runs and finds no such DM.
 	for _, args := range []string{
-		`{"action":"send","target":"@dave","body":"hi"}`,
 		`{"action":"show","target":"@dave"}`,
 		`{"action":"read","target":"@dave","to":1}`,
 		`{"action":"delete","target":"@dave","seq":1}`,
 	} {
 		before := rec.count()
 		raw := world.call("pad_chat", args, session)
-		if !strings.Contains(raw, `"isError":true`) || !strings.Contains(raw, "validation") && !strings.Contains(raw, "one chat, with your owner") {
-			t.Fatalf("%s: want a validation refusal, got %s", args, raw)
+		if !strings.Contains(raw, `"isError":true`) || !strings.Contains(raw, `"code":"not_found"`) {
+			t.Fatalf("%s: want not_found, got %s", args, raw)
 		}
-		if strings.Contains(raw, "secret-sibling") {
-			t.Fatalf("%s: refusal names another agent: %s", args, raw)
+		if strings.Contains(raw, "one chat") || strings.Contains(raw, "secret-sibling") {
+			t.Fatalf("%s: guard text or another agent in result: %s", args, raw)
 		}
-		if !strings.Contains(raw, "@director") {
-			t.Fatalf("%s: refusal does not name the caller's own DM: %s", args, raw)
-		}
-		for _, r := range rec.reqs[before:] {
-			if strings.Contains(r, "/me/conversations") {
-				t.Fatalf("%s: refusal still sent %s", args, r)
-			}
+		if got := rec.since(before); len(got) != 1 || got[0] != "GET /api/v1/me/conversations" {
+			t.Fatalf("%s: want exactly the lookup, got %v", args, got)
 		}
 	}
 
-	raw := world.call("pad_chat", `{"action":"send","target":"@director","body":"hello"}`, session)
+	raw = world.call("pad_chat", `{"action":"send","target":"@director","body":"hello"}`, session)
 	if strings.Contains(raw, `"isError":true`) {
 		t.Fatalf("own DM send refused: %s", raw)
 	}

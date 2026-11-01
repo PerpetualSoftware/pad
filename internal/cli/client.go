@@ -3601,8 +3601,12 @@ func (c *Client) ResolveChatTarget(target string, ensure bool) (int, error) {
 	if err != nil || agent == "" {
 		return n, err
 	}
-	if err := CheckAgentChatTarget(c.agentName, target); err != nil {
-		return 0, err
+	// Send only (ensure): show, read and delete keep the truthful not_found
+	// for an agent's @other, since they never create or message a DM.
+	if ensure {
+		if err := CheckAgentChatTarget(c.agentName, target); err != nil {
+			return 0, err
+		}
 	}
 	raw, err := c.ListChatConversations()
 	if err != nil {
