@@ -1,6 +1,8 @@
 package render
 
 import (
+	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 )
@@ -186,7 +188,7 @@ func TestRenderAttachmentChip(t *testing.T) {
 func TestRenderAttachmentChip_DisplayTextOverridesFilename(t *testing.T) {
 	meta := &AttachmentMeta{ID: "x", MimeType: "application/zip", Filename: "release.zip", SizeBytes: 100}
 	got := RenderAttachmentChip(meta, "Latest release", "ws")
-	if !strings.Contains(got, ">Latest release</span>") {
+	if !strings.Contains(got, "><bdi>Latest release</bdi></span>") {
 		t.Errorf("expected display text override, got: %s", got)
 	}
 	// download attribute always uses canonical filename, not the display text.
@@ -423,14 +425,14 @@ func TestResolveAttachmentReferences_EscapedBrackets(t *testing.T) {
 			in:   `[A \] B](pad-attachment:doc-1)`,
 			wantSubs: []string{
 				`data-attachment-id="doc-1"`,
-				`>A ] B</span>`,
+				`><bdi>A ] B</bdi></span>`,
 			},
 		},
 		{
 			name: "escaped backslash and bracket combo",
 			in:   `[a \\ b \[ c \] d](pad-attachment:doc-1)`,
 			wantSubs: []string{
-				`>a \ b [ c ] d</span>`,
+				`><bdi>a \ b [ c ] d</bdi></span>`,
 			},
 		},
 	}
@@ -509,5 +511,42 @@ func TestExtractAttachmentRefs(t *testing.T) {
 func TestExtractAttachmentRefs_None(t *testing.T) {
 	if got := ExtractAttachmentRefs("no attachments here"); got != nil {
 		t.Errorf("expected nil for content with no refs, got %v", got)
+	}
+}
+
+// fileChipParityFixture is shared with web/src/lib/markdown/fileChipParity.test.ts:
+// both renderers must emit byte-identical chips (TASK-4195).
+type fileChipParityFixture struct {
+	Cases []struct {
+		Name      string `json:"name"`
+		Workspace string `json:"workspace"`
+		Meta      struct {
+			ID        string `json:"id"`
+			MimeType  string `json:"mime_type"`
+			Filename  string `json:"filename"`
+			SizeBytes int64  `json:"size_bytes"`
+		} `json:"meta"`
+		DisplayText string `json:"display_text"`
+		HTML        string `json:"html"`
+	} `json:"cases"`
+}
+
+func TestRenderAttachmentChip_ParityWithTypeScript(t *testing.T) {
+	raw, err := os.ReadFile("../../../web/src/lib/markdown/testdata/file-chip-parity.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fx fileChipParityFixture
+	if err := json.Unmarshal(raw, &fx); err != nil {
+		t.Fatal(err)
+	}
+	if len(fx.Cases) == 0 {
+		t.Fatal("fixture has no cases")
+	}
+	for _, c := range fx.Cases {
+		meta := &AttachmentMeta{ID: c.Meta.ID, MimeType: c.Meta.MimeType, Filename: c.Meta.Filename, SizeBytes: c.Meta.SizeBytes}
+		if got := RenderAttachmentChip(meta, c.DisplayText, c.Workspace); got != c.HTML {
+			t.Errorf("%s:\n got  %s\n want %s", c.Name, got, c.HTML)
+		}
 	}
 }

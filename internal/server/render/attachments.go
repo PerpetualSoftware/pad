@@ -235,7 +235,7 @@ func RenderAttachmentChip(meta *AttachmentMeta, displayText, workspaceSlug strin
 		sizeSpan = ` <span class="file-chip-size">· ` + html.EscapeString(size) + `</span>`
 	}
 	return fmt.Sprintf(
-		`<a class="file-chip" href="%s" data-attachment-id="%s" download="%s" target="_blank" rel="noopener noreferrer"><span class="file-chip-icon" aria-hidden="true">📄</span><span class="file-chip-name">%s</span>%s</a>`,
+		`<a class="file-chip" href="%s" data-attachment-id="%s" download="%s" target="_blank" rel="noopener noreferrer"><span class="file-chip-icon" aria-hidden="true">📄</span><span class="file-chip-name"><bdi>%s</bdi></span>%s</a>`,
 		html.EscapeString(href),
 		html.EscapeString(meta.ID),
 		html.EscapeString(meta.Filename),

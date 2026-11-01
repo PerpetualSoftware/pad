@@ -4,6 +4,10 @@
 // lightbox, chip); this file covers the helpers and the string/markup sites
 // that need no component mount.
 import { describe, it, expect } from 'vitest';
+import { Editor } from '@tiptap/core';
+import StarterKit from '@tiptap/starter-kit';
+import { Markdown } from 'tiptap-markdown';
+import { AttachmentImage } from '$lib/components/editor/attachment-image';
 import {
 	displayFilename,
 	displayFilenameIsolated,
@@ -105,11 +109,51 @@ describe('markdown file chip (site 6, 12)', () => {
 		});
 		expectIsolated(mount(sanitizeMarkdownHtml(html)), EVIL_NAME);
 	});
-	it('isolates only the filename FALLBACK of an image alt, never authored alt', () => {
+	it('never isolates an image alt: the filename fallback and authored alt are both data', () => {
 		const img = { ...meta(EVIL_NAME), mime_type: 'image/png', width: 1, height: 1 };
-		expectFsiPdi(mount(renderAttachmentImage(img, '', 'ws')).querySelector('img')!.getAttribute('alt'), EVIL_NAME);
+		const fallback = mount(renderAttachmentImage(img, '', 'ws')).querySelector('img')!;
+		expect(fallback.getAttribute('alt')).toBe(EVIL_NAME);
+		expectNoIsolates(fallback.getAttribute('alt'));
 		const authored = mount(renderAttachmentImage(img, 'my alt', 'ws')).querySelector('img')!;
 		expect(authored.getAttribute('alt')).toBe('my alt');
+	});
+	it('an empty authored alt AND an empty filename renders alt="" with no isolates', () => {
+		const img = { ...meta(''), mime_type: 'image/png', width: 1, height: 1 };
+		const el = mount(renderAttachmentImage(img, '', 'ws')).querySelector('img')!;
+		expect(el.getAttribute('alt')).toBe('');
+		expectNoIsolates(el.outerHTML);
+	});
+});
+
+describe('image alt round trip through the editor (site 12)', () => {
+	function roundTrip(html: string): { alt: string | null; markdown: string } {
+		const editor = new Editor({
+			element: null,
+			extensions: [
+				StarterKit,
+				Markdown.configure({ html: true }),
+				AttachmentImage.configure({ workspaceSlug: 'ws', getDownloadUrl: (u: string) => `/a/${u}` })
+			],
+			content: `<p>${html}</p>`
+		});
+		let alt: string | null = null;
+		editor.state.doc.descendants((n) => {
+			if (n.type.name === 'attachmentImage') alt = n.attrs.alt as string | null;
+		});
+		const markdown = (editor.storage as { markdown: { getMarkdown(): string } }).markdown.getMarkdown();
+		editor.destroy();
+		return { alt, markdown };
+	}
+	const img = { ...meta('photo.png'), mime_type: 'image/png', width: 1, height: 1 };
+	it.each([
+		['the filename fallback', '', 'photo.png'],
+		['authored alt', 'my alt', 'my alt']
+	])('%s comes back byte-identical, with no isolates', (_n, alt, want) => {
+		const out = roundTrip(renderAttachmentImage(img, alt, 'ws'));
+		expect(out.alt).toBe(want);
+		expectNoIsolates(out.alt);
+		expectNoIsolates(out.markdown);
+		expect(out.markdown).toBe(`![${want}](pad-attachment:${ID})`);
 	});
 });
 

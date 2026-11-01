@@ -1,0 +1,26 @@
+{
+  "_comment": "Shared by internal/server/render (Go) and web/src/lib/markdown (vitest): both renderers must emit exactly `html` for each case, so drift on either side fails a test. Bidi controls are JSON escapes only.",
+  "cases": [
+    {
+      "name": "plain filename with size",
+      "workspace": "acme",
+      "meta": {"id": "abc-123", "mime_type": "application/pdf", "filename": "report.pdf", "size_bytes": 5242880},
+      "display_text": "",
+      "html": "<a class=\"file-chip\" href=\"/api/v1/workspaces/acme/attachments/abc-123\" data-attachment-id=\"abc-123\" download=\"report.pdf\" target=\"_blank\" rel=\"noopener noreferrer\"><span class=\"file-chip-icon\" aria-hidden=\"true\">📄</span><span class=\"file-chip-name\"><bdi>report.pdf</bdi></span> <span class=\"file-chip-size\">· 5.0 MB</span></a>"
+    },
+    {
+      "name": "filename carrying a right-to-left override, and markup in a size-free label",
+      "workspace": "ws",
+      "meta": {"id": "id-1", "mime_type": "application/pdf", "filename": "evil\u202egnp.exe", "size_bytes": -1},
+      "display_text": "a<b>&c",
+      "html": "<a class=\"file-chip\" href=\"/api/v1/workspaces/ws/attachments/id-1\" data-attachment-id=\"id-1\" download=\"evil\u202egnp.exe\" target=\"_blank\" rel=\"noopener noreferrer\"><span class=\"file-chip-icon\" aria-hidden=\"true\">📄</span><span class=\"file-chip-name\"><bdi>a&lt;b&gt;&amp;c</bdi></span></a>"
+    },
+    {
+      "name": "filename label with override",
+      "workspace": "ws",
+      "meta": {"id": "id-2", "mime_type": "application/pdf", "filename": "evil\u202egnp.exe", "size_bytes": 10},
+      "display_text": "",
+      "html": "<a class=\"file-chip\" href=\"/api/v1/workspaces/ws/attachments/id-2\" data-attachment-id=\"id-2\" download=\"evil\u202egnp.exe\" target=\"_blank\" rel=\"noopener noreferrer\"><span class=\"file-chip-icon\" aria-hidden=\"true\">📄</span><span class=\"file-chip-name\"><bdi>evil\u202egnp.exe</bdi></span> <span class=\"file-chip-size\">· 10 B</span></a>"
+    }
+  ]
+}

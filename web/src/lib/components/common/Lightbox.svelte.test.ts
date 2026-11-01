@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import Lightbox from './Lightbox.svelte';
+import { renderAttachmentImage } from '$lib/markdown/attachments';
 import {
 	EVIL_NAME,
 	FSI,
@@ -4551,6 +4552,21 @@ describe('Lightbox — metadata header (TASK-2475)', () => {
 
 	it('falls back to the generic label when filename AND alt are blank', async () => {
 		mountViewer({ images: [metaImage({ filename: null, alt: '' })] });
+		await settleAsync();
+		expect(metaName()).toBe('Attachment');
+	});
+
+	it('an image rendered with empty alt and empty filename seeds the generic label, not isolates', async () => {
+		// The timeline seeds this image from the rendered <img>'s alt attribute (viewerImageFor).
+		const d = document.createElement('div');
+		d.innerHTML = renderAttachmentImage(
+			{ id: 'a1', mime_type: 'image/png', filename: '', size_bytes: 1, width: 1, height: 1 },
+			'',
+			'ws'
+		);
+		const seededAlt = d.querySelector('img')!.getAttribute('alt') ?? '';
+		expect(seededAlt).toBe('');
+		mountViewer({ images: [metaImage({ filename: null, alt: seededAlt })] });
 		await settleAsync();
 		expect(metaName()).toBe('Attachment');
 	});

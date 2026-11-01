@@ -235,9 +235,9 @@ export function renderAttachmentImage(
 	const src = urlBuilder
 		? urlBuilder(meta.id, variant)
 		: attachmentDownloadUrl(workspaceSlug, meta.id, variant);
-	// Only the filename FALLBACK is isolated; user-authored alt text stays as written.
-	// (U+2068 / U+2069 written inline: this module deliberately does not import display.ts.)
-	const altText = alt && alt.trim() !== '' ? alt : `\u2068${meta.filename}\u2069`;
+	// alt is DATA, never isolated: ItemTimeline seeds the viewer from getAttribute('alt')
+	// and the editor's image parseHTML reads it back into node.attrs.alt.
+	const altText = alt && alt.trim() !== '' ? alt : meta.filename;
 	const sizeAttrs =
 		meta.width && meta.height && meta.width > 0 && meta.height > 0
 			? ` width="${meta.width}" height="${meta.height}"`
