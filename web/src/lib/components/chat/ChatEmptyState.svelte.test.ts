@@ -301,7 +301,8 @@ describe('ChatEmptyState', () => {
 			await flush();
 			// The second click's reset of status ('') and the failure text must reach the DOM
 			// as separate changes; the click's reset provides the '' (announce() no longer
-			// clears). The sync-throw path, where the tick matters, is pinned below.
+			// clears), and announce()'s tick keeps it from batching with the failure text.
+			// The sync-throw path, where the tick matters, is pinned below.
 			btn.click();
 			await flush();
 			mo.disconnect();
