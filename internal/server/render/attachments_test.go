@@ -514,39 +514,70 @@ func TestExtractAttachmentRefs_None(t *testing.T) {
 	}
 }
 
-// fileChipParityFixture is shared with web/src/lib/markdown/fileChipParity.test.ts:
-// both renderers must emit byte-identical chips (TASK-4195).
-type fileChipParityFixture struct {
-	Cases []struct {
-		Name      string `json:"name"`
-		Workspace string `json:"workspace"`
-		Meta      struct {
-			ID        string `json:"id"`
-			MimeType  string `json:"mime_type"`
-			Filename  string `json:"filename"`
-			SizeBytes int64  `json:"size_bytes"`
-		} `json:"meta"`
-		DisplayText string `json:"display_text"`
-		HTML        string `json:"html"`
-	} `json:"cases"`
+// attachmentParityFixture is shared with web/src/lib/markdown/fileChipParity.test.ts:
+// the Go and TS renderers must emit byte-identical chips, images and missing
+// placeholders (TASK-4195).
+type attachmentParityMeta struct {
+	ID        string `json:"id"`
+	MimeType  string `json:"mime_type"`
+	Filename  string `json:"filename"`
+	SizeBytes int64  `json:"size_bytes"`
+	Width     *int   `json:"width"`
+	Height    *int   `json:"height"`
 }
 
-func TestRenderAttachmentChip_ParityWithTypeScript(t *testing.T) {
+func (m attachmentParityMeta) toMeta() *AttachmentMeta {
+	return &AttachmentMeta{ID: m.ID, MimeType: m.MimeType, Filename: m.Filename, SizeBytes: m.SizeBytes, Width: m.Width, Height: m.Height}
+}
+
+type attachmentParityFixture struct {
+	Chips []struct {
+		Name        string               `json:"name"`
+		Workspace   string               `json:"workspace"`
+		Meta        attachmentParityMeta `json:"meta"`
+		DisplayText string               `json:"display_text"`
+		HTML        string               `json:"html"`
+	} `json:"chips"`
+	Images []struct {
+		Name      string               `json:"name"`
+		Workspace string               `json:"workspace"`
+		Meta      attachmentParityMeta `json:"meta"`
+		Alt       string               `json:"alt"`
+		HTML      string               `json:"html"`
+	} `json:"images"`
+	Missing []struct {
+		Name string `json:"name"`
+		UUID string `json:"uuid"`
+		Alt  string `json:"alt"`
+		HTML string `json:"html"`
+	} `json:"missing"`
+}
+
+func TestRenderAttachment_ParityWithTypeScript(t *testing.T) {
 	raw, err := os.ReadFile("../../../web/src/lib/markdown/testdata/file-chip-parity.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var fx fileChipParityFixture
+	var fx attachmentParityFixture
 	if err := json.Unmarshal(raw, &fx); err != nil {
 		t.Fatal(err)
 	}
-	if len(fx.Cases) == 0 {
-		t.Fatal("fixture has no cases")
+	if len(fx.Chips) == 0 || len(fx.Images) == 0 || len(fx.Missing) == 0 {
+		t.Fatalf("fixture has an empty case array: chips=%d images=%d missing=%d", len(fx.Chips), len(fx.Images), len(fx.Missing))
 	}
-	for _, c := range fx.Cases {
-		meta := &AttachmentMeta{ID: c.Meta.ID, MimeType: c.Meta.MimeType, Filename: c.Meta.Filename, SizeBytes: c.Meta.SizeBytes}
-		if got := RenderAttachmentChip(meta, c.DisplayText, c.Workspace); got != c.HTML {
-			t.Errorf("%s:\n got  %s\n want %s", c.Name, got, c.HTML)
+	for _, c := range fx.Chips {
+		if got := RenderAttachmentChip(c.Meta.toMeta(), c.DisplayText, c.Workspace); got != c.HTML {
+			t.Errorf("chip %s:\n got  %s\n want %s", c.Name, got, c.HTML)
+		}
+	}
+	for _, c := range fx.Images {
+		if got := RenderAttachmentImage(c.Meta.toMeta(), c.Alt, c.Workspace); got != c.HTML {
+			t.Errorf("image %s:\n got  %s\n want %s", c.Name, got, c.HTML)
+		}
+	}
+	for _, c := range fx.Missing {
+		if got := RenderAttachmentMissing(c.UUID, c.Alt); got != c.HTML {
+			t.Errorf("missing %s:\n got  %s\n want %s", c.Name, got, c.HTML)
 		}
 	}
 }

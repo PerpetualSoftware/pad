@@ -12,7 +12,6 @@ package render
 
 import (
 	"fmt"
-	"html"
 	"net/url"
 	"regexp"
 	"strings"
@@ -158,6 +157,27 @@ func ShouldEmbedAsImage(meta *AttachmentMeta, wantVariant string) bool {
 	return imgPaintableMimes[mime]
 }
 
+// htmlEscaper escapes exactly the five characters the TS escapeHtml in
+// web/src/lib/markdown/attachments.ts does, with the same replacements. It is
+// a single-pass Replacer, so an emitted entity is never re-escaped (the same
+// result as the TS chain that handles `&` first).
+var htmlEscaper = strings.NewReplacer(
+	"&", "&amp;",
+	"<", "&lt;",
+	">", "&gt;",
+	`"`, "&quot;",
+	"'", "&#39;",
+)
+
+// escapeHTML exists to keep byte parity with escapeHtml in
+// web/src/lib/markdown/attachments.ts (TASK-4195 r2-M1). html.EscapeString
+// emits `&#34;` for a double quote where the TS side emits `&quot;`, so the
+// two renderers disagreed on any name or alt containing one. The shared
+// fixture web/src/lib/markdown/testdata/file-chip-parity.json pins the output.
+func escapeHTML(s string) string {
+	return htmlEscaper.Replace(s)
+}
+
 // FormatAttachmentSize returns a human-readable byte count ("832 B",
 // "1.2 MB", "5 GB"). Negative sizes return "" — that's a corrupt-row
 // signal, not something to print to the user.
@@ -206,9 +226,9 @@ func RenderAttachmentImage(meta *AttachmentMeta, alt, workspaceSlug string) stri
 		sizeAttrs = fmt.Sprintf(` width="%d" height="%d"`, *meta.Width, *meta.Height)
 	}
 	return fmt.Sprintf(`<img src="%s" data-attachment-id="%s" alt="%s"%s>`,
-		html.EscapeString(src),
-		html.EscapeString(meta.ID),
-		html.EscapeString(altText),
+		escapeHTML(src),
+		escapeHTML(meta.ID),
+		escapeHTML(altText),
 		sizeAttrs,
 	)
 }
@@ -232,14 +252,14 @@ func RenderAttachmentChip(meta *AttachmentMeta, displayText, workspaceSlug strin
 	size := FormatAttachmentSize(meta.SizeBytes)
 	sizeSpan := ""
 	if size != "" {
-		sizeSpan = ` <span class="file-chip-size">· ` + html.EscapeString(size) + `</span>`
+		sizeSpan = ` <span class="file-chip-size">· ` + escapeHTML(size) + `</span>`
 	}
 	return fmt.Sprintf(
 		`<a class="file-chip" href="%s" data-attachment-id="%s" download="%s" target="_blank" rel="noopener noreferrer"><span class="file-chip-icon" aria-hidden="true">📄</span><span class="file-chip-name"><bdi>%s</bdi></span>%s</a>`,
-		html.EscapeString(href),
-		html.EscapeString(meta.ID),
-		html.EscapeString(meta.Filename),
-		html.EscapeString(label),
+		escapeHTML(href),
+		escapeHTML(meta.ID),
+		escapeHTML(meta.Filename),
+		escapeHTML(label),
 		sizeSpan,
 	)
 }
@@ -256,8 +276,8 @@ func RenderAttachmentMissing(uuid, alt string) string {
 	}
 	return fmt.Sprintf(
 		`<span class="attachment-missing" data-attachment-id="%s" title="This attachment is missing or has been deleted">📎 %s</span>`,
-		html.EscapeString(uuid),
-		html.EscapeString(safeAlt),
+		escapeHTML(uuid),
+		escapeHTML(safeAlt),
 	)
 }
 
