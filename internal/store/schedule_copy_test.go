@@ -872,10 +872,81 @@ func TestPGFireVersusMove(t *testing.T) {
 	})
 }
 
-// PG (r1-2): a timing edit that re-arms the managed reminder commits while a move
-// is parked on the schedule row. The move must read the re-armed reminder, not
-// the pre-wait snapshot, so it does NOT catch up the occurrence in B.
-func TestPGMoveParkedBehindAReArmingPatchDoesNotCatchUp(t *testing.T) {
+// PG (r1-2, the honest red): a FLOATING schedule whose recipient zone the move
+// changes. The source assignee (Tokyo) is not a member of B, so carryAssigneeTx
+// drops it and B's recipient is the copier (Los Angeles). A timing edit re-arms
+// the fired source to its next Tokyo occurrence (the 30th) while the move is
+// parked on the schedule row. Reading the re-armed fired_at, the move arms B
+// fresh in Los Angeles: 12:00Z is 05:00 there, so the 29th's 09:00 is still
+// ahead. A stale fired_at would take the catch-up branch and carry Tokyo's 30th.
+func TestPGMoveParkedBehindAReArmingPatchFollowsTheNewRecipientZone(t *testing.T) {
+	if os.Getenv("PAD_TEST_POSTGRES_URL") == "" {
+		t.Skip("PAD_TEST_POSTGRES_URL not set: row locks only exist on Postgres")
+	}
+	t.Parallel()
+	c := newSchedCopy(t)
+	tokyo := createTestUser(t, c.s, "d3-r12-tokyo@example.com", "tokyo", "password123")
+	la := createTestUser(t, c.s, "d3-r12-la@example.com", "la", "password123")
+	for _, u := range []struct{ id, tz, ws string }{{tokyo.ID, "Asia/Tokyo", c.wsA.ID}, {la.ID, "America/Los_Angeles", c.wsB.ID}} {
+		if _, err := c.s.SetUserTimezoneIfUnset(u.id, u.tz); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.s.AddWorkspaceMember(u.ws, u.id, "editor"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c.exec(t, `UPDATE items SET assigned_user_id = ? WHERE id = ?`, tokyo.ID, c.src.ID)
+	sc := c.schedule(t, models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-01T09:00", Floating: true, Rrule: "FREQ=DAILY"})
+	// Fired for the 29th in Tokyo (09:00 JST = 00:00Z).
+	c.exec(t, `UPDATE item_schedules SET next_at = ?, next_wall = ? WHERE id = ?`, "2026-10-29T00:00:00Z", "2026-10-29T09:00:00", sc.ID)
+	c.exec(t, `UPDATE item_reminders SET fired_at = ?, remind_at = ? WHERE schedule_id = ?`, "2026-10-29T00:00:00Z", "2026-10-28T23:30:00Z", sc.ID)
+
+	tx, err := c.s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(c.s.q(`SELECT 1 FROM item_schedules WHERE id = ? FOR UPDATE`), sc.ID); err != nil {
+		t.Fatal(err)
+	}
+	req := c.req()
+	req.Actor, req.ActorUserID = la.ID, la.ID // a signed-in copier: both name the account
+	req.SourceItemID, req.ArchiveSource, req.scheduleNow = c.src.ID, true, copyNow
+	moved := make(chan error, 1)
+	var res *CrossWorkspaceCopyResult
+	go func() {
+		var err error
+		res, err = c.s.CopyItemAcrossWorkspaces(req)
+		moved <- err
+	}()
+	waitForLockWait(t, c.s, "FOR UPDATE", moved)
+	// Re-armed to Tokyo's next occurrence, the 30th (00:00Z), which is after now.
+	if _, err := tx.Exec(c.s.q(`UPDATE item_reminders SET fired_at = NULL, remind_at = ? WHERE schedule_id = ?`), "2026-10-29T23:30:00Z", sc.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(c.s.q(`UPDATE item_schedules SET next_at = ?, next_wall = ? WHERE id = ?`), "2026-10-30T00:00:00Z", "2026-10-30T09:00:00", sc.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-moved; err != nil {
+		t.Fatalf("move: %v", err)
+	}
+	if !res.Schedule.Carried || res.Item.AssignedUserID != nil {
+		t.Fatalf("report = %+v, assignee = %v; want carried and the Tokyo assignee dropped", res.Schedule, res.Item.AssignedUserID)
+	}
+	if b := c.sched(t, c.wsB.ID, res.Item.ID); b == nil || b.NextWall == nil || *b.NextWall != "2026-10-29T09:00:00" {
+		t.Fatalf("destination next_wall = %v next_at = %v, want the 29th (09:00 in Los Angeles is still ahead)", derefStr(b.NextWall), derefStr(b.NextAt))
+	}
+}
+
+// PG (r1-2): a timing edit that re-arms the managed reminder to a FUTURE
+// occurrence commits while a move is parked on the schedule row. The move must
+// read the re-armed reminder, not the pre-wait snapshot's fired_at, so B is armed
+// at that future occurrence and fires nothing now. (Re-armed to a DUE instant,
+// the amended Q3 would carry and catch it up; that is the due-at-move rows' case.)
+func TestPGMoveParkedBehindAPatchReArmingToTheFutureDoesNotCatchUp(t *testing.T) {
 	if os.Getenv("PAD_TEST_POSTGRES_URL") == "" {
 		t.Skip("PAD_TEST_POSTGRES_URL not set: row locks only exist on Postgres")
 	}
@@ -904,10 +975,10 @@ func TestPGMoveParkedBehindAReArmingPatchDoesNotCatchUp(t *testing.T) {
 		moved <- err
 	}()
 	waitForLockWait(t, c.s, "FOR UPDATE", moved)
-	if _, err := tx.Exec(c.s.q(`UPDATE item_reminders SET fired_at = NULL, remind_at = ? WHERE schedule_id = ?`), "2026-10-29T09:30:00Z", sc.ID); err != nil {
+	if _, err := tx.Exec(c.s.q(`UPDATE item_reminders SET fired_at = NULL, remind_at = ? WHERE schedule_id = ?`), "2026-10-30T08:30:00Z", sc.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tx.Exec(c.s.q(`UPDATE item_schedules SET next_at = ?, next_wall = ? WHERE id = ?`), "2026-10-29T10:00:00Z", "2026-10-29T10:00:00", sc.ID); err != nil {
+	if _, err := tx.Exec(c.s.q(`UPDATE item_schedules SET next_at = ?, next_wall = ? WHERE id = ?`), "2026-10-30T09:00:00Z", "2026-10-30T09:00:00", sc.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -919,8 +990,8 @@ func TestPGMoveParkedBehindAReArmingPatchDoesNotCatchUp(t *testing.T) {
 	if !res.Schedule.Carried {
 		t.Fatalf("report = %+v", res.Schedule)
 	}
-	// Armed fresh at the first occurrence after now (the 30th), not the re-armed
-	// 10:00 on the 29th as a fired catch-up.
+	// Armed at the re-armed future occurrence (the 30th, after copyNow), not caught
+	// up as fired from the pre-wait snapshot.
 	if b := c.sched(t, c.wsB.ID, res.Item.ID); b == nil || b.NextWall == nil || *b.NextWall != "2026-10-30T09:00:00" {
 		t.Fatalf("destination schedule = %+v, want the 30th", b)
 	}
