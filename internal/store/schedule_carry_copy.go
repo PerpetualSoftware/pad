@@ -31,6 +31,11 @@ import (
 // is not carried is one of two kinds:
 //   - TERMINAL ("ended", "exhausted"): nothing is left to fire, so a copy skips
 //     it and a move ends the source (if it is not already) and reports it.
+//     "exhausted" on a move is terminal only when the source's own outstanding
+//     occurrence (read in the source recipient's zone) is absent or not after
+//     now; if the destination zone finds nothing after now but the source still
+//     has a future occurrence, that is "exhausted_in_destination_zone", which is
+//     NOT terminal: the move is refused. A copy reports it as a skip.
 //   - anything else (a rule that no longer compiles, a zone, any validation
 //     reason): the schedule is live and the destination cannot take it. A copy
 //     skips and reports; a MOVE is refused (ScheduleNotCarriedError) and rolls
@@ -67,6 +72,11 @@ func (e *ScheduleNotCarriedError) Error() string {
 // build one from the same two facts, the carried assignee and the copier.
 type scheduleRecipient struct{ assignee, creator string }
 
+// reasonExhaustedInDestZone is the non-terminal "exhausted": the destination
+// zone sees no occurrence after now, but the source's outstanding one is still
+// ahead in its own zone. A copy reports it as a skip; a move is refused.
+const reasonExhaustedInDestZone = "exhausted_in_destination_zone"
+
 // scheduleCarryTerminal reports a skip reason that means the schedule has
 // nothing left to fire.
 func scheduleCarryTerminal(reason string) bool { return reason == "ended" || reason == "exhausted" }
@@ -85,8 +95,10 @@ var carryLimits = schedule.DefaultLimits
 
 // carriedFromLive builds the destination schedule from the source's stored one.
 // It is pure. view is the destination recipient's zone, read only for a
-// floating schedule. A non-empty reason means the schedule is not carried.
-func carriedFromLive(sc *models.ItemSchedule, move bool, view *time.Location, nowT time.Time) (carriedSchedule, string) {
+// floating schedule. srcView is the SOURCE recipient's zone, read on a move only,
+// to place the source's own outstanding occurrence. A non-empty reason means the
+// schedule is not carried.
+func carriedFromLive(sc *models.ItemSchedule, move bool, view, srcView *time.Location, nowT time.Time) (carriedSchedule, string) {
 	if sc.EndedAt != nil || sc.NextWall == nil {
 		return carriedSchedule{}, "ended"
 	}
@@ -95,11 +107,16 @@ func carriedFromLive(sc *models.ItemSchedule, move bool, view *time.Location, no
 		Rrule: derefStr(sc.Rrule), RDates: sc.RDates, ExDates: sc.ExDates, Anchor: sc.Anchor, Audience: sc.Audience,
 		LeadMinutes: sc.LeadMinutes, AnchorWall: derefStr(sc.AnchorWall),
 	}
-	if move && (sc.ReminderFired || scheduleOccurrenceDue(sc, nowT)) {
+	srcOut, srcOK, srcErr := time.Time{}, false, error(nil)
+	if move {
+		srcOut, srcOK, srcErr = OutstandingInstant(sc, srcView)
+	}
+	if move && (sc.ReminderFired || (srcErr == nil && srcOK && !srcOut.After(nowT))) {
 		// The one catch-up: the outstanding occurrence that has fired, or is due
 		// and has not fired yet (a lagging tick), armed in the destination so the
 		// next tick fires it once.
 		in.NextWall, in.NextAt = *sc.NextWall, derefStr(sc.NextAt)
+		in.NextOverrideAt = liveOverride(sc, nowT)
 		return in, ""
 	}
 	start := sc.Dtstart
@@ -115,17 +132,30 @@ func carriedFromLive(sc *models.ItemSchedule, move bool, view *time.Location, no
 		return in, carryReason(err)
 	}
 	if !found {
+		if move && srcErr == nil && srcOK && srcOut.After(nowT) {
+			// The rule is spent in the destination's zone but the source still
+			// holds a future occurrence in its own: ending the source would lose it.
+			return in, reasonExhaustedInDestZone
+		}
 		return in, "exhausted"
 	}
 	in.NextWall, in.NextAt = occ.Wall.String(), NormalizeInstant(occ.At)
+	if move && occ.Wall.String() == *sc.NextWall {
+		// The source's own pending occurrence, snoozed: a move carries the snooze.
+		in.NextOverrideAt = liveOverride(sc, nowT)
+	}
 	return in, ""
 }
 
-// scheduleOccurrenceDue reports whether the schedule's outstanding occurrence is
-// at or before nowT, fired or not.
-func scheduleOccurrenceDue(sc *models.ItemSchedule, nowT time.Time) bool {
-	at, err := time.Parse(time.RFC3339, derefStr(sc.NextAt))
-	return err == nil && !at.After(nowT)
+// liveOverride is the source's snooze when it is still ahead of nowT, else "".
+func liveOverride(sc *models.ItemSchedule, nowT time.Time) string {
+	if sc.NextOverrideAt == nil {
+		return ""
+	}
+	if t, err := time.Parse(time.RFC3339, *sc.NextOverrideAt); err != nil || !t.After(nowT) {
+		return ""
+	}
+	return *sc.NextOverrideAt
 }
 
 // planScheduleCarry reads the source schedule on q (FOR UPDATE when lock, on
@@ -159,7 +189,13 @@ func (s *Store) planScheduleCarry(q Queryer, workspaceID, itemID string, who sch
 			return nil, err
 		}
 	}
-	in, skip := carriedFromLive(sc, move, view, nowT)
+	var srcView *time.Location
+	if sc.Floating && move {
+		if srcView, err = s.scheduleRecipientZone(q, itemID); err != nil {
+			return nil, err
+		}
+	}
+	in, skip := carriedFromLive(sc, move, view, srcView, nowT)
 	if skip == "" {
 		if _, err := prepareCarriedSchedule(in); err != nil {
 			var drop *scheduleCarryDrop
