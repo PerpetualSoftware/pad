@@ -3601,6 +3601,9 @@ func (c *Client) ResolveChatTarget(target string, ensure bool) (int, error) {
 	if err != nil || agent == "" {
 		return n, err
 	}
+	if err := CheckAgentChatTarget(c.agentName, target); err != nil {
+		return 0, err
+	}
 	raw, err := c.ListChatConversations()
 	if err != nil {
 		return 0, err

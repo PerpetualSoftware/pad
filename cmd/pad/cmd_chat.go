@@ -110,7 +110,7 @@ func chatShowCmd() *cobra.Command {
 func chatSendCmd() *cobra.Command {
 	var replyTo int64
 	var opKey, contextWorkspace string
-	cmd := &cobra.Command{Use: "send <target> <body>", Example: "  pad chat send @rook \"Ready for review\"", Short: "Send a chat message (- reads stdin)", Args: cobra.ExactArgs(2),
+	cmd := &cobra.Command{Use: "send <target> <body>", Example: "  pad chat send @rook \"Ready for review\"", Short: "Send a chat message (- reads stdin)", Long: "Send a chat message. Targets are C<n>, <n> or @<name>.\n\nAs an agent, @<name> is your own DM with your owner (your own name); another @x is another agent's DM and is refused. Use C<n> from `pad chat list`.", Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if _, _, err := cli.ParseChatTarget(args[0]); err != nil {
 				return err
