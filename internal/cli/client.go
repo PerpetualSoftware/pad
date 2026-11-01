@@ -1254,6 +1254,11 @@ func (c *Client) serverHonorsKeys() bool {
 	return caps.IdempotencyKeys
 }
 
+// ServerHonorsKeys is serverHonorsKeys for the command layer: false when the
+// capability lookup fails. `pad item copy` uses it to choose its
+// unknown-outcome advice (TASK-4131).
+func (c *Client) ServerHonorsKeys() bool { return c.serverHonorsKeys() }
+
 // retryableWithKey: no API answer at all (a transport error) or a 5xx.
 func retryableWithKey(err error) bool {
 	var apiErr *APIError

@@ -214,7 +214,14 @@ pad item copy <ref> --to-workspace <slug> --collection <slug> [--dry-run] [--arc
                               # Cross-workspace copy; --archive-source makes it a move.
                               # --dry-run previews the field mapping + warnings.
                               # Refuses rather than guessing when a destination field needs a value,
-                              # and NEVER retries the mutating call (no idempotency key — PLAN-2357 DR-13).
+                              # Every copy carries an idempotency key (op_key; --op-key to choose it, else a
+                              # fresh one per invocation, TASK-3585). The mutating call is retried ONCE, with
+                              # that key, after an unknown outcome and only against a server that advertises
+                              # idempotency_keys, where the retry replays the first copy; nothing else retries
+                              # it (PLAN-2357 DR-13). On such a server, re-running the same command with the
+                              # same --op-key within 24h (IdempotencyTTL) returns the first copy; on a still-
+                              # unknown outcome the CLI prints the key there, and warns of a duplicate on a
+                              # server without keys (TASK-4131).
                               # Content semantics: markdown is copied verbatim except `pad-attachment:`
                               # refs that resolve to a LIVE attachment in the SOURCE workspace — those are
                               # repointed at the clones (+ variants). Foreign / soft-deleted / dangling ids
