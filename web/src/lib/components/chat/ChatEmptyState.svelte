@@ -26,6 +26,8 @@
 	];
 
 	let copied = $state<Record<string, boolean>>({});
+	// Shared across commands: with a second copyable command this must become
+	// per-command, or one command's outcome would overwrite the other's (TASK-4210 L3).
 	let status = $state('');
 
 	let destroyed = false;
@@ -41,10 +43,12 @@
 	// outcome fades: it stays until the next click on that button.
 	const attempt: Record<string, number> = {};
 
-	// A live region announces a change; 'Copied' -> 'Copied' is none. Clear, let
-	// the DOM update, then set, so every outcome is announced.
+	// A live region announces a change; 'Copied' -> 'Copied' is none. The click
+	// already cleared status, and only the live attempt writes it, so no clear is
+	// needed here. The tick still matters: when navigator.clipboard is undefined,
+	// writeText throws synchronously, so without it the click's '' and the failure
+	// text would batch into one flush and the live region would not change.
 	async function announce(cmd: string, n: number, text: string) {
-		status = '';
 		await tick();
 		if (destroyed || attempt[cmd] !== n) return;
 		status = text;
