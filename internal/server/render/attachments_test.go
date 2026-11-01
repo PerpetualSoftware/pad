@@ -1,6 +1,8 @@
 package render
 
 import (
+	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 )
@@ -186,7 +188,7 @@ func TestRenderAttachmentChip(t *testing.T) {
 func TestRenderAttachmentChip_DisplayTextOverridesFilename(t *testing.T) {
 	meta := &AttachmentMeta{ID: "x", MimeType: "application/zip", Filename: "release.zip", SizeBytes: 100}
 	got := RenderAttachmentChip(meta, "Latest release", "ws")
-	if !strings.Contains(got, ">Latest release</span>") {
+	if !strings.Contains(got, "><bdi>Latest release</bdi></span>") {
 		t.Errorf("expected display text override, got: %s", got)
 	}
 	// download attribute always uses canonical filename, not the display text.
@@ -423,14 +425,14 @@ func TestResolveAttachmentReferences_EscapedBrackets(t *testing.T) {
 			in:   `[A \] B](pad-attachment:doc-1)`,
 			wantSubs: []string{
 				`data-attachment-id="doc-1"`,
-				`>A ] B</span>`,
+				`><bdi>A ] B</bdi></span>`,
 			},
 		},
 		{
 			name: "escaped backslash and bracket combo",
 			in:   `[a \\ b \[ c \] d](pad-attachment:doc-1)`,
 			wantSubs: []string{
-				`>a \ b [ c ] d</span>`,
+				`><bdi>a \ b [ c ] d</bdi></span>`,
 			},
 		},
 	}
@@ -509,5 +511,80 @@ func TestExtractAttachmentRefs(t *testing.T) {
 func TestExtractAttachmentRefs_None(t *testing.T) {
 	if got := ExtractAttachmentRefs("no attachments here"); got != nil {
 		t.Errorf("expected nil for content with no refs, got %v", got)
+	}
+}
+
+// attachmentParityFixture is shared with web/src/lib/markdown/fileChipParity.test.ts:
+// the Go and TS renderers must emit byte-identical chips, images and missing
+// placeholders (TASK-4195).
+//
+// Scope of the URL half (TASK-4195 r3-M1): Go builds download URLs with
+// url.PathEscape and TS with encodeURIComponent, which differ on !'()* and
+// $&+=:@. The fixture pins parity only for UUID attachment ids (store newID)
+// and workspace slugs minted since BUG-3769 ([a-z0-9-], where both encoders are
+// the identity). A preserved legacy slug may hold those characters and encode
+// differently on each side, but both forms decode to the same route.
+type attachmentParityMeta struct {
+	ID        string `json:"id"`
+	MimeType  string `json:"mime_type"`
+	Filename  string `json:"filename"`
+	SizeBytes int64  `json:"size_bytes"`
+	Width     *int   `json:"width"`
+	Height    *int   `json:"height"`
+}
+
+func (m attachmentParityMeta) toMeta() *AttachmentMeta {
+	return &AttachmentMeta{ID: m.ID, MimeType: m.MimeType, Filename: m.Filename, SizeBytes: m.SizeBytes, Width: m.Width, Height: m.Height}
+}
+
+type attachmentParityFixture struct {
+	Chips []struct {
+		Name        string               `json:"name"`
+		Workspace   string               `json:"workspace"`
+		Meta        attachmentParityMeta `json:"meta"`
+		DisplayText string               `json:"display_text"`
+		HTML        string               `json:"html"`
+	} `json:"chips"`
+	Images []struct {
+		Name      string               `json:"name"`
+		Workspace string               `json:"workspace"`
+		Meta      attachmentParityMeta `json:"meta"`
+		Alt       string               `json:"alt"`
+		HTML      string               `json:"html"`
+	} `json:"images"`
+	Missing []struct {
+		Name string `json:"name"`
+		UUID string `json:"uuid"`
+		Alt  string `json:"alt"`
+		HTML string `json:"html"`
+	} `json:"missing"`
+}
+
+func TestRenderAttachment_ParityWithTypeScript(t *testing.T) {
+	raw, err := os.ReadFile("../../../web/src/lib/markdown/testdata/file-chip-parity.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fx attachmentParityFixture
+	if err := json.Unmarshal(raw, &fx); err != nil {
+		t.Fatal(err)
+	}
+	if len(fx.Chips) == 0 || len(fx.Images) == 0 || len(fx.Missing) == 0 {
+		t.Fatalf("fixture has an empty case array: chips=%d images=%d missing=%d", len(fx.Chips), len(fx.Images), len(fx.Missing))
+	}
+	for _, c := range fx.Chips {
+		if got := RenderAttachmentChip(c.Meta.toMeta(), c.DisplayText, c.Workspace); got != c.HTML {
+			t.Errorf("chip %s:\n got  %s\n want %s", c.Name, got, c.HTML)
+		}
+	}
+	for _, c := range fx.Images {
+		if got := RenderAttachmentImage(c.Meta.toMeta(), c.Alt, c.Workspace); got != c.HTML {
+			t.Errorf("image %s:\n got  %s\n want %s", c.Name, got, c.HTML)
+		}
+	}
+	for _, c := range fx.Missing {
+		if got := RenderAttachmentMissing(c.UUID, c.Alt); got != c.HTML {
+			t.Errorf("missing %s:\n got  %s\n want %s", c.Name, got, c.HTML)
+		}
 	}
 }

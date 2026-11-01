@@ -364,7 +364,7 @@ test.describe('item attachment strip', () => {
 		// A file tile is a real button naming its action, not a download link —
 		// the whole point of the change (DR-1, DR-12).
 		await expect(tile).toHaveJSProperty('tagName', 'BUTTON');
-		await expect(tile).toHaveAttribute('aria-label', /^Options for notes\.zip/);
+		await expect(tile).toHaveAttribute('aria-label', /^Options for \u2068notes\.zip/);
 
 		await tile.click();
 		// The converged surface opens — a role="dialog" naming the file, NOT a menu.

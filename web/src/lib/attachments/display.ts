@@ -44,6 +44,22 @@ export function displayFilename(filename: string | null | undefined): string {
 	return trimmed || 'Untitled file';
 }
 
+/**
+ * Wrap text in a first-strong isolate (U+2068 .. U+2069) so a file name with
+ * bidi controls (a right-to-left override, say) cannot reorder the text around
+ * it. For attribute and plain-text strings (title, aria-label, toasts), where
+ * `<bdi>` markup cannot go. Display only: never use it for `download=`, node
+ * attrs, data attributes or any value that is stored or parsed back.
+ */
+export function isolateText(s: string): string {
+	return '\u2068' + s + '\u2069';
+}
+
+/** `displayFilename`, isolated for a sentence, attribute or toast. */
+export function displayFilenameIsolated(filename: string | null | undefined): string {
+	return isolateText(displayFilename(filename));
+}
+
 export function formatBytes(bytes: number): string {
 	if (bytes < 0) return `${bytes} B`;
 	const KB = 1024;

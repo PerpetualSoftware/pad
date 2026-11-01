@@ -30,7 +30,7 @@
 	import { unescapeDocLinks } from '$lib/utils/markdown';
 	import { AttachmentImage } from './editor/attachment-image';
 	import { AttachmentChip } from './editor/attachment-chip';
-	import { AttachmentUpload } from './editor/attachment-upload';
+	import { AttachmentUpload, uploadFailedMessage } from './editor/attachment-upload';
 	import type { AttachmentHostAddress } from '$lib/attachments/hostAddress';
 
 	interface Props {
@@ -290,7 +290,7 @@
 						if (message === PLAN_LIMIT_PROMPTED) return;
 						console.error(`[comment attachment] ${filename}: ${message}`);
 						// A toast, not a blocking window.alert (TASK-2221, audit C39).
-						toastStore.show(`Couldn't upload ${filename}: ${message}`, 'error');
+						toastStore.show(uploadFailedMessage(filename, message), 'error');
 					},
 					// An upload that finished after this composer unmounted: when a
 					// pane opens over the timeline, when the user navigates away. The

@@ -222,7 +222,7 @@ async function openViewer(page: Page): Promise<void> {
 async function openStripDeleteSheet(page: Page, filename: string): Promise<void> {
 	await page
 		.locator('.attachment-strip .att-delete')
-		.and(page.getByRole('button', { name: `Delete ${filename}` }))
+		.and(page.getByRole('button', { name: `Delete \u2068${filename}\u2069` }))
 		.evaluate((el) => (el as HTMLElement).click());
 	await expect(page.locator('.bs-sheet')).toBeVisible();
 }

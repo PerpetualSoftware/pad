@@ -207,7 +207,7 @@ export function escapeRe(s: string): string {
  * lives in ONE place.
  */
 export const viewerDialog = (page: Page, name: string) =>
-	page.getByRole('dialog', { name: new RegExp(`^${escapeRe(name)}(,|$)`) });
+	page.getByRole('dialog', { name: new RegExp(`^\\u2068?${escapeRe(name)}\\u2069?(,|$)`) });
 
 /**
  * The frontmost viewer's TABBABLE controls, in DOM (trap) order, as their

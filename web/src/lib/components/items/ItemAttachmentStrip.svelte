@@ -48,6 +48,7 @@
 		canOpenInViewer,
 		describeAttachmentType,
 		displayFilename,
+		displayFilenameIsolated,
 	} from '$lib/attachments/display';
 	import AttachmentIcon from '$lib/attachments/icons/AttachmentIcon.svelte';
 	import Menu from '$lib/components/common/Menu.svelte';
@@ -972,7 +973,7 @@
 
 	/** What the file IS — the tooltip, and the base of the accessible name. */
 	function tileLabel(att: StripAttachment): string {
-		return `${displayFilename(att.filename)}, ${describeAttachmentType(att.mime_type, att.filename)}, ${formatBytes(att.size_bytes)}`;
+		return `${displayFilenameIsolated(att.filename)}, ${describeAttachmentType(att.mime_type, att.filename)}, ${formatBytes(att.size_bytes)}`;
 	}
 
 	/**
@@ -1235,8 +1236,8 @@
 			}
 			toastStore.show(
 				code === 'forbidden'
-					? `You don't have permission to delete ${displayFilename(att.filename)}.`
-					: `Couldn't delete ${displayFilename(att.filename)}.`,
+					? `You don't have permission to delete ${displayFilenameIsolated(att.filename)}.`
+					: `Couldn't delete ${displayFilenameIsolated(att.filename)}.`,
 				'error'
 			);
 		} finally {
@@ -1320,7 +1321,7 @@
 									<span class="att-icon">
 										<AttachmentIcon id={iconForAttachment(att.mime_type, att.filename)} />
 									</span>
-									<span class="att-name" aria-hidden="true">{displayFilename(att.filename)}</span>
+									<span class="att-name" aria-hidden="true"><bdi>{displayFilename(att.filename)}</bdi></span>
 								</button>
 							{/if}
 
@@ -1331,8 +1332,8 @@
 								<button
 									type="button"
 									class="att-delete"
-									title="Delete {displayFilename(att.filename)}"
-									aria-label="Delete {displayFilename(att.filename)}"
+									title="Delete {displayFilenameIsolated(att.filename)}"
+									aria-label="Delete {displayFilenameIsolated(att.filename)}"
 									onclick={(e) => requestDelete(att, e.currentTarget)}
 								>
 									×
@@ -1394,8 +1395,8 @@
 		mode="portal"
 		width={272}
 		sheetOnMobile
-		sheetTitle="Delete {displayFilename(pendingDelete?.att.filename)}"
-		ariaLabel="Delete {displayFilename(pendingDelete?.att.filename)}"
+		sheetTitle="Delete {displayFilenameIsolated(pendingDelete?.att.filename)}"
+		ariaLabel="Delete {displayFilenameIsolated(pendingDelete?.att.filename)}"
 		focusKey={pendingDelete?.att.id}
 	>
 		<AttachmentDeleteConfirm

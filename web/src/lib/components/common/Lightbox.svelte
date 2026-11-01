@@ -110,7 +110,8 @@
 		describeAttachmentType,
 		formatBytes,
 		iconForAttachment,
-		isMarkdownAttachment
+		isMarkdownAttachment,
+		isolateText
 	} from '$lib/attachments/display';
 	import { createSurfaceMetadata } from '$lib/attachments/surfaceMetadata.svelte';
 	import { backdropDismiss } from '$lib/utils/backdropDismiss';
@@ -445,12 +446,14 @@
 	// string. Shared by the metadata header, the download attribute and the delete
 	// prompt, so all three name the file identically.
 	let displayName = $derived(img?.filename ?? blankToNull(img?.alt) ?? 'Attachment');
+	// FSI..PDI-wrapped copy for attribute / title text, where markup (`<bdi>`) cannot go.
+	let displayNameIsolated = $derived(isolateText(displayName));
 	// The dialog's accessible NAME (3c-ii T2b): the file's display name plus the
 	// type · size the header shows, so a screen reader announces WHAT is open — the
 	// metadata the retired panel exposed — not a bare alt. Never empty (`displayName`
 	// always resolves), so an unnamed `role="dialog"` — announced as nothing — can't
 	// happen.
-	let dialogLabel = $derived([displayName, headerDetail].filter(Boolean).join(', '));
+	let dialogLabel = $derived([displayNameIsolated, headerDetail].filter(Boolean).join(', '));
 	// Inline, transient error from a button action (a failed clipboard write). Sits
 	// in the toolbar beside the controls, never a blocking dialog.
 	let toolbarError = $state<string | null>(null);
@@ -2783,7 +2786,7 @@
 				<div
 					class="lightbox-text-scroll"
 					role="document"
-					aria-label={displayName}
+					aria-label={displayNameIsolated}
 					tabindex={shownRenderer === 'table' ? undefined : 0}
 				>
 				{#if textLoader.phase === 'loading'}
@@ -2820,7 +2823,7 @@
 					</div>
 				{:else if textLoader.phase === 'ready'}
 					{#if shownRenderer === 'table'}
-						<AttachmentTablePreview text={textLoader.text} mime={resolvedMime!} compact={isSheet} label={`${displayName} table`} />
+						<AttachmentTablePreview text={textLoader.text} mime={resolvedMime!} compact={isSheet} label={`${displayNameIsolated} table`} />
 					{:else}
 						<div class="lightbox-text-controls" role="group" aria-label="Preview display">
 							{#if markdownAttachment}
@@ -2854,7 +2857,7 @@
 		-->
 		{#if shownRenderer === 'pdf' && !soleMissing}
 			<div class="lightbox-pdf">
-				<div class="lightbox-pdf-scroll" role="document" aria-label={displayName}>
+				<div class="lightbox-pdf-scroll" role="document" aria-label={displayNameIsolated}>
 					{#if bytesLoader.phase === 'loading'}
 						<p class="lightbox-text-status" role="status">Loading preview…</p>
 					{:else if bytesLoader.phase === 'too-large'}
@@ -2886,7 +2889,7 @@
 								bind:this={pdfPreview}
 								bytes={bytesLoader.bytes}
 								compact={isSheet}
-								label={`${displayName} PDF`}
+								label={`${displayNameIsolated} PDF`}
 							/>
 						{/key}
 					{/if}
@@ -2917,7 +2920,7 @@
 				<span class="lightbox-fallback-icon" aria-hidden="true">
 					<AttachmentIcon id={fallbackIconId} size={72} />
 				</span>
-				<p class="lightbox-fallback-name" title={displayName}>{displayName}</p>
+				<p class="lightbox-fallback-name" title={displayNameIsolated}><bdi>{displayName}</bdi></p>
 				{#if headerDetail}
 					<p class="lightbox-fallback-detail">{headerDetail}</p>
 				{/if}
@@ -2939,7 +2942,7 @@
 				<span class="lightbox-fallback-icon" aria-hidden="true">
 					<AttachmentIcon id={fallbackIconId} size={72} />
 				</span>
-				<p class="lightbox-fallback-name" title={displayName}>{displayName}</p>
+				<p class="lightbox-fallback-name" title={displayNameIsolated}><bdi>{displayName}</bdi></p>
 				<p class="lightbox-fallback-note">This file is no longer available. It may have been deleted.</p>
 			</div>
 		{/if}
@@ -2963,7 +2966,7 @@
 	-->
 	{#if img}
 		<div class="lightbox-meta">
-			<div class="lightbox-meta-name" title={displayName}>{displayName}</div>
+			<div class="lightbox-meta-name" title={displayNameIsolated}><bdi>{displayName}</bdi></div>
 			{#if headerDetail}
 				<div class="lightbox-meta-detail">{headerDetail}</div>
 			{/if}
