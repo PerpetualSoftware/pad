@@ -540,6 +540,13 @@ type ItemCopyPreflightWarnings struct {
 	// which is what keeps it one bit rather than a window. Pinned by
 	// TestCopyPreflight_PartialMarkerForAnItemGrantOnlyGuest.
 	RelationshipsPartial bool `json:"relationships_partial"`
+
+	// ScheduleCarried / ScheduleHistoryDropped / ScheduleSkipped mirror the
+	// copy result's members (TASK-4104 D3), from the same store function the
+	// copy runs. Additive, omitted when the source has no schedule.
+	ScheduleCarried        bool   `json:"schedule_carried,omitempty"`
+	ScheduleHistoryDropped int    `json:"schedule_history_dropped,omitempty"`
+	ScheduleSkipped        string `json:"schedule_skipped,omitempty"`
 }
 
 // legacyHierarchyLinkTypes are hierarchy link types store.ChildLinkTypes
@@ -1535,6 +1542,17 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	resp.Warnings.AttachmentCount = len(plan.Rows)
 	resp.Warnings.AttachmentBytes = plan.TotalBytes
 	resp.Warnings.UnresolvableRefCount = len(plan.UnresolvableRefs)
+
+	// The source's schedule (TASK-4104 D3): the store function the copy runs, so
+	// the preview cannot disagree with it.
+	sched, err := s.store.PreviewItemScheduleCarry(sourceWorkspaceID, item.ID, input.ArchiveSource)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	resp.Warnings.ScheduleCarried = sched.Carried
+	resp.Warnings.ScheduleHistoryDropped = sched.HistoryDropped
+	resp.Warnings.ScheduleSkipped = sched.Skipped
 
 	resp.Valid = len(resp.Fields.NeedsValue) == 0
 

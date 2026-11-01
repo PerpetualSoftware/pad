@@ -206,6 +206,11 @@ type ItemCopyPreflightWarnings struct {
 	AttachmentCount      int            `json:"attachment_count"`
 	AttachmentBytes      int64          `json:"attachment_bytes"`
 	UnresolvableRefCount int            `json:"unresolvable_ref_count"`
+	// Schedule* are the source schedule's fate (TASK-4104 D3); absent when it
+	// has none.
+	ScheduleCarried        bool   `json:"schedule_carried,omitempty"`
+	ScheduleHistoryDropped int    `json:"schedule_history_dropped,omitempty"`
+	ScheduleSkipped        string `json:"schedule_skipped,omitempty"`
 	// RelationshipsPartial marks ChildCount, ChildrenOrphaned,
 	// DroppedParent, OutgoingLinks and IncomingLinks as a FLOOR rather
 	// than a total: at least one relationship hangs off an item this
@@ -271,6 +276,11 @@ type ItemCopyResultWarnings struct {
 	// source item's live collaborative document (BUG-3032). Omitted by the
 	// server when the source row was current.
 	SourceContentState string `json:"source_content_state,omitempty"`
+
+	// Schedule* are the source schedule's fate (TASK-4104 D3).
+	ScheduleCarried        bool   `json:"schedule_carried,omitempty"`
+	ScheduleHistoryDropped int    `json:"schedule_history_dropped,omitempty"`
+	ScheduleSkipped        string `json:"schedule_skipped,omitempty"`
 }
 
 // ItemCopyResult is the mutating copy's 201 response.

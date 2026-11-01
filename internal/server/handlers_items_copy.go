@@ -312,6 +312,16 @@ type ItemCopyResultWarnings struct {
 	// contentStateSQL, so this value was already in hand and was being
 	// discarded.
 	SourceContentState string `json:"source_content_state,omitempty"`
+
+	// ScheduleCarried / ScheduleHistoryDropped / ScheduleSkipped say what became
+	// of the source's schedule (TASK-4104 D3). All three are additive and
+	// omitted when the source had none, so a schedule-less copy's response is
+	// byte-identical to one produced before they existed. ScheduleSkipped is
+	// the reason a schedule was not carried ("ended", "exhausted", or a
+	// timing:<code> / <field>:<code> carry reason).
+	ScheduleCarried        bool   `json:"schedule_carried,omitempty"`
+	ScheduleHistoryDropped int    `json:"schedule_history_dropped,omitempty"`
+	ScheduleSkipped        string `json:"schedule_skipped,omitempty"`
 }
 
 // copyPreCheckDenial is an authorization refusal from the IN-TRANSACTION
@@ -553,6 +563,10 @@ func copyResult(res *store.CrossWorkspaceCopyResult, src, dst CrossWorkspaceAcce
 			// "current" about a row that an applier write moved ahead
 			// before the copy read it.
 			SourceContentState: res.Source.ContentState,
+
+			ScheduleCarried:        res.Schedule.Carried,
+			ScheduleHistoryDropped: res.Schedule.HistoryDropped,
+			ScheduleSkipped:        res.Schedule.Skipped,
 		},
 	}
 	if res.SourceSeq != nil {
