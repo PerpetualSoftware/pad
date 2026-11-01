@@ -110,7 +110,10 @@ export function storedNotInsertedMessage(filename: string): string {
 
 /**
  * The toast for a failed upload, shared by Editor and CommentEditor (TASK-4195
- * site 17). Only the file name is isolated: the message text is ours.
+ * site 17). Only the file name is isolated. `message` is the upload call's
+ * Error.message: client text or the server's error message, which names at most
+ * an extension from its fixed map (internal/attachments/mime.go), never the
+ * uploaded file's name (TASK-4195 r5-L1).
  */
 export function uploadFailedMessage(filename: string, message: string): string {
 	return `Couldn't upload ${isolateText(filename)}: ${message}`;
