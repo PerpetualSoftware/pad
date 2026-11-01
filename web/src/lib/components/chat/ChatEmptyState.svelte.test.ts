@@ -103,16 +103,16 @@ describe('ChatEmptyState', () => {
 
 	describe('copy button accessibility', () => {
 		const writeText = vi.fn();
+		// Real macrotask: lets every pending microtask chain (writeText, tick) run out.
+		const flush = () => new Promise<void>((r) => setTimeout(r, 0));
 		beforeEach(() => {
 			writeText.mockReset();
 			tickSpy.mockClear();
-			vi.useFakeTimers();
 			Object.defineProperty(navigator, 'clipboard', {
 				value: { writeText },
 				configurable: true
 			});
 		});
-		afterEach(() => vi.useRealTimers());
 
 		it('labels the button per command', () => {
 			const { getByRole } = render(ChatEmptyState);
@@ -156,8 +156,9 @@ describe('ChatEmptyState', () => {
 			mo.observe(live, { childList: true, characterData: true, subtree: true });
 			const btn = getByRole('button', { name: 'Copy Claude Code command' });
 			await fireEvent.click(btn);
+			await flush(); // a real second click is a later task; observer batches per microtask
 			await fireEvent.click(btn);
-			await Promise.resolve(); // let observer callbacks flush
+			await flush();
 			mo.disconnect();
 			expect(live.textContent).toBe('Copied');
 			// Without the clear, the second copy changes nothing and seen has one entry.
@@ -165,105 +166,59 @@ describe('ChatEmptyState', () => {
 			expect(seen).toContain('');
 		});
 
-		it('a second quick copy is not reset by the first timer', async () => {
-			writeText.mockResolvedValue(undefined);
-			const { getByRole, container } = render(ChatEmptyState);
-			const btn = getByRole('button', { name: 'Copy Claude Code command' });
-			await fireEvent.click(btn);
-			await vi.advanceTimersByTimeAsync(0); // settle writeText and announce(): the timer is set
-			vi.advanceTimersByTime(1000);
-			await fireEvent.click(btn);
-			await vi.advanceTimersByTimeAsync(0);
-			vi.advanceTimersByTime(700); // 1700ms after the first copy, 700ms after the second
-			flushSync();
-			expect(btn.textContent?.trim()).toBe('Copied');
-			vi.advanceTimersByTime(900);
-			flushSync();
-			expect(btn.textContent?.trim()).toBe('Copy');
-		});
-
-		it('two clicks while writeText is pending: the first timer cannot reset the second copy early', async () => {
-			const resolvers: Array<() => void> = [];
-			writeText.mockImplementation(() => new Promise<void>((r) => resolvers.push(r)));
-			const { getByRole, container } = render(ChatEmptyState);
-			const live = container.querySelector('[aria-live="polite"]')!;
-			const btn = getByRole('button', { name: 'Copy Claude Code command' });
-			await fireEvent.click(btn);
-			await fireEvent.click(btn);
-			expect(resolvers.length).toBe(2);
-			resolvers[0](); // first copy lands at t=0: its timer expires at 1500
-			await vi.advanceTimersByTimeAsync(1000);
-			resolvers[1](); // second lands at t=1000: its timer expires at 2500
-			await vi.advanceTimersByTimeAsync(1400); // t=2400, past the first timer
-			flushSync();
-			expect(live.textContent).toBe('Copied');
-			expect(btn.textContent?.trim()).toBe('Copied');
-			await vi.advanceTimersByTimeAsync(200);
-			flushSync();
-			expect(btn.textContent?.trim()).toBe('Copy');
-		});
-
-		it('clears its timers on destroy', async () => {
-			writeText.mockResolvedValue(undefined);
-			const { getByRole, unmount } = render(ChatEmptyState);
-			await fireEvent.click(getByRole('button', { name: 'Copy Claude Code command' }));
-			await vi.advanceTimersByTimeAsync(0); // settle writeText and tick()
-			expect(vi.getTimerCount()).toBe(1);
-			unmount();
-			expect(vi.getTimerCount()).toBe(0);
-		});
-
-		it('a copy failure keeps its message past an earlier success timer', async () => {
-			const { getByRole, container } = render(ChatEmptyState);
-			const live = container.querySelector('[aria-live="polite"]')!;
-			const btn = getByRole('button', { name: 'Copy Claude Code command' });
-			writeText.mockResolvedValueOnce(undefined);
-			await fireEvent.click(btn);
-			await vi.advanceTimersByTimeAsync(500); // success timer expires at ~1500
-			writeText.mockRejectedValueOnce(new Error('denied'));
-			await fireEvent.click(btn);
-			await vi.advanceTimersByTimeAsync(2000); // well past the first timer
-			flushSync();
-			expect(live.textContent).toBe("Couldn't copy \u2014 select the command");
-			expect(vi.getTimerCount()).toBe(0);
-		});
-
-		it('a stale attempt that rejects after a newer success does not touch its status or timer', async () => {
+		const COPY = { name: 'Copy Claude Code command' };
+		const FAIL = "Couldn't copy \u2014 select the command";
+		const deferred = () => {
 			const settle: Array<{ ok: () => void; fail: () => void }> = [];
 			writeText.mockImplementation(
-				() => new Promise<void>((ok, bad) => settle.push({ ok, fail: () => bad(new Error('denied')) }))
+				() =>
+					new Promise<void>((ok, bad) =>
+						settle.push({
+							ok,
+							fail: () => bad(new Error('denied'))
+						})
+					)
 			);
+			return settle;
+		};
+
+		it('a success followed by a failing click shows the failure and not Copied', async () => {
 			const { getByRole, container } = render(ChatEmptyState);
 			const live = container.querySelector('[aria-live="polite"]')!;
-			const btn = getByRole('button', { name: 'Copy Claude Code command' });
+			const btn = getByRole('button', COPY);
+			writeText.mockResolvedValueOnce(undefined);
+			await fireEvent.click(btn);
+			await flush();
+			expect(btn.textContent?.trim()).toBe('Copied');
+			writeText.mockRejectedValueOnce(new Error('denied'));
+			await fireEvent.click(btn);
+			await flush();
+			expect(live.textContent).toBe(FAIL);
+			expect(btn.textContent?.trim()).toBe('Copy');
+		});
+
+		it('a stale attempt that rejects after a newer success leaves the success standing', async () => {
+			const settle = deferred();
+			const { getByRole, container } = render(ChatEmptyState);
+			const live = container.querySelector('[aria-live="polite"]')!;
+			const btn = getByRole('button', COPY);
 			await fireEvent.click(btn); // A
 			await fireEvent.click(btn); // B
 			settle[1].ok();
-			await vi.advanceTimersByTimeAsync(0); // B lands, its timer is set
+			await flush();
 			expect(live.textContent).toBe('Copied');
 			settle[0].fail(); // A rejects late
-			await vi.advanceTimersByTimeAsync(1000);
+			await flush();
 			flushSync();
 			expect(live.textContent).toBe('Copied');
 			expect(btn.textContent?.trim()).toBe('Copied');
-			expect(vi.getTimerCount()).toBe(1);
-			await vi.advanceTimersByTimeAsync(499); // 1499ms after B landed
-			flushSync();
-			expect(btn.textContent?.trim()).toBe('Copied');
-			await vi.advanceTimersByTimeAsync(1); // B's own 1500ms
-			flushSync();
-			expect(btn.textContent?.trim()).toBe('Copy');
-			expect(live.textContent).toBe('');
 		});
 
 		it('an attempt that resolved and is awaiting tick cannot overwrite a newer failure', async () => {
-			const settle: Array<{ ok: () => void; fail: () => void }> = [];
-			writeText.mockImplementation(
-				() => new Promise<void>((ok, bad) => settle.push({ ok, fail: () => bad(new Error('denied')) }))
-			);
+			const settle = deferred();
 			const { getByRole, container } = render(ChatEmptyState);
 			const live = container.querySelector('[aria-live="polite"]')!;
-			const btn = getByRole('button', { name: 'Copy Claude Code command' });
+			const btn = getByRole('button', COPY);
 			const seen: string[] = [];
 			const mo = new MutationObserver(() => seen.push(live.textContent ?? ''));
 			mo.observe(live, { childList: true, characterData: true, subtree: true });
@@ -272,35 +227,65 @@ describe('ChatEmptyState', () => {
 			await Promise.resolve(); // A's continuation runs up to its await tick()
 			btn.click(); // B starts while A is awaiting tick
 			settle[1].fail();
-			await vi.advanceTimersByTimeAsync(0); // both attempts have run to the end
-			expect(vi.getTimerCount()).toBe(0); // A set no timer after going stale
-			await vi.advanceTimersByTimeAsync(2000);
+			await flush(); // both attempts have run to the end
 			flushSync();
 			mo.disconnect();
-			expect(live.textContent).toBe("Couldn't copy \u2014 select the command");
+			expect(live.textContent).toBe(FAIL);
 			expect(seen).not.toContain('Copied'); // A never announces over B
 			expect(btn.textContent?.trim()).toBe('Copy');
 		});
 
-		it('a stale success timer does not reset the state of a newer attempt still pending', async () => {
-			let calls = 0;
-			let resolveB!: () => void;
-			writeText.mockImplementation(() =>
-				++calls === 1 ? Promise.resolve() : new Promise<void>((r) => (resolveB = r))
-			);
-			const { getByRole } = render(ChatEmptyState);
-			const btn = getByRole('button', { name: 'Copy Claude Code command' });
-			await fireEvent.click(btn); // A succeeds, timer at 1500
-			await vi.advanceTimersByTimeAsync(0);
-			expect(btn.textContent?.trim()).toBe('Copied');
-			await fireEvent.click(btn); // B pending
-			await vi.advanceTimersByTimeAsync(1600); // A's timer fires while B is the latest
+		it("a pending newer attempt does not inherit the previous attempt's Copied (A paused in announce, B pending)", async () => {
+			const settle = deferred();
+			const { getByRole, container } = render(ChatEmptyState);
+			const live = container.querySelector('[aria-live="polite"]')!;
+			const btn = getByRole('button', COPY);
+			btn.click(); // A
+			settle[0].ok();
+			await Promise.resolve(); // A has set copied and is paused at tick() in announce()
+			btn.click(); // B: writeText never settles in this test
+			await flush();
 			flushSync();
-			expect(btn.textContent?.trim()).toBe('Copied');
-			resolveB();
-			await vi.advanceTimersByTimeAsync(1500);
-			flushSync();
+			expect(settle.length).toBe(2);
 			expect(btn.textContent?.trim()).toBe('Copy');
+			expect(btn.textContent).not.toContain('Copied');
+			expect(live.textContent).toBe('');
+		});
+
+		it('a click resets a prior Copied immediately, before writeText settles', async () => {
+			const { getByRole, container } = render(ChatEmptyState);
+			const live = container.querySelector('[aria-live="polite"]')!;
+			const btn = getByRole('button', COPY);
+			writeText.mockResolvedValueOnce(undefined);
+			await fireEvent.click(btn);
+			await flush();
+			expect(btn.textContent?.trim()).toBe('Copied');
+			expect(live.textContent).toBe('Copied');
+			writeText.mockImplementationOnce(() => new Promise<void>(() => {}));
+			btn.click();
+			flushSync(); // synchronously after the click event
+			expect(btn.textContent?.trim()).toBe('Copy');
+			expect(live.textContent).toBe('');
+		});
+
+		it('the latest success shows Copied indefinitely', async () => {
+			vi.useFakeTimers();
+			try {
+				writeText.mockResolvedValue(undefined);
+				const { getByRole, container } = render(ChatEmptyState);
+				const live = container.querySelector('[aria-live="polite"]')!;
+				const btn = getByRole('button', COPY);
+				await fireEvent.click(btn);
+				await vi.advanceTimersByTimeAsync(0);
+				expect(btn.textContent?.trim()).toBe('Copied');
+				await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+				flushSync();
+				expect(btn.textContent?.trim()).toBe('Copied');
+				expect(live.textContent).toBe('Copied');
+				expect(vi.getTimerCount()).toBe(0);
+			} finally {
+				vi.useRealTimers();
+			}
 		});
 
 		it('two failures in a row are each announced: the live region clears, then repeats the message', async () => {
@@ -310,16 +295,16 @@ describe('ChatEmptyState', () => {
 			const seen: string[] = [];
 			const mo = new MutationObserver(() => seen.push(live.textContent ?? ''));
 			mo.observe(live, { childList: true, characterData: true, subtree: true });
-			const btn = getByRole('button', { name: 'Copy Claude Code command' });
-			await fireEvent.click(btn);
-			await vi.advanceTimersByTimeAsync(0);
-			await fireEvent.click(btn);
-			await vi.advanceTimersByTimeAsync(0);
-			await Promise.resolve();
+			const btn = getByRole('button', COPY);
+			btn.click();
+			await flush();
+			// writeText is already rejected: without announce()'s own clear-then-tick, the
+			// click's reset and the failure text land in one flush and the DOM never changes.
+			btn.click();
+			await flush();
 			mo.disconnect();
-			const msg = "Couldn't copy \u2014 select the command";
-			expect(live.textContent).toBe(msg);
-			expect(seen.filter((t) => t === msg).length).toBe(2);
+			expect(live.textContent).toBe(FAIL);
+			expect(seen.filter((t) => t === FAIL).length).toBe(2);
 			expect(seen).toContain('');
 		});
 
@@ -327,13 +312,12 @@ describe('ChatEmptyState', () => {
 			let resolve!: () => void;
 			writeText.mockImplementation(() => new Promise<void>((r) => (resolve = r)));
 			const { getByRole, unmount } = render(ChatEmptyState);
-			await fireEvent.click(getByRole('button', { name: 'Copy Claude Code command' }));
+			await fireEvent.click(getByRole('button', COPY));
 			tickSpy.mockClear(); // testing-library's own tick() inside fireEvent is not ours
 			unmount();
 			resolve();
-			await vi.advanceTimersByTimeAsync(0);
+			await flush();
 			expect(tickSpy).not.toHaveBeenCalled();
-			expect(vi.getTimerCount()).toBe(0);
 		});
 	});
 });
