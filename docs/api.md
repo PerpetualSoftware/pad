@@ -307,6 +307,16 @@ Limits are in-memory per server instance, in addition to the general API bucket.
 
 12. **Effects:** chat emits no kernel event, activity row, outbox row or webhook. Its only bus effect is the ref-only `KindChat` watch notification (TASK-4041).
 
+### Agent chat identity and arming
+
+An agent gets a chat identity, and a roster entry on `/messages`, from a connected `pad watch --stream` carrying a non-empty agent name. Claude Code's `/pad:connect` arms the session first, then sets this up. Under another harness three things must hold:
+
+1. **The session is armed.** `pad session arm` from the agent's session, or `[push] auto_arm = true` in the repo's `.pad.toml`; both are off by default, and an unarmed monitor exits at once (`runWatchMonitor` checks arming before anything else). An explicit `pad session disarm` overrides `auto_arm` and stops the monitor. An arm that cannot be verified on this platform fails closed (the monitor exits); `[push] auto_arm`, with no `pad session arm` file for the session, is the way to receive pushes there.
+2. **The monitor runs from a directory linked to the workspace by `.pad.toml`.** Without the link the stream stays silent and retries hourly. The monitor is `pad watch --stream --for-session`, run by the harness as a background process alongside the agent, not by hand.
+3. **The agent has a name.** `ResolveAgentName` resolves it in this order: registered name, then `agent_name` in `.pad.toml`, then `PAD_AGENT`; only Claude Code is detected without one. The registered name is this session's own live registry row (`pad session register --agent <name>`, which needs a verifiable owner pid); a row registered from an unrelated shell does not apply.
+
+The web roster is built from the caller's own `GET /sessions` plus their existing DMs, so an agent with no name, or none connected, has no entry; the empty `/messages` page explains this only when both reads answered (a pending or failed list, or a `503` from `/sessions`, is unknown and never shown as "no agents"). An agent's own DM is `@<its-name>`: a name that differs from the caller's `X-Pad-Agent` is another agent's DM and is refused.
+
 ### Item schedules (TASK-4102)
 
 HTTP only for now: there is no CLI command or MCP action, and the web has no client. One schedule per item; the schedule is the RULE, and its single outstanding occurrence is carried by a managed reminder row (`reminder_id`) that the reminder tick fires.
