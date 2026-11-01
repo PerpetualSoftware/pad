@@ -10,6 +10,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/kernelevents"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/schedule"
 )
 
 // TASK-4104 D3: schedules on a cross-workspace copy and move.
@@ -458,18 +459,26 @@ func TestPreviewScheduleCarryMatchesTheCopy(t *testing.T) {
 			sc := c.schedule(t, daily())
 			c.exec(t, `UPDATE item_schedules SET ended_at = ?, next_at = NULL, next_wall = NULL WHERE id = ?`, "2026-10-28T10:00:00Z", sc.ID)
 		}},
+		{"exhausted", func(t *testing.T, c *schedCopy) { c.exhaust(t, c.schedule(t, daily())) }},
 	}
 	for _, tc := range cases {
 		for _, move := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s move=%v", tc.name, move), func(t *testing.T) {
 				c := newSchedCopy(t)
 				tc.setup(t, c)
-				got, err := c.s.PreviewScheduleCarry(c.s.db, c.wsA.ID, c.src.ID, move, copyNow)
-				if err != nil {
-					t.Fatal(err)
+				got, perr := c.s.PreviewScheduleCarry(c.s.db, c.wsA.ID, c.src.ID, "", c.actor, move, copyNow)
+				req := c.req()
+				req.SourceItemID, req.ArchiveSource, req.scheduleNow = c.src.ID, move, copyNow
+				res, cerr := c.s.CopyItemAcrossWorkspaces(req)
+				var pn, cn *ScheduleNotCarriedError
+				if errors.As(perr, &pn) != errors.As(cerr, &cn) || (pn != nil && *pn != *cn) {
+					t.Fatalf("preview err %v != copy err %v", perr, cerr)
 				}
-				if res := c.do(t, move); res.Schedule != got {
-					t.Errorf("preview %+v != copy %+v", got, res.Schedule)
+				if cerr != nil {
+					return
+				}
+				if perr != nil || res.Schedule != got {
+					t.Errorf("preview %+v (%v) != copy %+v", got, perr, res.Schedule)
 				}
 			})
 		}
@@ -477,11 +486,224 @@ func TestPreviewScheduleCarryMatchesTheCopy(t *testing.T) {
 	t.Run("carry reports", func(t *testing.T) {
 		c := newSchedCopy(t)
 		c.history(t, c.schedule(t, daily()), 2)
-		got, _ := c.s.PreviewScheduleCarry(c.s.db, c.wsA.ID, c.src.ID, false, copyNow)
-		if !got.Carried || got.HistoryDropped != 2 {
+		got, _ := c.s.PreviewScheduleCarry(c.s.db, c.wsA.ID, c.src.ID, "", c.actor, false, copyNow)
+		if !got.HasSchedule || !got.Carried || got.HistoryDropped != 2 {
 			t.Errorf("preview = %+v", got)
 		}
 	})
+}
+
+// exhaust makes the rule end before copyNow while the schedule still looks live.
+func (c *schedCopy) exhaust(t *testing.T, sc *models.ItemSchedule) {
+	t.Helper()
+	c.exec(t, `UPDATE item_schedules SET rrule = 'FREQ=DAILY;UNTIL=20261015T000000Z' WHERE id = ?`, sc.ID)
+}
+
+// D3-f, floating: the preview reads the schedule in the zone the COPY will, the
+// DESTINATION recipient's: the carried assignee, else the copier. The source is
+// assigned to a Los Angeles user who is not a member of B, so the copy drops the
+// assignee and reads the copier's zone (UTC). The rule's last occurrence is 09:00
+// on the 29th: ahead in Los Angeles (05:00 at copyNow), behind in UTC (12:00).
+// A preview that read the SOURCE recipient (Los Angeles) would say carried.
+func TestPreviewReadsAFloatingScheduleInTheDestinationZone(t *testing.T) {
+	t.Parallel()
+	c := newSchedCopy(t)
+	la := createTestUser(t, c.s, "d3fix-la@example.com", "lafix", "password123")
+	if _, err := c.s.SetUserTimezoneIfUnset(la.ID, "America/Los_Angeles"); err != nil {
+		t.Fatal(err)
+	}
+	c.exec(t, `UPDATE items SET assigned_user_id = ? WHERE id = ?`, la.ID, c.src.ID)
+	c.schedule(t, models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-01T09:00", Floating: true, Rrule: "FREQ=DAILY;UNTIL=20261029T090000"})
+
+	got, err := c.s.PreviewScheduleCarry(c.s.db, c.wsA.ID, c.src.ID, "", c.actor, false, copyNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := c.do(t, false)
+	if res.DroppedAssignee != true {
+		t.Fatal("setup: the assignee should have been dropped")
+	}
+	if res.Schedule != got {
+		t.Fatalf("preview %+v != copy %+v", got, res.Schedule)
+	}
+	if res.Schedule.Carried || res.Schedule.Skipped != "exhausted" {
+		t.Fatalf("report = %+v, want exhausted in the copier's UTC zone", res.Schedule)
+	}
+}
+
+// D3 r1-3: every reason a live schedule can fail to carry, and what each door
+// does with it. A MOVE of a non-terminal one is refused and rolls back whole; a
+// copy skips and reports. Terminal ones (ended, exhausted) are covered below.
+func TestMoveRefusesALiveScheduleItCannotCarry(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name, want string
+		corrupt    func(t *testing.T, c *schedCopy, sc *models.ItemSchedule)
+		fired      bool // a move carries a fired occurrence as it is; no compile
+	}{
+		{"rule does not compile", "timing:syntax", func(t *testing.T, c *schedCopy, sc *models.ItemSchedule) {
+			c.exec(t, `UPDATE item_schedules SET rrule = 'NOT A RULE' WHERE id = ?`, sc.ID)
+		}, false},
+		{"zone", "timing:zone", func(t *testing.T, c *schedCopy, sc *models.ItemSchedule) {
+			c.exec(t, `UPDATE item_schedules SET tz = 'Not/AZone' WHERE id = ?`, sc.ID)
+		}, false},
+		{"anchor_wall mismatches the rule", "anchor_wall:combination", func(t *testing.T, c *schedCopy, sc *models.ItemSchedule) {
+			c.exec(t, `UPDATE item_schedules SET anchor_wall = '2026-10-28' WHERE id = ?`, sc.ID)
+		}, false},
+		{"dtstart is not a wall", "timing:wall", func(t *testing.T, c *schedCopy, sc *models.ItemSchedule) {
+			c.exec(t, `UPDATE item_schedules SET dtstart = 'garbage' WHERE id = ?`, sc.ID)
+		}, false},
+		{"window ends before it starts", "dtend:range", func(t *testing.T, c *schedCopy, sc *models.ItemSchedule) {
+			c.exec(t, `UPDATE item_schedules SET kind = 'window', dtend = '2026-09-01T09:00' WHERE id = ?`, sc.ID)
+		}, false},
+		{"fired occurrence is all-day on a timed rule", "next_wall:combination", func(t *testing.T, c *schedCopy, sc *models.ItemSchedule) {
+			c.forcePast(t, sc)
+			c.exec(t, `UPDATE item_reminders SET fired_at = ? WHERE schedule_id = ?`, "2026-10-28T09:00:00Z", sc.ID)
+			c.exec(t, `UPDATE item_schedules SET next_wall = '2026-10-28' WHERE id = ?`, sc.ID)
+		}, true},
+		{"fired occurrence wall is malformed", "next_wall:wall", func(t *testing.T, c *schedCopy, sc *models.ItemSchedule) {
+			c.forcePast(t, sc)
+			c.exec(t, `UPDATE item_reminders SET fired_at = ? WHERE schedule_id = ?`, "2026-10-28T09:00:00Z", sc.ID)
+			c.exec(t, `UPDATE item_schedules SET next_wall = 'garbage' WHERE id = ?`, sc.ID)
+		}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			c := newSchedCopy(t)
+			sc := c.schedule(t, daily())
+			tc.corrupt(t, c, sc)
+			before := c.sched(t, c.wsA.ID, c.src.ID)
+			itemsB := countItemsIn(t, c.s, c.wsB.ID)
+
+			req := c.req()
+			req.SourceItemID, req.ArchiveSource, req.scheduleNow = c.src.ID, true, copyNow
+			_, err := c.s.CopyItemAcrossWorkspaces(req)
+			var refused *ScheduleNotCarriedError
+			if !errors.As(err, &refused) || refused.Reason != tc.want {
+				t.Fatalf("move err = %v, want ScheduleNotCarriedError %q", err, tc.want)
+			}
+			if got := countItemsIn(t, c.s, c.wsB.ID); got != itemsB {
+				t.Errorf("destination items %d -> %d", itemsB, got)
+			}
+			if live, _ := c.s.GetItem(c.src.ID); live == nil {
+				t.Error("the source was archived despite the refusal")
+			}
+			a := c.sched(t, c.wsA.ID, c.src.ID)
+			if a == nil || a.EndedAt != nil || a.UpdatedAt != before.UpdatedAt || a.NextWall == nil {
+				t.Errorf("source schedule after the refused move = %+v, want live and untouched (was %+v)", a, before)
+			}
+			if n, _, _ := c.managed(t, sc.ID); n != 1 {
+				t.Errorf("source managed rows = %d, want 1", n)
+			}
+			if n := c.count(t, `SELECT COUNT(*) FROM item_schedules WHERE workspace_id = ?`, c.wsB.ID); n != 0 {
+				t.Errorf("destination schedules = %d", n)
+			}
+
+			if tc.fired {
+				return // a plain copy never reads the fired wall
+			}
+			res := c.do(t, false)
+			if res.Item == nil || res.Schedule.Carried || res.Schedule.Skipped != tc.want {
+				t.Errorf("copy report = %+v, want skipped %q", res.Schedule, tc.want)
+			}
+			if a := c.sched(t, c.wsA.ID, c.src.ID); a == nil || a.EndedAt != nil {
+				t.Errorf("a plain copy touched the source schedule: %+v", a)
+			}
+		})
+	}
+}
+
+// D3 r1-3, terminal reasons: nothing is left to fire, so a move ends the source
+// (when it is not already) and reports it; a copy skips and reports.
+func TestMoveOfATerminalScheduleEndsItAndReports(t *testing.T) {
+	t.Parallel()
+	for _, reason := range []string{"exhausted", "ended"} {
+		t.Run(reason, func(t *testing.T) {
+			t.Parallel()
+			c := newSchedCopy(t)
+			sc := c.schedule(t, daily())
+			var endedAt string
+			if reason == "exhausted" {
+				c.exhaust(t, sc)
+			} else {
+				endedAt = "2026-10-28T10:00:00Z"
+				c.exec(t, `UPDATE item_schedules SET ended_at = ?, next_at = NULL, next_wall = NULL WHERE id = ?`, endedAt, sc.ID)
+				c.exec(t, `DELETE FROM item_reminders WHERE schedule_id = ?`, sc.ID)
+			}
+			cp := c.do(t, false)
+			if cp.Schedule.Carried || cp.Schedule.Skipped != reason {
+				t.Errorf("copy report = %+v, want skipped %q", cp.Schedule, reason)
+			}
+			if a := c.sched(t, c.wsA.ID, c.src.ID); a == nil || (reason == "exhausted") == (a.EndedAt != nil) {
+				t.Errorf("a plain copy changed whether the source is ended: %+v", a)
+			}
+
+			c2 := newSchedCopy(t)
+			sc2 := c2.schedule(t, daily())
+			if reason == "exhausted" {
+				c2.exhaust(t, sc2)
+			} else {
+				c2.exec(t, `UPDATE item_schedules SET ended_at = ?, next_at = NULL, next_wall = NULL WHERE id = ?`, endedAt, sc2.ID)
+				c2.exec(t, `DELETE FROM item_reminders WHERE schedule_id = ?`, sc2.ID)
+			}
+			res := c2.do(t, true)
+			if res.Schedule.Carried || res.Schedule.Skipped != reason || !res.Schedule.HasSchedule {
+				t.Errorf("move report = %+v, want skipped %q", res.Schedule, reason)
+			}
+			a := c2.sched(t, c2.wsA.ID, c2.src.ID)
+			if a == nil || a.EndedAt == nil || a.NextWall != nil {
+				t.Errorf("source schedule after the move = %+v, want ended", a)
+			}
+			if reason == "ended" && *a.EndedAt != endedAt {
+				t.Errorf("an already ended schedule was re-ended: %s", *a.EndedAt)
+			}
+			if n, _, _ := c2.managed(t, sc2.ID); n != 0 {
+				t.Errorf("source managed rows = %d", n)
+			}
+			if b := c2.sched(t, c2.wsB.ID, res.Item.ID); b != nil {
+				t.Errorf("destination got a schedule: %+v", b)
+			}
+		})
+	}
+}
+
+// D3 r1-3, cap_time: load-dependent, so BOTH a copy and a move are refused with
+// the cap error (the HTTP edge answers 503 schedule_busy) and nothing is written.
+// SEAM: carryLimits is lowered so the real clock cap bites. Serial on purpose
+// (it sets a package variable): parallel tests wait until it finishes.
+func TestCapTimeRefusesTheCopyAndTheMoveWithNothingWritten(t *testing.T) {
+	old := carryLimits
+	carryLimits.MaxDuration = time.Nanosecond
+	defer func() { carryLimits = old }()
+	for _, move := range []bool{false, true} {
+		t.Run(fmt.Sprintf("move=%v", move), func(t *testing.T) {
+			c := newSchedCopy(t)
+			sc := c.schedule(t, daily())
+			before := c.sched(t, c.wsA.ID, c.src.ID)
+			itemsB := countItemsIn(t, c.s, c.wsB.ID)
+
+			req := c.req()
+			req.SourceItemID, req.ArchiveSource, req.scheduleNow = c.src.ID, move, copyNow
+			_, err := c.s.CopyItemAcrossWorkspaces(req)
+			var capErr *schedule.CapError
+			if !errors.As(err, &capErr) || capErr.Kind != schedule.CapTime {
+				t.Fatalf("err = %v, want a CapTime error", err)
+			}
+			if got := countItemsIn(t, c.s, c.wsB.ID); got != itemsB {
+				t.Errorf("destination items %d -> %d", itemsB, got)
+			}
+			if live, _ := c.s.GetItem(c.src.ID); live == nil {
+				t.Error("the source was archived")
+			}
+			if a := c.sched(t, c.wsA.ID, c.src.ID); a == nil || a.EndedAt != nil || a.UpdatedAt != before.UpdatedAt {
+				t.Errorf("source schedule changed: %+v", a)
+			}
+			if n, _, _ := c.managed(t, sc.ID); n != 1 {
+				t.Errorf("source managed rows = %d", n)
+			}
+		})
+	}
 }
 
 // C3: an update of the schedule of an archived item is refused with the item
@@ -651,4 +873,61 @@ func TestPGFireVersusMove(t *testing.T) {
 			t.Errorf("the source fired after the move: %+v", got)
 		}
 	})
+}
+
+// PG (r1-2): a timing edit that re-arms the managed reminder commits while a move
+// is parked on the schedule row. The move must read the re-armed reminder, not
+// the pre-wait snapshot, so it does NOT catch up the occurrence in B.
+func TestPGMoveParkedBehindAReArmingPatchDoesNotCatchUp(t *testing.T) {
+	if os.Getenv("PAD_TEST_POSTGRES_URL") == "" {
+		t.Skip("PAD_TEST_POSTGRES_URL not set: row locks only exist on Postgres")
+	}
+	t.Parallel()
+	c := newSchedCopy(t)
+	sc := c.schedule(t, daily())
+	c.forcePast(t, sc)
+	c.exec(t, `UPDATE item_reminders SET fired_at = ? WHERE schedule_id = ?`, "2026-10-28T09:00:00Z", sc.ID)
+
+	// The PATCH holds the schedule row, and re-arms (clears fired_at) before it commits.
+	tx, err := c.s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(c.s.q(`SELECT 1 FROM item_schedules WHERE id = ? FOR UPDATE`), sc.ID); err != nil {
+		t.Fatal(err)
+	}
+	req := c.req()
+	req.SourceItemID, req.ArchiveSource, req.scheduleNow = c.src.ID, true, copyNow
+	moved := make(chan error, 1)
+	var res *CrossWorkspaceCopyResult
+	go func() {
+		var err error
+		res, err = c.s.CopyItemAcrossWorkspaces(req)
+		moved <- err
+	}()
+	waitForLockWait(t, c.s, "FOR UPDATE", moved)
+	if _, err := tx.Exec(c.s.q(`UPDATE item_reminders SET fired_at = NULL, remind_at = ? WHERE schedule_id = ?`), "2026-10-29T09:30:00Z", sc.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(c.s.q(`UPDATE item_schedules SET next_at = ?, next_wall = ? WHERE id = ?`), "2026-10-29T10:00:00Z", "2026-10-29T10:00:00", sc.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-moved; err != nil {
+		t.Fatalf("move: %v", err)
+	}
+	if !res.Schedule.Carried {
+		t.Fatalf("report = %+v", res.Schedule)
+	}
+	// Armed fresh at the first occurrence after now (the 30th), not the re-armed
+	// 10:00 on the 29th as a fired catch-up.
+	if b := c.sched(t, c.wsB.ID, res.Item.ID); b == nil || b.NextWall == nil || *b.NextWall != "2026-10-30T09:00:00" {
+		t.Fatalf("destination schedule = %+v, want the 30th", b)
+	}
+	if got := c.tick(t, "2026-10-29T12:01:00Z", c.wsB.ID); len(got) != 0 {
+		t.Fatalf("the move caught up a re-armed occurrence in B: %+v", got)
+	}
 }

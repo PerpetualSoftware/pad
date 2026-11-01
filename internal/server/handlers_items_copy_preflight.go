@@ -541,12 +541,9 @@ type ItemCopyPreflightWarnings struct {
 	// TestCopyPreflight_PartialMarkerForAnItemGrantOnlyGuest.
 	RelationshipsPartial bool `json:"relationships_partial"`
 
-	// ScheduleCarried / ScheduleHistoryDropped / ScheduleSkipped mirror the
-	// copy result's members (TASK-4104 D3), from the same store function the
-	// copy runs. Additive, omitted when the source has no schedule.
-	ScheduleCarried        bool   `json:"schedule_carried,omitempty"`
-	ScheduleHistoryDropped int    `json:"schedule_history_dropped,omitempty"`
-	ScheduleSkipped        string `json:"schedule_skipped,omitempty"`
+	// Schedule mirrors the copy result's member (TASK-4104 D3), from the same
+	// store function the copy runs. Nil, so omitted, when the source has none.
+	Schedule *ItemCopySchedule `json:"schedule,omitempty"`
 }
 
 // legacyHierarchyLinkTypes are hierarchy link types store.ChildLinkTypes
@@ -1545,14 +1542,18 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 
 	// The source's schedule (TASK-4104 D3): the store function the copy runs, so
 	// the preview cannot disagree with it.
-	sched, err := s.store.PreviewItemScheduleCarry(sourceWorkspaceID, item.ID, input.ArchiveSource)
+	// A floating schedule is read in the recipient's zone on the DESTINATION item:
+	// the assignee if the copy would carry it, else the copier.
+	carriedAssignee := ""
+	if item.AssignedUserID != nil && !resp.Warnings.DroppedAssignee {
+		carriedAssignee = *item.AssignedUserID
+	}
+	sched, err := s.store.PreviewItemScheduleCarry(sourceWorkspaceID, item.ID, carriedAssignee, actorID, input.ArchiveSource)
 	if err != nil {
-		writeInternalError(w, err)
+		s.writeCopyError(w, r, err)
 		return
 	}
-	resp.Warnings.ScheduleCarried = sched.Carried
-	resp.Warnings.ScheduleHistoryDropped = sched.HistoryDropped
-	resp.Warnings.ScheduleSkipped = sched.Skipped
+	resp.Warnings.Schedule = itemCopyScheduleView(sched)
 
 	resp.Valid = len(resp.Fields.NeedsValue) == 0
 

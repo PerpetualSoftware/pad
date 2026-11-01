@@ -13,6 +13,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/items"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/schedule"
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
@@ -313,15 +314,39 @@ type ItemCopyResultWarnings struct {
 	// discarded.
 	SourceContentState string `json:"source_content_state,omitempty"`
 
-	// ScheduleCarried / ScheduleHistoryDropped / ScheduleSkipped say what became
-	// of the source's schedule (TASK-4104 D3). All three are additive and
-	// omitted when the source had none, so a schedule-less copy's response is
-	// byte-identical to one produced before they existed. ScheduleSkipped is
-	// the reason a schedule was not carried ("ended", "exhausted", or a
-	// timing:<code> / <field>:<code> carry reason).
-	ScheduleCarried        bool   `json:"schedule_carried,omitempty"`
-	ScheduleHistoryDropped int    `json:"schedule_history_dropped,omitempty"`
-	ScheduleSkipped        string `json:"schedule_skipped,omitempty"`
+	// Schedule says what became of the source's schedule (TASK-4104 D3). Nil, so
+	// omitted, when the source had none: a schedule-less copy's response is
+	// byte-identical to one produced before it existed.
+	Schedule *ItemCopySchedule `json:"schedule,omitempty"`
+}
+
+// ItemCopySchedule is the fate of the source item's schedule, on the copy result
+// and the preflight alike. Inside it nothing is omitted but Skipped, so a client
+// can tell "carried" from "skipped" from "an older server" (no object).
+type ItemCopySchedule struct {
+	Carried        bool                     `json:"carried"`
+	HistoryDropped int                      `json:"history_dropped"`
+	Skipped        *ItemCopyScheduleSkipped `json:"skipped,omitempty"`
+}
+
+// ItemCopyScheduleSkipped says why a schedule was not carried: "ended",
+// "exhausted", or a timing:<code> / <field>:<code> carry reason. An object so it
+// can grow a member without breaking clients.
+type ItemCopyScheduleSkipped struct {
+	Reason string `json:"reason"`
+}
+
+// itemCopyScheduleView is the one conversion from the store's report, shared by
+// the copy and the preflight.
+func itemCopyScheduleView(r store.ScheduleCarryReport) *ItemCopySchedule {
+	if !r.HasSchedule {
+		return nil
+	}
+	v := &ItemCopySchedule{Carried: r.Carried, HistoryDropped: r.HistoryDropped}
+	if r.Skipped != "" {
+		v.Skipped = &ItemCopyScheduleSkipped{Reason: r.Skipped}
+	}
+	return v
 }
 
 // copyPreCheckDenial is an authorization refusal from the IN-TRANSACTION
@@ -564,9 +589,7 @@ func copyResult(res *store.CrossWorkspaceCopyResult, src, dst CrossWorkspaceAcce
 			// before the copy read it.
 			SourceContentState: res.Source.ContentState,
 
-			ScheduleCarried:        res.Schedule.Carried,
-			ScheduleHistoryDropped: res.Schedule.HistoryDropped,
-			ScheduleSkipped:        res.Schedule.Skipped,
+			Schedule: itemCopyScheduleView(res.Schedule),
 		},
 	}
 	if res.SourceSeq != nil {
@@ -876,6 +899,23 @@ func (s *Server) writeCopyError(w http.ResponseWriter, r *http.Request, err erro
 	if errors.As(err, &validation) {
 		writeError(w, http.StatusBadRequest, "validation_error",
 			summarizeMessages([]string{validation.Err.Error()}))
+		return
+	}
+
+	var capErr *schedule.CapError
+	if errors.As(err, &capErr) && capErr.Kind == schedule.CapTime {
+		// Load-dependent, so the whole copy or move is refused, nothing written
+		// (the code every other schedule write gives).
+		w.Header().Set("Retry-After", "1")
+		writeError(w, http.StatusServiceUnavailable, "schedule_busy",
+			"The item's schedule could not be computed in time; retry")
+		return
+	}
+	var notCarried *store.ScheduleNotCarriedError
+	if errors.As(err, &notCarried) {
+		writeError2(w, http.StatusConflict, "schedule_not_carried",
+			"The item has a live schedule the destination cannot take, so the move is refused; change the schedule or copy the item instead",
+			map[string]interface{}{"reason": notCarried.Reason})
 		return
 	}
 

@@ -1,38 +1,49 @@
 package server
 
 import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/go-chi/chi/v5"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/schedule"
+	"github.com/PerpetualSoftware/pad/internal/store"
+	"github.com/PerpetualSoftware/pad/internal/store/storetest"
 )
 
 // TASK-4104 D3: the preflight and the copy report the source schedule's fate
-// from one store function, and a schedule-less copy's response is unchanged.
-func TestCopyEndpoint_ScheduleMembersMatchThePreflight(t *testing.T) {
+// from one store function, in one nested object, and a schedule-less copy's
+// response is unchanged.
+func TestCopyEndpoint_ScheduleObjectMatchesThePreflight(t *testing.T) {
 	cases := []struct {
 		name        string
 		setup       func(t *testing.T, f *copyPreflightFixture)
 		wantCarried bool
 		wantSkipped string
-		wantHistory int
+		moveRefused bool // a non-terminal skip refuses a move
 	}{
 		{"carried", func(t *testing.T, f *copyPreflightFixture) {
 			mustSchedule(t, f)
-		}, true, "", 0},
+		}, true, "", false},
 		{"skipped: the rule does not compile", func(t *testing.T, f *copyPreflightFixture) {
-			sc := mustSchedule(t, f)
-			if _, err := f.srv.store.DB().Exec(f.srv.store.D().Rebind(`UPDATE item_schedules SET rrule = 'NOT A RULE' WHERE id = ?`), sc.ID); err != nil {
-				t.Fatal(err)
-			}
-		}, false, "timing:syntax", 0},
+			f.sql(`UPDATE item_schedules SET rrule = 'NOT A RULE' WHERE id = ?`, mustSchedule(t, f).ID)
+		}, false, "timing:syntax", true},
 		{"skipped: ended", func(t *testing.T, f *copyPreflightFixture) {
-			sc := mustSchedule(t, f)
-			if _, err := f.srv.store.DB().Exec(f.srv.store.D().Rebind(`UPDATE item_schedules SET ended_at = '2026-01-01T00:00:00Z', next_at = NULL, next_wall = NULL WHERE id = ?`), sc.ID); err != nil {
-				t.Fatal(err)
-			}
-		}, false, "ended", 0},
-		{"none", func(t *testing.T, f *copyPreflightFixture) {}, false, "", 0},
+			f.sql(`UPDATE item_schedules SET ended_at = '2026-01-01T00:00:00Z', next_at = NULL, next_wall = NULL WHERE id = ?`, mustSchedule(t, f).ID)
+		}, false, "ended", false},
+		{"skipped: exhausted", func(t *testing.T, f *copyPreflightFixture) {
+			f.sql(`UPDATE item_schedules SET rrule = 'FREQ=DAILY;UNTIL=20990102T000000Z', dtstart = '2099-01-01T09:00' WHERE id = ?`, mustSchedule(t, f).ID)
+			f.sql(`UPDATE item_schedules SET rrule = 'FREQ=DAILY;UNTIL=20000102T000000Z', dtstart = '2000-01-01T09:00' WHERE item_id = ?`, f.source.ID)
+		}, false, "exhausted", false},
 	}
 	for _, tc := range cases {
 		for _, move := range []bool{false, true} {
@@ -46,12 +57,32 @@ func TestCopyEndpoint_ScheduleMembersMatchThePreflight(t *testing.T) {
 				body := f.resolvableBody()
 				body["archive_source"] = move
 
-				pre := f.ok(body).Warnings
-				res := f.copyOK(body).Warnings
-				if pre.ScheduleCarried != tc.wantCarried || pre.ScheduleSkipped != tc.wantSkipped || pre.ScheduleHistoryDropped != tc.wantHistory {
-					t.Errorf("preflight = carried %v skipped %q history %d, want %v %q %d", pre.ScheduleCarried, pre.ScheduleSkipped, pre.ScheduleHistoryDropped, tc.wantCarried, tc.wantSkipped, tc.wantHistory)
+				if move && tc.moveRefused {
+					for _, rr := range []*httptest.ResponseRecorder{f.call(f.owner, reqOpts{}, body), f.callCopy(f.owner, reqOpts{}, body)} {
+						var e struct {
+							Error struct {
+								Code    string `json:"code"`
+								Details struct {
+									Reason string `json:"reason"`
+								} `json:"details"`
+							} `json:"error"`
+						}
+						_ = json.Unmarshal(rr.Body.Bytes(), &e)
+						if rr.Code != http.StatusConflict || e.Error.Code != "schedule_not_carried" || e.Error.Details.Reason != tc.wantSkipped {
+							t.Errorf("status %d code %q reason %q (%s), want 409 schedule_not_carried %q", rr.Code, e.Error.Code, e.Error.Details.Reason, rr.Body.String(), tc.wantSkipped)
+						}
+					}
+					if live, _ := f.srv.store.GetItem(f.source.ID); live == nil {
+						t.Error("the refused move archived the source")
+					}
+					return
 				}
-				if res.ScheduleCarried != pre.ScheduleCarried || res.ScheduleSkipped != pre.ScheduleSkipped || res.ScheduleHistoryDropped != pre.ScheduleHistoryDropped {
+				pre := f.ok(body).Warnings.Schedule
+				res := f.copyOK(body).Warnings.Schedule
+				if pre == nil || pre.Carried != tc.wantCarried || (tc.wantSkipped == "") != (pre.Skipped == nil) || (pre.Skipped != nil && pre.Skipped.Reason != tc.wantSkipped) {
+					t.Errorf("preflight = %+v, want carried %v skipped %q", pre, tc.wantCarried, tc.wantSkipped)
+				}
+				if res == nil || pre == nil || res.Carried != pre.Carried || res.HistoryDropped != pre.HistoryDropped || (res.Skipped == nil) != (pre.Skipped == nil) || (res.Skipped != nil && *res.Skipped != *pre.Skipped) {
 					t.Errorf("copy %+v disagrees with the preflight %+v", res, pre)
 				}
 			})
@@ -59,16 +90,175 @@ func TestCopyEndpoint_ScheduleMembersMatchThePreflight(t *testing.T) {
 	}
 }
 
-// A schedule-less copy carries none of the new members on the wire, in either
-// response.
-func TestCopyEndpoint_ScheduleMembersAbsentWithoutASchedule(t *testing.T) {
+// r1-1: a skipped schedule still says carried:false and history_dropped:0, so a
+// client can tell "skipped" from "no schedule" from "an older server"; a
+// schedule-less copy names no schedule member at all.
+func TestCopyEndpoint_ScheduleObjectKeepsItsZeroValues(t *testing.T) {
 	f := newCopyPreflightFixture(t)
 	body := f.resolvableBody()
-	if rr := f.call(f.owner, reqOpts{}, body); strings.Contains(rr.Body.String(), "schedule_") {
+	if rr := f.call(f.owner, reqOpts{}, body); strings.Contains(rr.Body.String(), "schedule") {
 		t.Errorf("preflight body names a schedule member: %s", rr.Body.String())
 	}
-	if rr := f.callCopy(f.owner, reqOpts{}, body); strings.Contains(rr.Body.String(), "schedule_") {
+	if rr := f.callCopy(f.owner, reqOpts{}, body); strings.Contains(rr.Body.String(), "schedule") {
 		t.Errorf("copy body names a schedule member: %s", rr.Body.String())
+	}
+
+	f = newCopyPreflightFixture(t)
+	f.sql(`UPDATE item_schedules SET ended_at = '2026-01-01T00:00:00Z', next_at = NULL, next_wall = NULL WHERE id = ?`, mustSchedule(t, f).ID)
+	for name, raw := range map[string]string{
+		"preflight": f.call(f.owner, reqOpts{}, f.resolvableBody()).Body.String(),
+		"copy":      f.callCopy(f.owner, reqOpts{}, f.resolvableBody()).Body.String(),
+	} {
+		if !strings.Contains(raw, `"schedule":{"carried":false,"history_dropped":0,"skipped":{"reason":"ended"}}`) {
+			t.Errorf("%s body lacks the whole schedule object: %s", name, raw)
+		}
+	}
+}
+
+// r1-3: cap_time is load-dependent: the copy answers 503 schedule_busy with
+// Retry-After, and a refused move answers 409 schedule_not_carried.
+func TestWriteCopyErrorMapsTheScheduleRefusals(t *testing.T) {
+	f := newCopyPreflightFixture(t)
+	r := httptest.NewRequest("POST", "/", nil)
+
+	rr := httptest.NewRecorder()
+	f.srv.writeCopyError(rr, r, errors.Join(errors.New("copy"), &schedule.CapError{Kind: schedule.CapTime}))
+	if rr.Code != http.StatusServiceUnavailable || rr.Header().Get("Retry-After") != "1" || !strings.Contains(rr.Body.String(), "schedule_busy") {
+		t.Errorf("cap_time: %d %q %s", rr.Code, rr.Header().Get("Retry-After"), rr.Body.String())
+	}
+	rr = httptest.NewRecorder()
+	f.srv.writeCopyError(rr, r, &store.ScheduleNotCarriedError{Reason: "timing:zone"})
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), "schedule_not_carried") || !strings.Contains(rr.Body.String(), "timing:zone") {
+		t.Errorf("not carried: %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+// D3-f: the preflight reads a floating schedule in the zone the COPY will: the
+// carried assignee, else the copier. The source is assigned to someone in
+// UTC+14 who is not a member of the destination (so the copy drops the
+// assignee and the copier's UTC-11 zone reads it). The rule's last occurrence is
+// an hour ahead of UTC now: ahead in UTC-11, behind in UTC+14.
+func TestPreflightReadsAFloatingScheduleInTheCopiersZone(t *testing.T) {
+	f := newCopyPreflightFixture(t)
+	ahead := mustUser(t, f.srv, "d3f-ahead@example.com", "d3fahead", "")
+	if _, err := f.srv.store.SetUserTimezoneIfUnset(ahead.ID, "Pacific/Kiritimati"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.srv.store.SetUserTimezoneIfUnset(f.owner.ID, "Pacific/Pago_Pago"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.srv.store.AddWorkspaceMember(f.wsA.ID, ahead.ID, "editor"); err != nil {
+		t.Fatal(err)
+	}
+	f.sql(`UPDATE items SET assigned_user_id = ? WHERE id = ?`, ahead.ID, f.source.ID)
+	sc, err := f.srv.store.CreateSchedule(f.wsA.ID, f.source.ID, models.ScheduleCreate{Kind: "check", Dtstart: "2099-01-01T09:00", Floating: true, Rrule: "FREQ=DAILY"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := time.Now().UTC().Add(time.Hour)
+	f.sql(`UPDATE item_schedules SET dtstart = ?, rrule = ? WHERE id = ?`,
+		last.AddDate(0, 0, -3).Format("2006-01-02T15:04:05"), "FREQ=DAILY;UNTIL="+last.Format("20060102T150405"), sc.ID)
+
+	body := f.resolvableBody()
+	pre := f.ok(body)
+	if !pre.Warnings.DroppedAssignee {
+		t.Fatal("setup: the assignee should be dropped")
+	}
+	res := f.copyOK(body).Warnings.Schedule
+	if res == nil || !res.Carried {
+		t.Fatalf("copy = %+v, want carried (UTC-11 is before the last occurrence)", res)
+	}
+	if got := pre.Warnings.Schedule; got == nil || got.Carried != res.Carried {
+		t.Errorf("preflight %+v disagrees with the copy %+v", got, res)
+	}
+}
+
+func (f *copyPreflightFixture) sql(q string, args ...any) {
+	f.t.Helper()
+	if _, err := f.srv.store.DB().Exec(f.srv.store.D().Rebind(q), args...); err != nil {
+		f.t.Fatalf("%s: %v", q, err)
+	}
+}
+
+// PG, D3-b: a schedule PATCH that passed the door's pre-check, then parked on the
+// schedule row while a move archived the item and committed, answers 409
+// archived, the answer a later PATCH gets from the pre-check
+// (handlers_items.go writeItemResolveError), not 404.
+func TestPGParkedSchedulePatchAnswers409WhenAMoveArchivesTheItem(t *testing.T) {
+	if os.Getenv("PAD_TEST_POSTGRES_URL") == "" {
+		t.Skip("PAD_TEST_POSTGRES_URL not set: row locks only exist on Postgres")
+	}
+	srv := New(storetest.NewPostgres(t))
+	t.Cleanup(srv.Stop)
+	f := newCopyPreflightFixtureOn(t, srv)
+	mustSchedule(t, f)
+
+	atHook, rel := make(chan struct{}), make(chan struct{})
+	moved := make(chan error, 1)
+	go func() {
+		_, err := srv.store.CopyItemAcrossWorkspaces(store.CrossWorkspaceCopyRequest{
+			SourceItemID: f.source.ID, TargetWorkspaceID: f.wsB.ID, TargetCollectionID: f.collB.ID,
+			FieldOverrides: map[string]any{"ticket": "T-1", "code": "123"},
+			Actor:          f.owner.ID, ArchiveSource: true,
+			AfterWriteTx: func(tx *sql.Tx, _ *store.CrossWorkspaceCopyResult) error {
+				close(atHook)
+				<-rel
+				return nil
+			},
+		})
+		moved <- err
+	}()
+	select {
+	case <-atHook:
+	case err := <-moved:
+		t.Fatalf("the move finished before the hook: %v", err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("the move never reached its commit")
+	}
+
+	patched := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		r := httptest.NewRequest("PATCH", "/api/v1/workspaces/"+f.wsA.Slug+"/items/"+f.source.Slug+"/schedule",
+			strings.NewReader(`{"dtstart":"2099-02-01T09:00"}`))
+		r.Header.Set("Content-Type", "application/json")
+		ctx := WithCurrentUser(r.Context(), f.owner)
+		ctx = contextWithWorkspaceRoleForTest(ctx, "owner")
+		ctx = contextWithResolvedWorkspaceIDForTest(ctx, f.wsA.ID)
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("slug", f.wsA.Slug)
+		rctx.URLParams.Add("itemSlug", f.source.Slug)
+		rr := httptest.NewRecorder()
+		srv.handleUpdateItemSchedule(rr, r.WithContext(context.WithValue(ctx, chi.RouteCtxKey, rctx)))
+		patched <- rr
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiting bool
+		if err := srv.store.DB().QueryRow(`SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid <> pg_backend_pid()
+			AND datname = current_database() AND state = 'active' AND wait_event_type = 'Lock' AND query LIKE '%' || $1 || '%')`,
+			"FOR UPDATE").Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting {
+			break
+		}
+		select {
+		case rr := <-patched:
+			t.Fatalf("the PATCH finished instead of parking: %d %s", rr.Code, rr.Body.String())
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the PATCH never parked on the schedule row")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	close(rel)
+	if err := <-moved; err != nil {
+		t.Fatalf("move: %v", err)
+	}
+	rr := <-patched
+	if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), `"archived"`) {
+		t.Fatalf("parked PATCH = %d %s, want 409 archived", rr.Code, rr.Body.String())
 	}
 }
 

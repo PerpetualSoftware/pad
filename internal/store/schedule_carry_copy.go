@@ -25,10 +25,23 @@ import (
 // A MOVE also ENDS the source schedule (ended_at set, next_* cleared, history
 // kept, managed row deleted), so restoring the archived source cannot fire a
 // second copy of the schedule that now lives in the destination.
+//
+// THE RULE: a move never ends a live schedule it did not carry. A schedule that
+// is not carried is one of two kinds:
+//   - TERMINAL ("ended", "exhausted"): nothing is left to fire, so a copy skips
+//     it and a move ends the source (if it is not already) and reports it.
+//   - anything else (a rule that no longer compiles, a zone, any validation
+//     reason): the schedule is live and the destination cannot take it. A copy
+//     skips and reports; a MOVE is refused (ScheduleNotCarriedError) and rolls
+//     back, so the item stays where it was.
+// timing:cap_time is not a property of the schedule but of the load, so it
+// refuses a copy as well as a move, as a *schedule.CapError (503 schedule_busy).
 
 // ScheduleCarryReport says what a cross-workspace copy or move did with the
 // source item's schedule. The zero value is "the source had none".
 type ScheduleCarryReport struct {
+	// HasSchedule is true when the source item has a schedule at all.
+	HasSchedule bool
 	// Carried is true when the destination got a schedule.
 	Carried bool
 	// HistoryDropped is how many resolved occurrences the source schedule has:
@@ -40,12 +53,34 @@ type ScheduleCarryReport struct {
 	Skipped string
 }
 
+// ScheduleNotCarriedError says a MOVE was refused because the source's live
+// schedule cannot be carried: ending it would lose it (TASK-4104 D3).
+type ScheduleNotCarriedError struct{ Reason string }
+
+func (e *ScheduleNotCarriedError) Error() string {
+	return "move refused: the item's live schedule cannot be carried (" + e.Reason + ")"
+}
+
+// scheduleRecipient names the users whose zone reads a floating schedule on the
+// destination item: its assignee, else its creator. A copy and its preview both
+// build one from the same two facts, the carried assignee and the copier.
+type scheduleRecipient struct{ assignee, creator string }
+
+// scheduleCarryTerminal reports a skip reason that means the schedule has
+// nothing left to fire.
+func scheduleCarryTerminal(reason string) bool { return reason == "ended" || reason == "exhausted" }
+
 // scheduleCarryPlan is what a copy would do with the source schedule.
 type scheduleCarryPlan struct {
 	src    *models.ItemSchedule
 	in     carriedSchedule
 	report ScheduleCarryReport
 }
+
+// carryLimits bounds the search for the destination's first occurrence. A
+// variable only so a test can make the clock cap bite (a real one depends on
+// load).
+var carryLimits = schedule.DefaultLimits
 
 // carriedFromLive builds the destination schedule from the source's stored one.
 // It is pure. view is the destination recipient's zone, read only for a
@@ -73,7 +108,7 @@ func carriedFromLive(sc *models.ItemSchedule, move bool, view *time.Location, no
 	if err != nil {
 		return in, carryReason(err)
 	}
-	occ, found, err := c.NextAfter(nowT, view, schedule.DefaultLimits)
+	occ, found, err := c.NextAfter(nowT, view, carryLimits)
 	if err != nil {
 		return in, carryReason(err)
 	}
@@ -87,20 +122,31 @@ func carriedFromLive(sc *models.ItemSchedule, move bool, view *time.Location, no
 // planScheduleCarry reads the source schedule on q (FOR UPDATE when lock, on
 // Postgres) and decides what the copy does with it, validating the destination
 // schedule without writing. It returns nil when the item has no schedule.
-// zoneItemID is the item whose recipient zone reads a floating schedule: the new
-// destination item for a copy, the source for a preview.
-func (s *Store) planScheduleCarry(q Queryer, workspaceID, itemID, zoneItemID string, move, lock bool, nowT time.Time) (*scheduleCarryPlan, error) {
+// who is the destination item's recipient, whose zone reads a floating schedule.
+func (s *Store) planScheduleCarry(q Queryer, workspaceID, itemID string, who scheduleRecipient, move, lock bool, nowT time.Time) (*scheduleCarryPlan, error) {
 	sc, err := s.getScheduleQ(q, workspaceID, itemID, lock)
 	if err != nil || sc == nil {
 		return nil, err
 	}
+	if lock {
+		// The reminder's fired_at reads through a subquery that, on Postgres under
+		// read committed, can keep the snapshot from before the row lock was won:
+		// a timing edit that re-armed the reminder while this waited would still
+		// read as fired. A statement of its own sees the committed row.
+		var fired sql.NullString
+		if err := q.QueryRow(s.q(`SELECT fired_at FROM item_reminders WHERE schedule_id = ?`), sc.ID).Scan(&fired); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("re-read schedule reminder: %w", err)
+		}
+		sc.ReminderFired = fired.Valid
+	}
 	p := &scheduleCarryPlan{src: sc}
+	p.report.HasSchedule = true
 	if err := q.QueryRow(s.q(`SELECT COUNT(*) FROM schedule_occurrences WHERE schedule_id = ?`), sc.ID).Scan(&p.report.HistoryDropped); err != nil {
 		return nil, fmt.Errorf("count schedule history: %w", err)
 	}
 	var view *time.Location
 	if sc.Floating {
-		if view, err = s.scheduleRecipientZone(q, zoneItemID); err != nil {
+		if view, err = s.scheduleZoneOf(q, who.assignee, who.creator); err != nil {
 			return nil, err
 		}
 	}
@@ -114,14 +160,23 @@ func (s *Store) planScheduleCarry(q Queryer, workspaceID, itemID, zoneItemID str
 			skip = drop.Reason
 		}
 	}
+	if skip == "timing:cap_time" {
+		return nil, &schedule.CapError{Kind: schedule.CapTime}
+	}
+	if skip != "" && move && !scheduleCarryTerminal(skip) {
+		return nil, &ScheduleNotCarriedError{Reason: skip}
+	}
 	p.in, p.report.Skipped, p.report.Carried = in, skip, skip == ""
 	return p, nil
 }
 
 // PreviewScheduleCarry is what the copy preflight reports: the same plan the
 // copy runs, read without a lock and written nowhere.
-func (s *Store) PreviewScheduleCarry(q Queryer, workspaceID, itemID string, move bool, nowT time.Time) (ScheduleCarryReport, error) {
-	p, err := s.planScheduleCarry(q, workspaceID, itemID, itemID, move, false, nowT)
+//
+// assignee is the assignee the copy would carry ("" when it is dropped or the
+// source has none) and creator the copier: the destination item's recipient.
+func (s *Store) PreviewScheduleCarry(q Queryer, workspaceID, itemID, assignee, creator string, move bool, nowT time.Time) (ScheduleCarryReport, error) {
+	p, err := s.planScheduleCarry(q, workspaceID, itemID, scheduleRecipient{assignee, creator}, move, false, nowT)
 	if err != nil || p == nil {
 		return ScheduleCarryReport{}, err
 	}
@@ -130,15 +185,15 @@ func (s *Store) PreviewScheduleCarry(q Queryer, workspaceID, itemID string, move
 
 // PreviewItemScheduleCarry is PreviewScheduleCarry on the store's own connection
 // at the current time, for the preflight handler.
-func (s *Store) PreviewItemScheduleCarry(workspaceID, itemID string, move bool) (ScheduleCarryReport, error) {
-	return s.PreviewScheduleCarry(s.db, workspaceID, itemID, move, time.Now())
+func (s *Store) PreviewItemScheduleCarry(workspaceID, itemID, assignee, creator string, move bool) (ScheduleCarryReport, error) {
+	return s.PreviewScheduleCarry(s.db, workspaceID, itemID, assignee, creator, move, time.Now())
 }
 
 // carrySourceScheduleTx runs inside the copy transaction after the destination
 // item exists and, on a move, after the source was archived (so the item row is
 // already held and the FOR UPDATE read below sees any committed edit).
-func (s *Store) carrySourceScheduleTx(tx *sql.Tx, sourceWorkspaceID, sourceItemID, targetWorkspaceID, targetItemID string, move bool, nowT time.Time) (ScheduleCarryReport, error) {
-	p, err := s.planScheduleCarry(tx, sourceWorkspaceID, sourceItemID, targetItemID, move, move, nowT)
+func (s *Store) carrySourceScheduleTx(tx *sql.Tx, sourceWorkspaceID, sourceItemID, targetWorkspaceID, targetItemID, assignee, creator string, move bool, nowT time.Time) (ScheduleCarryReport, error) {
+	p, err := s.planScheduleCarry(tx, sourceWorkspaceID, sourceItemID, scheduleRecipient{assignee, creator}, move, move, nowT)
 	if err != nil || p == nil {
 		return ScheduleCarryReport{}, err
 	}

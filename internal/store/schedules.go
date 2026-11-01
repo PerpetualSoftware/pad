@@ -250,11 +250,23 @@ func armSchedule(c *schedule.Compiled, occ schedule.Occurrence, lead int, overri
 // enqueueReminderNotificationTx uses, so whose zone and who is notified cannot
 // disagree. Unset, deleted or unloadable is UTC.
 func (s *Store) scheduleRecipientZone(q Queryer, itemID string) (*time.Location, error) {
+	var assignee, creator sql.NullString
+	err := q.QueryRow(s.q(`SELECT assigned_user_id, created_by_user_id FROM items WHERE id = ?`), itemID).Scan(&assignee, &creator)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("read schedule recipient: %w", err)
+	}
+	return s.scheduleZoneOf(q, assignee.String, creator.String)
+}
+
+// scheduleZoneOf is the zone of the assignee, else of the creator: the one rule
+// scheduleRecipientZone and the cross-workspace copy and its preview share.
+func (s *Store) scheduleZoneOf(q Queryer, assignee, creator string) (*time.Location, error) {
+	uid := assignee
+	if uid == "" {
+		uid = creator
+	}
 	var tz sql.NullString
-	err := q.QueryRow(s.q(`
-		SELECT u.timezone FROM items i
-		LEFT JOIN users u ON u.id = COALESCE(NULLIF(i.assigned_user_id, ''), NULLIF(i.created_by_user_id, ''))
-		WHERE i.id = ?`), itemID).Scan(&tz)
+	err := q.QueryRow(s.q(`SELECT timezone FROM users WHERE id = ?`), uid).Scan(&tz)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("read schedule recipient zone: %w", err)
 	}

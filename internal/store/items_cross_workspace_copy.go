@@ -901,7 +901,7 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 	if scheduleNow.IsZero() {
 		scheduleNow = time.Now()
 	}
-	scheduleReport, err := s.carrySourceScheduleTx(tx, sourceWorkspaceID, req.SourceItemID, req.TargetWorkspaceID, item.ID, req.ArchiveSource, scheduleNow)
+	scheduleReport, err := s.carrySourceScheduleTx(tx, sourceWorkspaceID, req.SourceItemID, req.TargetWorkspaceID, item.ID, derefStr(assignedUserID), req.Actor, req.ArchiveSource, scheduleNow)
 	if err != nil {
 		return nil, err
 	}

@@ -493,6 +493,12 @@ func (s *Server) handleUpdateItemSchedule(w http.ResponseWriter, r *http.Request
 		}
 	}
 	sc, err := s.store.UpdateSchedule(workspaceID, item.ID, upd)
+	if errors.Is(err, store.ErrScheduleItemGone) {
+		// Archived while the write waited (a move won the race): the answer the
+		// door's own pre-check gives, 409 archived; 404 only if it is truly gone.
+		s.writeItemResolveError(w, r, workspaceID, chi.URLParam(r, "itemSlug"))
+		return
+	}
 	if writeScheduleError(w, err) {
 		return
 	}
