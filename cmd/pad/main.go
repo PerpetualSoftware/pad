@@ -251,11 +251,24 @@ func newRootCmd() *cobra.Command {
 
 // --- helpers ---
 
+// getConfig is loadConfig for commands: a config.toml that fails to load
+// ends the process with the error.
 func getConfig() *config.Config {
-	cfg, err := config.Load()
+	cfg, err := loadConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
 		os.Exit(1)
+	}
+	return cfg
+}
+
+// loadConfig loads the config and applies --url, returning a load error
+// instead of exiting, for callers that must not end the process, such as
+// the display-zone resolver (TASK-4142).
+func loadConfig() (*config.Config, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, err
 	}
 	// --url flag takes highest precedence. An explicit --url is an
 	// unambiguous "talk to this server" signal from the user, so it
@@ -270,7 +283,7 @@ func getConfig() *config.Config {
 			cfg.Mode = config.ModeRemote
 		}
 	}
-	return cfg
+	return cfg, nil
 }
 
 // applyPadTomlOverride layers the per-directory .pad.toml `url` field on top
