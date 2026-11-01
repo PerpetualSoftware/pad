@@ -12,8 +12,9 @@ import (
 // none) and dropped_unique_values (BUG-3825; both paths).
 type importedWorkspace struct {
 	models.Workspace
-	ImportSummary       *importSummary            `json:"import_summary,omitempty"`
-	DroppedUniqueValues []models.ImportUniqueDrop `json:"dropped_unique_values,omitempty"`
+	ImportSummary       *importSummary              `json:"import_summary,omitempty"`
+	DroppedUniqueValues []models.ImportUniqueDrop   `json:"dropped_unique_values,omitempty"`
+	DroppedSchedules    []models.ImportScheduleDrop `json:"dropped_schedules,omitempty"`
 }
 
 // printImportDrops prints each unique value the import dropped, one line each
@@ -22,6 +23,18 @@ type importedWorkspace struct {
 func printImportDrops(w io.Writer, drops []models.ImportUniqueDrop) {
 	for _, d := range drops {
 		fmt.Fprintf(w, "  dropped: %s\n", itemCopyLine(fmt.Sprintf("%s: %s %q is taken by %s", d.Item, d.Key, d.Value, d.Holder)))
+	}
+}
+
+// printImportScheduleDrops prints each schedule the import refused (TASK-4104
+// D2); the item itself imported.
+func printImportScheduleDrops(w io.Writer, drops []models.ImportScheduleDrop) {
+	for _, d := range drops {
+		item := d.Item
+		if item == "" {
+			item = "(item not imported)"
+		}
+		fmt.Fprintf(w, "  dropped schedule: %s (%s)\n", item, d.Reason)
 	}
 }
 

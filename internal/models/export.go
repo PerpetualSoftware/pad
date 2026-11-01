@@ -24,6 +24,75 @@ type WorkspaceExport struct {
 	// regenerates. Without them a SQLite->Postgres migration drops every one.
 	// Additive and omitempty, like reminders, so the format version holds.
 	Verifications []VerificationExport `json:"verifications,omitempty"`
+	// Schedules round-trip too (TASK-4104 D2): the time trigger attached to an
+	// item, with its resolved-occurrence history. Additive and omitempty, so
+	// the format version holds and a bundle without the member imports as it
+	// always did.
+	Schedules []ScheduleExport `json:"schedules,omitempty"`
+}
+
+// ScheduleExport is one item schedule in a workspace bundle. Ids are not
+// carried (the import mints them), nor is error_code (a rule that compiles on
+// the destination is healthy; the fire path rediscovers a cap) nor the managed
+// reminder's ack mark (a managed row cannot be acknowledged).
+//
+// RDates and ExDates are []any, not []string, so ONE malformed entry (a
+// number, an object) is a dropped and reported schedule at import rather than
+// a decode failure that loses the whole bundle. The import re-marshals them
+// from the parsed values and never keeps the bundle's text (BUG-4193).
+type ScheduleExport struct {
+	ItemID      string `json:"item_id"`
+	Kind        string `json:"kind"`
+	Dtstart     string `json:"dtstart"`
+	Dtend       string `json:"dtend,omitempty"`
+	Tz          string `json:"tz,omitempty"`
+	Floating    bool   `json:"floating,omitempty"`
+	Rrule       string `json:"rrule,omitempty"`
+	RDates      []any  `json:"rdates,omitempty"`
+	ExDates     []any  `json:"exdates,omitempty"`
+	Anchor      string `json:"anchor"`
+	Audience    string `json:"audience"`
+	LeadMinutes int    `json:"lead_minutes,omitempty"`
+
+	// The outstanding occurrence. Empty on an ended schedule.
+	NextAt         string `json:"next_at,omitempty"`
+	NextWall       string `json:"next_wall,omitempty"`
+	NextOverrideAt string `json:"next_override_at,omitempty"`
+	AnchorWall     string `json:"anchor_wall,omitempty"`
+	EndedAt        string `json:"ended_at,omitempty"`
+	CreatedAt      string `json:"created_at"`
+	UpdatedAt      string `json:"updated_at"`
+
+	// Reminder is the managed reminder row's state; nil on an ended schedule.
+	// The row itself is rebuilt on import (export skips managed rows).
+	Reminder    *ScheduleReminderExport    `json:"reminder,omitempty"`
+	Occurrences []ScheduleOccurrenceExport `json:"occurrences,omitempty"`
+}
+
+// ScheduleReminderExport is the managed reminder's lifecycle.
+type ScheduleReminderExport struct {
+	RemindAt string `json:"remind_at"`
+	FiredAt  string `json:"fired_at,omitempty"`
+}
+
+// ScheduleOccurrenceExport is one resolved occurrence. CommentID names a
+// comment of the same bundle (CommentExport.ID); the import remaps it.
+type ScheduleOccurrenceExport struct {
+	OccurrenceAt   string `json:"occurrence_at"`
+	OccurrenceWall string `json:"occurrence_wall"`
+	State          string `json:"state"`
+	CommentID      string `json:"comment_id,omitempty"`
+	Actor          string `json:"actor,omitempty"`
+	ResolvedAt     string `json:"resolved_at"`
+}
+
+// ImportScheduleDrop is one bundled schedule an import did not store: its rule
+// or state failed the checks every other schedule writer applies. The item
+// imported; Item is its ref in the NEW workspace ("" when the item itself did
+// not import). Reason is a stable code, never bundle text.
+type ImportScheduleDrop struct {
+	Item   string `json:"item"`
+	Reason string `json:"reason"`
 }
 
 // VerificationExport is one acceptance-criterion verdict in a workspace
