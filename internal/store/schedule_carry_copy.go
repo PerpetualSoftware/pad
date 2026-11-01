@@ -33,7 +33,8 @@ import (
 //     it and a move ends the source (if it is not already) and reports it.
 //     "exhausted" on a move is terminal only when the source's own outstanding
 //     occurrence (read in the source recipient's zone) is absent or not after
-//     now; if the destination zone finds nothing after now but the source still
+//     now (floating schedules only: a pinned one reads one zone on both sides);
+//     if the destination zone finds nothing after now but the source still
 //     has a future occurrence, that is "exhausted_in_destination_zone", which is
 //     NOT terminal: the move is refused. A copy reports it as a skip.
 //   - anything else (a rule that no longer compiles, a zone, any validation
@@ -132,7 +133,7 @@ func carriedFromLive(sc *models.ItemSchedule, move bool, view, srcView *time.Loc
 		return in, carryReason(err)
 	}
 	if !found {
-		if move && srcErr == nil && srcOK && srcOut.After(nowT) {
+		if move && sc.Floating && srcErr == nil && srcOK && srcOut.After(nowT) {
 			// The rule is spent in the destination's zone but the source still
 			// holds a future occurrence in its own: ending the source would lose it.
 			return in, reasonExhaustedInDestZone
