@@ -25,7 +25,11 @@ import {
 	attachmentDeletePrompt,
 	workspaceAttachmentDeletePrompt
 } from '$lib/components/attachments/AttachmentDeleteConfirm.svelte';
-import { buildPlaceholder, storedNotInsertedMessage } from '$lib/components/editor/attachment-upload';
+import {
+	buildPlaceholder,
+	storedNotInsertedMessage,
+	uploadFailedMessage
+} from '$lib/components/editor/attachment-upload';
 import { renderAttachmentChip, renderAttachmentImage } from '$lib/markdown/attachments';
 import {
 	renderMarkedWithAttachments,
@@ -78,6 +82,31 @@ describe('attachment-upload (sites 7, 16)', () => {
 		const msg = storedNotInsertedMessage(EVIL_NAME);
 		expectFsiPdi(msg, EVIL_NAME);
 		expect(msg.startsWith(FSI + EVIL_NAME + PDI + ' was uploaded')).toBe(true);
+	});
+	// Site 17 (TASK-4195 r1-L2): the upload-error toast in Editor and
+	// CommentEditor. The name is isolated; the server's message is ours and is not.
+	it('the upload-failed toast isolates the name only', () => {
+		const msg = uploadFailedMessage(EVIL_NAME, 'too large');
+		expectFsiPdi(msg, EVIL_NAME);
+		expect(msg).toBe("Couldn't upload " + FSI + EVIL_NAME + PDI + ': too large');
+	});
+});
+
+// Site 17 binding (CONVE-19): no test mounts the full Editor's upload error
+// path, so pin that both toast sites build their text with the tested helper
+// rather than an inline template that could drop the isolation.
+const toastSites = import.meta.glob(
+	['../components/editor/Editor.svelte', '../components/CommentEditor.svelte'],
+	{ query: '?raw', import: 'default', eager: true }
+) as Record<string, string>;
+
+describe('upload-error toast sites (site 17)', () => {
+	it('finds both sources', () => {
+		expect(Object.keys(toastSites)).toHaveLength(2);
+	});
+	it.each(Object.entries(toastSites))('%s toasts through uploadFailedMessage', (_name, src) => {
+		expect(src).toContain('toastStore.show(uploadFailedMessage(filename, message), ');
+		expect(src).not.toContain("Couldn't upload");
 	});
 });
 

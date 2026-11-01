@@ -108,6 +108,14 @@ export function storedNotInsertedMessage(filename: string): string {
 	return `${isolateText(filename)} was uploaded but not inserted into the document: the editor closed, or the place it was dropped was removed, before it could be inserted. Attach it again to use it.`;
 }
 
+/**
+ * The toast for a failed upload, shared by Editor and CommentEditor (TASK-4195
+ * site 17). Only the file name is isolated: the message text is ours.
+ */
+export function uploadFailedMessage(filename: string, message: string): string {
+	return `Couldn't upload ${isolateText(filename)}: ${message}`;
+}
+
 const pluginKey = new PluginKey<UploadState>('attachmentUpload');
 
 /**
