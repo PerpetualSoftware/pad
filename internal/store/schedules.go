@@ -269,6 +269,12 @@ func (s *Store) scheduleRecipientZone(q Queryer, itemID string) (*time.Location,
 
 // scheduleZoneOf is the zone of the assignee, else of the creator: the one rule
 // the cross-workspace copy and its preview use, which already hold both ids.
+// The copy passes the copier's ACCOUNT id as creator, the one the new item's
+// created_by_user_id holds. When the carried assignee is dropped (not a member of
+// the destination) this fallback changes a floating schedule's zone, so the
+// destination walks its walls in the new zone: a wall the source already fired
+// can fire again there, or one can be skipped (TASK-4221 arms strictly after the
+// source's last fired instant).
 func (s *Store) scheduleZoneOf(q Queryer, assignee, creator string) (*time.Location, error) {
 	uid := assignee
 	if uid == "" {

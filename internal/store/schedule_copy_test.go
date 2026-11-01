@@ -436,6 +436,32 @@ func TestCopiedFloatingScheduleFollowsTheDestinationRecipient(t *testing.T) {
 	}
 }
 
+// The carry reads the copier's zone from the ACCOUNT that owns the new item
+// (ActorUserID, the created_by_user_id the later live reads use), not from the
+// audit Actor string (TASK-4104 Z2).
+func TestCopiedFloatingScheduleReadsTheCopierAccountZoneNotTheAuditActor(t *testing.T) {
+	t.Parallel()
+	c := newSchedCopy(t)
+	la := createTestUser(t, c.s, "d3z-la@example.com", "laz", "password123")
+	if _, err := c.s.SetUserTimezoneIfUnset(la.ID, "America/Los_Angeles"); err != nil {
+		t.Fatal(err)
+	}
+	c.schedule(t, models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-01T09:00", Floating: true, Rrule: "FREQ=DAILY"})
+
+	req := c.req()
+	req.SourceItemID, req.scheduleNow = c.src.ID, copyNow
+	req.Actor = "agent-not-an-account" // the audit string: no account, so UTC
+	req.ActorUserID = la.ID
+	res := c.copy(t, req)
+
+	// 12:00Z is 05:00 in Los Angeles: today's 09:00 local is still ahead. In UTC
+	// it would have passed, and B would arm the 30th.
+	b := c.sched(t, c.wsB.ID, res.Item.ID)
+	if b == nil || b.NextWall == nil || *b.NextWall != "2026-10-29T09:00:00" {
+		t.Fatalf("destination schedule = %+v, want the 29th (the account's zone)", b)
+	}
+}
+
 // The preflight asks the same store function the copy runs, so both agree on
 // every outcome.
 func TestPreviewScheduleCarryMatchesTheCopy(t *testing.T) {
