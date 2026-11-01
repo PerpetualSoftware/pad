@@ -15,6 +15,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Editor } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
+import {
+	EVIL_NAME,
+	FSI,
+	PDI,
+	expectFsiPdi,
+	expectIsolated,
+	expectNoIsolates
+} from '$lib/attachments/bidiIsolation.testutil';
 
 const panelOpenMock = vi.fn<(event: Record<string, unknown>) => void>();
 const deletionListeners = new Set<(uuid: string) => void>();
@@ -219,7 +227,7 @@ describe('editor chip → options panel', () => {
 	it('names the action, not just the file (DR-12)', () => {
 		// Type comes from the filename here, since no HEAD probe ran; size is
 		// omitted rather than reported as a confident "0 B".
-		expect(chip().getAttribute('aria-label')).toBe('Options for spec.pdf, PDF');
+		expect(chip().getAttribute('aria-label')).toBe('Options for ' + FSI + 'spec.pdf' + PDI + ', PDF');
 	});
 
 	it('probes under the CURRENT workspace after a pane workspace switch', async () => {
@@ -485,12 +493,37 @@ describe('editor chip → options panel', () => {
 		// happened rather than promising options.
 		expect(el.disabled).toBe(true);
 		expect(el.hasAttribute('tabindex')).toBe(false);
-		expect(el.getAttribute('aria-label')).toBe('spec.pdf — this attachment has been deleted');
+		expect(el.getAttribute('aria-label')).toBe(FSI + 'spec.pdf' + PDI + ' — this attachment has been deleted');
 		expect(el.classList.contains('attachment-missing')).toBe(true);
 
 		const click = new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 });
 		el.dispatchEvent(click);
 		el.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true }));
 		expect(panelOpenMock).not.toHaveBeenCalled();
+	});
+
+	// TASK-4195: the NodeView isolates the name for DISPLAY; the stored attrs, the
+	// clipboard HTML (renderHTML) and the markdown serializer stay isolate-free,
+	// because parseHTML reads the name back from them.
+	it('isolates the chip name and accessible name, leaving every stored form clean', () => {
+		const ed = (editor ??= makeEditor(target));
+		repointChip('uuid-1', EVIL_NAME);
+		const el = chip();
+
+		expectIsolated(el.querySelector('.file-chip-name')!, EVIL_NAME);
+		expectFsiPdi(el.getAttribute('aria-label'), EVIL_NAME);
+		expect(el.getAttribute('data-filename')).toBe(EVIL_NAME);
+
+		const node = ed.state.doc.firstChild!.firstChild!;
+		expect(node.attrs.filename).toBe(EVIL_NAME);
+		expectNoIsolates(node.attrs.filename);
+		expectNoIsolates(ed.getHTML());
+
+		let written = '';
+		(ed.storage as unknown as {
+			attachmentChip: { markdown: { serialize: (s: unknown, n: unknown) => void } };
+		}).attachmentChip.markdown.serialize({ write: (t: string) => (written += t) }, node);
+		expect(written).toBe(`[${EVIL_NAME}](pad-attachment:uuid-1)`);
+		expectNoIsolates(written);
 	});
 });

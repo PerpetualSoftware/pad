@@ -32,6 +32,7 @@
 	import { AttachmentChip } from './editor/attachment-chip';
 	import { AttachmentUpload } from './editor/attachment-upload';
 	import type { AttachmentHostAddress } from '$lib/attachments/hostAddress';
+	import { isolateText } from '$lib/attachments/display';
 
 	interface Props {
 		/** Initial markdown body. Parsed as markdown on mount. */
@@ -290,7 +291,7 @@
 						if (message === PLAN_LIMIT_PROMPTED) return;
 						console.error(`[comment attachment] ${filename}: ${message}`);
 						// A toast, not a blocking window.alert (TASK-2221, audit C39).
-						toastStore.show(`Couldn't upload ${filename}: ${message}`, 'error');
+						toastStore.show(`Couldn't upload ${isolateText(filename)}: ${message}`, 'error');
 					},
 					// An upload that finished after this composer unmounted: when a
 					// pane opens over the timeline, when the user navigates away. The

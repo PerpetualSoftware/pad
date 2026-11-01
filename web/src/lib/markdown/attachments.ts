@@ -235,7 +235,9 @@ export function renderAttachmentImage(
 	const src = urlBuilder
 		? urlBuilder(meta.id, variant)
 		: attachmentDownloadUrl(workspaceSlug, meta.id, variant);
-	const altText = alt && alt.trim() !== '' ? alt : meta.filename;
+	// Only the filename FALLBACK is isolated; user-authored alt text stays as written.
+	// (U+2068 / U+2069 written inline: this module deliberately does not import display.ts.)
+	const altText = alt && alt.trim() !== '' ? alt : `\u2068${meta.filename}\u2069`;
 	const sizeAttrs =
 		meta.width && meta.height && meta.width > 0 && meta.height > 0
 			? ` width="${meta.width}" height="${meta.height}"`
@@ -258,7 +260,7 @@ export function renderAttachmentChip(
 	const label = displayText && displayText.trim() !== '' ? displayText : meta.filename;
 	const size = formatAttachmentSize(meta.size_bytes);
 	const sizeSpan = size ? ` <span class="file-chip-size">· ${escapeHtml(size)}</span>` : '';
-	return `<a class="file-chip" href="${escapeHtml(href)}" data-attachment-id="${escapeHtml(meta.id)}" download="${escapeHtml(meta.filename)}" target="_blank" rel="noopener noreferrer"><span class="file-chip-icon" aria-hidden="true">📄</span><span class="file-chip-name">${escapeHtml(label)}</span>${sizeSpan}</a>`;
+	return `<a class="file-chip" href="${escapeHtml(href)}" data-attachment-id="${escapeHtml(meta.id)}" download="${escapeHtml(meta.filename)}" target="_blank" rel="noopener noreferrer"><span class="file-chip-icon" aria-hidden="true">📄</span><span class="file-chip-name"><bdi>${escapeHtml(label)}</bdi></span>${sizeSpan}</a>`;
 }
 
 /**

@@ -582,6 +582,7 @@
 	import { AttachmentChip } from './attachment-chip';
 	import type { AttachmentHostAddress } from '$lib/attachments/hostAddress';
 	import { AttachmentUpload } from './attachment-upload';
+	import { isolateText } from '$lib/attachments/display';
 
 	// The upload callback's refusal across an identity change (BUG-3105), matched
 	// by `onError` so that refusal is not presented as a failed upload.
@@ -1200,7 +1201,7 @@
 					// the main mobile upload path, and an alert steals focus and the
 					// keyboard mid-edit (TASK-2221, audit C39).
 					console.error(`[attachment upload] ${filename}: ${message}`);
-					toastStore.show(`Couldn't upload ${filename}: ${message}`, 'error');
+					toastStore.show(`Couldn't upload ${isolateText(filename)}: ${message}`, 'error');
 				},
 				// A stored upload whose reference could not be inserted (BUG-2177).
 				// The identity fence above rejects a previous user's upload before

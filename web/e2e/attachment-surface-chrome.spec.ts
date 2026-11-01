@@ -256,7 +256,7 @@ test.describe('attachment viewer — 3c-i surface chrome (TASK-2484)', () => {
 		// DR-13: the FULL value is in title, and the box CLIPS WITH AN ELLIPSIS — the
 		// resolved style, not just overflow (a clip without `text-overflow: ellipsis`
 		// would still overflow but drop the "…", which jsdom cannot show).
-		await expect(name).toHaveAttribute('title', long);
+		await expect(name).toHaveAttribute('title', `\u2068${long}\u2069`);
 		const clip = await name.evaluate((el) => {
 			const cs = getComputedStyle(el);
 			return {

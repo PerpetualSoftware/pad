@@ -397,7 +397,7 @@ test.describe('attachment viewer — four-surface parity (TASK-2436)', () => {
 			// tile's delete control carries the same filename, so an unanchored
 			// name matches two controls) and on the comma that follows it in the
 			// label, so a truncated or mangled name cannot satisfy the match.
-			const tile = page.getByRole('button', { name: new RegExp(`^View ${escapeRe(name)},`) });
+			const tile = page.getByRole('button', { name: new RegExp(`^View \\u2068?${escapeRe(name)}\\u2069?,`) });
 			await expect(tile).toHaveCount(1);
 			await tile.click();
 			// The dialog names itself for the file (3c-ii T2b): the name now LEADS with
@@ -410,7 +410,7 @@ test.describe('attachment viewer — four-surface parity (TASK-2436)', () => {
 			// is caught here — the tolerant addressing matcher above would accept it.
 			await expect(page.locator(VIEWER)).toHaveAttribute(
 				'aria-label',
-				new RegExp(`^${escapeRe(name)}, .+`)
+				new RegExp(`^\\u2068?${escapeRe(name)}\\u2069?, .+`)
 			);
 			await page.keyboard.press('Escape');
 			await expect(page.locator(VIEWER)).toHaveCount(0);
@@ -421,7 +421,7 @@ test.describe('attachment viewer — four-surface parity (TASK-2436)', () => {
 		// horizontal overflow — the failure a physical `left`/`right` pair would
 		// produce if the layout depended on it.
 		await page.evaluate(() => document.documentElement.setAttribute('dir', 'rtl'));
-		await page.getByRole('button', { name: new RegExp(`^View ${escapeRe(bidiStored)},`) }).click();
+		await page.getByRole('button', { name: new RegExp(`^View \\u2068?${escapeRe(bidiStored)}\\u2069?,`) }).click();
 		await expect(page.locator(VIEWER)).toHaveCount(1);
 		const rtl = await page.evaluate(() => {
 			const el = document.querySelector<HTMLElement>('.attachment-viewer')!;
