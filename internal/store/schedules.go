@@ -531,6 +531,18 @@ func (s *Store) updateScheduleAt(workspaceID, itemID string, upd models.Schedule
 	if err != nil || cur == nil {
 		return nil, err
 	}
+	// The item may have been archived while this waited on the schedule row: a
+	// cross-workspace move archives it, ends the schedule and commits first. A
+	// plain read, so no lock edge from the schedule to the item; an edit must not
+	// revive a schedule that move ended (TASK-4104 D3).
+	var live int
+	switch err := tx.QueryRow(s.q(`SELECT 1 FROM items WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL`),
+		itemID, workspaceID).Scan(&live); {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil, ErrScheduleItemGone
+	case err != nil:
+		return nil, fmt.Errorf("update schedule: check item: %w", err)
+	}
 
 	deref := func(p *string) string {
 		if p == nil {

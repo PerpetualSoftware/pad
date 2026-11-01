@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/items"
 	"github.com/PerpetualSoftware/pad/internal/kernelevents"
@@ -327,6 +328,9 @@ type CrossWorkspaceCopyRequest struct {
 	//
 	// See the copyStage* constants for the recognised values.
 	failAfterStage string
+
+	// scheduleNow is a TEST-ONLY clock for the schedule carry; zero is time.Now().
+	scheduleNow time.Time
 }
 
 // Stage names for CrossWorkspaceCopyRequest.failAfterStage.
@@ -335,6 +339,7 @@ const (
 	copyStageAttachments = "attachments"
 	copyStageArchive     = "archive"
 	copyStageProvenance  = "provenance"
+	copyStageSchedule    = "schedule"
 )
 
 // injectedStageFailure returns a synthetic error when the request asked to
@@ -406,6 +411,9 @@ type CrossWorkspaceCopyResult struct {
 	NotUnique        []models.NotUniqueDrop
 	DroppedAssignee  bool
 	DroppedAgentRole bool
+
+	// Schedule says what happened to the source's schedule (TASK-4104 D3).
+	Schedule ScheduleCarryReport
 }
 
 // CopyItemAcrossWorkspaces copies one item from its workspace into another,
@@ -887,6 +895,20 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 		return nil, err
 	}
 
+	// --- The source's schedule (TASK-4104 D3). After the archive, so a move
+	// already holds the item row when it reads the schedule FOR UPDATE. ---
+	scheduleNow := req.scheduleNow
+	if scheduleNow.IsZero() {
+		scheduleNow = time.Now()
+	}
+	scheduleReport, err := s.carrySourceScheduleTx(tx, sourceWorkspaceID, req.SourceItemID, req.TargetWorkspaceID, item.ID, req.ArchiveSource, scheduleNow)
+	if err != nil {
+		return nil, err
+	}
+	if err := req.injectedStageFailure(copyStageSchedule); err != nil {
+		return nil, err
+	}
+
 	// --- Provenance. Written last so it can carry the archive's seq, and in
 	// the same transaction so a rollback can never leave a pointer at an item
 	// that does not exist. ---
@@ -922,6 +944,7 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 		NotUnique:         notUnique,
 		DroppedAssignee:   droppedAssignee,
 		DroppedAgentRole:  droppedAgentRole,
+		Schedule:          scheduleReport,
 	}
 	if req.AfterWriteTx != nil {
 		if err := req.AfterWriteTx(tx, res); err != nil {
