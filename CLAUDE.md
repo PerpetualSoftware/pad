@@ -54,6 +54,7 @@ skills/pad/SKILL.md    agent skill
 - No `web/build`: `embed.go` embeds `all:web/build`, so `make test`/`make lint` fail with "no matching files found". Run `npx vite build` in `web/`. Do not use `make web` in a worktree without its own `node_modules` (see above).
 - No `web/build-materializer`: embedded too. Run `node scripts/build-materializer.mjs` in `web/` after `npx vite build` (`npm run build` does both). It needs esbuild, so a `node_modules` older than the lockfile cannot build it. A placeholder file is not enough: `internal/materialize` tests run the real bundle.
 - `make test-pg` is safe across worktrees (each gets its own compose project and Docker-assigned port) but NOT twice at once in one worktree: both resolve to the same project and the first to finish runs `down -v` under the other. The failure then looks like `connection refused` against the code. It refuses to run (`NO TESTS EXECUTED`) when the database is unreachable. Reap a stack from a deleted worktree with `docker ps --filter name=padtest-` then `docker compose -p <project> down -v`; from inside a worktree, `make test-pg-down`.
+- Refreshing an installed binary: use `scripts/install-refresh.sh`. `make install` runs `npm ci`, which rewrites `web/node_modules` and breaks any other process building from the same checkout.
 - Keep Go build caches off a tmpfs `/tmp` (it is RAM-backed on many dev machines); point `GOCACHE`/`GOTMPDIR` at a disk path.
 
 ## API and MCP
