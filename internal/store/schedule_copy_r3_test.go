@@ -156,6 +156,57 @@ func TestMoveCarriesASnoozeStillAhead(t *testing.T) {
 	})
 }
 
+// r5: the two 01:30 walls in a pinned hourly fall-back overlap are different
+// occurrences. A move carries the snooze only when the pending instant matches.
+func TestMoveCarriesPinnedSnoozeByInstantDuringFallBack(t *testing.T) {
+	t.Parallel()
+	const first = "2026-11-01T05:30:00Z"
+	const snooze = "2026-11-01T07:30:00Z"
+	for _, tc := range []struct {
+		name, pendingAt, wantOverride string
+	}{
+		{"second 01:30 does not match first", "2026-11-01T06:30:00Z", ""},
+		{"first 01:30 matches first", first, snooze},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			c := newSchedCopy(t)
+			now := rt("2026-11-01T05:00:00Z")
+			sc, err := c.s.createScheduleAt(c.wsA.ID, c.src.ID, models.ScheduleCreate{
+				Kind: "check", Dtstart: "2026-11-01T00:30", Tz: "America/New_York", Rrule: "FREQ=HOURLY",
+			}, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if derefStr(sc.NextWall) != "2026-11-01T01:30:00" || derefStr(sc.NextAt) != first {
+				t.Fatalf("setup: next wall = %q at %q, want first 01:30", derefStr(sc.NextWall), derefStr(sc.NextAt))
+			}
+			c.exec(t, `UPDATE item_schedules SET next_at = ?, next_override_at = ? WHERE id = ?`, tc.pendingAt, snooze, sc.ID)
+			c.exec(t, `UPDATE item_reminders SET remind_at = ? WHERE schedule_id = ?`, snooze, sc.ID)
+			req := c.req()
+			req.SourceItemID, req.ArchiveSource, req.scheduleNow = c.src.ID, true, now
+			res := c.copy(t, req)
+			if !res.Schedule.Carried {
+				t.Fatalf("report = %+v, want carried", res.Schedule)
+			}
+			b := c.sched(t, c.wsB.ID, res.Item.ID)
+			if b == nil || derefStr(b.NextWall) != "2026-11-01T01:30:00" || derefStr(b.NextAt) != first {
+				t.Fatalf("destination = %+v, want first 01:30 at %s", b, first)
+			}
+			if got := derefStr(b.NextOverrideAt); got != tc.wantOverride {
+				t.Errorf("destination snooze = %q, want %q", got, tc.wantOverride)
+			}
+			wantRemindAt := first
+			if tc.wantOverride != "" {
+				wantRemindAt = tc.wantOverride
+			}
+			if n, at, fired := c.managed(t, b.ID); n != 1 || fired || at != wantRemindAt {
+				t.Errorf("managed row = %d %s fired=%v, want one armed row at %s", n, at, fired, wantRemindAt)
+			}
+		})
+	}
+}
+
 // r4-1: an unreadable outstanding occurrence must not be lost by a move.
 // A copy still arms from the rule without reading the source occurrence.
 func unreadableSource(t *testing.T, c *schedCopy, floating bool) *models.ItemSchedule {

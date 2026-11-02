@@ -149,8 +149,13 @@ func carriedFromLive(sc *models.ItemSchedule, move bool, view, srcView *time.Loc
 		return in, "exhausted"
 	}
 	in.NextWall, in.NextAt = occ.Wall.String(), NormalizeInstant(occ.At)
-	if move && occ.Wall.String() == *sc.NextWall {
-		// The source's own pending occurrence, snoozed: a move carries the snooze.
+	samePending := in.NextAt == derefStr(sc.NextAt)
+	if sc.Floating {
+		samePending = in.NextWall == *sc.NextWall
+	}
+	if move && samePending {
+		// Match the source's pending occurrence by wall for floating schedules,
+		// instant for pinned schedules: a move carries that occurrence's snooze.
 		in.NextOverrideAt = liveOverride(sc, nowT)
 	}
 	return in, ""
