@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    branches: [main, 'ci-test/**']
 
 concurrency:
   # Per-SHA on main: never evict a pending run or its vendorHash heal.
