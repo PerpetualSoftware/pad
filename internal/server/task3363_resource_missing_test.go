@@ -197,3 +197,97 @@ func TestTASK3363_WarningIsRateLimitedPerClient(t *testing.T) {
 		t.Fatalf("after the hour: %d log lines, want 3", got)
 	}
 }
+
+// decideTarget posts a consent decision carrying one target parameter (key is
+// "resource" or "audience") and returns the redirect's query.
+func decideTarget(t *testing.T, srv *Server, sess oauthSession, key, value string) url.Values {
+	t.Helper()
+	form := url.Values{
+		"client_id": {sess.clientID}, "response_type": {"code"}, "redirect_uri": {"https://app.test/cb"},
+		"code_challenge": {s256Challenge("verifier-3363-aud-abcdefghijklmnopqrstuvwxyz0123456789")}, "code_challenge_method": {"S256"},
+		"scope": {"pad:read"}, "state": {"state-3363-aud-01"}, "decision": {"approve"},
+		"csrf_token": {sess.csrfTok}, "capability_tier": {"read"}, "allowed_workspaces": {"*"},
+		key: {value},
+	}
+	rr := postFormWithCookie(srv, "/oauth/authorize/decide", form, sess.sessionToken, sess.csrfTok)
+	loc, _ := url.Parse(rr.Header().Get("Location"))
+	if loc == nil {
+		t.Fatalf("decide with %s=%s: %d, no redirect", key, value, rr.Code)
+	}
+	return loc.Query()
+}
+
+func resourceMissingCount(t *testing.T, m *metrics.Metrics, label string) float64 {
+	t.Helper()
+	var pb io_prometheus_client.Metric
+	if err := m.OAuthResourceMissingTotal.WithLabelValues(label).Write(&pb); err != nil {
+		t.Fatal(err)
+	}
+	return pb.GetCounter().GetValue()
+}
+
+// TASK-3363 phase 2, dev lead ruling: audience= without resource= is NOT yet
+// refused (phase 1 never counted it). It is served, counted under its own
+// label, and enforced the release after v0.20.0.
+func TestTASK3363_AudienceOnlyIsServedAndCountedUnderItsOwnLabel(t *testing.T) {
+	srv := twoResourceOAuthServer(t)
+	m := metrics.New()
+	srv.SetMetrics(m)
+	sess := newOAuthSession(t, srv)
+
+	q := decideTarget(t, srv, sess, "audience", testCanonicalAudience)
+	if q.Get("code") == "" {
+		t.Fatalf("decide with audience= only was not served: %v", q)
+	}
+	if got := resourceMissingCount(t, m, "decide_audience_only"); got != 1 {
+		t.Fatalf("decide_audience_only = %v, want 1", got)
+	}
+	if got := resourceMissingCount(t, m, "decide"); got != 0 {
+		t.Fatalf("an audience-only request was counted as a neither-key omission: decide = %v", got)
+	}
+
+	// The authorize step is counted too, and is not refused with invalid_target.
+	aq := url.Values{
+		"client_id": {sess.clientID}, "response_type": {"code"}, "redirect_uri": {"https://app.test/cb"},
+		"scope": {"pad:read"}, "code_challenge": {s256Challenge("verifier-3363-abcdefghijklmnopqrstuvwxyz0123456789")},
+		"code_challenge_method": {"S256"}, "state": {"state-3363-02"}, "audience": {testCanonicalAudience},
+	}
+	// newOAuthSession already hit /oauth/authorize with audience= to read the
+	// CSRF cookie, so count the delta.
+	before := resourceMissingCount(t, m, "authorize_audience_only")
+	rr := doRequestWithCookie(srv, "GET", "/oauth/authorize?"+aq.Encode(), nil, sess.sessionToken)
+	if loc, _ := url.Parse(rr.Header().Get("Location")); loc != nil && loc.Query().Get("error") == "invalid_target" {
+		t.Fatalf("authorize with audience= only was refused with invalid_target; that is the next release: %s", rr.Header().Get("Location"))
+	}
+	if got := resourceMissingCount(t, m, "authorize_audience_only") - before; got != 1 {
+		t.Fatalf("authorize_audience_only rose by %v, want 1", got)
+	}
+
+	// A request that names resource= is not an audience-only request.
+	if q := decideTarget(t, srv, sess, "resource", testCanonicalAudience); q.Get("code") == "" {
+		t.Fatalf("decide with resource= was not served: %v", q)
+	}
+	if got := resourceMissingCount(t, m, "decide_audience_only"); got != 1 {
+		t.Fatalf("a resource= request moved decide_audience_only to %v", got)
+	}
+}
+
+// The condition on that ruling: audience= is held to the same allowed set as
+// resource=. A value resource= refuses, audience= refuses.
+func TestTASK3363_AudienceIsValidatedLikeResource(t *testing.T) {
+	srv := twoResourceOAuthServer(t)
+	sess := newOAuthSession(t, srv)
+	for _, bad := range []string{"https://evil.example/mcp", testCanonicalAudience + "/other", "not a url"} {
+		viaResource := decideTarget(t, srv, sess, "resource", bad)
+		viaAudience := decideTarget(t, srv, sess, "audience", bad)
+		if viaResource.Get("code") != "" {
+			t.Fatalf("resource=%q was granted a code; the premise of this test is wrong", bad)
+		}
+		if viaAudience.Get("code") != "" {
+			t.Errorf("audience=%q was granted a code that resource= refuses", bad)
+		}
+		if viaAudience.Get("error") == "" {
+			t.Errorf("audience=%q: no error in the redirect: %v", bad, viaAudience)
+		}
+	}
+}

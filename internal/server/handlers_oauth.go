@@ -597,6 +597,40 @@ func (s *Server) noteResourceMissing(r *http.Request, endpoint string) {
 	}
 }
 
+// isAudienceOnly reports a request that names its target through fosite's
+// audience= and sends no RFC 8707 resource=. translateResourceToAudience
+// defers to audience= untouched, so phase 1 never counted such a request, and
+// phase 2 does not yet refuse it: it is measured first (TASK-3363, dev lead
+// ruling), enforced the release after v0.20.0. Call it BEFORE
+// translateResourceToAudience. The audience= value is still held to the same
+// allowed set as resource= by fosite's audience matching strategy.
+func isAudienceOnly(r *http.Request) bool {
+	return r != nil && r.Form != nil && len(r.Form["audience"]) > 0 && len(r.Form["resource"]) == 0
+}
+
+// noteAudienceOnly records an audience-only request at authorize or decide:
+// the same log line shape and the same pad_oauth_resource_missing_total
+// counter as noteResourceMissing, under its own endpoint label
+// (<endpoint>_audience_only) so the two predicates read separately. The
+// request is served.
+func (s *Server) noteAudienceOnly(r *http.Request, endpoint string) {
+	clientID := r.Form.Get("client_id")
+	clientName := ""
+	if clientID != "" {
+		if c, err := s.store.GetOAuthClient(clientID); err == nil && c != nil {
+			clientName = c.Name
+		}
+	}
+	label := endpoint + "_audience_only"
+	if s.metrics != nil {
+		s.metrics.OAuthResourceMissingTotal.WithLabelValues(label).Inc()
+	}
+	if s.resourceMissingWarnDue("audience-only:" + clientID) {
+		slog.Warn("oauth: client sent audience= without the RFC 8707 resource parameter; served for now, refused from the release after v0.20.0. Logged once per client per hour; pad_oauth_resource_missing_total counts every request",
+			"endpoint", label, "client_id", clientID, "client_name", clientName)
+	}
+}
+
 // errInvalidTarget is RFC 8707 §2's invalid_target, which fosite does not
 // define: the request named no resource (TASK-3363 phase 2). A fresh value
 // per call, because fosite's With* helpers copy but callers may not.
@@ -678,9 +712,13 @@ func (s *Server) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid query string", http.StatusBadRequest)
 		return
 	}
+	audienceOnly := isAudienceOnly(r)
 	resourceMissing := translateResourceToAudience(r, s.oauthServer.AllowedAudience())
 	if resourceMissing {
 		s.noteResourceMissing(r, "authorize")
+	}
+	if audienceOnly {
+		s.noteAudienceOnly(r, "authorize")
 	}
 
 	// BUG-2088: `scope` is optional (RFC 6749 §3.1.2) and our advertised
@@ -890,9 +928,13 @@ func (s *Server) handleOAuthAuthorizeDecide(w http.ResponseWriter, r *http.Reque
 	}
 
 	// RFC 8707 resource= → fosite audience= (Codex #372 round 1).
+	audienceOnly := isAudienceOnly(r)
 	resourceMissing := translateResourceToAudience(r, s.oauthServer.AllowedAudience())
 	if resourceMissing {
 		s.noteResourceMissing(r, "decide")
+	}
+	if audienceOnly {
+		s.noteAudienceOnly(r, "decide")
 	}
 
 	ctx := r.Context()
