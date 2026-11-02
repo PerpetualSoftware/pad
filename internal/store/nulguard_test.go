@@ -437,6 +437,13 @@ func TestWrapperAdvertisesExactlyWhatTheBaseDoes(t *testing.T) {
 						return nil //nolint:nilerr // a driver that cannot prepare this tells us nothing
 					}
 					defer st.Close()
+					if p.base == "pgx" {
+						helper := "TestWrapperAdvertisesExactlyWhatTheBaseDoes.raw"
+						if db == wrapDB {
+							helper = "TestWrapperAdvertisesExactlyWhatTheBaseDoes.guarded"
+						}
+						tracePGConnected(t, helper)
+					}
 					out["StmtExecContext"] = isIface[driver.StmtExecContext](st)
 					out["StmtQueryContext"] = isIface[driver.StmtQueryContext](st)
 					out["stmt NamedValueChecker"] = isIface[driver.NamedValueChecker](st)

@@ -1,0 +1,7 @@
+# CANDIDATE: finalized only against a full traced PG run.
+./cmd/pad
+./internal/appstore
+./internal/mcp
+./internal/server
+./internal/store
+./internal/store/storetest

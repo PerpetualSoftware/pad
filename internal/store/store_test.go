@@ -199,14 +199,14 @@ func testStorePostgres(t *testing.T, baseURL string) *Store {
 	defer pgTemplateMu.RUnlock()
 
 	pgTemplateOnce.Do(func() {
-		pgTemplateName, pgTemplateErr = buildPostgresTemplate(baseURL)
+		pgTemplateName, pgTemplateErr = buildPostgresTemplate(t, baseURL)
 	})
 	if pgTemplateErr != nil {
 		t.Fatalf("build postgres template: %v", pgTemplateErr)
 	}
 
 	// Connect to the default "pad" database to issue CREATE/DROP DATABASE.
-	adminStore, err := newPostgresConn(baseURL)
+	adminStore, err := newPostgresConn(t, baseURL)
 	if err != nil {
 		t.Fatalf("connect to postgres for admin: %v", err)
 	}
@@ -235,14 +235,15 @@ func testStorePostgres(t *testing.T, baseURL string) *Store {
 		// behind on exactly the path that most needs cleaning up. Pre-existing
 		// and asymmetric with the twin; corrected here because this change
 		// makes the two helpers a matched pair (codex round 2, P2).
-		dropPostgresTemplateDB(baseURL, dbName)
+		dropPostgresTemplateDB(t, baseURL, dbName)
 		t.Fatalf("open test postgres store: %v", err)
 	}
+	tracePGConnected(t, "testStorePostgres")
 
 	t.Cleanup(func() {
 		s.Close()
 		// Drop the test database.
-		if admin, err := newPostgresConn(baseURL); err == nil {
+		if admin, err := newPostgresConn(t, baseURL); err == nil {
 			admin.db.Exec(fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", dbName))
 			admin.Close()
 		}
@@ -260,11 +261,11 @@ func testStorePostgres(t *testing.T, baseURL string) *Store {
 // LEAK POSTURE: a binary killed mid-run leaves its pad_tmpl_* database behind,
 // bounded by the container's lifetime — the test stack is per-worktree
 // (TASK-2708) and `make test-pg` tears it down with -v.
-func buildPostgresTemplate(baseURL string) (string, error) {
+func buildPostgresTemplate(tb testing.TB, baseURL string) (string, error) {
 	atomic.AddInt32(&pgTemplateBuilds, 1)
 	name := "pad_tmpl_" + uuid.New().String()[:8]
 
-	admin, err := newPostgresConn(baseURL)
+	admin, err := newPostgresConn(tb, baseURL)
 	if err != nil {
 		return "", fmt.Errorf("connect to postgres for admin: %w", err)
 	}
@@ -277,9 +278,10 @@ func buildPostgresTemplate(baseURL string) (string, error) {
 	// The one time this binary pays for the migration chain.
 	s, err := NewPostgres(replaceDBName(baseURL, name))
 	if err != nil {
-		dropPostgresTemplateDB(baseURL, name)
+		dropPostgresTemplateDB(tb, baseURL, name)
 		return "", fmt.Errorf("migrate template database %s: %w", name, err)
 	}
+	tracePGConnected(tb, "buildPostgresTemplate")
 	// Stamp the template with a marker a freshly-migrated database cannot have.
 	// Without it this mechanism is untestable: a clone and a per-test migration
 	// produce otherwise identical databases, so reverting the TEMPLATE clause
@@ -293,11 +295,11 @@ func buildPostgresTemplate(baseURL string) (string, error) {
 	// reason. KEEP IN SYNC.
 	if _, err := s.db.Exec(fmt.Sprintf("COMMENT ON TABLE schema_migrations IS '%s'", pgTemplateMarker(name))); err != nil {
 		s.Close()
-		dropPostgresTemplateDB(baseURL, name)
+		dropPostgresTemplateDB(tb, baseURL, name)
 		return "", fmt.Errorf("stamp template %s: %w", name, err)
 	}
 	if err := s.Close(); err != nil {
-		dropPostgresTemplateDB(baseURL, name)
+		dropPostgresTemplateDB(tb, baseURL, name)
 		return "", fmt.Errorf("close template connection %s: %w", name, err)
 	}
 	return name, nil
@@ -318,24 +320,27 @@ func removePostgresTemplate() {
 		return
 	}
 	if baseURL := os.Getenv("PAD_TEST_POSTGRES_URL"); baseURL != "" {
-		dropPostgresTemplateDB(baseURL, pgTemplateName)
+		// TestMain runs after every testing.T has finished; no live TB can log.
+		dropPostgresTemplateDB(nil, baseURL, pgTemplateName)
 	}
 	pgTemplateName = ""
 }
 
-func dropPostgresTemplateDB(baseURL, name string) {
-	if admin, err := newPostgresConn(baseURL); err == nil {
+func dropPostgresTemplateDB(tb testing.TB, baseURL, name string) {
+	if admin, err := newPostgresConn(tb, baseURL); err == nil {
 		admin.db.Exec(fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", name))
 		admin.Close()
 	}
 }
 
 // newPostgresConn opens a raw postgres connection (no migrations).
-func newPostgresConn(connStr string) (*Store, error) {
+func newPostgresConn(tb testing.TB, connStr string) (*Store, error) {
 	db, err := openPostgresDB(connStr)
 	if err != nil {
 		return nil, err
 	}
+	// openPostgresDB has already completed a successful Ping.
+	tracePGConnected(tb, "newPostgresConn")
 	return &Store{db: db, dialect: &postgresDialect{}}, nil
 }
 
