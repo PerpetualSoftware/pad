@@ -155,3 +155,91 @@ func TestMoveCarriesASnoozeStillAhead(t *testing.T) {
 		}
 	})
 }
+
+// r4-1: an unreadable outstanding occurrence must not be lost by a move.
+// A copy still arms from the rule without reading the source occurrence.
+func unreadableSource(t *testing.T, c *schedCopy, floating bool) *models.ItemSchedule {
+	t.Helper()
+	if floating {
+		sc := laSource(t, c, "FREQ=DAILY")
+		c.exec(t, `UPDATE item_schedules SET next_wall = 'unreadable' WHERE id = ?`, sc.ID)
+		return sc
+	}
+	sc := c.schedule(t, daily())
+	c.exec(t, `UPDATE item_schedules SET next_at = 'unreadable' WHERE id = ?`, sc.ID)
+	return sc
+}
+
+func TestMoveRefusesWhenTheSourceOccurrenceCannotBeRead(t *testing.T) {
+	t.Parallel()
+	for _, floating := range []bool{true, false} {
+		name := "pinned next_at"
+		if floating {
+			name = "floating next_wall"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			c := newSchedCopy(t)
+			sc := unreadableSource(t, c, floating)
+			before := c.sched(t, c.wsA.ID, c.src.ID)
+			itemsB := countItemsIn(t, c.s, c.wsB.ID)
+			schedulesB := c.count(t, `SELECT COUNT(*) FROM item_schedules WHERE workspace_id = ?`, c.wsB.ID)
+
+			_, err := c.s.PreviewScheduleCarry(c.s.db, c.wsA.ID, c.src.ID, "", c.actor, true, copyNow)
+			var refused *ScheduleNotCarriedError
+			if !errors.As(err, &refused) || refused.Reason != "schedule:unreadable" {
+				t.Errorf("preview err = %v, want ScheduleNotCarriedError schedule:unreadable", err)
+			}
+			req := c.req()
+			req.SourceItemID, req.ArchiveSource, req.scheduleNow = c.src.ID, true, copyNow
+			_, err = c.s.CopyItemAcrossWorkspaces(req)
+			if !errors.As(err, &refused) || refused.Reason != "schedule:unreadable" {
+				t.Errorf("move err = %v, want ScheduleNotCarriedError schedule:unreadable", err)
+			}
+			if live, _ := c.s.GetItem(c.src.ID); live == nil {
+				t.Error("the refused move archived the source")
+			}
+			if got := countItemsIn(t, c.s, c.wsB.ID); got != itemsB {
+				t.Errorf("destination items %d -> %d", itemsB, got)
+			}
+			if got := c.count(t, `SELECT COUNT(*) FROM item_schedules WHERE workspace_id = ?`, c.wsB.ID); got != schedulesB {
+				t.Errorf("destination schedules %d -> %d", schedulesB, got)
+			}
+			a := c.sched(t, c.wsA.ID, c.src.ID)
+			if a == nil || a.EndedAt != nil || derefStr(a.NextWall) != derefStr(before.NextWall) || derefStr(a.NextAt) != derefStr(before.NextAt) || a.UpdatedAt != before.UpdatedAt {
+				t.Errorf("source schedule = %+v, want live and unchanged (was %+v)", a, before)
+			}
+			if n, _, fired := c.managed(t, sc.ID); n != 1 || fired {
+				t.Errorf("source managed rows = %d fired=%v, want one unfired row", n, fired)
+			}
+		})
+	}
+}
+
+func TestCopyWithAnUnreadableSourceOccurrenceKeepsTodaysBehaviour(t *testing.T) {
+	t.Parallel()
+	for _, floating := range []bool{true, false} {
+		name := "pinned next_at"
+		if floating {
+			name = "floating next_wall"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			c := newSchedCopy(t)
+			unreadableSource(t, c, floating)
+			before := c.sched(t, c.wsA.ID, c.src.ID)
+			res := c.do(t, false)
+			if !res.Schedule.Carried || res.Schedule.Skipped != "" {
+				t.Fatalf("copy report = %+v, want carried fresh", res.Schedule)
+			}
+			b := c.sched(t, c.wsB.ID, res.Item.ID)
+			if b == nil || b.NextWall == nil || *b.NextWall != "2026-10-30T09:00:00" {
+				t.Errorf("destination = %+v, want the 30th armed fresh", b)
+			}
+			a := c.sched(t, c.wsA.ID, c.src.ID)
+			if a == nil || a.EndedAt != nil || derefStr(a.NextWall) != derefStr(before.NextWall) || derefStr(a.NextAt) != derefStr(before.NextAt) || a.UpdatedAt != before.UpdatedAt {
+				t.Errorf("source schedule = %+v, want live and unchanged (was %+v)", a, before)
+			}
+		})
+	}
+}

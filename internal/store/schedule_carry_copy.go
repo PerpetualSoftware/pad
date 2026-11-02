@@ -15,8 +15,8 @@ import (
 // preflight asks the same planScheduleCarry the copy runs.
 //
 // The destination is armed FRESH: its timing, kind, audience and lead carry, its
-// history and snooze do not, and its outstanding occurrence is the first one
-// strictly after the copy instant. A copy never fires an occurrence that is
+// history does not, a COPY drops its snooze, and its outstanding occurrence is
+// the first one strictly after the copy instant. A copy never fires an occurrence that is
 // already due or past. The one exception is a MOVE of a source whose current
 // occurrence is OUTSTANDING and due, whether it has fired (and is unresolved) or
 // not yet (the tick lags): the move ends the source, so the destination carries
@@ -36,11 +36,13 @@ import (
 //     now (floating schedules only: a pinned one reads one zone on both sides);
 //     if the destination zone finds nothing after now but the source still
 //     has a future occurrence, that is "exhausted_in_destination_zone", which is
-//     NOT terminal: the move is refused. A copy reports it as a skip.
+//     NOT terminal: the move is refused. A copy reports "exhausted" instead.
 //   - anything else (a rule that no longer compiles, a zone, any validation
 //     reason): the schedule is live and the destination cannot take it. A copy
 //     skips and reports; a MOVE is refused (ScheduleNotCarriedError) and rolls
-//     back, so the item stays where it was.
+//     back, so the item stays where it was. "schedule:unreadable" means the
+//     source's outstanding occurrence cannot be read; it is move-only, since
+//     a copy does not read that occurrence and keeps its usual carry result.
 // timing:cap_time is not a property of the schedule but of the load, so it
 // refuses a copy as well as a move, as a *schedule.CapError (503 schedule_busy).
 
@@ -75,8 +77,11 @@ type scheduleRecipient struct{ assignee, creator string }
 
 // reasonExhaustedInDestZone is the non-terminal "exhausted": the destination
 // zone sees no occurrence after now, but the source's outstanding one is still
-// ahead in its own zone. A copy reports it as a skip; a move is refused.
+// ahead in its own zone. A move is refused; a copy reports "exhausted" instead.
 const reasonExhaustedInDestZone = "exhausted_in_destination_zone"
+
+// reasonUnreadableOccurrence refuses a move whose source occurrence cannot be read.
+const reasonUnreadableOccurrence = "schedule:unreadable"
 
 // scheduleCarryTerminal reports a skip reason that means the schedule has
 // nothing left to fire.
@@ -111,6 +116,9 @@ func carriedFromLive(sc *models.ItemSchedule, move bool, view, srcView *time.Loc
 	srcOut, srcOK, srcErr := time.Time{}, false, error(nil)
 	if move {
 		srcOut, srcOK, srcErr = OutstandingInstant(sc, srcView)
+		if srcErr != nil {
+			return carriedSchedule{}, reasonUnreadableOccurrence
+		}
 	}
 	if move && (sc.ReminderFired || (srcErr == nil && srcOK && !srcOut.After(nowT))) {
 		// The one catch-up: the outstanding occurrence that has fired, or is due

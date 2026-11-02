@@ -41,7 +41,7 @@ func TestCopyEndpoint_ScheduleObjectMatchesThePreflight(t *testing.T) {
 			f.sql(`UPDATE item_schedules SET ended_at = '2026-01-01T00:00:00Z', next_at = NULL, next_wall = NULL WHERE id = ?`, mustSchedule(t, f).ID)
 		}, false, "ended", false},
 		{"skipped: exhausted", func(t *testing.T, f *copyPreflightFixture) {
-			f.sql(`UPDATE item_schedules SET rrule = 'FREQ=DAILY;UNTIL=20990102T000000Z', dtstart = '2099-01-01T09:00' WHERE id = ?`, mustSchedule(t, f).ID)
+			mustSchedule(t, f)
 			f.sql(`UPDATE item_schedules SET rrule = 'FREQ=DAILY;UNTIL=20000102T000000Z', dtstart = '2000-01-01T09:00' WHERE item_id = ?`, f.source.ID)
 		}, false, "exhausted", false},
 	}

@@ -1173,6 +1173,9 @@ func TestPGDueUnfiredFireVersusMoveFiresOncePerDoor(t *testing.T) {
 		}
 	})
 	t.Run("fire first", func(t *testing.T) {
+		// This is a sequential ORDERING row: the fire commits, then the move
+		// runs, and the row checks the outcome. The concurrent race is covered
+		// by TestPGFireVersusMove's "move first" and "fire pins first" rows.
 		t.Parallel()
 		c := newSchedCopy(t)
 		sc := c.schedule(t, daily())
