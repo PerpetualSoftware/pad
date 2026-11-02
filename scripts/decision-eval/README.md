@@ -1,10 +1,9 @@
 # Decision-provider evals
 
-The scripts behind PLAN-3114's go/no-go decision. They measure the decision
-provider (typesafe.ai Jev) against human-set labels in Pad's own project
-workspace, so a model pin change (`internal/decision.DefaultModel`) can be
-measured against a recorded baseline (see Baseline below) instead of argued
-about.
+These scripts measure the decision provider (typesafe.ai Jev) against
+human-set labels in Pad's own project workspace, so a model pin change
+(`internal/decision.DefaultModel`) can be measured against a recorded
+baseline (see Baseline below) instead of argued about.
 
 | script | what it asks | ground truth |
 |---|---|---|
