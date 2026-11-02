@@ -226,6 +226,7 @@ jobs:
         run: go test -timeout=45m ./...
 
       - name: Run tests with race detector
+        id: race
         if: github.event_name == 'push'
         # Dave's ruling (TASK-4224): race runs after merge on main only.
         # PRs keep the non-race suite; a main failure is stop-the-line.
@@ -270,6 +271,26 @@ jobs:
           removed=$(LC_ALL=C comm -23 <(printf '%s\n' "$all" | LC_ALL=C sort) <(printf '%s\n' "$pkgs" | LC_ALL=C sort))
           [ "$removed" = github.com/PerpetualSoftware/pad/internal/server ] || { printf '::error::the race step must exclude exactly internal/server; it excluded:\n%s\n' "${removed:-(nothing)}"; exit 1; }
           go test $GO_RACE_FLAGS -timeout=45m $pkgs
+
+      # A race failure on main is stop-the-line (Dave's TASK-4224 ruling), the
+      # same treatment race.yml gives the internal/server shards. Keyed on the
+      # race step's own outcome, so an ordinary test failure earlier in the job
+      # (which skips this step) is not reported as a race failure.
+      - name: Stop the line on main race failure
+        if: >-
+          always() && github.event_name == 'push' &&
+          (steps.race.outcome == 'failure' || steps.race.outcome == 'cancelled')
+        env:
+          FAILED_STEP: "Go: Run tests with race detector"
+          OUTCOME: ${{ steps.race.outcome }}
+        run: |
+          echo "::error::$FAILED_STEP: $OUTCOME at $GITHUB_SHA"
+          {
+            echo '# STOP THE LINE: main race failure'
+            echo "Step: $FAILED_STEP ($OUTCOME)"
+            echo "Commit: $GITHUB_SHA"
+            echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Build binary
         run: go build -o pad ./cmd/pad
@@ -635,6 +656,7 @@ jobs:
           fi
 
       - name: Run tests with race detector against PostgreSQL
+        id: race
         if: github.event_name == 'push'
         env:
           PAD_TEST_POSTGRES_URL: "postgres://pad:pad@localhost:5432/pad?sslmode=disable"
@@ -661,6 +683,23 @@ jobs:
           removed=$(LC_ALL=C comm -23 <(printf '%s\n' "$all" | LC_ALL=C sort) <(printf '%s\n' "$pkgs" | LC_ALL=C sort))
           [ "$removed" = github.com/PerpetualSoftware/pad/internal/server ] || { printf '::error::the race step must exclude exactly internal/server; it excluded:\n%s\n' "${removed:-(nothing)}"; exit 1; }
           go test $GO_RACE_FLAGS -timeout=45m -count=1 $pkgs
+
+      # Same stop-the-line treatment as the SQLite race step in the go job.
+      - name: Stop the line on main race failure
+        if: >-
+          always() && github.event_name == 'push' &&
+          (steps.race.outcome == 'failure' || steps.race.outcome == 'cancelled')
+        env:
+          FAILED_STEP: "Go (PostgreSQL): Run tests with race detector against PostgreSQL"
+          OUTCOME: ${{ steps.race.outcome }}
+        run: |
+          echo "::error::$FAILED_STEP: $OUTCOME at $GITHUB_SHA"
+          {
+            echo '# STOP THE LINE: main race failure'
+            echo "Step: $FAILED_STEP ($OUTCOME)"
+            echo "Commit: $GITHUB_SHA"
+            echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   go-server-shards:
     needs: changes

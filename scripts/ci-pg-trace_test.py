@@ -39,9 +39,20 @@ class TraceTest(unittest.TestCase):
              1, [MODULE + "/cmd/pad", MODULE + "/internal/server"],
              ["unexpected: " + MODULE + "/cmd/pad",
               "unexpected: " + MODULE + "/internal/server",
-              "warning: expected package never connected: " + MODULE + "/internal/store"]),
-            ("missing is only a warning", [], "./internal/store\n", 0, [],
-             ["warning: expected package never connected: " + MODULE + "/internal/store"]),
+              "expected package never connected: " + MODULE + "/internal/store"]),
+            # A listed package that stopped connecting means the list (or the
+            # trace marker) drifted: fatal, not a warning (TASK-4224 r1 H1).
+            ("listed package missing while others connect",
+             [event(MODULE + "/cmd/pad")], "./cmd/pad\n./internal/store\n",
+             1, [MODULE + "/cmd/pad"],
+             ["expected package never connected: " + MODULE + "/internal/store"]),
+            # No marker at all means the trace is broken (renamed helper, env
+            # gate lost): it must not pass vacuously.
+            ("empty trace fails", [], "./internal/store\n", 1, [],
+             ["expected package never connected: " + MODULE + "/internal/store",
+              "no PAD_PG_CONNECTED markers: the trace saw no connection at all"]),
+            ("empty trace fails even against an empty list", [], "# only comments\n", 1, [],
+             ["no PAD_PG_CONNECTED markers: the trace saw no connection at all"]),
             ("package output without a test",
              [{"Action": "output", "Package": MODULE + "/internal/store",
                "Output": "PAD_PG_CONNECTED helper=probe\n"}], "./internal/store\n",

@@ -65,8 +65,10 @@ jobs:
           run=$(scripts/test-shard.sh regex ./internal/server/ 3 "$SHARD" $GO_RACE_FLAGS)
           go test $GO_RACE_FLAGS -timeout=45m -run "$run" ./internal/server/
 
+      # failure() alone misses a cancelled run, which leaves main with no race
+      # result at this SHA: that is stop-the-line too (TASK-4224 r1 H3).
       - name: Stop the line on main race failure
-        if: failure()
+        if: failure() || cancelled()
         env:
           FAILED_JOB: Go race internal/server (SQLite ${{ matrix.shard }}/3)
         run: |
@@ -139,8 +141,10 @@ jobs:
           go test $GO_RACE_FLAGS -timeout=45m -count=1 -run "$run" ./internal/server/
 
 
+      # failure() alone misses a cancelled run, which leaves main with no race
+      # result at this SHA: that is stop-the-line too (TASK-4224 r1 H3).
       - name: Stop the line on main race failure
-        if: failure()
+        if: failure() || cancelled()
         env:
           FAILED_JOB: Go race internal/server (PostgreSQL ${{ matrix.shard }}/3)
         run: |

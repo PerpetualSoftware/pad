@@ -1,4 +1,7 @@
-# CANDIDATE: finalized only against a full traced PG run.
+# The packages whose tests connect to the test PostgreSQL. The PR "Go (PostgreSQL)"
+# job runs only these. Validated against a full traced PG run of ./... (TASK-4224).
+# On push to main, ci-pg-trace.py --expect fails unless the packages that connected
+# equal this list, in either direction.
 ./cmd/pad
 ./internal/appstore
 ./internal/mcp

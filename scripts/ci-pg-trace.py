@@ -4,8 +4,13 @@
 Usage: PAD_TEST_PG_TRACE=1 go test -json ... | python3 scripts/ci-pg-trace.py \
     --expect scripts/ci-pg-packages.txt
 
-The candidate list is evidence only; this command does not check the test run's
-exit status. Preserve that separately (for example, with shell pipefail).
+With --expect, the connecting packages must EQUAL the list. A package that
+connected but is not listed, a listed package that never connected, or no
+connection at all exits 1, so the guard cannot pass vacuously when the trace
+marker stops being emitted. Without --expect it only prints the packages.
+
+This command does not check the test run's exit status. Preserve that
+separately (for example, with shell pipefail).
 """
 
 import argparse
@@ -57,14 +62,17 @@ def main():
 
     for package in sorted(connected):
         print(package)
-    if expected is not None:
-        for package in sorted(connected - expected):
-            print(f"unexpected: {package}", file=sys.stderr)
-        for package in sorted(expected - connected):
-            print(f"warning: expected package never connected: {package}", file=sys.stderr)
-        if connected - expected:
-            return 1
-    return 0
+    if expected is None:
+        return 0
+    unexpected = connected - expected
+    missing = expected - connected
+    for package in sorted(unexpected):
+        print(f"unexpected: {package}", file=sys.stderr)
+    for package in sorted(missing):
+        print(f"expected package never connected: {package}", file=sys.stderr)
+    if not connected:
+        print("no PAD_PG_CONNECTED markers: the trace saw no connection at all", file=sys.stderr)
+    return 1 if unexpected or missing or not connected else 0
 
 
 if __name__ == "__main__":
