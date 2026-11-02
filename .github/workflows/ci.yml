@@ -7,8 +7,9 @@ on:
     branches: [main]
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Per-SHA on main: never evict a pending run or its vendorHash heal.
+  group: ci-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -28,7 +29,51 @@ env:
 # execute attacker code in CI. Bump the SHA + comment together when updating.
 
 jobs:
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      go: ${{ steps.scope.outputs.go }}
+      web: ${{ steps.scope.outputs.web }}
+      nix: ${{ steps.scope.outputs.nix }}
+      parity: ${{ steps.scope.outputs.parity }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      # Checkout's merge ref normally contains both parents. Fetch exact event
+      # commits too, so a moved base or fork branch cannot change classification.
+      - name: Ensure exact PR commits are available
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git cat-file -e "$BASE_SHA^{commit}" || git fetch --no-tags origin "$BASE_SHA"
+          git cat-file -e "$HEAD_SHA^{commit}" || git fetch --no-tags origin "$HEAD_SHA"
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Test CI policy and trace scripts
+        run: python3 -m unittest scripts/ci-scope_test.py scripts/ci-result_test.py scripts/ci-pg-trace_test.py
+
+      - name: Test source census
+        run: go test ./scripts/ci-web-census -count=1
+
+      - name: Census all tracked Go sources for web and PostgreSQL references
+        run: go run ./scripts/ci-web-census
+
+      - name: Classify paths
+        id: scope
+        run: python3 scripts/ci-scope.py
+
   go:
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
     # Backstop only. A hung TEST is caught by -timeout=45m on the steps
     # below, which fails fast AND prints the goroutine dump that tells
     # you which test hung; this cap exists because a job with no
@@ -181,14 +226,10 @@ jobs:
         run: go test -timeout=45m ./...
 
       - name: Run tests with race detector
-        # Runs on both push-to-main AND pull_request. Previously gated to
-        # main only because GitHub Actions minutes were billed on private
-        # repos; the repo is public now, so PR minutes are free and we'd
-        # rather catch race regressions on the contributing branch than
-        # after merge. See BUG-1371 (also dropped test-only bcrypt cost via
-        # TestMain, which brought this step back under the then-30m budget —
-        # it did NOT raise the budget; BUG-1913 later did, 30m→45m, when the
-        # suite outgrew it again).
+        id: race
+        if: github.event_name == 'push'
+        # Dave's ruling (TASK-4224): race runs after merge on main only.
+        # PRs keep the non-race suite; a main failure is stop-the-line.
         #
         # Default 10m is tight: the full server-package suite under -race
         # measures ~13m locally on a developer laptop after BUG-851 (the
@@ -214,7 +255,7 @@ jobs:
         # Measured: -25% on 267 serial server tests, -40% on a 40-test probe.
         #
         # internal/server is NOT in this step: it runs as the three
-        # go-server-race shards below (TASK-4141). Alone it took 2519.644s
+        # go-server-race shards in race.yml (TASK-4141). Alone it took 2519.644s
         # of this step's 2700s budget on main. The exclusion is asserted,
         # not trusted: the step fails unless exactly one package was
         # removed and it is internal/server. That catches a grep that
@@ -230,6 +271,26 @@ jobs:
           removed=$(LC_ALL=C comm -23 <(printf '%s\n' "$all" | LC_ALL=C sort) <(printf '%s\n' "$pkgs" | LC_ALL=C sort))
           [ "$removed" = github.com/PerpetualSoftware/pad/internal/server ] || { printf '::error::the race step must exclude exactly internal/server; it excluded:\n%s\n' "${removed:-(nothing)}"; exit 1; }
           go test $GO_RACE_FLAGS -timeout=45m $pkgs
+
+      # A race failure on main is stop-the-line (Dave's TASK-4224 ruling), the
+      # same treatment race.yml gives the internal/server shards. Keyed on the
+      # race step's own outcome, so an ordinary test failure earlier in the job
+      # (which skips this step) is not reported as a race failure.
+      - name: Stop the line on main race failure
+        if: >-
+          always() && github.event_name == 'push' &&
+          (steps.race.outcome == 'failure' || steps.race.outcome == 'cancelled')
+        env:
+          FAILED_STEP: "Go: Run tests with race detector"
+          OUTCOME: ${{ steps.race.outcome }}
+        run: |
+          echo "::error::$FAILED_STEP: $OUTCOME at $GITHUB_SHA"
+          {
+            echo '# STOP THE LINE: a main race run failed or did not finish'
+            echo "Step: $FAILED_STEP ($OUTCOME)"
+            echo "Commit: $GITHUB_SHA"
+            echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Build binary
         run: go build -o pad ./cmd/pad
@@ -453,6 +514,8 @@ jobs:
         run: go test ./internal/materialize/ -run '^(TestSupervisor.*|TestParseMemLimit|TestConfigFromEnv|TestParsePSRSS|TestPSRSSLive|TestParseStatVsize|TestStderrOOMMarkers|TestDeepNestFrameShallow)$' -count=1 -timeout 20m -v
 
   go-postgres:
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
     # Backstop only. A hung TEST is caught by -timeout=45m on the steps
     # below, which fails fast AND prints the goroutine dump that tells
     # you which test hung; this cap exists because a job with no
@@ -569,6 +632,7 @@ jobs:
       - name: Run tests against PostgreSQL
         env:
           PAD_TEST_POSTGRES_URL: "postgres://pad:pad@localhost:5432/pad?sslmode=disable"
+          PAD_TEST_POSTGRES_TOOLS_URL: "postgres://pad:pad@localhost:5432/pad?sslmode=disable"
         # Explicit -timeout: see the SQLite "Run tests" step. This is the
         # binary that actually blew the 10m default — internal/store creates a
         # fresh database AND replays the full migration chain per test
@@ -579,13 +643,25 @@ jobs:
         # exceeded 10m, i.e. >2.14x this box on that package. (An earlier
         # version of this comment said "~2x slower, which put store over
         # 10m" — 280s x 2 is 9m20s, so that explained nothing.)
-        run: go test -timeout=45m ./... -count=1
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            mapfile -t packages < <(sed '/^[[:space:]]*#/d; /^[[:space:]]*$/d' scripts/ci-pg-packages.txt)
+            test "${#packages[@]}" -gt 0
+            go test -timeout=45m -count=1 "${packages[@]}"
+          else
+            PAD_TEST_PG_TRACE=1 go test -json -timeout=45m -count=1 ./... \
+              | tee /tmp/pg-full.jsonl \
+              | python3 scripts/ci-pg-trace.py --expect scripts/ci-pg-packages.txt --show-output
+          fi
 
       - name: Run tests with race detector against PostgreSQL
+        id: race
+        if: github.event_name == 'push'
         env:
           PAD_TEST_POSTGRES_URL: "postgres://pad:pad@localhost:5432/pad?sslmode=disable"
-        # Runs on both push-to-main AND pull_request — see SQLite race-step
-        # comment for the public-repo / BUG-1371 reasoning.
+          PAD_TEST_POSTGRES_TOOLS_URL: "postgres://pad:pad@localhost:5432/pad?sslmode=disable"
+        # Push-to-main only, per Dave's TASK-4224 ruling.
         #
         # Headroom over the default 10m. PostgreSQL adds latency on
         # every CREATE/DROP, and the PLAN-866 attachment work pushed the
@@ -596,7 +672,7 @@ jobs:
         # suite's aggregate runtime crossed the old budget (this job
         # variant failed main at f235a04 with the same timeout panic).
         # checkptr off for modernc.org/... only: see the SQLite race step (BUG-3483).
-        # internal/server runs as the go-server-race-postgres shards instead
+        # internal/server runs as the go-server-race-postgres shards in race.yml instead
         # (TASK-4141; it took 2658.534s of 2700s here on main). The exclusion
         # is asserted as in the SQLite race step: exactly one package
         # removed, and it is internal/server.
@@ -608,114 +684,26 @@ jobs:
           [ "$removed" = github.com/PerpetualSoftware/pad/internal/server ] || { printf '::error::the race step must exclude exactly internal/server; it excluded:\n%s\n' "${removed:-(nothing)}"; exit 1; }
           go test $GO_RACE_FLAGS -timeout=45m -count=1 $pkgs
 
-  # internal/server under -race, as 3 shards per driver (TASK-4141). In the
-  # ./... race steps it took 2519.644s (SQLite) and 2658.534s (PostgreSQL) of
-  # the 2700s per-binary budget on main, sharing ~4 vCPU with every other
-  # package. No test or family is more than ~4% of its wall and ~88% of it is
-  # serial tests, so there is no slow test to fix; splitting it is the lever.
-  # scripts/test-shard.sh says how tests are assigned, and go-server-shards
-  # proves the shards cover the package exactly once.
-  go-server-race:
-    # Backstop only, as on the go job: -timeout=45m fires first.
-    timeout-minutes: 75
-    name: Go race internal/server (SQLite ${{ matrix.shard }}/3)
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: "1.26"
-
-      - name: Allow Go to fetch the toolchain go.mod pins
-        # See the identical step in the `go` job.
-        run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
-
-      - name: Create web build placeholder for embed
-        run: mkdir -p web/build && echo "placeholder" > web/build/.gitkeep
-
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: "24"
-          cache: "npm"
-          cache-dependency-path: web/package-lock.json
-
-      # Built for real, as in the `go` job: internal/server's tests run it.
-      - name: Build the materializer bundle for embed
-        working-directory: web
-        run: npm ci && node scripts/build-materializer.mjs
-
-      - name: Run internal/server shard with race detector
+      # Same stop-the-line treatment as the SQLite race step in the go job.
+      - name: Stop the line on main race failure
+        if: >-
+          always() && github.event_name == 'push' &&
+          (steps.race.outcome == 'failure' || steps.race.outcome == 'cancelled')
         env:
-          SHARD: ${{ matrix.shard }}
+          FAILED_STEP: "Go (PostgreSQL): Run tests with race detector against PostgreSQL"
+          OUTCOME: ${{ steps.race.outcome }}
         run: |
-          run=$(scripts/test-shard.sh regex ./internal/server/ 3 "$SHARD" $GO_RACE_FLAGS)
-          go test $GO_RACE_FLAGS -timeout=45m -run "$run" ./internal/server/
-
-  go-server-race-postgres:
-    # Backstop only, as on the go-postgres job: -timeout=45m fires first.
-    timeout-minutes: 75
-    name: Go race internal/server (PostgreSQL ${{ matrix.shard }}/3)
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3]
-    services:
-      postgres:
-        # Same image and digest as the go-postgres job; bump them together.
-        image: mirror.gcr.io/library/postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
-        env:
-          POSTGRES_USER: pad
-          POSTGRES_PASSWORD: pad
-          POSTGRES_DB: pad
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U pad"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: "1.26"
-
-      - name: Allow Go to fetch the toolchain go.mod pins
-        # See the identical step in the `go` job.
-        run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
-
-      - name: Create web build placeholder for embed
-        run: mkdir -p web/build && echo "placeholder" > web/build/.gitkeep
-
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: "24"
-          cache: "npm"
-          cache-dependency-path: web/package-lock.json
-
-      # Built for real, as in the `go` job: internal/server's tests run it.
-      - name: Build the materializer bundle for embed
-        working-directory: web
-        run: npm ci && node scripts/build-materializer.mjs
-
-      # internal/server's tests need no PostgreSQL client tools (no pg_dump
-      # or psql), so the PGDG install the go-postgres job does is not here.
-      - name: Run internal/server shard with race detector against PostgreSQL
-        env:
-          PAD_TEST_POSTGRES_URL: "postgres://pad:pad@localhost:5432/pad?sslmode=disable"
-          SHARD: ${{ matrix.shard }}
-        run: |
-          run=$(scripts/test-shard.sh regex ./internal/server/ 3 "$SHARD" $GO_RACE_FLAGS)
-          go test $GO_RACE_FLAGS -timeout=45m -count=1 -run "$run" ./internal/server/
+          echo "::error::$FAILED_STEP: $OUTCOME at $GITHUB_SHA"
+          {
+            echo '# STOP THE LINE: a main race run failed or did not finish'
+            echo "Step: $FAILED_STEP ($OUTCOME)"
+            echo "Commit: $GITHUB_SHA"
+            echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   go-server-shards:
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
     # The shards are only a gate if together they run every test exactly
     # once. A shard bug drops tests SILENTLY, which is worse than the timeout
     # it replaces, so this job fails the workflow unless Go's own -run
@@ -822,8 +810,7 @@ jobs:
     # ran mobile-chromium alone, 63 passed and 553 skipped, in 1.9m). And the
     # projects are lopsided: desktop-chromium carried 1222s of the 1359s of
     # test time (572 of 635 passing tests). Desktop is therefore sharded in
-    # two and mobile runs whole. The "E2E (Playwright)" job below is the one
-    # check that says whether E2E passed.
+    # two and mobile runs whole. The "CI result" job below checks the combined E2E matrix result.
     strategy:
       fail-fast: false
       matrix:
@@ -968,22 +955,250 @@ jobs:
           path: web/test-results/
           retention-days: 7
 
-  # The single E2E verdict. Every reader of CI (merge rules, waiters, people)
-  # keys on the check named "E2E (Playwright)", and the repo has no branch
-  # protection to list the shard jobs by name, so this job keeps that name and
-  # is green only when EVERY matrix job succeeded. `if: always()` is load-bearing:
-  # without it a failed or cancelled matrix job SKIPS this job, and a skipped check
-  # reads as neither red nor missing.
-  e2e-result:
-    name: E2E (Playwright)
-    needs: e2e
+  go-web-parity:
+    name: Go web parity
+    needs: changes
+    if: needs.changes.outputs.parity == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build web and the real materializer bundle
+        working-directory: web
+        run: npm ci && npx vite build && node scripts/build-materializer.mjs
+      - name: Run SQLite web parity tests from the census manifest
+        run: |
+          set -euo pipefail
+          while read -r package filter; do
+            [[ -z "$package" || "$package" == \#* ]] && continue
+            if [ -n "$filter" ]; then
+              go test -timeout=45m -count=1 "$package" -run "$filter"
+            else
+              go test -timeout=45m -count=1 "$package"
+            fi
+          done < scripts/ci-web-parity.txt
+
+  nix:
+    needs: changes
+    if: needs.changes.outputs.nix == 'true'
+    name: Nix build & check
+    runs-on: ubuntu-latest
+    # NO write permission here, deliberately — see `push-vendor-hash` below.
+    # This job builds; it never pushes.
+    outputs:
+      vendor_hash_bumped: ${{ steps.vendorhash.outputs.bumped }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+
+      # THE RED-BASELINE FIX (TASK-2954). `vendorHash` pins the Go module set by
+      # content hash; Dependabot updates go.mod/go.sum and has no idea this file
+      # exists, so EVERY Go bump PR failed the steps below on a hash mismatch,
+      # structurally and forever. A check that is always red is not a check —
+      # a bump that genuinely breaks the build looked identical, at a glance, to
+      # one that only moved the hash.
+      #
+      # This recomputes the hash in the WORKING TREE, so the steps below judge
+      # the build with this ref's actual module set. Nothing is pushed from here
+      # and no token is used: a Dependabot PR run gets a read-only GITHUB_TOKEN
+      # (it runs as if from a fork), and the `permissions` key does NOT lift that
+      # — only a repository-wide setting does, which would hand fork PRs write
+      # tokens too. The push therefore happens on `push: main` instead, in the
+      # job below, where the run is not Dependabot's.
+      #
+      # It runs on every run, not just Dependabot's: a human's own go.mod change
+      # moves the hash the same way, and a check that is honest only for one
+      # author is the shape this item exists to remove.
+      #
+      # It runs BEFORE `nix flake check`, which builds the package too and would
+      # hit the same mismatch first. It is deliberately not a gate: if the build
+      # fails for any reason other than a go-modules hash mismatch, the script
+      # exits non-zero, this step still succeeds, and the real steps below report
+      # the real failure. The gate stays exactly where it was.
+      - name: Recompute vendorHash before judging the build
+        id: vendorhash
+        run: |
+          set -o pipefail
+          if nix build .#default --print-build-logs 2>&1 | tee /tmp/nix-build.log; then
+            echo "Build is green; vendorHash is current."
+            exit 0
+          fi
+          if ! new_hash="$(nix/bump-vendor-hash.sh /tmp/nix-build.log)"; then
+            echo "Not a go-modules hash mismatch — leaving it to the build steps below."
+            exit 0
+          fi
+          echo "vendorHash -> $new_hash"
+          echo "bumped=true" >> "$GITHUB_OUTPUT"
+
+      - name: Carry the recomputed package.nix to the push job
+        if: steps.vendorhash.outputs.bumped == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: recomputed-package-nix
+          path: nix/package.nix
+          retention-days: 1
+
+      - name: nix flake check
+        run: nix flake check --print-build-logs
+
+      - name: nix build
+        run: nix build .#default --print-build-logs
+
+      - name: Smoke test binary
+        run: |
+          ./result/bin/pad --version
+          ./result/bin/pad --help
+
+      # The Go toolchain here exists only to install govulncheck for the
+      # scan step below — the pad binary under test was built by Nix above.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26"
+
+      - name: Scan Nix-built binary with govulncheck
+        # CI's main govulncheck job scans a `go build` binary, which honours
+        # go.mod's `toolchain go1.26.10` line — but nixpkgs pins
+        # GOTOOLCHAIN=local, so the Nix artifact is built with whatever Go
+        # patch the nixos-26.05 channel ships and can carry stdlib advisories
+        # the main gate can no longer see (BUG-2567). This scans the artifact
+        # that actually ships via Nix, against nix/accepted-advisories.txt:
+        # known-accepted advisories stay green and visible, any NEW advisory
+        # fails the job, and a warning fires when an accepted advisory clears
+        # (the signal to prune the list and eventually close BUG-2567).
+        #
+        # govulncheck pinned to the same release as ci.yml — bump the two
+        # together. GOTOOLCHAIN=auto on the install mirrors ci.yml's
+        # rationale: setup-go exports GOTOOLCHAIN=local, and if govulncheck's
+        # own go.mod ever requires a patch newer than setup-go's resolved
+        # one, `auto` lets Go fetch it instead of failing the install.
+        run: |
+          GOTOOLCHAIN=auto go install golang.org/x/vuln/cmd/govulncheck@v1.2.0
+          GOVULNCHECK="$(go env GOPATH)/bin/govulncheck" nix/vulnscan.sh result/bin/pad
+
+  # THE ONLY JOB WITH A WRITE TOKEN, and it exists as a separate job precisely so
+  # that the token is never minted in a context an untrusted change could reach.
+  #
+  # An `if:` on a STEP is not a security boundary — the job would still hold a
+  # write-capable GITHUB_TOKEN, and `actions/checkout` persists it in the
+  # workspace for every later command, so any change to this file inside a PR
+  # could use it. An `if:` on a JOB is different in kind: the job does not start,
+  # and no write token is issued for that run at all.
+  #
+  # WHY ON `push: main` AND NOT ON THE PR (ruled on TASK-2954's trail). A
+  # Dependabot PR run gets a read-only token whatever `permissions` says. The
+  # merge, though, is authored by a human, so the `push` run that follows is an
+  # ordinary run with an ordinary token. The PR's own check was already honest,
+  # because the job above recomputes in the working tree; `main` is what needs
+  # the committed fix, and it gets it from the run of the merge itself — or,
+  # when that run loses the push race, from the run of the next push to main.
+  # The two rejected alternatives were a PAT in the Dependabot secret store (a
+  # standing credential for a once-a-week fix) and enabling write tokens for
+  # pull-request workflows (which would give them to FORK PRs on a public repo —
+  # the surface CONVE-2438 exists to keep closed).
+  #
+  # THE LOOP TERMINATES BECAUSE THIS PUSH TRIGGERS NOTHING. A push made with
+  # the default `GITHUB_TOKEN` creates no workflow runs, so the commit this job
+  # pushes gets no run at all. Observed on the first heal this fix produced
+  # (BUG-2974, day 62): `gh run list --branch main` spans cbfc073e ->
+  # 31d11e76 -> 0b16be49 and skips the heal commit 249a8f87 entirely. Read the
+  # BRANCH listing, not `gh run list --commit` — that query also returned
+  # nothing for 0b16be49, which demonstrably has runs, so it cannot tell
+  # "no runs" from "no answer". The loop is closed by construction rather than
+  # by being green.
+  #
+  # THE CORRECTED-TREE TERMINATOR IS THE BACKSTOP, AND IT HAS NEVER RUN. If
+  # this push did trigger a run, the build job above would find the hash
+  # correct, print "Build is green; vendorHash is current.", never set
+  # `bumped`, and this job would not start — the FIX's own effect on the build,
+  # holding regardless of what any push touched. That is an argument, not a
+  # measurement: nothing has ever exercised it. It becomes load-bearing the
+  # moment this push uses a PAT or a GitHub App token, which is the obvious
+  # edit for anyone who wants CI to validate the healed tree. Making that
+  # change inherits an untested terminator; exercise it before relying on it.
+  #
+  # A CONSEQUENCE OF THE SAME MECHANISM, not a defect: the healed tip carries
+  # no CI of its own. Its tree is the merge commit plus the one hash line that
+  # merge's own Nix run computed and built against, and the next push to main
+  # builds on it normally.
+  #
+  # THE RANGE-VS-STATE DISTINCTION IS LOAD-BEARING, AND IT WAS GOT WRONG ONCE
+  # (BUG-2974). This
+  # comment used to name the loop guard as a gate asking whether the push had
+  # touched `go.mod`/`go.sum`, and that gate existed as a step below. It is the
+  # right question for loop prevention and the WRONG one for recovery: after a
+  # lost push race the tree that needs healing was written by an EARLIER push,
+  # so every later merge that did not itself move the module set refused to fix
+  # it, exited GREEN, and left main carrying a hash a clean nix build rejects.
+  # The gate is gone. The state comparison below is the only gate, and being a
+  # question about state it is equally true for a hash this push broke and one
+  # an earlier push broke and could not land.
+  #
+  # If another merge lands while this job runs, the push is REJECTED as a
+  # non-fast-forward and this job goes RED rather than overwriting anything —
+  # and the heal is genuinely not lost now, because the next push to main meets
+  # the same stale hash, recomputes it, and heals it from its own run.
+  #
+  # `needs: nix` without `if: always()` is the second half: this runs only when
+  # the build job SUCCEEDED, so a module set whose corrected tree still fails
+  # `nix flake check`, the smoke test or the vulnerability scan is never
+  # committed to main.
+  push-vendor-hash:
+    name: Heal main's vendorHash
+    needs: nix
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      needs.nix.outputs.vendor_hash_bumped == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing here reads history any more — BUG-2974 removed the gate that
+          # did. The depth stays full rather than dropping to the default shallow
+          # clone: this is the clone the heal commit is pushed from, full depth is
+          # what every run of this job has ever used, and a shallow push is not a
+          # variable worth introducing on a job that runs only when a Go bump
+          # actually moves the module set.
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: recomputed-package-nix
+          path: nix/
+
+      # THE GATE, and the only one, lives in the script: does what main COMMITTED
+      # differ from what the build job RECOMPUTED? The artifact exists only
+      # because the build job found a mismatch, but comparing there keeps the job
+      # honest about the tree it is actually looking at rather than about what
+      # another job reported. It is a file rather than a `run:` block so that
+      # nix/heal-vendor-hash_test.sh can drive it against a real git remote —
+      # BUG-2974 shipped green for a day because nothing could exercise it.
+      - name: Commit and push the recomputed hash
+        run: nix/heal-vendor-hash.sh
+        env:
+          SHA: ${{ github.sha }}
+
+  ci-result:
+    name: CI result
     if: always()
+    needs: [changes, go, go-postgres, go-server-shards, go-web-parity, nix, native-smoke, web, e2e]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - name: Every E2E job succeeded
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Require every applicable job to succeed
         env:
-          SHARDS: ${{ needs.e2e.result }}
-        run: |
-          echo "e2e matrix result: $SHARDS"
-          test "$SHARDS" = "success"
+          CI_NEEDS: ${{ toJSON(needs) }}
+          CI_EVENT_NAME: ${{ github.event_name }}
+        run: python3 scripts/ci-result.py

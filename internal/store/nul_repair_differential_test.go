@@ -135,6 +135,7 @@ func TestNativePostgresAcceptsEveryRepairedCorpusValue(t *testing.T) {
 	if _, err := db.Exec(`DROP TABLE IF EXISTS nul_repair_differential`); err != nil {
 		t.Fatalf("drop: %v", err)
 	}
+	tracePGConnected(t, "TestNativePostgresAcceptsEveryRepairedCorpusValue")
 	if _, err := db.Exec(
 		`CREATE TABLE nul_repair_differential (id TEXT PRIMARY KEY, txt TEXT, doc JSONB)`,
 	); err != nil {
