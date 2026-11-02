@@ -1,14 +1,19 @@
 name: CI
 
 on:
+  # release-* runs the full push suite, so the exact SHA a release is tagged
+  # at carries CI of its own (TASK-4253). PRs into release-* get no run; the
+  # push that lands them does.
   push:
-    branches: [main]
+    branches: [main, 'release-*']
   pull_request:
     branches: [main]
 
 concurrency:
-  # Per-SHA on main: never evict a pending run or its vendorHash heal.
-  group: ci-${{ github.event_name == 'push' && github.sha || github.ref }}
+  # Per branch and SHA on a push: never evict a pending run or its vendorHash
+  # heal, and a release branch cut at a main SHA neither queues behind nor
+  # evicts main's run of that SHA.
+  group: ci-${{ github.event_name == 'push' && format('{0}-{1}', github.ref, github.sha) || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -228,8 +233,9 @@ jobs:
       - name: Run tests with race detector
         id: race
         if: github.event_name == 'push'
-        # Dave's ruling (TASK-4224): race runs after merge on main only.
-        # PRs keep the non-race suite; a main failure is stop-the-line.
+        # Race runs on pushes only: after merge on main (TASK-4224), and on
+        # release-* so the tagged SHA is race-checked itself (TASK-4253). PRs
+        # keep the non-race suite. A failure on either branch is stop-the-line.
         #
         # Default 10m is tight: the full server-package suite under -race
         # measures ~13m locally on a developer laptop after BUG-851 (the
@@ -272,11 +278,12 @@ jobs:
           [ "$removed" = github.com/PerpetualSoftware/pad/internal/server ] || { printf '::error::the race step must exclude exactly internal/server; it excluded:\n%s\n' "${removed:-(nothing)}"; exit 1; }
           go test $GO_RACE_FLAGS -timeout=45m $pkgs
 
-      # A race failure on main is stop-the-line (Dave's TASK-4224 ruling), the
-      # same treatment race.yml gives the internal/server shards. Keyed on the
-      # race step's own outcome, so an ordinary test failure earlier in the job
-      # (which skips this step) is not reported as a race failure.
-      - name: Stop the line on main race failure
+      # A race failure on a push is stop-the-line (TASK-4224): on main, no
+      # merges until it is triaged; on release-*, no tag. The same treatment
+      # race.yml gives the internal/server shards. Keyed on the race step's own
+      # outcome, so an ordinary test failure earlier in the job (which skips
+      # this step) is not reported as a race failure.
+      - name: Stop the line on a race failure
         if: >-
           always() && github.event_name == 'push' &&
           (steps.race.outcome == 'failure' || steps.race.outcome == 'cancelled')
@@ -286,7 +293,7 @@ jobs:
         run: |
           echo "::error::$FAILED_STEP: $OUTCOME at $GITHUB_SHA"
           {
-            echo '# STOP THE LINE: a main race run failed or did not finish'
+            echo "# STOP THE LINE: a race run on $GITHUB_REF_NAME failed or did not finish"
             echo "Step: $FAILED_STEP ($OUTCOME)"
             echo "Commit: $GITHUB_SHA"
             echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
@@ -643,6 +650,9 @@ jobs:
         # exceeded 10m, i.e. >2.14x this box on that package. (An earlier
         # version of this comment said "~2x slower, which put store over
         # 10m" — 280s x 2 is 9m20s, so that explained nothing.)
+        #
+        # A PR runs the listed packages only. A push, on main or release-*,
+        # runs the whole traced suite and checks it against that list.
         run: |
           set -euo pipefail
           if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
@@ -661,7 +671,7 @@ jobs:
         env:
           PAD_TEST_POSTGRES_URL: "postgres://pad:pad@localhost:5432/pad?sslmode=disable"
           PAD_TEST_POSTGRES_TOOLS_URL: "postgres://pad:pad@localhost:5432/pad?sslmode=disable"
-        # Push-to-main only, per Dave's TASK-4224 ruling.
+        # Pushes only (main and release-*), as in the SQLite race step.
         #
         # Headroom over the default 10m. PostgreSQL adds latency on
         # every CREATE/DROP, and the PLAN-866 attachment work pushed the
@@ -685,7 +695,7 @@ jobs:
           go test $GO_RACE_FLAGS -timeout=45m -count=1 $pkgs
 
       # Same stop-the-line treatment as the SQLite race step in the go job.
-      - name: Stop the line on main race failure
+      - name: Stop the line on a race failure
         if: >-
           always() && github.event_name == 'push' &&
           (steps.race.outcome == 'failure' || steps.race.outcome == 'cancelled')
@@ -695,7 +705,7 @@ jobs:
         run: |
           echo "::error::$FAILED_STEP: $OUTCOME at $GITHUB_SHA"
           {
-            echo '# STOP THE LINE: a main race run failed or did not finish'
+            echo "# STOP THE LINE: a race run on $GITHUB_REF_NAME failed or did not finish"
             echo "Step: $FAILED_STEP ($OUTCOME)"
             echo "Commit: $GITHUB_SHA"
             echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
@@ -1038,6 +1048,19 @@ jobs:
           fi
           echo "vendorHash -> $new_hash"
           echo "bumped=true" >> "$GITHUB_OUTPUT"
+
+      # Only main is healed (push-vendor-hash below), so on any other push the
+      # recompute above would let the steps below pass on a tree that is not
+      # the committed one: on release-*, a tag at this SHA would ship a flake
+      # that does not build. A PR is still judged on the recomputed tree, and
+      # main is healed after its run (TASK-4253).
+      - name: Refuse a stale vendorHash on a push off main
+        if: >-
+          steps.vendorhash.outputs.bumped == 'true' &&
+          github.event_name == 'push' && github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::nix/package.nix has a stale vendorHash at $GITHUB_SHA on $GITHUB_REF_NAME, and only main is healed. Bring main's healed vendorHash into this branch and push again."
+          exit 1
 
       - name: Carry the recomputed package.nix to the push job
         if: steps.vendorhash.outputs.bumped == 'true'
