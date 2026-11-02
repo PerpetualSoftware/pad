@@ -1,0 +1,14 @@
+# One package per line; optional second field is the exact go test -run regex.
+# The census checks each web-referencing test and every caller of its helpers.
+./cmd/pad ^TestPushRefusalCodesMatchTheWebAllowList$
+./cmd/depages
+./internal/attachments ^TestMIMEFamilies(CoverAllowlist|FixtureHasNoStrays|KeysAreNormalized)$
+./internal/cli ^Test(FormatChangesForDisplayMatchesTheJSFixture|AgentNameCopyMatchesResolverOrder|DetectProjectCapturesMakeAndNestedWebSignals|BuildWorkspaceContext)$
+./internal/collab ^TestSchemaVersionMatchesWebClient$
+./internal/links ^TestMarkdownCitationsNameLiveSymbols$
+./internal/models ^Test(TerminalListsMatchWeb|NegativeTerminalsMatchTheWebCopy|TitleLimit.*)$
+./internal/server ^Test(CopyPreflightDropReasonsAreRenderedByTheDialog|SharePageDoesNotImportCollab|NotificationEnrichment_PathMatchesTheWebRouteTree|DerivedSSENamesMatchTheLegacyWireVocabulary)$
+./internal/server/render ^Test(ImgPaintableMimes_MatchesTypeScript|RenderAttachment_ParityWithTypeScript)$
+./internal/materialize
+./internal/buildtools ^TestInstallRefresh_WebStampCheckUsesTheCallersCheckout$
+./scripts/ci-web-census

@@ -63,5 +63,15 @@ class TraceTest(unittest.TestCase):
                 self.assertEqual(result.stderr.splitlines(), diagnostics)
 
 
+class HumanOutputTest(unittest.TestCase):
+    def test_output_can_be_mirrored_without_losing_trace(self):
+        row = event(MODULE + '/internal/store', 'ordinary test output\n')
+        result = subprocess.run([sys.executable, str(SCRIPT), '--show-output'],
+                                input=json.dumps(row) + '\n', text=True,
+                                capture_output=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, 'ordinary test output\n')
+
+
 if __name__ == "__main__":
     unittest.main()

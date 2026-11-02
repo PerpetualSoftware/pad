@@ -24,6 +24,8 @@ def normalize_package(package, module):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--expect", type=Path, help="expected package list")
+    parser.add_argument("--show-output", action="store_true",
+                        help="also stream human-readable go test Output events")
     args = parser.parse_args()
 
     connected = set()
@@ -35,6 +37,8 @@ def main():
                 event = json.loads(line)
             except json.JSONDecodeError:
                 parser.error(f"invalid JSON on stdin line {number}")
+            if args.show_output and event.get("Action") == "output":
+                print(event.get("Output", ""), end="", flush=True)
             if (event.get("Action") == "output"
                     and "PAD_PG_CONNECTED" in event.get("Output", "")
                     and event.get("Package")):
