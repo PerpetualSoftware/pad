@@ -560,6 +560,37 @@ func translateResourceToAudience(r *http.Request, canonical string) (defaulted b
 	return false
 }
 
+// resourceNoteMaxClientID bounds the client id the note functions look up,
+// log and key the warn limiter on. These run before fosite validates the
+// client, on an unauthenticated endpoint, so the id is attacker-chosen: a
+// real client id is a short generated string, and anything longer is cut.
+const resourceNoteMaxClientID = 128
+
+// resourceNoteClient names the client of a request for the note functions:
+// the form client_id, else the id a client authenticating with HTTP Basic
+// sends there, form-urlencoded (RFC 6749 §2.3.1). The id is cut to
+// resourceNoteMaxClientID, and only an id within that bound is looked up, so
+// an unknown or oversized one costs no database read and no map memory.
+func (s *Server) resourceNoteClient(r *http.Request) (clientID, clientName string) {
+	clientID = r.Form.Get("client_id")
+	if clientID == "" {
+		if user, _, ok := r.BasicAuth(); ok {
+			if decoded, err := url.QueryUnescape(user); err == nil {
+				clientID = decoded
+			}
+		}
+	}
+	if len(clientID) > resourceNoteMaxClientID {
+		return clientID[:resourceNoteMaxClientID], ""
+	}
+	if clientID != "" {
+		if c, err := s.store.GetOAuthClient(clientID); err == nil && c != nil {
+			clientName = c.Name
+		}
+	}
+	return clientID, clientName
+}
+
 // noteResourceMissing records a request that omitted the RFC 8707
 // resource parameter (TASK-3363, Dave's ruling on TASK-3345 #1): one log line
 // naming the client (id and registered name) and one
@@ -570,22 +601,7 @@ func translateResourceToAudience(r *http.Request, canonical string) (defaulted b
 // authorization is what let a client registered through DCR replay a token
 // cross-server.
 func (s *Server) noteResourceMissing(r *http.Request, endpoint string) {
-	clientID := r.Form.Get("client_id")
-	if clientID == "" {
-		// A client authenticating at the token endpoint with HTTP Basic
-		// sends its id there instead, form-urlencoded (RFC 6749 §2.3.1).
-		if user, _, ok := r.BasicAuth(); ok {
-			if decoded, err := url.QueryUnescape(user); err == nil {
-				clientID = decoded
-			}
-		}
-	}
-	clientName := ""
-	if clientID != "" {
-		if c, err := s.store.GetOAuthClient(clientID); err == nil && c != nil {
-			clientName = c.Name
-		}
-	}
+	clientID, clientName := s.resourceNoteClient(r)
 	// The counter takes every request; the log takes one line per client per
 	// hour, so a popular client that omits resource cannot flood it.
 	if s.metrics != nil {
@@ -614,13 +630,7 @@ func isAudienceOnly(r *http.Request) bool {
 // (<endpoint>_audience_only) so the two predicates read separately. The
 // request is served.
 func (s *Server) noteAudienceOnly(r *http.Request, endpoint string) {
-	clientID := r.Form.Get("client_id")
-	clientName := ""
-	if clientID != "" {
-		if c, err := s.store.GetOAuthClient(clientID); err == nil && c != nil {
-			clientName = c.Name
-		}
-	}
+	clientID, clientName := s.resourceNoteClient(r)
 	label := endpoint + "_audience_only"
 	if s.metrics != nil {
 		s.metrics.OAuthResourceMissingTotal.WithLabelValues(label).Inc()
@@ -1364,9 +1374,11 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 		// NOT refused here (TASK-3363 phase 2). RFC 8707 makes resource
 		// optional at the token endpoint: a code or refresh token is already
 		// bound to the audience its authorization granted, and that grant now
-		// requires resource (refused at /authorize and /authorize/decide).
-		// Defaulting here cannot widen a grant, because fosite holds the
-		// requested audience to the granted one. Still counted.
+		// requires a target (refused at /authorize and /authorize/decide).
+		// Defaulting here cannot widen a grant: fosite's code and refresh
+		// handlers replace the requested audience with the stored, granted
+		// one. (It reads the audience from PostForm, which this function does
+		// not write, so the default is in practice only counted.)
 		if translateResourceToAudience(r, s.oauthServer.AllowedAudience()) {
 			s.noteResourceMissing(r, "token")
 		}

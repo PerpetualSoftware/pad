@@ -73,7 +73,8 @@ func TestTASK3363_AuthorizeWithoutResourceIsRefusedAndCounted(t *testing.T) {
 }
 
 // The token endpoint is NOT refused (RFC 8707 makes resource optional there),
-// and that is safe only because the grant binds the audience: a code granted
+// and that is safe only because the grant binds the audience (fosite replaces
+// the requested audience with the stored one): a code granted
 // for the ChatGPT resource, exchanged WITHOUT resource (so the request is
 // defaulted to /mcp's canonical), still yields a token bound to the ChatGPT
 // resource, refused at /mcp. The exchange is counted.
@@ -313,5 +314,57 @@ func TestTASK3363_DelegatedSignInWithoutResourceIsRefused(t *testing.T) {
 	code, oauthErr := codeFrom(rr)
 	if code != "" || oauthErr == "" {
 		t.Fatalf("decide WITHOUT resource: code=%q error=%q, want no code and an error", code, oauthErr)
+	}
+}
+
+// The audience-only log names the client however it identifies itself (form
+// or HTTP Basic), and an oversized client id is cut, not stored whole in the
+// limiter map. Not parallel: it swaps the default logger.
+func TestTASK3363_AudienceOnlyNoteNamesTheClientAndBoundsTheID(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	srv := twoResourceOAuthServer(t)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+	for _, c := range []struct {
+		name  string
+		build func(*http.Request)
+	}{
+		{"form client_id", func(r *http.Request) { r.Form.Set("client_id", clientID) }},
+		{"HTTP Basic", func(r *http.Request) { r.SetBasicAuth(url.QueryEscape(clientID), "") }},
+	} {
+		buf.Reset()
+		srv.resourceMissingLast = nil
+		req := httptest.NewRequest("GET", "/oauth/authorize", nil)
+		req.Form = url.Values{"audience": {testCanonicalAudience}}
+		c.build(req)
+		srv.noteAudienceOnly(req, "authorize")
+		line := buf.String()
+		for _, want := range []string{"endpoint=authorize_audience_only", "client_id=" + clientID} {
+			if !strings.Contains(line, want) {
+				t.Errorf("%s: log %q lacks %q", c.name, line, want)
+			}
+		}
+		if strings.Contains(line, `client_name=""`) {
+			t.Errorf("%s: the registered client name was not logged: %q", c.name, line)
+		}
+	}
+
+	// An oversized id is cut to the bound in both the log and the limiter key.
+	buf.Reset()
+	srv.resourceMissingLast = nil
+	huge := strings.Repeat("x", 4*resourceNoteMaxClientID)
+	req := httptest.NewRequest("GET", "/oauth/authorize", nil)
+	req.Form = url.Values{"audience": {testCanonicalAudience}, "client_id": {huge}}
+	srv.noteAudienceOnly(req, "authorize")
+	if strings.Contains(buf.String(), huge) {
+		t.Errorf("the oversized client id was logged whole")
+	}
+	for key := range srv.resourceMissingLast {
+		if len(key) > len("audience-only:")+resourceNoteMaxClientID {
+			t.Errorf("limiter key of %d bytes stored", len(key))
+		}
 	}
 }
