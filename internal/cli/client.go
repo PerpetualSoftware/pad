@@ -1117,6 +1117,8 @@ func (c *Client) ListComments(wsSlug, itemSlug string) ([]models.Comment, error)
 }
 
 func (c *Client) CreateComment(wsSlug, itemSlug string, input models.CommentCreate) (*models.Comment, error) {
+	// BUG-4119: the shared response type retains additive item_ref; an older
+	// server leaves it empty so callers can fall back to the input spelling.
 	var result models.Comment
 	path := "/workspaces/" + url.PathEscape(wsSlug) + "/items/" + url.PathEscape(itemSlug) + "/comments"
 	err := c.post(path, input, &result)

@@ -3261,7 +3261,11 @@ func commentCmd() *cobra.Command {
 				return cli.PrintJSON(comment)
 			}
 
-			fmt.Printf("Comment added to %s\n", args[0])
+			ref := comment.ItemRef
+			if ref == "" { // Older servers omit item_ref (BUG-4119).
+				ref = args[0]
+			}
+			fmt.Printf("Comment added to %s\n", ref)
 			return nil
 		},
 	}

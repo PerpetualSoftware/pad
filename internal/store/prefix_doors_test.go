@@ -318,10 +318,10 @@ func TestImportWorkspace_DigitBearingPrefixIsLogged(t *testing.T) {
 	}
 }
 
-// The precedence BUG-2943's widening makes reachable for more strings, pinned
-// in both directions. "ab1-42" is ref-SHAPED under the wider grammar, so the
-// question "is a slug with that name still findable" has to have an answer
-// that does not depend on reading ResolveItem.
+// Current refs win over colliding slugs (BUG-2943). Ref-shaped misses with
+// any uppercase rune are terminal, preserving canonical-ref safety (BUG-4119
+// r1). Lowercase misses try only their exact, case-sensitive slug, so web slug
+// addressing works without a number fallback or a move-log match.
 func TestResolveItem_RefBeforeSlugPrecedence(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
@@ -347,14 +347,23 @@ func TestResolveItem_RefBeforeSlugPrecedence(t *testing.T) {
 			"a ref-shaped slug at all", slugged.Slug)
 	}
 
-	t.Run("with no such ref, the slug resolves", func(t *testing.T) {
-		got, err := s.ResolveItem(ws.ID, "ab1-42")
+	t.Run("uppercase ref misses are terminal; lowercase misses name their exact slug", func(t *testing.T) {
+		got, err := s.ResolveItem(ws.ID, "AB1-42")
 		if err != nil {
 			t.Fatalf("ResolveItem: %v", err)
 		}
-		if got == nil || got.ID != slugged.ID {
-			t.Fatalf("resolved %v, want the item slugged ab1-42 — a ref-shaped name that "+
-				"names no ref must still find the slug", got)
+		// BUG-4119 r1: a ref-shaped miss containing any uppercase rune is
+		// terminal, so a canonical ref cannot reach another item by slug.
+		// Lowercase tries only the current ref, then its exact case-sensitive
+		// slug: never a number fallback or move-log match.
+		if got != nil {
+			t.Fatalf("ref-shaped miss resolved to unrelated slug: %v", got)
+		}
+		for _, own := range []string{slugged.Ref, slugged.ID, slugged.Slug} {
+			item, err := s.ResolveItem(ws.ID, own)
+			if err != nil || item == nil || item.ID != slugged.ID {
+				t.Fatalf("own ref/UUID/slug %s: %v %v", own, item, err)
+			}
 		}
 	})
 

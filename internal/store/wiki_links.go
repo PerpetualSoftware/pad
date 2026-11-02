@@ -36,7 +36,7 @@ func (s *Store) replaceWikiLinks(tx *sql.Tx, sourceItemID, workspaceID, content 
 // linkScope restricts which items a wiki link may resolve to. The zero value
 // is unrestricted (every human path). An app write sets it to the install's
 // companion collections (SPEC-6, TASK-3390): every resolution query, the
-// number-only and collection-qualified fallbacks included, then sees only
+// move-history and collection-qualified lookups included, then sees only
 // companion items, so a hidden item can neither win a match nor change which
 // fallback runs, and the link state reveals nothing about it.
 type linkScope struct {
@@ -399,42 +399,14 @@ func (s *Store) replaceWikiLinksScoped(tx *sql.Tx, sourceItemID, workspaceID, co
 	return nil
 }
 
-// resolveRefTx looks up a (prefix, number) pair to an item ID within
-// a workspace. Returns a NULL sql.NullString if the ref doesn't
-// resolve — broken refs intentionally persist as unresolved rows
-// (PLAN-1593's "broken refs persisted" decision), so they're easy
-// to surface in a future broken-links report.
-//
-// Tries the exact prefix+number match first, then falls back to a
-// number-only match (matching GetItemByRef's behavior so an item
-// that has been moved between collections still resolves under its
-// old prefix).
+// resolveRefTx resolves a live exact or move-log-proven ref inside the
+// caller's transaction and wiki scope (BUG-4119). Broken refs persist with
+// NULL targets, including on database errors, as before (PLAN-1593).
 func resolveRefTx(tx *sql.Tx, s *Store, workspaceID, prefix string, number int, scope linkScope) sql.NullString {
+	query, args := itemRefLookupSQL(workspaceID, prefix, number, scope, false, true)
 	var id string
-	restrictI, scopeArgs := scope.clause("i")
-	err := tx.QueryRow(s.q(`
-		SELECT i.id FROM items i
-		JOIN collections c ON c.id = i.collection_id
-		WHERE i.workspace_id = ? AND c.prefix = ? AND i.item_number = ?
-		  AND i.deleted_at IS NULL`+restrictI), append([]any{workspaceID, prefix, number}, scopeArgs...)...).Scan(&id)
-	if err == nil {
-		return sql.NullString{String: id, Valid: true}
-	}
-	if err != sql.ErrNoRows {
-		// A real DB error during resolution is rare and not worth
-		// failing the whole item write over — log-and-skip would
-		// be ideal but we don't have a logger handle here. Return
-		// NULL so the row persists as unresolved; if the error
-		// repeats on every write the broken-links report (Phase 3+)
-		// will surface it.
-		return sql.NullString{}
-	}
-	// Number-only fallback for the cross-collection-move case.
-	restrict, _ := scope.clause("")
-	err = tx.QueryRow(s.q(`
-		SELECT id FROM items
-		WHERE workspace_id = ? AND item_number = ? AND deleted_at IS NULL`+restrict), append([]any{workspaceID, number}, scopeArgs...)...).Scan(&id)
-	if err != nil {
+	err := tx.QueryRow(s.q(query), args...).Scan(&id)
+	if err != nil || id == "" {
 		return sql.NullString{}
 	}
 	return sql.NullString{String: id, Valid: true}
@@ -1553,14 +1525,9 @@ func (s *Store) GetCrossWorkspaceBacklinks(targetWorkspaceID, targetRef, request
 // (...) OR id IN (...) — with the unrestricted variant skipping the
 // predicate.
 //
-// Ref matching is dual: the exact `target_ref` AND a number-only
-// LIKE fallback. The fallback mirrors resolveRefTx's cross-prefix-
-// move logic — `[[other-ws::OLD-42]]` written before the target
-// moved from OLD to NEW collection still resolves in the renderer
-// via item_number, so the cross-ws index query must too. The LIKE
-// pattern `%-<N>` matches any prefix-N ref because Pad prefixes are
-// alphanumeric (no internal `-`), so trailing `-N` uniquely
-// identifies the suffix. Codex round 1 P2.
+// BUG-4119: stored refs match only the target's exact current ref or a former
+// ref proven by its durable move log. The shared identity predicate is applied
+// before LIMIT, so unrelated same-number refs cannot consume the page.
 //
 // Each returned Backlink has SourceWorkspaceSlug populated so the
 // caller can route the link to the correct workspace prefix.
@@ -1570,19 +1537,25 @@ func (s *Store) queryCrossWorkspaceBacklinksForWorkspace(
 	unrestricted bool, fullCollIDs, grantedItemIDs []string,
 	cap int,
 ) ([]models.Backlink, error) {
-	// Derive the number-only LIKE pattern. If targetRef doesn't have
-	// a `-N` suffix (defensive — shouldn't happen for canonical
-	// PREFIX-N inputs), fall back to exact-only matching.
-	likeFallback := ""
-	if dash := strings.LastIndexByte(targetRef, '-'); dash > 0 && dash < len(targetRef)-1 {
-		likeFallback = "%-" + targetRef[dash+1:]
-	}
-
-	refClause := "LOWER(wl.target_ref) = LOWER(?)"
+	refClause := "LOWER(r.target_ref) = LOWER(?)"
 	args := []interface{}{targetWorkspaceID}
-	if likeFallback != "" {
-		refClause = "(LOWER(wl.target_ref) = LOWER(?) OR LOWER(wl.target_ref) LIKE LOWER(?))"
-		args = append(args, targetRef, likeFallback)
+	if prefix, number, ok := parseItemRef(targetRef); ok {
+		// BUG-4119: a suffix coincidence is never a backlink. Resolve the
+		// target using the same helper, then apply its shared predicate to
+		// each stored spelling in SQL, before pagination. Archived targets
+		// remain queryable, matching this door's existing liveness policy.
+		id, err := s.itemRefIDQ(s.db, targetWorkspaceID, prefix, number, linkScope{}, true, true)
+		if err != nil {
+			return nil, err
+		}
+		if id == "" {
+			return nil, nil
+		}
+		refClause = `EXISTS (
+            SELECT 1 FROM items i JOIN collections c ON c.id = i.collection_id
+            WHERE i.workspace_id = ? AND i.id = ? AND ` + itemRefMatchesSQL + `
+        )`
+		args = append(args, targetWorkspaceID, id)
 	} else {
 		args = append(args, targetRef)
 	}
@@ -1615,19 +1588,19 @@ func (s *Store) queryCrossWorkspaceBacklinksForWorkspace(
 
 	rows, err := s.db.Query(s.q(`
 		SELECT s.id, c.prefix, s.item_number, s.title, c.slug, c.icon,
-		       s.content, `+contentStateSQLFor("s")+`, wl.position, wl.display_text, s.updated_at
-		FROM item_wiki_links wl
-		JOIN items s       ON s.id = wl.source_item_id
+		       s.content, `+contentStateSQLFor("s")+`, r.position, r.display_text, s.updated_at
+		FROM item_wiki_links r
+		JOIN items s       ON s.id = r.source_item_id
 		JOIN collections c ON c.id = s.collection_id
-		WHERE wl.target_kind = 'workspace_ref'
-		  AND wl.target_workspace_id = ?
+		WHERE r.target_kind = 'workspace_ref'
+		  AND r.target_workspace_id = ?
 		  AND `+refClause+`
 		  AND s.workspace_id = ?
 		  AND s.deleted_at IS NULL
 		  -- A soft-deleted COLLECTION leaves its items live (BUG-3344);
 		  -- relation backlinks make the same check.
 		  AND c.deleted_at IS NULL`+visClause+`
-		ORDER BY s.updated_at DESC, wl.position ASC
+		ORDER BY s.updated_at DESC, r.position ASC
 		LIMIT ?
 	`), args...)
 	if err != nil {

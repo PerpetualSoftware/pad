@@ -2569,7 +2569,7 @@ func TestOldRefResolvesAfterMove(t *testing.T) {
 		t.Fatalf("expected ref TASK-%d after move, got %s", originalNumber, moved.Ref)
 	}
 
-	// Old ref PLAN-1 should STILL resolve to the same item (fallback by number)
+	// BUG-4119: the move log proves the old PLAN ref belongs to this item.
 	found, err = s.GetItemByRef(ws.ID, "PLAN", originalNumber)
 	if err != nil {
 		t.Fatalf("GetItemByRef (old ref) error: %v", err)

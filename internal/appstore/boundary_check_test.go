@@ -116,7 +116,8 @@ var allowedStoreMethodsInsideDoor = map[string]string{
 // of the door, with what each writes. Same rules as the list above.
 var reviewedStoreFuncs = map[string]string{
 	"writeOutboxTx":           "INSERT INTO event_outbox ... RETURNING on the tx it is handed",
-	"resolveRefTx":            "reads items",
+	"resolveRefTx":            "reads items; no INSERT/UPDATE/DELETE",
+	"itemRefLookupSQL":        "builds the items SELECT and arguments; no INSERT/UPDATE/DELETE or SQL execution",
 	"resolveTitleTx":          "reads items",
 	"resolveWorkspaceSlugTx":  "reads workspaces",
 	"itemUpdatedSliceChanged": "compares two item snapshots in memory; no SQL",
