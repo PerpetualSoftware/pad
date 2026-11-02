@@ -1296,7 +1296,8 @@ func TestRunItemCopy_AmbiguousFailureOnAKeyedServerNamesTheKey(t *testing.T) {
 		"UNKNOWN outcome",
 		"Check the destination first",
 		"pad item list tasks --workspace pad-web",
-		"within 24 hours",
+		"within 24 hours of the first attempt",
+		"the key is forgotten and a re-run can make a second copy",
 		"cannot make a",
 		"still in progress",
 	} {
@@ -1726,7 +1727,7 @@ func TestItemCopyCmd_IsRegisteredWithEveryFlag(t *testing.T) {
 		// single most surprising thing about this command. Since TASK-3585 it
 		// is one KEYED retry and nothing else (TASK-4131), and the old "no
 		// idempotency key" sentence must not come back.
-		for _, w := range []string{"retried ONCE with that key", "Nothing else retries it", "--op-key within 24 hours"} {
+		for _, w := range []string{"retried ONCE with that key", "Nothing else retries it", "--op-key within 24 hours of the first attempt", "a re-run can make a second copy"} {
 			if !strings.Contains(sub.Long, w) {
 				t.Errorf("--help must document the retry contract; missing %q", w)
 			}

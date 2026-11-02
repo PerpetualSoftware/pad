@@ -2128,9 +2128,10 @@ is retried ONCE with that key, and only when the server honours idempotency
 keys; such a server answers a same-key retry with the first copy instead of
 making another. Nothing else retries it. If the outcome is still unknown,
 check the destination workspace first. On a server that honours keys the
-command prints the key, and a re-run with the same --op-key within 24 hours
-cannot make a second copy; on one that does not, a re-run would create a
-duplicate item.
+command prints the key, and a re-run with the same
+--op-key within 24 hours of the first attempt cannot make a second copy;
+after that the key is forgotten and a re-run can make a second copy. On a
+server that does not honour keys, a re-run would create a duplicate item.
 
 Items can be referenced by issue ID (e.g. TASK-5) or slug.`,
 		Example: `  pad item copy IDEA-12 --to-workspace pad-web --collection tasks --dry-run
@@ -2323,10 +2324,12 @@ func runItemCopy(opts itemCopyOptions, deps itemCopyDeps, stdout, stderr io.Writ
 				fmt.Fprintf(stderr, "Check the destination first:\n")
 				fmt.Fprintf(stderr, "  pad item list %s --workspace %s\n\n", targetCollection, targetWorkspace)
 				fmt.Fprintf(stderr, "If the copy is not there, re-run the same command with --op-key %s\n", req.OpKey)
-				fmt.Fprintf(stderr, "within 24 hours. This server applies a request with the same key at most\n")
-				fmt.Fprintf(stderr, "once in that window, so a re-run after a copy that did land cannot make a\n")
-				fmt.Fprintf(stderr, "second one. If the first attempt is still in progress, the re-run is\n")
-				fmt.Fprintf(stderr, "refused; wait and run it again with the same key.\n")
+				fmt.Fprintf(stderr, "within 24 hours of the first attempt. This server applies a request with\n")
+				fmt.Fprintf(stderr, "the same key at most once in that window, so a re-run after a copy that\n")
+				fmt.Fprintf(stderr, "did land cannot make a second one. After the window,\n")
+				fmt.Fprintf(stderr, "the key is forgotten and a re-run can make a second copy.\n")
+				fmt.Fprintf(stderr, "If the first attempt is still in progress, the re-run is refused;\n")
+				fmt.Fprintf(stderr, "wait and run it again with the same key.\n")
 				return unknown
 			}
 			fmt.Fprintf(stderr, "This server does not honour idempotency keys, so a re-run would create\n")

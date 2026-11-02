@@ -220,8 +220,10 @@ pad item copy <ref> --to-workspace <slug> --collection <slug> [--dry-run] [--arc
                               # idempotency_keys, where the retry replays the first copy; nothing else retries
                               # it (PLAN-2357 DR-13). On a still-unknown outcome the CLI says check the
                               # destination first; on a keyed server it prints the key, and a re-run with that
-                              # --op-key within 24h (IdempotencyTTL) cannot make a second copy (the preflight
-                              # refuses or the POST replays). Without keys it warns of a duplicate (TASK-4131).
+                              # --op-key within 24h of the first attempt (IdempotencyTTL, from the key's
+                              # created_at) cannot make a second copy (the preflight refuses or the POST
+                              # replays); after that the key is forgotten and a re-run can make a second
+                              # copy. Without keys it warns of a duplicate (TASK-4131).
                               # Content semantics: markdown is copied verbatim except `pad-attachment:`
                               # refs that resolve to a LIVE attachment in the SOURCE workspace — those are
                               # repointed at the clones (+ variants). Foreign / soft-deleted / dangling ids
