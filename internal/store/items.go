@@ -944,65 +944,20 @@ func (s *Store) GetItemBySlug(workspaceID, slug string) (*models.Item, error) {
 	return s.GetItem(id)
 }
 
-// GetItemByRef looks up an item by its PREFIX-NUMBER reference (e.g. "IDEA-15").
-// Since item numbers are workspace-unique, this first tries an exact prefix match
-// and falls back to a number-only lookup. This allows old refs to still resolve
-// after an item has been moved to a different collection (e.g. PLAN-42 still
-// finds the item even after it became TASK-42).
-//
-// THE RELATION RUNG NO LONGER SHARES THIS FALLBACK (BUG-3082). `itemByRefQ` in
-// relation_referents.go takes the number-only lookup only when the written
-// prefix names no LIVE collection in the workspace. The two diverge because
-// they answer to different consequences: here a ref is a caller NAVIGATING, and
-// landing on the moved item is the helpful answer; there it is a value being
-// STORED into a typed field, where resolving CONVE-1 to whatever holds number 1
-// writes a referent nobody asked for and nothing above it objects. Do not
-// "restore consistency" by copying either behaviour onto the other without
-// reading that rationale.
+// GetItemByRef looks up a live item by PREFIX-NUMBER. A prefix miss resolves
+// only when the item's durable move log names a former collection whose
+// current prefix matches, including deleted collections (BUG-4119).
 func (s *Store) GetItemByRef(workspaceID, prefix string, number int) (*models.Item, error) {
-	var id string
-	// Try exact prefix + number match first
-	err := s.db.QueryRow(s.q(`
-		SELECT i.id FROM items i
-		JOIN collections c ON c.id = i.collection_id
-		WHERE i.workspace_id = ? AND c.prefix = ? AND i.item_number = ? AND i.deleted_at IS NULL
-	`), workspaceID, prefix, number).Scan(&id)
-	if err == nil {
-		return s.GetItem(id)
-	}
-	if err != nil && err != sql.ErrNoRows {
-		return nil, fmt.Errorf("get item by ref: %w", err)
-	}
-
-	// Fallback: item numbers are workspace-unique, so look up by number alone.
-	// This handles the case where an item was moved to a different collection
-	// but is still being referenced by its old prefix.
-	err = s.db.QueryRow(s.q(`
-		SELECT id FROM items
-		WHERE workspace_id = ? AND item_number = ? AND deleted_at IS NULL
-	`), workspaceID, number).Scan(&id)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("get item by number: %w", err)
+	id, err := s.itemRefIDQ(s.db, workspaceID, prefix, number, linkScope{}, false)
+	if err != nil || id == "" {
+		return nil, err
 	}
 	return s.GetItem(id)
 }
 
-// ResolveItem looks up an item by UUID, PREFIX-NUMBER ref (e.g. "IDEA-15"),
-// or slug. UUID is tried first, then ref, then slug.
-// ResolveItem maps a caller-supplied identifier to an item, trying UUID, then
-// PREFIX-NUMBER ref, then slug.
-//
-// THAT ORDER IS THE DOCUMENTED PRECEDENCE, and BUG-2943 made it matter more:
-// parseItemRef now accepts a digit after the first prefix character, so more
-// strings are ref-SHAPED than before — "ab1-42" among them. The rule is
-// deterministic and stated here once so both server and client code can cite
-// it rather than each deciding: a ref-shaped identifier is looked up AS A REF
-// first, and falls through to the slug lookup when no such ref exists. An
-// identifier that is both a live ref and a live slug is a naming collision the
-// user created, and the precedence is how it is settled — the ref wins.
+// ResolveItem tries UUID, then PREFIX-NUMBER ref, then an ordinary slug.
+// A parsed ref miss is terminal: falling through to an unrelated ref-shaped
+// slug would open a second wrong-item resolution door (BUG-4119).
 func (s *Store) ResolveItem(workspaceID, identifier string) (*models.Item, error) {
 	// Try UUID lookup first (8-4-4-4-12 hex format)
 	if isUUID(identifier) {
@@ -1014,15 +969,9 @@ func (s *Store) ResolveItem(workspaceID, identifier string) (*models.Item, error
 			return item, nil
 		}
 	}
-	// Try PREFIX-NUMBER ref
+	// A ref-shaped identifier is always interpreted as a ref (BUG-4119).
 	if prefix, number, ok := parseItemRef(identifier); ok {
-		item, err := s.GetItemByRef(workspaceID, prefix, number)
-		if err != nil {
-			return nil, err
-		}
-		if item != nil {
-			return item, nil
-		}
+		return s.GetItemByRef(workspaceID, prefix, number)
 	}
 	// Fall back to slug lookup
 	return s.GetItemBySlug(workspaceID, identifier)
@@ -1098,6 +1047,8 @@ func (s *Store) ResolveItemIncludeDeleted(workspaceID, slugOrRef string) (*model
 		if err != sql.ErrNoRows {
 			return nil, fmt.Errorf("resolve ref (include deleted): %w", err)
 		}
+		// BUG-4119: ref misses cannot be caught by unrelated item slugs.
+		return nil, nil
 	}
 	return s.GetItemBySlugIncludeDeleted(workspaceID, slugOrRef)
 }

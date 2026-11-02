@@ -36,7 +36,8 @@ func TestBUG3746_ContentReplacementMovesTheSeedBoundary(t *testing.T) {
 	parseJSON(t, rr, &created)
 	seqA := created.Seq
 
-	rr = doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+created.Slug,
+	// BUG-4119: the title's slug is ref-shaped; use the item's own identity.
+	rr = doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+created.ID,
 		map[string]interface{}{"content": "B"})
 	if rr.Code != http.StatusOK {
 		t.Fatalf("replace: %d %s", rr.Code, rr.Body.String())

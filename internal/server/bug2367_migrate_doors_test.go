@@ -279,7 +279,7 @@ func TestBUG2367_PreflightAndCopyAgree(t *testing.T) {
 					DroppedFields []string         `json:"dropped_fields"`
 					NotUnique     []b2367NotUnique `json:"not_unique"`
 				} `json:"warnings"`
-				Destination struct{ Slug string } `json:"destination"`
+				Destination struct{ Ref string } `json:"destination"`
 			}
 			parseJSON(t, cp, &c)
 			if len(c.Warnings.NotUnique) != 1 || c.Warnings.NotUnique[0].Message != wantMsg {
@@ -292,7 +292,9 @@ func TestBUG2367_PreflightAndCopyAgree(t *testing.T) {
 			if !dropped["invocation_slug"] || !dropped["progress"] {
 				t.Errorf("copy dropped_fields = %v, the preflight dropped invocation_slug and progress", c.Warnings.DroppedFields)
 			}
-			got := f.storedFields(dstWS, c.Destination.Slug)
+			// BUG-4119: a duplicate title can produce a ref-shaped slug
+			// (source-1); address the copied item by its exact ref instead.
+			got := f.storedFields(dstWS, c.Destination.Ref)
 			if _, ok := got["invocation_slug"]; ok {
 				t.Errorf("the copy stored the colliding slug: %v", got)
 			}

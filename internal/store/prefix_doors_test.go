@@ -347,14 +347,21 @@ func TestResolveItem_RefBeforeSlugPrecedence(t *testing.T) {
 			"a ref-shaped slug at all", slugged.Slug)
 	}
 
-	t.Run("with no such ref, the slug resolves", func(t *testing.T) {
+	t.Run("a ref miss cannot fall through to an unrelated slug", func(t *testing.T) {
 		got, err := s.ResolveItem(ws.ID, "ab1-42")
 		if err != nil {
 			t.Fatalf("ResolveItem: %v", err)
 		}
-		if got == nil || got.ID != slugged.ID {
-			t.Fatalf("resolved %v, want the item slugged ab1-42 — a ref-shaped name that "+
-				"names no ref must still find the slug", got)
+		// BUG-4119: slug fallthrough was a second door through which an
+		// unrelated item could catch a ref (for example, ident-10).
+		if got != nil {
+			t.Fatalf("ref-shaped miss resolved to unrelated slug: %v", got)
+		}
+		for _, own := range []string{slugged.Ref, slugged.ID} {
+			item, err := s.ResolveItem(ws.ID, own)
+			if err != nil || item == nil || item.ID != slugged.ID {
+				t.Fatalf("own ref/UUID %s: %v %v", own, item, err)
+			}
 		}
 	})
 
