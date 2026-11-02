@@ -83,6 +83,40 @@ func TestSQLiteException(t *testing.T) {
 	}
 }
 
+func TestPGNoTestsException(t *testing.T) {
+	for _, tt := range []struct {
+		name, testFile, source, want string
+	}{
+		{name: "operator command without tests"},
+		{name: "operator command gains tests", testFile: "operator/main_test.go", want: "ci-pg-packages.txt, or re-reviewed"},
+		{name: "build excluded external test still invalidates review", testFile: "operator/main_windows_test.go", want: "ci-pg-packages.txt, or re-reviewed"},
+		{name: "stale entry without PG references", source: `package main; func main() {}`, want: "stale no-tests"},
+		{name: "library is not an operator command", source: `package operator; func Open() { storetest.NewPostgres(t) }`, want: "no-tests entry requires package main"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			source := tt.source
+			if source == "" {
+				source = `package main; import "database/sql"; func main() { sql.Open("pgx", dsn) }`
+			}
+			files := map[string]string{"operator/main.go": source}
+			if tt.testFile != "" {
+				files[tt.testFile] = "package main\n"
+				if strings.HasSuffix(tt.testFile, "_windows_test.go") {
+					files[tt.testFile] = "//go:build windows\n\npackage main_test\n"
+				}
+			}
+			errs := audit(files, nil, nil, nil, map[string]string{"./operator": "no-tests: reviewed operator command"})
+			got := strings.Join(errs, "\n")
+			if tt.want == "" && got != "" {
+				t.Fatal(got)
+			}
+			if tt.want != "" && !strings.Contains(got, tt.want) {
+				t.Fatalf("wanted %q; got %q", tt.want, got)
+			}
+		})
+	}
+}
+
 func TestReviewedNonconnectingBoundary(t *testing.T) {
 	body := `func Register() { sql.Open("pgx", "") }`
 	files := map[string]string{

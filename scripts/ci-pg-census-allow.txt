@@ -1,5 +1,7 @@
-# Package<TAB>reason. Valid only while storetest usage is NewSQLite/Cleanup.
+# Package<TAB>reason. SQLite reviews are valid only while storetest usage is NewSQLite/Cleanup.
 ./internal/decision	storetest.NewSQLite only; no PostgreSQL constructor.
 ./internal/oauth	storetest.NewSQLite only; Cleanup cannot create a PostgreSQL template.
+# no-tests: reviewed operator commands; valid only with zero *_test.go files and PG references.
+./scripts/diagnose-version-ties	no-tests: operator command; connects only to a DSN from its own flags, never under go test (BUG-3751 diagnostic).
 # Hash-pinned graph boundary: sql.Open here only retrieves Driver(), then closes; it never dials.
 ./internal/store.registerGuardedDrivers	sha256:ca328ba0209b1304b14957e6e36d0f45712ae7f2731bd5190fb9a05da1224190 Driver registration for SQLite and PG only; no Ping/Conn/query. Any source change requires review.

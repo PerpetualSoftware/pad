@@ -151,18 +151,38 @@ func isWeb(value string) bool {
 	return webPath.MatchString(value) || strings.HasSuffix(value, "/web")
 }
 
-func audit(files map[string]string, parity, allow map[string]string, pgPackages map[string]bool, sqliteAllow map[string]string) []string {
+func audit(files map[string]string, parity, allow map[string]string, pgPackages map[string]bool, pgAllow map[string]string) []string {
 	errors := []string{}
+	// Operator reviews classify packages, not graph boundaries. Keep them separate
+	// from SQLite reviews so they cannot suppress storetest.Cleanup propagation.
+	noTests := map[string]bool{}
+	sqliteAllow := map[string]string{}
+	for pkg, review := range pgAllow {
+		if strings.HasPrefix(review, "no-tests:") {
+			noTests[pkg] = true
+		} else {
+			sqliteAllow[pkg] = review
+		}
+	}
 	sources := []*source{}
 	globals := map[string]map[string]ast.Expr{}
 	units := []*unit{}
 	for file, text := range files {
+		pkg := packagePath(file)
+		if _, reviewed := noTests[pkg]; reviewed && strings.HasSuffix(file, "_test.go") {
+			noTests[pkg] = false
+			errors = append(errors, file+": no-tests entry invalid: package must be added to ci-pg-packages.txt, or re-reviewed")
+		}
 		tree, err := parser.ParseFile(token.NewFileSet(), file, text, parser.ParseComments)
 		if err != nil {
 			errors = append(errors, err.Error())
 			continue
 		}
-		src := &source{file: file, pkg: packagePath(file), tree: tree, imports: map[string]string{}}
+		if _, reviewed := noTests[pkg]; reviewed && tree.Name.Name != "main" {
+			noTests[pkg] = false
+			errors = append(errors, file+": no-tests entry requires package main")
+		}
+		src := &source{file: file, pkg: pkg, tree: tree, imports: map[string]string{}}
 		sources = append(sources, src)
 		if globals[src.pkg] == nil {
 			globals[src.pkg] = map[string]ast.Expr{}
@@ -378,7 +398,11 @@ func audit(files map[string]string, parity, allow map[string]string, pgPackages 
 	// Without go/types, a selector on an imported receiver cannot be resolved
 	// safely. Importing a package exposing PG-capable methods requires review.
 	pgMethods := map[string]bool{}
+	pgReferences := map[string]bool{}
 	for _, u := range units {
+		if u.pg {
+			pgReferences[u.src.pkg] = true
+		}
 		if fn, ok := u.node.(*ast.FuncDecl); ok && fn.Recv != nil && ast.IsExported(u.name) && u.pg {
 			pgMethods[u.src.pkg] = true
 		}
@@ -386,14 +410,21 @@ func audit(files map[string]string, parity, allow map[string]string, pgPackages 
 	for _, src := range sources {
 		for _, imported := range src.imports {
 			pkg := "./" + strings.TrimPrefix(imported, module+"/")
-			if pgMethods[pkg] && !pgPackages[src.pkg] {
-				errors = append(errors, src.file+": unresolved PostgreSQL-capable receiver import "+imported)
+			if pgMethods[pkg] {
+				pgReferences[src.pkg] = true
+				if !pgPackages[src.pkg] && !noTests[src.pkg] {
+					errors = append(errors, src.file+": unresolved PostgreSQL-capable receiver import "+imported)
+				}
 			}
 		}
 		// Imports of PG test helpers require review even if calls are indirect or
 		// unresolved. SQLite exceptions are deliberately restricted to two symbols.
 		for alias, imp := range src.imports {
-			if imp != module+"/internal/store/storetest" || pgPackages[src.pkg] {
+			if imp != module+"/internal/store/storetest" {
+				continue
+			}
+			pgReferences[src.pkg] = true
+			if pgPackages[src.pkg] || noTests[src.pkg] {
 				continue
 			}
 			if sqliteAllow[src.pkg] == "" {
@@ -408,8 +439,13 @@ func audit(files map[string]string, parity, allow map[string]string, pgPackages 
 			})
 		}
 	}
+	for pkg := range noTests {
+		if !pgReferences[pkg] {
+			errors = append(errors, pkg+": stale no-tests entry: package has no PostgreSQL references")
+		}
+	}
 	for _, u := range units {
-		if u.pg && !pgPackages[u.src.pkg] {
+		if u.pg && !pgPackages[u.src.pkg] && !noTests[u.src.pkg] {
 			errors = append(errors, u.src.file+": unlisted PostgreSQL reference/wrapper "+u.name)
 		}
 		if !u.web {
@@ -503,7 +539,7 @@ func run() error {
 	for _, line := range lines {
 		pg[strings.TrimSpace(line)] = true
 	}
-	sqlite := map[string]string{}
+	pgAllow := map[string]string{}
 	lines, err = readLines("scripts/ci-pg-census-allow.txt")
 	if err != nil {
 		return err
@@ -511,9 +547,22 @@ func run() error {
 	for _, line := range lines {
 		fields := strings.SplitN(line, "\t", 2)
 		if len(fields) != 2 || fields[1] == "" {
-			return fmt.Errorf("SQLite allow entry needs package and reason: %q", line)
+			return fmt.Errorf("PostgreSQL allow entry needs package and reason: %q", line)
 		}
-		sqlite[fields[0]] = fields[1]
+		pgAllow[fields[0]] = fields[1]
+		if strings.HasPrefix(fields[1], "no-tests:") {
+			// Check the directory too: even untracked or ignored test files invalidate
+			// the review. The source audit below also checks tracked, build-tagged tests.
+			entries, err := os.ReadDir(fields[0])
+			if err != nil {
+				return err
+			}
+			for _, entry := range entries {
+				if !entry.IsDir() && strings.HasSuffix(entry.Name(), "_test.go") {
+					return fmt.Errorf("%s: no-tests entry invalid: package must be added to ci-pg-packages.txt, or re-reviewed (%s exists)", fields[0], entry.Name())
+				}
+			}
+		}
 	}
 	output, err := exec.Command("git", "ls-files", "-z", "--", "*.go").Output()
 	if err != nil {
@@ -530,7 +579,7 @@ func run() error {
 	if len(files) == 0 {
 		return fmt.Errorf("no tracked Go sources")
 	}
-	errors := audit(files, parity, allow, pg, sqlite)
+	errors := audit(files, parity, allow, pg, pgAllow)
 	if len(errors) > 0 {
 		return fmt.Errorf("source census failed:\n%s", strings.Join(errors, "\n"))
 	}
