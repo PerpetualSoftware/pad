@@ -570,7 +570,9 @@ const resourceNoteMaxClientID = 128
 // the form client_id, else the id a client authenticating with HTTP Basic
 // sends there, form-urlencoded (RFC 6749 §2.3.1). The id is cut to
 // resourceNoteMaxClientID, and only an id within that bound is looked up, so
-// an unknown or oversized one costs no database read and no map memory.
+// an oversized one costs no database read and at most a bounded map key. An
+// unknown id within the bound still costs one lookup and one limiter slot
+// (the map is cleared at resourceMissingWarnMax), as it did in phase 1.
 func (s *Server) resourceNoteClient(r *http.Request) (clientID, clientName string) {
 	clientID = r.Form.Get("client_id")
 	if clientID == "" {
