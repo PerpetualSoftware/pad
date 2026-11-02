@@ -10,9 +10,9 @@ on:
     branches: [main]
 
 concurrency:
-  # Per branch and SHA on a push: never evict a pending run or its vendorHash
-  # heal, and a release branch cut at a main SHA neither queues behind nor
-  # evicts main's run of that SHA.
+  # Per branch and SHA on a push, so a push never cancels or replaces another
+  # SHA's run (or its vendorHash heal), and a release branch cut at a main SHA
+  # neither queues behind nor replaces main's run of that SHA.
   group: ci-${{ github.event_name == 'push' && format('{0}-{1}', github.ref, github.sha) || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 

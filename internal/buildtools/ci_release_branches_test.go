@@ -1,6 +1,7 @@
 package buildtools
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -16,11 +17,12 @@ import (
 // runs where, and the one job that must never run off main.
 
 type workflowStep struct {
-	ID              string `yaml:"id"`
-	Name            string `yaml:"name"`
-	If              string `yaml:"if"`
-	Run             string `yaml:"run"`
-	ContinueOnError any    `yaml:"continue-on-error"`
+	ID              string            `yaml:"id"`
+	Name            string            `yaml:"name"`
+	If              string            `yaml:"if"`
+	Run             string            `yaml:"run"`
+	Env             map[string]string `yaml:"env"`
+	ContinueOnError any               `yaml:"continue-on-error"`
 }
 
 type workflowJob struct {
@@ -42,6 +44,11 @@ type workflowFile struct {
 		Group string `yaml:"group"`
 	} `yaml:"concurrency"`
 	Jobs map[string]workflowJob `yaml:"jobs"`
+
+	// Triggers is the set of keys under on:, read separately because a bare
+	// key such as workflow_dispatch: decodes to a nil pointer, which a struct
+	// cannot tell from an absent one.
+	Triggers []string
 }
 
 func readWorkflow(t *testing.T, name string) workflowFile {
@@ -54,14 +61,24 @@ func readWorkflow(t *testing.T, name string) workflowFile {
 	if err := yaml.Unmarshal(b, &wf); err != nil {
 		t.Fatalf("%s: %v", name, err)
 	}
+	var raw struct {
+		On map[string]any `yaml:"on"`
+	}
+	if err := yaml.Unmarshal(b, &raw); err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	wf.Triggers = slices.Sorted(maps.Keys(raw.On))
 	return wf
 }
+
+// fold collapses whitespace, so a folded (>-) expression compares as one line.
+func fold(expr string) string { return strings.Join(strings.Fields(expr), " ") }
 
 // conjuncts splits a GitHub expression on && after folding whitespace, and
 // refuses one that has a || anywhere: an OR can widen any guard it touches.
 func conjuncts(t *testing.T, where, expr string) []string {
 	t.Helper()
-	expr = strings.Join(strings.Fields(expr), " ")
+	expr = fold(expr)
 	if strings.Contains(expr, "||") {
 		t.Fatalf("%s: if = %q; it must be a plain && of terms, with no ||", where, expr)
 	}
@@ -75,12 +92,16 @@ func conjuncts(t *testing.T, where, expr string) []string {
 func TestCIWorkflows_RunOnMainAndReleasePushes(t *testing.T) {
 	want := []string{"main", "release-*"}
 	// A push's group carries the ref AND the SHA, so a release branch cut at a
-	// main SHA neither queues behind nor evicts main's run of that SHA. Pinned
+	// main SHA neither queues behind nor replaces main's run of that SHA. Pinned
 	// whole: in ci.yml the PR alternative names github.ref on its own, so a
 	// substring check would pass a push group keyed on the SHA alone.
 	groups := map[string]string{
 		"ci.yml":   "ci-${{ github.event_name == 'push' && format('{0}-{1}', github.ref, github.sha) || github.ref }}",
 		"race.yml": "race-${{ github.ref }}-${{ github.sha }}",
+	}
+	triggers := map[string][]string{
+		"ci.yml":   {"pull_request", "push"},
+		"race.yml": {"push", "workflow_dispatch"},
 	}
 	for name, group := range groups {
 		wf := readWorkflow(t, name)
@@ -92,15 +113,15 @@ func TestCIWorkflows_RunOnMainAndReleasePushes(t *testing.T) {
 		if wf.Concurrency.Group != group {
 			t.Errorf("%s: concurrency.group = %q, want %q", name, wf.Concurrency.Group, group)
 		}
+		if !slices.Equal(wf.Triggers, triggers[name]) {
+			t.Errorf("%s: triggers = %v, want %v", name, wf.Triggers, triggers[name])
+		}
 	}
 
 	// Pull requests are unchanged: PRs into main only.
 	ci := readWorkflow(t, "ci.yml")
 	if ci.On.PullRequest == nil || !slices.Equal(ci.On.PullRequest.Branches, []string{"main"}) {
 		t.Errorf("ci.yml: on.pull_request = %+v, want branches [main]", ci.On.PullRequest)
-	}
-	if race := readWorkflow(t, "race.yml"); race.On.PullRequest != nil {
-		t.Errorf("race.yml: on.pull_request = %+v; Race runs on pushes and dispatch only", race.On.PullRequest)
 	}
 }
 
@@ -165,10 +186,12 @@ func TestCIWorkflow_NixRefusesStaleVendorHashOffMain(t *testing.T) {
 	}
 }
 
-// The race steps run on every push (main and release-*), never on PRs, and
-// their stop-the-line notice names the branch rather than assuming main.
-func TestCIWorkflow_RaceRunsOnEveryPush(t *testing.T) {
+// The push-only work runs on every push (main and release-*), never on PRs:
+// the race steps, their stop-the-line notices (which name the branch rather
+// than assuming main), and the traced PostgreSQL ./... run with --expect.
+func TestCIWorkflow_PushOnlyWorkRunsOnEveryPush(t *testing.T) {
 	ci := readWorkflow(t, "ci.yml")
+	const stopIf = "always() && github.event_name == 'push' && (steps.race.outcome == 'failure' || steps.race.outcome == 'cancelled')"
 	for _, name := range []string{"go", "go-postgres"} {
 		job, ok := ci.Jobs[name]
 		if !ok {
@@ -178,14 +201,14 @@ func TestCIWorkflow_RaceRunsOnEveryPush(t *testing.T) {
 		for _, s := range job.Steps {
 			if s.ID == "race" {
 				race = true
-				if strings.Join(strings.Fields(s.If), " ") != "github.event_name == 'push'" {
+				if fold(s.If) != "github.event_name == 'push'" {
 					t.Errorf("%s race step if = %q, want exactly github.event_name == 'push'", name, s.If)
 				}
 			}
 			if strings.Contains(s.Run, "STOP THE LINE") {
 				stop = true
-				if strings.Contains(s.If, "refs/heads/") {
-					t.Errorf("%s stop-the-line if = %q; it must fire on any push", name, s.If)
+				if fold(s.If) != stopIf {
+					t.Errorf("%s stop-the-line if = %q, want exactly %q", name, s.If, stopIf)
 				}
 				if !strings.Contains(s.Run, "$GITHUB_REF_NAME") {
 					t.Errorf("%s stop-the-line notice must name the branch ($GITHUB_REF_NAME)", name)
@@ -196,12 +219,44 @@ func TestCIWorkflow_RaceRunsOnEveryPush(t *testing.T) {
 			t.Errorf("%s: race step present %v, stop-the-line step present %v", name, race, stop)
 		}
 	}
+
+	var traced bool
+	for _, s := range ci.Jobs["go-postgres"].Steps {
+		if s.Name != "Run tests against PostgreSQL" {
+			continue
+		}
+		traced = true
+		if s.If != "" {
+			t.Errorf("go-postgres %q if = %q; it must run on every event", s.Name, s.If)
+		}
+		// A PR runs the listed packages; every other event, i.e. any push,
+		// runs the whole traced suite against that list.
+		for _, need := range []string{
+			`if [ "$GITHUB_EVENT_NAME" = pull_request ]; then`,
+			"PAD_TEST_PG_TRACE=1 go test -json -timeout=45m -count=1 ./...",
+			"python3 scripts/ci-pg-trace.py --expect scripts/ci-pg-packages.txt",
+		} {
+			if !strings.Contains(s.Run, need) {
+				t.Errorf("go-postgres %q run must contain %q", s.Name, need)
+			}
+		}
+	}
+	if !traced {
+		t.Error("ci.yml go-postgres has no \"Run tests against PostgreSQL\" step")
+	}
+
 	race := readWorkflow(t, "race.yml")
 	for name, job := range race.Jobs {
+		if job.If != "" {
+			t.Errorf("race.yml %s if = %q; Race jobs run on every trigger", name, job.If)
+		}
 		var stop bool
 		for _, s := range job.Steps {
 			if strings.Contains(s.Run, "STOP THE LINE") {
 				stop = true
+				if fold(s.If) != "failure() || cancelled()" {
+					t.Errorf("race.yml %s stop-the-line if = %q, want exactly failure() || cancelled()", name, s.If)
+				}
 				if !strings.Contains(s.Run, "$GITHUB_REF_NAME") {
 					t.Errorf("race.yml %s stop-the-line notice must name the branch ($GITHUB_REF_NAME)", name)
 				}
@@ -209,6 +264,44 @@ func TestCIWorkflow_RaceRunsOnEveryPush(t *testing.T) {
 		}
 		if !stop {
 			t.Errorf("race.yml %s has no stop-the-line step", name)
+		}
+	}
+}
+
+// Nothing else in either workflow may depend on the branch: a job or step
+// gated to main would make a release-* push run less than a main push does.
+// The two deliberate exceptions are the heal job and the Nix refusal.
+func TestCIWorkflows_NoOtherBranchGates(t *testing.T) {
+	refersToBranch := func(s string) bool {
+		s = strings.ReplaceAll(s, "$GITHUB_REF_NAME", "") // the stop-the-line and refusal notices name it
+		for _, mark := range []string{"github.ref", "github.head_ref", "github.base_ref", "GITHUB_REF", "GITHUB_HEAD_REF", "GITHUB_BASE_REF", "refs/heads/"} {
+			if strings.Contains(s, mark) {
+				return true
+			}
+		}
+		return false
+	}
+	allowed := map[string]bool{
+		"ci.yml push-vendor-hash": true,
+		"ci.yml nix step Refuse a stale vendorHash on a push off main": true,
+	}
+	for _, file := range []string{"ci.yml", "race.yml"} {
+		wf := readWorkflow(t, file)
+		for name, job := range wf.Jobs {
+			where := file + " " + name
+			if refersToBranch(job.If) && !allowed[where] {
+				t.Errorf("%s: job if = %q depends on the branch", where, job.If)
+			}
+			for _, s := range job.Steps {
+				where := file + " " + name + " step " + s.Name
+				parts := []string{s.If, s.Run}
+				for _, v := range s.Env {
+					parts = append(parts, v)
+				}
+				if refersToBranch(strings.Join(parts, "\n")) && !allowed[where] {
+					t.Errorf("%s: depends on the branch (if %q)", where, s.If)
+				}
+			}
 		}
 	}
 }

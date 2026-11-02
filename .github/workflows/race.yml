@@ -9,7 +9,7 @@ on:
 
 concurrency:
   # Per branch and SHA, as ci.yml: a release branch cut at a main SHA neither
-  # queues behind nor evicts main's run of that SHA.
+  # queues behind nor replaces main's run of that SHA.
   group: race-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: false
 
