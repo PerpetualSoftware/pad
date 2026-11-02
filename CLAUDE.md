@@ -54,7 +54,7 @@ skills/pad/SKILL.md    agent skill
 - No `web/build`: `embed.go` embeds `all:web/build`, so `make test`/`make lint` fail with "no matching files found". Run `npx vite build` in `web/`. Do not use `make web` in a worktree without its own `node_modules` (see above).
 - No `web/build-materializer`: embedded too. Run `node scripts/build-materializer.mjs` in `web/` after `npx vite build` (`npm run build` does both). It needs esbuild, so a `node_modules` older than the lockfile cannot build it. A placeholder file is not enough: `internal/materialize` tests run the real bundle.
 - `make test-pg` is safe across worktrees (each gets its own compose project and Docker-assigned port) but NOT twice at once in one worktree: both resolve to the same project and the first to finish runs `down -v` under the other. The failure then looks like `connection refused` against the code. It refuses to run (`NO TESTS EXECUTED`) when the database is unreachable. Reap a stack from a deleted worktree with `docker ps --filter name=padtest-` then `docker compose -p <project> down -v`; from inside a worktree, `make test-pg-down`.
-- Go build caches never go under `/tmp` (7.3G tmpfs, i.e. RAM). Use `~/.cache/go-build` or `~/.cache/go-build-<worktree>`. `GOTMPDIR` already points to `~/.cache/go-tmp`.
+- Keep Go build caches off a tmpfs `/tmp` (it is RAM-backed on many dev machines); point `GOCACHE`/`GOTMPDIR` at a disk path.
 
 ## API and MCP
 
@@ -83,7 +83,7 @@ skills/pad/SKILL.md    agent skill
 - WebSocket `/api/v1/collab/{itemID}`. The server is a dumb relay: it persists raw Yjs updates without parsing them (`internal/store/yjs_updates.go`). Client provider: `web/src/lib/collab/wsProvider.svelte.ts`.
 - Bump `@tiptap/core`, `@tiptap/extension-collaboration` and `@tiptap/y-tiptap` together, exact-pinned to the same version (no `^`). Mixed versions silently change the persisted Y.Doc shape and peers diverge.
 - A change to the ProseMirror node spec must bump `web/src/lib/collab/schemaVersion.ts::SCHEMA_VERSION` and `internal/collab/manager.go::DefaultSchemaVersion` together. On mismatch the server returns 400 and prunes the item's op-log. Unflushed edits are set aside (`item_yjs_updates_set_aside`, `content_state: superseded_set_aside`), not restored.
-- The schema version is FROZEN: `internal/collab/schema_version_guard_test.go` fails on any bump (and when the constants disagree) until TASK-3246 lands and the freeze is lifted.
+- The schema version is FROZEN: `internal/collab/schema_version_guard_test.go` fails on any bump (and when the constants disagree); lifting the freeze is a deliberate, reviewed change.
 - UI/CSS/behaviour changes that do not alter the persisted document shape do not bump the version.
 
 ## Related repos and naming
@@ -100,8 +100,7 @@ skills/pad/SKILL.md    agent skill
 ## Gates
 
 - Pre-push on the exact head: `make check`, repo guard tests, `-race` on touched packages (internal/server, internal/store: `-run` the tests exercising the diff, report the count), full `npx vitest run` in `web/`, `go test -timeout=45m` (10m default is too short for internal/server). Exit status is the verdict.
-- Dev server :7777 tracks current main; `~/Dev/docapp` rests on main, current. Refresh with `scripts/install-refresh.sh` (`make install` runs `npm ci`; not sibling-safe); verify `/api/v1/health` `commit` == merged tip.
-- Never mark ready or merge someone else's draft PR; surface it to the lead.
+- Never mark ready or merge someone else's draft PR; leave it to its author.
 - External-contributor PRs: read the full diff before approving any Actions run (workflows, action pins against upstream, `pull_request_target`, permissions, secrets). Never enable auto-approval for outside contributors; the manual gate is the security boundary.
 
 ## Store and server traps
