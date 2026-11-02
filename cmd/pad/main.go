@@ -390,3 +390,5 @@ Usage:
 // =============================================================================
 // v2 Commands: create, list, show, update, delete, search, status, next, collections
 // =============================================================================
+
+// TASK-4224 CI scope probe (broken job condition). Never merged.

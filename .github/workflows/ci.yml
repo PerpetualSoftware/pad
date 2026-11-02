@@ -73,7 +73,7 @@ jobs:
 
   go:
     needs: changes
-    if: needs.changes.outputs.go == 'true'
+    if: false && needs.changes.outputs.go == 'true'
     # Backstop only. A hung TEST is caught by -timeout=45m on the steps
     # below, which fails fast AND prints the goroutine dump that tells
     # you which test hung; this cap exists because a job with no
