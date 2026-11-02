@@ -23,7 +23,7 @@ def classify(paths):
     for path in paths:
         if path.startswith(('.github/workflows/', 'scripts/ci-')):
             return dict.fromkeys(outputs, True)
-        outputs['go'] |= not path.startswith('web/')
+        outputs['go'] |= not path.startswith(('web/', 'internal/'))
         outputs['parity'] |= path.startswith('web/')
         outputs['nix'] |= (path.startswith('nix/') or
                            ('/' not in path and fnmatch.fnmatchcase(path, 'flake.*')) or
