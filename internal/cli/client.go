@@ -1117,6 +1117,8 @@ func (c *Client) ListComments(wsSlug, itemSlug string) ([]models.Comment, error)
 }
 
 func (c *Client) CreateComment(wsSlug, itemSlug string, input models.CommentCreate) (*models.Comment, error) {
+	// BUG-4119: the shared response type retains additive item_ref; an older
+	// server leaves it empty so callers can fall back to the input spelling.
 	var result models.Comment
 	path := "/workspaces/" + url.PathEscape(wsSlug) + "/items/" + url.PathEscape(itemSlug) + "/comments"
 	err := c.post(path, input, &result)
@@ -1253,6 +1255,11 @@ func (c *Client) serverHonorsKeys() bool {
 	caps, _ := c.serverCapabilities()
 	return caps.IdempotencyKeys
 }
+
+// ServerHonorsKeys is serverHonorsKeys for the command layer: false when the
+// capability lookup fails. `pad item copy` uses it to choose its
+// unknown-outcome advice (TASK-4131).
+func (c *Client) ServerHonorsKeys() bool { return c.serverHonorsKeys() }
 
 // retryableWithKey: no API answer at all (a transport error) or a 5xx.
 func retryableWithKey(err error) bool {
@@ -3600,6 +3607,13 @@ func (c *Client) ResolveChatTarget(target string, ensure bool) (int, error) {
 	n, agent, err := ParseChatTarget(target)
 	if err != nil || agent == "" {
 		return n, err
+	}
+	// Send only (ensure): show, read and delete keep the truthful not_found
+	// for an agent's @other, since they never create or message a DM.
+	if ensure {
+		if err := CheckAgentChatTarget(c.agentName, target); err != nil {
+			return 0, err
+		}
 	}
 	raw, err := c.ListChatConversations()
 	if err != nil {

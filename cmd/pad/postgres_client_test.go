@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"net/url"
 	"os"
 	"os/exec"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/PerpetualSoftware/pad/internal/store/storetest"
 	"github.com/google/uuid"
 )
 
@@ -111,6 +113,7 @@ func TestPostgresBackupRestoreConnection(t *testing.T) {
 		if _, err := admin.Exec("CREATE DATABASE " + name); err != nil {
 			t.Fatal(err)
 		}
+		storetest.TracePGConnected(t, "TestPostgresBackupRestoreConnection.admin")
 		t.Cleanup(func() {
 			if _, err := admin.Exec("DROP DATABASE " + name + " WITH (FORCE)"); err != nil {
 				t.Error(err)
@@ -134,6 +137,7 @@ func TestPostgresBackupRestoreConnection(t *testing.T) {
 	if _, err := source.Exec("CREATE TABLE recovery_probe (value text); INSERT INTO recovery_probe VALUES ('restored row')"); err != nil {
 		t.Fatal(err)
 	}
+	storetest.TracePGConnected(t, "TestPostgresBackupRestoreConnection.source")
 	// A wrong ambient database must not override the explicit URI.
 	t.Setenv("PGDATABASE", "not_the_requested_database")
 	t.Setenv("PGPASSWORD", "not_the_explicit_password")
@@ -177,16 +181,19 @@ func TestPostgresBackupRestoreConnection(t *testing.T) {
 		if err := backup.Execute(); err != nil {
 			t.Fatal(err)
 		}
+		storetest.TracePGConnected(t, "TestPostgresBackupRestoreConnection.pg_dump")
 		t.Setenv("PAD_DATABASE_URL", convert(targetURL))
 		restore := dbRestoreCmd()
 		restore.SetArgs([]string{"--force", archive})
 		if err := restore.Execute(); err != nil {
 			t.Fatal(err)
 		}
+		storetest.TracePGConnected(t, "TestPostgresBackupRestoreConnection.psql")
 		var value string
 		if err := target.QueryRow("SELECT value FROM recovery_probe").Scan(&value); err != nil || value != "restored row" {
 			t.Fatalf("round trip: value=%q err=%v", value, err)
 		}
+		storetest.TracePGConnected(t, "TestPostgresBackupRestoreConnection.target")
 	}
 	t.Run("SQL failure rolls back and overrides psqlrc", func(t *testing.T) {
 		psqlrc := filepath.Join(t.TempDir(), "psqlrc")
@@ -203,6 +210,13 @@ func TestPostgresBackupRestoreConnection(t *testing.T) {
 		restore.SetArgs([]string{"--force", failedArchive})
 		if err := restore.Execute(); err == nil {
 			t.Error("restore returned success after a SQL error rolled back its transaction")
+		} else {
+			// psql exit 3 means a script error with ON_ERROR_STOP, after
+			// connecting and beginning the --single-transaction transaction.
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) && exitErr.ExitCode() == 3 {
+				storetest.TracePGConnected(t, "TestPostgresBackupRestoreConnection.psql.sql_error")
+			}
 		}
 		var value string
 		if err := target.QueryRow("SELECT value FROM recovery_probe").Scan(&value); err != nil || value != "restored row" {
@@ -214,6 +228,7 @@ func TestPostgresBackupRestoreConnection(t *testing.T) {
 		if err := validRestore.Execute(); err != nil {
 			t.Fatal(err)
 		}
+		storetest.TracePGConnected(t, "TestPostgresBackupRestoreConnection.psql")
 		if err := target.QueryRow("SELECT value FROM recovery_probe").Scan(&value); err != nil || value != "restored row" {
 			t.Fatalf("valid restore after SQL error: value=%q err=%v", value, err)
 		}

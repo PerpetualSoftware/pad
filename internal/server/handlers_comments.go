@@ -122,6 +122,7 @@ func (s *Server) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 			writeError2(w, http.StatusGone, "idempotency_target_gone", "the comment this key created no longer exists", map[string]interface{}{"comment_id": a.CommentID})
 			return
 		}
+		c.ItemRef = item.Ref
 		writeJSON(w, status, c)
 	})
 	if !ok {
@@ -178,6 +179,7 @@ func (s *Server) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 		Summary:      truncateForSummary(comment.Body, 120),
 	})
 
+	comment.ItemRef = item.Ref
 	writeJSON(w, http.StatusCreated, comment)
 }
 

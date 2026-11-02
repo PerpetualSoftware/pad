@@ -667,7 +667,7 @@ handlers — onchange is never called.
 		//    `store.uniqueSlug`). Nothing auto-retries — the retry would be a
 		//    person clicking Create again, seeing the picker's current state —
 		//    and the repo's standing rule for the same shape is exactly that
-		//    (`item copy` "NEVER retry it automatically"). Filed as IDEA-2880
+		//    (PLAN-2357 DR-13: never a keyless automatic retry). Filed as IDEA-2880
 		//    rather than papered over with a client-side guess — checking for a
 		//    same-title item before retrying would rest on the same ranked,
 		//    paged, possibly-stale evidence the create row itself rests on, and

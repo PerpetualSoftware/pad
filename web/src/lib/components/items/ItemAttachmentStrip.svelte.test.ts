@@ -2,6 +2,13 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import type { AttachmentListItem, AttachmentListResponse } from '$lib/types';
 import type { UploadedAttachment } from '$lib/attachments/events';
+import {
+	EVIL_NAME,
+	FSI,
+	PDI,
+	expectFsiPdi,
+	expectIsolated
+} from '$lib/attachments/bidiIsolation.testutil';
 import { runTopEscape, _resetEscapeStackForTests } from '$lib/stores/escapeStack';
 import { __resetViewerBackdropForTests } from '$lib/a11y/viewerBackdrop';
 
@@ -292,8 +299,8 @@ describe('ItemAttachmentStrip', () => {
 		expect(tile.getAttribute('download')).toBeNull();
 		// The accessible name carries filename, TYPE and the ACTION (DR-12) —
 		// the only signpost for the changed behaviour, since DR-1 adds no `⋯`.
-		expect(tile.getAttribute('aria-label')).toBe('Options for spec.pdf, PDF, 1.5 KB');
-		expect(tile.getAttribute('title')).toBe('spec.pdf, PDF, 1.5 KB');
+		expect(tile.getAttribute('aria-label')).toBe('Options for ' + FSI + 'spec.pdf' + PDI + ', PDF, 1.5 KB');
+		expect(tile.getAttribute('title')).toBe(FSI + 'spec.pdf' + PDI + ', PDF, 1.5 KB');
 	});
 
 	it('emits the open-surface event with the invoker and all three metadata fields', async () => {
@@ -416,7 +423,7 @@ describe('ItemAttachmentStrip', () => {
 		const [svgTile, pngTile] = tiles();
 		// The SVG got the file path: an icon + name, no thumbnail request.
 		expect(svgTile.querySelector('img')).toBeNull();
-		expect(svgTile.getAttribute('aria-label')).toContain('Options for logo.svg');
+		expect(svgTile.getAttribute('aria-label')).toContain('Options for ' + FSI + 'logo.svg' + PDI);
 
 		svgTile.click();
 		await settle();
@@ -1047,7 +1054,7 @@ describe('ItemAttachmentStrip', () => {
 
 		const buttons = deleteButtons();
 		expect(buttons).toHaveLength(2);
-		expect(buttons[0].getAttribute('aria-label')).toBe('Delete a1.png');
+		expect(buttons[0].getAttribute('aria-label')).toBe('Delete ' + FSI + 'a1.png' + PDI);
 		// Actually focusable — not merely present. The earlier assertion checked
 		// the `hidden` PROPERTY, which a `visibility: hidden` rule never sets,
 		// so it passed while the control was in fact unreachable by keyboard
@@ -2666,5 +2673,46 @@ describe('ItemAttachmentStrip', () => {
 		expect(tiles()).toHaveLength(1);
 		expect(tiles()[0].getAttribute('aria-label')).toContain('a1.png');
 		expect(toastMock).toHaveBeenCalled();
+	});
+
+	// TASK-4195: a file name with a right-to-left override must be isolated
+	// wherever the strip shows it.
+	describe('bidi isolation of file names (TASK-4195)', () => {
+		it('isolates the visible tile name, and the title / aria-label / delete labels', async () => {
+			listMock.mockResolvedValue(response([att({ id: 'a1', filename: EVIL_NAME, mime_type: 'application/pdf' })]));
+			props.canDelete = true;
+			mountStrip('item-a');
+			await settle();
+
+			expectIsolated(target.querySelector('.att-name')!, EVIL_NAME);
+			const tile = tiles()[0];
+			expectFsiPdi(tile.getAttribute('title'), EVIL_NAME);
+			expectFsiPdi(tile.getAttribute('aria-label'), EVIL_NAME);
+			const del = deleteButtons()[0];
+			expectFsiPdi(del.getAttribute('title'), EVIL_NAME);
+			expectFsiPdi(del.getAttribute('aria-label'), EVIL_NAME);
+		});
+
+		it('isolates the name in the delete confirmation (sheet / menu label and prompt)', async () => {
+			listMock.mockResolvedValue(response([att({ id: 'a1', filename: EVIL_NAME })]));
+			props.canDelete = true;
+			mountStrip('item-a');
+			await settle();
+			openConfirm();
+			expectFsiPdi(confirmPanel()?.getAttribute('aria-label'), EVIL_NAME);
+			expectFsiPdi(promptText(), EVIL_NAME);
+		});
+
+		it('isolates only the name in the delete-failure toast', async () => {
+			listMock.mockResolvedValue(response([att({ id: 'a1', filename: EVIL_NAME })]));
+			deleteMock.mockRejectedValue(new Error('boom'));
+			props.canDelete = true;
+			mountStrip('item-a');
+			await settle();
+			openConfirm();
+			clickConfirm();
+			await settle();
+			expect(toastMock).toHaveBeenCalledWith("Couldn't delete " + FSI + EVIL_NAME + PDI + '.', 'error');
+		});
 	});
 });

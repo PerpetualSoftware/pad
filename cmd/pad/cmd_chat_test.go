@@ -66,6 +66,11 @@ func TestChatShowReadMarker(t *testing.T) {
 }
 
 func TestChatSendAndTargetResolution(t *testing.T) {
+	// A human caller: an ambient PAD_AGENT or CLAUDECODE would make @rook
+	// another agent's DM (TASK-4186 PR C). The send cases would then be refused
+	// by the agent guard before any request, and show would find nothing.
+	t.Setenv("PAD_AGENT", "")
+	t.Setenv("CLAUDECODE", "")
 	oldFormat, oldWorkspace, oldURL := formatFlag, workspaceFlag, urlFlag
 	t.Cleanup(func() { formatFlag, workspaceFlag, urlFlag = oldFormat, oldWorkspace, oldURL })
 

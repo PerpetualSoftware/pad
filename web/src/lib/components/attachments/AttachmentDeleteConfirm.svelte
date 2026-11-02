@@ -38,7 +38,7 @@
 	a change to one is read alongside the other.
 -->
 <script lang="ts" module>
-	import { displayFilename } from '$lib/attachments/display';
+	import { displayFilenameIsolated } from '$lib/attachments/display';
 
 	/**
 	 * The two arms of the ITEM-surface delete warning.
@@ -58,7 +58,7 @@
 		// confirmation reading "Delete ?" is the one place it actually matters,
 		// because the user is being asked to approve destroying something the
 		// prompt cannot name (final review round 4).
-		const displayName = displayFilename(filename);
+		const displayName = displayFilenameIsolated(filename);
 		return referencedHere
 			? `Delete ${displayName}? It's still used in this item's content — deleting it will leave a "missing attachment" placeholder where it appears.`
 			: `Delete ${displayName}? It isn't referenced in this item's content, but it may still be referenced by another item or a comment. This cannot be undone.`;
@@ -73,7 +73,7 @@
 	 * worth saying here is what actually happens to the bytes.
 	 */
 	export function workspaceAttachmentDeletePrompt(filename: string | null | undefined): string {
-		return `Delete ${displayFilename(filename)}? The blob is reclaimed by garbage collection after a grace period.`;
+		return `Delete ${displayFilenameIsolated(filename)}? The blob is reclaimed by garbage collection after a grace period.`;
 	}
 </script>
 

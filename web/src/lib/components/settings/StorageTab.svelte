@@ -18,6 +18,7 @@
 		isImage,
 		canOpenInViewer,
 		displayFilename,
+		displayFilenameIsolated,
 	} from '$lib/attachments/display';
 	import {
 		buildStorageFilters,
@@ -533,7 +534,7 @@
 				if (paint.isCurrent() && !painted.changed()) await reload();
 				return;
 			}
-			toastStore.show(`Deleted ${displayFilename(att.filename)}`, 'success');
+			toastStore.show(`Deleted ${displayFilenameIsolated(att.filename)}`, 'success');
 			await reload();
 		} catch (err) {
 			// A 404 is authoritative that the row is gone — the list was simply
@@ -550,7 +551,7 @@
 					if (paint.isCurrent() && !painted.changed()) await reload();
 					return;
 				}
-				toastStore.show(`${displayFilename(att.filename)} was already deleted`, 'info');
+				toastStore.show(`${displayFilenameIsolated(att.filename)} was already deleted`, 'info');
 				await reload();
 				return;
 			}
@@ -776,13 +777,13 @@
 							target={canOpenInViewer(att.mime_type) ? '_blank' : undefined}
 							rel={canOpenInViewer(att.mime_type) ? 'noopener' : undefined}
 							aria-label={canOpenInViewer(att.mime_type)
-								? `Open ${displayFilename(att.filename)}`
+								? `Open ${displayFilenameIsolated(att.filename)}`
 								: undefined}
 						>
 							{#if isImage(att.mime_type)}
 								<img
 									src={api.attachments.downloadUrl(wsSlug, att.id, 'thumb-sm')}
-									alt={displayFilename(att.filename)}
+									alt={displayFilenameIsolated(att.filename)}
 									loading="lazy"
 								/>
 							{:else}
@@ -794,8 +795,8 @@
 
 						<div class="att-meta">
 							<div class="att-line1">
-								<span class="att-filename" title={displayFilename(att.filename)}
-									>{displayFilename(att.filename)}</span
+								<span class="att-filename" title={displayFilenameIsolated(att.filename)}
+									><bdi>{displayFilename(att.filename)}</bdi></span
 								>
 							</div>
 							<div class="att-line2">
@@ -827,8 +828,8 @@
 								type="button"
 								class="btn btn-small btn-remove"
 								onclick={(e) => requestDelete(att, e.currentTarget)}
-								title="Delete {displayFilename(att.filename)}"
-								aria-label="Delete {displayFilename(att.filename)}"
+								title="Delete {displayFilenameIsolated(att.filename)}"
+								aria-label="Delete {displayFilenameIsolated(att.filename)}"
 							>
 								Delete
 							</button>
@@ -877,8 +878,8 @@
 		mode="portal"
 		width={272}
 		sheetOnMobile
-		sheetTitle="Delete {displayFilename(pendingDelete?.att.filename)}"
-		ariaLabel="Delete {displayFilename(pendingDelete?.att.filename)}"
+		sheetTitle="Delete {displayFilenameIsolated(pendingDelete?.att.filename)}"
+		ariaLabel="Delete {displayFilenameIsolated(pendingDelete?.att.filename)}"
 		focusKey={pendingDelete?.att.id}
 	>
 		<AttachmentDeleteConfirm

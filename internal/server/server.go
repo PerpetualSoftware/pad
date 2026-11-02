@@ -353,8 +353,8 @@ type Server struct {
 	// cross-workspace copy endpoint (PLAN-2357 / TASK-2365).
 	//
 	// It exists because DR-13 forbids the endpoint from ever transparently
-	// retrying a mutating copy — there is no idempotency key in v1, so a
-	// retry after a post-commit failure duplicates the item — and the only
+	// retrying a mutating copy — a KEYLESS retry after a post-commit failure
+	// duplicates the item (a keyed one replays, TASK-3585) — and the only
 	// falsifiable way to assert "called exactly once" is to count the calls.
 	// Several tests also use it to inject the store's typed errors and to
 	// land a concurrent mutation deterministically between the handler's

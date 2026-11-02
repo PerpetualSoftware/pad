@@ -1458,23 +1458,13 @@ const CmdhelpVersion = "0.1"
 //     item stored a different item's UUID, and the write answered 201
 //     with the substitution visible only in `relation_targets`.
 //
-//     What it PRESERVES, which is why the predicate is about the prefix
-//     rather than the item: a collection RENAME changes its prefix, and
-//     a relation already written as the old ref has to keep resolving
-//     (BUG-2873). That ref's prefix names nothing afterwards, so the
-//     fallback still fires for it. A prefix that IS live and simply has
-//     no item at that number is the caller naming a real collection that
-//     does not contain what they said, and is refused.
-//
-//     RESIDUAL, stated because it is not closed: a ref pasted from
-//     ANOTHER workspace whose prefix also names no collection here still
-//     resolves by number. Nothing in the value distinguishes it from a
-//     rename's leftover, so closing it would cost the case the fallback
-//     exists for. Pinned by a test rather than left implied.
-//
-//     No escape hatch, for 0.29's reason. Out of scope and unchanged:
-//     `GetItemByRef`, the navigational read path, where landing on the
-//     moved item is the helpful answer.
+//     Superseded by BUG-4119: all ref resolution, including GetItemByRef,
+//     relation fields, wiki links and cross-workspace backlinks, now requires
+//     an exact prefix or a move-log row for that item whose former
+//     collection's CURRENT prefix matches. Deleted former collections count,
+//     and reuse of the prefix does not invalidate that provenance. An absent
+//     prefix alone, including after a prefix-only rename, proves nothing.
+//     Parsed ref misses are terminal rather than falling through to slugs.
 //
 //     0.35 — BUG-3079. An injected schema DEFAULT now takes the same
 //     `validateFieldType` check a caller-supplied value takes. A default

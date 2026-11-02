@@ -42,6 +42,7 @@ import { Extension } from '@tiptap/core';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
 import { Decoration, DecorationSet, type EditorView } from '@tiptap/pm/view';
 import type { AttachmentUploadResult } from '$lib/types';
+import { isolateText } from '$lib/attachments/display';
 
 declare module '@tiptap/core' {
 	interface Commands<ReturnType> {
@@ -104,7 +105,17 @@ export interface AttachmentUploadOptions {
 
 /** The notice for a stored upload whose reference never landed (BUG-2177). */
 export function storedNotInsertedMessage(filename: string): string {
-	return `${filename} was uploaded but not inserted into the document: the editor closed, or the place it was dropped was removed, before it could be inserted. Attach it again to use it.`;
+	return `${isolateText(filename)} was uploaded but not inserted into the document: the editor closed, or the place it was dropped was removed, before it could be inserted. Attach it again to use it.`;
+}
+
+/**
+ * The toast for a failed upload, shared by Editor and CommentEditor (TASK-4195
+ * site 17). Only the file name is isolated. `message` is the upload call's
+ * Error.message (client text, or the server's error text) and is shown as
+ * received, not isolated (TASK-4195 r5-L1, r6-L1).
+ */
+export function uploadFailedMessage(filename: string, message: string): string {
+	return `Couldn't upload ${isolateText(filename)}: ${message}`;
 }
 
 const pluginKey = new PluginKey<UploadState>('attachmentUpload');
@@ -123,8 +134,8 @@ function newId(): string {
 	return `up-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-/** Build the placeholder DOM. Kept tiny — purely visual, ignored by ProseMirror's selection model. */
-function buildPlaceholder(filename: string): HTMLElement {
+/** Build the placeholder DOM (exported for the TASK-4195 bidi test). Kept tiny — purely visual, ignored by ProseMirror's selection model. */
+export function buildPlaceholder(filename: string): HTMLElement {
 	const wrapper = document.createElement('span');
 	wrapper.className = 'attachment-upload-placeholder';
 	wrapper.contentEditable = 'false';
@@ -135,7 +146,9 @@ function buildPlaceholder(filename: string): HTMLElement {
 
 	const label = document.createElement('span');
 	label.className = 'attachment-upload-label';
-	label.textContent = `Uploading ${filename}…`;
+	const name = document.createElement('bdi');
+	name.textContent = filename;
+	label.append('Uploading ', name, '…');
 
 	wrapper.append(spinner, label);
 	return wrapper;

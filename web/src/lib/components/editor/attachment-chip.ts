@@ -62,6 +62,7 @@ import {
 import {
 	describeAttachmentType,
 	displayFilename,
+	displayFilenameIsolated,
 	formatBytes,
 	iconForAttachment,
 } from '$lib/attachments/display';
@@ -235,6 +236,9 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 
 			const nameEl = document.createElement('span');
 			nameEl.className = 'file-chip-name';
+			// <bdi> so a name with bidi controls cannot reorder the chip around it.
+			const bdiEl = document.createElement('bdi');
+			nameEl.append(bdiEl);
 
 			const sizeEl = document.createElement('span');
 			sizeEl.className = 'file-chip-size';
@@ -262,7 +266,7 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 				} else {
 					wrapper.removeAttribute('data-filename');
 				}
-				nameEl.textContent = displayFilename(currentFilename);
+				bdiEl.textContent = displayFilename(currentFilename);
 			};
 
 			// Icon resolution is the shared mapper's (TASK-2417): MIME first,
@@ -295,7 +299,7 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 			 * read after it is initialised.)
 			 */
 			const refreshAccessibleName = (): void => {
-				const name = displayFilename(currentFilename);
+				const name = displayFilenameIsolated(currentFilename);
 				if (deleted) {
 					wrapper.setAttribute('aria-label', `${name} — this attachment has been deleted`);
 					return;

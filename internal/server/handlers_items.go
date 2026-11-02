@@ -1262,6 +1262,11 @@ func (s *Server) handleGetItem(w http.ResponseWriter, r *http.Request) {
 
 	itemSlug := chi.URLParam(r, "itemSlug")
 	item, err := s.store.ResolveItemIncludeDeleted(workspaceID, itemSlug)
+	if err == nil && item == nil {
+		// BUG-4119: show also accepts proven moved refs for live items.
+		// Include-deleted resolution itself stays exact-only.
+		item, err = s.store.ResolveItem(workspaceID, itemSlug)
+	}
 	if err != nil {
 		writeInternalError(w, err)
 		return

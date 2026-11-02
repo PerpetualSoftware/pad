@@ -39,6 +39,7 @@ func TestNativePostgresAgreesWithTheCorpus(t *testing.T) {
 	if _, err := db.Exec(`DROP TABLE IF EXISTS nul_differential`); err != nil {
 		t.Fatalf("drop: %v", err)
 	}
+	tracePGConnected(t, "TestNativePostgresAgreesWithTheCorpus")
 	// Both column classes, so each corpus case lands on the column its own
 	// classing names — the same choice the store's leg makes.
 	if _, err := db.Exec(`CREATE TABLE nul_differential (id TEXT PRIMARY KEY, txt TEXT, doc JSONB)`); err != nil {

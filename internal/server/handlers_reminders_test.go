@@ -21,7 +21,8 @@ const (
 
 func armViaAPI(t *testing.T, srv *Server, wsSlug string, item models.Item, at string) models.Reminder {
 	t.Helper()
-	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+wsSlug+"/items/"+item.Slug+"/reminders",
+	// BUG-4119: numbered titles may have ref-shaped slugs; use the item's UUID.
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+wsSlug+"/items/"+item.ID+"/reminders",
 		map[string]string{"remind_at": at})
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("arm reminder: expected 201, got %d: %s", rr.Code, rr.Body.String())

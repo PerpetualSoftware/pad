@@ -235,6 +235,8 @@ export function renderAttachmentImage(
 	const src = urlBuilder
 		? urlBuilder(meta.id, variant)
 		: attachmentDownloadUrl(workspaceSlug, meta.id, variant);
+	// alt is DATA, never isolated: ItemTimeline seeds the viewer from getAttribute('alt')
+	// and the editor's image parseHTML reads it back into node.attrs.alt.
 	const altText = alt && alt.trim() !== '' ? alt : meta.filename;
 	const sizeAttrs =
 		meta.width && meta.height && meta.width > 0 && meta.height > 0
@@ -258,7 +260,7 @@ export function renderAttachmentChip(
 	const label = displayText && displayText.trim() !== '' ? displayText : meta.filename;
 	const size = formatAttachmentSize(meta.size_bytes);
 	const sizeSpan = size ? ` <span class="file-chip-size">· ${escapeHtml(size)}</span>` : '';
-	return `<a class="file-chip" href="${escapeHtml(href)}" data-attachment-id="${escapeHtml(meta.id)}" download="${escapeHtml(meta.filename)}" target="_blank" rel="noopener noreferrer"><span class="file-chip-icon" aria-hidden="true">📄</span><span class="file-chip-name">${escapeHtml(label)}</span>${sizeSpan}</a>`;
+	return `<a class="file-chip" href="${escapeHtml(href)}" data-attachment-id="${escapeHtml(meta.id)}" download="${escapeHtml(meta.filename)}" target="_blank" rel="noopener noreferrer"><span class="file-chip-icon" aria-hidden="true">📄</span><span class="file-chip-name"><bdi>${escapeHtml(label)}</bdi></span>${sizeSpan}</a>`;
 }
 
 /**

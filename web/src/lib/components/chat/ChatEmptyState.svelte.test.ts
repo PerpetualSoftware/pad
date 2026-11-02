@@ -161,7 +161,8 @@ describe('ChatEmptyState', () => {
 			await flush();
 			mo.disconnect();
 			expect(live.textContent).toBe('Copied');
-			// Without the clear, the second copy changes nothing and seen has one entry.
+			// Without the click's reset of status, the second copy changes nothing and seen
+			// has one entry.
 			expect(seen.filter((t) => t === 'Copied').length).toBe(2);
 			expect(seen).toContain('');
 		});
@@ -298,14 +299,36 @@ describe('ChatEmptyState', () => {
 			const btn = getByRole('button', COPY);
 			btn.click();
 			await flush();
-			// writeText is already rejected: without announce()'s own clear-then-tick, the
-			// click's reset and the failure text land in one flush and the DOM never changes.
+			// The second click's reset of status ('') and the failure text must reach the DOM
+			// as separate changes; the click's reset provides the '' (announce() no longer
+			// clears), and announce()'s tick keeps it from batching with the failure text.
+			// The sync-throw path, where the tick matters, is pinned below.
 			btn.click();
 			await flush();
 			mo.disconnect();
 			expect(live.textContent).toBe(FAIL);
 			expect(seen.filter((t) => t === FAIL).length).toBe(2);
 			expect(seen).toContain('');
+		});
+
+		it('a synchronous writeText throw, clicked twice, re-announces the failure each time', async () => {
+			// navigator.clipboard undefined: the throw is synchronous, so only announce()'s
+			// tick separates the click's '' from the failure text.
+			Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true });
+			const { getByRole, container } = render(ChatEmptyState);
+			const live = container.querySelector('[aria-live="polite"]')!;
+			const seen: string[] = [];
+			const mo = new MutationObserver(() => seen.push(live.textContent ?? ''));
+			mo.observe(live, { childList: true, characterData: true, subtree: true });
+			const btn = getByRole('button', COPY);
+			btn.click();
+			await flush();
+			btn.click();
+			await flush();
+			mo.disconnect();
+			expect(live.textContent).toBe(FAIL);
+			expect(seen.filter((t) => t === FAIL).length).toBe(2);
+			expect(seen.filter((t) => t === '').length).toBe(1);
 		});
 
 		it('writes no state and calls no tick() when writeText settles after unmount', async () => {

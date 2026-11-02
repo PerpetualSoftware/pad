@@ -159,6 +159,7 @@ PAD_EMAIL_FROM_NAME=Pad                 # Sender display name (default: Pad)
 ## CLI
 
 Global chat targets are `C<n>`, `<n>`, or `@<name>` for your DM with an agent.
+An agent (one that sends X-Pad-Agent) has one chat, with its owner: for it `@<name>` is its OWN name, and `pad chat send @x` to another agent is refused before any request (show, read and delete keep their not_found).
 All chat commands support `--format json`.
 
 ```bash
@@ -212,8 +213,17 @@ pad item move <ref> <target-collection>
 pad item copy <ref> --to-workspace <slug> --collection <slug> [--dry-run] [--archive-source] [--field k=v]
                               # Cross-workspace copy; --archive-source makes it a move.
                               # --dry-run previews the field mapping + warnings.
-                              # Refuses rather than guessing when a destination field needs a value,
-                              # and NEVER retries the mutating call (no idempotency key — PLAN-2357 DR-13).
+                              # Refuses rather than guessing when a destination field needs a value.
+                              # Every copy carries an idempotency key (op_key; --op-key to choose it, else a
+                              # fresh one per invocation, TASK-3585). The mutating call is retried ONCE, with
+                              # that key, after an unknown outcome and only against a server that advertises
+                              # idempotency_keys, where the retry replays the first copy; nothing else retries
+                              # it (PLAN-2357 DR-13). On a still-unknown outcome the CLI says check the
+                              # destination first; on a keyed server it prints the key, and a re-run with that
+                              # --op-key within 24h of the first attempt (IdempotencyTTL, from the key's
+                              # created_at) cannot make a second copy (the preflight refuses or the POST
+                              # replays); after that the key is forgotten and a re-run can make a second
+                              # copy. Without keys it warns of a duplicate (TASK-4131).
                               # Content semantics: markdown is copied verbatim except `pad-attachment:`
                               # refs that resolve to a LIVE attachment in the SOURCE workspace — those are
                               # repointed at the clones (+ variants). Foreign / soft-deleted / dangling ids

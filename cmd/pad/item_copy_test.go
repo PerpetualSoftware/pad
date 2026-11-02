@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -105,6 +107,8 @@ type recordingDeps struct {
 	schema models.CollectionSchema
 	// forbidCopy makes any mutating call a test failure.
 	forbidCopy bool
+	// honorsKeys is what ServerHonorsKeys reports (TASK-4131).
+	honorsKeys bool
 }
 
 func (d *recordingDeps) deps() itemCopyDeps {
@@ -133,6 +137,7 @@ func (d *recordingDeps) deps() itemCopyDeps {
 			d.copyCalls = append(d.copyCalls, req)
 			return d.result, d.resultRaw, d.copyErr
 		},
+		ServerHonorsKeys: func() bool { return d.honorsKeys },
 	}
 }
 
@@ -1203,6 +1208,10 @@ func TestRunItemCopy_RefusesOnInvalidWithoutNamedFields(t *testing.T) {
 
 // ── DR-13 at the command layer ───────────────────────────────────────────
 
+// On a server that does NOT honour idempotency keys, a re-run can duplicate,
+// so the message says check first and carries no key hint: main's BUG-3999
+// hint promises the key is applied at most once, which only a keyed server
+// keeps (TASK-4131).
 func TestRunItemCopy_AmbiguousFailureNeverSuggestsARetry(t *testing.T) {
 	d := &recordingDeps{
 		t:         t,
@@ -1211,6 +1220,7 @@ func TestRunItemCopy_AmbiguousFailureNeverSuggestsARetry(t *testing.T) {
 	}
 	opts := baseOpts()
 	opts.ArchiveSource = true
+	opts.OpKey = "key-keyless"
 
 	var out, errOut bytes.Buffer
 	err := runItemCopy(opts, d.deps(), &out, &errOut)
@@ -1225,7 +1235,7 @@ func TestRunItemCopy_AmbiguousFailureNeverSuggestsARetry(t *testing.T) {
 		"UNKNOWN outcome",
 		"may or may not have been created in workspace \"pad-web\"",
 		"The source may or may not have been archived.",
-		"never retries automatically",
+		"does not honour idempotency keys",
 		"DUPLICATE item",
 		"pad item list tasks --workspace pad-web",
 	} {
@@ -1234,10 +1244,75 @@ func TestRunItemCopy_AmbiguousFailureNeverSuggestsARetry(t *testing.T) {
 		}
 	}
 	// The whole point: nothing here may read as "try again".
-	for _, forbidden := range []string{"retry the command", "run it again", "re-run the copy"} {
+	for _, forbidden := range []string{"retry the command", "run it again", "re-run the copy", "--op-key", "no idempotency key", "key-keyless"} {
 		if strings.Contains(strings.ToLower(stderr), forbidden) {
-			t.Errorf("ambiguous-failure message must not suggest a retry; found %q", forbidden)
+			t.Errorf("ambiguous-failure message on a keyless server must not say %q\n--- stderr ---\n%s", forbidden, stderr)
 		}
+	}
+	var oe *cli.OpKeyError
+	if errors.As(err, &oe) {
+		t.Errorf("a keyless server's failure must not carry the key hint; got key %q", oe.Key)
+	}
+	if !strings.Contains(err.Error(), "check workspace") {
+		t.Errorf("the returned error should point at the destination; got %v", err)
+	}
+}
+
+// TASK-4131: on a server that honours idempotency keys a same-key request is
+// applied at most once, so the message names the key on exactly ONE line and
+// promises no replay (a re-run meets the preflight first, r1-M1). The error
+// is plain: main's BUG-3999 hint would print the key a second time with
+// different advice (r1-M2).
+func TestRunItemCopy_AmbiguousFailureOnAKeyedServerNamesTheKey(t *testing.T) {
+	d := &recordingDeps{
+		t:          t,
+		preflight:  emptyPreflight(),
+		copyErr:    fmt.Errorf("%w: request failed: EOF", cli.ErrCopyOutcomeUnknown),
+		honorsKeys: true,
+	}
+	opts := baseOpts()
+	opts.ArchiveSource = true
+	opts.OpKey = "key-4131"
+
+	var out, errOut bytes.Buffer
+	err := runItemCopy(opts, d.deps(), &out, &errOut)
+	if err == nil {
+		t.Fatal("expected a non-zero exit")
+	}
+	if len(d.copyCalls) != 1 || d.copyCalls[0].OpKey != "key-4131" {
+		t.Fatalf("one keyed copy call expected; got %+v", d.copyCalls)
+	}
+	stderr := errOut.String()
+	var keyLines []string
+	for _, line := range strings.Split(stderr, "\n") {
+		if strings.Contains(line, d.copyCalls[0].OpKey) {
+			keyLines = append(keyLines, line)
+		}
+	}
+	if len(keyLines) != 1 || !strings.Contains(keyLines[0], "--op-key "+d.copyCalls[0].OpKey) {
+		t.Errorf("exactly one stderr line must carry the sent key as --op-key; got %q\n--- stderr ---\n%s", keyLines, stderr)
+	}
+	for _, w := range []string{
+		"UNKNOWN outcome",
+		"Check the destination first",
+		"pad item list tasks --workspace pad-web",
+		"within 24 hours of the first attempt",
+		"the key is forgotten and a re-run can make a second copy",
+		"cannot make a",
+		"still in progress",
+	} {
+		if !strings.Contains(stderr, w) {
+			t.Errorf("keyed ambiguous-failure message missing %q\n--- stderr ---\n%s", w, stderr)
+		}
+	}
+	for _, forbidden := range []string{"no idempotency key", "DUPLICATE", "returns the first copy"} {
+		if strings.Contains(stderr, forbidden) {
+			t.Errorf("keyed ambiguous-failure message must not say %q\n--- stderr ---\n%s", forbidden, stderr)
+		}
+	}
+	var oe *cli.OpKeyError
+	if errors.As(err, &oe) {
+		t.Errorf("the error must be plain, or main's hint prints the key again; got key %q", oe.Key)
 	}
 	if !strings.Contains(err.Error(), "check workspace") {
 		t.Errorf("the returned error should point at the destination; got %v", err)
@@ -1648,10 +1723,17 @@ func TestItemCopyCmd_IsRegisteredWithEveryFlag(t *testing.T) {
 		if sub.Short == "" || sub.Long == "" {
 			t.Error("pad item copy needs both a Short and a Long description")
 		}
-		// The no-retry contract has to be discoverable from --help; it is
-		// the single most surprising thing about this command.
-		if !strings.Contains(sub.Long, "NEVER retried") {
-			t.Error("--help must document that the copy is never retried automatically")
+		// The retry contract has to be discoverable from --help; it is the
+		// single most surprising thing about this command. Since TASK-3585 it
+		// is one KEYED retry and nothing else (TASK-4131), and the old "no
+		// idempotency key" sentence must not come back.
+		for _, w := range []string{"retried ONCE with that key", "Nothing else retries it", "--op-key within 24 hours of the first attempt", "a re-run can make a second copy"} {
+			if !strings.Contains(sub.Long, w) {
+				t.Errorf("--help must document the retry contract; missing %q", w)
+			}
+		}
+		if strings.Contains(sub.Long, "no idempotency key") {
+			t.Error("--help still says there is no idempotency key")
 		}
 	}
 	if !found {
@@ -2160,4 +2242,35 @@ func TestItemMoveNeedsValueHint(t *testing.T) {
 			t.Fatalf("printed %q", out.String())
 		}
 	})
+}
+
+// TASK-4131 (CONVE-19): the real binding reports the server's
+// idempotency_keys capability, so the unknown-outcome advice follows the
+// server rather than a nil func that always reads as keyless.
+func TestNewItemCopyDeps_ServerHonorsKeysFollowsTheCapability(t *testing.T) {
+	for _, tc := range []struct {
+		body string
+		want bool
+	}{
+		{`{"idempotency_keys":true}`, true},
+		{`{"idempotency_keys":false}`, false},
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/api/v1/server/capabilities" {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tc.body))
+				return
+			}
+			http.NotFound(w, r)
+		}))
+		deps := newItemCopyDeps(cli.NewClientFromURL(srv.URL), "ws", "IDEA-1")
+		if deps.ServerHonorsKeys == nil {
+			srv.Close()
+			t.Fatal("newItemCopyDeps left ServerHonorsKeys unbound")
+		}
+		if got := deps.ServerHonorsKeys(); got != tc.want {
+			t.Errorf("capabilities %s: ServerHonorsKeys() = %v, want %v", tc.body, got, tc.want)
+		}
+		srv.Close()
+	}
 }

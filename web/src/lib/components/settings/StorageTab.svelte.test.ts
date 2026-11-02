@@ -1,5 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
+import {
+	EVIL_NAME,
+	FSI,
+	PDI,
+	expectFsiPdi,
+	expectIsolated
+} from '$lib/attachments/bidiIsolation.testutil';
 import type {
 	AttachmentListItem,
 	AttachmentListResponse,
@@ -495,5 +502,44 @@ describe('StorageTab workspace switching', () => {
 		await settle();
 		expect(text()).toContain('222 B');
 		expect(toastMock).not.toHaveBeenCalled();
+	});
+
+	// TASK-4195: a right-to-left override in a file name must not reorder the row.
+	it('isolates the file name in the row, its attributes and its toasts', async () => {
+		listMock.mockResolvedValueOnce(
+			response([
+				att({ id: 'a1', filename: EVIL_NAME }),
+				att({ id: 'a2', filename: EVIL_NAME, mime_type: 'image/png' }),
+			])
+		);
+		mountTab();
+		await settle();
+
+		expectIsolated(target.querySelector('.att-filename')!, EVIL_NAME);
+		expectFsiPdi(target.querySelector('.att-filename')!.getAttribute('title'), EVIL_NAME);
+		expectFsiPdi(target.querySelector('img')!.getAttribute('alt'), EVIL_NAME);
+		const remove = target.querySelector<HTMLElement>('.btn-remove')!;
+		expectFsiPdi(remove.getAttribute('aria-label'), EVIL_NAME);
+
+		deleteAndConfirm();
+		await settle();
+		expect(toastMock).toHaveBeenCalledWith('Deleted ' + FSI + EVIL_NAME + PDI, 'success');
+	});
+
+	it('isolates the name in the already-deleted toast and the confirmation', async () => {
+		listMock.mockResolvedValueOnce(response([att({ id: 'a1', filename: EVIL_NAME })]));
+		mountTab();
+		await settle();
+		deleteMock.mockRejectedValueOnce(new FakeApiError('not_found'));
+		listMock.mockResolvedValueOnce(response([]));
+		Array.from(target.querySelectorAll<HTMLButtonElement>('.btn-remove'))[0].click();
+		flushSync();
+		expectFsiPdi(confirmPanel()?.getAttribute('aria-label'), EVIL_NAME);
+		Array.from(document.querySelectorAll<HTMLElement>('[role="menu"] [role="menuitem"]'))
+			.find((el) => el.querySelector('.mi-label')?.textContent?.trim() === 'Delete file')!
+			.click();
+		flushSync();
+		await settle();
+		expect(toastMock).toHaveBeenCalledWith(FSI + EVIL_NAME + PDI + ' was already deleted', 'info');
 	});
 });

@@ -180,7 +180,9 @@ const MARKDOWN_ALLOWED_TAGS = [
 	'a', 'abbr', 'b', 'blockquote', 'br', 'code', 'del', 'div', 'em',
 	'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'i', 'img', 'ins', 'kbd',
 	'li', 'ol', 'p', 'pre', 's', 'span', 'strong', 'sub', 'sup',
-	'table', 'tbody', 'td', 'th', 'thead', 'tr', 'ul', 'input'
+	'table', 'tbody', 'td', 'th', 'thead', 'tr', 'ul', 'input',
+	// File-name isolation (TASK-4195): attributes are still stripped, so it only sets direction.
+	'bdi'
 ] as const;
 
 // Attributes we emit from markdown + wiki-links. DOMPurify already

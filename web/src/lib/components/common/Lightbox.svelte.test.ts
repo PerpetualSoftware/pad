@@ -1,6 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import Lightbox from './Lightbox.svelte';
+import { renderAttachmentImage } from '$lib/markdown/attachments';
+import {
+	EVIL_NAME,
+	FSI,
+	PDI,
+	expectFsiPdi,
+	expectIsolated
+} from '$lib/attachments/bidiIsolation.testutil';
 import type { LightboxImage } from '$lib/attachments/events';
 // TASK-2477 — the deletion bus is REAL in this suite (the viewer subscribes to
 // it); firing `notifyAttachmentDeleted` drives the survivor logic directly.
@@ -312,7 +320,7 @@ describe('Lightbox — dialog semantics', () => {
 		// is absent here (the seed carries none and the probe is async), so the label
 		// is "name, type".
 		const type = describeAttachmentType('image/png', null);
-		expect(root().getAttribute('aria-label')).toBe(`a diagram, ${type}`);
+		expect(root().getAttribute('aria-label')).toBe(`${FSI}a diagram${PDI}, ${type}`);
 	});
 
 	it('falls back to a generic name when the image has no alt', () => {
@@ -321,7 +329,7 @@ describe('Lightbox — dialog semantics', () => {
 		// ("Attachment") plus the type.
 		mountViewer({ images: [image(IMG_A, '')] });
 		const type = describeAttachmentType('image/png', null);
-		expect(root().getAttribute('aria-label')).toBe(`Attachment, ${type}`);
+		expect(root().getAttribute('aria-label')).toBe(`${FSI}Attachment${PDI}, ${type}`);
 	});
 
 	it('gives every control a real accessible name, not a glyph', () => {
@@ -352,10 +360,10 @@ describe('Lightbox — dialog semantics', () => {
 			],
 		});
 		const type = describeAttachmentType('image/png', null);
-		expect(root().getAttribute('aria-label')).toBe(`first, ${type}`);
+		expect(root().getAttribute('aria-label')).toBe(`${FSI}first${PDI}, ${type}`);
 		root().querySelector<HTMLButtonElement>('.lightbox-nav.next')!.click();
 		flushSync();
-		expect(root().getAttribute('aria-label')).toBe(`second, ${type}`);
+		expect(root().getAttribute('aria-label')).toBe(`${FSI}second${PDI}, ${type}`);
 	});
 });
 
@@ -4548,6 +4556,21 @@ describe('Lightbox — metadata header (TASK-2475)', () => {
 		expect(metaName()).toBe('Attachment');
 	});
 
+	it('an image rendered with empty alt and empty filename seeds the generic label, not isolates', async () => {
+		// The timeline seeds this image from the rendered <img>'s alt attribute (viewerImageFor).
+		const d = document.createElement('div');
+		d.innerHTML = renderAttachmentImage(
+			{ id: 'a1', mime_type: 'image/png', filename: '', size_bytes: 1, width: 1, height: 1 },
+			'',
+			'ws'
+		);
+		const seededAlt = d.querySelector('img')!.getAttribute('alt') ?? '';
+		expect(seededAlt).toBe('');
+		mountViewer({ images: [metaImage({ filename: null, alt: seededAlt })] });
+		await settleAsync();
+		expect(metaName()).toBe('Attachment');
+	});
+
 	it('treats a whitespace-only alt as blank too, reaching the generic label', async () => {
 		// The chain blank-normalizes alt, not just filename — an all-spaces alt must
 		// not win over 'Attachment' as an empty-but-present string would.
@@ -4629,7 +4652,7 @@ describe('Lightbox — metadata header (TASK-2475)', () => {
 		// (overflow/text-overflow/nowrap on `.lightbox-meta-name`) is not applied by
 		// jsdom's `getComputedStyle` (it ignores scoped `<style>` rules), so it is a
 		// browser-suite concern, like every other measured-layout claim in this file.
-		expect(nameEl.getAttribute('title')).toBe(long);
+		expect(nameEl.getAttribute('title')).toBe(FSI + long + PDI);
 		expect(nameEl.textContent).toBe(long);
 	});
 });
@@ -4695,7 +4718,7 @@ describe('Lightbox — the fallback arm (TASK-2476)', () => {
 		// The display name, full value also in title (DR-13).
 		const nameEl = fb.querySelector('.lightbox-fallback-name');
 		expect(nameEl?.textContent).toBe('plans.svg');
-		expect(nameEl?.getAttribute('title')).toBe('plans.svg');
+		expect(nameEl?.getAttribute('title')).toBe(FSI + 'plans.svg' + PDI);
 		// Type · size and the honest note.
 		expect(fb.querySelector('.lightbox-fallback-detail')?.textContent).toContain(formatBytes(4096));
 		expect(fb.textContent).toContain('No preview available');
@@ -5295,7 +5318,7 @@ describe('Lightbox — the text arm', () => {
 		region.focus();
 		for (const key of ['ArrowRight', 'ArrowLeft']) {
 			expect(press(key)).toBe(false);
-			expect(region.getAttribute('aria-label')).toBe('first.csv table');
+			expect(region.getAttribute('aria-label')).toBe(FSI + 'first.csv' + PDI + ' table');
 			expect(root().querySelector('.attachment-table-scroll')).toBe(region);
 		}
 		region.scrollLeft = 1500;
@@ -5307,13 +5330,13 @@ describe('Lightbox — the text arm', () => {
 		expect(press('ArrowRight')).toBe(true);
 		await settleAsync();
 		const second = root().querySelector<HTMLElement>('.attachment-table-scroll')!;
-		expect(second.getAttribute('aria-label')).toBe('second.csv table');
+		expect(second.getAttribute('aria-label')).toBe(FSI + 'second.csv' + PDI + ' table');
 		Object.defineProperty(second, 'scrollWidth', { value: 2000 });
 		Object.defineProperty(second, 'clientWidth', { value: 500 });
 		closeButton().focus();
 		expect(press('ArrowRight')).toBe(true);
 		await settleAsync();
-		expect(root().querySelector('.attachment-table-scroll')?.getAttribute('aria-label')).toBe('first.csv table');
+		expect(root().querySelector('.attachment-table-scroll')?.getAttribute('aria-label')).toBe(FSI + 'first.csv' + PDI + ' table');
 	});
 
 	it('T2: exposes one focusable, labelled table scroll region', async () => {
@@ -5323,7 +5346,7 @@ describe('Lightbox — the text arm', () => {
 		expect(region).not.toBeNull();
 		expect(region.getAttribute('tabindex')).toBe('0');
 		expect(region.getAttribute('role')).toBe('region');
-		expect(region.getAttribute('aria-label')).toBe('report.csv table');
+		expect(region.getAttribute('aria-label')).toBe(FSI + 'report.csv' + PDI + ' table');
 		region.focus();
 		expect(document.activeElement).toBe(region);
 		expect(root().querySelector('[role="document"]')!.hasAttribute('tabindex')).toBe(false);
@@ -5766,12 +5789,12 @@ describe('Lightbox — the PDF arm (TASK-4075)', () => {
 		Object.defineProperty(region, 'clientWidth', { configurable: true, value: 500 });
 		region.focus();
 		for (const key of ['ArrowRight', 'ArrowLeft']) expect(press(key), key).toBe(false);
-		expect(root().querySelector('.lightbox-pdf-scroll')!.getAttribute('aria-label')).toBe('first.pdf');
+		expect(root().querySelector('.lightbox-pdf-scroll')!.getAttribute('aria-label')).toBe(FSI + 'first.pdf' + PDI);
 		// Without horizontal overflow the arrows page the gallery.
 		Object.defineProperty(region, 'scrollWidth', { configurable: true, value: 500 });
 		expect(press('ArrowRight')).toBe(true);
 		await settleAsync();
-		expect(root().querySelector('.lightbox-pdf-scroll')!.getAttribute('aria-label')).toBe('second.pdf');
+		expect(root().querySelector('.lightbox-pdf-scroll')!.getAttribute('aria-label')).toBe(FSI + 'second.pdf' + PDI);
 	});
 
 	it('U6: the arrows move the caret in the page-number box instead of paging the gallery', async () => {
@@ -5781,7 +5804,7 @@ describe('Lightbox — the PDF arm (TASK-4075)', () => {
 		box.focus();
 		expect(press('ArrowRight')).toBe(false);
 		expect(press('ArrowLeft')).toBe(false);
-		expect(root().querySelector('.lightbox-pdf-scroll')!.getAttribute('aria-label')).toBe('doc.pdf');
+		expect(root().querySelector('.lightbox-pdf-scroll')!.getAttribute('aria-label')).toBe(FSI + 'doc.pdf' + PDI);
 	});
 
 	it('H8: 0, -, + and = reach the page-number box instead of being swallowed as zoom keys', async () => {
@@ -5999,5 +6022,37 @@ describe('Lightbox — a pending delete confirmation owns the pointer gestures (
 		expect(panX()).toBeCloseTo(100);
 		expect(released).toContain(1);
 		ptr('pointerup', 700, 500, { buttons: 0 });
+	});
+});
+
+// TASK-4195: a right-to-left override in a file name must not reorder the viewer's
+// title, fallback name or accessible name.
+describe('Lightbox — file names are bidi-isolated (TASK-4195)', () => {
+	it('isolates the fallback name, the metadata name, and their title / aria-label', () => {
+		liveProps.images = [image(IMG_A, 'png')];
+		const app = mount(Lightbox, { target: appRoot, props: liveProps });
+		mounted.push(app);
+		flushSync();
+		liveProps.images = [
+			{
+				id: IMG_A,
+				alt: 'plans',
+				filename: EVIL_NAME,
+				mime_type: 'image/svg+xml',
+				size_bytes: 4096,
+				width: null,
+				height: null,
+			},
+		];
+		flushSync();
+
+		const fallbackName = root().querySelector<HTMLElement>('.lightbox-fallback-name')!;
+		expectIsolated(fallbackName, EVIL_NAME);
+		expectFsiPdi(fallbackName.getAttribute('title'), EVIL_NAME);
+		expectFsiPdi(root().getAttribute('aria-label'), EVIL_NAME);
+
+		const metaName = root().querySelector<HTMLElement>('.lightbox-meta-name')!;
+		expectIsolated(metaName, EVIL_NAME);
+		expectFsiPdi(metaName.getAttribute('title'), EVIL_NAME);
 	});
 });

@@ -8,8 +8,11 @@ import (
 
 // Comment represents a comment on an item.
 type Comment struct {
-	ID          string `json:"id"`
-	ItemID      string `json:"item_id"`
+	ID     string `json:"id"`
+	ItemID string `json:"item_id"`
+	// ItemRef is the resolved item's current ref on create-comment responses
+	// (BUG-4119). It is additive and not persisted. The CLI shares this type.
+	ItemRef     string `json:"item_ref,omitempty"`
 	WorkspaceID string `json:"workspace_id"`
 	Author      string `json:"author"`
 	// UserID is the authenticated user who authored the comment. Empty for

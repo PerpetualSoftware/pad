@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -307,5 +308,67 @@ func TestTZ4101_ResolverUnconfiguredNeverExits(t *testing.T) {
 	err := cmd.Run()
 	if err != nil || !strings.Contains(stdout.String(), "INSTANT=2026-01-15 02:30") || strings.Contains(stderr.String(), "times shown") || strings.Contains(stderr.String(), "not configured") {
 		t.Fatalf("resolver exited, prompted or left UTC: err=%v stdout=%q stderr=%q", err, stdout.String(), stderr.String())
+	}
+}
+
+// TASK-4142: a config.toml that fails to load must not exit the process from
+// inside the renderer either. getConfig os.Exit(1)s on a load error; the
+// resolver uses the non-exiting loadConfig and renders in UTC instead.
+func TestTZ4142_ResolverBrokenConfigNeverExits(t *testing.T) {
+	if os.Getenv("TZ4142_SUBPROCESS") == "1" {
+		setTempHomeMain(t)
+		for _, k := range []string{"PAD_URL", "PAD_TOKEN", "PAD_MODE", "PAD_HOST", "PAD_PORT", "PAD_CLOUD", "PAD_DB_PATH"} {
+			t.Setenv(k, "")
+		}
+		dir := t.TempDir()
+		t.Setenv("PAD_DATA_DIR", dir)
+		if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte("url = \"unterminated\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		time.Local = time.FixedZone("Machine", 9*3600)
+		newRootCmd()
+		old := time.Date(2026, 1, 15, 2, 30, 0, 0, time.UTC)
+		fmt.Printf("INSTANT=%s\n", cli.FormatInstant(old, "2006-01-02 15:04"))
+		return
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestTZ4142_ResolverBrokenConfigNeverExits$")
+	cmd.Env = append(os.Environ(), "TZ4142_SUBPROCESS=1")
+	var stdout, stderr strings.Builder
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	if err != nil || !strings.Contains(stdout.String(), "INSTANT=2026-01-15 02:30") || strings.Contains(stderr.String(), "Error loading config") {
+		t.Fatalf("resolver exited on a broken config.toml or left UTC: err=%v stdout=%q stderr=%q", err, stdout.String(), stderr.String())
+	}
+}
+
+// TASK-4142: the split must not change what commands see. loadConfig hands the
+// load error back, and getConfig still ends the process with it.
+func TestTZ4142_LoadConfigReturnsErrorGetConfigExits(t *testing.T) {
+	broken := func(t *testing.T) {
+		setTempHomeMain(t)
+		dir := t.TempDir()
+		t.Setenv("PAD_DATA_DIR", dir)
+		t.Setenv("PAD_DB_PATH", "")
+		if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte("url = \"unterminated\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if os.Getenv("TZ4142_GETCONFIG") == "1" {
+		broken(t)
+		getConfig()
+		fmt.Println("RETURNED")
+		return
+	}
+	broken(t)
+	if cfg, err := loadConfig(); err == nil || cfg != nil {
+		t.Fatalf("loadConfig on a broken config.toml: cfg=%v err=%v, want nil and an error", cfg, err)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestTZ4142_LoadConfigReturnsErrorGetConfigExits$")
+	cmd.Env = append(os.Environ(), "TZ4142_GETCONFIG=1")
+	var stdout, stderr strings.Builder
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	if err == nil || strings.Contains(stdout.String(), "RETURNED") || !strings.Contains(stderr.String(), "Error loading config: ") {
+		t.Fatalf("getConfig did not exit with the load error: err=%v stdout=%q stderr=%q", err, stdout.String(), stderr.String())
 	}
 }

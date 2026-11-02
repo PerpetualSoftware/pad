@@ -85,14 +85,9 @@ func (s *Server) handleResolveCrossWorkspaceRef(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	// 3. Resolve the ref within the workspace. parseRefForRedirect
-	//    canonicalizes the prefix to uppercase so it lines up with
-	//    GetItemByRef's exact-prefix path; refs whose prefix this parser
-	//    accepts but store.parseItemRef does not still resolve via the
-	//    workspace-unique number fallback inside GetItemByRef. That gap
-	//    narrowed in BUG-2943 — parseItemRef now accepts digits after the
-	//    first character — but the fallback is still what covers a moved
-	//    item, so it is load-bearing for its own reason.
+	// 3. Resolve the ref within the workspace. Both parsers canonicalize
+	// prefixes to uppercase. BUG-4119: a prefix miss resolves only through
+	// the item's durable collection-move history, never its number alone.
 	prefix, number, ok := parseRefForRedirect(ref)
 	if !ok {
 		s.refResolverNotFound(w, r)
@@ -296,13 +291,9 @@ func (s *Server) resolverOwnerUsername(ws *models.Workspace) string {
 	return user.Username
 }
 
-// parseRefForRedirect splits a validated ref (the regex caller already
-// confirmed `[A-Za-z][A-Za-z0-9]*-\d+`) into its uppercase prefix and
-// number. GetItemByRef's primary path matches on exact prefix; its
-// fallback path (workspace-unique number alone) handles items that have
-// been moved to a different collection. Since BUG-2943 store.parseItemRef
-// accepts a digit-bearing prefix too, so the two agree about that shape; the
-// number lookup remains the path for an item whose collection changed.
+// parseRefForRedirect splits a validated ref into its uppercase prefix and
+// number. GetItemByRef accepts exact refs and move-log-proven former refs
+// (BUG-4119); redirect parsing does not provide a number-only escape hatch.
 func parseRefForRedirect(s string) (string, int, bool) {
 	up := strings.ToUpper(s)
 	dash := strings.LastIndex(up, "-")

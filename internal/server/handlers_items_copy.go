@@ -142,9 +142,10 @@ import (
 //	                              message tells the user to check the
 //	                              destination rather than retry.
 //
-// DR-13 — NO TRANSPARENT RETRY. There is no idempotency key in v1, so a
-// retried copy is a duplicate, and a client that timed out after the commit
-// cannot tell. This handler therefore calls the store op EXACTLY ONCE per
+// DR-13 — NO TRANSPARENT RETRY. A KEYLESS retry of a committed copy is a
+// duplicate, and a client that timed out after the commit cannot tell. Since
+// TASK-3585 a copy may carry an idempotency key (claimKey in the handler),
+// and a same-key retry replays the first copy's answer instead. This handler therefore calls the store op EXACTLY ONCE per
 // request, whatever comes back: there is no retry loop, no backoff, and no
 // "transient error" classification that could grow into one.
 // TestCopyEndpoint_DoesNotRetryOnAmbiguousError pins the invocation count at
@@ -152,9 +153,10 @@ import (
 // 500's message is part of the same contract — it tells the user to CHECK
 // THE DESTINATION, because the copy may well have landed.
 //
-// The clients are clean today: internal/cli/client.go issues one
-// httpClient.Do per request, and web/src/lib/api/client.ts retries GET and
-// HEAD only, explicitly excluding POST.
+// The clients: internal/cli's CopyItem (client_items_copy.go) makes exactly
+// one retry, KEYED, only after an unknown outcome and only against a server
+// that advertises idempotency_keys (TASK-3585); web/src/lib/api/client.ts
+// retries GET and HEAD only, explicitly excluding POST.
 //
 // ⚠ READ THIS BEFORE PUTTING COPY ON THE MCP SURFACE. PLAN-2357 defers
 // `pad_item.action: copy`, and whoever picks it up inherits a live conflict:

@@ -27,8 +27,12 @@ func installViewerZone() {
 	viewerZone.loc, viewerZone.note = time.UTC, ""
 	cli.SetDisplayLocationResolver(func() *time.Location {
 		viewerZone.load.Do(func() {
-			// Never exit or prompt from a renderer: unconfigured means UTC, quietly.
-			cfg := getConfig()
+			// Never exit or prompt from a renderer: unconfigured, or a config.toml
+			// that fails to load (TASK-4142), means UTC, quietly.
+			cfg, err := loadConfig()
+			if err != nil {
+				return
+			}
 			applyPadTomlOverride(cfg)
 			if !cfg.IsConfigured() {
 				return
