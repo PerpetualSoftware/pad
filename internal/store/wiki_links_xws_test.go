@@ -537,12 +537,8 @@ func TestWikiLinks_CrossWorkspaceBearerAdminSeesMemberWorkspaces(t *testing.T) {
 	}
 }
 
-// TestWikiLinks_CrossWorkspaceRefNumberFallback regresses Codex round
-// 1 P2: when a target item is moved to a different collection (changing
-// its prefix), `[[other-ws::OLD-N]]` rows must still surface as
-// backlinks under the new prefix. Mirrors resolveRefTx's same-ws
-// fallback by item_number; cross-ws resolves at query time so the
-// query SQL has the OR-LIKE fallback inline.
+// BUG-4119: a stored old ref remains a backlink when the target's move log
+// proves its former collection. Same-number refs without that history do not.
 func TestWikiLinks_CrossWorkspaceRefNumberFallback(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
@@ -585,13 +581,13 @@ func TestWikiLinks_CrossWorkspaceRefNumberFallback(t *testing.T) {
 	}
 
 	// Query under the NEW ref — the stored row has OLD ref, but
-	// item_number suffix matches so the fallback should hit.
+	// the move log proves the stored ref names this item.
 	got, err := s.GetCrossWorkspaceBacklinks(wsA.ID, newRef, user.ID, nil, 50, 0, false)
 	if err != nil {
 		t.Fatalf("GetCrossWorkspaceBacklinks: %v", err)
 	}
 	if len(got) != 1 {
-		t.Errorf("expected number-fallback to surface old-prefix backlink, got %d", len(got))
+		t.Errorf("expected move history to surface old-prefix backlink, got %d", len(got))
 	}
 }
 

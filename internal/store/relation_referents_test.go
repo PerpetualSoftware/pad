@@ -848,17 +848,9 @@ func TestImportWorkspace_DoesNotMintIDsForOrphanRelationReferents(t *testing.T) 
 	}
 }
 
-// BUG-3082, at the STORE level. The server-layer test that drives this through
-// a real write door lives in internal/server, and `internal/server`'s test
-// harness is hardwired to SQLite — so this is the leg that runs the new SQL on
-// BOTH dialects under `make test-pg`. The predicate is a second query against
-// `collections`, so a dialect difference is a real risk and not a hypothetical.
-//
-// The rule: a ref-shaped relation value falls back to matching by item NUMBER
-// only when its prefix names NO live collection in the workspace. Item numbers
-// are workspace-unique and sequential ACROSS collections, so `CARS-1` and
-// `COLO-1` are never both real — and unconditionally, the fallback answered the
-// wrong one of the two without raising anything.
+// BUG-4119: neither a live prefix miss nor a prefix-only rename proves that
+// a relation ref names this item. Only durable collection moves permit the
+// shared resolver to accept a former prefix. Runs on both store dialects.
 func TestResolveRelationReferents_RefDoesNotFallBackAcrossALivePrefix(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
@@ -884,9 +876,7 @@ func TestResolveRelationReferents_RefDoesNotFallBackAcrossALivePrefix(t *testing
 		t.Fatalf("an unresolvable ref must be left as the caller wrote it, got %v", got)
 	}
 
-	// THE CASE THE FALLBACK EXISTS FOR (BUG-2873): rename the target
-	// collection's prefix and the ref a caller already wrote down must still
-	// resolve, because its prefix now names nothing.
+	// BUG-4119: a prefix-only rename has no move-log provenance.
 	renamed := "VAULT"
 	if _, err := s.UpdateCollection(colors.ID, models.CollectionUpdate{Prefix: &renamed}); err != nil {
 		t.Fatalf("UpdateCollection(prefix): %v", err)
@@ -896,10 +886,10 @@ func TestResolveRelationReferents_RefDoesNotFallBackAcrossALivePrefix(t *testing
 	if err != nil {
 		t.Fatalf("ResolveRelationReferents(after rename): %v", err)
 	}
-	if len(issues) != 0 {
-		t.Fatalf("a ref left behind by a prefix rename must still resolve, got %+v", issues)
+	if len(issues) != 1 || issues[0].Reason != RelationTargetNotFound {
+		t.Fatalf("a prefix rename without move history must refuse, got %+v", issues)
 	}
-	if stale["color"] != red.ID {
-		t.Fatalf("after rename: canonicalised to %v, want %s", stale["color"], red.ID)
+	if stale["color"] != red.Ref {
+		t.Fatalf("unresolved ref was rewritten: %v, want %s", stale["color"], red.Ref)
 	}
 }
