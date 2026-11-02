@@ -291,3 +291,27 @@ func TestTASK3363_AudienceIsValidatedLikeResource(t *testing.T) {
 		}
 	}
 }
+
+// An installed app's delegated sign-in goes through the same decide handler
+// and gets no code without resource= (population row: decideAppConsent). The
+// refusal is invalid_request, not invalid_target: the default injected for the
+// missing resource is the /mcp canonical, which an install client's audience
+// (the app API only) does not hold, so fosite refuses the request before the
+// phase-2 check runs. Either way no code is issued; with resource the code is
+// served.
+func TestTASK3363_DelegatedSignInWithoutResourceIsRefused(t *testing.T) {
+	f := delegatedFixture(t, "t3363-deleg", "write")
+	params := f.authorizeParams()
+
+	rr := f.decide(t, params, "approve", "write")
+	if code, oauthErr := codeFrom(rr); code == "" {
+		t.Fatalf("decide WITH resource: no code (%q); the control is broken", oauthErr)
+	}
+
+	params.Del("resource")
+	rr = f.decide(t, params, "approve", "write")
+	code, oauthErr := codeFrom(rr)
+	if code != "" || oauthErr == "" {
+		t.Fatalf("decide WITHOUT resource: code=%q error=%q, want no code and an error", code, oauthErr)
+	}
+}
