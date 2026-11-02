@@ -37,6 +37,31 @@ func TestBUG4119_HTTPWrongPrefix(t *testing.T) {
 	}
 }
 
+func TestBUG4119_HTTPImportedUppercaseRefSlug(t *testing.T) {
+	for _, pg := range []bool{false, true} {
+		for _, method := range []string{http.MethodGet, http.MethodPatch, http.MethodDelete} {
+			t.Run(fmt.Sprintf("pg=%t/%s", pg, method), func(t *testing.T) {
+				f, slugged := storetest.NewImportedUppercaseRefSlugFixture(t, pg)
+				srv := New(f.Store)
+				t.Cleanup(srv.Stop)
+				slugOwner := f
+				slugOwner.Item = slugged
+				beforeNumber, beforeSlug := f.Snapshot(t), slugOwner.Snapshot(t)
+				var body any
+				if method == http.MethodPatch {
+					body = map[string]string{"content": "Wrong write to uppercase slug owner"}
+				}
+				rr := doRequest(srv, method, "/api/v1/workspaces/"+f.Workspace.Slug+"/items/"+f.WrongRef, body)
+				if rr.Code != http.StatusNotFound {
+					t.Errorf("%s %s: got %d, want 404", method, f.WrongRef, rr.Code)
+				}
+				f.AssertUnchanged(t, beforeNumber)
+				slugOwner.AssertUnchanged(t, beforeSlug)
+			})
+		}
+	}
+}
+
 func TestBUG4119_HTTPMovedRefAndTerminalMiss(t *testing.T) {
 	for _, pg := range []bool{false, true} {
 		t.Run(fmt.Sprintf("pg=%t", pg), func(t *testing.T) {

@@ -111,3 +111,42 @@ func NewRefSlugFixture(t *testing.T, postgres bool) (RefPrefixFixture, *models.I
 	}
 	return f, slugged
 }
+
+// NewImportedUppercaseRefSlugFixture imports IDENT-10 verbatim, the real door
+// for uppercase slugs. A different item owns #10; there is no IDENT collection.
+func NewImportedUppercaseRefSlugFixture(t *testing.T, postgres bool) (RefPrefixFixture, *models.Item) {
+	t.Helper()
+	var s *store.Store
+	if postgres {
+		s = NewPostgres(t)
+	} else {
+		s = NewSQLite(t)
+	}
+	const timestamp = "2026-11-02T00:00:00Z"
+	bundle := &models.WorkspaceExport{
+		Version:   1,
+		Workspace: models.WorkspaceExportMeta{Name: "Uppercase slug import", Slug: "uppercase-slug-import", Settings: "{}"},
+		Collections: []models.CollectionExport{
+			{ID: "conversations", Name: "Conversations", Slug: "conversations", Prefix: "CONVE", Schema: `{"fields":[]}`, Settings: "{}", CreatedAt: timestamp, UpdatedAt: timestamp},
+			{ID: "docs", Name: "Docs", Slug: "docs", Prefix: "DOC", Schema: `{"fields":[]}`, Settings: "{}", CreatedAt: timestamp, UpdatedAt: timestamp},
+		},
+		Items: []models.ItemExport{
+			{ID: "number-holder", CollectionID: "conversations", Title: "Number holder", Slug: "number-holder", ItemNumber: 10, Content: "Untouched number ten", Fields: "{}", Tags: "[]", CreatedAt: timestamp, UpdatedAt: timestamp},
+			{ID: "slug-owner", CollectionID: "docs", Title: "Uppercase slug owner", Slug: "IDENT-10", ItemNumber: 11, Content: "Untouched uppercase slug", Fields: "{}", Tags: "[]", CreatedAt: timestamp, UpdatedAt: timestamp},
+		},
+	}
+	ws, err := s.ImportWorkspace(bundle, "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	holder, err := s.GetItemByRef(ws.ID, "CONVE", 10)
+	if err != nil || holder == nil {
+		t.Fatalf("imported number holder CONVE-10: got=%v err=%v", holder, err)
+	}
+	// Control: a case-sensitive slug lookup really can find the imported row.
+	slugged, err := s.GetItemBySlug(ws.ID, "IDENT-10")
+	if err != nil || slugged == nil || slugged.Slug != "IDENT-10" || slugged.ID == holder.ID {
+		t.Fatalf("imported uppercase slug owner: got=%v err=%v", slugged, err)
+	}
+	return RefPrefixFixture{s, ws, holder, "IDENT-10"}, slugged
+}

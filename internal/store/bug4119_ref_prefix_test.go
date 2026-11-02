@@ -250,6 +250,28 @@ func TestBUG4119_LowercaseRefSlug(t *testing.T) {
 	}
 }
 
+func TestBUG4119_ImportedUppercaseRefSlug(t *testing.T) {
+	for _, pg := range []bool{false, true} {
+		t.Run(fmt.Sprintf("pg=%t", pg), func(t *testing.T) {
+			f, _ := storetest.NewImportedUppercaseRefSlugFixture(t, pg)
+			for name, resolve := range map[string]func(string, string) (*models.Item, error){
+				"ResolveItem":               f.Store.ResolveItem,
+				"ResolveItemIncludeDeleted": f.Store.ResolveItemIncludeDeleted,
+			} {
+				t.Run(name, func(t *testing.T) {
+					got, err := resolve(f.Workspace.ID, f.WrongRef)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if got != nil {
+						t.Errorf("%s(%q) reached imported uppercase slug %q; want nil", name, f.WrongRef, got.Slug)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestBUG4119_LowercaseRefMove(t *testing.T) {
 	for _, pg := range []bool{false, true} {
 		t.Run(fmt.Sprintf("pg=%t", pg), func(t *testing.T) {
