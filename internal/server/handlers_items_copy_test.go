@@ -1272,8 +1272,8 @@ func TestCopyEndpoint_EnforceItemLimitFollowsCloudMode(t *testing.T) {
 // --- 4. DR-13: never retry ----------------------------------------------
 
 // TestCopyEndpoint_DoesNotRetryOnAmbiguousError is the executable form of
-// DR-13. There is no idempotency key in v1, so a retry after a failure that
-// may have committed produces a DUPLICATE item — and a client that timed out
+// DR-13. A keyless retry after a failure that may have committed produces a
+// DUPLICATE item (a keyed one replays, TASK-3585) — and a client that timed out
 // cannot tell the two apart. The store op must therefore be invoked exactly
 // once per request, whatever comes back.
 //
@@ -1300,7 +1300,7 @@ func TestCopyEndpoint_DoesNotRetryOnAmbiguousError(t *testing.T) {
 			rr := f.callCopy(f.owner, reqOpts{}, f.resolvableBody())
 			if calls != 1 {
 				t.Fatalf("the store op was invoked %d times; a mutating copy must never be retried "+
-					"(there is no idempotency key, so a retry duplicates the item)", calls)
+					"(a keyless retry duplicates the item)", calls)
 			}
 			if rr.Code != http.StatusInternalServerError {
 				t.Fatalf("expected 500, got %d: %s", rr.Code, rr.Body.String())
