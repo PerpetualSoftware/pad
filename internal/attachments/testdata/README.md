@@ -72,10 +72,10 @@ to get them wrong. Each one broke an earlier version of these signatures.
 
 | file | produced by | what it proves |
 |---|---|---|
-| `tar-bmp-firstmember.head512` | GNU `tar -cf` on a file named `BM.txt` | a structurally valid tar the stdlib reads as `image/bmp` — a real file exercising competing detections, refused before this change and still refused |
+| `tar-bmp-firstmember.head512` | GNU `tar -cf` on a file named `BM.txt` | a structurally valid tar the stdlib reads as `image/bmp` — a real file exercising competing detections, refused, as it always was |
 | `elf-with-ustar-magic.head512` | hand-built | an ELF header with `ustar` at offset 257. It is ACCEPTED now — recognition is by magic — and the test says so. It was written when it was refused, and is kept because the case it comes from used a real, executing binary |
 | `webm-void-says-matroska.head512` | FFmpeg WebM with a Void element containing the string `matroska`, header size widened to match | a substring search calls this Matroska; its DocType is `webm` |
-| `matroska-void-padded.head512` | FFmpeg Matroska with 40 bytes of Void padding, header size widened to match | DocType moves to offset 66, past any fixed leading window — the mistyping this change fixes, still live under a search |
+| `matroska-void-padded.head512` | FFmpeg Matroska with 40 bytes of Void padding, header size widened to match | DocType moves to offset 66, past any fixed leading window — the mistyping a parse avoids, and one a search still makes |
 | `elf-with-valid-tar-checksum.head512` | hand-built | an ELF header carrying a well-formed tar header in its padding, checksum included. ACCEPTED, deliberately — and when this package still verified checksums, `archive/tar`'s own reader accepted it too. It records a limitation rather than a defect |
 | `tar-flac-named-member.head512` | GNU `tar -cf` on a file named `fLaC.txt` | an ordinary archive carrying another format's prefix magic in its member NAME |
 | `flac-ustar-in-comment.head512` | a real FLAC with a Vorbis COMMENT block whose vendor string places `ustar` at offset 257; decodes under libsndfile | the same collision from the other side — Vorbis tags are arbitrary UTF-8, so audio can carry the tar magic as easily as a tar can carry an audio marker |
