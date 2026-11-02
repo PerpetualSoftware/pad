@@ -5,13 +5,14 @@ import (
 	"fmt"
 )
 
-// itemRefMatchesSQL is the shared identity rule for item i, its current
-// collection c, and the requested spelling r.target_ref (BUG-4119). Numbers
-// are workspace-unique, but that alone never establishes prefix ownership.
-// Former collections deliberately include deleted rows; prefix reuse must
-// not invalidate a moved item's old ref. The CURRENT former prefix is used.
-const itemRefMatchesSQL = `(
-	LOWER(r.target_ref) = LOWER(c.prefix || '-' || CAST(i.item_number AS TEXT))
+// itemRefCurrentMatchSQL proves current prefix ownership for item i and
+// collection c. Workspace-unique numbers alone do not establish it (BUG-4119).
+const itemRefCurrentMatchSQL = `LOWER(r.target_ref) = LOWER(c.prefix || '-' || CAST(i.item_number AS TEXT))`
+
+// itemRefMatchesSQL also accepts durable move history. Former collections
+// deliberately include deleted rows; prefix reuse must not invalidate a moved
+// item's old ref. The CURRENT former prefix is used.
+const itemRefMatchesSQL = `(` + itemRefCurrentMatchSQL + `
 	OR EXISTS (
 		SELECT 1 FROM item_collection_moves m
 		JOIN collections old ON old.id = m.from_collection_id
@@ -21,22 +22,32 @@ const itemRefMatchesSQL = `(
 	)
 )`
 
-// itemRefIDQ resolves exact and proven moved refs in one statement, using the
-// caller's executor so transaction-local moves and scope are respected. The
-// caller retains its liveness policy: backlinks may name archived targets;
-// ordinary resolution, relations and wiki links require live items.
-func (s *Store) itemRefIDQ(q Queryer, workspaceID, prefix string, number int, scope linkScope, includeDeleted bool) (string, error) {
+// itemRefLookupSQL builds the one shared SELECT for both ordinary Queryer
+// callers and the app door's concrete *sql.Tx path. allowMoves=false omits
+// move history entirely for lowercase identifiers and include-deleted lookup.
+func itemRefLookupSQL(workspaceID, prefix string, number int, scope linkScope, includeDeleted, allowMoves bool) (string, []any) {
 	restrict, scopeArgs := scope.clause("i")
 	args := []any{fmt.Sprintf("%s-%d", prefix, number), workspaceID, number, includeDeleted}
 	args = append(args, scopeArgs...)
-	var id string
-	err := q.QueryRow(s.q(`
+	match := itemRefCurrentMatchSQL
+	if allowMoves {
+		match = itemRefMatchesSQL
+	}
+	return `
 		SELECT i.id FROM items i
 		JOIN collections c ON c.id = i.collection_id
 		CROSS JOIN (SELECT ? AS target_ref) r
 		WHERE i.workspace_id = ? AND i.item_number = ?
 		  AND (? OR i.deleted_at IS NULL)
-		  AND `+itemRefMatchesSQL+restrict), args...).Scan(&id)
+		  AND ` + match + restrict, args
+}
+
+// itemRefIDQ retains the caller's executor, scope and liveness policy.
+// The app door executes itemRefLookupSQL through its concrete *sql.Tx instead.
+func (s *Store) itemRefIDQ(q Queryer, workspaceID, prefix string, number int, scope linkScope, includeDeleted, allowMoves bool) (string, error) {
+	query, args := itemRefLookupSQL(workspaceID, prefix, number, scope, includeDeleted, allowMoves)
+	var id string
+	err := q.QueryRow(s.q(query), args...).Scan(&id)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}

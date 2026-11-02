@@ -1102,7 +1102,7 @@ func (s *Store) collectionIDBySlugQ(q Queryer, workspaceID, slug string) (string
 // genuine moved ref from resolving. Collection and visibility validation
 // remain the caller's responsibility after identity resolution.
 func (s *Store) itemByRefQ(q Queryer, workspaceID, prefix string, number int) (*models.Item, error) {
-	id, err := s.itemRefIDQ(q, workspaceID, prefix, number, linkScope{}, false)
+	id, err := s.itemRefIDQ(q, workspaceID, prefix, number, linkScope{}, false, true)
 	if err != nil || id == "" {
 		return nil, err
 	}

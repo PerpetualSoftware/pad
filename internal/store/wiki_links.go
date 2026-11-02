@@ -403,7 +403,9 @@ func (s *Store) replaceWikiLinksScoped(tx *sql.Tx, sourceItemID, workspaceID, co
 // caller's transaction and wiki scope (BUG-4119). Broken refs persist with
 // NULL targets, including on database errors, as before (PLAN-1593).
 func resolveRefTx(tx *sql.Tx, s *Store, workspaceID, prefix string, number int, scope linkScope) sql.NullString {
-	id, err := s.itemRefIDQ(tx, workspaceID, prefix, number, scope, false)
+	query, args := itemRefLookupSQL(workspaceID, prefix, number, scope, false, true)
+	var id string
+	err := tx.QueryRow(s.q(query), args...).Scan(&id)
 	if err != nil || id == "" {
 		return sql.NullString{}
 	}
@@ -1542,7 +1544,7 @@ func (s *Store) queryCrossWorkspaceBacklinksForWorkspace(
 		// target using the same helper, then apply its shared predicate to
 		// each stored spelling in SQL, before pagination. Archived targets
 		// remain queryable, matching this door's existing liveness policy.
-		id, err := s.itemRefIDQ(s.db, targetWorkspaceID, prefix, number, linkScope{}, true)
+		id, err := s.itemRefIDQ(s.db, targetWorkspaceID, prefix, number, linkScope{}, true, true)
 		if err != nil {
 			return nil, err
 		}

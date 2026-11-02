@@ -189,25 +189,119 @@ func TestBUG4119_MoveHistory(t *testing.T) {
 	}
 }
 
-func TestBUG4119_TerminalRefMiss(t *testing.T) {
+func TestBUG4119_LowercaseRefSlug(t *testing.T) {
 	for _, pg := range []bool{false, true} {
 		t.Run(fmt.Sprintf("pg=%t", pg), func(t *testing.T) {
-			f := storetest.NewRefPrefixFixture(t, pg, false)
-			it, err := f.Store.CreateItem(f.Workspace.ID, f.Item.CollectionID, models.ItemCreate{Title: "Ident 999"})
+			f, slugged := storetest.NewRefSlugFixture(t, pg)
+			s := f.Store
+			// The exact number also exists, so BASE's number fallback is observable.
+			for n := 4; n <= 10; n++ {
+				if _, err := s.CreateItem(f.Workspace.ID, f.Item.CollectionID, models.ItemCreate{Title: fmt.Sprintf("Holder %d", n)}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ident, err := s.CreateItem(f.Workspace.ID, f.Item.CollectionID, models.ItemCreate{Title: "Ident 10"})
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, resolve := range []func(string, string) (*models.Item, error){f.Store.ResolveItem, f.Store.ResolveItemIncludeDeleted} {
-				got, err := resolve(f.Workspace.ID, it.Slug)
-				if err != nil || got != nil {
-					t.Errorf("ref-shaped slug miss resolved: %v %v", got, err)
-				}
-				for _, ref := range []string{it.Ref, it.ID} {
-					got, err = resolve(f.Workspace.ID, ref)
-					if err != nil || got == nil || got.ID != it.ID {
-						t.Errorf("own ref/UUID %s: %v %v", ref, got, err)
+			if ident.Slug != "ident-10" {
+				t.Fatal(ident.Slug)
+			}
+			for name, resolve := range map[string]func(string, string) (*models.Item, error){"live": s.ResolveItem, "include-deleted": s.ResolveItemIncludeDeleted} {
+				t.Run(name, func(t *testing.T) {
+					for _, row := range []struct{ input, want string }{
+						{"release-2", slugged.ID}, {"RELEASE-2", ""}, {"Release-2", ""},
+						{"IDENT-10", ""}, {"ident-10", ident.ID},
+						{"ident-2", ""},    // no such slug; number 2 must never be a fallback
+						{"release-02", ""}, // slug lookup is exact, not normalized
+					} {
+						t.Run(row.input, func(t *testing.T) {
+							got, err := resolve(f.Workspace.ID, row.input)
+							id := ""
+							if got != nil {
+								id = got.ID
+							}
+							if err != nil || id != row.want {
+								t.Errorf("resolve %q: id=%q want=%q err=%v", row.input, id, row.want, err)
+							}
+						})
 					}
+				})
+			}
+			if err := s.DeleteItem(ident.ID); err != nil {
+				t.Fatal(err)
+			}
+			if got, err := s.ResolveItem(f.Workspace.ID, "ident-10"); err != nil || got != nil {
+				t.Errorf("deleted slug live: %v %v", got, err)
+			}
+			if got, err := s.ResolveItemIncludeDeleted(f.Workspace.ID, "ident-10"); err != nil || got == nil || got.ID != ident.ID {
+				t.Errorf("deleted slug include-deleted: %v %v", got, err)
+			}
+			// Remove the slug owner entirely to pin the requested no-ident-10 case.
+			if _, err := s.DB().Exec(s.D().Rebind(`UPDATE items SET slug = 'elsewhere' WHERE id = ?`), ident.ID); err != nil {
+				t.Fatal(err)
+			}
+			for _, resolve := range []func(string, string) (*models.Item, error){s.ResolveItem, s.ResolveItemIncludeDeleted} {
+				if got, err := resolve(f.Workspace.ID, "ident-10"); err != nil || got != nil {
+					t.Errorf("missing ident-10 slug: %v %v", got, err)
 				}
+			}
+		})
+	}
+}
+
+func TestBUG4119_LowercaseRefMove(t *testing.T) {
+	for _, pg := range []bool{false, true} {
+		t.Run(fmt.Sprintf("pg=%t", pg), func(t *testing.T) {
+			f, _ := storetest.NewRefSlugFixture(t, pg)
+			s := f.Store
+			plan, err := s.CreateCollection(f.Workspace.ID, models.CollectionCreate{Name: "Plans", Prefix: "PLAN"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			task, err := s.CreateCollection(f.Workspace.ID, models.CollectionCreate{Name: "Tasks", Prefix: "TASK"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			current, err := s.CreateItem(f.Workspace.ID, task.ID, models.ItemCreate{Title: "Filler"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			current, err = s.CreateItem(f.Workspace.ID, task.ID, models.ItemCreate{Title: "Current task"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if current.Ref != "TASK-5" {
+				t.Fatal(current.Ref)
+			}
+			// Advance the fixture to the lead's concrete PLAN-42 example.
+			for n := 6; n < 42; n++ {
+				if _, err := s.CreateItem(f.Workspace.ID, task.ID, models.ItemCreate{Title: fmt.Sprintf("Filler %d", n)}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			moved, err := s.CreateItem(f.Workspace.ID, plan.ID, models.ItemCreate{Title: "Moved plan"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if moved.Ref != "PLAN-42" {
+				t.Fatal(moved.Ref)
+			}
+			if _, err := s.MoveItem(moved.ID, task.ID, `{}`); err != nil {
+				t.Fatal(err)
+			}
+			for name, resolve := range map[string]func(string, string) (*models.Item, error){"live": s.ResolveItem, "include-deleted": s.ResolveItemIncludeDeleted} {
+				t.Run(name, func(t *testing.T) {
+					if got, err := resolve(f.Workspace.ID, "plan-42"); err != nil || got != nil {
+						t.Errorf("lowercase old ref used move log: %v %v", got, err)
+					}
+					if got, err := resolve(f.Workspace.ID, "task-5"); err != nil || got == nil || got.ID != current.ID {
+						t.Errorf("lowercase current ref: %v %v", got, err)
+					}
+				})
+			}
+			if got, err := s.ResolveItem(f.Workspace.ID, "PLAN-42"); err != nil || got == nil || got.ID != moved.ID {
+				t.Errorf("uppercase old ref: %v %v", got, err)
 			}
 		})
 	}

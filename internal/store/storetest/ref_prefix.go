@@ -88,3 +88,26 @@ func (f RefPrefixFixture) AssertUnchanged(t *testing.T, before string) {
 		t.Errorf("BUG-4119: wrong-prefix request wrote data\nbefore: %s\nafter:  %s", before, after)
 	}
 }
+
+// NewRefSlugFixture pairs item #2 with a different item owning release-2.
+// There is deliberately no RELEASE collection.
+func NewRefSlugFixture(t *testing.T, postgres bool) (RefPrefixFixture, *models.Item) {
+	t.Helper()
+	f := NewRefPrefixFixture(t, postgres, false)
+	holder, err := f.Store.CreateItem(f.Workspace.ID, f.Item.CollectionID, models.ItemCreate{Title: "Second number holder", Content: "Untouched number two"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if holder.ItemNumber == nil || *holder.ItemNumber != 2 {
+		t.Fatalf("number holder: %v", holder.ItemNumber)
+	}
+	f.Item = holder
+	slugged, err := f.Store.CreateItem(f.Workspace.ID, holder.CollectionID, models.ItemCreate{Title: "Release 2", Content: "Slug owner body"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slugged.Slug != "release-2" {
+		t.Fatalf("slug: %q", slugged.Slug)
+	}
+	return f, slugged
+}

@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/PerpetualSoftware/pad/internal/collections"
 	"github.com/PerpetualSoftware/pad/internal/diff"
@@ -948,7 +949,7 @@ func (s *Store) GetItemBySlug(workspaceID, slug string) (*models.Item, error) {
 // only when the item's durable move log names a former collection whose
 // current prefix matches, including deleted collections (BUG-4119).
 func (s *Store) GetItemByRef(workspaceID, prefix string, number int) (*models.Item, error) {
-	id, err := s.itemRefIDQ(s.db, workspaceID, prefix, number, linkScope{}, false)
+	id, err := s.itemRefIDQ(s.db, workspaceID, prefix, number, linkScope{}, false, true)
 	if err != nil || id == "" {
 		return nil, err
 	}
@@ -956,8 +957,11 @@ func (s *Store) GetItemByRef(workspaceID, prefix string, number int) (*models.It
 }
 
 // ResolveItem tries UUID, then PREFIX-NUMBER ref, then an ordinary slug.
-// A parsed ref miss is terminal: falling through to an unrelated ref-shaped
-// slug would open a second wrong-item resolution door (BUG-4119).
+// A current ref wins over a colliding slug, including lowercase typed refs.
+// Ref-shaped identifiers containing any uppercase rune may use move history;
+// their misses are terminal so canonical refs cannot reach another item by slug.
+// With no uppercase rune, try only the exact current ref, then the exact,
+// case-sensitive slug. Never use move history or a number fallback (BUG-4119 r1).
 func (s *Store) ResolveItem(workspaceID, identifier string) (*models.Item, error) {
 	// Try UUID lookup first (8-4-4-4-12 hex format)
 	if isUUID(identifier) {
@@ -969,9 +973,17 @@ func (s *Store) ResolveItem(workspaceID, identifier string) (*models.Item, error
 			return item, nil
 		}
 	}
-	// A ref-shaped identifier is always interpreted as a ref (BUG-4119).
 	if prefix, number, ok := parseItemRef(identifier); ok {
-		return s.GetItemByRef(workspaceID, prefix, number)
+		if itemIdentifierHasUpper(identifier) {
+			return s.GetItemByRef(workspaceID, prefix, number)
+		}
+		id, err := s.itemRefIDQ(s.db, workspaceID, prefix, number, linkScope{}, false, false)
+		if err != nil {
+			return nil, err
+		}
+		if id != "" {
+			return s.GetItem(id)
+		}
 	}
 	// Fall back to slug lookup
 	return s.GetItemBySlug(workspaceID, identifier)
@@ -1008,49 +1020,32 @@ func (s *Store) ResolveItemIncludeDeleted(workspaceID, slugOrRef string) (*model
 		}
 	}
 	if prefix, number, ok := parseItemRef(slugOrRef); ok {
-		var item models.Item
-		var createdAt, updatedAt string
-		var deletedAt *string
-		var pinned bool
-
-		err := s.db.QueryRow(s.q(`
-			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, `+contentStateSQL+`, i.fields, i.tags,
-			       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
-			       i.created_by, i.last_modified_by, i.source,
-			       i.item_number, i.seq, i.created_at, i.updated_at, i.deleted_at,
-			       c.slug, c.name, c.icon, c.prefix,
-			       COALESCE(au.name, ''), COALESCE(au.email, ''),
-			       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
-			FROM items i
-			JOIN collections c ON c.id = i.collection_id
-			LEFT JOIN users au ON au.id = i.assigned_user_id
-			LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
-			WHERE i.workspace_id = ? AND c.prefix = ? AND i.item_number = ?
-		`), workspaceID, prefix, number).Scan(
-			&item.ID, &item.WorkspaceID, &item.CollectionID, &item.Title, &item.Slug,
-			&item.Content, &item.ContentState, &item.Fields, &item.Tags,
-			&pinned, &item.SortOrder, &item.ParentID, &item.AssignedUserID, &item.AgentRoleID, &item.RoleSortOrder,
-			&item.CreatedBy, &item.LastModifiedBy, &item.Source,
-			&item.ItemNumber, &item.Seq, &createdAt, &updatedAt, &deletedAt,
-			&item.CollectionSlug, &item.CollectionName, &item.CollectionIcon, &item.CollectionPrefix,
-			&item.AssignedUserName, &item.AssignedUserEmail,
-			&item.AgentRoleName, &item.AgentRoleSlug, &item.AgentRoleIcon,
-		)
-		if err == nil {
-			item.Pinned = pinned
-			item.CreatedAt = parseTime(createdAt)
-			item.UpdatedAt = parseTime(updatedAt)
-			item.DeletedAt = parseTimePtr(deletedAt)
-			hydrateItemComputedMetadata(&item)
-			return &item, nil
+		// Include-deleted resolution has always used current refs only, even
+		// for uppercase input. HTTP show can separately try live move history.
+		id, err := s.itemRefIDQ(s.db, workspaceID, prefix, number, linkScope{}, true, false)
+		if err != nil {
+			return nil, err
 		}
-		if err != sql.ErrNoRows {
-			return nil, fmt.Errorf("resolve ref (include deleted): %w", err)
+		if id != "" {
+			return s.GetItemIncludeDeleted(id)
 		}
-		// BUG-4119: ref misses cannot be caught by unrelated item slugs.
-		return nil, nil
+		if itemIdentifierHasUpper(slugOrRef) {
+			return nil, nil
+		}
 	}
+
 	return s.GetItemBySlugIncludeDeleted(workspaceID, slugOrRef)
+}
+
+// itemIdentifierHasUpper inspects the original spelling before ref parsing
+// uppercases it. A mixed-case identifier follows the canonical-ref policy.
+func itemIdentifierHasUpper(identifier string) bool {
+	for _, r := range identifier {
+		if unicode.IsUpper(r) {
+			return true
+		}
+	}
+	return false
 }
 
 // parseItemRef parses "PREFIX-123" into ("PREFIX", 123, true).
