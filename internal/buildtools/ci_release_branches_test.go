@@ -1,10 +1,13 @@
 package buildtools
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -302,26 +305,37 @@ const (
 	stopLine  = `echo "# STOP THE LINE: a race run on $GITHUB_REF_NAME failed or did not finish"`
 )
 
-// branchMarks are the ways a workflow can read the branch: the github
-// context's ref fields (github.ref also covers github.ref_name), the event
-// payload's, the runner's GITHUB_REF* variables, and git asking for the
-// checked-out branch.
+// branchMarks are the ways a workflow can read the branch, matched without
+// regard to case (GitHub's expression contexts are case-insensitive): the
+// github context's and event payload's ref fields (github.ref also covers
+// ref_name), the runner's GITHUB_REF* variables and event file, and git
+// asking which branch is checked out.
 var branchMarks = []string{
-	"github.ref", "github.head_ref", "github.base_ref", "github.event.ref",
-	"github[", "toJSON(github", "default_branch",
-	"GITHUB_REF", "GITHUB_HEAD_REF", "GITHUB_BASE_REF",
-	"refs/heads", "abbrev-ref", "show-current", "symbolic-ref", "origin/main",
+	"github.ref", "head_ref", "base_ref", "github.event.ref", "['ref']", `["ref"]`,
+	"default_branch", "github_ref", "github_head_ref", "github_base_ref", "github_event_path",
+	"refs/heads", "abbrev-ref", "show-current", "symbolic-ref", "symbolic-full-name",
+	"name-rev", "for-each-ref", "origin/main", "origin/head",
 }
+
+// wholeGithub matches the bare github context handed to a function or
+// indexed (toJSON(github), format('{0}', github), github['ref']), which can
+// reach the ref without naming it.
+var wholeGithub = regexp.MustCompile(`(?i)\bgithub\s*[\[\),]`)
+
+// branchKeys are keys whose value pins a branch as data, such as a checkout
+// step's with: ref: main. on: is pinned separately and not scanned.
+var branchKeys = []string{"ref", "branch", "branches"}
 
 // scalars collects every string in a decoded YAML tree, keys included, so a
 // scan of it covers every field (if, run, env, with, continue-on-error,
 // strategy, runs-on, needs, outputs, ...) without naming them. Comments are
-// not part of the tree.
+// not part of the tree. A key is prefixed "key:" so branchKeys can tell a
+// key from a value.
 func scalars(v any, out *[]string) {
 	switch x := v.(type) {
 	case map[string]any:
 		for k, vv := range x {
-			*out = append(*out, k)
+			*out = append(*out, "key:"+k)
 			scalars(vv, out)
 		}
 	case []any:
@@ -335,13 +349,16 @@ func scalars(v any, out *[]string) {
 }
 
 // branchHits returns the scalars that name the branch, after dropping the
-// allowed whole scalars (compared folded) and allowed whole lines.
-func branchHits(v any, allowScalars, allowLines []string) []string {
+// allowed whole lines (compared exactly, before case folding).
+func branchHits(v any, allowLines []string) []string {
 	var all, hits []string
 	scalars(v, &all)
 	for _, sc := range all {
-		if slices.Contains(allowScalars, fold(sc)) {
-			continue
+		if key, ok := strings.CutPrefix(sc, "key:"); ok {
+			if slices.Contains(branchKeys, strings.ToLower(key)) {
+				hits = append(hits, sc)
+			}
+			sc = key
 		}
 		var kept []string
 		for _, line := range strings.Split(sc, "\n") {
@@ -349,7 +366,11 @@ func branchHits(v any, allowScalars, allowLines []string) []string {
 				kept = append(kept, line)
 			}
 		}
-		rest := strings.Join(kept, "\n")
+		rest := strings.ToLower(strings.Join(kept, "\n"))
+		if wholeGithub.MatchString(rest) {
+			hits = append(hits, sc)
+			continue
+		}
 		for _, mark := range branchMarks {
 			if strings.Contains(rest, mark) {
 				hits = append(hits, sc)
@@ -360,26 +381,53 @@ func branchHits(v any, allowScalars, allowLines []string) []string {
 	return hits
 }
 
+// readRawWorkflow decodes a workflow as a plain tree, and refuses a file
+// with more than one YAML document, which a single decode would not see.
+func readRawWorkflow(t *testing.T, file string) map[string]any {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", file))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dec := yaml.NewDecoder(bytes.NewReader(b))
+	var raw map[string]any
+	if err := dec.Decode(&raw); err != nil {
+		t.Fatalf("%s: %v", file, err)
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		t.Fatalf("%s: more than one YAML document (or a trailing decode error: %v)", file, err)
+	}
+	return raw
+}
+
+// takeIf removes a mapping's if when it equals want (folded), and reports
+// whether it did. An allowance is for that key's exact value only.
+func takeIf(m map[string]any, want string) (map[string]any, bool) {
+	cond, ok := m["if"].(string)
+	if !ok || fold(cond) != want {
+		return m, false
+	}
+	m = maps.Clone(m)
+	delete(m, "if")
+	return m, true
+}
+
 // Nothing else in either workflow may depend on the branch: a job or step
 // gated to main would make a release-* push run less than a main push does.
-// The deliberate exceptions are the heal job's if, the Nix refusal step (its
-// if and its message, in the nix job, exactly once) and the stop-the-line
-// notice line. on: and concurrency: are pinned exactly elsewhere.
+// The deliberate exceptions, each an exact value in a fixed place: the heal
+// job's if; the Nix refusal step's if and its message line, in the nix job,
+// on exactly one step; and the stop-the-line notice line. on: and
+// concurrency: are pinned exactly elsewhere. Local actions and reusable
+// workflows run code this scan cannot read, so neither may appear.
 func TestCIWorkflows_NoOtherBranchGates(t *testing.T) {
 	for _, file := range []string{"ci.yml", "race.yml"} {
-		b, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", file))
-		if err != nil {
-			t.Fatal(err)
-		}
-		var raw map[string]any
-		if err := yaml.Unmarshal(b, &raw); err != nil {
-			t.Fatalf("%s: %v", file, err)
-		}
+		raw := readRawWorkflow(t, file)
 		for key, v := range raw {
 			if key == "on" || key == "concurrency" || key == "jobs" {
 				continue
 			}
-			if hits := branchHits(v, nil, nil); len(hits) > 0 {
+			if hits := branchHits(v, nil); len(hits) > 0 {
 				t.Errorf("%s: top-level %s depends on the branch: %q", file, key, hits)
 			}
 		}
@@ -393,30 +441,39 @@ func TestCIWorkflows_NoOtherBranchGates(t *testing.T) {
 			if !ok {
 				t.Fatalf("%s %s: job is not a mapping", file, name)
 			}
-			var jobAllow []string
-			if file == "ci.yml" && name == "push-vendor-hash" {
-				jobAllow = []string{healIf}
-			}
 			fields := maps.Clone(job)
 			delete(fields, "steps")
-			if hits := branchHits(fields, jobAllow, nil); len(hits) > 0 {
+			if file == "ci.yml" && name == "push-vendor-hash" {
+				var took bool
+				if fields, took = takeIf(fields, healIf); !took {
+					t.Errorf("ci.yml push-vendor-hash: if = %q, want exactly %q", job["if"], healIf)
+				}
+			}
+			if hits := branchHits(fields, nil); len(hits) > 0 {
 				t.Errorf("%s %s: job depends on the branch: %q", file, name, hits)
+			}
+			if uses, ok := job["uses"].(string); ok && strings.HasPrefix(uses, "./") {
+				t.Errorf("%s %s: uses a local reusable workflow %q, which this scan cannot read", file, name, uses)
 			}
 			steps, _ := job["steps"].([]any)
 			for i, sv := range steps {
-				var stepAllow, lineAllow []string
-				lineAllow = []string{stopLine}
+				step, ok := sv.(map[string]any)
+				if !ok {
+					t.Fatalf("%s %s step %d: not a mapping", file, name, i)
+				}
+				lineAllow := []string{stopLine}
 				if file == "ci.yml" && name == "nix" {
-					if step, ok := sv.(map[string]any); ok {
-						if cond, ok := step["if"].(string); ok && fold(cond) == refuseIf {
-							refusals++
-							stepAllow = []string{refuseIf}
-							lineAllow = append(lineAllow, refuseMsg)
-						}
+					var took bool
+					if step, took = takeIf(step, refuseIf); took {
+						refusals++
+						lineAllow = append(lineAllow, refuseMsg)
 					}
 				}
-				if hits := branchHits(sv, stepAllow, lineAllow); len(hits) > 0 {
+				if hits := branchHits(step, lineAllow); len(hits) > 0 {
 					t.Errorf("%s %s step %d depends on the branch: %q", file, name, i, hits)
+				}
+				if uses, ok := step["uses"].(string); ok && strings.HasPrefix(uses, "./") {
+					t.Errorf("%s %s step %d: uses a local action %q, which this scan cannot read", file, name, i, uses)
 				}
 			}
 		}
