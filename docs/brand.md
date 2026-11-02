@@ -100,16 +100,6 @@ The accent values (blue, green, amber, purple) are **already identical**
 between `pad-web/src/app.css` and `web/src/app.css`. Treat them as fixed
 and do not re-pick them.
 
-### Known drift to clean up (out of scope for this doc)
-
-- `web/src/app.css` defines `--text-muted: #666666`, which gives
-  ≈3.2:1 against `--bg-primary: #1a1a1a` and **fails WCAG AA for
-  body-size text**. The marketing site uses `#8a8a93` (≈4.7:1) which
-  passes. When the auth-page header/footer convergence work
-  (TASK-902 / TASK-903) lands, surfaces that consume the marketing
-  palette automatically inherit the AA-passing value. The deep-app
-  fix is a separate concern — file a follow-up if it bites.
-
 ---
 
 ## 4. Type scale
@@ -324,10 +314,9 @@ When `cloud_mode === false`, render only the legal-essential subset:
 
 - Privacy *(if the operator has hosted a privacy doc)*
 - Terms *(if applicable)*
-- A copyright line that says the operator's name, not Pad's (this is
-  out of scope for the immediate cohesion work — for now keep the
-  current self-hosted footer behavior; flag for the operator-branding
-  follow-up plan).
+- A copyright line that says the operator's name, not Pad's (not
+  implemented: the self-hosted footer keeps its current behavior until
+  operator branding exists; see section 10).
 
 ---
 
@@ -362,9 +351,9 @@ others and keep them in sync.
 
 ## 9. The Pad mark
 
-> **Adopted (Dave, 2026-10-09; TASK-3514), with a FLAT app icon:** a solid
-> dark tile, no edge glow and no tile sheen. The rollout runs repo by repo
-> (plan on TASK-3514); a surface not yet switched still shows its old mark.
+> **Adopted 2026-10-09 (TASK-3514), with a FLAT app icon:** a solid dark
+> tile, no edge glow and no tile sheen. A surface not yet switched still
+> shows its old mark.
 
 The mark is a 3x3 grid of rounded tiles. It replaces both earlier marks: the
 purple "P" (the app's favicons and app icons) and the raster nine-square
@@ -397,7 +386,7 @@ PNG anywhere is an export of one of them, never a hand-edited copy.
 - The two slate tiles are part of the mark, as in the mobile icon. Keep
   them slate; do not recolour them to the accent.
 - App-icon tile: solid `#0a0b16`, corner radius 222 of 1024 when shaped.
-  Flat by ruling: the mobile icon's edge glow and tile sheen were mocked and
+  Flat by design: the mobile icon's edge glow and tile sheen were mocked and
   declined.
 
 ### Rules
@@ -421,10 +410,10 @@ PNG anywhere is an export of one of them, never a hand-edited copy.
 
 ### GitHub social preview
 
-**Ruled (Dave, 2026-10-09):** keep GitHub's default card, which keeps the live
+**Decided 2026-10-09:** keep GitHub's default card, which keeps the live
 counts, and make the mark the org avatar (`pad-org-avatar-1024.png`, uploaded
-in the org settings). The custom card below is parked, kept in case it is
-wanted later.
+in the org settings). The custom card below is not in use, and is kept in
+case it is wanted later.
 
 `docs/brand/social/render.mjs` renders it in GitHub's own card layout, with
 the mark where the org avatar goes:
@@ -450,8 +439,8 @@ and export again.
 
 ### Where it goes
 
-Each surface gets an export from the master set. The rollout plan by repo
-is on TASK-3514.
+Each surface gets an export from the master set (rollout tracked on
+TASK-3514).
 
 ---
 

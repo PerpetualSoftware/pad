@@ -27,12 +27,12 @@ sha256 matches the table below. rrule.go is the only modified file.
 
 Lint: .golangci.yml excludes one upstream finding, ineffassign on `lno1wkst = 0`
 in rrule.go (upstream's own dead store), rather than editing upstream code. Every
-other linter still runs on this package, including our delta (TASK-4100 lint ruling).
+other linter still runs on this package, including the local changes (TASK-4100).
 
 ## File count
 
-The brief for this work said 3 library files; there are 4 (rrule.go, rruleset.go,
-str.go, util.go). Tests, README, Makefile and example are not vendored.
+Four library files are vendored (rrule.go, rruleset.go, str.go, util.go).
+Tests, README, Makefile and example are not vendored.
 
 ## sha256 of the originals (module cache, v1.8.2)
 
