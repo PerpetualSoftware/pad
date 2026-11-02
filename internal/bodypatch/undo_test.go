@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// PLAN-3578 step 3 (lead ruling): an undo is the inverse patch anchored on
+// PLAN-3578 step 3: an undo is the inverse patch anchored on
 // each edit's context, and it refuses unless every anchor occurs exactly once.
 
 func roundTrip(t *testing.T, body string, edits []Edit) {

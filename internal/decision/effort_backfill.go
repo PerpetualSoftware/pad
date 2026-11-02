@@ -99,7 +99,7 @@ func (r *Runner) CountEffortBackfill(ctx context.Context) (int, error) {
 // marker. owed is the number of jobs owed by this call (0 when the marker was
 // already set). A nil runner does nothing.
 //
-// PACING (lead ruling on TASK-3921, r3 M1). Claims run oldest-enqueued first
+// PACING (TASK-3921). Claims run oldest-enqueued first
 // and evaluation is sequential, so owing every candidate at once would put a
 // live edit's re-ask behind the whole backlog. The backfill therefore owes one
 // tick pass of items (backfillChunk) and owes the next only once THAT chunk's
@@ -117,7 +117,7 @@ func (r *Runner) CountEffortBackfill(ctx context.Context) (int, error) {
 // that lands before a chunk returns ctx.Err() with no marker, so the next run
 // redoes the work. A cancel that lands after the last chunk may still write
 // the marker, which is correct: the marker means every candidate was ENQUEUED,
-// not answered (lead ruling on TASK-3921, mutant M5).
+// not answered (TASK-3921).
 func (r *Runner) BackfillEffort(ctx context.Context) (owed int, err error) {
 	if r == nil {
 		return 0, nil

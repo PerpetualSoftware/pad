@@ -96,7 +96,7 @@ func TestBUG3340_RedirectAfterDeletionIsNotFollowed(t *testing.T) {
 	}
 }
 
-// Codex r2 P1: net/http can send inside a single Do on a connection obtained
+// net/http can send inside a single Do on a connection obtained
 // after the per-attempt check (a re-dial and replay, or a deletion during
 // dial or TLS setup). The per-connection check must catch it: the workspace
 // is live at the attempt check and deleted by the time a connection is ready.
@@ -128,7 +128,7 @@ func TestBUG3340_DeletionBeforeConnectionReadySendsNothing(t *testing.T) {
 	}
 }
 
-// Codex r2 P2s: a liveness LOOKUP ERROR is neither a deletion nor the
+// A liveness LOOKUP ERROR is neither a deletion nor the
 // endpoint's failure. It must leave the event owed (Transient, so the outbox
 // does not ack it) and must not be charged to the webhook.
 func TestBUG3340_LivenessLookupErrorDefersWithoutCharging(t *testing.T) {

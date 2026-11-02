@@ -71,8 +71,7 @@ const (
 
 // isoBMFFAVBrands maps MAJOR brands that name an audio or video container to
 // the MIME the allowlist spells. Consulted on the major brand ALONE, and only
-// on these two, which is what keeps it narrow enough to be safe (BUG-2963 F4,
-// ruled day 62).
+// on these two, which is what keeps it narrow enough to be safe (BUG-2963 F4).
 //
 //   - "qt  " is the QuickTime brand. The stdlib has no signature for it: its
 //     mp4 matcher wants a brand beginning "mp4" and a .mov carries none, so a

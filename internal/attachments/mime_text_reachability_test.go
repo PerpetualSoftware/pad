@@ -17,8 +17,7 @@ import (
 // from the table rather than listed by hand, so an entry added later is
 // covered without anyone remembering to add it: which real upload produces it?
 //
-// It also pins the property that makes the refinement safe (lead ruling on
-// BUG-2841, option a): choosing a text type from the extension NEVER GAINS
+// It also pins the property that makes the refinement safe (BUG-2841): choosing a text type from the extension NEVER GAINS
 // inline serving. text/plain is the only text type in inlineSafe, so every
 // refinement moves a file from inline toward attachment, never the reverse.
 func TestTextFamilyEntriesAreReachableAndNeverGainInline(t *testing.T) {

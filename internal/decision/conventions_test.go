@@ -291,7 +291,7 @@ func TestConventions_CurrencyFollowsTheConventionAndTheLinks(t *testing.T) {
 	}
 }
 
-// Codex r1: liveness is checked before EACH call of a split set. An item
+// Liveness is checked before EACH call of a split set. An item
 // deleted while the first call is in flight is not sent in the second.
 func TestConventions_DeleteBetweenSplitCallsStopsTheRest(t *testing.T) {
 	fx := newConvFixture(t)

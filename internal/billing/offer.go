@@ -29,7 +29,7 @@ const (
 )
 
 // ResolveMode picks the billing mode from PAD_BILLING and, for one release,
-// its predecessor PAD_BILLING_AVAILABLE (lead ruling on TASK-3577):
+// its predecessor PAD_BILLING_AVAILABLE (TASK-3577):
 //
 //   - PAD_BILLING set: it decides. "auto" or "off" (any case, trimmed); any
 //     other value is off, with a warning, since an unreadable switch must not

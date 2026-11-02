@@ -131,7 +131,7 @@ func lineOf(s string, p int) int {
 }
 
 // ContextChars bounds the body context kept on each side of an applied edit
-// (PLAN-3578 step 3, lead ruling: about 40, clipped at line ends).
+// (PLAN-3578 step 3: about 40, clipped at line ends).
 const ContextChars = 40
 
 // AppliedEdit is an edit as it landed: what was sent, plus the body text on

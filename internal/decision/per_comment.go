@@ -19,7 +19,7 @@ import (
 // Answers are stored in item_decisions under the item, keyed
 // "<question key>@<comment id>", with the comment's state hash.
 //
-// ASKED vs CURRENT (lead ruling). Only the item's last RecentTrailWindow live
+// ASKED vs CURRENT. Only the item's last RecentTrailWindow live
 // comments are asked or re-asked, which bounds an evaluation at that many
 // comments. But an answer stays CURRENT while its comment is unchanged however
 // many newer comments arrive: a pasted credential's chip must not vanish

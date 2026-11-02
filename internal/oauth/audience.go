@@ -47,8 +47,8 @@ import (
 // "directory" namespace). Collapsing those would let a token
 // minted for "/foo/" pass an audience check expecting "/foo"
 // (and vice versa), which is a real audience-confusion attack
-// surface. Codex review #386 round 1 caught the over-broad trim
-// that motivated this version.
+// surface. An earlier version trimmed too broadly (#386), which
+// motivated this one.
 //
 // Why we need this at all: real OAuth clients vary in how they
 // reconstruct the resource indicator. Claude Desktop's connector

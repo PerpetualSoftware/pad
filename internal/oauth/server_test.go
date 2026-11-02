@@ -122,8 +122,7 @@ func TestNewServer_FillsDefaultLifespans(t *testing.T) {
 	}
 }
 
-// TestNewServer_RefreshTokenScopesIsEmpty pins Codex review #371
-// round 3: fosite defaults Config.RefreshTokenScopes to
+// TestNewServer_RefreshTokenScopesIsEmpty pins #371: fosite defaults Config.RefreshTokenScopes to
 // ["offline", "offline_access"] — without overriding, refresh tokens
 // only get issued for grants that include one of those scopes. PLAN-
 // 943's scope vocabulary is pad:read / pad:write / pad:admin (no
@@ -257,8 +256,7 @@ func TestAudienceStrategy_TrailingSlashEquivalence(t *testing.T) {
 }
 
 // TestNormalizeAudience pins the boundaries of the slash-trim helper.
-// Codex review #386 round 1 caught an over-broad earlier version that
-// trimmed every trailing "/", which would have made
+// An over-broad earlier version (#386) trimmed every trailing "/", which would have made
 // "https://host/mcp" and "https://host/mcp/" compare equal — distinct
 // HTTP resources collapsing to one audience is a real confusion-attack
 // surface. The fixed version trims ONLY when the URI's path component
@@ -507,8 +505,8 @@ func TestStorage_AuthCodeInvalidatedReturnsCorrectError(t *testing.T) {
 	}
 }
 
-// TestStorage_GetClient_InjectsCanonicalAudience pins Codex review
-// #371 round 1: the adapter MUST inject the canonical audience into
+// TestStorage_GetClient_InjectsCanonicalAudience pins #371:
+// the adapter MUST inject the canonical audience into
 // the hydrated fosite.Client.Audience field. Without this,
 // audienceMatchingStrategy's haystack check (client.GetAudience()
 // must contain canonical) rejects every request — every authorize
@@ -603,7 +601,7 @@ func TestStorage_AccessToken_InactiveMappedToFositeError(t *testing.T) {
 }
 
 // TestStorage_GetRefreshTokenSession_InactiveReturnsPayload pins
-// Codex review #371 round 2: when the refresh row is inactive,
+// #371: when the refresh row is inactive,
 // GetRefreshTokenSession must return the hydrated request payload
 // alongside fosite.ErrInactiveToken. Fosite's handleRefreshTokenReuse
 // (flow_refresh.go:178-204) calls req.GetID() to revoke the family —

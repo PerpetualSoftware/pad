@@ -206,7 +206,7 @@ func (s *Storage) CreateAuthorizeCodeSession(_ context.Context, signature string
 // request in the context (introspection, revocation, admin paths) is not a
 // grant exchange and is left as it was.
 //
-// Residuals, accepted (lead ruling on BUG-3400):
+// Residuals, accepted (BUG-3400):
 //   - The client id is only as strong as the client's authentication. A
 //     PUBLIC client (every DCR client) authenticates by its client_id alone,
 //     and client ids are not secret, so anyone holding a public client's
@@ -297,8 +297,7 @@ func mapGrantRevoked(err error) error {
 // Inactive rows return the request payload AND the error so callers
 // (introspector, revocation handler) can read req.GetID() for grant-
 // scoped follow-up actions without nil-pointer dereferencing.
-// Codex review #371 round 2 caught the equivalent gap on the refresh
-// path; symmetric fix here for safety even though the access path's
+// The refresh path had the equivalent gap (#371); symmetric fix here for safety even though the access path's
 // callers don't currently dereference on inactive.
 func (s *Storage) GetAccessTokenSession(_ context.Context, signature string, session fosite.Session) (fosite.Requester, error) {
 	stored, err := s.store.GetAccessToken(signature)
@@ -352,8 +351,8 @@ func (s *Storage) CreateRefreshTokenSession(_ context.Context, signature, access
 // (flow_refresh.go:178-204) calls req.GetID() on the returned value
 // to drive RevokeRefreshToken(requestID) + RevokeAccessToken(requestID).
 // Returning a nil request would nil-deref the family-revocation
-// flow, defeating replay detection. Codex review #371 round 2 caught
-// this. The symmetric pattern is used by the auth-code invalidation
+// flow, defeating replay detection. The refresh path had the same
+// gap (#371). The symmetric pattern is used by the auth-code invalidation
 // path (GetAuthorizeCodeSession above).
 func (s *Storage) GetRefreshTokenSession(ctx context.Context, signature string, session fosite.Session) (fosite.Requester, error) {
 	stored, err := s.store.GetRefreshToken(signature)
@@ -613,7 +612,7 @@ func (s *Storage) oauthRequestToFositeRequest(stored *models.OAuthRequest, sessi
 // adapter injects Storage.canonicalAudience into the hydrated
 // client's Audience field so audienceMatchingStrategy's haystack
 // check (client.GetAudience() must contain canonical) passes for
-// every persisted client. Codex review #371 round 1 caught the bug
+// every persisted client. An earlier version (#371) had the bug
 // where this returned Audience=nil and every flow failed validation.
 //
 // If canonicalAudience is empty (a misconfigured Storage — should

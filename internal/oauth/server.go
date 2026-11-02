@@ -199,8 +199,7 @@ func NewServer(cfg Config) (*Server, error) {
 		// pad:read / pad:write / pad:admin — no offline scope —
 		// so the default would silently block refresh issuance for
 		// every Pad grant, defeating the whole rotation + family-
-		// revocation flow this PR adds. Codex review #371 round 3
-		// caught the gap.
+		// revocation flow this PR adds (#371).
 		//
 		// Empty slice tells fosite "issue refresh tokens on every
 		// authorize-code grant whose client allows the

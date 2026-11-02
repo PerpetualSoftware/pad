@@ -22,7 +22,7 @@ func TestResolveMode(t *testing.T) {
 		want        string
 		wantWarning bool
 	}{
-		{"both unset: auto (lead ruling)", "", false, "", false, ModeAuto, false},
+		{"both unset: auto", "", false, "", false, ModeAuto, false},
 		{"PAD_BILLING=auto", "auto", true, "", false, ModeAuto, false},
 		{"PAD_BILLING=off", "off", true, "", false, ModeOff, false},
 		{"PAD_BILLING trimmed, any case", " Off ", true, "", false, ModeOff, false},
