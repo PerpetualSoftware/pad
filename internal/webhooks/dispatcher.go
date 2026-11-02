@@ -736,7 +736,7 @@ func (d *Dispatcher) attemptDeliver(hook models.Webhook, body []byte) deliveryRe
 
 // RetryableStatus reports whether a receiver's HTTP status means "try again
 // later" rather than "this request is unacceptable": any 5xx, and the three
-// 4xx codes that say so (TASK-3409, lead ruling): 408 Request Timeout,
+// 4xx codes that say so (TASK-3409): 408 Request Timeout,
 // 425 Too Early and 429 Too Many Requests. Every other non-2xx is permanent.
 // Before this, all of 4xx was permanent, which an event-level retry mostly
 // hid; once a permanent outcome ends an endpoint's part in an event, a

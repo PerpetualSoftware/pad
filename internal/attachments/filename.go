@@ -207,7 +207,7 @@ const windowsReservedChars = `<>:"/\|?*`
 //
 // It is for the boundary where a stored name becomes a PATH, never for the
 // stored name itself: "Meeting: notes.pdf" is a normal name to store and to
-// show (the lead ruling on BUG-3186). Apply it where the path is made, and on
+// show (BUG-3186). Apply it where the path is made, and on
 // the platform it describes.
 func WindowsPathComponent(name string) string {
 	var b strings.Builder

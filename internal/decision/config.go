@@ -70,7 +70,7 @@ func EnvConfig() Config {
 // field leaves the earlier value standing.
 //
 // Callers put the environment LAST, because the environment overrides the
-// instance-admin setting (ruled day 73 on PLAN-3114). That precedence is why
+// instance-admin setting (PLAN-3114). That precedence is why
 // [ProviderNone] exists: since an empty string means "no opinion", an
 // environment that wants to TURN OFF a provider an admin enabled has to say
 // so with a value, and "none" is that value.

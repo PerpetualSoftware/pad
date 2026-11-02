@@ -970,7 +970,7 @@ func TestSupervisorCloseBeforeFirstJob(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// idle exit (Dave's ruling on TASK-2198: a worker with no job for
+// idle exit (TASK-2198: a worker with no job for
 // PAD_MATERIALIZE_IDLE_TIMEOUT stops, and the next job starts a new one)
 
 // waitIdleStopped polls until the supervisor has no worker.

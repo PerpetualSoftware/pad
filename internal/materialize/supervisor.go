@@ -719,7 +719,7 @@ func (s *Supervisor) armCap(c *child, h *capHandle) error {
 }
 
 // onBaselineProbeFailure is the one place that decides what happens when a
-// worker's memory baseline cannot be established (lead ruling: REFUSE). The
+// worker's memory baseline cannot be established (REFUSE). The
 // worker is killed without being sent a job, and the job fails with
 // ErrNoMemoryCap. One WARN names the cause; further failures stay silent
 // until a probe succeeds again, because every refused job starts (and

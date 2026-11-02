@@ -145,7 +145,7 @@ type runContext struct {
 	// (whose embedded timestamps predate this run) don't inflate
 	// the latency percentiles. Without this, every fresh connect's
 	// replay would record ages-old "latencies" and the p95/p99
-	// numbers would be junk. Per Codex review [P2].
+	// numbers would be junk.
 	startedAt time.Time
 
 	totalSent     atomic.Int64
@@ -196,8 +196,7 @@ func runClient(rc *runContext, id int, dialURL string, hdr http.Header, opsPerSe
 	// its embedded timestamp falls within this run's window, we
 	// record the latency. Frames whose embedded timestamp predates
 	// `rc.startedAt` are op-log replay rows from a prior session
-	// and would inflate percentiles if recorded. Per Codex review
-	// [P2].
+	// and would inflate percentiles if recorded.
 	readerDone := make(chan struct{})
 	go func() {
 		defer close(readerDone)
@@ -220,7 +219,7 @@ func runClient(rc *runContext, id int, dialURL string, hdr http.Header, opsPerSe
 	// `wg.Wait()` would hang forever in that scenario. Closing the
 	// conn from a watchdog unblocks both the writer (next send
 	// errors) and the reader (ReadMessage returns), so the
-	// goroutines can drain. Per Codex review [P2].
+	// goroutines can drain.
 	go func() {
 		<-rc.done
 		_ = conn.Close()
@@ -257,8 +256,7 @@ func runClient(rc *runContext, id int, dialURL string, hdr http.Header, opsPerSe
 				// If shutdown is signalled, the watchdog above
 				// closed the conn from under us — this write error
 				// is expected, not a real failure. Don't pollute
-				// the errors counter with it. Per Codex review
-				// round 2 NIT.
+				// the errors counter with it.
 				if isClosedDone(rc.done) {
 					return
 				}
@@ -342,7 +340,7 @@ func isClosedDone(done <-chan struct{}) bool {
 // Returns an error rather than killing the process via log.Fatalf
 // when crypto/rand fails — a test goroutine that exits via Fatalf
 // skips the wg.Done deferred in the caller and would also drop the
-// summary print. Per Codex review NIT.
+// summary print.
 func buildFrame(clientID, frameBytes int) ([]byte, error) {
 	if frameBytes < 16 {
 		frameBytes = 16 // minimum to fit the tagged metadata

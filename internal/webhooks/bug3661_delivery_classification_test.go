@@ -135,7 +135,7 @@ func TestBUG3662_CheckRedirectNamesTheRefusal(t *testing.T) {
 	}
 }
 
-// Codex r1: the dial-time screen's refusal is the policy's too. Validation
+// The dial-time screen's refusal is the policy's too. Validation
 // sees a public answer (the stub), then the dialer resolves the name itself
 // to loopback, as a DNS rebind would; the screen refuses the dial, and that
 // is permanent, not a network error to retry.
