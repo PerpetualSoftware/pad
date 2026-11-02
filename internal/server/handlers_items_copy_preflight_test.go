@@ -80,7 +80,13 @@ const dstSchemaJSON = `{"fields":[
 
 func newCopyPreflightFixture(t *testing.T) *copyPreflightFixture {
 	t.Helper()
-	srv := testServer(t)
+	return newCopyPreflightFixtureOn(t, testServer(t))
+}
+
+// newCopyPreflightFixtureOn is the fixture on a server the caller built, so a
+// test can run it on Postgres.
+func newCopyPreflightFixtureOn(t *testing.T, srv *Server) *copyPreflightFixture {
+	t.Helper()
 	bus := events.New()
 	srv.SetEventBus(bus)
 	t.Cleanup(bus.Close)

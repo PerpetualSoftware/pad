@@ -2548,6 +2548,7 @@ func renderItemCopyPreflight(out io.Writer, p *cli.ItemCopyPreflight) error {
 	fmt.Fprintf(w, "  %-32s %s\n", "agent role dropped", yesNo(warn.DroppedAgentRole))
 	fmt.Fprintf(w, "  %-32s %s\n", "attachments cloned", itemCopyAttachmentSummary(warn.AttachmentCount, warn.AttachmentBytes))
 	fmt.Fprintf(w, "  %-32s %d\n", "unresolvable attachment refs", warn.UnresolvableRefCount)
+	printItemCopySchedule(w, warn.Schedule)
 
 	// Printed ONLY when the server says something was withheld. An
 	// unrestricted caller — the overwhelming majority — sees the block
@@ -2878,6 +2879,7 @@ func renderItemCopyResult(out io.Writer, r *cli.ItemCopyResult) error {
 	fmt.Fprintf(w, "  %-32s %s\n", "agent role dropped", yesNo(warn.DroppedAgentRole))
 	fmt.Fprintf(w, "  %-32s %s\n", "attachments cloned", itemCopyAttachmentSummary(warn.AttachmentCount, warn.AttachmentBytes))
 	fmt.Fprintf(w, "  %-32s %d\n", "unresolvable attachment refs", warn.UnresolvableRefCount)
+	printItemCopySchedule(w, warn.Schedule)
 	// BUG-3032: the body that was copied was behind the source item's live
 	// collaborative document. A WARNING rather than a refusal, because the
 	// source survives a copy — the real text is still in workspace A's
@@ -4837,4 +4839,20 @@ func itemMoveStateChangeHint(ref, collection string, details json.RawMessage) st
 	}
 	return fmt.Sprintf("hint: pad item move %s %s --field %s=<%s>",
 		itemCopyLine(ref), itemCopyLine(collection), itemCopyLine(d.Field), itemCopyLine(strings.Join(d.Options, "|")))
+}
+
+// printItemCopySchedule prints the source schedule's fate, and nothing when the
+// source had none (TASK-4104 D3), so a schedule-less copy reads as it always did.
+func printItemCopySchedule(w *itemCopyWriter, sc *cli.ItemCopySchedule) {
+	switch {
+	case sc == nil:
+		return
+	case sc.Carried:
+		fmt.Fprintf(w, "  %-32s %s\n", "schedule", "carried (armed fresh)")
+	case sc.Skipped != nil:
+		fmt.Fprintf(w, "  %-32s %s\n", "schedule", "NOT carried: "+itemCopyLine(sc.Skipped.Reason))
+	}
+	if sc.HistoryDropped > 0 {
+		fmt.Fprintf(w, "  %-32s %d\n", "schedule history dropped", sc.HistoryDropped)
+	}
 }

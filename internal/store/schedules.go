@@ -250,11 +250,38 @@ func armSchedule(c *schedule.Compiled, occ schedule.Occurrence, lead int, overri
 // enqueueReminderNotificationTx uses, so whose zone and who is notified cannot
 // disagree. Unset, deleted or unloadable is UTC.
 func (s *Store) scheduleRecipientZone(q Queryer, itemID string) (*time.Location, error) {
+	// One statement: a reassignment committing between a read of the assignee
+	// and a read of the zone would arm in the former assignee's zone.
 	var tz sql.NullString
 	err := q.QueryRow(s.q(`
 		SELECT u.timezone FROM items i
 		LEFT JOIN users u ON u.id = COALESCE(NULLIF(i.assigned_user_id, ''), NULLIF(i.created_by_user_id, ''))
 		WHERE i.id = ?`), itemID).Scan(&tz)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("read schedule recipient zone: %w", err)
+	}
+	var stored *string
+	if tz.Valid {
+		stored = &tz.String
+	}
+	return usertz.Resolve(stored).Loc, nil
+}
+
+// scheduleZoneOf is the zone of the assignee, else of the creator: the one rule
+// the cross-workspace copy and its preview use, which already hold both ids.
+// The copy passes the copier's ACCOUNT id as creator, the one the new item's
+// created_by_user_id holds. When the carried assignee is dropped (not a member of
+// the destination) this fallback changes a floating schedule's zone, so the
+// destination walks its walls in the new zone: a wall the source already fired
+// can fire again there, or one can be skipped (TASK-4221 arms strictly after the
+// source's last fired instant).
+func (s *Store) scheduleZoneOf(q Queryer, assignee, creator string) (*time.Location, error) {
+	uid := assignee
+	if uid == "" {
+		uid = creator
+	}
+	var tz sql.NullString
+	err := q.QueryRow(s.q(`SELECT timezone FROM users WHERE id = ?`), uid).Scan(&tz)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("read schedule recipient zone: %w", err)
 	}
@@ -530,6 +557,18 @@ func (s *Store) updateScheduleAt(workspaceID, itemID string, upd models.Schedule
 	cur, err := s.getScheduleQ(tx, workspaceID, itemID, true)
 	if err != nil || cur == nil {
 		return nil, err
+	}
+	// The item may have been archived while this waited on the schedule row: a
+	// cross-workspace move archives it, ends the schedule and commits first. A
+	// plain read, so no lock edge from the schedule to the item; an edit must not
+	// revive a schedule that move ended (TASK-4104 D3).
+	var live int
+	switch err := tx.QueryRow(s.q(`SELECT 1 FROM items WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL`),
+		itemID, workspaceID).Scan(&live); {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil, ErrScheduleItemGone
+	case err != nil:
+		return nil, fmt.Errorf("update schedule: check item: %w", err)
 	}
 
 	deref := func(p *string) string {

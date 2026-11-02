@@ -106,9 +106,33 @@ func carryWall(field, v string) (schedule.Wall, error) {
 //   - next_at and the managed row's remind_at: derived from next_wall, the
 //     override and the lead by armSchedule's own arithmetic.
 func (s *Store) insertCarriedScheduleTx(tx *sql.Tx, workspaceID, itemID string, in carriedSchedule) (string, error) {
+	p, err := prepareCarriedSchedule(in)
+	if err != nil {
+		return "", err
+	}
+	return s.writePreparedSchedule(tx, workspaceID, itemID, in, p)
+}
+
+// preparedCarry is a carried schedule that passed every check, with everything
+// the write needs derived.
+type preparedCarry struct {
+	spec                       schedule.Spec
+	dtend                      schedule.Wall
+	hasEnd                     bool
+	anchorWall                 string
+	endedAt, firedAt, override string
+	createdAt, updatedAt       string
+	nextAt, nextWall, remindAt any
+	occs                       []carriedOccurrence
+}
+
+// prepareCarriedSchedule is the validation half of insertCarriedScheduleTx: pure
+// (no database), so the copy preflight asks the question the copy does
+// (TASK-4104 D3).
+func prepareCarriedSchedule(in carriedSchedule) (preparedCarry, error) {
 	c, err := compileScheduleSpec(scheduleSpecInput{Dtstart: in.Dtstart, Tz: in.Tz, Floating: in.Floating, Rrule: in.Rrule, RDates: in.RDates, ExDates: in.ExDates})
 	if err != nil {
-		return "", &scheduleCarryDrop{Reason: carryReason(err)}
+		return preparedCarry{}, &scheduleCarryDrop{Reason: carryReason(err)}
 	}
 	spec := c.Spec()
 	end, hasEnd, err := validateScheduleFields(in.Kind, in.Anchor, in.Audience, in.LeadMinutes, spec.Start, in.Dtend)
@@ -116,48 +140,48 @@ func (s *Store) insertCarriedScheduleTx(tx *sql.Tx, workspaceID, itemID string, 
 		err = validateAnchorRule(in.Anchor, spec)
 	}
 	if err != nil {
-		return "", &scheduleCarryDrop{Reason: carryReason(err)}
+		return preparedCarry{}, &scheduleCarryDrop{Reason: carryReason(err)}
 	}
 
 	var anchorWall string
 	if in.AnchorWall != "" {
 		aw, err := carryWall("anchor_wall", in.AnchorWall)
 		if err != nil {
-			return "", err
+			return preparedCarry{}, err
 		}
 		if aw.AllDay != spec.Start.AllDay {
-			return "", dropf("anchor_wall", "combination")
+			return preparedCarry{}, dropf("anchor_wall", "combination")
 		}
 		// The fire path compiles from the anchor, so it must compile.
 		if _, err := compileScheduleSpec(scheduleSpecInput{Dtstart: aw.String(), Tz: in.Tz, Floating: in.Floating, Rrule: in.Rrule, RDates: in.RDates, ExDates: in.ExDates}); err != nil {
-			return "", &scheduleCarryDrop{Reason: "anchor_wall:" + carryReason(err)}
+			return preparedCarry{}, &scheduleCarryDrop{Reason: "anchor_wall:" + carryReason(err)}
 		}
 		anchorWall = aw.String()
 	}
 
 	endedAt, err := carryInstant("ended_at", in.EndedAt)
 	if err != nil {
-		return "", err
+		return preparedCarry{}, err
 	}
 	firedAt, err := carryInstant("fired_at", in.FiredAt)
 	if err != nil {
-		return "", err
+		return preparedCarry{}, err
 	}
 	override, err := carryInstant("next_override_at", in.NextOverrideAt)
 	if err != nil {
-		return "", err
+		return preparedCarry{}, err
 	}
 	hint, err := carryInstant("next_at", in.NextAt)
 	if err != nil {
-		return "", err
+		return preparedCarry{}, err
 	}
 	createdAt, err := carryInstant("created_at", in.CreatedAt)
 	if err != nil {
-		return "", err
+		return preparedCarry{}, err
 	}
 	updatedAt, err := carryInstant("updated_at", in.UpdatedAt)
 	if err != nil {
-		return "", err
+		return preparedCarry{}, err
 	}
 	if ts := now(); createdAt == "" {
 		createdAt = ts
@@ -171,18 +195,18 @@ func (s *Store) insertCarriedScheduleTx(tx *sql.Tx, workspaceID, itemID string, 
 	var arm scheduleArming
 	if endedAt != "" {
 		if in.NextWall != "" || in.NextAt != "" || override != "" {
-			return "", dropf("ended_at", "combination") // ended_at => next_at NULL
+			return preparedCarry{}, dropf("ended_at", "combination") // ended_at => next_at NULL
 		}
 	} else {
 		if in.NextWall == "" {
-			return "", dropf("next_wall", "required")
+			return preparedCarry{}, dropf("next_wall", "required")
 		}
 		w, err := carryWall("next_wall", in.NextWall)
 		if err != nil {
-			return "", err
+			return preparedCarry{}, err
 		}
 		if w.AllDay != spec.Start.AllDay {
-			return "", dropf("next_wall", "combination")
+			return preparedCarry{}, dropf("next_wall", "combination")
 		}
 		var ov *time.Time
 		if override != "" {
@@ -190,12 +214,12 @@ func (s *Store) insertCarriedScheduleTx(tx *sql.Tx, workspaceID, itemID string, 
 			ov = &t
 		}
 		if arm, err = carriedArming(spec, w, hint, firedAt != "" || ov != nil, in.LeadMinutes, ov); err != nil {
-			return "", err
+			return preparedCarry{}, err
 		}
 		if firedAt != "" && in.RemindAt != "" {
 			ra, err := carryInstant("remind_at", in.RemindAt)
 			if err != nil {
-				return "", err
+				return preparedCarry{}, err
 			}
 			arm.RemindAt, _ = time.Parse(time.RFC3339, ra)
 		}
@@ -203,9 +227,20 @@ func (s *Store) insertCarriedScheduleTx(tx *sql.Tx, workspaceID, itemID string, 
 	}
 	occs, err := prepareCarriedOccurrences(in.Occurrences)
 	if err != nil {
-		return "", err
+		return preparedCarry{}, err
 	}
 
+	return preparedCarry{
+		spec: spec, dtend: end, hasEnd: hasEnd, anchorWall: anchorWall, endedAt: endedAt, firedAt: firedAt, override: override,
+		createdAt: createdAt, updatedAt: updatedAt, nextAt: nextAt, nextWall: nextWall, remindAt: remindAt, occs: occs,
+	}, nil
+}
+
+// writePreparedSchedule stores a prepared carry: the schedule, its managed row
+// (none when ended) and its history.
+func (s *Store) writePreparedSchedule(tx *sql.Tx, workspaceID, itemID string, in carriedSchedule, p preparedCarry) (string, error) {
+	spec, end, hasEnd, anchorWall, endedAt, firedAt, override := p.spec, p.dtend, p.hasEnd, p.anchorWall, p.endedAt, p.firedAt, p.override
+	createdAt, updatedAt, nextAt, nextWall, remindAt, occs := p.createdAt, p.updatedAt, p.nextAt, p.nextWall, p.remindAt, p.occs
 	// Everything is valid: write.
 	id := newID()
 	var dtend, tzVal, rrule any
