@@ -1,8 +1,8 @@
 # Attachment fixtures
 
 Real files, not hand-built headers. A sniffer's whole job is to recognise what
-encoders actually emit, so a fixture I typed from a spec would test my reading
-of the spec (BUG-2961's tests, `mime_isobmff_test.go`).
+encoders actually emit, so a fixture typed from a spec would test a reading of
+the spec (BUG-2961's tests, `mime_isobmff_test.go`).
 
 | file | produced by | ftyp brands |
 |---|---|---|
@@ -41,7 +41,7 @@ than 512 because the whole file is.
 | `webm.head512` | FFmpeg 7.1 `-f webm` | EBML magic with DocType `webm` at offset 24 — the control that stops the DocType read from answering Matroska for everything |
 | `avi.head512` | FFmpeg 7.1 `-f avi` | RIFF/AVI, which the stdlib names `video/avi` against the allowlist's `video/x-msvideo` |
 
-### PR B fixtures — the audio/video split (F4)
+### Audio/video split fixtures
 
 | file | produced by | what it proves |
 |---|---|---|
@@ -55,9 +55,9 @@ the 512 bytes `SniffMIME` reads.
 
 ### Fixtures for files the recogniser must ACCEPT
 
-Real files that three rounds of structural validation refused. Each is a file a
-user legitimately has, and refusing them is the defect BUG-2963 exists to fix —
-reintroduced, for a while, by its own fix.
+Real files that an earlier, stricter structural validation refused. Each is a
+file a user legitimately has, and refusing them is the defect BUG-2963 exists
+to fix.
 
 | file | produced by | what it proves |
 |---|---|---|
@@ -65,18 +65,17 @@ reintroduced, for a while, by its own fix.
 | `tar-gnu-longname.head512` | `tar --format=gnu -cf` with a 144-character member name | same shape, via GNU's long-name header |
 | `flac-zero-sample-rate.head512` | `flac.head512` with the sample-rate field zeroed | RFC 9639 permits a zero sample rate for non-audio samples and still registers the result as `audio/flac` |
 
-### Adversarial fixtures — the round-1 findings, kept as tests
+### Adversarial fixtures
 
 These exist to be REFUSED or to be typed correctly against a check that used
-to get them wrong. Each was produced by an adversarial review round that broke
-the first version of these signatures.
+to get them wrong. Each one broke an earlier version of these signatures.
 
 | file | produced by | what it proves |
 |---|---|---|
-| `tar-bmp-firstmember.head512` | GNU `tar -cf` on a file named `BM.txt` | a structurally valid tar the stdlib reads as `image/bmp` — a real file exercising competing detections, refused before this change and still refused |
-| `elf-with-ustar-magic.head512` | hand-built | an ELF header with `ustar` at offset 257. It is ACCEPTED now — recognition is by magic — and the test says so. It was written when it was refused, and is kept because the finding it comes from used a real, executing binary |
+| `tar-bmp-firstmember.head512` | GNU `tar -cf` on a file named `BM.txt` | a structurally valid tar the stdlib reads as `image/bmp` — a real file exercising competing detections, refused, as it always was |
+| `elf-with-ustar-magic.head512` | hand-built | an ELF header with `ustar` at offset 257. It is ACCEPTED now — recognition is by magic — and the test says so. It was written when it was refused, and is kept because the case it comes from used a real, executing binary |
 | `webm-void-says-matroska.head512` | FFmpeg WebM with a Void element containing the string `matroska`, header size widened to match | a substring search calls this Matroska; its DocType is `webm` |
-| `matroska-void-padded.head512` | FFmpeg Matroska with 40 bytes of Void padding, header size widened to match | DocType moves to offset 66, past any fixed leading window — the mistyping this change fixes, still live under a search |
+| `matroska-void-padded.head512` | FFmpeg Matroska with 40 bytes of Void padding, header size widened to match | DocType moves to offset 66, past any fixed leading window — the mistyping a parse avoids, and one a search still makes |
 | `elf-with-valid-tar-checksum.head512` | hand-built | an ELF header carrying a well-formed tar header in its padding, checksum included. ACCEPTED, deliberately — and when this package still verified checksums, `archive/tar`'s own reader accepted it too. It records a limitation rather than a defect |
 | `tar-flac-named-member.head512` | GNU `tar -cf` on a file named `fLaC.txt` | an ordinary archive carrying another format's prefix magic in its member NAME |
 | `flac-ustar-in-comment.head512` | a real FLAC with a Vorbis COMMENT block whose vendor string places `ustar` at offset 257; decodes under libsndfile | the same collision from the other side — Vorbis tags are arbitrary UTF-8, so audio can carry the tar magic as easily as a tar can carry an audio marker |
@@ -90,9 +89,8 @@ padding.
 Where an EBML entry above says a muxer or ffprobe read a file, that is said of
 the file it was MADE FROM. What is committed is the first 512 bytes, as with
 every fixture here, so running ffprobe on the committed prefix fails with a
-premature EOF — that is the truncation, not the file. (This paragraph said
-"the two EBML entries" while there were four of them; it is a property of the
-whole family, not of a fixed pair.)
+premature EOF — that is the truncation, not the file. This holds for every
+EBML entry, not a fixed subset.
 
 ### Ogg fixtures — kept for a format the sniffer does NOT recognise
 
@@ -104,7 +102,7 @@ Both are refused, and both are kept so the next person to reach for an
 | `ogg-opus.head512` | FFmpeg 7.1 `-c:a libopus -f ogg` | ordinary Ogg audio, refused — `audio/ogg` stays unreachable |
 | `ogg-vp8-video.head512` | FFmpeg 7.1 `-c:v libvpx -f ogg` | a real Ogg file whose first packet is `OVP80`: video in an Ogg container, which an unconditional alias accepted as inline audio |
 
-An alias was written, ruled in, and removed: whether an Ogg container is
+An alias was tried and removed: whether an Ogg container is
 audio-only cannot be decided from its first page, because Ogg multiplexes and a
 second video stream's pages come later than any 512-byte sniff can see.
 

@@ -9,7 +9,7 @@ Formal JSON Schema (draft 2020-12) for the [`cmdhelp` v0.1](https://getpad.dev/c
 - **Markdown** (`--format md`) — drop-in context for an LLM to *read*.
 - **JSON** (`--format json`) — structured schema for an LLM (or its harness) to *call*. ← **this schema describes that JSON.**
 
-See the full v0.1 spec on [getpad.dev/cmdhelp](https://getpad.dev/cmdhelp) (or `IDEA-927` in this workspace).
+See the full v0.1 spec on [getpad.dev/cmdhelp](https://getpad.dev/cmdhelp) (or `IDEA-927`).
 
 ## Who consumes this
 
@@ -63,4 +63,4 @@ Forward-compat: tools advertising `cmdhelp/0.1` MUST tolerate unknown fields (th
 
 ## Provenance
 
-Drafted in the design conversation captured under `IDEA-927`, frozen 2026-05-01 after four rounds of Codex review, reference implementation tracked under `PLAN-930`.
+Drafted under `IDEA-927` and frozen 2026-05-01; the reference implementation is tracked under `PLAN-930`.

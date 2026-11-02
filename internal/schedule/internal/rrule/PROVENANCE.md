@@ -6,7 +6,7 @@ License: MIT (LICENSE, copied verbatim from the module).
 
 ## Why it is vendored
 
-Its Next() is unbounded on a no-match stretch (TASK-4100 H1): UNTIL is checked
+Its Next() is unbounded on a no-match stretch (TASK-4100): UNTIL is checked
 only against produced candidates, so a rule that matches rarely or never spins
 inside one Next() until year 9999. The caller cannot interrupt it. Upstream has
 been unmaintained since 2023-01. The conformance suite in internal/schedule is
@@ -15,24 +15,24 @@ the contract. Do not "upgrade" this back to the module.
 The differences from upstream marked TASK-4100 in rrule.go are:
 
 - The per-iterator step budget: the `budget` field, SetBudget and Exhausted
-  (TASK-4100 H1).
+  (TASK-4100).
 - The `steps` counter, which resets at every produced candidate so the budget
-  bounds a no-match stretch (TASK-4100 r2).
+  bounds a no-match stretch (TASK-4100).
 - The `stall` position, StallPos and spend(adv), which record a conservative
   lower bound on every occurrence an exhausted iterator did not yield
-  (TASK-4100 r3).
+  (TASK-4100).
 
 rruleset.go, str.go, util.go and LICENSE are byte-identical to upstream: their
 sha256 matches the table below. rrule.go is the only modified file.
 
 Lint: .golangci.yml excludes one upstream finding, ineffassign on `lno1wkst = 0`
 in rrule.go (upstream's own dead store), rather than editing upstream code. Every
-other linter still runs on this package, including our delta (TASK-4100 lint ruling).
+other linter still runs on this package, including the local changes (TASK-4100).
 
 ## File count
 
-The brief for this work said 3 library files; there are 4 (rrule.go, rruleset.go,
-str.go, util.go). Tests, README, Makefile and example are not vendored.
+Four library files are vendored (rrule.go, rruleset.go, str.go, util.go).
+Tests, README, Makefile and example are not vendored.
 
 ## sha256 of the originals (module cache, v1.8.2)
 
