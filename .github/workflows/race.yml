@@ -74,7 +74,7 @@ jobs:
         run: |
           echo "::error::$FAILED_JOB failed at $GITHUB_SHA"
           {
-            echo '# STOP THE LINE: main race failure'
+            echo '# STOP THE LINE: a main race run failed or did not finish'
             echo "Job: $FAILED_JOB"
             echo "Commit: $GITHUB_SHA"
             echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
@@ -150,7 +150,7 @@ jobs:
         run: |
           echo "::error::$FAILED_JOB failed at $GITHUB_SHA"
           {
-            echo '# STOP THE LINE: main race failure'
+            echo '# STOP THE LINE: a main race run failed or did not finish'
             echo "Job: $FAILED_JOB"
             echo "Commit: $GITHUB_SHA"
             echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
