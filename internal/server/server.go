@@ -513,6 +513,15 @@ type Server struct {
 	// re-check, making the TOCTOU leg deterministic.
 	rowlessPreDeleteHook func(hash string)
 
+	// orphanPostCountHook and purgePostCountHook, when non-nil, run in the
+	// row-driven orphan sweep and in the workspace purge after the
+	// reference count and BEFORE the in-flight lock is taken (TASK-4279).
+	// Test seams only (rowlessPreDeleteHook precedent): a test commits a
+	// row for the hash at exactly the point a fully completed writer can
+	// land between the count and the lock.
+	orphanPostCountHook func(hash string)
+	purgePostCountHook  func(hash string)
+
 	// planLimitAdmittedHook, when non-nil, runs in enforcePlanLimit and
 	// enforceUserPlanLimit immediately after a limit check ADMITS a request,
 	// before the handler goes on to write. Test seam only (rowlessPreDeleteHook

@@ -239,6 +239,9 @@ func (s *Server) runOrphanGCSweep(ctx context.Context, graceCutoff time.Time) (*
 			res.Skipped++
 			continue
 		}
+		if s.orphanPostCountHook != nil {
+			s.orphanPostCountHook(a.ContentHash)
+		}
 
 		// Critical section: hold the in-flight mutex across the
 		// uploadInFlight check AND the FS Delete so a concurrent
@@ -250,6 +253,25 @@ func (s *Server) runOrphanGCSweep(ctx context.Context, graceCutoff time.Time) (*
 		alreadyReclaimed := reclaimedThisSweep[a.ContentHash]
 		s.inFlight.Lock()
 		inFlight := s.inFlight.CountLocked(a.ContentHash) > 0
+		if others == 0 && !inFlight && !alreadyReclaimed {
+			// Re-count UNDER the lock (TASK-4279). The count above ran
+			// before it, and an upload of the same content that marked,
+			// Put, committed its row and released entirely in that gap is
+			// invisible to the in-flight check (it is no longer in flight)
+			// and to the early count (it had not committed). Holding the
+			// lock from here to the delete means any later writer blocks
+			// at markUploadInFlight until we are done, so this count is
+			// the last word on the hash.
+			again, cerr := s.store.CountProtectingAttachmentsForHash(a.ContentHash, a.ID, graceCutoff)
+			if cerr != nil {
+				slog.Warn("orphan GC: recount under the in-flight lock failed",
+					"attachment_id", a.ID, "hash", a.ContentHash, "error", cerr)
+				s.inFlight.Unlock()
+				res.Skipped++
+				continue
+			}
+			others = again
+		}
 		if others == 0 && !inFlight && !alreadyReclaimed {
 			store, resolveErr := s.attachments.Resolve(a.StorageKey)
 			if resolveErr != nil {

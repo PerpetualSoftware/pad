@@ -328,6 +328,9 @@ func (s *Server) reclaimWorkspaceBlobs(ctx context.Context, c store.WorkspacePur
 			reclaimed[a.StorageKey] = true
 			continue
 		}
+		if s.purgePostCountHook != nil {
+			s.purgePostCountHook(a.ContentHash)
+		}
 
 		// Critical section: hold the in-flight mutex across the
 		// uploadInFlight check AND the backend Delete so a concurrent
@@ -336,6 +339,25 @@ func (s *Server) reclaimWorkspaceBlobs(ctx context.Context, c store.WorkspacePur
 		// finish — closing the TOCTOU window the orphan GC documents.
 		s.inFlight.Lock()
 		inFlight := s.inFlight.CountLocked(a.ContentHash) > 0
+		if !inFlight {
+			// Re-count UNDER the lock (TASK-4279), for the reason the orphan
+			// GC does: an upload of this content to another workspace that
+			// committed its row between the count above and this lock is no
+			// longer in flight and was not yet visible to that count.
+			again, cerr := s.store.CountAttachmentsForStorageKeyOutsideWorkspace(a.StorageKey, c.ID)
+			if cerr != nil {
+				s.inFlight.Unlock()
+				slog.Warn("workspace purge: recount under the in-flight lock failed",
+					"workspace_id", c.ID, "storage_key", a.StorageKey, "error", cerr)
+				return false
+			}
+			if again > 0 {
+				// Shared after all: leave the blob, as the early count does.
+				s.inFlight.Unlock()
+				reclaimed[a.StorageKey] = true
+				continue
+			}
+		}
 		var delErr error
 		deleted := false
 		if !inFlight {
