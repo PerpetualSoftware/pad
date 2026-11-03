@@ -351,8 +351,8 @@ local function next_gen()
     usable = true
   elseif t == 'string' then
     local v = redis.call('GET', KEYS[5])
-    -- 17, NOT 18, and the difference is derived rather than chosen.
-    -- This value is about to be INCREMENTED and the result becomes
+    -- 17, NOT 18, and the difference is derived rather than chosen (codex
+    -- round 4). This value is about to be INCREMENTED and the result becomes
     -- the EPOCH, which the guard further down rejects above 18 digits. Accept
     -- 18 here and a counter at 999999999999999999 increments to a 19-digit
     -- epoch, that guard fires, and the script rotates a SECOND time inside
@@ -384,7 +384,7 @@ local function next_gen()
     --
     -- WHAT THE SEED DOES NOT GUARANTEE, stated because 'strictly above any
     -- increment-from-1 history' is the ruling's premise and is not the same
-    -- as monotonic. A host clock stepped BACKWARDS, or the
+    -- as monotonic (codex round 2). A host clock stepped BACKWARDS, or the
     -- key corrupted a second time within the same second, can seed a
     -- generation at or below the one receivers already hold. Two things bound
     -- it. Consecutive repairs are already safe without the clock: the first

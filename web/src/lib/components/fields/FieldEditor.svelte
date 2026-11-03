@@ -1717,8 +1717,7 @@ handlers — onchange is never called.
 	     focused across the click — without this, the natural focus
 	     transfer fires the input's onblur (→ flushPendingSave clears
 	     hasPending) BEFORE the button's onclick runs, so
-	     handleNumberStep would read stale `value` from the parent prop.
-	     -->
+	     handleNumberStep would read stale `value` from the parent prop. -->
 	<div class="number-wrapper">
 		<button
 			class="number-btn"

@@ -77,8 +77,8 @@
 		}
 	});
 
-	// An own send, shown or confirmed, scrolls to the end even from further up
-	//; a row from elsewhere only follows a reader at the end.
+	// An own send, shown or confirmed, scrolls to the end even from further up;
+	// a row from elsewhere only follows a reader at the end.
 	$effect(() => {
 		const sendTick = thread.ownSendTick;
 		if (!positioned || !scroller || sendTick === lastOwnSend) return;
