@@ -324,7 +324,7 @@ func (s *Store) GetRelationBacklinks(targetItemID, workspaceID string, limit, of
 		  -- A soft-deleted COLLECTION leaves its items live, so without this a
 		  -- source in a collection the viewer can no longer open still shows
 		  -- up here — including for an Unrestricted viewer, who has no
-		  -- collection filter to catch it (codex round 2).
+		  -- collection filter to catch it.
 		  AND c.deleted_at IS NULL
 		  AND s.id != rl.target_item_id`+visClause+`
 		ORDER BY s.updated_at DESC, rl.source_item_id, rl.source_field_key

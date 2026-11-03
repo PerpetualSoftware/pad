@@ -168,7 +168,7 @@ describe('keyed {#each} census (TASK-3539)', () => {
 		]);
 	});
 
-	it('only a position-safe key is exempt (codex rounds 1-2)', () => {
+	it('only a position-safe key is exempt', () => {
 		const exempt = (key: string) => {
 			const [site] = keyedEaches('f.svelte', `{#each xs as x, i (${key})}a{/each}`);
 			return keysOnPosition(site.keyNode, site.index);

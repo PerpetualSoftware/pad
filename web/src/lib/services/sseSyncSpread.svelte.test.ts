@@ -265,7 +265,7 @@ describe('server sync_required is spread (BUG-2761)', () => {
 	});
 });
 
-describe('item-change reconciles are never delayed by the spread timer (lead ruling, BUG-2761)', () => {
+describe('item-change reconciles are never delayed by the spread timer (BUG-2761)', () => {
 	it('items_bulk_updated dispatches at once while a spread is pending, and subsumes it', async () => {
 		const { sse, source, onSync } = await leader();
 

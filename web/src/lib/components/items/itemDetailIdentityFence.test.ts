@@ -176,7 +176,7 @@ describe('ItemDetail: children calling back after their own awaits (class C, par
 	});
 });
 
-describe('ItemDetail: the collab provider belongs to one identity (codex round 2 on #1387)', () => {
+describe('ItemDetail: the collab provider belongs to one identity', () => {
 	it('the collab effect depends on the identity key, and the editor re-keys with it', () => {
 		const effects = src.effectBlocks().filter((b) => /new CollabProvider\(/.test(b.body));
 		expect(effects.length).toBe(1);
@@ -216,7 +216,7 @@ describe('ItemDetail: epoch reads in reactive scopes', () => {
 		{
 			context: /ctx\.retired \|\| ctx\.identityEpoch !== authStore\.identityEpoch$/,
 			afterMarker: 'queueMicrotask(() => {',
-			why: 'the lazy seed\'s refusal, inside the microtask it defers to (codex round 2 on #1387)',
+			why: 'the lazy seed\'s refusal, inside the microtask it defers to',
 		},
 		{
 			// The context is a fixed 60-character window, so it opens mid-token.

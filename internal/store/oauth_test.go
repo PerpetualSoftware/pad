@@ -654,7 +654,7 @@ func TestOAuth_Insert_AlwaysActive(t *testing.T) {
 		t.Fatalf("GetAccessToken (must succeed because insert hardcodes active=true): %v", err)
 	}
 	if !got.Active {
-		t.Error("row stored with active=false despite hardcoded active=true on insert; the round-1 fix regressed")
+		t.Error("row stored with active=false despite hardcoded active=true on insert")
 	}
 
 	// Same for refresh tokens.

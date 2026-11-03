@@ -329,7 +329,7 @@ func TestBodyDecodesNULLeavesTextFieldsAlone(t *testing.T) {
 		body := `{"` + key + `":` + jsonEncode(t, doc) + `}`
 		if bodyDecodesNUL([]byte(body)) {
 			t.Errorf("%s is a text field: a JSON document in its value must not be re-parsed "+
-				"(codex round 2 — the server emits such values in exports and must accept them back)", key)
+				"(the server emits such values in exports and must accept them back)", key)
 		}
 	}
 	// The same document under a JSON-ENCODED key is still refused, so the

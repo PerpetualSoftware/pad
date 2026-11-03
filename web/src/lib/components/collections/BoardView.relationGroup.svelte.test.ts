@@ -606,7 +606,7 @@ describe('the MENU move whose WRITE fails', () => {
 	});
 });
 
-describe('a REFUSED grouping must not write a group value (U4, codex round 1 P5)', () => {
+describe('a REFUSED grouping must not write a group value', () => {
 	/**
 	 * The defect: `isRelationGroup` is `type === 'relation'`, so a
 	 * `multi_relation` board took the SCALAR arm of the drop handler.

@@ -159,7 +159,7 @@ describe('invisible master/pane freeze wiring (BUG-2263)', () => {
 		// their own test below.)
 	});
 
-	it('the two same-item/same-collection WRITE surfaces are confined to the active side; prompt actions stay visible (Codex P1)', () => {
+	it('the two same-item/same-collection WRITE surfaces are confined to the active side; prompt actions stay visible', () => {
 		// Seed prompt actions so the quick-actions menu trigger has read-only content
 		// to keep it visible on both sides.
 		// Active side (peeking=false): prompts + Manage + version restore all present.

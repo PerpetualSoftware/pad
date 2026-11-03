@@ -761,7 +761,7 @@ describe('degenerate geometry', () => {
  * it stood before the fix — the point of the exercise, since a test that passes
  * either way would have let all three back in.
  */
-describe('extreme finite geometry (round 3)', () => {
+describe('extreme finite geometry', () => {
 	it('keeps the pan bound finite when extent * scale would overflow', () => {
 		// Before the fix `fittedW * scale` was Infinity, so the bound was
 		// Infinity, so clampSymmetric left ANY offset untouched — the clamp
@@ -808,7 +808,7 @@ describe('extreme finite geometry (round 3)', () => {
 	});
 });
 
-describe('the fit epsilon boundary is asymmetric, and cannot matter (round 3)', () => {
+describe('the fit epsilon boundary is asymmetric, and cannot matter', () => {
 	it('reads FIT + FIT_EPSILON as at-fit but FIT - FIT_EPSILON as not', () => {
 		// Neither value is exactly representable in binary; the subtraction lands
 		// a few ulps outside the window. Pinned rather than papered over.

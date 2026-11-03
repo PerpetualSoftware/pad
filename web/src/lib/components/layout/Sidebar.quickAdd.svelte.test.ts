@@ -96,7 +96,7 @@ describe('Sidebar quick-add — an in-flight create belongs to ONE opening of th
 		});
 	}
 
-	it('the reopened dialog is usable while the old create is still in flight (codex round 2)', async () => {
+	it('the reopened dialog is usable while the old create is still in flight', async () => {
 		render(Sidebar);
 		await open();
 		await type('first title');

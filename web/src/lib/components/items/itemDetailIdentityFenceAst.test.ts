@@ -219,14 +219,14 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	// (fenced) and keeps the draft.
 	restoreRefusedDraft: {
 		reviewed: '659f10aea990',
-		why: 'item id, gen against loadGeneration, and the captured identity (codex r1 on TASK-3607) after every await; the finally clears this pane\'s own busy flag; a draft the item moved on from is handed to applyRefusedDraftChanges, awaited last, with nothing committed after it (TASK-3607). Re-reviewed for BUG-3850 (lead ruling 0337bf77): before that hand-off, a synchronous return while restoreBlocked (a $derived read, no await, no write). Re-reviewed for BUG-3850 r7 (lead ruling a6380212): its body is unchanged; restoreBlocked gained a synchronous !refusedDraft.baseStale read, still no await and no write. Re-reviewed for TASK-3856 r2 (lead ruling on the codex High): it first re-reads the stored draft, a synchronous localStorage read, and when that copy has the same markdown and is now baseStale it assigns refusedDraft and returns; no await precedes that write, and nothing after it changed. Re-reviewed for TASK-3856 r3 (hunter Low): that condition also requires draftAppliesAsPatch(shown, item.seq), a pure synchronous read, so a whole-body restore goes ahead; still no await before the write. Re-reviewed for BUG-3863: the TASK-3856 guard re-reads the slot the shown draft is stored in (refusedDraftSlot, a plain component-level let, read synchronously before any await), and the success clear calls resolveKeptDraft (both slots, onlyIf-guarded, synchronous) at the same place behind the same fence; no new await.',
+		why: 'item id, gen against loadGeneration, and the captured identity (TASK-3607) after every await; the finally clears this pane\'s own busy flag; a draft the item moved on from is handed to applyRefusedDraftChanges, awaited last, with nothing committed after it (TASK-3607). Re-reviewed for BUG-3850: before that hand-off, a synchronous return while restoreBlocked (a $derived read, no await, no write). Re-reviewed for BUG-3850: its body is unchanged; restoreBlocked gained a synchronous !refusedDraft.baseStale read, still no await and no write. Re-reviewed for TASK-3856: it first re-reads the stored draft, a synchronous localStorage read, and when that copy has the same markdown and is now baseStale it assigns refusedDraft and returns; no await precedes that write, and nothing after it changed. Re-reviewed for TASK-3856: that condition also requires draftAppliesAsPatch(shown, item.seq), a pure synchronous read, so a whole-body restore goes ahead; still no await before the write. Re-reviewed for BUG-3863: the TASK-3856 guard re-reads the slot the shown draft is stored in (refusedDraftSlot, a plain component-level let, read synchronously before any await), and the success clear calls resolveKeptDraft (both slots, onlyIf-guarded, synchronous) at the same place behind the same fence; no new await.',
 		may: ['refusedDraftBusy'],
 	},
 	// TASK-3607: a crash draft's own changes go as a patch; the conflict and
 	// result states are keyed to the item they were computed for.
 	applyRefusedDraftChanges: {
 		reviewed: '63cb6a4357a8',
-		why: 'commits before the first await are synchronous (BUG-3850, lead ruling baa63dc3: the edits come from restoreEdits(d), a pure synchronous call before the first await, null for a stale base so it takes the existing conflict branch); after the patch and after the refetch, stale() (item id, gen against loadGeneration, captured identity) before any commit or toast, both catches included (a failed refetch after a landed patch says so, codex r2); the pending-flush branch only drops the raw seed, after the fenced patch await; the finally clears this pane\'s own busy flag Re-reviewed for BUG-3863: the two clears of the shown draft (nothing to restore, and after the patch landed) now call resolveKeptDraft, which removes that same text from the held slot and then the pending one, each onlyIf-guarded; synchronous localStorage writes at the same places, behind the same fences; no new await and no new write to component state.',
+		why: 'commits before the first await are synchronous (BUG-3850: the edits come from restoreEdits(d), a pure synchronous call before the first await, null for a stale base so it takes the existing conflict branch); after the patch and after the refetch, stale() (item id, gen against loadGeneration, captured identity) before any commit or toast, both catches included (a failed refetch after a landed patch says so); the pending-flush branch only drops the raw seed, after the fenced patch await; the finally clears this pane\'s own busy flag Re-reviewed for BUG-3863: the two clears of the shown draft (nothing to restore, and after the patch landed) now call resolveKeptDraft, which removes that same text from the held slot and then the pending one, each onlyIf-guarded; synchronous localStorage writes at the same places, behind the same fences; no new await and no new write to component state.',
 		may: ['refusedDraftBusy'],
 	},
 };
@@ -291,8 +291,8 @@ const CONTINUATIONS: SignedRow[] = [
 		why: 'connection state of this instance\'s own provider', reviewed: 'b0f9f4cc5f23',
 		may: ['staleConnecting'],
 	},
-	{ call: /\.get\(refreshCtx\.wsSlug, refreshCtx\.itemId\) \.then\($/, body: /./, why: 'force-refresh fetch: refreshGen against loadGeneration. Re-reviewed for TASK-2199: the enclosing onForceRefresh first captures the edits it discards (offlineRecovery), synchronously, before any await. Re-reviewed for BUG-3526: the capture reads provider.editsMayBeMissing instead of provider.unsentLocalEdits, still synchronous and before the fetch; the continuation and its fences are unchanged. Re-reviewed for BUG-3582: only the enclosing collab effect moved (onApplierRequest converts wiki-links before its setContent, synchronously, no await, no new write); this continuation is unchanged. Re-reviewed for PLAN-3578 step 2: only the enclosing collab effect moved again (onApplierPatch added to the provider options: a synchronous plan, the bracket callback and one dispatch; no await, no generation or identity write); this continuation is unchanged Re-reviewed for the PLAN-3578 retro fix (day 91): only the enclosing collab effect\'s onApplierPatch changed, building its one dispatch through patchTransaction (hunks) instead of one replaceWith; synchronous, no await, no generation or identity write; this continuation is unchanged. Re-reviewed for BUG-3697: the enclosing onForceRefresh now sets recoveryFrozen before the capture; this continuation writes nothing new. Re-reviewed for BUG-3850: the enclosing collab effect gained onConfirmed (synchronous, refreshes the crash draft\'s confirmed base; no await, no generation or identity write); this continuation is unchanged. Re-reviewed again for BUG-3850 (lead rulings c9db9612 and 0337bf77): only the pulled confirmedBase import line changed (registerRefreshBeforeLocalChange, restoreWaitsForEditor, RESTORE_WAITS_FOR_EDITOR), and under baa63dc3 the draftPatch import line (restoreEdits for draftEdits); nothing this continuation runs changed. Re-reviewed for BUG-3850 r8 (lead ruling 33dce972): the enclosing collab effect gained onLocalSend (synchronous; it calls the crash keeper\'s listeners, which may rewrite one localStorage draft; no await, no generation or identity write); this continuation is unchanged.', reviewed: '689201c22e9a' },
-	{ call: /forceRefreshNonce \+= 1; \}\) \.catch\($/, body: /./, why: 'force-refresh failure: refreshGen against loadGeneration. Re-reviewed for TASK-2199 (the synchronous capture above it), and for BUG-3526 (only the input of that capture). Re-reviewed for BUG-3582: only the enclosing collab effect moved (the synchronous wiki-link conversion in the applier); this continuation is unchanged. Re-reviewed for PLAN-3578 step 2: the enclosing collab effect gained onApplierPatch (synchronous, no await, no generation write); this continuation is unchanged Re-reviewed for the PLAN-3578 retro fix (day 91): only the enclosing collab effect\'s onApplierPatch changed, building its one dispatch through patchTransaction (hunks) instead of one replaceWith; synchronous, no await, no generation or identity write; this continuation is unchanged. Re-reviewed for BUG-3697: only its comment changed (recoveryFrozen stays true on this arm, so the editor stays read-only); it writes nothing new. Re-reviewed for BUG-3850: the enclosing collab effect gained onConfirmed (synchronous, refreshes the crash draft\'s confirmed base; no await, no generation or identity write); this continuation is unchanged. Re-reviewed again for BUG-3850 (lead rulings c9db9612 and 0337bf77): only the pulled confirmedBase import line changed (registerRefreshBeforeLocalChange, restoreWaitsForEditor, RESTORE_WAITS_FOR_EDITOR), and under baa63dc3 the draftPatch import line (restoreEdits for draftEdits); nothing this continuation runs changed. Re-reviewed for BUG-3850 r8 (lead ruling 33dce972): the enclosing collab effect gained onLocalSend (synchronous; it calls the crash keeper\'s listeners, which may rewrite one localStorage draft; no await, no generation or identity write); this continuation is unchanged.', reviewed: 'e12b2d5cf604' },
+	{ call: /\.get\(refreshCtx\.wsSlug, refreshCtx\.itemId\) \.then\($/, body: /./, why: 'force-refresh fetch: refreshGen against loadGeneration. Re-reviewed for TASK-2199: the enclosing onForceRefresh first captures the edits it discards (offlineRecovery), synchronously, before any await. Re-reviewed for BUG-3526: the capture reads provider.editsMayBeMissing instead of provider.unsentLocalEdits, still synchronous and before the fetch; the continuation and its fences are unchanged. Re-reviewed for BUG-3582: only the enclosing collab effect moved (onApplierRequest converts wiki-links before its setContent, synchronously, no await, no new write); this continuation is unchanged. Re-reviewed for PLAN-3578 step 2: only the enclosing collab effect moved again (onApplierPatch added to the provider options: a synchronous plan, the bracket callback and one dispatch; no await, no generation or identity write); this continuation is unchanged Re-reviewed for the PLAN-3578 retro fix: only the enclosing collab effect\'s onApplierPatch changed, building its one dispatch through patchTransaction (hunks) instead of one replaceWith; synchronous, no await, no generation or identity write; this continuation is unchanged. Re-reviewed for BUG-3697: the enclosing onForceRefresh now sets recoveryFrozen before the capture; this continuation writes nothing new. Re-reviewed for BUG-3850: the enclosing collab effect gained onConfirmed (synchronous, refreshes the crash draft\'s confirmed base; no await, no generation or identity write); this continuation is unchanged. Re-reviewed again for BUG-3850: only the pulled confirmedBase import line changed (registerRefreshBeforeLocalChange, restoreWaitsForEditor, RESTORE_WAITS_FOR_EDITOR), and the draftPatch import line (restoreEdits for draftEdits); nothing this continuation runs changed. Re-reviewed for BUG-3850: the enclosing collab effect gained onLocalSend (synchronous; it calls the crash keeper\'s listeners, which may rewrite one localStorage draft; no await, no generation or identity write); this continuation is unchanged.', reviewed: '689201c22e9a' },
+	{ call: /forceRefreshNonce \+= 1; \}\) \.catch\($/, body: /./, why: 'force-refresh failure: refreshGen against loadGeneration. Re-reviewed for TASK-2199 (the synchronous capture above it), and for BUG-3526 (only the input of that capture). Re-reviewed for BUG-3582: only the enclosing collab effect moved (the synchronous wiki-link conversion in the applier); this continuation is unchanged. Re-reviewed for PLAN-3578 step 2: the enclosing collab effect gained onApplierPatch (synchronous, no await, no generation write); this continuation is unchanged Re-reviewed for the PLAN-3578 retro fix: only the enclosing collab effect\'s onApplierPatch changed, building its one dispatch through patchTransaction (hunks) instead of one replaceWith; synchronous, no await, no generation or identity write; this continuation is unchanged. Re-reviewed for BUG-3697: only its comment changed (recoveryFrozen stays true on this arm, so the editor stays read-only); it writes nothing new. Re-reviewed for BUG-3850: the enclosing collab effect gained onConfirmed (synchronous, refreshes the crash draft\'s confirmed base; no await, no generation or identity write); this continuation is unchanged. Re-reviewed again for BUG-3850: only the pulled confirmedBase import line changed (registerRefreshBeforeLocalChange, restoreWaitsForEditor, RESTORE_WAITS_FOR_EDITOR), and the draftPatch import line (restoreEdits for draftEdits); nothing this continuation runs changed. Re-reviewed for BUG-3850: the enclosing collab effect gained onLocalSend (synchronous; it calls the crash keeper\'s listeners, which may rewrite one localStorage draft; no await, no generation or identity write); this continuation is unchanged.', reviewed: 'e12b2d5cf604' },
 	{
 		call: /^setTimeout\($/,
 		body: /teardownFlushed/,
@@ -522,7 +522,7 @@ const TITLE_STAMP_AT_ENTRY: [string, string] = [
 const TITLE_FENCE_AND_COMMITS =
 	"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n";
 
-describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, condition 1)', () => {
+describe('ItemDetail AST guard: every edit in the first fixture set is refused', () => {
 	// Without a clean baseline every mutant is "refused" for free.
 	const BASELINE = refusals(SOURCE);
 
@@ -546,7 +546,7 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 			// #1387: `?:` was walked as `consequent && alternate`, so an
 			// unsafe consequent short-circuited the walk and the alternate's commit
 			// was never seen.
-			id: 'R5-1 a commit in the alternate of a conditional whose consequent awaits',
+			id: 'a commit in the alternate of a conditional whose consequent awaits',
 			subs: [[
 				"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n",
 				"{ title: titleDraft.trim() });\n\t\t\tupdated ? await tick() : (item = withInflightTags(updated));\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n",
@@ -556,17 +556,17 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 		// A fence to the LEFT of an await in one test expression was
 		// read as holding after that await.
 		{
-			id: 'R5 E1 a fence before an await in one && test',
+			id: 'a fence before an await in one && test',
 			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen === loadGeneration && (await dialogs.confirm('Keep the new title?'))) {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t\tshowSaved(saveTok);\n\t\t\t}\n"]],
 			refuses: ['saveTitle()', 'assigns item after an unfenced await'],
 		},
 		{
-			id: 'R5 E1b a fence boolean whose initialiser awaits after the fence',
+			id: 'a fence boolean whose initialiser awaits after the fence',
 			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tconst keep = gen === loadGeneration && (await dialogs.confirm('Keep the new title?'));\n\t\t\tif (!keep) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n"]],
 			refuses: ['saveTitle()', 'assigns item after an unfenced await'],
 		},
 		{
-			id: 'R5 E1c the early-return form: fence, then an await, in one || test',
+			id: 'the early-return form: fence, then an await, in one || test',
 			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id || !(await dialogs.confirm('Keep the new title?'))) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n"]],
 			refuses: ['saveTitle()', 'assigns item after an unfenced await'],
 		},
@@ -574,55 +574,55 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 		// walked as if it ran inside the call, and a function-valued property was
 		// not walked at all.
 		{
-			id: 'R5 E6 a commit in the onRefetched property, which runs after the refetch await',
+			id: 'a commit in the onRefetched property, which runs after the refetch await',
 			subs: [["\t\t\t\t\tlastServerItem = latest;\n", "\t\t\t\t\tlastServerItem = latest;\n\t\t\t\t\titem = withInflightTags(latest);\n"]],
 			refuses: ['updateField()', 'callback submitOrderedOCC({onRefetched})', 'assigns item after an unfenced await'],
 		},
 		{
-			id: 'R5 E7 updateField\'s open-children confirm callback loses its stillCurrent fence',
+			id: 'updateField\'s open-children confirm callback loses its stillCurrent fence',
 			subs: [["\t\t\t\t\t\tif (!stillCurrent()) throw new Error('switched away');\n", '']],
 			refuses: ['updateField()', 'callback confirmOpenChildrenOrThrow(…)', 'calls submitOrderedOCC after an unfenced await'],
 		},
 		{
-			id: 'R5 E7b handleMove\'s open-children confirm callback loses its stillOnSource fence',
+			id: 'handleMove\'s open-children confirm callback loses its stillOnSource fence',
 			subs: [["\t\t\t\t\t\tif (!stillOnSource()) throw new Error('switched away');\n", '']],
 			refuses: ['handleMove()', 'callback confirmOpenChildrenOrThrow(…)', 'after an unfenced await'],
 		},
 		{
-			id: 'R5 E8 a commit inside a requestIdleCallback callback',
+			id: 'a commit inside a requestIdleCallback callback',
 			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\trequestIdleCallback(() => {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t\tshowSaved(saveTok);\n\t\t\t});\n"]],
 			refuses: ['saveTitle()', 'callback requestIdleCallback(…)', 'assigns item after an unfenced await'],
 		},
 		{
-			id: 'R5 E8b a commit inside an event listener',
+			id: 'a commit inside an event listener',
 			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\twindow.addEventListener('focus', () => {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t}, { once: true });\n"]],
 			refuses: ['saveTitle()', 'callback window.addEventListener(…)', 'assigns item after an unfenced await'],
 		},
 		{
 			// A helper handed over by NAME runs as late as a literal would.
-			id: 'R5 P1-2 a commit in a helper passed by name to an event listener',
+			id: 'a commit in a helper passed by name to an event listener',
 			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tconst applyTitleLater = () => {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t};\n\t\t\twindow.addEventListener('focus', applyTitleLater);\n"]],
 			refuses: ['saveTitle()', 'callback window.addEventListener(…)', 'assigns item after an unfenced await'],
 		},
 		{
-			id: 'R5 P1-2 a commit in a helper passed by name as an object property',
+			id: 'a commit in a helper passed by name as an object property',
 			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tconst applyTitleLater = () => {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t};\n\t\t\tdialogs.register({ onClose: applyTitleLater });\n"]],
 			refuses: ['saveTitle()', 'callback dialogs.register({onClose})', 'assigns item after an unfenced await'],
 		},
 		{
 			// A function value that escapes by any route runs whenever its holder
 			// calls it.
-			id: 'R5 P1-2 a helper stored by name into component state',
+			id: 'a helper stored by name into component state',
 			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tconst applyTitleLater = () => {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t};\n\t\t\trenameOverride = applyTitleLater;\n"]],
 			refuses: ['saveTitle()', 'callback applyTitleLater', 'assigns item after an unfenced await'],
 		},
 		{
-			id: 'R5 P1-2 a function literal stored into component state',
+			id: 'a function literal stored into component state',
 			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\trenameOverride = () => {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t};\n"]],
 			refuses: ['saveTitle()', 'callback renameOverride =', 'assigns item after an unfenced await'],
 		},
 		{
-			id: 'R5 P1-2 a function declared under a name used twice, passed by name',
+			id: 'a function declared under a name used twice, passed by name',
 			subs: [
 				[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tconst onTitleClose = () => {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t};\n\t\t\twindow.addEventListener('blur', onTitleClose);\n"],
 				['\tfunction showSaved(saveTok: SaveToken) {\n', '\tfunction showSaved(saveTok: SaveToken) {\n\t\tconst onTitleClose = () => {};\n\t\tvoid onTitleClose;\n'],
@@ -632,26 +632,26 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 		{
 			// A literal in a callee runs now; a literal in an ARGUMENT inside that
 			// callee does not.
-			id: 'R5 P1-2 a literal passed as an argument inside a called expression',
+			id: 'a literal passed as an argument inside a called expression',
 			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\t(dialogs.register(updated ? () => { item = withInflightTags(updated); } : null) ?? tick)();\n"]],
 			refuses: ['saveTitle()', 'assigns item after an unfenced await'],
 		},
 		{
 			// Only an empty Set/Map is an allowed constructor default.
-			id: 'R6 a default value that constructs something with effects',
+			id: 'a default value that constructs something with effects',
 			subs: [['\tfunction showSaved(saveTok: SaveToken) {\n', "\tfunction showSaved(stream = new TitleStream()) {\n\t\tvoid stream;\n"]],
 			refuses: ['default value calls or assigns'],
 		},
 		{
 			// A fence boolean stops being one when it is written; here the write,
 			// not an await, is what makes it stale.
-			id: 'R6 a fence boolean overwritten after it is computed',
+			id: 'a fence boolean overwritten after it is computed',
 			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tlet titleOk = gen === loadGeneration;\n\t\t\ttitleOk = true;\n\t\t\tif (!titleOk) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n"]],
 			refuses: ['saveTitle()', 'assigns item after an unfenced await'],
 		},
 		{
 			// H12b with the operands the other way round.
-			id: 'R6 loadGeneration compared against an identity capture',
+			id: 'loadGeneration compared against an identity capture',
 			subs: [
 				[TITLE_GEN_LET[0], TITLE_GEN_LET[0].replace('\t\tsaveStatus', '\t\tconst identity = captureIdentity();\n\t\tsaveStatus')],
 				[TITLE_FENCE_AND_COMMITS, '{ title: titleDraft.trim() });\n\t\t\tif (loadGeneration !== identity) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n'],
@@ -661,12 +661,12 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 		{
 			// The clear must be reached on every path to the
 			// first await. An early return before it skips it on one path.
-			id: 'R6 loadData can return before it clears the debounce',
+			id: 'loadData can return before it clears the debounce',
 			subs: [[LOAD_DATA_CLEAR, '\t\tif (!item) return;\n' + LOAD_DATA_CLEAR]],
 			refuses: ['loadData no longer clears contentDebounceTimer before its first await'],
 		},
 		{
-			id: 'R6 loadData awaits before it clears the debounce',
+			id: 'loadData awaits before it clears the debounce',
 			subs: [[LOAD_DATA_CLEAR, '\t\tawait tick();\n' + LOAD_DATA_CLEAR]],
 			refuses: ['loadData no longer clears contentDebounceTimer before its first await'],
 		},
@@ -674,7 +674,7 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 			// Iteration methods count as synchronous only on a receiver the unit
 			// declared; anything else could be an object whose `forEach` stores
 			// the callback.
-			id: 'R5 P1-2 an iteration-named method on a receiver the unit did not declare',
+			id: 'an iteration-named method on a receiver the unit did not declare',
 			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tsseService.forEach(() => {\n\t\t\t\titem = withInflightTags(updated);\n\t\t\t});\n"]],
 			refuses: ['saveTitle()', 'callback sseService.forEach(…)', 'assigns item after an unfenced await'],
 		},
@@ -682,7 +682,7 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 			// A row's `may` covers the unit's own statements, not the callbacks it
 			// creates: flushTagSaver may delete its registry entry, a listener it
 			// registers may not.
-			id: "R5 P1-2 a row's may does not reach a callback the unit creates",
+			id: "a row's may does not reach a callback the unit creates",
 			subs: [["\tasync function flushTagSaver(saver: TagSaver) {\n\t\tsaver.running = true;\n", "\tasync function flushTagSaver(saver: TagSaver) {\n\t\twindow.addEventListener('focus', () => tagSavers.delete(saver.itemId));\n\t\tsaver.running = true;\n"]],
 			refuses: ['flushTagSaver()', 'callback window.addEventListener(…)', 'calls tagSavers.delete after an unfenced await'],
 		},
@@ -690,95 +690,95 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 			// The debounce row starts safe because loadData clears
 			// contentDebounceTimer; the pin must also prove this callback IS that
 			// timer's.
-			id: 'R5 E12 the debounce callback moves onto a timer loadData does not clear',
+			id: 'the debounce callback moves onto a timer loadData does not clear',
 			subs: [['\t\tcontentDebounceTimer = setTimeout(() => {\n', '\t\tlegacyContentTimer = setTimeout(() => {\n']],
 			refuses: ['starts safe, but its setTimeout is not assigned to contentDebounceTimer'],
 		},
 		// Loop and switch flow.
 		{
-			id: 'R5 E2 a commit in a for-await body',
+			id: 'a commit in a for-await body',
 			subs: [[TITLE_FENCE_AND_COMMITS, TITLE_FENCE_AND_COMMITS + "\t\t\tfor await (const t of api.items.titleStream(wsSlug, targetItem.id)) {\n\t\t\t\ttitleDraft = t;\n\t\t\t}\n"]],
 			refuses: ['saveTitle()', 'assigns titleDraft after an unfenced await'],
 		},
 		{
-			id: 'R5 P2-1 a commit after a for-await loop',
+			id: 'a commit after a for-await loop',
 			subs: [[TITLE_FENCE_AND_COMMITS, TITLE_FENCE_AND_COMMITS + "\t\t\tfor await (const t of api.items.titleStream(wsSlug, targetItem.id)) void t;\n\t\t\ttitleDraft = '';\n"]],
 			refuses: ['saveTitle()', "assigns titleDraft after an unfenced await — titleDraft = ''"],
 		},
 		{
-			id: 'R5 E3 a commit after a for-of over an awaited list whose body always returns',
+			id: 'a commit after a for-of over an awaited list whose body always returns',
 			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tfor (const newer of await api.items.newerVersions(wsSlug, targetItem.id)) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n"]],
 			refuses: ['saveTitle()', 'assigns item after an unfenced await'],
 		},
 		{
-			id: 'R5 P2-2 a commit after a while whose test awaits and whose body always returns',
+			id: 'a commit after a while whose test awaits and whose body always returns',
 			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\twhile (await api.items.hasNewer(wsSlug, targetItem.id)) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n"]],
 			refuses: ['saveTitle()', 'assigns item after an unfenced await'],
 		},
 		{
-			id: 'R5 E4 a commit in the case whose test awaits',
+			id: 'a commit in the case whose test awaits',
 			subs: [[TITLE_FENCE_AND_COMMITS, TITLE_FENCE_AND_COMMITS + "\t\t\tswitch (titleDraft) {\n\t\t\t\tcase await api.items.canonicalTitle(wsSlug):\n\t\t\t\t\ttitleDraft = '';\n\t\t\t}\n"]],
 			refuses: ['saveTitle()', 'assigns titleDraft after an unfenced await'],
 		},
 		{
-			id: 'R5 P2-3 a commit in the default case, reached only after an awaiting test',
+			id: 'a commit in the default case, reached only after an awaiting test',
 			subs: [[TITLE_FENCE_AND_COMMITS, TITLE_FENCE_AND_COMMITS + "\t\t\tswitch (titleDraft) {\n\t\t\t\tdefault:\n\t\t\t\t\ttitleDraft = '';\n\t\t\t\t\tbreak;\n\t\t\t\tcase await api.items.canonicalTitle(wsSlug):\n\t\t\t\t\tbreak;\n\t\t\t}\n"]],
 			refuses: ['saveTitle()', 'assigns titleDraft after an unfenced await'],
 		},
 		{
-			id: 'R5 P2-3 a commit after a switch with no default whose test awaits',
+			id: 'a commit after a switch with no default whose test awaits',
 			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tswitch (titleDraft) {\n\t\t\t\tcase await api.items.canonicalTitle(wsSlug):\n\t\t\t\t\treturn;\n\t\t\t}\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n"]],
 			refuses: ['saveTitle()', 'assigns item after an unfenced await'],
 		},
 		// An identity comparison between two STAMPS proves nothing.
 		{
-			id: 'R5 E9 flushTagSaver compares two stale identity stamps',
+			id: 'flushTagSaver compares two stale identity stamps',
 			subs: [['\t\t\t\tif (!identityHeld(saver.epoch)) {\n', '\t\t\t\tif (tagSavers.get(saver.itemId)!.epoch !== saver.epoch) {\n']],
 			refuses: ['flushTagSaver()', 'after an unfenced await'],
 		},
 		{
-			id: 'R5 P2-4 flushTagSaver compares two live identity reads',
+			id: 'flushTagSaver compares two live identity reads',
 			subs: [['\t\t\t\tif (!identityHeld(saver.epoch)) {\n', '\t\t\t\tif (captureIdentity() !== authStore.identityEpoch) {\n']],
 			refuses: ['flushTagSaver()', 'after an unfenced await'],
 		},
 		{
-			id: 'R5 P2-4 flushTagSaver compares a live identity read against something that is not a stamp',
+			id: 'flushTagSaver compares a live identity read against something that is not a stamp',
 			subs: [['\t\t\t\tif (!identityHeld(saver.epoch)) {\n', '\t\t\t\tif (authStore.identityEpoch !== saver.itemId.length) {\n']],
 			refuses: ['flushTagSaver()', 'after an unfenced await'],
 		},
 		// A capture refreshed after an await makes every later check
 		// against it pass, whatever the refresh is spelled as.
 		{
-			id: 'R5 E10 saveTitle refreshes its capture through a cast',
+			id: 'saveTitle refreshes its capture through a cast',
 			subs: [TITLE_GEN_LET, ['{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration', '{ title: titleDraft.trim() });\n\t\t\tgen = loadGeneration as number;\n\t\t\tif (gen !== loadGeneration']],
 			refuses: ['saveTitle()', 'rewrites capture gen after an unfenced await'],
 		},
 		{
-			id: 'R5 E10b saveTitle refreshes its capture through ??',
+			id: 'saveTitle refreshes its capture through ??',
 			subs: [TITLE_GEN_LET, ['{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration', '{ title: titleDraft.trim() });\n\t\t\tgen = loadGeneration ?? gen;\n\t\t\tif (gen !== loadGeneration']],
 			refuses: ['saveTitle()', 'rewrites capture gen after an unfenced await'],
 		},
 		{
-			id: 'R5 P2-5 saveTitle bumps its capture',
+			id: 'saveTitle bumps its capture',
 			subs: [TITLE_GEN_LET, ['{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration', '{ title: titleDraft.trim() });\n\t\t\tgen++;\n\t\t\tif (gen !== loadGeneration']],
 			refuses: ['saveTitle()', 'rewrites capture gen after an unfenced await'],
 		},
 		// Every param of every function in or around the unit was a
 		// capture, so any of them compared to loadGeneration was a fence.
 		{
-			id: "R5 E11 updateField compares the onRefetched param to loadGeneration",
+			id: "updateField compares the onRefetched param to loadGeneration",
 			subs: [['\t\t\tconst fresh = await submitWithOCC(false);\n\t\t\tif (!stillCurrent()) return;\n', '\t\t\tconst fresh = await submitWithOCC(false);\n\t\t\tif (latest !== loadGeneration) return;\n']],
 			refuses: ['updateField()', 'assigns item after an unfenced await'],
 		},
 		// A row's allowance covered more than its reason, and
 		// a row could re-point by a move.
 		{
-			id: 'R5 E13 the rename heal clears the override without its bridge compare',
+			id: 'the rename heal clears the override without its bridge compare',
 			subs: [['\t\t\t\tif (renameOverride === bridge) renameOverride = null;\n', '\t\t\t\trenameOverride = null;\n']],
 			refuses: ['matches 0 table rows'],
 		},
 		{
-			id: "R5 P2-8 the rename heal's catch moves onto the SSE rename navigation",
+			id: "the rename heal's catch moves onto the SSE rename navigation",
 			subs: [
 				[
 					"\t\t\t\treset: false,\n\t\t\t}).catch(() => {\n\t\t\t\t// A failed/cancelled navigation must not leave the override\n\t\t\t\t// bridging to a URL we never reached. Identity compare (this\n\t\t\t\t// heal's own bridge object) so a cancelled older\n\t\t\t\t// navigation can't clear a newer bridge to the same slug.\n\t\t\t\tif (renameOverride === bridge) renameOverride = null;\n\t\t\t});\n",
@@ -794,33 +794,33 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 		{
 			// A callback allowance covers what its reason covers: the refetch may
 			// read, not commit.
-			id: 'R5 P1-2 the refetch callback commits beyond its allowance',
+			id: 'the refetch callback commits beyond its allowance',
 			subs: [["\t\t\t\trefetch: () => api.items.get(targetWs, targetItem.id),\n", "\t\t\t\trefetch: () => ((saveStatus = 'saving'), api.items.get(targetWs, targetItem.id)),\n"]],
 			refuses: ['updateField()', 'callback submitOrderedOCC({refetch})', 'assigns saveStatus after an unfenced await'],
 		},
 		// Every binding anywhere in a unit, nested functions
 		// included, made that name local for the whole unit.
 		{
-			id: 'R5 E5 a nested arrow param named item excuses an unfenced item write (adopting)',
+			id: 'a nested arrow param named item excuses an unfenced item write (adopting)',
 			subs: [SYNC_FIND_AS_ITEM, [SYNC_REFRESH_FENCED, SYNC_REFRESH_FENCED.replace(SYNC_REFRESH_FENCE_AND_ADOPT, '\t\t\t\titem = adoptServerItem(updated);\n' + SYNC_REFRESH_FENCE)]],
 			refuses: ['assigns item after an unfenced await — item = adoptServerItem(updated)'],
 		},
 		{
-			id: 'R5 E5b a nested arrow param named item excuses an unfenced item write (verbatim)',
+			id: 'a nested arrow param named item excuses an unfenced item write (verbatim)',
 			subs: [SYNC_FIND_AS_ITEM, [SYNC_REFRESH_FENCED, SYNC_REFRESH_FENCED.replace(SYNC_REFRESH_FENCE_AND_ADOPT, '\t\t\t\titem = updated;\n' + SYNC_REFRESH_FENCE)]],
 			refuses: ['assigns item after an unfenced await — item = updated'],
 		},
 		{
 			// A block's bindings hold only inside that block: a `const item` in
 			// one branch excuses no `item =` outside it.
-			id: 'R5 P1-3 a block-scoped declaration excuses a write outside its block',
+			id: 'a block-scoped declaration excuses a write outside its block',
 			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (updated) {\n\t\t\t\tconst item = updated;\n\t\t\t\tvoid item;\n\t\t\t}\n\t\t\titem = withInflightTags(updated);\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tshowSaved(saveTok);\n"]],
 			refuses: ['saveTitle()', 'assigns item after an unfenced await — item = withInflightTags(updated)'],
 		},
 		{
 			// An inlined helper resolves names in ITS scopes: a caller's local that
 			// shares a name with the state the helper writes excuses nothing.
-			id: "R5 P1-3 a caller's local does not excuse the same name inside an inlined helper",
+			id: "a caller's local does not excuse the same name inside an inlined helper",
 			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tconst saveStatus = updated.title;\n\t\t\tshowSaved(saveTok);\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n"]],
 			refuses: ['saveTitle()', 'showSaved() -> calls saves.succeed after an unfenced await'],
 		},
@@ -913,7 +913,7 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 		})),
 		// Recorded, not fixed.
 		...(round8.aidGaps as Array<{ id: string; model: string; subs: string[][] }>).map((g) => ({
-			id: `R8 ${g.id}`,
+			id: `${g.id}`,
 			model: g.model,
 			subs: g.subs as Array<[string, string]>,
 		})),
@@ -999,12 +999,12 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 	});
 });
 
-describe('ItemDetail identity gate: a fenced unit cannot change without a re-read (lead ruling on checkpoint 69)', () => {
+describe('ItemDetail identity gate: a fenced unit cannot change without a re-read', () => {
 	const GATE_BASELINE = refusals(SOURCE);
 	const changedHashes = (lines: string[]) => new Set(lines.flatMap((l) => (l.includes('has changed since') ? [l.match(/code ([0-9a-f]{12})/)![1]!] : [])));
 
 	const ROUND8 = round8.gate as Array<{ id: string; subs: string[][]; refuses: string[] }>;
-	it.each(ROUND8.map((g) => [g.id, g] as const))('round 8 edit refused by a hash mismatch: %s', (_id, g) => {
+	it.each(ROUND8.map((g) => [g.id, g] as const))('edit refused by a hash mismatch: %s', (_id, g) => {
 		expect(GATE_BASELINE).toEqual([]);
 		let code = SOURCE;
 		for (const [from, to] of g.subs as Array<[string, string]>) {
@@ -1016,7 +1016,7 @@ describe('ItemDetail identity gate: a fenced unit cannot change without a re-rea
 	});
 
 	const ROUND9 = round9.gate as Array<{ id: string; subs: string[][]; refuses: string[] }>;
-	it.each(ROUND9.map((g) => [g.id, g] as const))('round 9 edit refused by a hash mismatch: %s', (_id, g) => {
+	it.each(ROUND9.map((g) => [g.id, g] as const))('edit refused by a hash mismatch: %s', (_id, g) => {
 		expect(GATE_BASELINE).toEqual([]);
 		let code = SOURCE;
 		for (const [from, to] of g.subs as Array<[string, string]>) {
@@ -1028,7 +1028,7 @@ describe('ItemDetail identity gate: a fenced unit cannot change without a re-rea
 	});
 
 	const ROUND10 = round10.gate as Array<{ id: string; subs: string[][]; refuses: string[] }>;
-	it.each(ROUND10.map((g) => [g.id, g] as const))('round 10 edit refused by a hash mismatch: %s', (_id, g) => {
+	it.each(ROUND10.map((g) => [g.id, g] as const))('edit refused by a hash mismatch: %s', (_id, g) => {
 		expect(GATE_BASELINE).toEqual([]);
 		let code = SOURCE;
 		for (const [from, to] of g.subs as Array<[string, string]>) {
@@ -1054,10 +1054,10 @@ describe('ItemDetail identity gate: a fenced unit cannot change without a re-rea
 			expect(code.split(from).length - 1).toBe(1);
 			code = code.replace(from, to);
 		}
-		expect(refusals(code), 'this gap is now refused: move it to the round 8 gate fixtures').toEqual([]);
+		expect(refusals(code), 'this gap is now refused: move it to the gate fixtures').toEqual([]);
 	});
 
-	it('shrinking the population vocabulary is refused, although no row changes (round 9, smaller notes)', () => {
+	it('shrinking the population vocabulary is refused, although no row changes', () => {
 		// The population is a spelling list in the AID module, and the component
 		// cannot cover it: drop `setTimeout` from it and every setTimeout unit
 		// leaves the population, taking its row's claim with it. Mutating the
@@ -1076,7 +1076,7 @@ describe('ItemDetail identity gate: a fenced unit cannot change without a re-rea
 		expect(refusals(SOURCE), 'the vocabulary was not restored').toEqual([]);
 	});
 
-	it('a concise body wrapped in braces is refused, and so is a change of declaration form (round 11 finding 1)', () => {
+	it('a concise body wrapped in braces is refused, and so is a change of declaration form', () => {
 		// `() => EXPR` RETURNS the expression; `() => { EXPR }` returns undefined.
 		// Neither the braces nor `=>` nor `function` vs `const f =` is inside any
 		// statement slice, so the verbatim text alone could not tell these apart
@@ -1093,7 +1093,7 @@ describe('ItemDetail identity gate: a fenced unit cannot change without a re-rea
 		expect(rebound.some((l) => l.includes('helper identityHeld() has changed since it was reviewed')), `got ${JSON.stringify(rebound)}`).toBe(true);
 	});
 
-	it('a helper reached only through a pulled DECLARATION is demanded and hashed (round 11 finding 2)', () => {
+	it('a helper reached only through a pulled DECLARATION is demanded and hashed', () => {
 		// `const ops = { run: helper }` called as `ops.run()`: the unit never
 		// names `helper`, so the helper pull — which used to read only the unit's
 		// own roots — left its body outside every hash AND outside HELPERS, with
@@ -1113,7 +1113,7 @@ describe('ItemDetail identity gate: a fenced unit cannot change without a re-rea
 		expect(refusals(edited, opts).some((l) => l.includes('helper sneakySave() has changed since it was reviewed'))).toBe(true);
 	});
 
-	it('a component-level binding form the gate does not model is REFUSED, not skipped (round 10 finding 3)', () => {
+	it('a component-level binding form the gate does not model is REFUSED, not skipped', () => {
 		// `import x = require('y')` binds a runtime name through a form
 		// `topLevelOf` models neither as a declaration nor as a type. It refuses
 		// rather than letting the name fall silently outside every hash. A
@@ -1129,7 +1129,7 @@ describe('ItemDetail identity gate: a fenced unit cannot change without a re-rea
 		expect(refusals(typeOnly), 'a type-only declaration binds no value and is not a gate concern').toEqual([]);
 	});
 
-	it('a component-level write target no binding pattern models is REFUSED, not skipped (round 9 F3)', () => {
+	it('a component-level write target no binding pattern models is REFUSED, not skipped', () => {
 		// `({ x: someMember.prop } = …)` binds through a MemberExpression inside a
 		// pattern: the gate cannot say which names it rebinds, so it refuses
 		// rather than reading it as "rebinds nothing". A BARE member write is a
@@ -1191,7 +1191,7 @@ describe('ItemDetail identity gate: a fenced unit cannot change without a re-rea
 		expect(refusals(edited, opts).some((l) => l.includes('helper noteSaved() has changed since it was reviewed'))).toBe(true);
 	});
 
-	it('a function value rebound outside every unit changes the hash of the unit that only NAMES it (round 9 F4)', () => {
+	it('a function value rebound outside every unit changes the hash of the unit that only NAMES it', () => {
 		// Step 1: a reviewed base where saveTitle hands `applyTitle` to someone
 		// else rather than calling it — the same shape with the call removed.
 		const noop = '\tlet applyTitle = (next: Item): void => {\n\t\tvoid next;\n\t};\n\t$effect(() => {\n\t\tapplyTitle = (next: Item) => {\n\t\t\tvoid next;\n\t\t};\n\t});\n\n\tfunction showSaved(saveTok: SaveToken) {\n';

@@ -219,7 +219,7 @@ describe('PendingInvitations', () => {
 		expect(pendingInvitations.invitations.map((i) => i.id)).toEqual(['a']);
 	});
 
-	it('a newer badge refresh wins over an older list fetch, in the rows as in the count (codex r8)', async () => {
+	it('a newer badge refresh wins over an older list fetch, in the rows as in the count', async () => {
 		let answer!: (v: unknown) => void;
 		mocks.listMyInvitations.mockReturnValueOnce(new Promise((r) => (answer = r)));
 		const { queryByText } = render(PendingInvitations, { props: { active: true } });
@@ -232,7 +232,7 @@ describe('PendingInvitations', () => {
 		expect(pendingInvitations.count).toBe(0);
 	});
 
-	it('an older list fetch that fails does not clear a newer list (codex r8)', async () => {
+	it('an older list fetch that fails does not clear a newer list', async () => {
 		let fail!: (e: Error) => void;
 		mocks.listMyInvitations.mockReturnValueOnce(new Promise((_, f) => (fail = f)));
 		const { queryByText } = render(PendingInvitations, { props: { active: true } });
@@ -312,7 +312,7 @@ describe('PendingInvitations', () => {
 		expect(queryByText('Beta')).toBeNull();
 	});
 
-	it('a list response issued for a previous account is dropped, from the list and the badge (codex r1)', async () => {
+	it('a list response issued for a previous account is dropped, from the list and the badge', async () => {
 		let answer!: (v: unknown) => void;
 		mocks.listMyInvitations.mockReturnValue(new Promise((r) => (answer = r)));
 		const { queryByText } = render(PendingInvitations, { props: { active: true } });
@@ -324,7 +324,7 @@ describe('PendingInvitations', () => {
 		expect(pendingInvitations.count).toBe(0);
 	});
 
-	it('a list fetch issued before an accept cannot bring the accepted row back (codex r1)', async () => {
+	it('a list fetch issued before an accept cannot bring the accepted row back', async () => {
 		// A failed accept of A refetches; B is accepted while that refetch is
 		// still out, and the refetch answers with the list as it stood.
 		mocks.acceptMyInvitation.mockRejectedValueOnce(new Error('nope'));

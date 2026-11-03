@@ -95,7 +95,7 @@ describe('BUG-2633 — tombstones stop a stale snapshot resurrecting an evicted 
 		expect(await rawItem(U, WS, 'y')).toBeUndefined();
 	});
 
-	it('tombstones an upsert-then-removed row even before any sync (codex F1)', async () => {
+	it('tombstones an upsert-then-removed row even before any sync', async () => {
 		const { persistUpserts, persistRemovals, hydrate } = await loadPersistence();
 		const U = null;
 		const WS = 'ws-2633-presync';
@@ -116,7 +116,7 @@ describe('BUG-2633 — tombstones stop a stale snapshot resurrecting an evicted 
 		expect((await rawItem(U, WS, 'z'))?.seq).toBe(9);
 	});
 
-	it('a lower-cursor eviction does not weaken a higher tombstone stamp (codex F4)', async () => {
+	it('a lower-cursor eviction does not weaken a higher tombstone stamp', async () => {
 		const { persistUpserts, persistDelta } = await loadPersistence();
 		const U = null;
 		const WS = 'ws-2633-f4';
@@ -160,7 +160,7 @@ describe('BUG-2634 — durable retag overlay survives a racing delta and a reloa
 		expect(h.retags).toEqual({ 'coll-a': 'new-a' });
 	});
 
-	it('the overlay does not chase a row that has since MOVED out of the renamed collection (codex F5)', async () => {
+	it('the overlay does not chase a row that has since MOVED out of the renamed collection', async () => {
 		const { persistUpserts, persistRetag, persistDelta, hydrate } = await loadPersistence();
 		const U = null;
 		const WS = 'ws-2634-moved';

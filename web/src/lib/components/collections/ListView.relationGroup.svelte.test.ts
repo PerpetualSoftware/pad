@@ -281,7 +281,7 @@ describe('a relation field with no declared target, in the list', () => {
 	});
 });
 
-describe('a REFUSED grouping in the list must not write a group value (U4, codex round 5)', () => {
+describe('a REFUSED grouping in the list must not write a group value', () => {
 	/**
 	 * The SAME pair of defects BoardView had, in the other view — which is the point worth keeping.
 	 * One class of missed surface is every site dispatching on field type; another is every VIEW

@@ -576,7 +576,7 @@ func TestImportWorkspace_CarriesUnresolvableRelationValues(t *testing.T) {
 		t.Run(tc.title, func(t *testing.T) {
 			got, present := relationValue(tc.title)
 			if !present {
-				t.Fatalf("import DROPPED an unresolvable relation value; the ruling is that it carries")
+				t.Fatalf("import DROPPED an unresolvable relation value; it must carry")
 			}
 			if got != tc.want {
 				t.Fatalf("import rewrote an unresolvable relation value to %v, want it carried verbatim as %q", got, tc.want)
@@ -841,7 +841,7 @@ func TestImportWorkspace_DoesNotMintIDsForOrphanRelationReferents(t *testing.T) 
 	// THE RULE: the orphan-pointing value is carried verbatim.
 	got, present = relationValue("Orphan Referent")
 	if !present {
-		t.Fatalf("import DROPPED a relation value pointing at an orphan; the ruling is that it carries")
+		t.Fatalf("import DROPPED a relation value pointing at an orphan; it must carry")
 	}
 	if got != orphanColorID {
 		t.Fatalf("import rewrote an orphan-pointing relation value to %v — an id that names no row in any workspace — want it carried verbatim as %q", got, orphanColorID)

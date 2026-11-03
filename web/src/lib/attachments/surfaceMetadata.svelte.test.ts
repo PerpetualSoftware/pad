@@ -211,7 +211,7 @@ describe('surfaceMetadata — always-revalidate-per-(open, entry) nonce (T6 + 3c
 		expect(metaRevalidate).toHaveBeenCalledTimes(3);
 	});
 
-	it('a completed Retry probe does NOT record the pair → a later arrow-back still gets its one automatic probe (round-4 P2)', async () => {
+	it('a completed Retry probe does NOT record the pair → a later arrow-back still gets its one automatic probe', async () => {
 		// forcedFor records AUTOMATIC probes only. B's automatic probe is held pending
 		// (never records B); a Retry on B then completes but, being the reload path,
 		// must NOT record B either — so arrowing back to B still fires the automatic

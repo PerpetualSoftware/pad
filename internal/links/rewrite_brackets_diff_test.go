@@ -648,7 +648,7 @@ func TestProjectRewrittenLen_IsLockstepWithTheRealPass(t *testing.T) {
 		{Position: 3, TargetTitle: "A"},
 	}, "A", "N", "")
 	if totalApplied-before != 1 {
-		t.Fatalf("the codex-R2 overlap fixture applied %d rewrites, want exactly 1 — "+
+		t.Fatalf("the overlap fixture applied %d rewrites, want exactly 1 — "+
 			"a no-op-then-overlapping-change is the shape this regression exists to pin",
 			totalApplied-before)
 	}
@@ -859,7 +859,7 @@ func TestScanBracketBodyEdgeCasesMatchTheParser(t *testing.T) {
 		{"backslash before LF is NOT an escape pair", "[[A\\\nB]]", false, "",
 			"Go's regexp `.` does not match a newline, so `\\.` cannot consume one and the " +
 				"parser rejects the whole body. The scanner treated backslash-ANY as a pair and " +
-				"accepted it (codex R2 P2, introduced by this diff)"},
+				"accepted it"},
 		{"backslash before CR IS an escape pair to Go", "[[A\\\rB]]", true, "A\\\rB",
 			"Go's `.` excludes only LF. The JS renderer's `.` also excludes CR, U+2028 and " +
 				"U+2029 (measured with node), so Go indexes a link the renderer will not " +

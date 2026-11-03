@@ -435,7 +435,7 @@ func TestTask3392_MemberListAndSeatPolicy(t *testing.T) {
 	}
 
 	if appPrincipalMemberPolicy.MemberList != AppMembersSeparate || appPrincipalMemberPolicy.CountsAsSeat {
-		t.Fatalf("default policy = %+v, want separate list and no seat (Dave, SPEC-6 §11 Q2)", appPrincipalMemberPolicy)
+		t.Fatalf("default policy = %+v, want separate list and no seat (SPEC-6 §11 Q2)", appPrincipalMemberPolicy)
 	}
 	apps, err := s.ListWorkspaceAppPrincipals(ws.ID)
 	if err != nil {

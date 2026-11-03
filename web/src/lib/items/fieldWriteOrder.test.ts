@@ -520,7 +520,7 @@ describe('rederiveListWrite (BUG-3038)', () => {
 		expect(rederiveListWrite(['A'], ['A', 'B'], null)).toEqual(['B']);
 	});
 
-	it('carries this pane\'s own UNCOMMITTED earlier gesture when the base is the dispatched row (codex round 2)', () => {
+	it('carries this pane\'s own UNCOMMITTED earlier gesture when the base is the dispatched row', () => {
 		// Edit 1 removed A ([B,C] sent) and was abandoned on conflict because
 		// edit 2 superseded it. Edit 2 removed B from the editor's held list, so
 		// it sent [C] — and its base is the ROW it was dispatched against, which

@@ -360,7 +360,7 @@ describe('QuickActionsMenu push dispatch (PLAN-2558 S4)', () => {
 		host.remove();
 	});
 
-	it('copies with the ruled wording when nothing is listening, and never pushes', async () => {
+	it('copies with the agreed wording when nothing is listening, and never pushes', async () => {
 		sessionsListMock.mockResolvedValue({ sessions: [], count: 0 });
 
 		const { host, component } = mountMenu();
@@ -645,7 +645,7 @@ describe('QuickActionsMenu push dispatch (PLAN-2558 S4)', () => {
 	});
 });
 
-describe('QuickActionsMenu presence staleness (codex round 1)', () => {
+describe('QuickActionsMenu presence staleness', () => {
 	beforeEach(() => {
 		toastShow.mockReset();
 		sessionsListMock.mockReset();

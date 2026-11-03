@@ -256,7 +256,7 @@ describe('open', () => {
 	});
 });
 
-describe('refresh (R1)', () => {
+describe('refresh', () => {
 	// U12: one bump costs the newest-anchored page and the tombstone page, no more.
 	it('a bump is two reads; five bumps during one refresh give one more run', async () => {
 		server.fill(10);
@@ -1059,7 +1059,7 @@ describe('refresh during a send', () => {
 	});
 });
 
-describe('deferred refresh release (3b r4 C2)', () => {
+describe('deferred refresh release', () => {
 	/** A send held in flight, a bump deferred behind it, and a peer row the deferred refresh must fetch. */
 	async function deferredBehindSend() {
 		await readyThread();
@@ -1152,7 +1152,7 @@ describe('remove', () => {
 	});
 });
 
-describe('3b r2 ordering', () => {
+describe('ordering', () => {
 	const contiguous = () => {
 		const s = seqs();
 		for (let i = 1; i < s.length; i++) if (s[i] !== s[i - 1] + 1) return `break at ${s[i - 1]}->${s[i]}`;

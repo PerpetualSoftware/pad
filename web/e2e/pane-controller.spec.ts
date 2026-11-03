@@ -934,7 +934,7 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		await expect.poll(() => paneHasFocus(page)).toBe(true);
 	});
 
-	test('Back chevron: a second press while the first pop is still loading still ends with focus restored (Codex review round 3)', async ({
+	test('Back chevron: a second press while the first pop is still loading still ends with focus restored', async ({
 		page,
 		fixture,
 		request,
@@ -1015,7 +1015,7 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		await expect.poll(() => paneHasFocus(page)).toBe(true);
 	});
 
-	test('Back chevron: a superseding row-click while the pop is still loading does NOT steal focus back into the pane (Codex review round 6)', async ({
+	test('Back chevron: a superseding row-click while the pop is still loading does NOT steal focus back into the pane', async ({
 		page,
 		fixture,
 		request,

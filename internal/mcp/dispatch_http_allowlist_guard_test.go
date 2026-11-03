@@ -175,7 +175,7 @@ var allowlistCoverage = map[string]allowlistClassification{
 		"handlers_convention_library.go handleConventionLibrary and handlers_playbook_library.go " +
 			"handlePlaybookLibrary serve compiled-in static content. MECHANICALLY CHECKED: both named " +
 			"explicitly, both scanned, zero s.store. calls in either — an earlier version said \"and its " +
-			"playbook twin\", which read as coverage while checking only the first handler (codex round 9 P1)"},
+			"playbook twin\", which read as coverage while checking only the first handler"},
 	"library get": {exempt,
 		"handlers_library_entry.go handleLibraryEntry serves compiled-in static library content. " +
 			"MECHANICALLY CHECKED: zero s.store. calls"},
@@ -201,8 +201,8 @@ var allowlistCoverage = map[string]allowlistClassification{
 			"PLAN-1519/TASK-1521) so the agent can use what it just made. Since IDEA-2756 that flag also DECIDES the " +
 			"call: with may_create_workspaces unset the create is refused outright with a 403 and no workspace is " +
 			"made — it no longer gates the auto-add alone. The classification is unchanged either way, because " +
-			"refusing to create is still not a disclosure question (codex round 2 corrected this entry's original " +
-			"reasoning, which wrongly claimed no capability existed)"},
+			"refusing to create is still not a disclosure question (an earlier version of this entry " +
+			"wrongly claimed no capability existed)"},
 
 	// --- specialRoutes: observed via the recording handler ---
 	"library activate": {workspaceScoped,
@@ -1152,12 +1152,12 @@ func TestPathIsWorkspaceScoped(t *testing.T) {
 			"static sibling segment matched before the {slug} param route — the middleware never runs"},
 		{"/api/v1/workspaces/import", false,
 			"static sibling route outside the middleware; not MCP-routed today, but the guard must be right " +
-				"about it if it ever becomes routed (codex round 1 P2)"},
+				"about it if it ever becomes routed"},
 		{"/api/v1/workspaces/reorder", false,
 			"same — static sibling, no {slug} bound, no consent gate"},
 		{"/api/v1/workspaces/import/items/TASK-1", true,
 			"a static sibling name DEEPER in the path is just a workspace slug: chi's static route is an exact " +
-				"pattern, so this falls through to {slug}=import where the middleware does run (codex round 2 P2)"},
+				"pattern, so this falls through to {slug}=import where the middleware does run"},
 		{"/api/v1/workspaces/docapp/restore", false,
 			"workspace restore is registered BESIDE the /{slug} subrouter because that middleware resolves " +
 				"only live workspaces; its path looks scoped and is not"},

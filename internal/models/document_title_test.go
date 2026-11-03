@@ -114,8 +114,8 @@ func TestDocumentTitleValidationMatchesTheRoundTripProperty(t *testing.T) {
 // be tuned if the measurements change.
 func TestDocumentTitleBoundIsTheRuledNumber(t *testing.T) {
 	if MaxDocumentTitleRunes != 255 {
-		t.Errorf("MaxDocumentTitleRunes = %d, want 255 (Dave's day-63 ruling on BUG-2798). "+
-			"If this is a deliberate product change, update the ruling reference too.",
+		t.Errorf("MaxDocumentTitleRunes = %d, want 255 (BUG-2798). "+
+			"If this is a deliberate product change, update this test too.",
 			MaxDocumentTitleRunes)
 	}
 }

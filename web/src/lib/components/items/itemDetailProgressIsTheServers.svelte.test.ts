@@ -176,7 +176,7 @@ describe('the parent progress is the server\'s (BUG-3192 Unit B)', () => {
 		expect(progressGets()).toBe(before + 1);
 	});
 
-	it('ORDERING: of two overlapping re-reads, the older answer landing last does not win (codex r1)', async () => {
+	it('ORDERING: of two overlapping re-reads, the older answer landing last does not win', async () => {
 		await loaded();
 		childItems().onChildrenChange([child('a', 'done'), child('b', 'done'), child('c', 'open')]);
 		await settle();
@@ -196,7 +196,7 @@ describe('the parent progress is the server\'s (BUG-3192 Unit B)', () => {
 		expect(childItems().progress).toEqual({ done: 3, total: 3, percentage: 100 });
 	});
 
-	it('a FAILED load read leaves no numbers, never a local count, and the first report re-asks (codex r1)', async () => {
+	it('a FAILED load read leaves no numbers, never a local count, and the first report re-asks', async () => {
 		vi.mocked(api.items.progress).mockImplementationOnce(async () => {
 			throw new Error('blip');
 		});

@@ -248,7 +248,7 @@ describe('TopBar tab bar: closing (PLAN-3002 Q2, Q3)', () => {
 		expect(mocks.goto).toHaveBeenCalledWith('/u/beta');
 	});
 
-	it('closing the active FIRST tab lands on the tab that becomes first (lead ruling on Q3)', async () => {
+	it('closing the active FIRST tab lands on the tab that becomes first', async () => {
 		mocks.current = { slug: 'alpha', name: 'Alpha', owner_username: 'u' };
 		await mountWith([ALPHA, BETA, GAMMA]);
 		mocks.tabs.close.mockResolvedValueOnce(answer([BETA, GAMMA]));

@@ -219,7 +219,7 @@ func TestRunWatchMonitor_ExitsWhenNotArmed(t *testing.T) {
 			t.Fatalf("expected nil error, got %v", err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("runWatchMonitor did not exit on its own for an unarmed session (HIGH-1 consent gate missing?)")
+		t.Fatal("runWatchMonitor did not exit on its own for an unarmed session (consent gate missing?)")
 	}
 }
 

@@ -149,7 +149,7 @@ describe('FieldEditor — relation, three render states', () => {
 		expectNoBareUuid();
 	});
 
-	it('(d) an ID-shaped value resolving to nothing stays UNRESOLVED, never text (BUG-3014 ruling)', async () => {
+	it('(d) an ID-shaped value resolving to nothing stays UNRESOLVED, never text (BUG-3014)', async () => {
 		// The counter-case. A UUID that matches nothing is the gone-or-hidden
 		// case the server keeps indistinguishable; calling it "text" would be
 		// false, and showing it would put a bare id in front of the user.

@@ -169,7 +169,7 @@ describe('TASK-2909 — the ask outlives an unwritten resync', () => {
 		await inFlight;
 	});
 
-	it('an optimistic write issued after the snapshot installed is NOT fenced (round 3 P2)', async () => {
+	it('an optimistic write issued after the snapshot installed is NOT fenced', async () => {
 		// The counter split earns its place here. `scopeEpoch` is also the fence
 		// `upsert` uses to reject a write authorised under a superseded scope,
 		// so bumping it when a resync merely FINISHES PERSISTING rejected writes

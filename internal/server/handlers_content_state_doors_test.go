@@ -263,7 +263,7 @@ func TestBootstrapGenericIncludeBodiesCarryTheMarkerBothWays(t *testing.T) {
 			got["content_state"], models.ContentOutcomeAppliedPendingFlush)
 	}
 	if body, _ := got["content"].(string); body != "Step 1: restart it" {
-		t.Errorf("bodies-mode include content = %q, want the item's own body — removing it entirely kept this test green (codex round 4)", body)
+		t.Errorf("bodies-mode include content = %q, want the item's own body — removing it entirely kept this test green", body)
 	}
 
 	// METADATA mode: no body is served, so no claim about a body may be made —

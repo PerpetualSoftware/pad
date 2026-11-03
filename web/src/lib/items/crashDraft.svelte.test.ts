@@ -80,7 +80,7 @@ describe('crash drafts (TASK-3606)', () => {
 		expect(readRefusedRawDraft('u1', 'i1')).toBeNull();
 	});
 
-	it('an unchanged version skips serializing (codex r1)', () => {
+	it('an unchanged version skips serializing', () => {
 		let snaps = 0;
 		let v = 1;
 		const h = harness({

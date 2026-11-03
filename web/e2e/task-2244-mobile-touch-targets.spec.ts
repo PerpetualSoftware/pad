@@ -50,7 +50,7 @@ for (const view of ['list', 'board'] as const) {
 		page,
 		fixture,
 	}, testInfo) => {
-		test.skip(testInfo.project.name !== 'mobile-chromium', 'the ruling is <=768px');
+		test.skip(testInfo.project.name !== 'mobile-chromium', 'the rule is <=768px');
 
 		await browserLogin(page);
 		await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/tasks?view=${view}`);
@@ -223,7 +223,7 @@ for (const view of ['list', 'board'] as const) {
 		fixture,
 		request,
 	}, testInfo) => {
-		test.skip(testInfo.project.name !== 'mobile-chromium', 'the ruling is <=768px');
+		test.skip(testInfo.project.name !== 'mobile-chromium', 'the rule is <=768px');
 		const { titles, collSlug } = await seedLane(request, fixture, `shape-${view}`);
 
 		await browserLogin(page);
@@ -248,7 +248,7 @@ test('TASK-2244: the mobile card ⋯ stars, copies the ID and reorders (board)',
 	fixture,
 	request,
 }, testInfo) => {
-	test.skip(testInfo.project.name !== 'mobile-chromium', 'the ruling is <=768px');
+	test.skip(testInfo.project.name !== 'mobile-chromium', 'the rule is <=768px');
 	const { titles, slugs, collSlug } = await seedLane(request, fixture, 'wire');
 
 	await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
@@ -307,7 +307,7 @@ test('TASK-2244: on a host without reorder the mobile ⋯ holds only Star and Co
 	fixture,
 	request,
 }, testInfo) => {
-	test.skip(testInfo.project.name !== 'mobile-chromium', 'the ruling is <=768px');
+	test.skip(testInfo.project.name !== 'mobile-chromium', 'the rule is <=768px');
 	const { titles, slugs } = await seedLane(request, fixture, 'starred');
 	const star = await request.post(`/api/v1/workspaces/${fixture.workspaceSlug}/items/${slugs[0]}/star`, {
 		headers: authHeaders(fixture),
@@ -403,7 +403,7 @@ for (const view of ['list', 'board'] as const) {
 		fixture,
 		request,
 	}, testInfo) => {
-		test.skip(testInfo.project.name !== 'mobile-chromium', 'the ruling is <=768px');
+		test.skip(testInfo.project.name !== 'mobile-chromium', 'the rule is <=768px');
 		const { titles, slugs, collSlug } = await seedLane(request, fixture, `chip-${view}`);
 		const tagged = await request.patch(`/api/v1/workspaces/${fixture.workspaceSlug}/items/${slugs[1]}`, {
 			headers: authHeaders(fixture),

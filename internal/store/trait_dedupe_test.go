@@ -136,7 +136,7 @@ func TestDedupeKeepsTheCollectionTheUserWroteIn(t *testing.T) {
 		t.Fatalf("count loser items: %v", err)
 	}
 	if loserItems == 0 {
-		t.Error("the losing collection lost its items; the ruling is that it keeps them and loses only the trait")
+		t.Error("the losing collection lost its items; it must keep them and lose only the trait")
 	}
 }
 
