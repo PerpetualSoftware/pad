@@ -9,7 +9,7 @@ import type { SuiteFixture } from './fixtures';
  *  - Quick-add is the Modal primitive (native showModal): Tab cannot leave it,
  *    Escape closes it, and an Escape meant for its collection picker closes
  *    only the picker.
- *  - The palette keeps its own element : on desktop a
+ *  - The palette keeps its own element: on desktop a
  *    `role=dialog` `aria-modal` surface that keeps Tab inside; on mobile in a
  *    workspace a sheet docked above the live bottom nav, which (like
  *    DockedSheet) does not claim aria-modal and cycles Tab through the

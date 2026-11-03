@@ -60,7 +60,7 @@ func TestBUG4066_RefreshMarkerIsAnchoredAndCleanedUp(t *testing.T) {
 // The script warns about a relative data dir BEFORE anything is stopped: a
 // refusal that happens before the stop (the unwritable-log check) still
 // carries the warning. It names the SERVER's anchored, cleaned path, not the
-// caller's (BUG-4066 : the caller's cwd here differs from the server's).
+// caller's (BUG-4066: the caller's cwd here differs from the server's).
 func TestBUG4066_ScriptWarnsAboutARelativeDataDirBeforeStopping(t *testing.T) {
 	for _, tc := range []struct{ name, dataDir, dbPath, serverRel, want string }{
 		{"data", "data", "", "data", "PAD_DATA_DIR is relative (data); this process resolves it to %s (the server's directory; from this shell's directory it would be %s)."},

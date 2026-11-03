@@ -151,7 +151,7 @@ test.describe('BUG-3447: the launchpad follows an onboarding agent live', () => 
 			);
 			const coll = (await created.json()) as { slug: string };
 			await expect.soft(sidebarCollection, 'the new collection did not reach the sidebar live').toBeVisible({ timeout: LIVE });
-			// An agent's collection is agent activity : the step
+			// An agent's collection is agent activity: the step
 			// ticks and the banner goes, before any item exists.
 			await expect.soft(agentStep, 'the Agent activity detected step did not tick on the agent\'s collection').toHaveClass(/\bdone\b/, {
 				timeout: LIVE

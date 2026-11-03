@@ -9,7 +9,7 @@ import type { SuiteFixture } from './fixtures';
  * next option immediately, and on a board grouped by status the next option IS
  * the next lane. Users did not know the chip was a control at all.
  *
- * Ruling : the chip opens a status picker on every device, and
+ * Ruling: the chip opens a status picker on every device, and
  * nothing changes until an option is chosen.
  *
  * The assertion is the OUTCOME on the server, read back after the tap, not the

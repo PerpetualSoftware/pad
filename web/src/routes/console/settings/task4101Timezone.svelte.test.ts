@@ -180,7 +180,7 @@ it('a time zone Save whose PATCH fails does not count as an explicit write', asy
 });
 
 
-// TASK-4101 PR2a r2 : a fenced zone Save that settles after an
+// TASK-4101 PR2a r2: a fenced zone Save that settles after an
 // identity change must not leave its busy flag stuck for the new identity.
 it('a zone Save in flight across an identity change does not leave Save disabled', async () => {
 	const pending = deferred<unknown>();

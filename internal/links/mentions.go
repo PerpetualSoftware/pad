@@ -66,7 +66,7 @@ func emailLocalByte(b byte) bool {
 
 // urlScan answers "is the non-space run ending at this @ a URL" in O(1) per
 // match. Matches arrive in increasing order, so advance walks each byte once
-// and an ExtractMentions call stays linear in the body (TASK-3917 : a
+// and an ExtractMentions call stays linear in the body (TASK-3917: a
 // backward scan per match made ", @a" repeated quadratic).
 type urlScan struct {
 	pos      int // bytes before pos have been scanned
@@ -94,7 +94,7 @@ func (u *urlScan) inURL(content string, at int) bool {
 
 // rangeCursor answers "is pos inside one of these ranges" for positions that
 // arrive in increasing order, walking the sorted, disjoint ranges once per
-// call rather than once per match (TASK-3917 : a scan of every range per
+// call rather than once per match (TASK-3917: a scan of every range per
 // match made a body of many code spans and then many mentions quadratic).
 // ExtractWikiLinks uses it too (BUG-3968).
 type rangeCursor struct {

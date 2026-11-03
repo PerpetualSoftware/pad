@@ -1,4 +1,4 @@
-// BUG-3571 part 2 : when a session expires under an open item, the
+// BUG-3571 part 2: when a session expires under an open item, the
 // text the server does not have is kept in this browser under its author's id
 // and offered back on their next open. Rich mode is the leg nothing else
 // covers: the raw editor's unload save keeps its text before it sends, but

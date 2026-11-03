@@ -133,7 +133,7 @@ test('a stale-base draft on a changed item says it cannot be applied and offers 
 	await ctx.close();
 });
 
-// TASK-3856 r2 : the crash keeper rewrites a draft it kept as stale
+// TASK-3856 r2: the crash keeper rewrites a draft it kept as stale
 // when this tab sends, after the notice may already show it. Restore reads the
 // stored draft first: now stale, the notice re-renders without Restore and
 // nothing is written.
