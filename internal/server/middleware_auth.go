@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/logging"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/go-chi/chi/v5"
@@ -1371,7 +1372,7 @@ func tokenScopeAllows(scopesJSON, method, path string) bool {
 	var scopes []string
 	if err := json.Unmarshal([]byte(scopesJSON), &scopes); err != nil {
 		slog.Warn("token has unparseable scopes; denying request",
-			"method", method, "path", path, "error", err)
+			"method", method, "path", logging.RedactPath(path), "error", err)
 		return false
 	}
 
@@ -1383,7 +1384,7 @@ func tokenScopeAllows(scopesJSON, method, path string) bool {
 	// form and keeps working.
 	if scopes == nil {
 		slog.Warn("token has null scopes; denying request",
-			"method", method, "path", path, "scopes_json", scopesJSON)
+			"method", method, "path", logging.RedactPath(path), "scopes_json", scopesJSON)
 		return false
 	}
 	if len(scopes) == 0 {
@@ -1411,7 +1412,7 @@ func tokenScopeAllows(scopesJSON, method, path string) bool {
 
 	if len(unknown) > 0 {
 		slog.Warn("token has unrecognized scopes; treated as no-grant",
-			"method", method, "path", path, "unknown_scopes", unknown)
+			"method", method, "path", logging.RedactPath(path), "unknown_scopes", unknown)
 	}
 	return allowed
 }
