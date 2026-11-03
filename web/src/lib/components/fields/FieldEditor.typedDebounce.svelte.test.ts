@@ -327,7 +327,7 @@ describe('the echo answers for exactly one write', () => {
 	});
 });
 
-describe('a write that never comes home (codex round 1, finding 3)', () => {
+describe('a write that never comes home', () => {
 	it('releases the display hold when the consumer reports the write FAILED', async () => {
 		// The refused-write failure in the typed path. Agreement alone cannot answer for a
 		// REFUSED write, because the value never comes back — so without a second
@@ -414,7 +414,7 @@ describe('an older echo does not release a newer hold (findings 2 and 4)', () =>
 	});
 });
 
-describe('the number field (finding 1)', () => {
+describe('the number field', () => {
 	const numberField = { key: 'estimate', label: 'Estimate', type: 'number' as const };
 
 	function mountNumber(initial: unknown, onchange: (v: unknown) => void) {
@@ -473,7 +473,7 @@ describe('the number field (finding 1)', () => {
 	});
 });
 
-describe('the subject can change without the row changing (finding 5)', () => {
+describe('the subject can change without the row changing', () => {
 	// THE INTERLEAVING MATTERS, and a first draft of both legs got it wrong: they
 	// swapped the subject while an edit was still PENDING, and a pending edit is
 	// dropped by the ordinary "this is not our echo" branch whether or not the

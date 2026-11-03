@@ -81,7 +81,7 @@ test('TASK-3311: on touch the group archive button is visible and tappable acros
 	fixture,
 	request
 }, testInfo) => {
-	test.skip(testInfo.project.name !== 'mobile-chromium', 'the ruling is <=768px on touch');
+	test.skip(testInfo.project.name !== 'mobile-chromium', 'the rule is <=768px on touch');
 	const { collSlug, titles } = await seed(request, fixture, 'archive');
 	await open(page, fixture, collSlug, 'list');
 	const btn = page.locator('.archive-group-btn').first();
@@ -118,7 +118,7 @@ test('TASK-3311: on touch the group archive button is visible and tappable acros
 // ── 2. the board lane + and ⋯ ─────────────────────────────────────────────
 
 test('TASK-3311: the board lane + and ⋯ are at least 44x44 on mobile', async ({ page, fixture, request }, testInfo) => {
-	test.skip(testInfo.project.name !== 'mobile-chromium', 'the ruling is <=768px');
+	test.skip(testInfo.project.name !== 'mobile-chromium', 'the rule is <=768px');
 	const { collSlug } = await seed(request, fixture, 'lane');
 	await open(page, fixture, collSlug, 'board');
 	for (const [name, sel] of [
@@ -141,7 +141,7 @@ for (const view of ['list', 'board'] as const) {
 		fixture,
 		request
 	}, testInfo) => {
-		test.skip(testInfo.project.name !== 'mobile-chromium', 'the ruling is <=768px');
+		test.skip(testInfo.project.name !== 'mobile-chromium', 'the rule is <=768px');
 		const { collSlug, titles } = await seed(request, fixture, `tags-${view}`);
 		await open(page, fixture, collSlug, view);
 		const c = page.locator('.item-card').filter({ has: page.locator('.card-title', { hasText: titles[0] }) });

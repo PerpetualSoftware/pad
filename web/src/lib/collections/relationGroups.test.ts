@@ -260,7 +260,7 @@ describe('narrowRelationRow with no collection list yet', () => {
 	});
 });
 
-describe('codex round 1 — values the write path used to accept', () => {
+describe('values the write path used to accept', () => {
 	it('trims a padded value, so the lane and the chip agree', () => {
 		// `relationChipFor` has always trimmed; `relationLaneValueFor` did not.
 		// A legacy `" red "` therefore produced a LIVE chip and an UNRESOLVED
@@ -305,7 +305,7 @@ describe('relationLaneAriaName', () => {
 	});
 });
 
-describe('relationFilterMatches (codex round 2)', () => {
+describe('relationFilterMatches', () => {
 	it('matches a padded stored value against an unpadded filter', () => {
 		// The defect it closes: the board trimmed and the filter did not, so an
 		// item storing `" red "` sat in the Red LANE and vanished when you

@@ -247,7 +247,7 @@ describe('editsMayBeMissing (BUG-3526)', () => {
 // BUG-3850: the crash keeper flags its draft from this hook, so it
 // must run BEFORE the frame leaves: after it, a tab that dies leaves a draft
 // that says nothing was sent while the server may hold the text.
-describe('onLocalSend fires before every local send (BUG-3850 r8)', () => {
+describe('onLocalSend fires before every local send (BUG-3850)', () => {
 	function connectHooked(seen: number[]) {
 		doc = new Y.Doc();
 		provider = new CollabProvider('item-3850', doc, {

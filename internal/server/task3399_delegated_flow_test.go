@@ -201,7 +201,7 @@ func TestTask3399_ADelegatedSignInIssuesAPersonsToken(t *testing.T) {
 		t.Errorf("consented access = %q, want the read-only default", access)
 	}
 	if n := count3399(t, f.srv, `SELECT COUNT(*) FROM oauth_connections`); n != connsBefore {
-		t.Errorf("a delegated sign-in wrote %d oauth_connections rows (lead ruling Q1: none)", n-connsBefore)
+		t.Errorf("a delegated sign-in wrote %d oauth_connections rows (want none)", n-connsBefore)
 	}
 	// The app refreshes its own grant.
 	refresh, _ := resp["refresh_token"].(string)

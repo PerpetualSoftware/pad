@@ -1030,7 +1030,7 @@ func TestOpenChildrenGuard_PrecheckReadsInTxSnapshot(t *testing.T) {
 		t.Fatalf("parse seen fields: %v", err)
 	}
 	if s, _ := f["status"].(string); s != "completed" {
-		t.Errorf("precheck must see the in-tx snapshot (round-3 P2). Want status=completed, got %q. Full fields=%s",
+		t.Errorf("precheck must see the in-tx snapshot. Want status=completed, got %q. Full fields=%s",
 			s, seenFields)
 	}
 }

@@ -663,7 +663,7 @@ describe('multi_relation — the hold ends when the write does, not only when it
 	});
 });
 
-describe('multi_relation — what the round-8 enumeration found in the round-8 fix', () => {
+describe('multi_relation — what the enumeration found in the fix', () => {
 	const editable = { field: multi, wsSlug: 'ws', username: 'dave' } as const;
 
 	async function settle() {

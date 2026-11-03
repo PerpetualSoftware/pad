@@ -263,7 +263,7 @@ describe('a status field holding a LIST', () => {
 	});
 });
 
-describe('a stored status the schema no longer declares (BUG-3068 round 3)', () => {
+describe('a stored status the schema no longer declares (BUG-3068)', () => {
 	// THE TABLE'S INSTANCE OF THE SAME -1 ARITHMETIC the card was guarded for — found by asking for
 	// the population rather than fixing one example. `options.indexOf(current)` answers -1 for a
 	// stale or hand-written status, -1 + 1 is 0, and this chip PULSES and writes, so
@@ -304,7 +304,7 @@ describe('a stored status the schema no longer declares (BUG-3068 round 3)', () 
 	});
 });
 
-describe('the table chip asks the same permission question as the card (BUG-3068 round 4)', () => {
+describe('the table chip asks the same permission question as the card (BUG-3068)', () => {
 	// THE CONVERGENCE FAILURE. The card's gate covered the chip inside
 	// `ItemCard`, which covers the list and the board — but the table renders its
 	// OWN chip, so it went on offering a read-only viewer a control whose write

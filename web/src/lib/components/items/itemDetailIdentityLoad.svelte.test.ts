@@ -376,7 +376,7 @@ describe('the previous identity\'s RICH draft is not flushed on teardown (live o
 	});
 });
 
-describe('the collab provider belongs to one identity (codex round 2)', () => {
+describe('the collab provider belongs to one identity', () => {
 	it('an identity change destroys the previous identity\'s provider and mints a new one', async () => {
 		const r = mount();
 		await loaded(r);
@@ -732,7 +732,7 @@ describe('continuations started under the previous identity do not commit', () =
 	});
 });
 
-describe('the SSE callback refuses a continuation that spans an identity change (round 2 fix, round 3 leg)', () => {
+describe('the SSE callback refuses a continuation that spans an identity change', () => {
 	function sse() {
 		const cb = sseCallbacks.at(-1);
 		if (!cb) throw new Error('no SSE subscription');
@@ -845,7 +845,7 @@ describe('the load a moved identity triggers does not persist the previous user\
  * BUG-3084: the two
  * stale-write shapes the hash gate does not TEST, only detects edits to.
  */
-describe('the legacy content debounce holds one live timer across an identity change (round 8 A)', () => {
+describe('the legacy content debounce holds one live timer across an identity change', () => {
 	/**
 	 * The non-collab path: with no edit right there is no provider, and the
 	 * read-only editor's updates go through the legacy debounce.
@@ -883,7 +883,7 @@ describe('the legacy content debounce holds one live timer across an identity ch
 	});
 });
 
-describe('the field write\'s OCC retry does not re-send across an identity change (round 8 C)', () => {
+describe('the field write\'s OCC retry does not re-send across an identity change', () => {
 	async function conflictThenRefetch(moveIdentity: boolean) {
 		knobs.conflicts = true;
 		const r = mount();

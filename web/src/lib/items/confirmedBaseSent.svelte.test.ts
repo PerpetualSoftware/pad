@@ -103,7 +103,7 @@ function keptDraft(h: ReturnType<typeof setUp>) {
 	return { markdown: md(h.editor), baseBody: base.markdown, ...(base.remoteAfter || base.sentAfter ? { baseStale: true as const } : {}) };
 }
 
-describe('BUG-3850: a send after the base flags it stale (lead ruling a6380212)', () => {
+describe('BUG-3850: a send after the base flags it stale', () => {
 	it('own text partly landed on the last line: flagged, so restore takes the conflict path', () => {
 		const h = setUp();
 		typeAtEnd(h.editor, ' U1');

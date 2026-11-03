@@ -152,7 +152,7 @@ func TestArtifactImport_DropsFieldKeysTheKindDoesNotDeclare(t *testing.T) {
 	}
 
 	if v, present := blob["owner_ref"]; present {
-		t.Errorf("the artifact door carried %q = %#v into a RELATION field. The frontmatter allow-list used to drop it before any relation code ran, which is why PLAN-2857 U6's visibility rule was never implemented for this door. It is now reachable and the lead's ruling needs applying there", "owner_ref", v)
+		t.Errorf("the artifact door carried %q = %#v into a RELATION field. The frontmatter allow-list used to drop it before any relation code ran, which is why PLAN-2857's visibility rule was never implemented for this door. It is now reachable and the rule needs applying there", "owner_ref", v)
 	}
 	// CONTROL: the DECLARED keys did land, so the assertion above is about the
 	// allow-list filtering rather than about the import storing nothing.

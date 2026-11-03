@@ -185,7 +185,7 @@ var ChatGPTCatalog = []ChatGPTTool{
 		Params:      []string{chatGPTWorkspaceParam, "ref", "title", "content", "status", "priority", "parent", "clear_parent", "tags", "assign", "fields", "expected_seq"},
 		Required:    []string{chatGPTWorkspaceParam, "ref"},
 		Hints:       ChatGPTHints{},
-		Justification: "Not destructive by the ruling on TASK-3321: the prior content is kept as a version written " +
+		Justification: "Not destructive (TASK-3321): the prior content is kept as a version written " +
 			"before the change (version source chatgpt), so every edit is reversible from History; field changes " +
 			"are recorded in the item's activity.",
 	},

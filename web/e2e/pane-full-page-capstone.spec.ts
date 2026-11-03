@@ -426,7 +426,7 @@ test.describe('full-page pane host CAPSTONE (PLAN-2154 Phase 2 / TASK-2175)', ()
 	// the active side. The read-only prompt-copy actions stay visible on both sides.
 	// This mounts the REAL QuickActionsMenu (seeded with a prompt action) to prove
 	// the gate wiring, not just the empty-trigger-hides case.
-	test('quick-actions: read-only prompt actions stay visible on the peeking side; the collection-settings write controls (New/Manage) are confined to the active side (Codex P1)', async ({
+	test('quick-actions: read-only prompt actions stay visible on the peeking side; the collection-settings write controls (New/Manage) are confined to the active side', async ({
 		page,
 		fixture,
 		request,

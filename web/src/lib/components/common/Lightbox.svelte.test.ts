@@ -5487,7 +5487,7 @@ describe('Lightbox — the text arm', () => {
 
 	// ── regressions ──────────────────────────────────────────────────
 
-	it('re-decides on a LATE resolved size, cutting the transfer short (R1 #1)', async () => {
+	it('re-decides on a LATE resolved size, cutting the transfer short', async () => {
 		// Most producers seed `size_bytes: null` and let the metadata HEAD fill it,
 		// so the arm necessarily starts fetching before the size is known — the
 		// response gate is what bounds it in the meantime.
@@ -5536,7 +5536,7 @@ describe('Lightbox — the text arm', () => {
 	// This file's coverage of the CSS-backed guarantees is the structure the CSS keys
 	// off, and no more than that.
 
-	it('leaves the wheel to the CARD, while still owning it everywhere else (R1 #3)', async () => {
+	it('leaves the wheel to the CARD, while still owning it everywhere else', async () => {
 		mountViewer({ images: [image(IMG_A, 'notes.md', 'text/markdown')] });
 		await settleAsync();
 		const card = root().querySelector<HTMLElement>('.lightbox-text-scroll');
@@ -5556,7 +5556,7 @@ describe('Lightbox — the text arm', () => {
 		expect(overStage.defaultPrevented).toBe(true);
 	});
 
-	it('puts the interactive card INSIDE a layer that is not itself the target (R1 #4)', async () => {
+	it('puts the interactive card INSIDE a layer that is not itself the target', async () => {
 		const onClose = vi.fn();
 		mountViewer({ images: [image(IMG_A, 'notes.md', 'text/markdown')], onClose });
 		await settleAsync();

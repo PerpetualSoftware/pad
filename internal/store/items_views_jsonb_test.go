@@ -679,7 +679,7 @@ func TestItemsViewsJSONB_SQLiteBackfillRepairsMalformedShapes(t *testing.T) {
 			t.Fatalf("read migration %s: %v", name, err)
 		}
 		if err := applySQLiteMigration(db, name, string(data)); err != nil {
-			t.Fatalf("apply %s (codex R2 P1 ship-breaker): %v", name, err)
+			t.Fatalf("apply %s: %v", name, err)
 		}
 	}
 

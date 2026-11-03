@@ -303,7 +303,7 @@ func TestHTTPHandlerDispatcher_ScopeEnforcement_BulkUpdateBlockedOnReadScope(t *
 		t.Fatalf("dispatchItemBulkUpdate: %v", err)
 	}
 	if patchSeen {
-		t.Fatal("PATCH must not reach the handler when scope check fails (regression: round-2 fix removed the gap)")
+		t.Fatal("PATCH must not reach the handler when scope check fails (regression: a fix once removed the gap)")
 	}
 	if res.IsError {
 		t.Fatalf("bulk-update returns success with per-item errors recorded; got top-level IsError: %#v", res)

@@ -43,12 +43,12 @@ func (s *Store) ListUserAppGrants(userID string) ([]AppGrant, error) {
 		LEFT JOIN users u ON u.id = i.bot_user_id
 		WHERE b.auth_kind = 'delegated' AND b.delegated_user_id = ? AND b.revoked_at IS NULL
 		  -- An epoch the install has moved past (a disable, rotate or upgrade)
-		  -- has already ended the grant; it is not listed (codex U5b-1 r6).
+		  -- has already ended the grant; it is not listed.
 		  AND b.auth_epoch = i.auth_epoch
 		  AND (EXISTS (SELECT 1 FROM oauth_access_tokens t WHERE t.request_id = b.request_id AND t.active = ?)
 		    OR EXISTS (SELECT 1 FROM oauth_refresh_tokens t WHERE t.request_id = b.request_id AND t.active = ?)
 		    -- A grant not yet exchanged is still one the person can revoke
-		    -- (codex U5b-1 r7): its code can mint tokens.
+		    -- its code can mint tokens.
 		    OR EXISTS (SELECT 1 FROM oauth_authorization_codes t WHERE t.request_id = b.request_id AND t.active = ?))
 		ORDER BY b.created_at DESC`), userID, true, true, true)
 	if err != nil {

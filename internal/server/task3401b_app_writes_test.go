@@ -99,7 +99,7 @@ func TestTask3401b_WriteCensus(t *testing.T) {
 	_ = json.Unmarshal(rr.Body.Bytes(), &comment)
 	assertKeysWithin(t, "appCreateComment", comment, "comment", appDTOKeys["comment"])
 	if comment["author_kind"] != "app" || comment["author_display"] != f.in.bot.Name {
-		t.Errorf("comment author = %v / %v, want app / %q (lead ruling R3)", comment["author_kind"], comment["author_display"], f.in.bot.Name)
+		t.Errorf("comment author = %v / %v, want app / %q", comment["author_kind"], comment["author_display"], f.in.bot.Name)
 	}
 	seen["appCreateComment"] = true
 	cid := comment["id"].(string)
@@ -346,7 +346,7 @@ func TestTask3401b_SSEAndWatchParity(t *testing.T) {
 		t.Errorf("SSE = %v, want item updated and comment created", gotSSE)
 	}
 	if !gotWatch[string(watchevents.KindStatusChange)] || !gotWatch[string(watchevents.KindComment)] {
-		t.Errorf("watch = %v, want a status change and a comment (lead ruling R1)", gotWatch)
+		t.Errorf("watch = %v, want a status change and a comment", gotWatch)
 	}
 	var createdBy string
 	if err := f.srv.store.DB().QueryRow(`SELECT created_by FROM comments WHERE item_id = ? AND body = 'closing'`, f.item.ID).Scan(&createdBy); err != nil {
