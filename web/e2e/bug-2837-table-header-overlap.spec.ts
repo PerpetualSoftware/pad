@@ -84,20 +84,20 @@ test('BUG-2837: long table header labels do not overlap, wrap on one baseline, a
 		const longCell = headerCells.filter({ hasText: LABELS[1] }).first();
 		await expect(longCell).toBeVisible();
 
-		//  (c) at 1280px.
+		// (c) at 1280px.
 		expect(await overlaps(page), 'header labels overlap at 1280px').toEqual([]);
 
 		// The full label stays available while the cell shows a clamped one.
 		await expect(longCell.locator('button')).toHaveAttribute('title', LABELS[1]);
 
-		//  (a) one baseline: every field label's bottom edge within 1px of the others.
+		// (a) one baseline: every field label's bottom edge within 1px of the others.
 		const bottoms = await page.evaluate(() =>
 			[...document.querySelectorAll<HTMLElement>('.table-header .header-label')].map((l) => l.getBoundingClientRect().bottom),
 		);
 		expect(bottoms.length, 'precondition: the labels are the wrapped kind').toBeGreaterThan(LABELS.length - 1);
 		expect(Math.max(...bottoms) - Math.min(...bottoms), 'one- and two-line labels sit on different baselines').toBeLessThanOrEqual(1);
 
-		//  (b) sorting by the WRAPPED label still works and its arrow stays visible inside the cell.
+		// (b) sorting by the WRAPPED label still works and its arrow stays visible inside the cell.
 		await longCell.locator('button').click();
 		const arrow = longCell.locator('.sort-arrow');
 		await expect(arrow).toBeVisible();
@@ -110,7 +110,7 @@ test('BUG-2837: long table header labels do not overlap, wrap on one baseline, a
 		// BUG-3164 made the table its own vertical scroller; its stickiness is
 		// asserted in bug-3164-table-header-sticky.spec.ts.
 
-		//  (c) at the narrowest width: the field columns at their 90px floor.
+		// (c) at the narrowest width: the field columns at their 90px floor.
 		await page.setViewportSize({ width: 800, height: 800 });
 		await page.waitForTimeout(300);
 		const widths = await page.evaluate(() =>

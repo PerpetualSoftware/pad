@@ -30,7 +30,7 @@
 	let currentPath = $derived(page.url.pathname as string);
 
 	// Auto-close the mobile menu whenever the route changes. Kept as its own
-	// single-purpose effect per CONVE-606  (split reactive effects) so the
+	// single-purpose effect per CONVE-606 (split reactive effects) so the
 	// route-change concern doesn't get tangled with anything else.
 	$effect(() => {
 		void currentPath;
@@ -47,7 +47,7 @@
 		if (!(await confirmSignOut())) return;
 		await signOutLogout(() => api.auth.logout());
 		authStore.clear();
-		// HARD navigation, not `goto`  (BUG-3005). An SPA navigation to /login
+		// HARD navigation, not `goto` (BUG-3005). An SPA navigation to /login
 		// leaves every client-side singleton, component and cache exactly where
 		// it was — which is the original defect: the next person to sign in on
 		// this browser reads the previous user's data out of a tab that never
@@ -85,7 +85,7 @@
 
 {#if ready}
 	<div class="console-layout">
-		<!-- `clickOutside` dismisses only on a press that STARTS outside  (BUG-3231): a drag begun inside and released outside is not an outside click. -->
+		<!-- `clickOutside` dismisses only on a press that STARTS outside (BUG-3231): a drag begun inside and released outside is not an outside click. -->
 		<nav class="console-nav" use:clickOutside={{ enabled: mobileMenuOpen, onOutside: () => (mobileMenuOpen = false) }}>
 			<div class="nav-left">
 				<a href="/console" class="nav-logo">Pad</a>
@@ -128,7 +128,7 @@
 					class="nav-links"
 					class:open={mobileMenuOpen}
 				>
-					<!-- TASK-2238  (C108): navigation links, not a menu. The
+					<!-- TASK-2238 (C108): navigation links, not a menu. The
 					     menu/menuitem roles promised arrow keys that did nothing
 					     and hid the links' own semantics; the current page is
 					     marked with aria-current instead. -->
@@ -196,7 +196,7 @@
 							Connected Apps
 						</a>
 					{/if}
-					<!-- Hidden in the mobile apps: no purchase path there  (PLAN-3291 DR-3). -->
+					<!-- Hidden in the mobile apps: no purchase path there (PLAN-3291 DR-3). -->
 					{#if authStore.commerceAllowed}
 						<a
 							href="/console/billing"
@@ -345,7 +345,7 @@
 		background: var(--bg-tertiary);
 	}
 
-	/* ChatLink's own <a>: scoped .nav-link rules do not reach it  (TASK-4044 3c). */
+	/* ChatLink's own <a>: scoped .nav-link rules do not reach it (TASK-4044 3c). */
 	.nav-links :global(.chat-nav-link) {
 		display: flex;
 		align-items: center;

@@ -74,7 +74,7 @@ test('a collaborator changed paragraph one, the draft changed paragraph three: R
 			{ timeout: SYNC_TIMEOUT, message: 'the row holds both versions once the editor flushes' },
 		)
 		.toMatch(/Paragraph one, theirs\.[\s\S]*Paragraph three, mine\./);
-	// Both slots  (BUG-3863): the shown draft was held when it was offered.
+	// Both slots (BUG-3863): the shown draft was held when it was offered.
 	await expect.poll(() => page.evaluate((k) => [localStorage.getItem(k), localStorage.getItem(`${k}:held`)], key)).toEqual([null, null]);
 	await ctx.close();
 });
@@ -142,13 +142,13 @@ test('a shown draft rewritten as stale in storage is not patched when Restore is
 	test.setTimeout(120_000);
 	const { id, ref, base, key, headers } = await setUp(request, fixture, `TASK-3856 flipped ${Date.now()}`);
 	await collaboratorWrites(request, fixture, id, headers, base.content.replace('Paragraph one.', 'Paragraph one, theirs.'));
-	// Kept by a live keeper in another tab  (BUG-3863: stamped with its id).
+	// Kept by a live keeper in another tab (BUG-3863: stamped with its id).
 	const draft = { markdown: base.content.replace('Paragraph three.', 'Paragraph three, mine.'), savedAt: Date.now(), baseSeq: base.seq, baseBody: base.content, keeper: 'k-other-tab' };
 
 	const { ctx, page } = await openWithDraft(browser, fixture, ref, key, draft);
 	const notice = page.getByTestId('refused-raw-draft');
 	await expect(notice, 'premise: shown as a patch restore').toContainText('restoring applies only your changes');
-	// This tab held it  (BUG-3863); that keeper's send then flags the held
+	// This tab held it (BUG-3863); that keeper's send then flags the held
 	// copy stale by its id: same text, same base.
 	expect(await page.evaluate((k) => localStorage.getItem(k), key), 'premise: the shown draft was held').toBeNull();
 	await page.evaluate(([k, v]) => localStorage.setItem(`${k}:held`, v), [key, JSON.stringify({ ...draft, baseStale: true })] as const);
@@ -164,7 +164,7 @@ test('a shown draft rewritten as stale in storage is not patched when Restore is
 	await ctx.close();
 });
 
-// TASK-3856 r3  (hunter Low): a whole-body restore never reads the base, so a
+// TASK-3856 r3 (hunter Low): a whole-body restore never reads the base, so a
 // stale rewrite of the shown draft does not stop it: the first click sends the
 // restore. (With the editor open the server may refuse it over pending edits
 // and ask first; that flow is the existing one and is not what this pins.)

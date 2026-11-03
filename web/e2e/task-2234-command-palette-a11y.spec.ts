@@ -4,7 +4,7 @@ import AxeBuilder from '@axe-core/playwright';
 import { quietCrossActorToasts } from './fixtures';
 
 /**
- * TASK-2234  (July audit C8 + C45): the command palette, keyboard only, as a
+ * TASK-2234 (July audit C8 + C45): the command palette, keyboard only, as a
  * screen reader meets it. The input is a combobox controlling a listbox of
  * options; arrowing moves aria-activedescendant and aria-selected; the result
  * count is announced; Enter opens the selected result. With an empty query
@@ -151,9 +151,9 @@ test('the command palette is a combobox a keyboard and a screen reader can use',
 		// so the dark scan sets the attribute and proves it took.
 		await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
 		await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-		// The chips fade their colours  (`transition: all 0.15s`), so a scan taken
+		// The chips fade their colours (`transition: all 0.15s`), so a scan taken
 		// as the theme flips reads in-between colours that are neither theme's.
-		// That failed CI on #1851 with #9b9baa on #3b3b44  (4.04:1), passing 13/13
+		// That failed CI on #1851 with #9b9baa on #3b3b44 (4.04:1), passing 13/13
 		// locally. Scan only once every transition has finished.
 		await settleTransitions(page);
 		const dark = await new AxeBuilder({ page }).include('.palette').analyze();
@@ -172,7 +172,7 @@ test('the command palette is a combobox a keyboard and a screen reader can use',
 		await page.waitForURL(/\/tasks\//);
 		await page.waitForTimeout(1500);
 
-		// Recents: an empty query lists them, and the keyboard works on them  (C45).
+		// Recents: an empty query lists them, and the keyboard works on them (C45).
 		await page.keyboard.press('Control+k');
 		await expect(input).toBeFocused();
 		await expect(input).toHaveValue('');

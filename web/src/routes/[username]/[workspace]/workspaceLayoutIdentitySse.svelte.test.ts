@@ -1,7 +1,7 @@
-// Runs in the jsdom vitest project  (filename ends `.svelte.test.ts`).
+// Runs in the jsdom vitest project (filename ends `.svelte.test.ts`).
 //
 // BUG-3005 — the persistent workspace layout across an identity
-// change. Two bindings, and neither is observable anywhere else  (CONVE-19):
+// change. Two bindings, and neither is observable anywhere else (CONVE-19):
 //
 // A real identity change RELOADS the tab , so this
 // layout no longer re-runs its per-workspace work and no longer remounts leaf
@@ -10,7 +10,7 @@
 // What survives here is the SSE DISCONNECT, and it is not redundant with the
 // reload. `sseService.connect` is idempotent per workspace, so the EventSource
 // A opened keeps delivering into this tab for the whole pre-reload window.
-// Signing in as B destroys A's session row  (BUG-3011), so BUG-3007's
+// Signing in as B destroys A's session row (BUG-3011), so BUG-3007's
 // server-side close ends that stream too, but only on its next revalidation
 // tick. Closing it here bounds that window to zero.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -82,7 +82,7 @@ let mountCount = 0;
 const childSnippet = createRawSnippet(() => ({
 	// Counted in `render`, not in the factory: the factory is invoked once per
 	// snippet value, so a remount would not move it and the test would be
-	// vacuous. `render` runs each time the block is  (re)created.
+	// vacuous. `render` runs each time the block is (re)created.
 	render: () => {
 		mountCount++;
 		return `<div>leaf</div>`;

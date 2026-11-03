@@ -1,4 +1,4 @@
-// Setup for the `idb` vitest project  (PLAN-2636 unit 1). Installs
+// Setup for the `idb` vitest project (PLAN-2636 unit 1). Installs
 // fake-indexeddb's in-memory IndexedDB as the global `indexedDB` (and the full
 // set of `IDB*` interface globals — `IDBRequest`, `IDBKeyRange`, `IDBDatabase`
 // … — which the `idb` wrapper references) so `localIndexPersistence` — which
@@ -12,7 +12,7 @@
 // The interface classes are stateless and stay put; only the factory (which
 // owns the databases) is swapped. Tests that also need localIndexPersistence's
 // own module-level connection cache reset pair this with `loadPersistence()`
-//  (vi.resetModules) from the idb harness.
+// (vi.resetModules) from the idb harness.
 
 import 'fake-indexeddb/auto';
 import { IDBFactory } from 'fake-indexeddb';

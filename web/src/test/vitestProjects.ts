@@ -1,6 +1,6 @@
-// Project admission + project-count reporting for `web/vitest.config.ts`  (BUG-3045).
+// Project admission + project-count reporting for `web/vitest.config.ts` (BUG-3045).
 //
-// The web suite is several vitest PROJECTS  (`node`, `idb`, `jsdom`). Each of the
+// The web suite is several vitest PROJECTS (`node`, `idb`, `jsdom`). Each of the
 // non-`node` ones needs devDependencies that the config used to probe with
 // `require.resolve`, registering the project only when they resolved. A missing
 // dependency therefore NARROWED the run instead of failing it: `npm test` exited
@@ -28,7 +28,7 @@
 //
 // What the line does NOT prove, because it counts FILES:
 //  - not that any assertion executed — a file of `.skip`ped tests counts as run
-//     (vitest's own summary reports the skips);
+// (vitest's own summary reports the skips);
 //  - not that a project SHOULD have had files: an idle project is printed, not
 //    failed, because a file filter legitimately idles one. `projectForTestFile`
 //    below is the guard for the accidental version of that;
@@ -124,7 +124,7 @@ export function formatUnsatisfiedProjectsError(unsatisfied: readonly Unsatisfied
  * `registered` is the post-`--project`-filter set, so a deliberately narrowed run
  * reports the narrow number and says which projects it kept. A registered project
  * that ran NO modules is called out by name but is not an error — a file-filtered
- * run  (`vitest run src/lib/foo.test.ts`) legitimately leaves the other projects
+ * run (`vitest run src/lib/foo.test.ts`) legitimately leaves the other projects
  * with nothing to do.
  */
 export function formatProjectRunSummary(

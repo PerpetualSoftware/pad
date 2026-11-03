@@ -86,8 +86,8 @@ async function accountFor(fixture: SuiteFixture, username: string, email: string
 
 /**
  * Creates the workspace over a COOKIE session, as the web UI does: a
- * workspace created by a bearer client  (`pad init`) records source=cli and is
- * already showing agent activity  (BUG-1557), which is not the first run this
+ * workspace created by a bearer client (`pad init`) records source=cli and is
+ * already showing agent activity (BUG-1557), which is not the first run this
  * spec is about.
  */
 async function createWebWorkspace(fixture: SuiteFixture, email: string, name: string): Promise<string> {

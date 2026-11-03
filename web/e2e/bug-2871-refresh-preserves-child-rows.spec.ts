@@ -9,7 +9,7 @@ import type { SuiteFixture } from './fixtures';
  *
  * `loadChildren()` set `loading = true` before every fetch, and the template
  * swaps the whole list for a spinner while loading. Any `item_created` in the
- * workspace triggers that refresh  (ChildItems' SSE subscription), so with other
+ * workspace triggers that refresh (ChildItems' SSE subscription), so with other
  * people working it fired constantly — and each time, every row node was
  * destroyed and rebuilt even when the data came back identical.
  *
@@ -67,7 +67,7 @@ test('BUG-2871: a same-data refresh keeps the child row node', async ({
 	await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/docs`);
 	// By the seeded slug, not the title prefix: on a retry the previous
 	// attempt's parent is still on this shared board under the same prefix,
-	// and .first() opened it  (BUG-3553, seen on #2049's run 38111320569).
+	// and .first() opened it (BUG-3553, seen on #2049's run 38111320569).
 	await clickBoardCard(page.locator(`.item-card[data-item-slug="${parent.slug}"]`));
 	const pane = page.locator('.item-pane');
 	await expect(pane).toBeVisible();

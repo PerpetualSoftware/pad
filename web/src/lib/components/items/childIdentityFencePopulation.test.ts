@@ -98,7 +98,7 @@
  *       continuations are ENUMERATED mechanically and must each appear in
  *       `KNOWN_CONTINUATIONS` — still not MODELLED: the leg proves a new one is
  *       read, not that it is fenced.
- *   (g) OTHER DEFERRALS (BUG-3130). A callback run later by
+ * (g) OTHER DEFERRALS (BUG-3130). A callback run later by
  *       anything that is not an `await` or a promise continuation — `setTimeout`
  *       / `setInterval`, `requestAnimationFrame`, `queueMicrotask`, an event
  *       listener, a store subscription — or a callback a helper runs after its
@@ -113,7 +113,7 @@
  *       fence captured at the burst's first keystroke. Left as a gap rather than a third table
  *       because timers and listeners are mostly UI, and a table of them would
  *       be read as coverage of the effects they schedule, which it would not be.
- *   (h) WHAT A TABLE ROW PINS (BUG-3130). A row in
+ * (h) WHAT A TABLE ROW PINS (BUG-3130). A row in
  *       `KNOWN_OUTSIDE_FENCE` / `KNOWN_CONTINUATIONS` pins a callee (or a chain
  *       root) in a function, and how many times it occurs — not the arguments
  *       or the callback body. `toastStore.show('Copied')` becoming

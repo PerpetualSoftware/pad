@@ -23,11 +23,11 @@ import {
 
 /**
  * THE VIEWER'S ZOOM / PAN / LOADING BEHAVIOUR, IN A REAL BROWSER
- *  (PLAN-2392 phase 3b / TASK-2461, DR-9).
+ * (PLAN-2392 phase 3b / TASK-2461, DR-9).
  *
  * jsdom has no layout, no CSS and no gestures, so the unit suite proves the
- * zoom/pan MATH  (zoom.test.ts) and the loader's request POLICY
- *  (viewerImageLoader.svelte.test.ts) but never that a wheel/key/drag reaches
+ * zoom/pan MATH (zoom.test.ts) and the loader's request POLICY
+ * (viewerImageLoader.svelte.test.ts) but never that a wheel/key/drag reaches
  * that math, that the transform actually paints, that a clamp holds against real
  * geometry, or that a control stays clickable under a scaled image. Each test
  * here is written against "what mutation would this catch that a jsdom-equivalent
@@ -38,7 +38,7 @@ const BIG_W = 1600;
 
 /**
  * Open the viewer on a >1024px image and wait until the ORIGINAL has painted
- *  (naturalWidth === 1600), so geometry is settled past the thumb→original
+ * (naturalWidth === 1600), so geometry is settled past the thumb→original
  * upgrade and every zoom/pan measurement below is deterministic.
  */
 async function openBig(
@@ -67,7 +67,7 @@ async function openBig(
 
 /**
  * Zoom to maximum: press '+' in BURSTS, settle once per burst, and stop at the
- * first burst that does not climb  (the clamp).
+ * first burst that does not climb (the clamp).
  *
  * A burst is safe because each press computes from the viewer's zoom STATE, not
  * from the rendered matrix, so four presses land exactly four steps however the
@@ -75,9 +75,9 @@ async function openBig(
  * that does not climb really is the clamp and not a read taken too early.
  *
  * It used to settle after EVERY press, with a 1.5s wait for the clamp press to
- * climb. Once settleScale waited out the full 0.15s transition  (BUG-3213),
+ * climb. Once settleScale waited out the full 0.15s transition (BUG-3213),
  * paying that on every step moved all three callers 2-3s closer to the 30s
- * budget at 8 workers  (pan-clamp p50 17.2s → 19.8s, max 19.6s → 25.2s).
+ * budget at 8 workers (pan-clamp p50 17.2s → 19.8s, max 19.6s → 25.2s).
  */
 async function zoomToMax(page: Page): Promise<number> {
 	const BURST = 4;
@@ -106,7 +106,7 @@ test.describe('attachment viewer — desktop zoom & pan (TASK-2461)', () => {
 		request
 	}) => {
 		// jsdom has no layout, so `getComputedStyle(img).transform` is never a real
-		// matrix there — a handler wired to nothing  (or to a no-op `zoomTo`) passes
+		// matrix there — a handler wired to nothing (or to a no-op `zoomTo`) passes
 		// every unit test. Here the proof is the painted matrix moving off identity.
 		await openBig(page, fixture, request, 'Zoom transforms');
 		const stage = page.locator(VIEWER_STAGE);
@@ -116,7 +116,7 @@ test.describe('attachment viewer — desktop zoom & pan (TASK-2461)', () => {
 
 		expect(await renderedScale(page), 'opens at fit (scale 1)').toBeCloseTo(1, 1);
 
-		// WHEEL  (plain) in.
+		// WHEEL (plain) in.
 		await page.mouse.move(cx, cy);
 		await page.mouse.wheel(0, -120);
 		await expect.poll(() => renderedScale(page)).toBeGreaterThan(1.05);
@@ -131,10 +131,10 @@ test.describe('attachment viewer — desktop zoom & pan (TASK-2461)', () => {
 		await expect.poll(() => renderedScale(page)).toBeGreaterThan(1.05);
 		await page.keyboard.press('0');
 
-		// CTRL+WHEEL in — a genuinely separate gesture path  (Control HELD). We assert
+		// CTRL+WHEEL in — a genuinely separate gesture path (Control HELD). We assert
 		// it zooms the IMAGE; that the viewer's `preventDefault` also suppresses the
 		// browser's own ctrl-wheel page-zoom is not reliably observable through
-		// Playwright  (page zoom does not move visualViewport.scale), so it is left to
+		// Playwright (page zoom does not move visualViewport.scale), so it is left to
 		// the unit coverage of the non-passive listener.
 		expect(afterWheel, 'the plain-wheel leg zoomed').toBeGreaterThan(1.05);
 		await page.mouse.move(cx, cy);
@@ -144,7 +144,7 @@ test.describe('attachment viewer — desktop zoom & pan (TASK-2461)', () => {
 		await expect.poll(() => renderedScale(page)).toBeGreaterThan(1.05);
 		await page.keyboard.press('0');
 
-		// DOUBLE-CLICK toggles fit → actual  (a jump well past 1).
+		// DOUBLE-CLICK toggles fit → actual (a jump well past 1).
 		await page.mouse.dblclick(cx, cy);
 		await expect.poll(() => renderedScale(page)).toBeGreaterThan(1.05);
 	});
@@ -164,7 +164,7 @@ test.describe('attachment viewer — desktop zoom & pan (TASK-2461)', () => {
 
 		// HIT TEST — the point proof that the scaled image does not paint over the
 		// controls: `elementFromPoint` at each control's centre must return that
-		// control, not the IMG. jsdom cannot do this  (no layout, no stacking).
+		// control, not the IMG. jsdom cannot do this (no layout, no stacking).
 		const topAt = (sel: string) =>
 			page.evaluate((s) => {
 				const front = [...document.querySelectorAll('.attachment-viewer')].at(-1);
@@ -205,7 +205,7 @@ test.describe('attachment viewer — desktop zoom & pan (TASK-2461)', () => {
 	});
 
 	test('a wheel-zoom keeps the ANCHORED point under the cursor', async ({ page, fixture, request }) => {
-		// The property that separates pointer-anchored zoom  (TASK-2457) from
+		// The property that separates pointer-anchored zoom (TASK-2457) from
 		// centre-anchored: the image content under the cursor stays under it. jsdom
 		// has no cursor and no rect, so the anchor math has never been exercised
 		// against real geometry. Mutating the anchor to the stage centre drifts the
@@ -224,7 +224,7 @@ test.describe('attachment viewer — desktop zoom & pan (TASK-2461)', () => {
 		await settleScale(page);
 		const after = await imageRect(page);
 		// The same image-fractional point, mapped through the NEW rect, is still
-		// under the cursor  (uniform scale ⇒ linear map).
+		// under the cursor (uniform scale ⇒ linear map).
 		expect(Math.abs(after.x + fx * after.width - px), 'anchored X held').toBeLessThan(3);
 		expect(Math.abs(after.y + fy * after.height - py), 'anchored Y held').toBeLessThan(3);
 	});
@@ -234,7 +234,7 @@ test.describe('attachment viewer — desktop zoom & pan (TASK-2461)', () => {
 		fixture,
 		request
 	}) => {
-		// TWO legs on purpose  (TASK-2461): a one-legged "it panned" passes with the
+		// TWO legs on purpose (TASK-2461): a one-legged "it panned" passes with the
 		// clamp disabled, and a one-legged "it stopped" passes with pan disabled
 		// entirely. jsdom clamps against all-zero geometry, so neither leg has run
 		// against real bounds.
@@ -247,7 +247,7 @@ test.describe('attachment viewer — desktop zoom & pan (TASK-2461)', () => {
 		// Settle at the centred max-zoom position before measuring.
 		const r0 = await imageRect(page);
 		// POSITIVE leg — an 80px in-bounds drag moves the image ~80px to the RIGHT
-		//  (the pan follows the pointer). A small hold at the start engages the drag
+		// (the pan follows the pointer). A small hold at the start engages the drag
 		// cleanly past the 4px threshold.
 		await page.mouse.move(cx, cy);
 		await page.mouse.down();
@@ -295,7 +295,7 @@ test.describe('attachment viewer — desktop zoom & pan (TASK-2461)', () => {
 		const px = Math.max(2, Math.round(stage.x / 2));
 		const py = Math.round(stage.y + stage.height / 2);
 
-		// LEG 2 first  (it must NOT close): press, drag past threshold, return to the
+		// LEG 2 first (it must NOT close): press, drag past threshold, return to the
 		// SAME backdrop point, release → a synthesized backdrop click that the drag
 		// must suppress.
 		await page.mouse.move(px, py);
@@ -318,11 +318,11 @@ test.describe('attachment viewer — desktop zoom & pan (TASK-2461)', () => {
 		fixture,
 		request
 	}) => {
-		// THE UNCOVERED POINT  (TASK-2461). The existing suite clicks  (4,4) — outside
+		// THE UNCOVERED POINT (TASK-2461). The existing suite clicks (4,4) — outside
 		// the centred stage — so a stage that swallowed letterbox clicks would stay
 		// green. A wide image is letterboxed top/bottom; a click in that band is
 		// INSIDE the stage box, off the image, and must reach the backdrop and close
-		//  (the stage letterbox is `pointer-events: none`).
+		// (the stage letterbox is `pointer-events: none`).
 		await openBig(page, fixture, request, 'Dismiss letterbox', ['wide.png'], WIDE_PNG, 1600);
 		const stage = (await page.locator(VIEWER_STAGE).boundingBox())!;
 		const img = await imageRect(page);
@@ -340,7 +340,7 @@ test.describe('attachment viewer — desktop zoom & pan (TASK-2461)', () => {
 	}) => {
 		// `maxScale` is geometry-dependent: ENLARGING the window lowers `actualScale`
 		// and with it the ceiling, stranding a previously-valid scale above it
-		//  (TASK-2455). jsdom fires no resize with real geometry, so the re-clamp
+		// (TASK-2455). jsdom fires no resize with real geometry, so the re-clamp
 		// effect has never run against a live layout change.
 		await openBig(page, fixture, request, 'Resize clamp');
 		const maxBefore = await zoomToMax(page);
@@ -354,7 +354,7 @@ test.describe('attachment viewer — desktop zoom & pan (TASK-2461)', () => {
 		// zoomed" leg is what makes this a clamp and not a reset.
 		expect(after, 'the image is still zoomed in, not reset to fit').toBeGreaterThan(1.5);
 		// And it sits at the NEW maximum, not some arbitrary lower value: pressing '+'
-		// again does not climb  (already at the clamp).
+		// again does not climb (already at the clamp).
 		await page.keyboard.press('+');
 		expect(await settleScale(page), 'the clamped scale IS the new maximum').toBeCloseTo(after, 1);
 	});
@@ -364,7 +364,7 @@ test.describe('attachment viewer — desktop zoom & pan (TASK-2461)', () => {
 		fixture,
 		request
 	}) => {
-		// TWO legs  (TASK-2461): the one-legged "reduced-motion has no transition"
+		// TWO legs (TASK-2461): the one-legged "reduced-motion has no transition"
 		// passes against a viewer that never animates at all. `Modal.svelte:207` is
 		// the precedent this follows.
 		await openBig(page, fixture, request, 'Reduced motion');
@@ -388,12 +388,12 @@ test.describe('attachment viewer — desktop zoom & pan (TASK-2461)', () => {
 	}) => {
 		// DR-4. Under forced-colors the custom palette is discarded and the image's
 		// box-shadow BOUNDARY vanishes; the media block's explicit border is what
-		// keeps it visible. Asserted on COMPUTED STYLE  (a border with real width),
+		// keeps it visible. Asserted on COMPUTED STYLE (a border with real width),
 		// not DOM presence. jsdom has no forced-colors media and computes no border.
 		//
 		// The IMAGE border is the mutation-load-bearing proof: the base `.lightbox-
 		// image` has NO border, so its width>0 here comes ONLY from the media block
-		//  (removing that rule fails this — verified). The CONTROLS already carry a
+		// (removing that rule fails this — verified). The CONTROLS already carry a
 		// base 1px border that forced-colors re-colours to a system colour, so they
 		// are visible regardless; the control leg is a genuine "still visible" check,
 		// not a proof of the media rule (border COLOUR under forced-colors resolves
@@ -418,7 +418,7 @@ test.describe('attachment viewer — desktop zoom & pan (TASK-2461)', () => {
 	});
 });
 
-/** The viewer image's current `src` attribute  (the URL the browser is loading). */
+/** The viewer image's current `src` attribute (the URL the browser is loading). */
 function imageSrc(page: Page): Promise<string> {
 	return page.locator(VIEWER_IMAGE).evaluate((el) => el.getAttribute('src') ?? '');
 }
@@ -430,7 +430,7 @@ function imageNat(page: Page): Promise<number> {
 /**
  * Intercept the attachment DOWNLOAD requests so the thumb→original swap is
  * deterministic: `?variant=thumb-md` → a bounded 800px thumb, the no-variant
- * original → the 1600px BIG_PNG  (optionally delayed). Other variants — the
+ * original → the 1600px BIG_PNG (optionally delayed). Other variants — the
  * strip's own tile thumbnail — fall through to the real server. The upload
  * itself goes through the Node API context, not the page, so it is never
  * intercepted and the server records the real 1600×1200 metadata.
@@ -445,7 +445,7 @@ async function stubVariants(page: Page, originalDelayMs = 0): Promise<void> {
 			// The variant-less URL is BOTH the original image GET and the T6 metadata
 			// HEAD probe. Only the GET is the ORIGINAL bytes this stub delays/serves;
 			// let the HEAD reach the real server so the existence probe answers
-			// promptly  (a delayed/stubbed HEAD would stall the metadata machine).
+			// promptly (a delayed/stubbed HEAD would stall the metadata machine).
 			if (route.request().method() !== 'GET') return route.continue();
 			if (originalDelayMs) await new Promise((r) => setTimeout(r, originalDelayMs));
 			return route.fulfill({ contentType: 'image/png', body: BIG_PNG });
@@ -476,12 +476,12 @@ test.describe('attachment viewer — desktop loading policy (TASK-2461)', () => 
 		// arrived AND painted. A mere request-order check would pass an impl that
 		// fired both immediately; the finish→start ordering rules that out.
 		const timeline: string[] = [];
-		// GET-ONLY  (PLAN-2392 3c-ii T6): the metadata machine now fires a `no-store`
-		// HEAD of the canonical  (variant-less) URL on every open — which matches the
+		// GET-ONLY (PLAN-2392 3c-ii T6): the metadata machine now fires a `no-store`
+		// HEAD of the canonical (variant-less) URL on every open — which matches the
 		// variant-less arm of this regex and would land in the timeline as a spurious
 		// `original:start` at index 0, BEFORE the thumb. The image loads are GETs; the
 		// revalidation probe is a HEAD. Filtering to GET keeps this test about the
-		// thumb→original BITMAP swap, not the T6 existence probe  (which leg 5 owns).
+		// thumb→original BITMAP swap, not the T6 existence probe (which leg 5 owns).
 		const isViewerReq = (r: import('@playwright/test').Request) =>
 			r.method() === 'GET' &&
 			/\/attachments\/[^/?]+(\?variant=(thumb-md|original))?$/.test(r.url()) &&
@@ -500,7 +500,7 @@ test.describe('attachment viewer — desktop loading policy (TASK-2461)', () => 
 		await page.locator(TILE).first().click();
 		await expect(page.locator(VIEWER_IMAGE)).toBeVisible();
 
-		// The final painted bitmap is the ORIGINAL  (naturalWidth 1600, no variant).
+		// The final painted bitmap is the ORIGINAL (naturalWidth 1600, no variant).
 		await expect.poll(() => imageNat(page)).toBe(1600);
 		expect(await imageSrc(page)).not.toContain('variant=');
 		// The thumb was requested first, its response FINISHED (bytes arrived, the
@@ -520,24 +520,24 @@ test.describe('attachment viewer — desktop loading policy (TASK-2461)', () => 
 	}) => {
 		// TASK-2459's carried-forward concern, proven in a real engine. The originals
 		// are SLOW, so a rapid A→B→A navigates away while A's first original is still
-		// in flight: the first A element is torn down  (the `{#key loadToken}` remount)
+		// in flight: the first A element is torn down (the `{#key loadToken}` remount)
 		// with a pending load, and a fresh element takes over for the third visit. The
 		// live A must end on ITS OWN original — not B's content, not a broken image,
 		// not an error — which is what the per-mount generation fence + load key
 		// guarantee. jsdom has no real network timing to stage this.
 		//
-		// NOTE  (honest scope): Chromium ABORTS a detached <img>'s in-flight request,
+		// NOTE (honest scope): Chromium ABORTS a detached <img>'s in-flight request,
 		// so the exact "detached element fires a late ERROR that clobbers the live
 		// one" case the data-gen fence guards is not reachable in a browser — the
 		// engine cancels first. That case is covered by the unit tests
-		//  (viewerImageLoader / Lightbox); this leg proves the rapid-nav END-STATE
+		// (viewerImageLoader / Lightbox); this leg proves the rapid-nav END-STATE
 		// integrity, the practical half of the concern.
 		await browserLogin(page);
 		const doc = await seedDoc(fixture, request, 'Gen fence');
 		const aId = await uploadAttachment(fixture, request, doc.id, 'gen-a.png', 'image/png', BIG_PNG);
 		const bId = await uploadAttachment(fixture, request, doc.id, 'gen-b.png', 'image/png', BIG_PNG);
 
-		// thumb-md → the bounded thumb  (fast); the original → BIG, but SLOW, so the
+		// thumb-md → the bounded thumb (fast); the original → BIG, but SLOW, so the
 		// nav races the in-flight upgrade.
 		await stubVariants(page, 1500);
 
@@ -555,7 +555,7 @@ test.describe('attachment viewer — desktop loading policy (TASK-2461)', () => 
 		await expect(page.locator(TILE)).toHaveCount(2);
 		await page.locator(`${TILE}[aria-label*="gen-a.png"]`).click();
 		await expect(page.locator(VIEWER)).toHaveCount(1);
-		// A's  (slow) original request is in flight before we navigate.
+		// A's (slow) original request is in flight before we navigate.
 		await expect.poll(() => aOriginalRequested).toBe(true);
 
 		// A→B→A: the first A element is torn down mid-load; a fresh one takes over.
@@ -587,7 +587,7 @@ test.describe('attachment viewer — mobile DR-5b (TASK-2461)', () => {
 		fixture,
 		request
 	}) => {
-		// DR-5b mobile  (TASK-2460): a large image auto-fetches NOTHING — a tap-to-load
+		// DR-5b mobile (TASK-2460): a large image auto-fetches NOTHING — a tap-to-load
 		// affordance stands in, and only a real tap issues the original request. The
 		// no-request half is the assertion that fails if the deferral is dropped; the
 		// tap half proves the affordance is a live, hit-testable control (not pointer-
@@ -597,7 +597,7 @@ test.describe('attachment viewer — mobile DR-5b (TASK-2461)', () => {
 		await page.route('**/attachments/*', async (route) => {
 			const url = new URL(route.request().url());
 			if (/\/attachments\/[^/?]+$/.test(url.pathname) && !url.searchParams.get('variant')) {
-				// GET-ONLY  (PLAN-2392 3c-ii T6): the metadata machine fires a `no-store`
+				// GET-ONLY (PLAN-2392 3c-ii T6): the metadata machine fires a `no-store`
 				// HEAD of this same variant-less URL on open. That is the existence
 				// probe, NOT the deferred ORIGINAL image fetch this test counts — let
 				// the real server answer it so metadata resolves, and don't count it.
@@ -611,7 +611,7 @@ test.describe('attachment viewer — mobile DR-5b (TASK-2461)', () => {
 		});
 		await browserLogin(page);
 		const doc = await seedDoc(fixture, request, 'Mobile deferred');
-		// A genuinely large image  (>8 MP) so mobile classifies it as the DEFERRED
+		// A genuinely large image (>8 MP) so mobile classifies it as the DEFERRED
 		// cell — a 1.9 MP image is only the mobile thumb cell.
 		await uploadAttachment(fixture, request, doc.id, 'mobile-huge.png', 'image/png', HUGE_PNG);
 		await page.goto(itemUrl(fixture, doc.slug));
@@ -624,13 +624,13 @@ test.describe('attachment viewer — mobile DR-5b (TASK-2461)', () => {
 		expect(originalRequests, 'no original fetched before the tap').toBe(0);
 
 		// A REAL tap loads the original — the request fires, the bitmap DECODES
-		//  (naturalWidth settles), and no error state appears.
+		// (naturalWidth settles), and no error state appears.
 		await viewerTapLoad(page).tap();
 		await expect(page.locator(VIEWER_IMAGE)).toBeVisible();
 		await expect.poll(() => imageNat(page)).toBe(1600); // the stubbed original decoded
 		expect(await imageSrc(page)).not.toContain('variant=');
 		await expect(page.locator(`${VIEWER} .lightbox-error`)).toHaveCount(0);
-		// EXACTLY one original request — the tap loads it once  (dedup), not zero and
+		// EXACTLY one original request — the tap loads it once (dedup), not zero and
 		// not a double-fetch.
 		expect(originalRequests, 'the tap issued exactly one original request').toBe(1);
 	});

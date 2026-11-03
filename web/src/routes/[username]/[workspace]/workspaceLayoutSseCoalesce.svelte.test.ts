@@ -71,7 +71,7 @@ let mountCount = 0;
 const childSnippet = createRawSnippet(() => ({
 	// Counted in `render`, not in the factory: the factory is invoked once per
 	// snippet value, so a remount would not move it and the test would be
-	// vacuous. `render` runs each time the block is  (re)created.
+	// vacuous. `render` runs each time the block is (re)created.
 	render: () => {
 		mountCount++;
 		return `<div>leaf</div>`;

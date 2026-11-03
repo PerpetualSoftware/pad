@@ -100,7 +100,7 @@ test('BUG-2389: a shared item renders attachment refs as honest placeholders, no
 	}
 });
 
-// TASK-2247: an UNATTACHED upload  ("pad attachment upload -") that an item
+// TASK-2247: an UNATTACHED upload ("pad attachment upload -") that an item
 // embeds is a placeholder on that item's share, because a share serves only
 // attachments the item owns. Attaching it to the item makes the same share
 // render it, with real pixels. The first half is the control: main renders

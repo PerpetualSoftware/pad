@@ -11,7 +11,7 @@ import { flushSync, mount, unmount, tick } from 'svelte';
  * row to say an agent was involved.
  *
  * The fix renders both facts rather than swapping which one is hidden, and
- * these assert the page's rendered cell  (CONVE-19): `agentActor.ts` is unit
+ * these assert the page's rendered cell (CONVE-19): `agentActor.ts` is unit
  * tested separately, and a correct helper this page never calls would pass
  * all of those.
  */

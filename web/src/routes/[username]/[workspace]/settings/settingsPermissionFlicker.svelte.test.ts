@@ -100,7 +100,7 @@ describe('BUG-2978: settings permissions survive the /me window', () => {
 		// session has already answered. So this test now asserts two things at
 		// once, and the first is the load-bearing one — the window does not open
 		// at all. The page keeps its sticky `membershipKnown`-gated read as
-		// defence in depth  (and it still covers a FIRST resolution), which is
+		// defence in depth (and it still covers a FIRST resolution), which is
 		// why the assertion below would also hold if the store fix were
 		// reverted; the membership assertion is what fails in that case.
 		const second = workspaceStore.setCurrent('ws');

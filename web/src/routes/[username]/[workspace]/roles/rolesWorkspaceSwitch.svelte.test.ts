@@ -4,7 +4,7 @@ import { tick } from 'svelte';
 
 /**
  * BUG-3701: a param-only navigation /A/roles -> /B/roles keeps this page
- * mounted  (SvelteKit reuses the component), and the board used to load only
+ * mounted (SvelteKit reuses the component), and the board used to load only
  * on mount, so A's lanes stayed under B's heading. The page's data belongs to
  * a workspace as well as an identity.
  *
@@ -25,10 +25,10 @@ vi.mock('$lib/stores/toast.svelte', () => ({
 
 const auth = vi.hoisted(() => {
 	// Epoch read through a late-bound hook so it can be backed by the family's
-	// REAL `$state` signal  (bound below). See `identityEpochMock.svelte.ts`:
+	// REAL `$state` signal (bound below). See `identityEpochMock.svelte.ts`:
 	// a non-reactive double turns every "did this effect re-run?" assertion
 	// into "does this compile?", which is how a defect survived every
-	// instrument on the collection page  (BUG-3084 checkpoint 18).
+	// instrument on the collection page (BUG-3084 checkpoint 18).
 	const hook = { read: null as null | (() => number), write: null as null | ((n: number) => void) };
 	let fallback = 0;
 	const getEpoch = () => (hook.read ? hook.read() : fallback);
@@ -45,7 +45,7 @@ const auth = vi.hoisted(() => {
 		bumpEpoch() { setEpoch(getEpoch() + 1); },
 		resetEpoch() { setEpoch(0); },
 		identityFence() { const c = getEpoch(); return () => getEpoch() === c; },
-		// A REAL registry, not a no-op  (BUG-3084 checkpoint 13). The reload leg
+		// A REAL registry, not a no-op (BUG-3084 checkpoint 13). The reload leg
 		// below has to drive the page's own identity-change listener, because
 		// the window it is about only exists WHILE that reload is in flight.
 		listeners: [] as Array<() => void>,
@@ -65,7 +65,7 @@ const boardCalls = vi.hoisted(() => [] as Array<(v: unknown) => void>);
 // Which user `/auth/session` answers with. The resume leg flips it so the
 // reload lands under a DIFFERENT identity than the mount did — without that,
 // "the page works again" and "the page never changed hands" are the same
-// observation  (CONVE-12).
+// observation (CONVE-12).
 const sessionUser = vi.hoisted(() => ({ id: 'u1' }));
 
 vi.mock('$lib/api/client', () => ({

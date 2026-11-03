@@ -1,8 +1,8 @@
 // TASK-2231: the starred page lists the starred store's ids against the
 // local index's rows, and makes no request of its own. What the server's
 // starred query used to decide is the page's now, and is pinned here: star
-// order  (most recently starred first), completed items left out unless asked
-// for  (judged by each collection's done field), an id the index does not hold
+// order (most recently starred first), completed items left out unless asked
+// for (judged by each collection's done field), an id the index does not hold
 // left out, and an unstar removing the card at once.
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { cleanup, render, screen, waitFor } from '@testing-library/svelte';
@@ -83,7 +83,7 @@ afterEach(() => {
 
 describe('starred page from the index (TASK-2231)', () => {
 	it('lists in star order, not in the index order, and asks only for ids', async () => {
-		// The index holds Alpha first  (and it is the newer edit); Beta was
+		// The index holds Alpha first (and it is the newer edit); Beta was
 		// starred more recently, so star order puts it first.
 		fake.rows = [row('a', 'Alpha', { updated_at: '2026-03-01T00:00:00Z' }), row('b', 'Beta')];
 		starred.ids = ['b', 'a'];

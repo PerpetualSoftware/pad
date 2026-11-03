@@ -4,7 +4,7 @@ import type { APIRequestContext, Locator, Page } from '@playwright/test';
 import type { SuiteFixture } from './fixtures';
 
 /**
- * TASK-3311 — touch targets at phone width, second pass  (split out of TASK-2244):
+ * TASK-3311 — touch targets at phone width, second pass (split out of TASK-2244):
  *  1. the list group header's archive button was 18x14 and opacity 0 until
  *     hover, so on touch it could not be seen or reached;
  *  2. the board lane + and ⋯ were 32x32;
@@ -94,7 +94,7 @@ test('TASK-3311: on touch the group archive button is visible and tappable acros
 	const area = { x: b.x + b.width / 2 - MIN / 2, y: b.y + b.height / 2 - MIN / 2, w: MIN, h: MIN };
 	expect(await probe(btn, area, 'hits'), 'points in the 44x44 area that miss the archive button').toEqual([]);
 
-	// The ⋯ group menu beside it  (TASK-2222) is a 44x44 target of its own that
+	// The ⋯ group menu beside it (TASK-2222) is a 44x44 target of its own that
 	// must not overlap the archive button's area.
 	const menu = page.locator('.group-menu-btn').first();
 	if ((await menu.count()) > 0) {

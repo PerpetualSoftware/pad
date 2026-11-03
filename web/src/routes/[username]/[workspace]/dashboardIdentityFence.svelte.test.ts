@@ -39,7 +39,7 @@ const auth = vi.hoisted(() => {
 	const hook = {
 		read: null as null | (() => number),
 		write: null as null | ((n: number) => void),
-		// The user id is a SIGNAL too  (bound below): the page's recovery is a
+		// The user id is a SIGNAL too (bound below): the page's recovery is a
 		// `(sessionUserId, wsSlug)`-keyed effect, and a plain variable here
 		// would leave it never re-running — the recovery legs would then fail
 		// against a correct page, or worse, be weakened until they passed.

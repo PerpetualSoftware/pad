@@ -1,10 +1,10 @@
 <script lang="ts">
-	// Toolbar for the 3D workspace graph  (PLAN-1730 / TASK-1735).
+	// Toolbar for the 3D workspace graph (PLAN-1730 / TASK-1735).
 	//
 	// Owns the show-completed toggle, the filter controls (collection chips, status
 	// chips, optional role dropdown), the filtered node/edge readout, and the search
 	// fly-to box. It is PURE PRESENTATION + LOCAL UI STATE: the page owns the
-	// authoritative filter $state  (read by its renderer-sync effect) and the
+	// authoritative filter $state (read by its renderer-sync effect) and the
 	// selection machinery. This component receives the current filter values + the
 	// distinct option lists, and emits callbacks the page applies.
 	//
@@ -20,7 +20,7 @@
 	}
 
 	let {
-		// show-completed toggle  (two-way bound to the page).
+		// show-completed toggle (two-way bound to the page).
 		showCompleted = $bindable(),
 		// Filtered vs total counts for the readout.
 		nodeCount,
@@ -32,7 +32,7 @@
 		collections,
 		statuses,
 		roles,
-		// Current filter selections  (page-owned $state, passed down read-only).
+		// Current filter selections (page-owned $state, passed down read-only).
 		selectedCollections,
 		selectedStatuses,
 		selectedRole,
@@ -75,7 +75,7 @@
 		selectedCollections.length + selectedStatuses.length + (selectedRole ? 1 : 0)
 	);
 
-	// ── Search box  (local UI state only) ─────────────────────────────────────────
+	// ── Search box (local UI state only) ─────────────────────────────────────────
 	let query = $state('');
 	let searchOpen = $state(false);
 	// Active descendant in the type-ahead list, -1 when none. Reset on every fresh
@@ -116,7 +116,7 @@
 
 	// Keyboard nav. Escape closes the dropdown WITHOUT bubbling to the page's
 	// window-level Escape-deselect handler — but only when the dropdown is open, so
-	// a stray Escape on an empty/closed box still reaches the page  (CONVE-639 spirit).
+	// a stray Escape on an empty/closed box still reaches the page (CONVE-639 spirit).
 	function onSearchKeydown(e: KeyboardEvent) {
 		if (e.key === 'ArrowDown') {
 			if (!dropdownVisible) return;
@@ -132,9 +132,9 @@
 			const target = highlight >= 0 ? matches[highlight] : matches[0];
 			if (target) pick(target.ref);
 		} else if (e.key === 'Escape') {
-			// Gate on the dropdown actually being VISIBLE  (not just searchOpen):
+			// Gate on the dropdown actually being VISIBLE (not just searchOpen):
 			// Escape in a focused-but-empty search should fall through to the
-			// page-level deselect handler  (#703).
+			// page-level deselect handler (#703).
 			if (dropdownVisible) {
 				e.preventDefault();
 				e.stopPropagation();
@@ -201,7 +201,7 @@
 								class="result"
 								class:active={i === highlight}
 								onmousedown={(e) => {
-									// mousedown  (not click) so the pick fires before the input's
+									// mousedown (not click) so the pick fires before the input's
 									// blur closes the dropdown out from under it.
 									e.preventDefault();
 									pick(m.ref);

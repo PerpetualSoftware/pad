@@ -4,7 +4,7 @@ import type { APIRequestContext } from '@playwright/test';
 import type { SuiteFixture } from './fixtures';
 
 /**
- * Item action bar  (`.meta-actions`) layout invariants.
+ * Item action bar (`.meta-actions`) layout invariants.
  *
  * This band was reverted out of PLAN-2326's `.tab-strip` merge and then given
  * two properties by hand: it stays ONE row at every container width, and every
@@ -20,7 +20,7 @@ import type { SuiteFixture } from './fixtures';
  *
  * That is safe, but only narrowly: `container-type: inline-size` applies style
  * and inline-size containment and NOT layout containment
- *  (css-conditional-5 §container-type). Layout containment is what makes an
+ * (css-conditional-5 §container-type). Layout containment is what makes an
  * element a containing block for fixed-position descendants, so the sheet keeps
  * resolving against the viewport. Add `contain: layout` to this band — or a
  * transform/filter, which establish a containing block by a different route —
@@ -116,7 +116,7 @@ test('action bar: labelled controls share one width and height; ⋯ is exempt', 
 	expect(heights, `all controls share one height, got ${heights.join(',')}`).toHaveLength(1);
 
 	// One width for the labelled controls. Guarded to the wide case: a label
-	// wider than the 70px basis  (e.g. a 3-digit child count) legitimately grows
+	// wider than the 70px basis (e.g. a 3-digit child count) legitimately grows
 	// past it rather than truncating, and this seeded item has no such badge.
 	const widths = [...new Set(labelled.map((c) => c.w))];
 	expect(widths, `labelled controls share one width, got ${widths.join(',')}`).toHaveLength(1);
@@ -157,7 +157,7 @@ test('action bar: the mobile bottom sheet is not trapped by the band container',
 
 	// Both menus in the band get their own pass. They share the Menu +
 	// BottomSheet path today, but they are separate wrappers with separate
-	// styling  (.menu-anchor vs .quick-actions-menu), so asserting one does not
+	// styling (.menu-anchor vs .quick-actions-menu), so asserting one does not
 	// establish the other.
 	for (const trigger of [
 		{ label: '⋯ overflow', sel: 'button.pane-more-btn' },

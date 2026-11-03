@@ -11,16 +11,16 @@ import { asNewUser, openTabs, show, tabBoxes } from './lib/workspace-tabs';
  *     freeze is released when the pointer leaves, on a window resize, and on a
  *     tab change that did not come from this strip's own close;
  *   - with reduced motion a close has no animated phase.
- * The visual half  (flare, dividers, icon, height) is checked by screenshot.
+ * The visual half (flare, dividers, icon, height) is checked by screenshot.
  */
 
 const W = 1280;
 /**
  * Seven tabs at 1280px are 151px each on base a90f75fd, and six are 177px
- *  (measured). A close therefore GROWS the rest unless something holds them,
+ * (measured). A close therefore GROWS the rest unless something holds them,
  * which is what gives the freeze legs a precondition that can fail. At ten
  * tabs they sit on the 120px floor and scroll, so a close changes no width
- * with or without a freeze, and those legs passed on base  (measured).
+ * with or without a freeze, and those legs passed on base (measured).
  */
 const FREEZE_TABS = 7;
 

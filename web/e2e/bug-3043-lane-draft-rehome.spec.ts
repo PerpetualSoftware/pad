@@ -12,7 +12,7 @@ import type { SuiteFixture } from './fixtures';
  * neither complete nor show why. Decision, RE-HOME: the draft appears in the
  * Uncategorized lane, marked with the lane it came from, and saves there.
  *
- * The unit legs  (laneDrafts.test.ts, BoardView.laneDrafts.svelte.test.ts) hand
+ * The unit legs (laneDrafts.test.ts, BoardView.laneDrafts.svelte.test.ts) hand
  * BoardView its placement directly. This is the leg that runs the real WIRING:
  * the page derives the placement from its own draft map and the live schema,
  * a schema edit arriving over SSE re-derives it, and the create goes through

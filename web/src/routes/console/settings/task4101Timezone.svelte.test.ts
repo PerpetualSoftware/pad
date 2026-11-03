@@ -135,7 +135,7 @@ it('both Save buttons are disabled while the profile is reloading for a new iden
 });
 
 // TASK-4101 PR2a r1 H-L1: a PATCH response is merged into the profile, never replaces it
-//  (the PATCH answer has no totp_enabled / oauth_providers / password_set).
+// (the PATCH answer has no totp_enabled / oauth_providers / password_set).
 it('a time zone save keeps the 2FA state the PATCH response omits', async () => {
 	state.set.mockResolvedValue({ id: 'u1', name: 'Pat', email: 'pat@example.com', username: 'pat', timezone: 'Europe/Paris' });
 	render(AccountSettings);
@@ -197,7 +197,7 @@ it('a zone Save in flight across an identity change does not leave Save disabled
 	await waitFor(() => expect(screen.getByRole('button', { name: 'Save time zone' })).toBeEnabled());
 });
 
-// #2342 E2E  (account-delete.spec.ts:99): a sign-out's reload 401s raced the delete's navigation.
+// #2342 E2E (account-delete.spec.ts:99): a sign-out's reload 401s raced the delete's navigation.
 it('a sign-out does not reload the profile, and the next sign-in does', async () => {
 	const { api } = await import('$lib/api/client');
 	render(AccountSettings);

@@ -36,9 +36,9 @@ import {
 } from './lib/attachment-viewer';
 
 /**
- * 3c-i SURFACE CHROME — the browser proof  (TASK-2484, DR-9).
+ * 3c-i SURFACE CHROME — the browser proof (TASK-2484, DR-9).
  *
- * The A-E chain  (2473-2477) built the viewer's toolbar, metadata header, icon
+ * The A-E chain (2473-2477) built the viewer's toolbar, metadata header, icon
  * fallback and deletion reconciliation. DR-9's rule: the a11y and interaction
  * work is verified in a browser or it is not verified. jsdom cannot show the
  * anchor semantics a real `<a download>` carries, the inert-label pointer
@@ -50,7 +50,7 @@ import {
 const INLINE_IMG = '.editor-content .ProseMirror img[data-attachment-id]';
 
 /**
- * Comments  (and their inline images) live under the item CONTENT on the
+ * Comments (and their inline images) live under the item CONTENT on the
  * Details tab — IDEA-2843 moved them out of the Activity tab (changes and versions
  * are on the History tab now, PLAN-2348 U3). Details is the tab a pane opens on, so
  * there is nothing to click; the wait is what the tab click used to provide.
@@ -80,7 +80,7 @@ test.describe('attachment viewer — 3c-i surface chrome (TASK-2484)', () => {
 		// The toolbar is present, drawn over the stage.
 		await expect(page.locator(VIEWER_TOOLBAR)).toBeVisible();
 
-		// Open and Download are REAL anchors  (role "link"), carrying the attachment
+		// Open and Download are REAL anchors (role "link"), carrying the attachment
 		// href — the DR-16 semantics jsdom cannot render (an <a download> saves; a
 		// button would not).
 		// The EXACT canonical, variant-less URL — not merely "contains the id", so a
@@ -97,7 +97,7 @@ test.describe('attachment viewer — 3c-i surface chrome (TASK-2484)', () => {
 		// navigate-instead-of-save hole) is caught.
 		await expect(download).toHaveAttribute('download', 'strip-tool.png');
 
-		// Copy-link is a button  (JS action), not an anchor.
+		// Copy-link is a button (JS action), not an anchor.
 		await expect(viewerCopyLink(page)).toBeVisible();
 		// The admin owns the item and is not peeking → Delete is offered.
 		await expect(viewerDelete(page)).toBeVisible();
@@ -147,15 +147,15 @@ test.describe('attachment viewer — 3c-i surface chrome (TASK-2484)', () => {
 		fixture,
 		request
 	}) => {
-		// The browser proof of C1's permission threading  (TASK-2474). SCOPE, stated
+		// The browser proof of C1's permission threading (TASK-2474). SCOPE, stated
 		// honestly: a viewer OPENED from a peeked side cannot be observed here — the
 		// only way to open one is a content click on that side, and the
-		// invisible-freeze model  (BUG-2263) RE-ACTIVATES a side on any such click
+		// invisible-freeze model (BUG-2263) RE-ACTIVATES a side on any such click
 		// (deterministically un-peeking it before the viewer captures
 		// mutationsEnabled). So the peeked-side no-Delete VIEWER is jsdom-proven
-		//  (TASK-2474's timeline/viewer-host peek legs); what a browser proves is the
-		// two ends this rests on:  (a) mutationsEnabled=false really reaches a peeked
-		// side  (its delete affordance is gone), and  (b) an ACTIVE side's viewer
+		// (TASK-2474's timeline/viewer-host peek legs); what a browser proves is the
+		// two ends this rests on: (a) mutationsEnabled=false really reaches a peeked
+		// side (its delete affordance is gone), and (b) an ACTIVE side's viewer
 		// toolbar really offers Delete. Same fixture, opposite permission.
 		await browserLogin(page);
 		const master = await seedDoc(fixture, request, 'Chrome peek master');
@@ -174,13 +174,13 @@ test.describe('attachment viewer — 3c-i surface chrome (TASK-2484)', () => {
 			'contenteditable',
 			'false'
 		);
-		//  (a) The peeked master's strip still SHOWS its tiles  (a read affordance) but
+		// (a) The peeked master's strip still SHOWS its tiles (a read affordance) but
 		// its delete control is GONE — mutationsEnabled=false reached the side. This
 		// is the wiring that regresses silently if ItemDetail passes raw canEdit.
 		await expect(masterHost.locator(TILE)).toHaveCount(1);
 		await expect(masterHost.locator('.att-delete')).toHaveCount(0);
 
-		//  (b) The ACTIVE pane's viewer toolbar OFFERS Delete.
+		// (b) The ACTIVE pane's viewer toolbar OFFERS Delete.
 		await pane.locator(TILE).first().click();
 		await expect(page.locator(VIEWER_TOOLBAR)).toBeVisible();
 		await expect(viewerDelete(page)).toBeVisible();
@@ -198,34 +198,34 @@ test.describe('attachment viewer — 3c-i surface chrome (TASK-2484)', () => {
 		await page.goto(itemUrl(fixture, doc.slug));
 		await expect(page.locator(TILE)).toHaveCount(2);
 		// Open del-a specifically (by name — the list order is created_at DESC, so its
-		// POSITION isn't fixed). The counter shows "· / 2"  (two in the set); which
+		// POSITION isn't fixed). The counter shows "· / 2" (two in the set); which
 		// index del-a lands on is incidental.
 		await page.locator(`${TILE}[aria-label*="del-a.png"]`).click();
 		await expect(page.locator(VIEWER_COUNTER)).toHaveText(/^[12] \/ 2$/);
 		await expect(page.locator(VIEWER_IMAGE)).toHaveAttribute('src', new RegExp(`/attachments/${a}`));
 
 		// Open the drill-down and reach the confirm rows BY KEYBOARD. Focus Delete,
-		// Enter opens it, focus enters the menu on the first row  (Cancel).
+		// Enter opens it, focus enters the menu on the first row (Cancel).
 		await viewerDelete(page).focus();
 		await page.keyboard.press('Enter');
 		const cancel = viewerConfirmCancelRow(page);
 		const del = viewerConfirmDeleteRow(page);
 		await expect(cancel).toBeVisible();
 		await expect(cancel).toBeFocused();
-		// ROVING TABINDEX: exactly the active row is the tab stop  (0), the rest -1 —
-		// so Tab exits the menu and Up/Down move between the rows  (TASK-2477).
+		// ROVING TABINDEX: exactly the active row is the tab stop (0), the rest -1 —
+		// so Tab exits the menu and Up/Down move between the rows (TASK-2477).
 		await expect(cancel).toHaveAttribute('tabindex', '0');
 		await expect(del).toHaveAttribute('tabindex', '-1');
 		await page.keyboard.press('ArrowDown');
 		await expect(del).toBeFocused();
 		await expect(del).toHaveAttribute('tabindex', '0');
 		await expect(cancel).toHaveAttribute('tabindex', '-1');
-		// Confirm by KEYBOARD  (Enter), not a click — the drill-down is keyboard-usable
+		// Confirm by KEYBOARD (Enter), not a click — the drill-down is keyboard-usable
 		// end to end.
 		await page.keyboard.press('Enter');
 
-		// The viewer ADVANCES to the survivor  (del-b), not closes — the retired C1
-		// latch — and the deleted tile disappears from the strip  (bus reconciliation).
+		// The viewer ADVANCES to the survivor (del-b), not closes — the retired C1
+		// latch — and the deleted tile disappears from the strip (bus reconciliation).
 		await expect(page.locator(VIEWER)).toHaveCount(1);
 		await expect(page.locator(VIEWER_IMAGE)).toHaveAttribute('src', new RegExp('/attachments/'));
 		await expect(page.locator(VIEWER_IMAGE)).not.toHaveAttribute('src', new RegExp(`/attachments/${a}`));
@@ -241,7 +241,7 @@ test.describe('attachment viewer — 3c-i surface chrome (TASK-2484)', () => {
 		await browserLogin(page);
 		const doc = await seedDoc(fixture, request, 'Chrome header');
 		const long = `${'x'.repeat(180)}.png`;
-		// BIG_PNG  (1600×1200) OVERFLOWS the stage, so zooming makes a real pan
+		// BIG_PNG (1600×1200) OVERFLOWS the stage, so zooming makes a real pan
 		// possible — a smaller image stays inside the stage and clampPan pins the pan
 		// to 0, which would hide a missing header exclusion.
 		await uploadAttachment(fixture, request, doc.id, long, 'image/png', BIG_PNG);
@@ -272,7 +272,7 @@ test.describe('attachment viewer — 3c-i surface chrome (TASK-2484)', () => {
 		expect(clip.overflow).toBe('hidden');
 
 		// The inert-label contract. ZOOM IN so a pan is actually possible, and wait for
-		// the 150ms transform TRANSITION to SETTLE  (two equal scale reads) before
+		// the 150ms transform TRANSITION to SETTLE (two equal scale reads) before
 		// sampling — otherwise a mid-transition rect makes the comparison flaky.
 		await page.keyboard.press('+');
 		await page.keyboard.press('+');
@@ -287,7 +287,7 @@ test.describe('attachment viewer — 3c-i surface chrome (TASK-2484)', () => {
 			.toBe(true);
 		const rectBefore = await imageRect(page);
 		// A DRAG starting ON the header must not pan the image; the on-screen image
-		// rect stays put  (a missing exclusion would move it).
+		// rect stays put (a missing exclusion would move it).
 		const metaBox = (await page.locator(VIEWER_META).boundingBox())!;
 		await page.mouse.move(metaBox.x + 8, metaBox.y + metaBox.height / 2);
 		await page.mouse.down();
@@ -307,23 +307,23 @@ test.describe('attachment viewer — 3c-i surface chrome (TASK-2484)', () => {
 		// CLOSES THE 3c-i SCOPING NOTE. Under 3c-i the fallback arm was unreachable
 		// through a real producer — the producers filtered `canOpenInViewer` before
 		// emitting, so only images ever reached the viewer, and the arm was
-		// jsdom-only  (a mid-view MIME flip driven by a prop write). 3c-ii converges
+		// jsdom-only (a mid-view MIME flip driven by a prop write). 3c-ii converges
 		// the panel and the viewer: a file tile now EMITS on the surface channel, so
 		// a real PDF and a real ZIP open the grown `Lightbox` and draw the no-bytes
 		// fallback arm. This is the browser proof of ADMISSION (a non-raster row is
-		// navigable, not dropped) and the ARM  (no <img>, no bytes) together, plus the
+		// navigable, not dropped) and the ARM (no <img>, no bytes) together, plus the
 		// per-type toolbar: Open for a browser-previewable PDF, NO Open for a ZIP.
 		await browserLogin(page);
 		const doc = await seedDoc(fixture, request, 'Fallback integration');
 		// Real magic bytes so the server's sniff-against-allowlist accepts them and
-		// stores the canonical MIME  (the multipart Content-Type is not trusted).
+		// stores the canonical MIME (the multipart Content-Type is not trusted).
 		await uploadAttachment(fixture, request, doc.id, 'report.pdf', 'application/pdf', buildMultiPagePdf(2));
 		await uploadAttachment(fixture, request, doc.id, 'logs.zip', 'application/zip', REAL_ZIP);
 		await page.goto(itemUrl(fixture, doc.slug));
 		await expect(page.locator(TILE)).toHaveCount(2);
 
 		// ── The PDF: since TASK-4075 it has its own arm, not the fallback. Open IS
-		// still offered  (a PDF is browser-previewable), and Download always is ──
+		// still offered (a PDF is browser-previewable), and Download always is ──
 		await page.locator(`${TILE}[aria-label*="report.pdf"]`).click();
 		await expect(viewerDialog(page, 'report.pdf')).toHaveCount(1);
 		await expect(page.locator(`${VIEWER} .lightbox-pdf canvas`)).toBeVisible();
@@ -334,7 +334,7 @@ test.describe('attachment viewer — 3c-i surface chrome (TASK-2484)', () => {
 		await page.keyboard.press('Escape');
 		await expect(page.locator(VIEWER)).toHaveCount(0);
 
-		// ── The ZIP: same fallback arm, but Open is ABSENT  (not previewable) ──
+		// ── The ZIP: same fallback arm, but Open is ABSENT (not previewable) ──
 		await page.locator(`${TILE}[aria-label*="logs.zip"]`).click();
 		await expect(viewerDialog(page, 'logs.zip')).toHaveCount(1);
 		await expect(page.locator(VIEWER_FALLBACK)).toBeVisible();
@@ -342,7 +342,7 @@ test.describe('attachment viewer — 3c-i surface chrome (TASK-2484)', () => {
 		await expect(page.locator(VIEWER_FALLBACK_NOTE)).toHaveText('No preview available');
 		await expect(page.locator(VIEWER_IMAGE)).toHaveCount(0);
 		// A ZIP is NOT browser-previewable — the Open action does not apply, so the
-		// anchor is absent entirely  (not merely disabled). Download still applies.
+		// anchor is absent entirely (not merely disabled). Download still applies.
 		await expect(viewerOpenAnchor(page)).toHaveCount(0);
 		await expect(viewerDownloadAnchor(page)).toHaveAttribute('download', 'logs.zip');
 	});
@@ -355,11 +355,11 @@ test.describe('attachment viewer — 3c-i surface chrome (TASK-2484)', () => {
 		// 3c-iii U3 generalizes T6's always-revalidate-on-open to per navigation step,
 		// in a browser. The strip's list rows carry a COMPLETE seed (filename + MIME +
 		// size), so before T6 a strip open issued ZERO metadata HEADs. T6 forced one
-		// `no-store` HEAD of the OPENED entry; U3 forces one per  (open, attachment)
+		// `no-store` HEAD of the OPENED entry; U3 forces one per (open, attachment)
 		// pair, so ARROWING to a not-yet-probed sibling revalidates it too — catching a
 		// cross-tab / background delete the browser's `max-age` HEAD cache would hide.
 		// Observable as the HEAD count: one on the open, one MORE when arrowing to a
-		// fresh entry, and a fresh probe on a reopen  (a fresh nonce). (The complementary
+		// fresh entry, and a fresh probe on a reopen (a fresh nonce). (The complementary
 		// "arrowing BACK to an already-probed pair does NOT re-probe" is proven
 		// deterministically in surfaceMetadata.svelte.test.ts — it turns on a JS-internal
 		// mark with no race-free browser observable, so it is not asserted here.)
@@ -371,7 +371,7 @@ test.describe('attachment viewer — 3c-i surface chrome (TASK-2484)', () => {
 		// Count HEADs per attachment id. The image bytes are GETs (thumb-sm for the
 		// tiles, thumb-md/original for the viewer); the metadata existence probe is a
 		// HEAD of the EXACT variant-less URL, so match the pathname with a `$` anchor
-		//  (no `?variant`) — never a query-bearing URL.
+		// (no `?variant`) — never a query-bearing URL.
 		// The EXACT canonical API path per id — a full-path compare, not a suffix, so a
 		// different workspace or a prefixed route can never be miscounted.
 		const attPath = (id: string) => `/api/v1/workspaces/${fixture.workspaceSlug}/attachments/${id}`;
@@ -424,12 +424,12 @@ test.describe('attachment viewer — 3c-i surface chrome (TASK-2484)', () => {
 
 		// ARROW to ns-b within the SAME open: THE U3 INVERSION. T6 forced only the
 		// opened entry, so arrowing here forced NOTHING and ns-b stayed at 0; U3 forces
-		// one no-store HEAD of the ARRIVAL (a fresh  (nonce, entry) pair), so ns-b is now
+		// one no-store HEAD of the ARRIVAL (a fresh (nonce, entry) pair), so ns-b is now
 		// probed exactly once by the navigation step. ns-a is untouched by the arrow —
 		// it stays at 1, quiescent (no arrow-back is issued, so no count can transiently
 		// inflate; the reopen below is the only thing that moves ns-a again).
 		// Where the arrow LANDS is asserted by the shown attachment's id, not by the
-		// counter's position  (BUG-3210). The two uploads usually share a second of
+		// counter's position (BUG-3210). The two uploads usually share a second of
 		// `created_at`, the list's newest-first sort has no tiebreaker, so ns-a is
 		// "1 / 2" or "2 / 2" by the database's tie-break. Either way one ArrowRight in a
 		// two-entry set lands on ns-b, which is the entry this step is about.
@@ -446,7 +446,7 @@ test.describe('attachment viewer — 3c-i surface chrome (TASK-2484)', () => {
 		await expect(page.locator(VIEWER)).toHaveCount(0);
 
 		// REOPEN ns-a: a fresh open mints a fresh nonce → every entry is unseen again,
-		// so ns-a is force-probed once more, reaching exactly 2  (its two opens). ns-a
+		// so ns-a is force-probed once more, reaching exactly 2 (its two opens). ns-a
 		// climbs 1→2 with no intervening probe, so this exact poll cannot false-green on
 		// a transient. ns-b remains at its single arrow-forced probe.
 		await page.locator(`${TILE}[aria-label*="ns-a.png"]`).click();
@@ -462,12 +462,12 @@ test.describe('attachment viewer — 3c-i surface chrome (TASK-2484)', () => {
 		request
 	}) => {
 		// THE ARCHIVED-AT-OPEN GATE. An archived parent makes attachment reads 404,
-		// so a complete strip seed  (mime + size) is NOT evidence the bytes are
-		// REACHABLE  (DR-14). The host threads `parentArchived` to the surface, which
+		// so a complete strip seed (mime + size) is NOT evidence the bytes are
+		// REACHABLE (DR-14). The host threads `parentArchived` to the surface, which
 		// forces the metadata machine to PROBE rather than trust the seed; the probe
 		// 404s and the single-item surface settles on the inert "no longer available"
 		// missing overlay instead of a live image + working toolbar. Remove the gate
-		//  (the host stops threading `parentArchived`) and the seed is trusted: no
+		// (the host stops threading `parentArchived`) and the seed is trusted: no
 		// probe, so the raster arm loads bytes that 404 into the generic image-error
 		// state — never this overlay. That is the mutation this leg catches.
 		await browserLogin(page);
@@ -489,8 +489,8 @@ test.describe('attachment viewer — 3c-i surface chrome (TASK-2484)', () => {
 		const tile = page.locator(TILE).first();
 		await expect(tile).toBeVisible();
 
-		// Archive  (soft-delete) the parent from under the loaded page. The item GET
-		// still returns it  (deleted_at set), so the page stays up with its banner and
+		// Archive (soft-delete) the parent from under the loaded page. The item GET
+		// still returns it (deleted_at set), so the page stays up with its banner and
 		// its already-loaded strip tile — this is the archived-AT-open path: the next
 		// open mounts the surface with `parentArchived` already true.
 		const del = await request.delete(
@@ -498,7 +498,7 @@ test.describe('attachment viewer — 3c-i surface chrome (TASK-2484)', () => {
 			{ headers: { Authorization: `Bearer ${fixture.apiToken}` } }
 		);
 		expect(del.ok(), await del.text()).toBe(true);
-		// Wait for the archive to REACH the page  (the SSE `item_archived` flip), so
+		// Wait for the archive to REACH the page (the SSE `item_archived` flip), so
 		// `parentArchived` is true before the open — otherwise the assertion is about
 		// a live open that raced the archive.
 		await expect(page.locator('.archived-banner')).toBeVisible();
@@ -510,7 +510,7 @@ test.describe('attachment viewer — 3c-i surface chrome (TASK-2484)', () => {
 		await tile.click();
 		await expect(page.locator(VIEWER)).toHaveCount(1);
 		// BARRIER FIRST — the request-level proof: a 404 HEAD of this exact attachment
-		//  (the archived-parent reachability probe) fired on THIS open. Asserting it
+		// (the archived-parent reachability probe) fired on THIS open. Asserting it
 		// BEFORE the overlay makes the overlay a consequence of the observed 404.
 		await expect.poll(() => head404, 'a 404 HEAD probe fired on this open').toBeGreaterThan(before404);
 		// The gate's tell: the single-item MISSING overlay, announced, with its
@@ -520,9 +520,9 @@ test.describe('attachment viewer — 3c-i surface chrome (TASK-2484)', () => {
 		// No bytes, and no generic image-error arm — the probe pre-empted the load.
 		await expect(page.locator(VIEWER_IMAGE)).toHaveCount(0);
 		await expect(page.locator(`${VIEWER} .lightbox-error`)).toHaveCount(0);
-		// EVERY toolbar action is inert  (not just Open): the missing state drops both
-		// anchors' hrefs  (so neither is a link), disables Copy-link, and Delete is
-		// absent  (an archived parent withholds mutations).
+		// EVERY toolbar action is inert (not just Open): the missing state drops both
+		// anchors' hrefs (so neither is a link), disables Copy-link, and Delete is
+		// absent (an archived parent withholds mutations).
 		await expect(viewerOpenAnchor(page), 'Open href dropped').toHaveCount(0);
 		await expect(viewerDownloadAnchor(page), 'Download href dropped').toHaveCount(0);
 		await expect(viewerCopyLink(page), 'Copy-link disabled').toBeDisabled();
@@ -550,7 +550,7 @@ test.describe('attachment viewer — 3c-i surface chrome (TASK-2484)', () => {
 		await expect(page.locator(VIEWER_IMAGE)).toBeVisible();
 		await expect(page.locator(VIEWER)).toHaveCount(1);
 		// Stamp BOTH the document AND the item-page element: a full reload clears the
-		// window stamp, and a subtree remount  (ItemDetail re-created) replaces the
+		// window stamp, and a subtree remount (ItemDetail re-created) replaces the
 		// stamped `.item-page` node. Both surviving proves the close is the host's
 		// client-side transition, not a reload OR a remount that would drop the viewer
 		// for a reason unrelated to the gate.
@@ -591,9 +591,9 @@ test.describe('attachment viewer — 3c-i surface chrome (TASK-2484)', () => {
 		await page.goto(itemUrl(fixture, doc.slug));
 		await page.locator(TILE).first().click();
 		await expect(page.locator(VIEWER_IMAGE)).toBeVisible();
-		// WAIT FOR DECODE: zoom is disabled until a bitmap exists  (bitmapPresent), so
+		// WAIT FOR DECODE: zoom is disabled until a bitmap exists (bitmapPresent), so
 		// a wheel before the image decodes is inert regardless of the exclusion — the
-		// exclusion is only observable once zoom is live  (a false-pass without this).
+		// exclusion is only observable once zoom is live (a false-pass without this).
 		await expect
 			.poll(() =>
 				page.locator(VIEWER_IMAGE).evaluate((img) => (img as HTMLImageElement).naturalWidth)
@@ -602,7 +602,7 @@ test.describe('attachment viewer — 3c-i surface chrome (TASK-2484)', () => {
 
 		const scaleBefore = await renderedScale(page);
 		const scrollBefore = await page.evaluate(() => window.scrollY);
-		// Wheel directly over a toolbar control. deltaY NEGATIVE  (zoom IN): a
+		// Wheel directly over a toolbar control. deltaY NEGATIVE (zoom IN): a
 		// positive delta at fit is clamped to fit and would be a no-op regardless of
 		// the exclusion — so an inbound zoom is what makes the exclusion observable.
 		const box = (await page.locator(VIEWER_TOOLBAR).boundingBox())!;

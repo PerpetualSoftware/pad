@@ -24,23 +24,23 @@
 	let password = $state('');
 	let confirmPassword = $state('');
 	let error = $state('');
-	// A refusal for the password itself, shown on the field  (TASK-2260).
+	// A refusal for the password itself, shown on the field (TASK-2260).
 	let passwordError = $state('');
 	let setupRequired = $state(false);
 	let setupMethod = $state<'local_cli' | 'docker_exec' | 'cloud' | 'logs_token' | 'open' | undefined>(undefined);
 	let loading = $state(false);
 
-	// Cloud self-serve signups  (PLAN-1933 DR-1 model b / TASK-1940) create an
+	// Cloud self-serve signups (PLAN-1933 DR-1 model b / TASK-1940) create an
 	// UNVERIFIED account: it can log in + read but can't create/share until the
 	// emailed link is confirmed. When that happens we swap the form for a
 	// "check your email" state instead of dropping the user into the app and
-	// implying full access. Every other path  (self-host, invited, admin-created)
+	// implying full access. Every other path (self-host, invited, admin-created)
 	// returns a verified user and navigates straight in.
 	let registered = $state(false);
 	let registeredEmail = $state('');
-	// Where this signup goes once it is done  (TASK-3595); set from the register response.
+	// Where this signup goes once it is done (TASK-3595); set from the register response.
 	let signupTarget = $state<string | null>(null);
-	// The username field is a customization, closed until asked for  (TASK-3595).
+	// The username field is a customization, closed until asked for (TASK-3595).
 	let usernameOpen = $state(false);
 
 	// A taken generated name opens the field for good: editing it resets the
@@ -65,7 +65,7 @@
 	let usernameError = $state('');
 	let checkTimeout: ReturnType<typeof setTimeout> | null = null;
 
-	// Last-used auth method  (TASK-923 / TASK-1000) — populated on mount,
+	// Last-used auth method (TASK-923 / TASK-1000) — populated on mount,
 	// drives the "Last used" pill on whichever SSO button matches. Same
 	// behavior as /login for cross-page consistency.
 	let lastMethod = $state<AuthMethod | null>(null);
@@ -73,7 +73,7 @@
 	// Validated redirect target. /register supports `?redirect=` for the
 	// register-during-OAuth flow: agent clients send unauth users to
 	// /register?redirect=/oauth/authorize?... and we hand the param off
-	// to /auth/<provider> so pad-cloud's callback  (TASK-998) can return
+	// to /auth/<provider> so pad-cloud's callback (TASK-998) can return
 	// the user to /oauth/authorize after SSO. Falls back to /console for
 	// missing or invalid values.
 	const redirectTarget = $derived(validateRedirect(page.url.searchParams.get('redirect')));
@@ -84,7 +84,7 @@
 	onMount(async () => {
 		// Read the last-used method on mount so the "Last used" pill on the
 		// SSO buttons paints with the form. Fails silent in SSR / private mode
-		//  (the helper returns null).
+		// (the helper returns null).
 		const last = getLastAuthMethod();
 		if (last) lastMethod = last.method;
 
@@ -228,7 +228,7 @@
 		if (!registeredEmail || resendState === 'sending') return;
 		resendState = 'sending';
 		try {
-			// Enumeration-safe  (always 200); treat any non-throw as "sent".
+			// Enumeration-safe (always 200); treat any non-throw as "sent".
 			await api.auth.resendVerification(registeredEmail);
 			resendState = 'sent';
 		} catch {
@@ -237,7 +237,7 @@
 	}
 
 	async function continueToPad() {
-		// The account is already signed in  (register set a session cookie), so
+		// The account is already signed in (register set a session cookie), so
 		// this drops the user into the app to read/look around — they just
 		// can't create or share until they verify.
 		await navigateToRedirectTarget(signupTarget ?? redirectTarget);

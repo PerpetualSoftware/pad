@@ -18,7 +18,7 @@ import { createWorkspace, deleteCollection, deleteWorkspace } from './lib/attach
  *
  * The legs find the element that ACTUALLY scrolls the rows vertically by
  * walking up from the header, rather than naming it, so the same spec runs on
- * unfixed main  (where that element is the page) and on the fix  (the table).
+ * unfixed main (where that element is the page) and on the fix (the table).
  */
 
 const ROWS = 60;
@@ -161,7 +161,7 @@ test.describe('BUG-3164: the table header stays at the top of the table while it
 		await setup(page, fixture, request, { ws });
 		try {
 			// Where the focused row sits relative to the visible band of the table
-			//  (below the header, above the scroller's bottom edge).
+			// (below the header, above the scroller's bottom edge).
 			const focusedBand = () =>
 				page.evaluate(() => {
 					const row = document.querySelector<HTMLElement>('.table-row.focused');

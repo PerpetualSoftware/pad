@@ -106,8 +106,8 @@ func (s *Server) fetchTutorialBytes(ctx context.Context, url string, limit int64
 		return nil, "", err
 	}
 	// Never follow a redirect: the origin check is on the URL asked for, and a
-	// redirect would let an allowed getpad.dev URL send this server anywhere
-	//. A 3xx is then just a non-200, and the fetch fails.
+	// redirect would let an allowed getpad.dev URL send this server anywhere.
+	// A 3xx is then just a non-200, and the fetch fails.
 	client := *s.tutorialsClient()
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	resp, err := client.Do(req)

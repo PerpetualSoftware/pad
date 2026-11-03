@@ -2,7 +2,7 @@
  * BUG-3084 surface 4 — the SOURCE half. `dashboardIdentityFence.svelte.test.ts`
  * beside this file owns the SEMANTICS; this owns the POPULATION.
  *
- * THE GATE BESIDE THIS  (TASK-3097): `dashboardIdentityGate.test.ts` tables every async unit on
+ * THE GATE BESIDE THIS (TASK-3097): `dashboardIdentityGate.test.ts` tables every async unit on
  * this page with the hash of the code it was reviewed on, and refuses any
  * edit to one until its row is re-read. That catches BUG-3084's
  * classes, which a source scanner cannot see. This file catches what the
@@ -11,8 +11,8 @@
  *
  * The page is small — one async function, one timer — and the temptation on a
  * small surface is to assert less. The filed survey counted this page as ONE
- * commit point and the widened instrument found two  (checkpoint 6); reading
- * found a third  (the sync-subscription callback) that no instrument
+ * commit point and the widened instrument found two (checkpoint 6); reading
+ * found a third (the sync-subscription callback) that no instrument
  * enumerates. So the rules here are the family's in full, plus the three this
  * page's own shape needs:
  *   - every caller of `load()` is enumerated and held to writing nothing else,
@@ -100,7 +100,7 @@ describe('the dashboard fences every async commit point', () => {
 
 	it('enumerates the population it claims to cover', () => {
 		// COUNTS ASSERTED so a new member cannot arrive unnoticed. The filed
-		// survey reported 1; the widened instrument reports 2  (checkpoint 6).
+		// survey reported 1; the widened instrument reports 2 (checkpoint 6).
 		expect(src.asyncFunctions().size, 'a top-level async function was added or removed').toBe(1);
 		expect([...src.asyncFunctions().keys()]).toEqual(['load']);
 		expect(src.markupAsyncArrows(), 'an inline async arrow appeared in the markup').toHaveLength(0);
@@ -123,7 +123,7 @@ describe('the dashboard fences every async commit point', () => {
 		// not merely its call counted.
 		//
 		// Each site names the writes it is allowed: the keyed effect drops the
-		// board before it reloads  (that IS its job, asserted separately), the
+		// board before it reloads (that IS its job, asserted separately), the
 		// create-modal callback closes the modal synchronously under the
 		// current epoch before it delegates. Everything else writes nothing.
 		const NO_REQUEST = /\bapi\.|\.then\s*\(|\bawait\b|\basync\b|\bfetch\s*\(/;
@@ -244,7 +244,7 @@ describe('the dashboard fences every async commit point', () => {
 	it('every board write in load() sits behind a check made SINCE the last await', () => {
 		// The commit points, named. `loading` is deliberately absent — the
 		// finally arm is seq-gated and NOT identity-gated, the library's
-		// asymmetry  (#1378): pinning the skeleton for ever is the worse failure.
+		// asymmetry (#1378): pinning the skeleton for ever is the worse failure.
 		const COMMITS = ['dashboard', 'dashboardSlug', 'collections', 'dashError'];
 		const body = loadBody();
 		const offenders: string[] = [];
@@ -312,7 +312,7 @@ describe('the dashboard fences every async commit point', () => {
 
 	it('a lost identity issues no requests on behalf of the previous user', () => {
 		// Every request goes out at ENTRY, in one Promise.all with setCurrent
-		//  (TASK-2229), before load's first await, so each carries the identity
+		// (TASK-2229), before load's first await, so each carries the identity
 		// captured there. Nothing is issued after an await, which is where an
 		// identity could have moved: that is the rule the old check between the
 		// two awaits kept, held now by having no second await to check.
@@ -328,7 +328,7 @@ describe('the dashboard fences every async commit point', () => {
 	});
 
 	it('the deferred timer delegates to load() and writes nothing itself', () => {
-		// The member the filed survey could not see  (checkpoint 6). Its whole
+		// The member the filed survey could not see (checkpoint 6). Its whole
 		// job is to call `load()`, which carries the fence; anything else it
 		// wrote would be a commit no rule above reaches.
 		const [timer] = src.deferredTimers();
@@ -361,7 +361,7 @@ describe('the dashboard fences every async commit point', () => {
 		// change. The core cannot see through the call; this rule says what it
 		// cannot.
 		//
-		// HONEST ABOUT THE CONSEQUENCE ON THIS PAGE  (mutation M6): the effect's
+		// HONEST ABOUT THE CONSEQUENCE ON THIS PAGE (mutation M6): the effect's
 		// own `lastLoadKey` check returns early on a re-run whose key has not
 		// moved, so a tracked call here produces a spurious RE-RUN and not the
 		// library's double load. The behavioural suite therefore cannot see this
@@ -385,9 +385,9 @@ describe('the dashboard fences every async commit point', () => {
 	});
 
 	it('the keyed load effect is the recovery: keyed on the user, and it clears before it loads', () => {
-		// The family property, satisfied the settings way  (#1370): clear FIRST,
+		// The family property, satisfied the settings way (#1370): clear FIRST,
 		// then reload. The key must include the identity, or a sign-in on the
-		// same route reloads nothing and the fence latches shut  (#1372).
+		// same route reloads nothing and the fence latches shut (#1372).
 		const body = loadEffect();
 		expect(body).toMatch(/\$\{sessionUserId\}\\n\$\{wsSlug\}/);
 		expect(CODE).toMatch(/let sessionUserId = \$derived\(authStore\.userId\)/);
@@ -419,7 +419,7 @@ describe('the dashboard fences every async commit point', () => {
 	});
 
 	it('the identity listener resets every piece of transient interaction state', () => {
-		// ENUMERATED rather than sampled  (CONVE-35), held against the file's
+		// ENUMERATED rather than sampled (CONVE-35), held against the file's
 		// own `$state` declarations so a new piece of interaction state cannot
 		// arrive without being dispositioned.
 		const reset = CODE.slice(CODE.indexOf('function resetTransientState()'));
@@ -440,7 +440,7 @@ describe('the dashboard fences every async commit point', () => {
 			plansExpanded: 'a per-workspace list expansion in localStorage (TASK-2210), like onboardingDismissed',
 		};
 
-		// Enumerated by the core, by STATEMENT  (M12): this page is the one whose
+		// Enumerated by the core, by STATEMENT (M12): this page is the one whose
 		// `let pollTimer: … | undefined;` above a `$state` line broke the regex
 		// the family used to carry — see `stateDeclarations` for the shape.
 		const declared = src.stateDeclarations();
@@ -464,14 +464,14 @@ describe('the dashboard fences every async commit point', () => {
 	});
 
 	it('no $effect depends on the identity epoch without saying so', () => {
-		// The family rule  (checkpoint 18). A DISPOSITION TABLE, not a ban — and
+		// The family rule (checkpoint 18). A DISPOSITION TABLE, not a ban — and
 		// on this surface it is EMPTY, which is the state that needs no
 		// argument: no effect reads the epoch, and the one that dispatches
-		// `load()` does so untracked  (asserted positionally above).
+		// `load()` does so untracked (asserted positionally above).
 		//
 		// An entry added here names WHICH reads it covers and, where the reason
 		// is positional, an `afterMarker` — and it owes a control that puts the
-		// defect back through it  (the core's header, rule 3).
+		// defect back through it (the core's header, rule 3).
 		const INTENDED_DEPENDENCY: Record<string, { allowedReads: string[]; why: string; afterMarker?: string }> = {};
 
 		const offenders: string[] = [];

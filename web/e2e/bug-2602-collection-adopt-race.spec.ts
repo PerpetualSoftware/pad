@@ -7,7 +7,7 @@ import { test, type SuiteFixture } from './fixtures';
  * any generation-stale write that fetched a different collection. A
  * loadData continuation spanning a cross-collection MOVE could therefore
  * restore the SOURCE collection over the freshly adopted TARGET — the
- * live item  (itemGen-fenced) kept the move, so the pane rendered the
+ * live item (itemGen-fenced) kept the move, so the pane rendered the
  * item against the WRONG collection's schema.
  *
  * Deterministic construction (route-hold, same technique as
@@ -19,8 +19,8 @@ import { test, type SuiteFixture } from './fixtures';
  *      /collections/<src>`. That GET is HELD by route interception.
  *   2. While held, the item is MOVED src → tgt via the API. The pane's
  *      live SSE delivers item_updated; refreshCollectionIfMoved fetches
- *      TGT  (not held) and adopts it — the pane renders TGT's schema
- *       (its marker field label).
+ *      TGT (not held) and adopts it — the pane renders TGT's schema
+ * (its marker field label).
  *   3. The held SRC fetch is released. The continuation is generation-
  *      stale AND cross-collection: the old hatch admitted it (pane
  *      reverts to SRC's schema — the control build fails here); the
@@ -82,7 +82,7 @@ test('BUG-2602: a held cross-collection load released after a move cannot revert
 	const item = (await itemResp.json()) as { id: string; slug: string };
 
 	// A warm-up item IN the route collection: refreshCollectionIfMoved
-	//  (and the real-world race) requires the pane to already hold a
+	// (and the real-world race) requires the pane to already hold a
 	// collection snapshot — a cold pane with `collection === null` bails
 	// out of the move handling before the fetch this spec gates on.
 	const warmResp = await request.post(
@@ -113,9 +113,9 @@ test('BUG-2602: a held cross-collection load released after a move cannot revert
 	});
 
 	// Warm the pane on the route collection's own item so `collection`
-	// is loaded  (tasks), then switch to the cross-collection SRC item —
-	// loadData(src item) takes the realColl branch  (the held GET) while
-	// the pane keeps its persistent  (no {#key}) state.
+	// is loaded (tasks), then switch to the cross-collection SRC item —
+	// loadData(src item) takes the realColl branch (the held GET) while
+	// the pane keeps its persistent (no {#key}) state.
 	await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/tasks?item=${warm.slug}`);
 	const pane = page.locator('.item-pane');
 	await expect(pane.locator('.title', { hasText: /b2602 warmup/ })).toBeVisible();
@@ -124,11 +124,11 @@ test('BUG-2602: a held cross-collection load released after a move cannot revert
 	// NOTE: from here until release, the pane shows a loading state, so
 	// the mid-hold oracles below are network-level.
 	// The oracle below is the SSE path's item REFETCH, so the page must be
-	// subscribed before the move commits  (BUG-3152). A move landing before the
+	// subscribed before the move commits (BUG-3152). A move landing before the
 	// subscription still reaches the pane, but through the connect catch-up,
 	// which adopts the item from the /changes payload with no item GET, so this
 	// oracle would never fire. The server subscribes before it flushes the
-	// stream's headers  (handlers_events.go, SubscribeAndReplaySince), so the
+	// stream's headers (handlers_events.go, SubscribeAndReplaySince), so the
 	// response arriving means subscribed. Armed before the navigation that
 	// opens the stream.
 	const eventsOpen = page.waitForResponse((r) => r.url().includes('/api/v1/events?workspace='), {
@@ -145,7 +145,7 @@ test('BUG-2602: a held cross-collection load released after a move cannot revert
 
 	// The MOVE, while the SRC fetch is held. The pane's live SSE delivers
 	// item_updated and the pane refetches the item by slug — that
-	// response  (carrying the moved item) is the deterministic "move
+	// response (carrying the moved item) is the deterministic "move
 	// processed" oracle; the pane UI can't serve as one while loading.
 	// (On this freshly-switched pane `collection` is still null, so
 	// refreshCollectionIfMoved's `!collection` guard self-skips — the
@@ -177,7 +177,7 @@ test('BUG-2602: a held cross-collection load released after a move cannot revert
 	releaseSrc();
 
 	// The veto must hold: the pane renders the live item's collection
-	//  (TGT). On the control build the released continuation wins via the
+	// (TGT). On the control build the released continuation wins via the
 	// old escape hatch and SrcMarkerField renders instead.
 	await expect(pane.locator('.title', { hasText: /b2602 race probe/ })).toBeVisible({
 		timeout: 15_000,

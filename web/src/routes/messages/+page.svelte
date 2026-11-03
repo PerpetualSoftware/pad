@@ -8,7 +8,7 @@
 	import { chatEmptyKind } from '$lib/chat/emptyState';
 	import { chatInbox } from '$lib/stores/chatInbox.svelte';
 
-	// A late POST answer must not pull the user back after they leave  (TASK-4044).
+	// A late POST answer must not pull the user back after they leave (TASK-4044).
 	let mounted = true;
 
 	// The roster's dots poll sessions only while this page is open.

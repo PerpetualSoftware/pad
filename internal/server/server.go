@@ -812,8 +812,8 @@ func (s *Server) Stop() {
 	//
 	// This matters more than it did for MemoryBus, whose Close only dropped
 	// channels: RedisBus holds a receive goroutine and a Redis subscription
-	// from construction, so skipping it leaks both for the process's life
-	//. Closing also closes every subscriber channel, which
+	// from construction, so skipping it leaks both for the process's life.
+	// Closing also closes every subscriber channel, which
 	// is how a still-open SSE stream learns to unwind.
 	if s.watchEvents != nil {
 		s.watchEvents.Close()

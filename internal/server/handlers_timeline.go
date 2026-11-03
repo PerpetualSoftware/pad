@@ -148,8 +148,8 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 		// The id is the tie-break AT the cursor instant, so on its own it can
 		// never match anything: `before` defaults to now+1m and no row shares
 		// that timestamp. It was therefore accepted and silently ignored, and
-		// the caller paged from the beginning believing they had a cursor
-		//. The documented contract is both fields or neither.
+		// the caller paged from the beginning believing they had a cursor.
+		// The documented contract is both fields or neither.
 		//
 		// The other direction stays supported on purpose: `before` alone is
 		// the external-client case the sentinel above exists for.

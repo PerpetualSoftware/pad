@@ -8,7 +8,7 @@
 // The expiry is the client's view of one: the flush PATCH is answered 401
 // unauthorized, which is what the API client redirects on. The session itself
 // stays valid, so the same browser can come back and be offered the text.
-// The collab socket is cut first  (and reconnects refused), so the typing is
+// The collab socket is cut first (and reconnects refused), so the typing is
 // unsent local edits, the state a sign-out guard calls at risk.
 import { test, expect } from './fixtures';
 import { browserLogin, EDITOR_SELECTOR, SYNCED_BADGE_SELECTOR, SYNC_TIMEOUT } from './lib/collab-helpers';
@@ -81,7 +81,7 @@ test('rich text typed under an expiring session is kept and offered back', async
 	await page.keyboard.press('Control+End');
 	await page.keyboard.type(' Typed after the socket died.');
 
-	// The idle flush  (5s) PATCHes, meets the 401, and the client runs the
+	// The idle flush (5s) PATCHes, meets the 401, and the client runs the
 	// keepers and sends the tab to /login.
 	const key = `pad:refused-raw-draft:${me.id}:${doc.id}`;
 	await expect.poll(() => expired, { timeout: SYNC_TIMEOUT, message: 'premise: a content PATCH met the expiry' }).toBeGreaterThan(0);

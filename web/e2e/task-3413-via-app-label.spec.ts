@@ -2,13 +2,13 @@ import { expect, type APIRequestContext, type Route } from '@playwright/test';
 import { test, type SuiteFixture } from './fixtures';
 
 /**
- * TASK-3413  (SPEC-6 U9c): the "via <App>" label and the members list's
+ * TASK-3413 (SPEC-6 U9c): the "via <App>" label and the members list's
  * separate Apps section, in a real browser against the real server.
  *
  * WHAT IS REAL AND WHAT IS NOT. The e2e server is plain http, so apps are
  * unavailable there and nothing in it was written through an app. The item,
  * its comment and the members list are REAL rows the real server returns;
- * `page.route` passes each response through  (`route.fetch`) and adds only the
+ * `page.route` passes each response through (`route.fetch`) and adds only the
  * fields an app write would carry (`via_app`, `via_app_name`, and the members
  * `apps` array). The server half, that those fields are emitted, is covered by
  * the Go tests of #1787.
@@ -61,7 +61,7 @@ function stamp(value: unknown, itemId: string, name = APP): void {
  * This route handles every workspace GET, background ones included. When the
  * test ends, its browser context closes; a handler still between
  * `route.fetch()` and reading the body then gets "Response has been disposed"
- *  (Playwright maps the closed target to that message), and the throw was
+ * (Playwright maps the closed target to that message), and the throw was
  * reported against a test whose assertions had all passed: CI runs
  * 37315527477 and 37409948924. Reproduced by closing the context while a
  * handler holds a fetched response. Nobody is waiting for that request, so

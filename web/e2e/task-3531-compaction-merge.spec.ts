@@ -1,8 +1,8 @@
 // TASK-3531: a tab that sleeps past a DORMANCY sweep merges its unsent edit
 // when it wakes, because the sweep compacted the op-log into one Yjs snapshot
-// instead of deleting it  (Yjs identity survives, so the tab's update applies).
+// instead of deleting it (Yjs identity survives, so the tab's update applies).
 // Without compaction the same tab is force_refreshed and its text handed back
-//  (TASK-2199 / BUG-3526), which is the counterfactual this spec also states.
+// (TASK-2199 / BUG-3526), which is the counterfactual this spec also states.
 //
 // OPT-IN: the sweep must run within the test, so the server needs
 // PAD_OPLOG_GC_INTERVAL / PAD_OPLOG_GC_MIN_AGE set short, which would prune
@@ -12,7 +12,7 @@
 //   PAD_OPLOG_GC_MIN_AGE=5s PAD_E2E_PORT=<free> PAD_E2E_DATA_DIR=$(mktemp -d) \
 //   npx playwright test e2e/task-3531-compaction-merge.spec.ts --project=desktop-chromium
 //
-// PAD_E2E_COMPACTION=off  (with PAD_OPLOG_COMPACT unset) runs the
+// PAD_E2E_COMPACTION=off (with PAD_OPLOG_COMPACT unset) runs the
 // counterfactual: the same steps end in the hand-back notice.
 import { test, expect } from './fixtures';
 import { DatabaseSync } from 'node:sqlite';
@@ -45,7 +45,7 @@ test('a tab that slept past the dormancy sweep merges its edit (or, without comp
 	await expect(sleeper.locator(SYNCED_BADGE_SELECTOR)).toBeVisible({ timeout: SYNC_TIMEOUT });
 	await sleeper.locator(EDITOR_SELECTOR).click();
 	await sleeper.keyboard.type('Stored before the sleep. ');
-	// Let the edit persist, flush and be confirmed  (barrier) before sleeping.
+	// Let the edit persist, flush and be confirmed (barrier) before sleeping.
 	await sleeper.waitForTimeout(8_000);
 
 	await sleeperCtx.setOffline(true);
@@ -54,7 +54,7 @@ test('a tab that slept past the dormancy sweep merges its edit (or, without comp
 	await sleeper.keyboard.type('Typed while asleep.');
 
 	// The room's grace runs out and the sweep reaches the item: compacted into
-	// one row  (compaction on) or deleted  (off).
+	// one row (compaction on) or deleted (off).
 	await expect
 		.poll(() => opLogState(id), {
 			timeout: 150_000,

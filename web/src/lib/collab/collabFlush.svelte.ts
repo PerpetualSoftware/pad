@@ -180,7 +180,7 @@ export function createCollabFlusher(config: CollabFlusherConfig): CollabFlusher 
 	// now stale relative to whatever triggered the reset, so committing it would
 	// re-pollute the dedupe baseline the reset just cleared. Guards the extra
 	// promise turn `await config.save()` introduces over the page's original
-	// inline await.  (TASK-2082).
+	// inline await. (TASK-2082).
 	let resetGeneration = 0;
 
 	// Memoize the editor's canonical form of the seed on the context (BUG-3197).

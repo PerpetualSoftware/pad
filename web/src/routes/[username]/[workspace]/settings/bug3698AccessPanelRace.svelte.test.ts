@@ -5,7 +5,7 @@ import SettingsPage from './+page.svelte';
 import { api } from '$lib/api/client';
 
 /**
- * BUG-3698: the member access panel shares one form  (mode + collection ids)
+ * BUG-3698: the member access panel shares one form (mode + collection ids)
  * across every member. Opening Alice's panel and then Bob's left Alice's read
  * in flight, and when it landed last it painted Alice's access into Bob's
  * form, so Save granted Bob Alice's access. A stale read also ended Bob's
@@ -26,7 +26,7 @@ const COLLECTIONS = [
 	{ id: 'c-docs', slug: 'docs', name: 'Docs', icon: 'D', is_system: false, is_default: true, sort_order: 1 },
 ];
 
-// Reactive, so the workspace-switch leg re-runs the page's load  (BUG-3237).
+// Reactive, so the workspace-switch leg re-runs the page's load (BUG-3237).
 vi.mock('$app/state', async () => ({ page: (await import('../../../../test/mocks/reactivePage.svelte')).page }));
 
 vi.mock('$lib/stores/toast.svelte', () => ({

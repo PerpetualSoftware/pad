@@ -7,7 +7,7 @@ import type { SuiteFixture } from './fixtures';
  * TASK-2244 — touch targets at phone width.
  *
  * The collection control strip grows VISIBLY to 44x44 at <=768px, so its proof is
- * the element box  (boundingBox). Desktop is unchanged, pinned to the sizes
+ * the element box (boundingBox). Desktop is unchanged, pinned to the sizes
  * measured on the base commit, so a mobile rule that leaks past its media query
  * goes red here rather than in a screenshot nobody compares.
  */
@@ -91,7 +91,7 @@ for (const { width, view, withDot } of ONE_ROW) {
 
 		// Same row = each control's vertical centre lies inside the first
 		// control's span. Not equal tops: on one row, sub-pixel layout moves a
-		// top by 1px  (measured on base, 61 vs 60), and a wrap moves it by a row.
+		// top by 1px (measured on base, 61 vs 60), and a wrap moves it by a row.
 		const boxes = [];
 		for (const [name, loc] of stripControls(page, true)) {
 			const box = await loc.boundingBox();
@@ -127,7 +127,7 @@ for (const { width, view, withDot } of ONE_ROW) {
 /**
  * Desktop is unchanged. Pinned: what the CSS fixes. Every strip control is 28px
  * tall, and sort, filters and the collection menu are 30px wide. A text-sized
- * width  (the view label, "+ New Task", the ⚡ trigger) depends on the machine's
+ * width (the view label, "+ New Task", the ⚡ trigger) depends on the machine's
  * fonts: CI measured 77.6 / 101.1 / 34.4 where this box measured 75 / 93.8 / 41,
  * so those are not pinned. The height is the leak signal, since the phone rule
  * makes every control 44 tall.
@@ -166,7 +166,7 @@ function authHeaders(fixture: SuiteFixture) {
 /**
  * Three open items in one board lane, so the middle one has every reorder entry,
  * in a collection of the test's OWN. The shared Tasks lane collects every other
- * leg's items  (and a repeat's), which put a seeded card out of view and tied its
+ * leg's items (and a repeat's), which put a seeded card out of view and tied its
  * sort_order with strangers'.
  */
 async function seedLane(request: APIRequestContext, fixture: SuiteFixture, tag: string) {
@@ -275,7 +275,7 @@ test('TASK-2244: the mobile card ⋯ stars, copies the ID and reorders (board)',
 	await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(ref);
 
 	// Reorder: the card moves to the top of its lane, on screen and on the
-	// server  (a reload after the write's own response, never after the tap).
+	// server (a reload after the write's own response, never after the tap).
 	const lane = page.locator('.board-view .item-card .card-title');
 	const mine = async () => {
 		const all = await lane.allInnerTexts();
@@ -288,7 +288,7 @@ test('TASK-2244: the mobile card ⋯ stars, copies the ID and reorders (board)',
 	const moved = [2, ...before.filter((i) => i !== 2)];
 	await expect.poll(mine, 'on screen').toEqual(moved);
 	// persistReorder writes whichever rows' sort_order changes, not always the
-	// moved card  (one PUT /items/sort-order since TASK-3517), so the server's
+	// moved card (one PUT /items/sort-order since TASK-3517), so the server's
 	// answer is read by reloading until it agrees.
 	await expect
 		.poll(
@@ -327,7 +327,7 @@ test('TASK-2244: on a host without reorder the mobile ⋯ holds only Star and Co
 /**
  * Desktop card controls are unchanged. Pinned: the copy button, whose CSS fixes
  * it at 22x22. The star and the ⋮ are glyph-sized and depend on the machine's
- * fonts  (CI measured ⋮ 18 and star 11.9 wide where this box measured 8 and 13),
+ * fonts (CI measured ⋮ 18 and star 11.9 wide where this box measured 8 and 13),
  * so for them the check is that they stayed small: the phone rule would make
  * one 44x44 ⋯ in their place.
  */
@@ -363,13 +363,13 @@ for (const view of ['list', 'board'] as const) {
  * The instrument is elementFromPoint, from both sides:
  *   1. every point of the 44x44 area hits the chip. The area is centred
  *      horizontally and grows UPWARD from the chip's bottom edge, because a
- *      centred square took the top of the first tag  (measured on this leg);
+ *      centred square took the top of the first tag (measured on this leg);
  *   2. no point of a neighbour control's box (both tag buttons below, and the
  *      card ⋯ above) lands on the chip. Asked that way, not as "every point
  *      hits the neighbour": a rounded tag's corner pixel hits its row, with or
  *      without any extender, and that is not what the ruling is about. A
  *      centred extender DID land 20 of tag 0's 40 sampled points on the chip
- *       (list and board alike; the upward one lands 0), which is the measurement
+ * (list and board alike; the upward one lands 0), which is the measurement
  *      that made it upward-only.
  * The card carries tags on purpose: without them the row below is plain text,
  * and half 2 would pass on any extender, however large.

@@ -4,12 +4,12 @@ import type { Collection } from '$lib/types';
 
 /**
  * BUG-2410: the Insights collection picker offers what the default report
- * covers, which leaves out SYSTEM collections  (Conventions, Playbooks) —
+ * covers, which leaves out SYSTEM collections (Conventions, Playbooks) —
  * keyed on `is_system`, so an ordinary collection that happens to be named
  * "Conventions" is still offered.
  */
 // PLAN-3535: the picker now keys on the server's wider rule, a REFERENCE
-// collection  (`tracks_work: false`), which every system collection is (the
+// collection (`tracks_work: false`), which every system collection is (the
 // migration and workspace import mark them). So a system collection here is
 // served as it is in production, with the flag set.
 function coll(slug: string, name: string, is_system: boolean): Collection {
@@ -52,7 +52,7 @@ vi.mock('$lib/api/client', () => ({
 	PadApiError: class extends Error {},
 }));
 
-// The page debounces a layout save by 500ms  (scheduleSave); wait past it.
+// The page debounces a layout save by 500ms (scheduleSave); wait past it.
 const SAVE_WAIT_MS = 700;
 
 const { default: InsightsPage } = await import('./[username]/[workspace]/insights/+page.svelte');

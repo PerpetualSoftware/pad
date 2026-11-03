@@ -17,7 +17,7 @@ import type { APIRequestContext, Page } from '@playwright/test';
  * `item_created` branch fetches the item BY EVENT UUID (`api.items.get`,
  * +layout.svelte) before the toast line runs, and on a bare list URL
  * nothing else issues that exact by-uuid GET (deltaSync uses /changes and
- * slug routes). A pre-attached response LOG  (no arm-order race) is polled
+ * slug routes). A pre-attached response LOG (no arm-order race) is polled
  * for that pathname, the SSE stream's own response gates the create (the
  * heading doesn't prove connectedness), and a bounded settle covers the
  * fetch→toast continuation — so a missing toast is real suppression, never
@@ -87,7 +87,7 @@ test('the shared-fixture flag silences another actor\'s creation toast (row arri
 	const { id } = await createTask(request, fixture.apiToken, fixture.workspaceSlug, title);
 	// The layout's item_created branch fetches the item by EVENT UUID before
 	// its toast line; on a bare /tasks list URL nothing else issues that GET
-	//  (exact-pathname match — /children, /progress etc. don't count).
+	// (exact-pathname match — /children, /progress etc. don't count).
 	await expect
 		.poll(() => responseLog.some((u) => u.endsWith(`/items/${id}`)), { timeout: 15_000 })
 		.toBe(true);
@@ -123,7 +123,7 @@ test('CONTROL: an unflagged context still shows the creation toast — the produ
 			.poll(() => responseLog.some((u) => u.startsWith('/api/v1/events')), { timeout: 15_000 })
 			.toBe(true);
 
-		// Created AS AN AGENT  (TASK-3593): creation toasts group per actor, and
+		// Created AS AN AGENT (TASK-3593): creation toasts group per actor, and
 		// the rest of the suite seeds as the admin USER, so a user-actor probe
 		// could join another spec's burst and read "… created 3 items". No
 		// other spec in the normal run sends X-Pad-Agent (lib/readme-seed.ts is
@@ -133,7 +133,7 @@ test('CONTROL: an unflagged context still shows the creation toast — the produ
 
 		// The toast first, held the moment it shows: its 4s clock starts then,
 		// and waiting on the row before it could outlast that clock.
-		// Hover holds it  (TASK-2202), so a slow create or SSE delivery cannot
+		// Hover holds it (TASK-2202), so a slow create or SSE delivery cannot
 		// let it expire mid-burst and start a second toast either.
 		await expect(creationToast(page, title)).toBeVisible({ timeout: 15_000 });
 		await creationToast(page, title).hover();

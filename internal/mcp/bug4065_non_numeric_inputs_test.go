@@ -181,8 +181,7 @@ func bug4065Doors() []bug4065Door {
 		// pr_number (b46baef8).
 		{[]string{"github", "link"}, map[string]any{"item_ref": "TASK-1", "pr_url": "https://example.com/pr/7"}, "pr_number", top("pr_number"), false, `"number":7`},
 		// chatSequence's doors. Validation runs before target resolution; the
-		// C<n> target form needs no lookup, so "7" can be followed to the wire
-		//.
+		// C<n> target form needs no lookup, so "7" can be followed to the wire.
 		{[]string{"chat", "show"}, map[string]any{"target": "C12"}, "since", top("since"), false, "after_seq=7"},
 		{[]string{"chat", "show"}, map[string]any{"target": "C12"}, "limit", top("limit"), false, "limit=7"},
 		{[]string{"chat", "send"}, map[string]any{"target": "C12", "body": "hi"}, "reply_to", top("reply_to"), false, `"reply_to_seq":7`},

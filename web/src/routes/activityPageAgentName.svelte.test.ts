@@ -11,7 +11,7 @@ import type { Activity } from '$lib/types';
  * filtered a hardcoded set of client ids out of it (the retired
  * GENERIC_AGENT_IDS shim).
  *
- * Both views are asserted through the PAGE  (CONVE-19): the fold and the
+ * Both views are asserted through the PAGE (CONVE-19): the fold and the
  * helper have their own tests, and either could be correct while this page
  * passed the wrong arguments — which is the defect the Audit half actually
  * was, since the metadata was parsed three lines above the call that ignored
@@ -78,7 +78,7 @@ beforeEach(() => {
 	document.body.appendChild(host);
 	// The page derives its workspace from the route; the $app/state mock ships
 	// empty params, and an empty slug short-circuits the load effect entirely
-	//  (every assertion here would then pass or fail on an empty page).
+	// (every assertion here would then pass or fail on an empty page).
 	page.params.workspace = 'ws';
 	page.params.username = 'alice';
 	localStorage.clear();

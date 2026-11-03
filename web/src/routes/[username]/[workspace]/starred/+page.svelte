@@ -20,7 +20,7 @@
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let username = $derived(page.params.username ?? '');
 
-	// Built from what the workspace already holds  (TASK-2231): the starred
+	// Built from what the workspace already holds (TASK-2231): the starred
 	// store's ids, in star order, and the local index's rows for them. The page
 	// used to fetch every starred item with its full body, plus its own copy of
 	// the collection list, on every visit and every toggle of "Show completed";
@@ -32,7 +32,7 @@
 	// workspace's: mid-switch the array still holds the previous one's.
 	let collectionsReady = $derived(!!wsSlug && collectionStore.collectionsAreFreshFor(wsSlug));
 	let collections = $derived<Collection[]>(collectionsReady ? collectionStore.collections : []);
-	// A revoked caller's index is RESET, not failed  (see the tag page).
+	// A revoked caller's index is RESET, not failed (see the tag page).
 	let accessRevoked = $derived(!!wsSlug && localIndex.accessRevokedFor(wsSlug));
 	let collectionsError = $state<unknown>(null);
 	// TASK-2203: a failed load is an error with a retry, never "No starred items".
@@ -49,7 +49,7 @@
 	// collection's done field: before the list lands it would use the defaults.
 	let loading = $derived(!loadError && (!starsReady || indexState !== 'ready' || !collectionsReady));
 
-	// Scroll position restoration  (BUG-1425).
+	// Scroll position restoration (BUG-1425).
 	const scrollRestoration = createScrollRestoration({
 		ready: () => !loading,
 		persistKey: () =>
@@ -57,12 +57,12 @@
 	});
 	export const snapshot = scrollRestoration.snapshot;
 
-	// Bring the index up and catch it up, the shared way  (BUG-3181). Reads
+	// Bring the index up and catch it up, the shared way (BUG-3181). Reads
 	// `authStore.userId` on purpose so it re-runs for a new identity, and
 	// captures the epoch synchronously for the helper's fence. The call itself
 	// is UNTRACKED: `localIndex.bootstrap` reads and writes the workspace's
 	// bootstrap state before its first await, and tracked, each write re-ran
-	// this effect  (BUG-3192, the same trap on the item page).
+	// this effect (BUG-3192, the same trap on the item page).
 	$effect(() => {
 		const ws = wsSlug;
 		if (!ws) return;
@@ -75,7 +75,7 @@
 	// so the page offers a retry instead of a skeleton that never resolves.
 	// `ensureCollections` joins the layout's request rather than issuing one.
 	async function ensurePageCollections(ws: string) {
-		// The identity that asked  (TASK-2203), and the workspace: a settle after
+		// The identity that asked (TASK-2203), and the workspace: a settle after
 		// either moved describes a list this page is no longer showing.
 		const isSameIdentity = authStore.identityFence();
 		try {
@@ -122,7 +122,7 @@
 		workspaceStore.setCurrent(wsSlug);
 	});
 
-	// NO IDENTITY LISTENER HERE, deliberately  (BUG-3005). The
+	// NO IDENTITY LISTENER HERE, deliberately (BUG-3005). The
 	// layout's listener reloads on a real identity change, and the starred
 	// store clears itself on one; everything this page shows derives from
 	// those stores, so there is nothing of its own to reset.
@@ -159,8 +159,8 @@
 	// No explicit handleUnstar needed — items is derived from starredStore.isStarred,
 	// so unstarring via ItemCard's toggle automatically removes the item from the list.
 
-	// The browser tab names this section  (TASK-2261, audit C99). Pathname is
-	// read so a reuse across workspaces re-sets it  (see activity/+page.svelte).
+	// The browser tab names this section (TASK-2261, audit C99). Pathname is
+	// read so a reuse across workspaces re-sets it (see activity/+page.svelte).
 	$effect(() => {
 		page.url.pathname;
 		titleStore.setPageTitle({ section: 'Starred', item: null });

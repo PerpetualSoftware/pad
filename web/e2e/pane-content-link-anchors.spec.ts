@@ -32,12 +32,12 @@ import { clickBoardCard } from './lib/boardClickProbe';
  * The modifier bail-out itself (button / meta / ctrl / shift / alt /
  * defaultPrevented) is exhaustively unit-tested against the SHARED
  * predicate every surface here reuses — `shouldOpenInPane`
- *  (itemCardClick.test.ts). This spec verifies the WIRING: that each new
+ * (itemCardClick.test.ts). This spec verifies the WIRING: that each new
  * onclick handler actually calls that predicate before intercepting, in a
  * real browser (ctrl-click's "open a new background tab" behavior has no
  * jsdom equivalent).
  *
- * Viewport is driven explicitly  (desktop split), so one project is enough.
+ * Viewport is driven explicitly (desktop split), so one project is enough.
  */
 
 const DESKTOP = { width: 1200, height: 900 };
@@ -101,7 +101,7 @@ async function seedRelatedLink(
 	if (!resp.ok()) throw new Error(`link create failed (${resp.status()}): ${await resp.text()}`);
 }
 
-/** The PREFIX-NUMBER ref  (e.g. "DOC-5") the app renders for an item —
+/** The PREFIX-NUMBER ref (e.g. "DOC-5") the app renders for an item —
  *  computed the same way `formatItemRef` does, client-side. */
 async function itemRef(
 	fixture: SuiteFixture,
@@ -123,7 +123,7 @@ async function itemRef(
  * the surface prefers; `ChildItems` uses slugs, relationships and the graph use
  * refs).
  *
- * OBSERVED THROUGH CDP, NOT THROUGH `BrowserContext`'s `page` EVENT  (BUG-2993).
+ * OBSERVED THROUGH CDP, NOT THROUGH `BrowserContext`'s `page` EVENT (BUG-2993).
  *
  * The obvious spelling — `Promise.all([context.waitForEvent('page'), click()])`
  * — fails about one run in three, and for a reason that took four instrumented
@@ -247,7 +247,7 @@ test.describe('content-link anchor interception (PLAN-2154 / TASK-2159)', () => 
 		await expect.poll(() => openItemParam(page)).not.toBeNull();
 		const paneUrlAtParent = page.url();
 
-		// Children moved under the Relationships tab  (PLAN-2290 Phase 4).
+		// Children moved under the Relationships tab (PLAN-2290 Phase 4).
 		await pane.getByRole('tab', { name: 'Relationships' }).click();
 		const childRow = pane.locator('.child-row', { hasText: 'Anchors children kid' });
 		await expect(childRow).toBeVisible();
@@ -265,7 +265,7 @@ test.describe('content-link anchor interception (PLAN-2154 / TASK-2159)', () => 
 		// Back to the parent, then ctrl-click the SAME child row: the interceptor
 		// must NOT call preventDefault for a modifier click, so the browser's
 		// native "open link in a new background tab" behavior fires instead —
-		// the pane's own `?item=` must stay put  (proving our handler bailed).
+		// the pane's own `?item=` must stay put (proving our handler bailed).
 		await page.goto(paneUrlAtParent);
 		await expect(pane).toBeVisible();
 		// The pane retarget reset the tab to Details — re-activate Relationships.
@@ -293,7 +293,7 @@ test.describe('content-link anchor interception (PLAN-2154 / TASK-2159)', () => 
 		await expect(pane).toBeVisible();
 		const paneUrlAtA = page.url();
 
-		// Relationships moved under the Relationships tab  (PLAN-2290 Phase 4).
+		// Relationships moved under the Relationships tab (PLAN-2290 Phase 4).
 		await pane.getByRole('tab', { name: 'Relationships' }).click();
 		const relLink = pane.locator('.link-target', { hasText: 'Anchors rel bravo' });
 		await expect(relLink).toBeVisible();
@@ -303,7 +303,7 @@ test.describe('content-link anchor interception (PLAN-2154 / TASK-2159)', () => 
 		await expect(pane.locator('.title', { hasText: /Anchors rel bravo/ })).toBeVisible();
 		expect(pathname(page)).toBe(new URL(paneUrlAtA).pathname);
 
-		// Ctrl-click falls through to the plain `href`  (full-page popout); the
+		// Ctrl-click falls through to the plain `href` (full-page popout); the
 		// pane's own `?item=` is untouched.
 		await page.goto(paneUrlAtA);
 		await expect(pane).toBeVisible();
@@ -331,16 +331,16 @@ test.describe('content-link anchor interception (PLAN-2154 / TASK-2159)', () => 
 		await expect(pane).toBeVisible();
 		const paneUrlAtParent = page.url();
 
-		// Graph opens from the pane ⋯ overflow now  (PLAN-2290 Phase 4 PR B).
+		// Graph opens from the pane ⋯ overflow now (PLAN-2290 Phase 4 PR B).
 		await pane.locator('button.pane-more-btn').click();
-		// Portaled panel  (BUG-2610) — page-scoped row lookup.
+		// Portaled panel (BUG-2610) — page-scoped row lookup.
 		await page.getByRole('menuitem', { name: 'Dependency graph' }).click();
 		const drawer = pane.locator('.graph-drawer');
 		await expect(drawer).toBeVisible();
 		const childNode = drawer.locator('.node', { hasText: childRef });
 		await expect(childNode).toBeVisible();
 
-		// A plain click on the NODE selects it  (opens the detail card) but does
+		// A plain click on the NODE selects it (opens the detail card) but does
 		// NOT navigate — the pane must still be showing the parent.
 		await childNode.click();
 		const detailCard = drawer.locator('.detail-card');
@@ -348,7 +348,7 @@ test.describe('content-link anchor interception (PLAN-2154 / TASK-2159)', () => 
 		expect(openItemParam(page)).toBe(new URL(paneUrlAtParent).searchParams.get('item'));
 
 		// The detail card's "Open item ↗" anchor is the actual interception
-		// point  (Architecture B.4) — clicking IT drills the pane to the child.
+		// point (Architecture B.4) — clicking IT drills the pane to the child.
 		await detailCard.locator('.open-btn', { hasText: 'Open item' }).click();
 		await expect.poll(() => openItemParam(page)).toBe(childRef);
 		await expect(pane.locator('.title', { hasText: /Anchors graph kid/ })).toBeVisible();
@@ -370,15 +370,15 @@ test.describe('content-link anchor interception (PLAN-2154 / TASK-2159)', () => 
 		await expect(pane).toBeVisible();
 		const paneUrlAtParent = page.url();
 
-		// Graph opens from the pane ⋯ overflow now  (PLAN-2290 Phase 4 PR B).
+		// Graph opens from the pane ⋯ overflow now (PLAN-2290 Phase 4 PR B).
 		await pane.locator('button.pane-more-btn').click();
-		// Portaled panel  (BUG-2610) — page-scoped row lookup.
+		// Portaled panel (BUG-2610) — page-scoped row lookup.
 		await page.getByRole('menuitem', { name: 'Dependency graph' }).click();
 		const drawer = pane.locator('.graph-drawer');
 		await expect(drawer).toBeVisible();
 
 		// The controls-bar "Open ↗" anchor targets the currently-focused node
-		//  (the origin item itself here) — a modifier click must still fall
+		// (the origin item itself here) — a modifier click must still fall
 		// through to its plain `href` rather than being swallowed by the
 		// interceptor (which would otherwise preventDefault + no-op on the
 		// same-item guard, dropping the click entirely).
@@ -391,19 +391,19 @@ test.describe('content-link anchor interception (PLAN-2154 / TASK-2159)', () => 
 });
 
 /**
- * Focus per hop  (PLAN-2154 Architecture C / R1, TASK-2162).
+ * Focus per hop (PLAN-2154 Architecture C / R1, TASK-2162).
  *
- * Each in-pane hop  (a content-link DRILL or an in-pane BACK) changes `?item=`,
+ * Each in-pane hop (a content-link DRILL or an in-pane BACK) changes `?item=`,
  * which remounts ItemDetail's `{#key itemSlug}` subtrees and destroys the very
  * link/row the user just activated. `keepFocus` then has nothing to restore, so
  * focus falls to `<body>` — where the next `j`/`k` runs list-nav
- *  (`handlePageKeydown`'s `.item-pane` bail doesn't match `<body>`) and could
+ * (`handlePageKeydown`'s `.item-pane` bail doesn't match `<body>`) and could
  * laterally re-target the drilled `?item=`. The host moves focus onto the
  * STABLE aria-labeled `<aside>` region synchronously at each hop
- *  (`focusPaneRegion`), backed by a desktop `focusin` net, so focus stays inside
+ * (`focusPaneRegion`), backed by a desktop `focusin` net, so focus stays inside
  * `.item-pane` across the remount and `j`/`k` stay inert.
  *
- * These drive REAL content-link clicks  (and a keyboard activation) so the
+ * These drive REAL content-link clicks (and a keyboard activation) so the
  * anchor-removed-by-remount path is exercised end to end — `pane-controller`'s
  * `drillTo` test hook calls `navigatePaneTo` directly and can't reproduce it.
  * The editor content-body link path (EditorLinkPopover, which additionally
@@ -428,7 +428,7 @@ test.describe('focus per hop (PLAN-2154 / TASK-2162)', () => {
 	});
 
 	// Gate GET fetches for one item ref so a hop's DESTINATION stays on the
-	// minimal  (loading) pane header — no content, no editor. That isolates
+	// minimal (loading) pane header — no content, no editor. That isolates
 	// `focusPaneRegion` as the ONLY thing that could have put focus in the pane
 	// during the load window (ItemDetail's editor autofocuses once the item
 	// loads, which would otherwise mask whether the synchronous hop focus fired
@@ -473,7 +473,7 @@ test.describe('focus per hop (PLAN-2154 / TASK-2162)', () => {
 		// DRILL A→B by clicking the related-item link. Its anchor lives inside a
 		// `{#key itemSlug}` subtree that this very drill remounts — the exact R1
 		// "clicked link destroyed, focus falls to <body>" case.
-		// The related link lives under the Relationships tab  (PLAN-2290 Phase 4).
+		// The related link lives under the Relationships tab (PLAN-2290 Phase 4).
 		await pane.getByRole('tab', { name: 'Relationships' }).click();
 		const relLink = pane.locator('.link-target', { hasText: 'Focus hop rel bravo' });
 		await expect(relLink).toBeVisible();
@@ -485,7 +485,7 @@ test.describe('focus per hop (PLAN-2154 / TASK-2162)', () => {
 		// synchronous region focus — not dropped to <body>.
 		await expect.poll(() => paneHasFocus(page)).toBe(true);
 
-		// The next `j` is inert  (focus in the pane → the keydown handler bails),
+		// The next `j` is inert (focus in the pane → the keydown handler bails),
 		// so the drilled `?item=` is untouched — no lateral list re-target.
 		await page.keyboard.press('j');
 		await page.waitForTimeout(250); // outlast the pane-follow debounce
@@ -515,7 +515,7 @@ test.describe('focus per hop (PLAN-2154 / TASK-2162)', () => {
 
 		const releaseB = await gateItemFetch(page, bRef);
 
-		// The related link lives under the Relationships tab  (PLAN-2290 Phase 4).
+		// The related link lives under the Relationships tab (PLAN-2290 Phase 4).
 		await pane.getByRole('tab', { name: 'Relationships' }).click();
 		const relLink = pane.locator('.link-target', { hasText: 'Focus hop kbd bravo' });
 		await expect(relLink).toBeVisible();
@@ -550,18 +550,18 @@ test.describe('focus per hop (PLAN-2154 / TASK-2162)', () => {
 		await expect(pane).toBeVisible();
 		const aRef = openItemParam(page)!;
 
-		// The related link lives under the Relationships tab  (PLAN-2290 Phase 4).
+		// The related link lives under the Relationships tab (PLAN-2290 Phase 4).
 		await pane.getByRole('tab', { name: 'Relationships' }).click();
 		const relLink = pane.locator('.link-target', { hasText: 'Focus hop back bravo' });
 		await expect(relLink).toBeVisible();
 		await relLink.click();
 		await expect(pane.locator('.title', { hasText: /Focus hop back bravo/ })).toBeVisible();
 
-		// Gate A  (the Back destination) so the pop stalls on the loading header —
+		// Gate A (the Back destination) so the pop stalls on the loading header —
 		// focus in the pane during that window is purely `focusPaneRegion`.
 		const releaseA = await gateItemFetch(page, aRef);
 
-		// In-pane Back  (‹) pops B→A. The pop remounts the pane content and
+		// In-pane Back (‹) pops B→A. The pop remounts the pane content and
 		// unmounts the just-clicked Back button; focus must stay inside the pane.
 		const backBtn = pane.locator('button[aria-label="Back"]');
 		await expect(backBtn).toBeVisible();

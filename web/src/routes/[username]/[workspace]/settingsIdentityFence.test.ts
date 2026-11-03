@@ -1,7 +1,7 @@
 // Node-project SOURCE guard: every async commit point on the workspace settings
-// page is fenced on the signed-in identity  (BUG-3006).
+// page is fenced on the signed-in identity (BUG-3006).
 //
-// THE GATE BESIDE THIS  (TASK-3097): `settings/settingsIdentityGate.test.ts` tables every async unit on
+// THE GATE BESIDE THIS (TASK-3097): `settings/settingsIdentityGate.test.ts` tables every async unit on
 // this page with the hash of the code it was reviewed on, and refuses any
 // edit to one until its row is re-read. That catches BUG-3084's
 // classes, which a source scanner cannot see. This file catches what the

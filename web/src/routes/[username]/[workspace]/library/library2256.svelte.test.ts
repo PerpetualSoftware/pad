@@ -2,7 +2,7 @@ import { describe, expect, it, vi, afterEach } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 
 /**
- * TASK-2256  (audit C66 + C67) on the Library page:
+ * TASK-2256 (audit C66 + C67) on the Library page:
  *  - C66: the tab lives in the URL (a refresh keeps it, and the per-tab
  *    scroll keys finally differ), and the tabs follow the tabs pattern.
  *  - C67: a card can show its full text before Activate, and "Active" links

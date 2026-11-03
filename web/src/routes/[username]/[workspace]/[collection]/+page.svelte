@@ -666,7 +666,7 @@
 	//  • RE-TARGETING an already-open pane (row-click / Enter / j-k moving
 	//    A→B→C) REPLACES, so paging through N rows doesn't stack N history
 	//    entries that Back must unwind before it can close the pane
-	//    (PLAN-2105 history policy). `closeItemPane`
+	// (PLAN-2105 history policy). `closeItemPane`
 	//    likewise REPLACES.
 	// The element that opened the pane, captured so closing can return focus to
 	// it (TASK-2122). A plain ref (not $state) — it never drives the UI. The

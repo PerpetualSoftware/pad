@@ -1,5 +1,5 @@
 /**
- * The family's fake `authStore` for identity-fence suites  (BUG-3084).
+ * The family's fake `authStore` for identity-fence suites (BUG-3084).
  *
  * WHY THIS EXISTS, and it is not convenience. Each surface's suite grew its own
  * double with `let epoch = 0` — a plain closure variable. That models the

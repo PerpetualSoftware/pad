@@ -6,17 +6,17 @@ import { page } from '$app/state';
  * TASK-2190: the members page let an owner demote themselves with one
  * unconfirmed change, offered Remove on their own row (the server refuses
  * it), and reported every refusal as a bare "Failed to update role", so the
- * server's reason  ("a workspace must keep at least one owner") never reached
+ * server's reason ("a workspace must keep at least one owner") never reached
  * the person. The select also kept showing the refused role.
  */
 const calls = vi.hoisted(() => ({ updateRole: [] as Array<[string, string]>, refuseWith: null as null | string }));
 const toasts = vi.hoisted(() => [] as string[]);
 
-// The self-demotion question goes through the shared dialog  (TASK-3543); the
+// The self-demotion question goes through the shared dialog (TASK-3543); the
 // test answers it.
 const ask = vi.hoisted(() => ({ request: vi.fn() }));
 // Reactive, so a workspace switch while the question is open re-derives the
-// page's wsSlug  (the default double is a plain object).
+// page's wsSlug (the default double is a plain object).
 vi.mock('$app/state', async () => ({ page: (await import('../../../../test/mocks/reactivePage.svelte')).page }));
 vi.mock('$lib/stores/confirmDialog.svelte', () => ({ confirmDialog: { request: ask.request } }));
 vi.mock('$lib/api/client', () => {
@@ -174,7 +174,7 @@ describe('TASK-3543: a removal asked through the shared dialog', () => {
 
 	// Question: whether the changed select keeps showing the unsent role
 	// when the page moves on. It cannot: a workspace change clears the member
-	// list, so the rows  (and their selects) are rebuilt from the stored roles.
+	// list, so the rows (and their selects) are rebuilt from the stored roles.
 	it('a self-demotion answered after the page moved sends nothing, and the rebuilt row shows the stored role', async () => {
 		calls.updateRole.length = 0;
 		await openMembers();

@@ -36,7 +36,7 @@ vi.mock('$lib/services/sse.svelte', () => ({
 }));
 
 // BUG-3181: the page brings the workspace's local index up on entry. That is
-// the shared helper's job  (and its own test's), not this file's — and the
+// the shared helper's job (and its own test's), not this file's — and the
 // real one would drive the local index against an API mock with no index
 // endpoints, which never settles. Stubbed here; the one leg below checks
 // the page asks for it.
@@ -124,7 +124,7 @@ describe('workspace activity head re-read (BUG-3160)', () => {
 	it('a workspace-wide burst costs at most one head re-read per 10s (≤6/min per tab)', async () => {
 		await mountPage([act('a', 20)]);
 		listActivity.mockResolvedValue([act('a', 20)]);
-		// Two busy seats: an item event every 250ms for a minute  (240 events).
+		// Two busy seats: an item event every 250ms for a minute (240 events).
 		for (let ms = 0; ms < 60_000; ms += 250) {
 			sseBox.handler!({ type: 'item_updated', item_id: `i${ms % 7}` });
 			await advance(250);

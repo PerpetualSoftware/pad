@@ -22,8 +22,8 @@
 	// Route params arrive URL-decoded, so this is the human-readable tag.
 	let tag = $derived(page.params.tag ?? '');
 
-	// Served from the workspace's local index  (TASK-2231). The page used to
-	// fetch every tagged item with its full body  (~500 KB for a 50-item tag)
+	// Served from the workspace's local index (TASK-2231). The page used to
+	// fetch every tagged item with its full body (~500 KB for a 50-item tag)
 	// and its own copy of the collection list, to render card summaries the
 	// index already holds; now it makes no request of its own. The index is
 	// kept current by the workspace's live sync, so the list also follows
@@ -72,7 +72,7 @@
 		}
 	}
 
-	// Completed items  (TASK-2211, audit C105). A tag page used to mix them in
+	// Completed items (TASK-2211, audit C105). A tag page used to mix them in
 	// with no way to leave them out, so a long-lived tag read as open work.
 	// "Show completed" defaults ON, as the collection list shows completed
 	// items, and is remembered per workspace like the view mode above. Off,
@@ -104,12 +104,12 @@
 	});
 	export const snapshot = scrollRestoration.snapshot;
 
-	// Bring the index up and catch it up, the shared way  (BUG-3181). Reads
+	// Bring the index up and catch it up, the shared way (BUG-3181). Reads
 	// `authStore.userId` on purpose so it re-runs for a new identity, and
 	// captures the epoch synchronously for the helper's fence. The call itself
 	// is UNTRACKED: `localIndex.bootstrap` reads and writes the workspace's
 	// bootstrap state before its first await, and tracked, each write re-ran
-	// this effect  (BUG-3192, the same trap on the item page).
+	// this effect (BUG-3192, the same trap on the item page).
 	$effect(() => {
 		const ws = wsSlug;
 		if (!ws) return;
@@ -122,7 +122,7 @@
 	// so the page offers a retry instead of a skeleton that never resolves.
 	// `ensureCollections` joins the layout's request rather than issuing one.
 	async function ensurePageCollections(ws: string) {
-		// The identity that asked  (TASK-2203), and the workspace: a settle after
+		// The identity that asked (TASK-2203), and the workspace: a settle after
 		// either moved describes a list this page is no longer showing.
 		const isSameIdentity = authStore.identityFence();
 		try {
@@ -164,7 +164,7 @@
 	// embedded on the item so those rows still render — dropping them would
 	// make the header count disagree with the visible list. The empty schema
 	// means ItemCard just omits status/priority for these rows.
-	// Sorted last  (no real sort_order available).
+	// Sorted last (no real sort_order available).
 	function syntheticCollection(item: Item): Collection {
 		return {
 			id: item.collection_id,
@@ -185,7 +185,7 @@
 	}
 
 	// Aggregate tagged items the way collections are viewed: grouped by
-	// collection  (the shared axis across heterogeneous status enums), each
+	// collection (the shared axis across heterogeneous status enums), each
 	// group ordered by the collection's sort_order.
 	let groupedItems = $derived.by(() => {
 		const map = new Map<string, { collection: Collection; items: Item[] }>();
@@ -203,8 +203,8 @@
 		return groups;
 	});
 
-	// The browser tab names this section  (TASK-2261, audit C99). Pathname is
-	// read so a reuse across workspaces re-sets it  (see activity/+page.svelte).
+	// The browser tab names this section (TASK-2261, audit C99). Pathname is
+	// read so a reuse across workspaces re-sets it (see activity/+page.svelte).
 	$effect(() => {
 		page.url.pathname;
 		titleStore.setPageTitle({ section: tag ? `#${tag}` : 'Tags', item: null });
@@ -285,7 +285,7 @@
 			/>
 		{/if}
 	{:else if viewMode === 'board'}
-		<!-- Board: one lane per collection  (the shared axis). Read-only — no
+		<!-- Board: one lane per collection (the shared axis). Read-only — no
 		     drag/status changes, since moving a card between collection lanes
 		     would mean reclassifying the item, not the intent here. -->
 		<div class="tag-board">
@@ -409,7 +409,7 @@
 		border-left: 1px solid var(--border);
 	}
 
-	/* Selected segment: a 1px accent ring  (BUG-3420). Background alone measured
+	/* Selected segment: a 1px accent ring (BUG-3420). Background alone measured
 	   1.05-1.16:1 against its neighbours in both themes; the ring is >= 4.4:1. */
 	.view-btn.active {
 		background: var(--bg-tertiary);

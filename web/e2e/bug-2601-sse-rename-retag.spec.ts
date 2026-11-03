@@ -2,14 +2,14 @@ import { expect } from '@playwright/test';
 import { test } from './fixtures';
 
 /**
- * BUG-2601  (retag half) — the LIVE SSE rename path. BUG-2272 re-targets
+ * BUG-2601 (retag half) — the LIVE SSE rename path. BUG-2272 re-targets
  * the route, but cached localIndex rows keep the OLD `collection_slug`
  * (rows are only re-stamped when the item itself changes, and a rename
  * touches no items), so the healed route rendered an EMPTY board while
  * the sidebar still counted the items. Discovered by this spec's
  * pre-fix run during BUG-2601; fixed by `localIndex.retagCollection`
  * called from the workspace layout's global `collection_updated`
- * subscriber. The sibling spec  (bug-2601-sync-rename-heal) covers the
+ * subscriber. The sibling spec (bug-2601-sync-rename-heal) covers the
  * missed-SSE path, which retags at the sync-heal site instead.
  */
 test('BUG-2601: live SSE rename re-targets the route AND the board still renders its items', async ({ page, request, fixture }) => {

@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test';
 
-/** `PANE_MINT_SETTLE_MS`  (src/lib/collections/paneMintSettle.ts). */
+/** `PANE_MINT_SETTLE_MS` (src/lib/collections/paneMintSettle.ts). */
 export const PANE_MINT_SETTLE_MS = 140;
 
 /** How long after the Back's popstate the settle may take to arm. */
@@ -8,7 +8,7 @@ const ARM_WINDOW_MS = 1000;
 
 /**
  * Browser Back, then a pane drill `delayMs` after the Back's mint-settle is
- * ARMED — both timed in the page  (BUG-3166), so no Playwright round-trip sits
+ * ARMED — both timed in the page (BUG-3166), so no Playwright round-trip sits
  * between them. The settle is recognised as the `PANE_MINT_SETTLE_MS`
  * setTimeout the Back's afterNavigate arms; its callback is wrapped to record
  * whether it had FIRED by the time the drill ran, which is the precondition

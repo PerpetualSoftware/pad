@@ -26,7 +26,7 @@ test.skip(({ isMobile }) => isMobile, 'the permission walk runs on the desktop p
 type Coll = 'tasks' | 'ideas';
 
 // Which collections each account may see, and which it may edit, from the
-// seed in lib/permission-walk.ts  (HT-1157's Setup list).
+// seed in lib/permission-walk.ts (HT-1157's Setup list).
 const SEES: Record<AccountKey, Coll[]> = {
 	owner: ['tasks', 'ideas'],
 	editor: ['tasks', 'ideas'],
@@ -49,7 +49,7 @@ const EDITS: Record<AccountKey, Coll[]> = {
 const NAME: Record<Coll, string> = { tasks: 'Tasks', ideas: 'Ideas' };
 
 // Accounts whose role may edit every collection, so the dashboard also offers
-// the first non-Tasks collection  (BUG-3258).
+// the first non-Tasks collection (BUG-3258).
 const EDITS_ALL: ReadonlySet<AccountKey> = new Set(['owner', 'editor']);
 
 let walk: PermissionWalk;
@@ -71,12 +71,12 @@ async function open(page: Page, key: AccountKey, path: string, view?: 'list' | '
 		}, view);
 	}
 	await page.goto(`${walk.workspacePath}${path}`);
-	// Chrome is absent for every account until access settles  (BUG-3267).
+	// Chrome is absent for every account until access settles (BUG-3267).
 	await waitForAccessSettled(page);
 }
 
 // The row wrapper: the link and its quick-add button are siblings in it
-//  (TASK-2237).
+// (TASK-2237).
 function sidebarRow(page: Page, coll: Coll) {
 	return page.locator('nav.collection-nav .nav-section .nav-row', {
 		has: page.locator('.nav-label', { hasText: new RegExp(`^${NAME[coll]}$`) })
@@ -90,7 +90,7 @@ function sidebarEntry(page: Page, coll: Coll) {
 }
 
 // The one item of `coll` every account that sees `coll` can see: the granted
-// task  (guests see only it, or all of Tasks), or the first idea.
+// task (guests see only it, or all of Tasks), or the first idea.
 function anchorTitle(coll: Coll): string {
 	return coll === 'tasks' ? walk.grantedTask.title : walk.ideas[0].title;
 }
@@ -137,7 +137,7 @@ for (const key of ACCOUNT_KEYS) {
 
 		test('Cmd-N: quick-add opens on, and offers, only collections the account may edit', async ({ page }) => {
 			// From Ideas where the account sees it, so the fallback to the
-			// ACTIVE collection is exercised  (BUG-3258): an account that
+			// ACTIVE collection is exercised (BUG-3258): an account that
 			// cannot edit Ideas must not get a New Idea dialog there.
 			const onIdeas = SEES[key].includes('ideas');
 			await open(page, key, onIdeas ? '/ideas' : '');
@@ -182,13 +182,13 @@ for (const key of ACCOUNT_KEYS) {
 	});
 }
 
-// Why every leg waits for access to settle  (BUG-3267). The owner may create in
+// Why every leg waits for access to settle (BUG-3267). The owner may create in
 // every collection, yet a Cmd-N pressed while either input to that decision is
 // still in flight is consumed and ignored: with GET /me held, membership reads
 // `pending`; with the collection list held, membership is `known` and the
 // sidebar lists nothing to create in. The second is the state every failure
 // caught under 8 workers was in. Releasing the held request settles access,
-// the early press still does nothing  (it was dropped, not deferred), and the
+// the early press still does nothing (it was dropped, not deferred), and the
 // same press then opens the dialog.
 const HOLDS = {
 	membership: (slug: string) => `**/api/v1/workspaces/${slug}/me`,
@@ -263,7 +263,7 @@ for (const key of ['owner', 'editor', 'viewer', 'viewerTasksEdit'] as const) {
 // precedence guest may edit Tasks but only VIEW the granted task, because an
 // item grant beats a collection grant. Dragging that card to another lane is
 // a status write the account does not hold. Measured two ways: whether the
-// drag STARTED  (svelte-dnd-action's dragged element), and which writes it
+// drag STARTED (svelte-dnd-action's dragged element), and which writes it
 // sent, each recorded as `<status> <item id> <body>` so a failure names them.
 interface DragResult {
 	/** svelte-dnd-action mounted its dragged element: the drag started. */
@@ -313,7 +313,7 @@ async function dragToLane(page: Page, title: string, lane: string): Promise<Drag
 			// A cross-lane drop writes the card's STATUS, and may also write a
 			// neighbour's sort_order. Wait for the status write itself: waiting for
 			// the first write returned on the neighbour's, before the status write
-			// landed  (a CI flake on the BUG-3259 leg).
+			// landed (a CI flake on the BUG-3259 leg).
 			await expect
 				.poll(() => writes.some((w) => w.includes('"status"')), { timeout: 5_000 })
 				.toBe(true)
@@ -326,13 +326,13 @@ async function dragToLane(page: Page, title: string, lane: string): Promise<Drag
 }
 
 // A gesture can fail under load, either by not starting, or by releasing
-// before the library registered the target lane  (TASK-2866: both seen on CI).
+// before the library registered the target lane (TASK-2866: both seen on CI).
 // Retry until it both starts and enters the target lane. A card that never
 // starts in three tries counts as not draggable, and each test proves the
 // gesture works in the same run with a control drag.
 // The lane to drag a card INTO: whichever of Open / In-Progress it is not in
 // now. A drop into its own lane is a reorder with no status write, and the
-// world is shared by every test  (and every --repeat-each) in a worker.
+// world is shared by every test (and every --repeat-each) in a worker.
 async function otherLane(page: Page, title: string): Promise<string> {
 	const inProgress = page
 		.getByRole('group', { name: 'In-Progress column', exact: true })
@@ -378,10 +378,10 @@ test('guestPrecedence: a view-only card cannot be dragged to another lane (BUG-3
 	expect(viewOnly.writes, 'the view-only card sent writes').toEqual([]);
 });
 
-// Lane bulk actions  (archive, move, tag, priority, assign) sit behind each
+// Lane bulk actions (archive, move, tag, priority, assign) sit behind each
 // lane's ⋯ menu. The menu itself is for everyone, because lane sort lives
-// there too  (TASK-1673). The bulk endpoint gates on workspace ROLE, not on
-// grants  (TASK-1672), so the bulk verbs render iff the account is an owner
+// there too (TASK-1673). The bulk endpoint gates on workspace ROLE, not on
+// grants (TASK-1672), so the bulk verbs render iff the account is an owner
 // or editor. A collection-edit grant alone does not unlock them, which
 // under-grants rather than leaks.
 const BULK_ROLE: ReadonlySet<AccountKey> = new Set(['owner', 'editor', 'editorSpecific']);

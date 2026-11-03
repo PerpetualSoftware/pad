@@ -74,8 +74,8 @@ type decisionTickConfig struct {
 	// passCancel cancels the pass in flight, if any. SetDecisionRunner calls
 	// it when the runner changes, so disabling or replacing the provider
 	// stops the OLD one being called for the rest of that pass — up to
-	// `limit` more jobs of item data sent to a provider the admin turned off
-	//. A cancelled job's claim is released without counting
+	// `limit` more jobs of item data sent to a provider the admin turned off.
+	// A cancelled job's claim is released without counting
 	// an attempt, so the new runner picks it up.
 	passCancel context.CancelFunc
 

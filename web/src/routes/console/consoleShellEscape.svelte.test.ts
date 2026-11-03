@@ -1,4 +1,4 @@
-// Runs in the jsdom vitest project  (filename ends `.svelte.test.ts`).
+// Runs in the jsdom vitest project (filename ends `.svelte.test.ts`).
 //
 // TASK-2430 — the console shell owns a global Escape that
 // closes its collapsible nav. (The nav's toggle is CSS-hidden above the mobile
@@ -32,7 +32,7 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 		user: { name: 'E2E', email: 'e2e@example.com', role: 'admin' },
 		cloudMode: false,
 		authenticated: true,
-		// The page's sign-out asks through confirmDialog  (BUG-3571), which
+		// The page's sign-out asks through confirmDialog (BUG-3571), which
 		// listens for identity changes when it loads.
 		onIdentityChange: () => () => {},
 	},

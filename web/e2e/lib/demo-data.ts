@@ -19,7 +19,7 @@
 export interface DemoPlan {
 	/** Plan title rendered in cards / scenes. */
 	title: string;
-	/** Pad plan status  (`active`, `planned`, `completed`, `paused`). */
+	/** Pad plan status (`active`, `planned`, `completed`, `paused`). */
 	status: string;
 	/** Markdown body — short, marketing-friendly. */
 	content: string;
@@ -27,11 +27,11 @@ export interface DemoPlan {
 
 export interface DemoTask {
 	title: string;
-	/** Pad task status  (`open`, `in-progress`, `done`, `cancelled`). */
+	/** Pad task status (`open`, `in-progress`, `done`, `cancelled`). */
 	status: string;
-	/** Pad task priority  (`low`, `medium`, `high`, `critical`). */
+	/** Pad task priority (`low`, `medium`, `high`, `critical`). */
 	priority: string;
-	/** Pad effort estimate  (`xs`, `s`, `m`, `l`, `xl`). */
+	/** Pad effort estimate (`xs`, `s`, `m`, `l`, `xl`). */
 	effort?: string;
 	/**
 	 * Whether this task is parented to `demoPlan`. The seeder maps this to
@@ -43,15 +43,15 @@ export interface DemoTask {
 
 export interface DemoIdea {
 	title: string;
-	/** Pad idea status  (`new`, `exploring`, `planned`, `implemented`, `rejected`). */
+	/** Pad idea status (`new`, `exploring`, `planned`, `implemented`, `rejected`). */
 	status: string;
-	/** Pad idea impact  (`low`, `medium`, `high`). */
+	/** Pad idea impact (`low`, `medium`, `high`). */
 	impact: string;
 }
 
 export interface DemoConvention {
 	title: string;
-	/** Pad convention trigger  (`always`, `on-implement`, `on-commit`, ...). */
+	/** Pad convention trigger (`always`, `on-implement`, `on-commit`, ...). */
 	trigger: string;
 	priority: 'must' | 'should' | 'nice-to-have';
 	/** Defaults to `all` when omitted. */
@@ -70,7 +70,7 @@ export const demoPlan: DemoPlan = {
 /**
  * Realistic mix of statuses, priorities, parent linkage. Designed so the
  * board view shows meaningful columns and the dashboard's plan progress
- * widget reads non-zero  (3 of 5 plan-linked tasks are in-flight or done).
+ * widget reads non-zero (3 of 5 plan-linked tasks are in-flight or done).
  */
 export const demoTasks: DemoTask[] = [
 	{

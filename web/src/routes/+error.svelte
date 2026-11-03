@@ -1,6 +1,6 @@
 <script lang="ts">
 	// Root-level error page. Renders for any unhandled error or unmatched
-	// route  (404) anywhere in the SvelteKit tree.
+	// route (404) anywhere in the SvelteKit tree.
 	//
 	// Context-aware chrome:
 	//
@@ -11,14 +11,14 @@
 	//   brand; on self-hosted we render a bare centered card with the
 	//   inline Pad wordmark.
 	//
-	// - "App-shell context"  (workspace pages /[username]/[workspace]/...):
+	// - "App-shell context" (workspace pages /[username]/[workspace]/...):
 	//   the root layout already wraps us in Sidebar / TopBar / main-content,
 	//   so we MUST NOT also render fixed-position marketing chrome — that
 	//   would stack two header bars on top of each other. Render a minimal
 	//   in-shell error instead (no AuthHeader, no AuthFooter, no body-level
 	//   sizing — just a centered block inside the existing main-content).
 	//
-	// On self-hosted  (cloudMode=false) the marketing-context branch still
+	// On self-hosted (cloudMode=false) the marketing-context branch still
 	// renders no getpad.dev chrome — same gating philosophy as TASK-902/903.
 	//
 	// Visual contract: docs/brand.md sections 5–7 via the reused
@@ -46,8 +46,8 @@
 	// Mirror the bare-render condition from web/src/routes/+layout.svelte —
 	// these are the paths where the root layout renders children directly,
 	// without wrapping them in the workspace app shell. Errors on those
-	// paths get the marketing chrome treatment  (Cloud) or a minimal
-	// centered card  (self-hosted). Errors on any other path (workspace
+	// paths get the marketing chrome treatment (Cloud) or a minimal
+	// centered card (self-hosted). Errors on any other path (workspace
 	// pages) render inside the app shell, so we render only the inner
 	// block without any header/footer of our own.
 	const isMarketingContext = $derived.by(() => {

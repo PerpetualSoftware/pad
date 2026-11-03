@@ -4,7 +4,7 @@ import { page } from '$app/state';
 
 vi.mock('$app/state', async () => ({ page: (await import('../../../../test/mocks/reactivePage.svelte')).page }));
 
-// TASK-2203  (audit C46): the Members tab answered every failure of the members
+// TASK-2203 (audit C46): the Members tab answered every failure of the members
 // list, including the 403 a guest always gets, with "No members yet.".
 
 const answers = vi.hoisted(() => ({ next: [] as Array<'fail' | 'forbidden' | 'empty'> }));

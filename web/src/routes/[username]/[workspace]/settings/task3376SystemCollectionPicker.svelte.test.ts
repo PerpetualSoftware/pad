@@ -4,7 +4,7 @@ import { page } from '$app/state';
 import SettingsPage from './+page.svelte';
 
 /**
- * TASK-3376: system collections  (Conventions, Playbooks) are ordinary
+ * TASK-3376: system collections (Conventions, Playbooks) are ordinary
  * collections for a restricted member. In the member access picker they are
  * real checkboxes, not a disabled always-checked row. They start UNCHECKED
  * when an owner switches a member from All to Specific (TASK-3384),

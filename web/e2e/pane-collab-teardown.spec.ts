@@ -2,7 +2,7 @@ import { test, expect } from './fixtures';
 import { browserLogin, seedDoc, EDITOR_SELECTOR, SYNCED_BADGE_SELECTOR, SYNC_TIMEOUT } from './lib/collab-helpers';
 
 /**
- * Split-pane collab teardown e2e  (PLAN-2105 Phase 3 / TASK-2117).
+ * Split-pane collab teardown e2e (PLAN-2105 Phase 3 / TASK-2117).
  *
  * The Asana-style split pane mounts the shared <ItemDetail> collab editor
  * in a right-docked pane on the collection page and switches items by
@@ -11,13 +11,13 @@ import { browserLogin, seedDoc, EDITOR_SELECTOR, SYNCED_BADGE_SELECTOR, SYNC_TIM
  * the full-page route never exercised. This spec drives them through the
  * real embedded UI and proves the edit reaches items.content:
  *
- *   1. FULL pane-close  (unmount): typing then closing the pane must
+ *   1. FULL pane-close (unmount): typing then closing the pane must
  *      mirror the edit into items.content via the teardown flush in the
  *      collab $effect cleanup as <ItemDetail> unmounts.
- *   2. Item-switch  (A->B re-key): switching must flush the outgoing item's
- *      edit AND tear down the old provider's WebSocket  (no leak).
+ *   2. Item-switch (A->B re-key): switching must flush the outgoing item's
+ *      edit AND tear down the old provider's WebSocket (no leak).
  *   3. Raw-markdown switch: switching mid raw-save-debounce must flush the
- *      outgoing raw edit  (loadData keepalive flush before clearPending).
+ *      outgoing raw edit (loadData keepalive flush before clearPending).
  *
  * NOT FALSE-PASSING — the key design constraint. These edits are ALSO
  * persisted by timer-based backups (the 5s collab idle flush; the 1.2s
@@ -29,7 +29,7 @@ import { browserLogin, seedDoc, EDITOR_SELECTOR, SYNCED_BADGE_SELECTOR, SYNC_TIM
  *     idle timer / raw debounce on switch, so the teardown/keepalive flush
  *     is the ONLY path that can persist the outgoing edit. Revert the
  *     flush and the item never persists → the test's content poll fails.
- *   - Pane-close: loadData does NOT run  (no new item), so the 5s idle
+ *   - Pane-close: loadData does NOT run (no new item), so the 5s idle
  *     timer stays armed and would fire ~5s later. We therefore assert the
  *     collab-snapshot PATCH is DISPATCHED within 3s of the EDIT (anchored
  *     before the close click, so a stall can't shift the reference) — the
@@ -38,7 +38,7 @@ import { browserLogin, seedDoc, EDITOR_SELECTOR, SYNCED_BADGE_SELECTOR, SYNC_TIM
  *     and the only PATCH is the late idle one → the 3s bound fails.
  *
  * The item-switch and raw-switch tests additionally assert the switch
- * happened within the timer window  (edit-anchored), so a pathological
+ * happened within the timer window (edit-anchored), so a pathological
  * stall that let the backup timer fire first yields an HONEST failure
  * rather than a silent false-pass.
  *
@@ -52,7 +52,7 @@ const COLLAB_WS_RE = /\/api\/v1\/collab\//;
 const COLLAB_SNAPSHOT_RE = /source=collab-snapshot/;
 // The teardown flush dispatches its PATCH synchronously on close; the 5s
 // idle backup can't dispatch until ~5s after the edit. 3s cleanly
-// separates them  (a local keepalive PATCH dispatches in well under 1s).
+// separates them (a local keepalive PATCH dispatches in well under 1s).
 const TEARDOWN_DISPATCH_BUDGET = 3_000;
 
 test('closing the split pane flushes the edit to items.content on unmount (not the 5s idle backup)', async ({
@@ -79,7 +79,7 @@ test('closing the split pane flushes the edit to items.content on unmount (not t
 	await expect(page.locator(SYNCED_BADGE_SELECTOR)).toBeVisible({ timeout: SYNC_TIMEOUT });
 
 	// Content check: a collab-snapshot PATCH whose response body carries
-	// OUR marker  (proves items.content actually got the typed text).
+	// OUR marker (proves items.content actually got the typed text).
 	const flushed = page.waitForResponse(
 		async (r) =>
 			COLLAB_SNAPSHOT_RE.test(r.url()) &&
@@ -101,8 +101,8 @@ test('closing the split pane flushes the edit to items.content on unmount (not t
 	await expect(editor).toContainText(marker);
 
 	// The collab-snapshot PATCH carrying OUR marker must DISPATCH promptly
-	// after the edit  (the teardown flush fires synchronously on close), not
-	// ~5s later  (the idle backup). Marker-scoped so a stray/other flush
+	// after the edit (the teardown flush fires synchronously on close), not
+	// ~5s later (the idle backup). Marker-scoped so a stray/other flush
 	// can't satisfy it.
 	const flushDispatched = page.waitForRequest(
 		(r) =>
@@ -165,7 +165,7 @@ test('switching items in the pane tears down the old collab socket and flushes t
 	await expect(page.locator(SYNCED_BADGE_SELECTOR)).toBeVisible({ timeout: SYNC_TIMEOUT });
 	await expect.poll(() => liveSockets.size).toBe(1);
 
-	// A's edit flush wait  (marker-scoped). loadData() cancels A's idle timer
+	// A's edit flush wait (marker-scoped). loadData() cancels A's idle timer
 	// on the switch, so the switch's cleanup flush is the ONLY path that can
 	// persist this — no idle backup to mask a reverted flush.
 	const flushedA = page.waitForResponse(
@@ -179,16 +179,16 @@ test('switching items in the pane tears down the old collab socket and flushes t
 
 	await editor.click();
 	await page.keyboard.type(markerA);
-	// Anchor to the EDIT  (the keystroke that armed A's 5s idle timer),
+	// Anchor to the EDIT (the keystroke that armed A's 5s idle timer),
 	// captured BEFORE the awaited toContainText so a stall there can't
 	// consume the idle window while the measured switch interval still
-	// looks prompt  (same reasoning as the pane-close test).
+	// looks prompt (same reasoning as the pane-close test).
 	const editAt = Date.now();
 	await expect(editor).toContainText(markerA);
 
 	// Switch A->B IN-PANE via a list row-click (client-side re-target of
 	// ?item=, no full navigation). `?item=` re-targets to B's issue id
-	//  (itemUrlId), not its slug, so we assert the param changed AWAY from A.
+	// (itemUrlId), not its slug, so we assert the param changed AWAY from A.
 	const itemParam = () => new URL(page.url()).searchParams.get('item');
 	await page.locator('.item-card .card-link', { hasText: 'Pane switch B' }).first().click();
 
@@ -212,7 +212,7 @@ test('switching items in the pane tears down the old collab socket and flushes t
 	expect(itemParam()).toBeTruthy();
 	await expect.poll(() => liveSockets.size, { timeout: 10_000 }).toBe(1);
 
-	// Closing the pane returns the socket count to baseline  (no leak).
+	// Closing the pane returns the socket count to baseline (no leak).
 	await page.locator('[aria-label="Close pane"]').first().click();
 	await expect(editor).toHaveCount(0);
 	await expect.poll(() => liveSockets.size, { timeout: 10_000 }).toBe(0);
@@ -246,7 +246,7 @@ test('switching items mid raw-markdown debounce flushes the outgoing raw edit (n
 
 	// In RAW markdown mode there is NO collab cleanup flush (collabKey is
 	// null), so switching A->B relies on loadData flushing the raw saver
-	//  (keepalive) before clearPending(). loadData also CANCELS the 1.2s raw
+	// (keepalive) before clearPending(). loadData also CANCELS the 1.2s raw
 	// debounce on the switch, so that keepalive flush is the ONLY path that
 	// can persist A — no debounce backup to mask a reverted flush.
 	const a = await seedDoc(fixture, request, 'Raw switch A');
@@ -260,7 +260,7 @@ test('switching items mid raw-markdown debounce flushes the outgoing raw edit (n
 	await expect(page.locator(SYNCED_BADGE_SELECTOR)).toBeVisible({ timeout: SYNC_TIMEOUT });
 
 	// Toggle A into raw markdown mode and type — arms the 1.2s raw-save
-	// debounce  (which the switch will cancel).
+	// debounce (which the switch will cancel).
 	await page.locator('button[title="Raw markdown editor"]').first().click();
 	const raw = page.locator('textarea.raw-textarea');
 	await expect(raw).toBeVisible();
