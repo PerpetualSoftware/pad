@@ -413,7 +413,7 @@ func TestBUG3334_AuditLogRefusesAnAdminPAT(t *testing.T) {
 
 // A signed-in member keeps working through a user-count fault at every site
 // the fault no longer short-circuits: the fall-through, not a 500 (the
-// A1 ruling).
+// fall-through is the intended behaviour).
 func TestBUG3334_SignedInMemberWorksThroughUserCountFault(t *testing.T) {
 	srv, slug := initializedWorkspace(t)
 	ws, _ := srv.store.GetWorkspaceBySlug(slug)

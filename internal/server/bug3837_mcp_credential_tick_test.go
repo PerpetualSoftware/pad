@@ -430,7 +430,7 @@ func TestMCP_BUG3837_UserReadFailureKeepsTheStream(t *testing.T) {
 // refresh token. In fosite v0.49.0 the fallback's error is scoped to its
 // else-if (handler/oauth2/introspector.go), so the ACCESS lookup's error is
 // the one returned: a store failure stays "could not ask" even when the
-// fallback answers not found. The r4 decline rests on that, and
+// fallback answers not found. The decision to treat that as "could not ask" rests on that, and
 // a fosite bump could flip it silently, so it is pinned against real fosite.
 // The control is the same fallback after a definitive access answer.
 func TestMCP_BUG3837_TransientAccessErrorIsNotReadAsRevocation(t *testing.T) {

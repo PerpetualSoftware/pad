@@ -249,7 +249,7 @@ func (s *Server) sessionStatePayload(authenticated bool, user *models.User) map[
 //  2. Neither X-Forwarded-For nor X-Real-IP is set. A legitimate local CLI
 //     talking directly to the Pad port never sets these headers. A reverse
 //     proxy forwarding public traffic always does — so this rejects the
-//     regression a review flagged on PR #175: a local Caddy/nginx proxying
+//     regression (PR #175): a local Caddy/nginx proxying
 //     public traffic to Pad on 127.0.0.1 would otherwise make every
 //     request look loopback and reopen the bootstrap gate.
 //

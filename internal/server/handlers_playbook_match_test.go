@@ -109,7 +109,7 @@ func TestPlaybookMatch_ZeroActivePlaybooksNoProviderCall(t *testing.T) {
 // filtering (draft/deprecated playbooks never reach the provider) and the
 // exact prompt text sent — so a future edit to the wording or the option
 // description shows up as a visible diff here rather than silently
-// drifting (amendment 7).
+// drifting.
 func TestPlaybookMatch_DraftAndDeprecatedExcluded_ExactPrompt(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)

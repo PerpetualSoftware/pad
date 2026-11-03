@@ -459,7 +459,7 @@ func (s *Server) boundedToolLabel(tool string) string {
 // reserves the whole leading-"(" namespace and re-marks anything
 // caller-supplied that enters it. Two earlier copies of this comment rested
 // the non-forgeability claim on "real names do not begin with (", the exact
-// reasoning a later review retired.
+// reasoning that was retired.
 const sanitisedLabelPrefix = "(sanitised) "
 
 // auditLabel applies the marker; see the body for the namespace-reservation

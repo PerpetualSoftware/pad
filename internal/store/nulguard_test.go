@@ -45,7 +45,7 @@ func TestBinaryColumnCensus(t *testing.T) {
 	colRe := regexp.MustCompile(`(?im)^\s*([a-z_]+)\s+(BLOB|BYTEA)\b`)
 	tableRe := regexp.MustCompile(`(?is)CREATE\s+TABLE(?:\s+IF\s+NOT\s+EXISTS)?\s+([a-z_]+)\s*\((.*?)\n\s*\);`)
 	// ALTER TABLE ... ADD COLUMN is the OTHER way a binary column enters a
-	// schema, and the first version of this census could not see it (finding 7)
+	// schema, and the first version of this census could not see it
 	// — which would have let exactly the change this test
 	// exists to catch walk past it.
 	alterRe := regexp.MustCompile(`(?im)ALTER\s+TABLE\s+([a-z_]+)\s+ADD\s+(?:COLUMN\s+)?(?:IF\s+NOT\s+EXISTS\s+)?([a-z_]+)\s+(BLOB|BYTEA)\b`)
@@ -137,7 +137,7 @@ func TestWriteGuardRefusesTheCorpus(t *testing.T) {
 			// before the guard was ever consulted, and the case would then
 			// "pass" while measuring SQLite's JSON parser instead of this
 			// guard. The strengthened accepted-case assertion caught exactly
-			// that (finding 7).
+			// that.
 			var err error
 			if c.IsJSON && json.Valid([]byte(strings.TrimSpace(c.Value))) {
 				fields := c.Value
@@ -149,7 +149,7 @@ func TestWriteGuardRefusesTheCorpus(t *testing.T) {
 
 			refused := err != nil && strings.Contains(err.Error(), ErrInvalidTextParameter.Error())
 			// An ACCEPTED case must actually SUCCEED, not merely avoid the
-			// guard (finding 7). Without this, a write failing
+			// guard. Without this, a write failing
 			// for any other reason — a schema rejection, a constraint, a typo
 			// in the fixture — read as "the guard let it through" and the case
 			// proved nothing.
@@ -584,8 +584,7 @@ func TestWriteGuardResolvesValuerOnce(t *testing.T) {
 	})
 
 	t.Run("an unclassifiable shape is REFUSED, not passed through", func(t *testing.T) {
-		// The allow-list's whole point. Two rounds were spent
-		// naming text-carrying shapes one at a time; this asserts the default
+		// The allow-list's whole point. Naming text-carrying shapes one at a time never ends; this asserts the default
 		// answer for anything unnamed is refusal rather than silent acceptance.
 		type unexpected struct{ Note string }
 		args := []driver.NamedValue{{Ordinal: 1, Value: unexpected{Note: "hello"}}}

@@ -109,8 +109,8 @@ func (e *InvalidTextParameterError) Unwrap() error { return ErrInvalidTextParame
 //     classification back at the sites this design exists to stop depending on,
 //     and the failure mode of over-refusal is a loud 400 naming the rule, while
 //     the failure mode of under-refusal is a NUL at rest that only the next
-//     dialect migration discovers. A measured trade, flagged
-//     rather than buried here; if it is ever paid down, the mechanism is S2's
+//     dialect migration discovers. A measured trade, stated
+//     openly here; if it is ever paid down, the mechanism is S2's
 //     column-attached triggers, which DO have the classing this layer lacks.
 //
 // BINARY is exempt, and that is measured rather than assumed. The invariant is
@@ -209,9 +209,8 @@ func resolveValue(v driver.Value) (driver.Value, error) {
 
 // classify sorts a resolved parameter into text, exempt, or REFUSED.
 //
-// An ALLOW-LIST, and that is the point. Two rounds were spent
-// widening a text detector shape by shape — exact string, then *string and
-// named string types, then json.RawMessage — and the next round named five
+// An ALLOW-LIST, and that is the point. A text detector widened shape by shape — exact string, then *string and
+// named string types, then json.RawMessage — kept missing five
 // more (json.Marshaler, fmt.Stringer, pgx's TextValuer, defined []byte aliases,
 // JSON-marshallable structs). Enumerating what CAN carry text is a losing game
 // against a driver as permissive as pgx.

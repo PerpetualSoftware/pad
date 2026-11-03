@@ -253,7 +253,7 @@ func extractFrontmatterRegion(s string) (string, bool) {
 //
 // It works by MARSHALLING the artifact and searching the result, rather than
 // walking its fields by type. The hand-written walk this replaces missed two
-// things a reviewer found immediately: Provenance, whose
+// things: Provenance, whose
 // strings are rendered into a Markdown footer appended to the stored content,
 // and Arguments, whose declared type is []map[string]any — a concrete slice
 // type the walk's `[]any` case never matched. Both were reachable. A type

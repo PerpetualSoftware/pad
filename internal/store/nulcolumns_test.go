@@ -280,9 +280,9 @@ func isDerivedTable(name string) bool {
 
 // TestAttributionColumnsAreAllProtected keeps the class swept.
 //
-// Successive reviews each named unprotected attribution columns.
+// Unprotected attribution columns were found one at a time.
 // One answer was a sweep — but by a hand-written list of NAMES, which is
-// an enumeration one level up, and a later review found the two names nobody thought
+// an enumeration one level up, and a later pass found the two names nobody thought
 // to write down (event_outbox.claimed_by, oauth_connection_workspaces.added_by).
 //
 // So the sweep is a PATTERN and it is a test, which is the difference between

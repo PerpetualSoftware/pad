@@ -1388,7 +1388,7 @@ func TestUpdateItemWithParentLink_AtomicCommit(t *testing.T) {
 // TestGetParentMap_ExcludesSoftDeletedEndpoints covers the dashboard
 // orphan-detection path: a task whose parent has been soft-deleted should
 // NOT appear in GetParentMap, so handlers_dashboard.go correctly flags the
-// task as orphaned. See BUG-734 /.
+// task as orphaned. See BUG-734.
 func TestGetParentMap_ExcludesSoftDeletedEndpoints(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
@@ -1509,8 +1509,7 @@ func TestGetItemLineageByIDs(t *testing.T) {
 // TestListItems_ParentFilter_FTS_RespectsSoftDeletedParent covers the
 // `parent=<UUID>&search=<q>` combination. The search path routes through
 // listItemsFTS, which the non-FTS parent filter doesn't touch; the FTS
-// path needs to enforce the same deleted-parent rejection. See BUG-734 /
-// PR #259.
+// path needs to enforce the same deleted-parent rejection. See BUG-734.
 func TestListItems_ParentFilter_FTS_RespectsSoftDeletedParent(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
@@ -1573,7 +1572,7 @@ func TestListItems_ParentFilter_FTS_RespectsSoftDeletedParent(t *testing.T) {
 // `parent=<UUID>` query filter doesn't return children of a soft-deleted
 // parent. Slug/ref filters already reject deleted parents upstream via
 // GetItem/GetItemBySlug, but raw-UUID input bypasses that path. See
-// BUG-734 /.
+// BUG-734.
 func TestListItems_ParentFilter_RespectsSoftDeletedParent(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
@@ -1962,7 +1961,7 @@ func TestMigration046_DocumentsFTSTriggersExist(t *testing.T) {
 // Migration 046's `INSERT INTO documents_fts(documents_fts) VALUES('rebuild')`
 // step is what makes such a document searchable again. Without this test,
 // removing the rebuild step would not break either of the other two BUG-822
-// tests — flagged in.
+// tests.
 func TestMigration046_RebuildRecoversUnindexedDocs(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)

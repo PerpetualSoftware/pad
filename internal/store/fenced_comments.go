@@ -343,7 +343,7 @@ func (f *FencedTx) requireThreadOnItem(itemID, parentID string) error {
 // admits is bound to the item, so a stamp on it would protect nothing. A
 // stamp would also be the only reason to lock attachment rows here, and
 // those locks deadlock against the human stamp, which locks originals and
-// variants in no fixed order (ruling revised on DOC-3371).
+// variants in no fixed order (DOC-3371).
 //
 // Unlocked: an attachment deleted just after this read leaves the committed
 // body with a dangling reference, the same outcome as a delete a moment after

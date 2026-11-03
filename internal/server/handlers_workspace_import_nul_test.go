@@ -225,7 +225,7 @@ func TestImportBundle_RepairFlagCoversTheBundleDoorToo(t *testing.T) {
 // a quoted document — which the gate refuses (it re-parses that string) and
 // which a raw-byte repair cannot touch (at the body's own layer it is literal
 // text). Every fixture that put the NUL in `content` passed while this did not
-// work, which is how the gap survived to first review.
+// work, which is how the gap went unnoticed.
 func TestImportRepairsANULInsideAFieldsBlob(t *testing.T) {
 	// A JSON column has TWO at-rest shapes and they export DIFFERENTLY, which
 	// is the distinction this fixture exists to hold:
