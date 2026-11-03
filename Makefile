@@ -91,10 +91,9 @@ test-nix-hash:
 # during startup is covered as well.
 #
 # WHAT THIS DELIBERATELY DOES NOT DO: report a database that dies AFTER a
-# passing run. The post-run banner is gated on the tests having failed, and a
-# reviewer asked for that gate to be dropped. It stays, because the premise
-# does not hold — storetest.NewPostgres skips only when PAD_TEST_POSTGRES_URL
-# is EMPTY, and a database that is gone produces t.Fatalf, not a skip. So under
+# passing run. The post-run banner is gated on the tests having failed. The gate stays, because the case for dropping
+# it does not hold — storetest.NewPostgres skips only when
+# PAD_TEST_POSTGRES_URL is EMPTY, and a database that is gone produces t.Fatalf, not a skip. So under
 # this target a dead database always fails the tests that touch it, and exit 0
 # means every Postgres-backed test completed against a live one. Failing the
 # leg on a container that stopped after the suite finished would turn honest
@@ -131,7 +130,7 @@ test-nix-hash:
 # a narrowed run is not a gate leg.
 TEST_PG_PKGS ?= ./...
 
-# An EXPLICIT project name, unique per absolute path (codex round 1, P2).
+# An EXPLICIT project name, unique per absolute path.
 # Compose otherwise defaults it to the directory BASENAME, so two checkouts
 # that happen to share a basename — /a/docapp and /b/docapp — share a stack,
 # and one `down -v` tears down the other's database mid-run. That is the
@@ -263,7 +262,7 @@ clean:
 # GOLANGCI_LINT_VERSION and reinstalls on mismatch. A file-target
 # dependency wouldn't enforce the pin — make only runs the install rule
 # when the binary is missing, so an outdated local binary would be
-# silently reused and disagree with CI (Codex review on PR #322).
+# silently reused and disagree with CI (#322).
 lint:
 	@bin="$(GOLANGCI_LINT)"; pin="$(GOLANGCI_LINT_VERSION)"; want="$${pin#v}"; \
 	have=$$( $$bin version 2>/dev/null | sed -n 's/.*version \([0-9.]*\) built.*/\1/p' ); \
@@ -326,7 +325,7 @@ web-test:
 # under its own title; running it after the correctness checks means their
 # verdict exists whichever way it goes.
 #
-# NO `web` prerequisite (codex round 4 on #1247): `npm audit` reads the
+# NO `web` prerequisite (#1247): `npm audit` reads the
 # lockfile and needs neither node_modules nor a build, and `web` is .PHONY,
 # so depending on it made `check` run `npm ci` twice and made this the one
 # new target to reach `npm ci` — the command CLAUDE.md forbids in a worktree

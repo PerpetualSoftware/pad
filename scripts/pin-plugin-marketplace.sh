@@ -88,7 +88,7 @@ cur = hits[0].get("source")
 if cur == want:
     print("no")
     sys.exit(0)
-# Never move backwards (codex r1): two stable releases can finish out of order,
+# Never move backwards: two stable releases can finish out of order,
 # and the older one must not replace a newer pin.
 def ver(t):
     return tuple(int(x) for x in t[1:].split("."))

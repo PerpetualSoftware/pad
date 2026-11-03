@@ -306,7 +306,7 @@ jobs:
         run: ./pad --help
 
   dep-age:
-    # Advisory, NOT a required check (TASK-1391, lead ruling). Dependabot's
+    # Advisory, NOT a required check (TASK-1391). Dependabot's
     # cooldown (TASK-1390) holds a release for 7 days before PROPOSING it, but
     # cannot see a version added by hand (`go get`, `npm install`, an edited
     # workflow pin). This flags any Go module, npm package or action pin the
@@ -539,9 +539,9 @@ jobs:
       postgres:
         # The official image through Google's Docker Hub mirror, pinned by
         # digest. Anonymous pulls from shared runners hit limits on both
-        # earlier sources: Docker Hub ("toomanyrequests", day 90, #1987 and
+        # earlier sources: Docker Hub ("toomanyrequests", #1987 and
         # #1988), then AWS's public mirror ("toomanyrequests: Data limit
-        # exceeded", day 91, #2078, BUG-3602). The digest is postgres:17-alpine's
+        # exceeded", #2078, BUG-3602). The digest is postgres:17-alpine's
         # multi-arch index, the same on mirror.gcr.io and public.ecr.aws when
         # pinned (2026-10-11), so this is the image CI already ran, and a
         # moved tag cannot change it under a run. Bump it deliberately.
@@ -893,7 +893,7 @@ jobs:
         run: go build -tags e2etest -o pad-e2etest ./cmd/pad
 
       - name: The shipped build has no e2e CA door
-        # Lead ruling on TASK-3415: no environment variable may widen what a
+        # TASK-3415: no environment variable may widen what a
         # default build trusts. The e2etest build is the positive control:
         # if it lost the string, the first check would pass vacuously.
         run: |
@@ -1131,7 +1131,7 @@ jobs:
   # THE LOOP TERMINATES BECAUSE THIS PUSH TRIGGERS NOTHING. A push made with
   # the default `GITHUB_TOKEN` creates no workflow runs, so the commit this job
   # pushes gets no run at all. Observed on the first heal this fix produced
-  # (BUG-2974, day 62): `gh run list --branch main` spans cbfc073e ->
+  # (BUG-2974): `gh run list --branch main` spans cbfc073e ->
   # 31d11e76 -> 0b16be49 and skips the heal commit 249a8f87 entirely. Read the
   # BRANCH listing, not `gh run list --commit` — that query also returned
   # nothing for 0b16be49, which demonstrably has runs, so it cannot tell

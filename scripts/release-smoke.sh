@@ -5,7 +5,7 @@
 # that binary is built and BEFORE anything is archived, signed, notarized,
 # pushed or uploaded. A non-zero exit fails the release at the build stage,
 # so a binary that does not start is never published. There is deliberately
-# no switch to skip it (lead ruling): a flake gets a re-run, not a bypass.
+# no switch to skip it: a flake gets a re-run, not a bypass.
 #
 #   release-smoke.sh <binary> <target> <version> <full-commit>
 #
