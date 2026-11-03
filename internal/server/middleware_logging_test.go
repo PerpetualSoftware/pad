@@ -1,6 +1,9 @@
 package server
 
-import "testing"
+import (
+	"github.com/PerpetualSoftware/pad/internal/logging"
+	"testing"
+)
 
 // TestRedactQueryString covers the F6 leak guard: sensitive keys (token,
 // password, secret, api_key / api-key) must have their values replaced
@@ -82,7 +85,7 @@ func TestRedactQueryString(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := redactQueryString(tc.in)
+			got := logging.RedactQuery(tc.in)
 			if got != tc.want {
 				t.Fatalf("redactQueryString(%q) = %q, want %q", tc.in, got, tc.want)
 			}

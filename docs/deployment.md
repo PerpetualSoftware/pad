@@ -1520,14 +1520,8 @@ needs no login (you're locked out, after all), but it **only** works for a
 direct request from the server itself — proxied or remote requests are
 refused, and it's disabled entirely in cloud mode.
 
-Alternatively, if a user submits the web reset form, the server logs the
-reset path on a non-cloud instance with no email configured:
-
-```
-password reset generated (email not configured) ... reset_path=/reset-password/<token>
-```
-
-Open `<base-url>/reset-password/<token>` to finish the reset by hand.
+Recovery tokens are never written to server logs. Without email, use the
+host-side recovery command above.
 
 ### Disabling an account
 

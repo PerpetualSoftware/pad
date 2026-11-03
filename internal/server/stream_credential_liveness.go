@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/ory/fosite"
+
+	"github.com/PerpetualSoftware/pad/internal/logging"
 )
 
 // BUG-3007 — a long-lived connection must stop when the CREDENTIAL that opened
@@ -77,7 +79,7 @@ func (s *Server) streamCredentialStillValid(r *http.Request) bool {
 		// fleet-wide disconnect, which is worse than the bounded staleness
 		// these loops already accept for membership changes.
 		slog.Warn("stream: credential re-check failed, keeping the connection until the next tick",
-			"path", r.URL.Path, "auth_kind", authKind(r))
+			"path", logging.RedactPath(r.URL.Path), "auth_kind", authKind(r))
 		return true
 	default:
 		return true
@@ -109,7 +111,7 @@ func (s *Server) credentialLiveness(r *http.Request) credentialLiveness {
 		// The middleware said "session cookie" and the request has none. That
 		// is not a state this server produces; treat it as unrecognised.
 		slog.Warn("stream: auth_kind says session cookie but the request carries none, closing",
-			"path", r.URL.Path)
+			"path", logging.RedactPath(r.URL.Path))
 		return credentialInvalid
 
 	case authKindAPIToken:
@@ -160,7 +162,7 @@ func (s *Server) credentialLiveness(r *http.Request) credentialLiveness {
 		// CLOSES rather than streaming past a revoked credential.
 		if currentUser(r) != nil {
 			slog.Warn("stream: a principal was resolved without an auth kind, closing the connection",
-				"path", r.URL.Path)
+				"path", logging.RedactPath(r.URL.Path))
 			return credentialInvalid
 		}
 		return credentialValid
@@ -173,7 +175,7 @@ func (s *Server) credentialLiveness(r *http.Request) credentialLiveness {
 		// long-lived connections end on the first tick and say why — rather
 		// than quietly exempting itself from revalidation.
 		slog.Warn("stream: unrecognised credential kind, closing the connection",
-			"path", r.URL.Path, "auth_kind", authKind(r))
+			"path", logging.RedactPath(r.URL.Path), "auth_kind", authKind(r))
 		return credentialInvalid
 	}
 }

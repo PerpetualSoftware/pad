@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/logging"
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
@@ -622,11 +623,11 @@ func (d *Dispatcher) attemptDeliver(hook models.Webhook, body []byte) deliveryRe
 	if !d.SkipSSRF {
 		err := ValidateWebhookURLContext(attemptCtx, hook.URL)
 		if err != nil && IsResolveError(err) {
-			slog.Warn("webhook hostname did not resolve; will retry", "url", hook.URL, "error", err)
+			slog.Warn("webhook hostname did not resolve; will retry", "webhook_id", hook.ID, "error_type", logging.ErrorType(err))
 			return deliveryTransient
 		}
 		if err != nil {
-			slog.Warn("blocked webhook delivery", "url", hook.URL, "error", err)
+			slog.Warn("blocked webhook delivery", "webhook_id", hook.ID, "error_type", logging.ErrorType(err))
 			return deliveryPermanent
 		}
 	}
@@ -668,7 +669,7 @@ func (d *Dispatcher) attemptDeliver(hook models.Webhook, body []byte) deliveryRe
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, hook.URL, bytes.NewReader(body))
 	if err != nil {
 		// A malformed URL/method won't fix itself on retry.
-		slog.Error("failed to create webhook request", "url", hook.URL, "error", err)
+		slog.Error("failed to create webhook request", "webhook_id", hook.ID, "error_type", logging.ErrorType(err))
 		return deliveryPermanent
 	}
 
@@ -691,7 +692,7 @@ func (d *Dispatcher) attemptDeliver(hook models.Webhook, body []byte) deliveryRe
 		if connGone.Load() {
 			return deliverySuppressed
 		}
-		slog.Error("webhook workspace liveness unknown mid-delivery", "webhook_id", hook.ID, "error", err)
+		slog.Error("webhook workspace liveness unknown mid-delivery", "webhook_id", hook.ID, "error_type", logging.ErrorType(err))
 		return deliveryDeferred
 	}
 	if err != nil {
@@ -701,19 +702,19 @@ func (d *Dispatcher) attemptDeliver(hook models.Webhook, body []byte) deliveryRe
 			return deliverySuppressed
 		}
 		if errors.Is(err, errWorkspaceUnknown) {
-			slog.Error("webhook workspace liveness unknown at a redirect", "webhook_id", hook.ID, "error", err)
+			slog.Error("webhook workspace liveness unknown at a redirect", "webhook_id", hook.ID, "error_type", logging.ErrorType(err))
 			return deliveryDeferred
 		}
 		if errors.Is(err, errRedirectRejected) {
-			slog.Warn("blocked webhook redirect", "url", hook.URL, "error", err)
+			slog.Warn("blocked webhook redirect", "webhook_id", hook.ID, "error_type", logging.ErrorType(err))
 			return deliveryPermanent
 		}
 		if errors.Is(err, errDialBlocked) {
-			slog.Warn("blocked webhook dial", "url", hook.URL, "error", err)
+			slog.Warn("blocked webhook dial", "webhook_id", hook.ID, "error_type", logging.ErrorType(err))
 			return deliveryPermanent
 		}
 		// Network error / timeout — transient, worth retrying.
-		slog.Error("webhook delivery failed", "url", hook.URL, "error", err)
+		slog.Error("webhook delivery failed", "webhook_id", hook.ID, "error_type", logging.ErrorType(err))
 		return deliveryTransient
 	}
 	resp.Body.Close()
@@ -724,12 +725,12 @@ func (d *Dispatcher) attemptDeliver(hook models.Webhook, body []byte) deliveryRe
 	case RetryableStatus(resp.StatusCode):
 		// Server error, or the receiver asked us to come back later —
 		// transient, worth retrying.
-		slog.Warn("webhook retryable response", "status", resp.StatusCode, "url", hook.URL)
+		slog.Warn("webhook retryable response", "status", resp.StatusCode, "webhook_id", hook.ID)
 		return deliveryTransient
 	default:
 		// 4xx and any other non-2xx (3xx with no followable Location, 1xx)
 		// — permanent; retrying won't change an unacceptable request.
-		slog.Warn("webhook non-2xx response", "status", resp.StatusCode, "url", hook.URL)
+		slog.Warn("webhook non-2xx response", "status", resp.StatusCode, "webhook_id", hook.ID)
 		return deliveryPermanent
 	}
 }

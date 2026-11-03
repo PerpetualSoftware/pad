@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/PerpetualSoftware/pad/internal/logging"
 )
 
 // Response write deadlines (BUG-3821). http.Server.WriteTimeout is 0 because
@@ -127,7 +129,7 @@ func (s *Server) boundResponseWrites(next http.Handler) http.Handler {
 			// a missing bound into an outage.
 			writeDeadlineUnsupported.Do(func() {
 				slog.Warn("response served without a write deadline: the writer does not support one",
-					"path", r.URL.Path, "error", err)
+					"path", logging.RedactPath(r.URL.Path), "error", err)
 			})
 			next.ServeHTTP(w, r)
 			return

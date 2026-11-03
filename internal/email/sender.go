@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -178,7 +179,9 @@ func (s *Sender) sendWith(ctx context.Context, endpoint, fromAddr, fromName, to,
 	respBody, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("maileroo returned %d: %s", resp.StatusCode, string(respBody))
+		// The body is not included: a provider can echo the request (a reset
+		// link, an invitation code), and callers log this error.
+		return fmt.Errorf("maileroo returned %d", resp.StatusCode)
 	}
 
 	var result mailerooResponse
@@ -186,7 +189,7 @@ func (s *Sender) sendWith(ctx context.Context, endpoint, fromAddr, fromName, to,
 		return fmt.Errorf("decode maileroo response: %w", err)
 	}
 	if !result.Success {
-		return fmt.Errorf("maileroo error: %s", result.Message)
+		return errors.New("maileroo reported success=false")
 	}
 
 	return nil

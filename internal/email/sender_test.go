@@ -97,6 +97,33 @@ func TestSend_APIError(t *testing.T) {
 	}
 }
 
+// Callers log the send error, and a provider may echo the request, so the
+// response body and message must never be part of the error text.
+func TestSend_ErrorsDoNotCarryProviderText(t *testing.T) {
+	const secret = "reset-link-SECRET-token"
+	for name, handler := range map[string]http.HandlerFunc{
+		"http error": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"message":"bad link /reset-password/` + secret + `"}`))
+		},
+		"success false": func(w http.ResponseWriter, r *http.Request) {
+			json.NewEncoder(w).Encode(mailerooResponse{Success: false, Message: "bad link /reset-password/" + secret})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ts := httptest.NewServer(handler)
+			defer ts.Close()
+			err := newTestSender(ts).Send(context.Background(), "user@example.com", "", "Test", "<p>test</p>", "test")
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if strings.Contains(err.Error(), secret) {
+				t.Errorf("provider text leaked into the error: %v", err)
+			}
+		})
+	}
+}
+
 func TestSend_SuccessFalse(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(mailerooResponse{Success: false, Message: "domain not verified"})
