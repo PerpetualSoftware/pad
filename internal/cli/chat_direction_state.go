@@ -41,7 +41,7 @@ func WriteChatDirection() (string, error) {
 	if ino, dev, ok := statIdentity(info); ok {
 		st.SocketIno, st.SocketDev = ino, dev
 		// The socket's mount namespace, under the same visibility rule as
-		// the registry and the arm file (BUG-4090 r2): a reader with another
+		// the registry and the arm file (BUG-4090): a reader with another
 		// view of the filesystem must not reap this on a missing node.
 		st.MountNamespace = namespaceStamp(mountNamespaceFn)
 	}

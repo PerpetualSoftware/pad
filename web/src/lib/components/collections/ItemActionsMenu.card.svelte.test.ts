@@ -4,8 +4,8 @@ import type { Item } from '$lib/types';
 import ItemActionsMenu from './ItemActionsMenu.svelte';
 
 /**
- * TASK-2244 — the card's ONE touch-sized ⋯ at phone width (Dave's ruling, day
- * 83). Star, copy-ref and the reorder ⋮ become entries of this menu.
+ * TASK-2244 — the card's ONE touch-sized ⋯ at phone width. Star, copy-ref and the reorder ⋮ become
+ * entries of this menu.
  *
  * The entry set depends on the HOST: board and list wire reorder, but the
  * starred, tags and roles pages do not. Before this change the menu rendered

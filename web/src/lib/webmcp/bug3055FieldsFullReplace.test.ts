@@ -72,7 +72,7 @@ describe('webmcp pad_item update — field writes are a merge, never a replace',
 
 	// NOT A DETECTOR, and labelled so nobody counts it as one: this leg passes
 	// against the unfixed dispatcher too (measured — it survived the mutation
-	// run for this file, and codex round 2 named it). Both shapes omit the field
+	// run for this file). Both shapes omit the field
 	// write entirely when no field param is supplied, so it pins a property
 	// neither shape changes: a title-only update must not touch stored fields at
 	// all. Worth keeping for that, worth nothing as evidence for this fix.

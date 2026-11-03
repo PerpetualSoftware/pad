@@ -150,11 +150,11 @@ export function createSurfaceMetadata(
 	// already-probed entry takes the fast path. Scoped to the live nonce — a REOPEN
 	// mints a fresh nonce, so the same (ws, att) is unseen again and re-probes.
 	//
-	// COMPLETION, NOT DISPATCH (round-2 P1). An id is recorded only when its forced
+	// COMPLETION, NOT DISPATCH. An id is recorded only when its forced
 	// probe RESOLVES non-stale (see the async continuation), never at dispatch: a
 	// probe discarded stale (arrow away before it resolves) leaves the pair unseen,
 	// so arrow-back re-probes rather than trusting the seed for a maybe-deleted entry.
-	// AUTOMATIC ONLY (round-4 P2): a Retry- or restore-driven forced probe (the
+	// AUTOMATIC ONLY: a Retry- or restore-driven forced probe (the
 	// reload path) does NOT record its id — the two mechanisms stay independent, so
 	// an arrow-back after a Retry still gets its one automatic probe if it never had one.
 	//

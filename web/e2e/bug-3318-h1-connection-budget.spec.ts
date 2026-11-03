@@ -12,7 +12,7 @@ import type { Page } from '@playwright/test';
  * sat on its skeleton: `GET /collections` never reached the server.
  *
  * Measured on 7ba82300 in Playwright's Chromium: 4 open tabs, then a 5th load
- * never finishes `GET /collections` (20s) and stays a skeleton. Dave's Brave hit
+ * never finishes `GET /collections`  (20s) and stays a skeleton. A Brave user hit
  * it at 3. This drives the same shape and requires the 5th load to complete.
  *
  * The e2e server is plain http://localhost, so HTTP/1.1 and its 6-per-host
@@ -23,7 +23,7 @@ const OPEN_TABS = 4;
 
 async function openPad(page: Page, path: string) {
 	await page.goto(path, { waitUntil: 'domcontentloaded', timeout: 20_000 });
-	// Long enough for the tab to open its streams (access stream, leader SSE).
+	// Long enough for the tab to open its streams  (access stream, leader SSE).
 	await page.waitForTimeout(2_000);
 }
 
@@ -87,7 +87,7 @@ test.describe('BUG-3318: open pad tabs must not starve a new page of connections
 		expect(followerCount(), 'a second tab opened its own access stream').toBe(0);
 
 		// The leader goes. The follower takes the lock, opens the stream, and
-		// its first connect resyncs (a refetch of the open set).
+		// its first connect resyncs  (a refetch of the open set).
 		const resync = tabsFetched(follower);
 		await page.close();
 		await resync;

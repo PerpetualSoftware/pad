@@ -12,7 +12,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// BUG-3802 (BUG-3746 residual, Heron's ruling): a prune-and-replace write
+// BUG-3802 (BUG-3746 residual): a prune-and-replace write
 // stamps the in-memory seed boundary (SetLastRestoreSeq) inside PruneAndApply's
 // applyFn, and Join checks that boundary under the same per-item lock. So a
 // tab seeded before the write that joins WHILE the write is in flight must
@@ -27,7 +27,7 @@ func TestBUG3802_JoinRacingAPruneAndReplaceWaitsAndIsFenced(t *testing.T) {
 	defer mgr.Close()
 	// A server of its own, which signals immediately before calling Join, so
 	// the test knows the racing join is IN Join (and so at, or about to wait
-	// on, the item lock) before it starts the silence window (Codex r1: the
+	// on, the item lock) before it starts the silence window (the
 	// handshake completes before the handler reaches Join, so without this a
 	// slow handler could let the write finish first and pass by luck).
 	entering := make(chan string, 4)

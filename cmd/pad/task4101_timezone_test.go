@@ -290,7 +290,7 @@ func TestTZ4101_ResolverUnconfiguredNeverExits(t *testing.T) {
 	if os.Getenv("TZ4101_SUBPROCESS") == "1" {
 		setTempHomeMain(t)
 		// Every env var that can make an install read as configured (config.go), so the child
-		// takes the unconfigured path wherever the suite runs (PR2b r2).
+		// takes the unconfigured path wherever the suite runs (PR2b).
 		for _, k := range []string{"PAD_URL", "PAD_TOKEN", "PAD_MODE", "PAD_HOST", "PAD_PORT", "PAD_CLOUD", "PAD_DATA_DIR", "PAD_DB_PATH"} {
 			t.Setenv(k, "")
 		}

@@ -3,12 +3,12 @@ package watchevents
 // BUG-2651 — the half the hermetic tests structurally cannot reach: the actual
 // Redis round trip.
 //
-// Codex raised the gap three times, and it was right to: the publish path is a
+// The publish path is a
 // Lua script with KEYS/ARGV indexing, a wire format with an id prefix, a
 // channel name, and a subscription lifecycle — none of which a test that calls
-// fanOutLocally directly can exercise. The argument became concrete when the
+// fanOutLocally directly can exercise. The need became concrete when the
 // idempotency script shipped with `ARGV[3]` while Publish passed two arguments.
-// That bug was caught by re-reading, which is not a control I want to rely on
+// That bug was caught by re-reading, which is not a control to rely on
 // for the next one.
 //
 // miniredis is a test-only dependency (an in-process Redis with a Lua
@@ -211,8 +211,7 @@ func TestRedisBusCloseStopsReceiving(t *testing.T) {
 	}
 }
 
-// TestRedisBusPublishReportsAcceptanceOnASuccessfulRoundTrip — codex round
-// 30 (coverage-gap sweep).
+// TestRedisBusPublishReportsAcceptanceOnASuccessfulRoundTrip.
 //
 // publish_result_test.go covers the FAILURE directions — ErrBusClosed, and
 // a transport error that must not claim the bus was closed — against a

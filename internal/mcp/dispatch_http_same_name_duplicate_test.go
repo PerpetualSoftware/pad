@@ -1,10 +1,10 @@
 package mcp
 
-// BUG-2850, codex round 7 boundary + the lead's condition on it.
+// BUG-2850: the boundary on same-name duplicates between `status` and `field`.
 //
 // The remote door's half of the same-name-duplicate contract;
 // cmd/pad/item_same_name_duplicate_precedence_test.go is the stdio door's.
-// Both assert the SAME outcome, which is the point: the round-7 decision not
+// Both assert the SAME outcome, which is the point: the decision not
 // to refuse `status` + `field:["status=…"]` rests entirely on the two doors
 // resolving it identically, and nothing enforced that until these two tests
 // existed. Reorder either overlay and exactly one of them goes red.

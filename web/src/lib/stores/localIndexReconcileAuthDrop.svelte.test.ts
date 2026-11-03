@@ -96,10 +96,10 @@ describe('the reconcile’s auth-error reaction', () => {
 
 	it('BOOTSTRAP’s cold path: a 403 on /items-index still records the revocation', async () => {
 		// The likeliest path of all — the first load after a revocation — and the
-		// one the round-1 fix did NOT cover. Both of bootstrap's catches checked
+		// one the first fix did NOT cover. Both of bootstrap's catches checked
 		// `isStale()` BEFORE the auth branch, and the global handler's reset is
 		// exactly what makes `isStale()` true, so the revocation was swallowed
-		// into a cold state with no banner. Found by review round 2.
+		// into a cold state with no banner. Found by.
 		vi.spyOn(api.items, 'listIndex').mockImplementation(async () => {
 			localIndex.reset(ws);
 			throw new PadApiError({ code: 'forbidden', message: 'forbidden' });
@@ -152,7 +152,7 @@ describe('the reconcile’s auth-error reaction', () => {
 		// the reaction. An earlier draft reacted in both, so one 403 ran
 		// `markWorkspaceDropped`, `localSearch.reset` and an async `persistWipe`
 		// TWICE — and a retry could race the second wipe against freshly
-		// persisted rows (codex round 3 P2).
+		// persisted rows.
 		//
 		// `resetGenerationFor` counts drops, so it is the observable: one
 		// revocation, one drop of ours. The global handler's own `reset` is the

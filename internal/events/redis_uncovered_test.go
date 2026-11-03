@@ -11,7 +11,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// codex round 9 #1, ARRANGEMENT CORRECTED after the split. Publish lost its
+// ARRANGEMENT CORRECTED after the split. Publish lost its
 // local-counter fallback when the ID assignment fails, and the removal is the
 // fix — the fallback minted an ID from a process-local space and published it,
 // which every receiving instance reads as the counter having been reset.
@@ -78,7 +78,7 @@ func TestAFailedIDAssignmentPublishesNothing(t *testing.T) {
 	}
 }
 
-// codex round 9 #4. The subscriber map was re-indexed by workspace, so these
+// The subscriber map was re-indexed by workspace, so these
 // counts and the admission check run through new code on RedisBus while every
 // existing test for them uses MemoryBus.
 func TestRedisBusSubscriptionAccounting(t *testing.T) {
@@ -128,7 +128,7 @@ func TestRedisBusSubscriptionAccounting(t *testing.T) {
 	}
 }
 
-// codex round 9 #6. Close on a LIVE Redis bus: every subscriber channel closes
+// Close on a LIVE Redis bus: every subscriber channel closes
 // so handlers exit, and the receive loops stop. Existing coverage only
 // unsubscribes the last subscriber, which is a different path.
 func TestClosingALiveRedisBusReleasesEverything(t *testing.T) {

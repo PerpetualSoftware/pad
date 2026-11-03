@@ -98,7 +98,7 @@
 
 <!-- Delete's THIRD step: the ⋯ drill-down's confirm row (TASK-2327). Modelled
      separately from `delete-btn` because its gate is genuinely different, and
-     getting this wrong is easy — Codex caught a first attempt that wrapped it
+     getting this wrong is easy — an earlier attempt wrapped it
      in `{#if canEdit}`. The real row is NOT canEdit-gated: it renders on
      `paneMenuView === 'delete'` ALONE (mirrored here by `deleteViewArmed`) and
      refuses via `disabled={deleting || !canEdit}`, so a mid-confirm permission
@@ -157,7 +157,7 @@
      sides; the owner "Manage/New" controls WRITE the whole collection settings
      from a per-item snapshot (last-write-wins across two items in one collection),
      so they gate on `isOwner && !peeking` — the write is confined to the active
-     side (BUG-2263 / Codex P1). ItemDetail forwards `canEdit={isOwner && !peeking}`. -->
+     side (BUG-2263). ItemDetail forwards `canEdit={isOwner && !peeking}`. -->
 {#if quickActionsPresent || (isOwner && !peeking)}
 	<div data-testid="quickactions-menu">
 		{#if quickActionsPresent}
@@ -172,7 +172,7 @@
 <!-- Version restore REST-writes this item's `items.content` directly, colliding
      with the retained Y.Doc on a peeking side — a SAME-ITEM collision. So it stays
      FROZEN while peeking (`restoreFrozen={peeking}`), unlike comments/reactions
-     which are side-independent and stay live (BUG-2263 / Codex P1). -->
+     which are side-independent and stay live (BUG-2263). -->
 {#if !peeking}
 	<button data-testid="version-restore-btn">Restore this version</button>
 {/if}

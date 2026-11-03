@@ -140,8 +140,8 @@ func BuiltinStateHash(content string, fields map[string]any) string {
 
 // canonicalNumbers rewrites every json.Number to one exact spelling, so a
 // value hashes the same however it was written: Postgres stores fields as
-// jsonb and may respell a number the seed text spells differently (codex
-// r1). big.Rat is exact, so two values that differ anywhere still differ.
+// jsonb and may respell a number the seed text spells differently. big.Rat is
+// exact, so two values that differ anywhere still differ.
 func canonicalNumbers(v any) any {
 	switch t := v.(type) {
 	case json.Number:
@@ -310,7 +310,7 @@ func BuiltinStateOf(o models.BuiltinOrigin, content, fieldsJSON string) (state, 
 		}
 	}
 	// Matching the library over the library's keys is not enough when the
-	// library DROPPED a field (codex r2): the projection cannot see it, so an
+	// library DROPPED a field: the projection cannot see it, so an
 	// item still carrying it would read current and never be offered the
 	// removal. It holds the library text only when the seed's dropped keys
 	// are gone from it too.
@@ -336,7 +336,7 @@ func BuiltinStateOf(o models.BuiltinOrigin, content, fieldsJSON string) (state, 
 			return "", "", entry, err
 		}
 		// A field the library ADDED is outside the seed's keys, so the hash
-		// above cannot see it (codex r3). An item that already holds its own
+		// above cannot see it. An item that already holds its own
 		// value there was edited: taking the update would overwrite that
 		// value, and fields have no history to recover it from.
 		if vsSeed == o.SeedHash {

@@ -383,8 +383,8 @@ func TestParseAttachmentFilename_HandlesQuotedAndUnquoted(t *testing.T) {
 }
 
 func TestParseAttachmentFilename_PreservesSemicolonsInQuotedFilename(t *testing.T) {
-	// Codex review on PR #350 caught the previous Split(";") approach
-	// chopping `attachment; filename="a;b.png"` at the internal
+	// The previous Split(";") approach
+	// chopped `attachment; filename="a;b.png"` at the internal
 	// semicolon. mime.ParseMediaType respects the quote boundaries
 	// so the inner ; survives.
 	got := parseAttachmentFilename(`attachment; filename="a;b.png"`)

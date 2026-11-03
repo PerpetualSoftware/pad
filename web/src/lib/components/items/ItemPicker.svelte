@@ -159,8 +159,7 @@
 	/**
 	 * What the source last returned, BEFORE exclusions. Kept separate so
 	 * `results` can re-filter reactively when `excludeIds` changes — which it
-	 * does late, since `ItemDetail` loads `itemLinks` asynchronously (codex
-	 * round 4 P2). Deriving that filter is what lets the server-backed caller
+	 * does late, since `ItemDetail` loads `itemLinks` asynchronously. Deriving that filter is what lets the server-backed caller
 	 * honour a late exclusion without re-issuing a request per change.
 	 */
 	let rawResults = $state<ItemIndexRow[]>([]);
@@ -168,7 +167,7 @@
 	/**
 	 * A cold search ANSWERED, and `rawResults` is that answer.
 	 *
-	 * Stated positively on purpose (codex rounds 3 and 5). The negative form
+	 * Stated positively on purpose. The negative form
 	 * — "the last search failed" — was false in three different states that
 	 * are not answers at all: before the first request, after a failure, and
 	 * after `localIndex.reset()` drops everything on a sign-out or 403 purge.
@@ -238,8 +237,8 @@
 	 * available while the index is cold. But it is a RANKED, WINDOWED answer:
 	 * `warmSearch` asks for `limit + excluded.size` hits, so an exact row that
 	 * the ranker placed outside that window is simply absent, and resting the
-	 * no-duplicate guarantee on a relevance score rests it on the wrong thing
-	 * (codex round 1 P2). "Does an item with this exact title exist in this
+	 * no-duplicate guarantee on a relevance score rests it on the wrong thing.
+	 * "Does an item with this exact title exist in this
 	 * collection" has an authoritative answer in `localIndex`, already in RAM,
 	 * so the warm path asks it directly. `getByCollection` excludes
 	 * soft-deleted rows, which is right: a deleted "Purple" should not stop the
@@ -309,7 +308,7 @@
 	/**
 	 * Is the local index a source we may reason about ABSENCE from?
 	 *
-	 * `ready` is not enough (codex round 4). It coexists with `pendingResync`:
+	 * `ready` is not enough. It coexists with `pendingResync`:
 	 * `localIndex` hydrates from the IDB cache and serves those rows while
 	 * delta-sync catches up, so during that window a row that EXISTS can be
 	 * missing from the snapshot. Presence in the index is still evidence — the
@@ -381,12 +380,11 @@
 			const rows = (res.results ?? []).map((r) => r.item);
 			rawResults = rows;
 			// A TRUNCATED page is not an answer to "does this exact title
-			// exist" — the row could be on a page we never fetched (codex round
-			// 7). Same defect as trusting the local ranker's window, arriving
+			// exist" — the row could be on a page we never fetched. Same defect as trusting the local ranker's window, arriving
 			// from the server side.
 			//
-			// Completeness is read from the PAGE LENGTH, not from `total`
-			// (codex round 8). `total` cannot answer it: when the count query
+			// Completeness is read from the PAGE LENGTH, not from `total`.
+			// `total` cannot answer it: when the count query
 			// fails, `store.search` sets total = -1, floors it to 0, and then
 			// floors it again to `len(results)` — "Ensure total is never less
 			// than actual results", search.go:604-608 — so a failed count is
@@ -566,16 +564,16 @@
 
 	// Keep an OPEN picker current with the local index.
 	//
-	// Four ways it went stale, all found by codex review, all the same missing
+	// Four ways it went stale, all the same missing
 	// dependency. A picker can open BEFORE the workspace index has hydrated, and
 	// a scoped one then has nothing to list — `recent()` returns [] while cold,
-	// and nothing re-ran it (round 1). Once open it holds a COPY of the rows, so
+	// and nothing re-ran it. Once open it holds a COPY of the rows, so
 	// a delta landing while it is on screen left it showing what the workspace
-	// used to contain (round 2). The first fix for that tracked the wrong
-	// signal, missing every mutation that does not advance the cursor (round 3).
+	// used to contain. The first fix for that tracked the wrong
+	// signal, missing every mutation that does not advance the cursor.
 	// And `excludeIds` arriving late — `ItemDetail` loads `itemLinks`
 	// asynchronously, so a picker opened before that resolves was offering items
-	// that are already linked (round 4).
+	// that are already linked.
 	//
 	// Tracked reads are the two signals that say the INDEX changed: the bootstrap
 	// state and `localSearch.epoch(ws)`. The exclusion set is not one of them —
@@ -583,8 +581,8 @@
 	// its own, without a re-query and therefore without a request on the
 	// server-backed caller.
 	//
-	// The epoch, NOT the workspace cursor. Round 2 used the cursor and round 3
-	// caught that it misses every cursorless mutation — `localIndex.upsert()` /
+	// The epoch, NOT the workspace cursor. A cursor-based version
+	// misses every cursorless mutation — `localIndex.upsert()` /
 	// `remove()` (optimistic creates, edits, the 403 purge) update the rows and
 	// mirror to `localSearch` without advancing it. The epoch is bumped by every
 	// `localSearch` write, and EVERY `localIndex` path that touches `state.items`
@@ -609,7 +607,7 @@
 		const state = localIndex.bootstrapStateFor(wsSlug);
 		// Read for its dependency; the value carries no meaning here.
 		localSearch.epoch(wsSlug);
-		// TRACKED (codex round 10), by being read right here: the scope itself.
+		// TRACKED, by being read right here: the scope itself.
 		// Every other read below is untracked to keep this effect off the
 		// keystroke path, and `collection` was swept up in that — but it is not
 		// a per-keystroke value, it is the question the results answer.
@@ -623,7 +621,7 @@
 		//
 		// A SCOPE CHANGE is also not an index delta, and the two need opposite
 		// handling below, so decide which this run is while the reads are still
-		// tracked (codex round 11). Computing the pair is what SUBSCRIBES to it;
+		// tracked. Computing the pair is what SUBSCRIBES to it;
 		// a separate `void collection` alongside was redundant and went, since
 		// its mutant could not be killed.
 		const scope = `${wsSlug}\u0000${collection ?? ''}`;
@@ -641,7 +639,7 @@
 				// bumps the search epoch on its way out, so this effect runs, and
 				// leaving early would strand rows the viewer may no longer be
 				// allowed to see: still listed, still selectable, and a late cold
-				// response still able to add more (codex round 4 P1).
+				// response still able to add more.
 				//
 				// Unconditional, after measuring that a guard on "actually showing
 				// or awaiting something" was dead: on the ordinary cold mount this
@@ -656,13 +654,12 @@
 				clearTimeout(debounceTimer);
 				rawResults = [];
 				// The rows this answer described were just dropped, so it
-				// describes nothing (codex round 5). Without this the picker
+				// describes nothing. Without this the picker
 				// offers to create over a purged workspace.
 				coldAnswered = false;
 				activeId = null;
 				loading = false;
-				// INVALIDATED, not committed and not left alone (codex rounds 12
-				// and 13). `lastScope` means "the scope the rows on screen
+				// INVALIDATED, not committed and not left alone. `lastScope` means "the scope the rows on screen
 				// answer for", and this branch just removed the rows — so after
 				// it they answer for nothing, which is what null says.
 				//
@@ -687,7 +684,7 @@
 			// empty-query LISTING still comes from the index, so it does refresh.
 			//
 			// A SCOPE change is the exception, and it is the reason this early
-			// return is conditional (codex round 11). Rows fetched for the old
+			// return is conditional. Rows fetched for the old
 			// workspace or collection are not merely stale, they are answers to a
 			// different question — and left in place they stay selectable under
 			// the new scope. Re-querying costs one request at an event that

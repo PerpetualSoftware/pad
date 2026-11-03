@@ -63,7 +63,7 @@ describe('BUG-3571: confirmSignOut', () => {
 		off();
 	});
 
-	// Retro Codex review of #2041, (a): a logout that rejects must not leave
+	// #2041, (a): a logout that rejects must not leave
 	// items stood down. Every control logs out through signOutLogout.
 	it('a rejected logout through signOutLogout resets the discard and rethrows', async () => {
 		const off = registerSignOutGuard({ atRisk: () => true, discard: () => {} });
@@ -88,7 +88,7 @@ describe('BUG-3571: confirmSignOut', () => {
 		off();
 	});
 
-	// Retro Codex review of #2041, (b): suppressed must equal discarded.
+	// #2041, (b): suppressed must equal discarded.
 	it('a source that becomes at risk while the dialog is open is discarded too', async () => {
 		let lateRisk = false;
 		const early = vi.fn();

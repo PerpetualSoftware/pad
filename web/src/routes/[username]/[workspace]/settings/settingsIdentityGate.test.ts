@@ -1,4 +1,4 @@
-// The workspace settings page's identity gate (TASK-3097): its async units and
+// The workspace settings page's identity gate  (TASK-3097): its async units and
 // deferred callbacks, tabled with the hash of the code each was reviewed on.
 // `identityGateSuite` says what the gate refuses and why.
 // `settingsIdentityFence.test.ts` beside this keeps the site pins the gate

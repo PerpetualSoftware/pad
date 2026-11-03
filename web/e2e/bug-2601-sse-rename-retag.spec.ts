@@ -2,21 +2,20 @@ import { expect } from '@playwright/test';
 import { test } from './fixtures';
 
 /**
- * BUG-2601 (retag half) — the LIVE SSE rename path. BUG-2272 re-targets
+ * BUG-2601  (retag half) — the LIVE SSE rename path. BUG-2272 re-targets
  * the route, but cached localIndex rows keep the OLD `collection_slug`
  * (rows are only re-stamped when the item itself changes, and a rename
  * touches no items), so the healed route rendered an EMPTY board while
  * the sidebar still counted the items. Discovered by this spec's
  * pre-fix run during BUG-2601; fixed by `localIndex.retagCollection`
  * called from the workspace layout's global `collection_updated`
- * subscriber. The sibling spec (bug-2601-sync-rename-heal) covers the
+ * subscriber. The sibling spec  (bug-2601-sync-rename-heal) covers the
  * missed-SSE path, which retags at the sync-heal site instead.
  */
 test('BUG-2601: live SSE rename re-targets the route AND the board still renders its items', async ({ page, request, fixture }) => {
 	const auth = { Authorization: `Bearer ${fixture.apiToken}` };
 	// Worker-unique: desktop + mobile projects run this spec in
-	// parallel, and Date.now() alone can collide across workers
-	// (codex round 1 P2).
+	// parallel, and Date.now() alone can collide across workers.
 	const slug = `b2601p-${test.info().workerIndex}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 	const wsResp = await request.post('/api/v1/workspaces', {
 		headers: auth,

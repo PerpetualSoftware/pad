@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 /**
- * BUG-3005, codex round 2. Four defects the round-1 fixes left or created.
+ * BUG-3005. Four defects the first round of fixes left or created.
  *
  * The sharpest is the single-flight slot: dropping a store's DATA on an
  * identity change while leaving the previous identity's promise published made

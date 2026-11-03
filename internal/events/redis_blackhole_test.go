@@ -82,7 +82,7 @@ func newBlackholeProxy(t *testing.T, backend string) *blackholeProxy {
 			// darkening both would break the probe as well as the delivery,
 			// and the test could then pass on an implementation that treats a
 			// failed probe as evidence of a dead peer — the exact defect the
-			// premise check exists to prevent (codex round 14). Only a
+			// premise check exists to prevent. Only a
 			// connection that has carried a SUBSCRIBE goes dark.
 			go func() {
 				buf := make([]byte, 4096)
@@ -142,7 +142,7 @@ func (p *blackholeProxy) blackhole() {
 
 // TestAWedgedRouteIsDetectedEndToEnd is the integration test for BUG-2738's
 // central claim, and the only test here that exercises a REAL half-open socket
-// rather than a simulated one (codex round 13, P3).
+// rather than a simulated one.
 //
 // Everything else in this package drives the mechanism through a fake clock:
 // necessary, because the threshold is 90 seconds by construction and miniredis
@@ -195,8 +195,8 @@ func TestAWedgedRouteIsDetectedEndToEnd(t *testing.T) {
 	deadline := time.Now().Add(20 * time.Second)
 	// THE PROBE MUST KEEP SUCCEEDING while nothing comes back — that pairing IS
 	// the half-open case, and without asserting it this test would also pass on
-	// an implementation that cycles because it could not publish at all
-	// (codex round 14). Only the subscription's connection is darkened, so the
+	// an implementation that cycles because it could not publish at all.
+	// Only the subscription's connection is darkened, so the
 	// publish path stays healthy and this stays at zero.
 	defer func() {
 		if got := obs.probeFailureCount(); got != 0 {

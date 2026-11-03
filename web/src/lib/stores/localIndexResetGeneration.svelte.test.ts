@@ -62,7 +62,7 @@ describe('localIndex.resetGenerationFor', () => {
 	});
 
 	it('every path that drops a workspace\u2019s rows counts as a drop', () => {
-		// codex round 7: `bootstrap()`'s unauthorized/forbidden branch clears
+		//: `bootstrap()`'s unauthorized/forbidden branch clears
 		// `items`, resets the search index and wipes the persisted cache — every
 		// bit a drop — but does NOT go through `reset()`. A generation bumped
 		// only there misses exactly the revocation case the fence exists for.

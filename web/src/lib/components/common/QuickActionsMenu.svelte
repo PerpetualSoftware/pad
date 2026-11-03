@@ -63,7 +63,7 @@
 
 	// The focused "New quick action" row unmounts when the form swaps in —
 	// hand focus to the label input so keyboard users aren't dropped on
-	// <body> (PR #1022 Codex finding). Reads showCreateForm, writes only
+	// <body> (PR #1022). Reads showCreateForm, writes only
 	// DOM focus.
 	$effect(() => {
 		if (showCreateForm) {
@@ -86,8 +86,8 @@
 		const vars: Record<string, string> = {
 			ref: item ? formatItemRef(item) ?? '' : '',
 			title: item?.title ?? '',
-			// ONE IMPLEMENTATION, imported rather than mirrored (BUG-3067, lead
-			// ruling). A `status`/`priority` retyped to a relation stores an item
+			// ONE IMPLEMENTATION, imported rather than mirrored (BUG-3067).
+			// A `status`/`priority` retyped to a relation stores an item
 			// id, and this pasted it straight into a prompt handed to an agent.
 			// The chips answer by withholding; a prompt variable cannot, so it
 			// resolves to the target's TITLE with its REF as the fallback.
@@ -257,7 +257,7 @@
 
 	/**
 	 * Fire the expiry at the moment it comes due, rather than waiting for the
-	 * next poll tick to notice (codex round 3).
+	 * next poll tick to notice.
 	 *
 	 * Without this the footer line kept saying "Pushes to your connected agent
 	 * session" for up to a full poll interval after the routing had already
@@ -324,7 +324,7 @@
 			// sites. The click is also a fresh user gesture, which is what makes
 			// a clipboard write work this long after the original one.
 			//
-			// The offer reports its own outcome (codex round 2). Taking it
+			// The offer reports its own outcome. Taking it
 			// dismisses the toast that carried it, so discarding the result would
 			// leave a failed copy completely silent — and this is the one path
 			// where that silence means the instruction was neither sent NOR
@@ -405,12 +405,12 @@
 			// sends no idempotency key.
 			const result = await api.items.push(ws, target, collapsePushMessage(prompt));
 			if (!isSameIdentity()) return;
-			// The SERVER's count wins over the preflight one (codex round 5).
+			// The SERVER's count wins over the preflight one.
 			// `knownCount` is whatever the last presence poll saw, which may
 			// be many seconds stale; the response's `delivered_sessions` is
 			// read at request time, immediately before the publish. Not a
 			// publish-time measurement and not a receipt — a pre-publish
-			// snapshot of the delivery predicate (codex round 24) — but far
+			// snapshot of the delivery predicate — but far
 			// fresher than the poll, which is the whole reason to prefer it. And when it
 			// is NULL — published, but the registry could not be read — the
 			// toast must not fall back to the stale number, because that
@@ -562,7 +562,7 @@
 			// (different id) is dropped. On a reused route (no guaranteed
 			// remount) `oncollectionupdated` is the live (navigated) page's
 			// callback — feeding it our old response would assign stale data to
-			// the wrong page (Codex switch-safety).
+			// the wrong page.
 			if (wsSlug !== ws || collection?.id !== baseCollection.id) return;
 			if (!isSameIdentity()) return;
 			toastStore.show('Saved', 'success');

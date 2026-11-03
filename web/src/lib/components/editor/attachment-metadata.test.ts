@@ -230,7 +230,7 @@ describe('fetchAttachmentMetadata — caching is per-arm', () => {
 });
 
 describe('revalidateAttachmentMetadata — existence probes ignore the cache', () => {
-	// The orchestrator's Codex pass on TASK-2420 caught this: `ok` is cached
+	// TASK-2420: `ok` is cached
 	// for the page lifetime (correctly — MIME and size are durable facts about
 	// a content-addressed row), but that makes the cache structurally unable
 	// to answer "is this row still there?". An <img> whose load just failed
@@ -487,7 +487,7 @@ describe('fetchAttachmentMetadata — derived-variant header (BUG-2964)', () => 
 });
 
 /**
- * BUG-2964, codex round 2 — `derived` is NOT a durable fact, and caching it as
+ * BUG-2964 — `derived` is NOT a durable fact, and caching it as
  * one latches a wrong answer.
  *
  * Thumbnail derivation runs asynchronously after upload. A probe issued in that

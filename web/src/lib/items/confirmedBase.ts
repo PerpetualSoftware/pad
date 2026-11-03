@@ -19,14 +19,14 @@
 // since is in the base before the user's first keystroke on top of it. Both
 // matter: a base that lacks text the server holds sends that text again, and
 // an anchor is a substring, so typing on the last line duplicates it ('A' →
-// 'A C U' over a stored 'A C' restores as 'A C U C'; lead ruling c9db9612 on
-// BUG-3850). Remote changes cost nothing here: the version check makes the
+// 'A C U' over a stored 'A C' restores as 'A C U C'; BUG-3850).
+// Remote changes cost nothing here: the version check makes the
 // first local change after them the only serialization.
 //
 // A base can still be outrun before the next confirmed refresh: by a remote
-// update (remoteAfter, lead ruling baa63dc3) or by this tab's own send, which
-// the server may hold before any barrier says so (sentAfter, lead ruling
-// a6380212). Either makes the kept draft's base stale, and restore then shows
+// update (remoteAfter) or by this tab's own send, which
+// the server may hold before any barrier says so (sentAfter). Either
+// makes the kept draft's base stale, and restore then shows
 // the conflict notice rather than patching.
 
 import { ySyncPluginKey } from '@tiptap/y-tiptap';
@@ -68,13 +68,13 @@ export interface ConfirmedBase {
 	markdown: string;
 	seq: number;
 	/**
-	 * A remote update landed after this snapshot (lead ruling baa63dc3): the
+	 * A remote update landed after this snapshot: the
 	 * base may lack a collaborator's text the server holds, and a patch from
 	 * it would send that text again ('A' → 'A C U' over 'A C' gives 'A C U C').
 	 */
 	remoteAfter: boolean;
 	/**
-	 * This tab sent a local update after this snapshot (lead ruling a6380212):
+	 * This tab sent a local update after this snapshot:
 	 * the server may already hold text the draft counts as its own change, and
 	 * at the end of the document an anchor that is a substring sends it again
 	 * ('A' → 'A U1 U2' over a stored 'A U1' gives 'A U1 U2 U1').
@@ -149,7 +149,7 @@ export function registerRefreshBeforeLocalChange(editor: BeforeTransactionSource
 	return () => editor.off('beforeTransaction', handler);
 }
 
-/** Why a patch restore is not offered yet (BUG-3850, lead ruling 0337bf77). */
+/** Why a patch restore is not offered yet (BUG-3850). */
 export const RESTORE_WAITS_FOR_EDITOR = 'Restore is available once the editor has connected. You can copy your text now.';
 
 /**

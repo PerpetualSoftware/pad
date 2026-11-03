@@ -286,7 +286,7 @@ describe('accessStream (TASK-3275)', () => {
 
 	it('does not move the tab when the server says the workspace still resolves (a stale hint)', async () => {
 		// The tab row is gone too (closed on another device), so only the
-		// access probe stands between this and a navigation (codex round 1).
+		// access probe stands between this and a navigation.
 		const s = await freshStream();
 		s.start();
 		h.state.nextTabs = [tab('a'), tab('c')];

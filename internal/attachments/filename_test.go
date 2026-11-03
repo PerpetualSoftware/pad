@@ -39,7 +39,7 @@ func TestNormalizeFilename(t *testing.T) {
 		{"\U0001F469\u200D\U0001F4BB notes.txt", "\U0001F469\u200D\U0001F4BB notes.txt"},
 		// Nor are other format characters touched (U+00AD soft hyphen, Cf).
 		{"co\u00ADop.txt", "co\u00ADop.txt"},
-		// Trailing dots and spaces, which a download save strips (Q1).
+		// Trailing dots and spaces, which a download save strips.
 		{"x.svg.", "x.svg"},
 		{"x.svg ", "x.svg"},
 		{"x.svg . .", "x.svg"},
@@ -56,7 +56,7 @@ func TestNormalizeFilename(t *testing.T) {
 		{"..", "upload.bin"},
 		{"/", "upload.bin"},
 		{"\v\v", "upload.bin"},
-		// All dots is a POSIX name, not a path component (BUG-2803 round 27).
+		// All dots is a POSIX name, not a path component (BUG-2803).
 		{"...", "..."},
 		{". .", ". ."},
 		// BUG-2822: a Windows device name, with or without an extension, in any

@@ -100,7 +100,7 @@ func serveCmd() *cobra.Command {
 			defer func() { _ = ln.Close() }()
 
 			// We hold the port, so the PID file is ours to claim. It must
-			// follow the bind (BUG-2965, codex round 2): the file names the
+			// follow the bind (BUG-2965): the file names the
 			// process `pad server stop` will signal, and a start that wrote it
 			// before losing the race would, on its way out, remove the file
 			// the winner relies on. Claimed here rather than after startup, so
@@ -302,7 +302,7 @@ func serveCmd() *cobra.Command {
 			// Persist an id on every implementation note / decision entry
 			// stored without a usable, unique one (BUG-2788), so a timeline
 			// entry's identity no longer depends on its position in the array.
-			// Silent by ruling (no seq, no event); the premise is on the
+			// Silent by design (no seq, no event); the premise is on the
 			// function. Non-fatal: an unrepaired entry still renders, on the
 			// timeline's positional fallback, as it always has.
 			if sb, err := s.BackfillStructuredEntryIDs(); err != nil {
@@ -549,7 +549,7 @@ func serveCmd() *cobra.Command {
 			// Workspace bundle import cap. Default is 2 GiB inside
 			// internal/server; PAD_IMPORT_BUNDLE_MAX_BYTES lets
 			// operators with larger exports raise the ceiling without
-			// recompiling (Codex review on PR #306 round 3).
+			// recompiling.
 			if v := os.Getenv("PAD_IMPORT_BUNDLE_MAX_BYTES"); v != "" {
 				if n, perr := strconv.ParseInt(v, 10, 64); perr == nil && n > 0 {
 					srv.SetImportBundleMaxBytes(n)
@@ -661,7 +661,7 @@ func serveCmd() *cobra.Command {
 				eventBus = newObservedEventBus(cfg, rc, redisKeys, m)
 				watchRedis = rc
 				// THE EFFECTIVE PHASE IS LOGGED, not just configured
-				// (BUG-2736, codex round 9). An operator reading
+				// (BUG-2736). An operator reading
 				// pad_event_sequence_resets_total cannot interpret it without
 				// knowing which phase this instance publishes in — a
 				// counter_backward rate is expected on phase 1 and an anomaly
@@ -1047,8 +1047,8 @@ func serveCmd() *cobra.Command {
 				slog.Info("Shutting down server (30s grace period)...")
 				stop() // Reset signal handling so a second signal force-kills
 
-				// Release the PID file BEFORE the listener closes, not after
-				// (codex round 4, P1). Cleanup is a read-then-remove: it checks
+				// Release the PID file BEFORE the listener closes, not after.
+				// Cleanup is a read-then-remove: it checks
 				// the file still names us, then unlinks. Run after the port is
 				// released, a successor can bind and claim between those two
 				// steps, and we then delete ITS entry — the live server ends up
@@ -1071,8 +1071,7 @@ func serveCmd() *cobra.Command {
 				slog.Info("Event bus closed")
 
 				// Presence closes FIRST — before the watch bus, and well before
-				// Shutdown. The ordering is load-bearing twice over (codex
-				// rounds 4 and 5 on BUG-2698).
+				// Shutdown. The ordering is load-bearing twice over (BUG-2698).
 				//
 				// Remove waits for a session's renewal goroutine. Closing the bus
 				// is what RELEASES the SSE handlers, so each one immediately runs
@@ -1085,7 +1084,7 @@ func serveCmd() *cobra.Command {
 				// Note it does NOT empty the registry — an earlier version of
 				// this comment said so, and Close deliberately retains the
 				// entries precisely so a concurrent Remove can still find and
-				// await a renewal (codex rounds 6 and 10). Remove's own wait is
+				// await a renewal. Remove's own wait is
 				// bounded by the same drain deadline, so a renewal Close could
 				// not drain cannot hold Shutdown either.
 				//
@@ -1101,7 +1100,7 @@ func serveCmd() *cobra.Command {
 				// same reason: GET /api/v1/events/stream is a long-lived
 				// handler blocked on this bus's channel, so leaving it open
 				// keeps http.Server.Shutdown waiting out its full 30s
-				// deadline (codex round 2 on BUG-2651). Closing here rather
+				// deadline. Closing here rather
 				// than only in srv.Stop() below also tears the Redis
 				// subscription down promptly instead of at the very end.
 				// Both Close implementations are idempotent, so the second
@@ -1211,7 +1210,7 @@ func logBootstrapBanner(token string, cfg *config.Config, tokenPath string) {
 	// token — those are in the stderr banner where the operator looks
 	// for them. Repeating the URL as a parseable structured field would
 	// give log aggregators an easy-to-extract token, which is precisely
-	// what the URL-fragment design (TASK-1167 F10) is trying to avoid.
+	// what the URL-fragment design (TASK-1167) is trying to avoid.
 	// Operators / agents that want the token programmatically should
 	// read the token_path file directly.
 	slog.Info("first-run bootstrap setup banner emitted to stderr — see container logs",

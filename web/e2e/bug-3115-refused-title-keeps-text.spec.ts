@@ -15,9 +15,9 @@ import type { SuiteFixture } from './fixtures';
  * Two legs per door:
  *  - LOCAL: a 256-character title never reaches the network.
  *  - SERVER: a title the client accepts is lengthened IN FLIGHT by the test
- *    (route.continue with a rewritten body), so the REAL server refuses it
+ *     (route.continue with a rewritten body), so the REAL server refuses it
  *    with its real message. The client check and the server check agree by
- *    construction (testdata/item_title_limit.json), so no typed title reaches
+ *    construction  (testdata/item_title_limit.json), so no typed title reaches
  *    the refusal path without the rewrite; what is under test is what the
  *    client does with a real refusal.
  */
@@ -69,8 +69,8 @@ function titleWrites(page: Page, method: 'POST' | 'PATCH', urlPart: string) {
 
 /**
  * BUG-3234 instrument: CI once found TWO quick-add buttons for one collection.
- * Can a user see two (the sidebar list rendered the collection twice), or was
- * it a transient copy only the locator caught (e.g. a drag-and-drop clone)?
+ * Can a user see two  (the sidebar list rendered the collection twice), or was
+ * it a transient copy only the locator caught  (e.g. a drag-and-drop clone)?
  * On a strict-mode refusal this names every match and where it sits.
  */
 async function describeQuickAddMatches(page: Page, selector: string) {
@@ -209,7 +209,7 @@ test.describe('BUG-3115: a refused title keeps the typed text', () => {
 	});
 
 	// Lead NO-GO on #1437: the server re-validates a title only when it CHANGES
-	// (handlers_items.go's early refusal; the store's echo comparison), so a
+	//  (handlers_items.go's early refusal; the store's echo comparison), so a
 	// playbook whose title predates the bound stays saveable as long as the
 	// editor sends that title back unchanged — and save() always sends it.
 	// No door can STORE an over-limit title any more, so the page is SHOWN one:
@@ -263,7 +263,7 @@ test.describe('BUG-3115: a refused title keeps the typed text', () => {
 		await expect(page.getByText(`Title is too long`)).toHaveCount(0);
 	});
 
-	// CONTROL for the leg above (codex round 4): that leg passes for ANY editor
+	// CONTROL for the leg above: that leg passes for ANY editor
 	// that sends the save, including one with no length check at all. This one
 	// fails for that editor — a CHANGED over-limit title is refused locally —
 	// so the pair pins the guard from both sides.

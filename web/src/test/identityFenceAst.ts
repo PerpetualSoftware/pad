@@ -1,9 +1,9 @@
 /**
- * BUG-3084: the identity-fence guard for ItemDetail. Round 4 moved it from a
- * scanner to this AST (lead ruling on checkpoint 51). Rounds 3–8 then showed
- * that an analysis of what the code DOES does not converge: every review
- * round found edits it accepted, and round 8 found rows missing from the
- * population table itself (team CONVE-35). So the lead ruled on checkpoint 69:
+ * BUG-3084: the identity-fence guard for ItemDetail. It moved from a
+ * scanner to this AST. Repeated review then showed
+ * that an analysis of what the code DOES does not converge: every pass
+ * found edits it accepted, and one found rows missing from the
+ * population table itself (CONVE-35). So the decision was:
  *
  * THE GATE IS A CHANGE DETECTOR. Its machinery is `refusals` in
  * `identityFenceGate.ts`, and ItemDetail's table is in
@@ -13,44 +13,43 @@
  * one table row. It does NOT say every deferred callback has a row: the
  * population is the spelling list in 1 below, so a deferral spelled some
  * other way — a listener registration, `requestIdleCallback` — has no row to
- * match and is not seen at all (round 9 F5). Every row carries the hash of
+ * match and is not seen at all. Every row carries the hash of
  * the code it was last reviewed on, and so does every component-level sync
  * function a row's code reaches by name, transitively (HELPERS). What a
  * row's hash covers:
  *   - the unit, its HEAD included — `async`, `*`, the type parameters, the
  *     params and the return type, each of which changes what a call DOES
- *     while leaving every statement of the body untouched (round 9 F1);
+ *     while leaving every statement of the body untouched;
  *   - its outermost enclosing function;
  *   - component-level declarations of names the unit references, IMPORTS
- *     among them (round 9 F2) and `class` / `enum` / `namespace` among them
- *     (round 10 finding 3), transitively: a pulled declaration's own names
+ *     among them and `class` / `enum` / `namespace` among them,
+ * transitively: a pulled declaration's own names
  *     are pulled too, so `class Map` is in the hash of a unit that names
  *     only `tagSavers`. The transitivity reaches HELPERS and rebindings as
- *     well as declarations (round 11 finding 2 and O4) — a component-level
+ *     well as declarations — a component-level
  *     sync function named only inside a pulled declaration, as in
  *     `const ops = { run: helper }` called through `ops.run()`, is demanded
  *     as a helper and hashed, where it used to be neither. A component-level
  *     binding form the gate does not model is REFUSED rather than skipped;
  *   - component-level statements that REBIND a name it calls, or a
  *     component-level function it merely NAMES — a name it hands to someone
- *     else is a function it will run, just later (round 9 F4, and round 8 G
- *     for the callee half). Destructuring patterns and for-in/of heads count
- *     as rebindings (round 9 F3); a bare member write does not; any other
+ *     else is a function it will run, just later (including for the callee
+ *     half). Destructuring patterns and for-in/of heads count
+ *     as rebindings; a bare member write does not; any other
  *     target shape is REFUSED by line rather than read as binding nothing.
  * A deferring call whose callback is not a literal (`IDENTIFIER_CALLBACKS`)
  * carries its own hash over the statements that declare or rebind the names
  * it passes, because such a call site may sit outside every hashed unit —
- * both `.then(ensureGraphComp)` sites do (round 9 F4). The population's own
+ * both `.then(ensureGraphComp)` sites do. The population's own
  * vocabulary is hashed BY VALUE for the same reason: nothing in the
  * component covers it, so shrinking `DEFERRING_METHODS` or
  * `DEFERRING_FUNCTIONS` would drop units from the gate's population with no
  * row changing. `SYNC_CALLBACK_CALLEES` is hashed alongside them although
- * the GATE never reads it — it is the aid's (round 10 §5.3 corrected the
- * claim, not the code): over-inclusion costs a bump nobody needed, while
+ * the GATE never reads it — it is the aid's: over-inclusion costs a bump nobody needed, while
  * leaving it out would invite a later reader to wonder which of the three
  * the gate depends on.
  * All of that is found by syntax, never by this analysis — with one honest
- * qualification (round 11 O3): the gate's POPULATION is enumerated by this
+ * qualification: the gate's POPULATION is enumerated by this
  * module's walkers (`enumerateUnits`, `deferringCallee`, `walk`,
  * `patternNames`). Their spelling LISTS are hashed by value; their bodies are
  * not, so "the analysis does not decide" means the FLOW analysis does not,
@@ -63,13 +62,12 @@
  * That claim rests on the reviewed text being the SOURCE BYTES of each
  * statement, plus the function's SHAPE — its node type, its name, and whether
  * its body is a block — because none of that is inside any slice and each of
- * it changes what a call does (round 11 finding 1: `() => EXPR` returns the
+ * it changes what a call does (`() => EXPR` returns the
  * expression, `() => { EXPR }` returns undefined). The slices are joined by a
  * NUL, which cannot occur at a statement BOUNDARY: a NUL can sit inside a
  * string literal, but then neither half of a split is a parseable statement,
- * so no two renderings collide (round 11 O2 — the earlier wording said
- * "cannot occur in source", which is false). It is not
- * normalised, and round 10 is why: while whitespace runs were collapsed, a
+ * so no two renderings collide ("cannot occur in source" would be false). It is not
+ * normalised, and this is why: while whitespace runs were collapsed, a
  * NEWLINE left no trace — and a newline is what ends a `//` comment and what
  * separates two statements under ASI. Moving a fence onto the end of the
  * comment line above it, and splitting `return` from its expression, each
@@ -83,13 +81,13 @@
  * refusal prints the new hash. A comment INSIDE a statement of one of those
  * functions costs a bump too, because the hash reads statement text; a
  * comment between statements does not. So does a SIGNATURE change with no
- * body change — a return type, a param, `async` — since round 9 F1, and so
- * does REINDENTING or re-wrapping a hashed statement, since round 10 made
+ * body change — a return type, a param, `async` — and so
+ * does REINDENTING or re-wrapping a hashed statement, since the hash reads
  * the text verbatim. Whitespace and comments BETWEEN statements remain free:
  * they fall outside every statement's slice.
  *
  * THIS FILE IS THE AID (`analysisReport`): the flow analysis a re-reader runs
- * before bumping a hash. It keeps its round 4–7 regression fixtures, and it
+ * before bumping a hash. It keeps its regression fixtures, and it
  * must stay quiet on the committed component. It no longer decides whether
  * an edit is accepted, and nothing below is a guarantee.
  *
@@ -102,9 +100,9 @@
  *    a spelling list, so it is not trusted to be complete: inside a unit,
  *    every other function literal passed to a call, and every function-valued
  *    object property, is a CALLBACK walked from an unsafe start, since it may
- *    run after any await (round 5 P1-2). An `async` literal is its own unit,
+ *    run after any await. An `async` literal is its own unit,
  *    and one defined inside a unit or a helper a unit inlines starts unsafe
- *    for the same reason (`asyncUnitStartsSafe`, round 7 F1); an async unit
+ *    for the same reason (`asyncUnitStartsSafe`); an async unit
  *    defined anywhere else starts safe. Only callees on
  *    `SYNC_CALLBACK_CALLEES`, and array iteration methods on a receiver the
  *    unit declared, run their callback inline with the caller's state. A
@@ -119,7 +117,7 @@
  *    second time from the merge of the entry and the first pass's end, and
  *    leave from the state after their test or iterator (plus every `break`),
  *    whatever the body does; `for await` starts every pass unsafe, and lapses
- *    fence booleans as an await does (round 7 F3). A `switch`
+ *    fence booleans as an await does. A `switch`
  *    evaluates its case tests in order, so a case is entered from the state
  *    after its own test and `default` from the state after all of them. A
  *    statement type the walker does not know THROWS — it is not skipped.
@@ -142,7 +140,7 @@
  *    `identityHeld(x)`, or a comparison of a LIVE identity read
  *    (`authStore.identityEpoch`, `captureIdentity()`) against a stamp. `!`,
  *    `&&` and `||` combine atoms with their polarity, and when the right
- *    operand awaits only its own atoms survive (round 5 P1-1). So
+ *    operand awaits only its own atoms survive. So
  *    `if (gen !== loadGeneration) return;` fences what follows and
  *    `if (gen === loadGeneration) { … }` fences only its consequent. A `?:`
  *    is not a fence at all (its arms are walked, its value is not read). A
@@ -151,20 +149,20 @@
  *    counted as captures there and nowhere else; a CALL to it fences only when
  *    each param that polarity needs receives a capture of the kind it
  *    compares, in that position, and its name must be declared once and never
- *    for a fence boolean too (round 7 F8). Naming a helper without calling it
- *    is never a fence (round 7 F2). A local boolean initialised from a fence
+ *    for a fence boolean too. Naming a helper without calling it
+ *    is never a fence. A local boolean initialised from a fence
  *    is one too, until the next suspension or a write to it. Captures are
  *    typed: `generation` (from `loadGeneration` / `++itemGen`) or `identity`
  *    (from `captureIdentity()`); the type is recorded per NAME, so a name
- *    captured as both is refused (round 7 F5); only a snapshot declared inside
+ *    captured as both is refused; only a snapshot declared inside
  *    a function is one. A stamp is `.epoch` / `.identityEpoch` read through
  *    plain names whose root is bound in the scopes around the check —
- *    component state is re-stamped by the identity change (round 7 F4).
+ *    component state is re-stamped by the identity change.
  *
  * 5. SCOPES. Whether a write targets a local is decided by the lexical scopes
  *    enclosing the write: every function, block, loop head, switch body and
  *    catch clause around the unit, plus each one the walk enters. An inlined
- *    helper sees its own chain, not the caller's (round 5 P1-3). A `var` is
+ *    helper sees its own chain, not the caller's. A `var` is
  *    treated as scoped to its block, which can only refuse more.
  *
  * 6. REFUSED OUTRIGHT, anywhere inside a function, because the walk does not
@@ -181,57 +179,57 @@
  *
  * - It proves a check with the right SHAPE dominates every commit, not that
  *   the check reads the right item. A callback allowance covers its callee,
- *   not which item the call names (round 8 J).
+ *   not which item the call names.
  * - `identityHeld`, `captureIdentity` and `authStore.identityEpoch` are
  *   recognised BY NAME. The site pins in `itemDetailIdentityFence.test.ts`
- *   hold the two function bodies (round 8 E).
+ *   hold the two function bodies.
  * - Captures are known by name. A declaration or catch param shadowing one
  *   is refused. A function PARAM is not, because helpers such as
  *   `switchedAway` need the name, so a callback param named like a capture
  *   is read as that capture.
  * - A stamp rooted in a local is trusted to have been recorded earlier. That
- *   includes a local assigned from component state after the await
- *   (round 8 H), and a stamp minted after the await and compared at once.
+ *   includes a local assigned from component state after the await,
+ * and a stamp minted after the await and compared at once.
  * - Fence booleans:
  *   - one read inside a helper's body never lapses;
  *   - one initialised from a fence boolean that has already lapsed is
- *     marked live anyway (round 8 D).
+ *     marked live anyway.
  * - Callbacks:
  *   - `SYNC_CALLBACK_CALLEES`, and array iteration methods on a receiver in
  *     scope, are trusted to call synchronously;
  *   - a row's `callbacks` allowance trusts the callee to re-check before
  *     calling, AND trusts the values the unit hands the callee for that
- *     re-check (round 8 C);
+ *     re-check;
  *   - a helper already being inlined is not walked again as the callback it
- *     hands itself to (round 8 B).
+ *     hands itself to.
  * - Helpers:
  *   - a helper is declared once, not bound once: a `let` rebound outside
- *     every unit is inlined with its declared body (round 8 G);
+ *     every unit is inlined with its declared body;
  *   - a row's `may` keys also excuse writes inside the helpers the unit
- *     inlines (round 8 F).
+ *     inlines.
  * - A `startSafe` row trusts its pin's premises. The debounce pin does not
- *   prove the timer variable holds the only live handle (round 8 A). The
+ *   prove the timer variable holds the only live handle. The
  *   mount suite holds A and C semantically.
  * - `var` is treated as block-scoped, which only ever refuses more.
  *
  * WHAT NEITHER SEES (the gate's own boundary, and its GATE_GAPS table):
  * - the MARKUP entirely: nothing in it is hashed, so a markup handler or a
- *   callback prop on a child component is outside (round 8 I);
+ *   callback prop on a child component is outside;
  * - synchronous code no row reaches: `$effect` / `onMount` / `onDestroy`
  *   bodies that enclose no unit, and component-level statements outside the
  *   hashed set. Dropping `destroyed = true` from the `onDestroy` body is
- *   accepted although `reconcileCollectionSegment` reads it (round 9 O1);
+ *   accepted although `reconcileCollectionSegment` reads it;
  * - the SCHEDULING WRAPPER of a body that DOES enclose a unit. The body is
  *   hashed as that unit's outermost enclosing function; the call around it
  *   is a component-level statement, so swapping `onMount(() => {…})` for
  *   `$effect(() => {…})` around the two SSE units is accepted although the
- *   body then re-runs on every dependency change instead of once at mount
- *   (round 10 §5). A row's `in` catches this only where the row pins it;
+ *   body then re-runs on every dependency change instead of once at mount.
+ * A row's `in` catches this only where the row pins it;
  * - deferrals the population does not recognise, because it recognises them
  *   by spelling: listener registrations (`authStore.onIdentityChange`,
  *   `addEventListener`, service subscriptions) and callees outside the lists
  *   in 1 — `requestIdleCallback(() => …)` inside an `$effect` that encloses
- *   no unit is accepted (round 9 F5). The site pins hold the identity
+ *   no unit is accepted. The site pins hold the identity
  *   listener;
  * - a write to a name a unit only READS. By design: the hash covers the
  *   names a unit CALLS or names as a function VALUE, not every name it
@@ -291,7 +289,7 @@ export const DEFERRING_FUNCTIONS = new Set(['setTimeout', 'setInterval', 'queueM
 
 /**
  * Callees known to run a function-literal argument NOW, inside the call, so
- * the walk inlines it with the caller's state (round 5 P1-2). Every other
+ * the walk inlines it with the caller's state. Every other
  * function literal passed to a call, and every function-valued object
  * property, is a CALLBACK that may run later: it is walked starting unsafe,
  * and what it may commit is the unit row's `callbacks` entry for it.
@@ -306,12 +304,11 @@ export const SYNC_CALLBACK_CALLEES: Record<string, string> = {
 export const SYNC_ITERATION_METHODS = new Set(['find', 'findIndex', 'findLast', 'filter', 'map', 'flatMap', 'some', 'every', 'forEach', 'reduce', 'sort']);
 
 /**
- * Calls that commit nothing, by callee. SHORT on purpose (lead ruling,
- * condition 2): a new callee is a commit until it is listed here with its
+ * Calls that commit nothing, by callee. SHORT on purpose: a new callee is a commit until it is listed here with its
  * reason, and a list that grows to absorb every refusal is the regex problem
  * again. Keys are the callee's source text with `?.` read as `.`.
  * There are no method-name wildcards: `*.get` once admitted `api.items.get`,
- * a request (round-4 mutant G6), so every entry names its receiver.
+ * a request, so every entry names its receiver.
  */
 export const PURE_CALLS: Record<string, string> = {
 	untrack: 'Svelte: reads its callback without tracking; the callback is walked inline',
@@ -392,7 +389,7 @@ export type CaptureKind = 'generation' | 'identity';
 export interface Declarations {
 	/** Names declared inside a function whose initialiser is a generation or identity capture. */
 	captures: Set<string>;
-	/** The same names, split by what they captured (round 6: `identityHeld(gen)` is not a fence). */
+	/** The same names, split by what they captured (`identityHeld(gen)` is not a fence). */
 	kinds: Map<CaptureKind, Set<string>>;
 	/** Local booleans initialised from a fence; each is a fence only until the next await. */
 	fenceBooleans: Set<string>;
@@ -430,14 +427,14 @@ function collectDeclarations(src: AstSource): Declarations {
 	]);
 	const fnBodies = new Map<string, Node[]>();
 	const boolInits = new Map<string, Node[]>();
-	/** The names bound around each boolean initialiser, for its stamps (round 7 F4). */
+	/** The names bound around each boolean initialiser, for its stamps. */
 	const initScope = new Map<Node, Set<string>>();
 	const note = (m: Map<string, Node[]>, k: string, v: Node) => m.set(k, [...(m.get(k) ?? []), v]);
 	const visit = (n: Node, anc: Node[]) => {
 		if (n.type === 'VariableDeclarator' && n.id.type === 'Identifier' && n.init) {
 			const capture = isGenerationRead(n.init) ? 'generation' : isIdentityRead(src, n.init) ? 'identity' : null;
 			// A capture is a snapshot taken inside a function. A component-level
-			// variable is state that other code re-stamps (round 6 H40).
+			// variable is state that other code re-stamps.
 			if (capture && anc.some(isFn)) {
 				captures.add(n.id.name);
 				kinds.get(capture)!.add(n.id.name);
@@ -454,8 +451,7 @@ function collectDeclarations(src: AstSource): Declarations {
 	// The markup declares captures too (the mode toggles' `startGen`).
 	walk(src.script, visit);
 	walk(src.fragment, visit);
-	// Kinds are recorded by name, so one name must mean one kind everywhere
-	// (round 7 F5).
+	// Kinds are recorded by name, so one name must mean one kind everywhere.
 	for (const name of kinds.get('generation')!) {
 		if (kinds.get('identity')!.has(name)) throw new Error(`'${name}' is captured as both a generation and an identity — rename one; the guard types captures by name`);
 	}
@@ -493,7 +489,7 @@ function collectDeclarations(src: AstSource): Declarations {
 	}
 	// A helper's required params are known only for a name declared once, and
 	// a bare name is read as a fence boolean: a fence helper's name must be
-	// unique, and never also a boolean's (round 7 F8).
+	// unique, and never also a boolean's.
 	for (const [name, fns] of fnBodies) {
 		if (fns.length > 1 && decls.fences.has(name)) throw new Error(`'${name}' is declared more than once as a fence helper — rename one; the guard checks a helper's params only when it has one declaration`);
 		if (decls.fenceBooleans.has(name)) throw new Error(`'${name}' is declared both as a function and as a fence boolean — rename one`);
@@ -512,9 +508,9 @@ function settle(decls: Declarations, name: string, pols: Polarity[]) {
 
 /**
  * A helper's polarity. Its OWN params count as captures here, whatever they
- * are called, and nowhere else (round 5 P2-6). Each param the polarity rests
+ * are called, and nowhere else. Each param the polarity rests
  * on is recorded with the capture kind it needs, so a call site must pass a
- * capture of that kind IN THAT POSITION (round 6 H11).
+ * capture of that kind IN THAT POSITION.
  */
 function returnPolarity(src: AstSource, fn: Node, decls: Declarations): { polarity: Polarity; required: Array<{ index: number; kind: CaptureKind }> } {
 	let body: Node | null = null;
@@ -555,10 +551,9 @@ function isCaptureRef(n: Node, decls: Declarations, params: ReadonlyMap<string, 
 /**
  * A stamp: an identity recorded earlier, read as `x.epoch` / `x.a.identityEpoch`
  * through plain names only — never a live read, never an object built on the
- * spot (round 6 H37) — whose root is a binding of the scopes around the
+ * spot — whose root is a binding of the scopes around the
  * check. A root in component state is re-stamped by the identity change
- * itself, so it compares equal after one (round 7 F4, the H40 rule for
- * stamps).
+ * itself, so it compares equal after one.
  */
 function isStamp(src: AstSource, n: Node, locals: ReadonlySet<string>): boolean {
 	if (n.type !== 'MemberExpression' || n.computed || !['identityEpoch', 'epoch'].includes(n.property.name)) return false;
@@ -576,7 +571,7 @@ export interface PolarityScope {
 	params?: ReadonlyMap<string, CaptureKind | null>;
 	/**
 	 * When given, the fence booleans declared since the last suspension; any
-	 * other fence boolean has gone stale (round 6 H10, H39).
+	 * other fence boolean has gone stale (H39).
 	 */
 	live?: ReadonlySet<string>;
 }
@@ -599,7 +594,7 @@ export function polarity(src: AstSource, n: Node, decls: Declarations, scope: Po
 			const b = polarity(src, n.right, decls, scope);
 			// The left operand is evaluated first. When the right one awaits, a
 			// fence on the left is stale by the time the whole expression has a
-			// value, so only the right operand's atoms survive (round 5 P1-1). On
+			// value, so only the right operand's atoms survive. On
 			// the short-circuit path no await ran, and there the left atom's own
 			// verdict is already the other half of the polarity.
 			const awaitsRight = containsAwait(n.right);
@@ -616,7 +611,7 @@ export function polarity(src: AstSource, n: Node, decls: Declarations, scope: Po
 				(l.type === 'Identifier' && GENERATIONS.has(l.name) && isCaptureRef(r, decls, params, 'generation')) ||
 				(r.type === 'Identifier' && GENERATIONS.has(r.name) && isCaptureRef(l, decls, params, 'generation'));
 			// An identity atom compares a live read against a stamp. Two stamps can
-			// both be stale and still agree (round 5 P2-4); two live reads always
+			// both be stale and still agree; two live reads always
 			// agree.
 			const ident =
 				(isIdentityRead(src, l) && isStamp(src, r, locals)) || (isIdentityRead(src, r) && isStamp(src, l, locals));
@@ -626,7 +621,7 @@ export function polarity(src: AstSource, n: Node, decls: Declarations, scope: Po
 		case 'Identifier':
 			// Only a fence BOOLEAN is a fence by its bare name. A fence helper named
 			// without a call is a function value, always truthy, so `!helper`
-			// never holds (round 7 F2).
+			// never holds.
 			if (!decls.fenceBooleans.has(n.name)) return NONE;
 			if (live && !live.has(n.name)) return NONE;
 			return decls.fences.get(n.name) ?? NONE;
@@ -835,7 +830,7 @@ function chainBindings(src: AstSource, chain: Node[]): Set<string> {
 }
 
 // ---------------------------------------------------------------------------
-// Constructs refused outright (lead ruling on BUG-3084 checkpoint 63, (B))
+// Constructs refused outright (BUG-3084)
 // ---------------------------------------------------------------------------
 
 /**
@@ -994,7 +989,7 @@ class Analyser {
 
 	/**
 	 * Walks a nested function's body with `locals` as the names that resolve to
-	 * a binding of the unit rather than to component state (round 5 P1-3: a
+	 * a binding of the unit rather than to component state (a
 	 * nested arrow's `item` param used to make every `item =` in the unit
 	 * local).
 	 */
@@ -1075,7 +1070,7 @@ class Analyser {
 	 * A function defined inside the unit. A helper that is only ever CALLED is
 	 * checked at each call site instead (`inline`); anything else — a helper
 	 * also used as a value, a name declared twice, a literal stored or returned
-	 * — may run at any time, so it is walked here as a callback (round 5 P1-2).
+	 * — may run at any time, so it is walked here as a callback.
 	 */
 	private definition(fn: Node, key: string) {
 		if (fn.async) return;
@@ -1222,7 +1217,7 @@ class Analyser {
 		s = this.expr(n.discriminant, s);
 		// Case tests run in source order, skipping `default`, until one
 		// matches: a case is entered after its own test, and `default`
-		// only once every test has run (round 5 P2-3).
+		// only once every test has run.
 		const entries: boolean[] = [];
 		let tested = s;
 		for (const c of n.cases) {
@@ -1248,7 +1243,7 @@ class Analyser {
 		// One pass: `exit` is the state on every way out of the loop, `next` the
 		// state carried into the following pass. A loop leaves NORMALLY right
 		// after its test (or its iterator) says stop, so that state is an exit
-		// even when the body itself always returns (round 5 P2-2).
+		// even when the body itself always returns.
 		const once = (s: boolean): { exit: State; next: State } => {
 			this.breaks.push([]);
 			this.continues.push([]);
@@ -1262,10 +1257,10 @@ class Analyser {
 			if (n.type === 'ForOfStatement' || n.type === 'ForInStatement') {
 				s = this.expr(n.right, s);
 				// `for await` awaits before every iteration, and once more to find
-				// the end (round 5 P2-1).
+				// the end.
 				if (n.type === 'ForOfStatement' && n.await) {
 					s = false;
-					// A fence boolean lapses there too (round 7 F3). The try block is
+					// A fence boolean lapses there too. The try block is
 					// walked before its handler and finalizer, so this and the await
 					// case also lapse them for a handler entered after a suspension.
 					this.liveBools.clear();
@@ -1299,8 +1294,7 @@ class Analyser {
 			case 'Identifier': {
 				// A helper named in a value position is handed to whoever holds the
 				// value, whatever wraps it (`as`, `!`, `?:`): walked as a callback, or
-				// inline when this value is being called right here (round 6 H17,
-				// H36).
+				// inline when this value is being called right here.
 				const named = this.helperNamed(n);
 				if (named && this.calleeDepth > 0) this.inline(named, s, n.name);
 				else if (named) this.callback(named, n.name, this.lexicalOf(named));
@@ -1353,7 +1347,7 @@ class Analyser {
 			case 'ConditionalExpression': {
 				const t = this.test(n.test, s);
 				// Both arms are walked: `a && b` here would skip the alternate
-				// whenever the consequent ends unsafe (round 5 on #1387).
+				// whenever the consequent ends unsafe (#1387).
 				const a = this.expr(n.consequent, t.t);
 				const b = this.expr(n.alternate, t.f);
 				return a && b;
@@ -1371,8 +1365,8 @@ class Analyser {
 					this.flag(n, `assigns ${n.left.name} after an unfenced await`, n.left.name);
 				}
 				// Any rewrite of a capture after an unfenced await makes every later
-				// check against it pass, however the new value is spelled (round 5
-				// P2-5: `gen = loadGeneration as number`, `gen = loadGeneration ?? gen`).
+				// check against it pass, however the new value is spelled (e.g.
+				// `gen = loadGeneration as number`, `gen = loadGeneration ?? gen`).
 				if (n.left.type === 'Identifier' && this.decls.captures.has(n.left.name) && !s) {
 					this.flag(n, `rewrites capture ${n.left.name} after an unfenced await`);
 				}
@@ -1409,7 +1403,7 @@ class Analyser {
 				// is invoked right here, with this state.
 				if (this.calleeDepth > 0 && !n.async) {
 					// Its body is ordinary code: a function it returns or stores is a
-					// value again, not something invoked here (round 6 H1).
+					// value again, not something invoked here.
 					const depth = this.calleeDepth;
 					this.calleeDepth = 0;
 					try {
@@ -1475,7 +1469,7 @@ class Analyser {
 				else this.callback(named, `${key}(…)`, this.lexicalOf(named));
 			} else if (now && !deferred && unwrap(a).type !== 'ArrowFunctionExpression' && unwrap(a).type !== 'FunctionExpression') {
 				// A synchronous callee runs whatever it is given; a value the guard
-				// cannot follow is a call to an unknown function (round 6 H7).
+				// cannot follow is a call to an unknown function.
 				s = this.expr(a, s);
 				if (!s) this.flag(a, `calls ${key}(${collapseText(this.src, a)}) after an unfenced await`, `${key}(${collapseText(this.src, a)})`);
 			} else if (a.type === 'ObjectExpression' && !deferred) {
@@ -1514,7 +1508,7 @@ class Analyser {
 		if (n.type === 'CallExpression') {
 			const p = polarity(this.src, n, this.decls, this.scope());
 			if (p.t || p.f) {
-				// A fence helper's body still runs here, and may commit (round 6 H25).
+				// A fence helper's body still runs here, and may commit.
 				const fenceHelper = callee.type === 'Identifier' ? this.decls.helpers.get(callee.name) : undefined;
 				if (fenceHelper) this.inline(fenceHelper, s, key);
 				return s;
@@ -1536,7 +1530,7 @@ class Analyser {
 function containsAwait(n: Node): boolean {
 	let found = false;
 	walk(n, (c, anc) => {
-		// `for await` suspends too, and is not an AwaitExpression (round 6 H15).
+		// `for await` suspends too, and is not an AwaitExpression.
 		const suspends = c.type === 'AwaitExpression' || (c.type === 'ForOfStatement' && c.await);
 		if (suspends && !anc.some((a) => isFn(a) && a !== n)) found = true;
 	});
@@ -1548,8 +1542,7 @@ function containsAwait(n: Node): boolean {
  * with whatever state is current when it is called. One DEFINED inside a
  * unit, or inside a helper a unit may inline, is a callback: the callee it is
  * handed to may call it after any await, exactly as with a synchronous
- * literal, so it starts unsafe and commits only what its row allows
- * (round 7 F1).
+ * literal, so it starts unsafe and commits only what its row allows.
  */
 export function asyncUnitStartsSafe(decls: Declarations, unit: Unit, units: readonly Unit[]): boolean {
 	if (unit.kind !== 'async-function') return false;

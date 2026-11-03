@@ -71,7 +71,7 @@ func (c *tcpCutter) cut() {
 	c.conns = nil
 }
 
-// codex round 6 O1. A Redis failover drops whatever was published while the
+// A Redis failover drops whatever was published while the
 // subscription was down. Before this, PubSub.Channel resubscribed silently and
 // the replay buffer carried a hole it had no idea about, so a resume across
 // the outage was answered "caught up".
@@ -201,7 +201,7 @@ func TestAReconnectOnAnIdleWorkspaceIsNotAReset(t *testing.T) {
 	// at all cannot pass: once something IS buffered, the next reconnect does
 	// report.
 	// PUBLISH UNTIL ONE LANDS, because after a reconnect nothing else proves
-	// the REPLACEMENT subscription is live (BUG-2742, codex rounds 8 and 9).
+	// the REPLACEMENT subscription is live (BUG-2742).
 	//
 	// A publish that beats the replacement is lost outright, so this wants a
 	// registration wait — but counting subscribers cannot supply one here.
@@ -282,7 +282,7 @@ func TestTheReceiveLoopExitIsReported(t *testing.T) {
 	t.Fatalf("the last subscriber leaving must report a loop exit, got %d", obs.exits())
 }
 
-// codex round 7 #4. A receive loop can notice its connection died long after
+// A receive loop can notice its connection died long after
 // the workspace was unsubscribed and resubscribed under it. Without a
 // generation check in the cleanup, the stale goroutine deletes the
 // REPLACEMENT buffer, and a client that arrived after the outage ended is told

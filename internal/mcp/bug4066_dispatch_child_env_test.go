@@ -26,7 +26,7 @@ func TestBUG4066MCPChild(t *testing.T) {
 	os.Exit(1)
 }
 
-// BUG-4066 r1 (lead ruling on Q1): a failed MCP stdio tool call carries the
+// BUG-4066: a failed MCP stdio tool call carries the
 // child's stderr to the agent, so the dispatcher's children are silenced; the
 // relative data-dir warning must not appear in the error result.
 func TestBUG4066_DispatchedChildPutsNoWarningInTheError(t *testing.T) {
@@ -63,7 +63,7 @@ func bug4066ChildWrapper(t *testing.T) string {
 }
 
 // The resource and bootstrap fetchers fold a failed child's stderr into their
-// errors too (BUG-4066 r2), so they are silenced the same way.
+// errors too (BUG-4066), so they are silenced the same way.
 func TestBUG4066_FetchersPutNoWarningInTheError(t *testing.T) {
 	wrapper := bug4066ChildWrapper(t)
 	for name, call := range map[string]func() error{

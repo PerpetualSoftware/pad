@@ -33,7 +33,7 @@ import { fileURLToPath } from 'node:url';
  * replaces.
  *
  * IT WILL FAIL ON A RENAME, and that is correct rather than annoying — it did,
- * once, within an hour of being written, when codex round 5 made both callbacks
+ * once, within an hour of being written, when both callbacks were changed to
  * capture the workspace slug before awaiting. The failure is the prompt to go and
  * look at what changed; the anchors are then updated deliberately. An anchor
  * loose enough to survive a rename would also survive the call being deleted,
@@ -73,7 +73,7 @@ describe('TASK-2921 — the workspace layout drives the reconcile for every rout
 
 describe('BUG-3207 — the layout is the ONLY full_refresh cursor writer', () => {
 	/**
-	 * Lead ruling: a single item's reload cannot vouch for the shared
+	 * A single item's reload cannot vouch for the shared
 	 * workspace cursor, so ItemDetail no longer calls markSynced. Pinned the way
 	 * the ruling asked ("a failed layout reconcile plus a successful item reload
 	 * leaves the cursor unmoved"), within the limit of a source pin: neither

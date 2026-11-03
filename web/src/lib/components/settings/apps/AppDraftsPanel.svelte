@@ -61,7 +61,7 @@
 		rowError = null;
 		try {
 			// By id, never slug: a slug can be reused by another item, and the
-			// item routes resolve an id first (codex U9b r1).
+			// item routes resolve an id first.
 			await api.items.update(ws, a.item_id, { fields_patch: { status: 'active' } });
 			if (authStore.identityEpoch !== asked || ws !== wsSlug) return;
 			await load();
@@ -69,7 +69,7 @@
 			announcement = `${a.title} is now active.`;
 			// Its Activate button is gone. Move focus only if it was on that
 			// button: to the same row's link, or the panel heading when the
-			// reload failed or no longer lists the item (codex U9b r3).
+			// reload failed or no longer lists the item.
 			await tick();
 			if (focusWasLost(button)) {
 				const link = listEl?.querySelector<HTMLAnchorElement>(`[data-item="${a.item_id}"]`);

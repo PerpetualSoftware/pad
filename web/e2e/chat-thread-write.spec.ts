@@ -247,7 +247,7 @@ test('E6: the composer rides above the emulated keyboard, and a touch long-press
 	await expect.poll(bottomOf).toBeLessThanOrEqual(viewportH);
 
 	// A REAL tap (touch events, which move focus, unlike the synthetic pointer events
-	// below) opens nothing: no menu and none of its buttons (r5 H1, the Q-c instrument).
+	// below) opens nothing: no menu and none of its buttons (the Q-c instrument).
 	// A 500 ms press then opens the menu, and the lift that ends it presses nothing.
 	const bubble = row(page, line.seq);
 	const menuButtons = bubble.getByRole('button', { name: /^(Reply|Copy|Delete)$/ });

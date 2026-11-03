@@ -1,6 +1,6 @@
 // BUG-2177: a rotate (or crop) whose server-side transform finishes after the
 // master editor froze (a pane opened over it) used to drop its result with no
-// word to the user. Lead ruling, day 78: NOT replayed on thaw (applying an
+// word to the user. The result is NOT replayed on thaw (applying an
 // image edit minutes later changes the document while the user is not
 // looking); the user is told it was interrupted.
 //

@@ -3,7 +3,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import TimelineVersionCard from './TimelineVersionCard.svelte';
 import type { Version } from '$lib/types';
 
-// BUG-2263 / Codex P1 + P2 — REAL-component coverage for the version-restore
+// BUG-2263 — REAL-component coverage for the version-restore
 // exception. Unlike the other REST surfaces, version restore REST-writes this
 // item's `items.content` directly (colliding with the retained Y.Doc on a peeking
 // side), so it stays FROZEN while peeking. ItemDetail wires that as

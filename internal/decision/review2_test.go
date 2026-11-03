@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// Review round 2 (TASK-3116). Round 1 added the KIND check; round 2 found the
+// TASK-3116. The KIND check came first; this covers the
 // rest of that population: an answer can contradict its question in every
 // (kind, member) cell, not only in its kind. The rows below are that table —
 // one refusal per rule checkAnswer enforces, and an ACCEPTANCE row at each
@@ -144,7 +144,7 @@ func TestFittedRequestStaysInsideTheBudgetWithALongModelName(t *testing.T) {
 	}
 }
 
-// Round 2: the partial-read failure sat on BodyReadErr but was invisible to
+// The partial-read failure sat on BodyReadErr but was invisible to
 // errors.Is, so a caller could not ask "did this fail because the read was
 // cut off" without knowing the field.
 func TestPartialBodyReadIsReachableWithErrorsIs(t *testing.T) {
@@ -180,7 +180,7 @@ func TestPartialBodyReadIsReachableWithErrorsIs(t *testing.T) {
 	}
 }
 
-// Review round 3: with 0 or 1 bytes left for the state, fitState returned
+// With 0 or 1 bytes left for the state, fitState returned
 // "" — which still marshals to two bytes, so the request went over budget.
 // This walks `remaining` across the edge by growing the instructions a byte
 // at a time and holds one invariant at every step: either an error, or a
@@ -202,7 +202,7 @@ func TestFitStateHoldsTheBudgetAtTheQuoteEdge(t *testing.T) {
 		}
 		seen[remaining] = true
 		// A structured state is never cut, and `0` marshals to ONE byte, so
-		// with remaining >= 1 it fits and must not be refused (round 4).
+		// with remaining >= 1 it fits and must not be refused.
 		if remaining >= 1 {
 			got, truncated, err := p.fitState(0, wire)
 			if err != nil {

@@ -259,7 +259,7 @@ func TestRunBrowserBootstrap_TimeoutFires(t *testing.T) {
 	}
 	// Should be the friendly "timed out" error, NOT context.DeadlineExceeded
 	// — the latter would mean the helper conflated caller cancellation with
-	// its own internal timer (the bug the prior round caught).
+	// its own internal timer (a past bug).
 	if errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("err = %v: helper conflated its own timeout with caller-ctx cancellation", err)
 	}

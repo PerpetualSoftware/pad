@@ -68,7 +68,7 @@
 	// The identity guards (item.slug === ref || issue-id === ref) ensure
 	// we don't restore against stale content from a previous playbook
 	// while loadItem() for the new ref is still in flight — same race
-	// as the item detail page (Codex BUG-1425 round 4 P1-B).
+	// as the item detail page (BUG-1425).
 	const scrollRestoration = createScrollRestoration({
 		ready: () =>
 			!loading &&
@@ -157,7 +157,7 @@
 		accepting = false;
 		// Clear the previously-loaded playbook BEFORE the new fetch so a
 		// stale playbook isn't editable under a fresh URL while a 404 is
-		// in flight (Codex round 4 P2). The catch path then leaves item
+		// in flight. The catch path then leaves item
 		// null and the template renders "Playbook not found."
 		item = null;
 		// IDENTITY FENCE, on every unit of this page (BUG-3236). The route
@@ -174,7 +174,7 @@
 			if (ws !== wsSlug || slugOrRef !== ref || !isSameIdentity()) return;
 			// `api.items.get` is cross-collection — `/playbooks/TASK-1`
 			// would happily resolve to a task item, and Save would then
-			// rewrite the task's fields as a playbook (Codex round 1 P2).
+			// rewrite the task's fields as a playbook.
 			// Gate on the loaded item's collection so the editor refuses
 			// to touch non-playbook items.
 			// The playbooks collection by its trait, not the literal slug
@@ -299,14 +299,14 @@
 			// BUG-3049: name the five keys this editor owns and send nothing
 			// else. The previous shape spread `parseFields(item)` and replaced
 			// the whole blob — which preserved unknown keys as they stood at
-			// LOAD time (Codex round 3 P2's concern) and therefore reverted any
+			// LOAD time and therefore reverted any
 			// field written by anyone else while the editor was open, including
 			// a status toggle from the playbooks list page. A patch preserves
 			// unknown keys by not naming them, which is the same protection
 			// without the revert.
 			// What this save sends, captured before any await: the re-baseline
 			// below is THIS, not the form as it stands when the answer lands, so
-			// an edit typed while the save is in flight stays unsaved (codex r2).
+			// an edit typed while the save is in flight stays unsaved.
 			const sentForm = { status, trigger, scope, invocationSlug, args: argumentsToJSON(args) };
 			const sentKey = formKey;
 			const fieldsPatch = playbookFieldsPatch(sentForm, loadedForm);
@@ -349,7 +349,7 @@
 				const baseBody = item.content ?? '';
 				const fresh = isContentNotAppliedUnconfirmed(err) ? await api.items.get(wsSlug, refusedId) : null;
 				if (!isSameIdentity()) return;
-				// Only while the row holds what this save sent besides the body (codex: a
+				// Only while the row holds what this save sent besides the body (a
 				// title changed by someone else must not be put back).
 				const resendPayload = fresh && stillOnBase(fresh, baseBody) && holdsWhatWasSent(fresh, payload) ? { ...payload, ...contentWriteFor(bodyContent, fresh) } : payload;
 				const resent = await api.items.update(wsSlug, refusedId, { ...resendPayload, overwrite_pending_edits: true });
@@ -371,7 +371,7 @@
 			toastStore.show((err as Error)?.message || 'Failed to save playbook', 'error');
 		} finally {
 			// Only under the identity, like the collection page's busy flags: a
-			// save started by whoever is signed in NOW owns this flag (codex r1).
+			// save started by whoever is signed in NOW owns this flag.
 			if (isSameIdentity()) saving = false;
 		}
 	}

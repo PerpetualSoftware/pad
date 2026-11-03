@@ -20,7 +20,7 @@ export type SSEStatus = 'disconnected' | 'connected' | 'reconnecting' | 'unautho
 //
 // h2 and h3 multiplex every stream over one connection, so they have no such
 // limit and take no slot: Cloud behind its proxy keeps a live stream in every
-// tab (lead ruling). The one-stream-per-browser shape is IDEA-3498.
+// tab. The one-stream-per-browser shape is IDEA-3498.
 export const STREAM_SLOTS = 3;
 export const POLL_EVERY_MS = 15_000;
 
@@ -130,8 +130,7 @@ type BCEnvelope =
 	// A FLAG on the existing type rather than a new type, for mixed bundles
 	// after a deploy: a peer on an older bundle ignores the unknown member and
 	// dispatches at once — unspread, but not lost. A new type would be
-	// ignored outright, and nothing guarantees that tab another sync (codex
-	// round 1). The other direction is the same shape: an older leader sends
+	// ignored outright, and nothing guarantees that tab another sync. The other direction is the same shape: an older leader sends
 	// no flag, and a newer peer answers at once.
 	| { type: 'sync_required'; spread?: true }
 	| { type: 'status'; status: SSEStatus }
@@ -175,7 +174,7 @@ function createSSEService() {
 	// Bumped by disconnect(). A lock callback still awaiting its slot when the
 	// tab disconnects (and maybe reconnects to the SAME workspace) must not
 	// go on to stream: the workspace check alone cannot tell the two
-	// connections apart (codex r1 on BUG-3320).
+	// connections apart.
 	let leaderGeneration = 0;
 	// A slot is kept through a reconnect ladder and an offline spell, on
 	// purpose: the tab holds no connection meanwhile, and a blip should not
@@ -309,7 +308,7 @@ function createSSEService() {
 	 * items) call dispatchSyncRequired directly and are never delayed.
 	 *
 	 * A tab RESUME inside the window syncs off `needsSync` and the timer still
-	 * fires afterwards: one redundant resync, accepted (codex round 1). Letting
+	 * fires afterwards: one redundant resync, accepted. Letting
 	 * the resume cancel the timer would be wrong, not just cheaper — the graph
 	 * views listen to this dispatch and not to syncService, and a resume
 	 * notifies only syncService's subscribers, so they would never refetch.
@@ -341,8 +340,8 @@ function createSSEService() {
 		// BroadcastChannel is only safe when paired with leader
 		// election. Without `navigator.locks`, every tab opens its
 		// own EventSource AND would receive its peers' broadcasts —
-		// firing item callbacks N times across N tabs (Codex P1 of
-		// TASK-1359). Skip BC entirely in that fallback regime; the
+		// firing item callbacks N times across N tabs (TASK-1359).
+		// Skip BC entirely in that fallback regime; the
 		// per-tab EventSource still delivers the events locally.
 		if (!leaderElectionSupported()) return;
 		bc = new BroadcastChannel(`pad-sync-${workspaceSlug}`);
@@ -389,7 +388,7 @@ function createSSEService() {
 	// fallback paths fire dispatchSyncRequired BEFORE the SSE
 	// connection lands, so any mutation between the resulting
 	// /items-changes snapshot and the new stream's first received
-	// event can be missed (Codex P1 round 4 of TASK-1359).
+	// event can be missed.
 	//
 	// BUG-2540 widened WHEN it is armed: originally only on leader
 	// promotion and the lock-failure fallback, which left the FIRST
@@ -417,12 +416,12 @@ function createSSEService() {
 	let reconnectAttempt = 0;
 	// True from the failure until the replacement source exists: covers the
 	// probe in flight as well as the timer. connect() reads it so a layout
-	// re-run cannot reopen ahead of the backoff (codex r1).
+	// re-run cannot reopen ahead of the backoff.
 	let reconnectPending = false;
 	// Bumped by every teardown. A probe answers asynchronously, so an answer
 	// that arrives after disconnect() must find a different generation and
 	// arm nothing, even when the tab has since reconnected to the SAME
-	// workspace and failed again at the same attempt number (codex r1).
+	// workspace and failed again at the same attempt number.
 	let reconnectGeneration = 0;
 
 	function clearReconnect() {
@@ -491,7 +490,7 @@ function createSSEService() {
 	}
 
 	function openEventSource(workspaceSlug: string) {
-		// TASK-2197 (codex r1): never open while the browser says it is offline.
+		// TASK-2197: never open while the browser says it is offline.
 		// A follower promoted to leader during an outage, or a ladder retry that
 		// fires mid-outage, would otherwise fail straight back into the backoff
 		// ladder and miss the prompt reopen on `online`. Marked closed for
@@ -535,7 +534,7 @@ function createSSEService() {
 		 * Claim the pending connect-sync, but only on behalf of the
 		 * CURRENT connection.
 		 *
-		 * The identity check is load-bearing (codex review). `close()`
+		 * The identity check is load-bearing. `close()`
 		 * does not retract already-queued event tasks, so on a fast
 		 * workspace switch source A's `connected`/`onopen` handler can
 		 * still run after B has been created. Without `source ===
@@ -689,8 +688,8 @@ function createSSEService() {
 		}
 		// BUG-2540 removed the "first leader vs promoted follower"
 		// classification that used to live here (a `navigator.locks.query`
-		// probe plus a >100ms grant-delay heuristic, from TASK-1359 review
-		// rounds 2 and 3). It existed for exactly one purpose: to arm
+		// probe plus a >100ms grant-delay heuristic, from TASK-1359).
+		// It existed for exactly one purpose: to arm
 		// `pendingSyncOnConnect` only on promotion. Now that the flag is
 		// armed on every connect, nothing branches on it, and keeping the
 		// computation would mean paying for a `locks.query()` round-trip on
@@ -757,7 +756,7 @@ function createSSEService() {
 				// back to a per-tab EventSource — otherwise peer tabs
 				// rejected the same way would each open their own SSE
 				// AND keep receiving each other's broadcasts, firing
-				// callbacks N times (Codex P2 round 2). Trigger
+				// callbacks N times. Trigger
 				// sync_required because we may have missed events.
 				if (currentWorkspace === workspaceSlug && !eventSource) {
 					if (bc) {
@@ -765,7 +764,7 @@ function createSSEService() {
 						bc = null;
 					}
 					// Defer sync_required until the EventSource opens
-					// (Codex P1 round 4 of TASK-1359) — same race as
+					// — same race as
 					// the promotion path.
 					pendingSyncOnConnect = true;
 					openEventSource(workspaceSlug);
@@ -775,7 +774,7 @@ function createSSEService() {
 
 	function connect(workspaceSlug: string) {
 		// Backing off on this workspace: the scheduled reconnect owns the next
-		// open (BUG-2733, codex r1). Without this, a layout re-run found no
+		// open (BUG-2733). Without this, a layout re-run found no
 		// live source on a leader tab, tore down and reopened at once, ahead
 		// of the ladder and of any Retry-After.
 		if (currentWorkspace === workspaceSlug && reconnectPending) {
@@ -849,7 +848,7 @@ function createSSEService() {
 		// queued task. The next connection's own first-connect sync (BUG-2540)
 		// covers whatever it was holding.
 		cancelSpreadSync();
-		// Don't carry an unclaimed arm across a teardown (codex review).
+		// Don't carry an unclaimed arm across a teardown.
 		//
 		// Belt-and-braces, and labelled as such rather than implied to be
 		// load-bearing: mutation-testing says the source-identity checks in
@@ -929,7 +928,7 @@ function createSSEService() {
 		if (!closedForOffline || !currentWorkspace) return;
 		cancelOnlineReopen();
 		const ws = currentWorkspace;
-		// Jittered (lead ruling): when a whole office's Wi-Fi comes back, every
+		// Jittered: when a whole office's Wi-Fi comes back, every
 		// tab reopening in the same instant would hit the SSE admission budget.
 		onlineTimer = setTimeout(() => {
 			onlineTimer = null;

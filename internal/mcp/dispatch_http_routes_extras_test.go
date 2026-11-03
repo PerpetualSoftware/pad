@@ -171,9 +171,9 @@ func TestMapCollectionUpdate_EncodesSchemaObjectToString(t *testing.T) {
 // collectionSchemaJSONFromFlags produces) so MCP and CLI stay
 // symmetric with the create path. The encoder validates + backfills
 // missing labels — verbatim pass-through is NOT a property we
-// promise (Codex round-2 finding on PR #572: schema bodies should
-// go through encodeSchemaForBody so structured-but-label-missing
-// input gets normalized the same way collection-create handles it).
+// promise (schema bodies should go through encodeSchemaForBody so
+// structured-but-label-missing input gets normalized the same way
+// collection-create handles it).
 func TestMapCollectionUpdate_AcceptsSchemaString(t *testing.T) {
 	schemaStr := `{"fields":[{"key":"status","type":"select","options":["a","b"]}]}`
 	_, _, body, err := mapCollectionUpdate(map[string]any{
@@ -208,8 +208,8 @@ func TestMapCollectionUpdate_AcceptsSchemaString(t *testing.T) {
 	}
 }
 
-// TestMapCollectionUpdate_EmptySchemaDoesNotBlockFields covers the
-// Codex round-2 P3 finding: optional empty params should normalize as
+// TestMapCollectionUpdate_EmptySchemaDoesNotBlockFields covers
+// that optional empty params should normalize as
 // "absent" before the mutual-exclusion check fires, so an MCP client
 // that sends `schema:null` (or `""`) plus a real `fields=...` update
 // doesn't get a spurious exclusivity error.
@@ -263,8 +263,8 @@ func TestMapCollectionUpdate_RequiresWorkspaceAndSlug(t *testing.T) {
 	}
 }
 
-// TestMapCollectionUpdate_EmptyStringClearsField guards a Codex round-1
-// finding: the catalog advertises icon/description as clearable (the
+// TestMapCollectionUpdate_EmptyStringClearsField guards that
+// the catalog advertises icon/description as clearable (the
 // CLI flag help says `--icon "" / --description ""` clears the column,
 // and the store treats *string("") as "clear"). The mapper must use
 // key-presence semantics — not v != "" — so MCP HTTP callers can clear
@@ -295,8 +295,8 @@ func TestMapCollectionUpdate_EmptyStringClearsField(t *testing.T) {
 	}
 }
 
-// TestMapCollectionUpdate_AcceptsFieldsDSL covers the second Codex
-// finding: the catalog advertises `fields OR schema`, but the original
+// TestMapCollectionUpdate_AcceptsFieldsDSL covers the second
+// case: the catalog advertises `fields OR schema`, but the original
 // mapper only handled `schema`. Calling with `fields=...` must produce
 // a valid schema PATCH body, parsed through the shared
 // collections.FieldsDSLToSchemaJSON helper.
@@ -595,7 +595,7 @@ func TestMapWebhookCreate_NormalizesCommaSeparatedEventsToJSONArray(t *testing.T
 	// The store persists `events` verbatim into a column that the
 	// dispatcher's matchesEvent later parses as a JSON array. A
 	// comma-separated string never matches anything once stored.
-	// Codex review on PR #347 caught this divergence; the dispatcher
+	// The dispatcher
 	// must normalize CLI-style commas into the JSON-array shape so
 	// MCP-created webhooks actually fire.
 	_, p, body, err := mapWebhookCreate(map[string]any{
@@ -801,8 +801,7 @@ func TestMapWorkspaceAuditLog_DoesNotForwardSessionWorkspace(t *testing.T) {
 	// as a filter — it returns the GLOBAL audit log. The dispatcher
 	// must match: forwarding the implicit session workspace as
 	// `?workspace=<id>` would silently hide audit entries from other
-	// workspaces for an admin who queried "give me everything"
-	// (Codex review on PR #347, finding 1).
+	// workspaces for an admin who queried "give me everything".
 	_, p, _, err := mapWorkspaceAuditLog(map[string]any{
 		"workspace": "docapp", // session-default; should NOT scope
 		"action":    "item.created",

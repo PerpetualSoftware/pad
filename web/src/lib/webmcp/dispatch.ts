@@ -496,7 +496,7 @@ const HANDLERS: Record<string, Handler> = {
 		if (tags !== undefined) data.tags = tags;
 		const comment = str(args, 'comment');
 		if (comment !== undefined) data.comment = comment;
-		// Optimistic concurrency (BUG-3037, codex round 1). This surface dropped
+		// Optimistic concurrency (BUG-3037). This surface dropped
 		// BOTH tokens, so an agent driving the page had no way to say "only write
 		// if the item is still as I read it" — the catalog advertises the params
 		// and this dispatcher silently discarded them, which is the same shape of

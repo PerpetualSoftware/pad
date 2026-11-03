@@ -60,8 +60,8 @@ func TestUndeclaredOverrideKeys(t *testing.T) {
 	}
 }
 
-// Reserved keys are never settable through a field-override map, on any path
-// (Codex round 4). Two distinct holes closed by one rule:
+// Reserved keys are never settable through a field-override map, on any path.
+// Two distinct holes closed by one rule:
 //
 //   - the MOVE path has no declared-key gate at all, so an override could
 //     write arbitrary junk straight into implementation_notes, bypassing both

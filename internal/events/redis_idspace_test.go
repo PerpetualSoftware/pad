@@ -127,7 +127,7 @@ func TestDecodePayloadAcceptsBothWireForms(t *testing.T) {
 			"negative id":         "7|-4|" + string(body),
 			"body is not JSON":    "7|77|not json",
 			"neither form":        "not json at all",
-			// THE BARE FORM MUST BE HELD TO THE SAME RULE (codex round 16).
+			// THE BARE FORM MUST BE HELD TO THE SAME RULE.
 			// The id check lived in the prefixed branch only, so these were
 			// accepted: delivered with no SSE cursor, and once an epoch is
 			// adopted, read as the sequence going backwards and used to
@@ -400,7 +400,7 @@ func TestACounterGoingBackwardsRaisesTheFloor(t *testing.T) {
 }
 
 func TestAPhaseOneInterleaveDoesNotDropEveryBuffer(t *testing.T) {
-	// codex round 9, and the reason the backwards check is gated on having
+	// And the reason the backwards check is gated on having
 	// adopted an epoch. Phase 1 publishes with a two-call INCR-then-PUBLISH,
 	// so on any multi-instance deployment two publishers interleave routinely
 	// and a lower id arrives after a higher one as ORDINARY TRAFFIC.
@@ -480,7 +480,7 @@ func TestABarePayloadAfterAdoptionLeavesTheEpochAlone(t *testing.T) {
 }
 
 func TestAPhaseOneRestartClearsAStaleEpoch(t *testing.T) {
-	// codex round 2. The sequence of events that made this reachable:
+	// The sequence of events that made this reachable:
 	// phase 2 mints an epoch and the counter climbs; the deployment rolls
 	// back to phase 1; the seq key is lost; phase-1 publishers climb from 1
 	// again; phase 2 is re-enabled and finds the OLD epoch still there, so
@@ -540,7 +540,7 @@ func TestAPhaseOneRestartClearsAStaleEpoch(t *testing.T) {
 }
 
 func TestAStragglerFromAnAbandonedIDSpaceIsDiscarded(t *testing.T) {
-	// codex round 3. Each workspace has its own subscription and its own
+	// Each workspace has its own subscription and its own
 	// receive goroutine, and Redis orders messages within a channel but not
 	// ACROSS them — so a message published before a rotation, on workspace A's
 	// channel, can arrive after the rotation was learned from workspace B's.
@@ -579,7 +579,7 @@ func TestAStragglerFromAnAbandonedIDSpaceIsDiscarded(t *testing.T) {
 	if rb, ok := b.replayBuffers["ws-a"]; ok && rb.count != 0 {
 		t.Fatalf("the straggler must not be appended; ws-a's buffer holds %d events", rb.count)
 	}
-	// AND IT ENDS COVERAGE (codex round 19). Discarding the message while
+	// AND IT ENDS COVERAGE. Discarding the message while
 	// leaving the buffers valid told a reconnecting client it was caught up —
 	// harmless if this really is a straggler, and thirty seconds of silently
 	// missed events if the generation regressed instead. The bus cannot tell
@@ -657,7 +657,7 @@ func mustParseGeneration(t *testing.T, s string) int64 {
 }
 
 func TestAPrefixedPayloadReachesReconciliationThroughTheRealReceivePath(t *testing.T) {
-	// codex round 4. Every other test in this file drives fanOutFromRedis
+	// Every other test in this file drives fanOutFromRedis
 	// directly, and the publish tests read the wire with a raw subscriber —
 	// so a regression that decoded the epoch correctly and then handed 0 to
 	// the fan-out would pass all of them, and reconciliation would silently
@@ -710,7 +710,7 @@ func TestAPrefixedPayloadReachesReconciliationThroughTheRealReceivePath(t *testi
 }
 
 func TestConcurrentPhaseTwoPublishesArriveInIDOrder(t *testing.T) {
-	// codex round 4. The atomic script's whole justification is that publish
+	// The atomic script's whole justification is that publish
 	// order equals ID order globally — which matters because the receive path
 	// reads a descending ID as a counter reset and drops every buffer. Every
 	// other phase-2 test publishes once or drives the script sequentially, so
@@ -731,7 +731,7 @@ func TestConcurrentPhaseTwoPublishesArriveInIDOrder(t *testing.T) {
 		t.Fatalf("subscribe: %v", err)
 	}
 	// SIZED ABOVE THE MESSAGE COUNT, so truncation is structurally impossible
-	// rather than merely unlikely (codex round 7). go-redis defaults this to
+	// rather than merely unlikely. go-redis defaults this to
 	// 100 and drops past it, so publishing 300 through a 100-deep buffer makes
 	// the arrival count depend on how much CPU the reader gets — the exact
 	// defect this unit removes elsewhere. Draining early narrows that window;
@@ -802,7 +802,7 @@ func TestConcurrentPhaseTwoPublishesArriveInIDOrder(t *testing.T) {
 }
 
 func TestAPersistentlyRegressedGenerationIsAcceptedAsANewSpace(t *testing.T) {
-	// codex round 6, scenario (b). A Redis failover to a replica whose copy of
+	// A Redis failover to a replica whose copy of
 	// the generation counter predates the last rotation makes every publisher
 	// mint from a LOWER number — and the straggler rule would then discard
 	// every message forever: nothing delivered, nothing buffered, and the only
@@ -850,7 +850,7 @@ func TestAPersistentlyRegressedGenerationIsAcceptedAsANewSpace(t *testing.T) {
 }
 
 func TestACorruptedEpochKeyIsRotatedRatherThanEmitted(t *testing.T) {
-	// codex round 11. A publisher trusted whatever the epoch key held. Set to
+	// A publisher trusted whatever the epoch key held. Set to
 	// something that is not a positive generation — corrupted, hand-edited, or
 	// written by another installation sharing the keyspace — it would be
 	// emitted into every prefix, every receiver would reject the payload, and
@@ -859,7 +859,7 @@ func TestACorruptedEpochKeyIsRotatedRatherThanEmitted(t *testing.T) {
 	epochKey := redisns.Default.Name(redisEpochSuffix)
 	next := listen(t, b.client, redisns.Default.Name(redisChannelSuffix)+"ws-1")
 
-	// The last two are the same defect by a different route (codex round 13):
+	// The last two are the same defect by a different route:
 	// all digits, so a pattern match alone accepts them, and both overflow the
 	// int64 the RECEIVER parses them into — so the payload would be rejected
 	// on arrival and every event dropped, exactly as with "abc".
@@ -900,7 +900,7 @@ func TestACorruptedEpochKeyIsRotatedRatherThanEmitted(t *testing.T) {
 }
 
 func TestAnUndecodableMessageEndsThatWorkspacesCoverage(t *testing.T) {
-	// codex round 11. Dropping an unreadable message and carrying on left the
+	// Dropping an unreadable message and carrying on left the
 	// buffer claiming a span with a hole in it: the event gone, the ids either
 	// side contiguous, and a later resume across it answered "caught up".
 	b, mr := newFlippedRedisBus(t)
@@ -958,7 +958,7 @@ func TestAnUndecodableMessageEndsThatWorkspacesCoverage(t *testing.T) {
 }
 
 func TestAScriptThatDiedBeforePublishingDoesNotBlockItsRetry(t *testing.T) {
-	// codex round 11, and the reason the dedupe token is CHECKED first and
+	// And the reason the dedupe token is CHECKED first and
 	// WRITTEN last. Redis runs Lua atomically against interleaving, not with
 	// rollback: a script that errors part way through keeps whatever it
 	// already wrote. Written first, the token would survive a run that never
@@ -1009,7 +1009,7 @@ func TestAScriptThatDiedBeforePublishingDoesNotBlockItsRetry(t *testing.T) {
 }
 
 func TestAMixedPhaseDeploymentDeliversBothWays(t *testing.T) {
-	// codex round 12. Parsing, publishing and fan-out were each tested alone;
+	// Parsing, publishing and fan-out were each tested alone;
 	// the CLAIM the two phases rest on is that a phase-1 and a phase-2
 	// instance on one Redis deliver each other's events. That needs both buses
 	// at once, which nothing exercised.
@@ -1092,7 +1092,7 @@ func TestAMixedPhaseDeploymentDeliversBothWays(t *testing.T) {
 }
 
 func TestARepeatedIDIsTreatedAsBackwards(t *testing.T) {
-	// codex round 12: the guard is `<=`, and every test used a strictly lower
+	// The guard is `<=`, and every test used a strictly lower
 	// id — so a `<` implementation passed them all while letting a REPEATED id
 	// into the buffer. That is a duplicate delivery and a replay that can
 	// serve the same id twice, with no reset reported.
@@ -1112,7 +1112,7 @@ func TestARepeatedIDIsTreatedAsBackwards(t *testing.T) {
 
 func TestAColdJoinAcceptsTheAdjacentCursor(t *testing.T) {
 	// CHARACTERIZATION of the residual this unit deliberately leaves open, so
-	// it is executable rather than only described (codex round 12).
+	// it is executable rather than only described.
 	//
 	// A bus with EMPTY buffers adopts an epoch without dropping anything, so
 	// its first buffer starts at exactly the first id it sees — and a client
@@ -1146,7 +1146,7 @@ func TestAColdJoinAcceptsTheAdjacentCursor(t *testing.T) {
 }
 
 func TestAPayloadThatDecodesButIsNotOurEventEndsCoverage(t *testing.T) {
-	// codex round 15. Two payloads decode without error and are not a usable
+	// Two payloads decode without error and are not a usable
 	// event: one that is valid JSON and empty, and one naming a different
 	// workspace from the channel it arrived on. Both used to be skipped
 	// silently — the first fell out of fan-out because a zero Event has no
@@ -1219,7 +1219,7 @@ func TestAPayloadThatDecodesButIsNotOurEventEndsCoverage(t *testing.T) {
 }
 
 func TestAStragglerFromBeforeAResetIsBoundedByTheNextNewSpaceEvent(t *testing.T) {
-	// codex round 17 named a window the design leaves open: once an epoch is
+	// Named a window the design leaves open: once an epoch is
 	// adopted, a BARE message is treated as belonging to the current space,
 	// and it does — unless the counter reset between that publisher's
 	// assignment and its publish.
@@ -1262,7 +1262,7 @@ func TestAStragglerFromBeforeAResetIsBoundedByTheNextNewSpaceEvent(t *testing.T)
 
 func TestTheStragglerWindowDoesNotCloseWhenOtherWorkspacesCarryTheCounter(t *testing.T) {
 	// THE BOUNDARY of the test above, and a residual rather than a defect to
-	// fix here (codex round 21). The counter is global and the
+	// fix here. The counter is global and the
 	// counter-backwards check is per workspace, so if OTHER workspaces consume
 	// ids past the straggler's value before this one publishes again, this
 	// workspace's next id is HIGHER and nothing fires. The dead-space id stays
@@ -1270,7 +1270,8 @@ func TestTheStragglerWindowDoesNotCloseWhenOtherWorkspacesCarryTheCounter(t *tes
 	//
 	// Closing it needs a global high-water mark, which fires on interleaves
 	// across any pair of workspaces during the phase-2 roll — the storm that
-	// round 9 armed the check against. Asserted so the residual is executable
+	// arming the check on an adopted epoch guards against. Asserted so the
+	// residual is executable
 	// and so a future global check announces itself here rather than in a
 	// deployment.
 	b := newTestRedisBus(t)
@@ -1296,7 +1297,7 @@ func TestTheStragglerWindowDoesNotCloseWhenOtherWorkspacesCarryTheCounter(t *tes
 }
 
 func TestAStragglerDoesNotEraseTheCounterBackwardsFloor(t *testing.T) {
-	// codex round 20, an INTERACTION between two fixes that were each correct
+	// An INTERACTION between two fixes that were each correct
 	// alone. A lower generation inside the straggler window drops the buffers
 	// — and it used to do so with the same argument an epoch change uses,
 	// which CLEARS the floor. But a straggler is not proof of a new space;
@@ -1337,7 +1338,7 @@ func TestAStragglerDoesNotEraseTheCounterBackwardsFloor(t *testing.T) {
 }
 
 func TestAWrongTypedEpochKeyIsRecoveredToo(t *testing.T) {
-	// codex round 20. The corrupted-epoch recovery ran on the VALUE, after a
+	// The corrupted-epoch recovery ran on the VALUE, after a
 	// bare GET — and a GET on a key holding a list raises WRONGTYPE, aborting
 	// the script before the recovery could run. The guard written to handle a
 	// corrupted epoch was unreachable for one of the ways an epoch gets

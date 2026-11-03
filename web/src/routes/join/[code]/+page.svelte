@@ -82,9 +82,9 @@
 	// the code changes (an SPA navigation from one /join link to another), so
 	// the flow restarts for each code, every action addresses the code whose
 	// invitation is on screen, and an answer for an earlier code is dropped
-	// (BUG-2136 U2, codex r4). Every restart bumps flowSeq, and every await
+	// (BUG-2136 U2). Every restart bumps flowSeq, and every await
 	// below checks it, so nothing an earlier flow started (a preview, a session
-	// probe, an accept, a decline, a sign-in) lands on the current one (codex r5).
+	// probe, an accept, a decline, a sign-in) lands on the current one.
 	let flowCode = '';
 	let flowSeq = 0;
 	const flowFence = () => {
@@ -108,8 +108,8 @@
 		errorMsg = '';
 		formError = '';
 		challengeToken = '';
-		// Nothing typed for the previous invitation is carried to this one
-		// (codex r6). `submitting` is left alone: a sign-in still out keeps the
+		// Nothing typed for the previous invitation is carried to this one.
+		// `submitting` is left alone: a sign-in still out keeps the
 		// form busy until it answers, so a second one cannot overlap it.
 		name = '';
 		username = '';
@@ -151,14 +151,14 @@
 			const session = await api.auth.session();
 			if (!current()) return;
 			if (session.authenticated) {
-				// Already signed in: ASK (BUG-2136, lead ruling). Opening the link
+				// Already signed in: ASK (BUG-2136). Opening the link
 				// is not consent; the card offers accept or decline.
 				if (!(await applyPreview(previewPromise, current))) return;
 				status = 'confirm';
 				return;
 			}
 			if (session.setup_required) {
-				// Ahead of the preview on purpose (TASK-2251, codex r1): an
+				// Ahead of the preview on purpose (TASK-2251): an
 				// instance with no admin yet holds no invitations, so the
 				// preview could only say found:false, and "an admin must finish
 				// setup" is the message that can actually be acted on.
@@ -248,7 +248,7 @@
 	) {
 		const session = await authStore.load().catch(() => null);
 		// load() joins a session read already in flight, and one sent before
-		// this page's sign-in set the cookie answers "signed out" (codex r1).
+		// this page's sign-in set the cookie answers "signed out".
 		// A second read, sent now, carries the new session.
 		if (!session?.authenticated) await authStore.load().catch(() => {});
 		await workspaceStore.loadAll().catch(() => {});
@@ -349,7 +349,7 @@
 
 	// A sign-in or signup that completes after the code changed belongs to the
 	// earlier flow: the current one re-reads the session, which now carries the
-	// new sign-in, rather than taking this one's result (codex r5).
+	// new sign-in, rather than taking this one's result.
 	function restartIfMovedOn(current: () => boolean): boolean {
 		if (current()) return false;
 		submitting = false;
@@ -486,7 +486,7 @@
 		{/if}
 
 		<!-- Accept and Decline remove the focused buttons, so their progress and
-		     result are spoken from a region that stays mounted (codex r4). -->
+		     result are spoken from a region that stays mounted. -->
 		<p class="sr-only" role="status" aria-live="polite">{announcement}</p>
 		{#if status === 'loading'}
 			<p class="subtitle">Checking invitation...</p>

@@ -34,7 +34,7 @@ export function createKeyedCoalescer<K, T>(
 	}
 	const pending = new Map<K, Pending>();
 	// Runs that have started, so a cancel still reaches their callers: the
-	// owner going away mid-run must not have them resume afterwards (codex r3).
+	// owner going away mid-run must not have them resume afterwards.
 	const running = new Map<K, Set<Pending>>();
 
 	function fire(key: K) {
@@ -49,8 +49,8 @@ export function createKeyedCoalescer<K, T>(
 			if (set!.size === 0 && running.get(key) === set) running.delete(key);
 		};
 		// Settling an already-rejected (cancelled) promise is a no-op. Invoked
-		// inside a promise so a synchronous throw rejects the callers too
-		// (codex r4), rather than escaping the timer and stranding them.
+		// inside a promise so a synchronous throw rejects the callers too,
+		// rather than escaping the timer and stranding them.
 		Promise.resolve()
 			.then(() => fn(key))
 			.then(
@@ -88,13 +88,13 @@ export function createKeyedCoalescer<K, T>(
 				resolve = res;
 				reject = rej;
 			});
-			// A solitary call is capped by maxWaitMs too (codex r1).
+			// A solitary call is capped by maxWaitMs too.
 			const timer = setTimeout(() => fire(key), Math.min(opts.waitMs, opts.maxWaitMs));
 			pending.set(key, { promise, resolve, reject, timer, firstAt: now });
 			return promise;
 		},
 		// Every joined caller is SETTLED, rejected, so nothing waits forever on
-		// a run that will never start (codex r1).
+		// a run that will never start.
 		cancel(key) {
 			const p = pending.get(key);
 			if (p) {

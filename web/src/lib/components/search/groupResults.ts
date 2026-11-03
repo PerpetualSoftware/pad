@@ -49,7 +49,7 @@ export function inRenderedOrder(groups: Record<string, ResultGroup>): SearchResu
 
 /**
  * Where the selection belongs after a page of results is appended
- * (TASK-2234, codex r2). Grouped, an appended row can land ABOVE the
+ * (TASK-2234). Grouped, an appended row can land ABOVE the
  * selected one (A1, B1 + A2 renders A1, A2, B1), so the same index would
  * name a different item; the selection follows the item, by id.
  */

@@ -21,7 +21,7 @@ func TestProcStartToken_CurrentProcess(t *testing.T) {
 	}
 }
 
-// TestArmState_HeadlessPidReuseRejected is the Codex R1 HIGH-2 regression
+// TestArmState_HeadlessPidReuseRejected is a regression test
 // for the headless path on Linux: a live pid whose recorded owner-identity
 // token does NOT match (a reused pid belonging to an unrelated process)
 // must read as disarmed, not armed.

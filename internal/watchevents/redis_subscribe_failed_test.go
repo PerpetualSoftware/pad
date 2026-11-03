@@ -70,11 +70,11 @@ func TestAFailedSubscribeIsReportedAsItselfAndAtOnce(t *testing.T) {
 	}
 	// Nothing was installed: a retained dead PubSub would keep the retry
 	// gate (cycleIfIdle's `b.pubsub == nil`) closed for the life of the
-	// process (codex round 1 P1). This is also what distinguishes the fixed
+	// process. This is also what distinguishes the fixed
 	// constructor from the unfixed one, which waited out its 5s confirmation
 	// bound and kept the PubSub — so no timing bound is asserted here: a
 	// wall-clock cap would be a second way for the test to fail under load
-	// that says nothing about the mechanism (codex round 3).
+	// that says nothing about the mechanism.
 	if b.currentPubSub() != nil {
 		t.Fatal("the constructor kept a PubSub whose SUBSCRIBE failed; the retry gate can never open")
 	}

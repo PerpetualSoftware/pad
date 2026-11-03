@@ -277,7 +277,7 @@ func TestBUG2772_RemoteMCPWritesAreAgentWrites(t *testing.T) {
 }
 
 func TestBUG2772_RemoteLeaseHolderIsPerConnection(t *testing.T) {
-	// Lead ruling: two connections of one client do not silently share a
+	// Two connections of one client do not silently share a
 	// claim, and next/ready agree with the claim default. Since TASK-3613
 	// the connections are told apart by a session-derived worker id; the
 	// holder label is the bare client name (display only).

@@ -23,7 +23,7 @@
 
 	// Static metadata for the comparison table. Each row maps a label to
 	// the PlanLimits field + a display kind so the renderer picks the
-	// right formatter (count vs storage-bytes). Kept outside the
+	// right formatter  (count vs storage-bytes). Kept outside the
 	// template to keep the table JSX legible and to avoid rebuilding
 	// the array on every re-render.
 	type LimitKey = keyof PlanLimits;
@@ -34,7 +34,7 @@
 		{ label: 'API tokens', key: 'api_tokens', kind: 'count' },
 		{ label: 'Storage', key: 'storage_bytes', kind: 'storage' },
 		{ label: 'Webhooks', key: 'webhooks', kind: 'count' }
-		// No "Automated backups" row (Dave, TASK-3603): backups are a platform
+		// No "Automated backups" row  (TASK-3603): backups are a platform
 		// service for every Cloud account, not a plan feature.
 	];
 
@@ -43,7 +43,7 @@
 	let limits = $state<{ free: PlanLimits; pro: PlanLimits } | null>(null);
 
 	// Gate for Stripe-backed upgrade affordances: true only while the pad-cloud
-	// sidecar serves an offer and PAD_BILLING=auto (TASK-3577; TASK-800).
+	// sidecar serves an offer and PAD_BILLING=auto  (TASK-3577; TASK-800).
 	let stripeAvailable = $derived(authStore.billingAvailable);
 	// In the mobile apps this page shows the plan and its limits only: no
 	// plans table, prices, checkout, portal or interest prompt (PLAN-3291
@@ -56,11 +56,11 @@
 	// double-submission.
 	let checkoutInProgress = $state(false);
 
-	// The interval to buy (TASK-3468), shared by both pickers on the page, and
+	// The interval to buy  (TASK-3468), shared by both pickers on the page, and
 	// the intervals the sidecar has said it cannot sell this visit (a 503, or
 	// an echo that refused). An unsellable interval gets a plain inline
 	// message and its option is disabled, rather than a button that fails.
-	// Only the intervals the sidecar's offer lists are sold (TASK-3577); the
+	// Only the intervals the sidecar's offer lists are sold  (TASK-3577); the
 	// selection starts on the first of them.
 	let offered = $derived((authStore.billingOffer?.intervals ?? []).map((iv) => iv.interval));
 	let interval = $state<BillingInterval>(authStore.billingOffer?.intervals[0]?.interval ?? 'monthly');
@@ -130,7 +130,7 @@
 	//  * anything else → locale-formatted integer
 	//
 	// Zero is NOT specially rendered — admin-configured zero quotas
-	// (storage_bytes = 0, workspaces = 0) are legitimate values and
+	//  (storage_bytes = 0, workspaces = 0) are legitimate values and
 	// should display literally as "0" rather than a "—" placeholder.
 	function formatCompareCell(value: number | undefined, kind: 'count' | 'storage'): string {
 		if (value === undefined) return '…';
@@ -140,9 +140,9 @@
 	}
 
 	// One cell of the plan tables. Pro storage is stated, not served: Pro is
-	// to include about 1 GB with metered overage (PLAN-3605, open), and the
+	// to include about 1 GB with metered overage  (PLAN-3605, open), and the
 	// served value is a placeholder. Until that interim is decided the cell
-	// says what is meant (Dave, TASK-3603). Every other cell is the live limit.
+	// says what is meant  (TASK-3603). Every other cell is the live limit.
 	function planCell(plan: 'free' | 'pro', row: { key: LimitKey; kind: 'count' | 'storage' }): string {
 		if (plan === 'pro' && row.key === 'storage_bytes') return '1 GB included';
 		return formatCompareCell(limits?.[plan]?.[row.key], row.kind);
@@ -171,13 +171,13 @@
 		}
 	}
 
-	// Whether a Pro account has a Stripe customer to manage (BUG-3898). Only
+	// Whether a Pro account has a Stripe customer to manage  (BUG-3898). Only
 	// GET /auth/me carries stripe_customer_id. A plan granted by an admin has
 	// none, and the portal can only refuse it, so the page says so instead.
-	// 'unknown' (not read yet, or the read failed) keeps the button: the
+	// 'unknown'  (not read yet, or the read failed) keeps the button: the
 	// portal answers any refusal with ?portal_error=, which this page shows.
 	// A customer with no live subscription still gets the portal, for its
-	// invoices (BUG-3898 R2).
+	// invoices  (BUG-3898 R2).
 	let billingAccount = $state<'unknown' | 'yes' | 'none'>('unknown');
 
 	async function loadBillingAccount() {
@@ -192,9 +192,9 @@
 	}
 
 	// Read once the account is Pro, whether it was at mount or became Pro
-	// during the visit (a checkout return confirmed by polling; BUG-3898 r1).
+	// during the visit  (a checkout return confirmed by polling; BUG-3898 r1).
 	// One read per visit: a paid plan stores its customer before its plan
-	// (pad-cloud's handleCheckoutCompleted), so a Pro account read without
+	//  (pad-cloud's handleCheckoutCompleted), so a Pro account read without
 	// one is a granted plan.
 	let billingAccountRequested = false;
 	$effect(() => {
@@ -204,7 +204,7 @@
 		}
 	});
 
-	// A refused portal request comes back as ?portal_error=<code> (BUG-3898).
+	// A refused portal request comes back as ?portal_error=<code>  (BUG-3898).
 	let portalErrorText = $state<string | null>(null);
 
 	async function pollForUpgrade() {
@@ -251,7 +251,7 @@
 
 	async function loadPlanLimits() {
 		try {
-			// Under the API deadline (BUG-3216); a timeout falls to the catch below.
+			// Under the API deadline  (BUG-3216); a timeout falls to the catch below.
 			const body = await withRequestDeadline(
 				async (signal) => {
 					const resp = await fetch('/api/v1/plan-limits', { credentials: 'same-origin', signal });
@@ -269,7 +269,7 @@
 	// startCheckout POSTs to pad-cloud's /billing/checkout endpoint, parses
 	// the returned {url} and redirects the browser to the Stripe-hosted
 	// checkout page. Uses window.location.href so the Stripe session is
-	// opened in the same tab (matching Stripe's UX recommendation).
+	// opened in the same tab  (matching Stripe's UX recommendation).
 	// Called from the "Upgrade to Pro" buttons. TASK-800.
 	async function startCheckout() {
 		if (checkoutInProgress) return;
@@ -279,7 +279,7 @@
 		try {
 			const result = await api.billing.createCheckoutSession(picked);
 			// Only to a session priced at the interval the user picked
-			// (decideCheckout): never an annual pick charged monthly.
+			//  (decideCheckout): never an annual pick charged monthly.
 			const decision = decideCheckout(picked, result);
 			if (decision.kind === 'refuse') {
 				checkoutInProgress = false;
@@ -308,12 +308,12 @@
 		// Kick off the three independent async tasks in parallel. None are
 		// awaited here — onMount returns immediately so Svelte can run the
 		// onDestroy cleanup path synchronously if the user navigates away
-		// before any task resolves (the `destroyed` guard handles that).
+		// before any task resolves  (the `destroyed` guard handles that).
 		// A checkout return is a web-checkout state. In the app it is dropped
 		// unread: its banners talk about a payment and link support about one
-		// (PLAN-3291 DR-3, codex r1 on TASK-3293).
+		//  (PLAN-3291 DR-3, TASK-3293).
 		const checkoutParam = page.url.searchParams.get('checkout');
-		// A portal refusal is a web state too (BUG-3898): dropped unread in
+		// A portal refusal is a web state too  (BUG-3898): dropped unread in
 		// the app, like a checkout return.
 		const portalErrorParam = page.url.searchParams.get('portal_error');
 		if (portalErrorParam !== null) {
@@ -323,7 +323,7 @@
 		if (!authStore.commerceAllowed) {
 			if (checkoutParam) clearCheckoutQuery();
 		} else if (checkoutParam === 'success') {
-			// Where the upgrade was asked for (TASK-3601): offered once it is
+			// Where the upgrade was asked for  (TASK-3601): offered once it is
 			// confirmed, never followed on the user's behalf.
 			resume = readUpgradeResume();
 			startUpgradeConfirmation();
@@ -336,7 +336,7 @@
 		loadPlanLimits();
 	});
 
-	// The blocked flow to return to after checkout (TASK-3601).
+	// The blocked flow to return to after checkout  (TASK-3601).
 	let resume = $state<UpgradeResume | null>(null);
 
 	onDestroy(() => {
@@ -431,10 +431,10 @@
 				<!-- BUG-3898: a granted plan has no Stripe customer, so nothing to manage. -->
 				<p class="granted-note">Your plan was granted to your account, so there is no billing to manage.</p>
 			{:else if isPro}
-				<!-- /billing/ is pad-cloud's, not the SPA's: a full navigation (BUG-3897). -->
+				<!-- /billing/ is pad-cloud's, not the SPA's: a full navigation  (BUG-3897). -->
 				<a href="/billing/portal" class="secondary-btn" data-sveltekit-reload>Manage Billing</a>
 			{:else if stripeAvailable}
-				<!-- TASK-3603: the outcome first, then who it covers. Copy shown to Dave. -->
+				<!-- TASK-3603: the outcome first, then who it covers. -->
 				<p class="pro-pitch">
 					Run every project in one place, with your team and your agents: no caps on workspaces, items or members.
 				</p>
@@ -746,7 +746,7 @@
 		justify-content: flex-end;
 	}
 
-	/* The interval picker and its notice stack above the button (TASK-3468). */
+	/* The interval picker and its notice stack above the button  (TASK-3468). */
 	.compare-cta:not(.coming-soon) {
 		flex-direction: column;
 		align-items: flex-end;

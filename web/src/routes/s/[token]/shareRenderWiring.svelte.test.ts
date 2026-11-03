@@ -1,7 +1,7 @@
 // TASK-2248 U1: the share PAGE runs its markdown through the inert pass, on
 // both paths that render a body (the direct item share and the collection
 // inline-expand read the same `sanitizeMarkdown`). `shareRender.svelte.test.ts`
-// covers the pass itself; this covers the binding (team CONVE-19).
+// covers the pass itself; this covers the binding  (team CONVE-19).
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { cleanup, render } from '@testing-library/svelte';
 

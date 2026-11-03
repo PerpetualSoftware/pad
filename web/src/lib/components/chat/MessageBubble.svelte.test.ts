@@ -162,7 +162,7 @@ describe('MessageBubble menu', () => {
 		spy.mockRestore();
 	});
 
-	// Red if only a press outside the whole bubble unpins (r5 Codex M).
+	// Red if only a press outside the whole bubble unpins.
 	it('a pinned menu closes on a press inside the bubble but outside the menu', async () => {
 		vi.useFakeTimers();
 		const { container, bubble } = mount();

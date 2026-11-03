@@ -2,21 +2,21 @@ import { test, expect, request as playwrightRequest, type Page } from '@playwrig
 import { suiteFixture } from './fixtures';
 
 /**
- * PLAN-3291 DR-7 / TASK-3293 (BUG-3290): with the mobile shells' user agent,
+ * PLAN-3291 DR-7 / TASK-3293  (BUG-3290): with the mobile shells' user agent,
  * no upgrade copy, pricing or billing link is reachable in the web app. The
  * mobile apps render this web app, so any of it would be a purchase call to
  * action inside them.
  *
- * This checks what RENDERS, not source strings (the vitest guard does that).
+ * This checks what RENDERS, not source strings  (the vitest guard does that).
  * Every assertion runs twice: once with the shell UA, where it must find
  * nothing, and once with an ordinary browser UA on the same pages, where it
  * must find the surface (CONVE-12: an absence proves nothing if the surface
  * never rendered at all).
  *
  * The e2e server is self-hosted, so the session is patched to cloud_mode and
- * billing_available (every commerce surface on); a plan-limit refusal is
+ * billing_available  (every commerce surface on); a plan-limit refusal is
  * stubbed at the create-workspace door. Desktop only: UA, not viewport, is the
- * variable, and each leg registers and logs in a user (IP rate-limited).
+ * variable, and each leg registers and logs in a user  (IP rate-limited).
  */
 
 const SHELL_UA =
@@ -49,7 +49,7 @@ async function register(baseURL: string, adminToken: string, tag: string): Promi
 
 async function openAsCloudUser(page: Page, email: string): Promise<void> {
 	// Routes first: login reloads the session, and a patch installed after
-	// that fetch settled would leave the page self-hosted (codex r3).
+	// that fetch settled would leave the page self-hosted.
 	await page.route('**/api/v1/auth/session', async (route) => {
 		const resp = await route.fetch();
 		const body = await resp.json();
@@ -74,7 +74,7 @@ async function openAsCloudUser(page: Page, email: string): Promise<void> {
 				error: {
 					code: 'plan_limit_exceeded',
 					message: "You've reached the 1-workspace limit on the free plan.",
-					// The caller is the payer for a user limit (TASK-3601).
+					// The caller is the payer for a user limit  (TASK-3601).
 					details: { feature: 'workspaces', limit: 1, current: 1, plan: 'free', payer_is_you: true }
 				}
 			})
@@ -151,7 +151,7 @@ for (const leg of [
 			}
 
 			// A plan-limit refusal: the prompt states the limit; only the browser
-			// adds the upgrade. It is the create dialog's inline prompt (TASK-3601).
+			// adds the upgrade. It is the create dialog's inline prompt  (TASK-3601).
 			await page.goto('/console');
 			await page.getByRole('button', { name: 'Create Workspace', exact: true }).click();
 			await page.getByPlaceholder('Workspace name').fill('Over the limit');
@@ -178,7 +178,7 @@ for (const leg of [
  * TASK-3299: the marketing site is not linked from the app. The auth pages'
  * header and footer lose the getpad.dev root, blog, FAQ
  * and contribute links under the shell UA; the legal and docs links stay
- * (the privacy policy must be reachable in the app). The browser control must
+ *  (the privacy policy must be reachable in the app). The browser control must
  * find the marketing links on the same pages. No login: these are the pages a
  * signed-out shell renders.
  */

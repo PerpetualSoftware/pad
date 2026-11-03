@@ -147,7 +147,7 @@ func TestSessionRegistry_ReadFromForeignPIDNamespace(t *testing.T) {
 		assertKept(t, readFrom(t, nsArgs))
 	})
 
-	// P3: the same live row in its pre-fix shape, with no pid_ns or mnt_ns.
+	// The same live row in its pre-fix shape, with no pid_ns or mnt_ns.
 	// The reader is not in the init namespace, so its ESRCH is not evidence
 	// (option (a)), and the socket is judged by the old rule, under which it
 	// is still there with its identity.
@@ -175,7 +175,7 @@ func TestSessionRegistry_ReadFromForeignPIDNamespace(t *testing.T) {
 		assertKept(t, readFrom(t, nsArgs))
 	})
 
-	// r3 R-1: the same unstamped row, read from a sandbox with NO procfs.
+	// The same unstamped row, read from a sandbox with NO procfs.
 	// There /proc/self/ns/pid cannot be read at all, so the reader cannot
 	// tell whether it is in the host's namespace, and must not treat its
 	// ESRCH as evidence (F1). Runs after "unstamped row", which leaves the
@@ -228,7 +228,7 @@ func stubReaderMountNS(t *testing.T, ns uint64, err error) {
 // TestOwnerLiveness_PIDNamespace is BUG-4090's verdict table. Across a
 // namespace boundary — or a possible one — absence is not evidence: the pid
 // probe and a missing socket both give unknown, and only a socket that
-// answers with a different identity stays dead (lead ruling R1).
+// answers with a different identity stays dead.
 func TestOwnerLiveness_PIDNamespace(t *testing.T) {
 	tok, _ := procStartToken(os.Getpid())
 	if tok == "" {
@@ -312,15 +312,14 @@ func TestOwnerLiveness_PIDNamespace(t *testing.T) {
 		{"pid unstamped, foreign reader, dead pid", dead, away, LivenessUnknown},
 		{"pid unstamped, foreign reader, live pid", live, away, LivenessAlive},
 		// No token to match: a live number in a reader that may be elsewhere
-		// is not the owner by any evidence (r4, A-1). The bare-probe residual
+		// is not the owner by any evidence (A-1). The bare-probe residual
 		// stays for the init and same-namespace readers.
 		{"pid unstamped, foreign reader, live pid, no token", bare, away, LivenessUnknown},
 		{"pid unstamped, reader pid ns unreadable, live pid, no token", bare, reader{pidErr: errNS, mnt: recordedMnt}, LivenessUnknown},
 		{"pid unstamped, init reader, live pid, no token", bare, initHome, LivenessAlive},
 		{"same ns, live pid, no token", stamped(bare), home, LivenessAlive},
 		// ...and a reader that may be elsewhere never manufactures dead: a
-		// token mismatch or a zombie at the number describes THIS namespace
-		// (lead r2 ruling, Q3).
+		// token mismatch or a zombie at the number describes THIS namespace.
 		{"pid unstamped, foreign reader, reused pid", reused, away, LivenessUnknown},
 		{"pid unstamped, foreign reader, zombie", zombie, away, LivenessUnknown},
 		{"pid unstamped, init reader, reused pid", reused, initHome, LivenessDead},
@@ -334,7 +333,7 @@ func TestOwnerLiveness_PIDNamespace(t *testing.T) {
 		{"pid sentinel, dead pid, any reader", sentinelPID(dead), home, LivenessUnknown},
 		{"pid sentinel, live pid, any reader", sentinelPID(live), home, LivenessUnknown},
 
-		// The socket is judged by the MOUNT namespace (P1).
+		// The socket is judged by the MOUNT namespace.
 		{"mnt same, socket gone", withGoneSocket(mntStamped(sockOnly)), home, LivenessDead},
 		{"mnt same, socket rebound", withReboundSocket(mntStamped(sockOnly)), home, LivenessDead},
 		{"mnt same, other pid ns, socket gone", withGoneSocket(mntStamped(sockOnly)), pidAway, LivenessDead},
@@ -494,7 +493,7 @@ func TestWriteArmState_HeadlessRecordsPIDNamespace(t *testing.T) {
 }
 
 // TestCaptureSessionOwner_MountNamespace: mnt_ns is stamped only beside a
-// socket the recorder stat'ed with its identity (lead ruling C1). A pad
+// socket the recorder stat'ed with its identity (C1). A pad
 // started inside a sandbox by a harness outside it may not see the
 // harness's socket; stamping its own mount namespace on that row would let
 // a later reader in the same sandbox trust an ENOENT.
@@ -546,7 +545,7 @@ func TestCaptureSessionOwner_MountNamespace(t *testing.T) {
 // TestArmState_SocketKeyedMountNamespace: a socket-keyed arm file carries
 // the mount namespace its socket was seen in. Read from that namespace a
 // gone socket reaps it, as before; read from another it is kept and does
-// not arm (H1 and R1 together).
+// not arm.
 func TestArmState_SocketKeyedMountNamespace(t *testing.T) {
 	sock := filepath.Join(t.TempDir(), "s.sock")
 	if err := os.WriteFile(sock, nil, 0600); err != nil {
@@ -606,8 +605,8 @@ func zombiePID(t *testing.T) int {
 }
 
 // TestChatDirection_MountNamespace: the chat-direction file is the third
-// socket-identity writer (after the registry capture and the arm write;
-// BUG-4090 r2, Codex C1). It carries the socket's mount namespace, so a
+// socket-identity writer (after the registry capture and the arm write, BUG-4090,
+// C1). It carries the socket's mount namespace, so a
 // gone socket read from another one keeps the file and stays off, and read
 // from its own reaps it.
 func TestChatDirection_MountNamespace(t *testing.T) {
@@ -651,7 +650,7 @@ func TestChatDirection_MountNamespace(t *testing.T) {
 // TestArmStateOwnerVerdict_HeadlessNoTokenForeign: a headless arm file with
 // no start token — what capture writes for a harness pid it could not see —
 // is not honoured by a reader that may be in another namespace, even when
-// some live process answers at its number there (r4, A-1).
+// some live process answers at its number there (A-1).
 func TestArmStateOwnerVerdict_HeadlessNoTokenForeign(t *testing.T) {
 	armStateTestEnv(t, "")
 	st := &ArmState{PID: os.Getpid()} // live here, unstamped, no token
@@ -667,7 +666,7 @@ func TestArmStateOwnerVerdict_HeadlessNoTokenForeign(t *testing.T) {
 
 // TestListSessions_LegacyRowByReaderNamespace drives both branches of the
 // v1 legacy row's verdict by seam, so the non-init branch runs on an
-// ordinary runner and not only under Nix (lead ruling 8af75879). A v1 file
+// ordinary runner and not only under Nix (af75879). A v1 file
 // has no session_pid, pid_ns or token; its owner is the socket-derived pid.
 // cmd/pad's table test asserts the same rule from whatever namespace it is
 // in.

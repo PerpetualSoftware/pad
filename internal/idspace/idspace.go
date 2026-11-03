@@ -59,7 +59,7 @@ import (
 // That is a deterministic bound, not a probability — which is why this is not
 // the "start from a random high number" BUG-2736's body rejects.
 //
-// IT RESTS ON ONE UNSTATED ASSUMPTION, so here it is stated (codex round 8):
+// IT RESTS ON ONE UNSTATED ASSUMPTION, so here it is stated:
 // that a RESTART TAKES AT LEAST ONE MILLISECOND. The bases are separated by
 // the clock, at millisecond resolution, and the CAS below separates only buses
 // built inside ONE process — a second process starting inside the same

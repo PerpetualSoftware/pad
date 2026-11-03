@@ -80,7 +80,7 @@
 		 * svelte-dnd-action only supports zone-level dragDisabled.
 		 *
 		 * NOT the status CHIP, which is gated per ITEM inside `ItemCard` on
-		 * `canEditItem` (BUG-3068 round 2). The distinction is load-bearing rather
+		 * `canEditItem` (BUG-3068). The distinction is load-bearing rather
 		 * than pedantic: this flag is `canEditCollection`, item grants
 		 * deliberately do not promote to collection-level write, and gating the
 		 * chip here withheld it from a guest whose per-item grant the server would
@@ -165,7 +165,7 @@
 	let schema = $derived(parseSchema(collection));
 	let field = $derived(schema.fields.find((f) => f.key === groupField));
 
-	// GROUPING BY A RELATION (TASK-2998 / PLAN-2857 U7, codex round 4).
+	// GROUPING BY A RELATION (TASK-2998 / PLAN-2857 U7).
 	//
 	// This component discovers extra group values from the ITEMS already, which
 	// is what makes a text field groupable — and is exactly why a relation
@@ -180,7 +180,7 @@
 	 * Why grouping is refused for this field, or null (U4).
 	 *
 	 * Replaces `relationWithoutTarget`, which covered one of the two reasons.
-	 * A `multi_relation` joins it by lead ruling: one item belongs to as many
+	 * A `multi_relation` joins it by design: one item belongs to as many
 	 * lanes as it has references, and `bucketByColumn`'s invariant is exactly
 	 * one. See relationGroupingRefusal for the alternatives and why both were
 	 * rejected.
@@ -188,7 +188,7 @@
 	let groupingRefusal = $derived(relationGroupingRefusal(field));
 	/**
 	 * A relation field with no declared target (legacy or half-written) is not
-	 * groupable AT ALL here (codex round 5).
+	 * groupable AT ALL here.
 	 *
 	 * The board falls into UNCATEGORIZED for this, because its lanes come from
 	 * `field.options` and a relation has none. This view DISCOVERS values from
@@ -448,7 +448,7 @@
 			const relLane = isRelationGroup ? relationLaneByValue.get(groupName) : undefined;
 			const dropAllowed = !isRelationGroup || (!!relLane && relationLaneAcceptsDrop(relLane));
 			if (!dropAllowed) {
-				// AND NO REORDER EITHER (codex round 5). Skipping only the
+				// AND NO REORDER EITHER. Skipping only the
 				// relation write left `onReorder` running unconditionally, so a
 				// refused cross-group drop still rewrote every `sort_order` in
 				// the destination — a persisted side effect of a gesture the
@@ -474,8 +474,8 @@
 					: laneValue(fields[groupField]);
 				// A REFUSED grouping has no group value to change, so a drop in
 				// its fallback lane is a REORDER and nothing else — the same
-				// guard BoardView carries, and this view needed it too (codex
-				// round 5). Fixing one view and not the other is the same
+				// guard BoardView carries, and this view needed it too.
+				// Fixing one view and not the other is the same
 				// surface-count mistake as the type-dispatch sweep that started
 				// this review: two views implement grouping, and a behaviour's
 				// surface count is a number that gets ENUMERATED.
@@ -556,7 +556,7 @@
 			delayTouchStart: touchDragDelayMs,
 			// Off by input, not width, like every drag zone (BUG-3158): a group
 			// reorder persists the lane order for the whole collection. Off while
-			// a group's ⋯ menu is open, too (TASK-2222, codex round 2): the menu
+			// a group's ⋯ menu is open, too (TASK-2222): the menu
 			// lives inside a draggable group, so a press-and-drag on it would
 			// otherwise reorder the groups mid-action.
 			dragDisabled: viewport.dragDisabled || !canEdit || openGroupMenu !== null
@@ -571,7 +571,7 @@
 				<!-- The header's empty space toggles on a click, as it always has; the
 				     KEYBOARD and assistive-tech control is the .group-toggle button,
 				     whose Enter/Space click bubbles here. The action buttons are its
-				     siblings, not its children (TASK-2222, codex round 1: a role=button
+				     siblings, not its children (TASK-2222: a role=button
 				     header made every action a nested interactive control). -->
 				<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
 				<div
@@ -607,8 +607,7 @@
 						<!-- Gate on onArchiveGroup alone (not canEdit): archive-all
 						     is owner/editor-gated by the page via the callback, so
 						     an owner/editor without a collection edit grant
-						     (canEdit false) can still bulk-archive. TASK-1672 /
-						     Codex round 4. -->
+						     (canEdit false) can still bulk-archive. TASK-1672. -->
 						{#if onArchiveGroup && itemCount(grpItems) > 0}
 							{#if confirmArchiveGroup === groupName}
 								<span class="archive-confirm">
@@ -677,7 +676,7 @@
 							// requested rank-preserving order (search
 							// active) — otherwise a drag would persist
 							// the relevance-ranked subset order as the
-							// stored `sort_order`. TASK-1367 / Codex R5.
+							// stored `sort_order`. TASK-1367.
 							// Also disable under any non-manual page sort
 							// (TASK-1670) — the group is comparator-ordered.
 							// BUG-3158: this zone had no touch gate at all, so a held

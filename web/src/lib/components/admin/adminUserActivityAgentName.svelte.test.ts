@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { flushSync, mount, unmount, tick } from 'svelte';
 
 /**
- * TASK-2759, codex round 12 — and a correction to my own exemption.
+ * TASK-2759 — this tab is not exempt.
  *
  * The plan listed this tab as exempt because its local row type omitted
  * `metadata`. That was true and it was the wrong reason: the endpoint

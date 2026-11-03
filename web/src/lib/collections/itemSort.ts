@@ -78,7 +78,7 @@ export function itemComparator(
 			// no-op there and silently inherited whatever order the input array
 			// arrived in (updated_at DESC from the API).
 			//
-			// The direction is the SERVER's (BUG-3527, lead ruling 2026-10-09):
+			// The direction is the SERVER's (BUG-3527):
 			// child lists and the dashboard order `sort_order ASC, created_at
 			// ASC, item_number ASC` (internal/store/items.go getChildItems,
 			// ListChildItems and GetChildItemsForParents) and render that order
@@ -89,7 +89,7 @@ export function itemComparator(
 			// that tie (BUG-4005). id is only the last resort for an item
 			// without a number. The direction used to be DESC here, so the same two never-dragged children read in
 			// opposite orders on an item's page and on its collection board.
-			// BUG-4005 (Dave's ruling): a PARENTLESS create path writes the
+			// BUG-4005: a PARENTLESS create path writes the
 			// MIN(sort_order) - 1 of the collection's parentless items, so it
 			// sorts FIRST in a lane; a child is created at 0 and still appends
 			// under its parent (created_at ASC, which ship and decompose rely

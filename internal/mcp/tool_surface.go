@@ -145,7 +145,7 @@ var readOnlyActions = map[string]map[string]bool{
 
 // additiveWriteActions is the allowlist of WRITE actions that are
 // purely ADDITIVE — they create or attach state, never overwrite,
-// remove, or destroy it (BUG-2302, codex round 1). Used by
+// remove, or destroy it (BUG-2302). Used by
 // annotationForDef: a tool advertises DestructiveHint:false only when
 // every action is either read-only or listed here. Absence ⇒ assume
 // destructive — the conservative direction, same shape as
@@ -187,7 +187,7 @@ var additiveWriteActions = map[string]map[string]bool{
 //   - pad_playbook.match sends the caller's free text to the configured
 //     decision provider, a third-party model API (internal/decision).
 //     It is a READ: open-world is about where data goes, not whether
-//     anything is written, so a read can carry it (codex review).
+//     anything is written, so a read can carry it.
 var openWorldActions = map[string]map[string]bool{
 	"pad_workspace": {
 		"invite": true,

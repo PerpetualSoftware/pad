@@ -12,7 +12,7 @@ import (
 // and a standalone prune) across processes with an advisory flock on
 // ~/.pad/sessions/.lock, so a prune cannot delete a record that a
 // concurrent register renamed into place between the prune's re-read and
-// its os.Remove (TASK-2767, codex round 1 P1). The lock is held for the
+// its os.Remove (TASK-2767). The lock is held for the
 // few milliseconds a mutation takes; readers (ListSessions) do not take
 // it — an atomic-rename writer means they see a whole old or new file.
 //

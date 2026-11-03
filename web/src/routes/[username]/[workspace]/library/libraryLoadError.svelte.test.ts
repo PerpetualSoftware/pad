@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/svelte';
 
-// TASK-2203 (audit C46): a failed load rendered as "No conventions available."
+// TASK-2203  (audit C46): a failed load rendered as "No conventions available."
 // with no retry. The library always ships entries, so empty meant "did not
 // load", and the page said the opposite.
 

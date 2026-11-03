@@ -61,11 +61,11 @@ type CloseStateChange struct {
 // destination fields as they will be written (after overrides and injected
 // defaults). It returns nil when there is no change, when the caller supplied
 // the destination done field (supplied(key) true — an explicit value is the
-// override the lead ruling names), or when the destination declares no done
+// override), or when the destination declares no done
 // select field, so there is no state to change and no value a caller could
 // set.
 //
-// Only the STATE is compared, never the value (lead ruling, day 78): `done` in
+// Only the STATE is compared, never the value: `done` in
 // one collection and `shipped` in another are both closed-delivered, and carry
 // without asking.
 func MigrateCloseStateChange(

@@ -72,7 +72,7 @@
 	// `.main-content`, and not <ItemDetail>'s inner content wrapper which reuses
 	// the same `.item-page` class. Binding the element removes the global
 	// `querySelector('.item-page')` that would rely on ancestor DOM order to
-	// disambiguate the collision (orchestrator Codex review).
+	// disambiguate the collision.
 	let itemPageEl = $state<HTMLElement | null>(null);
 
 	// Scroll restoration parks on the master's own `.item-page` overflow column,
@@ -203,7 +203,7 @@
 	// `[A-Za-z]+`, so a master whose ref is `R2-1` parsed as null, its
 	// `item_number` fell back to 0, and the self-pane guard below stopped
 	// recognising `?item=R2-1` as the master — mounting a second provider for
-	// the item already on screen. Caught by codex round 3; it is the fourth
+	// the item already on screen.; it is the fourth
 	// consumer found carrying its own copy of this grammar, which is the
 	// argument for the shared definition rather than for four careful edits.
 	function refNumber(candidate: string): number | null {
@@ -221,7 +221,7 @@
 	// PROVENANCE-CORRECT: a bare `?item=` value resolves REF-BEFORE-SLUG the same
 	// way the server does, so a ref-shaped SLUG (e.g. master #5 slugged `plan-6`)
 	// is NOT mistaken for the master when `?item=plan-6` actually resolves to
-	// item #6 (Codex review).
+	// item #6.
 	let masterItem = $derived.by<PaneGuardItem | null>(() => {
 		if (!masterIdentity) return null;
 		// `masterIdentity` (from `onIdentity`) LAGS a same-route master navigation:
@@ -236,8 +236,8 @@
 		// closing the pane never trips this. Because it's a `$derived` over
 		// `page.url.pathname`, it re-nulls SYNCHRONOUSLY the instant the URL changes
 		// — before the strip `$effect` runs — so the guard never matches a bare
-		// `?item=` against the WRONG (previous) master (the R14 late-continuation
-		// class; Codex review). Null until identity resolves AND still matches.
+		// `?item=` against the WRONG (previous) master (the late-continuation
+		// class). Null until identity resolves AND still matches.
 		if (masterIdentityPathname !== page.url.pathname) return null;
 		return {
 			id: masterIdentity.id,
@@ -275,7 +275,7 @@
 	}
 
 	// Whether to MOUNT the pane. Gating the MOUNT (not merely stripping `?item=`
-	// after the fact) closes the cold-load self-collision RACE (Codex review): on
+	// after the fact) closes the cold-load self-collision RACE: on
 	// a cold `?item=` load the (fresh) master identity is unresolved for a beat,
 	// and a `?item=` that turns out to alias the master would otherwise mount
 	// `PaneHost`/`ItemDetail` and mint a SECOND collab provider on the master's
@@ -488,7 +488,7 @@
 		// Detached pane (depth>0): pop exactly one drill level, consume the key.
 		// Routed through the controller's fenced `handlePaneBack` (not a bare
 		// `history.back()`), gated on `paneNavInFlight()` — a rapid double ESC
-		// can't stack a second traversal and overshoot (R14). A no-op while a
+		// can't stack a second traversal and overshoot. A no-op while a
 		// traversal is armed STILL consumes the key (never falls through to close).
 		if (
 			openItemRef &&
@@ -637,7 +637,7 @@
 	   master document (not two items side-by-side with duplicate footers), and
 	   un-clip the host/column so the master flows naturally across print pages —
 	   mirroring app.css's `.app-shell`/`.main-content` print unlock, which does
-	   not reach these route-owned containers (Codex review). */
+	   not reach these route-owned containers. */
 	@media print {
 		.item-page-host {
 			display: block;

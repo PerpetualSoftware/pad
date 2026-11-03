@@ -16,8 +16,8 @@ import (
 //
 // A corrupted counter (another type, a non-integer, or 18+ digits) made INCR
 // abort the script, or let a value through that receivers could not trust, so
-// every publish failed until someone repaired the key by hand. Lead ruling,
-// day 89: SELF-HEAL, VISIBLY. The guard deletes the key, the INCR returns 1,
+// every publish failed until someone repaired the key by hand. The decision is
+// SELF-HEAL, VISIBLY. The guard deletes the key, the INCR returns 1,
 // and the existing id == 1 rotation starts a new id space, which every
 // receiver answers with sync_required. The repair is logged and counted,
 // because a heal nobody sees would hide whatever corrupted the key.

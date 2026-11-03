@@ -6,7 +6,7 @@
 	//
 	// WHY IT IS NEEDED. `excludeIds` arriving LATE is a real case — `ItemDetail`
 	// loads `itemLinks` asynchronously, so a picker opened first must re-filter
-	// when they land (codex round 4 P2). Testing-library's `rerender` cannot
+	// when they land. Testing-library's `rerender` cannot
 	// prove that: it replaces the whole props object, which re-runs the picker's
 	// refresh effect whether or not the effect tracks `excludeIds` — so the
 	// mutant that removes that dependency SURVIVES a rerender-driven test while
@@ -28,7 +28,7 @@
 	// The scope, held locally for the same reason `excludeIds` is: a test that
 	// changed it through `rerender` would prove nothing, since that replaces the
 	// props object and re-runs the picker's effect whether or not it tracks the
-	// scope (codex round 10 — the identical trap this host was built for).
+	// scope (the identical trap this host was built for).
 	let scope = $state<string | undefined>(undefined);
 	let effectiveCollection = $derived(scope ?? collection);
 

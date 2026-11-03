@@ -25,7 +25,7 @@ import {
  * this question.
  *
  * RESULT: it does not reproduce. Two mechanisms each close it on their own:
- * the (user, workspace)-keyed load effect clears the lists before load(), and
+ * the  (user, workspace)-keyed load effect clears the lists before load(), and
  * `loading = true` swaps the page for the spinner. With either one removed
  * this suite stays green; with BOTH removed the settled-page leg fails, which
  * is the filed defect. This suite is the regression pin for that pair, and it
@@ -33,7 +33,7 @@ import {
  * mutants M1/M5/M6). The dropped `loadGen` check and a load key without the
  * user each fail two legs here as well.
  *
- * A CONTROL leg (no flip) shows that the invitation and its copy button do
+ * A CONTROL leg  (no flip) shows that the invitation and its copy button do
  * render and that the copy writes, so "not on screen" cannot pass because the
  * page rendered nothing.
  */
@@ -60,7 +60,7 @@ function membersFor(who: string) {
 	};
 }
 
-// The destructive handlers ask through the shared dialog (TASK-3543); this
+// The destructive handlers ask through the shared dialog  (TASK-3543); this
 // suite is not about the question, so it is always answered yes.
 vi.mock('$lib/stores/confirmDialog.svelte', () => ({
 	confirmDialog: { request: () => Promise.resolve(true) }
@@ -220,7 +220,7 @@ describe('BUG-3237: the settings load never vouches for the previous identity\'s
 
 		auth.swapTo('u2');
 		flushSync();
-		// The CONSEQUENCE first (codex r1 on #1588): click whatever copy button
+		// The CONSEQUENCE first  (#1588): click whatever copy button
 		// is on screen while the new identity's load is pending. With both
 		// mechanisms removed, the previous session's button is still there and
 		// `pageIdentityHeld()` already vouches for it, so this is where the

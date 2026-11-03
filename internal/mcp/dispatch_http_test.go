@@ -140,7 +140,7 @@ func TestHTTPHandlerDispatcher_RoutesItemCreate(t *testing.T) {
 	}
 	// status/priority/category/parent must NOT live at the top level
 	// (the handler ignores them there); they belong in fields. This
-	// guards against the regression Codex caught in PR review round 1.
+	// guards against the regression where write fields leaked to the top level.
 	for _, leaked := range []string{"status", "priority", "category", "parent"} {
 		if _, present := body[leaked]; present {
 			t.Errorf("body.%s leaked to top level; should be inside body.fields", leaked)
@@ -176,7 +176,7 @@ func TestHTTPHandlerDispatcher_RoutesItemCreate(t *testing.T) {
 }
 
 // TestHTTPHandlerDispatcher_ScopeEnforcement_RejectsReadScopeOnWrites
-// pins the security fix from Codex review #369 round 1: a PAT with
+// pins the security fix: a PAT with
 // scopes `["read"]` must not drive write tools through the in-process
 // dispatcher.
 //
@@ -258,10 +258,10 @@ func TestHTTPHandlerDispatcher_ScopeEnforcement_AllowsReadScopeOnReads(t *testin
 }
 
 // TestHTTPHandlerDispatcher_ScopeEnforcement_BulkUpdateBlockedOnReadScope
-// pins the round-2 fix Codex caught: bulk-update used to call
+// pins the fix for bulk-update, which used to call
 // buildAuthedRequest + d.Handler.ServeHTTP directly for the per-item
-// PATCH, bypassing the executeRequest scope check that round 1
-// added. Centralizing the check inside buildAuthedRequest closes the
+// PATCH, bypassing the executeRequest scope check
+// added earlier. Centralizing the check inside buildAuthedRequest closes the
 // gap — every synthesized request, no matter the caller, is gated.
 //
 // The expected behavior with `["read"]` scope: each ref's GET
@@ -542,7 +542,7 @@ func TestMapItemCreate_PassesThroughResolvedAgentRoleID(t *testing.T) {
 }
 
 func TestMapItemCreate_LiftsAgentRoleIDFromFieldKVPToColumn(t *testing.T) {
-	// Codex review #345 round 3: the MCP tool schema only exposes
+	// The MCP tool schema only exposes
 	// `--role` (and the `--field` escape hatch), not a top-level
 	// `agent_role_id`. The error message tells agents to use
 	// `--field agent_role_id=<uuid>`; the lift logic below makes
@@ -630,9 +630,8 @@ func TestMapItemCreate_PassesThroughAgentRoleID(t *testing.T) {
 	// agent_role_id (UUID) is the ItemCreate column the handler
 	// writes to. Agents that know the UUID (e.g. from a prior
 	// `role list` call) can set it without --role slug resolution.
-	// Codex review #345 round 2 caught the misleading error message
-	// pointing at `--field agent_role_id=<uuid>` — that goes into
-	// the fields JSON blob, NOT the column. The fix is to pass the
+	// The error message used to point at `--field agent_role_id=<uuid>`,
+	// which goes into the fields JSON blob, NOT the column. The fix is to pass the
 	// top-level `agent_role_id` through directly; this test pins
 	// that path so the workaround the error message points at
 	// actually works.
@@ -916,8 +915,8 @@ func TestHTTPHandlerDispatcher_Integration(t *testing.T) {
 
 	// Source attribution: HTTPHandlerDispatcher must persist source="cli"
 	// (matching ExecDispatcher) so dashboard/standup/audit views
-	// attribute the change correctly. Codex review caught this one in
-	// round 2 — the synthesized request has no Authorization header,
+	// attribute the change correctly. The synthesized request has no
+	// Authorization header,
 	// so actorFromRequest now honors the ctxIsAPIToken context flag
 	// to derive source.
 	if found.Source != "cli" {

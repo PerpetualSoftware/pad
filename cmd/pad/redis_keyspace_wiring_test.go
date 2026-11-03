@@ -9,8 +9,7 @@ import (
 
 // TestAllRedisKeyspacesShareOneNamespace is a drift guard, in the same
 // spirit as internal/collections' invocation-framing test: it reads the
-// wiring source and enforces an invariant the type system cannot
-// (codex round 4).
+// wiring source and enforces an invariant the type system cannot.
 //
 // internal/redisns centralizes key CONSTRUCTION, but nothing stops a
 // future contributor from handing one bus a different Keys value than
@@ -23,8 +22,8 @@ import (
 // "every keyspace at once, from shared config". This is that rule's
 // enforcement step rather than another sentence asserting it.
 //
-// THE TRADE, since a source-parsing test is an unusual thing to ship
-// (codex round 8 flagged it): it protects a future EDIT rather than
+// THE TRADE, since a source-parsing test is an unusual thing to ship:
+// it protects a future EDIT rather than
 // runtime behaviour, and it breaks on a rename or a reformat of the
 // constructor calls. Kept because the alternative on offer — a single
 // construction API returning all three — cannot exist without collapsing
@@ -74,7 +73,7 @@ func TestAllRedisKeyspacesShareOneNamespace(t *testing.T) {
 	// helper also passes the shared value — otherwise the identifier check
 	// is satisfied by a shadowed name and proves nothing.
 	//
-	// The `func ` exclusion and the EXACT count both matter (codex round 8):
+	// The `func ` exclusion and the EXACT count both matter:
 	// the naive pattern also matches the helper's own DECLARATION, so a
 	// version accepting "at least 2" would be satisfied by the declaration
 	// plus a single call site — passing while one deployment shape went
@@ -95,8 +94,8 @@ func TestAllRedisKeyspacesShareOneNamespace(t *testing.T) {
 			len(helperCalls), wantHelperCalls)
 	}
 	for _, m := range helperCalls {
-		// THE DEPLOYMENT CONFIG MUST REACH THE HELPER TOO (BUG-2736, codex
-		// round 4). newObservedEventBus reads the phase-2 flip off the config
+		// THE DEPLOYMENT CONFIG MUST REACH THE HELPER TOO (BUG-2736).
+		// newObservedEventBus reads the phase-2 flip off the config
 		// it is given, and a Go test can construct any config it likes — so
 		// passing `&config.Config{}` at these two call sites would leave
 		// PAD_EVENTS_PUBLISH_EPOCH silently ignored in production while every

@@ -358,8 +358,8 @@ func TestRewriteBracketsAt_MatchesSequentialDescendingFold(t *testing.T) {
 			// to RewriteBracketsAt, so folding it would build the oracle out of
 			// the code under test and the comparison would be circular — the
 			// same vacuity that made the one-element assertion worthless, in
-			// the multi-bracket case, which I missed when I caught it there
-			// (codex R3). The frozen pre-refactor primitive is the only
+			// the multi-bracket case.
+			// The frozen pre-refactor primitive is the only
 			// genuinely independent oracle available.
 			want = rewriteBracketAtV0(want, p, target, newTitle, "")
 		}
@@ -480,7 +480,7 @@ func bracketOffsets(content string) []int {
 }
 
 // TestRewriteBracketsAt_ByteIdenticalRewriteIsNotAChange pins that `applied`
-// counts CHANGES, not matches (codex R1 P2).
+// counts CHANGES, not matches.
 //
 // The cascade uses the count to decide whether to write the row at all. The
 // pre-BUG-2804 code compared whole bodies for this, so a rewrite that
@@ -557,7 +557,7 @@ func TestRewriteBracketsAt_MixedChangedAndUnchangedCountsOnlyTheChanged(t *testi
 // depends on: what the projection PREDICTS must be exactly what the rewrite
 // DOES, for every input including the defensive ones.
 //
-// This is the property codex R2 found broken. The projection advanced its
+// This is the property once broken. The projection advanced its
 // cursor past a no-op bracket while the real pass did not, so on corrupt,
 // duplicated or overlapping offsets the two disagreed about which rewrites the
 // overlap guard skips — projection reporting (unchanged, 0 applied) where the
@@ -623,7 +623,7 @@ func TestProjectRewrittenLen_IsLockstepWithTheRealPass(t *testing.T) {
 		}
 	}
 
-	// The exact shape codex R2 named, asserted directly so the regression has a
+	// The exact shape that broke it, asserted directly so the regression has a
 	// named home rather than depending on the random search rediscovering it:
 	// an earlier bracket that does NOT advance the cursor, followed by an
 	// overlapping one that APPLIES. That pairing is what made the projection
@@ -883,7 +883,7 @@ func TestScanBracketBodyEdgeCasesMatchTheParser(t *testing.T) {
 	}
 }
 
-// TestBUG2805_AccidentalCompatibilitiesSurvive pins the two rescues Rook's
+// TestBUG2805_AccidentalCompatibilitiesSurvive pins the two rescues the
 // repro identified as non-reproducing directions (TASK-2826 2c and 2d).
 //
 // Both are ACCIDENTS of other code — the legacy full-body-with-pipe fallback

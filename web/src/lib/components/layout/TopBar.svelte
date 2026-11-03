@@ -284,7 +284,7 @@
 	);
 	// Ctrl+Shift+Left/Right moves the focused tab: the keyboard's reorder,
 	// since the zone's own keyboard drag needed the tab wrapper focusable,
-	// which put a second Tab stop on every tab (TASK-3306, codex r1). It goes
+	// which put a second Tab stop on every tab (TASK-3306). It goes
 	// through the same store write a drag does, and like a drag it keeps an
 	// ephemeral tab (PLAN-3002 Q9). Focus follows the moved tab.
 	// A move applies locally at once and writes through tabsStore.reorder,
@@ -647,7 +647,7 @@
 					dragDisabled: uiStore.isTouch,
 					// The zone and its items default to tabindex 0, which put
 					// the list and every tab wrapper in the Tab order ahead of
-					// the roving tab link (TASK-3306, codex r1). The zone's
+					// the roving tab link (TASK-3306). The zone's
 					// keyboard drag started only from a focused wrapper
 					// (Space on the link does not reach it, measured), so
 					// Ctrl+Shift+Left/Right on the link (moveTab) replaces it.
@@ -825,8 +825,7 @@
 			Also calls uiStore.onNavigate() — which closes the sidebar on
 			mobile (ui.svelte.ts:87) — so picking a search result doesn't
 			leave the sidebar overlay covering the destination page. Mirrors
-			the desktop sidebar's search button (Sidebar.svelte:522). Caught
-			by Codex review of the IDEA-1121 work.
+			the desktop sidebar's search button (Sidebar.svelte:522; IDEA-1121).
 		-->
 		<button
 			class="mobile-search-btn"

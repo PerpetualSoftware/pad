@@ -71,7 +71,7 @@ export function createRawBase(): RawBaseTracker {
  * exactly the editor's canonical form of one (when a canonicalizer is
  * available). Never a looser match: a body that differs by whitespace the
  * canonicalizer does not normalise is someone else's change, and the user is
- * asked (lead ruling, BUG-3540): a false dialog is cheap, a silent overwrite
+ * asked: a false dialog is cheap, a silent overwrite
  * is not.
  */
 export function isOwnBody(

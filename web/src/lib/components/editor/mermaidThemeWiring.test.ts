@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-// BUG-3106 review round 1, the test nit: the unit's behaviour tests exercise
+// BUG-3106: the unit's behaviour tests exercise
 // two pure functions, so restoring the literal `theme: 'dark'` inside
 // `initMermaid` left the whole suite green. A direct-call test vouches for a
 // component, not for its binding (CONVE-19), and the binding is where the
@@ -65,7 +65,7 @@ describe('BUG-3106 wiring in Editor.svelte', () => {
 		expect(has("removeEventListener('change', prefersLightHandler)")).toBe(true);
 	});
 
-	// Round 1 P1: the theme re-render must take the model source the NodeView
+	// The theme re-render must take the model source the NodeView
 	// published, never the contentDOM's text, which carries decorations.
 	it('feeds the theme re-render from the model-source map', () => {
 		expect(has('collectMermaidRerenders(root,')).toBe(true);
@@ -75,7 +75,7 @@ describe('BUG-3106 wiring in Editor.svelte', () => {
 		expect(editorSrc.match(/mermaidSources\.set\(diagram,/g) ?? []).toHaveLength(2);
 	});
 
-	// Round 1 P2: mermaid's config and render are global, so the trackers must
+	// Mermaid's config and render are global, so the trackers must
 	// not be per-instance. They are top-level `let`s of mermaidRender.ts, ahead
 	// of its first function, and the per-diagram source map stays in Editor's
 	// `<script module>` (TASK-2248 U2).
@@ -92,7 +92,7 @@ describe('BUG-3106 wiring in Editor.svelte', () => {
 	});
 
 	// TASK-2248 U2: a second loader anywhere would own a second tracker over the
-	// one global config, which is exactly the round-1 P2 defect across files.
+	// one global config, which is exactly that defect across files.
 	it('loads mermaid in exactly one module', () => {
 		const srcRoot = fileURLToPath(new URL('../../../', import.meta.url));
 		const loaders = (readdirSync(srcRoot, { recursive: true }) as string[])
@@ -104,8 +104,8 @@ describe('BUG-3106 wiring in Editor.svelte', () => {
 });
 
 describe('BUG-3106 mermaidTheme.ts', () => {
-	// The module has no business reading the DOM's text: that is the P1 defect
-	// expressed as a property of the file.
+	// The module has no business reading the DOM's text: that earlier defect expressed as a
+	// property of the file.
 	it('never reads textContent', () => {
 		expect(moduleSrc.replace(/\/\*[\s\S]*?\*\//g, '')).not.toContain('textContent');
 	});

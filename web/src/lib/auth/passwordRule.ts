@@ -8,7 +8,7 @@
 // states the rule beside the field, and a refusal for the password, whether
 // caught here or by the server, shows on the field itself.
 //
-// Deliberately NOT a live strength meter (lead ruling, day 90): scoring as
+// Deliberately NOT a live strength meter: scoring as
 // someone types would need an unauthenticated endpoint that receives the
 // password on every pause. The server's own check on submit stays the judge.
 

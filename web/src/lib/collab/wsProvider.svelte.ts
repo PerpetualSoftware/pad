@@ -273,7 +273,7 @@ export interface CollabProviderOptions {
 	 */
 	onConfirmed?: () => void;
 	/**
-	 * Called just BEFORE a local update goes out on the socket (BUG-3850 r8):
+	 * Called just BEFORE a local update goes out on the socket (BUG-3850):
 	 * from here on the server may hold it, so a crash draft kept on an older
 	 * base is flagged before the frame leaves. Errors are caught and logged.
 	 */
@@ -371,8 +371,7 @@ export class CollabProvider {
 	 * server rows but I have no anchor — propagating local edits
 	 * derived from this state can corrupt items.content via the
 	 * next 5s flush). Gating `handleDocUpdate` on this flag closes
-	 * the residual "stale Y.Doc + cursor 0" send path. Per Codex
-	 * round 14 [P1] of TASK-1319.
+	 * the residual "stale Y.Doc + cursor 0" send path.
 	 *
 	 * Reset on `force_refresh` (the provider is destroyed there
 	 * anyway) and on construction.
@@ -402,7 +401,7 @@ export class CollabProvider {
 	 * anchor we flush them in order so the server gets every
 	 * causally-required struct — Yjs ops are incremental and a
 	 * silently-dropped keystroke can leave later ops referencing
-	 * structs no peer has. Per Codex round 15 [P1] of TASK-1319.
+	 * structs no peer has.
 	 *
 	 * Capped because in pathological "anchor never arrives"
 	 * scenarios the buffer could grow unbounded; once we cross
@@ -446,8 +445,7 @@ export class CollabProvider {
 	 * because the server's op-log is now empty — points to a
 	 * mid-session prune) from "Y.Doc has only local pre-anchor
 	 * edits" (safe — those were typed locally and the buffer
-	 * holds them for replay on anchor). Per Codex round 19 [P1]
-	 * of TASK-1319.
+	 * holds them for replay on anchor).
 	 */
 	private remoteSyncApplied = false;
 
@@ -503,8 +501,7 @@ export class CollabProvider {
 		// fresh empty Y.Doc would announce `?since=N`, the server
 		// would replay only id > N, and the client would be missing
 		// rows 1..N from its Y.Doc. Reset the stored cursor to 0 in
-		// that case so the server replays from scratch. Per Codex
-		// round 13 [P1] of TASK-1319.
+		// that case so the server replays from scratch.
 		const storedCursor = readStoredCursor(itemID);
 		const ydocStateVector = Y.encodeStateVector(ydoc);
 		// An empty Y.Doc's state vector is the single VARINT 0 byte
@@ -531,14 +528,14 @@ export class CollabProvider {
 			// the version the crash-draft keeper checks before serializing
 			// (TASK-3606). Counted before the echo skip below on purpose.
 			this.docVersion++;
-			// BUG-3850 (lead ruling baa63dc3): remote updates alone, so a
+			// BUG-3850: remote updates alone, so a
 			// crash draft can tell its base predates a collaborator's change.
 			if (origin === this) this.remoteDocVersion++;
 			// Skip ops that came from us applying a server message —
 			// otherwise we'd echo every remote keystroke back to the
 			// server (which would persist + rebroadcast it again).
 			if (origin === this) return;
-			// Cursor-anchor gate (TASK-1319 round 14 [P1]). If the
+			// Cursor-anchor gate (TASK-1319). If the
 			// server has not yet confirmed our position in its op-log
 			// (no op_log_cursor frame received in this session), our
 			// Y.Doc may be populated by replay binaries whose
@@ -559,7 +556,7 @@ export class CollabProvider {
 			// either (a) resync and propagate, or (b) trigger
 			// force_refresh and the user gets a clean rebuild.
 			if (!this.cursorAnchored) {
-				// Buffer for replay on anchor (round 15 [P1]).
+				// Buffer for replay on anchor.
 				// Yjs updates are causal — silently dropping one
 				// keystroke makes later ops reference structs no
 				// peer can resolve. Saving them ensures the full
@@ -572,8 +569,7 @@ export class CollabProvider {
 					// recovery callback so a late op_log_cursor
 					// can't anchor and flush the partial buffer
 					// (the dropped prefix would reintroduce the
-					// causal-missing-update bug). Per Codex round
-					// 16 [P2] of TASK-1319.
+					// causal-missing-update bug).  round
 					console.warn(
 						'collab: pre-anchor buffer overflow; triggering recovery',
 					);
@@ -667,7 +663,7 @@ export class CollabProvider {
 			// stale syncStep2) AND removes the close listener (so
 			// scheduleReconnect won't fire from the natural close);
 			// we therefore have to inline our own scheduleReconnect
-			// call. Per Codex rounds 3-4 [P2].
+			// call.
 			this.state = 'offline';
 			if (this.ws) {
 				this.closeSocket(1000, 'network-offline');
@@ -718,8 +714,7 @@ export class CollabProvider {
 	 * notices on the next send → eventual close, by which time the
 	 * user has been staring at a stale "Synced" badge for seconds.
 	 * On visibility-resume / online events we therefore close
-	 * unconditionally and reconnect from a clean slate. Per Codex
-	 * review round 1 [P2].
+	 * unconditionally and reconnect from a clean slate.
 	 *
 	 * `closeSocket()` removes the close listener BEFORE calling
 	 * `ws.close()`, which means `onClose`'s bookkeeping (clearing
@@ -757,7 +752,7 @@ export class CollabProvider {
 	 *   post-sync→'reconnecting'). `handleOffline` skips this because
 	 *   it has already set state='offline' explicitly.
 	 *
-	 * Per Codex round 5 NIT — extracting this helper so a future
+	 *  — extracting this helper so a future
 	 * teardown path doesn't drift out of sync.
 	 */
 	private runDisconnectCleanup(opts: { demoteState: boolean }): void {
@@ -858,15 +853,14 @@ export class CollabProvider {
 		// until the sync handshake or grace timer below flips it to
 		// 'synced'. Specifically:
 		//   - 'offline' stays 'offline' (don't flicker to 'connecting'
-		//     until the proxy actually delivers a sync). Per Codex
-		//     round 2 [P2].
+		//     until the proxy actually delivers a sync).
 		//   - 'connecting'/'reconnecting' stay as-is, awaiting sync.
 		// 'synced' is unreachable here in practice because onClose
 		// always demotes it before scheduling a reconnect, so we
 		// don't need an explicit guard.
 		// NB: reconnectAttempts is also NOT reset here — same reason.
 		// Reset is owned by the actual-sync paths (syncStep2 branch +
-		// completeSync). Per Codex round 1 [P2].
+		// completeSync).
 
 		this.replayComplete = false;
 		this.seedGranted = false;
@@ -909,7 +903,6 @@ export class CollabProvider {
 		// made during a brief offline window before reconnect
 		// MUST go out via this catch-up path; gating on
 		// `lastOpLogID > 0` instead would leave them stranded.
-		// Per Codex round 17 [P2] of TASK-1319.
 		//
 		// **And only when something of ours can be missing** (BUG-3523): an
 		// edit made while no socket was open, or a local update sent on a
@@ -990,7 +983,6 @@ export class CollabProvider {
 				// cursor=0 + non-empty-Y.Doc safety check on a
 				// peer's syncStep1 arriving pre-anchor. Only the
 				// step2 / update subtypes mutate Y.Doc state.
-				// Per Codex round 21 [P1] of TASK-1319.
 				if (
 					subtype === syncProtocol.messageYjsSyncStep2 ||
 					subtype === syncProtocol.messageYjsUpdate
@@ -1015,8 +1007,7 @@ export class CollabProvider {
 					// will pick up our state via the buffered
 					// pre-anchor flush once the cursor anchors,
 					// or via the lazy-seed rebuild after
-					// force_refresh. Per Codex round 20 [P1] of
-					// TASK-1319.
+					// force_refresh.
 					if (this.cursorAnchored) {
 						this.send(encoding.toUint8Array(enc));
 					}
@@ -1027,7 +1018,6 @@ export class CollabProvider {
 						this.state = 'synced';
 						// Successful sync — reset the backoff counter
 						// so a subsequent disconnect starts fresh.
-						// Per Codex review round 1 [P2].
 						this.reconnectAttempts = 0;
 					}
 				}
@@ -1059,7 +1049,7 @@ export class CollabProvider {
 		if (this.connected) {
 			this.state = 'synced';
 			// A successful sync: reset the backoff so a later disconnect
-			// starts fresh. Per Codex review round 1 [P2].
+			// starts fresh.
 			this.reconnectAttempts = 0;
 		}
 	}
@@ -1144,8 +1134,7 @@ export class CollabProvider {
 				// or flush would resurrect pre-prune state and
 				// overwrite canonical items.content.
 				//
-				// Trigger force-refresh recovery instead. Per Codex
-				// round 18 [P1] of TASK-1319.
+				// Trigger force-refresh recovery instead.
 				if (!this.cursorAnchored && msg.op_log_id === 0 && this.remoteSyncApplied) {
 					// Remote replay binaries reached us before this
 					// cursor=0 frame, but the server now reports an
@@ -1157,7 +1146,6 @@ export class CollabProvider {
 					// initial cursor=0 of an empty op-log arrived)
 					// don't trip this branch — those updates live in
 					// preAnchorUpdates and will flush on anchor.
-					// Per Codex round 19 [P1] of TASK-1319.
 					console.warn(
 						'collab: cursor=0 received against remote-applied Y.Doc; treating as force_refresh',
 					);
@@ -1180,15 +1168,13 @@ export class CollabProvider {
 				// op-log — proves the server has finished its
 				// replay-time view of the op-log. handleDocUpdate
 				// gates on this so local edits can't propagate
-				// before the server has weighed in. Per Codex
-				// round 14 [P1].
+				// before the server has weighed in.
 				const wasAnchored = this.cursorAnchored;
 				this.cursorAnchored = true;
 				// Flush buffered pre-anchor updates in order so
 				// causal Yjs ops aren't silently dropped — sending
 				// only later updates would let the server (and
-				// peers) miss intervening structs. Per Codex round
-				// 15 [P1].
+				// peers) miss intervening structs.
 				if (!wasAnchored && this.preAnchorUpdates.length > 0) {
 					const buffered = this.preAnchorUpdates;
 					this.preAnchorUpdates = [];
@@ -1258,8 +1244,7 @@ export class CollabProvider {
 				// meant to prevent. destroy() sets
 				// `this.destroyed = true` so scheduleReconnect
 				// short-circuits, removes window/document
-				// listeners, and closes the socket. Per Codex
-				// round 6 [P1].
+				// listeners, and closes the socket.
 				this.destroy();
 				if (this.onForceRefresh) {
 					try {
@@ -1476,7 +1461,6 @@ export class CollabProvider {
 		// dropped, and (with demoteState) the state demote that
 		// preserves 'offline' across backoff retries while splitting
 		// pre-sync→'connecting' from post-sync→'reconnecting'.
-		// Per Codex rounds 1-5 of TASK-1264/-1265.
 		this.runDisconnectCleanup({ demoteState: true });
 
 		if (this.destroyed) return;
@@ -1486,8 +1470,7 @@ export class CollabProvider {
 		// (a flaky proxy can ESTABLISH then immediately CLOSE before
 		// any sync frame lands); only `synced` is. The reset is owned
 		// by the syncStep2 branch and the grace timer in onOpen — the
-		// actual successful-sync edges of the state machine. Per Codex
-		// review round 1 [P2] of TASK-1264.
+		// actual successful-sync edges of the state machine.
 		this.scheduleReconnect();
 	};
 
@@ -1511,7 +1494,6 @@ export class CollabProvider {
 		// we've burned through OFFLINE_THRESHOLD attempts; after that
 		// the UX flips to 'offline' so the user knows it's not coming
 		// back on its own. Provider keeps trying in the background.
-		// Per Codex rounds 1-2 [P2/NIT].
 		if (this.reconnectAttempts > OFFLINE_THRESHOLD) {
 			this.state = 'offline';
 		} else if (this.state !== 'offline') {
@@ -1576,8 +1558,8 @@ export class CollabProvider {
 	remoteDocVersion = 0;
 
 	/**
-	 * Moves each time this tab's local updates go out on a socket (BUG-3850,
-	 * lead ruling a6380212): the server may hold them before any barrier says
+	 * Moves each time this tab's local updates go out on a socket (BUG-3850):
+	 * the server may hold them before any barrier says
 	 * so. Not reactive.
 	 */
 	get localSentVersion(): number {

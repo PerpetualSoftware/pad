@@ -154,7 +154,7 @@ describe('createKeyedSingleFlight', () => {
 });
 
 /**
- * TASK-2947, codex round 2 — the ONE way this extraction is not tick-identical
+ * TASK-2947 — the ONE way this extraction is not tick-identical
  * to the hand-rolled code it replaced, pinned rather than hidden.
  *
  * The old versions ran their commit and their `finally` inside ONE async
@@ -190,7 +190,7 @@ describe('createKeyedSingleFlight — the commit-to-cleanup window', () => {
 
 		gate.resolve();
 		// One tick: `work` has finished and committed, but `run`'s finally has
-		// not gone yet — this is exactly the window round 2 named.
+		// not gone yet — this is exactly the window in question.
 		await Promise.resolve();
 		expect(committed).toBe('alpha-result');
 

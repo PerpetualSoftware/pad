@@ -36,7 +36,7 @@ export function fitsKeepaliveBudget(body: string): boolean {
 }
 
 // Bytes of keepalive body this page has in flight. The 64 KiB cap is the SUM
-// over in-flight keepalive requests (codex r1 on BUG-3522): at unload the
+// over in-flight keepalive requests: at unload the
 // collab flush and the raw saver can each fit alone and still overflow
 // together, and the browser then refuses the later one.
 let inFlight = 0;

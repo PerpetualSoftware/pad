@@ -8,7 +8,7 @@ import (
 // safeLocalFilename builds a LOCAL path component out of a remote string, so
 // its contract is what keeps `pad attachment view` from writing outside its
 // temp dir or handing viewers a name they cannot dispatch on. The CLI guard
-// had no tests of its own (codex closing round, BUG-2803); each case below
+// had no tests of its own (BUG-2803); each case below
 // names the failure it discriminates.
 func TestSafeLocalFilename(t *testing.T) {
 	cases := []struct {

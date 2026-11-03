@@ -35,7 +35,7 @@ func TestRoundTrip(t *testing.T) {
 	}
 }
 
-// codex r2: the shared client ignores a context deadline on command I/O, so a
+// The shared client ignores a context deadline on command I/O, so a
 // stalled Redis held a publish for its full read timeout. The transport's own
 // client honours the 1s bound.
 func TestPublishIsBoundedAgainstAStalledServer(t *testing.T) {
@@ -75,7 +75,7 @@ func TestPublishIsBoundedAgainstAStalledServer(t *testing.T) {
 	}
 }
 
-// codex r3: the clone gets its own push-notification processor rather than
+// The clone gets its own push-notification processor rather than
 // the source client's.
 func TestCloneDoesNotShareTheNotificationProcessor(t *testing.T) {
 	mr := miniredis.RunT(t)

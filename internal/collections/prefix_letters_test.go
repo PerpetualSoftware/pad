@@ -7,7 +7,7 @@ import (
 
 // BUG-2943: every character of a derived prefix must satisfy the SAME test
 // parseItemRef applies, or the collection's items print an issue ID that the
-// CLI cannot resolve back. The measured case: "TEMP Rook A 2870" derived
+// CLI cannot resolve back. The measured case: a multi-word name ending in a number derived
 // "TRA2", and `pad item show TRA2-2942` answered "item not found" while the
 // slug resolved fine.
 //

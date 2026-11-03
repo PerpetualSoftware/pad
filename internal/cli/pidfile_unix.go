@@ -71,7 +71,7 @@ func pidFileOwner(path string) (pidRecord, pidFileOwnership) {
 	lockErr := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 
 	// Read the record from the SAME descriptor whose lock state we just
-	// probed, and read it AFTER probing (codex round 1). Taking the pid from
+	// probed, and read it AFTER probing. Taking the pid from
 	// an earlier, separate read leaves a window in which a successor claims
 	// the file between the two: the lock then reports "held" — truthfully,
 	// about the SUCCESSOR — while the pid handed back is the predecessor's,
@@ -110,7 +110,7 @@ func pidFileOwner(path string) (pidRecord, pidFileOwnership) {
 		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 		return rec, pidFileUnprovable
 	}
-	// Stale. Remove the file WHILE STILL HOLDING the lock (codex round 2):
+	// Stale. Remove the file WHILE STILL HOLDING the lock:
 	// releasing first leaves a window in which a replacement server claims the
 	// path, and the remove then deletes ITS live record — the same
 	// unaddressable-server bug this fix exists to close, reintroduced by the

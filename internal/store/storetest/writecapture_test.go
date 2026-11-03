@@ -191,7 +191,7 @@ func runRecorded(t *testing.T, s *store.Store, fn func()) string {
 
 // A write committed on a connection OTHER than the hooked one is not
 // observed by the hook, so the capture must refuse rather than report a
-// clean result (codex round 1 on TASK-3388: before this check, widening the
+// clean result (TASK-3388: before this check, widening the
 // pool mid-capture lost a write with both sentinels passing).
 func TestCaptureWrites_RefusesAWriteOnAnotherConnection(t *testing.T) {
 	s := NewSQLite(t)
@@ -220,8 +220,7 @@ func TestCaptureWrites_RefusesAWriteOnAnotherConnection(t *testing.T) {
 }
 
 // Postgres: a table created after an earlier capture is covered by the next
-// one, and a table created DURING a capture is refused, not silently missed
-// (codex round 1 on TASK-3388).
+// one, and a table created DURING a capture is refused, not silently missed (TASK-3388).
 func TestCaptureWrites_PostgresCoversTablesCreatedLater(t *testing.T) {
 	if os.Getenv("PAD_TEST_POSTGRES_URL") == "" {
 		t.Skip("PAD_TEST_POSTGRES_URL not set")
@@ -283,7 +282,7 @@ func TestCaptureWrites_RefusesACommitFromAnotherHandle(t *testing.T) {
 }
 
 // A same-named trigger that is disabled is not coverage: the next capture
-// replaces it and sees the write (codex round 2 on TASK-3388).
+// replaces it and sees the write (TASK-3388).
 func TestCaptureWrites_PostgresReplacesABrokenTrigger(t *testing.T) {
 	if os.Getenv("PAD_TEST_POSTGRES_URL") == "" {
 		t.Skip("PAD_TEST_POSTGRES_URL not set")

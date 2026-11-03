@@ -56,7 +56,7 @@
 	const scrollRestoration = createScrollRestoration({
 		// `loading` flips true when filters/workspace change (loadActivities
 		// reset path), giving the helper its required ready=false
-		// transition. `length > 0` deliberately omitted (Codex P2): a
+		// transition. `length > 0` deliberately omitted: a
 		// late SSE-driven new activity shouldn't re-fire a stale restore.
 		ready: () => !loading,
 		persistKey: () =>
@@ -86,7 +86,7 @@
 	// same link changes no URL value, so the effect that reads it never
 	// re-runs. A real (replacing) navigation, not the shallow replaceState:
 	// that one leaves page.url, and the values derived from it, stale
-	// (TASK-3615 PR B, lead sweep 2026-10-18, r4). This route has no load
+	// (TASK-3615 PR B, lead sweep 2026-10-18). This route has no load
 	// function, so the navigation re-fetches nothing. A superseded goto
 	// needs nothing (the newer navigation decides the URL). A rejected one
 	// falls back to the shallow replaceState, so the address bar, and with
@@ -235,7 +235,7 @@
 	// Latest request wins. A reset (filter or workspace change) supersedes
 	// any load-more still in flight: without this, that older response
 	// appended rows from the PREVIOUS filter onto the new feed, and a slower
-	// reset could overwrite a newer one (BUG-2781, codex round 1).
+	// reset could overwrite a newer one (BUG-2781).
 	let activityRequest = 0;
 	// Bumped only by a RESET (filter or workspace change). A head re-read that
 	// lands after one is describing the previous feed and is dropped; a
@@ -250,7 +250,7 @@
 
 	async function loadActivities(slug: string, reset = false) {
 		const thisRequest = ++activityRequest;
-		// The identity that asked (TASK-2203, codex r1): a failure that lands
+		// The identity that asked (TASK-2203): a failure that lands
 		// after an account swap is not the new account's to see.
 		const isSameIdentity = authStore.identityFence();
 		if (reset) {
@@ -292,7 +292,7 @@
 		} finally {
 			// Under the identity that asked only: clearing `loading` for a request
 			// a swap overtook would show "No activity found" to the new account,
-			// a claim this request never made (codex r3). The layout's identity
+			// a claim this request never made. The layout's identity
 			// reload replaces the page.
 			if (thisRequest === activityRequest && isSameIdentity()) {
 				loading = false;
@@ -321,7 +321,7 @@
 	// minute per open tab.
 	// A head read skipped because a load was running. That load's read may have
 	// been sent BEFORE the event's write, so the event is owed a re-read once
-	// the load settles (codex round 1); skipping it silently lost the change.
+	// the load settles; skipping it silently lost the change.
 	let headRefreshOwed = false;
 
 	async function refreshHead() {
@@ -457,7 +457,7 @@
 		//
 		// `named` drives the badge's uppercasing off. "agent" / "cli" / "web"
 		// are CATEGORY words and read as chips; a stamped name is a name, and
-		// upper-casing it would collapse `Wren` and `wren` into the same
+		// upper-casing it would collapse `Alice` and `alice` into the same
 		// pixels — breaking the verbatim contract in CSS rather than in code.
 		// The `user` kind has always opted out for exactly this reason.
 		if (actor === 'agent') {

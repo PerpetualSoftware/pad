@@ -53,7 +53,7 @@ const SURFACES = [
 		src: '../../routes/[username]/[workspace]/playbooks/+page.svelte',
 		keys: ['status'],
 	},
-	// ROUND 2 found three more, two of which are fixed here. Both render SERVER
+	// A second sweep found three more, two of which are fixed here. Both render SERVER
 	// PROJECTIONS — values the server itself obtained by name — which is why a
 	// sweep for client-side `parseFields` reads kept missing them, and why the
 	// class is stated as "a value obtained by name" rather than "a value read
@@ -64,7 +64,7 @@ const SURFACES = [
 		keys: ['status', 'priority'],
 	},
 	{ name: 'ItemGraph', src: '../components/graph/ItemGraph.svelte', keys: ['status'] },
-	// ROUND 3. `OpenChildrenDialog` I had filed as unfixable client-side on the
+	// A third sweep: `OpenChildrenDialog` had been filed as unfixable client-side on the
 	// claim that its DTO carried no collection identifier — it carries
 	// `collection_slug`, and the link beside the status is built from it.
 	{ name: 'OpenChildrenDialog', src: '../components/OpenChildrenDialog.svelte', keys: ['status'] },
@@ -147,7 +147,7 @@ describe('a file is not a renderer', () => {
 });
 
 describe('the prompt substitution has ONE implementation, not two mirrors', () => {
-	// The structural half of the lead's ruling (BUG-3067). `QuickActionsMenu` and
+	// The structural half of the BUG-3067 decision. `QuickActionsMenu` and
 	// `quick-action-preview` held byte-identical copies of this substitution, and
 	// the preview module's own doc says it MIRRORS the menu so the preview shows
 	// what copying produces — which is exactly what makes a drift between them

@@ -70,10 +70,10 @@
 	let loadingMore = $state(false);
 	let requestCounter = 0;
 
-	// Rows whose Details cell is expanded to the full record (BUG-2789). This
+	// Rows whose Details cell is expanded to the full record  (BUG-2789). This
 	// is a forensic surface, so its presentation is bounded — one clipped line
 	// per row — but the CONTENT never is: the summary line is a digest that
-	// can clip or omit members (the generic fallback shows three keys), and
+	// can clip or omit members  (the generic fallback shows three keys), and
 	// expanding shows everything the row holds, in a height-bounded box.
 	const expanded = new SvelteSet<string>();
 
@@ -97,7 +97,7 @@
 	}
 
 	// Chip color for an audit action — success/danger/warning semantics
-	// mapped onto the shared accent tokens (TASK-2292).
+	// mapped onto the shared accent tokens  (TASK-2292).
 	function actionColor(action: string): string {
 		if (['login', 'register', 'oauth_login'].includes(action)) return 'var(--accent-green)';
 		if (['login_failed', 'oauth_login_failed', 'user_disabled', 'account_deleted'].includes(action)) return 'var(--accent-red)';
@@ -146,7 +146,7 @@
 		// and the branches below can genuinely throw on well-formed JSON —
 		// `String(data.keys)` on `{"keys":{"toString":null}}` cannot convert
 		// to a primitive. That used to render an em dash; it must not take
-		// the whole audit page down instead (codex round 6).
+		// the whole audit page down instead.
 		try {
 			switch (action) {
 				case 'role_changed':
@@ -179,8 +179,8 @@
 					break;
 				case 'payment_failed_email_sent': {
 					// Differentiate operationally distinct outcomes: a genuine delivery
-					// failure (Maileroo 5xx) should not read the same as a pre-send
-					// skip (unknown customer, no email on file, provider not wired up).
+					// failure  (Maileroo 5xx) should not read the same as a pre-send
+					// skip  (unknown customer, no email on file, provider not wired up).
 					// Surface admin_actor_id when present so manual operator calls
 					// show which admin triggered the send; sidecar calls omit that
 					// field and the User column's target user tells the story.
@@ -210,21 +210,21 @@
 	// person whose token it borrowed. Both facts are real and an audit
 	// surface needs both, so they render together rather than one replacing
 	// the other: the agent acted, that account is who it acted as. The name
-	// is self-declared (see agentActor.ts) and this column is the last place
+	// is self-declared  (see agentActor.ts) and this column is the last place
 	// that should be implied otherwise, hence "via" rather than a merge.
 	//
 	// Returns the PARTS, never a joined string. The agent half is
 	// attacker-chosen text and the human half is not, so building
-	// `${agent} (via ${human})` would let a writer pick a name that forges the
-	// construction (`admin (via root)`), or that carries a bidi control
+	// `${agent}  (via ${human})` would let a writer pick a name that forges the
+	// construction (`admin  (via root)`), or that carries a bidi control
 	// character and visually reorders the suffix it was appended to — the
 	// audited party editing how the audit reads. Kept apart, the template can
 	// isolate each one, which bounds a hostile name to its own element instead
-	// of letting it rewrite its neighbours (codex round 8).
+	// of letting it rewrite its neighbours.
 	//
 	// This is not a rendering quirk, it is ResolveAgentName's documented
 	// attribution-honesty problem arriving through the renderer. That contract
-	// (internal/cli/agent_identity.go, "WHAT THIS IS NOT") says the header
+	//  (internal/cli/agent_identity.go, "WHAT THIS IS NOT") says the header
 	// records honesty rather than identity, because the actor authors it. A
 	// surface that COMPOSES with an authored value inherits that: it hands the
 	// author influence over the parts they did not write. So the rule for any
@@ -263,7 +263,7 @@
 			if (filterAction) params.set('action', filterAction);
 			params.set('days', String(filterDays));
 			params.set('limit', String(LIMIT));
-			// Keyset, not offset (BUG-2781): see $lib/utils/activityPaging.
+			// Keyset, not offset  (BUG-2781): see $lib/utils/activityPaging.
 			const cursor = append ? cursorAfter(entries) : null;
 			if (cursor) {
 				params.set('before', cursor.before);

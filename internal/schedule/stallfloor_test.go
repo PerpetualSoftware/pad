@@ -15,7 +15,7 @@ const (
 )
 
 // stallShape classifies only costs proved linear on a never-firing stretch
-// from DTSTART (TASK-4100 H', ruling conditions 1 and 2).
+// from DTSTART (TASK-4100).
 //
 // All sites below are in internal/schedule/internal/rrule/rrule.go:
 //   - :615 charges spend(0) once per period-loop iteration.
@@ -49,7 +49,7 @@ func stallShape(r *Rule) shape {
 // ignoring a nonexistent instance does not skip a period of iteration.
 //
 // For shapeFloor only, P >= p0 + floor(S/2)*INTERVAL units is checked.
-// Blind spot (TASK-4100 H', ruling condition 5): this floor cannot detect a P
+// Blind spot (TASK-4100): this floor cannot detect a P
 // that is one INTERVAL too low. No equality is claimed for filtered day jumps.
 func TestStallPosClosedForm(t *testing.T) {
 	for _, tc := range []struct {

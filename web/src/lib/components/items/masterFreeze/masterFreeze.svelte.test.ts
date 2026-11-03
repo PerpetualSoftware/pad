@@ -119,7 +119,7 @@ describe('invisible master/pane freeze wiring (BUG-2263)', () => {
 		expect(present(r, 'archived-restore-btn')).toBe(true);
 		expect(disabled(r, 'star-btn')).toBe(false);
 		expect(present(r, 'share-btn')).toBe(true);
-		// TWO documented exceptions (Codex P1) — same-item / same-collection WRITES
+		// TWO documented exceptions — same-item / same-collection WRITES
 		// stay confined to the ACTIVE side. On the peeking side: version restore
 		// (writes items.content, collides with the retained Y.Doc) is hidden; and the
 		// owner collection-management menu is hidden here because no prompt actions
@@ -241,7 +241,7 @@ describe('invisible master/pane freeze wiring (BUG-2263)', () => {
 		// canEdit-gated: it renders whenever the 'delete' sub-view is active and
 		// refuses via `disabled={deleting || !canEdit}`. Mirroring it as
 		// `{#if canEdit}` was a real mistake in the first draft of this probe
-		// (Codex) — it would have claimed the row vanishes on permission loss when
+		// — it would have claimed the row vanishes on permission loss when
 		// the real component leaves it present but inert.
 
 		// Armed, active side, full permission: present and operable.

@@ -297,7 +297,7 @@ func TestRegisterOAuthActiveTokensCollector(t *testing.T) {
 }
 
 // TestRegisterOAuthActiveTokensCollector_ErrorIsScrapeSafe pins the
-// behavior Codex flagged on PR review: a provider error must NOT
+// behavior a PR review flagged: a provider error must NOT
 // fail Registry.Gather() (which would break the entire /metrics
 // scrape via promhttp's default handler). The contract is "skip
 // the sample, log the error, let every other metric through."

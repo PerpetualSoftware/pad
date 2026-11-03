@@ -129,7 +129,7 @@ func TestAppendRepairsIdlessSiblings(t *testing.T) {
 	}
 }
 
-// Round-1 review (BUG-2788): the repair touches only what the timeline can
+// BUG-2788: the repair touches only what the timeline can
 // read, and only a blob that is exactly one JSON value.
 func TestEnsureStructuredEntryIDsSkipsWhatTheTimelineCannotRead(t *testing.T) {
 	for name, in := range map[string]string{

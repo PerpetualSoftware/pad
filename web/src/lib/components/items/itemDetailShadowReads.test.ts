@@ -1,5 +1,5 @@
 // Node-project test (no DOM): the editor-markdown shadow is read only through
-// its draining accessor (TASK-2232, lead ruling).
+// its draining accessor (TASK-2232).
 //
 // The Editor delivers markdown COALESCED, so `lastEditorMarkdown` can be up to
 // one coalesce window behind the document. `currentEditorMarkdown()` drains

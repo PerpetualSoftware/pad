@@ -143,7 +143,7 @@ func TestInstallRefresh_HoldsTheRefreshMarkerForTheRestartWindow(t *testing.T) {
 	}
 }
 
-// Day 79, in order: the refresh stops the server, and before it restarts it a
+// In order: the refresh stops the server, and before it restarts it a
 // pad CLI call auto-starts a stray on the port (a binary that predates the
 // marker, or a start by hand). The restart cannot bind, so it is not spawned,
 // and the holder is named.

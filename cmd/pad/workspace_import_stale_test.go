@@ -7,7 +7,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/server"
 )
 
-// BUG-3032, codex round 1 P2: the server reports the stale-body count as a
+// BUG-3032: the server reports the stale-body count as a
 // response header, and the CLI printed only the NUL-repair count — so the signal
 // existed on the wire and nowhere a human could see it.
 //
@@ -39,8 +39,7 @@ func TestStaleBodyImportCountSpeaksOnlyWhenThereIsSomethingToSay(t *testing.T) {
 		{"one", staleHeader("1"), "1"},
 		// A response header is middlebox- and attacker-influenced input, not a
 		// trusted field. The earlier version returned any non-"0" string, so each
-		// of these printed as a count while the doc comment claimed they did not
-		// (codex round 2 P2).
+		// of these printed as a count while the doc comment claimed they did not.
 		{"not a number", staleHeader("abc"), ""},
 		{"negative", staleHeader("-1"), ""},
 		{"NaN", staleHeader("NaN"), ""},
@@ -51,7 +50,7 @@ func TestStaleBodyImportCountSpeaksOnlyWhenThereIsSomethingToSay(t *testing.T) {
 		// spelled oddly reaches the terminal in one canonical form.
 		{"leading zeros are normalised", staleHeader("007"), "7"},
 		// The three divergences from the web client, each one where strconv.Atoi
-		// alone was the LOOSER reader (codex round 4 P2). Atoi accepts a leading
+		// alone was the LOOSER reader. Atoi accepts a leading
 		// sign and anything up to MaxInt64; the browser's regex accepts neither,
 		// and the server writes this header with Itoa, which emits neither.
 		{"leading plus", staleHeader("+7"), ""},
@@ -67,8 +66,8 @@ func TestStaleBodyImportCountSpeaksOnlyWhenThereIsSomethingToSay(t *testing.T) {
 	}
 }
 
-// A REPEATED header is refused rather than resolved to its first value
-// (codex round 4 P2). Header.Get would have returned "2" here while the browser's
+// A REPEATED header is refused rather than resolved to its first value.
+// Header.Get would have returned "2" here while the browser's
 // Headers.get joins the values as "2, 3" and refuses — so the same response
 // produced a count on one surface and silence on the other. The server sets this
 // header exactly once, so two values mean something rewrote it.

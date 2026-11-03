@@ -22,8 +22,8 @@
 // implementation could slot in without touching any producer or the stream
 // handler, and that held for RedisBus: it changed neither.
 //
-// It did NOT hold for BUG-2699, and the distinction is worth keeping
-// (codex round 6). Making Publish report acceptance changed the INTERFACE,
+// It did NOT hold for BUG-2699, and the distinction is worth keeping.
+// Making Publish report acceptance changed the INTERFACE,
 // not just the implementations, so every producer had to be revisited —
 // not to change behaviour, but to rule on what each should do with an
 // answer it had never been given. An interface absorbs a new
@@ -111,7 +111,7 @@ const (
 	// per-process with MemoryBus and SHARED with RedisBus (BUG-2698), so
 	// the skip means "nothing is listening anywhere" in both shapes — an
 	// earlier version of this sentence said LOCAL, which described the
-	// window between BUG-2651 and BUG-2698 (codex round 24). See
+	// window between BUG-2651 and BUG-2698. See
 	// handlers_push.go's own comment on that gate, plus TargetSessionID
 	// and pushResponse.DeliveredSessions there.
 	// KindAsk is push's reserved sibling in the other direction
@@ -159,8 +159,8 @@ type Notification struct {
 	// CollectionID is the watched/assigned item's collection, needed so
 	// the stream handler can apply the SAME current-access visibility
 	// check to EVERY notification kind — watch-matched and
-	// addressed-to-you alike (TASK-2533 codex round 2 finding 2: the
-	// addressed-to-you branch used to skip this check entirely).
+	// addressed-to-you alike (TASK-2533: the addressed-to-you branch used to
+	// skip this check entirely).
 	CollectionID string
 	// ItemRef is the human-facing issue ID ("TASK-214"), pre-resolved by
 	// the producer so the stream handler and the CLI's --for-session
@@ -184,9 +184,9 @@ type Notification struct {
 	// TargetUserID is IDEA-2544's generalized addressed-to field:
 	// populated on Kind == KindPush with the user the push is addressed
 	// to (Phase 1 always sets this to the pushing user's own ID —
-	// self-addressed only, per Dave's product call that pushing into
-	// someone else's session is a consent question, not a code
-	// question). watchNotificationVisible compares this directly against
+	// self-addressed only, per the product decision that pushing into someone
+	// else's session is a consent question, not a code question).
+	// watchNotificationVisible compares this directly against
 	// the connected caller's user ID, exactly like AssignedUserID's role
 	// for KindAssignment. Reserved KindAsk is expected to share this same
 	// field (harness→human addressed traffic) rather than growing its
@@ -242,8 +242,8 @@ type Notification struct {
 type Bus interface {
 	// Publish assigns the Notification a monotonic ID, stores it in the
 	// replay buffer, and fans it out to every live Subscribe channel.
-	// ID assignment and buffer insertion are atomic under one lock
-	// (codex round 1 finding 4): two concurrent Publish calls that got
+	// ID assignment and buffer insertion are atomic under one lock: two
+	// concurrent Publish calls that got
 	// their IDs from separate critical sections could otherwise append
 	// to the replay buffer out of ID order, corrupting since()'s
 	// ordering assumptions.
@@ -307,8 +307,8 @@ type Bus interface {
 	// blocking on a channel nobody will ever close.
 	Subscribe() (chan Notification, <-chan struct{}, error)
 	// SubscribeAndReplaySince atomically subscribes AND captures every
-	// buffered notification with ID > sinceID, under the SAME lock
-	// (codex round 1 finding 3). Subscribing and reading the replay
+	// buffered notification with ID > sinceID, under the SAME lock. Subscribing
+	// and reading the replay
 	// buffer as two separate calls leaves a window where a Notification
 	// published in between lands in BOTH the replay set and the live
 	// channel — this closes that window structurally rather than
@@ -443,10 +443,10 @@ func (rb *replayBuffer) since(sinceID int64) []Notification {
 // comment for its single-process limitation.
 //
 // A SINGLE mutex guards subscriber membership, sequence assignment, and
-// the replay buffer together (codex round 1 findings 3 + 4 — the two
-// were separate locks before, which allowed both out-of-ID-order buffer
-// insertion under concurrent Publish AND a subscribe-then-replay window
-// where a Notification could be delivered twice). This serializes
+// the replay buffer together (the two were separate locks before, which allowed
+// both out-of-ID-order buffer insertion under concurrent Publish AND a
+// subscribe-then-replay window where a Notification could be delivered twice).
+// This serializes
 // Publish/Subscribe/EventsSince with respect to each other, which is the
 // correct semantics for a monotonic sequence + ordered ring buffer
 // anyway — genuinely concurrent publishes cannot both proceed and still
@@ -455,8 +455,8 @@ func (rb *replayBuffer) since(sinceID int64) []Notification {
 // concurrency a non-issue in practice.
 //
 // Publish also sends to every subscriber channel WHILE HOLDING mu
-// (codex round 2 finding 3 — see Publish's doc comment for why an
-// earlier "send after releasing the lock" version could panic).
+// (see Publish's doc comment for why an earlier "send after releasing the lock"
+// version could panic).
 type MemoryBus struct {
 	// observable carries the optional operational-event seam (BUG-2727).
 	//
@@ -503,8 +503,7 @@ func NewWithReplaySize(size int) *MemoryBus {
 
 // Publish assigns a sequence ID, appends to the replay buffer, and sends
 // to every live subscriber — ALL under the same lock Unsubscribe/Close
-// use to remove-and-close a channel (codex round 2 finding 3, fixing a
-// send-on-closed-channel panic).
+// use to remove-and-close a channel (fixing a send-on-closed-channel panic).
 //
 // The earlier version snapshotted subscriber channels under the lock,
 // released it, and sent afterward — reasoning that holding the lock
@@ -637,7 +636,7 @@ func (b *MemoryBus) Subscribe() (chan Notification, <-chan struct{}, error) {
 		// reachable during shutdown, where Stop closes the bus while a
 		// stream handler is still running. RedisBus guarded this from the
 		// start and the two implementations must not differ in a way a
-		// consumer can feel (codex round 2 on BUG-2651).
+		// consumer can feel (BUG-2651).
 		close(ch)
 		return ch, sub.gaps, ErrBusClosed
 	}
@@ -646,7 +645,7 @@ func (b *MemoryBus) Subscribe() (chan Notification, <-chan struct{}, error) {
 }
 
 // SubscribeAndReplaySince — see the Bus interface doc comment for why
-// this exists (codex round 1 finding 3). Subscribing and reading the
+// this exists. Subscribing and reading the
 // replay buffer under the SAME critical section that Publish also uses
 // means a Notification is either: published before this call (and thus
 // only in the returned replay slice), or published after (and thus only
@@ -673,7 +672,7 @@ func (b *MemoryBus) SubscribeAndReplaySince(ctx context.Context, sinceID int64) 
 	// package. RedisBus counts its own unservable resumes; MemoryBus did not,
 	// so pad_watchevents_resume_gaps_total read zero on a single-process
 	// deployment for a path that genuinely sends clients sync_required
-	// (BUG-2731, codex round 12). A counter that is structurally blind to one
+	// (BUG-2731). A counter that is structurally blind to one
 	// of its two implementations is worse than absent: it reads as evidence.
 	var pending pendingReports
 	defer func() { b.flush(&pending) }()

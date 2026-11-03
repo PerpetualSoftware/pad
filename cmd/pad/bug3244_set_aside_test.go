@@ -7,7 +7,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// BUG-3244 ruling 1 at the CLI: every stale-body notice that names a remedy
+// BUG-3244 at the CLI: every stale-body notice that names a remedy
 // branches on the value. For set-aside edits it names `pad item set-aside`
 // and never says a tab will catch the body up. Each case renders BOTH values.
 

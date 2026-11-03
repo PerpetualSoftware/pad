@@ -269,7 +269,7 @@ func TestAdvertisedRevisionMatchesWhatTheTransportServes(t *testing.T) {
 }
 
 // The server's stream admission keys the listen door on the versions the
-// mount's transport serves (BUG-3835 r7), read through SupportsProtocolVersion.
+// mount's transport serves (BUG-3835), read through SupportsProtocolVersion.
 // Both production mounts must expose it, the ChatGPT one through its wrapper,
 // or admission falls back to counting every modern version and a probing
 // client at a full budget gets 429 instead of the 400 it falls back on.

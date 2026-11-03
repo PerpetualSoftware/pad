@@ -3,8 +3,8 @@ import { clearAttachmentMetadataCache } from '$lib/components/editor/attachment-
 import { CURSOR_STORAGE_PREFIX } from '$lib/collab/wsProvider.svelte';
 
 /**
- * What a real identity change does to this tab (BUG-3005, lead ruling after
- * codex round 3): clear the persistent state a reload would NOT drop, then
+ * What a real identity change does to this tab (BUG-3005):
+ * clear the persistent state a reload would NOT drop, then
  * reload.
  *
  * WHY A RELOAD RATHER THAN MORE FENCES. Three review rounds each found another
@@ -55,7 +55,7 @@ export function clearPersistentIdentityState(): void {
 	// `pad-last-scroll-<ws>-<pathname>` embeds the path in its own KEY. Both are
 	// keyed by workspace with no user in them, so two accounts with access to
 	// the same workspace slug share them, and the second one is legible from
-	// the key list alone without reading a single value (codex round 4).
+	// the key list alone without reading a single value.
 	try {
 		for (const key of Object.keys(localStorage)) {
 			if (key.startsWith(LAST_ROUTE_PREFIX) || key.startsWith(LAST_SCROLL_PREFIX)) {
@@ -98,7 +98,7 @@ export function reloadForIdentityChange(): void {
 	try {
 		clearPersistentIdentityState();
 	} finally {
-		// THE RELOAD HAPPENS EITHER WAY (codex round 5). The clears are
+		// THE RELOAD HAPPENS EITHER WAY. The clears are
 		// best-effort hygiene; the reload is the mechanism. A throw on the way
 		// through — today only reachable if the attachment memo's `clear()`
 		// grows an implementation that can fail — would otherwise leave the tab

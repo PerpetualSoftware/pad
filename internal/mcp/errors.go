@@ -456,7 +456,7 @@ func envelopeFrom(res *CallToolResult) ErrorEnvelope {
 // the versioned line prefix the CLI writes to stderr when it surfaces
 // a structured error. Duplicated (rather than imported) so the mcp
 // classifier doesn't pull the cli package's dependency graph in for
-// one string. Codex round-3 P3 introduced the versioned shape.
+// one string. The marker is versioned.
 //
 // IMPORTANT: keep in lockstep with cli.StructuredErrorMarker AND with
 // allowedStructuredErrorCodes below. A wire-shape change requires
@@ -481,14 +481,14 @@ const storedStateUnreadableHint = "Retrying will not help — the item's stored 
 // MCP layer will surface verbatim. Two transports consult it:
 //
 //   - Stdio: extractStructuredCLIError gates the `pad-structured-error/v1:`
-//     marker on this set (Codex round-3 P3).
+//     marker on this set.
 //   - HTTP: classifyHTTPStatus's 409 branch gates the upstream
-//     `error.code` pass-through on this set (Codex round-4 P2).
+//     `error.code` pass-through on this set.
 //
 // Routing BOTH transports through the same whitelist keeps the
 // ErrorCode enum's closed-contract honest — agents see the same set
 // of structured codes regardless of which dispatcher delivered the
-// response. Pre-round-4 the HTTP path forwarded any non-"conflict"
+// response. Previously the HTTP path forwarded any non-"conflict"
 // upstream code, which silently widened the enum and let the two
 // transports diverge.
 //
@@ -564,7 +564,7 @@ var allowedStructuredErrorCodes = map[string]struct{}{
 // marker is found OR the payload fails any of the hardening checks
 // (caller falls back to the regex-based classifiers).
 //
-// Hardening (Codex round-3 P3):
+// Hardening:
 //   - Versioned marker. Unknown versions return nil.
 //   - Whitelisted codes. Unknown codes return nil.
 //   - Last-marker-wins. If multiple markers appear in stderr (a
@@ -615,7 +615,7 @@ func extractStructuredCLIError(stderr string) *CallToolResult {
 	case ErrEmailNotVerified:
 		return NewErrorResult(emailNotVerifiedPayload(env.Error.Message))
 	}
-	// Hint is forwarded when the writer set one (BUG-2675, Codex round 2).
+	// Hint is forwarded when the writer set one (BUG-2675).
 	// Without this the two transports delivered the same CODE and different
 	// guidance: remote MCP told the agent retrying is pointless and how to
 	// inspect the item, stdio got an empty hint. The existing marker writers
@@ -632,7 +632,7 @@ func extractStructuredCLIError(stderr string) *CallToolResult {
 // structured envelope. lookup is optional — when supplied, no_workspace
 // errors get available_workspaces enrichment.
 func classifyExecError(ctx context.Context, cmdPath []string, runErr error, stderr string, lookup WorkspaceLister) *CallToolResult {
-	// IDEA-1494 R2: the CLI emits a single `pad-error: {json}` line
+	// IDEA-1494: the CLI emits a single `pad-error: {json}` line
 	// on stderr when surfacing the open-children rejection (see
 	// internal/cli/client.go::WriteOpenChildrenError). Detect it
 	// before regex classification so we lift the structured `code`
@@ -695,7 +695,7 @@ func classifyExecError(ctx context.Context, cmdPath []string, runErr error, stde
 	// prefix referenced OLD CLI verb names (e.g. `pad item block`)
 	// that don't match the v0.2 catalog action names agents see, and
 	// the cmdPath is already implicit from which tool was called
-	// (BUG-987 bug 11 round 2).
+	// (BUG-987 bug 11).
 	msg := stderr
 	if msg == "" && runErr != nil {
 		msg = runErr.Error()
@@ -737,7 +737,7 @@ var (
 	// "cannot ..." (e.g. "cannot link an item to itself", "cannot
 	// modify archived item") which are validation-shaped server
 	// rejections previously falling through to server_error
-	// (BUG-987 bug 11 round 2).
+	// (BUG-987 bug 11).
 	//
 	// Two additions cover the reserved-key / override refusal family, which
 	// this bump documents as behaving the same on both transports:
@@ -758,7 +758,7 @@ var (
 	// inferring it. Until a refusal emits that, TestReservedKeyRefusalsAgree-
 	// AcrossTransports is where a new one has to be added — it drives both
 	// real classifiers with the real server text, so a reworded message fails
-	// there rather than in an agent's retry loop (Codex rounds 7-8).
+	// there rather than in an agent's retry loop.
 	reValidationFailed = regexp.MustCompile(`(invalid|missing required|must be one of|validation|not settable|has no field|cannot )`)
 
 	// The argv-parse refusals cobra and pflag raise before a command runs
@@ -1054,15 +1054,14 @@ func classifyHTTPStatusKind(
 		}
 		return classify404(ctx, cmdKey, route, bodyText, bodyMessage, lookup, kind, refOrSlug)
 	case http.StatusConflict:
-		// IDEA-1494 R2/R4 P2: preserve the upstream `code` + `details`
+		// IDEA-1494: preserve the upstream `code` + `details`
 		// when the handler emitted a structured rejection — but ONLY
 		// for codes that appear in the shared allow-list
 		// (allowedStructuredErrorCodes, defined below). The stdio
 		// classifier already gates on the same set; routing both
 		// transports through the same whitelist keeps the
-		// ErrorCode enum's closed contract honest (round-4 P2:
-		// HTTP was forwarding any non-"conflict" code, diverging
-		// from stdio).
+		// ErrorCode enum's closed contract honest (HTTP used to forward any
+		// non-"conflict" code, diverging from stdio).
 		//
 		// New structured codes get added to allowedStructuredErrorCodes
 		// in one place; both transports adopt them in lockstep.
@@ -1253,9 +1252,8 @@ func classify404(
 		// been retrofitted yet keep the pre-TASK-1078 code mapping.
 		// Use itemMissingHint (NOT raw bodyText) so the safe-extracted
 		// bodyMessage is the only upstream content forwarded, matching
-		// the privacy contract extractUpstreamMessage establishes
-		// (Codex review #387 round 2 caught the residual leak from
-		// the previous bare-`bodyText` Hint).
+		// the privacy contract extractUpstreamMessage establishes;
+		// a bare-`bodyText` Hint would leak upstream content.
 		return NewErrorResult(ErrorPayload{
 			Code:    ErrItemNotFound,
 			Message: "Item not found.",
@@ -1284,7 +1282,7 @@ func classify404(
 //     the hint omits the upstream-message clause entirely. The
 //     literal text has zero diagnostic value (Bug 17) and forwarding
 //     it doesn't help anyone.
-//   - Anything else → return "". Per Codex review #387 round 1, the
+//   - Anything else → return "". The
 //     pre-fix fallback returned the raw body — which would forward
 //     non-envelope upstream JSON / HTML / debug dumps, including any
 //     tokens / passwords / internal-only fields the backend might
@@ -1732,8 +1730,7 @@ func planLimitHintFor(bodyMsg, route string) string {
 // handles 429s from the dispatcher's SYNTHESIZED /api/v1/... requests,
 // which can fire from several different limiters with different sizing
 // (the general API limiter at 600/min/burst-60, the Search limiter at
-// 30/min/burst-10, etc.) — Codex review #546 round 1 [P2] caught the
-// first draft of this hint hard-coding the MCP per-token cap, which
+// 30/min/burst-10, etc.) — so this hint must not hard-code the MCP per-token cap, which
 // fires BEFORE the dispatcher runs and so never lands here. The
 // Retry-After header carries the limiter-specific wait time; agents
 // honoring it get correct backoff without needing the cap in prose.

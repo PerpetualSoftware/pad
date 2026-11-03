@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test';
 
-/** `PANE_MINT_SETTLE_MS` (src/lib/collections/paneMintSettle.ts). */
+/** `PANE_MINT_SETTLE_MS`  (src/lib/collections/paneMintSettle.ts). */
 export const PANE_MINT_SETTLE_MS = 140;
 
 /** How long after the Back's popstate the settle may take to arm. */
@@ -8,14 +8,14 @@ const ARM_WINDOW_MS = 1000;
 
 /**
  * Browser Back, then a pane drill `delayMs` after the Back's mint-settle is
- * ARMED — both timed in the page (BUG-3166), so no Playwright round-trip sits
+ * ARMED — both timed in the page  (BUG-3166), so no Playwright round-trip sits
  * between them. The settle is recognised as the `PANE_MINT_SETTLE_MS`
  * setTimeout the Back's afterNavigate arms; its callback is wrapped to record
  * whether it had FIRED by the time the drill ran, which is the precondition
  * that decides what the drill may observe (a busy main thread delays both
  * timers, so the delay alone does not say which ran first).
  *
- * Which 140ms timer is the settle (codex r1): the collection host's j/k
+ * Which 140ms timer is the settle: the collection host's j/k
  * pane-follow debounce is ALSO 140ms, so the wrapper latches only a timer armed
  * AFTER the Back's traversal reached this helper's popstate listener, and
  * within ARM_WINDOW_MS of it. SvelteKit 3's popstate handler is async: it

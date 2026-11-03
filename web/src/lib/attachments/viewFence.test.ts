@@ -61,7 +61,7 @@ describe('viewIdentity', () => {
 		// separator FOLLOWED BY the next part's name and the name/value
 		// separator re-creates the exact byte sequence the join itself emits, so
 		// two DIFFERENT identities serialise the same — and a stale fence passes,
-		// which is the failure this module exists to prevent (Codex round 1).
+		// which is the failure this module exists to prevent.
 		// Reproduced for the NUL/SOH join this module used to use, and for
 		// separators built from the characters JSON has to escape.
 		const shapes: [string, string][] = [

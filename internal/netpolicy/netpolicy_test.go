@@ -19,10 +19,10 @@ func TestBlocked(t *testing.T) {
 		"::c612:1",        // IPv4-compatible 198.18.0.1
 		"64:ff9b::c612:1", // NAT64 of 198.18.0.1: judged as the embedded IPv4
 		"64:ff9b::7f00:1", // NAT64 of 127.0.0.1
-		"192.88.99.2",     // 6to4 relay anycast (codex r1)
-		"100:0:0:1::1",    // dummy prefix (codex r1)
-		"3fff::1",         // documentation (codex r1)
-		"5f00::1",         // SRv6 SIDs (codex r1)
+		"192.88.99.2",     // 6to4 relay anycast
+		"100:0:0:1::1",    // dummy prefix
+		"3fff::1",         // documentation
+		"5f00::1",         // SRv6 SIDs
 		"64:ff9b:1::1",    // NAT64 local-use
 		"2002:c612:1::1",  // 6to4 of 198.18.0.1
 		"2001::1",         // Teredo
@@ -37,10 +37,10 @@ func TestBlocked(t *testing.T) {
 	allowed := []string{
 		"8.8.8.8", "1.1.1.1", "93.184.216.34", "198.17.255.255", "198.20.0.1", "100.128.0.1",
 		"2606:4700:4700::1111", "2001:4860:4860::8888", "2a00:1450:4001::1",
-		// globally reachable exceptions inside reserved blocks (codex r1)
+		// globally reachable exceptions inside reserved blocks
 		"192.0.0.9", "192.0.0.10", "2001:1::1", "2001:1::2", "2001:1::3",
 		"2001:3::1", "2001:4:112::1", "2001:20::1", "2001:30::1",
-		// NAT64 of a PUBLIC IPv4 address is that address (codex r1)
+		// NAT64 of a PUBLIC IPv4 address is that address
 		"64:ff9b::808:808",
 	}
 	for _, s := range allowed {
@@ -49,7 +49,7 @@ func TestBlocked(t *testing.T) {
 		}
 	}
 	// Malformed slices are refused, never judged by predicates that answer
-	// false for them (codex r1).
+	// false for them.
 	for _, ip := range []net.IP{nil, {}, {1}, make(net.IP, 15), make(net.IP, 17)} {
 		if !Blocked(ip) {
 			t.Errorf("Blocked(%d-byte slice) = false, want true", len(ip))

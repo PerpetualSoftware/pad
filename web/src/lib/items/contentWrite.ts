@@ -107,8 +107,8 @@ export function stillOnBase(fresh: { content?: string | null } | null | undefine
 }
 
 /**
- * The other half of that question for a write that sent more than the body
- * (codex, TASK-3548): does the re-read row hold exactly the title and every
+ * The other half of that question for a write that sent more than the body:
+ * does the re-read row hold exactly the title and every
  * fields_patch value this write sent? The refused write landed them, so it
  * should; if not, someone else changed them since, and resending this write
  * with the fresh token would put the old values back over a change the user

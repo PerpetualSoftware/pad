@@ -382,7 +382,7 @@ func TestRoute_ItemList_FiltersAsQuery(t *testing.T) {
 		// parent goes through the field-filter path (parseItemListParams
 		// treats unknown keys as fields → resolveParentFilter resolves
 		// "PLAN-3" → UUID). Sending parent_id would skip ref-resolution
-		// and break refs (Codex review #344 finding 2).
+		// and break refs.
 		"parent":        "PLAN-3",
 		"agent_role_id": "implementer",
 	} {
@@ -570,8 +570,8 @@ func TestRoute_ItemSearch_SendsCollectionAsTyped(t *testing.T) {
 	// BUG-2659: the collection goes on the wire exactly as sent. /search now
 	// resolves the filter itself, exact match first, so `task` reaches a
 	// collection really named `task`; normalising it here to `tasks` was the
-	// shadow. (It used to be normalised because the filter was a literal
-	// slug match that 0-matched shorthand — Codex review #344 round 2.)
+	// shadow. (It used to be normalised because the filter was a literal slug
+	// match that 0-matched shorthand.)
 	_, p, _, err := routeTable["item search"](map[string]any{
 		"workspace":  "docapp",
 		"query":      "OAuth",

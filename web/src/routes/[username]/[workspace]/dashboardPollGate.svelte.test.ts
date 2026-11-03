@@ -3,7 +3,7 @@
 // stream connected and syncService already reloading on real changes (measured:
 // 72 s idle with SSE connected = 8 calls / 112,890 B). A tick now does nothing
 // in a hidden tab or while the stream is live; it runs when the stream is
-// reconnecting, refused, or polling under the HTTP/1.1 budget (BUG-3320). A
+// reconnecting, refused, or polling under the HTTP/1.1 budget  (BUG-3320). A
 // hidden tab that comes back without a live stream catches up once.
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { cleanup, render } from '@testing-library/svelte';

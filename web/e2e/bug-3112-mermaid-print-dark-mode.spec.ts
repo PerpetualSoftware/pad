@@ -8,13 +8,13 @@ import { browserLogin, EDITOR_SELECTOR, SYNCED_BADGE_SELECTOR, expectEditorMount
  *
  * The palette is baked into the SVG when the diagram renders, and print is
  * browser-native, so the fix is a print-only CSS flip for diagrams rendered
- * dark (Editor.svelte, `.mermaid-diagram[data-mermaid-theme='dark']`). What is
+ * dark  (Editor.svelte, `.mermaid-diagram[data-mermaid-theme='dark']`). What is
  * asserted is the PAINTED colour inside a node, read from a screenshot taken
  * under print emulation, because the filter changes paint and nothing in the
  * DOM or in computed fills.
  *
- * Three legs, so the pixel read is shown able to go both ways (CONVE-34):
- *  - dark mode, printed: the node interior is light (the fix);
+ * Three legs, so the pixel read is shown able to go both ways  (CONVE-34):
+ *  - dark mode, printed: the node interior is light  (the fix);
  *  - dark mode, on screen: the SAME point is dark (the counterfactual: without
  *    the print rule, this is what printed);
  *  - light mode, printed: still light, and the diagram is not tagged dark (an
@@ -52,13 +52,13 @@ async function openDoc(
 }
 
 /**
- * Relative luminance (0 black .. 1 white) of the painted pixel inside the first
+ * Relative luminance  (0 black .. 1 white) of the painted pixel inside the first
  * node's FILL.
  *
- * Measured on the node's SHAPE, not on `g.node`, whose box also holds the label
- * (codex round 1): the point is a few px inside the shape's left edge, past the
+ * Measured on the node's SHAPE, not on `g.node`, whose box also holds the label:
+ * the point is a few px inside the shape's left edge, past the
  * stroke, at mid-height, and the shape must be wide enough that the centred
- * label cannot reach it. The screen leg (dark fill, luminance < 0.3) is what
+ * label cannot reach it. The screen leg  (dark fill, luminance < 0.3) is what
  * shows the point is fill rather than a light label on a dark node.
  */
 async function nodeInteriorLuminance(page: Page): Promise<number> {

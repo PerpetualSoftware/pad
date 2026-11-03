@@ -34,7 +34,7 @@ func repeatsOrBlanks(schema models.CollectionSchema) []string {
 // TASK-3539: template seeding writes collections through the store, not the
 // HTTP handlers that refuse a repeated or empty field key or option, so every
 // schema a template ships is held to the same rule here, by an independent
-// check (codex round 5: calling the validator under test would be circular).
+// check (calling the validator under test would be circular).
 func TestTASK3539_TemplateSchemasHaveUniqueKeysAndOptions(t *testing.T) {
 	all := ListAllTemplates()
 	if len(all) == 0 {

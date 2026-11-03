@@ -1,5 +1,5 @@
 // TASK-3595: a first Cloud signup lands in the workspace the server made for
-// it (register's `workspace_path`), not on /console. An explicit ?redirect=
+// it  (register's `workspace_path`), not on /console. An explicit ?redirect=
 // still wins. The username is a customization behind "Change".
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/svelte';

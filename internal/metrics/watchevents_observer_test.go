@@ -9,7 +9,7 @@ import (
 )
 
 // TestWatchEventsObserverMapsEachEventToItsOwnCounter is the ADAPTER
-// test codex round 5 found missing.
+// test that was missing.
 //
 // Both sides of this seam are tested: internal/watchevents proves the bus
 // calls the observer, and the metric names are pinned here. Neither
@@ -129,7 +129,7 @@ func labelsMatch(pairs []*dto.LabelPair, want map[string]string) bool {
 // the exported constants.
 //
 // That is the whole point of the test and the reason it does not simply
-// extend the table above (codex round 7). Every other assertion in this file
+// extend the table above. Every other assertion in this file
 // derives its expected label from the same constant the code emits, so the
 // pair moves together: rename the constant and the suite stays green while
 // every operator dashboard breaks. A metric label is a WIRE FORMAT with

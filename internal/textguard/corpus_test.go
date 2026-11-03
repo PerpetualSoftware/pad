@@ -101,7 +101,7 @@ func TestParameterRefusedMatchesTheCorpus(t *testing.T) {
 func TestKnownGapsStillGap(t *testing.T) {
 	// NOT a skip. An empty slice used to skip, so DELETING the last entry made
 	// the suite green — exactly the edit this test exists to catch, passing
-	// silently (codex round 2). Emptying it is a claim that every recorded gap
+	// silently. Emptying it is a claim that every recorded gap
 	// has closed, and that claim has a required consequence: the cases move
 	// into Corpus. Assert the count instead.
 	const wantGaps = 0 // BUG-2812 closed the last one

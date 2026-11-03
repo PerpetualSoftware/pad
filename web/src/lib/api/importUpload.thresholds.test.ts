@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { IMPORT_FINISHING_MS, IMPORT_STALL_MS } from './importUpload';
 
-// BUG-3475 (lead ruling Q3): the client's bounds are constants, pinned here
+// BUG-3475: the client's bounds are constants, pinned here
 // against the server's per-Read idle window so the two cannot drift apart
 // silently. The stall bound must not exceed the window (the client never
 // waits longer for progress than the server would wait for bytes); the

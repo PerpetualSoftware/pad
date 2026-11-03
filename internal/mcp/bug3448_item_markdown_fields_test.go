@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// BUG-3448 (codex r1): the MCP item resource's markdown printed a json field
+// BUG-3448: the MCP item resource's markdown printed a json field
 // in Go's map syntax, the agent-facing form of the same defect, and rounded a
 // number above 2^53 on the way through.
 func TestFormatItemAsMarkdownPrintsJSONFieldsAsJSON(t *testing.T) {

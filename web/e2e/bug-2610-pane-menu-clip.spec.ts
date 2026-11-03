@@ -2,12 +2,12 @@ import { expect, type Page } from '@playwright/test';
 import { test, type SuiteFixture } from './fixtures';
 
 /**
- * BUG-2610 — in split view the pane's quick-actions (⚡) and ⋯ menus were
+ * BUG-2610 — in split view the pane's quick-actions  (⚡) and ⋯ menus were
  * ANCHORED panels inside `.item-pane`, an `overflow-y:auto` scroll
- * container (which computes `overflow-x:auto` too). A right-aligned panel
+ * container  (which computes `overflow-x:auto` too). A right-aligned panel
  * opening from the pane's action bar extends LEFT past the pane's left
- * edge, so the container clipped it mid-text (Dave's screenshots on the
- * item: "age actions" for "Manage actions"). Both menus now use the Menu
+ * edge, so the container clipped it mid-text (seen on the
+ * item as "age actions" for "Manage actions"). Both menus now use the Menu
  * component's portal mode, which exists precisely to escape overflow
  * containment.
  *
@@ -15,7 +15,7 @@ import { test, type SuiteFixture } from './fixtures';
  * getBoundingClientRect: `document.elementFromPoint` just inside the
  * panel's LEFT edge must resolve to the panel itself. On the anchored
  * control build the panel's left region lies outside the pane's clip, so
- * the probe hits whatever is underneath (the board) — which is exactly
+ * the probe hits whatever is underneath  (the board) — which is exactly
  * what a user's click there did.
  */
 
@@ -24,7 +24,7 @@ function authHeaders(fixture: SuiteFixture) {
 }
 
 /** Probe: does the point just inside the panel's left edge actually hit
- *  the panel (i.e. is it painted / clickable there)? */
+ *  the panel  (i.e. is it painted / clickable there)? */
 async function leftEdgeHitsMenu(page: Page): Promise<boolean> {
 	const panel = page.getByRole('menu');
 	await expect(panel).toBeVisible();
@@ -61,11 +61,11 @@ test('BUG-2610: pane quick-actions and ⋯ menus are not clipped by the pane con
 	const pane = page.locator('.item-pane');
 	await expect(pane.locator('.title', { hasText: /b2610 probe/ })).toBeVisible();
 
-	// GEOMETRY PRECONDITIONS (keep the probe non-vacuous): each trigger
+	// GEOMETRY PRECONDITIONS  (keep the probe non-vacuous): each trigger
 	// sits close enough to the pane's left edge that its right-aligned
 	// panel — at ITS configured width — MUST extend past the edge;
 	// otherwise both builds pass trivially. Widths mirror the component
-	// props (QA 288, ⋯ 260).
+	// props  (QA 288, ⋯ 260).
 	const paneBox = await pane.boundingBox();
 	const qaTrigger = pane.locator('button.trigger-btn[title="Quick actions"]');
 	const qaBox = await qaTrigger.boundingBox();

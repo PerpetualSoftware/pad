@@ -157,7 +157,7 @@ type ControlMessage struct {
 	// Guarded marks an applier_request the tab must REFUSE (applier_refuse)
 	// rather than apply while it holds unconfirmed local edits (BUG-3542). Set
 	// for every external content write except one sent with
-	// overwrite_pending_edits (Dave's ruling: tokenless writes are guarded
+	// overwrite_pending_edits (tokenless writes are guarded
 	// too). Omitted otherwise, so an older tab sees the frame it always saw and
 	// applies as before.
 	Guarded bool `json:"guarded,omitempty"`
@@ -198,7 +198,7 @@ type ControlMessage struct {
 	// op-log session) would otherwise serialize as
 	// `{"type":"op_log_cursor"}` and the client's strict-type
 	// validation would drop it as 'missing op_log_id', leaving
-	// the session unanchored. Per Codex round 22 [P1] of TASK-1319.
+	// the session unanchored (TASK-1319).
 	// applier_request / applier_ack frames don't read this field;
 	// the trailing `,"op_log_id":0` they carry is ignored by the
 	// client's discriminated dispatch.
@@ -425,7 +425,7 @@ var (
 
 	// ErrApplierAmbiguous — a legacy (non-bracket-capable) applier round-trip was
 	// caught by a concurrent version restore and cannot be confirmed persisted
-	// (BUG-2276 residual 2, P1 mixed-deploy window). The caller MUST NOT fall back to
+	// (BUG-2276 residual 2, mixed-deploy window). The caller MUST NOT fall back to
 	// a direct write / re-apply (either could clobber); instead it returns a RETRYABLE
 	// error to the external-write caller so the write is retried once clients converge.
 	ErrApplierAmbiguous = errors.New("collab: applier outcome ambiguous (legacy conn during restore); retry")
@@ -652,15 +652,14 @@ func (m *RoomManager) electAndApply(room *Room, itemID string, payload applierPa
 	// peer holds an in-memory Y.Doc derived from the now-stale
 	// op-log). Without this distinction a sequence of write failures
 	// followed by no remaining candidates would surface as
-	// ErrAllAppliersTimedOut and skip the safe prune. Per Codex
-	// review round 5.
+	// ErrAllAppliersTimedOut and skip the safe prune.
 	var anyWriteSucceeded bool
 	for attempt := 0; attempt < applierMaxAttempts; attempt++ {
 		// Enter the restore gate FIRST so we wait out any in-progress restore
 		// before electing. `waited` means a restore held the room and just
 		// resolved — restart the whole election (the room's conn set changed). A
 		// !waited return ADMITS us; finishAdmission MUST run before we wait on the
-		// outcome so a concurrent beginRestore drains us (P1).
+		// outcome so a concurrent beginRestore drains us.
 		if room.enterApplierGate() {
 			return nil, nil, true, anyWriteSucceeded
 		}
@@ -724,7 +723,7 @@ func (m *RoomManager) electAndApply(room *Room, itemID string, payload applierPa
 			// PruneAndApply's len(r.conns) > 0 check, blocking the
 			// safe op-log prune), force-close the underlying WS
 			// so the conn's readLoop wakes up cleanly, and try
-			// the next applier. Per Codex review round 6.
+			// the next applier.
 			room.cancelPendingAck(requestID)
 			room.removeConn(applier)
 			_ = applier.conn.Close()
@@ -778,7 +777,7 @@ func (m *RoomManager) electAndApply(room *Room, itemID string, payload applierPa
 				// Legacy conn caught by a restore: setContent MIGHT have landed but we
 				// can't confirm. FAIL-SAFE — do NOT re-apply (that could clobber peer
 				// edits); return retryable so the external write is retried once
-				// clients converge (BUG-2276 residual 2, P1 mixed-deploy window). Wait
+				// clients converge (BUG-2276 residual 2, mixed-deploy window). Wait
 				// for the restore to resolve first so the caller's retry isn't a busy
 				// spin against a still-frozen room.
 				room.waitRestoreResolved()
@@ -864,7 +863,7 @@ func applierWriteDeadline() time.Duration { return applierWriteDeadlineVar }
 // timer closes the conn if the write can't complete within applierWriteDeadline —
 // gorilla's Close is concurrency-safe with an in-flight WriteMessage, so it forces a
 // wedged writeLoop write to error, releasing writeMu and unblocking us. Mirrors the
-// per-conn timer pattern in forceRefreshAll (BUG-2264 P1).
+// per-conn timer pattern in forceRefreshAll (BUG-2264).
 func writeApplierRequest(rc *roomConn, payload []byte) error {
 	d := applierWriteDeadline()
 	deadline := time.Now().Add(d)
@@ -945,7 +944,7 @@ func (r *Room) pickApplierFor(tried map[*websocket.Conn]struct{}, patch bool) *r
 		// direct-write fallback. (BUG-2276 residual 2.)
 		//
 		// An UNANCHORED conn (replayDone not yet flipped) is excluded (BUG-2276
-		// residual 2, P1): a conn is in the room map BEFORE runConn writes its initial
+		// residual 2): a conn is in the room map BEFORE runConn writes its initial
 		// op_log_cursor, and its client buffers Y.Doc updates until it receives that
 		// cursor (cursorAnchored). Electing it in that window means setContent produces
 		// a BUFFERED frame that is never sent, yet the client still acks — a false
@@ -967,7 +966,7 @@ func (r *Room) pickApplierFor(tried map[*websocket.Conn]struct{}, patch bool) *r
 	if len(candidates) == 0 {
 		return nil
 	}
-	// Stable ordering. PRIMARY: bracket-capable conns first (BUG-2276 residual 2, P1)
+	// Stable ordering. PRIMARY: bracket-capable conns first (BUG-2276 residual 2)
 	// — prefer a conn whose applier outcome the freeze can confirm durably, so we
 	// avoid the legacy-ambiguous fail-safe whenever any capable conn exists. SECONDARY:
 	// longest-connected (most authoritative cumulative Y.Doc); tiebreak on conn id.

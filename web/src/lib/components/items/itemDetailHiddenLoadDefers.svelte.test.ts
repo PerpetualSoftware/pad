@@ -1,6 +1,6 @@
 /**
  * BUG-3192 Unit B (2): a tab loaded HIDDEN issues its essentials only, and
- * the rest when it is first shown, exactly once (lead ruling).
+ * the rest when it is first shown, exactly once.
  *
  * Session restore and middle-click open tabs hidden, several at once, against
  * one per-user request budget. The gated panels (decisions, attachments,

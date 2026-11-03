@@ -934,7 +934,7 @@ describe('dispatch — result envelope + errors', () => {
 		expect(parse(result).text).toMatch(/action/);
 	});
 
-	// Regression for the round-1 codex finding: the `action` read happens
+	// Regression: the `action` read happens
 	// via str(), which now throws on a malformed type. It must stay inside
 	// dispatch()'s try/catch so a bad `action` resolves to an error envelope
 	// — the same contract as every other malformed-scalar case — rather than

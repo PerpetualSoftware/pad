@@ -1,7 +1,7 @@
 /**
  * BUG-3084, ItemDetail — the SITE PINS. The population and commit rules moved
- * to `itemDetailIdentityFenceAst.test.ts` (lead ruling on checkpoint 51: round 4
- * on #1387 showed the regex rules could not see four classes of edit), and the
+ * to `itemDetailIdentityFenceAst.test.ts` (the regex rules could not see four
+ * classes of edit), and the
  * mount suite `itemDetailIdentityLoad.svelte.test.ts` owns the semantics.
  *
  * What stays here asserts specific shapes the design depends on: the identity
@@ -154,7 +154,7 @@ describe('ItemDetail: children calling back after their own awaits (class C, par
 	});
 
 	it('no other child tag passes a callback that commits after its own await without a table row', () => {
-		// The probe that built the table (BUG-3084 checkpoint 36, class C) listed
+		// The probe that built the table (BUG-3084) listed
 		// every capitalised tag with an `on*=` prop. The rest, with their reasons:
 		// - synchronous callbacks: FieldEditor, TagInput, the editors, the menus,
 		//   ContentError, the pickers, Graph, RefusedRawDraftNotice (BUG-3230
@@ -163,7 +163,7 @@ describe('ItemDetail: children calling back after their own awaits (class C, par
 		// - already epoch-aware: EditorBubbleMenu;
 		// - PushToAgentDialog calls `onclose` after its send's await, but only
 		//   behind its own `stillMine()` check, and the parent's load closes the
-		//   dialog anyway (round 4 on #1387; the child's own toast is BUG-3095's).
+		//   dialog anyway (the child's own toast is BUG-3095's).
 		// CopyItemDialog is in the table above for `onmove` / `oncopied`. Its
 		// `onclose` also fires after an await, behind `gen !== flowGen`; flowGen
 		// is bumped by the cleanup that runs when the identity key remounts it.
@@ -245,7 +245,7 @@ describe('ItemDetail: epoch reads in reactive scopes', () => {
 	});
 
 	it('the two identity primitives the AST aid trusts by name have exactly their reviewed bodies', () => {
-		// BUG-3084 round 8 E: the flow analysis recognises identityHeld and
+		// BUG-3084: the flow analysis recognises identityHeld and
 		// captureIdentity by name, so a weakened body would still read as a fence
 		// there. The hash gate also covers both as helpers; this pins the text.
 		expect(SCRIPT).toMatch(/\n\tfunction captureIdentity\(\): number \{\n\t\treturn authStore\.identityEpoch;\n\t\}\n/);
@@ -259,7 +259,7 @@ describe('ItemDetail: epoch reads in reactive scopes', () => {
 		// snapshot (TASK-3606: whose typing is in the editor, so a draft is never
 		// filed under the next user's key). The collab cleanup and
 		// the rich teardown flush compare against the CONTEXT's mint-time epoch
-		// instead (codex round 1 on #1387), because a load re-stamps this one.
+		// instead, because a load re-stamps this one.
 		expect(SCRIPT.match(/identityEpochAtLoad/g)?.length).toBe(6);
 	});
 
@@ -267,7 +267,7 @@ describe('ItemDetail: epoch reads in reactive scopes', () => {
 		expect(SCRIPT).toMatch(/identityEpoch:\s*untrack\(\(\)\s*=>\s*authStore\.identityEpoch\)/);
 		expect(SCRIPT).toMatch(/const held = !ctx\.retired && authStore\.identityEpoch === ctx\.identityEpoch;/);
 		// Named `held`, not `identityHeld`: that name is the component's fence
-		// function, and a local of the same name shadows it (round 3 on #1387).
+		// function, and a local of the same name shadows it.
 		expect(SCRIPT.match(/\b(?:const|let)\s+identityHeld\b/g) ?? []).toEqual([]);
 		expect(SCRIPT).toMatch(/if \(ctx && !ctx\.retired && ctx\.identityEpoch === authStore\.identityEpoch\) collabFlusher\.flushNow\(ctx, true\)/);
 		// The flag is what closes the effect-flush window, where the cleanup read

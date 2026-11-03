@@ -421,7 +421,7 @@ func (s *Supervisor) Close() error {
 		c.idleTimer.Stop()
 	}
 	// A worker an idle stop is still ending: Close does not return while it
-	// runs (codex). The idle stop logs its own stop line.
+	// runs. The idle stop logs its own stop line.
 	stopping := s.stopping
 	s.mu.Unlock()
 	if stopping != nil {

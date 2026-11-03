@@ -1,10 +1,10 @@
-// BUG-3542: a content write routed to an open tab (the designated applier)
+// BUG-3542: a content write routed to an open tab  (the designated applier)
 // replaced typing the server had not stored yet. The pending-edits check runs
 // when the PATCH arrives and reads the op-log, so typing still on the wire is
 // invisible to it; the write passed, and the tab's setContent replaced that
 // typing. The tab now refuses such an apply, the write answers 409
-// content_not_applied (apply_reason unconfirmed_edits), and the typing lands.
-// Dave's ruling: tokenless writes are refused too; overwrite_pending_edits is
+// content_not_applied  (apply_reason unconfirmed_edits), and the typing lands.
+// Rule: tokenless writes are refused too; overwrite_pending_edits is
 // the only way past.
 //
 // Typing on the wire is made deterministic with routeWebSocket: while `hold` is

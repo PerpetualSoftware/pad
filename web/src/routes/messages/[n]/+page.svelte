@@ -128,7 +128,7 @@
 		scroller?.querySelector('#unread-divider')?.scrollIntoView?.({ block: 'start' });
 	}
 
-	// Reply puts the reader into the composer (r5 H3); the bar is there after the tick.
+	// Reply puts the reader into the composer; the bar is there after the tick.
 	function startReply(m: ChatMessage) {
 		replyTo = m;
 		void tick().then(() => composer?.focus());

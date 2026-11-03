@@ -249,7 +249,7 @@ describe('Sidebar — mobile left-edge swipe-to-open (TASK-2430)', () => {
 // its own, so what is worth asserting is the BINDING — that the anchor is
 // actually in the rendered footer and carries the external-link attributes.
 //
-// WHAT THE DOM TEST CANNOT SEE (codex R3 #6): comparing the rendered href to
+// WHAT THE DOM TEST CANNOT SEE: comparing the rendered href to
 // the imported constant passes identically for a component that hardcoded the
 // same string, because both sides end up as the same characters. That
 // assertion pins the VALUE, not the source of it — and "points at the shared

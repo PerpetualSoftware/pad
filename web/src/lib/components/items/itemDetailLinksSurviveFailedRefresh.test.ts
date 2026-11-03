@@ -63,7 +63,7 @@ const count = (haystack: string, needle: string) => haystack.split(needle).lengt
  * characters). Both were escapable — a clear placed past the window passes —
  * and the load-site window bled past its `catch` into unrelated member/role
  * loading, so an ordinary edit there could fail the count for a reason that has
- * nothing to do with this property (codex round 3). A balanced block is bounded
+ * nothing to do with this property. A balanced block is bounded
  * by the code's own structure instead of by a guess.
  *
  * Brace-counting is not a JS lexer: a `{` inside a string or a regex literal in
@@ -90,7 +90,7 @@ function balancedBlock(source: string, from: number): string {
  *
  * Assignment alone is not enough: `itemLinks.length = 0` and
  * `itemLinks.splice(0)` clear the visible links while passing an
- * assignment-only check (codex round 3 wrote both). A source guard cannot
+ * assignment-only check. A source guard cannot
  * enumerate every possible spelling — what it can do is refuse the ones a
  * reader would actually reach for.
  */
@@ -143,7 +143,7 @@ describe('ItemDetail: a failed same-item links refresh keeps the links it has', 
 	});
 
 	it('has a helper whose failure branch returns the CURRENT links, not an empty array', () => {
-		// The gap codex found in the first version of this test: every other
+		// A gap an earlier version of this test had: every other
 		// assertion here passes against a helper spelled
 		//
 		//     catch { return []; }
@@ -160,8 +160,8 @@ describe('ItemDetail: a failed same-item links refresh keeps the links it has', 
 		expect(catchBody).toMatch(/return itemLinks;\s*\}\s*$/);
 		// And the helper MUTATES NOTHING. Pinning only the return value admits
 		// `catch { itemLinks = []; return itemLinks; }`, which satisfies every
-		// other assertion here while reintroducing the defect (codex round 2
-		// wrote that mutant). A helper that reads state and writes none is the
+		// other assertion here while reintroducing the defect.
+		// A helper that reads state and writes none is the
 		// property; anything emptying `itemLinks` inside it is the defect
 		// whatever it then returns.
 		const helperStart = code.indexOf('async function refreshLinksPreservingOnFailure');
@@ -174,7 +174,7 @@ describe('ItemDetail: a failed same-item links refresh keeps the links it has', 
 	it('clears links on a failed load only when they belong to a DIFFERENT item', () => {
 		// `loadData` is not only a first load or a switch — the edit-collection
 		// handler calls it for a SAME-item reload after a schema change, and an
-		// unconditional clear there destroyed good rows (codex P1). The gate is
+		// unconditional clear there destroyed good rows. The gate is
 		// item identity captured before this load can replace `item`, not which
 		// function is running.
 		expect(code).toContain('const linksHeldForItemId = untrack(() => item?.id ?? null);');
@@ -183,11 +183,10 @@ describe('ItemDetail: a failed same-item links refresh keeps the links it has', 
 		// And that failure block empties `itemLinks` EXACTLY ONCE, gated. Pinning
 		// only the presence of the gated line admits an unconditional clear
 		// sitting beside it, or an `else` branch that clears anyway — both of
-		// which restore the defect while passing the assertion above (codex
-		// round 2). Counting is what makes the gate the only writer, and the
+		// which restore the defect while passing the assertion above. Counting is what makes the gate the only writer, and the
 		// region is the failure block matched by BALANCED BRACES rather than a
 		// fixed-length window, so a clear cannot sit just past the end of it and
-		// an unrelated edit after the block cannot fail the count (round 3).
+		// an unrelated edit after the block cannot fail the count.
 		// The load issues links beside progress (TASK-2228) and settles it into
 		// a result, so the failure path is the `else` of `linksResult.ok`.
 		const loadStart = code.indexOf('const linksResult = await linksRead;');

@@ -100,7 +100,7 @@ describe('BUG-2978: settings permissions survive the /me window', () => {
 		// session has already answered. So this test now asserts two things at
 		// once, and the first is the load-bearing one — the window does not open
 		// at all. The page keeps its sticky `membershipKnown`-gated read as
-		// defence in depth (and it still covers a FIRST resolution), which is
+		// defence in depth  (and it still covers a FIRST resolution), which is
 		// why the assertion below would also hold if the store fix were
 		// reverted; the membership assertion is what fails in that case.
 		const second = workspaceStore.setCurrent('ws');
@@ -118,8 +118,8 @@ describe('BUG-2978: settings permissions survive the /me window', () => {
 
 	it('drops owner-only chrome when membership becomes a definitive denial', async () => {
 		// The complement of the test above, and the reason the cache is gated on
-		// `membershipKnown` rather than on `currentMembership !== null` (codex
-		// round 1): null means BOTH "not fetched yet" and "no access". A cache
+		// `membershipKnown` rather than on `currentMembership !== null`:
+		// null means BOTH "not fetched yet" and "no access". A cache
 		// that ignores every null holds the last good answer forever, so an owner
 		// removed from the workspace — or a `/me` that 403s — would keep the
 		// owner-only tab and the delete controls on screen indefinitely.

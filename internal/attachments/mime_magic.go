@@ -13,16 +13,16 @@ import (
 //
 // WHAT THESE CHECKS DO. They RECOGNISE a format from its defining magic, to
 // the same standard the standard library's own detector uses. They do not
-// prove the bytes are that format, and three review rounds established that
-// nothing available here could:
+// prove the bytes are that format, and nothing
+// available here could:
 //
-//   - Round 1 defeated magic-only matching with a real, executing ELF binary
+//   - Magic-only matching is defeated by a real, executing ELF binary
 //     carrying "ustar" at offset 257, stored as application/x-tar.
-//   - Round 2 defeated the checksum that was round 1's answer, with an ELF
+//   - The checksum answer to that is defeated by an ELF
 //     carrying a CORRECT one — and archive/tar's own Reader.Next accepts that
 //     file too. A 512-byte tar header is exactly those fields, so the two are
 //     not distinguishable at this size by anything in the standard library.
-//   - Round 3 found the accumulated validation refusing REAL files: PAX and
+//   - The accumulated validation refuses REAL files: PAX and
 //     long-name GNU tars, legal randomized bzip2 blocks, FLAC declaring the
 //     zero sample rate RFC 9639 permits. That is this bug's own defect —
 //     refusing files people legitimately have — reintroduced by the fix.
@@ -196,7 +196,7 @@ func validTarHeader(head []byte) bool {
 // is simply false.
 //
 // This walks the EBML header's child elements. The first version searched the
-// leading 64 bytes for the two strings instead, and an adversarial round broke
+// leading 64 bytes for the two strings instead, and adversarial input broke
 // it in BOTH directions with files that ffprobe accepts: a WebM carrying
 // "matroska" inside a Void element was stored as Matroska, and a Matroska with
 // forty bytes of legal Void padding — which pushes DocType past 64 — was
@@ -250,7 +250,7 @@ func sniffEBMLDocType(head []byte) string {
 		if childID == docTypeID {
 			// DocType is an ASCII string whose value ENDS at the first NUL;
 			// anything after that is padding and is not part of the value
-			// (RFC 8794 §13). TrimRight was wrong here — a round-2 finding
+			// (RFC 8794 §13). TrimRight was wrong here — an input
 			// produced an ffprobe-readable Matroska whose DocType payload was
 			// "matroska\x00junk", which trimming left intact and so failed to
 			// match, storing a real Matroska as WebM.
@@ -278,7 +278,7 @@ func readEBMLID(b []byte) (id uint32, rest []byte, ok bool) {
 	// An ID whose value bits are all ones is RESERVED and not a valid element
 	// ID (RFC 8794 §5). Accepting one let malformed bytes act as a
 	// zero-length child and carry the walk onward to a DocType that follows
-	// them, which a round-2 finding used to have 1a45dfa3 8d ff80 ... parse
+	// them, which used to let 1a45dfa3 8d ff80 ... parse
 	// as Matroska.
 	if id == allOnesEBMLID[n] {
 		return 0, nil, false
@@ -335,7 +335,7 @@ func ebmlLength(first byte) int {
 // decide whether a signature this weak may speak at all.
 //
 // The frame-length, sampling-index and protection arithmetic that used to be
-// here is gone with the other structural validation. Review found it wrong in
+// here is gone with the other structural validation. It was found wrong in
 // both directions — accepting frames whose declared length could not hold
 // their own header, and rejecting legal MPEG-2 profiles — which is the tail
 // this file's header describes.
@@ -380,8 +380,8 @@ func docTypeMIME(payload []byte) string {
 // EIGHT FIXED BYTES AND NOTHING ELSE, deliberately. CFB is a container, not a
 // format: Word, Excel, PowerPoint, Visio, and .msi installers all wear this
 // header, and telling them apart means walking the directory stream, which is
-// a parse this door does not do (see this file's header for the three rounds
-// that settled why). So this says only "this is a CFB container" and the
+// a parse this door does not do (see this file's header for why). So this says only
+// "this is a CFB container" and the
 // caller decides what may be believed on top of it — which is why the caller
 // requires an extension naming one of the three reviewed Office types rather
 // than trusting the header alone. A .msi renamed .doc is stored as a Word

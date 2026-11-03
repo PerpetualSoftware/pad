@@ -38,7 +38,7 @@ const SERVER_FORMATS = ['png', 'jpeg'];
 /**
  * The list THIS test's server reports. Mutable, and one test below sets it to
  * a build that cannot do PNG: a "fix" that ignored the response and hard-coded
- * the common list would satisfy every other assertion here (Codex round 1), so
+ * the common list would satisfy every other assertion here, so
  * the only thing that separates delivery from a constant is asking a second
  * server a different question.
  */

@@ -96,7 +96,7 @@ func TestItemShowLabelsTheMetadataBlockForTheItemsKind(t *testing.T) {
 	}
 }
 
-// Codex r1: a number above 2^53 keeps its digits; a JSON null is shown as
+// A number above 2^53 keeps its digits; a JSON null is shown as
 // null, not as an empty value.
 func TestItemShowKeepsNumbersAndNull(t *testing.T) {
 	out := runShow3448(t, showFixture("playbooks", "Playbooks", map[string]any{
@@ -111,7 +111,7 @@ func TestItemShowKeepsNumbersAndNull(t *testing.T) {
 	}
 }
 
-// Codex r1: no guessing at plurals. The two system kinds have exact labels;
+// No guessing at plurals. The two system kinds have exact labels;
 // any other collection is named as it is.
 func TestItemShowMetadataLabelUsesTheNameAsIs(t *testing.T) {
 	out := runShow3448(t, showFixture("analysis", "Analysis", map[string]any{"trigger": "manual"}))

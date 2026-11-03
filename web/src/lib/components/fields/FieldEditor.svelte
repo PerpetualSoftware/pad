@@ -179,7 +179,7 @@ handlers — onchange is never called.
 		if (!isRelation) return [];
 		if (isMultiRelation) {
 			// THE LAST LIST WE SENT WINS OVER THE PROP WHILE A WRITE IS IN
-			// FLIGHT (codex round 7). `value` only catches up after the server
+			// FLIGHT. `value` only catches up after the server
 			// round trip, so two quick edits both derived from it: remove A then
 			// B from [A,B,C] sent [B,C] and then [A,C], and the second write
 			// puts A back. Every edit below is a WHOLE-LIST write computed from
@@ -191,7 +191,7 @@ handlers — onchange is never called.
 			// the prop agreeing with what we sent, or (for a consumer that
 			// returns something awaitable) that write settling, success or
 			// failure. Agreement alone was not enough, because a REFUSED write
-			// never agrees and the hold outlived it forever (round 8, R8-2). So a
+			// never agrees and the hold outlived it forever. So a
 			// change arriving from anywhere else — SSE, another tab, the parent's
 			// 409 refetch-and-retry — takes over the moment it lands. This holds
 			// a value forward; it does not own it.
@@ -223,8 +223,8 @@ handlers — onchange is never called.
 	 * with the identity it was sent for.
 	 *
 	 * "Over" is two signals, not one: `value` reflecting what we sent, or the
-	 * consumer's own settlement when it gives one. The second was added in round
-	 * 8 (R8-2) because the first cannot answer for a write the server REFUSES —
+	 * consumer's own settlement when it gives one. The second exists because the first cannot
+	 * answer for a write the server REFUSES —
 	 * that value never comes back, so the hold kept a rejected list on screen
 	 * and ignored every later server value.
 	 *
@@ -262,7 +262,7 @@ handlers — onchange is never called.
 	 * newer one's hold. Same class the item pane orders its field writes with
 	 * (`$lib/items/fieldWriteOrder`) — one model, asked in two places, because
 	 * the hold and the pane's 409 retry are two halves of one question about
-	 * which whole-list write is current (codex round 8, R8-1 / R8-2).
+	 * which whole-list write is current.
 	 *
 	 * Keyed by `relationIdentity`, so a retarget starts its own sequence.
 	 */
@@ -336,7 +336,7 @@ handlers — onchange is never called.
 				// by a consumer shape the signature permits: `Promise<void>` says
 				// when the write ended, never when the value landed. Releasing ahead
 				// of the assignment would show the pre-write list and hand an edit
-				// started in that window the stale base — the round-7 defect again.
+				// started in that window the stale base — the lost update again.
 				await tick();
 			} finally {
 				if (!holdOrder.superseded(ticket) && pendingRelation?.identity === identity) {
@@ -531,7 +531,7 @@ handlers — onchange is never called.
 	}
 
 	// Backing out is a decision, so it supersedes an in-flight create exactly as
-	// picking another row does (codex round 2).
+	// picking another row does.
 	function cancelRelationEdit() {
 		relationWrite++;
 		editingRelation = false;
@@ -565,8 +565,8 @@ handlers — onchange is never called.
 	// collection's ID, which only the loaded collection list has; a target the
 	// list does not know yields `null` here and therefore no create row, because
 	// "no answer" must not read as "allowed".
-	// FRESHNESS, for the same reason `knownCollectionSlugs` has it (codex round
-	// 1 P2): `collectionStore.collections` is one global list, so during a
+	// FRESHNESS, for the same reason `knownCollectionSlugs` has it:
+	// `collectionStore.collections` is one global list, so during a
 	// workspace switch it still holds the PREVIOUS workspace's rows. A slug
 	// match against those yields another workspace's collection ID, and asking
 	// `canEditCollection` about that ID is asking the wrong question — it can
@@ -612,8 +612,8 @@ handlers — onchange is never called.
 			toastStore.show(limitError, 'error');
 			return;
 		}
-		// Two fences on the completion, both found by codex round 1 P1, both
-		// about the same gap: the create is a round trip and the picker stays
+		// Two fences on the completion, both about the same gap: the create is a round trip and the
+		// picker stays
 		// open across it, so the world can move before it lands.
 		//
 		//   * DESTROYED. `ItemDetail` wraps its fields section in
@@ -630,7 +630,7 @@ handlers — onchange is never called.
 		//     switching workspaces to an item carrying the same ref — every
 		//     workspace has a TASK-5 — reuses this instance and never sets
 		//     `destroyed`. Comparing the captured workspace and target collection
-		//     to the current props is what catches that (codex round 2).
+		//     to the current props is what catches that.
 		const mySeq = ++relationWrite;
 		const epoch = localIndex.scopeEpochFor(ws);
 		const resetGen = localIndex.resetGenerationFor(ws);
@@ -643,8 +643,7 @@ handlers — onchange is never called.
 		// state and the replacement starts at 0 — and 0 is also the value in the
 		// overwhelmingly common case where no resync ever happened, so an
 		// equality check on it passes trivially across exactly the event it was
-		// meant to catch (codex round 6, correcting the residual round 5
-		// dismissed as needing a coincidence; it needs none).
+		// meant to catch (it needs no coincidence to fail).
 		const indexStillOurs = () => localIndex.resetGenerationFor(ws) === resetGen;
 		// THREE things are deliberately NOT fenced here, each raised by review
 		// and each declined for a reason that belongs next to the code rather
@@ -716,7 +715,7 @@ handlers — onchange is never called.
 			commitPicked(item.id);
 		} catch (e: any) {
 			// The SAME predicate as the success path, not a copy of some of it
-			// (codex rounds 4 and 6). A create the user escaped out of, or one
+			// A create the user escaped out of, or one
 			// belonging to a workspace they have since left or been purged from,
 			// must not throw its error over whatever they are looking at now —
 			// and the reset half was missing here while the success path had it.
@@ -997,7 +996,7 @@ handlers — onchange is never called.
 	// value-track $effect onto hasPending: scheduleSave would set
 	// hasPending=true, which would retrigger the $effect, which reads
 	// hasPending and clears it — cancelling every keystroke before the
-	// debounce can fire. Per Codex review round 4 [P1].
+	// debounce can fire.
 	let hasPending = false;
 	// Whose burst the pending value is (BUG-3130). Captured at the burst's FIRST
 	// keystroke: the timer and the blur flush both send it later, and a sign-out
@@ -1035,17 +1034,17 @@ handlers — onchange is never called.
 	 *
 	 * The stamp is the ITEM, not the text, because the text cannot answer the
 	 * question: the next item's value can equal what we just sent for this one,
-	 * and flushing then would write this item's typing onto that one (the Codex
-	 * round 3 [P1] the effect was originally built for).
+	 * and flushing then would write this item's typing onto that one (the case the effect was
+	 * originally built for).
 	 *
 	 * RELEASED BY TWO SIGNALS, not one, for the reason the relation hold needed
-	 * two (round 8, R8-2): the prop agreeing with what we sent, or the consumer's
+	 * two: the prop agreeing with what we sent, or the consumer's
 	 * own settlement when it gives one. Agreement alone cannot answer for a write
 	 * the server REFUSES — that value never comes back, so the stamp would stand
 	 * forever and `typedDisplay` with it, pinning rejected text on screen with no
 	 * release. An earlier version of this comment claimed nothing was pinned
 	 * here. That was wrong, and it was wrong in the direction of defending the
-	 * design I had just written (codex round 1, finding 3).
+	 * design it described.
 	 */
 	let awaitingEcho: { itemId: string | undefined; sent: any } | null = null;
 
@@ -1155,8 +1154,7 @@ handlers — onchange is never called.
 	//     whose schema doesn't include this field key, the parent's
 	//     `item` has already been replaced. Calling onchange now would
 	//     route the save through `updateField`, which reads the CURRENT
-	//     `item` — writing field-A's typed value into item-B (Codex
-	//     review round 3 [P1]).
+	//     `item` — writing field-A's typed value into item-B.
 	//   - The other unmount cases (route teardown, parent destroy) have
 	//     ambiguous parent state too.
 	// Blur is the supported commit gesture: tabbing out, clicking
@@ -1187,15 +1185,15 @@ handlers — onchange is never called.
 	//     silently overwrite the peer edit.
 	//   - The parent's own 409 refetch-and-retry does the same.
 	//
-	// STALE CLAIM REMOVED (BUG-3039, codex round 1 finding 8). This list used to
+	// STALE CLAIM REMOVED (BUG-3039). This list used to
 	// lead with "Navigation to a different item within the same route reuses the
-	// component … leaking item A's edit into item B (Codex review round 3 [P1])".
+	// component … leaking item A's edit into item B".
 	// That was true when it was written and is not true now: PLAN-2105 /
 	// TASK-2112 later put the whole fields panel inside `{#key itemSlug}`
 	// (ItemDetail.svelte), whose own comment says the sidebar "remounts on every
 	// item switch so a stale field continuation is discarded". An item switch
-	// destroys this component; it does not re-prop it. The leak that round 3
-	// named is closed structurally, one layer up.
+	// destroys this component; it does not re-prop it. The leak that was once named is closed
+	// structurally, one layer up.
 	//
 	// Left standing, it cost real work: BUG-3039 was built on it, reported a
 	// second hole that does not exist, and had a ruling made on that report
@@ -1230,8 +1228,8 @@ handlers — onchange is never called.
 		// The SUBJECT, not just the value. A swap of the field this editor is
 		// showing, or a flip to readonly, abandons the typed edit as surely as a
 		// change of row does — and `typedDisplay` would otherwise survive the swap
-		// and paint the old text over the new field's value (codex round 1,
-		// finding 5). Read before the early returns so they are dependencies on
+		// and paint the old text over the new field's value.
+		// Read before the early returns so they are dependencies on
 		// every path.
 		const subject = `${field.key}\u0000${field.type}\u0000${readonly ? 'ro' : 'rw'}`;
 		if (subject !== typedSubject) {
@@ -1253,8 +1251,8 @@ handlers — onchange is never called.
 		// survives the matrix (D3 on the BUG-3039 trail) — for two independent
 		// reasons, and both are worth stating because either alone would be a
 		// reason to delete it. First, in this Svelte version an effect re-runs on
-		// every assignment of a prop it reads, equal or not (the same behaviour
-		// round 8 hit as a HAZARD above), so reassigning `value` already re-runs
+		// every assignment of a prop it reads, equal or not (the same behaviour noted as a HAZARD
+		// above), so reassigning `value` already re-runs
 		// this. Second, ItemDetail remounts rather than retargeting, so the case
 		// this covers is not reachable from the only caller that has items.
 		// It stays for the same reason the prop does: the logic depends on
@@ -1285,8 +1283,8 @@ handlers — onchange is never called.
 			// Our newest send is still outstanding and this is not it: an OLDER
 			// send's echo, or an outside write. Indistinguishable, and both want
 			// the same answer — keep showing what we sent, because it is later
-			// than either. Releasing here showed the older value until the newer
-			// echo arrived (codex round 1, findings 2 and 4). The settlement
+			// than either. Releasing here showed the older value until the newer echo arrived. The
+			// settlement
 			// signal in `sendTyped` is what guarantees this ends even if our echo
 			// never comes.
 			return;
@@ -1322,7 +1320,7 @@ handlers — onchange is never called.
 	function numberTextInvalid(text: string | null): boolean {
 		if (text === null) return false;
 		const t = text.trim();
-		// Not finite counts as invalid (codex r1): `Infinity` parses but is no
+		// Not finite counts as invalid: `Infinity` parses but is no
 		// value a number field can hold.
 		return t !== '' && !PARTIAL_NUMBER.test(t) && !Number.isFinite(Number(t));
 	}
@@ -1333,7 +1331,7 @@ handlers — onchange is never called.
 		// Recorded even when the text does not parse: `1.` and `-` are on their
 		// way to a number and must not be rewritten under the cursor.
 		typedDisplay = target.value;
-		// Whitespace only is EMPTY, not the 0 that Number('  ') gives (codex r1).
+		// Whitespace only is EMPTY, not the 0 that Number('  ') gives.
 		const text = target.value.trim();
 		if (text === '') { scheduleSave(null); return; }
 		const num = Number(text);
@@ -1362,11 +1360,11 @@ handlers — onchange is never called.
 		// typed value. Compute the new value from the pending typed value
 		// (if any) BEFORE clearing the timer — `value` is the parent
 		// prop and would lag a freshly-typed pending number until the
-		// flush round-trips back. Per Codex review round 1 [P1].
+		// flush round-trips back.
 		// Three bases, most-recent-first. `value` is the parent prop and LAGS
 		// anything we have sent but not seen come home, so stepping from it turns
-		// `5` then `+1` into `oldValue + 1` and the typed 5 is gone (codex round 1,
-		// finding 1 — pre-existing, and reachable now that `awaitingEcho` records
+		// `5` then `+1` into `oldValue + 1` and the typed 5 is gone (pre-existing, and reachable
+		// now that `awaitingEcho` records
 		// the missing middle case).
 		// A burst typed under a previous identity is not a base to step from.
 		keepBurstIfOurs();
@@ -1721,7 +1719,7 @@ handlers — onchange is never called.
 	     transfer fires the input's onblur (→ flushPendingSave clears
 	     hasPending) BEFORE the button's onclick runs, so
 	     handleNumberStep would read stale `value` from the parent prop.
-	     Per Codex review round 2 [P1]. -->
+	     -->
 	<div class="number-wrapper">
 		<button
 			class="number-btn"

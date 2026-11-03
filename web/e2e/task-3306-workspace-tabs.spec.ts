@@ -153,7 +153,7 @@ test.describe('TASK-3306 workspace tabs', () => {
 		await show(page, username, slugs[0], 3);
 
 		// Walk Tab from the logo: the zone and the tab wrappers are never
-		// stops (the dndzone defaults put both in the order; codex r1).
+		// stops (the dndzone defaults put both in the order).
 		await page.locator('.pad-logo').focus();
 		const stops: string[] = [];
 		for (let i = 0; i < 5; i++) {
@@ -196,7 +196,7 @@ test.describe('TASK-3306 workspace tabs', () => {
 		await expect.poll(order).toEqual([slugs[1], slugs[2], slugs[0]]);
 		// Both of these moves' writes SENT (the second goes out only after the
 		// first settles, so "all sent have answered" alone passes in the gap
-		// between them; codex r2), and every write sent has answered.
+		// between them), and every write sent has answered.
 		await expect
 			.poll(() => putsSent >= sentBefore + 2 && putsSent === putsDone, { timeout: 10_000 })
 			.toBe(true);

@@ -74,7 +74,7 @@
 	// TASK-2205: the server's message when a restore failed; cleared on retry or cancel.
 	let restoreError = $state<string | null>(null);
 	// Whose error, about which item: a card reused for another item, or seen by
-	// the next signed-in account, shows nothing (codex r1, r2).
+	// the next signed-in account, shows nothing.
 	let restoreErrorFor = $state('');
 
 	// PLAN-2348 U3: a card shows ITS OWN edit — the body before the write that
@@ -172,7 +172,7 @@
 		const reqSlug = itemSlug;
 		const reqWs = wsSlug;
 		// The version asked for, captured with the item: the card can be reused
-		// for another version while the flush below is awaited (codex r3).
+		// for another version while the flush below is awaited.
 		const reqVersion = restoreId;
 		// IDENTITY fence (BUG-3095). This is the surface-8 member: the restore
 		// POST below is issued AFTER `flushBeforeRestore`, a parent-provided

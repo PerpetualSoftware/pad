@@ -83,8 +83,7 @@
 				if (slug !== wsSlug) return;
 				// A quiet failure keeps a KNOWN answer; from unknown (it overtook
 				// the first check, which its sequence then discarded) it falls
-				// back to false like any failure, or the banner hides for good
-				// (codex r3).
+				// back to false like any failure, or the banner hides for good.
 				if (!quiet || hasAgentActivity === null) hasAgentActivity = false;
 			});
 	}
@@ -128,12 +127,12 @@
 	const unsubscribeItems = browser
 		? sseService.onItemEvent((event) => {
 				// Unknown (the first check still out) counts: its answer may
-				// predate the write (codex r2). Only KNOWN activity stops it.
+				// predate the write. Only KNOWN activity stops it.
 				if (hasAgentActivity === true || dismissed) return;
-				// An agent's collection is agent activity too (BUG-3447, lead).
+				// An agent's collection is agent activity too (BUG-3447).
 				if (event.type !== 'item_created' && event.type !== 'collection_updated') return;
 				// Only for the workspace it was armed in: after a switch it would
-				// supersede the next workspace's own re-check (codex r1).
+				// supersede the next workspace's own re-check.
 				const armedFor = wsSlug;
 				clearTimeout(recheckTimer);
 				recheckTimer = setTimeout(() => {

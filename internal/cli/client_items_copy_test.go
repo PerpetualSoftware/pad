@@ -94,8 +94,8 @@ func TestCopyItem_MutatingRequestIsNotReplayable(t *testing.T) {
 // outcome is genuinely unknown. The CLI must send it once and must not
 // claim to know what happened.
 //
-// Scope, stated so nobody mistakes this for more than it is (Codex round
-// 3): this is NOT the net/http nothing-written replay case. That one needs
+// Scope, stated so nobody mistakes this for more than it is (3): this is NOT the
+// net/http nothing-written replay case. That one needs
 // the connection to die BEFORE the request bytes go out, on a pooled
 // connection, which is a race no test can schedule — and the copy now runs
 // on its own transport with its own empty pool, so it cannot arise here at
@@ -228,7 +228,7 @@ func (rt *retryingTransport) RoundTrip(req *http.Request) (*http.Response, error
 	return resp, err
 }
 
-// TestCopyItem_RetryingSharedTransportIsNotInherited is Codex round 1's P1.
+// TestCopyItem_RetryingSharedTransportIsNotInherited is a regression test.
 // A dedicated http.Client is not sufficient on its own: retry behaviour
 // lives in the RoundTripper, and inheriting c.httpClient.Transport would
 // have inherited the retry with it.
@@ -409,7 +409,7 @@ func TestCopyItem_4xxIsARefusalNotAnUnknownOutcome(t *testing.T) {
 
 // ── request/response fidelity ────────────────────────────────────────────
 
-// Codex round 6. A hostile ref must not be able to re-route the one call
+// A hostile ref must not be able to re-route the one call
 // in this CLI that mutates two workspaces.
 func TestCopyItemPath_EscapesEachSegmentOnce(t *testing.T) {
 	// The ordinary case is byte-identical to bare concatenation — that is

@@ -22,7 +22,7 @@ import (
 // the expectation came from.
 
 func TestItemUpdateParent_EmptyValueRefused(t *testing.T) {
-	// ZERO requests, not "no writes" (codex round 1 [P1]). The first version
+	// ZERO requests, not "no writes". The first version
 	// of this test ignored GETs, and the first version of the fix refused
 	// AFTER the item fetch — so a refused call still hit the server and this
 	// test passed anyway. Counting every method is what makes it an

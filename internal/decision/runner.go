@@ -277,7 +277,7 @@ type BuiltState struct {
 // What is DELIBERATELY absent: seq, updated_at, sort orders, ids. None is
 // something a question can read, and each changes on writes that change
 // nothing else — a role-board reorder, a wiki-link re-resolution. Including
-// them would make those writes cost a provider call (TASK-3117 ruling 2).
+// them would make those writes cost a provider call (TASK-3117).
 func BuildItemState(item *models.Item, comments []models.Comment) (BuiltState, error) {
 	return buildItemState(item, comments, nil)
 }
@@ -347,7 +347,7 @@ func clipRunes(s string, n int) (string, bool) {
 // definition. An answer is current only while its fingerprint still matches:
 // rewording the instructions, changing a criterion, or re-pinning the model
 // changes what was asked, and the old answer is not an answer to the new
-// question (codex round 6).
+// question.
 //
 // Marshalled from a fixed struct, so field order is the struct's and map keys
 // (Choice options) are sorted by encoding/json: one question has one print.
@@ -590,7 +590,7 @@ func (r *Runner) Evaluate(ctx context.Context, itemID, setName string) (called b
 	}
 	// Applicability is re-checked HERE, against the collection the item is in
 	// now, not trusted from enqueue time: a job owed before a move still names
-	// the old collection's set (codex round 2). Checked before the idempotency
+	// the old collection's set. Checked before the idempotency
 	// read so an inapplicable set never costs a call or a query.
 	if ok, err := r.appliesNow(qs, item); err != nil {
 		return false, err
@@ -624,7 +624,7 @@ func (r *Runner) Evaluate(ctx context.Context, itemID, setName string) (called b
 	if r.beforeAsk != nil {
 		r.beforeAsk()
 	}
-	// Liveness again, as the LAST statement before the send (codex round 4):
+	// Liveness again, as the LAST statement before the send:
 	// the check in State ran before the idempotency read, and a delete landing
 	// in between must still stop the call. RESIDUAL, stated rather than
 	// implied: no fence can hold across a network request, so a delete that
@@ -656,8 +656,8 @@ func (r *Runner) Evaluate(ctx context.Context, itemID, setName string) (called b
 		for _, k := range chunk {
 			cq[k] = questions[k]
 		}
-		// Liveness as the LAST statement before EACH send (codex r1 on
-		// TASK-3119): a split set makes several calls, and a delete landing
+		// Liveness as the LAST statement before EACH send (TASK-3119): a split set
+		// makes several calls, and a delete landing
 		// between them must stop the rest. A call already made is reported
 		// as made.
 		itemLive, wsLive, err := r.store.ItemLiveness(item.ID)
@@ -915,8 +915,7 @@ func (r *Runner) decisionsNow(itemID string) ([]models.ItemDecision, []string, e
 		// still applying to the item. A set or key no longer registered has
 		// no "now" to match, so it is not current. The last is not implied by
 		// the state hash: a collection schema edit can make an item terminal,
-		// and so ineligible, without changing a byte of its state (codex
-		// round 2 on TASK-3118).
+		// and so ineligible, without changing a byte of its state (TASK-3118).
 		now, err := nowFor(rows[i].QuestionSet)
 		if err != nil {
 			return nil, nil, err
@@ -999,7 +998,7 @@ const (
 )
 
 // isPermanentFailure reports whether a failed evaluation says something about
-// the REQUEST rather than about the provider's availability (codex round 6).
+// the REQUEST rather than about the provider's availability.
 //
 // Permanent: the provider answered 4xx other than 429 — the request itself is
 // the problem, and asking again unchanged gets the same answer. Everything else
@@ -1028,8 +1027,8 @@ func decisionBackoff(attempts int) time.Duration {
 // RunOnce evaluates up to limit owed jobs, CLAIMING ONE AT A TIME, and
 // returns how many it claimed.
 //
-// One at a time so that each job's lease starts when its own evaluation does
-// (codex round 4). Claiming the whole pass up front made the last job wait
+// One at a time so that each job's lease starts when its own evaluation does.
+// Claiming the whole pass up front made the last job wait
 // behind every earlier provider call: at the provider's worst case (4 attempts
 // x 60s plus up to 30s between them, ~5.5 min per job) twenty jobs is far past
 // any lease, and an expired claim is taken by another instance — a duplicate

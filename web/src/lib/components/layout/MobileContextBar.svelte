@@ -28,7 +28,7 @@
 
 	// Count in-app navigations so goBack() knows whether history.back() stays
 	// inside Pad. history.length is unreliable — a deep link opened from
-	// another site/app still has prior history (Codex review, PLAN-1694).
+	// another site/app still has prior history (PLAN-1694).
 	let inAppNavs = $state(0);
 	afterNavigate((nav) => {
 		if (nav.type !== 'enter') inAppNavs += 1;
@@ -90,7 +90,7 @@
 	function goBack() {
 		// history.back() restores the list's scroll/filter state when we got
 		// here via in-app navigation; fall back to the computed parent on a
-		// deep link (no in-app history to pop). (Codex review, PLAN-1694.)
+		// deep link (no in-app history to pop) (PLAN-1694).
 		if (inAppNavs > 0 && typeof history !== 'undefined') {
 			history.back();
 		} else {

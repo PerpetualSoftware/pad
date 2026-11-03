@@ -5,11 +5,11 @@
 	import { appendUnique } from '$lib/utils/activityPaging';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
 
-	// Admin MCP audit log page (PLAN-943 TASK-960).
+	// Admin MCP audit log page  (PLAN-943 TASK-960).
 	//
 	// Full-table view of every request that hit /mcp. Per-user
-	// drilldown (the same data filtered to one connection) lives on
-	// the connected-apps page (TASK-954) — this page is the
+	// drilldown  (the same data filtered to one connection) lives on
+	// the connected-apps page  (TASK-954) — this page is the
 	// operations view for ops + on-call.
 	//
 	// No filtering UI in v1 beyond pagination — at <= 200 rows per
@@ -26,7 +26,7 @@
 		workspace_id?: string;
 		token_kind: 'oauth' | 'pat';
 		connection_id: string;
-		// TASK-2255 (C110): resolved server-side; absent when the id no longer resolves.
+		// TASK-2255  (C110): resolved server-side; absent when the id no longer resolves.
 		user_name?: string;
 		connection_name?: string;
 		tool_name: string;
@@ -71,7 +71,7 @@
 	// Chip color for an MCP result status. These are call outcomes
 	// (ok / denied / error; a refused tool call is denied even inside a
 	// 200, BUG-3879), not item statuses, so they map locally
-	// rather than through fieldColors.statusColor (TASK-2292).
+	// rather than through fieldColors.statusColor  (TASK-2292).
 	function statusColor(status: string): string {
 		if (status === 'ok') return 'var(--accent-green)';
 		if (status === 'denied') return 'var(--accent-amber)';
@@ -102,7 +102,7 @@
 			dropped = typeof result?.dropped === 'number' ? result.dropped : 0;
 			if (append) {
 				// Newest-first offset paging repeats a row when a call is logged
-				// between pages; the list is keyed by id (TASK-3539).
+				// between pages; the list is keyed by id  (TASK-3539).
 				entries = appendUnique(entries, items);
 			} else {
 				entries = items;

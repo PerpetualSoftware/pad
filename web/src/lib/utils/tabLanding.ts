@@ -1,6 +1,6 @@
 // Where the ACTIVE workspace tab lands when that tab goes away (PLAN-3002
 // Q3): its left neighbour, or, when it was the first tab, the tab that
-// becomes first (its right neighbour; lead ruling on TASK-3274). `null`
+// becomes first (its right neighbour; TASK-3274). `null`
 // means no tab is left, which lands on /console. The caller turns a tab into
 // a URL at that tab's last route (workspaceRestoreTarget) and decides
 // whether a navigation is owed at all: only losing the ACTIVE tab moves you.

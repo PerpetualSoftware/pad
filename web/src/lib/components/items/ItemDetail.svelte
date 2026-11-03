@@ -288,7 +288,7 @@
 	// links/error/loading after `ref` moved on. Each load captures its
 	// generation and bails at every await-resume once a newer load has
 	// started; onDestroy also bumps it so an in-flight load can't write global
-	// stores after unmount (PLAN-2105 / TASK-2112; Codex rounds 1-2 P1). Plain
+	// stores after unmount (PLAN-2105 / TASK-2112). Plain
 	// counter — not reactive; it only fences async writes.
 	let loadGeneration = 0;
 	// The identity this component's editor contents belong to (BUG-3005).
@@ -297,7 +297,7 @@
 	// the identity a pending write may legitimately be persisted as.
 	let identityEpochAtLoad = authStore.identityEpoch;
 
-	// UNIFIED collection-snapshot generation (BUG-2265 Codex): bumped by EVERY
+	// UNIFIED collection-snapshot generation (BUG-2265): bumped by EVERY
 	// operation that assigns `collection` — loadData's collection fetch, the SSE
 	// collection_updated refresh, and the quick-action / edit-modal callbacks —
 	// so the last-STARTED write wins and a stale in-flight continuation can't
@@ -324,7 +324,7 @@
 			fetchedId: fetched.id,
 			// `|| null`, not `?? null`: an empty-string collection_id (a
 			// malformed row) must read as "no anchor", not as a real id
-			// that vetoes every collection (codex round 3 P2).
+			// that vetoes every collection.
 			liveItemCollectionId: item?.collection_id || null,
 			currentCollectionId: collection?.id ?? null,
 			genFresh: collGen === collectionGen,
@@ -358,8 +358,8 @@
 		if (!embedded) return;
 		const liveSlug = item?.collection_slug;
 		if (!liveSlug || liveSlug === fetched.slug) return;
-		// Ordering: capture the generation BEFORE the fetch (codex round 1
-		// #3) — a fresher collection write landing during it must win, and
+		// Ordering: capture the generation BEFORE the fetch
+		// — a fresher collection write landing during it must win, and
 		// bumping on completion would have overwritten it with this older
 		// snapshot.
 		const convergeGen = ++collectionGen;
@@ -368,12 +368,11 @@
 			if (myGen !== loadGeneration) return;
 			adoptCollection(liveColl, convergeGen);
 		} catch {
-			// Best-effort here; the caller surfaces the schema-less outcome
-			// (codex round 1 #2).
+			// Best-effort here; the caller surfaces the schema-less outcome.
 		}
 	}
 
-	// UNIFIED item-snapshot generation (BUG-2265 Codex round 9): bumped by EVERY
+	// UNIFIED item-snapshot generation (BUG-2265): bumped by EVERY
 	// async operation that assigns `item` from a fetch — loadData's item load,
 	// the SSE item_updated/archived/restored refetches, the onSync refetches,
 	// the collab refresh, the migration item-refetch, and the user-write adopts
@@ -414,7 +413,7 @@
 	// updateField() would write field JSON against the wrong shape and clobber
 	// migrated values. Refetching it per switch keeps it self-healing and cheap
 	// (one request), which is the correct trade for a schema that can change out
-	// from under the pane (Codex review).
+	// from under the pane.
 	let cachedMembers:
 		| { user_id: string; user_name: string; user_email: string; role: string }[]
 		| null = null;
@@ -424,15 +423,15 @@
 
 	// True when a captured (item, generation) snapshot is no longer the one on
 	// screen — the uniform fence for DROPPING a post-await write/feedback after
-	// a no-{#key} pane switch (PLAN-2105 / TASK-2112; Codex). Checks BOTH the
+	// a no-{#key} pane switch (PLAN-2105 / TASK-2112). Checks BOTH the
 	// item id (cheap) AND the load generation, which closes the A→B→A gap where
 	// the returning id matches but a newer load replaced the item in between.
 	function switchedAway(targetItem: Item, gen: number): boolean {
 		return gen !== loadGeneration || item?.id !== targetItem.id;
 	}
 
-	// The identity fence, for the commit points NO generation reaches (BUG-3084
-	// checkpoint 32). Everything `switchedAway` and the item/collection
+	// The identity fence, for the commit points NO generation reaches (BUG-3084).
+	// Everything `switchedAway` and the item/collection
 	// generations guard is already refused on an identity change, because the
 	// identity listener below runs `loadData`, which bumps all three. These two
 	// exist only for the sites whose staleness checks are keyed on something an
@@ -452,7 +451,7 @@
 	// Bumped by the identity listener. Children that call back into this
 	// component after their own awaits are mounted inside `{#key identityKey}`
 	// with `{@const handedDown = identityKey}`, and each such callback refuses
-	// when `handedDown !== identityKey` (BUG-3084 checkpoint 36, lead ruling).
+	// when `handedDown !== identityKey` (BUG-3084 checkpoint 36).
 	// The `{@const}` FREEZES there because the key remounts the block on exactly
 	// the change the check guards — measured for a callback fired after an await
 	// from a destroyed instance. BUG-2129's "a template snapshot does not freeze"
@@ -529,7 +528,7 @@
 				? renameOverride.to
 				: collSlug,
 	);
-	// BUG-2272 P2: the override is a SPENT-ONCE bridge, not a dormant persistent
+	// BUG-2272: the override is a SPENT-ONCE bridge, not a dormant persistent
 	// pair — null it the instant the route prop leaves the pre-rename slug (the
 	// goto it triggered committed, so `collSlug === to`, OR a real navigation
 	// moved on). Clearing it — rather than leaving it dormant behind the guards —
@@ -570,7 +569,7 @@
 		// same-item reload after an identity change leaves equal (BUG-3084): the
 		// previous identity's collection list would retag the index and navigate.
 		const identity = captureIdentity();
-		// Fence captured BEFORE the await (codex round 4 P1 — bumping after
+		// Fence captured BEFORE the await (bumping after
 		// it made the check tautological): a newer collection write during
 		// the list fetch supersedes this heal's snapshot refresh.
 		const collGen = ++collectionGen;
@@ -578,7 +577,7 @@
 			const list = await api.collections.list(ws);
 			// Persistent-host discipline: the instance may have unmounted
 			// (destroyed), the route or snapshot may have moved — a stale
-			// continuation must not retag, refresh, or goto (round 4 P1).
+			// continuation must not retag, refresh, or goto.
 			if (destroyed) return;
 			if (!identityHeld(identity)) return;
 			if (ws !== wsSlug || routeColl !== collSlug || itemRef !== itemSlug) return;
@@ -595,12 +594,12 @@
 			});
 			if (!target) return;
 			// A user navigation already in flight would be ABORTED by our
-			// goto (route props lag until commit — codex round 7 P1).
+			// goto (route props lag until commit).
 			if (navigating.to) return;
 			renameOverride = { collectionId: snap.id, from: routeColl, to: target };
 			// Read back the installed value: `renameOverride` is $state, so
 			// the assignment wraps the literal in a reactive proxy — the raw
-			// object would never compare === to it (codex round 5 P2). The
+			// object would never compare === to it. The
 			// proxy identity is stable across reads, so this is the token
 			// the rejection cleanup below can safely compare.
 			const bridge = renameOverride;
@@ -619,7 +618,7 @@
 			}).catch(() => {
 				// A failed/cancelled navigation must not leave the override
 				// bridging to a URL we never reached. Identity compare (this
-				// heal's own bridge object, round 4 P2) so a cancelled older
+				// heal's own bridge object) so a cancelled older
 				// navigation can't clear a newer bridge to the same slug.
 				if (renameOverride === bridge) renameOverride = null;
 			});
@@ -644,8 +643,8 @@
 	// server ALSO resolves a bare item id (internal/store/items.go) and app toast
 	// links use UUIDs — without the `item.id` arm a UUID route would never satisfy
 	// `itemMatchesRef`, so scroll-readiness, `onIdentity`, and the collab gate
-	// would silently never fire on it (Codex BUG-1425 round 5 P1; UUID arm added
-	// for the full-page pane host's `onIdentity` guard — orchestrator review).
+	// would silently never fire on it (BUG-1425; UUID arm added
+	// for the full-page pane host's `onIdentity` guard).
 	//
 	// Embedded panes don't pass `onReady` — they manage their own scroll
 	// container (TASK-2112), not the route-level snapshot.
@@ -657,7 +656,7 @@
 	// scrollReady AND by the collab lifecycle gate (collabKey below), so a
 	// stale provider for the previous item tears down the instant `ref`
 	// changes — before the new fetch resolves — instead of lingering with a
-	// destroyed editor (PLAN-2105 / TASK-2112 switch-safety; Codex).
+	// destroyed editor (PLAN-2105 / TASK-2112 switch-safety).
 	// The workspace arm (`loadedItemWsSlug === wsSlug`) makes the switch boundary
 	// workspace-aware (IDEA-2135): a reused instance navigating ws1→ws2 with the
 	// same `?item=<ref>`, where both workspaces own that ref, flips the predicate
@@ -697,8 +696,8 @@
 	// Both the rule and the effect that applies it live in
 	// `$lib/attachments/viewerResource*` so they are unit-testable: inline here
 	// they could only be exercised through the host's props, which are handed the
-	// answer and so cannot tell a correct counter from one that never moves
-	// (Codex round 6). The self-write discipline this effect needs — never read
+	// answer and so cannot tell a correct counter from one that never moves.
+	// The self-write discipline this effect needs — never read
 	// `gen` in the tracked scope — is documented and pinned there.
 	const viewerResource = createViewerResourceGen(() => ({
 		workspaceSlug: loadedItemWsSlug,
@@ -790,7 +789,7 @@
 
 	let contentDebounceTimer: ReturnType<typeof setTimeout> | undefined;
 	// The text the armed contentDebounceTimer will save, so a refusal resend of
-	// the same text can drop it rather than send it twice (TASK-2232, codex r2).
+	// the same text can drop it rather than send it twice (TASK-2232).
 	let contentDebounceMarkdown: string | null = null;
 	// The save indicator counts the writes OUTSTANDING (BUG-3044): every
 	// `saves.begin()` below is settled in a `finally`, so a superseded or
@@ -965,7 +964,7 @@
 		// This same-page toggle can PRESERVE an open pane's `?item=` (on the
 		// full-page host, Q1/Phase 2), so re-emit the current `page.state` to
 		// keep the pane depth+ownership stamp intact — a bare replaceState would
-		// blank it and desync the close arithmetic (PLAN-2154 R13). A no-op when
+		// blank it and desync the close arithmetic (PLAN-2154). A no-op when
 		// there's no pane state to carry.
 		goto(url, { replaceState: true, reset: false, state: page.state });
 	}
@@ -1058,7 +1057,7 @@
 		if (!ref) return;
 		const success = await copyToClipboard(ref);
 		// Don't flip the "Copied!" checkmark on a different item if the pane
-		// switched during the async clipboard write (Codex).
+		// switched during the async clipboard write.
 		if (success && !switchedAway(targetItem, gen)) {
 			copied = true;
 			setTimeout(() => {
@@ -1084,7 +1083,7 @@
 	let canEdit = $derived(item && !item.deleted_at ? workspaceStore.canEditItem(item) : false);
 	// Restore requires edit permission server-side, independent of the
 	// archived gate that forces canEdit false — otherwise the Restore CTA
-	// would render for read-only viewers and just 403 on click (Codex).
+	// would render for read-only viewers and just 403 on click.
 	let canRestore = $derived(item ? workspaceStore.canEditItem(item) : false);
 	// PLAN-2154 Phase 2 / D2 / R12 (TASK-2172): the master-freeze gate. Every
 	// local/user-originated mutation surface below (title / fields / assign /
@@ -1238,8 +1237,8 @@
 		}
 	});
 
-	// AN IDENTITY CHANGE IS A LOAD on this surface (BUG-3084 checkpoints 32-33,
-	// lead ruling). `loadData` bumps the load, item and collection generations,
+	// AN IDENTITY CHANGE IS A LOAD on this surface (BUG-3084 checkpoints 32-33).
+	// `loadData` bumps the load, item and collection generations,
 	// so every continuation fenced by `switchedAway` or a generation check is
 	// refused by construction, and it resets the transient page state — and it
 	// is the recovery: the item reloads for whoever is signed in now, so the pane
@@ -1266,7 +1265,7 @@
 		if (previousUserId) keepAtRiskText(previousUserId);
 		if (!(wsSlug && collSlug && itemSlug)) return;
 		// The member and role lists are cached per workspace, and the load below
-		// would otherwise reuse the previous identity's (BUG-3084 codex round 1).
+		// would otherwise reuse the previous identity's (BUG-3084).
 		cachedMembers = null;
 		cachedMembersWs = null;
 		cachedRoles = null;
@@ -1305,13 +1304,13 @@
 	});
 
 	// PLAN-2154 Phase 2 (TASK-2172): master-freeze TRANSITION effects.
-	//   • Peeking BEGIN (R6): the raw-markdown editor goes read-only, but a save
+	//   • Peeking BEGIN: the raw-markdown editor goes read-only, but a save
 	//     it queued just BEFORE the freeze is still sitting in the
 	//     `rawContentSaver` debounce. Drain it synchronously (flushNow) and
 	//     cancel the debounce so no REST `item.content` write lands mid-freeze.
 	//     Also close any open in-place title edit so its textarea can't linger
 	//     editable behind the freeze.
-	//   • Peeking END (R9): the master never re-runs loadData on pane close, so
+	//   • Peeking END: the master never re-runs loadData on pane close, so
 	//     it must reclaim the shared `collectionStore.activeItem` the pane's
 	//     clear-if-owner teardown nulled — otherwise layout self-save suppression
 	//     and ChildItems.defaultCollSlug degrade.
@@ -1345,10 +1344,9 @@
 		} else if (ended) {
 			untrack(() => {
 				// Un-peek: this side is now the active/editable one, so it reclaims the
-				// shared activeItem (R9). Nothing to re-flush — under Option A pre-pane
+				// shared activeItem. Nothing to re-flush — under Option A pre-pane
 				// saves already completed on their own while peeking; the freeze only
-				// ever blocked NEW edits. Gate on `itemMatchesRef` (PLAN-2179 / TASK-2181;
-				// Codex review): during a retarget (a drill that flips this side active
+				// ever blocked NEW edits. Gate on `itemMatchesRef` (PLAN-2179 / TASK-2181): during a retarget (a drill that flips this side active
 				// while `ref` already points at the NEXT item but `item` still holds the
 				// previous one) reclaiming `item` would point activeItem at a stale item.
 				// Skip until the load resolves — loadData's now-unfrozen `!peeking`
@@ -1359,7 +1357,7 @@
 					// This side owns the singleton editorStore now too — restore its
 					// scalars from THIS instance's own shadow so +layout's self-save
 					// suppression reads the ACTIVE side's real dirty/save state, not the
-					// side we just froze (PLAN-2179 / TASK-2181; Codex review). Mirrors the
+					// side we just froze (PLAN-2179 / TASK-2181). Mirrors the
 					// load-time / teardown ownership gates.
 					editorStore.setDirty(localDirty);
 					editorStore.setLastSaveTime(localLastSaveTime);
@@ -1414,7 +1412,7 @@
 		// the user's in-flight document. A proper fix needs editor-dirty-
 		// state integration; tracked separately.
 		unsubscribeSSE = sseService.onItemEvent(async (event) => {
-			// The load this event arrived under (BUG-3084 codex round 1). The
+			// The load this event arrived under (BUG-3084). The
 			// collection branch awaits a fetch and then captures `itemGen` for
 			// its item refresh, so an identity change inside that fetch was
 			// invisible to the item fence; the identity listener's load bumps
@@ -1430,14 +1428,13 @@
 			// branch must run BEFORE the item-id guard below.
 			if (event.type === 'collection_updated') {
 				const snap = collection;
-				// Match by STABLE id, not slug (Codex round 7): a replayed rename
+				// Match by STABLE id, not slug: a replayed rename
 				// event's old slug can be re-owned by a DIFFERENT collection, so a
 				// slug match could load the wrong schema into this pane.
 				if (!snap) {
 					// No collection installed yet: a load is in flight. A schema
 					// migration that changed item values would otherwise be lost
-					// when the load installs an item read before it (BUG-3198,
-					// codex round 2), so record the collection it names.
+					// when the load installs an item read before it (BUG-3198), so record the collection it names.
 					if (event.items_changed && event.collection_id) noteChangeDuringLoad([], false, [event.collection_id]);
 					return;
 				}
@@ -1466,7 +1463,7 @@
 					if (event.collection === believed && event.new_slug !== believed) {
 						// Scope to the renamed collection's stable id (=== snap.id,
 						// guarded above) so a later reuse of the old slug by a
-						// DIFFERENT collection can't re-trigger this override (P2).
+						// DIFFERENT collection can't re-trigger this override.
 						renameOverride = {
 							collectionId: event.collection_id ?? snap.id,
 							from: collSlug,
@@ -1482,13 +1479,13 @@
 				}
 				// On a rename, refetch by the NEW slug (the old one is dead) so
 				// this pane's collection reference — used to build quick-action /
-				// edit writes — stays valid (Codex P2).
+				// edit writes — stays valid.
 				// Fetch the collection's CURRENT slug. A rename carries new_slug;
 				// a settings update that follows a rename routes by (and carries in
 				// `collection`) the NEW slug — so prefer new_slug, THEN event's own
 				// slug, THEN the pane's snapshot slug. Using `slug` alone would make
 				// a post-rename settings update request the DEAD old slug and bump
-				// collectionGen, cancelling the valid rename fetch (Codex round 9).
+				// collectionGen, cancelling the valid rename fetch.
 				const targetSlug = event.new_slug || event.collection || slug;
 				// Unified generation: bumped here AND by loadData / the
 				// quick-action + edit-modal callbacks, so the last-started write
@@ -1500,8 +1497,7 @@
 					if (callbackGen !== loadGeneration) return;
 					// Persistent pane host has no {#key} remount — drop if the
 					// loaded collection changed IDENTITY during the fetch (compare
-					// by stable id, not slug, so a rename still applies — Codex
-					// round 9); adoptCollection folds in the generation order AND
+					// by stable id, not slug, so a rename still applies); adoptCollection folds in the generation order AND
 					// the live-item semantic veto, which also covers the fetched
 					// snapshot itself being foreign (a reused targetSlug after a
 					// rename returns a different collection — BUG-2602).
@@ -1512,11 +1508,11 @@
 					// Best-effort — a stale snapshot just means the next save
 					// may 409 and self-heal via QuickActionsMenu's retry.
 				}
-				// After the try/catch, not only inside the success arm (BUG-3084
-				// codex round 2): a REJECTED collection fetch otherwise fell through
+				// After the try/catch, not only inside the success arm (BUG-3084):
+				// a REJECTED collection fetch otherwise fell through
 				// into the item refresh below and adopted it under the new identity.
 				if (callbackGen !== loadGeneration) return;
-				// BUG-2265 (Codex P1): if the schema migration mutated item field
+				// BUG-2265: if the schema migration mutated item field
 				// values, THIS pane's `item` (loaded via api.items.get, NOT from
 				// the localIndex that the workspace deltaSync reconciles) may hold
 				// stale field JSON, so the pane would render pre-migration values
@@ -1545,7 +1541,7 @@
 					const reqItemId = item.id;
 					const reqWsSlug = wsSlug;
 					const reqItemSlug = itemSlug;
-					// Dedicated item-snapshot gen (round 9): the migration refetch
+					// Dedicated item-snapshot gen: the migration refetch
 					// and loadData no longer share loadGeneration, so a stale
 					// loadData response can't overwrite the migrated item (and
 					// vice-versa).
@@ -1564,7 +1560,7 @@
 			// No item of the REQUESTED ref is installed yet (a first load, or
 			// mid-switch A→B with `item` still A): an event cannot be applied,
 			// and a stale archive/delete event for A must not call handleGone()
-			// and close B's just-opening pane (PLAN-2105 / TASK-2112; Codex). It
+			// and close B's just-opening pane (PLAN-2105 / TASK-2112). It
 			// is RECORDED rather than dropped (BUG-3198): the in-flight load's
 			// item read may predate this change, so "the new load refetches
 			// fresh state" is not true, and the load checks this record when it
@@ -1574,7 +1570,7 @@
 				return;
 			}
 			if (event.item_id !== item.id) return;
-			// Item writes below are ordered via the dedicated itemGen (round 9),
+			// Item writes below are ordered via the dedicated itemGen,
 			// captured per-refetch just before the fetch so a switch / a newer
 			// item write (load, migration, another SSE/onSync refetch) drops the
 			// stale continuation. Identity is always checked by item id.
@@ -1584,7 +1580,7 @@
 			// item should be redirected immediately. Their in-flight save
 			// will fail against the archived row, and silently keeping
 			// them on a non-existent item is worse than discarding the
-			// edit. Per Codex review round 2.
+			// edit.
 			if (event.type === 'item_archived') {
 				// The open item was archived (another tab / user). GET still
 				// returns soft-deleted items (deleted_at set, #733), so re-fetch
@@ -1592,12 +1588,12 @@
 				// user back to the collection (TASK-1833). Two cases keep the
 				// prior redirect: mid-edit (an in-flight save will fail against
 				// the archived row and re-fetching would clobber the editor —
-				// the Codex-round-2 reasoning still holds there), and a re-fetch
+				// the same reasoning still holds there), and a re-fetch
 				// 404 (item hard-deleted — gone for real).
 				// localDirty catches unsaved content BEFORE the 1.2s debounced
 				// save flips saveStatus to 'saving' — without it a live archive
 				// in that window would re-fetch and clobber the user's
-				// in-progress edit (Codex P1). Reads the PER-INSTANCE shadow
+				// in-progress edit. Reads the PER-INSTANCE shadow
 				// (TASK-2156), not the global editorStore.dirty singleton — a
 				// concurrently-mounted pane's edits must not trip THIS
 				// instance's redirect (PLAN-2154 D2 / R4).
@@ -1692,8 +1688,8 @@
 		});
 
 		unsubscribeSync = syncService.onSync(async (result) => {
-			// Same reason as the SSE callback's `callbackGen` (BUG-3084 codex
-			// round 1): reconciliation below is awaited, its own identity fence
+			// Same reason as the SSE callback's `callbackGen` (BUG-3084):
+			// reconciliation below is awaited, its own identity fence
 			// only stops ITSELF, and everything after it captures `itemGen`
 			// fresh and would adopt this result under whoever signed in during it.
 			const callbackGen = loadGeneration;
@@ -1702,7 +1698,7 @@
 			if (result.workspace !== wsSlug) return;
 			// No item of the requested ref is installed yet (a first load, or
 			// mid-switch with `item` still A): a stale delete/refresh must not
-			// close B's pane or clobber it (PLAN-2105 / TASK-2112; Codex), so the
+			// close B's pane or clobber it (PLAN-2105 / TASK-2112), so the
 			// result is not APPLIED here. It is RECORDED (BUG-3198): measured, a
 			// bulk archive landed after this load's item read and before the
 			// load installed `item` (it waits on the index bootstrap), its sync
@@ -1724,7 +1720,7 @@
 			// caught_up return on purpose: link changes do not touch the item,
 			// so a gap that held only link changes reports caught_up.
 			linksRetry.kick();
-			// Item writes below are ordered via the dedicated itemGen (round 9),
+			// Item writes below are ordered via the dedicated itemGen,
 			// bumped per-refetch; a switch is caught by the item-id check.
 
 			// BUG-2601: reconcile the FULL-PAGE route's collection segment
@@ -1754,7 +1750,7 @@
 				// localDirty catches unsaved content BEFORE the 1.2s debounced
 				// save flips saveStatus to 'saving' — without it a live archive
 				// in that window would re-fetch and clobber the user's
-				// in-progress edit (Codex P1). Reads the PER-INSTANCE shadow
+				// in-progress edit. Reads the PER-INSTANCE shadow
 				// (TASK-2156), not the global editorStore.dirty singleton — a
 				// concurrently-mounted pane's edits must not trip THIS
 				// instance's redirect (PLAN-2154 D2 / R4).
@@ -1804,7 +1800,7 @@
 					// bump: bumping for it would cancel a fresher in-flight refetch
 					// and then install nothing (BUG-3036).
 					if (isOlderSnapshot(item, updated)) return;
-					// Bump the item-snapshot gen so an in-flight refetch drops (round 9).
+					// Bump the item-snapshot gen so an in-flight refetch drops.
 					const myItemGen = ++itemGen;
 					item = adoptServerItem(updated);
 					void refreshCollectionIfMoved(updated);
@@ -1822,8 +1818,8 @@
 				if (!item || item.id !== reqItemId || myItemGen !== itemGen) return;
 				item = adoptServerItem(updated);
 				// Same collection-moved handling as the SSE + incremental
-				// adoptions above — a long tab absence can span a move too
-				// (codex round 2 P1). The follow-ups read `item`, the row actually
+				// adoptions above — a long tab absence can span a move too.
+				// The follow-ups read `item`, the row actually
 				// INSTALLED: an older row than the one shown is refused by
 				// withInflightTags (BUG-3036), and the screen is then at least as
 				// new as this read — so the cursor below may still advance.
@@ -1851,7 +1847,7 @@
 	// a one-way "am I even still alive" flag — never reset, checked first
 	// by any handler whose global side effects (goto, collectionStore
 	// writes) would be wrong to run against a dead instance's stale
-	// closure-captured props (Codex PR review).
+	// closure-captured props.
 	let destroyed = false;
 
 	onDestroy(() => {
@@ -1865,12 +1861,12 @@
 		// global-store writes — collectionStore.setActiveItem / editorStore —
 		// and clobber the next view's state. Bumping the generation makes the
 		// pending load bail at its next await-resume guard, before those calls
-		// (PLAN-2105 / TASK-2112; Codex round 2 P1). onDestroy runs
+		// (PLAN-2105 / TASK-2112). onDestroy runs
 		// synchronously on unmount, before the awaited fetch continuations.
 		loadGeneration++;
 		// A FROZEN (peeking) instance is NOT the active editor — it never owned the
 		// singleton `editorStore`, so its teardown must not reset the scalars the
-		// ACTIVE side owns (PLAN-2179 / TASK-2181; Codex review). Closing a read-only
+		// ACTIVE side owns (PLAN-2179 / TASK-2181). Closing a read-only
 		// preview beside a dirty editable master would otherwise wipe the master's
 		// global dirty flag and degrade +layout's self-save suppression. Symmetric
 		// with the load-time gate and the clear-if-owner for activeItem below.
@@ -1903,7 +1899,7 @@
 		// exists for that case). On such a reload a failed links request must
 		// keep the links it has, for the same reason the three refresh callers
 		// do — and on a real switch it must NOT, or one item's relationships
-		// render under another's title (BUG-2871, codex P1).
+		// render under another's title (BUG-2871).
 		//
 		// READ THROUGH `untrack`, and that is not a style choice (CONVE-1688).
 		// The route effect now calls `loadData` under `untrack` (BUG-3192), so
@@ -1919,10 +1915,10 @@
 		const linksHeldForItemId = untrack(() => item?.id ?? null);
 		// Join the unified collection-snapshot fence so this load's `collection`
 		// write is dropped if a newer SSE refresh / callback landed a fresher
-		// snapshot while this load was in flight (Codex — separate lifecycle
+		// snapshot while this load was in flight (a separate lifecycle
 		// from loadGeneration).
 		const collGen = ++collectionGen;
-		// Join the item-snapshot fence (round 9) so this load's `item` write is
+		// Join the item-snapshot fence so this load's `item` write is
 		// dropped if a newer item write (e.g. the migration refetch, or another
 		// load/refetch) landed a fresher item while this load was in flight —
 		// they no longer share loadGeneration.
@@ -1935,12 +1931,12 @@
 		// would either (a) seed B's raw editor with A's live markdown
 		// via rawSeedMarkdown, or (b) cause flushRawIfPending on B to
 		// PATCH A's queued markdown into B. Cancel any in-flight raw
-		// debounce too. Per Codex review round 10.
+		// debounce too.
 		clearTimeout(contentDebounceTimer);
 		contentDebounceTimer = undefined;
 		collabFlusher.cancel();
 		rawSeedMarkdown = null;
-		// Raw-mode data-loss guard (PLAN-2105 / TASK-2112; coordinator P1).
+		// Raw-mode data-loss guard (PLAN-2105 / TASK-2112).
 		// In raw mode there is NO collab cleanup flush, so switching A→B within
 		// the 1.2s debounce would silently DROP A's pending markdown at
 		// clearPending() below. `item` still holds the OLD item here (B's fetch
@@ -1949,7 +1945,7 @@
 		// swap) FIRST. The saver's `save` callback captures the live item.id (the
 		// old item) internally, so the PATCH targets the right item.
 		//
-		// UNTRACK (Codex): flushNow synchronously invokes the save callback,
+		// UNTRACK: flushNow synchronously invokes the save callback,
 		// which reads `item`. Under a tracking caller that read would make
 		// `item` a dependency → loadData would re-fire on every item mutation
 		// (SSE / field edit), a duplicate-load loop. The route effect untracks
@@ -1981,8 +1977,8 @@
 		// continuation of this load sees the new stamp.
 		//
 		// UNTRACKED: when `loadData` ran inside the route effect, a tracked read
-		// here made that effect re-run on every identity change (BUG-3084
-		// checkpoint 33). The route effect untracks the whole call since
+		// here made that effect re-run on every identity change (BUG-3084).
+		// The route effect untracks the whole call since
 		// BUG-3192; this stays as defence. The identity listener is the one
 		// mechanism that reloads on an identity change.
 		identityEpochAtLoad = untrack(() => authStore.identityEpoch);
@@ -2000,7 +1996,7 @@
 		//      single item the user explicitly toggled.
 		//   2. Expected default. Opening B fresh should render its content, not
 		//      inherit A's editing mode.
-		// GATE on a real switch (Codex P1). loadData() also runs for SAME-item
+		// GATE on a real switch. loadData() also runs for SAME-item
 		// reloads — the edit-collection handler's `void loadData()` after a schema
 		// change. There `item` still matches `itemSlug` (itemMatchesRef stays
 		// true), so flipping rawMode→false would SYNCHRONOUSLY flip collabKey from
@@ -2023,7 +2019,7 @@
 		});
 		// Reset item-scoped ephemeral UI so an armed / open control from the
 		// PREVIOUS item can't act on the newly-loaded one across the no-{#key}
-		// prop-update switch (PLAN-2105 / TASK-2112; coordinator P2).
+		// prop-update switch (PLAN-2105 / TASK-2112).
 		// The armed delete confirmation is the dangerous one — armed on A,
 		// switch to B, and a confirming click would delete B. It now lives in
 		// the ⋯ menu as `paneMenuView === 'delete'`, so the paneMenuOpen /
@@ -2070,7 +2066,6 @@
 		// (item.id mismatch) leaves saveStatus pinned at 'saving' on
 		// the next item, which then suppresses SSE/sync refreshes
 		// (the `if (saveStatus === 'saving')` guards above).
-		// Per Codex review round 12.
 		// Cleared BEFORE the status goes idle: a refresh owed to the previous
 		// item must not fire against this one when the effect below sees the
 		// status drop (BUG-3036).
@@ -2085,7 +2080,7 @@
 		// path to detect whether the user has navigated away before this
 		// request rejected — without this the stale catch would clobber a
 		// fresh last route for {wsSlug} noted by the workspace +layout
-		// effect after the user moved on (TASK-754 round-2 race guard).
+		// effect after the user moved on (TASK-754 race guard).
 		const reqUsername = username;
 		const reqWsSlug = wsSlug;
 		const reqCollSlug = collSlug;
@@ -2098,7 +2093,7 @@
 		// surfaces only the first rejection, so keying the scrub off the outer
 		// error's code would (a) scrub a VALID item's route on a collection
 		// `not_found` and (b) miss a dead item when the collection/index errors
-		// first. Classifying the item request separately fixes both (Codex).
+		// first. Classifying the item request separately fixes both.
 		let itemFetchNotFound = false;
 		try {
 			// The workspace item index is needed for wiki-link resolution
@@ -2155,10 +2150,10 @@
 			if (myGen !== loadGeneration) return;
 			// Overlay any in-flight optimistic tag edit so navigating away and
 			// back mid-save can't show (and then let a follow-up edit overwrite
-			// with) stale server tags. See withInflightTags. Per Codex PR #659.
+			// with) stale server tags. See withInflightTags.
 			// Gate the ITEM snapshot on itemGen too: a newer item write (e.g. the
 			// migration refetch) that bumped itemGen but not loadGeneration must
-			// not be reverted by this in-flight load (round 9).
+			// not be reverted by this in-flight load.
 			// Stamp the workspace this item was loaded under in lockstep with the
 			// item adoption (IDEA-2135) — same gate, so `loadedItemWsSlug` and
 			// `item` can never disagree about which workspace `item` belongs to.
@@ -2170,8 +2165,8 @@
 			}
 			// A change to THIS item delivered while the load was in flight
 			// (BUG-3198): the read above may predate it, so read again. One read,
-			// issued now, after the change. OUTSIDE the itemGen gate on purpose
-			// (codex round 1): a newer item write that bumped itemGen installs
+			// issued now, after the change. OUTSIDE the itemGen gate on purpose:
+			// a newer item write that bumped itemGen installs
 			// its own row and skips the install above, and a check inside the
 			// gate would then leave the record unconsumed and the change
 			// unapplied. Keyed on the item actually installed, whoever
@@ -2210,13 +2205,11 @@
 					// converges on the live item's collection instead.
 					await adoptOrConvergeToLiveCollection(realColl, collGen, myGen);
 					// The converge fallback awaited — a route switch during it
-					// must stop this load before the global writes below
-					// (codex round 1 #1).
+					// must stop this load before the global writes below.
 					if (myGen !== loadGeneration) return;
 					// Veto + failed convergence = a schema-less pane. Surface
 					// it like the old fetch-failure path did instead of
-					// reporting a successful load with no fields (codex
-					// round 1 #2).
+					// reporting a successful load with no fields.
 					if (!collection) {
 						error = 'Failed to load this item’s collection';
 						return;
@@ -2226,8 +2219,7 @@
 					// Can't resolve the item's REAL collection. Surface the
 					// failure instead of falling back to the route collection's
 					// schema — rendering another collection's fields is exactly
-					// the mismatch the cross-collection guard exists to prevent
-					// (Codex round 1 P2).
+					// the mismatch the cross-collection guard exists to prevent.
 					error = 'Failed to load this item’s collection';
 					return;
 				}
@@ -2235,8 +2227,7 @@
 				// Same hatch shape, same fix (BUG-2602) — see above.
 				await adoptOrConvergeToLiveCollection(collData, collGen, myGen);
 				if (myGen !== loadGeneration) return;
-				// Same schema-less surfacing as the realColl branch (codex
-				// round 3): a veto + failed/skipped convergence on a cold
+				// Same schema-less surfacing as the realColl branch: a veto + failed/skipped convergence on a cold
 				// mount must not report a successful load with no fields.
 				if (!collection) {
 					error = 'Failed to load this item’s collection';
@@ -2252,7 +2243,7 @@
 			//   • `editorStore` scalars (mode/dirty/externalChange) — `resetForDoc()`
 			//     clears `dirty`; a frozen preview opening beside a DIRTY editable
 			//     master would otherwise wipe the master's dirty flag and degrade
-			//     +layout's self-save suppression (Codex review).
+			//     +layout's self-save suppression.
 			// On the focus-follows host the pane LOADS while the master stays active
 			// (`activePane='master'`); without this gate the pane's load would clobber
 			// both singletons. The freeze END transition reclaims them the instant THIS
@@ -2262,7 +2253,7 @@
 			// `localDirty` shadow (below) resets unconditionally — it's what THIS
 			// instance's own SSE guards read (TASK-2156).
 			if (!peeking && myItemGen === itemGen) {
-				// itemGen re-check (codex round 3 P1): the collection adoption
+				// itemGen re-check: the collection adoption
 				// above AWAITS (realColl fetch, possibly the convergence
 				// fallback), and an SSE item write during that window bumps
 				// itemGen — this load's itemData is then stale and must not
@@ -2275,7 +2266,7 @@
 				// owner's save timestamp (e.g. a pane activated mid-load — when the END
 				// reclaim was skipped by the itemMatchesRef gate — inheriting the frozen
 				// master's). Establish THIS instance's own lastSaveTime, mirroring the
-				// END reclaim (Codex review). For a single-instance caller this is a
+				// END reclaim. For a single-instance caller this is a
 				// no-op: localLastSaveTime already equals editorStore.lastSaveTime (they
 				// mirror on every write) → byte-identical for the collection route.
 				editorStore.setLastSaveTime(localLastSaveTime);
@@ -2330,8 +2321,7 @@
 			// another item's title; clearing it on a same-item reload destroys
 			// good rows and takes any click straddling it with them, which is
 			// the whole defect. So the test is `linksHeldForItemId`, not which
-			// function we are in (BUG-2871; the unconditional clear here was
-			// codex P1 on the first version of this fix).
+			// function we are in (BUG-2871; an unconditional clear here was wrong).
 			const linksResult = await linksRead;
 			if (myGen !== loadGeneration) return;
 			if (linksResult.ok) {
@@ -2384,7 +2374,7 @@
 			// (workspace re-entry) — just revived, so scrubbing on its stale
 			// rejection risks clobbering a valid cached pane. The current live
 			// load has no such ambiguity: it is failing right now, so its route
-			// is dead right now (TASK-2123; Codex rounds 1-4 converged here).
+			// is dead right now (TASK-2123).
 			if (myGen !== loadGeneration) return;
 			error = e.message ?? 'Failed to load item';
 			// Scrub the dead item from the workspace's last-route cache so the
@@ -2408,7 +2398,7 @@
 			// error, or a first-to-reject sibling in the Promise.all never strips
 			// a still-valid cached pane (incl. one another live tab wrote to the
 			// shared localStorage). Those errors still surface via `error` above;
-			// they just don't touch the cache (Codex).
+			// they just don't touch the cache.
 			if (itemFetchNotFound) {
 				// The read + write below is one synchronous block, so no same-tab
 				// interleaving is possible. Across tabs the stored route is
@@ -2439,7 +2429,7 @@
 				// $effect below so it can fire even if /me (which feeds canEdit)
 				// resolves AFTER loadData() finishes. One-shot. Always reassign
 				// (true OR false) so a stale flag from a previous ?new=1 load
-				// can't fire on a subsequent non-new item load — Codex round 6.
+				// can't fire on a subsequent non-new item load.
 				// `?new=1` create-intent is a full-page-only flow (create stays
 				// full-page for v1 — PLAN-2105). When embedded, `page.url` is the
 				// COLLECTION route, so never read it there.
@@ -2476,7 +2466,7 @@
 	// "no active room" answer and lets the regular direct-write path
 	// take care of items.content. Switching back mints a fresh Y.Doc
 	// + reseeds via op-log replay (and TASK-1261's lazy seed for the
-	// post-raw-save markdown). Per Codex review round 2.
+	// post-raw-save markdown).
 	let ydoc = $state<Y.Doc | null>(null);
 	let collabProvider = $state<CollabProvider | null>(null);
 	// forceRefreshNonce drives Y.Doc/provider recreation when the
@@ -2490,8 +2480,7 @@
 	// handler sets so the next collab $effect cleanup tears down
 	// without flushing the (known-stale) Y.Doc-derived markdown.
 	// Reset at the start of each cleanup so a subsequent normal
-	// teardown still runs its flush. Per Codex review round 1 [P1]
-	// of TASK-1319.
+	// teardown still runs its flush. See TASK-1319.
 	let skipFlushOnNextCleanup = false;
 	// forceRefreshInFlight blocks any new collab-snapshot flush from
 	// being scheduled (or surviving) while the page is mid-recovery
@@ -2500,8 +2489,7 @@
 	// edit during that window arms a NEW collabFlushTimer that fires
 	// before cleanup runs and PATCHes stale Y.Doc-derived markdown
 	// back to canonical items.content. Reset to false at the END of
-	// the new collab $effect run (after rebuild completes). Per
-	// Codex round 7 [P1] of TASK-1319.
+	// the new collab $effect run (after rebuild completes). See TASK-1319.
 	let forceRefreshInFlight = false;
 	// The editor is read-only from a force_refresh until the rebuilt provider
 	// is wired, and stays so if the refetch fails (BUG-3697). The provider is
@@ -2522,7 +2510,7 @@
 	// single-key shortcut reads, and nothing else. Every other key (Escape,
 	// Tab, arrows, Enter, space, chords) still reaches its window owners —
 	// DockedSheet, the PaneHost focus trap, scroll restore — as it does from an
-	// editable editor (BUG-3786 codex r2, r3). ProseMirror's own listener sits
+	// editable editor (BUG-3786). ProseMirror's own listener sits
 	// on this same node, so it still sees every key.
 	$effect(() => {
 		const dom = editorInstance?.view?.dom;
@@ -2545,7 +2533,7 @@
 	// unmounted (a stale applier would then ACK success against a destroyed
 	// editor). Going null tears the old provider down (its $effect cleanup
 	// still flushes the Y.Doc) until the new item loads. Same-item reloads
-	// keep the provider (item.slug still matches itemSlug). Codex.
+	// keep the provider (item.slug still matches itemSlug).
 	const collabKey = $derived(item && itemMatchesRef && canEdit && !rawMode ? item.id : null);
 
 	// Local user identity broadcast over awareness for the
@@ -2599,7 +2587,7 @@
 	// `setContent` on the wrong editor (or a destroyed one) instead
 	// of falling through to the server's direct-write fallback. The
 	// new editor's mount callback sets `editorInstance` again once
-	// the skeleton phase ends. Per Codex review round 2 of TASK-1375.
+	// the skeleton phase ends. See TASK-1375.
 	$effect(() => {
 		void collabProvider;
 		hasEverSynced = false;
@@ -2629,7 +2617,7 @@
 	// and retry-driven rebuilds — without this, a stuck-connecting
 	// flag from a previous provider would carry over and the new
 	// provider would immediately show error UI). Only the timer
-	// can flip it back to true. Per Codex review round 1.
+	// can flip it back to true.
 	let staleConnecting = $state(false);
 	$effect(() => {
 		if (!collabProvider) return;
@@ -2661,7 +2649,7 @@
 	// op-log. If the cursor is below MIN the server sends a real
 	// force_refresh which goes through onForceRefresh (which DOES
 	// refetch — correctly, because the server is the source of truth
-	// in that case). Per Codex review rounds 1 and 2 of TASK-1376.
+	// in that case). See TASK-1376.
 	function retryCollabSync() {
 		if (!item) return;
 		// Master-freeze / R14 (TASK-2172): the retry bumps forceRefreshNonce,
@@ -2675,8 +2663,8 @@
 
 	$effect(() => {
 		if (!collabKey) return;
-		// The provider and its Y.Doc belong to ONE identity (BUG-3084 codex
-		// round 2). `collabKey` does not move on an identity change, so without
+		// The provider and its Y.Doc belong to ONE identity (BUG-3084).
+		// `collabKey` does not move on an identity change, so without
 		// this dependency the previous identity's provider survived the
 		// identity-triggered load: its applier and force-refresh callbacks, the
 		// idle collab save and the mode toggles all kept consuming the old
@@ -2711,7 +2699,7 @@
 		// rebuild the provider/Y.Doc on any same-item refresh (SSE adoption,
 		// title/tag/field edits), dropping in-flight edits and interrupting
 		// active editing. collabKey just changed to this itemId, so item is
-		// the freshly-loaded item for it. Per Codex review.
+		// the freshly-loaded item for it.
 		const baseline = untrack(() => (item && item.id === itemId ? item.content ?? '' : ''));
 		// The items.content generation this Y.Doc is being seeded from (same
 		// untracked item snapshot as `baseline`). Announced to the server as
@@ -2719,10 +2707,9 @@
 		// predates it (BUG-2264). Untracked for the same reason as `baseline`:
 		// tracking `item.seq` would rebuild the provider on every seq bump.
 		const seedSeq = untrack(() => (item && item.id === itemId ? item.seq ?? 0 : 0));
-		// Eager, all-tabs seedMd (BUG-1941 follow-up — codex round 2 found
-		// that only the multi-tab-election WINNER got a captured seed via
-		// the lazy-seed effect below; a second tab on the same item, or
-		// simply reopening an item that already has collab history, never
+		// Eager, all-tabs seedMd (BUG-1941 follow-up: only the multi-tab-election
+		// WINNER got a captured seed via the lazy-seed effect below; a second tab
+		// on the same item, or simply reopening an item that already has collab history, never
 		// lazy-seeds and was left with seedMd stuck at null). This
 		// eagerly projects `baseline` (the SAME item.content @ load that
 		// the pre-existing storage-space dedupe already trusts) into
@@ -2778,7 +2765,7 @@
 			baseline,
 			seedMd,
 			// The identity this editor's Y.Doc is typed under, fixed for the
-			// context's life (BUG-3084 codex round 1). NOT `identityEpochAtLoad`:
+			// context's life (BUG-3084). NOT `identityEpochAtLoad`:
 			// a load re-stamps that, and the identity listener runs a load, so a
 			// context minted before an identity change would read as the new
 			// user's and its teardown flush would PATCH the previous user's rich
@@ -2790,7 +2777,7 @@
 			// measured on a mount, the cleanup that runs in the effect flush after
 			// an identity change read the epoch's PREVIOUS value, matched the
 			// stamp, and flushed the old draft. A flag written in the listener has
-			// no such window (BUG-3084 codex round 2).
+			// no such window (BUG-3084).
 			retired: false,
 		};
 		activeCollabContext = ctx;
@@ -2823,7 +2810,7 @@
 				// setContent would silently ACK success while applying no
 				// Yjs transaction. Falling through to `false` lets the
 				// server's direct-write fallback own the PATCH instead
-				// (PLAN-2105 / TASK-2112; Codex).
+				// (PLAN-2105 / TASK-2112).
 				if (!editorInstance || editorInstance.isDestroyed) return false;
 				if (collabProvider !== provider) return false;
 				if (!item || item.id !== itemId) return false;
@@ -2831,8 +2818,7 @@
 				// gates the ack on expiry but the actual setContent
 				// is owned here; gating the mutation itself is the
 				// only way to truly prevent a stale apply when the
-				// handler crosses the deadline. Per Codex review
-				// round 3 — the provider's post-check alone only
+				// handler crosses the deadline. The provider's post-check alone only
 				// suppresses the ack, not the side effect.
 				if (expiresAtMillis > 0 && Date.now() > expiresAtMillis) {
 					return false;
@@ -2933,8 +2919,7 @@
 				);
 				// Mark this provider's effect cleanup as a
 				// force-refresh tear-down so the cleanup path
-				// SKIPS the trailing collab-snapshot flush. Per
-				// Codex review round 1 [P1] of TASK-1319: a
+				// SKIPS the trailing collab-snapshot flush (TASK-1319): a
 				// force_refresh means the local Y.Doc state is
 				// known stale (its cursor was below MIN, so the
 				// rows it would replay no longer exist); flushing
@@ -2947,8 +2932,7 @@
 				// cleanup-skip flag only covers the cleanup path;
 				// a timer that already armed before force_refresh
 				// fired would otherwise PATCH the (stale) Y.Doc-
-				// derived markdown after the cleanup ran. Per
-				// Codex round 2 [P1].
+				// derived markdown after the cleanup ran.
 				collabFlusher.cancel();
 				// Refresh items.content from the server BEFORE
 				// rebuilding the Y.Doc. Without this, the lazy
@@ -2964,11 +2948,11 @@
 				// (better an editor session against possibly-
 				// stale content than no editor session at all);
 				// the user is already showing the toast about a
-				// refresh. Per Codex round 4 [P1].
+				// refresh.
 				const refreshCtx = ctx;
 				const refreshGen = loadGeneration;
 				// Order the `item` write against every other item-snapshot write
-				// via the dedicated itemGen (round 9); refreshGen still guards the
+				// via the dedicated itemGen; refreshGen still guards the
 				// collab provider + nonce rebuild.
 				const myItemGen = ++itemGen;
 				void api.items
@@ -2978,7 +2962,7 @@
 						// we haven't switched items. A pane switch already tore
 						// this provider down; bumping the nonce would rebuild the
 						// NEW item's provider needlessly and stamp A's content
-						// into the wrong slot (PLAN-2105 / TASK-2112; Codex).
+						// into the wrong slot (PLAN-2105 / TASK-2112).
 						if (collabProvider !== provider || refreshGen !== loadGeneration) return;
 						if (item && item.id === refreshCtx.itemId && myItemGen === itemGen) {
 							item = withInflightTags(fresh);
@@ -3006,7 +2990,7 @@
 						// editable, and typing here was lost);
 						// forceRefreshInFlight stays true so any
 						// in-flight or scheduled flush is blocked.
-						// Per Codex round 17 [P1] of TASK-1319.
+						// See TASK-1319.
 						console.warn(
 							'collab: force_refresh item refetch failed; refusing to auto-rebuild',
 							err,
@@ -3023,8 +3007,7 @@
 		collabProvider = provider;
 		// A fresh provider has been wired; the force-refresh
 		// recovery window (if any) has closed. Local edits from
-		// this point can safely schedule flushes again. Per Codex
-		// round 7 [P1] of TASK-1319.
+		// this point can safely schedule flushes again. See TASK-1319.
 		forceRefreshInFlight = false;
 		recoveryFrozen = false;
 
@@ -3073,11 +3056,10 @@
 			// clobbering newer raw edits with the older Y.Doc
 			// snapshot. The other cleanup triggers (item nav,
 			// canEdit flip, page unmount) all benefit from the
-			// flush. Per Codex review round 3.
+			// flush.
 			// Force-refresh tear-down skips the flush — the local
 			// Y.Doc is known stale and flushing it would overwrite
-			// canonical items.content. Per Codex review round 1
-			// [P1] of TASK-1319.
+			// canonical items.content. See TASK-1319.
 			const skipFlush = skipFlushOnNextCleanup;
 			skipFlushOnNextCleanup = false;
 			// The same discard rule as the beforeunload handler and the raw
@@ -3159,7 +3141,7 @@
 
 		// Collab path: flush the live Y.Doc snapshot.
 		// The rich flush is held to the identity its context was minted under,
-		// which the load re-stamp above does not move (BUG-3084 codex round 1).
+		// which the load re-stamp above does not move (BUG-3084).
 		const ctx = activeCollabContext;
 		if (ctx && !ctx.retired && ctx.identityEpoch === authStore.identityEpoch) collabFlusher.flushNow(ctx, true);
 
@@ -3177,7 +3159,7 @@
 		if (typeof window === 'undefined') return;
 		const onBeforeUnload = (event: BeforeUnloadEvent) => {
 			// WHEN THE IDENTITY MOVED, THIS HANDLER DOES NOTHING AT ALL
-			// (BUG-3005, codex round 4). `runTeardownFlush` carries the same
+			// (BUG-3005). `runTeardownFlush` carries the same
 			// check for the WRITE half; this one is not redundant with it,
 			// because it guards a second and different thing: the PROMPT.
 			// `preventDefault()` on a dirty editor raises the native "unsaved
@@ -3213,7 +3195,7 @@
 				event.returnValue = '';
 			}
 
-			// RE-ARM IF THE PAGE SURVIVES THIS (codex round 2).
+			// RE-ARM IF THE PAGE SURVIVES THIS.
 			//
 			// `beforeunload` is the one teardown event that can be CANCELLED:
 			// preventDefault raises the native dialog and "Stay" leaves the page
@@ -3314,7 +3296,7 @@
 		// tabs both calling setContent would produce duplicated
 		// content. Election + recheck shrink the race window to
 		// the time between checking awareness and dispatching
-		// setContent. Per Codex review round 1.
+		// setContent.
 		const localId = ydoc.clientID;
 		if (collabProvider.seedByElection) {
 			const peerIds = Array.from(collabProvider.awareness.getStates().keys());
@@ -3348,7 +3330,7 @@
 		// emptiness AND re-check election (peer set may have
 		// changed).
 		queueMicrotask(() => {
-			// Before the editor write, not after it (BUG-3084 codex round 2): the
+			// Before the editor write, not after it (BUG-3084): the
 			// seed belongs to the identity this context was minted under.
 			if (!ctx || ctx.retired || ctx.identityEpoch !== authStore.identityEpoch) return;
 			if (fragment.length > 0) return;
@@ -3382,7 +3364,7 @@
 	// Handle the ?new=1 auto-edit-title flow reactively. canEdit may flip
 	// from false → true after loadData() resolves (workspace layout fires
 	// workspaceStore.setCurrent without awaiting it, so /me can land after
-	// the page mounts). Per Codex review round 5.
+	// the page mounts).
 	let pendingNewItemEdit = $state(false);
 	$effect(() => {
 		if (pendingNewItemEdit && item && canEdit && !loading) {
@@ -3464,8 +3446,8 @@
 		// Capture the target item + generation BEFORE the await. A blur-fired
 		// saveTitle can resolve AFTER the pane switched to another item (click
 		// row B while editing A's title); dropping the write then keeps the
-		// pane from showing A under ?item=B (PLAN-2105 / TASK-2112; coordinator
-		// P1). The PATCH itself targets `targetItem.id` (captured, = A).
+		// pane from showing A under ?item=B (PLAN-2105 / TASK-2112).
+		// The PATCH itself targets `targetItem.id` (captured, = A).
 		// The text this PATCH sends, kept to put back in the editor if it is
 		// refused (BUG-3115). Read with no await before the send, so it is the
 		// same string the request carries.
@@ -3508,7 +3490,7 @@
 			if (titleError && editingTitle) return;
 			// Move focus to the editor so you can start writing immediately.
 			// The editor lives under the Details tab — surface it first or the
-			// focus lands on a display:none node (PR #1027 Codex finding).
+			// focus lands on a display:none node (PR #1027).
 			activeTab = 'details';
 			tick().then(() => requestAnimationFrame(() => editorInstance?.commands.focus()));
 		} else if (e.key === 'Escape') {
@@ -3517,8 +3499,7 @@
 	}
 
 	/**
-	 * Ordering for concurrent writes to ONE field of one item (PLAN-2857 U4,
-	 * codex round 8 R8-1). `stillCurrent()` below fences a write against an ITEM
+	 * Ordering for concurrent writes to ONE field of one item (PLAN-2857 U4). `stillCurrent()` below fences a write against an ITEM
 	 * SWITCH; it says nothing about two writes to the SAME field of the SAME
 	 * item, which is the whole of a `multi_relation` edit's exposure — every
 	 * chip removal sends the entire remaining list, so an older list re-sent by
@@ -3557,7 +3538,7 @@
 		// writer can move it in between.
 		const wholeList = isMultiRelationType(schema.fields.find((f) => f.key === key)?.type);
 		const dispatchedBase = wholeList ? parseFields(targetItem)[key] : undefined;
-		// Generation + id fence (Codex). A plain id check has an A→B→A gap (the
+		// Generation + id fence. A plain id check has an A→B→A gap (the
 		// returning id matches but the response is stale) and would also leak
 		// A's save/error feedback (showSaved / saveStatus / toasts) onto B.
 		// `stillCurrent()` gates EVERY post-await branch — success, the
@@ -3606,7 +3587,7 @@
 		// retry re-applies THIS delta against the freshly-read row without
 		// clobbering whatever another writer changed — the whole point of BUG-2273.
 		//
-		// EXCEPT when the delta has itself been superseded (R8-1). "Re-apply THIS
+		// EXCEPT when the delta has itself been superseded. "Re-apply THIS
 		// delta" is safe while the delta is a change to a value nobody else in
 		// this pane is also changing; a whole-list field breaks that premise,
 		// because the newer write is a different value for the SAME key and the
@@ -3664,7 +3645,7 @@
 				// Don't even OPEN the confirm dialog if the pane already switched
 				// items while the 409 was in flight — A's dialog must not appear
 				// over B. The retry callback is likewise fenced so a force-PATCH
-				// can't fire for a no-longer-shown item (Codex).
+				// can't fire for a no-longer-shown item.
 				if (!stillCurrent()) return;
 				const parentRef = formatItemRef(targetItem) ?? targetItem.slug;
 				let forced;
@@ -3769,8 +3750,7 @@
 	// can clobber a newer set, and `confirmed` always tracks the last
 	// server-acknowledged tags so a failed save reverts to server truth (not
 	// to an optimistic, unconfirmed value). Scoped by item id so a save still
-	// draining for a previous item can't touch the current one. Per Codex
-	// PR #659 rounds 1/4/5.
+	// draining for a previous item can't touch the current one.
 	type TagSaver = {
 		itemId: string;
 		ws: string;
@@ -3795,8 +3775,7 @@
 	};
 	// Keyed by item id so each item's in-flight saver stays discoverable across
 	// navigation — navigating away from A and back must find A's running saver
-	// and coalesce into it, not spawn a second concurrent A saver. Per Codex
-	// PR #659 round 6.
+	// and coalesce into it, not spawn a second concurrent A saver.
 	const tagSavers = new Map<string, TagSaver>();
 	// Refetch-and-retry cycles per tag batch on a 409 — the same bound
 	// updateField uses for a field write.
@@ -3907,8 +3886,7 @@
 				// queued (avoids flicker) and we're still on this item. Route
 				// through adoptServerItem so the tag PATCH echo can't clobber
 				// unsaved editor content — its response carries the server's
-				// `content`, and non-collab editors mirror item.content. Per
-				// Codex PR #659 round 11.
+				// `content`, and non-collab editors mirror item.content.
 				if (saver.pending === null) {
 					// Nothing queued, so the burst's gesture is fully applied and
 					// the returned row IS its result — including any tag another
@@ -3952,8 +3930,7 @@
 	// it drains, and the refresh handlers' `saveStatus === 'saving'` guard is
 	// racy (checked before their own await, not after), so overlaying the
 	// saver's latest desired set at assignment time is the only race-free
-	// guarantee that a concurrent snapshot can't drop the unsaved tags. Per
-	// Codex PR #659 rounds 8/9.
+	// guarantee that a concurrent snapshot can't drop the unsaved tags.
 	//
 	// It is also where a snapshot OLDER than the one on screen is refused
 	// (BUG-3036): every writer in this pane answers with the whole row, so a
@@ -3967,8 +3944,8 @@
 		const shown = untrack(() => item);
 		if (shown && isOlderSnapshot(shown, next)) return shown;
 		const saver = tagSavers.get(next.id);
-		// Only a burst typed under the CURRENT identity owns `item.tags` (BUG-3084
-		// codex round 1): the identity listener's load would otherwise render the
+		// Only a burst typed under the CURRENT identity owns `item.tags` (BUG-3084):
+		// the identity listener's load would otherwise render the
 		// previous user's pending tags. Untracked because some callers run inside
 		// reactive scopes and this must not make them depend on the epoch.
 		const ours = saver?.running && saver.epoch === untrack(() => captureIdentity());
@@ -4036,7 +4013,7 @@
 		const myItemGen = ++itemGen;
 		try {
 			const updated = await api.items.get(reqWsSlug, reqItemSlug);
-			// `destroyed` after every await too (codex round 2 on BUG-3198): the
+			// `destroyed` after every await too (BUG-3198): the
 			// load path now calls this, and a pane closed mid-read bumps
 			// loadGeneration but not itemGen, so the item fence alone let the
 			// response land in a destroyed instance.
@@ -4061,7 +4038,7 @@
 		untrack(() => void runOwedRefresh());
 	});
 
-	// BUG-2178 (codex R1): an SSE / delta-sync adoption can change the item's
+	// BUG-2178: an SSE / delta-sync adoption can change the item's
 	// COLLECTION — a cross-collection move by another user/tab, or this pane's
 	// own move when the full-page host's retarget same-ref-guards to a noop
 	// (a same-workspace move keeps the slug). `collection` — and the schema
@@ -4077,20 +4054,20 @@
 		// stale — a bigger, separately-tracked problem), and refreshing its
 		// collection object there would render the target collection's
 		// name/icon under the source route's URL — mixed state worse than
-		// consistently stale (codex round 2 P2).
+		// consistently stale.
 		if (!embedded) return;
 		const newSlug = adopted.collection_slug;
 		if (!newSlug || !collection || collection.slug === newSlug) return;
 		const collGen = ++collectionGen;
 		// `adoptCollection` deliberately accepts a STALE generation when it
 		// corrects the shown collection to the live item's, so it is not a fence
-		// against an identity change (BUG-3084 codex round 1). This one is.
+		// against an identity change (BUG-3084). This one is.
 		const gen = loadGeneration;
 		try {
 			const fresh = await api.collections.get(wsSlug, newSlug);
 			if (gen !== loadGeneration) return;
 			// adoptCollection carries BOTH fences this site pioneered
-			// (BUG-2178 codex round 2): generation order for same-collection
+			// (BUG-2178): generation order for same-collection
 			// refreshes, and the live-item semantic check — now anchored on
 			// stable collection_id rather than slug, so a reused slug can't
 			// satisfy it (BUG-2602).
@@ -4114,7 +4091,7 @@
 			// Drop stale results: if the workspace changed while this request
 			// was in flight (page instance reused across navigation, or a
 			// post-save reload for a now-previous workspace), don't overwrite
-			// the current workspace's suggestions. Per Codex PR #659 round 2.
+			// the current workspace's suggestions.
 			if (ws !== wsSlug || !identityHeld(identity)) return;
 			tagSuggestions = all.map((t) => t.tag);
 		} catch {
@@ -4138,8 +4115,7 @@
 	// Keys are namespaced with the `pad_` prefix so they cannot collide
 	// with a user-defined `source_url` field — without the prefix, an
 	// existing collection with that key in its schema would conflict
-	// both at validate time and at chip-render time. (Per Codex review
-	// round 5 finding #2.)
+	// both at validate time and at chip-render time.
 	//
 	// Race: this used to send the FULL fields blob, merged onto a
 	// snapshot re-fetched immediately before the PATCH. A re-read
@@ -4163,7 +4139,7 @@
 		const targetWs = wsSlug;
 		// Generation fence closes the A→B→A gap the id-only check missed — a
 		// stale GET could otherwise issue a full-fields PATCH against a
-		// re-shown item (Codex).
+		// re-shown item.
 		const gen = loadGeneration;
 		try {
 			// HT-2176 Option A (TASK-2172): NO peeking recheck. New imports are
@@ -4201,8 +4177,7 @@
 	// authoritative Y.Doc — which can hold user edits that haven't yet
 	// been flushed to item.content (the database snapshot). Checking
 	// item.content here would let a mixed/manual document be stamped
-	// as source-backed if it happened to not have synced yet. Per
-	// Codex review round 4.
+	// as source-backed if it happened to not have synced yet.
 	function handleImportInserted(meta: ImportURLResponse, ctx: { wasEmpty: boolean }) {
 		if (!item || !mutationsEnabled) return;
 		const alreadyStamped =
@@ -4226,10 +4201,10 @@
 		// before the fetch returns would otherwise have their NEW item
 		// clobbered with the OLD item's source content. After each
 		// await we re-check the captured values match the live state
-		// and bail if not. (Per Codex review round 2.)
+		// and bail if not.
 		const targetItem = item;
 		const targetEditor = editorInstance;
-		// Generation fence (Codex) alongside the item/editor identity checks —
+		// Generation fence alongside the item/editor identity checks —
 		// closes the A→B→A gap and keeps A's spinner/toast off B.
 		const gen = loadGeneration;
 		// The shared dialog, not a native confirm() (TASK-2221, audit C39).
@@ -4263,7 +4238,7 @@
 				return;
 			}
 			// Frozen: the replace is dropped, and the user is told rather than
-			// left to find the old content (BUG-2177, lead ruling day 78). Not
+			// left to find the old content (BUG-2177). Not
 			// replayed on thaw: a whole-document replace landing minutes later,
 			// while the user is not looking, is worse than asking them to repeat it.
 			if (!targetEditor.isEditable) {
@@ -4295,8 +4270,8 @@
 		} finally {
 			// Clear the spinner for the originating item only. loadData resets
 			// `refreshing` on a switch so B always starts clean; guarding here
-			// stops a superseded refresh from clearing a NEWER item's spinner
-			// (Codex). Navigating away already signals "user moved on".
+			// stops a superseded refresh from clearing a NEWER item's spinner.
+			// Navigating away already signals "user moved on".
 			if (!switchedAway(targetItem, gen)) refreshing = false;
 		}
 	}
@@ -4304,8 +4279,7 @@
 	async function updateAssignedUser(userId: string | null) {
 		if (!item || !canEdit) return;
 		// Capture target + generation before the await; drop the post-await
-		// write if the pane switched items mid-request (PLAN-2105 / TASK-2112;
-		// coordinator P1).
+		// write if the pane switched items mid-request (PLAN-2105 / TASK-2112).
 		const targetItem = item;
 		const gen = loadGeneration;
 		const saveTok = saves.begin();
@@ -4331,8 +4305,7 @@
 	async function updateAgentRole(roleId: string | null) {
 		if (!item || !canEdit) return;
 		// Capture target + generation before the await; drop the post-await
-		// write if the pane switched items mid-request (PLAN-2105 / TASK-2112;
-		// coordinator P1).
+		// write if the pane switched items mid-request (PLAN-2105 / TASK-2112).
 		const targetItem = item;
 		const gen = loadGeneration;
 		const saveTok = saves.begin();
@@ -4430,7 +4403,7 @@
 			// Capture identity at fire time. loadData cancels this timer on a
 			// switch, so it normally can't fire for a stale item — but an
 			// already-dispatched PATCH resolving late must not leak its
-			// saved/error feedback onto a switched-in item (Codex).
+			// saved/error feedback onto a switched-in item.
 			const reqItem = item;
 			const gen = loadGeneration;
 			const saveTok = saves.begin();
@@ -4501,8 +4474,7 @@
 	// resistant to navigation: if the user moves to a new item
 	// between schedule and fire, the timer-driven and cleanup-driven
 	// flushes still PATCH the OLD item's URL with its OLD markdown,
-	// so we never cross-write one item's content into another. Per
-	// Codex review round 1.
+	// so we never cross-write one item's content into another.
 	let activeCollabContext: (CollabFlushContext & { identityEpoch: number; retired: boolean }) | null = null;
 
 	// Provider we've already attempted the lazy seed against. Reset
@@ -4565,13 +4537,13 @@
 		idleMs: 5_000,
 		// Force-refresh recovery gate: while in flight, any Y.Doc-derived
 		// markdown is stale relative to canonical server content, so both
-		// scheduling and running bail. Per Codex round 7/8 [P1] of TASK-1319.
+		// scheduling and running bail. See TASK-1319.
 		isRecovering: () => forceRefreshInFlight,
 		normalize: (markdown) => unescapeDocLinks(markdown),
 		// Serialize against the CAPTURED workspace (the item being flushed),
 		// not the live route `wsSlug`. A background/unmount flush can fire
 		// after navigating to another workspace; the PATCH already targets
-		// `ws`, so the link index must match it. Per Codex review (round 1).
+		// `ws`, so the link index must match it.
 		serialize: (normalizedMarkdown, ws) => {
 			const allItems = localIndex.getAll(ws);
 			let toSave = normalizedMarkdown;
@@ -4642,7 +4614,7 @@
 		save: async ({ ws, itemId, toSave, keepalive }) => {
 			// Snapshot the load generation at flush-start so the UI-feedback
 			// gate below also closes the A→B→A gap (id re-matches but a newer
-			// load replaced the item) — Codex. The PATCH itself still targets
+			// load replaced the item). The PATCH itself still targets
 			// the captured `itemId`/`ws` (never-cross-write, unchanged).
 			const genAtFlush = loadGeneration;
 			// UI mutations only fire when:
@@ -4653,7 +4625,6 @@
 			// NOT touch saveStatus / lastSaveTime — those slots belong to
 			// whatever item the user is now on, and stamping them from a stale
 			// flush leaves the new page pinned in 'Saving...' indefinitely.
-			// Per Codex review round 2.
 			const isForegroundCurrent = (): boolean =>
 				!keepalive && !!item && item.id === itemId && genAtFlush === loadGeneration;
 
@@ -4699,8 +4670,7 @@
 				// our cursor by the time the request landed). Refuse to record
 				// this flush as authoritative locally — returning 'skipped'
 				// stops the flusher seeding lastFlushedContent from a
-				// known-stale base and skips the saveStatus update. Per Codex
-				// round 10 [P1].
+				// known-stale base and skips the saveStatus update.
 				if (forceRefreshInFlight) return 'skipped';
 				if (isForegroundCurrent()) {
 					localLastSaveTime = Date.now();
@@ -4741,7 +4711,7 @@
 	// flushRawIfPending below) can synchronously land the pending edit
 	// BEFORE the collab provider mints — otherwise the debounced PATCH
 	// fires after the provider is up, gets routed through the applier path,
-	// and races peer state. Per Codex review round 5. The PATCH + all
+	// and races peer state. The PATCH + all
 	// reactive bookkeeping stays here as the injected `save`.
 	const rawContentSaver = createContentSaver({
 		debounceMs: 1200,
@@ -4773,10 +4743,10 @@
 			// Capture the item id this PATCH was scoped to so a
 			// late-arriving response after navigation to a new item
 			// can't apply the old item's snapshot to the new page
-			// state (cross-item bleed). Per Codex review round 11.
+			// state (cross-item bleed).
 			// The load generation is captured alongside it to close the
 			// A→B→A gap the id-only check missed — a returning id can match a
-			// re-shown item that a newer load already replaced (Codex).
+			// re-shown item that a newer load already replaced.
 			const reqItemId = item.id;
 			const genAtSave = loadGeneration;
 			if (keepalive) {
@@ -4873,14 +4843,13 @@
 				// dedupe a content == lastFlushedContent that no
 				// longer reflects server state and skip the PATCH,
 				// leaving items.content stuck on the raw save.
-				// Per Codex review round 7.
 				collabFlusher.resetDedup();
 				// Stale-response guard: only swap in the server's
 				// snapshot when no newer raw edit landed during the
 				// PATCH. Otherwise RawMarkdownEditor's content-prop
 				// mirror would reset the textarea mid-keystroke and
-				// drop the queued edit. Mirrors the Round 8 fix in
-				// flushRawIfPending. Per Codex review round 9.
+				// drop the queued edit. Mirrors the fix in
+				// flushRawIfPending.
 				if (rawContentSaver.pending === toSave) {
 					item = withInflightTags(updated);
 					rawContentSaver.clearPending();
@@ -4940,7 +4909,7 @@
 	let rawStalePromptOpen = false;
 
 	// BUG-3540: a raw save was refused because the row moved past its base.
-	// Reads the item: a body this tab already has (exactly; lead ruling) is
+	// Reads the item: a body this tab already has (exactly) is
 	// rebased once ('rebased'); otherwise the user chooses. 'gone' means the
 	// pane moved on. The base is updated for 'rebased' and 'overwrite'; the
 	// caller resends for those two. 'reload' has already replaced the text.
@@ -5067,13 +5036,13 @@
 		}
 	}
 
-	// BUG-3850 (lead ruling 0337bf77): a rich draft's changes are anchored in
+	// BUG-3850: a rich draft's changes are anchored in
 	// the editor's form, and only an open editor applies a patch to the
 	// document in that form; the stored row may hold raw-only forms (a
 	// trailing newline, underscore emphasis) the anchors miss. So the patch
 	// restore waits until this tab's editor is mounted and its CURRENT
 	// connection is synced, and says why. Copy is always offered. A stale base
-	// never patches (r7 hunter-L1), so it goes straight to the conflict notice.
+	// never patches, so it goes straight to the conflict notice.
 	let restoreBlocked = $derived(
 		refusedDraft && !refusedDraft.baseStale && !rawMode && draftAppliesAsPatch(refusedDraft, item?.seq ?? 0) && restoreWaitsForEditor(collabProvider, !!editorInstance)
 			? RESTORE_WAITS_FOR_EDITOR
@@ -5094,11 +5063,11 @@
 		const reqItemId = item.id;
 		const gen = loadGeneration;
 		const userId = authStore.userId;
-		// An identity change need not move loadGeneration before the reload
-		// (codex r1): the draft, the toast and the result belong to this user.
+		// An identity change need not move loadGeneration before the reload:
+		// the draft, the toast and the result belong to this user.
 		const identity = captureIdentity();
 		const stale = () => !item || item.id !== reqItemId || gen !== loadGeneration || !identityHeld(identity);
-		// BUG-3850 (lead ruling baa63dc3): a base that predates a remote update
+		// BUG-3850: a base that predates a remote update
 		// takes the conflict notice, never the patch.
 		const edits = restoreEdits(d);
 		if (edits === null) {
@@ -5125,7 +5094,7 @@
 			toastStore.show('Applied your kept changes', 'success');
 			if (res.content_state !== 'applied_pending_flush') {
 				// No editor: the row has it now. The patch has landed whatever this
-				// read does, so its failure is not the restore's (codex r2).
+				// read does, so its failure is not the restore's.
 				let fresh: Item;
 				try {
 					fresh = await api.items.get(wsSlug, reqItemId);
@@ -5141,7 +5110,7 @@
 			}
 			// An open editor applied it, and the row catches up on its flush. The
 			// rich editor shows the room's document already. The raw editor shows
-			// its seed ahead of the row (codex r1), so drop the seed unless the
+			// its seed ahead of the row, so drop the seed unless the
 			// user has typed since (that save is guarded by its own base,
 			// BUG-3540); it then follows the row, which the SSE refresh moves
 			// when the flush lands.
@@ -5169,11 +5138,11 @@
 	async function restoreRefusedDraft() {
 		const shown = refusedDraft;
 		if (!shown || !item || refusedDraftBusy) return;
-		// TASK-3856 r2 (codex High): the crash keeper rewrites a draft it kept as
+		// TASK-3856: the crash keeper rewrites a draft it kept as
 		// stale when this tab sends, and that write does not refresh the copy
 		// shown here. For a patch restore the stored one decides; a stale one
 		// re-renders the notice without Restore, and nothing is written. A
-		// whole-body restore does not read the base, so it goes ahead (r3).
+		// whole-body restore does not read the base, so it goes ahead.
 		const stored = readRefusedRawDraft(authStore.userId, item.id, Date.now(), refusedDraftSlot);
 		if (stored && stored.markdown === shown.markdown && stored.baseStale && !shown.baseStale && draftAppliesAsPatch(shown, item.seq ?? 0)) {
 			refusedDraft = stored;
@@ -5192,9 +5161,9 @@
 		const reqItemId = item.id;
 		const gen = loadGeneration;
 		const userId = authStore.userId;
-		// The kept text and the result are this user's (codex r1 on TASK-3607).
+		// The kept text and the result are this user's (TASK-3607).
 		const identity = captureIdentity();
-		// BUG-3540 (codex): the restore replaces the body the user is looking
+		// BUG-3540: the restore replaces the body the user is looking
 		// at, so it is sent against that row. A body changed since is refused,
 		// shown, and the draft kept: the user restores again, deliberately.
 		let shownSeq = item.seq ?? 0;
@@ -5258,8 +5227,7 @@
 	// suppressed when the provider is active); without this seed,
 	// RawMarkdownEditor would mount with the pre-collab markdown and
 	// any subsequent save would silently lose the live Y.Doc state.
-	// Reset to null on rich-mode toggle and on item swap. Per Codex
-	// review round 9.
+	// Reset to null on rich-mode toggle and on item swap.
 	let rawSeedMarkdown = $state<string | null>(null);
 
 	function handleRawContentUpdate(markdown: string) {
@@ -5303,7 +5271,7 @@
 	// the return value — a stale pending edit left over from a fast
 	// typist or a failed PATCH would otherwise re-introduce the
 	// "collab active with unsaved raw edit" race the guard is meant to
-	// prevent. Per Codex review round 7.
+	// prevent.
 	async function flushRawIfPending(): Promise<boolean> {
 		if (!item) return rawContentSaver.pending === null;
 
@@ -5323,8 +5291,8 @@
 		// the user navigates away mid-flush, every iteration's stale response
 		// (including the in-flight one) is discarded so it can't clobber the
 		// newly-loaded item. The generation closes the A→B→A id-reuse gap the
-		// id-only check missed. Per Codex review round 11 + PLAN-2105 switch-
-		// safety.
+		// id-only check missed (PLAN-2105 switch-
+		// safety).
 		const reqItemId = item.id;
 		const genAtFlush = loadGeneration;
 		let lastError = false;
@@ -5378,8 +5346,7 @@
 					// Raw saves change items.content via a path the
 					// collab dedupe doesn't see; reset the flusher's
 					// dedupe baseline so a future collab flush
-					// can't skip a real PATCH. Per Codex review
-					// round 7.
+					// can't skip a real PATCH.
 					collabFlusher.resetDedup();
 					// Only swap in the server's snapshot when no
 					// newer raw edit arrived during the await.
@@ -5387,7 +5354,7 @@
 					// its textarea unconditionally, so assigning a
 					// stale snapshot here would reset the textarea
 					// from under the user's keystrokes and lose the
-					// queued edit. Per Codex review round 8.
+					// queued edit.
 					if (rawContentSaver.pending === markdown) {
 						item = withInflightTags(updated);
 						rawContentSaver.clearPending();
@@ -5400,7 +5367,7 @@
 				} catch (e) {
 					// Don't surface A's save failure over B (a superseded
 					// drain must not reset the current item's saveStatus /
-					// toast) — Codex.
+					// toast).
 					if (!item || item.id !== reqItemId || genAtFlush !== loadGeneration) return false;
 					// BUG-3080: a newer write of this tab already landed, so this
 					// markdown is not what the server should hold and is not a
@@ -5504,7 +5471,7 @@
 		}
 	}
 
-	// ORDERING for /progress reads (BUG-3192, codex round 1): two child-change
+	// ORDERING for /progress reads (BUG-3192): two child-change
 	// re-reads can be in flight together under one load generation (two quick
 	// SSE child updates), and the generation fence cannot order them. (The
 	// load's own read cannot overlap one: ChildItems is not mounted until the
@@ -5549,7 +5516,7 @@
 		const sameLoad = childrenSigGen === loadGeneration;
 		const changed = sameLoad && childrenSig !== sig;
 		// The load's own read FAILED: without a re-ask the numbers stay absent
-		// for the whole load (codex round 1). Once, then it is a normal load.
+		// for the whole load. Once, then it is a normal load.
 		const owed = progressFailedGen === loadGeneration;
 		childrenSig = sig;
 		childrenSigGen = loadGeneration;
@@ -5592,8 +5559,8 @@
 	 * loses its target the same way BUG-2871's Children rows did: no navigation,
 	 * no error, because a click needs mousedown and mouseup on ONE node.
 	 *
-	 * And silence on a failed same-item refresh is the ruled behaviour (BUG-2871
-	 * trail): last-good rows are valid data. That ruling only holds if the rows
+	 * And silence on a failed same-item refresh is the intended behaviour (BUG-2871
+	 * trail): last-good rows are valid data. That only holds if the rows
 	 * actually survive the failure — which is the half this closes, exactly as
 	 * the Children fix had to cover its error branch as well as its loading one.
 	 *
@@ -5765,7 +5732,7 @@
 		// item (the destroyed card still fires its parent callback). Fence in
 		// the parent: only adopt the restored version if it's for the item
 		// currently shown — otherwise A's restore would render permanently under
-		// ?item=B (PLAN-2105 / TASK-2112; coordinator). The descendant also
+		// ?item=B (PLAN-2105 / TASK-2112). The descendant also
 		// fences its own onRestore by itemSlug (belt-and-suspenders).
 		// HT-2176 Option A (TASK-2172): NO peeking guard. NEW restores are blocked
 		// at the card (hidden while `frozen`); this callback only adopts the result
@@ -5836,7 +5803,7 @@
 		// cross-write, and the only post-await action is an informational toast —
 		// switch-safe regardless of where the pane is now.
 		const result = await collabFlusher.flush(ctx, md, false);
-		// Non-silent failure (Codex P1 on #994). Warn ONLY on 'failed' — an
+		// Non-silent failure. Warn ONLY on 'failed' — an
 		// attempted, non-deduped snapshot PATCH the server rejected (e.g. the
 		// restore-boundary 409 in the narrow post-reconnect cursor-0 window; see
 		// the residual note below), so the live edit did NOT land in items.content
@@ -5998,7 +5965,7 @@
 		// switched to B while A's delete was in flight, calling handleGone()
 		// would close B's pane (embedded onGone = closeItemPane) and the toast
 		// would show over B. A was deleted regardless — the list reflects it via
-		// SSE (PLAN-2105 / TASK-2112; Codex).
+		// SSE (PLAN-2105 / TASK-2112).
 		const targetItem = item;
 		const gen = loadGeneration;
 		deleting = true;
@@ -6034,8 +6001,7 @@
 		// mutation — side-independent — so it is NOT frozen while peeking (BUG-2263).
 		if (!item || restoring) return;
 		// Capture target + generation before the awaits; drop the post-await
-		// write if the pane switched items mid-request (PLAN-2105 / TASK-2112;
-		// coordinator "gate all post-await writes").
+		// write if the pane switched items mid-request (PLAN-2105 / TASK-2112).
 		const targetItem = item;
 		const targetSlug = itemSlug;
 		const gen = loadGeneration;
@@ -6044,7 +6010,7 @@
 			await api.items.restore(wsSlug, targetSlug);
 			// Before the follow-up GET, not only after it: a request issued
 			// after a switch or an identity change goes out on whatever cookie
-			// is current (BUG-3084 codex round 1).
+			// is current (BUG-3084).
 			if (switchedAway(targetItem, gen)) return;
 			const refreshed = await api.items.get(wsSlug, targetSlug);
 			if (switchedAway(targetItem, gen)) return;
@@ -6073,14 +6039,14 @@
 	// collection whose prefix matches the ref) before drilling the pane, rather
 	// than misrouting a cross-workspace plain path, a non-item route, or a
 	// self-inconsistent collection/ref path into `?item=` (PLAN-2154
-	// Architecture B.3 / TASK-2160; Codex review).
+	// Architecture B.3 / TASK-2160).
 	//
 	// Gated on `collectionsAreFreshFor(wsSlug)`: `collectionStore.collections`
 	// is a single global slot that retains the PREVIOUS workspace's data while
 	// a workspace switch's `loadCollections()` is in flight, so pairing it with
 	// the current `wsSlug` unguarded could validate a link against another
 	// workspace's prefixes. An empty map during that window makes the gate
-	// decline (fall back to a normal `goto`) — the safe default (Codex review).
+	// decline (fall back to a normal `goto`) — the safe default.
 	let collectionPrefixMap = $derived(
 		collectionStore.collectionsAreFreshFor(wsSlug)
 			? new Map(allCollections.map((c) => [c.slug, c.prefix]))
@@ -6123,7 +6089,7 @@
 		// captured slug (not the live `itemSlug`, which an A→B→C switch would
 		// have advanced) and the result must be dropped if we switched away —
 		// otherwise B's refresh could land under C's ref, carrying the current
-		// item's content (Codex).
+		// item's content.
 		const targetItem = item;
 		const targetSlug = itemSlug;
 		const targetWs = wsSlug;
@@ -6170,7 +6136,7 @@
 		// Capture the SOURCE item (the one being edited) + generation before the
 		// awaits. `target` is the link target chosen from search; `sourceItem`
 		// is the current item. Use the captured slug for the refresh GET and
-		// drop the result if we switched away (Codex).
+		// drop the result if we switched away.
 		const sourceItem = item;
 		const sourceSlug = item.slug;
 		const targetSlug = itemSlug;
@@ -6247,7 +6213,7 @@
 		// kicked off the move. If the user navigates while the
 		// open-children modal is up, we don't want a confirmed force
 		// retry to fire against the new route's workspace — that
-		// could move the wrong item (Codex review round 2 P1).
+		// could move the wrong item.
 		const sourceItem = item;
 		const sourceSlug = item.slug;
 		const sourceWs = wsSlug;
@@ -6257,8 +6223,8 @@
 		const parentRef = formatItemRef(sourceItem) ?? sourceItem.slug;
 		// Generation fence for the toasts (the nav is separately guarded by
 		// navIfStillCurrent below). If the pane switched to another item while
-		// the move was in flight, A's move feedback must not surface over B
-		// (Codex). `stillOnSource()` also implicitly guarantees item !== null.
+		// the move was in flight, A's move feedback must not surface over B.
+		// `stillOnSource()` also implicitly guarantees item !== null.
 		const gen = loadGeneration;
 		const stillOnSource = () => !switchedAway(sourceItem, gen);
 		const doMove = (force: boolean) =>
@@ -6269,8 +6235,8 @@
 		// the route params (page.params.{username,workspace,
 		// collection,slug}) — during same-component navigation `item`
 		// can briefly still hold the old object while the URL has
-		// already advanced. Comparing both closes that race
-		// (Codex review round 3 P1). Stale resolutions complete
+		// already advanced. Comparing both closes that race.
+		// Stale resolutions complete
 		// silently rather than yanking the user back.
 		const navIfStillCurrent = (toSlug: string) => {
 			// stillOnSource() folds in the load-generation check, so an A→B→A
@@ -6291,7 +6257,7 @@
 			navIfStillCurrent(moved.slug);
 			return { status: 'ok' };
 		} catch (e: any) {
-			// BUG-1538 / Codex review round 1: the server's
+			// BUG-1538: the server's
 			// open-children guard also fires on POST /move when the
 			// move would land the parent terminal in the target
 			// collection. Wire the same modal + ?force=true override
@@ -6371,7 +6337,7 @@
 	}
 
 	// BUG-3571 part 2: keep the text this item would lose, as a kept raw draft
-	// for `userId` (ruling R1: rich text is kept as its serialized markdown, so
+	// for `userId` (rich text is kept as its serialized markdown, so
 	// the existing offer and its version-checked restore give it back; a
 	// stored Y update is refused, since prune, set-aside and compaction break
 	// it). Called where the text can no longer be saved under its author's
@@ -6399,7 +6365,7 @@
 		// Whose typing is in the editor (the teardown flush's fence): after an
 		// identity change and before the reload re-stamps it, the text is the
 		// previous user's, and the keeper would file it under the new user's
-		// key (codex r2). The identity listener already kept it for its author.
+		// key. The identity listener already kept it for its author.
 		if (authStore.identityEpoch !== identityEpochAtLoad) return null;
 		const base = { baseSeq: item.seq ?? 0, baseBody: item.content ?? '' };
 		if (rawContentSaver.dirty && rawContentSaver.pending !== null) return { markdown: rawContentSaver.pending, ...base };
@@ -6410,8 +6376,7 @@
 		// BUG-3850: rich text is anchored on the editor's own last confirmed
 		// snapshot, in the serialization a flush writes. No confirmed snapshot
 		// yet: the row, flagged stale. It was read before the provider's sync,
-		// so this tab cannot say the server holds nothing it lacks (lead ruling
-		// baa63dc3, r5 hunter-L1); such a draft restores through the conflict
+		// so this tab cannot say the server holds nothing it lacks; such a draft restores through the conflict
 		// notice.
 		const confirmed = confirmedBase.current();
 		if (!confirmed) return { markdown: md, ...base, baseStale: true };
@@ -6429,7 +6394,7 @@
 		snapshot: () => (activeCollabContext ? collabFlusher.snapshot(activeCollabContext) : null),
 		seq: () => item?.seq ?? 0,
 	});
-	// BUG-3850 (lead ruling c9db9612): the base is refreshed before the first
+	// BUG-3850: the base is refreshed before the first
 	// local keystroke after a collaborator's change, while the editor still
 	// holds the document without it.
 	$effect(() => {
@@ -6437,7 +6402,7 @@
 		if (!ed) return;
 		return registerRefreshBeforeLocalChange(ed as never, confirmedBase.refresh);
 	});
-	// BUG-3850 r8: the provider's pre-send hook reaches the keeper through this.
+	// BUG-3850: the provider's pre-send hook reaches the keeper through this.
 	const localSendListeners = new Set<() => void>();
 	$effect(() => {
 		return registerCrashDraftKeeper({
@@ -6480,13 +6445,13 @@
      the pane stays closable during a slow or failed deep link — including an
      A→B switch, where `loading` is true while `item` still holds the previous
      item (the skeleton renders, not the full header), and ESC isn't reachable
-     on touch (PLAN-2105 / TASK-2113; Codex rounds 2-3). This condition is the
+     on touch (PLAN-2105 / TASK-2113). This condition is the
      exact negation of the loaded branch's `!loading && !routePending && !error
      && item && collection`, so it never double-renders with the full header. -->
 {#if embedded && (loading || routePending || error || !item || !collection)}
 	<header class="pane-header pane-header--minimal" aria-label="Item pane">
 		<div class="pane-header-actions">
-			<!-- Back chevron (PLAN-2154 Architecture C / TASK-2164, Codex review):
+			<!-- Back chevron (PLAN-2154 Architecture C / TASK-2164):
 			     every drill sets `loading = true`, landing here — WITHOUT this, a
 			     slow or failed drilled item would strand the user with no way back
 			     (only Close), especially on mobile where ESC isn't reachable. Same
@@ -6778,8 +6743,7 @@
 					was created via "Insert from URL" and the modal stamped
 					pad_source_url into fields. The `pad_` prefix namespaces
 					the ghost-field keys away from any user-defined
-					`source_url` column on the collection schema (per Codex
-					review round 5 finding #2).
+					`source_url` column on the collection schema
 
 					Click re-fetches and replaces editor content; the
 					editor's Yjs op-log handles undo. Hidden for view-only
@@ -6791,7 +6755,7 @@
 					fail or update the off-screen rich editor. Read-only
 					and raw users see the provenance chip without the
 					Refresh button so the import history is still
-					discoverable. (Per Codex review round 1.)
+					discoverable.
 				-->
 				{#if canEdit && !rawMode}
 					<!-- Present on both master and pane even while peeking (BUG-2263);
@@ -6873,7 +6837,7 @@
 				oncopied={(copied) => {
 					if (handedDown !== identityKey) return;
 					// Only the version that was copied: by now this may be another
-					// item's recovery (codex r1).
+					// item's recovery.
 					if (offlineRecovery?.text !== copied) return;
 					offlineRecovery = null;
 					toastStore.show('Your version is on the clipboard.', 'success');
@@ -6891,7 +6855,7 @@
 		     ships whose library text is newer. Renders nothing otherwise; the
 		     server's not_builtin answer decides, not the collection, because an
 		     origin survives a move and activation can target any collection of
-		     the right kind (codex r6). -->
+		     the right kind. -->
 			<!-- Keyed by item: an item switch remounts it, so nothing from the
 			     previous item's preview survives into the next. -->
 			{#key item.id}
@@ -6998,7 +6962,7 @@
 							//      collection regardless of the collectionGen
 							//      bump below, since the live item agrees with it.
 							// Bump the unified fence so an in-flight stale load/refresh
-							// can't revert this fresh write (Codex). adoptCollection adds
+							// can't revert this fresh write. adoptCollection adds
 							// the live-item semantic veto on top (BUG-2602).
 							adoptCollection(updated, ++collectionGen);
 						}}
@@ -7231,7 +7195,7 @@
 					tabindex={activeTab === t.id ? 0 : -1}
 					onpointerdown={(e) => {
 						// Mouse only: touch pointerdown fires on scroll-start, and a
-						// drag beginning on a tab must not switch panels (Codex).
+						// drag beginning on a tab must not switch panels.
 						// Mobile has no peeking master, so the click-swallow race
 						// this guards against doesn't exist there.
 						if (e.pointerType === 'mouse') activeTab = t.id;
@@ -7428,7 +7392,7 @@
 			     flight, so `item.id` alone still reads A mid-switch and A's
 			     tiles would linger under B. Gating on the same switch boundary
 			     the collab lifecycle uses nulls the prop the instant the ref
-			     changes (Codex round 1). -->
+			     changes. -->
 			<!-- canDelete uses mutationsEnabled, NOT raw canEdit: a peeking master
 			     is a complete read-only freeze, so it shows tiles without the
 			     delete control (PLAN-2382 DR-6). itemContent feeds the
@@ -7504,7 +7468,7 @@
 							// routed through the applier path.
 							// Stay in raw mode if the flush failed — the
 							// user retains their unsaved edits to retry
-							// or copy out. Per Codex review round 6.
+							// or copy out.
 							//
 							// Editor-write residue (this button writes rawMode
 							// on the PERSISTENT editor subtree — NOT inside the
@@ -7559,7 +7523,7 @@
 							// each PATCH; if it changed, flush again.
 							// Capped at 3 iterations to bound the
 							// transition under aggressive concurrent
-							// typing. Per Codex review round 5.
+							// typing.
 							// What the raw-seed decision needs (BUG-3050 U1,
 							// $lib/items/rawSeed): the editor as it stands after the
 							// flush loop, and the last text the loop flushed.
@@ -7582,8 +7546,7 @@
 									// still use keepalive=true; this
 									// path doesn't need it because
 									// the user clicked a button and
-									// is expecting to wait. Per
-									// Codex review round 8.
+									// is expecting to wait.
 									let md = (ed.storage as any).markdown?.getMarkdown?.();
 									let lastFlushed: string | null = null;
 									let aborted = false;
@@ -7599,7 +7562,7 @@
 										// switched items during this iteration, don't
 										// show B a recovery toast, keep looping, or
 										// fall through to rawMode=true for the wrong
-										// item (PLAN-2105 / TASK-2112; coordinator).
+										// item (PLAN-2105 / TASK-2112).
 										// `|| peeking` (TASK-2172 / R14): peeking can begin
 										// mid-loop; bail before the NEXT flush dispatch so a
 										// frozen master issues no further collab PATCH.
@@ -7611,8 +7574,8 @@
 											// 'skipped' — force_refresh
 											//   recovery is in flight,
 											//   the Y.Doc-derived md is
-											//   known stale (TASK-1319
-											//   round 9 [P1]); seeding
+											//   known stale (TASK-1319);
+											//   seeding
 											//   raw mode from it would
 											//   silently overwrite the
 											//   canonical server content
@@ -7644,7 +7607,6 @@
 									// awaiting flushes — applying
 									// rawMode + rawSeedMarkdown to
 									// the new page would be wrong.
-									// Per Codex review round 7.
 									// The load-generation check closes BOTH the
 									// mid-switch A→B gap (loaded item still A but
 									// ref already B) AND the A→B→A gap the id-only
@@ -7652,7 +7614,7 @@
 									// load replaced the item) — without it B would
 									// mount in rawMode seeded with A's content and
 									// the new flusher would be cancelled
-									// (PLAN-2105 / TASK-2112; Codex).
+									// (PLAN-2105 / TASK-2112).
 									if (!item || item.id !== itemId || genAtToggle !== loadGeneration) return;
 									if (lastFlushed !== null) rawSeedMarkdown = lastFlushed;
 									// BUG-3540: the raw text's base is this seed at the row's seq
@@ -7669,7 +7631,7 @@
 									// must not let the trailing
 									// collabFlusher.cancel() + rawMode=true
 									// apply to a DIFFERENT item (incl.
-									// A→B→A). Per Codex.
+									// A→B→A).
 									if (!item || item.id !== itemId || genAtToggle !== loadGeneration) return;
 								}
 							}
@@ -7684,7 +7646,6 @@
 							// window — left armed, it would fire
 							// post-rawMode and PATCH a stale rich
 							// markdown over a subsequent raw save.
-							// Per Codex review round 5.
 							collabFlusher.cancel();
 							// BUG-3050 U1: the raw editor would start from a stored
 							// body that is behind an open tab's edits, and its
@@ -7722,7 +7683,7 @@
 						extensions whose registration is gated on `editable`) are
 						decided at construction time — without re-keying, an editor
 						mounted before /me resolves would never gain the drag handle
-						even after canEdit flips true. Per Codex review round 4.
+						even after canEdit flips true.
 					-->
 					<!--
 						Editable users mount the Editor only AFTER the Y.Doc
@@ -7734,7 +7695,7 @@
 						gate adds at most a single sub-frame delay (the
 						$effect runs in the same reactive cycle) and
 						guarantees the first mount has the binding
-						registered. Per Codex review round 1.
+						registered.
 
 						View-only viewers (canEdit === false) keep mounting
 						immediately under the legacy non-collab path; their
@@ -7769,7 +7730,7 @@
 							— the corner badge (line ~1700) already signals offline,
 							the existing reconnect loop in CollabProvider keeps
 							trying, and any in-progress user edits remain bound to
-							the live Y.Doc. Per Codex review round 2 of TASK-1376.
+							the live Y.Doc. See TASK-1376.
 						-->
 						{#if (collabProvider?.state === 'offline' && !hasEverSynced) || staleConnecting}
 							<ContentError
@@ -7856,7 +7817,7 @@
 		</div>
 
 		<!-- Comments, under the content (IDEA-2843 / GitHub #1228). They were
-		     reachable only through the Activity tab, which Dave called a
+		     reachable only through the Activity tab, which was a
 		     regression: reviewing an agent-written doc means many small
 		     comments, and every one cost a trip away from the passage being
 		     commented on. TASK-2294's own spec had an activity preview on this
@@ -7877,7 +7838,7 @@
 		     side-independent, so they are NOT frozen while peeking (BUG-2263) —
 		     composer + controls stay live on the passive side. -->
 		{#key itemSlug}
-			<!-- ITEM IDENTITY PROPS ARE GATED ON itemMatchesRef (codex round 6).
+			<!-- ITEM IDENTITY PROPS ARE GATED ON itemMatchesRef.
 			     During an A→B navigation `item` still holds A while loadData
 			     fetches B, so itemId/collectionId would describe A while itemSlug
 			     describes B — and an attachment dropped in the composer during
@@ -7952,7 +7913,7 @@
 		     and BacklinksPanel.onCountChange below drop a callback that a
 		     destroyed A-instance's in-flight load fires after the pane switched
 		     to B — the child's OWN prop check can't catch it (its prop is frozen
-		     at A). PLAN-2105 / TASK-2112; coordinator. -->
+		     at A). PLAN-2105 / TASK-2112. -->
 		{@const keyedSlug = itemSlug}
 		<div class="tab-panel" class:tab-hidden={activeTab !== 'relationships'} role="tabpanel" id="pane-panel-relationships-{uid}" aria-label="Relationships">
 		{#if relationshipGroups.length > 0}
@@ -8109,7 +8070,7 @@
 		     VERSION RESTORE stays frozen while peeking: it REST-writes this
 		     item's `items.content` directly (not via the Y.Doc applier), so on
 		     a peeking side whose Y.Doc is retained-alive a later collab flush
-		     could overwrite it — a same-item collision (Codex P1, BUG-2263).
+		     could overwrite it — a same-item collision (BUG-2263).
 
 		     `note` / `decision` are in HISTORY_KINDS. That list is the ONLY gate
 		     on them: omitting them renders them nowhere, which is exactly how
@@ -8126,8 +8087,7 @@
 				<!-- Loading and error are the owner's states, mirrored so this view
 				     does not render a FAILED load as an empty history — "nothing
 				     happened yet" and "the server did not answer" look identical
-				     otherwise, and only one of them is the reader's problem (codex
-				     round 1). -->
+				     otherwise, and only one of them is the reader's problem. -->
 				{#if timelineFeed.loading && timelineFeed.entries.length === 0}
 					<div class="feed-loading">Loading history...</div>
 				{/if}
@@ -8326,14 +8286,14 @@
 				// unmount), so without this guard a dead instance's stale
 				// props could still call goto()/collectionStore writes,
 				// visibly affecting whatever the user has since navigated
-				// to (Codex PR review).
+				// to.
 				if (destroyed) return;
 				if (handedDown !== identityKey) return;
 				if (!editedCollectionId || !editedCollectionSlug || !editedWsSlug) return;
 				// Collection slugs are workspace-scoped (two workspaces can
 				// both have a "docs" collection) — guard against a reused
 				// instance (workspace switched without a remount) matching
-				// on slug alone (Codex PR review).
+				// on slug alone.
 				if (wsSlug !== editedWsSlug) return;
 				// Keep the GLOBAL collections list (sidebar, pickers, etc.)
 				// fresh regardless of whether this pane/item is even
@@ -8350,7 +8310,7 @@
 				// after a route change), so comparing against them risks a
 				// mixed stale/fresh read: pass the check on stale data,
 				// then build a navigation URL from the ALREADY-updated
-				// collSlug/itemSlug and hijack to a mismatched URL (Codex).
+				// collSlug/itemSlug and hijack to a mismatched URL.
 				// collSlug has no such lag — it updates synchronously with
 				// the route — so this fence is correct regardless of
 				// whether loadData() has caught up yet, with no separate
@@ -8399,7 +8359,7 @@
 					return;
 				}
 				// Bump the unified fence so an in-flight stale load/refresh can't
-				// revert this fresh edit-modal write (Codex). adoptCollection adds
+				// revert this fresh edit-modal write. adoptCollection adds
 				// the live-item semantic veto on top (BUG-2602).
 				adoptCollection(updated, ++collectionGen);
 				// If the owner renamed the collection, its slug may have
@@ -8437,7 +8397,7 @@
 			onclose={() => {
 				// Archive calls onupdated THEN onclose after its await; the second
 				// must refuse too, or the previous identity's modal closes the new
-				// one (BUG-3084 codex round 2).
+				// one (BUG-3084).
 				if (handedDown !== identityKey) return;
 				editCollectionOpen = false;
 				editCollectionSection = undefined;
@@ -9460,7 +9420,7 @@
 
 	/* Copied from ItemTimeline, not shared: Svelte scopes styles per component,
 	   so reusing the class NAME across the boundary gets browser-default
-	   styling and nothing warns — the button just looks wrong (codex round 4).
+	   styling and nothing warns — the button just looks wrong.
 	   Kept as a copy rather than promoted to app.css because the button exists
 	   in exactly these two places; if a third appears, promote it. */
 	.load-more-btn {
@@ -9603,8 +9563,8 @@
 	   `.menu-anchor` keeps `position: relative` — Menu's anchored mode
 	   positions against it.
 
-	   The `div` qualifier on the ⚡ wrapper is load-bearing, not stylistic
-	   (Codex P2). QuickActionsMenu sets `.quick-actions-menu { display:
+	   The `div` qualifier on the ⚡ wrapper is load-bearing, not stylistic.
+	   QuickActionsMenu sets `.quick-actions-menu { display:
 	   inline-block }`, which Svelte scopes to `.quick-actions-menu.svelte-hash`
 	   — also (0,2,0). A bare `:global(.quick-actions-menu)` here would TIE it
 	   and be settled by cross-file stylesheet order, so a chunking change could

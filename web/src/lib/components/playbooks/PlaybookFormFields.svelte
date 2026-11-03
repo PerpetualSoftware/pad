@@ -33,7 +33,7 @@
 		// Hides the status selector. Set to true on the create-form where
 		// the submit buttons ("Create as Draft" / "Create as Active") own
 		// the status — surfacing a select that the buttons silently
-		// override is just confusing (Codex round 2 P2).
+		// override is just confusing.
 		hideStatus?: boolean;
 		existingPlaybooks: Item[];
 		onSlugChange: (slug: string) => void;

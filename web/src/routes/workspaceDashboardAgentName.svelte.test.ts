@@ -7,8 +7,7 @@ import type { DashboardResponse } from '$lib/types';
  * The dashboard's rows are NOT `Activity` — `recent_activity` is a reduced
  * shape with no id/workspace_id/document_id and an OPTIONAL metadata. Typing
  * the fixture as the real DTO is what keeps this suite honest if that payload
- * changes, and it is why the omitted-metadata case below is reachable at all
- * (codex round 4).
+ * changes, and it is why the omitted-metadata case below is reachable at all.
  */
 type RecentActivity = DashboardResponse['recent_activity'][number];
 
@@ -133,7 +132,7 @@ describe('workspace dashboard — Recent Activity agent badge', () => {
 		['an empty name', JSON.stringify({ agent: '' })],
 		['unparseable metadata', 'not json'],
 		// metadata is OPTIONAL on this DTO, so absent is a shape the server
-		// really sends — not just a defensive case (codex round 4).
+		// really sends — not just a defensive case.
 		['absent metadata', undefined]
 	])('falls back to the generic badge given %s', async (_case, metadata) => {
 		await mountWith([act({ metadata })]);
@@ -143,7 +142,7 @@ describe('workspace dashboard — Recent Activity agent badge', () => {
 		expect(agentBadges()).toEqual(['agent']);
 	});
 
-	// Codex round 1 — see the twin case in activityPageAgentName for the
+	// See the twin case in activityPageAgentName for the
 	// reasoning and for the boundary this assertion does NOT cover (the CSS
 	// rule itself is unobservable under this vitest setup).
 	it('marks a stamped name as a name so the badge stops upper-casing it', async () => {
@@ -161,7 +160,7 @@ describe('workspace dashboard — Recent Activity agent badge', () => {
 		expect(badge.classList.contains('named')).toBe(false);
 	});
 
-	// Codex round 11 — same claim at this binding: the badge element is the
+	// Same claim at this binding: the badge element is the
 	// isolate, and a <span> would satisfy every text assertion above.
 	it('isolates the badge so a bidi control cannot reorder the row', async () => {
 		await mountWith([act({ metadata: JSON.stringify({ agent: 'wren\u202egnimalb' }) })]);

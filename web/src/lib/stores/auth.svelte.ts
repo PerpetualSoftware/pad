@@ -66,14 +66,14 @@ let identityEstablished = false;
 // and a fence captured before an identity was established has nothing stale to
 // refuse.
 //
-// THE RESIDUAL THAT LEAVES, stated rather than discovered (codex round 1).
+// THE RESIDUAL THAT LEAVES, stated rather than discovered.
 // A request issued before the baseline resolves carries whatever cookie the
 // browser had; the baseline then reports whoever that cookie belongs to. Those
 // are the same principal unless the cookie CHANGED mid-flight — another tab
 // signing out and in — in which case the pre-baseline request settles under a
 // fence that still says current, and commits.
 //
-// CORRECTED (codex round 2). This comment previously justified the exemption by
+// CORRECTED. This comment previously justified the exemption by
 // saying the root layout issues the workspace list concurrently with
 // /auth/session, so refusing pre-baseline settles would empty the app. That is
 // FALSE, and I had taken it from the `identityEstablished` comment below rather
@@ -85,7 +85,7 @@ let identityEstablished = false;
 // What that means for the residual: on the ORDINARY path it needs a fence
 // captured by something that runs before any child renders, and the only
 // pre-baseline request there is `authStore.load()` itself, which takes no
-// fence. TWO EXCEPTIONS, both real (codex round 3, correcting this comment a
+// fence. TWO EXCEPTIONS, both real (correcting this comment a
 // second time): the share-page branch sets `authReady` WITHOUT calling
 // `authStore.load()` at all, and the auth-FAILURE path proceeds deliberately —
 // so children can render and fetch with no baseline established in either. The
@@ -109,7 +109,7 @@ let identityEstablished = false;
 // one may be READ FROM A TEMPLATE: a plain `let` is invisible to the template
 // and a block keyed on it never re-runs — which is exactly how the first
 // version of the remount this comment used to describe shipped, silently, until
-// a test counted mounts (codex round 2).
+// a test counted mounts.
 //
 // CORRECTED (BUG-3084): that remount no longer exists. This comment said the
 // workspace layout keys its leaf-page block on this value
@@ -140,7 +140,7 @@ function notifyIdentityChange() {
 	// and a fence captured under the OLD epoch would refuse that reload's own
 	// response.
 	//
-	// THE CONTRACT THIS PLACES ON LISTENERS (codex round 1): a fence captured
+	// THE CONTRACT THIS PLACES ON LISTENERS: a fence captured
 	// inside a listener passes, so a listener must reload for the identity that
 	// is signed in NOW and never re-issue a request built from the identity it
 	// was just told about. The fence cannot check this for them — it compares
@@ -149,12 +149,12 @@ function notifyIdentityChange() {
 	// nothing further: clearing state and stopping cannot re-issue anything.
 	// The two that DO reload — the workspace layout and the starred page — read
 	// the workspace from the live route rather than from anything captured
-	// before the change (codex round 2 read "stops" as a claim that they all
+	// before the change (an earlier wording read "stops" as a claim that they all
 	// reload, so this says which is which).
 	identityEpoch++;
 	// The PREVIOUS established identity is passed to listeners, because one of
 	// them has to distinguish a sign-IN from a sign-out or a swap (BUG-3005,
-	// lead ruling after the E2E failure). The reload exists to stop one user's
+	// after the E2E failure). The reload exists to stop one user's
 	// data being visible to the next, and an ANONYMOUS baseline holds nobody's
 	// private data — so `'' -> user` needs no reload, while `user -> user` and
 	// `user -> ''` do. Reloading on sign-in also put a full page load in the
@@ -251,8 +251,7 @@ export const authStore = {
 			})
 			.catch((err) => {
 				if (isCurrent()) session = null;
-				// DELIBERATELY NO `notifyIdentityChange()` HERE (BUG-2991, codex
-				// round 9). A rejection is a FETCH ERROR, not an identity
+				// DELIBERATELY NO `notifyIdentityChange()` HERE (BUG-2991). A rejection is a FETCH ERROR, not an identity
 				// signal: "not authenticated" comes back as a resolved session
 				// (that is what the re-throw below exists to distinguish), so a
 				// rejected `/auth/session` says a request failed and nothing

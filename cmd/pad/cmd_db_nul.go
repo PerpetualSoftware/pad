@@ -225,7 +225,7 @@ row.`,
 func resolveNULToolsTarget(fromPath *string) (proceed bool, err error) {
 	if *fromPath == "" {
 		// PAD_DB_DRIVER ALONE decides, and PAD_DATABASE_URL deliberately does
-		// not (codex round 9). cmd_server.go opens PostgreSQL only when
+		// not. cmd_server.go opens PostgreSQL only when
 		// PAD_DB_DRIVER=postgres; PAD_DATABASE_URL is also migrate-to-pg's
 		// TARGET, and its default at that. Treating the URL as proof of a
 		// PostgreSQL deployment broke the exact flow this unit prescribes: the
@@ -368,7 +368,7 @@ func resolvePathForCompare(p string) string {
 //
 // A failure counts. An earlier version printed failures and then returned nil,
 // so a repair that left data unrepaired exited 0, invisible to any script and
-// to an operator who trusts the status (codex round 5).
+// to an operator who trusts the status.
 //
 // Extracted so the decision is testable without a database: the bug was in the
 // decision, not in the repair, and a test that needed a fixture to reach it is

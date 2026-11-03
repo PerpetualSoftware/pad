@@ -46,7 +46,7 @@ const CROSS_WORKSPACE_HREF_PREFIX = '/-/r/';
 // ALWAYS returns when a future click-interceptor reads it off a live DOM
 // anchor rather than its raw attribute). Comparing `.pathname` after parsing
 // catches both uniformly; a raw `string.startsWith` on the href only catches
-// the root-relative case (Codex review).
+// the root-relative case.
 const HREF_PARSE_BASE = 'http://pad.invalid';
 // The host of `HREF_PARSE_BASE` — a resolved href keeps this host ONLY when it
 // was a genuinely same-origin root-relative path. A value like
@@ -54,7 +54,7 @@ const HREF_PARSE_BASE = 'http://pad.invalid';
 // resolves to a DIFFERENT host and is really an external navigation, so
 // comparing the parsed host against this sentinel is the robust "is this
 // truly local?" test — a raw `startsWith('/')` string check is fooled by the
-// backslash trick (Codex review).
+// backslash trick.
 const HREF_PARSE_HOST = new URL(HREF_PARSE_BASE).host;
 
 /** True when `href` is (or resolves to) the cross-workspace resolver route. */
@@ -126,7 +126,7 @@ function parseRefNumber(candidate: string): number | null {
  * item-shaped by construction and doesn't need this check — `resolvePaneTarget`
  * trusts it outright, slug-only items included. The editor popover is
  * different: a `link` mark is indistinguishable between a wiki-link-inserted
- * item link and a human-typed arbitrary path (Codex review, TASK-2160). A
+ * item link and a human-typed arbitrary path. A
  * trailing-REF-shape test ALONE isn't enough, because the pane's `?item=`
  * is scoped to the CURRENT workspace and resolved by ref NUMBER (the
  * collection segment is dropped): a link to a different workspace's item as
@@ -162,7 +162,7 @@ export function isSameWorkspaceItemHref(
 	// Parse against the sentinel base and require the result to be
 	// same-origin: this rejects an href that only LOOKS root-relative but
 	// resolves cross-origin (`/\evil.example/…`, `//evil.example/…`) — those
-	// are external navigations, not local item links (Codex review).
+	// are external navigations, not local item links.
 	const rawPath = href.split(/[?#]/)[0];
 	let url: URL;
 	try {
@@ -178,12 +178,12 @@ export function isSameWorkspaceItemHref(
 	// (`resolvePaneTarget` splits on "/" only), yielding a bogus `tasks\TASK-5`
 	// segment and drilling an invalid item. Every builder emits clean ASCII
 	// item URLs, so any href that isn't already canonical isn't one — navigate
-	// it normally instead (Codex review, regression guard).
+	// it normally instead.
 	if (url.pathname !== rawPath) return false;
 	// `url.pathname` always leads with "/", so split()[0] is the empty string
 	// before it; drop it. Do NOT `filter(Boolean)` the rest — collapsing
 	// empties would accept malformed paths with a double slash / trailing slash
-	// (`/alice/myws//tasks/TASK-9`) as valid item routes (Codex review). Any
+	// (`/alice/myws//tasks/TASK-9`) as valid item routes. Any
 	// remaining empty segment means the path isn't a clean item URL.
 	const segments = url.pathname.split('/').slice(1);
 	if (segments.some((s) => s === '')) return false;
@@ -228,8 +228,8 @@ export function isSameWorkspaceItemHref(
  * untrustworthy, not just the href field: it's unambiguous evidence the
  * link doesn't point at a same-workspace item, so a `ref`/`slug` set
  * alongside it is more likely mis-derived than an intentional override —
- * trusting it anyway risks silently opening the wrong local item (Codex
- * review). By this type's own contract (`$lib/types`), a genuinely
+ * trusting it anyway risks silently opening the wrong local item.
+ * By this type's own contract (`$lib/types`), a genuinely
  * same-workspace target never carries a cross-workspace href in the first
  * place.
  */
@@ -270,7 +270,7 @@ function matchesRefNumber(candidate: string, current: PaneGuardItem): boolean {
  * tried as a ref FIRST when it's ref-shaped (never falling through to the
  * slug compare in that case either), and as a slug only when it isn't;
  * this mirrors the server's own ref-before-slug resolution order for a bare
- * `?item=` value (PLAN-2154 / TASK-2158; Codex review — PR diff pass, x2).
+ * `?item=` value (PLAN-2154, TASK-2158).
  *
  * `current` is optional/nullable so callers that don't have a loaded item
  * in hand (e.g. the collection host, which only sees the target) can call
@@ -297,7 +297,7 @@ export function isSamePaneTarget(target: PaneTarget, current: PaneGuardItem | nu
 		// to a slug compare that could coincidentally match current.slug's
 		// literal string while the ref actually names a DIFFERENT item (the
 		// same collision fixed above for `target.ref`, now made consistent
-		// for the href channel too; Codex review — PR diff pass).
+		// for the href channel too).
 		if (REF_SHAPE.test(candidate)) return matchesRefNumber(candidate, current);
 		return candidate === current.slug;
 	}
@@ -322,7 +322,7 @@ export function isSamePaneTarget(target: PaneTarget, current: PaneGuardItem | nu
  * is a clean no-op. Deliberately NOT the item's own canonical ref: that
  * could itself mismatch the pane's actual (possibly slug-shaped) open `?item=`
  * value and cause `planPaneDrill`'s same-ref check to wrongly treat it as a
- * new target (Codex review).
+ * new target.
  *
  * Returns null when the target carries nothing resolvable.
  */

@@ -13,7 +13,7 @@
  *   interval. At most one run is ever pending.
  * - While `isHidden()` is true nothing runs; the trigger is remembered, and
  *   `onVisible()` runs one catch-up refresh only if an event arrived while
- *   hidden (lead ruling on BUG-3160).
+ *   hidden.
  * - `dispose()` clears the timer; nothing runs after it.
  */
 export interface ThrottledRefresh {

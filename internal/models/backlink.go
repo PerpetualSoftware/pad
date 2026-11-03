@@ -56,8 +56,7 @@ type Backlink struct {
 	// A non-nil pointer to "" represents the editor-distinct case
 	// `[[X|]]` — explicit empty display. Pointer (not omitempty
 	// string) so JSON serialization preserves the distinction:
-	// nil → field omitted, "" → field present and empty. Codex
-	// round-13 P2.
+	// nil → field omitted, "" → field present and empty.
 	DisplayText *string `json:"display_text,omitempty"`
 
 	// UpdatedAt is the source item's updated_at, RFC3339 string.

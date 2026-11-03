@@ -12,9 +12,9 @@ import (
 // transports. Remote's mapItemPatch had it inline (BUG-4065); stdio forwarded
 // edits to the CLI unread, so a string hint was refused there where remote
 // coerced it, and 2^53 or more reached bodypatch as a line number. Both now
-// call editsWithLineHints. Lead ruling 86931478: C1, one table drives both
+// call editsWithLineHints. One table drives both
 // transports, so a change to the helper turns both red and stdio == remote is
-// pinned, not asserted; C2, neither transport modifies the caller's map.
+// pinned, not asserted; and neither transport modifies the caller's map.
 
 // bug4082Cases is the shared table. edits is the JSON the caller sends; want
 // is the edits JSON each transport must forward (after a decode and re-encode,

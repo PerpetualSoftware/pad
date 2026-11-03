@@ -12,7 +12,7 @@ import (
 //
 // It lives HERE, in the package both consumers already import, because two
 // implementations of it is exactly the divergence PLAN-2357's DR-6 exists to
-// prevent (Codex round 17). The cross-workspace copy PREFLIGHT refuses an
+// prevent. The cross-workspace copy PREFLIGHT refuses an
 // undeclared override with a 400, and the COPY refuses it in
 // Store.migrateCopyFields; if the two ever disagreed about which keys count as
 // undeclared, the preview would promise something the copy refuses, or worse
@@ -116,7 +116,7 @@ func ReservedFieldKeysIn(fields map[string]any) []string {
 // not a softening, it is the rule; refusing would hand that audience a message
 // naming a command they cannot run, which is the disease this bug family is
 // about rather than a cure for it. Do not pattern-match a new key onto the
-// exemption list; evaluate it against the predicate (lead ruling, 2026-08-20).
+// exemption list; evaluate it against the predicate (2026-08-20).
 //
 // Today that exemption is `github_pr`, and here is the working of it. The other three reserved keys have a real writer on
 // every surface that can reach them: implementation_notes and decision_log have
@@ -131,7 +131,7 @@ func ReservedFieldKeysIn(fields map[string]any) []string {
 // Refusing it would therefore have removed a documented capability with nothing
 // to replace it, and — worse — answered with a message naming `pad github link`,
 // a command those same agents cannot run. That is the circular-remedy failure
-// this refusal exists to avoid, aimed at ourselves (Codex round 3).
+// this refusal exists to avoid, aimed at ourselves.
 //
 // Note what is NOT claimed: a raw `github_pr` write is still unvalidated, and
 // the move/copy OVERRIDE paths still refuse it (BUG-2674) because there the

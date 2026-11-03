@@ -291,11 +291,11 @@ func (e *catalogError) Error() string { return e.msg }
 //     IdempotentHint:true (repeating a read changes nothing).
 //   - Any write action → ReadOnlyHint:false, IdempotentHint:false.
 //     DestructiveHint then depends on WHAT the writes can do:
-//     false when every write is purely additive (additiveWriteActions
-//     in tool_surface.go — pad_library; codex round 1: create/claim/
-//     restore/activate never overwrite or remove, so marking them
-//     destructive would reintroduce the prompt-training harm at tool
-//     level), true when any action can overwrite, delete or SEND
+//     false when every write is purely additive (additiveWriteActions in
+//     tool_surface.go — pad_library: create/claim/restore/activate never
+//     overwrite or remove, so marking them destructive would reintroduce the
+//     prompt-training harm at tool level), true when any action can overwrite,
+//     delete or SEND
 //     (pad_item, pad_collection, pad_role, and pad_workspace since its
 //     invite sends email, TASK-3321 U0b) — the conservative tool-level
 //     truth.
@@ -602,8 +602,8 @@ func applyResultMode(result *CallToolResult, err error, structuredOnly, textOnly
 //     flag, and actionItemExport exists to OVERRIDE that key to `-`
 //     (the MCP host can't see a local path) — its doc comment says
 //     "agents send it" outright. Rejecting it at the gate would kill
-//     those calls before the override runs (PR #1159 round-1 review,
-//     bug 1). Not schema-declared because advertising a param the
+//     those calls before the override runs. Not schema-declared because
+//     advertising a param the
 //     handler always overwrites would invite more of them. The
 //     analogous `file` key on action=import is deliberately NOT
 //     listed: the schema points agents at `artifact`, and a rejection
@@ -673,7 +673,7 @@ func rejectUndeclaredKeys(def ToolDef, declared map[string]bool, input map[strin
 // BUG-4065). A float64 was formatted and forwarded too, so 2^53 and beyond,
 // which remote refuses as possibly rounded (wholeInt64, BUG-4061 / ba981cb4f),
 // reached the CLI as a number. Only strings and floats are checked: other
-// types keep their path (BUG-4070 r1, r2). intParam (pad_item list and
+// types keep their path (BUG-4070). intParam (pad_item list and
 // history limit) reads null as absent, so the default applies (v0.104), and
 // refuses a bool, an array or an object; everywhere else the CLI's own parse
 // refuses all of them. A value that passes is forwarded unchanged; it has no

@@ -157,7 +157,7 @@ func TestTooLargeHintIsTheSameOnBothTransports(t *testing.T) {
 	}
 }
 
-// TestEveryCLIMarkerCodeIsInTheStdioVocabulary is the lead's ask on BUG-2829:
+// TestEveryCLIMarkerCodeIsInTheStdioVocabulary guards BUG-2829:
 // a code the CLI can write into a structured marker must be one the stdio
 // classifier lifts, or that transport silently falls back to server_error
 // while the remote one reports the real code — the exact split BUG-3147 and

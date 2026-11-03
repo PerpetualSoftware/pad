@@ -393,8 +393,8 @@ func TestDispatch_ProjectStale_FiltersInterestingTypes(t *testing.T) {
 }
 
 func TestDispatch_ProjectStale_PreservesAllFields(t *testing.T) {
-	// Codex review on PR #348 round 1 caught the previous
-	// typed-struct approach dropping `collection` (and would have
+	// The previous
+	// typed-struct approach dropped `collection` (and would have
 	// dropped any future server-side field addition). Pin that
 	// every field on each attention entry survives the filter +
 	// sort path. Treat the dispatcher's attention slice as a
@@ -823,7 +823,7 @@ func TestMapCollectionCreate_FieldsAndSchemaMutuallyExclusive(t *testing.T) {
 }
 
 // TestMapCollectionCreate_EmptySchemaFallsThroughToFields verifies the
-// transport-symmetry fix per Codex round 1: when a client sends
+// transport-symmetry fix: when a client sends
 // schema=null or schema="" alongside fields, the dispatcher treats the
 // empty schema as absent and uses the fields DSL — matching how the
 // CLI handles an empty --schema value.

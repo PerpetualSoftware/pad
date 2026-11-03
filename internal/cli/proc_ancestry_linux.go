@@ -11,7 +11,7 @@ import (
 // ancestors, walking /proc/<pid>/stat's ppid field (via procStatFields,
 // the parser shared with the start-token reader). It is
 // how a registration's CLAUDE_PID / PAD_SESSION_PID claim is checked on
-// Linux (TASK-2767, codex round 3): a `pad session register` run by a
+// Linux (TASK-2767): a `pad session register` run by a
 // harness — as a hook, a monitor, or a tool shell — is a DESCENDANT of
 // that harness's session process, so a claimed session pid that is not
 // in the ancestry is a claim about some other process. It does not make

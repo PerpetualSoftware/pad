@@ -11,7 +11,7 @@
  * `$state` in the real store, so a read of it inside an `$effect` is a
  * DEPENDENCY. The first probe for this suite bound the reactive hook after
  * mount, saw an identity move leave the load alone, and was wrong for exactly
- * that reason (BUG-3084 checkpoint 33): the effect's first run had read a
+ * that reason (BUG-3084): the effect's first run had read a
  * plain variable. Every leg below states the precondition it needs.
  *
  * ONE CONTROL PER REFUSAL. "No PATCH was sent" is satisfied as well by a flush
@@ -19,7 +19,7 @@
  * run under an UNCHANGED identity and sees the PATCH go out. The one
  * exception is the collab effect-cleanup leg: only an identity change re-runs
  * that effect, so it asserts instead that the cleanup ran (the old provider
- * was destroyed) before asserting what it did not send (BUG-3084 round 7).
+ * was destroyed) before asserting what it did not send (BUG-3084).
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/svelte';
@@ -102,7 +102,7 @@ vi.mock('$lib/api/client', () => ({
 	// A rejection carrying `conflict: true` is a 409 only while a leg asks for it.
 	isUpdateConflictError: (e: unknown) => knobs.conflicts && (e as { conflict?: boolean } | null)?.conflict === true,
 }));
-// A REAL subscription (round 3 on #1387): the no-op this replaced left the
+// A REAL subscription: the no-op this replaced left the
 // SSE callback with no driven leg at all, pinned only by the source count.
 const sseCallbacks = vi.hoisted(() => [] as Array<(event: unknown) => unknown>);
 vi.mock('$lib/services/sse.svelte', () => ({
@@ -327,8 +327,7 @@ describe('the previous identity\'s RICH draft is not flushed on teardown (live o
 	// Pins the collab EFFECT CLEANUP that runs when the identity change
 	// re-mints the provider. By the time the pagehide below fires, the new
 	// context is active and the old editor is gone, so `runTeardownFlush` has
-	// nothing to flush either way — the leg after this one pins that path
-	// (round 4 on #1387, finding 6).
+	// nothing to flush either way — the leg after this one pins that path.
 	it('REFUSAL (effect cleanup): the re-mint after an identity change does not PATCH the old context\'s markdown', async () => {
 		collab.synced = true;
 		const r = mount();
@@ -424,7 +423,7 @@ describe('state a load reuses is not carried across identities', () => {
 
 describe('a child instance mounted under the previous identity cannot commit through its callback prop', () => {
 	/**
-	 * The parent side of class C (BUG-3084 checkpoint 36, lead ruling): a child
+	 * The parent side of class C (BUG-3084): a child
 	 * keeps running after the parent moves on, and its promise calls back into
 	 * the parent. The callback is gated on the identity key the child was
 	 * HANDED DOWN under — a `{@const}` inside a `{#key identityKey}` block, which
@@ -477,7 +476,7 @@ describe('continuations started under the previous identity do not commit', () =
 		await waitFor(() => expect(pending.length).toBe(1));
 		if (moveIdentity) {
 			// The title was already on screen before the move, so it cannot show
-			// that the reload ran; the fetch count can (round 5 nit).
+			// that the reload ran; the fetch count can.
 			const before = itemGets();
 			auth.moveIdentity();
 			await settle();
@@ -529,7 +528,7 @@ describe('continuations started under the previous identity do not commit', () =
 		expect(await tagDrainRace(false)).toEqual(['["a"]', '["a","b"]']);
 	});
 
-	/** The failure arm of the same drain (round 4 on #1387, A12). */
+	/** The failure arm of the same drain. */
 	async function tagFailureRace(moveIdentity: boolean) {
 		const r = mount();
 		await loaded(r);
@@ -687,8 +686,8 @@ describe('continuations started under the previous identity do not commit', () =
 	/**
 	 * An INCREMENTAL sync result: the callback awaits the reconciliation, then
 	 * adopts the changed item. Its `callbackGen` check after that await is the
-	 * only thing between the previous identity's payload and the new load
-	 * (round 4 on #1387, A8): reconcileCollectionSegment's own identity check
+	 * only thing between the previous identity's payload and the new load:
+	 * reconcileCollectionSegment's own identity check
 	 * stops only itself.
 	 */
 	async function incrementalRace(moveIdentity: boolean) {
@@ -774,7 +773,7 @@ describe('the SSE callback refuses a continuation that spans an identity change 
 		// `collectionGen`), so this line does not pin the success arm's
 		// `callbackGen` check: that check is load-bearing only for a
 		// cross-collection correction, which `shouldAdoptCollection` admits on a
-		// stale generation. It is held by the source guard (BUG-3084 checkpoint 45).
+		// stale generation. It is held by the source guard (BUG-3084).
 		expect(text).not.toContain('STALE COLLECTION NAME');
 	});
 
@@ -843,7 +842,7 @@ describe('the load a moved identity triggers does not persist the previous user\
 });
 
 /**
- * BUG-3084 round 8, lead ruling on checkpoint 69 (condition 2): the two
+ * BUG-3084: the two
  * stale-write shapes the hash gate does not TEST, only detects edits to.
  */
 describe('the legacy content debounce holds one live timer across an identity change (round 8 A)', () => {

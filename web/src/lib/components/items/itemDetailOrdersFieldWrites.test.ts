@@ -1,6 +1,5 @@
 // Node-project test (no DOM): a SOURCE-level guard that the item pane's field
-// saver is WIRED to the write ordering it is supposed to use (PLAN-2857 U4,
-// codex round 8, R8-1).
+// saver is WIRED to the write ordering it is supposed to use (PLAN-2857 U4).
 //
 // WHY A SOURCE GUARD. The ordering itself is tested for real in
 // `$lib/items/fieldWriteOrder.test.ts`, which drives the actual retry loop
@@ -59,7 +58,7 @@ describe('ItemDetail field writes are ordered', () => {
 		// The loop under test in fieldWriteOrder.test.ts has to be the loop that
 		// runs here. A second, hand-rolled `for`/`catch` retry in this function
 		// would pass every other assertion in this file while replaying exactly
-		// the stale body R8-1 is about.
+		// the stale body this guard exists to stop.
 		// BUG-3037 re-pointed this: the call is now `submitOrderedOCC<Item, OCCToken>`
 		// because the token is the row's `seq`, not its second-resolution
 		// `updated_at`. The generic list is matched loosely — what this leg is
@@ -118,7 +117,7 @@ describe('ItemDetail field writes are ordered', () => {
 	});
 
 	it('every claim is a GATE — the answer is acted on, never discarded', () => {
-		// Round 8 enumeration. The leg above matched `fieldWrites.claim(ticket)`
+		// The leg above matched `fieldWrites.claim(ticket)`
 		// anywhere, so replacing `if (!fieldWrites.claim(ticket)) return;` with a
 		// bare `fieldWrites.claim(ticket);` kept the proximity and no-await
 		// assertions green while every response was assigned regardless of the
@@ -135,8 +134,7 @@ describe('ItemDetail field writes are ordered', () => {
 	});
 
 	it('the forced-write success is gated on CLAIM and never on supersession', () => {
-		// Round 8 enumeration, and a defect this unit's own first version
-		// introduced. A forced write that SUCCEEDED has changed the row; if the
+		// A defect an earlier version of this unit introduced. A forced write that SUCCEEDED has changed the row; if the
 		// newer write then failed without writing, returning on supersession
 		// leaves the server holding the confirmed value and the pane showing the
 		// old one, with nothing left to correct it. `claim` asks whether anything
@@ -188,7 +186,7 @@ describe('ItemDetail field writes are ordered', () => {
 	it('the confirm callback asks about supersession BEFORE it sends', () => {
 		// The dialog can sit open for as long as the user takes, and this
 		// callback SENDS. Checking only after it returns suppresses the DISPLAY
-		// of a write that has already reached the server (round 8 enumeration).
+		// of a write that has already reached the server.
 		const callback = UPDATE_FIELD.slice(
 			UPDATE_FIELD.indexOf('confirmOpenChildrenOrThrow('),
 			UPDATE_FIELD.indexOf('} catch (retryErr) {'),

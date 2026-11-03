@@ -53,7 +53,7 @@
 	// Hash round-trip uses URLSearchParams so other hash params (used
 	// elsewhere on the admin page or by other tabs) survive. Previous
 	// regex-replace approach corrupted hashes where tab= was the first
-	// key but other params followed (Codex review on PR #605).
+	// key but other params followed.
 	function readHashParams(): URLSearchParams {
 		if (typeof window === 'undefined') return new URLSearchParams();
 		return new URLSearchParams(window.location.hash.replace(/^#/, ''));
@@ -80,7 +80,7 @@
 
 	// Open transition tracker — hydrate the active tab on the open=false → true
 	// transition only, not whenever initialTab or any other reactive value
-	// changes mid-open (Codex review on PR #605). Focus save/restore, Escape,
+	// changes mid-open. Focus save/restore, Escape,
 	// and the Tab focus-trap are now handled by the native <dialog> in <Modal>.
 	// `wasOpen` is a plain let (not $state) — edge-detection only — and this
 	// effect writes `activeTab` without reading it, so it can't self-invalidate

@@ -68,8 +68,7 @@
 
 <style>
 	/* It may shrink and truncate, never the controls beside it: in a narrow
-	   pane header the expand / pop-out / close buttons keep their size (codex
-	   review). */
+	   pane header the expand / pop-out / close buttons keep their size. */
 	.save-sync {
 		display: inline-flex;
 		align-items: center;

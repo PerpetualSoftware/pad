@@ -43,7 +43,7 @@ func TestBuiltinFieldChanges(t *testing.T) {
 	}
 }
 
-// codex r1 (P3): a change to the final newline alone is visible.
+// A change to the final newline alone is visible.
 func TestFormatLineDiffShowsAnEndOfFileNewlineChange(t *testing.T) {
 	got := FormatLineDiff("a\n", "a", 3)
 	if !strings.Contains(got, "No newline at end of file") {

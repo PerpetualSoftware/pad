@@ -56,7 +56,7 @@ const (
 	// from ("pad:event_epoch_gen" by default). It is INCRemented by Redis and
 	// never deleted by Pad, which is what makes epochs COMPARABLE.
 	//
-	// Comparability is not decoration (codex round 3). Epochs were opaque
+	// Comparability is not decoration. Epochs were opaque
 	// uuids at first, and an opaque token cannot say which of two spaces is
 	// the later one — so a straggler carrying the OLD epoch, arriving on one
 	// workspace's channel after a new-epoch message arrived on another's
@@ -182,7 +182,7 @@ end
 // generationRestartSeed is the value publishScript restarts the generation
 // counter at when it finds that key corrupted (BUG-2740, ARGV[3]).
 //
-// Wall-clock SECONDS, per Dave's day-49 ruling: generations only have to be
+// Wall-clock SECONDS: generations only have to be
 // orderable among themselves, and a corrupted key cannot testify to what the
 // previous generation was, so there is nothing to derive a safe increment
 // from. Seconds are strictly above any plausible increment-from-1 history
@@ -211,8 +211,8 @@ func (b *RedisBus) generationRestartSeed() string {
 // clampGenerationSeed forces the seed into the shape publishScript's guards
 // accept: a positive integer of at most 17 digits.
 //
-// THE CLOCK IS AN INPUT, AND A BROKEN ONE WAS FATAL (BUG-2740, codex round
-// 7). An unset or misconfigured host clock can report zero or a negative
+// THE CLOCK IS AN INPUT, AND A BROKEN ONE WAS FATAL (BUG-2740). An unset or
+// misconfigured host clock can report zero or a negative
 // second. The repair would then SET that at the generation key and return it
 // as the epoch — and the epoch guard rejects anything not matching
 // ^[1-9][0-9]*$, so it rotates, calls back into the repair, receives the SAME
@@ -271,7 +271,7 @@ func clampGenerationSeed(unix int64) string {
 //
 // THE EPOCH'S VALUE IS MINTED BY REDIS, from a monotonic generation counter,
 // rather than proposed by the caller. Two reasons, and the first is a
-// correctness one (codex round 3): a caller-proposed uuid cannot be COMPARED,
+// correctness one: a caller-proposed uuid cannot be COMPARED,
 // so a straggler carrying an abandoned epoch was indistinguishable from a
 // genuine rotation and flipped the bus back into a dead space. A generation
 // makes "is this later than what I have" answerable. The second is that
@@ -279,9 +279,8 @@ func clampGenerationSeed(unix int64) string {
 // two publishers can no longer both believe they minted the space.
 //
 // A DEDUPE TOKEN, matching internal/watchevents' script, and it is REQUIRED BY
-// THE SCRIPT rather than a separate improvement bundled in (codex round 7
-// asked whether it should ship here at all — it must, and cutting it while
-// keeping the script would ship a regression).
+// THE SCRIPT rather than a separate improvement bundled in (it must ship here,
+// and cutting it while keeping the script would ship a regression).
 //
 // The mechanism: go-redis retries a command whose reply was lost to a network
 // error — a Redis failover being the obvious trigger — so the script can run,
@@ -298,7 +297,7 @@ func clampGenerationSeed(unix int64) string {
 // redundant fetch.
 //
 // The token is CHECKED FIRST AND WRITTEN LAST, which is not the obvious order
-// and is the one that matters (codex round 11). Written first, any error later
+// and is the one that matters. Written first, any error later
 // in the script — Redis runs Lua atomically against interleaving, NOT with
 // rollback — would leave the token behind on a run that never published, and
 // the retry would then decline: the event lost, permanently and silently, with
@@ -309,7 +308,7 @@ func clampGenerationSeed(unix int64) string {
 // fresh uuid and so cannot be wrong-typed; its cost would be a duplicate
 // rather than a loss.
 //
-// WHAT IT DOES NOT COVER, so nobody reads it as a guarantee (codex round 6): a
+// WHAT IT DOES NOT COVER, so nobody reads it as a guarantee: a
 // retry that lands on a DIFFERENT Redis. If the original primary executed the
 // script and then failed over before the token replicated, the promoted
 // replica has no such key and the retry publishes a second copy under a second
@@ -525,7 +524,7 @@ type RedisBus struct {
 	// subscriber map is indexed by workspace: the critical section is then
 	// proportional to one workspace's subscribers rather than to all of them.
 	mu sync.Mutex
-	// subscribers is indexed BY WORKSPACE, not a flat set (codex round 6).
+	// subscribers is indexed BY WORKSPACE, not a flat set.
 	// Fan-out runs under the same lock as everything else here, so scanning
 	// every local subscriber to filter by workspace would make one hot
 	// workspace's publish rate the serialization point for every other
@@ -573,7 +572,7 @@ type RedisBus struct {
 	// heartbeatInterval is T and idleTimeout is 3T: how often this instance
 	// publishes a liveness frame per subscribed workspace, and how long a
 	// subscription may receive nothing at all before its coverage ends and its
-	// connection is replaced (BUG-2738). Tunables with the ruled defaults; see
+	// connection is replaced (BUG-2738). Tunables with their defaults; see
 	// DefaultHeartbeatInterval and cycleIdleSubscriptions.
 	heartbeatInterval time.Duration
 	idleTimeout       time.Duration
@@ -793,7 +792,7 @@ type redisSub struct {
 	// lastProbeOK is when this instance last SUCCEEDED in publishing a
 	// heartbeat for this workspace. Guarded by b.mu.
 	//
-	// IT IS THE DETECTOR'S PREMISE, not bookkeeping (codex round 13). Idle
+	// IT IS THE DETECTOR'S PREMISE, not bookkeeping. Idle
 	// detection reasons "we published a frame and nothing came back, so the
 	// receive path is dead". That inference is only valid if the publish
 	// actually happened. PUBLISH travels on the client's connPool while the
@@ -887,8 +886,8 @@ func NewRedisBus(client *redis.Client) *RedisBus {
 //
 // TWO INDEPENDENT ROLLOUT FLAGS, in this order, and they are NOT
 // interchangeable despite being adjacent booleans of the same type — the
-// hazard being that a maintenance edit swaps or drops one silently
-// (codex round 9). publishEpoch is BUG-2736's ID-space migration; publishHeartbeat
+// hazard being that a maintenance edit swaps or drops one silently.
+// publishEpoch is BUG-2736's ID-space migration; publishHeartbeat
 // is BUG-2738's half-open-connection detection. Any combination is valid and
 // each has its own phase in the startup log.
 //
@@ -926,7 +925,7 @@ func NewRedisBusWithKeys(client *redis.Client, keys redisns.Keys, publishEpoch, 
 		ctx:                ctx,
 		cancel:             cancel,
 	}
-	// NOT STARTED AT ALL ON PHASE 1 (codex round 4, P3). Both halves are gated
+	// NOT STARTED AT ALL ON PHASE 1. Both halves are gated
 	// on publishHeartbeat and would be guaranteed no-ops there, so the loop
 	// would be two goroutines and two timers per process waking every 30s for
 	// the life of a deployment that has asked for none of it — and the DEFAULT
@@ -1029,7 +1028,7 @@ func (b *RedisBus) SubscribeAndReplaySince(ctx context.Context, workspaceID stri
 // and let the replay read deliver the gap. It was wrong for the population
 // this whole fix is about: a fresh subscriber (sinceID == 0) reads no replay,
 // so events arriving in the gap were skipped by fan-out and never replayed —
-// dropped outright. Found by codex round 1; keeping the note because the
+// dropped outright. Keeping the note because the
 // mechanism was locally coherent and the failure was one call path over.
 func (b *RedisBus) subscribeAndReplay(ctx context.Context, workspaceID string, sinceID int64, maxPerWorkspace int) (chan Event, []Event, <-chan struct{}, SubscribeOutcome) {
 	if ctx.Err() != nil {
@@ -1039,7 +1038,7 @@ func (b *RedisBus) subscribeAndReplay(ctx context.Context, workspaceID string, s
 		// THIS IS THE ONLY EARLY EXIT, deliberately. An earlier draft paired it
 		// with a cancellation break at the top of the establish loop, which
 		// the mutation matrix could only detect when BOTH were removed — and
-		// codex round 2 then found why: the loop-top one could exit while
+		// The loop-top one could exit while
 		// still owning an unretired establishment record, stranding the next
 		// subscriber forever. It is gone. Past this point a cancelled caller
 		// is unwound by the code that owns the thing being unwound, never by
@@ -1072,8 +1071,8 @@ func (b *RedisBus) subscribeAndReplay(ctx context.Context, workspaceID string, s
 	// Where the buffer stood at REGISTRATION, captured here rather than read in
 	// section 2.
 	//
-	// The BUFFER ITSELF is part of the mark, not just its position (codex round
-	// 3). An ID-space reset during the wait replaces the buffer wholesale, and
+	// The BUFFER ITSELF is part of the mark, not just its position. An ID-space
+	// reset during the wait replaces the buffer wholesale, and
 	// a position in the old one describes nothing in the new one — while
 	// knownFrom may still accept an adjacent cursor, so the mismatch is not
 	// self-announcing. A nil buffer here is the same statement in its strongest
@@ -1085,7 +1084,7 @@ func (b *RedisBus) subscribeAndReplay(ctx context.Context, workspaceID string, s
 
 	var establish bool
 	var pending *pendingSub
-	// PENDING IS CHECKED BEFORE WSSUBS, not after (codex round 1, P1). The two
+	// PENDING IS CHECKED BEFORE WSSUBS, not after. The two
 	// overlap on purpose — establishSubscription installs wsSubs and only then
 	// waits for the acknowledgement — so a subscriber arriving in that overlap
 	// finds a live-looking subscription that Redis has not confirmed. Reading
@@ -1105,7 +1104,7 @@ func (b *RedisBus) subscribeAndReplay(ctx context.Context, workspaceID string, s
 	}
 
 	// A JOINER VERIFIES RATHER THAN ASSUMES, and may take the establishment
-	// over once (codex round 2, P1). Waiting on someone else's record proves
+	// over once. Waiting on someone else's record proves
 	// only that they FINISHED — not that they succeeded.
 	//
 	// THE LOAD-BEARING FIX IS ELSEWHERE, and this is defence in depth: the
@@ -1131,7 +1130,7 @@ func (b *RedisBus) subscribeAndReplay(ctx context.Context, workspaceID string, s
 	// failure is one a third pass would not fix either.
 	for attempt := range 2 {
 		// NO CANCELLATION CHECK AT THE TOP OF THIS LOOP, and its absence is
-		// load-bearing (BUG-2749, codex round 2 P1).
+		// load-bearing (BUG-2749).
 		//
 		// An earlier version broke out of the loop here when the caller's
 		// context had ended. On attempt 0 that is a STRAND: section 1 may
@@ -1229,13 +1228,13 @@ func (b *RedisBus) subscribeAndReplay(ctx context.Context, workspaceID string, s
 	// place every one of them passes through, establisher and joiner alike,
 	// after the loop's built-in retry.
 	//
-	// AN IN-FLIGHT RECORD IS WAITED ON, NOT TAKEN AS SUCCESS (codex round 1
-	// P2): an idle cycle re-establishing in its dial window owns one, and
+	// AN IN-FLIGHT RECORD IS WAITED ON, NOT TAKEN AS SUCCESS: an idle cycle
+	// re-establishing in its dial window owns one, and
 	// this caller's registration is served only if that attempt installs —
 	// so the caller waits for it and looks again, and returns failed only
 	// when there is neither a live subscription nor anyone still trying.
 	//
-	// A CLOSED BUS IS A REFUSAL TOO (codex round 1 P2). Close drains the
+	// A CLOSED BUS IS A REFUSAL TOO. Close drains the
 	// subscriber maps; a caller that registers after that holds a channel
 	// nothing will ever close, and a handler holding it would outlive the
 	// shutdown. Nothing this instance can promise is worth a 200 here.
@@ -1247,7 +1246,7 @@ func (b *RedisBus) subscribeAndReplay(ctx context.Context, workspaceID string, s
 			return nil, nil, nil, SubscribeFailed
 		}
 		// PENDING BEFORE WSSUBS, the same order section 1 uses and for the
-		// same reason (codex round 2 P1): a replacement installs its wsSubs
+		// same reason: a replacement installs its wsSubs
 		// entry BEFORE Redis acknowledges it and holds its record until the
 		// acknowledgement lands, so "live" alone can be a subscription in its
 		// unconfirmed window. A record in flight is waited on first; only a
@@ -1300,7 +1299,7 @@ type registrationMark struct {
 // would both replay a straggler the caller already received and silently drop a
 // pre-registration event that happens to carry a higher id.
 //
-// THE BOUND IS APPLIED BEFORE THE CURSOR FILTER, not after (codex round 5). An
+// THE BOUND IS APPLIED BEFORE THE CURSOR FILTER, not after. An
 // earlier version asked since() for the events above the cursor and then
 // dropped the last (appends - mark) of them — two different spaces. A
 // post-registration straggler whose id falls at or below the cursor is absent
@@ -1406,11 +1405,11 @@ func (b *RedisBus) Publish(event Event) error {
 	//
 	// THE ASSIGNMENT ITSELF IS A SCRIPT rather than a bare INCR, and only so
 	// that a restart can clear a stale epoch ATOMICALLY with the INCR that
-	// detects it (codex round 3). As two commands there is a window in which a
+	// detects it. As two commands there is a window in which a
 	// concurrent flipped publisher mints an epoch between our INCR and our
 	// DEL, and we delete a LIVE one.
 	//
-	// The shape the clear closes (codex round 2): phase 2 mints an epoch and
+	// The shape the clear closes: phase 2 mints an epoch and
 	// the sequence reaches 500; the deployment rolls back to phase 1; the seq
 	// key is then evicted or deleted; phase-1 publishers climb from 1 again;
 	// phase 2 is re-enabled and finds the old epoch still there. A receiver
@@ -1522,7 +1521,7 @@ const (
 // readSeqResult reads the reply both id-assigning scripts return: the id as
 // the key holds it, then a repair report (BUG-2744). A repair is logged and
 // counted here, so a corrupted counter heals VISIBLY: a heal nobody can see
-// would hide whatever corrupted the key (lead ruling, day 89).
+// would hide whatever corrupted the key.
 func (b *RedisBus) readSeqResult(res []interface{}) (int64, error) {
 	if len(res) != 4 {
 		return 0, fmt.Errorf("events: id script returned %d elements, want 4", len(res))
@@ -1603,7 +1602,7 @@ func (b *RedisBus) eventsSinceLocked(workspaceID string, sinceID int64) []Event 
 
 // Close shuts down all Redis subscriptions and closes local subscriber channels.
 //
-// IT DOES NOT JOIN THE MAINTENANCE GOROUTINES (BUG-2738, codex round 3), and
+// IT DOES NOT JOIN THE MAINTENANCE GOROUTINES (BUG-2738), and
 // that is a choice rather than an omission. Their publish half makes
 // synchronous Redis calls bounded by go-redis's own Dial/Read/WriteTimeout —
 // exactly the calls that stall on the wedged route this whole feature exists
@@ -1622,12 +1621,12 @@ func (b *RedisBus) Close() {
 	b.cancel() // signal all subscription goroutines to stop
 
 	b.mu.Lock()
-	// COLLECTED UNDER THE LOCK, CLOSED AFTER IT (codex round 13). Same reason
+	// COLLECTED UNDER THE LOCK, CLOSED AFTER IT. Same reason
 	// stopRedisSubscription hands its close off: PubSub.Close takes go-redis's
 	// mutex, which the health check can hold across reconnect work, so closing
 	// here would block shutdown inside the lock that every fan-out and every
 	// Subscribe contends for — with subscriber channels still open behind it.
-	// Round 12 fixed the cycle path and left this one, which is the same defect
+	// The cycle path already closes outside the lock; this is the same defect
 	// on the path that runs once per process.
 	//
 	// UNTESTED, DELIBERATELY. Moving a close off a lock is a CONTENTION
@@ -1657,7 +1656,7 @@ func (b *RedisBus) Close() {
 		}
 		delete(b.subscribers, wsID)
 	}
-	// CLEARED ALONGSIDE THE SUBSCRIBERS IT COUNTS (codex round 2). Left
+	// CLEARED ALONGSIDE THE SUBSCRIBERS IT COUNTS. Left
 	// populated, it is a count of channels this loop has just closed, and an
 	// establishment still in flight reads it as a reason to install a
 	// subscription for them. The ctx check there is the primary guard; this
@@ -1700,12 +1699,12 @@ func (b *RedisBus) WorkspaceSubscriberCount(workspaceID string) int {
 // that answer and cannot infer it: reading the live generation afterwards
 // misattributes an unrelated caller's fresh subscription as this cycle's
 // replacement, and misses a real replacement that has already lost its last
-// subscriber (codex round 13).
+// subscriber.
 func (b *RedisBus) establishSubscription(ctx context.Context, workspaceID string, establisher *subscriber, pending *pendingSub) (installed bool) {
 	channel := b.keys.Name(redisChannelSuffix) + workspaceID
 	// DIALLED ON THE CALLER'S CONTEXT *AND* THE BUS'S, so a client that leaves
 	// mid-dial stops paying for it (BUG-2749) without taking away Close()'s
-	// ability to interrupt the same dial (codex round 2 P2).
+	// ability to interrupt the same dial.
 	//
 	// Passing only the caller's context regressed shutdown: b.ctx used to be
 	// what cut a stalled dial short when the bus closed, and a caller who
@@ -1757,8 +1756,7 @@ func (b *RedisBus) establishSubscription(ctx context.Context, workspaceID string
 
 	b.mu.Lock()
 	// THREE REASONS TO ABANDON, and all must retire the establishment record
-	// in THIS critical section (codex round 2, both P1s; BUG-2764 for the
-	// third).
+	// in THIS critical section (both P1s, BUG-2764 for the third).
 	//
 	// SUBSCRIBE failed: the client could not deliver the command (a refused
 	// dial, a write that failed, a caller's context ending mid-dial), so
@@ -1822,7 +1820,7 @@ func (b *RedisBus) establishSubscription(ctx context.Context, workspaceID string
 		// an emptied workspace and a closing bus are both quiet by design. A
 		// cancelled caller's dial ends in a context error here too — that is
 		// its departure, not Redis failing, and its own path reports it.
-		// CLASSIFIED BY THE ERROR, not by the contexts (codex round 1 P2): a
+		// CLASSIFIED BY THE ERROR, not by the contexts: a
 		// genuine Redis failure that happens to race the caller leaving is
 		// still a Redis failure, and gating on ctx.Err() would swallow it.
 		if subscribeErr != nil && !errors.Is(subscribeErr, context.Canceled) && !errors.Is(subscribeErr, context.DeadlineExceeded) {
@@ -2031,8 +2029,8 @@ func (b *RedisBus) markUnconfirmedAdmission(workspaceID string, gen int64) {
 	}
 	b.mu.Lock()
 	sub, ok := b.wsSubs[workspaceID]
-	// confirmClosed is checked under the same lock that closes it (codex round
-	// 1, P2). The timer and the acknowledgement can become ready together; if
+	// confirmClosed is checked under the same lock that closes it. The timer
+	// and the acknowledgement can become ready together; if
 	// the timer won the select after confirmSubscription had already cleared
 	// the flag, this would set it again with nothing left to come and clear
 	// it — a subscriber counted as unconfirmed, never told to reconcile, and
@@ -2093,7 +2091,7 @@ func (b *RedisBus) stopRedisSubscription(workspaceID string) {
 	sub.cancel()
 	delete(b.wsSubs, workspaceID)
 
-	// CLOSED OFF THE LOCK (codex round 12). PubSub.Close takes go-redis's own
+	// CLOSED OFF THE LOCK. PubSub.Close takes go-redis's own
 	// mutex, which its health check can be holding across reconnect work — so
 	// closing here would put a network-bound wait inside b.mu, and b.mu is the
 	// lock every fan-out and every Subscribe on this instance contends for.
@@ -2277,7 +2275,7 @@ func (b *RedisBus) receiveMessages(ctx context.Context, pubsub *redis.PubSub, wo
 			}
 			if err != nil {
 				// A MESSAGE WE CANNOT READ IS A HOLE IN THIS WORKSPACE'S
-				// COVERAGE (codex round 11). Dropping it and carrying on
+				// COVERAGE. Dropping it and carrying on
 				// left the buffer claiming a span it no longer had: the
 				// event is gone, the ids either side of it look
 				// contiguous, and a later resume across it is answered
@@ -2294,7 +2292,7 @@ func (b *RedisBus) receiveMessages(ctx context.Context, pubsub *redis.PubSub, wo
 			}
 			if event.WorkspaceID != workspaceID {
 				// THE CHANNEL IS THE AUTHORITY ON WHOSE EVENT THIS IS, not
-				// the body (codex round 15). Two things arrive here that
+				// the body. Two things arrive here that
 				// decode without error and are not a usable event:
 				//
 				//   - a payload that is valid JSON and empty — "null" or
@@ -2347,14 +2345,14 @@ func (b *RedisBus) dropWorkspaceCoverage(workspaceID, reason string, gen int64) 
 // back into the bus.
 //
 // SPLIT OUT SO A CALLER CAN MAKE THE DROP PART OF A LARGER ATOMIC DECISION
-// (BUG-2738, codex round 11). The idle cycle has to validate the subscription,
+// (BUG-2738). The idle cycle has to validate the subscription,
 // end its coverage and tear it down without releasing the lock in between —
 // otherwise a heartbeat arriving in one of those gaps makes it drop coverage
 // for a workspace that had just recovered.
 func (b *RedisBus) dropWorkspaceCoverageLocked(workspaceID, reason string, gen int64) string {
 	var report string
-	// THE GENERATION CHECK BELONGS HERE TOO, not only in fan-out (codex round
-	// 7). A receive loop can notice its connection died LONG after the
+	// THE GENERATION CHECK BELONGS HERE TOO, not only in fan-out. A receive
+	// loop can notice its connection died LONG after the
 	// workspace was unsubscribed and resubscribed under it: last viewer
 	// leaves, the buffer is dropped and the subscription torn down, a viewer
 	// returns and a new generation starts buffering — and only then does the
@@ -2371,8 +2369,8 @@ func (b *RedisBus) dropWorkspaceCoverageLocked(workspaceID, reason string, gen i
 		// and nothing to report. Reporting here would give the reset counter
 		// a baseline on every reconnect of an idle workspace.
 		//
-		// THE LIVE SUBSCRIBERS STILL GET TOLD, and that is not a contradiction
-		// (codex round 4). "No buffer" says nothing was RECEIVED for this
+		// THE LIVE SUBSCRIBERS STILL GET TOLD, and that is not a contradiction.
+		// "No buffer" says nothing was RECEIVED for this
 		// workspace on this instance; it does not say nothing was PUBLISHED.
 		// A subscriber that connected and then sat through a pub/sub outage
 		// has exactly the hole this signal exists for, and it is the case
@@ -2541,7 +2539,7 @@ func (b *RedisBus) dropAllBuffers(floor floorAction) {
 // floorAction says what a buffer drop should do with the standing
 // counter-backwards floor. Three intents rather than a boolean, because a
 // boolean gave the third one no way to spell itself and it silently took the
-// wrong branch (codex round 20).
+// wrong branch.
 type floorAction int
 
 const (
@@ -2651,7 +2649,7 @@ func decodePayload(payload string) (payloadKind, int64, Event, error) {
 }
 
 // requirePositiveID is applied to BOTH wire forms, and being applied to both
-// is the point (codex round 16). It lived inside the prefixed branch first, so
+// is the point. It lived inside the prefixed branch first, so
 // a bare payload carrying id 0 or a negative was accepted — delivered with no
 // SSE cursor for the client to advance to, and, once an epoch has been
 // adopted, read as the sequence going backwards and used to discard every
@@ -2676,7 +2674,7 @@ func requirePositiveID(id int64) error {
 // alone — silence is not evidence of a change.
 //
 // THAT LEAVES ONE NARROW HOLE DURING THE PHASE-2 ROLL, named here because it
-// is a property of the design rather than an oversight (codex round 17). Once
+// is a property of the design rather than an oversight. Once
 // an epoch has been adopted, a bare message is TREATED AS BELONGING TO THE
 // CURRENT SPACE, and it usually does: an un-flipped publisher INCRs the same
 // counter. It does not if the counter reset between that publisher's
@@ -2690,8 +2688,8 @@ func requirePositiveID(id int64) error {
 // id from the dead space and an id from an un-flipped publisher are both
 // "above what we hold" and are otherwise identical.
 //
-// WHAT BOUNDS IT, stated with the limit that took a second look to see (codex
-// rounds 17 and 21). The counter-backwards branch closes the window when this
+// WHAT BOUNDS IT, stated with the limit that took a second look to see. The
+// counter-backwards branch closes the window when this
 // WORKSPACE next receives an id below the straggler's — which is the common
 // case, because the straggler's id comes from a dead space that had climbed
 // higher than the new one has.
@@ -2705,8 +2703,8 @@ func requirePositiveID(id int64) error {
 // A global high-water mark would close that, and would cost a storm: the check
 // is armed during the phase-2 roll, when un-flipped publishers interleave
 // routinely, and a global comparison fires on interleaves across ANY pair of
-// workspaces rather than within one. That trade is the same one round 9
-// settled when it armed this check on an adopted epoch at all. The residual
+// workspaces rather than within one. That trade is the same one made
+// when this check was armed on an adopted epoch at all. The residual
 // belongs with the others that the client cursor's missing epoch would close —
 // see BUG-2736.
 func (b *RedisBus) fanOutFromRedis(gen, epoch int64, event Event) {
@@ -2730,8 +2728,8 @@ const stragglerWindow = 30 * time.Second
 // defaultSubscribeConfirmTimeout bounds the wait for Redis to acknowledge a new
 // subscription (BUG-2747).
 //
-// IT BOUNDS THE ACKNOWLEDGEMENT, NOT THE WHOLE OF ESTABLISHMENT (codex round
-// 7). The dial and go-redis's HELLO/AUTH handshake happen inside
+// IT BOUNDS THE ACKNOWLEDGEMENT, NOT THE WHOLE OF ESTABLISHMENT. The dial and
+// go-redis's HELLO/AUTH handshake happen inside
 // client.Subscribe, before this timer starts, and they are bounded by the
 // CLIENT's DialTimeout — 5s by default. So a stalled dial followed by this
 // wait composes to roughly DialTimeout + this, and anyone reasoning about
@@ -2809,8 +2807,8 @@ func (b *RedisBus) fanOut(gen, epoch int64, event Event) {
 	if !receiving {
 		return
 	}
-	// ...AND THAT THIS MESSAGE BELONGS TO THE SUBSCRIPTION THAT IS LIVE NOW
-	// (codex round 1 F2). Checking only that SOME subscription exists leaves
+	// ...AND THAT THIS MESSAGE BELONGS TO THE SUBSCRIPTION THAT IS LIVE NOW.
+	// Checking only that SOME subscription exists leaves
 	// the same hole one step further along: last subscriber leaves, buffer
 	// dropped, a NEW subscriber arrives and registers a new subscription, and
 	// only THEN does the old receive goroutine's in-flight message land. It
@@ -2831,7 +2829,7 @@ func (b *RedisBus) fanOut(gen, epoch int64, event Event) {
 	// Every buffer is dropped, not just this workspace's: the counter is
 	// global, so a reset invalidates all of them at once.
 	if epoch != 0 && epoch < b.epoch && time.Since(b.epochAdoptedAt) < stragglerWindow {
-		// A STRAGGLER FROM A SPACE WE HAVE LEFT (codex round 3). Each
+		// A STRAGGLER FROM A SPACE WE HAVE LEFT. Each
 		// workspace has its own subscription and its own receive goroutine,
 		// and Redis orders messages within a channel but not across them — so
 		// a message published before a rotation, on workspace A's channel, can
@@ -2848,7 +2846,7 @@ func (b *RedisBus) fanOut(gen, epoch int64, event Event) {
 		// instead flipped the bus BACK to the dead generation, dropping every
 		// buffer a second time and making the "one drop per instance per roll"
 		// property false.
-		// THE MESSAGE IS DISCARDED AND SO IS OUR COVERAGE (codex round 19).
+		// THE MESSAGE IS DISCARDED AND SO IS OUR COVERAGE.
 		// Discarding alone left the buffers claiming a span they could still
 		// answer, so a client reconnecting during the window was told it was
 		// caught up — while, if this is a REGRESSION rather than a straggler,
@@ -2932,7 +2930,7 @@ func (b *RedisBus) fanOut(gen, epoch int64, event Event) {
 			// count one at startup and the reset metric would grow a
 			// per-deploy baseline instead of meaning something.
 			//
-			// It is logged rather than counted (codex round 9) because it is
+			// It is logged rather than counted because it is
 			// the moment the documented residual becomes possible on this
 			// replica: from here its first buffer starts at the first ID it
 			// sees, so a client holding the ID one below that — from a space
@@ -2960,7 +2958,7 @@ func (b *RedisBus) fanOut(gen, epoch int64, event Event) {
 	}
 	if b.epoch != 0 && rb.lastAppendedID != 0 && event.ID <= rb.lastAppendedID {
 		// IT ONLY RUNS ONCE AN EPOCH HAS BEEN ADOPTED, and that gate is not a
-		// detail (codex round 9). Phase 1 publishes with a two-call
+		// detail. Phase 1 publishes with a two-call
 		// INCR-then-PUBLISH, so on any multi-instance deployment two
 		// publishers interleave routinely and a lower ID arrives after a
 		// higher one as ORDINARY TRAFFIC. Without the gate this branch would
@@ -2993,8 +2991,8 @@ func (b *RedisBus) fanOut(gen, epoch int64, event Event) {
 		// deployment can run two publisher versions at once, which is every
 		// rolling upgrade.
 		//
-		// It has already been tuned four times, each round finding a defect
-		// inside the previous round's cleverness. So the floor is raised
+		// It has already been tuned four times, each pass finding a defect
+		// inside the previous pass's cleverness. So the floor is raised
 		// UNCONDITIONALLY: every cursor at or below what the discarded buffers
 		// held is refused. The alternative was a discriminator on "a restart
 		// always begins at 1", which an out-of-order ID 1 during a roll

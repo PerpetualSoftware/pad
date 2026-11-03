@@ -64,14 +64,14 @@ let membershipSeq = 0;
 // than tidiness: logout is an SPA navigation (`authStore.clear()` +
 // `goto('/login')`), so this map outlives a sign-out. Keyed by slug alone, the
 // NEXT user to resolve the same workspace would be served the PREVIOUS user's
-// grants until their own `/me` settled — a cross-account grant leak in the UI
-// (codex round 3). Keying on identity makes the CACHE's invalidation
+// grants until their own `/me` settled — a cross-account grant leak in the UI.
+// Keying on identity makes the CACHE's invalidation
 // structural: a different user simply has no entry, so no logout path has to
 // remember to clear anything. It does not fence the store's other state —
 // `current`, `workspaces` and a `currentMembership` already published are not
 // identity-scoped. That used to mean a clean account change with no settle in
-// flight left the previous user's live permission state on screen (codex round
-// 6); BUG-2991 closed it the same structural way, with the
+// flight left the previous user's live permission state on screen;
+// BUG-2991 closed it the same structural way, with the
 // `authStore.onIdentityChange` subscription at the foot of this file, so the
 // drop happens whether or not anything is racing.
 //
@@ -106,7 +106,7 @@ const answeredMembership = new Map<string, WorkspaceMembership | null>();
  * caller is inside `untrack` — the settings page calls `load(wsSlug)` straight
  * from an `$effect`. A tracked read there would make that effect re-run on any
  * session change, which is a dependency the caller never asked for and cannot
- * see (codex round 4).
+ * see.
  */
 function currentUserId(): string {
 	return untrack(() => authStore.userId);
@@ -141,7 +141,7 @@ function settleMembership(userId: string, slug: string, m: WorkspaceMembership |
  * `userId` is the identity fence: logout is an SPA navigation, so a `/me`
  * issued as one user can settle after another has signed in — and without this
  * it would both publish that answer and record it under the NEW user's cache
- * key (codex round 4). Neither fence subsumes the other: a sign-in does not
+ * key. Neither fence subsumes the other: a sign-in does not
  * advance `membershipSeq`, and a navigation does not change the user.
  *
  * The two fences DISPOSE of a rejected settle differently, and that asymmetry
@@ -150,11 +150,11 @@ function settleMembership(userId: string, slug: string, m: WorkspaceMembership |
  * instead CLEARS to unknown: if the answer we were about to publish belongs to
  * a user who is no longer signed in, then so does whatever is published right
  * now — including an answer replayed from the cache a moment ago, which is how
- * a stale owner read would otherwise survive a sign-out (codex round 5).
+ * a stale owner read would otherwise survive a sign-out.
  * Unknown is the fail-safe reading, since the helpers treat it as no access.
  *
  * It also drops `current`, which is what makes the clear SELF-HEALING rather
- * than terminal (codex round 6). `recoverIfMissing` re-resolves on a null
+ * than terminal. `recoverIfMissing` re-resolves on a null
  * `current` and runs on every sync result, so the new user gets a real answer
  * at the next one; leaving `current` in place would have left them unknown
  * until a navigation, and a sign-in that does not navigate would never get one.
@@ -203,7 +203,7 @@ function settleIfCurrent(
 // about it, so a workspace that has since been deleted or become invisible is
 // dropped rather than re-added forever.
 //
-// THE CLASS, asked before choosing (BUG-2981, lead's framing). `workspaces`
+// THE CLASS, asked before choosing (BUG-2981). `workspaces`
 // has exactly three writers — this append, `loadAll`'s commit, and the
 // identity reset's clear — and `create` is the only path that mutates the
 // list LOCALLY. Import, accept-invitation, reorder, delete and restore all
@@ -237,7 +237,7 @@ let pendingCreates: { seq: number; ws: Workspace }[] = [];
 //
 // `recoverIfMissing` JOINS an in-flight run via `inFlightFor` rather than
 // skipping past it: acting on a still-empty `workspaces` sends `setCurrent`
-// down its single-workspace fallback for no reason (codex round 4).
+// down its single-workspace fallback for no reason.
 const LOAD_ALL_KEY = 'all';
 // Slugs `setCurrent` has refreshed the list for, and whether a list has
 // committed for this identity. See `setCurrent`'s fallback.
@@ -337,8 +337,7 @@ export const workspaceStore = {
 
 	async loadAll() {
 		return loadAllFlight.run(LOAD_ALL_KEY, async ({ isLatest }) => {
-			// Captured before the request, compared after it (BUG-2991, codex
-			// round 1). `isLatest` is a NAVIGATION fence — its generation only
+			// Captured before the request, compared after it (BUG-2991). `isLatest` is a NAVIGATION fence — its generation only
 			// advances when a newer `loadAll` starts — so it says nothing about
 			// whether the same USER is still signed in. Without this, A's list
 			// resolving after A signed out and B signed in commits A's
@@ -407,8 +406,8 @@ export const workspaceStore = {
 	async recoverIfMissing(ws: string): Promise<void> {
 		if (workspaces.length === 0) {
 			try {
-				// JOIN an in-flight list request rather than skipping past it
-				// (codex round 4). The first draft skipped on `!loading` and
+				// JOIN an in-flight list request rather than skipping past it.
+				// The first draft skipped on `!loading` and
 				// went straight to `setCurrent`, which — with `workspaces` still
 				// empty — falls back to a single-workspace fetch; if THAT failed
 				// while the in-flight list succeeded moments later, `current`
@@ -507,8 +506,7 @@ export const workspaceStore = {
 				if (resolved && listCommitted && !listRefreshedFor.has(ws)) {
 					// Marked before the request so two navigations in flight send
 					// one, and unmarked if it fails, so a transient failure does
-					// not leave the list stale for the rest of the page load
-					// (codex round 1).
+					// not leave the list stale for the rest of the page load.
 					const refreshed = ws;
 					listRefreshedFor.add(refreshed);
 					void workspaceStore.loadAll().catch(() => {
@@ -541,20 +539,19 @@ export const workspaceStore = {
 	},
 
 	async create(data: { name: string; description?: string; template?: string }) {
-		// CLEAR NOTHING UNTIL THE CREATE HAS SUCCEEDED (codex round 3).
+		// CLEAR NOTHING UNTIL THE CREATE HAS SUCCEEDED.
 		//
 		// This used to clear membership at entry, mirroring `setCurrent` — but
 		// `setCurrent` is switching to a workspace it already names, while a
 		// create that FAILS leaves the current workspace exactly as it was. So
-		// the clear was making an assertion about the wrong workspace, and my
-		// round-2 fix made that assertion louder rather than removing it:
+		// the clear was making an assertion about the wrong workspace, and the
+		// earlier fix made that assertion louder rather than removing it:
 		// settling the flag turned "we don't know" into "no access to the
 		// workspace you are still looking at", which hid a mounted settings
 		// page's owner controls until the next `setCurrent`. A failed create
 		// says nothing about the current membership, so it now changes nothing.
 		//
-		// OBSERVE the sequence token at entry, CLAIM it only on success (codex
-		// round 4). Three orderings have to come out right and the obvious two
+		// OBSERVE the sequence token at entry, CLAIM it only on success. Three orderings have to come out right and the obvious two
 		// spellings each get one wrong:
 		//
 		//  - claiming at entry (the original) makes a FAILED create invalidate a
@@ -573,7 +570,7 @@ export const workspaceStore = {
 		// Identity captured BEFORE the POST, not after it. A create issued as one
 		// user can return after another has signed in, and capturing on success
 		// would cache the first user's membership under the SECOND user's key —
-		// which is the leak the key was introduced to close (codex round 5).
+		// which is the leak the key was introduced to close.
 		const callUser = currentUserId();
 		const ws = await api.workspaces.create(data);
 
@@ -588,7 +585,7 @@ export const workspaceStore = {
 		// sign-in does not advance `membershipSeq`, which is the same reason
 		// `settleIfCurrent` needs two fences rather than one.
 		//
-		// Returns NULL rather than the workspace (codex round 1). Refusing to
+		// Returns NULL rather than the workspace. Refusing to
 		// touch the store is most of the fix, but not all of it: the only caller
 		// navigates to whatever comes back, so returning `ws` sent the NEW user
 		// to the PREVIOUS user's workspace. The server denies them, so it is not
@@ -604,7 +601,7 @@ export const workspaceStore = {
 		// user who is no longer signed in has nowhere to land.
 		if (currentUserId() !== callUser) return null;
 
-		// THE LIST IS ADDITIVE; ONLY THE SELECTION IS RACED (codex round 5).
+		// THE LIST IS ADDITIVE; ONLY THE SELECTION IS RACED.
 		// Two concurrent creates both succeed on the server, so both workspaces
 		// exist and both belong in `workspaces` — but only one can be the
 		// selected one. Appending before the token check means the loser of the
@@ -636,7 +633,7 @@ export const workspaceStore = {
 			settleIfCurrent(seq, callUser, ws.slug, null);
 		}
 
-		// SECOND identity check, for the `/me` phase (codex round 2). The check
+		// SECOND identity check, for the `/me` phase. The check
 		// above covers the POST; this one covers everything after it. A swap
 		// landing while the membership request is open leaves the store correct
 		// — `settleIfCurrent` refuses the write and the reset listener has
@@ -694,7 +691,7 @@ authStore.onIdentityChange(() => {
 	currentMembership = null;
 	membershipKnown = false;
 	// The SINGLE-FLIGHT SLOT, for the reason collectionStore's reset carries
-	// the same line (BUG-3005, codex round 2): dropping the list while leaving
+	// the same line (BUG-3005): dropping the list while leaving
 	// the previous identity's promise published lets the next caller JOIN it,
 	// that run's own fence then refuses to commit, and the joiner gets no data
 	// and no request. Not a defect this file was filed for — it is the same

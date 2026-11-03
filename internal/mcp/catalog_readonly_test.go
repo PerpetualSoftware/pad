@@ -707,7 +707,7 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 				Flags: map[string]cmdhelp.Flag{
 					"workspace": {Type: "string"},
 					"field":     {Type: "[]string", Repeatable: true},
-					// IDEA-1494 R3 P1: move now honors the same
+					// IDEA-1494: move now honors the same
 					// open-children guard override the update path
 					// does.
 					"force": {Type: "bool"},

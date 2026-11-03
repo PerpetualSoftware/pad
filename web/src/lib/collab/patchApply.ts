@@ -103,7 +103,7 @@ export function parseDetached(editor: Editor, markdown: string): PMNode | null {
 // ---------------------------------------------------------------- alignment
 
 /**
- * The ruled equivalence (PLAN-3578, lead rulings day 91): a live block and a
+ * The accepted equivalence (PLAN-3578): a live block and a
  * parsed block are the same block when they are equal, or differ only by a
  * link mark's title attribute, or by bold/italic marks on whitespace.
  */

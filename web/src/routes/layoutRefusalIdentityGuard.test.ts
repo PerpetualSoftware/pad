@@ -1,6 +1,6 @@
 // Node-project SOURCE guard: the root layout records a workspace refusal against
 // the identity that ASKED, not whoever is signed in when the answer lands
-// (BUG-2983, codex round 1 P1).
+// (BUG-2983).
 //
 // Source rather than render: the registration happens at module scope in a
 // layout that pulls in the whole app shell, and the property is structural —

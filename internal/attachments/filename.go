@@ -148,8 +148,8 @@ func normalizeFilename(raw string) (name string, substituted bool) {
 		return r
 	}, name)
 	// Only when something is left: a name that is ALL dots and spaces has no
-	// extension to expose, and "..." is an ordinary POSIX name (BUG-2803,
-	// codex round 27), while "." and ".." are caught below as path components.
+	// extension to expose, and "..." is an ordinary POSIX name (BUG-2803), while
+	// "." and ".." are caught below as path components.
 	if trimmed := strings.TrimRight(name, ". "); trimmed != "" {
 		name = trimmed
 	}
@@ -178,7 +178,7 @@ var windowsReservedStems = func() map[string]bool {
 // WindowsDeviceName reports whether Windows would open name as a device. It
 // reads the name as Windows does: the stem is everything before the FIRST dot
 // or colon, so "con.tar.gz" and "nul:x.txt" are devices (a colon opens the
-// stream syntax, codex round 1), and trailing spaces in the stem are ignored,
+// stream syntax), and trailing spaces in the stem are ignored,
 // so "con .txt" is one too. The match folds case.
 //
 // Exported for BUG-3185: every name offered for download or written by the

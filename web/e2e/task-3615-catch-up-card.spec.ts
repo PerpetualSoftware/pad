@@ -9,7 +9,7 @@ import type { SuiteFixture } from './fixtures';
  * TASK-3615 PR B: the catch-up card on the workspace home, end to end against
  * the real binary. The digest leaves out the viewer's own actions, so a
  * TEAMMATE seeds the work: the admin then sees it under "New and reopened",
- * follows See everything into Activity (Audit, since chip), comes back, marks
+ * follows See everything into Activity  (Audit, since chip), comes back, marks
  * caught up, and the card collapses and stays collapsed across a reload,
  * because the cursor now lives on the server.
  */
@@ -30,7 +30,7 @@ async function teammate(fixture: SuiteFixture, request: APIRequestContext, ws: s
 	const username = `catchup${Date.now()}`;
 	const email = `${username}@example.com`;
 	// Account creation is platform administration: the admin's SESSION, not
-	// its API token, which is refused 403 session_required (BUG-3361).
+	// its API token, which is refused 403 session_required  (BUG-3361).
 	const admin = await pwRequest.newContext({
 		baseURL: fixture.baseURL,
 		extraHTTPHeaders: { Authorization: `Bearer ${fixture.adminSessionToken}` },
@@ -91,7 +91,7 @@ test.describe('catch-up card (TASK-3615)', () => {
 			}
 			// The window's floor is inclusive at second precision, so a mark in
 			// the same second as these writes would show them again. Server and
-			// browser share this box's clock (TASK-3615 PR B r1).
+			// browser share this box's clock  (TASK-3615 PR B r1).
 			const madeInSecond = Math.floor(Date.now() / 1000);
 
 			await browserLogin(page);
@@ -110,7 +110,7 @@ test.describe('catch-up card (TASK-3615)', () => {
 			await page.getByRole('button', { name: 'Remove the since filter' }).click();
 			await expect(page).not.toHaveURL(/since=/);
 			// Assert on the reloaded feed request itself: a chip's absence passes
-			// before a late effect could add it (PR B r3).
+			// before a late effect could add it  (PR B r3).
 			const reloadedFeed = page.waitForRequest((r) => /\/api\/v1\/workspaces\/[^/]+\/activity(\?|$)/.test(r.url()));
 			await page.reload();
 			expect(new URL((await reloadedFeed).url()).searchParams.has('since')).toBe(false);

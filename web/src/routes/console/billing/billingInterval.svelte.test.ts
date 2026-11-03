@@ -122,7 +122,7 @@ describe('billing page interval (TASK-3468)', () => {
 
 		expect(href).toBe('');
 		expect(m.toast).not.toHaveBeenCalled();
-		// ONE live region, so a screen reader announces it once (codex r1).
+		// ONE live region, so a screen reader announces it once.
 		const statuses = screen.getAllByRole('status');
 		expect(statuses).toHaveLength(1);
 		expect(statuses[0].textContent).toContain("Annual billing isn't available right now");

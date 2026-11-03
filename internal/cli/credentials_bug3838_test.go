@@ -16,7 +16,7 @@ import (
 // ftruncate leaves an empty file's mtime alone, and stalls the save after it
 // until release is called. truncated is closed once the truncate has run.
 // Cleanup releases a save the test left stalled, so a failing test leaves no
-// goroutine blocked in the seam (codex r1 on BUG-3838).
+// goroutine blocked in the seam.
 func posixTruncate(t *testing.T, path string) (truncated chan struct{}, release func()) {
 	truncated = make(chan struct{})
 	stall := make(chan struct{})
@@ -91,7 +91,7 @@ func TestBUG3838_MemoDoesNotSkipASaveWhoseTruncateKeepsTheMtime(t *testing.T) {
 			release()
 			// Wait for the write without consuming the save's result, bounded
 			// so a save that failed after the release fails the test instead
-			// of hanging it (hunter r2 on BUG-3838); cleanup reports its error.
+			// of hanging it; cleanup reports its error.
 			for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
 				if fi, err := os.Stat(path); err == nil && fi.Size() != 0 {
 					return
@@ -149,7 +149,7 @@ func TestBUG3838_FinalStatShowingABodyRereadsOnce(t *testing.T) {
 
 // The touch lands on the file the save opened, not on whatever the path names
 // by the time it runs: a symlink retargeted after the open must not take the
-// stamp while the opened file keeps its old mtime (codex r3 on BUG-3838).
+// stamp while the opened file keeps its old mtime.
 func TestBUG3838_TouchStampsTheOpenedFile(t *testing.T) {
 	dir := t.TempDir()
 	opened, other, link := dir+"/opened", dir+"/other", dir+"/credentials.json"

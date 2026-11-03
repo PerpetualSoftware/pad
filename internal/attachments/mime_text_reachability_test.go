@@ -7,7 +7,7 @@ import (
 )
 
 // BUG-2841: an allowlisted text type that no upload can produce. Before
-// BUG-2963 F5 (#1309) every text-family entry but text/plain was dead by
+// BUG-2963 (#1309) every text-family entry but text/plain was dead by
 // construction: ValidateUpload returned the SNIFFED type, and the stdlib sniffs
 // any prose as text/plain, so text/markdown sat on the allowlist while a real
 // .md upload stored text/plain. Tests that hand-set the MIME passed; a browser
@@ -59,7 +59,7 @@ func TestTextFamilyEntriesAreReachableAndNeverGainInline(t *testing.T) {
 	}
 	// The population must not SHRINK unnoticed: the filter above skips an
 	// extension that stops being an allowed text type, and a count floor would
-	// let that pass silently (codex round 1 on BUG-2841). Every member as of
+	// let that pass silently. Every member as of
 	// this test is named here. GROWTH needs no edit, because the loop reads the
 	// table, which is the point of enumerating it; a REMOVAL fails until
 	// someone removes it here too, which is the deliberate step it should be.

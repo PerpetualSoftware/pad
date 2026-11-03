@@ -28,7 +28,7 @@ import (
 
 // U7 (TASK-3396): app attachments. Every upload runs under the write census,
 // and every refusal must capture NOTHING. The invariant under a disable is
-// about ROWS (DOC-3371 round-12 ruling): a blob may be left rowless, never a
+// about ROWS (DOC-3371): a blob may be left rowless, never a
 // row committed.
 
 type uploadFixture struct {
@@ -81,7 +81,7 @@ func (f uploadFixture) upload(ctx context.Context, spec store.FenceSpec, itemID 
 }
 
 // allowedUploadWrite: an upload writes the attachments INSERT and nothing
-// else (DOC-3371 day-85 revisions: no item row, no stamp).
+// else (DOC-3371: no item row, no stamp).
 func assertUploadWritesOnlyTheRow(t *testing.T, writes []storetest.Write) {
 	t.Helper()
 	if len(writes) == 0 {
@@ -661,8 +661,8 @@ func TestAppUpload_DisableBetweenBlobAndRowCommitsNoRow(t *testing.T) {
 // An upload's reservation is released INSIDE its row transaction, while that
 // transaction holds the seq lock and before it commits, so an admission
 // (which reads reservations under that lock) never counts one upload as both
-// a row and a reservation (codex round 1). Postgres pins the ordering across
-// the commit boundary (codex round 2): a test-only trigger makes the upload's
+// a row and a reservation. Postgres pins the ordering across
+// the commit boundary: a test-only trigger makes the upload's
 // INSERT wait on an advisory lock the test holds, so the row transaction sits
 // open, holding the seq lock, and the reservation must already be gone then.
 func TestAppUpload_ReservationIsReleasedBeforeTheRowCommits(t *testing.T) {

@@ -104,8 +104,7 @@ type RoomManager struct {
 	//
 	// The lock is released before Join's readLoop so concurrent
 	// peers can edit simultaneously — only the setup phase (where
-	// op-log staleness matters) is serialised. Per Codex review
-	// round 5.
+	// op-log staleness matters) is serialised.
 	itemLocksMu sync.Mutex
 	itemLocks   map[string]*sync.Mutex
 
@@ -128,7 +127,7 @@ type RoomManager struct {
 	// lastRestoreSeqs records, per item, the item.seq assigned by the most
 	// recent version RESTORE — i.e. the content generation of the restored (and
 	// now canonical) items.content that the pruned op-log's peers must rebuild
-	// from (BUG-2264, closing the additional-P1 + Codex-xhigh stale-seed race).
+	// from (BUG-2264, closing the stale-seed race).
 	// On Join a client announces the items.content `seq` its Y.Doc was seeded
 	// from (?content_seq=); if that seed predates the last restore (contentSeq <
 	// lastRestoreSeq), the client's seed is the stale PRE-restore content and the
@@ -357,8 +356,8 @@ var ErrForceRefreshSent = errors.New("collab: client cursor below op-log MIN; fo
 // the conn is closed WITHOUT admitting it (so a stale seed can't be pushed) — but
 // via a plain close, NOT a force_refresh: force_refresh would make the client
 // DISCARD its Y.Doc and rebuild, and a persistent read error (DB down) would then
-// spin an unbounded refresh/GET loop that also drops local-only edits (Codex
-// xhigh). A plain close is retryable: the client's provider reconnects with
+// spin an unbounded refresh/GET loop that also drops local-only edits. A plain
+// close is retryable: the client's provider reconnects with
 // backoff, Y.Doc intact, and once the DB recovers it's admitted (or legitimately
 // force_refreshed if genuinely stale). The handler closes the conn on this.
 var ErrStaleSeedFenceUnavailable = errors.New("collab: durable restore-boundary read failed; retryable close")
@@ -419,7 +418,7 @@ func (m *RoomManager) Join(itemID string, conn *websocket.Conn, since int64, con
 		// Acquire the per-item setup lock BEFORE creating the room
 		// so the schema-rebuild + force_refresh checks below can
 		// run without leaking an empty m.rooms entry on bail-out.
-		// Per Codex round 5 [P2] of TASK-1319.
+		// (TASK-1319).
 		itemLock.Lock()
 
 		// Schema-mismatch rebuild (TASK-1268). Runs before the
@@ -452,7 +451,7 @@ func (m *RoomManager) Join(itemID string, conn *websocket.Conn, since int64, con
 		//     have been pruned (the same hazard, just with a
 		//     non-empty post-prune suffix).
 		// Both branches force_refresh and bail BEFORE we touch
-		// m.rooms — no orphan-room leak. Per Codex round 5 [P2].
+		// m.rooms — no orphan-room leak.
 		if since > 0 {
 			minID, hasMin, merr := m.store.MinOpLogID(itemID)
 			if merr != nil {
@@ -521,7 +520,7 @@ func (m *RoomManager) Join(itemID string, conn *websocket.Conn, since int64, con
 			if !ok {
 				durable, hasDurable, derr := m.store.ItemLastRestoreSeq(itemID)
 				if derr != nil {
-					// FAIL CLOSED, but RETRYABLE (Codex xhigh): a read error means
+					// FAIL CLOSED, but RETRYABLE: a read error means
 					// we can't confirm the seed is current, so admitting the client
 					// would let a stale cursor-0 tab push its pre-restore Y.Doc and
 					// clobber the restored content once the DB recovers. Close the
@@ -721,8 +720,7 @@ type PruneSweepResult struct {
 // **Why whole-log only.** Yjs op streams are causally linked: a
 // recent op can reference structs created in older ops. Prefix-
 // pruning (delete old rows, keep recent) corrupts replay because
-// the suffix's references can't be resolved. Per Codex review of
-// the original TASK-1309 [P1]. Whole-log prune is safe because the
+// the suffix's references can't be resolved (TASK-1309). Whole-log prune is safe because the
 // next cold connect lazy-seeds from items.content (TASK-1261),
 // producing a fresh self-consistent Y.Doc.
 //
@@ -886,14 +884,14 @@ func (m *RoomManager) runConn(room *Room, rc *roomConn, itemLock *sync.Mutex, si
 	// op that landed during replay would be reflected in MAX but
 	// hasn't been broadcast through this conn's writeLoop yet, and
 	// a cursor=MAX would let the client persist a value that
-	// outpaces its received binary frames. Per Codex round 6 [P1].
+	// outpaces its received binary frames.
 	// Acquire writeMu across the read-max + cursor-send +
 	// replayDone-flip so writeLoop's per-event critical section
-	// (round 22) cannot interleave a record-vs-read window.
+	// cannot interleave a record-vs-read window.
 	// Holding the lock means: any in-flight writeLoop event
 	// finishes its record/send before we read max; any subsequent
 	// event sees replayDone=true and emits its own live cursor.
-	// Per Codex round 22 [P1] of TASK-1319.
+	// (TASK-1319).
 	rc.writeMu.Lock()
 	cursorID := highestReplayed
 	if cursorID < since {
@@ -1025,8 +1023,7 @@ var ErrRoomActiveDuringPrune = errors.New("collab: room became active during pru
 // w.r.t. concurrent prunes (PruneAndApply, schema rebuild, dormant
 // GC's per-item DELETE). Without this serialization, a prune
 // landing between the check and the write lets the stale
-// collab-snapshot overwrite canonical content. Per Codex round 13
-// [P1] of TASK-1319.
+// collab-snapshot overwrite canonical content (TASK-1319).
 //
 // Best-effort with a fast bail-out: if Close has fired the lock
 // goroutine returns ErrManagerClosed without invoking fn. fn's
@@ -1065,7 +1062,7 @@ func (m *RoomManager) UnderItemLock(itemID string, fn func() error) error {
 // slip in between that check and the prune, replay the
 // soon-to-be-pruned op-log into a new client, and end up with stale
 // Y.Doc state that later overwrites the freshly-written
-// items.content on the next idle flush. Per Codex review round 5.
+// items.content on the next idle flush.
 //
 // Only a live WRITER peer blocks the prune (TASK-265). A read-only
 // peer (workspace viewer / view-only guest) can never persist — its
@@ -1165,8 +1162,8 @@ func (m *RoomManager) PruneAndApply(itemID string, applyFn func() error) error {
 // `commit` MUST perform the canonical items.content write, the version row, AND
 // the op-log wipe in ONE store transaction (the restore handler passes
 // UpdateItemWithPreCheck + PruneItemOpLogTx). ForceRefreshRoom no longer prunes
-// separately: a split prune/commit leaves a divergent state on any failure
-// (Codex xhigh [P1]). The op-log wipe is what makes reconnecting/cold clients
+// separately: a split prune/commit leaves a divergent state on any failure. The
+// op-log wipe is what makes reconnecting/cold clients
 // lazy-seed from items.content (an empty op-log ⇒ nothing to replay).
 //
 // Holding the per-item lock across the commit + boundary + broadcast serialises
@@ -1174,7 +1171,7 @@ func (m *RoomManager) PruneAndApply(itemID string, applyFn func() error) error {
 // under this lock), so a client reconnecting after its force_refresh blocks here
 // until the op-log is empty AND the boundary is published, then rebuilds cleanly.
 //
-// Failure handling (Codex xhigh [P1]): the conns are frozen (rc.frozen=true) and
+// Failure handling: the conns are frozen (rc.frozen=true) and
 // appendMu is held BEFORE the fallible commit. If the commit fails the restore
 // did not happen (the ONE tx rolled back — items.content, version, op-log wipe,
 // and the boundary MAX read all together), so we UN-freeze the conns (peers keep
@@ -1212,8 +1209,8 @@ func (m *RoomManager) PruneAndApply(itemID string, applyFn func() error) error {
 // (the whole restore rolls back instead) and the seq is this restore's, not a
 // concurrent writer's.
 //
-// The stale-SEED clobber that survives the boundary (BUG-2264 additional-P1 +
-// Codex-xhigh) is closed by the restore boundary generation: the restore stamps
+// The stale-SEED clobber that survives the boundary (BUG-2264) is closed by the
+// restore boundary generation: the restore stamps
 // the item's seq both in-memory (lastRestoreSeqs fast-path) and DURABLY
 // (items.last_restore_seq, in the commit tx), and Join force_refreshes any client
 // whose announced ?content_seq predates it. That catches a client whose Y.Doc
@@ -1311,7 +1308,7 @@ func (m *RoomManager) ForceRefreshRoom(itemID string, commit func() (int64, int6
 				// peer / stale collab-snapshot would be admitted against that stale cache
 				// and clobber the landed content. Clearing them forces Join + the snapshot
 				// gate to consult the DURABLE columns (which reflect this restore if it
-				// committed, and fail closed on a read error). (BUG-2276 residual 1, P1.)
+				// committed, and fail closed on a read error). (BUG-2276 residual 1.)
 				m.invalidateRestoreFences(itemID)
 				if room != nil {
 					room.appendMu.Unlock()

@@ -3,7 +3,7 @@ import { request, type APIRequestContext, type BrowserContext, type Locator, typ
 import { quietCrossActorToasts } from './fixtures';
 
 /**
- * TASK-3274 (PLAN-3002 U3): the desktop TopBar is a tab bar over the
+ * TASK-3274  (PLAN-3002 U3): the desktop TopBar is a tab bar over the
  * caller's server-side open set.
  *
  * THE OPEN SET IS PER USER, and every other spec signs in as the shared
@@ -111,7 +111,7 @@ async function barOrder(page: Page): Promise<string[]> {
 	return tabs(page).evaluateAll((els) => els.map((el) => (el as HTMLElement).dataset.wsSlug ?? ''));
 }
 
-/** A locator's box once two reads 100 ms apart agree (an animation has settled). */
+/** A locator's box once two reads 100 ms apart agree  (an animation has settled). */
 async function stableBox(locator: Locator) {
 	let prev = await locator.boundingBox();
 	for (let i = 0; i < 30; i++) {
@@ -332,9 +332,9 @@ test.describe('workspace tab bar (TASK-3274)', () => {
 });
 
 /**
- * TASK-3276 (PLAN-3002 U4): the "+" discovery surface. Since U3 the bar shows
+ * TASK-3276  (PLAN-3002 U4): the "+" discovery surface. Since U3 the bar shows
  * only the open set, so "+" is how a workspace outside it is reached. The
- * create path is covered above ('a workspace created with "+" …').
+ * create path is covered above  ('a workspace created with "+" …').
  */
 test.describe('"+" discovery surface (TASK-3276)', () => {
 	test.beforeEach(async ({ page }, testInfo) => {
@@ -424,8 +424,8 @@ test.describe('"+" discovery surface (TASK-3276)', () => {
 		}
 	});
 
-	// TASK-3277 (U4b): a pending invitation is listed in "+" and accepting it
-	// lands in the workspace on an EPHEMERAL tab (Q5).
+	// TASK-3277  (U4b): a pending invitation is listed in "+" and accepting it
+	// lands in the workspace on an EPHEMERAL tab  (Q5).
 	test('an invitation in "+" is accepted and lands on an ephemeral tab', async ({ page, context, fixture }) => {
 		let inviter: World | undefined;
 		let invitee: World | undefined;
@@ -516,7 +516,7 @@ test.describe('"+" discovery surface (TASK-3276)', () => {
 });
 
 /**
- * TASK-3279 (PLAN-3002 U5): every landing in a visible workspace outside the
+ * TASK-3279  (PLAN-3002 U5): every landing in a visible workspace outside the
  * open set opens it as an EPHEMERAL tab, and a write there keeps it. Each leg
  * mints its own account, as above.
  */
@@ -620,7 +620,7 @@ test.describe('landings open an ephemeral tab (TASK-3279)', () => {
 			await actAs(context, account);
 
 			await page.goto(`/join/${inv.code}`);
-			// Signed in: the link asks first (BUG-2136); accepting joins.
+			// Signed in: the link asks first  (BUG-2136); accepting joins.
 			await page.getByTestId('join-accept').click();
 			await expect(page).toHaveURL(new RegExp(`/${inviter.account.username}/${shared}$`));
 			await expectEphemeral(page, account, shared);
@@ -711,7 +711,7 @@ test.describe('landings open an ephemeral tab (TASK-3279)', () => {
 			const { account } = world;
 			await setOpenSet(account, [home, gone]);
 			await ok(await account.api.delete(`/api/v1/workspaces/${gone}`), 'delete');
-			// Soft delete removes every user's row for it (U1).
+			// Soft delete removes every user's row for it  (U1).
 			await expect.poll(() => serverOrder(account)).toEqual([home]);
 			await actAs(context, account);
 

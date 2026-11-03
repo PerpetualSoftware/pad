@@ -567,7 +567,7 @@ describe('inline image missing placeholder', () => {
 		});
 
 		/**
-		 * Codex round 2: fencing on the uuid by VALUE is not enough, because a swap
+		 * Fencing on the uuid by VALUE is not enough, because a swap
 		 * AWAY AND BACK makes the comparison pass again. The attachment can have been
 		 * deleted while the node pointed elsewhere (the deletion listener filters on
 		 * the CURRENT uuid, so it ignored the event), and the stale positive answer
@@ -602,7 +602,7 @@ describe('inline image missing placeholder', () => {
 		/**
 		 * `latchMissing` takes the generation as a REQUIRED argument precisely so a
 		 * probe that is not the restore probe cannot forget it. The toolbar MIME
-		 * probe is one of the three that originally did (found in review round 3):
+		 * probe is one of the three that originally did:
 		 * issued while the parent was archived, it answers 404 and would re-kill the
 		 * image the restore had already healed.
 		 */
@@ -644,7 +644,7 @@ describe('inline image missing placeholder', () => {
 
 			// The registry is the only honest assertion here: a LEAKED listener
 			// would still see `destroyed` and return, so "no probe fired" stays
-			// green with the dispose call deleted (Codex, review of this commit).
+			// green with the dispose call deleted.
 			expect(restoreListeners.size).toBe(0);
 
 			announceRestore();

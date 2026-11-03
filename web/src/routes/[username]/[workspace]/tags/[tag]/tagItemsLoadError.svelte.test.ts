@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/svelte';
 
-// TASK-2203 (audit C46): a failed load is an error with a retry, never
+// TASK-2203  (audit C46): a failed load is an error with a retry, never
 // "No items tagged …". Since TASK-2231 the page reads the local index and
 // the layout's collection list instead of fetching, so the failures it must
 // own are those: an index that could not load, a revoked caller (whose index

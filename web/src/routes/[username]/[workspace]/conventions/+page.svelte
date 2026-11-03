@@ -60,7 +60,7 @@
 	// Scroll position restoration (BUG-1425).
 	const scrollRestoration = createScrollRestoration({
 		// `conventionsCollection` flips null on workspace change. Length
-		// gate omitted (Codex P2 round 2).
+		// gate omitted.
 		ready: () => !loading && conventionsCollection !== null,
 		persistKey: () =>
 			workspace
@@ -252,7 +252,7 @@
 
 	async function toggleStatus(item: Item) {
 		// Not during a bulk run: its failure handling owns the rows' status
-		// until it ends (TASK-2204, codex r2).
+		// until it ends (TASK-2204).
 		if (!workspace || bulkBusy || !workspaceStore.canEditItem(item)) return;
 		const fields = parseFields(item);
 		const wasActive = fields.status === 'active';
@@ -435,7 +435,7 @@
 				const refusedId = item.id;
 				const fresh = isContentNotAppliedUnconfirmed(err) ? await api.items.get(workspace, refusedId) : null;
 				if (workspace !== savedWs || authStore.identityEpoch !== savedEpoch) return;
-				// Only while the row holds what this save sent besides the body (codex).
+				// Only while the row holds what this save sent besides the body.
 				const resend =
 					fresh && stillOnBase(fresh, base.content ?? '') && holdsWhatWasSent(fresh, { fields_patch: metaPatch ?? undefined })
 						? { ...write, ...contentWriteFor(editContent, fresh) }
@@ -578,10 +578,10 @@
 					done++;
 				} catch {
 					// Only the key this run wrote, and only if it still holds this
-					// run's value: a single toggle on the row meanwhile wins (codex r1).
+					// run's value: a single toggle on the row meanwhile wins.
 					// A row a refresh replaced already shows the server's answer;
 					// only a row still on screen carries this run's optimistic
-					// value (codex r3).
+					// value.
 					const now = parseFields(item);
 					if (conventions.includes(item) && now.status === targetStatus) {
 						now.status = oldStatus;

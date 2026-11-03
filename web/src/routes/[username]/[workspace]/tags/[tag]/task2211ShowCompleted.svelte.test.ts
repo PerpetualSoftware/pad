@@ -1,4 +1,4 @@
-// TASK-2211 (audit C105): a tag page mixed completed items in with no way to
+// TASK-2211  (audit C105): a tag page mixed completed items in with no way to
 // leave them out. "Show completed" defaults ON, matching the collection list,
 // is remembered per workspace like the view mode, and OFF lists open items
 // only.
@@ -6,7 +6,7 @@
 // TASK-2231: the list is built from the local index now, so the rules the
 // server query used to apply are this page's to get right, and are pinned
 // here: the tag compared exactly, open judged by each collection's done field,
-// and the server's order (pinned first, then most recently updated).
+// and the server's order  (pinned first, then most recently updated).
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { cleanup, render, screen, waitFor } from '@testing-library/svelte';
 
@@ -39,7 +39,7 @@ import { page } from '$app/state';
 import { fake, releaseCollections, resetFake } from '../../../../../test/mocks/indexedPageStores.svelte';
 import TagPage from './+page.svelte';
 
-// Its done field is `stage` (board_group_by), with `shipped` terminal; `status`
+// Its done field is `stage`  (board_group_by), with `shipped` terminal; `status`
 // means nothing here, so a rule that read `status` would get these wrong.
 const TASKS = {
 	id: 'c1', slug: 'tasks', name: 'Tasks', icon: '✅', sort_order: 1, prefix: 'T',

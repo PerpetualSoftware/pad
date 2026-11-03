@@ -44,7 +44,7 @@ describe('getSurfaceRenderer', () => {
 		// 'text' is a MIME allowlist and never a category test — a category
 		// selector would admit all three of these.
 		//
-		// HONEST ABOUT WHAT THIS IS (codex R3 #5): it passes against origin/main
+		// HONEST ABOUT WHAT THIS IS: it passes against origin/main
 		// too, where EVERYTHING non-raster returned null. It is a REGRESSION
 		// GUARD against a future widening — the one that would follow from
 		// reaching for `CategoryText` — not evidence that this branch's change

@@ -601,7 +601,7 @@ describe('ItemAttachmentStrip', () => {
 		// Uploads announced while the list request is in flight go into
 		// `pendingUploads`, which was itself unbounded — so bounding only the
 		// merge still let the buffer grow across a long paste session
-		// (DR-11, Codex rounds 4 and 6). Proven through the merge: 60 pending
+		// (DR-11). Proven through the merge: 60 pending
 		// uploads must yield 50 rows, not 60 (and not 110 once rows land).
 		const pending = deferred<AttachmentListResponse>();
 		listMock.mockReturnValue(pending.promise);
@@ -637,7 +637,7 @@ describe('ItemAttachmentStrip', () => {
 	it('still offers the continuation when every held row is deleted', async () => {
 		// 50 held + 70 past the bound. Deleting the held ones must not hide the
 		// section outright — there are still 70 attachments on this item, and
-		// the link is the only way to reach them (Codex round 5).
+		// the link is the only way to reach them.
 		const rows = Array.from({ length: 50 }, (_, i) => att({ id: `a${i}` }));
 		listMock.mockResolvedValue({ attachments: rows, total: 120, limit: 50, offset: 0 });
 		mountStrip('item-a');
@@ -657,7 +657,7 @@ describe('ItemAttachmentStrip', () => {
 	it('does not double-count uploads the response already reported', async () => {
 		// The GET went out after the uploads, so its `total` already includes
 		// them. Adding a separate "pending overflow" on top produced
-		// "View all (70)" for 60 real attachments (Codex round 3).
+		// "View all (70)" for 60 real attachments.
 		const rows = Array.from({ length: 50 }, (_, i) => att({ id: `u${i}` }));
 		listMock.mockResolvedValue({ attachments: rows, total: 60, limit: 50, offset: 0 });
 		mountStrip('item-a');
@@ -673,7 +673,7 @@ describe('ItemAttachmentStrip', () => {
 
 	it('does not count a row deleted while the request was in flight', async () => {
 		// `total` predates the deletion, so trusting it verbatim advertised
-		// "View all (2)" for a single remaining attachment (Codex round 3).
+		// "View all (2)" for a single remaining attachment.
 		const pending = deferred<AttachmentListResponse>();
 		listMock.mockReturnValue(pending.promise);
 		mountStrip('item-a');
@@ -735,7 +735,7 @@ describe('ItemAttachmentStrip', () => {
 	});
 
 	it('clears when the parent nulls the id mid-switch, then paints B', async () => {
-		// The real parent lifecycle (Codex round 1): ItemDetail RETAINS the
+		// The real parent lifecycle: ItemDetail RETAINS the
 		// previous item while B's request is in flight, so it gates the prop on
 		// `itemMatchesRef` — the strip sees A → null → B, not A → B.
 		listMock.mockResolvedValueOnce(response([att({ id: 'from-a' })]));
@@ -896,7 +896,7 @@ describe('ItemAttachmentStrip', () => {
 		// Props update synchronously, effects flush later — so a click can land
 		// on item A's still-painted Retry when `itemId` already reads B. Taking
 		// it at face value would record a retry for B and preserve A's rows
-		// across the switch (Codex round 11).
+		// across the switch.
 		listMock.mockRejectedValueOnce(new Error('offline'));
 		mountStrip('item-a');
 		await settle();
@@ -1057,8 +1057,8 @@ describe('ItemAttachmentStrip', () => {
 		expect(buttons[0].getAttribute('aria-label')).toBe('Delete ' + FSI + 'a1.png' + PDI);
 		// Actually focusable — not merely present. The earlier assertion checked
 		// the `hidden` PROPERTY, which a `visibility: hidden` rule never sets,
-		// so it passed while the control was in fact unreachable by keyboard
-		// (Codex round 4). jsdom doesn't apply the component's scoped CSS, so
+		// so it passed while the control was in fact unreachable by keyboard.
+		// jsdom doesn't apply the component's scoped CSS, so
 		// this can't catch a future regression to visibility/display on its own
 		// — the browser-level guarantee is the TASK-2385 e2e.
 		buttons[0].focus();
@@ -1168,7 +1168,7 @@ describe('ItemAttachmentStrip', () => {
 		expect(confirmPanel()).toBeNull();
 		// An <img> already painted in the editor never re-requests, so the
 		// NodeView has to be told or the body keeps showing a deleted image
-		// until reload (Codex round 12).
+		// until reload.
 		expect(notifyDeletedMock).toHaveBeenCalledWith('a1');
 		expect(invalidateMock).toHaveBeenCalledWith('ws', 'a1');
 	});
@@ -1216,7 +1216,7 @@ describe('ItemAttachmentStrip', () => {
 	});
 
 	it('refuses a delete click that lands after the ITEM already switched', async () => {
-		// The most serious hole the final review found. Props update
+		// The most serious hole in this area. Props update
 		// synchronously and the load effect repaints later, so a click can land
 		// on item A's still-mounted tile when `itemId` already reads B — and
 		// unlike the rollback, a DELETE cannot be taken back once sent. The
@@ -1311,7 +1311,7 @@ describe('ItemAttachmentStrip', () => {
 		await settle();
 
 		// A REJECTING deferred: resolving it would skip the catch entirely and
-		// the test would pass against a broken rollback (Codex round 2 P3).
+		// the test would pass against a broken rollback.
 		let failDelete!: (err: Error) => void;
 		deleteMock.mockReturnValue(
 			new Promise<void>((_, reject) => {
@@ -1340,7 +1340,7 @@ describe('ItemAttachmentStrip', () => {
 	it('rolls back only the failed row, never resurrecting a concurrent success', async () => {
 		// Delete A (will fail) then B (succeeds). A snapshot-based rollback
 		// would restore the whole pre-delete array and bring B back from the
-		// dead (Codex round 2 P2).
+		// dead.
 		listMock.mockResolvedValue(
 			response([att({ id: 'a1' }), att({ id: 'b1' }), att({ id: 'c1' })])
 		);
@@ -1372,7 +1372,7 @@ describe('ItemAttachmentStrip', () => {
 
 	it('still announces the deletion when the delete 404s', async () => {
 		// A 404 proves the row is gone just as well as a 204 does, so the other
-		// local surfaces need telling either way (Codex round 19).
+		// local surfaces need telling either way.
 		listMock.mockResolvedValue(response([att({ id: 'a1' })]));
 		deleteMock.mockRejectedValue(new FakeApiError('not_found'));
 		props.canDelete = true;
@@ -1392,7 +1392,7 @@ describe('ItemAttachmentStrip', () => {
 		// this view. Fencing the whole catch block on `viewChanged` meant a
 		// switch mid-delete swallowed that proof, leaving every other mounted
 		// surface (editor NodeViews, the other pane's strip, the HEAD cache)
-		// stale with nothing left to correct them (final review round 2). Only
+		// stale with nothing left to correct them. Only
 		// the LOCAL reconciliation — rollback, toast — is view-scoped.
 		listMock.mockResolvedValue(response([att({ id: 'a1' })]));
 		props.canDelete = true;
@@ -1428,7 +1428,7 @@ describe('ItemAttachmentStrip', () => {
 	it('does not roll back a failed delete that another surface already announced', async () => {
 		// Our DELETE fails, but someone else confirmed the same uuid is gone
 		// while it was in flight. The tombstone wins — restoring the tile would
-		// contradict a deletion we know landed (Codex round 18/19).
+		// contradict a deletion we know landed.
 		listMock.mockResolvedValue(response([att({ id: 'a1' }), att({ id: 'a2' })]));
 		props.canDelete = true;
 		mountStrip('item-a');
@@ -1456,7 +1456,7 @@ describe('ItemAttachmentStrip', () => {
 	it('keeps the tile removed when the delete 404s (already gone)', async () => {
 		// Someone else deleted it and this strip has no live subscription, so
 		// the tile was stale before the click. Restoring it would leave a dead
-		// tile whose download and delete both fail (Codex round 6).
+		// tile whose download and delete both fail.
 		listMock.mockResolvedValue(response([att({ id: 'a1' }), att({ id: 'a2' })]));
 		deleteMock.mockRejectedValue(new FakeApiError('not_found'));
 		props.canDelete = true;
@@ -1490,7 +1490,7 @@ describe('ItemAttachmentStrip', () => {
 		// A Retry is the SAME item reloading, not a switch. Fencing mutations on
 		// the load generation made a Retry look like an A→B switch, so a delete
 		// failure landing during one was swallowed — no rollback, no toast, no
-		// broadcast (final-review P2). Reachable because a failed load still
+		// broadcast. Reachable because a failed load still
 		// paints rows uploaded while it was in flight, delete control and all.
 		listMock.mockRejectedValue(new Error('offline'));
 		props.canDelete = true;
@@ -1529,8 +1529,7 @@ describe('ItemAttachmentStrip', () => {
 	it('suppresses a failed delete when the WORKSPACE changed under it', async () => {
 		// `wsSlug` is reactive and the strip survives a workspace change, so
 		// view identity is (workspace, item) — keying it on the item alone would
-		// read that switch as a same-item Retry and roll A's row into B's strip
-		// (Codex fresh-angle round 2).
+		// read that switch as a same-item Retry and roll A's row into B's strip.
 		listMock.mockRejectedValue(new Error('offline'));
 		props.canDelete = true;
 		mountStrip('item-a');
@@ -1692,7 +1691,7 @@ describe('ItemAttachmentStrip', () => {
 	it('survives an in-flight list() that predates the upload', async () => {
 		// The GET was issued before the drop, so its response can't contain the
 		// new row. Assigning it verbatim would erase the tile we just showed
-		// (Codex review of TASK-2385).
+		// (TASK-2385).
 		const pending = deferred<AttachmentListResponse>();
 		listMock.mockReturnValue(pending.promise);
 		mountStrip('item-a');
@@ -1716,7 +1715,7 @@ describe('ItemAttachmentStrip', () => {
 		// consumed it, so it re-merged onto EVERY later load. The event bus is
 		// process-local, so a deletion from another tab or another user, followed
 		// by a load that legitimately returns no row, resurrected the tile — and
-		// kept resurrecting it (final review round 4).
+		// kept resurrecting it.
 		//
 		// The rule: a response is authoritative about the entries the buffer
 		// already held when that request went OUT. Entries announced while it was
@@ -1748,7 +1747,7 @@ describe('ItemAttachmentStrip', () => {
 		// The request is bounded at 50 rows, so a FULL page is not proof of
 		// absence — a still-live row can simply be past it. Retiring it there
 		// would delete a good tile permanently, which is worse than the
-		// resurrection the retirement rule exists to fix (Codex round 2).
+		// resurrection the retirement rule exists to fix.
 		listMock.mockRejectedValueOnce(new Error('offline'));
 		mountStrip('item-a');
 		await settle();
@@ -1773,7 +1772,7 @@ describe('ItemAttachmentStrip', () => {
 		// `total` is the server's own count and `offset` is always 0 here, so a
 		// page of exactly MAX_FETCH rows with `total: 50` HAS reached everything.
 		// Reading "full page" as "truncated" would leave an externally deleted
-		// upload buffered — resurrectable indefinitely (Codex round 3).
+		// upload buffered — resurrectable indefinitely.
 		listMock.mockRejectedValueOnce(new Error('offline'));
 		mountStrip('item-a');
 		await settle();
@@ -1838,7 +1837,7 @@ describe('ItemAttachmentStrip', () => {
 
 	it('keeps an optimistic upload when the in-flight list() FAILS', async () => {
 		// The upload succeeded; only the listing failed. Clearing the strip
-		// would hide a row the editor and server both have (Codex round 2).
+		// would hide a row the editor and server both have.
 		let failList!: (err: Error) => void;
 		listMock.mockReturnValue(
 			new Promise<AttachmentListResponse>((_, reject) => {
@@ -1893,7 +1892,7 @@ describe('ItemAttachmentStrip', () => {
 		// upload path did not, so a delayed or duplicated upload event for a row
 		// the user has since deleted put it straight back — into `attachments`
 		// AND into `pendingUploads`, which then re-merges it onto every later
-		// response (final review round 2). A confirmed deletion outranks a
+		// response. A confirmed deletion outranks a
 		// repeat of an older upload event.
 		listMock.mockResolvedValue(response([att({ id: 'a1' })]));
 		mountStrip('item-a');
@@ -1919,7 +1918,7 @@ describe('ItemAttachmentStrip', () => {
 	it('drops a tile when another surface broadcasts its deletion', async () => {
 		// Settings → Storage, or the OTHER strip in a split pane. Both mount
 		// concurrently, so a strip that only updated its own deletes would keep
-		// showing a downloadable tile for a row that is gone (Codex round 17).
+		// showing a downloadable tile for a row that is gone.
 		listMock.mockResolvedValue(response([att({ id: 'a1' }), att({ id: 'a2' })]));
 		mountStrip('item-a');
 		await settle();
@@ -1935,8 +1934,7 @@ describe('ItemAttachmentStrip', () => {
 
 	it('does not let an in-flight fetch resurrect an already-deleted row', async () => {
 		// The list request is still in flight when another surface announces a
-		// deletion; the response must not paint the dead row back
-		// (Codex round 18).
+		// deletion; the response must not paint the dead row back.
 		const pending = deferred<AttachmentListResponse>();
 		listMock.mockReturnValue(pending.promise);
 		mountStrip('item-a');
@@ -1955,7 +1953,7 @@ describe('ItemAttachmentStrip', () => {
 
 	it('bounds the tombstone set, shedding the oldest ids first', async () => {
 		// The tombstones survive a Retry and ride a workspace-wide bus, so the
-		// set needs the same hard bound as the list buffers (final-review P3).
+		// set needs the same hard bound as the list buffers.
 		// The newest tombstone is the one that can still be racing an in-flight
 		// response, so the cap sheds from the other end.
 		listMock.mockRejectedValueOnce(new Error('offline'));
@@ -2182,7 +2180,7 @@ describe('ItemAttachmentStrip', () => {
 
 	it('does not double-load when an archived item switches to an active one', async () => {
 		// A(archived) → B(active) is a true→false transition in the raw prop, but a
-		// SWITCH, not a restore (round-3 P2). The switch's own load is the ONLY
+		// SWITCH, not a restore. The switch's own load is the ONLY
 		// fetch; a value-only latch would fire a duplicate restore revalidation on
 		// top of it. The identity-keyed latch reseeds to B instead.
 		props.parentArchived = true;
@@ -2204,7 +2202,7 @@ describe('ItemAttachmentStrip', () => {
 	});
 
 	it('does not repaint an in-flight-deleted row when a restore revalidation lands first', async () => {
-		// round-3 P1: `deletedIds` is only tombstoned AFTER the delete's await, so
+		// `deletedIds` is only tombstoned AFTER the delete's await, so
 		// a restore refetch in the optimistic-removal window would otherwise
 		// repaint the just-removed tile. The in-flight-delete marker excludes it.
 		props.parentArchived = true;
@@ -2350,8 +2348,7 @@ describe('ItemAttachmentStrip', () => {
 
 	it('defers to a load still in flight instead of superseding it (no strand on failure)', async () => {
 		// A restore that superseded a still-pending mount load would strand the
-		// strip empty with no error/retry if the revalidation then failed (Codex
-		// round 2). The revalidation instead DEFERS: the in-flight load already
+		// strip empty with no error/retry if the revalidation then failed. The revalidation instead DEFERS: the in-flight load already
 		// returns the current list (archive doesn't delete attachments), so no
 		// second fetch is issued, and that load remains responsible for the outcome.
 		props.parentArchived = true;
@@ -2378,7 +2375,7 @@ describe('ItemAttachmentStrip', () => {
 		// The defer guard is keyed PER VIEW. The api client has no request abort, so
 		// item A's load lingers in flight after a switch to B; a GLOBAL guard would
 		// let that stale A-load suppress B's genuine restore revalidation, leaving B
-		// stale with nothing to refetch it (Codex round 3).
+		// stale with nothing to refetch it.
 		props.parentArchived = true;
 		const aPending = deferred<AttachmentListResponse>(); // A's load never resolves
 		listMock.mockReturnValueOnce(aPending.promise);
@@ -2449,7 +2446,7 @@ describe('ItemAttachmentStrip', () => {
 	it('keeps a row excluded while a SECOND delete of the same id is still pending (ref-count)', async () => {
 		// A bare Set marker would let the FIRST delete's settle clear the id while a
 		// SECOND delete of the same id is still outstanding, so a restore refetch
-		// could repaint a row that is still being deleted (Codex round 2). The
+		// could repaint a row that is still being deleted. The
 		// in-flight-delete marker is ref-counted.
 		props.parentArchived = true;
 		props.canDelete = true;

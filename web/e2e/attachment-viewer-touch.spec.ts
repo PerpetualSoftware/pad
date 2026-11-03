@@ -154,7 +154,7 @@ test.describe('attachment viewer — touch gestures (PLAN-2392 3d / TASK-2519)',
 		fixture,
 		request
 	}) => {
-		// THE DISCRIMINATING ORACLE (round-2 P2). A pinch composes anchor-zoom around
+		// THE DISCRIMINATING ORACLE. A pinch composes anchor-zoom around
 		// the previous midpoint PLUS the midpoint translation, so the IMAGE point under
 		// the midpoint stays under it as the midpoint both MOVES and the image SCALES.
 		// We fix a known image-local point (its fraction of the image rect) from the
@@ -351,7 +351,7 @@ test.describe('attachment viewer — touch gestures (PLAN-2392 3d / TASK-2519)',
 		const afterPlus = await settleScale(page);
 		expect(afterPlus, 'the + key raised the scale mid-pinch').toBeGreaterThan(midPinch + 0.1);
 
-		// THE DISCRIMINATOR (round-2 P2, Codex): a TINY continued spread (±57 → ±60, a
+		// THE DISCRIMINATOR: a TINY continued spread (±57 → ±60, a
 		// separation barely wider than at the keypress). WITH the rebase, the pinch's
 		// baseline was re-seeded to (afterPlus, currentDist), so this near-zero-delta
 		// move holds the scale AT/ABOVE afterPlus. WITHOUT the rebase, the next move
@@ -432,7 +432,7 @@ test.describe('attachment viewer — touch gestures (PLAN-2392 3d / TASK-2519)',
 	});
 
 	test('a letterbox touch never arms a pan, and a letterbox tap still closes', async ({ page, fixture, request }) => {
-		// The letterbox rule (V2 round-2 P2). A touch that lands on the STAGE letterbox
+		// The letterbox rule. A touch that lands on the STAGE letterbox
 		// — not the painted image — must NOT arm a pan (the stage is pointer-events:none
 		// so the target is the backdrop, and `touchOnImage` gates gesture arming); it
 		// stays a native tap-to-close. We zoom in (real pan room), then drag from the

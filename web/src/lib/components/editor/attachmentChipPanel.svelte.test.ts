@@ -107,7 +107,7 @@ describe('editor chip → options panel', () => {
 
 	// The live NodeView chip is a BUTTON, not an anchor: it opens the options
 	// panel rather than navigating, and an anchor left the URL reachable by
-	// middle-click straight past the panel (orchestrator review of TASK-2424).
+	// middle-click straight past the panel (TASK-2424).
 	// `renderHTML` — the clipboard / read-only shape — is still an <a download>.
 	/**
 	 * Repoint the existing chip node at a different attachment via a
@@ -234,8 +234,7 @@ describe('editor chip → options panel', () => {
 		// The pane switches workspace without remounting its editors, and the
 		// workspace keys the metadata cache — so a value baked in at configure
 		// time makes a mounted chip ask the PREVIOUS workspace about this
-		// workspace's attachment, and cache the answer under the wrong key
-		// (final review round 3).
+		// workspace's attachment, and cache the answer under the wrong key.
 		probeMock.mockResolvedValue({ status: 'transient' });
 		let ws = 'ws-a';
 		editor = makeEditor(target, () => ({ ...ADDRESS, workspaceSlug: ws }));

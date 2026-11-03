@@ -6,8 +6,8 @@ import type { Activity } from '$lib/types';
 // BUG-2674. A move can discard field values the destination schema has no home
 // for. The server has always computed that list (items.MigrateFields' Dropped)
 // and now records it in the move's audit metadata — but the report only means
-// anything if the surface a user actually reads displays it. Codex round 1
-// caught that the timeline renderer ignored the key, which would have left the
+// anything if the surface a user actually reads displays it. The timeline renderer once ignored the
+// key, which would have left the
 // loss silent in the one place someone asks "what happened to my item".
 //
 // The negative legs are the load-bearing ones: a row that renders

@@ -824,7 +824,7 @@ Use 'pad workspace list' to see available workspaces.`,
 
 // sameServerURL compares two .pad.toml url values. Empty means the local
 // server. Scheme and host case, a default port and a trailing slash do not
-// make a different server (codex r1).
+// make a different server.
 func sameServerURL(a, b string) bool {
 	return normalizeServerURL(a) == normalizeServerURL(b)
 }
@@ -846,7 +846,7 @@ func normalizeServerURL(raw string) string {
 		host = "[" + host + "]"
 	}
 	// The ESCAPED path, less ONE trailing slash: /a%2Fb is not /a/b, and /a//
-	// is not /a, to a server that tells them apart (codex r2).
+	// is not /a, to a server that tells them apart.
 	return scheme + "://" + host + strings.TrimSuffix(u.EscapedPath(), "/")
 }
 
@@ -879,8 +879,8 @@ func offerSkillInstall() {
 		defer printClaudePluginHint(os.Stdout)
 	}
 
-	// Installed tools go through the same door as pad init (BUG-3466, codex
-	// r1): pad's own unedited text updates quietly, an edited file or a
+	// Installed tools go through the same door as pad init (BUG-3466): pad's own
+	// unedited text updates quietly, an edited file or a
 	// newer pad's is kept and reported. They used to be skipped outright, so
 	// an older copy never updated here.
 	allInstalled := true
@@ -997,7 +997,7 @@ func printClaudePluginHint(w io.Writer) {
 
 // claudePadPluginKey is the plugin's key in installed_plugins.json: the pad
 // plugin from the pad marketplace, which is what the commands above install.
-// Exact, so a plugin named pad from another marketplace does not count (codex r1).
+// Exact, so a plugin named pad from another marketplace does not count.
 const claudePadPluginKey = "pad@pad"
 
 // claudePadPluginInstalled reports whether Claude Code has the pad plugin
@@ -1196,8 +1196,7 @@ Both formats can be re-imported via 'pad workspace import'.`,
 			// Stream rather than buffer. Workspaces with multi-GB of
 			// attachments would otherwise pin the entire bundle in
 			// memory before the first byte hits disk — defeats the
-			// server-side streaming design and risks OOM (Codex
-			// review feedback on PR #305).
+			// server-side streaming design and risks OOM (review feedback on PR #305).
 			var dest io.Writer = os.Stdout
 			var f *os.File
 			if outputFile != "" {
@@ -1299,7 +1298,7 @@ Format is detected by file extension. Override workspace name with --name.`,
 			// Stream the file rather than reading it all in. A multi-
 			// GiB bundle would otherwise pin that much memory client-
 			// side before the first byte hits the wire — defeats the
-			// server's streaming import (Codex P2 on PR #306 round 1).
+			// server's streaming import.
 			f, err := os.Open(filePath)
 			if err != nil {
 				return fmt.Errorf("open file: %w", err)
@@ -1375,7 +1374,7 @@ Format is detected by file extension. Override workspace name with --name.`,
 				fmt.Printf("  Values repaired (each NUL replaced with U+FFFD): %s\n",
 					repairedNULCount(header))
 			}
-			// BUG-3032, codex round 1 P2: the server reports this count as a
+			// BUG-3032: the server reports this count as a
 			// RESPONSE HEADER, and a header nobody prints is a signal that does
 			// not exist. Unconditional, unlike the NUL line above: that one is
 			// gated on a flag the operator passed, whereas this one tells them
@@ -1533,7 +1532,7 @@ func auditLogDetail(metadata string) string {
 // server that never sets the header has nothing to report, and printing
 // "unknown" would invent an open question on every import against one.
 //
-// It PARSES rather than passing the value through (codex round 2 P2). The
+// It PARSES rather than passing the value through. The
 // earlier version returned any non-"0" string, so `abc`, `-1` or `NaN` — a
 // malformed or proxy-injected header — printed as a count, while this comment
 // already claimed unparseable values were dropped. The comment was the
@@ -1541,7 +1540,7 @@ func auditLogDetail(metadata string) string {
 // middlebox-influenced input, not a trusted field.
 //
 // STRICTER THAN strconv.Atoi ALONE, so that this and the web client suppress and
-// display exactly the same set of values (codex round 4 P2). Atoi diverged from
+// display exactly the same set of values. Atoi diverged from
 // the browser in three ways, and in each the browser was the stricter one, so the
 // fix tightens here rather than loosening there — the server writes this header
 // with strconv.Itoa, which emits none of these forms, so nothing legitimate is
@@ -1588,7 +1587,7 @@ func staleBodyImportCount(header http.Header) string {
 // integer below which EVERY integer is exactly representable as a float64.
 //
 // Not "the largest integer a Number can hold exactly" — larger ones can be, 2^54
-// among them (codex round 5 nit). What fails above this bound is that integers
+// among them. What fails above this bound is that integers
 // stop being CONTIGUOUSLY representable, so a value there can round to a
 // different one and two adjacent counts become indistinguishable.
 //

@@ -9,7 +9,7 @@
 // same child.
 //
 // An ABANDONED child (cancelled, wontfix, …) is left out of BOTH counts
-// (BUG-3195, lead ruling): it is not part of the work any more, and counting
+// (BUG-3195): it is not part of the work any more, and counting
 // it as done read 100% with nothing delivered.
 //
 // So is every child of a REFERENCE collection (PLAN-3535, `tracks_work:

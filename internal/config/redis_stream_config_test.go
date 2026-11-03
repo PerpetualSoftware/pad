@@ -6,7 +6,7 @@ import (
 )
 
 // TestStreamAndRedisEnvMapping covers the config plumbing for
-// PAD_REDIS_NAMESPACE and PAD_SSE_MAX_PER_USER (codex round 5).
+// PAD_REDIS_NAMESPACE and PAD_SSE_MAX_PER_USER.
 //
 // The namespace PARSER and the admission GATE both have their own tests,
 // and both would keep passing if Load() never populated these fields —
@@ -104,7 +104,7 @@ func TestStreamAndRedisDefaults(t *testing.T) {
 	}
 }
 
-// codex round 4. The env-var mapping test above proves PAD_EVENTS_PUBLISH_EPOCH
+// The env-var mapping test above proves PAD_EVENTS_PUBLISH_EPOCH
 // reaches the field; it says nothing about the TOML tag. A wrong or missing
 // `toml:"events_publish_epoch"` would keep every other test green while an
 // operator who set the flag in ~/.pad/config.toml — which is the form the
@@ -140,7 +140,7 @@ func TestEventsPublishEpochRoundTripsThroughTheConfigFile(t *testing.T) {
 	}
 }
 
-// codex round 12. The rollback procedure tells an operator to make the
+// The rollback procedure tells an operator to make the
 // EFFECTIVE value false, and warns that unsetting the environment variable is
 // not the same thing. Neither half of that had a test, so a load order that
 // let the file win over an explicit env-var false would have kept a deployment
@@ -254,7 +254,7 @@ func TestEventsHeartbeatIgnoresANonBooleanValue(t *testing.T) {
 }
 
 // The precise contract, stated because the sentence above is easy to read as
-// something stronger than it is (codex round 9): an unparseable value is
+// something stronger than it is: an unparseable value is
 // IGNORED, not read as false. From a default config that leaves the flip off,
 // which is what the test above checks. From a config file that set it true it
 // leaves it TRUE — deliberately, and the same as the epoch flag: a typo must

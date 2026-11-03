@@ -4,12 +4,12 @@
  *
  * EXTRACTED FROM `CopyItemDialog.svelte` (IDEA-2894). It lived inline in the
  * component, unexported, with no test file for the dialog at all — and two
- * separate review rounds found defects in it:
+ * separate defects were found in it:
  *
- *   - round 12: the UI asserted NON-EXISTENCE from `not_found`, which the
+ *   - the UI asserted NON-EXISTENCE from `not_found`, which the
  *     server also emits for a target the caller merely cannot see. Telling
  *     those apart is the existence oracle the server works to prevent.
- *   - round 18: `referent_not_portable` read "it points at something in the
+ *   - `referent_not_portable` read "it points at something in the
  *     source workspace", claiming both existence and location for a reason
  *     emitted WITHOUT resolving the target — and which `github_pr` also
  *     reaches, where the referent is in no workspace at all.
@@ -71,7 +71,7 @@ const MESSAGES: Record<CopyDropReason, string> = {
 	assignee_not_a_member: 'the assignee is not a member of the destination',
 	agent_role_not_portable: 'agent roles are workspace-local',
 
-	// NEUTRAL WORDING (codex round 18). Emitted for EVERY carried
+	// NEUTRAL WORDING. Emitted for EVERY carried
 	// cross-workspace relation WITHOUT resolving the target, so the value may
 	// name a live item, a deleted one, one the caller cannot see, or nothing
 	// at all — and `github_pr` reaches it too, where the referent is not in
@@ -79,7 +79,7 @@ const MESSAGES: Record<CopyDropReason, string> = {
 	// exists, is a claim the response does not support.
 	referent_not_portable: 'this reference cannot be carried to the destination',
 
-	// NEUTRAL WORDING (codex round 12). `not_found` is what the server
+	// NEUTRAL WORDING. `not_found` is what the server
 	// collapses a HIDDEN target to as well as a missing one — telling them
 	// apart is the existence oracle the collapse exists to prevent — so a
 	// sentence asserting non-existence is both wrong for half the cases and a

@@ -113,8 +113,8 @@ func TestStdioStructuredFieldsReachTheServer(t *testing.T) {
 				t.Errorf("meta = %s, want a JSON object", b)
 			}
 			// No schema reaches the CLI here (the fake answers 404), so a
-			// number sent as --field effort=3 would land as the string "3"
-			// (codex r1): only --fields-json keeps it a number, as remote does.
+			// number sent as --field effort=3 would land as the string "3":
+			// only --fields-json keeps it a number, as remote does.
 			if v, ok := fields["effort"].(float64); !ok || v != 3 {
 				t.Errorf("effort = %#v, want the number 3", fields["effort"])
 			}

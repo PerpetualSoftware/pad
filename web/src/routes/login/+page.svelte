@@ -21,7 +21,7 @@
 	let password = $state('');
 	let error = $state('');
 	let setupRequired = $state(false);
-	// The server says this browser's account is disabled (BUG-3349).
+	// The server says this browser's account is disabled  (BUG-3349).
 	let accountDisabled = $state(false);
 	let setupMethod = $state<'local_cli' | 'docker_exec' | 'cloud' | 'logs_token' | 'open' | undefined>(undefined);
 	let loading = $state(false);
@@ -44,7 +44,7 @@
 		| null
 	>(null);
 
-	// Last-used auth method (TASK-923) — reads from localStorage on mount,
+	// Last-used auth method  (TASK-923) — reads from localStorage on mount,
 	// drives a soft "you used X last time" banner and a visual lift on the
 	// matching CTA. Never blocks any flow; first-time visitors see no banner.
 	let lastMethod = $state<AuthMethod | null>(null);
@@ -121,7 +121,7 @@
 				break;
 		}
 
-		// Strip ?error= (and ?provider=) from the URL so a refresh or back-
+		// Strip ?error=  (and ?provider=) from the URL so a refresh or back-
 		// button doesn't re-show the banner.
 		url.searchParams.delete('error');
 		url.searchParams.delete('provider');
@@ -129,7 +129,7 @@
 	}
 
 	// The provider has stood in for the password, so a challenge in the
-	// fragment opens straight on the code step (BUG-3322).
+	// fragment opens straight on the code step  (BUG-3322).
 	function readChallengeFromFragment() {
 		if (typeof window === 'undefined') return;
 		const found = readChallengeFragment(window.location.href);
@@ -221,7 +221,7 @@
 			await navigateToRedirectTarget(redirectTarget);
 		} catch (err: unknown) {
 			// A disabled account's sign-in is refused; say so with the
-			// notice, not as a wrong password (BUG-3349).
+			// notice, not as a wrong password  (BUG-3349).
 			if (err instanceof PadApiError && err.code === 'account_disabled') {
 				accountDisabled = true;
 				error = '';
@@ -686,7 +686,7 @@
 	}
 
 	/*
-	 * Last-used auth method banner + CTA emphasis (TASK-923).
+	 * Last-used auth method banner + CTA emphasis  (TASK-923).
 	 * Soft hint above the form for returning users; matching OAuth button
 	 * gets a subtle border lift + "Last used" pill so the recommended
 	 * action reads at a glance without overwhelming first-time visitors

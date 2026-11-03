@@ -231,11 +231,11 @@ export function rateLimitRetryDelayMs(
 // Before firing an idempotent GET/HEAD we wait out the remaining window
 // (bounded by MAX_RETRY_AFTER_MS) so INDEPENDENT call sites don't burst a
 // busy server — e.g. localIndex.bootstrap's reconcile 429s, then the
-// collection page immediately fires a follow-up deltaSync (Codex P1 on the
+// collection page immediately fires a follow-up deltaSync (the
 // first cut of TASK-2026). We deliberately do NOT clear this on a
 // successful response: a success from an unrelated request that was already
-// in flight when the 429 landed is not evidence the rate limit lifted
-// (Codex round 2). The cooldown simply expires by wall-clock. Zero = no
+// in flight when the 429 landed is not evidence the rate limit lifted.
+// The cooldown simply expires by wall-clock. Zero = no
 // cooldown active.
 let rateLimitedUntil = 0;
 
@@ -355,7 +355,7 @@ function isContentPendingFlushError(err: unknown): err is PadApiError {
 }
 
 /**
- * Returns true when `err` is a 404 not_found. BUG-2265 (Codex round 6): a
+ * Returns true when `err` is a 404 not_found. BUG-2265: a
  * competing RENAME can kill the slug a write targeted, so the request returns
  * 404 instead of 409 — retry paths must treat BOTH as "resolve the fresh
  * collection by stable id and retry", surfacing an error only if it's truly
@@ -437,8 +437,8 @@ function planLimitMessage(err: PadApiError): string {
  * level visibility misses return 404. So a 403 on any workspace-scoped
  * endpoint means access to the workspace is gone — purging a single
  * item or collection would leave the rest of the cache stale.
- * Per-item granular purge was attempted in TASK-1360 round 1 and
- * round 2 (Codex P1 each) — both got the scope wrong; this is the
+ * Per-item granular purge was attempted in TASK-1360 and
+ * a second time — both got the scope wrong; this is the
  * conservative fix.
  */
 /**
@@ -468,7 +468,7 @@ export type AccessRevokedScope = {
 	/** Optional for compatibility with handlers written before BUG-2983. */
 	reason?: AccessRevokedReason;
 	/**
-	 * WHO the request was issued as, captured before it left (codex round 1 P1).
+	 * WHO the request was issued as, captured before it left.
 	 *
 	 * A refusal is a fact about a (user, workspace) pair, and a response can
 	 * outlive the identity that asked: sign out, or switch users, while a
@@ -607,7 +607,7 @@ export function networkUnreachableError(isIdempotent: boolean): PadApiError {
 }
 
 /**
- * `fetch` for a direct WRITE that bypasses request() (TASK-2202, codex r1):
+ * `fetch` for a direct WRITE that bypasses request() (TASK-2202):
  * attachment upload and transform, artifact import, checkout. Same rule as
  * requestAttempt: an abort keeps its own path (each site's deadline turns its
  * timeout into request_timeout), and any other rejection, which happened
@@ -636,7 +636,7 @@ export function isNetworkUnreachable(err: unknown): boolean {
  * server health, OR workspace-scoped endpoints whose 403 doesn't
  * imply workspace-wide read loss (members list, storage usage, etc.
  * 403 from those for grant-only guests is expected and shouldn't
- * purge the cache — Codex P1 round 3 of TASK-1360).
+ * purge the cache (TASK-1360).
  *
  * The whitelist is the set of endpoints the local-first read model
  * actually consumes for items:
@@ -750,7 +750,7 @@ function parseWorkspaceGoneScope(
 	// `/workspaces/{ws}` (2) or `/workspaces/{ws}/{endpoint}` (3). Anything
 	// longer names a sub-resource that can itself be missing.
 	if (parts.length > 3) return null;
-	// AN ALLOW-LIST, not "depth 3 is safe" (codex round 1 P2). Depth alone was
+	// AN ALLOW-LIST, not "depth 3 is safe". Depth alone was
 	// too broad: a workspace-level endpoint may have its OWN not_found — a
 	// singleton that has never been created, a feature-gated route — and one
 	// such endpoint answering 404 would purge a workspace the caller reads
@@ -956,8 +956,8 @@ async function request<T>(
 ): Promise<T> {
 	const headers: Record<string, string> = { 'Content-Type': 'application/json' };
 
-	// WHO is asking, captured BEFORE the request leaves (BUG-2983, codex round 1
-	// P1). A response can outlive the identity that asked — a sign-out or user
+	// WHO is asking, captured BEFORE the request leaves (BUG-2983).
+	// A response can outlive the identity that asked — a sign-out or user
 	// switch mid-flight — and a refusal recorded against whoever is signed in at
 	// RESPONSE time would lock a workspace away from a user who may be a member
 	// of it, permanently, since the identity-change clear has already run.
@@ -978,8 +978,8 @@ async function request<T>(
 	// this. Non-idempotent writes are never delayed here — they
 	// don't auto-retry and shouldn't be silently stalled by an unrelated
 	// GET's cooldown. The loop re-reads the deadline after each nap so a
-	// cooldown EXTENDED by another 429 mid-sleep is honored (Codex round
-	// 2 P2), but the total wait is capped at MAX_RETRY_AFTER_MS so a
+	// cooldown EXTENDED by another 429 mid-sleep is honored, but
+	// the total wait is capped at MAX_RETRY_AFTER_MS so a
 	// sustained 429 storm can't stall a single request indefinitely.
 	if (isIdempotent && rateLimitAttempt === 0) {
 		const waitStart = Date.now();
@@ -998,7 +998,7 @@ async function request<T>(
 		// Only GET/HEAD are retried after a 429, and neither is a write, so a
 		// write reaches here once. Reported only to the identity that issued
 		// it: a write that answers after a sign-out or account switch must not
-		// keep a tab in the NEXT account's bar (codex round 1). Same user id
+		// keep a tab in the NEXT account's bar. Same user id
 		// is enough, not an epoch: A's write keeping A's own tab is correct.
 		if (currentIdentity() === issuedAs) reportWorkspaceWrite(path, method);
 		return result;
@@ -1088,7 +1088,7 @@ async function requestAttempt<T>(
 		// WRITE this resource" — purging on those would wipe
 		// perfectly accessible cache rows for a read-only user who
 		// tried (and was correctly denied) to create / update /
-		// archive an item (Codex P1 round 1 of TASK-1360). Read 403
+		// archive an item. Read 403
 		// is the canonical "visibility revoked" signal.
 		//
 		// `method` is already uppercased above; undefined means GET
@@ -1149,7 +1149,7 @@ async function requestAttempt<T>(
 		// Arm the global cooldown on EVERY 429 — including this one that we
 		// may be about to retry — so a concurrent idempotent request that
 		// started during the retry's own backoff sleep also backs off
-		// instead of immediately re-hitting the busy server (Codex round 2 P1).
+		// instead of immediately re-hitting the busy server.
 		armRateLimitCooldown(backoffMs);
 		// Only GET/HEAD auto-retry — retrying a POST/PATCH/DELETE could
 		// duplicate a write the server may have already partially applied.
@@ -1655,8 +1655,8 @@ export const api = {
 			// presence without treating a clean import as a fact worth showing.
 			//
 			// A POSITIVE DECIMAL INTEGER is required, spelled the one way the CLI's
-			// staleBodyImportCount accepts it (codex rounds 2 P2, 3 P2, 4 P2 and
-			// the round-5 nit). NOT "the one way strconv.Atoi accepts it": Atoi is
+			// staleBodyImportCount accepts it, and
+			// no looser. NOT "the one way strconv.Atoi accepts it": Atoi is
 			// LOOSER than both readers, and the Go side deliberately rejects three
 			// forms it would take — a leading `+`, values above 2^53-1, and a
 			// repeated header — so that the two agree exactly. A response
@@ -1857,7 +1857,7 @@ export const api = {
 		 * Endpoint: `GET /api/v1/workspaces/{ws}/items-index`. The path is
 		 * deliberately at workspace level (sibling to `/plans-progress`)
 		 * rather than `/items/index` to avoid colliding with any item
-		 * whose slug is `"index"` — see PR #486 Codex round 1.
+		 * whose slug is `"index"` — see PR #486.
 		 *
 		 * The server's `ListItemsIndex` query doesn't scan `i.content`, but
 		 * the Go struct serializes the zero value (`content: ""`) over the
@@ -1865,7 +1865,7 @@ export const api = {
 		 * here so the returned shape matches `ItemIndexRow`'s
 		 * `Omit<Item, 'content'>` contract — preventing downstream code
 		 * from spreading a row back into the canonical item store and
-		 * silently blanking the rich-text body. Per Codex round 1 [P2]
+		 * silently blanking the rich-text body.
 		 * on PR #487.
 		 */
 		listIndex: async (
@@ -2043,12 +2043,11 @@ export const api = {
 			//
 			// Always include the cursor when the caller passed it,
 			// INCLUDING zero. The server's stale-snapshot gate
-			// (round 12 [P1]) needs to see cursor=0 explicitly to
+			// needs to see cursor=0 explicitly to
 			// reject flushes from clients whose Y.Doc is populated
 			// but whose cursor was never anchored (network blip
 			// during the post-replay cursor write). Omitting on 0
-			// would silently bypass the gate. Per Codex round 13
-			// [P1] of TASK-1319.
+			// would silently bypass the gate.
 			if (opts?.opLogCursor !== undefined) {
 				body.op_log_cursor = opts.opLogCursor;
 			}

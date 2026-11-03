@@ -13,20 +13,20 @@ import {
 } from './lib/attachment-viewer';
 
 /**
- * Item attachment strip — host-level coverage (PLAN-2382).
+ * Item attachment strip — host-level coverage  (PLAN-2382).
  *
- * The component suite (ItemAttachmentStrip.svelte.test.ts) mounts the strip
+ * The component suite  (ItemAttachmentStrip.svelte.test.ts) mounts the strip
  * DIRECTLY, so every one of its assertions still passes if the ItemDetail
  * mount is deleted, moved, or handed an ungated id. Three things can only be
- * proven in a real browser, and all three were flagged by Codex review as
+ * proven in a real browser, and all three are
  * structurally invisible to jsdom:
  *
  *   1. the strip is actually mounted in the item page, showing the CURRENT
- *      item's attachments across an A→B switch (TASK-2383);
+ *      item's attachments across an A→B switch  (TASK-2383);
  *   2. `canDelete` is wired to ItemDetail's `mutationsEnabled` and not raw
  *      `canEdit` — a peeking master must show tiles with NO delete control
- *      (TASK-2384 / DR-6). Both the component tests (which inject the prop)
- *      and the masterFreeze unit test (which checks the bare boolean) pass
+ *       (TASK-2384 / DR-6). Both the component tests  (which inject the prop)
+ *      and the masterFreeze unit test  (which checks the bare boolean) pass
  *      even if that wiring regressed;
  *   3. the delete control is genuinely keyboard reachable. jsdom applies no
  *      scoped CSS, so a regression to `visibility: hidden` — which silently
@@ -80,7 +80,7 @@ async function uploadTo(
  * Upload a NON-image bound to `itemId`, of a type NO RENDERER CLAIMS — so the
  * surface it opens is the no-bytes fallback arm.
  *
- * WAS `text/plain` (IDEA-2712), THEN PDF. Each stopped being a fallback fixture
+ * WAS `text/plain`  (IDEA-2712), THEN PDF. Each stopped being a fallback fixture
  * when the viewer gained its in-app renderer (text in IDEA-2712, PDF in
  * TASK-4075): a `.txt` or a PDF now previews, which is the point of those
  * changes, so a test asserting "No preview available" over one would be
@@ -119,7 +119,7 @@ async function uploadFallbackFileTo(
 /**
  * Drop a file onto the live editor, the way a user does. The upload plugin
  * listens for a real `drop` with a DataTransfer, so we build one in the page
- * rather than driving the (nonexistent) file input.
+ * rather than driving the  (nonexistent) file input.
  */
 async function dropFileIntoEditor(
 	page: Page,
@@ -172,7 +172,7 @@ test.describe('item attachment strip', () => {
 		await expect(page.locator(TILE).first()).toHaveAttribute('aria-label', /alpha-only\.png/);
 
 		// A→B switch: B's strip must not carry A's tile. The strip persists
-		// across the switch (it sits outside ItemDetail's {#key itemSlug}), so
+		// across the switch  (it sits outside ItemDetail's {#key itemSlug}), so
 		// this exercises the generation fence in the real navigation path.
 		await page.goto(itemUrl(fixture, docB.slug));
 		await expect(page.locator(TILE)).toHaveCount(1);
@@ -219,7 +219,7 @@ test.describe('item attachment strip', () => {
 
 		// Count attachment-LIST requests so "no refetch" is proven rather than
 		// asserted in a comment. An implementation that re-listed after the drop
-		// would otherwise pass this test identically (Codex review of TASK-2385).
+		// would otherwise pass this test identically  (TASK-2385).
 		let listCalls = 0;
 		await page.route('**/api/v1/workspaces/*/attachments?*', async (route) => {
 			// The upload POST hits the same path with a query string; only count
@@ -228,7 +228,7 @@ test.describe('item attachment strip', () => {
 			await route.fallback();
 		});
 
-		// `listCalls` counts REQUESTS (the route handler runs at request time),
+		// `listCalls` counts REQUESTS  (the route handler runs at request time),
 		// so it can't tell us the load finished — wait on the RESPONSE for
 		// that. Armed before navigating, per the empty-item test above.
 		const listSettled = page.waitForResponse(
@@ -257,13 +257,13 @@ test.describe('item attachment strip', () => {
 		).toBe(callsBeforeDrop);
 		await expect(page.locator(TILE).first()).toHaveAttribute('aria-label', /dropped\.png/);
 
-		// The delete control is keyboard reachable: focus it directly (no hover)
+		// The delete control is keyboard reachable: focus it directly  (no hover)
 		// and confirm it actually took focus. `visibility: hidden` would drop it
 		// from the tab order and fail here — the regression jsdom can't see.
 		const del = page.locator(DELETE_BTN).first();
 		await del.focus();
 		await expect(del).toBeFocused();
-		// WCAG 2.2 target size (2.5.8), from PLAN-2382. Only a real browser
+		// WCAG 2.2 target size  (2.5.8), from PLAN-2382. Only a real browser
 		// applies the scoped CSS, so this is the only place it can be checked.
 		const box = await del.boundingBox();
 		expect(box?.width).toBeGreaterThanOrEqual(24);
@@ -276,7 +276,7 @@ test.describe('item attachment strip', () => {
 		await del.click();
 		const confirmMenu = page.locator('[role="menu"]');
 		await expect(confirmMenu).toBeVisible();
-		// The attachment IS embedded in the body (the drop inserted it), so the
+		// The attachment IS embedded in the body  (the drop inserted it), so the
 		// prompt must say so rather than hedging.
 		await expect(confirmMenu.locator('.attachment-delete-prompt')).toContainText(
 			"still used in this item's content"
@@ -311,12 +311,12 @@ test.describe('item attachment strip', () => {
 		const masterHost = page.locator('.item-page-host > .item-page');
 		const masterStrip = masterHost.locator(DELETE_BTN);
 
-		// Active master: the control exists (canDelete === mutationsEnabled === true).
+		// Active master: the control exists  (canDelete === mutationsEnabled === true).
 		await expect(masterHost.locator(TILE)).toHaveCount(1);
 		await expect(masterStrip).toHaveCount(1);
 
 		// Open a pane and click INTO it → the master goes peeking (read-only
-		// freeze). Its tiles stay (the strip is a read affordance) but the
+		// freeze). Its tiles stay  (the strip is a read affordance) but the
 		// delete control must go — this is the wiring that regresses silently
 		// if ItemDetail passes raw canEdit.
 		await page.goto(`${itemUrl(fixture, master.slug)}?item=${encodeURIComponent(related.slug)}`);
@@ -338,10 +338,10 @@ test.describe('item attachment strip', () => {
 	}, testInfo) => {
 		test.skip(testInfo.project.name !== 'desktop-chromium', 'desktop-only surface');
 
-		// FALSIFIED + REWRITTEN for the converged surface (PLAN-2392 3c-ii, T4a/T4b).
+		// FALSIFIED + REWRITTEN for the converged surface  (PLAN-2392 3c-ii, T4a/T4b).
 		// A file tile no longer opens a `role="menu"` options panel — that channel
 		// was retired. It now emits on the ONE surface channel and the ONE
-		// `AttachmentSurfaceHost` opens the grown `Lightbox` (a `role="dialog"`),
+		// `AttachmentSurfaceHost` opens the grown `Lightbox`  (a `role="dialog"`),
 		// showing the no-bytes fallback arm for a non-previewable-as-image file.
 		//
 		// This is still the ONE test that exercises the real producer→host wiring
@@ -349,7 +349,7 @@ test.describe('item attachment strip', () => {
 		// emit on the bus directly, so between them a broken `hostToken` thread
 		// through ItemDetail would pass everything. Only a real page has a real
 		// ItemDetail minting a real token — and "activates exactly once per key
-		// press" (DR-12) can only be shown where the UA synthesises the activation
+		// press"  (DR-12) can only be shown where the UA synthesises the activation
 		// click, which jsdom does not.
 		await page.setViewportSize(DESKTOP);
 		await browserLogin(page);
@@ -362,7 +362,7 @@ test.describe('item attachment strip', () => {
 		await expect(tile).toBeVisible();
 
 		// A file tile is a real button naming its action, not a download link —
-		// the whole point of the change (DR-1, DR-12).
+		// the whole point of the change  (DR-1, DR-12).
 		await expect(tile).toHaveJSProperty('tagName', 'BUTTON');
 		await expect(tile).toHaveAttribute('aria-label', /^Options for \u2068notes\.zip/);
 
@@ -387,7 +387,7 @@ test.describe('item attachment strip', () => {
 		// Keyboard activation, for real: focus the tile and press each key. EXACTLY
 		// ONE NAMED surface opens per press and NO menu — two viewers, or a leftover
 		// menu, would mean a hand-rolled handler firing alongside the UA's activation
-		// click (DR-12). Asserting the count AND the named dialog AND zero menus is
+		// click  (DR-12). Asserting the count AND the named dialog AND zero menus is
 		// what rules out a duplicate activation a bare count would miss.
 		for (const key of ['Enter', ' ']) {
 			await tile.focus();
@@ -433,7 +433,7 @@ test.describe('item attachment strip', () => {
 		const chip = page.locator('.editor-content .ProseMirror button.file-chip').first();
 		await expect(chip).toBeVisible();
 		// A button, not a link: an anchor left the URL reachable by middle-click,
-		// straight past the surface (DR-12).
+		// straight past the surface  (DR-12).
 		await expect(chip).toHaveJSProperty('tagName', 'BUTTON');
 
 		await chip.click();
@@ -442,7 +442,7 @@ test.describe('item attachment strip', () => {
 		await expect(page.locator('[role="menu"]')).toHaveCount(0);
 		await expect(page.locator(VIEWER_FALLBACK_NAME)).toHaveText('handbook.zip');
 		// The Download anchor carries the filename — even though a dropped chip's
-		// metadata may be partial, the download attribute is never dropped (DR-16).
+		// metadata may be partial, the download attribute is never dropped  (DR-16).
 		await expect(viewerDownloadAnchor(page)).toHaveAttribute('download', 'handbook.zip');
 	});
 });

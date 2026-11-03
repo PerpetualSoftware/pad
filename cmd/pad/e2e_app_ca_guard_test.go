@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// TASK-3415 (lead ruling): the e2e harness's app-CA door exists only in a
+// TASK-3415: the e2e harness's app-CA door exists only in a
 // build with the e2etest tag. A default build, which is what release and
 // production ship, must contain no source that reads PAD_E2E_APP_CA, so no
 // environment variable can widen what a shipped binary trusts.

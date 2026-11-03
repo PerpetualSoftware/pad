@@ -2,7 +2,7 @@
 // inline attachment), and y-tiptap never writes such a mark to the Y.Doc. The
 // tab that applied the mark held a document its own Y.Doc did not, so two
 // live tabs flushed different bodies. The fix forbids marks on inline atoms
-// (the InlineAtomNoMarks plugin, inlineAtomNoMarks.ts; a node spec's `marks` cannot do it). The lead's ruling names four conditions,
+// (the InlineAtomNoMarks plugin, inlineAtomNoMarks.ts; a node spec's `marks` cannot do it). The fix names four conditions,
 // each a test here:
 //   (a) a Y.Doc produced on main loads byte-identically under the new schema;
 //   (b) markdown with a mark spanning a hard break round-trips unchanged;
@@ -98,7 +98,7 @@ describe('BUG-3568: no marks on inline atoms', () => {
 		}
 	});
 
-	// (c) Rook's one-tab repro: apply a mark over a range containing an atom.
+	// (c) the one-tab repro: apply a mark over a range containing an atom.
 	for (const [name, apply] of [
 		['bold', (e: TiptapEditor, r: { from: number; to: number }) => e.chain().setTextSelection(r).toggleBold().run()],
 		['italic', (e: TiptapEditor, r: { from: number; to: number }) => e.chain().setTextSelection(r).toggleItalic().run()],
@@ -124,7 +124,7 @@ describe('BUG-3568: no marks on inline atoms', () => {
 	}
 
 	// A mark put on the atom node directly (tr.addNodeMark → AddNodeMarkStep)
-	// is stripped too (codex round 1).
+	// is stripped too.
 	it('(c) addNodeMark on a hard break leaves the editor equal to its Y.Doc', async () => {
 		const doc = new Y.Doc();
 		const { editor, destroy } = mountEditor(doc);

@@ -49,7 +49,7 @@
 	// loadError is the top-of-tab error used when the INITIAL fetch fails
 	// and there's nothing to show. loadMoreError is a separate inline
 	// message for append failures so an already-rendered feed doesn't
-	// flip back to a "Retry" full-tab state (Codex review on PR #609).
+	// flip back to a "Retry" full-tab state.
 	let loadError = $state('');
 	let loadMoreError = $state('');
 	// The cursor for the next page, or null when the last page is held.
@@ -107,8 +107,7 @@
 			if (user.id !== userId) return;
 			// Append failure — keep the already-loaded feed visible and
 			// surface an inline error near the Load more button so the
-			// admin can retry without losing context (Codex review on
-			// PR #609).
+			// admin can retry without losing context.
 			loadMoreError = e instanceof Error ? e.message : 'Failed to load more activity';
 		} finally {
 			if (user.id === userId) loadingMore = false;
@@ -138,8 +137,7 @@
 	// chronological scan aid. The Activity tab is a triage view, not a
 	// design showpiece. Coverage: every action constant in
 	// internal/models/activity.go that can land in this endpoint's user-
-	// authored feed (PLAN-1542 / TASK-1554, expanded per Codex review on
-	// PR #609).
+	// authored feed (PLAN-1542 / TASK-1554).
 	function iconFor(action: string): string {
 		switch (action) {
 			// Item / comment writes

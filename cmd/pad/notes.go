@@ -245,7 +245,7 @@ func structuredAppendRefusal(err error, kind, key string) error {
 // the server accepted the request but its response does not show the entry.
 // It is reported, and deliberately NOT followed by a legacy write — the
 // capability check already said this server appends, so a second write would
-// duplicate the entry whenever it did (lead ruling on BUG-3056).
+// duplicate the entry whenever it did.
 func unconfirmedAppendError(kind, ref string) error {
 	return fmt.Errorf("the server accepted the %s for %s but its response does not show it appended; "+
 		"it was NOT re-sent, so check `pad item show %s --format json` before trying again", kind, ref, ref)

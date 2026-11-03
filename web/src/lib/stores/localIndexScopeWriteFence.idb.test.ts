@@ -110,7 +110,7 @@ describe('TASK-2922 — a tab may only write under the scope the cache advertise
 		// the mutation is still inside the next delta's window. This leg is what
 		// makes "deferred, not lost" a measured claim rather than an assumption
 		// about scheduling: it does not depend on WHEN the tab reconciles, only
-		// on the row being re-supplied when it does (codex round 2 P1).
+		// on the row being re-supplied when it does.
 		await persistDelta(U, WS, [row('mine', 13)], '13', false, 'e2');
 
 		expect((await hydrate(U, WS)).items.map((r) => r.id).sort()).toEqual(['mine', 'ok']);

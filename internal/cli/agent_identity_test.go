@@ -18,7 +18,7 @@ import (
 // Each case pins one rung of the precedence AND the negative that makes it
 // meaningful: a plain human shell with no markers must still resolve to "",
 // because a resolver that returned a name unconditionally would satisfy every
-// positive case here while attributing Dave's own commands to an agent.
+// positive case here while attributing the user's own commands to an agent.
 func TestResolveAgentName(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -64,7 +64,7 @@ func TestResolveAgentName(t *testing.T) {
 			chdir(t, dir)
 			// And from a scratch HOME with no session identity, so a registry
 			// row belonging to the REAL session running these tests cannot
-			// leak in as the resolver's first answer (codex round 1, #1248).
+			// leak in as the resolver's first answer (#1248).
 			isolateHome(t, t.TempDir())
 			clearSessionEnv(t)
 
@@ -293,7 +293,7 @@ func TestRegisteredAgentWinsForThisSession(t *testing.T) {
 	}
 
 	// A record with NO token, while this process can read one, is
-	// unverifiable and must not name us either (codex round 1, #1248: a
+	// unverifiable and must not name us either (#1248: a
 	// dead session's stale row under a reused pid).
 	reg.ProcStart = ""
 	out, _ = json.Marshal(reg)
@@ -315,7 +315,7 @@ func TestRegisteredAgentWinsForThisSession(t *testing.T) {
 	}
 }
 
-// TestRegisteredAgentRequiresAVerifiableOwner — codex round 2 on #1248. A
+// TestRegisteredAgentRequiresAVerifiableOwner (#1248). A
 // harness-supplied owner pid that the platform CAN check and that is NOT
 // this process or an ancestor is a misconfigured session: its registry row
 // must not name us, even though the pid is alive and its token matches
@@ -346,7 +346,7 @@ func TestRegisteredAgentRequiresAVerifiableOwner(t *testing.T) {
 	}
 }
 
-// TASK-4186 PR B r1. The /messages empty state, docs/api.md and both SKILL.md
+// TASK-4186: the /messages empty state, docs/api.md and both SKILL.md
 // files tell people how an agent's name is resolved. The order is pinned here
 // in one chain, peeling one source at a time: registry row, then .pad.toml
 // agent_name, then $PAD_AGENT, then runtime detection. (TestResolveAgentName

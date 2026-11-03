@@ -1,4 +1,4 @@
-// BUG-3067, lead ruling on the trail — the prompt-substitution half of the class.
+// BUG-3067 — the prompt-substitution half of the class.
 //
 // The chips answer a retyped `status`/`priority` by WITHHOLDING the value. A
 // prompt variable cannot: `{status}` has to become something, and a blank is a

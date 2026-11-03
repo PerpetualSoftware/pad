@@ -40,8 +40,7 @@ const (
 	redisWatchSeqSuffix = "watchevents_seq"
 
 	// redisWatchEpochSuffix identifies the CURRENT id space, and exists because
-	// numeric detection alone cannot see a reset that has caught back up
-	// (codex round 13).
+	// numeric detection alone cannot see a reset that has caught back up.
 	//
 	// The counter resetting is detectable when an id arrives BELOW our
 	// high-water mark. It is invisible when the new space has already climbed
@@ -90,7 +89,7 @@ const (
 // publishScript assigns the next id and publishes, ATOMICALLY.
 //
 // Doing those as two client calls is not merely unlocked, it is actively
-// order-breaking, and the failure is not theoretical (Codex round 1 P1):
+// order-breaking, and the failure is not theoretical:
 // instance A runs INCR and gets 1, is descheduled; instance B runs INCR, gets
 // 2, and publishes; A then publishes 1. Every subscriber receives 2 before 1.
 // The replay buffer appends in ARRIVAL order, so it now holds a non-monotonic
@@ -113,8 +112,8 @@ const (
 // continuing one when the new space has already climbed past an instance's
 // high-water mark. See redisWatchEpochSuffix before considering it removable.
 // The dedupe key makes the script IDEMPOTENT UNDER RETRY, which it needs to be
-// because go-redis retries a command when the reply is lost to a network error
-// (codex round 5). Without it, a script that ran and whose reply never came
+// because go-redis retries a command when the reply is lost to a network error.
+// Without it, a script that ran and whose reply never came
 // back would run AGAIN on retry: the same notification published twice under
 // two different ids. Both copies look perfectly valid — correct ordering,
 // distinct ids — so nothing downstream could tell them apart, and on the push
@@ -181,7 +180,7 @@ const (
 // Redis would deliver twice to the publishing instance's own streams.
 //
 // Not "exactly-once", which an earlier draft of this comment claimed and which
-// is not on offer at any layer here (Codex round 1). Redis pub/sub is
+// is not on offer at any layer here. Redis pub/sub is
 // at-most-once — a subscriber that is disconnected when a message is published
 // never sees it — and the local send is deliberately non-blocking, so a slow
 // subscriber's notification is dropped and logged rather than awaited. The
@@ -244,7 +243,7 @@ type RedisBus struct {
 
 	// knownFrom / lastAppendedID bound what this instance can HONESTLY
 	// replay — a failure mode MemoryBus structurally cannot have and this
-	// one can (codex rounds 3 and 4).
+	// one can.
 	//
 	// MemoryBus assigns every id itself, so its buffer is contiguous by
 	// construction and replayBuffer.since()'s only gap case is eviction —
@@ -273,7 +272,7 @@ type RedisBus struct {
 
 	// highWaterID is the highest id this instance has EVER appended in the
 	// current epoch, and it exists because lastAppendedID does not survive
-	// dropCoverage (BUG-2739, codex round 13).
+	// dropCoverage (BUG-2739).
 	//
 	// Backward-counter detection reads "did an id arrive at or below what we
 	// already hold", and dropCoverage answers 0 to that question — so a
@@ -313,14 +312,14 @@ type RedisBus struct {
 	// ambiguous ones. Raised, never lowered, by a later restart.
 	//
 	// WHAT IT COSTS, stated because it was first stated wrong as "once"
-	// (BUG-2743 trail, day 80): a client genuinely in the NEW space is refused
+	// (BUG-2743 trail): a client genuinely in the NEW space is refused
 	// on EVERY reconnect until the new space climbs past the old peak — each
 	// refusal retires its cursor, the ids it then receives are new-space ids
 	// still at or below the peak, and the next resume lands inside the
 	// boundary again. It ends when the new space passes the peak or this
 	// process restarts, since the field is in memory. The activity bus names
 	// the same loop in internal/events dropAllBuffers and declines it on an
-	// epoch change; this bus accepts it on every arm, by lead ruling (a) on
+	// epoch change; this bus accepts it on every arm, per
 	// BUG-2743: a missed watch notification is unrecoverable, and the loop
 	// costs one refused resume per reconnect with nothing fetched.
 	//
@@ -371,7 +370,7 @@ type RedisBus struct {
 	beforeDropHook func()
 
 	// subGen numbers subscriptions so a frame can be matched to the one it
-	// arrived on (BUG-2769, codex round 1).
+	// arrived on (BUG-2769).
 	//
 	// stopping a receive loop only SIGNALS it — cancelling its context and
 	// closing its PubSub does not join the goroutine, and go-redis's channel is
@@ -501,7 +500,7 @@ func NewRedisBusWithKeys(client *redis.Client, size int, keys redisns.Keys, publ
 	// unconfirmed subscription — but the cause is logged at once and the
 	// five-second wait for an acknowledgement that cannot come is skipped.
 	//
-	// THE FAILED PUBSUB IS NOT KEPT (codex round 1 P1). go-redis's own
+	// THE FAILED PUBSUB IS NOT KEPT. go-redis's own
 	// reconnect after a failed write leaves a fresh connection with no
 	// subscription on it, and this bus's only retry — cycleIfIdle's
 	// resubscribe — fires on `b.pubsub == nil`. Retaining the dead PubSub
@@ -586,7 +585,7 @@ func NewRedisBusWithKeys(client *redis.Client, size int, keys redisns.Keys, publ
 		go b.receiveMessages(subLoopCtx, b.pubsub, b.subGen)
 	}
 
-	// NOT STARTED AT ALL ON PHASE 1 (codex round 2). Both halves are gated on
+	// NOT STARTED AT ALL ON PHASE 1. Both halves are gated on
 	// publishHeartbeat and would be guaranteed no-ops there, so the loop would
 	// be goroutines and timers per bus for a deployment that asked for none of
 	// it — and phase 1 is the DEFAULT. The flag is constructor-only, so the
@@ -664,7 +663,7 @@ func (b *RedisBus) Publish(n Notification) error {
 	if err := publishScript.Run(b.ctx, b.client,
 		[]string{b.keys.Name(redisWatchSeqSuffix), b.keys.Name(redisWatchChannelSuffix), dedupeKey, b.keys.Name(redisWatchEpochSuffix)},
 		string(data), redisWatchDedupeTTLSeconds, uuid.NewString()).Err(); err != nil {
-		// WORDED AS UNCONFIRMED, not as a drop (codex round 3). The earlier
+		// WORDED AS UNCONFIRMED, not as a drop. The earlier
 		// text said "dropping notification ... no globally ordered ID was
 		// assigned", which contradicts what this error actually means and
 		// contradicted the return path four lines down: go-redis retries a
@@ -678,7 +677,7 @@ func (b *RedisBus) Publish(n Notification) error {
 		// the log line above phrases it for an operator. This error means
 		// UNCONFIRMED: go-redis retries a command whose reply was lost to a
 		// network error, which is the entire reason the script carries a
-		// SET-NX dedupe token (codex round 5), so the script may well have
+		// SET-NX dedupe token, so the script may well have
 		// run and published while this call still returns non-nil. A caller
 		// that re-publishes on this error risks a duplicate DISPATCH, not a
 		// repeat of nothing — see Bus.Publish's doc comment.
@@ -753,7 +752,7 @@ func (b *RedisBus) SubscribeAndReplaySince(ctx context.Context, sinceID int64) (
 	// admission slot (BUG-2726), released by defer when the handler returns —
 	// so every moment spent here is capacity held for a client that may
 	// already be gone.
-	// CHECKED BEFORE THE SETTLE PATH IS ENTERED AT ALL (codex round 2). Placed
+	// CHECKED BEFORE THE SETTLE PATH IS ENTERED AT ALL. Placed
 	// after it, an already-cancelled caller still made the first Redis GET —
 	// which fails on the dead context and logs "could not read the sequence
 	// counter to validate a resume" at WARN. That line means "Redis is
@@ -766,7 +765,7 @@ func (b *RedisBus) SubscribeAndReplaySince(ctx context.Context, sinceID int64) (
 
 	forceGap := b.resumeOutrunsLocalView(ctx, sinceID)
 
-	// A CALLER THAT HAS GONE IS NOT REGISTERED (BUG-2751, codex round 1).
+	// A CALLER THAT HAS GONE IS NOT REGISTERED (BUG-2751).
 	// resumeOutrunsLocalView answers false on cancellation — "no forced gap" —
 	// which on its own reads as an ordinary converged resume, so the rest of
 	// this function would go on to register a subscriber and build a replay
@@ -824,8 +823,8 @@ func (b *RedisBus) SubscribeAndReplaySince(ctx context.Context, sinceID int64) (
 // callerIsGone reports whether a Redis error is our own cancellation rather
 // than a fault worth telling an operator about.
 //
-// A FUNCTION OF THE ERROR ALONE, AND THAT IS THE FIX (codex round 4, which
-// BLOCKED on the earlier form). The first version asked ctx.Err() instead —
+// A FUNCTION OF THE ERROR ALONE, AND THAT IS THE FIX The first version asked
+// ctx.Err() instead —
 // which cannot distinguish "the caller left" from "Redis failed while the
 // caller happened to be leaving", so a genuine failure coinciding with a
 // disconnect was downgraded to Debug and disappeared. That is the signal an
@@ -847,7 +846,7 @@ func callerIsGone(err error) bool {
 // Subscribe() when it gets one, which would re-register the caller this is
 // declining.
 //
-// LOGGED AT DEBUG, AND DELIBERATELY NOT COUNTED (codex round 2). The finding
+// LOGGED AT DEBUG, AND DELIBERATELY NOT COUNTED. The concern
 // was that an operator cannot distinguish disconnect churn from no resume
 // activity. True, and the honest fix is not a counter: a client hanging up
 // during its own resume is ORDINARY on a mobile network, so a metric for it
@@ -890,8 +889,8 @@ func whicheverEndsFirst(caller, bus context.Context) (context.Context, context.C
 // mark is the NORMAL state for a moment after every publish. That window is
 // bounded by propagation time (a local network hop), while a genuinely missed
 // message never arrives at all. So the discriminator is TIME, not magnitude:
-// wait out the propagation window and re-read. This is the lead's ruling on
-// BUG-2651, and it is what avoids inventing an unprincipled "how many ids
+// wait out the propagation window and re-read. This is the BUG-2651 decision,
+// and it is what avoids inventing an unprincipled "how many ids
 // behind is too many" threshold.
 const settleWindow = 250 * time.Millisecond
 
@@ -924,7 +923,7 @@ const settleWindow = 250 * time.Millisecond
 // hiccup into a resync for every reconnecting client would be a worse failure
 // than the one this is guarding against.
 //
-// CHATTINESS BOUND, stated because it is the cost side of the lead's ruling
+// CHATTINESS BOUND, stated because it is the cost side of that decision
 // (chatty-but-correct beats quiet-but-lossy): the condition is agreement
 // between the two reads, so a resume that happens while publishing is
 // CONTINUOUS across the whole settle window can find them disagreeing every
@@ -959,7 +958,7 @@ func (b *RedisBus) resumeOutrunsLocalView(ctx context.Context, sinceID int64) bo
 	if remote == b.highestSeen() {
 		// Agreed as of this instant, so there is nothing to settle for.
 		//
-		// WHAT THIS DOES NOT COVER, and cannot (codex round 12): a
+		// WHAT THIS DOES NOT COVER, and cannot: a
 		// notification published AFTER this read and missed by this instance
 		// is invisible to any check made here — and shrinking the window by
 		// settling anyway would not close it, since the same race exists in
@@ -974,7 +973,7 @@ func (b *RedisBus) resumeOutrunsLocalView(ctx context.Context, sinceID int64) bo
 	// Give propagation its beat, then re-read BOTH SIDES.
 	//
 	// Re-reading only the local side was the first version of this and it was
-	// wrong in both directions (codex round 11). The captured counter is a
+	// wrong in both directions. The captured counter is a
 	// SNAPSHOT: if id 101 lands during the beat while 102 is published and
 	// missed, comparing against the stale 101 says "converged" and loses 102;
 	// and a GET that raced just before a publish can report a value BELOW
@@ -1027,7 +1026,7 @@ func (b *RedisBus) sharedCounter(ctx context.Context) (int64, bool) {
 		return v, true
 	case errors.Is(err, redis.Nil):
 		// ABSENT IS A VALUE, NOT A FAILURE, and reading it as the latter was
-		// a bug (codex round 12). "No counter" legitimately means zero — on a
+		// a bug. "No counter" legitimately means zero — on a
 		// fresh deployment nothing has been published, so there is nothing to
 		// have missed and 0 == 0 agrees with an instance that has seen
 		// nothing. But the key can also DISAPPEAR after this bus has seen
@@ -1041,7 +1040,7 @@ func (b *RedisBus) sharedCounter(ctx context.Context) (int64, bool) {
 		// 0, does not converge, and the resume is answered with a gap.
 		return 0, true
 	case callerIsGone(err):
-		// OUR OWN CANCELLATION IS NOT A REDIS FAULT (codex round 3). The
+		// OUR OWN CANCELLATION IS NOT A REDIS FAULT. The
 		// caller can disconnect while this GET is IN FLIGHT, and the error
 		// that comes back is context.Canceled — indistinguishable, at the WARN
 		// below, from Redis being unreachable. That line is read as "the
@@ -1050,8 +1049,8 @@ func (b *RedisBus) sharedCounter(ctx context.Context) (int64, bool) {
 		// chase. The entry-side decline catches a caller that was already
 		// gone; this catches one that left while we were asking.
 		//
-		// CLASSIFIED ON THE ERROR, NOT ON ctx.Err() (codex round 4, which
-		// BLOCKED on this). Asking the context instead asks the wrong
+		// CLASSIFIED ON THE ERROR, NOT ON ctx.Err() Asking the context instead
+		// asks the wrong
 		// question: a GENUINE Redis failure that merely coincides with a
 		// cancellation would be downgraded to Debug and vanish — precisely the
 		// signal an operator needs, hidden by the fix meant to reduce noise.
@@ -1094,7 +1093,7 @@ func (b *RedisBus) replaySince(sinceID int64) []Notification {
 	if sinceID > 0 {
 		// knownFrom == 0 means this instance has received NOTHING yet, which
 		// is strictly LESS knowledge than "contiguous from X" and must
-		// therefore produce at least as strong a signal (codex round 9). The
+		// therefore produce at least as strong a signal. The
 		// earlier version skipped the check entirely in that state, so an
 		// empty buffer answered any cursor with an empty-but-non-nil slice —
 		// which the SSE handler reads as "caught up".
@@ -1291,7 +1290,7 @@ func (b *RedisBus) receiveMessages(ctx context.Context, pubsub *redis.PubSub, ge
 			// handles; it does not mean the connection is dead, and cycling it
 			// would be the wrong remedy.
 			// THE GENERATION TRAVELS TO EACH MUTATION rather than being
-			// checked once here (codex round 2). A check in this frame and a
+			// checked once here. A check in this frame and a
 			// mutation inside stampLastSeen / fanOutFromRedis /
 			// dropCoverageForGen are two separate lock acquisitions, and a
 			// replacement between them is exactly the interleave the fence
@@ -1348,12 +1347,11 @@ func (b *RedisBus) receiveMessages(ctx context.Context, pubsub *redis.PubSub, ge
 			// generation, so a frame the fence REFUSES is by design invisible
 			// — which leaves a test no way to know the loop handled it rather
 			// than never having received it, and a fixed sleep in place of
-			// that knowledge passes just as well against a loop that stalled
-			// (codex round 4). Placed here it fires for EVERY frame and every
+			// that knowledge passes just as well against a loop that stalled.
+			// Placed here it fires for EVERY frame and every
 			// arm; when the arms were `continue`s in this loop it silently
 			// skipped heartbeats, undecodable payloads and unsubscribe
-			// confirmations while the comment claimed otherwise (codex round
-			// 9). nil in production.
+			// confirmations while the comment claimed otherwise. nil in production.
 			if b.afterFrameHandled != nil {
 				b.afterFrameHandled()
 			}
@@ -1488,16 +1486,16 @@ func decodePayload(payload string) (string, Notification, error) {
 // "is this the same id sequence I have been tracking" — a string comparison
 // that no arithmetic on ids can substitute for. fanOutLocally then asks "am I
 // contiguous within it". Numeric detection alone is blind to a reset that has
-// already climbed past our high-water mark (codex round 13), which is exactly
+// already climbed past our high-water mark, which is exactly
 // the case the epoch exists for.
 // gen is the subscription this frame arrived on. Checked under the SAME lock
 // that mutates, because a check taken in the caller and a mutation taken here
 // are two lock acquisitions with a replacement possible in between — which is
-// what codex round 2 found wrong with a single fence at the top of the frame
+// what is wrong with a single fence at the top of the frame
 // handler (BUG-2769).
 func (b *RedisBus) fanOutFromRedis(epoch string, n Notification, gen int64) {
 	// Registered FIRST so it runs LAST — after the Unlock below — because
-	// observer callbacks must not run under the bus mutex (codex round 9).
+	// observer callbacks must not run under the bus mutex.
 	var pending pendingReports
 	defer func() { b.flush(&pending) }()
 
@@ -1554,8 +1552,8 @@ func (b *RedisBus) fanOutFromRedis(epoch string, n Notification, gen int64) {
 // gen is the subscription this notification arrived on, or currentGen() for a
 // caller that is not the receive loop.
 //
-// CHECKED HERE, under the lock that APPENDS — not only in fanOutFromRedis
-// (codex round 3). That function checks, unlocks to do its epoch bookkeeping,
+// CHECKED HERE, under the lock that APPENDS — not only in fanOutFromRedis.
+// That function checks, unlocks to do its epoch bookkeeping,
 // and calls this one, which locks again; a replacement in between let a stale
 // notification into the fresh buffer. The rule that actually holds is per
 // MUTATION, not per call chain: every place that writes re-checks under the
@@ -1586,7 +1584,7 @@ func (b *RedisBus) fanOutLocally(n Notification, gen int64) {
 	// Coverage bookkeeping before the append — see knownFrom's comment.
 	switch {
 	case b.lastAppendedID == 0 && !b.epochJustChanged && b.highWaterID > 0 && n.ID <= b.highWaterID:
-		// A COLD START THAT IS ACTUALLY A COUNTER RESET (codex round 13).
+		// A COLD START THAT IS ACTUALLY A COUNTER RESET.
 		//
 		// lastAppendedID is 0 because dropCoverage zeroed it, not because
 		// this instance is new — and the id that arrived is at or below what
@@ -1634,7 +1632,7 @@ func (b *RedisBus) fanOutLocally(n Notification, gen int64) {
 	case n.ID <= b.lastAppendedID:
 		// THE COUNTER WENT BACKWARDS, which means the id space itself
 		// restarted — pad:watchevents_seq evicted under maxmemory, lost to a
-		// FLUSHDB, or restored from an older snapshot (codex round 6). Ids
+		// FLUSHDB, or restored from an older snapshot. Ids
 		// are no longer comparable across that boundary, so KEEPING the old
 		// entries is what does the damage: the ring would hold 99,100,101
 		// alongside a fresh 1,2,3, and a resume from 2 would replay the
@@ -1649,7 +1647,7 @@ func (b *RedisBus) fanOutLocally(n Notification, gen int64) {
 		// every reconnect until the new space climbs past it, because such a
 		// cursor is ambiguous (see ambiguousThrough for the cost).
 		//
-		// RESIDUAL WINDOW, accepted (codex round 8). This fires when the
+		// RESIDUAL WINDOW, accepted. This fires when the
 		// first post-reset notification ARRIVES, so between the counter
 		// resetting and the next publish, this instance still holds and will
 		// still replay the old ids. A client reconnecting inside that window
@@ -1672,7 +1670,7 @@ func (b *RedisBus) fanOutLocally(n Notification, gen int64) {
 			"Dropping the replay buffer — resumes from the previous id space will report sync_required",
 			"previous", b.lastAppendedID, "got", n.ID)
 		b.replay = newReplayBuffer(b.replaySize)
-		// n.ID + 1, NOT n.ID (BUG-2739, codex round 21). The id space
+		// n.ID + 1, NOT n.ID (BUG-2739). The id space
 		// RESTARTED, so the two spaces overlap and a client presenting
 		// n.ID-1 may be holding the OLD sequence's n.ID-1 — a different
 		// notification entirely. knownFrom = n.ID admitted exactly that
@@ -1808,7 +1806,7 @@ func (b *RedisBus) fanOutLocally(n Notification, gen int64) {
 // client on the instance because a dead socket's buffered tail arrived late.
 //
 // The generation is checked INSIDE dropCoverage's own critical section rather
-// than in a separate acquisition here (codex round 3) — a check and a reset in
+// than in a separate acquisition here — a check and a reset in
 // two locks is the TOCTOU this fence exists to close.
 func (b *RedisBus) dropCoverageForGen(reason string, gen int64) {
 	b.dropCoverageChecked(reason, &gen)

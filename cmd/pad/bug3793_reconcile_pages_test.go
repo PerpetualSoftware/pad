@@ -78,7 +78,7 @@ func TestBUG3793_GitHubStatusScansEveryPage(t *testing.T) {
 	}
 }
 
-// BUG-3793 (Codex r1): the completed-work report (changelog, standup) reads
+// BUG-3793: the completed-work report (changelog, standup) reads
 // newest-first pages until one reaches past the cutoff. It read one page as
 // every match, so a status with more matches than the page lost the older
 // ones; and it must not keep reading once a page is past the cutoff.

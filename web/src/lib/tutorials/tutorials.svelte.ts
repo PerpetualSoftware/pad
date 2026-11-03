@@ -72,7 +72,7 @@ export const tutorialsStore = {
 		try {
 			const r = await api.uiDismissals.dismiss(key);
 			// Merge, never replace: dismissals only grow, and an older answer
-			// arriving after a newer one must not bring a card back (codex r1).
+			// arriving after a newer one must not bring a card back.
 			if (isSameIdentity()) dismissed = new Set([...(dismissed ?? []), ...r.dismissed]);
 		} catch {
 			// Keep it hidden for this page load; the next load asks again.

@@ -10,8 +10,8 @@
  *
  * The code block stays VISIBLE until the diagram is actually drawn, and only
  * then is hidden, so a mermaid that never settles (a stalled import, a
- * pathological diagram) leaves the reader the code rather than nothing (codex
- * round 1 on TASK-2248 U2). A parse failure, a failure to load mermaid at
+ * pathological diagram) leaves the reader the code rather than nothing (TASK-2248 U2). A parse
+ * failure, a failure to load mermaid at
  * all, or a render or import that runs past its deadline (BUG-3239) removes
  * the empty diagram. The reader always gets one of the two.
  */

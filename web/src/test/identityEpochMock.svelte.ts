@@ -1,5 +1,5 @@
 /**
- * The family's fake `authStore` for identity-fence suites (BUG-3084).
+ * The family's fake `authStore` for identity-fence suites  (BUG-3084).
  *
  * WHY THIS EXISTS, and it is not convenience. Each surface's suite grew its own
  * double with `let epoch = 0` — a plain closure variable. That models the
@@ -75,7 +75,7 @@ export function bindReactiveEpoch(hook: {
  * function did NOT: it read and wrote this module's signal directly, so it
  * returned true even with both hooks disconnected and every PRECONDITION leg
  * built on it passed against exactly the non-reactive double it existed to
- * detect. Codex reproduced that. A guard that cannot fail for the case it is
+ * detect. A guard that cannot fail for the case it is
  * named after is the failure it is named after, wearing its own badge.
  *
  * Pass the values the PAGE will see: `() => authStore.identityEpoch` and

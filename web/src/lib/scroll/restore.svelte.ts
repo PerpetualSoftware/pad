@@ -37,7 +37,7 @@
 //      heights.
 //   4. Per-key one-shot guard (`restoredKey`). For routes that reuse a
 //      component instance across URLs, the lifetime-scoped `restored`
-//      boolean from round 1 blocked the second back-nav. Keying the
+//      boolean from the first version blocked the second back-nav. Keying the
 //      guard by `persistKey()` lets each new URL get a fresh shot.
 //   5. Optional `persistKey` localStorage fallback. sessionStorage is
 //      per-tab; closing and reopening a tab (or the workspace
@@ -230,8 +230,7 @@ export function createScrollRestoration(
 	// entry — don't overwrite it with a stale LS value." A bare boolean
 	// like the previous `snapshotRestoreCalled` was unsafe: the LS
 	// `$effect` reset it on every key change, blowing away a signal set
-	// by a snapshot.restore that beat the effect to the microtask queue
-	// (Codex BUG-1425 round 5 P1).
+	// by a snapshot.restore that beat the effect to the microtask queue.
 	let snapshotKey: string | null | undefined = undefined;
 
 	// Per-key one-shot guard. `undefined` = never restored (or just
@@ -239,7 +238,7 @@ export function createScrollRestoration(
 	// value = already restored for that key. Non-reactive on purpose: a
 	// previous version made this a $state boolean that the gated effect
 	// wrote to, which invalidated itself and cancelled the RAF via
-	// cleanup-then-rerun (Codex round 1 of BUG-1425). Writing a plain
+	// cleanup-then-rerun. Writing a plain
 	// variable doesn't establish a dependency.
 	let restoredKey: string | null | undefined = undefined;
 
@@ -264,8 +263,8 @@ export function createScrollRestoration(
 	// chance to call snapshot.restore first. The microtask checks
 	// `snapshotKey === key` to skip when snapshot won the race — that's
 	// the per-key signal that survives effect re-runs (vs. the bare
-	// boolean we used previously, which Codex round 5 P1 caught us
-	// blowing away here).
+	// boolean we used previously, which would
+	// blow it away here).
 	//
 	// `pending` is intentionally NOT cleared on key change: pending
 	// values for the previous key are filtered by the gated effect's
@@ -289,7 +288,7 @@ export function createScrollRestoration(
 			// If snapshot.restore for the NEW key already fired before
 			// this effect (popstate beat the effect to the microtask
 			// queue), `snapshotKey === key` and we preserve it.
-			// Codex BUG-1425 round 6 P1.
+			// (BUG-1425)
 			if (snapshotKey !== key) {
 				snapshotKey = undefined;
 			}
@@ -349,7 +348,7 @@ export function createScrollRestoration(
 	// IMPORTANT — never write `pending` from inside this effect. It's
 	// tracked here; the write would invalidate the effect and Svelte's
 	// cleanup-then-rerun semantics would cancel the queued RAF before
-	// scrollTo fires (BUG-1425 round 1 regression).
+	// scrollTo fires (BUG-1425 regression).
 	$effect(() => {
 		if (pending === null) return;
 		const key = opts.persistKey?.() ?? null;
@@ -373,7 +372,7 @@ export function createScrollRestoration(
 		// taking another 200px once relationships resolve), the layout
 		// shifts down and we end up visually too far down the page —
 		// scrollY=y now points at a different DOM position than at
-		// save time. BUG-1425 round 11.
+		// save time. BUG-1425.
 		//
 		// The loop continues until BOTH conditions hold:
 		//   (a) actual scroll reached the saved y, AND
@@ -402,7 +401,7 @@ export function createScrollRestoration(
 		// silently bumps scrollY to keep the visible anchor stable).
 		// That browser-driven scroll change isn't user input but our
 		// previous diff check treated it as one and bailed mid-restore,
-		// leaving the user 200-400px past their target. BUG-1425 round 12.
+		// leaving the user 200-400px past their target. BUG-1425.
 		let userScrolled = false;
 		// Ignore input the user did not aim at the PAGE: an event a modal already
 		// handled (`defaultPrevented`) or one originating inside the frontmost
@@ -461,7 +460,7 @@ export function createScrollRestoration(
 				// so the gated effect will NOT re-fire, and a bare return would strand
 				// the parked offset forever. The default `.main-content`/window
 				// resolver never returns null in-browser, so existing callers are
-				// unaffected (Codex review, TASK-2171).
+				// unaffected.
 				if (performance.now() - startTime > budgetMs) {
 					cleanupListeners();
 					return;
@@ -525,8 +524,7 @@ export function createScrollRestoration(
 				const key = opts.persistKey?.() ?? null;
 				// Mark THIS key as snapshot-claimed so the LS fallback's
 				// microtask sees `snapshotKey === key` and skips. This
-				// replaces the unsafe `snapshotRestoreCalled` boolean
-				// (Codex BUG-1425 round 5 P1).
+				// replaces the unsafe `snapshotRestoreCalled` boolean.
 				snapshotKey = key;
 				if (skipRestore) {
 					// The page positioned the scroller itself for this navigation.
@@ -543,8 +541,7 @@ export function createScrollRestoration(
 					// LS fallback racing ahead of this restore call).
 					// The freshly-arrived snapshot is more authoritative
 					// than the cross-tab LS mirror — if the user
-					// genuinely ended at top, we honor that. Codex
-					// round 5 P2-B.
+					// genuinely ended at top, we honor that.
 					pending = null;
 					return;
 				}

@@ -10,7 +10,7 @@ import { nextViewerResourceGen, viewerResourceKey } from './viewerResource';
  * subtlest thing in this task, and inline it could only ever be exercised
  * through `AttachmentSurfaceHost`'s props — which are handed the answer and so
  * cannot tell a correct counter from one that never moves, nor a healthy flush
- * from a self-invalidating one (Codex round 6).
+ * from a self-invalidating one.
  *
  * SELF-WRITE DISCIPLINE (CONVE-1688). The effect writes `gen`, which it must
  * therefore never READ in its tracked scope: an `$effect` that depends on what

@@ -840,7 +840,7 @@ func actionItemList(ctx context.Context, input map[string]any, env ActionEnv) (*
 	}
 	// One row past the limit tells whether the list was cut short (BUG-3704):
 	// the result then says so. It never pages for the agent, which is what
-	// the limit is for (lead ruling).
+	// the limit is for.
 	out["limit"] = limit + 1
 
 	res, err := env.Dispatch(ctx, []string{"item", "list"}, out)
@@ -851,7 +851,7 @@ func actionItemList(ctx context.Context, input map[string]any, env ActionEnv) (*
 }
 
 // actionItemStarred handles pad_item.action=starred. Like list it never pages
-// (BUG-3790, lead ruling, as BUG-3704 ruled for list): it asks for one row past
+// (BUG-3790, as BUG-3704 did for list): it asks for one row past
 // the list cap, on both transports (the HTTP mapper sends it as ?limit=, stdio
 // as pad item starred --limit), and a result that had the extra row says
 // has_more with the truncation note.

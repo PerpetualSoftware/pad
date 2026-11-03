@@ -8,7 +8,7 @@
 // A limit on Pro (TASK-3619: the interim storage cap) has no plan to upgrade
 // to: the payer gets "Need more? Contact us", anyone else is asked to raise
 // it with the payer.
-// Copy is plain and was shown to Dave before merge (TASK-3601 ruling).
+// Copy is plain and was reviewed before merge (TASK-3601).
 
 /** Where Upgrade goes: the plan picker, which starts checkout. */
 export const BILLING_PATH = '/console/billing';
@@ -43,7 +43,7 @@ export function planLimitPromptModel(
 	if (!ctx.commerceAllowed || !ctx.billingAvailable) {
 		return { message: statement, action: 'none', hint: '', note: '' };
 	}
-	// Unknown payer: say what happened and offer nothing (codex r1). Checkout
+	// Unknown payer: say what happened and offer nothing. Checkout
 	// sells Pro to the CURRENT user, so offering it to someone who is not the
 	// payer would sell them a plan that does not lift this limit. The server
 	// that serves this bundle always says (TASK-3601), so this is a fallback.

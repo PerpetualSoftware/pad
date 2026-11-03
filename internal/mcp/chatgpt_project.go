@@ -8,11 +8,11 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
-// Response minimization for the ChatGPT catalog (TASK-3321 U3, ruling R2).
+// Response minimization for the ChatGPT catalog (TASK-3321 U3).
 // OpenAI's review requires tool responses to carry only what the request
 // needs, with no counters or diagnostics.
 //
-// THE PERSONAL-DATA POLICY, exactly (Dave's ruling on TASK-3345 #2): PAD ADDS
+// THE PERSONAL-DATA POLICY, exactly (TASK-3345): PAD ADDS
 // NO PERSONAL DATA. What Pad itself attaches to a response (internal ids,
 // account emails, an email-shaped display name, which is masked below) is
 // stripped. What the USER wrote passes through unchanged: item titles and
@@ -244,7 +244,7 @@ func projectChatGPTResult(t ChatGPTTool, in map[string]any, res *CallToolResult)
 		if t.Name != "archive_item" {
 			// Every other source answers JSON. Anything else is not
 			// something the shapes can vouch for, so it does not pass
-			// (codex review: fail closed).
+			// (fail closed).
 			return NewErrorResult(ErrorPayload{Code: ErrServerError, Message: t.Name + " returned an unexpected response"})
 		}
 		// The source answers 204 with no body; say what happened. The ref
@@ -445,7 +445,7 @@ func relationRefs(target any) any {
 
 // errorShape is what an error envelope may carry to ChatGPT. details (which
 // can hold item data, ids and the upgrade link) and every other key are
-// dropped (codex review).
+// dropped.
 var errorShape = shape{"error": shapeWith(shapeKeys("code", "message", "hint", "field", "expected"), shape{
 	"available_workspaces": shapeKeys("slug", "name", "default"),
 })}
@@ -501,7 +501,7 @@ var emailLike = regexp.MustCompile(`[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2
 // address. A user can set their display name to their email, and a name is
 // shown wherever a person is; OpenAI's review forbids emails in responses.
 // It is not replaced by the local part, which would be a new identifier
-// (lead's ruling on TASK-3321).
+// (TASK-3321).
 const maskedPersonName = "a Pad user"
 
 // maskEmailShapedNames replaces email-shaped person names in place.

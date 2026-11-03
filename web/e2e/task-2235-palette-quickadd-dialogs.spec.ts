@@ -4,12 +4,12 @@ import { browserLogin, seedDoc } from './lib/collab-helpers';
 import type { SuiteFixture } from './fixtures';
 
 /**
- * TASK-2235 U2 (audit C7): the command palette and quick-add are real dialogs.
+ * TASK-2235 U2  (audit C7): the command palette and quick-add are real dialogs.
  *
- *  - Quick-add is the Modal primitive (native showModal): Tab cannot leave it,
+ *  - Quick-add is the Modal primitive  (native showModal): Tab cannot leave it,
  *    Escape closes it, and an Escape meant for its collection picker closes
  *    only the picker.
- *  - The palette keeps its own element (lead ruling): on desktop a
+ *  - The palette keeps its own element : on desktop a
  *    `role=dialog` `aria-modal` surface that keeps Tab inside; on mobile in a
  *    workspace a sheet docked above the live bottom nav, which (like
  *    DockedSheet) does not claim aria-modal and cycles Tab through the
@@ -79,12 +79,12 @@ test.describe('TASK-2235 U2: palette and quick-add are dialogs (desktop)', () =>
 		expect(new URL(page.url()).searchParams.get('item')).toBe(paneRef);
 
 		// The same from a NON-text control in the palette. From the input the
-		// route guard already stood down (text-entry targets own Escape), so
+		// route guard already stood down  (text-entry targets own Escape), so
 		// this is the case the palette's role="dialog" decides: before it, the
 		// route saw no foreign dialog and closed the pane on the same press.
 		// With an empty query the input is the palette's only tabbable control,
 		// so put focus on the palette surface itself, where a click on its body
-		// lands it (tabindex=-1).
+		// lands it  (tabindex=-1).
 		await openPalette(page);
 		await page.locator(PALETTE).focus();
 		expect(await focusOwner(page)).toBe('palette');
@@ -136,7 +136,7 @@ test.describe('TASK-2235 U2: palette and quick-add are dialogs (desktop)', () =>
 		await expect(page.getByRole('textbox', { name: 'New item title' })).toBeFocused();
 
 		// A native modal dialog lets Tab step out of the DOCUMENT to the browser
-		// chrome (activeElement reads <body>) and back; what it never reaches is
+		// chrome  (activeElement reads <body>) and back; what it never reaches is
 		// the inert page behind it, which is the claim.
 		const owners = new Set<string>();
 		for (let i = 0; i < 8; i++) {
@@ -161,16 +161,16 @@ test.describe('TASK-2235 U2: palette and quick-add are dialogs (desktop)', () =>
 		await expect(picker).toBeVisible();
 		// The picker's own box reaches past the dialog's: hit-testing its bottom
 		// edge finds the picker, which a clip by the dialog would prevent.
-		// The PICKER'S edge, not its last option (BUG-3529): the picker scrolls
+		// The PICKER'S edge, not its last option  (BUG-3529): the picker scrolls
 		// its list past 280px, and the suite's shared workspace gains
 		// collections as other specs run, so the last option could be scrolled
-		// out of the picker (measured: 15 extra collections failed every run).
+		// out of the picker  (measured: 15 extra collections failed every run).
 		// And at the fixture's own four collections the last option ends INSIDE
-		// the dialog's box (measured: 319 against 324), where no clip shows, so
+		// the dialog's box  (measured: 319 against 324), where no clip shows, so
 		// the old check could not fail. Both checks below go red on a dialog
 		// forced to overflow:hidden: it scrolls its own content to keep the
 		// focused picker in view, so the picker no longer reaches past it
-		// (measured: 33px past, then -0.2px).
+		//  (measured: 33px past, then -0.2px).
 		const edge = await picker.evaluate((p) => {
 			const d = (p.closest('dialog') as HTMLElement).getBoundingClientRect();
 			const r = p.getBoundingClientRect();

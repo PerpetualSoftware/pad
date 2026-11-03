@@ -153,8 +153,8 @@ describe('CommentEditor.appendMarkdown', () => {
 
 	it('survives a quote arriving while a submit is in flight', async () => {
 		// `doSubmit` clears on success. A quote pushed in during the round trip
-		// is not part of what was sent, and an unconditional clear destroys it
-		// (codex round 5). Same class as the item-identity capture that already
+		// is not part of what was sent, and an unconditional clear destroys it.
+		// Same class as the item-identity capture that already
 		// guards this path, applied to the content rather than the item.
 		let release: (() => void) | null = null;
 		const inFlight = new Promise<void>((resolve) => {

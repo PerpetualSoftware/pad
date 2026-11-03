@@ -14,10 +14,10 @@ import {
 
 /**
  * BUG-3260: Settings -> General showed an EMPTY workspace name on a direct load
- * or reload (measured in e2e, owner included), while in-app navigation filled
+ * or reload  (measured in e2e, owner included), while in-app navigation filled
  * it. This suite reproduces the load orders in isolation.
  *
- * MECHANISM (traced in e2e): on a cold load the page's load() and the layout
+ * MECHANISM  (traced in e2e): on a cold load the page's load() and the layout
  * both call workspaceStore.setCurrent for the same slug at once. The page's
  * call is superseded: it returns before `current` is written, because
  * setCurrent drops a stale call's writes. load() then read `current` while it
@@ -191,7 +191,7 @@ describe('BUG-3260: the General name field holds the workspace name however the 
 		second.resolve({ id: 'id-ws', slug: 'ws', name: 'Real Name', context: { repo: 'x' } });
 
 		// 'Real Name' comes only from these two answers. The store is a module
-		// singleton, so an earlier leg's workspace ('WS') can still be current
+		// singleton, so an earlier leg's workspace  ('WS') can still be current
 		// here; a load that read the store at the wrong moment shows that
 		// instead, or '' on a real cold load.
 		await waitFor(() => expect(nameField()?.value).toBe('Real Name'));

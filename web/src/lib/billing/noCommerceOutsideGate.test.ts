@@ -98,7 +98,7 @@ describe('no commerce outside the commerceAllowed gate', () => {
 		expect(hits).toEqual([]);
 	});
 
-	// The two account menus are not opened by the e2e (codex r2), so their one
+	// The two account menus are not opened by the e2e, so their one
 	// Billing link is pinned structurally: its opening tag sits directly under
 	// the commerceAllowed block, comments aside.
 	it('the account menus open their Billing link directly under commerceAllowed', () => {

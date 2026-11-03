@@ -6,8 +6,8 @@ import { api } from './client';
 //
 // These cases exist because a response header is middlebox- and
 // attacker-influenced input, and the two transports must suppress and display
-// exactly the same set of values. Codex round 2 caught the web client accepting
-// what the CLI rejects (`Number()` trims and takes decimals); round 3 caught the
+// exactly the same set of values. Review caught the web client accepting
+// what the CLI rejects (`Number()` trims and takes decimals); a later pass caught the
 // rest of the gap — exponent notation, hex, and integers past 2^53, all of which
 // Go's strconv.Atoi refuses and `Number()` happily converts or rounds.
 //
@@ -68,8 +68,8 @@ describe('importBundle stale-body header', () => {
 		for (const v of [
 			'abc', '-1', 'NaN', '2.5', ' 7 ', '7e0', '0x7', '+7', '1e309', '9007199254740993',
 			// A repeated header: Headers.get joins the values, and the Go side
-			// refuses on len(Values) != 1 rather than reporting the first
-			// (codex round 4 P2). The same response must say the same thing on
+			// refuses on len(Values) != 1 rather than reporting the first.
+			// The same response must say the same thing on
 			// both surfaces.
 			'2, 3',
 			// An internal NUL, and the two values either side of the 2^53-1

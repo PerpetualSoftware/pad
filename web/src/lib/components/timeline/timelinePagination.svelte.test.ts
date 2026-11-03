@@ -336,8 +336,8 @@ describe('timeline pagination past dropped windows (BUG-2765)', () => {
 		// resolves, itemSlug matches again, so only the view generation
 		// distinguishes "this page belongs to what is on screen" from "this
 		// page belongs to a view that has since been replaced twice". The same
-		// generation is what a local comment delete advances via loadTimeline
-		// (codex round 6); this is the harness-reachable form of it.
+		// generation is what a local comment delete advances via loadTimeline;
+		// this is the harness-reachable form of it.
 		pages.push({
 			entries: [entry('e-a1', '2026-01-01T00:00:09Z', 'A page one')],
 			has_more: true,
@@ -383,7 +383,7 @@ describe('timeline pagination past dropped windows (BUG-2765)', () => {
 	it('re-enables Load More when a paging request resolved while away', async () => {
 		// loadMore's own cleanup is identity-guarded, so a page resolving on
 		// another item leaves loadingMore set. Coming back found the button
-		// permanently disabled (codex round 9) — a dead control, which reads
+		// permanently disabled — a dead control, which reads
 		// as "there is nothing more" rather than as a bug.
 		pages.push({
 			entries: [entry('e-a1', '2026-01-01T00:00:09Z', 'A page one')],

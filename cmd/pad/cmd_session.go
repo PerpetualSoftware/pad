@@ -250,7 +250,7 @@ Newest first. Use --format json for the stable shape.`,
 				}
 				// Directory IDENTITY, not spelling: both sides resolve
 				// symlinks so a checkout reached through a link matches its
-				// real path (codex round 5). A stored cwd that no longer
+				// real path. A stored cwd that no longer
 				// exists compares by its cleaned spelling.
 				if cwdWant != "" && canonicalDir(r.Cwd) != cwdWant {
 					continue
@@ -317,7 +317,7 @@ func canonicalDir(p string) string {
 // printableCell makes a self-declared value safe for the terminal table:
 // every non-printable rune (newline, carriage return, ESC, ...) becomes
 // '?', so a hostile agent name or directory cannot forge a row or drive
-// the terminal (codex round 3). Replaced, not dropped, so the value is
+// the terminal. Replaced, not dropped, so the value is
 // visibly odd rather than silently shortened. JSON output is untouched —
 // encoding/json escapes on its own.
 func printableCell(s string) string {
@@ -673,8 +673,7 @@ func serverSessionCounts() (sessionCounts, bool) {
 	// explicit --url wins (and promotes Mode to remote), otherwise the
 	// directory's .pad.toml `url` override applies. Without this, status
 	// would query the global config's server while the monitor connects to
-	// the repo's (Codex R1 MED-2), and `--url B` would be ignored entirely
-	// (Codex R2 finding 5).
+	// the repo's, and `--url B` would be ignored entirely.
 	if urlFlag != "" {
 		cfg.URL = urlFlag
 		cfg.LoadedFromFlags = true
@@ -759,7 +758,7 @@ func printSessionStatus(st sessionStatusJSON) {
 	}
 	fmt.Fprintf(tw, "Announced:\t%s\n", announced)
 
-	// The honest tri-state note the ruling requires: an explicit disarm in
+	// The honest tri-state note: an explicit disarm in
 	// an auto_arm repo holds only for this session.
 	if st.LocalState == "disarmed" && st.AutoArm {
 		fmt.Fprintf(tw, "Note:\tdisarmed this session; auto_arm will re-arm the next session\n")

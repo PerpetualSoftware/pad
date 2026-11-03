@@ -56,8 +56,8 @@ func CoerceFields(fields map[string]any, schema models.CollectionSchema) map[str
 	for k, v := range fields {
 		def, declared := byKey[k]
 		if !declared {
-			// DECISION POINT — BUG-2850 undeclared-key disposition (with Dave:
-			// refuse / warn / keep). Today's behaviour is KEEP, which is what
+			// DECISION POINT — BUG-2850 undeclared-key disposition (refuse /
+			// warn / keep). Today's behaviour is KEEP, which is what
 			// silently stores materials_cost="42" on a collection that never
 			// declared it. Refuse becomes a returned issue here; warn becomes a
 			// collected key. Deliberately isolated to this branch so the choice
@@ -84,7 +84,7 @@ func coerceValue(def models.FieldDef, v any) any {
 	// in one of those is a JSON array. Without this entry `--field
 	// 'members=["PEOPL-1"]'` arrived as the STRING `["PEOPL-1"]` and the
 	// validator refused it for a shape the caller never sent, which made the
-	// type unwritable from the CLI entirely (codex round 1).
+	// type unwritable from the CLI entirely.
 	case "json", "multi_select", "multi_relation":
 		var parsed any
 		if err := models.DecodeJSONKeepingNumbers([]byte(s), &parsed); err == nil {

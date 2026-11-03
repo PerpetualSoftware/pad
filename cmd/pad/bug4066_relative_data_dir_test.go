@@ -44,7 +44,7 @@ func TestMain_BUG4066Child(t *testing.T) {
 
 // runMainWith runs the real main() with these arguments, so a test of what
 // main() does before Execute (the completion silence) tests main() itself and
-// not a copy of its steps (BUG-4066 r4 item 6). main may os.Exit; this is a
+// not a copy of its steps (BUG-4066). main may os.Exit; this is a
 // child process, and the parent reads only its output.
 func runMainWith(args ...string) {
 	os.Args = append([]string{os.Args[0]}, args...)
@@ -95,7 +95,7 @@ func TestBUG4066_ServerWarnsThroughSlog(t *testing.T) {
 }
 
 // `pad mcp serve` never loads config, so it checks the data dir itself and
-// warns once on its own stderr (BUG-4066 r1, Q1). stdin is closed, so the
+// warns once on its own stderr (BUG-4066). stdin is closed, so the
 // server sees EOF and returns.
 func TestBUG4066_MCPServeWarnsOnce(t *testing.T) {
 	out := runBUG4066Child(t, "mcp")

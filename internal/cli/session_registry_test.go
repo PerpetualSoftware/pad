@@ -142,7 +142,7 @@ func TestRegisterSession_PadSessionPidOverridesClaudePid(t *testing.T) {
 	}
 }
 
-// TestRegisterSession_RepeatedCallsOneFile is the day-57 shape as a
+// TestRegisterSession_RepeatedCallsOneFile is the old shape as a
 // counterfactual: ten registrations from one session produce ONE record,
 // the newest. (v1 produced ten, keyed on ten dead command pids.)
 func TestRegisterSession_RepeatedCallsOneFile(t *testing.T) {
@@ -428,7 +428,7 @@ func TestSessionRecord_JSONShape(t *testing.T) {
 // TestListSessions_SemanticallyMalformedIsUnknown: JSON that parses but
 // is not a registration this code wrote must be MALFORMED (unknown, kept
 // without an age bound) — not a dead legacy record to prune, and not a
-// live one (codex round 1 P2).
+// live one.
 func TestListSessions_SemanticallyMalformedIsUnknown(t *testing.T) {
 	dir := registryEnv(t)
 	if err := os.MkdirAll(dir, 0700); err != nil {
@@ -657,7 +657,7 @@ func TestSessionsDir_TightensExistingMode(t *testing.T) {
 
 // TestReadSessionRecord_InputHardening: an oversized file, invalid UTF-8,
 // and a FIFO under a session-shaped name are all MALFORMED — and the FIFO
-// does not block the reader (codex round 8).
+// does not block the reader.
 func TestReadSessionRecord_InputHardening(t *testing.T) {
 	dir := registryEnv(t)
 	if err := os.MkdirAll(dir, 0700); err != nil {

@@ -68,8 +68,8 @@ type Metrics struct {
 	// failed.
 	//
 	// REGISTERED SEPARATELY, via RegisterRedisUp, so a deployment with no
-	// Redis omits the series entirely rather than exporting a permanent 0
-	// (codex round 1 P2). A 0 means "Redis is down" to anything scraping
+	// Redis omits the series entirely rather than exporting a permanent 0.
+	// A 0 means "Redis is down" to anything scraping
 	// it, so registering unconditionally would have every single-process
 	// binary alerting on an outage of a dependency it does not have.
 	// Absence is the honest signal for "not applicable", and it matches
@@ -1172,7 +1172,7 @@ type OAuthActiveTokensProvider func() (int64, error)
 // surface. Prometheus tolerates a missing series cleanly (renders as
 // a gap; alerting rules can use absent() or stale-for thresholds).
 //
-// Codex review on the TASK-961 PR caught the prior NewInvalidMetric
+// (TASK-961) The prior NewInvalidMetric
 // approach — original comment claimed Prometheus would drop the NaN,
 // but the actual behavior is whole-scrape failure.
 func (m *Metrics) RegisterOAuthActiveTokensCollector(provider OAuthActiveTokensProvider) {

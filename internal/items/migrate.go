@@ -144,7 +144,7 @@ func MigrateFields(
 		// cannot supply — which bulk move rejects on before it ever reaches
 		// the stripped-schema validation, so a legacy target requiring
 		// implementation_notes failed bulk move while single move and copy
-		// succeeded. Same key, same item, two answers (Codex round 4).
+		// succeeded. Same key, same item, two answers.
 		if models.IsReservedItemField(f.Key) {
 			continue
 		}
@@ -229,7 +229,7 @@ func StillDropped(dropped []string, finalFields map[string]any) []string {
 		// on a move, `{"due_date": null}` leaves the key present with a nil
 		// value. Treating that as restored would suppress a REAL drop on the
 		// strength of a key that carries nothing, which is the silent loss
-		// this whole change exists to end (Codex round 3).
+		// this whole change exists to end.
 		if v, restored := finalFields[key]; restored && v != nil {
 			continue
 		}
@@ -247,7 +247,7 @@ func StillDropped(dropped []string, finalFields map[string]any) []string {
 // removed, for validating the OUTPUT of MigrateFields.
 //
 // Only migration and copy need this, which is exactly why it is a separate
-// function rather than a skip inside ValidateFieldsDetailed (Codex round 3).
+// function rather than a skip inside ValidateFieldsDetailed.
 // That validator is shared with create, full update and every bulk path, and a
 // blanket skip there would stop enforcing a grandfathered declaration on the
 // paths where the user really is authoring that key — letting arbitrary junk

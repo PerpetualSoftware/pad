@@ -559,8 +559,8 @@ func TestMCPCapability_HostAllowlist(t *testing.T) {
 	}
 }
 
-// TestMCPCapability_HostAllowlistBehindAProxy is the lead's TASK-2319
-// ruling: behind a proxy that rewrites Host to the backend's name, the
+// TestMCPCapability_HostAllowlistBehindAProxy is the TASK-2319
+// rule: behind a proxy that rewrites Host to the backend's name, the
 // public host arrives in X-Forwarded-Host, which is honoured only from a
 // peer PAD_TRUSTED_PROXIES trusts. From any other peer it is ignored, so a
 // rebinding page cannot pass by sending it. The refusal names the fix.

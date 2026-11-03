@@ -223,8 +223,7 @@ path to stream to stdout (useful for piping into image viewers etc.).`,
 // file and atomically renames it onto outPath on success. Shared by
 // `attachment download` and `attachment view -o <path>` so both get
 // the same crash-safe behavior (a bad ID, auth failure, or partial
-// download never truncates an existing destination — Codex round 1
-// P2 on the original download command).
+// download never truncates an existing destination, the original download command).
 func downloadAttachmentToPath(client *cli.Client, ws, id, variant, outPath string) (mime string, n int64, err error) {
 	dir := filepath.Dir(outPath)
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(outPath)+".*.tmp")
@@ -288,7 +287,7 @@ func parseAttachmentFilename(disposition string) string {
 // Treating it as a path component is how `..` turns into a write outside the
 // temp directory this command just created: filepath.Ext("..") is ".", which
 // is non-empty, so even an extension check waves it through, and
-// filepath.Join(dir, "..") is dir's PARENT (codex round 26).
+// filepath.Join(dir, "..") is dir's PARENT.
 //
 // The server has its own guard, and it is being tightened for this case. This
 // one is independent on purpose: a client that builds a local path out of a
@@ -304,7 +303,7 @@ func safeLocalFilename(name string) string {
 // hostOS is the OS whose filesystem rules safeLocalFilename applies. A
 // variable rather than a direct runtime.GOOS read so a test can drive the
 // production wrapper under each OS; a wrapper hard-coding either answer is
-// then caught on any build host (codex round 1 on BUG-3186).
+// then caught on any build host.
 var hostOS = runtime.GOOS
 
 // safeLocalFilenameFor is safeLocalFilename for a named OS, so the Windows
@@ -316,7 +315,7 @@ var hostOS = runtime.GOOS
 // kept as given ("Meeting: notes.pdf" is legal there), because each saver
 // applies its own filesystem's rules, as browsers do.
 //
-// KNOWN EDGE, ACCEPTED (lead ruling, BUG-3186): a Linux or macOS CLI writing
+// KNOWN EDGE, ACCEPTED (BUG-3186): a Linux or macOS CLI writing
 // onto an NTFS mount (WSL /mnt/c, a USB drive) keeps the colon. The CLI cannot
 // see the target filesystem's rules from the OS name. This is not a bug to
 // rediscover.
@@ -340,7 +339,7 @@ func safeLocalFilenameFor(goos, name string) string {
 	// is "." — non-empty — so the caller's MIME-extension fallback never
 	// fires and the temp file dispatches on no extension; Windows cannot
 	// store the name at all. Strip the dots instead of refusing: "photo." is
-	// an ordinary name wearing one (codex closing round). Cannot empty the
+	// an ordinary name wearing one. Cannot empty the
 	// name — the dots-only case returned above.
 	name = strings.TrimRight(name, ".")
 	if goos == "windows" {
@@ -356,7 +355,7 @@ func safeLocalFilenameFor(goos, name string) string {
 // but not gzip, tar, XML, YAML, TOML, HTML, JavaScript or several document
 // types the server has always allowed. So `pad attachment view` produced an
 // extensionless temp file for those, defeating its own contract of handing a
-// path to something that opens files by extension (codex round 26).
+// path to something that opens files by extension.
 //
 // Two tables for one relationship is the defect; the delegation is the fix.
 func extensionForMIME(mimeType string) string {
@@ -420,7 +419,7 @@ do that.`,
 					// so it gets the same reduction as the server-supplied
 					// name before becoming a path component — a raw
 					// traversal-shaped id joined onto the temp dir escapes
-					// it (codex closing round 3).
+					// it.
 					base := safeLocalFilename(id)
 					if base == "" {
 						base = "attachment"
@@ -438,7 +437,7 @@ do that.`,
 					// the path to whatever opens files — `open "$IMG"`,
 					// `xdg-open`, an image viewer — and those dispatch on the
 					// extension. An extensionless temp file silently stops
-					// opening as an image (codex round 24).
+					// opening as an image.
 					name += extensionForMIME(meta.MIME)
 				}
 				dir, err := os.MkdirTemp("", "pad-attachment-")

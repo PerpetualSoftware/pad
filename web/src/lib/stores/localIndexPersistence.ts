@@ -88,8 +88,7 @@ export interface HydrateResult {
 	 */
 	accessEpoch: string | null;
 	/**
-	 * Did this call actually READ the durable cache? (IDEA-2898, review round 2
-	 * of the reduced tip.)
+	 * Did this call actually READ the durable cache? (IDEA-2898).
 	 *
 	 * Every failure here returns the same empty payload as a genuinely empty
 	 * cache — deliberately, because a best-effort cache that throws should not
@@ -158,7 +157,7 @@ interface RetagsRow {
  * borrowed stamp honest. A genuine server-side stamp would need that endpoint
  * to return an ENVELOPE — it currently writes a naked array — and that is a
  * wire-shape break for the web, CLI and MCP clients at once. Priced and
- * declined (lead ruling, day 78); this note is here so the next person who
+ * declined; this note is here so the next person who
  * wants it knows what it costs.
  */
 interface CollectionsRow {
@@ -216,7 +215,7 @@ function seqFromCursor(cursor: string): number {
 
 /**
  * Write a tombstone for `id` at `deletedAtSeq`, but NEVER lower an existing
- * tombstone's stamp (codex F4). Tombstone puts are otherwise last-write-wins,
+ * tombstone's stamp. Tombstone puts are otherwise last-write-wins,
  * so an out-of-order cross-tab eviction (a lower-cursor delta arriving after a
  * higher one) could weaken the gate and let a stale row between the two stamps
  * resurrect. Keeping the max makes the stamp monotonic. Best-effort like every
@@ -265,7 +264,7 @@ async function raiseTombstone(
  * newer row per id and a replayed range is idempotent. See TASK-2906
  * checkpoint 2 for the measurement.
  *
- * BUT POSITION IS ALL A BEHIND CURSOR SETTLES (review round 1). A snapshot that
+ * BUT POSITION IS ALL A BEHIND CURSOR SETTLES. A snapshot that
  * is behind in position can still be strictly NEWER IN SCOPE — an access
  * revocation writes no item, so the epoch changes while the cursor does not, and
  * such a snapshot can lose the position race to an unrelated mutation in another
@@ -280,8 +279,8 @@ async function raiseTombstone(
  * the one thing that would break this: it erases the signal and leaves the
  * revoked rows with nothing left to notice them.
  *
- * ORDERING PRECISION — and why this does NOT go through `seqFromCursor`
- * (review round 2). Both sides of THIS comparison are cursors, which travel as
+ * ORDERING PRECISION — and why this does NOT go through `seqFromCursor`.
+ * Both sides of THIS comparison are cursors, which travel as
  * opaque decimal strings and are unrounded until something calls `Number` on
  * them, so an exact compare here is meaningful and is what `compareCursors`
  * does. The lossiness of `ItemIndexRow.seq` — a JSON `number`, already rounded
@@ -314,7 +313,7 @@ async function readSyncRow(metaStore: {
 }
 
 /**
- * Order two cursors EXACTLY (TASK-2906, review round 2). Cursors are opaque
+ * Order two cursors EXACTLY (TASK-2906). Cursors are opaque
  * decimal strings on the wire, so comparing them through `Number` ties any pair
  * that differs only above 2^53 — and a tie reads as "not behind", which is the
  * direction that lets a stale batch through.
@@ -449,7 +448,7 @@ export async function hydrate(
 		// is left alone (also skips a row that has since MOVED to another
 		// collection — its `collection_id` no longer matches).
 		//
-		// RESIDUAL (codex F3, lead-accepted option (a)). This ALWAYS trusts the
+		// RESIDUAL (accepted trade-off). This ALWAYS trusts the
 		// recorded rename, so it can revert a NEWER authoritative slug. TRIGGER: a
 		// tab records rename coll-a v0->v1 (overlay {coll-a:v1}), MISSES the later
 		// v1->v2 rename SSE (reconnect gap), then receives an item-delta carrying
@@ -558,7 +557,7 @@ export async function hydrate(
  * `/items-changes`". That is true whenever one happens and it is NOT
  * guaranteed: reconciles are SSE-driven rather than timed, so a quiet
  * workspace whose SSE connection has dropped may not poll again in that
- * session (codex round 2 P1). The correction matters because the two
+ * session. The correction matters because the two
  * statements bound different things — the poll bounds how long the durable
  * cache LAGS, and provenance is what says no row is ever at RISK. Only the
  * second is load-bearing, and it was the one I had not written down.
@@ -668,7 +667,7 @@ export function shouldApplyRetag(
 	// move to another collection between the RAM retag and this transaction,
 	// and applying the renamed collection's slug to it would persist a row
 	// whose collection_id and collection_slug disagree — behind the cursor,
-	// so no delta repairs it (codex round 5).
+	// so no delta repairs it.
 	if (existing.collection_id !== collectionId) return false;
 	if (existing.collection_slug === newSlug) return false;
 	return true;
@@ -712,8 +711,7 @@ export async function persistRetag(
  * (browser eviction, quota, tab freeze), nothing is written so the
  * persisted cursor never overshoots the persisted rows. The next
  * warm hydrate sees a consistent floor and `/items-changes?since=`
- * can pick up from there without skipping rows. Codex P2 (round 1)
- * caught the divergence risk of separate row/cursor writes.
+ * can pick up from there without skipping rows.
  *
  * Soft deletes flow through `rows` (as upserts with `deleted_at`
  * populated). Hard removals are either passed as `removeIds` (so a
@@ -731,7 +729,7 @@ export async function persistDelta(
 	includesUnparentedMetadata: boolean,
 	/**
 	 * The scope this batch was fetched under, or `undefined` for CARRY THE
-	 * STORED EPOCH (TASK-2909, review round 1 P2).
+	 * STORED EPOCH (TASK-2909).
 	 *
 	 * TASK-2906 had the caller write an explicit `null` — "cannot know what this
 	 * was authorised for" — whenever it could not vouch for the epoch, which is
@@ -981,7 +979,7 @@ export async function persistCollections(
 			await tx.done.catch(() => undefined);
 			return;
 		}
-		// ONE VANTAGE POINT, BRACKETING THE FETCH (codex round 2). Earlier drafts
+		// ONE VANTAGE POINT, BRACKETING THE FETCH. Earlier drafts
 		// asked RAM: the epoch the store believed before the request against the
 		// one it believed after. Two things were wrong with that, and both were
 		// found by review rather than by these tests, because every test seeded
@@ -1126,8 +1124,8 @@ export async function persistAccessEpoch(
  * Like `persistDelta`'s `removeIds`, a removal lands a TOMBSTONE so a delayed
  * snapshot can't resurrect the id (BUG-2633). This path has no cursor advance
  * in hand, so it stamps the strongest floor available: the PERSISTED cursor
- * (`meta.sync`) when a sync has happened, else the removed row's OWN seq (codex
- * F1 — an `upsert` can persist a row before any sync writes meta.sync, and that
+ * (`meta.sync`) when a sync has happened, else the removed row's OWN seq (
+ * an `upsert` can persist a row before any sync writes meta.sync, and that
  * row must still be un-resurrectable after removal), else 0. `raiseTombstone`
  * never lowers an existing stamp.
  */
@@ -1148,7 +1146,7 @@ export async function persistRemovals(
 		for (const id of ids) {
 			const stored = (await store.get(id)) as ItemIndexRow | undefined;
 			store.delete(id).catch(() => undefined);
-			// ALWAYS tombstone, even with no persisted cursor (codex F1): an upsert
+			// ALWAYS tombstone, even with no persisted cursor: an upsert
 			// can write a row before any sync stamps meta.sync, and without a
 			// tombstone a delayed snapshot would resurrect that removed row. Stamp
 			// the strongest floor available — the persisted cursor if we have one,

@@ -15,7 +15,7 @@
  * point of the descriptor list: one source of truth, two renderers.
  *
  * TWO DESCRIPTOR SHAPES, not one, because the ELEMENT is part of the contract
- * (DR-5, round 35/36):
+ * (DR-5):
  *
  *  - `element: 'anchor'` — Download must remain a real `<a download>`: the
  *    server sends `Content-Disposition: inline` for most accepted types
@@ -201,7 +201,7 @@ export const ATTACHMENT_ACTIONS: readonly AttachmentAction[] = [
 		// undefined here, which drops the attribute entirely and turns Download
 		// back into a navigation — the exact regression this action exists to
 		// prevent, reachable whenever a chip's metadata is partial. `download=""`
-		// still forces the save; the browser just picks the name (round 8).
+		// still forces the save; the browser just picks the name.
 		download: (ctx) => ctx.attachment.filename || '',
 	} satisfies AnchorAttachmentAction,
 	{

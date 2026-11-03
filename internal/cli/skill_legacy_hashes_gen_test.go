@@ -25,7 +25,7 @@ import (
 // way that tag's FormatForTool did: claude verbatim, copilot and the plain
 // body from StripFrontmatter (unchanged in every tag), and agents from the
 // shared frontmatter plus either the stripped skill or, from v0.17.0, the
-// tag's agentsSkillBody constant. RELEASED output only (codex r3): the
+// tag's agentsSkillBody constant. RELEASED output only: the
 // working tree's text was never shipped, so it is never trusted as pad's;
 // a file a dev build wrote after the last tag is kept, and --force replaces
 // it. Regenerate after tagging any release that still wrote unstamped files.
@@ -117,7 +117,7 @@ func releasedSkillOutputs(t *testing.T, tag string) map[string][]byte {
 
 // Every unstamped release's output is in the frozen list, so a release cut
 // before the list was regenerated fails here, loudly, rather than its users'
-// unedited skills reading as edited (lead, BUG-3466). Needs the release tags:
+// unedited skills reading as edited (BUG-3466). Needs the release tags:
 // CI's shallow clone has none and skips; the release workflow fetches them
 // (fetch-depth: 0) and runs this before it publishes.
 func TestLegacySkillHashesCoverEveryUnstampedRelease(t *testing.T) {
@@ -183,7 +183,7 @@ func evalString(e ast.Expr) (string, error) {
 
 // Real copies a released pad binary wrote (Claude Code and the shared
 // agents file, installed by a v0.14.0-era pad on 2026-08-16), pinned by
-// hash. Independent of releasedSkillOutputs (codex r5): if the
+// hash. Independent of releasedSkillOutputs: if the
 // reconstruction were wrong, the generator and the coverage test above would
 // agree on the same wrong hashes; these would still fail.
 func TestLegacySkillHashesIncludeRealInstalledCopies(t *testing.T) {
@@ -199,7 +199,7 @@ func TestLegacySkillHashesIncludeRealInstalledCopies(t *testing.T) {
 
 // The reconstruction assumes every tag formatted output with today's
 // StripFrontmatter and frontmatter literals. Check that per tag rather than
-// assume it (codex r5): a tag that formatted differently fails here.
+// assume it: a tag that formatted differently fails here.
 func TestReleasedSkillFormattingMatchesToday(t *testing.T) {
 	tags := unstampedReleaseTags(t)
 	if len(tags) == 0 {

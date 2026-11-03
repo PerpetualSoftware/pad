@@ -72,15 +72,14 @@ import (
 //     ("Apply DialTimeout per attempt, but never extend an existing earlier
 //     deadline") and this must not quietly disagree with it.
 func New(tlsConfig *tls.Config, dialTimeout time.Duration) func(context.Context, string, string) (net.Conn, error) {
-	// == 0, NOT <= 0 (codex round 2). ParseURL represents an EXPLICIT
+	// == 0, NOT <= 0. ParseURL represents an EXPLICIT
 	// dial_timeout of zero or negative as -1, and go-redis preserves that as
 	// "no timeout" rather than treating it as unset. Collapsing every
 	// non-positive value to the default would silently overrule an operator who
 	// had deliberately disabled the bound — a different defect from the one
 	// this branch exists to fix, in the opposite direction.
 	if dialTimeout == 0 {
-		// GO-REDIS'S OWN DEFAULT, APPLIED HERE BECAUSE WE CANNOT SEE IT
-		// (codex round 1, P1 — and the first draft of this shipped the bug).
+		// GO-REDIS'S OWN DEFAULT, APPLIED HERE BECAUSE WE CANNOT SEE IT.
 		// Options.init() sets DialTimeout to 5s when it is zero
 		// (options.go:31), but NewClient CLONES the options first
 		// (redis.go:1924), so a caller reading opt.DialTimeout before
@@ -104,7 +103,7 @@ func New(tlsConfig *tls.Config, dialTimeout time.Duration) func(context.Context,
 	}
 
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
-		// ONE BUDGET FOR CONNECT AND HANDSHAKE TOGETHER (codex round 1, P2).
+		// ONE BUDGET FOR CONNECT AND HANDSHAKE TOGETHER.
 		// Applying DialTimeout to the TCP connect and then starting a FRESH
 		// one for the handshake allows up to 2×DialTimeout on the pub/sub
 		// path, which has no outer deadline to mask it. tls.DialWithDialer
@@ -116,7 +115,7 @@ func New(tlsConfig *tls.Config, dialTimeout time.Duration) func(context.Context,
 			defer cancel()
 		}
 
-		// KeepAliveConfig REPLICATED, not dropped (codex round 1, P2).
+		// KeepAliveConfig REPLICATED, not dropped.
 		// go-redis's default dialer sets it (options.go:608) and it governs how
 		// quickly a dead peer is noticed on every Redis connection this process
 		// holds. Silently reverting to OS defaults would change liveness

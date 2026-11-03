@@ -100,7 +100,7 @@ describe('list group bulk actions (TASK-2222)', () => {
 		await tick();
 		const header = openBtn.closest('.group-header')!.querySelector('.group-toggle')!;
 		expect(header.getAttribute('aria-expanded'), 'the ⋯ click toggled the group').toBe('true');
-		// The ⋯ is a sibling of the toggle, not inside it (codex round 1).
+		// The ⋯ is a sibling of the toggle, not inside it.
 		expect(header.contains(openBtn)).toBe(false);
 		await fireEvent.click(menuItem(container, 'Move all to')!);
 		await tick();

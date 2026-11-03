@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import Parent from './Parent.svelte';
 
-// Empirical probe for TASK-2117 / Codex Finding 5: on component unmount,
+// Empirical probe for TASK-2117: on component unmount,
 // does a top-level $effect's cleanup run BEFORE or AFTER a child
 // component's onDestroy? ItemDetail's pane-close teardown flush lives in
 // a top-level collab $effect cleanup and reads the child <Editor>'s

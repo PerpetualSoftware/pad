@@ -28,8 +28,8 @@ import { bindReactiveEpoch, isEpochReactive } from '../../../../test/identityEpo
  * was never called. Each test asserts the same sequence WITHOUT the identity
  * flip and sees the commit land.
  *
- * WHAT THIS FILE DOES NOT COVER, stated rather than implied (codex round 1
- * [Medium]). It drives four of the fourteen commit points — member removal, the
+ * WHAT THIS FILE DOES NOT COVER, stated rather than implied.
+ * It drives four of the fourteen commit points — member removal, the
  * rename status timer, the Undo toast, and the collection-access revert — chosen
  * as one per TIMING CLASS plus the callback that outlives its page, not as a
  * sample of handlers. The remaining ten share a class with one of these and are
@@ -203,7 +203,7 @@ describe('BUG-3006: settings commits are fenced on the signed-in identity', () =
 			// The MOCK's own getter and bump, not the module signal: the first
 			// version of this helper read its own state and returned true with
 			// both hooks disconnected, so every leg below passed against the
-			// non-reactive double it exists to detect (codex round 1 [P2]).
+			// non-reactive double it exists to detect.
 			isEpochReactive(
 				() => auth.identityEpoch,
 				() => auth.bumpEpoch()
@@ -396,7 +396,7 @@ describe('BUG-3006: settings commits are fenced on the signed-in identity', () =
 
 	it('discards the deferred status timer when the identity changes during its two seconds', async () => {
 		// THE ORDER HERE IS THE TEST, and the first version got it wrong in a way
-		// that looked right (codex round 1 [Medium]): it flipped the identity
+		// that looked right: it flipped the identity
 		// BEFORE resolving the update, so the await-site fence returned early and
 		// the timer was never scheduled at all. It passed, and it measured the
 		// await fence a second time rather than the timer.
@@ -455,7 +455,7 @@ describe('BUG-3006: settings commits are fenced on the signed-in identity', () =
 	 * Drive the access panel into the one state where the REVERT is observable,
 	 * and leave the save request open.
 	 *
-	 * WHY THE SECOND CHANGE IS THE WHOLE SETUP (codex round 2). The revert
+	 * WHY THE SECOND CHANGE IS THE WHOLE SETUP. The revert
 	 * restores `prevMode`/`prevIds`, captured before the await — so if nothing
 	 * moves them afterwards, the revert writes the values already on screen and
 	 * is invisible. The first version of these tests saved from the panel's

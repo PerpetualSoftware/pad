@@ -222,8 +222,7 @@
 	 * preserves the table's column alignment, sticky header, hover
 	 * states, and visual fidelity. Rows are no longer "internal table
 	 * boxes," so content-visibility / containment apply normally. ARIA
-	 * roles preserve assistive-tech semantics — Codex round 1 [P2] on
-	 * PR #490 traced through the spec citation to this conclusion.
+	 * roles preserve assistive-tech semantics (PR #490 traced the spec citation to this conclusion).
 	 *
 	 * The grid template is built dynamically because `visibleFields`
 	 * depends on the collection schema. Fixed-width Ref / Updated

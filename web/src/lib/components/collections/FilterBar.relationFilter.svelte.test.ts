@@ -159,7 +159,7 @@ describe('FilterBar relation filter', () => {
 	it('sets the filter to the picked item\'s ID', async () => {
 		// The picker test above proves the picker is SCOPED; nothing proved what
 		// selecting does. A mutant writing `row.slug`, `row.title` or nothing at
-		// all survived it (codex round 4) — and the id is the whole contract,
+		// all survived it — and the id is the whole contract,
 		// since `filteredItems` compares the stored field value against this.
 		getByCollection.mockReturnValue([
 			{

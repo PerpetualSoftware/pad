@@ -1,4 +1,4 @@
-// The selection toolbar's Comment action, end to end (IDEA-2843 / GitHub #1228).
+// The selection toolbar's Comment action, end to end  (IDEA-2843 / GitHub #1228).
 //
 // Why these cannot be unit tests. A jsdom test drives selection with
 // `editor.commands.setTextSelection(...)` — a programmatic transaction that
@@ -111,7 +111,7 @@ test.describe('selection toolbar — Comment (IDEA-2843)', () => {
 		await expect(firstPara).toContainText('Alpha paragraph');
 
 		// PEEK: open the pane, click into it so the master freezes, put the
-		// master's Details tab back on screen (which re-activates it), then
+		// master's Details tab back on screen  (which re-activates it), then
 		// re-peek — the master is frozen WITH its editor visible.
 		const pane = page.locator('.item-pane');
 		await masterPage.getByRole('tab', { name: 'Relationships' }).click();
@@ -128,7 +128,7 @@ test.describe('selection toolbar — Comment (IDEA-2843)', () => {
 
 		// THE MEASUREMENT. The Comment action was briefly given a
 		// peek-INdependent gate, reasoning that a peeking master keeps a live
-		// composer (BUG-2263) and so should be able to act on a selection. This
+		// composer  (BUG-2263) and so should be able to act on a selection. This
 		// asserts the state that argument assumed, and it does not exist: the
 		// drag itself re-activates the master (focus-follows-editing,
 		// PLAN-2179 DR-2), so a selection and a frozen master never coexist.
@@ -148,7 +148,7 @@ test.describe('selection toolbar — Comment (IDEA-2843)', () => {
 		// Side by side, not stacked. The menu's buttons are themselves flex, so
 		// without a row layout on the container they stack — which also
 		// falsifies the width the positioner clamps against, drifting the menu
-		// over the text it points at (codex round 7). Layout is not observable
+		// over the text it points at. Layout is not observable
 		// in jsdom, so this is the only place the claim can be made.
 		const commentBox = await comment.boundingBox();
 		const extractBox = await extract.boundingBox();

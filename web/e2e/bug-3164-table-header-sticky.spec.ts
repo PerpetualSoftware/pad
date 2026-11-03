@@ -18,7 +18,7 @@ import { createWorkspace, deleteCollection, deleteWorkspace } from './lib/attach
  *
  * The legs find the element that ACTUALLY scrolls the rows vertically by
  * walking up from the header, rather than naming it, so the same spec runs on
- * unfixed main (where that element is the page) and on the fix (the table).
+ * unfixed main  (where that element is the page) and on the fix  (the table).
  */
 
 const ROWS = 60;
@@ -161,7 +161,7 @@ test.describe('BUG-3164: the table header stays at the top of the table while it
 		await setup(page, fixture, request, { ws });
 		try {
 			// Where the focused row sits relative to the visible band of the table
-			// (below the header, above the scroller's bottom edge).
+			//  (below the header, above the scroller's bottom edge).
 			const focusedBand = () =>
 				page.evaluate(() => {
 					const row = document.querySelector<HTMLElement>('.table-row.focused');
@@ -193,7 +193,7 @@ test.describe('BUG-3164: the table header stays at the top of the table while it
 			}
 			expect(await position(), 'j should reach a row far below the first screenful').toBeGreaterThanOrEqual(30);
 			// NO_ROW can never satisfy the bound, so a lost focus fails the poll
-			// instead of passing it (round 2 of the review caught a -1 sentinel
+			// instead of passing it (an earlier version used a -1 sentinel
 			// that met its own `>= -1`).
 			const NO_ROW = -1e9;
 			await expect.poll(async () => (await focusedBand())?.aboveBottom ?? NO_ROW, { message: 'j moved the focus below the visible table' })

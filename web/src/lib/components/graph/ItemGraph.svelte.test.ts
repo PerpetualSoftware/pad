@@ -284,7 +284,7 @@ describe('ItemGraph — pan (TASK-2430)', () => {
 	// This asserts the INVARIANT that must hold without one: a viewer opening
 	// between the last move and the release still leaves nothing captured.
 	it('a press whose pointerup RETARGETS to the viewer cannot resume a pan later', async () => {
-		// The one sequence the move/end gates cannot see (review round 10): the
+		// The one sequence the move/end gates cannot see: the
 		// press never crosses DRAG_THRESHOLD, so no capture is taken; the viewer
 		// then opens and the release lands on the PORTALED viewer, so this
 		// viewport's `onPointerUp` never runs at all and `maybeDrag` stays

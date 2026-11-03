@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 /**
- * TASK-2998, codex round 4 — the LIST half of relation grouping.
+ * TASK-2998 — the LIST half of relation grouping.
  *
  * BoardView was fixed and this was not, which is the same class one component
  * over. It matters more here than it looks: this view DISCOVERS group values
@@ -118,7 +118,7 @@ const groups = (screen: { container: HTMLElement }) =>
 			.trim(),
 	}));
 vi.mock('$lib/stores/workspace.svelte', () => ({
-	// BUG-3068 round 2 moved the chip's permission gate into `ItemCard`, where the
+	// BUG-3068 moved the chip's permission gate into `ItemCard`, where the
 	// per-item answer lives (`canEditItem`, not the views' collection-level
 	// `canEdit` prop). A suite that renders a CLICKABLE chip therefore has to say
 	// who is looking; with no membership the store answers false and the chip is
@@ -202,8 +202,7 @@ describe('group reorder under relation grouping', () => {
 	);
 
 	it('gates the onGroupReorder CALL, not merely mentions the flag nearby', () => {
-		// THE SIXTH WRONG-REASON TEST ON THIS BRANCH, and codex caught it in the
-		// same round it was written. The first version searched the handler for
+		// A WRONG-REASON TEST once lived here. The first version searched the handler for
 		// `!isRelationGroup` appearing before `onGroupReorder(` — a condition
 		// the file satisfies in several ways that leave the callback
 		// unconditional. It asserts the guard is IN the `if` that wraps the
@@ -227,7 +226,7 @@ describe('a rejected drop in the list', () => {
 	);
 
 	it('writes NEITHER the relation NOR the sort order', () => {
-		// codex round 5, P1. Skipping only `onStatusChange` left
+		// Skipping only `onStatusChange` left
 		// `onReorder(reorderUpdates)` running unconditionally, so a refused
 		// cross-group drop still rewrote every `sort_order` in the destination
 		// — a persisted side effect of a gesture the component had just
@@ -262,8 +261,7 @@ describe('a relation field with no declared target, in the list', () => {
 		// from `field.options` and a relation has none. This view DISCOVERS
 		// values from the items, so the same malformed schema produced one
 		// group per raw ITEM ID — the two siblings disagreeing, with the list
-		// landing on the one outcome this unit exists to prevent (codex round
-		// 5).
+		// landing on the one outcome this unit exists to prevent.
 		const screen = renderList(
 			[item('car-1', 'id-red'), item('car-2', 'id-gone')],
 			[{ key: 'car_color', label: 'Colour', type: 'relation' }],
@@ -285,11 +283,10 @@ describe('a relation field with no declared target, in the list', () => {
 
 describe('a REFUSED grouping in the list must not write a group value (U4, codex round 5)', () => {
 	/**
-	 * The SAME pair of defects BoardView had, in the other view — which is the
-	 * point worth keeping. Round 1 of this review was one class of missed
-	 * surface (every site dispatching on field type); this is a second one
-	 * (every VIEW implementing grouping), and I fixed the board alone before
-	 * the review asked about the list. A behaviour's surface count is a number,
+	 * The SAME pair of defects BoardView had, in the other view — which is the point worth keeping.
+	 * One class of missed surface is every site dispatching on field type; another is every VIEW
+	 * implementing grouping, so fixing the board alone leaves the list open. A behaviour's surface
+	 * count is a number,
 	 * and numbers get enumerated.
 	 *
 	 * The full population is {BoardView, ListView} x {drag, status chip}.

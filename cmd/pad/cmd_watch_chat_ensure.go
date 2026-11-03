@@ -17,8 +17,8 @@ import (
 // The server's ChatDM Retry-After is 120 seconds.
 const monitorEnsureDMDefaultRetryAfter = 120 * time.Second
 
-// The largest Retry-After, in seconds, that a time.Duration can hold
-// (TASK-4043 r2 J1); a larger one would wrap negative.
+// The largest Retry-After, in seconds, that a time.Duration can hold (TASK-4043); a
+// larger one would wrap negative.
 const monitorEnsureDMMaxRetryAfterSeconds = math.MaxInt64 / int64(time.Second)
 
 // One worker belongs to the monitor process, across identity lookups and stream

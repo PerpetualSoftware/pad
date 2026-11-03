@@ -12,7 +12,7 @@
  * NodeViews (imperative DOM) and Svelte components alike. It lives here rather
  * than under `components/editor/` because it is attachment-domain state, not an
  * editor concern — the strip both emits and consumes it and never touches
- * Tiptap (Codex round 18).
+ * Tiptap.
  *
  * Scope: this process only. It does NOT cover another user's changes or
  * another browser tab — surfaces still need their own reconciliation for that

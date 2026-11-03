@@ -1,9 +1,9 @@
 // Node-project SOURCE guard: every async commit point on the workspace settings
-// page is fenced on the signed-in identity (BUG-3006).
+// page is fenced on the signed-in identity  (BUG-3006).
 //
-// THE GATE BESIDE THIS (TASK-3097): `settings/settingsIdentityGate.test.ts` tables every async unit on
+// THE GATE BESIDE THIS  (TASK-3097): `settings/settingsIdentityGate.test.ts` tables every async unit on
 // this page with the hash of the code it was reviewed on, and refuses any
-// edit to one until its row is re-read. That catches BUG-3084's round-4
+// edit to one until its row is re-read. That catches BUG-3084's
 // classes, which a source scanner cannot see. This file catches what the
 // gate does not: the RULE on a NEW handler, which the gate accepts with any
 // row. Keep both. Neither is a duplicate of the other.
@@ -126,8 +126,8 @@ describe('the workspace settings page fences every async commit point', () => {
 
 	it('captures the identity at ENTRY in every async handler, before its first await', () => {
 		// The CAPTURE is the half a "does it mention the fence" check misses,
-		// and it is where this guard's first version was wrong (codex round 1
-		// [Medium]): an occurrence anywhere in the body satisfied it, including
+		// and it is where this guard's first version was wrong:
+		// an occurrence anywhere in the body satisfied it, including
 		// one after the write it was supposed to guard.
 		//
 		// Entry, specifically, because the page's load epoch is RE-STAMPED by a
@@ -151,8 +151,7 @@ describe('the workspace settings page fences every async commit point', () => {
 	});
 
 	it('never lets a handler compare against the PAGE load epoch', () => {
-		// Lead ruling, day 67, carrying codex round 1's [High] into the
-		// enumeration: `identityEpochAtLoad` is RE-STAMPED by `load()`, so a
+		// Carried into the enumeration: `identityEpochAtLoad` is RE-STAMPED by `load()`, so a
 		// handler comparing against it can be defeated by a concurrent load
 		// setting it to the very value the handler is about to see. Exactly one
 		// function may read it — `pageIdentityHeld`, whose whole question is

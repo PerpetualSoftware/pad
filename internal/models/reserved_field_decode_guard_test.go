@@ -20,8 +20,8 @@ import (
 // The fix is one predicate — models.UnmarshalItemFieldSchema — applied at every
 // site that decodes a collection schema FOR ITEM-FIELD PURPOSES. A predicate
 // nothing enforces is a convention the next consumer has to remember, and the
-// last four review rounds this bug was filed out of are what remembering looks
-// like in practice: each round found another site.
+// history of this bug is what remembering looks like in practice: each
+// attempt found another site.
 //
 // So this test enumerates every raw `json.Unmarshal` into a models.
 // CollectionSchema in the tree and requires each to be listed below WITH A
@@ -35,7 +35,7 @@ import (
 //
 // IT IS TYPE-RESOLVED, and that was earned rather than chosen. The first
 // version approximated types by reading declarations with go/ast, and FIVE
-// consecutive codex rounds each named more DESTINATION SPELLINGS it could not
+// consecutive attempts each found more DESTINATION SPELLINGS it could not
 // see — a bare pointer parameter; an inferred-type var; new(T); an aliased
 // models import, `var x = new(T)`, `dst := &s`, an inline element type; a type
 // alias, `dst := helper()`, a closure parameter. That loop was measuring how
@@ -199,7 +199,7 @@ func schemaShaped(t types.Type) bool {
 //
 // encoding/json matches an UNTAGGED field by NAME, case-insensitively, so
 // `struct{ Fields []models.FieldDef }` decodes the same JSON as the tagged
-// version and is the same schema (codex round 12). Requiring the tag was a
+// version and is the same schema. Requiring the tag was a
 // property of how the shape test was written rather than of what JSON does.
 func jsonNameIsFields(name, tag string) bool {
 	if v, ok := reflect.StructTag(tag).Lookup("json"); ok {
@@ -582,8 +582,8 @@ func TestGuardSeesEveryKnownDecodeSite(t *testing.T) {
 // written down there.
 //
 // THE FIXTURE OUTLIVED THE GUARD IT WAS WRITTEN FOR, which is why it is still
-// here. It was built for the go/ast approximation, where five review rounds
-// each named another spelling that approximation could not see; the type
+// here. It was built for the go/ast approximation, where five attempts
+// each found another spelling that approximation could not see; the type
 // checker answers all of them by construction, so this is no longer a list of
 // holes to plug but a REGRESSION TEST on the resolver — it fails if a future
 // change to schemaShaped, isJSONDecodeFunc, or the destination-argument rule

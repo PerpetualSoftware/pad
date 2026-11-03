@@ -36,7 +36,7 @@ func triStateEnv(t *testing.T) (socketFile string) {
 }
 
 // TestTriState_DisarmBeatsAutoArmWithinSession is the core PLAN-2613 S3
-// ruling: in an auto_arm=true repo, a live `pad session disarm` (explicit
+// rule: in an auto_arm=true repo, a live `pad session disarm` (explicit
 // OFF) must win for THIS session — the disconnect verb must not be a lie.
 func TestTriState_DisarmBeatsAutoArmWithinSession(t *testing.T) {
 	triStateEnv(t)
@@ -114,8 +114,8 @@ func TestTriState_ArmThenDisarmFlips(t *testing.T) {
 	}
 }
 
-// TestArmState_SemanticallyCorruptFailsClosed is the Codex R2 S3 HIGH-2
-// regression: a syntactically-valid but semantically-garbage file (missing
+// TestArmState_SemanticallyCorruptFailsClosed is a
+// regression test: a syntactically-valid but semantically-garbage file (missing
 // the stamps our writer always sets) must fail CLOSED — not be judged
 // owner-dead, reaped, and re-armed via auto_arm; and not be treated as a
 // live headless arm just because it names a live pid like init (1).
@@ -125,7 +125,7 @@ func TestArmState_SemanticallyCorruptFailsClosed(t *testing.T) {
 		`{"pid":1}`,
 		`{"pid":1,"armed":true}`, // no StartedAt
 		// Well-stamped but violates the writer invariant Armed != Disarmed:
-		// neither armed nor disarmed must not resolve to armed (Codex R4).
+		// neither armed nor disarmed must not resolve to armed.
 		`{"pid":123,"started_at":"2026-08-18T00:00:00Z","armed":false,"disarmed":false}`,
 		`{"pid":123,"started_at":"2026-08-18T00:00:00Z","armed":true,"disarmed":true}`,
 	} {

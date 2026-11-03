@@ -434,7 +434,7 @@ func TestApplierWaitsForRestoreInProgress(t *testing.T) {
 	<-restoreDone
 }
 
-// TestForceRefreshDoesNotStallOnInFlightApplier is the P1(a) guard: ForceRefreshRoom
+// TestForceRefreshDoesNotStallOnInFlightApplier is a guard: ForceRefreshRoom
 // must NOT wait for an in-flight applier round-trip (the old drain could stall
 // forever on a blocked applier write). With the finalization redesign there is no
 // drain — the restore finalizes the round-trip and proceeds. Here the applier never
@@ -497,7 +497,7 @@ func TestForceRefreshDoesNotStallOnInFlightApplier(t *testing.T) {
 	<-applyDone // the round-trip re-elects/falls back after the rollback
 }
 
-// TestWriteApplierRequestBoundedOnWedgedWrite is the P1(a) bounded-write guard: a
+// TestWriteApplierRequestBoundedOnWedgedWrite is a bounded-write guard: a
 // conn whose writeMu is held by a genuinely blocked WriteMessage — a real peer that
 // never drains, so a large frame fills the socket buffer and blocks — must not wedge
 // writeApplierRequest forever. The independent close-timer closes the conn, the
@@ -615,7 +615,7 @@ func TestConcurrentAppliersAndRestoreNoDeadlock(t *testing.T) {
 	}
 }
 
-// TestPickApplierSkipsUnanchoredConn is the P1(1) guard: a conn that is in the room
+// TestPickApplierSkipsUnanchoredConn is a guard: a conn that is in the room
 // but NOT yet anchored (replayDone false — its client still buffers Y.Doc updates
 // until it receives the initial cursor) must NEVER be elected applier, else its
 // setContent frame would be buffered/unsent yet still acked → a false success for a
@@ -717,7 +717,7 @@ func TestBeginRestoreDrainsAdmissionGap(t *testing.T) {
 	<-restoreDone
 }
 
-// TestRestoreLegacyPersistedIsAmbiguousNoReapply is the P1(3) mixed-deploy guard: a
+// TestRestoreLegacyPersistedIsAmbiguousNoReapply is a mixed-deploy guard: a
 // LEGACY (non-bracket-capable) applier persists its setContent before a restore
 // freeze, then the restore ROLLS BACK. Because the server can't confirm persistence
 // without the apply_start bracket, the round-trip resolves AMBIGUOUS →

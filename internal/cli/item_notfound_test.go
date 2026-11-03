@@ -45,7 +45,7 @@ func TestGetItemWrapsNotFound(t *testing.T) {
 		// errors.As and — critically — direct `err.(*APIError)` assertions
 		// keep matching. bulk-update's per-row code capture (cmd_item.go)
 		// uses a non-unwrapping direct assertion; a wrapper type would
-		// silently drop the not_found code there (team-lead P2 review).
+		// silently drop the not_found code there.
 		apiErr, ok := err.(*APIError)
 		if !ok {
 			t.Fatalf("GetItem error must be a concrete *APIError (direct assertion), got %T", err)

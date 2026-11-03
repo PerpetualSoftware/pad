@@ -2,7 +2,7 @@ package models
 
 import "testing"
 
-// BUG-2367 item 4: only the STATE is compared (lead ruling, day 78).
+// BUG-2367 item 4: only the STATE is compared.
 func TestMigrateCloseStateChange(t *testing.T) {
 	tasks := CollectionSchema{Fields: []FieldDef{{Key: "status", Type: "select",
 		Options:          []string{"open", "in-progress", "done", "cancelled"},

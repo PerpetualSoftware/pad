@@ -14,8 +14,8 @@ func TestChatGPTCatalog_Valid(t *testing.T) {
 	}
 }
 
-// TestChatGPTCatalog_CoversEveryOperation is the parity guard the lead's
-// ruling asks for (TASK-3321): every /mcp operation, and pad_set_workspace,
+// TestChatGPTCatalog_CoversEveryOperation is the parity guard
+// TASK-3321 requires: every /mcp operation, and pad_set_workspace,
 // is EITHER a ChatGPT entry OR an exclusion with a reason, never both and
 // never neither, and neither list names an operation that does not exist.
 // Adding an action to Catalog without deciding its ChatGPT fate fails here.

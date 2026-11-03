@@ -1,4 +1,4 @@
-// The workspace dashboard's identity gate (TASK-3097): its async units, tabled
+// The workspace dashboard's identity gate  (TASK-3097): its async units, tabled
 // with the hash of the code each was reviewed on. `identityGateSuite` says
 // what the gate refuses and why. `dashboardIdentityFence.test.ts` beside this
 // keeps the site pins the gate does not cover (the sync listener, the

@@ -81,7 +81,7 @@ describe('share render: internal links become plain text, viewer links stay (C84
 		expect(isInternalHref(' /dave/ws', PAGE)).toBe(true);
 	});
 
-	// Codex round 1: a raw-prefix test let each of these through. The browser
+	// A raw-prefix test let each of these through. The browser
 	// normalises them before navigating, so the check must too.
 	it('backslashes, dot segments and letter case are judged by where the browser goes', () => {
 		// `\/dave/ws` and `/\dave/ws` are both `//dave/ws` to a browser: a

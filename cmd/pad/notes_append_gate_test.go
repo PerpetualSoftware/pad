@@ -122,7 +122,7 @@ func TestNote_NewServer_OnePatchCarryingOnlyTheAppend(t *testing.T) {
 	}
 }
 
-// TestNote_OldServer_LegacyPathExactlyOnce is the lead's required leg: a
+// TestNote_OldServer_LegacyPathExactlyOnce is a required leg: a
 // server that does not advertise the flag and ignores append_* gets today's
 // full-fields write, once, and the note is really in it.
 func TestNote_OldServer_LegacyPathExactlyOnce(t *testing.T) {

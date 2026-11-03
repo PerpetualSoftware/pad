@@ -23,7 +23,7 @@ points at the heading.
 
 THE POINT OF THIS DIALOG IS THE PRESENCE LINE, NOT THE TEXTAREA. `pad push` is
 fire-and-forget: no durable inbox, no ack, no "nobody was listening" warning
-(handlers_push.go — Dave's product call, and defensible for a CLI verb typed by
+(handlers_push.go — a product decision, and defensible for a CLI verb typed by
 someone who knows their own session is running). A button in a web UI has no
 such user. So this dialog answers "is anything ACCEPTING?" BEFORE the click, and
 words the answer at exactly the confidence the server can support.
@@ -244,8 +244,8 @@ always a broadcast that went out.
 	/**
 	 * True once this component instance has been torn down.
 	 *
-	 * `presenceGen` cannot cover this case, and assuming it could was the bug
-	 * (codex round 2): the parent remounts this dialog under `{#key itemSlug}`,
+	 * `presenceGen` cannot cover this case, and assuming it could was the bug:
+	 * the parent remounts this dialog under `{#key itemSlug}`,
 	 * so item B gets a NEW instance with its OWN counters. A's in-flight send
 	 * therefore still sees `gen === presenceGen` — A's own, untouched — and
 	 * calls the SHARED parent `onclose`, closing the composer the user just
@@ -309,8 +309,7 @@ always a broadcast that went out.
 	/**
 	 * Keep `selectedSessionId` valid whenever `sessions` changes. Called
 	 * right after every `sessions = ...` reassignment that ISN'T already
-	 * paired with an explicit reset of the selection (TASK-2588 round 2,
-	 * codex).
+	 * paired with an explicit reset of the selection (TASK-2588).
 	 *
 	 * A `<select>` whose bound value names an `<option>` that no longer
 	 * exists typically falls back to DISPLAYING the first remaining
@@ -341,7 +340,7 @@ always a broadcast that went out.
 		 * Apply only if this opening is still current AND no newer response has
 		 * already landed.
 		 *
-		 * Deliberately "latest ARRIVED", not "latest ISSUED" (codex round 2).
+		 * Deliberately "latest ARRIVED", not "latest ISSUED".
 		 * If request 1 stalls and request 2 is issued, a late-but-first arrival
 		 * from request 1 IS applied — because the alternative, dropping it
 		 * because a newer request exists, leaves the UI holding older data when
@@ -407,8 +406,7 @@ always a broadcast that went out.
 
 		void refreshPresence(gen);
 		const timer = setInterval(() => {
-			// Expire a 'known' answer that has stopped being refreshed (codex
-			// round 2). The stall timeout below only rescues the FIRST read; a
+			// Expire a 'known' answer that has stopped being refreshed. The stall timeout below only rescues the FIRST read; a
 			// later poll that hangs would otherwise freeze the count at its last
 			// value forever, leaving Push armed against a session list nobody has
 			// confirmed in minutes. Past PRESENCE_MAX_AGE_MS our answer carries no
@@ -418,7 +416,7 @@ always a broadcast that went out.
 				reconcileSelectedSession();
 				presenceState = 'unknown';
 				presenceReason = 'The last check was a while ago and hasn’t refreshed.';
-				// Retire every request already in flight (codex round 3). Those
+				// Retire every request already in flight. Those
 				// were issued BEFORE the expiry, so their answers describe the
 				// server as it was back then — letting one land now would restore
 				// the very count we just declared too old to trust. The poll
@@ -494,7 +492,7 @@ always a broadcast that went out.
 			// refused with a 503 — but the guard is one character wide, so
 			// pin it rather than rely on that.
 			if (target && result.delivered_sessions === undefined) {
-				// Mixed-version hazard (TASK-2588 round 2, codex). The server
+				// Mixed-version hazard (TASK-2588). The server
 				// ships EMBEDDED in the binary (web/build is baked into the Go
 				// build), so a version skew between this tab's JS and the
 				// server it's talking to can only exist transiently — a stale
@@ -516,7 +514,7 @@ always a broadcast that went out.
 				return;
 			}
 			if (target && result.delivered_sessions === 0) {
-				// A targeted push that reached nobody. As of TASK-2588 round 1
+				// A targeted push that reached nobody. As of TASK-2588
 				// the server SKIPS the publish entirely for this case (see
 				// pushResponse.DeliveredSessions' doc comment) — nothing was
 				// sent, so zero delivery is a guarantee, not a race, and
@@ -658,7 +656,7 @@ always a broadcast that went out.
 					     a session that is already gone — up to ~30s for a dropped
 					     CLIENT, and on a Redis-backed deployment up to ~90s for a
 					     dead SERVER instance, whose entries clear on the shared
-					     registry's TTL (BUG-2698, codex round 23). So even "was
+					     registry's TTL (BUG-2698). So even "was
 					     listening" is past tense. And nothing acknowledges a push,
 					     so delivery is never confirmable.
 

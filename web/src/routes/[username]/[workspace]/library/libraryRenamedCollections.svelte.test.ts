@@ -3,7 +3,7 @@ import { cleanup, render, waitFor } from '@testing-library/svelte';
 
 /**
  * BUG-3481: the web half of BUG-2702. A workspace that RENAMED its conventions
- * or playbooks collection (a documented onboarding step) got a Library page
+ * or playbooks collection  (a documented onboarding step) got a Library page
  * that listed nothing Active and hid Activate, because the page addressed both
  * collections by their default slugs. It now resolves them by the
  * `artifact_kind` trait the server already uses.

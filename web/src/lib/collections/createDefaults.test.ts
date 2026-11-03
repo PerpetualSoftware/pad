@@ -62,7 +62,7 @@ describe('createDefaultFields', () => {
 	});
 
 	it('OMITS for relation and multi_relation, whose values are item ids', () => {
-		// Codex round 1 found `multi_relation`; `relation` is the same class and
+		// `multi_relation` was found first; `relation` is the same class and
 		// came from asking what else reaches that branch. Both refusals were
 		// measured against the create handler, not reasoned about:
 		//   relation       -> 400 "open" does not name an item in collection "tasks"

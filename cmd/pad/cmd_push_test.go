@@ -63,8 +63,7 @@ func TestPushCmd_SendsCollapsedMessage(t *testing.T) {
 	}
 }
 
-// TestPushCmd_FormatJSON covers the P2 finding (dispatcher review round
-// 2, codex): --format json was silently ignored — the RunE hardcoded
+// TestPushCmd_FormatJSON covers a defect: --format json was silently ignored — the RunE hardcoded
 // plain text regardless of formatFlag. Mirrors runCreateWatch's
 // formatFlag == "json" branch (cmd_watch.go) and asserts the full
 // PushResult shape (ref, workspace, pushed, message), not just that
@@ -112,9 +111,9 @@ type PushResultForTest struct {
 	DeliveredSessions *int `json:"delivered_sessions"`
 }
 
-// TestPushCmd_FormatJSONCarriesDeliveredSessions — codex round 25.
+// TestPushCmd_FormatJSONCarriesDeliveredSessions.
 //
-// The field was added to cli.PushResult in review round 3 and nothing
+// The field was added to cli.PushResult and nothing
 // covered its serialization, so a regression in either direction — the tag
 // renamed, `omitempty` reintroduced — would have passed unnoticed. Both
 // values are driven, because they are DIFFERENT answers: a number is a

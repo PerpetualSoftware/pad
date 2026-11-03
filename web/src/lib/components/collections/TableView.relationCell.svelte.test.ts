@@ -62,7 +62,7 @@ vi.mock('$lib/stores/collections.svelte', () => ({
 
 let tableCanEditItem = true;
 vi.mock('$lib/stores/workspace.svelte', () => ({
-	// BUG-3068 round 4 gave the table's status chip the same per-item permission
+	// BUG-3068 gave the table's status chip the same per-item permission
 	// gate the card has (`canEditItem`). A suite that renders a CLICKABLE chip has
 	// to say who is looking; with no membership the store answers false and the
 	// chip is correctly withheld. The permission legs themselves drive this per

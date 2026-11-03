@@ -1,11 +1,11 @@
 <script lang="ts">
-	// Focus-mode detail card for the 3D workspace graph (PLAN-1730 / TASK-1734).
+	// Focus-mode detail card for the 3D workspace graph  (PLAN-1730 / TASK-1734).
 	//
 	// Slides in from the right when a node is selected. The graph +page.svelte owns
 	// selection state and the richer item fetch; this component is pure presentation
-	// — it takes the selected node, the (optionally still-loading) full Item, and
+	// — it takes the selected node, the  (optionally still-loading) full Item, and
 	// emits open/close callbacks. Styling mirrors the page's .toolbar / .state-card
-	// (backdrop-blur, color-mix surfaces) so the focus layer reads as the same UI.
+	//  (backdrop-blur, color-mix surfaces) so the focus layer reads as the same UI.
 	import { relativeTime } from '$lib/utils/markdown';
 	import type { Item } from '$lib/types';
 	import { collectionStore } from '$lib/stores/collections.svelte';
@@ -15,7 +15,7 @@
 		collectionsNotStaleFor,
 	} from '$lib/collections/categoricalFieldValue';
 
-	// The selected node's renderer-facing shape (a subset of the page's GraphNode3D).
+	// The selected node's renderer-facing shape  (a subset of the page's GraphNode3D).
 	// Kept structural so the page can pass its mapped node straight through.
 	interface SelectedNode {
 		ref: string;
@@ -42,7 +42,7 @@
 	}: {
 		node: SelectedNode;
 		/**
-		 * THREADED RATHER THAN ARGUED (BUG-3067 round 5, lead ruling). The
+		 * THREADED RATHER THAN ARGUED  (BUG-3067). The
 		 * permissive staleness default was allowed to stand only on a grep showing
 		 * every mount site sits under the `[workspace]` layout that stamps the
 		 * collection store. This component has exactly one mount site — the graph
@@ -51,18 +51,18 @@
 		 * the first time someone mounts it somewhere else.
 		 */
 		wsSlug: string;
-		/** collection color (hex) — shared with the node's renderer color. */
+		/** collection color  (hex) — shared with the node's renderer color. */
 		color: string;
 		/** full item, fetched lazily by the page; null until it arrives. */
 		item: Item | null;
 		itemLoading: boolean;
-		/** direct blockers of this node (TASK-1737) — clickable to drill up the chain. */
+		/** direct blockers of this node  (TASK-1737) — clickable to drill up the chain. */
 		blockedBy: { ref: string; title: string }[];
-		/** how many items this node blocks (outgoing blocks-edges). */
+		/** how many items this node blocks  (outgoing blocks-edges). */
 		blocksCount: number;
-		/** deepest blocker hop from this node (1 = a direct blocker; >direct = chain). */
+		/** deepest blocker hop from this node  (1 = a direct blocker; >direct = chain). */
 		chainDepth: number;
-		/** fly to + re-select a blocker by ref (re-traces ITS chain — natural drill-up). */
+		/** fly to + re-select a blocker by ref  (re-traces ITS chain — natural drill-up). */
 		onjump: (ref: string) => void;
 		onopen: () => void;
 		onclose: () => void;
@@ -78,7 +78,7 @@
 	const showChainDepth = $derived(chainDepth > 1 && chainDepth > blockedBy.length);
 
 	// item.fields is a JSON string on the Item type. Parse defensively — handle a
-	// pre-parsed object too (some callers/snapshots hydrate it eagerly) and never
+	// pre-parsed object too  (some callers/snapshots hydrate it eagerly) and never
 	// throw on malformed JSON.
 	const fields = $derived.by<Record<string, unknown>>(() => {
 		const raw = item?.fields;
@@ -92,7 +92,7 @@
 		}
 	});
 
-	// ASKED OF THE ITEM'S OWN COLLECTION (BUG-3067). `typeof … === 'string'` is
+	// ASKED OF THE ITEM'S OWN COLLECTION  (BUG-3067). `typeof … === 'string'` is
 	// the right question for a LIST-typed field and the wrong one for a scalar
 	// `relation`, whose value IS a string — so a retyped `priority` printed its
 	// stored item id here, exactly as it did on the cards before BUG-3016.
@@ -153,7 +153,7 @@
 		{/if}
 	</div>
 
-	<!-- Blocker chain (TASK-1737): direct blockers, clickable to drill up the chain.
+	<!-- Blocker chain  (TASK-1737): direct blockers, clickable to drill up the chain.
 	     Red accent — these are the reason this item is stuck. -->
 	{#if blockedBy.length > 0}
 		<section class="blockers" aria-label="Blocked by">
@@ -332,7 +332,7 @@
 		}
 	}
 
-	/* ── Blocker chain (TASK-1737) ─────────────────────────────────────────────── */
+	/* ── Blocker chain  (TASK-1737) ─────────────────────────────────────────────── */
 	.blockers {
 		margin: var(--space-3) 0;
 		padding-top: var(--space-3);

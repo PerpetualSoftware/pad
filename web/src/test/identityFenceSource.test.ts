@@ -337,7 +337,7 @@ describe('untrackedSpans exempts only what actually runs untracked', () => {
 		// `untrack((captureIdentity(), () => {}))` runs the capture BEFORE
 		// untrack is called, so the read is tracked. Exempting the call's whole
 		// span hid it; a compiled probe confirmed the effect re-runs on an epoch
-		// bump (codex round 2 [P2]). This form is refused rather than guessed at.
+		// bump. This form is refused rather than guessed at.
 		expect(() => trackedEpochReads('untrack((captureIdentity(), () => {}));')).toThrow(
 			/does not read that form/
 		);
@@ -355,7 +355,7 @@ describe('untrackedSpans exempts only what actually runs untracked', () => {
 describe('epoch reads are found regardless of ordinary whitespace', () => {
 	it('matches spaced call and member forms', () => {
 		// Unchanged runtime reads with different formatting were producing zero
-		// matches, so the guard accepted them silently (codex round 2 [P3]).
+		// matches, so the guard accepted them silently.
 		expect(trackedEpochReads('captureIdentity ();')).toHaveLength(1);
 		expect(trackedEpochReads('const x = authStore . identityEpoch;')).toHaveLength(1);
 	});
@@ -364,7 +364,7 @@ describe('epoch reads are found regardless of ordinary whitespace', () => {
 describe('matchBrace understands regex literals', () => {
 	it('does not close a block at a `}` inside a regex', () => {
 		// `const p = /}/;` otherwise ends the body early and every read after it
-		// vanishes — silently, with the effect still enumerated (codex round 3).
+		// vanishes — silently, with the effect still enumerated.
 		const code = '{ const p = /}/; captureIdentity(); }';
 		const end = matchBrace(code, 0);
 		expect(end, 'the block was truncated at the regex literal').toBe(code.length - 1);
@@ -434,8 +434,8 @@ describe('stateDeclarations enumerates the $state population by STATEMENT', () =
 		expect(() => stateDeclarations('\tlet a = $state((1')).toThrow(/could not delimit/);
 	});
 
-	// The four shapes codex built against the first scanner (round 1 on the
-	// hoist), each accepted by the compiler and each read wrong by a depth
+	// Four shapes built against the first scanner,
+	// each accepted by the compiler and each read wrong by a depth
 	// counter that did not know the grammar.
 	it('a regex literal containing a brace does not swallow the declarations after it', () => {
 		const code = ['\tlet open = /{/;', '\tlet hidden = $state(1);', '\tlet close = /}/;'].join('\n');
@@ -462,7 +462,7 @@ describe('stateDeclarations enumerates the $state population by STATEMENT', () =
 		expect(stateDeclarations('\tlet d =\n\t\t$state(4);')).toEqual(['d']);
 	});
 
-	// Round 2's three shapes.
+	// Three shapes: type arguments.
 	it('a type-argument list on the initialiser does not split the bindings', () => {
 		expect(stateDeclarations('\tlet data = $state<Record<string, number>>({}), hidden = $state(1);')).toEqual(['data', 'hidden']);
 		expect(stateDeclarations('\tlet a = 1 < 2, b = $state(1);')).toEqual(['b']);
@@ -480,7 +480,7 @@ describe('stateDeclarations enumerates the $state population by STATEMENT', () =
 		expect(stateDeclarations("\tconst s = 'no\\nlet fake = $state(1);';\n\tlet real = $state(2);")).toEqual(['real']);
 	});
 
-	// Round 3's two shapes.
+	// Two shapes: unspaced comparisons.
 	it('an unspaced comparison is not a type-argument list', () => {
 		expect(stateDeclarations('\tlet a = 1<2;\n\tlet hidden = $state(1);')).toEqual(['hidden']);
 		expect(stateDeclarations('\tlet a = x<y, b = $state(1);')).toEqual(['b']);
@@ -493,7 +493,7 @@ describe('stateDeclarations enumerates the $state population by STATEMENT', () =
 		expect(stateDeclarations('\tlet x = foo(() => { let inner = $state(0); return inner; });')).toEqual(['inner']);
 	});
 
-	// Round 4's three shapes.
+	// Three shapes: template interpolations.
 	it('a template interpolation body is code and is walked', () => {
 		const code = ['\tconst tpl = `${(() => {', '\t\tlet hidden = $state(1);', '\t\treturn hidden;', '\t})()}`;', '\tlet top = $state(2);'].join('\n');
 		expect(stateDeclarations(code)).toEqual(['hidden', 'top']);
@@ -509,7 +509,7 @@ describe('stateDeclarations enumerates the $state population by STATEMENT', () =
 		expect(stateDeclarations('\tlet data = $state<Map<Map<string, number>, 1 | 2>>(new Map()), b = $state(0);')).toEqual(['data', 'b']);
 	});
 
-	// Round 5's three shapes.
+	// Three shapes: whitespace in type arguments.
 	it('whitespace and newlines inside and after a type-argument list are fine', () => {
 		expect(stateDeclarations('\tlet data = $state<Map<string, 1 | 2>> (new Map());')).toEqual(['data']);
 		expect(stateDeclarations('\tlet data = $state<\n\t\tMap<string, number>\n\t>(new Map()), b = $state(0);')).toEqual(['data', 'b']);

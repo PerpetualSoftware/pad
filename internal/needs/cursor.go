@@ -45,7 +45,7 @@ func KeyOf(r *Row) Key { return KeyFor(SortAge, r) }
 // The instants a cursor can carry: Unix nanoseconds in int64, about 1677 to
 // 2262. A key time outside them (a zero time from an unparseable stored date,
 // or a far-future one) is clamped to the nearer end, so the sort and the cursor
-// see the same instant and the cursor round-trips exactly (TASK-3959 part 2 r2).
+// see the same instant and the cursor round-trips exactly (TASK-3959 part 2).
 // Clamped times tie and the tie falls through to created, then the item id.
 var (
 	keyTimeMin = time.Unix(0, math.MinInt64).UTC()
@@ -181,8 +181,7 @@ func DecodeCursor(token, sort, view, ws string) (Cursor, error) {
 	// and ws must equal this request's; as_of must be positive, since it is the
 	// server's own clock (a future one is clamped by the handler, not refused);
 	// item_id must look like a store id. key and created_at are NOT checked:
-	// every int64 is an instant a key can hold, a pre-1970 date included
-	// (TASK-3959 part 2 r2).
+	// every int64 is an instant a key can hold, a pre-1970 date included (TASK-3959 part 2).
 	if c.V != cursorVersion || c.Sort != sort || c.View != view || c.WS != ws || c.AsOf <= 0 ||
 		!validCursorItemID(c.ItemID) {
 		return Cursor{}, ErrInvalidCursor

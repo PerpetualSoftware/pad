@@ -162,8 +162,8 @@ func TestRedisBusSubscribeAndReplayHasNoWindowUnderConcurrency(t *testing.T) {
 	const readyAfter, holdAt = 50, 500
 	ready := make(chan struct{})
 	subscribed := make(chan struct{})
-	// Released on EVERY exit, not only after a successful subscribe (codex
-	// review): a subscribe that panics or a t.Fatal before the release would
+	// Released on EVERY exit, not only after a successful subscribe: a
+	// subscribe that panics or a t.Fatal before the release would
 	// otherwise leave the producer parked at holdAt for good.
 	var releaseOnce sync.Once
 	release := func() { releaseOnce.Do(func() { close(subscribed) }) }
@@ -491,7 +491,7 @@ func TestRedisBusNotificationSurvivesTheJSONRoundTrip(t *testing.T) {
 	}
 }
 
-// TestRedisBusReplayReportsAHoleAsAGap — codex round 3.
+// TestRedisBusReplayReportsAHoleAsAGap.
 //
 // MemoryBus assigns every id itself, so its replay buffer is contiguous by
 // construction and the ONLY gap it can report is eviction. RedisBus receives
@@ -539,7 +539,7 @@ func TestRedisBusReplayReportsAHoleAsAGap(t *testing.T) {
 	}
 }
 
-// TestRedisBusResumeAgainstAnEmptyBusReportsAGap — codex round 9, P1.
+// TestRedisBusResumeAgainstAnEmptyBusReportsAGap.
 //
 // A replica that has received NOTHING knows nothing, which is strictly less
 // than "contiguous from X" — so it must answer a resume at least as
@@ -564,7 +564,7 @@ func TestRedisBusResumeAgainstAnEmptyBusReportsAGap(t *testing.T) {
 	}
 }
 
-// TestRedisBusColdStartReplayReportsAGap — codex round 4, the case the first
+// TestRedisBusColdStartReplayReportsAGap: the case the first
 // version of the hole check missed entirely.
 //
 // A replica that restarts while Redis is already at 101 has an empty buffer.
@@ -599,7 +599,7 @@ func TestRedisBusColdStartReplayReportsAGap(t *testing.T) {
 	}
 }
 
-// TestRedisBusEpochChangeDropsTheStaleReplayBuffer — codex round 13, and the
+// TestRedisBusEpochChangeDropsTheStaleReplayBuffer: the
 // case pure arithmetic cannot see.
 //
 // Hold 100. Lose the connection. The counter resets and ids 1-101 are
@@ -641,7 +641,7 @@ func TestRedisBusEpochChangeDropsTheStaleReplayBuffer(t *testing.T) {
 	}
 }
 
-// TestRedisBusCounterResetDropsTheStaleReplayBuffer — codex round 6.
+// TestRedisBusCounterResetDropsTheStaleReplayBuffer.
 //
 // pad:watchevents_seq has no TTL, but it can still vanish: evicted under
 // maxmemory, dropped by a FLUSHDB, or restored from an older snapshot. Ids then
@@ -695,7 +695,7 @@ func TestRedisBusCounterResetDropsTheStaleReplayBuffer(t *testing.T) {
 }
 
 // TestRedisBusDecodePayloadRoundTrip covers the wire format publishScript
-// introduced (Codex round 1 P1) and extended in round 13: the epoch and id are
+// introduced and later extended: the epoch and id are
 // both assigned inside the Lua script and prepended as "<epoch>|<id>|<json>",
 // so the publisher never knows either and the receiver is the only place the
 // three parts are rejoined.

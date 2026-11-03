@@ -137,7 +137,7 @@ func TestMigrateFields_ReservedKeysCarryThroughUntouched(t *testing.T) {
 	convention := map[string]any{"trigger": "always", "enforcement": "must"}
 
 	// The expectations are INDEPENDENT deep copies, not aliases of the values
-	// handed to MigrateFields (Codex round 1). Comparing the result against the
+	// handed to MigrateFields. Comparing the result against the
 	// same backing objects that were passed in cannot detect an in-place
 	// mutation: both sides change together and DeepEqual stays true. These
 	// copies are the only thing that makes "untouched" mean untouched.
@@ -215,7 +215,7 @@ func TestMigrateFields_ReservedKeysBypassSchemaMatching(t *testing.T) {
 // this, MigrateFields hands the array through untouched and
 // ValidateFieldsDetailed — which iterates schema.Fields and therefore DOES see
 // a declared key — rejects it, turning a move that used to silently destroy the
-// notes into one that fails outright (Codex round 1 P2). Pinning the set here
+// notes into one that fails outright. Pinning the set here
 // rather than only at the server handler keeps the two lists honest.
 func TestReservedItemFieldKeysAreStableAndComplete(t *testing.T) {
 	got := models.ReservedItemFieldKeys()
@@ -237,7 +237,7 @@ func TestReservedItemFieldKeysAreStableAndComplete(t *testing.T) {
 	}
 }
 
-// The carry rule's own qualifier (BUG-2674, lead ruling): system-minted
+// The carry rule's own qualifier (BUG-2674): system-minted
 // NON-REFERENTIAL data carries everywhere; REFERENTIAL system data carries only
 // where its referent's context still holds. github_pr names a repository that
 // belongs to the source workspace's context — carried into a different
@@ -390,7 +390,7 @@ func TestStillDropped(t *testing.T) {
 // Scoped to migration deliberately: the same skip inside ValidateFieldsDetailed
 // would stop enforcing the declaration on create and full update too, where the
 // user really is authoring that key — and fields_patch would keep rejecting it,
-// so full and partial updates would disagree (Codex round 3).
+// so full and partial updates would disagree.
 func TestSchemaForMigratedFields(t *testing.T) {
 	t.Run("strips a grandfathered reserved declaration", func(t *testing.T) {
 		// The reserved key is FIRST on purpose. With it last, an in-place
@@ -467,7 +467,7 @@ func TestSchemaForMigratedFields(t *testing.T) {
 // it reaches the stripped-schema validation, so a legacy target requiring
 // implementation_notes failed bulk move while single move and copy succeeded —
 // the same key on the same item getting two answers depending on which button
-// was pressed (Codex round 4).
+// was pressed.
 func TestMigrateFields_GrandfatheredReservedDeclarationIsInert(t *testing.T) {
 	source := []models.FieldDef{}
 	target := []models.FieldDef{

@@ -218,7 +218,7 @@ function showGrouped<T, A>(
 		live.message = message;
 		live.link = link;
 		// The history entry moves to the front with its new timestamp, so the
-		// tray stays newest-first when another toast landed mid-burst (codex r3).
+		// tray stays newest-first when another toast landed mid-burst.
 		const at = history.findIndex((h) => h.id === group.id);
 		if (at !== -1) {
 			const [past] = history.splice(at, 1);

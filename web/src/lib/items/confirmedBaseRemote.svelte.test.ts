@@ -1,4 +1,4 @@
-// BUG-3850 (lead ruling c9db9612): a collaborator's text that arrived while
+// BUG-3850: a collaborator's text that arrived while
 // this tab was confirmed must be in the crash draft's base before the user's
 // first keystroke on top of it. Otherwise restore sends it again, and on the
 // last line an anchor that is a substring duplicates it: base 'A', stored
@@ -131,7 +131,7 @@ describe('BUG-3850: the base is refreshed before the first local change after a 
 		expect(h.state.snapshots).toBe(before);
 	});
 
-	// Lead ruling baa63dc3, the r4 hunter's trace: a remote update lands while
+	// A remote update lands while
 	// this tab is unconfirmed, so no base can be taken that holds it.
 	it('a remote change while unconfirmed: the base stays behind and is flagged, so restore never patches from it', () => {
 		const h = setUp('before');

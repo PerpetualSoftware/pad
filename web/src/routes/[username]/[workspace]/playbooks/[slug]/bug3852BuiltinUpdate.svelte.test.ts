@@ -5,9 +5,9 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/sv
  * BUG-3852: the Library's "Update available" link for a built-in playbook
  * opens this editor, so the review and Accept live here too. Accept refuses
  * while the form holds unsaved edits, the form is locked while an accept is in
- * flight (the dialog can be closed mid-request, which hands the page back),
+ * flight  (the dialog can be closed mid-request, which hands the page back),
  * and an accepted update reloads the form, so a later Save cannot send the
- * old body back. The e2e test (bug-3852-playbook-builtin-update.spec.ts) walks
+ * old body back. The e2e test  (bug-3852-playbook-builtin-update.spec.ts) walks
  * the same path against the real server.
  */
 vi.mock('$app/navigation', () => ({

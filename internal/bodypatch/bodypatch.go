@@ -105,7 +105,7 @@ func Apply(body string, edits []Edit) (string, error) {
 }
 
 // ErrNoChange: the edits, applied in order, leave the body exactly as it was
-// (retro CONVE-735 finding on #2055). A patch is a version; one that changes
+// (CONVE-735). A patch is a version; one that changes
 // nothing is refused rather than advancing seq with no version behind it.
 var ErrNoChange = errors.New("the edits change nothing")
 
@@ -168,7 +168,7 @@ func ApplyWithContext(body string, edits []Edit) (string, []AppliedEdit, error) 
 		end := p + len(e.New)
 		cb, ca := ctxBefore(body, p, true), ctxAfter(body, end, true)
 		if cb+e.New+ca == "" {
-			// The edit emptied its line (retro CONVE-735 finding on #2058):
+			// The edit emptied its line (CONVE-735):
 			// line-clipped context is empty on both sides, which would leave
 			// the undo no anchor at all. Reach across the line breaks instead.
 			cb, ca = ctxBefore(body, p, false), ctxAfter(body, end, false)

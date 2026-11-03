@@ -134,17 +134,17 @@ type RRule struct {
 	byeaster                []int
 	timeset                 []time.Time
 	len                     int
-	budget                  int64 // TASK-4100 H1: step budget per iterator; 0 = unbounded (upstream behaviour)
+	budget                  int64 // TASK-4100: step budget per iterator; 0 = unbounded (upstream behaviour)
 	stall                   time.Time
 }
 
-// SetBudget bounds every iterator of r to n period-loop steps (0: unbounded). TASK-4100 H1.
+// SetBudget bounds every iterator of r to n period-loop steps (0: unbounded). TASK-4100.
 func (r *RRule) SetBudget(n int64) { r.budget = n }
 
-// Exhausted reports whether an iterator of r stopped on its budget. TASK-4100 H1.
+// Exhausted reports whether an iterator of r stopped on its budget. TASK-4100.
 func (r *RRule) Exhausted() bool { return !r.stall.IsZero() }
 
-// StallPos bounds below every occurrence an exhausted iterator did not yield. TASK-4100 r3.
+// StallPos bounds below every occurrence an exhausted iterator did not yield. TASK-4100.
 func (r *RRule) StallPos() time.Time { return r.stall }
 
 // NewRRule construct a new RRule instance
@@ -583,12 +583,12 @@ type rIterator struct {
 	remain   reusingRemainSlice
 	finished bool
 	dayset   []optInt
-	steps    int64 // TASK-4100 H1: since the last candidate (r2)
+	steps    int64 // TASK-4100: since the last candidate
 }
 
 // spend charges one step; true when the budget is spent. It is the one place
 // the stall position is set: the start of the first period not fully examined,
-// adv further on from a skip loop that has examined this one. TASK-4100 r3.
+// adv further on from a skip loop that has examined this one. TASK-4100.
 func (iterator *rIterator) spend(adv int) bool {
 	r := iterator.ii.rrule
 	if iterator.steps++; r.budget <= 0 || iterator.steps <= r.budget {
@@ -612,7 +612,7 @@ func (iterator *rIterator) generate() {
 
 	r := iterator.ii.rrule
 	for iterator.remain.Len() == 0 {
-		if iterator.spend(0) { // TASK-4100 H1
+		if iterator.spend(0) { // TASK-4100
 			return
 		}
 		// Get dayset with the right frequency
@@ -684,7 +684,7 @@ func (iterator *rIterator) generate() {
 				} else if !res.Before(r.dtstart) {
 					iterator.total++
 					iterator.remain.Append(res)
-					iterator.steps = 0 // TASK-4100 r2: the budget bounds a no-match stretch
+					iterator.steps = 0 // TASK-4100: the budget bounds a no-match stretch
 					if iterator.count != 0 {
 						iterator.count--
 						if iterator.count == 0 {
@@ -714,7 +714,7 @@ func (iterator *rIterator) generate() {
 					} else if !res.Before(r.dtstart) {
 						iterator.total++
 						iterator.remain.Append(res)
-						iterator.steps = 0 // TASK-4100 r2
+						iterator.steps = 0 // TASK-4100
 						if iterator.count != 0 {
 							iterator.count--
 							if iterator.count == 0 {
@@ -771,7 +771,7 @@ func (iterator *rIterator) generate() {
 				iterator.hour += ((23 - iterator.hour) / r.interval) * r.interval
 			}
 			for {
-				if iterator.spend(r.interval) { // TASK-4100 H1
+				if iterator.spend(r.interval) { // TASK-4100
 					return
 				}
 				iterator.hour += r.interval
@@ -792,7 +792,7 @@ func (iterator *rIterator) generate() {
 				iterator.minute += ((1439 - (iterator.hour*60 + iterator.minute)) / r.interval) * r.interval
 			}
 			for {
-				if iterator.spend(r.interval) { // TASK-4100 H1
+				if iterator.spend(r.interval) { // TASK-4100
 					return
 				}
 				iterator.minute += r.interval
@@ -819,7 +819,7 @@ func (iterator *rIterator) generate() {
 				iterator.second += (((86399 - (iterator.hour*3600 + iterator.minute*60 + iterator.second)) / r.interval) * r.interval)
 			}
 			for {
-				if iterator.spend(r.interval) { // TASK-4100 H1
+				if iterator.spend(r.interval) { // TASK-4100
 					return
 				}
 				iterator.second += r.interval

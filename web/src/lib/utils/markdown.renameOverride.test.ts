@@ -56,7 +56,7 @@ describe('a rename no longer pins the old title on an op-logged item (BUG-3315)'
 	}
 
 	// Straight from the load, without the editor in between, the marker still
-	// carries the load's escapes (codex r3); it must still read as the title.
+	// carries the load's escapes; it must still read as the title.
 	for (const special of ['A & B', 'back\\slash', 'say "hi"']) {
 		it(`the marker straight from the load follows a rename (${JSON.stringify(special)})`, () => {
 			const doc = wikiLinksToMarkdown('see [[TASK-1]] here', [taskTitled(special)], 'ws', 'u');

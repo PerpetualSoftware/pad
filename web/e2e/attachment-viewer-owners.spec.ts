@@ -16,7 +16,7 @@ import {
 
 /**
  * THE SEVEN GLOBAL KEY / GESTURE OWNERS, DEFERRING TO A FRONTMOST VIEWER
- * (TASK-2430, proven in a browser by TASK-2436).
+ *  (TASK-2430, proven in a browser by TASK-2436).
  *
  * TASK-2430 routed seven global owners through `isBlockedByModal()`. Its own
  * tests mount each component in jsdom and drive its handler directly, which
@@ -27,7 +27,7 @@ import {
  * end-to-end proof belongs to TASK-2436's Playwright suite".
  *
  * EVERY owner here is asserted twice: once with a viewer frontmost (must stand
- * down) and once with an EMPTY stack (must behave exactly as it always did).
+ * down) and once with an EMPTY stack  (must behave exactly as it always did).
  * The empty-stack half is the contract TASK-2430 promises and the half a
  * blanket "always decline" mutation would break.
  *
@@ -69,7 +69,7 @@ const FIRST_STEP_WINDOW_MS = 2000;
  * is asserted on its own.
  *
  * Direction is still not assumed. If `j` does not move the cursor within
- * FIRST_STEP_WINDOW_MS (the end of a group), the order flips: `k` must move it,
+ * FIRST_STEP_WINDOW_MS  (the end of a group), the order flips: `k` must move it,
  * then `j` must bring it back.
  *
  * The suite is fully parallel against one server, so a row from another spec
@@ -133,7 +133,7 @@ async function expectCursorMoves(
 	// press is a separate press to the app too.
 	await page.waitForTimeout(PANE_FOLLOW_SETTLE_MS);
 	// Read again right before the press: the return must be movement caused by
-	// it, not a change that happened during the settle (codex r2).
+	// it, not a change that happened during the settle.
 	const beforeBack = await focusedCard();
 	await press(back);
 	try {
@@ -160,7 +160,7 @@ async function expectCursorMoves(
 interface NavGuardState {
 	/** Tag, id and classes of `document.activeElement` and its two nearest ancestors. */
 	active: string;
-	/** Focus is where the route's j/k handler bails (collection +page.svelte). */
+	/** Focus is where the route's j/k handler bails  (collection +page.svelte). */
 	activeInPane: boolean;
 	activeInEditableOrMenu: boolean;
 	/** Viewer roots still mounted, and native modals open: `isBlockedByModal`'s inputs. */
@@ -207,7 +207,7 @@ async function openViewer(page: Page): Promise<void> {
 }
 
 /**
- * Open the strip's DELETE-CONFIRM BottomSheet for `filename` (PLAN-2392 3c-ii).
+ * Open the strip's DELETE-CONFIRM BottomSheet for `filename`  (PLAN-2392 3c-ii).
  *
  * Owner 4's co-mounted `BottomSheet` used to be the file-tile OPTIONS panel, but
  * the converged surface retired that channel (a file tile now opens the viewer,
@@ -216,8 +216,8 @@ async function openViewer(page: Page): Promise<void> {
  * surviving BottomSheet a user actually meets on this page. The `.att-delete`
  * control is hover/focus-revealed, so a programmatic `click()` opens it without
  * depending on a pointer hover the mobile viewport does not have. Firing only a
- * `click` (no `pointerdown`) also means the sheet's outside-close does not later
- * fire when a viewer is opened over it (the same trick the tile opens use).
+ * `click`  (no `pointerdown`) also means the sheet's outside-close does not later
+ * fire when a viewer is opened over it  (the same trick the tile opens use).
  */
 async function openStripDeleteSheet(page: Page, filename: string): Promise<void> {
 	await page
@@ -284,7 +284,7 @@ test.describe('attachment viewer — global key & gesture owners (TASK-2436)', (
 		await expect.poll(async () => (await state()).quickAdd).toBe(false);
 
 		// `?` BEFORE Cmd+F, deliberately: Cmd+F focuses the filter bar's search
-		// INPUT, and `?` is (correctly) ignored while a text control has focus.
+		// INPUT, and `?` is  (correctly) ignored while a text control has focus.
 		await page.keyboard.press('?');
 		await expect.poll(async () => (await state()).shortcutsModal).toBe(true);
 		await page.keyboard.press('Escape');
@@ -327,7 +327,7 @@ test.describe('attachment viewer — global key & gesture owners (TASK-2436)', (
 	}) => {
 		// The collection route's keydown handler is the one with TWO halves: the
 		// Escape dispatch (which must NOT be arbitrated, or the viewer becomes
-		// undismissable) and the navigation switch below it (which must be).
+		// undismissable) and the navigation switch below it  (which must be).
 		// This asserts the second half; the first is asserted in
 		// `attachment-viewer-modal.spec.ts` — together they pin the guard between
 		// its two bounds.
@@ -347,7 +347,7 @@ test.describe('attachment viewer — global key & gesture owners (TASK-2436)', (
 		await expect(page.locator(`.item-pane ${TILE}`).first()).toBeVisible();
 
 		// Identified by slug, not by text: a card's text carries a relative time
-		// ("just now") that can roll over between two readings of the same card.
+		//  ("just now") that can roll over between two readings of the same card.
 		const focusedCard = () =>
 			page.evaluate(
 				() => document.querySelector('.item-card.focused')?.getAttribute('data-item-slug') ?? null
@@ -369,7 +369,7 @@ test.describe('attachment viewer — global key & gesture owners (TASK-2436)', (
 		await page.waitForTimeout(PANE_FOLLOW_SETTLE_MS);
 
 		// Back to the row that HAS the attachment: j/k re-target the pane as they
-		// move (that is the behaviour under test), so the cursor has walked the
+		// move  (that is the behaviour under test), so the cursor has walked the
 		// pane onto a doc with no strip.
 		await page.locator('.item-card', { hasText: 'Owner nav alpha' }).first().click();
 		await expect(page.locator(`.item-pane ${TILE}`).first()).toBeVisible();
@@ -377,7 +377,7 @@ test.describe('attachment viewer — global key & gesture owners (TASK-2436)', (
 
 		// WITH A VIEWER: nothing moves, asserted after every individual press.
 		// The reference reading is re-taken each time, so a row arriving from
-		// another spec (the suite is fully parallel and this is the shared list)
+		// another spec  (the suite is fully parallel and this is the shared list)
 		// cannot be mistaken for a keystroke landing.
 		await openViewer(page);
 		for (const key of ['j', 'j', 'ArrowDown', 'ArrowDown', 'k', 'ArrowUp']) {
@@ -442,7 +442,7 @@ test.describe('attachment viewer — global key & gesture owners (TASK-2436)', (
 		// answered `false`. The guard was correct; the moment it was read was not.
 		//
 		// WHAT FIXES IT: the viewer marks the EVENT it consumed
-		// (`noteEscapeConsumedByViewer`), and the sheet passes that event to
+		//  (`noteEscapeConsumedByViewer`), and the sheet passes that event to
 		// `isBlockedByModal` — so the mark outlives the lease and this listener
 		// stands down. Remove either half and this test fails again.
 		//
@@ -450,7 +450,7 @@ test.describe('attachment viewer — global key & gesture owners (TASK-2436)', (
 		// component's handler in isolation, so nothing releases a lease
 		// mid-dispatch. It is invisible to a CLICK-driven test too: closing the
 		// same viewer with its Close button leaves the sheet open, which is how
-		// this was isolated. `BottomSheet` has the identical shape (next test).
+		// this was isolated. `BottomSheet` has the identical shape  (next test).
 		// ─────────────────────────────────────────────────────────────────────
 		await page.setViewportSize(MOBILE);
 		await browserLogin(page);
@@ -495,7 +495,7 @@ test.describe('attachment viewer — global key & gesture owners (TASK-2436)', (
 		// EMPTY-STACK REGRESSION for `BottomSheet`. The strip's DELETE-CONFIRM is a
 		// `Menu` with `sheetOnMobile`, i.e. a real `BottomSheet` — the surviving
 		// BottomSheet a user meets on this page now the file-tile options panel is
-		// retired (PLAN-2392 3c-ii).
+		// retired  (PLAN-2392 3c-ii).
 		await page.setViewportSize(MOBILE);
 		await browserLogin(page);
 		const doc = await seedDoc(fixture, request, 'Owner sheet baseline');
@@ -534,8 +534,8 @@ test.describe('attachment viewer — global key & gesture owners (TASK-2436)', (
 		await uploadAttachment(fixture, request, doc.id, 'shot.png');
 		await page.goto(itemUrl(fixture, doc.slug));
 
-		// Co-mount a BottomSheet (shot.png's delete confirm) and then a viewer over
-		// it (pic.png's tile). The tile open is a programmatic `click()` — only a
+		// Co-mount a BottomSheet  (shot.png's delete confirm) and then a viewer over
+		// it  (pic.png's tile). The tile open is a programmatic `click()` — only a
 		// `click`, no `pointerdown` — so the sheet's outside-close does not fire and
 		// it stays mounted BEHIND the frontmost viewer.
 		await openStripDeleteSheet(page, 'shot.png');
@@ -595,7 +595,7 @@ test.describe('attachment viewer — global key & gesture owners (TASK-2436)', (
 		await expect(sheet, 'the sheet is a LOWER layer and must survive the press').toBeVisible();
 
 		// A SECOND press closes it — the sheet keeps its Escape, it just doesn't
-		// get to spend the viewer's one (see owner 3).
+		// get to spend the viewer's one  (see owner 3).
 		await page.keyboard.press('Escape');
 		await expect(sheet).toHaveCount(0);
 	});
@@ -606,9 +606,9 @@ test.describe('attachment viewer — global key & gesture owners (TASK-2436)', (
 		request
 	}) => {
 		// This owner used to be the TopBar's workspace OVERFLOW MENU, whose
-		// window keydown handler had to stand down under a viewer (TASK-2430).
+		// window keydown handler had to stand down under a viewer  (TASK-2430).
 		// The menu and that handler were deleted when the bar became a tab bar
-		// over the open set (TASK-3274), so the bar owns no key at all. What is
+		// over the open set  (TASK-3274), so the bar owns no key at all. What is
 		// left to pin is the consequence: one Escape spends the viewer and
 		// nothing in the bar moves.
 		//
@@ -741,7 +741,7 @@ test.describe('attachment viewer — global key & gesture owners (TASK-2436)', (
 	}) => {
 		// The graph is the owner that CO-MOUNTS with the viewer: its drawer stays
 		// in the DOM while a viewer opens over it. A user's wheel cannot reach it
-		// then (the viewer covers the screen), so the event is dispatched at the
+		// then  (the viewer covers the screen), so the event is dispatched at the
 		// graph viewport directly — which is exactly the reachability the guard
 		// exists for, and the only way to distinguish "the guard declined" from
 		// "the pointer never got there".

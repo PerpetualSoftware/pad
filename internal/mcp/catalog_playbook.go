@@ -169,7 +169,7 @@ func actionPlaybookRun(ctx context.Context, input map[string]any, env ActionEnv)
 				// Skip — caller signaled "leave unbound"; let the
 				// server's bindPlaybookArgs surface it as unbound.
 			default:
-				// BUG-4056 r1: a number-typed argument parses '1e+06' fine,
+				// BUG-4056: a number-typed argument parses '1e+06' fine,
 				// but a string- or ref-typed one would bind that text.
 				if number, ok := formatNumber(tv); ok {
 					tokens = append(tokens, k+"="+number)

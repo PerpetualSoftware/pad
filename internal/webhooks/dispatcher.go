@@ -146,8 +146,8 @@ type WebhookPayload struct {
 	// before their header lands (SPEC-3 v1.6 makes "one wire event per batch"
 	// the normal case rather than an invariant). Without it on BOTH, a
 	// consumer receiving singles-then-partial-batch has no way to tell they
-	// were one operation, which is the entire reason the field exists (codex
-	// round 2 — the correlation was claimed in comments and reachable only
+	// were one operation, which is the entire reason the field exists (the
+	// correlation was claimed in comments and reachable only
 	// from the folded half).
 	BatchID   string      `json:"batch_id,omitempty"`
 	Event     string      `json:"event"`
@@ -392,7 +392,7 @@ func screenDialAddr(address string) error {
 
 // errDialBlocked marks screenDialAddr's refusal. It is the policy's, like a
 // blocked URL, so a delivery that hits it is permanent, not a network error
-// to retry (BUG-3661, codex r1): before, any Do error that was not a
+// to retry (BUG-3661): before, any Do error that was not a
 // rejected redirect counted as transient, this one included.
 var errDialBlocked = errors.New("webhook dial blocked")
 
@@ -476,8 +476,8 @@ func (d *Dispatcher) DeliverEvent(dv Delivery) (DeliveryOutcome, error) {
 			// A deactivated endpoint (by its owner, or automatically after
 			// consecutive failures) is no longer owed the event. If an
 			// earlier pass left it owed, that is a drop: recorded and
-			// counted, so the loss is visible rather than silent (TASK-3409,
-			// codex r1). Nothing is recorded for a hook that never had a row.
+			// counted, so the loss is visible rather than silent (TASK-3409).
+			// Nothing is recorded for a hook that never had a row.
 			if ledger != nil && dv.EventID != "" && matchesEvent(hook.Events, dv.Event) {
 				st, err := ledger.OwnerDeliveryStatus(dv.EventID, hook.ID)
 				if err != nil {
@@ -614,8 +614,8 @@ func (d *Dispatcher) attemptDeliver(hook models.Webhook, body []byte) deliveryRe
 	// failed lookup is not a block (BUG-3661): a DNS timeout or SERVFAIL
 	// used to end the endpoint's part in the event for good. It is
 	// transient, and the lookup is bound to the attempt's timeout.
-	// One deadline covers the whole attempt, the lookup above included
-	// (codex r1): the lookup used to get its own deliveryTimeout before the
+	// One deadline covers the whole attempt, the lookup above included:
+	// the lookup used to get its own deliveryTimeout before the
 	// request got another.
 	attemptCtx, attemptCancel := context.WithTimeout(context.Background(), deliveryTimeout)
 	defer attemptCancel()
@@ -656,7 +656,7 @@ func (d *Dispatcher) attemptDeliver(hook models.Webhook, body []byte) deliveryRe
 			}
 			// Cancelling alone is not a write barrier: HTTP/1 queues the
 			// request before it checks the context, so its writer can still
-			// send the whole request (codex r3). Closing the connection is:
+			// send the whole request. Closing the connection is:
 			// no byte can be written to it. The cancel then stops any
 			// transport-internal retry on a fresh connection.
 			if info.Conn != nil {
@@ -683,7 +683,7 @@ func (d *Dispatcher) attemptDeliver(hook models.Webhook, body []byte) deliveryRe
 	resp, err := d.client.Do(req)
 	// The connection check decides the outcome whether or not Do errored:
 	// net/http can still return an already-buffered response after the close
-	// and cancel (codex r4), and that must not count as a delivery.
+	// and cancel, and that must not count as a delivery.
 	if connGone.Load() || connUnknown.Load() {
 		if resp != nil {
 			resp.Body.Close()

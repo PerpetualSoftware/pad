@@ -154,7 +154,7 @@ describe('resolveSyncRenameTarget', () => {
 
 	it('skips a mid-navigation foreign snapshot — loaded slug belongs to the PREVIOUS route', () => {
 		// Navigating A→B while A's snapshot is still loaded: B's route must
-		// not be steered by A's id, even when B's slug is dead (codex P1).
+		// not be steered by A's id, even when B's slug is dead.
 		expect(
 			resolveSyncRenameTarget(
 				syncInput({

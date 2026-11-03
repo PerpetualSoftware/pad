@@ -64,7 +64,7 @@ func MkdirTemp(prefix string) (string, error) {
 // with no owner.lock (made before BUG-4088), its pid is not running. A
 // directory without a pid (made before BUG-3412) is never removed: its age
 // cannot prove its owner gone, since a stopped or suspended process can
-// outlive any bound (codex r1). Errors are ignored: a sweep that cannot
+// outlive any bound. Errors are ignored: a sweep that cannot
 // remove something leaves it as it was.
 func Sweep(dir, prefix string) {
 	entries, err := os.ReadDir(dir)

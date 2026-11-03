@@ -19,7 +19,7 @@
 //      allowed);
 //   2. a later line is `---` (trailing whitespace allowed: without that, a
 //      `--- ` close fell through to the setext reading this file exists to
-//      stop, codex round 1);
+//      stop);
 //   3. every line between is a `key: value` / `key:` line, an indented
 //      continuation of a preceding key, or blank, and the first is a key line.
 // No YAML parser is loaded: the rule is the strict line check above, chosen
@@ -94,7 +94,7 @@ function frontmatterRule(state: StateBlock, startLine: number, endLine: number, 
 
 // tiptap-markdown runs every extension's `parse.setup` on each parse, against
 // the same markdown-it instance, so the rule is registered once per instance
-// rather than once per parse (codex round 1: the rule list grew on every
+// rather than once per parse (the rule list grew on every
 // setContent).
 const registered = new WeakSet<MarkdownIt>();
 

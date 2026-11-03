@@ -143,7 +143,7 @@ func decisionFileConfig(cfg *config.Config) decision.Config {
 
 // resolveDecisionConfig resolves the two sources THIS HOST can see: config
 // file first, environment last, because the environment overrides the
-// instance-admin setting (ruled day 73 on PLAN-3114). The running server
+// instance-admin setting (PLAN-3114). The running server
 // resolves a third source between them — the instance-admin setting, stored
 // in its database (TASK-3121) — which this command does not read; the report
 // says so rather than presenting a two-source answer as the server's.

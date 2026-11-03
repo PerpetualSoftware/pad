@@ -7,7 +7,7 @@ import (
 	"github.com/prometheus/common/expfmt"
 )
 
-// TestRedisUpIsAbsentUntilRegistered pins codex round 1's P2: a
+// TestRedisUpIsAbsentUntilRegistered pins that a
 // deployment with no Redis must export NO pad_redis_up series, because a
 // permanent 0 reads as "Redis is down" to anything scraping it and would
 // have every single-process binary alerting on a dependency it does not

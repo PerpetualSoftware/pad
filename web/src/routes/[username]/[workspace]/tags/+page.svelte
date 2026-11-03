@@ -33,14 +33,14 @@
 		// UNTRACKED, so this effect depends on the workspace alone: loadTags
 		// reads the reactive identity epoch synchronously for its fence, and
 		// tracked, that read would add an identity reload path the layout
-		// already owns (BUG-3236).
+		// already owns  (BUG-3236).
 		if (ws) untrack(() => loadTags(ws));
 	});
 
 	async function loadTags(ws: string) {
 		loading = true;
 		const seq = ++loadSeq;
-		// The identity that ASKED (BUG-3236). `seq` is a navigation fence and
+		// The identity that ASKED  (BUG-3236). `seq` is a navigation fence and
 		// does not move on an account swap, so it cannot see a list settling in
 		// the window before the layout's identity reload takes the page away:
 		// the same window starred's fence covers.
@@ -63,8 +63,8 @@
 		return `/${username}/${wsSlug}/tags/${encodeURIComponent(tag)}`;
 	}
 
-	// The browser tab names this section (TASK-2261, audit C99). Pathname is
-	// read so a reuse across workspaces re-sets it (see activity/+page.svelte).
+	// The browser tab names this section  (TASK-2261, audit C99). Pathname is
+	// read so a reuse across workspaces re-sets it  (see activity/+page.svelte).
 	$effect(() => {
 		page.url.pathname;
 		titleStore.setPageTitle({ section: 'Tags', item: null });

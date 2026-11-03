@@ -8,7 +8,7 @@ import { join, relative } from 'node:path';
  * is CLASSIFIED, so that a new one fails here until someone decides whether it
  * belongs in the mobile apps.
  *
- * KEPT addresses are legal and docs pages (the lead's ruling, day 82): the
+ * KEPT addresses are legal and docs pages: the
  * privacy policy must be reachable in the app, and none of them sells
  * anything. GATED addresses are the marketing site (its root, blog, FAQ,
  * contribute) and the Pro-interest mailto, and each file that names one must
@@ -26,7 +26,7 @@ const KEPT: RegExp[] = [
 	/^https:\/\/getpad\.dev\/learn(\/|$)/,
 	/^https:\/\/getpad\.dev\/(changelog|privacy|terms|subprocessors|security|connect)$/,
 	/^https:\/\/status\.getpad\.dev$/,
-	// TASK-3612 (lead ruling, day 92): Cloud's MCP endpoint. A connection
+	// TASK-3612: Cloud's MCP endpoint. A connection
 	// address the move-to-Cloud guide names; it sells nothing.
 	/^https:\/\/mcp\.getpad\.dev$/,
 	/^mailto:support@getpad\.dev$/
@@ -35,7 +35,7 @@ const KEPT: RegExp[] = [
 const GATED: RegExp[] = [
 	/^https:\/\/getpad\.dev\/?$/,
 	/^https:\/\/getpad\.dev\/(blog|faq|contribute)$/,
-	// TASK-3612 (lead ruling, day 92): Pad Cloud's sign-up, linked from the
+	// TASK-3612: Pad Cloud's sign-up, linked from the
 	// move-to-Cloud guide on a self-hosted instance only.
 	/^https:\/\/app\.getpad\.dev$/,
 	/^mailto:info@getpad\.dev(\?|$)/

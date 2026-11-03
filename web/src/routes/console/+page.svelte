@@ -25,9 +25,9 @@
 
 	onMount(async () => {
 		// Honor the openCreate=1 query param staged by /console/new's
-		// redirect (IDEA-1516 §1). Open the modal and scrub the param
+		// redirect  (IDEA-1516 §1). Open the modal and scrub the param
 		// from the URL so a subsequent refresh doesn't re-open it.
-		// Lives in onMount (not an $effect) so it runs exactly once
+		// Lives in onMount  (not an $effect) so it runs exactly once
 		// per page mount — modal-toggle is a side-effect, not reactive
 		// state derived from the URL.
 		if (browser && page.url.searchParams.get('openCreate') === '1') {

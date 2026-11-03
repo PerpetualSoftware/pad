@@ -82,7 +82,7 @@ type Why struct {
 type Routing struct {
 	Rule string
 	// People are the users the winning rule routes to, in rule order. Only the
-	// winning rule's people are returned (lead ruling A1: exclusive).
+	// winning rule's people are returned (A1: exclusive).
 	People       []string
 	Why          Why
 	Because      []Because

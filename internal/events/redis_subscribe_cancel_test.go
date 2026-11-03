@@ -261,7 +261,7 @@ func TestCancelledEstablisherStillFinishesTheWaitForItsJoiners(t *testing.T) {
 	}
 	// The hook fires BEFORE the mark takes b.mu; the observer reports AFTER
 	// it is set. Release the acknowledgement only on the second signal, or it
-	// can beat the mark and turn it into a no-op (codex round 3 P1).
+	// can beat the mark and turn it into a no-op.
 	deadline := time.Now().Add(5 * time.Second)
 	for obs.unconfirmedCount() == 0 {
 		if time.Now().After(deadline) {
@@ -522,7 +522,7 @@ func TestACancelledEstablisherNeverStrandsTheNextSubscriber(t *testing.T) {
 }
 
 // TestClosingTheBusStillEndsAnInFlightDial pins the half of the dial's context
-// that BUG-2749 nearly removed (codex round 2 P2).
+// that BUG-2749 nearly removed.
 //
 // Before this unit the dial ran on the bus's own context, so Close() could cut
 // a stalled one short. Routing it to the caller instead would have handed that

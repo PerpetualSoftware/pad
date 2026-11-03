@@ -75,7 +75,7 @@ func MatchLegacyBuiltin(entries []BuiltinEntry, kind, title, invocationSlug, con
 
 	switch {
 	case byTitle != "" && bySlug != "" && byTitle != bySlug:
-		// The title names one built-in and the slug another (codex r1):
+		// The title names one built-in and the slug another:
 		// either could be the rename, so neither is adopted.
 		return ""
 	case byTitle != "":

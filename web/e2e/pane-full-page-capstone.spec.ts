@@ -375,7 +375,7 @@ test.describe('full-page pane host CAPSTONE (PLAN-2154 Phase 2 / TASK-2175)', ()
 		// Add-relationship + per-link remove: still present (side-independent single-item REST — no freeze).
 		await expect(col.locator('button.add-relationship-btn')).toHaveCount(1);
 		await expect(col.locator('button.link-delete-btn')).toHaveCount(1);
-		// EXCEPTION (Codex P1): the owner quick-actions menu's "Manage/New" controls
+		// EXCEPTION: the owner quick-actions menu's "Manage/New" controls
 		// WRITE the whole collection settings from a per-item snapshot (last-write-
 		// wins across two items in one collection), so they gate on `!peeking`. This
 		// note collection seeds NO read-only prompt actions, so with the write
@@ -385,7 +385,7 @@ test.describe('full-page pane host CAPSTONE (PLAN-2154 Phase 2 / TASK-2175)', ()
 		// Rich editor: retained (no teardown) — only not typeable.
 		await expect(masterEditor).toHaveCount(1);
 
-		// ── RUNTIME MUTATION (Codex P2): the invisible freeze is not merely visual —
+		// ── RUNTIME MUTATION: the invisible freeze is not merely visual —
 		//    a field edit must actually PATCH the CORRECT item. The field lives under
 		//    the master's Details tab (Phase-4); switching to it re-activates the master
 		//    per focus-follows (the same un-peek a field click always triggered), then
@@ -420,7 +420,7 @@ test.describe('full-page pane host CAPSTONE (PLAN-2154 Phase 2 / TASK-2175)', ()
 		await expect(masterEditor).toHaveAttribute('contenteditable', 'true', { timeout: SYNC_TIMEOUT });
 	});
 
-	// ── 1b. Quick-actions EXCEPTION (Codex P1): the owner "New/Manage" controls
+	// ── 1b. Quick-actions EXCEPTION: the owner "New/Manage" controls
 	// WRITE the whole collection settings from a per-item snapshot (last-write-wins
 	// across two items in one collection), so they gate on `!peeking` — confined to
 	// the active side. The read-only prompt-copy actions stay visible on both sides.
@@ -506,7 +506,7 @@ test.describe('full-page pane host CAPSTONE (PLAN-2154 Phase 2 / TASK-2175)', ()
 		const maxByRoom = new Map<string, number>();
 		// The running peak of TOTAL concurrent collab sockets across ALL rooms —
 		// the real "at most 2 collab WS" ceiling. Per-room maxima alone would miss
-		// a transient master + old-pane + new-pane = 3 during a drill (Codex P1).
+		// a transient master + old-pane + new-pane = 3 during a drill.
 		let maxTotalLive = 0;
 		const totalLive = () => [...liveByRoom.values()].reduce((a, b) => a + b, 0);
 		page.on('websocket', (ws) => {
@@ -729,7 +729,7 @@ test.describe('full-page pane host CAPSTONE (PLAN-2154 Phase 2 / TASK-2175)', ()
 		// proceeds PAST the post-item-GET gen-check — i.e. only if the fence failed.
 		// `loadData` fetches progress/links by the LOADED item's SLUG (ItemDetail
 		// ~L1211/1233 `itemData.slug`), NOT the `?item=` REF — so track the SLUG
-		// (plus the ref as a belt) or the fence proof is vacuous (Codex P1).
+		// (plus the ref as a belt) or the fence proof is vacuous.
 		const aSubResourceGets: string[] = [];
 		page.on('request', (req) => {
 			if (req.method() !== 'GET') return;
@@ -840,7 +840,7 @@ test.describe('full-page pane host CAPSTONE (PLAN-2154 Phase 2 / TASK-2175)', ()
 		await drillTo(page, d.slug);
 		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 3, paneOwned: true });
 		// D must be fully RENDERED before the burst, so the post-burst A-title
-		// assertion can't be satisfied by a stale, previously-rendered A (Codex).
+		// assertion can't be satisfied by a stale, previously-rendered A.
 		await expect(pane.locator('.title', { hasText: /FP burst delta/ })).toBeVisible({ timeout: SYNC_TIMEOUT });
 		const getsBeforeBurst = itemGets.length;
 
@@ -882,7 +882,7 @@ test.describe('full-page pane host CAPSTONE (PLAN-2154 Phase 2 / TASK-2175)', ()
 		expect(burstGets).not.toContain(b.slug);
 		// ...and the base A was minted EXACTLY ONCE — the settle coalesced the
 		// three popstates into a SINGLE teardown/mint, not one per traversed entry
-		// (proves "one mint", not just "the right destination"; Codex P2).
+		// (proves "one mint", not just "the right destination").
 		expect(burstGets.filter((g) => g === refA)).toHaveLength(1);
 	});
 
@@ -921,7 +921,7 @@ test.describe('full-page pane host CAPSTONE (PLAN-2154 Phase 2 / TASK-2175)', ()
 		// close issues one go(-1); the second call hits the in-flight fence and
 		// no-ops (issues no go). Counting is the only timing-immune way to
 		// distinguish "second close fenced" from "second go(-1) browser-coalesced"
-		// — both leave the same end URL (Codex round 4 discipline).
+		// — both leave the same end URL.
 		const goCount = await page.evaluate(() => {
 			let count = 0;
 			const orig = history.go.bind(history);

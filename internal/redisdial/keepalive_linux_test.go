@@ -21,7 +21,7 @@ import (
 // portable — the Smoke jobs on macOS and Windows skip the file entirely.
 //
 // WHAT THAT GAP ACTUALLY COSTS, since Pad ships darwin and windows binaries
-// too (codex round 2, P3): nothing in regression terms. The behaviour is
+// too: nothing in regression terms. The behaviour is
 // platform-independent — net.Dialer applies KeepAliveConfig on every platform
 // Go supports — so a removal would be caught here, on the Go and Go (PostgreSQL)
 // CI jobs, which are the ones that run the full suite. The macOS and Windows

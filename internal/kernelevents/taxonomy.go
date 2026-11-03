@@ -176,8 +176,8 @@ const (
 // source of truth that can disagree with the first — and it disagreed
 // dangerously: a canonical event missing from a separate family map would
 // resolve to the empty family, which a caller declaring nothing would then
-// MATCH, so the check would fail OPEN exactly when it was needed (Codex round
-// 11, on code round 10 had just added). Co-locating the fields makes the drift
+// MATCH, so the check would fail OPEN exactly when it was needed. Co-locating the
+// fields makes the drift
 // unrepresentable rather than tested-for.
 type eventSpec struct {
 	subject string
@@ -235,7 +235,7 @@ type eventSpec struct {
 // whether the bytes attached to it are the right shape. Without families, a
 // caller could pair item.created with a ref-only deletion payload and the write
 // would be accepted — the taxonomy would have validated the half that was
-// already obviously correct (Codex round 10).
+// already obviously correct.
 const (
 	// PayloadItemSnapshot: a full item snapshot with the prior_status envelope
 	// pseudo-field.
@@ -319,8 +319,7 @@ func PayloadFamilies(name string) ([]string, bool) {
 // A writer that knows which shape it just marshalled calls this to confirm the
 // event name agrees, so an event and a payload that were not meant for each
 // other cannot be stored together. An empty family is never allowed: a caller
-// declaring nothing must not match, which was the fail-open shape Codex round
-// 10 found.
+// declaring nothing must not match, which was the fail-open shape.
 func AllowsPayload(name, family string) bool {
 	if family == "" {
 		return false

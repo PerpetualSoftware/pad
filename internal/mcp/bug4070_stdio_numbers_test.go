@@ -92,7 +92,7 @@ func TestBUG4070_StdioNumberStringsAndFloats(t *testing.T) {
 		}
 	})
 
-	// Other types are not this check's to refuse (r1 ruling, row 1): they keep
+	// Other types are not this check's to refuse: they keep
 	// their path, and these rows pin where it goes. At a flag, encodeFlagValue
 	// sends text that pflag's ParseInt(s, 0, 64) refuses; at the positional
 	// seq, fmt.Sprint sends text that cmd_chat.go's ParseInt(s, 10, 64)
@@ -158,8 +158,8 @@ func TestBUG4070_StdioNumberStringsAndFloats(t *testing.T) {
 	}
 }
 
-// TestBUG4070_EveryNumberParamIsGuarded is the population check (CONVE-35,
-// lead ruling e522d1be): for every catalog tool and every param it declares
+// TestBUG4070_EveryNumberParamIsGuarded is the population check (CONVE-35): for
+// every catalog tool and every param it declares
 // "number", a leading-zero string and a 2^53 float are each refused naming that
 // param, before any action runs or anything is dispatched. It walks Catalog,
 // so a number param added later is covered without editing this test.

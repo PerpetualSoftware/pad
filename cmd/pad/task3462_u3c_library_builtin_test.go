@@ -238,7 +238,7 @@ func withFormat(t *testing.T, f string) {
 	t.Cleanup(func() { u3cFormat = "table" })
 }
 
-// codex r1 (P1): the JSON diff carries the current text even from a server
+// The JSON diff carries the current text even from a server
 // that does not send it, read from the item itself.
 func TestTASK3462U3c_JSONDiffCarriesCurrentFromAnOlderServer(t *testing.T) {
 	withFormat(t, "json")
@@ -259,7 +259,7 @@ func TestTASK3462U3c_JSONDiffCarriesCurrentFromAnOlderServer(t *testing.T) {
 	}
 }
 
-// codex r1 (P2): a no-op under --format json is JSON.
+// A no-op under --format json is JSON.
 func TestTASK3462U3c_JSONNoOpIsJSON(t *testing.T) {
 	withFormat(t, "json")
 	f := &u3cFake{caps: true, state: map[string]any{"key": "playbook/plan", "state": "current", "seq": 7}}
@@ -273,7 +273,7 @@ func TestTASK3462U3c_JSONNoOpIsJSON(t *testing.T) {
 	}
 }
 
-// codex r1 (P2): a probe that failed is not "the server is older".
+// A probe that failed is not "the server is older".
 func TestTASK3462U3c_IndeterminateProbeIsNotCalledSkew(t *testing.T) {
 	f := &u3cFake{capsCode: http.StatusInternalServerError, state: divergedState()}
 	_, err := u3cRun(t, f.server(t), func() u3cCmd { return libraryUpdateCmd() }, "plan")
@@ -285,7 +285,7 @@ func TestTASK3462U3c_IndeterminateProbeIsNotCalledSkew(t *testing.T) {
 	}
 }
 
-// codex r1 (P2): the write's warnings reach the caller.
+// The write's warnings reach the caller.
 func TestTASK3462U3c_UpdateReportsWriteWarnings(t *testing.T) {
 	f := &u3cFake{caps: true, state: divergedState(), postWarn: map[string]any{"content_outcome": "applied_pending_flush", "pruned_pending_edits": 2}}
 	var out string
@@ -298,7 +298,7 @@ func TestTASK3462U3c_UpdateReportsWriteWarnings(t *testing.T) {
 	}
 }
 
-// codex r1 (P2): set-aside rows get their own remedy, not "an open editor".
+// Set-aside rows get their own remedy, not "an open editor".
 func TestTASK3462U3c_SetAsideRowsAreNamedAsSuch(t *testing.T) {
 	f := &u3cFake{caps: true, state: divergedState(), postCode: http.StatusConflict,
 		postBody: map[string]any{"code": "content_pending_flush", "message": "set aside", "details": map[string]any{"set_aside_rows": 3}}}
@@ -314,7 +314,7 @@ func TestTASK3462U3c_SetAsideRowsAreNamedAsSuch(t *testing.T) {
 	}
 }
 
-// codex r2 (P1): numbers keep their digits, so two integers above 2^53 that a
+// Numbers keep their digits, so two integers above 2^53 that a
 // float64 would merge still show as a change.
 func TestTASK3462U3c_LargeNumbersAreNotRounded(t *testing.T) {
 	st := divergedState()
@@ -330,7 +330,7 @@ func TestTASK3462U3c_LargeNumbersAreNotRounded(t *testing.T) {
 	}
 }
 
-// codex r2 (P2): a fallback read of a newer version than the state described
+// A fallback read of a newer version than the state described
 // is refused, not mixed in.
 func TestTASK3462U3c_FallbackFromAnotherVersionIsRefused(t *testing.T) {
 	st := divergedState()
@@ -342,7 +342,7 @@ func TestTASK3462U3c_FallbackFromAnotherVersionIsRefused(t *testing.T) {
 	}
 }
 
-// codex r5 (P2): an update into a collection that does not declare the
+// An update into a collection that does not declare the
 // built-in's settings says so, as any item update does.
 func TestTASK3462U3c_UpdateReportsUndeclaredFields(t *testing.T) {
 	f := &u3cFake{caps: true, state: divergedState(), postWarn: map[string]any{"undeclared_fields": []string{"trigger"}}}

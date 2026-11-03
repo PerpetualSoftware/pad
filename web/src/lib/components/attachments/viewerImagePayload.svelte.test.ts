@@ -241,7 +241,7 @@ describe('strip → viewer payload (TASK-2431)', () => {
 		// The payload assertions above are all safe inputs, so they cannot catch
 		// a gate regression on their own — this one feeds the producer an SVG, an
 		// undecodable raster and a row with no MIME at all, and pins what comes
-		// out the other side (Codex: stub-based payload tests with only safe
+		// out the other side (stub-based payload tests with only safe
 		// inputs prove nothing about the gate).
 		listMock.mockResolvedValue({
 			attachments: [

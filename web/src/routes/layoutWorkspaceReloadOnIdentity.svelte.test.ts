@@ -1,6 +1,6 @@
 // Runs in the jsdom vitest project (filename ends `.svelte.test.ts`).
 //
-// BUG-2991, codex round 1 — the root layout issues `workspaceStore.loadAll()`
+// BUG-2991 — the root layout issues `workspaceStore.loadAll()`
 // once, behind a one-shot `workspacesRequested` latch.
 //
 // The store now DROPS the previous user's workspace list when the signed-in
@@ -121,7 +121,7 @@ describe('BUG-2991: the root layout refetches workspaces when the user changes',
 		// A different user signs in. The store's own listener empties the list;
 		// this layout's listener re-arms the latch so the effect asks again.
 		//
-		// The second response is DIFFERENT DATA, deliberately (codex round 2).
+		// The second response is DIFFERENT DATA, deliberately.
 		// A call count alone is a weak oracle: returning the same fixture twice
 		// would let this pass even if the second call committed nothing, or
 		// committed the first user's list. Asserting the store ends up holding

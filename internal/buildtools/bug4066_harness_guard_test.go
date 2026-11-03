@@ -77,7 +77,7 @@ func testTempScope(t *testing.T) tempScope {
 // insideTestTempDir reports whether p is inside this test's temp dir: under
 // sc.base, in a top-level directory named for sc.top.
 func insideTestTempDir(sc tempScope, p string) bool {
-	// Both sides symlink-resolved (BUG-4066 r1): on macOS t.TempDir() is
+	// Both sides symlink-resolved (BUG-4066): on macOS t.TempDir() is
 	// under /var/folders, a symlink to /private/var/folders, and the tests
 	// anchor under realDir()'s resolved path.
 	rel, err := filepath.Rel(resolveExisting(sc.base), resolveExisting(p))
@@ -93,8 +93,8 @@ func insideTestTempDir(sc tempScope, p string) bool {
 }
 
 // requireSafeScriptEnv is the harness guard every install-refresh exec in
-// this package passes through BEFORE the script runs (BUG-4066 incident; lead
-// ruling on the BUG-4066 trail). A test whose environment could let the
+// this package passes through BEFORE the script runs (BUG-4066 incident). A test
+// whose environment could let the
 // script target the box's REAL shared server fails here, without running.
 func requireSafeScriptEnv(t *testing.T, env []string, dir string) {
 	t.Helper()
@@ -108,7 +108,7 @@ var configPortLine = regexp.MustCompile(`(?m)^[[:space:]]*port[[:space:]]*=[[:sp
 // configPortValue reads config.toml's port the way the script's config_value
 // does: the FIRST port line, unquoted, an inline comment and trailing space
 // stripped. Taking leading digits instead read "8080abc" as 8080 where the
-// script rejects it and falls back to 7777 (BUG-4066 r3 item 7).
+// script rejects it and falls back to 7777 (BUG-4066).
 func configPortValue(b []byte) (string, bool) {
 	m := configPortLine.FindSubmatch(b)
 	if m == nil {
@@ -157,7 +157,7 @@ func scriptEnvHazard(env []string, dir string, scope tempScope) error {
 		}
 		dataDir = filepath.Join(base, dataDir)
 	}
-	// Condition 1 (lead ruling): HOME and the data dir are the test's own,
+	// Condition 1: HOME and the data dir are the test's own,
 	// never the real user's home and never outside a test temp dir.
 	if real, err := os.UserHomeDir(); err == nil && real != "" {
 		if filepath.Clean(home) == filepath.Clean(real) || filepath.Clean(dataDir) == filepath.Join(real, ".pad") {
@@ -171,7 +171,7 @@ func scriptEnvHazard(env []string, dir string, scope tempScope) error {
 		return fmt.Errorf("the data dir %q is not inside a test temp dir", dataDir)
 	}
 	// PAD_HOST is inherited from the developer's shell; only empty or
-	// loopback keeps the script on this machine's own stub (BUG-4066 r2).
+	// loopback keeps the script on this machine's own stub (BUG-4066).
 	if h := strings.Trim(get("PAD_HOST"), "[]"); h != "" && h != "localhost" {
 		if ip := net.ParseIP(h); ip == nil || !ip.IsLoopback() {
 			return fmt.Errorf("PAD_HOST is %q: not empty or loopback, so the script could target another host", get("PAD_HOST"))
@@ -179,7 +179,7 @@ func scriptEnvHazard(env []string, dir string, scope tempScope) error {
 	}
 	port := get("PAD_PORT")
 	if !numeric(port) && relativeDataDir {
-		// BUG-4066 r1: after the capture the script reads config.toml under
+		// BUG-4066: after the capture the script reads config.toml under
 		// <SERVER_CWD>/<dir>, which the guard cannot know before exec.
 		return fmt.Errorf("PAD_PORT is %q and the data dir %q is relative: the script would read the port from the server's cwd, which this guard cannot see", port, get("PAD_DATA_DIR")+get("PAD_DB_PATH"))
 	}
@@ -192,7 +192,7 @@ func scriptEnvHazard(env []string, dir string, scope tempScope) error {
 		port = v
 	}
 	// Numeric, so "07777" is refused too, and before any dial: this guard
-	// never dials port 7777 under any input (BUG-4066 r2).
+	// never dials port 7777 under any input (BUG-4066).
 	if n, err := strconv.Atoi(port); err != nil || n == 7777 {
 		return fmt.Errorf("the resolved port %q is 7777 (or unreadable): the box's real server", port)
 	}
@@ -214,13 +214,13 @@ func scriptEnvHazard(env []string, dir string, scope tempScope) error {
 	return nil
 }
 
-// answersAsStub: condition 2 (lead ruling), the port echoes THIS test's
+// answersAsStub: condition 2, the port echoes THIS test's
 // random token, not merely any /stub/pid.
 func answersAsStub(ip, port, token string) bool {
 	if token == "" {
 		return false
 	}
-	// Asked on the LAN address that answered (BUG-4066 r1), not on loopback,
+	// Asked on the LAN address that answered (BUG-4066), not on loopback,
 	// which could be a different process holding the same port number.
 	client := &http.Client{Timeout: time.Second}
 	res, err := client.Get("http://" + net.JoinHostPort(ip, port) + "/stub/token")
@@ -264,7 +264,7 @@ func TestHarnessGuard_RefusesAHazardousScriptEnv(t *testing.T) {
 		}
 	}
 	// A relative data dir with the port left to config.toml: the script reads
-	// it from the server's cwd, which the guard cannot see (BUG-4066 r1).
+	// it from the server's cwd, which the guard cannot see (BUG-4066).
 	relHome := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(relHome, "data"), 0o755); err != nil {
 		t.Fatal(err)
@@ -328,7 +328,7 @@ func TestHarnessGuard_RefusesAHazardousScriptEnv(t *testing.T) {
 	}
 }
 
-// Condition 1 (lead ruling): HOME and the data dir must be the test's own.
+// Condition 1: HOME and the data dir must be the test's own.
 func TestHarnessGuard_RefusesARealOrForeignHome(t *testing.T) {
 	free := fmt.Sprint(freePort(t))
 	real, err := os.UserHomeDir()
@@ -357,7 +357,7 @@ func TestHarnessGuard_RefusesARealOrForeignHome(t *testing.T) {
 	}
 }
 
-// Condition 2 (lead ruling): only THIS test's token exempts a LAN answer.
+// Condition 2: only THIS test's token exempts a LAN answer.
 func TestHarnessGuard_StubTokenMustMatch(t *testing.T) {
 	ln, err := net.Listen("tcp", ":0") // every interface, as a 0.0.0.0 stub binds
 	if err != nil {
@@ -395,7 +395,7 @@ func TestHarnessGuard_StubTokenMustMatch(t *testing.T) {
 	}
 }
 
-// The temp-dir check compares symlink-resolved paths (BUG-4066 r1, macOS).
+// The temp-dir check compares symlink-resolved paths (BUG-4066, macOS).
 func TestHarnessGuard_ResolvesSymlinkedTempPaths(t *testing.T) {
 	real := t.TempDir()
 	link := filepath.Join(t.TempDir(), "link")
@@ -424,7 +424,7 @@ func TestHarnessGuard_ResolvesSymlinkedTempPaths(t *testing.T) {
 	if !insideTestTempDir(tempScope{base, "TestSomething"}, filepath.Join(baseLink, "TestSomething123", "x")) {
 		t.Fatalf("a symlinked path is not inside its resolved base")
 	}
-	// Only THIS test's directory (BUG-4066 r2 item 9): another test's is
+	// Only THIS test's directory (BUG-4066): another test's is
 	// refused; a subtest's, which t.TempDir names "<Parent><sub…>", passes.
 	for _, tc := range []struct {
 		dir  string
@@ -487,7 +487,7 @@ func unguardedScriptExecs(src string) (bad []int, found int) {
 }
 
 // Every exec of install-refresh in this package passes the guard before it
-// runs (BUG-4066 r1): a new unguarded exec fails here, by source scan.
+// runs (BUG-4066): a new unguarded exec fails here, by source scan.
 func TestHarnessGuard_EveryScriptExecIsGuarded(t *testing.T) {
 	files, err := filepath.Glob("*_test.go")
 	if err != nil {
@@ -510,7 +510,7 @@ func TestHarnessGuard_EveryScriptExecIsGuarded(t *testing.T) {
 	}
 }
 
-// The scanner itself (BUG-4066 r2): a differently named variable, the
+// The scanner itself (BUG-4066): a differently named variable, the
 // CommandContext form, and a guard that only appears in a LATER function must
 // all be flagged; a guarded one must not. The snippets spell the exec call as
 // EXEC so this file's own scan does not see them.
@@ -568,7 +568,7 @@ func b(t *testing.T) {
 	}
 }
 
-// The token is asked on the LAN address that answered (BUG-4066 r1): a real
+// The token is asked on the LAN address that answered (BUG-4066): a real
 // server on the LAN address and a stub on loopback, sharing one port number,
 // must not pass on the stub's token.
 func TestHarnessGuard_TokenIsAskedWhereTheLANAnswered(t *testing.T) {
@@ -609,7 +609,7 @@ func TestHarnessGuard_TokenIsAskedWhereTheLANAnswered(t *testing.T) {
 	}
 }
 
-// The guard reads config.toml's port as the script does (BUG-4066 r3 item 7),
+// The guard reads config.toml's port as the script does (BUG-4066),
 // so a value the script rejects, and falls back to 7777 for, is unreadable to
 // the guard too, and refused.
 func TestHarnessGuard_ReadsTheConfigPortLikeTheScript(t *testing.T) {

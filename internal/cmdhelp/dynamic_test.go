@@ -220,7 +220,7 @@ func TestResolver_Apply_PreservesExistingEnum(t *testing.T) {
 }
 
 func TestResolver_Apply_PerCommandBindingScoped(t *testing.T) {
-	// Codex round 1 caught: a global `--role` binding is wrong because
+	// A global `--role` binding is wrong because
 	// `pad workspace invite --role` accepts workspace roles while
 	// `pad item create --role` accepts agent role slugs. CommandFlagBindings
 	// fixes this by scoping bindings to a specific command path.

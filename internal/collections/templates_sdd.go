@@ -8,8 +8,8 @@ import "github.com/PerpetualSoftware/pad/internal/models"
 // carries acceptance criteria and gates implementation via conventions.
 //
 // Deliberately NO Plans collection — a spec's optional "## Implementation
-// plan" body section covers what a separate Plans collection would (Dave's
-// decision, IDEA-2527 comment 3): cheaper than maintaining two artifacts
+// plan" body section covers what a separate Plans collection would
+// (IDEA-2527 comment 3): cheaper than maintaining two artifacts
 // that would otherwise say almost the same thing.
 func specTemplate() WorkspaceTemplate {
 	return WorkspaceTemplate{

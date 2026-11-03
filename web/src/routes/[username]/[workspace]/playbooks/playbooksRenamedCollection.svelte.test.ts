@@ -6,7 +6,7 @@ import { cleanup, render, waitFor } from '@testing-library/svelte';
  * default `playbooks` slug, so a RENAMED playbooks collection showed an empty
  * page with Create and Import hidden. It now resolves the collection by its
  * artifact_kind trait, and a load for the slug it superseded cannot land over
- * the newer one (codex r1).
+ * the newer one.
  */
 const auth = vi.hoisted(() => ({
 	get identityEpoch() { return 0; },

@@ -13,7 +13,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/cli"
 )
 
-// BUG-2699 codex round 9 — the CLI's half of "is this safe to re-run?".
+// BUG-2699 — the CLI's half of "is this safe to re-run?".
 //
 // The push handler publishes BEFORE it writes its response, so an error is
 // not proof that nothing went out. The web dialog has distinguished the
@@ -112,9 +112,9 @@ func TestPushRefusalCodesMatchTheWebAllowList(t *testing.T) {
 		t.Fatal("parsed no codes out of the web allow-list — the parser is broken, not the lists")
 	}
 	// WHAT THIS TEST CANNOT DO, stated because agreement reads like
-	// completeness (codex round 12): it proves the two lists MATCH, never
-	// that either is complete. `archived` was missing from both for two
-	// rounds and this test was green throughout. Completeness comes from
+	// completeness: it proves the two lists MATCH, never
+	// that either is complete. `archived` was missing from both for a
+	// while and this test was green throughout. Completeness comes from
 	// enumerating the handler's pre-publish error codes — see
 	// pushPrePublishRefusalCodes' doc comment, which records that
 	// enumeration and which codes were deliberately left off.
@@ -147,8 +147,7 @@ func readWebPrePublishCodes(t *testing.T) map[string]bool {
 	return out
 }
 
-// TestPushCmd_WarnsOnlyWhenTheOutcomeIsAmbiguous — codex round 30
-// (coverage-gap sweep).
+// TestPushCmd_WarnsOnlyWhenTheOutcomeIsAmbiguous (coverage-gap sweep).
 //
 // The classification helper is tested directly; nothing executed the
 // command and checked what a user actually sees. Both directions matter

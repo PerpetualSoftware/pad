@@ -42,7 +42,7 @@
 
 	let groupField = $derived.by(() => {
 		const key = collection.settings.list_group_by;
-		// Same refusal the board makes (TASK-2998, codex round 2). A share has
+		// Same refusal the board makes (TASK-2998). A share has
 		// no local index, so grouping by a relation renders one group per
 		// stored id. A saved LIST view routes its `group_by` here, which is the
 		// door the board-only fix left open.

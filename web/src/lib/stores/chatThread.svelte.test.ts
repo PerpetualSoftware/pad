@@ -603,7 +603,7 @@ describe('mark read', () => {
 		expect(resync).toHaveBeenCalledTimes(1);
 	});
 
-	// U17b (r2 hunter): rows that land while a mark is in flight are marked when it settles.
+	// U17b: rows that land while a mark is in flight are marked when it settles.
 	it('marks rows that arrived while a mark was in flight', async () => {
 		await opened();
 		let release!: () => void;
@@ -952,7 +952,7 @@ describe('send', () => {
 		expect(pendingOf()).toHaveLength(0);
 	});
 
-	// 3b r1 hunter finding 2 (B16 retired in S1): both own rows end up in the window.
+	// Both own rows end up in the window.
 	// Rewritten for the sequential queue: B's apply waits behind A's held fetch, so
 	// awaiting B's send before releasing A's fetch would never settle.
 	it('keeps both own rows when two sends land during a held re-anchor', async () => {
@@ -1020,7 +1020,7 @@ describe('refresh during a send', () => {
 		expect(seqs()).toEqual([1, 2, 3, 4]);
 	});
 
-	// 3b r1 hunter finding 1 (refuted): the deferred refresh's cursor starts past a
+	// The deferred refresh's cursor starts past a
 	// peer row committed during the send, and the sweep leg brings it in.
 	it('does not skip a peer row committed while a send was in flight', async () => {
 		await readyThread();
@@ -1037,7 +1037,7 @@ describe('refresh during a send', () => {
 		expect(seqs()).toEqual([1, 2, 3, 4, 5]);
 	});
 
-	// r1 hunter 1 (ruling a61ca213): red if the one-shot cursor floor is dropped (B18).
+	// Red if the one-shot cursor floor is dropped (B18).
 	// More than the sweep's 200: only step 1 from below the own row can fetch them.
 	it('does not skip any of 201 peer rows committed while a send was in flight', async () => {
 		await readyThread();
@@ -1302,7 +1302,7 @@ describe('S1 serialized window', () => {
 		expect(thread.messages[1]).toMatchObject({ seq: 2, deleted: true });
 	});
 
-	// Hunter #2: more skipped rows than the fill bound detach the own row. Red with the
+	// More skipped rows than the fill bound detach the own row. Red with the
 	// bound removed (N6) or the row published inside the window (N7).
 	it('detaches an own row 1,200 peer rows away, then Show newer reaches it once', async () => {
 		await readyThread(3);

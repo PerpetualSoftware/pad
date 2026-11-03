@@ -92,8 +92,8 @@ var reservedItemFieldKeys = map[string]struct{}{
 // naming the default as the cause. Additive and omitempty, so a clean write is
 // byte-identical.
 // UnresolvedRelations lists relation keys whose value was STORED without
-// resolving to a live item. Only an IMPORT produces these: Dave's ruling
-// (day 57) is that import must carry junk relation values rather than refuse
+// resolving to a live item. Only an IMPORT produces these: the rule
+// is that import must carry junk relation values rather than refuse
 // them, because refusing would break the import of any artifact written before
 // referent validation existed. Distinct from DroppedFields — the value is kept,
 // not discarded — and from UndeclaredFields, which is about the KEY rather than
@@ -197,7 +197,7 @@ type RelationTarget struct {
 
 // RelationTargetSet is what one `relation_targets` KEY carries: a single target
 // object for a `relation` field, or a JSON ARRAY of them, in stored order, for a
-// `multi_relation` field (PLAN-2857 U4, lead ruling day 64).
+// `multi_relation` field (PLAN-2857 U4).
 //
 // ONE map, not two. A parallel `multi_relation_targets` key was the obvious
 // alternative and was ruled against: a consumer rendering "what does this field
@@ -328,7 +328,7 @@ func IsReservedItemField(key string) bool {
 // something outside the item — a resource whose meaning depends on the
 // surrounding workspace's context rather than on the item itself.
 //
-// The distinction decides how far they travel (BUG-2674, lead ruling). The
+// The distinction decides how far they travel (BUG-2674). The
 // carry rule is one sentence: system-minted NON-REFERENTIAL data carries;
 // referential system data carries only where its referent's context still
 // holds. implementation_notes and decision_log describe the item's own history
@@ -459,7 +459,7 @@ type Item struct {
 	// RelationTargets hydrates `relation` field values for READ responses
 	// (PLAN-2857 U6): field key -> the item that value names.
 	//
-	// It sits BESIDE `fields` rather than inside it, by lead ruling. `fields` is
+	// It sits BESIDE `fields` rather than inside it, by design. `fields` is
 	// a write shape as well as a read shape — a caller reads an item, changes
 	// one key and writes the object back — so replacing a relation's ID string
 	// with an object there would break that round trip for every existing
@@ -931,8 +931,7 @@ func ExtractItemConventionMetadata(fieldsJSON string) *ItemConventionMetadata {
 	// markers because hasConventionShape only flips once we've seen
 	// a Convention-specific signal. Without this ordering, a legacy
 	// Convention with only `{scope, priority}` would lose its
-	// enforcement value because scope hadn't been processed yet
-	// (Codex review on PR #361 caught this).
+	// enforcement value because scope hadn't been processed yet.
 	if metadata.Enforcement == "" && hasConventionShape {
 		if priority, ok := fieldsMap["priority"].(string); ok {
 			metadata.Enforcement = priority
@@ -1065,7 +1064,7 @@ func assertStructuredFieldAppendable[T any](fieldsMap map[string]any, key string
 }
 
 // unreadableFieldsBlob tags an append's fields-parse failure as
-// ErrStructuredFieldUnreadable (Codex round 5).
+// ErrStructuredFieldUnreadable.
 //
 // The classification, not the failure, is what this changes. An item whose
 // whole fields column will not parse is unreadable in exactly the sense
@@ -1087,7 +1086,7 @@ func unreadableFieldsBlob(err error) error {
 // refusal message names `pad item note` as the remedy, which is a lie whenever
 // that command would itself refuse; the message therefore has to agree with the
 // guard EXACTLY, and a second decode written to look equivalent is not exact.
-// Codex round 2 caught a first version of it that decoded into
+// A first version of it decoded into
 // []json.RawMessage: a stored `[1]` passed there and failed the real guard, so
 // the message prescribed a command that refuses.
 //
@@ -1101,8 +1100,7 @@ func unreadableFieldsBlob(err error) error {
 // parse and return an error, so an append would not be accepted. An earlier
 // version returned true on the reasoning that a broken outer blob is "a
 // different problem" — which is true of the CAUSE and irrelevant to the
-// CALLER, who would have been told to run a command that cannot succeed
-// (Codex round 4).
+// CALLER, who would have been told to run a command that cannot succeed.
 func StructuredFieldIsAppendable(fieldsJSON, key string) bool {
 	fieldsMap, err := parseMutableItemFields(fieldsJSON)
 	if err != nil {
@@ -1236,8 +1234,8 @@ func parseMutableItemFields(fieldsJSON string) (map[string]any, error) {
 		// A literal `null` unmarshals into a NIL map with no error, and every
 		// caller here goes on to assign into what it gets back — so `pad item
 		// note` against an item whose fields column holds "null" panicked with
-		// "assignment to entry in nil map" rather than appending (reproduced;
-		// Codex round 3 on BUG-2627). An absent blob and a null blob mean the
+		// "assignment to entry in nil map" rather than appending (reproduced,
+		// BUG-2627). An absent blob and a null blob mean the
 		// same thing to every caller, so they get the same empty map.
 		return map[string]any{}, nil
 	}
@@ -1327,7 +1325,7 @@ type ItemCreate struct {
 	UnderParent bool `json:"-"`
 	// Append keeps the pre-BUG-4005 create position, sort_order 0, for the
 	// bulk, ordered, non-interactive creates (template seeds, an app's
-	// artifacts), so they list in the order they were made (r7-H1).
+	// artifacts), so they list in the order they were made.
 	// Internal-only.
 	Append bool `json:"-"`
 	// ActorUserID is the request's user, stamped on the create's version row
@@ -1439,7 +1437,7 @@ type ItemUpdate struct {
 	// the collab 5s-flush PATCH handler so an auto-flush doesn't
 	// re-attribute a CLI/MCP-created item to "collab-snapshot" and
 	// silently flip it out of `WorkspaceHasAgentActivity`'s count.
-	// Per Codex review round 3 of TASK-1267 [P2].
+	// (TASK-1267.)
 	VersionSource string `json:"version_source,omitempty"`
 	ChangeSummary string `json:"change_summary,omitempty"`
 	// ForceVersion bypasses the per-(actor, source) version throttle
@@ -1682,7 +1680,7 @@ type ItemUpdate struct {
 	// UniqueCheck: see the type (BUG-3812). Internal-only.
 	UniqueCheck *UniqueCheck `json:"-"`
 	// BuiltinSeed, when set, moves the item's built-in origin to this seed
-	// inside the update's own transaction (TASK-3462, codex r1): the item and
+	// inside the update's own transaction (TASK-3462): the item and
 	// the record of which version of Pad's text it holds commit together.
 	// Internal-only: set by the built-in update, never by a request body.
 	BuiltinSeed *BuiltinOrigin `json:"-"`
@@ -1747,7 +1745,7 @@ var (
 //     type string`.
 //
 // The asymmetry with ItemUpdate (which already handled both shapes
-// cleanly per BUG-1144) was Codex's tip in the BUG-1432 investigation
+// cleanly per BUG-1144) was found in the BUG-1432 investigation
 // — fixing it here closes the create/update gap and gives agents a
 // uniform shape contract across both verbs.
 //
@@ -1874,7 +1872,7 @@ func (u *ItemUpdate) UnmarshalJSON(data []byte) error {
 // Any other shape returns errInvalid so the handler surfaces a clean
 // domain-level error instead of a leaked Go unmarshal message.
 //
-// IDEA-1488 R1 codex hardening: the `case '"'` branch validates the
+// IDEA-1488 hardening: the `case '"'` branch validates the
 // INNER content's shape (not just the JSON-encoded-string envelope).
 // Without this, `{"config": "[]"}` or `{"settings": "not json"}` would
 // slip past — the outer string-shape check accepted any inner content
@@ -2094,11 +2092,10 @@ type ItemLinkCreate struct {
 //
 // Enforced at WRITE time only, and deliberately NOT retroactive: an item whose
 // stored title already exceeds the bound keeps working, and an update that does
-// not set a title never validates one. Same grandfathering rule as documents
-// (Dave's ruling, day-63).
+// not set a title never validates one. Same grandfathering rule as documents.
 //
 // TWO PATHS DO NOT VALIDATE, both by ruling and both carrying legacy data
-// rather than caller input (codex round 5 — an earlier version of this comment
+// rather than caller input (an earlier version of this comment
 // said every door normalizes then validates, which is not true of either):
 //
 //   - ImportWorkspace COERCES rather than refuses, so restoring an archive
@@ -2132,7 +2129,7 @@ const MaxItemTitleRunes = 255
 // then truncates or substitutes rather than refusing) and cross-workspace copy
 // carries the source row's title through untouched. See MaxItemTitleRunes for
 // both. An earlier version of this comment said "every door", which reads as
-// covering those two and does not (codex round 6).
+// covering those two and does not.
 func NormalizeItemTitle(title string) string {
 	return strings.TrimSpace(title)
 }

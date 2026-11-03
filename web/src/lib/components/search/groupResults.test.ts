@@ -43,7 +43,7 @@ describe('groupResultsByCollection (BUG-3054)', () => {
 	});
 });
 
-// TASK-2234 (codex r1): the palette renders results GROUPED by collection, so
+// TASK-2234: the palette renders results GROUPED by collection, so
 // keyboard navigation (and aria-activedescendant) must walk them in that
 // order, not in rank order: ranked A1, B1, A2 renders A1, A2, B1.
 describe('inRenderedOrder (TASK-2234)', () => {
@@ -53,7 +53,7 @@ describe('inRenderedOrder (TASK-2234)', () => {
 	});
 });
 
-// TASK-2234, codex r2: a grouped append can put a row above the selected
+// TASK-2234: a grouped append can put a row above the selected
 // one; the selection follows the item, not the index.
 describe('reselectAfterAppend (TASK-2234)', () => {
 	const cols = [{ slug: 'a', icon: '', name: 'A' }, { slug: 'b', icon: '', name: 'B' }];
@@ -77,7 +77,7 @@ describe('reselectAfterAppend (TASK-2234)', () => {
 	});
 });
 
-// TASK-2234, codex r2: a body-only term has a local total of 0 while the
+// TASK-2234: a body-only term has a local total of 0 while the
 // content search runs; announcing "0 results" then would be false.
 describe('resultAnnouncement (TASK-2234)', () => {
 	it('says nothing while either search is still running', () => {

@@ -61,7 +61,7 @@ func TestChatGPTProjection_PlanLimitIsNeutral(t *testing.T) {
 }
 
 // Other errors keep their code, message and hint, lose any other member,
-// and have ids masked (codex review).
+// and have ids masked.
 func TestChatGPTProjection_ErrorsAreMinimized(t *testing.T) {
 	src := NewErrorResult(ErrorPayload{
 		Code:                ErrNotFound,

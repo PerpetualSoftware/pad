@@ -1,8 +1,8 @@
-// idb test harness (PLAN-2636 unit 1). Helpers the localIndex persistence
+// idb test harness  (PLAN-2636 unit 1). Helpers the localIndex persistence
 // regression tests build on. All of these run under the `idb` vitest project,
-// whose setup (`setup-idb.ts`) installs a fresh fake-indexeddb per test.
+// whose setup  (`setup-idb.ts`) installs a fresh fake-indexeddb per test.
 //
-// Design note (lead ruling on the PLAN-2636 trail): the localIndex cache
+// Design note  (PLAN-2636): the localIndex cache
 // races are SNAPSHOT-staleness, not read-staleness — the stale thing is the
 // RAM snapshot handed to persistUpserts, never its own `get`, which always
 // reads committed state. IDB serializes overlapping readwrite transactions,
@@ -34,8 +34,8 @@ export function harnessDbName(userId: string | null, ws: string): string {
 
 /**
  * Load a FRESH instance of the persistence module — `vi.resetModules()`
- * clears its module-level connection cache (`dbs`) so a previous test's
- * cached handle (pointing at the prior test's now-discarded IDBFactory)
+ * clears its module-level connection cache  (`dbs`) so a previous test's
+ * cached handle  (pointing at the prior test's now-discarded IDBFactory)
  * can't leak in. Pair with the per-test fresh factory in setup-idb.ts for
  * full isolation. Returns the module's public surface.
  */
@@ -47,14 +47,14 @@ export async function loadPersistence(): Promise<
 }
 
 /**
- * A SECOND raw connection to the same (user, workspace) database — the
+ * A SECOND raw connection to the same  (user, workspace) database — the
  * "other tab". Used by the 2635 cross-tab pins: one connection persists an
  * unmerged snapshot while another holds the merged row. fake-indexeddb backs
  * both handles with one in-memory store within a single test context
- * (verified in the unit-1 spike), so writes through one are visible to the
+ *  (verified in the unit-1 spike), so writes through one are visible to the
  * other, exactly like two browser tabs.
  *
- * Opens at the module's CURRENT IDB format version (IDB_FORMAT_VERSION) with
+ * Opens at the module's CURRENT IDB format version  (IDB_FORMAT_VERSION) with
  * the same stores localIndexPersistence creates, so it never triggers an
  * unexpected upgrade and never VersionErrors against a module-owned DB at that
  * version. Imported from the module so the two can't drift.
@@ -78,7 +78,7 @@ export async function openSecondConnection(
 	});
 }
 
-/** Raw read of a single persisted tombstone by id (BUG-2633) — ground truth. */
+/** Raw read of a single persisted tombstone by id  (BUG-2633) — ground truth. */
 export async function rawTombstone(
 	userId: string | null,
 	ws: string,
@@ -102,7 +102,7 @@ export async function rawTombstones(userId: string | null, ws: string): Promise<
 	}
 }
 
-/** Raw read of the durable retag overlay map (BUG-2634), or undefined if unset. */
+/** Raw read of the durable retag overlay map  (BUG-2634), or undefined if unset. */
 export async function rawRetags(
 	userId: string | null,
 	ws: string,
@@ -159,7 +159,7 @@ export async function rawItems(userId: string | null, ws: string): Promise<ItemI
 	}
 }
 
-/** Raw read of a single persisted item by id (or undefined). */
+/** Raw read of a single persisted item by id  (or undefined). */
 export async function rawItem(
 	userId: string | null,
 	ws: string,
@@ -177,7 +177,7 @@ export async function rawItem(
  * Open a database at a HIGHER IDB format version to create a new object
  * store, mirroring what unit 2's v1→v2 bump will do, and assert the pre-
  * existing data survived the upgrade. Returns the observed `oldVersion` so a
- * test can pin that the upgrade actually ran (vs a clean create).
+ * test can pin that the upgrade actually ran  (vs a clean create).
  */
 export async function openWithMigration(
 	userId: string | null,

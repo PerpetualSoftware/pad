@@ -47,7 +47,7 @@
 	// The selection that COUNTS: the saved/selected slugs minus reference ones. A
 	// layout saved before BUG-2410 can still name a system collection, and the
 	// picker cannot show one, so sending it would filter the report by a
-	// selection the page does not display (codex round 1). Derived rather than
+	// selection the page does not display. Derived rather than
 	// filtered once at hydration, because the collections and the layout load
 	// independently; the next save persists this cleaned list.
 	let referenceSlugs = $derived(new Set(collections.filter((c) => !collectionTracksWork(c)).map((c) => c.slug)));
@@ -56,7 +56,7 @@
 	// system collection and the picker shows no chips, so no selection can be
 	// shown either: the REPORT goes unfiltered (the server's default already
 	// leaves system collections out). The SAVED layout keeps activeCollections,
-	// so a failed load never erases the user's choice (codex round 2).
+	// so a failed load never erases the user's choice.
 	let collectionsFailed = $state(false);
 	let requestCollections = $derived(collectionsFailed ? [] : activeCollections);
 	// Period navigation: periods back from now (0 = current). SESSION-only — not
@@ -181,7 +181,7 @@
 	});
 
 	async function loadCollections(slug: string) {
-		// Workspace-guarded like loadLayout (codex round 3): a slower response for
+		// Workspace-guarded like loadLayout: a slower response for
 		// a workspace the user has left must not replace this one's collections,
 		// nor mark this one's list as failed.
 		try {

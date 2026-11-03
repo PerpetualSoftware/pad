@@ -137,7 +137,7 @@ func RunBrowserBootstrap(ctx context.Context, client *Client, cfg *config.Config
 //     <DataDir>/.bootstrap-token. We read it and hand the operator a deep
 //     link with the token in the URL fragment (#token=...). The fragment
 //     is scrubbed from the address bar by /setup's onMount before paint
-//     so the secret doesn't survive in browser history (TASK-1167 F10).
+//     so the secret doesn't survive in browser history (TASK-1167).
 //
 //   - "open" — operator started the server with PAD_BYPASS_SETUP_TOKEN=true
 //     on a self-host deployment. The /setup form works directly, no token

@@ -14,7 +14,7 @@ import (
 // the key ABSENT. These helpers find and remove the other two spellings.
 //
 // Which blanks a door removes BEFORE validation and which AFTER is the whole
-// of the provenance rule (the lead's ruling on BUG-3028): a blank the write
+// of the provenance rule: a blank the write
 // itself SUPPLIES is removed first, so the ordinary required check refuses it;
 // a legacy blank the write merely CARRIES is removed after, so it becomes
 // absent without refusing a write that never touched the field.

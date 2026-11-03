@@ -33,8 +33,8 @@ func TestRenderRelationValue(t *testing.T) {
 		// gone or the requester may not see it, and this layer cannot tell
 		// which. Saying "deleted" asserts non-existence for a target that may
 		// be alive and merely hidden — the existence oracle the server's
-		// collapse exists to prevent, and the exact defect codex round 12
-		// found in the copy dialog's not_found wording.
+		// collapse exists to prevent, and the exact defect the copy dialog's
+		// not_found wording once had.
 		for _, forbidden := range []string{"deleted", "removed", "does not exist", "missing"} {
 			if strings.Contains(strings.ToLower(got), forbidden) {
 				t.Errorf("render %q claims %q; an id-only entry covers BOTH a gone target and a hidden one, so a non-existence claim is false for half the cases", got, forbidden)

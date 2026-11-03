@@ -224,7 +224,7 @@ const CmdhelpVersion = "0.1"
 //     {"parent":""} can no longer distinguish clear-hierarchy intent from a
 //     legitimate blank-a-real-field write once it reaches the server; the
 //     ambiguity is created at the client surface that accepted `clear_parent`,
-//     so that surface refuses rather than guessing (codex round 2).
+//     so that surface refuses rather than guessing.
 //
 //   - "0.18" — historical. IDEA-2584: `clear_assigned_user` / `clear_agent_role`
 //     booleans on `pad_item`, the canonical and DISCOVERABLE way to unassign.
@@ -295,7 +295,7 @@ const CmdhelpVersion = "0.1"
 //     both create and update, mirroring liftFieldsToColumns (and its
 //     INVARIANT) on the MCP side, so the two surfaces stop diverging.
 //
-//     TWO compat changes, ruled separately: (1) NON-empty
+//     TWO compat changes, judged separately: (1) NON-empty
 //     `--field assigned_user_id=<uuid>` now writes the COLUMN and no longer
 //     writes the blob key — accepted on the grounds that relying on the old
 //     behaviour is relying on a shadowing defect; (2) EMPTY clears the
@@ -325,13 +325,13 @@ const CmdhelpVersion = "0.1"
 //     unassign.
 //
 //     Deliberately NOT changed: the empty-string filter on `tags` at the
-//     same call site (codex #547 r3 P2). `tags: ""` is not a clear, it is a
+//     same call site. `tags: ""` is not a clear, it is a
 //     corrupt write into a JSONB/TEXT column. Same-looking guard, opposite
 //     justification.
 //
 //     Also not done: `clear_assigned_user` / `clear_agent_role` schema flags
-//     mirroring the HTTP body (option (b) on the task) — deferred by the
-//     lead as additive sugar, then reopened by codex review and filed as
+//     mirroring the HTTP body (option (b) on the task) — deferred
+//     as additive sugar, then reopened and filed as
 //     IDEA-2584: the catalog exposes `assign` / `role`, NOT the ID params,
 //     so an agent reading the schema still cannot discover the clear.
 //
@@ -569,10 +569,9 @@ const CmdhelpVersion = "0.1"
 //     noRemoteEquivalent points remote agents at
 //     `item update --field github_pr=...` as the alternative. Refusing
 //     it would have deleted the only door those agents have and
-//     answered with a message naming a command they cannot run (Codex
-//     round 3).
+//     answered with a message naming a command they cannot run.
 //
-//     Round 4 then found that door does not actually work: a `field`
+//     That door does not actually work: a `field`
 //     value is stored as a STRING on every surface, so the PR data
 //     lands double-encoded and no link appears — the BUG-2627 shape one
 //     key over, filed as BUG-2696. That does not change the exemption
@@ -648,7 +647,7 @@ const CmdhelpVersion = "0.1"
 //     the claim flow (there is nothing to claim when nothing was
 //     created).
 //
-//     Ruled by Dave on IDEA-2756: the consent checkbox is a permission
+//     IDEA-2756: the consent checkbox is a permission
 //     on whether the connected token may CREATE, and has to be true to
 //     what a user would honestly expect from the option. Applied to
 //     `POST /workspaces/import` as well as `POST /workspaces` — import
@@ -858,8 +857,8 @@ const CmdhelpVersion = "0.1"
 //     accepting it differently: /mcp trimmed it and wrote the declared
 //     field, the CLI stored a ghost field beside it. So both refuse
 //     something they used to accept — the phrase "only /mcp changes"
-//     was in an earlier draft of this entry and is wrong (codex round
-//     1). What is /mcp-ONLY is the value half: it used to trim a
+//     was in an earlier draft of this entry and is wrong. What is /mcp-ONLY is
+//     the value half: it used to trim a
 //     padded VALUE and type the result, and now carries it through to
 //     the same validation the CLI has always applied.
 //
@@ -1066,7 +1065,7 @@ const CmdhelpVersion = "0.1"
 //     rounded value; local stdio stringified the rounded float64 into its
 //     `--field` entry, so it was affected too (the filing believed it was
 //     not). Only `fields` is re-read; every other numeric param is unchanged.
-//     The BUMP is owed by one NEW REFUSAL (lead-ruled on BUG-3217's trail):
+//     The BUMP is owed by one NEW REFUSAL (BUG-3217):
 //     on `pad_item.action=create` / `update`, a `fields` number beside a
 //     `field: ["n=…"]` entry for the same
 //     key is compared by exact numeric value, so two numbers that differ
@@ -1091,7 +1090,7 @@ const CmdhelpVersion = "0.1"
 //     never `caller`; a bundle import stores the bundle's claim when the
 //     name arrives unchanged. Nothing moved, retyped or disappeared, so a
 //     consumer that ignores the key is unaffected: the 0.28 / 0.13
-//     disposition (lead-ruled on BUG-2819's trail: bump if and only if the
+//     disposition (BUG-2819: bump if and only if the
 //     field reaches a response, which it does). `pad_attachment.action=show`
 //     synthesises its shape from HEAD headers and does NOT carry it. The
 //     sibling `mcp_audit_log.tool_name_source` reaches no catalog action
@@ -1112,7 +1111,7 @@ const CmdhelpVersion = "0.1"
 //     same sentence; the preflight asks through a needs_value row with
 //     reason `state_change`, which the web dialog's picker already renders.
 //     A destination with no done select field has no state to change and is
-//     exempt. BEHAVIOR bump on the 0.43 / 0.29 grounds (lead-ruled).
+//     exempt. BEHAVIOR bump on the 0.43 / 0.29 grounds.
 //
 //     0.51 — BUG-2367. `pad_item.action=move` (and the copy and bulk-move
 //     doors behind the same field pipeline) stops carrying a value into a
@@ -1134,7 +1133,7 @@ const CmdhelpVersion = "0.1"
 //     ref of the item holding the value) is present only when the caller may
 //     see that item, so the drop is not an existence oracle. Local stdio
 //     `item move` prints `  dropped: <message>` lines on stdout after its
-//     success line. BEHAVIOR bump on the 0.43 / 0.29 grounds (lead-ruled): a
+//     success line. BEHAVIOR bump on the 0.43 / 0.29 grounds: a
 //     move or copy stores something different from what it stored before.
 //
 //     0.50 — BUG-3014. A `relation_targets` entry gains an ADDITIVE,
@@ -1146,7 +1145,7 @@ const CmdhelpVersion = "0.1"
 //     the flag keeps exactly that meaning, and a UUID-shaped value, resolved
 //     or not, marshals byte-identically to 0.49. The predicate is syntactic
 //     and decided from the stored bytes alone, never from a lookup, so the
-//     flag discloses nothing about any item (lead-ruled). It is deliberately
+//     flag discloses nothing about any item. It is deliberately
 //     not coupled to the resolver's UUID/ref/title ladder, whose evolution
 //     would otherwise change the flag's meaning without a bump. The CLI
 //     renders such a value as `"<text>" (text, not a reference)`, and the web
@@ -1156,7 +1155,7 @@ const CmdhelpVersion = "0.1"
 //     param now leaves out SYSTEM collections (Collection.IsSystem: today
 //     Conventions and Playbooks), so they stop counting in created, WIP and
 //     status totals. A call that NAMES one (`collections: "conventions"`) still
-//     includes it. BEHAVIOR bump on the 0.40 / 0.42 grounds (lead-ruled): no
+//     includes it. BEHAVIOR bump on the 0.40 / 0.42 grounds: no
 //     tool name, action enum or param shape changed, but a default call's
 //     content changed for every caller. The rule is the store's
 //     (resolveReportCollections), so the web Insights page, the print report,
@@ -1410,7 +1409,7 @@ const CmdhelpVersion = "0.1"
 //     which wired `remind` / `ack-reminder` the same way, and a 0.37
 //     consumer that enumerates neither action is unaffected.
 //
-//     Stated because the PR thread first ruled NO bump under DR-7:
+//     Stated because the PR thread first concluded NO bump was owed under DR-7:
 //     DR-7 (tool_surface.go) is about a consumer tolerating an unknown
 //     KEY in the serialized surface, not about the action enum. Adding
 //     an action is the contract change that owns the bump — the entry
@@ -1540,7 +1539,7 @@ const CmdhelpVersion = "0.1"
 //     same UUID -> ref -> exact-title ladder a scalar `relation` uses.
 //
 //     0.32 was reserved for PR #1337, which was opened first. This unit
-//     took 0.33 on a lead ruling rather than contest the number. PR #1337
+//     took 0.33 rather than contest the number. PR #1337
 //     remained open while 0.33 through 0.36 landed, so its additive
 //     contract now lands as 0.37 rather than moving the advertised version
 //     backward. Version 0.32 remains skipped; a gap is cheaper than a
@@ -1577,7 +1576,7 @@ const CmdhelpVersion = "0.1"
 //     handle the array; a strictly-typed client will fail to decode it,
 //     which is why this is a bump and not a no-bump.
 //
-//     Value rules, all ruled on TASK-2999's trail and all NEW rather
+//     Value rules, all decided on TASK-2999 and all NEW rather
 //     than inherited, because scalar `relation` had nothing coherent to
 //     inherit (BUG-3028): exactly ONE stored form for "none", which is
 //     the key being ABSENT, with `[]` normalising to it at the write
@@ -1655,7 +1654,7 @@ const CmdhelpVersion = "0.1"
 //     failed job, an item with set-aside rows and PAD_MATERIALIZE=off all
 //     leave the old behaviour, so "re-read later, never re-send" stands.
 //
-//     0.59 — BUG-3252, the tombstone (ruled over cascade). BEHAVIOR bump
+//     0.59 — BUG-3252, the tombstone (chosen over cascade). BEHAVIOR bump
 //     on the v0.58 / v0.45 grounds: no name, enum or param shape changed,
 //     but `pad_item.action=delete-comment` on a comment that still has
 //     replies now SUCCEEDS where v0.58 refused it with 409
@@ -1762,7 +1761,7 @@ const CmdhelpVersion = "0.1"
 //     grounds: `pad_item.action=starred` returns at most 300 items, most
 //     recently starred first, and when more exist says `has_more: true`
 //     on the structured result plus the same truncation note as list. It
-//     never pages (lead ruling, as for list). Both transports ask for one
+//     never pages (as for list). Both transports ask for one
 //     row past the cap: remote as GET /starred?limit=301, stdio as
 //     `pad item starred --limit 301` (a new CLI flag; without it the CLI
 //     walks every page). Starred used to return everything. The `limit`
@@ -2008,7 +2007,7 @@ const CmdhelpVersion = "0.1"
 //     gains `scope="pad:read pad:write"` ahead of resource_metadata. Stdio
 //     is unchanged. No name, enum or param moved.
 //
-//     0.77 — BUG-2772 (lead ruling; IDEA-2791 Tier B). BEHAVIOR bump on the
+//     0.77 — BUG-2772 (IDEA-2791 Tier B). BEHAVIOR bump on the
 //     v0.76 / v0.49 grounds: a write over REMOTE /mcp is now recorded as an
 //     AGENT write (created_by / actor "agent"), named by the client's declared
 //     MCP clientInfo.name ("claude-code"), where it was recorded as the
@@ -2029,7 +2028,7 @@ const CmdhelpVersion = "0.1"
 //     both transports, where remote answered `conflict` and stdio
 //     `server_error`.
 //
-//     0.76 — TASK-1809 (lead ruling). BEHAVIOR bump on the v0.70 / v0.49
+//     0.76 — TASK-1809. BEHAVIOR bump on the v0.70 / v0.49
 //     grounds: no tool name, action enum or param shape moved. Two
 //     changes, one identity:
 //
@@ -2058,7 +2057,7 @@ const CmdhelpVersion = "0.1"
 //     another holder's to the same agent until it expires (at most its TTL,
 //     15 minutes by default).
 //
-//     0.75 — BUG-3480 (lead ruling). BEHAVIOR bump on the v0.43 / v0.29
+//     0.75 — BUG-3480. BEHAVIOR bump on the v0.43 / v0.29
 //     grounds: `pad_item.action=list` on both transports REFUSES a filter
 //     key (a `field` entry, or `priority` on a collection without one)
 //     that no schema in scope declares and no item in scope stores, with
@@ -2073,7 +2072,7 @@ const CmdhelpVersion = "0.1"
 //     `X-Pad-Undeclared-Filter-Keys`, which the CLI prints to stderr; the
 //     MCP result does not carry it. No name, enum or param moved.
 //
-//     0.74 — TASK-2188 (lead ruling). ADDITIVE bump on the v0.67 grounds
+//     0.74 — TASK-2188. ADDITIVE bump on the v0.67 grounds
 //     (an omitempty warning on a write result): `pad_collection.action=update`
 //     answers, on both transports, with `warnings.orphaned`
 //     [{field, option?, items}] when its schema removed a field, or removed an
@@ -2083,7 +2082,7 @@ const CmdhelpVersion = "0.1"
 //     orphans nothing reads byte-identical to before. 0.73 is BUG-3480's; if
 //     this lands first, that one takes 0.75 and 0.73 stays a gap.
 //
-//     0.72 — TASK-2189 (lead ruling). ADDITIVE bump on the v0.8 / v0.13
+//     0.72 — TASK-2189. ADDITIVE bump on the v0.8 / v0.13
 //     grounds (existing CLI verbs wired onto the catalog): `pad_collection`
 //     gains `list-archived` (read-only: the workspace's archived
 //     collections with slug, id, prefix, item_count and archived_at) and
@@ -2092,7 +2091,7 @@ const CmdhelpVersion = "0.1"
 //     description no longer says "No restore endpoint exists": an agent's
 //     archive is now recoverable by an agent. Nothing existing moved.
 //
-//     0.71 — TASK-3462 U3a (lead ruling). ADDITIVE bump on the v0.63 /
+//     0.71 — TASK-3462 U3a. ADDITIVE bump on the v0.63 /
 //     v0.53 grounds: the bootstrap every bootstrap door returns
 //     (`pad_set_workspace`'s embed, `pad_meta.action=bootstrap`, the
 //     `pad://workspace/{ws}/bootstrap` resource) gains an `omitempty`
@@ -2103,7 +2102,7 @@ const CmdhelpVersion = "0.1"
 //     never apply an update itself. No name, enum or param moved; a
 //     workspace with nothing on offer reads byte-identical to before.
 //
-//     0.70 — BUG-3453 (lead ruling). BEHAVIOR bump on the v0.49 grounds
+//     0.70 — BUG-3453. BEHAVIOR bump on the v0.49 grounds
 //     (a default call's content changed, with no name, enum or param
 //     moved): `pad_project.action=next` and `ready`, which return the
 //     dashboard's suggested-next list, now fill any slot the existing tiers
@@ -2130,7 +2129,7 @@ const CmdhelpVersion = "0.1"
 //     hint is never empty: with no list it names `pad_workspace
 //     action=list`. Stdio is unchanged except for that fallback hint.
 //
-//     0.68 — BUG-3448 (lead ruling). BEHAVIOR bump on the v0.62 / v0.64
+//     0.68 — BUG-3448. BEHAVIOR bump on the v0.62 / v0.64
 //     grounds (an output shape a consumer reads changed, with no name, enum
 //     or param moved): the item resource `pad://workspace/{ws}/items/{ref}`
 //     renders a structured field (a json field's object or array) as compact
@@ -2140,7 +2139,7 @@ const CmdhelpVersion = "0.1"
 //     a number above 2^53 when it drops the hydrated keys. Scalar fields
 //     render exactly as before.
 //
-//     0.67 — BUG-3446 (lead ruling, day 89). ADDITIVE bump on the v0.62 /
+//     0.67 — BUG-3446. ADDITIVE bump on the v0.62 /
 //     v0.64 grounds: in a SYSTEM conventions or playbooks collection, a
 //     create whose `trigger` / `scope` is a word the convention or playbook
 //     LIBRARY itself uses now ADDS that word to the select's options instead
@@ -2153,7 +2152,7 @@ const CmdhelpVersion = "0.1"
 //     was added, so a consumer that ignores it is unaffected. No name, enum
 //     or param moved.
 //
-//     0.66 — BUG-2136 (lead ruling, day 87). BEHAVIOR bump on the v0.52 /
+//     0.66 — BUG-2136. BEHAVIOR bump on the v0.52 /
 //     v0.43 grounds: `pad_workspace.action=invite` no longer ADDS an existing
 //     account to the workspace. Every invite now creates a pending
 //     invitation that the invitee accepts or declines (in the web app, or
@@ -2191,7 +2190,7 @@ const CmdhelpVersion = "0.1"
 //     that ignores it is unaffected. Rows imported before this shipped are
 //     not marked: nothing stored distinguishes them.
 //
-//     0.63 — TASK-3321 (lead-ruled as its own PR). ADDITIVE bump on the
+//     0.63 — TASK-3321 (its own PR). ADDITIVE bump on the
 //     v0.53 / v0.28 grounds: every `pad_item.action=history` summary row,
 //     on both transports, gains an `omitempty` `actor_name`, the display
 //     name of the user who made the change. Rows could say only

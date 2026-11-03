@@ -172,7 +172,7 @@ func installList() error {
 	fmt.Println("Supported tools:")
 	fmt.Println()
 	for _, tool := range cli.SupportedTools {
-		// The same decision an update makes (BUG-3466, codex r2), so an edited
+		// The same decision an update makes (BUG-3466), so an edited
 		// or newer committed skill is not shown as healthy.
 		status := "  not installed"
 		if action, stampVer, exists := cli.SkillState(tool, pad.PadSkill, version); exists {

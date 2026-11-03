@@ -77,7 +77,7 @@ func TestToolOutcome_NewServerRecordsEveryEnding(t *testing.T) {
 		{"succeed", false, "", ""},
 		{"go_error", true, models.MCPAuditResultError, "server_error"},
 		{"panics", true, models.MCPAuditResultError, "server_error"},
-		// Refused by mcp-go before any middleware runs (hunter r1 M1).
+		// Refused by mcp-go before any middleware runs.
 		{"no_such_tool", true, models.MCPAuditResultError, "tool_not_found"},
 	}
 	for _, tc := range cases {
@@ -90,7 +90,7 @@ func TestToolOutcome_NewServerRecordsEveryEnding(t *testing.T) {
 	}
 }
 
-// Lead ruling R2 on BUG-3879: the OnError hook is not scoped to tools/call,
+// BUG-3879: the OnError hook is not scoped to tools/call,
 // so a failed tools/list writes error, not ok. A cursor that is not one
 // mcp-go issued fails the listing with INVALID_PARAMS.
 func TestToolOutcome_AFailedToolsListIsAnError(t *testing.T) {

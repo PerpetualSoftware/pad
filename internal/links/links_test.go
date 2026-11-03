@@ -6,7 +6,7 @@ import (
 )
 
 // TestRewriteBracketAt covers the position-based per-row cascade
-// helper introduced for Codex round 7 finding 2. The cascade SELECT
+// helper introduced to avoid a broad-regex hazard. The cascade SELECT
 // returns (position, target_title) per row; this helper rewrites
 // exactly the bracket at `position` if its body matches target_title,
 // preserving slug prefix and display suffix.
@@ -132,7 +132,7 @@ func TestRewriteBracketAt(t *testing.T) {
 			want:     "see [[tasks/Renamed]] here",
 		},
 		{
-			// BUG-2830, codex R1 P2. `strings.EqualFold` is UNICODE simple case
+			// BUG-2830. `strings.EqualFold` is UNICODE simple case
 			// folding, and case-equivalent strings can differ in BYTE LENGTH:
 			// EqualFold("K", "\u212A") — KELVIN SIGN — is true at 1 byte vs 3.
 			//

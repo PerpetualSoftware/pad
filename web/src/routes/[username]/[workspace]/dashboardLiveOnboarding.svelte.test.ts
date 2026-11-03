@@ -2,7 +2,7 @@
 // swap to the dashboard once the first item exists) waited on the 30 s poll:
 // item and collection events updated the sidebar, not this page. While the
 // workspace still needs onboarding, the page now refetches on those events
-// (coalesced), and it does not once onboarding is over: the board is the
+//  (coalesced), and it does not once onboarding is over: the board is the
 // aggregated view the poll and sync already keep.
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { cleanup, render } from '@testing-library/svelte';

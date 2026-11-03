@@ -1,5 +1,5 @@
 // BUG-3067 — BEHAVIOURAL coverage for the renderers the source guard only
-// inventories. Lead ruling on the trail: one parametrised test over the shared
+// inventories. One parametrised test over the shared
 // helper, with an own leg only where a renderer needs its own harness.
 //
 // The reason it is owed: a source guard answers "does this file import the

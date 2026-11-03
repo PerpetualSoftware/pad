@@ -56,8 +56,8 @@ type routeSpec struct {
 	// integers (the catalog declares them "number"). buildQuery reads them
 	// through numericInput, so a bool, an object or a string that is not a
 	// plain decimal integer is refused naming the key; the server would
-	// otherwise Atoi it, fail and silently use its default (BUG-4065 r1, lead
-	// ruling 5a06782e). TestBUG4065_NoRouteForwardsANonNumberForANumberParam
+	// otherwise Atoi it, fail and silently use its default (BUG-4065).
+	// TestBUG4065_NoRouteForwardsANonNumberForANumberParam
 	// walks every route against the catalog so a new numeric key cannot be
 	// left off.
 	numericQuery []string
@@ -158,7 +158,7 @@ func expandPath(template string, input map[string]any) (string, error) {
 // default (parseDaysParam, the limit parsers), so forwarding it silently
 // replaced the caller's number exactly as numericInput's truncation did.
 //
-// BUG-4065 r1 (lead ruling 5a06782e): the input keys named in numeric are
+// BUG-4065: the input keys named in numeric are
 // integers. Each is read through numericInput whatever its type, so "7" and 7
 // both forward 7, and a bool, an object, an array, "7.5" or "abc" is refused
 // naming the key. The server's parsers Atoi these and keep their default on
@@ -203,7 +203,7 @@ func buildQuery(input map[string]any, mapping map[string]string, numeric ...stri
 			}
 			q.Set(dst, strconv.FormatInt(n, 10))
 		default:
-			// BUG-4056 r1: float32 shares formatNumber (the integer types moved
+			// BUG-4056: float32 shares formatNumber (the integer types moved
 			// to the case above in BUG-4065).
 			if number, ok := formatNumber(v); ok {
 				q.Set(dst, number)
@@ -487,7 +487,7 @@ func init() {
 		// takes ttl_seconds. `item release` fits the declarative shape.
 		"item claim": mapItemClaim,
 		// PLAN-3578: content-anchored patch writes.
-		// BUG-4065 (Q9): validates expected_seq and each edit's line_hint
+		// BUG-4065: validates expected_seq and each edit's line_hint
 		// before forwarding; see mapItemPatch.
 		"item patch": mapItemPatch,
 		"item release": routeSpec{
@@ -866,7 +866,7 @@ var itemPatchRoute = routeSpec{
 }.toRouteMapper()
 
 // mapItemPatch is itemPatchRoute with its two numeric inputs validated here
-// (BUG-4065, folded from BUG-4061's Q9, lead ruling 63360424). They used to be
+// (BUG-4065, folded from BUG-4061). They used to be
 // forwarded raw, so a fraction or a non-number answered the server decode's
 // 400 bad_request rather than validation_failed naming the field. A string
 // expected_seq gets numericInput's rule here, as on update, so "123" is a
@@ -1017,8 +1017,8 @@ func mapCollectionUpdate(input map[string]any) (string, string, []byte, error) {
 	// CollectionUpdate field is a pointer server-side, and the store
 	// honors *string("") as "clear this column" (collections.go:271+).
 	// The CLI's --icon "" / --description "" flag help advertises this
-	// behavior; the MCP HTTP path must preserve it. Codex review on
-	// PR #572 caught the empty-string filter regression.
+	// behavior; the MCP HTTP path must preserve it; filtering out empty strings
+	// regressed this.
 	for _, key := range []string{"name", "icon", "description", "prefix"} {
 		v, ok := input[key]
 		if !ok || v == nil {
@@ -1031,7 +1031,7 @@ func mapCollectionUpdate(input map[string]any) (string, string, []byte, error) {
 			payload[key] = s
 		}
 	}
-	// BUG-4065 (Q4): validated here, so a fraction, a string that is not a
+	// BUG-4065: validated here, so a fraction, a string that is not a
 	// plain integer or any other type answers validation_failed naming
 	// sort_order, not the server decode's 400 bad_request. CollectionUpdate.
 	// SortOrder is *int; the whole int64 is forwarded.
@@ -1137,7 +1137,7 @@ func mapRoleUpdate(input map[string]any) (string, string, []byte, error) {
 			payload["slug"] = s
 		}
 	}
-	// BUG-4065 (Q4): validated here, as in mapCollectionUpdate.
+	// BUG-4065: validated here, as in mapCollectionUpdate.
 	if so, ok, err := intParam(input, "sort_order"); err != nil {
 		return "", "", nil, err
 	} else if ok {
@@ -1194,7 +1194,7 @@ func mapRoleCreate(input map[string]any) (string, string, []byte, error) {
 // be a JSON-array string (e.g. `["item.created","item.updated"]`) —
 // any other shape unmarshals to nil and matches no events at all.
 //
-// Codex review on PR #347 caught that the CLI's `--events
+// The CLI's `--events
 // "item.created,item.updated"` example produces a literal comma-
 // separated string in the column, which matchesEvent then can't
 // parse. The CLI is independently bugged — fixing it is its own
@@ -1312,8 +1312,8 @@ func normalizeWebhookEvents(raw any) (string, bool) {
 // session-default mechanism (mergeDispatchInput) auto-injects
 // `workspace` into every input — if we forwarded it here, an admin
 // listing audit entries through MCP would silently miss every entry
-// outside the session workspace. Codex review on PR #347 caught this
-// divergence; matching the CLI's "no workspace filter" behaviour
+// outside the session workspace. This divergence; matching the CLI's "no
+// workspace filter" behaviour
 // keeps parity. Workspace-scoping admin audit logs needs its own
 // CLI flag (and would surface as a separate input via cmdhelp) —
 // not folding-in the implicit session value.
@@ -1458,7 +1458,7 @@ func mapWorkspaceInvite(input map[string]any) (string, string, []byte, error) {
 //   - `--parent <ref>` → `?parent=<ref>`. The handler's
 //     resolveParentFilter resolves the ref via the field-filter path.
 //     (Going via `parent_id` would skip ref-resolution and fail for
-//     human-friendly inputs like "PLAN-3"; Codex review caught this.)
+//     human-friendly inputs like "PLAN-3".)
 //   - `--role <slug>` → `?agent_role_id=<slug>`. The store accepts
 //     both ID and slug here.
 //   - `--assign <name>` → rejected. The CLI resolves name→ID
@@ -1640,7 +1640,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemList(
 	if resp.StatusCode >= 400 {
 		// Same envelope path as packageHTTPResponse; req.Context() so
 		// the workspace lister sees the auth state buildAuthedRequest
-		// attached (Codex review #379 round 1).
+		// attached.
 		return classifyHTTPStatus(req.Context(), cmdKey, resp.StatusCode, bodyBytes, d.Lister), nil
 	}
 	var items []models.Item
@@ -1786,7 +1786,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemHistory(
 		// the actionable per-ref hint — same as dispatchProjectNext's
 		// item reads, richer than the legacy ResourceUnknown path.
 		// Shared by BOTH modes: full=true must not degrade the 404
-		// envelope (codex round 2).
+		// envelope.
 		return classifyHTTPStatusKind(req.Context(), cmdKey, urlPath,
 			resp.StatusCode, bodyBytes, d.Lister, ResourceItem, ref), nil
 	}
@@ -1838,8 +1838,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemHistory(
 //     above MaxInt64 is refused as out of range;
 //   - a float32 widens exactly to float64 and gets wholeInt64's rules;
 //   - a string is admitted only as a plain decimal integer (decimalIntString),
-//     a form stdio's CLI flags read as the same number (lead ruling af4bff40,
-//     Q1; leading zeros refused per 5a06782e). Strings and float64 are
+//     a form stdio's CLI flags read as the same number. Strings and float64 are
 //     bounded at |x| < 2^53; the native Go integers keep their int64 range;
 //   - anything else is refused, naming its JSON type.
 func numericInput(v any) (int64, bool, error) {
@@ -1888,7 +1887,7 @@ func numericInput(v any) (int64, bool, error) {
 }
 
 // uint64Int64 converts an unsigned value that fits int64 and refuses a larger
-// one, rather than wrapping it negative (BUG-4065, from BUG-4061's Q6 note).
+// one, rather than wrapping it negative (BUG-4065, from BUG-4061 note).
 func uint64Int64(x uint64) (int64, error) {
 	if x > math.MaxInt64 {
 		return 0, fmt.Errorf("is out of range, got %d", x)
@@ -1900,11 +1899,10 @@ func uint64Int64(x uint64) (int64, error) {
 // ^-?(0|[1-9][0-9]*)$: an optional '-', then "0" or digits with no leading
 // zero, nothing else (no whitespace, no '+', no '.', no exponent, not empty).
 // It is parsed exactly by ParseInt and then gets the float64 path's bound,
-// |x| < 2^53, so a string accepts no value a JSON number would not (lead
-// ruling af4bff40, Q1). A leading zero ("010", "00", "-010") is refused, not
+// |x| < 2^53, so a string accepts no value a JSON number would not. A leading
+// zero ("010", "00", "-010") is refused, not
 // read as decimal: stdio's CLI flags parse base 0, so "010" is 8 there, and
-// accepting it here as 10 would make one string two numbers (BUG-4065 r1,
-// lead ruling 5a06782e). "-0" is 0.
+// accepting it here as 10 would make one string two numbers (BUG-4065). "-0" is 0.
 func decimalIntString(s string) (int64, error) {
 	digits := strings.TrimPrefix(s, "-")
 	if digits == "" || strings.TrimLeft(digits, "0123456789") != "" ||
@@ -1938,14 +1936,14 @@ func jsonTypeName(v any) string {
 // whole number written with an exponent ("1e6"), so a literal it cannot parse
 // is read EXACTLY as a decimal: a float64 would round 9007199254740993e0 to
 // ...992 and 1.0000000000000001 to 1, changing the caller's number again
-// (BUG-4061 r2). The length and exponent bounds keep a literal like 1e999999999
+// (BUG-4061). The length and exponent bounds keep a literal like 1e999999999
 // from costing a huge allocation; no int64 needs either to be larger.
 func jsonNumberInt64(x json.Number) (int64, error) {
 	s := x.String()
 	if n, err := x.Int64(); err == nil {
 		return n, nil
 	}
-	// An allow-list, not a deny-list (BUG-4061 r5): big.Rat parses base
+	// An allow-list, not a deny-list (BUG-4061): big.Rat parses base
 	// prefixes ("0b101" is 5, "0o17" is 15, "0x10" is 16), fractions ("1/2")
 	// and underscores, none of which is a JSON number.
 	if len(s) > 64 || !isDecimalLiteral(s) {
@@ -1971,7 +1969,7 @@ func jsonNumberInt64(x json.Number) (int64, error) {
 // (MaxInt64 is 2^63-1, and float64(MaxInt64) rounds up to 2^63). NaN fails
 // the Trunc comparison; ±Inf fails the range check.
 //
-// BUG-4061 r3/r4 (lead ruling on Q3, corrected on r4): a float64 of magnitude
+// BUG-4061: a float64 of magnitude
 // 2^53 or more is refused too. The JSON decoder has already rounded such an
 // integer, and 2^53 itself is the rounded image of 2^53+1, so the value cannot
 // prove it is the number the caller sent. The largest accepted float64 is
@@ -2088,7 +2086,7 @@ func mapItemMove(input map[string]any) (string, string, []byte, error) {
 	}
 	urlPath := fmt.Sprintf("/api/v1/workspaces/%s/items/%s/move",
 		url.PathEscape(workspace), url.PathEscape(ref))
-	// IDEA-1494 R3 P1: forward the open-children guard override into
+	// IDEA-1494: forward the open-children guard override into
 	// the URL query, matching the server-side contract (handler reads
 	// ?force=true). Same wire shape `pad item move --force` uses.
 	if b, ok := input["force"].(bool); ok && b {

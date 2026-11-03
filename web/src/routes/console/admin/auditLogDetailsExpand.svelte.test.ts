@@ -4,7 +4,7 @@ import { flushSync, mount, unmount, tick } from 'svelte';
 /**
  * BUG-2789, the admin audit log's disposition: a forensic surface bounds the
  * ROW presentation, never the content. The collapsed cell is a clipped digest
- * (the generic fallback names only three members); expanding it must show
+ *  (the generic fallback names only three members); expanding it must show
  * everything the row holds, including what the activity feeds suppress.
  */
 const adminFetchMock = vi.hoisted(() => vi.fn<(path: string) => Promise<unknown>>());

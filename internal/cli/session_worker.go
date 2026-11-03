@@ -90,7 +90,7 @@ func keptWorkerID(path string, owner SessionOwner) string {
 	}
 	// Same pid AND same start token is the same process. Where the platform
 	// records no start token on either side, the pid alone has to do: a
-	// /clear must keep its leases (lead ruling), and a reused pid inheriting
+	// /clear must keep its leases, and a reused pid inheriting
 	// a dead session's id is the lesser risk, since its leases expire within
 	// their TTL. A token on one side only is a different process.
 	if prev.PID != owner.PID || prev.ProcStart != owner.ProcStart {

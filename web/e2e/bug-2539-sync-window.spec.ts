@@ -42,7 +42,7 @@ import { test, quietCrossActorToasts, type SuiteFixture } from './fixtures';
  *      committed, whenever the client sent it. Judging by CLIENT send time
  *      refused a correct delivery — an incremental issued 16 ms before the
  *      archive, read after its commit, carried it, and the pass after it
- *      rightly carried nothing (BUG-3207, lead ruling). What the send-time
+ *      rightly carried nothing (BUG-3207). What the send-time
  *      guard was for, a RETRIED seed at a later ordinal, is not separable by
  *      ordinal alone; no path re-seeds a workspace the page never left. The
  *      URL match is anchored so `/items-changes` — a different, seq-based
@@ -57,7 +57,7 @@ import { test, quietCrossActorToasts, type SuiteFixture } from './fixtures';
 // Matchers are built PER ATTEMPT and scoped to that attempt's workspace. A
 // retry reuses the page, which is still showing the previous attempt's
 // workspace when the listeners go on — an in-flight /changes from that one
-// would otherwise take ordinal 0 and be mistaken for the new seed (Codex P2).
+// would otherwise take ordinal 0 and be mistaken for the new seed.
 const changesReFor = (wsSlug: string) =>
 	new RegExp(`/api/v1/workspaces/${wsSlug}/changes(\\?|$)`);
 const itemGetReFor = (wsSlug: string) =>
@@ -241,7 +241,7 @@ async function runLeg(opts: {
 			const cursorSecond = seedServerTime === null ? null : secondOf(seedServerTime);
 			const archiveSecond = checked.deleted_at;
 			// A seed we never observed proves NEITHER equality nor difference —
-			// retry rather than let the control leg pass on an unknown (Codex P2).
+			// retry rather than let the control leg pass on an unknown.
 			if (cursorSecond === null) {
 				return { outcome: 'misaligned', cursorSecond, archiveSecond };
 			}

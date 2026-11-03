@@ -83,7 +83,7 @@ describe('BUG-2995: applier markdown vs flushed markdown', () => {
 		});
 	}
 
-	// The RECORDED FORMS, kept separate on purpose (codex round 1, nit). These pin
+	// The RECORDED FORMS, kept separate on purpose. These pin
 	// exact serializer output and are the brittle half: a dependency bump can change
 	// them without touching the property above. When this fails and the block above
 	// does not, the contract is intact and the fixtures need re-recording — update

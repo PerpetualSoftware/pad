@@ -1053,7 +1053,7 @@
 	// `graph` handle and the plain `collectionPalette` assigner, never a tracked $state.
 	// A null graphData (workspace switch in flight, or load error) clears the
 	// canvas too — otherwise the previous workspace's nodes linger behind the
-	// loading overlay (Codex round-1 finding #1).
+	// loading overlay.
 	$effect(() => {
 		// Feed the FILTERED subset (TASK-1735) — not the raw payload. filteredData is
 		// graphData verbatim when no filter is active, so the unfiltered path is
@@ -1116,7 +1116,7 @@
 				? // sourceRef/targetRef preserve the raw ref strings: after ingest the
 					// force layout mutates source/target into node OBJECTS, so any
 					// accessor comparing endpoints against a ref (linkColor's focus-mode
-					// adjacency check) must read these instead (Codex PR #702 round 1).
+					// adjacency check) must read these instead (#702).
 					data.edges.map((e) => ({
 						source: e.source,
 						target: e.target,
@@ -1165,7 +1165,7 @@
 		// Bulk mutations (items_bulk_updated) and replay-buffer gaps don't fan
 		// out through onItemEvent — the SSE service routes them to
 		// onSyncRequired. Either way the graph may be stale, so fold them into
-		// the same debounced refetch (Codex PR #704 round 1).
+		// the same debounced refetch (#704).
 		const unsubscribeSync = sseService.onSyncRequired(() => scheduleRefetch());
 		return () => {
 			unsubscribeSSE?.();

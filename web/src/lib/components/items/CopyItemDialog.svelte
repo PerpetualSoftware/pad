@@ -31,7 +31,7 @@ the intra-workspace "Required fields missing: …" dead end — the old move cal
 site passed `field_overrides: undefined` and turned the server's refusal into
 an unactionable toast.
 
-Ambiguity rule (DR-13 / round-10 amendment). Ambiguity is decided by "was the
+Ambiguity rule (DR-13). Ambiguity is decided by "was the
 mutation dispatched?", NOT by the server returning `copy_failed`. Once the copy
 POST is dispatched, any UNSTRUCTURED failure (rejected fetch, non-JSON 502,
 timeout) is as ambiguous to the user as an explicit `copy_failed`: the server
@@ -127,7 +127,7 @@ user hunting for an item that provably does not exist.
 	// ── Preflight timing ──────────────────────────────────────────────────
 	// Typed overrides re-run the preflight, which rescans relationships and
 	// replans attachments server-side — real work, on a rate-limited endpoint.
-	// So: a debounce, PLUS single-flight trailing coalescing (round-12 fold-in).
+	// So: a debounce, PLUS single-flight trailing coalescing.
 	// At most one preflight is in flight at any moment; edits that settle while
 	// one is running collapse into exactly ONE trailing run.
 	const PREFLIGHT_DEBOUNCE_MS = COPY_PREFLIGHT_DEBOUNCE_MS;
@@ -193,8 +193,8 @@ user hunting for an item that provably does not exist.
 	 */
 	let overrides = $state<Record<string, unknown>>({});
 	/**
-	 * Everything the user has typed, kept across destination changes (round-8
-	 * amendment: entered values are still valid input for a replacement
+	 * Everything the user has typed, kept across destination changes
+	 * (entered values are still valid input for a replacement
 	 * destination). Re-applied to `overrides` only once the new destination's
 	 * preflight confirms it declares the key.
 	 */
@@ -253,7 +253,7 @@ user hunting for an item that provably does not exist.
 	// previewGen cancels in-flight preflights, and an override edit must NOT do
 	// that — the debounce + single-flight runner already collapse rapid edits.
 	// What an override edit MUST do is supersede an in-progress confirm, whose
-	// request was built from the OLD values (final-review P1).
+	// request was built from the OLD values.
 	let overrideGen = 0;
 
 	// ── Derived ───────────────────────────────────────────────────────────
@@ -286,10 +286,10 @@ user hunting for an item that provably does not exist.
 	 * is not now: with a relation whose target is unavailable sorted first, the
 	 * printed command would name the ONE field the CLI cannot set either.
 	 *
-	 * An EMPTY KEY is excluded for the same reason and was the round-4 miss:
+	 * An EMPTY KEY is excluded for the same reason and is easy to miss:
 	 * `--field =value` is rejected by the CLI's own parser, so a required
 	 * `json` field the destination reported with no key is type-shaped, blocked,
-	 * and still unfillable. The CLI has refused these since Codex round 6; the
+	 * and still unfillable. The CLI has refused these already; the
 	 * dialog was printing the command anyway.
 	 */
 	let cliFillableField = $derived(
@@ -759,8 +759,8 @@ user hunting for an item that provably does not exist.
 	 * The preflight response is the canonicalising round-trip: the server
 	 * resolved whatever it was given and answered with the real slug. Falls
 	 * back to `destWs` only before the first preflight has returned, at which
-	 * point no needs-value row is being rendered anyway (codex review,
-	 * TASK-2869).
+	 * point no needs-value row is being rendered anyway
+	 * (TASK-2869).
 	 */
 	let pickerWsSlug = $derived(preflight?.destination.workspace_slug || destWs);
 
@@ -774,8 +774,7 @@ user hunting for an item that provably does not exist.
 			// what FieldEditor scopes its picker to. The call site pairs it
 			// with wsSlug={destWs} — the DESTINATION workspace, never the
 			// source: the picker must list items the copy can actually point
-			// at, and a relation resolves at the destination (TASK-2869,
-			// day-55 ruling).
+			// at, and a relation resolves at the destination (TASK-2869).
 			collection: row.collection,
 			required: row.required
 		};
@@ -823,7 +822,7 @@ user hunting for an item that provably does not exist.
 		'rate_limited',
 		'unauthorized',
 		// Rejected by the middleware stack BEFORE handleCopyItem runs, so they
-		// provably cannot have created anything (final review round 2):
+		// provably cannot have created anything:
 		'csrf_error', // 403 — CSRF check failed at the perimeter
 		'email_not_verified', // 403 — unverified email may not mutate content
 		// 500 internal_error is pre-write ON THIS ROUTE specifically: the only

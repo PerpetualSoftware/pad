@@ -2,7 +2,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
 
 // TASK-2219: every activity filter reaches the server, and Load more stays
-// under a collection filter (it was hidden while the filter ran client-side).
+// under a collection filter  (it was hidden while the filter ran client-side).
 
 const calls = vi.hoisted(() => ({ params: [] as Array<Record<string, unknown>> }));
 const row = (i: number) => ({

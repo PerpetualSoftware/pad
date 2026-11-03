@@ -60,7 +60,7 @@ func TestNewWatchEventsStreamRequest_OmitsUnsetIdentity(t *testing.T) {
 }
 
 // TestNewWatchEventsStreamRequest_UnsendableLabelStillConnects is the
-// regression for the failure Codex round 1 found on this PR, and the
+// regression for a past failure, and the
 // reason it is asserted by DOING THE ROUND TRIP rather than by
 // inspecting the header: the bug was never about the header's contents.
 // Unix directory names may contain newlines ("doc\napp" is a legal

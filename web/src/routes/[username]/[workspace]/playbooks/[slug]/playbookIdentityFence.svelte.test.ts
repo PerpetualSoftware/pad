@@ -236,7 +236,7 @@ describe('BUG-3236: the playbook editor does not act for the previous identity',
 		expect(toasts).not.toContain('Playbook saved');
 		expect(gotos).toEqual([]);
 		// Nor does it clear the busy flag, which after the flip belongs to
-		// whoever is signed in now (codex r1).
+		// whoever is signed in now.
 		expect(screen.getByRole('button', { name: /Saving…/ })).toBeTruthy();
 	});
 

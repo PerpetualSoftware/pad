@@ -21,7 +21,7 @@ func writeSkill(tool cli.AgentTool, force bool) (cli.SkillWriteResult, error) {
 	}
 	// Record every skill that is there afterwards, written or not: an
 	// already-current or kept file is still an installation, and an
-	// untracked one would never get a later cross-project update (codex r2).
+	// untracked one would never get a later cross-project update.
 	if res.Wrote || res.Action != cli.SkillInstall {
 		recordInstallation(tool.Name, res.Path)
 	}

@@ -60,8 +60,8 @@ type AppAttachment struct {
 	Filename string `json:"filename"`
 	MimeType string `json:"mime_type"`
 	Size     int64  `json:"size"`
-	// Variant is null on an original (DOC-3371 §4 lists it in every DTO;
-	// TASK-3401 U6c codex r3), the variant key on a variant.
+	// Variant is null on an original (DOC-3371 §4 lists it in every DTO, TASK-3401
+	// U6c), the variant key on a variant.
 	Variant   *string   `json:"variant"`
 	CreatedAt time.Time `json:"created_at"`
 }
@@ -89,8 +89,7 @@ func toAppAttachment(a *models.Attachment) *AppAttachment {
 // while they hold the workspace seq lock, and released inside the upload's
 // row transaction (also under the seq lock) once its row is inserted. Under
 // that lock an upload is therefore counted exactly once, as a reservation or
-// as a row (codex round 1 found the double count when the release came after
-// commit).
+// as a row (releasing after commit would count it twice).
 type reservations struct {
 	mu    sync.Mutex
 	files map[string]int64
@@ -153,8 +152,8 @@ func (a *Store) UploadAttachment(ctx context.Context, spec store.FenceSpec, item
 // PendingUpload is an upload between its blob and its row: admitted, typed,
 // and its blob canonical, with its reservation and hash guard still held.
 // The caller may re-check what is not the store's to decide (the server
-// re-checks the subject's visibility and edit right, TASK-3401 U6c codex
-// r3), then calls Insert, and always Close. A pending upload that is closed
+// re-checks the subject's visibility and edit right, TASK-3401 U6c), then calls
+// Insert, and always Close. A pending upload that is closed
 // without a committed Insert reclaims its blob through Options.Reclaimer
 // (BUG-3652), or leaves it for the rowless sweep when that is nil.
 type PendingUpload struct {
@@ -331,7 +330,7 @@ func (a *Store) insertUploadTx(ctx context.Context, spec store.FenceSpec, res *r
 	// admission (which reads reservations under the same lock) can see the
 	// upload as both a reservation and a row: until this transaction commits
 	// or rolls back, every admission waits (see reservations). Releasing after
-	// Commit was codex round 1's double count.
+	// Commit would count the upload twice.
 	if err := ftx.LockWorkspaceSeq(); err != nil {
 		return nil, err
 	}

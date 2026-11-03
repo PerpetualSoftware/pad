@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 /**
- * BUG-3005, codex round 1. The stores round 1 found still holding per-user
+ * BUG-3005. The stores still holding per-user
  * state, plus the unfenced `loading` write in collectionStore.
  *
  * The four stores named on the item were not the population — the enumeration
@@ -107,7 +107,7 @@ describe('adminStore across an identity change', () => {
 		auth.fireIdentityChange();
 
 		expect(adminStore.stats).toBeNull();
-		// FALSE, not true (codex round 2). The admin layout loads on MOUNT and a
+		// FALSE, not true. The admin layout loads on MOUNT and a
 		// same-route admin-to-admin swap mounts nothing, so leaving this true
 		// pinned the console on "Loading admin data…" forever. The layout
 		// re-issues the load on the same signal; until then the honest state is

@@ -171,11 +171,11 @@
 		// Only apply filters we can actually evaluate against the public
 		// payload. Share items carry schema `fields` only — NOT the logged-in
 		// page's top-level `tags` / `parent_link_id` / `phase`. A filter on one
-		// of those would otherwise hide the entire collection (Codex round 2).
+		// of those would otherwise hide the entire collection.
 		// Evaluability is decided against the COLLECTION SCHEMA (not item
 		// values): a `priority eq high` filter on a schema that HAS `priority`
 		// stays applied even when no shared item happens to set it (so the
-		// public view returns none, matching the owner) — Codex round 3. Only
+		// public view returns none, matching the owner). Only
 		// fields genuinely absent from the public schema are skipped.
 		const schemaKeys = new Set(baseParsedCollection.fields.map((f) => f.key));
 		const applicable = rawFilters.filter((f) => filterEvaluable(schemaKeys, f));
@@ -265,7 +265,7 @@
 		// Normalize the address bar to the resolved selection. A stale/invalid
 		// `?view=` (e.g. a deleted saved view) otherwise leaves the URL
 		// describing a view the page isn't rendering, so a copied link
-		// wouldn't reproduce what the viewer sees (Codex round 3). When the URL
+		// wouldn't reproduce what the viewer sees. When the URL
 		// already matched, this is a harmless no-op replaceState.
 		syncUrl();
 	}
@@ -275,7 +275,7 @@
 	// selection equals the owner default — that's the no-op case, and the
 	// reload-without-localStorage path resolves back to the same view. A
 	// non-default base (e.g. List on a board-default share) MUST keep the
-	// param so the link reproduces the viewer's choice (Codex round 2).
+	// param so the link reproduces the viewer's choice.
 	function syncUrl() {
 		const url = new URL(page.url.href);
 		const handle = selectedKind === 'saved' ? `saved:${selectedSavedSlug}` : selectedBase;
@@ -504,7 +504,7 @@
 		passwordLoading = true;
 		try {
 			// Through the share loader, so a collection past one page arrives
-			// whole (BUG-3792, Codex r1); each page is under the API deadline
+			// whole (BUG-3792); each page is under the API deadline
 			// (BUG-3216), and `passwordLoading` is held across them.
 			let data: SharePayload;
 			try {

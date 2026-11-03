@@ -258,7 +258,7 @@ func TestPruneRemovesDeadSessionsChatSeen(t *testing.T) {
 	}
 }
 
-// r1: ensurePrivateDir follows a symlink, so a symlinked chat-seen directory
+// ensurePrivateDir follows a symlink, so a symlinked chat-seen directory
 // would have its target chmodded and the log written into it.
 func TestChatSeenRefusesSymlinkedDir(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -289,7 +289,7 @@ func TestChatSeenRefusesSymlinkedDir(t *testing.T) {
 	}
 }
 
-// r1: a log removed under the writer (a prune of an unknown-liveness record)
+// A log removed under the writer (a prune of an unknown-liveness record)
 // is recreated at its path rather than written into an unlinked file.
 func TestChatSeenReopensAfterRemoval(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())

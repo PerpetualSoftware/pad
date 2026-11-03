@@ -27,7 +27,7 @@ import { readFileSync } from 'node:fs';
 /**
  * REFUSAL IS NOT ABSENCE — the rule every surface in this family has now paid
  * for at least once, placed here so surfaces 4-7 meet it before they write
- * their first assertion (lead's ruling, BUG-3084 day 68).
+ * their first assertion (BUG-3084).
  *
  * Every rule in this file asks a REFUSAL question: is a fence present, is it
  * positioned before the commit, is there one per await, does it read the right
@@ -166,7 +166,7 @@ export function stripComments(src: string): string {
  * mis-delimits every block after it. This file's own test suite drives that
  * case directly rather than asserting in a comment that it cannot happen here
  * — the previous time that assertion was made in a comment, the matcher it
- * defended was broken (identity doc, day 1).
+ * defended was broken (identity doc).
  *
  * Comments must already be stripped; `stripComments` is the only supported
  * input. A `/` is therefore never a comment start here, and division vs regex
@@ -209,7 +209,7 @@ export function matchDelimiter(code: string, openIndex: number, open: string, cl
 			continue;
 		}
 		if (ch === "'" || ch === '"' || ch === '`') { quote = ch; continue; }
-		// REGEX LITERALS (codex round 3 [P2]). A `}` inside one — `const p = /}/;`
+		// REGEX LITERALS. A `}` inside one — `const p = /}/;`
 		// — otherwise closes the block early and every read after it vanishes,
 		// silently, with the block still counted. Comments are stripped before
 		// this runs, so a `/` here is either division or a regex start; the
@@ -348,7 +348,7 @@ function delimitDeclaration(code: string, openIndex: number, label: string): str
  * request actually reaches.
  */
 export function withoutCatchArms(block: string): string {
-	// FAILS CLOSED on any catch it cannot delimit (codex round 5 [P2]). The
+	// FAILS CLOSED on any catch it cannot delimit. The
 	// first version treated `}catch` — or a catch whose brace it could not find
 	// — as "there is no catch arm", so the success-path guard would go on to
 	// scan FAILURE code and could pass an unfenced success path. A guard that
@@ -389,7 +389,7 @@ export function withoutCatchArms(block: string): string {
  * contains an `untrack` somewhere. The first version of the effect-dependency
  * rule tested for `untrack(` anywhere in the effect, so
  * `const e = captureIdentity(); untrack(() => unrelatedWork());` passed with the
- * capture still tracked (codex round 1 [P2]).
+ * capture still tracked.
  *
  * This REPLACES a `syncBodyOnly()` helper that stripped every nested function
  * body on the premise that a read inside one is not tracked. That premise is
@@ -416,7 +416,7 @@ export function untrackedSpans(block: string): Array<[number, number]> {
 				'could not delimit an untrack(...) call — re-point this guard rather than widening it'
 			);
 		}
-		// THE CALLBACK BODY, not the whole call (codex round 2 [P2]).
+		// THE CALLBACK BODY, not the whole call.
 		// `untrack((captureIdentity(), () => {}))` evaluates that capture while
 		// building the argument — BEFORE untrack disables tracking — so the read
 		// is tracked and exempting the call's whole span hides it. A compiled
@@ -477,7 +477,7 @@ export function trackedEpochReads(block: string): string[] {
  * A disposition must be able to say WHICH reads it covers, not merely which
  * effect. Exempting a whole effect let the `searchTimeout = setTimeout` entry
  * skip the synchronous capture that WAS this unit's defect — removing its
- * `untrack` produced zero offenders (codex round 2 [P2]).
+ * `untrack` produced zero offenders.
  */
 export function trackedEpochReadDetails(
 	block: string
@@ -526,7 +526,7 @@ export function trackedEpochReadDetails(
  * line all come out right, and the core's own suite drives each of them —
  * with the legacy regex run on the same fixture as the control that goes red.
  *
- * WHAT A STATEMENT IS, here (codex round 1 on the hoist built four shapes
+ * WHAT A STATEMENT IS, here (four shapes
  * the first scanner got wrong, every one accepted by the compiler):
  *   - brackets are skipped with `matchDelimiter`, which already understands
  *     strings, template interpolations and REGEX LITERALS — a hand-rolled
@@ -547,7 +547,7 @@ export function trackedEpochReadDetails(
  *     recreated the very wrong-name bug the hoist exists to close.
  *
  *
- * Round 2 added three more: a type-ARGUMENT list on the initialiser
+ * Three more: a type-ARGUMENT list on the initialiser
  * (`$state<Record<string, number>>({}), hidden = …`) whose comma is not a
  * binding separator; a parenthesised initialiser `($state(1))`; and the
  * outer search finding a `let` INSIDE A TEMPLATE LITERAL and enumerating a
@@ -587,7 +587,7 @@ export function trackedEpochReadDetails(
  */
 /**
  * Index just past the string or template literal opening at `i`, or -1.
- * A template's `${…}` bodies are CODE, not text (codex round 4): they are
+ * A template's `${…}` bodies are CODE, not text: they are
  * walked for declarations rather than skipped with the literal around them.
  */
 function skipStringLiteral(code: string, i: number, out: string[]): number {
@@ -612,7 +612,7 @@ function skipRegexLiteral(code: string, i: number): number {
 	const prev = code.slice(0, i).replace(/\s+$/, '');
 	const last = prev.slice(-1);
 	// `=>` ends in `>`, which the character rule reads as a comparison; an
-	// arrow returning a regex is a regex (codex round 5).
+	// arrow returning a regex is a regex.
 	const isRegexStart = prev === '' || '(,=:[!&|?{};+-*%~^'.includes(last) || prev.endsWith('=>') ||
 		/\b(return|typeof|case|in|of|new|delete|void|instanceof)$/.test(prev);
 	if (!isRegexStart) return -1;
@@ -632,8 +632,7 @@ export function stateDeclarations(code: string): string[] {
 	const out: string[] = [];
 	const STATEMENT_START = /^[ \t]*(let|const|var|function|export|import|class|if|for|while|return|switch|try|\$effect|\$derived|\$inspect|onMount|onDestroy)\b/;
 
-	// ONE WALK over the code, literal-aware from the outside in (codex round 2
-	// on the hoist): a regex that searched for `let` found one INSIDE a template
+	// ONE WALK over the code, literal-aware from the outside in (a regex that searched for `let` found one INSIDE a template
 	// literal and enumerated a phantom declaration, so the search itself has to
 	// skip what the statement scanner skips.
 	let i = 0;
@@ -675,8 +674,8 @@ function closesAsTypeArguments(code: string, i: number): boolean {
 		else if (c === '>') {
 			depth--;
 			// Whitespace — a newline included — may sit between the `>` and its
-			// call paren, and newlines may sit inside the arguments (codex round
-			// 5); only a terminator or a paren before the match says "comparison".
+			// call paren, and newlines may sit inside the arguments;
+			// only a terminator or a paren before the match says "comparison".
 			if (depth === 0) return /^\s*\(/.test(code.slice(k + 1));
 		} else if (c === ';' || c === '(' || c === ')') return false;
 	}
@@ -721,12 +720,12 @@ function readLetStatement(code: string, from: number, out: string[], STATEMENT_S
 			if (c === '{' || c === '(' || c === '[') {
 				const close = matchDelimiter(code, i, c, c === '{' ? '}' : c === '(' ? ')' : ']');
 				if (close === -1) throw new Error(`could not delimit a bracket in the statement declaring \`${name}\` — re-point this guard rather than widening it`);
-				// DESCEND, do not merely skip (codex round 3): the regex this
+				// DESCEND, do not merely skip: the regex this
 				// replaces enumerated a `let` at ANY depth, so a factory-owned
 				// `let hidden = $state(1)` inside an initialiser's function body
 				// was in the population before and must stay in it. ONLY the
 				// initialiser's brackets: a type annotation's braces hold type
-				// members, and a member may be NAMED `let` (codex round 5).
+				// members, and a member may be NAMED `let`.
 				if (initAt !== -1) for (const nested of stateDeclarations(code.slice(i + 1, close))) out.push(nested);
 				i = close;
 				continue;
@@ -734,9 +733,8 @@ function readLetStatement(code: string, from: number, out: string[], STATEMENT_S
 			// ANGLE BRACKETS. In type position every `<` opens a type. After the
 			// initialiser starts, a `<` is a type-ARGUMENT list only if it
 			// closes with a `>` that is immediately followed by `(` — the call
-			// it parameterises (`$state<Record<string, number>>({})`, codex
-			// round 2) — otherwise it is a comparison, spaced or not (`1<2`,
-			// codex round 3), and is left alone.
+			// it parameterises (`$state<Record<string, number>>({})`) — otherwise it is a comparison,
+			// spaced or not (`1<2`), and is left alone.
 			if (c === '=' && code[i + 1] === '>') { i++; continue; }
 			if (c === '<' && (initAt === -1 || angle > 0)) { angle++; continue; }
 			if (c === '<' && closesAsTypeArguments(code, i)) { angle++; continue; }
@@ -745,7 +743,7 @@ function readLetStatement(code: string, from: number, out: string[], STATEMENT_S
 			if (angle > 0) continue;
 			if (c === ';') { endAt = i; break; }
 			// A closer the statement did not open belongs to the ENCLOSING block
-			// and ends the statement without a semicolon (codex round 4:
+			// and ends the statement without a semicolon (e.g.
 			// `function f() { let ordinary = 0 } let hidden = $state(1);`).
 			if (c === '}' || c === ')' || c === ']') { endAt = i; break; }
 			if (c === ',') { endAt = i; nextBinding = true; break; }
@@ -758,8 +756,7 @@ function readLetStatement(code: string, from: number, out: string[], STATEMENT_S
 			}
 		}
 		if (endAt === -1) endAt = code.length; // end of input terminates the last statement
-		// A parenthesised initialiser (`($state(1))`) is still that initialiser
-		// (codex round 2).
+		// A parenthesised initialiser (`($state(1))`) is still that initialiser.
 		const isState = initAt !== -1 && /^[\s(]*\$state\b/.test(code.slice(initAt, endAt));
 		if (isState && name === '(destructured)') throw new Error('a destructuring pattern backed by $state is not read by this guard — name the binding or teach the shape');
 		if (isState) out.push(name);
@@ -792,7 +789,7 @@ export function readFenceSource(url: URL): FenceSource {
 				out.set(m[1], delimitDeclaration(script, m.index, `${m[1]}()`));
 			}
 			// FAILS CLOSED when the tab-indented shape above stops describing the
-			// file (codex round 5 [P2]). The enumeration is what every population
+			// file. The enumeration is what every population
 			// assertion is built on, so a declaration it silently skips is a
 			// handler no rule applies to — and the skip is invisible, because a
 			// smaller map makes every "these are missing a fence" list SHORTER.
@@ -872,7 +869,7 @@ export function readFenceSource(url: URL): FenceSource {
 				}
 				// The INNER body of a BRACE-BODIED ARROW, and nothing else.
 				//
-				// FAILS CLOSED on every other form (codex round 1 [P2]). Taking
+				// FAILS CLOSED on every other form. Taking
 				// "the first `{` after the call" mis-delimits an expression-bodied
 				// arrow — `$effect(() => (captureIdentity(), setTimeout(() => {}, 200)))`
 				// returns the TIMER's empty body, so a rule reading it sees no
@@ -887,7 +884,7 @@ export function readFenceSource(url: URL): FenceSource {
 				// The argument must be a BARE `() => { … }`. A parameter default
 				// that is itself an arrow — `$effect((unused = () => {}) => …)` —
 				// otherwise lands the scanner on the default's body and returns
-				// an empty one, reporting no reads at all (codex round 2 [P2]).
+				// an empty one, reporting no reads at all.
 				if (
 					arrow === -1 ||
 					brace === -1 ||

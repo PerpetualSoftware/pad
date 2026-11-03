@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
  * handleGetChanges does. Every leg drives the REAL sync service and the REAL
  * server-clock module; only the network is modelled.
  *
- * The trade these legs pin is the lead's ruling: an early cursor re-delivers a
+ * The trade these legs pin is a deliberate choice: an early cursor re-delivers a
  * change the reader already has (a DUPLICATE, harmless), a late one skips it (a
  * MISS, never recovered). So every assertion below is of the form "delivered",
  * and a duplicate delivery is expected, not tolerated.

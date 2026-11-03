@@ -48,7 +48,7 @@ async function renderAs(slug: string, membership: Record<string, unknown>) {
 	// The General tab's workspace card has rendered once the name input is up.
 	await screen.findByDisplayValue('WS');
 	// And the membership this case set has landed, so an absence below is the
-	// gate's answer and not the page's default (codex r1).
+	// gate's answer and not the page's default.
 	await waitFor(() => {
 		expect(workspaceStore.membershipKnown).toBe(true);
 		expect(workspaceStore.currentRole).toBe(membership.role);

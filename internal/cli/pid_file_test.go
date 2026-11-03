@@ -151,7 +151,7 @@ func TestProcessIsGone_LiveAndDead(t *testing.T) {
 	}
 }
 
-// TestPIDFileOwner_ReportsTheRecordItVerified is codex round 1's first race,
+// TestPIDFileOwner_ReportsTheRecordItVerified guards a race,
 // as a property rather than a timing test: the record the ownership check
 // hands back must be the one it read from the descriptor it probed, so a
 // caller cannot signal a pid whose ownership was never established.
@@ -201,7 +201,7 @@ func TestPIDFileOwner_HeldButUnreadableIsUnprovable(t *testing.T) {
 // TestPIDFileOwner_RemovesTheStaleFileItself pins where cleanup happens. It has
 // to be inside the ownership check, while the lock is held: a caller that
 // removed the file afterwards would race a replacement server's claim and
-// delete ITS record (codex round 2). Asserting the file is gone when the check
+// delete ITS record. Asserting the file is gone when the check
 // returns is how that placement stays put.
 func TestPIDFileOwner_RemovesTheStaleFileItself(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pad.pid")
@@ -221,7 +221,7 @@ func TestPIDFileOwner_RemovesTheStaleFileItself(t *testing.T) {
 // TestPIDFileOwner_LegacyBarePIDIsUnprovableAndKept is BUG-2970. A bare-pid
 // file was written by a build that predates the lock (BUG-2969), so the free
 // lock on it proves nothing: its server never took one, and may be answering
-// right now. That is what happened on the day-19 refresh, where the probe
+// right now. That is what happened on a refresh, where the probe
 // deleted the record of a live pre-fix server on its way to refusing.
 //
 // Two assertions, because each catches a different wrong answer: the verdict
@@ -252,7 +252,7 @@ func TestPIDFileOwner_LegacyBarePIDIsUnprovableAndKept(t *testing.T) {
 	release()
 }
 
-// TestClaimPIDFile_RetriesPastABriefProbe covers the interaction the round-2
+// TestClaimPIDFile_RetriesPastABriefProbe covers the interaction an earlier
 // fix created: `stop`'s ownership probe holds the lock for an instant, and a
 // server claiming in that instant must not lose its claim for the rest of its
 // life. The probe here is a real held lock released while the claim is trying.
@@ -298,7 +298,7 @@ func deadPID(t *testing.T) int {
 }
 
 // TestPIDFileOwner_LegacyBarePIDNamingADeadProcessIsStale is the way out of
-// BUG-2970's kept state (lead review, day 79): a legacy record whose pid has no
+// BUG-2970's kept state: a legacy record whose pid has no
 // process behind it cannot be anyone's server, so it is stale by the same
 // proof as an unheld fingerprinted record, and is removed under the lock.
 // Without this a dead legacy file would be kept forever and every stop would
@@ -340,7 +340,7 @@ func TestStopServer_LegacyPIDFileNamingADeadProcessSaysNotRunning(t *testing.T) 
 	}
 }
 
-// TestClaimPIDFile_OverwritesAKeptLegacyRecord is the START half of the lead's
+// TestClaimPIDFile_OverwritesAKeptLegacyRecord is the START half of the
 // question: a legacy file kept as unprovable must not block a new server.
 // `pad server start` never reads the file (EnsureServer probes the port), and
 // the new server's claim takes it over: no lock was ever held on a legacy file,

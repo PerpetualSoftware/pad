@@ -10,7 +10,7 @@ import type { SuiteFixture } from './fixtures';
  *
  * - Roles board: a cross-lane drop writes `agent_role_id`, and when the item
  *   had no assignee, ALSO `assigned_user_id` = the current user.
- * - ChildItems: a drop writes only `sort_order` (never status) — a stray
+ * - ChildItems: a drop writes only `sort_order`  (never status) — a stray
  *   reorder of the parent's children.
  *
  * Built on #1461's lessons: every fixture is scratch (own collection, own
@@ -124,7 +124,7 @@ async function rolesDrag(
 	await browserLogin(page);
 	const stamp = Date.now();
 	// Each scratch resource registers its cleanup the moment it exists, so a
-	// failure partway through setup leaks nothing (codex round 1).
+	// failure partway through setup leaks nothing.
 	const coll = await scratchCollection(fixture, request);
 	cleanups.push(() => deleteCollection(fixture, request, coll.slug));
 	// Lanes sort by NAME, so the stamp goes first: the pair sorts together and

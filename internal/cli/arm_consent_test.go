@@ -117,8 +117,8 @@ func TestResolveAutoArmFromDisk_ReadsBothSources(t *testing.T) {
 	}
 }
 
-// TestResolveAutoArmFromDisk_UnreadableConfigFailsClosed is the Codex R1
-// HIGH-1 regression: a repo that opted into auto_arm must NOT arm when the
+// TestResolveAutoArmFromDisk_UnreadableConfigFailsClosed is the
+// regression: a repo that opted into auto_arm must NOT arm when the
 // per-user config.toml exists but can't be parsed — a veto we can't read
 // must be assumed present (fail closed), and the decision must say why.
 func TestResolveAutoArmFromDisk_UnreadableConfigFailsClosed(t *testing.T) {

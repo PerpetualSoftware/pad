@@ -7,7 +7,7 @@ import type { Activity, Comment, TimelineEntry, Version } from '$lib/types';
 
 /**
  * SPEC-6 U9c (TASK-3413). A write made through an installed app keeps its
- * author; the app is a quiet "via <App>" label beside it (Dave §11 Q4), and
+ * author; the app is a quiet "via <App>" label beside it, and
  * history never merges a person's own edit with their edit through an app.
  */
 function comment(overrides: Partial<Comment> = {}): Comment {

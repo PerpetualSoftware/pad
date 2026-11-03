@@ -54,7 +54,7 @@ import (
 //
 // Exported so the cmd/pad item commands can funnel their create / list / move
 // calls through this ONE implementation instead of each re-deriving the
-// send-raw-then-retry dance (BUG-2630 lead ruling: one shared helper, not
+// send-raw-then-retry dance (BUG-2630 : one shared helper, not
 // copied at the call sites).
 func WithCollectionAliasFallback[T any](rawSlug string, notFoundIsAuthoritative func() bool, op func(slug string) (T, error)) (T, error) {
 	result, err := op(rawSlug)

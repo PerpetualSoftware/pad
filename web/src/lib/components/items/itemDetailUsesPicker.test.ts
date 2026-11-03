@@ -42,7 +42,7 @@ describe('ItemDetail consumes ItemPicker', () => {
 	});
 
 	it('keeps the Relationships tab on the SERVER search', () => {
-		// Lead ruling on PR #1241. `/search`'s FTS indexes item BODY CONTENT;
+		// PR #1241: `/search`'s FTS indexes item BODY CONTENT;
 		// `localIndex` strips `content` by design, so the warm path can never
 		// answer "the item that mentioned that phrase". Dropping `source` here
 		// would silently take that away from this caller — the regression is

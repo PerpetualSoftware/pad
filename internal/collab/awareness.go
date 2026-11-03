@@ -30,13 +30,13 @@ import (
 // a newer clock comes from the client itself. When it arrives on another
 // connection, the client has reconnected while its old connection is still
 // closing, and ownership moves with it. Without that, the old connection's
-// close would remove a client that is live on the new one (codex r1). The
+// close would remove a client that is live on the new one. The
 // provider advances its clock on every (re)connect, so this always applies.
 //
 // Accepted, not defended: a connection can claim another client's ID first
 // and, on closing, remove that caret from peers' views until its owner's next
 // heartbeat. Awareness is cosmetic and never document state, so this is not
-// an integrity or confidentiality question (lead ruling, no auth work).
+// an integrity or confidentiality question (no auth work).
 
 // maxOwnedPerConn bounds the IDs one connection can own. A real tab owns one
 // (its Y.Doc's client ID); the cap only stops a misbehaving client growing
@@ -55,13 +55,12 @@ var errAwarenessFrame = errors.New("malformed awareness frame")
 
 // maxSafeInteger is the largest integer y-protocols can write: client IDs and
 // clocks are JavaScript numbers. A larger value is not a real client's, and a
-// clock at the top of uint64 would wrap the removal's clock + 1 to 0 (codex r1).
+// clock at the top of uint64 would wrap the removal's clock + 1 to 0.
 const maxSafeInteger = 1<<53 - 1
 
 // readVarUint reads a lib0 variable-length unsigned integer (7 bits per byte,
 // high bit = more). At most 8 bytes (56 bits): y-protocols writes nothing above
-// 2^53, and a longer encoding could carry bits a uint64 would silently drop
-// (codex r4).
+// 2^53, and a longer encoding could carry bits a uint64 would silently drop.
 func readVarUint(b []byte, i int) (uint64, int, error) {
 	var v uint64
 	for shift := uint(0); shift < 56; shift += 7 {
@@ -180,7 +179,7 @@ func (t *awarenessTracker) observe(connID uint64, frame []byte) {
 		mine := t.owned[connID]
 		if _, held := mine[e.clientID]; !held && len(mine) >= maxOwnedPerConn {
 			// At the cap: take nothing, and so move nothing away from its
-			// current owner, whose close must still remove it (codex r5).
+			// current owner, whose close must still remove it.
 			continue
 		}
 		if o, ok := t.owner[e.clientID]; ok && o != connID {

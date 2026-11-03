@@ -70,7 +70,7 @@ function rowHeight(page: Page, title: string) {
 }
 
 // The list's current vertical scroller. Table view scrolls in the table itself,
-// pane or no pane (BUG-3164); otherwise `.list-column` with the pane open and
+// pane or no pane  (BUG-3164); otherwise `.list-column` with the pane open and
 // `.main-content` without it.
 // The selectors are tried in order inside each page.evaluate.
 const SCROLLERS = [
@@ -90,7 +90,7 @@ function topRow(page: Page) {
 	}, [ROW_SEL, TITLE_SEL, SCROLLERS] as const);
 }
 
-/** Scroll the page to 600 and pick a row showing mid-screen (clicking it needs no auto-scroll). */
+/** Scroll the page to 600 and pick a row showing mid-screen  (clicking it needs no auto-scroll). */
 async function scrollAndPick(page: Page) {
 	await page.evaluate(
 		(scrollers) => scrollers.map((sel) => document.querySelector<HTMLElement>(sel)).find(Boolean)!.scrollTo({ top: 600 }),
@@ -155,7 +155,7 @@ test.describe('BUG-3165: the list keeps its position across the split pane', () 
 		// Long titles wrap onto more lines in the narrower column than at full
 		// width, so every row above the clicked one grows: holding the TOP row in
 		// place would push the clicked row down by that growth. 250 characters
-		// (titles cap at 255), so the line count differs whatever the font's
+		//  (titles cap at 255), so the line count differs whatever the font's
 		// glyph width: a ~130 character title wrapped to two lines in BOTH
 		// layouts on CI's fonts.
 		const { coll } = await setup(page, fixture, request, 'list', (i) =>

@@ -607,7 +607,7 @@
 		if (!target || tokenDeleting) return;
 		tokenDeleting = true;
 		tokenDeleteError = '';
-		// IDENTITY fence (BUG-3105, codex r1): an answer that lands after a
+		// IDENTITY fence (BUG-3105): an answer that lands after a
 		// sign-in change must not edit the next identity's token list.
 		const isSameIdentity = authStore.identityFence();
 		try {

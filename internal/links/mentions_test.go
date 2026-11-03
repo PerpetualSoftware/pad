@@ -111,7 +111,7 @@ func assertMentionsLinear(t *testing.T, n int, body func(int) string, regression
 }
 
 // ExtractMentions stays linear in the body: a backward scan per "@" made
-// "/@a" repeated quadratic (TASK-3917 r3 F1; 240 KB took ~10 s).
+// "/@a" repeated quadratic (TASK-3917, 240 KB took ~10 s).
 func TestExtractMentionsLinearOnSlashRuns(t *testing.T) {
 	assertMentionsLinear(t, 40000, func(n int) string {
 		return strings.Repeat("/@a", n)
@@ -120,7 +120,7 @@ func TestExtractMentionsLinearOnSlashRuns(t *testing.T) {
 
 // The code-range check walks the spans once per call, not once per match: a
 // body of many inline code spans followed by many mentions was quadratic
-// (TASK-3917 r4; 360 KB took ~1.1 s, so a 2 MiB comment body ~40 s).
+// (TASK-3917, 360 KB took ~1.1 s, so a 2 MiB comment body ~40 s).
 func TestExtractMentionsLinearAfterCodeSpans(t *testing.T) {
 	assertMentionsLinear(t, 40000, func(n int) string {
 		return strings.Repeat("`a` ", n) + strings.Repeat("@aaa ", n)

@@ -30,7 +30,7 @@ import (
 // later took `conventions`), so the guess can land a library entry in a
 // collection that has nothing to do with it. An error is propagated instead;
 // the fallback applies ONLY when the lookup SUCCEEDED and simply found no
-// declaring collection, which is the genuine pre-backfill case. Codex round 5.
+// declaring collection, which is the genuine pre-backfill case.
 func libraryTargetSlug(client *cli.Client, ws, kind, fallback string) (string, error) {
 	colls, err := client.ListCollections(ws)
 	if err != nil {
@@ -564,14 +564,14 @@ Read-only. Take the update with "pad library update <ref>".`,
 			}
 			if st.Library != nil && st.Current == nil {
 				// A server that does not send it: read the item itself, for
-				// the JSON shape too (codex r1). status is never part of it.
+				// the JSON shape too. status is never part of it.
 				item, err := client.GetItem(ws, ref)
 				if err != nil {
 					return err
 				}
 				// The same version the state describes, or nothing: a newer
 				// item mixed into an older state would show text the seq does
-				// not guard (codex r2).
+				// not guard.
 				if item.Seq != st.Seq {
 					return fmt.Errorf("%s changed while it was being read; run this again", ref)
 				}
@@ -676,7 +676,7 @@ in between, it is refused rather than applied over the change.`,
 					switch apiErr.Code {
 					case "content_pending_flush":
 						// The shared rendering names set-aside rows apart from an
-						// open editor's (codex r1).
+						// open editor's.
 						cli.WriteContentPendingFlushError(os.Stderr, apiErr)
 						return fmt.Errorf("%s was not updated: it holds edits that are not in its stored text (see above); --overwrite-pending-edits replaces them, and they are not kept", ref)
 					case "update_conflict":
@@ -687,11 +687,11 @@ in between, it is refused rather than applied over the change.`,
 				}
 				return err
 			}
-			// The write's own warnings, as on any content write (codex r1).
+			// The write's own warnings, as on any content write.
 			warnContentPendingFlush(item)
 			warnPrunedPendingEdits(item)
 			// An origin survives a move, so the item's collection may not
-			// declare the settings the library writes (codex r5).
+			// declare the settings the library writes.
 			warnUndeclaredFields(item)
 			if formatFlag == "json" {
 				return cli.PrintJSON(item)

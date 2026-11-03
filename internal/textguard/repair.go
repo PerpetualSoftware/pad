@@ -7,7 +7,7 @@ import "strings"
 // shared: four layers that agree about what is REFUSED but disagree about what
 // a repair PRODUCES is this bug family arriving one step later.
 //
-// DOC-2823 S3, on Dave's day-54 ruling: the replacement character is U+FFFD.
+// DOC-2823 S3, the replacement character is U+FFFD.
 // Visible, greppable, and — because the JSON arm emits it as an escape — the
 // same six characters wide as the escape it replaces.
 //

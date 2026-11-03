@@ -215,8 +215,8 @@ export function withoutScopeTokens(raw: string): string {
 // parens, brackets, etc., so `TASK-5` → ['task', '5'], `foo,bar` →
 // ['foo', 'bar'], `Item (Done)` → ['item', 'done']. Underscore counts
 // as a splitter too so snake_case field keys index as separate tokens.
-// Codex review round 1 (TASK-1363) caught that the original narrow
-// split missed `foo:bar` / `foo,bar` / `foo(bar)` cases.
+// The original narrow
+// split missed `foo:bar` / `foo,bar` / `foo(bar)` cases (TASK-1363).
 
 const TOKENIZE_RE = /[^\p{L}\p{N}]+/u;
 
@@ -383,8 +383,8 @@ const indexes = new Map<string, MiniSearch<IndexedDoc>>();
 // `localIndex.upsert` would update the canonical row list but the
 // search filter Set would go stale and a freshly-matching item could
 // stay hidden, or an edited item that no longer matches could stay
-// visible until the user retyped the query (Codex round 3 P2 of
-// TASK-1364). Reactive `SvelteMap` so per-workspace reads are tracked.
+// visible until the user retyped the query (TASK-1364).
+// Reactive `SvelteMap` so per-workspace reads are tracked.
 const epochs = new SvelteMap<string, number>();
 
 function bumpEpoch(ws: string): void {
@@ -539,7 +539,7 @@ export const localSearch = {
 	 * `rebuild` / `upsert` / `remove`. Consumers should READ this inside
 	 * a `$effect` so their derived state (e.g. a `searchResultIds` Set
 	 * that intersects local items with a query) re-runs whenever the
-	 * underlying index changes — Codex round 3 P2 of TASK-1364.
+	 * underlying index changes (TASK-1364).
 	 */
 	epoch(ws: string): number {
 		return epochs.get(ws) ?? 0;
@@ -577,8 +577,8 @@ export const localSearch = {
 		// shouldn't return everything matching anywhere; require the
 		// prefix (TASK-5) OR explicit #5 / item:5 syntax". We accept all
 		// three: TASK-5, #5/item:5, and bare digits — bare digits get
-		// treated as #N for typing-speed (Codex round 2 of TASK-1367
-		// caught that the prior `!parsed.text` guard suppressed the
+		// treated as #N for typing-speed (TASK-1367:
+		// the prior `!parsed.text` guard suppressed the
 		// bare-digit branch because `parseSearchQuery("5")` leaves
 		// "5" in `parsed.text`). The result is a single doc (or empty)
 		// which we still post-filter by collection / archived so the
@@ -606,8 +606,7 @@ export const localSearch = {
 		const overfetch = limit * 4;
 		// Pass the residual text (post-prefix-strip) to MiniSearch. If
 		// the user typed nothing but prefixes (`coll:tasks` with no
-		// query, `is:archived` with no query) return empty — Codex
-		// round 1 of TASK-1367 caught that the prior `parsed.text ||
+		// query, `is:archived` with no query) return empty (TASK-1367). The prior `parsed.text ||
 		// query` fallback searched the literal `is`/`archived` /
 		// `coll`/`tasks` tokens, which surfaced unrelated rows.
 		const searchText = parsed.text;

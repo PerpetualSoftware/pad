@@ -246,8 +246,7 @@ describe('workspaceStore: repeat resolution of an already-answered workspace', (
 		// Logout is an SPA navigation (`authStore.clear()` + `goto('/login')`), so
 		// this module — and the cache in it — outlives a sign-out. Keyed by slug
 		// alone, the next user to open the same workspace would be handed the
-		// previous user's grants until their own /me settled. Found by codex
-		// round 3 on the first version of this fix, which was keyed by slug.
+		// previous user's grants until their own /me settled. The first version of this fix was keyed by slug.
 		const { workspaceStore } = await import('./workspace.svelte');
 		api.workspaces.get.mockResolvedValue(WS);
 
@@ -275,7 +274,7 @@ describe('workspaceStore: repeat resolution of an already-answered workspace', (
 		// stops a later user reading an earlier answer, but a request already in
 		// flight when the user changes would still publish its answer and record
 		// it under the NEW user's key. Two fences, two races — a sign-in does not
-		// advance membershipSeq (codex round 4).
+		// advance membershipSeq.
 		const { workspaceStore } = await import('./workspace.svelte');
 		api.workspaces.get.mockResolvedValue(WS);
 
@@ -310,7 +309,7 @@ describe('workspaceStore: repeat resolution of an already-answered workspace', (
 		// on the SETTLE is what has to notice the change — and noticing is not
 		// enough: dropping the late answer silently would leave the replayed
 		// owner read on screen for the previous user. An identity mismatch
-		// therefore clears to unknown rather than returning (codex round 5).
+		// therefore clears to unknown rather than returning.
 		const { workspaceStore } = await import('./workspace.svelte');
 		api.workspaces.get.mockResolvedValue(WS);
 
@@ -349,8 +348,7 @@ describe('workspaceStore: repeat resolution of an already-answered workspace', (
 	it('does not cache a create issued by one user under the next user', async () => {
 		// `create` captures identity BEFORE its POST. Capturing after would key
 		// the first user's membership by the SECOND user's id — the exact leak
-		// the key exists to close, reintroduced through the other door (codex
-		// round 5).
+		// the key exists to close, reintroduced through the other door.
 		const { workspaceStore } = await import('./workspace.svelte');
 		api.workspaces.get.mockResolvedValue(OTHER);
 

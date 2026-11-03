@@ -54,7 +54,7 @@
 	}
 
 	// AT MOST ONE refetch per completed action (TASK-3923 r4). Three paths want
-	// one: a stale response accepted (r3), an action that completed without
+	// one: a stale response accepted, an action that completed without
 	// settling the current rows (H-F2), and a settle that emptied the rows while
 	// a cursor remains (H-F1). They all go through here; `refetchedFor` records
 	// the actionsDone a refetch was issued for, so whichever fires first wins.

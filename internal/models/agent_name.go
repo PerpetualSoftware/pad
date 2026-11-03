@@ -7,7 +7,7 @@ import (
 
 // NormalizeAgentName is the one stored form of a self-declared agent name,
 // shared by write attribution, presence (TASK-4040), chat key validation
-// (TASK-4039 r3) and the client-side chat target guard (TASK-4186 PR C):
+// (TASK-4039) and the client-side chat target guard (TASK-4186 PR C):
 // trimmed, control characters removed, at most MaxAgentNameRunes runes. It
 // does not fold case.
 func NormalizeAgentName(raw string) string {

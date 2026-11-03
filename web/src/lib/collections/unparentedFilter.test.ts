@@ -76,7 +76,7 @@ describe('unparentedConfirmedRestricted', () => {
 		expect(unparentedConfirmedRestricted(true, false)).toBe(true);
 	});
 
-	// Codex review round 3, P1: mere "unavailable" (metadata unknown/pending)
+	// Mere "unavailable" (metadata unknown/pending)
 	// must NOT be treated as confirmed restriction — that would destroy a
 	// legitimate intent that loaded mid-resync, moments before the resync
 	// confirms the caller unrestricted.
@@ -171,7 +171,7 @@ describe('URL round-trip', () => {
 		expect(params.has(UNPARENTED_FILTER_FIELD)).toBe(false);
 	});
 
-	// Collision guard (Codex review round 1): a real field literally named
+	// Collision guard: a real field literally named
 	// `unparented` (no `$`) round-trips through the plain `unparented`
 	// query param independently — untouched by the reserved-param helpers.
 	it('does not read/write the plain "unparented" param (real-field collision guard)', () => {

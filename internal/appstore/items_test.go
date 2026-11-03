@@ -423,7 +423,7 @@ func contains(list []string, v string) bool {
 	return false
 }
 
-// A hidden item must not change what an app link resolves to (codex round 1):
+// A hidden item must not change what an app link resolves to:
 // with the unrestricted resolver, a private item sharing a companion's title
 // could win the match and leave the link broken, which told the app it
 // existed.
@@ -451,7 +451,7 @@ func TestAppLinks_HiddenItemsDoNotInfluenceResolution(t *testing.T) {
 }
 
 // Schema defaults are applied after the key checks, so they must not carry a
-// forbidden value onto an app item (codex round 1).
+// forbidden value onto an app item.
 func TestAppCreateItem_DefaultsCannotBypassTheRules(t *testing.T) {
 	f := newAppFixture(t, Options{})
 	ctx := context.Background()
@@ -506,7 +506,7 @@ func TestAppCreateItem_DefaultsCannotBypassTheRules(t *testing.T) {
 }
 
 // Without a usable server key there are no etags to issue or check: a
-// forgeable token is worse than none (codex round 1).
+// forgeable token is worse than none.
 func TestAppUpdateItem_RefusesWithoutAnETagKey(t *testing.T) {
 	f := newAppFixture(t, Options{})
 	ctx := context.Background()

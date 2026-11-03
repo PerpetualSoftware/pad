@@ -113,7 +113,7 @@ export const openChildrenDialog = {
 
 // This dialog is mounted in the ROOT layout, outside the workspace subtree the
 // identity remount covers, and it holds two things that must not cross an
-// identity change (BUG-3005, codex round 3):
+// identity change (BUG-3005):
 //
 //   - `details`, the FETCHED child list from the 409 — B would read A's child
 //     titles and statuses out of an open dialog;

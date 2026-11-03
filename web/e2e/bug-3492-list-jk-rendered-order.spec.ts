@@ -11,14 +11,14 @@ import type { SuiteFixture } from './fixtures';
  * list renders in its sort mode's order (default manual: stored sort_order, then
  * created_at). After an edit to an older item the two disagree, and j landed on
  * the edited item instead of the row below. Found under 6-worker e2e load
- * (BUG-3492's trace), where another worker's edit put an old item next to the
+ *  (BUG-3492's trace), where another worker's edit put an old item next to the
  * cursor in updated order.
  *
  * Own collection, so no other spec's rows move this list. Timestamps are
  * one-second resolution, so writes are spaced by a second:
- *   create old (t0), b (t1), c (t2); edit old (t3); create d (t4)
- *   on screen (newest create on top, BUG-4005):  d, c, b, old
- *   updated DESC (old order):                    d, old, c, b
+ *   create old  (t0), b  (t1), c  (t2); edit old  (t3); create d  (t4)
+ *   on screen  (newest create on top, BUG-4005):  d, c, b, old
+ *   updated DESC  (old order):                    d, old, c, b
  * From no focus j lands on d; the next j must land on c, not old.
  */
 
@@ -80,9 +80,9 @@ test.describe('list j/k follow the rows on screen (BUG-3492)', () => {
 			await page.setViewportSize(DESKTOP);
 			await browserLogin(page);
 			await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/${coll}?view=list`);
-			// A parentless create lands on top of its collection (BUG-4005),
+			// A parentless create lands on top of its collection  (BUG-4005),
 			// so manual order shows newest first. The page holds updated DESC
-			// (d, old, c, b), so from `d` the edit order says `old` and the
+			//  (d, old, c, b), so from `d` the edit order says `old` and the
 			// screen says `c`.
 			await expect.poll(() => screenTitles(page)).toEqual(['d', 'c', 'b', 'old']);
 
@@ -97,8 +97,7 @@ test.describe('list j/k follow the rows on screen (BUG-3492)', () => {
 			await expect.poll(() => focusedTitle(page)).toBe('c');
 
 			// Every group collapsed: nothing is on screen, so j focuses nothing.
-			// An empty rendered order must not fall back to the unrendered list
-			// (codex r1).
+			// An empty rendered order must not fall back to the unrendered list.
 			await page.keyboard.press('Escape');
 			await expect.poll(() => focusedTitle(page)).toBeNull();
 			for (const h of await page.locator('.group-header').all()) await h.click();

@@ -40,8 +40,8 @@ export interface RefusedRawDraft {
 	baseSeq?: number;
 	baseBody?: string;
 	/**
-	 * The server may hold text the base lacks (BUG-3850, lead rulings baa63dc3
-	 * and a6380212): a remote update or this tab's own send came after it, or
+	 * The server may hold text the base lacks (BUG-3850): a
+	 * remote update or this tab's own send came after it, or
 	 * there was no confirmed snapshot. Restore never patches from it; it shows
 	 * the conflict notice instead.
 	 */
@@ -277,7 +277,7 @@ export function refusedRawDraftOffer(
  * equal to the stored body is cleared silently from its slot ('clear'). A
  * pending draft is moved to the held slot before it is shown, unless
  * `keeperOwns` says it is the text this tab's live crash keeper is tracking:
- * the keeper is authoritative for its own in-session draft (lead ruling 1), so
+ * the keeper is authoritative for its own in-session draft, so
  * that one stays pending. When the held write fails (storage full or blocked)
  * the draft is shown from pending, as before the held slot existed.
  */

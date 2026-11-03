@@ -18,7 +18,7 @@ type WorkspaceExport struct {
 	// pending reminder, and "silently" is the part that matters: nothing in
 	// the destination would show that anything was dropped.
 	Reminders []ReminderExport `json:"reminders,omitempty"`
-	// Verifications round-trip too (TASK-3617 r4). They are user-written
+	// Verifications round-trip too (TASK-3617). They are user-written
 	// evidence (a verdict, its evidence, the revisions it was about) that
 	// nothing can rebuild, unlike typed decisions, which a provider
 	// regenerates. Without them a SQLite->Postgres migration drops every one.

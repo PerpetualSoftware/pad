@@ -32,7 +32,7 @@ export interface Episode {
 	itemTitle?: string;
 	itemSlug?: string;
 	collectionSlug?: string;
-	/** Display label for the actor ("Dave", an agent's stamped name, or "agent"). */
+	/** Display label for the actor ("Alice", an agent's stamped name, or "agent"). */
 	actorLabel: string;
 	/** "agent" | "user" — drives the row's border treatment like the audit view. */
 	actorKind: string;

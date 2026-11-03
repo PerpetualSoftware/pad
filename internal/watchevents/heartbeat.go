@@ -59,8 +59,8 @@ import (
 //     incident by drifting its own heartbeats apart.
 //   - "Replacement attempted, not guaranteed" in whatever the operator reads.
 const (
-	// DefaultWatchHeartbeatInterval is T. Dave's day-49 ruling for the
-	// activity bus, applied here for the same reason: it makes silence
+	// DefaultWatchHeartbeatInterval is T, the same as the
+	// activity bus, for the same reason: it makes silence
 	// diagnostic without asking anyone to guess a deployment's publish rate.
 	DefaultWatchHeartbeatInterval = 30 * time.Second
 
@@ -260,7 +260,7 @@ func (b *RedisBus) publishHeartbeats() {
 		// lastProbeOK stays where it was, so the detector stops treating this
 		// instance's silence as evidence. A failure to PROBE is not a finding
 		// about the peer.
-		// "NOT CONFIRMED", NOT "NOT DELIVERED" (codex round 9). A publish that
+		// "NOT CONFIRMED", NOT "NOT DELIVERED". A publish that
 		// returns an error may still have been accepted — the reply can be
 		// what was lost — so the honest claim is about our knowledge, not
 		// about Redis. It does not change the response either way: an
@@ -299,8 +299,8 @@ func (b *RedisBus) publishHeartbeats() {
 func (b *RedisBus) cycleIfIdle() {
 	b.mu.Lock()
 	// NO SUBSCRIPTION AT ALL: a previous pass dropped coverage and its
-	// resubscribe failed. THE RE-DIAL IS ALL THAT IS OWED HERE (codex round
-	// 5). Falling through would re-run the whole cycle, and the cycle's
+	// resubscribe failed. THE RE-DIAL IS ALL THAT IS OWED HERE. Falling through
+	// would re-run the whole cycle, and the cycle's
 	// precondition stays true for the entire outage — the probe fails so
 	// nothing stamps lastProbeOK, nothing arrives so nothing stamps lastSeen,
 	// and both are frozen either side of the threshold. Coverage would be
@@ -344,14 +344,14 @@ func (b *RedisBus) cycleIfIdle() {
 		b.beforeDropHook()
 	}
 
-	// RE-VALIDATED IMMEDIATELY BEFORE THE DROP (codex round 1). The decision
+	// RE-VALIDATED IMMEDIATELY BEFORE THE DROP. The decision
 	// above was taken under a lock this function then released, and a heartbeat
 	// or notification can arrive in that window — at which point the
 	// subscription is demonstrably alive and dropping it would resync every
 	// client on the instance for nothing. False positives are the property this
-	// design cares about most, and BUG-2738 had to learn the same thing at its
-	// round 11: "idle when we looked" is not "idle now".
-	// RE-VALIDATED AND DROPPED UNDER ONE LOCK (codex round 2). Checking and
+	// design cares about most, and BUG-2738 had to learn the same thing:
+	// "idle when we looked" is not "idle now".
+	// RE-VALIDATED AND DROPPED UNDER ONE LOCK. Checking and
 	// then dropping in two acquisitions leaves an interval in which a frame can
 	// arrive and be discarded by a drop already decided on — which is the same
 	// class of defect as the stale decision this re-check exists to fix, one
@@ -361,8 +361,8 @@ func (b *RedisBus) cycleIfIdle() {
 		return
 	}
 
-	// LOGGED AFTER THE DECISION IS FINAL, not before it (codex round 9).
-	// internal/events learned this at its own round 6 and the reason did not
+	// LOGGED AFTER THE DECISION IS FINAL, not before it.
+	// internal/events learned this earlier and the reason did not
 	// come across with the port: the revalidation above can abandon the cycle,
 	// and a warning emitted ahead of it describes coverage ending and resumes
 	// answering sync_required for a subscription that was then left alone.
@@ -400,7 +400,7 @@ func (b *RedisBus) cycleIfIdle() {
 	b.mu.Unlock()
 
 	if err := b.resubscribe(); err != nil {
-		// NOT "until restarted" — that was wrong (codex round 2). No generation
+		// NOT "until restarted" — that was wrong. No generation
 		// is current after the teardown above, so the next idle tick finds the
 		// instance idle and tries again. It is degraded until one succeeds, and
 		// every attempt is reported, which is the honest claim.
@@ -437,8 +437,8 @@ func (b *RedisBus) resubscribe() error {
 	// A TEST SEAM AT THE DIAL/INSTALL BOUNDARY. The window the install guard
 	// below closes opens here: the connection exists and the lock has not been
 	// taken. A test cannot open it from outside — starting two goroutines only
-	// makes overlap likely, and one can finish before the other begins (codex
-	// round 8) — so this is where a barrier has to go for the guard to be
+	// makes overlap likely, and one can finish before the other begins — so
+	// this is where a barrier has to go for the guard to be
 	// exercised rather than assumed. nil in production.
 	if b.beforeInstallLock != nil {
 		b.beforeInstallLock()
@@ -451,7 +451,7 @@ func (b *RedisBus) resubscribe() error {
 		_ = pubsub.Close()
 		return errors.New("bus closed during resubscribe")
 	}
-	// SOMEONE ELSE GOT THERE FIRST (codex round 6). Both callers dial with the
+	// SOMEONE ELSE GOT THERE FIRST. Both callers dial with the
 	// lock released — deliberately, since a Redis round trip under the bus's
 	// hot mutex would stall every fan-out on the instance — so two passes can
 	// each find no subscription and each dial one. Installing both would leave
@@ -537,7 +537,7 @@ func (b *RedisBus) dropCoverageIfStillIdle(decidedGen int64) bool {
 		b.mu.Unlock()
 		return false
 	}
-	// RETIRED IN THE SAME CRITICAL SECTION AS THE RESET (codex round 3).
+	// RETIRED IN THE SAME CRITICAL SECTION AS THE RESET.
 	// Retiring it afterwards left a window between the fresh buffer and the
 	// generation bump in which a straggler from the old subscription still
 	// passed every fence and landed in the buffer we had just emptied — which

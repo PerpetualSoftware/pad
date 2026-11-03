@@ -22,7 +22,7 @@ type neverCase struct {
 var neverSteps = []int64{1, 2, 5, 50, 1000, 0} // 0 is the default
 
 // TestNeverAPartialAnswer is the instrument for the "CapStall, never a partial
-// answer" contract (TASK-4100 r3 D4). Rounds r1 to r3 each found a partial
+// answer" contract (TASK-4100). Earlier cases each exposed a partial
 // answer or a starved stream by hand; this enumerates them. Every case runs
 // NextAfter and Between under every MaxSteps, with no RDATE, an RDATE before the
 // query point, one after it, and one that coincides with a rule occurrence; with
@@ -43,13 +43,13 @@ func TestNeverAPartialAnswer(t *testing.T) {
 
 	t.Run("named", func(t *testing.T) {
 		for _, tc := range []neverCase{
-			// M1 (r3): MaxSteps=1 once dropped 03-01 from Between with no error.
+			// M1: MaxSteps=1 once dropped 03-01 from Between with no error.
 			{name: "M1 monthly utc", spec: pinned(t, "UTC", "2096-01-20T00:00", "FREQ=MONTHLY;BYMONTH=1,3;BYMONTHDAY=1,25"), win: 45 * day, offs: []time.Duration{0}},
 			{name: "M1 monthly tokyo", spec: pinned(t, "Asia/Tokyo", "2096-01-20T09:00", "FREQ=MONTHLY;BYMONTH=1,3;BYMONTHDAY=1,25"), win: 45 * day, offs: all},
 			{name: "M1 monthly new_york", spec: pinned(t, nyZone, "2096-01-20T09:00", "FREQ=MONTHLY;BYMONTH=1,3;BYMONTHDAY=1,25"), win: 45 * day, offs: all},
 			{name: "yearly feb29 tokyo", spec: pinned(t, "Asia/Tokyo", "2093-03-01T08:30", "FREQ=YEARLY;BYMONTH=2;BYMONTHDAY=29"), win: 60 * day, offs: all},
 			{name: "weekly new_york", spec: pinned(t, nyZone, "2096-03-01T02:30", "FREQ=WEEKLY;BYDAY=SU;INTERVAL=3"), win: 45 * day, offs: all},
-			// M2 (r3): an RDATE behind a rule that never fires.
+			// M2: an RDATE behind a rule that never fires.
 			{name: "M2 minutely", spec: pinned(t, "UTC", "2025-01-01T00:00", "FREQ=MINUTELY;BYMONTH=1;BYYEARDAY=200"), never: true, win: 6 * time.Hour, offs: all},
 			{name: "M2 hourly tokyo", spec: pinned(t, "Asia/Tokyo", "2025-01-01T00:00", "FREQ=HOURLY;BYMONTH=1;BYYEARDAY=200"), never: true, win: 6 * time.Hour, offs: all},
 		} {
@@ -284,8 +284,8 @@ func asKind(err error) CapKind {
 
 // TestMergeYieldsEachInstantOnce holds the merge itself, below the settle the
 // public calls apply: an RDATE equal to a rule occurrence, and an RDATE repeated,
-// come out of the stream once, and an EXDATE on an RDATE removes it (TASK-4100
-// r3 D1). Through NextAfter and Between a repeat would be invisible, so this
+// come out of the stream once, and an EXDATE on an RDATE removes it (TASK-4100).
+// Through NextAfter and Between a repeat would be invisible, so this
 // reads the walk.
 func TestMergeYieldsEachInstantOnce(t *testing.T) {
 	spec := pinned(t, "UTC", "2025-01-01T09:00", "FREQ=DAILY;COUNT=6")
@@ -305,8 +305,7 @@ func TestMergeYieldsEachInstantOnce(t *testing.T) {
 
 // The grid sample takes every gridStride-th cell of reachabilityGrid. The stride
 // is coprime to every axis length (2, 24, 5, 6, 4), so it cannot alias with an
-// axis and drop a value: 24 and 150 did, sampling one Start and one BYMINUTE
-// (TASK-4100 r3).
+// axis and drop a value: 24 and 150 did, sampling one Start and one BYMINUTE (TASK-4100).
 func gridStride() int {
 	if raceSample {
 		return 149

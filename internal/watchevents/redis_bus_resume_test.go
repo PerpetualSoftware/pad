@@ -1,6 +1,6 @@
 package watchevents
 
-// BUG-2651, the trailing gap — lead ruling: a silently lost nudge is unbounded
+// BUG-2651, the trailing gap: a silently lost nudge is unbounded
 // staleness, a spurious resync costs one redundant fetch, so the gap must not
 // survive. These run against miniredis because the check's whole mechanism is
 // asking the shared counter, which is not a thing a hermetic fixture has.
@@ -121,8 +121,8 @@ func TestResumeToleratesAnInFlightCounter(t *testing.T) {
 	}
 }
 
-// TestResumeReportsAGapWhenTheCounterAdvancesAgainDuringTheSettle — codex
-// round 11, P1. The first version of the check re-read only the LOCAL side, so
+// TestResumeReportsAGapWhenTheCounterAdvancesAgainDuringTheSettle. The first
+// version of the check re-read only the LOCAL side, so
 // it compared against a stale counter snapshot: id 2 arrives during the beat,
 // the captured remote was 2, and it declared convergence — while id 3 had been
 // published and missed in the meantime.
@@ -156,7 +156,7 @@ func TestResumeReportsAGapWhenTheCounterAdvancesAgainDuringTheSettle(t *testing.
 	}
 }
 
-// TestResumeDoesNotResyncWhenTheCounterReadRacedAPublish — codex round 11, P2,
+// TestResumeDoesNotResyncWhenTheCounterReadRacedAPublish,
 // the other direction. A GET can land just before a publish completes and
 // return a value BELOW what this instance already holds. Comparing against
 // that stale snapshot forever meant an unnecessary full resync for a client
@@ -232,7 +232,7 @@ func TestResumeFallsBackToLocalKnowledgeWhenTheCounterIsUnreadable(t *testing.T)
 	}
 }
 
-// TestResumeReportsAGapWhenTheCounterKeyDisappears — codex round 12, P2.
+// TestResumeReportsAGapWhenTheCounterKeyDisappears.
 //
 // The sequence key can vanish after this bus has seen ids (FLUSHDB, eviction).
 // Reading redis.Nil as "unreadable" meant falling back to local knowledge and
@@ -331,7 +331,7 @@ func TestACancelledResumeStopsPayingForTheSettleWindow(t *testing.T) {
 	// INSIDE the window — a caller that was already gone takes the
 	// declined-on-entry path instead, which is a different assertion — and a
 	// sleep-timed cancellation that lands late does not fail safe here, it
-	// silently measures the wrong path (codex round 1).
+	// silently measures the wrong path.
 	var entered atomic.Bool
 	b.beforeSettleWait = func() {
 		entered.Store(true)
@@ -518,7 +518,7 @@ func TestClosingTheBusStillEndsTheSettleWindow(t *testing.T) {
 }
 
 // TestACancelledCounterReadIsNotReportedAsRedisTrouble covers the in-flight
-// twin of the entry-path decline (codex round 3).
+// twin of the entry-path decline.
 //
 // The entry-side decline catches a caller that was ALREADY gone. A caller can
 // also leave while the counter GET is in flight, and the error that comes back
@@ -551,8 +551,8 @@ func TestACancelledCounterReadIsNotReportedAsRedisTrouble(t *testing.T) {
 }
 
 // TestAGenuineCounterFailureIsStillReported is the control, and the reason the
-// test above is not simply a hole. Codex round 4 BLOCKED the first version of
-// this pair because the suppression keyed on ctx.Err() rather than on the
+// test above is not simply a hole. The first version of
+// this pair was wrong because the suppression keyed on ctx.Err() rather than on the
 // error: a real Redis failure that merely coincided with a cancellation would
 // have been downgraded to Debug and disappeared. Without this leg, "no WARN"
 // is satisfied by a bus that has stopped reporting Redis trouble at all.
@@ -583,10 +583,10 @@ func TestAGenuineCounterFailureIsStillReported(t *testing.T) {
 	}
 }
 
-// TestCallerIsGoneClassifiesOnTheErrorNotTheContext is the test codex round 4's
-// BLOCK actually calls for, and the two integration legs above cannot provide.
+// TestCallerIsGoneClassifiesOnTheErrorNotTheContext is the test that
+// the two integration legs above cannot provide.
 //
-// The blocked form asked ctx.Err(). Both forms agree on every case a live
+// The earlier form asked ctx.Err(). Both forms agree on every case a live
 // client can be made to produce on demand — a cancelled context yields a
 // context error, a live one yields a server error — so the integration pair
 // passes against either. They disagree on exactly one case: a GENUINE Redis
@@ -608,7 +608,7 @@ func TestCallerIsGoneClassifiesOnTheErrorNotTheContext(t *testing.T) {
 		{"a caller whose deadline passed", context.DeadlineExceeded, true},
 		{"a wrapped cancellation", fmt.Errorf("get counter: %w", context.Canceled), true},
 		{"a redis server error", serverErr, false},
-		// THE ROW THE BLOCK WAS ABOUT. Under the ctx.Err() form this was
+		// THE ROW THAT MATTERS MOST. Under the ctx.Err() form this was
 		// suppressed whenever a disconnect coincided with it, which is the one
 		// combination an operator cannot afford to lose.
 		{"a redis failure that merely coincides with a disconnect", fmt.Errorf("counter unreadable: %w", serverErr), false},

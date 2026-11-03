@@ -257,8 +257,7 @@ func (m *Manifest) validate() error {
 			return fail(p+".schema", "is required")
 		}
 		// Strict, like the manifest itself: a misspelled key ("requried")
-		// would otherwise be dropped silently, losing what it meant (codex
-		// round 2).
+		// would otherwise be dropped silently, losing what it meant.
 		sdec := json.NewDecoder(bytes.NewReader(c.Schema))
 		sdec.DisallowUnknownFields()
 		if err := sdec.Decode(&c.Parsed); err != nil {

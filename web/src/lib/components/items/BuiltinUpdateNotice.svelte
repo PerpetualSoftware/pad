@@ -2,7 +2,7 @@
 	// TASK-3462 U3b: the item pane's half of the built-in update nudge. For an
 	// item made from one of the conventions or playbooks Pad ships, it reads the
 	// item's state, and when Pad's library has newer text it shows a badge that
-	// opens a review dialog. Nothing updates on its own (Dave's ruling): the
+	// opens a review dialog. Nothing updates on its own: the
 	// update happens only when a person presses Accept.
 	import { onDestroy, untrack } from 'svelte';
 	import { api } from '$lib/api/client';
@@ -26,7 +26,7 @@
 		 * Whether the pane holds edits the server cannot see yet: a pending raw
 		 * draft, a save in flight, or a collab editor that is not synced (its
 		 * typing is buffered or dropped, not in the op-log). Accept refuses
-		 * while it does (codex r1, r2). A synced collab editor's typing IS in
+		 * while it does. A synced collab editor's typing IS in
 		 * the op-log, where the server's content_pending_flush refusal covers
 		 * it. Asked at the press, synchronously.
 		 */
@@ -42,7 +42,7 @@
 		onAccepted?: () => void;
 		/**
 		 * Save the open collab editor's text before the update and say what
-		 * happened (codex r4). A synced socket proves nothing about typing the
+		 * happened. A synced socket proves nothing about typing the
 		 * server has stored: a frame in flight is not in the op-log yet, so the
 		 * server's content_pending_flush refusal cannot see it. 'flushed' means
 		 * the editor held text the preview did not show: the update is not
@@ -134,7 +134,7 @@
 	}
 
 	// What the dialog compares against: the item's text from the SAME read as
-	// the seq Accept sends (codex r5), so a fresh seq is never paired with a
+	// the seq Accept sends, so a fresh seq is never paired with a
 	// stale body. The pane's own copy is the fallback for a server that does
 	// not send it.
 	let previewContent = $derived(offer?.current?.content ?? currentContent);
@@ -174,11 +174,11 @@
 		}
 		const isSameIdentity = authStore.identityFence();
 		// The item this press is about: a response that settles after the pane
-		// moved to another item commits nothing here (codex r1).
+		// moved to another item commits nothing here.
 		const ws = wsSlug;
 		const ref = itemRef;
 		const id = itemId;
-		// By id, not ref: a rename during the request is the same item (codex r2).
+		// By id, not ref: a rename during the request is the same item.
 		const stillThisItem = () => isSameIdentity() && itemId === id;
 		const discard = pendingEdits;
 		busy = true;
@@ -215,7 +215,7 @@
 			} else if (code === 'update_conflict') {
 				errorMessage = 'The item changed since this preview opened. The preview has been refreshed; review it again.';
 				// The LIVE ref: a rename, which is what usually moves seq here,
-				// leaves the captured one pointing at nothing (codex r3).
+				// leaves the captured one pointing at nothing.
 				void load(wsSlug, itemRef);
 			} else if (code === 'builtin_up_to_date') {
 				open = false;

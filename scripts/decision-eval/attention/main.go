@@ -1,4 +1,4 @@
-// Command attention re-runs the day-73 decision-detector eval (eval2.py
+// Command attention re-runs the original decision-detector eval (eval2.py
 // section D) through the PRODUCTION state builder, to set
 // decision.AttentionThreshold from a measurement (TASK-3137).
 //
@@ -14,12 +14,12 @@
 //	-mode r1 / r0     production builder over the item REPLAYED to its last
 //	                  open moment / its filing (replay.go)
 //	-mode titlebody   state = {"title","body"[:5000 runes]} with the same two
-//	                  eval questions — the day-73 shape, re-run today, as the
+//	                  eval questions — the original shape, re-run today, as the
 //	                  control that separates model drift from state shape.
 //	-mode titlebody-live  the same {"title","body"} state with the LIVE
 //	                  attention set (four questions since TASK-3921) in one
 //	                  call: what the call shape does to needs_human_decision on
-//	                  the day-73 state, with titlebody as its drift control.
+//	                  the original state, with titlebody as its drift control.
 //
 // The key is read from PAD_TYPESAFE_API_KEY or TYPESAFE_API_KEY and is never
 // printed or written.
@@ -41,10 +41,10 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// The day-73 eval asked two questions in one call. The `blocked` one was
+// The original eval asked two questions in one call. The `blocked` one was
 // retired from the production set in TASK-3915 (the dependency graph owns
 // blocked), so the titlebody control carries its text here, verbatim, to keep
-// re-running the day-73 shape.
+// re-running the original shape.
 const day73Blocked = "blocked"
 
 var day73BlockedQuestion = decision.Noul(
@@ -336,7 +336,7 @@ func mustRead(path string, v any) {
 }
 
 // dryRun is the instrument check: every item parses, every state builds, and
-// the recorded day-73 probabilities reproduce the eval's AUC through this
+// the recorded original probabilities reproduce the eval's AUC through this
 // file's auc — so a wrong parse or a wrong statistic shows before any call.
 func dryRun(dump string) {
 	var pop []member

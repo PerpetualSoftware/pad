@@ -166,7 +166,7 @@ func TestTASK1273_TheRoomClosesAPeerTheBusOverflowed(t *testing.T) {
 	}
 }
 
-// End to end through a real overflow (codex): the peer's writeLoop is held
+// End to end through a real overflow: the peer's writeLoop is held
 // on its write lock, the bus fills its buffer and drops the next op, and the
 // room closes the socket, counted once.
 func TestTASK1273_ARealOverflowClosesThePeerOnce(t *testing.T) {

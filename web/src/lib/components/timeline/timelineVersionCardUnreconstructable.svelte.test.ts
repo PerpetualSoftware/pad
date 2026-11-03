@@ -9,7 +9,7 @@ import type { Version } from '$lib/types';
 // The card used to read that as "Couldn't load this edit's changes." It now
 // says what the refusal means. Restore stays offered either way: the diff also
 // reads the NEXT newer row, so a verified, restorable version whose neighbour
-// failed is refused by the diff and restored fine (r3 R3-1). The restore's own
+// failed is refused by the diff and restored fine. The restore's own
 // gate decides, and its refusal shows on the card. These legs mock the
 // server's answers; the server half is pinned in
 // internal/server/bug3820_unverified_version_test.go.
@@ -87,7 +87,7 @@ describe('TimelineVersionCard: an unreconstructable version (BUG-3820)', () => {
 		expect(root.querySelector('.btn-restore')).not.toBeNull();
 	});
 
-	// R3-1 (a), as the server answers it: the diff is refused, the restore
+	// Case (a), as the server answers it: the diff is refused, the restore
 	// succeeds (a verified V whose NEWER neighbour failed).
 	it('a verified version whose newer neighbour failed is restored', async () => {
 		diff.mockRejectedValue(new PadApiError({ code: 'version_unreconstructable', message: 'refused' }));
@@ -101,7 +101,7 @@ describe('TimelineVersionCard: an unreconstructable version (BUG-3820)', () => {
 		expect(root.querySelector('.restore-error')).toBeNull();
 	});
 
-	// R3-1 (b), as the server answers it: the diff and the restore are both
+	// Case (b), as the server answers it: the diff and the restore are both
 	// refused (V itself is unverified). The card shows the server's message
 	// instead of snapping back.
 	it('an unverified version: the restore is refused and says why', async () => {

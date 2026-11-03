@@ -51,9 +51,9 @@
 		// in onDestroy — so it is the owner whose lifetime actually matches the
 		// signal's. A store-owned subscription would have outlived its source.
 		unsubscribeSync = syncService.onSync(async (result) => {
-			// The workspace this result was SYNCED FOR, off the result itself
-			// (codex round 8). Capturing `wsSlug` at callback entry — which is
-			// what round 5's fix did — is not enough: it names the workspace the
+			// The workspace this result was SYNCED FOR, off the result itself.
+			// Capturing `wsSlug` at callback entry — which is
+			// what an earlier fix did — is not enough: it names the workspace the
 			// user is on when the result is DELIVERED, and a sync issued for A
 			// and delivered after a switch to B reads as B's from both ends.
 			// Only the service knows, so the service now stamps it.
@@ -86,8 +86,8 @@
 				// Still unreachable. The next sync result asks again; throwing
 				// out of a subscriber would take the other subscribers with it.
 			}
-			// ONE collection call, and WHICH one is the caller's intent (codex
-			// rounds 1 and 2). Two reasons to want the list, and they are not
+			// ONE collection call, and WHICH one is the caller's intent.
+			// Two reasons to want the list, and they are not
 			// the same request:
 			//
 			//   - the server says the list CHANGED, so a fetch issued before
@@ -98,8 +98,8 @@
 			//     which joins it instead of issuing a second one.
 			//
 			// Asking them as two separate `if`s fired two requests whenever both
-			// were true (round 1), and the recovery arm alone still raced the
-			// workspace effect's own in-flight load (round 2). The store owns
+			// were true, and the recovery arm alone still raced the
+			// workspace effect's own in-flight load. The store owns
 			// the join because only the store can see what is in flight.
 			const collectionsChanged =
 				result.type === 'full_refresh' ||
@@ -139,7 +139,7 @@
 			// the user has since left — the reconcile that vouched for it was
 			// about a different cache.
 			// This is the ONLY full_refresh cursor writer: a single item's reload
-			// cannot vouch for the workspace (BUG-3207, lead ruling).
+			// cannot vouch for the workspace (BUG-3207).
 			if (caughtUp && result.type === 'full_refresh' && wsSlug === ws) {
 				syncService.markSynced(syncStamp);
 			}
@@ -252,8 +252,7 @@
 		untrack(() => void tabsStore.land(slug).catch(() => {}));
 	});
 
-	// CLOSE THE STREAM, and let the reload do the rest (BUG-3005, lead ruling
-	// after codex round 3).
+	// CLOSE THE STREAM, and let the reload do the rest (BUG-3005).
 	//
 	// A real identity change reloads this tab — see `reloadForIdentityChange`
 	// in the root layout for why the fix stopped being per-surface. So this
@@ -332,8 +331,8 @@
 			// Captured for the same reason as the sync handler above: this
 			// callback awaits, and `wsSlug` is derived from the route.
 			//
-			// Used for the WHOLE callback, not just the reconcile (codex round 6
-			// P1). The later `loadCollections` / `api.items.get` / link-building
+			// Used for the WHOLE callback, not just the reconcile.
+			// The later `loadCollections` / `api.items.get` / link-building
 			// calls read the reactive slug after their own awaits and predate
 			// this unit — but the reconcile added ANOTHER await in front of all
 			// of them, so an event for workspace A crossing a switch to B now has
@@ -347,14 +346,14 @@
 				} catch (err) {
 					// Cancelled: the layout was destroyed inside the coalescing
 					// window, and nothing below is this callback's to do any more
-					// (codex r2: carrying on reloaded the old workspace's
+					// (carrying on reloaded the old workspace's
 					// collections and toasted onto the next screen).
 					if (err instanceof CoalescerCancelled) return;
 					// Otherwise as above: the cache-state readers own the reaction.
 				}
 			}
 
-			// THE INDEX IS PER-WORKSPACE; THE UI BELOW IS NOT (codex round 7 P1).
+			// THE INDEX IS PER-WORKSPACE; THE UI BELOW IS NOT.
 			// `localIndex` is keyed by workspace, so reconciling `eventWs` above
 			// is right whatever route the user is on now. `collectionStore` and
 			// the toasts are GLOBAL — they describe the ONE workspace being
@@ -386,7 +385,7 @@
 						// One toast per burst from one actor (TASK-3593), and it counts
 						// toward unread: it is another actor's work, not a confirmation.
 						toastStore.showGrouped(
-							// Owner AND slug: two owners can each have a workspace of one slug (codex r4).
+							// Owner AND slug: two owners can each have a workspace of one slug.
 							`created:${username}/${eventWs}:${event.actor ?? ''}:${event.actor_name ?? ''}`,
 							{ title: event.title, collection: event.collection, link },
 							foldCreated,
@@ -475,7 +474,7 @@
 					}
 					// Refresh sidebar/pickers for EVERY collection_updated —
 					// icon / name / sort-order changes matter to the nav
-					// even without a rename (codex round 1 P2).
+					// even without a rename.
 					reloadCollectionsSoon(eventWs);
 					break;
 				}

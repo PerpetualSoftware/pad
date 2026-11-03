@@ -52,8 +52,8 @@
 				// error, and is logged so it is not invisible.
 				if (token === latest) console.warn('decision chips: read failed', err);
 			});
-		// Leaving this item (or this identity) invalidates the request (codex
-		// r1 on TASK-3119 U2b): a response still in flight would otherwise
+		// Leaving this item (or this identity) invalidates the request
+		// (TASK-3119): a response still in flight would otherwise
 		// pass the token check and repaint chips for an item no longer shown.
 		return () => {
 			latest++;

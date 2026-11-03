@@ -240,8 +240,8 @@ describe('SSE refresh: roll-off is not deletion (BUG-2773)', () => {
 	});
 
 	it('compares instants, not strings, at the coverage boundary', async () => {
-		// A GUARD, not a live scenario, and labelled as one after codex round
-		// 3 corrected me: every timestamp this endpoint emits is whole-second
+		// A GUARD, not a live scenario, and labelled as one: every timestamp this endpoint emits is
+		// whole-second
 		// today — the store writes RFC3339 seconds and the handler truncates
 		// the structured kinds' hand-written ones — so nothing currently
 		// produces this input. It pins the comparison the ordering MEANS:
@@ -275,7 +275,7 @@ describe('SSE refresh: roll-off is not deletion (BUG-2773)', () => {
 		// "not returned" still means "not on this timeline" — but there is
 		// nothing behind the page for an entry to have rolled off into.
 		// Without this, the coverage rule would keep a genuinely deleted entry
-		// indefinitely (codex round 1).
+		// indefinitely.
 		pages.push({
 			entries: [
 				entry('e-keep', '2026-01-01T12:00:09Z', 'still there'),
@@ -412,7 +412,7 @@ describe('SSE refresh: roll-off is not deletion (BUG-2773)', () => {
 	it('a Load More response in flight cannot resurrect an entry a refresh deleted', async () => {
 		// The paging request is older than the refresh and does not know: its
 		// page still contains the deleted entry, and appending it verbatim
-		// puts it back on screen (codex round 4).
+		// puts it back on screen.
 		pages.push({
 			entries: [
 				entry('e-top', '2026-01-01T12:00:20Z', 'top'),
@@ -472,7 +472,7 @@ describe('SSE refresh: roll-off is not deletion (BUG-2773)', () => {
 		// The generation counts writes that LANDED, not requests that were
 		// sent. Counting dispatches made a refresh that then failed invalidate
 		// an in-flight reload, so its good response was thrown away and the
-		// view stayed empty until something else redrew it (codex round 7).
+		// view stayed empty until something else redrew it.
 		let releaseLoad: (r: TimelineResponse) => void = () => {};
 		const heldLoad = new Promise<TimelineResponse>((r) => {
 			releaseLoad = r;
@@ -504,8 +504,7 @@ describe('SSE refresh: roll-off is not deletion (BUG-2773)', () => {
 	it('the NEWER of two refreshes wins even when the older lands first', async () => {
 		// The mirror of the out-of-order test above, and the case a single
 		// applied-writes counter got backwards: the older response landing
-		// first claimed the view and discarded the newer one behind it (codex
-		// round 8).
+		// first claimed the view and discarded the newer one behind it.
 		pages.push({
 			entries: [entry('e-1', '2026-01-01T12:00:09Z', 'original')],
 			has_more: false,
@@ -555,7 +554,7 @@ describe('SSE refresh: roll-off is not deletion (BUG-2773)', () => {
 	it('a refresh that replaces an in-flight load clears the spinner', async () => {
 		// The overlapped load declines to clear it — a newer write has landed
 		// — so the writer must, or an empty result sits under a permanent
-		// spinner and the list never renders (codex round 8).
+		// spinner and the list never renders.
 		let releaseLoad: (r: TimelineResponse) => void = () => {};
 		const heldLoad = new Promise<TimelineResponse>((r) => {
 			releaseLoad = r;
@@ -579,7 +578,7 @@ describe('SSE refresh: roll-off is not deletion (BUG-2773)', () => {
 		// over-fetch window while another returned an older rendered row, so
 		// the cursor sits NEWER than the oldest entry on the page. Everything
 		// between them was never examined — a live entry there is not deleted,
-		// it was not looked for (codex round 10).
+		// it was not looked for.
 		pages.push({
 			entries: [
 				entry('e-top', '2026-01-01T12:00:20Z', 'top'),
@@ -619,7 +618,7 @@ describe('SSE refresh: roll-off is not deletion (BUG-2773)', () => {
 		// The retry exists so a transient failure does not leave the panel
 		// quietly stale (BUG-2508). Once a newer refresh has written, there is
 		// nothing stale to repair, and the retry is traffic whose answer would
-		// arrive older than the view (codex round 13).
+		// arrive older than the view.
 		pages.push({ entries: [entry('e-1', '2026-01-01T12:00:09Z', 'original')], has_more: false });
 
 		app = mount(ItemTimeline, { target: host, props }) as Record<string, unknown>;

@@ -14,7 +14,7 @@ import (
 )
 
 // BUG-4056 pinned notation: an integral number forwards without an exponent.
-// BUG-4061 (lead ruling on its Q2, day 33) superseded the rows that forwarded
+// BUG-4061 superseded the rows that forwarded
 // a fraction and a value outside int64 unchanged: every numeric query
 // parameter is an integer and the server's parsers default a malformed one,
 // so those two are now refusals naming the key. The notation rows stand.

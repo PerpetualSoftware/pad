@@ -21,17 +21,17 @@
 	import { builtinOfferLabel, builtinActive } from '$lib/library/builtinOffers';
 
 	/**
-	 * IDENTITY FENCE — surface 3 of 7 (BUG-3084). Every async commit point on
+	 * IDENTITY FENCE — surface 3 of 7  (BUG-3084). Every async commit point on
 	 * this page is checked against the signed-in identity, so a response or a
 	 * click that lands after a sign-in or sign-out cannot commit the previous
-	 * session's data. Same shape as the collection page (#1372/#1374), settings
-	 * (#1370) and the roles board (#1375); the rules below are the family's,
+	 * session's data. Same shape as the collection page  (#1372/#1374), settings
+	 *  (#1370) and the roles board  (#1375); the rules below are the family's,
 	 * carried here rather than re-derived.
 	 *
 	 * WHAT IS DIFFERENT HERE. The population is 7, not the 3 a function-level
 	 * count sees: four DEFERRED TIMERS (`setTimeout(… , 3000)` clearing the
 	 * toast) are commit points that fire long after their handler returned, and
-	 * the filed survey missed all four (BUG-3084 checkpoint 6).
+	 * the filed survey missed all four  (BUG-3084 checkpoint 6).
 	 *
 	 * `activateConvention` / `activatePlaybook` COMPOSE A WRITE from state
 	 * chosen under the previous identity — the `convention` / `playbook` the
@@ -73,23 +73,23 @@
 	let activeConventionTitles = $state<Set<string>>(new Set());
 	let activePlaybookTitles = $state<Set<string>>(new Set());
 	// The workspace items those titles came from, so "Active" can link to the
-	// item activation created (TASK-2256, audit C67). Keyed by title, like
+	// item activation created  (TASK-2256, audit C67). Keyed by title, like
 	// the sets above, for an item with no built-in origin on the listing.
 	let conventionItemsByTitle = $state<Map<string, Item>>(new Map());
 	let playbookItemsByTitle = $state<Map<string, Item>>(new Map());
-	// Every item made from a built-in, with its state (TASK-3462 U3b): what
+	// Every item made from a built-in, with its state  (TASK-3462 U3b): what
 	// makes an entry "Active" by KEY, and where an update is on offer.
 	let builtinEntries = $state<BuiltinListEntry[]>([]);
 	let loading = $state(true);
 	// TASK-2203: a failed load is an error with a retry, never "No conventions
-	// available." (the library ships with entries; empty means it did not load).
+	// available."  (the library ships with entries; empty means it did not load).
 	let loadError = $state<unknown>(null);
 
-	// Scroll position restoration (BUG-1425). persistKey includes `?tab=…`
+	// Scroll position restoration  (BUG-1425). persistKey includes `?tab=…`
 	// so the conventions and playbooks tabs each keep their own offset.
 	const scrollRestoration = createScrollRestoration({
 		// `loading` flips true on workspace change. Length-based gate
-		// omitted (Codex P2 round 2).
+		// omitted.
 		ready: () => !loading,
 		persistKey: () =>
 			wsSlug
@@ -99,7 +99,7 @@
 	export const snapshot = scrollRestoration.snapshot;
 	let activatingTitle = $state<string | null>(null);
 	let toast = $state<string | null>(null);
-	// The tab lives in the URL (TASK-2256, audit C66). It used to be read once
+	// The tab lives in the URL  (TASK-2256, audit C66). It used to be read once
 	// and never written, so a refresh landed on Conventions and both tabs
 	// shared one scroll key, which defeated the per-tab offsets above.
 	let activeTab = $derived<'conventions' | 'playbooks'>(
@@ -115,7 +115,7 @@
 			// through. Not reset: false, because each tab restores its own
 			// offset. Kit 3 folded keepFocus into `reset`, which also resets
 			// focus, so a tab that held focus gets it back once the navigation
-			// lands (TASK-3423).
+			// lands  (TASK-3423).
 			const tabHadFocus = document.activeElement?.getAttribute('role') === 'tab';
 			void goto(url, { replaceState: true }).then(() => {
 				if (focus || tabHadFocus) document.getElementById(`library-tab-${tab}`)?.focus();
@@ -139,7 +139,7 @@
 		selectTab(TABS[next], true);
 	}
 
-	// Which cards show their full text (TASK-2256, audit C67): activation
+	// Which cards show their full text  (TASK-2256, audit C67): activation
 	// commits to an entry, and a 100-character excerpt is not enough to
 	// decide on. The text is already here; this only shows it.
 	let expandedCards = $state<Set<string>>(new Set());
@@ -184,7 +184,7 @@
 	/**
 	 * Every piece of TRANSIENT INTERACTION STATE on this page — something a
 	 * click started and a later response or timer would finish. Distinct from
-	 * the page's DATA (the four collections `loadData` replaces) and from its
+	 * the page's DATA  (the four collections `loadData` replaces) and from its
 	 * identity bookkeeping.
 	 *
 	 * The source guard holds this against the file's own `$state` declarations,
@@ -204,7 +204,7 @@
 	 * `routes/+layout.svelte` deliberately does not reload on an anonymous ->
 	 * signed-in transition. Without this the page keeps a dead epoch and every
 	 * `pageIdentityHeld()` is false for ever: both activate handlers go
-	 * silently inert and never recover (#1372's regression, repaired in #1374).
+	 * silently inert and never recover  (#1372's regression, repaired in #1374).
 	 *
 	 * The reset runs FIRST: `activatingTitle` gates both handlers at their very
 	 * first line, so a stale value latches them shut, and `toast` would keep the
@@ -217,7 +217,7 @@
 	onDestroy(stopIdentityWatch);
 
 	$effect(() => {
-		// UNTRACKED (codex round 1 [P2]). `loadData` reads `authStore.identityEpoch`
+		// UNTRACKED. `loadData` reads `authStore.identityEpoch`
 		// synchronously via `captureIdentity()` before its first await, so
 		// without this the effect takes a dependency on the epoch and re-runs
 		// when the identity moves — on top of the listener above, which already
@@ -226,11 +226,11 @@
 		// on the wire, and the kind of thing that reads as a mystery in a
 		// network log.
 		//
-		// The key this effect is FOR is the workspace. Settings (#1370) suppresses
+		// The key this effect is FOR is the workspace. Settings  (#1370) suppresses
 		// the same class the same way; naming the real key is what makes the
 		// suppression safe rather than a blanket silencing.
 		const ws = wsSlug;
-		// And the two collections' CURRENT slugs (BUG-3481): a renamed
+		// And the two collections' CURRENT slugs  (BUG-3481): a renamed
 		// conventions or playbooks collection is listed under its new slug.
 		// The default slug resolves to itself, so an unrenamed workspace loads
 		// once, as before.
@@ -256,7 +256,7 @@
 			const [libraryRes, playbookRes, existingConventions, existingPlaybooks, builtins] = await Promise.all([
 				api.library.get(),
 				api.library.getPlaybooks(),
-				// No `all` param (TASK-3462 U3b): the server has none, reads any
+				// No `all` param  (TASK-3462 U3b): the server has none, reads any
 				// unknown parameter as a FIELD filter, and so answered [] here, which
 				// left the title match below matching nothing. A plain list already
 				// returns every status.
@@ -316,7 +316,7 @@
 	}
 
 	// Activate renders only for an account that may create in the collection
-	// the activation writes to (BUG-3264); the server refuses the rest.
+	// the activation writes to  (BUG-3264); the server refuses the rest.
 	let canActivateConventions = $derived(canCreateIn(conventionsSlug));
 	let canActivatePlaybooks = $derived(canCreateIn(playbooksSlug));
 
@@ -408,8 +408,8 @@
 		return lines.slice(0, 3).join('\n');
 	}
 
-	// The browser tab names this section (TASK-2261, audit C99). Pathname is
-	// read so a reuse across workspaces re-sets it (see activity/+page.svelte).
+	// The browser tab names this section  (TASK-2261, audit C99). Pathname is
+	// read so a reuse across workspaces re-sets it  (see activity/+page.svelte).
 	$effect(() => {
 		page.url.pathname;
 		titleStore.setPageTitle({ section: 'Library', item: null });
@@ -481,7 +481,7 @@
 								<div class="card-body">
 									<h3 class="card-title">{convention.title}</h3>
 									<div class="badges">
-										<!-- TASK-2257 (C72): each chip says what it is, to a pointer
+										<!-- TASK-2257  (C72): each chip says what it is, to a pointer
 										     (title) and to a screen reader (the hidden prefix). -->
 										<Chip size="sm" color="var(--status-blue)" title={termTitle('trigger', convention.trigger)}><span class="sr-only">{'Trigger: '}</span>{convention.trigger}</Chip>
 										<Chip size="sm" color="var(--accent-purple)" title={termTitle('surface', conventionSurfaceLabel(convention))}><span class="sr-only">{'Surface: '}</span>{conventionSurfaceLabel(convention)}</Chip>

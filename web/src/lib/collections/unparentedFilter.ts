@@ -26,7 +26,7 @@ export const UNPARENTED_FILTER_FIELD = '$unparented';
 // (`phase` is kept for backward compat with pre-rename saved views). The
 // mutex helpers below must recognize both aliases, or a legacy view/URL
 // carrying `phase` would survive "Unparented only" turning on and produce a
-// contradictory (always-empty) filter combination (Codex review round 1).
+// contradictory (always-empty) filter combination.
 const PARENT_FILTER_KEYS = ['parent', 'phase'] as const;
 
 /**
@@ -62,7 +62,7 @@ export function clearParentFilter(filters: Record<string, string>): Record<strin
  * specific-parent filter AND the unparented pseudo-filter simultaneously;
  * unparented wins (same precedence as `handleUnparentedChange`), dropping
  * `parent`/`phase` rather than leaving a contradictory, always-empty
- * combination in place (PLAN-2095 DR-3, Codex review round 1).
+ * combination in place (PLAN-2095, DR-3).
  */
 export function resolveParentUnparentedMutex(
 	filters: Record<string, string>,
@@ -80,7 +80,7 @@ export function resolveParentUnparentedMutex(
  * and "a resync is currently deciding", and destructively clearing intent
  * on mere unavailability would permanently discard a legitimate caller's
  * intent the instant it loaded mid-resync — even one about to resolve
- * unrestricted a moment later (PLAN-2095 DR-2, Codex review round 3, P1).
+ * unrestricted a moment later (PLAN-2095, DR-2).
  *
  * `metadataKnownFalse` should be `localIndex.includesUnparentedMetadataFor(ws)
  * === false` (a CONFIRMED negative, not just "not true") and `pendingResync`
@@ -148,8 +148,8 @@ export function viewHasUnparentedFilter(filters: ViewFilterCondition[] | undefin
 // page's generic field-filter loop reads/writes through `activeFilters`
 // via the SAME URL searchParams object. A plain `unparented` param name
 // would collide with that field's filter value and either clobber it or
-// swallow it into the "known params" skip-set on read (Codex review round
-// 1). `$` is not a legal field-key character server-side (see
+// swallow it into the "known params" skip-set on read.
+// `$` is not a legal field-key character server-side (see
 // `internal/store/store.go::isValidFieldKey`), so this name is collision-free.
 
 /** Read the reserved `$unparented` URL search param as a boolean intent. */

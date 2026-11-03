@@ -15,7 +15,7 @@ import (
 // from models.ContentOutcomeAppliedPendingFlush. That risk was closed by sharing the
 // constant, not by this test — an earlier draft of this change had the literal
 // spelled out in both packages, where a rename on one side would have left the
-// warning silently never firing (BUG-2995, codex round 2).
+// warning silently never firing (BUG-2995).
 func TestWarnContentPendingFlush(t *testing.T) {
 	cases := []struct {
 		name string

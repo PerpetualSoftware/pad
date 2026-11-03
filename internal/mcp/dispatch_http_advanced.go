@@ -42,7 +42,7 @@ func (d *HTTPHandlerDispatcher) resolveAssignName(
 		// An EMPTY `assign` is deliberately still a no-op, and this is
 		// the one place in TASK-2571 where the fix stops short. Do not
 		// "finish the job" by mapping it to a clear without reading
-		// this first — codex round 1 proposed exactly that.
+		// this first; mapping it to a clear was proposed and is wrong.
 		//
 		// `assign` is SCHEMA-DECLARED (catalog_item.go), unlike
 		// `assigned_user_id`, which an agent can only reach by knowing
@@ -58,7 +58,7 @@ func (d *HTTPHandlerDispatcher) resolveAssignName(
 		// The gap is real — an agent reading the schema will reach for
 		// `assign: ""` and get a lie — but the remedy is explicit
 		// `clear_assigned_user` / `clear_agent_role` params (option (b)
-		// on TASK-2571, deferred by the lead as additive sugar), not a
+		// on TASK-2571, deferred as additive sugar), not a
 		// destructive meaning bolted onto an optional string. Tracked
 		// separately; the MCP instructions name the ID form meanwhile.
 		return input, nil
@@ -260,8 +260,8 @@ func (d *HTTPHandlerDispatcher) lookupAssigneeID(
 // to read existing fields, merges in new --status / --priority /
 // --field overrides, then PATCHes the merged result. Without this
 // dispatch path, an MCP `item.update --status done` would erase
-// every other field the schema set — Codex caught the equivalent
-// shape regression on item.create in PR #343.
+// every other field the schema set (the equivalent
+// shape regression on item.create was fixed in PR #343).
 //
 // Sequence:
 //
@@ -327,7 +327,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 		// list is filtered by the OAuth allow-list (TASK-977). Use
 		// prefetchReq.Context() so the lister sees the same
 		// auth/token state buildHTTPRequest + d.Apply attached
-		// (Codex review #379 round 1 — same fix as executeRequest).
+		// (same fix as executeRequest).
 		return packageHTTPResponse(prefetchReq.Context(), cmdKey, prefetchRec.Result(), d.Lister)
 	}
 
@@ -344,15 +344,14 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 	// CLI back-compat string) and lets ItemUpdate.UnmarshalJSON's
 	// flex parser (BUG-1144) normalize. Pre-BUG-1432 this loop
 	// filtered on `string` only, so a schema-conforming
-	// `tags: ["a"]` was silently dropped — Codex review #547
-	// round 1 [P1] caught that.
+	// `tags: ["a"]` was silently dropped (BUG-1432).
 	//
 	// Empty string is a no-op (matches the pre-fix behaviour for
 	// non-tags string fields): ItemUpdate treats `tags: ""` as an
 	// explicit empty-string write, which would corrupt the JSONB
 	// column on Postgres (500) and the TEXT column on SQLite. Empty
 	// array `[]` is intentionally NOT filtered — that's a legitimate
-	// "clear all tags" update. Codex review #547 round 3 [P2].
+	// "clear all tags" update.
 	if v, ok := input["tags"]; ok && v != nil {
 		if s, isString := v.(string); !isString || s != "" {
 			payload["tags"] = v
@@ -377,7 +376,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 	// surprising half of the pair.
 	//
 	// NOTE the contrast with `tags` immediately above, whose empty-string
-	// filter STAYS (codex #547 r3 P2): `tags: ""` is not a clear, it is a
+	// filter STAYS: `tags: ""` is not a clear, it is a
 	// corrupt write into a JSONB/TEXT column. Same-looking guard, opposite
 	// justification — do not "unify" them.
 	if v, ok := input["assigned_user_id"].(string); ok {
@@ -431,7 +430,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 	// contention.
 	seq, hasSeq, seqErr := itemExpectedSeqParam(input)
 	if seqErr != nil {
-		// BUG-4061 r2: a validation_failed envelope, as every other refused
+		// BUG-4061: a validation_failed envelope, as every other refused
 		// parameter gets, not a raw error the transport turns into a
 		// protocol-level failure.
 		return validationFailedResult(cmdKey, seqErr.Error(), "Pass expected_seq as the whole-number seq you read."), nil
@@ -513,7 +512,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 		// competing `patch["parent"]` behind, same reasoning as the
 		// assigned-user conflict check below.
 		//
-		// Checked against BOTH "parent" and "plan" (codex round 1 [P1]):
+		// Checked against BOTH "parent" and "plan":
 		// extractParentLink resolves the link from EITHER key with no early
 		// exit — `for _, key := range []string{"parent", "plan"}` — so a
 		// competing value reaching the wire as `field: ["plan=<ref>"]`
@@ -523,7 +522,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 		// iteration exits early). Checking both closes the alias bypass.
 		if clear, _ := input["clear_parent"].(bool); clear {
 			// Refuse when the TARGET COLLECTION'S SCHEMA declares its own
-			// "parent" or "plan" field (codex round 2 finding #2).
+			// "parent" or "plan" field.
 			// extractParentLink (internal/server/handlers_items.go ~L606-610,
 			// pre-existing documented policy: "Skip this if the schema
 			// actually defines a field with that key") skips hierarchy
@@ -574,7 +573,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 	}
 
 	// A simultaneous set-and-clear is REJECTED, matching the CLI, so the two
-	// transports can't disagree about a contradiction (codex round 1).
+	// transports can't disagree about a contradiction.
 	//
 	// Placed HERE — after --assign/--role resolution AND after
 	// liftFieldsToColumns — because every one of those can put a competing
@@ -616,7 +615,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 // extractParentLink (internal/server/handlers_items.go ~L606-610) treats
 // that key as an ORDINARY data field instead of hierarchy, so a
 // clear_parent request would silently blank the field and leave the real
-// hierarchy link untouched (codex round 2 finding #2 / BUG-2078). Returns
+// hierarchy link untouched (BUG-2078). Returns
 // the shadowed key name ("parent" or "plan") when found, "" when the
 // collection is clear to use clear_parent normally.
 //
@@ -684,7 +683,7 @@ func (d *HTTPHandlerDispatcher) collectionSchemaShadowsParent(
 // category, parent) off the dispatch input, reporting whether it was actually
 // supplied.
 //
-// A NON-STRING SCALAR COUNTS (codex round 6). Both call sites used to read
+// A NON-STRING SCALAR COUNTS. Both call sites used to read
 // `input[key].(string)`, which was right while these params could only arrive
 // as CLI-shaped strings — but reshapeItemFields now promotes `fields:{…}`
 // values with their JSON types intact, so `fields:{"priority":3}` arrives as a
@@ -809,7 +808,7 @@ func (d *HTTPHandlerDispatcher) maybeInjectWorkspace(
 // itemExpectedSeqParam reads the BUG-3037 optimistic-concurrency token off an
 // MCP input map, as an integer.
 //
-// It REFUSES a fractional value rather than truncating it (codex round 1).
+// It REFUSES a fractional value rather than truncating it.
 // int64(42.7) is 42 — a DIFFERENT row state, and one that may well be the
 // current one, so truncation turns a malformed token into a silent ACCEPT: the
 // exact failure this token exists to remove, reintroduced by a coercion. The

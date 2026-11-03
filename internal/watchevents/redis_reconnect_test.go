@@ -112,7 +112,7 @@ func newCutterBus(t *testing.T, size int) (*RedisBus, *miniredis.Miniredis, *tcp
 // so a caller cannot mistake "not yet" for "never".
 //
 // Reason-specific rather than "any reset", which is what it was first written
-// as (codex round 3). Waiting on any reset lets an unrelated one satisfy the
+// as. Waiting on any reset lets an unrelated one satisfy the
 // wait and lets the test proceed to its real assertions before the condition
 // under test has happened — the wait would then be measuring nothing, and the
 // assertions after it would be racing. It also makes the failure message name
@@ -410,7 +410,7 @@ func TestAnUndecodableMessageEndsCoverage(t *testing.T) {
 // `got map[subscription_resumed:1]`.
 //
 // ONE RESIDUAL, STATED BECAUSE IT IS REAL AND MEASURED RATHER THAN DISMISSED
-// (codex rounds 3 and 17 both raised it). The confirmation is recorded only if
+// (it was raised more than once in review). The confirmation is recorded only if
 // it arrives after newCutterBus attaches the observer, and nothing ORDERS
 // those two — so in principle a mutated constructor could let it slip through
 // unobserved and this test would pass on broken code.
@@ -432,7 +432,7 @@ func TestNoCoverageIsDroppedAtStartup(t *testing.T) {
 	ch, gaps, _ := b.Subscribe()
 	defer b.Unsubscribe(ch)
 
-	// ORDERED, NOT TIMED (codex round 16). The first version slept 500ms and
+	// ORDERED, NOT TIMED. The first version slept 500ms and
 	// hoped. This publishes and waits for DELIVERY instead, which gives a real
 	// happens-before: the pub/sub channel is FIFO, so a startup confirmation —
 	// if the constructor were no longer consuming it — is queued AHEAD of this
@@ -472,7 +472,7 @@ func drainOne(t *testing.T, ch chan Notification) Notification {
 	return Notification{}
 }
 
-// Close must not look like a resubscription (codex round 7).
+// Close must not look like a resubscription.
 //
 // WHAT THIS DOES AND DOES NOT PIN, because the first version of this comment
 // got it wrong and the mutation said so. It pins the INVARIANT — a graceful
@@ -512,7 +512,7 @@ func TestCloseDoesNotLookLikeAResubscription(t *testing.T) {
 	}
 }
 
-// A resubscription with NOTHING in the buffer yet (codex round 7).
+// A resubscription with NOTHING in the buffer yet.
 //
 // Every other reconnect test publishes first, so all of them enter
 // dropCoverage with real bookkeeping to clear. An instance that has been up
@@ -548,7 +548,7 @@ func TestAResubscriptionOnAnIdleBusStillEndsCoverage(t *testing.T) {
 	}
 }
 
-// A COUNTER RESET THAT HAPPENS DURING THE RECONNECT WINDOW (codex round 13).
+// A COUNTER RESET THAT HAPPENS DURING THE RECONNECT WINDOW.
 //
 // The two conditions were covered separately and their COMPOSITION was not,
 // which is where the regression lived: dropCoverage zeroes lastAppendedID, so
@@ -686,8 +686,7 @@ func TestAnEpochChangeDiscardsTheHighWaterMark(t *testing.T) {
 	}
 }
 
-// A CURSOR FROM THE OLD ID SPACE MUST NOT BE SERVED THE NEW ONE (BUG-2739,
-// codex round 21).
+// A CURSOR FROM THE OLD ID SPACE MUST NOT BE SERVED THE NEW ONE (BUG-2739).
 //
 // Both backward arms set knownFrom to the first id they see of the restarted
 // sequence, which ADMITS a resume from one below it — and one below it is

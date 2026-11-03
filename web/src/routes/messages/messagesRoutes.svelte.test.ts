@@ -257,7 +257,7 @@ describe('/messages page (TASK-4044)', () => {
 		expect(getByText('Could not load your conversations.')).toBeTruthy();
 	});
 
-	// Nothing else retries a failed list while the unread fetch is fine (r1).
+	// Nothing else retries a failed list while the unread fetch is fine.
 	it('Try again reloads the list once and shows it', async () => {
 		h.listConversations.mockRejectedValueOnce(new Error('boom'));
 		const { container, getByText } = render(MessagesPage);
@@ -270,7 +270,7 @@ describe('/messages page (TASK-4044)', () => {
 		expect(container.textContent).not.toContain('Could not load');
 	});
 
-	// A failed reload keeps the last list, and must say so (r2).
+	// A failed reload keeps the last list, and must say so.
 	it('a failed reload keeps the list, says so, and Try again clears it', async () => {
 		const { container, getByText } = render(MessagesPage);
 		await settle();
@@ -799,7 +799,7 @@ describe('/messages/[n] thread write path (TASK-4044 PR 3b)', () => {
 		[...row.querySelectorAll('button')].find((b) => b.textContent === 'Reply')!.click();
 		await settle();
 		expect(container.querySelector('.reply')!.textContent).toContain('body 2');
-		// Red if Reply leaves focus on the body (r5 H3): the reader types next.
+		// Red if Reply leaves focus on the body: the reader types next.
 		expect(document.activeElement).toBe(box(container));
 		h.sendMessage.mockResolvedValue({
 			message: message(3, { mine: true, body: 'answer' }),

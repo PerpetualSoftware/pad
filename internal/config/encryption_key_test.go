@@ -88,7 +88,7 @@ func TestEnsureEncryptionKey_RespectsConfigured(t *testing.T) {
 }
 
 func TestEnsureEncryptionKey_RefusesToGenerateWhenClustered(t *testing.T) {
-	// Codex P1 on PR #189: in a clustered Postgres deployment, each replica
+	// In a clustered Postgres deployment, each replica
 	// would generate its own local key and cross-instance decryption of
 	// shared DB rows would fail. The caller MUST set allowGenerate=false in
 	// that case, and EnsureEncryptionKey must refuse to fabricate a key.
@@ -139,7 +139,7 @@ func TestEnsureEncryptionKey_RejectsWorldReadableFile(t *testing.T) {
 }
 
 func TestEnsureEncryptionKey_ConcurrentStartIsRaceSafe(t *testing.T) {
-	// Codex P2 on PR #189: two processes racing on first boot must NOT
+	// Two processes racing on first boot must NOT
 	// generate divergent keys. O_EXCL creation + reload-on-EEXIST makes
 	// every racing goroutine converge on the same persisted value.
 	dir := t.TempDir()

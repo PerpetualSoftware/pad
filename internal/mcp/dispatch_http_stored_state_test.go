@@ -1,6 +1,6 @@
 package mcp
 
-// Codex round 2 nit on BUG-2675 — the classifier test called
+// Nit on BUG-2675 — the classifier test called
 // the classifier directly, so deleting either CALL SITE in
 // dispatchItemNote / dispatchItemDecide would have left it green. This drives
 // the real dispatcher against the real server and store, which is the only

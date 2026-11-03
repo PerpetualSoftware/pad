@@ -9,7 +9,7 @@
 // blocked by a draft the user could not see — or, where the client refused the
 // value first, reported success and deleted the text.
 //
-// Lead ruling (RE-HOME; typed text is never dropped): an orphaned draft moves
+// Re-homing (typed text is never dropped): an orphaned draft moves
 // to the Uncategorized lane, visibly marked with the lane it came from, and is
 // saved there. Where Uncategorized cannot actually RECEIVE it — the create
 // would land somewhere else, or be refused — the draft is kept in place of a

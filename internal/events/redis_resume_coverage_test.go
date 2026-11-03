@@ -112,7 +112,7 @@ func TestBufferSurvivesWhileAnyLocalSubscriberRemains(t *testing.T) {
 	}
 }
 
-// codex round 1 F2. The straggler test above never resubscribes before the
+// The straggler test above never resubscribes before the
 // stray message lands, so it passes with a fan-out guard that only checks
 // "does SOME subscription exist". This one closes that: the workspace is
 // resubscribed FIRST, and only then does the old subscription's in-flight

@@ -57,7 +57,7 @@ type ItemVerification struct {
 
 // VerificationStaleHint says a linked PR merged after the verdict's code
 // revision was recorded. It is advisory: it names its evidence and never
-// changes State (TASK-3617 ruling (a)).
+// changes State (TASK-3617).
 type VerificationStaleHint struct {
 	Via       string `json:"via"`
 	MergedSHA string `json:"merged_sha"`

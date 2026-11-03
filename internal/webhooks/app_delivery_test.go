@@ -285,7 +285,7 @@ func TestAppDelivery_StoppedDispatcherSendsNothing(t *testing.T) {
 	}
 }
 
-// codex r3 on U10c: a request that failed before any byte went out (dial,
+// A request that failed before any byte went out (dial,
 // handshake, policy) is not counted as sent.
 func TestAppDelivery_UnsentFailuresAreNotCounted(t *testing.T) {
 	for _, tc := range []struct {

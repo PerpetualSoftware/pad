@@ -6,7 +6,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
  * through the false window, so a path that leaves it false forever is a cache
  * that never updates again.
  *
- * The create-failure leg is the one codex round 2 found: `create()` clears
+ * The create-failure leg is the subtle one: `create()` clears
  * membership at entry, and a rejected create returned before anything settled
  * the flag.
  */
@@ -73,7 +73,7 @@ describe('workspaceStore.membershipKnown', () => {
 
 	it('is false while the WORKSPACE is still resolving, not just the /me', async () => {
 		// The contract is the whole replacing call, so the window has to open
-		// before `/me` is even reached (codex round 3).
+		// before `/me` is even reached.
 		const { workspaceStore } = await import('./workspace.svelte');
 		let releaseGet: (v: unknown) => void = () => {};
 		api.workspaces.get.mockReturnValue(new Promise((r) => { releaseGet = r; }));
@@ -92,8 +92,8 @@ describe('workspaceStore.membershipKnown', () => {
 		// at. The first version of this fix cleared membership at entry and then
 		// settled the flag on the failure path, which told every consumer the
 		// current workspace was now a definitive "no access" — hiding a mounted
-		// settings page's owner controls until the next setCurrent (codex round
-		// 3). The flag alone cannot catch that, so this asserts the membership.
+		// settings page's owner controls until the next setCurrent.
+		// The flag alone cannot catch that, so this asserts the membership.
 		const { workspaceStore } = await import('./workspace.svelte');
 		api.workspaces.get.mockResolvedValue(WS);
 		api.workspaces.me.mockResolvedValue(OWNER);
@@ -106,13 +106,12 @@ describe('workspaceStore.membershipKnown', () => {
 		expect(workspaceStore.membershipKnown).toBe(true);
 		expect(workspaceStore.currentMembership).not.toBeNull();
 		expect(workspaceStore.isOwner).toBe(true);
-		// "Untouched" means the workspace identity too, not just the permission
-		// (codex round 4 — the title claimed more than the assertions did).
+		// "Untouched" means the workspace identity too, not just the permission.
 		expect(workspaceStore.current?.slug).toBe('ws');
 	});
 
 	it('does not let a create override a navigation the user started after it', async () => {
-		// Ordering, not just settling (codex round 4). The create's API call is
+		// Ordering, not just settling. The create's API call is
 		// slow; a `setCurrent` begins while it is pending and resolves first.
 		// The navigation is the newer intent and must win — an earlier draft
 		// claimed the sequence token only after the create returned, which let
@@ -135,7 +134,7 @@ describe('workspaceStore.membershipKnown', () => {
 	});
 
 	it('keeps BOTH workspaces when two creates race', async () => {
-		// Codex round 5. Both creates succeed on the server, so both workspaces
+		// Both creates succeed on the server, so both workspaces
 		// exist; only one can be selected. The loser of the selection race must
 		// still be in the list — otherwise a workspace the user just created is
 		// invisible until the next loadAll. Every earlier spelling of this

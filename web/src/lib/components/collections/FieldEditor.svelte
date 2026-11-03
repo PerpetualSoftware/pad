@@ -106,7 +106,7 @@
 	}
 
 	// Markings are keyed by option VALUE, so an edited option must carry its
-	// terminal and abandoned marks to the new value (codex round 1 on #1468):
+	// terminal and abandoned marks to the new value (#1468):
 	// a plain bind left them on the old value, which the save then filtered
 	// out, silently un-marking a renamed "cancelled" and counting it shipped.
 	function renameOption(optIndex: number, next: string) {

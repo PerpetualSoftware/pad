@@ -70,8 +70,8 @@
 	let fields = $derived(parseFields(item));
 	let schema = $derived(parseSchema(collection));
 
-	// `chippable` asks the SCHEMA as well as the value (BUG-3016, codex
-	// enumeration round). The value test below — "is it a string" — is the right
+	// `chippable` asks the SCHEMA as well as the value (BUG-3016). The value test below — "is it a
+	// string" — is the right
 	// question for a `multi_relation` (an array falls out) and the WRONG one for a
 	// scalar `relation`, whose value IS a string: a `status` retyped to one
 	// rendered its stored item id as a title-cased status pill, and the chip is
@@ -110,7 +110,7 @@
 	let starred = $derived(starredStore.isStarred(item.id));
 
 	/**
-	 * GATED PER ITEM, not per collection (BUG-3068 round 2).
+	 * GATED PER ITEM, not per collection (BUG-3068).
 	 *
 	 * Nothing gated the chip on permission at all before this: a read-only
 	 * viewer was offered a clickable chip whose write the server refused. That
@@ -263,7 +263,7 @@
 		{/if}
 		{#if viewport.isMobile}
 			<!--
-				Phone width (TASK-2244, Dave's ruling day 83): star, copy-ref and the
+				Phone width (TASK-2244): star, copy-ref and the
 				⋮ could not each reach 44x44 without overlapping, so ONE 44x44 ⋯
 				carries all three. The starred state stays visible as a passive ★,
 				not a control, so it is not a sub-44 target.
@@ -524,7 +524,7 @@
 		}
 	}
 
-	/* Status chip touch extender (TASK-2244, Dave's ruling day 83). At phone
+	/* Status chip touch extender (TASK-2244). At phone
 	   width the chip's tappable area grows to 44x44 through an invisible ::after,
 	   so the chip does not change size. It grows UPWARD only, into the title,
 	   which is the card link and not a control. The row below can be tag
@@ -772,7 +772,7 @@
 	}
 
 	/* Phone width (TASK-3311): each tag is a 44x44 touch target. It grows
-	   visibly to 44 wide and 28 tall (Dave's ruling: not bigger pills), and an
+	   visibly to 44 wide and 28 tall (not bigger pills), and an
 	   invisible extender adds the last 16px, 8 above and 8 below. That fills the
 	   16px gap between wrapped rows and the card's 8px gap above the row (the
 	   status chip's extender grows UP, away from the tags), so no neighbouring

@@ -47,7 +47,7 @@ var ErrRefused = errors.New("app fetch refused")
 
 // ErrNotSent marks a Poster.Post failure that happened before any byte of
 // the request was written (dial, TLS handshake), so a delivery ledger does
-// not count a request the endpoint never received (codex r3 on U10c). A
+// not count a request the endpoint never received. A
 // policy refusal (ErrRefused) is also unsent.
 var ErrNotSent = errors.New("request not sent")
 
@@ -246,8 +246,8 @@ func (f *Fetcher) Get(ctx context.Context, rawURL string, maxBytes int64) ([]byt
 // It does NOT use net/http's Transport. The transport may hand back a
 // response while it is still writing the request, and stops writing on its
 // own schedule. A webhook's in-flight record must end only when no byte can
-// still go out, and a 2xx must mean the whole request was sent (codex r1-r3
-// on U10b). So Post writes the whole request itself, on its own connection,
+// still go out, and a 2xx must mean the whole request was sent (U10b). So Post
+// writes the whole request itself, on its own connection,
 // then reads the response, then closes the connection, all on the caller's
 // goroutine: when it returns, nothing else can write.
 type Poster struct {
@@ -259,7 +259,7 @@ type Poster struct {
 // posterEntry is one webhook-flagged admin entry: its pinned addresses and
 // the path it admits ("" = any). Kept per ENTRY, never merged per origin:
 // two entries for one origin admit their own path at their own addresses
-// only (codex r4 on U10b).
+// only.
 type posterEntry struct {
 	nets []*net.IPNet
 	path string
@@ -295,8 +295,8 @@ func NewPoster(private []PrivateOrigin, timeout time.Duration, tlsConfig *tls.Co
 			}
 			pe.nets = append(pe.nets, n)
 		}
-		// Every entry is kept: duplicate entries for one origin add paths
-		// (codex r2), each with its own addresses (codex r4).
+		// Every entry is kept: duplicate entries for one origin add paths,
+		// each with its own addresses.
 		p.entries[origin] = append(p.entries[origin], pe)
 	}
 	return p, nil
@@ -386,7 +386,7 @@ func (p *Poster) Post(ctx context.Context, rawURL string, body []byte, header ht
 	req.Close = true // one request per connection
 	// Count what reached the connection: a write that fails before its
 	// first byte (a reset or the deadline right after the handshake) sent
-	// nothing (codex r4 on U10c).
+	// nothing.
 	cw := &countingWriter{w: conn}
 	bw := bufio.NewWriter(cw)
 	if err := req.Write(bw); err != nil {
@@ -396,7 +396,7 @@ func (p *Poster) Post(ctx context.Context, rawURL string, body []byte, header ht
 		return 0, unsentIfNothingWritten(cw, err)
 	}
 	// Interim 1xx answers (100 Continue, 103 Early Hints) precede the final
-	// one and are skipped, as net/http's Transport does (codex r4 on U10b);
+	// one and are skipped, as net/http's Transport does;
 	// they share the one 64 KiB bound. 101 is a protocol switch, never a
 	// webhook answer.
 	br := bufio.NewReader(io.LimitReader(conn, postResponseMax))
@@ -420,7 +420,7 @@ func (p *Poster) Post(ctx context.Context, rawURL string, body []byte, header ht
 // underPath reports whether u's path lies under prefix, by whole segments.
 // A path carrying dot segments or percent-encoding is refused outright: a
 // server may normalise "/hooks/../admin" or "/hooks/%2e%2e/admin" to a path
-// outside the prefix that a string comparison accepted (codex r1 on U10b).
+// outside the prefix that a string comparison accepted.
 func underPath(u *url.URL, prefix string) bool {
 	if u.RawPath != "" || strings.Contains(u.EscapedPath(), "%") {
 		return false

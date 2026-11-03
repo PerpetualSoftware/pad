@@ -309,8 +309,8 @@ func TestEditNoChangesSendsNothing(t *testing.T) {
 }
 
 // A nonzero editor exit aborts (vim's :cq), even after the file was written:
-// nothing is sent, and the error says nothing was saved (codex round 1 P2 —
-// dispositioned as abort semantics, not a lost save).
+// nothing is sent, and the error says nothing was saved (dispositioned as abort
+// semantics, not a lost save).
 func TestEditNonzeroEditorExitAbortsWithoutSaving(t *testing.T) {
 	stub := &editStub{gets: []map[string]any{editFixture("body", "", 41)}}
 	abort := filepath.Join(t.TempDir(), "abort-editor")

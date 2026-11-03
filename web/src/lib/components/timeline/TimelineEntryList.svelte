@@ -45,7 +45,7 @@
 		 * What to say when empty. Each view renders a different slice, so
 		 * "No timeline entries yet." is wrong on all but the whole feed — a
 		 * changes tab with no changes has not established anything about
-		 * comments (codex round 3).
+		 * comments.
 		 */
 		emptyLabel?: string;
 

@@ -6,7 +6,7 @@ import TagsPage from './+page.svelte';
 import { bindReactiveEpoch, isEpochReactive } from '../../../../test/identityEpochMock.svelte';
 
 /**
- * BUG-3236 (tags): a tag list that settles after the signed-in identity
+ * BUG-3236  (tags): a tag list that settles after the signed-in identity
  * changed must not paint.
  *
  * The window is the one starred's fence names: the layout calls
@@ -22,7 +22,7 @@ import { bindReactiveEpoch, isEpochReactive } from '../../../../test/identityEpo
  * A PAIR, stated rather than implied: removing the identity check from the
  * success arm ALONE survives this suite, because the `finally`'s check then
  * leaves `loading` true and the spinner hides the list. Removing both fails the
- * paint leg (BUG-3236 trail). Neither is redundant.
+ * paint leg  (BUG-3236 trail). Neither is redundant.
  */
 
 type Deferred<T> = { promise: Promise<T>; resolve: (v: T) => void; reject: (e: unknown) => void };
@@ -85,7 +85,7 @@ async function settle() {
 }
 
 
-// TASK-2203 (audit C46): a failed load is an error with a retry, never "No tags yet".
+// TASK-2203  (audit C46): a failed load is an error with a retry, never "No tags yet".
 describe('Tags: a failed load is not an empty workspace (TASK-2203)', () => {
 	beforeEach(() => {
 		tagCalls.length = 0;

@@ -194,7 +194,7 @@ func TestArmState_HeadlessDeadPidReaped(t *testing.T) {
 
 // TestArmState_MalformedFailsClosedNotAutoArm: an unparseable arm-state
 // file reads as LocalArmError → NOT armed, and does NOT fall back to
-// auto_arm even in an auto_arm=true repo (Codex R1 S3 HIGH-2). It is NOT
+// auto_arm even in an auto_arm=true repo. It is NOT
 // reaped — reaping would make the next read "absent" and re-arm via
 // auto_arm, re-arming despite a possible-but-unreadable disarm.
 func TestArmState_MalformedFailsClosedNotAutoArm(t *testing.T) {
@@ -222,8 +222,8 @@ func TestArmState_MalformedFailsClosedNotAutoArm(t *testing.T) {
 	}
 }
 
-// TestArmState_SocketIdentityMismatchRejected is the Codex R1 HIGH-2 / R2
-// finding-2 regression: a stale arm file must not arm a session that
+// TestArmState_SocketIdentityMismatchRejected is the
+// regression: a stale arm file must not arm a session that
 // merely reuses the socket PATH. On unix the file records the socket's
 // inode; a different node at the same path (a rebind, or a lingering stale
 // node reused as-is) has a different inode and must read as disarmed. The
@@ -303,8 +303,8 @@ func TestArmState_SocketMtimeFallbackMismatch(t *testing.T) {
 }
 
 // TestReapArmFile_NonDestructive: reap must NOT delete a file that was
-// re-armed with a live owner between the read and the reap (Codex R1
-// MED-1). Simulated by pointing reap at a path that currently holds a
+// re-armed with a live owner between the read and the reap (MED-1). Simulated by
+// pointing reap at a path that currently holds a
 // live arm.
 func TestReapArmFile_NonDestructive(t *testing.T) {
 	socketFile := filepath.Join(t.TempDir(), "msg.sock")

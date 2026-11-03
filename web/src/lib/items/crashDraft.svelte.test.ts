@@ -251,7 +251,7 @@ describe('crash drafts (TASK-3606)', () => {
 	});
 });
 
-// BUG-3863 (lead ruling 1): the pane holds a shown draft unless a live keeper
+// BUG-3863: the pane holds a shown draft unless a live keeper
 // in this tab last kept exactly that text for that user and item.
 describe('keeper ownership (BUG-3863)', () => {
 	it('owns exactly what it last kept, for that user and item', () => {

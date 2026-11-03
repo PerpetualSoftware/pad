@@ -133,7 +133,7 @@ func TestSubscribeAndReplaySinceRefusesAColdResume(t *testing.T) {
 	b.Unsubscribe(ch)
 }
 
-// codex round 12. The cold-resume fix above sends clients sync_required, and
+// The cold-resume fix above sends clients sync_required, and
 // MemoryBus reported nothing — RedisBus counts its own unservable resumes, so
 // pad_watchevents_resume_gaps_total read ZERO on a single-process deployment
 // for a path that genuinely resyncs clients.

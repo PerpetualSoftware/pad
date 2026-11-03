@@ -49,7 +49,7 @@ func pidFileOwner(path string) (pidRecord, pidFileOwnership) {
 }
 
 // Windows deliberately does NOT delete a stale PID file, where Unix removes it
-// under the lock it already holds (codex round 3).
+// under the lock it already holds.
 //
 // There is no lock here to make check-then-remove atomic, so a successor that
 // claims the path between the two would have its live record deleted and be

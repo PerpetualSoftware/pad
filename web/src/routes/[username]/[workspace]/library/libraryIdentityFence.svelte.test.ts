@@ -61,7 +61,7 @@ const activateCalls = vi.hoisted(
 	() => [] as Array<{ args: unknown[]; resolve: (v: unknown) => void; reject: (e: unknown) => void }>
 );
 // `activatePlaybook` gets its own driven legs rather than riding on the
-// convention handler's (codex round 1 [P2]). The two are near-identical, which
+// convention handler's. The two are near-identical, which
 // is exactly why source-text assertions alone would not notice one of them
 // going inert.
 const playbookCalls = vi.hoisted(
@@ -169,7 +169,7 @@ describe('the library page stops a commit when the identity moves mid-flight', (
 			// The MOCK's own getter and bump, not the module signal: the first
 			// version of this helper read its own state and returned true with
 			// both hooks disconnected, so every leg below passed against the
-			// non-reactive double it exists to detect (codex round 1 [P2]).
+			// non-reactive double it exists to detect.
 			isEpochReactive(
 				() => auth.identityEpoch,
 				() => auth.bumpEpoch()
@@ -269,7 +269,7 @@ describe('the library page stops a commit when the identity moves mid-flight', (
 	});
 
 	it('a LOAD in flight when the identity moves writes none of the previous data', async () => {
-		// The load path had no driven leg at all (codex round 2 [P2]): the source
+		// The load path had no driven leg at all: the source
 		// guard permits the fence to sit AFTER the assignments, and nothing held
 		// a load open across an identity change to notice. The implementation
 		// ordering was right; the instrument could not say so.
@@ -301,7 +301,7 @@ describe('the library page stops a commit when the identity moves mid-flight', (
 	});
 
 	it('the FAILURE path arms a fenced timer too, and it clears', async () => {
-		// Only the success timer was driven (codex round 2 [P2]). Two of the four
+		// Only the success timer was driven. Two of the four
 		// timers live in catch arms, so a dead branch carrying both
 		// `identityHeld()` and `toast = null` satisfied the source guard and the
 		// whole suite — source text vouching for a path nothing executes.
@@ -380,8 +380,8 @@ describe('the library page stops a commit when the identity moves mid-flight', (
 	});
 
 	it('a playbook activation IN FLIGHT when the identity moves commits nothing', async () => {
-		// The late-response half of the playbook path (codex round 3 [P2]).
-		// Round 2 gave the playbook handler a control and a click-after-the-change
+		// The late-response half of the playbook path.
+		// An earlier pass gave the playbook handler a control and a click-after-the-change
 		// leg, which between them prove the request STARTS and that a preflight
 		// refusal works — and say nothing about the post-await fence. Removing
 		// that fence left the whole suite passing.
@@ -406,9 +406,9 @@ describe('the library page stops a commit when the identity moves mid-flight', (
 	});
 
 	it("the PLAYBOOK failure path arms a fenced timer too, and it clears", async () => {
-		// The FOURTH timer, and the one round 2 claimed coverage of without
-		// having it (codex round 3 [P2]). Two of the four live in catch arms;
-		// round 2 drove the convention one and stopped.
+		// The FOURTH timer, and the one an earlier pass claimed coverage of without
+		// having it. Two of the four live in catch arms;
+		// that pass drove the convention one and stopped.
 		vi.useFakeTimers();
 		await mountPage();
 		clickActivatePlaybook();
@@ -438,7 +438,7 @@ describe('the library page stops a commit when the identity moves mid-flight', (
 
 	it('CONTROL: the timer DOES clear the toast when the identity is unchanged', async () => {
 		// Pairs with the stale-timer leg above, which on its own is satisfied by
-		// a timer that clears nothing at all (codex round 1 [P2]). Fixing a
+		// a timer that clears nothing at all. Fixing a
 		// stale-write by making the write never happen is the failure this
 		// family already shipped once.
 		vi.useFakeTimers();

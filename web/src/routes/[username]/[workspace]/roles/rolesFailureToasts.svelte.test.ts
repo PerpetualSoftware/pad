@@ -3,14 +3,14 @@ import { cleanup, render, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 
 /**
- * TASK-2204 (audit C71): every write on the roles board that fails is shown.
- * Role save and delete went only to console.error (the dialog read as frozen);
+ * TASK-2204  (audit C71): every write on the roles board that fails is shown.
+ * Role save and delete went only to console.error  (the dialog read as frozen);
  * the drag write, the card sort order and the lane order reloaded the board on
  * failure and said nothing, so a move silently undid itself.
  */
 
 const toasts = vi.hoisted(() => [] as Array<{ message: string; kind: string }>);
-// The destructive handlers ask through the shared dialog (TASK-3543); this
+// The destructive handlers ask through the shared dialog  (TASK-3543); this
 // suite is not about the question, so it is always answered yes.
 vi.mock('$lib/stores/confirmDialog.svelte', () => ({
 	confirmDialog: { request: () => Promise.resolve(true) }
@@ -43,7 +43,7 @@ const ITEM = {
 	fields: '{}', tags: '[]', agent_role_id: null, assigned_user_id: null, role_sort_order: 3,
 };
 // Already in role lane A, so a drop has a card to land ahead of: a card alone
-// in a lane needs no sort-order write (TASK-2230).
+// in a lane needs no sort-order write  (TASK-2230).
 const NEIGHBOR = { ...ITEM, id: 'i2', slug: 'i2', title: 'Neighbour', item_number: 2, agent_role_id: 'r1', role_sort_order: 1 };
 
 vi.mock('$lib/api/client', () => ({

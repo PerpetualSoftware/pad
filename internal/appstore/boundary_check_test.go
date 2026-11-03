@@ -125,7 +125,7 @@ var reviewedStoreFuncs = map[string]string{
 }
 
 // allowedFuncValues are named function values the walk may meet: function
-// FullName, then variable name, then why it is safe. Per the lead's ruling the
+// FullName, then variable name, then why it is safe. The
 // func-value rule is never loosened globally; a new case gets its own entry.
 var allowedFuncValues = map[string]map[string]string{
 	"(*github.com/PerpetualSoftware/pad/internal/store.Store).enqueueDecisionJobsTx": {
@@ -331,7 +331,7 @@ func (ix *index) walkRoot(rootPkg *packages.Package) []violation {
 				// Rule 8: a call through a function VALUE has no static
 				// target the walk can follow. Refused outright, with no
 				// attempt to verify where the value came from: every such
-				// verification codex probed (reassignment, aliases, method
+				// verification attempted (reassignment, aliases, method
 				// expressions, interface dispatch) had a bypass, and this
 				// is a guard, not a proof. App code calls named functions.
 				if !isStaticOrBuiltin(p, n.Fun) && !allowedFuncValue(u, p, n.Fun) {
@@ -367,8 +367,8 @@ func (ix *index) walkRoot(rootPkg *packages.Package) []violation {
 						// through can be checked against what will
 						// implement it: Mutator[T], an anonymous constraint,
 						// a type parameter hidden in a func, alias, slice or
-						// map argument. Codex rounds 3 and 4 found each in
-						// turn; the class is closed by refusing interface
+						// map argument. Each of these was found
+						// in turn; the class is closed by refusing interface
 						// dispatch inside ANY generic body (error excepted).
 						if !door && isGenericUnit(u) && !isErrorIface(irecv) {
 							report(p, n.Pos(), "interface-call", "%s calls %s on interface %s inside a generic body", u.name, inst.Name(), irecv)

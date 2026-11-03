@@ -73,7 +73,7 @@ func TestNextAfterBeforeStartReturnsSyncedStart(t *testing.T) {
 	}
 }
 
-// TestNextAfterUnsyncedStartSkipsStart pins ruling Q1 (dateutil semantics): a
+// TestNextAfterUnsyncedStartSkipsStart pins dateutil semantics: a
 // "every Friday" schedule made on a Tuesday does not fire on the Tuesday.
 func TestNextAfterUnsyncedStartSkipsStart(t *testing.T) {
 	tuesday := "2025-10-28T09:00" // a Tuesday
@@ -169,7 +169,7 @@ func TestBetweenEqualsChainedNextAfter(t *testing.T) {
 		"FREQ=DAILY;UNTIL=20250320T120000Z", "FREQ=MONTHLY;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1",
 	}
 	windows := [][2]string{{"2025-03-07T00:00:00Z", "2025-03-12T00:00:00Z"}, {"2025-10-31T00:00:00Z", "2025-11-04T00:00:00Z"}, {"2025-01-01T00:00:00Z", "2025-01-08T00:00:00Z"}}
-	// MaxInstances 5, 50 and 500 exercise the truncation (TASK-4100 r1): the
+	// MaxInstances 5, 50 and 500 exercise the truncation (TASK-4100): the
 	// first N of Between must be the first N of the chain, not just agree when
 	// nothing is cut.
 	for _, rule := range rules {

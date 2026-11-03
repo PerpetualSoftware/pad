@@ -551,7 +551,7 @@ func TestEffortBackfill_StoreFailureMidRunWritesNoMarker(t *testing.T) {
 	}
 }
 
-// Pacing (TASK-3921 r3 M1). The drain wait is ONE condition, marked
+// Pacing (TASK-3921). The drain wait is ONE condition, marked
 // "THE DRAIN-WAIT LINE" in waitChunkDrained (effort_backfill.go); making it
 // return at once makes the next two tests go red.
 

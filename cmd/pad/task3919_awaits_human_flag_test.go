@@ -92,7 +92,7 @@ func TestTASK3919_CollectionUpdateRefusesAnUnappliedAwaitsHuman(t *testing.T) {
 	}
 }
 
-// Codex r2 P2: `pad collection create` carries the same flag, so a human-tasks
+// `pad collection create` carries the same flag, so a human-tasks
 // collection can be marked at creation instead of by a second update.
 func TestTASK3919_CollectionCreateSendsAwaitsHuman(t *testing.T) {
 	for _, tc := range []struct {

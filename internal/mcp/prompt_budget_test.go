@@ -8,7 +8,7 @@ import (
 )
 
 // These budgets are FIXED CEILINGS on the prompt-bearing MCP payloads every
-// agent receives (lead ruling, TASK-3489). Aim to keep about 2 KiB of headroom
+// agent receives (TASK-3489). Aim to keep about 2 KiB of headroom
 // under each. When the headroom drops under about 512 bytes, TRIM the text
 // (move detail into docs/mcp.md, keeping every rule an agent acts on) rather
 // than raising the ceiling. A trim does not lower the ceiling either: a budget

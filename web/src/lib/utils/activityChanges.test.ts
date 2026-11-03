@@ -5,7 +5,7 @@ import { parseFieldChanges, formatChangesForDisplay } from './activityChanges';
 //
 //   - `implementation_notes` / `decision_log` are suppressed, because those
 //     entries have had their own timeline cards since BUG-2301 and a pill can
-//     only restate the card above it (Dave's ruling, option 3).
+//     only restate the card above it.
 //   - a segment whose "field name" is not a field name is not a change at all.
 //     The server's change string is joined with "; " and split here on ";", so
 //     any value containing a semicolon fragments — and on legacy rows those
@@ -29,7 +29,7 @@ describe('parseFieldChanges', () => {
 		// so they are the cases a schema-key-shaped guard could wrongly refuse.
 		// One-sided values ("field: → value") are KEPT with an empty `from` —
 		// checked against the function, after the source comment claiming they
-		// were dropped turned out to be wrong and sent this expectation astray.
+		// were dropped was wrong.
 		const parsed = parseFieldChanges(
 			'title: Old → New; role: → Implementer; assigned: Dave → Wren; due_date: → 2026-09-01',
 		);

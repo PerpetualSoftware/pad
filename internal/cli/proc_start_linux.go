@@ -12,15 +12,14 @@ import (
 // Linux: the process's start time (field 22 of /proc/<pid>/stat, in clock
 // ticks since boot). It is constant for the life of a process and differs
 // for a reused pid, so comparing it defeats the pid-reuse hazard the
-// headless arm-state fallback would otherwise have (Codex R1 HIGH-2). ok
+// headless arm-state fallback would otherwise have. ok
 // is false when the value can't be read, in which case the caller treats
 // the owner as unverifiable and fails closed.
 //
 // A ZOMBIE (state 'Z') reports ok=false even though its /proc entry and
 // start time still exist: the arming process has exited and is only
 // awaiting reap, so its consent is dead. Without this a defunct arm
-// command would keep a headless session armed until its parent reaped it
-// (Codex R2 finding 3).
+// command would keep a headless session armed until its parent reaped it.
 //
 // The comm field (2) is wrapped in parentheses and may itself contain
 // spaces or parentheses, so parsing starts after the LAST ')': the fields
@@ -35,7 +34,7 @@ func procStartToken(pid int) (string, bool) {
 // caller that must tell "this process is gone" (os.ErrNotExist, errProcZombie)
 // from "this process could not be examined" (a permission or I/O error —
 // hidepid mounts, a namespace boundary) can do so. The registry's liveness
-// verdict needs that distinction (TASK-2767, codex round 1 P2): a probe that
+// verdict needs that distinction (TASK-2767): a probe that
 // failed is not proof the owner is gone.
 func procStartTokenErr(pid int) (string, error) {
 	fields, err := procStatFields(pid)

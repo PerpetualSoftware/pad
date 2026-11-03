@@ -98,8 +98,7 @@ class WorkspaceState {
 	// in-flight bootstrap bails out instead of writing/reapplying
 	// rows that belong to a stale identity. Without this, a sign-out
 	// or 403 purge during a slow /items-index request would let the
-	// completed snapshot resurrect just-purged rows (Codex P1
-	// round 3).
+	// completed snapshot resurrect just-purged rows.
 	generation = 0;
 
 	// True while a first-time `bootstrap` has not yet issued its first NETWORK
@@ -121,7 +120,7 @@ class WorkspaceState {
 	// delta from a cursor that may be past the rows in question.
 	// PLAIN, not `$state`: nothing renders from them.
 	// A stale ask is answered only by a projection resync that STARTED after
-	// it, never by one already in flight when it was made (Codex on #2150):
+	// it, never by one already in flight when it was made:
 	// `resyncStarts` counts starts (a join is not one), `staleSince` is that
 	// count at the latest outstanding ask (null when none), and
 	// `resyncCompleted` is the start number of the newest resync that
@@ -135,7 +134,7 @@ class WorkspaceState {
 	// complete (transient network blip). The cache is usable —
 	// `bootstrapState` is `'ready'` so the UI renders — but a later
 	// `bootstrap()` call will retry the delta sync instead of
-	// no-opping. Cleared on successful sync. Codex P2 round 5.
+	// no-opping. Cleared on successful sync.
 	pendingResync = $state(false);
 	// Mirrors the explicit capability bit on index/delta responses. It is
 	// persisted with the cursor because the same user/workspace cache can
@@ -160,7 +159,7 @@ class WorkspaceState {
 	// `ensureAccessScope`.
 	cacheRead = $state(false);
 	// Does the durable cache reflect the MOST RECENT authoritative snapshot this
-	// session installed in RAM? (TASK-2906 round 2; widened by TASK-2909.)
+	// session installed in RAM? (TASK-2906; widened by TASK-2909.)
 	//
 	// Read it as a statement about the two stores AGREEING, not as the return
 	// value of the last `persistReplace` call. `resyncProjectionScope` clears it
@@ -204,7 +203,7 @@ class WorkspaceState {
 	// authoritative snapshot — hidden by a downgrade or deleted). `upsert`
 	// refuses to write a fenced id, so a stale old-scope optimistic
 	// create/update response resolving after the resync can't resurrect a
-	// now-hidden row (Codex P1 round 8). An authoritative new-scope `applyDelta`
+	// now-hidden row. An authoritative new-scope `applyDelta`
 	// un-fences an id (the server says it's visible again); the next resync
 	// recomputes the set from scratch, so a re-upgrade clears it. Not persisted;
 	// the race it guards is within a single session.
@@ -246,8 +245,7 @@ class WorkspaceState {
 	// BOUNDED, and NOT by the `delete` on the authoritative re-add paths: that
 	// lift fires only when an item comes BACK, which by definition never happens
 	// for one that moved out permanently — so it prunes exactly the entries that
-	// were already harmless and none of the ones that accumulate (codex round 1
-	// P2, against the first draft of the comment above, which implied otherwise).
+	// were already harmless and none of the ones that accumulate.
 	// `noteMovedOut` caps the map; see `MOVED_OUT_FLOOR_CAP`.
 	movedOutFloor = new Map<string, number>();
 
@@ -264,8 +262,8 @@ class WorkspaceState {
 	// persisted (the window it guards is within a single session).
 	pendingRetags = new Map<string, string>();
 
-	// The auth identity the pendingRetags were recorded under (codex round 2
-	// P2): a cold state survives the bootstrap user-mismatch reset (that
+	// The auth identity the pendingRetags were recorded under:
+	// a cold state survives the bootstrap user-mismatch reset (that
 	// check deliberately skips cold states), so a rename recorded pre-
 	// bootstrap by user A could otherwise be applied to user B's warm cache
 	// after a console logout + login. Recorded at retag time from the
@@ -325,8 +323,8 @@ const resetGenerations = new Map<string, number>();
 let allWorkspacesDropped = 0;
 
 /**
- * Workspaces whose cache was dropped because ACCESS WAS REVOKED (TASK-2921,
- * codex round 1 P1). A `$state` set so the reading component re-renders.
+ * Workspaces whose cache was dropped because ACCESS WAS REVOKED (TASK-2921).
+ * A `$state` set so the reading component re-renders.
  *
  * Module-level, OUTLIVING THE STATE IT DESCRIBES, for the same reason
  * `resetGenerations` and `reconcileTokens` are — and here the reason is not
@@ -534,7 +532,7 @@ function cursorAsNum(c: string): number {
  * permanently in that deployment, which is the worse of the two failures.
  */
 /**
- * How many eviction floors one workspace keeps (TASK-2920, codex round 1 P2).
+ * How many eviction floors one workspace keeps (TASK-2920).
  *
  * 5000 is `DefaultItemChangesLimit` in `internal/store/items.go` — the server's
  * per-page cap on `/items-changes`, and the one that applies here: the client
@@ -549,7 +547,7 @@ function cursorAsNum(c: string): number {
  * whose racing fetches are likeliest to have long since landed.
  *
  * WHAT THE CAP DOES NOT CLOSE, stated plainly because a bound that reads as a
- * guarantee is worse than one that reads as a bound (codex round 2 P2). The
+ * guarantee is worse than one that reads as a bound. The
  * reconcile loop PAGES, so more than one page of evictions can be consumed
  * inside a single in-flight snapshot; past 5000 of them the oldest floors are
  * gone before that snapshot merges, and those ids can be reinstated exactly as
@@ -675,7 +673,7 @@ function rebuildSearchIndex(ws: string, state: WorkspaceState): void {
 }
 
 /**
- * The access epoch a DELTA may stamp on the durable cache (TASK-2906 round 3).
+ * The access epoch a DELTA may stamp on the durable cache (TASK-2906).
  *
  * `state.accessEpoch` is what RAM believes, and after a REFUSED `persistReplace`
  * that belief is true of RAM and false of disk: the resync adopted the new epoch
@@ -686,7 +684,7 @@ function rebuildSearchIndex(ws: string, state: WorkspaceState): void {
  * available here, because the delta's rows and cursor must still land.
  *
  * So the delta DECLINES TO VOUCH: it passes `undefined`, which `persistDelta`
- * reads as "carry the stored epoch" (TASK-2909 review round 1 P2 — an explicit
+ * reads as "carry the stored epoch" (TASK-2909 — an explicit
  * null, which this shipped as, could commit after a replace and clobber the
  * epoch that replace had just recorded). The carried value keeps the durable
  * epoch agreeing with the durable ROWS, which is what makes the SERVER's next
@@ -732,7 +730,7 @@ function durableEpochFor(state: WorkspaceState): string | null | undefined {
 	// unsafe during the window between a resync installing its snapshot in RAM
 	// and `persistReplace` resolving: a delta committing after that replace
 	// would clobber the epoch it had just correctly recorded, and the next boot
-	// would pay a full snapshot to rediscover it (review round 1 P2).
+	// would pay a full snapshot to rediscover it.
 	return state.durableSnapshotCommitted ? state.accessEpoch : undefined;
 }
 
@@ -909,8 +907,7 @@ function runReconcilePass(ws: string): Promise<boolean> {
 async function reconcilePassBody(ws: string): Promise<boolean> {
 	const state = workspaces.get(ws);
 	if (!state) return true;
-	// GENERATION FENCE, the same one `bootstrap` has carried since Codex P1
-	// round 3 of TASK-1357 (codex round 4 P1 of this unit).
+	// GENERATION FENCE, the same one `bootstrap` has carried since TASK-1357.
 	//
 	// Without it, a `reset()` landing while `/items-changes` is in flight —
 	// a sign-out, a user switch, a 403 purge — leaves this loop reading the
@@ -969,7 +966,7 @@ async function resyncProjectionScope(
 	// version behind the in-memory baseline. The next warm boot hydrates the
 	// DURABLE one, so it would start from a baseline this session had already
 	// superseded and resync on its first delta — a full snapshot per reload,
-	// for a scope that never actually changed (round 2).
+	// for a scope that never actually changed.
 	fallbackEpoch?: string,
 ): Promise<void> {
 	const pending = projectionResyncs.get(ws);
@@ -992,7 +989,7 @@ async function resyncProjectionScope(
 		// Advance the scope epoch NOW — before the network await, not after the
 		// snapshot installs. A reconcile response that races this fetch must see
 		// the epoch already changed so it can't declare catch-up and clear the
-		// pendingResync we just set (Codex P2 round 9). The bump is monotonic and
+		// pendingResync we just set. The bump is monotonic and
 		// side-effect-free: even if this resync later bails on a generation
 		// mismatch, a spurious bump just makes in-flight loops re-poll once.
 		state.scopeEpoch += 1;
@@ -1058,8 +1055,8 @@ async function resyncProjectionScope(
 		// here, and a baseline left stale would re-fire the resync on the very
 		// next poll.
 		//
-		// ABSENT means UNKNOWN, and unknown must not erase what we know
-		// (review round 1 F3). `?? null` here read "no epoch on the snapshot"
+		// ABSENT means UNKNOWN, and unknown must not erase what we know.
+		// `?? null` here read "no epoch on the snapshot"
 		// as "this workspace has no baseline", which during a mixed deployment
 		// — a delta from a new server, a snapshot from an old one — sent the
 		// reconcile loop into the null-baseline branch and resynced again, up
@@ -1144,7 +1141,7 @@ async function resyncProjectionScope(
 			snapshot,
 			state.cursor,
 			resp.includes_unparented_metadata,
-			// The state's baseline, NOT `resp.access_epoch ?? null` (round 2).
+			// The state's baseline, NOT `resp.access_epoch ?? null`.
 			// F3 deliberately keeps a known baseline when the snapshot carries
 			// no epoch; writing null here would contradict it in the durable
 			// copy. A null on disk is not a harmless gap: `ensureAccessScope`
@@ -1164,7 +1161,7 @@ async function resyncProjectionScope(
 		await promise;
 	} finally {
 		if (projectionResyncs.get(ws) === promise) projectionResyncs.delete(ws);
-		// BUMP THE OVERLAP COUNTER ON SETTLE (TASK-2909, review rounds 2-3).
+		// BUMP THE OVERLAP COUNTER ON SETTLE (TASK-2909).
 		//
 		// This is the ONLY bump. A reconcile loop captures the counter when its
 		// `/items-changes` request starts, so bumping here makes every capture
@@ -1249,8 +1246,8 @@ export const localIndex = {
 
 		// User-mismatch reset BEFORE the early-return checks. Otherwise
 		// a different user signing into the same browser would inherit
-		// the previous user's `ready` state and in-flight promise
-		// (Codex P1 round 5). `ensureState` auto-creates a fresh
+		// the previous user's `ready` state and in-flight promise.
+		// `ensureState` auto-creates a fresh
 		// WorkspaceState after the reset.
 		const prior = workspaces.get(ws);
 		if (prior && prior.bootstrapState !== 'cold' && prior.userId !== opts.userId) {
@@ -1261,8 +1258,7 @@ export const localIndex = {
 		// Early return for already-ready states ONLY when there's no
 		// outstanding resync work. A transient delta-sync failure
 		// (network blip) leaves `pendingResync = true`; the next
-		// bootstrap call must retry the reconcile, not no-op. Codex P2
-		// round 5.
+		// bootstrap call must retry the reconcile, not no-op.
 		if (state.bootstrapState === 'ready' && !state.pendingResync) return;
 		const pending = inflight.get(ws);
 		if (pending) return pending;
@@ -1270,7 +1266,7 @@ export const localIndex = {
 		// `userId` is REQUIRED (not defaulted) so authenticated callers
 		// can't silently land their cache in the shared `anon`
 		// namespace. Pass null explicitly for pre-auth / public-share
-		// flows. Codex P? (round 4) caught the leak risk.
+		// flows.
 		state.userId = opts.userId;
 		// Capture reentry BEFORE flipping bootstrapState to 'loading'
 		// — otherwise the `state.bootstrapState === 'ready'` check
@@ -1278,7 +1274,7 @@ export const localIndex = {
 		// on a pendingResync retry. That's bad because IDB writes are
 		// fire-and-forget; re-reading rows whose RAM copy was just
 		// removed but whose IDB delete hasn't landed would resurrect
-		// them. Codex P2 round 7.
+		// them.
 		const reentry =
 			state.bootstrapState === 'ready' && state.pendingResync;
 		// Only flip to 'loading' for first-time bootstrap. A reentry
@@ -1292,14 +1288,13 @@ export const localIndex = {
 		// Capture the generation at start. If `reset()` runs during
 		// any await below, generation bumps; we then bail out before
 		// re-applying rows or writing the snapshot back, otherwise
-		// purged data could resurrect (Codex P1 round 3).
+		// purged data could resurrect.
 		const bootstrapGen = state.generation;
 		const userId = state.userId;
 		const isStale = () => state.generation !== bootstrapGen;
 
 		// `slot.p` holds the in-flight promise so the IIFE body's
-		// `finally` can do an identity check against it — see Codex
-		// round 7 P2. We need a level of indirection (the object)
+		// `finally` can do an identity check against it. We need a level of indirection (the object)
 		// because a bare `const p = ...` puts `p` in the TDZ when the
 		// suspended async body resumes and references it.
 		const slot: { p: Promise<void> | null } = { p: null };
@@ -1335,8 +1330,8 @@ export const localIndex = {
 				// `durableRead`, NOT an unconditional true: every failure inside
 				// `hydrate` returns the same empty payload a genuinely empty
 				// cache does, and treating a failed read as an empty cache is
-				// how a silent adopt gets back in through the front door
-				// (review round 2). A transient IDB failure now leaves the
+				// how a silent adopt gets back in through the front door.
+				// A transient IDB failure now leaves the
 				// baseline unacquired, which costs a resync and hides nothing.
 				state.cacheRead = cached.durableRead;
 				// A populated cache is one we've successfully synced
@@ -1344,7 +1339,7 @@ export const localIndex = {
 				// has moved off the "0" floor (empty workspaces /
 				// guests with item-level grants legitimately have
 				// zero rows but a real cursor). Both deserve the
-				// warm-path fast boot. Codex P2 round 8.
+				// warm-path fast boot.
 				const cacheIsPopulated =
 					cached.includesUnparentedMetadata !== null &&
 					(cached.items.length > 0 || cursorAsNum(cached.cursor) > 0);
@@ -1372,10 +1367,10 @@ export const localIndex = {
 					// window. Runs before the search rebuild so the
 					// rebuilt index sees the live slugs. Intent recorded
 					// under a DIFFERENT auth identity is discarded, not
-					// applied (codex round 2 P2 — a cold state survives
+					// applied (a cold state survives
 					// the logout path, so this is the cross-user gate).
 					// A null stamp = recorded before this session's auth
-					// resolved — same session, so apply (codex round 7 P2).
+					// resolved — same session, so apply.
 					if (state.pendingRetagsUser === null || state.pendingRetagsUser === userId) {
 						for (const [collectionId, newSlug] of state.pendingRetags) {
 							applyRetag(ws, state, collectionId, newSlug);
@@ -1402,7 +1397,7 @@ export const localIndex = {
 					// behind by more than one page would only catch
 					// up by 5000 rows and then `bootstrapState` would
 					// pin at `ready` forever, with no later trigger
-					// to fetch the rest (Codex P2 round 1).
+					// to fetch the rest.
 					//
 					// Auth/authz failures (403) must NOT be swallowed
 					// — the cache is stale-by-permission and showing
@@ -1427,10 +1422,10 @@ export const localIndex = {
 						// owns the reaction, and running it in both places ran it
 						// TWICE — two `markWorkspaceDropped` bumps, two search
 						// resets, and two async `persistWipe` calls that a retry
-						// could race (codex round 3 P2).
+						// could race.
 						//
 						// It still has to come BEFORE the staleness bail, which is
-						// codex round 2's fix and independent of this one: the
+						// an earlier fix and independent of this one: the
 						// global 403 handler has already called `reset(ws)`,
 						// bumping this state's generation, so `isStale()` is true
 						// in exactly the case the auth path exists for. Bailing
@@ -1441,7 +1436,7 @@ export const localIndex = {
 						// Transient network failure. Cache stands and
 						// state stays 'ready' so the UI keeps working.
 						// `pendingResync` remains true so the next
-						// bootstrap() call retries (Codex P2 round 5).
+						// bootstrap() call retries.
 						// Permission revocation that doesn't change row
 						// data used to be uncovered here — TASK-1360 and
 						// DOC-1342 decision #3 punted it in favour of the
@@ -1516,8 +1511,8 @@ export const localIndex = {
 					// Otherwise an SSE/applyDelta that landed during the
 					// in-flight /items-index request could overwrite a
 					// newer row in IDB while the cursor on disk pointed
-					// past the gap, leaving the cache permanently stale
-					// (Codex P1 round 2). Iterating state.items.values()
+					// past the gap, leaving the cache permanently stale.
+					// Iterating state.items.values()
 					// yields exactly the merged, winning rows.
 					const snapshot: ItemIndexRow[] = [];
 					for (const row of state.items.values()) snapshot.push(row);
@@ -1576,8 +1571,7 @@ export const localIndex = {
 					}
 				}
 			} catch (err) {
-				// Same order, same reason as the reconcile catch above (codex
-				// round 2 P1): a 403 on the COLD `/items-index` — the first load
+				// Same order, same reason as the reconcile catch above: a 403 on the COLD `/items-index` — the first load
 				// after a revocation, and the likeliest path of all — is reset by
 				// the global handler before it reaches here, which makes
 				// `isStale()` true and used to swallow it into a cold state with
@@ -1596,7 +1590,7 @@ export const localIndex = {
 				// re-occupy the slot before this stale promise's
 				// `finally` runs; deleting unconditionally would
 				// remove the new entry and let a duplicate bootstrap
-				// start (Codex P2 round 7).
+				// start.
 				if (slot.p && inflight.get(ws) === slot.p) inflight.delete(ws);
 				// A hydrate that THREW never reached the line that closes the
 				// join window; a joiner is already awaiting this promise.
@@ -1693,7 +1687,7 @@ export const localIndex = {
 	 * surfaces them. Hard deletes (workspace GC / 403 purge) go
 	 * through `remove()` instead.
 	 *
-	 * Three guards against stale batches (all three caught by Codex
+	 * Three guards against stale batches (all three caught by
 	 * across review rounds):
 	 *
 	 *   1. If `newCursor <= state.cursor`, drop the whole batch. The
@@ -1752,8 +1746,8 @@ export const localIndex = {
 					// persist set so the IDB cursor we're about
 					// to advance doesn't lap a row that may not
 					// be durable yet (upsert's fire-and-forget
-					// IDB write could still be pending / failed
-					// — Codex P? round 4). One redundant put is
+					// IDB write could still be pending / failed).
+					// One redundant put is
 					// cheaper than a missing row on warm boot.
 					// (A moved-out eviction is unconditional — it
 					// removes the row regardless of stored seq.)
@@ -1827,8 +1821,8 @@ export const localIndex = {
 		state.cursor = newCursor;
 		// Write-through to IDB. ATOMIC: rows + cursor land in a
 		// single transaction so the persisted cursor can never
-		// advance past rows that didn't make it to disk (Codex P2
-		// round 1). Fire-and-forget; storage failures degrade to
+		// advance past rows that didn't make it to disk.
+		// Fire-and-forget; storage failures degrade to
 		// in-memory only and never break the read path. Routed
 		// through the workspace's captured `userId` so a different
 		// user signing into the same browser sees their own cache.
@@ -1874,7 +1868,7 @@ export const localIndex = {
 				if (state.accessEpoch === null) {
 					state.accessEpoch = accessEpoch;
 					// Only when the resync's snapshot actually landed durably —
-					// see `durableSnapshotCommitted` (TASK-2906 round 2).
+					// see `durableSnapshotCommitted` (TASK-2906).
 					if (state.durableSnapshotCommitted) {
 						await persistAccessEpoch(state.userId, ws, accessEpoch, null);
 					}
@@ -1900,7 +1894,7 @@ export const localIndex = {
 			return false;
 		}
 		if (state.accessEpoch === accessEpoch) return false;
-		// TERMINATION (round 1 F3). The resync adopts the snapshot's epoch when
+		// TERMINATION. The resync adopts the snapshot's epoch when
 		// it has one. When it does not — an older server answering the snapshot
 		// while a newer one answers the delta — the baseline would be unchanged,
 		// the very next poll would compare it against the same incoming epoch,
@@ -1910,7 +1904,7 @@ export const localIndex = {
 		// and IDB together.
 		const beforeResync = state.accessEpoch;
 		await resyncProjectionScope(ws, state, accessEpoch);
-		// ...UNLESS THE RESYNC WAS JOINED, not started (round 3). Resyncs are
+		// ...UNLESS THE RESYNC WAS JOINED, not started. Resyncs are
 		// deduplicated per workspace, so a resync already in flight — started
 		// by a projection mismatch, which passes no fallback — returns its
 		// promise and this caller's fallback is never seen. The baseline is then
@@ -1927,8 +1921,8 @@ export const localIndex = {
 			// and resync again — every reload, for a scope that has not changed
 			// since. The started-resync path has no such gap, because its
 			// fallback is applied BEFORE the persist that happens inside it.
-			// ...AND ONLY IF THAT RESYNC'S SNAPSHOT REACHED DISK (TASK-2906
-			// round 2). The compare-and-set below is honest about the row it
+			// AND ONLY IF THAT RESYNC'S SNAPSHOT REACHED DISK (TASK-2906).
+			// The compare-and-set below is honest about the row it
 			// patches but cannot see whether the `persistReplace` it is
 			// finishing on behalf of committed. When that write was declined —
 			// a cursor that lost the race to another tab, or a storage failure —
@@ -2124,7 +2118,7 @@ export const localIndex = {
 		// the fence below only catches ids the resync explicitly dropped,
 		// not a fresh create whose id was never in the map.
 		if (sinceEpoch !== undefined && sinceEpoch < state.scopeEpoch) return;
-		// Fence guard (Codex P1 round 8): a projection resync records the ids it
+		// Fence guard: a projection resync records the ids it
 		// dropped as hidden under the new scope. This is the untrusted optimistic
 		// path — a create/update response authorized under the OLD scope can
 		// resolve here after the resync and would otherwise resurrect and persist
@@ -2236,14 +2230,14 @@ export const localIndex = {
 		// ensureState (not a bare get): a rename that lands before this
 		// workspace ever hydrated must still be RECORDED, or the warm
 		// hydrate restores rows under the dead slug with nothing left to
-		// fix them (codex round 1 P1 — see pendingRetags on WorkspaceState).
+		// fix them.
 		const state = ensureState(ws);
-		// Ownership stamp (codex round 2 P2): intent recorded under a
+		// Ownership stamp: intent recorded under a
 		// DIFFERENT resolved auth identity is dropped, never mixed — a cold
 		// state survives logout, and user A's rename intent must not steer
 		// user B's warm cache. A null stamp means "recorded before this
 		// session's auth resolved" and is ADOPTED by the first resolved
-		// identity rather than discarded (codex round 7 P2): the SSE
+		// identity rather than discarded: the SSE
 		// connection that delivered the event was authenticated as this
 		// session's user, so the intent is theirs.
 		if (state.pendingRetagsUser !== userId) {
@@ -2316,8 +2310,8 @@ export const localIndex = {
 	 * collection page's SSE/periodic-sync-driven `deltaSync`) MUST call
 	 * `markCaughtUp` itself on ITS catch-up, or gating routine availability
 	 * on this being `false` can wedge a UI element hidden indefinitely
-	 * after a live permission upgrade (Codex review round 3 P1/P2, round 4
-	 * — TASK-2099 / PLAN-2095 DR-2). Returns `false` for an unhydrated
+	 * after a live permission upgrade (TASK-2099 / PLAN-2095 DR-2).
+	 * Returns `false` for an unhydrated
 	 * workspace (nothing pending because nothing has started).
 	 */
 	pendingResyncFor(ws: string): boolean {
@@ -2337,7 +2331,7 @@ export const localIndex = {
 	 * it, so it would stay stuck `true` for the rest of the session. That
 	 * wedges any consumer gating a destructive decision on
 	 * `pendingResyncFor` (TASK-2099 / PLAN-2095 DR-2's
-	 * `unparentedConfirmedRestricted`, Codex review round 4) — a caller
+	 * `unparentedConfirmedRestricted`) — a caller
 	 * downgraded and later re-upgraded within the same session would never
 	 * see the "confirmed restricted" transition fire, so a stuck
 	 * unparented-filter intent from before the downgrade would silently
@@ -2360,7 +2354,7 @@ export const localIndex = {
 	 * out from under a DIFFERENT, still-in-progress (or just-restarted)
 	 * resync that landed after this caller's own epoch check — silencing
 	 * `bootstrap()`'s retry of a resync/replay that hasn't actually
-	 * finished (Codex review round 5). A mismatched epoch means a resync
+	 * finished. A mismatched epoch means a resync
 	 * has landed since this caller confirmed catch-up, so the clear is
 	 * skipped — whichever loop eventually catches up under the NEW epoch
 	 * will clear it.
@@ -2391,7 +2385,7 @@ export const localIndex = {
 		// would apply a verdict the snapshot invalidated. The caller's next
 		// trigger re-polls from the pinned cursor and clears honestly.
 		//
-		// DISK IS NOT A CONDITION, deliberately (review round 1). An earlier
+		// DISK IS NOT A CONDITION, deliberately. An earlier
 		// version also refused while `durableSnapshotCommitted` was false. That
 		// buys no repair and costs a wedge: `pendingResyncFor` gates a
 		// destructive decision (TASK-2099 / PLAN-2095 DR-2), and a persistently
@@ -2422,7 +2416,7 @@ export const localIndex = {
 	 * Distinct from `scopeEpochFor`, which answers "was my optimistic write
 	 * authorised under the current scope" and must NOT change when a resync
 	 * merely finishes persisting — a settle bump there rejected user writes
-	 * issued after the new snapshot was already installed (review round 3).
+	 * issued after the new snapshot was already installed.
 	 * This one changes when a resync SETTLES, which is what makes a capture
 	 * taken before or during that resync detectably stale afterwards; the
 	 * mid-flight case is covered by the in-flight check in `clearAskIfSettled`
@@ -2498,8 +2492,8 @@ export const localIndex = {
 		// it from the map. Any in-flight bootstrap promise still holds
 		// a reference to `prior` — checking `state.generation !==
 		// bootstrapGen` after each await lets it bail out instead of
-		// writing or re-applying rows that belong to a stale identity
-		// (Codex P1 round 3). Without this, a sign-out / 403 purge
+		// writing or re-applying rows that belong to a stale identity.
+		// Without this, a sign-out / 403 purge
 		// during a slow /items-index request could resurrect just-
 		// purged rows when the snapshot resolved.
 		const priorUserId = prior?.userId ?? null;
@@ -2578,7 +2572,7 @@ export const localIndex = {
 		// This catches an index whose workspace state was already gone: the two
 		// maps are keyed independently and nothing keeps them in step.
 		localSearch.resetAll();
-		// THE DURABLE WIPE THIS INHERITS, and why it is kept (codex round 1).
+		// THE DURABLE WIPE THIS INHERITS, and why it is kept.
 		// `reset` fire-and-forgets `persistWipe` for the workspace's last-known
 		// userId, so this drops the previous user's IndexedDB cache as well as
 		// their RAM. Not required for ISOLATION — the cache is namespaced per

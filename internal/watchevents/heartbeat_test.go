@@ -220,7 +220,7 @@ func TestAReplacedLoopExitsQuietly(t *testing.T) {
 	ch, _, _ := b.Subscribe()
 	defer b.Unsubscribe(ch)
 
-	// WAITED FOR, NOT SAMPLED (codex round 9). The count is incremented inside
+	// WAITED FOR, NOT SAMPLED. The count is incremented inside
 	// the goroutine, so reading it straight after the constructor returns can
 	// catch zero — and then "the count returned to where it started" is
 	// satisfied by a loop that never ran, which is the assertion below going
@@ -235,8 +235,8 @@ func TestAReplacedLoopExitsQuietly(t *testing.T) {
 	wedge(t, b, clock, DefaultWatchIdleTimeout+time.Second)
 	b.cycleIfIdle()
 
-	// IT LEFT, and this leg is why the test is not just an absence (codex round
-	// 4). "No exit was reported" is also what a replaced goroutine that never
+	// IT LEFT, and this leg is why the test is not just an absence. "No exit
+	// was reported" is also what a replaced goroutine that never
 	// exits at all produces — a leak, and a worse outcome than the noisy exit
 	// this test exists to rule out. The count returns to where it started: one
 	// loop torn down, one replacement installed.
@@ -346,13 +346,13 @@ func TestAFailedProbeSuspendsDetection(t *testing.T) {
 // ONE HALF, AND THE NAME SAYS SO. An earlier version claimed both and observed
 // only a heartbeat, which a loop that started just the publisher satisfies —
 // and a shared kick channel between the two halves, the defect this file's
-// first draft actually had, is precisely that shape (codex round 4).
+// first draft actually had, is precisely that shape.
 //
 // The idle half is not provable here. Its scanner needs an instance that has
 // received nothing, and against a live miniredis this bus's own heartbeats come
 // straight back and refresh liveness every cadence — an attempt to wedge it
 // with the loop running is a race against the publisher, which is what the
-// first fix for this finding turned out to be. TestAWedgedWatchRouteIsDetected-
+// first fix for this problem turned out to be. TestAWedgedWatchRouteIsDetected-
 // EndToEnd is the honest proof: it darkens the route with the blackhole proxy,
 // never calls cycleIfIdle, and waits for the scanner to reach it. Verified
 // against both mutations — starting only the publisher, and pointing the
@@ -507,8 +507,8 @@ func TestAReplacementCanItselfBeCycled(t *testing.T) {
 	}
 }
 
-// TestAnInstanceThatRecoversBeforeItsCycleIsNotCycled is codex round 1's P2,
-// and the same defect BUG-2738 had to fix at its round 11.
+// TestAnInstanceThatRecoversBeforeItsCycleIsNotCycled covers the same defect
+// BUG-2738 had to fix.
 //
 // cycleIfIdle decides under one lock and tears down under another. Between
 // them a heartbeat or a notification can arrive, at which point the
@@ -600,7 +600,7 @@ func TestTheReceiveLoopActuallyConsultsTheGeneration(t *testing.T) {
 		t.Fatalf("publish: %v", err)
 	}
 
-	// A REAL BARRIER, NOT A SLEEP (codex round 4). The original waited 300ms
+	// A REAL BARRIER, NOT A SLEEP. The original waited 300ms
 	// and asserted nothing had changed — which a loop that stalled, or never
 	// started, satisfies perfectly. There is no natural signal to wait on
 	// instead, because a frame the fence refuses is by design invisible: that
@@ -715,7 +715,7 @@ func TestAStragglerCannotEnterTheReplacementsBuffer(t *testing.T) {
 // rather than one.
 //
 // The fence is not "check once and pass the frame along" — that was the shape
-// codex round 3 blocked, because a check in one lock acquisition and a write in
+// rejected, because a check in one lock acquisition and a write in
 // another is a TOCTOU. Each of the four things a frame can mutate re-checks
 // under the lock in which it writes, and each is therefore reachable on its own:
 // driving only fanOutFromRedis leaves dropCoverageForGen's check unexercised,
@@ -871,8 +871,8 @@ func TestClosingTheBusDuringAnIdleCycleIsSafe(t *testing.T) {
 	}
 }
 
-// TestAFailedResubscribeDoesNotReDropCoverageEveryPass is codex round 5's P2,
-// and it is a full-outage behaviour rather than a logic slip.
+// TestAFailedResubscribeDoesNotReDropCoverageEveryPass covers a full-outage
+// behaviour rather than a logic slip.
 //
 // The probe-failure suspension does not cover this. Suspension asks "did our
 // last probe get through", and the answer can be YES with the route already
@@ -963,7 +963,7 @@ func TestRecoveryAfterAFailedResubscribeStillReplacesTheConnection(t *testing.T)
 	}
 }
 
-// TestTwoConcurrentRetriesInstallOneSubscription is codex round 6's P2.
+// TestTwoConcurrentRetriesInstallOneSubscription covers this case.
 //
 // Both the cycle and its retry arm dial with the lock RELEASED — deliberately,
 // since a Redis round trip under the bus's hot mutex would stall every fan-out
@@ -1009,8 +1009,9 @@ func TestTwoConcurrentRetriesInstallOneSubscription(t *testing.T) {
 
 	// WHAT THIS DETECTS, MEASURED. Removing the guard entirely: 10 runs, 10
 	// failures. A guard that checks b.pubsub in its OWN acquisition and then
-	// takes the lock again to install — the regression codex round 8 asked
-	// about — is NOT detected: 10 runs, 0 failures. The barrier below opens the
+	// takes the lock again to install — the regression where a guard checks
+	// in one acquisition and installs in another — is NOT detected: 10 runs, 0
+	// failures. The barrier below opens the
 	// window, but landing the second caller inside the mutant's own
 	// check-to-install gap needs a seam that exists only in the mutant, and
 	// after the barrier releases, the winner crosses that gap with nothing to
@@ -1030,8 +1031,8 @@ func TestTwoConcurrentRetriesInstallOneSubscription(t *testing.T) {
 	// BOTH HELD AT THE DIAL/INSTALL BOUNDARY, which is the only place the
 	// window is actually open. Starting two goroutines together makes overlap
 	// likely and guarantees nothing — one can finish before the other begins,
-	// and a guard that checked b.pubsub OUTSIDE the install lock would pass
-	// (codex round 8). Each caller announces its arrival and waits for the
+	// and a guard that checked b.pubsub OUTSIDE the install lock would pass.
+	// Each caller announces its arrival and waits for the
 	// other, so both are past the dial and neither has taken the lock.
 	atBoundary := make(chan struct{}, 2)
 	bothDialled := make(chan struct{})
@@ -1079,7 +1080,7 @@ func TestTwoConcurrentRetriesInstallOneSubscription(t *testing.T) {
 }
 
 // TestTheFrameSeamFiresForEveryArm pins what the seam's comment claims, after
-// the comment was found claiming more than the code did (codex round 9). The
+// the comment was found claiming more than the code did. The
 // arms that decline to act were `continue` statements in the receive loop, so
 // the seam after the switch never ran for a heartbeat, an undecodable payload,
 // or a subscription confirmation — and a test waiting on it for one of those

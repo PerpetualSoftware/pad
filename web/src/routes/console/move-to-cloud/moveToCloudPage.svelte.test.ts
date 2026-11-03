@@ -33,7 +33,7 @@ describe('move-to-Cloud guide', () => {
 		expect(container.textContent).toContain('https://mcp.getpad.dev');
 	});
 
-	// Lead ruling (day 92): the whole guide steers to Pad Cloud, so inside a
+	// Decision: the whole guide steers to Pad Cloud, so inside a
 	// mobile app the route shows one line and nothing else.
 	it('shows only the open-in-a-browser note inside a mobile app', () => {
 		auth.authStore.nativeShell = true;

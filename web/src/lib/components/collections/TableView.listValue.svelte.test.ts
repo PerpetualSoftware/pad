@@ -24,7 +24,7 @@ import type { Collection, Item } from '$lib/types';
 
 let tableCanEditItem = true;
 vi.mock('$lib/stores/workspace.svelte', () => ({
-	// BUG-3068 round 4 gave the table's status chip the same per-item permission
+	// BUG-3068 gave the table's status chip the same per-item permission
 	// gate the card has (`canEditItem`). A suite that renders a CLICKABLE chip has
 	// to say who is looking; with no membership the store answers false and the
 	// chip is correctly withheld. The permission legs themselves drive this per
@@ -130,7 +130,7 @@ describe('a status field holding a LIST', () => {
 			} as never,
 		});
 
-		// PRECONDITIONS (BUG-3068 round 4): the row rendered and the loop below is
+		// PRECONDITIONS (BUG-3068): the row rendered and the loop below is
 		// non-empty. Without them an unrendered table passes this leg, and the
 		// comment above ("clicks every control in the row") would be describing a
 		// loop that never ran.
@@ -264,9 +264,9 @@ describe('a status field holding a LIST', () => {
 });
 
 describe('a stored status the schema no longer declares (BUG-3068 round 3)', () => {
-	// THE TABLE'S INSTANCE OF THE SAME -1 ARITHMETIC the card was guarded for in
-	// round 2 — found by asking for the population rather than fixing the
-	// reviewer's one example. `options.indexOf(current)` answers -1 for a stale
+	// THE TABLE'S INSTANCE OF THE SAME -1 ARITHMETIC the card was guarded for — found by asking for
+	// the population rather than fixing one example. `options.indexOf(current)` answers -1 for a
+	// stale
 	// or hand-written status, -1 + 1 is 0, and this chip PULSES and writes, so
 	// the silent rewrite to the first option even looks like it worked.
 	//
@@ -306,7 +306,7 @@ describe('a stored status the schema no longer declares (BUG-3068 round 3)', () 
 });
 
 describe('the table chip asks the same permission question as the card (BUG-3068 round 4)', () => {
-	// THE CONVERGENCE FAILURE ROUND 4 FOUND. Round 2 gated the chip inside
+	// THE CONVERGENCE FAILURE. The card's gate covered the chip inside
 	// `ItemCard`, which covers the list and the board — but the table renders its
 	// OWN chip, so it went on offering a read-only viewer a control whose write
 	// the server refuses. Three surfaces, one class, and the branch claimed

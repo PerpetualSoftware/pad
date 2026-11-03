@@ -100,8 +100,8 @@ func newClientFromURL(baseURL string) *Client {
 		// calls but kills a multi-GiB bundle upload mid-stream over
 		// anything but a fast local link. 1 hour is generous enough
 		// for ~100 MB/s uplinks shipping a 350 GiB bundle and still
-		// caps a hung connection eventually. (Codex review on PR
-		// #306 round 2.)
+		// caps a hung connection eventually. (PR
+		// #306 .)
 		streamClient: &http.Client{
 			Timeout: 1 * time.Hour,
 		},
@@ -775,8 +775,7 @@ func (c *Client) DeleteWatch(wsSlug, itemSlug string) error {
 
 // PushResult is the response body of a successful pad push, mirroring
 // server.pushResponse's wire shape. Workspace is the CANONICAL slug the
-// server resolved the push against (dispatcher review round 2, codex
-// P1/P2) — a JSON consumer needs it because the notification stream is
+// server resolved the push against — a JSON consumer needs it because the notification stream is
 // user-scoped across every workspace the caller belongs to, not just
 // the one this call happened to target.
 type PushResult struct {
@@ -788,7 +787,7 @@ type PushResult struct {
 	// many of the caller's own live sessions the push's delivery predicate
 	// matched. It was missing here while this struct's doc comment claimed
 	// to mirror the response shape, so `pad push --format json` silently
-	// dropped it (codex round 3 on BUG-2698/2699).
+	// dropped it (2699).
 	//
 	// A POINTER, because the field is genuinely tri-state on the wire:
 	// a number is a real count; NULL means the notification was published
@@ -799,7 +798,7 @@ type PushResult struct {
 	// matters is that neither is reported as 0, because 0 and "unknown" are
 	// different answers.
 	//
-	// AND 0 IS NOT "reached nobody" ON THIS PATH (codex round 24). That
+	// AND 0 IS NOT "reached nobody" ON THIS PATH. That
 	// guarantee is the TARGETED one: the server skips the publish when a
 	// named target is absent, so nothing was sent. `pad push` only ever
 	// broadcasts — internal/cli never sends target_session_id — and a
@@ -807,7 +806,7 @@ type PushResult struct {
 	// registered at the moment the count was taken, not that nobody got it.
 	// A session registering in the interval receives it.
 	//
-	// NO omitempty (codex round 10): it would drop the nil case on the way
+	// NO omitempty: it would drop the nil case on the way
 	// back OUT, so `pad push --format json` would print no field at all for
 	// "published, count unknown" — silently re-collapsing the distinction
 	// this pointer exists to carry. The field is always present in the
@@ -1030,7 +1029,7 @@ func (c *Client) MoveItem(wsSlug, itemSlug string, input map[string]any) (*model
 }
 
 // MoveItemWithForce is the open-children-guard-aware variant of
-// MoveItem (IDEA-1494 R3 P1). When `force` is true, the URL gets a
+// MoveItem (IDEA-1494). When `force` is true, the URL gets a
 // `?force=true` query so the server-side move handler skips the guard
 // and still records the collection + fields change. Same escape-hatch
 // semantics as `pad item update --force`.
@@ -1189,7 +1188,7 @@ func (c *Client) ServerSupportsBuiltinUpdate() bool {
 }
 
 // BuiltinUpdateSupport is ServerSupportsBuiltinUpdate with the probe's
-// certainty kept apart (codex r1): definitive false means the capabilities
+// certainty kept apart: definitive false means the capabilities
 // probe failed, which is not the same as an older server and must not be
 // reported as one.
 func (c *Client) BuiltinUpdateSupport() (supported, definitive bool) {
@@ -1373,7 +1372,7 @@ type BuiltinText struct {
 	Fields  map[string]any `json:"fields"`
 }
 
-// UnmarshalJSON keeps the fields' numbers as written (codex r2): the default
+// UnmarshalJSON keeps the fields' numbers as written: the default
 // decoder makes every number a float64, so two integers above 2^53 that
 // differ would compare equal and hide a setting an update overwrites.
 func (b *BuiltinText) UnmarshalJSON(data []byte) error {
@@ -2343,7 +2342,7 @@ func (e *APIError) AsOpenChildren() *OpenChildrenDetails {
 // in particular — can detect the rejection and lift the structured
 // payload without parsing free-form human text.
 //
-// Versioned (Codex round-3 P3) so future evolutions of the wire shape
+// Versioned so future evolutions of the wire shape
 // don't silently break older parsers — when the payload contract
 // changes incompatibly, bump to `pad-structured-error/v2:` and have
 // the classifier accept both during the transition. The version token
@@ -2356,7 +2355,7 @@ func (e *APIError) AsOpenChildren() *OpenChildrenDetails {
 // internal/mcp/errors.go.
 const StructuredErrorMarker = "pad-structured-error/v1: "
 
-// OpenChildrenErrorMarker is the pre-round-3 marker, retained as a
+// OpenChildrenErrorMarker is the earlier marker, retained as a
 // deprecated alias for any out-of-tree consumer that may have hard-
 // coded it. New code MUST use StructuredErrorMarker.
 //
@@ -2364,7 +2363,7 @@ const StructuredErrorMarker = "pad-structured-error/v1: "
 const OpenChildrenErrorMarker = StructuredErrorMarker
 
 // WriteOpenChildrenError formats an open-children rejection to w in
-// the canonical two-track shape the project guarantees (IDEA-1494 R2):
+// the canonical two-track shape the project guarantees (IDEA-1494):
 //
 //  1. A single `pad-error: {json}\n` line carrying the full structured
 //     payload — consumed by the MCP stdio classifier and anyone else
@@ -2413,7 +2412,7 @@ type UpdateConflictDetails struct {
 	ExpectedUpdatedAt string `json:"expected_updated_at"`
 	ActualUpdatedAt   string `json:"actual_updated_at"`
 
-	// BUG-3037 (codex round 4): a conflict on the SEQ token carries these
+	// BUG-3037: a conflict on the SEQ token carries these
 	// instead of the timestamp pair, and `ConflictType` is "seq". Without them
 	// a seq conflict printed two empty timestamps and told the caller to retry
 	// with "the current timestamp" — advice for a token they did not send, and
@@ -2696,7 +2695,7 @@ const StoredStateUnreadableCode = "stored_state_unreadable"
 //
 // It exists as a constant rather than being left to each transport because a
 // hint the remote transport delivers and the stdio one does not is the same
-// class of gap as a code only one transport emits (Codex round 2).
+// class of gap as a code only one transport emits.
 const StoredStateUnreadableHint = "Retrying will not help — the item's stored value has been undecodable since it was written, " +
 	"so every attempt refuses identically, and the append is refused precisely because completing it " +
 	"would overwrite that value. Do not route around it by writing the field another way. What you can " +
@@ -2866,10 +2865,10 @@ func (c *Client) UploadAttachment(wsSlug, itemRef, filename string, body io.Read
 // ("pad-attachment:" refs other workspace members wrote), so it is treated
 // as hostile: PathEscape stops a slash-carrying id from re-routing the
 // request to a different endpoint whose 200 would then vouch for it
-// downstream (codex closing round 3), and the exact dot segments "." and
+// downstream, and the exact dot segments "." and
 // ".." — which PathEscape leaves UNCHANGED, so a proxy or server can still
-// normalize them away — are refused outright rather than sent (codex
-// closing round 4). A real id is a UUID; neither refusal can fire on one.
+// normalize them away — are refused outright rather than sent. A real id is a UUID;
+// neither refusal can fire on one.
 func attachmentIDPathSegment(id string) (string, error) {
 	if id == "." || id == ".." {
 		return "", fmt.Errorf("invalid attachment id %q", id)

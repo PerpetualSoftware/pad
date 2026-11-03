@@ -97,8 +97,7 @@ test('BUG-2601: a missed collection-rename SSE is healed by the next sync pass',
 		// Own workspace — the shared suite workspace carries cross-spec SSE
 		// and mutation traffic that could mask or confound the strand.
 		// Worker-unique: desktop + mobile projects run this spec in
-		// parallel, and Date.now() alone can collide across workers
-		// (codex round 1 P2).
+		// parallel, and Date.now() alone can collide across workers.
 		const slug = `b2601-${test.info().workerIndex}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 		createdSlug = slug;
 		const wsResp = await request.post('/api/v1/workspaces', {
@@ -150,8 +149,7 @@ test('BUG-2601: a missed collection-rename SSE is healed by the next sync pass',
 		await page.waitForTimeout(2200);
 		// Still stranded INSIDE the hidden window: pins the heal to the
 		// RESUME signal specifically — a broken implementation healing on
-		// the hidden event or a free-running timer fails here (codex
-		// round 7 P2).
+		// the hidden event or a free-running timer fails here.
 		routeLog.expectStranded('inside the hidden window', (p) => p.endsWith('/tasks'));
 		await page.evaluate(() => {
 			Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
@@ -177,8 +175,8 @@ test('BUG-2601: a missed collection-rename SSE is healed by the next sync pass',
 // The bug body's own example is the FULL-PAGE ITEM route
 // (`/user/ws/OLDSLUG/item-slug`) — its collection segment goes just as
 // dead, and a reload 404s the collection fetch. ItemDetail's
-// reconcileCollectionSegment heals it on the same sync pass (codex
-// round 3 finding 1); the goto is replaceState, so the dead URL also
+// reconcileCollectionSegment heals it on the same sync pass;
+// the goto is replaceState, so the dead URL also
 // leaves the history.
 test('BUG-2601: a missed rename heals the full-page item route too', async ({
 	page,

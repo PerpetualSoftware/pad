@@ -21,7 +21,7 @@ import (
 // when none is built (PLAN-2310 DR-4). OAuth is constructed at startup
 // whenever the resolved auth-server URL is https, whatever the MCP
 // setting says; the setting gates each request over a server that
-// already exists. Over http, MCP is PAT-only (Dave's ruling).
+// already exists. Over http, MCP is PAT-only.
 //
 // It reads only the resolved configuration. Every input to it is
 // environment, the toml file or a flag, and no platform setting or other
@@ -148,8 +148,8 @@ func wireMCP(cmd *cobra.Command, srv *server.Server, s *store.Store, ep config.M
 	// UUID on the response (so the tracker can key on it), but Validate
 	// accepts ANY incoming header value (including empty / arbitrary), so
 	// clients that never echo the session-id behave exactly as they did
-	// under the original WithStateLess(true) setup. Codex review on PR
-	// #400 round 1 caught the gauge-stays-at-zero gap.
+	// under the original WithStateLess(true) setup (PR
+	// #400: the gauge would otherwise stay at zero).
 	// The option set lives in mcpserver.NewRemoteTransport so a test can
 	// drive the real thing: the advertised protocol versions are only
 	// correct if the option is actually passed, and a test constructing
@@ -208,7 +208,7 @@ func wireMCP(cmd *cobra.Command, srv *server.Server, s *store.Store, ep config.M
 		HMACSecret:      keyBytes,
 		AllowedAudience: audience,
 		// The ChatGPT catalog's resource is a second canonical audience
-		// (TASK-3321 U2a, ruling (i)). Tokens are bound to one of the two,
+		// (TASK-3321 U2a). Tokens are bound to one of the two,
 		// never both, and each mount checks its own. A request naming no
 		// resource is still bound to /mcp's.
 		AdditionalAudiences: []string{ep.ChatGPTResourceURL},

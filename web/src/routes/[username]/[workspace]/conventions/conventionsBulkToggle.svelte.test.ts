@@ -2,7 +2,7 @@ import { describe, expect, it, vi, afterEach } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 
 /**
- * TASK-2204 (audit C70): "Enable all" in a trigger group wrote each convention
+ * TASK-2204  (audit C70): "Enable all" in a trigger group wrote each convention
  * back to back, swallowed every failure in an empty catch, kept the failed
  * rows' optimistic state and always toasted the full count. A failure is now
  * reverted on its own row and counted in the toast, and the writes are paced.

@@ -9,10 +9,10 @@ import type { SuiteFixture } from './fixtures';
  * A draft typed in a lane lives in the collection PAGE's map, keyed by that
  * lane's value. Deleting the option took the lane, and the draft card with it,
  * off the board while the text stayed in the map, and "Save all" could then
- * neither complete nor show why. Lead ruling, RE-HOME: the draft appears in the
+ * neither complete nor show why. Decision, RE-HOME: the draft appears in the
  * Uncategorized lane, marked with the lane it came from, and saves there.
  *
- * The unit legs (laneDrafts.test.ts, BoardView.laneDrafts.svelte.test.ts) hand
+ * The unit legs  (laneDrafts.test.ts, BoardView.laneDrafts.svelte.test.ts) hand
  * BoardView its placement directly. This is the leg that runs the real WIRING:
  * the page derives the placement from its own draft map and the live schema,
  * a schema edit arriving over SSE re-derives it, and the create goes through

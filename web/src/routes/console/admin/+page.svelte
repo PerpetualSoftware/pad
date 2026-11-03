@@ -7,11 +7,11 @@
 	import UserModal from '$lib/components/admin/UserModal.svelte';
 	import Chip from '$lib/components/common/Chip.svelte';
 
-	// --- List + pagination + filter + sort state (PLAN-1542 / TASK-1549) ---
+	// --- List + pagination + filter + sort state  (PLAN-1542 / TASK-1549) ---
 	// All filter state is reactive $state; we rebuild the query string on
 	// every loadList() call and reset offset to 0 on any filter/sort change.
 	// URL params reflect the filter/sort set so admins can paste a link
-	// (e.g. "all disabled pro users sorted by storage desc"). The search
+	//  (e.g. "all disabled pro users sorted by storage desc"). The search
 	// input is deliberately NOT in the URL — it changes on every keystroke
 	// and would clutter history.
 	type SortKey = 'email' | 'last_write' | 'last_active' | 'storage' | 'workspaces' | 'created';
@@ -41,7 +41,7 @@
 	}
 	function closeUserModal() {
 		modalOpen = false;
-		// Keep modalUser around so the closing animation (if any) doesn't
+		// Keep modalUser around so the closing animation  (if any) doesn't
 		// blank the modal mid-fade; cleared on next open.
 	}
 	// Called by the modal's Settings tab after any save — merges the
@@ -65,11 +65,10 @@
 		// statusFilter and hasWorkspacesFilter are independent; we used to
 		// auto-map statusFilter=no-workspace to has_workspaces=false but
 		// that conflicted with the explicit hasWorkspacesFilter and broke
-		// the server-side status precedence (disabled > no-workspace).
+		// the server-side status precedence  (disabled > no-workspace).
 		// Now: statusFilter is always applied client-side via
 		// applyClientStatusFilter; only the "disabled" case gets a server
-		// hint so the result set is smaller for the common case (Codex
-		// review on PR #604, finding 1+2+3).
+		// hint so the result set is smaller for the common case (PR #604).
 		if (statusFilter === 'disabled') p.set('disabled', 'true');
 		if (activeWithinDaysFilter) p.set('active_within_days', activeWithinDaysFilter);
 		if (hasWorkspacesFilter) p.set('has_workspaces', hasWorkspacesFilter);
@@ -84,7 +83,7 @@
 
 	// applyClientStatusFilter narrows the response to the selected status
 	// bucket using the server-computed `status` field on each row. Server
-	// precedence (disabled > no-workspace > inactive > active) is preserved
+	// precedence  (disabled > no-workspace > inactive > active) is preserved
 	// because we filter on the exact value, not approximations.
 	function applyClientStatusFilter(rows: AdminUser[]): AdminUser[] {
 		if (!statusFilter) return rows;
@@ -104,7 +103,7 @@
 			const result = await adminFetch('/admin/users?' + params.toString());
 			const rows: AdminUser[] = applyClientStatusFilter(result.users ?? result);
 			// Offset paging over a mutable sort can repeat a user across pages;
-			// the list is keyed by id (TASK-3539).
+			// the list is keyed by id  (TASK-3539).
 			users = reset ? rows : appendUnique(users, rows);
 			total = typeof result.total === 'number' ? result.total : users.length;
 			// Sync filter/sort state back to URL (skip on reset=false to
@@ -119,8 +118,7 @@
 	}
 
 	// loadMore appends the next page without resetting offset. On failure,
-	// rolls back the offset so a retry doesn't skip a page (Codex review
-	// on PR #604). Also guards against re-entrant calls while a page is
+	// rolls back the offset so a retry doesn't skip a page (PR #604). Also guards against re-entrant calls while a page is
 	// in flight.
 	async function loadMore() {
 		if (loadingMore || loading) return;
@@ -154,23 +152,23 @@
 		onFilterChange();
 	}
 
-	// Search button (or Enter in search input) — same as a filter change.
+	// Search button  (or Enter in search input) — same as a filter change.
 	function searchUsers() {
 		onFilterChange();
 	}
 
 	// syncURL pushes filter/sort state into the URL via SvelteKit's goto,
 	// replaceState so we don't litter browser history. Search query is
-	// excluded (changes per keystroke). Status is its own URL param
-	// (rather than smuggled through has_workspaces/disabled) so all four
+	// excluded  (changes per keystroke). Status is its own URL param
+	//  (rather than smuggled through has_workspaces/disabled) so all four
 	// buckets — active/inactive/disabled/no-workspace — round-trip
-	// losslessly (Codex review on PR #604).
+	// losslessly  (#604).
 	function syncURL() {
 		const p = buildQueryParams({ offset: 0, includeSearch: false });
 		p.delete('limit');
 		p.delete('offset');
 		// buildQueryParams stamps disabled=true for statusFilter=disabled
-		// (server hint). Strip it from the URL; statusFilter is the
+		//  (server hint). Strip it from the URL; statusFilter is the
 		// canonical representation in the URL.
 		p.delete('disabled');
 		if (statusFilter) p.set('status', statusFilter);
@@ -200,9 +198,9 @@
 	}
 
 	// formatStorageBytes renders a raw byte count in the largest unit
-	// that keeps the number readable (-1 → "-1" unlimited). Used by the
+	// that keeps the number readable  (-1 → "-1" unlimited). Used by the
 	// Storage cell in the user table. The parse-side of this helper
-	// lives in UserSettingsForm.svelte (lifted in T1551). PLAN-1542 /
+	// lives in UserSettingsForm.svelte  (lifted in T1551). PLAN-1542 /
 	// TASK-1555.
 	function formatStorageBytes(n: number): string {
 		if (n === -1) return '-1';
@@ -234,10 +232,10 @@
 	}
 
 	// writeRecency buckets the last-write timestamp into a CSS class:
-	//   recent: < 7 days (green)
-	//   stale:  < 30 days (yellow)
-	//   cold:   ≥ 30 days (red)
-	//   never:  null (gray)
+	//   recent: < 7 days  (green)
+	//   stale:  < 30 days  (yellow)
+	//   cold:   ≥ 30 days  (red)
+	//   never:  null  (gray)
 	// Buckets are the visual half of the API's "status" pill — the pill
 	// names the overall user state, this cell colors the write-age cell
 	// at a glance. PLAN-1542 / TASK-1548.
@@ -247,7 +245,7 @@
 		if (days < 7) return 'recent';
 		// 30 days inclusive is "stale" to match server-side
 		// computeAdminUserStatus which only flips to inactive on > 30 days
-		// (Codex review on PR #603).
+		//  (#603).
 		if (days <= 30) return 'stale';
 		return 'cold';
 	}
@@ -289,7 +287,7 @@
 			<button class="btn" onclick={searchUsers}>Search</button>
 		</div>
 
-		<!-- Filter bar (PLAN-1542 / TASK-1549). Each control fires
+		<!-- Filter bar  (PLAN-1542 / TASK-1549). Each control fires
 		     onFilterChange so the list reloads from offset=0 and the
 		     URL updates. -->
 		<div class="filter-bar">
@@ -406,7 +404,7 @@
 							onclick={() => openUserModal(user)}
 						>
 							<td>
-								<!-- TASK-2238 (C61): the modal is the only way to a user's
+								<!-- TASK-2238  (C61): the modal is the only way to a user's
 								     detail, and the row's click is mouse-only. The name is a
 								     real button, so the keyboard reaches it too. -->
 								<button
@@ -510,7 +508,7 @@
 		border-color: var(--accent-blue);
 	}
 
-	/* Filter bar (PLAN-1542 / TASK-1549) */
+	/* Filter bar  (PLAN-1542 / TASK-1549) */
 	.filter-bar {
 		display: flex;
 		flex-wrap: wrap;
@@ -656,7 +654,7 @@
 	.status-chip {
 		margin-left: var(--space-2);
 	}
-	/* Numeric cells (workspace_count, storage_bytes) — right-aligned and
+	/* Numeric cells  (workspace_count, storage_bytes) — right-aligned and
 	   tabular figures so digits line up vertically across rows. */
 	.num-cell {
 		text-align: right;

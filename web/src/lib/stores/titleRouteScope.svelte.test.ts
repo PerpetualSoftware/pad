@@ -15,7 +15,7 @@ import { flushSync } from 'svelte';
  *     guarantee is about mount order, not re-runs;
  *  3. moved to `beforeNavigate`, it fired for navigations the app then
  *     CANCELLED — `[collection]/+page.svelte` cancels to prompt about an unsaved
- *     draft — clearing the title of a page the user never left (codex round 1).
+ *     draft — clearing the title of a page the user never left.
  *
  * Stamping removes the clear, so none of the three has anywhere to happen.
  * Leg 4 below is the one that pins (3): with no clear, a cancelled navigation

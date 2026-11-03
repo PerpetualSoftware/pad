@@ -373,8 +373,7 @@ func (d *HTTPHandlerDispatcher) Dispatch(ctx context.Context, cmdPath, _ []strin
 	// commands that accept the shorthand. Symmetric to the --assign
 	// preprocess above. Failure here surfaces as IsError so agents
 	// see the resolution error instead of a silently dropped role
-	// assignment (the regression the older mapper-level rejection was
-	// guarding against — Codex review #345 round 1).
+	// assignment (the regression the older mapper-level rejection was guarding against).
 	if _, ok := commandsAcceptingRoleBySlug[cmdKey]; ok {
 		var err error
 		input, err = d.resolveRoleSlug(ctx, user, input)
@@ -457,7 +456,7 @@ type specialDispatchFn func(context.Context, map[string]any, *models.User) (*Cal
 //
 // Built once per dispatcher (sync.Once — Dispatch runs concurrently)
 // so the hot path doesn't rebuild a ~20-entry map of bound methods on
-// every call (codex round 1 P2).
+// every call.
 func (d *HTTPHandlerDispatcher) specialRoutes() map[string]specialDispatchFn {
 	d.specialOnce.Do(func() {
 		d.special = d.buildSpecialRoutes()
@@ -505,7 +504,7 @@ func (d *HTTPHandlerDispatcher) buildSpecialRoutes() map[string]specialDispatchF
 // Scope enforcement lives in buildAuthedRequest (called below) so it
 // applies uniformly to every synthesized request — including
 // bulk-update's per-item PATCH and the RMW prefetches that don't go
-// through this method. Codex review #369 round 2 caught the leak that
+// through this method. The leak that
 // motivated centralizing the check.
 func (d *HTTPHandlerDispatcher) executeRequest(
 	ctx context.Context,
@@ -530,14 +529,13 @@ func (d *HTTPHandlerDispatcher) executeRequest(
 	// this fix the lister would silently return empty hints in
 	// those test paths and (more critically) in any production
 	// dispatcher that attaches token state via Apply rather than
-	// inheriting from the inbound request's ctx. Codex review #379
-	// round 1.
+	// inheriting from the inbound request's ctx.
 	return packageHTTPResponse(req.Context(), cmdKey, rec.Result(), d.Lister)
 }
 
 // buildRequestErrorResult maps a buildAuthedRequest failure onto the
-// structured error envelope. Extracted from executeRequest (BUG-2305,
-// codex round 1) so hand-written dispatchers that call
+// structured error envelope. Extracted from executeRequest (BUG-2305) so
+// hand-written dispatchers that call
 // buildAuthedRequest directly (dispatchItemList's summary path)
 // surface the SAME permission_denied codes as the routeTable path —
 // without the extraction, a scope rejection on those paths degraded
@@ -569,12 +567,12 @@ func buildRequestErrorResult(cmdKey string, err error) *CallToolResult {
 // token-scope context attached via Apply applies uniformly to every
 // synthesized request — no scope bypass on the prefetches.
 //
-// Codex review #345 round 1 caught the inconsistency: if an OAuth
+// The inconsistency was this: if an OAuth
 // middleware attached workspace-allow-list context via Apply, the
 // prefetches were bypassing that and could read members / items
 // outside the allowed set during resolution.
 //
-// Scope enforcement (Codex review #369 rounds 1+2):
+// Scope enforcement:
 //
 // Every synthesized request — main writes, RMW prefetches,
 // bulk-update per-item PATCHes, link-create POSTs — passes through
@@ -589,7 +587,7 @@ func buildRequestErrorResult(cmdKey string, err error) *CallToolResult {
 // built, before http.NewRequest parses it, which is why that allowlist
 // accepts only plain-name segments.
 //
-// Centralizing here closes the gap Codex round 2 found in
+// Centralizing here closes the gap in
 // dispatch_http_project.go's bulk-update path (PATCH issued
 // directly via buildAuthedRequest + ServeHTTP, bypassing
 // executeRequest's previous scope check).
@@ -730,7 +728,7 @@ func buildHTTPRequest(ctx context.Context, method, urlPath string, body []byte, 
 	// NO Authorization HEADER, deliberately — the context carries the auth
 	// state and the handler chain reads it from there.
 	//
-	// BUG-3007, codex round 3: that makes this request a poor fit for the
+	// BUG-3007: that makes this request a poor fit for the
 	// long-lived-connection liveness predicate, which re-reads the CREDENTIAL
 	// from the request. The inbound /mcp request's `ctxAuthKind` survives into
 	// this context, so a synthesized request says `api_token` or (since
@@ -878,7 +876,6 @@ func mapItemCreate(input map[string]any) (method, path string, body []byte, err 
 	// visible escape hatch (`--field agent_role_id=<uuid>`) would
 	// otherwise have the value sit inert inside the fields JSON
 	// instead of going to the column the handler writes to.
-	// (Codex review #345 round 3.)
 	liftFieldsToColumns(fields, payload)
 	if len(fields) > 0 {
 		fb, mErr := json.Marshal(fields)

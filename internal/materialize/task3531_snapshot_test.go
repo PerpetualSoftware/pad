@@ -126,7 +126,7 @@ func TestTASK3531_SnapshotThroughTheWorker(t *testing.T) {
 	}
 }
 
-// The merge itself, in CI (lead, TASK-3531 PR 2: nothing may be covered only by
+// The merge itself, in CI (TASK-3531: nothing may be covered only by
 // the opt-in e2e). A tab that slept past a compaction holds structs from
 // BEFORE it and sends updates built on them. Compact a corpus op-log's first k
 // rows, then replay the snapshot followed by the rows after k (exactly such

@@ -5,7 +5,7 @@ import { tick } from 'svelte';
 
 const mocks = vi.hoisted(() => ({ goto: vi.fn(), commerce: true, billing: true }));
 vi.mock('$app/navigation', () => ({ goto: mocks.goto }));
-// Reactive, so a workspace switch under a mounted host re-runs it (codex r2).
+// Reactive, so a workspace switch under a mounted host re-runs it.
 vi.mock('$app/state', async () => ({ page: (await import('../../../test/mocks/reactivePage.svelte')).page }));
 vi.mock('$lib/stores/auth.svelte', () => ({
 	authStore: {

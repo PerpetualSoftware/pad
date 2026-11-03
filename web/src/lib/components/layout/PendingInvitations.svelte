@@ -1,7 +1,7 @@
 <script lang="ts">
 	// Pending invitations addressed to you, with an Accept action per row: the
 	// "Invitations" section of the TopBar "+" discovery surface (PLAN-3002 U4b /
-	// TASK-3277, Dave's Q4 ruling). The server lists only invitations to your
+	// TASK-3277). The server lists only invitations to your
 	// VERIFIED email, so an unverified cloud account sees none.
 	//
 	// Accepting lands you in the workspace on an EPHEMERAL tab (Q5): an
@@ -27,7 +27,7 @@
 
 	let { active, onaccepted }: Props = $props();
 
-	// The rows ARE the badge store's list (codex r8): one list, written in one
+	// The rows ARE the badge store's list: one list, written in one
 	// order, so the rows and the "+" count cannot disagree.
 	const invitations = $derived(pendingInvitations.invitations);
 	// Id being accepted: a double-click cannot fire two accepts.

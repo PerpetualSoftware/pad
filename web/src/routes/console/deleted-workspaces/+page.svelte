@@ -8,7 +8,7 @@
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
 	import type { DeletedWorkspace } from '$lib/types';
 
-	// Deleted workspaces page (TASK-1975). Lists the caller's soft-deleted
+	// Deleted workspaces page  (TASK-1975). Lists the caller's soft-deleted
 	// workspaces still inside the purge window and lets them restore any of
 	// them before permanent deletion. Restore un-deletes the workspace and
 	// drops the row from the table.
@@ -42,7 +42,7 @@
 			workspaces = workspaces.filter((w) => w.slug !== ws.slug);
 			toastStore.show(`Restored "${ws.name}"`, 'success');
 			// Back in the list, and reopened as an ephemeral tab for the
-			// restorer only (TASK-3279, PLAN-3002 Q12). Neither failing makes
+			// restorer only  (TASK-3279, PLAN-3002 Q12). Neither failing makes
 			// the restore a failure.
 			void workspaceStore.loadAll().catch(() => {});
 			void tabsStore.land(ws.slug).catch(() => {});
@@ -62,7 +62,7 @@
 	}
 
 	// "N days left" until permanent deletion. When the window is nearly up
-	// (0 days) we swap in a plain-language warning instead of "0 days left".
+	//  (0 days) we swap in a plain-language warning instead of "0 days left".
 	function daysLeftLabel(days: number): string {
 		if (days <= 0) return 'Permanently deleted soon';
 		if (days === 1) return '1 day left';

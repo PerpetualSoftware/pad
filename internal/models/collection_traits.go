@@ -53,7 +53,7 @@ const (
 // cannot honour. Declaring `{mode: metadata, key: conventions}` would still
 // emit bodies, because the conventions projection always does. Rather than
 // letting a declaration mean something different from what it says, that
-// combination is refused. Codex round 7.
+// combination is refused.
 const (
 	BootstrapKeyConventions     = "conventions"
 	BootstrapKeyConventionIndex = "convention_index"
@@ -188,7 +188,7 @@ func ParseCollectionTraits(raw string) (CollectionTraits, error) {
 	// follows, so `{"artifact_kind":{"kind":"playbook"}} garbage` would parse
 	// cleanly and activate behavior from a blob that is not valid JSON. That
 	// makes "strict" a false claim, which is worse than being lenient on
-	// purpose. Reject trailing content. Codex round 7.
+	// purpose. Reject trailing content.
 	if _, err := dec.Token(); err != io.EOF {
 		return CollectionTraits{}, fmt.Errorf("parse collection traits: unexpected trailing content after the JSON object")
 	}

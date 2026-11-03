@@ -1,9 +1,9 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/svelte';
 
-// TASK-2203 (audit C46): a failed load is an error with a retry, never
+// TASK-2203  (audit C46): a failed load is an error with a retry, never
 // "No starred items". Since TASK-2231 the page makes no request of its own:
-// the starred store's load (which the workspace layout starts) is the one that
+// the starred store's load  (which the workspace layout starts) is the one that
 // can fail, so this drives that load, with the index and the collection list
 // ready.
 

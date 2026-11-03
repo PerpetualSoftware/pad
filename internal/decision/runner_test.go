@@ -131,7 +131,7 @@ func TestRunner_UnchangedStateShortCircuits(t *testing.T) {
 }
 
 // A comment changes the state (the trail is hashed), so it re-evaluates —
-// the case items.seq alone would have missed (ruling 2).
+// the case items.seq alone would have missed.
 func TestRunner_CommentReevaluates(t *testing.T) {
 	fx := newRunnerFixture(t)
 	fx.evaluate(t)
@@ -405,7 +405,7 @@ func TestRunner_DeletedWorkspaceOrCollectionIsNeverSent(t *testing.T) {
 			switch tc.name {
 			case "workspace":
 				// HELD, not dropped: a workspace restore must find the work
-				// still owed (codex round 5).
+				// still owed.
 				if j == nil || j.ClaimedBy != "" || j.Attempts != 0 {
 					t.Fatalf("job for an item in a soft-deleted workspace is %+v; want held (owed, unclaimed, attempts=0)", j)
 				}
@@ -419,7 +419,7 @@ func TestRunner_DeletedWorkspaceOrCollectionIsNeverSent(t *testing.T) {
 	}
 }
 
-// Codex round 2 P2: a job owed for a set scoped to the item's OLD collection
+// A job owed for a set scoped to the item's OLD collection
 // must not reach the provider after the item moves out of that collection.
 func TestRunner_SetNoLongerApplicableAfterMoveIsNotAsked(t *testing.T) {
 	s := storetest.NewSQLite(t)
@@ -461,7 +461,7 @@ func TestRunner_SetNoLongerApplicableAfterMoveIsNotAsked(t *testing.T) {
 	}
 }
 
-// Codex round 4: jobs are claimed ONE AT A TIME, so a job's lease starts when
+// Jobs are claimed ONE AT A TIME, so a job's lease starts when
 // its own evaluation starts. Claiming a whole pass up front let the last job
 // wait out its lease behind the others' provider calls and be re-claimed by
 // another instance — a duplicate evaluation.
@@ -500,7 +500,7 @@ func TestRunner_ClaimsOneJobAtATime(t *testing.T) {
 	}
 }
 
-// Codex round 4: liveness is re-checked immediately before the provider call,
+// Liveness is re-checked immediately before the provider call,
 // so a delete landing between building the state and asking stops the send.
 func TestRunner_DeleteJustBeforeAskIsNotSent(t *testing.T) {
 	fx := newRunnerFixture(t)
@@ -517,7 +517,7 @@ func TestRunner_DeleteJustBeforeAskIsNotSent(t *testing.T) {
 	}
 }
 
-// Codex round 5: work owed in a workspace that is soft-deleted and then
+// Work owed in a workspace that is soft-deleted and then
 // RESTORED is evaluated after the restore — nothing enqueues on restore (it
 // is a fan-out), so the job must have survived the deletion.
 func TestRunner_WorkspaceRestoreResumesHeldWork(t *testing.T) {
@@ -541,7 +541,7 @@ func TestRunner_WorkspaceRestoreResumesHeldWork(t *testing.T) {
 	}
 }
 
-// Codex round 6: an answer is current only for the QUESTION and MODEL that
+// An answer is current only for the QUESTION and MODEL that
 // produced it. Rewording a question, or changing the pinned model, at an
 // unchanged item state must re-ask — and the old answer must stop reading as
 // current.
@@ -580,7 +580,7 @@ func TestRunner_QuestionOrModelChangeReasks(t *testing.T) {
 	}
 }
 
-// Codex round 6: a provider OUTAGE must not lose owed work. Transient failures
+// A provider OUTAGE must not lose owed work. Transient failures
 // (5xx, 429, transport) back off indefinitely; only a permanent refusal (a 4xx
 // naming the request itself) is dropped after repeated attempts.
 func TestRunner_TransientFailuresAreNeverDropped(t *testing.T) {

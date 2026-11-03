@@ -886,8 +886,7 @@ export interface Item {
 	 *
 	 * The Go side has carried this since BUG-2850 and has gained members
 	 * since (TASK-2878, BUG-2995); nothing here mirrored it at first, so typed
-	 * code could not reach a warning the server was already sending (codex
-	 * round 18). Keep this interface in step with `models.ItemWriteWarnings`
+	 * code could not reach a warning the server was already sending. Keep this interface in step with `models.ItemWriteWarnings`
 	 * — the members are listed there, and a count in this sentence would go
 	 * stale on the next addition.
 	 */
@@ -2598,7 +2597,7 @@ export interface LiveSessionsResponse {
  * PLAN-2558 S5, TASK-2588).
  *
  * `pushed: true` means the request was ACCEPTED AND PROCESSED, not
- * "delivered" (dispatcher ruling, TASK-2588 round 2) — it is true even for
+ * "delivered" (dispatcher ruling, TASK-2588) — it is true even for
  * a targeted push whose id matched no live session, exactly the same shape
  * broadcast-with-no-listeners has always returned. There is no separate
  * error channel for a targeted miss; `delivered_sessions` is the delivery
@@ -2621,7 +2620,7 @@ export interface LiveSessionsResponse {
  * reached nobody (the server skips the publish entirely in that case, so
  * there is nothing to duplicate by resending), never a race.
  *
- * OPTIONAL, not always present on the wire (codex round 2 mixed-version
+ * OPTIONAL, not always present on the wire (mixed-version
  * hazard): the server ships embedded in the binary, so a version skew
  * between the JS a tab is running and the server it talks to can only
  * exist transiently — a stale browser tab surviving a server swap — never
@@ -3150,7 +3149,7 @@ const isStrArrOrAbsent = (v: unknown) =>
  * abandoned_options has the wrong type, makes this return no fields and the
  * resolvers use the defaults, as Go's do when its typed unmarshal fails. A
  * null entry is dropped; Go decodes it as a zero-value field, which matches
- * no key, so the answer is the same. (codex rounds 2 to 4 on BUG-3195.)
+ * no key, so the answer is the same.
  *
  * NOT exact parity on corrupt data, stated rather than implied: Go rejects
  * the whole schema, or the whole settings object, when ANY decoded member is

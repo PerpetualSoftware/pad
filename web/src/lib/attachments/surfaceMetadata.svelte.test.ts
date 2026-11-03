@@ -175,7 +175,7 @@ describe('surfaceMetadata — always-revalidate-per-(open, entry) nonce (T6 + 3c
 	});
 
 	it('records the pair on COMPLETION, not dispatch: a delayed probe discarded stale leaves it unseen → arrow-back re-probes', async () => {
-		// round-2 P1. Marking at dispatch would let A→B, arrow-away-before-B-resolves,
+		// Marking at dispatch would let A→B, arrow-away-before-B-resolves,
 		// arrow-back-to-B take B's complete-seed fast path — painting a maybe-deleted B
 		// live. B is recorded ONLY when its forced probe resolves non-stale; a
 		// stale-discarded probe leaves B unseen so a later arrow-back re-forces.

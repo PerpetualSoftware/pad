@@ -18,7 +18,7 @@ export interface PlanLimitPromptState extends PlanLimitPromptModel {
 	 * The workspace route it was raised on ("owner/slug", or "" off any
 	 * workspace). A route component can stay mounted across a workspace
 	 * switch, so a host shows the prompt only while the page is still there:
-	 * it names that workspace's owner and blocked action (codex r2).
+	 * it names that workspace's owner and blocked action.
 	 */
 	place: string;
 }

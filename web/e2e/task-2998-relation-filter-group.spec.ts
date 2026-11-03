@@ -6,7 +6,7 @@ import type { SuiteFixture } from './fixtures';
 /**
  * TASK-2998 / PLAN-2857 U7 — filtering and grouping a collection view by a
  * RELATION field, driven through a real browser against a binary built from
- * this tree (CONVE-34 / CONVE-2729).
+ * this tree  (CONVE-34 / CONVE-2729).
  *
  * The unit tests cover the rules and the wiring; what only this leg can show is
  * that the whole path holds together — a schema with a relation field, rows
@@ -90,7 +90,7 @@ async function deleteCollection(fixture: SuiteFixture, request: APIRequestContex
 /**
  * NOTE ON WHAT THIS LEG CANNOT COVER, found by trying it. A value that resolves
  * to NOTHING cannot be created through the API any more: U1's validator
- * (TASK-2878) refuses it with
+ *  (TASK-2878) refuses it with
  * `"…" does not name an item in collection "colors-…"`. That lane only exists
  * for LEGACY rows written before U1 landed, so it is covered by the unit tests
  * — where the fixture can hold one — and named here rather than quietly
@@ -171,7 +171,7 @@ test.describe('relation filter and group (PLAN-2857 U7)', () => {
 			// Every car is placed exactly once: four cars, four cards.
 			await expect(page.locator('.kanban-column .item-card')).toHaveCount(4);
 
-			// AND IN THE RIGHT LANES (codex round 4). A total count survives a
+			// AND IN THE RIGHT LANES. A total count survives a
 			// mutant that puts every card in one lane while the headings still
 			// render, which is exactly what dropping the bucketing callback
 			// does.

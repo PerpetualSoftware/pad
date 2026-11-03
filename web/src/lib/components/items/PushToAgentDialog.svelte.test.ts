@@ -755,7 +755,7 @@ describe('PushToAgentDialog — session targeting (PLAN-2558 S5, TASK-2588)', ()
 			expect.anything()
 		);
 		// Dismissed like a normal success, not re-armed like a miss —
-		// "no auto-resend enablement" (dispatcher round 2).
+		// "no auto-resend enablement".
 		expect(onclose).toHaveBeenCalled();
 	});
 });

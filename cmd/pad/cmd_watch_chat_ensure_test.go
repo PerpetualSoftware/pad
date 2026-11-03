@@ -103,7 +103,7 @@ func TestMonitorEnsureDM_RetriesAfter429(t *testing.T) {
 	}
 }
 
-// TASK-4043 r1 H1 and r2 J1: a 429 with no usable Retry-After, or one too
+// TASK-4043: a 429 with no usable Retry-After, or one too
 // large for a Duration, waits the 120s default; the largest value that fits is
 // honoured as sent. The absent row goes through the real client, so the
 // header-to-zero mapping and the worker's default are tested together.

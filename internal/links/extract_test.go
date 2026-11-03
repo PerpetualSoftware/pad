@@ -67,7 +67,7 @@ func TestExtractWikiLinks_RefForm(t *testing.T) {
 // form is stored AS-WRITTEN (e.g. "docs/Setup") so the resolver can
 // try the renderer's order — full-key title match first, `/`-split
 // only on miss — without losing information about how the link was
-// typed. Codex finding #3 from the planning round.
+// typed.
 func TestExtractWikiLinks_TitleForms(t *testing.T) {
 	t.Run("plain title", func(t *testing.T) {
 		got := ExtractWikiLinks("Click [[Some Title]] here.")
@@ -135,8 +135,8 @@ func TestExtractWikiLinks_TitleForms(t *testing.T) {
 	})
 }
 
-// TestExtractWikiLinks_TitlePreservesWhitespace regresses Codex
-// round 9 P2 against PR #621. The renderer doesn't trim before
+// TestExtractWikiLinks_TitlePreservesWhitespace regresses a bug
+// in PR #621. The renderer doesn't trim before
 // title matching (web/src/lib/utils/markdown.ts::resolveWikiBody), so an
 // item titled "Foo" doesn't match `[[ Foo ]]`. The extractor must
 // preserve whitespace in the title kind too, or the index would
@@ -331,7 +331,7 @@ func TestExtractWikiLinks_CodeBlocksExcluded(t *testing.T) {
 		// Per CommonMark, an inline-code span can cross a single
 		// newline. The renderer treats `pre\n[[INSIDE-1]]\npost`
 		// as a single code span — the embedded link must NOT be
-		// indexed. Codex round-9 P1.
+		// indexed.
 		content := "Outside [[A-1]]\n" +
 			"start `pre\n[[INSIDE-1]]\npost` end\n" +
 			"Outside [[B-1]]"
@@ -381,7 +381,7 @@ func TestExtractWikiLinks_CodeBlocksExcluded(t *testing.T) {
 		// backticks inside a ``...`` span are code text, not
 		// closers. Without matching-run semantics, the extractor
 		// would close on the first single backtick and leak the
-		// inner [[X]]. Codex round-7 finding #2.
+		// inner [[X]].
 		content := "Before [[A-1]] ``code with ` inside and [[INSIDE-1]]`` after [[B-1]]"
 		got := ExtractWikiLinks(content)
 		refs := refStrings(got)
@@ -423,7 +423,7 @@ func TestExtractWikiLinks_CodeBlocksExcluded(t *testing.T) {
 	t.Run("tilde fence excludes refs inside", func(t *testing.T) {
 		// CommonMark / marked accept ~~~ fences alongside ```.
 		// Refs inside a tilde fence render as code in the UI and
-		// must NOT be indexed. Codex round-6 finding #1.
+		// must NOT be indexed.
 		content := "Real: [[OUTSIDE-1]]\n" +
 			"~~~\n" +
 			"Example: [[INSIDE-1]]\n" +
@@ -474,7 +474,7 @@ func TestExtractWikiLinks_CodeBlocksExcluded(t *testing.T) {
 		// the fence + optional trailing spaces. A line like
 		// `\`\`\`not-closed` inside an open fence does NOT
 		// terminate the block — later refs in the same fence stay
-		// excluded. Codex round-6 finding #2.
+		// excluded.
 		content := "Real: [[OUTSIDE-1]]\n" +
 			"```\n" +
 			"```not-closed\n" +
@@ -602,7 +602,7 @@ func TestExtractWikiLinks_PositionIsByteOffset(t *testing.T) {
 }
 
 // TestExtractWikiLinks_RefVsTitleFallback exercises the parseBody
-// decision tree. After Codex round-1 P2, the refPattern is
+// decision tree. The refPattern is
 // case-insensitive — `[[Task-5]]` and `[[task-5]]` now parse as the
 // ref kind (and normalize to "TASK-5" for storage), matching the
 // renderer's behavior. Inputs that don't look like a ref at all
@@ -656,8 +656,8 @@ func TestExtractWikiLinks_RefVsTitleFallback(t *testing.T) {
 	})
 }
 
-// TestExtractWikiLinks_EscapedBodyChars regresses Codex rounds
-// 4/7/10 P2: the editor's wikiLinksToMarkdown can produce bodies
+// TestExtractWikiLinks_EscapedBodyChars regresses a bug: the editor's
+// wikiLinksToMarkdown can produce bodies
 // containing `\]`, `\|`, `\\` escapes (markdown.ts::WIKI_LINK_PATTERN_SOURCE). The
 // extractor must parse those — both the regex and the body parser —
 // so the resulting link is indexed with the unescaped display text.
@@ -714,7 +714,7 @@ func TestExtractWikiLinks_EscapedBodyChars(t *testing.T) {
 		// [[X|]] is distinct from [[X]] in the editor: the former
 		// has displayOverride="" (preserved by JS ?? coalescing),
 		// the latter has no override and falls back to title. We
-		// preserve that distinction via HasDisplay. Codex round-12 P3.
+		// preserve that distinction via HasDisplay.
 		withPipe := ExtractWikiLinks(`[[TASK-7|]]`)
 		if len(withPipe) != 1 {
 			t.Fatalf("expected 1 ref, got %d", len(withPipe))
@@ -742,7 +742,7 @@ func TestExtractWikiLinks_EscapedBodyChars(t *testing.T) {
 		// The renderer stores display text verbatim — leading and
 		// trailing whitespace are part of the display. Trimming
 		// in the extractor would silently differ from client
-		// behavior. Codex round-11 P3.
+		// behavior.
 		got := ExtractWikiLinks(`[[TASK-9|  padded display  ]]`)
 		if len(got) != 1 {
 			t.Fatalf("expected 1 ref, got %d", len(got))

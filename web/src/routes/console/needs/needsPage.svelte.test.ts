@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { flushSync, mount, unmount, tick } from 'svelte';
 
 /**
- * TASK-3923 (IDEA-3906 A6): the "Needs you" page. The API client is stubbed;
+ * TASK-3923  (IDEA-3906 A6): the "Needs you" page. The API client is stubbed;
  * what is pinned is what the page does with the server's answers.
  */
 const list = vi.hoisted(() => vi.fn());
@@ -533,7 +533,7 @@ describe('needs page: r1 fixes', () => {
 			list.mockImplementationOnce(() => toHidden.promise);
 			await click(btn(/^Hidden/));
 			// The PUT completing while the destination load is in flight takes the
-			// H-F2 refetch (the stale load is then superseded and writes nothing).
+			// H-F2 refetch  (the stale load is then superseded and writes nothing).
 			list.mockImplementationOnce(() =>
 				Promise.resolve(resp([row('a', 'TASK-1', { snooze: { kind: 'dismiss' } })], { hidden: 1 }))
 			);
@@ -947,7 +947,7 @@ describe('needs page: r5 (a quiet automatic refetch)', () => {
 
 	// Rows 1, 3, 5 with a cursor. A Load more is in flight when TASK-1's dismiss
 	// completes, so the Load more lands stale and requests ONE quiet refetch,
-	// which stays pending (`refetch`). Returns it, with the PUTs for further use.
+	// which stays pending  (`refetch`). Returns it, with the PUTs for further use.
 	async function pendingRefetch() {
 		await mountWith(resp([row('a', 'TASK-1'), row('a', 'TASK-3'), row('a', 'TASK-5')], { total: 5, hidden: 0, next_cursor: 'c1' }));
 		const more = deferred();

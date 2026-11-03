@@ -63,7 +63,7 @@ export function mermaidThemeForMode(
  * caret is a widget decoration whose label holds a text node with the peer's
  * display name (CollaborationCaret's default `render`, which Editor.svelte
  * does not override), so `textContent` for a block with a peer's cursor in it
- * reads `graph TD; A-->B;Dave`. mermaid throws, the render path swaps the SVG
+ * reads `graph TD; A-->B;<peer name>`. mermaid throws, the render path swaps the SVG
  * for "Invalid Mermaid syntax", and the error-skip below then makes that
  * STICK until the source is edited — the two rules combining into a
  * persistent broken diagram.

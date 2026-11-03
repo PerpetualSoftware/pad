@@ -33,8 +33,7 @@ import { GENERIC_ICON_ID, isAttachmentIconId, type AttachmentIconId } from './ic
  * an upload with no name, a legacy row — and every surface then renders the
  * gap differently: a blank tile, an accessible name that says nothing, and a
  * confirmation reading "Delete ?", which is the one place it actually matters
- * because the user is being asked to approve something unnamed (final review
- * round 4).
+ * because the user is being asked to approve something unnamed.
  *
  * Deliberately generic rather than clever: the id is not a name, and inventing
  * one from the MIME would claim knowledge the row does not have.
@@ -161,7 +160,7 @@ const EXTENSION_FAMILIES: Record<string, AttachmentIconId> = {
  *
  * The archive patterns are token-delimited on purpose. A bare `includes('zip')`
  * claims `application/vnd.airzip.filesecure.azf`, which is an encrypted
- * FileSECURE document and not an archive at all (Codex review).
+ * FileSECURE document and not an archive at all.
  */
 const MIME_PATTERNS: ReadonlyArray<readonly [RegExp, AttachmentIconId]> = [
 	[/wordprocessingml/, 'document'],
@@ -566,7 +565,7 @@ export function isMarkdownAttachment(
  * bound holds the line, and the late size re-decides and aborts what is in
  * flight. So the cap always bounds what is RENDERED; it saves the TRANSFER only
  * when the size is known before the load. Claiming otherwise would be false for
- * the common seeding (codex R1 #1).
+ * the common seeding.
  */
 export const TEXT_PREVIEW_MAX_BYTES = 1 << 20; // 1 MiB
 

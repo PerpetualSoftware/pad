@@ -1,7 +1,7 @@
 /**
  * Ordering for concurrent writes that each REPLACE the same target.
  *
- * PLAN-2857 U4, codex round 8 findings R8-1 / R8-2. A `multi_relation` edit is
+ * PLAN-2857 U4. A `multi_relation` edit is
  * a WHOLE-LIST write: removing one chip sends the entire remaining list. Two of
  * them in flight at once are therefore not independent deltas the server can
  * merge — each one asserts the complete value, and the LATER one is the only
@@ -218,8 +218,7 @@ export function fieldWriteTarget(itemId: string, fieldKey: string): string {
  * and derives the next gesture from it, so `sent` already carries both. The
  * row does not, so its delta names BOTH gestures, which is right when the
  * earlier one never commits (a superseded retry is abandoned). The editor's list
- * as base would name only the later gesture and bring the earlier removal back
- * (codex round 2 on BUG-3038 proposed it; the test beside this pins why not).
+ * as base would name only the later gesture and bring the earlier removal back.
  *
  * There is no reorder gesture in the pane today (a list is only ever added to
  * or removed from). If one is added, a pure reorder has an empty delta and this

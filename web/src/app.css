@@ -4,7 +4,7 @@
 	--bg-primary: #0b0b10;
 	--bg-secondary: #14141b;
 	--bg-tertiary: #1c1c25;
-	/* Elevated overlay surfaces (menus, popovers). Same as tertiary in
+	/* Elevated overlay surfaces  (menus, popovers). Same as tertiary in
 	   dark; pure white in light where tertiary is a gray input tone. */
 	--bg-raised: #1c1c25;
 	--bg-hover: #22222d;
@@ -18,14 +18,14 @@
 	--border-subtle: #1d1d27;
 	--border-strong: #4a4a5e;
 
-	/* Card surface family (consumed app-wide from Phase 3 on). */
+	/* Card surface family  (consumed app-wide from Phase 3 on). */
 	--card-bg: #16161f;
 	--card-border: #363648;
 	--shadow-card: 0 2px 6px rgba(0, 0, 0, 0.35);
 
-	/* Tint strength for Chip/badge fills (color-mix percentage). */
+	/* Tint strength for Chip/badge fills  (color-mix percentage). */
 	--chip-alpha: 16%;
-	/* Chip TEXT darkening: 100% = raw accent (dark theme); light theme
+	/* Chip TEXT darkening: 100% = raw accent  (dark theme); light theme
 	   drops to ~72% mixed toward black so small colored labels hold AA. */
 	--chip-text-mix: 100%;
 
@@ -51,15 +51,15 @@
 	--accent-gray: #9ca3af;
 	--accent-brown: #a8896c;
 	--accent-red: #ef4444;
-	/* Solid destructive fill — the red where white text passes AA (4.83:1)
+	/* Solid destructive fill — the red where white text passes AA  (4.83:1)
 	   in both themes. Button variant="danger-solid" (final confirms). */
 	--accent-red-strong: #dc2626;
 
-	/* Literal blue for categorical uses (status maps, charts, info badges).
+	/* Literal blue for categorical uses  (status maps, charts, info badges).
 	   Stays blue even if the brand accent changes — see PLAN-2290. */
 	--status-blue: #4a9eff;
 
-	/* Text color on accent-filled surfaces (buttons, filled badges). */
+	/* Text color on accent-filled surfaces  (buttons, filled badges). */
 	--text-on-accent: #ffffff;
 
 	--status-draft: #666666;
@@ -106,7 +106,7 @@
 	box-sizing: border-box;
 }
 
-/* The auth-page shell (TASK-3509). Keyed on the auth header being on the
+/* The auth-page shell  (TASK-3509). Keyed on the auth header being on the
    page, so every page that renders AuthHeader (login, register, setup, join,
    forgot/reset password, verify-email, the signed-out error page) shares one
    layout: a soft accent glow, the card under the fixed header, the page's own
@@ -209,7 +209,7 @@ input, textarea, select {
 input:focus, textarea:focus, select:focus {
 	border-color: var(--accent-blue);
 }
-/* TASK-2262 (audit C10): a keyboard user must SEE where focus is. The rule
+/* TASK-2262  (audit C10): a keyboard user must SEE where focus is. The rule
    above strips the browser outline from every field in favour of a 1px
    border hue shift, and selects were left out of it entirely (no indicator
    at all; measured on settings' invite-role selects). Every field now gets a
@@ -455,7 +455,7 @@ input:focus, textarea:focus, select:focus {
 	border-color: color-mix(in srgb, var(--accent-blue) 35%, var(--border));
 	text-decoration: none;
 }
-/* The editor NodeView renders an SVG file-type icon here (TASK-2417); the
+/* The editor NodeView renders an SVG file-type icon here  (TASK-2417); the
    read-only markdown render path still emits a text glyph, so these rules
    have to work for both. currentColor keeps the SVG themed and
    forced-colors safe. */
@@ -577,7 +577,7 @@ input:focus, textarea:focus, select:focus {
 	max-width: 30ch;
 }
 
-/* Crop modal (TASK-880). Appended to document.body so styles must
+/* Crop modal  (TASK-880). Appended to document.body so styles must
    be global. Uses the native <dialog> element with a flex layout
    so the image fills available space while header/footer stay fixed. */
 dialog.attachment-crop-modal {
@@ -845,8 +845,7 @@ dialog.attachment-crop-modal::backdrop {
 		--border: #cccccc;
 		--border-subtle: #dddddd;
 		/* Pin light-theme accents for paper — otherwise printing from the
-		   dark theme puts the bright dark-mode accent on white (PR #1018
-		   Codex finding). */
+		   dark theme puts the bright dark-mode accent on white (PR #1018). */
 		--accent-primary: #7c3aed;
 		--accent-blue: var(--accent-primary);
 		--accent-red: #dc2626;
@@ -924,7 +923,7 @@ dialog.attachment-crop-modal::backdrop {
 		background-image: none !important;
 	}
 
-	/* Page margins + page number (PLAN-620 / BUG-625).
+	/* Page margins + page number  (PLAN-620 / BUG-625).
 	   - Top/bottom margins carve out space for the rendered header /
 	     footer (TASK-623). Previously declared in +page.svelte, but
 	     Svelte scoped-style timing meant the rule didn't always win
@@ -936,7 +935,7 @@ dialog.attachment-crop-modal::backdrop {
 	     per page in Chromium. Margin-box counters evaluate per page
 	     correctly. */
 	@page {
-		/* Top margin is generous-but-plain (no reserved header strip):
+		/* Top margin is generous-but-plain  (no reserved header strip):
 		   the page-1 document header lives in normal flow via
 		   `.title-row` + `.meta-info`, so subsequent pages start at
 		   this margin with no overlap risk. Bottom margin reserves
@@ -1093,7 +1092,7 @@ dialog.attachment-crop-modal::backdrop {
 		box-shadow: none !important;
 	}
 
-	/* Custom select controls (FieldEditor) render a dropdown chevron as
+	/* Custom select controls  (FieldEditor) render a dropdown chevron as
 	   an inline SVG (`.select-chevron`) inside the button — `appearance:
 	   none` on the button doesn't affect SVG children, so the `∨` caret
 	   leaks into print. Same story for the expanded dropdown panel
@@ -1106,7 +1105,7 @@ dialog.attachment-crop-modal::backdrop {
 		display: none !important;
 	}
 
-	/* Checkbox field (`.toggle`): visible outlined box; on-state gets a
+	/* Checkbox field  (`.toggle`): visible outlined box; on-state gets a
 	   check mark overlay so the on/off signal survives in print. */
 	.field-value .toggle {
 		appearance: none !important;

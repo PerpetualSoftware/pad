@@ -50,8 +50,8 @@ func (d *HTTPHandlerDispatcher) dispatchProjectReady(
 // Operates on the raw map[string]any decoded from the dashboard JSON
 // so any field server.DashboardAttention adds in future versions
 // (collection, plus anything not yet wired) flows through unchanged.
-// Codex review on PR #348 round 1 caught the previous typed-struct
-// approach dropping `collection` from the response.
+// The previous typed-struct
+// approach dropped `collection` from the response.
 func (d *HTTPHandlerDispatcher) dispatchProjectStale(
 	ctx context.Context,
 	input map[string]any,
@@ -240,8 +240,8 @@ func dashboardArrayField(dash map[string]any, key string) []map[string]any {
 //
 // Operates on map[string]any (not a typed struct) so attention
 // entries pass through to the response with EVERY field the server
-// emitted, not just the ones we knew to declare. Codex review on PR
-// #348 caught the previous typed approach dropping `collection`.
+// emitted, not just the ones we knew to declare. The previous typed approach
+// dropped `collection`.
 func filterAgentAttention(attention []map[string]any) []map[string]any {
 	interesting := map[string]bool{
 		"stalled":       true,

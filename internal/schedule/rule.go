@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// Rule-text limits (TASK-4100, ruling Q7).
+// Rule-text limits (TASK-4100).
 const (
 	maxRuleBytes  = 512
 	maxInterval   = 1_000_000
@@ -109,7 +109,7 @@ func (r *Rule) setPart(name, val string) error {
 		switch f {
 		case freqDaily, freqWeekly, freqMonthly, freqYearly, freqHourly, freqMinutely:
 			r.Freq = f
-		case "SECONDLY": // the tick is 30 s and no cadence needs it (ruling Q3)
+		case "SECONDLY": // the tick is 30 s and no cadence needs it
 			return malformed(CodeUnsupported, "FREQ", val, "SECONDLY is not supported")
 		default:
 			return malformed(CodeRange, "FREQ", val, "want DAILY, WEEKLY, MONTHLY, YEARLY, HOURLY or MINUTELY")
@@ -334,7 +334,7 @@ func (r *Rule) checkSatisfiable() error {
 }
 
 // neverFires says an HOURLY or MINUTELY rule, stepped from start, provably
-// never lands on its BYHOUR and BYMINUTE values (TASK-4100 r1). The library
+// never lands on its BYHOUR and BYMINUTE values (TASK-4100). The library
 // steps naive walls, so the offsets reachable from the start time-of-day are
 // exact: with INTERVAL i and g = gcd(i, 24) hours or gcd(i, 1440) minutes,
 // a time-of-day is reachable iff it is congruent to the start's modulo g.

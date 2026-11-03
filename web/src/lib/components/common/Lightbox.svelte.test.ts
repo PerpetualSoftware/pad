@@ -2435,7 +2435,7 @@ describe('Lightbox — drag-to-pan and double-click (TASK-2458)', () => {
 		expect(released).toContain(1);
 	});
 
-	// ── registry hygiene: the pointer set drains, never leaks (round-2 P1) ──
+	// ── registry hygiene: the pointer set drains, never leaks ──
 	//
 	// The registry is inert plumbing in V1, so a leak has no other observable
 	// consequence — assert the drain invariant directly via the test-only accessor.
@@ -2521,7 +2521,7 @@ describe('Lightbox — drag-to-pan and double-click (TASK-2458)', () => {
 		expect(app.__registrySize()).toBe(1);
 	});
 
-	// ── gesture-state hygiene (round 1) ──
+	// ── gesture-state hygiene ──
 	it('a wheel DURING a captured drag does not snap the pan back (rebases the baseline)', () => {
 		mountViewer();
 		mockGeometry(root(), OVERFLOW_G);
@@ -3224,7 +3224,7 @@ describe('Lightbox — touch pan, pinch, double-tap (TASK-2518)', () => {
 		// A large image: thumb paints, desktop auto-upgrades, the UPGRADE errors, retry
 		// re-mounts a blank element at a fresh generation. `loader.painted` is still true
 		// (stale), but the per-element paint generation is not — so gestures stay inert
-		// until the retried element decodes (round-6 P2).
+		// until the retried element decodes.
 		mountViewer({ images: [sized(IMG_A, 'big', 5000, 5000)] });
 		mockGeometry(root(), OVERFLOW_G);
 		fireLoad(1024, 768); // thumb decodes → painted; desktop requests the original
@@ -3252,7 +3252,7 @@ describe('Lightbox — touch pan, pinch, double-tap (TASK-2518)', () => {
 		expect(scaleOf()).toBeGreaterThan(1); // armed again after the fresh decode
 	});
 
-	// ── regressions from the Codex review (round 1) ──
+	// ── regressions ──
 	it('at MAX scale, spreading further does NOT drift the pan (k uses the clamped scale)', () => {
 		mountPainted(); // fit
 		const MAX = ACTUAL_SCALE * 4; // maxScale for OVERFLOW_G
@@ -3383,7 +3383,7 @@ describe('Lightbox — touch pan, pinch, double-tap (TASK-2518)', () => {
 		// Desktop large image: the thumb decodes and PAINTS (arming gestures), then the
 		// original auto-upgrades in the background (SAME element, SAME token). Gestures
 		// must stay live on the thumb — the accept-gate arms on the thumb decode even
-		// though `decoded` repointed `displaySrc` to the original (the round-2 regression).
+		// though `decoded` repointed `displaySrc` to the original (a past regression).
 		mountViewer({ images: [sized(IMG_A, 'big', 5000, 5000)] });
 		mockGeometry(root(), OVERFLOW_G);
 		expect(imageSrc()).toContain('variant=thumb-md');
@@ -4327,7 +4327,7 @@ describe('Lightbox — action toolbar (TASK-2474)', () => {
 		expect(toolbar()).toBeNull();
 	});
 
-	// ── Codex-review fixes (TASK-2474) ────────────────────────────────────────
+	// ── fixes (TASK-2474) ────────────────────────────────────────
 
 	it('renders the drill-down as a role="menu" of role="menuitem" rows', () => {
 		// The confirm rows are role="menuitem" (from MenuItem); they must be parented
@@ -5461,7 +5461,7 @@ describe('Lightbox — the text arm', () => {
 		// these share CategoryText with markdown server-side.
 		//
 		// Like its sibling in surfaceRenderers.test.ts, this passes against
-		// origin/main as well (codex R3 #5) — the old viewer already showed the
+		// origin/main as well — the old viewer already showed the
 		// fallback and made no request. Kept as a regression guard on the arm
 		// selection, labelled so nobody counts it as proof of the new behaviour.
 		for (const mime of ['text/html', 'text/javascript']) {
@@ -5485,7 +5485,7 @@ describe('Lightbox — the text arm', () => {
 		expect(textFetch).not.toHaveBeenCalled();
 	});
 
-	// ── codex R1 regressions ──────────────────────────────────────────────────
+	// ── regressions ──────────────────────────────────────────────────
 
 	it('re-decides on a LATE resolved size, cutting the transfer short (R1 #1)', async () => {
 		// Most producers seed `size_bytes: null` and let the metadata HEAD fill it,
@@ -5523,8 +5523,8 @@ describe('Lightbox — the text arm', () => {
 		expect(signals[0].aborted).toBe(true);
 	});
 
-	// WHAT THIS SUITE CAN AND CANNOT DECIDE, stated because two of codex R1's
-	// findings are CSS-mechanism findings and a test that cannot see CSS would
+	// WHAT THIS SUITE CAN AND CANNOT DECIDE, stated because two of the findings above are
+	// CSS-mechanism findings and a test that cannot see CSS would
 	// report the jsdom default and call it a pass. `getComputedStyle` here returns
 	// `pointer-events: auto` for EVERY element — component styles are not injected
 	// in this environment — so asserting the layer's `pointer-events: none` would
@@ -5533,7 +5533,8 @@ describe('Lightbox — the text arm', () => {
 	// So: the wheel exclusion (a HANDLER change) is asserted here, with a control
 	// leg. The pointer-events and overscroll guarantees (CSS) are asserted in
 	// `web/e2e/attachment-text-preview.spec.ts`, where a real engine applies them.
-	// This file's coverage of R1 #3/#4 is the structure the CSS keys off, and no
+	// This file's coverage of the wheel and overscroll guarantees is the structure the CSS keys
+	// off, and no
 	// more than that.
 
 	it('leaves the wheel to the CARD, while still owning it everywhere else (R1 #3)', async () => {
@@ -5570,7 +5571,7 @@ describe('Lightbox — the text arm', () => {
 		expect(card).not.toBeNull();
 		expect(card!.parentElement).toBe(layer);
 
-		// NO CLICK ASSERTION HERE, deliberately (codex R2 #6). Dispatching a click
+		// NO CLICK ASSERTION HERE, deliberately. Dispatching a click
 		// on `root()` FORCES `event.target === root`, which is the condition the
 		// close handler tests — so it passes just as happily with the old
 		// interactive full-bleed layer in place. jsdom does no hit-testing, so

@@ -34,7 +34,7 @@ export interface AttachmentMeta {
 	 * (BUG-2964), e.g. `['thumb-sm', 'thumb-md']`. Sourced from the
 	 * `X-Pad-Attachment-Derived` response header via `fetchAttachmentMetadata`.
 	 *
-	 * PER-VARIANT, NOT A BOOLEAN (codex round 1): derivation writes each variant
+	 * PER-VARIANT, NOT A BOOLEAN: derivation writes each variant
 	 * independently, so "some thumbnail exists" is not the same question as "the
 	 * one this render will REQUEST exists". A boolean would say "image" when only
 	 * `thumb-sm` was present and the render asked for `thumb-md`, the endpoint
@@ -177,7 +177,7 @@ const IMG_PAINTABLE_MIMES: ReadonlySet<string> = new Set([
  * `wantVariant` MUST be the variant the caller is about to put in the URL.
  * Asking about a variant you will not request answers a question nobody has —
  * derivation writes each variant independently, so `thumb-sm` existing says
- * nothing about `thumb-md` (codex round 1). `'original'` or omitted means the
+ * nothing about `thumb-md`. `'original'` or omitted means the
  * render points at the original, so only the paintable half can carry it.
  *
  * UNKNOWN (`derived_variants === undefined`) falls back to the old MIME-prefix

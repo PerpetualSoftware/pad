@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/svelte';
 
-// BUG-3850 (lead ruling 0337bf77): a patch restore that must wait for the
+// BUG-3850: a patch restore that must wait for the
 // editor says why, keeps Restore disabled, and still offers Copy.
 const { default: Notice } = await import('./RefusedRawDraftNotice.svelte');
 
@@ -55,7 +55,7 @@ describe('RefusedRawDraftNotice: the wording and buttons match what Restore does
 		const { container } = render(Notice, { props: p });
 		// No diff: the base it would be drawn from is the untrusted part.
 		expect(container.querySelector('.diff')).toBeNull();
-		// Some of it may already be on the server (lead ruling on codex r2 Low).
+		// Some of it may already be on the server.
 		expect(screen.getByTestId('refused-raw-draft').textContent).toContain('may not all have reached the server');
 		expect(screen.getByTestId('refused-raw-draft').textContent).not.toContain('did not reach');
 		expect(screen.getByTestId('refused-raw-draft-stale').textContent).toContain("can't be applied by themselves");

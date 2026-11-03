@@ -42,7 +42,7 @@ func TestStaleKeepsOverdueAttention(t *testing.T) {
 	}
 }
 
-// TestRemindArgsAcceptRearmWithoutARef — codex round 2.
+// TestRemindArgsAcceptRearmWithoutARef.
 //
 // `--rearm` addresses a reminder by id and needs no item ref, but ExactArgs(1)
 // forced one and the rearm branch then ignored it — so the flag could not be
@@ -64,7 +64,7 @@ func TestRemindArgsAcceptRearmWithoutARef(t *testing.T) {
 	}
 }
 
-// TestReminderCommandsExposeTheArgsMCPExpects — codex round 5, P1.
+// TestReminderCommandsExposeTheArgsMCPExpects.
 //
 // cmdhelp derives positionals by regex from a command's `Use` string, and
 // `<instant>` inside `remind <ref> --remind-at <instant>` matched: it became a
@@ -90,7 +90,7 @@ func TestReminderCommandsExposeTheArgsMCPExpects(t *testing.T) {
 		// `remind`'s ref is OPTIONAL: --rearm addresses a reminder by id and
 		// takes none. cmdhelp cannot express a conditional requirement, so
 		// declaring it required would be a machine-readable claim the command
-		// contradicts (codex round 6).
+		// contradicts.
 		{"item remind", []string{"ref"}, []bool{false}},
 		{"item ack", []string{"reminder-id"}, []bool{true}},
 		{"item reminders", []string{"ref"}, []bool{true}},

@@ -112,7 +112,7 @@ func TestSeedGrantPassesToLivePeerAfterSeedersLastOp(t *testing.T) {
 }
 
 // The seeder leaves with nobody else in the room: the NEXT connection to
-// set up is granted (the lead's condition 1).
+// set up is granted.
 func TestSeedGrantReleasedToNextConnWhenSeederLeavesAlone(t *testing.T) {
 	bus := NewMemoryOpBus()
 	defer bus.Close()

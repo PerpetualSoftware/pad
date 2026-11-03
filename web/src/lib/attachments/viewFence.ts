@@ -68,7 +68,7 @@ function serialize(parts: IdentityParts): string | null {
 	// and uuids" is an assumption this module has no way to enforce. JSON quotes
 	// and escapes both halves, so no two distinct part sets can serialise the
 	// same — a collision here would silently let a stale fence pass, which is
-	// the exact failure this module exists to prevent (Codex round 1).
+	// the exact failure this module exists to prevent.
 	return JSON.stringify(pairs);
 }
 

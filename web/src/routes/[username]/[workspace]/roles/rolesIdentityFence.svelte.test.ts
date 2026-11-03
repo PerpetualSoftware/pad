@@ -194,7 +194,7 @@ describe('the roles board stops a commit when the identity moves mid-flight', ()
 			// The MOCK's own getter and bump, not the module signal: the first
 			// version of this helper read its own state and returned true with
 			// both hooks disconnected, so every leg below passed against the
-			// non-reactive double it exists to detect (codex round 1 [P2]).
+			// non-reactive double it exists to detect.
 			isEpochReactive(
 				() => auth.identityEpoch,
 				() => auth.bumpEpoch()
@@ -389,7 +389,7 @@ describe('the roles board stops a commit when the identity moves mid-flight', ()
 	// They all ask "did it refuse?", and an instrument set that only ever asks
 	// that can only measure UNDER-protection — the failure mode on the other
 	// side, a fence that latches shut and never lifts, is invisible to all of
-	// them. That is precisely what shipped in #1372 through four codex rounds
+	// them. That is precisely what shipped in #1372 despite repeated review
 	// and a 10/10 matrix.
 	//
 	// So: move the identity, let the page recover, and then KEEP USING IT.
@@ -435,7 +435,7 @@ describe('the roles board stops a commit when the identity moves mid-flight', ()
 	});
 
 	it('a drag interrupted by an identity change does not pin the board for ever', async () => {
-		// THE LATCH (codex round 3 [P1]), and the reason this leg exists at all
+		// THE LATCH, and the reason this leg exists at all
 		// is that every other one in this file asks "did it refuse?".
 		//
 		// `isDragging` disables the $effect that repopulates `laneData`. The
@@ -531,8 +531,8 @@ describe('the roles board stops a commit when the identity moves mid-flight', ()
 	});
 
 	it('a role save CLICKED after an identity move never issues the write', async () => {
-		// The other order, and the one an entry capture cannot see (codex round
-		// 2 [P1]). The leg below opens the modal and clicks BEFORE the change,
+		// The other order, and the one an entry capture cannot see.
+		// The leg below opens the modal and clicks BEFORE the change,
 		// so the capture catches it. Here the form is already open when the
 		// identity moves and the click comes after — the capture is the current
 		// epoch and passes, while `editingRoleId` is still a role id from the

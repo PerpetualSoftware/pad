@@ -52,7 +52,7 @@ export function builtinOfferLabel(entries: BuiltinListEntry[], key: string | und
 	}
 	// A copy added before Pad recorded versions (legacy, TASK-3462 U4) whose
 	// text differs from the library's: there is something to review, though
-	// whether it was edited is unknown (codex r1).
+	// whether it was edited is unknown.
 	const unknown = mine.find((e) => e.state === 'unknown_origin');
 	if (unknown) {
 		return {

@@ -158,7 +158,7 @@ func TestAwarenessTrackerFirstSenderOwns(t *testing.T) {
 
 // A client that reconnects announces at a newer clock (the provider advances
 // it on every connect) on its new connection before the old one has closed:
-// ownership moves, so the old connection's close removes nobody (codex r1).
+// ownership moves, so the old connection's close removes nobody.
 func TestAwarenessTrackerReconnectOverlapMovesOwnership(t *testing.T) {
 	tr := newAwarenessTracker()
 	tr.observe(1, liveFrame(100, 3)) // the old connection
@@ -172,7 +172,7 @@ func TestAwarenessTrackerReconnectOverlapMovesOwnership(t *testing.T) {
 }
 
 // A connection at its cap takes nothing, so it cannot take a client away from
-// the connection that must remove it on close (codex r5).
+// the connection that must remove it on close.
 func TestAwarenessTrackerCappedConnTakesNoOwnership(t *testing.T) {
 	tr := newAwarenessTracker()
 	tr.observe(1, liveFrame(100, 3))
@@ -315,7 +315,7 @@ func TestRoomRelaysMalformedAwarenessUntracked(t *testing.T) {
 	}
 }
 
-// The interleaving codex r2 found: the old connection has released its client,
+// The interleaving: the old connection has released its client,
 // and the reconnected client's first frame arrives before the old connection
 // has published the removal. Peers must see the removal FIRST: a removal at
 // the same clock arriving after the live state would be applied, hiding a
@@ -343,7 +343,7 @@ func TestRoomRemovalCannotOvertakeAReconnectedClient(t *testing.T) {
 	r.beforeAwarenessRelay = func() { close(atLock) }
 	relayed := make(chan struct{})
 	go func() { r.relayAwareness(newConn, liveFrame(100, 4)); close(relayed) }()
-	<-atLock // the racing frame has reached the lock (codex r3)
+	<-atLock // the racing frame has reached the lock
 	select {
 	case <-relayed:
 		t.Fatal("the reconnected client's frame was published while the removal was pending")

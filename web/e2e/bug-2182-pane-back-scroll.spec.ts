@@ -35,7 +35,7 @@ async function setup(page: import('@playwright/test').Page, fixture: import('./f
 	// waves, which looks like the item detail re-mounting. Record what the
 	// pane fetched and the route it was on, so a failure names the cause.
 	// RelationBacklinksPanel refetches only when it mounts or its item
-	// changes, so its fetches count item-detail mounts (the slug says which).
+	// changes, so its fetches count item-detail mounts  (the slug says which).
 	const t0 = Date.now();
 	const paneLog: string[] = [];
 	page.on('request', (r) => {
@@ -72,8 +72,8 @@ async function setup(page: import('@playwright/test').Page, fixture: import('./f
 	expect(before, 'precondition: the pane scrolled').toBeGreaterThan(300);
 
 	// The popover drills the pane only for a link whose prefix is in the page's
-	// FRESH collection list (collectionPrefixMap); before that list lands it
-	// navigates instead, and no Back button appears (BUG-3241). This collection
+	// FRESH collection list  (collectionPrefixMap); before that list lands it
+	// navigates instead, and no Back button appears  (BUG-3241). This collection
 	// was created a moment ago, so wait for it: its sidebar row is rendered from
 	// the same store write that marks the list fresh.
 	await expect(page.locator(`.nav-section a[href$="/${coll.slug}"]`)).toBeVisible({ timeout: 15_000 });
@@ -83,7 +83,7 @@ async function setup(page: import('@playwright/test').Page, fixture: import('./f
 	const urlBefore = page.url();
 	await page.locator('.link-href').first().click();
 	// On failure, say whether the click drilled the pane, navigated the page,
-	// or did nothing (BUG-3241): the bare "not visible" could not tell them apart.
+	// or did nothing  (BUG-3241): the bare "not visible" could not tell them apart.
 	try {
 		await expect(page.locator('.pane-back-btn')).toBeVisible({ timeout: 10_000 });
 	} catch (e) {
@@ -110,7 +110,7 @@ test('BUG-2182: pane Back returns to the previous item at its scroll position; t
 	test.setTimeout(60_000);
 	const ctx = await setup(page, fixture, request);
 	try {
-		// A cold entry (B, just drilled to, saved nothing) opens at the top.
+		// A cold entry  (B, just drilled to, saved nothing) opens at the top.
 		expect(await ctx.scrollTop(), 'the drilled-to item did not open at the top').toBeLessThan(40);
 
 		await page.locator('.pane-back-btn').click();
@@ -143,7 +143,7 @@ test('BUG-2182: a reader gesture during the restore wait wins', async ({ page, f
 		await page.mouse.wheel(0, 100); // the reader's gesture, during the wait
 		release();
 		await expect(ctx.pane.locator('a', { hasText: ctx.titleB }).last()).toBeAttached({ timeout: 10_000 });
-		// Past the restore cap (RESTORE_CAP_MS, 2500 since BUG-3228), so a restore
+		// Past the restore cap  (RESTORE_CAP_MS, 2500 since BUG-3228), so a restore
 		// that ignored the gesture would have landed by now.
 		await page.waitForTimeout(3000);
 		expect(await ctx.scrollTop(), 'the restore overrode the reader').toBeLessThan(ctx.before / 2);
@@ -203,7 +203,7 @@ for (const leg of [
 	});
 }
 
-// BUG-3250 codex round 1 (P1): the pane element is reused across items, and a
+// BUG-3250: the pane element is reused across items, and a
 // link drill is a pushState, which never reaches the popstate cancel. A hold
 // still live when the reader drills on must not write A's position into B.
 // A GUARD, not a red control: today the drill replaces every child of the pane,
@@ -229,7 +229,7 @@ test('BUG-3250: drilling to another item during the hold does not carry the rest
 
 // BUG-3251: the body can render SHORT and grow later. Text typed just before
 // leaving the item reaches the reopened connection after its replay, seconds
-// later under write load (BUG-3253). A max-height on the pane's editor stands
+// later under write load  (BUG-3253). A max-height on the pane's editor stands
 // in for those missing lines, deterministically, and lifting it is the late
 // text landing. The restore clamps at once and holds, so the reader is never
 // left at the top while the body is short.
@@ -251,7 +251,7 @@ test('BUG-3251: a body that is still short when the restore ends leaves the read
 	const ctx = await setup(page, fixture, request);
 	try {
 		// A's body renders 300px short and stays short past the cap
-		// (RESTORE_CAP_MS, 2500).
+		//  (RESTORE_CAP_MS, 2500).
 		await shortenBody(page, ctx.bodyHeight - 300);
 		await page.locator('.pane-back-btn').click();
 		await expect(ctx.pane.locator('a', { hasText: ctx.titleB }).last()).toBeAttached({ timeout: 10_000 });
@@ -262,7 +262,7 @@ test('BUG-3251: a body that is still short when the restore ends leaves the read
 		expect(clamped, 'the reader was left at the top').toBeGreaterThan(max - 3);
 		// Being at the bottom is also what a stick-to-bottom mechanism would
 		// give. This one was a restore: it ended at the cap, so growth after it
-		// leaves the reader where it put them (BUG-3251 codex round 1).
+		// leaves the reader where it put them  (BUG-3251).
 		await growBody(page);
 		await page.waitForTimeout(400);
 		expect(await ctx.pane.evaluate((el) => el.scrollHeight - el.clientHeight), 'premise: the body grew').toBeGreaterThan(max + 200);
@@ -291,7 +291,7 @@ test('BUG-3251: late growth inside the hold carries the reader to the saved posi
 	}
 });
 
-// BUG-3251 codex round 1: a scrollbar drag raises no wheel/touch/key event, and
+// BUG-3251: a scrollbar drag raises no wheel/touch/key event, and
 // the height rule cannot see it when it shares a frame with late growth: the
 // scroll arrives with the height already changed, so it reads as a clamp and
 // the next resize re-applies the target over the reader. The press on the

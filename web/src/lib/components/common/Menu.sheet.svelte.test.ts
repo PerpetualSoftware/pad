@@ -1,5 +1,5 @@
 /**
- * BUG-3157 codex round 3: at the mobile breakpoint Menu renders a BottomSheet,
+ * BUG-3157: at the mobile breakpoint Menu renders a BottomSheet,
  * and only a consumer whose content IS a menu (sheetMenu) gets a role="menu"
  * wrapper. Several sheetOnMobile consumers put other content there (a delete
  * confirmation, for one), which must not be announced as a menu.

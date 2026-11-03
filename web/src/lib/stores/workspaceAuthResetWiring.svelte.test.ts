@@ -8,7 +8,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
  * registration that joins them is gone: the workspace store subscribes at
  * module scope, and nothing in either suite observes that subscription
  * actually happening (CONVE-19 — a direct-call test vouches for the component,
- * not for its binding). Codex round 1 named this gap.
+ * not for its binding). This file closes that gap.
  *
  * So this file mocks ONLY the API client and drives a real `authStore.clear()`.
  */

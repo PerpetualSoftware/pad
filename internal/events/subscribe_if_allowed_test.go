@@ -6,7 +6,7 @@ import (
 )
 
 // TestSubscribeIfAllowedBounds covers the bus's per-workspace admission
-// bound directly (codex round 5).
+// bound directly.
 //
 // It had no package-level test — it was exercised only through
 // internal/server's HTTP tests, which since BUG-2726 also route through

@@ -16,7 +16,7 @@
 // the first, DST-side instant. Two wall times that resolve to one instant are
 // emitted once; COUNT counts wall-clock occurrences before that de-duplication.
 //
-// SUB-DAILY RULES (ruling Q2). HOURLY and MINUTELY with no BY part step in
+// SUB-DAILY RULES. HOURLY and MINUTELY with no BY part step in
 // elapsed time, so INTERVAL means that many real hours or minutes across a
 // transition. With any BY part they step on the wall clock and collapse: a
 // repeated hour is emitted once, and gap readings merge into the post-gap
@@ -41,21 +41,21 @@
 // accepted as Until defines it (untilbounds_test.go). It also refuses rules that never fire
 // (Feb 30), FREQ=SECONDLY (the tick is 30 s), over 10,000 candidates per FREQ period
 // (density.go), over 512 bytes, INTERVAL over 1,000,000 or years outside 1970..2200.
-// A DTSTART the rule does not produce is not emitted (dateutil semantics, ruling
-// Q1). Every refusal is a *MalformedError carrying a Code and the offending Part;
+// A DTSTART the rule does not produce is not emitted (dateutil semantics). Every
+// refusal is a *MalformedError carrying a Code and the offending Part;
 // no third-party error text ever reaches a caller.
 //
 // VENDORED EXPANDER. The library that expands a rule is vendored at
 // internal/schedule/internal/rrule (teambition/rrule-go v1.8.2, MIT; see its
 // PROVENANCE.md) because its Next() is unbounded on a no-match stretch: UNTIL
 // is checked only against produced candidates, so a rule that never matches
-// spins inside one call until year 9999 (TASK-4100 H1). The vendored copy
+// spins inside one call until year 9999 (TASK-4100). The vendored copy
 // carries a step budget (Limits.MaxSteps) that restarts at every candidate it
 // produces, so it ends only a no-match stretch. The engine merges the rule, the
 // RDATEs and the EXDATEs itself (the library's Set is a test oracle only): a
 // rule that stalls is a stream state with a lower-bound position, the RDATEs
 // below it still flow, and a CapStall is returned only when an answer could lie
-// in the part of the rule not examined (TASK-4100 r3). CapScan is a
+// in the part of the rule not examined (TASK-4100). CapScan is a
 // different bound: the total work from Start to the query exceeds Limits.MaxScan
 // periods. Do not "upgrade" the copy back to the module: that removes the bound.
 package schedule

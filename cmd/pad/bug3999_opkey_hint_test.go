@@ -84,7 +84,7 @@ func TestBUG3999_SuccessAndKeylessPrintNothing(t *testing.T) {
 
 // Both copies of the skill: the one embedded in the binary (pad agent guide,
 // pad agent install) and the separately maintained one the Claude Code plugin
-// ships, which is not synced from it (BUG-3999 r1 H1).
+// ships, which is not synced from it (BUG-3999).
 func TestBUG3999_SkillNoLongerPromisesAutomaticRetrySafety(t *testing.T) {
 	plugin, err := os.ReadFile("../../plugin/skills/pad/SKILL.md")
 	if err != nil {
@@ -106,7 +106,7 @@ func TestBUG3999_SkillNoLongerPromisesAutomaticRetrySafety(t *testing.T) {
 }
 
 // A failed write that sent NO op_key has no key to reuse, so it prints no
-// hint (BUG-3999 r1 H2). The body is what the client marshalled; WrapOpKey is
+// hint (BUG-3999). The body is what the client marshalled; WrapOpKey is
 // the transport's own decision.
 func TestBUG3999_KeylessFailedWritePrintsNoHint(t *testing.T) {
 	failed := errors.New("server error (503)")
@@ -129,7 +129,7 @@ func runDecide(t *testing.T, args ...string) error {
 	return err
 }
 
-// BUG-3999 F1: a keyed create comes back wrapped in *OpKeyError. The plan-limit
+// BUG-3999: a keyed create comes back wrapped in *OpKeyError. The plan-limit
 // branch asserted *cli.APIError directly and stopped matching, which lost the
 // structured marker the MCP stdio classifier reads.
 func TestBUG3999_KeyedCreatePlanLimitKeepsItsStructuredMarker(t *testing.T) {
@@ -165,7 +165,7 @@ func TestBUG3999_KeyedCreatePlanLimitKeepsItsStructuredMarker(t *testing.T) {
 	}
 }
 
-// BUG-3999 F2: under --format json the key line goes to stderr only, so stdout
+// BUG-3999: under --format json the key line goes to stderr only, so stdout
 // stays empty or valid JSON.
 func TestBUG3999_FormatJSONFailedWriteKeepsStdoutParseable(t *testing.T) {
 	createServer(t, true, http.StatusConflict)

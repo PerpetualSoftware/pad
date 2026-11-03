@@ -86,8 +86,8 @@ async function accountFor(fixture: SuiteFixture, username: string, email: string
 
 /**
  * Creates the workspace over a COOKIE session, as the web UI does: a
- * workspace created by a bearer client (`pad init`) records source=cli and is
- * already showing agent activity (BUG-1557), which is not the first run this
+ * workspace created by a bearer client  (`pad init`) records source=cli and is
+ * already showing agent activity  (BUG-1557), which is not the first run this
  * spec is about.
  */
 async function createWebWorkspace(fixture: SuiteFixture, email: string, name: string): Promise<string> {
@@ -151,7 +151,7 @@ test.describe('BUG-3447: the launchpad follows an onboarding agent live', () => 
 			);
 			const coll = (await created.json()) as { slug: string };
 			await expect.soft(sidebarCollection, 'the new collection did not reach the sidebar live').toBeVisible({ timeout: LIVE });
-			// An agent's collection is agent activity (lead ruling): the step
+			// An agent's collection is agent activity : the step
 			// ticks and the banner goes, before any item exists.
 			await expect.soft(agentStep, 'the Agent activity detected step did not tick on the agent\'s collection').toHaveClass(/\bdone\b/, {
 				timeout: LIVE

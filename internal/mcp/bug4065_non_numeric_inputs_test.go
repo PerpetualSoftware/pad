@@ -15,7 +15,7 @@ import (
 )
 
 // BUG-4065: a string expected_seq used to read as absent, so the content write
-// went out UNGUARDED. Under the lead's ruling on Q1 (af4bff40) a plain decimal
+// went out UNGUARDED. A plain decimal
 // integer string is the number it spells, so "123" must reach the server as
 // expected_seq 123: a guarded write.
 func TestBUG4065_StringExpectedSeqIsAGuardedWrite(t *testing.T) {
@@ -63,11 +63,11 @@ func TestBUG4065_NumericInputAdmitsOrRefusesEveryType(t *testing.T) {
 		wantErr string // "" = accepted
 	}{
 		{"nil is absent", nil, 0, false, ""},
-		// Strings (lead ruling af4bff40, Q1): plain decimal integers only.
+		// Strings: plain decimal integers only.
 		{"string 10", "10", 10, true, ""},
 		{"string -12", "-12", -12, true, ""},
 		{"string -0", "-0", 0, true, ""},
-		// A leading zero is refused (lead ruling 5a06782e): stdio's CLI flags
+		// A leading zero is refused: stdio's CLI flags
 		// parse base 0, so "010" is 8 there, and reading it as 10 here would
 		// make one string two numbers.
 		{"string 010 refused", "010", 0, false, `must be a whole number, got the string "010"`},
@@ -89,11 +89,11 @@ func TestBUG4065_NumericInputAdmitsOrRefusesEveryType(t *testing.T) {
 		{"string above int64", "99999999999999999999", 0, false, `is out of range, got the string "99999999999999999999"`},
 		// Other JSON types.
 		{"bool", true, 0, false, "must be a number, got a boolean"},
-		// false is refused too, not skipped as absent (r3 item 2).
+		// false is refused too, not skipped as absent.
 		{"bool false", false, 0, false, "must be a number, got a boolean"},
 		{"object", map[string]any{"n": 1.0}, 0, false, "must be a number, got an object"},
 		{"array", []any{1.0}, 0, false, "must be a number, got an array"},
-		// Native Go integers (BUG-4061's Q6 note): widened exactly.
+		// Native Go integers (BUG-4061): widened exactly.
 		{"int8", int8(-5), -5, true, ""},
 		{"int16", int16(300), 300, true, ""},
 		{"int32", int32(-70000), -70000, true, ""},
@@ -160,7 +160,7 @@ func bug4065Doors() []bug4065Door {
 		{[]string{"workspace", "audit-log"}, map[string]any{}, "limit", top("limit"), false, "limit=7"},
 		{[]string{"item", "list"}, map[string]any{}, "limit", top("limit"), false, "limit=7"},
 		{[]string{"item", "list"}, map[string]any{}, "offset", top("offset"), false, "offset=7"},
-		// The buildQuery doors (lead ruling 5a06782e, Q12): each numeric key
+		// The buildQuery doors: each numeric key
 		// goes through numericInput, so "7" forwards 7 and a non-number is
 		// refused, where the server's Atoi used to default it silently.
 		{[]string{"project", "standup"}, map[string]any{}, "days", top("days"), false, "days=7"},
@@ -174,7 +174,7 @@ func bug4065Doors() []bug4065Door {
 		// expected_seq at both write doors.
 		{[]string{"item", "update"}, map[string]any{"ref": "TASK-1", "content": "x"}, "expected_seq", top("expected_seq"), true, `"expected_seq":7`},
 		{[]string{"item", "patch"}, map[string]any{"ref": "TASK-1", "edits": []any{map[string]any{"old": "a", "new": "b"}}}, "expected_seq", top("expected_seq"), false, `"expected_seq":7`},
-		// Q9 and Q4: line_hint and the sort_order passthroughs.
+		// line_hint and the sort_order passthroughs.
 		{[]string{"item", "patch"}, map[string]any{"ref": "TASK-1"}, "line_hint", hint, false, `"line_hint":7`},
 		{[]string{"collection", "update"}, map[string]any{"slug": "tasks"}, "sort_order", top("sort_order"), false, `"sort_order":7`},
 		{[]string{"role", "update"}, map[string]any{"slug": "rook"}, "sort_order", top("sort_order"), false, `"sort_order":7`},
@@ -182,7 +182,7 @@ func bug4065Doors() []bug4065Door {
 		{[]string{"github", "link"}, map[string]any{"item_ref": "TASK-1", "pr_url": "https://example.com/pr/7"}, "pr_number", top("pr_number"), false, `"number":7`},
 		// chatSequence's doors. Validation runs before target resolution; the
 		// C<n> target form needs no lookup, so "7" can be followed to the wire
-		// (r1 h2 L2).
+		//.
 		{[]string{"chat", "show"}, map[string]any{"target": "C12"}, "since", top("since"), false, "after_seq=7"},
 		{[]string{"chat", "show"}, map[string]any{"target": "C12"}, "limit", top("limit"), false, "limit=7"},
 		{[]string{"chat", "send"}, map[string]any{"target": "C12", "body": "hi"}, "reply_to", top("reply_to"), false, `"reply_to_seq":7`},
@@ -260,7 +260,7 @@ func TestBUG4065_EveryDoorRefusesANonNumberNamingIt(t *testing.T) {
 	}
 }
 
-// BUG-4065 (Q1 b): the string "7" is the number 7 at every door, and that
+// BUG-4065: the string "7" is the number 7 at every door, and that
 // value is what gets forwarded, not the default.
 func TestBUG4065_EveryDoorUsesAPlainDecimalString(t *testing.T) {
 	for _, door := range bug4065Doors() {
@@ -363,7 +363,7 @@ func TestBUG4065_PRNumberBoundAndJSONNumber(t *testing.T) {
 	}
 }
 
-// buildQuery (BUG-4061's Q6 note): a native unsigned value above MaxInt64 is
+// buildQuery (BUG-4061): a native unsigned value above MaxInt64 is
 // refused rather than forwarded for the server to default; one within range
 // is forwarded as its decimal value. Strings stay verbatim.
 func TestBUG4065_BuildQueryNativeIntegers(t *testing.T) {
@@ -387,7 +387,7 @@ func TestBUG4065_BuildQueryNativeIntegers(t *testing.T) {
 	}
 }
 
-// The resource limit flag (Q2): a malformed flag is refused naming limit, not
+// The resource limit flag: a malformed flag is refused naming limit, not
 // defaulted; a plain decimal one is used; zero still means the default.
 func TestBUG4065_ItemListResourceLimitFlag(t *testing.T) {
 	var uris []string
@@ -431,7 +431,7 @@ func itoa(n int) string {
 	return string(b)
 }
 
-// Absent still means the default (r1 h2 L3, r2 item 8): only null and a
+// Absent still means the default: only null and a
 // missing key are absent, and neither is refused or forwarded.
 func TestBUG4065_AbsentMeansTheDefault(t *testing.T) {
 	for name, set := range map[string]func(map[string]any, any){
@@ -479,7 +479,7 @@ func TestBUG4065_AbsentMeansTheDefault(t *testing.T) {
 	}
 }
 
-// End to end through the pad_item tool handler (lead ruling 5a06782e, Q14):
+// End to end through the pad_item tool handler:
 // the catalog gate checks input KEYS only, so a string or a bool expected_seq
 // reaches the dispatcher. Arguments are decoded from JSON bytes, as an MCP
 // client's arrive.
@@ -536,8 +536,7 @@ func TestBUG4065_PadItemToolHandlerExpectedSeq(t *testing.T) {
 	}
 }
 
-// The population check the lead asked for (5a06782e, Q12; rebuilt in r2 per
-// b9025d7c). For every remote dispatch route and every parameter p its tool
+// The population check: for every remote dispatch route and every parameter p its tool
 // declares "number", the route is dispatched three ways from a curated valid
 // base: p absent, p = "7", and p = each bad value. The forwarded requests are
 // compared, so the oracle does not depend on the wire name p travels under:
@@ -555,7 +554,7 @@ func TestBUG4065_PadItemToolHandlerExpectedSeq(t *testing.T) {
 //
 // Conditional reads are outside the walk: a route that reads p only when an
 // input the base does not set is present is classed "does not read". The
-// door table covers the live case, edits[].line_hint (BUG-4065 r4, 86de95f1).
+// door table covers the live case, edits[].line_hint (BUG-4065).
 func TestBUG4065_NoRouteForwardsANonNumberForANumberParam(t *testing.T) {
 	toolFor := func(cmd string) string {
 		word := strings.SplitN(cmd, " ", 2)[0]
@@ -658,7 +657,7 @@ func bug4065WalkBase(cmd string) map[string]any {
 // bug4065ReadSet is the checked-in set of (route, parameter) pairs the walk
 // derives as reading a number-declared parameter. Review a change here
 // against the route's code: a pair that disappears means a route stopped
-// reading the parameter. Reviewed against the code at r2: these are the
+// reading the parameter. These are the
 // top-level doors of bug4065Doors (edits[].line_hint is nested, so the door
 // table covers it).
 var bug4065ReadSet = []string{
@@ -690,7 +689,7 @@ var bug4065ReadSet = []string{
 	"workspace audit-log limit",
 }
 
-// The catalog doors (r3 item 4): pad_item.list and pad_item.history read limit
+// The catalog doors: pad_item.list and pad_item.history read limit
 // through intParam themselves, before the dispatcher. A non-number is refused
 // naming limit and reaches no dispatcher; "7" is the limit used.
 func TestBUG4065_CatalogLimitNonNumbers(t *testing.T) {

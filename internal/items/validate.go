@@ -174,7 +174,7 @@ func ValidateFieldsDetailedWithDrops(
 			// the key absent is the only stored form of "no target", so there is
 			// nothing to inject. Injecting it would satisfy `required` here and
 			// then be normalised away after validation, landing a required
-			// relation with no target (codex round 1).
+			// relation with no target.
 			blankRelationDefault := def.Type == "relation" && IsBlankRelationValue(def.Default)
 			if def.Default == nil || blankRelationDefault {
 				if def.Required {
@@ -230,11 +230,10 @@ func ValidateFieldsDetailedWithDrops(
 }
 
 // normalizeEmptyRelationLists rewrites an EMPTY `multi_relation` array into
-// whichever spelling of "no targets" the caller's write shape already has
-// (PLAN-2857 U4, lead ruling day 64 on codex round 1's P17).
+// whichever spelling of "no targets" the caller's write shape already has (PLAN-2857 U4).
 //
 // ONE SITE, deliberately, and it is the reason this lives here rather than in
-// the doors: the defect codex round 1 found was a whole CLASS of per-door type
+// the doors: the defect here was a whole CLASS of per-door type
 // dispatch, and a normalisation implemented per door would be the same class
 // again. Every write reaches one of these two validators.
 //
@@ -258,7 +257,7 @@ func ValidateFieldsDetailedWithDrops(
 // Exported because the copy PREFLIGHT has to ask the same question before this
 // package runs: it records where each value came from, and an empty list is
 // about to stop being the caller's value, so a preflight that records it as an
-// override labels the injected default "your value" (codex round 6). One rule,
+// override labels the injected default "your value". One rule,
 // asked in two places, rather than two spellings of it.
 func IsEmptyRelationList(def models.FieldDef, val any) bool {
 	if !def.IsMultiRelation() || val == nil {
@@ -285,7 +284,7 @@ func normalizeEmptyRelationLists(fields map[string]any, schema models.Collection
 		if !exists {
 			continue
 		}
-		// NIL IS THE OTHER SPELLING (codex round 7). On a FULL write the
+		// NIL IS THE OTHER SPELLING. On a FULL write the
 		// traversal below treats a present-but-nil key as absent for the
 		// purposes of required-ness and defaults — but it does not REMOVE it,
 		// so `{"members": null}` was stored: a third representation of "no
@@ -460,7 +459,7 @@ func validateFieldType(def models.FieldDef, val any) error {
 		// element names a live item is `ResolveRelationReferentsQ`'s question,
 		// exactly as it is for a scalar `relation`.
 		//
-		// Two rules that differ from the scalar case, both ruled day 64 as NEW
+		// Two rules that differ from the scalar case, both decided as NEW
 		// rules rather than inherited ones (see BUG-3028 for why there was
 		// nothing coherent to inherit):
 		//
@@ -476,7 +475,7 @@ func validateFieldType(def models.FieldDef, val any) error {
 		//     write shape's own spelling of none — an absent key on a full
 		//     write, the nil deletion sentinel on a partial one. The rule used
 		//     to say this was "the write door's job"; no door did it, which is
-		//     what codex round 1 found, and the lead's ruling put it at the one
+		//     what was found, and it now sits at the one
 		//     entry every door passes through instead. The arm still accepts
 		//     the shape: a caller reaching `validateFieldType` directly (the
 		//     tests do) gets the honest answer that an empty list is legal.

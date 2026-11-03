@@ -9,7 +9,7 @@ import (
 )
 
 // ParseChatTarget accepts an owner-scoped conversation number (C12 or 12)
-// or a DM agent key (@rook). Chat never resolves against a workspace.
+// or a DM agent key (@name). Chat never resolves against a workspace.
 func ParseChatTarget(target string) (number int, agent string, err error) {
 	if strings.HasPrefix(target, "@") && len(target) > 1 {
 		return 0, target[1:], nil

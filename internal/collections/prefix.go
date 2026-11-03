@@ -10,8 +10,7 @@ import "strings"
 // Both the CLI's `pad item create / list / move` flows and the MCP
 // HTTPHandlerDispatcher route table call this. Without a shared
 // implementation, `pad item create task ...` works through the
-// subprocess CLI but 404s through the in-process HTTP dispatcher
-// (caught on PR #343 review round 3).
+// subprocess CLI but 404s through the in-process HTTP dispatcher (PR #343).
 func NormalizeSlug(input string) string {
 	switch strings.ToLower(strings.TrimSpace(input)) {
 	case "task", "t":
@@ -45,7 +44,7 @@ func NormalizeSlug(input string) string {
 // PREFIX-NUMBER ref only when the prefix satisfies IsValidPrefix, and falls
 // through to a slug lookup otherwise — so a prefix carrying anything else
 // makes every item in that collection unresolvable by the issue ID the
-// product itself prints. Measured: a collection named "TEMP Rook A 2870" got
+// product itself prints. Measured: a multi-word collection name ending in a number got
 // the prefix "TRA2", `pad item show TRA2-2942` answered "item not found",
 // and only the slug worked.
 //

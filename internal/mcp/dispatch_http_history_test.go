@@ -156,8 +156,8 @@ func TestDispatch_BacklinksAndReport_RouteToRealEndpoints(t *testing.T) {
 // TestDispatchItemHistory_UnknownItemIsNotFound pins the error
 // envelope in BOTH modes: a missing item must classify as the
 // kind-aware item_not_found (with the ref echoed), and full=true must
-// not degrade it back to the legacy ResourceUnknown envelope (codex
-// round 2 — the modes share one request path precisely for this).
+// not degrade it back to the legacy ResourceUnknown envelope (the modes share
+// one request path precisely for this).
 func TestDispatchItemHistory_UnknownItemIsNotFound(t *testing.T) {
 	t.Parallel()
 	d := newHistoryFixture(t)

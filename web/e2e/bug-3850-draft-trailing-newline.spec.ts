@@ -63,7 +63,7 @@ test('a draft typed at the end of a body stored with a trailing newline restores
 	await browserLogin(page);
 	await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/docs?item=${doc.ref}`);
 	await expect(page.locator(SYNCED_BADGE_SELECTOR)).toBeVisible({ timeout: SYNC_TIMEOUT });
-	// The keeper takes the confirmed snapshot on its tick (every 2s) while
+	// The keeper takes the confirmed snapshot on its tick  (every 2s) while
 	// nothing is unconfirmed; give it two ticks before the socket goes.
 	await page.waitForTimeout(4_500);
 	cut = true;
@@ -107,12 +107,12 @@ test('a draft typed at the end of a body stored with a trailing newline restores
 	await expect
 		.poll(async () => (await read()).content, { timeout: SYNC_TIMEOUT, message: 'the row holds the typing once the editor flushes' })
 		.toBe(`Paragraph one.\n\nParagraph two.${TYPED}`);
-	// Both slots (BUG-3863): the shown draft was held when it was offered.
+	// Both slots  (BUG-3863): the shown draft was held when it was offered.
 	await expect.poll(() => again.evaluate((key) => [localStorage.getItem(key), localStorage.getItem(`${key}:held`)], key)).toEqual([null, null]);
 	await again.context().close();
 });
 
-// Lead ruling 0337bf77: a rich draft's anchors are in the editor's form, and
+// Ruling 0337bf77: a rich draft's anchors are in the editor's form, and
 // only an open editor applies a patch to the document in that form (with none,
 // the server matches the stored row, where a raw-only form like underscore
 // emphasis makes them miss). So the patch restore waits until this tab's
@@ -254,7 +254,7 @@ test('a patch restore waits for the editor: disabled with the reason while not s
 		.poll(async () => (await read()).content, { timeout: SYNC_TIMEOUT, message: 'the row holds the typing once the editor flushes' })
 		.toContain(`*emphasised* word here.${EM_TYPED}`);
 	expect((await read()).content).toContain('Paragraph one.');
-	// Both slots (BUG-3863): the shown draft was held when it was offered.
+	// Both slots  (BUG-3863): the shown draft was held when it was offered.
 	await expect.poll(() => again.evaluate((key) => [localStorage.getItem(key), localStorage.getItem(`${key}:held`)], key)).toEqual([null, null]);
 	await again.context().close();
 });

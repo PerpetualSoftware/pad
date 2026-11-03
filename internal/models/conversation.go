@@ -83,7 +83,7 @@ type ConversationSend struct {
 
 // ConversationSendResult is a send's outcome. Replayed means the op_key had
 // already been used and Message is the stored message, not a new one.
-// TASK-4038 r6: a send leaves both read and delivered markers unchanged.
+// TASK-4038: a send leaves both read and delivered markers unchanged.
 // TASK-4038: Recipients contains every OTHER member identity, including the
 // human member, because the web also needs a ref-only nudge. TASK-4041 filters
 // to agent members for monitor delivery. A Replayed result has no Recipients;
@@ -120,7 +120,9 @@ type ConversationUnread struct {
 }
 
 // AgentDMKey is the dm_key of an owner's direct conversation with an agent.
-// TASK-4038 r3: owner user ids are store-generated UUIDs (store.go newID) with no ':', so agent:<owner>:<agent_key> splits unambiguously at the second ':' even when agent_key contains ':'.
+// TASK-4038: owner user ids are store-generated UUIDs (store.go newID) with no ':',
+// so agent:<owner>:<agent_key> splits unambiguously at the second ':' even when
+// agent_key contains ':'.
 func AgentDMKey(owner, agentKey string) string {
 	return "agent:" + owner + ":" + agentKey
 }

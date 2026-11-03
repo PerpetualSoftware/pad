@@ -91,7 +91,7 @@
 			// allows 120 CHARACTERS, so any multibyte name near the limit
 			// comes back shorter than the draft. Without this the equality
 			// check below never matches, Save stays enabled forever, and each
-			// press re-sends the same request (codex round 24, BUG-2803).
+			// press re-sends the same request (BUG-2803).
 			//
 			// Assigning the canonical value rather than comparing lengths
 			// keeps this correct for any future normalisation too.
@@ -223,7 +223,7 @@
 	}
 
 	// Returns true iff the user should see the "Any workspace" badge
-	// in the card's summary view. Post-Codex-#585-round-2 the wire
+	// in the card's summary view. Since #585 the wire
 	// shape sends BOTH the wildcard flag AND the staged slug list,
 	// so the badge is driven by the flag (the slug list may carry
 	// pre-staged rows that are inert until the user flips the flag).
@@ -538,8 +538,7 @@
 									{/if}
 								</div>
 
-								<!-- Workspace allow-list editor (TASK-1524 / Codex review
-									 #585 round 1): always rendered so users in wildcard
+								<!-- Workspace allow-list editor (TASK-1524 / #585): always rendered so users in wildcard
 									 mode can pre-stage workspaces before flipping
 									 all_current_workspaces=off. The backend's
 									 empty_allowlist guard rejects the toggle when the

@@ -156,7 +156,7 @@ type ActivityListParams struct {
 	// ExcludeUnresolvedItems drops rows that name an item which no longer
 	// exists, for every caller, scoped or not. The feed shows such rows as
 	// workspace-level; the dashboard never renders them, so it sets this to
-	// keep them from filling its window (BUG-3687, Codex rounds 1 and 2).
+	// keep them from filling its window (BUG-3687).
 	ExcludeUnresolvedItems bool
 }
 
@@ -218,8 +218,7 @@ type TimelineEntry struct {
 	// way for every kind. The nested comment's value is the authoritative
 	// one — it is what the store's join wrote. Activity entries deliberately
 	// do NOT get it: their name already lives in Activity.Metadata, and a
-	// second copy there would be a second source that can drift (TASK-2760,
-	// lead ruling on the trail).
+	// second copy there would be a second source that can drift (TASK-2760, the trail).
 	AgentName string `json:"agent_name,omitempty"`
 	// CommentOnUpdate is set on a "comment" entry whose comment an item update
 	// carried (`pad item update --comment`, the update's "updated" activity),

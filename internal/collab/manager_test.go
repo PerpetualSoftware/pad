@@ -35,7 +35,7 @@ type fakeOpLog struct {
 	appendGate chan struct{}
 
 	// contentFlushedIDs simulates the items.content_flushed_op_log_id
-	// watermark per item (TASK-1309 round 4). Tests populate this
+	// watermark per item (TASK-1309). Tests populate this
 	// to exercise the schema-mismatch + sweeper paths that consult
 	// it. Missing key = NULL watermark = "never flushed".
 	contentFlushedIDs map[string]int64
@@ -65,8 +65,7 @@ type fakeOpLog struct {
 	// runs under the per-item lock". The hook receives the locked
 	// store so it can mutate rows directly. nil = no-op.
 	//
-	// Per Codex review of TASK-1309 round 2 NIT:
-	// TestPruneSweepSkipsRowAddedMidSweep wasn't actually exercising
+	// TestPruneSweepSkipsRowAddedMidSweep (TASK-1309) wasn't actually exercising
 	// the conditional-DELETE path because it inserted the recent row
 	// before the listing query.
 	onListDormantHook func(f *fakeOpLog)
@@ -410,7 +409,7 @@ func dialWS(t *testing.T, server *httptest.Server, itemID string) *websocket.Con
 // waitElectable polls until the room for itemID has at least n conns that pickApplier
 // would actually elect — writable, anchored (replayDone), not frozen. Gates tests
 // that drive ApplyExternalContent so they don't race the post-replay cursor write:
-// an unanchored conn is deliberately NOT elected (BUG-2276 residual 2, P1), because
+// an unanchored conn is deliberately NOT elected (BUG-2276 residual 2), because
 // its client buffers Y.Doc updates until it receives the initial cursor.
 func waitElectable(t *testing.T, mgr *RoomManager, itemID string, n int) {
 	t.Helper()
@@ -920,7 +919,7 @@ func TestForceRefreshRoomReconcile(t *testing.T) {
 }
 
 // TestForceRefreshRoomUncertainInvalidatesInMemoryFences is the BUG-2276
-// residual-1 P1 guard: on the UNCERTAIN commit-outcome path, ForceRefreshRoom must
+// residual-1 guard: on the UNCERTAIN commit-outcome path, ForceRefreshRoom must
 // CLEAR the item's in-memory restore fences (lastRestoreSeqs + restoreBoundaries)
 // so a reconnecting stale-seed peer is judged against the DURABLE column — which
 // reflects a landed-but-ack-lost restore — not a PRIOR restore's cached generation.
@@ -964,7 +963,7 @@ func TestForceRefreshRoomUncertainInvalidatesInMemoryFences(t *testing.T) {
 	}
 
 	// A peer seeded at R1's generation (content_seq=10) now reconnecting is judged
-	// against the DURABLE column (R2=20): 10 < 20 → force_refresh. With the STALE
+	// against the DURABLE column (=20): 10 < 20 → force_refresh. With the STALE
 	// cache it would have compared 10 vs cached-10 (equal) and been admitted — the
 	// clobber this fix prevents.
 	srv := newCollabTestServer(t, mgr)
@@ -1016,7 +1015,7 @@ func TestJoinDurableRestoreBoundaryFencesStaleSeedAfterRestart(t *testing.T) {
 }
 
 // TestJoinFailsClosedWhenDurableBoundaryReadErrors is the BUG-2264 fail-closed
-// guard (Codex xhigh): if the durable restore-boundary read errors on an
+// guard: if the durable restore-boundary read errors on an
 // in-memory miss (a flaky DB after a restart), the fence must NOT degrade open
 // and admit a possibly-stale seed — that client could push its pre-restore Y.Doc
 // and clobber the restored content once the DB recovers. It fails CLOSED via a
@@ -1544,7 +1543,7 @@ func TestRoomManagerSchemaPostRebuildClean(t *testing.T) {
 	// Wait for the prune to actually land. RoomCount() == 1 isn't a
 	// prune-completion barrier (getOrCreate publishes the room
 	// BEFORE maybeRebuildOnSchemaMismatch runs), so poll the store
-	// state directly. Per Codex review round 1 NIT.
+	// state directly.
 	for i := 0; i < 200; i++ {
 		if store.rowCount() == 0 {
 			break
@@ -1588,8 +1587,8 @@ func TestRoomManagerSchemaPostRebuildClean(t *testing.T) {
 // TestPruneSweepRemovesDormantItems is the TASK-1309 happy-path test:
 // a sweep finds items whose entire op-log is older than minAge and
 // prunes them whole. Items with ANY recent activity are preserved
-// completely (no prefix-pruning — Yjs causal references would break
-// per the Codex P1 finding).
+// completely (no prefix-pruning, Yjs causal references would break
+// as noted in the design).
 func TestPruneSweepRemovesDormantItems(t *testing.T) {
 	bus := NewMemoryOpBus()
 	defer bus.Close()
@@ -1813,9 +1812,7 @@ func TestPruneSweepSkipsActiveRoom(t *testing.T) {
 // which fires after the listing is computed but before
 // PruneSweep iterates. The hook injects a recent row that the
 // candidate-list already committed to but that the conditional
-// DELETE must catch.
-//
-// Per Codex review of TASK-1309 round 2 NIT.
+// DELETE must catch (TASK-1309).
 func TestPruneSweepSkipsRowAddedMidSweep(t *testing.T) {
 	bus := NewMemoryOpBus()
 	defer bus.Close()
@@ -2100,7 +2097,7 @@ func TestRoomManagerSyncCursorBroadcast(t *testing.T) {
 }
 
 // TestRoomManagerForceRefreshOnEmptyOpLogWithSince exercises the
-// branch added in Codex round 2 [P1] of TASK-1319: a client
+// branch added for TASK-1319: a client
 // announces `?since=N>0` against an item whose ENTIRE op-log has
 // been pruned (PruneAndApply, schema rebuild, or dormant GC). MIN
 // is undefined, so the original `hasMin && since < minID` predicate
@@ -2125,8 +2122,8 @@ func TestRoomManagerForceRefreshOnEmptyOpLogWithSince(t *testing.T) {
 	}
 }
 
-// TestRoomManagerCursorSuppressedDuringReplay is the round 5 [P1]
-// regression: a live op broadcast during the replay window MUST NOT
+// TestRoomManagerCursorSuppressedDuringReplay is a
+// regression test: a live op broadcast during the replay window MUST NOT
 // generate an op_log_cursor TextMessage to a peer mid-replay. If it
 // did, a client disconnecting after that cursor but before the rest
 // of the replay rows would persist a cursor pointing past unreplayed

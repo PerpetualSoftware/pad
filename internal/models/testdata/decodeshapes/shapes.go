@@ -2,8 +2,8 @@
 // testdata so the go tool ignores it, and exists to be parsed by
 // TestGuardCatchesEveryDestinationShape.
 //
-// It is the population table for BUG-2685's guard. Three consecutive review
-// rounds each named another destination spelling the guard did not handle, one
+// It is the population table for BUG-2685's guard. Three consecutive
+// attempts each found another destination spelling the guard did not handle, one
 // at a time; CONVE-35 says a loop that keeps finding new members of a class is
 // measuring the enumeration rather than the code. So the class is written down
 // HERE, once, and the guard is tested against the whole of it.

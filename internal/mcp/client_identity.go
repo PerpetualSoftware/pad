@@ -185,7 +185,7 @@ type RemoteCaller struct {
 	// client declared nothing, which still records an agent write.
 	Name string
 	// LeaseHolder is the default lease holder label: Name, or
-	// remoteAgentFallback. Display only (TASK-3613, lead ruling).
+	// remoteAgentFallback. Display only (TASK-3613).
 	LeaseHolder string
 	// WorkerID is the default lease worker id, derived from the account and
 	// the MCP session, so two connections of one client do not silently

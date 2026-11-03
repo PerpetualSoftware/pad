@@ -39,7 +39,7 @@ const auth = vi.hoisted(() => {
 	const hook = {
 		read: null as null | (() => number),
 		write: null as null | ((n: number) => void),
-		// The user id is a SIGNAL too (bound below): the page's recovery is a
+		// The user id is a SIGNAL too  (bound below): the page's recovery is a
 		// `(sessionUserId, wsSlug)`-keyed effect, and a plain variable here
 		// would leave it never re-running — the recovery legs would then fail
 		// against a correct page, or worse, be weakened until they passed.
@@ -420,7 +420,7 @@ describe('the dashboard stops a commit when the identity moves mid-flight', () =
 	});
 
 	it("Retry's load, overtaken by an identity change, does not paint over the new user's board", async () => {
-		// Codex round 2's probe, kept as a driven leg: Retry issues a load, the
+		// A probe kept as a driven leg: Retry issues a load, the
 		// identity moves and the keyed effect reloads for the new user, and THEN
 		// the Retry load resolves with the previous user's board. Retry
 		// delegates to load(), so both the fence and the sequence token refuse

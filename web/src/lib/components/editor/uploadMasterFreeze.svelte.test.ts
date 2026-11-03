@@ -1,7 +1,7 @@
 // BUG-2177: an attachment upload in flight when the master editor freezes (a
 // detail pane opened over it, TASK-2172 / TASK-2180) used to DROP its result:
 // the bytes were stored server-side and nothing referenced them, silently.
-// Lead ruling, day 78: the upload is DEFERRED, inserted at its mapped
+// The upload is DEFERRED, inserted at its mapped
 // placeholder once the editor is editable again; an editor that is gone by
 // then tells the user, naming the file.
 //

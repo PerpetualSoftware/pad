@@ -25,8 +25,8 @@ func (d *HTTPHandlerDispatcher) dispatchGitHubLink(ctx context.Context, input ma
 		return validationFailedResult(cmdKey, "ref is required", "Pass `ref=<TASK-N>`, the item to link the PR to."), nil
 	}
 	// Any positive whole number the CLI's --pr-number takes; the bound is
-	// only where a JSON number stops being an exact integer (codex r2: a
-	// MaxInt32 cap refused what the CLI accepts).
+	// only where a JSON number stops being an exact integer (a MaxInt32 cap
+	// refused what the CLI accepts).
 	//
 	// BUG-4065: read through numericInput, so the bound is wholeInt64's
 	// exclusive 2^53 (the old 'n > 1<<53' admitted 2^53, the rounded image of

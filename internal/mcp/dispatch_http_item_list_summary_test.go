@@ -127,7 +127,7 @@ func TestHTTPItemList_DefaultIsSummaryShape(t *testing.T) {
 }
 
 // TestHTTPItemList_ScopeDenialIsPermissionDenied pins the error
-// envelope on the SUMMARY path (codex round 1 P2): dispatchItemList
+// envelope on the SUMMARY path: dispatchItemList
 // calls buildAuthedRequest directly, and before the
 // buildRequestErrorResult extraction a scope rejection there degraded
 // to a generic server_error — while the routeTable path and the

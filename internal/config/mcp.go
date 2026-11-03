@@ -61,7 +61,7 @@ func (e MCPEndpoints) Usable() bool {
 }
 
 // HTTPS reports whether the auth-server URL is https, which is what makes
-// OAuth available (PLAN-2310 DR-4, Dave's ruling: http deployments are
+// OAuth available (PLAN-2310 DR-4, http deployments are
 // PAT-only).
 func (e MCPEndpoints) HTTPS() bool {
 	if !e.Usable() {

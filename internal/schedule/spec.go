@@ -33,7 +33,7 @@ type Compiled struct {
 	spec    Spec
 	rule    *Rule          // nil: no rule
 	zone    *time.Location // nil: floating
-	elapsed bool           // bare HOURLY or MINUTELY: steps in elapsed time (ruling Q2)
+	elapsed bool           // bare HOURLY or MINUTELY: steps in elapsed time
 	synced  bool
 }
 
@@ -92,7 +92,7 @@ func Compile(s Spec) (*Compiled, error) {
 		return c, nil
 	}
 	// ParseRule enforces maxPeriodCandidates before probeSynced can create
-	// and advance a generator below (TASK-4100 F1).
+	// and advance a generator below (TASK-4100).
 	r, err := ParseRule(s.Rule)
 	if err == nil {
 		err = r.Validate(s.Start, c.zone)
@@ -128,6 +128,6 @@ func (c *Compiled) Bounded() bool {
 }
 
 // StartSynced reports whether the rule itself produces Start. When it does
-// not, Start is not an occurrence (dateutil semantics, ruling Q1): a WEEKLY
+// not, Start is not an occurrence (dateutil semantics): a WEEKLY
 // BYDAY=FR rule started on a Tuesday first fires the following Friday.
 func (c *Compiled) StartSynced() bool { return c.synced }

@@ -70,7 +70,7 @@ const (
 	// Composite events: NONE. item_updated_with_comment was declared here
 	// and never published by anything — its only producer was a hand-called
 	// webhook dispatch using the dot-form name, retired under SPEC-3 v1.2
-	// (Dave's ruling, day-48) because it folds into item.updated +
+	// because it folds into item.updated +
 	// comment.created. The constant went with it rather than being left as
 	// a name a future publisher could reach for.
 
@@ -109,7 +109,7 @@ type Event struct {
 	NewSlug string `json:"new_slug,omitempty"`
 	// ItemsChanged is set on a collection_updated event when a field MIGRATION
 	// WAS REQUESTED (a schema change carrying migrations), independent of how
-	// many rows actually changed (BUG-2265 Codex round 7). It's a SANITIZED
+	// many rows actually changed (BUG-2265). It's a SANITIZED
 	// reconcile signal — a bare bool carrying NO per-item data and revealing
 	// nothing about hidden item values — so it can be delivered to item-grant
 	// subscribers; their client triggers a /items-changes deltaSync
@@ -216,7 +216,7 @@ type EventBus interface {
 	// no-replay primitive that no handler uses, and that is the point: an
 	// interface method whose subscribers CANNOT be told they missed
 	// something is a silent under-delivery waiting for its first production
-	// caller (codex round 5). Every way of registering a subscriber hands
+	// caller. Every way of registering a subscriber hands
 	// back the same two things.
 	// ctx is the CALLER's lifetime, not the bus's. When it ends before the
 	// subscription is handed back, any registration made along the way is
@@ -337,7 +337,7 @@ type replayBuffer struct {
 	count  int // current number of events
 
 	// appends counts every append this buffer has ever taken, and it is a
-	// POSITION rather than an identifier (BUG-2747, codex round 3).
+	// POSITION rather than an identifier (BUG-2747).
 	//
 	// A caller that registers and reads its replay in two separate critical
 	// sections needs to know where the buffer stood at the FIRST of them.
@@ -374,7 +374,7 @@ type replayBuffer struct {
 	// one logical stream whose IDs are consecutive by construction; we
 	// cannot, and no cleverer local check recovers it — see BUG-2735, which
 	// carries the two real options (a per-workspace counter, or an authority
-	// read against the shared counter) and the load arithmetic that ruled
+	// read against the shared counter) and the load arithmetic that rules
 	// the second one out.
 	//
 	// THE ID SPACE'S IDENTITY IS STILL NOT HERE, and after BUG-2736 that is a
