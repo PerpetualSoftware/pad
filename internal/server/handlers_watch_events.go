@@ -946,7 +946,7 @@ func parseWatchPredicate(raw string) (field, value string, ok bool) {
 //
 // Actor mapping (TASK-2533 plan interpretation): DOC-2479's payload
 // lists a single `actor` field, but the monitor's own example output —
-// `PAD TASK-214 → done (Alice): fix verified` — names a PERSON, not a
+// `PAD TASK-214 → done (Dave): fix verified` — names a PERSON, not a
 // source category ("web"/"cli"/"agent"). Notification carries both
 // (Actor = category, ActorName = display name, mirroring the existing
 // events.Event shape); this maps the wire `actor` field to ActorName
