@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"time"
@@ -132,8 +133,15 @@ func (s *Store) WorkspaceAttachmentBlobs(workspaceID string) ([]models.Attachmen
 // Returns the count of protecting rows in OTHER workspaces; 0 means the
 // physical blob is safe to delete.
 func (s *Store) CountAttachmentsForStorageKeyOutsideWorkspace(storageKey, workspaceID string) (int, error) {
+	return s.CountAttachmentsForStorageKeyOutsideWorkspaceContext(context.Background(), storageKey, workspaceID)
+}
+
+// CountAttachmentsForStorageKeyOutsideWorkspaceContext is the same count
+// bounded by ctx, for the caller that runs it under the in-flight lock
+// (TASK-4279).
+func (s *Store) CountAttachmentsForStorageKeyOutsideWorkspaceContext(ctx context.Context, storageKey, workspaceID string) (int, error) {
 	var n int
-	err := s.db.QueryRow(s.q(`
+	err := s.db.QueryRowContext(ctx, s.q(`
 		SELECT COUNT(*) FROM attachments
 		WHERE storage_key = ? AND workspace_id <> ?
 	`), storageKey, workspaceID).Scan(&n)
