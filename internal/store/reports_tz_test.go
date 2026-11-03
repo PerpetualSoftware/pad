@@ -117,6 +117,99 @@ func TestGetReport_TZ_MonthAcrossDSTChange(t *testing.T) {
 	}
 }
 
+// zeroFilledDayLabels runs zeroFilledBucketsIn for a day report and fails the
+// test when it has not returned by the deadline: the failure mode under test is
+// a loop that never ends, which a plain call would turn into a hung package.
+func zeroFilledDayLabels(t *testing.T, zone string, start, end time.Time) []string {
+	t.Helper()
+	loc := mustZone(t, zone)
+	done := make(chan []ReportBucket, 1)
+	go func() { done <- zeroFilledBucketsIn(start, end, "day", loc, nil, nil) }()
+	select {
+	case buckets := <-done:
+		labels := make([]string, len(buckets))
+		for i, b := range buckets {
+			labels[i] = b.Bucket
+		}
+		return labels
+	case <-time.After(5 * time.Second):
+		t.Fatalf("zeroFilledBucketsIn(%s, %s .. %s) did not return", zone, start.Format(time.RFC3339), end.Format(time.RFC3339))
+		return nil
+	}
+}
+
+func equalLabels(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// TASK-4277: a local date that does not exist (a zone moving across the
+// International Date Line) must be skipped, not revisited forever.
+func TestZeroFilledBucketsIn_SkippedLocalDateTerminates(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		zone  string
+		start time.Time
+		end   time.Time
+		want  []string
+	}{
+		{
+			// Samoa skipped 2011-12-30 entirely.
+			name:  "Pacific/Apia short window",
+			zone:  "Pacific/Apia",
+			start: time.Date(2011, 12, 28, 12, 0, 0, 0, time.UTC),
+			end:   time.Date(2011, 12, 31, 12, 0, 0, 0, time.UTC),
+			want:  []string{"2011-12-28", "2011-12-29", "2011-12-31", "2012-01-01"},
+		},
+		{
+			name:  "Pacific/Apia long window",
+			zone:  "Pacific/Apia",
+			start: time.Date(2011, 12, 20, 0, 0, 0, 0, time.UTC),
+			end:   time.Date(2012, 1, 5, 0, 0, 0, 0, time.UTC),
+			want: []string{
+				"2011-12-19", "2011-12-20", "2011-12-21", "2011-12-22", "2011-12-23", "2011-12-24", "2011-12-25",
+				"2011-12-26", "2011-12-27", "2011-12-28", "2011-12-29", "2011-12-31",
+				"2012-01-01", "2012-01-02", "2012-01-03", "2012-01-04", "2012-01-05",
+			},
+		},
+		{
+			// Kiribati's Line Islands skipped 1994-12-31.
+			name:  "Pacific/Kiritimati",
+			zone:  "Pacific/Kiritimati",
+			start: time.Date(1994, 12, 29, 12, 0, 0, 0, time.UTC),
+			end:   time.Date(1995, 1, 2, 12, 0, 0, 0, time.UTC),
+			want:  []string{"1994-12-29", "1994-12-30", "1995-01-01", "1995-01-02", "1995-01-03"},
+		},
+		{
+			// Midnight does not exist on 2018-11-04 in Sao Paulo (the clock
+			// jumped 00:00 to 01:00), but the DAY does: it must still get a
+			// bucket, exactly once.
+			name:  "America/Sao_Paulo midnight gap",
+			zone:  "America/Sao_Paulo",
+			start: time.Date(2018, 11, 3, 12, 0, 0, 0, time.UTC),
+			end:   time.Date(2018, 11, 6, 12, 0, 0, 0, time.UTC),
+			want:  []string{"2018-11-03", "2018-11-04", "2018-11-05", "2018-11-06"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := zeroFilledDayLabels(t, tc.zone, tc.start, tc.end)
+			if !equalLabels(got, tc.want) {
+				t.Fatalf("labels = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestZeroFilledBucketsIn_FallBackHourIsEmittedOnce(t *testing.T) {
 	t.Parallel()
 	ny := mustZone(t, "America/New_York")

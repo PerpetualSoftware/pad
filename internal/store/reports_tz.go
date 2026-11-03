@@ -86,8 +86,27 @@ func zeroFilledBucketsIn(start, end time.Time, gran string, loc *time.Location, 
 		}
 		return out
 	}
-	for d := time.Date(ls.Year(), ls.Month(), ls.Day(), 0, 0, 0, 0, loc); !d.After(end); d = d.AddDate(0, 0, 1) {
-		emit(d.Format(reportDayLayout))
+	// Step a calendar-date counter, never the previous midnight: adding a day
+	// to a midnight that sits in a gap lands on a date already visited (the
+	// loop then never ends, TASK-4277) or drifts an hour off the day boundary.
+	// The counter is pure calendar arithmetic in UTC, so it advances by exactly
+	// one date per pass.
+	y, m, day := ls.Date()
+	for n := 0; ; n++ {
+		civil := time.Date(y, m, day+n, 0, 0, 0, 0, time.UTC)
+		d := time.Date(civil.Year(), civil.Month(), civil.Day(), 0, 0, 0, 0, loc)
+		if d.After(end) {
+			break
+		}
+		// A date the zone skipped (a jump across the International Date Line)
+		// has no events and no bucket. Test noon, not midnight: a DST gap at
+		// midnight (Sao Paulo) resolves midnight to the previous evening, but
+		// the day itself exists and keeps its bucket.
+		noon := time.Date(civil.Year(), civil.Month(), civil.Day(), 12, 0, 0, 0, loc)
+		if ly, lm, ld := noon.Date(); ly != civil.Year() || lm != civil.Month() || ld != civil.Day() {
+			continue
+		}
+		emit(civil.Format(reportDayLayout))
 	}
 	return out
 }
