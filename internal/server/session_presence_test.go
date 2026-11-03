@@ -185,7 +185,7 @@ func TestMemorySessionPresence_ConcurrentAccess(t *testing.T) {
 //
 // ListForUser gained an error when an out-of-process implementation made
 // "I could not find out" a reachable state distinct from "there are none"
-// (BUG-2698, codex round 1 P1). Going through this helper makes every
+// (BUG-2698). Going through this helper makes every
 // existing test assert its own premise — that the read SUCCEEDED — rather
 // than comparing lengths against a nil slice that an error would also
 // produce.

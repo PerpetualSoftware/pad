@@ -185,8 +185,8 @@ func TestPushDeliverySymmetry_CountAgreesWithWhatTheStreamReceives(t *testing.T)
 // It is tested here rather than through the handler because the branch
 // is not reachable that way — RequireAuth rejects a deleted or disabled
 // caller long before handlePushToItem runs. Defence in depth, pinned
-// because the distinction it sits next to is the one codex round 1
-// caught: absence is an answer, unreadability is not.
+// because the distinction it sits next to is the one that matters:
+// absence is an answer, unreadability is not.
 func TestPushSessionVisibility_MissingUserIsNotVisible(t *testing.T) {
 	t.Parallel()
 	srv := testServerWithWatchEvents(t)
@@ -210,8 +210,8 @@ func TestPushSessionVisibility_MissingUserIsNotVisible(t *testing.T) {
 	}
 }
 
-// TestDeliveredSessionCount_PropagatesVisibilityError is the codex
-// round-1 P1 regression, and it FAILS against the first version of this
+// TestDeliveredSessionCount_PropagatesVisibilityError is a
+// regression test, and it FAILS against the first version of this
 // fix, which swallowed the error and returned false.
 //
 // Why it matters more than it looks: deliveredSessionCount's 0 is

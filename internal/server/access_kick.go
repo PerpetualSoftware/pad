@@ -11,7 +11,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/accesskick"
 )
 
-// TASK-3365 (Dave's ruling on TASK-3345 #3): revoking access must reach live
+// TASK-3365 (TASK-3345): revoking access must reach live
 // connections NOW, not on their next 60s revalidation tick. The mechanism is
 // a KICK, not new authorization: every long-lived connection (collab
 // WebSocket, /events SSE, /events/stream) already has a revalidation routine
@@ -23,10 +23,10 @@ import (
 // WORKSPACE (it was deleted, restored or purged). Across instances it travels
 // on its own transport (internal/accesskick: Redis pub/sub on cloud), NOT on
 // the client watch bus, whose sequence ids, replay buffer and per-client
-// queues kicks must not consume (codex r1). With no transport (one instance)
+// queues kicks must not consume. With no transport (one instance)
 // a kick is applied locally.
 //
-// The residual is accepted (lead ruling): frames already in flight between
+// The residual is accepted: frames already in flight between
 // the revoking commit and the kick landing are processed under the old
 // access, a window of bus latency plus one store check instead of up to 60s.
 
@@ -166,7 +166,7 @@ func (s *Server) SetAccessKickTransport(t accesskick.Transport) {
 		s.accessKickWorker = nil
 	}
 	// An installed transport is the server's: a replaced or cleared one that
-	// owns resources is closed (codex r3).
+	// owns resources is closed.
 	if c, ok := s.accessKickTransport.(io.Closer); ok {
 		if err := c.Close(); err != nil {
 			slog.Warn("access kicks: closing the replaced transport failed", "error", err)
@@ -185,7 +185,7 @@ func (s *Server) SetAccessKickTransport(t accesskick.Transport) {
 const kickPublisherQueue = 1024
 
 // kickPublisher publishes kicks to the transport from ONE background
-// goroutine, so no request waits on Redis (codex r2): a stalled Redis costs
+// goroutine, so no request waits on Redis: a stalled Redis costs
 // the queue, never the handler that just committed an access change.
 type kickPublisher struct {
 	ch     chan accesskick.Message
@@ -193,7 +193,7 @@ type kickPublisher struct {
 	cancel context.CancelFunc
 }
 
-// stop ends the worker, cancelling a publish it is blocked in (codex r3: a
+// stop ends the worker, cancelling a publish it is blocked in (a
 // stalled transport otherwise kept its worker and queue alive after being
 // replaced).
 func (p *kickPublisher) stop() {

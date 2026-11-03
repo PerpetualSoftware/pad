@@ -32,7 +32,7 @@ type flushErrorWriter struct {
 //
 // The wrapper exposes exactly the optional interfaces w has among Hijacker,
 // io.ReaderFrom and Pusher, so a handler's type assertions see what they saw
-// before (io.Copy's ReaderFrom fast path, HTTP/2 push; #2186 codex r1). chi's
+// before (io.Copy's ReaderFrom fast path, HTTP/2 push; #2186). chi's
 // writers come in the shapes {Hijacker, ReaderFrom} (HTTP/1), {Hijacker},
 // {Pusher} (HTTP/2) and {} (wrap_writer.go), and its compressor is
 // {Hijacker, Pusher}.

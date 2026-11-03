@@ -210,7 +210,7 @@ func TestEveryContentBearingReadDoorCarriesTheMarker(t *testing.T) {
 // the FTS branches are DIALECT-SPECIFIC: ListItems(search) and Search take different
 // SELECTs on SQLite and Postgres, so a SQLite-only enumeration leaves the Postgres
 // variants of those spliced queries unexercised — and an unexercised spliced query
-// is precisely the runtime-mismatch hazard this test exists for (codex round 3).
+// is precisely the runtime-mismatch hazard this test exists for.
 func everyContentBearingReadDoor(t *testing.T, s *store.Store) {
 	t.Helper()
 	wsID, _, item := seedStaleItem(t, s)
@@ -282,7 +282,7 @@ func everyContentBearingReadDoor(t *testing.T, s *store.Store) {
 	// By REF, not slug: a slug falls through to GetItemBySlugIncludeDeleted and
 	// leaves this function's own ref SELECT — a separately spliced query —
 	// unexercised. Passing the slug here made this leg pass while measuring the
-	// wrong query (codex round 3).
+	// wrong query.
 	one("ResolveItemIncludeDeleted(by ref)", func() (*models.Item, error) {
 		return s.ResolveItemIncludeDeleted(wsID, item.Ref)
 	})

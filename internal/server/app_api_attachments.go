@@ -69,8 +69,8 @@ func (s *Server) appUploadAttachment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer pending.Close()
-	// The subject's part of the write gate again, once the body is in (codex
-	// U6c r3): a body can take minutes. A full re-admission (the credential,
+	// The subject's part of the write gate again, once the body is in:
+	// a body can take minutes. A full re-admission (the credential,
 	// the install, the membership and its role as they stand now, and the item
 	// re-check appVisibleItem registered, replayed under the fresh context),
 	// then the edit right, which the unchanged role keeps current. The fence
@@ -162,7 +162,7 @@ func (s *Server) appGetAttachment(w http.ResponseWriter, r *http.Request) {
 }
 
 // appDownloadAttachment streams an attachment's bytes, or a variant's. It is
-// NOT buffered (lead ruling, U6c): it authorizes, opens the blob, and then
+// NOT buffered: it authorizes, opens the blob, and then
 // re-admits the whole request (appRevalidate, every registered re-check)
 // immediately before the first byte. A revocation committed before that
 // point sends nothing. One committed after it can still see the rest of
@@ -184,13 +184,13 @@ func (s *Server) appDownloadAttachment(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	id := chi.URLParam(r, "attachmentID")
 	// An unknown variant name is a malformed request, as on the regular
-	// download, not a silent fallback to the original (codex U6c r2).
+	// download, not a silent fallback to the original.
 	variant := r.URL.Query().Get("variant")
 	if variant != "" && !isKnownVariant(variant) {
 		writeError(w, http.StatusBadRequest, "bad_variant", "Unknown variant")
 		return
 	}
-	// Authorize BEFORE touching storage (codex U6c r1 P2): a storage error
+	// Authorize BEFORE touching storage: a storage error
 	// (a missing blob, a missing variant blob) on an attachment the subject
 	// may not see would answer differently from an unknown id.
 	meta, err := as.GetAttachment(ctx, ac.appFenceSpec(), id)
@@ -214,7 +214,7 @@ func (s *Server) appDownloadAttachment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A variant is its own row: the gate re-checks the row whose bytes are
-	// served, not only the original that was authorized (codex U6c r6).
+	// served, not only the original that was authorized.
 	if att.ID != meta.ID {
 		served, item := att.ID, meta.ItemID
 		appAddRecheck(r, func(r2 *http.Request) error { return s.appRecheckAttachment(r2, served, item) })
@@ -227,7 +227,7 @@ func (s *Server) appDownloadAttachment(w http.ResponseWriter, r *http.Request) {
 		writeAppRevalidateError(w, err)
 		return
 	}
-	// The deadline also bounds the transport (codex U6c r1 P2): a context
+	// The deadline also bounds the transport: a context
 	// stops only the next file read, so a client that stops reading would
 	// otherwise hold a blocked write open past it and receive more bytes
 	// later. A ResponseWriter without deadline support (a test recorder) is
@@ -277,7 +277,7 @@ func writeAppAttachmentError(w http.ResponseWriter, err error) bool {
 		writeError(w, http.StatusForbidden, "storage_limit_reached", "The workspace has reached its storage limit")
 	case errors.Is(err, appstore.ErrAppSizeMismatch), errors.Is(err, io.ErrUnexpectedEOF):
 		// A body that ends before its declared length: over a connection
-		// the request body reports io.ErrUnexpectedEOF (codex U6c r2), the
+		// the request body reports io.ErrUnexpectedEOF, the
 		// same client mistake as a short body.
 		writeError(w, http.StatusBadRequest, "size_mismatch", "The body does not match Content-Length")
 	case errors.Is(err, appstore.ErrAppNoAttachmentStore):

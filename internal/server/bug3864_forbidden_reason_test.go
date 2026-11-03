@@ -97,7 +97,7 @@ func TestBUG3864_RequireMinRoleSaysRoleOnlyWhenARoleCanFixIt(t *testing.T) {
 }
 
 // The workspace-role gates that check the role inline rather than through
-// requireMinRole (the lead's Codex round found the bulk endpoint). Driven
+// requireMinRole (the bulk endpoint is one such gate). Driven
 // through the router with real tokens, so the role on context is the one the
 // auth middleware put there. A guest holds grants, not a role.
 func TestBUG3864_InlineRoleGatesSayRoleOrNoAccess(t *testing.T) {

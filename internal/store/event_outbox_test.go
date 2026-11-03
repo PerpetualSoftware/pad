@@ -721,7 +721,7 @@ func TestOutbox_CollectionOptionRenameEmitsOneBulkEvent(t *testing.T) {
 		t.Fatalf("members = %d, want 2 — per-member snapshots are what keep item-level bindings "+
 			"evaluable across a batched delivery", len(members))
 	}
-	// MEMBER IDENTITY, not just count (Codex round 3): a reader that returned
+	// MEMBER IDENTITY, not just count: a reader that returned
 	// the same member twice, or the wrong items entirely, would satisfy a
 	// count-only assertion while making per-member binding evaluation fire on
 	// the wrong set.
@@ -800,7 +800,7 @@ func TestOutbox_WikiTitleCascadeEmitsOneBulkEvent(t *testing.T) {
 }
 
 // TestItemUpdatedSliceChanged_NonDefaultAndNonStringDoneKey covers two gaps
-// Codex round 3 found in the classification tests above: every other test uses
+// in the classification tests above: every other test uses
 // the default "status" key, so a classifier hard-coded to mask "status" would
 // pass them all; and none of them exercise a done-key value the status
 // machinery cannot read.
@@ -995,7 +995,7 @@ func TestEmitBulkItemEventTx_PartitionsByMemberWorkspace(t *testing.T) {
 }
 
 // TestOutbox_StatusChangeFromEmptyCarriesEmptyPriorStatus pins the SPEC-3
-// conformance point Codex round 6 found: prior_status must be PRESENT on
+// conformance point : prior_status must be PRESENT on
 // item.status_changed even when the prior status was empty.
 //
 // An item can transition from no status at all, and that is a real status
@@ -1222,7 +1222,7 @@ func TestOutbox_NeverAttachedClaimEmitsNothing(t *testing.T) {
 	}
 }
 
-// TestOutbox_VariantClaimEmitsNothing pins the symmetry Codex round 8 found
+// TestOutbox_VariantClaimEmitsNothing pins the symmetry
 // missing: a row that could not have emitted attachment.added must not emit
 // attachment.removed.
 //
@@ -1289,7 +1289,7 @@ func TestOutbox_VariantClaimEmitsNothing(t *testing.T) {
 	}
 }
 
-// TestWriteOutboxTx_SubjectKindIsDerivedNotTrusted pins the round-9 finding.
+// TestWriteOutboxTx_SubjectKindIsDerivedNotTrusted pins that the subject kind is derived, not trusted.
 //
 // subject_kind is a pure function of the event name, so a caller-supplied
 // value can only agree with the taxonomy or be wrong — and a wrong one used to
@@ -1340,8 +1340,8 @@ func TestWriteOutboxTx_SubjectKindIsDerivedNotTrusted(t *testing.T) {
 	}
 }
 
-// TestWriteOutboxTx_RejectsMismatchedPayloadFamily pins Codex round 10's
-// finding: canonical membership validates the NAME, and said nothing about
+// TestWriteOutboxTx_RejectsMismatchedPayloadFamily pins the case: canonical
+// membership validates the NAME, and said nothing about
 // whether the bytes attached to it were the right shape.
 func TestWriteOutboxTx_RejectsMismatchedPayloadFamily(t *testing.T) {
 	t.Parallel()
@@ -1513,7 +1513,7 @@ func TestCanonicalEventsAreFullyDeclared(t *testing.T) {
 	}
 
 	// Non-canonical names must report ok=false rather than an empty string a
-	// caller declaring nothing would match — the fail-open shape Codex round 11
+	// caller declaring nothing would match — the fail-open shape
 	// found in the two-map version.
 	for _, name := range []string{"", "item.frobnicated", "comment.deleted.v2"} {
 		if _, ok := kernelevents.PayloadFamilies(name); ok {
@@ -1655,7 +1655,7 @@ func outboxBatchIDsFor(t *testing.T, s *Store, itemID string) []string {
 // bulk verbs route through it.
 //
 // THIS TEST IS NOT SUFFICIENT ON ITS OWN, and saying so is the point: it
-// proves the OPTION works, not that the handler passes it. Codex round 1 found
+// proves the OPTION works, not that the handler passes it. There were
 // three handler call sites that never did.
 // TestBulkItems_EveryVerbStampsOneBatchID covers that layer.
 //
@@ -1974,7 +1974,7 @@ func sameStrings(got, want []string) bool {
 // folded payload reports `count` in ITEMS.
 //
 // Without dedup the members list disagrees with the count in the same
-// payload — the wire event contradicting itself (codex round 1).
+// payload — the wire event contradicting itself.
 func TestFoldBulkHeader_KeepsOneSnapshotPerItem(t *testing.T) {
 	t.Parallel()
 	header := []byte(`{"batch_id":"b1","op":"move","count":2,"item_ids":["i1","i2"]}`)
@@ -2134,7 +2134,7 @@ func TestOutbox_StaleClaimCannotAckOrReleaseAnotherPass(t *testing.T) {
 // retention, so without a claim check one instance's prune deletes a row
 // another is mid-delivery on — the delivery then succeeds while the ack
 // matches zero rows, and a crash in that window loses an event the outbox had
-// already committed (codex round 4).
+// already committed.
 func TestOutbox_PruneUndispatchedSparesAClaimedRow(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
@@ -2174,7 +2174,7 @@ func TestOutbox_PruneUndispatchedSparesAClaimedRow(t *testing.T) {
 }
 
 // TestOutbox_SetParentLinkEmitsItemUpdated pins the fix for the create-with-
-// parent regression (codex round 4).
+// parent regression.
 //
 // CreateItem commits item.created with a PRE-LINK snapshot, and the parent
 // link lands in a separate transaction afterwards. The hand-called webhook
@@ -2221,7 +2221,7 @@ func TestOutbox_SetParentLinkEmitsItemUpdated(t *testing.T) {
 	if int64(seq) <= createdSeq {
 		t.Errorf("event carries seq %d, want later than the create's %d — this is the pre-link snapshot", int64(seq), createdSeq)
 	}
-	// AND WHAT IT DOES NOT CARRY, asserted rather than left implied. Round 4's
+	// AND WHAT IT DOES NOT CARRY, asserted rather than left implied. An earlier
 	// version of this test checked is_unparented and passed vacuously: that
 	// field is populated only by the local-first index queries, so it is
 	// absent from every event payload and "not true" was satisfied by nil.
@@ -2243,7 +2243,7 @@ func TestOutbox_SetParentLinkEmitsItemUpdated(t *testing.T) {
 }
 
 // TestOutbox_ParentOnlyUpdateStillEmits covers the path SetParentLink's fix
-// did NOT reach (codex round 5): UpdateItemWithParentLink writes the hierarchy
+// did NOT reach: UpdateItemWithParentLink writes the hierarchy
 // inside the item-update transaction and emits from a SNAPSHOT DIFF, and a
 // parent write leaves nothing in a snapshot to diff — items.parent_id is
 // legacy and untouched, the link lives in its own table, and seq/updated_at
@@ -2301,7 +2301,7 @@ func TestOutbox_ParentOnlyUpdateStillEmits(t *testing.T) {
 	}
 }
 
-// TestOutbox_ParentDetachEmitsOnEveryRoute closes the loop codex round 6
+// TestOutbox_ParentDetachEmitsOnEveryRoute closes the loop
 // opened: attach was observable on every route while DETACH was silent on two
 // of the three, so a consumer's model kept a parent the user had removed.
 //
@@ -2336,7 +2336,7 @@ func TestOutbox_ParentDetachEmitsOnEveryRoute(t *testing.T) {
 		}
 
 		// A SECOND clear removes nothing, so it must emit nothing — the
-		// "provided is not changed" half of round 6.
+		// "provided is not changed" half of that case.
 		clearOutbox(t, s)
 		if err := s.ClearParentLink(child.ID); err != nil {
 			t.Fatalf("ClearParentLink (already unparented): %v", err)

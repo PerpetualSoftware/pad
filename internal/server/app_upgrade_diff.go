@@ -14,7 +14,7 @@ import (
 
 // The upgrade diff (SPEC-6 U8b2, DOC-3371 §2 "Upgrade"; TASK-3397).
 //
-// Classes (the spec, plus the lead's rulings of day 86):
+// Classes (the spec, plus later decisions):
 //   - "auto": applies without review: removing an event, an item action, an
 //     artifact, an access level (narrowing), or a companion collection (which
 //     is RELEASED to the workspace with its data, not deleted);
@@ -23,9 +23,9 @@ import (
 //     field on an existing companion. Prose is never classed as narrowing.
 //
 // Every upgrade, removals-only included, is applied only by the owner's
-// confirm (ruling 3); "auto" means there is no diff to read, not no consent.
+// confirm; "auto" means there is no diff to read, not no consent.
 // Refused outright: a changed app id or origin, a changed companion slug, and
-// any companion schema change other than additive optional fields (ruling 2).
+// any companion schema change other than additive optional fields.
 
 const (
 	upgradeAuto   = "auto"
@@ -150,7 +150,7 @@ func diffUpgrade(old, next *appmanifest.Manifest, oldDigests map[string]storedAr
 	// Events, by name.
 	// A name may be declared more than once (the manifest allows it): its
 	// collections are the union of every declaration, or a widening could hide
-	// behind a duplicate (codex r1 on U8b2).
+	// behind a duplicate.
 	unionEvents := func(evs []appmanifest.Event) map[string]appmanifest.Event {
 		out := map[string]appmanifest.Event{}
 		for _, e := range evs {
@@ -270,7 +270,7 @@ func diffUpgrade(old, next *appmanifest.Manifest, oldDigests map[string]storedAr
 			// created, e.g. invocation_slug "ship" becomes "ship-2"), and an
 			// unchanged artifact stores nothing, so there is nothing of it to
 			// review. A changed one lands as a new draft whose normalized
-			// form is the reviewed one (TASK-3397 U8b2, flagged to the lead).
+			// form is the reviewed one (TASK-3397 U8b2).
 			d.ChangedArtifacts[a.Key] = true
 			d.add("artifact", a.Key, "changed", upgradeReview, "lands as a new draft; the installed item is not changed")
 		}
@@ -279,7 +279,7 @@ func diffUpgrade(old, next *appmanifest.Manifest, oldDigests map[string]storedAr
 }
 
 // additiveFields returns the fields next adds to old, refusing every other
-// schema change (lead ruling 2, day 86). An added field must be optional
+// schema change. An added field must be optional
 // with no default, not computed, and declare no terminal or abandoned
 // options: each of those would change existing items, which hold no value
 // for it (a backfill, or a reclassification of their done state).

@@ -129,7 +129,7 @@ func TestBUG3744_SameOrNewerCursorIsWritten(t *testing.T) {
 }
 
 // A snapshot without a cursor cannot show what it covers: refused once the
-// stored body has recorded one, written as before when none has (codex r2).
+// stored body has recorded one, written as before when none has.
 func TestBUG3744_CursorlessSnapshotRefusedOnceACursorIsRecorded(t *testing.T) {
 	s, itemID, ids := bug3744Item(t, 1)
 	bare := func(body string) error {

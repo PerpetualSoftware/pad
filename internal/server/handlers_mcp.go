@@ -203,7 +203,7 @@ func (s *Server) registerMCPRoutes(r chi.Router) {
 	// URL actually produces (/mcp and a trailing-slash /mcp/) rather
 	// than a wildcard: the handler sets Cache-Control public max-age,
 	// and a wildcard would hand a CDN one cacheable object per
-	// attacker-chosen suffix (codex round 2). /mcp is the only
+	// attacker-chosen suffix. /mcp is the only
 	// path-mounted resource, so nothing else needs the variant.
 	r.With(s.requireOAuthAvailable, s.requireConfiguredHost).Get("/.well-known/oauth-protected-resource/mcp", s.handleOAuthProtectedResource)
 	r.With(s.requireOAuthAvailable, s.requireConfiguredHost).Get("/.well-known/oauth-protected-resource/mcp/", s.handleOAuthProtectedResource)
@@ -292,10 +292,10 @@ func (s *Server) mcpBoundWrites(next http.Handler) http.Handler {
 			// The keepalive goroutine is stopped and joined before this
 			// handler returns, so net/http never sees a write after it
 			// (BUG-3835). Deferred, so a panicking transport stops it too
-			// (hunter r2): chi's Recoverer swallows the panic and the
+			//: chi's Recoverer swallows the panic and the
 			// connection may be reused. A tick between the transport's return
 			// and end() can still add one comment frame to a response that is
-			// ending, which is valid SSE (Codex r1).
+			// ending, which is valid SSE.
 			defer func() {
 				mw.end()
 				close(stop)

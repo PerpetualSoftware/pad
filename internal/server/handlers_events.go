@@ -242,7 +242,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	//
 	// unreadableCursor: sending the header at all means the client believes it
 	// has a position, so a value we cannot read is a cursor we cannot serve —
-	// NOT a fresh connection (BUG-2731, codex round 10). Treating it as fresh
+	// NOT a fresh connection (BUG-2731). Treating it as fresh
 	// silently drops everything published before this subscription. A
 	// genuinely fresh client sends no header and leaves both of these zero.
 	var lastID int64
@@ -400,7 +400,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 				// never reads this string, which is precisely why correcting
 				// it is free — the earlier decision to keep "Event buffer
 				// exceeded" as a deliberate non-change had it backwards
-				// (codex round 6). Eviction is now one of several reasons
+				//. Eviction is now one of several reasons
 				// this fires, so the old text named the rarest of them.
 				"reason": "This instance cannot vouch for events since your last ID. Full sync required.",
 			}); err != nil {
@@ -754,7 +754,7 @@ func sseEventVisibleFor(vis sseVisibility, sseUserID string, event events.Event)
 	// (NewSlug set, BUG-2265) the event is ROUTED by the OLD slug, but a
 	// subscriber that reconnected / revalidated AFTER the rename only has the
 	// NEW slug in its visibleSlugSet — accept EITHER so the client still learns
-	// the rename mapping (Codex). Non-rename events have NewSlug == "", so this
+	// the rename mapping. Non-rename events have NewSlug == "", so this
 	// reduces to the old single-slug check.
 	visibleColl := ""
 	if vis.visibleSlugSet[collection] {
@@ -831,7 +831,7 @@ func (v sseVisibility) accessEpoch() string {
 // access. Comparing it would send sync_required when the fault starts and again
 // when it clears, with no access change either time, and the resync it asks for
 // would hit the same failing store. So it neither announces nor moves the base
-// (BUG-3347, codex round 1: the epoch's collection half came to depend on a
+// (BUG-3347: the epoch's collection half came to depend on a
 // lookup whose error used to be swallowed).
 func sseAccessEpochAdvance(last string, v sseVisibility) (next string, changed bool) {
 	if v.degraded {
@@ -1153,7 +1153,7 @@ func (s *Server) sseSubscriberStillHasAccess(r *http.Request, workspaceID string
 // writeSSEResetCursorEvent writes an event that also CLEARS the client's
 // Last-Event-ID, by carrying an `id:` field with an empty value.
 //
-// Used for sync_required (BUG-2731, codex round 3). Without it the client
+// Used for sync_required (BUG-2731). Without it the client
 // keeps the cursor that was just declared unservable, so every subsequent
 // reconnect on a quiet workspace is answered with sync_required again and
 // re-runs a full delta sync — a loop that only ends when a live event happens

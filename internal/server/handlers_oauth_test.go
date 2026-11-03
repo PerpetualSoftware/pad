@@ -368,7 +368,7 @@ func TestOAuth_Authorize_RendersConsentWhenLoggedIn(t *testing.T) {
 // handler now defaults an absent scope to the client's registered
 // scopes (DCR seeds pad:read/pad:write) so the tier radios render AND
 // the scope round-trips through the consent form's hidden fields into
-// the /authorize/decide POST (Codex review: the default must live on
+// the /authorize/decide POST (the default must live on
 // r.URL.Query() too, not just r.Form, or the decide step rebuilds a
 // scope-less request and rejects the chosen tier). This test drives
 // the full GET-consent → POST-decide → code flow to pin both halves.
@@ -411,7 +411,7 @@ func TestOAuth_Authorize_DefaultsScopeWhenOmitted(t *testing.T) {
 	}
 
 	// The defaulted scope MUST round-trip into the consent form's hidden
-	// `scope` field — this is the half Codex caught: rendering radios
+	// `scope` field — this is the half that matters: rendering radios
 	// isn't enough if the decide POST rebuilds a scope-less request.
 	// Extract exactly what the browser would submit rather than
 	// hardcoding it, so the test fails if the hidden field goes missing.
@@ -645,8 +645,8 @@ func TestOAuth_FullAuthCodeFlow_PKCE(t *testing.T) {
 	}
 }
 
-// TestOAuth_Authorize_AcceptsResourceOnly pins Codex review #372
-// round 1 fix: real RFC 8707 clients (Claude Desktop / Cursor /
+// TestOAuth_Authorize_AcceptsResourceOnly pins that real RFC 8707
+// clients (Claude Desktop / Cursor /
 // ChatGPT) send `resource=` not `audience=`. fosite v0.49 only
 // reads the `audience` form key, so without translation the
 // audienceMatchingStrategy sees an empty needle and rejects
@@ -682,8 +682,8 @@ func TestOAuth_Authorize_AcceptsResourceOnly(t *testing.T) {
 	}
 }
 
-// TestOAuth_Authorize_RefusesNoResource pins TASK-3363 phase 2 (Dave's
-// ruling on TASK-3345 #1). From 2026-05 until phase 2, /oauth/authorize
+// TestOAuth_Authorize_RefusesNoResource pins TASK-3363 phase 2 (see
+// TASK-3345 #1). From 2026-05 until phase 2, /oauth/authorize
 // DEFAULTED a request with neither resource= nor audience= to the canonical
 // audience, because Claude Desktop and Cursor did not send resource= then.
 // That default let a client registered through DCR replay a token
@@ -823,7 +823,7 @@ func snippetAround(body, marker string, n int) string {
 
 // TestOAuth_AuthorizationServerMetadata_AdvertisesRFC9207IssFlag: the flag
 // is advertised now that every authorize redirect carries iss (TASK-3321 U0a,
-// oauth_iss.go). It used to be pinned ABSENT (codex #372 round 2) because the
+// oauth_iss.go). It used to be pinned ABSENT because the
 // parameter was not sent, and an advertised flag with no parameter makes an
 // RFC 9207 client reject every response. TestOAuth_AuthorizeRedirectsCarryIss
 // is the half that keeps the flag honest.
@@ -849,7 +849,7 @@ func TestOAuth_AuthorizationServerMetadata_AdvertisesRFC9207IssFlag(t *testing.T
 // populated and point at the URLs the handlers actually serve.
 //
 // introspection_endpoint_auth_methods_supported is intentionally
-// OMITTED — see Codex review #373 round 1 + the comment in
+// OMITTED — see the comment in
 // handleOAuthAuthorizationServer. The introspection endpoint only
 // accepts Bearer auth (a separate active access token), which has
 // no registered registry value, so listing "none" would be
@@ -887,7 +887,7 @@ func TestOAuth_AuthorizationServerMetadata_AdvertisesRevokeIntrospect(t *testing
 			doc["revocation_endpoint_auth_methods_supported"])
 	}
 	// introspection_endpoint_auth_methods_supported MUST NOT be
-	// present (Codex review #373 round 1): the endpoint requires
+	// present: the endpoint requires
 	// Bearer auth which isn't a registered auth-methods value.
 	// Listing anything here would mislead clients.
 	if v, ok := doc["introspection_endpoint_auth_methods_supported"]; ok {
@@ -896,7 +896,7 @@ func TestOAuth_AuthorizationServerMetadata_AdvertisesRevokeIntrospect(t *testing
 }
 
 // TestOAuth_AuthorizationServerMetadata_404WhenOAuthDisabled pins
-// Codex review #372 round 3: with MCP available but no OAuth server,
+// With MCP available but no OAuth server,
 // the doc must not 200 with /oauth/{register,authorize,token} URLs
 // that 404 — worse for clients than no document at all. It used to
 // answer 503; PLAN-2310 DR-5 gates it on oauthAvailable, the same gate
@@ -918,7 +918,7 @@ func TestOAuth_AuthorizationServerMetadata_404WhenOAuthDisabled(t *testing.T) {
 	}
 }
 
-// TestOAuth_Register_RateLimited pins Codex review #372 round 2:
+// TestOAuth_Register_RateLimited pins that
 // /oauth/register is open by RFC 7591 design but must be rate-
 // limited so an attacker can't flood the oauth_clients table.
 // Reuses the Register limiter (5/hour/IP, burst 5), so the 6th
@@ -1767,8 +1767,8 @@ func TestConsent_TokenScopeMatchesTierChoice_Read(t *testing.T) {
 	}
 }
 
-// TestConsent_URLPollution_DoesNotOverrideUserSelection pins Codex
-// review #376 round 1: a malicious OAuth client could craft
+// TestConsent_URLPollution_DoesNotOverrideUserSelection pins that a
+// malicious OAuth client could craft
 //
 //	/oauth/authorize?client_id=…&capability_tier=admin&allowed_workspaces=*
 //
@@ -2003,8 +2003,8 @@ func TestOAuth_Revoke_UnknownToken_Returns200(t *testing.T) {
 	}
 }
 
-// TestOAuth_Revoke_MissingToken_Returns400 pins Codex review #373
-// round 3: RFC 7009 §2.1 marks `token` REQUIRED, but fosite v0.49
+// TestOAuth_Revoke_MissingToken_Returns400 pins that RFC 7009 §2.1
+// marks `token` REQUIRED, but fosite v0.49
 // doesn't enforce that — it passes the empty string into the
 // revocation handlers and emits the same bare ErrInvalidRequest
 // the unknown-token path produces. Without the explicit
@@ -2055,7 +2055,7 @@ func TestOAuth_Revoke_MalformedRequest_Returns400(t *testing.T) {
 }
 
 // TestOAuth_Revoke_RefreshToken_RevokesFamily covers the security
-// invariant established in sub-PR A round 2: revoking a refresh
+// invariant established in sub-PR A: revoking a refresh
 // token must revoke the *entire grant family* (every access AND
 // refresh token sharing the same request_id), not just the row
 // addressed by the revoke call.

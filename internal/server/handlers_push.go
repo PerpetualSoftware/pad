@@ -25,7 +25,7 @@ type pushRequest struct {
 	// surface for SETTING it.
 	//
 	// The read side is no longer true and was corrected in place rather
-	// than left as archaeology (codex round 10): internal/cli's PushResult
+	// than left as archaeology: internal/cli's PushResult
 	// now mirrors delivered_sessions, because `pad push --format json` was
 	// silently dropping a field this response documents at length. It
 	// still never SENDS target_session_id.
@@ -35,10 +35,9 @@ type pushRequest struct {
 	OpKey string `json:"op_key,omitempty"`
 }
 
-// pushResponse is the body of a successful push (dispatcher review round
-// 2, codex P2: `pad push --format json` needs a real shape, not a
-// discarded response). Workspace is included per the round-2 P1 fix's
-// same rationale — the stream is user-scoped across every workspace the
+// pushResponse is the body of a successful push (`pad push --format json`
+// needs a real shape, not a discarded response). Workspace is included for
+// the same reason as in the stream line — the stream is user-scoped across every workspace the
 // caller belongs to, so a JSON consumer needs it disambiguated same as
 // the monitor line does.
 type pushResponse struct {
@@ -46,7 +45,7 @@ type pushResponse struct {
 	Workspace string `json:"workspace"`
 	// Pushed means "accepted and processed", not "delivered" — it is
 	// true even when a TARGETED push's publish was skipped because the
-	// id matched no live session (dispatcher ruling, TASK-2588 round 2:
+	// id matched no live session (TASK-2588:
 	// broadcast-with-no-listeners has always returned exactly this shape
 	// — true, with nothing to receive it — and a targeted miss is not
 	// given a different contract just because DeliveredSessions can now
@@ -71,8 +70,7 @@ type pushResponse struct {
 	// field name and wire shape are unchanged; only which registry
 	// entries qualify.
 	//
-	// SNAPSHOTTED BEFORE THE PUBLISH, not after (dispatcher review round
-	// 1, codex): counting post-publish raced the very thing it reports on
+	// SNAPSHOTTED BEFORE THE PUBLISH, not after: counting post-publish raced the very thing it reports on
 	// — a targeted session could receive the notification and then
 	// disconnect before the count read, reporting 0 on a push that had
 	// already landed exactly once. handlePushToItem reads presence FIRST
@@ -95,7 +93,7 @@ type pushResponse struct {
 	// shared registry does not make it a receipt.
 	//
 	// STILL AN UPPER BOUND, not a match count, and an earlier draft of this
-	// comment claimed otherwise (codex round 6). deliveredSessionCount
+	// comment claimed otherwise. deliveredSessionCount
 	// filters on user, armed, and target id. Actual delivery ALSO applies
 	// each stream's own visibility — watchNotificationVisible's
 	// vis.allows(CollectionID, ItemID), computed per connection from the
@@ -115,8 +113,8 @@ type pushResponse struct {
 	// TARGETED push, for the unhappy reason that the same locality stopped
 	// those from being published at all.
 	//
-	// NULL MEANS "PUBLISHED, COUNT UNKNOWN" — never "zero" (codex round 1
-	// P1). It is emitted only when the presence registry could not be READ
+	// NULL MEANS "PUBLISHED, COUNT UNKNOWN" — never "zero". It is emitted only when the presence
+	// registry could not be READ
 	// (a Redis outage) on a BROADCAST push: the publish still happened,
 	// because presence never gated a broadcast, but there is no honest
 	// number to put here and 0 would claim nobody received it. A TARGETED
@@ -132,8 +130,7 @@ type pushResponse struct {
 	DeliveredSessions *int `json:"delivered_sessions"`
 }
 
-// maxPushTargetSessionIDLen bounds target_session_id (dispatcher review
-// round 1, codex). It's trimmed but otherwise unvalidated — see its doc
+// maxPushTargetSessionIDLen bounds target_session_id. It's trimmed but otherwise unvalidated — see its doc
 // comment in pushRequest — and decodeJSON allows request bodies up to
 // 2 MiB, so without a cap an authenticated caller could park arbitrarily
 // large garbage strings in the bus's 1024-entry replay buffer on every
@@ -146,7 +143,7 @@ type pushResponse struct {
 const maxPushTargetSessionIDLen = 256
 
 // maxPushMessageLen bounds a push's instruction text, measured in runes
-// AFTER whitespace collapse (dispatcher review round 1). Two
+// AFTER whitespace collapse. Two
 // constraints in tension set this: a push message is a free-form
 // instruction, not a short label — truncating one the way
 // truncateForSummary shortens a comment preview would silently corrupt
@@ -170,7 +167,7 @@ const maxPushMessageLen = 4096
 // lacks access, does not receive it — via
 // GET /api/v1/events/stream, or to exactly one of them when the request
 // names a target_session_id (PLAN-2558 S5, TASK-2588). Unlike watch/
-// assignment notifications, this has no durable backing (Dave's product
+// assignment notifications, this has no durable backing (a product
 // call: fire-and-forget is acceptable for v1 — no inbox, no "no session
 // connected" warning; the bus's replay buffer is the only resilience a
 // push gets).
@@ -264,9 +261,8 @@ func (s *Server) handlePushToItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Presence is read BEFORE the publish, not after (dispatcher review
-	// round 1, codex — see DeliveredSessions' doc comment for the race a
-	// post-publish count had). For a TARGETED push whose id isn't in this
+	// Presence is read BEFORE the publish, not after (see DeliveredSessions' doc comment
+	// for the race a post-publish count had). For a TARGETED push whose id isn't in this
 	// snapshot, the publish is skipped entirely: session ids are
 	// per-connection and never reused (both SessionPresence
 	// implementations mint a fresh uuid per Add call), so a
@@ -311,8 +307,7 @@ func (s *Server) handlePushToItem(w http.ResponseWriter, r *http.Request) {
 	if presenceErr != nil {
 		// PRESENCE GATES A TARGETED PUSH BUT ONLY COUNTS A BROADCAST, and
 		// that asymmetry is exactly why an unreadable registry gets two
-		// different answers rather than one uniform refusal (codex round 1
-		// P1; dispatcher ruling).
+		// different answers rather than one uniform refusal.
 		//
 		// TARGETED: the gate cannot be evaluated at all. Publishing would
 		// deliver but report a count we do not have; skipping silently is
@@ -440,7 +435,7 @@ func (s *Server) handlePushToItem(w http.ResponseWriter, r *http.Request) {
 // targeted push at an unarmed session is skipped for the identical
 // reason a targeted push at a vanished one is: a guaranteed no-op.
 //
-// UNREADABLE PRESENCE IS NOT ZERO (codex round 1, P1). The error is
+// UNREADABLE PRESENCE IS NOT ZERO. The error is
 // returned rather than folded into a 0, because 0 is a load-bearing
 // answer on this path: it makes the caller SKIP the publish for a
 // targeted push. Reporting 0 for a registry that could not be read would
@@ -458,7 +453,7 @@ func (s *Server) handlePushToItem(w http.ResponseWriter, r *http.Request) {
 // dropped it, and the response said delivered_sessions: 1. An
 // instruction lost behind a success.
 //
-// Dave ruled (day-49) that visibility is RE-RESOLVED here rather than
+// Visibility is RE-RESOLVED here rather than
 // snapshotted into the registry, for the reason watchNotificationVisible
 // re-reads it per notification: membership and grants are revocable, and
 // a value cached at connect goes wrong exactly when revocation is what
@@ -484,8 +479,8 @@ func (s *Server) handlePushToItem(w http.ResponseWriter, r *http.Request) {
 // receives broadcasts while never entering the registry, so it is
 // invisible here no matter how exactly this predicate is reproduced.
 // delivered_sessions remains an ESTIMATE with error in both directions,
-// and every consumer-facing description of it says so. Dave's ruling
-// scoped this unit to the over-side.
+// and every consumer-facing description of it says so. This unit is
+// scoped to the over-side.
 func deliveredSessionCount(presence SessionPresence, userID, targetSessionID string, visibleFor *sessionVisibility) (int, error) {
 	if presence == nil {
 		return 0, nil
@@ -508,8 +503,7 @@ func deliveredSessionCount(presence SessionPresence, userID, targetSessionID str
 		// the SET of filters is the contract.
 		visible, err := visibleFor.allows(sess.BearerAuth)
 		if err != nil {
-			// AN UNRESOLVABLE VISIBILITY IS NOT "NOT VISIBLE" (codex round
-			// 1, P1). The first version of this fix swallowed the store
+			// AN UNRESOLVABLE VISIBILITY IS NOT "NOT VISIBLE". The first version of this fix swallowed the store
 			// error and returned false, reasoning that over-counting was
 			// the defect being fixed so uncertainty should resolve
 			// downward. That argument optimizes the wrong axis, and this
@@ -603,7 +597,7 @@ func (v *sessionVisibility) resolutions() int {
 // context, mirroring watchVisCache.refreshUser: a disabled or deleted
 // user's streams must not be counted as reachable.
 //
-// TWO OUTCOMES THAT LOOK ALIKE AND ARE NOT (codex round 1, P1):
+// TWO OUTCOMES THAT LOOK ALIKE AND ARE NOT:
 //
 //   - A user who is definitively GONE or DISABLED resolves to "not
 //     visible". That is an answer, and it is the right one — such a
@@ -617,8 +611,8 @@ func (v *sessionVisibility) resolutions() int {
 //     exactly this line; this follows it rather than inventing a second,
 //     narrower rule for the same situation.
 //
-// KNOWN, BOUNDED DISAGREEMENT WITH THE STREAM (codex round 1, P1, and
-// accepted rather than fixed — see the PR for the ruling). This resolves
+// KNOWN, BOUNDED DISAGREEMENT WITH THE STREAM (accepted rather than
+// fixed). This resolves
 // visibility FRESH, while a live stream reads watchVisCache, which
 // refreshes on its own reval tick. So for at most one tick the two can
 // differ:

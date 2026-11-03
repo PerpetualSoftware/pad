@@ -264,7 +264,7 @@ func leaseUserArg(userID string) any {
 }
 
 // ErrWorkerIDWithoutUser refuses a worker id with no signed-in user: a worker
-// id is matched only together with the account (TASK-3613, lead ruling), so
+// id is matched only together with the account (TASK-3613), so
 // without one it would be an unscoped credential.
 var ErrWorkerIDWithoutUser = errors.New("a lease worker id needs a signed-in user")
 

@@ -83,7 +83,7 @@ func (s *Store) uniqueFieldConflictsQ(q Queryer, collectionID, excludeItemID str
 
 // DropCarriedUniqueCollisionsQ removes from fields every CARRIED value that
 // collides on a destination unique_scope field, and describes each removal
-// (BUG-2367, lead ruling day 78).
+// (BUG-2367).
 //
 // Provenance decides, as it does for relation referents (TASK-2878): a value
 // the move or copy only CARRIED was asserted by nobody in this request, so it

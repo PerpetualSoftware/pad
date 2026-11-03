@@ -156,7 +156,7 @@ func TestTask3394_BarrierIssuesTheBotsServiceToken(t *testing.T) {
 	}
 }
 
-// Lead ruling R1: the barrier is the ONLY door for a bot credential. Any
+// The barrier is the ONLY door for a bot credential. Any
 // other subject on an install client, and a bot asked for by any other
 // client, is refused, and nothing is persisted.
 func TestTask3394_ABotCredentialHasOneDoor(t *testing.T) {
@@ -347,7 +347,7 @@ func TestTask3394_PrimitivesWriteOnlyThroughTheCallersTx(t *testing.T) {
 	}
 }
 
-// Lead ruling R1, structurally: insertOAuthRequestRowTx is the guard's one
+// Structurally: insertOAuthRequestRowTx is the guard's one
 // exempt credential insert, and its exemption holds only while every caller
 // gates. Its callers are exactly the ordinary path (requireActiveUserTx) and
 // the issuance barrier.
@@ -412,7 +412,7 @@ func TestTask3394_IssuanceRacesTheLifecycle_Postgres(t *testing.T) {
 	}{
 		{"disable (phase 1)", `UPDATE app_installs SET state = 'disabling', auth_epoch = auth_epoch + 1 WHERE id = ?`, ErrInstallNotActive, 0},
 		// The grant carries the epoch from before the rotate, so it is
-		// refused (codex r1 P1): it never binds to the epoch after it.
+		// refused: it never binds to the epoch after it.
 		{"rotate (phase 1)", `UPDATE app_installs SET auth_epoch = auth_epoch + 1 WHERE id = ?`, ErrInstallNotActive, 0},
 		{"re-enable", `UPDATE app_installs SET state = 'active' WHERE id = ?`, nil, 1},
 	}
@@ -490,7 +490,7 @@ func TestTask3394_IssuanceRacesTheLifecycle_Postgres(t *testing.T) {
 	}
 }
 
-// codex r1 P1: a grant carries the epoch it read BEFORE the client
+// A grant carries the epoch it read BEFORE the client
 // authenticated, and the barrier refuses unless it is still the install's.
 // A request that authenticated with a secret a rotate then replaced reaches
 // the barrier after the rotate committed, carrying the old epoch.

@@ -56,7 +56,7 @@ func TestBUG3632_WithContextCancelsAReadAtTheDeadline(t *testing.T) {
 			}
 			return rows.Err()
 		}},
-		// An endless result set iterated row by row (Codex r3): modernc
+		// An endless result set iterated row by row: modernc
 		// interrupts only the first step, which returns a row at once here, so
 		// this measures that database/sql closes the rows at the next row
 		// boundary after the deadline, on both dialects.

@@ -45,8 +45,8 @@ func TestBinaryColumnCensus(t *testing.T) {
 	colRe := regexp.MustCompile(`(?im)^\s*([a-z_]+)\s+(BLOB|BYTEA)\b`)
 	tableRe := regexp.MustCompile(`(?is)CREATE\s+TABLE(?:\s+IF\s+NOT\s+EXISTS)?\s+([a-z_]+)\s*\((.*?)\n\s*\);`)
 	// ALTER TABLE ... ADD COLUMN is the OTHER way a binary column enters a
-	// schema, and the first version of this census could not see it (codex
-	// round 1, finding 7) — which would have let exactly the change this test
+	// schema, and the first version of this census could not see it
+	// — which would have let exactly the change this test
 	// exists to catch walk past it.
 	alterRe := regexp.MustCompile(`(?im)ALTER\s+TABLE\s+([a-z_]+)\s+ADD\s+(?:COLUMN\s+)?(?:IF\s+NOT\s+EXISTS\s+)?([a-z_]+)\s+(BLOB|BYTEA)\b`)
 
@@ -137,7 +137,7 @@ func TestWriteGuardRefusesTheCorpus(t *testing.T) {
 			// before the guard was ever consulted, and the case would then
 			// "pass" while measuring SQLite's JSON parser instead of this
 			// guard. The strengthened accepted-case assertion caught exactly
-			// that (codex round 1, finding 7).
+			// that.
 			var err error
 			if c.IsJSON && json.Valid([]byte(strings.TrimSpace(c.Value))) {
 				fields := c.Value
@@ -149,7 +149,7 @@ func TestWriteGuardRefusesTheCorpus(t *testing.T) {
 
 			refused := err != nil && strings.Contains(err.Error(), ErrInvalidTextParameter.Error())
 			// An ACCEPTED case must actually SUCCEED, not merely avoid the
-			// guard (codex round 1, finding 7). Without this, a write failing
+			// guard. Without this, a write failing
 			// for any other reason — a schema rejection, a constraint, a typo
 			// in the fixture — read as "the guard let it through" and the case
 			// proved nothing.
@@ -169,7 +169,7 @@ func TestWriteGuardRefusesTheCorpus(t *testing.T) {
 func models_ItemUpdateContent(v string) (u models.ItemUpdate) { u.Content = &v; return }
 func models_ItemUpdateFields(v string) (u models.ItemUpdate)  { u.Fields = &v; return }
 
-// TestWriteGuardCoversTheQueryPath is the leg the lead required before this
+// TestWriteGuardCoversTheQueryPath is the leg required before this
 // guard's coverage claim could be written, and a mutation is why it exists in
 // this shape: removing checkParams from guardConn.QueryContext SURVIVED the
 // corpus leg above, because every write that leg makes goes through Exec.
@@ -185,7 +185,7 @@ func models_ItemUpdateFields(v string) (u models.ItemUpdate)  { u.Fields = &v; r
 // the PATH: the predicate is covered by textguard's own tests, and the corpus
 // leg covers Exec.
 //
-// It also answers the lead's other branch. If those three writes are ever
+// It also answers the other branch. If those three writes are ever
 // rewritten away, this test does not become vacuous — it constructs its own
 // RETURNING statement, so it keeps guarding the path against the day someone
 // adds the next one.
@@ -320,7 +320,7 @@ func TestWriteGuardCoversPreparedStatements(t *testing.T) {
 func TestStoreOverRefusalsStillOverRefuse(t *testing.T) {
 	t.Parallel()
 	// NOT a skip, for the same reason as KnownGaps: an empty slice would let
-	// someone delete the record of a divergence and see green (codex round 2).
+	// someone delete the record of a divergence and see green.
 	const wantOverRefusals = 1
 	if len(textguard.StoreOverRefusals) != wantOverRefusals {
 		t.Fatalf("StoreOverRefusals has %d entries, expected %d. If one was PAID DOWN, move its case into "+
@@ -416,7 +416,7 @@ func TestWrapperAdvertisesExactlyWhatTheBaseDoes(t *testing.T) {
 				}
 				return out
 			}
-			// STATEMENT level too (codex round 3): the parity test originally
+			// STATEMENT level too: the parity test originally
 			// stopped at the connection, while guardStmt wraps statements and
 			// forwards a different set. A wrapper that hid StmtExecContext
 			// would have passed.
@@ -474,7 +474,7 @@ func TestWrapperAdvertisesExactlyWhatTheBaseDoes(t *testing.T) {
 	}
 }
 
-// TestWriteGuardSeesThroughDriverValuer regresses codex round 2's second P1.
+// TestWriteGuardSeesThroughDriverValuer regresses the case.
 //
 // checkParams originally type-asserted `string`. pgx implements
 // driver.NamedValueChecker and ACCEPTS a sql.NullString unchanged rather than
@@ -511,7 +511,7 @@ func TestWriteGuardSeesThroughDriverValuer(t *testing.T) {
 		t.Errorf("a clean sql.NullString must still write: %v", err)
 	}
 
-	// The NULL leg ASSERTS NULL (codex round 3). Checking only that the write
+	// The NULL leg ASSERTS NULL. Checking only that the write
 	// succeeded would pass against a normalization that turned NULL into "" —
 	// which is precisely the kind of silent conversion a guard that rewrites
 	// parameters could introduce.
@@ -529,14 +529,14 @@ func TestWriteGuardSeesThroughDriverValuer(t *testing.T) {
 	}
 }
 
-// TestWriteGuardResolvesValuerOnce regresses the OTHER two halves of codex
-// round 3's Valuer findings, neither of which needs a database.
+// TestWriteGuardResolvesValuerOnce regresses the OTHER two halves of the
+// Valuer findings, neither of which needs a database.
 //
 // They are unit-level on purpose: the integration test above only exercises
 // the Valuer path meaningfully on POSTGRES, because SQLite's driver lacks
 // NamedValueChecker and database/sql therefore unwraps sql.NullString before
 // the guard ever runs. That made it pass for the wrong reason by default
-// (codex round 3), and these do not depend on which driver is present.
+// And these do not depend on which driver is present.
 func TestWriteGuardResolvesValuerOnce(t *testing.T) {
 	t.Parallel()
 	t.Run("typed-nil valuer binds NULL instead of panicking", func(t *testing.T) {
@@ -567,7 +567,7 @@ func TestWriteGuardResolvesValuerOnce(t *testing.T) {
 	})
 
 	t.Run("a valuer returning a valuer resolves to a fixed point", func(t *testing.T) {
-		// codex round 4: resolving ONCE let an outer valuer hand the guard a
+		// Resolving ONCE let an outer valuer hand the guard a
 		// clean inner valuer while pgx went on to evaluate it and send the NUL.
 		inner := sql.NullString{String: "bad" + textguard.NUL + "text", Valid: true}
 		args := []driver.NamedValue{{Ordinal: 1, Value: nestingValuer{inner}}}
@@ -584,8 +584,7 @@ func TestWriteGuardResolvesValuerOnce(t *testing.T) {
 	})
 
 	t.Run("an unclassifiable shape is REFUSED, not passed through", func(t *testing.T) {
-		// The allow-list's whole point (codex round 4). Two rounds were spent
-		// naming text-carrying shapes one at a time; this asserts the default
+		// The allow-list's whole point. Naming text-carrying shapes one at a time never ends; this asserts the default
 		// answer for anything unnamed is refusal rather than silent acceptance.
 		type unexpected struct{ Note string }
 		args := []driver.NamedValue{{Ordinal: 1, Value: unexpected{Note: "hello"}}}

@@ -8,7 +8,7 @@ import (
 // TestGenerateNULTriggerMigration regenerates the Layer B migration from the
 // shared column list.
 //
-// It is a TEST rather than a deleted scratch script (codex round 1): the
+// It is a TEST rather than a deleted scratch script: the
 // migration's own header tells a reader to run it, and an artifact that
 // instructs you to run something that does not exist is worse than one with no
 // instructions. It is skipped unless GEN_NUL_TRIGGERS is set, so it costs

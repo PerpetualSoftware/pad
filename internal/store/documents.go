@@ -334,7 +334,7 @@ func (s *Store) UpdateDocument(id string, input models.DocumentUpdate) (*models.
 			return nil, err
 		}
 		// Re-read UNDER the lock and decide from that row, not from the
-		// pre-transaction read above (codex round 1). `existing` was loaded
+		// pre-transaction read above. `existing` was loaded
 		// before this transaction and before this lock, so a rename that
 		// committed in between is invisible to it — and every decision below
 		// is made from it: whether to cascade at all, and which OLD TITLE the
@@ -434,7 +434,7 @@ func (s *Store) UpdateDocument(id string, input models.DocumentUpdate) (*models.
 	if input.Title != nil && *input.Title != existing.Title {
 		// Validated HERE, not only at the handler, because here is where the
 		// rename is decided — under the lock, against the title this
-		// transaction re-read (codex round 11).
+		// transaction re-read.
 		//
 		// The handler's check compares against a document it read BEFORE the
 		// lock. That is fine for giving a caller a fast, friendly 400, but it
@@ -554,13 +554,13 @@ func (s *Store) UpdateDocument(id string, input models.DocumentUpdate) (*models.
 // only with other renames — reusing acquireWorkspaceSeqLock's bare workspace
 // key would have made every rename wait behind every item-number and seq
 // write in the workspace, and vice versa, for no benefit: the cycle this
-// closes is rename-against-rename (codex round 2). Same shape and no-op
+// closes is rename-against-rename. Same shape and no-op
 // dialect gate as acquireWorkspaceParentLinkLock.
 func (s *Store) acquireWorkspaceDocumentRenameLock(tx *sql.Tx, workspaceID string) error {
 	if s.dialect.Driver() != DriverPostgres {
 		return nil
 	}
-	// BOUNDED WAIT (codex round 5). The transaction has already taken a pool
+	// BOUNDED WAIT. The transaction has already taken a pool
 	// connection by the time it waits here, so an unbounded wait converts
 	// lock contention into pool exhaustion: a burst of renames in ONE
 	// workspace can pin connections and stall unrelated work, and a client
@@ -598,7 +598,7 @@ func (s *Store) acquireWorkspaceDocumentRenameLock(tx *sql.Tx, workspaceID strin
 // LIKE pattern, for use with an explicit `ESCAPE '\'` clause.
 //
 // Without this the cascade's own search term is interpreted as a pattern, and
-// a document TITLE decides how (BUG-2798, codex round 1 P2 — plus the rest of
+// a document TITLE decides how (BUG-2798, plus the rest of
 // the class it was an instance of):
 //
 //   - `_` and `%` are wildcards in BOTH dialects, so a title containing them
@@ -688,7 +688,7 @@ func (s *Store) updateLinksInTx(tx *sql.Tx, workspaceID, oldTitle, newTitle stri
 		// a one-character title makes each 2 MiB linker project about 40 KiB
 		// while the cascade still retains its 2 MiB read for the
 		// compare-and-set, so hundreds of linkers exhaust memory while the
-		// counter reports well under the cap (codex round 1 P1). Both strings
+		// counter reports well under the cap. Both strings
 		// are alive at once, so both are counted.
 		//
 		// Refusing here rather than after the loop is what makes the bound
@@ -701,7 +701,7 @@ func (s *Store) updateLinksInTx(tx *sql.Tx, workspaceID, oldTitle, newTitle stri
 		// links.ReplaceTitle, being case-sensitive, will not touch. Charging
 		// those bodies to the budget lets case-variant content that can never
 		// be rewritten push a legitimate rename over the cap, on one dialect
-		// only (codex round 7).
+		// only.
 		//
 		// Skipping them is the fix for both halves: no budget is spent, and no
 		// no-op UPDATE is issued for a row whose content the cascade was never
@@ -740,7 +740,7 @@ func (s *Store) updateLinksInTx(tx *sql.Tx, workspaceID, oldTitle, newTitle stri
 		// The compare-and-set is handed the scan's TOTAL, not a pre-computed
 		// budget, so it can both bound and REPORT correctly: a retry must fit
 		// in what remains under the cap, and a refusal must name the whole
-		// operation's size rather than the re-read alone (codex rounds 3, 8).
+		// operation's size rather than the re-read alone (8).
 		//
 		// Everything the scan counted is still held — `updates` references the
 		// original read and rewritten bodies for every linker, this one
@@ -773,7 +773,7 @@ func cascadeRetainedBytes(read, oldTitle, newTitle string) int64 {
 		// allocates nothing and `rewritten` aliases `read`.
 		//
 		// This is not a micro-optimisation, it is a correctness case on the
-		// retry path (codex round 3 P2): a concurrent edit that REMOVES the
+		// retry path: a concurrent edit that REMOVES the
 		// link leaves a body with no occurrences, and charging it twice could
 		// refuse an otherwise valid rename for memory the cascade never
 		// allocates.
@@ -789,15 +789,15 @@ func cascadeRetainedBytes(read, oldTitle, newTitle string) int64 {
 // a caller-facing layer can compose its own sentence instead of splicing this
 // error's text into a response.
 //
-// The distinction matters (codex round 5): the HTTP handler used to append
+// The distinction matters: the HTTP handler used to append
 // err.Error() verbatim, which meant every wrapper any caller added on the way
 // up — "update links: " today, anything at all tomorrow — was published to the
 // client as part of a public message. The two figures ARE meant to reach the
-// caller (Dave's day-63 ruling: the refusal states what it would hold and what
+// caller (the refusal states what it would hold and what
 // the cap is, so "split the rename" is actionable advice rather than a shrug);
 // the internal call path is not.
 //
-// This is the round-3 lesson applied in the other direction: there, prose was
+// This is the same lesson applied in the other direction: there, prose was
 // being used to CLASSIFY an error and should have been identity; here, prose
 // was being used to REPORT one and should have been data.
 type RenameCascadeTooLargeError struct {
@@ -837,7 +837,7 @@ func newRenameCascadeTooLargeError(newTitle string, retained int64) error {
 // retrying it can succeed. Exported so the HTTP layer can answer 503 with a
 // Retry-After instead of the 500 that "an internal error occurred" implies —
 // a caller told the request will never succeed will not retry, which is the
-// opposite of the truth here (codex round 2 on BUG-2785).
+// opposite of the truth here (BUG-2785).
 var ErrLinkCascadeContention = errors.New("store: link cascade lost the compare-and-set")
 
 // ErrInvalidDocumentTitle reports a rename to a title the wiki-link machinery
@@ -865,8 +865,7 @@ func (e *InvalidDocumentTitleError) Unwrap() error { return ErrInvalidDocumentTi
 // retrying it unchanged will fail identically until the workspace's content
 // changes." One wants 503 + Retry-After, the other a permanent 4xx carrying
 // the projection so the caller can see what it asked for. Blurring the two
-// vocabularies would tell a client to retry forever (BUG-2798, lead ruling
-// day-63).
+// vocabularies would tell a client to retry forever (BUG-2798).
 var ErrRenameCascadeTooLarge = errors.New("store: rename cascade exceeds the retained-content bound")
 
 // MaxRenameCascadeRetainedBytes bounds the TOTAL linked-document content a
@@ -877,7 +876,7 @@ var ErrRenameCascadeTooLarge = errors.New("store: rename cascade exceeds the ret
 // the resource. A rename to a SHORTER title projects less output than its
 // input while still holding every read body for the compare-and-set — so an
 // output-only counter reports ~40 KiB per 2 MiB linker and bounds nothing in
-// that direction (codex round 1). Counting both strings makes the cap a
+// that direction. Counting both strings makes the cap a
 // statement about resident memory, which is what actually runs out.
 //
 // 32 MiB, and both bounds of the gap are measured rather than picked:
@@ -892,7 +891,7 @@ var ErrRenameCascadeTooLarge = errors.New("store: rename cascade exceeds the ret
 //     is ~1.6x that impossible worst case.
 //
 //     The INFERENCE is worth naming rather than hiding, because the guard it
-//     justifies is on documents and the measurement is not (codex round 6):
+//     justifies is on documents and the measurement is not:
 //     that instance's `documents` table is EMPTY, so there is no direct
 //     figure to take. `items` is used as the proxy on the grounds that the
 //     two hold the same kind of prose and cascade the same way — a reasonable
@@ -1007,7 +1006,7 @@ var cascadeRewriteAttempts = 3
 // transaction that holds row locks is BUG-2409's deadlock.
 //
 // WHAT THIS DOES NOT FIX, named because "the cascade is now safe" is the claim
-// that would rot silently (codex round 2 enumerated both):
+// that would rot silently:
 //
 //   - THE MIRROR DIRECTION. This stops the cascade losing a content writer's
 //     edit. It does not stop a content writer losing the CASCADE's rewrite: a
@@ -1064,12 +1063,12 @@ func (s *Store) rewriteLinkerCAS(tx *sql.Tx, id, read, rewritten, oldTitle, newT
 		// aggregate bound holds across retries too — without this, an editor
 		// could grow a linker between the scan and the retry and walk the
 		// rename straight back into the amplification it was refused for
-		// (BUG-2798, codex round 1 P1).
+		// (BUG-2798).
 		// ACCUMULATED across attempts, not just this one. Each retry's
 		// buffers become unreachable when `expected`/`next` are reassigned
 		// below, but unreachable is not the same as reclaimed — the runtime
 		// may not have collected them yet, so a run of failures can hold
-		// several copies at once (codex round 9). Counting every attempt is
+		// several copies at once. Counting every attempt is
 		// the conservative reading, and it errs toward refusing, which is the
 		// safe direction for a memory bound. The loop is capped at
 		// cascadeRewriteAttempts, so this cannot accumulate without end.
@@ -1080,7 +1079,7 @@ func (s *Store) rewriteLinkerCAS(tx *sql.Tx, id, read, rewritten, oldTitle, newT
 			// counted are still held, so the operation's real size is their
 			// total plus the re-read — and reporting only `grown` produced a
 			// refusal that contradicted itself, telling the caller it would
-			// hold 16 MiB against a 32 MiB limit (codex round 8). A refusal
+			// hold 16 MiB against a 32 MiB limit. A refusal
 			// whose own numbers do not justify it reads as a bug in the
 			// server, which is the opposite of what an actionable error does.
 			return newRenameCascadeTooLargeError(newTitle, scanTotal+grown)
@@ -1106,7 +1105,7 @@ func (s *Store) rewriteLinkerCAS(tx *sql.Tx, id, read, rewritten, oldTitle, newT
 	//
 	// Wrapped around ErrLinkCascadeContention so the HTTP layer can tell this
 	// from a genuine fault. It is CONTENTION, not a bug: retrying can succeed,
-	// and a 500 would tell the caller the opposite (codex round 2).
+	// and a 500 would tell the caller the opposite.
 	return fmt.Errorf("%w: document %s after %d attempts", ErrLinkCascadeContention, id, cascadeRewriteAttempts)
 }
 

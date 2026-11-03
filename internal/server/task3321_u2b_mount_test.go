@@ -74,7 +74,7 @@ func TestU2b_MountRoutesAndBindsTokens(t *testing.T) {
 	}
 }
 
-// OAuth-only (lead's ruling): a personal access token is refused at the
+// OAuth-only: a personal access token is refused at the
 // ChatGPT mount with a clear 401, before the PAT branch that would accept it
 // without the audience check.
 func TestU2b_PersonalAccessTokensAreRefused(t *testing.T) {
@@ -136,7 +136,7 @@ func TestU2b_SwitchAndMetadata(t *testing.T) {
 }
 
 // The consent screen names what is being connected when the request is for
-// the ChatGPT resource (lead's ruling), and says nothing extra for /mcp.
+// the ChatGPT resource, and says nothing extra for /mcp.
 func TestU2b_ConsentNamesTheChatGPTSurface(t *testing.T) {
 	srv := chatGPTMountServer(t, true)
 	_, sessionToken := loginTestUser(t, srv)

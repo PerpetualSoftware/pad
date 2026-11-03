@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// BUG-2367 item 4 (lead ruling (a), day 78): a move or copy that would change
+// BUG-2367 item 4: a move or copy that would change
 // an item between open, done and abandoned is refused unless the caller names
 // the destination done field. The preflight asks through needs_value; the
 // doors without that route refuse with the field and its values.

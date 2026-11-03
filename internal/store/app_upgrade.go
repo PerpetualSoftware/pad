@@ -81,7 +81,7 @@ type UpgradePlan struct {
 	// Restrictive: the upgrade narrows what the app may do (an access level
 	// narrowed, or a companion released). The install's epoch is bumped, so
 	// a write admitted before the upgrade cannot commit after it and every
-	// token issued before it is refused (codex r1 on U8b2).
+	// token issued before it is refused.
 	Restrictive bool
 	// Webhook is the new manifest's hook (events by companion SLUG); nil
 	// removes it. An existing hook keeps its secret and delivered state; a
@@ -232,14 +232,14 @@ func (s *Store) UpgradeAppInstall(req UpgradeRequest, derive UpgradeDeriveFunc) 
 
 	// Released companions: no longer the app's (via_app cleared, so the U6a
 	// ceiling drops them), out of the bot's access list; the collection and
-	// its items stay as an ordinary collection (lead ruling 1). Human
+	// its items stay as an ordinary collection. Human
 	// members' access is unchanged.
 	for _, slug := range plan.Released {
 		var collID string
 		err := tx.QueryRow(s.q(`SELECT id FROM collections WHERE workspace_id = ? AND slug = ? AND via_app = ?`), req.WorkspaceID, slug, req.InstallID).Scan(&collID)
 		if errors.Is(err, sql.ErrNoRows) {
 			// Never skipped: a companion that no longer resolves by its slug
-			// would keep via_app and the bot's access (codex r1 on U8b2).
+			// would keep via_app and the bot's access.
 			return nil, &ProvisionConflictError{Collection: slug, Field: "slug", Detail: "this installed companion no longer resolves (renamed or deleted); restore its slug to upgrade the app"}
 		}
 		if err != nil {
@@ -361,7 +361,7 @@ func (s *Store) UpgradeAppInstall(req UpgradeRequest, derive UpgradeDeriveFunc) 
 // CheckCompanionsResolveQ refuses unless every installed companion slug still
 // names a live collection stamped via_app = installID. An owner rename or
 // delete of a companion is drift the upgrade cannot map (it addresses
-// companions by slug), so it refuses rather than guessing (codex r1 on U8b2).
+// companions by slug), so it refuses rather than guessing.
 func (s *Store) CheckCompanionsResolveQ(q Queryer, workspaceID, installID string, slugs []string) error {
 	for _, slug := range slugs {
 		var n int
@@ -378,8 +378,8 @@ func (s *Store) CheckCompanionsResolveQ(q Queryer, workspaceID, installID string
 }
 
 // CheckAdditiveFieldsQ refuses an additive field that is not safe for the
-// collection's EXISTING items, decided against the current data (codex r1 on
-// U8b2): a key the schema already declares; a key items already hold values
+// collection's EXISTING items, decided against the current data: a key the
+// schema already declares; a key items already hold values
 // under (human writes accept undeclared keys, so a new unique or relation
 // field would start out violated or unindexed); and a field that would change
 // the collection's done field (DoneFieldKey also reads settings, so a plain
@@ -417,7 +417,7 @@ func (s *Store) CheckAdditiveFieldsQ(q Queryer, workspaceID, installID, slug str
 		expr := s.dialect.JSONExtractText("fields", f.Key)
 		// ARCHIVED items count too: RestoreItem clears deleted_at without
 		// re-validating fields, so an archived value would come back
-		// unchecked under the new field (codex r2 on U8b2).
+		// unchecked under the new field.
 		if err := q.QueryRow(s.q(`SELECT COUNT(*) FROM items WHERE collection_id = ? AND `+expr+` IS NOT NULL`), collID).Scan(&n); err != nil {
 			return fmt.Errorf("check additive field %q: %w", f.Key, err)
 		}

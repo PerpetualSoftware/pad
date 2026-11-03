@@ -200,7 +200,7 @@ func TestCascade_RenameToEmptyTitleDoesNotDestroyLinks(t *testing.T) {
 		t.Errorf("content parses to %d links, want 1 — the bracket must stay parseable", n)
 	}
 
-	// INDEX STATE IN FULL, not a row count. Codex R2 was right that the first
+	// INDEX STATE IN FULL, not a row count. The first
 	// version of this assertion was blind: it counted rows, so it would have
 	// passed with the row present but target_item_id cleared — a broken
 	// backlink reported as success.
@@ -230,7 +230,7 @@ func TestCascade_RenameToEmptyTitleDoesNotDestroyLinks(t *testing.T) {
 	}
 
 	// RECOVERY, which is the leg that distinguishes "broken but honest" from
-	// "irrecoverable". Codex R2 called this unrecoverable; it is not. Renaming
+	// "irrecoverable". It might look unrecoverable; it is not. Renaming
 	// back re-resolves the row through resolveBrokenTitleLinks, because the
 	// CONTENT was never destroyed — which is precisely what the emission guard
 	// protects.

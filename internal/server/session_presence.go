@@ -73,7 +73,7 @@ import (
 // handler or the endpoint, and that held: the STREAM HANDLER is unchanged.
 //
 // The ENDPOINT is not, and an earlier draft of this note claimed both were
-// (codex round 6). handleListSessions gained a 503 branch, because the
+//. handleListSessions gained a 503 branch, because the
 // out-of-process implementation made "I could not find out" a reachable
 // answer that the in-process one never had — the interface absorbed the
 // implementation swap, not the new failure mode the implementation brought
@@ -94,7 +94,7 @@ import (
 // that is already gone, for up to ~30 seconds.
 //
 // A DEAD INSTANCE IS A SECOND, LONGER WINDOW, and it exists only for the
-// shared registry (codex round 1, P2 on BUG-2698). The ~30s above is
+// shared registry (BUG-2698). The ~30s above is
 // about a dead CLIENT, detected when the keepalive write fails and the
 // handler's defer deregisters. If the SERVER PROCESS dies instead,
 // MemorySessionPresence loses its entries instantly — they lived in the
@@ -162,9 +162,9 @@ type LiveSession struct {
 	// types is the trust boundary.
 	//
 	// WHY A REGISTRY FIELD IS ADMISSIBLE HERE WHEN A VISIBILITY SNAPSHOT
-	// IS NOT. Dave's day-49 ruling on this bug rejected storing each
+	// IS NOT. The decision on this bug rejected storing each
 	// session's resolved visibility and required re-resolution at push
-	// time instead. That ruling is about STALENESS: membership,
+	// time instead. That decision is about STALENESS: membership,
 	// CollectionAccess and grants are DERIVED and REVOCABLE, so a value
 	// cached at Add goes wrong exactly when it matters most (access
 	// revoked mid-connection), which is why watchNotificationVisible
@@ -175,7 +175,7 @@ type LiveSession struct {
 	// is no operation that changes it for a live stream — a cookie
 	// session cannot become a bearer one without reconnecting, at which
 	// point Add runs again and mints a new id. It cannot go stale, so the
-	// ruling's reasoning does not reach it. Armed is the standing
+	// decision's reasoning does not reach it. Armed is the standing
 	// precedent: a per-connection fact living here and consulted by
 	// deliveredSessionCount.
 	//
@@ -194,7 +194,7 @@ type LiveSession struct {
 	// deployment that needs it most.
 	//
 	// ROLLING-UPGRADE WINDOW, bounded and deliberately not tri-stated
-	// (codex round 1, P2). A session record written by a pre-BUG-2725
+	// A session record written by a pre-BUG-2725
 	// instance has no `bearer_auth` key and decodes as false, i.e. as
 	// cookie-opened. The blast radius is exactly one case — a platform
 	// ADMIN's bearer-opened stream registered before the upgrade, which
@@ -281,8 +281,7 @@ type SessionIdentity struct {
 // called from each stream connection's own goroutine while ListForUser
 // is served from unrelated request goroutines.
 //
-// CONSTRAINT ON ANY OUT-OF-PROCESS IMPLEMENTATION (codex round 2, P2,
-// refined). Server.Shutdown delegates to http.Server.Shutdown, and Go's
+// CONSTRAINT ON ANY OUT-OF-PROCESS IMPLEMENTATION. Server.Shutdown delegates to http.Server.Shutdown, and Go's
 // stdlib does NOT cancel an in-flight handler's request context there —
 // it waits for the handler to return. SSE handlers only return on their
 // own ctx.Done or a failed write, so a shutdown leaves stream handlers
@@ -328,7 +327,7 @@ type SessionPresence interface {
 	// first. The returned slice is a copy and is safe to retain.
 	//
 	// THE ERROR IS NOT DECORATION, and an implementation that cannot fail
-	// must still not drop it (codex round 1, P1 on BUG-2698). Without it,
+	// must still not drop it (BUG-2698). Without it,
 	// "this user has no sessions" and "I could not find out" are the same
 	// value to every consumer — and they demand OPPOSITE handling: the
 	// first means a push has nothing to deliver to, the second means the

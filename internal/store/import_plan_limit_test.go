@@ -120,7 +120,7 @@ func TestImportWorkspace_OverItemCap_RefusesAndLeavesNothing(t *testing.T) {
 	if ple.Result.Limit != capItems {
 		t.Errorf("Limit = %d, want %d", ple.Result.Limit, capItems)
 	}
-	// Dave's day-71 ruling: the refusal names how many would land vs the
+	// The refusal names how many would land vs the
 	// limit. Requested is that count; Current stays the destination's own
 	// count, which is zero because the workspace never committed.
 	if ple.Result.Requested != len(bundle.Items) {
@@ -198,8 +198,8 @@ func TestImportWorkspace_OverItemCap_UnlimitedWithoutMintOption(t *testing.T) {
 // The loop skips an item whose collection is missing from the bundle
 // (`newCollID == ""` → `continue`), so len(data.Items) is NOT how many items
 // land. Counting the bundle's length up front would refuse this import even
-// though the number that actually lands is exactly at the cap — and Dave's
-// ruling asks the refusal to name how many WOULD LAND, which is a different
+// though the number that actually lands is exactly at the cap — and the
+// product rule asks the refusal to name how many WOULD LAND, which is a different
 // number from how many were offered.
 //
 // Construction: export a workspace whose items live in two collections, then

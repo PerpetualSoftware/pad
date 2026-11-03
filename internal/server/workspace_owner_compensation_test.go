@@ -353,7 +353,7 @@ func TestInvitationSignup_NoFault_GrantsMembershipAndConsumesTheInvitation(t *te
 // on the unit's trail with the matrix.
 //
 // WHAT THIS LEG DOES NOT COVER, stated so its green is not read wider than it
-// is (codex round 2): it runs on SQLITE and drives the ABSENT arm only. It says
+// is: it runs on SQLITE and drives the ABSENT arm only. It says
 // nothing about Postgres connection behaviour, and nothing about the ack-loss
 // arm, which reaches the same reads by a different route. The claim it supports
 // is "this path's calls are sequential and complete under one connection",
@@ -384,7 +384,7 @@ func TestOwnerCompensation_CompletesUnderASingleConnection(t *testing.T) {
 		// RETURNING is the point, but a 5xx alone would also be satisfied by a
 		// failure BEFORE the compensation ever ran — validation, auth, the
 		// create itself — which would make this leg green without exercising
-		// the path it names (codex round 2). So pin that the compensation
+		// the path it names. So pin that the compensation
 		// actually happened: its own log line, and a workspace count back where
 		// it started because the removal ran.
 		if code < 500 {
@@ -403,9 +403,9 @@ func TestOwnerCompensation_CompletesUnderASingleConnection(t *testing.T) {
 	}
 }
 
-// The three legs below cover behaviour added by codex round 1. Each exists
-// because the round's finding named a state the original code reached and the
-// tests could not see.
+// The three legs below cover behaviour added after review. Each exists
+// because it names a state the original code reached and the tests could not
+// see.
 
 // ABSENT BUT NOT ALONE. Absence of THIS caller's owner row is not absence of
 // every member — the two questions BUG-3026 separated. Deleting on the first
@@ -477,7 +477,7 @@ func TestCreateWorkspace_Compensation_LeavesNothingRestorable(t *testing.T) {
 		t.Fatalf("status %d, want 5xx", rr.Code)
 	}
 
-	// PIN THAT COMPENSATION RAN (codex round 3). An empty deleted-list is also
+	// PIN THAT COMPENSATION RAN. An empty deleted-list is also
 	// what a 5xx BEFORE the workspace was ever created produces, and what a
 	// failed DeleteWorkspace leaving the workspace LIVE produces — so the
 	// absence below is only evidence once these two say the removal happened.
@@ -539,7 +539,7 @@ func TestInvitationSignup_MemberAddFails_RollsTheAccountBack(t *testing.T) {
 // SIGNUP ACK LOSS — the membership committed and reported failure anyway.
 // Deleting the account here destroys a signup that worked, which is the
 // BUG-3026 shape arriving in the door forty lines from the helper written to
-// prevent it. Added after codex round 2 found exactly that.
+// prevent it. Added because review found exactly that.
 func TestInvitationSignup_MemberAddAckLoss_KeepsTheAccountAndSucceeds(t *testing.T) {
 	srv, inv := invitedSignupServer(t)
 	logs := captureLogs(t)
@@ -580,8 +580,8 @@ func TestInvitationSignup_MemberAddAckLoss_KeepsTheAccountAndSucceeds(t *testing
 	if !strings.Contains(logs.String(), "reconciled to success") {
 		t.Errorf("the reconcile arm was not taken. log: %s", logs)
 	}
-	// The signup SUCCEEDED, so the bookkeeping must have run too (codex round
-	// 3). Without this, a regression that reconciles the membership and then
+	// The signup SUCCEEDED, so the bookkeeping must have run too.
+	// Without this, a regression that reconciles the membership and then
 	// skips the accept passes here while leaving a redeemable code behind a
 	// granted membership.
 	consumed, err := srv.store.GetInvitationByCode(inv.Code)
@@ -631,7 +631,7 @@ func TestInvitationSignup_MembershipUnreadable_RefusesButKeepsTheAccount(t *test
 	if !strings.Contains(logs.String(), "state is unknown") {
 		t.Errorf("the unreadable arm was not taken. log: %s", logs)
 	}
-	// The refusal's whole promise is that the code survives it (codex round 3).
+	// The refusal's whole promise is that the code survives it.
 	// Asserting only that the account survives would still pass if the accept
 	// were moved ahead of the reconcile, which is the one ordering this door
 	// exists to forbid.
@@ -645,7 +645,7 @@ func TestInvitationSignup_MembershipUnreadable_RefusesButKeepsTheAccount(t *test
 	}
 }
 
-// SEED FAILURE IS THE SAME HUSK, one step earlier (codex round 4). Compensating
+// SEED FAILURE IS THE SAME HUSK, one step earlier. Compensating
 // the owner step alone left the invariant true of one failure point and false of
 // its neighbour: the old handler returned 500 saying "Workspace created but
 // failed to seed collections" and kept a live, ownerless, unseeded workspace
@@ -672,7 +672,7 @@ func TestCreateWorkspace_SeedFails_RefusesAndLeavesNoWorkspace(t *testing.T) {
 	}
 }
 
-// THE SLUG MUST COME BACK, on every compensated arm (BUG-2715, ruling (d)).
+// THE SLUG MUST COME BACK, on every compensated arm (BUG-2715).
 //
 // The comments in the helper claim the removal frees the name — the purge
 // removes the row outright (a soft delete alone does not: the slug column is

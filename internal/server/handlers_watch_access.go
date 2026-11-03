@@ -10,7 +10,7 @@ import (
 // filterWatchesByCurrentAccess re-checks each watch's CURRENT visibility
 // (workspace membership / role / collection access / item grants)
 // before it is used to gate SSE delivery or returned from
-// GET /api/v1/watches (TASK-2533, codex round 1 finding 1).
+// GET /api/v1/watches (TASK-2533).
 //
 // Store.ListWatchesForUser's doc comment explains why this exists: the
 // watches table durably outlives a workspace membership or grant
@@ -26,8 +26,8 @@ import (
 // (handlers_events.go's computeSSEVisibility), which only ever resolves
 // visibility for the ONE workspace it's subscribed to.
 //
-// r supplies the bearer-vs-cookie admin check (TASK-2533 codex round 2
-// finding 2) — see computeWatchAccessVisibility's doc comment for why
+// r supplies the bearer-vs-cookie admin check (TASK-2533) — see
+// computeWatchAccessVisibility's doc comment for why
 // this call site can no longer treat "userID is always the caller" as a
 // reason to skip it. BUG-2725 replaced the *http.Request parameter on
 // that function with a plain bool, so the transport is read here, once.
@@ -71,8 +71,8 @@ func (s *Server) filterWatchesByCurrentAccess(r *http.Request, userID string, wa
 	return out
 }
 
-// watchAccessVisibility is filterWatchesByCurrentAccess's (and, as of
-// codex round 2 finding 2, the addressed-delivery check's) per-workspace
+// watchAccessVisibility is filterWatchesByCurrentAccess's (and the
+// addressed-delivery check's) per-workspace
 // visibility snapshot. Deliberately keyed by ID (collection ID / item
 // ID), unlike handlers_events.go's sseVisibility, which is keyed by
 // collection SLUG because it routes live workspace-scoped events that
@@ -89,8 +89,7 @@ type watchAccessVisibility struct {
 	// full access to — a member's own assigned collections, system
 	// collections, or a guest's direct collection_grants (nil/empty when
 	// fullAccess is true or the caller has none). Deliberately NOT built
-	// from VisibleCollectionIDs/GuestVisibleCollectionIDs (TASK-2533
-	// codex round 2 finding 1) — those over-widen for navigation,
+	// from VisibleCollectionIDs/GuestVisibleCollectionIDs (TASK-2533) — those over-widen for navigation,
 	// including a collection ID merely because the caller has an item
 	// grant somewhere inside it, which is exactly the leak this field
 	// must not reproduce. Built from GuestVisibleResources'
@@ -120,8 +119,7 @@ func (v watchAccessVisibility) allows(collectionID, itemID string) bool {
 // uses (handlers_events.go) and the SAME two-tier construction, not an
 // approximation of it.
 //
-// TASK-2533 codex round 2 finding 1 (confirmed real, fixed): the
-// previous version used VisibleCollectionIDs/GuestVisibleCollectionIDs
+// TASK-2533: the previous version used VisibleCollectionIDs/GuestVisibleCollectionIDs
 // directly as the "fully visible" gate. Those functions deliberately
 // OVER-WIDEN for navigation purposes — GuestVisibleCollectionIDs' own
 // query adds a collection's ID to the result if the caller has an item
@@ -137,12 +135,12 @@ func (v watchAccessVisibility) allows(collectionID, itemID string) bool {
 // an actual workspace member. (A ListSystemCollectionIDs layer was removed
 // by TASK-3376: system collections are listed like any other.)
 //
-// Admin bypass (TASK-2533 codex round 2 finding 2 — the argument below
+// Admin bypass (TASK-2533 — the argument below
 // REPLACES a now-falsified one, not just a code fix): this used to treat
 // ANY admin as full-access regardless of auth transport, reasoned as
 // "every call site filters a caller's OWN watches, so this can't leak
 // another user's data." That reasoning held for watch-matched
-// notifications, but finding 2 is exactly the case where it doesn't:
+// notifications, but the addressed-delivery path is exactly the case where it doesn't:
 // the addressed-delivery path is now ALSO gated by this
 // function (handlers_watch_events.go), and an addressed
 // notification is, by definition, about something aimed AT the
@@ -172,8 +170,8 @@ func (v watchAccessVisibility) allows(collectionID, itemID string) bool {
 // sessions it counts. That bound is what retires the "N access checks
 // per push" cost objection permanently; it is enforced structurally in
 // deliveredSessionCount rather than argued.
-// THE ERROR RETURN IS NOT DECORATION (codex round 2, P1 — the same
-// class round 1 caught one layer up). Every store failure below used to
+// THE ERROR RETURN IS NOT DECORATION (the same
+// class as the one caught one layer up). Every store failure below used to
 // be collapsed into an empty, deny-everything visibility. For the SSE
 // stream that is correct and stays the default: delivering a fact to
 // someone whose access could not be confirmed is the worse outcome
@@ -182,7 +180,7 @@ func (v watchAccessVisibility) allows(collectionID, itemID string) bool {
 // deliveredSessionCount is a second caller with the OPPOSITE
 // consequence. Its 0 makes a targeted push SKIP the publish, so a DB
 // outage silently collapsing to "not visible" drops the instruction and
-// answers 200 — BUG-2698's defect, which round 1 removed from the
+// answers 200 — BUG-2698's defect, which was removed from the
 // GetUser lookup and which lived on in all four store calls here.
 //
 // So the resolution and the POLICY are separated: this function reports
@@ -196,7 +194,7 @@ func (v watchAccessVisibility) allows(collectionID, itemID string) bool {
 // ListSystemCollectionIDs (the last removed since by TASK-3376, leaving
 // three). All of them report. The last two were not
 // merely swallowed but discarded into `_`, which is how they escaped
-// round 1's sweep. Search boundary: this function only; the sibling
+// the earlier sweep. Search boundary: this function only; the sibling
 // resolver computeSSEVisibility (handlers_events.go) has the same shape
 // and was NOT changed, because no counting caller reads it.
 func (s *Server) computeWatchAccessVisibility(bearerAuth bool, user *models.User, workspaceID string) (watchAccessVisibility, error) {

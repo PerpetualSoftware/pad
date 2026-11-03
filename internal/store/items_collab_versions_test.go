@@ -59,7 +59,6 @@ func TestCollabSnapshotPreservesVersionDiff(t *testing.T) {
 	// line dwarfs any patch describing the single-line change, so
 	// `diff.IsDiffSmaller` will keep these as reverse-patches and
 	// the test actually exercises the patch-reconstruction path.
-	// Per Codex review round 1 [P2].
 	filler := strings.Repeat("Lorem ipsum dolor sit amet, consectetur adipiscing elit. ", 20)
 	v1 := filler + "\n\nSection: original heading\nContent line one.\n"
 	v2 := filler + "\n\nSection: original heading\nContent line one updated.\n"
@@ -70,8 +69,7 @@ func TestCollabSnapshotPreservesVersionDiff(t *testing.T) {
 	// with Source="web" then differs from the most-recent version's
 	// source, bypassing the per-(actor, source) throttle in
 	// shouldCreateItemVersion. Without this differentiation the
-	// "v1→v2" row would be silently throttled away. Per Codex
-	// review round 1 [P2].
+	// "v1→v2" row would be silently throttled away.
 	item, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{
 		Title:   "Versioned Item",
 		Content: v1,
@@ -85,8 +83,7 @@ func TestCollabSnapshotPreservesVersionDiff(t *testing.T) {
 	// One-second sleep between writes so each version row gets a
 	// distinct `created_at`. RFC3339-second resolution + back-to-
 	// back updates would otherwise tie and the newest→oldest walk
-	// would depend on row-insertion order rather than time. Per
-	// Codex review round 1 [P2].
+	// would depend on row-insertion order rather than time.
 	time.Sleep(1100 * time.Millisecond)
 
 	// Step 2: web write to v2.
@@ -127,7 +124,7 @@ func TestCollabSnapshotPreservesVersionDiff(t *testing.T) {
 
 	// Locate the rows by Source so the assertions don't depend on
 	// the relative ordering of the create-time row vs. the update
-	// rows. Per Codex review round 1 [P2].
+	// rows.
 	rowBySource := map[string]models.Version{}
 	for _, v := range resolved {
 		// Take the most recent row per source — there's only one
@@ -192,7 +189,7 @@ func TestCollabSnapshotPreservesVersionDiff(t *testing.T) {
 }
 
 // TestCollabSnapshotDoesNotAdvanceOpLogWatermark is a regression
-// guard for TASK-1309 round 5 [P1]: a browser collab-snapshot
+// guard for TASK-1309: a browser collab-snapshot
 // PATCH (VersionSource="collab-snapshot") must NOT advance the
 // items.content_flushed_op_log_id watermark, because the flusher's
 // markdown can't be proven to capture every peer's ops.

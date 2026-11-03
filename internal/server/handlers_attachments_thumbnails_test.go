@@ -343,8 +343,7 @@ func TestServerCapabilities_DegradedWhenProcessorMissing(t *testing.T) {
 // the RequireAuth middleware kicks in for non-public paths, so the
 // capabilities endpoint must be on the isPublicAPIPath allowlist.
 // Without that, the editor's pre-login fetch (e.g. on the share
-// preview surface) gets 401'd. Regression guard for the exact issue
-// Codex flagged in the round-1 review of TASK-878.
+// preview surface) gets 401'd. Regression guard for the exact issue (TASK-878).
 func TestServerCapabilities_PublicAfterBootstrap(t *testing.T) {
 	srv := testServer(t)
 	// Bootstrap an admin so the RequireAuth gate is active for
@@ -406,8 +405,8 @@ func TestThumbnails_PersistRefusedWhenParentDeleted(t *testing.T) {
 	if n != 0 {
 		t.Fatalf("race minted %d live variant row(s) under a tombstoned parent", n)
 	}
-	// And the refused thumbnail's just-Put blob was cleaned up (codex
-	// round 1: without this assertion the cleanup branch was untested).
+	// And the refused thumbnail's just-Put blob was cleaned up (without this
+	// assertion the cleanup branch was untested).
 	// The thumb bytes are a deterministic function of the 8x8 RGBA +
 	// encoder, so recompute the storage key the same way persistThumbnail
 	// did and Stat it.

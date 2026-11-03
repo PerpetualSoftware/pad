@@ -7,7 +7,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// BUG-3447 (lead): during a real onboarding the agent creates COLLECTIONS
+// BUG-3447: during a real onboarding the agent creates COLLECTIONS
 // minutes before its first item, so the launchpad's "Agent connected" step
 // must tick on a collection an agent created. A collection now records its
 // source the way an item does (from the request's auth shape, never the body),

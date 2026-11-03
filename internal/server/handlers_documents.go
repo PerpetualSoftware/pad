@@ -149,7 +149,7 @@ func (s *Server) handleUpdateDocument(w http.ResponseWriter, r *http.Request) {
 	// Only when the title actually CHANGES, though. Grandfathering existing
 	// over-limit titles is not a thing you get by validating at write time —
 	// it is a thing you get by not validating a write that is not a rename
-	// (codex round 10). A client PATCHing content with the full object, title
+	//. A client PATCHing content with the full object, title
 	// included, is the ordinary shape of an edit; validating the echoed-back
 	// value would make every document with a legacy title uneditable rather
 	// than merely un-renameable, which is the opposite of the promise this
@@ -185,7 +185,7 @@ func (s *Server) handleUpdateDocument(w http.ResponseWriter, r *http.Request) {
 		// title containing the words "UNIQUE constraint" came back as a 409
 		// title collision, telling the caller to pick a different name for a
 		// rename that was refused for size and would fail identically under
-		// any name (codex round 3 P2). Any sentinel this handler knows by
+		// any name. Any sentinel this handler knows by
 		// identity is tested before an error is classified by what its text
 		// happens to contain.
 		//
@@ -203,7 +203,7 @@ func (s *Server) handleUpdateDocument(w http.ResponseWriter, r *http.Request) {
 		// The store re-checks the title under the rename lock, which is the
 		// authoritative point; this arm surfaces that check for the case the
 		// handler's pre-lock comparison could not see — a concurrent rename
-		// turning an echoed legacy title into a real one (codex round 11).
+		// turning an echoed legacy title into a real one.
 		var badTitle *store.InvalidDocumentTitleError
 		if errors.As(err, &badTitle) {
 			writeError(w, http.StatusBadRequest, "bad_request", badTitle.Reason)
@@ -215,7 +215,7 @@ func (s *Server) handleUpdateDocument(w http.ResponseWriter, r *http.Request) {
 			// two figures are meant to reach the caller — the refusal has to
 			// be actionable — but the internal call path wrapped around them
 			// is not, and appending the error text published whatever any
-			// layer had prefixed (codex round 5).
+			// layer had prefixed.
 			writeError(w, http.StatusRequestEntityTooLarge, "rename_cascade_too_large",
 				fmt.Sprintf("This rename would rewrite more linked content than the server will process in one "+
 					"operation: at least %d bytes, and the limit is %d. Reduce the number of documents linking "+
@@ -227,7 +227,7 @@ func (s *Server) handleUpdateDocument(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Lock contention is RETRYABLE and must not look like a bug
-		// (BUG-2778, codex round 6). A rename serializes per workspace with a
+		// (BUG-2778). A rename serializes per workspace with a
 		// 5s lock timeout, so a burst produces SQLSTATE 55P03
 		// (lock_not_available); 40P01 is a deadlock Postgres chose to abort.
 		// Both mean "try again", and a generic 500 tells the caller the
@@ -238,7 +238,7 @@ func (s *Server) handleUpdateDocument(w http.ResponseWriter, r *http.Request) {
 		// document kept being edited underneath it. Retrying can succeed, so a
 		// 500 would be actively misleading — it says the request will never
 		// work. Distinguished by sentinel rather than message text, because
-		// this one is ours to name (codex round 2).
+		// this one is ours to name.
 		if isRetryableLockError(err) || errors.Is(err, store.ErrLinkCascadeContention) {
 			w.Header().Set("Retry-After", "1")
 			// Deliberately does NOT name the holder. The previous wording said
@@ -469,8 +469,7 @@ func (s *Server) logActivityWithMetaReturningID(workspaceID, documentID, action 
 	// item action is kind=item (comments and attachments touch from their own
 	// handlers). The one caller with no item, a workspace restore, still
 	// records the write but is never counted as an item: if it is an
-	// account's first write, that first write goes uncounted (r1, Codex and
-	// the hunter).
+	// account's first write, that first write goes uncounted.
 	if documentID == "" {
 		s.store.TouchUserWrite(r.Context(), currentUserID(r))
 	} else {

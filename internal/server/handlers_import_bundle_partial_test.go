@@ -167,7 +167,7 @@ func keepPathOwnerAddFailureRemoves(t *testing.T, driver store.DriverType) {
 // membership read failed (an ack-lost commit may have landed the owner row),
 // or a row exists with a non-owner role (which still permits reading). A read
 // of the row cannot tell reachable from not, so the message must claim only
-// existence and unconfirmed ownership (codex round 2 on #1386).
+// existence and unconfirmed ownership.
 
 func TestImportBundle_KeepPath_UnreadableMembershipSaysUnconfirmed(t *testing.T) {
 	keepPathHelperKeepArm(t, "unread", func(string, string) (*models.WorkspaceMember, error) {

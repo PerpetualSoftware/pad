@@ -208,7 +208,7 @@ func TestHandleUpdateConnectedAppFlags_EmptyAllowListBlocked(t *testing.T) {
 }
 
 // TestHandleUpdateConnectedAppFlags_WildcardToSpecific_AfterPrestage is
-// the regression guard for Codex review #585 round 1: a wildcard
+// the regression guard for a wildcard
 // connection must be able to flip to "specific workspaces" after
 // the user has pre-staged at least one workspace via the add-
 // workspace endpoint. The pre-fix code path called
@@ -255,7 +255,7 @@ func TestHandleUpdateConnectedAppFlags_WildcardToSpecific_AfterPrestage(t *testi
 }
 
 // TestHandleAddConnectedAppWorkspace_VisibleUnderWildcard is the
-// regression guard for Codex review #585 round 2: pre-staging a
+// regression guard: pre-staging a
 // workspace while wildcard is on must surface that workspace in
 // the response DTO's allowed_workspaces array, so the UI can render
 // the chip + offer a remove button. Pre-fix the DTO suppressed

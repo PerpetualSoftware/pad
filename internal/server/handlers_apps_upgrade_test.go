@@ -147,7 +147,7 @@ func TestAppUpgrade_ChangedArtifactIsANewDraft(t *testing.T) {
 	installedDigests := digestsOf()
 
 	// Every raw digest unchanged (a version bump only): no draft, and no
-	// installed digest moves (lead ruling, day 86: changed = raw differs).
+	// installed digest moves (changed = raw differs).
 	u.m["version"] = "1.0.1"
 	u.publish(t, u.m)
 	code, p, body := u.previewUpgrade(t)
@@ -313,7 +313,7 @@ func (u *upgradeEnv) addTicketField(f map[string]any) {
 	sch["fields"] = append(sch["fields"].([]any), f)
 }
 
-// codex r1 #1: an owner renamed a companion; the upgrade cannot map it by
+// An owner renamed a companion; the upgrade cannot map it by
 // slug, so it refuses rather than leaving it the app's.
 func TestAppUpgrade_RenamedCompanionRefuses(t *testing.T) {
 	u := newUpgradeEnv(t)
@@ -329,7 +329,7 @@ func TestAppUpgrade_RenamedCompanionRefuses(t *testing.T) {
 	}
 }
 
-// codex r1 #2: a restrictive upgrade bumps the epoch (admitted writes and
+// A restrictive upgrade bumps the epoch (admitted writes and
 // earlier tokens die); a neutral one does not.
 func TestAppUpgrade_RestrictiveUpgradeBumpsTheEpoch(t *testing.T) {
 	u := newUpgradeEnv(t)
@@ -355,7 +355,7 @@ func TestAppUpgrade_RestrictiveUpgradeBumpsTheEpoch(t *testing.T) {
 	}
 }
 
-// codex r1 #3: items already hold values under the key a field would declare.
+// Items already hold values under the key a field would declare.
 func TestAppUpgrade_AdditiveFieldOverExistingDataRefuses(t *testing.T) {
 	u := newUpgradeEnv(t)
 	c, _ := u.srv.store.GetCollectionBySlug(u.wsID, "portal-tickets")
@@ -370,7 +370,7 @@ func TestAppUpgrade_AdditiveFieldOverExistingDataRefuses(t *testing.T) {
 	}
 }
 
-// codex r1 #4: board_group_by names the new select, so adding it would move
+// Board_group_by names the new select, so adding it would move
 // the done field and reclassify every existing item.
 func TestAppUpgrade_AdditiveFieldThatMovesTheDoneFieldRefuses(t *testing.T) {
 	u := newUpgradeEnv(t)
@@ -386,7 +386,7 @@ func TestAppUpgrade_AdditiveFieldThatMovesTheDoneFieldRefuses(t *testing.T) {
 	}
 }
 
-// codex r2: an ARCHIVED item's value counts too, since a restore would bring
+// An ARCHIVED item's value counts too, since a restore would bring
 // it back unchecked under the new field.
 func TestAppUpgrade_AdditiveFieldOverArchivedDataRefuses(t *testing.T) {
 	u := newUpgradeEnv(t)

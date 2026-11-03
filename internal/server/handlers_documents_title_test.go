@@ -54,7 +54,7 @@ func TestDocumentTitleValidation_IsWiredOnBothWriteDoors(t *testing.T) {
 
 		// Controls. Without these a handler that rejected every title — or
 		// one that rejected any title containing punctuation — passes the
-		// legs above. (`Alpha|Beta` was a control here until codex round 9:
+		// legs above. (`Alpha|Beta` was once a control here:
 		// it renders correctly but its links can be stored in a form the
 		// cascade cannot find, so it moved to the refused side. The remaining
 		// controls carry the load.)
@@ -140,7 +140,7 @@ func TestRenameCascadeTooLarge_IsPermanentShapedNotRetryable(t *testing.T) {
 
 	// The actual CAP, not the word "maximum" — a message reading "maximum
 	// exceeded" would satisfy a word check and tell the caller nothing about
-	// how far over they are (codex round 4).
+	// how far over they are.
 	if !strings.Contains(respBody, fmt.Sprint(store.MaxRenameCascadeRetainedBytes)) {
 		t.Errorf("response does not state the limit %d: %s", store.MaxRenameCascadeRetainedBytes, respBody)
 	}
@@ -150,7 +150,7 @@ func TestRenameCascadeTooLarge_IsPermanentShapedNotRetryable(t *testing.T) {
 
 	// And NOT the store's internal wrapping. The handler composes this message
 	// from typed fields; splicing err.Error() published whatever prefix any
-	// layer had added on the way up (codex round 5). These two strings are the
+	// layer had added on the way up. These two strings are the
 	// wrapping that was reaching clients before.
 	for _, leak := range []string{"update links:", "store:"} {
 		if strings.Contains(respBody, leak) {
@@ -160,8 +160,8 @@ func TestRenameCascadeTooLarge_IsPermanentShapedNotRetryable(t *testing.T) {
 	}
 }
 
-// TestRenameCascadeTooLarge_IsNotMisreportedAsATitleCollision pins codex round
-// 3's P2 at the handler.
+// TestRenameCascadeTooLarge_IsNotMisreportedAsATitleCollision pins the
+// handler's behaviour.
 //
 // The UNIQUE-constraint arm identifies its error by SUBSTRING, and the refusal
 // error carries the caller's own title verbatim. So a document renamed to a
@@ -204,12 +204,12 @@ func TestRenameCascadeTooLarge_IsNotMisreportedAsATitleCollision(t *testing.T) {
 	}
 }
 
-// TestLegacyTitleDocumentStaysEditable pins codex round 10, and it is a
+// TestLegacyTitleDocumentStaysEditable pins a
 // regression this fix introduced rather than one it inherited.
 //
 // "Enforced at write time, existing titles valid until their next rename" was
-// the promise — Dave's ruling, repeated in the constant's doc comment and in
-// two commit messages. Validating every supplied title broke it for the most
+// the promise, repeated in the constant's doc comment. Validating every
+// supplied title broke it for the most
 // ordinary shape of an edit there is: a client that PATCHes the whole object,
 // title included, to change the CONTENT. Documents with a legacy title became
 // uneditable, not merely un-renameable.

@@ -32,7 +32,7 @@ import (
 // cannot work here and would hang a CORRECT implementation. The sorted
 // acquisition means both transactions request the SAME key first: transaction
 // 1 takes it and waits at the barrier, transaction 2 blocks on the lock and
-// never arrives (PLAN-2373, Phase D round 1).
+// never arrives (PLAN-2373, Phase D).
 //
 // So the rendezvous is external and BELOW the code under test:
 // advisoryLockGate holds the very workspace advisory keys the copy protocol
@@ -59,7 +59,7 @@ import (
 // evidence rather than proof — what changed is that a passing run no longer
 // depends on the scheduler having happened to interleave them.
 //
-// --- MUTATION HARNESS (re-runnable; TASK-2372 round-5 amendment) ------------
+// --- MUTATION HARNESS (re-runnable; TASK-2372 amendment) ------------
 //
 // Each mutation below was applied to the production code, observed to fail,
 // and reverted (2026-07-31, TASK-2372, against this commit's production
@@ -128,7 +128,7 @@ import (
 // MUTATION D — absorb the deadlock instead of surfacing it.
 //
 //	Not a lock-ordering mutation: the vacuity a retry wrapper would introduce
-//	(Codex round 6). Apply mutation B, and additionally, in
+// Apply mutation B, and additionally, in
 //	CopyItemAcrossWorkspaces, wrap the call:
 //
 //		result, err := s.copyItemAcrossWorkspacesTx(req, sourceWorkspaceID)
@@ -284,8 +284,8 @@ func (g *advisoryLockGate) release() {
 // The error channel alone cannot prove no deadlock HAPPENED — only that none
 // SURFACED. A future retry-on-40P01 wrapper around CopyItemAcrossWorkspaces
 // would absorb the abort, complete serially, and leave both deadlock tests
-// green while the cycle they exist to forbid formed on every round (Codex
-// round 6). Postgres counts the aborts itself, below the layer any retry could
+// green while the cycle they exist to forbid formed on every round.
+// Postgres counts the aborts itself, below the layer any retry could
 // hide, so the tests assert on the counter as well as on the returned errors.
 //
 // Read before and after; assert the delta is zero. The counter is cumulative
@@ -314,7 +314,7 @@ func deadlocksDetected(t *testing.T, s *Store) int64 {
 // — and otherwise waits out the flush window before agreeing that zero is
 // zero. Without the wait the assertion would be a coin flip on a fast machine:
 // the copies' backends stay pooled and idle after wg.Wait(), so their pending
-// counts can sit unflushed for up to about a second (Codex round 7).
+// counts can sit unflushed for up to about a second.
 func deadlocksSettled(t *testing.T, s *Store, before int64) int64 {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
@@ -387,7 +387,7 @@ func TestCopyItemAcrossWorkspaces_OpposingDirectionsDoNotDeadlock(t *testing.T) 
 
 	// A readiness failure does not Fatal inside the loop: the accumulated
 	// copy errors are the more informative signal and would otherwise be
-	// thrown away unread (Codex round 6). Break, report those first, then the
+	// thrown away unread. Break, report those first, then the
 	// readiness failure.
 	var readyFailure error
 	for i := 0; i < rounds; i++ {

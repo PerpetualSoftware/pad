@@ -156,7 +156,7 @@ func TestResolveItemCollectionSlug_ExactMatchAlwaysWins(t *testing.T) {
 	}
 }
 
-// BUG-2630 #2 (Codex round 1). The legacy semantic aliases the client-side map
+// BUG-2630 #2. The legacy semantic aliases the client-side map
 // used to apply (t/i/p/d, phase/phases -> plans) are now resolved SERVER-side,
 // so dropping client normalization — including on the remote MCP transport,
 // which cannot retry — loses nothing. `t` must reach `tasks`.
@@ -297,7 +297,7 @@ func TestCollectionSlugCandidates(t *testing.T) {
 	}
 }
 
-// Codex round 1. Bulk move resolved the target for the actual move but kept
+// Bulk move resolved the target for the actual move but kept
 // the caller's raw slug for the comparison that decides whether this IS a
 // move, for the activity metadata, and for the SSE scope the arrival event is
 // addressed to. Reachable only because the resolver made `spec` succeed at
@@ -367,7 +367,7 @@ func TestResolveItemCollectionSlug_ItemsIndexAcceptsTheSingular(t *testing.T) {
 	}
 }
 
-// Codex round 2. The cross-workspace copy's `target_collection` is user-typed
+// The cross-workspace copy's `target_collection` is user-typed
 // and was wired to the resolver, but nothing exercised it — every existing
 // copy test passes an exact slug, so reverting that call site would have gone
 // unnoticed. Drives BOTH halves (preflight and the mutating copy), because
@@ -418,7 +418,7 @@ func TestResolveItemCollectionSlug_CrossWorkspaceCopyAcceptsTheSingular(t *testi
 	}
 }
 
-// Codex round 3 P1. A case-only difference must resolve to the collection it
+// A case-only difference must resolve to the collection it
 // case-insensitively names, not to that name's plural. In a workspace holding
 // both `spec` and `specs`, `Spec` is `spec` — trying pluralization first would
 // misfile the write into `specs`, which is the same failure the
@@ -443,7 +443,7 @@ func TestResolveItemCollectionSlug_CaseFoldBeatsPluralization(t *testing.T) {
 	}
 }
 
-// Codex round 4 P1 — a VISIBILITY REGRESSION this branch introduced and then
+// A VISIBILITY REGRESSION this branch introduced and then
 // reverted, pinned so it cannot come back.
 //
 // The collection-item list was briefly "pinned" by setting
@@ -499,7 +499,7 @@ func TestCollectionItemList_ItemGrantOnly_DoesNotLeakSiblings(t *testing.T) {
 	}
 }
 
-// Codex round 4 P2 — the bulk endpoint must answer "collection does not exist"
+// The bulk endpoint must answer "collection does not exist"
 // and "collection exists but you cannot see it" the SAME way. Answering them
 // with different HTTP statuses turns the endpoint into an existence oracle: a
 // restricted caller probes slugs and learns which collections they are not
@@ -527,8 +527,7 @@ func TestBulkMove_HiddenAndUnknownTargetsAreIndistinguishable(t *testing.T) {
 	}
 	// Status alone is not the whole channel: an implementation that returned
 	// both inside a 200 envelope but with different error codes or messages
-	// would still be an oracle. Compare the per-item failure shape too
-	// (codex round 5).
+	// would still be an oracle. Compare the per-item failure shape too.
 	if normalizeBulkFailures(t, hidden.Body.String()) != normalizeBulkFailures(t, unknown.Body.String()) {
 		t.Errorf("hidden and unknown targets produced different failure envelopes:\n"+
 			"hidden: %s\nunknown: %s", hidden.Body.String(), unknown.Body.String())
@@ -552,7 +551,7 @@ func normalizeBulkFailures(t *testing.T, body string) string {
 	// Field names mirror bulkItemFailure exactly. An invented name here would
 	// silently decode to the empty string and make every failure normalize
 	// identically — the message half of this comparison was dead for exactly
-	// that reason until codex round 6 caught it.
+	// that reason until it was caught.
 	var resp struct {
 		Failed []struct {
 			Code  string `json:"code"`
@@ -573,7 +572,7 @@ func normalizeBulkFailures(t *testing.T, body string) string {
 	return strings.Join(parts, ";")
 }
 
-// Codex round 7. An ARCHIVED collection still claims its name. Without a guard
+// An ARCHIVED collection still claims its name. Without a guard
 // the exact lookup skips the soft-deleted row and the alias fallback picks up
 // a DIFFERENT collection — so archiving `spec` would quietly start routing
 // `spec` writes into `specs`. That is the same silent misroute this branch
@@ -612,7 +611,7 @@ func TestResolveItemCollectionSlug_ArchivedCollectionBlocksTheAlias(t *testing.T
 	}
 }
 
-// Codex round 8. The archived-claim guard has to run for every candidate, not
+// The archived-claim guard has to run for every candidate, not
 // only the raw input: with an archived `spec` and a live `specs`, the input
 // `Spec` misses on the exact form, and its case-folded candidate `spec` finds
 // no LIVE row — so a guard on the input alone lets the archived name be

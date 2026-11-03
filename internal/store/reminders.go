@@ -21,8 +21,8 @@ import (
 // ONE STRING, because the drift between those two is a defect class this unit
 // hit three times: the scan filtered something the arbiter did not revalidate,
 // so a change committed between them fired a reminder that no longer
-// qualified. Round 3 was a re-armed instant, round 7 a workspace deleted
-// mid-pass, and the round-1 soft-deleted item was the same shape caught from
+// qualified. One was a re-armed instant, another a workspace deleted
+// mid-pass, and a soft-deleted item was the same shape caught from
 // the other side. Each was fixed as an instance; this is the shape.
 //
 // Written as a correlated EXISTS on item_reminders.item_id — rather than as a
@@ -35,7 +35,7 @@ import (
 // identically at both sites; folding them in would need a parameter order this
 // shared form cannot fix.
 //
-// THE ROW'S OWN workspace_id MUST AGREE WITH ITS ITEM'S (codex round 13).
+// THE ROW'S OWN workspace_id MUST AGREE WITH ITS ITEM'S.
 // CreateReminder writes the pair from the item, and import writes it from
 // its own in-workspace mapping, so no door produces a disagreement today, and
 // since IDEA-2883 the TABLE forbids one: the foreign key is composite,
@@ -68,7 +68,7 @@ const reminderColumns = `id, workspace_id, item_id, remind_at, fired_at, acked_a
 // row's workspace is its item's workspace" — for the reads that do not care
 // about liveness (a fired reminder on an archived item is still history worth
 // showing) but must still refuse a row whose two columns disagree. Referenced
-// by GetReminder and ListRemindersForItem (codex round 14); the write paths
+// by GetReminder and ListRemindersForItem; the write paths
 // reach a row only through GetReminder, so scoping it scopes them. A row no
 // door can write needs no door to delete it.
 const reminderOwned = `EXISTS (
@@ -143,7 +143,7 @@ var ErrReminderItemGone = errors.New("reminder item is not live in this workspac
 // CreateReminder arms a reminder on an item.
 //
 // THE ITEM MUST BE A LIVE ITEM OF THIS WORKSPACE, and that is asserted by the
-// INSERT itself rather than by a read before it (codex round 12). The table
+// INSERT itself rather than by a read before it. The table
 // has a foreign key to items but no same-workspace constraint, so a plain
 // INSERT accepts a (workspace, item) pair that names another workspace's item
 // — and every reader then scopes by r.workspace_id and joins the item, which
@@ -209,7 +209,7 @@ func (s *Store) GetReminder(workspaceID, id string) (*models.Reminder, error) {
 // soonest first. History is included because a fired reminder is the record
 // that a reminder existed and went out.
 //
-// Takes the workspace as well as the item (codex round 14): the caller has
+// Takes the workspace as well as the item: the caller has
 // already resolved the item inside the workspace, so the argument costs
 // nothing, and it lets the query refuse a row stamped with a different
 // workspace than the item it points at — the same identity every other read
@@ -281,7 +281,7 @@ func (s *Store) RearmReminder(workspaceID, id, remindAt string) (*models.Reminde
 // reactions from a caller — and the handler resolved the ambiguity from a row
 // it had read BEFORE the ack. A fire or re-arm landing between that read and
 // the UPDATE made it answer 409 for a reminder it had just acknowledged, or
-// 200 for one it had not (codex round 12). Folding the distinction into the
+// 200 for one it had not. Folding the distinction into the
 // statement removes the read the race needed.
 //
 // IDEMPOTENT by construction: COALESCE keeps the first acknowledgement's
@@ -394,7 +394,7 @@ func scopeClause(alias string, scope PendingReminderScope) (string, []any) {
 // capped: every pending reminder became a suggestion prepended to a
 // three-entry list, so a workspace with five hundred unacknowledged reminders
 // returned five hundred suggestions and grew without limit until somebody
-// acknowledged them (codex round 3). Oldest-fired first, so the window holds
+// acknowledged them. Oldest-fired first, so the window holds
 // the reminders that have been waiting longest rather than an arbitrary slice.
 //
 // The caller is told when the window was not the whole set — but as a BOOLEAN,
@@ -403,9 +403,9 @@ func scopeClause(alias string, scope PendingReminderScope) (string, []any) {
 // filter runs above, per item. "There are more than you can see here" is the
 // strongest claim the data supports, so it is the one made.
 // VISIBILITY IS SCOPED IN SQL, not filtered afterwards, and that is the
-// round-4 correction. The round-3 bound took the first N rows and let the
+// later correction. The earlier bound took the first N rows and let the
 // caller discard the ones it could not show — which recreated, in the READ
-// path, the exact starvation the round-1 fix removed from the FIRE path:
+// path, the exact starvation the earlier fix removed from the FIRE path:
 // fifty rows the caller must drop can hide a visible reminder behind them
 // forever, with no continuation to reach it. A bounded window is only safe
 // when the discarding happens BEFORE the bound.
@@ -520,7 +520,7 @@ func (s *Store) dueReminderCandidates(nowTS string, limit int) ([]string, error)
 		limit = defaultReminderFireLimit
 	}
 	// SOFT-DELETED ITEMS ARE EXCLUDED HERE, not merely skipped downstream
-	// (codex round 1). fireOneReminder rolls back when it finds the item gone,
+	// FireOneReminder rolls back when it finds the item gone,
 	// which leaves the reminder ARMED and therefore a candidate again on the
 	// next pass — so a batch bounded at `limit` and ordered oldest-first can be
 	// filled entirely by archived items, and no live reminder ever fires. The
@@ -528,7 +528,7 @@ func (s *Store) dueReminderCandidates(nowTS string, limit int) ([]string, error)
 	// idle. Filtering in the candidate query means those rows never occupy a
 	// slot, while the reminders themselves are kept, so restoring the item
 	// restores its reminder with it.
-	// THE WORKSPACE IS CHECKED TOO, not only the item (codex round 6).
+	// THE WORKSPACE IS CHECKED TOO, not only the item.
 	// Workspace soft-delete deliberately leaves items in place for the 30-day
 	// restore window, so a workspace-level filter on the ITEM finds nothing
 	// wrong — and the tick kept firing, emitting outbound webhook events for a
@@ -602,7 +602,7 @@ func (s *Store) dueReminderCandidates(nowTS string, limit int) ([]string, error)
 // this paragraph. Workspace liveness has no such second READ, which is why
 // dropping ITS half of the predicate does fail the pin.
 //
-// A READ IS NOT A HOLD (codex round 12, found independently by two runs on
+// A READ IS NOT A HOLD (found independently by two runs on
 // the same line). Everything above re-asserts liveness at the instant the
 // predicate is evaluated; nothing above keeps it true until the transaction
 // commits. On SQLite that gap does not exist — the DSN's _txlock=immediate
@@ -639,7 +639,7 @@ func (s *Store) dueReminderCandidates(nowTS string, limit int) ([]string, error)
 //
 // The UPDATE re-checks the FULL candidate condition — the fire mark, the
 // instant, and the shared reminderFireable predicate — so it arbitrates
-// against every actor the scan filtered for — and getting only the first was the round-3
+// against every actor the scan filtered for — and getting only the first was the earlier
 // defect. Against a concurrent TICK, `fired_at IS NULL` means both instances
 // see the same candidate and exactly one gets RowsAffected 1; the loser does
 // no work and emits nothing. Against a concurrent USER, `remind_at <= nowTS`
@@ -658,7 +658,7 @@ func (s *Store) FireDueReminders(nowTS string, limit int) ([]*models.Reminder, e
 		return nil, nil
 	}
 
-	// ONE FAILURE DOES NOT END THE PASS (codex round 1). The per-reminder
+	// ONE FAILURE DOES NOT END THE PASS. The per-reminder
 	// transaction above exists precisely so that one unfireable row cannot
 	// hold back the rest — and returning on the first error made that comment
 	// false, since candidates are ordered oldest-first and a persistently
@@ -713,7 +713,7 @@ func (s *Store) fireOneReminder(id, nowTS string) (*models.Reminder, error) {
 	managed := scheduleID.Valid
 
 	// PIN THE ITEM AND WORKSPACE ROWS FOR THE REST OF THE TRANSACTION on
-	// Postgres (codex round 12). The predicate below READS liveness, and a read
+	// Postgres. The predicate below READS liveness, and a read
 	// is not a hold: under READ COMMITTED the UPDATE locks only the reminder
 	// row, so DeleteItem / DeleteWorkspace can commit deleted_at between the
 	// predicate's evaluation and this transaction's commit, and the event goes
@@ -761,7 +761,7 @@ func (s *Store) fireOneReminder(id, nowTS string) (*models.Reminder, error) {
 		}
 	}
 
-	// THE INSTANT IS REVALIDATED HERE, not just the fire mark (codex round 3).
+	// THE INSTANT IS REVALIDATED HERE, not just the fire mark.
 	// A re-arm can move this reminder into the future between the candidate
 	// scan and this UPDATE — it clears fired_at, so a predicate that checked
 	// only `fired_at IS NULL` still matched, and the pass fired a reminder the
@@ -878,7 +878,7 @@ func (s *Store) emitReminderEventTx(tx *sql.Tx, r *models.Reminder, item *models
 // SECONDS ARE THE STORED RESOLUTION: the column is compared as a string
 // against a whole-second clock, and the tick runs on a 30s interval, so
 // sub-second precision is not a thing this system can honour. The question is
-// only which way to resolve it, and truncating was wrong (codex round 2):
+// only which way to resolve it, and truncating was wrong:
 // `09:00:00.900Z` truncated to `09:00:00Z` fires 900ms BEFORE the moment the
 // caller named, and it does so silently, having rewritten their value on the
 // way in.

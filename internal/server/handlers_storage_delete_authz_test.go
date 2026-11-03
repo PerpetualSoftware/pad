@@ -157,7 +157,7 @@ func TestDeleteAttachment_ViewGrantCannotDelete(t *testing.T) {
 }
 
 // TestDeleteAttachment_InvisibleItemIs404Not403 pins the ORDERING that
-// Codex round 2 on PLAN-2382 called out: visibility is checked BEFORE edit
+// PLAN-2382 requires: visibility is checked BEFORE edit
 // permission, so an attachment whose parent item the caller cannot see
 // returns 404 rather than 403. A 403 here would confirm the attachment
 // exists — the non-disclosure behavior the handler deliberately preserves.
@@ -174,8 +174,8 @@ func TestDeleteAttachment_InvisibleItemIs404Not403(t *testing.T) {
 	}
 }
 
-// TestDeleteAttachment_ForeignItemGrantCannotReachAcrossWorkspaces pins the
-// P1 Codex caught on this change.
+// TestDeleteAttachment_ForeignItemGrantCannotReachAcrossWorkspaces pins a
+// cross-workspace grant hole.
 //
 // attachments.item_id has no FK or same-workspace constraint, and the upload
 // handler stores the raw ?item_id verbatim, so a row in workspace A can point
@@ -247,7 +247,7 @@ func TestDeleteAttachment_OrphanStillRequiresEditorRole(t *testing.T) {
 	// A full-access VIEWER member, not a stranger. Without the membership the
 	// request is refused by guestResourceFilter's restricted-user 404 and the
 	// test would pass even with the orphan role gate deleted — it wouldn't pin
-	// the rule it names (Codex round 10). As a full-access viewer the only
+	// the rule it names. As a full-access viewer the only
 	// thing standing between this user and the orphan is requireMinRole.
 	if err := srv.store.AddWorkspaceMember(f.wsID, granted.ID, "viewer"); err != nil {
 		t.Fatalf("AddWorkspaceMember: %v", err)

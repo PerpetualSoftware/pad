@@ -422,7 +422,7 @@ func TestCSRF_AllMutationMethodsBlocked(t *testing.T) {
 }
 
 // TestCSRF_LegacyCookieFallback_NotAcceptedWhenSecure pins a deliberate
-// asymmetry surfaced in codex review of TASK-1932: SessionAuth falls back
+// asymmetry (TASK-1932): SessionAuth falls back
 // from the __Host--prefixed session cookie to the legacy unprefixed name
 // (upgrade-path convenience — the token VALUE is still an unguessable
 // secret either way), but the CSRF cookie lookup has NO such fallback. A
@@ -472,8 +472,8 @@ func TestCSRF_LegacyCookieFallback_NotAcceptedWhenSecure(t *testing.T) {
 	}
 }
 
-// TestCSRF_AdminSessionRegister_RequiresCSRF covers the P1 codex found in
-// round 2 of TASK-1932: handleRegister has an admin-session branch (an
+// TestCSRF_AdminSessionRegister_RequiresCSRF covers a gap found in
+// TASK-1932: handleRegister has an admin-session branch (an
 // already-logged-in admin can create a verified account with no invitation
 // code), but /api/v1/auth/register was unconditionally CSRF-exempt by
 // path — a cross-site POST could ride the admin's cookie into that branch
@@ -501,7 +501,7 @@ func TestCSRF_AdminSessionRegister_RequiresCSRF(t *testing.T) {
 
 // TestCSRF_AdminSessionRegister_ValidCSRFStillSucceeds is the companion to
 // the test above: an admin session WITH a valid double-submit pair must
-// still be able to create accounts — the P1 fix only closes the missing-
+// still be able to create accounts — the fix only closes the missing-
 // token gap, it doesn't break the legitimate admin-created-account flow.
 func TestCSRF_AdminSessionRegister_ValidCSRFStillSucceeds(t *testing.T) {
 	srv := testServer(t)
@@ -524,7 +524,7 @@ func TestCSRF_AdminSessionRegister_ValidCSRFStillSucceeds(t *testing.T) {
 	}
 }
 
-// TestCSRF_AnonymousRegister_StillExempt confirms the P1 fix didn't
+// TestCSRF_AnonymousRegister_StillExempt confirms the fix didn't
 // collateral-damage the genuinely anonymous case: a request carrying no
 // session at all must still reach handleRegister rather than being
 // rejected by CSRF, even once users already exist (so the separate
@@ -552,8 +552,8 @@ func TestCSRF_AnonymousRegister_StillExempt(t *testing.T) {
 	}
 }
 
-// TestCSRF_SessionCookiePlusGarbageBearer_RequiresCSRF covers the codex
-// round-3 finding: the old Bearer exemption fired on header PRESENCE, not
+// TestCSRF_SessionCookiePlusGarbageBearer_RequiresCSRF covers the case where the old Bearer
+// exemption fired on header PRESENCE, not
 // validation. TokenAuth's rejectInvalidBearer deliberately falls through
 // (rather than 401ing) on /api/v1/auth/* paths so a stale CLI token can
 // still recover — but that fallthrough let a cross-site request carrying a
@@ -610,7 +610,7 @@ func TestCSRF_GarbageBearerNoCookie_StaysCLIRecoveryPath(t *testing.T) {
 }
 
 // TestCSRF_ValidBearerPlusSessionCookie_ExemptRegardless proves the third
-// required semantic from codex round 3: a request carrying a Bearer
+// required semantic: a request carrying a Bearer
 // credential TokenAuth actually validated (here, a CLI session-bearer
 // token) must stay CSRF-exempt even when a session cookie is ALSO
 // present — the fix must not newly break legitimate token clients that
@@ -638,7 +638,7 @@ func TestCSRF_ValidBearerPlusSessionCookie_ExemptRegardless(t *testing.T) {
 }
 
 // TestCSRF_LoginAndBootstrap_ExemptEvenWithAmbientSessionCookie pins the
-// exact regression codex round 4's CI (E2E) run caught: round 2's fix
+// exact regression the CI (E2E) run caught: an earlier fix
 // gated the WHOLE authCSRFExemptPaths list (not just register) on
 // currentUser(r) == nil, so a /login POST carrying a lingering session
 // cookie — e.g. the E2E harness bootstrapping the admin (which mints a
@@ -648,7 +648,7 @@ func TestCSRF_ValidBearerPlusSessionCookie_ExemptRegardless(t *testing.T) {
 // currentUser(r) == nil gate; login/bootstrap have none, so an ambient
 // cookie must never cost them their exemption. This is unit-level
 // coverage for the exact case the E2E suite hit, since static review
-// alone missed the blast radius of round 2's fix.
+// alone missed the blast radius of that fix.
 func TestCSRF_LoginAndBootstrap_ExemptEvenWithAmbientSessionCookie(t *testing.T) {
 	srv := testServer(t)
 

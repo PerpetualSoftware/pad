@@ -223,7 +223,7 @@ func TestUpdateCollectionExpectedUpdatedAtConflict(t *testing.T) {
 	}
 }
 
-// TestUpdateCollectionAppliesMigrationsAtomically (BUG-2265 Codex P1): the
+// TestUpdateCollectionAppliesMigrationsAtomically (BUG-2265): the
 // schema change and its field-value migration commit together in ONE tx — the
 // item's renamed option value lands with the schema, and the concurrency token
 // advances once. (Failure-rollback is covered structurally: the migration runs
@@ -284,8 +284,8 @@ func TestUpdateCollectionAppliesMigrationsAtomically(t *testing.T) {
 	}
 }
 
-// TestUpdateCollectionMigrationNoDeadlockWithItemCreate is the BUG-2265 Codex
-// round-4 lock-ordering regression guard. UpdateCollection's migration path and
+// TestUpdateCollectionMigrationNoDeadlockWithItemCreate is the BUG-2265
+// lock-ordering regression guard. UpdateCollection's migration path and
 // item creation both lock the workspace advisory/seq lock AND a collection row;
 // they MUST take them in the same order (workspace lock first, then the
 // collection row) or a concurrent item-create + schema-migration ABBA-deadlocks.
@@ -349,7 +349,7 @@ func TestUpdateCollectionMigrationNoDeadlockWithItemCreate(t *testing.T) {
 }
 
 // TestUpdateCollectionTokenAdvancesPreventsSameSecondClobber is the BUG-2265
-// same-second regression guard (Codex P1): two guarded writes reusing the SAME
+// same-second regression guard: two guarded writes reusing the SAME
 // token must not both succeed even when they land in the same wall-clock second
 // (now() is one-second precision). The first accepted write advances updated_at
 // strictly past the token, so replaying the stale token conflicts — DETERMINISTIC
@@ -409,8 +409,8 @@ func TestUpdateCollectionTokenAdvancesPreventsSameSecondClobber(t *testing.T) {
 	}
 }
 
-// TestUpdateCollectionTokenlessWriteStillAdvancesToken is the BUG-2265 Codex
-// round-2 guard: a TOKENLESS update must also advance updated_at strictly past
+// TestUpdateCollectionTokenlessWriteStillAdvancesToken is the BUG-2265
+// guard: a TOKENLESS update must also advance updated_at strictly past
 // the row's current value, so it can't regress the concurrency token in the
 // same wall-clock second and let a stale guarded token clobber newer data.
 func TestUpdateCollectionTokenlessWriteStillAdvancesToken(t *testing.T) {
@@ -714,7 +714,7 @@ func TestSeedWithEmptyTemplateNameSkipsOnboard(t *testing.T) {
 }
 
 // TestBlankWorkspaceSurvivesSeedDefaultCollections is the regression guard
-// for codex round-2: the server runs SeedDefaultCollections against every
+// for The server runs SeedDefaultCollections against every
 // workspace at startup as an auto-upgrade rescue. Before the fix, that hook
 // unconditionally re-materialized the standard Software-template collections
 // (tasks/ideas/plans/docs) into any workspace missing them — including

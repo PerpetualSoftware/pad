@@ -130,8 +130,8 @@ func (rl *ipRateLimiter) Stop() {
 // allow charges one token from key's bucket and reports whether the
 // request may proceed. The lookup and the charge happen under one lock
 // hold: a caller that took the pointer and charged it later could spend a
-// bucket the sweep had already evicted and replaced (BUG-3308, codex
-// round 1), getting both the old bucket's tokens and the new one's burst.
+// bucket the sweep had already evicted and replaced (BUG-3308), getting both the
+// old bucket's tokens and the new one's burst.
 // Every production charge goes through here.
 func (rl *ipRateLimiter) allow(key string) bool {
 	rl.mu.Lock()
@@ -204,7 +204,7 @@ func (rl *ipRateLimiter) evictLocked(now time.Time) {
 	// level is that fraction of burst in evictLevels steps. Levels rather
 	// than a sort keep the sweep linear, and a fixed count keeps the
 	// histogram's size off the config: two buckets share a level only
-	// when they differ by under burst/evictLevels tokens (codex round 1:
+	// when they differ by under burst/evictLevels tokens (
 	// whole-token levels put a drained bucket beside ones at 0.99).
 	type candidate struct {
 		key   string
@@ -840,7 +840,7 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 		// their page loads and the reverse. Only an actual upgrade request
 		// counts as a dial; anything else under the prefix (a plain GET, a
 		// POST, a future REST route) is an ordinary API request and pays the
-		// API bucket (codex round 1).
+		// API bucket.
 		if strings.HasPrefix(path, "/api/v1/collab/") && websocket.IsWebSocketUpgrade(r) {
 			key := rateLimitKey(r, addr)
 			if !s.rateLimiters.CollabDial.allow(key) {

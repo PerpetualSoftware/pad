@@ -13,12 +13,12 @@ import (
 
 // TestArtifactImport_DropsFieldKeysTheKindDoesNotDeclare pins the assumption
 // that makes the artifact door's relation-visibility question MOOT
-// (PLAN-2857 U6, codex round 6 P1).
+// (PLAN-2857).
 //
-// Round 6 raised a real-sounding P1: handleImportArtifact uses the
+// A real-sounding concern: handleImportArtifact uses the
 // `relationsCarry` posture, so a carried relation title would be judged by the
 // IMPORTER's visibility and two people importing one artifact would store
-// different bytes. The lead ruled that import KEEPS visibility — an import has
+// different bytes. Import KEEPS visibility — an import has
 // no prior truth, and exempting it would let a crafted title resolve to a UUID
 // the importer cannot see but can then read straight back off their own item.
 //
@@ -27,7 +27,7 @@ import (
 // else is dropped at DECODE, before any relation code runs — which is what this
 // test pins, with `owner_ref` as the undeclared key.
 //
-// CORRECTION (BUG-3082, day 67). This comment used to end "so no relation value
+// CORRECTION (BUG-3082). This comment used to end "so no relation value
 // can ride in an artifact, whatever the destination collection's schema has been
 // reshaped to", and that second half is FALSE. The allow-list filters KEYS, not
 // types: a key the kind DOES declare — `role` for a convention, `scope` for a

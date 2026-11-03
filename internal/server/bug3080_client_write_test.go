@@ -262,7 +262,7 @@ func TestBUG3080_AStampOnANonContentWriteNeitherOrdersNorMarks(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	item := createTaskWithFields(t, srv, slug, "Item", `{"status":"open"}`)
-	// A field-only PATCH carrying a high stamp (codex round 1). A field, not a
+	// A field-only PATCH carrying a high stamp. A field, not a
 	// title: a rename moves the slug this test addresses the item by.
 	code, out := patchContent(t, srv, slug, item.Slug, "", map[string]interface{}{
 		"fields_patch": map[string]interface{}{"status": "done"}, "client_write": map[string]interface{}{"tab": "tab-a", "n": 50},

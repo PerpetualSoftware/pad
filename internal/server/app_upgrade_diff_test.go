@@ -210,7 +210,7 @@ func TestUpgradeDiff_AbsentConfigSchemaIsNotAChange(t *testing.T) {
 	}
 }
 
-// codex r1 #5: a name declared twice is the union of its declarations, so a
+// A name declared twice is the union of its declarations, so a
 // widening cannot hide behind a duplicate.
 func TestUpgradeDiff_DuplicateEventNamesAreUnioned(t *testing.T) {
 	old := diffBase()

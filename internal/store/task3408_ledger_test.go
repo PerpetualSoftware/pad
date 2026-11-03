@@ -75,7 +75,7 @@ func TestTask3408_DeliveryLedger(t *testing.T) {
 	}
 }
 
-// codex r4 on U10c: the drop decision runs admission's checks under the
+// The drop decision runs admission's checks under the
 // install lock, so a delivery no longer owed (here: the install disabled
 // since) is recorded refused, not dropped and counted.
 func TestTask3408_DropOfAnUnowedDeliveryIsARefusal(t *testing.T) {
@@ -104,7 +104,7 @@ func TestTask3408_DropOfAnUnowedDeliveryIsARefusal(t *testing.T) {
 	}
 }
 
-// codex r5 on U10c: a request admitted before another drainer dropped the
+// A request admitted before another drainer dropped the
 // event did reach the app; "delivered" replaces "dropped" and the drop is
 // taken back off the count. Any other terminal row still stands.
 func TestTask3408_DeliveredOverridesADrop(t *testing.T) {
@@ -167,7 +167,7 @@ func TestTask3408_DeliveredOverridesADrop(t *testing.T) {
 	}
 }
 
-// codex r6 on U10c: a drop and a late delivery racing on a row that does
+// A drop and a late delivery racing on a row that does
 // not exist yet. Whatever the interleaving, dropped_count equals the number
 // of events whose final row is dropped (Postgres is where this bites; SQLite
 // serializes the writers).

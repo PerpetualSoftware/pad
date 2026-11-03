@@ -1052,8 +1052,7 @@ func TestItemCrossCollectionListing(t *testing.T) {
 	}
 }
 
-// TestCreateItemSourcePersistedFromAuth covers the fix for the bug Codex
-// caught while reviewing TASK-862's PR: items created via the CLI were
+// TestCreateItemSourcePersistedFromAuth covers the fix for TASK-862: items created via the CLI were
 // persisting with source='web' (the column default) instead of 'cli',
 // because the handler decoded ItemCreate from the body — which has no
 // Source set by the CLI client — and only consulted actorFromRequest
@@ -1898,7 +1897,7 @@ func TestListItemsChanges_EmptyWorkspace(t *testing.T) {
 // resolves through /items/{itemSlug}, while /items-index serves the new
 // index wrapper. This is the contract that drove the path choice: keeping
 // the endpoint outside the /items/{itemSlug} subtree means no item slug
-// can ever shadow it (or vice versa). See Codex round 1 [P2] on PR #486.
+// can ever shadow it (or vice versa).
 func TestListItemsIndex_DoesNotShadowItemSlug(t *testing.T) {
 	t.Parallel()
 	srv := testServer(t)
@@ -2010,7 +2009,7 @@ func TestCollectionCheckboxProgress(t *testing.T) {
 
 	// Archive `allDone` and confirm it drops out of the default response
 	// but reappears with ?include_archived=true. Mirrors the Archived
-	// toggle on the collection page (Codex round 2 [P2] on PR #491).
+	// toggle on the collection page.
 	rr = doRequest(srv, "DELETE", "/api/v1/workspaces/"+slug+"/items/"+allDone.Slug, nil)
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("archive allDone: expected 204, got %d", rr.Code)
@@ -2206,7 +2205,7 @@ func TestCollectionChildProgress(t *testing.T) {
 	}
 
 	// ── include_archived: done-semantics must use archived parents' child
-	// collections (childrenDoneFiltersForCollection gap, codex round 3) ──────
+	// collections (childrenDoneFiltersForCollection gap) ──────
 	//
 	// Create a custom "Widgets" collection whose done field is `state` with
 	// terminal value "shipped" — NOT the default `status` terminals. If

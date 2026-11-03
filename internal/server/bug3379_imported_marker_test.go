@@ -11,7 +11,7 @@ import (
 )
 
 // BUG-3379: workspace import keeps the export's comment authors, version
-// kinds and attachment uploaders verbatim (BUG-3372 ruling (1)), so the rows
+// kinds and attachment uploaders verbatim (BUG-3372), so the rows
 // it writes carry a marker the UI shows as "imported, author not verified".
 // Nothing stored before could tell them apart: user_id is NULL after an
 // account deletion too, and the export supplies the timestamps.

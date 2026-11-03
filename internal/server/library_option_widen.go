@@ -28,7 +28,7 @@ const libraryWidenAttempts = 3
 //
 // Bounded on purpose: a value outside collections.LibraryOptionVocabulary is
 // left for validation to refuse as before, so the options never become a
-// free-for-all. An editor may trigger it (lead ruling, BUG-3446): the words
+// free-for-all. An editor may trigger it (BUG-3446): the words
 // are ones every non-blank template already ships. What was added is returned
 // so the create can report it, in its write warnings and in its activity.
 // Not on the artifact import door (relationsCarry): an import clears a
@@ -38,12 +38,12 @@ const libraryWidenAttempts = 3
 //
 // The caller validates the create against withSelectOptions(schema, wanted)
 // BEFORE calling this, so a create the widened schema would still refuse
-// writes nothing (codex round 2). The schema write goes through
+// writes nothing. The schema write goes through
 // Store.UpdateCollection with the collection's own concurrency token, so it
 // takes the same locks as any schema edit. It is its own transaction, ahead
 // of the item insert, so a refusal after it (the plan cap at insert, a title
 // the store rejects, a race lost to a unique value, or another writer's
-// schema edit landing between the dry run and this write, codex round 3)
+// schema edit landing between the dry run and this write)
 // leaves the library word listed and recorded only in the log; it is a word
 // the library uses, and nothing else depends on it. The store re-validates the item under its
 // lock if the schema moved again in between (BUG-3407).

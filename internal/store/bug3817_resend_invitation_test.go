@@ -221,7 +221,7 @@ func TestBUG3817_AResendRacingADeletionMintsNothing(t *testing.T) {
 // bug3817AwaitLiveCheckWait returns once a backend is waiting on a lock while
 // running createInvitationTx's FOR SHARE liveness read, so a test proves the
 // resend reached that statement and blocked there, not that some other query
-// in the database is waiting (codex r1 Medium). It fails if done delivers
+// in the database is waiting. It fails if done delivers
 // first: the resend did not wait.
 func bug3817AwaitLiveCheckWait(t *testing.T, s *Store, done <-chan error) {
 	t.Helper()
@@ -252,7 +252,7 @@ func bug3817AwaitLiveCheckWait(t *testing.T, s *Store, done <-chan error) {
 // workspaces, then deletes the invitations they sent (DeleteAccountAtomic's
 // order, replayed here step by step so the resend can be caught between
 // them). A resend that took the invitation row before the workspace row
-// deadlocked with it (codex r1 High); now it waits holding no invitation
+// deadlocked with it; now it waits holding no invitation
 // row, the deletion finishes, and the resend refuses.
 //
 // Postgres only, as above.

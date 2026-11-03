@@ -11,7 +11,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
-// BUG-2136 (lead ruling, day 87): an existing user invited to a workspace is
+// BUG-2136: an existing user invited to a workspace is
 // asked, not added. Every invite creates a pending invitation the invitee can
 // accept or decline; a re-invite replaces the pending one; decline deletes it
 // and leaves an audit event.

@@ -114,7 +114,7 @@ func TestFiredReminderReachesTheSuggestionSurface(t *testing.T) {
 	}
 }
 
-// TestFiredReminderOnADoneItemIsFilteredNotAcked is the lead's pin, and the
+// TestFiredReminderOnADoneItemIsFilteredNotAcked is a pin, and the
 // two halves are the whole point: ABSENT from the surface, PRESENT in the
 // table. Acking on terminal status would couple every status write to reminder
 // state and would consume a reminder armed to fire after the work was done.
@@ -220,7 +220,7 @@ func TestTickIsQuietWhenNothingIsDue(t *testing.T) {
 	}
 }
 
-// TestPendingRemindersRespectItemGrants — codex round 1, P1.
+// TestPendingRemindersRespectItemGrants.
 //
 // Every other dashboard section reads `allItems`, which the store already
 // scoped to the caller's collections AND their granted item ids. The pending-
@@ -288,7 +288,7 @@ func TestPendingRemindersRespectItemGrants(t *testing.T) {
 	}
 }
 
-// TestFiredReminderSuggestionCarriesItsID — codex round 1, P2.
+// TestFiredReminderSuggestionCarriesItsID.
 //
 // The docs tell an agent to acknowledge what it sees in next/ready, and the
 // payload did not carry the handle: a stateless poller could read the reminder
@@ -326,12 +326,12 @@ func TestFiredReminderSuggestionCarriesItsID(t *testing.T) {
 	}
 }
 
-// TestReminderSuggestionsAreCapped — codex round 3, tightened in round 11.
+// TestReminderSuggestionsAreCapped pins the cap on reminder suggestions.
 //
 // suggested_next is a recommendation list of THREE and every consumer is
-// written against that. Round 3 capped the reminders at five and prepended
+// written against that. An earlier version capped the reminders at five and prepended
 // them past the list's own cap, which made the surface return up to eight —
-// caught in round 11, along with the fact that it falsified a decision
+// and it falsified a decision
 // recorded in BootstrapDashboard (no suggested_next_overflow_count, BECAUSE
 // this list is capped at three upstream).
 //
@@ -454,10 +454,10 @@ func TestStartReminderTickIsIdempotent(t *testing.T) {
 	srv.stopReminderTick()
 }
 
-// TestPendingRemindersAreNotStarvedByCompletedItems — codex round 4, P1.
+// TestPendingRemindersAreNotStarvedByCompletedItems.
 //
-// This is the defect the ROUND-3 fix introduced, and it is the same shape as
-// the round-1 one it had just removed from the fire path: a bounded window
+// This is the defect an earlier fix introduced, and it is the same shape as
+// the earlier one it had just removed from the fire path: a bounded window
 // whose rows are discarded ABOVE the bound hides everything behind them
 // forever, with no continuation to reach it. Bounding is only safe when the
 // discarding happens before the bound.
@@ -522,7 +522,7 @@ func TestPendingRemindersAreNotStarvedByCompletedItems(t *testing.T) {
 	}
 }
 
-// TestPendingReminderScopeIsAppliedInTheQuery — codex round 4, the other half.
+// TestPendingReminderScopeIsAppliedInTheQuery, the other half.
 //
 // A guest's invisible rows must not consume the window either. The granted
 // item is armed LAST, so it sorts after 60 rows the guest may not see: if
@@ -530,7 +530,7 @@ func TestPendingRemindersAreNotStarvedByCompletedItems(t *testing.T) {
 // own reminder would be unreachable.
 //
 // MUTANT: drop the scope clause from the SQL and the guest sees nothing (or
-// sees other people's items, which the round-1 test catches).
+// sees other people's items, which another test catches).
 func TestPendingReminderScopeIsAppliedInTheQuery(t *testing.T) {
 	t.Parallel()
 	srv := testServer(t)
@@ -579,7 +579,7 @@ func TestPendingReminderScopeIsAppliedInTheQuery(t *testing.T) {
 	}
 }
 
-// TestBootstrapCapsPendingReminders — codex round 11.
+// TestBootstrapCapsPendingReminders.
 //
 // BootstrapDashboard embeds *DashboardResponse, so every new field flows into
 // the boot payload automatically — including a reminder window of up to 50,
@@ -628,7 +628,7 @@ func TestBootstrapCapsPendingReminders(t *testing.T) {
 	}
 }
 
-// TestSuggestedNextKeepsItsCapWithReminders — codex round 11.
+// TestSuggestedNextKeepsItsCapWithReminders.
 //
 // Prepending up to five reminders past a list capped at three returned eight
 // entries, against consumers written for three — and it falsified the comment
@@ -657,7 +657,7 @@ func TestSuggestedNextKeepsItsCapWithReminders(t *testing.T) {
 	if len(resp.SuggestedNext) != 3 {
 		t.Errorf("suggested_next returned %d entries, want the established cap of 3", len(resp.SuggestedNext))
 	}
-	// And the trim keeps the REMINDERS, which lead — trimming the front would
+	// And the trim keeps the REMINDERS, which come first — trimming the front would
 	// satisfy the count and defeat the feature.
 	for i, sug := range resp.SuggestedNext {
 		if sug.ReminderID == "" {
@@ -701,7 +701,7 @@ func TestSuggestedNextSurvivesWithNoTaskCandidates(t *testing.T) {
 	}
 }
 
-// TestTruncationIsReportedWhenTheWindowFillsMidPage — codex round 11.
+// TestTruncationIsReportedWhenTheWindowFillsMidPage.
 //
 // The collector reported truncation from the store's `more` flag alone, which
 // answers "is there another PAGE" and not "did I read all of THIS one". When
@@ -779,8 +779,8 @@ func TestTruncationIsReportedWhenTheWindowFillsMidPage(t *testing.T) {
 	}
 }
 
-// TestArchivedItemRemindersAreReadableAndNotEditable pins the posture codex
-// round 16 read as a contradiction: the store keeps an archived item's
+// TestArchivedItemRemindersAreReadableAndNotEditable pins the posture that
+// could read as a contradiction: the store keeps an archived item's
 // reminders (reminderOwned enforces identity, not liveness), the LIST follows
 // handleGetItem and stays readable, and the lifecycle verbs follow every other
 // item mutation and answer 409 "archived" — not a bare 404 — until the item is
@@ -841,7 +841,7 @@ func TestArchivedItemRemindersAreReadableAndNotEditable(t *testing.T) {
 	}
 }
 
-// TestAnItemIsSuggestedOnceWhenItIsBothRemindedAndACandidate — codex round 17.
+// TestAnItemIsSuggestedOnceWhenItIsBothRemindedAndACandidate.
 // An in-progress, high-priority item with a fired reminder qualified for
 // suggested_next twice: once from the reminder (with the ack handle) and once
 // as an ordinary candidate. One item, one line, the one that carries the id.
@@ -872,9 +872,9 @@ func TestAnItemIsSuggestedOnceWhenItIsBothRemindedAndACandidate(t *testing.T) {
 	}
 }
 
-// TestArchivedLegacyItemStillAnswers409 — codex round 17. A legacy item with no
+// TestArchivedLegacyItemStillAnswers409. A legacy item with no
 // item_number has an empty derived Ref; re-resolving by that empty ref inside
-// writeItemResolveError matched nothing and turned round 16's 409 into a 404.
+// writeItemResolveError matched nothing and turned the 409 into a 404.
 // The door now hands over the slug, which every item has.
 //
 // MUTANT: passing item.Ref again makes this a 404.

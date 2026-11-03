@@ -63,7 +63,7 @@ import (
 // (which this handler can also emit for a failed lookup). Those are not
 // restated per-endpoint anywhere in Pad and are not restated here; the list
 // below is the business vocabulary a copy client has to understand
-// specifically (Codex round 14).
+// specifically.
 //
 //	400 invalid_body            — the JSON body did not decode
 //	400 missing_field           — target_workspace / target_collection absent
@@ -97,7 +97,7 @@ import (
 //	                              established by check 4. Withholding it here
 //	                              would hide an actionable answer behind a
 //	                              distinction a POST to the same collection
-//	                              erases anyway (Codex round 8, declined).
+//	                              erases anyway.
 //	403 plan_limit_exceeded     — the cloned attachments would take the
 //	                              destination owner past storage_bytes
 //	                              (BUG-3653), every cloned row counted,
@@ -137,7 +137,7 @@ import (
 //	                              exactly one backend. The mapping is here so
 //	                              that wiring a second backend is a one-line
 //	                              change rather than a new 500; a client need
-//	                              not handle it until then (Codex round 14).
+//	                              not handle it until then.
 //	500 copy_failed             — an AMBIGUOUS failure. See DR-13 below; the
 //	                              message tells the user to check the
 //	                              destination rather than retry.
@@ -164,7 +164,7 @@ import (
 // once", which is the exact advice this endpoint's 500 exists to contradict.
 // An agent that follows that hint duplicates the item. Routing copy through
 // the MCP dispatcher therefore requires special-casing the `copy_failed` code
-// in that classifier first — it is not a wiring-only change (Codex round 8).
+// in that classifier first — it is not a wiring-only change.
 //
 // DR-9 — THE VERDICT IS RE-CHECKED IN-TRANSACTION. The four-check ladder runs
 // at the top of the handler; inside the write transaction, against the
@@ -190,7 +190,7 @@ import (
 // correctness gate." Nothing here is unbounded — variants are server-derived,
 // exactly two per original and idempotent (thumbnailSpecs), so an attacker
 // cannot inflate the per-attachment cost — but the deferral is a decision on
-// record rather than an oversight (Codex round 22, declined).
+// record rather than an oversight.
 //
 // CALLER OBLIGATIONS from CrossWorkspaceCopyResult, both honored here:
 // storageInfoCache invalidation for the DESTINATION when attachments were
@@ -421,7 +421,7 @@ func (s *Server) handleCopyItem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// STRUCTURAL BEFORE SEMANTIC, through the one classifier the preflight
-		// also runs (lead ruling, day 58). This door used to reach the
+		// also runs. This door used to reach the
 		// visibility question first and the structural checks only later,
 		// inside the store call — so the same body got `malformed_override`
 		// from the preview and `validation_error` from the copy. The order was
@@ -480,7 +480,7 @@ func (s *Server) handleCopyItem(w http.ResponseWriter, r *http.Request) {
 		// source's. The copy runs it on its own transaction so a late-resolved
 		// destination default gets the same check the other seven doors give
 		// it, and so the copy and its preflight agree by construction rather
-		// than by two implementations (night-11 finding; lead ruling day-58).
+		// than by two implementations.
 		RelationVisibility: s.relationVisibility(r, dst.Role),
 		Actor:              actorID,
 		ActorUserID:        currentUserID(r),
@@ -541,8 +541,7 @@ func (s *Server) handleCopyItem(w http.ResponseWriter, r *http.Request) {
 	// authorization lookup and the lock, the source item can be moved into a
 	// different collection and either collection can be renamed. Reporting the
 	// pre-transaction slug would attribute the source's archive event to a
-	// collection the copy did not touch and hand the client a stale slug
-	// (Codex round 1 P2).
+	// collection the copy did not touch and hand the client a stale slug.
 	s.afterCopyCommit(r, res)
 
 	writeJSON(w, http.StatusCreated, copyResult(res, src, dst, input))
@@ -556,8 +555,7 @@ func copyResult(res *store.CrossWorkspaceCopyResult, src, dst CrossWorkspaceAcce
 		Source: ItemCopyResultSource{
 			// The CANONICAL slug, never the URL parameter — /workspaces/{slug}
 			// also accepts a UUID, and a client building a "go back to the
-			// source" link out of that gets one that does not resolve (Codex
-			// round 14).
+			// source" link out of that gets one that does not resolve.
 			WorkspaceSlug:  src.WorkspaceSlug(),
 			CollectionSlug: res.SourceCollection.Slug,
 			Ref:            res.Source.Ref,
@@ -642,8 +640,7 @@ func (s *Server) copyItemAcrossWorkspaces(req store.CrossWorkspaceCopyRequest) (
 //
 // WHAT IT DOES NOT CHECK, and why — an honest boundary is worth more than a
 // broad-sounding one. It does NOT re-read membership or grants. An earlier
-// version re-ran the whole ladder here, and that was wrong on two counts
-// (Codex round 6):
+// version re-ran the whole ladder here, and that was wrong on two counts.
 //
 //   - It OVERCLAIMED. The authorize helpers read through s.store, not this
 //     transaction, and Postgres READ COMMITTED takes a fresh snapshot per
@@ -667,7 +664,7 @@ func (s *Server) copyItemAcrossWorkspaces(req store.CrossWorkspaceCopyRequest) (
 //
 // THE CONSEQUENCE, so this is not read as an oversight: a membership, grant
 // or token-consent revocation that commits while a copy is in flight does NOT
-// stop that copy. Codex round 22 raised this as an attack; it is declined on
+// stop that copy. This could be raised as an attack; it is declined on
 // three grounds. Re-reading here would only NARROW the window from "since the
 // handler ran" to "since the lock was taken", never close it — closing it
 // needs every membership writer to take the copy's workspace advisory locks,
@@ -732,8 +729,8 @@ type copyAuthorizedResources struct {
 // event is reconciled by the next delta poll, and a stale storage figure
 // expires in thirty seconds.
 //
-// The cache invalidation is INSIDE the boundary rather than beside it (Codex
-// round 3): storageInfoCache is a mutex-guarded map, so a panic there is not
+// The cache invalidation is INSIDE the boundary rather than beside it:
+// storageInfoCache is a mutex-guarded map, so a panic there is not
 // something to reason about case by case — it is simply another way to lose a
 // committed copy's response, and it belongs under the same guard as the
 // fanout.
@@ -800,8 +797,8 @@ func (s *Server) afterCopyCommit(r *http.Request, res *store.CrossWorkspaceCopyR
 // The corollary is that a rolled-back copy emits nothing anywhere, which
 // falls out of this being called only on the success path.
 //
-// THE ONE GAP, stated because it is inherent rather than overlooked (Codex
-// round 20): if tx.Commit() itself errors, the store returns no result, so
+// THE ONE GAP, stated because it is inherent rather than overlooked: if tx.Commit()
+// itself errors, the store returns no result, so
 // nothing here runs — and on Postgres a commit whose acknowledgement is lost
 // may nonetheless have committed. That is DR-13's ambiguity in its purest
 // form: a copy that landed with no events. It cannot be closed from here —
@@ -815,7 +812,7 @@ func (s *Server) afterCopyCommit(r *http.Request, res *store.CrossWorkspaceCopyR
 // SYNCHRONOUS, deliberately. logActivity writes a row and the SSE publish can
 // reach Redis — so this runs before the 201 and can add latency to it. That is
 // exactly what handleCreateItem, handleDeleteItem and handleMoveItem already
-// do (Codex round 3), and diverging would buy nothing:
+// do, and diverging would buy nothing:
 //
 // The webhook dispatch that used to be part of this list is gone (TASK-2714):
 // webhooks are delivered by the outbox drain now, from the row the copy's own
@@ -931,7 +928,7 @@ func (s *Server) writeCopyError(w http.ResponseWriter, r *http.Request, err erro
 	// copy's lock. Both are PRE-WRITE rejections — nothing was inserted and
 	// nothing can have committed — so neither may fall through to the
 	// ambiguous 500, which would send the user hunting for an item that
-	// provably does not exist (Codex round 1 P2). Each side keeps its own
+	// provably does not exist. Each side keeps its own
 	// disclosure posture: the source collapses to the bare "Item not found"
 	// every other source-side refusal gives, and the destination reuses the
 	// one collection_not_found answer shared with "absent" and "hidden".
@@ -961,7 +958,7 @@ func (s *Server) writeCopyError(w http.ResponseWriter, r *http.Request, err erro
 		// naming which one would report on rows the caller may not see.
 		//
 		// store.IsUniqueViolation rather than a local string match, so this
-		// and CreateItem's 409 cannot drift apart (Codex round 8). The
+		// and CreateItem's 409 cannot drift apart. The
 		// heuristic is a text match and CAN in principle misfire on an
 		// unrelated error whose message happens to contain the phrase — which
 		// is harmless here, and worth saying why: EVERY error out of
@@ -981,7 +978,7 @@ func (s *Server) writeCopyError(w http.ResponseWriter, r *http.Request, err erro
 	// Deliberately not writeInternalError: its generic text would invite the
 	// exact retry that duplicates the item.
 	// The NUL refusal is NOT ambiguous, so it must not get the ambiguous
-	// message (codex round 3). It fires at parameter binding, before any
+	// message. It fires at parameter binding, before any
 	// statement executes and long before commit, so nothing landed and a retry
 	// of the same value will be refused identically. Telling the caller to
 	// "check the destination workspace" for a copy that provably did not start
@@ -1014,7 +1011,7 @@ func (s *Server) writeCopyError(w http.ResponseWriter, r *http.Request, err erro
 // extra `"preflight"` literal at the end, which was harmless there (it hands
 // the value to a planner that writes nothing) but made the preview accept a
 // request the copy would refuse — a THIRD divergence of exactly the kind
-// DR-6 exists to prevent, found in Codex round 4. One function, one answer;
+// DR-6 exists to prevent, found in review. One function, one answer;
 // both endpoints refuse identically via writeCopyActorRequired.
 func copyActorID(r *http.Request, item *models.Item) string {
 	if id := currentUserID(r); id != "" {

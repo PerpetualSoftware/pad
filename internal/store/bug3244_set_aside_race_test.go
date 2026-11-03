@@ -4,7 +4,7 @@ import (
 	"testing"
 )
 
-// BUG-3244 codex r1: the rebuild's setup lock does not stop a connected peer
+// BUG-3244: the rebuild's setup lock does not stop a connected peer
 // appending, and on Postgres each statement in the move takes its own
 // snapshot. A content-bearing row committed after the rows to keep were chosen
 // but before the op-log was cleared used to be deleted without being set

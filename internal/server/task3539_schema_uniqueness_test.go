@@ -27,7 +27,7 @@ var task3539BadSchemas = []struct {
 }
 
 // A non-select field's options are not a rendered list; a legacy one that
-// repeats is not refused (codex round 4).
+// repeats is not refused.
 const task3539LegacyTextOptions = `{"fields":[{"key":"owner","label":"Owner","type":"text","options":["x","x",""]}]}`
 
 const task3539CleanSchema = `{"fields":[{"key":"status","label":"Status","type":"select","options":["open","done"]}]}`

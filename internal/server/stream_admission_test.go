@@ -102,8 +102,8 @@ func TestWatchStreamHasAConnectionLimit(t *testing.T) {
 	}
 }
 
-// TestStreamAdmissionIsSharedAcrossBothEndpoints is the ruling that
-// PAD_SSE_MAX_CONNECTIONS covers both streams, made executable. It is the
+// TestStreamAdmissionIsSharedAcrossBothEndpoints asserts that
+// PAD_SSE_MAX_CONNECTIONS covers both streams. It is the
 // assertion a per-endpoint implementation would fail, and the one that
 // distinguishes the shipped design from the rejected parallel-knob
 // alternative.
@@ -383,7 +383,7 @@ func gaugeValue(t *testing.T, m *metrics.Metrics) float64 {
 }
 
 // TestStreamPrincipalFallsBackToWorkspace covers the resolution order
-// itself, which is where the codex round 3 fix actually lives: a request
+// itself, which is where the fix actually lives: a request
 // with no user must still produce a bucket key, or the per-user bound is
 // unreachable for exactly the principal class that could abuse it.
 func TestStreamPrincipalFallsBackToWorkspace(t *testing.T) {
@@ -598,8 +598,8 @@ func gaugeValueQuiet(m *metrics.Metrics) float64 {
 }
 
 // TestRedisHealthConcurrentStartStop drives the lifecycle from many
-// goroutines. The round-9 fix guarded the FIELDS; round 10 pointed out
-// that Stop released the lock before cancelling and waiting, so a Start
+// goroutines. An earlier fix guarded the FIELDS, but
+// Stop released the lock before cancelling and waiting, so a Start
 // could interleave and install a loop that Stop would wait for but never
 // cancel. The failure is a hang, so this bounds itself.
 func TestRedisHealthConcurrentStartStop(t *testing.T) {
@@ -664,7 +664,7 @@ func TestStreamGaugeFollowsAReplacedMetricsInstance(t *testing.T) {
 }
 
 // TestStreamLimitRefusalContractIsIdenticalOnBothEndpoints pins what a
-// refused client actually receives (codex round 12). Both endpoints must
+// refused client actually receives. Both endpoints must
 // answer the same way, or a client that handles one correctly mishandles
 // the other — and one of them used to send the JSON error envelope under
 // Content-Type: text/event-stream, because the SSE headers were set

@@ -427,8 +427,7 @@ func ComputeAdminUserStatusValue(disabledAt, lastWriteAt string, workspaceCount 
 // UserStorageUsage returns the SUM(size_bytes) of all non-deleted
 // attachments across workspaces owned by this user. Matches the
 // per-workspace WorkspaceStorageUsage definition. PLAN-1542 / TASK-1548
-// (Codex review on PR #603 — single-user endpoint needs the same
-// aggregate as the list endpoint so row-merge keeps the value fresh).
+// (#603).
 func (s *Store) UserStorageUsage(userID string) (int64, error) {
 	var total sql.NullInt64
 	err := s.db.QueryRow(s.q(`
@@ -553,7 +552,7 @@ func (s *Store) SearchUsers(params AdminUserSearchParams) (*AdminUserSearchResul
 	// Page query needs both aggregations (the row carries them). The count
 	// query only needs the workspace_count join when HasWorkspaces filtering
 	// is active — skipping the storage SUM avoids scanning every attachment
-	// on every list call (Codex review on PR #599).
+	// on every list call (#599).
 	fromClause := "FROM users u" + workspaceCountJoin + storageBytesJoin
 	countFromClause := "FROM users u"
 	if params.HasWorkspaces != nil {
@@ -719,7 +718,7 @@ type BillingAggregates struct {
 // count of new "pro" signups since `since`. Implemented as two scalar
 // SQL queries so the admin Billing dashboard does not have to materialise
 // every users row + decrypt every TOTP secret on each refresh
-// (Codex round 1, MEDIUM, PR for TASK-827).
+// (MEDIUM, PR for TASK-827).
 //
 // `since` is compared lexicographically against the stored RFC3339
 // created_at strings — that matches the rest of the store, where times
@@ -732,7 +731,7 @@ func (s *Store) CountBillingAggregates(since time.Time) (*BillingAggregates, err
 	// GROUP BY must match the projected expression — grouping on the raw
 	// `plan` column would split '' and 'free' into two result rows that
 	// both scan as "free" in Go and overwrite each other in the map,
-	// silently underreporting the free-tier count (Codex round 2).
+	// silently underreporting the free-tier count.
 	//
 	// Counted by EFFECTIVE plan (BUG-3356): a plan past its expiry is free.
 	// The expiry is decided in Go by the same models.User.EffectivePlan the
@@ -1219,7 +1218,7 @@ func (s *Store) disableUserAndRevokeAccessTx(tx *sql.Tx, userID string) error {
 		// An authorization code not yet exchanged carries no subject column,
 		// but shares its request id with the connection row the consent step
 		// wrote: deactivate it before that row goes, or a re-enable would let
-		// it exchange (codex review). PKCE rows ride the same request id.
+		// it exchange. PKCE rows ride the same request id.
 		{"revoke oauth authorization codes", `UPDATE oauth_authorization_codes SET active = ? WHERE request_id IN (SELECT request_id FROM oauth_connections WHERE user_id = ?)`, []any{s.dialect.BoolToInt(false), userID}},
 		{"delete oauth pkce requests", `DELETE FROM oauth_pkce_requests WHERE request_id IN (SELECT request_id FROM oauth_connections WHERE user_id = ?)`, []any{userID}},
 		{"delete oauth connections", `DELETE FROM oauth_connections WHERE user_id = ?`, []any{userID}},
@@ -1376,7 +1375,7 @@ func (s *Store) DeleteAccountAtomic(userID string) error {
 
 // DeleteAccountAtomicReport is DeleteAccountAtomic that also reports the
 // workspaces whose grants the user had ISSUED, read from the rows the
-// transaction itself deleted (TASK-3365, codex r2 on PR2): a list read before
+// transaction itself deleted (TASK-3365): a list read before
 // the call could miss a grant created in between and deleted by it. The
 // caller kicks every connection on those workspaces after the commit.
 func (s *Store) DeleteAccountAtomicReport(userID string) ([]string, error) {
@@ -1608,8 +1607,8 @@ func (s *Store) deleteAccountAtomicOnce(userID string, issuedGrantWorkspaces *[]
 	}
 
 	// 1b. The bots of installs in those workspaces go with them, with every
-	// credential and reference they hold (lead ruling on TASK-3392: no
-	// orphan principals). A bot is a member of its install's workspace only.
+	// credential and reference they hold (TASK-3392). A bot is a member of its
+	// install's workspace only.
 	// Deleting a bot locks its users row; nothing a person does locks one
 	// (a bot holds no session), and account deletions do not overlap (the
 	// advisory lock above), so this adds no lock-order hazard.
@@ -1685,7 +1684,7 @@ func (s *Store) eraseUserTx(tx *sql.Tx, userID string) error {
 	// The de-identify list above reaches LIVE rows only; outbox payloads froze
 	// the id at emit time and would otherwise keep it legible — in workspaces
 	// the user didn't own — until TASK-2714's retention window closes on the
-	// row. Dave's ruling on TASK-2719: "delete my account" means prompt
+	// row. TASK-2719: "delete my account" means prompt
 	// erasure, not a bounded window.
 	if err := s.ScrubOutboxUserRefsTx(tx, userID); err != nil {
 		return fmt.Errorf("delete account: %w", err)

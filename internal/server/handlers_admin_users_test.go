@@ -109,7 +109,7 @@ func TestAdminUpdateUser_StorageOverrideRoundTrip(t *testing.T) {
 // that. Empty string ("" → SetUserPlanOverrides("")) is the
 // explicit "clear" signal used by the Reset-to-default button.
 //
-// Codex caught the related bug on PR #304 round 1: the UI was
+// Related bug on PR #304: the UI was
 // sending null when all override fields were blank, which JSON-
 // decoded to a nil pointer and the handler skipped the update.
 // This test pins the OTHER half of the contract — that omitting

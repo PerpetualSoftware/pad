@@ -9,9 +9,9 @@ package server
 // preprocessing warnings.
 //
 // READ THE SETUP BEFORE CHANGING IT — it is what makes the case reachable,
-// and I got this wrong once. Round 10 dismissed the finding as unreachable
+// and it is easy to get wrong: the case can look unreachable
 // because artifact.Decode populates Fields only from FieldKeysForKind. That
-// check was true and irrelevant: UndeclaredFieldKeys compares the field map
+// observation is true and irrelevant: UndeclaredFieldKeys compares the field map
 // against the DESTINATION COLLECTION'S SCHEMA, not against the artifact
 // format's key list. So the reachable shape is not a weird artifact — it is
 // an ordinary artifact meeting a NARROWED destination schema, which is what
@@ -114,8 +114,7 @@ func TestImportArtifactAgainstTheDefaultSchemaNamesNothingUndeclared(t *testing.
 	}
 }
 
-// The import response must forward BOTH halves of ItemWriteWarnings (codex
-// round 8).
+// The import response must forward BOTH halves of ItemWriteWarnings.
 //
 // `createItemChecked` records dropped relation defaults alongside undeclared
 // keys; this handler enumerated only the undeclared ones, so an import that
@@ -166,8 +165,8 @@ func TestImportArtifactReportsDroppedRelationDefault(t *testing.T) {
 	}
 }
 
-// IMPORT CARRIES a junk relation value; it never refuses (Dave's ruling,
-// day 57: "explicitly allow import of the junk to avoid breaking import").
+// IMPORT CARRIES a junk relation value; it never refuses (explicitly allowed, to avoid
+// breaking import).
 //
 // Import is a CARRY door, not a write door. An artifact was written elsewhere,
 // possibly before referent validation existed, and the person importing it
@@ -236,7 +235,7 @@ func TestImportArtifactCarriesUnresolvableRelationValue(t *testing.T) {
 }
 
 // An import carrying ONE unresolvable caller value must still clean up the
-// destination schema's own broken defaults (codex round 15).
+// destination schema's own broken defaults.
 //
 // The write path's step 2 returned early when the caller's values had issues —
 // correct while every caller of that path REFUSED, since steps 3 and 4 only

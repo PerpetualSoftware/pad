@@ -29,10 +29,10 @@ func (s *Store) AppPrincipalInstallIDQ(q Queryer, userID string) (string, error)
 }
 
 // appPrincipalInstallQ is AppPrincipalInstallIDQ that also reports whether
-// the user is a bot at all, from the same single users read (codex r1 P3).
+// the user is a bot at all, from the same single users read.
 //
 // That read runs on EVERY VisibleCollectionIDsQ call, people included: one
-// primary-key lookup, accepted by the lead (TASK-3401 U6a review) rather than
+// primary-key lookup, accepted (TASK-3401) rather than
 // widening the shared, hot membership query to carry users.kind. If profiling
 // ever flags it, pass the already-loaded request user's kind in instead.
 func (s *Store) appPrincipalInstallQ(q Queryer, userID string) (string, bool, error) {

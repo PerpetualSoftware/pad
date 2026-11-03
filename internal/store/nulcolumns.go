@@ -50,7 +50,7 @@ type nulColumn struct {
 // carry values extracted from stored item content, which is the BUG-2814
 // re-emit in miniature — they need the raw check and no JSON parser reads them.
 //
-// The SECOND RING is included per the lead's Ruling 2: instr triggers are
+// The SECOND RING is included by design: instr triggers are
 // near-free, so caller-influenced text columns go in wholesale rather than
 // being litigated one at a time. Ruling 2 attached a condition — a
 // header-derived value (user agent, IP) must not surface as a 500 or a broken
@@ -62,7 +62,7 @@ var nulColumns = []nulColumn{
 	{"items", "tags", classJSON},
 	{"items", "title", classText},
 	{"items", "content", classText},
-	// items.slug IS protected (codex round 2), and the reasoning that excluded
+	// items.slug IS protected, and the reasoning that excluded
 	// it was true of one write path and false of another — the lesson this
 	// cluster keeps re-teaching. The API path derives the slug through slugify,
 	// whose [a-z0-9-] output cannot carry a NUL. ImportWorkspace has its OWN
@@ -105,7 +105,7 @@ var nulColumns = []nulColumn{
 	{"item_links", "created_by", classText},
 	// link_type is normalized on the ordinary create path and written VERBATIM
 	// by ImportWorkspace — the second-write-path shape again, and the third
-	// column in this unit found that way (codex round 3).
+	// column in this unit found that way.
 	{"item_links", "link_type", classText},
 	{"versions", "content", classText},
 	{"versions", "change_summary", classText},
@@ -135,14 +135,13 @@ var nulColumns = []nulColumn{
 	{"views", "name", classText},
 	// view_type is `viewType := input.ViewType` with "list" only as a fallback,
 	// on create AND update — caller text, not an enum the store validates
-	// (codex round 3).
 	{"views", "view_type", classText},
 
 	// agent roles
 	// tools is FREE TEXT, not JSON — migration 019 says so in as many words
 	// ("free-text notes about preferred tools/models", e.g. "Claude Code +
 	// Sonnet 4.6"). TASK-2825's census classed it J and this list inherited
-	// that; codex round 1 caught it. Classing it JSON would refuse a user's
+	// that, which was wrong. Classing it JSON would refuse a user's
 	// note that happens to be valid JSON carrying an escape.
 	{"agent_roles", "tools", classText},
 	{"agent_roles", "name", classText},
@@ -194,7 +193,7 @@ var nulColumns = []nulColumn{
 	{"share_links", "restrict_to_email", classText},
 	{"workspace_invitations", "email", classText},
 
-	// CALLER-SUPPLIED SLUGS (codex round 1).
+	// CALLER-SUPPLIED SLUGS.
 	//
 	// These are caller-supplied, and were missed because items.slug's
 	// derived-only reasoning was read as covering slugs generally.
@@ -211,13 +210,13 @@ var nulColumns = []nulColumn{
 	{"comment_reactions", "emoji", classText},
 	{"oauth_clients", "logo_url", classText},
 
-	// ATTRIBUTION COLUMNS, swept as a CLASS (codex round 6, CONVE-18).
+	// ATTRIBUTION COLUMNS, swept as a CLASS (CONVE-18).
 	//
 	// Rounds 2, 3 and 6 each named one or two of these, which is the signal
 	// that the reviewer was sampling a population rather than finding
 	// instances. Enumerating every created_by / last_modified_by / source /
 	// actor / author / *_by column in the schema found SIXTEEN unprotected,
-	// against the eight round 6 listed.
+	// against the eight an earlier list had.
 	//
 	// Some are server-set today (granted_by, invited_by, uploaded_by are user
 	// ids). They go in anyway, on Ruling 2's posture for the second ring: an
@@ -240,9 +239,8 @@ var nulColumns = []nulColumn{
 	{"workspace_invitations", "invited_by", classText},
 	{"workspaces", "source", classText},
 	// Found by re-running the sweep as a PATTERN (*_by) instead of the
-	// hand-written name list round 6 used — which was an enumeration one level
+	// hand-written name list an earlier pass used — which was an enumeration one level
 	// up, and missed exactly the two names nobody thought to write down
-	// (codex round 7).
 	{"event_outbox", "claimed_by", classText},
 	{"oauth_connection_workspaces", "added_by", classText},
 
@@ -440,7 +438,7 @@ var oauthRequestTables = []string{
 }
 
 // Only session_data is JSON. The other five are NOT, and the census's
-// "shared-writer extension" classed all six alike (codex round 1).
+// "shared-writer extension" classed all six alike.
 //
 // Measured in internal/oauth/storage.go: RequestForm is
 // `req.GetRequestForm().Encode()` — url-encoded form data; Scopes,
@@ -635,7 +633,7 @@ func (s *Store) ensureNULTriggers() error {
 // satisfied by a full drop-and-recreate — SQLite reuses the rowids when the
 // drops and creates happen in one transaction in the same order. Two wrong
 // observables in a row is the point at which the honest fix is to make the
-// thing itself observable (codex round 5).
+// thing itself observable.
 func (s *Store) ensureNULTriggersReporting() (restored bool, err error) {
 	return s.ensureNULTriggersFor(nulTriggerMigrations)
 }
@@ -652,7 +650,7 @@ func (s *Store) ensureNULTriggersFor(known []string) (restored bool, err error) 
 
 	// NOTHING TO RESTORE BEFORE THE MIGRATION THAT CREATES THEM.
 	//
-	// This runs after every migration (codex round 4, to narrow the window in
+	// This runs after every migration (to narrow the window in
 	// which a rebuild has dropped the triggers), which means it also runs
 	// during a FRESH install while the early migrations are still creating the
 	// tables. Attempting the trigger SQL then fails on "no such table" — caught
@@ -673,7 +671,7 @@ func (s *Store) ensureNULTriggersFor(known []string) (restored bool, err error) 
 	// compare DEFINITIONS.
 	want := renderedNULTriggers(applied)
 
-	// The SET, not the count (codex round 2). A database with the right NUMBER
+	// The SET, not the count. A database with the right NUMBER
 	// of triggers but a missing one and an extra one read as healthy, and
 	// CREATE TRIGGER IF NOT EXISTS would then never repair the missing one.
 	//
@@ -690,10 +688,10 @@ func (s *Store) ensureNULTriggersFor(known []string) (restored bool, err error) 
 		files = append(files, string(data))
 	}
 
-	// TRANSACTION FIRST, THEN INSPECT (codex rounds 2 and 3).
+	// TRANSACTION FIRST, THEN INSPECT.
 	//
-	// Round 2 put the CREATE statements in a transaction, which closed the
-	// window between them. Round 3 found the window BEFORE them: checking
+	// An earlier version put the CREATE statements in a transaction, which closed the
+	// window between them. A later fix found the window BEFORE them: checking
 	// whether triggers were missing outside the transaction let a raw writer
 	// commit an invalid row between the check and the lock. The store's DSN
 	// carries _txlock=immediate, so Begin takes the write lock up front and the
@@ -713,7 +711,7 @@ func (s *Store) ensureNULTriggersFor(known []string) (restored bool, err error) 
 		return false, err
 	}
 	missing := false
-	// An EXTRA trigger in a known namespace is unhealthy too (codex round 6). A stray one
+	// An EXTRA trigger in a known namespace is unhealthy too. A stray one
 	// left by a partial restore or a manual edit can ABORT legitimate writes,
 	// and a check that only asks "is everything I expect present" reports that
 	// database as fine. The drop-then-recreate below removes them, so detecting
@@ -725,7 +723,7 @@ func (s *Store) ensureNULTriggersFor(known []string) (restored bool, err error) 
 		}
 	}
 	for name, stmt := range want {
-		// DEFINITION, not just presence (codex round 3). A same-name trigger
+		// DEFINITION, not just presence. A same-name trigger
 		// with a stale or no-op body satisfies CREATE TRIGGER IF NOT EXISTS
 		// forever, so a name check can never repair it.
 		if have[name] != stmt {
@@ -743,7 +741,7 @@ func (s *Store) ensureNULTriggersFor(known []string) (restored bool, err error) 
 		// QUOTED. Names come from sqlite_master, and a legal identifier that
 		// matches the GLOB — one containing a hyphen, say — would otherwise
 		// produce a syntax error here, failing the restoration and, because
-		// migrate propagates it, STARTUP (codex round 7). The one place a
+		// migrate propagates it, STARTUP. The one place a
 		// stray trigger is most likely to have an unusual name is the one
 		// place this code must survive it.
 		if _, derr := tx.Exec(`DROP TRIGGER IF EXISTS "` + strings.ReplaceAll(name, `"`, `""`) + `"`); derr != nil {
@@ -816,7 +814,7 @@ func readNULTriggers(q Queryer, prefix string, out map[string]string) error {
 // for 084, and pad_nul<NNN>_ for a later file NNN.
 //
 // Separate namespaces are what keep an OLDER binary from destroying a newer
-// file's triggers (BUG-3108, codex round 1). The restore reads its triggers by
+// file's triggers (BUG-3108). The restore reads its triggers by
 // GLOB, treats any name in that namespace it does not expect as a stray, and
 // drops it. A binary that predates 094 reads 'pad_nul_*'; had 094's triggers
 // used that prefix, such a binary started with --force would drop them all.
@@ -837,7 +835,7 @@ func nulTriggerPrefix(file string) string {
 // there is still one definition of what a trigger is. Comparing DEFINITIONS
 // rather than names is what lets the restoration replace a stale trigger — a
 // same-name no-op body satisfies CREATE TRIGGER IF NOT EXISTS forever, so a
-// name check can never repair one (codex round 3).
+// name check can never repair one.
 func renderedNULTriggers(files []string) map[string]string {
 	out := map[string]string{}
 	var all strings.Builder
@@ -872,7 +870,7 @@ func normalizeTriggerSQL(s string) string {
 	// statement says CREATE TRIGGER IF NOT EXISTS and sqlite_master holds
 	// CREATE TRIGGER. Comparing the two verbatim made every trigger look
 	// changed, so every startup dropped and recreated all 226 of them under an
-	// immediate write lock (codex round 5).
+	// immediate write lock.
 	//
 	// The no-op test did not catch it because it asserted the trigger COUNT was
 	// unchanged, which is true of a full drop-and-recreate — the assertion was
@@ -884,7 +882,7 @@ func normalizeTriggerSQL(s string) string {
 // nulTriggerMigrationsApplied returns the trigger files that have run, in
 // migration order.
 //
-// A QUERY ERROR IS AN ERROR (codex round 5). The first version folded it in
+// A QUERY ERROR IS AN ERROR. The first version folded it in
 // with "not applied" behind a nolint:nilerr, so a migrated database with a
 // transient read failure would start successfully with the invariant
 // unenforced — the one outcome this whole layer exists to prevent. Only the
@@ -920,7 +918,7 @@ func (s *Store) nulTriggerMigrationsApplied(known []string) ([]string, error) {
 // It lives in PRODUCTION code, not the generator test, because it has three
 // production-relevant readers: the generator writes it, the pin test compares
 // the committed file against it byte for byte, and the startup restoration
-// compares the LIVE triggers against it (codex round 3). One definition, three
+// compares the LIVE triggers against it. One definition, three
 // consumers — the same shape the column list has, for the same reason.
 func renderNULTriggerMigration(file string) string {
 	var cols []nulColumn

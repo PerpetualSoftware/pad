@@ -149,7 +149,7 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 		// never match anything: `before` defaults to now+1m and no row shares
 		// that timestamp. It was therefore accepted and silently ignored, and
 		// the caller paged from the beginning believing they had a cursor
-		// (codex round 4). The documented contract is both fields or neither.
+		//. The documented contract is both fields or neither.
 		//
 		// The other direction stays supported on purpose: `before` alone is
 		// the external-client case the sentinel above exists for.
@@ -245,7 +245,7 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 	//   - an exhausted window: a source that filled its over-fetch has rows
 	//     older than its tail that were never examined — the cursor cannot be
 	//     older than that tail, or those rows fall between the two pages and
-	//     are never fetched by either (codex round 1).
+	//     are never fetched by either.
 	//
 	// Both can hold at once, and the second is not implied by the first: a
 	// source whose rows all DROP contributes nothing to `entries`, so the
@@ -372,7 +372,7 @@ func structuredTimelineEntries(item *models.Item, before time.Time, beforeID str
 	// within a kind does.
 	//
 	// WHAT IS CLOSED, enumerated so the next reader does not have to re-derive
-	// it (BUG-2783, review round 5):
+	// it (BUG-2783):
 	//
 	//   - structured raw vs structured raw ....... the `!usedIDs[raw]` guard
 	//   - structured raw vs derived, same kind ... divert on the prefix
@@ -495,16 +495,16 @@ func buildTimeline(comments []models.Comment, activities []models.Activity, vers
 	// the only place the check is exact: comments and activities arrive
 	// through separately bounded windows, and a guard built from the
 	// comments in hand cannot see an activity whose comment fell outside the
-	// comment window (TASK-2760, codex round 2). What this set covers is the
+	// comment window (TASK-2760). What this set covers is the
 	// read skew between the two queries: the sources are read at separate
 	// instants with no shared snapshot (see TimelineEntry's doc), so a
 	// comment fetched here and hard-deleted before the activity query runs
 	// leaves its activity eligible again while the stale comment is still in
-	// memory, and both would render once (codex round 4). Two guards, two
+	// memory, and both would render once. Two guards, two
 	// distinct failure modes; neither substitutes for the other. The same
 	// skew runs the other way too: a comment created between the two reads
 	// is in neither — its activity is excluded by the query, and the comment
-	// missed the earlier read (codex round 5). Before the exclusion that
+	// missed the earlier read. Before the exclusion that
 	// window showed a ghost "commented" card with no comment behind it; now
 	// it shows nothing, and the next fetch (or the comment.created SSE
 	// event) is consistent. Neither guard can close a gap that lives between
@@ -653,7 +653,7 @@ func isAutosaveVersion(e models.TimelineEntry) bool {
 // still leaves one restore point.
 //
 // The kept row carries an AutosaveRun describing the rows it stands for
-// (PLAN-2348 U3), so the History tab can say "4 autosaves by Dave · 1:02–1:14"
+// (PLAN-2348 U3), so the History tab can say "4 autosaves by Alice · 1:02–1:14"
 // and diff the whole run. A lone autosave carries none. The run is keyed on
 // the writer too: two people's autosaves are two runs, because the History
 // card names one person.

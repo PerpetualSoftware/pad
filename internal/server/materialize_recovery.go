@@ -706,7 +706,7 @@ func materializeErrorKind(err error) string {
 }
 
 // materializeLinkIndex is the link index a recovery job converts internal
-// links against: EVERY live item of the workspace (Dave's ruling), not the
+// links against: EVERY live item of the workspace, not the
 // set any one viewer can see. A tab's index is its viewer's localIndex, but a
 // recovery has no viewer, and an index missing an item a link points at would
 // leave that link as a raw URL instead of the [[REF]] a full tab stores.

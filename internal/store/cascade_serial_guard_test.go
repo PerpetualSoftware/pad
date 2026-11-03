@@ -84,7 +84,7 @@ func TestCascadeExhaustionStaysSerial(t *testing.T) {
 
 // TestMigrationGuardTestsStaySerial is the same guard for the other file whose
 // tests mutate package globals — store.AllowSchemaAhead and store.BinaryVersion,
-// both EXPORTED, which is why my `^var [a-z]` sweep missed them and codex did
+// both EXPORTED, which is why my `^var [a-z]` sweep missed them
 // not. It guards the whole FILE rather than named functions, because every test
 // in it touches one of those two globals and a new one added there would too.
 func TestMigrationGuardTestsStaySerial(t *testing.T) {

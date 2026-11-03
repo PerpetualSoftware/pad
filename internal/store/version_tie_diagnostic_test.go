@@ -85,7 +85,7 @@ func TestBUG3751_VersionTieDiagnosticCounts(t *testing.T) {
 
 	// A deadline reached while an item is being classified stops the run
 	// there: that item is not counted, and the report says truncated rather
-	// than presenting a complete result (codex on BUG-3751).
+	// than presenting a complete result (BUG-3751).
 	testHookBeforeClassify = func(scanned int) {
 		if scanned == 1 {
 			time.Sleep(200 * time.Millisecond)
@@ -101,7 +101,7 @@ func TestBUG3751_VersionTieDiagnosticCounts(t *testing.T) {
 	}
 
 	// The deadline can close the rows between Next and Scan; in either row
-	// loop that is a truncated report, not an error (codex on BUG-3751).
+	// loop that is a truncated report, not an error (BUG-3751).
 	for _, loop := range []string{"items", "versions"} {
 		fired := false
 		testHookBeforeScan = func(l string) {
@@ -143,7 +143,7 @@ func TestBUG3751_DiagnosticCannotWrite(t *testing.T) {
 		}
 		defer tx.Rollback() //nolint:errcheck
 		// The timeout is set first in the transaction and SET TRANSACTION
-		// READ ONLY is still accepted after it (codex on BUG-3751).
+		// READ ONLY is still accepted after it (BUG-3751).
 		for setting, want := range map[string]string{"statement_timeout": "1500ms", "transaction_read_only": "on"} {
 			var got string
 			if err := tx.QueryRowContext(ctx, "SHOW "+setting).Scan(&got); err != nil || got != want {
@@ -192,7 +192,7 @@ func (c *expiringCtx) Err() error {
 }
 
 // Classification is bounded by the context wherever the deadline lands
-// (codex on BUG-3751): for every version application during which it can
+// (BUG-3751): for every version application during which it can
 // expire, the item is not reported complete and nothing is applied after it.
 // The histories walk every path: a tie group small enough to permute,
 // singletons, a group too large to permute, a group holding a snapshot, a
@@ -284,7 +284,7 @@ func TestBUG3751_StatementTimeoutNeverRoundsToZero(t *testing.T) {
 }
 
 // The operator entry point refuses to run without a run deadline: it is the
-// only bound on opening the transaction (codex on BUG-3751).
+// only bound on opening the transaction (BUG-3751).
 func TestBUG3751_OperatorRunRequiresADeadline(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "never-opened.db")
 	for _, d := range []time.Duration{0, -time.Second} {

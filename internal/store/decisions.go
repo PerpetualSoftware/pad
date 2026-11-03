@@ -23,7 +23,7 @@ import (
 // event outbox, and why answers are keyed on a state hash rather than
 // items.seq.
 //
-// THE WRITE PATH NEVER WAITS ON THE NETWORK (the day-73 async-only ruling).
+// THE WRITE PATH NEVER WAITS ON THE NETWORK (the async-only rule).
 // A mutation that makes an evaluation owed inserts a decision_jobs row in its
 // own transaction and returns; the runner's tick does the provider call later.
 
@@ -318,7 +318,7 @@ type DecisionJob struct {
 // debounce (not_before, TASK-3916) has passed or was never set.
 //
 // A job whose WORKSPACE is soft-deleted is not claimable: it is held in place
-// so a workspace restore finds the work still owed (codex round 5). Nothing
+// so a workspace restore finds the work still owed. Nothing
 // enqueues on restore — that would be a fan-out over every item — so keeping
 // the row is the only thing that makes a restore resume. A purge hard-deletes
 // the items, and the composite FK cascades the held rows away.
@@ -479,7 +479,7 @@ func (s *Store) FailDecisionJob(j DecisionJob, cause error, retryAfter time.Dura
 // DropDecisionJob abandons a claimed job: the item is gone, the set no
 // longer applies, or the job has exhausted its attempts.
 //
-// Generation-matched, exactly like CompleteDecisionJob (codex round 2): the
+// Generation-matched, exactly like CompleteDecisionJob: the
 // verdict is about the generation this runner claimed. A write that landed
 // mid-evaluation bumped the row to a newer generation, which is new work the
 // verdict says nothing about — so the row is released for it, not deleted.
@@ -670,8 +670,8 @@ func (s *Store) HasItemDecisionsAtState(itemID, questionSet, stateHash string, k
 	if len(keys) == 0 {
 		return true, nil
 	}
-	// Counted over the ASKED (key, question_hash) pairs only (codex rounds 3
-	// and 6). Counting every stored key was wrong in a way the count cannot
+	// Counted over the ASKED (key, question_hash) pairs only. Counting every
+	// stored key was wrong in a way the count cannot
 	// see: a RENAMED key keeps the total equal — the old name answered, the
 	// new one not — so the set read complete and the new key was never asked.
 	// Matching the question hash as well is what makes a reworded question or

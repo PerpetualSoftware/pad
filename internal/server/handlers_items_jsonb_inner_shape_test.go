@@ -8,7 +8,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// IDEA-1488 R1 codex P1.2: the `case '"'` branch in
+// IDEA-1488: the `case '"'` branch in
 // models.flexJSONToString previously accepted JSON-encoded strings
 // without checking the inner content's shape. The hardened path
 // validates that the inner JSON matches the expected start byte ('{'
@@ -103,8 +103,8 @@ func TestPatchItem_JSONEncodedStringInnerShapeValidated(t *testing.T) {
 	})
 }
 
-// TestCreateItem_JSONEncodedStringInnerShapeValidated is the codex R2
-// P2 regression test. handleCreateItem was missed in the original
+// TestCreateItem_JSONEncodedStringInnerShapeValidated is a
+// regression test. handleCreateItem was missed in the original
 // IDEA-1488 work — it returned `invalid JSON: <wrapped>` instead of
 // the clean sentinel-based 400 that PATCH and the view/collection
 // POST/PATCH handlers do. These tests assert the POST path now

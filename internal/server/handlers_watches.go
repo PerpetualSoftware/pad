@@ -57,8 +57,8 @@ func (s *Server) handleCreateWatch(w http.ResponseWriter, r *http.Request) {
 	//
 	// != 0, not > 0: a CHUNKED body arrives with ContentLength == -1, and
 	// the old guard silently DROPPED it — the caller's predicate was
-	// ignored and an unconditional watch created with a 200 (codex closing
-	// round 4; handlers_tokens.go already used the != 0 form). decodeJSON
+	// ignored and an unconditional watch created with a 200 (handlers_tokens.go already used the
+	// != 0 form). decodeJSON
 	// answers a genuinely empty body with io.EOF, which keeps the
 	// no-body-is-valid contract for an empty chunked body too.
 	if r.Body != nil && r.ContentLength != 0 {
@@ -146,7 +146,7 @@ func (s *Server) handleListWatches(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
-	// TASK-2533 codex round 1 finding 1: re-check current access before
+	// TASK-2533: re-check current access before
 	// listing — a watch row survives a revoked workspace membership or
 	// grant, so without this a caller could see item/workspace metadata
 	// for access they no longer have. See filterWatchesByCurrentAccess.

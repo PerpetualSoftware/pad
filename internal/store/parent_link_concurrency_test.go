@@ -306,7 +306,7 @@ func TestSetParentLink_ConcurrentNHopNoCycle(t *testing.T) {
 }
 
 // TestCreateItemLink_ConcurrentNHopNoCycle covers the second parent-edge adder
-// (BUG-2074 / Codex round-1): CreateItemLink with link_type="parent" writes the
+// (BUG-2074): CreateItemLink with link_type="parent" writes the
 // same graph edge SetParentLink does and is the only other path that can close
 // a cycle, yet it neither ran a cycle check nor joined the workspace cycle
 // serialization. Here the B→C closing edge is written via CreateItemLink(parent)
@@ -380,7 +380,7 @@ func TestCreateItemLink_ConcurrentNHopNoCycle(t *testing.T) {
 }
 
 // TestCreateItemLink_ParentSingleParentAndCycle asserts CreateItemLink with
-// link_type="parent" now behaves like SetParentLink (BUG-2074 / Codex round-2):
+// link_type="parent" now behaves like SetParentLink (BUG-2074):
 // it enforces the single-parent invariant (DELETE-then-INSERT, not append) and
 // runs cycle detection. Both were absent before — CreateItemLink appended a raw
 // parent row with no cycle check, so a child could accumulate multiple parents

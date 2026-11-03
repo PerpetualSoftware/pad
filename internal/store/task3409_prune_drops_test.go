@@ -104,7 +104,7 @@ func TestTask3409_GivingUpOnAnEventCountsTheEndpointsStillOwed(t *testing.T) {
 	}
 }
 
-// codex r2: the automatic deactivation (10 consecutive failures) is where an
+// The automatic deactivation (10 consecutive failures) is where an
 // endpoint stops being owed what it was still owed, so its pending rows are
 // settled there, as dropped and counted; a failure that does not deactivate
 // settles nothing.

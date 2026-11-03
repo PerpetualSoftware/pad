@@ -117,7 +117,7 @@ func TestSetMemberCollectionAccess_RestrictedOwner_WithinScope_OK(t *testing.T) 
 
 // TestSetMemberCollectionAccess_RestrictedOwner_ItemGrantOnly_StillForbidden
 // pins the fullCollIDs narrowing (mirrors requireCollectionFullyVisible,
-// BUG-1920 codex R2): a restricted owner who holds only an ITEM-level grant
+// BUG-1920): a restricted owner who holds only an ITEM-level grant
 // into the hidden collection must not be able to designate that collection
 // as a mode="specific" target. visibleCollectionIDs is nav-lenient and
 // folds item-grant-derived collections in for navigation purposes; using it

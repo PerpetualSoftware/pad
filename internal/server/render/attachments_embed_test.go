@@ -123,7 +123,7 @@ func TestImgPaintableMimes_MatchesTypeScript(t *testing.T) {
 	}
 }
 
-// TestShouldEmbedAsImage_RequestedVariant — codex round 1.
+// TestShouldEmbedAsImage_RequestedVariant.
 //
 // The question is about THE VARIANT THIS RENDER WILL REQUEST, not about whether
 // any thumbnail exists. Derivation writes thumb-sm and thumb-md independently,
@@ -161,7 +161,7 @@ func TestShouldEmbedAsImage_RequestedVariant(t *testing.T) {
 }
 
 // TestRenderAttachmentImage_UsesTheDecidedVariant pins the coupling that made
-// the round-1 finding possible in the first place: the variant the decision asks
+// the original bug possible in the first place: the variant the decision asks
 // about and the variant the URL requests are the same constant.
 func TestRenderAttachmentImage_UsesTheDecidedVariant(t *testing.T) {
 	html := RenderAttachmentImage(&AttachmentMeta{ID: "a1", MimeType: "image/png"}, "alt", "ws")

@@ -54,7 +54,7 @@ func writeRemindAtError(w http.ResponseWriter) {
 // handleListItemReminders returns every reminder on an item, armed or fired.
 // GET /api/v1/workspaces/{slug}/items/{itemSlug}/reminders
 //
-// ARCHIVED ITEMS ARE READABLE HERE, AND ONLY HERE (codex round 16). This
+// ARCHIVED ITEMS ARE READABLE HERE, AND ONLY HERE. This
 // route follows handleGetItem: an archived item resolves read-only, so its
 // reminder history stays visible after the item is archived — which is why
 // the store's reminderOwned enforces identity and not liveness. The lifecycle
@@ -196,7 +196,7 @@ func (s *Server) handleAckReminder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if acked == nil {
-		// THE PRE-READ IS NOT CONSULTED HERE (codex round 12). AckReminder
+		// THE PRE-READ IS NOT CONSULTED HERE. AckReminder
 		// matches every fired row, acknowledged or not, so a nil answer means
 		// exactly "not fired at the instant of the ack" — or "gone", which a
 		// fresh read tells apart. The earlier form decided 409-vs-200 from the
@@ -286,13 +286,13 @@ func (s *Server) resolveVisibleItem(w http.ResponseWriter, r *http.Request, work
 //
 // THE ARCHIVED CHECK IS A DOOR COURTESY, NOT A STORE INVARIANT, and an archive
 // that lands between this check and the store's UPDATE lets the verb through
-// (codex round 17, accepted). That is the posture of every item mutation in
+// (an accepted tradeoff). That is the posture of every item mutation in
 // this API — UpdateItem's own UPDATE is `WHERE id = ?` with no liveness
 // clause — and the outcome is benign: an ack, re-arm or delete on a reminder
 // whose item was archived a moment ago leaves rows the scan and the pending
 // surface already exclude, and RestoreItem brings back whatever state they
 // hold. Asserting liveness inside the store's WHERE would make AckReminder's
-// no-match ambiguous again ("not fired" vs "archived"), which round 12 removed
+// no-match ambiguous again ("not fired" vs "archived"), which an earlier change removed
 // on purpose; the courtesy stays at the door. See handleListItemReminders for the read
 // side of the same posture. The include-deleted load is what lets the
 // visibility check run first, so a guest who could not see the item learns
@@ -317,8 +317,8 @@ func (s *Server) resolveReminderForWrite(w http.ResponseWriter, r *http.Request,
 		writeError(w, http.StatusNotFound, "not_found", "Reminder not found")
 		return nil, nil
 	}
-	// The visibility refusal is the SAME 404 as an unknown id (TASK-3611 codex
-	// r3): requireItemVisible's "Item not found" would tell a caller who
+	// The visibility refusal is the SAME 404 as an unknown id (TASK-3611):
+	// requireItemVisible's "Item not found" would tell a caller who
 	// cannot see the item that this reminder id exists. checkItemVisible is
 	// the decision requireItemVisible makes, without its message.
 	if !appCeilingAllows(r, item.CollectionID) {
@@ -335,7 +335,7 @@ func (s *Server) resolveReminderForWrite(w http.ResponseWriter, r *http.Request,
 		return nil, nil
 	}
 	if item.DeletedAt != nil {
-		// BY SLUG, not Ref (codex round 17): Ref is derived and EMPTY for a
+		// BY SLUG, not Ref: Ref is derived and EMPTY for a
 		// legacy item with no item_number or collection prefix, and
 		// writeItemResolveError re-resolves by what it is handed — an empty
 		// ref matches nothing and falls through to a 404 that says nothing
@@ -368,7 +368,7 @@ func writeReminderManaged(w http.ResponseWriter, scheduleID string) {
 		"This reminder is managed by the item's schedule; resolve it with POST .../schedule/resolve, or change or delete the schedule instead", details)
 }
 
-// Bounds for the pending-reminder read (IDEA-2641, codex round 4).
+// Bounds for the pending-reminder read (IDEA-2641).
 const (
 	// pendingReminderWindow is how many pending reminders the dashboard shows.
 	pendingReminderWindow = 50
@@ -430,7 +430,7 @@ func (s *Server) collectPendingRemindersBounded(workspaceID string, scope store.
 			if len(out) == window {
 				// Rows AFTER this one in the page are pending reminders the
 				// caller is not being shown, so the set is truncated even if
-				// this was the last page (codex round 11). Reporting `more`
+				// this was the last page. Reporting `more`
 				// alone said "you have seen everything" while unread rows sat
 				// in the very page we stopped reading.
 				filledMidPage = i < len(page)-1

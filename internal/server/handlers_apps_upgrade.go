@@ -25,7 +25,7 @@ import (
 //   apply it in one transaction that re-derives the normalization AND the
 //   diff under locks and refuses if either moved (store.UpgradeAppInstall).
 //
-// Every upgrade, removals-only included, needs this confirm (lead ruling 3).
+// Every upgrade, removals-only included, needs this confirm.
 
 const appUpgradeNotice = "Review what changes. Changed artifacts arrive as new drafts; nothing you have activated is overwritten. Removed companion collections are released to the workspace with their data."
 
@@ -329,7 +329,7 @@ func upgradePlanFrom(old, next *appmanifest.Manifest, d *upgradeDiff, fresh *app
 // upgradeStateChecks runs, on q, the checks the diff cannot make alone
 // because they read the workspace: every installed companion still resolves,
 // and every additive field is safe for the collection's existing items
-// (codex r1 on U8b2). Preview runs it on the pool (advisory); confirm runs it
+// Preview runs it on the pool (advisory); confirm runs it
 // inside the transaction (the guarantee).
 func (s *Server) upgradeStateChecks(q store.Queryer, workspaceID, installID string, old *appmanifest.Manifest, d *upgradeDiff) error {
 	var slugs []string

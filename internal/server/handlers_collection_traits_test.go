@@ -181,7 +181,7 @@ func collectionTraits(t *testing.T, srv *Server, wsSlug, collSlug string) models
 // serialize it". An unknown kind used to reach artifact.Encode, which returns
 // ErrUnknownKind and surfaced as a 500. A collection whose declared kind this
 // build cannot encode is simply not exportable — a 400, exactly like a
-// collection declaring no kind at all. Codex round 1.
+// collection declaring no kind at all.
 func TestArtifactExportRefusesUnknownDeclaredKind(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
@@ -217,7 +217,6 @@ func TestArtifactExportRefusesUnknownDeclaredKind(t *testing.T) {
 }
 
 // TestResolvePlaybookIgnoresInvisibleCollections locks the shadowing fix from
-// Codex round 2.
 //
 // Before traits this was structurally impossible: resolution named one
 // collection. Now any number may declare invocation_field, so resolving across
@@ -308,7 +307,7 @@ func TestResolvePlaybookIgnoresInvisibleCollections(t *testing.T) {
 }
 
 // TestCollectionIDForKindIgnoresInvisibleCollections is the artifact-import
-// half of the round-2 shadowing fix. Same failure shape as playbook
+// half of the shadowing fix. Same failure shape as playbook
 // resolution: with two collections declaring one artifact kind, selecting the
 // first and checking visibility afterwards means a hidden collection makes the
 // import fail even though a destination the caller can write to exists.
@@ -375,7 +374,7 @@ func TestCollectionIDForKindIgnoresInvisibleCollections(t *testing.T) {
 }
 
 // TestGenericBootstrapIncludeIsBudgeted locks the SPEC-0 L4 boot budget on the
-// generic include path (Codex round 5). Without a cap, one declaration —
+// generic include path. Without a cap, one declaration —
 // bodies mode, no filter, on a large collection — makes every agent's boot
 // arbitrarily large, and nothing in the trait grammar prevents declaring it.
 //
@@ -439,7 +438,7 @@ func TestGenericBootstrapIncludeIsBudgeted(t *testing.T) {
 // or two declaring invocation_field, leave the resolvers picking by collection
 // order — sort_order then created_at — which makes where an imported artifact
 // lands, or which collection answers an invocation slug, a coin flip. Refused
-// with a conflict rather than resolved silently. Codex round 7.
+// with a conflict rather than resolved silently.
 func TestTraitConflictsRefused(t *testing.T) {
 	srv := testServer(t)
 	wsSlug := createWSWithCollections(t, srv)
@@ -499,7 +498,7 @@ func TestTraitConflictsRefused(t *testing.T) {
 	}
 }
 
-// TestFirstPartyKeyModeIsPinned covers the other round-7 contract gap: the
+// TestFirstPartyKeyModeIsPinned covers the other contract gap: the
 // three first-party payloads have fixed projection shapes, so a declaration
 // naming one with the other mode would be quietly ignored — the payload comes
 // out in the projection's shape regardless of what the declaration said.

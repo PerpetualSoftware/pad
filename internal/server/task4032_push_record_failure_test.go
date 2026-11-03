@@ -469,7 +469,7 @@ func TestTask4032_TicksNeverOverlapAcrossStopStart(t *testing.T) {
 	})
 }
 
-// TASK-4032 codex r3 M1. A retry whose record fails in a later chunk has
+// TASK-4032. A retry whose record fails in a later chunk has
 // already committed the earlier ones; those ids must leave the parked set, or
 // each counts twice against the rate cap (once as sent, once as parked). The
 // fault hits one row in the second 500-id chunk (store.notificationIDChunk).
@@ -533,7 +533,7 @@ func (f *pdx) failExpire(on bool) {
 	}
 }
 
-// TASK-4032 r5 H-Q1. A parked row past the expiry age is dropped from the set
+// TASK-4032. A parked row past the expiry age is dropped from the set
 // even when its record fails again; if the expiry sweep failed in the same
 // tick, the row is still pending with a lapsed lease. The claim's expiry
 // bound is what keeps it from being pushed a second time. Kills: removing the
@@ -568,7 +568,7 @@ func TestPushDispatch_DroppedParkedRowIsNotResentWhenExpireFails(t *testing.T) {
 	})
 }
 
-// TASK-4032 r5 H-Q1. The drop rule compares against the same second-truncated
+// TASK-4032. The drop rule compares against the same second-truncated
 // cutoff the claim uses, so a row created exactly on the cutoff second is
 // claimable AND kept parked (excluded from the claim), never claimable and
 // dropped. The tick starts half a second past that second. Kills: comparing

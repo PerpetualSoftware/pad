@@ -6,7 +6,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// BUG-3447 (codex r5): collections.source is the only agent-activity signal
+// BUG-3447: collections.source is the only agent-activity signal
 // an onboarding workspace has before its first item, and `pad db migrate` is
 // this same export piped into import. It must survive the bundle; a bundle
 // value the server would never write imports as ” (unknown, never agent).

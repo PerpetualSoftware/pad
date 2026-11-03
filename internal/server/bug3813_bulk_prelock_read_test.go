@@ -217,7 +217,7 @@ func TestBUG3813_BulkTagKeepsAConcurrentTagChange(t *testing.T) {
 	}
 }
 
-// #2188 codex r1 Low: the retry is bounded. A concurrent writer that wins
+// #2188: the retry is bounded. A concurrent writer that wins
 // every attempt exhausts bulkTagAttempts, and the row fails with conflict
 // rather than retrying without end or writing over the last concurrent set.
 func TestBUG3813_BulkTagGivesUpAfterBulkTagAttempts(t *testing.T) {

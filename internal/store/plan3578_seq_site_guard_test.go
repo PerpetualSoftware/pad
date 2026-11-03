@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// PLAN-3578 (lead ruling, condition 1): a rebased patch reports its
+// PLAN-3578 (condition 1): a rebased patch reports its
 // intervening writes as complete only when the activity seq chain is
 // unbroken, and a write that moves an item's seq without a stamped entry
 // breaks it. Every statement that moves items.seq is classified here: STAMPED

@@ -18,10 +18,10 @@ import (
 // WHAT IT IS NOT. It is not an exemption from the gate. The gate still runs, on
 // the repaired bytes, and still decides; the flag buys the body one repair
 // attempt first. BUG-2803's filing named this endpoint as carrying the largest
-// attacker-controlled body in the product and explicitly ruled out exempting
+// attacker-controlled body in the product and explicitly excluded exempting
 // it, so nothing here may become a decode path that skips the check.
 //
-// Dave's day-54 ruling: the flag ships, the default stays strict, the strict
+// Design: the flag ships, the default stays strict, the strict
 // refusal names the flag, and a test drives that named remedy against the exact
 // failing fixture.
 

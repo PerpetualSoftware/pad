@@ -268,7 +268,7 @@ func (s *Server) publishStructuralLinkSourceEvent(r *http.Request, workspaceID, 
 	// keeping the first from following the second is the point of the central
 	// table. This publish takes sseItemUpdated like every other SSE site, so a
 	// future rename of the snake_case vocabulary reaches it; what it does NOT
-	// mean is that events/1 emits for this mutation (codex round 8 — the
+	// mean is that events/1 emits for this mutation (the
 	// literal here would have quietly recreated exactly the drift the mapping
 	// exists to prevent).
 	//
@@ -281,12 +281,12 @@ func (s *Server) publishStructuralLinkSourceEvent(r *http.Request, workspaceID, 
 	// says nothing about them.
 	//
 	// `implements` IS THE UNRESOLVED CASE, and this comment previously got it
-	// wrong by listing it with the silent ones (codex round 7). It DOES bump
+	// wrong by listing it with the silent ones. It DOES bump
 	// the source row — bumpStructuralLinkSourceTx treats it exactly like
 	// parent — so the mechanical criterion would have it emit, while v1.5's
 	// relationship-link silence would not. Deciding it inside a delivery
 	// refactor would put an event nobody ruled on onto a public wire, so it is
-	// raised with the lead and left as it was. TASK-2723 carries the
+	// left as it was. TASK-2723 carries the
 	// link.created / link.removed shape and this call site with it.
 	//
 	// Consequence worth naming: this handler publishes SSE for BOTH kinds, so

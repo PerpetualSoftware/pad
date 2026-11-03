@@ -109,7 +109,7 @@ func TestWorkspaceTabs_SoftDeleteLockOrder(t *testing.T) {
 }
 
 // A soft delete of a workspace racing its owner's account deletion, the
-// owner holding a tab on it (codex round 3 on BUG-3285). Account deletion
+// owner holding a tab on it (BUG-3285). Account deletion
 // takes users(D) and then the workspaces row; a soft delete that took the
 // workspaces row first and then its holders' users rows (D among them)
 // would wait on it in the other order. A soft delete that loses the race

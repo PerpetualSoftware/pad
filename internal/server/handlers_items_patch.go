@@ -30,7 +30,7 @@ import (
 //   - the body is computed inside the store transaction from the row it
 //     replaces (models.ItemUpdate.ContentTransform), so anchors match the
 //     committed body, never an earlier read;
-//   - expected_seq does not refuse: anchors are the precondition (ruling iii).
+//   - expected_seq does not refuse: anchors are the precondition.
 //     A moved seq is applied over and reported as rebased, with the
 //     intervening writes and the diff;
 //   - an item with a live editor is refused (patch_room_open). The open-room
@@ -136,7 +136,7 @@ func (p *itemPatch) recordEdits(applied []bodypatch.AppliedEdit) error {
 }
 
 // maxPatchIntervening caps the intervening writes a rebased patch lists
-// (lead ruling); the diff is the real check.
+// The diff is the real check.
 const maxPatchIntervening = 50
 
 func (s *Server) handlePatchItem(w http.ResponseWriter, r *http.Request) {
@@ -500,7 +500,7 @@ func (s *Server) patchViaApplier(w http.ResponseWriter, item *models.Item, input
 	}
 	p.before, p.after = ack.Before, ack.After
 	// Edits that cancel out change nothing in the tab either: refuse, writing
-	// nothing, as the no-room path does (retro Codex round on the #2055 fix:
+	// nothing, as the no-room path does (the #2055 fix:
 	// this path used to write a version and advance seq for a no-op).
 	if ack.Before == ack.After {
 		s.writePatchRefusal(w, ref, bodypatch.ErrNoChange)
@@ -566,7 +566,7 @@ func (s *Server) writeTabPatchRefusal(w http.ResponseWriter, ref string, e *coll
 	}
 }
 
-// countPatchRefusal counts a refused patch by reason (lead ruling: the
+// countPatchRefusal counts a refused patch by reason (the
 // uncovered share must be visible).
 func (s *Server) countPatchRefusal(reason string) {
 	if s.metrics == nil {
@@ -582,7 +582,7 @@ func (s *Server) countPatchRefusal(reason string) {
 
 // claimPatchKey claims the request's idempotency key (TASK-3585) BEFORE any
 // write-path guard, so a retry of a write that committed replays it rather
-// than meeting its own first success as a conflict (lead ruling). It answers
+// than meeting its own first success as a conflict. It answers
 // the request itself, returning false, when the key settles it: a replay, a
 // key reused for a different request (422), or one in flight (409).
 func (s *Server) claimPatchKey(w http.ResponseWriter, r *http.Request, req *patchRequest, p *itemPatch, key string) bool {
@@ -670,7 +670,7 @@ func (s *Server) writePatchOutcomeUnknownFor(w http.ResponseWriter, item *models
 }
 
 // writePatchOutcomeUnknown answers a retry of an unconfirmed patch whose
-// connection is gone (TASK-3585, lead ruling): it is NOT re-planned (an
+// connection is gone (TASK-3585): it is NOT re-planned (an
 // insert-shaped edit keeps its anchor and would apply twice). The caller gets
 // the current seq and the diff from the body the patch was sent against to
 // now, and decides; the key stays unknown.

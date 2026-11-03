@@ -58,7 +58,7 @@ var ErrArtifactUnsafeYAML = errors.New("artifact import: frontmatter rejected by
 // anything here.
 //
 // "Refuses", not "cannot" — the distinction matters and the earlier wording
-// blurred it (codex round 20). PostgreSQL rejects a NUL in a text or JSON
+// blurred it. PostgreSQL rejects a NUL in a text or JSON
 // column outright; SQLite would accept one in TEXT. So this is an application
 // rule Pad applies on both dialects, not a storage limit it inherits from
 // either. Stating it as a capability would tell the next reader that SQLite
@@ -80,8 +80,7 @@ var ErrArtifactUnbindableText = errors.New("artifact import: body contains inval
 //  5. Decoded text validity, because YAML manufactures a NUL from \0 that
 //     step 2 cannot see in the request bytes.
 //
-// Steps 2 and 5 arrived with BUG-2803; this list said "three checks" until
-// codex round 8 pointed out it was describing the version before them.
+// Steps 2 and 5 arrived with BUG-2803; this list previously said "three checks".
 //
 // Returns the decoded Artifact or a typed error: ErrArtifactTooLarge,
 // ErrArtifactUnbindableText, ErrArtifactUnsafeYAML, or an artifact.*
@@ -120,7 +119,7 @@ func decodeArtifactBytes(data []byte) (artifact.Artifact, error) {
 	// neither). A raw NUL or invalid UTF-8 here reaches the store and
 	// Postgres answers 22021, which the handler turns into a 500 for what is
 	// a client error. Same predicate as ValidatePath and ValidateQuery.
-	// Found by the codex round 3 sweep over body readers (BUG-2803).
+	// Found by the sweep over body readers (BUG-2803).
 	if !bindableText(string(data)) {
 		return artifact.Artifact{}, ErrArtifactUnbindableText
 	}
@@ -141,7 +140,7 @@ func decodeArtifactBytes(data []byte) (artifact.Artifact, error) {
 	// a double-quoted scalar `title: "a\0b"` carries no NUL in the request
 	// bytes, passes (2a), and manufactures one during the YAML decode.
 	// Measured before this check: such an artifact imported 201 with a NUL in
-	// the item title (codex round 4, BUG-2803). Same shape as the JSON half —
+	// the item title (BUG-2803). Same shape as the JSON half —
 	// a value that only becomes dangerous after a SECOND parse — so it gets
 	// the same answer, at the layer that can see it.
 	if !artifactIsBindableText(art) {
@@ -254,7 +253,7 @@ func extractFrontmatterRegion(s string) (string, bool) {
 //
 // It works by MARSHALLING the artifact and searching the result, rather than
 // walking its fields by type. The hand-written walk this replaces missed two
-// things a reviewer found immediately (codex round 8): Provenance, whose
+// things: Provenance, whose
 // strings are rendered into a Markdown footer appended to the stored content,
 // and Arguments, whose declared type is []map[string]any — a concrete slice
 // type the walk's `[]any` case never matched. Both were reachable. A type
@@ -267,8 +266,7 @@ func extractFrontmatterRegion(s string) (string, bool) {
 // machinery as caller data — not byte-searched for the escape sequence. An
 // earlier version of this paragraph claimed a byte search was safe because
 // "the ambiguity cannot arise here"; the body comment below records why that
-// was simply wrong (codex round 9, re-caught contradicting itself in the
-// closing rounds): a value holding the six LITERAL characters marshals to a
+// was simply wrong: a value holding the six LITERAL characters marshals to a
 // doubled backslash that still contains the sequence as a substring.
 //
 // SCOPE, stated because marshalling hides one thing: invalid UTF-8 in a Go
@@ -286,7 +284,7 @@ func artifactIsBindableText(art artifact.Artifact) bool {
 		return false
 	}
 	// Searching the marshalled BYTES for the escape is wrong, and this
-	// function did it until codex round 9: a value holding the six LITERAL
+	// function once did it: a value holding the six LITERAL
 	// characters marshals to a doubled backslash, which still contains the
 	// six-character sequence as a substring, so valid content was refused.
 	// That is the same doubled-backslash trap bodyDecodesNUL exists to

@@ -98,7 +98,7 @@ func TestUpdateCollection_OptimisticConcurrency(t *testing.T) {
 		}
 	})
 
-	// Codex round-2 P2: the 409's actual_updated_at must be FULL sub-second
+	// The 409's actual_updated_at must be FULL sub-second
 	// precision so the client can round-trip it as the token on retry. A
 	// truncated (second-precision) token would never match the row's real
 	// sub-second updated_at, 409-looping forever.
@@ -164,7 +164,7 @@ func TestUpdateCollection_OptimisticConcurrency(t *testing.T) {
 	})
 }
 
-// TestDeleteCollection_OptimisticConcurrency covers BUG-2265 Codex round 8: the
+// TestDeleteCollection_OptimisticConcurrency covers BUG-2265: the
 // archive/delete accepts an expected_updated_at token so a concurrent rename
 // that re-owned the slug (or any change) 409s instead of archiving the wrong
 // collection. Mirrors the update OCC.
@@ -294,8 +294,8 @@ func TestUpdateCollection_PublishesCollectionUpdatedEvent(t *testing.T) {
 	}
 }
 
-// TestUpdateCollection_RenameEventCarriesNewSlug covers BUG-2265 Codex-round
-// P2: a rename broadcasts collection_updated routed by the OLD slug and
+// TestUpdateCollection_RenameEventCarriesNewSlug covers BUG-2265: a rename broadcasts
+// collection_updated routed by the OLD slug and
 // carrying the NEW slug so remote tabs can re-target instead of hitting the
 // dead old slug.
 func TestUpdateCollection_RenameEventCarriesNewSlug(t *testing.T) {
@@ -353,10 +353,10 @@ func TestUpdateCollection_RenameEventCarriesNewSlug(t *testing.T) {
 	}
 }
 
-// TestUpdateCollection_MigrationSetsItemsChanged covers BUG-2265 Codex round
-// 6/7: a schema change carrying migrations sets the SANITIZED items_changed
+// TestUpdateCollection_MigrationSetsItemsChanged covers BUG-2265: a schema change
+// carrying migrations sets the SANITIZED items_changed
 // flag on collection_updated — keyed on whether a migration was REQUESTED, not
-// how many rows changed (round 7 P1: an affected-row count would let an
+// how many rows changed (an affected-row count would let an
 // item-grant subscriber infer that hidden items matched). The event carries the
 // STABLE CollectionID for id-based matching. A settings-only update leaves
 // items_changed false. No separate items_bulk_updated is emitted.

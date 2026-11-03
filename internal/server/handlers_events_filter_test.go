@@ -89,7 +89,7 @@ func TestSSEEventVisibleFor(t *testing.T) {
 		// can see the collection receives it regardless of which slug they know.
 		{"rename delivered by id", fullColl, collRenamed(tasksID, "tasks", "renamed-tasks"), true},
 
-		// SLUG-REUSE LEAK FIX (Codex round 7): the subscriber sees a DIFFERENT
+		// SLUG-REUSE LEAK FIX: the subscriber sees a DIFFERENT
 		// collection (otherID) that now owns slug "tasks"; a replayed event for
 		// the ORIGINAL collection (tasksID) must be DROPPED even though its slug
 		// is in visibleSlugSet — otherwise it misroutes / leaks the new slug.

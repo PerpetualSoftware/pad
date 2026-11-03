@@ -68,7 +68,7 @@ func TestTask3413b_TheInstallListsItsProvisionedItems(t *testing.T) {
 }
 
 // The prefix is compared in characters: an origin whose host is not ASCII
-// still finds its items (codex U9b r1).
+// still finds its items.
 func TestTask3413b_ANonASCIIOriginFindsItsItems(t *testing.T) {
 	e := newProvisionEnv(t)
 	p := e.stagePreview(t)
@@ -92,7 +92,7 @@ func TestTask3413b_ANonASCIIOriginFindsItsItems(t *testing.T) {
 	}
 }
 
-// §2 step 7 (lead ruling, U9b): activating an app's draft is an ordinary
+// §2 step 7: activating an app's draft is an ordinary
 // edit by a person, never the app's. An app token, service or a delegated
 // owner's, cannot PATCH a draft playbook or convention the app's pack
 // provisioned: those live in system collections, never companions, and app

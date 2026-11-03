@@ -37,7 +37,7 @@ import (
 // (map[string]any); expectObject==false requires a JSON array
 // ([]any) — used for items.tags.
 //
-// IDEA-1486 R1 codex P2: `json.Unmarshal("null", &m)` returns nil error
+// IDEA-1486: `json.Unmarshal("null", &m)` returns nil error
 // and leaves the destination nil. Imported `fields: null` (or the
 // string literal `"null"` at the JSON-encoded-string layer) would
 // otherwise satisfy this validator and land as a JSONB null on
@@ -86,7 +86,7 @@ func coerceJSONForImport(raw, defaultJSON, field, rowID, workspaceID string, exp
 // still imports". Refusing titles in the same loop would give one loop two
 // dispositions for the same class of problem.
 //
-// The coercion does NOT weaken Dave's untitled-items ruling. The imported row
+// The coercion does NOT weaken the untitled-items rule. The imported row
 // lands WITH a title — the literal string "Untitled" — so the invariant that
 // no door writes an empty title into the database holds here too, and the
 // store's baseSlug == "" fallback stays defensive-only.
@@ -564,7 +564,7 @@ func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExpor
 // in this import, and returns "" — meaning no parent — unless that item
 // actually landed.
 //
-// itemMap alone is not enough (BUG-2884, codex round 3). It holds an entry for
+// itemMap alone is not enough (BUG-2884). It holds an entry for
 // every item in the bundle INCLUDING orphans, written before the orphan skip
 // because parent resolution reads it for items the loop has not reached yet.
 // So `mapped != ""` was satisfied by an id naming no row, and a live child of
@@ -651,7 +651,7 @@ func (s *Store) ImportWorkspaceWithReport(data *models.WorkspaceExport, newName 
 // reminders, relation fields), so a duplicate collapses two rows into one
 // mapping and every reference to the id lands silently on whichever row was
 // written last. It runs before the transaction opens, so a refused bundle
-// writes nothing. An EMPTY id counts like any other (codex r1): the maps key
+// writes nothing. An EMPTY id counts like any other: the maps key
 // on "" too, so two rows without an id collide and a reference written as ""
 // resolves to whichever came last. One row without an id stays importable,
 // as it always was: a hand-built export may omit ids, and a lone "" is
@@ -754,9 +754,9 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 	// trade. What must not happen is that it lands silently: with two
 	// declarations live, which collection receives an imported artifact or
 	// answers an invocation slug depends on collection order. Warn so the
-	// operator can fix it. Codex round 8.
+	// operator can fix it.
 	// DE-DUPLICATED ON THE WAY IN, not warned about and inserted (TASK-2710
-	// item 4, and codex round 2's P1 when it was still the latter).
+	// item 4).
 	//
 	// Import used to warn and insert both, which was right while nothing
 	// forbade the pair. With the partial unique indexes the second INSERT is
@@ -772,7 +772,7 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 	// cleanly the other failures fail.
 	//
 	// THE CHECK HAPPENS IN THE INSERT LOOP, ON THE FINAL BYTES, and that
-	// placement is the fix for codex round 3's P1 rather than a style choice.
+	// placement is the fix for a real bug rather than a style choice.
 	// An earlier version pre-computed the strips from the traits the BUNDLE
 	// carries, which is not what gets written: coercion, validation-discard and
 	// canonical inference all run afterwards. A pre-traits archive carrying
@@ -856,7 +856,7 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 		// deliberately does NOT claim what the collection ends up with —
 		// inference below may still give it the canonical set, and an earlier
 		// version of this said "importing with no declarations" and was then
-		// contradicted three lines later. Codex round 6.
+		// contradicted three lines later.
 		discarded := false
 		if parsed, perr := models.ParseCollectionTraits(traits); perr != nil {
 			slog.Warn("import: collection traits could not be parsed; discarding them",
@@ -903,7 +903,7 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 		// working workspace is worth more than honouring a deliberate clear
 		// that only round-trips through an export. Slug-keyed for the same
 		// reason the migration is: on a row with no declarations, the slug is
-		// the only evidence of intent that exists. Codex round 4.
+		// the only evidence of intent that exists.
 		//
 		// Not applied to an ARCHIVED collection (BUG-2884): inference exists so
 		// a restored workspace comes up ROUTING, and an archived collection
@@ -982,7 +982,7 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 		}
 
 		// abandoned_options must be a subset of terminal_options, as the
-		// create/update doors require (BUG-2347, codex round 1 on #1464): a
+		// create/update doors require (BUG-2347, #1464): a
 		// declared list REPLACES the global fallback, so an invalid one would
 		// make a real abandon value count as shipped. Only a schema that
 		// parses is checked; the rest of the blob stays verbatim, as always.
@@ -1160,7 +1160,7 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 		}
 		itemSlug, slugCoerced := importCoercedSlug(it.Slug)
 		// Collision resolution is keyed on the CLAIMED SET, not on whether THIS
-		// row was truncated (codex round 1, P1). Truncation is the only source
+		// row was truncated. Truncation is the only source
 		// of duplicate slugs here — a bundle exported from a live workspace
 		// cannot contain two identical slugs, because UNIQUE(workspace_id, slug)
 		// held there — but the duplicate it creates can land in EITHER order:
@@ -1290,7 +1290,7 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 	// orphaned items — ones whose collection is missing from the bundle — with a
 	// `continue`, and insertedItems is what records the survivors. Checking the
 	// bundle's length up front would refuse an import of 150 items at a 100 cap
-	// even when 50 of them are orphans and only 100 would land. Dave's ruling
+	// even when 50 of them are orphans and only 100 would land. The product rule
 	// asks the refusal to name "how many would land vs the limit", so the check
 	// counts what landed. The whole thing sits inside the transaction that also
 	// minted the workspace, so refusing here rolls the workspace back with it.
@@ -1465,8 +1465,8 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 		if cm.ID != "" {
 			commentMap[cm.ItemID+"\x00"+cm.ID] = newCommentID
 		}
-		// No comment_mentions rows for imported comments (TASK-3917 lead
-		// ruling bb0c9fc6): history would stay open for good, and a bundle's
+		// No comment_mentions rows for imported comments (TASK-3917):
+		// history would stay open for good, and a bundle's
 		// @handles name SOURCE-instance users that could bind to a different
 		// local user. Matches needsOthersComment (needs_snooze.go, #2231 r1).
 	}
@@ -1494,7 +1494,7 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 		// bundle can carry the same edge twice. On Postgres the unique
 		// violation aborts the transaction, so the `continue` below could
 		// never ignore it — COMMIT failed and the whole restore was lost over
-		// a row the loop meant to drop (codex round 3). Keyed on the remapped
+		// a row the loop meant to drop. Keyed on the remapped
 		// triple because that is what the index sees.
 		edge := newSourceID + "\x00" + newTargetID + "\x00" + lk.LinkType
 		if seenLinks[edge] {
@@ -1545,7 +1545,7 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 		// so `!= ""` is satisfied by an id that names no row. Inserting a
 		// foreign key to it fails, and this loop used to treat that as fatal,
 		// so ONE orphaned item with a reminder aborted the entire workspace
-		// restore. Codex round 10.
+		// restore.
 		if !insertedItems[newItemID] {
 			continue
 		}
@@ -1571,7 +1571,7 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 			firedAt = rm.FiredAt
 		}
 		if rm.AckedAt != "" {
-			// ACKED WITHOUT FIRED IS NOT A STATE (codex round 11). The
+			// ACKED WITHOUT FIRED IS NOT A STATE. The
 			// lifecycle has three: armed, fired-unacked, fired-acked. A bundle
 			// carrying an acknowledgement with no fire — which this server's
 			// export cannot produce, but a hand-edited or foreign one can —
@@ -1599,7 +1599,7 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 			// loops both survive a bad row. A reminder is the least critical
 			// thing in a bundle, and failing a 900-item restore over one of
 			// them is the wrong trade; this was the aggravating half of the
-			// round-10 finding, and it was mine, not the pre-existing mapping.
+			// problem, and it came from this change, not the pre-existing mapping.
 			slog.Warn("workspace import: skipping reminder that failed to insert",
 				"workspace_id", ws.ID, "item_id", newItemID, "error", err)
 			continue
@@ -1795,7 +1795,6 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 	if report != nil {
 		// insertedItemMap, not itemMap: itemMap also names items the import
 		// skipped (their collection was missing), whose ids exist nowhere
-		// (codex r2).
 		report.ItemIDs = insertedItemMap
 	}
 	return ws, nil
@@ -1828,7 +1827,7 @@ func remapFieldIDs(fieldsJSON string, itemMap map[string]string) string {
 	if fieldsJSON == "" {
 		return "{}"
 	}
-	// WHOLE-VALUE matches only, never a substring (codex round 17).
+	// WHOLE-VALUE matches only, never a substring.
 	//
 	// This was `strings.ReplaceAll` over the RAW id, which corrupts a value
 	// that merely CONTAINS one: with a bundle carrying ids `c-1` and a

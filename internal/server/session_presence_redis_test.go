@@ -140,10 +140,9 @@ func TestRedisSessionPresence_CrashedInstanceEntriesExpire(t *testing.T) {
 		renewInterval: time.Hour,
 		renewals:      make(map[string]*renewal),
 	}
-	// Cleaned up at the END, after the expiry has been observed (codex
-	// round 13). The crash is modelled by the renewal never FIRING — a
-	// one-hour ticker — so joining the goroutine afterwards does not weaken
-	// the scenario, while abandoning it leaks a goroutine and a Redis
+	// Cleaned up at the END, after the expiry has been observed. The crash is modelled by the renewal never
+	// FIRING — a one-hour ticker — so joining the goroutine afterwards does
+	// not weaken the scenario, while abandoning it leaks a goroutine and a Redis
 	// client into every subsequent test in the package and into -count
 	// reruns.
 	t.Cleanup(crashed.Close)
@@ -180,7 +179,7 @@ func TestRedisSessionPresence_RenewalKeepsALiveSessionListed(t *testing.T) {
 	t.Parallel()
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	// MARGIN, deliberately generous (codex round 13). The first version ran
+	// MARGIN, deliberately generous. The first version ran
 	// a 2s fake TTL forward by 1s every 50ms of wall time, so a ~100ms
 	// scheduler pause could expire the session before a renewal ran and
 	// report "renewal broken" for a loaded CI machine. A 10s TTL tolerates
@@ -258,8 +257,7 @@ func TestRedisSessionPresence_ScopedPerUser(t *testing.T) {
 	}
 }
 
-// TestRedisSessionPresence_RemoveWaitsForAnInFlightRenewal — codex round
-// 1, P2.
+// TestRedisSessionPresence_RemoveWaitsForAnInFlightRenewal.
 //
 // Remove cancels the renewal goroutine and then DELs the entry.
 // Cancelling returns immediately, so an unfixed Remove leaves a renewal

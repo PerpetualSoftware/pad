@@ -11,7 +11,7 @@ import (
 // BUG-2995: a SUCCESSFUL content PATCH through the designated applier answers 200
 // carrying the item's PREVIOUS content.
 //
-// This is the control the lead's ruling requires: a test that drives the applier
+// This is the control the ruling requires: a test that drives the applier
 // path and goes red on the previous content appearing in a 200. It is written to
 // fail against the code as it stands, which is what makes its green mean anything.
 //
@@ -142,7 +142,7 @@ func keysOf(m map[string]any) []string {
 // means something only if it is absent when the content DID land in the row, so a
 // change that stamps it unconditionally has to fail somewhere.
 //
-// WHAT IT ESTABLISHES, stated exactly (codex round 1 P2). The precondition it checks
+// WHAT IT ESTABLISHES, stated exactly. The precondition it checks
 // is that items.content holds the sent value — which is true of the direct-write
 // path, and equally true of any ordinary non-routed write. (It named
 // contentRouteFallThrough as a third case until BUG-2994 removed that route; the

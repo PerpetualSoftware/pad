@@ -218,8 +218,8 @@ func bug2685PresentationWorkspace(t *testing.T) (*Server, string) {
 	return srv, ws
 }
 
-// Codex round 2 raised the public payload as a response-shape change and
-// proposed preserving the raw schema. The change IS the fix, and the reason is
+// The public payload could be read as a response-shape change, with the
+// raw schema preserved instead. The change IS the fix, and the reason is
 // in the handler's own comment two lines above the decode: the schema is
 // emitted "so the public viewer can render" the items. That is an item-field
 // purpose, so an anonymous viewer would otherwise be handed a declaration

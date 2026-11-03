@@ -17,7 +17,7 @@ package server
 // The caller can override the guard with `--force` (CLI) / `force: true`
 // (MCP body field). The override still records the status change.
 //
-// ── Visibility (Codex round 2 P1) ─────────────────────────────────────
+// ── Visibility ─────────────────────────────────────
 // The invariant itself is a DATA-INTEGRITY gate, not a visibility
 // gate: we evaluate it against ALL children (so a caller with reduced
 // visibility can't close a parent that has children they don't see).
@@ -36,7 +36,7 @@ package server
 //     either coordination with someone who can or `--force` if their
 //     role permits.
 //
-// ── Atomicity (Codex round 2 P2) ──────────────────────────────────────
+// ── Atomicity ──────────────────────────────────────
 // The guard query runs INSIDE the same store transaction as the
 // UPDATE, so a concurrent child insert / child status flip can't slip
 // between the read and the write. See Store.UpdateItemWithPreCheck +
@@ -190,7 +190,7 @@ func (s *Server) runOpenChildrenGuard(tx *sql.Tx, ctx openChildrenGuardContext) 
 	// don't need to be read from the same tx — schemas don't mutate
 	// in the kind of races this guard cares about.
 	ctxCache := make(map[string]doneContext)
-	// Codex round-5 P3: initialize as empty (not nil) so the
+	// Initialize as empty (not nil) so the
 	// hidden-only rejection path serializes `open_children: []`
 	// rather than `null`. The contract documents this field as an
 	// array; clients (CLI renderer, MCP agents) `range` over it
@@ -201,7 +201,7 @@ func (s *Server) runOpenChildrenGuard(tx *sql.Tx, ctx openChildrenGuardContext) 
 		child := &children[i]
 		dc, cached := ctxCache[child.CollectionID]
 		if !cached {
-			// Codex round-3 P3: include soft-deleted collections so a
+			// Include soft-deleted collections so a
 			// child still attached to a soft-deleted collection is
 			// evaluated against its own done-field schema, not the
 			// default-status fallback (which would false-block when
@@ -419,7 +419,7 @@ const contentNotAppliedRetryAfterSeconds = 1
 // outcome the write-first-apply-second ordering creates (PLAN-2975 decision 2): the
 // row write COMMITTED and the content did not reach the collaborative document.
 //
-// It is a 409 rather than a 200-with-a-warning, and that is the ruled shape rather
+// It is a 409 rather than a 200-with-a-warning, and that is the deliberate shape rather
 // than a stylistic choice. The two failure modes are not symmetric: a client that
 // ignores an advisory on a 200 believes the content landed and loses the information
 // silently, while a client that meets a non-2xx retries — the fields it re-sends hit
@@ -435,13 +435,13 @@ const contentNotAppliedRetryAfterSeconds = 1
 // timed-out applier from an evicted one.
 //
 // `contentOutcome` is the part a first draft of this got WRONG, and the reason it is
-// a parameter rather than a constant false (codex round 1, this unit). An apply that
+// a parameter rather than a constant false (a first draft got it wrong). An apply that
 // TIMED OUT is not the same as one that never happened: ApplyExternalContent only
 // returns ErrAllAppliersTimedOut after an applier_request has actually gone out on
 // the wire, and the elected peer may have applied the markdown and persisted its ops
 // while the ack was lost or merely late. Answering `content_landed: false` there
-// states as fact something the server cannot know — the same overclaim the ruling
-// avoided by leaving applier_ambiguous alone. So the envelope reports what the server
+// states as fact something the server cannot know — the same overclaim the design
+// avoids by leaving applier_ambiguous alone. So the envelope reports what the server
 // can actually distinguish, and the discriminator already exists upstream:
 // ErrNoActiveRoom / ErrNoApplierAvailable mean nothing ever reached a peer
 // (anyWriteSucceeded == false), while ErrAllAppliersTimedOut means something did.

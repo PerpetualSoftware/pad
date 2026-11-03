@@ -451,7 +451,7 @@ func TestTimeline_DivertedIDIsStableAcrossBlobMutations(t *testing.T) {
 // namespace property that makes it safe, not merely that it differs from
 // something.
 //
-// Round 3 of the review found the earlier tests too weak to distinguish the
+// The earlier tests were too weak to distinguish the
 // fix from its alternatives: "stable and not the raw id" is satisfied by a
 // constant, and the collision tests' inequality checks are satisfied by the
 // positional fallback this deliberately replaced. These assert the contract.
@@ -489,7 +489,7 @@ func TestTimeline_DerivedIDContract(t *testing.T) {
 	}
 	// The namespace is closed: a raw id that ALREADY carries the prefix is
 	// itself diverted, so it cannot land on the id entry "a" derived. Before
-	// round 3 this one was kept as-is, "a" collided with it, and "a" fell
+	// the fix this one was kept as-is, "a" collided with it, and "a" fell
 	// through to the unstable positional path.
 	if got, want := bySummary["c"], "note:note:"+uuidA; got != want {
 		t.Errorf("a raw id already in the derived namespace = %q, want %q", got, want)
@@ -539,7 +539,7 @@ func TestTimeline_DerivedIDRoundTripsAsACursor(t *testing.T) {
 // TestTimeline_DerivedNamespaceIsClosedAcrossKinds is the cross-kind case.
 //
 // Notes and decisions are numbered by separate calls but share one uniqueness
-// map, so checking only the CALLING kind's prefix leaves the round-3 hole
+// map, so checking only the CALLING kind's prefix leaves the same hole
 // intact one kind across: a note whose raw id is "decision:<uuid>" is kept,
 // and a decision whose raw id is "<uuid>" then derives onto exactly that
 // string, falls through, and lands on the index-dependent positional path.

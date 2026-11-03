@@ -120,7 +120,7 @@ func TestTASK2307_ClientClassVocabularyIsClosed(t *testing.T) {
 }
 
 // A caller refused by the per-token rate limit inside MCPBearerAuth is not
-// counted (codex round 2): the counter's total equals the requests the
+// counted: the counter's total equals the requests the
 // transport actually received, with the 429 left to
 // pad_mcp_authz_denials_total.
 func TestTASK2307_RateLimitedRequestsAreNotCounted(t *testing.T) {

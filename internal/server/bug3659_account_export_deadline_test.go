@@ -105,7 +105,7 @@ func bug3659OwnerAndWorkspace(t *testing.T, srv *Server) (string, *models.Worksp
 	return u.ID, &wss[0]
 }
 
-// Codex r1: access restricted after the preflight must not be exported.
+// Access restricted after the preflight must not be exported.
 // The snapshot re-checks it, so the export aborts rather than ship content
 // the account can no longer see.
 func TestBUG3659_AccessRestrictedAfterPreflightIsNotExported(t *testing.T) {
@@ -127,7 +127,7 @@ func TestBUG3659_AccessRestrictedAfterPreflightIsNotExported(t *testing.T) {
 	}
 }
 
-// Codex r1: a workspace's collections and items come from one snapshot, so a
+// A workspace's collections and items come from one snapshot, so a
 // collection and item created between the two reads are in neither, and every
 // exported item's collection is in the export.
 func TestBUG3659_CollectionsAndItemsShareOneSnapshot(t *testing.T) {
@@ -183,7 +183,7 @@ func TestBUG3659_CollectionsAndItemsShareOneSnapshot(t *testing.T) {
 	}
 }
 
-// TASK-3401 review of the snapshot path (lead, on BUG-3659): the access
+// TASK-3401 review of the snapshot path (BUG-3659): the access
 // re-check inside the export's snapshot applies the app ceiling exactly as
 // visibleCollectionIDs does, because both run visibleCollectionIDsQ. The
 // account export route sits outside the app routes, so a real request never

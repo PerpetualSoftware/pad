@@ -92,8 +92,8 @@ type execQueryer interface {
 //
 // INSERT FIRST, THEN LOCK AND COUNT, the same order ImportWorkspace uses. Both
 // workspace mints must take their two locks in one order: the workspace row's
-// UNIQUE slug entry, then the owner's users row. Review round 2 on PR A found
-// the cycle the opposite order makes on Postgres: a create holding the owner
+// UNIQUE slug entry, then the owner's users row.
+// The cycle the opposite order makes on Postgres: a create holding the owner
 // lock while it waits on an import's uncommitted row for the same slug, and
 // the import asking for the owner lock at its end. With one order, the create
 // waits on the slug holding nothing, and the import commits.

@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// The announcer answers codex round 4's P1: a slow subscriber answered with a
+// The announcer answers this: a slow subscriber answered with a
 // delta sync can be made slower, drop more, and be answered again. The bound
 // has to hold WITHOUT losing a gap, because dropping one would be the same
 // dishonesty this fix exists to remove, one layer up.

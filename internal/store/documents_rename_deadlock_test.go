@@ -22,7 +22,7 @@ import (
 // figure — it asserts the absence of the failure over 8 rounds against the
 // fixed code, and dies to the mutations that remove or misplace the lock.
 // The distinction matters because "12 of 12" is evidence from a run nobody
-// can repeat by reading this file (codex round 6).
+// can repeat by reading this file.
 //
 // The bug was originally filed (by me) as a lock-ORDERING problem in the
 // cascade loop, and reproducing it is what showed that diagnosis to be wrong
@@ -44,7 +44,7 @@ func TestUpdateDocument_ConcurrentMutualRenamesDoNotDeadlock(t *testing.T) {
 	// start barrier below releases both goroutines together, which makes
 	// overlap LIKELY, not certain — nothing here can guarantee two
 	// transactions interleave at the statement that matters, which is why
-	// this runs rounds rather than asserting on one (codex round 6). Each
+	// this runs rounds rather than asserting on one. Each
 	// round uses fresh titles: the (workspace_id, title) unique constraint
 	// makes reuse a different error.
 	const rounds = 8
@@ -58,7 +58,7 @@ func TestUpdateDocument_ConcurrentMutualRenamesDoNotDeadlock(t *testing.T) {
 		var wg sync.WaitGroup
 		errs := make([]error, 2)
 		// Start barrier: without it the two renames can run end to end and the
-		// round proves nothing (codex round 3). Closing the channel releases
+		// round proves nothing. Closing the channel releases
 		// both goroutines at the same instant, which makes overlap likely —
 		// it cannot make it certain, since nothing here controls when each
 		// transaction reaches the statement that takes the second lock.
@@ -76,7 +76,7 @@ func TestUpdateDocument_ConcurrentMutualRenamesDoNotDeadlock(t *testing.T) {
 		}()
 		close(start)
 		// Bounded wait so a failure reports as THIS test failing rather than
-		// as a package-wide timeout (codex round 4). Postgres aborts a
+		// as a package-wide timeout. Postgres aborts a
 		// detected deadlock within deadlock_timeout — a second by default —
 		// so the unfixed code fails fast rather than hanging; the bound is
 		// for the case where something holds a lock nothing releases, which
@@ -234,7 +234,7 @@ func TestUpdateDocument_RenameBackToTheStaleTitleStillCascades(t *testing.T) {
 // EARLY-RETURN half: a delete that lands before the transaction's re-read
 // makes that read return nil, and the rename must stop there.
 //
-// Precise about what it does NOT show (codex round 6): the cascade has not
+// Precise about what it does NOT show: the cascade has not
 // run at this point, so this is not evidence that a cascade gets rolled
 // back. The rows-affected guard that provides that atomicity is exercised by
 // TestUpdateDocument_DeleteLandingBeforeTheWriteIsNotOverwritten, on a path
@@ -282,7 +282,7 @@ func TestUpdateDocument_DeletedArchivedBeforeTheLockIsNotRenamed(t *testing.T) {
 // TestDocumentRenameLock_DoesNotContendWithTheSeqLock pins the reason the
 // rename key is its own key. A half-fix that reused acquireWorkspaceSeqLock's
 // bare workspace key serializes renames just as well and passes every other
-// test here (codex round 2) — while also making every rename wait behind every
+// test here — while also making every rename wait behind every
 // item-number and seq write in the workspace, and vice versa. The difference
 // is invisible in behaviour and visible only in contention, so this asserts
 // contention directly.

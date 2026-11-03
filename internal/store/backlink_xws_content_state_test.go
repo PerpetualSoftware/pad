@@ -8,7 +8,7 @@ import (
 )
 
 // BUG-3033 — the CROSS-WORKSPACE backlink query, which the same-workspace test
-// does not reach (codex round 3 P3: clearing ContentState on every
+// does not reach (clearing ContentState on every
 // cross-workspace result left that test and the existing cross-workspace tests
 // all green).
 //
@@ -55,7 +55,7 @@ func TestCrossWorkspaceBacklinkSnippetsCarryTheMarkerBothWays(t *testing.T) {
 	// SOURCE ISOLATION first: an unrelated item in the SOURCE workspace is made
 	// stale, and the backlink must stay unmarked. Replacing the source
 	// correlation with "any op-log row exists anywhere" passed this test without
-	// it (codex round 4).
+	// it.
 	unrelated := createTestItem(t, s, wsB.ID, colB.ID, "Unrelated in B", "nothing to do with the link")
 	if _, err := s.AppendYjsUpdate(unrelated.ID, []byte{4, 5, 6}, "1"); err != nil {
 		t.Fatalf("AppendYjsUpdate(unrelated): %v", err)
@@ -85,7 +85,7 @@ func TestCrossWorkspaceBacklinkSnippetsCarryTheMarkerBothWays(t *testing.T) {
 	}
 }
 
-// TestDirectRefSearchResultsDoNotClaimTheirTitleIsStale covers codex round 3's
+// TestDirectRefSearchResultsDoNotClaimTheirTitleIsStale covers the case where
 // P2, which this unit INTRODUCED: the new CLI renderer warned that a snippet was
 // derived from a stale body on results whose snippet is the item's TITLE.
 //
@@ -137,7 +137,7 @@ func TestDirectRefSearchResultsDoNotClaimTheirTitleIsStale(t *testing.T) {
 
 	// The NUMERIC direct-ref path, which is a SECOND code path in Store.Search
 	// with its own scan and its own clearing. Removing the marker-clearing from
-	// only that one left this test green (codex round 4), because it queried a
+	// only that one left this test green, because it queried a
 	// prefixed ref and never a bare number.
 	byNumber, err := s.Search(SearchParams{Unrestricted: true, WorkspaceIDs: []string{ws.ID}, Query: numericPartOf(ref)})
 	if err != nil {
@@ -174,7 +174,7 @@ func TestDirectRefSearchResultsDoNotClaimTheirTitleIsStale(t *testing.T) {
 		}
 		seen = true
 		// PREMISE: a snippet was actually produced, or "the marker qualifies
-		// served text" is a claim about nothing (codex round 4).
+		// served text" is a claim about nothing.
 		if r.Snippet == "" {
 			t.Fatal("the FTS result carries no snippet, so the surviving marker qualifies nothing here")
 		}

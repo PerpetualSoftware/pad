@@ -166,7 +166,7 @@ func (s *Server) attachmentCallerIsRestrictedQ(q store.Queryer, r *http.Request,
 // plus two thumbnail variants each — costs ONE item load and ONE
 // visibility query instead of three per image, and the planner cannot turn
 // a long reference list into an N+1 storm inside the copy's transaction,
-// where both workspace advisory locks are held (Codex round 4). The
+// where both workspace advisory locks are held. The
 // restricted-ness verdict, a membership query used only by the orphan
 // branch, is resolved once for the same reason. Errors are memoized too: a
 // database that is failing should be asked once, not once per row.

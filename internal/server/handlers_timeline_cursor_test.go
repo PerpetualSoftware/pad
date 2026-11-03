@@ -131,7 +131,7 @@ func TestTimeline_PagingTraversesADroppedWindow(t *testing.T) {
 	// The expected set is DERIVED from the rows, not listed by hand: naming
 	// the two seeded ids would leave the item's own `created` activity free to
 	// vanish or repeat while the test still claimed "every renderable entry
-	// exactly once" (codex round 4).
+	// exactly once".
 	want := renderableActivityIDs(t, srv, item.ID)
 	if len(want) < 3 {
 		t.Fatalf("fixture is thinner than the test assumes: %d renderable rows, want the created activity plus %s and %s",
@@ -277,7 +277,7 @@ func TestExhaustedWindowCursor_PicksTheNewestFullTail(t *testing.T) {
 	}
 }
 
-// Codex round 1: truncation and an exhausted window are INDEPENDENT reasons to
+// Truncation and an exhausted window are INDEPENDENT reasons to
 // bound the cursor, and the second is not implied by the first. A source whose
 // rows all drop contributes nothing to the page, so the truncation cursor can
 // sit older than that source's tail — and every unexamined row between the two

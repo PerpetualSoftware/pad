@@ -68,7 +68,7 @@ func TestBUG3816_ConcurrentUnlinksKeepASignInMethod(t *testing.T) {
 	// Commit the first only once the second is seen waiting on a lock in the
 	// account row's FOR NO KEY UPDATE read, so the pair is concurrent by
 	// observation, not by a timer, and the wait is the unlink's own, not
-	// some other query's (the class codex r1 found in BUG-3817's test).
+	// some other query's (the class in BUG-3817's test).
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		var waiting int

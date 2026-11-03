@@ -15,7 +15,7 @@ import (
 // come from the install's manifest (consented at install, changed only by a
 // reviewed upgrade). Its signing secret is minted here and handed to the app
 // ONLY by redeem, which stamps secret_delivered_at; until then the hook is
-// HELD and delivers nothing (lead ruling, day 86): an app cannot verify what
+// HELD and delivers nothing: an app cannot verify what
 // it has no secret for.
 
 // AppWebhookEvent is one declared subscription: an event name and the
@@ -97,7 +97,7 @@ func (s *Store) upsertAppWebhookTx(tx *sql.Tx, workspaceID, installID string, sp
 	}
 	ts := now()
 	// A changed subscription list moves deliver_from: an event that occurred
-	// before the owner consented to it is never delivered (codex r5).
+	// before the owner consented to it is never delivered.
 	res, err := tx.Exec(s.q(`UPDATE webhooks SET url = ?, deliver_from = CASE WHEN events = ? THEN deliver_from ELSE ? END, events = ?, updated_at = ? WHERE app_install_id = ?`),
 		spec.URL, string(events), ts, string(events), ts, installID)
 	if err != nil {
@@ -240,9 +240,9 @@ type AppWebhookSpecFunc func(manifestJSON string) (*AppWebhookSpec, error)
 // (the backfill). Under the install row lock it re-checks the state, that
 // there is still no hook, and re-reads the manifest: the list the caller
 // worked from may be stale (another instance's backfill or a reviewed
-// upgrade can land in between; codex r1 on U10a), and an existing hook is
+// upgrade can land in between), and an existing hook is
 // never touched. It creates the hook HELD (awaiting its secret): this app was
-// never handed one, and gets it only at its next redeem (lead ruling, day 86).
+// never handed one, and gets it only at its next redeem.
 func (s *Store) EnsureAppWebhook(workspaceID, installID string, specOf AppWebhookSpecFunc) error {
 	tx, err := s.db.Begin()
 	if err != nil {

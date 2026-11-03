@@ -7,7 +7,7 @@ import (
 	"unicode/utf8"
 )
 
-// TASK-3462 U3a, codex r1: the replaced-fields summary.
+// TASK-3462 U3a: the replaced-fields summary.
 func TestTASK3462U3a_ReplacedFieldsSummary(t *testing.T) {
 	// Item fields keep their numbers as written (DecodeJSONKeepingNumbers),
 	// so 1e3 and 1000 must not read as a change.

@@ -59,7 +59,7 @@ const (
 
 // stakesPart is the high_stakes component (S). It is held at 0 and nothing
 // reads or surfaces the high_stakes answer: the question is not trusted until
-// its labelled eval has run (lead ruling 440f5c63, filed as TASK-4011). Until
+// its labelled eval has run (see TASK-4011). Until
 // then importance tops out at 85 and is NOT renormalised, because rescaling
 // would move every score the day S switches on. Reading the answer into this
 // constant is the one change that switch makes.

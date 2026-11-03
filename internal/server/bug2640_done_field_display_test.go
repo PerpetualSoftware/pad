@@ -63,7 +63,7 @@ func TestBUG2640_CompletedRowsShowTheDoneFieldValue(t *testing.T) {
 }
 
 // completedWorkValue falls back to "status" when the item's collection is not
-// in the map (codex round 1 on BUG-2640 named this as an uncovered branch).
+// in the map (an otherwise uncovered branch, BUG-2640).
 func TestBUG2640_CompletedWorkValueFallsBackToStatus(t *testing.T) {
 	item := models.Item{CollectionID: "unknown", Fields: `{"status":"done","stage":"complete"}`}
 	if got := completedWorkValue(item, map[string]string{"other": "stage"}); got != "done" {

@@ -134,8 +134,8 @@ func (s *Store) CompleteIdempotencyKey(workspaceID, userID, key, token string, s
 }
 
 // ReleaseIdempotencyKey gives up a claim the write refused, so a corrected
-// retry with the same key can proceed (lead ruling: refusals are not
-// stored). A pending claim is deleted; an unknown one keeps its record and
+// retry with the same key can proceed. A pending claim is deleted; an unknown
+// one keeps its record and
 // only drops the lease.
 func (s *Store) ReleaseIdempotencyKey(workspaceID, userID, key, token string) error {
 	if _, err := s.db.Exec(s.q(`DELETE FROM idempotency_keys WHERE workspace_id = ? AND user_id = ? AND key = ? AND claim_token = ? AND state = 'pending'`),

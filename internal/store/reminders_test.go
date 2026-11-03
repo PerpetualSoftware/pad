@@ -349,8 +349,8 @@ func TestAckRequiresAFiredReminder(t *testing.T) {
 	}
 }
 
-// TestCreateReminderRefusesAnotherWorkspacesItem — codex round 12, P2, the one
-// finding of that round that needs no timing to bite.
+// TestCreateReminderRefusesAnotherWorkspacesItem — the one
+// case that needs no timing to bite.
 //
 // item_reminders.item_id carries an FK to items and no same-workspace
 // constraint, so without the INSERT's own predicate a (workspace B, item of A)
@@ -556,7 +556,7 @@ func TestReminderCascadesWithItsItem(t *testing.T) {
 	}
 }
 
-// TestSoftDeletedItemsDoNotOccupyTheBatch — codex round 1, P1.
+// TestSoftDeletedItemsDoNotOccupyTheBatch
 //
 // fireOneReminder rolls back when it finds the item gone, which leaves the
 // reminder ARMED and therefore a candidate again on every later pass. With
@@ -610,7 +610,7 @@ func TestSoftDeletedItemsDoNotOccupyTheBatch(t *testing.T) {
 	}
 }
 
-// TestOneBrokenReminderDoesNotBlockTheRest — codex round 1, P2.
+// TestOneBrokenReminderDoesNotBlockTheRest
 //
 // The per-reminder transaction exists so one unfireable row cannot hold back
 // the pass, and returning on the first error made that comment false:
@@ -685,7 +685,7 @@ func TestSkippedRemindersAreNotErrors(t *testing.T) {
 	}
 }
 
-// TestFractionalSecondsRoundUp — codex round 2.
+// TestFractionalSecondsRoundUp —.
 //
 // The column is compared as a string against a whole-second clock, so seconds
 // are the stored resolution. Truncating resolved that the wrong way:
@@ -755,7 +755,7 @@ func TestAFractionalReminderDoesNotFireEarly(t *testing.T) {
 	}
 }
 
-// TestARearmedReminderIsNotFiredByAnInFlightPass — codex round 3.
+// TestARearmedReminderIsNotFiredByAnInFlightPass —.
 //
 // A re-arm can move a reminder into the future between the candidate scan and
 // the fire. It clears fired_at, so a predicate checking only `fired_at IS NULL`
@@ -815,7 +815,7 @@ func TestARearmedReminderIsNotFiredByAnInFlightPass(t *testing.T) {
 	}
 }
 
-// TestPendingRemindersAreBounded — codex round 3.
+// TestPendingRemindersAreBounded —.
 //
 // Every pending reminder became a suggestion prepended to a three-entry list,
 // so the payload grew without limit until somebody acknowledged them — in the
@@ -919,7 +919,7 @@ func TestEmptyScopeSeesNothing(t *testing.T) {
 	}
 }
 
-// TestSoftDeletedWorkspacesDoNotFire — codex round 6, P1, and the only defect
+// TestSoftDeletedWorkspacesDoNotFire — the only defect
 // in this unit whose consequence leaves the process.
 //
 // Workspace soft-delete deliberately keeps items for the 30-day restore
@@ -1019,7 +1019,7 @@ func TestPendingRemindersHideASoftDeletedWorkspace(t *testing.T) {
 	}
 }
 
-// TestRemindersRoundTripThroughExport — codex round 8, P1.
+// TestRemindersRoundTripThroughExport
 //
 // WorkspaceExport is a hand-maintained field list, so a new table joins it
 // only if someone remembers. Reminders did not, and the loss was silent: a
@@ -1241,7 +1241,7 @@ func TestFirePathInvariantFiresWhenNothingChanged(t *testing.T) {
 	}
 }
 
-// TestPendingRemindersSurviveALegacyItemNumber — codex round 9, P1.
+// TestPendingRemindersSurviveALegacyItemNumber
 //
 // items.item_number is NULLABLE (migration 006 added it to existing rows), and
 // scanning NULL into an int fails the Scan — which fails the QUERY, which
@@ -1287,7 +1287,7 @@ func TestPendingRemindersSurviveALegacyItemNumber(t *testing.T) {
 	}
 }
 
-// TestExportSkipsRemindersForSoftDeletedItems — codex round 9, P1.
+// TestExportSkipsRemindersForSoftDeletedItems
 //
 // The items section filters on deleted_at IS NULL, so a soft-deleted item is
 // NOT in the bundle and its reminder can never be reunited with it — the
@@ -1322,7 +1322,7 @@ func TestExportSkipsRemindersForSoftDeletedItems(t *testing.T) {
 	}
 }
 
-// TestImportNormalizesRemindAt — codex round 9, P2.
+// TestImportNormalizesRemindAt
 //
 // Import is a WRITER, and a bundle is not necessarily one this server
 // produced — it can be hand-edited or come from another instance. Inserting a
@@ -1378,7 +1378,7 @@ func TestImportNormalizesRemindAt(t *testing.T) {
 	}
 }
 
-// TestOrphanedItemDoesNotAbortTheImport — codex round 10.
+// TestOrphanedItemDoesNotAbortTheImport —.
 //
 // An ORPHANED item — one whose collection is missing from the bundle — still
 // gets an itemMap entry, because that entry is written before the skip and
@@ -1443,7 +1443,7 @@ func TestOrphanedItemDoesNotAbortTheImport(t *testing.T) {
 	}
 }
 
-// TestImportRefusesAckWithoutFire — codex round 11.
+// TestImportRefusesAckWithoutFire —.
 //
 // The lifecycle has three states; acked-without-fired is not one of them. A
 // bundle carrying it — which this server's export cannot produce, but a
@@ -1494,7 +1494,7 @@ func TestImportRefusesAckWithoutFire(t *testing.T) {
 	}
 }
 
-// TestAReminderWhoseWorkspaceDisagreesWithItsItemIsInert — codex round 13.
+// TestAReminderWhoseWorkspaceDisagreesWithItsItemIsInert —.
 //
 // No door writes such a row (CreateReminder derives the pair from the item;
 // import maps within the workspace), and the table has nothing that forbids
@@ -1568,7 +1568,7 @@ func TestAReminderWhoseWorkspaceDisagreesWithItsItemIsInert(t *testing.T) {
 
 	// By-id and by-item reads, from B's side (the row's own workspace) and
 	// from A's side (the item's): neither may see it. B's read is the one
-	// that scoped by r.workspace_id alone before round 14; A's never could
+	// that scoped by r.workspace_id alone before the fix; A's never could
 	// match on workspace_id and is here as the other half of the pair.
 	for _, ws := range []string{wsB.ID, wsA.ID} {
 		got, err := s.GetReminder(ws, id)

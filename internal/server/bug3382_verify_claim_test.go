@@ -257,7 +257,7 @@ func TestBUG3382_StaleCredentialCheckMintsNoSession(t *testing.T) {
 }
 
 // The cookie fallbacks in PATCH /auth/me and CLI approval do not let an
-// unverified account write (codex: SessionAuth resolves the cookie first).
+// unverified account write (SessionAuth resolves the cookie first).
 func TestBUG3382_UnverifiedCookieCannotUseFallbackRoutes(t *testing.T) {
 	f := newSquatFixture(t)
 	rr := doRequestWithCookie(f.srv, "PATCH", "/api/v1/auth/me", map[string]string{"name": "Renamed"}, f.sessTok)

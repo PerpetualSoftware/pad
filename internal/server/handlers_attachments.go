@@ -55,7 +55,7 @@ const multipartParseMemory = 1 << 20 // 1 MiB
 // ResolveItem and into a database comparison exactly as the query-string
 // channel does, and that channel has been validated at the transport since
 // BUG-2784. A raw NUL arriving through the form instead of the query reached
-// the store unchecked (codex round 4, BUG-2803).
+// the store unchecked (BUG-2803).
 //
 // Dropping rather than erroring keeps this helper's signature and matches
 // what callers already do with absent values: resolveUploadItemID treats
@@ -610,7 +610,7 @@ func writeAttachmentNotFound(w http.ResponseWriter) {
 //     allowlist (BUG-2413): only audited types are "inline", everything
 //     else — RenderChip types included — is "attachment". (An earlier
 //     version of this line derived the answer from RenderMode, the
-//     pre-BUG-2413 policy; codex closing round 8.)
+//     pre-BUG-2413 policy.)
 //   - Hands off to http.ServeContent when the backend supports Seek
 //     (FSStore returns *os.File, so this is the common path) — that
 //     gives us If-Modified-Since, If-None-Match, Range/206, Accept-Ranges

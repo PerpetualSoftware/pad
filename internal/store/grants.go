@@ -403,7 +403,7 @@ func (s *Store) ResolveUserPermission(workspaceID, userID, itemID, collectionID 
 	}
 	if member != nil {
 		// A restricted member's ROLE applies only to a collection in their
-		// member_collection_access (TASK-3376, PR #1756 codex round 2 P1).
+		// member_collection_access (TASK-3376, PR #1756).
 		// This used to consult VisibleCollectionIDs, the NAVIGATION set, which
 		// also lists a collection because one item in it is granted, so a
 		// view grant on one item handed the member their editor role over
@@ -569,7 +569,7 @@ func (s *Store) GuestVisibleCollectionIDsQ(q Queryer, workspaceID, userID string
 // grant-only user whose granted item gets soft-deleted would see
 // the row vanish from /items-changes with no `deleted:true` signal,
 // and the client would keep the stale entry in its local index
-// forever (Codex review of TASK-1354 round 1 [P1]).
+// forever (TASK-1354).
 //
 // Same shape as GuestVisibleResources so the caller can swap them
 // in/out depending on whether the endpoint needs live-state or

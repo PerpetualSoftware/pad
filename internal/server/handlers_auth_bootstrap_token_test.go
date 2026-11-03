@@ -14,8 +14,8 @@ import (
 )
 
 // Tests for the first-run logs-token bootstrap flow (TASK-1167 / PLAN-1166).
-// These tests pin the security-critical contracts that codex review
-// surfaced before implementation:
+// These tests pin the security-critical contracts raised
+// in review before implementation:
 //
 //   - F2: cloud mode never accepts the token bypass.
 //   - F5: concurrent valid-token requests cannot create multiple admins.
@@ -149,7 +149,7 @@ func TestBootstrapToken_Replay_AfterConsume(t *testing.T) {
 	srv := testServer(t)
 	configureBootstrapToken(t, srv)
 
-	// Round 1 — succeeds.
+	// First attempt — succeeds.
 	rr := doRequestWithHeadersFromAddr(srv, "POST", "/api/v1/auth/bootstrap",
 		bootstrapBody("admin@test.com"),
 		map[string]string{BootstrapTokenHeader: testBootstrapToken},
@@ -158,7 +158,7 @@ func TestBootstrapToken_Replay_AfterConsume(t *testing.T) {
 		t.Fatalf("first bootstrap: expected 201, got %d: %s", rr.Code, rr.Body.String())
 	}
 
-	// Round 2 — same token replayed. After consume it's been cleared in
+	// Second attempt — same token replayed. After consume it's been cleared in
 	// memory + the file is deleted, so the validate path returns false
 	// and we fall back to the loopback gate (which fails: non-loopback
 	// peer). UserCount > 0 also bails the inner check, but we expect

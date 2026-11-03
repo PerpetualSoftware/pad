@@ -206,7 +206,7 @@ func TestTASK3619_SeedRewritesOnlyTheOldStorageDefaults(t *testing.T) {
 
 // Pro is one pool per ACCOUNT: bytes in one owned workspace count against an
 // upload into another, and a soft-deleted owned workspace still counts until
-// it is purged (TASK-3619, lead rulings).
+// it is purged (TASK-3619).
 func TestTASK3619_ProPoolsAcrossOwnedWorkspacesIncludingSoftDeleted(t *testing.T) {
 	f := newStorageFixture(t, "pro")
 	limit := int64(DefaultProLimits.StorageBytes)
@@ -297,7 +297,7 @@ func TestTASK3619_ConcurrentUploadsAcrossWorkspacesShareThePool(t *testing.T) {
 }
 
 // An ownership change between the owner read that picks the lock and the
-// check under it (codex r3) is detected, and the attempt retried in a fresh
+// check under it is detected, and the attempt retried in a fresh
 // transaction. The seam makes the change through the attempt's own
 // transaction (on SQLite nothing else can write while it is open), so it
 // rolls back with that attempt: a change on the first attempt only is

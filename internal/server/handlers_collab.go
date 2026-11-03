@@ -292,7 +292,7 @@ func (s *Server) handleCollab(w http.ResponseWriter, r *http.Request) {
 		// durable stale-seed boundary read failed, so we fail closed without
 		// admitting the peer; Join already logged it at warn). The deferred
 		// conn.Close closes the WS so the client reconnects with backoff,
-		// Y.Doc intact. Don't double-warn. Per BUG-2264 (Codex xhigh).
+		// Y.Doc intact. Don't double-warn. Per BUG-2264.
 		if errors.Is(err, collab.ErrStaleSeedFenceUnavailable) {
 			return
 		}
@@ -390,7 +390,7 @@ func (s *Server) collabRevalidationLoop(
 				// The re-check itself failed (a store error). Not a
 				// revocation, so the conn stays open, but it is an errored
 				// tick, so it goes READ-ONLY and skips authorization until a
-				// tick succeeds (BUG-3474, codex r1: this used to read as
+				// tick succeeds (BUG-3474: this used to read as
 				// valid, and the tick went on to set write from the role).
 				s.collab.SetConnWritable(itemID, conn, false)
 				slog.Warn("collab: revalidation credential check failed; keeping connection open, read-only",
@@ -466,7 +466,7 @@ func (s *Server) collabRevalidationLoop(
 				// MUST NOT close the conn — a single failed
 				// query shouldn't punt every active editor.
 				//
-				// FAIL CLOSED ON WRITE (BUG-3474, lead ruling): the conn
+				// FAIL CLOSED ON WRITE (BUG-3474): the conn
 				// stays open but goes READ-ONLY until a tick succeeds. It
 				// used to keep the write permission it last had, so an
 				// editor demoted while the store was failing kept writing
@@ -727,7 +727,7 @@ func (s *Server) authorizeCollabAccess(r *http.Request, item *models.Item) (coll
 	// checks below decide READ admission to the room; canWrite decides
 	// whether the admitted conn may persist inbound frames. Per TASK-265.
 	//
-	// TASK-3376 (PR #1756 codex round 2 P1): the role applies only inside
+	// TASK-3376: the role applies only inside
 	// the member's collection access, exactly as in requireEditPermission
 	// (memberRoleReachesCollection). Outside it, a grant decides, so a view
 	// grant that admits a restricted editor to the room does not let them
@@ -781,7 +781,7 @@ func (s *Server) authorizeCollabAccess(r *http.Request, item *models.Item) (coll
 	//
 	// Without the strict stage, a guest with `item:A` grant could
 	// upgrade /api/v1/collab/{B} for a sibling B in the same
-	// collection — the bug Codex found in round 3.
+	// collection.
 	visibleIDs, err := s.store.VisibleCollectionIDs(wsID, fresh.ID)
 	if err != nil {
 		return collabAccess{}, err

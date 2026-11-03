@@ -133,7 +133,7 @@ func orNoneLabel(status string) string {
 // six times over.
 //
 // DISCARDED, BUT NOT UNOBSERVED, and this helper is what makes that true
-// (codex round 10). An earlier version of this comment claimed both bus
+// . An earlier version of this comment claimed both bus
 // implementations already log a failed publish, so discarding cost no
 // visibility. That is right for a transport failure and WRONG for the one
 // case most likely to matter: ErrBusClosed returns without logging in

@@ -163,7 +163,7 @@ var ErrInviterScopeTooNarrow = errors.New("the inviter can no longer grant this 
 
 // AcceptWorkspaceInvitation accepts an invitation in one transaction: the
 // membership through addWorkspaceMemberTx, then the invitation's accepted_at.
-// An existing membership is an idempotent success (BUG-3281, lead ruling):
+// An existing membership is an idempotent success (BUG-3281):
 // the invitation is marked accepted and the member keeps their role in either
 // direction, because role changes belong to member management. That holds
 // even when the inviter can no longer grant the invitation (BUG-3870): it
@@ -305,8 +305,8 @@ func (s *Store) inviterCanGrantQ(q rowQueryer, invitationID, workspaceID string,
 	// Role and scope in ONE share-locked read on Postgres, never upgraded
 	// later in this transaction: a demotion, removal or restriction of the
 	// inviter committing alongside this accept either lands first and is read
-	// here, or waits for the membership this accept writes (codex round 2 of
-	// BUG-3634). A removal that commits first leaves no row, which is the
+	// here, or waits for the membership this accept writes (BUG-3634). A removal
+	// that commits first leaves no row, which is the
 	// refusal. SQLite's single writer orders them already.
 	member := `SELECT role, collection_access FROM workspace_members WHERE workspace_id = ? AND user_id = ?`
 	if lock && s.dialect.Driver() == DriverPostgres {
@@ -1090,7 +1090,7 @@ var ErrLastOwner = errors.New("a workspace must keep at least one owner")
 // concurrently. The last-owner count below only matters for a legacy row
 // whose canonical owner is NOT an owner member, and is best-effort there: it
 // takes no row locks, deliberately. Locking the other owners' rows FOR UPDATE
-// (codex r1) neither serialized a concurrent promote-then-demote under READ
+// neither serialized a concurrent promote-then-demote under READ
 // COMMITTED nor kept a lock order account deletion could agree with.
 func (s *Store) guardOwnerLossTx(tx *sql.Tx, workspaceID, userID string) error {
 	var ownerID sql.NullString
@@ -1265,7 +1265,7 @@ var ErrInvitationNotPending = errors.New("invitation: no longer pending")
 // workspaces row, and only then any invitation row. Account deletion takes
 // the departing user's row, soft-deletes their workspaces and then deletes
 // the invitations they sent, so an invitation row taken before the other
-// two closes a cycle with it (codex r1 on BUG-3817: a resend that revoked
+// two closes a cycle with it (BUG-3817: a resend that revoked
 // first deadlocked against deleting the inviter or the workspace's owner).
 func (s *Store) createInvitationTx(tx *sql.Tx, workspaceID, email, role, invitedBy, codeHash, proofHash, revokeID string) (*models.WorkspaceInvitation, error) {
 	id := newID()
@@ -1296,7 +1296,7 @@ func (s *Store) createInvitationTx(tx *sql.Tx, workspaceID, email, role, invited
 	// check is BUG-3104's). Taken after the inviter's row: the users-then-
 	// workspace order DeleteWorkspace uses. Soft delete and restore both
 	// serialize against it through this row lock, not the advisory lock,
-	// which neither takes (codex r1 Low).
+	// which neither takes.
 	live := `SELECT id FROM workspaces WHERE id = ? AND deleted_at IS NULL`
 	if s.dialect.Driver() == DriverPostgres {
 		live += ` FOR SHARE`

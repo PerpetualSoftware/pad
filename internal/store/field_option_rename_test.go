@@ -164,7 +164,7 @@ func TestRenameMultiSelectOptionEmitsBulkEvent(t *testing.T) {
 	}
 }
 
-// A rename map is applied simultaneously (codex r1): with a→b and b→c in one
+// A rename map is applied simultaneously: with a→b and b→c in one
 // call every stored value is mapped once, scalars and arrays alike, however
 // Go orders the map. A swap is the sharpest case.
 func TestRenameOptionsApplySimultaneously(t *testing.T) {
@@ -184,7 +184,7 @@ func TestRenameOptionsApplySimultaneously(t *testing.T) {
 		{"chain array", `{"tags":["a","b"]}`, map[string]string{"a": "b", "b": "c"}, `["b","c"]`},
 		{"swap scalar", `{"st":"a"}`, map[string]string{"a": "b", "b": "a"}, `"b"`},
 		{"swap array", `{"tags":["a","b","c"]}`, map[string]string{"a": "b", "b": "a"}, `["b","a","c"]`},
-		// codex r2: an identity entry is not a rename, so b stays and the
+		// An identity entry is not a rename, so b stays and the
 		// renamed a is dropped as a duplicate, as with no b entry at all.
 		{"identity entry array", `{"tags":["a","b"]}`, map[string]string{"a": "b", "b": "b"}, `["b"]`},
 		{"identity entry scalar", `{"st":"b"}`, map[string]string{"a": "b", "b": "b"}, `"b"`},

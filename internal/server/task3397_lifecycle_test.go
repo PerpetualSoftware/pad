@@ -138,7 +138,7 @@ func TestTask3397_Rotate(t *testing.T) {
 
 // Uninstall keeps the bot's users row, disabled, and the install row as the
 // tombstone; it removes the client, the bot's membership and every credential
-// (lead ruling, day 86: the spec, not the account-deletion purge). A disabled
+// (the spec, not the account-deletion purge). A disabled
 // bot cannot mint a credential through any door even with the kind gate
 // taken away, which pins "disabled" as a second, independent lock.
 func TestTask3397_UninstallKeepsADisabledBotAndTheTombstone(t *testing.T) {

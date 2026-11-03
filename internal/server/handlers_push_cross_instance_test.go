@@ -16,8 +16,8 @@ import (
 //
 // session_presence_redis_test.go proves the registry crosses instances.
 // That is a different claim from "the push endpoint now delivers
-// cross-instance", and conflating the two is the exact mistake the day-49
-// review caught one unit ago: a knob tested where it is CONSUMED proves
+// cross-instance", and conflating the two is the exact mistake an earlier
+// review caught: a knob tested where it is CONSUMED proves
 // the knob works, not that the handler turns it.
 //
 // So these drive the real failure scenario through HTTP:

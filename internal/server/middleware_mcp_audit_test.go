@@ -292,8 +292,8 @@ filled:
 	}
 }
 
-// TestMCPAudit_RateLimited_RecordsDeniedRow pins the fix for Codex
-// review on PR #389 round 1: when MCPBearerAuth resolves the user
+// TestMCPAudit_RateLimited_RecordsDeniedRow pins the fix for a missing
+// audit row: when MCPBearerAuth resolves the user
 // + token but then rate-limits the request, the wrapping
 // MCPAuditLog never sees the response (it's mounted INSIDE
 // MCPBearerAuth, which returns before next.ServeHTTP). The fix is
@@ -394,7 +394,7 @@ func TestMCPAudit_ClassifyResult(t *testing.T) {
 }
 
 // TestMCPAudit_ToolNameCannotCarryANUL closes a door BUG-2803's own
-// completeness map wrongly certified as safe (codex round 20).
+// completeness map wrongly certified as safe.
 //
 // That map listed middleware_mcp_audit.go as "audit capture — records the body
 // and restores it; decoding still happens in the MCP dispatcher". The first
@@ -454,8 +454,8 @@ func TestMCPAudit_ToolNameCannotCarryANUL(t *testing.T) {
 			sanitised = row.ToolName
 		}
 	}
-	// The cleaned text is kept for diagnosis, but MARKED — round 23 showed
-	// that storing the bare cleaned name makes the row indistinguishable from
+	// The cleaned text is kept for diagnosis, but MARKED — storing the bare
+	// cleaned name makes the row indistinguishable from
 	// a genuine call with that name. Asserted as "contains the cleaned text
 	// and is not equal to it", so this pins the two properties that matter
 	// (diagnosable, and distinguishable) without pinning the marker's wording.
@@ -482,8 +482,8 @@ func TestMCPAudit_ToolNameCannotCarryANUL(t *testing.T) {
 	}
 }
 
-// TestMCPAudit_SanitiseNeverEmptiesToolName covers the boundary the round-20
-// fix created and did not test (codex round 21, top-ranked un-probed lens).
+// TestMCPAudit_SanitiseNeverEmptiesToolName covers the boundary the NUL-sanitising
+// fix created and did not test.
 //
 // parseMCPRequestBody checks env.Method == "" and p.Name == "" BEFORE
 // sanitising, so a value made ENTIRELY of NULs is non-empty at the fallback
@@ -494,8 +494,8 @@ func TestMCPAudit_ToolNameCannotCarryANUL(t *testing.T) {
 // silently dropping the row; an empty string is the silent drop wearing a
 // different shape.
 //
-// This is the round-20 fix's own boundary: I closed the NUL door and did not
-// ask what the close does when it consumes the entire value.
+// This is the sanitising fix's own boundary: closing the NUL door must also
+// handle a value that is consumed entirely.
 func TestMCPAudit_SanitiseNeverEmptiesToolName(t *testing.T) {
 	// escNULLiteral, not a local literal. Rolling my own here is exactly how
 	// two of these tests became vacuous: written inline, the escape is one
@@ -532,9 +532,9 @@ func TestMCPAudit_SanitiseNeverEmptiesToolName(t *testing.T) {
 }
 
 // TestMCPAudit_RawMethodDecidesClassification pins that dispatch reads what the
-// client SENT while only the stored value is cleaned (codex round 22).
+// client SENT while only the stored value is cleaned.
 //
-// The round-21 fix sanitised before comparing, so "tools/<NUL>call" cleaned up
+// An earlier version sanitised before comparing, so "tools/<NUL>call" cleaned up
 // INTO the literal "tools/call" and the parser then extracted params.name and
 // hashed the arguments. Measured before the fix: tool_name="pad_item" with a
 // full 64-character args_hash — an audit row indistinguishable from a genuine
@@ -568,9 +568,9 @@ func TestMCPAudit_RawMethodDecidesClassification(t *testing.T) {
 }
 
 // TestMCPAudit_CleanedIdentityIsNotForgeable pins that a value which only
-// became well-formed by cleaning cannot imitate a genuine one (codex round 23).
+// became well-formed by cleaning cannot imitate a genuine one.
 //
-// Round 22 closed the coarse version: sanitising before classifying let
+// An earlier fix closed the coarse version: sanitising before classifying let
 // "tools/<NUL>call" become a real tools/call and lift params.name. Classifying
 // on the raw method fixed that, but cleaning is LOSSY, so the stored pair
 // still collapsed onto a genuine identity — "pad_<NUL>item" stored exactly
@@ -630,7 +630,7 @@ func TestMCPAudit_CleanedIdentityIsNotForgeable(t *testing.T) {
 }
 
 // TestMetricsToolLabelIsBounded pins that the cleaned-identity marker costs
-// exactly ONE extra Prometheus label value, not one per tool (codex round 24).
+// exactly ONE extra Prometheus label value, not one per tool.
 //
 // The audit ROW keeps the cleaned name; an operator reading a single row needs
 // to know which tool it resembles. A metric SERIES does not, and keeping the
@@ -668,7 +668,7 @@ func TestMetricsToolLabelIsBounded(t *testing.T) {
 
 // TestMCPAudit_SynthesisedNamespaceIsReserved pins that a caller cannot name a
 // tool so that its UNMODIFIED value collides with a value this server
-// synthesises (codex round 25).
+// synthesises.
 //
 // Marking only what cleaning changed was not enough: "(unknown)" is what the
 // parser returns for a malformed body, and "(sanitised) pad_item" is what it

@@ -380,7 +380,7 @@ func newCopyRelationFixtureWith(t *testing.T, destDefault destDefaultKind, sourc
 }
 
 // A DESTINATION DEFAULT is not a carried referent, and must not be dropped as
-// one (codex round 1, P1).
+// one.
 //
 // `MigrateFields` fills in the destination schema's defaults for keys the
 // source item has nothing for. A classifier that splits only on "did the
@@ -421,8 +421,7 @@ func TestCopyEndpoint_DestinationDefaultRelationIsNotDroppedAsNotPortable(t *tes
 }
 
 // An EMPTY relation value is a cleared field, not a referent, and reporting it
-// as dropped tells a user they lost something they never had (codex round 1,
-// P1, second half).
+// as dropped tells a user they lost something they never had.
 func TestCopyEndpoint_EmptyCarriedRelationIsNotReportedDropped(t *testing.T) {
 	empty := ""
 	f := newCopyRelationFixtureWith(t, noDestDefault, &empty, false)
@@ -440,7 +439,7 @@ func TestCopyEndpoint_EmptyCarriedRelationIsNotReportedDropped(t *testing.T) {
 }
 
 // A supplied relation override must name an item the REQUESTER CAN SEE, on the
-// copy and its preflight alike (codex round 1, P1).
+// copy and its preflight alike.
 //
 // The four write doors have always checked this; the migrate doors called the
 // store resolver directly, and the store cannot answer a request-scoped
@@ -474,7 +473,7 @@ func TestCopyEndpoint_InvisibleRelationOverrideIsRefused(t *testing.T) {
 			t.Fatalf("%s: error code = %q, want validation_error", d.name, code)
 		}
 		// The refusal must quote what the CALLER sent, never the canonical
-		// UUID (codex round 2). The store resolver rewrites a ref into its
+		// UUID. The store resolver rewrites a ref into its
 		// target's id before the visibility check runs, so a message built
 		// from the resolved value hands back the id of an item this requester
 		// may not see — confirming both its existence and its canonical
@@ -496,7 +495,7 @@ func TestCopyEndpoint_InvisibleRelationOverrideIsRefused(t *testing.T) {
 }
 
 // A destination default injected by VALIDATION — after referent resolution has
-// finished — must still be resolved (codex round 2, P1).
+// finished — must still be resolved.
 //
 // The migrate doors resolve before they validate, because the required-field
 // check has to see a value that resolution dropped. `ValidateFields` then
@@ -547,7 +546,7 @@ func TestCopyEndpoint_LateInjectedRelationDefaultIsResolved(t *testing.T) {
 }
 
 // A REQUIRED relation whose default does not resolve must REFUSE, not land the
-// item with the field absent (codex round 3).
+// item with the field absent.
 //
 // The late pass deletes the key after validation has already passed, so
 // nothing re-checks required-ness. Re-running validation is not the fix — it
@@ -595,7 +594,7 @@ func TestCopyEndpoint_RequiredRelationWithBrokenDefaultIsRefused(t *testing.T) {
 }
 
 // A source key holding `null` carries nothing, and the preflight must not
-// report the destination's default as `migrated` (codex round 4).
+// report the destination's default as `migrated`.
 //
 // `MigrateFields` keeps the key, the relation pass skips a nil value, and
 // validation then treats it as missing and fills the destination default in
@@ -648,11 +647,10 @@ func newCopyRelationFixtureNullSource(t *testing.T) *relationFixture {
 	return f
 }
 
-// A null source value with NO destination default is not a default (codex
-// round 5) — the tail of round 4's fix, and the other direction of the same
-// guard.
+// A null source value with NO destination default is not a default — the
+// other direction of the same guard.
 //
-// Round 4 stopped calling a null-source key `migrated` because a destination
+// An earlier fix stopped calling a null-source key `migrated` because a destination
 // default fills it in. With no default there is nothing to fill it, the null
 // is what carries, and `default` names a value the schema never declared. One
 // guard, wrong in both directions, because "was the key present in the source"
@@ -686,7 +684,7 @@ func TestCopyEndpoint_NullSourceWithoutDefaultIsNotReportedAsDefault(t *testing.
 }
 
 // A relation default that is not a reference at all must be reported, not
-// silently stored (codex round 6).
+// silently stored.
 //
 // THE ROUTE MATTERS, and the review's account of it was not quite right.
 // `MigrateFields` injects destination defaults itself, so in the ordinary case
@@ -737,7 +735,7 @@ func newCopyRelationFixtureNonStringDefault(t *testing.T) *relationFixture {
 }
 
 // A destination default survives an incompatible source value, in value AND
-// in label (codex round 9).
+// in label.
 //
 // `MigrateFields` matches on key AND type, so a source `owner_ref` declared as
 // `text` cannot become a `relation`: the value is DROPPED and the default loop
@@ -815,8 +813,7 @@ func newCopyRelationFixtureIncompatibleSource(t *testing.T) *relationFixture {
 }
 
 // A carried key the RELATION pass dropped must stop counting as carried when
-// the destination default that replaces it is visibility-checked (codex round
-// 16, the concrete case round 15 could not produce).
+// the destination default that replaces it is visibility-checked.
 //
 // The preflight computes `carriedSource` from MigrateFields' drops, then runs
 // MigrateRelationReferents, which drops MORE keys — and hands the
@@ -826,8 +823,8 @@ func newCopyRelationFixtureIncompatibleSource(t *testing.T) *relationFixture {
 // then refills that very key with the destination schema's default, the
 // default is exempted on the strength of a value that is no longer there.
 //
-// Round 15 reported this shape and every mutant survived, so it shipped as a
-// robustness change and was then REVERTED by lead ruling as unobservable. The
+// A robustness change for this shape was once shipped, every mutant survived,
+// and it was REVERTED as unobservable. The
 // probe that cleared it used a source value that RESOLVED — which the relation
 // pass never drops, so the two sets were identical by construction and the
 // probe could not have failed. THIS fixture uses a non-nil DANGLING source
@@ -862,7 +859,7 @@ func TestCopyPreflight_RelationDroppedCarriedKeyDoesNotExemptTheDefault(t *testi
 }
 
 // A malformed destination default gets the SAME answer whether or not the
-// caller sent an unrelated null override (codex round 17).
+// caller sent an unrelated null override.
 //
 // `MigrateRelationReferents` skipped non-string values on the general rule
 // that shape is ValidateFields's to reject, so one defect makes one error.
@@ -919,13 +916,12 @@ func TestCopyEndpoint_NonStringDestinationDefaultDropsWithOrWithoutANullOverride
 }
 
 // The cross-workspace COPY gives a late-resolved DESTINATION DEFAULT the same
-// visibility check the other seven doors give it (night-11 finding, lead
-// ruling day 58).
+// visibility check the other seven doors give it.
 //
 // `dropInvisibleRelationDefaults` reached five call sites, all in
 // `internal/server`. The SIXTH caller of the late-default resolver is
 // `store.migrateCopyFields`, inside the copy's own transaction, where a
-// *Server method cannot go. Round 15's CONVE-18 sweep said "all five late-
+// *Server method cannot go. An earlier CONVE-18 sweep said "all five late-
 // default sites" and was right about the sites it could see: the class is one
 // wider than the package.
 //
@@ -998,9 +994,9 @@ func TestCopyEndpoint_InvisibleDestinationDefaultIsDroppedByTheCopyToo(t *testin
 }
 
 // A CARRIED relation value that a destination default refills is still
-// reported dropped by the COPY (lead ruling, day 58).
+// reported dropped by the COPY.
 //
-// Round 3 taught StillDropped to suppress a key the final map has a value for,
+// StillDropped was taught to suppress a key the final map has a value for,
 // because reporting a populated key as dropped made three surfaces give two
 // answers. That is right for a key MigrateFields dropped and a default
 // refilled — the caller never had anything else there. It is wrong for a
@@ -1041,7 +1037,7 @@ func TestCopyEndpoint_CarriedRelationDropIsReportedEvenWhenADefaultRefillsIt(t *
 }
 
 // The copy and its preflight give the SAME error, with the same precedence,
-// for the two bodies codex round 19 named (lead ruling, day 58).
+// for the two bodies in question.
 //
 // Structural errors about the request — an undeclared key
 // (`malformed_override`) and a wrong-shaped value (`invalid_override`) — are
@@ -1342,7 +1338,7 @@ func TestCopyPreflight_OnlyRelationRowsCarryTheUnavailableFlag(t *testing.T) {
 			"relations only, and blocking this row would refuse a value the dialog "+
 			"can perfectly well collect: %+v", bucket.Type, bucket)
 	}
-	// AND IT CARRIES NO TARGET AT ALL (review round 2). The field's doc says
+	// AND IT CARRIES NO TARGET AT ALL. The field's doc says
 	// `collection` is empty for every non-relation type; until this unit that
 	// was a claim about the schemas people write rather than a property of the
 	// response, and the CLI rendered "target collection: people" beneath a
@@ -1390,8 +1386,7 @@ func TestCopyPreflight_AnEmptyButReadableTargetIsNotReportedUnavailable(t *testi
 	}
 }
 
-// A `multi_relation` row carries the unavailable flag too (PLAN-2857 U4, codex
-// round 1's enumeration — this site was NOT one of the five codex named).
+// A `multi_relation` row carries the unavailable flag too (PLAN-2857 U4).
 //
 // `CollectionUnavailable` was gated on `def.Type == "relation"`, so a
 // multi_relation aimed at a deleted collection reported `false`: the dialog
@@ -1434,7 +1429,7 @@ func TestCopyPreflight_MultiRelationRowCarriesTheUnavailableFlag(t *testing.T) {
 }
 
 // An empty `multi_relation` override must not leave the preflight claiming the
-// caller supplied what it then reports (PLAN-2857 U4, codex round 6).
+// caller supplied what it then reports (PLAN-2857).
 //
 // The preflight already treats an explicit `null` override as "leave this
 // unset": it drops the key from `final` AND from `origin`, so the destination
@@ -1455,10 +1450,10 @@ func TestCopyPreflight_AnEmptyMultiRelationOverrideIsNotReportedAsYourValue(t *t
 		t.Fatalf("UpdateCollection(collB): %v", err)
 	}
 
-	// THE STRING SPELLING TOO (codex round 7): a `"[]"` override is a string
+	// THE STRING SPELLING TOO: a `"[]"` override is a string
 	// until `CoerceFields` runs, so a check placed in the override loop — where
-	// round 6 put it — cannot see it. The sweep now runs after coercion.
-	// The NIL spelling too (codex round 8): `CoerceFields` JSON-parses a
+	// it was once placed — cannot see it. The sweep now runs after coercion.
+	// The NIL spelling too: `CoerceFields` JSON-parses a
 	// multi_relation string, so `"null"` arrives at the sweep as a nil.
 	for _, override := range []any{[]any{}, "[]", "null"} {
 		body := f.baseBody()
@@ -1528,7 +1523,7 @@ func carriedRowFor(pre ItemCopyPreflight, key string) *ItemCopyPreflightCarried 
 }
 
 // A CARRIED empty list must not leave the preflight calling the destination
-// default "migrated" (PLAN-2857 U4, codex round 7).
+// default "migrated" (PLAN-2857).
 //
 // Same mechanism as the override case and a different origin, which is why the
 // fix is one sweep over the coerced map rather than a branch in the override

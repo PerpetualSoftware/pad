@@ -718,7 +718,7 @@ func (s *Store) getCollectionSlugTx(tx *sql.Tx, collectionID string) (string, er
 //
 // Exported in TASK-2365 rather than duplicated at the call site: the
 // cross-workspace copy endpoint needs exactly this test, and a second copy of
-// the same two magic strings is a place for the two to drift (Codex round 8).
+// the same two magic strings is a place for the two to drift.
 // It is a string match rather than a SQLSTATE/driver-type check because
 // internal/store is driver-agnostic and both drivers sit behind database/sql;
 // the strings are stable parts of each engine's user-facing error text.
@@ -766,7 +766,7 @@ func (s *Store) GetItemQ(q Queryer, id string) (*models.Item, error) {
 // UpdateItemWithPreCheck to re-read the parent under the workspace +
 // parent-children locks so the invariant precheck classifies the
 // transition against a snapshot that's stable for the rest of the tx
-// (Codex round-3 P2). Soft-deleted items are excluded, matching
+// Soft-deleted items are excluded, matching
 // GetItem's contract.
 func (s *Store) getItemTx(tx *sql.Tx, id string) (*models.Item, error) {
 	item, err := s.getItemScanQ(tx, id, false)
@@ -795,7 +795,7 @@ func (s *Store) getItemTx(tx *sql.Tx, id string) (*models.Item, error) {
 // models.Item.ContentState for why a query selecting an empty-string literal for
 // content must not carry it.
 //
-// RECEIPT (BUG-3000, day 64). ListItems over 200 items, SQLite, best-of-5 per shape,
+// RECEIPT (BUG-3000). ListItems over 200 items, SQLite, best-of-5 per shape,
 // measured WITH the predicate and again with it replaced by an empty-string literal
 // — the counterfactual, because a one-armed timing cannot attribute cost:
 //
@@ -1076,8 +1076,8 @@ func parseItemRef(s string) (string, int, bool) {
 			return "", 0, false
 		}
 		num = num*10 + int(c-'0')
-		// OVERFLOW IS A WRONG ANSWER, NOT A BIG ONE (TASK-2878, codex round
-		// 12). This accumulates into a machine int with no bound, so
+		// OVERFLOW IS A WRONG ANSWER, NOT A BIG ONE (TASK-2878). This
+		// accumulates into a machine int with no bound, so
 		// "TASK-18446744073709551617" wraps to 1 and resolves to TASK-1 — a
 		// caller-supplied ref canonicalising to a DIFFERENT item, which is
 		// exactly the corruption relation referent validation exists to stop.
@@ -1403,8 +1403,7 @@ func (s *Store) listItemsQ(q Queryer, workspaceID string, params models.ItemList
 
 	// Parent link filter via item_links. Joins items so we ignore links pointing
 	// to a soft-deleted parent — slug/ref filtering already rejects deleted
-	// parents upstream, but raw-UUID input bypasses that path. See BUG-734 /
-	// Codex review on PR #259.
+	// parents upstream, but raw-UUID input bypasses that path. See BUG-734.
 	if params.ParentLinkID != "" {
 		query += " AND EXISTS (SELECT 1 FROM item_links il JOIN items p ON p.id = il.target_id AND p.deleted_at IS NULL AND p.workspace_id = il.workspace_id AND il.workspace_id = i.workspace_id JOIN collections pc ON pc.id = p.collection_id AND pc.deleted_at IS NULL WHERE il.source_id = i.id AND il.link_type = 'parent' AND il.target_id = ?)"
 		args = append(args, params.ParentLinkID)
@@ -1839,7 +1838,7 @@ type MovedOutRow struct {
 // Keyed on the MOVE's seq (item_collection_moves.seq), which is written
 // in the SAME transaction as the move and never changes on later edits —
 // so the tombstone fires once, pages deterministically, and can't be
-// raced or lost by the best-effort activity log (Codex rounds 1–3). The
+// raced or lost by the best-effort activity log. The
 // per-move rows also handle multi-hop moves: only a move whose
 // from-collection is visible qualifies, and MIN(seq) picks the earliest
 // such visibility loss so the cursor can't skip it.
@@ -1987,8 +1986,7 @@ const checkboxCountSQL = `
 // rows. The default (false) matches the pre-existing client-side
 // parse for the un-toggled view. With the page's Archived toggle
 // on, the collection page renders archived items too — passing
-// true preserves their progress badges (per Codex round 2 [P2] on
-// PR #491).
+// true preserves their progress badges (PR #491).
 //
 // Items with no markers, or with non-positive totals after subtracting
 // done from open, are filtered out. Result order is unspecified.
@@ -2659,7 +2657,7 @@ func (s *Store) updateItemWithParentLinkOnce(
 		return nil, err
 	}
 
-	// IDEA-1494 round 2: also acquire the parent-children advisory
+	// IDEA-1494: also acquire the parent-children advisory
 	// lock for THIS item (as a potential parent) AND for its own
 	// parent (when it is itself a child). That gives the open-children
 	// guard a tight serialization:
@@ -2690,7 +2688,7 @@ func (s *Store) updateItemWithParentLinkOnce(
 		return nil, err
 	}
 
-	// IDEA-1494 round 2: run the caller's invariant check (if any)
+	// IDEA-1494: run the caller's invariant check (if any)
 	// AFTER the locks are held but BEFORE any mutation. Closing the
 	// guard-vs-write TOCTOU window relies on this ordering — the
 	// precheck's view of `items` / `item_links` is the same one the
@@ -2698,7 +2696,7 @@ func (s *Store) updateItemWithParentLinkOnce(
 	// UpdateItem on this parent (or on any of its children) blocks
 	// on the same advisory key.
 	//
-	// Codex round-3 P2: re-read the item INSIDE the tx (after locks)
+	// Re-read the item INSIDE the tx (after locks)
 	// and pass that fresh snapshot to the precheck. The pre-tx
 	// `existing` above was loaded without holding the workspace seq
 	// lock or the parent-children lock — a concurrent writer could
@@ -2711,7 +2709,7 @@ func (s *Store) updateItemWithParentLinkOnce(
 	// state as seen UNDER the write lock — the pre-tx `existing` was read
 	// before the locks, so a concurrent writer could have superseded it.
 	//
-	// TASK-2533 codex round 2 finding 4: this used to be conditional
+	// TASK-2533: this used to be conditional
 	// (precheck != nil || ExpectedUpdatedAt != "" || FieldsPatch != nil),
 	// which left `existing` as the STALE pre-tx snapshot for any update
 	// that touched none of those three — including a plain assignment
@@ -2784,13 +2782,13 @@ func (s *Store) updateItemWithParentLinkOnce(
 	//
 	// GRANDFATHERED, deliberately: a title identical to the stored one is not
 	// a rename, so it is not a write-time door and is not validated. That is
-	// what keeps the bound non-retroactive (Dave's day-63 ruling, carried over
+	// what keeps the bound non-retroactive (carried over
 	// from MaxDocumentTitleRunes) — an item whose stored title predates the
 	// bound stays editable in every other respect, and a client that echoes
 	// the whole item back does not start failing on it.
 	//
-	// The guarantee this buys, stated at the width it actually holds (codex
-	// round 4): NO CALLER-SUPPLIED TITLE can be stored unvalidated. An item may
+	// The guarantee this buys, stated at the width it actually holds:
+	// NO CALLER-SUPPLIED TITLE can be stored unvalidated. An item may
 	// still be written with a legacy-invalid title, but only the one it already
 	// has. It is NOT true that no row anywhere gets a fresh invalid title —
 	// ImportWorkspace coerces one in (to "Untitled" or a truncation) and
@@ -2801,8 +2799,8 @@ func (s *Store) updateItemWithParentLinkOnce(
 	// which reads as a global invariant and is false of the copy path.
 	if input.Title != nil {
 		normalized := models.NormalizeItemTitle(*input.Title)
-		// The exemption tests BOTH forms against the stored title (codex round
-		// 1, P2). Comparing only the normalized one narrows the rule to less
+		// The exemption tests BOTH forms against the stored title.
+		// Comparing only the normalized one narrows the rule to less
 		// than it claims: a legacy row whose stored title carries edge
 		// whitespace is echoed back VERBATIM by a client that read it, and the
 		// normalized echo then differs from what is stored — so the row's own
@@ -2810,11 +2808,11 @@ func (s *Store) updateItemWithParentLinkOnce(
 		// refused. "Identical to the stored one" has to mean what it says.
 		//
 		// A GRANDFATHERED WRITE WRITES THE STORED BYTES, NOT THE NORMALIZED
-		// ONES (codex round 2, P1 — a hole the round-1 fix above opened).
+		// ONES (a hole the earlier fix above opened).
 		// Skipping validation while still assigning `normalized` meant a
 		// legacy row stored as "   " was echoed back, skipped validation on the
 		// raw match, and then had "" written to it — minting exactly the empty
-		// title Dave's ruling forbids, through the clause meant to protect
+		// title the validation rule forbids, through the clause meant to protect
 		// legacy rows. An over-bound title with edge whitespace went the same
 		// way, into a DIFFERENT over-bound title.
 		//
@@ -2822,7 +2820,7 @@ func (s *Store) updateItemWithParentLinkOnce(
 		// is a genuine no-op (the row keeps the bytes it has), and anything
 		// else is validated before it is normalized in.
 		if normalized == existing.Title || *input.Title == existing.Title {
-			// NIL, not "the same bytes" (codex round 5, P1). Writing the stored
+			// NIL, not "the same bytes". Writing the stored
 			// title back leaves input.Title non-nil, and everything downstream
 			// keys on that pointer rather than on whether the value changed:
 			// the SET clause below regenerates the SLUG from slugify(title),
@@ -2848,7 +2846,7 @@ func (s *Store) updateItemWithParentLinkOnce(
 	// precheck — so a caller who lost the race gets the promised
 	// update_conflict envelope, not a semantic (e.g. open_children)
 	// rejection for a transition attempted against a row that is no longer
-	// the one they read (Codex round 2). Parsed as RFC3339 and compared with
+	// the one they read. Parsed as RFC3339 and compared with
 	// time.Equal so a round-tripped `updated_at` matches regardless of
 	// zone/format.
 	//
@@ -2877,7 +2875,7 @@ func (s *Store) updateItemWithParentLinkOnce(
 		}
 	}
 	// SEQ DECIDES when it is present, so the timestamp check below is SKIPPED
-	// rather than also run (codex round 2). Running both was an AND, which
+	// rather than also run. Running both was an AND, which
 	// contradicts the documented contract and can only produce a conflict the
 	// caller cannot act on: a seq that still matches means NO write has landed
 	// since the caller read the row, so a differing `updated_at` is not a
@@ -2913,7 +2911,7 @@ func (s *Store) updateItemWithParentLinkOnce(
 		input.Content = &body
 	}
 
-	// IDEA-1494 round 2: run the caller's invariant check (open-children
+	// IDEA-1494: run the caller's invariant check (open-children
 	// guard) against the same in-tx snapshot the UPDATE will write. Closing
 	// the guard-vs-write TOCTOU window relies on this ordering — every
 	// concurrent UpdateItem on this parent (or its children) blocks on the
@@ -3064,7 +3062,7 @@ func (s *Store) updateItemWithParentLinkOnce(
 			// version whose body the newest version already holds verbatim.
 			// Only a flush: any other writer's edit owes its own row even when
 			// an earlier throttled edit brought the body back to a versioned
-			// one (codex review), or that writer's change would read as the
+			// one, or that writer's change would read as the
 			// earlier writer's.
 			if shouldVersion && source == "collab-snapshot" {
 				dup, derr := s.newestVersionIsUnflushedApplierRow(tx, id, existing.Content)
@@ -3172,7 +3170,7 @@ func (s *Store) updateItemWithParentLinkOnce(
 		// above, so it is ordered against every other content writer.
 		//
 		// A snapshot with NO cursor cannot show what it covers, so once the
-		// stored body has recorded one it is refused too (codex r2): its
+		// stored body has recorded one it is refused too: its
 		// edits travelled as ops and are in the op-log, so nothing durable is
 		// lost. Before any cursor is recorded (0) it is written as it always
 		// was. Cursor -1 in the error marks the missing one.
@@ -3196,7 +3194,7 @@ func (s *Store) updateItemWithParentLinkOnce(
 		sets = append(sets, "content_flushed_at = ?")
 		args = append(args, ts)
 
-		// Op-log GC watermark policy (TASK-1309 round 5 [P1]):
+		// Op-log GC watermark policy (TASK-1309):
 		// only advance content_flushed_op_log_id from server-driven
 		// full-content writes (CLI / MCP / applier-direct-write /
 		// version-restore / PruneAndApply). Browser collab-snapshot
@@ -3336,7 +3334,7 @@ func (s *Store) updateItemWithParentLinkOnce(
 	// Capture the pre-update status BEFORE the UPDATE runs, so the
 	// transition log below records an accurate from_status. `existing` is
 	// now UNCONDITIONALLY the locked, in-tx snapshot (see the re-read
-	// above, widened by TASK-2533 codex round 2 finding 4 to cover every
+	// above, widened by TASK-2533 to cover every
 	// existing.* comparison in this function, not just this one) — no
 	// separate defensive re-read needed here anymore. Reading here,
 	// before the UPDATE, is essential: a re-read after the UPDATE would
@@ -3421,8 +3419,8 @@ func (s *Store) updateItemWithParentLinkOnce(
 	// content changed or not. ORDER MATTERS: cascade runs BEFORE
 	// replaceWikiLinks(self) so the pre-existing wl rows pointing
 	// at self via target_item_id=renamedItemID are still present
-	// when cascade does its SELECT. Codex round 6 finding 2 caught
-	// the original order (re-index self → cascade) silently
+	// when cascade does its SELECT. Previously
+	// the order (re-index self → cascade) silently
 	// breaking the self-ref cascade on title+content combined
 	// updates: re-indexing self first would delete the self-row
 	// that cascade needs to find. Function early-returns when
@@ -3501,7 +3499,7 @@ func (s *Store) updateItemWithParentLinkOnce(
 	// update committed while the parent link write failed. The new
 	// parent's advisory lock was already folded into the acquisition
 	// above, so setParentLinkTx's re-lock is a no-op.
-	// PROVIDED IS NOT CHANGED (codex round 6). Clearing an already-unparented
+	// PROVIDED IS NOT CHANGED. Clearing an already-unparented
 	// item deletes zero rows; forcing item.updated for it would describe a
 	// mutation that did not happen. The set branch always writes — it is a
 	// DELETE-then-INSERT that bumps the row either way.
@@ -3538,8 +3536,8 @@ func (s *Store) updateItemWithParentLinkOnce(
 
 	// Assignment delta, read from the same in-tx before/after snapshots
 	// used for the status delta above — `existing` is now UNCONDITIONALLY
-	// this transaction's locked, in-tx pre-write view (TASK-2533 codex
-	// round 2 finding 4), `updated` is this transaction's own committed
+	// this transaction's locked, in-tx pre-write view (TASK-2533),
+	// `updated` is this transaction's own committed
 	// write. Comparing the two committed values (rather than re-deriving
 	// "after" from input.AssignedUserID / ClearAssignedUser) sidesteps
 	// having to duplicate that tri-state set/clear/untouched logic here.
@@ -3750,7 +3748,7 @@ func (s *Store) restoreItemOnce(id string, opt mutationOptions) (*models.Item, e
 		}
 	}
 
-	// Codex round-3 P1 / round-4 P1: restoring an item resurrects it
+	// Restoring an item resurrects it
 	// as a (potentially non-terminal) child of EVERY parent it's
 	// linked to (one item can have both a `parent` and an
 	// `implements` link). Lock ALL of those parents' children-keys
@@ -3806,7 +3804,7 @@ func (s *Store) restoreItemOnce(id string, opt mutationOptions) (*models.Item, e
 	// the item comes back carrying whatever rows it had before, against a
 	// schema that has moved. Both directions bite — a field that became a
 	// relation leaves the restored item missing edges, one that stopped being
-	// a relation leaves it with edges it should not have (codex round 1).
+	// a relation leaves it with edges it should not have.
 	if _, err := s.replaceRelationLinks(tx, id, existing.WorkspaceID, existing.CollectionID, existing.Fields); err != nil {
 		return nil, fmt.Errorf("index relation links on restore: %w", err)
 	}
@@ -3825,7 +3823,7 @@ func (s *Store) restoreItemOnce(id string, opt mutationOptions) (*models.Item, e
 		if err := s.emitItemEventTx(tx, kernelevents.ItemRestored, restored, nil, opt.batchID); err != nil {
 			return nil, err
 		}
-		// Restore is a door (codex round 4): a job owed when the item was
+		// Restore is a door: a job owed when the item was
 		// deleted was dropped as gone, so without this the item returns with
 		// stale answers and nothing scheduled. If nothing changed while it was
 		// away, the runner finds its old answers current and makes no call.
@@ -4012,7 +4010,7 @@ func (s *Store) CreateItemLink(workspaceID string, input models.ItemLinkCreate, 
 		}
 	}
 
-	// Codex round-3 P1: when this link puts `sourceID` into the
+	// When this link puts `sourceID` into the
 	// children-set of `target` (i.e. linkType ∈ childLinkTypes), lock
 	// the target's parent-children key so a concurrent
 	// UpdateItemWithPreCheck on the target can't read 0 open children
@@ -4070,7 +4068,7 @@ func (s *Store) CreateItemLink(workspaceID string, input models.ItemLinkCreate, 
 // intentionally does NOT filter on items.deleted_at IS NULL: the only caller
 // is the immediate readback after INSERT, and a delete race against either
 // endpoint would otherwise cause the just-successful insert to return nil
-// (Codex review on PR #259). User-facing surfaces all read links via
+// (#259). User-facing surfaces all read links via
 // GetItemLinks (plural) or GetParentForItem, both of which DO filter.
 func (s *Store) getItemLinkQ(q Queryer, id string) (*models.ItemLink, error) {
 	var link models.ItemLink
@@ -4216,7 +4214,7 @@ func (s *Store) DeleteItemLink(id string) error {
 	}
 	defer tx.Rollback()
 
-	// Codex round-3 P1: peek the link's type + target before deleting
+	// Peek the link's type + target before deleting
 	// so we can lock the target's parent-children key when this link
 	// participates in the children-set. Without this, a concurrent
 	// UpdateItemWithPreCheck on the target could read the child as
@@ -4265,7 +4263,7 @@ func (s *Store) DeleteItemLink(id string) error {
 		}
 	}
 
-	// item.updated for a PARENT detach, on this transaction (codex round 6).
+	// item.updated for a PARENT detach, on this transaction.
 	//
 	// Same criterion as SetParentLink and the update path (SPEC-3 v1.6): the
 	// parent edge writes the source item's own row. Without this, DELETE
@@ -4279,7 +4277,7 @@ func (s *Store) DeleteItemLink(id string) error {
 	// relationship-graph link (so v1.5's silence would exclude it). The
 	// contract does not currently decide that case, and inventing an answer
 	// inside a delivery refactor is how a public wire acquires an event nobody
-	// ruled on. Raised with the lead; tracked separately. The same note is on
+	// ruled on. Tracked separately. The same note is on
 	// handlers_item_links.go, which is where a reader is likely to hit it
 	// first.
 	if linkType == models.ItemLinkTypeParent {
@@ -4302,7 +4300,7 @@ func (s *Store) DeleteItemLink(id string) error {
 // one parent, this deletes any existing parent link for the item first.
 // Includes cycle detection to prevent A→B→A or deeper ancestor loops.
 //
-// Codex round-3 P1: acquires `pad:parent-children:<id>` for BOTH the
+// Acquires `pad:parent-children:<id>` for BOTH the
 // old parent (if any) AND the new parent in sorted order. That makes
 // a concurrent UpdateItemWithPreCheck on either parent block on the
 // same key, closing the link-mutation TOCTOU gap — without this, the
@@ -4347,8 +4345,8 @@ func (s *Store) setParentLinkOnce(workspaceID, itemID, parentID, createdBy, user
 		return nil, err
 	}
 
-	// item.updated for the CHILD, on this transaction (TASK-2714, codex rounds
-	// 4-5; SPEC-3 v1.6 clarification).
+	// item.updated for the CHILD, on this transaction (TASK-2714;
+	// SPEC-3 v1.6 clarification).
 	//
 	// A parent link writes the item's OWN row — it advances seq — and that is
 	// the criterion the contract uses to divide two rulings that look
@@ -4356,9 +4354,9 @@ func (s *Store) setParentLinkOnce(workspaceID, itemID, parentID, createdBy, user
 	// relationship-graph link (blocks / blocked-by), which writes only the
 	// links table, stays silent under v1.5.
 	//
-	// WHAT THE PAYLOAD DOES AND DOES NOT CARRY, stated because round 4's
-	// version of this comment claimed more than the code delivers (round 5
-	// caught it): the snapshot is the ITEM ROW, and the parent EDGE is not on
+	// WHAT THE PAYLOAD DOES AND DOES NOT CARRY, stated because an earlier
+	// version of this comment claimed more than the code delivers:
+	// the snapshot is the ITEM ROW, and the parent EDGE is not on
 	// it. items.parent_id is legacy and untouched here, and IsUnparented is
 	// populated only by the local-first index queries. So this event reports
 	// that the row changed — a fresh seq and updated_at — not the linkage
@@ -4467,8 +4465,8 @@ func (s *Store) setParentLinkTx(tx *sql.Tx, workspaceID, itemID, parentID, creat
 	}
 
 	// Cycle detection: walk the ancestor chain from parentID to ensure itemID
-	// is not an ancestor. Run this AFTER the parent-children locks are held (Codex
-	// review, PR #868): checking before the lock lets two concurrent reparents
+	// is not an ancestor. Run this AFTER the parent-children locks are held (PR
+	// #868): checking before the lock lets two concurrent reparents
 	// each pass on a stale ancestry snapshot, block on the lock, then both insert
 	// — closing the loop (A→B→C→A). Under the lock the walk reads via the tx, so
 	// it sees the edge the just-unblocked peer committed and catches the cycle.
@@ -4564,7 +4562,7 @@ func (s *Store) checkParentCycleQ(q rowQueryer, itemID, parentID string) error {
 
 // ClearParentLink removes the parent link for an item.
 //
-// Codex round-3 P1: runs in a tx and acquires `pad:parent-children:<old>`
+// Runs in a tx and acquires `pad:parent-children:<old>`
 // before the DELETE so a concurrent UpdateItemWithPreCheck on the old
 // parent blocks until this commit. Detaching a child is materially
 // similar to attaching one — the parent's children-set changes either
@@ -4598,7 +4596,7 @@ func (s *Store) clearParentLinkOnce(itemID string) error {
 	// Same criterion as SetParentLink (SPEC-3 v1.6): a parent DETACH writes
 	// the item's own row, so it emits. Removing this half would leave the
 	// attach observable and the detach silent — a consumer's model would keep
-	// a parent the user removed (codex round 6).
+	// a parent the user removed.
 	if removed {
 		child, err := s.getItemTx(tx, itemID)
 		if err != nil {
@@ -4620,7 +4618,7 @@ func (s *Store) clearParentLinkOnce(itemID string) error {
 // Returns whether a link was actually REMOVED. Callers need the distinction:
 // clearing an already-unparented item deletes zero rows and changes nothing, so
 // forcing an item.updated for it would put an event on the wire describing a
-// mutation that did not happen (codex round 6).
+// mutation that did not happen.
 func (s *Store) clearParentLinkTx(tx *sql.Tx, itemID, workspaceID string) (bool, error) {
 	// Best-effort pre-lock read of the current parent, re-verified under lock.
 	oldParentID, err := s.readParentLinkTarget(tx, itemID)
@@ -4858,7 +4856,7 @@ func (s *Store) GetItemLineageByIDs(ids []string) (map[string]LineageRef, error)
 // child is evaluated against its own collection's done rules.
 //
 // An ABANDONED child (a terminal value that closes without delivering, e.g.
-// cancelled) is left out of BOTH counts (BUG-3195, lead ruling): it is not
+// cancelled) is left out of BOTH counts (BUG-3195): it is not
 // part of the work any more. Counting it as done read 100% with nothing
 // delivered. So total can be 0 while children exist, and callers render 0/0
 // as no progress. A child in a REFERENCE collection (PLAN-3535) is left out
@@ -5261,8 +5259,8 @@ func (s *Store) GetChildItems(parentItemID string) ([]models.Item, error) {
 // that constraint while still giving us a serialized snapshot.
 func (s *Store) GetChildItemsTx(tx *sql.Tx, parentItemID string) ([]models.Item, error) {
 	// The open-children guard is this function's caller. A child in a
-	// soft-deleted collection does not block closing its parent (BUG-3428,
-	// lead ruling): it is gone from the children list and from progress.
+	// soft-deleted collection does not block closing its parent (BUG-3428): it
+	// is gone from the children list and from progress.
 	if tx == nil {
 		return s.getChildItems(s.db, parentItemID, false)
 	}
@@ -5282,7 +5280,7 @@ func (s *Store) GetChildItemsTx(tx *sql.Tx, parentItemID string) ([]models.Item,
 //  2. THIS item itself, as a parent — so any concurrent precheck
 //     running against this item's own children list waits.
 //
-// Codex round-4 P1: pre-fix this helper used `LIMIT 1` and only
+// Pre-fix this helper used `LIMIT 1` and only
 // locked one parent. A child of TWO parents (one via `parent`, one
 // via `implements`) would let a status flip race against the
 // un-locked parent's precheck. The query now returns ALL distinct
@@ -5290,7 +5288,7 @@ func (s *Store) GetChildItemsTx(tx *sql.Tx, parentItemID string) ([]models.Item,
 //
 // All keys (parents + self) are funnelled through
 // AcquireParentChildrenLocks so they're acquired in a single,
-// canonical sorted order — round-4 P2's deadlock-avoidance contract.
+// canonical sorted order — the deadlock-avoidance contract.
 // No call site outside this helper takes pad:parent-children:* locks
 // in any other order.
 //
@@ -5449,8 +5447,8 @@ func (s *Store) listParentChildLockKeys(tx *sql.Tx, itemID string) ([]string, er
 // (set via _txlock=immediate in store.go) already serializes every
 // writer; advisory locks would add no protection there.
 //
-// Per Codex round-3 P1 (link-mutations bypass) + round-4 P2
-// (lock-order asymmetry). If you find yourself writing
+// Reasons: the link-mutations bypass and the
+// lock-order asymmetry. If you find yourself writing
 // `pg_advisory_xact_lock(... 'pad:parent-children:' ...)` anywhere
 // outside this helper, route it through here instead.
 func (s *Store) AcquireParentChildrenLocks(tx *sql.Tx, parentItemIDs ...string) error {
@@ -5801,7 +5799,7 @@ func (s *Store) MoveItem(itemID, targetCollectionID, newFieldsJSON string) (*mod
 }
 
 // MoveItemWithPreCheck is MoveItem with the same precheck escape hatch
-// UpdateItemWithPreCheck offers. Codex round-3 P1: a `pad item move
+// UpdateItemWithPreCheck offers. A `pad item move
 // ... --field status=done` writes a terminal done-field value through
 // MoveItem, bypassing the open-children guard wired into the regular
 // UpdateItem path. This variant runs the caller's invariant check
@@ -5906,7 +5904,7 @@ func (s *Store) moveItemWithPreCheckOnce(
 	// because a pool read and an in-tx read can render join-populated fields
 	// differently and the diff would report those differences as changes —
 	// comparing `existing` against the post-move snapshot violated exactly
-	// that precondition (Codex round 1, P2).
+	// that precondition.
 	preMove := existing
 	if precheck == nil {
 		// Read it once, and treat a failure as a failure. The previous shape
@@ -5928,8 +5926,8 @@ func (s *Store) moveItemWithPreCheckOnce(
 
 	// A move's field OVERRIDES can inject a brand-new pad-attachment:
 	// reference into the rewritten fields blob — this write bypasses the
-	// UpdateItem core, so stamp here too, BEFORE the UPDATE (BUG-2415,
-	// codex rounds 1 #2 and 3; see the ORDERING note on
+	// UpdateItem core, so stamp here too, BEFORE the UPDATE (BUG-2415, #2, see
+	// the ORDERING note on
 	// stampAttachmentRefsTx).
 	if err := stampAttachmentRefsTx(tx, s, existing.WorkspaceID, newFieldsJSON); err != nil {
 		return nil, err
@@ -6158,8 +6156,8 @@ func buildItemSort(sort string, dialect Dialect) string {
 // newestVersionIsUnflushedApplierRow reports whether the item's newest
 // version is the row an applier-path edit wrote (BUG-3327) for exactly
 // body, still waiting for the tab's flush to land the new body in the row.
-// Such a row is recognised positively, not by its content alone (codex
-// review): it is a full-body, non-create row, and it is NEWER than the
+// Such a row is recognised positively, not by its content alone:
+// it is a full-body, non-create row, and it is NEWER than the
 // item's content_flushed_at. Every direct content write bumps
 // content_flushed_at in the same write as its version, so only an
 // applier-path version (whose row write leaves content alone) can postdate
@@ -6187,7 +6185,7 @@ func (s *Store) newestVersionIsUnflushedApplierRow(q rowQueryer, itemID, body st
 	if isDiff || isCreate || content != body {
 		return false, nil
 	}
-	// No timestamp is no evidence (codex review): migration 052 leaves
+	// No timestamp is no evidence: migration 052 leaves
 	// content_flushed_at NULL on items with op-log rows, and treating that as
 	// "unflushed" would let an ordinary flush lose its version. Without it the
 	// skip does not apply, and the cost is a duplicate row, never a lost one.

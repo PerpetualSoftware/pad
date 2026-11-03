@@ -45,8 +45,8 @@ import (
 // lookup says invalid" and "the lookup could not be performed" are opposite
 // facts that a bool collapses: returning false on a store error closed every
 // affected stream on the next tick of a transient DB blip — a reconnect storm
-// and an availability loss for users whose credentials were fine (codex round
-// 1). Returning true on an UNRECOGNISED credential kind is the mirror error,
+// and an availability loss for users whose credentials were fine.
+// Returning true on an UNRECOGNISED credential kind is the mirror error,
 // and is the defect BUG-3007 exists to fix, wearing a different coat.
 type credentialLiveness int
 
@@ -116,7 +116,7 @@ func (s *Server) credentialLiveness(r *http.Request) credentialLiveness {
 		// extractBearer, the parse both bearer accept points use: the scheme
 		// is case-insensitive (RFC 6750), so a case-sensitive trim here would
 		// read "bearer <tok>" as the whole header and close a live stream
-		// every tick (BUG-3837 hunter r1).
+		// every tick (BUG-3837).
 		token, ok := extractBearer(r.Header.Get("Authorization"))
 		if !ok {
 			return credentialInvalid
@@ -150,7 +150,7 @@ func (s *Server) credentialLiveness(r *http.Request) credentialLiveness {
 		//
 		// A RESOLVED PRINCIPAL WITH NO KIND IS NOT THAT CASE, and is the one
 		// way the empty branch could quietly become the exemption the default
-		// branch exists to prevent (codex round 2, P1). Somebody was
+		// branch exists to prevent. Somebody was
 		// authenticated, so a credential was accepted; an accept point that
 		// records the user and not how it established them leaves this
 		// predicate with nothing to re-check and no way to notice. Both MCP
@@ -166,7 +166,7 @@ func (s *Server) credentialLiveness(r *http.Request) credentialLiveness {
 		return credentialValid
 
 	default:
-		// FAILS CLOSED, deliberately (lead ruling, day 63). A credential kind
+		// FAILS CLOSED, deliberately. A credential kind
 		// nobody taught this predicate about is a connection nobody can
 		// revoke, which is BUG-3007 again under a new name. A new auth path
 		// that forgets to set `ctxAuthKind` therefore breaks loudly — its

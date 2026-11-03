@@ -99,7 +99,7 @@ func bundleWithAttachmentOnBeta(t *testing.T) (bundle []byte, blobPath string) {
 	return rr.Body.Bytes(), blobPath
 }
 
-// Codex r1: with two items sharing a slug, the import renames the second, and
+// With two items sharing a slug, the import renames the second, and
 // the bundle door used to attach the rehydrated attachment through the SLUG,
 // so it landed on the wrong item. It now uses the import's source-id map.
 func TestBUG3357_AttachmentOwnershipSurvivesASlugCollision(t *testing.T) {
@@ -147,7 +147,7 @@ func TestBUG3357_AttachmentOwnershipSurvivesASlugCollision(t *testing.T) {
 	}
 }
 
-// Codex r1: the same blob path twice in the tar rehydrated the attachment
+// The same blob path twice in the tar rehydrated the attachment
 // twice, and references followed the last copy.
 func TestBUG3357_RepeatedBlobEntryRefused(t *testing.T) {
 	bundle, blobPath := bundleWithAttachmentOnBeta(t)
@@ -166,7 +166,7 @@ func TestBUG3357_RepeatedBlobEntryRefused(t *testing.T) {
 	}
 }
 
-// Codex r2: the repeat check runs before anything that can fail, so a repeat
+// The repeat check runs before anything that can fail, so a repeat
 // whose second copy is over the per-blob cap still takes the reject-and-roll-
 // back path instead of the keep path.
 func TestBUG3357_OversizedRepeatStillRollsBack(t *testing.T) {

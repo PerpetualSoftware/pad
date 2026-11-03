@@ -38,7 +38,7 @@ func TestBUG3668_CredentialLookupsAreIndexed(t *testing.T) {
 	for _, c := range census {
 		plan := explainPlan(t, s, c.query, "x")
 		// Positive: the plan must read the table through an index, not
-		// merely avoid one named scan node (codex r1).
+		// merely avoid one named scan node.
 		var indexed bool
 		if s.dialect.Driver() == DriverPostgres {
 			indexed = regexp.MustCompile(`(Index Scan|Index Only Scan) using \S+ on `+c.table+`\b|Bitmap Index Scan on `).MatchString(plan) &&

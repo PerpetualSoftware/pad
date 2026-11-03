@@ -97,7 +97,7 @@ func TestTASK3617_Refusals(t *testing.T) {
 	slug := createWSWithCollections(t, srv)
 	spec := createItem(t, srv, slug, "docs", map[string]any{"title": "Spec", "content": task3617Body})
 	dup := createItem(t, srv, slug, "docs", map[string]any{"title": "Dup", "content": "## Acceptance criteria\n\n- AC-1: one\n- AC-1: two\n"})
-	// One real criterion and one placeholder under the same id (lead spot
+	// One real criterion and one placeholder under the same id (spot
 	// mutant at d2fb671, TASK-3617): the id names two lines, so a verdict
 	// could not say which it was about.
 	halfDup := createItem(t, srv, slug, "docs", map[string]any{"title": "Half dup", "content": "## Acceptance criteria\n\n- AC-1: one\n- AC-1: ...\n"})

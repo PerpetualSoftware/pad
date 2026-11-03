@@ -42,7 +42,7 @@ import (
 // ONLY when the TCP peer is a trusted proxy by the same source of trust as
 // client-IP resolution (PAD_TRUSTED_PROXIES, see TrustedProxyRealIP and
 // cliAuthScheme); from any other peer it is ignored, so a rebinding page
-// cannot pass by sending it (lead ruling on TASK-2319). The refusal says
+// cannot pass by sending it (TASK-2319). The refusal says
 // which host it saw, what is configured, and how to fix a proxy, and the
 // first refusal per host is logged at WARN, rate-limited overall.
 //
@@ -51,8 +51,8 @@ import (
 // with an empty Host (internal/mcp/dispatch_http.go), which this would
 // refuse.
 //
-// Cloud keeps its behaviour: the allowlist is off-cloud only (Dave:
-// "off cloud"); extending it to cloud is a follow-up.
+// Cloud keeps its behaviour: the allowlist is off-cloud only;
+// extending it to cloud is a follow-up.
 //
 // mcp-go's own check stays disabled (internal/mcp/transport.go): it has
 // no allowlist and refuses a legitimate local reverse proxy, and this is

@@ -23,8 +23,7 @@ import (
 // We walk the import graph rooted at the share-page route so a future
 // refactor that hides collab behind a sub-component (e.g. `import
 // ShareContent from '$lib/share-content.svelte'`) is still caught —
-// the bare-route check would otherwise miss it. Per Codex review
-// round 2 [P2].
+// the bare-route check would otherwise miss it.
 //
 // External packages (node_modules) are not scanned: `marked` and
 // `DOMPurify` (under sanitizeMarkdownHtml) are intentionally reached, and
@@ -60,7 +59,7 @@ func TestSharePageDoesNotImportCollab(t *testing.T) {
 		"CollabProvider",                  // class itself
 		"@tiptap/extension-collaboration", // Collaboration extension (also matches -caret)
 		"@tiptap/y-tiptap",                // y-tiptap binding
-		"'yjs'", `"yjs"`,                  // Y.Doc construction (both quote styles, quoted to avoid matching `dayjs`); per Codex round 4 NIT
+		"'yjs'", `"yjs"`,                  // Y.Doc construction (both quote styles, quoted to avoid matching `dayjs`)
 		"y-protocols",    // wire format
 		"Editor.svelte",  // rich editor mounts y-tiptap when ydoc is set; suffix-only so relative imports don't bypass
 		"WebSocket",      // any hand-rolled WS client
@@ -173,7 +172,7 @@ func TestSharePageDoesNotImportCollab(t *testing.T) {
 // correctly handle `//` inside string literals, but that's a
 // false-positive risk for forbidden-token detection only (the test
 // would error on a string that LOOKS like a forbidden import in a
-// comment, which is fine — flag and review). Per Codex round 2 NIT.
+// comment, which is fine — flag and review).
 func stripComments(src string) string {
 	// Block comments first so // inside /* ... */ doesn't survive.
 	src = regexp.MustCompile(`(?s)/\*.*?\*/`).ReplaceAllString(src, "")
@@ -190,7 +189,7 @@ var (
 	// Dynamic imports: `import('...')` and `await import('...')`.
 	// SvelteKit uses these for lazy route components, so a future
 	// share-page refactor that lazy-loads a sub-component would
-	// otherwise bypass the static-only walk. Per Codex round 3 [P2].
+	// otherwise bypass the static-only walk.
 	dynamicImportRegex = regexp.MustCompile(`import\s*\(\s*['"]([^'"]+)['"]\s*\)`)
 )
 

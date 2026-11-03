@@ -603,7 +603,7 @@ func TestImportKeepsTheLiveDeclarationWhenAnArchivedCollectionSharesIt(t *testin
 }
 
 // TestTheSnapshotIsTakenBeforeTheRepairWrites pins the ORDER of two startup
-// steps, which is the whole of what it asserts (codex round 5, P2).
+// steps, which is the whole of what it asserts.
 //
 // The repair changes data — it strips a declaration, moving which collection
 // owns a kernel behavior — and `<db>.pre-<version>` is the operator's rollback

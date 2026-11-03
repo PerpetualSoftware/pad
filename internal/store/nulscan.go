@@ -35,7 +35,7 @@ import (
 //
 // SQLITE ONLY, and not by omission. PostgreSQL cannot hold either defect —
 // SQLSTATE 22021 for a raw NUL in text, 22P05 for the escape reaching jsonb —
-// which is why Layer B was ruled not to apply there, and the four-way
+// which is why Layer B does not apply there, and the four-way
 // differential test pins that native refusal. A scan of a Postgres database
 // would be a full table scan of every protected column to prove a theorem.
 // ScanNUL says so and returns an empty report rather than pretending it looked.

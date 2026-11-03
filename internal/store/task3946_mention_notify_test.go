@@ -10,7 +10,7 @@ import (
 // TASK-3946: @mentions enqueue a 'mention' push notification for each NEWLY
 // indexed (comment, user) pair, on create and edit only, for users who can
 // see the item (binding rule 645fab20), and a mention supersedes the same
-// user's pending comment/reply row (lead ruling f0fc5933).
+// user's pending comment/reply row.
 
 // mentionNotifyFixture is a workspace with author A and members bob and carol,
 // each with a device, and dave, a non-member with a device.

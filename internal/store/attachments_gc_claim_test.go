@@ -311,7 +311,7 @@ func TestClaimProtocol_FiledRaceSequence(t *testing.T) {
 }
 
 // TestStampAttachmentRefs_StampsVariantsOfReferencedOriginal pins the
-// codex-round-4 half of the variant story: stamping a referenced
+// Half of the variant story: stamping a referenced
 // ORIGINAL also stamps rows whose parent_id points at it, so a
 // concurrently-claimed thumbnail is protected by its OWN row's stamp
 // (and, on Postgres, its own row lock) — not just the claim's parent
@@ -351,8 +351,8 @@ func TestStampAttachmentRefs_StampsVariantsOfReferencedOriginal(t *testing.T) {
 	}
 }
 
-// TestClaimOrphanedVariant_RestoreRefusesAtClaimTime pins the codex-
-// round-1 gap in BUG-2388's restore-wins e2e leg (which only proved the
+// TestClaimOrphanedVariant_RestoreRefusesAtClaimTime pins the
+// gap in BUG-2388's restore-wins e2e leg (which only proved the
 // restored row never became a CANDIDATE): the claim itself, called
 // directly against a variant whose parent was restored after candidate
 // selection, must refuse — the parent-liveness re-read happens inside

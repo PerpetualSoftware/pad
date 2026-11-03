@@ -260,7 +260,7 @@ func TestAuthSessionBillingAvailable(t *testing.T) {
 	}
 }
 
-// Lead ruling on TASK-3577: with PAD_BILLING and PAD_BILLING_AVAILABLE both
+// With PAD_BILLING and PAD_BILLING_AVAILABLE both
 // unset the mode is auto, and with the sidecar down that still gives
 // billing_available false: auto fails closed.
 func TestAuthSessionBillingBothUnsetSidecarDown(t *testing.T) {

@@ -64,7 +64,7 @@ func TestPlanLimitDetails_UntouchedDoorsAreByteIdentical(t *testing.T) {
 	}
 }
 
-// TestPlanLimitMessage_ImportNamesWhatWouldLand is Dave's day-71 clause: the
+// TestPlanLimitMessage_ImportNamesWhatWouldLand pins that the
 // refusal names how many would land versus the limit.
 func TestPlanLimitMessage_ImportNamesWhatWouldLand(t *testing.T) {
 	t.Parallel()

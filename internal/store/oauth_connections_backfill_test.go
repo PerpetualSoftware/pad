@@ -294,7 +294,7 @@ func TestBackfillOAuthConnections_RefreshOnlyChain(t *testing.T) {
 }
 
 // TestBackfillOAuthConnections_DoesNotResurrectRemovedWorkspace is the
-// regression guard for Codex review #583 round 2: a user who removes a
+// regression guard (#583): a user who removes a
 // slug from their connection's allow-list (via Phase D's mutation UI)
 // must NOT see the slug come back on the next server restart's
 // backfill run. Backfill is a one-shot seed; once the oauth_connections
@@ -349,7 +349,7 @@ func TestBackfillOAuthConnections_DoesNotResurrectRemovedWorkspace(t *testing.T)
 // TestBackfillOAuthConnections_AtomicOnMidLoopFailure verifies that
 // the per-chain transaction rolls BOTH the parent oauth_connections
 // row AND any join rows back when a slug INSERT fails mid-loop. The
-// regression guard for Codex review #583 round 3: without atomicity,
+// regression guard (#583): without atomicity,
 // a partial seed (parent inserted, slug loop crashed) would leave the
 // connection permanently scoped to an incomplete allow-list because
 // the subsequent backfill sees the parent row and short-circuits.
@@ -431,8 +431,8 @@ func TestBackfillOAuthConnections_Idempotent(t *testing.T) {
 	}
 	// Idempotent: chain scan re-counts but every counter for "new
 	// work" must report 0 — pre-insert existence probes prevent
-	// no-op INSERTs from incrementing the counters. Codex review
-	// #583 round 1 caught the prior over-report; this assertion is
+	// no-op INSERTs from incrementing the counters.
+	// This fixes the prior over-report (#583); this assertion is
 	// the regression guard.
 	if second.ConnectionsCreated != 0 {
 		t.Errorf("idempotent re-run ConnectionsCreated = %d, want 0", second.ConnectionsCreated)

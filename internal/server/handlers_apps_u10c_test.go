@@ -35,7 +35,7 @@ func ownerSink(t *testing.T, e *deliveryEnv, status *atomic.Int32) *atomic.Int32
 }
 
 // An app held back by its rate cap for several passes causes exactly ONE
-// delivery to an owner hook that succeeded (lead ruling, day 87).
+// delivery to an owner hook that succeeded.
 func TestAppDelivery_RateLimitedAppDoesNotDuplicateOwnerDeliveries(t *testing.T) {
 	e := newDeliveryEnv(t)
 	e.redeemNow(t)
@@ -212,7 +212,7 @@ func (e *deliveryEnv) setAppRate(t *testing.T, limit rate.Limit, burst int) {
 	e.srv.appRate.mu.Unlock()
 }
 
-// codex r1 on U10c: an event in a collection the app is not subscribed to
+// An event in a collection the app is not subscribed to
 // spends none of its rate budget.
 func TestAppDelivery_UnrelatedCollectionsSpendNoBudget(t *testing.T) {
 	e := newDeliveryEnv(t)
@@ -231,7 +231,7 @@ func TestAppDelivery_UnrelatedCollectionsSpendNoBudget(t *testing.T) {
 	}
 }
 
-// codex r1 on U10c: the cap bounds REQUESTS, retries included.
+// The cap bounds REQUESTS, retries included.
 func TestAppDelivery_RateCapCountsEveryAttempt(t *testing.T) {
 	e := newDeliveryEnv(t)
 	e.redeemNow(t)
@@ -247,7 +247,7 @@ func TestAppDelivery_RateCapCountsEveryAttempt(t *testing.T) {
 	}
 }
 
-// codex r1 on U10c: the limiter map does not grow without bound, and pruning
+// The limiter map does not grow without bound, and pruning
 // drops only idle (full-bucket) entries.
 func TestAppRateLimiter_PrunesIdle(t *testing.T) {
 	l := appRateLimiter{by: map[string]*rate.Limiter{}, limit: 10, burst: 60}
@@ -266,7 +266,7 @@ func TestAppRateLimiter_PrunesIdle(t *testing.T) {
 	}
 }
 
-// codex r1 on U10c: a bulk skip is recorded, so an owner hook's retry of
+// A bulk skip is recorded, so an owner hook's retry of
 // the same unit does not count it again.
 func TestAppDelivery_BulkSkipCountedOnce(t *testing.T) {
 	e := newDeliveryEnv(t)
@@ -293,7 +293,7 @@ func TestAppDelivery_BulkSkipCountedOnce(t *testing.T) {
 	}
 }
 
-// codex r2 on U10c: an old event the app was never owed (before its
+// An old event the app was never owed (before its
 // deliver_from) is refused, not dropped and counted.
 func TestAppDelivery_NotOwedIsNotDropped(t *testing.T) {
 	e := newDeliveryEnv(t)
@@ -311,7 +311,7 @@ func TestAppDelivery_NotOwedIsNotDropped(t *testing.T) {
 	}
 }
 
-// codex r2 on U10c: an attempt admission refuses spends no rate budget.
+// An attempt admission refuses spends no rate budget.
 func TestAppDelivery_RefusalsSpendNoBudget(t *testing.T) {
 	e := newDeliveryEnv(t)
 	var down atomic.Int32
@@ -329,7 +329,7 @@ func TestAppDelivery_RefusalsSpendNoBudget(t *testing.T) {
 	}
 }
 
-// codex r2 on U10c: the ledger counts requests actually sent.
+// The ledger counts requests actually sent.
 func TestAppDelivery_LedgerCountsRequests(t *testing.T) {
 	e := newDeliveryEnv(t)
 	e.redeemNow(t)

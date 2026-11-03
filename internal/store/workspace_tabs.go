@@ -199,7 +199,7 @@ func (s *Store) OpenWorkspaceTab(userID, workspaceID string, ephemeral bool) (Wo
 	// UPDATE; the FK check alone takes KEY SHARE, which does not). An open
 	// that loses a race with a soft delete therefore sees deleted_at and
 	// stores nothing, instead of inserting a row the delete's DELETE never saw
-	// and a restore would bring back (codex round 4 on BUG-3285). The caller
+	// and a restore would bring back (BUG-3285). The caller
 	// checked visibility before this, so sql.ErrNoRows means that race.
 	live := `SELECT id FROM workspaces WHERE id = ? AND deleted_at IS NULL`
 	if s.dialect.Driver() == DriverPostgres {
@@ -411,7 +411,7 @@ type execer interface {
 //     holds it no tab row of U's can appear or go, and the conditional bump
 //     and the DELETE below see the same rows. Without it, under READ
 //     COMMITTED, an open committing between the two statements is missed by
-//     the bump's EXISTS and then deleted without a bump (codex round 2).
+//     the bump's EXISTS and then deleted without a bump.
 func (s *Store) pruneWorkspaceTabIfNoAccessTx(ex execer, userID, workspaceID string) error {
 	const noAccess = `
 		  AND NOT EXISTS (SELECT 1 FROM workspace_members WHERE workspace_id = ? AND user_id = ?)
@@ -454,7 +454,7 @@ func (s *Store) pruneWorkspaceTabIfNoAccessTx(ex execer, userID, workspaceID str
 //     (BUG-3288: taken after the tabs, the two deadlocked). A soft
 //     delete that took the workspaces row first and D's users row second
 //     would cross it (measured: 40P01,
-//     TestWorkspaceTabs_SoftDeleteVsOwnerAccountDeletion, codex round 3),
+//     TestWorkspaceTabs_SoftDeleteVsOwnerAccountDeletion),
 //     which is why this runs first.
 //   - Two soft deletes: both lock their holders in id order.
 //

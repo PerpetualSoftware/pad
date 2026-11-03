@@ -55,7 +55,7 @@ func (s *Server) resolveItemCollectionSlug(workspaceID, input string) (*models.C
 	// the raw form, and its case-folded candidate `spec` then finds no LIVE
 	// row (GetCollectionBySlug skips soft-deleted) and walks on to `specs` —
 	// so guarding only the input lets the exact archived name be stepped over
-	// by a spelling of itself (codex round 8).
+	// by a spelling of itself.
 	for _, name := range append([]string{input}, collectionSlugCandidates(input)...) {
 		coll, err := s.store.GetCollectionBySlug(workspaceID, name)
 		if err != nil {
@@ -104,7 +104,7 @@ func collectionSlugCandidates(input string) []string {
 	// more closely than it names `specs`, so trying pluralization ahead of the
 	// folded form would resolve `Spec` to `specs` in a workspace holding both
 	// — the same misfiling the exact-match rule exists to prevent, reached by
-	// a different route (codex round 3 P1).
+	// a different route.
 	if trimmed != input {
 		out = append(out, trimmed)
 	}

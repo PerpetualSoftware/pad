@@ -99,12 +99,12 @@ func TestActivityStreamAnnouncesAGapMidStream(t *testing.T) {
 		t.Errorf("pad_event_midstream_resyncs_total = %v, want 1", got)
 	}
 	// The RESUME counter must not move: existing alerts are written against
-	// it and this was not a resume (codex round 4).
+	// it and this was not a resume.
 	if got := counterValue(t, m.EventResumeGapsTotal); got != resumeBefore {
 		t.Errorf("a mid-stream gap moved the resume counter: %v -> %v", resumeBefore, got)
 	}
 
-	// THE STREAM MUST STAY OPEN (codex round 3). sync_required tells the
+	// THE STREAM MUST STAY OPEN. sync_required tells the
 	// client to reconcile, not that the connection is over — and a handler
 	// that emitted it and then returned would have passed everything above.
 	// An ordinary event arriving afterwards is the proof.
@@ -222,7 +222,7 @@ func TestWatchStreamAnnouncesAGapMidStream(t *testing.T) {
 		t.Errorf("a mid-stream gap moved the watch resume counter: %v", got)
 	}
 
-	// Same liveness claim as the activity twin (codex round 3). This stream
+	// Same liveness claim as the activity twin. This stream
 	// has no cheap ordinary event to publish — a notification needs a watch
 	// predicate to match — so the assertion is that the handler did not
 	// return: a closed frames channel is what a returned handler looks like
@@ -306,8 +306,7 @@ func assertNoFrameWithEvent(t *testing.T, frames <-chan string, eventType string
 	}
 }
 
-// TestRefusedConnectionDoesNotCountASyncRequired is codex round 1's finding,
-// pinned. The counter's population is "sync_required signals SENT". Moving the
+// TestRefusedConnectionDoesNotCountASyncRequired is pinned. The counter's population is "sync_required signals SENT". Moving the
 // cursor parse above the subscribe (which is what closes the duplicate window)
 // put the unreadable-cursor increment on the wrong side of the admission
 // check, so a connection refused with 429 — which is never sent anything —
@@ -317,7 +316,7 @@ func assertNoFrameWithEvent(t *testing.T, frames <-chan string, eventType string
 // that IS admitted must still count, or the fix would read as correct while
 // having simply deleted the increment.
 //
-// SCOPE, recorded because codex round 3 raised it: origin/main also does not
+// SCOPE: origin/main also does not
 // count a refused connection — it parsed the cursor after admission, so the
 // question never arose there. This test therefore does NOT argue for the
 // parse-before-subscribe ordering; it is a regression test for the defect that

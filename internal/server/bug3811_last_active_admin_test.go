@@ -107,7 +107,7 @@ func TestBUG3811_DemoteAndDisableAnswer409(t *testing.T) {
 				done <- rr.Code
 			}()
 			// Commit only once the request is seen WAITING on the guard's
-			// lock, not after a fixed sleep (codex r1 on #2178).
+			// lock, not after a fixed sleep.
 			waited := false
 			for deadline := time.Now().Add(10 * time.Second); !waited && time.Now().Before(deadline); {
 				var n int

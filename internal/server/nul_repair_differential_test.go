@@ -108,7 +108,8 @@ func TestImportRepairFlagRepairsExactlyTheEscape(t *testing.T) {
 	}
 }
 
-// TestImportStrictRefusalNamesTheWorkingRemedy is Dave's day-54 ruling 2 in
+// TestImportStrictRefusalNamesTheWorkingRemedy is the decision that a strict refusal must
+// name a working remedy, in
 // test form, and PATTE-135's rule: a suggested remedy is an untested contract
 // claim until something runs it.
 //
@@ -179,7 +180,7 @@ func TestNULRepairTallyDefaultsToStrict(t *testing.T) {
 	}
 }
 
-// TestRepairFlagReachesTheNestedAndObliqueForms is the codex round-1 finding
+// TestRepairFlagReachesTheNestedAndObliqueForms is a past finding
 // turned into a test, and it is the reason the repair walks the DECODED body
 // rather than scanning raw bytes.
 //
@@ -192,7 +193,7 @@ func TestNULRepairTallyDefaultsToStrict(t *testing.T) {
 //     document it is. This is the most common carrier in a real export and the
 //     first version of the flag could not repair it.
 //   - The oblique spelling puts the backslash itself in as an escape, so the
-//     six characters do not appear in the raw bytes at all (BUG-2803 round 4).
+//     six characters do not appear in the raw bytes at all (BUG-2803).
 //     The decode resolves it; a scan never sees it.
 //
 // Each leg asserts the gate ACCEPTS the repaired body, which is the property
@@ -377,7 +378,7 @@ func TestBodyRepairPreservesEverythingElse(t *testing.T) {
 	}
 }
 
-// TestRepairDeclinesADuplicateMemberBody is codex round 4's finding.
+// TestRepairDeclinesADuplicateMemberBody pins a past finding.
 //
 // The repair decodes into map[string]any, where a repeated member keeps only
 // the LAST value. The TYPED decode that runs next does not agree: it unmarshals

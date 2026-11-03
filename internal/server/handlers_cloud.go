@@ -119,7 +119,7 @@ func (s *Server) requireCloudMode(next http.Handler) http.Handler {
 // cloudAdminPaths are the exact paths where a cloud-secret auth attempt is
 // allowed to bypass the normal user-auth / CSRF gates. Defined as an
 // explicit whitelist so no future /api/v1/... route accidentally inherits
-// the bypass — Codex caught a P0 in the first cut of this change where
+// the bypass — an earlier cut of this change had a hole where
 // setting X-Cloud-Secret on any path (e.g. GET /api/v1/workspaces)
 // bypassed auth globally.
 var cloudAdminPaths = map[string]struct{}{
@@ -215,7 +215,7 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 		// email address alone, whatever the account's binding state.
 		Subject string `json:"subject"`
 		// EmailPrimary: the address is the provider account's PRIMARY one.
-		// Only GitHub's matters (TASK-3351 ruling 2): an account claim from
+		// Only GitHub's matters (TASK-3351): an account claim from
 		// GitHub requires it to be true, so an absent value claims nothing.
 		EmailPrimary *bool `json:"email_primary"`
 		// TwoFactorPKCEChallenge: an RFC 7636 S256 code_challenge. When the
@@ -515,7 +515,7 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 
 // providerVouchesForClaim: whether a provider's verified assertion of an
 // address is enough to claim the never-verified account registered with it
-// (TASK-3351 ruling 2). GitHub reports every verified address on an account,
+// (TASK-3351). GitHub reports every verified address on an account,
 // not only its own, so only the primary one counts, and only when the
 // sidecar says so.
 func providerVouchesForClaim(provider string, emailPrimary *bool) bool {
@@ -526,7 +526,7 @@ func providerVouchesForClaim(provider string, emailPrimary *bool) bool {
 }
 
 // sendAccountClaimedNotice tells the address's owner what the claim removed
-// (TASK-3351 ruling 3). The sign-in ends in a redirect through the sidecar,
+// (TASK-3351). The sign-in ends in a redirect through the sidecar,
 // so the response's lists may never be shown; the mailbox is the channel
 // that reaches the right person. Without email, it is logged.
 func (s *Server) sendAccountClaimedNotice(user *models.User, provider string, claim *store.AccountClaim) {
@@ -1873,7 +1873,7 @@ func planLimitMessage(r *http.Request, result *store.LimitResult) string {
 	limitStr := fmt.Sprintf("%d-%s", result.Limit, label)
 
 	// An operation that would add MORE THAN ONE at once gets its own sentence
-	// (BUG-3103: ImportWorkspace). Dave's day-71 ruling asks this refusal to
+	// (BUG-3103: ImportWorkspace). This refusal should
 	// name how many would land versus the limit, and the sentence below cannot
 	// — it never reads Current, and on the import door "You've reached" is
 	// simply false: the workspace the transaction just minted holds nothing,
@@ -2037,7 +2037,7 @@ func (s *Server) autoCreateWorkspace(user *models.User) *models.Workspace {
 			// PRECISELY when the membership write had succeeded.
 			//
 			// TWO QUESTIONS, not one, and an earlier draft of this reconcile
-			// conflated them (codex round 1): "did MY write land?" and "is it safe
+			// conflated them: "did MY write land?" and "is it safe
 			// to destroy this workspace?". Existence answers the second; only the
 			// ROLE answers the first, because what was attempted was an OWNER row.
 			// A row carrying some other role means my write did NOT land, and also

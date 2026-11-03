@@ -151,8 +151,7 @@ func (s *Server) handleOAuthAuthorizationServer(w http.ResponseWriter, _ *http.R
 	// missing Authorization header is rejected). RFC 8414 §2 marks
 	// the field OPTIONAL; omitting it tells discovery clients
 	// "negotiate auth out-of-band," which for our case is documented
-	// in the public docs at getpad.dev/mcp/local. Codex review #373
-	// round 1 caught the mismatch.
+	// in the public docs at getpad.dev/mcp/local.
 	doc := authServerMetadata{
 		Issuer:                                 issuer,
 		AuthorizationEndpoint:                  issuer + "/oauth/authorize",

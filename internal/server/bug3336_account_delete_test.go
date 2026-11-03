@@ -169,7 +169,7 @@ func TestBUG3336_RotationKeepsTheSignInTime(t *testing.T) {
 	}
 }
 
-// codex round 2: approving a CLI sign-in from an existing session is not a
+// Approving a CLI sign-in from an existing session is not a
 // fresh sign-in. The CLI session it mints carries the approver's sign-in
 // time, so it cannot confirm-delete; and a PAT cannot approve at all.
 func TestBUG3336_CLIApprovalDoesNotMintAFreshSignIn(t *testing.T) {

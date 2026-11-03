@@ -26,7 +26,7 @@ func postComment(t *testing.T, srv *Server, ws, itemSlug, agent, body string) mo
 }
 
 // postReply uses the dedicated reply route — the one the web UI calls — not
-// the top-level route with a parent_id. Codex round 1: the reply route wrote
+// the top-level route with a parent_id. The reply route wrote
 // no `commented` activity, so a reply had nothing to carry the name through,
 // and a test driving the top-level route would never have seen that.
 func postReply(t *testing.T, srv *Server, ws, parentID, agent, body string) models.Comment {
@@ -162,7 +162,7 @@ func TestListComments_CarriesAgentName(t *testing.T) {
 	}
 }
 
-// Codex round 2 on TASK-2760, driven end to end. The comment sources and the
+// TASK-2760, driven end to end. The comment sources and the
 // activity source are windowed separately (perSource = limit*3 each), so a
 // comment can fall outside the comment window while the activity it links to
 // sits inside the activity window. The handler's in-memory guard cannot see

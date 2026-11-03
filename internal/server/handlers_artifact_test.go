@@ -575,7 +575,7 @@ func fieldString(t *testing.T, fieldsJSON, key string) string {
 }
 
 // TestImportArtifactUnbindableTextRejected covers the last body reader the
-// BUG-2803 sweep turned up (codex round 3). The artifact endpoint takes RAW
+// BUG-2803 sweep turned up. The artifact endpoint takes RAW
 // TEXT, not JSON, so it never went through decodeJSON and inherited neither
 // the NUL refusal nor the path/query rule — a body is neither a path nor a
 // query. A raw NUL or invalid UTF-8 reached the store, and Postgres answered
@@ -603,13 +603,13 @@ func TestImportArtifactUnbindableTextRejected(t *testing.T) {
 	}{
 		{"NUL byte in the body", []byte(strings.Replace(good, "body", "bo\x00dy", 1))},
 		{"invalid UTF-8 in the body", append([]byte(strings.Replace(good, "body", "bo", 1)), 0xff, '\n')},
-		// codex round 4: YAML has its own escape vocabulary. A double-quoted
+		// YAML has its own escape vocabulary. A double-quoted
 		// scalar carries no NUL in the request bytes — the raw check passes —
 		// and manufactures one during the YAML decode. Measured before the
 		// post-decode check existed: this imported 201 with a NUL in the
 		// title. Same shape as the JSON half, where a value only becomes
 		// dangerous after a SECOND parse.
-		// codex round 8: the first version of the post-decode check walked
+		// The first version of the post-decode check walked
 		// the artifact by TYPE and missed two reachable fields — arguments,
 		// whose declared type []map[string]any never matched the walk's
 		// []any case, and provenance, whose strings are rendered into a

@@ -374,7 +374,7 @@ func (s *Server) parkUnrecorded(ids []string, meta map[string]store.Notification
 
 // recordedPrefix is how many leading ids a failed RecordNotificationsSent
 // still recorded: its chunks commit one by one, and an id left parked after
-// its chunk landed counts twice against the rate cap (TASK-4032 codex r3 M1).
+// its chunk landed counts twice against the rate cap (TASK-4032).
 func recordedPrefix(err error) int {
 	var rse *store.RecordSentError
 	if errors.As(err, &rse) {

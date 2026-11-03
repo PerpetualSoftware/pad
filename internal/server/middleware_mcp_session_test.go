@@ -181,7 +181,7 @@ func TestMCPSessionTracker_ConcurrentTouchEvict(t *testing.T) {
 	}
 }
 
-// TestMCPSessionTracker_OnChangeUnderLock pins the Codex round-1 fix
+// TestMCPSessionTracker_OnChangeUnderLock pins the fix
 // for the race where onChange ran AFTER the mutex was released:
 // concurrent touches could compute (n=1, n=2) under the lock then
 // race the callback writes, leaving the gauge at 1 while the map

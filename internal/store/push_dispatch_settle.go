@@ -14,7 +14,7 @@ var rowsAffected = func(r sql.Result) (int64, error) { return r.RowsAffected() }
 // RecordSentError is RecordNotificationsSent's error. The record runs one
 // UPDATE per chunk with no transaction, so a failure can follow chunks that
 // already committed: Landed is how many leading ids those chunks covered,
-// which a caller must treat as recorded (TASK-4032 codex r3 M1).
+// which a caller must treat as recorded (TASK-4032).
 type RecordSentError struct {
 	Landed int
 	err    error

@@ -23,7 +23,7 @@ import (
 // reaches getpad.dev, and the posters are proxied here for the same reason.
 // A SELF-HOSTED server never fetches anything: both routes answer 404 and the
 // web client links out to getpad.dev/learn instead (a self-hoster's instance
-// makes no third-party calls). Lead rulings on TASK-3452: server-side fetch
+// makes no third-party calls). Server-side fetch
 // gated on cloud mode, the catalog URL a server constant, posters proxied.
 
 // tutorialsCatalogURL is the catalog's address. www, not the apex: the apex
@@ -107,7 +107,7 @@ func (s *Server) fetchTutorialBytes(ctx context.Context, url string, limit int64
 	}
 	// Never follow a redirect: the origin check is on the URL asked for, and a
 	// redirect would let an allowed getpad.dev URL send this server anywhere
-	// (codex round 1). A 3xx is then just a non-200, and the fetch fails.
+	//. A 3xx is then just a non-200, and the fetch fails.
 	client := *s.tutorialsClient()
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	resp, err := client.Do(req)
@@ -130,7 +130,7 @@ func (s *Server) fetchTutorialBytes(ctx context.Context, url string, limit int64
 
 // tutorialCatalogNow returns the catalog, refreshing it when it is older than
 // the TTL. One refresh runs at a time and never holds the lock while it waits
-// on the network (codex round 1): a caller with a copy in hand gets that copy
+// on the network: a caller with a copy in hand gets that copy
 // at once, and only a caller with NO copy waits for the refresh in progress,
 // bounded by its own request context. A failed refresh keeps the last good
 // copy; with none, the result is nil and the client falls back to links.

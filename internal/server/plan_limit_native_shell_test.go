@@ -264,7 +264,7 @@ func TestPlanLimitDetails_NativeShellOmitsOnlyUpgradeURL(t *testing.T) {
 // The invitee's member-limit refusal (BUG-3098) is its own message, not the
 // plan-limit helpers', and it says "upgrade their plan". Both accept doors,
 // the existing-account accept and register-with-code, must drop that clause
-// for a shell and keep it for a browser (codex r1 on TASK-3293).
+// for a shell and keep it for a browser (TASK-3293).
 func TestMemberLimitRefusal_NativeShell(t *testing.T) {
 	for _, door := range []string{"existing", "register"} {
 		for _, shell := range []bool{true, false} {

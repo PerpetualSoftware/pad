@@ -49,7 +49,7 @@ func TestAFailedSubscriptionIsRefusedWithARetryableStatus(t *testing.T) {
 
 	slug := createTestWorkspace(t, ts.URL, "Test")
 
-	// BOTH BRANCHES of the handler's subscribe (codex round 5 on BUG-2764):
+	// BOTH BRANCHES of the handler's subscribe (BUG-2764):
 	// a fresh connection goes through SubscribeIfAllowed, a resume through
 	// SubscribeAndReplaySince, and each has its own call site that could
 	// have missed the mapping.

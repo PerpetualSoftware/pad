@@ -15,8 +15,7 @@ import (
 // op-log fully pruned and the mixed item's preserved.
 //
 // Whole-log prune of dormant items only — prefix-pruning a mixed
-// item would corrupt Yjs replay (causal references). Per Codex
-// review of TASK-1309 [P1].
+// item would corrupt Yjs replay (causal references). See TASK-1309.
 //
 // Times here are tight (10ms ticks, 1min minAge) because the test
 // is driving the real ticker. Test parameters are NOT representative
@@ -155,7 +154,7 @@ func TestOpLogGC_StartIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestOpLogGC_PreservesUnflushedItem is the TASK-1309 round-2 P1
+// TestOpLogGC_PreservesUnflushedItem is the TASK-1309
 // guard: an item with op-log rows that have NOT yet been captured
 // by a items.content flush must NOT be pruned, even if the rows
 // are dormant by age. The id watermark `items.content_flushed_op_log_id`
@@ -237,7 +236,7 @@ func TestOpLogGC_PreservesUnflushedItem(t *testing.T) {
 // out the watermark to simulate the post-migration "items with
 // op-log rows stay at NULL" outcome.
 //
-// Per Codex review of TASK-1309 round 3 [P1]: original backfill
+// TASK-1309: the original backfill
 // using `updated_at` could certify unflushed rows.
 func TestOpLogGC_BackfillDoesNotCertifyUnflushed(t *testing.T) {
 	srv := testServerWithCollab(t)

@@ -32,7 +32,7 @@ type LegacyBuiltinAdoption struct {
 
 // AdoptLegacyBuiltins gives items made before built-in origins were recorded
 // (TASK-3462 U4) the origin their exact title names, with no seed version, so
-// they read current or unknown_origin and the 2-way preview applies (Dave's
+// they read current or unknown_origin and the 2-way preview applies (the
 // ruling: no historical hashes).
 //
 // ONCE per instance, recorded in platform_settings, and only for items created
@@ -61,8 +61,7 @@ func (s *Store) AdoptLegacyBuiltins() (LegacyBuiltinAdoption, error) {
 	}
 
 	// The convention and playbook collections first, so the item read below
-	// touches only their items (codex r1: reading every originless item's body
-	// on the instance cost startup time and memory in proportion to it).
+	// touches only their items.
 	kindOf := map[string]string{}
 	crows, err := s.db.Query(s.q(`SELECT id, traits FROM collections WHERE deleted_at IS NULL`))
 	if err != nil {
@@ -120,7 +119,7 @@ func (s *Store) AdoptLegacyBuiltins() (LegacyBuiltinAdoption, error) {
 				rows.Close()
 				return res, fmt.Errorf("scan item: %w", err)
 			}
-			// AT OR BEFORE the migration's second (codex r1): timestamps are
+			// AT OR BEFORE the migration's second: timestamps are
 			// second-precision, so an item made in that very second is still
 			// a legacy item, and missing it now would miss it for good once the
 			// marker is written. Parsed, not compared as text, because an
@@ -130,7 +129,7 @@ func (s *Store) AdoptLegacyBuiltins() (LegacyBuiltinAdoption, error) {
 			if err != nil || created.After(cutoff) {
 				continue
 			}
-			// The WORKSPACE must predate the cutoff too (codex r2): import
+			// The WORKSPACE must predate the cutoff too: import
 			// keeps each item's created_at from the bundle, so an old bundle
 			// imported after the migration but before this pass first ran
 			// would read as legacy. Every import door (workspace import,
@@ -215,7 +214,7 @@ func (s *Store) adoptLegacyWorkspace(workspaceID string, cands []legacyCandidate
 		return 0, err
 	}
 	// SQLite's write lock already serialises and it does not take the clause.
-	// The collection is read here too (codex r1): its traits decide the kind,
+	// The collection is read here too: its traits decide the kind,
 	// and the scan's copy is as stale as the item's. UpdateCollection and
 	// DeleteCollection take the workspace lock held here, so this read is
 	// current until commit.

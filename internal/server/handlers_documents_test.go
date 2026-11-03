@@ -122,7 +122,7 @@ func TestFormatChangeValueNilSafe(t *testing.T) {
 	}
 }
 
-// Regression for the Codex-round-1 finding on PR #236: collapsing slice
+// Regression for a finding on PR #236: collapsing slice
 // values to a count-only label meant a same-cardinality replacement (one
 // note swapped for a different one note) produced equal old/new display
 // strings, so `diffFields()` silently dropped the change. The fix compares
@@ -147,7 +147,7 @@ func TestDiffFieldsSameCardinalityArrayChangeStillReported(t *testing.T) {
 	}
 }
 
-// Regression for the Codex-round-1 finding on PR #236: object-valued fields
+// Regression for a finding on PR #236: object-valued fields
 // (e.g. `convention`) now both stringify to `(object)`, so an in-place edit
 // would have been silently dropped. Confirm DeepEqual catches it.
 func TestDiffFieldsObjectMutationStillReported(t *testing.T) {

@@ -52,7 +52,7 @@ func TestCreateInvitation_ConcurrentReinvitesLeaveOnePending(t *testing.T) {
 	}
 }
 
-// Codex r1: accept must not land after the invitation was declined (or
+// Accept must not land after the invitation was declined (or
 // replaced). The handler reads the invitation before the store transaction,
 // so a decline can delete the row in between; the accept must then add no
 // membership and report the invitation gone. Modelled by deleting the row

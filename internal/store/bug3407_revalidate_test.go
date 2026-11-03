@@ -141,7 +141,7 @@ func TestBug3407_ACarriedValueIsNotReJudged(t *testing.T) {
 	wantValidation(t, err, "changing the carried value")
 }
 
-// Control (lead condition 4): the schema moves in the same window, but the
+// Control: the schema moves in the same window, but the
 // written values still satisfy it, and the write lands. The refusals above are
 // about the value, not about any schema edit.
 func TestBug3407_ASchemaChangeTheValuesStillSatisfyDoesNotRefuse(t *testing.T) {
@@ -213,7 +213,7 @@ func TestBug3407_ASchemaChangeWaitsForAFencedWriteThatReadTheSchema(t *testing.T
 }
 
 // A move writes destination fields its caller validated before the lock
-// (codex r1): a destination schema change in between is checked too.
+// : a destination schema change in between is checked too.
 func TestBug3407_AMoveIntoACollectionWhoseSchemaChangedIsRefused(t *testing.T) {
 	s, ws, _, item := bug3407Fixture(t)
 	dest, err := s.CreateCollection(ws.ID, models.CollectionCreate{Name: "Dest", Slug: "dest", Schema: bug3407Base})
@@ -238,7 +238,7 @@ func TestBug3407_AMoveIntoACollectionWhoseSchemaChangedIsRefused(t *testing.T) {
 }
 
 // A grandfathered schema that still declares a reserved key must not refuse
-// the system's own value on any re-validated path (codex r2): the handlers
+// the system's own value on any re-validated path: the handlers
 // judge reserved metadata by no schema, and so does the re-check.
 const bug3407Grandfathered = `{"fields":[{"key":"status","label":"Status","type":"select","options":["open","done"],"default":"open"},{"key":"implementation_notes","label":"Notes","type":"select","options":["x"]}]}`
 
@@ -296,7 +296,7 @@ func TestBug3407_AnUnmovedSchemaIsNotReJudged(t *testing.T) {
 	}
 }
 
-// codex r3: an UpdateCollection that supplies a schema takes the workspace
+// An UpdateCollection that supplies a schema takes the workspace
 // seq lock even when the bytes look unchanged against its pre-transaction
 // read, because whether they moved is decided only under the locks. Here
 // the bytes really are unchanged, and the update still waits for a held seq

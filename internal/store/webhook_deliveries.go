@@ -54,7 +54,7 @@ func (s *Store) DeliveryStatus(eventID, webhookID string) (string, error) {
 // with ONE exception: "delivered" replaces "dropped" and takes the drop back
 // off the hook's count. A request admitted before another drainer dropped
 // the event (its claim expired mid-request) did reach the app, and the
-// owner must not see it as lost (codex r5 on U10c).
+// owner must not see it as lost.
 func (s *Store) RecordDelivery(eventID, webhookID, status, lastError string, attempts int) error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -64,8 +64,7 @@ func (s *Store) RecordDelivery(eventID, webhookID, status, lastError string, att
 	ts := now()
 	// Insert first: ON CONFLICT waits for a concurrent inserter (a drop) to
 	// commit, so a row that exists afterwards can be locked and read, and an
-	// absent one is simply ours (codex r6 on U10c: FOR UPDATE alone locks
-	// nothing when the row does not exist yet).
+	// absent one is simply ours.
 	res, err := tx.Exec(s.q(`INSERT INTO webhook_deliveries (outbox_event_id, webhook_id, status, attempts, last_error, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (outbox_event_id, webhook_id) DO NOTHING`),
 		eventID, webhookID, status, attempts, nullIfEmpty(lastError), ts)

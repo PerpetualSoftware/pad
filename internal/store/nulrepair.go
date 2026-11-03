@@ -12,7 +12,7 @@ import (
 
 // The explicit operator repair for the legacy NUL population (DOC-2823 S3).
 //
-// NEVER A MIGRATION, on Dave's day-54 ruling: a migration that rewrites user
+// NEVER A MIGRATION, by design: a migration that rewrites user
 // content decides consent for the operator. This runs only when somebody types
 // `pad db repair-nul`, and `pad db migrate-to-pg` refuses and prints that
 // command rather than repairing on the operator's behalf.
@@ -117,8 +117,7 @@ func (s *Store) RepairNUL() (*NULRepairReport, error) {
 		// Detected here rather than left to the driver. Without this the row
 		// lands in Failed carrying "invalid text parameter: parameter 2", which
 		// says nothing an operator can act on — the same information, phrased as
-		// a fault in the repair rather than as a property of the row (codex
-		// round 3).
+		// a fault in the repair rather than as a property of the row.
 		if key, bad := nulBearingKey(v); bad {
 			report.Skipped = append(report.Skipped, NULRepairSkip{
 				Violation: v,
@@ -182,7 +181,7 @@ func (s *Store) repairOneNUL(v NULViolation) (bool, error) {
 	// the same document with that string's bad bytes replaced
 	// (TestRepairInvalidUTF8KeepsJSONValid). A value that was already MALFORMED
 	// JSON stays malformed: PostgreSQL refuses it for that reason too (22P02),
-	// which is outside this census and not made worse by the repair (codex r1).
+	// which is outside this census and not made worse by the repair.
 	// Then the NUL repair, on the now-valid text.
 	repaired := value
 	if invalidUTF8 {

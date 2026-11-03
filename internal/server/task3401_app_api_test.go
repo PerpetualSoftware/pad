@@ -586,7 +586,7 @@ func TestTask3401_ACrossItemParentProjectsToNull(t *testing.T) {
 	}
 }
 
-// Lead ruling R2: every caller of the store's visibility, listed with how
+// Every caller of the store's visibility, listed with how
 // the ceiling reaches it. A new caller fails until it is reviewed.
 func TestTask3401_EveryVisibilityCallerIsCeilinged(t *testing.T) {
 	reviewed := map[string]string{
@@ -714,13 +714,13 @@ func TestTask3401_TheRequestCeilingBindsAPersonActor(t *testing.T) {
 	}
 }
 
-// codex r1 P1: a revocation that commits while a read is in flight withholds
+// A revocation that commits while a read is in flight withholds
 // its data. The response is re-validated against the install (epoch, state,
 // service access, client) before it is sent.
 func TestTask3401_ARevocationDuringAReadWithholdsItsData(t *testing.T) {
 	t.Parallel()
 	// Each change is keyed by the install id; the ones that act on other
-	// rows find them through it (codex r2: the token, the membership, the
+	// rows find them through it (the token, the membership, the
 	// resources themselves).
 	cases := map[string]string{
 		"rotate (epoch bump)":    `UPDATE app_installs SET auth_epoch = auth_epoch + 1 WHERE id = ?`,
@@ -770,7 +770,7 @@ func TestTask3401_AppAfterHandlerSeamIsNilInProduction(t *testing.T) {
 	}
 }
 
-// codex r3 P2: on a self-host, an admin turning apps off while a read is in
+// On a self-host, an admin turning apps off while a read is in
 // flight withholds its data, as the gate refuses any new request.
 func TestTask3401_AppsTurnedOffMidReadWithholdsTheData(t *testing.T) {
 	f := appAPIFixtureOn(t, "read", false)
@@ -788,7 +788,7 @@ func TestTask3401_AppsTurnedOffMidReadWithholdsTheData(t *testing.T) {
 	}
 }
 
-// codex r3: a request with no re-check holder could not have registered its
+// A request with no re-check holder could not have registered its
 // authorizations, so re-validation refuses it rather than passing with none.
 func TestTask3401_RevalidateFailsClosedWithoutARecheckHolder(t *testing.T) {
 	f := appAPIFixture(t, "read")
@@ -811,7 +811,7 @@ func TestTask3401_RevalidateFailsClosedWithoutARecheckHolder(t *testing.T) {
 	}
 }
 
-// Rook's review: item visibility filters AFTER the LIMIT, so a page can come
+// Item visibility filters AFTER the LIMIT, so a page can come
 // back short. Paging must not depend on the page's length: next_offset
 // advances by the rows the window covered, and has_more is decided from the
 // raw window, so a short page never ends an app's paging early.

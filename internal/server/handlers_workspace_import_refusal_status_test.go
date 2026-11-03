@@ -93,8 +93,8 @@ func TestImportWorkspace_RealFailuresStayA500(t *testing.T) {
 	}
 }
 
-// TestImportBundle_UnimportablePrefixKeepsTheReasonClean is the consumer
-// codex round 1 caught: the tar.gz door renders a bundle failure through its
+// TestImportBundle_UnimportablePrefixKeepsTheReasonClean is the consumer:
+// the tar.gz door renders a bundle failure through its
 // own envelope, and its fallback path wraps err.Error(). Making the JSON door
 // actionable moved the sentinel prefix INTO that text, so the change that
 // improved one door would have made its sibling's message worse — the producer

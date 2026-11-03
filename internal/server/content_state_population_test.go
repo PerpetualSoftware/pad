@@ -14,14 +14,14 @@ import (
 
 // BUG-3033, CONVE-35 — the ENUMERATION guard.
 //
-// Three review rounds of this unit each found another door of the same class,
+// Review of this unit repeatedly found another door of the same class,
 // and one had its precedent already in the tree. A loop that keeps finding new
 // members is measuring the enumeration, not the code, so this test IS the
 // table: every site that turns an item body into text under another name is
 // listed with why it is safe, and anything else fails.
 //
 // It parses Go rather than grepping. The grep draft passed four controls and
-// codex round 3 then walked through it in four ways — a one-line function, a
+// was then walked through in four ways — a one-line function, a
 // helper assigned to a local and called through it, a comment inside the call
 // (`PlaybookSummary /* x */ (body)`), and an argument changed below the opening
 // line of a multiline call — while failing on harmless prose that merely
@@ -42,7 +42,7 @@ import (
 //   - A helper NAME used as a value rather than called — assigned to a
 //     variable, passed as an argument — is reported too, and fails closed: the
 //     call through that alias is invisible, so the reference itself is the last
-//     honest place to stop. That claim was FALSE until codex round 4: a
+//     honest place to stop. That claim was once FALSE: a
 //     declaration whose own name was a helper had a special traversal that
 //     skipped this check entirely.
 //
@@ -55,9 +55,8 @@ import (
 //     Content into a field under another name. The helper list is the grammar
 //     it reads; the failure message therefore asks for the helper too.
 //
-//     This is a real and load-bearing limit, not a formality. Codex round 4
-//     censused 434 non-test Go files and found the marker's population is
-//     WIDER than these four helpers: the workspace export's ItemExport.Content
+//     This is a real and load-bearing limit, not a formality. A census of 434 non-test Go files found the
+//     marker's population is WIDER than these four helpers: the workspace export's ItemExport.Content
 //     and the cross-workspace copy's body remap are field copies this guard
 //     cannot see by construction. Counts also cannot distinguish a
 //     count-preserving move of a call to an unreviewed caller.
@@ -74,8 +73,8 @@ import (
 //     must not be cited as one.
 //
 //   - It scans GO only. The browser surface is BUG-3050, and that item's scope
-//     is wider than "choose a badge": codex round 4 found the share-view
-//     projection and the individual-share page performing actual FIELD COPIES
+//     is wider than "choose a badge": the share-view
+//     projection and the individual-share page perform actual FIELD COPIES
 //     that DISCARD the marker before any rendering decision arises, alongside
 //     quick-action prompts, the conventions and playbook editors, and
 //     ItemDetail's editor-seed and timeline-diff strings. An earlier version of
@@ -147,7 +146,7 @@ func TestBodyDerivedTextSitesAreAllRuledOn(t *testing.T) {
 				// silent: vendored/third-party trees we do not own, and
 				// `testdata`, which the go tool itself excludes from builds so
 				// nothing under it is production code. `build` was skipped too
-				// until codex round 4 reproduced a green with a real file at
+				// until a green was reproduced with a real file at
 				// internal/server/build/ — a package may legitimately be named
 				// that, and the exclusion was inherited from a web/build path
 				// that is not under these roots at all.

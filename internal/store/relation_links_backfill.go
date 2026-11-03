@@ -32,8 +32,8 @@ type BackfillRelationLinksResult struct {
 // state and is indistinguishable from "never indexed" — a per-item EXISTS
 // would re-derive nearly every item on every boot, forever.
 //
-// It is also no longer "does the table have any row", which is what I wrote
-// first and which codex round 1 correctly called a P1. Rows commit per item,
+// It is also no longer "does the table have any row", which is what was written
+// first, and which was wrong. Rows commit per item,
 // so a crash partway through leaves the table NON-EMPTY AND INCOMPLETE — and
 // that guard then skips forever, with the missing edges never derived. The
 // "rebuild by deleting the table" story only ever covered deliberate deletion,
@@ -103,7 +103,7 @@ func (s *Store) BackfillRelationLinks() (*BackfillRelationLinksResult, error) {
 
 	// IDS ONLY. The scan used to carry every item's `fields` blob, which put
 	// the whole database's field JSON in memory before a single row was
-	// written (codex round 6). It was never needed: each write re-reads the
+	// written. It was never needed: each write re-reads the
 	// blob under a lock, precisely because a snapshot written later is a
 	// snapshot that can be stale. Three ids per row is ~100 bytes, so 100k
 	// items is ~10MB rather than the sum of every blob.
@@ -131,7 +131,7 @@ func (s *Store) BackfillRelationLinks() (*BackfillRelationLinksResult, error) {
 	rows.Close()
 
 	// BATCHED BY WORKSPACE, in bounded chunks. One transaction per ITEM was
-	// the first shape and codex round 5 was right to call it out: a 100k-item
+	// the first shape and it was too costly: a 100k-item
 	// database meant 100k transactions and 100k advisory-lock acquisitions in
 	// a synchronous startup pause, which is connection churn nobody asked for.
 	//
@@ -243,7 +243,7 @@ func (s *Store) backfillRelationChunk(workspaceID string, batch []itemRow) (int,
 	// against a concurrent SCHEMA change, which is guarded a level up by this
 	// lock: without it the backfill can read the old schema, watch
 	// UpdateCollection reindex the collection, then write rows derived from the
-	// shape it just replaced and commit last (codex rounds 3 and 4).
+	// shape it just replaced and commit last.
 	if err := s.acquireWorkspaceSeqLock(tx, workspaceID); err != nil {
 		return 0, err
 	}
@@ -275,7 +275,7 @@ func (s *Store) backfillRelationChunk(workspaceID string, batch []itemRow) (int,
 		// The COUNT comes from the write itself. Deriving it from the
 		// schema map captured before the pass would disagree with reality
 		// whenever a schema changed underneath — reporting a number of rows
-		// that were never written (codex round 6).
+		// that were never written.
 		n, err := s.replaceRelationLinks(tx, it.id, workspaceID, collectionID, fields)
 		if err != nil {
 			return 0, err

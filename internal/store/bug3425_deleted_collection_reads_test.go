@@ -210,7 +210,7 @@ func TestTitleRenameCascade_StillRewritesSoftDeletedCollectionSources(t *testing
 	}
 }
 
-// Codex r1: the role lanes list their items through ListItems, so the role
+// The role lanes list their items through ListItems, so the role
 // COUNTS must leave out a soft-deleted collection's items too, or a lane
 // reports more items than it shows.
 func TestRoleCounts_ExcludeSoftDeletedCollections(t *testing.T) {

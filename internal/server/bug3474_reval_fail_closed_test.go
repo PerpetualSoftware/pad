@@ -45,7 +45,7 @@ func (h revalWarnCounter) WithGroup(n string) slog.Handler {
 	return revalWarnCounter{Handler: h.Handler.WithGroup(n), mu: h.mu, count: h.count}
 }
 
-// BUG-3474 (lead ruling): a revalidation tick that ERRORS must not leave the
+// BUG-3474: a revalidation tick that ERRORS must not leave the
 // connection with the write permission it last had. It used to keep both the
 // connection and its write flag, so an editor demoted while the store was
 // failing kept writing until the first clean tick. Now the connection is kept
@@ -53,7 +53,7 @@ func (h revalWarnCounter) WithGroup(n string) slog.Handler {
 // still allows it.
 //
 // The faults are real, one per error branch of the tick: renaming sessions
-// makes the credential re-check UNKNOWN (codex r1: it used to read as valid,
+// makes the credential re-check UNKNOWN (it used to read as valid,
 // so that tick went on and set write from the role); renaming
 // workspace_members fails the membership lookup inside authorizeCollabAccess
 // with a plain (non-denial) error; renaming items fails the tick's own
@@ -180,7 +180,7 @@ func runBUG3474FaultLeg(t *testing.T, table string) {
 	// tick's timing is not observable from here. One connection's frames are
 	// handled in order, so once a recovery frame has landed the faulted frame
 	// has been handled too, and its absence is then a fact rather than a
-	// window (codex r1: a count could not tell the two apart).
+	// window (a count could not tell the two apart).
 	restore()
 	sent := map[string]bool{}
 	landed := false

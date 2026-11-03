@@ -84,7 +84,7 @@ func TestBUG3167_CommaParentFilterIsStillRefused(t *testing.T) {
 }
 
 // The parse is where a comma becomes an OR, so its edges are pinned directly
-// (codex round 1 on BUG-3167 named them as uncovered): pieces are trimmed, an
+// (BUG-3167): pieces are trimmed, an
 // empty piece survives as the empty string (as the old split did), a value
 // without a comma stays verbatim in Fields, a repeated key keeps its FIRST
 // value, and known parameters never become field filters.

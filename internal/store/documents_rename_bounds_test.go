@@ -95,7 +95,7 @@ func TestRenameCascade_RefusesOnProjectedTOTAL_NotPerDocument(t *testing.T) {
 	//    them guessing.
 	// The ACTUAL numbers, not the words around them. Checking only for
 	// "maximum" and "bytes" would pass a message that says "too large, maximum
-	// bytes exceeded" and tells the caller nothing (codex round 4).
+	// bytes exceeded" and tells the caller nothing.
 	msg := err.Error()
 	if !strings.Contains(msg, fmt.Sprint(MaxRenameCascadeRetainedBytes)) {
 		t.Errorf("error message does not state the cap %d: %q", MaxRenameCascadeRetainedBytes, msg)
@@ -166,7 +166,7 @@ func TestRenameCascade_AllowsAnOrdinaryRename(t *testing.T) {
 // TestRenameCascade_RefusesBeforeBuildingTheRewrittenBody, which needs that
 // exact shape for its allocation margin. Kept separate rather than described
 // here, because a comment naming a shape the test does not build is how
-// figures rot (codex round 6).
+// figures rot.
 //
 // Kept separate from the total-versus-per-document test because it is the one
 // case a per-document guard WOULD catch — asserting both makes it explicit
@@ -191,7 +191,7 @@ func TestRenameCascade_RefusesTheSingleDocumentAttack(t *testing.T) {
 	}
 }
 
-// TestRenameCascade_CountsRetainedBytesNotJustOutput pins codex round 1's P1
+// TestRenameCascade_CountsRetainedBytesNotJustOutput pins the case
 // against the guard that shipped in the first commit, which summed only the
 // PROJECTED OUTPUT.
 //
@@ -245,8 +245,8 @@ func TestRenameCascade_CountsRetainedBytesNotJustOutput(t *testing.T) {
 	}
 }
 
-// TestRenameCascade_FindsLinkersWhoseTitleContainsABackslash pins codex round
-// 1's P2. POSTGRES ONLY, and skipped loudly elsewhere rather than passing
+// TestRenameCascade_FindsLinkersWhoseTitleContainsABackslash pins the backslash case.
+// POSTGRES ONLY, and skipped loudly elsewhere rather than passing
 // quietly — the defect is a DIALECT DIVERGENCE, and SQLite is the dialect that
 // was accidentally right.
 //
@@ -287,7 +287,7 @@ func TestRenameCascade_FindsLinkersWhoseTitleContainsABackslash(t *testing.T) {
 }
 
 // TestRenameCascade_DoesNotSpendTheBudgetOnDocumentsThatDoNotLinkTheTitle is
-// the rest of the class codex's backslash finding was an instance of
+// the rest of the class the backslash case was an instance of
 // (CONVE-18): `%` and `_` are LIKE wildcards in BOTH dialects, so an unescaped
 // search term for a title containing them selects documents that do not link
 // it.
@@ -343,8 +343,8 @@ func TestRenameCascade_DoesNotSpendTheBudgetOnDocumentsThatDoNotLinkTheTitle(t *
 	}
 }
 
-// TestRenameCascade_RetryRecheckesTheBudgetAgainstTheGrownBody pins codex round
-// 1's other P1: the guard used to cover only the cascade's SCAN, while the
+// TestRenameCascade_RetryRecheckesTheBudgetAgainstTheGrownBody pins the case where
+// the guard used to cover only the cascade's SCAN, while the
 // compare-and-set's retry path re-read a linker's body and called ReplaceTitle
 // on it with no bound at all.
 //
@@ -402,8 +402,8 @@ func TestRenameCascade_RetryRecheckesTheBudgetAgainstTheGrownBody(t *testing.T) 
 	}
 }
 
-// TestRenameCascade_RetryBudgetExcludesThisDocumentsOwnStrings pins codex round
-// 3's P1, and is deliberately separate from the test above: that one catches
+// TestRenameCascade_RetryBudgetExcludesThisDocumentsOwnStrings pins the case.
+// It is deliberately separate from the test above: that one catches
 // the retry check being ABSENT, this one catches it being too GENEROUS.
 //
 // The first version credited this document's own contribution back into its
@@ -480,7 +480,7 @@ func TestRenameCascade_RetryBudgetExcludesThisDocumentsOwnStrings(t *testing.T) 
 	// The refusal must JUSTIFY ITSELF: the figure it reports has to exceed the
 	// cap it cites. Reporting only the re-read body produced a refusal saying
 	// it would hold less than the limit, which reads as a server bug rather
-	// than as actionable advice (codex round 8).
+	// than as actionable advice.
 	var tooLarge *RenameCascadeTooLargeError
 	if !errors.As(err, &tooLarge) {
 		t.Fatalf("error does not carry the typed figures: %v", err)
@@ -493,7 +493,7 @@ func TestRenameCascade_RetryBudgetExcludesThisDocumentsOwnStrings(t *testing.T) 
 }
 
 // TestRenameCascade_ConcurrentEditThatRemovesTheLinkDoesNotRefuseTheRename pins
-// codex round 3's P2.
+// the case.
 //
 // When a concurrent edit removes the link entirely, ReplaceTitle has nothing to
 // replace — strings.Replace returns its input unchanged, allocating nothing.
@@ -560,7 +560,7 @@ func TestRenameCascade_ConcurrentEditThatRemovesTheLinkDoesNotRefuseTheRename(t 
 	}
 }
 
-// TestRenameCascade_CountsBothStringsNotTheLargerOne closes codex round 4's P1:
+// TestRenameCascade_CountsBothStringsNotTheLargerOne closes the case:
 // every other retained-byte case here exceeds the cap under `max(read,
 // rewritten)` as well as under `read + rewritten`, so none of them can tell the
 // two arithmetics apart.
@@ -604,8 +604,8 @@ func TestRenameCascade_CountsBothStringsNotTheLargerOne(t *testing.T) {
 	}
 }
 
-// TestRenameCascade_RefusesBeforeBuildingTheRewrittenBody closes codex round
-// 4's P2: every other oversize test asserts only THAT the rename is refused,
+// TestRenameCascade_RefusesBeforeBuildingTheRewrittenBody closes the case:
+// every other oversize test asserts only THAT the rename is refused,
 // so moving links.ReplaceTitle above the guard would keep them all green while
 // destroying the point of the guard — the refusal exists so the amplified
 // string is never built.
@@ -671,7 +671,7 @@ func TestRenameCascade_RefusesBeforeBuildingTheRewrittenBody(t *testing.T) {
 }
 
 // TestRenameCascade_DoesNotChargeCaseVariantsTheRewriterWillNotTouch closes
-// codex round 7, and is the third instance of one class: the LIKE that finds
+// the third instance of one class: the LIKE that finds
 // candidates is not the rewriter that changes them, so it selects a SUPERSET
 // and the difference gets charged to the caller's budget.
 //
@@ -729,8 +729,8 @@ func TestRenameCascade_DoesNotChargeCaseVariantsTheRewriterWillNotTouch(t *testi
 	}
 }
 
-// TestUpdateDocument_RefusesAnInvalidRenameEvenWhenTheHandlerDidNot pins codex
-// round 11: the store validates a rename under the lock, so the guarantee does
+// TestUpdateDocument_RefusesAnInvalidRenameEvenWhenTheHandlerDidNot pins the case:
+// the store validates a rename under the lock, so the guarantee does
 // not depend on a caller having checked first.
 //
 // The handler's own check compares against a document read BEFORE the rename
@@ -742,7 +742,7 @@ func TestRenameCascade_DoesNotChargeCaseVariantsTheRewriterWillNotTouch(t *testi
 //
 // The grandfathering leg is the control: without it, validating every title
 // here would pass while making legacy documents uneditable, which is the
-// regression round 10 fixed.
+// regression that was fixed.
 func TestUpdateDocument_RefusesAnInvalidRenameEvenWhenTheHandlerDidNot(t *testing.T) {
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "StoreSideTitleGuard")

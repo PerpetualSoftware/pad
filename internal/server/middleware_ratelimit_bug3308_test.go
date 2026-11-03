@@ -105,7 +105,7 @@ func TestIPRateLimiter_FloodCannotEvictADrainedBucket(t *testing.T) {
 	}
 }
 
-// Codex round 1: whole-token levels put a drained bucket on the same
+// Whole-token levels put a drained bucket on the same
 // level as buckets holding 0.9 tokens, so the sweep chose among them at
 // random. The ranking is finer than a token now, so the drained bucket
 // is never the one evicted. 200 trials: at the old granularity it went
@@ -394,7 +394,7 @@ func TestRateLimit_IPv6KeysOnThe64OutsideTheMiddleware(t *testing.T) {
 		}
 		// The right password from the sibling is refused too: the gate is
 		// charged before the compare, so a shared bucket is shared for a
-		// viewer who knows the password (codex round 2).
+		// viewer who knows the password.
 		if code := resolveShareWithPassword(srv, link.Token, "right", "["+sibling+"]").Code; code != http.StatusTooManyRequests {
 			t.Errorf("%s (same /64) with the right password got %d, want 429", sibling, code)
 		}

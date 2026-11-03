@@ -223,8 +223,7 @@ func TestTimeline_NeverEmitsACursorItWouldRefuse(t *testing.T) {
 	// that the update fails with "SQL logic error: malformed JSON"; the
 	// likely source is one of the expression indexes over json_extract(fields
 	// ...) rather than a column constraint, and that attribution is NOT
-	// verified. The claim corrected to what the run actually showed (codex
-	// round 8).
+	// verified. The claim is stated as what the run actually showed.
 	// The API refuses this body (BUG-2803), and since DOC-2823 S2 so do the
 	// database's own triggers — which is why the injection is bracketed by
 	// dropping and restoring them.
@@ -291,7 +290,7 @@ func TestTimeline_NeverEmitsACursorItWouldRefuse(t *testing.T) {
 // A cursor is a PAIR. `before_id` alone could never match anything — the id is
 // the tie-break at the cursor instant, and `before` defaults to a moment no row
 // shares — so it was accepted and silently ignored while the caller paged from
-// the beginning believing otherwise (codex round 4).
+// the beginning believing otherwise.
 func TestTimeline_OneSidedCursorIsRejected(t *testing.T) {
 	t.Parallel()
 	srv := testServer(t)

@@ -37,7 +37,7 @@ func (s *Server) getTokenExpirySettings() (defaultDays, maxDays int) {
 
 // requireInteractiveSession refuses a request authenticated by a long-lived
 // API token, and is the gate on every door that MINTS or ROTATES one
-// (BUG-2890, ruled on that item's trail day 57).
+// (BUG-2890).
 //
 // The escalation it closes: a PAT that can reach a mint door issues further
 // tokens with independent names and expiries, which outlive the revocation
@@ -385,8 +385,8 @@ func setTokenExpiryWarning(w http.ResponseWriter, token *models.APIToken) {
 var apiTokenScopeVocabulary = []string{"*", "read", "write", "pad:read", "pad:write", "pad:admin"}
 
 // apiTokenCreateRequest is a create body with scopes kept raw, so an
-// explicit "scopes": null can be told apart from an omitted field (Codex
-// r1 on TASK-3866). Decoded into models.APITokenCreate alone, null and
+// explicit "scopes": null can be told apart from an omitted field (TASK-3866).
+// Decoded into models.APITokenCreate alone, null and
 // absent both arrive as "" and both would mint a full-access key; the
 // shallower RawScopes field takes the "scopes" key from the embedded one.
 type apiTokenCreateRequest struct {
@@ -417,7 +417,7 @@ func normalizeTokenScopesInput(w http.ResponseWriter, input *models.APITokenCrea
 		return false
 	}
 	// "" is the stored legacy unrestricted form, refused for the reason []
-	// is (Codex r2): only an omitted field gets the default.
+	// is: only an omitted field gets the default.
 	if *field == "" {
 		writeError(w, http.StatusBadRequest, "validation_error",
 			fmt.Sprintf("scopes must name at least one of: %s; omit scopes for full access", allowed))

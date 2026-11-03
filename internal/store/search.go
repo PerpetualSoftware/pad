@@ -213,8 +213,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 				// carries NO body-derived text at all: the snippet below is the
 				// TITLE, which the collaborative document does not hold. Keeping
 				// the body's marker here would make a renderer describe a title
-				// as derived from a stale body — which it did, until codex round
-				// 3 reproduced it through the store and the CLI.
+				// as derived from a stale body — which it once did.
 				//
 				// The FTS path further down does the opposite and deliberately:
 				// there the snippet IS cut from the body, so the marker is true
@@ -319,8 +318,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 				// carries NO body-derived text at all: the snippet below is the
 				// TITLE, which the collaborative document does not hold. Keeping
 				// the body's marker here would make a renderer describe a title
-				// as derived from a stale body — which it did, until codex round
-				// 3 reproduced it through the store and the CLI.
+				// as derived from a stale body — which it once did.
 				//
 				// The FTS path further down does the opposite and deliberately:
 				// there the snippet IS cut from the body, so the marker is true
@@ -341,7 +339,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 	//      later pages); and
 	//   2) add their count back to the FTS total so SearchResponse.Total
 	//      reflects the true result set size.
-	// See Codex review for BUG-864/910 round 1.
+	// See BUG-864/910.
 	refHits := results
 	refCount := len(refHits)
 	refIDs := make(map[string]bool, refCount)
@@ -446,7 +444,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 	}
 
 	// Exclude direct hits (ref + numeric) from FTS so duplicates don't consume
-	// pagination slots. See snapshot above and Codex review for BUG-864/910 r1.
+	// pagination slots. See snapshot above and BUG-864/910.
 	if len(directHitIDs) > 0 {
 		query += ` AND i.id NOT IN (` + placeholders(len(directHitIDs)) + `)`
 		for _, id := range directHitIDs {
@@ -523,7 +521,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 	// (offset, limit). In global searches (no `workspace`), the same
 	// PREFIX-N or bare number can match in multiple workspaces, so refCount
 	// can exceed Limit — we must slice direct hits, not just append them.
-	// See Codex review for BUG-864/910 round 2.
+	// See BUG-864/910.
 
 	if total < 0 {
 		total = 0
@@ -602,7 +600,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		//
 		// NOT always, and the earlier wording claimed otherwise: an FTS TITLE
 		// match on an item with an empty body returns an empty snippet and an
-		// empty content while still carrying the marker (codex round 4). That
+		// empty content while still carrying the marker. That
 		// case predates this change and is not wrong in itself — the row really
 		// is behind its live document — but it is the marker describing the ROW
 		// rather than any served text, which is the one thing the sentence above

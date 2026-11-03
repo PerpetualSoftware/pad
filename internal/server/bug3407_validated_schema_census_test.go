@@ -18,7 +18,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
-// BUG-3407 census (lead ruling, day 86, condition 3). Every HTTP path that
+// BUG-3407 census. Every HTTP path that
 // validates item fields and then writes them must hand the store the schema
 // bytes it validated against, so the store can re-check under its lock when
 // the schema moved in between:
@@ -154,7 +154,7 @@ func callPassesValidatedSchemaOption(call *ast.CallExpr) bool {
 	return false
 }
 
-// End to end (lead condition 4): a PATCH through the real update handler,
+// End to end: a PATCH through the real update handler,
 // with the schema changed after the handler validated and before the store's
 // lock, is refused; the same window with a schema the value still satisfies
 // lets it through.
@@ -206,7 +206,7 @@ func TestBug3407_AnHTTPPatchRacingASchemaChangeIsRefused(t *testing.T) {
 	}
 }
 
-// codex r3: the collaborative-content orderings answer through
+// The collaborative-content orderings answer through
 // writeTypedItemRefusal, which needs its own 400 arm for the refusal.
 func TestBug3407_TheContentRouteRefusalHelperAnswersTheSchemaRefusalWith400(t *testing.T) {
 	srv := testServer(t)

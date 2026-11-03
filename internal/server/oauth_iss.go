@@ -82,7 +82,7 @@ func withIssParam(loc, issuer string) string {
 
 // supportedResponseModes are the response modes whose redirects carry iss.
 // fosite also implements form_post, an HTML page that POSTs the response,
-// which has no Location for issRedirectWriter to extend (codex review). This
+// which has no Location for issRedirectWriter to extend. This
 // server never needed it, so it is refused rather than half-supported: the
 // metadata advertises RFC 9207, and a mode that silently drops iss would make
 // that claim false. Empty is the default (query for the code flow).

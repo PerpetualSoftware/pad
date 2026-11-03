@@ -165,8 +165,8 @@ func TestNULColumnCensus(t *testing.T) {
 	// A baseline entry that has become PROTECTED is a stale record, and leaving
 	// it there is what lets a protection REGRESSION pass silently: the column
 	// would drop out of the protected set, land back in `unaccounted`, find
-	// itself still listed in the baseline, and read as expected (codex round
-	// 2). The two sets must stay disjoint.
+	// itself still listed in the baseline, and read as expected. The two sets
+	// must stay disjoint.
 	var protectedButBaselined []string
 	for key := range known {
 		if protected[key] {
@@ -232,8 +232,8 @@ func TestNULColumnListIsWellFormed(t *testing.T) {
 
 // isTextAffinity reports whether a declared column type can hold text.
 //
-// WIDER than the first version, which matched TEXT/CHAR/CLOB only (codex round
-// 1). SQLite gives BLOB affinity to a column with NO declared type and to one
+// WIDER than the first version, which matched TEXT/CHAR/CLOB only.
+// SQLite gives BLOB affinity to a column with NO declared type and to one
 // declared JSON — both hold text perfectly well — so a future column declared
 // either way would have slipped past the census entirely. Matching on what
 // CANNOT hold text is the safer direction: a false positive costs one baseline
@@ -260,7 +260,7 @@ func isTextAffinity(declared string) bool {
 // something written directly.
 //
 // It matches the shapes SQLite actually creates rather than the substring
-// "_fts" anywhere in the name (codex round 1): a real table someone names
+// "_fts" anywhere in the name: a real table someone names
 // "user_fts_settings" would otherwise be skipped, and skipping a real table is
 // exactly the failure this census exists to prevent.
 func isDerivedTable(name string) bool {
@@ -280,9 +280,9 @@ func isDerivedTable(name string) bool {
 
 // TestAttributionColumnsAreAllProtected keeps the class swept.
 //
-// Rounds 1, 2, 3, 6 and 7 of review each named unprotected attribution columns.
-// Round 6's answer was a sweep — but by a hand-written list of NAMES, which is
-// an enumeration one level up, and round 7 found the two names nobody thought
+// Unprotected attribution columns were found one at a time.
+// One answer was a sweep — but by a hand-written list of NAMES, which is
+// an enumeration one level up, and a later pass found the two names nobody thought
 // to write down (event_outbox.claimed_by, oauth_connection_workspaces.added_by).
 //
 // So the sweep is a PATTERN and it is a test, which is the difference between

@@ -139,7 +139,7 @@ func TestHealthEndpointsAreMountedWhereDocumented(t *testing.T) {
 	}
 }
 
-// TestHealthReadyReportsRedisWithoutGatingOnIt is the ruling made
+// TestHealthReadyReportsRedisWithoutGatingOnIt makes this rule
 // executable: an unreachable Redis must be VISIBLE in the payload and
 // must NOT change the status code. A test that only checked the payload
 // would pass against a handler that also 503'd, which is the specific
@@ -218,8 +218,8 @@ func TestHealthReadyReportsRedisWithoutGatingOnIt(t *testing.T) {
 // "/api/v1/health/ready" INSIDE the /api/v1 group — so the real endpoint
 // became /api/v1/api/v1/health/ready and readiness 404'd at the
 // documented path — and this suite stayed green throughout, because a
-// handler invoked by hand has no route to be wrong. Codex found it; the
-// test could not.
+// handler invoked by hand has no route to be wrong. Only a router-level test can
+// catch it.
 //
 // Going through srv.ServeHTTP costs nothing and makes the URL part of
 // what is asserted.
@@ -238,8 +238,8 @@ func readyBody(t *testing.T, srv *Server, wantCode int) map[string]interface{} {
 	return body
 }
 
-// TestRedisHealthStartStopLifecycle covers the lifecycle codex round 9
-// flagged: a second Start used to leak the first loop and leave Stop
+// TestRedisHealthStartStopLifecycle covers the lifecycle: a second Start used to leak the first
+// loop and leave Stop
 // cancelling only the second, so wg.Wait never returned.
 //
 // Bounded explicitly, because the failure is a HANG rather than a wrong

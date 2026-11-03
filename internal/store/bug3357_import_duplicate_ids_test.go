@@ -40,7 +40,7 @@ func TestBUG3357_DuplicateSourceIDsRefused(t *testing.T) {
 		"collection": func(d *models.WorkspaceExport) {
 			d.Collections[1].ID = d.Collections[0].ID
 		},
-		// Two rows without an id collide on "" (codex r1); one is allowed.
+		// Two rows without an id collide on ""; one is allowed.
 		"item-empty": func(d *models.WorkspaceExport) {
 			d.Items[0].ID, d.Items[1].ID = "", ""
 		},
@@ -74,7 +74,7 @@ func TestBUG3357_DuplicateSourceIDsRefused(t *testing.T) {
 	}
 }
 
-// Codex r2: ImportReport.ItemIDs names only items that were actually
+// ImportReport.ItemIDs names only items that were actually
 // inserted. An item the import skips (its collection is missing) has an id
 // that exists nowhere, and the bundle door would attach to it.
 func TestBUG3357_ItemIDsOmitSkippedItems(t *testing.T) {

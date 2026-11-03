@@ -230,7 +230,7 @@ func TestFilterKeyRuleMatchesStoreSanitizer(t *testing.T) {
 }
 
 // TestImportLegacyArchiveInfersTraits locks the compatibility inference for
-// archives written before the traits column existed (Codex round 4, P1).
+// archives written before the traits column existed.
 //
 // The migration backfill cannot help here: it ran long before these rows were
 // inserted, and nothing re-runs it per import. So without inference an imported
@@ -334,7 +334,7 @@ func TestImportDoesNotOverrideSurvivingTraits(t *testing.T) {
 	// before inferring — an invalid declaration is discarded and then
 	// replaced by the canonical set, which is correct behaviour but would
 	// make this test assert the opposite of its name. (An earlier version
-	// used `mode: metadata` on the `conventions` key, which round 7's
+	// used `mode: metadata` on the `conventions` key, which the earlier
 	// first-party mode pinning subsequently made invalid; the test caught
 	// the interaction.) It must differ from canonical or the assertion
 	// cannot tell "kept" from "overwritten".

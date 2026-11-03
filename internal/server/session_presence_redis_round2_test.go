@@ -16,7 +16,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// BUG-2698, codex round 2. Three findings, three instruments.
+// BUG-2698. Three findings, three instruments.
 
 // stalledRedis returns the address of a listener that ACCEPTS connections
 // and then never answers — the shape a hung Redis presents, which a closed
@@ -29,7 +29,7 @@ func stalledRedis(t *testing.T) (addr string, accepted <-chan struct{}) {
 		t.Fatalf("listen: %v", err)
 	}
 	// Closed on the FIRST accepted connection. Callers synchronise on this
-	// rather than sleeping (codex round 13): a sleep does not establish
+	// rather than sleeping: a sleep does not establish
 	// that the call under test is in flight, so on a loaded runner the
 	// sequencing can invert and even the BROKEN implementation passes. An
 	// instrument whose discrimination depends on the scheduler is not one.
@@ -65,8 +65,8 @@ func stalledRedis(t *testing.T) (addr string, accepted <-chan struct{}) {
 	return ln.Addr().String(), firstAccept
 }
 
-// TestRedisSessionPresence_StalledRedisDoesNotHangShutdown — codex round
-// 2, P1, with the claim narrowed to what is actually true.
+// TestRedisSessionPresence_StalledRedisDoesNotHangShutdown, with the claim
+// narrowed to what is actually true.
 //
 // The first version of this test asserted that Add returns within the
 // op timeout when Redis stalls. IT FAILED, and it was right to: go-redis
@@ -143,7 +143,7 @@ func TestRedisSessionPresence_StalledRedisDoesNotHangShutdown(t *testing.T) {
 	}
 }
 
-// TestPruneIndexScript_LeavesLiveMembers — codex round 2, P2. The prune
+// TestPruneIndexScript_LeavesLiveMembers. The prune
 // re-checks existence INSIDE Redis, because between ListForUser's MGet and
 // its prune a renewal can restore the key it observed missing. That
 // happens exactly when it hurts most: an outage long enough to expire
@@ -189,7 +189,7 @@ func TestPruneIndexScript_LeavesLiveMembers(t *testing.T) {
 	}
 }
 
-// TestRedisSessionPresence_UndecodableEntryIsAnError — codex round 2, P2.
+// TestRedisSessionPresence_UndecodableEntryIsAnError.
 // A row we cannot interpret is an UNKNOWN registry state, not an absent
 // session. Skipping it silently made deliveredSessionCount report a number
 // that looked complete, so a targeted push at the omitted session returned
@@ -226,8 +226,7 @@ func TestRedisSessionPresence_UndecodableEntryIsAnError(t *testing.T) {
 }
 
 // TestRedisSessionPresence_CloseDoesNotWaitForeverOnAParkedRenewal —
-// codex round 4, P2, and the instrument the round-2 version of this file
-// admitted it did not have.
+// the instrument an earlier version of this file did not have.
 //
 // closeDrainTimeout was untestable while it was a constant: under the
 // production client config go-redis's own timeouts always release the
@@ -263,7 +262,7 @@ func TestRedisSessionPresence_CloseDoesNotWaitForeverOnAParkedRenewal(t *testing
 		},
 	}
 	t.Cleanup(func() {
-		// JOIN, don't just release (codex round 13). This test
+		// JOIN, don't just release. This test
 		// deliberately lets a drain time out, so it finishes with a renewal
 		// goroutine still parked; releasing it without waiting leaves it
 		// unwinding into whatever runs next, contaminating leak checks and
@@ -286,7 +285,7 @@ func TestRedisSessionPresence_CloseDoesNotWaitForeverOnAParkedRenewal(t *testing
 	}
 }
 
-// TestRedisSessionPresence_EmptyListIsNotNil — codex round 5, P2.
+// TestRedisSessionPresence_EmptyListIsNotNil.
 //
 // handleListSessions marshals whatever ListForUser returns straight into
 // the `sessions` field, so a nil slice serialises as `"sessions": null`
@@ -327,9 +326,9 @@ func TestRedisSessionPresence_EmptyListIsNotNil(t *testing.T) {
 	}
 }
 
-// TestRedisSessionPresence_RemoveAfterCloseStillWaits — codex round 6, P2.
+// TestRedisSessionPresence_RemoveAfterCloseStillWaits.
 //
-// Round 1 made Remove wait for its session's renewal so an in-flight write
+// Remove was made to wait for its session's renewal so an in-flight write
 // could not re-create the key after the DEL. Close then removed the
 // entries from the map before draining, which deleted the very lookup
 // Remove uses to find that renewal — so a handler disconnecting
@@ -408,11 +407,11 @@ func TestRedisSessionPresence_RemoveAfterCloseStillWaits(t *testing.T) {
 }
 
 // TestRedisSessionPresence_RemoveIsBoundedWhenARenewalWillNotStop —
-// codex round 11, and the counterweight to the test above.
+// the counterweight to the test above.
 //
 // Those two properties pull against each other: Remove must WAIT for an
 // in-flight renewal (or a ghost survives the delete), and must NOT wait
-// forever (or a parked renewal holds http.Server.Shutdown). Round 10
+// forever (or a parked renewal holds http.Server.Shutdown). An earlier fix
 // bounded the wrong branch — the post-Close fallback rather than the
 // `<-rn.done` path a shutdown actually takes, because Close RETAINS its
 // entries so the handler finds one. The hang survived its own fix.
@@ -442,7 +441,7 @@ func TestRedisSessionPresence_RemoveIsBoundedWhenARenewalWillNotStop(t *testing.
 		},
 	}
 	t.Cleanup(func() {
-		// JOIN, don't just release (codex round 13). This test
+		// JOIN, don't just release. This test
 		// deliberately lets a drain time out, so it finishes with a renewal
 		// goroutine still parked; releasing it without waiting leaves it
 		// unwinding into whatever runs next, contaminating leak checks and
@@ -468,7 +467,7 @@ func TestRedisSessionPresence_RemoveIsBoundedWhenARenewalWillNotStop(t *testing.
 	}
 }
 
-// TestWriteScript_IndexesAtomicallyWithTheEntry — codex round 14.
+// TestWriteScript_IndexesAtomicallyWithTheEntry.
 //
 // The index is the ONLY enumeration of a user's sessions, so a session key
 // written without its index member is a live session ListForUser cannot
@@ -515,7 +514,7 @@ func TestWriteScript_IndexesAtomicallyWithTheEntry(t *testing.T) {
 	}
 }
 
-// TestRedisSessionPresence_RenewalRestoresAVanishedEntry — codex round 30
+// TestRedisSessionPresence_RenewalRestoresAVanishedEntry
 // (coverage-gap sweep).
 //
 // renewLoop re-SETs the full payload rather than issuing a bare EXPIRE, and
@@ -582,12 +581,12 @@ func TestRedisSessionPresence_RenewalRestoresAVanishedEntry(t *testing.T) {
 	}
 }
 
-// TestRedisSessionPresence_RealRedisReadFailureIsReported — codex round 30.
+// TestRedisSessionPresence_RealRedisReadFailureIsReported.
 //
 // The unreadable-presence tests use a fake SessionPresence, so they prove
 // the HANDLER's behaviour and say nothing about whether the real
 // implementation reports a read failure or flattens it into an empty list.
-// That flattening is the round-1 P1 defect, and until now nothing would
+// That flattening is a known defect, and until now nothing would
 // have caught its return.
 func TestRedisSessionPresence_RealRedisReadFailureIsReported(t *testing.T) {
 	t.Parallel()
@@ -609,8 +608,8 @@ func TestRedisSessionPresence_RealRedisReadFailureIsReported(t *testing.T) {
 	}
 }
 
-// TestRedisSessionPresence_RenewalFailureLoggingIsRateLimited — codex
-// round 33 (operability).
+// TestRedisSessionPresence_RenewalFailureLoggingIsRateLimited
+// (operability).
 //
 // A Redis outage fails EVERY session's renewal on every tick. At a
 // thousand sessions the unthrottled warning emitted roughly 33 lines a
@@ -688,16 +687,14 @@ func (l *lockedWriter) Write(p []byte) (int, error) {
 	return l.w.Write(p)
 }
 
-// TestRedisSessionPresence_RenewLoopUsesTheRateLimitedWarning — codex
-// round 34, and the SECOND time in this review I tested a knob and not the
-// wiring.
+// TestRedisSessionPresence_RenewLoopUsesTheRateLimitedWarning: a test of a
+// knob is not a test of the wiring.
 //
 // TestRedisSessionPresence_RenewalFailureLoggingIsRateLimited calls
 // warnRenewFailure directly. It proves the throttle and says nothing about
 // whether renewLoop USES it — restoring the original unbounded slog.Warn
-// at the call site leaves that test green while the flood returns. Round
-// 20 caught the identical shape on the cap's admission flag, and I wrote
-// the lesson down before writing this test.
+// at the call site leaves that test green while the flood returns. The same shape
+// applies to the cap's admission flag.
 //
 // So this drives the real goroutine against an unreachable Redis and
 // counts what reaches the log.

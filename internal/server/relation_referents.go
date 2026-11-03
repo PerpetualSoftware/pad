@@ -85,7 +85,7 @@ func (s *Server) resolveRelationReferentsAsQ(
 	// requester may not see must not hand back that item's UUID, which would
 	// confirm both its existence and its canonical identity — the existence
 	// oracle the `not_found` collapse exists to prevent, reopened by the
-	// message (codex round 2).
+	// message.
 	supplied := make(map[string]string, len(fieldMap))
 	for k, v := range fieldMap {
 		if str, isStr := v.(string); isStr {
@@ -115,7 +115,7 @@ func (s *Server) resolveRelationReferentsAsQ(
 			continue
 		}
 		if def.IsMultiRelation() {
-			// PLAN-2857 U4, lead ruling day 64: a `multi_relation` element's
+			// PLAN-2857 U4: a `multi_relation` element's
 			// visibility is judged in the SHARED per-element resolver
 			// (`resolveRelationValueQ`), which now consults `canSee` on the
 			// UUID and REF rungs for BOTH types — one site, so the two shapes
@@ -130,7 +130,7 @@ func (s *Server) resolveRelationReferentsAsQ(
 		// value as "no reference", so an untrimmed check here refuses a value
 		// the store never objected to — and since the vanished-target arm
 		// below turns a missing lookup into a refusal, `"   "` became a
-		// not_found instead of an empty field (codex round 6).
+		// not_found instead of an empty field.
 		if !isStr || strings.TrimSpace(id) == "" {
 			continue
 		}
@@ -139,7 +139,7 @@ func (s *Server) resolveRelationReferentsAsQ(
 			// its message ("is not an item in collection X") tells the caller
 			// the value EXISTS — distinguishable from the `not_found` a
 			// nonexistent value gets, and therefore an existence oracle for
-			// anyone who cannot see that item (codex round 3). Collapse it to
+			// anyone who cannot see that item. Collapse it to
 			// `not_found` when the requester may not see the target; keep the
 			// specific message when they may, because "you linked a task
 			// where a person belongs" is the useful half of this reason.
@@ -219,11 +219,11 @@ func collapseIssue(issues []store.RelationIssue, key string, reason store.Relati
 // Late-default issues reach a caller: each door feeds them to
 // RequiredRelationIssues and renders the result into a 400 or a preflight
 // `needs_value` row. `wrong_collection` is the one reason that names a LIVE
-// item, so an invisible target announced that way is the existence oracle
-// round 3 closed, reopened through the door round 10 added (codex round 15).
+// item, so an invisible target announced that way is an existence oracle
+// that an earlier fix closed and a later door reopened.
 // Applied at all five late-default sites, per CONVE-18.
 //
-// Since the day-64 ruling, `store.ResolveLateRelationDefaults` takes the
+// `store.ResolveLateRelationDefaults` takes the
 // requester's visibility func and judges every rung itself, so its issues
 // arrive with VisibilityChecked set and this pass leaves them alone. An issue
 // without it fails closed, with no second lookup (failClosedUnjudged,
@@ -248,7 +248,7 @@ func (s *Server) collapseInvisibleRelationIssues(r *http.Request, workspaceID, r
 // that by RE-RESOLVING the value and checking visibility on what came back,
 // which was a second lookup of a value the resolver had already looked up:
 // a delete between the two turned a visible caller's specific message into
-// `not_found`. Since the day-64 ruling moved visibility into the resolver,
+// `not_found`. Because visibility lives in the resolver,
 // every server feeder hands it a non-nil relationVisibility, and both sites
 // that build this reason stamp VisibilityChecked when they had one. The one
 // resolution that deliberately runs WITHOUT one, MigrateRelationReferentsQ's
@@ -353,7 +353,7 @@ func (s *Server) refuseInvisibleRelationOverrides(
 // notDefaultKeys delegates to store.NotDefaultKeys.
 //
 // The rule moved into `store` because the cross-workspace COPY needs it from
-// inside its transaction, and the lead's day-58 ruling is that both doors run
+// inside its transaction, and both doors must run
 // ONE classifier rather than two kept in step by hand. Kept as a wrapper so
 // the four server call sites read unchanged.
 func notDefaultKeys(supplied, carried map[string]any) map[string]bool {
@@ -361,7 +361,7 @@ func notDefaultKeys(supplied, carried map[string]any) map[string]bool {
 }
 
 // dropInvisibleRelationDefaults is the visibility check a LATE-RESOLVED
-// DEFAULT owes (codex round 11).
+// DEFAULT owes.
 //
 // `ResolveLateRelationDefaults` lives in `store` and resolves against the
 // database alone. At the write doors the caller's own values are filtered out
@@ -394,9 +394,8 @@ func notDefaultKeys(supplied, carried map[string]any) map[string]bool {
 // COPY — which resolves its late defaults inside its own transaction and could
 // not reach a *Server method — runs the SAME code rather than a second
 // implementation of the same rule. That door was the one site of five that
-// never got this pass, because round 15's sweep enumerated the sites reachable
-// from `internal/server` and the class is one wider than the package
-// (night-11 finding, lead ruling day 58).
+// never got this pass, because an earlier sweep enumerated the sites reachable
+// from `internal/server` and the class is one wider than the package.
 //
 // The request-scoped part stays here, as the closure: who is asking, their role
 // in this workspace, and whether the call is bearer-authenticated.
@@ -439,7 +438,7 @@ func (s *Server) relationVisibility(r *http.Request, role string) store.Relation
 // resolveRelationsForWrite is the whole relation decision for a WRITE door —
 // create and the full-`fields` update, which ran the identical four steps.
 //
-// Extracted after codex round 10 showed the same rule stated at a third site
+// Extracted once the same rule turned out to be stated at a third site
 // (CONVE-139: consolidate when the move is mechanical, do not defer for
 // effort). The rule is: the CALLER's values are refused, and everything
 // validation filled in is dropped and reported. Four steps expressed that, and
@@ -497,7 +496,7 @@ func (s *Server) resolveRelationsForWriteQ(
 		// prepare a field map nobody stores.
 		return callerIssues, nil, nil
 	}
-	// A CARRYING door does not stop here, and this is the round-15 defect:
+	// A CARRYING door does not stop here, and stopping was an earlier defect:
 	// the early return was written when every caller of this path refused, and
 	// stayed when the artifact-import door began carrying instead. An import
 	// holding ONE unresolvable caller value would skip the late-default pass
@@ -524,7 +523,7 @@ func (s *Server) resolveRelationsForWriteQ(
 	// The required check covers the INVISIBLE drops too. It was written for
 	// `lateDropped` and a sibling list was added beside it a round later —
 	// deleting a key after validation has passed leaves a required field
-	// absent regardless of which list recorded it (codex round 13).
+	// absent regardless of which list recorded it.
 	if required := store.RequiredRelationIssues(schema, invisible); len(required) > 0 {
 		return append(callerIssues, required...), nil, nil
 	}
@@ -541,7 +540,7 @@ func (s *Server) resolveRelationsForWriteQ(
 // structuralOverrideError classifies the problems with a caller's field
 // overrides that are about the REQUEST rather than about the workspace's
 // state, and is the one classifier both copy doors run before any semantic
-// check (lead ruling, day 58).
+// check.
 //
 // Two kinds, in this order:
 //
@@ -557,7 +556,7 @@ func (s *Server) resolveRelationsForWriteQ(
 // the preflight and `validation_error` from the copy, and `{"owner_ref":42}`
 // returned `invalid_override` from the preflight and `validation_error` from
 // the copy. One body, two answers, which is the DR-6 divergence this pair
-// exists to prevent (codex round 19).
+// exists to prevent.
 //
 // One function rather than two orderings kept in step by hand: the previous
 // arrangement was not that anyone chose the wrong order, it was that the order

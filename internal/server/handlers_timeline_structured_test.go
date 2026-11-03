@@ -431,7 +431,7 @@ func TestItemTimeline_StructuredPagingIsExactlyOnce(t *testing.T) {
 	})
 }
 
-// Codex round 2, finding 2. When a client sends `before` WITHOUT `before_id`,
+// When a client sends `before` WITHOUT `before_id`,
 // the handler substitutes the sentinel "g" — an upper bound whose whole job is
 // to keep same-second entries rather than drop them, and which does that job
 // only because every lowercase-hex UUID character sorts below "g". Structured
@@ -457,7 +457,7 @@ func TestItemTimeline_StructuredSentinelCursorKeepsBothKinds(t *testing.T) {
 	}
 }
 
-// Codex round 2, finding 1. The SQL sources format the cursor to whole-second
+// The SQL sources format the cursor to whole-second
 // RFC3339 text before comparing; a structured entry can carry sub-second
 // precision (a hand-written created_at, or the item's createdAt standing in
 // for an absent one). Comparing full-precision Go times against a truncated
@@ -576,7 +576,7 @@ func TestItemTimeline_FractionalStructuredEntryDoesNotSkipSameSecondRows(t *test
 	assertEachEntryOnce(t, seen, "0-frac", commentID)
 }
 
-// Codex round 2, finding 3. Nothing validates ids on write, so a hand-written
+// Nothing validates ids on write, so a hand-written
 // fields blob can repeat one. A duplicate is not cosmetic: it collides in the
 // client's keyed {#each} (a hard render error in Svelte 5), the client's
 // loadMore dedupes by id and would drop the older entry, and the cursor cannot

@@ -148,7 +148,7 @@ func TestItemRenameCascade_RefusesBeforeBuildingTheRewrittenBody(t *testing.T) {
 	// exact division the assertion below cannot discriminate: refusing after
 	// the build would total exactly the cap rather than exceeding it. It also
 	// must not assume a precise admitted count, because the scan charges the
-	// same budget first (codex R4) and that shifts the boundary by a source.
+	// same budget first and that shifts the boundary by a source.
 	const body = 1536 << 10 // 1.5 MiB
 	perLinker := int64(body) * 2
 	linkers := int(MaxItemRenameCascadeBytes/perLinker) + 3
@@ -199,7 +199,7 @@ func TestItemRenameCascade_RefusesBeforeBuildingTheRewrittenBody(t *testing.T) {
 // charged for the body it had to READ — unavoidable, it is already in memory —
 // but NOT for a rewritten copy that will never be built. Charging for both
 // would let content the rewriter can never touch push a legitimate rename over
-// the cap, which is the class BUG-2798's codex round 7 caught on the document
+// the cap, which is the class BUG-2798 hit on the document
 // path in a different costume.
 //
 // Drift is simulated the only way it occurs in production: the content changes
@@ -252,7 +252,7 @@ func TestItemRenameCascade_DoesNotChargeForRewritesItWillNotPerform(t *testing.T
 	}
 }
 
-// TestItemRenameCascade_BoundsTheScanNotJustTheRewrite closes codex R4's P1.
+// TestItemRenameCascade_BoundsTheScanNotJustTheRewrite closes the case.
 //
 // The rewrite loop's cap charges CONTENT bytes. The scan that feeds it retains
 // one entry per matching link ROW, each carrying that row's target_title.
@@ -344,7 +344,7 @@ func TestItemRenameCascade_BoundsTheScanNotJustTheRewrite(t *testing.T) {
 	// NOT the ~24,000 the paragraph above quotes, and the difference is the
 	// point: that figure is BUG-2804's, derived from Postgres's practical title
 	// ceiling of a few KB, and an earlier version of this comment reused it for
-	// the 255-rune bound without recomputing (codex round 5). Two ceilings, two
+	// the 255-rune bound without recomputing. Two ceilings, two
 	// numbers, one sentence away from each other.
 	//
 	// Built as legacy data so the test keeps measuring the guard rather than

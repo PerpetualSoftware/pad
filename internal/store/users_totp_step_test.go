@@ -97,7 +97,7 @@ func TestConsumeTOTPStep_SecretMismatch(t *testing.T) {
 }
 
 // TestTOTPStep_ResetOnSecretChange asserts the single-use watermark is cleared
-// when the secret changes (BUG-2054 Codex follow-up): a time-step counter from
+// when the secret changes (BUG-2054): a time-step counter from
 // an old secret must not reject a freshly-enrolled authenticator's codes.
 func TestTOTPStep_ResetOnSecretChange(t *testing.T) {
 	t.Parallel()

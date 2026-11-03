@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// BUG-2965 codex round 2: `pad server start` must be able to tell "we own this
+// BUG-2965: `pad server start` must be able to tell "we own this
 // port" from "we are about to try", because the PID file it writes names the
 // process `pad server stop` will signal. Splitting Listen from Serve is what
 // makes that distinguishable; these pin the split itself.

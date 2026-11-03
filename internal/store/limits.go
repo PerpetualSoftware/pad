@@ -31,7 +31,7 @@ var DefaultFreeLimits = PlanLimits{
 	ItemsPerWorkspace:   1000,
 	MembersPerWorkspace: 3,
 	APITokens:           10,
-	// StorageBytes is Free's storage limit, per workspace: 100 MB, Dave's
+	// StorageBytes is Free's storage limit, per workspace: 100 MB, the product
 	// decision on PLAN-3605 (TASK-3619; it was 500 MB).
 	StorageBytes:     104857600, // 100 MB
 	Webhooks:         0,
@@ -76,7 +76,7 @@ type LimitResult struct {
 	// JSON and rendered message are byte-identical to before this field
 	// existed.
 	//
-	// It exists because Current could not answer the question Dave's ruling
+	// It exists because Current could not answer the question the product rule
 	// asks the refusal to answer — "how many would land vs the limit". The
 	// obvious shortcut, setting Current to the incoming count, is WRONG and
 	// deliberately not taken: Current is published in the API's error
@@ -529,7 +529,7 @@ func (s *Store) SeedPlanLimits() error {
 				// every earlier cloud boot seeded, so it is the old default
 				// and not an admin's choice. Any other value is kept, and the
 				// write itself says so: an admin's change landing between the
-				// read above and this write is not overwritten (codex r2).
+				// read above and this write is not overwritten.
 				res, err := s.db.Exec(s.q(`UPDATE platform_settings SET value = ?, updated_at = ? WHERE key = ? AND value = ?`),
 					strconv.Itoa(limitsMap[feature]), now(), key, legacy)
 				if err != nil {

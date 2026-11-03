@@ -206,7 +206,7 @@ func TestImportPartialMarker_NotExported(t *testing.T) {
 }
 
 // A rollback that FAILS leaves a workspace that may still be live, so it is
-// marked too (codex r1): on the transport arm and on the validation arm. A
+// marked too: on the transport arm and on the validation arm. A
 // trigger refuses the soft-delete, as in the BUG-3475 test.
 func TestImportPartialMarker_FailedRollbackMarks(t *testing.T) {
 	real := realBundleWithBlob(t)
@@ -242,7 +242,7 @@ func TestImportPartialMarker_FailedRollbackMarks(t *testing.T) {
 }
 
 // Who reads the note: owners, and instance admins who are MEMBERS. An admin
-// admitted as a guest reads the workspace as a guest (codex r2).
+// admitted as a guest reads the workspace as a guest.
 func TestImportPartialMarker_NoteReaders(t *testing.T) {
 	admin := &models.User{ID: "a", Role: "admin"}
 	member := &models.User{ID: "m", Role: "member"}

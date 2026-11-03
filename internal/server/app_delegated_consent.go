@@ -18,8 +18,7 @@ import (
 // can act through the app. The consent page's workspace is FIXED to the
 // install: no workspace choice, no wildcard, no creation flag. The person
 // chooses the access, read-only by default, and write only when the manifest
-// offers it (lead ruling Q2). No oauth_connections row is written (lead
-// ruling Q1): the install fixes the workspace, and the binding the issuance
+// offers it. No oauth_connections row is written: the install fixes the workspace, and the binding the issuance
 // barrier writes carries the kind, epoch and access.
 
 // installClientOf returns the install client an authorize request names, or
@@ -93,7 +92,7 @@ func (s *Server) appConsentGate(ar fosite.AuthorizeRequester, user *models.User,
 
 // appConsentFacts is what the consent gate read and the decision carries
 // into the grant: the install state (with its epoch, read before the checks)
-// and the person's membership as of the gate (codex U5b-1 r8).
+// and the person's membership as of the gate.
 type appConsentFacts struct {
 	*store.InstallConsentState
 	MemberSince string
@@ -187,7 +186,7 @@ func (s *Server) decideAppConsent(w http.ResponseWriter, r *http.Request, ar fos
 	}
 	access := r.PostForm.Get("app_access")
 	if access == "" {
-		access = "read" // least privilege (lead ruling Q2)
+		access = "read" // least privilege
 	}
 	if access != "read" && !(access == "write" && st.DelegatedAccess == "write") {
 		s.recordOAuthFlow("failed")
@@ -196,7 +195,7 @@ func (s *Server) decideAppConsent(w http.ResponseWriter, r *http.Request, ar fos
 	}
 	// The epoch and membership the gate read, never re-read here: a disable
 	// and re-enable, or a removal and re-add, after the gate refuses the code
-	// at the barrier (codex U5b-1 r8).
+	// at the barrier.
 	epoch := st.AuthEpoch
 	ar.GrantScope(store.InstallClientScope)
 	ar.GrantAudience(s.store.AppAPIAudience())
@@ -206,7 +205,7 @@ func (s *Server) decideAppConsent(w http.ResponseWriter, r *http.Request, ar fos
 	session.DefaultSession.Extra[store.InstallAccessSessionKey] = access
 	// The credentials this request's session resolved the person under: the
 	// barrier refuses the code if they changed since (a disable destroyed
-	// this session, then a re-enable), codex U5b-1 r7.
+	// this session, then a re-enable).
 	session.DefaultSession.Extra[store.InstallPersonEpochSessionKey] = user.CredentialEpoch
 	session.DefaultSession.Extra[store.InstallMemberSinceSessionKey] = st.MemberSince
 	resp, err := s.oauthServer.Provider().NewAuthorizeResponse(r.Context(), ar, session)

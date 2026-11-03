@@ -178,7 +178,7 @@ func (s *Store) backfillWikiLinksItem(itemID, workspaceID string) (int, error) {
 	// representation into Go's bool, so this single shape works
 	// on both engines. Scanning into `int` happened to work on
 	// SQLite but blew up on Postgres, silently disabling the
-	// backfill there (Codex round-3 P1).
+	// backfill there.
 	var has bool
 	if err := tx.QueryRow(s.q(`
 		SELECT EXISTS(SELECT 1 FROM item_wiki_links WHERE source_item_id = ?)

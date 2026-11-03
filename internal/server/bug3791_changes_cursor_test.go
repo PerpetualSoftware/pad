@@ -312,7 +312,7 @@ func TestBUG3791_CursorIsValidated(t *testing.T) {
 	if rr := doRequest(srv, "GET", base+"?since=0&cursor="+p.NextCursor, nil); rr.Code != http.StatusOK {
 		t.Errorf("a since equal to the cursor's: %d, want 200", rr.Code)
 	}
-	// Codex r1 (Medium): a cursor continues only the workspace it came from.
+	// A cursor continues only the workspace it came from.
 	otherSlug, _ := task3462Workspace(t, srv, "Cursor 3791 other", "startup")
 	if rr := doRequest(srv, "GET", "/api/v1/workspaces/"+otherSlug+"/changes?cursor="+p.NextCursor, nil); rr.Code != http.StatusBadRequest {
 		t.Errorf("another workspace's cursor: %d, want 400", rr.Code)

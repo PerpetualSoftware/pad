@@ -29,8 +29,7 @@ import (
 // said every error arriving at that arm came out of a write TRANSACTION. It does
 // not — GetItem, validateAssignmentScope and db.Begin all fail before one is opened
 // — and the enum comment in handlers_items_content_route.go carries the three-way
-// split. Corrected in codex round 2, having been corrected wrongly in round 1: the
-// round-1 edit fixed the enum comment and left this one contradicting it.)
+// split. This comment was corrected to agree with the enum comment.)
 //
 // WHY THE OBVIOUS INSTRUMENTS DO NOT WORK — see the note above the commit-count
 // assertion below, which names each and what it actually measures.
@@ -134,7 +133,7 @@ func assertContentPatchAckLossCommitsOnce(t *testing.T, srv *Server) {
 	//     and mints nothing.
 	//   - item_updated events, on EITHER of the two surfaces that carry that name,
 	//     which are worth separating because an earlier draft of this comment ran
-	//     them together (codex rounds 1 and 2):
+	//     them together:
 	//
 	//     The DURABLE OUTBOX row, written in-transaction by emitItemUpdateEventsTx
 	//     and gated on itemUpdatedSliceChanged. One write produces one; the replay

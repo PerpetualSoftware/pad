@@ -103,7 +103,7 @@ func TestActivityCursorIsRefusedWhenMalformed(t *testing.T) {
 		}
 	}
 
-	// The item activity door shares the parser (codex round 1): a cursor it
+	// The item activity door shares the parser: a cursor it
 	// ignored would answer every next page with the first page again.
 	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{"title": "cursor door"})
 	if rr.Code != http.StatusCreated {

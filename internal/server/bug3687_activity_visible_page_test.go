@@ -251,7 +251,7 @@ func TestBUG3687_DashboardGuestNotStarvedByWorkspaceLevelRows(t *testing.T) {
 }
 
 func TestBUG3687_DashboardNotStarvedByRowsOfMissingItems(t *testing.T) {
-	// Codex round 1: rows naming an item that no longer exists pass the feed
+	// Rows naming an item that no longer exists pass the feed
 	// as workspace-level, but the dashboard drops them, so 30 of them used to
 	// fill its window as surely as hidden rows did.
 	bothBackends(t, func(t *testing.T, srv *Server) {
@@ -315,7 +315,7 @@ func TestBUG3687_FeedBearerAdminIsScopedAndNotStarved(t *testing.T) {
 }
 
 func TestBUG3687_UnscopedDashboardNotStarvedByRowsOfMissingItems(t *testing.T) {
-	// Codex round 2: a cookie-session platform admin has no visibility scope,
+	// A cookie-session platform admin has no visibility scope,
 	// so the exclusion of missing-item rows cannot ride on that scope.
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		f := newBUG3687Fixture(t, srv)

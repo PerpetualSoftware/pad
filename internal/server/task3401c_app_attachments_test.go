@@ -158,7 +158,7 @@ func TestTask3401c_DownloadServesTheBytesFailClosed(t *testing.T) {
 	}
 }
 
-// Lead ruling (U6c): a download is re-admitted immediately before its first
+// U6c: a download is re-admitted immediately before its first
 // byte, and a revocation committed before then sends nothing.
 func TestTask3401c_ARevocationBeforeTheFirstByteSendsNothing(t *testing.T) {
 	for name, revoke := range map[string]string{
@@ -281,7 +281,7 @@ func TestTask3401c_AViewerCannotUpload(t *testing.T) {
 	}
 }
 
-// Codex U6c r1 P1: a companion that stops being one while an upload's body
+// A companion that stops being one while an upload's body
 // is in flight. The fence checks the collection's stamp in the row's own
 // transaction, so no row commits.
 func TestTask3401c_ACompanionLeavingMidUploadCommitsNoRow(t *testing.T) {
@@ -320,7 +320,7 @@ func TestTask3401c_ACompanionLeavingMidUploadCommitsNoRow(t *testing.T) {
 	}
 }
 
-// Codex U6c r1 P1: a credential change committed while the re-checks run.
+// A credential change committed while the re-checks run.
 // The credential is read again as re-admission's last step.
 func TestTask3401c_ARevocationDuringReadmissionSendsNothing(t *testing.T) {
 	for name, revoke := range map[string]string{
@@ -350,7 +350,7 @@ func TestTask3401c_ARevocationDuringReadmissionSendsNothing(t *testing.T) {
 	}
 }
 
-// Codex U6c r1 P2: a storage error on an attachment the subject may not see
+// A storage error on an attachment the subject may not see
 // answers exactly as an unknown id does.
 func TestTask3401c_AMissingBlobIsNoOracle(t *testing.T) {
 	f := appAPIFixture(t, "read")
@@ -379,7 +379,7 @@ func TestTask3401c_AMissingBlobIsNoOracle(t *testing.T) {
 	}
 }
 
-// Codex U6c r1 P2: the route deadline bounds the transport too. A client
+// The route deadline bounds the transport too. A client
 // that reads the headers and then stops reading must not hold the handler
 // in a blocked write past the deadline.
 func TestTask3401c_AStalledClientDoesNotOutliveTheDeadline(t *testing.T) {
@@ -412,7 +412,7 @@ func TestTask3401c_AStalledClientDoesNotOutliveTheDeadline(t *testing.T) {
 	}
 }
 
-// Codex U6c r2: a body that ends early over a real connection reports
+// A body that ends early over a real connection reports
 // io.ErrUnexpectedEOF, which is the client's mistake (400), not a 500.
 func TestTask3401c_ATruncatedUploadIsTheClientsMistake(t *testing.T) {
 	f := appAPIFixture(t, "write")
@@ -444,12 +444,12 @@ func TestTask3401c_ATruncatedUploadIsTheClientsMistake(t *testing.T) {
 	}
 }
 
-// Codex U6c r2: a store fault during re-admission withholds the bytes but
+// A store fault during re-admission withholds the bytes but
 // answers 500, not the 401 invalid_token that tells the app to discard a
 // good credential.
 func TestTask3401c_AFaultDuringReadmissionIsNotADenial(t *testing.T) {
 	// Each table is read by a different step of re-admission: the attachment
-	// re-check, and the token's state (codex U6c r4).
+	// re-check, and the token's state.
 	for _, table := range []string{"attachments", "app_token_bindings"} {
 		t.Run(table, func(t *testing.T) {
 			f := appAPIFixture(t, "read")
@@ -472,7 +472,7 @@ func TestTask3401c_AFaultDuringReadmissionIsNotADenial(t *testing.T) {
 	}
 }
 
-// Codex U6c r2: HEAD probes the download through the same gate, and an
+// HEAD probes the download through the same gate, and an
 // unknown variant name is refused as on the regular download.
 func TestTask3401c_HeadAndUnknownVariant(t *testing.T) {
 	f := appAPIFixture(t, "read")
@@ -489,7 +489,7 @@ func TestTask3401c_HeadAndUnknownVariant(t *testing.T) {
 	}
 }
 
-// Codex U6c r3 P1: the subject's edit right, checked again once the body is
+// The subject's edit right, checked again once the body is
 // in. A membership narrowed while the body was read refuses the row.
 func TestTask3401c_ASubjectNarrowedMidUploadCommitsNoRow(t *testing.T) {
 	for name, change := range map[string]string{
@@ -527,7 +527,7 @@ func TestTask3401c_ASubjectNarrowedMidUploadCommitsNoRow(t *testing.T) {
 	}
 }
 
-// Codex U6c r5: a credential that dies while an upload's body arrives is a
+// A credential that dies while an upload's body arrives is a
 // 401 with the invalid_token challenge, not the 403 a permission change gets.
 func TestTask3401c_ACredentialDyingMidUploadIs401(t *testing.T) {
 	f := appAPIFixture(t, "write")
@@ -549,7 +549,7 @@ func TestTask3401c_ACredentialDyingMidUploadIs401(t *testing.T) {
 	}
 }
 
-// Codex U6c r6: the variant whose bytes are served is re-checked at the gate,
+// The variant whose bytes are served is re-checked at the gate,
 // not only the original that was authorized.
 func TestTask3401c_ADeletedVariantIsNotServed(t *testing.T) {
 	f := appAPIFixture(t, "read")
@@ -581,7 +581,7 @@ func TestTask3401c_ADeletedVariantIsNotServed(t *testing.T) {
 	}
 }
 
-// Codex U6c r6: on a self-host, a failure to read the apps setting is a fault
+// On a self-host, a failure to read the apps setting is a fault
 // at the first gate too, not a 404 "apps are off".
 func TestTask3401c_ASettingsFaultIsNotAppsOff(t *testing.T) {
 	f := appAPIFixtureOn(t, "read", false)

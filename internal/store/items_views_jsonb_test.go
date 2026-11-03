@@ -165,7 +165,7 @@ func TestItemsViewsJSONB_ImportWorkspaceCoercesEmptyAndMalformed(t *testing.T) {
 				UpdatedAt:    "2026-05-16T00:00:00Z",
 			},
 			{
-				// IDEA-1486 R1 codex P2: imported fields=null and
+				// IDEA-1486: imported fields=null and
 				// tags=null must coerce to defaults. Without the
 				// non-nil check in coerceJSONForImport,
 				// json.Unmarshal("null", &m) returns err=nil with m
@@ -275,7 +275,7 @@ func TestItemsViewsJSONB_SQLiteRebuildPreservesIndexesAndTriggers(t *testing.T) 
 
 	// All 8 indexes from 005/017/053/054 must be present on items.
 	// idx_items_invocation_slug_per_collection was added to migration
-	// 056 in IDEA-1486 R1 codex P1.1 after the original draft forgot
+	// 056 in IDEA-1486 R1.1 after the original draft forgot
 	// to recreate it; this test grew to 8 entries alongside that fix.
 	wantIndexes := map[string]bool{
 		"idx_items_collection":                     false,
@@ -516,7 +516,7 @@ func TestItemsViewsJSONB_ItemLinksRoundTripAfterRebuild(t *testing.T) {
 }
 
 // TestItemsViewsJSONB_SQLiteBackfillRepairsMalformedShapes is the
-// codex R2 P1 regression test. It applies migrations 001-055 against
+// regression test. It applies migrations 001-055 against
 // a fresh DB (stopping BEFORE the 056/057 hardening), seeds rows that
 // violate the post-migration shape contract in every observable way
 // (empty string, JSON null, wrong-shape JSON, non-JSON garbage), then
@@ -556,7 +556,7 @@ func TestItemsViewsJSONB_SQLiteBackfillRepairsMalformedShapes(t *testing.T) {
 	// Apply migrations up to BUT NOT INCLUDING 054 (which creates the
 	// partial UNIQUE index on json_extract(fields, '$.invocation_slug')),
 	// 055, 056, 057. We then seed pre-054 malformed rows, then apply
-	// 056 + 057. The codex R2 P1 ship-breaker scenario is precisely:
+	// 056 + 057. The ship-breaker scenario is precisely:
 	// rows with malformed items.fields exist, then 056 recreates the
 	// partial UNIQUE index over those rows, and CREATE INDEX errors
 	// mid-migration when json_extract evaluates on the bad rows.
@@ -662,7 +662,7 @@ func TestItemsViewsJSONB_SQLiteBackfillRepairsMalformedShapes(t *testing.T) {
 	// its own CREATE INDEX on json_extract(fields, '$.invocation_slug')
 	// would error on the malformed seed rows — and in production, 054
 	// already shipped without that error, which means no production
-	// row carried malformed fields at 054-run-time. The codex R2 P1
+	// row carried malformed fields at 054-run-time. The
 	// concern is forward-looking: if malformed rows appeared between
 	// 054 and 056 (or any other source), 056's REBUILD recreates the
 	// same partial UNIQUE index and would re-hit the json_extract
@@ -756,7 +756,7 @@ func TestItemsViewsJSONB_SQLiteBackfillRepairsMalformedShapes(t *testing.T) {
 // Postgres counterpart. JSONB columns reject invalid JSON at write
 // time, so the only pre-existing pathologies are SQL NULL and JSONB-
 // valid-but-wrong-shape (e.g. JSONB null, an array where an object is
-// required, a primitive). Codex R2 P1: the original NULL-only WHERE
+// required, a primitive). The original NULL-only WHERE
 // would have left wrong-shape rows in place.
 func TestItemsViewsJSONB_PostgresBackfillRepairsMalformedShapes(t *testing.T) {
 	t.Parallel()

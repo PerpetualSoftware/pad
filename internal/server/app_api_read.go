@@ -331,7 +331,7 @@ func (s *Server) appListItems(w http.ResponseWriter, r *http.Request) {
 	// restricted member's or guest's item grants (guestResourceFilter): a
 	// person acting through the app (TASK-3399) may hold item grants only,
 	// and a window over hidden rows would let has_more and next_offset count
-	// them (codex U5b-2 r2). The per-item check below stays, as a second
+	// them. The per-item check below stays, as a second
 	// layer.
 	params := models.ItemListParams{ScopeCollectionID: c.ID, CollectionIDs: []string{c.ID}, Limit: limit + 1, Offset: offset}
 	fullCollIDs, grantedItemIDs, err := s.guestResourceFilter(r, ac.WorkspaceID)

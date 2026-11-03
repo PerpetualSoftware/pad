@@ -79,7 +79,7 @@ type Store struct {
 	// cannot write each other's seam. Set it only while no request is in
 	// flight against this Store: it is READ on a write path with no
 	// synchronisation, so mutating it under live traffic is a -race
-	// finding waiting to happen (codex round 2 — latent, not current:
+	// finding waiting to happen (not current:
 	// every test that sets it does so synchronously and none is parallel).
 	afterDebounceRead func()
 
@@ -134,7 +134,7 @@ type Store struct {
 	//
 	// It exists because the scrub's BYTE budget is otherwise unobservable: it
 	// changes peak memory and nothing else, so removing it leaves every
-	// outcome assertion green (codex round 2). Counting batches is the one
+	// outcome assertion green. Counting batches is the one
 	// visible consequence of the budget doing its job.
 	afterOutboxScrubBatch func(rows int)
 
@@ -152,7 +152,6 @@ type Store struct {
 	// a hook that issues its own update must nil the field for the duration
 	// of that nested call — and note that updateItemWithParentLinkOnce runs
 	// under retryOnParentSetChanged, so a retried update fires it again
-	// (codex round 3).
 	afterItemPreLockRead func(itemID string)
 
 	// beforeItemVersionsRead is a TEST-ONLY seam, nil in production. When set,
@@ -683,7 +682,7 @@ func (s *Store) migrate() error {
 	}
 
 	// AFTER the snapshot and BEFORE the migrations, both deliberately
-	// (TASK-2710, codex round 5).
+	// (TASK-2710).
 	//
 	// Before the migrations, because 087 / 064 add partial unique indexes over
 	// the collection-trait declarations and those CREATE statements fail on
@@ -720,7 +719,7 @@ func (s *Store) migrate() error {
 			return err
 		}
 
-		// AFTER EACH MIGRATION, not once at the end (codex round 4).
+		// AFTER EACH MIGRATION, not once at the end.
 		//
 		// A table-rebuild migration drops that table's triggers, and until they
 		// are back the invariant is unenforced for it. Restoring once after the
@@ -749,8 +748,7 @@ func (s *Store) migrate() error {
 	// already missing (a manual drop, a restored backup taken mid-rebuild) and
 	// therefore had no migration to trigger the per-migration check above.
 	//
-	// The NUL triggers are RE-ASSERTED, not merely checked (DOC-2823 S2, codex
-	// round 1).
+	// The NUL triggers are RE-ASSERTED, not merely checked (DOC-2823 S2)
 	//
 	// SQLite drops a table's triggers when the table is dropped, and this
 	// codebase rebuilds tables to change constraints — migrations 025, 055,
@@ -1053,10 +1051,10 @@ func extractPragmas(sqlText string) (pragmas []string, rest string) {
 // fkCheckResult is one PRAGMA foreign_key_check pass, run per table so a
 // table whose check cannot run ("foreign key mismatch": an FK whose parent
 // key has no unique index) does not blind the check for every other table
-// (codex on #2120).
+// (#2120).
 type fkCheckResult struct {
 	// counts holds the violations per foreign key, keyed
-	// "table|parent|fkid". Counts, not rowids (codex r1): a table rebuild
+	// "table|parent|fkid". Counts, not rowids: a table rebuild
 	// renumbers rowids, so a legacy violation would look new under a rowid
 	// key, and a WITHOUT ROWID table reports no rowid at all.
 	counts map[string]int
@@ -1129,7 +1127,7 @@ func foreignKeyViolationsOf(ctx context.Context, tx *sql.Tx, table string) (map[
 		rows.Close()
 		return nil, err
 	}
-	// A close error is a failed check too (codex on #2120), never counts
+	// A close error is a failed check too (#2120), never counts
 	// reported as complete.
 	if err := rows.Close(); err != nil {
 		return nil, err

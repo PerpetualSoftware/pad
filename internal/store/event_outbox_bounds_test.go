@@ -81,7 +81,7 @@ func TestOutboxLimitSeamsDefaultToTheProductionConstants(t *testing.T) {
 	// the Postgres round-trip test: the default suite runs on SQLite, where
 	// that test passes trivially, so a claim ceiling collapsed back to the
 	// write cap would go unnoticed in every run without PAD_TEST_POSTGRES_URL
-	// (codex round 2). This assertion fails on either dialect.
+	// This assertion fails on either dialect.
 	if MaxOutboxClaimableBytes <= MaxOutboxPayloadBytes {
 		t.Errorf("MaxOutboxClaimableBytes (%d) must exceed MaxOutboxPayloadBytes (%d)",
 			MaxOutboxClaimableBytes, MaxOutboxPayloadBytes)
@@ -328,7 +328,7 @@ func TestOutboxClaimSpendsTheBudgetOnBatchSiblingsToo(t *testing.T) {
 		t.Fatalf("the whole batch was claimed; the sibling scan bypassed the byte budget")
 	}
 	// BOTH BOUNDS, because "fewer than five" alone is satisfied by an
-	// implementation that never claims siblings at all (codex round 1). The
+	// implementation that never claims siblings at all. The
 	// limit passed above is 1, so anything past the first row IS a sibling.
 	if len(events) < 2 {
 		t.Fatalf("claimed %d rows with limit=1; siblings are not being claimed at all, which is a "+
@@ -680,7 +680,7 @@ func TestBatchSiblingQueryIsBoundedInSQL(t *testing.T) {
 	// is about: a sibling query that materialised the whole batch and let the
 	// caller truncate afterwards passes every assertion on the claim's return
 	// value while keeping exactly the unbounded allocation the cap was added
-	// to remove (codex round 2).
+	// to remove.
 	siblings, err := s.claimableBatchSiblings("batch-1", "2026-01-01T00:00:00Z")
 	if err != nil {
 		t.Fatalf("claimableBatchSiblings: %v", err)
@@ -751,7 +751,7 @@ func TestScrubOnlyEverShrinksAPayload(t *testing.T) {
 	// byte stored costs 6 in Go's output. Non-ASCII and an exponent-form
 	// number cover the other two places the round trip could change length.
 	// A fixture of one repeated ASCII letter, which is what this test had
-	// first, cannot tell any of that apart (codex round 4).
+	// first, cannot tell any of that apart.
 	c := &models.Comment{ID: newID(), ItemID: item.ID, WorkspaceID: ws.ID,
 		Author: "Scrub Me", UserID: deleted.ID,
 		Body: strings.Repeat("x<y>z&w é ", 50)}

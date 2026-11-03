@@ -194,7 +194,7 @@ func (s *Server) handleTestEmail(w http.ResponseWriter, r *http.Request) {
 	// deliberately callable with no payload. A body that is present and
 	// REFUSED is a different thing and must not be silently reinterpreted as
 	// that default: collapsing the two swallowed BUG-2803's refusal, so a
-	// request carrying a NUL answered 200 (codex round 3).
+	// request carrying a NUL answered 200.
 	if err := decodeJSON(r, &input); err != nil {
 		if !errors.Is(err, io.EOF) {
 			writeError(w, http.StatusBadRequest, "bad_request", err.Error())

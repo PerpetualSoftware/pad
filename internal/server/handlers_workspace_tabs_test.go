@@ -140,7 +140,7 @@ func TestWorkspaceTabsAPI_LastRouteIsSameWorkspaceOnly(t *testing.T) {
 		"/someoneelse/" + b.Slug + "/tasks",
 		"tasks",
 		base + "/" + strings.Repeat("a", maxWorkspaceTabLastRouteLen),
-		// Percent-encoded forms a URL parser decodes (codex round 1).
+		// Percent-encoded forms a URL parser decodes.
 		base + "/%2e%2e/other/tasks",
 		base + "/%2E%2E/other/tasks",
 		base + "/.%2e/other/tasks",

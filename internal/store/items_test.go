@@ -1388,7 +1388,7 @@ func TestUpdateItemWithParentLink_AtomicCommit(t *testing.T) {
 // TestGetParentMap_ExcludesSoftDeletedEndpoints covers the dashboard
 // orphan-detection path: a task whose parent has been soft-deleted should
 // NOT appear in GetParentMap, so handlers_dashboard.go correctly flags the
-// task as orphaned. See BUG-734 / Codex review on PR #259.
+// task as orphaned. See BUG-734.
 func TestGetParentMap_ExcludesSoftDeletedEndpoints(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
@@ -1509,8 +1509,7 @@ func TestGetItemLineageByIDs(t *testing.T) {
 // TestListItems_ParentFilter_FTS_RespectsSoftDeletedParent covers the
 // `parent=<UUID>&search=<q>` combination. The search path routes through
 // listItemsFTS, which the non-FTS parent filter doesn't touch; the FTS
-// path needs to enforce the same deleted-parent rejection. See BUG-734 /
-// Codex review on PR #259 (3rd pass).
+// path needs to enforce the same deleted-parent rejection. See BUG-734.
 func TestListItems_ParentFilter_FTS_RespectsSoftDeletedParent(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
@@ -1538,7 +1537,7 @@ func TestListItems_ParentFilter_FTS_RespectsSoftDeletedParent(t *testing.T) {
 
 	// Soft-delete the parent. The FTS path must also reject the now-deleted
 	// parent, otherwise `?parent=<deleted-uuid>&search=foo` continues to leak
-	// active children of an archived parent (the gap Codex flagged).
+	// active children of an archived parent (the gap).
 	if err := s.DeleteItem(parent.ID); err != nil {
 		t.Fatalf("DeleteItem: %v", err)
 	}
@@ -1573,7 +1572,7 @@ func TestListItems_ParentFilter_FTS_RespectsSoftDeletedParent(t *testing.T) {
 // `parent=<UUID>` query filter doesn't return children of a soft-deleted
 // parent. Slug/ref filters already reject deleted parents upstream via
 // GetItem/GetItemBySlug, but raw-UUID input bypasses that path. See
-// BUG-734 / Codex review on PR #259.
+// BUG-734.
 func TestListItems_ParentFilter_RespectsSoftDeletedParent(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
@@ -1957,12 +1956,12 @@ func TestMigration046_DocumentsFTSTriggersExist(t *testing.T) {
 
 // TestMigration046_RebuildRecoversUnindexedDocs pins the *recovery* half of
 // migration 046 — the part that rescues already-broken DBs. We simulate the
-// production state Codex flagged: triggers were missing, so a document was
+// production state: triggers were missing, so a document was
 // inserted into the documents table but never made it into documents_fts.
 // Migration 046's `INSERT INTO documents_fts(documents_fts) VALUES('rebuild')`
 // step is what makes such a document searchable again. Without this test,
 // removing the rebuild step would not break either of the other two BUG-822
-// tests — flagged in Codex review.
+// tests.
 func TestMigration046_RebuildRecoversUnindexedDocs(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
@@ -2140,7 +2139,7 @@ func TestListDocuments_FTS_PinnedFilter(t *testing.T) {
 // guard on each FTS entry point. sanitizeFTSQuery turns "   " into "" and
 // SQLite FTS5 errors on a MATCH against an empty string, so the
 // routing/guard has to short-circuit before binding.
-// See BUG-818 / Codex follow-up.
+// See BUG-818.
 func TestFTS_WhitespaceOnlyQuery_DoesNotCrash(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
@@ -2830,7 +2829,7 @@ func TestWorkspaceHasAgentActivity(t *testing.T) {
 // TestWorkspaceHasAgentActivityVisibility covers the visibility filter
 // so a guest with restricted access can't infer the existence of
 // agent-sourced items in collections they don't have visibility into.
-// Codex flagged this as a P2 leak during PR #284 review — without
+// This was a leak (PR #284) — without
 // filtering, has_agent_activity reflected the whole workspace regardless
 // of caller visibility.
 func TestWorkspaceHasAgentActivityVisibility(t *testing.T) {
@@ -2900,7 +2899,7 @@ func TestWorkspaceHasAgentActivityVisibility(t *testing.T) {
 }
 
 // TestGuestVisibleResourcesIncludeDeleted_SurfacesTombstones is the
-// delta-sync correctness test Codex round 1 [P1] on TASK-1354 asked
+// delta-sync correctness test TASK-1354 asked
 // for: when a guest's only access to an item is via an item-level
 // grant, soft-deleting that item must NOT make the grant ID
 // disappear from the delta-sync lookup. Otherwise /items-changes
@@ -2977,8 +2976,8 @@ func stringInSlice(xs []string, want string) bool {
 }
 
 // TestMigrateItemFieldValues_PerRowUniqueSeq guards the
-// /items-changes pagination contract on bulk rewrites (Codex
-// review of TASK-1354 round 2 [P1]). Before the fix, the bulk
+// /items-changes pagination contract on bulk rewrites
+// (TASK-1354). Before the fix, the bulk
 // UPDATE assigned every affected row the same `MAX(seq)+1`. A
 // /items-changes?limit=N poll that cut through that equal-seq
 // group would advance the cursor to the shared seq, and the

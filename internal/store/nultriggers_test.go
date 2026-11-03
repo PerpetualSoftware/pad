@@ -75,7 +75,7 @@ func TestNULTriggersRefuseAnUnguardedWriter(t *testing.T) {
 		if err == nil {
 			t.Fatal("a NUL in a JSON KEY was stored; json_tree exposes keys and the trigger must read them")
 		}
-		// Assert WHICH refusal (codex round 3). items.fields also carries
+		// Assert WHICH refusal. items.fields also carries
 		// migration 056's JSON constraint, so "some error" would be satisfied
 		// by a value that never reached the trigger at all.
 		if !strings.Contains(err.Error(), nulTriggerMarker) {
@@ -153,7 +153,7 @@ func TestNULTriggersRefuseAnUnguardedWriter(t *testing.T) {
 // TestNULTriggersMatchTheList pins the committed migration against the Go list
 // it is generated from — BYTE FOR BYTE.
 //
-// The first version compared trigger NAMES and counts, which codex round 1
+// The first version compared trigger NAMES and counts, which
 // showed would pass a wrong BEFORE UPDATE OF clause, a wrong predicate, or a
 // changed RAISE marker — all of which are the parts that do the work. Names are
 // the one thing a hand edit is least likely to get wrong.
@@ -218,7 +218,7 @@ func TestTriggerRefusalIsIndistinguishableFromLayerA(t *testing.T) {
 	t.Parallel()
 	// WHY THERE IS NO END-TO-END LEG HERE, stated rather than faked.
 	//
-	// Codex round 2 was right that testing classifyTriggerRefusal with a
+	// Testing classifyTriggerRefusal with a
 	// synthetic error would pass even if the wrapper stopped calling it. My
 	// first answer was an "integration" leg that wrote a nested-document value
 	// through a guarded connection and asserted the typed error came back. It
@@ -239,7 +239,7 @@ func TestTriggerRefusalIsIndistinguishableFromLayerA(t *testing.T) {
 	// arm-parity shape from the item-title unit, which exists because
 	// "somebody will add a fifth return and forget" is the failure that
 	// actually happens.
-	// A FAKE DRIVER, driven through the real wrapper (codex round 3).
+	// A FAKE DRIVER, driven through the real wrapper.
 	//
 	// The previous version grepped nulguard.go for the classifier's name, which
 	// a dead or commented call would satisfy. This wraps a driver that returns
@@ -381,7 +381,7 @@ func TestLayerBAgreesWithTheCorpus(t *testing.T) {
 					t.Fatalf("expected accepted, but the write failed for another reason: %v", werr)
 				}
 				// READ IT BACK. The comment used to claim persistence and the
-				// code only checked that no error came back (codex round 1) —
+				// code only checked that no error came back —
 				// which a trigger that silently discarded the row would also
 				// satisfy, and which says nothing about whether the value
 				// survived intact.
@@ -408,7 +408,7 @@ func execRaw(db *sql.DB, q string, args ...any) error {
 	return err
 }
 
-// TestNULTriggersSurviveATableRebuild regresses codex round 1's sharpest
+// TestNULTriggersSurviveATableRebuild regresses the sharpest
 // finding: SQLite drops a table's triggers when the table is dropped, this
 // codebase rebuilds tables to change constraints (migrations 025, 055, 056,
 // 057, 068, 072 all do), and migration 084 would never run again because it is
@@ -481,7 +481,7 @@ func TestNULTriggersSurviveATableRebuild(t *testing.T) {
 
 	// A STALE trigger — right name, wrong body — is the case a name-only check
 	// can never repair, because CREATE TRIGGER IF NOT EXISTS sees the name and
-	// does nothing forever (codex round 3). A mutation reverting the definition
+	// does nothing forever. A mutation reverting the definition
 	// comparison survived until this existed.
 	t.Run("a same-name trigger with a no-op body is replaced", func(t *testing.T) {
 		for _, tr := range []string{"pad_nul_items_content_ins", "pad_nul_items_content_upd"} {
@@ -522,7 +522,7 @@ func TestNULTriggersSurviveATableRebuild(t *testing.T) {
 		}
 	})
 
-	// THE NO-OP CASE, asserted on whether WORK HAPPENED (codex round 5).
+	// THE NO-OP CASE, asserted on whether WORK HAPPENED.
 	//
 	// Two earlier observables were wrong and both passed. The trigger COUNT is
 	// unchanged by a full drop-and-recreate. So are sqlite_master ROWIDs, since
@@ -606,8 +606,7 @@ func openFakeGuarded(t *testing.T) *sql.DB {
 	return db
 }
 
-// TestNULTriggerRestorationFailsLoudlyOnAQueryError regresses codex round 5's
-// P1.
+// TestNULTriggerRestorationFailsLoudlyOnAQueryError regresses the case.
 //
 // The applied-check folded a query ERROR in with "not applied" behind a
 // nolint:nilerr, so a migrated database with a read failure would start
@@ -642,7 +641,7 @@ func TestNULTriggerRestorationFailsLoudlyOnAQueryError(t *testing.T) {
 	}
 }
 
-// TestNULTriggerRestorationRemovesStrays regresses codex round 6: the health
+// TestNULTriggerRestorationRemovesStrays regresses The health
 // check asked only whether every EXPECTED trigger was present, so a database
 // carrying an extra pad_nul_ trigger read as healthy.
 //

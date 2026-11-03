@@ -341,7 +341,7 @@ func TestAppDelivery_StopEndsAPendingRetry(t *testing.T) {
 	}
 }
 
-// codex r3 on U10b: a bulk operation's members are never delivered to an app,
+// A bulk operation's members are never delivered to an app,
 // claimed alone or folded, so the app never sees an arbitrary subset of one
 // operation (DOC-3371 §5: bulk edits are invisible to apps in v1).
 func TestAppDelivery_BulkMembersAreNotDelivered(t *testing.T) {
@@ -383,7 +383,7 @@ func TestAppDelivery_BulkMembersAreNotDelivered(t *testing.T) {
 	}
 }
 
-// codex r4 on U10b: a folded bulk batch delivers nothing to apps and is
+// A folded bulk batch delivers nothing to apps and is
 // counted, like a member claimed alone.
 func TestAppDelivery_FoldedBulkIsCountedNotDelivered(t *testing.T) {
 	e := newDeliveryEnv(t)
@@ -421,7 +421,7 @@ func TestAppDelivery_FoldedBulkIsCountedNotDelivered(t *testing.T) {
 	}
 }
 
-// codex r5 on U10b: an event the app skipped while disabled stays pending
+// An event the app skipped while disabled stays pending
 // when an OWNER hook fails; after the re-enable it must still not reach the
 // app. The same for an event from before the app was handed its secret.
 func TestAppDelivery_SkippedEventsStaySkippedWhenOwnerRetries(t *testing.T) {

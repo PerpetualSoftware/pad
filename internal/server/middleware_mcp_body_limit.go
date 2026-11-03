@@ -48,7 +48,7 @@ func (s *Server) mcpBodyLimit() int64 {
 // nothing reads an unauthenticated body: it is refused 401 first, and
 // that 401 is what the pre-auth rate limit meters. Reading a chunked body
 // here, before auth, would let an anonymous caller make the server take
-// in up to the limit per request ahead of both (codex review). After the
+// in up to the limit per request ahead of both. After the
 // audit log so a 413 is recorded.
 //
 //   - A declared Content-Length over the limit is refused without this

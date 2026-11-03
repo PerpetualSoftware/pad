@@ -163,7 +163,7 @@ func TestRelationTitle_RefWinsOverAnItemTitledLikeARef(t *testing.T) {
 		t.Errorf("stored %q, want the REF's target %q — the ref rung must win over an item merely titled like one", stored, red.ID)
 	}
 
-	// CONTROL, and the reason this test needs one (codex round 1 nit): the
+	// CONTROL, and the reason this test needs one: the
 	// assertions above supply a REF and exercise only the pre-existing ref
 	// rung, so they pass with exact-title resolution removed entirely and the
 	// impostor is decoration. The control resolves an ORDINARY title in the
@@ -313,8 +313,8 @@ func mustCollectionID(t *testing.T, s *Store, workspaceID, slug string) string {
 	return ""
 }
 
-// TestRelationTitle_ANullItemNumberCandidateStillCounts is codex round 3's
-// third P1, and it is the reason the candidate walk pages on `id`.
+// TestRelationTitle_ANullItemNumberCandidateStillCounts guards the case:
+// it is the reason the candidate walk pages on `id`.
 //
 // The first paging shape used `item_number > ?` as its cursor. item_number is
 // NULLABLE — migration 006 adds it with no constraint and nothing since makes
@@ -357,8 +357,8 @@ func TestRelationTitle_ANullItemNumberCandidateStillCounts(t *testing.T) {
 	}
 }
 
-// TestMigrateRelationTitle_CarriedValueIgnoresTheMoversVisibility is codex
-// round 5's P1, and this file's own standing argument, as a test.
+// TestMigrateRelationTitle_CarriedValueIgnoresTheMoversVisibility is
+// this file's own standing argument, as a test.
 //
 // A CARRIED value was asserted by nobody, so no caller is probing with it —
 // and judging it by the MOVER's visibility is exactly what
@@ -425,7 +425,7 @@ func TestRelationTitle_SuppliedValueStillObeysVisibility(t *testing.T) {
 }
 
 // TestHydrateRelationTargets_WrongCollectionAndNullNumberStayHonest covers
-// codex round 7's two read-side P2s.
+// the two read-side cases.
 //
 // Both are about legacy rows: the write side has refused wrong-collection
 // relation values since U1 and item_number has been populated since migration

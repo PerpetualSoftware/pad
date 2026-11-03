@@ -23,12 +23,12 @@ import (
 func compressSkips(r *http.Request) bool {
 	// GETs only. A HEAD sends no body, and compressing one would only strip
 	// the Content-Length its caller asked for (attachment HEADs report the
-	// file's size that way; codex r3). Every secret the API mints (session and API tokens, share-
-	// link tokens, invitation codes, recovery codes, OAuth grants) comes back
-	// from a write, and a compressed secret beside request-influenced text is
+	// file's size that way). Every secret the API mints (session and API tokens,
+	// share-link tokens, invitation codes, recovery codes, OAuth grants) comes
+	// back from a write, and a compressed secret beside request-influenced text is
 	// the BREACH shape; write responses are small, so leaving them alone costs
 	// nothing, while every large response worth compressing (the items index,
-	// the bundle's JS, polls, exports) is a GET (codex r1: a path list missed
+	// the bundle's JS, polls, exports) is a GET (a path list missed
 	// invitations and share links).
 	if r.Method != http.MethodGet {
 		return true
@@ -73,13 +73,13 @@ func compressSkips(r *http.Request) bool {
 	case strings.HasPrefix(p, "/api/v1/auth/"), strings.HasPrefix(p, "/oauth/"), strings.HasPrefix(p, "/api/v1/oauth/"),
 		strings.HasSuffix(p, "/tokens") || strings.Contains(p, "/tokens/"),
 		// Reads that return a live secret, found by an exhaustive sweep of the
-		// GET routes: a workspace's claim code (codex r2)
+		// GET routes: a workspace's claim code
 		// and the members list, which still carries the plaintext code of a
-		// legacy pending invitation (codex r4). Webhook secrets are masked on
+		// legacy pending invitation. Webhook secrets are masked on
 		// reads; every other secret comes back from a write.
 		strings.HasSuffix(p, "/claim-code"), strings.HasSuffix(p, "/members") || strings.HasSuffix(p, "/members/"),
 		// A share view can carry signed, short-lived attachment references
-		// (an exp and a signature each; codex r5's exhaustive GET sweep).
+		// (an exp and a signature each).
 		strings.HasPrefix(p, "/api/v1/s/"):
 		return true
 	}

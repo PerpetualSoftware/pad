@@ -6,7 +6,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// GAP, RECORDED RATHER THAN PAPERED OVER (codex round 2).
+// GAP, RECORDED RATHER THAN PAPERED OVER.
 //
 // There is no test here driving the WHOLE chain — store fault →
 // computeWatchAccessVisibility → pushSessionVisibility →

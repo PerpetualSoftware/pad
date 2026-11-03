@@ -159,7 +159,7 @@ func TestBUG3349_DisabledAccountsOAuthGrantIsRefusedAtMCP(t *testing.T) {
 	}
 }
 
-// codex review: a refresh token (or an authorization code) issued before the
+// A refresh token (or an authorization code) issued before the
 // disable does not exchange for new tokens after it.
 func TestBUG3349_TokenEndpointRefusesADisabledSubject(t *testing.T) {
 	srv := twoResourceOAuthServer(t)
@@ -176,14 +176,14 @@ func TestBUG3349_TokenEndpointRefusesADisabledSubject(t *testing.T) {
 		"grant_type": {"refresh_token"}, "refresh_token": {refresh}, "client_id": {client},
 	})
 	// The token endpoint's own refusal, not a storage failure behind it
-	// (codex review): a 500 would mean the check was skipped and the store's
+	// A 500 would mean the check was skipped and the store's
 	// gate caught it.
 	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "invalid_grant") {
 		t.Fatalf("a disabled account's refresh exchange: %d %s, want 400 invalid_grant", rr.Code, rr.Body.String())
 	}
 }
 
-// codex review: the consent step (outside RequireAuth) does not treat a
+// The consent step (outside RequireAuth) does not treat a
 // disabled account's session as signed in.
 func TestBUG3349_ConsentRefusesADisabledSession(t *testing.T) {
 	srv := twoResourceOAuthServer(t)
@@ -200,7 +200,7 @@ func TestBUG3349_ConsentRefusesADisabledSession(t *testing.T) {
 	}
 }
 
-// codex review: a 2FA challenge issued before the disable mints no session
+// A 2FA challenge issued before the disable mints no session
 // after it.
 func TestBUG3349_TOTPChallengeMintsNothingForADisabledAccount(t *testing.T) {
 	srv := testServer(t)
@@ -231,7 +231,7 @@ func TestBUG3349_TOTPChallengeMintsNothingForADisabledAccount(t *testing.T) {
 	}
 }
 
-// codex review: no session is created for a disabled account, wherever the
+// No session is created for a disabled account, wherever the
 // mint is reached from; the store refuses it under the users row.
 func TestBUG3349_NoSessionForADisabledAccount(t *testing.T) {
 	srv := testServer(t)
@@ -281,7 +281,7 @@ func TestBUG3349_ShareLinksAreSuspendedWhileTheCreatorIsDisabled(t *testing.T) {
 	}
 }
 
-// codex review round 2: email verification is an account acting; a disabled
+// Email verification is an account acting; a disabled
 // one is refused, and the token is not spent.
 func TestBUG3349_EmailVerificationRefusesADisabledAccount(t *testing.T) {
 	srv := testServer(t)
@@ -305,7 +305,7 @@ func TestBUG3349_EmailVerificationRefusesADisabledAccount(t *testing.T) {
 	}
 }
 
-// codex review round 2: the authorize step itself (GET, before consent)
+// The authorize step itself (GET, before consent)
 // treats a disabled account's session as signed out.
 func TestBUG3349_AuthorizeTreatsADisabledSessionAsSignedOut(t *testing.T) {
 	srv := twoResourceOAuthServer(t)

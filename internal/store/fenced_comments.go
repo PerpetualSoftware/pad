@@ -27,7 +27,7 @@ import (
 // LOCK ORDER. Each method takes the workspace seq lock FIRST, as the U2a item
 // writes do. Every human path that moves, deletes or restores an item takes
 // it first too, so the companion check cannot be invalidated before commit
-// (codex round 3: an unlocked check let a concurrent move into a private
+// (an unlocked check let a concurrent move into a private
 // collection land under an app edit). Then the comment rows (root first on a
 // delete). No attachment row is locked.
 
@@ -189,13 +189,13 @@ func (f *FencedTx) UpdateComment(itemID, commentID, body string, actor FencedAct
 	if _, err := f.tx.Exec(f.s.q(`UPDATE comments SET body = ?, updated_at = ? WHERE id = ?`), body, editTS, commentID); err != nil {
 		return nil, fmt.Errorf("fenced comment update: %w", err)
 	}
-	// Imported comments are never indexed (TASK-3917 lead ruling bb0c9fc6).
+	// Imported comments are never indexed (TASK-3917).
 	// This skip is unreachable today: lockOwnComment requires user_id and
 	// via_app to match the actor, and imported rows carry neither, so an
 	// imported comment never gets here (TASK-3917 r2 F6, no test by design).
 	// A change that gives imported rows a user_id or via_app reopens this path
 	// and owes it a test.
-	// Accepted cost (TASK-3917 lead ruling, day 20): a mention a local user ADDS while editing an imported comment is not indexed either.
+	// Accepted cost (TASK-3917): a mention a local user ADDS while editing an imported comment is not indexed either.
 	var mentioned []string
 	if !imported {
 		if mentioned, err = f.s.reindexCommentMentionsTx(f.tx, commentID, f.workspaceID, itemID, body, true, editTS); err != nil {
@@ -343,7 +343,7 @@ func (f *FencedTx) requireThreadOnItem(itemID, parentID string) error {
 // admits is bound to the item, so a stamp on it would protect nothing. A
 // stamp would also be the only reason to lock attachment rows here, and
 // those locks deadlock against the human stamp, which locks originals and
-// variants in no fixed order (codex round 4; ruling revised on DOC-3371).
+// variants in no fixed order (DOC-3371).
 //
 // Unlocked: an attachment deleted just after this read leaves the committed
 // body with a dangling reference, the same outcome as a delete a moment after

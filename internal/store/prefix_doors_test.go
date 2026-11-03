@@ -218,7 +218,7 @@ func TestImportWorkspace_PrefixMustBeResolvable(t *testing.T) {
 		if err != nil || got == nil {
 			t.Fatalf("imported workspace has no tasks collection: %v", err)
 		}
-		// PIN THE VALUE, not just resolvability (codex round 2 [P2]). Asserting
+		// PIN THE VALUE, not just resolvability. Asserting
 		// only "non-empty and parseable" passes an implementation that stamps
 		// ITEM on every absent prefix, which is not the documented
 		// derive-then-ITEM fallback and would give every collection in a

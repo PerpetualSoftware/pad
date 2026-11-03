@@ -287,7 +287,7 @@ const (
 // verdict from an item or workspace-only scope it falls through to
 // WriteDenied, so a future caller cannot use it to turn a normally hidden
 // denial into the distinctive collection_not_found response for a
-// collection the caller never named (Codex round 7).
+// collection the caller never named.
 //
 // Note the asymmetry with the SOURCE side, which uses WriteHidden: the
 // source item is addressed through the request's own workspace URL, so a
@@ -623,7 +623,7 @@ func (s *Server) authorizeCrossWorkspaceInner(r *http.Request, workspaceSlugOrID
 		// unrestricted caller) and ResolveUserPermission (which falls
 		// back to the workspace membership role when collectionID is
 		// empty). Every field is required; no "unset means it's fine"
-		// branch (Codex round 1 P1).
+		// branch.
 		if item.ID == "" || item.WorkspaceID != ws.ID || item.CollectionID == "" {
 			return crossWorkspaceDeny(CrossWorkspaceScopeMismatch, ws, role, nil)
 		}
@@ -632,8 +632,7 @@ func (s *Server) authorizeCrossWorkspaceInner(r *http.Request, workspaceSlugOrID
 		// establish any of that — soft-deleting a collection leaves
 		// its items in place and neither GetItem nor
 		// VisibleCollectionIDs filters on the collection's deleted_at,
-		// so an item under an archived collection would otherwise pass
-		// (Codex round 2 P1).
+		// so an item under an archived collection would otherwise pass.
 		//
 		// Only the caller-independent facts, though: the item scope
 		// deliberately does NOT apply the collection scope's
@@ -741,7 +740,7 @@ func (s *Server) crossWorkspaceLiveCollection(ws *models.Workspace, role, collec
 // ownership and membership are separate persisted state, and the
 // middleware requires the membership row — so honoring the shortcut
 // here would let a bearer token reach a workspace the front door
-// refuses. Codex round 2 P1.
+// refuses.
 func (s *Server) crossWorkspaceRole(r *http.Request, ws *models.Workspace, user *models.User, isBearer bool) (string, error) {
 	if user == nil {
 		count, err := s.store.UserCount()
@@ -813,7 +812,7 @@ func (s *Server) crossWorkspaceRole(r *http.Request, ws *models.Workspace, user 
 // the resource-scoped answer — but it resolves item and collection
 // grants BEFORE membership, so an incidental `view` grant would demote
 // a member whose base role is editor or owner and deny an edit the
-// front door allows (Codex round 5). Fail-closed, but wrong, and
+// front door allows. Fail-closed, but wrong, and
 // divergence from requireEditPermission in either direction is how this
 // helper eventually rots.
 //
@@ -837,7 +836,7 @@ func (s *Server) crossWorkspaceEditAllowed(ws *models.Workspace, user *models.Us
 	}
 	// Base-role branch, mirroring requireEditPermission. "guest" is
 	// excluded: a guest has no role-based permission at all, only
-	// grants. Since TASK-3376 (PR #1756 codex round 2 P1) the role, like
+	// grants. Since TASK-3376 the role, like
 	// requireEditPermission's, applies only inside the member's collection
 	// access: visibility can come from a VIEW grant, so "the caller can see
 	// it" no longer stands in for "the role reaches it".
@@ -882,7 +881,7 @@ func (s *Server) checkCollectionFullyVisible(r *http.Request, workspaceID, colle
 
 // fullyVisibleCollectionIDs is the set checkCollectionFullyVisible decides
 // against, computed once, for a caller that asks about many collections
-// (TASK-3462's /builtins listing, codex r1). nil means unrestricted, as for
+// (TASK-3462's /builtins listing). nil means unrestricted, as for
 // visibleCollectionIDs.
 func (s *Server) fullyVisibleCollectionIDs(r *http.Request, workspaceID string) ([]string, error) {
 	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
@@ -906,7 +905,7 @@ func (s *Server) fullyVisibleCollectionIDs(r *http.Request, workspaceID string) 
 			// already guarantees that, but the guarantee lives two
 			// packages away and inverting it here would silently grant
 			// every collection in the workspace. Re-assert it locally
-			// (Codex round 3 P1: reported as a live bug on the
+			// (reported as a live bug on the
 			// assumption the guarantee wasn't there; it is, and
 			// TestCrossWorkspace_GuestItemGrantOnly pins the behavior —
 			// but the sentinel flip is too dangerous to leave implicit).

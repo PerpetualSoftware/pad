@@ -66,7 +66,7 @@ func exportBody(t *testing.T) []byte {
 	t.Helper()
 	// Version 1 is REQUIRED. Without it the import fails with a 500 before it
 	// reaches anything this file is about — and the success controls below,
-	// which assert only "not 403", passed on that 500 (codex round 1). A
+	// which assert only "not 403", passed on that 500. A
 	// control that cannot tell success from a server error controls nothing.
 	b, err := json.Marshal(models.WorkspaceExport{
 		Version:   1,
@@ -124,7 +124,7 @@ func TestImportWorkspace_EnforcesThePlanLimitOnTheBundlePathToo(t *testing.T) {
 // TestImportWorkspace_EnforcesThePlanLimitBeforeReadingTheJSONBody is the
 // JSON-path half of the placement claim, and the refusal test above cannot
 // make it: that one sends VALID JSON, so a gate placed after the decode would
-// still return 403 and it would stay green (codex round 3).
+// still return 403 and it would stay green.
 //
 // The code comment claims the gate sits above EITHER body read. The bundle
 // test proves it for gzip. This proves it for JSON, by sending a body that

@@ -7,8 +7,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// A `multi_relation` DEFAULT, and `required` on one (PLAN-2857 U4, codex round
-// 1's P2 and P3).
+// A `multi_relation` DEFAULT, and `required` on one (PLAN-2857 U4)
 //
 // Both were the same defect in two places: a gate reading `def.Type !=
 // "relation"`. `ValidateFields` assigns a schema default and skips its own type
@@ -189,7 +188,7 @@ func TestRequiredRelationIssues_CoversTheMultiType(t *testing.T) {
 	}
 }
 
-// CODEX ROUND 2 — all three findings were in round 1's FIXES, not in the
+// SECOND PASS — all three findings were in the first FIXES, not in the
 // original code. Treating a correction as new code that deserves the same
 // adversarial pass is the lesson; these are its instruments.
 
@@ -198,7 +197,7 @@ func TestLateMultiRelationDefault_NonStringElementDropsTheWholeDefault(t *testin
 	s := testStore(t)
 	ws, _, _, _ := relationFixture(t, s)
 
-	// Round 1's reader mapped a non-string element to "" and the resolver SKIPS
+	// The first reader mapped a non-string element to "" and the resolver SKIPS
 	// a blank element, so `default: [42]` was accepted, stored as [""] and
 	// reported to nobody. A list is ONE value: an unusable element makes the
 	// default unusable, exactly as a non-array does.
@@ -307,7 +306,7 @@ func TestRelationKeysPresent_AnEmptyListIsNotCallerInput(t *testing.T) {
 	}
 }
 
-// CODEX ROUND 3. Two of the three were again in the previous round's fixes; the
+// THIRD PASS. Two of the three were again in the previous fixes; the
 // third is a pre-existing inconsistency the empty-list rule made visible.
 
 func TestMigrateMultiRelation_ABlankDefaultIsRemovedRatherThanLeftToFailValidation(t *testing.T) {
@@ -426,7 +425,7 @@ func validateMigrated(t *testing.T, fields map[string]any, schema models.Collect
 	return items.ValidateFields(fields, schema)
 }
 
-// CODEX ROUND 4 — both findings were in round 3's fix. The deletion it added ran
+// FOURTH PASS — both findings were in the previous fix. The deletion it added ran
 // BEFORE the origin split, so it treated a caller's malformed override exactly
 // like a schema's malformed default. Those get opposite dispositions on purpose.
 
@@ -437,7 +436,7 @@ func TestMigrateMultiRelation_ASuppliedBlankOverrideIsLeftForValidationToRefuse(
 	schema := multiDefaultSchema(nil, false)
 
 	// `[" "]` is not a cleared field — it is a list of ONE reference that
-	// happens to be blank, a shape every write door refuses. Round 3's fix
+	// happens to be blank, a shape every write door refuses. The earlier fix
 	// counted it as cleared, so a move with `field_overrides: {"color":[" "]}`
 	// returned 200 with the field silently absent: the caller's malformed value
 	// vanished instead of being refused.
@@ -585,7 +584,7 @@ func TestMigrateScalarRelationDefault_ANonStringDefaultIsDropped(t *testing.T) {
 	}
 }
 
-// CARRIED values, the third origin (PLAN-2857 U4, codex round 5).
+// CARRIED values, the third origin (PLAN-2857 U4).
 //
 // Rounds 1-4 settled SUPPLIED (refused) and DESTINATION DEFAULT (dropped) and
 // left CARRIED on the lenient check. It shares the default's disposition, not
@@ -646,8 +645,8 @@ func TestMigrateMultiRelation_ControlAWellFormedCarriedListSurvives(t *testing.T
 	}
 }
 
-// A default's shape must not depend on which door's coercion has run (codex
-// round 8). `CoerceFields` runs BEFORE `ValidateFields` injects a default, so an
+// A default's shape must not depend on which door's coercion has run.
+// `CoerceFields` runs BEFORE `ValidateFields` injects a default, so an
 // injected one is uncoerced at the create door and coerced at the migrate door —
 // and a default written as the JSON TEXT `["<id>"]` was stored by one path and
 // dropped as invalid_shape by the other.

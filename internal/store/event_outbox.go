@@ -209,7 +209,7 @@ type OversizedOutboxPayloadError struct {
 	Limit     int
 	// Measured names WHAT Bytes counted, because the two refusal sites count
 	// different things against different limits and saying "a %d-byte
-	// payload" for both was untrue of one of them (codex round 3).
+	// payload" for both was untrue of one of them.
 	//
 	// The early-out charges the members' own bytes, which is a LOWER BOUND on
 	// the payload, against the write cap. The post-insert check charges the
@@ -276,7 +276,7 @@ const maxOutboxClaimBytes = 64 << 20
 // The path that made it necessary is the batch scan: siblings are collected
 // past the row limit by design, so a batch of a million tiny rows fits the
 // byte budget comfortably while its ids, maps, OutboxEvent structs and folded
-// delivery do not (codex round 1). Roughly 200 bytes of overhead per row means the byte
+// delivery do not. Roughly 200 bytes of overhead per row means the byte
 // budget alone admits hundreds of megabytes of it.
 //
 // 5,000 is chosen so it binds only on that pathological shape: at the measured
@@ -393,8 +393,8 @@ func writeOutboxTx(tx *sql.Tx, s *Store, ev OutboxEvent) error {
 	// The caller declares which payload shape it just marshalled, and the
 	// taxonomy says which shape this event carries. Canonical membership only
 	// ever validated the NAME; without this, item.created could be stored with
-	// a ref-only deletion payload and the write would be accepted (Codex round
-	// 10). Pairing them here means an event and a payload that were not meant
+	// a ref-only deletion payload and the write would be accepted. Pairing them
+	// here means an event and a payload that were not meant
 	// for each other cannot reach the table at all.
 	want, known := kernelevents.PayloadFamilies(ev.EventType)
 	if !known || len(want) == 0 {
@@ -425,7 +425,7 @@ func writeOutboxTx(tx *sql.Tx, s *Store, ev OutboxEvent) error {
 	// it. Without this, the same bad payload fails a mutation on one backend
 	// and silently persists an undeliverable event on the other — a
 	// dual-dialect divergence in the one place the whole design is trying to
-	// make trustworthy (Codex round 3). Validating in Go makes the failure
+	// make trustworthy. Validating in Go makes the failure
 	// identical on both.
 	if !json.Valid(ev.Payload) {
 		return fmt.Errorf("outbox: event %s has a malformed JSON payload", ev.EventType)
@@ -449,7 +449,7 @@ func writeOutboxTx(tx *sql.Tx, s *Store, ev OutboxEvent) error {
 	// that was never going to exist — and the hop bound's whole disposition is
 	// that the mutation stands. Unreachable today, since nothing propagates a
 	// hop yet, which is exactly why the ordering is worth getting right before
-	// something does (codex round 5).
+	// something does.
 	//
 	// SIZE IS CHECKED HERE, at the one choke point every outbox row passes
 	// through, rather than at the bulk emitter that motivated it. The bulk
@@ -499,7 +499,7 @@ func writeOutboxTx(tx *sql.Tx, s *Store, ev OutboxEvent) error {
 	// SUBJECT KIND IS DERIVED, NEVER TRUSTED. It is a pure function of the
 	// event name, so a caller-supplied value can only ever agree with the
 	// taxonomy or be wrong — and a wrong one persists silently and misroutes
-	// the event at drain time (Codex round 9). Before this, a non-empty value
+	// the event at drain time. Before this, a non-empty value
 	// was taken as given, so `item.created` could be stored with
 	// subject_kind "comment" and nothing would notice; every test happened to
 	// pass either the correct value or none, which is exactly the blind spot
@@ -665,7 +665,7 @@ func commentPayloadWithProjection(comment *models.Comment, proj *commentAppProje
 // row's own state. The name and email are denormalized lookups a consumer can
 // resolve for itself if it is entitled to.
 //
-// SUPERSEDED AT DELETION TIME (TASK-2719, Dave's ruling day-49). This comment
+// SUPERSEDED AT DELETION TIME (TASK-2719). This comment
 // originally kept assigned_user_id unconditionally, reasoning that after the
 // account is gone it is "a dangling reference to nobody rather than a way to
 // identify anyone". That engineering call LOST to the account-deletion ruling:
@@ -782,7 +782,7 @@ func scrubUserRefsInNode(node any, userID string) bool {
 			// The app-projection block (TASK-3389) is scrubbed by PATH, not
 			// walked: its creator carries identity, and its fields are the
 			// item's own data, where a declared field may well be called
-			// user_id (codex round 1).
+			// user_id.
 			if k == appProjectionKey {
 				if proj, ok := val.(map[string]any); ok && scrubAppProjectionCreator(proj, userID) {
 					changed = true
@@ -816,8 +816,8 @@ func scrubUserRefsInNode(node any, userID string) bool {
 // SUPERSEDED note there for the ruling that reversed emit-time's
 // assigned_user_id decision (TASK-2719).
 //
-// UNIFORM OVER DISPATCHED AND UNDISPATCHED ROWS, deleting neither (lead
-// ruling, TASK-2719): erasure is this scrub's job and row LIFECYCLE is
+// UNIFORM OVER DISPATCHED AND UNDISPATCHED ROWS, deleting neither (TASK-2719):
+// erasure is this scrub's job and row LIFECYCLE is
 // retention's (TASK-2714) — deleting an undispatched row would break the
 // outbox durability guarantee for zero erasure gain over scrubbing it. A
 // scrubbed member row degrades from a delta to a resync signal ("a membership
@@ -831,13 +831,13 @@ func scrubUserRefsInNode(node any, userID string) bool {
 // (workspace_id,occurred_at), batch_id and (claimed_at,occurred_at), and
 // nothing on subject_id — so this is a scan over the retention window either
 // way. An earlier version of this note called subject_id indexed; it is not
-// (codex round 1). The CAST
+// The CAST
 // is load-bearing: payload is JSONB on Postgres and TEXT on SQLite, and LIKE
 // on jsonb is not a thing. A uuid carries no LIKE metacharacters and is
 // specific enough that false positives are rare — and harmless, because the Go
 // rewrite is a no-op when no matching key holds the id. Two invariants the
-// prefilter leans on, named so they are checkable rather than assumed (codex
-// round 1): user ids are newID() uuids (hex + dashes — no LIKE metacharacters,
+// prefilter leans on, named so they are checkable rather than assumed:
+// user ids are newID() uuids (hex + dashes — no LIKE metacharacters,
 // no characters JSON escapes, so the id appears verbatim in the stored text on
 // both dialects), and a payload is a SINGLE valid JSON value (writeOutboxTx
 // rejects anything json.Valid refuses, which includes concatenated values), so
@@ -847,8 +847,8 @@ func scrubUserRefsInNode(node any, userID string) bool {
 // once-per-account-deletion path (option (b) on the TASK-2719 trail, where (a)
 // full-scan and (c) a side-table were weighed).
 //
-// RESIDUAL WINDOW, stated rather than discovered in an audit (codex rounds 1
-// and 2): the candidate read is one snapshot inside the deletion transaction,
+// RESIDUAL WINDOW, stated rather than discovered in an audit:
+// the candidate read is one snapshot inside the deletion transaction,
 // so a row emitted CONCURRENTLY can commit after it and keep the id. SQLite's
 // single writer serializes the whole race away. On Postgres three paths stay
 // open, all bounded by TASK-2714's retention exactly like every pre-scrub
@@ -880,7 +880,7 @@ func (s *Store) ScrubOutboxUserRefsTx(tx *sql.Tx, userID string) error {
 	// below, and two scrubs whose LIKE matches overlap must not take those
 	// locks in opposite orders. Scoped to those per-row updates: any bulk
 	// statement elsewhere in this transaction takes its own locks in its own
-	// order (codex round 6).
+	// order.
 	// BATCHED, because the collect this replaces held every matching payload
 	// in memory at once and nothing bounded how many that was. The filter is a
 	// substring match over the whole retention window, so on an instance
@@ -889,8 +889,8 @@ func (s *Store) ScrubOutboxUserRefsTx(tx *sql.Tx, userID string) error {
 	// reached through a different door.
 	//
 	// WHAT BATCHING DOES TO THE RESIDUAL WINDOW, stated because a reviewer
-	// asked whether keyset paging over random uuids can miss a row (codex
-	// round 1). It cannot miss a row that EXISTED when the scan began: ids are
+	// asked whether keyset paging over random uuids can miss a row.
+	// It cannot miss a row that EXISTED when the scan began: ids are
 	// fixed, the walk is ascending over every matching row above the cursor,
 	// and a row only stops matching once it has been scrubbed. What changes is
 	// concurrent commits, and it changes them in the SAFE direction — the
@@ -971,7 +971,7 @@ func (s *Store) ScrubOutboxUserRefsTx(tx *sql.Tx, userID string) error {
 
 	// The COLUMN half: member rows carry the user id as their subject —
 	// indexed, outside the JSON, and missed by anything that only rewrites
-	// payloads (TASK-2719 recon; ratified in scope by the lead). Value
+	// payloads (TASK-2719). Value
 	// equality is the precise predicate: item/comment/attachment subjects are
 	// their own row ids, never a user's.
 	if _, err := tx.Exec(s.q(`
@@ -989,7 +989,7 @@ func (s *Store) ScrubOutboxUserRefsTx(tx *sql.Tx, userID string) error {
 // are measured when candidates are selected and the claim UPDATE that follows
 // rechecks only lease and dispatch state, so a writer that GREW a payload in
 // between could push a row past the ceiling after it had been judged under it
-// (codex round 3). No such writer exists: this is the only UPDATE of payload in
+// No such writer exists: this is the only UPDATE of payload in
 // the tree, and it removes keys and re-marshals compactly, so the result is
 // strictly smaller. Shrinking is harmless — a row already judged claimable
 // stays claimable. Stated here rather than left implicit because it is the
@@ -1001,7 +1001,7 @@ func (s *Store) ScrubOutboxUserRefsTx(tx *sql.Tx, userID string) error {
 // is a candidate for both, and on Postgres READ COMMITTED both transactions
 // can read the ORIGINAL before either commits — a blind rewrite by the later
 // committer would then reintroduce the earlier deletion's id from its stale
-// copy (codex round 1). Conditioning on the payload we read makes the stale
+// copy. Conditioning on the payload we read makes the stale
 // write match zero rows; we re-read and redo against the fresh bytes. SQLite
 // never takes the retry path (one writer at a time), and on Postgres the
 // text parameter coerces to jsonb, so the equality is the column's own.
@@ -1307,7 +1307,7 @@ func (s *Store) emitBulkItemEventTx(tx *sql.Tx, workspaceID string, members []*m
 		// it can only see the payload once json.Marshal has already built it,
 		// and building it is the expensive allocation: a member set large
 		// enough to be refused is large enough that rendering it to be
-		// refused is its own memory event (codex round 1).
+		// refused is its own memory event.
 		//
 		// Charged on the members' own bytes, which the marshal can only GROW
 		// (JSON adds quoting, escaping and key names and removes nothing), so
@@ -1346,7 +1346,7 @@ func (s *Store) emitBulkItemEventTx(tx *sql.Tx, workspaceID string, members []*m
 
 // outboxMemberSnapshotsTx builds the MEMBER LIST FOR AN item.bulk_updated
 // PAYLOAD. It is not a general "read these items" helper, and the name says so
-// on purpose (Codex round 10): it applies three outbox policies a maintainer
+// on purpose: it applies three outbox policies a maintainer
 // reusing it for ordinary snapshots would not expect and would not see fail —
 // it DE-DUPLICATES, it SILENTLY SKIPS rows that no longer resolve, and it
 // SCRUBS assignee identity. Any of those makes a general-purpose caller's
@@ -1361,7 +1361,7 @@ func (s *Store) emitBulkItemEventTx(tx *sql.Tx, workspaceID string, members []*m
 //
 // COST: one joined read per outboxMemberChunk members, inside the caller's
 // transaction and under whatever lock the caller holds. It used to be one read
-// PER MEMBER (Codex round 6), which roughly doubled an already-N-long lock hold
+// PER MEMBER, which roughly doubled an already-N-long lock hold
 // — the migration loop this serves issues N sequential UPDATEs under the same
 // lock, by design, so each row gets its own seq. BUG-2718 batched it. The
 // query is itemSnapshotSelect, the same SELECT and scan a single-item read
@@ -1498,7 +1498,7 @@ func (s *Store) emitRefOnlyDeletionWithProjectionTx(tx *sql.Tx, eventType, works
 // nothing at all.
 //
 // THE LIMIT OF THAT GUARANTEE, stated precisely because the sloppy version of
-// this comment overclaimed it (Codex round 3): the diff sees the SNAPSHOT, not
+// this comment overclaimed it: the diff sees the SNAPSHOT, not
 // the row. A column that models.Item does not carry — or carries as `json:"-"`
 // — is invisible here no matter what this list says. `items.last_restore_seq`
 // and the content-flush watermarks are exactly that, so a write touching ONLY
@@ -1576,7 +1576,6 @@ func itemUpdatedSliceChanged(before, after *models.Item, statusKey string) (bool
 	// change status_changed will never report. Masking the key unconditionally
 	// then deleted it from BOTH snapshots, the remainder compared equal, and the
 	// mutation emitted NOTHING AT ALL: a real field change, silently unobservable
-	// (Codex round 3).
 	//
 	// The rule that fixes it is the disjoint-delta rule read carefully: a slice
 	// belongs to status_changed only if status_changed will describe it. When it
@@ -1668,7 +1667,7 @@ func itemUpdatedSliceChanged(before, after *models.Item, statusKey string) (bool
 // to compare: items.parent_id is legacy and untouched, the link lives in its
 // own table, and seq/updated_at are excluded from the diff as metadata. So a
 // fields_patch carrying only `parent` mutated the row and emitted NOTHING
-// (codex round 5). The caller knows it performed a hierarchy write; the diff
+// The caller knows it performed a hierarchy write; the diff
 // cannot see it, and it must not have to.
 func (s *Store) emitItemUpdateEventsTx(tx *sql.Tx, before, after *models.Item, statusChanged bool, priorStatus, statusKey, batchID string, hierarchyChanged bool) error {
 	return s.emitItemUpdateEventsAsInstallTx(tx, before, after, statusChanged, priorStatus, statusKey, batchID, hierarchyChanged, "")
@@ -1711,7 +1710,6 @@ func (s *Store) emitItemUpdateEventsAsInstallTx(tx *sql.Tx, before, after *model
 // unclaimed read survives as the DIAGNOSTIC view — "what is still owed?" — and
 // is what tests assert against. Said plainly because a reader finding two
 // pending-row readers should not have to guess which one production uses
-// (codex round 4).
 //
 // DELIBERATELY CROSS-WORKSPACE AND UNAUTHORIZED, which is safe only because of
 // who may call it. The drain is a single server-internal loop that must serve
@@ -1725,7 +1723,7 @@ func (s *Store) emitItemUpdateEventsAsInstallTx(tx *sql.Tx, before, after *model
 // content and comment bodies, so it must never be reachable from an HTTP
 // handler, an MCP tool, or anything else carrying a user's identity. If you
 // find yourself calling it from a request path, the answer is a
-// workspace-scoped query with an authorization check, not this (Codex round 2).
+// workspace-scoped query with an authorization check, not this.
 func (s *Store) ListPendingOutboxEvents(limit int) ([]OutboxEvent, error) {
 	if limit <= 0 {
 		limit = 100
@@ -1774,14 +1772,14 @@ func (s *Store) ListPendingOutboxEvents(limit int) ([]OutboxEvent, error) {
 // not a bound. Once the lease expires another instance may legitimately claim
 // the row; without this condition the first instance's late ack would then
 // stamp a row the second instance is mid-delivery on, and its late RELEASE
-// would clear a live claim, handing the same event to a third pass (codex
-// round 3). A stale ack now matches zero rows, which is exactly right: the
+// would clear a live claim, handing the same event to a third pass.
+// A stale ack now matches zero rows, which is exactly right: the
 // event is the new claim's problem.
 func (s *Store) MarkOutboxDispatched(claimToken string, ids []string) error {
 	// TOKEN FIRST, then the empty-id short-circuit. The other order makes the
 	// refusal conditional on there being work to do, so a caller with no token
 	// gets nil for an empty list and an error otherwise — a contract that
-	// depends on the argument it is not about (codex round 4).
+	// depends on the argument it is not about.
 	if claimToken == "" {
 		return fmt.Errorf("mark outbox dispatched: no claim token")
 	}
@@ -1894,7 +1892,7 @@ func (s *Store) PruneDispatchedOutbox(before string) (int64, error) {
 // leaseCutoff condition one instance's prune could delete a row another is
 // mid-delivery on: the delivery would then succeed while the ack matched zero
 // rows, and a crash in that window loses an event the outbox had committed
-// (codex round 4). A row whose claim has expired is fair game — that is what
+// A row whose claim has expired is fair game — that is what
 // expiry means — so this is the same predicate the claim uses, applied to
 // deletion.
 //
@@ -2113,7 +2111,7 @@ func (s *Store) pendingClaimCandidates(limit int, leaseCutoff string) ([]string,
 	budget := s.outboxClaimBudget()
 	// Batches are collected as a SET: a 100-row candidate slice drawn from one
 	// large batch would otherwise run the same sibling scan 100 times for the
-	// same answer (codex round 2).
+	// same answer.
 	seenBatch := map[string]bool{}
 	var batches []string
 	for rows.Next() {
@@ -2290,7 +2288,7 @@ func (s *Store) outboxEventsClaimedBy(token string) ([]OutboxEvent, error) {
 		// STRAIGHT INTO []byte, not into a string that is then converted. The
 		// conversion doubled the transient cost of every row for no gain, and
 		// on the largest single row a pass may take that is the difference
-		// between one copy and two (codex round 1).
+		// between one copy and two.
 		if err := rows.Scan(&ev.ID, &ev.WorkspaceID, &ev.EventType, &ev.SubjectKind, &ev.SubjectID,
 			&ev.Payload, &ev.Hop, &ev.OccurredAt, &ev.Attempts, &ev.LastError, &ev.BatchID); err != nil {
 			return nil, fmt.Errorf("scan claimed outbox event: %w", err)
@@ -2351,7 +2349,7 @@ func (s *Store) EmitBulkHeaderEvent(workspaceID, batchID, op string, itemIDs []s
 	}
 	// A bulk operation that TOUCHED nothing is not an event. Note the verb:
 	// this is an empty-member-list guard, not a semantic-change guard, and the
-	// difference is visible on the wire (codex rounds 1, 2 and 5 each raised
+	// difference is visible on the wire (2 and 5 each raised
 	// it). The caller passes every row it mutated without error, which
 	// includes rows where the mutation was a no-op — untagging a tag nobody
 	// has — and the store emits member events only for real changes. So a
@@ -2433,7 +2431,7 @@ func FoldBulkHeader(header []byte, members [][]byte) ([]byte, error) {
 // mixed update emits status_changed AND item.updated. Appending every row
 // would put the same item in `members` two or three times while `count` and
 // `item_ids` reported the number of ITEMS, so the payload would contradict
-// itself (codex round 1).
+// itself.
 //
 // The member list answers "what do these items look like now", so duplicates
 // are not extra information — they are the same item at two points inside one
@@ -2449,8 +2447,7 @@ func FoldBulkHeader(header []byte, members [][]byte) ([]byte, error) {
 // envelope pseudo-field prior_status and item.updated does not, so plain
 // last-wins would keep the later row and silently drop the transition — the
 // one piece of information a "nonterminal → terminal" binding needs, lost
-// exactly in the mixed update that produces both (codex round 2, on round 1's
-// own fix).
+// exactly in the mixed update that produces both.
 func dedupeMemberSnapshots(members [][]byte) [][]byte {
 	lastAt := map[string]int{}
 	out := make([][]byte, 0, len(members))

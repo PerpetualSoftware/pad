@@ -32,7 +32,7 @@ func (c *capturedLog) snapshot() []map[string]any {
 	return append([]map[string]any(nil), c.lines...)
 }
 
-// BUG-2732, the lead's addition: the failure log is rate-bounded, because
+// BUG-2732: the failure log is rate-bounded, because
 // shutdown and a Redis outage both fail every publish at once, and the bound
 // is tested. A burst of publishFailureLogBurst lines, then one per
 // publishFailureLogEvery, each reporting what it suppressed.

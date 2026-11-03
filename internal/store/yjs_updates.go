@@ -163,7 +163,7 @@ func (s *Store) appendSyncFrameQ(q yjsExecQueryer, itemID string, data []byte, s
 	bearing := !yjsFrameIsEnvelopeNonContent(data)
 	if bearing {
 		// ONE statement answers both "is there an exact twin" and "what is
-		// MAX(id)", so no delete can land between them (codex round 1). Every
+		// MAX(id)", so no delete can land between them. Every
 		// op-log delete path removes ALL of an item's rows, so a delete after
 		// this statement would have removed an inserted copy too: under any
 		// interleaving the skip is exactly as durable as the insert it replaces.
@@ -481,7 +481,7 @@ func (s *Store) ItemRestoreBoundaryOpID(itemID string) (int64, bool, error) {
 // item has never been flushed (NULL column value or item missing).
 //
 // The schema-mismatch rebuild used to read it to warn that its prune
-// was about to drop unflushed edits (TASK-1309 round 4). Since BUG-3244
+// was about to drop unflushed edits (TASK-1309). Since BUG-3244
 // the rebuild sets those rows aside instead, in SQL that reads the
 // watermark itself, so no production path calls this today.
 func (s *Store) GetItemContentFlushedOpLogID(itemID string) (int64, bool, error) {
@@ -523,8 +523,8 @@ func (s *Store) GetItemContentFlushedOpLogID(itemID string) (int64, bool, error)
 //     contains every edit the op-log persisted. The id is a
 //     monotonic AUTOINCREMENT/BIGSERIAL — strict id comparison
 //     avoids the false-positive that wall-clock timestamp
-//     comparison admits at second granularity (Codex review of
-//     TASK-1309 round 4 [P1]).
+//     comparison admits at second granularity (
+//     TASK-1309).
 //
 // Without the flush-coverage check, a browser/process death between
 // an op-log append and the next 5s collab-snapshot flush would
@@ -590,7 +590,7 @@ func (s *Store) ListDormantOpLogItemsBefore(before time.Time) ([]string, error) 
 // is atomic at the SQL layer: either every row of the item gets
 // deleted (no recent row at evaluation time) or none do.
 //
-// Per Codex review of TASK-1309 [P1].
+// See TASK-1309.
 func (s *Store) PruneItemOpLogIfDormantBefore(itemID string, before time.Time) (int64, error) {
 	if itemID == "" {
 		return 0, errors.New("PruneItemOpLogIfDormantBefore: itemID is required")
@@ -650,7 +650,7 @@ func (s *Store) PruneItemOpLogIfDormantBefore(itemID string, before time.Time) (
 // PruneItemOpLogIfDormantBefore, which enforce the dormant-only
 // invariant + flush-watermark check at the SQL layer.
 //
-// Per Codex review of TASK-1309 — comment was previously stale,
+// See TASK-1309. This comment was previously stale,
 // describing future GC use that turned out to be unsafe.
 func (s *Store) PruneYjsUpdatesBefore(itemID string, before time.Time) (int64, error) {
 	if itemID == "" {
@@ -704,7 +704,7 @@ func (s *Store) MaxOpLogIDTx(tx *sql.Tx, itemID string) (int64, bool, error) {
 // or a wiped op-log + unchanged content that a cold connect then lazy-seeds
 // wrong). Running the DELETE in UpdateItem's own tx (via its precheck hook)
 // means a failed update rolls the prune back too, so the three move together
-// or not at all (Codex xhigh [P1]).
+// or not at all.
 //
 // Wipes every row (no cutoff): a restore makes the old version canonical and
 // discards all in-flight collaborative state, so nothing in the op-log should

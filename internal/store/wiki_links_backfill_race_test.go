@@ -214,7 +214,7 @@ func TestBackfillWikiLinks_WriteAfterTheRereadWaitsAndWins(t *testing.T) {
 		}
 		once.Do(func() {
 			// "Blocked" means blocked BY THIS transaction, not any lock wait in
-			// the database (codex r2): an unrelated waiter would otherwise read
+			// the database: an unrelated waiter would otherwise read
 			// as the edit waiting, and an edit that ran only later would pass.
 			var backfillPID int
 			if err := tx.QueryRow("SELECT pg_backend_pid()").Scan(&backfillPID); err != nil {

@@ -36,7 +36,7 @@ func SetBcryptCostForTesting(cost int) func() {
 // Why this exists: those indexes make "two collections in one workspace
 // declaring the same trait" unrepresentable, and several tests need exactly
 // that state — not because it is supported, but because it exists in LEGACY
-// databases and the code's handling of it is what they verify. The round-2
+// databases and the code's handling of it is what they verify. The
 // shadowing tests in internal/server are the clearest case: they prove
 // resolution returns the collection the caller can SEE rather than one hidden
 // collection that happens to sort first, and that guarantee still stands

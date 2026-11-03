@@ -593,7 +593,7 @@ func TestCrossWorkspace_ScopeMismatch(t *testing.T) {
 	assertDenied(t, f.srv.AuthorizeCrossWorkspaceEdit(r, f.wsB.Slug, CrossWorkspaceCollectionScope(f.collA.ID)),
 		CrossWorkspaceScopeMismatch, "collection from A against B")
 
-	// Codex round 1 P1: a sparse / hand-built item must NOT fail open.
+	// A sparse / hand-built item must NOT fail open.
 	// An unset WorkspaceID once meant "can't tell, assume fine", which
 	// let an item from a third workspace be laundered through a
 	// workspace the caller owns. Same for an unset CollectionID, which
@@ -645,7 +645,7 @@ func TestCrossWorkspace_InvalidAndMissingInputs(t *testing.T) {
 		CrossWorkspaceCollectionNotVisible, "nonexistent collection")
 }
 
-// --- Grant / role precedence (Codex round 5) --------------------------
+// --- Grant / role precedence --------------------------
 
 // Grants widen, never narrow. requireEditPermission lets an
 // editor/owner base role win outright and only consults grants when the
@@ -693,8 +693,8 @@ func TestCrossWorkspace_GrantsWidenNeverNarrow(t *testing.T) {
 
 // A system collection (conventions, playbooks) is an ordinary collection
 // for a restricted member: reachable only when it is in their
-// member_collection_access, for reads AND writes (TASK-3376, Dave's day-84
-// ruling). Before it, every restricted member reached every system
+// member_collection_access, for reads AND writes (TASK-3376). Before it, every restricted
+// member reached every system
 // collection implicitly, and an editor among them could write it. The
 // listed leg is the control: the same scopes pass once the collection is
 // granted, so the unlisted denials are about the listing, not the fixture.
@@ -774,7 +774,7 @@ func TestCrossWorkspace_GrantOnArchivedItemGivesNoRole(t *testing.T) {
 	}
 }
 
-// --- Archived collections (Codex round 2 P1) --------------------------
+// --- Archived collections --------------------------
 
 // Soft-deleting a collection leaves its items in place, and neither
 // GetItem nor VisibleCollectionIDs filters on the collection's
@@ -818,7 +818,7 @@ func TestCrossWorkspace_ArchivedCollectionDenied(t *testing.T) {
 		CrossWorkspaceCollectionNotVisible, "cookie admin vs archived collection")
 }
 
-// --- Never grant more than the front door (Codex round 2 P1) ----------
+// --- Never grant more than the front door ----------
 
 // Ownership and membership are separate persisted state.
 // RequireWorkspaceAccess has no ws.OwnerID exception — it requires the
@@ -994,8 +994,8 @@ func TestCrossWorkspace_WriteDeniedDoesNotDistinguishAbsence(t *testing.T) {
 
 	// Lookup failures are the documented 500 variant, and the one
 	// observable difference WriteDenied carries. Pinning it here so the
-	// trade-off in its doc comment can't drift silently (Codex round 3
-	// P2). WriteHidden must NOT have the same variant.
+	// trade-off in its doc comment can't drift silently.
+	// WriteHidden must NOT have the same variant.
 	lc, _ := render(CrossWorkspaceAccess{Reason: CrossWorkspaceLookupFailed, Err: errAuthzTestLookup})
 	if lc != http.StatusInternalServerError {
 		t.Fatalf("lookup failure via WriteDenied: expected 500, got %d", lc)
@@ -1016,7 +1016,7 @@ var errAuthzTestLookup = errors.New("synthetic store failure")
 // a reason that separates absence from forbidden-ness. Serializing it
 // into a response would hand a caller everything the disclosure rule
 // forbids, so every field carries json:"-" as a backstop against a
-// stray json.Marshal (Codex round 7).
+// stray json.Marshal.
 func TestCrossWorkspace_VerdictDoesNotSerialize(t *testing.T) {
 	f := newCrossWSFixture(t)
 	u := f.member("ser@example.com", "seruser", "editor", f.wsA)
@@ -1155,7 +1155,7 @@ func TestCrossWorkspace_WriteCollectionNotFoundRefusesForeignVerdicts(t *testing
 
 // A restricted editor who can SEE an item in another workspace only through a
 // VIEW grant may not edit it through the cross-workspace authorizer
-// (TASK-3376, PR #1756 codex round 2 P1): the base role reaches only the
+// (TASK-3376): the base role reaches only the
 // member's listed collections. The edit grant is the control.
 func TestCrossWorkspace_RestrictedEditorViewGrantIsNotEdit(t *testing.T) {
 	f := newCrossWSFixture(t)

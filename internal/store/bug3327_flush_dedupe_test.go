@@ -10,7 +10,7 @@ import (
 // version already holds ONLY when that newest row is recognised as the
 // applier edit's: content_flushed_at present and not newer than it. A NULL
 // content_flushed_at (migration 052 leaves it so on items with op-log rows)
-// is no evidence, so the flush versions (codex review, round 4).
+// is no evidence, so the flush versions.
 func TestBUG3327_FlushDedupeNeedsTheFlushTimestamp(t *testing.T) {
 	for _, tc := range []struct {
 		name        string

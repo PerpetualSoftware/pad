@@ -227,7 +227,7 @@ func resourceMissingCount(t *testing.T, m *metrics.Metrics, label string) float6
 	return pb.GetCounter().GetValue()
 }
 
-// TASK-3363 phase 2, dev lead ruling: audience= without resource= is NOT yet
+// TASK-3363 phase 2: audience= without resource= is NOT yet
 // refused (phase 1 never counted it). It is served, counted under its own
 // label, and enforced the release after v0.20.0.
 func TestTASK3363_AudienceOnlyIsServedAndCountedUnderItsOwnLabel(t *testing.T) {
@@ -273,7 +273,7 @@ func TestTASK3363_AudienceOnlyIsServedAndCountedUnderItsOwnLabel(t *testing.T) {
 	}
 }
 
-// The condition on that ruling: audience= is held to the same allowed set as
+// The condition on that behavior: audience= is held to the same allowed set as
 // resource=. A value resource= refuses, audience= refuses.
 func TestTASK3363_AudienceIsValidatedLikeResource(t *testing.T) {
 	srv := twoResourceOAuthServer(t)

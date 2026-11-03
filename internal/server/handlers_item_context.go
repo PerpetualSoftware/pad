@@ -217,7 +217,7 @@ func (s *Server) handleGetItemContext(w http.ResponseWriter, r *http.Request) {
 	}
 
 	visible := s.contextRelatedVisible(r, workspaceID)
-	// Lifecycle reads use the dashboard's predicates (lead ruling, PLAN-3598
+	// Lifecycle reads use the dashboard's predicates (PLAN-3598
 	// #2094): the brief must agree with firstActiveBlocker and workItems.
 	colls, err := s.store.ListCollectionsMinimal(workspaceID)
 	if err != nil {
@@ -408,7 +408,7 @@ func (s *Server) contextRelatedVisible(r *http.Request, workspaceID string) func
 // contextBudget admits parts in order while they fit. A part that does not
 // fit is skipped WHOLE (never truncated), listed in `omitted` by part, ref and
 // title, and filling continues: one 32 KB convention must not crowd out every
-// smaller part after it (lead dogfood, PLAN-3598). Callers order parts by
+// smaller part after it. Callers order parts by
 // relevance, so what is skipped is the least relevant that does not fit.
 type contextBudget struct {
 	limit, used int
@@ -433,8 +433,8 @@ func partSize(v any) int {
 	return len(raw)
 }
 
-// intentAlsoTriggers widens an intent past its own trigger (lead dogfood,
-// PLAN-3598): implementing a task includes committing and opening the PR, so
+// intentAlsoTriggers widens an intent past its own trigger
+// (PLAN-3598): implementing a task includes committing and opening the PR, so
 // the rules for those steps (CONVE-735's mandatory review is on-pr-create)
 // belong in an implement brief. Each is added only when the workspace
 // declares it.
@@ -577,7 +577,7 @@ func (s *Server) contextConventions(r *http.Request, workspaceID string, conv *c
 			Priority: contextFieldString(it.Fields, "priority"), Role: it.AgentRoleSlug, Content: it.Content,
 		})
 	}
-	// Relevance order (lead dogfood, PLAN-3598), so the budget spends itself
+	// Relevance order, so the budget spends itself
 	// on what matters first: the intent's own triggers, then rules scoped to
 	// the caller's role, then the global always-on ones; within a tier,
 	// priority (must > should > nice), then the smaller body (more rules fit),

@@ -157,8 +157,8 @@ func TestAccessEpoch_TracksTheEffectiveSetForItemGrantCallers(t *testing.T) {
 	}
 }
 
-// TestSSEAccessEpochAdvance_DegradedSnapshotNeitherAnnouncesNorMovesTheBase is
-// the codex round-1 follow-up. A snapshot resolved through a store fault is
+// TestSSEAccessEpochAdvance_DegradedSnapshotNeitherAnnouncesNorMovesTheBase covers
+// the degraded-snapshot case. A snapshot resolved through a store fault is
 // fail-closed as a filter, but its epoch describes the fault. Comparing it would
 // send sync_required when the fault starts and again when it clears, with no
 // access change either time.

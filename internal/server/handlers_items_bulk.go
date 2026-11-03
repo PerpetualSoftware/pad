@@ -163,9 +163,9 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 		// the caller's `spec` in place while the move lands in `specs` would
 		// make a same-collection move look like a cross-collection one, log a
 		// to_collection nobody can look up, and address the arrival event to a
-		// lane no client watches (codex round 1). And re-resolving per item
+		// lane no client watches. And re-resolving per item
 		// multiplies the lookup by the batch size — up to four queries per row
-		// for a target that never resolves (codex round 3).
+		// for a target that never resolves.
 		if req.Collection != "" {
 			targetColl, rerr := s.resolveItemCollectionSlug(workspaceID, req.Collection)
 			if rerr != nil {
@@ -178,7 +178,7 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 			// existing-but-hidden target, which fails per item inside the
 			// normal 200 envelope — and that difference is an existence
 			// oracle: a restricted caller could probe slugs and learn which
-			// collections they cannot see exist (codex round 4). Passing nil
+			// collections they cannot see exist. Passing nil
 			// down keeps both cases on the identical per-item path, which is
 			// also the pre-change behaviour.
 			if targetColl != nil {
@@ -283,7 +283,7 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 			resp.Failed = append(resp.Failed, bulkItemFailure{Ref: ref, Error: "item not found"})
 			continue
 		}
-		// Per-item EDIT gate (TASK-3376, PR #1756 codex round 2 P1). Seeing
+		// Per-item EDIT gate (TASK-3376). Seeing
 		// an item is not editing it: a restricted editor who sees this one
 		// through a view grant, outside their collection access, may not
 		// bulk-mutate it any more than PATCH it.
@@ -392,7 +392,7 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 	// single event.
 	//
 	// "when something actually changed" USED TO SAY MORE THAN IT MEANT, and is
-	// corrected here rather than left to be re-derived (codex rounds 1-2): the
+	// corrected here rather than left to be re-derived: the
 	// condition is that at least one row was TOUCHED without erroring, which
 	// is not the same as a semantic change. Untagging a tag nobody has
 	// succeeds on every row and changes nothing, so this fires with a count
@@ -416,7 +416,7 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 		// nothing" rule is the other half of it. Recorded rather than fixed
 		// here — narrowing the count to semantically-changed rows is a wire
 		// change to `count`/`item_ids` and belongs with a contract version,
-		// not inside a delivery refactor (codex round 1).
+		// not inside a delivery refactor.
 		//
 		// Written AFTER the loop, in its own transaction, because a handler
 		// bulk has no enclosing one. A failure here is logged and swallowed on
@@ -439,7 +439,7 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 // (nil for every other op), so the per-item path never re-resolves.
 // bulkStoreError wraps a store error as a per-item bulk failure, classifying
 // the NUL refusal so it carries a real code instead of arriving as an
-// unlabelled message (codex round 1, finding 4).
+// unlabelled message.
 //
 // A bulk response stays 200 with the item listed under Failed — that is the
 // bulk contract, and a deterministic refusal of ONE item should not fail the
@@ -509,7 +509,7 @@ func (s *Server) applyBulkOp(r *http.Request, workspaceID string, item *models.I
 			return nil, bulkStoreError(err)
 		}
 		// TASK-3365: a restored item is reachable again through grants it
-		// kept, so connections on this workspace re-check now (codex r2).
+		// kept, so connections on this workspace re-check now.
 		s.invalidateWorkspaceAccess(item.WorkspaceID)
 
 		return restored, nil
@@ -584,12 +584,11 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 
 	fieldMap := make(map[string]any)
 	if item.Fields != "" && item.Fields != "{}" {
-		// REFUSE an unreadable stored blob rather than discard it (BUG-3049,
-		// codex round 3). This unmarshal error used to be ignored: the map
-		// stayed empty, the caller's changes were written over the top, and the
-		// unreadable bytes were GONE — a bulk status move silently destroyed
-		// whatever the row held. That is the repair path codex correctly
-		// identified as lost, and it is not one worth keeping: the room's
+		// REFUSE an unreadable stored blob rather than discard it (BUG-3049).
+		// This unmarshal error used to be ignored: the map stayed empty, the
+		// caller's changes were written over the top, and the unreadable bytes
+		// were GONE — a bulk status move silently destroyed whatever the row
+		// held. That repair path is not one worth keeping: the room's
 		// standing answer for unreadable stored state is to refuse and say so
 		// (BUG-2627 part 3, BUG-2675's `stored_state_unreadable`), because the
 		// raw bytes are still there for a human to repair and a write that
@@ -629,7 +628,7 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 	// Snapshot before validation, which INJECTS schema defaults: this door's
 	// relation pass looks only at the keys `changes` names, so a relation
 	// default validation fills in was persisted raw — never canonicalised and
-	// never checked against its target collection (codex round 3). The same
+	// never checked against its target collection. The same
 	// late-arrival the migrate doors hit, reached by a different route.
 	relBefore := store.RelationKeysPresent(schema, fieldMap)
 	// BUG-3079: a default failing its own type check is DISCARDED and reported
@@ -661,7 +660,7 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 	suppliedRelations := make(map[string]any, len(changes))
 	for k := range changes {
 		// GATED ON THE PROVENANCE SNAPSHOT taken above, not on presence in the
-		// post-validation map (codex round 3). `ValidateFields` injects schema
+		// post-validation map. `ValidateFields` injects schema
 		// defaults, and an empty `multi_relation` in `changes` is normalised to
 		// an absent key BEFORE that injection — so `fieldMap[k]` could hold a
 		// DEFAULT while `changes` still named the key, and this loop then
@@ -721,7 +720,7 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 	// Which keys autoPopulateDates ADDED, as opposed to keys the caller set or
 	// the item already carried. Needed below: an auto-date is an "only if still
 	// empty" intent, and that decision was made against a snapshot read outside
-	// the write transaction (codex round 4).
+	// the write transaction.
 	beforeAuto := make(map[string]any, len(fieldMap))
 	for k, v := range fieldMap {
 		beforeAuto[k] = v
@@ -794,7 +793,7 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 		// store.UpdateItem's ordering), which is the only place an "only if
 		// still empty" decision can be made truthfully.
 		precheck = func(tx *sql.Tx, existing *models.Item) error {
-			// JOB 1 (BUG-3049, codex round 4): re-decide each AUTO-POPULATED
+			// JOB 1 (BUG-3049): re-decide each AUTO-POPULATED
 			// date against the LOCKED row. autoPopulateDates fills start_date /
 			// end_date only when the value is empty, and it read a snapshot from
 			// outside this transaction — so a concurrent writer who set the date
@@ -970,7 +969,7 @@ func bulkTagSet(existingJSON string, tags []string, add bool) (string, *bulkOpEr
 // instead of one-per-item. It is NIL when the caller named a collection that
 // resolves to nothing — deliberately, so that case and an existing-but-hidden
 // target fail identically here rather than at different HTTP statuses (the
-// existence oracle from codex round 4). Hence the nil check below.
+// existence oracle). Hence the nil check below.
 func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *models.Item, req *bulkItemsRequest, visibleIDs []string, targetColl *models.Collection, batchID string, droppedFields *[]string) (*models.Item, *bulkOpError) {
 	if targetColl == nil {
 		return nil, &bulkOpError{message: "target collection not found", code: "invalid_collection"}
@@ -1021,7 +1020,7 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 	// true of every field except this one. A destination schema is free to
 	// declare `status` as a relation, and then a value the caller typed was
 	// classified as carried: silently dropped instead of refused, and never
-	// checked for visibility (codex round 11).
+	// checked for visibility.
 	suppliedByCaller := map[string]any{}
 	if req.Status != "" {
 		// BUG-3154: the same refusal bulkFieldUpdate makes for a status-only
@@ -1044,11 +1043,11 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 	//
 	// This is the defect PLAN-2357 DR-12 fixed at the SINGLE move door and
 	// nobody swept to this one: an override that SATISFIED a required
-	// destination field still 400'd. Reachable here since round 11 made
-	// `status` caller input — move an item whose source `status` is a select
+	// destination field still 400'd. Reachable here since `status` became
+	// caller input — move an item whose source `status` is a select
 	// value into a destination whose `status` is a required relation, supply
 	// a perfectly good referent, and the move was refused for a field the
-	// request had just filled (codex round 19).
+	// request had just filled.
 	//
 	// Filtering rather than adopting the single door's "validate the merged
 	// map" shape, deliberately: ValidateFields below already covers the
@@ -1082,14 +1081,14 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 	// value here is CARRIED, and nothing on this door can refuse. Passing nil
 	// for `supplied` says that rather than leaving it implied.
 	// The supplied half owes the visibility check, exactly as at the single
-	// move door. Round 11 made `status` supplied so the store classifier
+	// move door. `status` is supplied so the store classifier
 	// would REFUSE an unresolvable value rather than drop it; it did not
 	// carry across the other half of the supplied contract, which the store
 	// resolver structurally cannot provide — see
 	// refuseInvisibleRelationOverrides. This was the only one of the three
 	// MigrateRelationReferents call sites without it, so a caller who cannot
 	// see the target collection could name a live item in it and have the
-	// value stored (codex round 16).
+	// value stored.
 	if invisible, err := s.refuseInvisibleRelationOverrides(
 		r, workspaceID, workspaceRole(r), items.SchemaForMigratedFields(targetSchema),
 		suppliedByCaller); err != nil {
@@ -1106,7 +1105,7 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 		return nil, &bulkOpError{message: "Failed to resolve relation references", code: "internal_error"}
 	}
 	if len(relRefusals) > 0 {
-		// Reachable since round 11: `status` is caller input, so a destination
+		// Reachable because `status` is caller input, so a destination
 		// schema declaring it as a relation makes this the ordinary write
 		// refusal. It was written as unreachable-but-kept, which is why the
 		// misclassification survived — a branch nobody can reach is a branch
@@ -1140,7 +1139,7 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 		return nil, &bulkOpError{message: err.Error(), code: "validation_error"}
 	}
 	items.DropBlankRelations(result.Fields, items.SchemaForMigratedFields(targetSchema), nil)
-	// Relation defaults ValidateFields just injected (codex round 2). After
+	// Relation defaults ValidateFields just injected. After
 	// validation for the reason ResolveLateRelationDefaults documents.
 	lateDropped, lateErr := s.store.ResolveLateRelationDefaults(
 		s.relationVisibility(r, workspaceRole(r)),
@@ -1154,7 +1153,7 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 	// A REQUIRED relation whose default did not resolve cannot be left as a
 	// drop: the key is deleted AFTER validation passed, so nothing re-checks
 	// it and the item would land with a required field absent, reported valid
-	// (codex round 3). Re-running validation is not the answer — it would
+	//. Re-running validation is not the answer — it would
 	// re-inject the same broken default. There is no valid value, so this
 	// refuses.
 	if req := store.RequiredRelationIssues(items.SchemaForMigratedFields(targetSchema), lateDropped); len(req) > 0 {
@@ -1218,7 +1217,7 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 	// that also sets a terminal status would otherwise mark a parent
 	// terminal while it still has open children. Routing every
 	// collection move through MoveItemWithPreCheck closes the bypass
-	// Codex flagged (a status-only move already ran the guard).
+	// (a status-only move already ran the guard).
 	var precheck func(tx *sql.Tx, existing *models.Item) error
 	if !req.Force {
 		var destSettings models.CollectionSettings
@@ -1331,7 +1330,7 @@ func bulkEventDelta(req *bulkItemsRequest) map[string]any {
 	case "set-priority":
 		return map[string]any{"priority": req.Priority}
 	case "tag", "untag":
-		// NORMALIZED THE SAME WAY THE MUTATION DOES (codex round 7). bulkTagUpdate
+		// NORMALIZED THE SAME WAY THE MUTATION DOES. bulkTagUpdate
 		// trims each added tag and skips the ones that go empty, so a request
 		// carrying "  " changed nothing while a raw delta would announce it.
 		// Untag matches on the raw value — it never trims — so only the add
@@ -1341,7 +1340,7 @@ func bulkEventDelta(req *bulkItemsRequest) map[string]any {
 		// its `seen` set and trims each ADDED tag, while untag builds a removal
 		// SET from the raw values, so duplicates and untrimmed strings behave
 		// differently on the two sides. A delta echoing the request advertised
-		// two changes where one happened (codex rounds 8-9).
+		// two changes where one happened.
 		tags := make([]string, 0, len(req.Tags))
 		seen := map[string]bool{}
 		for _, t := range req.Tags {
@@ -1361,8 +1360,7 @@ func bulkEventDelta(req *bulkItemsRequest) map[string]any {
 	case "move":
 		// BOTH, when both were sent. bulkMoveCollection applies req.Status as
 		// a field override on the migrated set, so a move-with-status changes
-		// two things and a delta naming only the collection under-reports it
-		// (codex round 1).
+		// two things and a delta naming only the collection under-reports it.
 		delta := map[string]any{}
 		if req.Collection != "" {
 			delta["collection"] = req.Collection
@@ -1372,7 +1370,7 @@ func bulkEventDelta(req *bulkItemsRequest) map[string]any {
 		}
 		return delta
 	case "assign":
-		// SAME PRECEDENCE AS THE STORE (codex round 7): a non-empty id WINS
+		// SAME PRECEDENCE AS THE STORE: a non-empty id WINS
 		// over the clear flag, and an explicit empty string clears exactly as
 		// the flag does (see the assignment SET clauses in items.go — BUG-2566).
 		// The delta had the flag winning, so a request carrying both announced

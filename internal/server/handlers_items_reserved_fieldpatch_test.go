@@ -176,7 +176,7 @@ func TestPatchItemFieldsPatchRefusalNamesEveryReservedKeyPresent(t *testing.T) {
 // `--field` was an unreadable string; the refusal and the typed member that
 // replaced it are pinned in handlers_items_github_pr_test.go.)
 
-// TestPatchItemFieldsPatchRemedyIsHonestWhenAlreadyUnreadable — Codex round 1.
+// TestPatchItemFieldsPatchRemedyIsHonestWhenAlreadyUnreadable.
 //
 // PATTE-135 asks that a suggested remedy work in the state the caller is in.
 // On an item whose stored value is ALREADY undecodable, `pad item note` refuses

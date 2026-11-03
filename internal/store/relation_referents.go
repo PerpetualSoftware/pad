@@ -64,8 +64,8 @@ const (
 	// resolver deliberately stays out of it (one error per defect), but an
 	// injected schema DEFAULT is never type-checked: ValidateFields assigns
 	// it and `continue`s past its own validation. That is the one route by
-	// which a non-string reaches a relation field unchallenged (codex round
-	// 6), so the late-default pass reports it rather than skipping it.
+	// which a non-string reaches a relation field unchallenged, so the
+	// late-default pass reports it rather than skipping it.
 	RelationTargetInvalidShape RelationIssueReason = "invalid_shape"
 	// RelationTargetDuplicate — two elements of one `multi_relation` value
 	// resolve to the SAME item (PLAN-2857 U4). Refused at the write door
@@ -320,7 +320,7 @@ func (s *Store) ResolveRelationReferentsQ(
 }
 
 // THREE READERS OF ONE SHAPE, and they are three because they answer three
-// different questions. Picking the wrong one is what codex rounds 2 and 3 found,
+// different questions. Picking the wrong one is what went wrong,
 // twice, so the map lives here where the first of them is defined:
 //
 //   - `relationArrayElements` — IS THIS AN ARRAY OF STRINGS? The general shape
@@ -380,7 +380,7 @@ func relationArrayElements(raw any) ([]string, bool) {
 //
 // Named for the disposition and not for one origin, because naming it
 // `…DefaultShapeIsUsable` is what let the CARRIED bucket keep the lenient check
-// for a round (codex round 5): the two origins share a rule and a name that
+// for a round: the two origins share a rule and a name that
 // mentions only one of them reads as though the other is a different case.
 //
 // Same question for a scalar; STRICTER for a list, because droppable and
@@ -401,7 +401,7 @@ func relationDroppableShapeIsUsable(def models.FieldDef, raw any) bool {
 // apply, so a shape judgement does not depend on whether the caller's door had
 // already coerced.
 //
-// A schema DEFAULT is what makes this necessary (codex round 8). `CoerceFields`
+// A schema DEFAULT is what makes this necessary. `CoerceFields`
 // runs BEFORE `ValidateFields` injects a default, so an injected one is
 // uncoerced at the create door and coerced at the migrate door, where the copy
 // coerces after merging. A default written as the JSON TEXT `["<id>"]` was
@@ -435,7 +435,7 @@ func relationValueShapeIsValid(def models.FieldDef, raw any) bool {
 // caller deliberately emptied.
 func relationValueIsCleared(def models.FieldDef, raw any) bool {
 	if def.IsMultiRelation() {
-		// THE EMPTY LIST ONLY, and this narrowed in codex round 4. It used to
+		// THE EMPTY LIST ONLY, and this narrowed in. It used to
 		// count an array of BLANKS as cleared too, by analogy with the scalar
 		// `" "`. The analogy does not hold: an empty list is the agreed
 		// spelling of "no targets", while `[" "]` is a list of ONE reference
@@ -655,8 +655,8 @@ func (s *Store) resolveRelationValueQ(
 			}, nil
 		}
 	}
-	// VISIBILITY ON THE UUID AND REF RUNGS (lead ruling, day 64, after codex
-	// round 1 on the U4 tip). It belongs HERE, in the one function both types
+	// VISIBILITY ON THE UUID AND REF RUNGS.
+	// It belongs HERE, in the one function both types
 	// resolve through, and not in the server's post-resolution pass where the
 	// scalar half used to carry it alone.
 	//
@@ -779,7 +779,7 @@ func (s *Store) resolveRelationTargetQ(q Queryer, workspaceID, value string) (*m
 }
 
 // resolveRelationTitleQ resolves an exact TITLE to an item, scoped to the
-// declared target collection (PLAN-2857 U6, lead ruling day 55).
+// declared target collection (PLAN-2857 U6).
 //
 // It returns at most one of:
 //
@@ -821,7 +821,7 @@ func (s *Store) resolveRelationTitleQ(
 	workspaceID, targetCollectionID, title string,
 	canSee RelationVisibilityFunc,
 ) (item *models.Item, outside *models.Item, ambiguous bool, err error) {
-	// THE COUNT THAT DECIDES IS THE VISIBLE COUNT (lead ruling, PLAN-2857 U6).
+	// THE COUNT THAT DECIDES IS THE VISIBLE COUNT (PLAN-2857 U6).
 	// Among live exact-title matches in the target collection, only ones the
 	// requester can SEE count: zero is not_found, exactly one resolves, two or
 	// more is ambiguous. A hidden match never changes the answer.
@@ -840,8 +840,8 @@ func (s *Store) resolveRelationTitleQ(
 	// on the store API."
 	//
 	// TWO COSTS, stated because they are real, and stated more carefully than
-	// the first version of this comment (codex rounds 4 and 5 — round 5 was
-	// right that both claims were overstated):
+	// the first version of this comment (which
+	// overstated both claims):
 	//
 	// The walk loads each candidate and asks canSee about it, so it is O(live
 	// items sharing this exact title) queries — in this collection here, and
@@ -894,8 +894,7 @@ func (s *Store) resolveRelationTitleQ(
 			if canSee == nil {
 				// Load BEFORE counting. Counting first meant a row deleted
 				// between the id page and this fetch still counted, so one
-				// remaining live match could answer `ambiguous` (codex round
-				// 5). A vanished row is not a match.
+				// remaining live match could answer `ambiguous`. A vanished row is not a match.
 				found, gerr := s.GetItemQ(q, id)
 				if gerr != nil {
 					return nil, nil, false, gerr
@@ -959,7 +958,7 @@ func (s *Store) resolveRelationTitleQ(
 	// the property in the other direction: if the row it happened to pick was
 	// hidden the caller got not_found, while a DIFFERENT live match they can
 	// see would have earned `wrong_collection` — so a hidden match changed the
-	// answer again (codex round 4).
+	// answer again.
 	other, perr := s.firstVisibleTitleMatchQ(q, workspaceID, title, canSee)
 	if perr != nil {
 		return nil, nil, false, perr
@@ -1278,8 +1277,8 @@ func (s *Store) MigrateRelationReferentsQ(
 			// `ValidateFields` assigns without type-checking — then failed the
 			// shape check and returned 400 on an ordinary move, while the same
 			// default on a CREATE was dropped by the late pass and the write
-			// succeeded. Same value, same schema, opposite answers (codex round
-			// 3). Deleting it applies the one spelling of none here too.
+			// succeeded. Same value, same schema, opposite answers.
+			// Deleting it applies the one spelling of none here too.
 			//
 			// Scalar values are left exactly as they were: `""` is a legal
 			// stored spelling for a cleared scalar relation and validation
@@ -1345,7 +1344,7 @@ func (s *Store) MigrateRelationReferentsQ(
 	if defaults := byOrigin[RelationOriginDestinationDefault]; len(defaults) > 0 {
 		// A NON-STRING default is dropped and reported here, exactly as
 		// ResolveLateRelationDefaultsQ drops one, and NOT left for
-		// ValidateFields (codex round 17).
+		// ValidateFields.
 		//
 		// The general rule a few lines up — shape is ValidateFields's to
 		// reject, so one defect produces one error — is right for a SUPPLIED
@@ -1370,7 +1369,7 @@ func (s *Store) MigrateRelationReferentsQ(
 			if !exists {
 				continue
 			}
-			// STRICT for a list (codex round 4): `relationValueShapeIsValid`
+			// STRICT for a list: `relationValueShapeIsValid`
 			// asks only "is this an array of strings", so a default of
 			// `[validID, " "]` passed here, survived resolution — which skips a
 			// blank element — and was then refused by the shape check the
@@ -1404,7 +1403,7 @@ func (s *Store) MigrateRelationReferentsQ(
 
 	carried := byOrigin[RelationOriginCarried]
 	// A NON-STRING carried value is dropped and reported HERE, above the mode
-	// switch, so both modes keep agreeing about it — which was round 6's
+	// switch, so both modes keep agreeing about it — which was the
 	// point — while the thing they agree on becomes the right one.
 	//
 	// They agreed on leaving it for ValidateFields, and ValidateFields
@@ -1414,7 +1413,7 @@ func (s *Store) MigrateRelationReferentsQ(
 	// A legacy blob holding a number in a relation field was exactly that —
 	// the single move answered 400 invalid_fields and the bulk move failed
 	// the item, on every attempt, with no way for the owner to fix it except
-	// by editing the blob through some other door (codex round 20, F20-3).
+	// by editing the blob through some other door (F20-3).
 	//
 	// `invalid_shape` rather than `not_portable` or `not_found`: the value is
 	// not a reference, so every reason describing a LOOKUP is a false account
@@ -1429,8 +1428,8 @@ func (s *Store) MigrateRelationReferentsQ(
 		if !exists {
 			continue
 		}
-		// STRICT, the same rule the destination-default bucket uses (codex
-		// round 5). A CARRIED value is asserted by nobody either — TASK-2878's
+		// STRICT, the same rule the destination-default bucket uses. A CARRIED
+		// value is asserted by nobody either — TASK-2878's
 		// rule is that it is dropped, never refused — so a carried
 		// `[validID, " "]` passing the lenient check meant resolution skipped
 		// the blank and the shape check afterwards REFUSED an ordinary
@@ -1461,7 +1460,7 @@ func (s *Store) MigrateRelationReferentsQ(
 				// every mis-shaped carried value, in BOTH modes. Kept as a
 				// shape check rather than removed, so this branch cannot
 				// silently start treating a malformed value as a ref if that
-				// loop is ever narrowed. Round 6 established that the two modes
+				// loop is ever narrowed. The two modes
 				// must not disagree about a malformed value; they now agree
 				// by construction, above.
 				continue
@@ -1480,7 +1479,7 @@ func (s *Store) MigrateRelationReferentsQ(
 		// Same workspace: resolve, keep what resolves, drop what does not.
 		//
 		// WHAT SURVIVES HERE IS OBSERVABLE, AND THAT IS ACCEPTED (IDEA-2893,
-		// lead ruling day 58; the measurements it rests on are on that idea's
+		// the measurements it rests on are on that idea's
 		// trail, which is where to check this reasoning rather than take it).
 		//
 		// A carried value naming a live item in a collection the mover cannot
@@ -1528,7 +1527,7 @@ func (s *Store) MigrateRelationReferentsQ(
 		// nothing for visibility to change. Passing the predicate here — which
 		// I did, against this file's own standing argument — meant a carried
 		// title resolved for one mover and was DROPPED for another, and the
-		// item's stored fields depended on who touched it (codex round 5).
+		// item's stored fields depended on who touched it.
 		//
 		// The disclosure the predicate exists to prevent needs a caller who
 		// TYPED the title. Supplied values and injected defaults still get it.
@@ -1641,8 +1640,7 @@ func RelationKeysPresent(schema models.CollectionSchema, fieldMap map[string]any
 		// input marked the key as "not a default", validation then injected the
 		// schema default into the hole normalisation had made, and the
 		// late-default pass skipped the key on the strength of that mark: a
-		// caller sending `members: []` against `default: 42` stored 42 (codex
-		// round 2).
+		// caller sending `members: []` against `default: 42` stored 42.
 		//
 		// Reading it as absent here is the one-site fix: the key is then a
 		// DEFAULT for every later pass, which is exactly what it became.
@@ -1685,7 +1683,7 @@ func relationListShape(raw any) ([]any, bool) {
 // of refusing. But `ValidateFields` injects defaults, so a default lands after
 // the resolver has finished and reaches the row uncanonicalised — and an
 // invalid one that the resolver deleted is put straight back, with
-// `StillDropped` then suppressing the warning about it (codex round 2).
+// `StillDropped` then suppressing the warning about it.
 //
 // Reordering the two would trade this defect for the required-field one. A
 // narrow pass over exactly the keys validation added costs one lookup in the
@@ -1765,7 +1763,7 @@ func (s *Store) ResolveLateRelationDefaultsQ(
 				// other spelling reaches the blob.
 				delete(fieldMap, def.Key)
 				// ON A REQUIRED FIELD IT IS ALSO A DEFECT, and silence there was
-				// the round-2 finding: validation had just been satisfied by the
+				// the problem: validation had just been satisfied by the
 				// presence of this default, so deleting it afterwards with no
 				// issue left a required field absent and nothing to refuse it.
 				// `RequiredRelationIssues` promotes by KEY, so an issue is the
@@ -1834,7 +1832,7 @@ func (s *Store) ResolveLateRelationDefaultsQ(
 // by this unit's rule a default is asserted by nobody, so an unresolvable one
 // is dropped and reported, never refused — otherwise a single bad default in a
 // collection's schema makes every write into that collection fail, on a defect
-// its author has to fix somewhere else entirely (codex round 10). The migrate
+// its author has to fix somewhere else entirely. The migrate
 // doors already behaved this way; the write doors did not.
 func IssuesForCallerInput(issues []RelationIssue, presentBefore map[string]bool) []RelationIssue {
 	out := make([]RelationIssue, 0, len(issues))
@@ -1859,12 +1857,12 @@ func IssuesForCallerInput(issues []RelationIssue, presentBefore map[string]bool)
 // actually SURVIVED migration.
 //
 // The migrate doors need "which values carried", and the source map alone
-// answers a different question — "which keys the source had" (codex round 9).
+// answers a different question — "which keys the source had".
 // When MigrateFields cannot convert a source value it DROPS the key and its
 // default loop then fills the same key from the DESTINATION schema, so the
 // value sitting in the map came from the destination while the key is still
 // present in the source. Classified as carried, a cross-workspace copy then
-// discards the destination's own default as non-portable — the round-1 defect
+// discards the destination's own default as non-portable — the earlier defect
 // again, one level finer: presence of the KEY is not survival of the VALUE.
 //
 // `dropped` is MigrateFields' own Dropped list, which is exactly the set of
@@ -1901,19 +1899,17 @@ func hasKey(m map[string]any, key string) bool {
 // A NIL value is not a value. `ValidateFields` treats a present-but-nil key as
 // absent and injects the destination default in its place, so a key holding
 // nil in `supplied` or `carried` names a value that CAME FROM THE DEFAULT —
-// and counting it here excludes it from the very check it needs (codex round
-// 14).
+// and counting it here excludes it from the very check it needs.
 //
 // An EXPLICIT nil in `supplied` beats a non-nil `carried`, and that is a
-// separate rule (codex round 16). Round 14 skipped nils PER MAP, so a caller
+// separate rule. An earlier version skipped nils PER MAP, so a caller
 // who nulled a key whose stored value was non-nil still had it counted — out
 // of `carried`, on the strength of a value the request had just discarded.
 // The request is the later statement about that key.
 //
 // Lives in `store` rather than `server` because the cross-workspace COPY needs
 // it from inside its transaction, and one implementation feeding both doors is
-// the point — the alternative is two copies kept in step by hand (lead ruling,
-// day 58).
+// the point — the alternative is two copies kept in step by hand.
 func NotDefaultKeys(supplied, carried map[string]any) map[string]bool {
 	out := make(map[string]bool, len(supplied)+len(carried))
 	for _, m := range []map[string]any{supplied, carried} {
@@ -2012,7 +2008,7 @@ func (s *Store) DropInvisibleRelationDefaultsQ(
 			// workspace: either way the id in the map names nothing this
 			// requester can be shown, and leaving it there keeps a dangling
 			// canonical id AND skips the required-field handling the callers
-			// do (codex round 14).
+			// do.
 			dropped = append(dropped, RelationIssue{
 				Key: def.Key, Target: def.Collection, Reason: RelationTargetNotFound,
 			})
@@ -2036,7 +2032,7 @@ func (s *Store) DropInvisibleRelationDefaultsQ(
 
 // relationValueStoredAsText is the `stored_as_text` predicate (BUG-3014): a
 // stored relation value that, after strings.TrimSpace, is not 8-4-4-4-12 hex
-// was never an id. Syntactic on purpose (lead ruling).
+// was never an id. Syntactic on purpose.
 //
 // KEEP IN SYNC with isRelationValueStoredAsText in
 // web/src/lib/items/relationFieldTypes.ts. Both are pinned to the same table,
@@ -2147,7 +2143,7 @@ func (s *Store) HydrateRelationTargetsQ(
 			}
 		}
 	}
-	// NO EARLY RETURN ON AN EMPTY `wanted` (codex round 3). A stored
+	// NO EARLY RETURN ON AN EMPTY `wanted`. A stored
 	// `multi_relation` holding no resolvable reference still owes its key an
 	// entry — an EMPTY LIST, which says "this field points at nothing", where
 	// an absent key says "nothing hydrated this field". Returning nil here made
@@ -2201,7 +2197,7 @@ func (s *Store) HydrateRelationTargetsQ(
 			// carries NULL — and scanning NULL into an int ERRORS. This
 			// function is best-effort and its caller drops the whole map on
 			// error, so one legacy row would have silently removed
-			// `relation_targets` from the ENTIRE response (codex round 7).
+			// `relation_targets` from the ENTIRE response.
 			var number sql.NullInt64
 			if err := rows.Scan(&id, &title, &number, &collectionID, &prefix); err != nil {
 				rows.Close()
@@ -2249,7 +2245,7 @@ func (s *Store) HydrateRelationTargetsQ(
 					// rendering one as `{ref, title}` presents a Task as though it
 					// were the Colour the field promised. ID-only is the honest
 					// shape — the same one a dangling value gets, for the same
-					// reason (codex round 7).
+					// reason.
 					declaredID, known := declaredIDs[want.targetSlug]
 					if !known {
 						var derr error

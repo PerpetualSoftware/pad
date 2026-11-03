@@ -435,7 +435,7 @@ func TestWatchEventsStream_CommentNotification(t *testing.T) {
 	}
 }
 
-// TestWatchEventsStream_ReplyNotification covers codex round-1 finding 2:
+// TestWatchEventsStream_ReplyNotification covers this case:
 // handleCreateReply is a SEPARATE code path from handleCreateComment (it
 // calls store.CreateComment directly via POST .../comments/{id}/replies,
 // not POST .../comments) and was missing the watch-notification hook
@@ -681,7 +681,7 @@ func TestWatchEventsStream_ArmedStreamReceivesPush(t *testing.T) {
 }
 
 // TestWatchEventsStream_ReplaySuppressesPushToUnarmedStream covers the
-// dispatcher's round-1 addition: the armed gate must cover the
+// dispatcher's armed gate: it must cover the
 // Last-Event-ID REPLAY path (SubscribeAndReplaySince's `missed` loop in
 // handleWatchEventsStream), not just live delivery through the select
 // loop. Both loops call the same watchNotificationVisible, but that
@@ -968,7 +968,7 @@ func TestWatchNotificationVisible_PushToSomeoneElseDenied(t *testing.T) {
 }
 
 // TestWatchNotificationVisible_PushToSomeoneElseDeniedEvenWithUnconditionalWatch
-// covers codex round 1's P1 finding: the original push branch returned
+// covers this bug: the original push branch returned
 // true only on a match and otherwise FELL THROUGH to the watch-map
 // check below it — so a non-target caller holding an unconditional
 // watch on the item still received the push (instruction text
@@ -1023,7 +1023,7 @@ func TestWatchNotificationVisible_PushStillGatedByAccess(t *testing.T) {
 }
 
 // TestWatchNotificationVisible_AssignmentStillGatedByAccess covers
-// TASK-2533 codex round 2 finding 2: the addressed-to-you branch used to
+// TASK-2533: the addressed-to-you branch used to
 // return true unconditionally, with NO access check — an item assigned
 // to a "specific"-access member whose granted collections don't include
 // it (validateAssignmentScope only checks workspace membership, never
@@ -1058,7 +1058,7 @@ func TestWatchNotificationVisible_AssignmentStillGatedByAccess(t *testing.T) {
 }
 
 // TestWatchEventsStream_AssignmentOutsideMemberCollectionAccessDenied is
-// the HTTP/SSE-level regression for TASK-2533 codex round 2 finding 2:
+// the HTTP/SSE-level regression for TASK-2533:
 // an item can be assigned to a "specific"-access member whose granted
 // collections do NOT include it — validateAssignmentScope
 // (internal/store/items.go) only checks WORKSPACE membership, never
@@ -1194,7 +1194,7 @@ func TestWatchEventsStream_AssignmentOutsideMemberCollectionAccessDenied(t *test
 }
 
 // TestWatchEventsStream_ItemGrantGuestDoesNotSeeSiblingItem is the
-// HTTP/SSE-level regression for TASK-2533 codex round 2 finding 1: a
+// HTTP/SSE-level regression for TASK-2533: a
 // guest granted only item A must not receive stream notifications for
 // an ungranted sibling item B in the SAME collection, even if a watch
 // row exists on B (simulating access narrowed after the watch was

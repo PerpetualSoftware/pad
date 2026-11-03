@@ -43,7 +43,7 @@ func TestTASK3585_ClaimCompleteReplay(t *testing.T) {
 	}
 }
 
-// The lead's (2): a writer that dies between claim and write leaves a
+// Case (2): a writer that dies between claim and write leaves a
 // pending row; after its lease a retry takes it over. If the first writer
 // was only slow and finishes after the takeover, its completion matches no
 // row and ITS write rolls back, so exactly one write lands.

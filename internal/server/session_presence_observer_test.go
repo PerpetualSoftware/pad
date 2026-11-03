@@ -98,8 +98,8 @@ func TestPresenceReportsFailedOps(t *testing.T) {
 	}
 }
 
-// TestPresenceReportsCorruptEntriesAsListFailures covers the paths codex
-// round 1 found uncounted: a session entry that is unparseable returns
+// TestPresenceReportsCorruptEntriesAsListFailures covers the paths that
+// were once uncounted: a session entry that is unparseable returns
 // the SAME 503-producing error as a transport failure and blinds the same
 // picker, so leaving it out of the counter would make the metric
 // under-report precisely the case an operator is least likely to notice
@@ -147,7 +147,7 @@ func TestPresenceReportsCorruptEntriesAsListFailures(t *testing.T) {
 }
 
 // TestPresenceReportsRenewAndDeregisterFailures covers the two ops the
-// earlier tests left uninstrumented (codex round 5). They matter for
+// earlier tests left uninstrumented. They matter for
 // opposite reasons, which is exactly why counting them separately was
 // worth doing: a failed RENEW under-reports (a live session expires out
 // of the picker), a failed DEREGISTER over-reports (a dead session stays

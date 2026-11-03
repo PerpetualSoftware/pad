@@ -94,7 +94,7 @@ func TestAdoptLegacyBuiltins_EditAfterScanIsSeen(t *testing.T) {
 	}
 }
 
-// Codex r1 on #2179: the collection's kind is re-read under the lock too. A
+// #2179: the collection's kind is re-read under the lock too. A
 // conventions collection whose traits stop declaring it one after the scan
 // is not adopted from, while another collection's items still are.
 func TestAdoptLegacyBuiltins_CollectionChangedAfterScanIsSeen(t *testing.T) {

@@ -122,8 +122,8 @@ func TestOAuth_GetOAuthClient_NotFound(t *testing.T) {
 	}
 }
 
-// TestOAuth_DeleteOAuthClient_CascadesDependentRows pins the round-3
-// fix Codex caught: DeleteOAuthClient must cascade through the four
+// TestOAuth_DeleteOAuthClient_CascadesDependentRows pins the
+// fix: DeleteOAuthClient must cascade through the four
 // dependent tables (auth codes, access tokens, refresh tokens, PKCE)
 // rather than failing with an FK violation on any client that has
 // ever issued a grant. The cascade is intentional + named (no ON
@@ -148,7 +148,7 @@ func TestOAuth_DeleteOAuthClient_CascadesDependentRows(t *testing.T) {
 		t.Fatalf("create pkce: %v", err)
 	}
 
-	// Without the round-3 fix this errors with an FK constraint
+	// Without the fix this errors with an FK constraint
 	// violation. With the cascade in place, the delete succeeds and
 	// every dependent row is gone.
 	if err := s.DeleteOAuthClient(c.ID); err != nil {
@@ -461,7 +461,7 @@ func TestOAuth_RotateRefreshToken_RevokesEntireGrant(t *testing.T) {
 	// per flow_refresh.go:86 and get inserted active=TRUE per our
 	// insertOAuthRequestRow contract).
 	//
-	// Codex review #370 round 2 caught the previous implementation
+	// This fixes the previous implementation
 	// that flipped only the named refresh row, leaving the previously-
 	// issued access token active until TTL expired. The test below
 	// pins the corrected behavior: after rotation, the OLD refresh +
@@ -620,7 +620,7 @@ func TestOAuth_PKCE_CRUD(t *testing.T) {
 // ------------------------------------------------------------
 
 // TestOAuth_Insert_AlwaysActive pins the active-on-insert contract
-// the round-1 Codex finding flushed out. Before the fix,
+// that an earlier bug exposed. Before the fix,
 // insertOAuthRequestRow used `if req.Active != defaultActive` to
 // detect "explicit override" — but a zero-value bool is
 // indistinguishable from "the caller forgot to set it," so any

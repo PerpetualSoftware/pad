@@ -27,7 +27,7 @@ import (
 // declaring an agent. The account is what makes these tests meaningful: the
 // debounce keys on user_id, and an unauthenticated request writes NULL there —
 // which coalesces by a different branch of the predicate and would let a
-// regression in the handler→store user-id flow pass unnoticed (codex round 5).
+// regression in the handler→store user-id flow pass unnoticed.
 func authedAgentRequest(t *testing.T, srv *Server, token, agent, method, path string, body any) *httptest.ResponseRecorder {
 	t.Helper()
 	var r io.Reader

@@ -316,8 +316,8 @@ func TestOutboxDrain_MembersWithoutTheirHeaderDeliverIndividually(t *testing.T) 
 		// events whose payload is an item snapshot with no batch anywhere in
 		// it. If the correlation is not on the envelope, a consumer receiving
 		// singles-then-partial-batch cannot tell they were one operation —
-		// which is the only reason batch_id is on the wire (codex round 2
-		// found this claimed in comments and reachable only from the folded
+		// which is the only reason batch_id is on the wire (this was
+		// claimed in comments and reachable only from the folded
 		// half).
 		if d.BatchID != batch {
 			t.Errorf("member delivery carries batch_id %q, want %q", d.BatchID, batch)

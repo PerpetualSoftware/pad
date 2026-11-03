@@ -278,8 +278,8 @@ func TestRestoreWorkspace_LiveOrUnknown404(t *testing.T) {
 	}
 }
 
-// TestRestoreWorkspace_NoZeroUsersBypass is the security regression for
-// the Codex P1: when account deletion leaves zero live users, a
+// TestRestoreWorkspace_NoZeroUsersBypass is the security regression:
+// when account deletion leaves zero live users, a
 // soft-deleted (account-deleted) workspace must NOT be restorable by an
 // unauthenticated caller who guesses its slug. There is no fresh-install
 // UserCount==0 bypass on restore.
@@ -321,7 +321,7 @@ func TestRestoreWorkspace_NoZeroUsersBypass(t *testing.T) {
 	}
 }
 
-// TestRestoreWorkspace_OwnerGone404NotProbeable is the Codex P2 fix for
+// TestRestoreWorkspace_OwnerGone404NotProbeable is the fix for
 // slug probing: when the owning user is gone (account deletion), a
 // soft-deleted workspace must return 404 to a non-owner — not 403 —
 // so a guessed slug can't confirm the account-deleted row still exists.
@@ -362,7 +362,7 @@ func TestRestoreWorkspace_OwnerGone404NotProbeable(t *testing.T) {
 	}
 }
 
-// TestRestoreWorkspace_PastHorizon404 pins the Codex P2 fix: a workspace
+// TestRestoreWorkspace_PastHorizon404 pins the fix: a workspace
 // soft-deleted longer ago than the purge retention window is eligible for
 // hard-purge and hidden from the deleted-list, so restore must 404 on it
 // too (even if the sweeper hasn't physically purged it yet) — restore and

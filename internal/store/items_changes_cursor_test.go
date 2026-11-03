@@ -23,7 +23,7 @@ import (
 // The same-second claim is checked against the timestamps the writes ACTUALLY
 // stored, not against a wall-clock reading taken before them — a leg whose
 // writes drifted into the next second would otherwise pass under the unfixed
-// query and be counted as evidence (Codex P2). Alignment is retried rather than
+// query and be counted as evidence. Alignment is retried rather than
 // skipped so the leg cannot silently stop testing anything.
 func TestItemsModifiedSince_SameSecondCursor(t *testing.T) {
 	for _, tc := range []struct {
@@ -117,7 +117,7 @@ func runSameSecondCursorLeg(t *testing.T, cursorLead time.Duration, wantSameSeco
 
 	// The archived row must ALSO come back in `updated` — that is the only
 	// coverage of the `(deleted_at IS NULL OR deleted_at >= ?)` arm, which
-	// could otherwise regress to `>` unnoticed (Codex P2). Archived views need
+	// could otherwise regress to `>` unnoticed. Archived views need
 	// the full row, not just the id.
 	var sawArchivedInUpdated, sawUpdated bool
 	for _, it := range updated {

@@ -73,7 +73,7 @@ type Server struct {
 	// lifetime: a capped schedule removed by an item hard-delete or purge
 	// cascade, which never reaches this server's handler, and one whose entry
 	// an in-flight read of an older broken snapshot re-adds after the DELETE
-	// evicted it (TASK-4103 C2b-i r2-1, declined: bounded, and log-only). Per
+	// evicted it (TASK-4103 C2b-i, declined: bounded, and log-only). Per
 	// server so tests do not share it.
 	missedWarned sync.Map
 
@@ -113,7 +113,7 @@ type Server struct {
 	// It fires once per item-update REQUEST, so a hook that issues its own
 	// update must nil the field for the duration of that nested call or it
 	// recurses without end. Every test here does exactly that; the pattern is
-	// load-bearing, not incidental (codex round 3).
+	// load-bearing, not incidental.
 	afterItemPreRead func(itemID string)
 
 	// resourceMissingLast is when noteResourceMissing last logged each
@@ -147,7 +147,7 @@ type Server struct {
 	// itemDoorAfterRowsHook is a TEST-ONLY seam, nil in production: the item
 	// doors (/items-index, /items-changes) call it right after their row
 	// query, so a test can commit a write between the rows and the access
-	// epoch the response pairs them with (BUG-3428 phase 2, codex r1).
+	// epoch the response pairs them with (BUG-3428 phase 2).
 	itemDoorAfterRowsHook func()
 	// appstoreState holds the one appstore the app API uses (SPEC-6 U6a).
 	appstoreState appStoreState
@@ -363,7 +363,7 @@ type Server struct {
 	//
 	// It is nil on every production path — nothing outside package server can
 	// set it, no constructor or setter assigns it, and only _test.go files do
-	// (Codex round 6: it is compiled into the binary, so "test-only" describes
+	// (it is compiled into the binary, so "test-only" describes
 	// the convention, not a compiler-enforced guarantee).
 	copyItemFn func(store.CrossWorkspaceCopyRequest) (*store.CrossWorkspaceCopyResult, error)
 
@@ -478,18 +478,17 @@ type Server struct {
 	// that have called AttachmentStore.Put but not yet inserted the
 	// attachments row. Without this, the orphan GC could delete a
 	// blob between Put and CreateAttachment, leaving a live row that
-	// references a missing blob (Codex P2 on PR #307 round 1).
+	// references a missing blob.
 	//
 	// A plain map + mutex rather than sync.Map: counters need
 	// atomic-with-delete semantics (decrement-then-delete-if-zero
 	// must be one critical section, not two — sync.Map.CompareAndDelete
-	// addresses the entry but not the inc/dec interleaving). Codex
-	// P1 round 2 caught the prior sync.Map version racing on
-	// release-vs-reload of the same hash.
+	// addresses the entry but not the inc/dec interleaving). A sync.Map
+	// version raced on release-vs-reload of the same hash.
 	inFlight attachments.InFlight
 	// workspaceReclaimMu serializes every reclaim-blobs-then-purge sequence in
 	// this process: the retention sweeper's per-candidate step and
-	// removeUnusableWorkspace's (BUG-3094, codex round 1 P2). The reclaimer's
+	// removeUnusableWorkspace's (BUG-3094). The reclaimer's
 	// dedupe guard counts OTHER workspaces' rows for a storage_key and skips the
 	// delete when any exist, which is correct only if no two sequences
 	// interleave — two rejected imports carrying the same blob would each see
@@ -620,7 +619,7 @@ type Server struct {
 	importBundleAfterMintHook func()
 
 	// verificationBeforeInsertHook is a TEST SEAM (always nil in production,
-	// TASK-3617 r1): handleCreateItemVerifications calls it with the attempt
+	// TASK-3617): handleCreateItemVerifications calls it with the attempt
 	// number just before each insert, so a test can move the item between
 	// the criteria read and the write and drive the retry, which has no
 	// natural trigger on SQLite.
@@ -649,11 +648,11 @@ type Server struct {
 	// touching the store; a non-nil return short-circuits the real
 	// ListWatchesForUser call and is returned as the reload error —
 	// exercising GET /api/v1/events/stream's reval-tick error path
-	// (codex round 4: a watch-list reload failure must not also skip
+	// (a watch-list reload failure must not also skip
 	// the identity/visibility refresh) deterministically, without
 	// needing to actually break the DB connection mid-test.
 	//
-	// atomic.Pointer, not a plain func field (codex round 5 finding 2):
+	// atomic.Pointer, not a plain func field:
 	// unlike restoreAckFault — set once, synchronously, before the single
 	// HTTP request that will read it, so goroutine-creation's own
 	// happens-before edge makes a plain field safe there — this seam is
@@ -677,7 +676,7 @@ type Server struct {
 	// visibility cache and reloads the watch list, masking exactly the
 	// reset-skipped-on-fault regression the reval-fault test guards, and
 	// enough extra FAULTING ticks clear the watch set (both observed as
-	// codex-round findings on BUG-2570's first fix attempt).
+	// a first fix attempt on BUG-2570).
 	//
 	// Same atomic.Pointer rationale as watchPredicatesLoadFault above:
 	// read by the stream's background goroutine (once, at stream setup)
@@ -799,7 +798,7 @@ func (s *Server) Stop() {
 	// itemLock; Join holds itemLock until WS closes; WS only closes
 	// when collab.Close() runs; collab.Close() only runs after
 	// bg.Wait(); bg.Wait() never returns because GC is stuck.
-	// Per Codex review of TASK-1309 [P2]. nil-safe: collab is optional.
+	// See TASK-1309. nil-safe: collab is optional.
 	if s.collab != nil {
 		s.collab.Close()
 	}
@@ -814,7 +813,7 @@ func (s *Server) Stop() {
 	// This matters more than it did for MemoryBus, whose Close only dropped
 	// channels: RedisBus holds a receive goroutine and a Redis subscription
 	// from construction, so skipping it leaks both for the process's life
-	// (Codex round 1 P2). Closing also closes every subscriber channel, which
+	//. Closing also closes every subscriber channel, which
 	// is how a still-open SSE stream learns to unwind.
 	if s.watchEvents != nil {
 		s.watchEvents.Close()
@@ -1320,7 +1319,7 @@ func (s *Server) SetImageProcessor(p attachments.Processor) {
 // upload handler to fence Put + CreateAttachment against orphan-GC
 // blob deletions of the same hash. The counter is attachments.InFlight,
 // shared with the app store (TASK-3396); its doc carries the locking
-// rationale (Codex P1 on PR #307 round 2).
+// rationale.
 func (s *Server) markUploadInFlight(hash string) func() {
 	return s.inFlight.Mark(hash)
 }
@@ -1363,7 +1362,7 @@ func (s *Server) SetSecureCookies(secure bool) {
 }
 
 // countResumeGap records a resume this instance refused to serve, for the gaps
-// the BUS never sees (BUG-2731, codex round 12).
+// the BUS never sees (BUG-2731).
 //
 // The buses count their own coverage-based refusals, which is where most of
 // them happen. A cursor we could not even PARSE never reaches a bus, so
@@ -1566,8 +1565,8 @@ func (s *Server) wireStreamGauge() {
 // SetSSELimits reconfigures this gate in place rather than replacing it,
 // so a late call neither strands held slots nor over-grants capacity.
 //
-// That is damage limitation, NOT a live-reconfiguration feature (codex
-// round 9). SetSSELimits also writes plain Server fields that request
+// That is damage limitation, NOT a live-reconfiguration feature.
+// SetSSELimits also writes plain Server fields that request
 // handlers read — sseMaxPerWorkspace among them — so calling it while
 // requests are in flight is a data race regardless of how careful this
 // gate is. It is config-time: call it before ListenAndServe. The in-place
@@ -1761,8 +1760,8 @@ func (s *Server) setupRouter() {
 	// /login). RequireAuth is intentionally NOT used — /oauth/authorize
 	// must be reachable anonymously to trigger the login redirect.
 	//
-	// RateLimit gates /oauth/register specifically (per Codex review
-	// #372 round 2 — the DCR endpoint is open by RFC 7591 design,
+	// RateLimit gates /oauth/register specifically (the DCR endpoint
+	// is open by RFC 7591 design,
 	// but unlimited writes to oauth_clients are an obvious DoS
 	// surface). The middleware short-circuits other /oauth/* paths
 	// because they're either session-bound or PKCE-bound; explicit
@@ -2655,7 +2654,7 @@ func (s *Server) setupRouter() {
 		// (slug grammar also requires letter-led). This replaces the
 		// earlier `/{username}/{workspace}/ref/{ref}` shape that risked
 		// collision with collection slugs named "ref" on pre-existing
-		// data (Codex round-2 P1.4 — picked Option B over a migration
+		// data (picked Option B over a migration
 		// because the feature is unshipped, the new shape is more
 		// defensive, and the only cost is a frontend emit-shape change).
 		r.Get("/-/r/{workspace}/{ref}", s.handleResolveCrossWorkspaceRef)
@@ -2967,8 +2966,7 @@ func writeInternalError(w http.ResponseWriter, err error) {
 		// The message names WHAT was measured, because the store refuses on two
 		// different measurements — the member content before marshalling, and
 		// the row as stored — and a caller told only "%d bytes" for both
-		// cannot reconcile two different numbers for one mutation (codex
-		// round 3).
+		// cannot reconcile two different numbers for one mutation.
 		writeError(w, http.StatusRequestEntityTooLarge, "event_payload_too_large",
 			fmt.Sprintf("This change would record a %s event larger than the server will store in one "+
 				"row: %s is %d bytes, and the limit is %d. Split the change into smaller ones and try again.",
@@ -2983,7 +2981,7 @@ func writeInternalError(w http.ResponseWriter, err error) {
 // a caller should be given.
 //
 // ONE classifier, SEVERAL envelopes — and the several is deliberate rather than
-// an omission (codex round 1, finding 4). writeInternalError covers every
+// an omission. writeInternalError covers every
 // handler that lets an error reach its generic arm, but three paths carry their
 // own error shape for their own reasons: createItemChecked returns a typed
 // *itemCreateError for its caller to write, a bulk op reports per-item failures
@@ -3036,12 +3034,12 @@ func decodeJSONWithLimit(r *http.Request, v interface{}, maxBytes int64) error {
 //
 // The workspace import's --repair-nul flag exists because a self-hoster whose
 // database predates the enforcement can EXPORT a workspace and then not import
-// it back: the server emits a payload it will refuse. Dave's day-54 ruling
-// ships the flag with the default staying strict.
+// it back: the server emits a payload it will refuse. The flag ships with
+// the default staying strict.
 //
 // What the flag does is repair the body and then run the SAME gate on the
 // repaired bytes. It does not skip the gate, and it must not: a decode path
-// that does is precisely the door BUG-2803 spent thirty rounds closing, and it
+// that does is precisely the door BUG-2803 took many attempts to close, and it
 // would be reachable from the endpoint carrying the largest attacker-controlled
 // body in the product. So a value the repair cannot fix is still refused, by
 // the same function, with the same error.
@@ -3078,8 +3076,7 @@ func decodeJSONRepairingNUL(r *http.Request, v interface{}, maxBytes int64, t *n
 // layer it is literal text. The gate refuses it anyway, because it decodes the
 // body first and re-parses that string as the document it is. So a raw-byte
 // repair left `--repair-nul` unable to fix the single most common carrier in a
-// real export, while passing every test whose fixture put the NUL in `content`
-// (codex round 1).
+// real export, while passing every test whose fixture put the NUL in `content`.
 //
 // The walk below is therefore the same traversal, with the same classing, one
 // verb changed: where bodyDecodesNUL asks textguard whether a value decodes to
@@ -3096,7 +3093,7 @@ func repairBodyNULEscapes(raw []byte) (out []byte, replaced int, declined string
 		return raw, 0, ""
 	}
 
-	// DUPLICATE MEMBERS ARE A REFUSAL, NOT A REPAIR (codex round 4).
+	// DUPLICATE MEMBERS ARE A REFUSAL, NOT A REPAIR.
 	//
 	// The walk below decodes into map[string]any, where a repeated key keeps
 	// only the LAST value. The typed decode that follows does not agree: it
@@ -3242,8 +3239,7 @@ func decodeJSONBytes(raw []byte, v interface{}) error {
 	// "\v" looked EMPTY here and returned io.EOF, so an EOF-tolerant caller
 	// (playbook run, share links) treated a syntactically invalid body as an
 	// ABSENT one and proceeded. Same Go-versus-spec whitespace divergence
-	// that bites when a Go trim stands in for another grammar's definition
-	// (codex round 22).
+	// that bites when a Go trim stands in for another grammar's definition.
 	if len(bytes.Trim(raw, " \t\r\n")) == 0 {
 		return fmt.Errorf("invalid JSON: %w", io.EOF)
 	}
@@ -3284,7 +3280,7 @@ func decodeJSONBytes(raw []byte, v interface{}) error {
 // ("Invalid JSON body"). The status is uniform; the wording is not. Where a
 // caller's own message would actively mislead — the OAuth registration
 // endpoint's "Request body must be JSON", for a body that IS valid JSON —
-// that caller distinguishes the two cases explicitly (codex round 8).
+// that caller distinguishes the two cases explicitly.
 //
 // The wording avoids writing the escape sequence literally: the message is
 // rendered in terminals, logs and a browser, and a literal escape in an error
@@ -3401,8 +3397,8 @@ func (s *Server) visibleCollectionIDsQ(r *http.Request, q store.Queryer, workspa
 }
 
 // requireCollectionFullyVisible checks that the collection is visible to the
-// requesting user under FULL-collection-access semantics (BUG-1920 —
-// codex R2 follow-up). This is deliberately STRICTER than
+// requesting user under FULL-collection-access semantics (BUG-1920).
+// This is deliberately STRICTER than
 // handleGetCollection's inline visibleCollectionIDs + isCollectionVisible
 // check: VisibleCollectionIDs (workspace_members.go) intentionally folds in
 // collections that are visible ONLY via an item-level grant, "so the
@@ -3500,8 +3496,7 @@ func (s *Server) requireItemVisible(w http.ResponseWriter, r *http.Request, work
 //     user == nil — real authenticated members with role "owner" /
 //     "editor" must still fall through to the per-collection filter,
 //     otherwise a restricted editor member would bypass their own
-//     collection_access="specific" gate (Codex round-3 regression of
-//     the round-2 P1.1 fix).
+//     collection_access="specific" gate (a regression of an earlier fix).
 //  2. nil user past rule 1 → not visible. Anonymous viewers without a
 //     tokenized role have no item-read access (share links own the
 //     public-read surface via /s/{token}).
@@ -3509,8 +3504,8 @@ func (s *Server) requireItemVisible(w http.ResponseWriter, r *http.Request, work
 //     → always visible. Bearer-borne admins fall through to rule 4.
 //  4. Otherwise: replay the guestResourceFilterCore + member-collection-
 //     access logic that requireItemVisible used to inline, with a system-
-//     collections union added to the item-grants branch (Codex round-2
-//     P1.2 — restricted members with conventions/playbooks access plus
+//     collections union added to the item-grants branch (restricted
+//     members with conventions/playbooks access plus
 //     an unrelated item grant previously 404'd on system-collection items
 //     because the item-grants branch only checked direct grants + the
 //     member's explicit collection-access list).
@@ -3539,7 +3534,7 @@ func (s *Server) checkItemVisibleQ(q store.Queryer, workspaceID string, item *mo
 	// (workspace owners, member.Role=="editor", …) must NOT short-circuit
 	// here — they have to walk the per-collection filter so
 	// collection_access="specific" + member_collection_access actually
-	// gates them (Codex round-3 — the round-2 fix dropped the
+	// gates them (an earlier fix dropped the
 	// `user == nil` qualifier and accidentally disabled the gate for
 	// every real editor too).
 	if user == nil && (role == "owner" || role == "editor") {
@@ -3667,8 +3662,7 @@ func (s *Server) guestResourceFilter(r *http.Request, workspaceID string) (fullC
 // restricted member with an item-level grant still receives the
 // `deleted:true` row when their granted item is soft-deleted —
 // without this variant the grant ID vanishes before the delta
-// query runs and the client keeps the stale entry forever (Codex
-// review of TASK-1354 round 1 [P1]).
+// query runs and the client keeps the stale entry forever (TASK-1354).
 func (s *Server) guestResourceFilterIncludeDeletedItems(r *http.Request, workspaceID string) (fullCollIDs, grantedItemIDs []string, err error) {
 	return s.guestResourceFilterCore(r, workspaceID, true)
 }
@@ -3890,7 +3884,7 @@ func (s *Server) requireEditPermission(w http.ResponseWriter, r *http.Request, w
 // response, for callers that report per row (bulk) rather than per request.
 //
 // An editor or owner ROLE applies only inside the collections the member's
-// access reaches (TASK-3376, PR #1756 codex round 2 P1). Before it, the role
+// access reaches (TASK-3376). Before it, the role
 // short-circuited before the collection was looked at, so a member with
 // collection_access='specific' who could SEE an item through a VIEW grant
 // could edit it, comment on it and create beside it. Outside their reach the
@@ -3951,7 +3945,7 @@ func (s *Server) editorRoleReaches(r *http.Request, workspaceID, collectionID st
 // memberRoleReachesCollection is the member half of editorRoleReaches, shared
 // with the collab socket's write decision, which has no request context.
 //
-// The OWNER role always reaches (PR #1756 codex round 3, lead ruling). An
+// The OWNER role always reaches. An
 // owner can set any member's collection access, their own included
 // (handleSetMemberCollectionAccess is owner-gated with no self exception), so
 // a restriction on an owner's writes is one click from undone. It would also

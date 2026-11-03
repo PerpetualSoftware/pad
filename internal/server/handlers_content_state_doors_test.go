@@ -87,7 +87,7 @@ func TestPlaybookRunCarriesTheMarkerBothWays(t *testing.T) {
 	// presence-only assertion.
 	// The EXACT body. "Non-empty" passes for a response that replaced the body
 	// with anything at all, which is the failure a marker must never hide
-	// (codex round 4: substituting "WRONG BODY" kept this green).
+	// (substituting "WRONG BODY" kept this green).
 	if body, _ := got["body"].(string); body != "Step 1: do the thing" {
 		t.Errorf("run body = %q, want the playbook's own body — the marker qualifies the text, it does not substitute for it", body)
 	}
@@ -131,7 +131,7 @@ func TestPlaybookShowInheritsTheContentStateMarker(t *testing.T) {
 		t.Errorf("show content_state = %v, want %q — the embed that carries it has been broken",
 			got["content_state"], models.ContentOutcomeAppliedPendingFlush)
 	}
-	// The body the marker is ABOUT must still be served (codex round 4: removing
+	// The body the marker is ABOUT must still be served (removing
 	// it entirely left this green, since only the marker was asserted).
 	if body, _ := got["content"].(string); body != "Step 1: do the thing" {
 		t.Errorf("show content = %q, want the playbook's own body", body)
@@ -333,7 +333,7 @@ func TestArtifactExportCarriesTheMarkerBothWays(t *testing.T) {
 	}
 	// The EXACT body, not merely a non-empty one. "Non-empty" is satisfied by an
 	// export that replaced the body with unrelated text, which is the failure a
-	// marker must never be able to hide (codex round 1 P3).
+	// marker must never be able to hide.
 	if decoded.Body != body {
 		t.Errorf("the marked artifact's body is not what the item holds:\n got: %q\nwant: %q", decoded.Body, body)
 	}
@@ -379,8 +379,8 @@ func TestArtifactExportCarriesTheMarkerBothWays(t *testing.T) {
 	}
 }
 
-// TestPlaybookSummariesCarryTheMarkerBothWays covers the door codex round 1
-// found, which this unit's own population table missed even though the
+// TestPlaybookSummariesCarryTheMarkerBothWays covers a door that
+// this unit's own population table missed even though the
 // precedent was already in the tree: BUG-3000 put the marker on
 // cli.ItemSummary.ContentPreview on the grounds that "a content_preview is
 // content", and a playbook `summary` is the identical shape — the body's first
@@ -466,7 +466,7 @@ func TestPlaybookSummariesCarryTheMarkerBothWays(t *testing.T) {
 		}
 		// The summary must still be THERE. Presence was asserted only BEFORE
 		// staleness, so dropping marked summaries from both doors while keeping
-		// the marker left this green (codex round 4).
+		// the marker left this green.
 		if sum, _ := entry["summary"].(string); sum == "" {
 			t.Errorf("%s: the marked entry carries no summary; the marker qualifies the text, it does not replace it", door)
 		}

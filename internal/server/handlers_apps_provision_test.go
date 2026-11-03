@@ -248,9 +248,9 @@ func squatPlaybook(t *testing.T, e *appsEnv, title, slug string) {
 // The single-transaction re-derivation is the guarantee: a write that lands
 // AFTER the pre-transaction comparison passed is still refused inside the
 // transaction, the refusal names the artifact or collection, the field and
-// what changed, and nothing is written (lead rulings, U8b). Each case moves a
-// different piece of state the normalization READS, including the two codex
-// round 2 found that skip the workspace lock (a collection archive, a
+// what changed, and nothing is written. Each case moves a
+// different piece of state the normalization READS, including the two
+// that skip the workspace lock (a collection archive, a
 // relation target's collection archive).
 func TestProvisionAppInstall_InTransactionRecheck(t *testing.T) {
 	cases := map[string]struct {
@@ -270,7 +270,7 @@ func TestProvisionAppInstall_InTransactionRecheck(t *testing.T) {
 			},
 			wantText: []string{"portal-tickets"},
 		},
-		// Codex round 1: a schema edit can make a stored value a conflict.
+		// A schema edit can make a stored value a conflict.
 		"destination schema makes a value unique": {
 			setup: func(t *testing.T, e *appsEnv) {
 				coll := playbooksColl(t, e)
@@ -287,7 +287,7 @@ func TestProvisionAppInstall_InTransactionRecheck(t *testing.T) {
 			},
 			wantText: []string{`Artifact "ship"`, `"status"`, "already used"},
 		},
-		// Codex round 2: a trait-only update (no schema move) skips the
+		// A trait-only update (no schema move) skips the
 		// workspace lock, and changes which collection the kind resolves to.
 		"destination kind trait cleared": {
 			move: func(t *testing.T, e *appsEnv) {
@@ -535,7 +535,7 @@ func TestProvisionAppInstall_RefusesAnUnreviewedManifest(t *testing.T) {
 // A relation value reaches an artifact only through a schema default (an
 // artifact carries a fixed key set). The in-transaction derivation re-runs the
 // RESOLUTION, not a check of the id it chose, so every way the resolution can
-// change is caught (codex round 2): the target deleted, its collection
+// change is caught: the target deleted, its collection
 // archived (which skips the workspace lock), and a title default that a new
 // item makes ambiguous.
 func TestProvisionAppInstall_RelationRecheck(t *testing.T) {
@@ -676,7 +676,7 @@ func ownerRequest(t *testing.T, e *appsEnv) *http.Request {
 	return r.WithContext(ctx)
 }
 
-// Codex round 1: a reserved companion slug would be rewritten to
+// A reserved companion slug would be rewritten to
 // "<slug>-collection", which the app cannot address. The preview refuses it,
 // and the store refuses a de-collided OR rewritten slug as a backstop.
 func TestAppInstall_ReservedCompanionSlug(t *testing.T) {
@@ -711,7 +711,7 @@ func TestAppInstall_ReservedCompanionSlug(t *testing.T) {
 	assertCensusUnchanged(t, before, provisionCensus(t, e2))
 }
 
-// Codex round 1: a dead code (expired or consumed) must answer exactly like an
+// A dead code (expired or consumed) must answer exactly like an
 // unknown one. It never charges the install bucket, so it can never draw a
 // 429 the unknown code would not, and it cannot throttle a fresh code.
 func TestAppInstallRedeem_DeadCodeNeverChargesTheInstallBucket(t *testing.T) {
@@ -739,7 +739,7 @@ func TestAppInstallRedeem_DeadCodeNeverChargesTheInstallBucket(t *testing.T) {
 	}
 }
 
-// Lead condition (2), U8b: the in-transaction derivation only READS. It runs
+// U8b: the in-transaction derivation only READS. It runs
 // under the write-capture harness on a real transaction, relation passes
 // included, and must record no write. On SQLite the harness pins the store to
 // ONE connection, so a derivation that slipped a read onto the pool instead
@@ -815,7 +815,7 @@ func TestProvisionDerive_WritesNothing(t *testing.T) {
 	}
 }
 
-// Codex round 3: a relation value the artifact itself SUPPLIES (here the
+// A relation value the artifact itself SUPPLIES (here the
 // playbook's trigger, redeclared as a relation) is carried as text when it no
 // longer resolves, so the stored bytes do not change and only a warning
 // appears. The owner reviewed the warnings too, so the derivation refuses.
@@ -859,7 +859,7 @@ func TestProvisionAppInstall_SuppliedRelationTargetDeleted(t *testing.T) {
 	assertCensusUnchanged(t, before, provisionCensus(t, e))
 }
 
-// Adoption (lead ruling, day 86): a same-origin companion is adopted, and
+// Adoption: a same-origin companion is adopted, and
 // re-stamped to the new install, ONLY when its holder is uninstalled. Every
 // other holder state is refused, naming the state.
 func TestAppInstall_AdoptionByHolderState(t *testing.T) {

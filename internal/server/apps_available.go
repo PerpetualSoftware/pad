@@ -2,8 +2,8 @@ package server
 
 import "log/slog"
 
-// Whether installed apps are available on this server (SPEC-6, DOC-3371 §9;
-// Dave's day-85 answer Q1). Shared by U8 (the install routes) and U5 (the
+// Whether installed apps are available on this server (SPEC-6, DOC-3371 §9).
+// Shared by U8 (the install routes) and U5 (the
 // token and introspection endpoints for install clients), which must agree
 // exactly, so it lives alone in this file.
 
@@ -26,7 +26,7 @@ func (s *Server) appsAvailable() bool {
 
 // appsAvailableChecked is appsAvailable with a failure to read the setting
 // reported rather than folded into "off", for re-admission, where a fault
-// must not read as a revocation (TASK-3401 U6c codex r4).
+// must not read as a revocation (TASK-3401).
 func (s *Server) appsAvailableChecked() (bool, error) {
 	if s.cloudMode {
 		return s.oauthServer != nil, nil

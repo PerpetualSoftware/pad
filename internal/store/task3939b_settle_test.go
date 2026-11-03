@@ -158,7 +158,7 @@ func TestNotificationSettles_CoverMoreIDsThanOneChunk(t *testing.T) {
 	}
 }
 
-// TASK-4032 codex r1 M1. Kills: ignoring exclude (the excluded legs go red);
+// TASK-4032. Kills: ignoring exclude (the excluded legs go red);
 // building the clause for an empty list (the nil leg goes red on a SQL error).
 func TestClaimNotifications_ExcludeSkipsTheListedIDs(t *testing.T) {
 	t.Parallel()
@@ -191,7 +191,7 @@ func TestClaimNotifications_ExcludeSkipsTheListedIDs(t *testing.T) {
 	}
 }
 
-// TASK-4032 codex r3 M1. A failure in a later chunk follows chunks that
+// TASK-4032. A failure in a later chunk follows chunks that
 // committed; the error says how many leading ids they covered. Kills:
 // returning a plain error (errors.As fails); reporting 0 or len(ids) landed.
 func TestRecordNotificationsSent_ReportsTheChunksThatLanded(t *testing.T) {

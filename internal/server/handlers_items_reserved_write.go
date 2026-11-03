@@ -24,7 +24,7 @@ import (
 //
 // A full `fields` update refuses a reserved key it would CHANGE, and that
 // includes deleting one by omitting it, because the store replaces the whole
-// blob (lead ruling on BUG-3163 checkpoint 3). CARRYING the stored value
+// blob. CARRYING the stored value
 // unchanged stays legal, since a full-blob round-trip must keep working.
 // Deletes have typed routes (clear_github_pr) or none. A server-side
 // "preserve what the caller left out" was weighed and rejected: it silently
@@ -101,7 +101,7 @@ func callerReservedFields(fieldMap map[string]any) map[string]any {
 // with reflect.DeepEqual, never bytes, because Postgres JSONB re-spaces and
 // reorders a stored object (the first CI run on #1464 failed on exactly that).
 // A stored blob that does not decode as an object is treated as EMPTY, on
-// purpose (codex round 1 on BUG-3163 raised it as a bypass). Every reader of
+// purpose. Every reader of
 // reserved metadata parses the blob as an object first (models.parseItemFields),
 // so such a row holds no readable reserved metadata for this check to protect,
 // and a full `fields` write is the only repair path the unreadable-state

@@ -364,7 +364,7 @@ func (s *Server) handleReorderWorkspaces(w http.ResponseWriter, r *http.Request)
 // signup with no OAuth connection in context, provisioning the user's
 // own first workspace rather than acting for a connected app.
 //
-// Ruled by Dave on IDEA-2756 (2026-08-26): the consent screen's "may
+// Per IDEA-2756: the consent screen's "may
 // create workspaces" checkbox is a permission on whether the connected
 // token has the right to CREATE a workspace, and it has to be true to
 // what a user would honestly expect from the option. Before this, the
@@ -500,7 +500,7 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 
 	// Seed collections for the new workspace using the requested template
 	if err := s.store.SeedCollectionsFromTemplate(ws.ID, input.Template); err != nil {
-		// COMPENSATE HERE TOO (BUG-2715, codex round 4). This step's failure
+		// COMPENSATE HERE TOO (BUG-2715). This step's failure
 		// produced the same husk as the owner step's — a live, ownerless,
 		// unseeded workspace still holding its slug, so the retry landed on
 		// `name-2` — and the old message said so out loud ("Workspace created
@@ -631,7 +631,7 @@ func (s *Server) attachImportStatus(w http.ResponseWriter, r *http.Request, ws *
 
 // mayReadImportNote: the workspace's owners, and instance admins who are
 // MEMBERS of it. An admin admitted only through a guest grant reads the
-// workspace as a guest and gets the status alone (codex r2).
+// workspace as a guest and gets the status alone.
 func mayReadImportNote(r *http.Request) bool {
 	role := workspaceRole(r)
 	if role == "owner" {
@@ -870,7 +870,7 @@ func (s *Server) handleRestoreWorkspace(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	// Published once the restore commits, before the re-fetch below can 500
-	// over it (TASK-3272, codex round 1's class).
+	// over it (TASK-3272).
 	s.publishWorkspaceAccessChangedFromRequest(r, ws.ID, watchevents.AccessRestored, s.workspaceAccessUsers(ws.ID)...)
 
 	// Re-fetch the now-live row so the response carries the fully hydrated,
@@ -999,7 +999,7 @@ func (s *Server) handleImportWorkspace(w http.ResponseWriter, r *http.Request) {
 	if decodeErr != nil {
 		msg := "invalid export data: " + decodeErr.Error()
 		if errors.Is(decodeErr, errJSONBodyNUL) {
-			// The strict refusal NAMES the remedy, per Dave's day-54 ruling —
+			// The strict refusal NAMES the remedy —
 			// and TestImportStrictRefusalNamesTheWorkingRemedy drives the named
 			// flag against this exact failing body, because a suggested remedy
 			// is an untested contract claim until it has been run (PATTE-135).

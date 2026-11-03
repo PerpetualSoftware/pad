@@ -717,7 +717,7 @@ func TestMaterializeSetAsideSkipsAreCountedNotLogged(t *testing.T) {
 	}
 }
 
-// STARVATION (codex r1): the sweep reads a bounded page, and the room check
+// STARVATION: the sweep reads a bounded page, and the room check
 // and the failure budget filter it afterwards. With materializeSweepLimit+1
 // dormant pending items of which the first materializeSweepLimit fail every
 // time, the last one must still be recovered, within
@@ -980,7 +980,7 @@ func TestMaterializeSweepSkipsExhaustedItems(t *testing.T) {
 }
 
 // The exhausted population is counted over the budget map, not per sweep
-// page (codex r1): with more candidates than one page, a stable population
+// page: with more candidates than one page, a stable population
 // must not read as a change on every page.
 func TestMaterializeSweepExhaustedCountIsStableAcrossPages(t *testing.T) {
 	var buf bytes.Buffer

@@ -26,7 +26,7 @@ import (
 // repair has to precede it. On a fresh database there is no collections table
 // yet, which is the no-op case below.
 //
-// THE RULE (lead ruling, day-58, after three proposals each retired by a
+// THE RULE (after three proposals each retired by a
 // measurement):
 //
 //  1. The collection holding the most items the USER wrote — source <>
@@ -66,7 +66,7 @@ func (s *Store) dedupeTraitDeclarations() error {
 		createdAt string
 	}
 
-	// THE EXTRACTION IS THE INDEX'S, NOT GO'S (codex round 1, P1). An earlier
+	// THE EXTRACTION IS THE INDEX'S, NOT GO'S. An earlier
 	// version parsed traits with ParseCollectionTraits and skipped rows that
 	// failed — but the indexes key on json_extract / ->>, so "declares a kind"
 	// had two spellings that could disagree: a row the Go parser rejected still
@@ -185,8 +185,8 @@ func (s *Store) dedupeTraitDeclarations() error {
 	}
 	defer tx.Rollback()
 
-	// ONE WRITE PER COLLECTION, accumulating every declaration it lost (codex
-	// round 1, P1). A collection can lose BOTH — the playbooks definition
+	// ONE WRITE PER COLLECTION, accumulating every declaration it lost (P1). A
+	// collection can lose BOTH — the playbooks definition
 	// declares artifact_kind AND invocation_field — and stripping them in two
 	// passes, each re-parsing the row's ORIGINAL traits, made the second write
 	// restore what the first removed. The duplicate then survived and the

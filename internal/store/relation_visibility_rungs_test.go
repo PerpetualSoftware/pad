@@ -6,8 +6,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// Visibility on the UUID and REF rungs (PLAN-2857 U4, lead ruling day 64 after
-// codex round 1's P1).
+// Visibility on the UUID and REF rungs (PLAN-2857 U4).
 //
 // It used to live only in the SERVER's post-resolution pass, which is gated on
 // the field TYPE — so every element of a `multi_relation` went unjudged and an

@@ -28,7 +28,7 @@ import (
 // allowedDirectPublishFiles with a reason.
 //
 // WHAT IT STILL CANNOT SEE, said plainly rather than left to be
-// discovered (codex round 7): a bus obtained indirectly — returned from a
+// discovered: a bus obtained indirectly — returned from a
 // method, passed in as a parameter, reached through an interface value
 // stored elsewhere. Catching those needs type information, not syntax.
 // The structural alternative is stronger and is the right answer if this
@@ -37,7 +37,7 @@ import (
 // would plausibly be written in, and it FAILS on them — which is more
 // than the doc comment it replaced could do.
 //
-// COUNTS, not just filenames (codex round 10). A filename allow-list lets
+// COUNTS, not just filenames. A filename allow-list lets
 // a future unsafe producer be added to an already-allowed file and pass —
 // while this test's own message claims new producers fail. Pinning the
 // expected number means a new direct publish in handlers_push.go fails
@@ -62,7 +62,7 @@ var allowedDirectPublishFiles = map[string]allowedPublishSite{
 func TestWatchEventsPublishSitesAreRuled(t *testing.T) {
 	t.Parallel()
 
-	// AST, not a line grep (codex round 2, P2). The first version matched
+	// AST, not a line grep. The first version matched
 	// the literal string `s.watchEvents.Publish(` on a single line, which a
 	// producer could evade without trying: a local alias (`bus :=
 	// s.watchEvents`), a selector split across lines by gofmt, a receiver
@@ -120,7 +120,7 @@ func TestWatchEventsPublishSitesAreRuled(t *testing.T) {
 			// because the ruling is about which code may HOLD the bus, not
 			// about how the call is spelled.
 			//
-			// Both binding forms, not just `:=` (codex round 7): a
+			// Both binding forms, not just `:=`: a
 			// `var bus = s.watchEvents` is a GenDecl/ValueSpec, not an
 			// AssignStmt, and the first version of this check walked only
 			// the latter.

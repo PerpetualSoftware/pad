@@ -202,11 +202,11 @@ func (s *Store) GetOAuthClient(id string) (*models.OAuthClient, error) {
 // `DELETE FROM oauth_clients` from a future migration / admin tool
 // errors loudly instead of silently nuking grants. The intentional
 // cascade lives here, in one named method, so its blast radius is
-// obvious and auditable. Codex review #370 round 3 caught the
+// obvious and auditable. This fixes the
 // previous behaviour where DeleteOAuthClient errored on FK violation
 // for any client that had ever issued a grant.
 //
-// Postgres concurrency note (Codex review #370 round 4): without the
+// Postgres concurrency note (#370): without the
 // row-level lock below, a concurrent grant/token insert on the same
 // client_id could land between our child-row deletes and the parent
 // delete, producing a fresh FK reference that fails the parent
@@ -326,7 +326,7 @@ func (s *Store) InvalidateAuthorizationCode(signature string) error {
 // inactive but keep the row for introspection auditing). The
 // caller's `req.Active` field is ignored on insert — fosite never
 // issues pre-revoked tokens, so honoring it would only enable
-// silently-broken adapters. Codex review #370 round 1 caught the
+// silently-broken adapters. This fixes the
 // previous bug where zero-value `req.Active=false` collided with
 // the default and silently issued inactive tokens.
 func (s *Store) CreateAccessToken(req models.OAuthRequest) error {
@@ -417,7 +417,7 @@ func (s *Store) DeleteRefreshToken(signature string) error {
 // state is "all old rows in this chain inactive; the new pair
 // active." Without revoking the access family here, the previously-
 // issued access token would remain active until its TTL expired —
-// the bug Codex review #370 round 2 caught.
+// the bug this fixes.
 //
 // signatureToRotate is the presented refresh token. It is spent
 // conditionally before the family flips, and a
@@ -433,7 +433,7 @@ func (s *Store) RotateRefreshToken(requestID, signatureToRotate string) error {
 	// Its own statement, not a transaction with the flips below: holding
 	// this row while flipping the access family would deadlock against the
 	// account claim and disable, which flip access before refresh under the
-	// users row (codex round 1 on BUG-3678).
+	// users row (BUG-3678).
 	res, err := s.db.Exec(s.q(`
 		UPDATE oauth_refresh_tokens SET active = ?
 		WHERE signature = ? AND request_id = ? AND active = ?
@@ -479,8 +479,7 @@ func (s *Store) flipOAuthFamiliesTx(tx *sql.Tx, requestID string) error {
 func (s *Store) RevokeOAuthGrant(requestID string) error {
 	// An installed app's grant has its own tombstone (the binding's
 	// revoked_at) and lock order, which the issuance barrier, the claim and
-	// disable already share: end it the way RevokeUserAppGrant does (codex
-	// round 2 on BUG-3678).
+	// disable already share: end it the way RevokeUserAppGrant does (BUG-3678).
 	var bound int
 	if err := s.db.QueryRow(s.q(`SELECT COUNT(*) FROM app_token_bindings WHERE request_id = ?`), requestID).Scan(&bound); err != nil {
 		return fmt.Errorf("revoke grant: read binding: %w", err)
@@ -510,8 +509,7 @@ func (s *Store) RevokeOAuthGrant(requestID string) error {
 		return fmt.Errorf("revoke grant: read subject: %w", err)
 	}
 	// The consent's connection row names the person before any token
-	// exists, so a first issuance still in flight is ordered too (codex
-	// round 3 on BUG-3678).
+	// exists, so a first issuance still in flight is ordered too (BUG-3678).
 	if subject.Valid && s.dialect.Driver() == DriverPostgres {
 		// The strong lock first: issuance holds FOR SHARE on this row, and
 		// a share lock upgraded later in this transaction could deadlock.
@@ -690,7 +688,7 @@ func (s *Store) DeletePKCERequest(signature string) error {
 // req.Active field is ignored — fosite never issues pre-revoked
 // tokens, and honoring zero-value Active=false would silently
 // produce immediately-revoked tokens for any adapter that didn't
-// remember to set it. Codex review #370 round 1.
+// remember to set it.
 //
 // Switch on the table name to pick the right INSERT — uglier than
 // per-table methods but keeps the call sites uniform and lets the

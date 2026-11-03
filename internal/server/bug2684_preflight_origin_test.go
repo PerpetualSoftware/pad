@@ -8,7 +8,7 @@ import "testing"
 // that value — not "migrated", which would tell the user a value came across
 // that did not survive.
 //
-// Fixed by TASK-2878 (#1246, codex round 9), which labels from the source
+// Fixed by TASK-2878, which labels from the source
 // values that SURVIVED migration (store.CarriedSourceValues) rather than from
 // the source map. The existing pins cover a null source value and a
 // destination-only default; neither is this shape, where the source value was

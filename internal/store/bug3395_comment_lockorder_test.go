@@ -34,7 +34,7 @@ func TestBug3395_BulkCommentWritesLockRootFirst(t *testing.T) {
 	// by authorID(a). P is then rewritten so its live tuple sits AFTER R's in
 	// the heap and dated after R: a sequential scan and an index scan on
 	// (workspace_id, created_at) both visit R first, the reply-before-parent
-	// order the bug needs from a plan-ordered write (codex r1).
+	// order the bug needs from a plan-ordered write.
 	seed := func(t *testing.T, s *Store, tag string, authorID func(a *models.User) string) world {
 		t.Helper()
 		a := tabsUser(t, s, tag+"a")
@@ -184,7 +184,7 @@ func TestBug3395_BulkCommentWritesLockRootFirst(t *testing.T) {
 	})
 }
 
-// The depth bound fails closed (codex r1 on BUG-3395): a thread that reaches
+// The depth bound fails closed (BUG-3395): a thread that reaches
 // it refuses the lock, rather than collapsing its deeper rows onto one depth
 // and losing the parent-before-child order. Not parallel: it lowers a
 // package var, and parallel tests resume only after sequential ones finish.

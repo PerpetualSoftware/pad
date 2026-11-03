@@ -162,7 +162,7 @@ type appInstallListEntry struct {
 
 // appInstallListResponse answers GET /workspaces/{ws}/apps. Available is
 // false when apps are off on this server, so the page can say "ask your
-// admin" (Dave §11 Q1) instead of reading a 404 as an empty workspace.
+// admin" instead of reading a 404 as an empty workspace.
 type appInstallListResponse struct {
 	Available bool                  `json:"available"`
 	Cloud     bool                  `json:"cloud"`

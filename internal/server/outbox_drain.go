@@ -230,7 +230,7 @@ func (s *Server) runOutboxDrainTick() {
 	// retention bound, which already exists for events that can never be
 	// delivered.
 	// THROTTLED, because the query is expensive precisely when it finds
-	// nothing (codex round 3). Its size predicate is non-sargable and there is
+	// nothing. Its size predicate is non-sargable and there is
 	// no index on payload length, so with no oversized rows it must evaluate
 	// octet_length over every pending row — and on Postgres that means
 	// detoasting and serializing each JSONB payload. Running that every 5s
@@ -241,8 +241,7 @@ func (s *Server) runOutboxDrainTick() {
 	// until the 7-day retention takes them, which makes a five-minute alarm
 	// delay irrelevant to any decision anyone makes about them. The log line
 	// says exactly that and no more — the query does not look at claimed_at,
-	// and during a rolling upgrade an older binary may well be holding one
-	// (codex round 6).
+	// and during a rolling upgrade an older binary may well be holding one.
 	if s.shouldScanOversizedOutbox() {
 		if oversized, oerr := s.store.OversizedPendingOutbox(5); oerr != nil {
 			slog.Error("outbox drain: oversized scan failed", "error", oerr)

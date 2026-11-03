@@ -106,7 +106,7 @@ func (s *Server) deriveThumbnails(parentID string) {
 		// bounds. It would be pointless for the AUTHENTICATED download path
 		// (which falls back to the original), but the SHARE byte path
 		// (TASK-2637) serves variants ONLY and never an original — the
-		// invariant Dave ruled is that every byte a share viewer receives has
+		// invariant is that every byte a share viewer receives has
 		// passed through this decode→re-encode pipeline: metadata (EXIF/GPS)
 		// dropped by construction, format normalized per ThumbnailFormat,
 		// resolution bounded. A ≤bound source therefore still needs a real
@@ -294,11 +294,11 @@ func (s *Server) persistThumbnail(
 		// bytes). The count runs first; the in-flight re-check + Delete
 		// then hold the InFlight lock, mirroring the sweep's fence, so a
 		// concurrent upload registering this hash between our check and
-		// the Delete cannot lose its bytes (codex round 1 P1). We hold
+		// the Delete cannot lose its bytes. We hold
 		// one registration ourselves — > 1 means someone else does too.
 		// A cleanup failure or skipped count only strands bytes — never
-		// a row — and is logged so it isn't silent (codex round 1 P2).
-		// Count INSIDE the fence (codex round 2): a full upload
+		// a row — and is logged so it isn't silent.
+		// Count INSIDE the fence: a full upload
 		// lifecycle — register, Put, insert row, release — can complete
 		// between an outside-the-mutex count and the delete, so the
 		// count must observe the world the delete will act on. The

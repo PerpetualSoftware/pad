@@ -167,7 +167,7 @@ func (s *Server) handleInviteMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// BUG-2136 (lead ruling, day 87): an existing account is ASKED, never
+	// BUG-2136: an existing account is ASKED, never
 	// added. Every invite is a pending invitation the invitee accepts or
 	// declines, in-app (GET /me/invitations) or from the email when one is
 	// sent. The response has the same SHAPE whether or not the address has
@@ -884,7 +884,7 @@ func (s *Server) handleSetMemberCollectionAccess(w http.ResponseWriter, r *http.
 // The membership check narrows to guestResourceFilter's fullCollIDs
 // (the strict, full-access-only set) rather than the raw nav-lenient
 // visibleCollectionIDs whenever the caller holds any item-level grants —
-// mirroring requireCollectionFullyVisible (BUG-1920 codex R2). Without
+// mirroring requireCollectionFullyVisible (BUG-1920). Without
 // this narrowing, a restricted caller with only an item-level grant into a
 // collection could designate that collection as a mode="specific" target,
 // minting themselves (or another member) full collection-wide

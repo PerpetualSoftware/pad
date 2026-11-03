@@ -61,7 +61,7 @@ func TestListMovedOutSince(t *testing.T) {
 		t.Errorf("expected 0 rows when since >= move seq, got %d", len(rows))
 	}
 
-	// Re-fire regression (Codex round 1): a later change while the item
+	// Re-fire regression: a later change while the item
 	// sits in the hidden collection bumps its current seq, but the
 	// tombstone is keyed on the MOVE's seq — so a caller who already
 	// consumed it (since = move seq) must NOT get it again.
@@ -101,7 +101,7 @@ func TestListMovedOutSince(t *testing.T) {
 	}
 }
 
-// TestListMovedOutSince_PaginatesByMoveSeq is the round-2 regression:
+// TestListMovedOutSince_PaginatesByMoveSeq is a regression test:
 // pagination must order/limit by the MOVE seq, not the item's current
 // seq. An item that moved out early but then churned in the hidden
 // collection (high current seq) must not be dropped past the limit.

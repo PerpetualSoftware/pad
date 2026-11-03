@@ -76,9 +76,9 @@ func (s *Server) deliverAppHooks(unit outboxDelivery) (owed bool, err error) {
 	// is claimed alone or folded under its header (item.bulk_updated, not
 	// subscribable). Which of the two happens depends on claim timing, so
 	// delivering the singles would hand an app an arbitrary subset of one
-	// operation (codex r3 on U10b). DOC-3371 §5: a bulk human edit is
+	// operation. DOC-3371 §5: a bulk human edit is
 	// invisible to the app in v1; it resyncs through the API. Counted for
-	// every app hook in the workspace, folded or single (codex r4).
+	// every app hook in the workspace, folded or single.
 	if unit.batchID != "" {
 		hooks, err := s.store.ListAppWebhookTargets(unit.workspaceID, "")
 		if err != nil {
@@ -86,7 +86,7 @@ func (s *Server) deliverAppHooks(unit outboxDelivery) (owed bool, err error) {
 		}
 		for _, h := range hooks {
 			// Recorded, so an owner hook's retry of this unit does not count
-			// it again (codex r1 on U10c).
+			// it again.
 			st, err := s.store.DeliveryStatus(unit.eventID, h.WebhookID)
 			if err != nil {
 				return false, err
@@ -148,14 +148,14 @@ func (s *Server) deliverAppHooks(unit outboxDelivery) (owed bool, err error) {
 	for _, t := range live {
 		// Only a hook subscribed to this event FOR THIS COLLECTION is a
 		// target: anything else would be refused at admission, and must not
-		// spend the install's rate budget or be dropped (codex r1 on U10c).
+		// spend the install's rate budget or be dropped.
 		if !store.AppHookSubscribes(t.Events, unit.eventType, collectionID) {
 			continue
 		}
 		if expired {
 			// Only a delivery the app was OWED is dropped and counted, and
 			// the decision is made under the install lock, as admission's is
-			// (codex r2/r4 on U10c): one admission would refuse is recorded
+			// One admission would refuse is recorded
 			// refused.
 			outcome, err := s.store.DropOwedDelivery(unit.eventID, t.WebhookID, unit.eventType, collectionID, unit.occurredAt, "undelivered after "+appWebhookDropAfter.String())
 			if err != nil {
@@ -189,7 +189,7 @@ func (s *Server) deliverAppHooks(unit outboxDelivery) (owed bool, err error) {
 
 // appWebhookDropAfter: an app delivery still undelivered this long after its
 // event occurred is dropped and counted on the hook (dropped_count, shown to
-// the owner) rather than retried. 24 h (lead ruling, day 86): long enough to
+// the owner) rather than retried. 24 h: long enough to
 // ride out an app's ordinary outage or deploy, short enough that an app
 // receiving a day-old change learns it should resync instead. Well inside
 // the outbox's 7-day undispatched retention.
@@ -223,7 +223,7 @@ func appDeliveryStatus(r webhooks.AppResult) string {
 	}
 }
 
-// The per-install delivery rate cap (lead ruling, day 86): 600 a minute with
+// The per-install delivery rate cap: 600 a minute with
 // a burst of 60. One busy workspace with an installed app can emit faster
 // than any app needs to hear, and the drain delivers synchronously, so an
 // uncapped app would take the drain's whole pass. Excess is DEFERRED (the
@@ -264,7 +264,7 @@ func (l *appRateLimiter) allow(installID string) bool {
 	return lim.Allow()
 }
 
-// appRateLimiterPruneAt bounds the limiter map (codex r1 on U10c): past it,
+// appRateLimiterPruneAt bounds the limiter map: past it,
 // idle entries are dropped before a new one is added.
 const appRateLimiterPruneAt = 1024
 

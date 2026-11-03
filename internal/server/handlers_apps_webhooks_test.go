@@ -302,7 +302,7 @@ func TestAppWebhook_ResolvesOnlyOwnCompanions(t *testing.T) {
 	}
 }
 
-// codex r1 on U10a: a backfill working from a stale list never touches an
+// A backfill working from a stale list never touches an
 // existing hook and reads the manifest under the install lock.
 func TestAppWebhook_BackfillNeverOverridesAnUpgrade(t *testing.T) {
 	u := newUpgradeEnv(t)

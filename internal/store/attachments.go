@@ -233,7 +233,7 @@ func (s *Store) CreateAttachmentForLiveItem(a *models.Attachment, opts ...MintOp
 		return s.createAttachmentOn(s.db, a)
 	}
 	// An ownership change between the storage check's owner read and its lock
-	// is retried in a fresh transaction (codex r3 on TASK-3619): it is rare,
+	// is retried in a fresh transaction (TASK-3619): it is rare,
 	// and the next attempt locks the new owner.
 	for attempt := 1; ; attempt++ {
 		err := s.createAttachmentForLiveItemTx(a, limited, orphan)
@@ -974,7 +974,7 @@ func (s *Store) HardDeleteAttachment(id string) error {
 // stamp did not commit would not be protected — failing the save is the
 // honest outcome.
 //
-// ORDERING (codex round 3): call this BEFORE the content statement, as
+// ORDERING: call this BEFORE the content statement, as
 // early in the writer transaction as the texts are known. On Postgres
 // the stamp UPDATE row-locks the attachment rows for the rest of the
 // transaction, so a concurrent GC claim DELETE blocks until commit and
@@ -990,7 +990,6 @@ func (s *Store) HardDeleteAttachment(id string) error {
 // stamp-to-commit span EXCEEDS orphanGCRefStaleWindow — the stamp is
 // already stale when a blocked claim re-evaluates, so the window's
 // sizing (see its comment) is what bounds this case, not the lock
-// (codex round 4 P2).
 func stampAttachmentRefsTx(tx *sql.Tx, s *Store, workspaceID string, texts ...string) error {
 	if workspaceID == "" {
 		return nil
@@ -1016,7 +1015,7 @@ func stampAttachmentRefsTx(tx *sql.Tx, s *Store, workspaceID string, texts ...st
 	// Chunked like the attachment-copy planner's id walks: a hostile
 	// payload can carry thousands of refs, and an unbounded IN list
 	// would blow the bind-parameter limit and roll back the whole
-	// write (codex round 3 P2).
+	// write.
 	const stampChunk = 400
 	ts := time.Now().UTC().Format(time.RFC3339)
 	for start := 0; start < len(ids); start += stampChunk {
@@ -1041,7 +1040,7 @@ func stampAttachmentRefsTx(tx *sql.Tx, s *Store, workspaceID string, texts ...st
 		// only re-evaluates predicates on the row it deletes, so a
 		// fresh stamp on the parent alone cannot make a concurrently
 		// claimed thumbnail wait — locking the variant row itself does
-		// (codex round 4 P1). The claim's parent NOT EXISTS stays as
+		// The claim's parent NOT EXISTS stays as
 		// the belt for variants created AFTER the stamp landed.
 		if _, err := tx.Exec(s.q(
 			`UPDATE attachments SET last_referenced_at = ? WHERE workspace_id = ? AND (id IN (`+
@@ -1118,7 +1117,7 @@ func (s *Store) ClaimNeverAttachedAttachment(id string, refCutoff time.Time) (bo
 func (s *Store) ClaimOrphanedVariantAttachment(id string) (bool, error) {
 	// Transaction + parent row-lock so a concurrent RESTORE (clearing
 	// the parent's deleted_at) serializes with this claim instead of
-	// racing its NOT EXISTS snapshot (codex round 1 P1): restore commits
+	// racing its NOT EXISTS snapshot: restore commits
 	// first → the locked re-read sees a live parent and the claim
 	// refuses; claim commits first → the restore proceeds against a
 	// parent whose thumbnail is gone (regenerable state, consistent
@@ -1368,7 +1367,7 @@ func (s *Store) AttachmentRowsExistForHashContext(ctx context.Context, hash stri
 //     (deleted_at >= graceCutoff)
 //
 // excludeID is the row currently being GC'd; we don't count it
-// against itself. Codex P2 round 3 caught the earlier version's
+// against itself. The earlier version's
 // gap: counting only deleted_at IS NULL would have GC reclaim the
 // blob from row A (soft-deleted 31d ago) even though row B is
 // also soft-deleted but still 1 day old — within grace, so its
@@ -1415,8 +1414,8 @@ func (s *Store) CountProtectingAttachmentsForHash(hash, excludeID string, graceC
 //
 // Dialect note: items.fields is TEXT on SQLite but JSONB on
 // PostgreSQL (see migrations + pgmigrations). LIKE doesn't work on
-// JSONB so the Postgres path casts to text first. Codex P1 round 2
-// caught this — without the cast, the GC's reference scan errored
+// JSONB so the Postgres path casts to text first.
+// Without the cast, the GC's reference scan errored
 // on Postgres and every never-attached row got skipped. comments.body
 // is TEXT on both dialects, so it needs no cast.
 func (s *Store) AttachmentReferenced(workspaceID, attachmentID string) (bool, error) {
@@ -1463,7 +1462,7 @@ func (s *Store) AttachmentReferenced(workspaceID, attachmentID string) (bool, er
 // have already been rehydrated — without this cascade the
 // attachment rows stay live (deleted_at IS NULL), pin their blobs
 // from orphan-GC reclamation, and continue counting toward the
-// importing user's storage usage. Codex P1 on PR #308.
+// importing user's storage usage.
 //
 // Both originals and thumbnails carry the same workspace_id, so a
 // single WHERE workspace_id = ? clause covers both. Returns the
@@ -1580,7 +1579,7 @@ func (s *Store) CreateAttachmentVariantIfParentLive(a *models.Attachment) (bool,
 	// deletion, PLAN-2391 DR-14): on Postgres a plain WHERE EXISTS reads
 	// a snapshot and a concurrent SoftDeleteAttachment can commit under
 	// it — the lock makes the delete cascade wait, and whichever commits
-	// first, the other observes it (codex round 1 P1). SQLite's
+	// first, the other observes it. SQLite's
 	// _txlock=immediate already serializes writers, and the lock clause
 	// is a syntax error there — the dialect gate is not an optimization.
 	tx, err := s.db.Begin()
@@ -1701,7 +1700,7 @@ func (s *Store) WorkspaceItemSlugMap(workspaceID string) (map[string]string, err
 // point at, then writes back only what changed. That helper tokenizes with
 // attachmentRefRE and matches whole ids — NOT strings.ReplaceAll,
 // which used to rewrite a mapped id sitting as the PREFIX of a
-// longer one (Codex round 26). See its doc.
+// longer one. See its doc.
 //
 // Search needs no separate pass: on SQLite each UPDATE fires the
 // items_fts_update / comments_fts_update triggers inside the
@@ -1718,8 +1717,8 @@ func (s *Store) RemapAttachmentReferencesInWorkspace(workspaceID string, oldToNe
 	}
 	defer tx.Rollback()
 
-	// Serialise against concurrent item writes in this workspace (codex round
-	// 5 on PLAN-2857 U5). This function SCANS every item's fields and content,
+	// Serialise against concurrent item writes in this workspace
+	// (PLAN-2857). This function SCANS every item's fields and content,
 	// then writes the snapshot back — so without the lock a concurrent update
 	// can commit newer fields in between and this overwrites them.
 	//
@@ -1744,7 +1743,7 @@ func (s *Store) RemapAttachmentReferencesInWorkspace(workspaceID string, oldToNe
 	// a stable seq-scan order, and synchronize_seqscans deliberately starts
 	// concurrent scans at different points.
 	//
-	// SCOPE OF THE CLAIM (codex round 6): this makes the CONTENT-ROW updates
+	// SCOPE OF THE CLAIM: this makes the CONTENT-ROW updates
 	// below take their locks in one order for every caller. It does not order
 	// the attachment rows stampAttachmentRefsTx locks elsewhere in the same
 	// transaction, so it is not "the whole deadlock class removed" — it
@@ -1847,7 +1846,7 @@ func (s *Store) RemapAttachmentReferencesInWorkspace(workspaceID string, oldToNe
 	// the stamp would then match zero rows and commit a dangling reference.
 	// It also keeps this path's lock order identical to the item and comment
 	// writers (attachments first, then content rows) — the reverse order
-	// deadlocks against them (codex round 2 P1).
+	// deadlocks against them.
 	//
 	// The texts are already known here: both scans have run and produced the
 	// exact strings the UPDATEs below will write.
@@ -2083,7 +2082,7 @@ func (s *Store) planVersionChainRemapTx(tx *sql.Tx, workspaceID string, oldToNew
 // captured id matches a map key EXACTLY.
 //
 // A plain strings.ReplaceAll over "pad-attachment:"+old was the
-// obvious implementation and was subtly wrong (Codex round 26). The
+// obvious implementation and was subtly wrong. The
 // regex is greedy — `pad-attachment:<uuid>x` captures `<uuid>x`, one
 // id, which resolves to nothing and is deliberately left alone — but a
 // substring replace happily rewrote the `<uuid>` PREFIX inside it,
@@ -2158,7 +2157,7 @@ func (s *Store) WorkspaceStorageUsage(workspaceID string) (int64, error) {
 // accountStorageUsageQ is the bytes of non-deleted attachments across every
 // workspace ownerID owns: the pool a per-account limit is checked against.
 //
-// A soft-deleted workspace COUNTS until it is purged (lead ruling, TASK-3619):
+// A soft-deleted workspace COUNTS until it is purged (TASK-3619):
 // its bytes are still on disk, and the cap exists to stop a full disk.
 // Leaving it out would let upload, soft-delete, upload, restore walk past the
 // cap, and restore needs no check of its own because nothing changes on disk
@@ -2393,7 +2392,7 @@ func (s *Store) checkStorageLimitTx(tx *sql.Tx, lock storageLimitLock, adding in
 	if err != nil {
 		return err
 	}
-	// The pool checked must be the one locked (codex r3): if the owner moved
+	// The pool checked must be the one locked: if the owner moved
 	// since the read that chose the lock, the check would hold the old
 	// owner's lock while counting the new owner's pool, and two uploads could
 	// both pass it. A move after this point is an ownership transfer, which

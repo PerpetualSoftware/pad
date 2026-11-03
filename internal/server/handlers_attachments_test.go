@@ -480,7 +480,7 @@ func TestUpload_RejectsUnresolvableItemID(t *testing.T) {
 // same bit ("item_not_found" => it really is absent; "not_found" => it
 // exists but is hidden from you).
 //
-// Found by the Codex review of TASK-2400 after the ordering fix landed.
+// Added for TASK-2400 after the ordering fix landed.
 func TestUpload_HiddenAndMissingItemsAreIndistinguishable(t *testing.T) {
 	srv, _ := testServerWithAttachments(t)
 
@@ -843,7 +843,7 @@ func TestUpload_NoRegistryWired(t *testing.T) {
 	}
 }
 
-// TestUpload_QuotaCheckResolves regression-tests Codex round 1 finding 3:
+// TestUpload_QuotaCheckResolves is a regression test:
 // CheckLimit("storage_bytes") returns "unknown workspace feature", so the
 // previous warning path silently dropped every probe. We now use
 // WorkspaceStorageLimit which understands byte-counted features. The
@@ -879,7 +879,7 @@ var _ = io.Discard
 var _ = models.Attachment{}
 var _ = strings.Contains
 
-// TestUpload_MultipartTextFieldsAreBindableText covers codex round 4's P2 on
+// TestUpload_MultipartTextFieldsAreBindableText covers
 // BUG-2803. The multipart body is deliberately exempt from the JSON NUL rule
 // — its payload is binary blob content and must not be scanned for text
 // validity — but its TEXT fields are a different thing. `item_id` goes to
@@ -980,15 +980,14 @@ func TestUpload_MultipartTextFieldsAreBindableText(t *testing.T) {
 		// download anchor, bundle export naming, and `pad attachment view`,
 		// whose contract is handing a path to something that opens files by
 		// extension. Dropping it made this fallback lossier than the
-		// empty-name one, which has always produced "upload.bin" (codex
-		// round 24).
+		// empty-name one, which has always produced "upload.bin".
 		if got.Filename != "upload.png" {
 			t.Errorf("expected the generic fallback to keep the storable extension, got %q", got.Filename)
 		}
 	})
 
 	t.Run("a control-obfuscated extension does not survive the fallback", func(t *testing.T) {
-		// The one with teeth (codex round 25). A vertical tab is valid UTF-8
+		// The one with teeth. A vertical tab is valid UTF-8
 		// and not a NUL, so bindableText calls ".s<VT>vg" storable. The
 		// extension blocklist then sees no KNOWN extension and passes it,
 		// and Content-Disposition sanitising strips the control byte — so the
@@ -1067,7 +1066,7 @@ func TestUpload_MultipartTextFieldsAreBindableText(t *testing.T) {
 		// it onto a directory — the CLI builds its temp path this way, where
 		// filepath.Join(dir, "..") is dir's PARENT. It survives bindableText,
 		// and filepath.Ext("..") is "." (non-empty), so an extension check
-		// waves it through too (codex round 26).
+		// waves it through too.
 		for _, raw := range []string{"..", "./", "a/b"} {
 			rr := uploadWithRawDisposition(t,
 				`form-data; name="file"; filename=`+strconv.Quote(raw))
@@ -1088,15 +1087,15 @@ func TestUpload_MultipartTextFieldsAreBindableText(t *testing.T) {
 
 		// PRESERVATION controls. Refusing path components must not become
 		// refusing anything unusual: "..." and a backslash are ordinary POSIX
-		// filenames and a user who uploads one should get it back (codex
-		// round 27 flagged the earlier version as over-refusing both).
+		// filenames and a user who uploads one should get it back (an earlier
+		// version over-refused both).
 		// A backslash name is legitimate on Unix too, but expressing one
 		// through a quoted Content-Disposition tests the header grammar more
 		// than it tests this guard, so it is left out deliberately rather
 		// than fudged.
 		// A Windows-style path must be reduced to its leaf, not stored whole:
 		// the stored name is consumed cross-platform, and a client joining
-		// "..\\evil" onto a directory traverses upward (codex round 28).
+		// "..\\evil" onto a directory traverses upward.
 		winPath := uploadWithRawDisposition(t,
 			`form-data; name="file"; filename=`+strconv.Quote(`..\evil.png`))
 		var win struct {
@@ -1155,7 +1154,7 @@ func TestUpload_MultipartTextFieldsAreBindableText(t *testing.T) {
 		}
 		// Both byte classes, not just the NUL: a filter that rejected NULs
 		// while letting malformed UTF-8 through would have passed the
-		// earlier version of this leg (codex round 13). Invalid UTF-8 is the
+		// earlier version of this leg. Invalid UTF-8 is the
 		// class that reaches Postgres as 22021 on a UTF8 database.
 		for _, bad := range []string{"TASK-1\x00", "TASK-1\xff"} {
 			rr := upload(t, "clean.png", &bad)

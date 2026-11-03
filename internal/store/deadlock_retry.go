@@ -7,8 +7,8 @@ import (
 	"time"
 )
 
-// Bounded retry on a Postgres deadlock (TASK-3399, lead ruling (a) on codex
-// U5b-1 r5). A deadlock aborts ONE transaction cleanly: nothing it wrote
+// Bounded retry on a Postgres deadlock (TASK-3399).
+// A deadlock aborts ONE transaction cleanly: nothing it wrote
 // commits, so running the whole transaction again from the start is safe.
 // It is a liveness cost, not a correctness one. The lock orders already in
 // place (users, then installs, then a grant's binding in request_id order,

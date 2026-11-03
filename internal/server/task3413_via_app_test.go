@@ -131,7 +131,7 @@ func TestTask3413_ViaAppOnHumanJSON(t *testing.T) {
 			t.Fatalf("timeline: app comment %v, version %v", sawComment, sawVersion)
 		}
 
-		// Search and the outage /changes sync serve the item too (codex r1).
+		// Search and the outage /changes sync serve the item too.
 		var sr struct {
 			Results []struct {
 				Item map[string]any `json:"item"`
@@ -195,7 +195,7 @@ func TestTask3413_ViaAppOnHumanJSON(t *testing.T) {
 }
 
 // The lookup is chunked: one IN list per response would pass SQLite's
-// 32,766-variable limit on a large unbounded response (codex r1 on U9c).
+// 32,766-variable limit on a large unbounded response.
 func TestTask3413_AttributionLookupIsChunked(t *testing.T) {
 	f := appAPIFixture(t, "read")
 	ids := make([]string, 0, 40001)
@@ -213,7 +213,7 @@ func TestTask3413_AttributionLookupIsChunked(t *testing.T) {
 }
 
 // pad playbook show (and pad_playbook get) serves the playbook item outside
-// the common enrichment path; it carries the creating app too (codex r1).
+// the common enrichment path; it carries the creating app too.
 func TestTask3413_PlaybookShowCarriesViaApp(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
@@ -245,7 +245,7 @@ func TestTask3413_PlaybookShowCarriesViaApp(t *testing.T) {
 }
 
 // The role board, a comment edit's response and the account export carry
-// the attribution too (codex r2 on U9c).
+// the attribution too.
 func TestTask3413_RoleBoardCommentEditAndExport(t *testing.T) {
 	f := appAPIFixture(t, "read")
 	db := f.srv.store.DB()

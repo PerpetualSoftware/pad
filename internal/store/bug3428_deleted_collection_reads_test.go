@@ -162,7 +162,7 @@ func TestChildrenAndProgress_ExcludeSoftDeletedCollections(t *testing.T) {
 	check("after the delete", false, 1)
 }
 
-// The open-children guard reads children through GetChildItemsTx. Lead ruling
+// The open-children guard reads children through GetChildItemsTx.
 // (BUG-3428 phase 2): an open child in a soft-deleted collection no longer
 // blocks closing its parent, so this read leaves it out like every other.
 func TestGetChildItemsTx_ExcludesSoftDeletedCollections(t *testing.T) {
@@ -189,7 +189,7 @@ func TestGetChildItemsTx_ExcludesSoftDeletedCollections(t *testing.T) {
 	}
 }
 
-// Codex r1: has_children must agree with the children list. A child whose only
+// has_children must agree with the children list. A child whose only
 // child lives in a soft-deleted collection has none to list, so it must not
 // claim to have any.
 func TestPopulateHasChildren_ExcludesSoftDeletedCollections(t *testing.T) {

@@ -49,7 +49,7 @@ var ErrCompactionRefused = errors.New("op-log compaction refused: the op-log cha
 // The database checks below are the atomic re-check, NOT the exclusion: on
 // Postgres an append that allocated an id before the MAX(id) read and
 // committed after this transaction would be invisible to it, and would land
-// BELOW the snapshot's id, outside it (codex, TASK-3531). The dormant DELETE
+// BELOW the snapshot's id, outside it (TASK-3531). The dormant DELETE
 // this replaces has the same exposure and the same contract.
 //
 // It deletes EXACTLY ids, not the range up to their max (TASK-3532). On
@@ -98,7 +98,7 @@ func (s *Store) CompactItemOpLog(itemID string, cutoff time.Time, ids []int64, f
 		return 0, err
 	}
 	// A row the job did not read survived the exact delete: it committed
-	// after the read, with an id below the max (codex, TASK-3532). The
+	// after the read, with an id below the max (TASK-3532). The
 	// snapshot does not hold it, and moving the watermark past it would mark
 	// it flushed, so refuse the whole swap (the transaction rolls back) and
 	// let a later pass read it too.

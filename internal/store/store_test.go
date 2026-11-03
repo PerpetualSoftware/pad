@@ -234,7 +234,7 @@ func testStorePostgres(t *testing.T, baseURL string) *Store {
 		// attached, so the un-forced form left an orphaned pad_test_* database
 		// behind on exactly the path that most needs cleaning up. Pre-existing
 		// and asymmetric with the twin; corrected here because this change
-		// makes the two helpers a matched pair (codex round 2, P2).
+		// makes the two helpers a matched pair.
 		dropPostgresTemplateDB(t, baseURL, dbName)
 		t.Fatalf("open test postgres store: %v", err)
 	}
@@ -747,7 +747,7 @@ func TestGetUserWorkspaces_MemberFreshness(t *testing.T) {
 
 // TestGetUserWorkspaces_GuestFreshnessLimitedToVisibleItems covers the
 // guest path of BUG-1481 AND the data-leak guardrail surfaced in
-// codex review: a guest's view of a workspace's UpdatedAt must reflect
+// A guest's view of a workspace's UpdatedAt must reflect
 // ONLY items they can actually see (via collection_grants or
 // item_grants). Activity in items they have no grant on must not leak
 // through the freshness signal.
@@ -1728,8 +1728,8 @@ func TestSearch_BareNumericQueryFindsItemByNumber(t *testing.T) {
 	}
 }
 
-// TestSearch_BareNumericQueryDedupsAgainstFTS guards the fix for the Codex
-// review finding on the BUG-864/910 PR: when a bare-numeric query also
+// TestSearch_BareNumericQueryDedupsAgainstFTS guards the fix for the
+// BUG-864/910 issue: when a bare-numeric query also
 // matches FTS via the item's title/content (because the title literally
 // contains the digit string), the direct hit must not also appear as an
 // FTS row — otherwise pagination shrinks page 0 below `limit` and shifts
@@ -1784,8 +1784,8 @@ func TestSearch_BareNumericQueryDedupsAgainstFTS(t *testing.T) {
 	}
 }
 
-// TestSearch_BareNumericQueryPaginatesAcrossWorkspaces guards the round-2
-// Codex finding: in global search (WorkspaceIDs scoping, no single
+// TestSearch_BareNumericQueryPaginatesAcrossWorkspaces guards the following case.
+// In global search (WorkspaceIDs scoping, no single
 // `Workspace`), a bare numeric query like "1" can match one item per
 // workspace. Direct hits must be paginated together with FTS results so
 // that (limit, offset) honours the full ordered list — not return all

@@ -413,7 +413,7 @@ func TestPushDispatch_GatewayFailuresWarnOncePerTickWithoutSecrets(t *testing.T)
 }
 
 // A tick that stops at the deadline after an unavailable chunk still warns
-// once for it (TASK-3939 B2a codex r3).
+// once for it (TASK-3939).
 func TestPushDispatch_UnavailableThenDeadlineStillWarns(t *testing.T) {
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newPdx(t, srv)

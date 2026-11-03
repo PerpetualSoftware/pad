@@ -141,7 +141,7 @@ func TestRepairInvalidUTF8KeepsJSONValid(t *testing.T) {
 }
 
 // A value whose row has an INCOMPLETE key (a NULL in its primary key, which
-// SQLite permits) and carries both defects is still ONE violation (codex r1).
+// SQLite permits) and carries both defects is still ONE violation.
 // Two such rows stay two: the merge is by rowid, which both scans read, not by
 // the partial key they share.
 func TestInvalidUTF8MergesOnKeyIncompleteRows(t *testing.T) {
@@ -179,8 +179,8 @@ func TestInvalidUTF8MergesOnKeyIncompleteRows(t *testing.T) {
 
 // The rowid merge (and the rowid address item_wiki_links already uses) reads
 // SQLite's hidden rowid. A table that DECLARED a column named rowid, _rowid_
-// or oid would shadow it, and the scan would read that column instead (codex
-// r2). None does; this makes adding one fail here rather than miscount.
+// or oid would shadow it, and the scan would read that column instead. None
+// does; this makes adding one fail here rather than miscount.
 func TestNoProtectedTableShadowsRowid(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)

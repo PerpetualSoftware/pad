@@ -136,7 +136,7 @@ func TestImportOfAnAffectedExportIsRefusedAndTheRemedyWorks(t *testing.T) {
 	t.Run("the flag does not repair without being asked", func(t *testing.T) {
 		// The control for the whole feature: an import that repaired by
 		// default would pass every assertion above and break the strict
-		// posture Dave's ruling keeps.
+		// posture the product keeps.
 		srv := testServer(t)
 		rr := importWithQuery(t, srv, "?repair_nul=false", affected)
 		if rr.Code != http.StatusBadRequest {
@@ -151,8 +151,8 @@ func TestImportOfAnAffectedExportIsRefusedAndTheRemedyWorks(t *testing.T) {
 // handleImportWorkspaceBundle is reachable only through the Content-Type
 // dispatch in handleImportWorkspace, so a flag honoured below that dispatch
 // would work on the JSON path and silently do nothing on the tar.gz one — which
-// is the path a real `pad workspace export --bundle` produces. BUG-2803's round
-// 3 found the strict check missing on exactly this door for the same reason,
+// is the path a real `pad workspace export --bundle` produces. BUG-2803 found the strict
+// check missing on exactly this door for the same reason,
 // and the plan-limit unit found its gate missing there too.
 func TestImportBundle_RepairFlagCoversTheBundleDoorToo(t *testing.T) {
 	src, srcSlug := testServerWithAttachments(t)
@@ -225,7 +225,7 @@ func TestImportBundle_RepairFlagCoversTheBundleDoorToo(t *testing.T) {
 // a quoted document — which the gate refuses (it re-parses that string) and
 // which a raw-byte repair cannot touch (at the body's own layer it is literal
 // text). Every fixture that put the NUL in `content` passed while this did not
-// work, which is how the gap survived to the first review round.
+// work, which is how the gap went unnoticed.
 func TestImportRepairsANULInsideAFieldsBlob(t *testing.T) {
 	// A JSON column has TWO at-rest shapes and they export DIFFERENTLY, which
 	// is the distinction this fixture exists to hold:

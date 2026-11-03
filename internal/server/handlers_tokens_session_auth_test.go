@@ -13,7 +13,7 @@ import (
 // token that made them — so revoking a leaked credential does not end the
 // access it was used to establish.
 //
-// Dave ruled the shape on day 57: create and rotate require session auth
+// The shape: create and rotate require session auth
 // and refuse a PAT-authenticated call with 403 `session_required`; list
 // and revoke stay PAT-reachable, because neither extends access.
 //

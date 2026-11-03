@@ -658,7 +658,7 @@ func (s *Server) resolvePlaybook(workspaceID, identifier string, visibleCollIDs 
 	// invocation slug becomes unreachable. Filtering first makes the hidden
 	// collection invisible to resolution rather than merely unreadable, so
 	// shadowing cannot occur and no 404 is contingent on a row the caller was
-	// never allowed to know about. Codex round 2.
+	// never allowed to know about.
 	//
 	// nil visibleCollIDs means an unrestricted caller (full member) — the
 	// same convention every other bootstrap/list path in this package uses.

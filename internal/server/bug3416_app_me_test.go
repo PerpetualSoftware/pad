@@ -52,7 +52,7 @@ func TestBug3416_UnscopedMeNamesTheBinding(t *testing.T) {
 
 // A code issued before its workspace was soft-deleted is refused, not
 // spent: the workspace is resolved live inside the redeem's transaction,
-// before the code is consumed (codex r1 on BUG-3416).
+// before the code is consumed (BUG-3416).
 func TestBug3416_RedeemRefusesASoftDeletedWorkspace(t *testing.T) {
 	e := newProvisionEnv(t)
 	p := e.stagePreview(t)

@@ -10,7 +10,7 @@ import (
 )
 
 // TASK-3613: a lease is held under an opaque worker id plus the account; the
-// agent name is display only. These pin the lead's rulings: two workers under
+// agent name is display only. These pin the rulings: two workers under
 // one name never share a lease, a name-only caller is refused against a
 // worker-bound lease of its own name (with the way out in the message), a
 // malformed id is a 400, the 409 shows only the SHORT id, and the queue

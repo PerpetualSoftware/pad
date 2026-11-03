@@ -25,7 +25,7 @@ func TestRebindQuery(t *testing.T) {
 		{"comment markers inside a string", "SELECT 'a--b?' , '/* c? */' , ?", "SELECT 'a--b?' , '/* c? */' , $1"},
 		{"escaped quote in a string", "SELECT 'it''s ?' , ?", "SELECT 'it''s ?' , $1"},
 		{"apostrophe and ? in a quoted identifier", `SELECT "it's?" FROM t WHERE a = ?`, `SELECT "it's?" FROM t WHERE a = $1`},
-		// Postgres block comments nest (codex r1).
+		// Postgres block comments nest.
 		{"nested block comment", "SELECT /* outer /* inner */ ? */ ?", "SELECT /* outer /* inner */ ? */ $1"},
 		{"block comment at end of query", "SELECT ? /* done? */", "SELECT $1 /* done? */"},
 		{"comment markers inside a quoted identifier", `SELECT "a--b?", "c/*d?" FROM t WHERE x = ?`, `SELECT "a--b?", "c/*d?" FROM t WHERE x = $1`},

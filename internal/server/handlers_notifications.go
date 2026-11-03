@@ -87,7 +87,7 @@ func (s *Server) handleGetMyNotification(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	// A deleted actor is a nil user and an empty name; a store error is a 500
-	// (TASK-3939 B2b codex r3).
+	// (TASK-3939).
 	actor := ""
 	if n.ActorUserID != "" {
 		u, err := s.store.GetUser(n.ActorUserID)

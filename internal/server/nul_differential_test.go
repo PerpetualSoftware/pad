@@ -53,7 +53,7 @@ func TestHTTPGateAgreesWithTheCorpus(t *testing.T) {
 
 // TestStoreRefusalAnswers400 pins the status. The design's requirement is a 4xx
 // naming the rule, and "not a 500" is not the same claim as "exactly 400" — the
-// round-4 lesson from BUG-2803, where a >=400 assertion hid a wrong status.
+// lesson from BUG-2803, where a >=400 assertion hid a wrong status.
 //
 // It drives a value the HTTP gate CANNOT catch, so the refusal genuinely comes
 // from the store: a raw NUL arriving through a path the body gate does not

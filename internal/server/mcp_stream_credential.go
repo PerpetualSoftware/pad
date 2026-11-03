@@ -25,7 +25,7 @@ import (
 // startMCPCredentialTick re-checks r's credential every interval until ctx
 // ends, and calls end when it is no longer valid. The interval and the first
 // delay are read here, on the handler's goroutine: tests swap both package
-// variables, and the tick goroutine is not joined (hunter r1).
+// variables, and the tick goroutine is not joined.
 func (s *Server) startMCPCredentialTick(ctx context.Context, r *http.Request, end context.CancelFunc) {
 	interval := watchListRevalInterval
 	if s.mcpCredentialRevalOverride > 0 {

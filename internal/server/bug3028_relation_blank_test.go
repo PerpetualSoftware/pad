@@ -14,8 +14,7 @@ import (
 
 // BUG-3028: "no target" on a scalar relation has ONE stored form, the key
 // absent. A blank a write SETS is refused on a required field; a legacy blank a
-// write merely CARRIES is normalised to absent without refusing (the lead's
-// provenance ruling). `owner` is required, `helper` is optional.
+// write merely CARRIES is normalised to absent without refusing. `owner` is required, `helper` is optional.
 
 type blankFixture struct {
 	*doorFixture
@@ -284,7 +283,7 @@ func TestRelationBlank_BulkMoveCarriesALegacyBlank(t *testing.T) {
 }
 
 // A blank schema DEFAULT on a relation is "no default": it must not satisfy
-// `required` by injection (codex round 1), and on an optional field it leaves
+// `required` by injection, and on an optional field it leaves
 // the key absent without reporting a drop, since nothing was lost.
 func TestRelationBlank_BlankDefaultIsNoDefault(t *testing.T) {
 	f := newBlankFixture(t)

@@ -71,7 +71,7 @@ func TestRelationTitleDoors_ThreeSpellingsAgreeThroughTheCreateDoor(t *testing.T
 }
 
 // TestRelationTitleDoors_TitleWrongCollectionDoesNotDiscloseExistence is
-// ruling (3) on the TITLE path, and it is the leg the addendum was written for.
+// the check on the TITLE path, and it is the leg the addendum was written for.
 //
 // The server's collapse used to RE-RESOLVE a wrong_collection value through a
 // UUID-or-ref ladder. That ladder does not speak titles, so a title-derived
@@ -233,7 +233,7 @@ func TestRelationTitleDoors_ReadDoesNotHydrateAnInvisibleTarget(t *testing.T) {
 
 // --- title resolution is scoped to what the caller can SEE ----------------
 //
-// Lead ruling on PLAN-2857 U6, one step past "collapse ambiguous when nothing
+// PLAN-2857 U6 rule, one step past "collapse ambiguous when nothing
 // is visible": among live exact-title matches in the declared collection, only
 // VISIBLE ones count — zero is not_found, one RESOLVES, two or more is
 // ambiguous. A hidden match never changes the answer a caller gets.
@@ -395,7 +395,7 @@ func TestRelationTitleDoors_HydrationUsesITEMVisibilityNotCollectionVisibility(t
 }
 
 // TestRelationTitleDoors_VisibilityNarrowingHasNoCountBoundary is the
-// regression test for codex round 2's P1: the first fix bounded the candidate
+// regression test for an earlier defect: the first fix bounded the candidate
 // list at a constant and answered `ambiguous` past it, which made the BOUND an
 // oracle — a caller could tell "one visible plus cap hidden" (resolves) from
 // "one visible plus cap+1 hidden" (ambiguous), and the difference is entirely
@@ -456,8 +456,8 @@ func TestRelationTitleDoors_VisibilityNarrowingHasNoCountBoundary(t *testing.T) 
 	}
 }
 
-// TestRelationTitleDoors_UpdateDoorAppliesTheSameNarrowing answers codex round
-// 2's P2 on coverage: the three ambiguity legs only drove CREATE, and each door
+// TestRelationTitleDoors_UpdateDoorAppliesTheSameNarrowing answers a coverage
+// gap: the three ambiguity legs only drove CREATE, and each door
 // reaches the resolver by its own route.
 func TestRelationTitleDoors_UpdateDoorAppliesTheSameNarrowing(t *testing.T) {
 	f := newDoorFixture(t)
@@ -488,8 +488,8 @@ func TestRelationTitleDoors_UpdateDoorAppliesTheSameNarrowing(t *testing.T) {
 	}
 }
 
-// TestRelationTitleDoors_LateDefaultResolvesForACallerWhoSeesOne is codex round
-// 2's other P1, and it is a leak through the OUTCOME rather than the message.
+// TestRelationTitleDoors_LateDefaultResolvesForACallerWhoSeesOne pins
+// a leak through the OUTCOME rather than the message.
 //
 // A relation DEFAULT declared as a title goes through the late pass, which runs
 // after validation injects it. The first fix could only downgrade a narrowed
@@ -550,8 +550,8 @@ func TestRelationTitleDoors_LateDefaultResolvesForACallerWhoSeesOne(t *testing.T
 	}
 }
 
-// TestRelationTitleDoors_ProbeFindsAVisibleMatchNotAnArbitraryOne is codex
-// round 4's P2, and it is the property failing in the other direction.
+// TestRelationTitleDoors_ProbeFindsAVisibleMatchNotAnArbitraryOne covers the property
+// failing in the other direction.
 //
 // When nothing in the declared collection carries the title, the resolver
 // probes the workspace so it can answer `wrong_collection` instead of
@@ -607,7 +607,7 @@ func TestRelationTitleDoors_ProbeFindsAVisibleMatchNotAnArbitraryOne(t *testing.
 	}
 }
 
-// BUG-3366 (codex r1): a LEGACY target, whose item_number is NULL, hydrates
+// BUG-3366: a LEGACY target, whose item_number is NULL, hydrates
 // with a title but no ref. Redaction used to key on the ref alone, so an
 // ungranted legacy target's title reached an item-grant guest. Any target
 // that would name an item is now checked.

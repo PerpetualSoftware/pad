@@ -145,8 +145,7 @@ func TestMigration095RecreatesAMissingTable(t *testing.T) {
 
 // An items_fts with ANOTHER definition is replaced rather than kept. A
 // contentless table is the sharp case: FTS5 refuses 'rebuild' on one, so an
-// IF NOT EXISTS create followed by a rebuild failed the migration (codex
-// round 2).
+// IF NOT EXISTS create followed by a rebuild failed the migration.
 func TestMigration095ReplacesAForeignDefinition(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)

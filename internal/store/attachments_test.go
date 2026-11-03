@@ -136,8 +136,8 @@ func TestWorkspaceStorageInfo_FreePlanResolution(t *testing.T) {
 }
 
 // TestWorkspaceAttachments_VisibilityFilter verifies that
-// VisibleCollectionIDs gates the result set per Codex P1 from
-// PR #303 round 1: a restricted member must not see attachments
+// VisibleCollectionIDs gates the result set:
+// a restricted member must not see attachments
 // in collections they can't access, and orphans (item_id IS NULL)
 // must be hidden as well so filenames don't leak.
 func TestWorkspaceAttachments_VisibilityFilter(t *testing.T) {
@@ -248,8 +248,8 @@ func TestWorkspaceAttachments_VisibilityFilter(t *testing.T) {
 	}
 }
 
-// TestWorkspaceAttachments_SurfacesSoftDeletedParents pins Codex P2
-// from PR #303 round 4: an attachment whose parent item is soft-
+// TestWorkspaceAttachments_SurfacesSoftDeletedParents pins the case
+// where an attachment whose parent item is soft-
 // deleted must remain in the list so the user can reclaim the
 // bytes, AND the collection-level visibility filter must still see
 // the (still-set) collection_id so restricted users with access to
@@ -606,7 +606,7 @@ func TestWorkspaceAttachments_ForeignCollectionYieldsNullCollectionMetadata(t *t
 }
 
 // TestWorkspaceAttachments_CategoryFilters covers the document/text/
-// archive/other filter buckets per Codex P2 from PR #303 round 1:
+// archive/other filter buckets:
 // the earlier prefix-only mapping silently passed those filters
 // through with no MIME predicate, returning the full list.
 func TestWorkspaceAttachments_CategoryFilters(t *testing.T) {

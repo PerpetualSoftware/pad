@@ -203,7 +203,7 @@ func TestItemTitle_StoresTheNormalizedValue(t *testing.T) {
 }
 
 // TestItemTitle_GrandfathersLegacyRows pins the non-retroactive half of the
-// rule (Dave's day-63 ruling, carried from MaxDocumentTitleRunes). A row whose
+// rule (carried from MaxDocumentTitleRunes). A row whose
 // stored title predates the bound must stay editable; only a genuine rename is
 // a write-time door.
 func TestItemTitle_GrandfathersLegacyRows(t *testing.T) {
@@ -211,7 +211,7 @@ func TestItemTitle_GrandfathersLegacyRows(t *testing.T) {
 	// RUNS ON BOTH DIALECTS. It used to skip on Postgres, on the stated ground
 	// that a legacy over-bound title implies a slug past the btree index-tuple
 	// cap — which is true of BUG-2804's 2 MiB fixture and FALSE of this one
-	// (codex round 1, P2). overlongTitle() is 256 runes, so the slug it derives
+	// OverlongTitle() is 256 runes, so the slug it derives
 	// is 256 ASCII bytes: an order of magnitude under the 2704 the cap actually
 	// enforces. The skip was reasoning by analogy with a different fixture and
 	// left the non-retroactive rule untested on the backend BUG-2831 is about.
@@ -342,7 +342,7 @@ func TestImportWorkspace_CoercesTitles(t *testing.T) {
 	}
 
 	// Empty and whitespace-only both land as the coerced title — WITH a title,
-	// so Dave's untitled-items invariant holds on this door too.
+	// so the untitled-items invariant holds on this door too.
 	untitled := 0
 	for _, it := range items {
 		if it.Title == "Untitled" {
@@ -354,7 +354,7 @@ func TestImportWorkspace_CoercesTitles(t *testing.T) {
 		if n := utf8.RuneCountInString(it.Title); n > models.MaxItemTitleRunes {
 			t.Errorf("item %s imported with a %d-rune title, over the %d bound", it.ID, n, models.MaxItemTitleRunes)
 		}
-		// The slug bound allows for the uniqueness suffix (codex round 5). A
+		// The slug bound allows for the uniqueness suffix. A
 		// truncated slug that collides is resolved to "<255 runes>-2", so a
 		// hard <= MaxItemTitleRunes assertion states the design more strictly
 		// than it is — it happens to hold for this fixture and would fail a
@@ -376,8 +376,8 @@ func TestImportWorkspace_CoercesTitles(t *testing.T) {
 		t.Errorf("want 2 items coerced to %q (the empty one and the whitespace-only one), got %d", "Untitled", untitled)
 	}
 
-	// THE COERCED-LONG ROW MUST SURVIVE, WITH THE EXPECTED TITLE (codex round
-	// 4). Without this, an implementation that silently DROPPED the over-long
+	// THE COERCED-LONG ROW MUST SURVIVE, WITH THE EXPECTED TITLE. Without this,
+	// an implementation that silently DROPPED the over-long
 	// item would satisfy every assertion above — it would still see two
 	// "Untitled" rows and the ordinary one, and the per-item bound checks are
 	// vacuously true over a row that is not there. Coerce-and-continue means
@@ -436,7 +436,7 @@ func highEntropySlug(n int) string {
 }
 
 // TestImportWorkspace_TruncatedSlugCollidesWithALaterVerbatimSlug regresses
-// codex round 1 P1.
+// the collision case.
 //
 // Truncation is the only way this loop can produce two identical slugs — a
 // bundle exported from a live workspace cannot contain a duplicate, because
@@ -513,8 +513,8 @@ func TestImportWorkspace_TruncatedSlugCollidesWithALaterVerbatimSlug(t *testing.
 		bySlugTitle[it.Title] = it.Slug
 	}
 
-	// PROVE THE TRUNCATION, not merely that the import survived (codex round
-	// 5). Uniqueness alone is satisfied by an implementation that truncates
+	// PROVE THE TRUNCATION, not merely that the import survived. Uniqueness
+	// alone is satisfied by an implementation that truncates
 	// NOTHING: 755 runes and 255 runes are already distinct, so no collision
 	// arises, both rows land, and every assertion above passes while the very
 	// mechanism under test is absent. The test has to name the two slugs it
@@ -548,8 +548,8 @@ func TestImportWorkspace_TruncatedSlugCollidesWithALaterVerbatimSlug(t *testing.
 	}
 }
 
-// TestItemTitle_GrandfathersAVerbatimEchoOfAWhitespaceTitle regresses codex
-// round 1 P2: the exemption is "a title identical to the stored one", and
+// TestItemTitle_GrandfathersAVerbatimEchoOfAWhitespaceTitle regresses The
+// exemption is "a title identical to the stored one", and
 // comparing only the NORMALIZED form makes that false for exactly the rows the
 // exemption exists for.
 func TestItemTitle_GrandfathersAVerbatimEchoOfAWhitespaceTitle(t *testing.T) {
@@ -572,8 +572,8 @@ func TestItemTitle_GrandfathersAVerbatimEchoOfAWhitespaceTitle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a verbatim echo of the stored title is not a rename and must be accepted: %v", err)
 	}
-	// ASSERT THE STORED BYTES, not merely that no error came back (codex round
-	// 2, P1). Checking err == nil alone passed against a version that skipped
+	// ASSERT THE STORED BYTES, not merely that no error came back (P1). Checking
+	// err == nil alone passed against a version that skipped
 	// validation and then wrote the NORMALIZED title anyway — turning a
 	// protective exemption into a silent rewrite of the row it was protecting.
 	if updated.Title != legacyTitle {
@@ -627,13 +627,13 @@ func TestItemTitle_GrandfathersAWriteThatNormalizesToTheStoredTitle(t *testing.T
 }
 
 // TestItemTitle_GrandfatheredWriteCannotMintAnEmptyTitle is the direct
-// regression for codex round 2's P1 — a hole the round-1 grandfathering fix
+// regression for a hole the earlier grandfathering fix
 // opened, not one the original code had.
 //
 // A legacy row stored as whitespace-only is the sharpest case: echoed back
 // verbatim, the raw comparison grandfathers it, and a version that skipped
 // validation while still assigning the normalized value wrote "" to the row —
-// minting the empty title Dave's ruling forbids, through the very clause meant
+// minting the empty title the validation rule forbids, through the very clause meant
 // to protect legacy rows. No error is returned in that version, which is why
 // the assertion has to be on the stored bytes.
 func TestItemTitle_GrandfatheredWriteCannotMintAnEmptyTitle(t *testing.T) {
@@ -668,8 +668,8 @@ func TestItemTitle_GrandfatheredWriteCannotMintAnEmptyTitle(t *testing.T) {
 	}
 }
 
-// TestItemTitle_GrandfatheredEchoDoesNotMoveTheSlug regresses codex round 5's
-// P1, which is the second defect the grandfathering clause has produced.
+// TestItemTitle_GrandfatheredEchoDoesNotMoveTheSlug regresses the slug case.
+// It is the second defect the grandfathering clause has produced.
 //
 // Assigning the stored title back left input.Title NON-NIL, and every consumer
 // downstream keys on that pointer rather than on whether the value changed —
@@ -698,8 +698,8 @@ func TestItemTitle_GrandfatheredEchoDoesNotMoveTheSlug(t *testing.T) {
 		t.Fatalf("fixture: set an import-shaped slug: %v", err)
 	}
 
-	// BOTH grandfathering legs, against the same out-of-step slug (codex round
-	// 6). The raw echo and the padded form take different branches, and the
+	// BOTH grandfathering legs, against the same out-of-step slug. The raw echo
+	// and the padded form take different branches, and the
 	// padded one had no slug coverage at all: the test that exercises it
 	// derives its slug FROM the title, so the non-nil-pointer mutant
 	// regenerates the identical slug there and passes.

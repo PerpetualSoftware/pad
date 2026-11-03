@@ -55,7 +55,7 @@ func TestArchivedItem_Get200WithMarker_Update409(t *testing.T) {
 	}
 
 	// MOVE must likewise return the archived conflict, not a bare 404
-	// (Codex round 1: the move path is a peer mutation and was missed).
+	// (the move path is a peer mutation and was missed).
 	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+created.Slug+"/move", map[string]interface{}{
 		"target_collection": "ideas",
 	})

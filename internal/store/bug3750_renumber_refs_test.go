@@ -100,7 +100,7 @@ func TestBUG3750_RenumberingKeepsStoredReferencesOnTheirItems(t *testing.T) {
 // items held the number, it never had one target, and is left as written.
 // A collection with no prefix gets one (ITEM, when its name derives none)
 // from backfillItemNumbers before the conversion runs, so its items are
-// reached by the same two rules (codex r3 asked about prefixless targets).
+// reached by the same two rules.
 func TestBUG3750_StalePrefixReferenceKeepsItsFallbackTarget(t *testing.T) {
 	path := bug3664Path(t)
 	db := openRaw(t, path)

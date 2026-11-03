@@ -12,7 +12,7 @@ import (
 )
 
 // catchUpCeiling is how far back the catch-up digest ever reaches
-// (TASK-3615, Dave's 10-17 answer). With no cursor the window IS the ceiling.
+// (TASK-3615). With no cursor the window IS the ceiling.
 const catchUpCeiling = 14 * 24 * time.Hour
 
 // catchUpWindow is the period the digest covers.
@@ -127,7 +127,7 @@ func (s *Server) handleGetCatchUp(w http.ResponseWriter, r *http.Request) {
 // catchUpNeedsYou is current state, not windowed: items the attention set
 // says are waiting on a human, then open items assigned to the viewer that
 // something visible and unfinished still blocks. Roles are agent roles, so
-// "yours" means assigned to you (lead ruling, v1). A failing decision
+// "yours" means assigned to you. A failing decision
 // provider degrades the section rather than failing the digest.
 func (s *Server) catchUpNeedsYou(r *http.Request, workspaceID, viewerID string, visibleIDs, fullCollIDs, grantedItemIDs []string, scope store.CatchUpScope) (store.CatchUpSection, bool, error) {
 	var ids []string

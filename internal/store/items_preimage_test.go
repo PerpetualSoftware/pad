@@ -170,8 +170,8 @@ func TestUpdateItem_PreUpdateComesFromTheLockedReRead(t *testing.T) {
 
 // TestUpdateItem_PreUpdateCarriesTheAssignedUser is the users-join half of the
 // display-name contract. Without it, an implementation that dropped the users
-// join while keeping the agent_roles one passes every other test here (codex
-// round 3) — and would make the handler report "assigned:  → Dave" on any
+// join while keeping the agent_roles one passes every other test here — and
+// would make the handler report "assigned:  → Dave" on any
 // update to an already-assigned item.
 func TestUpdateItem_PreUpdateCarriesTheAssignedUser(t *testing.T) {
 	t.Parallel()

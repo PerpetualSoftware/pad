@@ -280,7 +280,7 @@ func TestCopyPreflight_HiddenAttachmentReadsAsDangling(t *testing.T) {
 // deleted, and would be proving nothing about the branch they name. Both
 // therefore run as the OWNER, who can see the secret item perfectly well
 // and must still be refused. Only the orphan case needs a restricted
-// caller, because the orphan rule IS about restriction (Codex round 2).
+// caller, because the orphan rule IS about restriction.
 func TestCopy_UnauthorizedParentsAreAllUnresolvable(t *testing.T) {
 	for _, tc := range []struct {
 		name string

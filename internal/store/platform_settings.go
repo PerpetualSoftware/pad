@@ -94,7 +94,7 @@ var ErrSecretNotEncrypted = errors.New("store: secret platform setting is not en
 // generic decrypt() passes plaintext through for callers that predate
 // encryption, but a secret setting has only ever been written encrypted, so a
 // plaintext row came from somewhere other than SetSecretPlatformSetting and
-// must not become a live credential (codex round 2).
+// must not become a live credential.
 func (s *Store) GetSecretPlatformSetting(key string) (string, error) {
 	v, err := s.GetPlatformSetting(key)
 	if err != nil || v == "" {

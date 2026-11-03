@@ -162,7 +162,7 @@ func TestBUG3663_FKOffMigrationIgnoresAViolationThatPredatesIt(t *testing.T) {
 }
 
 // The legacy violation sits in a table the migration rebuilds, and the copy
-// renumbers its rowids (codex r1): it is still the same one violation, and
+// renumbers its rowids: it is still the same one violation, and
 // does not block.
 func TestBUG3663_FKOffRebuildThatRenumbersALegacyViolationIsNotRefused(t *testing.T) {
 	s := fkCheckStore(t)
@@ -258,7 +258,7 @@ func fkCheckRuns(t *testing.T, s *Store) error {
 }
 
 // A table whose check cannot run does not blind the check for the others
-// (codex on #2120): with one unreadable FK in the schema, a dangling
+// (#2120): with one unreadable FK in the schema, a dangling
 // reference the body leaves in a different, readable table is refused.
 func TestBUG3663_UnreadableTableDoesNotHideAViolationElsewhere(t *testing.T) {
 	s := fkCheckStore(t)
@@ -284,7 +284,7 @@ func TestBUG3663_UnreadableTableDoesNotHideAViolationElsewhere(t *testing.T) {
 }
 
 // Failing to list the tables at all is the check being unavailable, not a
-// reason to refuse the upgrade (codex on #2120).
+// reason to refuse the upgrade (#2120).
 func TestBUG3663_FKOffMigrationIsNotRefusedWhenTheTablesCannotBeListed(t *testing.T) {
 	s := fkCheckStore(t)
 	saved := fkCheckTablesQuery
@@ -322,7 +322,7 @@ func TestBUG3663_FKOffMigrationIsNotRefusedWhenItsBodyBreaksTheListing(t *testin
 }
 
 // A listing that returns rows and THEN fails is a failed listing, not a
-// complete one (codex on #2120): the partial list must not be compared. Here
+// complete one (#2120): the partial list must not be compared. Here
 // the partial list includes fk3663_child, where the body leaves a dangling
 // reference; treated as complete, that would refuse the migration.
 func TestBUG3663_ListingThatFailsMidwayIsNotTreatedAsComplete(t *testing.T) {

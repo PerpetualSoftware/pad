@@ -9,7 +9,7 @@ import (
 
 // BUG-3475: an import's OUTCOME must reach the person who started it even
 // when the response does not. The web dialog uploads over whatever path the
-// browser has, and on a path that drops packets (Dave's QUIC to Cloudflare)
+// browser has, and on a path that drops packets (for example QUIC to Cloudflare)
 // the client gives up on its own timers while the server, 60s later on its
 // per-Read deadline, finishes the import one way or the other. A lost 201 is
 // the same shape: a complete workspace the client reported as failed, and a
@@ -19,7 +19,7 @@ import (
 // bundle door records what became of it, and GET /workspaces/import-status
 // answers it for the caller who started it.
 //
-// IN MEMORY, by ruling: one instance, a 1h TTL, lost on restart. A key this
+// IN MEMORY by design: one instance, a 1h TTL, lost on restart. A key this
 // registry does not hold is an UNKNOWN outcome, never "nothing was created":
 // the client says "check your workspace list" for it.
 
@@ -81,7 +81,7 @@ func (g *importOutcomeRegistry) begin(userID, key string) bool {
 		return false
 	}
 	if len(g.entries) >= importOutcomeMax && !g.evictOldestSettledLocked() {
-		// Every entry is a running import (codex r1 on BUG-3475). Evicting
+		// Every entry is a running import (BUG-3475). Evicting
 		// one would let its key begin again beside the upload still using
 		// it, so this attempt goes untracked instead: its status reads as
 		// unknown, which is the truth about it.
@@ -120,7 +120,7 @@ func (g *importOutcomeRegistry) get(userID, key string) (importOutcome, bool) {
 func (g *importOutcomeRegistry) sweepLocked() {
 	now := g.now()
 	cutoff := now.Add(-importOutcomeTTL)
-	// A RUNNING entry outlives the TTL (codex r2): an import may read for up
+	// A RUNNING entry outlives the TTL: an import may read for up
 	// to its 1h ceiling (defaultImportReadCeiling) and then still finish, and
 	// expiring its key mid-upload would let the key begin again beside it.
 	// Every path that returns records an end, so a running entry this old

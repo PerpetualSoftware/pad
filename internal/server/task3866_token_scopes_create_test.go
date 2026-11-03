@@ -31,7 +31,7 @@ func TestTASK3866_CreateTokenScopes(t *testing.T) {
 		{"every vocabulary value", `["*","read","write","pad:read","pad:write","pad:admin"]`, `["*","read","write","pad:read","pad:write","pad:admin"]`},
 	}
 	// Not strings: the field itself is null, an array or a number. A JSON
-	// null used to decode as "" and mint a full-access key (Codex r1).
+	// null used to decode as "" and mint a full-access key.
 	refusedRaw := []struct {
 		name   string
 		scopes json.RawMessage

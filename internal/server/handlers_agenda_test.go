@@ -400,14 +400,14 @@ func TestAgendaResponseCutIs500(t *testing.T) {
 	}
 }
 
-// r1-1: the scan bound must not be spent on schedules that cannot appear. 1001
+// The scan bound must not be spent on schedules that cannot appear. 1001
 // ended one-shots precede (by id) one live schedule; it is still listed.
 func TestAgendaScanBoundIsNotSpentOnEndedSchedules(t *testing.T) {
 	t.Parallel()
 	scanBoundHolds(t, false)
 }
 
-// r2-1 (a pin): the same when the ended schedules' only history lies AFTER the
+// Pin: the same when the ended schedules' only history lies AFTER the
 // window, which the history lookup must not count as reaching it.
 func TestAgendaScanBoundIsNotSpentOnEndedSchedulesWithLaterHistory(t *testing.T) {
 	t.Parallel()
@@ -445,7 +445,7 @@ func scanBoundHolds(t *testing.T, laterHistory bool) {
 	}
 }
 
-// r2-1: marking a deadline done EARLY ends the schedule at the resolve time,
+// Marking a deadline done EARLY ends the schedule at the resolve time,
 // while its history row keeps the due instant. The window around the due
 // instant still lists it, as done.
 func TestAgendaListsAnEarlyResolvedScheduleAsDone(t *testing.T) {
@@ -462,7 +462,7 @@ func TestAgendaListsAnEarlyResolvedScheduleAsDone(t *testing.T) {
 	}
 }
 
-// r2-2: a database failure while expanding is a 500, not an incomplete 200.
+// A database failure while expanding is a 500, not an incomplete 200.
 func TestAgendaDatabaseFailureDuringExpansionIs500(t *testing.T) {
 	t.Parallel()
 	w := newAgendaWorld(t, "tasks")
@@ -478,7 +478,7 @@ func TestAgendaDatabaseFailureDuringExpansionIs500(t *testing.T) {
 	}
 }
 
-// r1-2: one schedule whose stored state cannot be read is that schedule's
+// One schedule whose stored state cannot be read is that schedule's
 // problem, not a 500 for the agenda.
 func TestAgendaCorruptScheduleIsUnavailableNotA500(t *testing.T) {
 	t.Parallel()

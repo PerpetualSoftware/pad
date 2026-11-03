@@ -161,7 +161,7 @@ func (s *Store) CatchUp(workspaceID, viewerID string, since, until time.Time, sc
 //
 // status_transitions has no actor, so the actor is read from the activity
 // row the same write logged: same item, action updated or moved, same
-// second (lead ruling, day 13). A transition is the viewer's only when such
+// second. A transition is the viewer's only when such
 // a row exists and every such row is the viewer's. No row, or another
 // person's row in that second, keeps the line: showing a user their own
 // change is the safe failure, hiding someone else's is not. Debounced update
@@ -349,7 +349,7 @@ func mergeNewAndReopened(created, reopened []CatchUpLine) []CatchUpLine {
 }
 
 // catchUpComments returns comments by others in the window on items the
-// viewer created or is assigned to (Dave, v1), one line per item at its
+// viewer created or is assigned to, one line per item at its
 // newest such comment. Deleted comments are left out.
 func (s *Store) catchUpComments(workspaceID, viewerID, sinceStr, untilStr string, scope CatchUpScope) ([]CatchUpLine, error) {
 	scopeSQL, scopeArgs := scope.clause("i")

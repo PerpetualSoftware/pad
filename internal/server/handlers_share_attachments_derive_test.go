@@ -16,7 +16,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
-// Real-derivation pins for TASK-2637 / fork-3 Option C. Dave's invariant:
+// Real-derivation pins for TASK-2637 / fork-3 Option C. The invariant:
 // every byte a share viewer receives has passed through the decode→re-encode
 // variant pipeline — metadata (EXIF/GPS) dropped by construction, format
 // normalized per ThumbnailFormat, resolution bounded. These wire the REAL

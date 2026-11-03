@@ -79,8 +79,7 @@ func newBug3837Fixture(t *testing.T, accessLifespan time.Duration) *bug3837Fixtu
 	}
 	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
 	clientID := registerTestClient(t, srv, "https://app.test/cb")
-	// Minted last, so a short lifespan is not spent on the setup above
-	// (hunter r3).
+	// Minted last, so a short lifespan is not spent on the setup above.
 	tokens := runAuthCodeFlow(t, srv, sessionToken, csrfTok, clientID,
 		"verifier-bug3837-quick-brown-fox-jumps-over-lazy-dog-12")
 	f.clientID = clientID
@@ -204,7 +203,7 @@ func TestMCP_BUG3837_RevokedOAuthGrantEndsGETAndListen(t *testing.T) {
 }
 
 // The lifespan leaves the fixture's setup seconds of margin before the token
-// expires (hunter r1); the stream must be admitted on a live token.
+// expires; the stream must be admitted on a live token.
 func TestMCP_BUG3837_ExpiredOAuthTokenEndsTheStream(t *testing.T) {
 	f := newBug3837Fixture(t, 5*time.Second)
 	done := f.open(t, f.access, false)
@@ -261,7 +260,7 @@ func TestMCP_BUG3837_DeletedOAuthTokenEndsTheStream(t *testing.T) {
 }
 
 // The bearer scheme is case-insensitive (RFC 6750), and admission accepts
-// "bearer <tok>". The tick must read the token the same way (hunter r1). A
+// "bearer <tok>". The tick must read the token the same way. A
 // case-sensitive read fails one of two ways: the PAT door finds no token and
 // closes a live stream, and fosite rejects the whole header as a malformed
 // token, which is "could not ask", so a REVOKED OAuth stream stays open. Each
@@ -310,7 +309,7 @@ func TestMCP_BUG3837_DeletedUserIsNotStillValid(t *testing.T) {
 	}
 }
 
-// The lead's KEEP ruling on rotation (on BUG-3837): a refresh rotation flips
+// The KEEP ruling on rotation (BUG-3837): a refresh rotation flips
 // the old access token inactive, so a live stream opened with it ends at its
 // next tick, even though the grant is live. Pinned with its three conditions:
 // it ends at about the next tick after the rotation, it ends between frames
@@ -338,7 +337,7 @@ func TestMCP_BUG3837_RefreshRotationEndsTheStreamAndTheNewTokenOpensOne(t *testi
 	f.assertEnds(t, done, "access token rotated out by a refresh")
 	// The next tick is at most one interval away; the bound is two plus
 	// slack, so it catches the override being ignored (the 60s production
-	// interval), not scheduling noise under -race (hunter r3).
+	// interval), not scheduling noise under -race.
 	if took := time.Since(rotated); took > 2*tick+2*time.Second {
 		t.Fatalf("the stream ended %v after the rotation, want within about one tick (%v)", took, tick)
 	}
@@ -368,7 +367,7 @@ func TestMCP_BUG3837_RefreshRotationEndsTheStreamAndTheNewTokenOpensOne(t *testi
 // The tick runs only on the long-lived doors (where admitMCPStream took a
 // slot). A tool call is an ordinary request: its credential was checked at
 // admission, and it ends with its response, so a revocation mid-call must not
-// cancel it (hunter r3).
+// cancel it.
 func TestMCP_BUG3837_ToolCallIsNotTicked(t *testing.T) {
 	f := newBug3837Fixture(t, 0)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -431,7 +430,7 @@ func TestMCP_BUG3837_UserReadFailureKeepsTheStream(t *testing.T) {
 // refresh token. In fosite v0.49.0 the fallback's error is scoped to its
 // else-if (handler/oauth2/introspector.go), so the ACCESS lookup's error is
 // the one returned: a store failure stays "could not ask" even when the
-// fallback answers not found. The r4 decline rests on that (lead ruling), and
+// fallback answers not found. The decision to treat that as "could not ask" rests on that, and
 // a fosite bump could flip it silently, so it is pinned against real fosite.
 // The control is the same fallback after a definitive access answer.
 func TestMCP_BUG3837_TransientAccessErrorIsNotReadAsRevocation(t *testing.T) {

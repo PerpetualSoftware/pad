@@ -92,7 +92,7 @@ func TestBUG3811_ConcurrentRemovalsKeepAnActiveAdmin(t *testing.T) {
 				// Commit A only once B is seen WAITING on the guard's lock, so
 				// the pair is concurrent by observation, not by a timer: a B
 				// that ran after the commit would refuse sequentially and pass
-				// without the lock (codex r1 on #2178).
+				// without the lock (#2178).
 				var bErr error
 				returnedEarly := false
 				deadline := time.Now().Add(10 * time.Second)

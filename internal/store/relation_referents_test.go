@@ -259,7 +259,7 @@ func TestResolveRelationReferents_IsDeterministicAndBatched(t *testing.T) {
 	}
 }
 
-// --- Migrate doors (PLAN-2857 U1, lead ruling: provenance, not door) ---
+// --- Migrate doors (PLAN-2857 U1, not door) ---
 
 func TestMigrateRelationReferents_SameWorkspaceKeepsWhatResolves(t *testing.T) {
 	t.Parallel()
@@ -392,7 +392,7 @@ func carriedFrom(fields map[string]any) map[string]any {
 }
 
 // A ref whose number overflows must not resolve to a different item
-// (TASK-2878, codex round 12).
+// (TASK-2878).
 //
 // `parseItemRef` accumulated into a machine int with no bound, so
 // "COLO-18446744073709551617" wrapped to 1 and named the item numbered 1 —
@@ -436,7 +436,7 @@ func TestResolveRelationReferents_OverflowingRefDoesNotResolve(t *testing.T) {
 // raw rows and never goes through createItemChecked, so referent validation
 // cannot have reached it; that is an argument that the behaviour is unchanged,
 // not evidence that it is correct or that it will stay. The carry is a RULING
-// (Dave's, day 71: an import's value HAS a home, because the artifact is the
+// (because the artifact is the
 // record) and an unpinned ruling is one refactor away from becoming a refusal
 // that turns every pre-validation archive into a hard failure. Same reasoning
 // as TestImportWorkspace_CoercesTitles one file over, which this is modelled on.
@@ -586,7 +586,7 @@ func TestImportWorkspace_CarriesUnresolvableRelationValues(t *testing.T) {
 }
 
 // An unresolvable carried relation value survives the ID remap VERBATIM, even
-// when it contains a resolvable id as a substring (codex round 17).
+// when it contains a resolvable id as a substring.
 //
 // `remapFieldIDs` rewrote relation values with strings.ReplaceAll over the raw
 // JSON for every id in the bundle, so a value that merely CONTAINED another
@@ -729,8 +729,8 @@ func TestImportWorkspace_DoesNotMintIDsForOrphanRelationReferents(t *testing.T) 
 		t.Fatalf("CreateUser: %v", err)
 	}
 
-	// No id here is a prefix of another: a partial rewrite (codex round 17's
-	// defect, fixed) would otherwise fail these assertions for the wrong reason.
+	// No id here is a prefix of another: a partial rewrite (fixed) would
+	// otherwise fail these assertions for the wrong reason.
 	const (
 		liveColorID   = "old-color-alpha"
 		orphanColorID = "old-color-omega" // an ITEM in the bundle, collection absent

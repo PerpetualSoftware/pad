@@ -99,7 +99,7 @@ type notJoinedBody struct {
 	} `json:"invitation_not_joined"`
 }
 
-// Lead ruling on #1834: the account is rolled back only when the invitation
+// The account is rolled back only when the invitation
 // was the signup's ADMISSION. Where registration is open anyway (Pad Cloud
 // with a deliverable verification email, the self-serve path), the account is
 // KEPT, nothing is joined, and the response says the invitation is no longer
@@ -162,7 +162,7 @@ func TestRegisterWithCode_OpenRegistrationKeepsTheAccountWhenTheInvitationIsGone
 	}
 }
 
-// Codex r1: the claim now commits with the membership, so a membership alone no
+// The claim now commits with the membership, so a membership alone no
 // longer proves the claim landed. A failed claim beside a membership that came
 // from elsewhere must not be reported as a joined signup.
 func TestRegisterWithCode_FailedClaimBesideAMembershipIsNotAJoin(t *testing.T) {
@@ -183,7 +183,7 @@ func TestRegisterWithCode_FailedClaimBesideAMembershipIsNotAJoin(t *testing.T) {
 	}
 }
 
-// Codex r2/r3: the account exists from CreateUser on, so a sign-in can mint it
+// The account exists from CreateUser on, so a sign-in can mint it
 // a session, and /forgot-password a reset token, before the claim. The
 // rollback must still remove the account.
 func TestRegisterWithCode_CredentialsMintedBeforeTheClaimDoNotBlockTheRollback(t *testing.T) {
@@ -198,7 +198,7 @@ func TestRegisterWithCode_CredentialsMintedBeforeTheClaimDoNotBlockTheRollback(t
 			if _, err := f.srv.store.CreateSession(u.ID, "go-test", "192.0.2.1", "", time.Hour); err != nil {
 				t.Fatalf("CreateSession: %v", err)
 			}
-			// And a public /forgot-password, which mints a reset token (codex r3).
+			// And a public /forgot-password, which mints a reset token.
 			if _, err := f.srv.store.CreatePasswordReset(u.ID); err != nil {
 				t.Fatalf("CreatePasswordReset: %v", err)
 			}
@@ -271,7 +271,7 @@ func TestRegisterWithCode_OpenRegistrationKeepsTheAccountWhenTheClaimIsRefused(t
 	}
 }
 
-// Codex r5: the claim keeps a membership that already exists (an admin's add
+// The claim keeps a membership that already exists (an admin's add
 // in the window) at ITS role, and the signup must report that role, as the
 // accept doors do, not the invitation's.
 func TestRegisterWithCode_ReportsTheRoleTheAccountHolds(t *testing.T) {
@@ -306,7 +306,7 @@ func TestRegisterWithCode_ReportsTheRoleTheAccountHolds(t *testing.T) {
 	})
 }
 
-// Codex r9: a claim the store refused BEFORE its commit is definitely not
+// A claim the store refused BEFORE its commit is definitely not
 // landed, so a failing membership read must not turn the open-registration
 // outcome (account kept, told) into a 500 that leaves the account behind with
 // no session and a retry that meets the duplicate-email 409.
@@ -343,7 +343,7 @@ func TestRegisterWithCode_OpenRegistrationRefusedClaimNeedsNoReconcileRead(t *te
 	}
 }
 
-// Codex r9: when the invitation was the admission and the account rollback
+// When the invitation was the admission and the account rollback
 // FAILS, the signup must not answer as if it had been rolled back: the
 // account still holds the email.
 func TestRegisterWithCode_FailedRollbackIsNotReportedAsARollback(t *testing.T) {

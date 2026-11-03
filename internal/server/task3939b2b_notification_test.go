@@ -249,7 +249,7 @@ func TestNotificationEnrichment_PinnedTokenRefused(t *testing.T) {
 }
 
 // An unpinned personal API token resolves its own user's notification through
-// the router, as docs/api.md promises (TASK-3939 B2b codex r2).
+// the router, as docs/api.md promises (TASK-3939).
 func TestNotificationEnrichment_UnpinnedBearerTokenReadsItsOwnRow(t *testing.T) {
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newPdx(t, srv)

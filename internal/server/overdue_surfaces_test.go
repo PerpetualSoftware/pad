@@ -192,7 +192,7 @@ func TestFutureDeadlineIsNotOverdue(t *testing.T) {
 	}
 }
 
-// TestSuggestionsCarryTheItemsRealCollection — codex round 5, P2.
+// TestSuggestionsCarryTheItemsRealCollection.
 //
 // The orphan branch admits any collection (its own comment claimed otherwise,
 // and the comment was wrong), while the output hardcoded `Collection: "tasks"`

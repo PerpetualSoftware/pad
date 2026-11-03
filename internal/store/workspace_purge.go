@@ -174,7 +174,7 @@ var purgeWorkspaceChildDeletes = []struct{ what, query string }{
 	// dispatched after its item is gone), which means nothing deletes these
 	// rows on its behalf. Payloads hold full item content and comment bodies,
 	// so leaving them behind would keep a purged workspace's text readable
-	// indefinitely — the exact thing a purge exists to prevent (Codex round 2).
+	// indefinitely — the exact thing a purge exists to prevent.
 	{"event outbox", `DELETE FROM event_outbox WHERE workspace_id = ?`},
 
 	// --- item child rows (before items) ---

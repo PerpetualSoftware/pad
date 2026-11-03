@@ -129,7 +129,7 @@ func (s *Store) BeginInstallTeardown(workspaceID, installID string, kind Teardow
 		return err
 	}
 	// Every unconsumed install code dies too: redeeming one would mint a
-	// fresh working secret, which rotate and disable exist to end (codex r1).
+	// fresh working secret, which rotate and disable exist to end.
 	if _, err := tx.Exec(s.q(`DELETE FROM app_install_codes WHERE install_id = ? AND consumed_at IS NULL`), installID); err != nil {
 		return fmt.Errorf("revoke install codes: %w", err)
 	}
@@ -221,7 +221,7 @@ func (s *Store) FinishRotate(workspaceID, installID string) (string, time.Time, 
 	// A second bump: a token request that read the phase-1 epoch while the
 	// install was disabling, and authenticated with the OLD secret, would
 	// otherwise commit a live token once this makes the install active
-	// (codex r1). Its grant carries the phase-1 epoch, which this ends.
+	// Its grant carries the phase-1 epoch, which this ends.
 	if err := s.setInstallStateTx(tx, installID, InstallActive, true); err != nil {
 		return "", time.Time{}, err
 	}
@@ -269,7 +269,7 @@ func (s *Store) ReenableInstall(workspaceID, installID string) error {
 		return err
 	}
 	// Events from the disabled period are never delivered after it, even
-	// when an owner hook's failure kept them pending (codex r5 on U10b).
+	// when an owner hook's failure kept them pending.
 	if _, err := tx.Exec(s.q(`UPDATE webhooks SET deliver_from = ?, updated_at = ? WHERE app_install_id = ?`), now(), now(), installID); err != nil {
 		return fmt.Errorf("re-enable: webhook: %w", err)
 	}
@@ -300,7 +300,7 @@ var uninstallHookAfterStep func(step string) error
 // bot's user id, and display resolves the app's name from the tombstone.
 // This differs on purpose from the account-deletion purge
 // (purgeAppPrincipalsOfOwnedWorkspacesTx), which ERASES bots because their
-// workspace is itself going away (lead ruling, day 86).
+// workspace is itself going away.
 func (s *Store) UninstallAppTx(workspaceID, installID string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -311,7 +311,7 @@ func (s *Store) UninstallAppTx(workspaceID, installID string) error {
 	// then the install row. Account deletion purging this bot takes them in
 	// that order (membership, user, then the install row through the
 	// bot_user_id FK action); taking the install row first deadlocked with it
-	// (codex r1). The users row is FOR NO KEY UPDATE, which does not conflict
+	// The users row is FOR NO KEY UPDATE, which does not conflict
 	// with the FK KEY SHARE a fenced app write takes on it while holding the
 	// install row FOR SHARE. SQLite: BEGIN IMMEDIATE.
 	if s.dialect.Driver() == DriverPostgres {
@@ -468,7 +468,7 @@ type InstallArtifactItem struct {
 // The stamp names the app, not one install. The install conflict check
 // allows one non-uninstalled install per origin in a workspace, so the only
 // other install these rows can come from is an uninstalled one of the same
-// app, whose items a reinstall is meant to show (codex U9b r1).
+// app, whose items a reinstall is meant to show.
 func (s *Store) ListInstallArtifactItems(workspaceID, origin string) ([]InstallArtifactItem, error) {
 	prefix := origin + "@"
 	rows, err := s.db.Query(s.q(`

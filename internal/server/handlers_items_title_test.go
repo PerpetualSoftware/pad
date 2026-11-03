@@ -262,7 +262,7 @@ func TestCreateItemCheckedMapsStoreTitleRefusalTo400(t *testing.T) {
 	}
 }
 
-// TestWriteTypedItemRefusalIncludesTitleRefusal regresses codex round 1 P1 on the
+// TestWriteTypedItemRefusalIncludesTitleRefusal regresses a bug in the
 // collab fallback, PORTED from isDeterministicWriteFailure when PLAN-2975 unit 2
 // replaced that classifier with writeTypedItemRefusal.
 //
@@ -282,7 +282,7 @@ func TestWriteTypedItemRefusalIncludesTitleRefusal(t *testing.T) {
 
 	// The recorder is inspected, not discarded: the classifier's answer is only half
 	// the contract — a mutant that returns true while writing the wrong status would
-	// pass a boolean-only assertion (codex round 1, this unit).
+	// pass a boolean-only assertion.
 	refused := func(err error) bool {
 		rec := httptest.NewRecorder()
 		got := srv.writeTypedItemRefusal(rec, item, err, false)
@@ -327,7 +327,7 @@ func TestWriteTypedItemRefusalIncludesTitleRefusal(t *testing.T) {
 	// The FIFTH arm. Before PLAN-2975 the applier path's row write fell through the
 	// ordinary error block and inherited its UNIQUE-constraint mapping; routing that
 	// path through this helper dropped it, turning a benign race into a 500 on that
-	// route only (codex round 5, a regression rather than a gap). Both wordings are
+	// route only. Both wordings are
 	// asserted because the store hands back the driver's message verbatim and SQLite
 	// and Postgres word it differently — testing one would leave the other route to
 	// the 500.
@@ -372,13 +372,13 @@ func TestWriteTypedItemRefusalIncludesTitleRefusal(t *testing.T) {
 //
 // WHAT IT COVERS AND WHAT IT DOES NOT, stated because a structural test invites
 // more confidence than it earns. It detects an arm that is DELETED, one that is
-// out of ORDER, and — since codex round 3 — one DISABLED by being made an
+// out of ORDER, and — and one DISABLED by being made an
 // operand of a boolean condition, which is the shape that defeated the
 // presence-only version. All three are verified by mutation rather than
 // asserted.
 //
-// It is still LEXICAL, and that is a boundary rather than a to-do. Three review
-// rounds each named a new way to satisfy the letter of it — a short-circuited
+// It is still LEXICAL, and that is a boundary rather than a to-do. Review
+// repeatedly found a new way to satisfy the letter of it — a short-circuited
 // condition, an inverted one, a missing return — and each was closed, but a
 // lexical instrument has no last one: an early return above the block, a
 // wrapping `if false`, or a condition calling something that always returns
@@ -417,7 +417,7 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 		wantArm[w] = true
 	}
 
-	// THE FILE SET IS DERIVED, NOT LISTED (codex round 5). A hardcoded pair passes
+	// THE FILE SET IS DERIVED, NOT LISTED. A hardcoded pair passes
 	// while an unmapped block sits in a third file, which is the same
 	// under-counting this guard exists to catch — so the sources are every
 	// non-test file in the package that calls UpdateItemWithParentLink, and a file
@@ -439,7 +439,7 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 			t.Fatalf("read %s: %v", name, rerr)
 		}
 		// The predicate is a UNION, and fail-open is the failure mode it is fighting
-		// (codex round 6): a file reaching the store through a wrapper or a variable
+		//: a file reaching the store through a wrapper or a variable
 		// would not match the call text, so a file that calls any of the refusal ARMS
 		// is scanned too. A refusal block lives where the arms are called, whatever it
 		// calls the store through.
@@ -473,7 +473,7 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 
 	// ---- membership + order, per block ----
 	//
-	// PER-BLOCK, not per-file (codex round 2): counting calls across the whole
+	// PER-BLOCK, not per-file: counting calls across the whole
 	// file lets one block's duplicate mask another's omission and says nothing
 	// about order.
 	//
@@ -578,8 +578,8 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 	//
 	// It is not in `want` because it is not a call to a named helper — it is a string
 	// match on the driver's message, so the AST walk above cannot see it. It is
-	// checked anyway, and separately, because dropping it is exactly the regression
-	// codex round 5 found: the applier path inherited this mapping from the ordinary
+	// checked anyway, and separately, because dropping it is exactly the regression:
+	// the applier path inherited this mapping from the ordinary
 	// block until the reorder routed around it, and a benign race answered 500 on one
 	// route and 409 on the other.
 	//
@@ -614,8 +614,8 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 		})
 		return best
 	}
-	// The arm is an IF CONDITION, and the check reads only conditions (codex round
-	// 7). Accepting any string literal in the block would let an unrelated nested
+	// The arm is an IF CONDITION, and the check reads only conditions.
+	// Accepting any string literal in the block would let an unrelated nested
 	// closure, or a message string that happened to quote the phrase, satisfy the
 	// guard after the real mapping had been deleted — the guard passing for a reason
 	// that has nothing to do with what it claims.
@@ -662,11 +662,11 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 	// `false && writeInvalidItemTitle(w, err)` short-circuits at runtime while
 	// leaving the call in the AST, so the sequence above reads as correct while
 	// every title refusal falls through to a 500. Measured — that mutant
-	// survived the presence-only version (codex round 3).
+	// survived the presence-only version.
 	//
 	// WHITELIST, not blacklist. The first attempt rejected conditions that were
 	// BinaryExpr, which `!writeInvalidItemTitle(w, err)` — a UnaryExpr — walked
-	// straight past while inverting the arm's meaning (codex round 5).
+	// straight past while inverting the arm's meaning.
 	// Enumerating the ways to disable a call is a losing game; enumerating the
 	// two ways these arms are legitimately written is not:
 	//
@@ -705,7 +705,7 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 	//
 	// An arm that matches and then falls through has written its response and
 	// let the next arm write another, or let the request continue to the
-	// generic 500 (codex round 6). The body's last statement is a bare return
+	// generic 500. The body's last statement is a bare return
 	// in all three blocks; anything else is a behaviour change worth looking at.
 	//
 	// BOUNDARY, stated because the shared block weakened this leg and pretending

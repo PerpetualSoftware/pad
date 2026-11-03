@@ -230,7 +230,7 @@ func TestScrubOutboxUserRefs_CommentSnapshot(t *testing.T) {
 	}
 	// The author DISPLAY STRING stays: live-row de-identification nulls
 	// comments.user_id only, and the scrub matches that posture exactly. The
-	// wider live-rows question is with Dave (TASK-2719 trail), not decided
+	// wider live-rows question is open (TASK-2719 trail), not decided
 	// silently here.
 	if got["author"] != "Scrub Me" || got["body"] != "frozen body" {
 		t.Fatalf("scrub damaged non-target comment fields: author=%v body=%v", got["author"], got["body"])
@@ -296,7 +296,7 @@ func TestScrubOutboxUserRefs_MemberRowAndSubjectColumn(t *testing.T) {
 	scrubInTx(t, s, deleted.ID)
 
 	// The deleted user's member row: subject_id NULL, payload user_id gone,
-	// the rest intact — a resync signal, not a broken row (lead ruling).
+	// the rest intact — a resync signal, not a broken row.
 	var subjectNull int
 	if err := s.db.QueryRow(s.q(`
 		SELECT COUNT(*) FROM event_outbox WHERE event_type = ? AND subject_id IS NULL
@@ -313,7 +313,7 @@ func TestScrubOutboxUserRefs_MemberRowAndSubjectColumn(t *testing.T) {
 	`), kernelevents.MemberJoined).Scan(&payload); err != nil {
 		t.Fatalf("read scrubbed member payload: %v", err)
 	}
-	// The parse condition from the lead's ruling: the scrubbed row must
+	// The parse condition: the scrubbed row must
 	// unmarshal under the member payload shape. It does — user_id is simply
 	// absent — which is what closed the tombstone branch.
 	var member memberEventPayload
@@ -360,7 +360,7 @@ func TestScrubOutboxUserRefs_DispatchedRowsScrubbedNotDeleted(t *testing.T) {
 
 	scrubInTx(t, s, deleted.ID)
 
-	// UNIFORM, DELETE NOTHING (lead ruling): the dispatched-retained row
+	// UNIFORM, DELETE NOTHING: the dispatched-retained row
 	// survives — lifecycle is retention's job — but its id is gone.
 	var count int
 	var payload string
@@ -379,7 +379,7 @@ func TestScrubOutboxUserRefs_DispatchedRowsScrubbedNotDeleted(t *testing.T) {
 }
 
 // TestScrubOutboxUserRefs_KeyScopedAndNumberSafe pins two properties a looser
-// implementation passes every other test without (codex round 1): the walk is
+// implementation passes every other test without: the walk is
 // KEY-scoped, not value-scoped — a payload field that merely CONTAINS the
 // deleted user's id under an unrelated key survives — and numeric literals
 // cross the rewrite verbatim, so an int64 past float64's 2^53 integer range

@@ -185,7 +185,7 @@ func TestMigration093RequeuesStep2RowsForTheBackfill(t *testing.T) {
 			_, _, item := seedStaleItem(t, s)
 			// A content-bearing row that is NOT a step2/update frame: 093 must
 			// leave it alone, so the count below catches a migration that drops
-			// its subtype predicate (codex round 1, P3).
+			// its subtype predicate.
 			appendFrame(t, s, item.ID, []byte{0x07, 0x01, 0x02})
 			seed := appendFrame(t, s, item.ID, probeSeedUpdate)
 			answer := appendFrame(t, s, item.ID, probeStep2Answer)

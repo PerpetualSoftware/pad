@@ -17,7 +17,7 @@ import (
 // a proxy for the real question — it cannot see a second server on another
 // port, or any other caller of the exported Store.AppendYjsUpdate.
 //
-// THE MEASUREMENT THIS RESTS ON (BUG-3072's trail, day 66). Holding a write
+// THE MEASUREMENT THIS RESTS ON (BUG-3072's trail). Holding a write
 // transaction across the migration does NOT make a concurrent append fail. The
 // store's DSN carries busy_timeout(30000) and that timeout belongs to the
 // APPENDER's connection, not ours, so the lock DEFERS the append rather than
@@ -34,7 +34,7 @@ import (
 // it, on any handle, in any process, on any port, from any binary.
 //
 // THAT THE DEFERRED APPEND SEES THE NEW TRIGGER IS MEASURED, NOT ASSUMED
-// (day 67). The append is a pooled autocommit Exec (yjs_updates.go), already
+// The append is a pooled autocommit Exec (yjs_updates.go), already
 // prepared and blocked mid-step when the DDL commits, so the mechanism is
 // SQLite's SQLITE_SCHEMA auto-reprepare. Measured: 3.050524463s then
 // `constraint failed: <marker> (1811)` — SQLITE_CONSTRAINT_TRIGGER — against a
@@ -127,7 +127,7 @@ const MigratedMarker = "PAD_MIGRATED_TO_POSTGRES"
 //   - The marker table itself, which the migration writes.
 //
 // Group 3 below — workspace user state the BUNDLE does not carry — is in on a
-// judgement the lead ruled: the ruling is refuse-rather-than-lose, and a star
+// judgement made deliberately: the rule is refuse-rather-than-lose, and a star
 // written to an abandoned file is exactly the loss the marker exists to
 // prevent. The posture is nulcolumns.go's Ruling 2: a RAISE(ABORT) trigger
 // with no value check is near-free, and litigating a table at a time is how
@@ -179,7 +179,7 @@ var migratedRefusalTables = []string{
 	"app_installs",
 	// The four below also ride protected writes, but each has a writer of
 	// its own that does not, so a write to the old file loses something
-	// (BUG-3958, lead-ruled):
+	// (BUG-3958):
 	// - the decision runner claims, completes and releases jobs alone;
 	"decision_jobs",
 	// - its answers are written by InsertItemDecisions alone;

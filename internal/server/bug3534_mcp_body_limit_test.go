@@ -123,7 +123,7 @@ func TestBUG3534_LimitOnBothMountsAndBothLengthPaths(t *testing.T) {
 	}
 }
 
-// Nothing reads an unauthenticated body (codex review): an oversized one,
+// Nothing reads an unauthenticated body: an oversized one,
 // with or without a declared length, is refused 401 by auth, which the
 // pre-auth rate limit meters, with zero body bytes read.
 func TestBUG3534_UnauthenticatedBodyIsNeverRead(t *testing.T) {
@@ -187,7 +187,7 @@ func TestBUG3534_LimitFollowsTheArtifactCap(t *testing.T) {
 }
 
 // The 413 is audited, as the response of an authenticated call
-// (codex round 2): one row, classified error / client_error_413 by
+// : one row, classified error / client_error_413 by
 // classifyMCPResult like any other 4xx that is not an auth or rate gate.
 func TestBUG3534_TooLargeIsAudited(t *testing.T) {
 	srv, user, bearer := auditedMCPServer(t)

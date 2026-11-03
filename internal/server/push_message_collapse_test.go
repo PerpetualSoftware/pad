@@ -69,7 +69,7 @@ func TestPushMessageCollapseFixture(t *testing.T) {
 
 // The test above asserts the EXPRESSION handlePushToItem uses, copied into the
 // test — which cannot notice the handler switching to a different
-// normalization (codex review). This one drives the real endpoint for every
+// normalization. This one drives the real endpoint for every
 // fixture case and reads the collapsed form back off the response, so the
 // table is pinned to the code path a client actually talks to.
 //

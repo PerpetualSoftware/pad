@@ -32,8 +32,8 @@ import (
 // Known limits, by decision (TASK-3917 r1): imported comments are NEVER
 // indexed, by import, by the backfill (imported = 0) or by an edit of an
 // imported comment (the reindex covers the whole body, so unedited
-// source-instance handles would bind): the caller skips the helper (TASK-3917
-// lead ruling bb0c9fc6). Accepted cost (TASK-3917 lead ruling, day 20): a
+// source-instance handles would bind): the caller skips the helper (TASK-3917).
+// Accepted cost (TASK-3917): a
 // mention a local user ADDS while editing an imported comment is not indexed
 // either. A comment mentioning more than
 // links.MaxMentionsPerComment distinct RESOLVED names indexes only the first

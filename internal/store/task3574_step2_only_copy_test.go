@@ -10,8 +10,8 @@ import (
 // step2 is the ONLY persisted copy of an edit (the originating tab's update
 // append failed but was still broadcast, the originating tab closed before its
 // catch-up, and another tab answered a joiner with a step2 carrying the edit),
-// recovery never saw that content. It now hands every step2 to recovery (lead
-// ruling); it still does not mark the item pending.
+// recovery never saw that content. It now hands every step2 to recovery
+// and it still does not mark the item pending.
 //
 // The frame is BUG-3134's real step2 answer (bug3136_step2_twin_test.go),
 // appended with no update twin, as the only row.
@@ -39,8 +39,7 @@ func TestStep2OnlyCopyReachesRecovery(t *testing.T) {
 			if !found {
 				t.Errorf("recovery's input omits the step2 that is the only copy of this content")
 			}
-			// Still not counted (lead ruling: whether a step2 should count is a
-			// separate design); recovery replays it when other rows trigger it.
+			// Still not counted; recovery replays it when other rows trigger it.
 			if in.Pending != 0 {
 				t.Errorf("a step2 counted toward pending: %d", in.Pending)
 			}

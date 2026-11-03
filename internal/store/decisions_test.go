@@ -335,7 +335,7 @@ func TestDecisionJobs_CommentEditAndDeleteEnqueue(t *testing.T) {
 	}
 }
 
-// Codex round 2 P1: dropping a claim (retry limit, gone item) must not take a
+// Dropping a claim (retry limit, gone item) must not take a
 // NEWER generation with it — a write that landed mid-evaluation is still owed.
 func TestDecisionJobs_DropPreservesANewerGeneration(t *testing.T) {
 	s, ws, col := decisionFixture(t)
@@ -367,7 +367,7 @@ func TestDecisionJobs_DropPreservesANewerGeneration(t *testing.T) {
 	}
 }
 
-// Codex round 3: a set whose keys CHANGED at an unchanged state is not
+// A set whose keys CHANGED at an unchanged state is not
 // complete. A rename keeps the count equal (old key stored, new key asked),
 // so a count over every stored key would report it complete and the new key
 // would never be answered.
@@ -387,14 +387,14 @@ func TestItemDecisions_HasStateCountsOnlyTheAskedKeys(t *testing.T) {
 	if ok, _ := s.HasItemDecisionsAtState(item.ID, "triage", "h", map[string]string{"urgent": ""}); !ok {
 		t.Fatal("control: a set whose every asked key is stored must read complete")
 	}
-	// Codex round 6: the same key under a different question hash (a reworded
+	// The same key under a different question hash (a reworded
 	// question, or a new model) is not an answer.
 	if ok, _ := s.HasItemDecisionsAtState(item.ID, "triage", "h", map[string]string{"urgent": "reworded"}); ok {
 		t.Fatal("an answer to an older question definition counted as an answer to the new one")
 	}
 }
 
-// Codex round 4: restore is a door. A job owed at delete time is dropped as
+// Restore is a door. A job owed at delete time is dropped as
 // gone; without an enqueue on restore the item would come back with stale
 // answers and nothing scheduled.
 func TestDecisionJobs_RestoreEnqueues(t *testing.T) {

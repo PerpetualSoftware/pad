@@ -25,8 +25,8 @@ const watchEventsKeepaliveInterval = sseKeepaliveInterval
 var watchListRevalInterval = 60 * time.Second
 
 // maxConsecutiveWatchReloadFailures bounds how many reval ticks in a row
-// a stale watch list is tolerated before it's cleared (TASK-2533 codex
-// round 5 finding 1). A single failed reload is ordinary, bounded
+// a stale watch list is tolerated before it's cleared (TASK-2533). A single failed
+// reload is ordinary, bounded
 // staleness — one tick behind, same as watchListRevalInterval's normal
 // "eventually consistent" contract — but an unbounded run of failures
 // would leave a DEAD watch set live indefinitely (a removed watch or a
@@ -162,7 +162,7 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 	defer release()
 
 	// Subscribe FIRST, replay (if resuming) as part of the SAME atomic
-	// call when a Last-Event-ID was supplied (codex round 1 finding 3):
+	// call when a Last-Event-ID was supplied:
 	// subscribing and separately reading the replay buffer left a window
 	// where a Notification published in between would be delivered
 	// TWICE — once from the replay loop below, once again from the live
@@ -296,10 +296,9 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 		watches = map[string]string{} // fail closed, not open
 	}
 	// consecutiveWatchReloadFailures tracks reval ticks in a row where
-	// loadWatchPredicates errored — see the reval.C case below (TASK-2533
-	// codex round 5 finding 1).
+	// loadWatchPredicates errored — see the reval.C case below (TASK-2533).
 	consecutiveWatchReloadFailures := 0
-	// TASK-2533 codex round 2 finding 2: EVERY notification — watch-
+	// TASK-2533: EVERY notification — watch-
 	// matched or addressed (KindPush) — must pass the same current-access
 	// check before delivery, not just watch-matched ones. visCache
 	// resolves per-workspace visibility lazily (a notification's
@@ -375,7 +374,7 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 	// buffered(1), so a burst coalesces into one revalidation. It stops with
 	// the stream.
 	// Registered under the wildcard workspace too: this stream spans every
-	// workspace, so every workspace kick must reach it (codex r1).
+	// workspace, so every workspace kick must reach it.
 	kick, unregisterKick := s.accessKicks().register(user.ID, workspaceWildcard)
 	defer unregisterKick()
 	revalC := make(chan time.Time, 1)
@@ -517,7 +516,7 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 				slog.Info("watch-events: credential invalidated mid-stream, closing", "user_id", user.ID)
 				return
 			}
-			// TASK-2533 codex round 4: reset the identity/visibility
+			// TASK-2533: reset the identity/visibility
 			// cache FIRST, unconditionally, BEFORE attempting the watch-
 			// list reload — the two used to be coupled (visCache.reset()
 			// only ran on the reload's success path), so a
@@ -535,7 +534,7 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 			fresh, ferr := s.loadWatchPredicates(r, user.ID)
 			if ferr != nil {
 				consecutiveWatchReloadFailures++
-				// TASK-2533 codex round 5 finding 1: keeping the stale
+				// TASK-2533: keeping the stale
 				// watch list across a SINGLE reload failure is bounded
 				// staleness (one tick behind, matching
 				// watchListRevalInterval's normal "eventually
@@ -573,7 +572,7 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 
 // watchVisCache resolves per-workspace watchAccessVisibility snapshots
 // lazily and caches them for the lifetime of one connection between
-// reval ticks (TASK-2533 codex round 2 finding 2). A notification's
+// reval ticks (TASK-2533). A notification's
 // workspace isn't known in advance the way the watches map's workspaces
 // are — an addressed-to-you assignment can arrive from ANY workspace the
 // caller has ever touched — so visibility is resolved on first sight of
@@ -581,7 +580,7 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 // reval tick that reloads `watches`, so a revoked grant or membership
 // takes effect within one tick without requiring a reconnect.
 //
-// TASK-2533 codex round 3: the round-2 version's reset() cleared only
+// TASK-2533: the earlier version's reset() cleared only
 // the per-workspace map — the cached *models.User itself was captured
 // ONCE at connect time and never re-fetched, so a mid-stream admin
 // demotion or disable left computeWatchAccessVisibility's admin bypass
@@ -708,7 +707,7 @@ func (c *watchVisCache) workspaceSlug(workspaceID string) string {
 
 // loadWatchPredicates returns the caller's active watches as
 // itemID -> predicate ("" = unconditional). Filtered through
-// filterWatchesByCurrentAccess (TASK-2533 codex round 1 finding 1) so a
+// filterWatchesByCurrentAccess (TASK-2533) so a
 // watch on an item the caller can no longer see — workspace membership
 // or grant revoked after the watch was created — doesn't keep delivering
 // live nudges for it.
@@ -753,7 +752,7 @@ func watchNotificationVisible(watches map[string]string, vis watchAccessVisibili
 	if n.Kind == watchevents.KindChat {
 		return false
 	}
-	// TASK-2533 codex round 2 finding 2: the caller's CURRENT access to
+	// TASK-2533: the caller's CURRENT access to
 	// the notification's collection/item is checked FIRST and applies
 	// UNIFORMLY to every kind below — watch-matched and addressed-to-you
 	// alike. The addressed-to-you branch used to skip this entirely: an
@@ -770,7 +769,7 @@ func watchNotificationVisible(watches map[string]string, vis watchAccessVisibili
 	// IDEA-2544 Phase 2 (TASK-2551): assignment is NOT addressed traffic.
 	// There used to be a branch here delivering a KindAssignment
 	// notification to its new assignee whether or not they watched the
-	// item. Dave's product call (day-33) removed it outright — no opt-in
+	// item. The product decision removed it outright — no opt-in
 	// flag, no config key: assignment is bookkeeping (who owns this),
 	// push is dispatch (where attention goes now), and conflating them
 	// meant one triage session assigning N items sprayed N notifications
@@ -788,7 +787,7 @@ func watchNotificationVisible(watches map[string]string, vis watchAccessVisibili
 	// plugin/skills/pad/SKILL.md) described assignment as addressed-to-you
 	// traffic until PLAN-2558 S6 (TASK-2591) reworded it and bumped the
 	// plugin version — installed plugins are version-pinned at install
-	// (live-proven day-33), so the bump is what made the fix reach users.
+	// so the bump is what made the fix reach users.
 	// The manifest no longer carries a version (BUG-3463), so an update
 	// now follows the commit that changed plugin/.
 
@@ -804,7 +803,7 @@ func watchNotificationVisible(watches map[string]string, vis watchAccessVisibili
 	// of their OWN session, not a fact about the item that anyone
 	// watching it has a claim on. Watching an item must not leak a push
 	// someone else addressed to themselves — that's the whole point of
-	// TargetUserID gating it (dispatcher review round 2, codex P1: the
+	// TargetUserID gating it (the
 	// original code fell through to the watch-map check on a
 	// non-matching TargetUserID, so any unconditional watcher on the item
 	// received every push addressed to every other user, instruction
@@ -948,7 +947,7 @@ func parseWatchPredicate(raw string) (field, value string, ok bool) {
 //
 // Actor mapping (TASK-2533 plan interpretation): DOC-2479's payload
 // lists a single `actor` field, but the monitor's own example output —
-// `PAD TASK-214 → done (Dave): fix verified` — names a PERSON, not a
+// `PAD TASK-214 → done: fix verified` — names a PERSON, not a
 // source category ("web"/"cli"/"agent"). Notification carries both
 // (Actor = category, ActorName = display name, mirroring the existing
 // events.Event shape); this maps the wire `actor` field to ActorName

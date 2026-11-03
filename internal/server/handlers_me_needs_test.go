@@ -360,8 +360,8 @@ func TestNeedsMe_TokenAllowlist(t *testing.T) {
 	})
 }
 
-// A user-bound token scoped to one workspace stays in it (lead ruling Q5,
-// stricter than search; BUG-3982).
+// A user-bound token scoped to one workspace stays in it (stricter than search;
+// BUG-3982).
 func TestNeedsMe_WorkspaceBoundTokenStaysInIt(t *testing.T) {
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newNfx(t, srv)
@@ -639,7 +639,7 @@ func TestNeedsMe_DegradedOnlyOnProviderError(t *testing.T) {
 	})
 }
 
-// Codex r1 P2: the attention read evaluates only items the caller can see, so
+// The attention read evaluates only items the caller can see, so
 // an item whose state cannot be built, hidden from the caller, sets no bit on
 // their response; the same failure on a visible item does degrade.
 func TestNeedsMe_DegradedNotLeakedByHiddenItemFailure(t *testing.T) {
@@ -725,7 +725,7 @@ func TestNeedsMe_RoutingRulesAndWaitingSince(t *testing.T) {
 			t.Fatalf("owner why %+v", r.Why)
 		}
 
-		// mentioned: a reference-collection mention counts too (lead ruling Q2).
+		// mentioned: a reference-collection mention counts too.
 		docs, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{Name: "Notes", Schema: `{"fields":[]}`})
 		if err != nil {
 			t.Fatal(err)
@@ -876,7 +876,7 @@ func TestNeedsMe_SnoozeLostAccess(t *testing.T) {
 	})
 }
 
-// Hunter r1 F1 end to end: with two open mentions on one item, each person's
+// End to end: with two open mentions on one item, each person's
 // row carries only their own mention.
 func TestNeedsMe_MentionedRowIsPerCaller(t *testing.T) {
 	needsBackends(t, func(t *testing.T, srv *Server) {

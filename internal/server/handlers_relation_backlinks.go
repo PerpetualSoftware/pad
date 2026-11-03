@@ -20,7 +20,7 @@ import (
 // where half the entries have a snippet and half have a field key, and every
 // consumer branching on which.
 //
-// THE COUNT IS THE VIEWER'S (ratified, day 55). Visibility comes from the same
+// THE COUNT IS THE VIEWER'S. Visibility comes from the same
 // guestResourceFilter the wiki backlinks use, so "referenced by 3" means "by 3
 // you can see". A true count would leak the existence of items the viewer has
 // no access to.

@@ -3,7 +3,7 @@ package store
 // BUG-2608 — the claim that summary mode SKIPS reverse-patch resolution is a
 // claim about work not done, which a response-shape assertion cannot make: a
 // handler that resolved everything and then blanked the fields would look
-// identical from outside (codex round 2).
+// identical from outside.
 //
 // This asserts it where it is observable — the paged raw reader returns rows
 // still carrying patch text and is_diff, while the resolved reader returns

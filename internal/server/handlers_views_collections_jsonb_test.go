@@ -105,7 +105,7 @@ func TestPatchView_FlexibleConfigShape(t *testing.T) {
 		}
 	})
 
-	// IDEA-1488 R1 codex P1.2: the `case '"'` branch in flexJSONToString
+	// IDEA-1488: the `case '"'` branch in flexJSONToString
 	// previously accepted JSON-encoded strings without checking the
 	// inner content's shape. The hardened path validates that the
 	// inner JSON is an object (or array for tags). These tests pin the
@@ -222,7 +222,7 @@ func TestPatchCollection_FlexibleSettingsShape(t *testing.T) {
 		}
 	})
 
-	// IDEA-1488 R1 codex P1.2 — see the matching view-side tests above
+	// IDEA-1488: see the matching view-side tests above
 	// for context. These pin the inner-shape validation of the
 	// JSON-encoded-string envelope.
 	t.Run("settings as JSON-encoded array string returns 400", func(t *testing.T) {

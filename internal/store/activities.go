@@ -27,7 +27,7 @@ const ActivityDebounceCooldown = 5 * time.Minute
 // tie in a stable-looking order that Postgres does not promise. Reading only
 // the top row would let a rapid human → agent → agent sequence land on the
 // human's row, refuse the merge on identity, and split the agent's run across
-// two rows (codex round 1 on this fix).
+// two rows.
 //
 // The rows that can crowd out the writer's own are narrower than "everything
 // in the window": the query already filters to one document, one account and
@@ -43,9 +43,9 @@ const ActivityDebounceCooldown = 5 * time.Minute
 // produce a wrong attribution — the direction this fix exists to prevent.
 // Raising it costs a longer scan on a write path; the number is a scan
 // ceiling, not a statement about how many rows the window may hold.
-// (Declined codex round 2, which read the bound as incomplete coalescing.)
+// (which read the bound as incomplete coalescing.)
 //
-// WHAT IT DOES NOT BOUND (codex rounds 5-7 on BUG-2770). It caps the rows
+// WHAT IT DOES NOT BOUND (BUG-2770). It caps the rows
 // the GO loop examines. It says nothing about the work the database does to
 // produce them: no index matches this query's five filters together
 // (document_id, action, created_at, actor, user_id — and there is no index
@@ -127,10 +127,10 @@ func (s *Store) CreateActivityDebounced(a models.Activity) (string, error) {
 	// reads its agent name from the row's metadata, and a merge overlays the
 	// incoming `agent` and bumps created_at, so a later update by a different
 	// agent under the same credentials would otherwise silently re-attribute
-	// an earlier comment (TASK-2760, codex round 3). A linked row therefore
+	// an earlier comment (TASK-2760). A linked row therefore
 	// ENDS a coalescing run; the next update starts a new one. That refusal
 	// lives in the UPDATE's own predicate and nowhere else, because a comment
-	// can link the row between this read and that write (codex round 6) — a
+	// can link the row between this read and that write — a
 	// check here would be a second guard that only looks load-bearing. That
 	// still holds with BUG-2770's compare-and-set arm on the same UPDATE:
 	// debounceRowUnchanged runs only AFTER a refusal, asks about the
@@ -205,7 +205,7 @@ func (s *Store) CreateActivityDebounced(a models.Activity) (string, error) {
 		// Merge metadata: accumulate "changes" strings from both old and new.
 		merged := mergeActivityMeta(existingMeta, a.Metadata)
 
-		// Stamped per ATTEMPT, not once before the loop (codex round 3): the
+		// Stamped per ATTEMPT, not once before the loop: the
 		// merge bumps created_at because the row now carries a change that
 		// just happened, and a retry that stamped the pre-loop instant would
 		// backdate a row whose newest change is younger than that — the
@@ -259,7 +259,7 @@ func (s *Store) CreateActivityDebounced(a models.Activity) (string, error) {
 			// since. Frozen: a fresh row starts the next run.
 			//
 			// "Frozen" is about THIS call, not forever: DeleteComment can
-			// unlink the row a moment later (codex round 8). The cost of
+			// unlink the row a moment later. The cost of
 			// having decided otherwise is one extra activity row, which is
 			// the same currency every other giving-up path here spends.
 			return s.CreateActivity(a)
@@ -296,7 +296,7 @@ func (s *Store) CreateActivityDebounced(a models.Activity) (string, error) {
 // used by both statements that ask it — the UPDATE that enforces it and the
 // probe that decides, after a refusal, which arm refused (BUG-2770).
 //
-// Shared rather than written twice on purpose (codex round 6): if the two
+// Shared rather than written twice on purpose: if the two
 // spellings could drift, the probe would answer a question the UPDATE is
 // not asking, and the disposition it picks — retry, or start a fresh row —
 // would silently be the wrong one. This makes them the same question by
@@ -461,7 +461,7 @@ func (s *Store) recentDebounceCandidateQ(q rowsQueryer, a models.Activity, cutof
 // between this probe and the next attempt, so its answer can be stale the
 // moment it returns; the loop re-reads and re-runs the CAS rather than
 // trusting it, and the worst a stale hint costs is one wasted attempt or
-// one extra activity row (codex round 7).
+// one extra activity row.
 func (s *Store) debounceRowUnchanged(id, metadata string) (bool, error) {
 	var found int
 	err := s.db.QueryRow(s.q(`
@@ -522,7 +522,7 @@ func mergeActivityMeta(existing, incoming string) string {
 	}
 	// A JSON `null` blob unmarshals with NO error and leaves the map nil,
 	// and the overlay below writes into existMap — assignment to a nil map
-	// panics (codex round 3). The error branches above cannot catch this
+	// panics. The error branches above cannot catch this
 	// because there is no error: `null` is valid JSON, valid JSONB on
 	// Postgres, and storable in the TEXT column on SQLite. Ranging over a
 	// nil newMap is already safe; existMap is the one that must be real.
@@ -631,8 +631,7 @@ func collapseChanges(s string) string {
 		// emitted both entries because reflect.DeepEqual saw real
 		// changes (see TestDiffFieldsSameCardinalityArrayChangeStillReported).
 		// We can't recover the raw values from the merged string, so
-		// we never drop a run that touched a lossy summary. Per Codex
-		// review round 3 [P2].
+		// we never drop a run that touched a lossy summary.
 		hasLossySummary bool
 	}
 
@@ -725,11 +724,11 @@ func collapseChanges(s string) string {
 	//     wouldn't emit it unless reflect.DeepEqual detected a real
 	//     change. Only collapsed runs can synthesise a fake from==to.
 	//   - hadTransition: distinguishes a real cancellation from a
-	//     repeated same-display run (Codex round 2 [P2]).
+	//     repeated same-display run.
 	//   - !hasLossySummary: a `(1 note) → (2 notes) → (1 note)` run
 	//     visibly transitions and visibly returns, but the underlying
 	//     notes can be entirely different objects — the display labels
-	//     are lossy. Never drop those (Codex round 3 [P2]).
+	//     are lossy. Never drop those.
 	kept := collapsed[:0]
 	for _, e := range collapsed {
 		if e.raw == "" && e.mergedCount > 1 && e.from == e.to && e.hadTransition && !e.hasLossySummary {
@@ -812,7 +811,7 @@ func (s *Store) ListUserActivity(userID string, params models.ActivityListParams
 	// at the public page-size ceiling of 50 still works without the store
 	// silently truncating to 50 and tricking next_offset into reporting
 	// null. The handler is the source of truth for the per-page maximum;
-	// this is an inner-safety cap only (Codex review on PR #601).
+	// this is an inner-safety cap only (#601).
 	if limit > 100 {
 		limit = 100
 	}
@@ -985,7 +984,7 @@ func (s *Store) ListDocumentActivity(documentID string, params models.ActivityLi
 // one cursor, so an activity can land inside its window while the comment
 // that links it falls outside the comment window, and a handler that only
 // suppresses activities whose comment it happens to hold then emits a
-// standalone "commented" card for it (TASK-2760, codex round 2). Excluding at
+// standalone "commented" card for it (TASK-2760). Excluding at
 // the source makes the suppression exact regardless of either window, and
 // frees the window's slots for rows that will actually render. The lookup is
 // a point probe on idx_comments_activity, present on both dialects.

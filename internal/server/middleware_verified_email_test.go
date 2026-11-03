@@ -502,7 +502,7 @@ func TestVerifiedEmail_OAuthAuthorize_BlocksUnverified(t *testing.T) {
 	assertBlocked(t, rr, "unverified oauth authorize render")
 }
 
-// BUG-2136, codex r1: declining by code is the other answer to the same
+// BUG-2136: declining by code is the other answer to the same
 // invitation, so it passes the gate exactly as accepting does.
 func TestVerifiedEmail_InvitationDecline_CarveOut(t *testing.T) {
 	f := newVerifiedEmailFixture(t, true)

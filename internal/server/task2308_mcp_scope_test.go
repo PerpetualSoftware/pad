@@ -150,7 +150,7 @@ func TestTASK2308_PassThroughCases(t *testing.T) {
 			`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"pad_item","arguments":{"Action":"create"}}}`, ""},
 		{"read token, body past the peek bound", readTok, oversized, ""},
 		// Messages mcp-go itself refuses or runs no tool for: answered as
-		// before, never challenged (codex round 1).
+		// before, never challenged.
 		{"read token, no jsonrpc member", readTok,
 			`{"id":1,"method":"tools/call","params":{"name":"pad_item","arguments":{"action":"create"}}}`, ""},
 		{"read token, jsonrpc 1.0", readTok,

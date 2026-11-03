@@ -303,7 +303,7 @@ func TestTask3389_AccountDeletionScrubsCreator(t *testing.T) {
 	}
 }
 
-// Codex round 1 [P2]: the block needs only the collection's schema. Reading the
+// The block needs only the collection's schema. Reading the
 // whole row broke item mutations on a collection with a legal NULL column.
 func TestTask3389_NullCollectionColumnsDoNotBlockMutations(t *testing.T) {
 	s, ws, coll, u := task3389Fixture(t)
@@ -322,7 +322,7 @@ func TestTask3389_NullCollectionColumnsDoNotBlockMutations(t *testing.T) {
 	}
 }
 
-// Codex round 1 [P2]: the account scrub erases the deleted user's identity in
+// The account scrub erases the deleted user's identity in
 // the block's CREATOR, and must not touch projected FIELD values, which are the
 // item's own data (a declared text field may well be called user_id).
 func TestTask3389_ScrubLeavesProjectedFieldsAlone(t *testing.T) {
@@ -399,7 +399,7 @@ func TestTask3389_NonObjectFieldsBlobDoesNotBlockWrites(t *testing.T) {
 	t.Fatal("no item.updated event for the renamed item")
 }
 
-// Lead ruling on #1763: data-shape problems must NEVER fail a human write. A
+// #1763: data-shape problems must NEVER fail a human write. A
 // malformed schema or an unknown field type degrades the block (fields
 // omitted, partial: true) and the edit goes through. Only DB errors propagate.
 func TestTask3389_DataShapeProblemsDegradeNotFail(t *testing.T) {
@@ -495,7 +495,7 @@ func TestTask3389_PartialLoggedOncePerCollection(t *testing.T) {
 	}
 }
 
-// codex r3 P2: a blob holding a valid object followed by trailing bytes is not
+// A blob holding a valid object followed by trailing bytes is not
 // a JSON object. It must project partial, not as a clean block of the leading
 // object's fields.
 func TestTask3389_TrailingGarbageBlobIsPartial(t *testing.T) {
@@ -510,7 +510,7 @@ func TestTask3389_TrailingGarbageBlobIsPartial(t *testing.T) {
 	}
 }
 
-// codex r3 P3: the once-per-collection registry stops growing at its cap.
+// The once-per-collection registry stops growing at its cap.
 func TestTask3389_WarnRegistryIsCapped(t *testing.T) {
 	saved := appProjectionWarnCount.Load()
 	appProjectionWarnCount.Store(appProjectionWarnCap)

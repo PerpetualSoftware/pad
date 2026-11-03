@@ -12,7 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-// TASK-2225, lead condition: the GET responses compressSkips leaves alone
+// TASK-2225: the GET responses compressSkips leaves alone
 // because they carry a secret are a DENY list, and a deny list rots: the next
 // GET route that returns a secret would be compressed silently. This census
 // holds every GET route the router serves, each classified compress or skip

@@ -260,7 +260,7 @@ func (s *Store) UpdateWebhookFailure(id string, failed bool) error {
 		`), ts, id); err != nil {
 			return fmt.Errorf("update webhook failure: %w", err)
 		}
-		// TASK-3409 (codex r2): the deactivation is where the endpoint stops
+		// TASK-3409: the deactivation is where the endpoint stops
 		// being owed what it was still owed, so its pending rows are settled
 		// here, in the same transaction, as dropped and counted. The event
 		// whose failure caused it has no row yet (its outcome is recorded

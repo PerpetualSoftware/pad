@@ -194,7 +194,7 @@ type DashboardSuggestion struct {
 	// ReminderID is set only on suggestions produced by a fired reminder
 	// (IDEA-2641). It is the id an acknowledgement addresses — without it a
 	// poller reading this surface can SEE the reminder and has no way to
-	// retire it, which was the shape codex round 1 caught: the docs told
+	// retire it, which was a real gap: the docs told
 	// agents to ack what they saw here, and the payload did not carry the
 	// handle.
 	ReminderID string `json:"reminder_id,omitempty"`
@@ -359,9 +359,9 @@ func isItemDone(fieldsJSON, collectionID string, ctxMap map[string]doneContext) 
 
 // childProgressState says how one child counts toward its parent's progress:
 // whether it is in the total, and whether it is done. An ABANDONED child
-// (a terminal value that closes without delivering) is in neither (BUG-3195,
-// lead ruling), so progress never reads 100% with nothing delivered. Nor is
-// a child of a REFERENCE collection (PLAN-3535), whatever its status. Every
+// (a terminal value that closes without delivering) is in neither (BUG-3195), so
+// progress never reads 100% with nothing delivered. Nor is a child of a
+// REFERENCE collection (PLAN-3535), whatever its status. Every
 // Go-side progress loop calls this; the SQL side is
 // store.buildChildrenUncountedExpr, from the same resolver.
 func childProgressState(fieldsJSON, collectionID string, ctxMap map[string]doneContext) (counted, done bool) {
@@ -655,7 +655,7 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 		// degrading to an empty map would globally skew active_plans
 		// progress, plan_completion attention, orphan detection, and
 		// suggested_next. Mirror the sibling batch queries (allItems,
-		// GetBlocksEdges) which also return on error (BUG-2002, Codex review).
+		// GetBlocksEdges) which also return on error (BUG-2002).
 		kids, cbErr := s.store.GetChildItemsForParents(activePlanIDs)
 		if cbErr != nil {
 			return nil, cbErr
@@ -783,7 +783,7 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 	// the surface an agent polls. The distinction is observable: the reminder
 	// is absent from here and present in the table.
 	// Visibility is scoped IN THE QUERY, using the same collection/item id sets
-	// every other section here reads through `allItems` (codex rounds 1 and 4).
+	// every other section here reads through `allItems`.
 	// Filtering after a bounded window is what let fifty invisible rows hide a
 	// visible one forever, so the only filter left above is terminality, which
 	// SQL cannot evaluate — a collection's schema defines it. That one is
@@ -1091,7 +1091,7 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 	var candidates []suggestion
 
 	// workable: the collections whose open items may fill the fallback tier
-	// (BUG-3453, lead-ruled): not a system collection, and the schema
+	// (BUG-3453): not a system collection, and the schema
 	// declares a `priority` or `severity` field. Across every built-in
 	// template that is Tasks, Features, Backlog and Bugs; Conventions (a
 	// system collection with a priority field), Ideas, Docs, Plans and the
@@ -1197,7 +1197,7 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 		// never did — the only gate below is collection VISIBILITY, so an
 		// idea or a doc could always reach suggested_next. The overdue bypass
 		// (IDEA-2641) widened that from high-priority items to any overdue
-		// one, which is how codex round 5 found it.
+		// one, which is how the gap arose.
 		//
 		// Rather than narrow the branch — which would silently drop the
 		// high-priority non-task items it has surfaced since BUG-1082 — the
@@ -1411,7 +1411,7 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 	// the workspace is. But the COMBINED list is then trimmed back to the same
 	// cap this surface has always had.
 	//
-	// Trimming was the round-11 correction. Prepending after the cap made
+	// Trimming is deliberate. Prepending after the cap made
 	// suggested_next return up to eight entries where every consumer — the web
 	// dashboard, `pad project next`, `pad project ready` — was written against
 	// three. Worse, it silently falsified a decision recorded in
@@ -1451,7 +1451,7 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 				Reason:     "REMINDER due — armed for " + pr.RemindAt,
 			})
 		}
-		// ONE ENTRY PER ITEM ACROSS THE TWO SOURCES (codex round 17). An item
+		// ONE ENTRY PER ITEM ACROSS THE TWO SOURCES. An item
 		// can be both a fired reminder and an ordinary candidate (in progress,
 		// high priority, overdue); the reminder entry carries the ack handle
 		// and the ordinary one carries nothing the reminder does not, so the

@@ -74,7 +74,7 @@ func (f u11Fix) mint(t *testing.T, itemID, installID, key string) (int, string, 
 }
 
 // redeem is §6's POST /api/app/v1/context/redeem: no workspace in the path,
-// the token's own (codex r1 on U11).
+// the token's own.
 func (f u11Fix) redeem(code string) *httptest.ResponseRecorder {
 	return appDo(f.srv, "POST", appAPIPrefix+"/context/redeem", f.token, map[string]string{"code": code})
 }
@@ -129,7 +129,7 @@ func TestTask3414_MintRedeemAndReplay(t *testing.T) {
 }
 
 // Every refusal of a redeem is one body, whatever the reason; and a
-// mismatch burns the code (lead ruling, day 88: consume first).
+// mismatch burns the code (consume first).
 func TestTask3414_RedeemRefusalsAreIndistinguishable(t *testing.T) {
 	f := u11Fixture(t)
 	db := f.srv.store.DB()
@@ -220,7 +220,7 @@ func TestTask3414_RedeemRefusalsAreIndistinguishable(t *testing.T) {
 	}
 }
 
-// The mint re-checks what the redeem will (lead ruling, day 88), with one
+// The mint re-checks what the redeem will, with one
 // refusal body.
 func TestTask3414_MintRefusalsAreIndistinguishable(t *testing.T) {
 	f := u11Fixture(t)
@@ -270,7 +270,7 @@ func TestTask3414_MintRefusalsAreIndistinguishable(t *testing.T) {
 	}
 }
 
-// The lead's pin (day 88): access revoked between mint and redeem refuses
+// Access revoked between mint and redeem refuses
 // the redeem, read from the viewer's CURRENT memberships, not the mint's.
 func TestTask3414_RevokedBetweenMintAndRedeem(t *testing.T) {
 	f := u11Fixture(t)
@@ -462,14 +462,14 @@ func TestTask3414_DelegatedTokenCannotRedeem(t *testing.T) {
 		t.Fatalf("a delegated redeem: %d %s", got.Code, got.Body.String())
 	}
 	// The refused attempt consumed the code: the app's service token
-	// cannot redeem it afterwards (codex r2 on U11).
+	// cannot redeem it afterwards.
 	f.token = mintServiceToken(t, f.srv, f.in)
 	if rr := f.redeem(code); rr.Code != http.StatusNotFound {
 		t.Fatalf("a service redeem after a delegated attempt: %d %s", rr.Code, rr.Body.String())
 	}
 }
 
-// codex r1 on U11: the URL is built from the validated origin, not the raw
+// The URL is built from the validated origin, not the raw
 // stored base_url.
 func TestTask3414_URLUsesTheNormalizedOrigin(t *testing.T) {
 	f := u11Fixture(t)
@@ -482,7 +482,7 @@ func TestTask3414_URLUsesTheNormalizedOrigin(t *testing.T) {
 	}
 }
 
-// codex r1 on U11: the mint and redeem transactions read nothing through the
+// The mint and redeem transactions read nothing through the
 // pool. With ONE connection, a pool read inside them deadlocks
 // deterministically. Every viewer branch is armed: a full member, a
 // restricted member (collection access list), a non-member guest (an item

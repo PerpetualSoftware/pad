@@ -232,7 +232,7 @@ func TestBUG3348_RegisterWithInvitationCodeDoesNotVerifyOnCloud(t *testing.T) {
 	})
 }
 
-// Codex r2: when the invited signup's membership write fails and its outcome
+// When the invited signup's membership write fails and its outcome
 // cannot be read, the handler KEEPS the account (BUG-2715) and returns early.
 // That account is unverified on cloud, so it must already have been sent its
 // verification link — a retry hits the duplicate-email 409.

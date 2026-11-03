@@ -231,8 +231,8 @@ func TestCountBillingAggregates(t *testing.T) {
 
 	// Mix: explicit-empty plan (older legacy rows) + explicit "free"
 	// (current default) + pro recent + pro old + self-hosted. Both the
-	// '' and 'free' rows must roll up into the same "free" bucket — Codex
-	// round 2 caught this regression where GROUP BY plan (raw column)
+	// '' and 'free' rows must roll up into the same "free" bucket —
+	// otherwise a regression appears where GROUP BY plan (raw column)
 	// produced two scanned rows both labelled "free" that overwrote each
 	// other in the result map.
 	insertWithPlanAndDate(t, s, "legacy_blank@test.com", "", now.Add(-100*24*time.Hour))

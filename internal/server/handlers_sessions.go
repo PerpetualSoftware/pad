@@ -63,7 +63,7 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Codex round 2, P2. writeJSON sets no Cache-Control and the
+	// WriteJSON sets no Cache-Control and the
 	// jsonContentType middleware only sets Content-Type, so without
 	// this the response is heuristically cacheable. Two reasons that's
 	// wrong here, beyond matching the house pattern for per-user
@@ -87,8 +87,7 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		// an empty list is a lie in exactly the direction this endpoint
 		// exists to prevent. The nil branch covers "never wired"; this one
 		// covers "wired but unreachable right now" — a distinction only an
-		// out-of-process registry can produce (codex round 1, P1 on
-		// BUG-2698), and one the caller must not have to guess at.
+		// out-of-process registry can produce (BUG-2698), and one the caller must not have to guess at.
 		slog.Warn("sessions: presence read failed", "error", err, "user_id", user.ID)
 		writeError(w, http.StatusServiceUnavailable, "unavailable", "Session presence is not available")
 		return

@@ -25,8 +25,7 @@ import (
 //     `(fullCollIDs, grantedItemIDs)` shape returned by
 //     guestResourceFilter. Pagination correctness depends on this:
 //     filtering AFTER the fetch would let hidden rows consume LIMIT
-//     slots and shrink pages silently — Codex round-1 P1 and
-//     round-2 P1 both flagged variants of that bug.
+//     slots and shrink pages silently.
 //
 // Visibility model passed to the store:
 //   - admin or full-access member          → Unrestricted=true
@@ -73,7 +72,7 @@ func (s *Server) handleGetItemBacklinks(w http.ResponseWriter, r *http.Request) 
 	// `remaining = 301 - len(sameWs)` while the store fetched only
 	// 50 same-ws rows — same-ws tier exhausted at row 50 but the
 	// handler thinks it has 251 same-ws slots left, so the cross-
-	// ws slice starts incorrectly. Codex round 3 P2.
+	// ws slice starts incorrectly.
 	if limit > 300 {
 		limit = 300
 	}
@@ -167,7 +166,6 @@ func (s *Server) handleGetItemBacklinks(w http.ResponseWriter, r *http.Request) 
 			// workspace by slug. Without this, an MCP token
 			// consented for workspace A could leak backlinks from
 			// workspace B that the user has independent access to.
-			// Codex round 2 P1.
 			allowedSlugs := TokenAllowedWorkspacesFromContext(r.Context())
 			// Pass the bearer-auth signal so the store-layer admin
 			// bypass mirrors BUG-1616's policy: bearer-borne admin

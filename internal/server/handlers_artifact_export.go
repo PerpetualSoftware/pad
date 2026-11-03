@@ -24,7 +24,7 @@ import (
 // TASK-2657.
 // The returned string is a human-facing reason when ok is false: the two
 // refusals are different facts and an operator debugging an export needs to
-// know WHICH. Collapsing them was the round-3 finding — a collection that
+// know WHICH. Collapsing them was a bug — a collection that
 // declares `widget` was told it declares nothing at all.
 func kindForCollection(coll *models.Collection) (artifact.Kind, bool, string) {
 	if coll == nil {

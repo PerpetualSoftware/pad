@@ -91,7 +91,7 @@ func TestListUserActivity(t *testing.T) {
 		t.Fatalf("cap: want 3 got %d", len(got))
 	}
 
-	// Regression for Codex finding: handler's limit+1 probe at the public
+	// Handler's limit+1 probe at the public
 	// max (50) must reach the store untruncated. Seed 51 activities,
 	// request 51 from the store, expect 51 rows.
 	for i := 0; i < 48; i++ {

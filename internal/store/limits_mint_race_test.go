@@ -231,7 +231,7 @@ func TestLimitedMint_WithoutOption_NotEnforced(t *testing.T) {
 }
 
 // Both workspace mints take their two locks in ONE order: the workspace row's
-// UNIQUE slug entry, then the owner's users row (review round 2 on PR A). This
+// UNIQUE slug entry, then the owner's users row. This
 // builds the interleaving the opposite order deadlocks on. An import-shaped
 // transaction has inserted slug "same-name" and not committed. A limited
 // create of the same name is then observed waiting on that row. The import
