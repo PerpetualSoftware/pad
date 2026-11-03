@@ -11,7 +11,7 @@ import { IMPORT_FINISHING_MS, IMPORT_STALL_MS } from './importUpload';
 // itself spend up to a window on its last read, is given that time).
 //
 // Read from the Go source, because that constant is the server's truth and no
-// endpoint publishes it (no capabilities plumbing, by the same ruling).
+// endpoint publishes it (no capabilities plumbing, for the same reason).
 
 function serverIdleMs(): number {
 	const src = readFileSync(resolve(process.cwd(), '../internal/server/import_read_deadline.go'), 'utf8');

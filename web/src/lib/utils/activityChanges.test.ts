@@ -119,7 +119,7 @@ describe('parseFieldChanges', () => {
 	// The surfaces that render the change string as TEXT rather than as pills.
 	// The audit page's fallback is the sharp one: it renders raw when the
 	// parsed list is empty, so suppressing every pill on a legacy row put the
-	// wall of text back on the very surface the ruling was about.
+	// wall of text back on the very surface the pill rule was about.
 	describe('formatChangesForDisplay', () => {
 		it('drops suppressed fields and keeps the rest verbatim', () => {
 			expect(

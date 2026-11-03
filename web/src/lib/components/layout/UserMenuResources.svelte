@@ -129,8 +129,7 @@
 	   the elements rendered here without explicit :global() opt-in. We
 	   mirror the parent's rules under `:global(.user-dropdown)` so the
 	   dropdown surface stays the styling boundary — the rules apply to
-	   anything dropped into the menu, but never leak outside it.
-	   (TASK-905) */
+	   anything dropped into the menu, but never leak outside it (TASK-905). */
 	:global(.user-dropdown) :global(.dropdown-divider) {
 		height: 1px;
 		background: var(--border);

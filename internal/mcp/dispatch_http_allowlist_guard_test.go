@@ -77,8 +77,8 @@ package mcp
 // being wrong: extend the grammar (and the sets it feeds) rather than
 // loosening the assertion or exempting the new form.
 //
-// Coverage is therefore bounded by the grammar, not by the reviewer's
-// imagination — an adversarial reviewer will always name one more
+// Coverage is therefore bounded by the grammar, not by the
+// imagination of whoever reads it: someone will always name one more
 // registration style, and teaching the scanner to TRUST more shapes
 // buys coverage of styles nobody writes at the cost of the fail-closed
 // posture that makes the rest sound.

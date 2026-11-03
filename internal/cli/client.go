@@ -1929,7 +1929,7 @@ func filenameFromContentDisposition(header string) string {
 //
 // Buffers the entire response in memory; do NOT use for endpoints that
 // can return arbitrarily large bodies (e.g. workspace export bundles).
-// Reach for RawStream for those callers — see TASK-884 review feedback.
+// Reach for RawStream for those callers.
 func (c *Client) RawGet(path string) ([]byte, error) {
 	req, err := c.newRequest("GET", path, nil)
 	if err != nil {

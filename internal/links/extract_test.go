@@ -224,7 +224,7 @@ func TestExtractWikiLinks_WorkspaceRefForms(t *testing.T) {
 		// the foreign workspace's own canonical prefix at query time.
 		// What we store IS the verbatim ref the user wrote; matching
 		// happens via LOWER() at lookup. Document this so a future
-		// reviewer doesn't try to "fix" it.
+		// reader doesn't try to "fix" it.
 		got := ExtractWikiLinks("[[other-ws::task-9]]")
 		if len(got) != 1 || got[0].Kind != WikiLinkKindWorkspaceRef {
 			t.Fatalf("expected workspace_ref kind, got %+v", got)

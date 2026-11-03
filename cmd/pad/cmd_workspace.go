@@ -1196,7 +1196,7 @@ Both formats can be re-imported via 'pad workspace import'.`,
 			// Stream rather than buffer. Workspaces with multi-GB of
 			// attachments would otherwise pin the entire bundle in
 			// memory before the first byte hits disk — defeats the
-			// server-side streaming design and risks OOM (review feedback on PR #305).
+			// server-side streaming design and risks OOM.
 			var dest io.Writer = os.Stdout
 			var f *os.File
 			if outputFile != "" {

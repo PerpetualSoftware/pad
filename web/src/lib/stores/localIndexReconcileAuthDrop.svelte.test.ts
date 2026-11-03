@@ -18,7 +18,7 @@ import { localIndex } from './localIndex.svelte';
  *
  * TWO NEGATIVE LEGS ARE THE POINT. A cap hit and a transient failure must NOT
  * raise it — that is today's behaviour and this change deliberately does not
- * widen it. (The ruling anticipated the banner deriving from `pendingResyncFor`,
+ * widen it. (The original plan anticipated the banner deriving from `pendingResyncFor`,
  * which is set in both those cases; that would have made the banner appear where
  * it never has. See the trail — the divergence is deliberate and declared.)
  */

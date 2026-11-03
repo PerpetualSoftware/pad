@@ -120,7 +120,7 @@ handlers — onchange is never called.
 	// number, `"false"` under a checkbox) is shown as its raw stored text with a
 	// note, never fed to the type's editor: the checkbox read `!!"false"` as
 	// checked and its toggle wrote a boolean over the string, and the number
-	// step converted the string. The ruling: an edit REPLACES the value
+	// step converted the string. The rule: an edit REPLACES the value
 	// explicitly, never a silent coercion. Replace opens the ordinary editor on
 	// an EMPTY value; nothing is written until the user sets one.
 	//
@@ -1196,7 +1196,7 @@ handlers — onchange is never called.
 	// structurally, one layer up.
 	//
 	// Left standing, it cost real work: BUG-3039 was built on it, reported a
-	// second hole that does not exist, and had a ruling made on that report
+	// second hole that does not exist, and a decision was made on that report
 	// before the call site was read.
 	//
 	// The trade-off: a typed-but-unflushed value is lost when the user
@@ -1364,8 +1364,7 @@ handlers — onchange is never called.
 		// Three bases, most-recent-first. `value` is the parent prop and LAGS
 		// anything we have sent but not seen come home, so stepping from it turns
 		// `5` then `+1` into `oldValue + 1` and the typed 5 is gone (pre-existing, and reachable
-		// now that `awaitingEcho` records
-		// the missing middle case).
+		// now that `awaitingEcho` records the missing middle case).
 		// A burst typed under a previous identity is not a base to step from.
 		keepBurstIfOurs();
 		const base = hasPending

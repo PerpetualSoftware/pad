@@ -112,7 +112,7 @@ test('a draft typed at the end of a body stored with a trailing newline restores
 	await again.context().close();
 });
 
-// Ruling 0337bf77: a rich draft's anchors are in the editor's form, and
+// A rich draft's anchors are in the editor's form, and
 // only an open editor applies a patch to the document in that form (with none,
 // the server matches the stored row, where a raw-only form like underscore
 // emphasis makes them miss). So the patch restore waits until this tab's

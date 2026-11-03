@@ -255,7 +255,7 @@ describe('the roles board fences every async commit point', () => {
 
 	it('the identity-change listener resets every piece of transient interaction state', () => {
 		// ENUMERATED rather than sampled, and the enumeration is the point
-		// (CONVE-35). Rounds 2 and 3 each returned members of ONE class, found
+		// (CONVE-35). Members of ONE class were found
 		// one at a time — an open role modal, an open new-item modal, a stuck
 		// `newItemSaving`, a stuck `isDragging`, stale lane-drag styling. A loop
 		// that keeps finding new members of a class is measuring the enumeration,

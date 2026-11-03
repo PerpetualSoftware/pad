@@ -229,7 +229,7 @@ let pendingCreates: { seq: number; ws: Workspace }[] = [];
 // The keyed single-flight loader fencing `loadAll` (TASK-2947) — the same
 // primitive `collections.svelte.ts` uses, which is the point: generation,
 // join slot and ownership-guarded cleanup had been hand-rolled in both stores
-// and drifted three times in one afternoon (TASK-2200 rounds 3, 4 and 5).
+// and drifted three times in one afternoon (TASK-2200).
 //
 // `loadAll` takes no argument, so there is one key. It is still the KEYED
 // primitive rather than a bespoke unkeyed one, because a second shape would be

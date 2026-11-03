@@ -47,7 +47,7 @@
 		error = '';
 		try {
 			const res = await api.auth.setTimezone(browser);
-			// Counted only once it has succeeded (TASK-4101 PR2a r2 H2-M2).
+			// Counted only once it has succeeded (TASK-4101).
 			noteExplicitTimezoneWrite();
 			if (isSameIdentity() && res.timezone !== undefined) authStore.setTimezone(userId, res.timezone);
 		} catch (err) {

@@ -108,7 +108,7 @@ func captureSkillStdout(t *testing.T, fn func()) string {
 	return <-done
 }
 
-// Pad workspace init/link skipped every installed skill, so an
+// pad workspace init/link skipped every installed skill, so an
 // unedited older copy was never updated there. It now asks the same door.
 func TestBUG3466_WorkspaceInitUpdatesAnOlderUneditedSkill(t *testing.T) {
 	project := setupSkillTest(t)

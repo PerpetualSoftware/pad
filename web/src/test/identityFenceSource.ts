@@ -60,10 +60,10 @@ import { readFileSync } from 'node:fs';
  *
  * AN EXEMPTION IS THE MOST DANGEROUS LINE IN A GUARD — it is the one place
  * the instrument agrees not to look (BUG-3084 checkpoint 21, the rule the
- * collection-page fold paid for four times in three review rounds).
+ * collection-page fold paid for four times over).
  *
  * Thirteen findings across #1379's rounds; two were defects in the page.
- * Eleven were these guards failing OPEN, and the reviewer defeated the guard
+ * Eleven were these guards failing OPEN, and each guard was defeated
  * four separate times AFTER it had been fixed — every time by constructing a
  * shape and running it, never by reading:
  *   - a disposition that covered a whole EFFECT exempted the effect's own
@@ -526,8 +526,8 @@ export function trackedEpochReadDetails(
  * line all come out right, and the core's own suite drives each of them —
  * with the legacy regex run on the same fixture as the control that goes red.
  *
- * WHAT A STATEMENT IS, here (four shapes
- * the first scanner got wrong, every one accepted by the compiler):
+ * WHAT A STATEMENT IS, here. Four shapes the first scanner got
+ * wrong, every one accepted by the compiler:
  *   - brackets are skipped with `matchDelimiter`, which already understands
  *     strings, template interpolations and REGEX LITERALS — a hand-rolled
  *     depth counter read `let open = /{/;` as an open brace and swallowed
@@ -554,9 +554,9 @@ export function trackedEpochReadDetails(
  * phantom — so the search is now the same literal-aware walk the statement
  * scanner uses, from the outside in.
  *
- * THE POPULATION TABLE (CONVE-35: five review rounds each found new members
+ * THE POPULATION TABLE (CONVE-35: repeated passes each found new members
  * of one class — grammar the scanner had not been told about — so the class
- * is written down and reviewed as a table rather than found one round at a
+ * is written down and reviewed as a table rather than found one case at a
  * time). What this scanner READS, and what it REFUSES:
  *
  *   read    `let a = $state(…)`, typed, generic, multi-line annotation,

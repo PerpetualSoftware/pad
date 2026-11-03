@@ -525,10 +525,9 @@ describe('TASK-2922 — what an optimistic upsert hands on', () => {
 	/**
 	 * THE REPAIR PATHS, enumerated rather than sampled (CONVE-18).
 	 *
-	 * Rounds 2 and 3 both attacked the same claim — that a refused durable write
-	 * is always re-supplied — from different directions, which is a reviewer
-	 * sampling a population I had not written down. The population is small, so
-	 * here it is in full, with the leg that pins each:
+	 * The claim that a refused durable write is always re-supplied can be
+	 * attacked from several directions, so the population of cases is written
+	 * down rather than sampled. It is small, so here it is in full, with the leg that pins each:
 	 *
 	 *   1. A later delta CARRIES the row → pinned in
 	 *      localIndexScopeWriteFence.idb.test.ts.

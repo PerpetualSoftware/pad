@@ -987,7 +987,7 @@ describe('the collection page searches every match, not the first 200 (BUG-3710)
 		expect(vi.mocked(api.search).mock.calls.length).toBe(1);
 	});
 
-	// Heron's ruling on BUG-3710: the 1000 cap stays, but never silently.
+	// BUG-3710: the 1000 cap stays, but never silently.
 	const capPage = (from: number, n: number, total: number | undefined) => ({
 		results: Array.from({ length: n }, (_, i) => ({ item: { id: `m${from + i}` } })),
 		total,
@@ -1236,7 +1236,7 @@ describe('the collection page settles a reorder to what the server stored (BUG-3
 		expect(reorderState.current.get('b'), 'a stale read-back overwrote the newer row').toMatchObject({ seq: 22, sort_order: -1024 });
 	});
 
-	// The rework (BUG-3699 plan, Heron's ruling): bounded read-back retries,
+	// The rework (BUG-3699 plan): bounded read-back retries,
 	// then the last confirmed order and a stale scope; never an unconfirmed
 	// order that looks settled.
 	const staleCalls = () => vi.mocked(localIndex.markScopeStale).mock.calls;
@@ -1494,7 +1494,7 @@ describe('the collection page settles a reorder to what the server stored (BUG-3
 					expectEveryCardOnServer(server);
 				});
 
-	// Read-backs completing OUT OF ORDER (Heron, GO-blocking): two landed
+	// Read-backs completing OUT OF ORDER (a blocking case): two landed
 	// reorders on B, their read-backs answering newer-first and older-first.
 	for (const newerFirst of [true, false])
 		it(`overlap: both land, read-backs answer ${newerFirst ? 'newer' : 'older'} first`, async () => {

@@ -230,7 +230,7 @@ func TestMCPUpdate_EmptyTagsStillFiltered(t *testing.T) {
 func strPtr(s string) *string { return &s }
 
 // TestMCPUpdate_EmptyAssignAliasIsStillANoOp pins the deliberate LIMIT of
-// TASK-2571's fix, so the next reader (or the next reviewer) finds a
+// TASK-2571's fix, so the next reader finds a
 // decision here rather than an oversight.
 //
 // `assign` is schema-declared; `assigned_user_id` is not. Every other

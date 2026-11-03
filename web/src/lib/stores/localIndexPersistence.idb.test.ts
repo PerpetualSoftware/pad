@@ -10,7 +10,7 @@ import { loadPersistence, rawItem, openSecondConnection, harnessDbName } from '.
  * and explicitly says it does NOT cover the interleaving outcome. This file
  * covers exactly that outcome through a real (fake-indexeddb) database.
  *
- * The ruling on the PLAN-2636 trail: the family's races are SNAPSHOT-
+ * The finding on the PLAN-2636 trail: the family's races are SNAPSHOT-
  * staleness, not read-staleness — the stale thing is the RAM snapshot handed
  * to persistUpserts, never its `get`, which reads committed state. IDB
  * serializes overlapping readwrite transactions, so the race BUG-2609 fixed

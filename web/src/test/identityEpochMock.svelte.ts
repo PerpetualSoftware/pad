@@ -11,7 +11,7 @@
  * question into "does this compile?". That is not a coverage gap; it is an
  * instrument answering a different question than its name. It hid a real defect
  * on the collection page through ten source assertions, ten behavioural legs, a
- * 10/10 mutation matrix, four review rounds and two lead reads — the search
+ * 10/10 mutation matrix, repeated review — the search
  * dispatch effect re-armed its debounce with the previous user's typed text and
  * captured the NEW epoch, so the fence inside the timer passed and the old
  * query went to the server under the new identity.

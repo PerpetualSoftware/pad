@@ -158,7 +158,7 @@
 	// The most matches one body search walks (BUG-3710), matching the
 	// server's list max (#2143). Never silent: a walk that stops here with
 	// more matches left sets `bodySearchCapped`, and the page says so,
-	// because a filter can then hide a match past the cap (Heron's ruling).
+	// because a filter can then hide a match past the cap (the cap stays, but never silently).
 	const BODY_SEARCH_MAX = 1000;
 	let bodySearchCapped = $state(false);
 	let searchTimeout: ReturnType<typeof setTimeout>;
@@ -926,8 +926,8 @@
 	 *
 	 * Enumerated rather than sampled, and the source guard holds this list
 	 * against the file's own `$state` declarations so a new piece cannot arrive
-	 * undispositioned (CONVE-35; the roles board needed two review rounds to
-	 * learn this and it is carried here rather than re-learned).
+	 * undispositioned (CONVE-35; the roles board learned this the hard way
+	 * and it is carried here rather than re-learned).
 	 */
 	function resetPerSessionState() {
 		// THE QUERY MUST NOT COME BACK, and clearing the variable alone does not
@@ -2381,8 +2381,7 @@
 	// confirmed one, so the stamped row is kept from the first (#2150).
 	const lastConfirmed = new Map<string, Item>();
 	// Read-back retry delays for a reorder's cards: bounded, then the scope is
-	// marked stale for a full resync instead of retrying forever (Heron's
-	// ruling on BUG-3699).
+	// marked stale for a full resync instead of retrying forever (BUG-3699).
 	const REORDER_READBACK_DELAYS_MS = [0, 500, 1000, 2000];
 
 	async function handleReorder(updates: { slug: string; sort_order: number }[], movedId?: string) {
@@ -2499,7 +2498,7 @@
 		// and still holds this reorder's unstamped write, is put back to its
 		// original stamped row: an order the server never confirmed must not
 		// LOOK settled. The scope is then marked stale, so the next reconcile
-		// (focus, reconnect, SSE) installs a full snapshot (Heron's ruling).
+		// (focus, reconnect, SSE) installs a full snapshot.
 		// A landed card is confirmed once the index holds a stamped row at or
 		// past its write. A refused card always reads back: the row its
 		// rollback restored is only what this reorder found.
@@ -2937,7 +2936,7 @@
 		// A commit point with NO AWAIT, which is a population neither the
 		// function-level enumeration nor the await-counting rules can see. The
 		// item's own body warned this shape exists and is found by reading; it
-		// was found by a reviewer instead, which is the same thing arriving
+		// was found late instead, which is the same thing arriving
 		// later.
 		if (!pageIdentityHeld()) {
 			pendingNav = null;
@@ -4593,7 +4592,7 @@
 				affordances: that one offers RETRY, and retrying this is what
 				produced the storm this fix closes.
 
-				THE WORDING IS THE RULING. A non-member and a
+				THE WORDING IS THE RULE. A non-member and a
 				DELETED workspace are the same 404 by design — the server refuses
 				to say which, so neither may this. "Access revoked" would assert
 				the half that was deliberately withheld, and it is also wrong for

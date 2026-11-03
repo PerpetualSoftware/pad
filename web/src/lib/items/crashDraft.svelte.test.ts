@@ -322,7 +322,7 @@ describe('keeper ownership (BUG-3863)', () => {
 	});
 });
 
-// BUG-3863 two-tab ruling: tab A holds a draft tab B's live keeper kept. B's
+// BUG-3863 two-tab rule: tab A holds a draft tab B's live keeper kept. B's
 // keeper reaches that held copy by its id, never by its text, and nothing
 // without its id.
 describe('a held copy of a live keeper draft in another tab (BUG-3863)', () => {

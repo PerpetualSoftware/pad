@@ -524,7 +524,7 @@
 		white-space: nowrap;
 	}
 	/* The expanded record: bounded in HEIGHT and scrolled, never truncated
-	   (BUG-2789's ruling for this surface). */
+	   (BUG-2789). */
 	.details-full {
 		margin: 0.35rem 0 0;
 		max-height: 16rem;

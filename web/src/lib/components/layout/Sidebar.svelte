@@ -640,7 +640,7 @@
 				</a>
 				{/if}
 				<!--
-					TASK-4044 3c (Option C, ruling 687eb810 Q-e): the Chat entry. Chat is
+					TASK-4044 3c (Option C): the Chat entry. Chat is
 					per user, not per workspace, so it is gated on being signed in and
 					sits OUTSIDE the `!isGuest` block: a guest member of this workspace
 					still has their own chat. href is global, not wsPrefix.
@@ -1311,7 +1311,7 @@
 	.quick-add-input::placeholder {
 		color: var(--text-muted);
 	}
-	/* Wraps on a narrow screen (TASK-3972 r1): the buttons drop below the
+	/* Wraps on a narrow screen (TASK-3972): the buttons drop below the
 	   hint, and then onto two rows themselves, rather than run past the
 	   dialog's edge. */
 	.quick-add-actions {

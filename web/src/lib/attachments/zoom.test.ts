@@ -656,7 +656,7 @@ describe('RTL / horizontal direction symmetry', () => {
 // ---------------------------------------------------------------------------
 // The hard bound: NO sequence of operations escapes [FIT, maxScale] or the pan
 // bounds. Individually-correct operations can still compose into an escape —
-// this is the property the phase's review round called binding.
+// this is the property the zoom spec calls binding.
 // ---------------------------------------------------------------------------
 
 describe('bounds no sequence of operations can escape', () => {

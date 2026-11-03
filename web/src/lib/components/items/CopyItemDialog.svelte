@@ -1066,7 +1066,7 @@ user hunting for an item that provably does not exist.
 	}
 
 	// Extracted to `$lib/items/copyDropReasons` (IDEA-2894) so the mapping
-	// can be tested: two review rounds found defects in it and neither fix
+	// can be tested: defects were found in it twice and neither fix
 	// was pinned by anything, because it lived here unexported with no test
 	// file for this component.
 	const dropReason = copyDropReasonMessage;

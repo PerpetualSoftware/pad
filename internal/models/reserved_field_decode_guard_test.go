@@ -39,7 +39,7 @@ import (
 // see — a bare pointer parameter; an inferred-type var; new(T); an aliased
 // models import, `var x = new(T)`, `dst := &s`, an inline element type; a type
 // alias, `dst := helper()`, a closure parameter. That loop was measuring how
-// many spellings a reviewer could think of, not whether the guard was sound
+// many spellings could be thought of, not whether the guard was sound
 // (CONVE-35). go/packages answers the question the approximation was
 // approximating: what is the TYPE of this expression. No spelling escapes it,
 // including the ones nobody has thought of yet.

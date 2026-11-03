@@ -133,7 +133,7 @@ export function parseFieldChanges(changesStr: string | undefined | null): FieldC
 // DISPLAY rule, so it is applied where a human reads the string and nowhere
 // else. The REST endpoints, `--format json`, the bootstrap payload and the
 // MCP tools all return the activity metadata verbatim, and that is deliberate
-// and not an oversight: the row records THAT notes changed, the ruling was
+// and not an oversight: the row records THAT notes changed, the rule was
 // about not showing it as a pill, and a client that wants the raw record must
 // still be able to get it. Sanitizing the wire would be the option the filing
 // rejected for destroying the original.
@@ -147,7 +147,7 @@ export function parseFieldChanges(changesStr: string | undefined | null): FieldC
 // Those surfaces are why suppressing inside parseFieldChanges alone does not
 // finish the job, and the audit page is the sharp case: it falls back to the
 // raw string when the parsed list is EMPTY, so suppressing every pill on a
-// legacy row made the wall of text reappear on the very surface the ruling was
+// legacy row made the wall of text reappear on the very surface the pill rule was
 // about. The fix has to be a property of the string, not of the pill list.
 //
 // Segments are dropped on the same rules parseFieldChanges applies, and

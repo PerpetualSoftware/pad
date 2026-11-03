@@ -15,7 +15,7 @@
  *     reaches, where the referent is in no workspace at all.
  *
  * Neither fix was pinned by anything. A third defect of the same shape would
- * have been found the same way — by a reviewer happening to read it — or not
+ * have been found the same way — by someone happening to read it — or not
  * at all.
  */
 

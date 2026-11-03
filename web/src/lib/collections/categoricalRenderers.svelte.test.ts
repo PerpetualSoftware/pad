@@ -83,7 +83,7 @@ describe('the shared helper is what every renderer is asking', () => {
 	// hand it, and the source guard proves they hand it anything at all.
 	//
 	// Stated plainly so nobody reads more into it than it carries: this is not a
-	// substitute for mounting each renderer. It is the ruling's parametrised leg,
+	// substitute for mounting each renderer. It is the parametrised leg,
 	// and `detailCardRetypedField.svelte.test.ts` plus the leg above are the two
 	// places a real component is actually rendered.
 	const CASES = [

@@ -47,7 +47,7 @@ export interface RefusedRawDraft {
 	 */
 	baseStale?: true;
 	/**
-	 * The crash keeper that kept it (BUG-3863 two-tab ruling): one id per live
+	 * The crash keeper that kept it (BUG-3863 two-tab rule): one id per live
 	 * keeper, so a keeper can still flag or confirm its own draft after another
 	 * tab moved it to the held slot. Absent on every other producer's draft.
 	 */
@@ -323,7 +323,7 @@ export function resolveKeptDraft(userId: string, itemId: string, markdown: strin
 
 /*
  * The two exceptions to "producers never touch the held slot" (BUG-3863,
- * two-tab ruling). Another tab may hold a draft a keeper in THIS tab kept and
+ * two-tab rule). Another tab may hold a draft a keeper in THIS tab kept and
  * is still tracking, out of the keeper's pending slot. The keeper reaches that
  * held copy by its id, never by its text: the user may have typed on since.
  * A draft with another id, or with none (an earlier tab's D, other

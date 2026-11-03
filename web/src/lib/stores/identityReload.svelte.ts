@@ -7,7 +7,7 @@ import { CURSOR_STORAGE_PREFIX } from '$lib/collab/wsProvider.svelte';
  * clear the persistent state a reload would NOT drop, then
  * reload.
  *
- * WHY A RELOAD RATHER THAN MORE FENCES. Three review rounds each found another
+ * WHY A RELOAD RATHER THAN MORE FENCES. Each of three passes found another
  * layer of surfaces holding the previous user's data — three stores, then
  * fourteen route pages plus a connection and two caches, then the console
  * subtree, share pages, the command palette and an open dialog. The population

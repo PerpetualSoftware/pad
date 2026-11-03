@@ -86,11 +86,11 @@
 	// same link changes no URL value, so the effect that reads it never
 	// re-runs. A real (replacing) navigation, not the shallow replaceState:
 	// that one leaves page.url, and the values derived from it, stale
-	// (TASK-3615 PR B, lead sweep 2026-10-18). This route has no load
+	// (TASK-3615 PR B). This route has no load
 	// function, so the navigation re-fetches nothing. A superseded goto
 	// needs nothing (the newer navigation decides the URL). A rejected one
 	// falls back to the shallow replaceState, so the address bar, and with
-	// it a reload, at least stays cleared (PR B r3).
+	// it a reload, at least stays cleared.
 	function dropFromUrl(name: 'since' | 'view') {
 		if (!page.url.searchParams.has(name)) return;
 		const url = new URL(page.url.href);
@@ -133,7 +133,7 @@
 	let viewFromUrl = $state(false);
 	// The `?view=` onMount applied. A later See everything on the mounted
 	// page changes it, and the effect below applies that, as the since effect
-	// does for `?since=` (TASK-3615 PR B r1).
+	// does for `?since=` (TASK-3615 PR B).
 	let appliedLinkedView: string | null = null;
 	const urlView = $derived(page.url.searchParams.get('view'));
 

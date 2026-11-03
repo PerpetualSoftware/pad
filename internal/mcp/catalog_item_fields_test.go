@@ -1856,7 +1856,7 @@ func TestPadItemUpdate_PaddedEntryCollidingWithAParamRefused(t *testing.T) {
 // receives, not just callers who supplied the same key twice.
 //
 // This leg is the scope boundary made executable: if it ever goes red, the
-// padded-entry refusal has grown into BUG-2870's territory without a ruling.
+// padded-entry refusal has grown into BUG-2870's territory.
 // REPLACES TestPadItemUpdate_PaddedEntryAloneIsUntouched (BUG-2850). That
 // test pinned a DEFERRAL rather than a desired behaviour — its own failure
 // message said "a lone padded entry is BUG-2870's business, not this PR's" —

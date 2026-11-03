@@ -141,7 +141,7 @@ func envOr(k, def string) string {
 // workflowFiles lists the files whose `uses:` pins a change can add: every
 // YAML file under .github (workflows, local actions), and any action.yml or
 // action.yaml elsewhere in the repository (a composite action can live
-// anywhere, s 1-2). node_modules and .git are skipped. A
+// anywhere). node_modules and .git are skipped. A
 // `docker://` image is not covered: it is not pinned by a commit SHA, and has
 // no source of publish time here.
 func workflowFiles(root string) []string {

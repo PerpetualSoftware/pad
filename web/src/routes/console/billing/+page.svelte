@@ -177,7 +177,7 @@
 	// 'unknown' (not read yet, or the read failed) keeps the button: the
 	// portal answers any refusal with ?portal_error=, which this page shows.
 	// A customer with no live subscription still gets the portal, for its
-	// invoices (BUG-3898 R2).
+	// invoices (BUG-3898).
 	let billingAccount = $state<'unknown' | 'yes' | 'none'>('unknown');
 
 	async function loadBillingAccount() {
@@ -192,7 +192,7 @@
 	}
 
 	// Read once the account is Pro, whether it was at mount or became Pro
-	// during the visit (a checkout return confirmed by polling; BUG-3898 r1).
+	// during the visit (a checkout return confirmed by polling; BUG-3898).
 	// One read per visit: a paid plan stores its customer before its plan
 	// (pad-cloud's handleCheckoutCompleted), so a Pro account read without
 	// one is a granted plan.

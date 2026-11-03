@@ -223,7 +223,7 @@ path to stream to stdout (useful for piping into image viewers etc.).`,
 // file and atomically renames it onto outPath on success. Shared by
 // `attachment download` and `attachment view -o <path>` so both get
 // the same crash-safe behavior (a bad ID, auth failure, or partial
-// download never truncates an existing destination, the original download command).
+// download never truncates an existing destination, which is also how the original download command behaved).
 func downloadAttachmentToPath(client *cli.Client, ws, id, variant, outPath string) (mime string, n int64, err error) {
 	dir := filepath.Dir(outPath)
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(outPath)+".*.tmp")

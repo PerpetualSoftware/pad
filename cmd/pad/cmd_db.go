@@ -475,9 +475,9 @@ Steps:
 			// database and an error naming a driver, not a cause. The scan is
 			// read-only and cheap next to the copy it guards.
 			//
-			// It does NOT repair. a migration that
-			// rewrites user content decides consent for the operator, so this
-			// prints the exact command that asks for it.
+			// It does NOT repair: a migration that rewrites user content
+			// would be deciding consent for the operator, so this prints the
+			// exact command that asks for it.
 			if err := preflightNULForMigration(srcStore, fromPath); err != nil {
 				return err
 			}

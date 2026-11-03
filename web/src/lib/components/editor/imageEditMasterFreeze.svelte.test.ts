@@ -128,7 +128,7 @@ describe('an image edit finishing after the master froze (BUG-2177)', () => {
 		expect(imageUuid(tiptap!)).toBe(PNG);
 		expect(toastSpy).toHaveBeenCalledTimes(1);
 		expect(String(toastSpy.mock.calls[0][0])).toContain(IMAGE_EDIT_INTERRUPTED);
-		// Not replayed on thaw (the ruling): the document stays as it was.
+		// Not replayed on thaw: the document stays as it was.
 		tiptap!.setEditable(true);
 		await settle();
 		expect(imageUuid(tiptap!)).toBe(PNG);

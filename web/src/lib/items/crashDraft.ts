@@ -72,7 +72,7 @@ export function registerCrashDraftKeeper(
 	type Last = { userId: string; itemId: string; markdown: string; version: unknown; base: string; baseSeq: number; baseBody: string; stale: boolean };
 	let last: Last | null = null;
 	const token = Symbol('crash-draft-keeper');
-	// Stamped on every draft this keeper writes (BUG-3863 two-tab ruling).
+	// Stamped on every draft this keeper writes (BUG-3863 two-tab rule).
 	const id = `k-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 	const setLast = (next: Last | null) => {
 		last = next;
@@ -91,8 +91,8 @@ export function registerCrashDraftKeeper(
 			const snap = source.snapshot();
 			if (!snap || snap.markdown.length > CRASH_DRAFT_MAX_CHARS) return;
 			// The base is part of what was kept: the same text over a base that
-			// has since moved, or turned stale, is a different draft (BUG-3850
-			// r5: a remote ' C' the user deleted again within one tick leaves the
+			// has since moved, or turned stale, is a different draft (BUG-3850:
+			// a remote ' C' the user deleted again within one tick leaves the
 			// markdown as it was and the base stale).
 			const base = JSON.stringify([snap.baseSeq, snap.baseBody, snap.baseStale === true]);
 			if (last && last.userId === userId && last.itemId === itemId && last.markdown === snap.markdown && last.base === base) return;

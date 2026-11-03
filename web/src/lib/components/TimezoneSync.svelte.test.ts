@@ -138,7 +138,7 @@ it('Switch counts as an explicit write', async () => {
 	await fireEvent.click(await screen.findByRole('button', { name: 'Switch' }));
 	await waitFor(() => expect(explicitTimezoneWrites()).toBe(before + 1));
 });
-// TASK-4101 PR2a r2 H2-M2: a FAILED explicit write must not count, or a default answer in flight is dropped forever.
+// TASK-4101: a FAILED explicit write must not count, or a default answer in flight is dropped forever.
 it('a Switch whose PATCH fails does not count as an explicit write', async () => {
 	const { explicitTimezoneWrites } = await import('$lib/timezone');
 	await signIn(currentA, 'Europe/Paris'); await mount();

@@ -133,7 +133,7 @@ test('a stale-base draft on a changed item says it cannot be applied and offers 
 	await ctx.close();
 });
 
-// TASK-3856 r2: the crash keeper rewrites a draft it kept as stale
+// TASK-3856: the crash keeper rewrites a draft it kept as stale
 // when this tab sends, after the notice may already show it. Restore reads the
 // stored draft first: now stale, the notice re-renders without Restore and
 // nothing is written.
@@ -164,7 +164,7 @@ test('a shown draft rewritten as stale in storage is not patched when Restore is
 	await ctx.close();
 });
 
-// TASK-3856 r3 (hunter Low): a whole-body restore never reads the base, so a
+// TASK-3856: a whole-body restore never reads the base, so a
 // stale rewrite of the shown draft does not stop it: the first click sends the
 // restore. (With the editor open the server may refuse it over pending edits
 // and ask first; that flow is the existing one and is not what this pins.)

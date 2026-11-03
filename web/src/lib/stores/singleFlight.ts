@@ -4,7 +4,7 @@
  * THE MECHANISM THIS REPLACES. `collections.svelte.ts` and
  * `workspace.svelte.ts` each hand-rolled the same three parts around a store
  * load, and the two copies drifted three times in one afternoon — each drift
- * found by a reviewer rather than by a test (TASK-2200 rounds 3, 4 and 5). The
+ * found late rather than by a test (TASK-2200). The
  * three parts:
  *
  *   1. A monotonic GENERATION, so only the latest call commits. A workspace

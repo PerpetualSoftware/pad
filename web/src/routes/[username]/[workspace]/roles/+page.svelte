@@ -636,7 +636,7 @@
 		// reachable path — but a future refactor that makes it optional owes a
 		// re-stamp on this branch.
 		// EVERY piece of transient interaction state, reset together.
-		// Rounds 2 and 3 each found members of one class one at a time
+		// Members of one class were found one at a time
 		// — an open modal, a stuck `newItemSaving`, a stuck `isDragging`, stale
 		// lane-drag styling — which is CONVE-35's signal that the loop was
 		// measuring the enumeration rather than the code. So it is enumerated

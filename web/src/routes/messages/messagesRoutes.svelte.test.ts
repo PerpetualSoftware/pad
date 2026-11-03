@@ -834,7 +834,7 @@ describe('/messages/[n] thread write path (TASK-4044 PR 3b)', () => {
 		expect(container.querySelector('article[data-seq="1"]')!.textContent).toContain('Message deleted');
 	});
 
-	// r6 L3 (N36): red with replyTo cleared before the delete resolves.
+	// Red with replyTo cleared before the delete resolves.
 	it('deleting the reply target clears the reply bar only when the delete succeeds', async () => {
 		const { container } = await openThread();
 		const menu = async (seq: number, label: string) => {
@@ -854,7 +854,7 @@ describe('/messages/[n] thread write path (TASK-4044 PR 3b)', () => {
 		expect(container.querySelector('.reply'), 'the delete succeeded: the bar goes').toBeNull();
 	});
 
-	// r6 L4 (N37): red with focus left to fall to body when Retry/Discard unmount.
+	// Red with focus left to fall to body when Retry/Discard unmount.
 	it.each(['Retry', 'Discard'])('%s on a failed bubble puts focus in the composer', async (label) => {
 		const { container } = await openThread();
 		h.sendMessage.mockRejectedValueOnce(new Error('network'));
@@ -871,7 +871,7 @@ describe('/messages/[n] thread write path (TASK-4044 PR 3b)', () => {
 		expect(document.activeElement).toBe(box(container));
 	});
 
-	// r7 M1: red with the page dropping Retry's outcome. A refused Retry discards the bubble,
+	// Red with the page dropping Retry's outcome. A refused Retry discards the bubble,
 	// so without the restore its text was gone with no notice.
 	it('a Retry refused because the quoted message was deleted puts the text back with its notice', async () => {
 		const { container } = await openThread();

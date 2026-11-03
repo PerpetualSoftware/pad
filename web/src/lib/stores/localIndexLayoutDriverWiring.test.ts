@@ -75,7 +75,7 @@ describe('BUG-3207 — the layout is the ONLY full_refresh cursor writer', () =>
 	/**
 	 * A single item's reload cannot vouch for the shared
 	 * workspace cursor, so ItemDetail no longer calls markSynced. Pinned the way
-	 * the ruling asked ("a failed layout reconcile plus a successful item reload
+	 * the requirement reads ("a failed layout reconcile plus a successful item reload
 	 * leaves the cursor unmoved"), within the limit of a source pin: neither
 	 * route component has a harness, and the service-level half, that
 	 * markSynced is the only door that moves the cursor on a full reload, is

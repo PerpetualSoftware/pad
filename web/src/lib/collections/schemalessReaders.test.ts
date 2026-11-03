@@ -42,10 +42,9 @@ const SURFACES = [
 		src: '../../routes/[username]/[workspace]/graph/DetailCard.svelte',
 		keys: ['status', 'priority'],
 	},
-	// ADDED AFTER THE REVIEW ROUND FOUND IT (BUG-3067). I had classified this
-	// page as a non-member because `playbooks` is a SYSTEM collection and I
-	// assumed its schema could not be retyped — an assumption I wrote down as a
-	// reason and never checked. `handleUpdateCollection` has no `is_system` gate
+	// ADDED LATE (BUG-3067). This page was first classified as a non-member
+	// because `playbooks` is a SYSTEM collection and its schema was assumed
+	// not to be retypable — an assumption that was never checked. `handleUpdateCollection` has no `is_system` gate
 	// on schema edits, so it is a member like any other. The list is data now, so
 	// a missed surface is a missing ROW rather than a silent absence.
 	{
@@ -87,7 +86,7 @@ describe('every schema-less by-name reader routes through the shared question', 
 			// accepted an import from `shareView`, the lower-level helper — which
 			// let a surface bypass the shared question while satisfying the guard,
 			// and `graph/DetailCard` was doing exactly that for its `status` read
-			// when the review round pointed it out. The bypass is the thing this
+			// once it was spotted. The bypass is the thing this
 			// leg exists to prevent, so it cannot be an accepted spelling.
 			const body = code(s.src);
 			expect(

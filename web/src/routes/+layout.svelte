@@ -158,7 +158,7 @@
 			// WHAT A REAL IDENTITY CHANGE DOES TO THIS TAB (BUG-3005): clear the persistent state a reload
 			// would not drop, then reload.
 			//
-			// Three review rounds each found another layer of surfaces holding
+			// Three successive passes each found another layer of surfaces holding
 			// the previous user's data, because the fix was per-surface and the
 			// population is "everything in the tab that ever held a fetch". A
 			// reload ends the enumeration: every store, component, cache and

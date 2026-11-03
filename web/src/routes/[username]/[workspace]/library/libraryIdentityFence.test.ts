@@ -179,7 +179,7 @@ describe('the library page fences every async commit point', () => {
 
 	it('the identity-change listener resets every piece of transient interaction state', () => {
 		// ENUMERATED rather than sampled (CONVE-35). On the roles board this
-		// class produced findings in two consecutive review rounds before it was
+		// class produced findings twice in a row before it was
 		// enumerated; carried here so this surface does not repeat that.
 		const reset = CODE.slice(CODE.indexOf('function resetTransientState()'));
 		const resetBody = reset.slice(0, reset.indexOf('\n\t}'));

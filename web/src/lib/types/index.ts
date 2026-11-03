@@ -2597,7 +2597,7 @@ export interface LiveSessionsResponse {
  * PLAN-2558 S5, TASK-2588).
  *
  * `pushed: true` means the request was ACCEPTED AND PROCESSED, not
- * "delivered" (dispatcher ruling, TASK-2588) — it is true even for
+ * "delivered" (TASK-2588) — it is true even for
  * a targeted push whose id matched no live session, exactly the same shape
  * broadcast-with-no-listeners has always returned. There is no separate
  * error channel for a targeted miss; `delivered_sessions` is the delivery

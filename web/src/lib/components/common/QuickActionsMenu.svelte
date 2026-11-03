@@ -130,7 +130,7 @@
 	// the click handler and is gone after a network round-trip (Safari is
 	// strictest, but Firefox refuses too). Deciding push-vs-copy from a read
 	// issued on the CLICK would therefore put an await in front of the very
-	// fallback this slice promises, and the ruling is that nothing silently
+	// fallback this slice promises, and the rule is that nothing silently
 	// vanishes. Reading on OPEN keeps the copy synchronous inside the gesture.
 	//
 	// The cost is a small window: click a row before the first read lands and

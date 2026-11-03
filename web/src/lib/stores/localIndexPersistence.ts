@@ -855,7 +855,7 @@ export async function persistReplace(
 	// absent, and between "no cache" and "a cache I could not replace" only the
 	// second is safe to assume. See the caller notes in
 	// `localIndex.ensureAccessScope` and `durableEpochFor` for why the
-	// difference is load-bearing (review rounds 2 and 3).
+	// difference is load-bearing.
 	if (!isSupported()) return true;
 	const db = await open(userId, ws);
 	if (!db) return false;

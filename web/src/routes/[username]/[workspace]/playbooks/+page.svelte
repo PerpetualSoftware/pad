@@ -612,9 +612,9 @@
 					     `is_system`, so `status` here can be retyped to a relation
 					     exactly as on any user collection — and this page printed the
 					     stored value through `statusLabel`, and keyed its card
-					     styling off it. I had classified this site as a non-member on
-					     the assumption that a system schema was immutable, and filed
-					     that assumption without checking it; a review round found it.
+					     styling off it. This site was first classified as a non-member on
+					     the assumption that a system schema was immutable, an
+					     assumption that was never checked.
 
 					     RESOLVED FROM `playbooksCollection`, the object this page
 					     already fetched under its own stale-response guard, rather
@@ -639,7 +639,7 @@
 					     before this unit. That reintroduced the defect for the
 					     duration of the window it was meant to fix: a retyped status
 					     IS an id, so the raw value is the id, printed. Worse than the
-					     Draft misreport it replaced, and the review round said so.
+					     Draft misreport it replaced.
 
 					     The honest answer for an unknown schema is to claim nothing:
 					     no status chip and no draft/deprecated styling until the

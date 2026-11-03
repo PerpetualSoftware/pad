@@ -127,8 +127,8 @@ describe('the collection page fences every async commit point', () => {
 		// destination.
 		//
 		// The item's body predicted this shape exists ("commit points with NO
-		// await at all") and said it is found by reading. It was found by a
-		// reviewer instead, which is the same thing arriving later. Named
+		// await at all") and said it is found by reading. It was found late
+		// instead, which is the same thing arriving later. Named
 		// explicitly rather than enumerated, because "every synchronous function
 		// that might replay captured intent" is not a set a grep can produce —
 		// and a rule that cannot enumerate its population should not pretend to.

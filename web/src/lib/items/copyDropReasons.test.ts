@@ -7,7 +7,7 @@ import {
 
 // The two tests IDEA-2894 exists to make possible. Neither could be written
 // while the mapper was inline in CopyItemDialog.svelte and unexported, which
-// is why two review-round fixes to it shipped unpinned.
+// is why two earlier fixes to it shipped unpinned.
 
 describe('copyDropReasonMessage', () => {
 	it('has a sentence for every reason the server can emit', () => {

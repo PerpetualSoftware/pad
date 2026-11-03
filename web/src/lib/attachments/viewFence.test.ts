@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { viewIdentity, createFence, createPaintFence } from './viewFence';
 
-// The invariant these fences encode failed four review rounds running, always
+// The invariant these fences encode failed repeatedly in earlier iterations, always
 // by comparing only PART of the identity. These tests pin the module directly:
 // the identity rules, then each of the three fences, then the two collapses
-// that a prior round proved are NOT safe.
+// that were shown to be NOT safe.
 
 describe('viewIdentity', () => {
 	it('is the whole record, not any one part', () => {

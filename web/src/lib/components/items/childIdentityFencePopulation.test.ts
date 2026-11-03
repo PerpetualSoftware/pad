@@ -35,7 +35,7 @@
  * ItemDetail's specific vocabulary — its generation counters, its capture
  * helpers, its fence booleans. Pointing it at fifteen other components would
  * mean teaching it fifteen more vocabularies, and the last six windows on this
- * family all went the same way: the review rounds are spent on the GUARD's
+ * family all went the same way: the review effort is spent on the GUARD's
  * defects, not the component's. So this one is deliberately small and answers a
  * narrower question, and the rest is declared below rather than discovered in
  * review.

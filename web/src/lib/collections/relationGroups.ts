@@ -298,8 +298,8 @@ export function relationLaneAcceptsDrop(lane: Pick<RelationLane, 'state'>): bool
  *   - `no_target` — a `relation` (or `multi_relation`) that declares no target
  *     collection. Half-written or legacy. Nothing can resolve its values, so
  *     there is nothing to label lanes with. Fixable: declare the target.
- *   - `multi_valued` — a `multi_relation`, whatever it declares. Refused by lead
- *     ruling, not by limitation: `bucketByColumn` puts every item in EXACTLY ONE
+ *   - `multi_valued` — a `multi_relation`, whatever it declares. Refused by
+ *     design, not by limitation: `bucketByColumn` puts every item in EXACTLY ONE
  *     lane (U7's proving row asserts it by placing six items and counting), and
  *     an item with three references belongs to three. The alternatives were to
  *     render the item once per target — which makes a drag between lanes mean

@@ -1687,8 +1687,7 @@ export const localIndex = {
 	 * surfaces them. Hard deletes (workspace GC / 403 purge) go
 	 * through `remove()` instead.
 	 *
-	 * Three guards against stale batches (all three caught by
-	 * across review rounds):
+	 * Three guards against stale batches:
 	 *
 	 *   1. If `newCursor <= state.cursor`, drop the whole batch. The
 	 *      server returns `cursor === since` on empty responses, so an
