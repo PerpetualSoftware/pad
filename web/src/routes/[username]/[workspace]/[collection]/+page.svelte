@@ -157,7 +157,7 @@
 	// The most matches one body search walks (BUG-3710), matching the
 	// server's list max (#2143). Never silent: a walk that stops here with
 	// more matches left sets `bodySearchCapped`, and the page says so,
-	// because a filter can then hide a match past the cap (#2143).
+	// because a filter can then hide a match past the cap.
 	const BODY_SEARCH_MAX = 1000;
 	let bodySearchCapped = $state(false);
 	let searchTimeout: ReturnType<typeof setTimeout>;
