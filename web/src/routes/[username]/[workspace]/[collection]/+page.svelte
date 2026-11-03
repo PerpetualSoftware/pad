@@ -3602,7 +3602,7 @@
 	// (maxBulkItems). The old per-item archive loop had no ceiling, so
 	// chunk to keep very large filtered lanes working — one bulk call per
 	// chunk (a few SSE events instead of thousands; still far better than
-	// per-item). TASK-1672 /.
+	// per-item) (TASK-1672).
 	const BULK_CHUNK = 1000;
 
 	// Longer dwell for toasts carrying an Undo so the user can react

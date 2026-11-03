@@ -299,7 +299,7 @@
 			// BUG-3049: name the five keys this editor owns and send nothing
 			// else. The previous shape spread `parseFields(item)` and replaced
 			// the whole blob — which preserved unknown keys as they stood at
-			// LOAD time ('s concern) and therefore reverted any
+			// LOAD time and therefore reverted any
 			// field written by anyone else while the editor was open, including
 			// a status toggle from the playbooks list page. A patch preserves
 			// unknown keys by not naming them, which is the same protection

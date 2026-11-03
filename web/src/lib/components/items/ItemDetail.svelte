@@ -9556,8 +9556,8 @@
 	   `.menu-anchor` keeps `position: relative` — Menu's anchored mode
 	   positions against it.
 
-	   The `div` qualifier on the ⚡ wrapper is load-bearing, not stylistic
-. QuickActionsMenu sets `.quick-actions-menu { display:
+	   The `div` qualifier on the ⚡ wrapper is load-bearing, not stylistic.
+	   QuickActionsMenu sets `.quick-actions-menu { display:
 	   inline-block }`, which Svelte scopes to `.quick-actions-menu.svelte-hash`
 	   — also (0,2,0). A bare `:global(.quick-actions-menu)` here would TIE it
 	   and be settled by cross-file stylesheet order, so a chunking change could

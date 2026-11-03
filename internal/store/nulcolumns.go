@@ -212,8 +212,9 @@ var nulColumns = []nulColumn{
 
 	// ATTRIBUTION COLUMNS, swept as a CLASS (CONVE-18).
 	//
-	// Review kept naming one or two of these at a time, which is the signal
-	// that a population was being sampled rather than instances found. Enumerating every created_by / last_modified_by / source /
+	// These columns kept being named one or two at a time, which is the signal
+	// that a population was being sampled rather than instances found.
+	// Enumerating every created_by / last_modified_by / source /
 	// actor / author / *_by column in the schema found SIXTEEN unprotected,
 	// against the eight an earlier list had.
 	//

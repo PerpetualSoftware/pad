@@ -987,7 +987,7 @@
 							{#if activity.actor === 'agent'}
 								<!-- `named` drops the badge's uppercasing: the generic "agent" is a
 								     CATEGORY word and reads as a chip, but a stamped name is a name,
-								     and upper-casing it would make `Atlas` and `atlas` identical —
+								     and upper-casing it would make `Wren` and `wren` identical —
 								     breaking the verbatim contract in CSS. Humans already get this
 								     treatment (the .actor-name span below is never transformed). -->
 								<bdi
