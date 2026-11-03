@@ -97,7 +97,7 @@ func (s *Server) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if input.Body == "" {
+	if strings.TrimSpace(input.Body) == "" {
 		writeError(w, http.StatusBadRequest, "bad_request", "body is required")
 		return
 	}
