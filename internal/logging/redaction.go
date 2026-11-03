@@ -16,8 +16,12 @@ var keySeparators = strings.NewReplacer("_", "", "-", "", " ", "")
 // credentialKey also recognises compound names such as access_token,
 // webhook_secret and Proxy-Authorization, regardless of case or separators.
 func credentialKey(key string) bool {
+	// token[] and access_token[0] are array forms of the same key.
+	if i := strings.IndexByte(key, '['); i > 0 {
+		key = key[:i]
+	}
 	key = strings.ToLower(keySeparators.Replace(key))
-	// A plural (tokens, passwords, cookies) names the same credential.
+	// A plural (tokens, passwords, cookies, recovery_codes) names the same credential.
 	for _, k := range []string{key, strings.TrimSuffix(key, "s")} {
 		for _, suffix := range []string{"token", "password", "secret", "apikey", "authorization", "cookie", "header",
 			"signature", "jwt", "ticket", "verifier", "sessionid",
@@ -29,10 +33,13 @@ func credentialKey(key string) bool {
 	}
 	// Any *code names a one-time credential (invite, recovery, verification,
 	// device, user, totp...) unless it is a known diagnostic code.
-	if strings.HasSuffix(key, "code") {
-		switch key {
+	for _, k := range []string{key, strings.TrimSuffix(key, "s")} {
+		if !strings.HasSuffix(k, "code") {
+			continue
+		}
+		switch k {
 		case "statuscode", "errorcode", "exitcode", "httpcode", "responsecode", "returncode", "countrycode", "languagecode":
-			return false
+			continue
 		}
 		return true
 	}

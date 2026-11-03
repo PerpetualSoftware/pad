@@ -75,6 +75,19 @@ func TestRedactQueryOpaqueEncodingIsRedacted(t *testing.T) {
 	}
 }
 
+func TestCredentialKeyForms(t *testing.T) {
+	for _, k := range []string{"recovery_codes", "invite_codes", "token[]", "access_token[0]", "Backup-Codes"} {
+		if !credentialKey(k) {
+			t.Errorf("credentialKey(%q) = false", k)
+		}
+	}
+	for _, k := range []string{"status_code", "error_codes", "limit", "tokenizer", "items[]"} {
+		if credentialKey(k) {
+			t.Errorf("credentialKey(%q) = true", k)
+		}
+	}
+}
+
 func TestRedactAttrKeepsNumericCounts(t *testing.T) {
 	for _, a := range []slog.Attr{slog.Int("input_tokens", 12), slog.Int("access_tokens", 3), slog.Int("http_status_code", 502)} {
 		if got := redactAttr(nil, a); got.Value.Kind() != slog.KindInt64 || got.Value.Int64() != a.Value.Int64() {
