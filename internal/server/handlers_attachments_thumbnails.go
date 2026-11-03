@@ -307,16 +307,21 @@ func (s *Server) persistThumbnail(
 		graceCutoff := time.Now().Add(-s.orphanGCGraceConfigured())
 		s.inFlight.Lock()
 		if s.inFlight.CountLocked(hash) <= 1 {
-			others, cErr := s.store.CountProtectingAttachmentsForHash(hash, "", graceCutoff)
+			// Count and delete share one deadline: the lock is process-wide
+			// and every upload takes it (TASK-4280). The request's own
+			// cancellation is dropped, as in reclaimRefusedBlob.
+			lockedCtx, cancelLocked := context.WithTimeout(context.WithoutCancel(ctx), refusedBlobDeleteTimeout)
+			others, cErr := s.store.CountProtectingAttachmentsForHashContext(lockedCtx, hash, "", graceCutoff)
 			if cErr != nil {
 				slog.Warn("thumbnails: refusal cleanup count failed — blob stranded for manual cleanup",
 					"storage_key", storageKey, "error", cErr)
 			} else if others == 0 {
-				if dErr := store.Delete(ctx, storageKey); dErr != nil {
+				if dErr := store.Delete(lockedCtx, storageKey); dErr != nil {
 					slog.Warn("thumbnails: orphan blob cleanup failed",
 						"storage_key", storageKey, "error", dErr)
 				}
 			}
+			cancelLocked()
 		}
 		s.inFlight.Unlock()
 		slog.Info("thumbnails: skipped, parent deleted during derivation",
