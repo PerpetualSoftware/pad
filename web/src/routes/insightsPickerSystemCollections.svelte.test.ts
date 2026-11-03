@@ -120,7 +120,7 @@ describe('Insights collection picker (BUG-2410)', () => {
 		expect(chips, 'the same collection as work is offered').toContain('Docs');
 	});
 
-	it('a layout saved with a system collection does not filter the report by it (codex round 1)', async () => {
+	it('a layout saved with a system collection does not filter the report by it', async () => {
 		getLayout.mockResolvedValue({ default_window: 'week', default_collections: ['playbooks', 'tasks'], hidden_cards: [] });
 		app = mount(InsightsPage, { target: host, props: {} }) as Record<string, unknown>;
 		await settle();
@@ -132,7 +132,7 @@ describe('Insights collection picker (BUG-2410)', () => {
 		expect(tasks?.getAttribute('aria-pressed'), 'the counted selection is the one shown').toBe('true');
 	});
 
-	it('if the collection list fails, the report goes unfiltered and the saved layout is not erased (codex round 2)', async () => {
+	it('if the collection list fails, the report goes unfiltered and the saved layout is not erased', async () => {
 		listCollections.mockRejectedValue(new Error('boom'));
 		getLayout.mockResolvedValue({ default_window: 'week', default_collections: ['playbooks', 'tasks'], hidden_cards: [] });
 		app = mount(InsightsPage, { target: host, props: {} }) as Record<string, unknown>;
@@ -153,7 +153,7 @@ describe('Insights collection picker (BUG-2410)', () => {
 		expect(saved.default_collections, 'a failed collections load erased the saved layout').toEqual(['playbooks', 'tasks']);
 	});
 
-	it('a stale collections failure from a workspace the user left does not unfilter the current one (codex round 3)', async () => {
+	it('a stale collections failure from a workspace the user left does not unfilter the current one', async () => {
 		let rejectA!: (e: Error) => void;
 		listCollections.mockImplementationOnce(() => new Promise((_, rej) => (rejectA = rej)));
 		getLayout.mockResolvedValue({ default_window: 'week', default_collections: ['tasks'], hidden_cards: [] });

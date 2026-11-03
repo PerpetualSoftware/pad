@@ -1734,7 +1734,7 @@ func TestFieldConflictProperty_SourcesDerivedFromTheDeclaredSchema(t *testing.T)
 		t.Errorf("declared pad_item params that neither the conflict machinery classifies "+
 			"nor this test excludes as non-field-writing: %v\n"+
 			"If one of these can write a field value, add it to the appropriate key set so "+
-			"detectFieldConflicts visits it — a source no guard visits is the round-14 defect. "+
+			"detectFieldConflicts visits it — a source no guard visits is the defect this guard exists for. "+
 			"If it cannot, add it to notFieldWriters with that reason.", unclassified)
 	}
 
@@ -1804,7 +1804,7 @@ func TestPadItemUpdate_CompatIDSameNameCollisionRefusedWithoutFields(t *testing.
 			"field":  []any{"status=done"},
 		})
 		if isErr {
-			t.Fatalf("the round-7 boundary must survive: %s", msg)
+			t.Fatalf("the boundary must survive: %s", msg)
 		}
 		if !argsContainPair(disp.gotArgs, "--field", "status=done") {
 			t.Errorf("both forms must still reach the CLI, which resolves them: %v", disp.gotArgs)

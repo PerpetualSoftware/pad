@@ -180,7 +180,7 @@ describe('workspace activity head re-read (BUG-3160)', () => {
 		expect(ids, 'a stale head read leaked old-filter rows into the new feed').not.toContain('stale');
 	});
 
-	it('an item event during a load is not lost: the head is re-read once the load finishes (codex round 1)', async () => {
+	it('an item event during a load is not lost: the head is re-read once the load finishes', async () => {
 		let release!: (rows: Activity[]) => void;
 		listActivity.mockImplementationOnce(() => new Promise<Activity[]>((r) => (release = r)));
 		app = mount(ActivityPage, { target: host, props: {} }) as Record<string, unknown>;

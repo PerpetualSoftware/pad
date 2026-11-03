@@ -98,7 +98,7 @@ describe('the 403 half is unchanged', () => {
 	});
 });
 
-describe('the allow-list (codex round 1 P2)', () => {
+describe('the allow-list', () => {
 	// Depth alone was too broad. A workspace-level endpoint may have its OWN
 	// not_found — a singleton never created, a feature-gated route — and one of
 	// those answering 404 would purge a workspace the caller reads fine. The
@@ -119,7 +119,7 @@ describe('the allow-list (codex round 1 P2)', () => {
 	});
 });
 
-describe('the request is stamped with WHO asked (codex round 1 P1)', () => {
+describe('the request is stamped with WHO asked', () => {
 	// A response can outlive the identity that asked — sign out or switch users
 	// mid-flight. The scope carries the identity captured BEFORE the request
 	// left, so the handler can refuse to record a refusal against someone who

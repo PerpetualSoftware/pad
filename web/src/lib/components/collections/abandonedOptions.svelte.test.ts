@@ -100,7 +100,7 @@ describe('FieldEditor abandoned toggle', () => {
 	});
 });
 
-describe('FieldEditor option rename (codex round 1 on #1468)', () => {
+describe('FieldEditor option rename (#1468)', () => {
 	function typeInto(input: HTMLInputElement, value: string) {
 		input.value = value;
 		input.dispatchEvent(new Event('input', { bubbles: true }));

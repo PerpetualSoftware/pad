@@ -113,7 +113,7 @@ describe('BUG-3239: a mermaid render that never settles does not stall the queue
 		expect(hung.querySelector('svg')?.getAttribute('data-src')).toBe('graph newer');
 	});
 
-	it('a callback that throws does not poison the queue for the diagrams after it (codex r1)', async () => {
+	it('a callback that throws does not poison the queue for the diagrams after it', async () => {
 		const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
 		const a = el();
 		const b = el();

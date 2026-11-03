@@ -394,7 +394,7 @@ func TestCheckItemVisible_AuthenticatedEditorWithRestrictedAccess(t *testing.T) 
 		t.Fatalf("checkItemVisible: unexpected error: %v", err)
 	}
 	if visible {
-		t.Fatal("authenticated editor with collection_access='specific' (only collA) saw item in collB: round-2 bypass regression")
+		t.Fatal("authenticated editor with collection_access='specific' (only collA) saw item in collB: bypass regression")
 	}
 
 	// Sanity: same editor on an item in collection A (their allowed

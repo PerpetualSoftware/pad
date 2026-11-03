@@ -88,7 +88,7 @@ describe('BUG-3201 — the seed delta is delivered, not dropped', () => {
 		expect(seen).toEqual([]);
 	});
 
-	it('a seed superseded by the SAME workspace still delivers its delta, and leaves the newer cursor alone (codex round 1)', async () => {
+	it('a seed superseded by the SAME workspace still delivers its delta, and leaves the newer cursor alone', async () => {
 		const seen: unknown[] = [];
 		const off = syncService.onSync((r) => {
 			seen.push(r);

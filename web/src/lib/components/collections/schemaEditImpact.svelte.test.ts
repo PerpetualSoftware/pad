@@ -116,7 +116,7 @@ describe('removing an option is never a rename (TASK-2187)', () => {
 		});
 	}
 
-	it('an option added after a removal is not read as a rename (codex r1)', async () => {
+	it('an option added after a removal is not read as a rename', async () => {
 		usageMock.mockResolvedValue(usage({}));
 		await open();
 		removeOption('doing');
@@ -134,7 +134,7 @@ describe('removing an option is never a rename (TASK-2187)', () => {
 		expect(stageOptions(sent())).toEqual(['todo', 'done', 'blocked']);
 	});
 
-	it('the counts landing do not close a confirm that is open (codex r1)', async () => {
+	it('the counts landing do not close a confirm that is open', async () => {
 		let answer: (u: CollectionFieldUsage) => void = () => {};
 		usageMock.mockReturnValue(new Promise<CollectionFieldUsage>((r) => (answer = r)));
 		await open();

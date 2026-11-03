@@ -43,6 +43,6 @@ func TestInitNonTTYNotAuthenticated(t *testing.T) {
 		t.Errorf("error %q should point at piped 'pad auth login --interactive' for scripted use", err.Error())
 	}
 	if strings.Contains(err.Error(), "--email") {
-		t.Errorf("error %q must not suggest pad init's --email/--name/--password — those only fire when SetupRequired (the wrong-remedy shape codex r1/r2 flagged on BUG-2538)", err.Error())
+		t.Errorf("error %q must not suggest pad init's --email/--name/--password — those only fire when SetupRequired (the wrong-remedy shape from BUG-2538)", err.Error())
 	}
 }

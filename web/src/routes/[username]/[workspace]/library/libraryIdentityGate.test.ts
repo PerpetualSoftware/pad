@@ -15,7 +15,7 @@ identityGateSuite({
 		asyncFunctions: {
 			loadData: {
 				reviewed: '8c273b8de01d',
-				why: 'identityHeld(epochAtEntry) then loadGen on both arms before any commit; re-stamps identityEpochAtLoad only after the data it vouches for; the finally clears loading on loadGen alone, deliberately (#1378). Re-reviewed for TASK-2203: loadError is written on both arms after the same checks. Re-reviewed for BUG-3704: listAllByCollection pages inside one awaited call, and the same checks run after it resolves, so a result whose pages straddled an identity change is discarded whole',
+				why: 'identityHeld(epochAtEntry) then loadGen on both arms before any commit; re-stamps identityEpochAtLoad only after the data it vouches for; the finally clears loading on loadGen alone, deliberately (#1378). TASK-2203: loadError is written on both arms after the same checks. BUG-3704: listAllByCollection pages inside one awaited call, and the same checks run after it resolves, so a result whose pages straddled an identity change is discarded whole',
 			},
 			activateConvention: {
 				reviewed: '500f0d1fabdf',
@@ -29,9 +29,9 @@ identityGateSuite({
 		nested: [],
 		markup: [],
 		continuations: [
-			{ call: /\(ws, convSlug\)\.catch\($/, body: /./, why: 'loadData conventions fetch: a failure reads as none; commits nothing. Re-reviewed for BUG-3704: now listAllByCollection, every page in one awaited call', reviewed: '1c93d2991eb5' },
-			{ call: /\(ws, pbSlug\)\.catch\($/, body: /./, why: 'loadData playbooks fetch: a failure reads as none; commits nothing. Re-reviewed for BUG-3704: now listAllByCollection, every page in one awaited call', reviewed: '1c93d2991eb5' },
-			{ call: /builtins\.list\(ws\)\.catch\($/, body: /./, why: 'loadData built-ins fetch (TASK-3462 U3b): a failure, or a server without the listing, reads as none; commits nothing. Re-reviewed for BUG-3704: unchanged; its hash moved with the two fetch lines above it', reviewed: 'ac7322d86a09' },
+			{ call: /\(ws, convSlug\)\.catch\($/, body: /./, why: 'loadData conventions fetch: a failure reads as none; commits nothing. BUG-3704: now listAllByCollection, every page in one awaited call', reviewed: '1c93d2991eb5' },
+			{ call: /\(ws, pbSlug\)\.catch\($/, body: /./, why: 'loadData playbooks fetch: a failure reads as none; commits nothing. BUG-3704: now listAllByCollection, every page in one awaited call', reviewed: '1c93d2991eb5' },
+			{ call: /builtins\.list\(ws\)\.catch\($/, body: /./, why: 'loadData built-ins fetch (TASK-3462 U3b): a failure, or a server without the listing, reads as none; commits nothing. BUG-3704: unchanged; its hash moved with the two fetch lines above it', reviewed: 'ac7322d86a09' },
 			// TASK-3423: kit 3 folded keepFocus into goto's reset, so a tab that held
 			// focus gets it back once the replaceState navigation lands. Writes no
 			// state; a tab gone by then (an identity or route change) is a no-op.

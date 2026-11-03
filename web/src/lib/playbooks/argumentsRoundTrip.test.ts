@@ -87,7 +87,7 @@ describe('updateArgumentsInBody keeps what it did not change', () => {
 		expect(updateArgumentsInBody(BODY, [])).not.toContain('No arguments');
 	});
 
-	it('a CRLF body is edited in place and keeps CRLF (codex r1)', () => {
+	it('a CRLF body is edited in place and keeps CRLF', () => {
 		const crlf = BODY.replace(/\n/g, '\r\n');
 		expect(args(crlf).map((a) => a.name)).toEqual(['target', 'dry-run']);
 		expect(updateArgumentsInBody(crlf, args(crlf))).toBe(crlf);

@@ -205,7 +205,7 @@ describe('BUG-3320: the HTTP/1.1 stream budget', () => {
 		expect(syncs).toBe(before);
 	});
 
-	it('a disconnect and same-workspace reconnect during the slot request leaves one leader and one stream (codex r1)', async () => {
+	it('a disconnect and same-workspace reconnect during the slot request leaves one leader and one stream', async () => {
 		setProtocol('http/1.1');
 		const { svc } = await loadService();
 		svc.connect('ws-a'); // the lock callback runs and awaits its slot
@@ -221,7 +221,7 @@ describe('BUG-3320: the HTTP/1.1 stream budget', () => {
 		expect([0, 1, 2].filter((i) => held.has(`pad-sse-slot-${i}`))).toHaveLength(0);
 	});
 
-	it('losing access frees the slot (codex r1)', async () => {
+	it('losing access frees the slot', async () => {
 		setProtocol('http/1.1');
 		const { svc } = await loadService();
 		svc.connect('ws-a');

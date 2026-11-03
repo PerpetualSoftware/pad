@@ -87,7 +87,7 @@ describe('network_unreachable (TASK-2202)', () => {
 		expect(notified).toBe(0);
 	});
 
-	it('the direct-fetch WRITES (attachment upload, artifact import) report it too (codex r1)', async () => {
+	it('the direct-fetch WRITES (attachment upload, artifact import) report it too', async () => {
 		vi.stubGlobal('fetch', vi.fn(async () => Promise.reject(new TypeError('Failed to fetch'))));
 		const upload = await api.attachments.upload('ws', new Blob(['x'])).catch((e) => e);
 		expect(upload.code).toBe('network_unreachable');

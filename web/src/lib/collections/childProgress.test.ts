@@ -90,7 +90,7 @@ describe('getAbandonedOptions (BUG-3195)', () => {
 	});
 });
 
-describe('resolvers fall back instead of throwing on odd stored JSON (codex round 2)', () => {
+describe('resolvers fall back instead of throwing on odd stored JSON', () => {
 	it('a schema whose fields is null resolves with the defaults', () => {
 		const odd = { slug: 'odd', schema: '{"fields":null}', settings: '{}' } as unknown as Collection;
 		expect(childState(child('a', 'odd', { status: 'done' }), odd)).toBe('done');
@@ -107,7 +107,7 @@ describe('resolvers fall back instead of throwing on odd stored JSON (codex roun
 	});
 });
 
-describe('schema validation happens in one place (codex round 3)', () => {
+describe('schema validation happens in one place', () => {
 	const odd = (fields: unknown) =>
 		({ slug: 'odd', schema: JSON.stringify({ fields }), settings: '{"board_group_by":"resolution"}' }) as unknown as Collection;
 	// Each shape would have reached `.key` / `.trim()` on a non-string before.

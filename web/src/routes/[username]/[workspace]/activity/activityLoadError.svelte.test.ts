@@ -81,7 +81,7 @@ describe('Activity: a failed load is not an empty feed (TASK-2203)', () => {
 		expect(screen.queryByText("Couldn't load the activity feed")).toBeNull();
 	});
 
-	it('a failure that lands after an account swap shows nothing to the new account (codex r1)', async () => {
+	it('a failure that lands after an account swap shows nothing to the new account', async () => {
 		answers.next = ['fail-after-swap'];
 		render(ActivityPage);
 		await new Promise((r) => setTimeout(r, 50));
@@ -90,7 +90,7 @@ describe('Activity: a failed load is not an empty feed (TASK-2203)', () => {
 		expect(screen.queryByText('No activity found')).toBeNull();
 	});
 
-	it('a new feed does not inherit the previous feed\'s load-more failure (codex r1)', async () => {
+	it('a new feed does not inherit the previous feed\'s load-more failure', async () => {
 		answers.next = ['full', 'fail', 'full'];
 		render(ActivityPage);
 		(await screen.findByRole('button', { name: 'Load more activity' })).click();
@@ -100,7 +100,7 @@ describe('Activity: a failed load is not an empty feed (TASK-2203)', () => {
 		expect(screen.queryByRole('button', { name: "Couldn't load more. Try again" })).toBeNull();
 	});
 
-	it('a refused later page says so and offers no retry (codex r4)', async () => {
+	it('a refused later page says so and offers no retry', async () => {
 		answers.next = ['full', 'forbidden'];
 		render(ActivityPage);
 		(await screen.findByRole('button', { name: 'Load more activity' })).click();

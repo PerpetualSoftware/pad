@@ -185,7 +185,7 @@ describe('roles board: a failed write is shown (TASK-2204)', () => {
 		expect(toasts.filter((t) => t.kind === 'error')).toEqual([]);
 	});
 
-	it('a failure that lands after navigating to another workspace is not toasted there (codex r1)', async () => {
+	it('a failure that lands after navigating to another workspace is not toasted there', async () => {
 		await mountPage();
 		let reject!: (e: unknown) => void;
 		vi.mocked(api.agentRoles.update).mockReturnValueOnce(new Promise((_res, rej) => { reject = rej; }) as never);
@@ -198,7 +198,7 @@ describe('roles board: a failed write is shown (TASK-2204)', () => {
 		expect(errorToast(/Couldn't save the role/)).toBeUndefined();
 	});
 
-	it('nor on another owner\'s board that has the same slug (codex r2)', async () => {
+	it('nor on another owner\'s board that has the same slug', async () => {
 		await mountPage();
 		let reject!: (e: unknown) => void;
 		vi.mocked(api.agentRoles.delete).mockReturnValueOnce(new Promise((_res, rej) => { reject = rej; }) as never);

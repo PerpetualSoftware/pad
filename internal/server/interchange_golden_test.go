@@ -49,7 +49,7 @@ var interchangeKnownLosses = []struct {
 	{`^attachments/attachment:[0-9a-f]{64}/created_at$`, 1,
 		"import writes a new attachment row stamped now; the manifest's created_at is not restored"},
 	{`^item_links/link:item:Parent task><unknown [0-9a-f-]{36}>\|blocks/(created_at|created_by|link_type|source_id|target_id)$`, 5,
-		"a link whose endpoint is a soft-deleted item is exported (the raw graph) but skipped on import, because the item is not in the bundle (lead ruling on TASK-3628, day 92)"},
+		"a link whose endpoint is a soft-deleted item is exported (the raw graph) but skipped on import, because the item is not in the bundle (TASK-3628)"},
 }
 
 func TestInterchangeGolden_RoundTrip(t *testing.T) {

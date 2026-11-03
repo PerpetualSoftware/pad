@@ -73,7 +73,7 @@ describe('Settings, Members: a failed load is not an empty list (TASK-2203)', ()
 		expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
 	});
 
-	it('another workspace whose load fails earlier does not show the previous one\'s members error (codex r2)', async () => {
+	it('another workspace whose load fails earlier does not show the previous one\'s members error', async () => {
 		answers.next = ['fail'];
 		render(SettingsPage);
 		await screen.findByText("Couldn't load the members list");

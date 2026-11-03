@@ -40,7 +40,7 @@ describe('planHrefClick — PLAN-2154 Architecture B.3 / TASK-2160', () => {
 			expect(planHrefClick(e, '/alice/myws/tasks/TASK-5', ctx())).toEqual({ kind: 'passthrough' });
 		});
 
-		it('passthrough on alt-click (download gesture — Codex review)', () => {
+		it('passthrough on alt-click (download gesture)', () => {
 			const e = { ...leftClick, altKey: true };
 			expect(planHrefClick(e, '/alice/myws/tasks/TASK-5', ctx())).toEqual({ kind: 'passthrough' });
 		});
@@ -73,7 +73,7 @@ describe('planHrefClick — PLAN-2154 Architecture B.3 / TASK-2160', () => {
 			});
 		});
 
-		it('drills the pane for a digit-bearing collection prefix (e.g. R2-1 — Codex review)', () => {
+		it('drills the pane for a digit-bearing collection prefix (e.g. R2-1)', () => {
 			expect(planHrefClick(leftClick, '/alice/myws/releases/R2-1', ctx())).toEqual({
 				kind: 'pane',
 				href: '/alice/myws/releases/R2-1',
@@ -89,7 +89,7 @@ describe('planHrefClick — PLAN-2154 Architecture B.3 / TASK-2160', () => {
 		});
 	});
 
-	describe('cross-workspace links — never drill the current pane (Codex review)', () => {
+	describe('cross-workspace links — never drill the current pane', () => {
 		it('loads a /-/r/{workspace}/{ref} resolver link in full, never through goto (TASK-3119)', () => {
 			// /-/r/ is a SERVER redirect with no client route: goto rendered it
 			// as [username]=- / [workspace]=r, "Workspace not found".
@@ -114,7 +114,7 @@ describe('planHrefClick — PLAN-2154 Architecture B.3 / TASK-2160', () => {
 		});
 	});
 
-	describe('internal non-item routes — not misrouted into a pane target (Codex review)', () => {
+	describe('internal non-item routes — not misrouted into a pane target', () => {
 		it('a non-item route with a ref-shaped tail (e.g. /tags/TASK-5) falls back to goto', () => {
 			// `tags` is not a collection slug, so this is a tags route, not an
 			// item — a trailing-REF-shape check alone would wrongly intercept it.
@@ -145,7 +145,7 @@ describe('planHrefClick — PLAN-2154 Architecture B.3 / TASK-2160', () => {
 			});
 		});
 
-		it('a self-inconsistent collection/ref path (e.g. /playbooks/TASK-9) falls back to goto (Codex review)', () => {
+		it('a self-inconsistent collection/ref path (e.g. /playbooks/TASK-9) falls back to goto', () => {
 			// `TASK-9` is a task, not a playbook — even if `playbooks` were a
 			// known collection, the ref prefix must match the collection.
 			expect(planHrefClick(leftClick, '/alice/myws/docs/TASK-9', ctx())).toEqual({
@@ -154,21 +154,21 @@ describe('planHrefClick — PLAN-2154 Architecture B.3 / TASK-2160', () => {
 			});
 		});
 
-		it('a zero-number ref (e.g. TASK-0) falls back to goto (Codex review)', () => {
+		it('a zero-number ref (e.g. TASK-0) falls back to goto', () => {
 			expect(planHrefClick(leftClick, '/alice/myws/tasks/TASK-0', ctx())).toEqual({
 				kind: 'goto',
 				href: '/alice/myws/tasks/TASK-0',
 			});
 		});
 
-		it('a malformed double-slash path falls back to goto (Codex review)', () => {
+		it('a malformed double-slash path falls back to goto', () => {
 			expect(planHrefClick(leftClick, '/alice/myws//tasks/TASK-9', ctx())).toEqual({
 				kind: 'goto',
 				href: '/alice/myws//tasks/TASK-9',
 			});
 		});
 
-		it('a backslash-authority href that resolves cross-origin is NOT pane-drilled (Codex review)', () => {
+		it('a backslash-authority href that resolves cross-origin is NOT pane-drilled', () => {
 			// "/\evil.example/..." resolves to https://evil.example/... in the
 			// browser — it must not be misclassified as a local item and drilled.
 			expect(planHrefClick(leftClick, '/\\evil.example/myws/tasks/TASK-5', ctx())).toEqual({
@@ -177,7 +177,7 @@ describe('planHrefClick — PLAN-2154 Architecture B.3 / TASK-2160', () => {
 			});
 		});
 
-		it('a backslash-in-segment href is NOT pane-drilled (raw != canonical — Codex review)', () => {
+		it('a backslash-in-segment href is NOT pane-drilled (raw != canonical)', () => {
 			expect(planHrefClick(leftClick, '/alice/myws/tasks\\TASK-5', ctx())).toEqual({
 				kind: 'goto',
 				href: '/alice/myws/tasks\\TASK-5',

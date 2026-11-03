@@ -166,7 +166,7 @@ describe('BUG-3898: ?portal_error= from pad-cloud', () => {
 	});
 });
 
-describe('BUG-3898 r1: a plan that becomes Pro during the visit', () => {
+describe('BUG-3898: a plan that becomes Pro during the visit', () => {
 	it('is read for a customer then, not only at mount', async () => {
 		plan.value = 'free';
 		m.me.mockResolvedValue({ id: 'u' });

@@ -217,7 +217,7 @@ describe('SSE liveness (TASK-2197)', () => {
 		sse.disconnect();
 	});
 
-	it('a source due while the browser is offline is not opened; online opens it (codex r1)', async () => {
+	it('a source due while the browser is offline is not opened; online opens it', async () => {
 		const online = vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false);
 		const sse = await loadService();
 		sse.connect('ws-a'); // e.g. a follower promoted mid-outage

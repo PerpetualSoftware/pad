@@ -14,11 +14,11 @@ identityGateSuite({
 	table: {
 		asyncFunctions: {
 			submitNewItem: { reviewed: '7e18149cf58f', why: `${PAGE_AND_ENTRY}; the finally clears newItemSaving only under the identity` },
-			// Re-reviewed for TASK-2204: the failure toast sits after the identity
+			// TASK-2204: the failure toast sits after the identity
 			// check, beside the recovery reload it explains.
 			handleLaneDrop: { reviewed: '9cb867491e2a', why: `${PAGE_AND_ENTRY}, including before the recovery reload and its toast` },
 			handleDndFinalize: {
-				// Re-reviewed for BUG-3259: the lane renumber is planned around
+				// BUG-3259: the lane renumber is planned around
 				// view-only cards (planLaneOrder), and its no-room toast and the
 				// empty-batch return both sit after the identity check that guards
 				// the optimistic commit. A refused batch reloads the board, after
@@ -30,14 +30,14 @@ identityGateSuite({
 				why: `${PAGE_AND_ENTRY}; the identity check sits BEFORE the role write, because that write carries currentUserId; a lost-identity exit writes no shared interaction state`,
 			},
 			loadData: {
-				// Re-reviewed for BUG-3701: fetches the workspace captured at
+				// BUG-3701: fetches the workspace captured at
 				// entry, and stamps workspaceAtLoad beside identityEpochAtLoad on
 				// both arms; no await or check moved.
 				reviewed: '7bd4ad584d02',
 				why: 'identityHeld(epochAtEntry) then loadGen on both arms before any commit; re-stamps identityEpochAtLoad and workspaceAtLoad only after the data they vouch for; the finally clears loading on loadGen alone, deliberately (#1378)',
 			},
 			saveRole: { reviewed: 'd5057790dac8', why: `${PAGE_AND_ENTRY}, per branch; the failure toast (TASK-2204) after the check` },
-			deleteRole: { reviewed: '3c79a726945d', why: `${PAGE_AND_ENTRY}; the failure toast (TASK-2204) after the check. Re-reviewed for TASK-3543: entry, board and role captured before the confirm dialog's await, and all re-checked after it` },
+			deleteRole: { reviewed: '3c79a726945d', why: `${PAGE_AND_ENTRY}; the failure toast (TASK-2204) after the check. TASK-3543: entry, board and role captured before the confirm dialog's await, and all re-checked after it` },
 		},
 		nested: [],
 		markup: [],

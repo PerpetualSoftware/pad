@@ -105,7 +105,7 @@ describe('a board lane mounts a window (TASK-2230)', () => {
 		expect(cardsIn(doneLane(container))).toBe(60);
 	});
 
-	it('a regroup does not carry an expanded lane over to the new lanes (codex r1)', async () => {
+	it('a regroup does not carry an expanded lane over to the new lanes', async () => {
 		const { container, getByText, rerender } = renderBoard();
 		await tick();
 		await fireEvent.click(getByText('Show all 60 (10 more)'));

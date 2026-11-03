@@ -75,7 +75,7 @@ describe('createWatermarkStamper — a send that throws synchronously', () => {
 	});
 });
 
-describe('createWatermarkStamper — codex round 1', () => {
+describe('createWatermarkStamper keepalive and advanced:false', () => {
 	it('the keepalive (pagehide) path sends even for a cursor already sent', () => {
 		const { stamp, send } = make(42);
 		stamp(input);

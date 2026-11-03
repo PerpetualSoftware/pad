@@ -36,7 +36,7 @@ describe('the keepalive budget (BUG-3522)', () => {
 		warn.mockRestore();
 	});
 
-	it('counts every keepalive body in flight: two that fit alone can overflow together (codex r1)', () => {
+	it('counts every keepalive body in flight: two that fit alone can overflow together', () => {
 		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 		const half = 'a'.repeat(Math.floor(KEEPALIVE_BODY_BUDGET * 0.6));
 		const first = reserveKeepalive(true, half, 'collab flush');
