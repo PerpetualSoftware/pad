@@ -3232,13 +3232,42 @@ Use - to read the artifact from stdin.`,
 
 func commentCmd() *cobra.Command {
 	var replyTo, commentOpKey string
+	var useStdin bool
 
 	cmd := &cobra.Command{
-		Use:     "comment <ref> <message>",
-		Short:   "Add a comment to an item",
-		Example: `  pad item comment TASK-5 "Reproduced on main; the fix is in progress"`,
-		Args:    cobra.ExactArgs(2),
+		Use:   "comment <ref> [message]",
+		Short: "Add a comment to an item",
+		Example: `  pad item comment TASK-5 "Reproduced on main; the fix is in progress"
+  pad item comment TASK-5 --stdin < note.md`,
+		Long: `Add a comment to an item.
+
+The message is the second argument, or the whole of stdin with --stdin (use it
+for multi-line text, backticks and quotes). A message given both ways is
+refused, and so is an empty or whitespace-only one: nothing is posted.`,
+		Args: func(cmd *cobra.Command, args []string) error {
+			if useStdin {
+				if len(args) > 1 {
+					return fmt.Errorf("--stdin reads the comment from stdin, so a message argument is refused (got %d arguments, want just the ref); nothing was posted", len(args))
+				}
+				return cobra.ExactArgs(1)(cmd, args)
+			}
+			return cobra.ExactArgs(2)(cmd, args)
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			var body string
+			if useStdin {
+				b, err := readStdinBody("comment")
+				if err != nil {
+					return err
+				}
+				body = b
+			} else {
+				body = args[1]
+				if strings.TrimSpace(body) == "" {
+					return fmt.Errorf("the comment message is empty or whitespace-only, so the comment was refused and nothing was posted; pass a message, or use --stdin")
+				}
+			}
+
 			client, _ := getClient()
 			ws := getWorkspace()
 
@@ -3248,7 +3277,7 @@ func commentCmd() *cobra.Command {
 				commentOpKey = uuid.NewString()
 			}
 			input := models.CommentCreate{
-				Body:     args[1],
+				Body:     body,
 				ParentID: replyTo,
 				OpKey:    commentOpKey,
 			}
@@ -3271,6 +3300,7 @@ func commentCmd() *cobra.Command {
 		},
 	}
 
+	cmd.Flags().BoolVar(&useStdin, "stdin", false, "read the comment from stdin instead of the message argument (a blank read is refused)")
 	cmd.Flags().StringVar(&replyTo, "reply-to", "", "reply to a specific comment ID")
 	cmd.Flags().StringVar(&commentOpKey, "op-key", "", "idempotency key: retrying the SAME comment with the same key returns the comment it made instead of a second one (default: a new key per invocation)")
 	return cmd

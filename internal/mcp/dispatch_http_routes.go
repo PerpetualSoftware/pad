@@ -2220,8 +2220,8 @@ func mapItemComment(input map[string]any) (string, string, []byte, error) {
 	if ref == "" {
 		return "", "", nil, fmt.Errorf("ref is required")
 	}
-	if message == "" {
-		return "", "", nil, fmt.Errorf("message is required")
+	if strings.TrimSpace(message) == "" {
+		return "", "", nil, fmt.Errorf("message is required (an empty or whitespace-only comment is refused)")
 	}
 	payload := map[string]any{
 		"body":   message,

@@ -494,7 +494,7 @@ pad item delete <ref>                 Delete item
 pad item move <ref> <collection>      Move item between collections
 pad item edit <ref> [--force]         Open item in $EDITOR (guarded save; see --help)
 pad item search "query"               Full-text search across all items
-pad item comment <ref> "text"         Add comment to an item
+pad item comment <ref> "text"         Add comment to an item (--stdin reads the text from stdin)
 pad item comments <ref>               View item comments
 pad item note <ref> "summary"         Append an implementation note to an item
 pad item decide <ref> "decision"      Append a decision log entry to an item

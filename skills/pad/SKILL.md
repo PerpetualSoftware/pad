@@ -217,7 +217,7 @@ pad item patch TASK-5 --old "exact text" --new "replacement" [--expected-seq N] 
 pad item show TASK-5 --lines 40-80   # numbered body lines + seq, to quote a patch anchor
 pad item delete TASK-5
 pad item search "query"
-pad item comment TASK-5 "..." [--reply-to <comment-id>]
+pad item comment TASK-5 "..." [--reply-to <comment-id>]   # or --stdin for a multi-line body; an empty one is refused
 pad item remind TASK-5 --remind-at 2026-08-01T09:00:00Z   # arm a one-shot reminder (RFC3339 INSTANT; a bare date is refused)
 pad item reminders TASK-5                                  # armed / fired / acknowledged
 pad item ack <reminder-id>                                 # acknowledge a fired reminder
