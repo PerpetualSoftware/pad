@@ -100,7 +100,7 @@ describe('FieldEditor abandoned toggle', () => {
 	});
 });
 
-describe('FieldEditor option rename', () => {
+describe('FieldEditor option rename (#1468)', () => {
 	function typeInto(input: HTMLInputElement, value: string) {
 		input.value = value;
 		input.dispatchEvent(new Event('input', { bubbles: true }));

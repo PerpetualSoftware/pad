@@ -151,7 +151,7 @@ slug ("planner") or its UUID.
 NOTE: the rename flag is --new-slug, not --slug. This is deliberate:
 the MCP catalog passes the positional via MCP property "slug" and
 the rename target via "new_slug"; calling the CLI flag --slug too
-would collide on the local stdio MCP path.`,
+would collide on the local stdio MCP path (#574).`,
 		Example: `  pad role update planner --description "Decomposes plans into tasks"
   pad role update reviewer --icon 👁️
   pad role update implementer --name "Engineer" --new-slug engineer`,
