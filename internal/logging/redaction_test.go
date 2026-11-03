@@ -53,6 +53,28 @@ func TestRedactQueryNestingIsBounded(t *testing.T) {
 	}
 }
 
+func TestRedactQueryOpaqueEncodingIsRedacted(t *testing.T) {
+	enc := func(s string, n int) string {
+		for i := 0; i < n; i++ {
+			s = url.QueryEscape(s)
+		}
+		return s
+	}
+	// A reset path encoded past the decode limit, as a value and as a key.
+	val := "next=" + enc("/reset-password/SECRET", 20)
+	if got := RedactQuery(val); strings.Contains(got, "SECRET") || got != "next=REDACTED" {
+		t.Errorf("over-encoded value not redacted: %.60q", got)
+	}
+	key := enc("token", 20) + "=SECRET"
+	if got := RedactQuery(key); strings.Contains(got, "SECRET") {
+		t.Errorf("over-encoded key leaked: %.60q", got)
+	}
+	// Within the limit it is still decoded and the diagnostics survive.
+	if got := RedactQuery("next=" + enc("/reset-password/SECRET", 5)); strings.Contains(got, "SECRET") {
+		t.Errorf("5x-encoded value leaked: %q", got)
+	}
+}
+
 func TestRedactAttrKeepsNumericCounts(t *testing.T) {
 	for _, a := range []slog.Attr{slog.Int("input_tokens", 12), slog.Int("access_tokens", 3), slog.Int("http_status_code", 502)} {
 		if got := redactAttr(nil, a); got.Value.Kind() != slog.KindInt64 || got.Value.Int64() != a.Value.Int64() {

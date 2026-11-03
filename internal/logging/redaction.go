@@ -39,20 +39,41 @@ func credentialKey(key string) bool {
 	return false
 }
 
+const maxUnescapePasses = 16
+
+// fullyUnescape decodes s until no escape remains. It reports false when the
+// input is malformed, or is still encoded after maxUnescapePasses: text that
+// cannot be examined cannot be shown, so callers redact it whole. A literal
+// "%" that appears only after a decode (not a valid escape) is plain data.
+func fullyUnescape(s string) (string, bool) {
+	cur, err := url.QueryUnescape(s)
+	if err != nil {
+		return "", false
+	}
+	for i := 0; i < maxUnescapePasses && strings.Contains(cur, "%"); i++ {
+		next, nerr := url.QueryUnescape(cur)
+		if nerr != nil {
+			return cur, true
+		}
+		if next == cur {
+			return cur, true
+		}
+		cur = next
+	}
+	// The pass limit was reached; a valid escape that still decodes is opaque.
+	if next, nerr := url.QueryUnescape(cur); nerr == nil && next != cur {
+		return "", false
+	}
+	return cur, true
+}
+
 // redactQueryValue masks credentials nested inside a non-credential query
 // value: a credential path (redirect=/verify-email/<token>), a nested query
 // (next=/setup?token=x) or either of those percent-encoded more than once.
 func redactQueryValue(rawValue string, depth int) (string, bool) {
-	decoded, err := url.QueryUnescape(rawValue)
-	if err != nil {
+	decoded, ok := fullyUnescape(rawValue)
+	if !ok {
 		return redacted, true
-	}
-	for i := 0; i < 16 && strings.Contains(decoded, "%"); i++ {
-		next, nerr := url.QueryUnescape(decoded)
-		if nerr != nil {
-			break
-		}
-		decoded = next
 	}
 	// The value may be a path with a nested query (?) or fragment (#) whose
 	// key=value pairs are redacted like a query, or a bare key=value pair.
@@ -97,8 +118,8 @@ func redactQueryDepth(raw string, depth int) string {
 	parts := strings.Split(raw, "&")
 	for i, part := range parts {
 		key, _, hasValue := strings.Cut(part, "=")
-		decoded, err := url.QueryUnescape(key)
-		if err != nil || strings.Contains(part, ";") {
+		decoded, ok := fullyUnescape(key)
+		if !ok || strings.Contains(part, ";") {
 			return redacted
 		}
 		if !hasValue {
