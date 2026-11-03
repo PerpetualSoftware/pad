@@ -522,7 +522,7 @@ const TITLE_STAMP_AT_ENTRY: [string, string] = [
 const TITLE_FENCE_AND_COMMITS =
 	"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n";
 
-describe('ItemDetail AST guard: the earlier edits are all refused', () => {
+describe('ItemDetail AST guard: every edit in the first fixture set is refused', () => {
 	// Without a clean baseline every mutant is "refused" for free.
 	const BASELINE = refusals(SOURCE);
 
