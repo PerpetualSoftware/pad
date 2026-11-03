@@ -65,8 +65,8 @@
 	 * exactly the one this surface was prioritised for.
 	 */
 	// `$state` rather than a plain `let`, because `pageIdentityHeld()` is read
-	// from an `$effect` below as well as from event handlers.
-	// A plain `let` is not tracked, so that effect would never re-run
+	// from an `$effect` below as well as from event handlers (codex round 2
+	// [P1]). A plain `let` is not tracked, so that effect would never re-run
 	// when the epoch is re-stamped and would keep whichever answer it saw first.
 	let identityEpochAtLoad = $state(authStore.identityEpoch);
 	// The workspace the board on screen was loaded for, stamped by `loadData`
@@ -127,7 +127,8 @@
 	// scroll is out of scope here (same constraint as the collection-page
 	// board view).
 	const scrollRestoration = createScrollRestoration({
-		// `loading` flips true on workspace change. Length gate omitted.
+		// `loading` flips true on workspace change. Length gate omitted
+		// (Codex P2 round 2).
 		ready: () => !loading,
 		persistKey: () =>
 			wsSlug ? `pad-last-scroll-${wsSlug}-${page.url.pathname}` : null,
@@ -147,7 +148,7 @@
 	// Eligible collections for the "+ New" item flow. Filter to collections
 	// the user can actually create items in — handleCreateItem requires
 	// collection-level edit on the server, so an item-only edit grant
-	// doesn't qualify.
+	// doesn't qualify (Codex round 2).
 	let eligibleCollections = $derived(
 		collectionStore.collections.filter(
 			(c) => !isAgentCollection(c)
@@ -184,7 +185,7 @@
 			return;
 		}
 		// `pageIdentityHeld()` as well as an entry capture, for the reason
-		// `handleDndFinalize` gives. The collection and the
+		// `handleDndFinalize` gives (codex round 2 [P1]). The collection and the
 		// title were chosen by whoever filled this form in, against the
 		// collection list the PREVIOUS identity loaded. The modal is mounted
 		// outside the `{#if loading}` branch, so it survives the whole reload
@@ -216,7 +217,7 @@
 			}
 		} finally {
 			// FENCED, unlike `loadData`'s busy flag, and the asymmetry is the
-			// point. `loading` is cleared unconditionally
+			// point (codex round 4 [P2]). `loading` is cleared unconditionally
 			// because nothing else clears it and pinning the board at the
 			// skeleton is the worse failure. `newItemSaving` IS cleared by
 			// `resetTransientState()` on every identity change, so a stale
@@ -364,7 +365,7 @@
 	let laneData = $state<Record<string, Item[]>>({});
 
 	// Sync from orderedLanes when not dragging — and only while this page holds
-	// the signed-in identity. `handleDndFinalize` mutates
+	// the signed-in identity (codex round 2 [P1]). `handleDndFinalize` mutates
 	// `lanes` OPTIMISTICALLY before its request resolves; if the identity moves
 	// during the `await loadData()` on its failure path, that load's own fence
 	// returns early and leaves the optimistic value in place, and releasing
@@ -409,9 +410,9 @@
 		// written anyway. Nothing about "has the identity moved since this work
 		// started" can see that; the question is whether the PAGE still belongs
 		// to the signed-in user.
-		// NOTHING IS TOUCHED ON A LOST-IDENTITY EXIT.
+		// NOTHING IS TOUCHED ON A LOST-IDENTITY EXIT (codex round 4 [P2]).
 		//
-		// These paths used to set `isDragging = false` on the way out, on
+		// Round 1 had these paths set `isDragging = false` on the way out, on
 		// the grounds that a fence returning without clearing it pins the board
 		// on stale lane data for ever. That was correct THEN and is wrong now:
 		// `resetTransientState()` clears it from the identity listener, which
@@ -488,7 +489,7 @@
 					// by what lands after it.
 					// See the lost-identity rule at the top of this handler. This
 					// exit used to release `isDragging` here, with a comment
-					// explaining that nothing else would; that became
+					// explaining that nothing else would; round 3 made that
 					// false by giving the reset to the identity listener, and
 					// this guard's own assertion is what noticed the comment was
 					// still describing the old arrangement.
@@ -502,7 +503,7 @@
 					if (!identityHeld(epochAtEntry)) return;
 					failureToast(wsAtEntry, "Couldn't move the item", err);
 					await loadData();
-					// GATED, like every other continuation.
+					// GATED, like every other continuation (codex round 5 [P2]).
 					// The check above happens BEFORE this await, so it says
 					// nothing about an identity change during the recovery load
 					// — and releasing the flag afterwards would cancel a drag the
@@ -560,7 +561,7 @@
 			console.error('Failed to persist sort order:', err);
 			// A refused batch stored nothing, so the lane shown is an order the
 			// server does not have: reload it, under the identity that made the
-			// request only (BUG-3259; the role write's recovery
+			// request only (BUG-3259 codex round 4; the role write's recovery
 			// above is the same shape).
 			if (!identityHeld(epochAtEntry)) return;
 			failureToast(wsAtEntry, "Couldn't save the card order", err);
@@ -569,7 +570,7 @@
 	}
 
 	/**
-	 * RE-LOAD ON AN IDENTITY CHANGE (BUG-3084).
+	 * RE-LOAD ON AN IDENTITY CHANGE (codex round 1 [P1], BUG-3084).
 	 *
 	 * `pageIdentityHeld()` compares against `identityEpochAtLoad`, which only
 	 * `loadData` re-stamps — and `loadData` runs on mount and after mutations,
@@ -635,8 +636,8 @@
 		// parameter on a route that cannot match without it, so there is no
 		// reachable path — but a future refactor that makes it optional owes a
 		// re-stamp on this branch.
-		// EVERY piece of transient interaction state, reset together.
-		// Members of one class were found one at a time
+		// EVERY piece of transient interaction state, reset together (codex
+		// round 3). Rounds 2 and 3 each found members of one class one at a time
 		// — an open modal, a stuck `newItemSaving`, a stuck `isDragging`, stale
 		// lane-drag styling — which is CONVE-35's signal that the loop was
 		// measuring the enumeration rather than the code. So it is enumerated
@@ -692,8 +693,8 @@
 	// Bumped by every `loadData()`. Without it an OLDER load's unconditional
 	// `finally` clears `loading` while a newer one is still in flight, and the
 	// markup re-renders the board over whatever `lanes` currently holds — which
-	// during an identity-change reload is the previous identity's.
-	// The settings page solves the same problem the same way; this page
+	// during an identity-change reload is the previous identity's (codex round 2
+	// [P1]). The settings page solves the same problem the same way; this page
 	// had no generation guard at all.
 	let loadGen = 0;
 
@@ -709,7 +710,7 @@
 				api.auth.session()
 			]);
 			if (!identityHeld(epochAtEntry)) return;
-			// GENERATION-GATED as well as identity-fenced.
+			// GENERATION-GATED as well as identity-fenced (codex round 4 [P2]).
 			// The two questions are different and neither implies the other: the
 			// fence asks whether the SIGNED-IN USER changed, the generation asks
 			// whether a NEWER LOAD for the same user already landed. `loadGen`
@@ -720,7 +721,7 @@
 			if (myLoad !== loadGen) return;
 			lanes = boardResult.lanes;
 			if (!session.authenticated || !session.user) {
-				// CLEARED, not left alone. A load that comes
+				// CLEARED, not left alone (codex round 3 [P2]). A load that comes
 				// back unauthenticated used to fall past this and re-stamp the
 				// epoch over the PREVIOUS user's id, so the page then vouched for
 				// itself while `handleDndFinalize` still had someone to assign to.
@@ -758,7 +759,7 @@
 			lanes = [];
 			currentUserId = '';
 			// RE-STAMPED ON THE ERROR PATH TOO, and the reason is NOT the one
-			// this comment used to give. It said the
+			// this comment used to give (codex round 2 [P2]). It said the
 			// listener had cleared `currentUserId` and `lanes` first, so a
 			// failed reload left nothing of the previous identity to protect.
 			// That was true when it was written and false two commits later,
@@ -786,7 +787,7 @@
 	async function saveRole() {
 		if (!editName.trim()) return;
 		// `pageIdentityHeld()` as well as an entry capture, and for
-		// `handleDndFinalize`'s reason. This handler writes to
+		// `handleDndFinalize`'s reason (codex round 2 [P1]). This handler writes to
 		// `editingRoleId`, which `openEditModal` took from `lanes` — a role id
 		// belonging to the board the PREVIOUS identity loaded. The modals are
 		// mounted outside the `{#if loading}` branch, so unlike the drag handlers
@@ -837,7 +838,7 @@
 	async function deleteRole() {
 		if (!editingRoleId) return;
 		// `pageIdentityHeld()` as well as an entry capture, and for
-		// `handleDndFinalize`'s reason. It DELETES
+		// `handleDndFinalize`'s reason (codex round 2 [P1]). It DELETES
 		// `editingRoleId`, taken by `openEditModal` from the previous identity's
 		// board — the most destructive write on the page.
 		// A click that happens AFTER an identity change is the current epoch, so
@@ -883,7 +884,7 @@
 	// Only while the page still shows the board the write was for: a failure
 	// that lands after navigating elsewhere is not about this board.
 	function failureToast(ws: string, what: string, err: unknown): void {
-		if (username + '/' + wsSlug !== ws) return; // owner and slug: two owners may share a slug
+		if (username + '/' + wsSlug !== ws) return; // owner and slug: two owners may share a slug (codex r2)
 		const detail = err instanceof Error && err.message ? err.message : '';
 		toastStore.show(detail ? `${what}: ${detail}` : what, 'error');
 	}

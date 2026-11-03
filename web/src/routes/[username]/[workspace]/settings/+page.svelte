@@ -39,7 +39,7 @@
 	 * settings UI, or act on intent captured for a different account.
 	 *
 	 * TWO CAPTURES, because there are two different questions and one of them
-	 * cannot be answered by the other:
+	 * cannot be answered by the other (codex round 1 [High]):
 	 *
 	 *   `identityHeld(captured)` — "has the identity moved since THIS WORK
 	 *   started?" Each handler captures at ENTRY, before its first await, and
@@ -103,7 +103,7 @@
 	 * A real (replacing) navigation rather than history.replaceState: only a
 	 * navigation updates `page.url`, and this route derives the prop from it —
 	 * with a bare history write the scope would come straight back on the next
-	 * tab switch or remount. The route has no load function,
+	 * tab switch or remount (Codex round 4). The route has no load function,
 	 * so this is a cheap client-side URL swap.
 	 */
 	function clearAttachmentItem() {
@@ -135,7 +135,7 @@
 	let membersError = $state<unknown>(null);
 	let invitations = $state<{ id: string; email: string; role: string; code: string; join_url?: string }[]>([]);
 	// Installed apps' bot principals (TASK-3392): listed apart from members and
-	// not seats; shown in their own section (SPEC-6 U9c).
+	// not seats (Dave §11 Q2); shown in their own section (SPEC-6 U9c).
 	let workspaceApps = $state<WorkspaceApp[]>([]);
 	let inviteEmail = $state('');
 	let inviteRole = $state('editor');
@@ -195,7 +195,7 @@
 	// never flashes before `/me` confirms; the server-side owner check remains
 	// the enforcement boundary, this is a stability fix.
 	// Memoised so the effects below re-run on a change of USER and not on every
-	// replacement of the session object (BUG-2991).
+	// replacement of the session object (BUG-2991, codex round 3).
 	// `authStore.userId` reads the reactive `session`, so any `authStore.load()`
 	// — the routine same-user refetch included — assigns a new object and would
 	// otherwise re-fire them. A `$derived` propagates only on a real change.
@@ -207,7 +207,8 @@
 	// invite form and the delete controls go readonly and then come back.
 	let isOwner = $state(false);
 	let canExport = $state(false);
-	// KEYED ON (USER, WORKSPACE), not on workspace alone (BUG-2991). Same hole the dashboard had, for the same reason and found in
+	// KEYED ON (USER, WORKSPACE), not on workspace alone (BUG-2991, codex
+	// round 2). Same hole the dashboard had, for the same reason and found in
 	// the same sweep: since BUG-2991 the store drops membership to UNKNOWN when
 	// the signed-in user changes, unknown deliberately does not update these
 	// caches, and keyed on slug alone the previous user's answers survive a
@@ -251,8 +252,8 @@
 		// Read through the store's getters rather than re-deriving the cascade —
 		// they mirror the server's ResolveUserPermission and must not be forked.
 		//
-		// Gated on `membershipKnown`, NOT on `currentMembership !== null`.
-		// Null means both "not fetched yet" and "no access", and gating
+		// Gated on `membershipKnown`, NOT on `currentMembership !== null` (codex
+		// round 1). Null means both "not fetched yet" and "no access", and gating
 		// on non-null would hold the last good answer forever once the answer
 		// became a denial: an owner removed from the workspace, or a `/me` that
 		// 403s, would keep the Save buttons, the invite form and the Danger Zone
@@ -313,7 +314,7 @@
 		document.getElementById(`settings-tab-${ids[next]}`)?.focus();
 	}
 
-	// Keyed on (USER, WORKSPACE) (BUG-2991). This page's own data
+	// Keyed on (USER, WORKSPACE) (BUG-2991, codex round 3). This page's own data
 	// — workspace name, members, invitations, collections, the context editor —
 	// is local state that the store's identity reset does not touch, so a
 	// sign-in as somebody else on the same route would otherwise leave the
@@ -326,8 +327,8 @@
 	// suppresses exactly it with `untrack`. Naming the real key makes the
 	// behaviour survive someone fixing the accident.
 	//
-	// The DATA IS DROPPED before the reload, not merely hidden behind `loading`.
-	// `load`'s catch allows a partial render and its `finally`
+	// The DATA IS DROPPED before the reload, not merely hidden behind `loading`
+	// (codex round 5). `load`'s catch allows a partial render and its `finally`
 	// clears `loading` regardless, so a FAILED load for the new user left the
 	// previous user's name, members and invitations on screen the moment the
 	// spinner went away.
@@ -346,7 +347,7 @@
 			invitations = [];
 			workspaceApps = [];
 			// An access panel belongs to the workspace it was opened in
-			// (BUG-3698): closing it also retires any read or save
+			// (BUG-3698, codex r1): closing it also retires any read or save
 			// still in flight for it.
 			setAccessPanel(null);
 			if (wsSlug) load(wsSlug);
@@ -380,7 +381,7 @@
 
 	// BUG-2265: keep the collections list fresh when another client changes a
 	// collection, so opening the edit modal seeds a CURRENT
-	// expected_updated_at instead of a stale one. UNIFIED generation:
+	// expected_updated_at instead of a stale one. UNIFIED generation (Codex):
 	// EVERY collections-list write — load(), create/update handlers, and the
 	// SSE refresh — bumps this and gates its assignment, so a stale in-flight
 	// fetch (e.g. a slow load for workspace A) can't revert a newer one.
@@ -394,7 +395,7 @@
 	async function refreshCollections(ws: string) {
 		if (!ws) return;
 		// Captured at ENTRY, before any await: the only epoch that cannot be
-		// re-stamped by a concurrent load.
+		// re-stamped by a concurrent load (codex round 1).
 		const epochAtEntry = captureIdentity();
 		const gen = ++collectionsGen;
 		try {
@@ -409,7 +410,7 @@
 			// If the edit modal is open, feed it the refreshed object for the
 			// SAME id so a concurrent rename updates its `collection` prop and
 			// its same-id-rename retarget branch fires — otherwise the modal
-			// keeps PATCHing the dead old slug → 404.
+			// keeps PATCHing the dead old slug → 404 (Codex #4).
 			if (editingCollection) {
 				const refreshed = fresh.find((c) => c.id === editingCollection!.id);
 				if (refreshed) editingCollection = refreshed;
@@ -444,13 +445,13 @@
 	async function load(slug: string) {
 		loading = true;
 		// Capture generations at ENTRY — BEFORE any await (including setCurrent)
-		// — and fence EVERY continuation. A slow load for
+		// — and fence EVERY continuation (Codex round 8). A slow load for
 		// workspace A that resumes after B's load is superseded (myLoad !==
 		// loadGen) and drops all its writes, so it can't clobber B's
 		// name/context/collections/members. The collections write ALSO respects
 		// collectionsGen so it doesn't revert a fresher SSE refresh.
 		const myLoad = ++loadGen;
-		// Another workspace's members failure is not this one's (TASK-2203).
+		// Another workspace's members failure is not this one's (TASK-2203, codex r2).
 		membersError = null;
 		const myColl = ++collectionsGen;
 		// RE-STAMPED HERE, before any await, exactly as ItemDetail's loadData
@@ -507,7 +508,7 @@
 	async function saveName() {
 		if (!wsName.trim() || savingName) return;
 		// Captured at ENTRY, before any await: the only epoch that cannot be
-		// re-stamped by a concurrent load.
+		// re-stamped by a concurrent load (codex round 1).
 		const epochAtEntry = captureIdentity();
 		savingName = true;
 		nameStatus = 'idle';
@@ -565,7 +566,7 @@
 	async function saveContext() {
 		if (savingContext) return;
 		// Captured at ENTRY, before any await: the only epoch that cannot be
-		// re-stamped by a concurrent load.
+		// re-stamped by a concurrent load (codex round 1).
 		const epochAtEntry = captureIdentity();
 		contextError = '';
 		contextStatus = 'idle';
@@ -622,7 +623,7 @@
 	}
 	async function handleCollectionCreated() {
 		// Captured at ENTRY, before any await: the only epoch that cannot be
-		// re-stamped by a concurrent load.
+		// re-stamped by a concurrent load (codex round 1).
 		const epochAtEntry = captureIdentity();
 		await refreshCollections(wsSlug);
 		// refreshCollections fences its OWN commit; this one is for the two
@@ -633,7 +634,7 @@
 	}
 	async function handleCollectionUpdated() {
 		// Captured at ENTRY, before any await: the only epoch that cannot be
-		// re-stamped by a concurrent load.
+		// re-stamped by a concurrent load (codex round 1).
 		const epochAtEntry = captureIdentity();
 		editingCollection = null;
 		await refreshCollections(wsSlug);
@@ -643,7 +644,7 @@
 	async function handleInvite() {
 		if (!inviteEmail.trim() || inviting) return;
 		// Captured at ENTRY, before any await: the only epoch that cannot be
-		// re-stamped by a concurrent load.
+		// re-stamped by a concurrent load (codex round 1).
 		const epochAtEntry = captureIdentity();
 		inviting = true;
 		inviteResult = null;
@@ -686,8 +687,8 @@
 
 	async function handleRemoveMember(userId: string, name: string) {
 		// Captured at ENTRY, before any await (the confirmation is one): the
-		// only epoch that cannot be re-stamped by a concurrent load.
-		// The workspace too, so a yes given after the page moved to
+		// only epoch that cannot be re-stamped by a concurrent load (codex
+		// round 1). The workspace too, so a yes given after the page moved to
 		// another workspace's settings removes nobody (TASK-3543).
 		const epochAtEntry = captureIdentity();
 		const reqWs = wsSlug;
@@ -755,7 +756,8 @@
 		// TASK-2190: demoting YOURSELF from owner takes away your own access to
 		// members, collections and settings here, so it is confirmed first.
 		// Captured at ENTRY, before any await (the confirmation below is one):
-		// the only epoch that cannot be re-stamped by a concurrent load.
+		// the only epoch that cannot be re-stamped by a concurrent load (codex
+		// round 1).
 		const epochAtEntry = captureIdentity();
 		const reqWs = wsSlug;
 		if (userId === sessionUserId && previous === 'owner' && newRole !== 'owner') {
@@ -788,7 +790,7 @@
 
 	async function toggleAccessPanel(userId: string) {
 		// Captured at ENTRY, before any await: the only epoch that cannot be
-		// re-stamped by a concurrent load.
+		// re-stamped by a concurrent load (codex round 1).
 		const epochAtEntry = captureIdentity();
 		if (expandedAccessUserId === userId) {
 			setAccessPanel(null);
@@ -833,7 +835,7 @@
 	async function saveCollectionAccess() {
 		if (!expandedAccessUserId || accessSaving) return;
 		// Captured at ENTRY, before any await: the only epoch that cannot be
-		// re-stamped by a concurrent load.
+		// re-stamped by a concurrent load (codex round 1).
 		const epochAtEntry = captureIdentity();
 		accessSaving = true;
 		const userId = expandedAccessUserId;
@@ -1270,7 +1272,8 @@
 
 				{#if workspaceApps.length > 0}
 					<!-- SPEC-6 U9c: installed apps act as their own principals.
-					     They are listed apart from people and are not seats. -->
+					     They are listed apart from people and are not seats
+					     (Dave §11 Q2). -->
 					<div class="invitations-section apps-section" data-testid="members-apps">
 						<h3>Apps</h3>
 						<p class="apps-note">
