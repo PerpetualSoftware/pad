@@ -594,7 +594,7 @@ func TestWikiLinks_CrossWorkspaceRefNumberFallback(t *testing.T) {
 }
 
 // TestWikiLinks_CrossWorkspaceTokenAllowListFilters guards that
-// cross-ws traversal must honor the OAuth/MCP token's
+// cross-ws traversal honors the OAuth/MCP token's
 // workspace allow-list (TASK-952). A token consented for workspace
 // A must not return source rows from workspace B even when the
 // underlying user has B access — the consent boundary lives at the

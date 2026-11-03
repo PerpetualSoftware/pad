@@ -643,10 +643,10 @@ handlers — onchange is never called.
 		// state and the replacement starts at 0 — and 0 is also the value in the
 		// overwhelmingly common case where no resync ever happened, so an
 		// equality check on it passes trivially across exactly the event it was
-		// meant to catch. No coincidence is needed for that: 0 is the common case.
+		// meant to catch.
 		const indexStillOurs = () => localIndex.resetGenerationFor(ws) === resetGen;
-		// THREE things are deliberately NOT fenced here, each raised by review
-		// and each declined for a reason that belongs next to the code rather
+		// THREE things are deliberately NOT fenced here, each
+		// declined for a reason that belongs next to the code rather
 		// than in a commit message nobody downstream reads.
 		//
 		// 1. A CONCURRENT CHANGE TO THE FIELD (SSE, another tab) landing while
