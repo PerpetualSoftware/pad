@@ -199,8 +199,8 @@ func TestClassifyHTTPStatus(t *testing.T) {
 			}
 			// Body fragment preservation contract changed in TASK-1077:
 			// pre-fix the raw body was always copied into Hint, which
-			// would leak unstructured upstream output (Codex review #387
-			// round 1). Post-fix only structured-envelope-shaped bodies
+			// would leak unstructured upstream output. Post-fix only
+			// structured-envelope-shaped bodies
 			// have their inner message lifted; unstructured bodies are
 			// dropped to avoid leaking tokens / debug dumps.
 			//
@@ -275,8 +275,8 @@ func TestParseWorkspaceListJSON(t *testing.T) {
 
 // TestExtractUnknownWorkspaceSlug covers the small regex helper used
 // to pull a slug name out of CLI stderr like "workspace 'foo' does
-// not exist". Only QUOTED slugs match — Codex review on PR #357
-// caught that bare-word matching captured stop-words like "not" out
+// not exist". Only QUOTED slugs match, because bare-word matching captured
+// stop-words like "not" out
 // of generic "Workspace not found" responses, which would push agents
 // toward retrying with a bogus slug. The regex now requires single or
 // double quotes around the slug; bare-word phrasings yield empty

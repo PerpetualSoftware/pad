@@ -142,8 +142,8 @@ describe('TASK-2200 — workspace identity recovers after a failed cold load', (
 		const recovering = workspaceStore.recoverIfMissing('alpha');
 
 		// Still two. Unconditional cleanup would have let the older failure
-		// clear the slot the NEWER load still owns (codex round 5), and this
-		// would be a third request instead of a join — the race round 4 closed,
+		// clear the slot the NEWER load still owns, and this
+		// would be a third request instead of a join — the race an earlier fix closed,
 		// reintroduced by its own cleanup.
 		expect(list).toHaveBeenCalledTimes(2);
 
@@ -163,7 +163,7 @@ describe('TASK-2200 — workspace identity recovers after a failed cold load', (
 		// part: the first draft of `recoverIfMissing` skipped an in-flight list
 		// and went straight to `setCurrent`, which — with `workspaces` still
 		// empty — takes this fallback, and when it failed `current` stayed null
-		// even though the list request succeeded moments later (codex round 4).
+		// even though the list request succeeded moments later.
 		const get = vi.spyOn(api.workspaces, 'get').mockRejectedValue(new Error('down'));
 		vi.spyOn(api.workspaces, 'me').mockResolvedValue({} as never);
 

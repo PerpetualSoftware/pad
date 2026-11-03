@@ -9,7 +9,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/store/storetest"
 )
 
-// BUG-3056, codex round 1: moving the append server-side must not change who
+// BUG-3056: moving the append server-side must not change who
 // the remote door says wrote an entry. It has always stamped the requesting
 // user's display name; the server's own stamp for an in-process request
 // (which carries no X-Pad-Agent) would be "user". Driven through the real

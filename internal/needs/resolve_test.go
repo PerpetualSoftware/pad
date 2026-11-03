@@ -89,7 +89,7 @@ func TestResolve_Order(t *testing.T) {
 	})
 }
 
-// Hunter r1 F1: a mentioned person's row is computed from their own mentions
+// A mentioned person's row is computed from their own mentions
 // only; another person's mention must not reach it.
 func TestResolve_MentionedRowIsPerPerson(t *testing.T) {
 	t0 := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)

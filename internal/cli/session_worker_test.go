@@ -8,7 +8,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// TASK-3613 (lead ruling): a session's lease worker id survives a /clear in
+// TASK-3613: a session's lease worker id survives a /clear in
 // the same process (which re-runs `pad session register`) and is new for a
 // new process, including one that reuses the pid.
 

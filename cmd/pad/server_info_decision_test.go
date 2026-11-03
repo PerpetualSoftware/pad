@@ -48,7 +48,7 @@ func TestDescribeDecisionProviderReadsTheConfigFile(t *testing.T) {
 }
 
 func TestDescribeDecisionProviderEnvOverridesTheFile(t *testing.T) {
-	// The precedence ruled on PLAN-3114 (day 73): the environment overrides
+	// The precedence from PLAN-3114: the environment overrides
 	// the instance-admin setting, and the config file stands in for that
 	// source until TASK-3121 adds it. Only the wiring decides the ORDER the
 	// sources are passed in, so only a test here can catch it reversed.
@@ -121,7 +121,7 @@ func TestCollectedReportCarriesDecisionProviderAndNoKey(t *testing.T) {
 	}
 }
 
-// Review round 2: the tests above call describeDecisionProvider directly, so
+// The tests above call describeDecisionProvider directly, so
 // they have no opinion about whether collectServerInfo calls it, or whether
 // the human-readable output prints it. These go through both doors.
 func TestServerInfoCarriesTheDecisionProviderThroughBothDoors(t *testing.T) {
@@ -154,7 +154,7 @@ func TestServerInfoCarriesTheDecisionProviderThroughBothDoors(t *testing.T) {
 
 	// The printer must print the REPORT, not re-resolve the environment: a
 	// report carrying values the environment does not hold tells the two
-	// apart (review round 3).
+	// apart.
 	report.Config.DecisionProvider = serverInfoDecision{Name: "report-only-name", Model: "report-only-model"}
 	out = captureStdout(t, func() { printServerInfo(report) })
 	if !strings.Contains(out, "report-only-name (report-only-model)") {

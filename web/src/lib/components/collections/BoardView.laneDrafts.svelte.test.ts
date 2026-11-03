@@ -1,6 +1,6 @@
 // BUG-3043 — a lane draft whose lane no longer exists.
 //
-// Lead ruling, RE-HOME: the draft is shown in the Uncategorized lane, marked
+// Re-home rule: the draft is shown in the Uncategorized lane, marked
 // with the lane it came from, and saved there; where Uncategorized cannot
 // receive it, it is kept and a notice names the lost lane.
 //

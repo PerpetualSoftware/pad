@@ -47,7 +47,7 @@
 //     refused by referent validation, because the option names no item — so the
 //     key is omitted and the collection's own default applies.
 //
-//     Codex found `multi_relation`; `relation` is the same class and was found
+//     `multi_relation` was found first; `relation` is the same class and was found
 //     by asking what else reaches that branch (CONVE-18).
 //
 // A CAVEAT THE OMIT ARM INHERITS, recorded because it is invisible from here.

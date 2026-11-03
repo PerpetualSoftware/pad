@@ -7,7 +7,7 @@ import "encoding/json"
 // greenfield-only SDD tools (spec-kit, Kiro), which assume you start from
 // the spec. This one recovers specs FROM a living codebase.
 //
-// Design decisions settled with Dave (IDEA-2527 comment 4): (1) subsystem
+// Design decisions (IDEA-2527 comment 4): (1) subsystem
 // decomposition is proposed by the agent first, with exactly ONE human
 // checkpoint before any specs get written — not a spec-per-file sweep with
 // no oversight; (2) extraction doubles as an audit — extracted specs

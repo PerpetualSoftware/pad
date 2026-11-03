@@ -99,8 +99,7 @@ export function uploadImportBundle(opts: ImportUploadOptions): Promise<ImportUpl
 		};
 		const onAbort = () => fail('aborted');
 		// A caller's callback must not wedge the upload: one that throws is
-		// reported and ignored, and the transfer and its timers carry on
-		// (codex r1).
+		// reported and ignored, and the transfer and its timers carry on.
 		const notify = (fn: () => void) => {
 			try {
 				fn();

@@ -2,7 +2,7 @@
 // editor's NodeViews and the public share page, and moved here from
 // Editor.svelte's `<script module>` block.
 //
-// MODULE SCOPE IS LOAD-BEARING (BUG-3106 review round 1). `mermaid` is a
+// MODULE SCOPE IS LOAD-BEARING (BUG-3106). `mermaid` is a
 // singleton: initialize() and render() act on ONE global config. A second
 // copy of this bookkeeping anywhere, whether per <Editor> instance or per
 // page, produces two bugs at once:
@@ -70,7 +70,7 @@ class MermaidTimeout extends Error {}
  * Append a job to the queue so that its link SETTLES whatever the job does.
  * A throw from a caller's `onError` / `onRendered` used to reject the link,
  * and every later `.then` job was then skipped for good, which is the same
- * stall as a hung render arriving by another route (BUG-3239, codex r1).
+ * stall as a hung render arriving by another route (BUG-3239).
  * The error is reported, not swallowed.
  */
 function enqueue(job: () => void | Promise<void>): void {

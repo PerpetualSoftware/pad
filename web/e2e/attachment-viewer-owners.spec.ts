@@ -133,7 +133,7 @@ async function expectCursorMoves(
 	// press is a separate press to the app too.
 	await page.waitForTimeout(PANE_FOLLOW_SETTLE_MS);
 	// Read again right before the press: the return must be movement caused by
-	// it, not a change that happened during the settle (codex r2).
+	// it, not a change that happened during the settle.
 	const beforeBack = await focusedCard();
 	await press(back);
 	try {

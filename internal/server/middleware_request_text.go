@@ -574,7 +574,8 @@ type bodyWalk struct {
 //   - A collection may declare a user field literally named `schema` or
 //     `tags`. Treating `{"fields":{"schema":"..."}}`'s inner key as a wire key
 //     refused valid text that happened to hold a JSON example
-//     (BUG-2803).
+//
+// (BUG-2803).
 //   - Below the document Postgres parses, an escape is harmless. Measured on
 //     Postgres 17 with the check disabled: a NUL escape two levels deep
 //     imports 201, because `fields` is parsed ONCE and the inner text is
@@ -795,8 +796,8 @@ func isJSONEncodedFieldKey(k string) bool {
 	// EqualFold, not ToLower. encoding/json matches with Unicode SIMPLE
 	// FOLDING, which is wider than lower-casing: U+017F LATIN SMALL LETTER
 	// LONG S folds to 's', so "ſchema" reaches the `schema` field while
-	// strings.ToLower("ſchema") is still "ſchema" and missed the allowlist
-	//. Fixing the ASCII half and leaving the Unicode half
+	// strings.ToLower("ſchema") is still "ſchema" and missed the allowlist.
+	// Fixing the ASCII half and leaving the Unicode half
 	// would have been this bug's own pattern one more time.
 	for canonical := range jsonEncodedFieldKeys {
 		if strings.EqualFold(k, canonical) {

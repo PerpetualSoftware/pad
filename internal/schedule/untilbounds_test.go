@@ -8,7 +8,7 @@ import (
 )
 
 // TestBetweenGapPopulationKeepsEarlierRDate is the New York repro of a gap
-// holding more than the old constant slack (TASK-4100 r1): 1,800 gap readings
+// holding more than the old constant slack (TASK-4100): 1,800 gap readings
 // sort ahead of an RDATE that resolves earlier than all of them. Between must
 // start at the RDATE and equal the chained NextAfter.
 func TestBetweenGapPopulationKeepsEarlierRDate(t *testing.T) {
@@ -41,8 +41,8 @@ func TestBetweenGapPopulationKeepsEarlierRDate(t *testing.T) {
 	}
 }
 
-// TestUntilZIsAnInstantBound covers a Z UNTIL on the wall-clock path
-// (TASK-4100 r1): it bounds the resolved instant, inclusively, not the wall.
+// TestUntilZIsAnInstantBound covers a Z UNTIL on the wall-clock path (TASK-4100):
+// it bounds the resolved instant, inclusively, not the wall.
 func TestUntilZIsAnInstantBound(t *testing.T) {
 	for _, tc := range []struct {
 		name, start, rule string
@@ -87,7 +87,7 @@ func TestUntilZDoesNotBoundRDates(t *testing.T) {
 	wantAts(t, got, "2025-03-08T07:50:00Z", "2025-03-09T07:50:00Z")
 }
 
-// TestStartSyncedTokyoZUntil: UNTIL equal to Start, ahead of UTC (TASK-4100 r1).
+// TestStartSyncedTokyoZUntil: UNTIL equal to Start, ahead of UTC (TASK-4100).
 func TestStartSyncedTokyoZUntil(t *testing.T) {
 	c := compile(t, pinned(t, "Asia/Tokyo", "2025-01-06T09:00", "FREQ=DAILY;UNTIL=20250106T000000Z"))
 	if !c.StartSynced() {

@@ -237,7 +237,7 @@ func TestAJoinerIsServedAcrossAnIdleFiredCycle(t *testing.T) {
 	}
 
 	// EXACTLY ONE REDIS SUBSCRIPTION, which the delivery assertion below does
-	// NOT establish on its own (codex round 8). If the cycle had torn wsSubs
+	// NOT establish on its own. If the cycle had torn wsSubs
 	// down WITHOUT first minting the establishment record, the joiner would
 	// have found neither a live subscription nor a pending one, appointed
 	// itself establisher, and opened a SECOND connection and receive loop for
@@ -269,10 +269,9 @@ func TestAJoinerIsServedAcrossAnIdleFiredCycle(t *testing.T) {
 	}
 }
 
-// TestAResumingJoinerIsToldSyncRequiredAcrossACycle answers codex round 2's P2
-// with the case that discriminates.
+// TestAResumingJoinerIsToldSyncRequiredAcrossACycle covers the case that discriminates.
 //
-// The concern raised was that a subscriber arriving DURING a cycle gets no gap
+// The concern was that a subscriber arriving DURING a cycle gets no gap
 // signal — dropWorkspaceCoverage signals only the subscribers present when it
 // runs. That is true, and for a RESUMING caller it is not the mechanism that
 // protects it: the registration MARK is. It registers while the workspace has
@@ -483,7 +482,7 @@ func TestAHeartbeatIsRecognisedByPrefixNotByExactPayload(t *testing.T) {
 }
 
 // TestAPayloadWearingThePrefixStillEndsCoverage is the other half of the frame
-// contract, and the one codex round 5 asked for.
+// contract.
 //
 // The prefix buys forward compatibility, but it must not become a hole in the
 // loud path: before this feature, EVERY payload this instance could not read
@@ -520,7 +519,7 @@ func TestAPayloadWearingThePrefixStillEndsCoverage(t *testing.T) {
 }
 
 // TestAPrefixedGarbagePayloadEndsCoverageEndToEnd is the half the classifier
-// test cannot reach (codex round 8): asserting that decodePayload returns an
+// test cannot reach: asserting that decodePayload returns an
 // error says nothing about whether receiveMessages ACTS on it. This drives the
 // real Redis receive path and asserts the coverage drop and its reset reason.
 func TestAPrefixedGarbagePayloadEndsCoverageEndToEnd(t *testing.T) {
@@ -650,7 +649,7 @@ func TestAnIdleSubscriptionEndsItsCoverageAndReplacesItsConnection(t *testing.T)
 	// tear them down. The wedged route is exactly the case where they never
 	// die on their own.
 	//
-	// COUNTED AT REDIS, not inferred from the loop exiting (codex round 8).
+	// COUNTED AT REDIS, not inferred from the loop exiting.
 	// stopRedisSubscription does two things — sub.cancel() and pubsub.Close()
 	// — and the receive loop exits on the FIRST of them alone, so waiting for
 	// the exit alone would still pass against a version that cancelled the loop
@@ -718,7 +717,7 @@ func TestAnUnconfirmedAdmissionIsNotCycledAsIdle(t *testing.T) {
 	t.Cleanup(func() { _ = client.Close() })
 
 	// PHASE 2, because the detector only runs there — flipping the gate in
-	// codex round 1 silently un-covered this test, which the mutation matrix
+	// Silently un-covered this test, which the mutation matrix
 	// caught: removing the install-time stamp went from DETECTED back to
 	// SURVIVED, because a phase-1 bus never scans and this was the only test
 	// that could see the zero value.
@@ -905,7 +904,7 @@ func TestAStragglerCannotRefreshTheLivenessOfItsSuccessor(t *testing.T) {
 // therefore start receiving again between being selected and being cycled —
 // and the earlier version cycled it anyway, because its re-checks asked about
 // generation, subscriber count and bus liveness but never re-asked about
-// idleness (codex round 11).
+// idleness.
 //
 // The gap this exercises was WIDENED by this unit's own concurrency cap, which
 // is what makes it a real production window rather than a theoretical one.
@@ -956,8 +955,8 @@ func TestAWorkspaceThatRecoversBeforeItsTurnIsNotCycled(t *testing.T) {
 	}
 }
 
-// TestAFailedProbeSuspendsDetectionRatherThanCyclingBlindly is codex round
-// 13's P2, and it is the mirror image of the failure this feature exists to
+// TestAFailedProbeSuspendsDetectionRatherThanCyclingBlindly is the mirror image
+// of the failure this feature exists to
 // find.
 //
 // The detector's inference is "we published a frame into this subscription and
@@ -1007,7 +1006,7 @@ func TestAFailedProbeSuspendsDetectionRatherThanCyclingBlindly(t *testing.T) {
 }
 
 // TestAnUnrelatedSubscriptionIsNotCountedAsThisCyclesReplacement pins the
-// explicit installation result (codex round 13's P3).
+// explicit installation result.
 //
 // The counter means "torn down AND replaced". Reading the live generation
 // after establishment infers that, and infers it wrongly in both directions:
@@ -1064,8 +1063,8 @@ func TestAnUnrelatedSubscriptionIsNotCountedAsThisCyclesReplacement(t *testing.T
 	_ = first
 }
 
-// TestAProbeDoesNotCreditTheSubscriptionThatReplacedItsTarget closes the
-// residual codex round 15 named: the generation binding on lastProbeOK had no
+// TestAProbeDoesNotCreditTheSubscriptionThatReplacedItsTarget closes a
+// residual: the generation binding on lastProbeOK had no
 // deterministic test, only the reasoning that it mirrors stampLastSeen.
 //
 // publishHeartbeats snapshots the workspaces, publishes off the lock — for as
@@ -1161,7 +1160,7 @@ func TestAProbeDoesNotCreditTheSubscriptionThatReplacedItsTarget(t *testing.T) {
 // check across a probe that succeeds and then starts failing.
 //
 // WHAT THIS DOES AND DOES NOT ESTABLISH, stated because the first version of
-// this comment claimed more. Codex round 16 argued the age-based premise
+// this comment claimed more. An age-based premise
 // ("has a probe succeeded within the threshold") failed to suspend detection
 // where the ordering rule ("has a probe succeeded since anything last
 // arrived") would, and the rule was rewritten on that argument. The mutation
@@ -1468,7 +1467,7 @@ func TestAHeartbeatConsumesNoEventID(t *testing.T) {
 	// that returned true unconditionally, which is not a wait at all — it read
 	// the counter with the publishes possibly still in flight, so a heartbeat
 	// that DID consume an id could land afterwards and the test would still
-	// pass. Observing the frames arrive is the barrier (codex round 4, P3).
+	// pass. Observing the frames arrive is the barrier.
 	//
 	// Subscribed HERE, after the fixture event, so the channel carries only the
 	// frames under test.
@@ -1526,8 +1525,8 @@ func TestOneIdlePassCyclesEveryDueWorkspace(t *testing.T) {
 		before[ws] = gen
 	}
 
-	// A RENDEZVOUS, because counting outcomes cannot tell serial from parallel
-	// (codex round 8): a serial pass also cycles all of them and would have
+	// A RENDEZVOUS, because counting outcomes cannot tell serial from parallel:
+	// a serial pass also cycles all of them and would have
 	// passed the assertions below unchanged. Each establishment blocks here
 	// until a second one joins it; under a serial implementation the first
 	// waits alone, times out, and maxConcurrent never exceeds 1.
@@ -1701,9 +1700,9 @@ func TestTheMaintenanceLoopRunsBothHalves(t *testing.T) {
 	})
 }
 
-// TestAQuietWorkspaceIsNotCycledOnPhase1 is the regression test for the defect
-// codex round 1 found in this unit's first draft, and it is the one most worth
-// keeping.
+// TestAQuietWorkspaceIsNotCycledOnPhase1 is the regression test for a defect in
+// this unit's first draft, and it is the
+// one most worth keeping.
 //
 // Idle detection originally ran on EVERY instance from phase 1, on the
 // reasoning that it could detect off whatever traffic the deployment already
@@ -1759,7 +1758,7 @@ func TestPhase2CyclesTheSameWorkspace(t *testing.T) {
 	}
 }
 
-// TestClosingTheBusDuringACycleInstallsNothing covers codex round 3's P2.
+// TestClosingTheBusDuringACycleInstallsNothing covers this case.
 //
 // Close cancels b.ctx and drains wsSubs, but it does NOT join the maintenance
 // goroutines — deliberately, because a heartbeat publish against a wedged

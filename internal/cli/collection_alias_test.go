@@ -100,7 +100,7 @@ func TestWithCollectionAliasFallback_NonAliasedInput_NoRetry(t *testing.T) {
 }
 
 func TestWithCollectionAliasFallback_NonCollectionError_NoRetry(t *testing.T) {
-	// Constraint 1 (lead): a request aimed at a collection that really exists
+	// Constraint 1: a request aimed at a collection that really exists
 	// ("plan") but that fails for a DIFFERENT reason (here a validation error)
 	// must NOT be retried against the alias ("plans"). Retrying could silently
 	// succeed against the wrong collection — BUG-2630 in a new costume.
@@ -119,7 +119,7 @@ func TestWithCollectionAliasFallback_NonCollectionError_NoRetry(t *testing.T) {
 }
 
 func TestWithCollectionAliasFallback_BothFail_SurfacesRawError(t *testing.T) {
-	// Constraint 2 (lead): when both raw and alias fail, the error the user
+	// Constraint 2: when both raw and alias fail, the error the user
 	// sees must name the slug they typed ("task"), not the alias tried on their
 	// behalf ("tasks").
 	got := "sentinel-unset"
@@ -143,7 +143,7 @@ func TestWithCollectionAliasFallback_BothFail_SurfacesRawError(t *testing.T) {
 }
 
 func TestWithCollectionAliasFallback_AliasSubstantiveError_Surfaced(t *testing.T) {
-	// Codex P2: when the raw slug misses but the alias names a REAL collection
+	// When the raw slug misses but the alias names a REAL collection
 	// that fails for a substantive reason (here a plan limit), the user must
 	// see THAT error, not a misleading "collection not found" — the alias
 	// collection exists, so "not found" would be a lie.

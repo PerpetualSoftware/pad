@@ -64,7 +64,7 @@ test.describe('attachment lifecycle completeness — 3c-iii browser proof (TASK-
 		// second tie on `created_at`, so their order is the DB's tie-break, not the
 		// upload order. So DERIVE the viewer order at runtime rather than assume it (a
 		// hard-coded position would be a same-second coincidence that flips the moment
-		// the uploads straddle a second — Codex round 1).
+		// the uploads straddle a second).
 		const ids = [
 			await uploadAttachment(fixture, request, doc.id, 'nav-1.png'),
 			await uploadAttachment(fixture, request, doc.id, 'nav-2.png'),
@@ -112,7 +112,7 @@ test.describe('attachment lifecycle completeness — 3c-iii browser proof (TASK-
 		// ONLY 404s are counted, deliberately: the discovery pass above already
 		// force-probed `arrival` once (a 200, while it was alive), and one such probe
 		// may still be in flight as we register this listener. Counting 200s would let
-		// that straggler pollute the count (Codex round 2); a 404 can ONLY come from a
+		// that straggler pollute the count; a 404 can ONLY come from a
 		// probe issued AFTER the API delete below — i.e. the post-reopen navigation
 		// probe this leg is proving. The priming's cacheability is asserted directly off
 		// the `page.evaluate` return value, not off a 200 counter.
@@ -173,7 +173,7 @@ test.describe('attachment lifecycle completeness — 3c-iii browser proof (TASK-
 		// does not close, and it is never a live-looking stale row.
 		//
 		// ARM the 404 response wait BEFORE the arrow so the observed 404 is causally the
-		// ARROW's probe, not a straggler (Codex round 3): armed after the delete + reopen
+		// ARROW's probe, not a straggler: armed after the delete + reopen
 		// and immediately before the keypress, it can only catch a HEAD 404 issued by the
 		// navigation that follows. The `headArrival404 === 0` guard above confirms none
 		// preceded it.
@@ -217,7 +217,7 @@ test.describe('attachment lifecycle completeness — 3c-iii browser proof (TASK-
 		// its only role here is to establish the archived level, and a reliable banner
 		// keeps the no-op assertion honest.
 		//
-		// The list-request choreography is three-step (round-9): ARCHIVE fires no
+		// The list-request choreography is three-step: ARCHIVE fires no
 		// `attachments.list` (the content no-op), then baseline the count immediately
 		// BEFORE the restore, then a NEW list must fire AFTER it. Baselining before the
 		// archive would let an incorrect archive-triggered reload false-satisfy the
@@ -233,7 +233,7 @@ test.describe('attachment lifecycle completeness — 3c-iii browser proof (TASK-
 		await browserLogin(page);
 		// `ws` is captured OUTSIDE the try so the finally can always reclaim it; the
 		// try opens immediately after so a failure during doc/upload setup still cleans
-		// up (Codex round 2).
+		// up.
 		const ws = (await createWorkspace(fixture, request, 'U5 restore revalidate')).slug;
 		try {
 			const doc = await createDoc(fixture, request, ws, `U5 restore ${Date.now()}`);
@@ -276,13 +276,13 @@ test.describe('attachment lifecycle completeness — 3c-iii browser proof (TASK-
 			await page.waitForTimeout(500);
 			expect(listCalls, 'archiving fires no attachments.list — the content no-op').toBe(afterMount);
 
-			// Baseline immediately BEFORE the restore (round-9): the after-restore delta
+			// Baseline immediately BEFORE the restore: the after-restore delta
 			// is measured from here, so an archive-time reload (were there one) could not
 			// pre-satisfy it.
 			const beforeRestore = listCalls;
 
-			// DELAY the restore's revalidation list so its IN-FLIGHT window is observable
-			// (Codex round 3): "never blank" is a claim about the interval WHILE the list
+			// DELAY the restore's revalidation list so its IN-FLIGHT window is observable:
+			// "never blank" is a claim about the interval WHILE the list
 			// is fetching, so hold that response open and assert the tiles stay painted
 			// during it. A blank-then-refill implementation would blank at fetch start and
 			// be caught here; a post-settle count alone could not tell the two apart. The
@@ -299,7 +299,7 @@ test.describe('attachment lifecycle completeness — 3c-iii browser proof (TASK-
 				{ times: 1 }
 			);
 			// Arm the settled-200 wait BEFORE firing so what we assert is causally the
-			// restore's own list (Codex round 1), not a bare dispatch a failed/unrelated
+			// restore's own list, not a bare dispatch a failed/unrelated
 			// GET could satisfy.
 			const restoreList = page.waitForResponse(isItemListResp, { timeout: 15_000 });
 			// RESTORE through the BULK lane — `items_bulk_updated`, no `item_id`.

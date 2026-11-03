@@ -32,8 +32,8 @@
 		 */
 		restoreBlocked?: string | null;
 		/**
-		 * The draft's base is not known to be where the user started (BUG-3850
-		 * rulings baa63dc3, a6380212): a patch could not be told apart from the
+		 * The draft's base is not known to be where the user started (BUG-3850):
+		 * a patch could not be told apart from the
 		 * newer edits, so Restore is not offered and Copy leads (TASK-3856).
 		 */
 		baseStale?: boolean;

@@ -116,7 +116,7 @@ export async function navigateToRedirectTarget(target: string): Promise<void> {
  * caller that hands this function an already-decoded-once value (or any
  * future caller that doesn't go through URLSearchParams) could. Rejecting
  * them defensively costs nothing: no legitimate SPA route ever contains a
- * literal `%2f`/`%5c` sequence. BUG-1929 follow-up (Codex R2).
+ * literal `%2f`/`%5c` sequence. BUG-1929 follow-up.
  */
 export function validateRedirect(raw: string | null | undefined): string {
 	if (

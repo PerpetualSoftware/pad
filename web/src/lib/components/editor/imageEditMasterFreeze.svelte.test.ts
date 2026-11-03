@@ -1,6 +1,6 @@
 // BUG-2177: a rotate (or crop) whose server-side transform finishes after the
 // master editor froze (a pane opened over it) used to drop its result with no
-// word to the user. Lead ruling, day 78: NOT replayed on thaw (applying an
+// word to the user. The result is NOT replayed on thaw (applying an
 // image edit minutes later changes the document while the user is not
 // looking); the user is told it was interrupted.
 //
@@ -128,7 +128,7 @@ describe('an image edit finishing after the master froze (BUG-2177)', () => {
 		expect(imageUuid(tiptap!)).toBe(PNG);
 		expect(toastSpy).toHaveBeenCalledTimes(1);
 		expect(String(toastSpy.mock.calls[0][0])).toContain(IMAGE_EDIT_INTERRUPTED);
-		// Not replayed on thaw (the ruling): the document stays as it was.
+		// Not replayed on thaw: the document stays as it was.
 		tiptap!.setEditable(true);
 		await settle();
 		expect(imageUuid(tiptap!)).toBe(PNG);

@@ -33,7 +33,7 @@ const VIEWER_PATH_PREFIXES = ['/s/', '/api/v1/s/'];
  * spelling: `new URL` applies the same WHATWG parsing a click does, so dot
  * segments (`/s/../dave/ws`, `%2e%2e`), letter case and backslashes are
  * normalised before the path is compared. A prefix test on the raw string let
- * `/s/../dave/ws` through (codex round 1 on TASK-2248 U1). A leading
+ * `/s/../dave/ws` through (TASK-2248 U1). A leading
  * backslash (`\/x`) is `//x` to a browser: another HOST, so not internal.
  * Page-local hrefs (`#x`, `?q`) resolve to the share page itself, under `/s/`.
  */
@@ -103,8 +103,7 @@ function shareClassAllowed(tag: string, cls: string): boolean {
  * - every class the renderer would not have emitted, on that tag, is stripped;
  * - an <input> survives only as the renderer's task-list checkbox, and is
  *   forced disabled. Any other input (a text field) matched the global
- *   `input` rule, which is a styled fake sign-in field without any class
- *   (Codex r1 on this unit).
+ *   `input` rule, which is a styled fake sign-in field without any class.
  * Runs on the sanitizer's output, before the share page's own passes. Fails
  * CLOSED without a DOM: it returns nothing rather than HTML it could not check.
  */

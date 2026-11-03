@@ -162,7 +162,7 @@ describe('EpisodeFeed', () => {
 	// Both events are on the SAME item, deliberately: that is what makes the
 	// card count discriminating. Two different items would produce two cards
 	// however the actors were keyed, so the earlier version of this test proved
-	// only that labels render (codex round 10). Same item, same window, two
+	// only that labels render. Same item, same window, two
 	// names — a fold that ignored the name would yield ONE card.
 	it('renders each agent under its own stamped name', async () => {
 		mountFeed([
@@ -186,7 +186,7 @@ describe('EpisodeFeed', () => {
 		expect(host.querySelector('.ep-actor')!.textContent).toBe('claude-code');
 	});
 
-	// Codex round 11. The label element must stay a <bdi>: an agent name is
+	// The label element must stay a <bdi>: an agent name is
 	// self-declared text and a bidi control inside it would otherwise reorder
 	// the verb and item title that follow it on the card's line. Swapping the
 	// element back to a <span> passes every text assertion above.

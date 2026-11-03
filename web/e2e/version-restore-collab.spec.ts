@@ -192,7 +192,7 @@ test('restoring a version under live collab is not clobbered by the next flush (
  * captured without gamma and gamma is lost when the op-log is pruned — no
  * version ever contains gamma and the poll goes red.
  *
- * Determinism / no false-pass (Codex P3 on #994): the poll alone could pass for
+ * Determinism / no false-pass (#994): the poll alone could pass for
  * the WRONG reason if the ordinary 5s idle flush happened to land gamma before
  * the restore. So we deterministically SUPPRESS the idle flush — a route gate
  * ABORTS every `source=collab-snapshot` PATCH until we explicitly allow it,
@@ -268,7 +268,7 @@ test('an unflushed live edit is captured in the restore undo-point via the UI (B
 	await expect(editor).toContainText(beta);
 	await expect(page.locator(SYNCED_BADGE_SELECTOR)).toBeVisible();
 
-	// P3 (Codex): deterministically SUPPRESS the ordinary 5s idle collab-snapshot
+	// P3: deterministically SUPPRESS the ordinary 5s idle collab-snapshot
 	// flush so the ONLY gamma-carrying collab-snapshot PATCH that can land is the
 	// pre-restore one — making both the outcome and the ordering assertions
 	// airtight (no reliance on "reach the click under 5s"). A route gate ABORTS
@@ -341,7 +341,7 @@ test('an unflushed live edit is captured in the restore undo-point via the UI (B
 	await card.getByRole('button', { name: 'Confirm Restore' }).click();
 	await restoreDone;
 
-	// Ordering proof (Codex P3): a SUCCESSFUL gamma collab-snapshot flush occurred
+	// Ordering proof: a SUCCESSFUL gamma collab-snapshot flush occurred
 	// AND its response was dispatched STRICTLY BEFORE the restore POST was issued
 	// (monotonic index — the client awaited the flush before POSTing the restore).
 	// Under the bug the restore POST fires with no preceding gamma flush, so

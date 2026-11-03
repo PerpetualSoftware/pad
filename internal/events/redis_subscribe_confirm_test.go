@@ -53,8 +53,8 @@ func newSubscribeDelayProxy(t *testing.T, backend string, delay time.Duration) *
 }
 
 // newSubscribeProxy is the constructor behind both proxies. Every field the
-// forward goroutine reads is set BEFORE the accept loop starts (codex round
-// 5): a gate assigned after the goroutine is running is published to it
+// forward goroutine reads is set BEFORE the accept loop starts: a gate assigned
+// after the goroutine is running is published to it
 // without synchronisation, and a stale nil there takes the delay path with
 // delay=0 — the gate silently not a gate.
 func newSubscribeProxy(t *testing.T, backend string, delay time.Duration, gate chan struct{}) *subscribeDelayProxy {
@@ -94,7 +94,7 @@ func (p *subscribeDelayProxy) addr() string { return p.ln.Addr().String() }
 // magnitude past the loaded ack latency measured for BUG-2786 (sub-ms) and
 // past every wait the gated tests contain. It is NOT self-reporting: a test
 // that relies on the gate must check forcedOpen before it trusts the
-// ordering the gate was holding (codex round 4), or a failsafe release
+// ordering the gate was holding, or a failsafe release
 // shows up as an unrelated assertion failing. When it fires it opens the
 // gate for every connection, so the test records ONE forced open rather
 // than one per connection.
@@ -119,8 +119,8 @@ func newSubscribeGateProxy(t *testing.T, backend string) *subscribeDelayProxy {
 	t.Helper()
 	p := newSubscribeProxy(t, backend, 0, make(chan struct{}))
 	// A test that ends without releasing leaves forward parked on the gate,
-	// holding both sides of the connection until the failsafe (codex round
-	// 3). Release at cleanup so teardown is prompt whichever way the test
+	// holding both sides of the connection until the failsafe. Release at
+	// cleanup so teardown is prompt whichever way the test
 	// went.
 	t.Cleanup(p.release)
 	return p
@@ -128,14 +128,14 @@ func newSubscribeGateProxy(t *testing.T, backend string) *subscribeDelayProxy {
 
 // release lets every parked and future SUBSCRIBE through. Idempotent and
 // safe to call concurrently — the hook and the failsafe, or two connections'
-// failsafes, can race to be first (codex round 2).
+// failsafes, can race to be first.
 func (p *subscribeDelayProxy) release() {
 	p.releaseOnce.Do(func() { close(p.gate) })
 }
 
 // waitParked blocks until the proxy has parked a SUBSCRIBE, and fails the
-// test if none arrives. A one-shot read of held is NOT a barrier (codex
-// round 4): the client's write returns once the bytes are in the kernel,
+// test if none arrives. A one-shot read of held is NOT a barrier: the client's
+// write returns once the bytes are in the kernel,
 // and under load the proxy's forward goroutine may not have read them yet
 // when the test looks — so a plain `held == 0` premise check fails
 // spuriously, which is the family of flake this instrument exists to end.
@@ -173,8 +173,8 @@ func (p *subscribeDelayProxy) forward(client, server net.Conn) {
 					select {
 					case <-p.gate:
 					case <-time.After(subscribeGateFailsafe):
-						// OPENS THE GATE FOR EVERYONE, not just this chunk
-						// (codex round 1 P2): a later connection — a
+						// OPENS THE GATE FOR EVERYONE, not just this chunk:
+						// a later connection — a
 						// reconnect, a second workspace — would otherwise
 						// park for another failsafe interval, and forcedOpen
 						// would then be reporting a cause that belongs to
@@ -299,7 +299,7 @@ func TestConcurrentFirstSubscribersShareOneRedisSubscription(t *testing.T) {
 		case <-time.After(3 * time.Second):
 			t.Fatalf("caller %d did not receive the event", i)
 		}
-		// EXACTLY ONCE, not merely at least once (codex round 7). Two
+		// EXACTLY ONCE, not merely at least once. Two
 		// establishments mean two receive loops fanning the same event out
 		// twice; reading one and moving on would leave the duplicate sitting
 		// in the channel undetected, and the subscriber-count assertion above
@@ -422,7 +422,7 @@ func TestAnUnconfirmedAdmissionTellsItsSubscribersWhenTheAckLands(t *testing.T) 
 
 	// RELEASED ONLY NOW, after the mark has been observed above — not from
 	// the beforeUnconfirmedMark hook, which runs before the mark takes b.mu
-	// and would let the acknowledgement beat it (codex round 3 P1). With
+	// and would let the acknowledgement beat it. With
 	// Subscribe returned and the count at 1, the acknowledgement is late by
 	// construction rather than by margin.
 	proxy.release()
@@ -585,7 +585,7 @@ func waitForWorkspaceSubscribers(t *testing.T, b *RedisBus, workspaceID string, 
 // not even return one. So any mechanism that withholds in-gap events from its
 // channel on the theory that the replay will deliver them drops those events
 // outright, for exactly the population BUG-2747 is about. The first version of
-// this fix did that; codex round 1 found it.
+// this fix did that.
 func TestAFreshSubscriberReceivesAnEventPublishedDuringEstablishment(t *testing.T) {
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
@@ -641,7 +641,6 @@ func TestAFreshSubscriberReceivesAnEventPublishedDuringEstablishment(t *testing.
 // subscription Redis has not confirmed. A second subscriber that reads wsSubs
 // first is admitted straight into the unconfirmed window — the defect this
 // whole change exists to close, reached through the fix's own seam. Found by
-// codex round 1.
 func TestASubscriberArrivingMidEstablishmentWaitsForTheAcknowledgement(t *testing.T) {
 	mr := miniredis.RunT(t)
 	proxy := newSubscribeDelayProxy(t, mr.Addr(), 300*time.Millisecond)
@@ -690,8 +689,8 @@ func TestASubscriberArrivingMidEstablishmentWaitsForTheAcknowledgement(t *testin
 	b.Unsubscribe(<-first)
 }
 
-// TestAConfirmedSubscriptionIsNeverLeftMarkedUnconfirmed pins codex round 1's
-// P2 — the interleave where establishSubscription's select chose the timer but
+// TestAConfirmedSubscriptionIsNeverLeftMarkedUnconfirmed covers the interleave
+// where establishSubscription's select chose the timer but
 // the acknowledgement had already landed and confirmSubscription had already
 // cleared the flag. Without a re-check under the lock that closes it, the flag
 // is set again with nothing left to come and clear it: the subscriber is
@@ -754,8 +753,8 @@ func TestAConfirmedSubscriptionIsNeverLeftMarkedUnconfirmed(t *testing.T) {
 	ch, gaps, _ := b.Subscribe(context.Background(), "ws-1")
 	defer b.Unsubscribe(ch)
 
-	// PREMISES, IN AN ORDER WHERE EACH GUARD'S CAUSE IS WHAT REMAINS (codex
-	// round 7): the proxy parked the SUBSCRIBE at all; the failsafe did not
+	// PREMISES, IN AN ORDER WHERE EACH GUARD'S CAUSE IS WHAT REMAINS: the proxy
+	// parked the SUBSCRIBE at all; the failsafe did not
 	// open it before the test released it; given both, the only way the hook
 	// did not run is that the timer arm was not taken (this is the cause the
 	// old guard misreported); and given all three, the only way raced is
@@ -792,8 +791,7 @@ func TestAConfirmedSubscriptionIsNeverLeftMarkedUnconfirmed(t *testing.T) {
 	}
 }
 
-// TestAJoinerIsNotStrandedByAnAbandonedEstablishment covers codex round 2's
-// second P1.
+// TestAJoinerIsNotStrandedByAnAbandonedEstablishment covers this case.
 //
 // establishSubscription abandons when the workspace emptied while it was
 // dialling. If the establishment record outlives that decision by even an
@@ -803,7 +801,7 @@ func TestAConfirmedSubscriptionIsNeverLeftMarkedUnconfirmed(t *testing.T) {
 // later caller establishes either. A dead stream that looks alive.
 //
 // IT FABRICATES THE STATE ON PURPOSE, and that is worth stating rather than
-// hiding (codex round 7). It empties the maps directly instead of calling
+// hiding. It empties the maps directly instead of calling
 // Unsubscribe because the establishing caller is blocked inside Subscribe and
 // its channel does not exist yet — nobody can unsubscribe it. That is the same
 // reason the retry it exercises is DEFENCE IN DEPTH: with the record retired in
@@ -859,8 +857,7 @@ func TestAJoinerIsNotStrandedByAnAbandonedEstablishment(t *testing.T) {
 	}
 }
 
-// TestCloseDuringEstablishmentDoesNotLeakTheSubscription covers codex round 2's
-// first P1.
+// TestCloseDuringEstablishmentDoesNotLeakTheSubscription covers this case.
 //
 // Close cancels the context BEFORE it takes the lock and drains wsSubs, so an
 // establishment that locks afterwards used to install into a map Close had
@@ -897,7 +894,7 @@ func TestCloseDuringEstablishmentDoesNotLeakTheSubscription(t *testing.T) {
 	}
 }
 
-// TestTheReplayCeilingIsAPositionNotAnID covers codex round 3's first P1
+// TestTheReplayCeilingIsAPositionNotAnID covers the replay ceiling
 // directly on the buffer, where the out-of-order case can be constructed
 // exactly rather than hoped for.
 //
@@ -959,8 +956,8 @@ func TestTheReplayCeilingIsAPositionNotAnID(t *testing.T) {
 	}
 }
 
-// TestAPostRegistrationStragglerBelowTheCursorDoesNotEatAnEarlierEvent is codex
-// round 5's P1, and it is the same two-spaces mistake the ID-valued ceiling made,
+// TestAPostRegistrationStragglerBelowTheCursorDoesNotEatAnEarlierEvent guards
+// against the same two-spaces mistake the ID-valued ceiling made,
 // committed again inside the fix for it.
 //
 // Bounding by counting entries off the END of what since() returned mixes two
@@ -1053,8 +1050,7 @@ func TestAnEvictedRegistrationSpanIsRefusedRatherThanPartiallyServed(t *testing.
 	}
 }
 
-// TestAReplacedBufferVoidsTheCallersCoverageClaim covers codex round 3's second
-// P1.
+// TestAReplacedBufferVoidsTheCallersCoverageClaim covers this case.
 //
 // An ID-space reset during the wait replaces the buffer wholesale. A position
 // in the old buffer describes nothing in the new one, and knownFrom may still

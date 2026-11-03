@@ -1,15 +1,15 @@
-// BUG-3067, lead ruling on the trail — the prompt-substitution half of the class.
+// BUG-3067 — the prompt-substitution half of the class.
 //
 // The chips answer a retyped `status`/`priority` by WITHHOLDING the value. A
 // prompt variable cannot: `{status}` has to become something, and a blank is a
-// lie of a different kind. The ruling matches what #1352 did for chips —
+// lie of a different kind. This matches what #1352 did for chips —
 // resolve to the target's TITLE, fall back to its REF, never emit the raw id.
 // The FALLBACK IS FOR A RESOLVED ROW WITH NO TITLE — an earlier version of this
 // comment said "when the row cannot be resolved", which the code cannot do and
 // the legs below show it does not: a ref is built from the row, so an id that
 // resolves to nothing has no ref to fall back to and yields empty.
 //
-// The second half of the ruling is structural: `QuickActionsMenu` and
+// The second half of the rule is structural: `QuickActionsMenu` and
 // `quick-action-preview` held byte-identical copies of this substitution, and
 // the preview module's own doc says it MIRRORS the menu so the preview shows
 // what copying produces. Two mirrors drift, and a preview whose purpose is to
@@ -55,7 +55,7 @@ describe('a categorical template variable', () => {
 	});
 
 	it('falls back to the REF when the row has no title', () => {
-		// The fallback the ruling names, and it needs a title-less row to be
+		// The fallback the rule names, and it needs a title-less row to be
 		// reachable at all — a fixture that always has a title would make this
 		// leg pass without ever exercising the branch.
 		expect(categoricalTemplateValue(RETYPED, 'status', NAMELESS, resolve)).toBe('COLOR-7');

@@ -23,7 +23,7 @@ import (
 // It is a display cue, never a record: the agent's stdout is the record.
 // Rotation can therefore lose display only. A reader that polls between two
 // rotations misses the lines that moved into <pid>.log.1, and nothing
-// catches them up (TASK-4071 C3, lead ruling day 35).
+// catches them up (TASK-4071 C3).
 
 // ChatSeenMaxBytes caps one generation of a session's chat-seen log. On the
 // write that would pass it, the log moves to <pid>.log.1 (replacing an older

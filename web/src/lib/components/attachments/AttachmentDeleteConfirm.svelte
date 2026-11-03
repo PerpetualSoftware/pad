@@ -57,7 +57,7 @@
 		// Normalized HERE, not at each call site: a blank name is rare, but a
 		// confirmation reading "Delete ?" is the one place it actually matters,
 		// because the user is being asked to approve destroying something the
-		// prompt cannot name (final review round 4).
+		// prompt cannot name.
 		const displayName = displayFilenameIsolated(filename);
 		return referencedHere
 			? `Delete ${displayName}? It's still used in this item's content — deleting it will leave a "missing attachment" placeholder where it appears.`

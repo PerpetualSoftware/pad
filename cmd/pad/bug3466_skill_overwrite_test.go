@@ -108,7 +108,7 @@ func captureSkillStdout(t *testing.T, fn func()) string {
 	return <-done
 }
 
-// Codex r1: pad workspace init/link skipped every installed skill, so an
+// pad workspace init/link skipped every installed skill, so an
 // unedited older copy was never updated there. It now asks the same door.
 func TestBUG3466_WorkspaceInitUpdatesAnOlderUneditedSkill(t *testing.T) {
 	project := setupSkillTest(t)
@@ -129,7 +129,7 @@ func TestBUG3466_WorkspaceInitUpdatesAnOlderUneditedSkill(t *testing.T) {
 	}
 }
 
-// Codex r1: after keeping an edited file, pad agent update must not then say
+// After keeping an edited file, pad agent update must not then say
 // nothing is installed or everything is up to date.
 func TestBUG3466_AgentUpdateDoesNotContradictAKeep(t *testing.T) {
 	project := setupSkillTest(t)
@@ -145,7 +145,7 @@ func TestBUG3466_AgentUpdateDoesNotContradictAKeep(t *testing.T) {
 	}
 }
 
-// Codex r1: the status listing names --force for a newer pad's file too.
+// The status listing names --force for a newer pad's file too.
 func TestBUG3466_ListNamesForceForANewerSkill(t *testing.T) {
 	project := setupSkillTest(t)
 	body := "---\nname: pad\n---\n\nThe skill a newer pad wrote.\n"
@@ -163,7 +163,7 @@ func TestBUG3466_ListNamesForceForANewerSkill(t *testing.T) {
 	}
 }
 
-// Codex r2: the local part of --list asks the same decision, so an edited
+// The local part of --list asks the same decision, so an edited
 // committed skill in a fresh checkout (nothing in the registry) is not shown
 // as healthy.
 func TestBUG3466_ListFlagsAnUntrackedEditedSkill(t *testing.T) {
@@ -175,7 +175,7 @@ func TestBUG3466_ListFlagsAnUntrackedEditedSkill(t *testing.T) {
 	}
 }
 
-// Codex r2: an untracked skill that is already current is installed, so
+// An untracked skill that is already current is installed, so
 // agent update must not say nothing is installed; and it is recorded.
 func TestBUG3466_UpdateCountsAnUntrackedCurrentSkill(t *testing.T) {
 	_ = setupSkillTest(t)

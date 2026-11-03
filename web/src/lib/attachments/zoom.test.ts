@@ -656,7 +656,7 @@ describe('RTL / horizontal direction symmetry', () => {
 // ---------------------------------------------------------------------------
 // The hard bound: NO sequence of operations escapes [FIT, maxScale] or the pan
 // bounds. Individually-correct operations can still compose into an escape —
-// this is the property the phase's review round called binding.
+// this is the property the zoom spec calls binding.
 // ---------------------------------------------------------------------------
 
 describe('bounds no sequence of operations can escape', () => {
@@ -756,8 +756,8 @@ describe('degenerate geometry', () => {
 });
 
 /**
- * Round 3 of the per-task Codex review took the numerical-robustness angle and
- * found three P2s. Each is pinned here by a test that FAILS against the code as
+ * The numerical-robustness pass
+ * found three issues. Each is pinned here by a test that FAILS against the code as
  * it stood before the fix — the point of the exercise, since a test that passes
  * either way would have let all three back in.
  */

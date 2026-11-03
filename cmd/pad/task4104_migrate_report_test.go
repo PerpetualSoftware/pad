@@ -10,7 +10,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/store/storetest"
 )
 
-// TASK-4104 D2 r1-1: `pad db migrate-to-pg` drops a schedule the import
+// TASK-4104: `pad db migrate-to-pg` drops a schedule the import
 // refuses, so it must say so: a line per drop as it happens, then a closing
 // summary naming the SQLite file the schedule is still in. Print-only.
 func TestTASK4104_MigrateReportsDroppedSchedules(t *testing.T) {
@@ -64,7 +64,7 @@ func TestTASK4104_MigrateReportsDroppedSchedules(t *testing.T) {
 	var sum bytes.Buffer
 	printMigrateDropSummary(&sum, []migrateDropped{{Workspace: "Migrate Drop", Drops: drops}}, "/data/pad.db")
 	// The source is marked migrated (pad refuses to open it), so the summary
-	// must say how the rows can still be read (TASK-4104 D2 r2-2).
+	// must say how the rows can still be read (TASK-4104).
 	for _, want := range []string{"Migrate Drop", "1 schedule", "NOT carried", "/data/pad.db",
 		"marked\nas migrated, so pad will not open it", "sqlite3 '/data/pad.db'", "item_schedules", "schedule_occurrences", "pad db backup"} {
 		if !strings.Contains(sum.String(), want) {
@@ -73,7 +73,7 @@ func TestTASK4104_MigrateReportsDroppedSchedules(t *testing.T) {
 	}
 }
 
-// TASK-4104 D2 r3-1: the summary's sqlite3 hint is a pasteable command, so a
+// TASK-4104: the summary's sqlite3 hint is a pasteable command, so a
 // source path with a space or a quote (a realistic macOS data path) must
 // reach the shell as one argument, unchanged.
 func TestTASK4104_MigrateDropSummaryQuotesThePath(t *testing.T) {

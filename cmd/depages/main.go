@@ -141,7 +141,7 @@ func envOr(k, def string) string {
 // workflowFiles lists the files whose `uses:` pins a change can add: every
 // YAML file under .github (workflows, local actions), and any action.yml or
 // action.yaml elsewhere in the repository (a composite action can live
-// anywhere; codex rounds 1-2). node_modules and .git are skipped. A
+// anywhere). node_modules and .git are skipped. A
 // `docker://` image is not covered: it is not pinned by a commit SHA, and has
 // no source of publish time here.
 func workflowFiles(root string) []string {
@@ -228,7 +228,7 @@ func parsePackageLock(b []byte) ([]Dep, error) {
 		return nil, err
 	}
 	// A v1 lockfile keeps its tree under `dependencies`, which this does not
-	// read; refusing beats checking nothing (codex round 1).
+	// read; refusing beats checking nothing.
 	if lock.LockfileVersion < 2 {
 		return nil, fmt.Errorf("lockfileVersion %d is not supported (want 2 or 3)", lock.LockfileVersion)
 	}
@@ -395,7 +395,7 @@ func getJSON(src Sources, u string, github bool, v any) error {
 		return err
 	}
 	// The token goes to GitHub's API host and nowhere else, whatever
-	// DEPAGES_GITHUB_API says (codex round 1).
+	// DEPAGES_GITHUB_API says.
 	if github && src.Token != "" && req.URL.Host == src.TokenHost {
 		req.Header.Set("Authorization", "Bearer "+src.Token)
 	}

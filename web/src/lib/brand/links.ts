@@ -16,8 +16,8 @@
 export const GITHUB_REPO_URL = 'https://github.com/PerpetualSoftware/pad';
 
 /**
- * Community channel: the repo's GitHub Discussions tab (TASK-2888 — Dave's
- * day-57 call: no Discord; Discussions, or r/getpad, is the channel for now).
+ * Community channel: the repo's GitHub Discussions tab (TASK-2888 — the
+ * decision: no Discord; Discussions, or r/getpad, is the channel for now).
  * Project-wide, so shown on Cloud and self-hosted alike.
  */
 export const COMMUNITY_URL = `${GITHUB_REPO_URL}/discussions`;

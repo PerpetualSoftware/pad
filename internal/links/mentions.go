@@ -66,8 +66,8 @@ func emailLocalByte(b byte) bool {
 
 // urlScan answers "is the non-space run ending at this @ a URL" in O(1) per
 // match. Matches arrive in increasing order, so advance walks each byte once
-// and an ExtractMentions call stays linear in the body (TASK-3917 r3: a
-// backward scan per match made "/@a" repeated quadratic).
+// and an ExtractMentions call stays linear in the body (TASK-3917: a
+// backward scan per match made ", @a" repeated quadratic).
 type urlScan struct {
 	pos      int // bytes before pos have been scanned
 	runStart int // start of the current non-space run
@@ -94,7 +94,7 @@ func (u *urlScan) inURL(content string, at int) bool {
 
 // rangeCursor answers "is pos inside one of these ranges" for positions that
 // arrive in increasing order, walking the sorted, disjoint ranges once per
-// call rather than once per match (TASK-3917 r4: a scan of every range per
+// call rather than once per match (TASK-3917: a scan of every range per
 // match made a body of many code spans and then many mentions quadratic).
 // ExtractWikiLinks uses it too (BUG-3968).
 type rangeCursor struct {
@@ -162,7 +162,7 @@ func badMentionFollower(content string, end int) bool {
 // apostrophe, ellipsis, dash, emoji, fullwidth punctuation) terminates it. A
 // following "_" rejects only when an ASCII letter or digit follows it
 // ("@alice_bob" no, "@alice_" yes); "." plus an ASCII letter or digit rejects.
-// Known limits, by decision (TASK-3917 r1, r2): "end.@alice" is read as an
+// Known limits, by decision (TASK-3917): "end.@alice" is read as an
 // email and skipped; "@alice.Thanks" (no space after the period) is rejected,
 // indistinguishable from "@alice.smith"; "-@alice" is skipped; "@alice" directly
 // followed by a CJK (or any non-ASCII) letter is not indexed, since that rule

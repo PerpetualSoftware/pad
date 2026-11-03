@@ -38,7 +38,7 @@ import {
  * corrected resend cannot duplicate anything.
  *
  * A whitelist, not `err instanceof PadApiError`, and the difference is
- * load-bearing (PR #1099 codex round 2): the API client turns ANY JSON error
+ * load-bearing (PR #1099): the API client turns ANY JSON error
  * envelope into a PadApiError, including one a proxy or gateway invented AFTER
  * the handler had already published. Treating "structured" as "definitely not
  * published" would offer a duplicate on exactly that case. So the rule is
@@ -57,7 +57,7 @@ export const PUSH_PRE_PUBLISH_ERROR_CODES: ReadonlySet<string> = new Set([
 	'permission_denied', // workspace-access middleware
 	'unavailable', // the bus isn't wired, or was already closed — nothing published
 	// The 409 for a soft-deleted item. Resolution happens before the
-	// publish, so nothing went out (codex round 12 on BUG-2699).
+	// publish, so nothing went out.
 	'archived',
 	'rate_limited', // the client's own 429 shape; the handler never ran
 	'plan_limit_exceeded',
@@ -70,7 +70,7 @@ export const PUSH_PRE_PUBLISH_ERROR_CODES: ReadonlySet<string> = new Set([
 /** True when `err` is a failure the push endpoint provably wrote BEFORE
  *  publishing, so the message did not go out and re-offering it is safe.
  *
- *  WHAT THIS TRUSTS, said plainly (codex round 9): that a recognised code
+ *  WHAT THIS TRUSTS, said plainly: that a recognised code
  *  came from the push HANDLER. An intermediary that synthesised one of
  *  these codes AFTER the handler had already published would make this
  *  return true for a delivered push, and the surface would offer a resend.

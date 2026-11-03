@@ -69,7 +69,7 @@ export type HrefClickPlan =
  * The `pane` branch requires `isSameWorkspaceItemHref` — unlike
  * relationships/children/graph, this popover's href comes off a Tiptap
  * `link` mark with no signal distinguishing a wiki-link-inserted item link
- * from a human-typed arbitrary internal path (Codex review, TASK-2160; see
+ * from a human-typed arbitrary internal path (TASK-2160; see
  * that function's doc comment in `$lib/collections/paneTarget`).
  */
 export function planHrefClick(
@@ -81,7 +81,7 @@ export function planHrefClick(
 	// Let the browser handle new-tab / new-window / download modifiers and
 	// middle-click itself. `altKey` is included to match `itemCardClick.ts`'s
 	// `shouldOpenInPane` and every other pane interceptor — alt-click is a
-	// download gesture, not a pane drill (Codex review).
+	// download gesture, not a pane drill.
 	if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) {
 		return { kind: 'passthrough' };
 	}

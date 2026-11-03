@@ -428,8 +428,8 @@ export function renderMarkdown(
 			// visibility into the target workspace's items.
 			//
 			// URL shape: `/-/r/{workspace}/{ref}`. The leading `/-/r/` is
-			// the resolver's sentinel prefix (Codex round-2 P1.4 / Option
-			// B); it can't collide with any user-namespace URL because
+			// the resolver's sentinel prefix; it
+			// can't collide with any user-namespace URL because
 			// username + collection slugs both require letter-led. The
 			// `username` arg is ignored for cross-workspace links because
 			// the resolver derives the canonical user-namespace segment
@@ -443,7 +443,7 @@ export function renderMarkdown(
 			// (`^[A-Za-z][A-Za-z0-9]*-\d+$`) — both produce URL-safe ASCII
 			// by construction. wikiLinksToMarkdown emits the same bytes
 			// verbatim, so the encode/no-encode choice is symmetric across
-			// both functions (Codex round-1 sanity sweep).
+			// both functions.
 			const safeDisplay = escapeHtml(xw.display ?? `${xw.workspace}::${xw.ref}`);
 			// rel="external" makes the SvelteKit router leave the click to the
 			// browser: `/-/r/` is a SERVER redirect with no client route, and a
@@ -554,7 +554,7 @@ export function renderMarkedWithAttachments(
  *    stay inert text, the posture the public share route already takes.
  *  - **No attachment context.** A `pad-attachment:` href inside an attached
  *    document is not ours to resolve either. The context is CLEARED for the
- *    duration rather than merely left alone (codex R3): this module's context
+ *    duration rather than merely left alone: this module's context
  *    is module-level state, so a call nested inside another render — an
  *    attachment resolver or a `missing` hook that itself renders markdown —
  *    would otherwise inherit the OUTER document's workspace and resolver, and
@@ -647,7 +647,7 @@ const REF_PATTERN = /^[A-Za-z][A-Za-z0-9]*-\d+$/;
 // preserves digit-leading inputs, e.g. "2026 Roadmap" → "2026-roadmap").
 // The earlier `^[a-z]` constraint was a frontend-only tightening that
 // caused `[[2026-roadmap::TASK-1]]` to fall through as a legacy title
-// link (Codex round-4). Anchored so other non-slug shapes (uppercase,
+// link. Anchored so other non-slug shapes (uppercase,
 // punctuation) still fall through to legacy title handling.
 const WORKSPACE_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 
@@ -825,7 +825,7 @@ export function wikiLinksToMarkdown(content: string, items: Item[], workspaceSlu
 				return _match;
 			}
 			// Cross-workspace: emit the resolver URL (`/-/r/{ws}/{ref}`).
-			// Same shape renderMarkdown emits — Codex round-2 P1.4 / Option B.
+			// Same shape renderMarkdown emits.
 			const display = xw.display ?? `${xw.workspace}::${xw.ref}`;
 			return `[${escapeMarkdownLinkText(display)}](/-/r/${xw.workspace}/${xw.ref})`;
 		}
@@ -872,15 +872,14 @@ export function markdownToWikiLinks(markdown: string, items: Item[]): string {
 	// Run BEFORE the same-workspace match below because the regex below
 	// accepts two-or-three-segment URL paths and would otherwise misclassify
 	// the resolver URL. The `/-/r/` sentinel prefix can't appear in any
-	// user-namespace URL because username + collection slugs are letter-led
-	// (Codex round-2 P1.4 / Option B).
+	// user-namespace URL because username + collection slugs are letter-led.
 	//
 	// Strip the optional `|Display` ONLY when the link text equals the
 	// renderer's DEFAULT (`${ws}::${ref}`). A user who explicitly wrote
 	// `[[other::TASK-1|TASK-1]]` must round-trip back to itself — comparing
 	// against the bare ref (`displayText === ref`) drops the override, after
 	// which the next render would emit the default `other::TASK-1` and
-	// silently change the visible link text (Codex round-1 P2.1).
+	// silently change the visible link text.
 	const withXwRefs = markdown.replace(
 		/\[((?:\\.|[^\]\\])+)\]\(\/-\/r\/([a-z0-9][a-z0-9-]*)\/([A-Za-z][A-Za-z0-9]*-\d+)\)/g,
 		(_match, rawText: string, ws: string, ref: string) => {
@@ -945,9 +944,9 @@ export function markdownToWikiLinks(markdown: string, items: Item[]): string {
 // The load-time marker for a link that FOLLOWS its target's title (BUG-3315),
 // carried in the link mark's existing `title` attribute:
 // `[Title](href "pad-follows-title:Title")`. The prefix is what tells it from a
-// title a user wrote, which is never read, stripped or hidden (codex r2). The
+// title a user wrote, which is never read, stripped or hidden. The
 // prefix is RESERVED: a title a user writes that itself begins with it is read as
-// a marker (codex r4, ruled by design; nothing in the product writes one).
+// a marker.
 // It records the text as loaded, and only for a link with no explicit override
 // whose text IS the title. The save then tells "nobody edited this, it was the
 // title then" (follows the title, so `[[REF]]`) from a deliberate or edited
@@ -982,7 +981,7 @@ function codeRanges(markdown: string): Array<[number, number]> {
 	}
 	if (open !== null) fences.push([open.at, markdown.length]);
 
-	// Inline spans, in ONE left-to-right pass (codex: the first version rescanned
+	// Inline spans, in ONE left-to-right pass (: the first version rescanned
 	// for each opening run and went superlinear). Collect the backtick runs
 	// outside fences, then pair each unconsumed run with the next run of the
 	// same length. Everything between is inside the span. A per-length pointer
@@ -990,7 +989,7 @@ function codeRanges(markdown: string): Array<[number, number]> {
 	// A span never crosses a fenced block (block structure comes first), so a
 	// run is only paired inside its own gap between fences. `gap` numbers it,
 	// and the pairing key is (gap, length), which also keeps every range
-	// disjoint, as inRanges' binary search requires (codex r3).
+	// disjoint, as inRanges' binary search requires.
 	const runs: Array<{ at: number; len: number; gap: number }> = [];
 	const tick = /`+/g;
 	let f = 0;
@@ -1039,7 +1038,7 @@ function inRanges(ranges: Array<[number, number]>, i: number): boolean {
 // After a trip through the editor the marker comes back as the serializer
 // writes a title (only `"` escaped), so it is compared RAW. Straight from
 // wikiLinksToMarkdown it still carries the load's `\\`, `\"` and `\&`
-// escapes, so it is also compared with backslash escapes undone (codex r3).
+// escapes, so it is also compared with backslash escapes undone.
 function followsMarker(text: string, marker: string | undefined): boolean {
 	if (marker === undefined) return false;
 	return text === marker || text === marker.replace(/\\([\\"&])/g, '$1');

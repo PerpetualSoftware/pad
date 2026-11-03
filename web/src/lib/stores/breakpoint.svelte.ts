@@ -42,8 +42,8 @@ if (browser) {
  * every tablet. Gate touch-hostile interactions such as card drag on this, not
  * on width.
  *
- * PRIMARY pointer, deliberately, not `any-pointer` (lead-ruled on BUG-3158's
- * trail; raised again by codex round 1). A device whose primary pointer is fine
+ * PRIMARY pointer, deliberately, not `any-pointer` (BUG-3158).
+ * A device whose primary pointer is fine
  * but which ALSO has a touchscreen — a touch laptop, an iPad driven by a
  * trackpad — reports `pointer: fine`, keeps drag, and a finger on its screen
  * can still pick a card up after the 500ms hold. `any-pointer: coarse` would

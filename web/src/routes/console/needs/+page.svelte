@@ -53,8 +53,8 @@
 		return rs.filter((r) => (m.get(keyOf(r)) ?? 0) <= startedAt);
 	}
 
-	// AT MOST ONE refetch per completed action (TASK-3923 r4). Three paths want
-	// one: a stale response accepted (r3), an action that completed without
+	// AT MOST ONE refetch per completed action (TASK-3923). Three paths want
+	// one: a stale response accepted, an action that completed without
 	// settling the current rows (H-F2), and a settle that emptied the rows while
 	// a cursor remains (H-F1). They all go through here; `refetchedFor` records
 	// the actionsDone a refetch was issued for, so whichever fires first wins.
@@ -66,7 +66,7 @@
 		void load(sort, view, true);
 	}
 
-	// `quiet` is used ONLY by requestRefetch (TASK-3923 r5): an automatic
+	// `quiet` is used ONLY by requestRefetch (TASK-3923): an automatic
 	// correction must not look like a page reload. It leaves `loading`, the
 	// errors and the rendered list alone until its response lands (through the
 	// ticket guard, as any load), and a FAILED quiet load changes nothing on
@@ -117,7 +117,7 @@
 				refetching = false;
 			}
 		}
-		// THE CLASS FIX (TASK-3923 r3): a response whose request started before
+		// THE CLASS FIX (TASK-3923): a response whose request started before
 		// the latest completed dismiss/defer/restore was served by a state that may
 		// predate it. `trusted` keeps the acted row from flickering back, but its
 		// counts (and a destination view's rows) can still be wrong, so ask again:

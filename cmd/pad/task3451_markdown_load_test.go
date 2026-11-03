@@ -84,13 +84,13 @@ func TestItemShowMarkdownBodyStaysVerbatim(t *testing.T) {
 
 // loadsWithMarkdown matches a command that reads an ITEM through the
 // body-only format, in either flag spelling and with the flag before or after
-// `item show` (codex r1). `pad playbook show --format markdown` is not matched:
+// `item show`. `pad playbook show --format markdown` is not matched:
 // a playbook's body IS its script.
 var loadsWithMarkdown = regexp.MustCompile("item (show|read)\\b[^\n`]*?--format[= ]markdown|--format[= ]markdown[^\n`]*?item (show|read)\\b")
 
 // roundTripDescriptions are the only exemptions: text that names the format
-// to DESCRIBE the edit round trip it exists for, never an instruction to load
-// (codex r2: an exemption on any line naming `update --stdin` let the old
+// to DESCRIBE the edit round trip it exists for, never an instruction to load (an
+// exemption on any line naming `update --stdin` let the old
 // plan instruction, which loads and then writes back, through).
 var roundTripDescriptions = []string{
 	"is the body only, for an edit round-trip",
@@ -99,7 +99,7 @@ var roundTripDescriptions = []string{
 
 // The guard: no agent-facing instruction loads an item with --format markdown
 // to READ it. A line may name the format only to describe the edit round trip
-// it exists for, which it does by naming `update --stdin` (codex r1: a looser
+// it exists for, which it does by naming `update --stdin` (a looser
 // "body only" exemption would excuse a real load).
 func TestNoAgentFacingTextLoadsAnItemWithMarkdown(t *testing.T) {
 	for _, shape := range []string{
@@ -195,7 +195,7 @@ func doublestarGlob(root, pattern string) ([]string, error) {
 	return out, err
 }
 
-// Codex r1: an empty body whose live document is ahead is not "no body". The
+// An empty body whose live document is ahead is not "no body". The
 // stale warning already says what to do; the empty-body line must not add a
 // claim that may be false.
 func TestItemShowMarkdownStaleEmptyBodyDoesNotClaimNoBody(t *testing.T) {

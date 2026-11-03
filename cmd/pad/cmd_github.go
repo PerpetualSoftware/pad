@@ -52,7 +52,7 @@ func (m *ghMergeCommit) sha() string {
 // ghMergedAt is gh's mergedAt, with Go's zero time read as "not merged".
 // gh prints null for an open PR today (measured on #2008); a client that
 // serialises an unset time.Time prints 0001-01-01T00:00:00Z instead, and
-// storing that would claim a merge that never happened (TASK-3617 r4 Q2).
+// storing that would claim a merge that never happened (TASK-3617).
 func ghMergedAt(s string) string {
 	if strings.HasPrefix(s, "0001-01-01") {
 		return ""
@@ -185,7 +185,7 @@ For example, branch "fix/TASK-5-oauth-bug" would auto-link to TASK-5.`,
 			// server validates the number and URL, as for a fetched PR.
 			var branch string
 			var pr *GitHubPR
-			// ANY supplied PR flag opts in (codex r1): a lone --pr-title must
+			// ANY supplied PR flag opts in: a lone --pr-title must
 			// not fall through to the branch and `gh`.
 			if anyFlagChanged(cmd, "pr-number", "pr-url", "pr-title", "pr-state", "pr-branch", "pr-repo") {
 				if supplied.Number <= 0 || supplied.URL == "" {

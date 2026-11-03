@@ -117,7 +117,7 @@ describe('TASK-2906 — the durable cursor never moves backward', () => {
 
 		// A behind cursor settles POSITION, not SCOPE. A revocation writes no
 		// item, so a snapshot can be strictly newer in scope while losing the
-		// position race to an unrelated mutation in another tab (review round 1).
+		// position race to an unrelated mutation in another tab.
 		await persistDelta(U, WS, [row('a', 500), row('revoked', 500)], '501', false, 'e1');
 		await persistReplace(U, WS, [row('a', 500)], '500', false, 'e2');
 
@@ -189,7 +189,7 @@ describe('TASK-2906 — the durable cursor never moves backward', () => {
 
 		// Both of these are the same IEEE double. Comparing through `Number`
 		// makes them tie, and a tie reads as "not behind" — the direction that
-		// lets a stale batch through (review round 2).
+		// lets a stale batch through.
 		await persistDelta(U, WS, [row('a', 1)], '9007199254740993', false, null);
 		await persistDelta(U, WS, [row('behind', 2)], '9007199254740992', false, null);
 

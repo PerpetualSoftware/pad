@@ -1,6 +1,6 @@
 package main
 
-// BUG-2850, codex round 7 boundary + the lead's condition on it.
+// BUG-2850: boundary case and its condition.
 //
 // checkHierarchyAliasAmbiguity refuses parent+plan — two NAMES for one target,
 // which a caller can collide without knowing. It deliberately does NOT refuse

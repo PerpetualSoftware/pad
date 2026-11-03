@@ -21,7 +21,7 @@ const (
 	// (BUG-2413), NOT by this mode: most chip types are served as
 	// "attachment", with only the audited exceptions (PDF, say) inline. An
 	// earlier version of this comment said the HTTP layer served every chip
-	// inline, which described the pre-BUG-2413 policy (codex closing round 8).
+	// inline, which described the pre-BUG-2413 policy.
 	RenderChip
 	// RenderForceDownload means we set Content-Disposition: attachment
 	// to keep the browser from interpreting the bytes inline. This is
@@ -124,7 +124,7 @@ var allowed = func() map[string]MIMEEntry {
 	}
 
 	// --- Forced-download text payloads — would XSS if served inline ---
-	// application/javascript was removed here (BUG-2963 F6): no extension in
+	// application/javascript was removed here (BUG-2963): no extension in
 	// extMIMEMap reaches that spelling and SniffMIME cannot emit it, so the
 	// entry could never be the type an upload was stored under. text/javascript
 	// stays because .js maps to it — and since F5 it is REACHABLE: a .js upload
@@ -168,7 +168,7 @@ func LookupMIME(mime string) (MIMEEntry, bool) {
 // application/xhtml+xml (active), text/xml (SVG and XHTML wear it after an
 // extensionless sniff), and the whole RenderForceDownload bucket. The
 // application/xml spelling used to be named here alongside text/xml; it left
-// the allowlist entirely in BUG-2963 F6, so there is no entry left to exclude.
+// the allowlist entirely in BUG-2963, so there is no entry left to exclude.
 var inlineSafe = map[string]struct{}{
 	// Raster images.
 	"image/png": {}, "image/jpeg": {}, "image/gif": {}, "image/webp": {},
@@ -212,7 +212,7 @@ func NormalizeMIME(mime string) string {
 // get rejected because the allowlist uses canonical names. Aliasing here
 // keeps the allowlist single-sourced and predictable.
 //
-// Add new entries when a Codex round or a real-world upload turns up
+// Add new entries when a real-world upload turns up
 // another stdlib mismatch.
 var sniffAliases = map[string]string{
 	"audio/wave":         "audio/wav",        // .wav
@@ -238,7 +238,7 @@ var sniffAliases = map[string]string{
 // One family is detected ahead of the stdlib: ISO-BMFF. Still images
 // (HEIC / HEIF / AVIF) are the original case — the mimesniff table has no
 // signature for them, so they sniffed as application/octet-stream and were
-// unreachable behind an allowlist that names all three (BUG-2961). BUG-2963 F4
+// unreachable behind an allowlist that names all three (BUG-2961). BUG-2963
 // added two audio/video MAJOR brands: "qt  " (QuickTime), which the stdlib
 // also has no signature for, and "M4A ", which it names video/mp4 from a
 // compatible mp41 brand — the one place this package overrides the stdlib,
@@ -261,7 +261,7 @@ func SniffMIME(head []byte) string {
 	// mime_magic.go for why a container name cannot be aliased to an audio
 	// type.) Each is keyed on what the stdlib already said, so none can retype
 	// a file the standard library identified. None VALIDATES the format — see
-	// mime_magic.go's header for the three review rounds that settled why
+	// mime_magic.go's header for why
 	// recognition here is by magic:
 	//
 	//   - video/webm is refined, because the mimesniff table answers it from
@@ -393,7 +393,7 @@ func ValidateUpload(head []byte, filename string) (entry MIMEEntry, code string,
 		}
 	}
 
-	// The text family (BUG-2963 F5). text/plain is the stdlib saying "these
+	// The text family (BUG-2963). text/plain is the stdlib saying "these
 	// bytes are text" and nothing more — it has no signature that separates
 	// Markdown from YAML from JavaScript, because at the byte level there is
 	// none to have. So the extension chooses WHICH text, and that is the whole
@@ -456,7 +456,7 @@ func ValidateUpload(head []byte, filename string) (entry MIMEEntry, code string,
 				if sniffed == "application/zip" && extEntry.Category == CategoryDocument {
 					return extEntry, "", nil
 				}
-				// The audio/video split inside the MP4 family (BUG-2963 F4).
+				// The audio/video split inside the MP4 family (BUG-2963).
 				// Audio-only and video MP4 files are the same container, so
 				// the stdlib answers video/mp4 for both and an .m4a is
 				// refused as a mismatch against its own type. This is the
@@ -509,7 +509,7 @@ func (e *uploadError) Error() string { return e.msg }
 // JavaScript or several document types this map has always allowed — so
 // `pad attachment view` silently produced an extensionless file for them,
 // defeating its contract of handing a path to something that opens files by
-// extension (codex round 26). Two tables for one relationship was the defect.
+// extension. Two tables for one relationship was the defect.
 func ExtensionForMIME(mimeType string) string {
 	if ext, ok := canonicalExtForMIME[NormalizeMIME(mimeType)]; ok {
 		return ext
@@ -528,7 +528,7 @@ var canonicalExtForMIME = buildCanonicalExtForMIME()
 // line that cannot fire. One of them was exactly that on first writing —
 // "text/yaml", where the forward map says application/yaml — so the preference
 // never applied and .yaml won on length. (text/yaml is no longer even on the
-// allowlist; BUG-2963 F6 removed it as unreachable. The lesson it taught this
+// allowlist; BUG-2963 removed it as unreachable. The lesson it taught this
 // map is why the note survives it.) The test asserts the property rather than
 // trusting the next reader to notice.
 func preferredExtensions() map[string]string {
@@ -538,8 +538,8 @@ func preferredExtensions() map[string]string {
 		"text/html":        ".html", // over .htm, which shortest-wins would pick
 		// text/markdown is NOT here: .md is its only extMIMEMap spelling, so
 		// a preference had nothing to choose against — a line that cannot
-		// fire, the same class this map's doc warns about (codex closing
-		// round 5). The test now asserts every entry has a real competitor.
+		// fire, the same class this map's doc warns about. The test now asserts
+		// every entry has a real competitor.
 	}
 }
 
@@ -549,9 +549,9 @@ func preferredExtensions() map[string]string {
 // (.webm says video/webm), while the allowlist accepts the alias spellings
 // too. An attachment stored under an alias type with an unstorable filename
 // came out of `pad attachment view` extensionless — the exact failure the
-// delegation to this package was built to end (codex closing round).
+// delegation to this package was built to end.
 //
-// This table held four entries until BUG-2963 F6. Three stopped being
+// This table held four entries until BUG-2963. Three stopped being
 // alias-shaped for two different reasons, and the distinction is the thing to
 // keep: text/yaml and application/javascript were REMOVED from the allowlist
 // as unreachable spellings, so an alias for them would name a refused type;
@@ -585,7 +585,7 @@ func buildCanonicalExtForMIME() map[string]string {
 		// `pad attachment view` names a local file with it. The old CLI table
 		// answered nothing for those, so this was a regression, and it
 		// reopened the same hazard BUG-2818 describes through a different
-		// door (codex round 27).
+		// door.
 		//
 		// A caller asking "what should I call a file of this type" must only
 		// ever be told about types this product actually accepts.
@@ -709,7 +709,7 @@ var extMIMEMap = map[string]string{
 	".tsv":  "text/tab-separated-values",
 	".json": "application/json",
 	// text/xml, not application/xml: the latter left the allowlist in
-	// BUG-2963 F6, and this map's values are looked up in `allowed` — an
+	// BUG-2963, and this map's values are looked up in `allowed` — an
 	// extension pointing at a removed spelling would make every .xml upload
 	// fail extension_blocked, which is the same map's mechanism for refusing
 	// .svg and .exe.

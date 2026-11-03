@@ -93,8 +93,8 @@
 		 * the persisted body, and the editor deliberately doesn't write back to
 		 * `item` on every keystroke — so an image inserted seconds ago isn't in
 		 * it yet, and the in-use warning would wrongly stay silent for exactly
-		 * the attachment a user is most likely to delete by mistake
-		 * (Codex round 2). Consulted at confirm time only.
+		 * the attachment a user is most likely to delete by mistake.
+		 * Consulted at confirm time only.
 		 */
 		liveContent?: (() => string | null) | null;
 		/**
@@ -259,7 +259,7 @@
 	 * `wsSlug` is reactive and the strip stays mounted across a workspace
 	 * change, so keying on the item would classify that as a same-view Retry —
 	 * leaving the previous workspace's rows painted and its in-flight mutations
-	 * still reconciling (Codex fresh-angle round 2). Declared once here so no
+	 * still reconciling. Declared once here so no
 	 * individual fence call site can restate a shorter identity; every fence
 	 * below derives from it, and every captured workspace is read back off a
 	 * token rather than off the live prop.
@@ -288,8 +288,8 @@
 
 	// Ids confirmed deleted while this item's list was loading. A deletion
 	// broadcast only filters the CURRENT array, so a list() response that was
-	// already in flight would otherwise land afterwards and resurrect the row
-	// (Codex round 18). Every response is filtered through this, and a failed
+	// already in flight would otherwise land afterwards and resurrect the row.
+	// Every response is filtered through this, and a failed
 	// optimistic delete won't roll back an id that's in here. Cleared per item
 	// load — tombstones are meaningless once we refetch.
 	//
@@ -309,7 +309,7 @@
 	// Uploads announced while this item's list was still loading. The GET may
 	// have been issued BEFORE the upload happened, so its response won't
 	// contain the new row — assigning it verbatim would erase the tile we just
-	// showed (Codex review of TASK-2385). Merged back on top of every response.
+	// showed (TASK-2385). Merged back on top of every response.
 	let pendingUploads: StripAttachment[] = [];
 
 	// list() requests currently fetching, counted PER VIEW KEY. A restore
@@ -318,7 +318,7 @@
 	// `revalidateAfterRestore`). Per-view, not a single counter: the api client
 	// has no abort, so a superseded prior-view load lingers in flight after an
 	// A→B switch, and a global counter would let that stale A-load suppress B's
-	// genuine restore revalidation with nothing left to refetch B (Codex round 3).
+	// genuine restore revalidation with nothing left to refetch B.
 	const loadsInFlightByView = new Map<string, number>();
 	function viewLoadsInFlight(key: string | null): number {
 		return key === null ? 0 : (loadsInFlightByView.get(key) ?? 0);
@@ -347,7 +347,7 @@
 	// REF-COUNTED, not a bare Set: the same id can have two deletes outstanding
 	// (a load repaints an optimistically-removed-but-not-yet-tombstoned row and
 	// the user deletes it again), and the first to settle must not clear the
-	// marker while the second is still in flight (Codex round 2). Not bounded
+	// marker while the second is still in flight. Not bounded
 	// like `deletedIds`: it drains per delete, holding at most the handful of
 	// concurrently in-flight deletes, never a workspace-wide backlog.
 	const inFlightDeletes = new Map<string, number>();
@@ -387,7 +387,7 @@
 		// the failure deliberately preserved — uploads that succeeded while the
 		// list request was in flight, and the tombstones for rows confirmed
 		// deleted. Wiping them would make a second failure lose rows the server
-		// and the editor both have (Codex round 1).
+		// and the editor both have.
 		untrack(() => {
 			// Whatever this run paints — rows, error row, or nothing — belongs to
 			// this (workspace, item). Recorded unconditionally: a Retry repaints
@@ -436,9 +436,9 @@
 			// (PLAN-2392 3c-iii U2 / TASK-2511). A restore revalidation DEFERS to a
 			// load already fetching THIS view — that load returns fresh-enough data
 			// (archive doesn't delete attachments), and superseding it would strand
-			// the strip empty if the revalidation then failed (Codex round 2). Keyed
+			// the strip empty if the revalidation then failed. Keyed
 			// by `req.key` so a stale prior-view load can't suppress a genuine
-			// restore of the current view (Codex round 3).
+			// restore of the current view.
 			noteLoadStart(req.key);
 			// Ids the pending buffer ALREADY held when this request went out. A
 			// response can be authoritative about exactly these — the row existed
@@ -446,7 +446,7 @@
 			// another tab or another user, which the in-process event bus cannot
 			// see). Merging them back in resurrected such rows, and because
 			// nothing ever consumed the buffer it did so on every subsequent
-			// load, forever (final review round 4).
+			// load, forever.
 			//
 			// Entries announced AFTER this point are the buffer's actual purpose
 			// and are never touched: the GET may predate them, so their absence
@@ -480,11 +480,10 @@
 				// request is bounded at MAX_FETCH, so a truncated page may simply
 				// not reach a row that is still perfectly alive — and retiring a
 				// live upload would delete a good tile permanently, which is a
-				// worse failure than the resurrection this is fixing (Codex
-				// round 2). `total` is the server's own statement of how many
+				// worse failure than the resurrection this is fixing. `total` is the server's own statement of how many
 				// live rows there are and `offset` is always 0 here, so a page
 				// that holds all of them IS complete even when it is exactly
-				// MAX_FETCH long (Codex round 3). Only when the response omits
+				// MAX_FETCH long. Only when the response omits
 				// `total` does the page length have to stand in for it.
 				const pageIsComplete =
 					typeof res.total === 'number' ? res.total <= raw.length : raw.length < MAX_FETCH;
@@ -513,7 +512,7 @@
 				// The continuation count is anchored on the server's `total` —
 				// one authority, corrected — rather than summed from
 				// independent per-source deltas, which double-counted uploads
-				// the response also reported (Codex rounds 1 and 3).
+				// the response also reported.
 				//
 				// `res.total` counts every live row at query time. Three
 				// corrections:
@@ -522,8 +521,7 @@
 				//     are countable — `deletedIds` is a workspace-wide bus and
 				//     may hold ids belonging to other items.
 				//   - add the uploads this page did NOT return: the GET can have
-				//     been issued before they existed, so `total` predates them
-				//     (Codex round 5).
+				//     been issued before they existed, so `total` predates them.
 				//   - floor it at what we actually hold, in case an upload beat
 				//     the count.
 				//
@@ -532,7 +530,7 @@
 				// request) are not counted — we can't tell whether `total`
 				// already includes them, and counting them unconditionally
 				// double-counts the ordinary case where the response does
-				// (Codex rounds 3 and 5 pull in opposite directions here). The
+				// (two competing concerns pull in opposite directions here). The
 				// next successful load corrects it.
 				const reportedTotal = Math.max(0, (res.total ?? raw.length) - (raw.length - rows.length));
 				const trueTotal = Math.max(reportedTotal + missed.length, merged.length);
@@ -563,7 +561,7 @@
 				if (!isSameIdentity()) return;
 				// Keep anything uploaded while this request was in flight: the
 				// upload SUCCEEDED, so dropping it would hide a row the editor
-				// and server both have, until a remount (Codex review round 2).
+				// and server both have, until a remount.
 				// A row with a delete still in flight is excluded here too — the
 				// failure arm repaints from the pending buffer, and an optimistically
 				// removed row must not ride back in on that repaint (load-path fence).
@@ -580,7 +578,7 @@
 
 		// Teardown invalidates the captured generation too, so a request still
 		// in flight when the component is destroyed loses the fence instead of
-		// writing into a dead instance (Codex round 4). The api wrapper has no
+		// writing into a dead instance. The api wrapper has no
 		// abort signal, so this is the only lever. The pending loading timer
 		// goes with it — otherwise it fires into a dead instance.
 		//
@@ -617,7 +615,7 @@
 		// already swapped `itemId` or `wsSlug` and this effect hasn't flushed
 		// yet, the click is stale — the incoming view's own load is already on
 		// its way, and honouring the retry would preserve the previous view's
-		// rows across the switch (Codex round 11).
+		// rows across the switch.
 		//
 		// `loadFailed` is only ever set by a response that passed the request
 		// fence under the run that also recorded the paint, so the two together
@@ -652,7 +650,7 @@
 	 *     isn't resurrected;
 	 *   - honours `inFlightDeletes`: a delete whose optimistic removal has run but
 	 *     whose tombstone broadcast hasn't yet must not be repainted by this
-	 *     refetch (round-3 P1).
+	 *     refetch.
 	 *
 	 * Fenced on `loadFence.restart()` like every other request: it SUPERSEDES an
 	 * in-flight load (and is superseded by a later switch / Retry / another
@@ -664,7 +662,7 @@
 	 * tiles. The next real load corrects it.
 	 */
 	async function revalidateAfterRestore() {
-		// DEFER to a load already fetching THIS view (Codex rounds 2-3). A restore
+		// DEFER to a load already fetching THIS view. A restore
 		// is a refresh, and an in-flight load for this view — the mount fetch, a
 		// Retry — already returns the current list (archive doesn't delete
 		// attachments), so superseding it buys nothing and, if this revalidation
@@ -686,7 +684,7 @@
 			if (!isSameIdentity()) return;
 			const raw = res.attachments ?? [];
 			// Exclude BOTH the tombstoned ids AND the ids with a delete still in
-			// flight: neither may be repainted (round-3 P1). This is the only
+			// flight: neither may be repainted. This is the only
 			// difference from the load path's response filter, which sees just
 			// `deletedIds` because a fresh load runs with no optimistic delete
 			// outstanding against its own results.
@@ -716,7 +714,7 @@
 			// A successful revalidation is an authoritative fresh listing, so it
 			// also clears a stale error left from an EARLIER failed load: without
 			// this the restored rows would render UNDER a lingering "Couldn't load"
-			// row (Codex round 1). The failure arm deliberately does NOT set it —
+			// row. The failure arm deliberately does NOT set it —
 			// a refresh failure is not authoritative (see the header).
 			loadFailed = false;
 		} catch {
@@ -742,7 +740,7 @@
 	// lives outside ItemDetail's `{#key itemSlug}`), so an archived item A → an
 	// active item B is ALSO a true→false transition in the raw prop — but it is a
 	// SWITCH, not a restore, and honouring it would fire a duplicate racing load
-	// on top of the switch's own (round-3 P2). Reseeding the latch whenever the
+	// on top of the switch's own. Reseeding the latch whenever the
 	// view key changes makes a switch reseed-not-fire. Only the true→false edge
 	// WITHIN one identity revalidates; the archive edge is a content no-op.
 	//
@@ -776,8 +774,8 @@
 	// Deletions broadcast on the shared registry — from Settings → Storage, or
 	// from ANOTHER strip (the split-pane host mounts two ItemDetails, so two
 	// strips can show the same attachment). Dropping the row here keeps every
-	// mounted strip agreeing with the editors, which already subscribe
-	// (Codex round 17). Emitting our own delete re-enters this harmlessly: the
+	// mounted strip agreeing with the editors, which already subscribe.
+	// Emitting our own delete re-enters this harmlessly: the
 	// row is already gone, and the filter is idempotent.
 	//
 	// A deletion of a row the strip HOLDS shrinks `attachments`, and the
@@ -786,7 +784,7 @@
 	// an id we don't hold may belong to another item entirely, and decrementing
 	// on it would corrupt this item's count. The continuation can therefore
 	// overstate by one until the next load; that is the safe direction, and it
-	// self-corrects (Codex round 5).
+	// self-corrects.
 	/**
 	 * Permission withdrawn while the tile's confirmation is open.
 	 *
@@ -846,7 +844,7 @@
 			// without the same guard here, a re-announced upload for a row the
 			// user has since deleted resurrects it in BOTH buffers, and
 			// `pendingUploads` then keeps re-merging it onto every subsequent
-			// response (final review round 2). A confirmed deletion is
+			// response. A confirmed deletion is
 			// authoritative; a repeat of an older upload event is not.
 			if (deletedIds.has(uploaded.id)) return;
 			// Idempotence guard for the bus itself: the same event can reach us
@@ -1072,8 +1070,8 @@
 		// repaints these tiles flushes later. In that window a click on a stale
 		// tile would send a DELETE while the user is looking at another item or
 		// workspace — and the view-fence check in the catch below runs after the
-		// request, so it can suppress the rollback but cannot unsend the request
-		// (final review round 2). The only fix is to refuse here, before the
+		// request, so it can suppress the rollback but cannot unsend the request.
+		// The only fix is to refuse here, before the
 		// confirm and before the call.
 		if (!paint.isCurrent()) return;
 
@@ -1146,7 +1144,7 @@
 		// view. The workspace comes off the token for the same reason: it is
 		// reactive, and the request + broadcast + metadata-cache key must name
 		// the workspace the DELETE actually targeted, not whichever one is
-		// current when it resolves (Codex round 6).
+		// current when it resolves.
 		const req = viewFence.begin();
 		const reqWsSlug = req.value.ws;
 		// IDENTITY fence (BUG-3105). Placed exactly where the view fence is
@@ -1182,22 +1180,21 @@
 			// other surfaces in THIS tab, but not another user, another tab, or
 			// a notification we missed — so the tile can still be stale by the
 			// time it's clicked. Rolling back would restore a dead tile whose
-			// download and delete both fail, and keep failing until navigation
-			// (Codex round 6). Treat it as the success it effectively is.
+			// download and delete both fail, and keep failing until navigation.
+			// Treat it as the success it effectively is.
 			const code = err instanceof PadApiError ? err.code : null;
 			if (code === 'not_found') {
 				// A 404 is just as authoritative as a 204 about the row being
 				// gone, so it gets the same broadcast — otherwise an editor
 				// NodeView or another mounted strip in this tab stays stale
-				// precisely when we have proof it should not (Codex round 19).
+				// precisely when we have proof it should not.
 				//
 				// Deliberately AHEAD of the view fence, unlike everything below
 				// it: this is a GLOBAL side effect keyed by (workspace, id), not
 				// a write into this view's local state. A view switch says
 				// nothing about whether the row is gone — and if the broadcast
 				// is skipped, no later event replaces it, so every other mounted
-				// surface stays stale on proof we already have (final review
-				// round 2). The rollback, the toast and the tombstone check
+				// surface stays stale on proof we already have. The rollback, the toast and the tombstone check
 				// below stay fenced: those DO touch what is on screen.
 				announceAttachmentDeleted(reqWsSlug, att.id);
 				return;
@@ -1208,19 +1205,18 @@
 
 			// Someone else announced this deletion while our own call was in
 			// flight — the row is gone regardless of why ours failed, so don't
-			// bring it back (Codex round 18).
+			// bring it back.
 			if (deletedIds.has(att.id)) return;
 
 			// Everything else is a genuine failure: put the row back where it
 			// was. Re-insert ONLY this row — restoring a whole pre-delete
 			// snapshot would resurrect rows a concurrent delete removed
 			// successfully (delete A then B, B succeeds, A fails, A's snapshot
-			// brings B back — Codex round 2).
+			// brings B back).
 			//
 			// Through capped() like every other growth path: an upload landing
 			// while the delete was in flight can have taken the list back to
-			// MAX_FETCH, so a bare re-insert would push it to 51
-			// (Codex round 1).
+			// MAX_FETCH, so a bare re-insert would push it to 51.
 			//
 			// Skipped entirely when the row is already back: a reload that
 			// landed while the delete was in flight (a Retry, or the pending-
@@ -1449,7 +1445,7 @@
 	}
 	/* The TEXT stays on --text-primary: --accent-red is #ef4444 in the light
 	   theme, roughly 3.5:1 on the page background, which fails AA for
-	   normal-size body text (Codex round 2). The red is carried by the
+	   normal-size body text. The red is carried by the
 	   decorative mark instead, where the 3:1 non-text threshold applies. */
 	.att-error {
 		color: var(--text-primary);
@@ -1495,7 +1491,7 @@
 		align-items: center;
 		justify-content: center;
 		/* 24x24 is the WCAG 2.2 minimum target size for a non-inline control
-		   (2.5.8) — an 18px hit area failed it (Codex round 2). */
+		   (2.5.8) — an 18px hit area failed it. */
 		width: 24px;
 		height: 24px;
 		padding: 0;
@@ -1510,7 +1506,7 @@
 		   includes the delete button itself, so tabbing to it makes it appear.
 		   opacity (NOT visibility/display): `visibility: hidden` removes the
 		   control from the tab order entirely, which silently made the
-		   "keyboard reachable" claim false (Codex round 4). pointer-events
+		   "keyboard reachable" claim false. pointer-events
 		   keeps the invisible control from swallowing clicks aimed at the tile
 		   without affecting keyboard focus. */
 		opacity: 0;

@@ -30,7 +30,7 @@ func TestProbeRewriteBracketAtAllocation(t *testing.T) {
 	}
 }
 
-// TestProjectRewrittenLenDoesNotAllocatePerBracket pins codex R5's finding.
+// TestProjectRewrittenLenDoesNotAllocatePerBracket pins a past defect.
 //
 // ProjectRewrittenLen runs once per rewrite BEFORE the cascade's cap can fire.
 // An earlier bracketRewriteAt composed `collSlug + "/" + newTitle` on every

@@ -3,7 +3,7 @@
 //
 // THE GATE BESIDE THIS (TASK-3097): `collectionIdentityGate.test.ts` tables every async unit on
 // this page with the hash of the code it was reviewed on, and refuses any
-// edit to one until its row is re-read. That catches BUG-3084's round-4
+// edit to one until its row is re-read. That catches BUG-3084's
 // classes, which a source scanner cannot see. This file catches what the
 // gate does not: the RULE on a NEW handler, which the gate accepts with any
 // row. Keep both. Neither is a duplicate of the other.
@@ -90,7 +90,7 @@ describe('the collection page fences every async commit point', () => {
 	});
 
 	it('re-loads on an identity change, so pageIdentityHeld() can recover', () => {
-		// WITHOUT THIS THE FENCE IS A ONE-WAY DOOR (BUG-3084 repair, codex P1).
+		// WITHOUT THIS THE FENCE IS A ONE-WAY DOOR (BUG-3084 repair).
 		// `identityEpochAtLoad` is re-stamped only by the page load, and that
 		// load is driven by a ROUTE-keyed effect. `routes/+layout.svelte` does
 		// not reload the tab on an anonymous -> signed-in transition, so without
@@ -127,8 +127,8 @@ describe('the collection page fences every async commit point', () => {
 		// destination.
 		//
 		// The item's body predicted this shape exists ("commit points with NO
-		// await at all") and said it is found by reading. It was found by a
-		// reviewer instead, which is the same thing arriving later. Named
+		// await at all") and said it is found by reading. It was found late
+		// instead, which is the same thing arriving later. Named
 		// explicitly rather than enumerated, because "every synchronous function
 		// that might replay captured intent" is not a set a grep can produce —
 		// and a rule that cannot enumerate its population should not pretend to.
@@ -145,7 +145,7 @@ describe('the collection page fences every async commit point', () => {
 		// collection, views and progress on screen for its whole duration. The
 		// fences stop stale async COMMITS; they say nothing about state already
 		// rendered, so without this the previous user's private collection stays
-		// visible across a sign-out (codex [P1]).
+		// visible across a sign-out.
 		const sub = CODE.slice(CODE.indexOf('authStore.onIdentityChange('));
 		const body = sub.slice(0, sub.indexOf('});'));
 		expect(body, 'the identity-change listener re-loads without clearing what is on screen')
@@ -189,8 +189,8 @@ describe('the collection page fences every async commit point', () => {
 		//
 		// Exempting a whole effect was wrong and hid this unit's own defect: the
 		// search entry skipped the synchronous capture along with the timer's
-		// reads, so removing that capture's `untrack` produced ZERO offenders
-		// (codex round 2 [P2]). An entry now lists the read tokens it vouches
+		// reads, so removing that capture's `untrack` produced ZERO offenders.
+		// An entry now lists the read tokens it vouches
 		// for, and any other read in that effect is an offender.
 		const INTENDED_DEPENDENCY: Record<string, { allowedReads: string[]; why: string; afterMarker?: string }> = {
 			// Keyed on the shared helper's call since BUG-3181 moved the bootstrap
@@ -229,7 +229,7 @@ describe('the collection page fences every async commit point', () => {
 			const entry = Object.entries(INTENDED_DEPENDENCY).find(([k]) => block.body.includes(k));
 			// PER READ, not per block: testing for `untrack(` anywhere in the
 			// effect exempted `const e = captureIdentity(); untrack(() => x());`.
-			// POSITIONAL as well as by token (codex round 3 [P2]). Without the
+			// POSITIONAL as well as by token. Without the
 			// marker, an entry written for reads inside a timer covered a read
 			// added SYNCHRONOUSLY beside the untracked capture — which puts the
 			// dependency straight back while the rule reports nothing.
@@ -259,7 +259,7 @@ describe('the collection page fences every async commit point', () => {
 		// the effect reads nothing before it subscribes. Checked, not assumed:
 		// a read added to the synchronous prefix would otherwise inherit the
 		// callback's exemption and re-run the subscription on every identity
-		// change (codex round 2 [P2]).
+		// change.
 		const sse = src.effectBlocks().find((b) => b.body.includes('sseService.onItemEvent'));
 		expect(sse, 'the SSE effect was not found — re-point this guard').toBeDefined();
 		const beforeSubscribe = sse!.body.slice(0, sse!.body.indexOf('sseService.onItemEvent'));
@@ -296,7 +296,7 @@ describe('the collection page fences every async commit point', () => {
 			boardColumns: 'derived from the item list the reload replaces',
 			listOrder: 'derived from the item list the reload replaces; the list or table view re-reports it (BUG-3492)',
 			defaultViewId: 're-read from localStorage on render',
-			// CORRECTED (codex round 1 [P3]): the previous justification said
+			// CORRECTED: the previous justification said
 			// "reset by the load it gates", and `loadCollection` never resets it
 			// — only the route effect does. On a SAME-ROUTE identity reload the
 			// flag therefore stayed true and the new user's default view was
@@ -357,8 +357,8 @@ describe('the collection page fences every async commit point', () => {
 	});
 
 	it('a stale continuation does not release the new identity\'s busy flags', () => {
-		// The REVERSAL the roles board made in its round 4, applied here (codex
-		// round 1 [P2]). These releases were unconditional on the grounds that a
+		// The REVERSAL the roles board made, applied here.
+		// These releases were unconditional on the grounds that a
 		// busy flag left true disables its affordance for ever. That held while
 		// nothing else cleared them; `resetPerSessionState()` now does, on every
 		// identity change, synchronously and before any stale continuation can
@@ -428,7 +428,7 @@ describe('the collection page fences every async commit point', () => {
 	it('captures the identity at ENTRY in every async handler, before its first await', () => {
 		// The CAPTURE is the half a "does the body mention a fence" check
 		// misses: an occurrence anywhere in the body satisfies that, including
-		// one AFTER the write it was supposed to guard (#1370, codex round 1).
+		// one AFTER the write it was supposed to guard (#1370).
 		const missing: string[] = [];
 		for (const [name, body] of src.asyncFunctions()) {
 			if (name in NO_ENTRY_CAPTURE) continue;
@@ -446,8 +446,7 @@ describe('the collection page fences every async commit point', () => {
 	it('never lets a handler compare against the PAGE load epoch', () => {
 		// `identityEpochAtLoad` is RE-STAMPED by loadCollection, so a handler
 		// comparing against it can be defeated by a concurrent load setting it
-		// to the very value the handler is about to see (#1370, codex round 1
-		// [High], carried into this enumeration). Exactly one function may read
+		// to the very value the handler is about to see (#1370). Exactly one function may read
 		// it: `pageIdentityHeld`, whose question is about the PAGE.
 		const readers: string[] = [];
 		for (const [name, body] of src.asyncFunctions()) {
@@ -561,8 +560,7 @@ describe('the collection page fences every async commit point', () => {
 		// still satisfies every count above. This is not a hypothetical shape:
 		// the first version of this unit put one at the end of the bootstrap
 		// IIFE, where it followed the `deltaSync` it was meant to guard, and
-		// every assertion in this file passed. Codex round 1 returned CLEAN on
-		// it too.
+		// every assertion in this file passed.
 		//
 		// A trailing `if (!identityHeld(x)) return;` is the only spelling worth
 		// forbidding — an early-return fence is the shape this codebase uses,

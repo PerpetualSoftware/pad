@@ -61,7 +61,7 @@ func SchemaWithoutReservedFields(schema CollectionSchema) CollectionSchema {
 // purpose. BUG-2685's instrument counted 76 sites that consult a
 // `CollectionSchema.Fields` and only 38 that decode one: a rule applied at the
 // consultations is 76 patches that every future consumer has to remember, which
-// is the shape of the last four review rounds this bug was filed out of. Every
+// is the shape this bug was filed out of. Every
 // consultation inherits whatever the decode produced, so the decode is where
 // one rule covers all of them.
 //

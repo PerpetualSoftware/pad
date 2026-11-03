@@ -58,7 +58,7 @@ export const editorStore = {
 // These scalars survive an SPA identity swap, and they are not merely stale —
 // they are consumed by GUARDS. `dirty` drives unsaved-draft prompts and SSE
 // archive/delete suppression, so A's dirty editor makes B's navigation and save
-// paths act on a document B never opened (BUG-3005, codex round 1).
+// paths act on a document B never opened (BUG-3005).
 authStore.onIdentityChange(() => {
 	editorStore.clear();
 });

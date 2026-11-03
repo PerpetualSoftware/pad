@@ -44,8 +44,8 @@
 	let usernameOpen = $state(false);
 
 	// A taken generated name opens the field for good: editing it resets the
-	// availability check, and the field must not vanish under the typing
-	// (codex r1). Writes only usernameOpen, which it does not read.
+	// availability check, and the field must not vanish under the typing.
+	// Writes only usernameOpen, which it does not read.
 	$effect(() => {
 		if (usernameAvailable === false) usernameOpen = true;
 	});

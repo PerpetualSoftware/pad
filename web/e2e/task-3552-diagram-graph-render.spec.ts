@@ -178,7 +178,7 @@ test.describe('TASK-3552: the graph view draws', () => {
 		expect(drawn.pageErrors).toEqual([]);
 		expect(drawn.width).toBeGreaterThan(100);
 		expect(drawn.emptyState).toBe(false);
-		// Receipt (own workspaces, 3 runs each per project, day 90): drawn
+		// Receipt (own workspaces, 3 runs each per project): drawn
 		// 198-225 colours on desktop and 1134-1146 on mobile; empty 1 on desktop
 		// and 2 on mobile. The bound sits above both empty readings and far
 		// below every drawn one.

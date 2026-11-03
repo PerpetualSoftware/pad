@@ -29,7 +29,7 @@ export const PLAN_LIMIT_PROMPTED = 'plan-limit-prompted';
  * as an Error carrying PLAN_LIMIT_PROMPTED, having raised the prompt only when
  * `sameIdentity` says the user who started the request is still signed in. A
  * refusal for the previous identity is dropped silently, neither prompted nor
- * toasted, since its message names that identity's owner and plan (codex r2).
+ * toasted, since its message names that identity's owner and plan.
  * Any other error is returned as it was. The caller throws the result.
  */
 export function promptOnPlanLimit(err: unknown, sameIdentity: () => boolean): unknown {

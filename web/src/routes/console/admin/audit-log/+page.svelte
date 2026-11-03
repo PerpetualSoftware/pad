@@ -146,7 +146,7 @@
 		// and the branches below can genuinely throw on well-formed JSON —
 		// `String(data.keys)` on `{"keys":{"toString":null}}` cannot convert
 		// to a primitive. That used to render an em dash; it must not take
-		// the whole audit page down instead (codex round 6).
+		// the whole audit page down instead.
 		try {
 			switch (action) {
 				case 'role_changed':
@@ -220,7 +220,7 @@
 	// character and visually reorders the suffix it was appended to — the
 	// audited party editing how the audit reads. Kept apart, the template can
 	// isolate each one, which bounds a hostile name to its own element instead
-	// of letting it rewrite its neighbours (codex round 8).
+	// of letting it rewrite its neighbours.
 	//
 	// This is not a rendering quirk, it is ResolveAgentName's documented
 	// attribution-honesty problem arriving through the renderer. That contract
@@ -524,7 +524,7 @@
 		white-space: nowrap;
 	}
 	/* The expanded record: bounded in HEIGHT and scrolled, never truncated
-	   (BUG-2789's ruling for this surface). */
+	   (BUG-2789). */
 	.details-full {
 		margin: 0.35rem 0 0;
 		max-height: 16rem;

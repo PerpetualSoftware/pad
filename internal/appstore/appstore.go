@@ -2,8 +2,8 @@
 // (SPEC-6, DOC-3371 §4). Every mutation runs in ONE store.FencedTx and never
 // calls a human item or comment mutation method: those open their own
 // transactions and carry workspace-wide side effects (title cascades,
-// broken-link resolution, slug probing, relation rebuilds) that four review
-// rounds kept finding new instances of.
+// broken-link resolution, slug probing, relation rebuilds) that kept
+// turning up new instances.
 //
 // Two tests guard the rule rather than prove it (DOC-3371 §4):
 //   - boundary_test.go walks every call this package can reach, through

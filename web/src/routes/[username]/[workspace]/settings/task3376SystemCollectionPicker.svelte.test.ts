@@ -7,8 +7,8 @@ import SettingsPage from './+page.svelte';
  * TASK-3376: system collections (Conventions, Playbooks) are ordinary
  * collections for a restricted member. In the member access picker they are
  * real checkboxes, not a disabled always-checked row. They start UNCHECKED
- * when an owner switches a member from All to Specific (TASK-3384, Dave's
- * ruling), like every other collection, and a hint names what leaving them
+ * when an owner switches a member from All to Specific (TASK-3384),
+ * like every other collection, and a hint names what leaving them
  * unchecked means: that member's agents won't load the workspace's
  * conventions or playbooks. A member who is ALREADY restricted keeps their
  * saved list as is.

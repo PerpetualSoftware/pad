@@ -39,14 +39,14 @@
 		timezoneMsg = '';
 		try {
 			const updated = await api.auth.setTimezone(timezone.trim());
-			// Counted only once it has succeeded: a failed write changed nothing a late default could clobber (TASK-4101 PR2a r2 H2-M2).
+			// Counted only once it has succeeded: a failed write changed nothing a late default could clobber (TASK-4101).
 			noteExplicitTimezoneWrite();
 			if (!isSameIdentity()) return;
 			if (updated.timezone !== undefined) {
 				authStore.setTimezone(userId, updated.timezone);
 				timezone = updated.timezone ?? '';
 			}
-			// Merge: the PATCH answer lacks totp_enabled, oauth_providers and password_set (TASK-4101 PR2a r1 H-L1).
+			// Merge: the PATCH answer lacks totp_enabled, oauth_providers and password_set (TASK-4101).
 			profile = profile ? { ...profile, ...updated } : updated;
 			timezoneMsg = 'Time zone updated.';
 		} catch (err) {
@@ -216,7 +216,7 @@
 	}
 
 	// The identity epoch the form's profile was loaded under. Saves are enabled only while it is the
-	// current one, so no save is built from another identity's load, or from none (TASK-4101 PR2a r2 H2-M1).
+	// current one, so no save is built from another identity's load, or from none (TASK-4101).
 	let loadedEpoch = $state<number | null>(null);
 	const profileReady = $derived(loadedEpoch === authStore.identityEpoch);
 
@@ -331,7 +331,7 @@
 				username: profileUsername.trim()
 			});
 			if (!isSameIdentity()) return;
-			// Merge, as in saveTimezone (TASK-4101 PR2a r1 H-L1).
+			// Merge, as in saveTimezone (TASK-4101).
 			profile = profile ? { ...profile, ...updated } : updated;
 			profileMsg = 'Profile updated.';
 			await authStore.load();
@@ -607,7 +607,7 @@
 		if (!target || tokenDeleting) return;
 		tokenDeleting = true;
 		tokenDeleteError = '';
-		// IDENTITY fence (BUG-3105, codex r1): an answer that lands after a
+		// IDENTITY fence (BUG-3105): an answer that lands after a
 		// sign-in change must not edit the next identity's token list.
 		const isSameIdentity = authStore.identityFence();
 		try {

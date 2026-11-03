@@ -34,7 +34,7 @@
 		{ label: 'API tokens', key: 'api_tokens', kind: 'count' },
 		{ label: 'Storage', key: 'storage_bytes', kind: 'storage' },
 		{ label: 'Webhooks', key: 'webhooks', kind: 'count' }
-		// No "Automated backups" row (Dave, TASK-3603): backups are a platform
+		// No "Automated backups" row (TASK-3603): backups are a platform
 		// service for every Cloud account, not a plan feature.
 	];
 
@@ -142,7 +142,7 @@
 	// One cell of the plan tables. Pro storage is stated, not served: Pro is
 	// to include about 1 GB with metered overage (PLAN-3605, open), and the
 	// served value is a placeholder. Until that interim is decided the cell
-	// says what is meant (Dave, TASK-3603). Every other cell is the live limit.
+	// says what is meant (TASK-3603). Every other cell is the live limit.
 	function planCell(plan: 'free' | 'pro', row: { key: LimitKey; kind: 'count' | 'storage' }): string {
 		if (plan === 'pro' && row.key === 'storage_bytes') return '1 GB included';
 		return formatCompareCell(limits?.[plan]?.[row.key], row.kind);
@@ -177,7 +177,7 @@
 	// 'unknown' (not read yet, or the read failed) keeps the button: the
 	// portal answers any refusal with ?portal_error=, which this page shows.
 	// A customer with no live subscription still gets the portal, for its
-	// invoices (BUG-3898 R2).
+	// invoices (BUG-3898).
 	let billingAccount = $state<'unknown' | 'yes' | 'none'>('unknown');
 
 	async function loadBillingAccount() {
@@ -192,7 +192,7 @@
 	}
 
 	// Read once the account is Pro, whether it was at mount or became Pro
-	// during the visit (a checkout return confirmed by polling; BUG-3898 r1).
+	// during the visit (a checkout return confirmed by polling; BUG-3898).
 	// One read per visit: a paid plan stores its customer before its plan
 	// (pad-cloud's handleCheckoutCompleted), so a Pro account read without
 	// one is a granted plan.
@@ -311,7 +311,7 @@
 		// before any task resolves (the `destroyed` guard handles that).
 		// A checkout return is a web-checkout state. In the app it is dropped
 		// unread: its banners talk about a payment and link support about one
-		// (PLAN-3291 DR-3, codex r1 on TASK-3293).
+		// (PLAN-3291 DR-3, TASK-3293).
 		const checkoutParam = page.url.searchParams.get('checkout');
 		// A portal refusal is a web state too (BUG-3898): dropped unread in
 		// the app, like a checkout return.
@@ -434,7 +434,7 @@
 				<!-- /billing/ is pad-cloud's, not the SPA's: a full navigation (BUG-3897). -->
 				<a href="/billing/portal" class="secondary-btn" data-sveltekit-reload>Manage Billing</a>
 			{:else if stripeAvailable}
-				<!-- TASK-3603: the outcome first, then who it covers. Copy shown to Dave. -->
+				<!-- TASK-3603: the outcome first, then who it covers. -->
 				<p class="pro-pitch">
 					Run every project in one place, with your team and your agents: no caps on workspaces, items or members.
 				</p>

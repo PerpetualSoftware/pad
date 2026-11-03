@@ -77,8 +77,8 @@ package mcp
 // being wrong: extend the grammar (and the sets it feeds) rather than
 // loosening the assertion or exempting the new form.
 //
-// Coverage is therefore bounded by the grammar, not by the reviewer's
-// imagination — an adversarial reviewer will always name one more
+// Coverage is therefore bounded by the grammar, not by the
+// imagination of whoever reads it: someone will always name one more
 // registration style, and teaching the scanner to TRUST more shapes
 // buys coverage of styles nobody writes at the cost of the fail-closed
 // posture that makes the rest sound.
@@ -117,7 +117,7 @@ const (
 	//
 	// THIS IS THE CLASS THAT CAN HIDE A LEAK, because "cannot leak" is
 	// an argument rather than a mechanism, and a future handler could
-	// evade the guard simply by choosing it (codex round 6 P1). Two
+	// evade the guard simply by choosing it. Two
 	// mitigations, both below: an exempt entry naming a handler has
 	// that handler checked for store access — a handler that touches
 	// the store is not structurally safe and must justify itself — and
@@ -270,7 +270,7 @@ func pathIsWorkspaceScoped(urlPath string) bool {
 	// static route is registered as an exact pattern, so
 	// /workspaces/import matches it while /workspaces/import/items/X
 	// falls through to the {slug} route with slug="import" — where the
-	// middleware DOES run (codex round 2 P2). Treating the latter as
+	// middleware DOES run. Treating the latter as
 	// global would be wrong in the safe direction, but wrong.
 	if seg != "" && tail == "" && staticWorkspaceSiblingSegments[seg] {
 		return false
@@ -288,8 +288,8 @@ func pathIsWorkspaceScoped(urlPath string) bool {
 // Only `deleted` is MCP-routed today; `import` and `reorder` are listed
 // because the guard's job is to be right about a route that becomes
 // routed LATER, and a missing entry here FAILS OPEN — it would wave a
-// genuinely unguarded route through on the strength of its path (codex
-// round 1 P2). Keep in sync with server.go's registrations beside the
+// genuinely unguarded route through on the strength of its path. Keep in sync
+// with server.go's registrations beside the
 // /{slug} block.
 var staticWorkspaceSiblingSegments = map[string]bool{
 	"deleted": true,
@@ -322,8 +322,8 @@ var routesRegisteredOutsideWorkspaceMiddleware = map[string]bool{
 // be driven for the URLs it ISSUES rather than for what it returns.
 //
 // It answers everything with a MINIMAL BUT RESOLVABLE item, because
-// `{}` was not enough and the difference was a false green (codex round
-// 3 P2): the specials that do read-modify-write call resolveItemRef on
+// `{}` was not enough and the difference was a false green: the specials that
+// do read-modify-write call resolveItemRef on
 // the prefetch, which requires a non-empty id and slug. With `{}` the
 // item-link drives died at the prefetch, the only URL observed was that
 // prefetch — which IS workspace-scoped — and the test passed while
@@ -338,9 +338,8 @@ type pathRecorder struct {
 	paths []string
 	// calls carries METHOD + path. The path alone was not enough: a
 	// drive that dies partway still issues intermediate GETs whose URL
-	// matches what a write-path assertion was looking for (codex round
-	// 4 P1 — `item unblock` passed on its GET .../links prefetch while
-	// never issuing the DELETE).
+	// matches what a write-path assertion was looking for (`item unblock`
+	// passed on its GET .../links prefetch while never issuing the DELETE).
 	calls []string
 }
 
@@ -353,7 +352,7 @@ func (h *pathRecorder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// un-* commands LIST an item's links and then delete the matching
 	// one, so a links GET must return a decodable array containing a
 	// match or the drive stops there — which is exactly how the DELETE
-	// family was passing on its list prefetch (codex round 4 P1).
+	// family was passing on its list prefetch.
 	//
 	// Both item prefetches resolve to id "item-1", so source and target
 	// are the same id here; one entry per link type covers every spec.
@@ -489,8 +488,8 @@ func TestHTTPTransport_WorkspaceGlobalRoutesAreClassified(t *testing.T) {
 			// required AND the unobservability must itself be declared —
 			// otherwise a classified route that quietly stops being
 			// exercised keeps its entry accepted forever, which is
-			// coverage that has silently become a comment (codex round 1
-			// P2 found exactly that for `library activate`).
+			// coverage that has silently become a comment (this happened for
+			// `library activate`).
 			if !classified {
 				unclassified = append(unclassified, cmdKey+" (issued no observable request — classification required)")
 				continue
@@ -610,7 +609,7 @@ func TestAllowlistCoverage_EveryEntryStatesAReason(t *testing.T) {
 	}
 	// unverifiableByFixture holds ACKNOWLEDGED HOLES, so it owes the
 	// same discipline as the map it excuses — an unreasoned hole is
-	// indistinguishable from an oversight (codex round 2 P2).
+	// indistinguishable from an oversight.
 	for cmdKey, reason := range unverifiableByFixture {
 		if strings.TrimSpace(reason) == "" {
 			bare = append(bare, cmdKey+" (unverifiableByFixture)")
@@ -622,8 +621,8 @@ func TestAllowlistCoverage_EveryEntryStatesAReason(t *testing.T) {
 	}
 }
 
-// TestItemLinkDrives_ReachTheirWriteRequest pins the fix for codex
-// round 3's false green, because the fix alone was not self-defending:
+// TestItemLinkDrives_ReachTheirWriteRequest pins the fix for a
+// false green, because the fix alone was not self-defending:
 // reverting the recorder to `{}` still passed every other assertion
 // here. Measured, not assumed — that revert was run as a control and
 // SURVIVED, which is what this test exists to stop.
@@ -685,8 +684,8 @@ func TestItemLinkDrives_ReachTheirWriteRequest(t *testing.T) {
 }
 
 // TestStaticWorkspaceSiblings_MatchServerRegistrations closes this
-// guard's own fail-open, which codex raised in two consecutive rounds
-// and which is the weakness that matters most: the sibling sets
+// guard's own fail-open,
+// which is the weakness that matters most: the sibling sets
 // duplicate routing knowledge from server.go, and a NEW route mounted
 // beside the /{slug} subrouter would be waved through as
 // middleware-gated purely because its URL looks scoped.
@@ -721,7 +720,7 @@ func TestStaticWorkspaceSiblings_MatchServerRegistrations(t *testing.T) {
 	// subrouter instead, so any sibling registered AFTER it was
 	// invisible — and pathIsWorkspaceScoped would then treat it as
 	// middleware-protected, which is the fail-open this test exists to
-	// remove (codex round 5 P1).
+	// remove.
 	block, ok := braceBlock(text[start:])
 	if !ok {
 		t.Fatal("could not bound the /workspaces route block — anchor stale")
@@ -731,8 +730,8 @@ func TestStaticWorkspaceSiblings_MatchServerRegistrations(t *testing.T) {
 		if !innerOK {
 			t.Fatal("could not bound the nested /{slug} subrouter — anchor stale")
 		}
-		// THE CLASSIFIER'S FOUNDATION, checked rather than assumed
-		// (codex round 8 P1). Everything pathIsWorkspaceScoped returns
+		// THE CLASSIFIER'S FOUNDATION, checked rather than assumed.
+		// Everything pathIsWorkspaceScoped returns
 		// true for is "safe" ONLY because this subrouter applies
 		// RequireWorkspaceAccess. Delete that one line and every
 		// workspaceScoped classification in this file silently becomes
@@ -751,7 +750,7 @@ func TestStaticWorkspaceSiblings_MatchServerRegistrations(t *testing.T) {
 
 	// Handle/Method/HandleFunc too, not just the verb helpers — a
 	// sibling registered through one of those would otherwise be
-	// invisible (codex round 5 P1). Method/MethodFunc take the verb
+	// invisible. Method/MethodFunc take the verb
 	// first, so the pattern allows a leading argument.
 	re := regexp.MustCompile(`r\.(?:Get|Post|Put|Patch|Delete|Head|Options|Handle|HandleFunc)\("(/[^"]*)"|` +
 		`r\.(?:Method|MethodFunc)\([^,]+,\s*"(/[^"]*)"`)
@@ -789,7 +788,7 @@ func TestStaticWorkspaceSiblings_MatchServerRegistrations(t *testing.T) {
 	// for, and guessing about it fails OPEN: routes under
 	// r.Route("/deleted", ...) would live outside RequireWorkspaceAccess
 	// while pathIsWorkspaceScoped — which only inspects the first
-	// segment — would call them middleware-protected (codex round 7 P1).
+	// segment — would call them middleware-protected.
 	//
 	// None exist today. Rather than build speculative handling for a
 	// shape with no instances, the guard REFUSES: if one appears, this
@@ -889,9 +888,9 @@ func braceBlock(src string) (string, bool) {
 }
 
 // TestAllowlistCoverage_FiltersClaimsNameARealEnforcementSite turns the
-// filtersAllowlist class from documentation into a checked claim (codex
-// round 3 P2: the two global classes passed identically, and a reason
-// saying "the handler filters" was verified only to be non-empty).
+// filtersAllowlist class from documentation into a checked claim (the two
+// global classes passed identically, and a reason saying "the handler filters"
+// was verified only to be non-empty).
 //
 // Not proof the filter is CORRECT — that belongs to the handler's own
 // tests — but an entry can no longer claim a handler filters when that
@@ -923,8 +922,8 @@ func TestAllowlistCoverage_FiltersClaimsNameARealEnforcementSite(t *testing.T) {
 			bad = append(bad, cmdKey+": reason names "+file+", which does not exist in internal/server")
 			continue
 		}
-		// Scan the NAMED HANDLER, not the whole file (codex round 4
-		// P2). A file-wide substring match would let an unfiltered
+		// Scan the NAMED HANDLER, not the whole file. A file-wide substring
+		// match would let an unfiltered
 		// handler pass by living next door to a filtered one — and
 		// handlers_workspaces.go contains both kinds, so that is not
 		// hypothetical here.
@@ -1069,7 +1068,7 @@ func firstGoFileMentioned(reason string) string {
 }
 
 // TestAllowlistCoverage_ExemptClaimsAreCheckedOrMarkedAsJudgment
-// narrows the one class that could hide a leak (codex round 6 P1).
+// narrows the one class that could hide a leak.
 //
 // `exempt` means "structurally cannot leak workspace data", which for
 // the static-content handlers is a MECHANICAL fact — they make no store
@@ -1098,7 +1097,7 @@ func TestAllowlistCoverage_ExemptClaimsAreCheckedOrMarkedAsJudgment(t *testing.T
 			// EVERY handler the reason names, resolved across EVERY file
 			// it names. Checking one handler, or resolving against one
 			// file, both let the rest bypass the guard while the entry
-			// still reads as checked (codex rounds 7 and 9).
+			// still reads as checked.
 			failed := false
 			for _, name := range handlersMentioned(c.reason) {
 				body, ok := findHandlerBody(files, name)

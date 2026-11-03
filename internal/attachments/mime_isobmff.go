@@ -71,7 +71,7 @@ const (
 
 // isoBMFFAVBrands maps MAJOR brands that name an audio or video container to
 // the MIME the allowlist spells. Consulted on the major brand ALONE, and only
-// on these two, which is what keeps it narrow enough to be safe (BUG-2963 F4).
+// on these two, which is what keeps it narrow enough to be safe (BUG-2963).
 //
 //   - "qt  " is the QuickTime brand. The stdlib has no signature for it: its
 //     mp4 matcher wants a brand beginning "mp4" and a .mov carries none, so a
@@ -126,7 +126,7 @@ func sniffISOBMFF(head []byte) string {
 	// a major brand plus a minor version, so a buffer that stops inside it is a
 	// truncated file rather than a small one. Classifying from a 13-byte buffer
 	// would let "00 00 00 10 ftyp heic" — three fields of a box that does not
-	// exist — be stored and served as an image (codex round 2, P2). Nothing
+	// exist — be stored and served as an image. Nothing
 	// legitimate is lost: no ISO-BMFF still image is 15 bytes long, and
 	// SniffMIME hands this the first 512 bytes of the upload.
 	if len(head) < 16 || !bytes.Equal(head[4:8], isoBMFFFtypBox) {
@@ -150,7 +150,7 @@ func sniffISOBMFF(head []byte) string {
 	// version is already 16 — so the bytes at 8.. are not brands of THIS box
 	// whatever else they are. Both decline: a payload that opens with a size
 	// of 8 and the letters ftyp heic must not be classified from bytes its own
-	// header says are not in the box (codex round 1, P2).
+	// header says are not in the box.
 	//
 	// Size 0 is the one small value that IS legal: it means "to the end of the
 	// file" and shifts nothing.

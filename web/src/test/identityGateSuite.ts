@@ -1,7 +1,7 @@
 /**
  * The acceptance suite every route surface's identity gate runs (TASK-3097).
  * The route guards used to be regex scanners (`identityFenceSource.ts`), and
- * BUG-3084's round 4 named five classes of edit a scanner cannot see. The
+ * BUG-3084 named five classes of edit a scanner cannot see. The
  * gate (`identityFenceGate.ts`) is a change detector, so it refuses those
  * edits by construction. This suite is what shows it, per surface, on that
  * surface's own code:
@@ -22,10 +22,9 @@
  * accepted, which is what makes the gate a detector of THESE edits rather
  * than of any edit.
  *
- * The aid (`analysisReport`) is not required quiet on a route surface (lead
- * ruling (a) on TASK-3097): its trusted vocabulary names ItemDetail's fences.
+ * The aid (`analysisReport`) is not required quiet on a route surface (TASK-3097): its trusted vocabulary names ItemDetail's fences.
  *
- * THE SCANNER GUARDS STAY (TASK-3097, lead ruling 2). Where a surface has a
+ * THE SCANNER GUARDS STAY (TASK-3097). Where a surface has a
  * regex guard beside its gate (`<surface>IdentityFence.test.ts`, built on
  * `identityFenceSource.ts`), the two answer different questions. The gate
  * catches an EDIT to a unit it already knows, which the scanner cannot see.
@@ -43,7 +42,7 @@ import { refusals, type GateTable } from './identityFenceGate';
 export type RoundFourClass = 1 | 2 | 3 | 4 | 5;
 
 export interface GateMutant {
-	/** Which round-4 class this edit is a member of. */
+	/** Which class this edit is a member of. */
 	cls: RoundFourClass;
 	what: string;
 	/** Exact source text to replace. It must occur exactly once. */

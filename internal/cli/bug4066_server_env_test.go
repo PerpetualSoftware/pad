@@ -12,7 +12,7 @@ import (
 // An MCP tool-call child carries the warning-silencing variable, and it is
 // often the process that auto-starts the server. The server it starts must
 // not inherit it, or that long-lived server never logs the relative data-dir
-// warning; every other variable carries through (BUG-4066 r3 item 2).
+// warning; every other variable carries through (BUG-4066).
 func TestBUG4066_AutoStartedServerDropsOnlyTheSilencingVar(t *testing.T) {
 	t.Setenv(config.InternalNoDataDirWarningEnv, "1")
 	t.Setenv("PAD_DATA_DIR", "data")

@@ -196,8 +196,8 @@ func claudeCodePathFor(base, _ string) (string, error) {
 	return filepath.Join(base, ".mcp.json"), nil
 }
 
-// codexPathFor resolves Codex's `~/.codex/config.toml` (same location on
-// every platform — Codex is a CLI tool with a Unix-style dotdir).
+// codexPathFor resolves Codex's `~/.codex/config.toml` (same location on every
+// platform — Codex is a CLI tool with a Unix-style dotdir).
 func codexPathFor(home, _ string) (string, error) {
 	return filepath.Join(home, ".codex", "config.toml"), nil
 }
@@ -234,7 +234,7 @@ func addPadEntryJSON(path, binary string, args []string) (bool, error) {
 		// Still tighten perms — a previous tool / manual edit may
 		// have left the file 0644, and the security-tightening
 		// guarantee should not depend on whether content changed.
-		// Codex round 2 (TASK-948) caught this gap.
+		// See TASK-948.
 		tightenPerms(path)
 		return false, nil
 	}
@@ -367,8 +367,8 @@ func writeJSONConfig(path string, cfg map[string]any) error {
 	// though pad's own entry has no secrets.
 	//
 	// os.WriteFile only honors the mode when CREATING the file — an
-	// existing 0644 config keeps 0644 after the write. Codex caught
-	// this on TASK-948 round 1, so we Chmod after writing. Best-effort:
+	// existing 0644 config keeps 0644 after the write (TASK-948),
+	// so we Chmod after writing. Best-effort:
 	// chmod failures don't fail the install (the data write
 	// succeeded; the user can re-tighten manually).
 	if err := os.WriteFile(path, append(b, '\n'), 0o600); err != nil {
@@ -395,7 +395,7 @@ func jsonEqual(a, b map[string]any) bool {
 	return string(ab) == string(bb)
 }
 
-// --- TOML config path (Codex) --------------------------------------------
+// --- TOML config path --------------------------------------------
 //
 // Codex nests its MCP servers in a TOML `[mcp_servers.pad]` table, so the
 // JSON reader/writer above won't do. These mirror the JSON functions'

@@ -225,7 +225,7 @@ func TestBody_FixedAndContentFree(t *testing.T) {
 	}
 }
 
-// A pin, not a kill (TASK-3939 r4-L5): Send logs nothing and puts no response
+// A pin, not a kill (TASK-3939): Send logs nothing and puts no response
 // body in its errors today, so this passes by construction. It guards the
 // invariant against a future change: no error and no log line, on any failure
 // path, carries the secret or a token. Distinctive sentinels make a leak
@@ -289,13 +289,13 @@ func serveWith(t *testing.T, secret string, h http.HandlerFunc) *Gateway {
 	return NewGateway(srv.URL, secret)
 }
 
-// Kills (TASK-3939 r1-H3, r2-F2): closing a non-200 body without draining it.
+// Kills (TASK-3939): closing a non-200 body without draining it.
 // Loopback buffers hide an early close from the server, so this asserts the
 // observable effect instead: two requests through ONE transport, and the
 // second must be served on the first's connection. A body closed unread makes
 // the transport drop the connection.
 func TestGateway_Non200BodyIsDrained(t *testing.T) {
-	// Under the cap, so the bounded drain reaches EOF (TASK-3939 r3-L1).
+	// Under the cap, so the bounded drain reaches EOF (TASK-3939).
 	body := strings.Repeat("x", maxResponseBytes/4)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)

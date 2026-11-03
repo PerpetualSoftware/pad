@@ -205,8 +205,8 @@ func TestMCPUpdate_EmptyParentIsStillANoOp(t *testing.T) {
 // are covered. `parent` and `field: ["parent=…"]` both land in
 // `patch["parent"]` (the named param directly, and the --field overlay,
 // which runs before clear_parent's own check but after the named-flag
-// loop). `field: ["plan=…"]` is the THIRD route, added by codex round 1
-// [P1]: extractParentLink (internal/server/handlers_items.go) resolves the
+// loop). `field: ["plan=…"]` is the THIRD route:
+// extractParentLink (internal/server/handlers_items.go) resolves the
 // parent link from either a "parent" or a "plan" key with no early exit —
 // the loop's LATER key wins — so a check that only inspected
 // `patch["parent"]` missed a competing `patch["plan"]` entirely.
@@ -277,7 +277,7 @@ func TestMCPUpdate_ClearParentConflictIsRejected(t *testing.T) {
 }
 
 // TestMCPUpdate_ClearParentRefusedWhenSchemaShadowsField promotes the
-// empirical repro from the codex round 2 finding #2 investigation to a
+// empirical repro from the BUG-2078 investigation to a
 // permanent regression test. BEFORE this guard existed, dispatching
 // clear_parent against a collection whose schema declares its own "parent"
 // (or "plan") field reported SUCCESS while silently blanking the data

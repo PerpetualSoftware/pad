@@ -3,15 +3,15 @@ package collections
 import "encoding/json"
 
 // specPlaybookBody is the de-personalized body of the seeded `spec`
-// playbook (IDEA-2527). Draft-first + ask-only-gaps interview design
-// settled with Dave: recon → four slots → full draft in chat →
+// playbook (IDEA-2527). Draft-first + ask-only-gaps interview design:
+// recon → four slots → full draft in chat →
 // conversational approval → hand off to decompose. Two discipline rules
 // carried through from the design record: every MUST maps to ≥1 AC (a
 // self-audit before presenting, not a question asked of the user), and the
 // verifiability rule (if you can't say how an agent would check it, it's a
 // goal, not a criterion).
 //
-// Authoring principle (Dave, IDEA-2527 comment 5, applies to all three SDD
+// Authoring principle (IDEA-2527 comment 5, applies to all three SDD
 // playbook bodies): generic playbooks ship judgment-triggers, not
 // unconditional gates. The MUST→AC audit is mechanical enough to be a real
 // gate; asking the user a fixed set of interview questions regardless of

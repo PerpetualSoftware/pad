@@ -24,8 +24,8 @@ import (
 // forwarding: no reconnect in 24 seconds. Do not replace this with a Ping.
 //
 // WHAT THIS DETECTS AND WHAT IT DOES NOT, stated as precisely as the mechanism
-// actually supports (codex round 10, which was asked to refute the claim rather
-// than to look for defects, and partly succeeded). All three limits below were
+// actually supports (which was asked to refute the claim rather than to look
+// for defects, and partly succeeded). All three limits below were
 // checked against go-redis v9.22.0 rather than reasoned about:
 //
 //   - IT IS A RECEIVE-SIDE DETECTOR, not a round-trip health check. What it
@@ -58,8 +58,7 @@ import (
 // it is measuring a socket.
 const (
 	// DefaultHeartbeatInterval is T: how often an instance publishes one
-	// liveness frame per workspace it is subscribed to. Dave's ruling
-	// (day-49): 30s.
+	// liveness frame per workspace it is subscribed to. The default is 30s.
 	DefaultHeartbeatInterval = 30 * time.Second
 
 	// DefaultIdleTimeout is 3T: how long a subscription may receive NOTHING —
@@ -69,9 +68,9 @@ const (
 	// Three intervals rather than two so that a single lost or late heartbeat
 	// is not a cycle.
 	//
-	// THE LATENCY ARITHMETIC, corrected after the loops were split (codex
-	// round 8; the earlier wording described a shared ticker that no longer
-	// exists). Measured FROM lastSeen, detection lands in [3T, 4T) — the scan
+	// THE LATENCY ARITHMETIC, corrected after the loops were split (the earlier
+	// wording described a shared ticker that no longer exists). Measured FROM
+	// lastSeen, detection lands in [3T, 4T) — the scan
 	// runs on its own T-cadence, so it adds up to one interval on top of the
 	// threshold. Measured from FAULT ONSET it is wider and less tidy, roughly
 	// [2T, 4T): the publisher has its own independent phase, so the last frame
@@ -114,7 +113,7 @@ const heartbeatMaxLen = 64
 
 // isHeartbeat reports whether a payload is a bus-internal liveness frame.
 //
-// THE SHAPE IS VALIDATED, NOT JUST THE PREFIX (codex round 5, P2), and the
+// THE SHAPE IS VALIDATED, NOT JUST THE PREFIX, and the
 // first draft got this wrong in a way worth recording. Accepting any "hb|…"
 // created a silently-ignored class on the workspace event channel where
 // previously EVERY unreadable payload ended coverage loudly and moved
@@ -171,7 +170,7 @@ func (b *RedisBus) now() time.Time {
 // maintenanceLoop runs the two halves of BUG-2738's machinery.
 //
 // TWO GOROUTINES, NOT ONE LOOP DOING BOTH, and the separation is the whole
-// point rather than tidiness (codex round 1, P1). publishHeartbeats makes N
+// point rather than tidiness. publishHeartbeats makes N
 // SYNCHRONOUS Redis publishes, one per subscribed workspace. Against the
 // failure this feature exists to detect — a route that has stopped carrying
 // traffic — those publishes are exactly the ones that block, and go-redis
@@ -210,8 +209,8 @@ func (b *RedisBus) maintenanceLoop() {
 // Each loop gets its OWN kick channel: a single shared one would be consumed
 // by whichever goroutine happened to be waiting, leaving the other serving out
 // a cadence that had already changed.
-// SCHEDULED FROM A DEADLINE, NOT FROM THE END OF THE LAST PASS (codex round 5,
-// P2). Restarting the timer after work() makes the real period T plus however
+// SCHEDULED FROM A DEADLINE, NOT FROM THE END OF THE LAST PASS. Restarting the
+// timer after work() makes the real period T plus however
 // long the pass took, and for the PUBLISHER that is self-defeating: an instance
 // whose publishes are slow emits heartbeats further apart, its own subscription
 // sees them further apart, and it can cross its own 3T threshold and cycle
@@ -274,7 +273,7 @@ func (b *RedisBus) tickForever(kick <-chan struct{}, work func()) {
 //
 // cmd/pad's wiring test needs to know whether the config flip reached this
 // bus's constructor, and driving the pass DIRECTLY is what makes that test
-// deterministic (codex round 7). Shortening the cadence and waiting instead
+// deterministic. Shortening the cadence and waiting instead
 // makes the negative arm — a phase-1 bus must publish nothing — a race against
 // the scheduler: under -race or a loaded CI box the goroutine may simply not
 // have run yet, which is indistinguishable from a bus that is correctly
@@ -337,7 +336,7 @@ func (b *RedisBus) publishHeartbeats() {
 		b.mu.Unlock()
 		return
 	}
-	// THE GENERATION IS PART OF THE SNAPSHOT (codex round 14). The publish
+	// THE GENERATION IS PART OF THE SNAPSHOT. The publish
 	// below happens off the lock and can take as long as go-redis's timeouts
 	// allow, during which this workspace's subscription may be torn down and
 	// replaced — by a cycle, or by its last subscriber leaving and a new one
@@ -466,9 +465,8 @@ func (b *RedisBus) cycleIdleSubscriptions() {
 
 	var due []idleCycle
 	b.mu.Lock()
-	// DETECTION IS GATED ON PUBLISHING, and getting this wrong is the defect
-	// codex round 1 found in the first draft of this unit (P2, and it is a P1
-	// in effect). Idle detection ran on every instance from phase 1, justified
+	// DETECTION IS GATED ON PUBLISHING, and getting this wrong is the defect:
+	// idle detection ran on every instance from phase 1, justified
 	// in a comment as "detecting off whatever traffic the deployment already
 	// carries" — which is true only of a BUSY workspace. On a QUIET one, phase
 	// 1 has no traffic to detect off and no heartbeat either, so a perfectly
@@ -532,9 +530,9 @@ func (b *RedisBus) cycleIdleSubscriptions() {
 		// something into it AFTER the silence began; see redisSub.lastProbeOK.
 		//
 		// EXPRESSED AS AN ORDERING, not as an age, and the honest reason is
-		// weaker than the one this comment first gave. Codex round 16 argued
-		// an age-based form ("has a probe succeeded within the threshold")
-		// failed to suspend detection where this one would; the mutation
+		// weaker than the one this comment first gave. An age-based form ("has
+		// a probe succeeded within the threshold")
+		// would fail to suspend detection where this one would; the mutation
 		// matrix then declined to confirm it — reverting to the age form, and
 		// even removing cycleOne's copy too, breaks no test, and no case could
 		// be constructed that separates them. On any healthy path the two
@@ -569,8 +567,8 @@ func (b *RedisBus) cycleIdleSubscriptions() {
 		b.pendingSubs[ws] = pending
 		due = append(due, idleCycle{workspaceID: ws, gen: sub.gen, pending: pending})
 	}
-	// UNCOVERED WORKSPACES ARE RE-ESTABLISHED ON THE SAME PASS (BUG-2764,
-	// codex round 1 P1). A workspace can have subscribers counted and no
+	// UNCOVERED WORKSPACES ARE RE-ESTABLISHED ON THE SAME PASS (BUG-2764). A
+	// workspace can have subscribers counted and no
 	// subscription behind them: its last establishment — a cycle's
 	// replacement, or a caller's — abandoned because Redis refused the
 	// SUBSCRIBE. Before BUG-2764 that failure INSTALLED the dead PubSub, so
@@ -602,7 +600,7 @@ func (b *RedisBus) cycleIdleSubscriptions() {
 	}
 	b.mu.Unlock()
 
-	// BOUNDED-PARALLEL, NOT SERIAL (codex round 5, P2). Each cycle re-dials,
+	// BOUNDED-PARALLEL, NOT SERIAL. Each cycle re-dials,
 	// and a dial against a struggling Redis is bounded by go-redis's own
 	// timeouts rather than by anything here — so a serial pass makes recovery
 	// take N x that timeout, and the workspaces at the end of the map wait the
@@ -654,7 +652,7 @@ func (b *RedisBus) cycleIdleSubscriptions() {
 // here and retires it whether it installs or abandons, exactly as on the
 // cycle path, so no joiner is stranded by a failed retry either.
 func (b *RedisBus) reestablishUncovered(c idleCycle) {
-	// QUIET ON SHUTDOWN (codex round 6 on BUG-2764): a pass queued before
+	// QUIET ON SHUTDOWN (BUG-2764): a pass queued before
 	// Close began would otherwise log, per workspace, that subscribers exist
 	// and that the next pass will retry — both false once the bus is
 	// closing, and at 200 workspaces that is a wall of misleading lines in
@@ -668,7 +666,7 @@ func (b *RedisBus) reestablishUncovered(c idleCycle) {
 		// The cause is logged by establishSubscription when it is Redis
 		// refusing; a workspace that emptied meanwhile is quiet by design —
 		// and is NOT retried, since the next pass skips zero-count
-		// workspaces (codex round 7), so the line says so rather than
+		// workspaces, so the line says so rather than
 		// promising a retry that only happens while subscribers remain.
 		slog.Warn("events: re-establishing an uncovered workspace installed nothing; while it still has subscribers the next idle pass will retry",
 			"workspace", c.workspaceID)
@@ -715,7 +713,7 @@ const maxConcurrentCycles = 8
 // cycleOne ends one workspace's coverage and re-establishes its subscription.
 //
 // EVERY VALIDATION, THE COVERAGE DROP AND THE TEARDOWN HAPPEN UNDER ONE LOCK,
-// and that is the fix for a false positive codex round 11 found — the property
+// and that is the fix for a false positive — the property
 // this whole design cares about most, because a false positive costs a
 // coverage drop and a resync for every subscriber of a healthy workspace.
 //
@@ -807,8 +805,8 @@ func (b *RedisBus) cycleOne(c idleCycle, idleTimeout time.Duration) {
 	b.stopRedisSubscription(c.workspaceID)
 	b.mu.Unlock()
 
-	// LOGGED AFTER THE UNLOCK, and after the decision is final (codex rounds 6
-	// and 12). Two separate reasons, both learned the hard way:
+	// LOGGED AFTER THE UNLOCK, and after the decision is final. Two separate
+	// reasons, both learned the hard way:
 	//
 	//   - After the DECISION, so the log cannot describe a cycle that then
 	//     abandons. It still says ATTEMPTING to replace, because
@@ -835,7 +833,7 @@ func (b *RedisBus) cycleOne(c idleCycle, idleTimeout time.Duration) {
 	// more than by a cancelled caller (BUG-2749).
 	installed := b.establishSubscription(b.ctx, c.workspaceID, nil, c.pending)
 	if !installed {
-		// THE OUTCOME IS LOGGED, not only the attempt (codex round 16). The
+		// THE OUTCOME IS LOGGED, not only the attempt. The
 		// line above says "attempting"; without this an on-call correlating it
 		// with pad_event_subscription_cycled_total finds a log with no counter
 		// and no explanation, on the one path where that is expected.
@@ -847,7 +845,7 @@ func (b *RedisBus) cycleOne(c idleCycle, idleTimeout time.Duration) {
 		b.afterCycleEstablish(c.workspaceID)
 	}
 
-	// AND ONLY IF A REPLACEMENT ACTUALLY LANDED (codex round 3). The counter's
+	// AND ONLY IF A REPLACEMENT ACTUALLY LANDED. The counter's
 	// documented meaning is "torn down AND replaced", and establishSubscription
 	// has three reasons to install nothing: the bus closed under us, the
 	// workspace emptied while we dialled, or Redis refused the SUBSCRIBE
@@ -859,7 +857,7 @@ func (b *RedisBus) cycleOne(c idleCycle, idleTimeout time.Duration) {
 	// to drop.
 	//
 	// TAKEN FROM THE ESTABLISHMENT ITSELF, not inferred from the live
-	// generation afterwards (codex round 13). Inference is wrong in both
+	// generation afterwards. Inference is wrong in both
 	// directions: if this cycle installed nothing and an unrelated caller
 	// established the workspace before the check, that caller's subscription
 	// was counted as this cycle's replacement; and a real replacement that

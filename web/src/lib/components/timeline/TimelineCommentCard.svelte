@@ -572,7 +572,7 @@
 		background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
 	}
 
-	/* A third party's name: it may be long and unbroken (codex U9c r1). */
+	/* A third party's name: it may be long and unbroken. */
 	.via-app-marker {
 		min-width: 0;
 		overflow-wrap: anywhere;

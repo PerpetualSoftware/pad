@@ -120,7 +120,7 @@ var chatGPTParamDescriptions = map[string]string{
 	"since":               "Only changes on or after this date (YYYY-MM-DD).",
 }
 
-// ChatGPTCatalog is the approved v1 cut (TASK-3321 U1-T, lead-ruled).
+// ChatGPTCatalog is the approved v1 cut (TASK-3321 U1-T).
 var ChatGPTCatalog = []ChatGPTTool{
 	{
 		Name:        "list_workspaces",
@@ -244,7 +244,7 @@ var ChatGPTCatalog = []ChatGPTTool{
 	// link_type selects among the source's link commands (block,
 	// blocked-by, implements, ...; resolveItemLink). That is one operation,
 	// "relate two items", whose kinds are an enumerated, disclosed
-	// parameter, not a route to undisclosed operations (codex review).
+	// parameter, not a route to undisclosed operations.
 	{
 		Name:          "link_items",
 		Description:   "Link two items, for example mark one as blocking another.",
@@ -317,7 +317,7 @@ var ChatGPTCatalog = []ChatGPTTool{
 }
 
 // ChatGPTExclusions are the /mcp operations deliberately not on the ChatGPT
-// surface, each with its reason (TASK-3321 U1-T, lead-ruled).
+// surface, each with its reason (TASK-3321 U1-T).
 var ChatGPTExclusions = map[ChatGPTSource]string{
 	{"pad_chat", "list"}:                "agent chat is not on the ChatGPT surface",
 	{"pad_chat", "inbox"}:               "agent chat is not on the ChatGPT surface",
@@ -539,10 +539,10 @@ func chatGPTHandler(t ChatGPTTool, source server.ToolHandlerFunc) server.ToolHan
 		res, err := source(padserver.WithChatGPTSurface(ctx), out)
 		if err != nil {
 			// A Go error would reach the client as a protocol error carrying
-			// its text; answer a plain failure instead (codex review).
+			// its text; answer a plain failure instead.
 			return NewErrorResult(ErrorPayload{Code: ErrServerError, Message: "The request failed."}), nil
 		}
-		// TASK-3321 U3: minimize the response before it leaves (R2).
+		// TASK-3321 U3: minimize the response before it leaves .
 		return projectChatGPTResult(t, in, res), nil
 	}
 }
@@ -551,7 +551,7 @@ func chatGPTHandler(t ChatGPTTool, source server.ToolHandlerFunc) server.ToolHan
 // action and Fixed inputs spliced in. The source handler re-reads `fields`
 // from these bytes so a number keeps the literal the caller sent
 // (BUG-3217); re-marshalling the DECODED arguments instead would hand it
-// float64s that already lost it (codex review). Each original value stays
+// float64s that already lost it. Each original value stays
 // as its own raw bytes. With no raw bytes, or bytes that are not a JSON
 // object, nil is returned and the source falls back to the decoded map, as
 // it does for any request without them.

@@ -7,8 +7,8 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// The EMPTY-LIST rule for `multi_relation` (PLAN-2857 U4, lead ruling day 64
-// after codex round 1 found P17): `[]` is normalised at the one entry every
+// The EMPTY-LIST rule for `multi_relation` (PLAN-2857 U4): `[]` is normalised at
+// the one entry every
 // write passes through, into whichever spelling of "no targets" the write shape
 // already has.
 //
@@ -151,7 +151,7 @@ func TestCoerceFields_ScalarRelationStillTakesABareString(t *testing.T) {
 	}
 }
 
-// The NIL spelling (codex round 7). On a full write the traversal treats a
+// The NIL spelling. On a full write the traversal treats a
 // present-but-nil key as absent for required-ness and defaults, but does not
 // REMOVE it — so `{"members": null}` was stored: a third representation of "no
 // targets", which is exactly what the one-spelling rule exists to prevent.

@@ -1,5 +1,5 @@
 // BUG-3067 — BEHAVIOURAL coverage for the renderers the source guard only
-// inventories. Lead ruling on the trail: one parametrised test over the shared
+// inventories. One parametrised test over the shared
 // helper, with an own leg only where a renderer needs its own harness.
 //
 // The reason it is owed: a source guard answers "does this file import the
@@ -83,7 +83,7 @@ describe('the shared helper is what every renderer is asking', () => {
 	// hand it, and the source guard proves they hand it anything at all.
 	//
 	// Stated plainly so nobody reads more into it than it carries: this is not a
-	// substitute for mounting each renderer. It is the ruling's parametrised leg,
+	// substitute for mounting each renderer. It is the parametrised leg,
 	// and `detailCardRetypedField.svelte.test.ts` plus the leg above are the two
 	// places a real component is actually rendered.
 	const CASES = [

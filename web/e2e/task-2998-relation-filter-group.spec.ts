@@ -171,7 +171,7 @@ test.describe('relation filter and group (PLAN-2857 U7)', () => {
 			// Every car is placed exactly once: four cars, four cards.
 			await expect(page.locator('.kanban-column .item-card')).toHaveCount(4);
 
-			// AND IN THE RIGHT LANES (codex round 4). A total count survives a
+			// AND IN THE RIGHT LANES. A total count survives a
 			// mutant that puts every card in one lane while the headings still
 			// render, which is exactly what dropping the bucketing callback
 			// does.

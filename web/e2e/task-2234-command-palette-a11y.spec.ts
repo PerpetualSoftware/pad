@@ -122,7 +122,7 @@ test('the command palette is a combobox a keyboard and a screen reader can use',
 		await expect(input).toHaveAttribute('role', 'combobox');
 		await expect(input).toHaveAttribute('aria-expanded', 'true');
 		// aria-controls is an ID LIST: local results and content matches can
-		// both be on screen (codex r1).
+		// both be on screen.
 		const controls = ((await input.getAttribute('aria-controls')) ?? '').split(/\s+/).filter(Boolean);
 		expect(controls.length, 'the combobox names the listbox(es) it controls').toBeGreaterThan(0);
 		for (const id of controls) await expect(page.locator(`[id="${id}"]`)).toHaveAttribute('role', 'listbox');
@@ -147,7 +147,7 @@ test('the command palette is a combobox a keyboard and a screen reader can use',
 		expect(withResults.violations.map((v) => `${v.id}: ${v.help}`), 'axe on the open palette with results').toEqual([]);
 		// And in the dark theme: the status pills' text is a mix with the
 		// theme's text colour, which has to clear 4.5:1 in both.
-		// The app pins data-theme, which overrides the media query (codex r1),
+		// The app pins data-theme, which overrides the media query,
 		// so the dark scan sets the attribute and proves it took.
 		await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
 		await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
@@ -188,7 +188,7 @@ test('the command palette is a combobox a keyboard and a screen reader can use',
 		await page.keyboard.press('Enter');
 		await expect(input, 'Enter on a recent runs that search').toHaveValue('Zephyr');
 
-		// A match found only in an item's BODY is announced too (codex r1): the
+		// A match found only in an item's BODY is announced too: the
 		// local count is 0 there, and the content matches are the results.
 		await input.fill('');
 		await page.keyboard.type('quokkaword');

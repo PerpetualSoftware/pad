@@ -7,7 +7,7 @@ import { join } from 'node:path';
  * TASK-2921 — EVERY `syncService.onSync` subscriber compares `result.workspace`.
  *
  * The field's own doc comment says every subscriber must compare it, and when it
- * was introduced four of the five did not (codex round 9). So this is an
+ * was introduced four of the five did not. So this is an
  * ENUMERATION test, not a list of per-site pins: it walks the source tree and
  * finds the subscribers itself, so a NEW one that skips the comparison fails
  * here without anyone remembering to add a case.

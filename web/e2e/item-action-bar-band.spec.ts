@@ -33,7 +33,7 @@ import type { SuiteFixture } from './fixtures';
  * which fails this spec on overlay width.
  *
  * (PLAN-2326's DR-3 asserts `container-type: inline-size` implies
- * `contain: layout style inline-size`. It does not. A Codex review reached the
+ * `contain: layout style inline-size`. It does not. A review reached the
  * opposite conclusion from the same wrong premise. Measure, don't infer.)
  *
  * jsdom computes no layout, so none of this is unit-testable.

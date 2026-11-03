@@ -40,14 +40,14 @@ export interface RefusedRawDraft {
 	baseSeq?: number;
 	baseBody?: string;
 	/**
-	 * The server may hold text the base lacks (BUG-3850, lead rulings baa63dc3
-	 * and a6380212): a remote update or this tab's own send came after it, or
+	 * The server may hold text the base lacks (BUG-3850): a
+	 * remote update or this tab's own send came after it, or
 	 * there was no confirmed snapshot. Restore never patches from it; it shows
 	 * the conflict notice instead.
 	 */
 	baseStale?: true;
 	/**
-	 * The crash keeper that kept it (BUG-3863 two-tab ruling): one id per live
+	 * The crash keeper that kept it (BUG-3863 two-tab rule): one id per live
 	 * keeper, so a keeper can still flag or confirm its own draft after another
 	 * tab moved it to the held slot. Absent on every other producer's draft.
 	 */
@@ -277,7 +277,7 @@ export function refusedRawDraftOffer(
  * equal to the stored body is cleared silently from its slot ('clear'). A
  * pending draft is moved to the held slot before it is shown, unless
  * `keeperOwns` says it is the text this tab's live crash keeper is tracking:
- * the keeper is authoritative for its own in-session draft (lead ruling 1), so
+ * the keeper is authoritative for its own in-session draft, so
  * that one stays pending. When the held write fails (storage full or blocked)
  * the draft is shown from pending, as before the held slot existed.
  */
@@ -323,7 +323,7 @@ export function resolveKeptDraft(userId: string, itemId: string, markdown: strin
 
 /*
  * The two exceptions to "producers never touch the held slot" (BUG-3863,
- * two-tab ruling). Another tab may hold a draft a keeper in THIS tab kept and
+ * two-tab rule). Another tab may hold a draft a keeper in THIS tab kept and
  * is still tracking, out of the keeper's pending slot. The keeper reaches that
  * held copy by its id, never by its text: the user may have typed on since.
  * A draft with another id, or with none (an earlier tab's D, other

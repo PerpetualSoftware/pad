@@ -17,7 +17,7 @@ export const CRASH_DRAFT_INTERVAL_MS = 2000;
 /** Bodies above this are not kept (6x the largest measured; design note). */
 export const CRASH_DRAFT_MAX_CHARS = 1_000_000;
 
-// What each live keeper last kept (BUG-3863, lead ruling 1). The pane holds a
+// What each live keeper last kept (BUG-3863). The pane holds a
 // kept draft it shows unless it is one of these: a live keeper's own draft
 // stays where the keeper's stale rewrite and confirm-clear can reach it.
 const tracked = new Map<symbol, { userId: string; itemId: string; markdown: string }>();
@@ -44,13 +44,13 @@ export interface CrashDraftSource {
 	/** True while a confirmed sign-out is discarding: keep nothing then. */
 	discarding?: () => boolean;
 	/**
-	 * A cheap value that changes whenever the text may have (codex r1): the
+	 * A cheap value that changes whenever the text may have: the
 	 * keeper serializes only when it differs from the last write's, so an
 	 * unchanged large document is not re-serialized every tick.
 	 */
 	version?: () => unknown;
 	/**
-	 * Subscribe to "a local update is about to be sent" (BUG-3850 r8 hunter-1).
+	 * Subscribe to "a local update is about to be sent" (BUG-3850).
 	 * The server may hold it from then on, so the draft kept here is rewritten
 	 * flagged stale at once: the next tick may never come, and on a reconnect's
 	 * catch-up it would clear the draft rather than flag it.
@@ -72,7 +72,7 @@ export function registerCrashDraftKeeper(
 	type Last = { userId: string; itemId: string; markdown: string; version: unknown; base: string; baseSeq: number; baseBody: string; stale: boolean };
 	let last: Last | null = null;
 	const token = Symbol('crash-draft-keeper');
-	// Stamped on every draft this keeper writes (BUG-3863 two-tab ruling).
+	// Stamped on every draft this keeper writes (BUG-3863 two-tab rule).
 	const id = `k-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 	const setLast = (next: Last | null) => {
 		last = next;
@@ -91,8 +91,8 @@ export function registerCrashDraftKeeper(
 			const snap = source.snapshot();
 			if (!snap || snap.markdown.length > CRASH_DRAFT_MAX_CHARS) return;
 			// The base is part of what was kept: the same text over a base that
-			// has since moved, or turned stale, is a different draft (BUG-3850
-			// r5: a remote ' C' the user deleted again within one tick leaves the
+			// has since moved, or turned stale, is a different draft (BUG-3850:
+			// a remote ' C' the user deleted again within one tick leaves the
 			// markdown as it was and the base stale).
 			const base = JSON.stringify([snap.baseSeq, snap.baseBody, snap.baseStale === true]);
 			if (last && last.userId === userId && last.itemId === itemId && last.markdown === snap.markdown && last.base === base) return;
@@ -118,7 +118,7 @@ export function registerCrashDraftKeeper(
 		// A held copy of a draft this keeper kept, whatever its text now (the
 		// user may have typed on since another tab held it), is stale too.
 		flagHeldDraftStale(last.userId, last.itemId, id);
-		// Only the draft this keeper wrote (r9 hunter-2): a newer keep by another
+		// Only the draft this keeper wrote (a stale keeper must not clobber): a newer keep by another
 		// producer (keepAtRiskText) is left as it is; this one is done.
 		if (readRefusedRawDraft(last.userId, last.itemId)?.markdown !== last.markdown) {
 			setLast({ ...last, stale: true });

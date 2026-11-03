@@ -217,7 +217,7 @@ describe('ItemPicker — collection size does not change the control (PLAN-2857 
 	});
 
 	it('lists the collection once the local index finishes hydrating, without the user typing', async () => {
-		// codex round 1 P2: a scoped picker opened while the index was cold had
+		// A scoped picker opened while the index was cold had
 		// nothing to list and nothing re-ran the listing, so it stayed empty
 		// until the user typed.
 		loadIndex(makeRows(3));
@@ -268,10 +268,10 @@ describe('ItemPicker — collection size does not change the control (PLAN-2857 
 	});
 
 	it('picks up an index mutation that lands while it is open', async () => {
-		// codex round 2 P2: the picker holds a COPY of the rows, so a change
+		// The picker holds a COPY of the rows, so a change
 		// arriving while it is on screen left it listing what the workspace used
 		// to contain until the query changed or it remounted. Driven through the
-		// search epoch rather than the workspace cursor — round 3 P2: the cursor
+		// search epoch rather than the workspace cursor — the cursor
 		// misses every optimistic `localIndex.upsert` / `remove`, which mutate
 		// the rows without advancing it.
 		loadIndex(makeRows(2));
@@ -287,7 +287,7 @@ describe('ItemPicker — collection size does not change the control (PLAN-2857 
 	});
 
 	it('refreshes on a mutation that never advances the workspace cursor', async () => {
-		// codex round 3 P2, and the whole reason the dependency is the search
+		// And the whole reason the dependency is the search
 		// epoch. `localIndex.upsert()` / `remove()` — optimistic creates and
 		// edits, the 403 purge — mutate the rows and mirror to `localSearch`
 		// WITHOUT touching `state.cursor`. This leg bumps only the epoch, so a
@@ -306,7 +306,7 @@ describe('ItemPicker — collection size does not change the control (PLAN-2857 
 	});
 
 	it('re-filters when the exclusion set arrives late', async () => {
-		// codex round 4 P2. `ItemDetail` loads `itemLinks` asynchronously, so a
+		// `ItemDetail` loads `itemLinks` asynchronously, so a
 		// picker opened before that resolves was offering items already linked to
 		// the source — clicking one is a duplicate-link write the user did not
 		// know they were making.
@@ -334,7 +334,7 @@ describe('ItemPicker — collection size does not change the control (PLAN-2857 
 	});
 
 	it('drops everything it was showing when the workspace state is reset', async () => {
-		// codex round 4 P1: `localIndex.reset()` — sign-out, a 403 membership
+		// `localIndex.reset()` — sign-out, a 403 membership
 		// purge, a deleted workspace — bumps the search epoch on its way out, so
 		// this effect runs. Returning early there left rows the viewer may no
 		// longer be allowed to see listed AND selectable.
@@ -454,7 +454,7 @@ describe('ItemPicker — collection size does not change the control (PLAN-2857 
 
 describe('ItemPicker — the collection scope is a tracked input', () => {
 	it('re-lists when the target collection changes under an open picker', async () => {
-		// codex round 10. A relation field's declared target can change while
+		// A relation field's declared target can change while
 		// this picker is mounted — a schema edit, or an SSE-driven collection
 		// refresh — and `ItemDetail` does not remount it for that. Rows from the
 		// OLD collection must not stay on screen and selectable under the new
@@ -485,7 +485,7 @@ describe('ItemPicker — the collection scope is a tracked input', () => {
 	});
 
 	it('re-queries after a reset even when the scope never changed', async () => {
-		// codex round 13. The reset CLEARED the rows, so the picker has nothing
+		// The reset CLEARED the rows, so the picker has nothing
 		// for its scope — but the scope itself is unchanged, and a `lastScope`
 		// left in place compares equal at rehydration. A server-sourced picker
 		// then takes the early return and sits empty permanently, because
@@ -516,7 +516,7 @@ describe('ItemPicker — the collection scope is a tracked input', () => {
 	});
 
 	it('serves a scope change that arrived while the index was cold, once it hydrates', async () => {
-		// codex round 12. The not-ready branch clears and gives up WITHOUT
+		// The not-ready branch clears and gives up WITHOUT
 		// serving the scope, so committing `lastScope` there consumes a refresh
 		// nobody performed: at hydration `scopeChanged` reads false, a
 		// server-sourced picker takes the early return, and it sits empty until
@@ -552,7 +552,7 @@ describe('ItemPicker — the collection scope is a tracked input', () => {
 	});
 
 	it('re-queries a SERVER-sourced picker when the scope changes mid-query', async () => {
-		// codex round 11, the tail of the fix above. The effect skips
+		// The effect skips
 		// server-sourced queries on an index delta — right, since the index is
 		// not their source of truth — but a scope change is not a delta. Rows
 		// fetched for the old collection are answers to a different question,
@@ -590,7 +590,7 @@ describe('ItemPicker — the collection scope is a tracked input', () => {
 });
 
 describe('ItemPicker — source: the two callers want different models', () => {
-	// Lead ruling on PR #1241: the Relationships tab keeps the server FTS, which
+	// PR #1241: the Relationships tab keeps the server FTS, which
 	// indexes item BODY CONTENT. `localIndex` strips `content` by design, so the
 	// warm path can never answer "the item that mentioned that phrase" — losing
 	// it silently is a regression regardless of how consistent the other pickers
@@ -846,7 +846,7 @@ describe('ItemPicker — Escape only consumes what it closes', () => {
 	// What that driver DOES with the key is deliberately not modelled: both pane
 	// hosts return early for text-entry targets before they reach the escape
 	// stack, so a picker with no `oncancel` leaves Escape with no owner rather
-	// than handing it upward (codex round 1 P2 — the first version of this file
+	// than handing it upward (an earlier version of this file
 	// claimed otherwise in its own comment, without having read the handler).
 	// These legs assert only what this component does: consume the key when it
 	// has something to close, and leave it untouched when it does not.
@@ -1109,7 +1109,7 @@ describe('ItemPicker — inline create (PLAN-2857 U8)', () => {
 	});
 
 	it('withholds create for an exact title the SEARCH RANKING did not return', async () => {
-		// codex round 1 P2. `warmSearch` asks `localSearch` for `limit +
+		// `warmSearch` asks `localSearch` for `limit +
 		// excluded.size` hits, so the exact match is only in `rawResults` if the
 		// RANKER put it there. Resting the no-duplicate guarantee on a relevance
 		// score is resting it on the wrong thing: the question "does an item with
@@ -1153,7 +1153,7 @@ describe('ItemPicker — inline create (PLAN-2857 U8)', () => {
 	});
 
 	it('offers nothing to create when the cold search FAILED', async () => {
-		// codex round 3 P2. A failed search and an empty one leave identical
+		// A failed search and an empty one leave identical
 		// state — no rows, not loading — and the result list is right to render
 		// both as "No results". The create row is not: an empty answer says no
 		// such item exists, a failed one says nothing at all, and offering to
@@ -1200,7 +1200,7 @@ describe('ItemPicker — inline create (PLAN-2857 U8)', () => {
 	});
 
 	it('offers nothing to create while the index is ready but still resyncing', async () => {
-		// codex round 4 P1. `ready` coexists with `pendingResync`: the rows on
+		// `ready` coexists with `pendingResync`: the rows on
 		// screen came from the IDB cache and delta-sync has not reconciled them,
 		// so an item that EXISTS can be missing from the snapshot. Presence
 		// would still be evidence; absence is not, and absence is what the
@@ -1258,13 +1258,13 @@ describe('ItemPicker — inline create (PLAN-2857 U8)', () => {
 	});
 
 	it('offers nothing to create when the cold answer was TRUNCATED', async () => {
-		// codex round 7. `/search` pages, so a page that does not contain the
+		// `/search` pages, so a page that does not contain the
 		// exact title is not evidence the title is unused — the row may be on a
 		// page nobody fetched. Same defect as trusting the local ranker's
 		// window, arriving from the server side.
 		//
-		// Completeness is the PAGE LENGTH against the echoed limit, not `total`
-		// (codex round 8): a failed count query floors `total` up to
+		// Completeness is the PAGE LENGTH against the echoed limit, not `total`:
+		// a failed count query floors `total` up to
 		// `len(results)` server-side, so it cannot distinguish a complete page
 		// from a broken count.
 		setBootstrapState('cold');
@@ -1301,7 +1301,7 @@ describe('ItemPicker — inline create (PLAN-2857 U8)', () => {
 	});
 
 	it('offers nothing to create after the workspace state is dropped', async () => {
-		// codex round 5 P1. `localIndex.reset()` — sign-out, a 403 membership
+		// `localIndex.reset()` — sign-out, a 403 membership
 		// purge, a deleted workspace — drops every row, and the picker's own
 		// effect clears what it was showing. The query is still in the box, so
 		// with a negative "did it fail" flag the picker read that silence as a

@@ -11,7 +11,7 @@ import (
 //
 // They are the same three payloads the pre-trait bootstrap hardcoded, kept as
 // first-party views rather than replaced by a purely generic array: the
-// binding day-45 ruling was that the boot MECHANISM goes generic, which the
+// binding decision was that the boot MECHANISM goes generic, which the
 // trait declarations deliver, and nothing in it required breaking the CLI,
 // skill, MCP, and web consumers that read these keys. Any collection may now
 // declare an include feeding any key, including a new one of its own.

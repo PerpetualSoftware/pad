@@ -94,7 +94,7 @@ describe('draftEdits', () => {
 
 // BUG-3850: a rich crash draft's text is the editor's serialization, and so is
 // the live document an open editor applies a restore patch to (the restore
-// waits for that editor, lead ruling 0337bf77). The raw row a CLI or MCP
+// waits for that editor). The raw row a CLI or MCP
 // writer stored need not be: it can end in a newline, or hold a form the
 // editor serializes differently.
 describe('a rich draft anchored on the editor snapshot (BUG-3850)', () => {
@@ -133,7 +133,7 @@ describe('a rich draft anchored on the editor snapshot (BUG-3850)', () => {
 	});
 });
 
-// Lead ruling baa63dc3: a base taken before a remote update is never patched from.
+// A base taken before a remote update is never patched from.
 describe('restoreEdits (BUG-3850)', () => {
 	it('a stale base: no edits, so restore takes the conflict notice; premise: the patch would duplicate', () => {
 		expect(applyDraftEdits('A C', draftEdits('A', 'A C U')!)).toBe('A C U C');

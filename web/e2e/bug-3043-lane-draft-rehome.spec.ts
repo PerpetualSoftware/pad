@@ -9,7 +9,7 @@ import type { SuiteFixture } from './fixtures';
  * A draft typed in a lane lives in the collection PAGE's map, keyed by that
  * lane's value. Deleting the option took the lane, and the draft card with it,
  * off the board while the text stayed in the map, and "Save all" could then
- * neither complete nor show why. Lead ruling, RE-HOME: the draft appears in the
+ * neither complete nor show why. Decision, RE-HOME: the draft appears in the
  * Uncategorized lane, marked with the lane it came from, and saves there.
  *
  * The unit legs (laneDrafts.test.ts, BoardView.laneDrafts.svelte.test.ts) hand

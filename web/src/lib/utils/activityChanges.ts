@@ -9,7 +9,7 @@ export interface FieldChange {
 	to: string;
 }
 
-// Fields whose change pill is suppressed (BUG-2628, Dave's ruling, option 3).
+// Fields whose change pill is suppressed (BUG-2628, option 3).
 //
 // Implementation notes and decision-log entries have had their own timeline
 // cards since BUG-2301, so a pill for them can only ever restate what the card
@@ -72,7 +72,7 @@ const SUPPRESSED_CHANGE_FIELDS = new Set(['implementation_notes', 'decision_log'
 // help the legacy rows either way, since their metadata is already frozen.
 //
 // EVERY WAY A LEGACY BLOB CAN REACH A READER, enumerated rather than
-// spot-checked (review round 5), across the three surfaces this covers — the
+// spot-checked, across the three surfaces this covers — the
 // item timeline card, the workspace activity page (pills and its raw
 // fallback), and the dashboard's recent-activity list:
 //
@@ -129,11 +129,11 @@ export function parseFieldChanges(changesStr: string | undefined | null): FieldC
 // rather than as pills — the dashboard's recent-activity list, and the audit
 // page's fallback when nothing parsed.
 //
-// SCOPE, enumerated rather than sampled (BUG-2628 review round 2). This is a
+// SCOPE, enumerated rather than sampled (BUG-2628). This is a
 // DISPLAY rule, so it is applied where a human reads the string and nowhere
 // else. The REST endpoints, `--format json`, the bootstrap payload and the
 // MCP tools all return the activity metadata verbatim, and that is deliberate
-// and not an oversight: the row records THAT notes changed, the ruling was
+// and not an oversight: the row records THAT notes changed, the rule was
 // about not showing it as a pill, and a client that wants the raw record must
 // still be able to get it. Sanitizing the wire would be the option the filing
 // rejected for destroying the original.
@@ -147,7 +147,7 @@ export function parseFieldChanges(changesStr: string | undefined | null): FieldC
 // Those surfaces are why suppressing inside parseFieldChanges alone does not
 // finish the job, and the audit page is the sharp case: it falls back to the
 // raw string when the parsed list is EMPTY, so suppressing every pill on a
-// legacy row made the wall of text reappear on the very surface the ruling was
+// legacy row made the wall of text reappear on the very surface the pill rule was
 // about. The fix has to be a property of the string, not of the pill list.
 //
 // Segments are dropped on the same rules parseFieldChanges applies, and
@@ -176,7 +176,7 @@ export function formatChangesForDisplay(changesStr: string | undefined | null): 
 			// before the colon is short and unspaced, like `id:note-1775…` or
 			// `summary:…` from inside a serialized notes array. Those were
 			// still reaching the audit page's fallback, which is the surface
-			// this function exists for (codex round 4).
+			// this function exists for.
 			//
 			// AT LEAST one arrow, not exactly one: a value containing "→" is
 			// a real change that parseFieldChanges declines to make a pill of,

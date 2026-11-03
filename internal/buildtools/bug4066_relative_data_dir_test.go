@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// BUG-4066 (lead ruling 4b4cb4ff): with a relative data dir and a server whose
+// BUG-4066 (b4cb4ff): with a relative data dir and a server whose
 // cwd is not the caller's, the refresh marker used to be written under the
 // CALLER's cwd and looked for under the server's after the cd, so it leaked.
 // It is now anchored where the log is (${SERVER_CWD:-$PWD}): written and
@@ -60,7 +60,7 @@ func TestBUG4066_RefreshMarkerIsAnchoredAndCleanedUp(t *testing.T) {
 // The script warns about a relative data dir BEFORE anything is stopped: a
 // refusal that happens before the stop (the unwritable-log check) still
 // carries the warning. It names the SERVER's anchored, cleaned path, not the
-// caller's (BUG-4066 r1: the caller's cwd here differs from the server's).
+// caller's (BUG-4066: the caller's cwd here differs from the server's).
 func TestBUG4066_ScriptWarnsAboutARelativeDataDirBeforeStopping(t *testing.T) {
 	for _, tc := range []struct{ name, dataDir, dbPath, serverRel, want string }{
 		{"data", "data", "", "data", "PAD_DATA_DIR is relative (data); this process resolves it to %s (the server's directory; from this shell's directory it would be %s)."},
@@ -104,7 +104,7 @@ func TestBUG4066_ScriptWarnsAboutARelativeDataDirBeforeStopping(t *testing.T) {
 				t.Fatalf("refresh succeeded with an unwritable log\nstdout=%s\nstderr=%s", res.stdout, res.stderr)
 			}
 			// Both paths in ONE line, and that line once: phase 1's contract is
-			// one warning per process (BUG-4066 r4 item 1).
+			// one warning per process (BUG-4066).
 			want := fmt.Sprintf(tc.want, filepath.Join(serverDir, tc.serverRel), filepath.Join(callerDir, tc.serverRel))
 			line := ""
 			for _, l := range strings.Split(res.stderr, "\n") {

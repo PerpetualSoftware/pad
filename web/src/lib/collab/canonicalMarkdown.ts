@@ -22,7 +22,7 @@
 // A transaction some other filterTransaction plugin refuses leaves the empty
 // document, and serializing that would make "" the canonical form of a body
 // that is not empty — so a user who deleted the whole body would be deduped
-// and the deletion lost (codex round 4). A refused replace answers null, and
+// and the deletion lost. A refused replace answers null, and
 // the flush then compares against the seed alone, as it did before.
 import { createDocument, type Editor } from '@tiptap/core';
 import { EditorState, type Plugin } from '@tiptap/pm/state';

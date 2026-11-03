@@ -11,8 +11,8 @@ import (
 
 // touchCredentialsFile sets the save's open file's mtime to now (BUG-3838),
 // through its descriptor only, so a path replaced or a symlink retargeted
-// since the open cannot take the stamp instead (codex r3). There is no path
-// fallback (codex r4): when the descriptor form fails (Linux's futimes
+// since the open cannot take the stamp instead. There is no path
+// fallback: when the descriptor form fails (Linux's futimes
 // resolves /proc/self/fd, so no /proc; EPERM on a foreign-owned file) the
 // save relies on its truncate, which moves an empty file's mtime on Linux.
 func touchCredentialsFile(f *os.File, _ string) error {

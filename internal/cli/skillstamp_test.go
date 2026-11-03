@@ -33,7 +33,7 @@ func TestDecideSkillWrite(t *testing.T) {
 		{"edited after stamping", append(stamp(older, "v0.17.0"), []byte("my line\n")...), true, "v0.18.0", SkillKeepEdited},
 		{"edited body, stamp left", []byte(strings.Replace(string(stamp(older, "v0.17.0")), "older", "edited", 1)), true, "v0.18.0", SkillKeepEdited},
 		{"newer pad's text", stamp(older, "v0.19.0"), true, "v0.18.0", SkillKeepNewer},
-		// Deliberate (codex r6, declined): a newer pad that wrote the SAME text
+		// Deliberate (declined): a newer pad that wrote the SAME text
 		// leaves nothing to downgrade, so the file is current; no warning, and
 		// no re-stamp to an older version.
 		{"newer pad wrote this same text", stamp([]byte(testSkill), "v0.19.0"), true, "v0.18.0", SkillUnchanged},
@@ -41,12 +41,12 @@ func TestDecideSkillWrite(t *testing.T) {
 		{"dev build wrote it", stamp(older, "dev"), true, "v0.18.0", SkillUpdate},
 		{"running a dev build", stamp(older, "v0.19.0"), true, "dev", SkillUpdate},
 		{"dev build, but edited", append(stamp(older, "v0.19.0"), []byte("x\n")...), true, "dev", SkillKeepEdited},
-		// The lead's condition: line endings never read as an edit.
+		// Line endings never read as an edit.
 		{"CRLF copy of an unedited older file", crlf(stamp(older, "v0.17.0")), true, "v0.18.0", SkillUpdate},
 		{"extra final newline on an unedited older file", append(stamp(older, "v0.17.0"), '\n', '\n'), true, "v0.18.0", SkillUpdate},
 		{"CRLF copy of the current file", crlf(stamp([]byte(testSkill), "v0.18.0")), true, "v0.18.0", SkillUnchanged},
 		{"unstamped, already this text", expected, true, "v0.18.0", SkillUpdate},
-		// Codex r5: whitespace after the stamp (an editor's trailing blank
+		// Whitespace after the stamp (an editor's trailing blank
 		// line, or spaces on the stamp line) does not hide it.
 		{"whitespace-only lines after the stamp", append(stamp(older, "v0.17.0"), []byte("  \n\t\n \n")...), true, "v0.18.0", SkillUpdate},
 		{"trailing spaces on the stamp line", []byte(strings.TrimRight(string(stamp(older, "v0.17.0")), "\n") + "   \n"), true, "v0.18.0", SkillUpdate},
@@ -63,7 +63,7 @@ func TestDecideSkillWrite(t *testing.T) {
 // An unstamped copy a past release wrote is recognised from the frozen list,
 // with any line endings, and updates quietly; the same bytes edited do not.
 // The fixture is v0.18.0-rc.7's Claude Code skill, pinned by hash rather than
-// re-derived, because the list holds RELEASED output only (codex r3): the
+// re-derived, because the list holds RELEASED output only: the
 // working tree's own text is never trusted as pad's.
 const rc7ClaudeSkillHash = "51964efed99bd5f8753e0be8816f20e255f10dfbfda586d964ad0b21cdccc868"
 
@@ -163,13 +163,13 @@ func TestSkillVersionNewer(t *testing.T) {
 		{"v0.19.0", "dev", false},
 		{"unknown", "v0.18.0", false},
 		{"v0.19", "v0.18.0", false},
-		// Codex r1: SemVer numbers have no size limit.
+		// SemVer numbers have no size limit.
 		{"v99999999999999999999.0.0", "v1.0.0", true},
 		{"v1.0.0", "v99999999999999999999.0.0", false},
 		{"v1.0.0-rc.99999999999999999999", "v1.0.0-rc.2", true},
 		{"v1.0.0-rc.2", "v1.0.0-rc.99999999999999999999", false},
 		{"v1.0.0-rc.99999999999999999999", "v1.0.0-rc.alpha", false},
-		// Codex r3: invalid SemVer is unparseable, so it never refuses.
+		// Invalid SemVer is unparseable, so it never refuses.
 		{"v999.00.0", "v1.0.0", false},
 		{"v999.0.0-dev_1", "v1.0.0", false},
 		{"v999.0.0+", "v1.0.0", false},

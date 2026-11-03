@@ -223,12 +223,14 @@ func TestWatchEventsStream_StopsDeliveringAfterUserDisabled(t *testing.T) {
 //   - A watch-matched probe brings a SECOND mechanism that produces the
 //     same silence: once maxConsecutiveWatchReloadFailures is crossed,
 //     the handler clears the watch set wholesale
-//     (covered by the test below). A bare "nothing arrived" assertion
-//     would pass on that alone (team CONVE-12). The control leg closes
-//     it: a watch on an item in a STILL-granted collection must keep
-//     delivering in the same window, which is only possible while the
-//     watch set is still live — so the revoked item's silence can only
-//     be visCache.
+//
+// (covered by the test below). A bare "nothing arrived" assertion
+//
+//	would pass on that alone (team CONVE-12). The control leg closes
+//	it: a watch on an item in a STILL-granted collection must keep
+//	delivering in the same window, which is only possible while the
+//	watch set is still live — so the revoked item's silence can only
+//	be visCache.
 //
 // Uses collection-access revocation rather than "disabled" (the original
 // vehicle) because a disabled user denies everything, control

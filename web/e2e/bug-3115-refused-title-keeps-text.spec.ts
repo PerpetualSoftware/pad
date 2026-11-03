@@ -15,7 +15,7 @@ import type { SuiteFixture } from './fixtures';
  * Two legs per door:
  *  - LOCAL: a 256-character title never reaches the network.
  *  - SERVER: a title the client accepts is lengthened IN FLIGHT by the test
- *    (route.continue with a rewritten body), so the REAL server refuses it
+ * (route.continue with a rewritten body), so the REAL server refuses it
  *    with its real message. The client check and the server check agree by
  *    construction (testdata/item_title_limit.json), so no typed title reaches
  *    the refusal path without the rewrite; what is under test is what the
@@ -263,7 +263,7 @@ test.describe('BUG-3115: a refused title keeps the typed text', () => {
 		await expect(page.getByText(`Title is too long`)).toHaveCount(0);
 	});
 
-	// CONTROL for the leg above (codex round 4): that leg passes for ANY editor
+	// CONTROL for the leg above: that leg passes for ANY editor
 	// that sends the save, including one with no length check at all. This one
 	// fails for that editor — a CHANGED over-limit title is refused locally —
 	// so the pair pins the guard from both sides.

@@ -1,4 +1,4 @@
-// BUG-3792 (Codex r1 Medium): a password-protected share's retry goes through
+// BUG-3792: a password-protected share's retry goes through
 // api.share.get, the loader that walks every page of a shared collection. It
 // used to fetch the first page by hand, so a protected collection past one page
 // rendered incomplete.

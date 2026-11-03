@@ -102,7 +102,7 @@ func TestGateUnflushedEditsUnderTheFlagProceedsButRecordsTheLoss(t *testing.T) {
 	}
 }
 
-// staleBundleItems is the codex-round-1 P1 fix: the pre-pass reads the database
+// staleBundleItems is the fix where the pre-pass reads the database
 // at one instant and ExportWorkspace reads it at another, so the bundle about to
 // be written is the only artifact whose staleness can be checked without a
 // window. These pin the two things the refusal depends on — that it fires on

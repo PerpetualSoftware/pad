@@ -80,7 +80,7 @@ func runAttachmentView(t *testing.T, handler http.Handler, id string) string {
 
 // TestAttachmentViewNamesTheFileThroughTheCommand exercises the WIRING —
 // helper tests alone left the command's naming fallback an untested claim
-// (codex closing round 3, CONVE-19's direct-call-vouches-for-the-component
+// (CONVE-19's direct-call-vouches-for-the-component
 // point).
 func TestAttachmentViewNamesTheFileThroughTheCommand(t *testing.T) {
 	body := []byte("png-bytes")
@@ -107,8 +107,8 @@ func TestAttachmentViewNamesTheFileThroughTheCommand(t *testing.T) {
 
 	// image/png was in the OLD hand-rolled CLI table too, so png-only cases
 	// cannot discriminate the delegation to the shared MIME map — a stale
-	// local table would pass them (codex closing round 7). gzip is one of
-	// the types round 26 found MISSING from that table, and SVG is blocked:
+	// local table would pass them. gzip is one of
+	// the types once MISSING from that table, and SVG is blocked:
 	// the shared map must answer for the first and refuse an extension for
 	// the second.
 	t.Run("delegated type the old table lacked gains its extension", func(t *testing.T) {
@@ -142,7 +142,7 @@ func TestAttachmentViewNamesTheFileThroughTheCommand(t *testing.T) {
 		assertWrittenInsideTemp(t, got, body)
 	})
 
-	// The closing-round-3 defect: an id harvested from item content can be
+	// The traversal defect: an id harvested from item content can be
 	// traversal-shaped. Unfixed, the fallback joined it raw onto the temp
 	// dir and the write escaped it. The stub answers for ANY attachments
 	// path, standing in for a re-routed request that answers 200.
@@ -173,8 +173,8 @@ func TestAttachmentViewNamesTheFileThroughTheCommand(t *testing.T) {
 
 	// PathEscape leaves exact "." and ".." UNCHANGED, so they would reach
 	// the wire as live dot segments for a proxy or server to normalize
-	// away — the client refuses them before any request (codex closing
-	// round 4). A real id is a UUID; the refusal cannot fire on one.
+	// away — the client refuses them before any request. A real id is a UUID; the
+	// refusal cannot fire on one.
 	t.Run("exact dot-segment id is refused before any request", func(t *testing.T) {
 		var requests int
 		record := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

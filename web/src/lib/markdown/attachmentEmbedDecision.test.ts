@@ -121,7 +121,7 @@ describe('resolveAttachmentImage — what the reader actually gets', () => {
 });
 
 /**
- * BUG-2964, codex round 1 — the question is about THE VARIANT THIS RENDER WILL
+ * BUG-2964 — the question is about THE VARIANT THIS RENDER WILL
  * REQUEST, not about whether any thumbnail exists.
  *
  * Derivation writes `thumb-sm` and `thumb-md` independently, so a partial

@@ -219,7 +219,7 @@ describe('localIndex access-epoch scope', () => {
 	});
 
 	it('keeps a known baseline when a snapshot carries no epoch, and stops asking', async () => {
-		// Review round 1, F3. Mixed deployment: the delta comes from a server
+		// Mixed deployment: the delta comes from a server
 		// that sends the field, the resync's snapshot from one that does not.
 		// `?? null` read absent as "no baseline", so the null-baseline branch
 		// resynced again on the next poll — a full snapshot per iteration up to
@@ -247,7 +247,7 @@ describe('localIndex access-epoch scope', () => {
 	});
 
 	it('records the told-epoch even when it JOINS a resync that was already running', async () => {
-		// Round 3, P2. Resyncs are deduplicated per workspace, so a resync
+		// Resyncs are deduplicated per workspace, so a resync
 		// already in flight — started by a PROJECTION mismatch, which passes no
 		// fallback — returns its promise and the access caller's fallback is
 		// never seen. The baseline then stays unchanged and the next poll asks

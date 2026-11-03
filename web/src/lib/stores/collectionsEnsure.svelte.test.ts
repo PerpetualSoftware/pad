@@ -138,13 +138,13 @@ describe('TASK-2200 — ensureCollections', () => {
 			.mockImplementation(() => new Promise<Collection[]>((r) => releases.push(r)));
 
 		// alpha, then beta, then someone needs alpha again — all three in
-		// flight at once (codex round 3 asked for this ordering).
+		// flight at once.
 		const alpha = collectionStore.loadCollections('alpha');
 		const beta = collectionStore.loadCollections('beta');
 		const ensured = collectionStore.ensureCollections('alpha');
 		await flush();
 
-		// THREE requests, and the third is the point. Round 3 read this as a
+		// THREE requests, and the third is the point. One reading takes this for a
 		// missing join and proposed a per-workspace map; the map would be the
 		// defect. `loadCollections` commits only the LATEST call, so beta's
 		// start already killed alpha's first request — its response is dropped

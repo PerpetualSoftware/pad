@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { DEFAULT_REDIRECT, validateRedirect } from './redirect';
 
 // Regression pins for the open-redirect guard in validateRedirect (BUG-1929
-// follow-up, Codex R2). A bare `startsWith('/')` check is not enough — these
+// follow-up). A bare `startsWith('/')` check is not enough — these
 // are the concrete bypass shapes a browser or an upstream redirect handler
 // can end up treating as cross-origin, so each MUST fall through to
 // DEFAULT_REDIRECT rather than being echoed back as a safe target.

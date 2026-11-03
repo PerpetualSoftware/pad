@@ -132,7 +132,7 @@ func TestPinPluginMarketplace_RewritesOnlyTheSource(t *testing.T) {
 	if src, _ := marketplaceSource(t, dir).(map[string]any); src["ref"] != "v0.18.1" {
 		t.Fatalf("ref after the second pin = %v", src["ref"])
 	}
-	// An OLDER release finishing late never moves the pin back (codex r1).
+	// An OLDER release finishing late never moves the pin back.
 	if out, err := runPin(t, dir, "v0.18.0"); err != nil || !strings.Contains(out, "newer than v0.18.0") {
 		t.Fatalf("pin an older tag: %v %s", err, out)
 	}

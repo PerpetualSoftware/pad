@@ -6,7 +6,7 @@
 // It is deliberately NOT the watch bus. The watch bus gives every message a
 // sequence id, a slot in the shared client replay buffer and a place in each
 // client subscriber's queue, so kicks published there evicted real
-// notifications and could open gaps for unrelated clients (codex r1). A kick
+// notifications and could open gaps for unrelated clients. A kick
 // needs none of that: it is fire-and-forget, a lost one leaves the tick as
 // the backstop, and nothing ever replays it. So it rides its own Redis
 // pub/sub channel, with no sequence, buffer or client in reach.
@@ -53,13 +53,13 @@ type RedisTransport struct {
 // uses its OWN client, cloned from client's options with context timeouts
 // enabled: the shared client leaves ContextTimeoutEnabled off, so command I/O
 // ignores a context deadline and a stalled Redis held a publish for the
-// client's full 5s read timeout (codex r2).
+// client's full 5s read timeout.
 func NewRedisTransport(client *redis.Client, keys redisns.Keys) *RedisTransport {
 	opts := *client.Options()
 	opts.ContextTimeoutEnabled = true
 	// The source client's push-notification processor is ITS state: reusing
-	// it registers the clone's handlers on the original's registry (codex r3:
-	// duplicate MOVING registrations, and a panic with maintenance
+	// it registers the clone's handlers on the original's registry (duplicate
+	// MOVING registrations, and a panic with maintenance
 	// notifications on). NewClient builds a fresh one when this is nil.
 	opts.PushNotificationProcessor = nil
 	return &RedisTransport{client: redis.NewClient(&opts), channel: keys.Name(ChannelSuffix)}

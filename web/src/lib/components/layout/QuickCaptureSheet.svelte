@@ -2,9 +2,9 @@
 	QuickCaptureSheet — the mobile BottomNav's center "＋" action (PLAN-1694,
 	TASK-1698). A self-contained capture flow: pick a collection, type a title,
 	create. "Add" stays on the current screen and readies the sheet for the
-	next capture; "Add and open" goes to the new item (TASK-3590). Deliberately does NOT reuse the Sidebar's quickAdd overlay
-	(uiStore.requestQuickAdd) — that path only works while the Sidebar is
-	mounted and renders a desktop-ish overlay (Codex review of PLAN-1694). The
+	next capture; "Add and open" goes to the new item (TASK-3590). Deliberately does NOT reuse the Sidebar's
+	quickAdd overlay (uiStore.requestQuickAdd) — that path only works while the Sidebar is
+	mounted and renders a desktop-ish overlay (PLAN-1694). The
 	create logic mirrors Sidebar.svelte's submitQuickAdd so behaviour (default
 	status, content template, add vs add-and-open) stays consistent.
 
@@ -64,7 +64,7 @@
 	// Default to tasks (or the first collection) when the sheet opens. Also
 	// re-default if the remembered slug is no longer a valid collection (e.g.
 	// the workspace changed since last open) — otherwise submit() would
-	// silently no-op on a stale slug (Codex review, PLAN-1694).
+	// silently no-op on a stale slug (PLAN-1694).
 	$effect(() => {
 		if (!open || !collections.length) return;
 		if (!selectedSlug || !collections.some((c) => c.slug === selectedSlug)) {

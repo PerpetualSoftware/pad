@@ -124,7 +124,7 @@ describe('confirmed base tracker (BUG-3850)', () => {
 	});
 });
 
-// Lead ruling 0337bf77: the patch restore waits for this tab's open editor.
+// The patch restore waits for this tab's open editor.
 describe('restoreWaitsForEditor (BUG-3850)', () => {
 	it('runs only with the editor mounted on a CURRENT connection that is synced', () => {
 		expect(restoreWaitsForEditor({ state: 'synced' }, true)).toBe(false);

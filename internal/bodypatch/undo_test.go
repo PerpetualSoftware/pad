@@ -78,7 +78,7 @@ func TestContextIsBoundedAndLineClipped(t *testing.T) {
 	}
 }
 
-// Retro CONVE-735 finding on #2058: an edit that deletes a line's only
+// CONVE-735: an edit that deletes a line's only
 // content left empty line-clipped context on both sides, so the inverse's
 // anchor was "" and the undo was refused as an empty anchor.
 func TestUndoOfALineEmptiedOut(t *testing.T) {

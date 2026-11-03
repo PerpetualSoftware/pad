@@ -425,7 +425,7 @@ describe('fences', () => {
 		expect(thread.status).toBe('loading');
 	});
 
-	// U14b (r1 H1): an identity change closes the thread, so the next bump reads nothing
+	// U14b: an identity change closes the thread, so the next bump reads nothing
 	// as the new identity. Red with #reset() not clearing #n and the status.
 	it('fetches nothing on a bump after an identity change', async () => {
 		server.fill(3);
@@ -571,7 +571,7 @@ describe('mark read', () => {
 		expect(h.markRead).toHaveBeenCalledWith(1, 210);
 	});
 
-	// Pins the behaviour ruled in b3dd1e54 / ec6bbe31 (3b r4 H3, r5 A1): after an own send
+	// Pins the behaviour: after an own send
 	// re-anchors the window, the reader has seen the NEW newest row, so markRead names it,
 	// which also covers the peer rows the re-anchor skipped. Changing that is a decision.
 	it('after a re-anchor marks the new newest seq', async () => {
@@ -603,7 +603,7 @@ describe('mark read', () => {
 		expect(resync).toHaveBeenCalledTimes(1);
 	});
 
-	// U17b (r2 hunter): rows that land while a mark is in flight are marked when it settles.
+	// U17b: rows that land while a mark is in flight are marked when it settles.
 	it('marks rows that arrived while a mark was in flight', async () => {
 		await opened();
 		let release!: () => void;
@@ -762,7 +762,7 @@ describe('send', () => {
 		expect(pendingOf()).toHaveLength(0);
 	});
 
-	// 3b r5 A2 (I5, tombstone wins): red with the replayed live row written over the held tombstone.
+	// Red with the replayed live row written over the held tombstone.
 	it('a replayed send does not resurrect a row deleted meanwhile (window)', async () => {
 		await readyThread();
 		wireSend();
@@ -796,7 +796,7 @@ describe('send', () => {
 		expect(thread.messages.at(-1)).toMatchObject({ seq: 401, deleted: true, body: '' });
 	});
 
-	// 3b r5a2 R1 (I1): red with the replayed row merged across the hole below the moved window.
+	// red with the replayed row merged across the hole below the moved window.
 	it('a replayed send below the re-anchored window is history: bubble dropped, row not merged', async () => {
 		server.fill(400);
 		server.readSeq = 0;
@@ -819,7 +819,7 @@ describe('send', () => {
 		expect(pendingOf()).toHaveLength(0);
 	});
 
-	// r6 A-L1 (N34): red with #applyOwn ending in #publish(null) - the replayed row is already
+	// Red with #applyOwn ending in #publish(null) - the replayed row is already
 	// in the window, the re-anchor fetch fails, so hasNewer fell to false and Show newer vanished.
 	it('keeps hasNewer when a replayed answer already in the window detaches after a failed re-anchor', async () => {
 		server.fill(400);
@@ -838,7 +838,7 @@ describe('send', () => {
 		expect(thread.messages.at(-1)!.seq).toBe(200);
 	});
 
-	// r6 A-M1 (N33): red with the held-row lookup at #applyOwn reading the window only. The detached
+	// Red with the held-row lookup at #applyOwn reading the window only. The detached
 	// row is the reader's tombstone; a replayed answer for its seq carries the live text and must not win (I5).
 	it('a held DETACHED tombstone beats a replayed answer for the same seq', async () => {
 		server.fill(400);
@@ -937,7 +937,7 @@ describe('send', () => {
 		expect(thread.ownSendTick).toBeGreaterThan(scrollBefore);
 	});
 
-	// 3b r4 C1 (ruling ec6bbe31), N15: red with the window replaced by the confirmed row alone.
+	// N15: Red with the window replaced by the confirmed row alone.
 	it('keeps the window and detaches the row when the newest page cannot be fetched', async () => {
 		server.fill(400);
 		server.readSeq = 0;
@@ -952,7 +952,7 @@ describe('send', () => {
 		expect(pendingOf()).toHaveLength(0);
 	});
 
-	// 3b r1 hunter finding 2 (B16 retired in S1): both own rows end up in the window.
+	// Both own rows end up in the window.
 	// Rewritten for the sequential queue: B's apply waits behind A's held fetch, so
 	// awaiting B's send before releasing A's fetch would never settle.
 	it('keeps both own rows when two sends land during a held re-anchor', async () => {
@@ -1020,7 +1020,7 @@ describe('refresh during a send', () => {
 		expect(seqs()).toEqual([1, 2, 3, 4]);
 	});
 
-	// 3b r1 hunter finding 1 (refuted): the deferred refresh's cursor starts past a
+	// The deferred refresh's cursor starts past a
 	// peer row committed during the send, and the sweep leg brings it in.
 	it('does not skip a peer row committed while a send was in flight', async () => {
 		await readyThread();
@@ -1037,7 +1037,7 @@ describe('refresh during a send', () => {
 		expect(seqs()).toEqual([1, 2, 3, 4, 5]);
 	});
 
-	// r1 hunter 1 (ruling a61ca213): red if the one-shot cursor floor is dropped (B18).
+	// Red if the one-shot cursor floor is dropped (B18).
 	// More than the sweep's 200: only step 1 from below the own row can fetch them.
 	it('does not skip any of 201 peer rows committed while a send was in flight', async () => {
 		await readyThread();
@@ -1157,7 +1157,7 @@ describe('3b r2 ordering', () => {
 		return 'ok';
 	};
 
-	// r2 H1 (the floor is gone in S1): 201 peer rows skipped by an own row are still
+	// 201 peer rows skipped by an own row are still
 	// filled when a refresh is in flight. The send's apply queues behind the held
 	// refresh, so the send is awaited only after the refresh is released.
 	it('fills 201 skipped peer rows when the send lands during a held refresh', async () => {
@@ -1180,7 +1180,7 @@ describe('3b r2 ordering', () => {
 		expect(thread.newestSeq).toBe(205);
 	});
 
-	// r2 C1/H2 (late re-anchor gone in S1): two sends around a peer row all land
+	// Two sends around a peer row all land
 	// contiguous. Rewritten: window fetches are sequential now, so the holds are
 	// released one at a time instead of two fetches being outstanding together.
 	it('fills the peer row between two own rows sent around it', async () => {
@@ -1211,7 +1211,7 @@ describe('3b r2 ordering', () => {
 		expect(thread.detached).toEqual([]);
 	});
 
-	// r2 H3: red if a delete answer merges a row the window no longer holds (B21).
+	// red if a delete answer merges a row the window no longer holds (B21).
 	it('does not insert a tombstone below a window that a re-anchor moved', async () => {
 		server.fill(400);
 		server.readSeq = 0;
@@ -1232,7 +1232,7 @@ describe('3b r2 ordering', () => {
 	});
 });
 
-// ── S1: serialized window ops and a contiguous window (rulings 3293b1c6, 5c95ef40) ──
+// ── S1: serialized window ops and a contiguous window ──
 describe('S1 serialized window', () => {
 	const contiguous = () => seqs().every((q, i, all) => i === 0 || q === all[i - 1] + 1);
 
@@ -1253,7 +1253,7 @@ describe('S1 serialized window', () => {
 		await flush();
 	}
 
-	// r3 #1: mark-read never passes a hole. Red with the fill skipped (N4).
+	// Mark-read never passes a hole. Red with the fill skipped (N4).
 	it('marks only a contiguous window and fills the skipped peer rows before the own row', async () => {
 		await readyThread(3);
 		thread.atBottom = true;
@@ -1280,7 +1280,7 @@ describe('S1 serialized window', () => {
 		expect(marks.at(-1)?.seq).toBe(7);
 	});
 
-	// r3 #3: a stale page cannot un-delete a row. Red with the delete applied outside the queue (N3).
+	// A stale page cannot un-delete a row. Red with the delete applied outside the queue (N3).
 	it('applies a delete after the refresh page that was fetched before it', async () => {
 		await readyThread(5);
 		let release!: () => void;
@@ -1302,7 +1302,7 @@ describe('S1 serialized window', () => {
 		expect(thread.messages[1]).toMatchObject({ seq: 2, deleted: true });
 	});
 
-	// Hunter #2: more skipped rows than the fill bound detach the own row. Red with the
+	// More skipped rows than the fill bound detach the own row. Red with the
 	// bound removed (N6) or the row published inside the window (N7).
 	it('detaches an own row 1,200 peer rows away, then Show newer reaches it once', async () => {
 		await readyThread(3);
@@ -1327,7 +1327,7 @@ describe('S1 serialized window', () => {
 		expect(seqs()).toEqual(Array.from({ length: 1204 }, (_, i) => i + 1));
 	});
 
-	// Q2 pin (ruling 3293b1c6): a detached row is outside the window for every reader.
+	// Q2 pin: a detached row is outside the window for every reader.
 	it('keeps a detached row out of newestSeq, mark-read, the divider and the loadNewer cursor', async () => {
 		await detachedThread();
 		expect(seqs()).toEqual([1, 2, 3]);
@@ -1452,7 +1452,7 @@ describe('S1 serialized window', () => {
 		return { sending, own };
 	}
 
-	// TASK-4044 ruling 2a03a442, N12: red with the own apply fetching while another send is in flight.
+	// TASK-4044, N12: Red with the own apply fetching while another send is in flight.
 	it('detaches the first own row without fetching while a second send is in flight (I9, N12)', async () => {
 		server.fill(400);
 		server.readSeq = 0;
@@ -1483,7 +1483,7 @@ describe('S1 serialized window', () => {
 		expect(all.sort()).toEqual([401, 402]);
 	});
 
-	// TASK-4044 ruling 2a03a442, N14: red with the refresh merging a page that landed during a send.
+	// TASK-4044, N14: Red with the refresh merging a page that landed during a send.
 	it('drops a refresh page that lands while a send is in flight rather than show its row twice (I9, N14)', async () => {
 		await readyThread(3);
 		wireSend();
@@ -1506,7 +1506,7 @@ describe('S1 serialized window', () => {
 		expect(pendingOf()).toHaveLength(0);
 	});
 
-	// 3b r4 H1 (ruling ec6bbe31), N16: red with #fill not rechecking for a send in flight after its await.
+	// N16: Red with #fill not rechecking for a send in flight after its await.
 	it('detaches rather than fill a page that carries the row of a send retried meanwhile (I9, N16)', async () => {
 		await readyThread(3);
 		wireSend();
@@ -1559,7 +1559,7 @@ describe('S1 serialized window', () => {
 	});
 });
 
-// TASK-4044 3c: the ref verdicts the thread collects (rulings 687eb810, Q-h).
+// TASK-4044 3c: the ref verdicts the thread collects.
 describe('refs (3c)', () => {
 	const key = (ref: string, workspace = 'w') => refKey(workspace, ref);
 	const vis = (ref: string, workspace = 'w'): ChatRef => ({ workspace, ref, state: 'visible', title: `t ${ref}` });

@@ -125,7 +125,7 @@ func (g *Gateway) Send(ctx context.Context, msgs []Message) ([]Result, error) {
 		}
 		return nil, fmt.Errorf("%w: transport error", ErrUnavailable)
 	}
-	// Drain what is left (bounded) so the connection can be reused (TASK-3939 r1-H3).
+	// Drain what is left (bounded) so the connection can be reused (TASK-3939).
 	defer func() {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponseBytes))
 		resp.Body.Close()

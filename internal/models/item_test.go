@@ -118,7 +118,7 @@ func TestExtractItemConventionMetadata_ConventionWithLegacyPriority(t *testing.T
 }
 
 // TestExtractItemConventionMetadata_LegacyConvention_ScopeOnly is
-// the regression test for Codex's PR #361 round-1 finding: a legacy
+// the regression test for a PR #361 bug: a legacy
 // Convention carrying only `{scope, priority}` (no trigger, no
 // commands, no structured convention field) must still resolve
 // priority→enforcement. Pre-fix, the fallback ran BEFORE scope had
@@ -361,7 +361,7 @@ func TestAppendDecisionLogProceedsWhenFieldIsAbsentEmptyOrValid(t *testing.T) {
 // (unknown key, ignored) and REJECTED by the log struct (Decision is a string).
 // The guard would then permit an append that ExtractItemDecisionLog reads as
 // empty — which is the exact guard/extractor divergence this whole change exists
-// to prevent, reintroduced one type parameter away. Codex round 2.
+// to prevent, reintroduced one type parameter away.
 func TestAppendDecisionLogRefusesEntriesOnlyItsOwnTypeRejects(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -603,7 +603,7 @@ func TestItemUpdateUnmarshalFlexFields(t *testing.T) {
 // Pre-fix, ItemCreate.Tags rejected `["foo","bar"]` with "cannot
 // unmarshal array into Go struct field ItemCreate.tags of type
 // string" — agents over MCP saw this as a generic validation_failed
-// envelope and (per BUG-1409) blamed "tags is the culprit." The Codex
+// envelope and (per BUG-1409) blamed "tags is the culprit." The
 // investigation called out the asymmetry with ItemUpdate (which already
 // handled both shapes per BUG-1144) as the root architectural fix.
 func TestItemCreateUnmarshalFlexFields(t *testing.T) {

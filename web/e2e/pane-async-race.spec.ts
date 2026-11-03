@@ -34,7 +34,7 @@ import { backThenDrillAfterSettleArms } from './lib/paneSettle';
  * this verifies the runtime wiring in a real browser, which jsdom's absent
  * history/navigation model can't reach.
  *
- * Deliberate design against VACUOUS passes (Codex review): the races are made
+ * Deliberate design against VACUOUS passes: the races are made
  * DETERMINISTIC — the stale continuation is proven to have actually run (its
  * gated request is observed entering the gate and draining after release; the
  * fenced-out action is proven to have issued no fetch) rather than merely
@@ -162,7 +162,7 @@ async function seedNoteItem(
  *  distinct bodies). Isolating each timing test in its OWN collection keeps its
  *  list deterministic and — critically — keeps its ~4 items OUT of the shared
  *  `docs` collection, whose DOM bloat under parallel load flakes the other pane
- *  specs' row-clicks (Codex/stability review). Returns the collection + seeded
+ *  specs' row-clicks. Returns the collection + seeded
  *  items in insertion order. */
 async function seedFreshCollection(
 	fixture: SuiteFixture,
@@ -276,7 +276,7 @@ test.describe('pane async-race hardening (PLAN-2154 R14 / TASK-2167)', () => {
 		// first card snaps focus to it; `j` then moves to the second card. The
 		// FORWARD target must be a THIRD, distinct item so the follow's callback
 		// same-item guard (openItemRef === focused row) can't fire — leaving the
-		// depth re-check as the ONLY thing that can stop the follow (Codex round 2).
+		// depth re-check as the ONLY thing that can stop the follow.
 		const titles = (await cardTitles.allInnerTexts()).map((t) => t.trim());
 		const openTitle = titles[0];
 		const followTitle = titles[1]; // the row `j` will focus
@@ -316,14 +316,14 @@ test.describe('pane async-race hardening (PLAN-2154 R14 / TASK-2167)', () => {
 		// Arm the follow AND fire the popstate-forward in ONE synchronous evaluate
 		// so the 140ms debounce timer PHYSICALLY cannot elapse between them — the
 		// follow is PROVABLY still pending when the forward supersedes it, not just
-		// probably (Codex round 3). The synthetic keydown reaches the window-level
+		// probably. The synthetic keydown reaches the window-level
 		// `handlePageKeydown` (`<svelte:window onkeydown>`); with the cursor on
 		// row 0 it steps to row 1 (followTitle) and schedules the follow, then
 		// `history.forward()` drills to depth 1 via a popstate that never calls
 		// `cancelPaneFollow`. So ONLY the fired callback's own depth re-check can
 		// stop the (distinct-target) follow.
 		// Also instrument `history.go` so a regressed follow is caught even if its
-		// RESET traversal hasn't committed yet by assertion time (Codex round 6): a
+		// RESET traversal hasn't committed yet by assertion time: a
 		// depth>0 follow re-target is an `openItemPane` RESET → `paneHistoryGo` →
 		// `history.go(-depth)`, and that CALL happens synchronously the instant the
 		// follow callback fires — long before its ~500ms settle commits. Counting
@@ -417,8 +417,7 @@ test.describe('pane async-race hardening (PLAN-2154 R14 / TASK-2167)', () => {
 		// Non-vacuous proof the settle was pending-then-CANCELLED, not merely
 		// overwritten late: A's ref was never minted (fetched) during the window —
 		// the drill's `goto` cancelled the settle before it could re-fetch A. Had
-		// the settle fired, A would appear in the post-Back fetch sequence (Codex
-		// round 3).
+		// the settle fired, A would appear in the post-Back fetch sequence.
 		const postBack = itemGets.slice(getsBeforeBack);
 		expect(postBack).toContain(c.slug);
 		expect(postBack).not.toContain(refA);
@@ -508,8 +507,8 @@ test.describe('pane async-race hardening (PLAN-2154 R14 / TASK-2167)', () => {
 		// through (the first close's cold-base go(-1)). Counting is the only way to
 		// distinguish "second close fenced" from "second close's go(-1) was
 		// browser-coalesced into the first" — both leave the same end URL, so the
-		// end-state assertions alone are vacuous for the second-close fence (Codex
-		// round 4). navigatePaneTo/closeItemPane issue NO `history.go` when fenced
+		// end-state assertions alone are vacuous for the second-close fence.
+		// navigatePaneTo/closeItemPane issue NO `history.go` when fenced
 		// (the drill uses `goto`; the latch's delete uses `goto`), so a fenced burst
 		// yields exactly 1.
 		const goCount = await page.evaluate((cRef) => {
@@ -563,7 +562,7 @@ test.describe('pane async-race hardening (PLAN-2154 R14 / TASK-2167)', () => {
 	// idiom at every await-resume (ItemDetail.svelte). This item-GET race stands
 	// for that family rather than duplicating a gated-endpoint test per handler;
 	// the SSE/sync path is additionally covered by pane-collection-migration-race
-	// (a post-await refetch superseded by a switch). (Codex rounds 2-3 residual.)
+	// (a post-await refetch superseded by a switch).
 	test('a stale loadData GET resolving after a rapid re-target does not clobber the newer item’s title, field, or editor body', async ({
 		page,
 		fixture,
@@ -627,7 +626,7 @@ test.describe('pane async-race hardening (PLAN-2154 R14 / TASK-2167)', () => {
 		await expect(paneEditor(page)).toContainText('BRAVO-22', { timeout: SYNC_TIMEOUT });
 
 		// Release A's now-superseded GET and deterministically drain its stale
-		// continuation before asserting (Codex round 5): `finished()` waits for the
+		// continuation before asserting: `finished()` waits for the
 		// full response BODY (so the app's `await response.json()` can resolve), and
 		// a single-threaded browser task turn (`setTimeout(0)` inside the page)
 		// runs strictly AFTER all the microtasks that continuation is made of — so
@@ -744,7 +743,7 @@ test.describe('pane async-race hardening (PLAN-2154 R14 / TASK-2167)', () => {
 		// the PRECEDING popstate handler so the traversals can't coalesce at the
 		// browser level into a single event — a real held-Back that the pane's
 		// mint-settle (not the browser) must coalesce. `popstateCount` proves all
-		// three fired (Codex review round 2: a bare 3× synchronous `back()` can be
+		// three fired (a bare 3× synchronous `back()` can be
 		// collapsed by pending-traversal coalescing, making the burst untested).
 		const popstateCount = await page.evaluate(
 			() =>
@@ -771,7 +770,7 @@ test.describe('pane async-race hardening (PLAN-2154 R14 / TASK-2167)', () => {
 		await expect.poll(() => openItemParam(page)).toBe(refA);
 		await expect(page.locator('.item-pane')).toHaveCount(1);
 		await expect(paneEditor(page)).toContainText('ALPHA-11', { timeout: SYNC_TIMEOUT });
-		// Non-vacuous proof of COALESCING (Codex round 3), not just the right
+		// Non-vacuous proof of COALESCING, not just the right
 		// destination: the mint-settle minted ONLY the final ref. The intermediate
 		// stops (C, B) traversed mid-burst were NEVER minted — their item GETs are
 		// absent from the burst window. Had each popstate minted eagerly, C and B
@@ -847,7 +846,7 @@ test.describe('pane async-race hardening (PLAN-2154 R14 / TASK-2167)', () => {
 	// ── Scenario 7 — a pending loadData resolving after the pane CLOSES ──────
 	// The other end of the loadData fence: `onDestroy` bumps `loadGeneration`,
 	// so a GET still outstanding when the pane unmounts must write nothing and
-	// PROCEED no further. The non-vacuous discriminator (Codex round 3): the
+	// PROCEED no further. The non-vacuous discriminator: the
 	// item GET is the FIRST await in loadData, and the very next line after it
 	// re-checks `myGen !== loadGeneration` before fetching the item's collection
 	// / progress / links. A fenced continuation bails there — so A's downstream
@@ -920,7 +919,7 @@ test.describe('pane async-race hardening (PLAN-2154 R14 / TASK-2167)', () => {
 		await expect(paneEditor(page)).toContainText('BRAVO-22', { timeout: SYNC_TIMEOUT });
 
 		// Release A's now-orphaned GET and deterministically drain its post-unmount
-		// continuation before asserting (Codex round 5): `finished()` waits for the
+		// continuation before asserting: `finished()` waits for the
 		// full response body, then a browser task turn runs after all the
 		// continuation's microtasks. Its continuation must be a total no-op
 		// (generation-fenced) — B's title, body, and `?item=` are unmoved, and

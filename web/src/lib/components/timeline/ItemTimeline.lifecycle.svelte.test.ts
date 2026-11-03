@@ -272,7 +272,7 @@ describe('ItemTimeline — attMeta lifecycle reconciliation (TASK-2510)', () => 
 			render();
 			await settle();
 			// The probe MUST have been dispatched — otherwise this test would pass
-			// against a no-op probe effect for the wrong reason (Codex round-1).
+			// against a no-op probe effect for the wrong reason.
 			expect(fetchImpl).toHaveBeenCalledWith('ws', PNG_A);
 			// Not yet resolved → still unresolved.
 			expect(imgFor(PNG_A)).toBeNull();
@@ -343,7 +343,7 @@ describe('ItemTimeline — attMeta lifecycle reconciliation (TASK-2510)', () => 
 		});
 
 		it('drops a resolved-then-unreferenced id so re-referencing it while archived shows missing, not a broken <img>', async () => {
-			// Codex round-2, symmetric to P2 on the ARCHIVE side: an attachment
+			// Symmetric to the ARCHIVE side: an attachment
 			// resolved `ok`, then unreferenced BEFORE the archive, keeps its cached
 			// `ok` + probe mark. If the archive edge cleaned only the currently-
 			// referenced ids, re-adding it while archived would skip the probe and
@@ -561,7 +561,7 @@ describe('ItemTimeline — attMeta lifecycle reconciliation (TASK-2510)', () => 
 		});
 
 		it('re-probes an id that went missing while archived, was unreferenced, then re-referenced after restore (P2)', async () => {
-			// Codex round-1 P2: `probed` is cleared on restore only for the WHOLE
+			// `probed` is cleared on restore only for the WHOLE
 			// unresolved set, not just the currently-referenced ids. Otherwise an id
 			// that probed `missing` while archived, then lost its reference before the
 			// restore, keeps a stale `probed` mark and SKIPS the probe when re-added
@@ -616,7 +616,8 @@ describe('ItemTimeline — attMeta lifecycle reconciliation (TASK-2510)', () => 
 				// The comment is edited AGAIN to RE-ADD the PNG_A reference.
 				await fireReload(respond([PNG_A]));
 
-				// COULD FAIL (pre-P2-fix): the stale `probed` mark skips the re-probe and
+				// COULD FAIL (before the broadened restore clearing): the stale `probed` mark skips
+				// the re-probe and
 				// PNG_A renders missing forever; the broadened restore clearing re-probes
 				// it and the image returns.
 				expect(imgFor(PNG_A)).not.toBeNull();

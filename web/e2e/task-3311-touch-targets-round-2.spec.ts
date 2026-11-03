@@ -4,7 +4,7 @@ import type { APIRequestContext, Locator, Page } from '@playwright/test';
 import type { SuiteFixture } from './fixtures';
 
 /**
- * TASK-3311 — touch targets at phone width, round 2 (split out of TASK-2244):
+ * TASK-3311 — touch targets at phone width, second pass (split out of TASK-2244):
  *  1. the list group header's archive button was 18x14 and opacity 0 until
  *     hover, so on touch it could not be seen or reached;
  *  2. the board lane + and ⋯ were 32x32;

@@ -1,6 +1,6 @@
 // Runs in the jsdom vitest project (filename ends `.svelte.test.ts`).
 //
-// BUG-3005, codex round 1 — the starred PAGE keeps its own copy of the
+// BUG-3005 — the starred PAGE keeps its own copy of the
 // previous user's items, and the store fix alone does not reach it.
 //
 // Two things make this page worse than an ordinary stale cache, and the second
@@ -100,7 +100,7 @@ async function settle(): Promise<void> {
 
 describe('starred page across an identity change', () => {
 	beforeEach(async () => {
-		// NO vi.resetModules() here (codex round 5): this file imports the page
+		// NO vi.resetModules() here: this file imports the page
 		// component and the auth store at top level, and resetting the registry
 		// mid-file hands the test a different authStore instance than the one
 		// the component closed over — so the identity change fires into a store
@@ -126,8 +126,8 @@ describe('starred page across an identity change', () => {
 		// A's starred load is out when the account changes. The STORE's identity
 		// fence refuses the settle and its listener clears the ids, so the page,
 		// which derives from them, has nothing of A's to show. Every mock carries
-		// a default beside the pending one-shot (codex round 5 on the earlier
-		// version of this file).
+		// a default beside the pending one-shot (an earlier version of this file
+		// lacked it).
 		let resolveA!: (v: unknown) => void;
 		api.items.starred.mockReturnValueOnce(new Promise((r) => { resolveA = r; }));
 		api.items.starred.mockResolvedValue([]);

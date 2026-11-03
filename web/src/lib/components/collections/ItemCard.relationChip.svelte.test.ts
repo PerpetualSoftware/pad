@@ -1,5 +1,5 @@
 // A card's status/priority chip asks the SCHEMA, not only the value's shape
-// (BUG-3016, codex enumeration round).
+// (BUG-3016).
 //
 // The card reads these two fields BY NAME and then tests "is the value a
 // string" — the right question for a `multi_relation` (its value is an array,
@@ -17,7 +17,7 @@ import type { Collection, Item } from '$lib/types';
 vi.mock('$app/state', () => ({ page: { params: { username: 'u', workspace: 'ws' }, url: new URL('http://x/') } }));
 vi.mock('$app/navigation', () => ({ goto: vi.fn() }));
 vi.mock('$lib/stores/workspace.svelte', () => ({
-	// BUG-3068 round 2 moved the chip's permission gate into `ItemCard`, where the
+	// BUG-3068 moved the chip's permission gate into `ItemCard`, where the
 	// per-item answer lives (`canEditItem`, not the views' collection-level
 	// `canEdit` prop). A suite that renders a CLICKABLE chip therefore has to say
 	// who is looking; with no membership the store answers false and the chip is
@@ -99,7 +99,7 @@ describe('a status/priority field retyped to a relation', () => {
 				onStatusClick,
 			} as never,
 		});
-		// PRECONDITIONS (BUG-3068 round 4). Without these the leg passes when the
+		// PRECONDITIONS (BUG-3068). Without these the leg passes when the
 		// card fails to render at all, or renders nothing clickable: an empty loop
 		// followed by `not.toHaveBeenCalled()` asserts nothing about the guard.
 		// The card always has other controls (star, ⋮, the ref copy), so a

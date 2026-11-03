@@ -142,7 +142,7 @@ func TestStopServer_StalePIDFileNamingALiveStrangerIsNotSignalled(t *testing.T) 
 }
 
 // TestStopServer_LegacyPIDFileIsRefusedAndKept is BUG-2970 through stop
-// itself: the day-19 refresh, where the new binary's stop met a bare-pid file
+// itself: a refresh, where the new binary's stop met a bare-pid file
 // written by a running pre-lock server. Refusing was right; deleting the file
 // on the way was not, since it was the only record of a live server. Unix
 // only in effect: Windows already answered unprovable for this shape.
@@ -164,7 +164,7 @@ func TestStopServer_LegacyPIDFileIsRefusedAndKept(t *testing.T) {
 	if !strings.Contains(err.Error(), "cannot confirm") {
 		t.Errorf("message = %q, want the unprovable refusal (cannot confirm)", err.Error())
 	}
-	// The way out must be NAMED (lead review, day 79): the kept state is
+	// The way out must be NAMED: the kept state is
 	// only acceptable if the refusal tells the user how to leave it.
 	if !strings.Contains(err.Error(), "remove "+cfg.PIDFile()) {
 		t.Errorf("message = %q, want it to name the manual remedy (remove %s)", err.Error(), cfg.PIDFile())

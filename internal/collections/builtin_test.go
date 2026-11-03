@@ -165,7 +165,7 @@ func TestBuiltinStateOfAcrossAChangedKeySet(t *testing.T) {
 }
 
 // A number hashes by value, not spelling: Postgres stores fields as jsonb and
-// may respell what the seed text spells another way (codex r1). Different
+// may respell what the seed text spells another way. Different
 // values still differ, however close.
 func TestBuiltinStateHashNumbersByValue(t *testing.T) {
 	h := func(raw string) string {
@@ -184,7 +184,7 @@ func TestBuiltinStateHashNumbersByValue(t *testing.T) {
 }
 
 // A library change that ONLY drops a field is still a change: an item that
-// carries the dropped field is offered the removal (codex r2).
+// carries the dropped field is offered the removal.
 func TestBuiltinStateOfDropOnly(t *testing.T) {
 	e, _ := LookupBuiltin("playbook/ship")
 	var fields map[string]any
@@ -205,7 +205,7 @@ func TestBuiltinStateOfDropOnly(t *testing.T) {
 
 // A field the library ADDED that the user had already set to their own value
 // is an edit: the item is diverged, so the update is not promised to lose
-// nothing (codex r3). The library's own value there is not an edit.
+// nothing. The library's own value there is not an edit.
 func TestBuiltinStateOfAddedKeyAlreadySet(t *testing.T) {
 	e, _ := LookupBuiltin("playbook/ship")
 	var fields map[string]any

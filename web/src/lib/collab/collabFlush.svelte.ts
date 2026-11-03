@@ -180,7 +180,7 @@ export function createCollabFlusher(config: CollabFlusherConfig): CollabFlusher 
 	// now stale relative to whatever triggered the reset, so committing it would
 	// re-pollute the dedupe baseline the reset just cleared. Guards the extra
 	// promise turn `await config.save()` introduces over the page's original
-	// inline await. Per Codex review (TASK-2082).
+	// inline await. (TASK-2082).
 	let resetGeneration = 0;
 
 	// Memoize the editor's canonical form of the seed on the context (BUG-3197).
@@ -203,7 +203,7 @@ export function createCollabFlusher(config: CollabFlusherConfig): CollabFlusher 
 		// Force-refresh recovery in flight: block any new flush scheduling. The
 		// provider is destroyed but the editor component is still mounted; a
 		// local edit during this window must NOT arm a flush against the stale
-		// Y.Doc state. Per Codex round 7 [P1] of TASK-1319.
+		// Y.Doc state.
 		if (config.isRecovering()) return;
 		if (!ctx) return;
 		timer = setTimeout(() => {
@@ -220,8 +220,7 @@ export function createCollabFlusher(config: CollabFlusherConfig): CollabFlusher 
 		// Force-refresh recovery is in flight: any markdown derived from the
 		// soon-to-be-discarded Y.Doc is stale relative to canonical server
 		// content. Skipping here covers every direct caller (beforeunload,
-		// raw-toggle, flushNow) without per-call-site guards. Per Codex round 8
-		// [P1] of TASK-1319.
+		// raw-toggle, flushNow) without per-call-site guards.
 		if (config.isRecovering()) return 'skipped';
 		const normalizedMarkdown = config.normalize(markdown);
 		// Editor-markdown-space short-circuit (BUG-1941, regression of BUG-1899).
@@ -245,7 +244,7 @@ export function createCollabFlusher(config: CollabFlusherConfig): CollabFlusher 
 		// Serialize against the CAPTURED workspace (the item being flushed), not
 		// live route state — a background/unmount flush can fire after navigating
 		// to another workspace; the PATCH already targets `ctx.wsSlug`, so the
-		// link index must match it. Per Codex review (round 1).
+		// link index must match it.
 		const toSave = config.serialize(normalizedMarkdown, ctx.wsSlug);
 		// Dedupe against what the server already has for this item. Once we've
 		// flushed this session that's `lastFlushedContent`; before any flush it's

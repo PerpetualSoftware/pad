@@ -351,7 +351,7 @@ func TestAppCommentRefusalsWriteNothing(t *testing.T) {
 // A human move of the item into a private collection, committing while an
 // app comment write is in flight, must not land under it: the app write
 // waits on the workspace seq lock every item move takes, then sees the move
-// and refuses (codex round 3). One case per method.
+// and refuses. One case per method.
 func TestAppComment_ConcurrentMoveOutOfCompanionsRefuses(t *testing.T) {
 	for name, run := range map[string]func(f commentFixture, c *models.Comment) error{
 		"create": func(f commentFixture, _ *models.Comment) error {

@@ -15,7 +15,7 @@ import (
 // succeed: `item create` minted a content-less item and `item update` REPLACED
 // the body with nothing, both reporting success. A lost heredoc arrives exactly
 // like that, so an agent harness that dropped stdin produced hollow or wiped
-// items with no signal. Blank — empty OR whitespace-only (lead ruling: a lone
+// items with no signal. Blank — empty OR whitespace-only (a lone
 // newline is the likeliest shape of a lost heredoc) — is now refused on both
 // doors, before any request. Clearing a body on purpose moves to its own flag,
 // `item update --clear-content`.
@@ -218,7 +218,7 @@ func TestItemUpdate_ClearContent(t *testing.T) {
 	}
 }
 
-// `--content ""` stays a no-op (lead ruling 4): making it a clear would turn an
+// `--content ""` stays a no-op: making it a clear would turn an
 // unset shell variable into a wipe. Pinned so that is a decision, not a gap.
 func TestItemUpdate_EmptyContentFlagStillNoOp(t *testing.T) {
 	reqs := recordingServer(t)
@@ -237,7 +237,7 @@ func TestItemUpdate_EmptyContentFlagStillNoOp(t *testing.T) {
 	}
 }
 
-// The rest of the stdin population (lead ruling 5), each pinned by evidence
+// The rest of the stdin population, each pinned by evidence
 // rather than by reading. Population: `os.Stdin` in non-test cmd/pad files —
 // item create/update (above), item import (server-side; pinned in
 // internal/server TestImportArtifactBlankRejected), note/decide, workspace

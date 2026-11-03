@@ -8,7 +8,7 @@
 	interface Props {
 		text: string;
 		/** This text is on the clipboard: the caller drops the notice, if it still
-		 * holds this text (codex r1: a copy can resolve after an item switch). */
+		 * holds this text (a copy can resolve after an item switch). */
 		oncopied: (copied: string) => void;
 		/** The user chose to discard it. */
 		ondismiss: () => void;

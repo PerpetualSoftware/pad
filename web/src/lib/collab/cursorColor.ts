@@ -11,8 +11,8 @@
  *
  * Output is `#rrggbb` rather than `hsl(...)` because y-tiptap's
  * default selectionRender appends a literal `70` (alpha hex) to the
- * user's colour string and only validates `#rrggbb` — see Codex
- * review round 1 [P2]. Computing the hue in HSL space and converting
+ * user's colour string and only validates `#rrggbb`.
+ * Computing the hue in HSL space and converting
  * to hex gives us the readability of a clamped saturation/lightness
  * band while staying inside y-tiptap's accepted format.
  *

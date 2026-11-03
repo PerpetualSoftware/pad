@@ -1,5 +1,5 @@
 /**
- * BUG-3192 Unit B (1): the parent's completion is the SERVER's (lead ruling).
+ * BUG-3192 Unit B (1): the parent's completion is the SERVER's.
  *
  * ItemDetail used to recompute `computedOverrides.progress` from ChildItems'
  * children list, with the union of their `status` terminal_options, racing

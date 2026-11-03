@@ -58,7 +58,7 @@ func ContainsNUL(s string) bool { return strings.ContainsRune(s, 0) }
 // The STORE cannot use this rule, because jsonb accepts a scalar as a complete
 // document: a bare JSON string consisting of the NUL escape is a valid jsonb
 // value that Postgres refuses and SQLite stores, which is the dialect split all
-// over again (codex round 1, finding 1). DocumentDecodesNULAnyShape is the
+// over again. DocumentDecodesNULAnyShape is the
 // store's version. Two rules, two callers, and the difference is which question
 // is asked - "is this a nested document" versus "will a jsonb parser read it".
 func IsJSONDocument(s string) bool {
@@ -174,14 +174,13 @@ func ValueDecodesNUL(v any) bool {
 //
 // The raw check runs REGARDLESS of isJSON: a JSON-classed parameter carrying a
 // literal NUL byte is refused by the same rule as any other text, and skipping
-// it for JSON-classed values is precisely the regression codex round 9 caught
+// it for JSON-classed values is precisely a past regression
 // in the HTTP gate's own walk.
 func ParameterRefused(value string, isJSON bool) bool {
 	if ContainsNUL(value) {
 		return true
 	}
 	// ANY SHAPE, not just objects and arrays: a jsonb column accepts a bare
-	// scalar as a complete document, and a scalar can decode to a NUL (codex
-	// round 1, finding 1).
+	// scalar as a complete document, and a scalar can decode to a NUL.
 	return isJSON && DocumentDecodesNULAnyShape(value)
 }

@@ -123,7 +123,7 @@
 		 * rationale (zone-level gate).
 		 *
 		 * NOT the status CHIP, which is gated per ITEM inside `ItemCard` on
-		 * `canEditItem` (BUG-3068 round 2) — this flag is `canEditCollection`, and
+		 * `canEditItem` (BUG-3068) — this flag is `canEditCollection`, and
 		 * item grants deliberately do not promote to it, so gating the chip here
 		 * withheld it from a guest the server would have honoured.
 		 *
@@ -260,7 +260,7 @@
 	// dangling target is labelled, which lanes accept a drop — live in
 	// `$lib/collections/relationGroups`, because they are decisions and a
 	// decision reachable only by mounting a board is one nobody tests.
-	// A DECLARED TARGET IS REQUIRED (codex round 2). `narrowRelationRow` skips
+	// A DECLARED TARGET IS REQUIRED. `narrowRelationRow` skips
 	// the collection check when there is nothing to check against, so a legacy
 	// or half-written relation field with no `collection` would resolve ids
 	// ANYWHERE in the workspace and label lanes with whatever it found. The
@@ -269,7 +269,7 @@
 	/**
 	 * Why grouping is refused for this field, or null (U4).
 	 *
-	 * A `multi_relation` is refused by lead ruling — one item belongs to as many
+	 * A `multi_relation` is refused by design — one item belongs to as many
 	 * lanes as it has references and `bucketByColumn`'s invariant is exactly one
 	 * — and a relation with no declared target for the reason above.
 	 *
@@ -306,13 +306,13 @@
 	/**
 	 * The board's lanes.
 	 *
-	 * NO lanes when grouping is refused (codex round 8, R8-3), which sends every
+	 * NO lanes when grouping is refused, which sends every
 	 * item to UNCATEGORIZED and leaves exactly one lane on screen — the single
 	 * lane the refusal notice describes.
 	 *
-	 * Round 7 gated every affordance that WRITES the group value and left the
-	 * lanes themselves reading it, so the board went on bucketing under a notice
-	 * saying it did not. That is the same false premise round 6 corrected one
+	 * Gating every affordance that WRITES the group value is not enough while the
+	 * lanes themselves keep reading it: the board would go on bucketing under a notice
+	 * saying it did not. That is the same false premise corrected one
 	 * derivation below: "a multi_relation declares no options" is true of the
 	 * schemas people write and enforced nowhere, so a `multi_select` retyped to
 	 * `multi_relation` keeps `options` like `["A","A,B"]` — and a lane value is
@@ -371,7 +371,7 @@
 	 * naming `status`, the group field is unreachable from it, and a relation
 	 * lane says nothing about whether an item's status can be written.
 	 *
-	 * THE RETAINED-OPTIONS HAZARD the round-6 note recorded is still real and is
+	 * THE RETAINED-OPTIONS HAZARD recorded below is still real and is
 	 * NOT closed by this line — reading the status field instead of the group
 	 * field only moves it when the two differ, and a board grouped BY a `status`
 	 * that was retyped keeps them the same field, stale `options` and all. What
@@ -387,7 +387,7 @@
 	 *     relation's value IS a string.
 	 *
 	 * Named here rather than re-guarded: a third guard for the same hazard is how
-	 * the round-5 mutant came to survive its own test.
+	 * a mutant came to survive its own test.
 	 */
 	let cardStatusOptions = $derived(getStatusOptions(collection));
 
@@ -567,7 +567,7 @@
 		if ((!isDragging && !dropCooldown) || structure !== syncedStructure) {
 			// A different grouping is a different set of lanes: a lane value
 			// that happens to repeat must not inherit another grouping's
-			// expanded or grown window (TASK-2230, codex r1).
+			// expanded or grown window (TASK-2230).
 			if (structure !== syncedStructure) {
 				expandedLanes = {};
 				grownWindows = {};
@@ -686,7 +686,7 @@
 		if (isRelationGroup) {
 			const lane = relationLaneByValue.get(targetColumn);
 			if (!lane || !relationLaneAcceptsDrop(lane)) {
-				// AND PUT THE CARD BACK (codex round 1, P1). By the time this
+				// AND PUT THE CARD BACK. By the time this
 				// runs, svelte-dnd-action has already moved the card in
 				// `columnData` — refusing the WRITE without undoing that leaves
 				// the board showing a move that never happened, which is the
@@ -698,9 +698,8 @@
 				// restore. Assigning here rather than releasing a cooldown
 				// nobody set is the same repair without the two-second window.
 				//
-				// COPIED rather than aliased — defensive, and NOT for the
-				// reason rounds 6 and 7 gave. Both rounds argued that the sync
-				// effect assigns the derived VALUE into `columnData`, so a
+				// COPIED rather than aliased — defensive, and NOT for the usual alias reasoning. It
+				// is argued that the sync effect assigns the derived VALUE into `columnData`, so a
 				// later `columnData[col] = ...` writes THROUGH to
 				// `propColumnData`'s cached object and assigning it back
 				// restores nothing. That premise is FALSE, measured rather than
@@ -709,14 +708,14 @@
 				// A probe over exactly this shape ($derived.by object → $state
 				// → property write → read the derived) reported
 				// `after mutation, derived.a=[1]`, the pre-mutation value. The
-				// rendered tests agree from the other side: the round-6 menu
-				// test survives the alias mutant, and the failure-exit test
+				// rendered tests agree from the other side: the menu test survives the alias
+				// mutant, and the failure-exit test
 				// below passes on the cooldown release alone while going red
 				// when that release is removed.
 				// So the copy buys nothing against aliasing; it stays only
 				// because a restore path should not hand its caller an object
 				// somebody else owns. Do not re-derive the aliasing story from
-				// the shape of this code — it has now cost two review rounds.
+				// the shape of this code — it has cost real time.
 				columnData = Object.fromEntries(
 					Object.entries(propColumnData).map(([key, list]) => [key, [...list]]),
 				);
@@ -727,11 +726,11 @@
 
 		let moveSucceeded = true;
 		const fields = parseFields(item);
-		// TRIMMED for a relation, as the list already was (codex round 6). A
+		// TRIMMED for a relation, as the list already was. A
 		// legacy value of `" id-red "` is ALREADY in the `id-red` lane, and a
 		// raw `!==` fired a pointless write for it — the same asymmetry between
 		// these two views, in the other direction this time.
-		// NORMALISED on both sides (BUG-3053, lead review of PR #1348). The raw
+		// NORMALISED on both sides (BUG-3053, PR #1348). The raw
 		// field value against a lane STRING makes an item already in its own lane
 		// look like it moved: `0 !== '0'`, `false !== 'false'`, and the "move"
 		// then writes the string '0' into a number field.
@@ -744,8 +743,8 @@
 			? relationLaneValueFor(item, groupField, resolveRelation)
 			: laneValue(fields[groupField]);
 		// A REFUSED grouping has no group value to change, so a drop inside its
-		// single fallback lane is a REORDER and nothing else (U4, codex round
-		// 1). Without this the multi_relation case took the scalar arm:
+		// single fallback lane is a REORDER and nothing else.
+		// Without this the multi_relation case took the scalar arm:
 		// `currentValue` is the stored ARRAY, `targetColumn` is a lane string,
 		// they are never equal, and every drop fired a write that would replace
 		// the list with a scalar. The server refuses it, `moveSucceeded` goes
@@ -858,7 +857,7 @@
 
 	// Delegates to the shared accent mapper (shareView.ts) so the in-app
 	// board and the public-share fork can never drift again — this was the
-	// FIFTH parallel status-color-ish implementation (PR #1023 Codex catch).
+	// FIFTH parallel status-color-ish implementation (PR #1023).
 	// Bonus: terminal_options-aware, so custom "Shipped"-style lanes read
 	// as done here too, matching public boards.
 	function columnCssClass(value: string): string {
@@ -974,12 +973,12 @@
 					     verbs are owner/editor-gated by the page). Don't gate
 					     on `canEdit`, or an owner/editor without a collection
 					     edit grant (canBulkEdit true, canEdit false) couldn't
-					     open the menu at all. TASK-1672 / Codex round 4. The
+					     open the menu at all. TASK-1672. The
 					     UNCATEGORIZED lane hides "add" (creating an explicitly
 					     uncategorized item makes no sense) but keeps the bulk
 					     ⋯ menu — "move/tag/assign all" is useful for triage. -->
 					<!--
-						AND NOT WHEN GROUPING IS REFUSED (codex round 7). A
+						AND NOT WHEN GROUPING IS REFUSED. A
 						multi_relation that retained `options` produces NAMED
 						lanes, so neither `isUncategorized` nor `isRelationGroup`
 						withheld this: creating in one sent the lane string as
@@ -1029,7 +1028,7 @@
 										: undefined}
 									onArchive={onArchiveColumn ? () => onArchiveColumn?.(colItems) : undefined}
 									onMove={/* The FIFTH affordance that writes the group value —
-										round 7 enumerated four and missed this one (round 8).
+										an earlier enumeration found four and missed this one.
 										It offers `statusField.options` as destinations, so a
 										`status` field retyped to `multi_relation` with its
 										options retained offers lanes that do not exist and
@@ -1075,7 +1074,7 @@
 					// requested rank-preserving order (search
 					// active) — otherwise a drag would persist the
 					// relevance-ranked subset order as the stored
-					// `sort_order`. TASK-1367 / Codex R5. Also disable
+					// `sort_order`. TASK-1367. Also disable
 					// under any non-manual page sort (TASK-1670): the
 					// lane is comparator-ordered, so a drag couldn't
 					// stick anyway.
@@ -1419,9 +1418,8 @@
 		 *   - ~3px for the badge's `box-shadow: 0 1px 3px` blur radius
 		 *   - ~2px for the hover `transform: scale(1.05)` growth at
 		 *     the typical 25-40px badge width
-		 * 12px covers all three with a small safety margin. Codex
-		 * rounds 2 + 3 on PR #489 walked through the spec misreading
-		 * in round 1 and then the under-sized margin in round 2.
+		 * 12px covers all three with a small safety margin.
+		 * PR #489 corrected a misreading of the spec and then an under-sized margin.
 		 *
 		 * Browser support for `overflow-clip-margin`: Chrome 90+,
 		 * Firefox 102+, Safari 16.4+ — all browsers that ship

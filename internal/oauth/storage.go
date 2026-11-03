@@ -126,9 +126,9 @@ func (s *Storage) observeRevocation(requestID, kind string) {
 // Why inject vs persist: pad's authorization-server is single-resource
 // for v1. Storing an audience column per client would always hold the
 // same value — purely write amplification — and a future move to a
-// multi-resource AS will need explicit per-client policy anyway. Codex
-// review #371 round 1 caught the gap where the adapter returned
-// Audience=nil and every flow failed validation.
+// multi-resource AS will need explicit per-client policy anyway. (#371) An earlier
+// version had a gap where the adapter
+// returned Audience=nil and every flow failed validation.
 func NewStorage(s *store.Store, canonicalAudiences ...string) *Storage {
 	return &Storage{
 		store:              s,
@@ -445,8 +445,8 @@ func (s *Storage) RevokeRefreshToken(_ context.Context, requestID string) error 
 // flagged inactive in storage. The default kind here is
 // "user_initiated" because /oauth/revoke is the dominant caller —
 // fosite's replay-detection path also routes through this method,
-// so the label is best-effort rather than ground truth (Codex
-// could later differentiate via a context-carried hint, but the
+// so the label is best-effort rather than ground truth (could later differentiate
+// via a context-carried hint, but the
 // gross signal "tokens are getting revoked" matters more than the
 // per-cause split for v1 alerting).
 func (s *Storage) RevokeAccessToken(_ context.Context, requestID string) error {

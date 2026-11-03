@@ -321,7 +321,7 @@ test('a collection migration completing after a rapid A->B pane switch refreshes
 	// waitForResponse (not waitForRequest) — we need the PATCH to actually
 	// COMMIT server-side before the belt-and-suspenders readback below,
 	// not just be dispatched, or that GET can race an in-flight write and
-	// intermittently observe pre-PATCH data (Codex round 2).
+	// intermittently observe pre-PATCH data.
 	const fieldPatch = page.waitForResponse(
 		(r) => r.url().endsWith(`/items/${b.id}`) && r.request().method() === 'PATCH',
 	);
@@ -490,8 +490,7 @@ test('a collection migration completing after a cross-collection navigation does
 	// waitForResponse (not a fixed sleep) — we need the PATCH to actually
 	// COMPLETE (onupdated only fires once the fetch promise resolves)
 	// before checking the URL, or this assertion could false-pass simply
-	// because the buggy navigation hadn't had a chance to fire yet (Codex
-	// round 3).
+	// because the buggy navigation hadn't had a chance to fire yet.
 	const patchResponse = page.waitForResponse(
 		(r) => r.url().endsWith(`/collections/${collA.slug}`) && r.request().method() === 'PATCH',
 	);

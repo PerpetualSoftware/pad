@@ -53,8 +53,7 @@
 	// on a flag: `workspaceStore.recoverIfMissing`, driven by the workspace
 	// layout's sync subscriber.
 	// One-shot latch so the effect below issues `loadAll` once per session
-	// rather than on every re-run. RE-ARMED ON AN IDENTITY CHANGE (BUG-2991,
-	// codex round 1): the workspace store now drops the previous user's list
+	// rather than on every re-run. RE-ARMED ON AN IDENTITY CHANGE (BUG-2991): the workspace store now drops the previous user's list
 	// when the signed-in user changes, and this latch is what would otherwise
 	// stop the new user's list ever being fetched — logout is an SPA
 	// navigation, so this layout stays mounted and the latch stays true. The
@@ -98,7 +97,7 @@
 	// entire workspace cache because Pad's 403 source is the
 	// workspace-access middleware, which means access to the whole
 	// workspace is gone — purging a single row would leave the rest
-	// stale (Codex round 2 of TASK-1360). Registration lives here
+	// stale (TASK-1360). Registration lives here
 	// instead of inside client.ts to keep client.ts free of a store
 	// import that would create a circular dep.
 	// Who the API client stamps outgoing requests as (BUG-2983). Registered
@@ -116,7 +115,7 @@
 		// next bootstrap cold, which refetches, which 404s, which resets. The
 		// mark is what makes the refusal terminal for this identity, and it is
 		// cleared on identity change.
-		// STAMPED IDENTITY, not the current one (codex round 1 P1). A 404 can
+		// STAMPED IDENTITY, not the current one. A 404 can
 		// land after a sign-out or a user switch; recording it against whoever is
 		// signed in now would refuse the workspace to a user who never asked and
 		// may well be a member — and the identity-change clear has already run by
@@ -144,7 +143,7 @@
 
 	onMount(() => {
 		// Re-arm the one-shot workspace-load latch whenever the signed-in user
-		// changes (BUG-2991, codex round 1). Registered here rather than folded
+		// changes (BUG-2991). Registered here rather than folded
 		// into the store's own listener because the latch is THIS component's
 		// state: the store drops the list, and the component has to be willing
 		// to ask for it again. Returned unsubscribe runs on destroy.
@@ -156,11 +155,10 @@
 			// Re-armed for the pre-reload window: this latch is THIS component's
 			// state and the reload below may not have happened yet.
 			workspacesRequested = false;
-			// WHAT A REAL IDENTITY CHANGE DOES TO THIS TAB (BUG-3005, lead
-			// ruling after codex round 3): clear the persistent state a reload
+			// WHAT A REAL IDENTITY CHANGE DOES TO THIS TAB (BUG-3005): clear the persistent state a reload
 			// would not drop, then reload.
 			//
-			// Three review rounds each found another layer of surfaces holding
+			// Three successive passes each found another layer of surfaces holding
 			// the previous user's data, because the fix was per-surface and the
 			// population is "everything in the tab that ever held a fetch". A
 			// reload ends the enumeration: every store, component, cache and

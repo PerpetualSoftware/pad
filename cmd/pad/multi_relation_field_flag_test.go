@@ -6,8 +6,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// P14 — `pad item create ... --field 'members=["PEOPL-1"]'` (PLAN-2857 U4,
-// codex round 1).
+// P14 — `pad item create ... --field 'members=["PEOPL-1"]'` (PLAN-2857 U4).
 //
 // This function runs BEFORE the request exists, so it is a second copy of the
 // rule `items.coerceValue` states, kept in step by hand. It gets its own test

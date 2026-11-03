@@ -67,7 +67,7 @@ func TestValidateExamples_Clean(t *testing.T) {
 }
 
 func TestValidateExamples_DetectsTypoFlag(t *testing.T) {
-	// THIS IS THE DRIFT-PREVENTION CONTRACT TEST (spec §6 / §11 Q5).
+	// THIS IS THE DRIFT-PREVENTION CONTRACT TEST (spec §6, §11).
 	// A typo in an example flag — `--priorty` instead of `--priority`
 	// — MUST be detected by ValidateExamples and reported with the
 	// offending command + example index.
@@ -205,7 +205,7 @@ func TestValidateExamples_FlagBeforeSubcommandResolvesToCorrectTarget(t *testing
 	// `pad --workspace foo item create task --priority high`.
 	// The validator MUST resolve to `item create` (not root) so leaf
 	// flags like --priority are checked against the leaf, not just
-	// against root's flag set. (Caught by Codex round 1.)
+	// against root's flag set. (Caught by .)
 	root := &cobra.Command{Use: "padtest"}
 	root.PersistentFlags().String("workspace", "", "workspace override")
 

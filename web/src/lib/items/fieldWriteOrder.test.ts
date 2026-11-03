@@ -1,5 +1,4 @@
-// Ordering for concurrent whole-list writes to ONE field (PLAN-2857 U4, codex
-// round 8, R8-1).
+// Ordering for concurrent whole-list writes to ONE field (PLAN-2857, U4).
 //
 // The defect this file is the instrument for is not a display glitch: the item
 // pane's 409 refetch-and-retry RE-SENDS a body the user has already replaced,
@@ -172,7 +171,7 @@ describe('submitOrderedOCC — the retry never replays a superseded body', () =>
 		// something of the same class. The caller tells a superseded write apart
 		// by asking the question this asked, and a synthesised error of the
 		// right shape would satisfy an `instanceof` while losing whatever the
-		// server said (round 8 enumeration: these assertions checked class and
+		// server said (these assertions once checked only class and
 		// message, so swapping in a different Conflict stayed green).
 		expect(outcome.ok === false && outcome.e).toBe(row.lastConflict);
 	});
@@ -345,7 +344,7 @@ describe('submitOrderedOCC — the retry never replays a superseded body', () =>
 	});
 
 	it('does not RE-SEND once the view moves on DURING the refetch', async () => {
-		// Round 8 enumeration, reproduced. The post-refetch check asked only
+		// The post-refetch check asked only
 		// about supersession, so switching items while the GET was in flight
 		// still produced another PATCH at the item the pane had just left —
 		// invisible, because the caller then discards the response, and landing

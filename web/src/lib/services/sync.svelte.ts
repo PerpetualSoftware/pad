@@ -22,7 +22,7 @@ import type { Item, ChangesResponse } from '$lib/types';
 
 /**
  * `workspace` is the slug this result was SYNCED FOR, stamped when the sync was
- * issued rather than when it is delivered (TASK-2921, codex round 8).
+ * issued rather than when it is delivered (TASK-2921).
  *
  * Without it a subscriber has no way to tell which workspace a result describes:
  * the service's own `wsSlug` moves on `setWorkspace`, and the subscriber's is
@@ -154,7 +154,7 @@ function createSyncService() {
 			// from and nothing loaded to have missed.
 			const since = estimateServerNow() ?? Date.now();
 			const changes = await api.changes.since(slug, since);
-			// Two questions, answered separately (BUG-3201, codex round 1):
+			// Two questions, answered separately (BUG-3201):
 			//   - the CURSOR belongs to the newest seed only; an older one's
 			//     clock is behind it;
 			//   - the DELTA belongs to its workspace, and is delivered whenever
@@ -193,7 +193,7 @@ function createSyncService() {
 		if (absence < MIN_ABSENCE_MS) return;
 
 		syncing = true;
-		// Same capture as `triggerSync`, same reason (codex round 8): stamped at
+		// Same capture as `triggerSync`, same reason: stamped at
 		// issue time, not at delivery.
 		//
 		// NOT PINNED BY A TEST, and said out loud rather than left implied: the
@@ -404,15 +404,14 @@ function createSyncService() {
 				// Cleared BEFORE the request, so a signal arriving DURING it is
 				// recorded rather than swallowed by the pass that predates it.
 				pendingSync = false;
-				// PER PASS, not once for the loop (codex round 10). A deferred
+				// PER PASS, not once for the loop. A deferred
 				// pass issues its OWN request, and `setWorkspace` may have moved
 				// `wsSlug` since the first one — so a single capture would run
 				// pass two against workspace B and label its result A. Each pass
 				// is a separate sync and stamps the workspace it actually ran
 				// for. `setWorkspace` can move `wsSlug` while the request below
 				// is in flight; a result stamped at DELIVERY would name the
-				// workspace the user navigated TO rather than the one synced
-				// (codex round 8).
+				// workspace the user navigated TO rather than the one synced.
 				syncedWs = wsSlug;
 				// SSE told us there's a gap — try incremental, fall back to full
 				const result = await doIncrementalOrFull(MAX_INCREMENTAL_MS);

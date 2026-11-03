@@ -12,14 +12,14 @@
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import type { ChatMessage } from '$lib/types';
 
-	// The thread (TASK-4044 PR 3a and 3b, rulings 4cf4d4b9 and 2de240d9). The
+	// The thread (TASK-4044 PR 3a and 3b). The
 	// store owns the window; this page owns the scroll container, the bottom
 	// sentinel that says what the reader has seen, and the reply target.
 	let raw = $derived(page.params.n ?? '');
 	let n = $derived(/^[1-9][0-9]*$/.test(raw) ? Number(raw) : null);
 
 	const thread = new ChatThread();
-	// Bumped by "Try again" so the load effect below re-runs (TASK-4044 2b-i, ruling 90709f40).
+	// Bumped by "Try again" so the load effect below re-runs (TASK-4044 2b-i).
 	let retry = $state(0);
 
 	let scroller = $state<HTMLElement | null>(null);
@@ -30,7 +30,7 @@
 	let composer = $state<Composer | null>(null);
 	let lastOwnSend = 0;
 	// Loading newer messages while a send is in flight would race the send's own
-	// confirmed row into the window (TASK-4044 ruling 2a03a442).
+	// confirmed row into the window (TASK-4044).
 	let sending = $derived(thread.items.some((it) => it.kind === 'pending' && it.pending.status === 'sending'));
 
 	// The presence dot polls only while this page is open.
@@ -77,8 +77,8 @@
 		}
 	});
 
-	// An own send, shown or confirmed, scrolls to the end even from further up
-	// (ruling d87482de Q-d); a row from elsewhere only follows a reader at the end.
+	// An own send, shown or confirmed, scrolls to the end even from further up;
+	// a row from elsewhere only follows a reader at the end.
 	$effect(() => {
 		const sendTick = thread.ownSendTick;
 		if (!positioned || !scroller || sendTick === lastOwnSend) return;
@@ -128,18 +128,18 @@
 		scroller?.querySelector('#unread-divider')?.scrollIntoView?.({ block: 'start' });
 	}
 
-	// Reply puts the reader into the composer (r5 H3); the bar is there after the tick.
+	// Reply puts the reader into the composer; the bar is there after the tick.
 	function startReply(m: ChatMessage) {
 		replyTo = m;
 		void tick().then(() => composer?.focus());
 	}
 
-	// Retry and Discard unmount with the status flip, so focus would fall to body (r6 L4).
+	// Retry and Discard unmount with the status flip, so focus would fall to body.
 	function refocusComposer() {
 		void tick().then(() => composer?.focus());
 	}
 
-	// The reply bar goes only once the delete went through, and only if it still quotes this row (r6 L3).
+	// The reply bar goes only once the delete went through, and only if it still quotes this row.
 	async function deleteMessage(m: ChatMessage) {
 		if (await thread.remove(m.seq)) {
 			if (replyTo?.seq === m.seq) replyTo = null;
@@ -223,7 +223,7 @@
 							pending={item.pending}
 							onRetry={(k) => {
 								const body = item.pending.body;
-								// A refused Retry discards its bubble: the text comes back with its notice, as for a refused send (r7 M1).
+								// A refused Retry discards its bubble: the text comes back with its notice, as for a refused send.
 								void thread.retry(k).then((outcome) => {
 									if (outcome !== 'sent' && outcome !== 'failed' && outcome !== 'stale') composer?.restore(body, outcome);
 								});
@@ -253,7 +253,7 @@
 					{/if}
 				</div>
 			{/if}
-			<!-- A flex column like .messages, so .bubble.mine { align-self: flex-end } applies (r6 L1). -->
+			<!-- A flex column like .messages, so .bubble.mine { align-self: flex-end } applies. -->
 			<div class="detached">
 				{#each thread.detached as m (m.seq)}
 					<MessageBubble

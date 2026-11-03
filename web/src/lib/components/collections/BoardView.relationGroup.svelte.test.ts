@@ -54,7 +54,7 @@ vi.mock('$lib/stores/collections.svelte', () => ({
 }));
 
 vi.mock('$lib/stores/workspace.svelte', () => ({
-	// BUG-3068 round 2 moved the chip's permission gate into `ItemCard`, where the
+	// BUG-3068 moved the chip's permission gate into `ItemCard`, where the
 	// per-item answer lives (`canEditItem`, not the views' collection-level
 	// `canEdit` prop). A suite that renders a CLICKABLE chip therefore has to say
 	// who is looking; with no membership the store answers false and the chip is
@@ -154,7 +154,7 @@ describe('BoardView grouped by a relation field', () => {
 
 	/**
 	 * Cards per lane, read from the DOM. Header assertions alone cannot see the
-	 * bucketing (codex round 3): removing `bucketByColumn`'s `valueFor`
+	 * bucketing: removing `bucketByColumn`'s `valueFor`
 	 * callback leaves every relation lane RENDERED and EMPTY while the cards
 	 * fall into Uncategorized, and every label test stays green.
 	 */
@@ -196,14 +196,14 @@ describe('BoardView grouped by a relation field', () => {
 	});
 
 	it('does not turn the card\'s status chip into a RELATION setter', async () => {
-		// codex round 3, P1, and BUG-3068 changed the ANSWER without changing the
-		// question. Cards were handed `statusOptions={columns}` — fine while a
+		// BUG-3068 changed the ANSWER without changing the question. Cards were handed
+		// `statusOptions={columns}` — fine while a
 		// lane value is a status option, but under relation grouping the lanes
 		// are ITEM IDS and the parent handler wrote what it received into
 		// `fields[groupField]`, so a chip click set the card's relation and could
 		// land on the deleted or unresolved lane.
 		//
-		// Round 3 answered by WITHHOLDING the chip. The options now come from the
+		// The first answer was to WITHHOLD the chip. The options now come from the
 		// `status` field's own schema and the write goes through a prop that
 		// names `status`, so neither half of that defect is reachable and the
 		// chip is offered. Asserting the click is strictly stronger than
@@ -212,7 +212,7 @@ describe('BoardView grouped by a relation field', () => {
 		//
 		// The collection needs a STATUS field as well as the relation, or the
 		// card renders no status chip for an unrelated reason and the test cannot
-		// discriminate. Measured: without it the round-3 mutant survived.
+		// discriminate. Measured: without it the mutant survives.
 		const coll = collection();
 		coll.schema = JSON.stringify({
 			fields: [
@@ -359,7 +359,7 @@ describe('the drop gate on a relation lane', () => {
 	 * tests the drag library as much as this decision.
 	 */
 	it('puts the card BACK when it refuses the drop', () => {
-		// codex round 1, P1, and the most important mutant this file missed:
+		// The most important mutant to catch:
 		// svelte-dnd-action has already moved the card in `columnData` by the
 		// time the gate runs, so refusing the WRITE without undoing that leaves
 		// the board showing a move that never happened — the exact failure the
@@ -369,7 +369,7 @@ describe('the drop gate on a relation lane', () => {
 		const body = SRC.slice(start, SRC.indexOf('\n\t}', start));
 		const gate = body.indexOf('relationLaneAcceptsDrop');
 		// Matched as "reassigns columnData from propColumnData", not as one exact
-		// spelling: the restore became a COPY in round 6 (the two aliased, so
+		// spelling: the restore is a COPY (the two aliased, so
 		// assigning the derived back restored nothing), and a guard pinned to
 		// the old literal failed the fix rather than the defect.
 		const restore = body.indexOf('columnData =');
@@ -394,7 +394,7 @@ describe('the drop gate on a relation lane', () => {
 	});
 
 	it('gates on isRelationGroup, so an ordinary board is untouched', () => {
-		// THE EIGHTH WRONG-REASON TEST (codex round 6). It asserted only that
+		// THE EIGHTH WRONG-REASON TEST. It asserted only that
 		// the source CONTAINS `if (isRelationGroup)` — a mutant leaving that
 		// block empty and calling `onStatusChange` unconditionally would pass.
 		// It now requires the refusal to live INSIDE that block, ahead of the
@@ -417,8 +417,7 @@ describe('a relation field with no declared target collection', () => {
 		// `narrowRelationRow` skips the collection check when there is nothing
 		// to check against, so a legacy or half-written relation field would
 		// resolve ids ANYWHERE in the workspace and label lanes with whatever it
-		// found. The filter UI already required a target; the board did not
-		// (codex round 2).
+		// found. The filter UI already required a target; the board did not.
 		const coll = collection();
 		coll.schema = JSON.stringify({
 			fields: [{ key: 'car_color', label: 'Colour', type: 'relation' }],
@@ -434,7 +433,7 @@ describe('a relation field with no declared target collection', () => {
 			} as never,
 		});
 
-		// PRECONDITIONS (BUG-3068 round 4): the board rendered, with a lane and the
+		// PRECONDITIONS (BUG-3068): the board rendered, with a lane and the
 		// card in it. Without them "no `.lane-ref`" is also what an unrendered
 		// board looks like, and the leg would pass for the wrong reason.
 		expect(screen.container.querySelectorAll('.kanban-column').length).toBeGreaterThan(0);
@@ -455,13 +454,12 @@ describe('a relation field with no declared target collection', () => {
 
 describe('the MENU move into a refused relation lane', () => {
 	/**
-	 * codex round 6, P2 — and the reason this leg is rendered rather than
-	 * source-guarded like its drag sibling.
+	 * The reason this leg is rendered rather than source-guarded like its drag sibling.
 	 *
-	 * Round 6 reported that `moveItem`'s `columnData[col] = ...` writes THROUGH
+	 * It was once suspected that `moveItem`'s `columnData[col] = ...` writes THROUGH
 	 * to `propColumnData`'s cached object, so restoring by assigning it back
-	 * restores nothing. That premise is FALSE (settled in round 7, see the
-	 * failure-exit block at the end of this file): the alias mutant SURVIVES
+	 * restores nothing. That premise is FALSE (see the failure-exit block at the end of this file):
+	 * the alias mutant SURVIVES
 	 * this test, and a direct probe of the shape reports the derived's cache
 	 * unchanged by the write.
 	 *
@@ -527,12 +525,12 @@ describe('the MENU move into a refused relation lane', () => {
 
 describe('the MENU move whose WRITE fails', () => {
 	/**
-	 * codex round 7, P1 — REFUTED, and this test is what refutes it.
+	 * The suspected alias is REFUTED, and this test is what refutes it.
 	 *
-	 * Rounds 6 and 7 both reasoned that the sync `$effect` assigns the
+	 * It was reasoned that the sync `$effect` assigns the
 	 * `$derived.by` VALUE into `columnData`, so `moveItem`'s
-	 * `columnData[col] = …` writes THROUGH to the derived cache — round 6
-	 * against the refusal exit, round 7 against this one, the failure exit
+	 * `columnData[col] = …` writes THROUGH to the derived cache — against the refusal exit and
+	 * against this one, the failure exit
 	 * where the lane write rejects and the restore rests on
 	 * `dropCooldown = false` alone.
 	 *
@@ -651,11 +649,11 @@ describe('a REFUSED grouping must not write a group value (U4, codex round 1 P5)
 	});
 
 	it('lands every card in ONE lane even when the schema RETAINED options', () => {
-		// codex round 8, R8-3. Round 7 gated every affordance that WRITES the
-		// group value and left the LANES reading it, so the board went on
-		// bucketing under a notice saying it did not.
+		// Gating every affordance that WRITES the
+		// group value is not enough while the LANES keep reading it: the board
+		// would go on bucketing under a notice saying it did not.
 		//
-		// The fixture is the finding's own: a lane key is the STRINGIFIED array,
+		// The fixture: a lane key is the STRINGIFIED array,
 		// so options carried through a type change can MATCH one. `['id-red']`
 		// and `['id-red','id-blue']` stringify to 'id-red' and 'id-red,id-blue',
 		// and with those retained as options the two cars landed in two named
@@ -713,12 +711,12 @@ describe('a REFUSED grouping must not write a group value (U4, codex round 1 P5)
 		// neither the group field nor a lane value is reachable from the chip at
 		// all. Nothing is left for the refusal to protect here.
 		//
-		// The fixture is kept exactly as rounds 5 and 6 left it, because its
+		// The fixture is kept as is, because its
 		// lesson outlives the guard it was built for: a `multi_select` retyped to
 		// `multi_relation` KEEPS its `options` — nothing strips them — so a leg
 		// written against an optionless multi_relation passes for a reason that
-		// has nothing to do with the code under test. Round 5 read that survival
-		// as "the guard is unreachable" and deleted a live guard.
+		// has nothing to do with the code under test.
+		// That survival was once read as "the guard is unreachable" and deleted a live guard.
 		//
 		// It now discriminates by CLICKING rather than by counting: a build that
 		// routed the chip back through the lane writer fails on the last
@@ -773,27 +771,27 @@ describe('a REFUSED grouping must not write a group value (U4, codex round 1 P5)
 	});
 
 	it('offers no lane create control, which would send the lane string as the value', () => {
-		// The third affordance in the class, after the drag and the status chip
-		// (codex round 7). A multi_relation that RETAINED options produced NAMED
+		// The third affordance in the class, after the drag and the status chip.
+		// A multi_relation that RETAINED options produced NAMED
 		// lanes, so neither `isUncategorized` nor `isRelationGroup` withheld the
 		// lane "+": creating there sent the lane string as the relation value.
 		// Every affordance that writes the GROUP VALUE has to ask the refusal.
 		//
-		// REWRITTEN IN ROUND 8, AND THIS LEG NO LONGER DISCRIMINATES ITS GUARD.
+		// REWRITTEN, AND THIS LEG NO LONGER DISCRIMINATES ITS GUARD.
 		// Its precondition used to be `.kanban-column > 1` — the named lanes
-		// really rendered, so "no +" was not "no lanes". R8-3 removed those
+		// really rendered, so "no +" was not "no lanes". The retained-options change removed those
 		// lanes: a refused grouping now yields the single UNCATEGORIZED lane,
 		// which withholds the "+" through `!isUncategorized` regardless of the
 		// `!groupingRefusal` gate this leg was written for. Deleting that gate
 		// leaves this green.
 		//
 		// The gate is KEPT anyway, and the reason is not defence in depth: each
-		// affordance asking the refusal directly is what made round 7's class
-		// enumerable at all, and one of the four (drag) is NOT subsumed, since a
-		// drop is gated on the refusal rather than on the lane. Keeping three of
-		// four phrased the same way is worth more than deleting two lines. What
-		// is not worth keeping is the pretence that this leg proves it: the leg
-		// that actually fails when R8-3 regresses is the one-lane test above.
+		// affordance asking the refusal directly is what made that class enumerable at all,
+		// and one of the four (drag) is NOT subsumed, since a drop is gated on the
+		// refusal rather than on the lane. Keeping three of four phrased the same
+		// way is worth more than deleting two lines. What is not worth keeping is
+		// the pretence that this leg proves it: the leg that actually fails when
+		// the one-lane rule regresses is the one-lane test above.
 		const coll = collection();
 		coll.schema = JSON.stringify({
 			fields: [
@@ -818,7 +816,7 @@ describe('a REFUSED grouping must not write a group value (U4, codex round 1 P5)
 		});
 
 		// PRECONDITIONS: refused, and a lane really is rendered — so "no +
-		// button" is not "no lanes". One lane exactly, since R8-3.
+		// button" is not "no lanes". One lane exactly.
 		expect(screen.container.textContent).toContain('more than one group');
 		expect(screen.container.querySelectorAll('.kanban-column')).toHaveLength(1);
 		expect(screen.container.querySelectorAll('.item-card')).toHaveLength(1);
@@ -886,8 +884,8 @@ describe('a REFUSED grouping must not write a group value (U4, codex round 1 P5)
 		// Without this, withholding the chip for EVERY value would satisfy the
 		// leg above, and the boards that work today would quietly lose their
 		// chips. PRIORITY is here because the first version of this control
-		// covered status alone — and the enumeration round showed that deleting
-		// every ItemCard priority chip left the whole suite green (d4). Each
+		// covered status alone — and deleting every ItemCard priority chip once left the whole
+		// suite green. Each
 		// gate needs a leg that fails when it is removed.
 		const coll = collection();
 		coll.schema = JSON.stringify({
@@ -917,9 +915,8 @@ describe('a REFUSED grouping must not write a group value (U4, codex round 1 P5)
 	});
 
 	it('offers no bulk "Move all to" either — the FIFTH group-writing affordance', async () => {
-		// Round 8 enumeration. Round 7 enumerated four affordances that write the
-		// group value and this was not among them: the lane menu reads
-		// `statusField.options` and offers them as destinations, so a `status`
+		// Four other affordances write the group value, and so does this one:
+		// the lane menu reads `statusField.options` and offers them as destinations, so a `status`
 		// field retyped to `multi_relation` with its options retained offers
 		// named lanes that no longer exist and calls `onMoveColumn` with a
 		// SCALAR — a write the server refuses for a list-shaped field.

@@ -4,7 +4,7 @@ import PublicListView from './PublicListView.svelte';
 import type { PublicCollection, PublicItem } from './shareView';
 
 /**
- * TASK-2998, codex round 2 — the LIST door onto public grouping.
+ * TASK-2998 — the LIST door onto public grouping.
  *
  * `resolveGroupField` guards the public BOARD. A saved view with
  * `view_type: "list"` routes its `group_by` to `list_group_by`, which this

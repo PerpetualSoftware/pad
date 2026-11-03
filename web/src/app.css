@@ -845,8 +845,7 @@ dialog.attachment-crop-modal::backdrop {
 		--border: #cccccc;
 		--border-subtle: #dddddd;
 		/* Pin light-theme accents for paper — otherwise printing from the
-		   dark theme puts the bright dark-mode accent on white (PR #1018
-		   Codex finding). */
+		   dark theme puts the bright dark-mode accent on white (PR #1018). */
 		--accent-primary: #7c3aed;
 		--accent-blue: var(--accent-primary);
 		--accent-red: #dc2626;

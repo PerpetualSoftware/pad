@@ -325,8 +325,8 @@ func TestUnknownWorkspace_StoreError_EmptyHints(t *testing.T) {
 // path the production /mcp transport runs.
 // ─────────────────────────────────────────────────────────────────────
 
-// TestExecuteRequest_UsesRequestContext_NotOuterContext pins Codex
-// review #379 round 1. The dispatcher's `executeRequest` MUST pass
+// TestExecuteRequest_UsesRequestContext_NotOuterContext pins
+// that the dispatcher's `executeRequest` MUST pass
 // `req.Context()` (not the outer `ctx`) into `packageHTTPResponse`
 // so the lister sees everything `buildHTTPRequest` + `d.Apply`
 // attached: WithCurrentUser, WithAPITokenAuth, and any

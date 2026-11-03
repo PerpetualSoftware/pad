@@ -52,7 +52,7 @@ test('BUG-2871: a same-data refresh keeps the child row node', async ({
 
 	// Count children fetches, so "the node survived" can't pass because no
 	// refresh ever happened — which is the way this test would go vacuous.
-	// Count RESPONSES, not requests (codex round 1). A request event can fire
+	// Count RESPONSES, not requests. A request event can fire
 	// before the component has processed the state change that replaces the
 	// DOM, so polling on requests and asserting immediately could observe the
 	// node still connected on a BROKEN build — a race-dependent false pass.

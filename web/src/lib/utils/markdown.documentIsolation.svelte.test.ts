@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { renderMarkdownDocument, renderMarkedWithAttachments, renderMarkdown, sanitizeMarkdownHtml } from './markdown';
 
 /**
- * `renderMarkdownDocument`'s ISOLATION contract (IDEA-2712, codex R3 #3).
+ * `renderMarkdownDocument`'s ISOLATION contract (IDEA-2712).
  *
  * jsdom, because the function ends in `sanitizeMarkdownHtml`, which needs a
  * window and returns '' without one.

@@ -25,7 +25,7 @@ func TestTASK1069_ValidateCloudMCPOAuth(t *testing.T) {
 		{"no origin is refused, naming PAD_URL", config.Config{}, "no public origin is configured"},
 		{"an http origin is refused (OAuth needs https)", config.Config{URL: "http://app.example.com"}, "is not https"},
 		{"an unusable value is refused with the problem", config.Config{URL: "not a url"}, `PAD_URL "not a url"`},
-		// Combinations (codex r1). PAD_URL wins over PUBLIC_URL, so an http
+		// Combinations. PAD_URL wins over PUBLIC_URL, so an http
 		// PAD_URL leaves no https issuer: OAuth was never constructed in this
 		// shape, and the refusal says so instead of serving PAT-only.
 		{"http PAD_URL beside an https PUBLIC_URL is refused", config.Config{
@@ -79,8 +79,8 @@ func TestTASK1069_ServerStartWiresBothChecks(t *testing.T) {
 	}
 }
 
-// pad-cloud's PRODUCTION shape, through the real environment loading (lead
-// ruling): its compose sets PAD_MCP_PUBLIC_URL=${MCP_PUBLIC_URL:-}, so the
+// pad-cloud's PRODUCTION shape, through the real environment loading: its compose
+// sets PAD_MCP_PUBLIC_URL=${MCP_PUBLIC_URL:-}, so the
 // variable is PRESENT but EMPTY, beside PUBLIC_URL and PAD_AUTH_SERVER_URL
 // set to the https domain, and no PAD_URL. A refused start on Cloud is an
 // outage, so this shape must start, read the way the server reads it.

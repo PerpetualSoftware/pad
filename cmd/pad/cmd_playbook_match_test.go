@@ -119,8 +119,8 @@ func TestPlaybookMatchCommand_NoneAndJSON(t *testing.T) {
 	}
 }
 
-// TestPlaybookMatchCommand_LeadingDashNeedsDoubleDash pins the codex-review
-// finding (BUG-3142's class, this command's own instance): text starting
+// TestPlaybookMatchCommand_LeadingDashNeedsDoubleDash pins a defect
+// (BUG-3142's class, this command's own instance): text starting
 // with "-" is parsed as a flag by cobra's default flag scanner, both here
 // and over stdio MCP (which shells out to this same command) — so text like
 // "-ship it" must be preceded by "--" to reach the positional arg intact.

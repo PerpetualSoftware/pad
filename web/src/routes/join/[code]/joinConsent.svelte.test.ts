@@ -1,4 +1,4 @@
-// BUG-2136 U2 (lead ruling, option B): opening an invitation link is not
+// BUG-2136 U2 (option B): opening an invitation link is not
 // consent. A visitor who is signed in, or who signs in from the link, lands
 // on an accept/decline card; only REGISTERING a new account through the code
 // joins in one step.
@@ -20,7 +20,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 // Reactive, so a leg can change the code under a mounted page, as an SPA
-// navigation from one /join link to another does (codex r4).
+// navigation from one /join link to another does.
 vi.mock('$app/state', async () => ({ page: (await import('../../../test/mocks/reactivePage.svelte')).page }));
 vi.mock('$app/navigation', () => ({ goto: mocks.goto, replaceState: vi.fn() }));
 vi.mock('$lib/api/client', () => ({
@@ -47,7 +47,7 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 	},
 }));
 // The "+" badge must not keep counting an invitation this page accepted or
-// declined (codex r2): both force a refetch, which also orders out any older one.
+// declined: both force a refetch, which also orders out any older one.
 vi.mock('$lib/stores/pendingInvitations.svelte', () => ({
 	pendingInvitations: { refresh: mocks.refreshInvitations },
 }));
@@ -129,8 +129,7 @@ describe('/join/[code] asks before joining (BUG-2136)', () => {
 		expect(mocks.accept).not.toHaveBeenCalled();
 		expect(mocks.goto).not.toHaveBeenCalled();
 		expect(document.body.textContent).toContain('Invitation declined');
-		// Announced: the focused buttons are gone, so the result must be spoken
-		// (codex r4).
+		// Announced: the focused buttons are gone, so the result must be spoken.
 		expect(document.querySelector('[role="status"]')?.textContent).toContain('Invitation declined');
 	});
 
@@ -255,7 +254,7 @@ describe('/join/[code] asks before joining (BUG-2136)', () => {
 		expect(document.body.textContent).not.toContain('Acme');
 	});
 
-	// codex r5: an action still in flight when the code changes must not land on
+	// An action still in flight when the code changes must not land on
 	// the new code's page.
 	const BETA_PREVIEW = { found: true, email: 'inv@example.com', has_account: true, workspace_name: 'Beta Co' };
 
@@ -322,7 +321,6 @@ describe('/join/[code] asks before joining (BUG-2136)', () => {
 		expect(mocks.accept).not.toHaveBeenCalled();
 	});
 
-	// codex r6
 	it('a code change empties the form it carried, so B is never submitted with what was typed for A', async () => {
 		mocks.session.mockResolvedValue({ authenticated: false });
 		mocks.preview.mockResolvedValue({ found: true, email: 'new@example.com', has_account: false, workspace_name: 'Acme' });

@@ -132,7 +132,7 @@ describe('DecisionChips', () => {
 		// /-/r/ is a server redirect: the client router must not take the click.
 		expect(links[0].hasAttribute('data-sveltekit-reload')).toBe(true);
 		// Nothing anywhere reads as compliance: not the text, and not the
-		// title or any other attribute (codex r1 caught it in the title).
+		// title or any other attribute (the title once did).
 		expect(document.body.innerHTML).not.toMatch(/complies|compliant|passes/i);
 	});
 });

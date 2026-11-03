@@ -301,7 +301,7 @@ func TestTheTimeoutStillBoundsAStalledHandshake(t *testing.T) {
 	}
 }
 
-// TestAZeroTimeoutStillDialsSuccessfully is codex round 1's P1, restated after
+// TestAZeroTimeoutStillDialsSuccessfully is restated after
 // the mutation matrix refused to confirm the failure mode it was named for.
 //
 // The setup is real: go-redis's Options.init() defaults DialTimeout to 5s, but
@@ -329,12 +329,12 @@ func TestAZeroTimeoutStillDialsSuccessfully(t *testing.T) {
 	_ = conn.Close()
 }
 
-// TestConnectAndHandshakeShareOneBudget covers codex round 1's other P2:
+// TestConnectAndHandshakeShareOneBudget covers a second case:
 // applying the timeout to the TCP connect and then starting a fresh one for the
 // handshake allows up to 2x DialTimeout on the pub/sub path, which has no outer
 // deadline to mask it.
 //
-// IT DOES NOT DISCRIMINATE, and codex round 2 was right to say so. The server
+// IT DOES NOT DISCRIMINATE. The server
 // here accepts immediately, so the connect consumes none of the budget and the
 // two-budget implementation finishes in the same time as the one-budget one.
 // Making it discriminate needs a connect that is itself slow, which cannot be
@@ -395,7 +395,7 @@ func TestKeepAliveIsNotSilentlyDropped(t *testing.T) {
 	}
 }
 
-// TestAnExplicitlyDisabledTimeoutIsHonoured is codex round 2's P2. ParseURL
+// TestAnExplicitlyDisabledTimeoutIsHonoured covers explicit disabling. ParseURL
 // turns an explicit dial_timeout of zero or negative into -1, which go-redis
 // preserves as "no timeout"; collapsing every non-positive value to the default
 // would overrule an operator who had deliberately disabled the bound.
@@ -421,8 +421,8 @@ func TestAnExplicitlyDisabledTimeoutIsHonoured(t *testing.T) {
 	_ = conn.Close()
 }
 
-// TestTheCopiedDefaultStillMatchesGoRedis is the drift guard codex round 2
-// asked for (P3). Both constants in this package are copies of unexported or
+// TestTheCopiedDefaultStillMatchesGoRedis is the drift guard.
+// Both constants in this package are copies of unexported or
 // internal go-redis values, and a copy that silently diverges from what it
 // mirrors is exactly the maintenance trap that makes this package worse than
 // no package.

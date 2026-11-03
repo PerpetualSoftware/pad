@@ -140,7 +140,7 @@
 	// Derived: flat index list for keyboard navigation. Content matches
 	// are appended after the local results so Arrow/Enter can reach them
 	// (their index is `results.length + i`). TASK-2008.
-	// Grouped, they walk in the RENDERED order (TASK-2234, codex r1): ranked
+	// Grouped, they walk in the RENDERED order (TASK-2234): ranked
 	// A1, B1, A2 renders A1, A2, B1, and the arrows follow what is on screen.
 	let flatResults = $derived([
 		...(groupedResults ? inRenderedOrder(groupedResults) : results),
@@ -177,7 +177,7 @@
 					: undefined
 	);
 	// What the live region says: the count of what a search found.
-	// Content matches are results too (codex r1): a body-only match has a
+	// Content matches are results too: a body-only match has a
 	// local total of 0, so nothing is said until the content search answers.
 	let announcement = $derived(
 		searchFailed && !loading
@@ -187,7 +187,7 @@
 
 	/*
 		TASK-2235: the palette is a dialog. It keeps its own element rather than
-		the Modal primitive's native showModal (lead ruling): on mobile inside a
+		the Modal primitive's native showModal: on mobile inside a
 		workspace it is a sheet docked ABOVE the bottom nav, which stays live
 		(its Search slot toggles the palette), and showModal's top layer would
 		inert that nav and lay a backdrop over it. So, like DockedSheet, the
@@ -286,7 +286,7 @@
 
 	// `typed` is the query text the caller parsed for its request, so the
 	// filters and the text it sends come from the same query, not from
-	// whatever the input holds when this runs (BUG-3709, codex r1).
+	// whatever the input holds when this runs (BUG-3709).
 	function buildFilters(typed: string, offset = 0, wsSlug?: string): SearchFilters {
 		const filters: SearchFilters = {
 			// "All workspaces" names none: the server then searches every
@@ -391,8 +391,7 @@
 		// SSE-driven epoch bump or hydration completion mid-flight
 		// would then re-fire doSearch and wipe an in-flight `loadMore`
 		// append. Body queries are server-authoritative; nothing in
-		// local state can change their result set. Codex round 8 P2
-		// of TASK-1365.
+		// local state can change their result set (TASK-1365).
 		const currentReady = parsed.body
 			? true
 			: !!currentSlug && localIndex.bootstrapStateFor(currentSlug) === 'ready';
@@ -405,7 +404,7 @@
 		//     server even if other workspaces are ready, so the user
 		//     never misses results from where they are. The
 		//     `searchAllWorkspaces` toggle is meant to widen, never
-		//     to replace. Codex round 2 P2.
+		//     to replace.
 		//   - No ready workspaces at all (cold session) — fall through
 		//     to the server so the palette still works pre-bootstrap.
 		// All three use a 200ms debounce on the network call.
@@ -418,8 +417,8 @@
 			// path — drop any stale one. TASK-2008.
 			clearContentSearch();
 			loading = true;
-			// Snapshot the FULL dispatch scope at request time
-			// (Codex rounds 4-5 P2): the response is only valid if
+			// Snapshot the FULL dispatch scope at request time:
+			// the response is only valid if
 			// every dimension that determines what we render is still
 			// the same. `isSameDispatch` must READ LIVE state for
 			// readiness — capturing `currentReady` at dispatch left
@@ -460,7 +459,7 @@
 					// `parsed.text` is empty and we'd otherwise fall back
 					// to the raw query (`body:`) and ship that literal
 					// token to the server. Treat as a no-op until the
-					// user keeps typing. Codex round 9 P3 of TASK-1365.
+					// user keeps typing. TASK-1365.
 					if (parsed.body && !parsed.text) {
 						if (isSameDispatch()) {
 							results = [];
@@ -509,7 +508,7 @@
 		// Per-workspace limit: when a status filter chip is active, we
 		// expand the per-workspace pull so the post-fetch
 		// `filterStatus` filter has enough headroom to find matches
-		// outside the top 20 (Codex round 3 P2). The status filter
+		// outside the top 20. The status filter
 		// isn't an index-aware operation on the local path — it walks
 		// the parsed `fields` blob after materialization — so a tight
 		// per-ws cap could drop valid lower-ranked matches.
@@ -546,7 +545,7 @@
 		// set `total = results.length` so the "Load more" affordance
 		// stays hidden — loadMore hits the server, which would
 		// inject scope-mismatched (and duplicate) rows into the local
-		// result set. Codex round 1 P2. Local results are all in RAM;
+		// result set. Local results are all in RAM;
 		// if more than `PAGE_SIZE * 2` match, the right answer is a
 		// more specific query, not a paginated fetch.
 		results = filtered.slice(0, PAGE_SIZE * 2);
@@ -642,7 +641,7 @@
 	// text. Skip the readiness / epoch reads for body queries so a
 	// concurrent SSE bump (or hydration completion) can't re-fire
 	// doSearch from offset 0 and wipe an in-flight `loadMore` append.
-	// Codex round 7 P2 of TASK-1365.
+	// TASK-1365.
 	//
 	// SAME EXCEPTION for bare-digit queries (BUG-1531): a bare digit
 	// short-circuits to `exactItemNumberLookup` — a single deterministic
@@ -678,7 +677,7 @@
 		// is untracked, body / bare-digit queries (which skip the local-
 		// index dep block below) would otherwise miss workspace switches
 		// and leave `loading` stuck while an in-flight server response
-		// gets discarded by `isSameDispatch()`. Codex round 1 of BUG-1531.
+		// gets discarded by `isSameDispatch()` (BUG-1531).
 		void workspaceStore.current?.slug;
 		const trimmed = query.trim();
 		const parsed = trimmed ? parseSearchQuery(trimmed) : null;
@@ -722,7 +721,7 @@
 		// and bail if any of it has shifted before the response lands.
 		// Body queries are always server-authoritative (the local
 		// index doesn't carry content), so they bypass the
-		// live-readiness guard. Codex rounds 5-6 P2.
+		// live-readiness guard.
 		loadingMore = true;
 		const snapshotQuery = query;
 		const snapshotAllWs = searchAllWorkspaces;
@@ -1104,7 +1103,7 @@
 				     Without this branch, switching from server → local
 				     with a filter chip selected would hide the chip but
 				     keep filtering, leaving the user no clear way to
-				     remove it. Codex round 2 P2 of TASK-1365.
+				     remove it. TASK-1365.
 			-->
 			{#if facets && query.trim()}
 				<div class="filters-row">
@@ -1348,7 +1347,7 @@
 										The local list above can span every ready workspace,
 										but the content search is a single request scoped to
 										the current workspace — say so rather than imply it
-										covers all of them. TASK-2008 / Codex review.
+										covers all of them. TASK-2008.
 									-->
 									<span class="content-scope">current workspace</span>
 								{/if}

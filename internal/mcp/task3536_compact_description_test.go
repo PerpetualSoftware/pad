@@ -42,7 +42,7 @@ func TestCompactToolDescriptionShape(t *testing.T) {
 	}
 }
 
-// Codex round 1: a list must stay a list. Every bullet, numbered item and
+// A list must stay a list. Every bullet, numbered item and
 // one-word label in the source starts its own line on the wire, and a bullet's
 // wrapped continuation joins the bullet, not the line before it.
 func TestCompactToolDescriptionKeepsListStructure(t *testing.T) {

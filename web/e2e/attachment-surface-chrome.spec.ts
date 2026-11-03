@@ -243,7 +243,7 @@ test.describe('attachment viewer — 3c-i surface chrome (TASK-2484)', () => {
 		const long = `${'x'.repeat(180)}.png`;
 		// BIG_PNG (1600×1200) OVERFLOWS the stage, so zooming makes a real pan
 		// possible — a smaller image stays inside the stage and clampPan pins the pan
-		// to 0, which would hide a missing header exclusion (Codex round 2).
+		// to 0, which would hide a missing header exclusion.
 		await uploadAttachment(fixture, request, doc.id, long, 'image/png', BIG_PNG);
 		await page.goto(itemUrl(fixture, doc.slug));
 		await page.locator(TILE).first().click();
@@ -611,7 +611,7 @@ test.describe('attachment viewer — 3c-i surface chrome (TASK-2484)', () => {
 		await page.mouse.wheel(0, -300);
 		// Settle past the 150ms zoom transition before sampling: a mutation that let
 		// the toolbar wheel through would animate the scale up, and reading too soon
-		// could catch a still-near-baseline value (Codex round 3). Asserting the
+		// could catch a still-near-baseline value. Asserting the
 		// ABSENCE of a zoom has nothing to poll for, so a bounded wait is right here.
 		await page.waitForTimeout(250);
 

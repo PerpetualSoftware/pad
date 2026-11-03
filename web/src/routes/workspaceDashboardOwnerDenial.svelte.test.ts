@@ -200,7 +200,7 @@ describe('BUG-2990: dashboard owner chrome expires on a definitive denial', () =
 	});
 
 	it('drops the card the moment a DIFFERENT user signs in, before their /me lands', async () => {
-		// BUG-2991, codex round 2 — the hole `membershipKnown` alone leaves open.
+		// BUG-2991 — the hole `membershipKnown` alone leaves open.
 		//
 		// An identity change drops membership to UNKNOWN, and unknown
 		// deliberately does not update this cache; that is what the gate is
@@ -230,7 +230,7 @@ describe('BUG-2990: dashboard owner chrome expires on a definitive denial', () =
 	});
 
 	it('stops showing the previous user\'s board the moment a different user signs in', async () => {
-		// BUG-2991, codex round 3 — the half the store's reset could not reach.
+		// BUG-2991 — the half the store's reset could not reach.
 		//
 		// The store drops `current`, `workspaces` and membership on an identity
 		// change, but this page's `dashboard` and `collections` are LOCAL state
@@ -264,7 +264,7 @@ describe('BUG-2990: dashboard owner chrome expires on a definitive denial', () =
 	});
 
 	it('does not bring the previous user\'s board back when the new user\'s load FAILS', async () => {
-		// BUG-2991, codex round 5. Hiding A's board behind `loading` was a
+		// BUG-2991. Hiding A's board behind `loading` was a
 		// fail-open: `loading` goes false when the new user's request settles
 		// EITHER WAY, and on a failure `dashboard` still held A's data with the
 		// template rendering it ahead of the `dashError` branch. So A's items,
@@ -289,7 +289,7 @@ describe('BUG-2990: dashboard owner chrome expires on a definitive denial', () =
 		meCalls[i]!(OWNER);
 		await settle();
 
-		// NON-VACUITY (codex round 6). "The grid is absent" is also true of a
+		// NON-VACUITY. "The grid is absent" is also true of a
 		// page still sitting in its loading branch, which would prove nothing
 		// about whether the old board was restored. Pin the state precisely:
 		// the load has SETTLED into its error branch, with the Retry affordance
@@ -300,7 +300,7 @@ describe('BUG-2990: dashboard owner chrome expires on a definitive denial', () =
 	});
 
 	it('does not highlight the new user\'s items as if they had just created them', async () => {
-		// codex round 9. The aha-highlight track is keyed on `dashboardSlug`,
+		// The aha-highlight track is keyed on `dashboardSlug`,
 		// which does NOT change on a same-route identity change, so the previous
 		// user's `needs_onboarding: true` was still standing when the new user's
 		// first response arrived with `false`. That reads as the true→false

@@ -40,7 +40,7 @@ func TestEventsObserverMapsEachEventToItsOwnCounter(t *testing.T) {
 	obs.SequenceReset(events.ResetReasonUndecodableMessage)
 	obs.SequenceReset(events.ResetReasonUndecodableMessage)
 	// The comment above claimed "every reason this bus can emit" while this one
-	// was missing (codex round 8). Production emits it from
+	// was missing. Production emits it from
 	// confirmSubscription's late-acknowledgement path, so the mapping was
 	// unexercised — and the zero-assertion further down proved only that the
 	// dedicated counter does not leak INTO this series, which is a different

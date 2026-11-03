@@ -2,8 +2,8 @@
 //
 // BUG-3115 — the sidebar quick-add dialog must not lose a title the user
 // typed. The e2e spec (bug-3115-refused-title-keeps-text.spec.ts) covers the
-// refusal paths against the real server; this pins the interleaving codex
-// round 1 found: dismiss the dialog and reopen it on the SAME collection while
+// refusal paths against the real server; this pins the interleaving: dismiss the dialog and reopen
+// it on the SAME collection while
 // the first create is still in flight. The old response used to recognise
 // "its" dialog by collection, so it closed the new one and cleared the new
 // text.

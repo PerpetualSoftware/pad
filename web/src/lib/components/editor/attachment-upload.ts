@@ -69,7 +69,7 @@ interface UploadEntry {
 	 *  removed, or the whole document replaced), so a mapped number survives
 	 *  but the place the user dropped the file does not. Inserting there would
 	 *  put the file at a deletion boundary, possibly in content the user never
-	 *  saw (codex round 1 on BUG-2177), so a lost placeholder is reported. */
+	 *  saw (BUG-2177), so a lost placeholder is reported. */
 	lost?: boolean;
 }
 
@@ -112,7 +112,7 @@ export function storedNotInsertedMessage(filename: string): string {
  * The toast for a failed upload, shared by Editor and CommentEditor (TASK-4195
  * site 17). Only the file name is isolated. `message` is the upload call's
  * Error.message (client text, or the server's error text) and is shown as
- * received, not isolated (TASK-4195 r5-L1, r6-L1).
+ * received, not isolated (TASK-4195).
  */
 export function uploadFailedMessage(filename: string, message: string): string {
 	return `Couldn't upload ${isolateText(filename)}: ${message}`;
@@ -387,7 +387,7 @@ export function attachmentUploadPlugin(opts: AttachmentUploadOptions): Plugin<Up
 				},
 				// The view is going away with results still parked: the files are
 				// stored and nothing will reference them, so say so, as the
-				// destroyed arm of the upload itself does (codex round 1).
+				// destroyed arm of the upload itself does.
 				destroy() {
 					const st = pluginKey.getState(editorView.state);
 					if (!st) return;

@@ -2,8 +2,8 @@
  * The agent display name carried on a workspace activity row.
  *
  * WHERE THE NAME COMES FROM. The CLI resolves it once per process
- * (`internal/cli/agent_identity.go::ResolveAgentName`: `agent_name` in
- * .pad.toml, then $PAD_AGENT, then a detected runtime) and sends it as
+ * (`internal/cli/agent_identity.go::ResolveAgentName`: `agent_name` in.
+ * pad.toml, then $PAD_AGENT, then a detected runtime) and sends it as
  * `X-Pad-Agent`. The server stamps it into the activity's metadata as
  * `agent` (`handlers_documents.go::agentMeta`), reached from
  * `logActivityWithMetaReturningID` — so **workspace activity rows are the
@@ -20,7 +20,7 @@
  * VERBATIM IS THE WHOLE CONTRACT. Whatever an agent sent is what a reader
  * sees — no allow-list, no normalization, no title-casing. Pad does not
  * know which client ids are "real names": a run of seats calling
- * themselves `claude-code` and a run calling themselves `wren` are the
+ * themselves `claude-code` and a run calling themselves `my-agent` are the
  * same fact reported at different resolutions, and the display's job is to
  * report it, not to grade it. This replaces a shim that filtered a
  * hardcoded set of one team's client ids out of the Live view, which made

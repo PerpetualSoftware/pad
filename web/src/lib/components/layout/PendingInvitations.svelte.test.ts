@@ -40,7 +40,7 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 }));
 vi.mock('$lib/stores/toast.svelte', () => ({ toastStore: { show: mocks.toast } }));
 
-// The REAL badge store (codex r8): the list renders from it, so the rows and
+// The REAL badge store: the list renders from it, so the rows and
 // the count cannot disagree, and every write goes through its one order.
 import { pendingInvitations } from '$lib/stores/pendingInvitations.svelte';
 import PendingInvitations from './PendingInvitations.svelte';

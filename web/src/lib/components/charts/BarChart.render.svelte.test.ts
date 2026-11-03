@@ -111,7 +111,7 @@ describe('BarChart renders through LayerCake', () => {
 		// scale; y/height from k.yScale and k.height. A collapsed or absent
 		// context leaves these NaN or 0. Checking only the x half would leave
 		// `k.height` and the y-scale reads at Bars.svelte:55,57 uncovered, which
-		// is exactly what it did until review round 3 said so.
+		// is exactly why both halves are checked.
 		for (const bar of bars) {
 			const width = Number(bar.getAttribute('width'));
 			const x = Number(bar.getAttribute('x'));
@@ -152,7 +152,7 @@ describe('BarChart renders through LayerCake', () => {
 		// barX = k.xGet(d) + inner(key): bands march left to right, and within a
 		// band the series sit side by side in declared order. Finiteness alone
 		// would let a positive constant through, which is the x-dimension twin of
-		// the y hole review round 3 closed.
+		// the y-dimension gap closed above.
 		const xOf = (title: string) => Number(barFor(title).getAttribute('x'));
 		expect(xOf('Created: 5')).toBeLessThan(xOf('Created: 3')); // Mon before Tue
 		expect(xOf('Created: 3')).toBeLessThan(xOf('Created: 8')); // Tue before Wed
@@ -172,7 +172,7 @@ describe('BarChart renders through LayerCake', () => {
 		expect(texts.map((t) => t.textContent?.trim())).toEqual(['Mon', 'Tue', 'Wed']);
 
 		// The baseline spans the plot at its foot — a direct k.width / k.height
-		// read that nothing asserted until review round 3 named it.
+		// read that nothing else asserts.
 		const baseline = container.querySelector('g.axis-x line')!;
 		const plotWidth = Number(baseline.getAttribute('x2'));
 		const plotFoot = Number(baseline.getAttribute('y2'));
@@ -197,7 +197,7 @@ describe('BarChart renders through LayerCake', () => {
 		expect(xs[0]).toBeGreaterThan(0);
 
 		// The labels sit BELOW the baseline (y = k.height + 16) — a k.height read
-		// distinct from the baseline's, and uncovered until review round 4.
+		// distinct from the baseline's, and otherwise uncovered.
 		const labelYs = texts.map((t) => Number(t.getAttribute('y')));
 		expect(labelYs.every((y) => y > plotFoot)).toBe(true);
 	});
@@ -226,7 +226,7 @@ describe('BarChart renders through LayerCake', () => {
 		}
 
 		// Each tick's LABEL is placed by its own k.yScale read (AxisY:29),
-		// distinct from the grid line's, and uncovered until review round 4. The
+		// distinct from the grid line's, and otherwise uncovered. The
 		// scale descends — a larger tick value sits higher — and each label lines
 		// up with its own grid line.
 		const labelYs = Array.from(
@@ -312,8 +312,8 @@ describe('BarChart renders through LayerCake', () => {
 	it('drives the hover tooltip from context read at event time', async () => {
 		// `bandCenter` (Bars.svelte:45-47) is the ONE context read in the unit that
 		// happens outside a tracking context: it runs in the pointer handler and
-		// wants the value at event time rather than a dependency. Review round 1
-		// judged that correct by design; this leg is what makes it checked rather
+		// wants the value at event time rather than a dependency. That is correct by design; this
+		// leg is what makes it checked rather
 		// than argued, and it is the only coverage of `k.padding` in this file.
 		//
 		// `bandSummary` is NOT in that category, though it looks like it — its one

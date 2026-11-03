@@ -88,7 +88,7 @@ describe('TagInput keyboard selection (BUG-3150)', () => {
 		await key(input, 'Escape');
 		expect(document.querySelector('.tag-suggestions')).toBeNull();
 		expect(input.getAttribute('aria-expanded')).toBe('false');
-		// Closed: no reference to a list that is not in the DOM (codex r1).
+		// Closed: no reference to a list that is not in the DOM.
 		expect(input.getAttribute('aria-controls')).toBeNull();
 		expect(input.getAttribute('aria-activedescendant')).toBeNull();
 	});

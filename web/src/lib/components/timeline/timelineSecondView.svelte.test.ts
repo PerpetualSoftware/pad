@@ -165,7 +165,7 @@ describe('timeline second view — the mirrored error', () => {
 
 		// Without this, a failed load reaches the History tab as zero entries
 		// and renders as "No timeline entries yet." — an unreachable server
-		// wearing an empty timeline's clothes (codex round 1).
+		// wearing an empty timeline's clothes.
 		expect(state.feed?.error).toBeTruthy();
 		expect(state.feed?.entries).toEqual([]);
 	});
@@ -174,7 +174,7 @@ describe('timeline second view — the mirrored error', () => {
 		// The two states contradict each other: "No timeline entries yet" is a
 		// statement about the ITEM, and a failed load knows nothing about the
 		// item. Rendering both at once — an unguarded `showEmpty` — puts
-		// something false next to something true (codex round 2).
+		// something false next to something true.
 		//
 		// Asserted against the MOUNTED owner's DOM rather than by re-evaluating
 		// the condition: a test that recomputes `entries.length === 0 &&
@@ -207,7 +207,7 @@ describe('timeline second view — the composer identity gate', () => {
 		// an A→B navigation it passes neither, and ItemTimeline must treat that
 		// as "cannot edit" rather than as a permissive default. An attachment
 		// dropped in the composer during that window would otherwise be
-		// associated with the PREVIOUS item (codex round 6).
+		// associated with the PREVIOUS item.
 		app = mount(ItemTimeline, {
 			target: host,
 			props: {
@@ -228,8 +228,8 @@ describe('timeline second view — filtered pagination', () => {
 		// The hop loop used to stop on any new entry of any kind. With one feed
 		// serving views that render different kinds, a page of pure comments
 		// ended it having added nothing to a changes view — a button that
-		// visibly does nothing. Found twice by codex (rounds 1 and 4): the
-		// first fix covered the tabs and left the same class in the owner's own
+		// visibly does nothing. It was fixed in two steps: the first fix covered the tabs and left
+		// the same class in the owner's own
 		// button, which is why the filter now travels with the request.
 		timelineListMock.mockReset();
 		timelineListMock

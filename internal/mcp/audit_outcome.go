@@ -36,17 +36,17 @@ func recordToolOutcome(next server.ToolHandlerFunc) server.ToolHandlerFunc {
 }
 
 // recordJSONRPCError is the OnError hook that records a JSON-RPC error
-// response (BUG-3879 hunter r1 M1). mcp-go refuses an unknown tool, and
+// response (BUG-3879). mcp-go refuses an unknown tool, and
 // answers a missing resource or prompt, before the tool-handler middleware
 // is applied, with a JSON-RPC error inside a 200. A tool handler's own Go
 // error reaches this hook too, after recordToolOutcome has recorded it;
 // the sink keeps the first, so the row is unchanged. None of these is a
 // refusal, so every code here audits as error. It fires for every method,
 // not only tools/call: a failed initialize or tools/list did not succeed
-// either (lead ruling R2 on BUG-3879). It does NOT see a message mcp-go
+// either (BUG-3879). It does NOT see a message mcp-go
 // rejects before dispatching it to a method (an unknown method, a bad
 // jsonrpc version, a failed request-init): those still audit as ok, and no
-// tool runs on them (hunter r2 L1).
+// tool runs on them.
 func recordJSONRPCError(ctx context.Context, _ any, _ mcp.MCPMethod, _ any, err error) {
 	code := "jsonrpc_error"
 	switch {

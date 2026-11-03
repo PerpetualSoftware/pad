@@ -54,7 +54,7 @@ func (o BuiltinOrigin) Validate() error {
 		if err := json.Unmarshal([]byte(o.SeedFields), &m); err != nil || m == nil {
 			return fmt.Errorf("built-in origin seed_fields for %q is not a JSON object", o.Key)
 		}
-		// An escape decoding to NUL is refused like a raw one (codex r1):
+		// An escape decoding to NUL is refused like a raw one:
 		// Postgres's jsonb refuses it, and SQLite's trigger 129 refuses both,
 		// and a refused insert there poisons the whole import.
 		if jsonHoldsNUL(m) {

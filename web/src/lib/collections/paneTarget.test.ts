@@ -59,14 +59,14 @@ describe('resolvePaneTarget — candidate extraction (no current item)', () => {
 		// links. Taking the trailing segment at face value would drill the
 		// CURRENT workspace's pane to a same-numbered local item — the wrong
 		// item. This link shape must fall through to a normal navigation
-		// instead (Codex review).
+		// instead.
 		expect(resolvePaneTarget({ href: '/-/r/other-workspace/TASK-9' })).toBeNull();
 	});
 
 	it('refuses an ABSOLUTE cross-workspace resolver href too', () => {
 		// HTMLAnchorElement.href always returns the fully-resolved absolute
 		// URL, not the raw attribute — a future click-interceptor reading it
-		// off a live DOM anchor must still be caught (Codex review).
+		// off a live DOM anchor must still be caught.
 		expect(
 			resolvePaneTarget({ href: 'http://localhost:5173/-/r/other-workspace/TASK-9' }),
 		).toBeNull();
@@ -77,7 +77,7 @@ describe('resolvePaneTarget — candidate extraction (no current item)', () => {
 		// A target that carries both a `ref` and a cross-workspace `href`
 		// contradicts this type's own contract — the href is unambiguous
 		// evidence of non-locality, so it wins rather than risk opening
-		// whatever local item `ref` happens to name (Codex review).
+		// whatever local item `ref` happens to name.
 		expect(
 			resolvePaneTarget({ ref: 'TASK-9', href: '/-/r/other-workspace/TASK-9' }),
 		).toBeNull();
@@ -144,7 +144,7 @@ describe('isSamePaneTarget — same-item guard', () => {
 		// workspace-unique): a wiki-link written as "[[PLAN-5]]" before the
 		// item moved to the Tasks collection (now TASK-5, item_number 5) still
 		// names the same item — the guard must catch it, not push a redundant
-		// re-target (Codex review).
+		// re-target.
 		expect(isSamePaneTarget({ ref: 'PLAN-5' }, task5)).toBe(true);
 		expect(isSamePaneTarget({ ref: 'plan-5' }, task5)).toBe(true);
 	});
@@ -189,7 +189,7 @@ describe('isSamePaneTarget — same-item guard', () => {
 	});
 
 	it('a ref-sourced candidate is judged ONLY as a ref, never falling through to a raw slug compare', () => {
-		// The exact collision Codex's PR-diff pass flagged: current is
+		// The exact collision: current is
 		// slugged "plan-6" but numbered 5; a target explicitly carrying
 		// `{ ref: "plan-6" }` names a DIFFERENT item (number 6) and must NOT
 		// be swallowed as a same-item alias just because the ref string
@@ -203,8 +203,8 @@ describe('isSamePaneTarget — same-item guard', () => {
 	});
 
 	it('an href-sourced ref-shaped candidate is likewise judged ONLY as a ref, not a slug fallback', () => {
-		// Same collision as above, via the href channel this time — a second
-		// Codex PR-diff round caught the href branch still checking slug
+		// Same collision as above, via the href channel this time — a second bug:
+		// the href branch was still checking slug
 		// before ref-shape.
 		const current = item({ id: 'id-9', slug: 'plan-6', item_number: 5, collection_prefix: 'TASK' });
 		expect(isSamePaneTarget({ href: '/alice/myws/plans/plan-6' }, current)).toBe(false);
@@ -281,7 +281,7 @@ describe('isSameWorkspaceItemHref — editor content-link gate (TASK-2160)', () 
 	it('rejects a backslash-authority href that resolves cross-origin (/\\evil.example/...)', () => {
 		// Browsers treat "\" as "/", so this resolves to https://evil.example/…
 		// — an external navigation that must NOT be classified as a local item
-		// link even though it "looks" root-relative (Codex review).
+		// link even though it "looks" root-relative.
 		expect(isSameWorkspaceItemHref('/\\evil.example/myws/tasks/TASK-5', 'myws', colls)).toBe(false);
 	});
 
@@ -292,7 +292,7 @@ describe('isSameWorkspaceItemHref — editor content-link gate (TASK-2160)', () 
 	it('rejects a backslash-in-segment href (URL-normalizes but the raw href is what gets resolved)', () => {
 		// `/alice/myws/tasks\TASK-5` normalizes to `.../tasks/TASK-5`, but the
 		// raw href is what the host later splits on "/" — accepting it would
-		// drill a bogus `tasks\TASK-5` item. Require canonical form (Codex).
+		// drill a bogus `tasks\TASK-5` item. Require canonical form.
 		expect(isSameWorkspaceItemHref('/alice/myws/tasks\\TASK-5', 'myws', colls)).toBe(false);
 	});
 

@@ -72,8 +72,8 @@ import (
 // shared-state implementation could slot in without rewriting the stream
 // handler or the endpoint, and that held: the STREAM HANDLER is unchanged.
 //
-// The ENDPOINT is not, and an earlier draft of this note claimed both were
-//. handleListSessions gained a 503 branch, because the
+// The ENDPOINT is not, and an earlier draft of this note claimed both were unchanged.
+// handleListSessions gained a 503 branch, because the
 // out-of-process implementation made "I could not find out" a reachable
 // answer that the in-process one never had — the interface absorbed the
 // implementation swap, not the new failure mode the implementation brought

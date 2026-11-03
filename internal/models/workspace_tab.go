@@ -5,7 +5,7 @@ import "time"
 // WorkspaceTab is one workspace in a user's open set: a tab in the workspace
 // tab bar (PLAN-3002 U1 / TASK-3256). Stored as a user_workspace_tabs row, one
 // per (user, workspace). The whole row is server-side so the bar is the same
-// on every device (PLAN-3002 Q1).
+// on every device (PLAN-3002).
 type WorkspaceTab struct {
 	WorkspaceID string `json:"-"`
 	// Workspace fields the bar renders, filled from the caller's visible set
@@ -14,7 +14,7 @@ type WorkspaceTab struct {
 	Name          string `json:"name"`
 	OwnerUsername string `json:"owner_username"`
 	// IsGuest marks a workspace the caller reaches through grants only
-	// (PLAN-3002 Q10: guests enter the open set like members, with the guest
+	// (PLAN-3002: guests enter the open set like members, with the guest
 	// marker).
 	IsGuest bool `json:"is_guest"`
 

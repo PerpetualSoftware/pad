@@ -419,7 +419,7 @@ func PrintItemTitles(items []models.Item) {
 //
 // Decode the field blob with models.DecodeJSONKeepingNumbers so a number
 // arrives as json.Number and keeps its digits; a float64 rounds anything
-// above 2^53 (codex r1). A JSON null prints as null, which an empty value
+// above 2^53. A JSON null prints as null, which an empty value
 // would not say.
 func FormatFieldValue(v any) string {
 	switch t := v.(type) {

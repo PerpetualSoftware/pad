@@ -41,8 +41,8 @@
 		 * "View all (N)" continuation passes it via `?attachment_item=`
 		 * (PLAN-2392 DR-18). Seeds the filter, and re-seeds whenever the
 		 * deep-link CHANGES, so following a second item's link while this tab
-		 * is already mounted retargets instead of keeping the old scope
-		 * (Codex round 3). Clearing the scope in the UI rewrites the URL, which
+		 * is already mounted retargets instead of keeping the old scope.
+		 * Clearing the scope in the UI rewrites the URL, which
 		 * is why this can go back to '' without fighting the user.
 		 */
 		initialItemId?: string;
@@ -50,7 +50,7 @@
 		 * Called when the user clears the item scope, so the OWNER of the URL
 		 * can drop `?attachment_item=`. It lives up there because only a real
 		 * navigation updates `page.url` — which is what `initialItemId` is
-		 * derived from (Codex round 4).
+		 * derived from.
 		 */
 		onClearScope?: () => void;
 	}
@@ -171,10 +171,10 @@
 	// Drives the empty-state wording: "nothing matches" is honest when a filter
 	// is narrowing the list (including a foreign or stale `attachment_item`
 	// uuid, which is indistinguishable from an item with no attachments);
-	// "nothing uploaded yet" is only true unfiltered (Codex round 2).
-	// One projection, not two: re-listing the fields here let the two drift
-	// (final-review P3). `selections()` reads the same $state, so the derived
-	// still tracks every filter.
+	// "nothing uploaded yet" is only true unfiltered.
+	// One projection, not two: re-listing the fields here let the two drift.
+	// `selections()` reads the same $state, so the derived still tracks every
+	// filter.
 	let anyFilterActive = $derived(hasActiveStorageFilters(selections()));
 
 	/**
@@ -202,7 +202,7 @@
 	 * Fence 2 — the view generation. Mutations fence on this rather than on the
 	 * paint alone: a paint token has no generation, so an A→B→A round trip (or
 	 * an unmount) leaves an identity that still matches and a stale continuation
-	 * would sail through (Codex round 3).
+	 * would sail through.
 	 */
 	const viewFence = createFence(view);
 	/** Fence 3 — the workspace whose view is currently painted (and loaded). */
@@ -212,8 +212,8 @@
 	// fence invalidated for free (its load lives in an $effect, whose teardown
 	// runs on destroy); this tab's loaders are plain async functions, so nothing
 	// else retires their tokens — and a list or usage request that fails after
-	// unmount would otherwise raise an error toast for a tab that is gone
-	// (Codex round 5). "Nothing is painted any more" is exactly what the paint
+	// unmount would otherwise raise an error toast for a tab that is gone.
+	// "Nothing is painted any more" is exactly what the paint
 	// fence is for, so no separate destroyed flag is needed.
 	onDestroy(() => {
 		viewFence.invalidate();
@@ -233,14 +233,13 @@
 	 *    a reactive reload the previous workspace's rows and usage figure stay
 	 *    on screen, and a list request that was in flight across the switch is
 	 *    dropped by `loadList`'s workspace fence — which, with no successor
-	 *    request, would strand `listLoading` at true forever (final review P1).
+	 *    request, would strand `listLoading` at true forever.
 	 *    Since this fires on mount too, it REPLACES the old `onMount` load
 	 *    rather than sitting alongside it — an effect plus `onMount` would
 	 *    fetch the first page twice.
 	 *  - **Deep-link change.** A new `?attachment_item=` on the same route
 	 *    (a second "View all" followed from an already-open settings page)
-	 *    retargets the scope instead of silently keeping the first item's
-	 *    (Codex round 3).
+	 *    retargets the scope instead of silently keeping the first item's.
 	 *
 	 * A workspace change subsumes the deep-link branch: it re-seeds the scope
 	 * from the incoming link itself, so a single load covers both and the
@@ -259,7 +258,7 @@
 				// against the old one must stop reconciling. Bumped here, not
 				// derived from the paint: an A→B→A round trip lands back on an
 				// identity that MATCHES, and only a generation can tell that
-				// apart from never having left (Codex round 3).
+				// apart from never having left.
 				viewFence.invalidate();
 				// Everything workspace-scoped is meaningless in the new
 				// workspace and must not survive the switch: the rows and
@@ -293,7 +292,7 @@
 	 * Refetch after the item scope changed. Clears the rendered rows first:
 	 * the list fence stops a stale RESPONSE from landing, but on its own
 	 * it would leave the previous item's rows on screen while the new request
-	 * runs — indefinitely if that request fails (Codex round 5).
+	 * runs — indefinitely if that request fails.
 	 */
 	function retargetScope() {
 		attachments = [];
@@ -307,7 +306,7 @@
 		// URL change as already applied and doesn't fire a second fetch.
 		seededItemId = '';
 		// Drop the deep-link too, or a tab switch / reload / restored route
-		// re-applies a scope the user just dismissed (Codex rounds 2-4).
+		// re-applies a scope the user just dismissed.
 		onClearScope?.();
 		retargetScope();
 	}
@@ -318,8 +317,7 @@
 	 * change, so a figure fetched for the workspace the user just left must not
 	 * paint over the one they switched to (nor raise its error toast). The
 	 * generation check: on an A→B→A round trip the workspace matches again, so
-	 * only the generation can tell the first A request from the current one
-	 * (Codex round 1).
+	 * only the generation can tell the first A request from the current one.
 	 */
 	const usageFence = createFence(view);
 
@@ -338,8 +336,7 @@
 
 	// Every list load shares one fence, so a slower earlier request can never
 	// overwrite a newer one's rows/total/offset — the deep-link re-seed can
-	// start a load while onMount's or a filter change's is still in flight
-	// (Codex round 4).
+	// start a load while onMount's or a filter change's is still in flight.
 	const listFence = createFence(view);
 	// A list request is in flight. Only meaningful once the tab's initial
 	// `loading` gate is down — it keeps a scope retarget (which clears the
@@ -347,13 +344,13 @@
 	let listLoading = $state(false);
 	// The last list request failed. Without it a failure renders as "no
 	// attachments match", which is the same misleading empty-vs-broken
-	// conflation DR-10 removed from the item strip (Codex round 6).
+	// conflation DR-10 removed from the item strip.
 	let listError = $state(false);
 
 	/**
 	 * @param opts.retry - This load is an explicit Retry after a failure, so it
 	 * carries the same cache-invalidation duty the item strip's Retry does
-	 * (PLAN-2392 DR-10, final-review P2). `fetchAttachmentMetadata` latches
+	 * (PLAN-2392 DR-10). `fetchAttachmentMetadata` latches
 	 * `null` on a failed HEAD for the page lifetime, so the outage that broke
 	 * this list also poisoned every chip and inline image that probed during
 	 * it. Dropping a healthy entry is harmless — the cache holds immutable data
@@ -364,7 +361,7 @@
 		// change, so the request's workspace is captured and re-checked: the
 		// generation alone can't tell a superseded workspace from the current
 		// one, and both the rows and the metadata-cache keys are workspace
-		// scoped (Codex fresh-angle round 2).
+		// scoped.
 		const req = listFence.restart();
 		const reqWsSlug = req.value.ws;
 		listLoading = true;
@@ -414,7 +411,7 @@
 			// would reveal the next workspace's half-loaded view. The workspace
 			// check alone isn't enough — on an A→B→A round trip the first A load
 			// finishes with `wsSlug` back at A while A's current load is still in
-			// flight (Codex round 1). It can't strand: whatever supersedes a load
+			// flight. It can't strand: whatever supersedes a load
 			// is itself a load, and the newest one's `finally` always runs.
 			if (!req.stale()) loading = false;
 		}
@@ -484,7 +481,7 @@
 		// optimistically the way the item strip does, so the same row stays
 		// clickable throughout. Two DELETEs for one row means the second gets a
 		// 404 and the user sees a success and an "already deleted" for a single
-		// action (orchestrator's full-diff review round 2).
+		// action.
 		if (deletingIds.has(pending.att.id)) return;
 		void handleDelete(pending.att);
 	}
@@ -503,7 +500,7 @@
 		// Fence 2 for everything after the await. Deliberately NOT the paint
 		// token: that carries an identity but no generation, so an A→B→A round
 		// trip (or an unmount) would leave it matching again and let a stale
-		// continuation toast and refetch (Codex round 3).
+		// continuation toast and refetch.
 		const req = viewFence.begin();
 
 		deletingIds.add(att.id);
@@ -513,7 +510,7 @@
 			// TASK-2384): an editor open in another tab-pane still holds live
 			// <img>/chip NodeViews for this attachment, and an already-loaded
 			// image never re-requests, so without this they keep presenting a
-			// row the server no longer has (Codex round 14).
+			// row the server no longer has.
 			//
 			// Deliberately AHEAD of the fence, like the strip's: this is a GLOBAL
 			// side effect keyed by (workspace, id), not a write into this view's
@@ -522,7 +519,7 @@
 			// stale on proof we already have.
 			announceAttachmentDeleted(reqWsSlug, att.id);
 			// The toast DOES belong to a view: after an A→B switch mid-request it
-			// would announce A's deletion over B (final review round 4).
+			// would announce A's deletion over B.
 			if (req.stale()) {
 				// The refetch does NOT. This tab holds no tombstones and does not
 				// subscribe to the deletion bus, so a list request that raced the
@@ -530,7 +527,7 @@
 				// the fence above suppresses the only thing that heals it. A
 				// refetch is a request for the truth about what is ON SCREEN, not
 				// a write into a view the user left, so it is gated on the paint
-				// rather than on the generation (Codex round 4).
+				// rather than on the generation.
 				if (paint.isCurrent() && !painted.changed()) await reload();
 				return;
 			}
@@ -541,7 +538,7 @@
 			// stale (another tab, another user). Treat it exactly like a
 			// success: broadcast, invalidate, and refresh, rather than showing
 			// an error for something that is in fact already done
-			// (Codex round 20; matches the attachment strip's handling).
+			// (matches the attachment strip's handling).
 			if (err instanceof PadApiError && err.code === 'not_found') {
 				announceAttachmentDeleted(reqWsSlug, att.id);
 				if (req.stale()) {

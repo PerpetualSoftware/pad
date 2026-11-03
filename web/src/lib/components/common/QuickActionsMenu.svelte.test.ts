@@ -256,7 +256,7 @@ describe('QuickActionsMenu push dispatch (PLAN-2558 S4)', () => {
 	});
 
 	it('reports the SERVER\'s delivered_sessions, not the stale preflight count', async () => {
-		// BUG-2698 codex round 5. The preflight poll saw three sessions; by
+		// BUG-2698. The preflight poll saw three sessions; by
 		// the time the push landed the server matched one. The toast used to
 		// announce the preflight number because the response was discarded.
 		sessionsListMock.mockResolvedValue({

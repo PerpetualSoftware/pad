@@ -2,7 +2,7 @@ package main
 
 import "testing"
 
-// BUG-3037 (codex round 3) — `--expected-seq 0` must reach the wire.
+// BUG-3037 — `--expected-seq 0` must reach the wire.
 //
 // 0 is the flag's zero value AND a value a user can type, so a presence check
 // written as `if expectedSeq != 0` silently DROPPED the flag and sent an

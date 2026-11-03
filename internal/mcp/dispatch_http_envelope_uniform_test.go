@@ -187,7 +187,7 @@ func TestClassifyHTTPStatus_HintsAreActionable(t *testing.T) {
 			// free-form prose. Cap is intentionally NOT named in the
 			// hint — classifyHTTPStatusKind handles synthesized
 			// /api/v1/... 429s which can come from several limiters
-			// with different sizing (Codex review #546 round 1 [P2]).
+			// with different sizing.
 			name:        "429 hint suggests backoff + points at Retry-After",
 			kind:        ResourceItem, // kind doesn't matter for 429
 			ref:         "TASK-7",
@@ -227,7 +227,7 @@ func TestClassifyHTTPStatus_HintsAreActionable(t *testing.T) {
 // TestExtractUpstreamMessage covers each shape the helper handles —
 // envelope happy path, chi default 404, and the safe-fallback cases.
 //
-// Codex review #387 round 1 caught that the pre-fix fallback returned
+// The pre-fix fallback returned
 // the raw body verbatim, which would forward arbitrary upstream JSON
 // (potentially including tokens / passwords / debug dumps) into the
 // hint surface. Post-fix non-envelope bodies return "" — the hint

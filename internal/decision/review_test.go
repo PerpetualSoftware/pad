@@ -12,14 +12,14 @@ import (
 	"unicode/utf8"
 )
 
-// One test per finding from review round 1 (backend: opencode/gpt-5.6-luna).
-// Each asserts the CONSEQUENCE the finding described, so it fails on the
+// One test per defect.
+// Each asserts the CONSEQUENCE the defect had, so it fails on the
 // pre-fix code rather than merely exercising the new lines.
 
-// Finding 1 — the backoff ignored context cancellation, so a cancelled Ask
+// The backoff ignored context cancellation, so a cancelled Ask
 // waited out the full wait (up to maxBackoff) before issuing a doomed retry.
 //
-// The finding names ONE mechanism and it needs two instruments, because the
+// This is ONE mechanism and it needs two instruments, because the
 // obvious single test does not reach the code it claims to. Cancelling during
 // the first response makes http.Client.Do fail, so Ask returns from the
 // TRANSPORT-error branch having never reached the sleep at all — the first
@@ -27,7 +27,7 @@ import (
 // the substitution showed up. So: this test pins that Ask HONOURS an
 // interrupted wait, and TestCtxSleepReturnsEarlyOnCancellation pins that the
 // wait actually installed on a real provider IS interruptible. Neither alone
-// covers the finding.
+// covers it.
 func TestAskAbortsWhenTheBackoffIsInterrupted(t *testing.T) {
 	sentinel := errors.New("wait interrupted")
 
@@ -58,7 +58,7 @@ func TestAskAbortsWhenTheBackoffIsInterrupted(t *testing.T) {
 	}
 }
 
-// Finding 1, the in-flight case: a cancellation while the request is on the
+// The in-flight case: a cancellation while the request is on the
 // wire must also end the call, and must not be swallowed as a retryable
 // transport error.
 func TestCancellationDuringTheRequestEndsTheCall(t *testing.T) {
@@ -84,7 +84,7 @@ func TestCancellationDuringTheRequestEndsTheCall(t *testing.T) {
 	}
 }
 
-// Finding 1, the production path: the real sleep must return early. The fake
+// The production path: the real sleep must return early. The fake
 // above can only show that Ask HONOURS an aborting sleep; this shows that the
 // sleep actually installed on a real provider aborts.
 func TestCtxSleepReturnsEarlyOnCancellation(t *testing.T) {
@@ -136,7 +136,7 @@ func TestCtxSleepReturnsEarlyOnCancellation(t *testing.T) {
 	}
 }
 
-// Finding 2 — a body read that failed partway was discarded, so a caller could
+// A body read that failed partway was discarded, so a caller could
 // not tell an absent ErrorType from an unread one.
 func TestPartialBodyReadIsCarriedOnTheError(t *testing.T) {
 	// Content-Length promises more than the handler writes, so the client's
@@ -171,7 +171,7 @@ func TestPartialBodyReadIsCarriedOnTheError(t *testing.T) {
 	}
 }
 
-// Finding 3 — exhausting retries wrapped a *transientError, which is not an
+// Exhausting retries wrapped a *transientError, which is not an
 // *APIError, so errors.As could not reach the status or error type.
 func TestExhaustedRetriesStillExposeTheAPIError(t *testing.T) {
 	p, _ := newFake(t, func(_ *fake, _ wireRequest, _ []byte, w http.ResponseWriter) {
@@ -202,7 +202,7 @@ func TestExhaustedRetriesStillExposeTheAPIError(t *testing.T) {
 	}
 }
 
-// Finding 4 — the truncation budget was measured on RAW string length while
+// The truncation budget was measured on RAW string length while
 // encoding/json escapes <, > and & to six-byte sequences, so a state of '<'
 // characters passed the budget check and then drew max_tokens_exceeded.
 func TestTruncationAccountsForJSONEscapeExpansion(t *testing.T) {
@@ -265,7 +265,7 @@ func TestTruncationAccountsForJSONEscapeExpansion(t *testing.T) {
 	}
 }
 
-// Finding 4, boundary: when the questions alone consume the budget there is no
+// Boundary: when the questions alone consume the budget there is no
 // room for any state, and that must be an error or an empty state — never a
 // panic or a negative slice index.
 func TestFitStateWithNoRoomForState(t *testing.T) {
@@ -292,7 +292,7 @@ func TestFitStateWithNoRoomForState(t *testing.T) {
 	}
 }
 
-// Finding 4, the helper's own edge case I found while fixing it: an index at or
+// The helper's own edge case: an index at or
 // past len(s) must not index out of range.
 func TestRuneBoundaryAtOrBeforeEdges(t *testing.T) {
 	const s = "aé" // 3 bytes: 'a', then a two-byte rune
@@ -308,7 +308,7 @@ func TestRuneBoundaryAtOrBeforeEdges(t *testing.T) {
 	}
 }
 
-// Finding 5 — an answer whose kind differs from its question's was accepted,
+// An answer whose kind differs from its question's was accepted,
 // and fromWire then left the requested kind's member at a plausible zero.
 func TestAnswerKindMustMatchTheQuestion(t *testing.T) {
 	// A noul question answered with a score. Noul would read 0.0 — "almost
@@ -339,7 +339,7 @@ func TestAnswerKindMustMatchTheQuestion(t *testing.T) {
 	}
 }
 
-// Finding 6 — TopLevel ordered only on the parsed index, so distinct keys
+// TopLevel ordered only on the parsed index, so distinct keys
 // sharing an index ("1" and "01"), or several unparseable keys sharing the
 // sentinel, were tie-broken by Go's randomised map iteration order.
 func TestTopLevelIsDeterministicForDegenerateKeys(t *testing.T) {

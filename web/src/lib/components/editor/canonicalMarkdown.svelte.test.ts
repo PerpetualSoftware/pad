@@ -153,7 +153,7 @@ describe('canonicalEditorMarkdown agrees with the editor round trip (BUG-3197)',
 		expect(withSpans).toMatch(/<p>para one<\/p><p>para two<\/p>/);
 	});
 
-	// Codex round 4: a filterTransaction plugin that refuses the replace leaves
+	// A filterTransaction plugin that refuses the replace leaves
 	// the EMPTY document. Serializing that would make "" the canonical form of a
 	// non-empty body, and a user who deleted the whole body would be deduped.
 	it('a refused replace answers null, never the empty document', () => {

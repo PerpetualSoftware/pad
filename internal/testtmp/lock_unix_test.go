@@ -90,7 +90,7 @@ func TestSweepRemovesAnUnlockedDirWhosePidIsAlive(t *testing.T) {
 }
 
 // A directory with no owner.lock was made before BUG-4088 and keeps the pid
-// rule (lead ruling (a)). So a lockless directory whose pid names some live,
+// rule. So a lockless directory whose pid names some live,
 // unrelated process stays: by design, the leak direction is closed only for
 // directories that carry a lock. Pid 1 always exists.
 func TestSweepKeepsALocklessDirWhosePidIsAlive(t *testing.T) {

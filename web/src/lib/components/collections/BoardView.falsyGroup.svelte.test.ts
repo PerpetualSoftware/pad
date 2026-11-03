@@ -1,5 +1,4 @@
-// BUG-3053, lead review of PR #1348 — the FIFTH consumer of the lane-key pair,
-// and the one I had said I checked.
+// BUG-3053 (PR #1348) — the FIFTH consumer of the lane-key pair.
 //
 // `commitColumnMove` compared the RAW field value against the lane string:
 //

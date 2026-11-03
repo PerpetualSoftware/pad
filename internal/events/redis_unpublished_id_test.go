@@ -125,7 +125,7 @@ func (h *countingHandler) Handle(context.Context, slog.Record) error { h.n.Add(1
 func (h *countingHandler) WithAttrs([]slog.Attr) slog.Handler        { return h }
 func (h *countingHandler) WithGroup(string) slog.Handler             { return h }
 
-// BUG-2732 (the lead's review note): a failed publish is LOGGED BY THE CALLER,
+// BUG-2732: a failed publish is LOGGED BY THE CALLER,
 // rate-bounded (server.publishActivityEvent). The bus used to log every
 // failure itself as well, once per publish for the whole of a Redis outage.
 // A storm of failures must produce no log line at this layer. Not parallel:

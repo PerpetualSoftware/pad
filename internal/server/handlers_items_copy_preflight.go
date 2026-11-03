@@ -1345,8 +1345,8 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// DroppedParent consults both: GetChildItems joins item_links and
 	// never looks at items.parent_id, while an item created through the
 	// API with a raw parent_id has no link row at all. Missing those
-	// would leave children_orphaned false on a move that strands them
-	//. Deduplicated by id — a child can legitimately
+	// would leave children_orphaned false on a move that strands them.
+	// Deduplicated by id — a child can legitimately
 	// carry both.
 	children, err := s.store.GetChildItems(item.ID)
 	if err != nil {
@@ -1395,8 +1395,8 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 		// and count it itself (see legacyHierarchyLinkTypes).
 		//
 		// COST: this is the one case that makes an UNRESTRICTED caller pay
-		// for a per-link GetItem, which restricted callers already paid
-		//. Accepted rather than batched, because the
+		// for a per-link GetItem, which restricted callers already paid.
+		// Accepted rather than batched, because the
 		// predicate is exactly "there is a legacy 'plan' row here": a
 		// workspace with none — every workspace created since the rename,
 		// since NormalizeItemLinkType has no 'plan' alias and no write path
@@ -1470,8 +1470,8 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// The legacy items.parent_id column, which the item_links scan above
 	// cannot see. models.ItemCreate accepts `parent_id` on the create
 	// route and CreateItem inserts it verbatim, so this is API-reachable
-	// state, and CopyItemAcrossWorkspaces scrubs it along with the link
-	//. Same visibility filter as every other
+	// state, and CopyItemAcrossWorkspaces scrubs it along with the link.
+	// Same visibility filter as every other
 	// relationship, plus an explicit workspace guard: the column's foreign
 	// key constrains it to items(id) but says nothing about WHICH
 	// workspace, and GetItem is id-global with no workspace predicate, so

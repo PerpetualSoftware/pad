@@ -100,7 +100,7 @@ type Observer interface {
 	// Redis had not acknowledged the SUBSCRIBE.
 	//
 	// THE TWO ARE NOT DISJOINT, and an earlier version of this comment said
-	// they were (codex round 3). When the acknowledgement eventually lands,
+	// they were. When the acknowledgement eventually lands,
 	// that path calls dropWorkspaceCoverage, which reports SequenceReset with
 	// reason subscription_unconfirmed — though only when a buffer existed to
 	// drop, which on this path is the uncommon case. So this counter is the
@@ -253,7 +253,7 @@ const (
 	// STOPPED VOUCHING FOR ITS BUFFER (BUG-2738).
 	//
 	// IT DOES NOT SAY THE CONNECTION WAS REPLACED, and an earlier version of
-	// this comment claimed it did (codex round 6). This reason is emitted
+	// this comment claimed it did. This reason is emitted
 	// before the re-establishment is attempted, and the attempt can install
 	// nothing — the bus closes, or the last subscriber leaves while we dial.
 	// Observer.SubscriptionCycled is the one that means "replaced"; this one

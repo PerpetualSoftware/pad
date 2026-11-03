@@ -53,7 +53,7 @@ func TestFormatNumber(t *testing.T) {
 	}
 }
 
-// BUG-4056 r1: array elements and playbook argument tokens share the helper.
+// BUG-4056: array elements and playbook argument tokens share the helper.
 func TestBUG4056SliceAndPlaybookNumbers(t *testing.T) {
 	got, err := toStringSlice([]any{float64(1000000), float64(2.5), "x", true})
 	if err != nil || strings.Join(got, ",") != "1000000,2.5,x,true" {

@@ -98,7 +98,7 @@ func TestPerComment_EachCommentAskedAloneOnce(t *testing.T) {
 	}
 }
 
-// Lead ruling: the window bounds what is ASKED, not what stays current. A
+// The window bounds what is ASKED, not what stays current. A
 // breaking comment keeps its answer, and so its chip, after 11 newer ones.
 func TestPerComment_AnswerStaysCurrentAfterElevenNewerComments(t *testing.T) {
 	fx := newCommentFixture(t)

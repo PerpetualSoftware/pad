@@ -178,7 +178,7 @@ describe('localIndex.includesUnparentedMetadataFor', () => {
 	});
 });
 
-// TASK-2099 Codex review round 2 (P1): the collection page must not trust
+// TASK-2099: the collection page must not trust
 // `includesUnparentedMetadataFor` while a resync is still in flight — the
 // warm-cache boot path can serve a persisted (possibly stale) capability
 // bit before its follow-up reconcile confirms it. `pendingResyncFor` is the
@@ -212,7 +212,7 @@ describe('localIndex.pendingResyncFor', () => {
 	});
 });
 
-// TASK-2099 Codex review round 4: a resync triggered mid-session (e.g. the
+// TASK-2099: a resync triggered mid-session (e.g. the
 // collection page's SSE/periodic-sync-driven `deltaSync`, not
 // `bootstrap()`) has no owner for clearing `pendingResync` unless the
 // caller explicitly marks its own catch-up. Without `markCaughtUp`, a
@@ -237,7 +237,7 @@ describe('localIndex.markCaughtUp', () => {
 		expect(localIndex.pendingResyncFor(ws)).toBe(false);
 	});
 
-	// Codex review round 5: a caller's catch-up confirmation must not clear
+	// A caller's catch-up confirmation must not clear
 	// `pendingResync` out from under a DIFFERENT, concurrently-landed resync
 	// (SSE/periodic-sync/bootstrap can all trigger one). A stale epoch means
 	// exactly that raced — skip the clear so the newer resync's own

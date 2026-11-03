@@ -307,7 +307,7 @@ func userConfigPath() string {
 // pad.db; PAD_DB_PATH, applied second, wins, and its directory is the data
 // dir. set is false when neither is set.
 //
-// BUG-4066 phase 1 (lead ruling 4b4cb4ff): a relative value still resolves
+// BUG-4066 phase 1 (b4cb4ff): a relative value still resolves
 // verbatim, against this process's own cwd, exactly as before. Because a CLI
 // and a server in different directories then use different data, the
 // process warns once (warnRelativeDataDir). Phase 2 (TASK-4072) refuses it.
@@ -334,8 +334,7 @@ func envDataDir() (dataDir, dbPath string, set bool) {
 // `pad` children it execs per tool call: their stderr is folded into the
 // agent-facing error text, and `pad mcp serve` has already warned once on its
 // own stderr. It is deliberately NOT a user setting and is not documented
-// for users, so the deprecation cannot be silenced before phase 2
-// (TASK-4072; lead ruling on BUG-4066 r1).
+// for users, so the deprecation cannot be silenced before phase 2 (TASK-4072).
 const InternalNoDataDirWarningEnv = "PAD_INTERNAL_NO_DATA_DIR_WARNING"
 
 // WarnOnRelativeDataDir runs the relative data-dir check without loading the
@@ -407,7 +406,7 @@ func warnRelativeDataDir(name, value string) {
 //     CANNOT confirm the user's veto and must fail closed (not arm),
 //     rather than silently proceeding as if no veto existed.
 //
-// The last case is the fix for Codex round-1 HIGH-1: a malformed
+// The last case is the fix for a bug where a malformed
 // config.toml in a repo that opted into auto_arm must not arm.
 func LoadPushConfigAutoArm() (*bool, error) {
 	path := userConfigPath()
@@ -618,7 +617,7 @@ func Load() (*Config, error) {
 			cfg.EventsPublishEpoch = on
 		} else {
 			// LOUD, because the silent reading is the dangerous one
-			// (BUG-2736, codex round 9). An operator who typed "yes" believes
+			// (BUG-2736). An operator who typed "yes" believes
 			// they have flipped phase 2; the value is ignored and the
 			// deployment stays on phase 1, which looks exactly like a correct
 			// phase-1 deployment from every metric. Ignoring it is still the
@@ -695,7 +694,7 @@ func (c *Config) Save() error {
 	// tidiness for the push-consent gate (PLAN-2613 S2): a monitor
 	// reconnecting while `pad configure` rewrites the file could otherwise
 	// read an empty/partial config, miss a [push] auto_arm=false veto, and
-	// arm despite it (Codex R2 HIGH-1).
+	// arm despite it.
 	tmp, err := os.CreateTemp(c.DataDir, ".config-*.toml.tmp")
 	if err != nil {
 		return err

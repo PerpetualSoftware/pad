@@ -22,7 +22,7 @@ identityGateSuite({
 				// view-only cards (planLaneOrder), and its no-room toast and the
 				// empty-batch return both sit after the identity check that guards
 				// the optimistic commit. A refused batch reloads the board, after
-				// an identity check, as the role write's recovery does (codex r4).
+				// an identity check, as the role write's recovery does.
 				// TASK-2204: both recovery reloads now toast, after the same checks.
 				// TASK-3525: the plan is also handed the dragged card's id (a
 				// synchronous planner argument); no await or check moved.

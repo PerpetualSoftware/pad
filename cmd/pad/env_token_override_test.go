@@ -233,7 +233,7 @@ func newStubSessionServer(t *testing.T, meAccept string, sessionStatus int) *stu
 }
 
 // TestInit_RejectedEnvTokenFailsInsteadOfStoredFallback covers PR #1160
-// round-1 bug 1: with PAD_TOKEN set to a token the server rejects,
+// With PAD_TOKEN set to a token the server rejects,
 // `pad init`'s auth step used to fall back to valid stored credentials
 // and silently run as that user — then report the override as active.
 // Under the override, an unauthenticated session must fail with the
@@ -268,8 +268,8 @@ func TestInit_RejectedEnvTokenFailsInsteadOfStoredFallback(t *testing.T) {
 	}
 }
 
-// TestLogin_UnderEnvTokenSkipsStoredShortcut covers PR #1160 round-1
-// bug 2: `login` printed "Already logged in as <stored user>" off the
+// TestLogin_UnderEnvTokenSkipsStoredShortcut covers a PR #1160
+// bug: `login` printed "Already logged in as <stored user>" off the
 // credential store even while PAD_TOKEN was overriding every API call —
 // directly contradicting the envTokenNotice printed above it. Under the
 // override the shortcut must not fire; login proceeds to the real flow

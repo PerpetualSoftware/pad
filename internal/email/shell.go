@@ -53,8 +53,8 @@ func buildHTMLShell(bodyHTML, footerNoteHTML string, cloudMode bool) string {
 		// Contribute, FAQ, Security, Privacy, Terms, Sub-processors. The
 		// auth-page AuthFooter component carries the same nine links; emails
 		// get the same set so the brand spec's "Full parity" promise for
-		// transactional mail (§1) is honored. Codex caught a trimmed subset
-		// on first review (TASK-907 round 1).
+		// transactional mail (§1) is honored. A trimmed subset was
+		// rejected (TASK-907).
 		year := time.Now().UTC().Year()
 		b.WriteString(fmt.Sprintf(`  <p style="font-size: 11px; color: #999; line-height: 1.5; margin-top: 16px;">
     <a href="https://github.com/PerpetualSoftware/pad" style="color: #999; text-decoration: underline;">GitHub</a>

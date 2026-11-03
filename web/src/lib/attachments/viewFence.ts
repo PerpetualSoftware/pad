@@ -9,14 +9,14 @@
  * `/{user}/{ws}/settings` is one SvelteKit route, so a workspace switch changes
  * `wsSlug` under a mounted tab. Every fetch, mutation and timer therefore has to
  * say which view it belongs to. Written out by hand at each call site, that
- * invariant failed the same way four review rounds running — always by
+ * invariant failed the same way repeatedly — always by
  * comparing only PART of the identity, almost always by forgetting the
  * workspace half. This module makes the identity a single value that is read in
  * exactly one place per component and carried on a token, so no call site can
  * assemble a partial one.
  *
  * THREE FENCES, THREE QUESTIONS. They are deliberately NOT collapsible into one
- * — a prior review round established that merging any two loses either A→B
+ * — merging any two loses either A→B
  * suppression or same-item-Retry reconciliation:
  *
  *   1. REQUEST fence (`createFence`, restarted per request) — "is this RESPONSE
@@ -68,7 +68,7 @@ function serialize(parts: IdentityParts): string | null {
 	// and uuids" is an assumption this module has no way to enforce. JSON quotes
 	// and escapes both halves, so no two distinct part sets can serialise the
 	// same — a collision here would silently let a stale fence pass, which is
-	// the exact failure this module exists to prevent (Codex round 1).
+	// the exact failure this module exists to prevent.
 	return JSON.stringify(pairs);
 }
 

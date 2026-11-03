@@ -171,8 +171,8 @@ describe('BUG-2991: the create-workspace modal does not act for a session that e
 		// NON-VACUITY, and it is not decoration: before BUG-3004 was fixed the
 		// reset wiped the typed name, the submit button was disabled, the click
 		// did nothing, and this exact assertion pair passed for that reason
-		// (codex round 5 flagged the shape; the first version of this test had
-		// it). "Did not navigate" is trivially true of a submit that never
+		// (an earlier version of this test had that shape). "Did not navigate" is trivially true of
+		// a submit that never
 		// happened.
 		expect(api.workspaces.create).toHaveBeenCalled();
 
@@ -220,7 +220,7 @@ describe('BUG-2991: the create-workspace modal does not act for a session that e
 	});
 
 	it('does not navigate when the user changes during the import\'s loadAll', async () => {
-		// The SECOND await (codex round 5). One check after the upload is not
+		// The SECOND await. One check after the upload is not
 		// enough: `loadAll` is another await, and a swap landing inside it put
 		// the callback, the toast and the navigation back in the new user's
 		// session. The rule is per-await, not per-operation.
@@ -235,7 +235,7 @@ describe('BUG-2991: the create-workspace modal does not act for a session that e
 		await settle();
 
 		expect(api.workspaces.importBundle).toHaveBeenCalled();
-		// PRECONDITION, not decoration (codex round 8): without it a regression
+		// PRECONDITION, not decoration: without it a regression
 		// that returned right after the FIRST identity check would satisfy every
 		// assertion below, and this test exists for the SECOND one. Reaching
 		// `api.workspaces.list` is what proves we are past the first check and
@@ -252,7 +252,7 @@ describe('BUG-2991: the create-workspace modal does not act for a session that e
 	});
 
 	it('does not report a FAILED import to the user who did not start it', async () => {
-		// codex round 7. The success path was fenced and the failure path was
+		// The success path was fenced and the failure path was
 		// not, so an import that rejected after the signed-in user changed
 		// showed A's error to B — an error for an operation B never started,
 		// naming a file they never chose.
@@ -316,7 +316,7 @@ describe('BUG-2991: the create-workspace modal does not act for a session that e
 	});
 
 	it('closes itself when the signed-in user changes, so no draft is inherited', async () => {
-		// codex round 7. The OPERATIONS were fenced; the DRAFT was not. A modal
+		// The OPERATIONS were fenced; the DRAFT was not. A modal
 		// left open by one user kept their typed name, description, chosen
 		// template and selected bundle on screen for whoever signed in next —
 		// visible to them, and submittable by them.
@@ -337,7 +337,7 @@ describe('BUG-2991: the create-workspace modal does not act for a session that e
 	});
 
 	it('does not close the NEXT user\'s freshly opened modal when a stale create lands', async () => {
-		// codex round 8. `close()` is global — it writes
+		// `close()` is global — it writes
 		// `uiStore.createWorkspaceOpen` — so a continuation belonging to the
 		// previous session dismissed the modal the NEW user had just opened,
 		// taking their draft with it. By then the identity listener has already
@@ -372,7 +372,7 @@ describe('BUG-2991: the create-workspace modal does not act for a session that e
 	});
 
 	it('does not re-enable the NEXT user\'s in-flight import when a stale one settles', async () => {
-		// codex round 9. `importing` is COMPONENT state and the component
+		// `importing` is COMPONENT state and the component
 		// outlives the operation, so a stale import's `finally` cleared it
 		// unconditionally: A starts an import, identity changes, B opens the
 		// modal and starts their own, and A's promise settling re-enabled B's
@@ -419,7 +419,7 @@ describe('BUG-2991: the create-workspace modal does not act for a session that e
 	});
 
 	it('does not act on a stale operation after the modal is remounted, same user', async () => {
-		// codex round 10. The token used to be instance-local, so a remount —
+		// The token used to be instance-local, so a remount —
 		// a logout, or navigating between the console and workspace shells —
 		// reset it while an older promise still held the old value. Identity
 		// cannot answer this case: the user did NOT change. What changed is

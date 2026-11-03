@@ -8,7 +8,7 @@
 // EXECUTES those plans against the live `page.state` / `history` — it reads the
 // current stamp off SvelteKit's `page.state`, asks the pure planner what to do,
 // and performs the returned navigation, fencing the async `history.go`
-// traversals against duplicate gestures (R14).
+// traversals against duplicate gestures.
 //
 // It was inline in the collection route (`[collection]/+page.svelte`) through
 // Phase 1; PLAN-2154 Phase 2 (Architecture E, TASK-2170) extracts it here so
@@ -47,14 +47,13 @@ export interface PaneControllerDeps {
 	/**
 	 * Cancel a pending j/k pane-follow debounce (collection page only; a no-op
 	 * on the full-page host, which has no list to follow). Called at the start
-	 * of every drill/close/reset so a stale follow can't clobber the new state
-	 * (R3 / R14).
+	 * of every drill/close/reset so a stale follow can't clobber the new state.
 	 */
 	cancelFollow: () => void;
 	/**
 	 * Move keyboard focus into the stable pane region (owned by the shell,
 	 * which binds `paneEl`). Fired synchronously on each in-pane hop before the
-	 * `{#key itemSlug}` remount destroys the just-activated control (R1).
+	 * `{#key itemSlug}` remount destroys the just-activated control.
 	 */
 	focusPaneRegion: () => void;
 	/**
@@ -133,7 +132,7 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 	// before the first's popstate lands and OVERSHOOT the intended entry. Blocks
 	// re-entrancy; bounded so it can never stick (a stuck flag would freeze every
 	// pane gesture). Steady-state depth-0 opens/re-targets issue no `history.go`,
-	// so this only arms on a close/reset (R14; Codex review).
+	// so this only arms on a close/reset.
 	const PANE_GO_SETTLE_MS = 500;
 	let paneGoInFlight = false;
 	let paneGoTimer: ReturnType<typeof setTimeout> | null = null;
@@ -249,7 +248,7 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 				// `?item=` (not just depth 0) rejects a competing browser Back that
 				// landed on the pre-pane entry (which has no `?item=`), so the reset
 				// can't be written onto the wrong entry; it stays armed for this go's
-				// own popstate (Codex review).
+				// own popstate.
 				if (!page.url.searchParams.has('item')) return false;
 				if (currentPaneState().paneDepth !== 0) return false;
 				const u = new URL(page.url.href);
@@ -289,7 +288,7 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 		if (paneNavInFlight()) return;
 		controllerActionSeq++;
 		// A pending j/k follow scheduled at a shallower depth must not fire after
-		// this drill and clobber it (R3 / R14).
+		// this drill and clobber it.
 		deps.cancelFollow();
 		const plan = planPaneDrill(deps.getOpenItemRef(), target, currentPaneState());
 		if (plan.kind === 'noop') return;
@@ -302,7 +301,7 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 			reset: false,
 			state: plan.state,
 		});
-		// Focus per hop (R1): pull focus into the stable pane region NOW, before
+		// Focus per hop: pull focus into the stable pane region NOW, before
 		// this drill's `{#key itemSlug}` remount destroys the just-clicked link
 		// and dumps focus to `<body>`. Covers the editor-link keyboard path too —
 		// EditorLinkPopover.handleHrefClick hides the popover (removing the
@@ -324,7 +323,7 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 	// The pane chrome's Back chevron (PLAN-2154 Architecture C / TASK-2164) —
 	// `ItemDetail`'s `onBack`, rendered only once `page.state.paneDepth > 0`.
 	// Pops exactly one drill level through the same FENCED `paneHistoryGo` /
-	// `paneNavInFlight()` guard the depth-aware ESC handler uses (R14), not a
+	// `paneNavInFlight()` guard the depth-aware ESC handler uses, not a
 	// bare `history.back()` — a rapid double-click, or a click racing ESC/close,
 	// can't queue a second traversal and overshoot. The depth check is
 	// defense-in-depth: the chevron only renders at depth>0, but a stale click
@@ -333,7 +332,7 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 	function handlePaneBack() {
 		if (currentPaneState().paneDepth > 0 && !paneNavInFlight()) {
 			paneHistoryGo(-1);
-			// Focus per hop (R1) — same rationale as `navigatePaneTo`: the pop
+			// Focus per hop — same rationale as `navigatePaneTo`: the pop
 			// remounts the pane content and unmounts the just-clicked Back button,
 			// so move focus onto the stable region before that drop can reach
 			// `<body>` (where the next `j`/`k` would steal to list-nav).
@@ -354,7 +353,7 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 	//  • COLLECTION RENAME (`/user/ws/NEWSLUG?item=X`) — the pathname changed
 	//    (old→new slug) but the pane stays open. This needs the rename-specific
 	//    handling: replaceState (not push) so it adds no uncounted history entry
-	//    that would desync the close-depth arithmetic (R8); a FRESH UNOWNED
+	//    that would desync the close-depth arithmetic; a FRESH UNOWNED
 	//    depth-0 stamp (every predecessor entry — pre-pane base + any drills —
 	//    still points at the now-dead OLD slug, so carrying ownership forward
 	//    would make an owned close `history.go` onto a 404; an unowned base
@@ -371,7 +370,7 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 	//    item route with NO `?item=`) — this leaves the collection page entirely
 	//    (the pane closes, the component unmounts, its drafts WOULD be lost), so
 	//    it must retain the ORIGINAL guarded push: the unsaved-draft prompt has
-	//    to fire, and there is no pane to stamp (Codex review).
+	//    to fire, and there is no pane to stamp.
 	function handlePaneNavigateAway(url: string) {
 		let keepsPane = false;
 		try {

@@ -7,11 +7,11 @@ import {
 
 // The two tests IDEA-2894 exists to make possible. Neither could be written
 // while the mapper was inline in CopyItemDialog.svelte and unexported, which
-// is why two review-round fixes to it shipped unpinned.
+// is why two earlier fixes to it shipped unpinned.
 
 describe('copyDropReasonMessage', () => {
 	it('has a sentence for every reason the server can emit', () => {
-		// This is round 12's OTHER finding as a test: BUG-2674 added
+		// This pins the second defect found in this area: BUG-2674 added
 		// `referent_not_portable` server-side, nothing here learned it, and it
 		// rendered through the fallback as the raw enum string in front of a
 		// user. A reason that maps to itself is that defect.
@@ -20,8 +20,8 @@ describe('copyDropReasonMessage', () => {
 	});
 
 	it('never claims a target exists, or says where it is', () => {
-		// Round 12 (`not_found` asserted non-existence) and round 18
-		// (`referent_not_portable` asserted existence AND location) were the
+		// The `not_found` reason (asserted non-existence) and the
+		// `referent_not_portable` reason (asserted existence AND location) were the
 		// same defect twice. The server collapses a HIDDEN target to
 		// `not_found`, and emits `referent_not_portable` without resolving the
 		// target at all, so any sentence that settles the question is a claim

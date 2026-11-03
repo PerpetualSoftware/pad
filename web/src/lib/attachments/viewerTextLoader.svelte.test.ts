@@ -39,7 +39,7 @@ function bodylessResponse(): Response {
 /**
  * A Response that streams `body` in chunks, exercising the `getReader` leg.
  *
- * `text()` THROWS (codex R3 #4). The first version of this fixture exposed the
+ * `text()` THROWS. The first version of this fixture exposed the
  * whole body through `text()` as well, so an implementation that ignored the
  * stream and buffered everything passed the "bounds a body whose size the
  * metadata never declared" test — the exact behaviour those tests exist to

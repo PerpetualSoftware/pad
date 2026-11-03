@@ -118,8 +118,8 @@ describe('BUG-2978: settings permissions survive the /me window', () => {
 
 	it('drops owner-only chrome when membership becomes a definitive denial', async () => {
 		// The complement of the test above, and the reason the cache is gated on
-		// `membershipKnown` rather than on `currentMembership !== null` (codex
-		// round 1): null means BOTH "not fetched yet" and "no access". A cache
+		// `membershipKnown` rather than on `currentMembership !== null`:
+		// null means BOTH "not fetched yet" and "no access". A cache
 		// that ignores every null holds the last good answer forever, so an owner
 		// removed from the workspace — or a `/me` that 403s — would keep the
 		// owner-only tab and the delete controls on screen indefinitely.

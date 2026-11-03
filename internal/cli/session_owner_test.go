@@ -155,7 +155,7 @@ func TestOwnerLiveness_Socket(t *testing.T) {
 	// EVERY recorded signal must agree. A live socket node beside a dead
 	// pid is dead: the kernel does not unlink a socket when its owner is
 	// SIGKILLed, so a socket-only verdict would report a crashed harness
-	// alive forever (codex round 1 P1).
+	// alive forever.
 	withDeadPID := o
 	withDeadPID.PID = exitedProcessPID(t)
 	if got := OwnerLiveness(&withDeadPID); got != LivenessDead {
@@ -219,7 +219,7 @@ func itoa(n int) string { return strconv.Itoa(n) }
 
 // TestOwnerLiveness_SocketProbeErrorIsUnknown: a socket the caller cannot
 // stat (EACCES, not ENOENT) is not evidence the owner is gone — the verdict
-// is unknown, which the pruner leaves alone (codex round 1 P2). Skips as
+// is unknown, which the pruner leaves alone. Skips as
 // root, where permission bits do not bite.
 func TestOwnerLiveness_SocketProbeErrorIsUnknown(t *testing.T) {
 	if runtime.GOOS == "windows" || os.Geteuid() == 0 {

@@ -7,7 +7,7 @@ import { ImportTransportError } from '$lib/api/importUpload';
 // The poll outlasts the server's 60s per-Read idle window: a stalled upload
 // the client gave up on is still "running" there until that window closes,
 // and only then rolled back. A key the server does not hold is UNKNOWN, never
-// "nothing was created" (lead ruling): it may have restarted, or the import
+// "nothing was created": it may have restarted, or the import
 // may have been started somewhere this registry cannot see.
 
 export const IMPORT_RESOLVE_WINDOW_MS = 75_000;

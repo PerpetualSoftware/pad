@@ -3,7 +3,7 @@ import type { APIRequestContext, Browser, BrowserContext, Page } from '@playwrig
 import { ADMIN_EMAIL, ADMIN_PASSWORD } from './global-setup';
 
 /**
- * TASK-4044 PR 3b (rulings 4cf4d4b9, 2de240d9, d87482de): the write path of
+ * TASK-4044 PR 3b: the write path of
  * /messages/[n] against the REAL server. Every value asserted is one the server
  * sends: a bearer POST with NO X-Pad-Agent is the human (mine true, source "cli"
  * from the CLI, "web" from this page); with X-Pad-Agent it is that agent. E5
@@ -122,7 +122,7 @@ async function e5(page: Page, request: APIRequestContext, fixture: Fixture) {
 	await pick(page, first.seq, 'Reply');
 	await expect(page.locator('.reply')).toContainText('agent line one');
 	await typeAndSend(page, 'a reply');
-	await expect(page.locator('article.pending')).toHaveCount(0); // r6 L2: the POST has been answered before the API read
+	await expect(page.locator('article.pending')).toHaveCount(0); // the POST has been answered before the API read
 	const replied = (await listAll(request, fixture, n)).find((m) => m.body === 'a reply')!;
 	expect(replied.reply_to!.seq).toBe(first.seq);
 	await expect(row(page, replied.seq).locator('.quote-text')).toHaveText(replied.reply_to!.excerpt);
@@ -174,7 +174,7 @@ test('E5b: an own send scrolls to the end even from further up', async ({ page, 
 	await expect(page.locator('article.mine', { hasText: 'from the top of the page' })).toBeInViewport();
 });
 
-// 3b r4 Q3 (ruling ec6bbe31): with a gap open and the newest page unreachable, the sent
+// With a gap open and the newest page unreachable, the sent
 // row is DETACHED: it shows below the 'Show newer messages' marker and the marker stays.
 test('E5c: a send past a gap shows below the Show newer marker while the marker stays', async ({
 	page,
@@ -200,7 +200,7 @@ test('E5c: a send past a gap shows below the Show newer marker while the marker 
 	const m = (await marker.boundingBox())!;
 	const s = (await sent.boundingBox())!;
 	expect(s.y).toBeGreaterThan(m.y);
-	// r6 L1: the own detached row is right-aligned like any own row, not left-aligned and full width.
+	// The own detached row is right-aligned like any own row, not left-aligned and full width.
 	const agentRow = (await page.locator('article.bubble:not(.mine)').last().boundingBox())!;
 	const col = (await page.locator('.scroller').boundingBox())!;
 	expect(s.x).toBeGreaterThan(agentRow.x + 100);
@@ -247,7 +247,7 @@ test('E6: the composer rides above the emulated keyboard, and a touch long-press
 	await expect.poll(bottomOf).toBeLessThanOrEqual(viewportH);
 
 	// A REAL tap (touch events, which move focus, unlike the synthetic pointer events
-	// below) opens nothing: no menu and none of its buttons (r5 H1, the Q-c instrument).
+	// below) opens nothing: no menu and none of its buttons (the Q-c instrument).
 	// A 500 ms press then opens the menu, and the lift that ends it presses nothing.
 	const bubble = row(page, line.seq);
 	const menuButtons = bubble.getByRole('button', { name: /^(Reply|Copy|Delete)$/ });

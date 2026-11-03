@@ -203,7 +203,7 @@ func TestMCPUpdate_EmptyAssignmentViaFieldFlagClears(t *testing.T) {
 // empty strings".
 //
 // `tags: ""` is NOT a clear — it is a corrupt write into a JSONB column
-// on Postgres and a TEXT column on SQLite (codex #547 r3 P2). The guard
+// on Postgres and a TEXT column on SQLite. The guard
 // that drops it sits three lines above the two this task changed and
 // looks identical; the justification is opposite. Without this test,
 // "unify the empty-string handling" is a plausible-looking future edit
@@ -230,7 +230,7 @@ func TestMCPUpdate_EmptyTagsStillFiltered(t *testing.T) {
 func strPtr(s string) *string { return &s }
 
 // TestMCPUpdate_EmptyAssignAliasIsStillANoOp pins the deliberate LIMIT of
-// TASK-2571's fix, so the next reader (or the next reviewer) finds a
+// TASK-2571's fix, so the next reader finds a
 // decision here rather than an oversight.
 //
 // `assign` is schema-declared; `assigned_user_id` is not. Every other
@@ -355,7 +355,7 @@ func (f *clearFixture) dispatchExpectingError(t *testing.T, cmd []string, input 
 }
 
 // TestMCPUpdate_ClearConflictsAreRejected mirrors the CLI's refusal so the two
-// transports can't disagree about a contradiction (codex round 1).
+// transports can't disagree about a contradiction.
 //
 // Both routes to a competing value are covered because they land in the
 // payload at DIFFERENT points: `assigned_user_id` directly, and

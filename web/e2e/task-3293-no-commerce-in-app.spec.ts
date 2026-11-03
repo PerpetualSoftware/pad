@@ -49,7 +49,7 @@ async function register(baseURL: string, adminToken: string, tag: string): Promi
 
 async function openAsCloudUser(page: Page, email: string): Promise<void> {
 	// Routes first: login reloads the session, and a patch installed after
-	// that fetch settled would leave the page self-hosted (codex r3).
+	// that fetch settled would leave the page self-hosted.
 	await page.route('**/api/v1/auth/session', async (route) => {
 		const resp = await route.fetch();
 		const body = await resp.json();

@@ -59,7 +59,7 @@ import FieldEditor from './FieldEditor.svelte';
 // iOS a date picker is presented only by FOCUS inside the tap; `showPicker()`
 // alone never focuses. So the trigger focuses the input, synchronously, before
 // `showPicker()`. What these tests can prove is the page's half (Chromium /
-// jsdom); the Safari behaviour itself is Dave's verification on real devices.
+// jsdom); the Safari behaviour itself needs verification on real devices.
 const field = { key: 'due', label: 'Due', type: 'date' as const };
 
 function mount(onchange: (v: unknown) => void = () => {}) {

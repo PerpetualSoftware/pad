@@ -191,7 +191,7 @@ describe('localIndex.reconcile — the door the collection route now uses', () =
 		// state's cursor and `applyDelta` — which calls `ensureState(ws)` —
 		// writes the old response into the REPLACEMENT state: one user's rows in
 		// another's cache. The reconcile token does not cover this; it makes the
-		// loop re-poll rather than abort (codex round 4 P1).
+		// loop re-poll rather than abort.
 		await boot([row('keeper', 1, 'kept')]);
 
 		let started!: () => void;
@@ -230,8 +230,7 @@ describe('localIndex.reconcile — the door the collection route now uses', () =
 	});
 
 	it('an older, lower batch landing after a newer one cannot regress the cursor', () => {
-		// IDEA-2901 asked for this to be PINNED rather than assumed, and codex
-		// round 11 proposed it as a defect: two loops both start at cursor 10,
+		// IDEA-2901 asked for this to be PINNED rather than assumed, and it was once proposed as a defect: two loops both start at cursor 10,
 		// the newer response applies 20, then the older applies 15 and progress
 		// goes backwards. It cannot happen — `applyDelta` reads `state.cursor`,
 		// compares and assigns with NO await between them, so a non-advancing

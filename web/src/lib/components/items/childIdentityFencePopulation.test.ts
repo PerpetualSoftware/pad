@@ -26,9 +26,8 @@
  *    send in a `catch` or `finally`, or after a try/catch, needs the fence on
  *    the path that actually reaches it, because a fence in the try block is
  *    skipped by a throw and taken by a `finally` on its own early return. A
- *    LITERAL assignment inside a `finally` is not a commit (lead ruling 1 for
- *    PR B): it carries no data across the await, and it is how a busy flag
- *    clears under any identity. Each rule is pinned by the fixture legs at the
+ *    LITERAL assignment inside a `finally` is not a commit: it carries no data
+ *    across the await, and it is how a busy flag clears under any identity. Each rule is pinned by the fixture legs at the
  *    bottom of this file.
  *
  * WHY A SECOND, SIMPLER ANALYZER RATHER THAN REUSING THE AID MODULE.
@@ -36,13 +35,12 @@
  * ItemDetail's specific vocabulary — its generation counters, its capture
  * helpers, its fence booleans. Pointing it at fifteen other components would
  * mean teaching it fifteen more vocabularies, and the last six windows on this
- * family all went the same way: the review rounds are spent on the GUARD's
+ * family all went the same way: the review effort is spent on the GUARD's
  * defects, not the component's. So this one is deliberately small and answers a
  * narrower question, and the rest is declared below rather than discovered in
  * review.
  *
- * WHAT IT CANNOT SEE — the declared gaps, stated up front (lead ruling on
- * checkpoint 1b). These are not suspicions; each is a construct this guard
+ * WHAT IT CANNOT SEE — the declared gaps, stated up front. These are not suspicions; each is a construct this guard
  * provably does not model:
  *
  *   (a) PROVENANCE. It matches a CALL to a name bound from
@@ -67,7 +65,7 @@
  *       callback. A METHOD CALL on a store or a module helper
  *       (`localIndex.upsert`, `toastStore.show`, `announceAttachmentDeleted`)
  *       is not modelled. BUG-3105 PR B dispositioned such calls by hand ONLY
- *       inside the functions it fenced, plus one found by review
+ *       inside the functions it fenced, plus one more
  *       (`Editor`'s upload callback). BUG-3130 closed the rest by ENUMERATION
  *       rather than by widening the model: every post-await call that is
  *       neither a modelled send nor a fence call, and that no fence precedes,
@@ -80,8 +78,8 @@
  *       the right move, on the wrong quantity (`paint.isCurrent()` compares
  *       `{ws, item}`). There is no `await` there at all, so nothing in this
  *       guard's model applies: a logout and different login while that menu is
- *       open passed the check and the DELETE went out as the new user. Found by
- *       hand, not by this guard, and since fixed by an identity fence captured
+ *       open passed the check and the DELETE went out as the new user. Not caught
+ *       by this guard, and since fixed by an identity fence captured
  *       when the menu opens (`pending.isSameIdentity()`); the guard still cannot
  *       see this shape, and it remains the clearest evidence that this guard is
  *       a floor and not a ceiling.
@@ -100,7 +98,7 @@
  *       continuations are ENUMERATED mechanically and must each appear in
  *       `KNOWN_CONTINUATIONS` — still not MODELLED: the leg proves a new one is
  *       read, not that it is fenced.
- *   (g) OTHER DEFERRALS (codex round 3 on BUG-3130). A callback run later by
+ * (g) OTHER DEFERRALS (BUG-3130). A callback run later by
  *       anything that is not an `await` or a promise continuation — `setTimeout`
  *       / `setInterval`, `requestAnimationFrame`, `queueMicrotask`, an event
  *       listener, a store subscription — or a callback a helper runs after its
@@ -111,11 +109,11 @@
  *       `setInterval(` 2, `addEventListener(` 10. One of them WAS a live
  *       member: `FieldEditor`'s typed-save debounce timer (and the blur flush
  *       of the same burst) sent a value typed under one identity as the next
- *       identity's edit — found by codex round 5, fixed in BUG-3130 with a
+ *       identity's edit — fixed in BUG-3130 with a
  *       fence captured at the burst's first keystroke. Left as a gap rather than a third table
  *       because timers and listeners are mostly UI, and a table of them would
  *       be read as coverage of the effects they schedule, which it would not be.
- *   (h) WHAT A TABLE ROW PINS (codex round 4 on BUG-3130). A row in
+ * (h) WHAT A TABLE ROW PINS (BUG-3130). A row in
  *       `KNOWN_OUTSIDE_FENCE` / `KNOWN_CONTINUATIONS` pins a callee (or a chain
  *       root) in a function, and how many times it occurs — not the arguments
  *       or the callback body. `toastStore.show('Copied')` becoming
@@ -136,7 +134,7 @@
  * goes wrong is by asking to be taught, which is visible, rather than by going
  * quiet, which is not.
  *
- * KNOWN GAPS ARE ENUMERATED, NOT TOLERATED IN BULK (lead ruling). The paths
+ * KNOWN GAPS ARE ENUMERATED, NOT TOLERATED IN BULK. The paths
  * this unit did not fix are listed in `KNOWN_UNFENCED` by exact
  * `file::function` path. Each listed path is EXPECTED to be unfenced: a path
  * that gets fixed without being removed from the list ALSO fails, so the list
@@ -343,7 +341,7 @@ function isDirectRequest(src: AstSource, n: Node): boolean {
  * them, and the miss is a FALSE NEGATIVE — the guard reports such a path as
  * having no send at all and stays silent.
  *
- * Found by three independent readers auditing the same population by hand while
+ * Found by auditing the same population by hand while
  * this guard was already green; `ItemTimeline` alone has six such handlers, none
  * of which this guard saw. Recorded here rather than quietly fixed because the
  * lesson is the guard's, not the codebase's: a green source scanner had not been
@@ -828,8 +826,7 @@ function analyseSource(path: string, code: string): Analysis {
 			for (const a of ancestors) {
 				if (a !== fn && isFnNode(a)) return;
 			}
-			// A LITERAL assignment inside a `finally` is not a commit (BUG-3105,
-			// lead ruling 1 for PR B): a commit carries data across the await, and
+			// A LITERAL assignment inside a `finally` is not a commit (BUG-3105): a commit carries data across the await, and
 			// a literal carries none. This is what lets a busy flag clear
 			// UNCONDITIONALLY — `finally { creating = false }` must run under any
 			// identity, or a failed request leaves the component disabled. Narrow
@@ -854,7 +851,7 @@ function analyseSource(path: string, code: string): Analysis {
 			// textually above the send.
 			let lowerBound = loop ? loop.start : Math.max(...preceding.map((a) => a.start));
 			// A CATCH or FINALLY is not "after" the fence calls in its try block
-			// in the sense position implies (BUG-3105, found by the non-literal
+			// in the sense position implies (BUG-3105; see the non-literal
 			// control below). A catch is entered from the await THROWING, so a
 			// fence textually after that await never ran; a finally is entered on
 			// every exit, INCLUDING the fence's own early return — which is the
@@ -917,7 +914,7 @@ function continuationKeys(path: string, code: string): string[] {
 	}
 	const counts = new Map<string, number>();
 	// `p.then` and `p['then']` are the same continuation; the computed spelling
-	// was a way round the first version (codex round 3 on BUG-3130).
+	// was a way round the original check (BUG-3130).
 	const memberName = (m: Node): string | undefined =>
 		m.computed ? (m.property?.type === 'Literal' ? String(m.property.value) : undefined) : m.property?.name;
 	walk(src.script, (n, ancestors) => {
@@ -926,7 +923,7 @@ function continuationKeys(path: string, code: string): string[] {
 		if (!method || !CONTINUATION_METHODS.has(method)) return;
 		// ANY argument, not only an inline function: `settled.then(release,
 		// release)` hands over a callback by NAME and runs it after the same
-		// suspension (codex round 1 on BUG-3130 found exactly that one).
+		// suspension (BUG-3130).
 		if ((n.arguments ?? []).length === 0) return;
 		let o: Node = n.callee.object;
 		for (;;) {
@@ -951,8 +948,7 @@ function continuationKeys(path: string, code: string): string[] {
 /**
  * Keys with their OCCURRENCE COUNT folded in (`… ×2`) when above one — so a
  * second call of an already-classified shape in the same function changes the
- * key and fails, instead of hiding behind the row the first one earned (codex
- * round 3 on BUG-3130). The count is stable under edits elsewhere in the file,
+ * key and fails, instead of hiding behind the row the first one earned (BUG-3130). The count is stable under edits elsewhere in the file,
  * which a line number or an ordinal is not.
  */
 function withCounts(counts: Map<string, number>): string[] {
@@ -994,7 +990,7 @@ describe('BUG-3095 — child population identity fence', () => {
 			.map((f) => ({ ...f, label: `${f.path}::${f.fn}` }))
 			.filter((f) => !KNOWN_UNFENCED.includes(f.label));
 
-		// ONE ROW PER PATH, not per offending statement (lead ruling, BUG-3105).
+		// ONE ROW PER PATH, not per offending statement (BUG-3105).
 		// The commit model made the difference load-bearing: a single handler can
 		// commit a dozen times, so `BacklinksPanel.loadFirstPage` alone emitted
 		// eight rows and the real shape of the list — how many HANDLERS need

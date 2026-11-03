@@ -144,7 +144,7 @@ func TestSubscribeAndReplayIsAtomic(t *testing.T) {
 	// The seeded event MUST be in the replay. Without this leg the test would
 	// pass for an implementation that always answers "cannot vouch" (nil
 	// missed) and delivers everything live — which satisfies "never both" by
-	// never replaying anything (codex round 3).
+	// never replaying anything.
 	if !containsItem(missed, "before-2") {
 		t.Fatalf("the event above the cursor was not replayed; missed = %+v", missed)
 	}
@@ -323,7 +323,7 @@ func TestIDSpaceResetSignalsEveryWorkspace(t *testing.T) {
 	}
 }
 
-// TestCoverageDropWithNoBufferStillSignals is codex round 4's P1. A subscriber
+// TestCoverageDropWithNoBufferStillSignals covers this case. A subscriber
 // that connected and then sat through a pub/sub outage before ANY event was
 // received for its workspace has the largest possible hole and the least
 // evidence of it — and the early return that (correctly) suppresses the reset
@@ -395,7 +395,7 @@ func TestConcurrentPublishesDeliverInIDOrder(t *testing.T) {
 	// looks tidier and is a trap: integer division silently yields 0 the day
 	// the depth drops below `publishers`, and then total is 0, nothing is
 	// published, and `count == total` passes as 0 == 0 — the test going
-	// permanently vacuous with no signal at all (codex round 2). Stating the
+	// permanently vacuous with no signal at all. Stating the
 	// numbers and failing the BUILD when they stop being compatible is the
 	// version that cannot rot quietly.
 	const _ uint = subscriberChanDepth - total
@@ -432,7 +432,7 @@ func TestConcurrentPublishesDeliverInIDOrder(t *testing.T) {
 			// scheduler, which is why the round count above exists and why
 			// the header quotes a measured catch rate rather than a proof.
 			//
-			// CONTIGUOUS, not merely increasing (codex round 2): one bus, one
+			// CONTIGUOUS, not merely increasing: one bus, one
 			// workspace and nothing else publishing means the ids assigned are
 			// exactly base+1..base+total, so the delivered sequence must have
 			// no holes. "Increasing" would also be satisfied by a bus that

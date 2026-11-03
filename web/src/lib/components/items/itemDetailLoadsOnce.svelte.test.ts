@@ -8,7 +8,7 @@
  * workspace's `bootstrapState` (`$state`), then writes it: `'cold'` →
  * `'loading'` synchronously, `'loading'` → `'ready'` when the index lands. Each
  * write re-ran the effect, so a cold item page fetched the item and its
- * collection THREE times (BUG-3192 checkpoint 1, measured on a real page:
+ * collection THREE times (BUG-3192, measured on a real page:
  * runs at 447, 466 and 1017 ms, the last just after `items-index` resolved).
  *
  * WHY NO EARLIER SUITE SAW IT. Every ItemDetail mount stubs `bootstrap` as a

@@ -209,8 +209,7 @@ describe('relationChipFor', () => {
 		// about what the same id is called.
 		//
 		// `relationLanes` CALLS `relationChipFor`, so this leg alone is partly
-		// tautological — a change to the shared helper moves both sides (codex
-		// round 4). The independent anchor is below: the expected shape is
+		// tautological — a change to the shared helper moves both sides. The independent anchor is below: the expected shape is
 		// written out by hand, so the helper cannot redefine what agreement
 		// means.
 		const chip = relationChipFor('red', resolve);

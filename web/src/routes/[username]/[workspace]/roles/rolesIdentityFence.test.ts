@@ -3,7 +3,7 @@
 //
 // THE GATE BESIDE THIS (TASK-3097): `rolesIdentityGate.test.ts` tables every async unit on
 // this page with the hash of the code it was reviewed on, and refuses any
-// edit to one until its row is re-read. That catches BUG-3084's round-4
+// edit to one until its row is re-read. That catches BUG-3084's
 // classes, which a source scanner cannot see. This file catches what the
 // gate does not: the RULE on a NEW handler, which the gate accepts with any
 // row. Keep both. Neither is a duplicate of the other.
@@ -141,7 +141,7 @@ describe('the roles board fences every async commit point', () => {
 		// Ported from #1374's collection guard (owed item 4). Without this the
 		// page's only re-stamp site never runs on the event it exists for, and
 		// `pageIdentityHeld()` refuses for ever after a sign-in — the regression
-		// #1372 shipped past four codex rounds and a 10/10 matrix.
+		// #1372 shipped past repeated review and a 10/10 matrix.
 		expect(
 			CODE,
 			'the page does not subscribe to authStore.onIdentityChange, so a stale load epoch is never ' +
@@ -182,7 +182,7 @@ describe('the roles board fences every async commit point', () => {
 		// that is the case this test exists to catch.
 		const sub = CODE.slice(CODE.indexOf('authStore.onIdentityChange('));
 		const listener = sub.slice(0, sub.indexOf('\t});'));
-		// BOTH values, not just `currentUserId` (codex round 3 [P2]): a listener
+		// BOTH values, not just `currentUserId`: a listener
 		// clearing the id while leaving `lanes` still hands the fence a board the
 		// previous identity loaded.
 		const clearMatch = listener.match(/currentUserId\s*=\s*(?:null|'')/);
@@ -193,7 +193,7 @@ describe('the roles board fences every async commit point', () => {
 			listener.indexOf(clearMatch[0]) < listener.indexOf('loadData(') &&
 			listener.indexOf(lanesMatch[0]) < listener.indexOf('loadData(');
 
-		// STRENGTHENED after codex round 2 [P2] said so, and it was right: this
+		// STRENGTHENED after review showed it was too weak: this
 		// used to prove only that no re-stamp appears before the first await,
 		// which a re-stamp placed after the await but BEFORE the state it
 		// vouches for also satisfies — the exact defect, passing its own guard.
@@ -224,8 +224,8 @@ describe('the roles board fences every async commit point', () => {
 		// An entry capture asks "has the identity moved since this work started";
 		// these handlers' work starts with a CLICK, which is always the current
 		// epoch, over form state chosen against the previous identity's board.
-		// So they need the page-level question too, and codex round 2 [P1] found
-		// three of them still carrying only the entry capture.
+		// So they need the page-level question too, and three of them
+		// were found still carrying only the entry capture.
 		//
 		// NAMED, not enumerated, and the reason matters: "every handler that
 		// composes a write from earlier state" is not a set a grep produces, and
@@ -255,7 +255,7 @@ describe('the roles board fences every async commit point', () => {
 
 	it('the identity-change listener resets every piece of transient interaction state', () => {
 		// ENUMERATED rather than sampled, and the enumeration is the point
-		// (CONVE-35). Rounds 2 and 3 each returned members of ONE class, found
+		// (CONVE-35). Members of ONE class were found
 		// one at a time — an open role modal, an open new-item modal, a stuck
 		// `newItemSaving`, a stuck `isDragging`, stale lane-drag styling. A loop
 		// that keeps finding new members of a class is measuring the enumeration,
@@ -328,10 +328,10 @@ describe('the roles board fences every async commit point', () => {
 	});
 
 	it('a lost-identity exit writes no shared interaction state', () => {
-		// The rule REPLACES round 1's, and the reversal is the interesting part
-		// (codex round 4 [P2]). Round 1 required every fenced exit in
+		// The rule REPLACES an earlier one, and the reversal is the interesting part.
+		// The earlier rule required every fenced exit in
 		// `handleDndFinalize` to release `isDragging`, because nothing else
-		// would and the board would pin. Round 3 gave the reset to the identity
+		// would and the board would pin. Later the reset moved to the identity
 		// listener, which runs synchronously on the epoch bump and therefore
 		// always before a stale continuation resumes — at which point the same
 		// release became a way for a previous-identity continuation to cancel a
@@ -354,7 +354,7 @@ describe('the roles board fences every async commit point', () => {
 			}
 
 			// (b) In a CONTINUATION — after an await — which is the same question
-			// one line later and is where round 5 found the instance (a) could
+			// one line later and is where the instance (a) could
 			// not see: a check placed BEFORE an await says nothing about a change
 			// DURING it.
 			//
@@ -387,7 +387,7 @@ describe('the roles board fences every async commit point', () => {
 
 	it('a stale create does not re-enable the new identity\'s form', () => {
 		// The `finally` counterpart of the rule above, and a deliberate
-		// ASYMMETRY with `loadData`'s own busy flag (codex round 4 [P2], found
+		// ASYMMETRY with `loadData`'s own busy flag (found
 		// by mutant M22 surviving the first version of these assertions).
 		//
 		// `loading` is cleared unconditionally because nothing else clears it and
@@ -409,7 +409,7 @@ describe('the roles board fences every async commit point', () => {
 	it('a stale load may not write the page it no longer owns', () => {
 		// `loadGen` gated only `loading` when it arrived, which reads as though
 		// the overlapping-load race were handled while a slow first load could
-		// still overwrite a newer one's board (codex round 4 [P2]). The identity
+		// still overwrite a newer one's board. The identity
 		// fence does not cover this: both loads can belong to the SAME user.
 		const load = src.asyncFunctions().get('loadData')!;
 		const checks = (load.match(/if \(myLoad !== loadGen\) return;/g) ?? []).length;
@@ -428,7 +428,7 @@ describe('the roles board fences every async commit point', () => {
 		// The success arm re-stamps the fence. If the session comes back
 		// unauthenticated and `currentUserId` is left alone, the page then
 		// vouches for itself while still holding someone for handleDndFinalize
-		// to assign to (codex round 3 [P2]).
+		// to assign to.
 		const load = src.asyncFunctions().get('loadData')!;
 		expect(
 			load,
@@ -439,8 +439,7 @@ describe('the roles board fences every async commit point', () => {
 	it('only the newest load may declare the page loaded', () => {
 		// Without a generation guard an OLDER loadData's unconditional `finally`
 		// clears `loading` while the identity-change reload is still in flight,
-		// and the markup paints the board over the previous identity's `lanes`
-		// (codex round 2 [P1]).
+		// and the markup paints the board over the previous identity's `lanes`.
 		const load = src.asyncFunctions().get('loadData')!;
 		expect(load, 'loadData does not take a load generation').toMatch(/const myLoad = \+\+loadGen/);
 		expect(
@@ -471,8 +470,8 @@ describe('the roles board fences every async commit point', () => {
 		// `handleDndFinalize` mutates `lanes` optimistically. If the identity
 		// moves during the `await loadData()` on its failure path, that load
 		// fences itself out and leaves the optimistic value, and the
-		// unconditional `isDragging = false` afterwards re-enables this effect
-		// (codex round 2 [P1]). The release must stay unconditional — a fence
+		// unconditional `isDragging = false` afterwards re-enables this effect.
+		// The release must stay unconditional — a fence
 		// that skips it pins the board for ever — so the sync is fenced instead.
 		expect(
 			CODE,
@@ -494,8 +493,8 @@ describe('the roles board fences every async commit point', () => {
 		//
 		// Exempting a whole effect was wrong and hid this unit's own defect: the
 		// search entry skipped the synchronous capture along with the timer's
-		// reads, so removing that capture's `untrack` produced ZERO offenders
-		// (codex round 2 [P2]). An entry now lists the read tokens it vouches
+		// reads, so removing that capture's `untrack` produced ZERO offenders.
+		// An entry now lists the read tokens it vouches
 		// for, and any other read in that effect is an offender.
 		const INTENDED_DEPENDENCY: Record<string, { allowedReads: string[]; why: string; afterMarker?: string }> = {
 			'laneData = data': {
@@ -511,7 +510,7 @@ describe('the roles board fences every async commit point', () => {
 			const entry = Object.entries(INTENDED_DEPENDENCY).find(([k]) => block.body.includes(k));
 			// PER READ, not per block: testing for `untrack(` anywhere in the
 			// effect exempted `const e = captureIdentity(); untrack(() => x());`.
-			// POSITIONAL as well as by token (codex round 3 [P2]). Without the
+			// POSITIONAL as well as by token. Without the
 			// marker, an entry written for reads inside a timer covered a read
 			// added SYNCHRONOUSLY beside the untracked capture — which puts the
 			// dependency straight back while the rule reports nothing.
@@ -624,7 +623,7 @@ describe('the roles board fences every async commit point', () => {
 
 	it('never ends a block with a fence, which guards nothing', () => {
 		// Surface 1's mutant M10: a check after the last commit in its block is
-		// dead code that satisfies every count above. Codex returned CLEAN on
+		// dead code that satisfies every count above. A review passed
 		// one of those.
 		const trailing = /if \(!(?:identityHeld\([^)]*\)|pageIdentityHeld\(\))\) return;\s*\}\s*$/;
 		const offenders: string[] = [];

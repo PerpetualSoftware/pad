@@ -294,7 +294,7 @@ export function visibleFields(fields: FieldDef[]): FieldDef[] {
  *  else `status` if the schema has one, else the first select field, else ''. */
 export function resolveGroupField(collection: PublicCollection): string {
 	const explicit = collection.settings.board_group_by;
-	// A RELATION FIELD IS NOT GROUPABLE HERE (TASK-2998, codex round 1).
+	// A RELATION FIELD IS NOT GROUPABLE HERE (TASK-2998).
 	//
 	// The authenticated board resolves a relation value against the local index
 	// and labels the lane with the target's ref and title. A public share has
@@ -315,7 +315,7 @@ export function resolveGroupField(collection: PublicCollection): string {
 /**
  * A field a PUBLIC view can group by: it exists, and it is not a relation.
  *
- * Exported because the BOARD is not the only door (codex round 2): a saved view
+ * Exported because the BOARD is not the only door: a saved view
  * with `view_type: "list"` routes its `group_by` to `list_group_by`, and
  * `PublicListView` resolves that key itself. Refusing in one place and not the
  * other left a shared LIST rendering one group per stored id — the same wall of
@@ -345,7 +345,7 @@ export function isPublicGroupable(collection: PublicCollection, key: string): bo
  * share cannot resolve.
  *
  * THE PLACEHOLDER IS A BOUNDARY, NOT A SHRUG, and the boundary is a privacy one
- * (lead ruling, BUG-3016). Hydrating ref+title into the share payload is not a
+ * (BUG-3016). Hydrating ref+title into the share payload is not a
  * payload question but a VISIBILITY question: the target may live in a
  * collection the owner never shared, and a public viewer is anonymous, so
  * carrying the target's name would hand them the title of an unshared item
@@ -368,8 +368,7 @@ export const PUBLIC_RELATION_TITLE =
 	'This shared view links to another item. Its name is not part of the share.';
 
 /**
- * The value a categorical chip (status / priority) may show, or '' (BUG-3016,
- * codex enumeration round).
+ * The value a categorical chip (status / priority) may show, or '' (BUG-3016).
  *
  * These surfaces read a field BY NAME and then ask the VALUE's shape — "is it a
  * string" — which is the right question for a `multi_relation` (its value is an

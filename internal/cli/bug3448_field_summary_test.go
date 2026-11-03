@@ -23,14 +23,14 @@ func TestFormatFieldSummarySummarisesStructuredValues(t *testing.T) {
 	}
 }
 
-// Codex r1: a number above 2^53 keeps its digits in the summary too.
+// A number above 2^53 keeps its digits in the summary too.
 func TestFormatFieldSummaryKeepsLargeNumbers(t *testing.T) {
 	if got := FormatFieldSummary(`{"budget":9007199254740993}`); !strings.Contains(got, "9007199254740993") {
 		t.Errorf("summary %q lost the number's digits", got)
 	}
 }
 
-// Codex r2: the agent projection (`item show --agent`, the MCP item get)
+// The agent projection (`item show --agent`, the MCP item get)
 // re-marshalled the fields through a float64 and rounded a number above 2^53.
 func TestAgentItemFieldsKeepsLargeNumbers(t *testing.T) {
 	got := string(agentItemFields([]byte(`{"budget":9007199254740993,"decision_log":[]}`)))

@@ -92,7 +92,7 @@ var Default = Keys{}
 // namespace — the empty string — is valid and yields Default.
 //
 // A value that is present but whitespace-only is an ERROR, not a
-// synonym for unset (codex round 3). Trimming it to Default would mean
+// synonym for unset. Trimming it to Default would mean
 // PAD_REDIS_NAMESPACE=" " — which is what a broken template substitution
 // produces — silently restores the historical keyspace and collides with
 // the un-namespaced installation it was set to separate from. That is

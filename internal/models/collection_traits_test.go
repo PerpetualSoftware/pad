@@ -198,7 +198,7 @@ func TestZeroTraitsSerializeToEmptyObject(t *testing.T) {
 // TestParseCollectionTraitsRejectsTrailingContent closes the gap between the
 // "strict parsing" claim and what json.Decoder actually does: Decode stops at
 // the end of the first JSON value and ignores the rest, so a blob that is not
-// valid JSON would parse cleanly and activate behavior. Codex round 7.
+// valid JSON would parse cleanly and activate behavior.
 func TestParseCollectionTraitsRejectsTrailingContent(t *testing.T) {
 	cases := []string{
 		`{"artifact_kind":{"kind":"playbook"}} garbage`,

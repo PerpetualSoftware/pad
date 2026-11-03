@@ -1,4 +1,4 @@
-// BUG-3850 (lead ruling a6380212): text this tab SENT after the confirmed base
+// BUG-3850: text this tab SENT after the confirmed base
 // may already be on the server when the tab dies before the barrier ack. The
 // draft counts it as its own change, and at the end of the document an anchor
 // that is a substring sends it again: base 'A', draft 'A U1 U2', stored

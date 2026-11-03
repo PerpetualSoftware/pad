@@ -284,7 +284,7 @@ func docsCollection(sortOrder int) DefaultCollection {
 			DefaultView: "board",
 			ListSortBy:  "updated_at",
 			ListGroupBy: "category",
-			// Reference material, not work (PLAN-3535, Dave): a new Docs
+			// Reference material, not work (PLAN-3535): a new Docs
 			// collection does not count toward progress or Insights.
 			TracksWork: reference(),
 		},
@@ -530,7 +530,7 @@ func conventionsCollection(sortOrder int, triggerOptions, scopeOptions []string)
 				},
 				// TASK-3119: whether the decision provider checks items
 				// against this convention ("Possibly breaks CONVE-N"). On
-				// unless set off (Dave's opt-out ruling): ABSENT reads as on,
+				// unless set off (an explicit opt-out): ABSENT reads as on,
 				// so there is deliberately no default. A default would be
 				// written into every new convention, change every exported
 				// artifact, and make every activated built-in read as diverged

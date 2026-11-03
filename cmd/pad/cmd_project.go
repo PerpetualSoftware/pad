@@ -239,7 +239,7 @@ func nextCmd() *cobra.Command {
 					// ReminderID is present only on a fired-reminder
 					// suggestion, and it is the handle an ack needs — a
 					// surface that shows a reminder without it can be read
-					// and not acted on (IDEA-2641, codex round 1).
+					// and not acted on (IDEA-2641).
 					ReminderID string `json:"reminder_id,omitempty"`
 					ItemSlug   string `json:"item_slug"`
 					ItemRef    string `json:"item_ref,omitempty"`
@@ -312,7 +312,7 @@ func listCompletedWorkSince(client *cli.Client, ws string, cutoff time.Time, lim
 		}
 		for _, status := range values {
 			// Newest first, `limit` rows a page, until a page reaches past the
-			// cutoff or the list ends (BUG-3793, Codex r1): one page used to be
+			// cutoff or the list ends (BUG-3793): one page used to be
 			// read as every match, so a status with more than `limit` items
 			// changed since the cutoff lost the older ones from the report.
 			for offset := 0; ; {

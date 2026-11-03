@@ -83,7 +83,7 @@ func TestFormatMonitorLine(t *testing.T) {
 			want: "PAD (update) demo/TASK-1 → comment (Bob): fix verified",
 		},
 		{
-			// IDEA-2544 Phase 1, dispatcher review round 2 (codex P1): the
+			// IDEA-2544 Phase 1: the
 			// workspace prefix matters most here — push carries an
 			// instruction, so a caller resolving it against the wrong
 			// linked workspace is a worse failure mode than for a passive
@@ -136,8 +136,8 @@ func TestSleepOrDone_ReturnsFalseWhenCancelled(t *testing.T) {
 	}
 }
 
-// TestMonitorClient_UnconfiguredReturnsError covers codex round 1
-// finding 5's core regression: monitorClient must return a plain error
+// TestMonitorClient_UnconfiguredReturnsError covers the core regression:
+// monitorClient must return a plain error
 // for an unconfigured environment, never call os.Exit (this test
 // process completing at all, rather than terminating early, is the
 // proof) and never block waiting for interactive input — unlike
@@ -158,11 +158,11 @@ func TestMonitorClient_UnconfiguredReturnsError(t *testing.T) {
 // TestRunWatchMonitor_NoPadToml_RespectsCancellation verifies the
 // no-.pad.toml silent-retry path (which sleeps for
 // noPadTomlRetryInterval — an hour) still returns promptly when the
-// context is cancelled, WITHOUT ever reaching client construction
-// (there is no configured client in this test's environment at all —
-// if the loop attempted to build one before the .pad.toml check, per
-// finding 5, it would have to do so via a path that can only return an
-// error or block; since this test provably completes quickly, neither
+// context is cancelled, WITHOUT ever reaching client construction (there is no
+// configured client in this test's environment at all, if the loop attempted to
+// build one before the .pad.toml check, it would have to do so via a path that can
+// only return an
+// error or block, since this test provably completes quickly, neither
 // happened).
 func TestRunWatchMonitor_NoPadToml_RespectsCancellation(t *testing.T) {
 	home := t.TempDir()
@@ -185,7 +185,7 @@ func TestRunWatchMonitor_NoPadToml_RespectsCancellation(t *testing.T) {
 	}
 }
 
-// TestRunWatchMonitor_ExitsWhenNotArmed is the Codex R1 S3 HIGH-1 gate:
+// TestRunWatchMonitor_ExitsWhenNotArmed is the gate:
 // the whole stream lives behind consent (D1), so an unarmed session's
 // monitor must exit ON ITS OWN — not merely on context cancellation — so
 // the plugin wrapper's should-arm gate then keeps it dead. Proven by using
@@ -300,7 +300,7 @@ func TestStreamWatchEvents_ParsesNotificationsAndTracksLastEventID(t *testing.T)
 	}
 }
 
-// TestStreamWatchEvents_StopsWhenNotArmed is the Codex R2 S3 HIGH-1
+// TestStreamWatchEvents_StopsWhenNotArmed is the
 // per-notification gate: a session that isn't armed must NOT have events
 // delivered — streamWatchEvents returns at the first notification instead
 // of printing it and moving on. Proven by the cursor stopping at the first
@@ -331,8 +331,8 @@ func TestStreamWatchEvents_StopsWhenNotArmed(t *testing.T) {
 	}
 }
 
-// TestStreamWatchEvents_SyncRequiredClearsLastEventID covers codex
-// round 1 finding 6: without this, a stale Last-Event-ID would be
+// TestStreamWatchEvents_SyncRequiredClearsLastEventID covers
+// a regression: without this, a stale Last-Event-ID would be
 // resent on every reconnect after the server's replay buffer evicted
 // it, producing sync_required forever. sync_required carries no "id:"
 // line (server writes it with eventID=0), matching real wire behavior.
@@ -406,8 +406,8 @@ func TestMonitorSessionIdentity_RootCwdIsUnlabelled(t *testing.T) {
 	}
 }
 
-// THE CONSUMER IS TOLD (BUG-2743 / BUG-2728 follow-through, lead ruling on
-// #1518). Clearing the cursor is this process's recovery; the agent reading
+// THE CONSUMER IS TOLD (BUG-2743, BUG-2728 follow-through, #1518). Clearing the
+// cursor is this process's recovery; the agent reading
 // stdout cannot see a cursor, so a sync_required that printed nothing left it
 // believing it had missed nothing. Each leg reads what reached the WRITER,
 // which is the only thing the consumer ever sees.

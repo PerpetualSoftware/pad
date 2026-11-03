@@ -4,7 +4,7 @@
  * THE MECHANISM THIS REPLACES. `collections.svelte.ts` and
  * `workspace.svelte.ts` each hand-rolled the same three parts around a store
  * load, and the two copies drifted three times in one afternoon — each drift
- * found by a reviewer rather than by a test (TASK-2200 rounds 3, 4 and 5). The
+ * found late rather than by a test (TASK-2200). The
  * three parts:
  *
  *   1. A monotonic GENERATION, so only the latest call commits. A workspace
@@ -75,7 +75,7 @@ export interface KeyedSingleFlight<K> {
 	inFlightFor(key: K): Promise<void> | null;
 
 	/**
-	 * Abandon the current run and the published slot (BUG-3005, codex round 2).
+	 * Abandon the current run and the published slot (BUG-3005).
 	 *
 	 * A single-flight slot outlives the DATA its owner drops. Clearing a store
 	 * on an identity change without this leaves the previous identity's promise
@@ -149,8 +149,8 @@ export function createKeyedSingleFlight<K>(options: SingleFlightOptions = {}): K
 			// body runs synchronously only as far as its first await, so the
 			// `finally` above cannot run before this line.
 			//
-			// ONE TICK OF NON-EQUIVALENCE with the hand-rolled code this replaced
-			// (codex round 2, TASK-2947), named because it is real. Both old
+			// ONE TICK OF NON-EQUIVALENCE with the hand-rolled code this replaced,
+			// named because it is real. Both old
 			// versions ran commit and `finally` inside ONE async function, so
 			// cleanup followed the commit with no tick between. Here the commit is
 			// inside `work`, and `await work(...)` costs a microtask — crossing an

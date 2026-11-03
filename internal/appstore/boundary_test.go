@@ -42,14 +42,14 @@ func TestAppstoreBoundaryCatchesEachRule(t *testing.T) {
 		"embeddedstore":  "store-method",
 		"funcfield":      "dynamic-call",
 		"linkname":       "linkname",
-		// codex round 2
+		// generic interfaces and callback parameters
 		"genericiface":       "interface-call",
 		"callbackparam":      "func-value",
 		"methodexprcallback": "func-value",
 		"oncevar":            "func-value",
-		// codex round 3
+		// generic interface bodies
 		"genericifacebody": "interface-call",
-		// codex round 4
+		// generic constraints and nesting
 		"genericconstraint": "interface-call",
 		"genericnested":     "interface-call",
 		// U2a: a named func-value entry does not leak to a same-named value

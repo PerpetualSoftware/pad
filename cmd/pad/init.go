@@ -164,7 +164,7 @@ your current status.`,
 					// doHeadlessBootstrap reads the on-disk first-run token,
 					// calls BootstrapWithToken (X-Bootstrap-Token header set
 					// when a token is present), saves credentials, and calls
-					// client.SetAuthToken. BUG-988 / round-1 finding #1.
+					// client.SetAuthToken. BUG-988.
 					//
 					// pad init is a multi-step flow; the human-readable step
 					// header is always printed. For machine-readable bootstrap

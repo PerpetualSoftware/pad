@@ -119,7 +119,7 @@ func TestBUG4024_PagerErrorsOnANonAdvancingOffset(t *testing.T) {
 	}
 }
 
-// R2-F1: a has-more page must be full and contiguous; every other shape is an
+// A has-more page must be full and contiguous; every other shape is an
 // error with no items, even when a later page says has-more=false.
 func TestBUG4024_PagerRefusesAMalformedHasMorePage(t *testing.T) {
 	cases := map[string]struct{ rows, next int }{

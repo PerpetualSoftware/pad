@@ -36,7 +36,7 @@ import (
 //	PAD_UPDATE_MCP_GOLDEN=1 go test ./cmd/pad/ -run TestMCPWireGolden
 //
 // review the testdata diff as the contract diff it is, and decide whether it
-// owes a ToolSurfaceVersion bump. If it is NOT intended, that is the finding.
+// owes a ToolSurfaceVersion bump. If it is NOT intended, that is the defect.
 //
 // The only field normalised is serverInfo.version, which is the build's
 // version string and not part of the contract. The JSON is re-indented for

@@ -63,11 +63,11 @@
 		// expression. The slug (not just the id) matters to callers whose
 		// own "is this still relevant" check needs to compare against a
 		// route param (e.g. `collSlug`) rather than a loaded object that
-		// can itself be stale mid-navigation (Codex). `editedWsSlug` is the
+		// can itself be stale mid-navigation. `editedWsSlug` is the
 		// `wsSlug` PROP at the same synchronous capture point — collection
 		// slugs are workspace-scoped (two workspaces can both have a
 		// "docs" collection), so a caller reused across a workspace switch
-		// needs this to disambiguate (Codex PR review).
+		// needs this to disambiguate.
 		onupdated: (
 			updated?: Collection,
 			editedCollectionId?: string,
@@ -94,7 +94,7 @@
 	const TYPED_ARCHIVE_THRESHOLD = 25;
 	let archiveTyped = $state('');
 	const archiveItemCount = $derived(collection.item_count);
-	// An UNKNOWN count fails closed (codex r1): the confirm cannot say how
+	// An UNKNOWN count fails closed: the confirm cannot say how
 	// much is going, so the typed guard stands in for the number.
 	const archiveNeedsTyping = $derived(archiveItemCount === undefined || archiveItemCount >= TYPED_ARCHIVE_THRESHOLD);
 	const archiveConfirmed = $derived(!archiveNeedsTyping || archiveTyped.trim() === collection.name);
@@ -109,12 +109,12 @@
 		archiving = true;
 		// Target the SEEDED collection identity, NOT the live props — the props
 		// may now identify a different collection while this form still shows
-		// the seeded one, and archive is destructive (Codex switch-safety).
+		// the seeded one, and archive is destructive.
 		const editedCollectionId = seededCollectionId;
 		const editedCollectionSlug = seededCollectionSlug;
 		const editedCollectionName = seededCollectionName;
 		const editedWsSlug = seededWsSlug;
-		// OCC token (BUG-2265 Codex round 8): the seeded collection's updated_at.
+		// OCC token (BUG-2265): the seeded collection's updated_at.
 		// Passed to the server delete so a concurrent RENAME that re-owned this
 		// slug with a DIFFERENT collection 409s instead of archiving the wrong
 		// one — closing the resolve-by-id → delete-by-slug TOCTOU.
@@ -204,8 +204,8 @@
 	// non-destructive "reload" message and keep the user's edits intact.
 	let expectedUpdatedAt = $state('');
 
-	// Target-collection IDENTITY captured when the form was SEEDED (Codex
-	// switch-safety). SvelteKit reuses this modal's host route, so the
+	// Target-collection IDENTITY captured when the form was SEEDED.
+	// SvelteKit reuses this modal's host route, so the
 	// `collection`/`wsSlug` PROPS can come to identify a DIFFERENT collection
 	// while collection A's form is still on screen. handleSave/handleArchive
 	// MUST target the collection the form was seeded from — never the live
@@ -368,7 +368,7 @@
 			});
 			if (!isSameIdentity()) return;
 			if (items && items.length > 0) {
-				// WITH A RESOLVER (BUG-3067 round 5). `contextFromItem` defaults it
+				// WITH A RESOLVER (BUG-3067). `contextFromItem` defaults it
 				// to one that resolves nothing, so this preview rendered every
 				// relation-valued `{status}`/`{priority}` as empty — quietly
 				// disagreeing with the menu it exists to mirror.
@@ -452,8 +452,8 @@
 	// ── Sync from collection when modal opens ────────────────────────────────
 
 	// Seed the form once per open transition (open false→true) OR when the
-	// target collection IDENTITY changes while open (Codex switch-safety —
-	// navigation can swap the `collection` prop to a different collection). A
+	// target collection IDENTITY changes while open (navigation can swap the `collection` prop to a
+	// different collection). A
 	// same-identity `collection` reassignment (BUG-2265's sibling broadcast
 	// refreshing settings/updated_at) must NOT re-seed, or it would wipe the
 	// user's in-progress edits — so gate on the id, not any change. `wasOpen`
@@ -547,7 +547,7 @@
 			collection.slug !== seededCollectionSlug
 		) {
 			// SAME collection (same id) but a concurrent RENAME changed its slug
-			// (and name) while the modal is open (Codex P2). Retarget the PATCH
+			// (and name) while the modal is open. Retarget the PATCH
 			// endpoint (slug/name/ws) so handleSave/handleArchive hit the LIVE
 			// slug instead of the now-dead one (which would 404 before the token
 			// could even 409). Do NOT reseed the form, and DELIBERATELY do NOT
@@ -698,7 +698,7 @@
 		// Target the SEEDED collection identity, NOT the live props — the form
 		// data and expectedUpdatedAt below were seeded from that collection, so
 		// the write must land on it even if the props now identify a different
-		// collection (Codex switch-safety). Matches the captured token.
+		// collection. Matches the captured token.
 		const editedCollectionId = seededCollectionId;
 		const editedCollectionSlug = seededCollectionSlug;
 		const editedWsSlug = seededWsSlug;
@@ -841,8 +841,8 @@
 					return def;
 				});
 
-			// The form as this save sends it, for the re-baseline below (codex r2
-			// on TASK-2191: an edit typed while the save is in flight stays unsaved).
+			// The form as this save sends it, for the re-baseline below (TASK-2191: an edit typed
+			// while the save is in flight stays unsaved).
 			const sentKey = editKey;
 			const allFields = [...updatedExisting, ...addedFields];
 			const migrations = buildMigrations();

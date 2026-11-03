@@ -152,15 +152,15 @@
 		// single space (line 77) because Extract uses it as an item TITLE, where
 		// newlines would be wrong — but that join silently flattens a
 		// multi-paragraph selection into one run-on line, and a quote has to
-		// keep the shape of what was quoted. Found by codex round 1; before it,
-		// `toBlockquote`'s blank-line handling could never be reached from this
+		// keep the shape of what was quoted. Before that join was fixed, `toBlockquote`'s
+		// blank-line handling could never be reached from this
 		// call site at all, which made that test true and unreachable.
 		const text = editor.state.doc.textBetween(selFrom, selTo, '\n\n').trim();
 		if (!text) return;
 		// The return value is the whole reason `appendMarkdown` has one: it
 		// says "inserted" or "did nothing", and discarding it here would put
-		// the silent no-op back exactly where the handle was built to remove it
-		// (codex round 3). A false means the composer is unreachable — the
+		// the silent no-op back exactly where the handle was built to remove it.
+		// A false means the composer is unreachable — the
 		// timeline is filtered away, or the user cannot comment — so keep the
 		// selection and the menu, and say so.
 		if (!onComment(toBlockquote(text))) {
@@ -208,7 +208,7 @@
 		// Capture the workspace at create time. handleCreate awaits the
 		// create call and fires onItemCreated after it; reading the live
 		// `wsSlug` prop post-await could mis-attribute the item if the user
-		// navigated to another workspace mid-create. Per Codex review (round 2).
+		// navigated to another workspace mid-create.
 		const ws = wsSlug;
 
 		// Capture the ORIGINATING editor instance too. This bubble menu is
@@ -237,8 +237,8 @@
 			creating = false;
 			return;
 		}
-		// Permission can change while the form is open (codex round 1 on
-		// BUG-3258); the form keeps the slug it was opened with.
+		// Permission can change while the form is open (BUG-3258); the form keeps the slug it was
+		// opened with.
 		if (!workspaceStore.canEditCollection(coll.id)) {
 			errorMsg = `You can't create items in ${coll.name}`;
 			creating = false;
@@ -264,8 +264,7 @@
 			// callback/toast for it. Reset the persistent menu's form directly:
 			// hide() early-returns while `creating` is still true (the normal
 			// path hides via the post-insert selectionUpdate, which never fires
-			// here), so A's create form/selection would otherwise linger over B
-			// (Codex).
+			// here), so A's create form/selection would otherwise linger over B.
 			//
 			// `!originEditor.isEditable` is the master-freeze arm (PLAN-2179 DR-1
 			// / TASK-2180): the peeking `{#key}` remount used to destroy this
@@ -432,7 +431,7 @@
 		/* A ROW. The action buttons are themselves `display: flex`, so without
 		   this they are block-level and stack vertically — invisible with one
 		   action, wrong the moment there were two, and it also falsified the
-		   width/height the positioner clamps against (codex round 7). The
+		   width/height the positioner clamps against. The
 		   expanded state opts out below: the extract form lays itself out. */
 		display: flex;
 		align-items: center;

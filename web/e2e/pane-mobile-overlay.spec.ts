@@ -26,7 +26,7 @@ import type { Page } from '@playwright/test';
  * (media query reflects the new width + two animation frames). Asserting before
  * that would false-pass: CSS `position` flips synchronously on resize, so a
  * regression that drops `?item=` from the *async* handler wouldn't have fired
- * yet (Codex review, TASK-2121).
+ * yet (TASK-2121).
  *
  * Viewport is driven explicitly with `setViewportSize`, so the behaviour is
  * project-independent; we run on one project to avoid doubling the work. The
@@ -89,7 +89,7 @@ test.describe('mobile split-pane full-screen overlay (PLAN-2105 Phase 4 / TASK-2
 
 		// Overlay covers the FULL viewport EXACTLY: each edge pinned within a
 		// ±1px tolerance band (not one-sided bounds — a shifted `x=-100,
-		// width=868` or an oversized pane must fail, Codex review pass 2).
+		// width=868` or an oversized pane must fail).
 		const box = await pane.boundingBox();
 		expect(box).not.toBeNull();
 		expect(Math.abs(box!.x - 0)).toBeLessThanOrEqual(1); // left edge at 0

@@ -148,8 +148,8 @@ func (s *Server) handleUpdateDocument(w http.ResponseWriter, r *http.Request) {
 	//
 	// Only when the title actually CHANGES, though. Grandfathering existing
 	// over-limit titles is not a thing you get by validating at write time —
-	// it is a thing you get by not validating a write that is not a rename
-	//. A client PATCHing content with the full object, title
+	// it is a thing you get by not validating a write that is not a rename.
+	// A client PATCHing content with the full object, title
 	// included, is the ordinary shape of an edit; validating the echoed-back
 	// value would make every document with a legacy title uneditable rather
 	// than merely un-renameable, which is the opposite of the promise this

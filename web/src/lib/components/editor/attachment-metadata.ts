@@ -38,7 +38,7 @@ export interface AttachmentMetadata {
 	 * The derived (thumbnail) variants the SERVER holds for this attachment —
 	 * parsed from the `X-Pad-Attachment-Derived` response header (BUG-2964).
 	 *
-	 * A LIST, not a boolean (codex round 1): derivation writes each variant
+	 * A LIST, not a boolean: derivation writes each variant
 	 * independently, so a consumer has to ask about the variant IT will request,
 	 * not about whether any thumbnail at all exists.
 	 *
@@ -153,7 +153,7 @@ const cache = new Map<string, Promise<AttachmentMetadataResult>>();
  * Is this result a DURABLE fact worth keeping for the page's lifetime?
  *
  * `mime` and `size` are durable — the row is content-addressed. `derived` is
- * NOT, and conflating the two is a real defect (BUG-2964, codex round 2):
+ * NOT, and conflating the two is a real defect (BUG-2964):
  * thumbnail derivation runs ASYNCHRONOUSLY after upload, so a probe issued in
  * that window sees no variants yet. Caching that answer as immutable latches it
  * for the rest of the page — and on a build that CAN derive HEIC, a freshly
@@ -338,8 +338,7 @@ export function invalidateAttachmentMetadataForWorkspace(workspaceSlug: string):
  * different question, "is this row still there?", and a page-lifetime
  * cache structurally cannot answer it: the cached `ok` is a memory of
  * an earlier observation, so a row deleted since would still read as
- * live and a permanent placeholder would never latch (found by the
- * orchestrator's Codex pass on TASK-2420).
+ * live and a permanent placeholder would never latch (TASK-2420).
  *
  * The callers that need this are the ones holding contrary evidence —
  * an <img> whose load just failed, or a user pressing Retry (DR-10,

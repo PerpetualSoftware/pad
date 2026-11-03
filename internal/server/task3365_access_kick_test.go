@@ -451,8 +451,8 @@ func TestTASK3365_StalledTransportDoesNotBlockTheRequest(t *testing.T) {
 	}
 	waitKick(t, kick, "local kick with a stalled transport")
 
-	// Clearing the transport cancels the publish its worker is blocked in
-	//, without the transport ever being released. The worker must
+	// Clearing the transport cancels the publish its worker is blocked in,
+	// without the transport ever being released. The worker must
 	// BE in that publish first (BUG-3464): cleared before it was scheduled,
 	// it finds both `done` closed and a full queue, its select picks either
 	// at random, and choosing `done` returns without ever publishing. That

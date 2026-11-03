@@ -1,6 +1,6 @@
 package models
 
-// Codex round 2 on BUG-2627 part 2 — StructuredFieldIsAppendable must agree
+// BUG-2627 part 2 — StructuredFieldIsAppendable must agree
 // with the guard it describes, on every shape, not just the obvious two.
 //
 // The refusal message the server renders names `pad item note` as the remedy
@@ -63,7 +63,7 @@ func TestStructuredFieldIsAppendableAgreesWithTheGuard(t *testing.T) {
 	}
 
 	// Malformed OUTER blobs, which the table above cannot express because it
-	// builds a well-formed object around the value. Codex round 4: the
+	// builds a well-formed object around the value. the
 	// predicate claimed these were appendable while the helpers error on the
 	// same parse, so the refusal message prescribed a command that fails.
 	for _, k := range keys {
@@ -105,7 +105,7 @@ func TestStructuredFieldIsAppendableAgreesWithTheGuard(t *testing.T) {
 	}
 }
 
-// TestAppendSurvivesAMalformedOuterBlob — Codex round 3, P2.
+// TestAppendSurvivesAMalformedOuterBlob.
 //
 // parseMutableItemFields unmarshalled a literal `null` into a NIL map with no
 // error, and both Append* helpers then assign into whatever they get back — so
@@ -145,7 +145,7 @@ func TestAppendSurvivesAMalformedOuterBlob(t *testing.T) {
 				if err == nil {
 					t.Fatalf("fields=%q: expected an error, got out=%q", tc.fields, out)
 				}
-				// Codex round 5: an unparseable blob is unreadable in exactly
+				// An unparseable blob is unreadable in exactly
 				// BUG-2675's sense — deterministic and unfixable by the
 				// caller. Without the sentinel it reaches agents as
 				// server_error, which reads as transient and invites the

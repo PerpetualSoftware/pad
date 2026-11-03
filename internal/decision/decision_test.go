@@ -316,7 +316,7 @@ func TestOversizedStateSurfacesTypedError(t *testing.T) {
 }
 
 // TestFitStateRefusesOversizedQuestionsBeforeSending pins ErrRequestTooLarge
-// (TASK-3120, lead review F2): a Choice question set whose options alone
+// (TASK-3120): a Choice question set whose options alone
 // exceed maxRequestTokens is refused by fitState BEFORE any HTTP call, with
 // an error matching errors.Is(err, ErrRequestTooLarge) — distinct from
 // ErrMaxTokensExceeded, which is the PROVIDER's own after-the-fact refusal
@@ -592,7 +592,7 @@ func TestFitStateCutsOnRuneBoundaries(t *testing.T) {
 	// replaces with a six-byte \ufffd — so a mid-rune cut often FAILS the
 	// size check on its own and the loop retries, landing wherever the
 	// retry's arithmetic puts it. That second mechanism hides the defect at
-	// most offsets. Measured with the boundary loop deleted (review round 2):
+	// most offsets. Measured with the boundary loop deleted:
 	// invalid UTF-8 escaped at 18/64 offsets for 2-byte runes, 29/64 for
 	// 3-byte and 43/64 for 4-byte, while the previous 8-offset sweep over
 	// 2-byte runes caught NONE.

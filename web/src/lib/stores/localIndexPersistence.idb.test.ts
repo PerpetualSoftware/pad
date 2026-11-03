@@ -5,12 +5,12 @@ import { loadPersistence, rawItem, openSecondConnection, harnessDbName } from '.
 /**
  * PLAN-2636 unit 1 — end-to-end IDB coverage for the localIndex persistence
  * layer, which ran as a no-op under vitest until this project existed (no
- * IndexedDB in the node env — Wren's #1148 finding). The sibling
+ * IndexedDB in the node env; PR #1148). The sibling
  * `localIndexPersistence.test.ts` pins the PURE decision (`shouldWriteRow`)
  * and explicitly says it does NOT cover the interleaving outcome. This file
  * covers exactly that outcome through a real (fake-indexeddb) database.
  *
- * The ruling on the PLAN-2636 trail: the family's races are SNAPSHOT-
+ * The finding on the PLAN-2636 trail: the family's races are SNAPSHOT-
  * staleness, not read-staleness — the stale thing is the RAM snapshot handed
  * to persistUpserts, never its `get`, which reads committed state. IDB
  * serializes overlapping readwrite transactions, so the race BUG-2609 fixed

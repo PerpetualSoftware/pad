@@ -38,7 +38,7 @@ let itemValue = $state<string | undefined>(undefined);
 //   - moved to `beforeNavigate` to fix that, it then fired for navigations that
 //     were subsequently CANCELLED — the collection page cancels to prompt about
 //     an unsaved draft — leaving the title cleared on a page the user never
-//     left (codex round 1).
+//     left.
 //
 // Stamping removes the clear, and with it all three. A part simply stops
 // counting when the route it was set for is no longer the route being shown, so
@@ -132,7 +132,7 @@ export const titleStore = {
 
 // The path STAMP is what normally retires a title part, and a same-route
 // identity change moves no path — so A's workspace name and item ref stayed in
-// the browser tab and the mobile context bar for B (BUG-3005, codex round 1).
+// the browser tab and the mobile context bar for B (BUG-3005).
 // Cosmetic rather than a data leak of any size, and cheap enough that leaving
 // one member of the class unfixed costs more than fixing it.
 authStore.onIdentityChange(() => {

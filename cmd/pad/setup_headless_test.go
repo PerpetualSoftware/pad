@@ -459,8 +459,7 @@ func TestHeadlessInitPathSuccess(t *testing.T) {
 // a .bootstrap-token file, doHeadlessBootstrap (and thus the headless path of
 // both setup and init) forwards it as the X-Bootstrap-Token header. This is
 // required for self-host deployments where the server uses setup_method=logs_token
-// and would otherwise reject the request with 403 (finding #1 from round-1 codex
-// review).
+// and would otherwise reject the request with 403.
 func TestHeadlessSetupSendsBootstrapToken(t *testing.T) {
 	isolateHome(t)
 

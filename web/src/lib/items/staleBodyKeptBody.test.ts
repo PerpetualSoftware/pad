@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-// BUG-3050 U3 (codex round 1): a site that builds an item from a server row
+// BUG-3050 U3: a site that builds an item from a server row
 // but keeps a DIFFERENT body must keep that body's `content_state` too, or the
 // renders that read the marker label a body it does not describe. Two shapes:
 //
@@ -14,7 +14,7 @@ import { resolve } from 'node:path';
 //
 // The scan finds every object literal that spreads something and sets
 // `content`, in the files that hold the population (census on the BUG-3050
-// trail, round 1). It fails naming the literal.
+// trail). It fails naming the literal.
 
 const SRC = resolve(__dirname, '..');
 const FILES = [

@@ -151,11 +151,11 @@ func TestValidationFailedFromBuildErr(t *testing.T) {
 }
 
 // TestClassifyExecError_CannotPhrasingClassifiesAsValidation pins
-// the round-2 fix: server-side rejections phrased "cannot link an
+// the fix: server-side rejections phrased "cannot link an
 // item to itself" / "cannot modify archived item" / etc. were
 // falling through to ErrServerError. They're validation-shaped and
 // should classify as ErrValidationFailed so agents can branch on
-// the right code (BUG-987 bug 11 round 2).
+// the right code (BUG-987 bug 11).
 func TestClassifyExecError_CannotPhrasingClassifiesAsValidation(t *testing.T) {
 	cases := []string{
 		"Error: cannot link an item to itself",
@@ -179,12 +179,12 @@ func TestClassifyExecError_CannotPhrasingClassifiesAsValidation(t *testing.T) {
 	}
 }
 
-// TestClassifyExecError_NoLegacyVerbPrefixInMessage pins the round-2
+// TestClassifyExecError_NoLegacyVerbPrefixInMessage pins the
 // fix that drops the "pad <cmd> failed: " prefix from server_error
 // fallback messages. The prefix referenced OLD CLI verb names which
 // don't match the v0.2 MCP catalog action names agents see, and was
 // noise on top of the cmdPath that's already implicit from the
-// invoked tool (BUG-987 bug 11 round 2).
+// invoked tool (BUG-987 bug 11).
 func TestClassifyExecError_NoLegacyVerbPrefixInMessage(t *testing.T) {
 	// Use a stderr that won't hit any classifier matcher so we
 	// definitely fall through to the server_error fallback path.

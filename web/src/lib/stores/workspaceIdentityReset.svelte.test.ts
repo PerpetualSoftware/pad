@@ -163,7 +163,7 @@ describe('workspaceStore: identity change drops the previous user\'s state', () 
 		// `loadAll` is guarded by a single-flight GENERATION, which only advances
 		// when a newer `loadAll` starts — it says nothing about the user. The
 		// request is issued before the reset and commits after it, which is the
-		// one door the reset itself cannot close (codex round 1).
+		// one door the reset itself cannot close.
 		const { workspaceStore } = await import('./workspace.svelte');
 		const listing = deferred<typeof WS[]>();
 		api.workspaces.list.mockReturnValueOnce(listing.promise);
@@ -180,7 +180,7 @@ describe('workspaceStore: identity change drops the previous user\'s state', () 
 
 		// And the fence must not have poisoned the door: user-2's OWN list still
 		// commits. Asserting only the empty array would pass against a `loadAll`
-		// that had stopped committing anything at all (codex round 2).
+		// that had stopped committing anything at all.
 		api.workspaces.list.mockResolvedValue([OTHER]);
 		await workspaceStore.loadAll();
 		expect(workspaceStore.workspaces).toEqual([OTHER]);
@@ -200,7 +200,7 @@ describe('workspaceStore: identity change drops the previous user\'s state', () 
 	it('returns null from a create whose user changed, so the caller navigates nowhere', async () => {
 		// The store refusing to mutate is not enough on its own: the only caller
 		// navigates to whatever comes back, so returning the workspace sent the
-		// NEW user to the PREVIOUS user's slug (codex round 1).
+		// NEW user to the PREVIOUS user's slug.
 		const { workspaceStore } = await import('./workspace.svelte');
 		const created = deferred<typeof OTHER>();
 		api.workspaces.create.mockReturnValueOnce(created.promise);
@@ -214,7 +214,7 @@ describe('workspaceStore: identity change drops the previous user\'s state', () 
 	});
 
 	it('returns null when the user changes during the create\'s /me phase', async () => {
-		// The window AFTER the post-POST identity check (codex round 2). The
+		// The window AFTER the post-POST identity check. The
 		// store is protected there — `settleIfCurrent` refuses the write and the
 		// reset has already cleared what `create` wrote — but the RETURN VALUE
 		// was still the previous user's workspace, and the caller navigates to

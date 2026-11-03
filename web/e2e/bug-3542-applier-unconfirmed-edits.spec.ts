@@ -4,7 +4,7 @@
 // invisible to it; the write passed, and the tab's setContent replaced that
 // typing. The tab now refuses such an apply, the write answers 409
 // content_not_applied (apply_reason unconfirmed_edits), and the typing lands.
-// Dave's ruling: tokenless writes are refused too; overwrite_pending_edits is
+// Rule: tokenless writes are refused too; overwrite_pending_edits is
 // the only way past.
 //
 // Typing on the wire is made deterministic with routeWebSocket: while `hold` is

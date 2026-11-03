@@ -61,8 +61,8 @@
 		/** Accessible label suffix, e.g. the item title. */
 		label?: string;
 		/**
-		 * The card's ONE touch-sized ⋯ at phone width (TASK-2244, Dave's ruling,
-		 * day 83): star, copy-ref and the ⋮ are not rendered there, and their
+		 * The card's ONE touch-sized ⋯ at phone width (TASK-2244): star, copy-ref and the ⋮ are not
+		 * rendered there, and their
 		 * actions become the first entries of this menu. The trigger is 44x44.
 		 * Desktop never sets it, so the reorder-only ⋮ is unchanged there.
 		 */

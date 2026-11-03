@@ -111,7 +111,7 @@ func TestElapsedFastForwardCount(t *testing.T) {
 }
 
 func TestCapTimeGuard(t *testing.T) {
-	// A wall-clock check between yields, in the calling goroutine (TASK-4100 H1).
+	// A wall-clock check between yields, in the calling goroutine (TASK-4100).
 	// The elapsed rule yields on every minute, so a 1ns budget trips on the first.
 	c := compile(t, pinned(t, "UTC", "2025-01-01T00:00", "FREQ=MINUTELY"))
 	from := inst(t, "2025-01-01T00:00:00Z")

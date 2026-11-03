@@ -4,8 +4,8 @@
 // JSON shapes the API consumes.
 //
 // `dsl.go` is the home for the legacy "compact field DSL" parser that
-// originally lived in cmd/pad/main.go. Moved up to this shared package
-// (PR #572 follow-up to Codex finding on TASK-1510) so the MCP HTTP
+// originally lived in cmd/pad/main.go. Moved up to this shared package (PR #572,
+// TASK-1510) so the MCP HTTP
 // route mapper can accept `fields=...` for `collection update` without
 // reimplementing the parser. The CLI calls the same helper via
 // CollectionSchemaJSONFromDSL; both surfaces now have parity.

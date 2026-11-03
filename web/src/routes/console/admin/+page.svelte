@@ -68,8 +68,7 @@
 		// the server-side status precedence (disabled > no-workspace).
 		// Now: statusFilter is always applied client-side via
 		// applyClientStatusFilter; only the "disabled" case gets a server
-		// hint so the result set is smaller for the common case (Codex
-		// review on PR #604, finding 1+2+3).
+		// hint so the result set is smaller for the common case (PR #604).
 		if (statusFilter === 'disabled') p.set('disabled', 'true');
 		if (activeWithinDaysFilter) p.set('active_within_days', activeWithinDaysFilter);
 		if (hasWorkspacesFilter) p.set('has_workspaces', hasWorkspacesFilter);
@@ -119,8 +118,7 @@
 	}
 
 	// loadMore appends the next page without resetting offset. On failure,
-	// rolls back the offset so a retry doesn't skip a page (Codex review
-	// on PR #604). Also guards against re-entrant calls while a page is
+	// rolls back the offset so a retry doesn't skip a page (PR #604). Also guards against re-entrant calls while a page is
 	// in flight.
 	async function loadMore() {
 		if (loadingMore || loading) return;
@@ -164,7 +162,7 @@
 	// excluded (changes per keystroke). Status is its own URL param
 	// (rather than smuggled through has_workspaces/disabled) so all four
 	// buckets — active/inactive/disabled/no-workspace — round-trip
-	// losslessly (Codex review on PR #604).
+	// losslessly (#604).
 	function syncURL() {
 		const p = buildQueryParams({ offset: 0, includeSearch: false });
 		p.delete('limit');
@@ -247,7 +245,7 @@
 		if (days < 7) return 'recent';
 		// 30 days inclusive is "stale" to match server-side
 		// computeAdminUserStatus which only flips to inactive on > 30 days
-		// (Codex review on PR #603).
+		// (#603).
 		if (days <= 30) return 'stale';
 		return 'cold';
 	}

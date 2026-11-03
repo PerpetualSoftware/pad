@@ -238,7 +238,7 @@ func TestEditWarnsBeforeLaunchingTheEditor(t *testing.T) {
 	// Both directions at the COMMAND boundary, because the helper's own gating
 	// table cannot see a wiring error: with the call site forced to warn
 	// unconditionally, a stale-only test still passes and the marker becomes
-	// noise on every edit. Codex round 1 P3.
+	// noise on every edit.
 	for _, tc := range []struct {
 		name         string
 		contentState string
@@ -324,7 +324,7 @@ func TestEditWarnsBeforeLaunchingTheEditor(t *testing.T) {
 			}
 			// The exact CONTENT, not merely that a PATCH occurred: an update
 			// payload stripped of its content still produces a PATCH, and this
-			// case claims to exercise saving the edited body (codex round 2 P3).
+			// case claims to exercise saving the edited body.
 			wantContent := "the previous content" + "edited\n"
 			if patchedContent == nil {
 				t.Fatalf("the PATCH carried no content, so this case did not exercise saving:\n%s", stderr)
@@ -355,14 +355,14 @@ func TestEditWarnsBeforeLaunchingTheEditor(t *testing.T) {
 }
 
 // TestPlaybookListWarnsOnlyAboutStaleSummaries covers the CLI half of the
-// summary door (BUG-3033, codex round 1 P2) through BOTH renderers.
+// summary door (BUG-3033) through BOTH renderers.
 //
 // A `summary` is the body's first paragraph, truncated, so a stale body makes a
 // stale summary — and an agent routes on that description. Each renderer decodes
 // its own narrow struct, so neither inherits anything.
 //
 // Three stale entries INTERLEAVED with current ones, because a single stale row
-// cannot distinguish three different renderers (codex round 2 P3): one that
+// cannot distinguish three different renderers: one that
 // names every ref, one that names only the first, and the correct one all agree
 // when exactly one row is stale. The assertions are therefore the COMPLETE ref
 // set, the absence of the current ones, and EXACTLY ONE warning line.
@@ -457,8 +457,8 @@ func TestPlaybookListWarnsOnlyAboutStaleSummaries(t *testing.T) {
 
 			// The summaries must STILL BE RENDERED. Presence was asserted only
 			// in the absence leg, so suppressing stale summary text in both
-			// renderers while keeping the warning refs left this green (codex
-			// round 4). The warning qualifies the text; it is not a substitute.
+			// renderers while keeping the warning refs left this green. The warning
+			// qualifies the text; it is not a substitute.
 			for ref := range stale {
 				if !strings.Contains(stdout, ref) {
 					t.Errorf("stale %s vanished from the listing; the warning is a qualifier, not a replacement:\n%s", ref, stdout)
@@ -505,7 +505,7 @@ func TestPlaybookListWarnsOnlyAboutStaleSummaries(t *testing.T) {
 }
 
 // TestSnippetRenderersWarnAboutStaleSources covers the two CLI renderers that
-// print body-derived SNIPPETS (BUG-3033, codex round 2 P2).
+// print body-derived SNIPPETS (BUG-3033).
 //
 // `pad item search` decodes the embedded models.Item and prints only the
 // snippet; `pad item backlinks` decodes models.Backlink and prints only the
@@ -519,7 +519,7 @@ func TestSnippetRenderersWarnAboutStaleSources(t *testing.T) {
 	// THREE stale rows separated by current ones. An earlier draft had one
 	// stale row while its comment claimed interleaving — the same gap this unit
 	// had already fixed for summaries, reintroduced one test later, and a
-	// renderer reporting only the first stale source passed it (codex round 3).
+	// renderer reporting only the first stale source passed it.
 	staleRefs := []string{"TASK-2", "TASK-4"}
 	currentRefs := []string{"TASK-1", "TASK-3", "TASK-5"}
 	isStale := map[string]bool{}
@@ -589,7 +589,7 @@ func TestSnippetRenderersWarnAboutStaleSources(t *testing.T) {
 	// Each door names the tokens whose presence proves the listing really
 	// rendered, so an absence assertion cannot pass vacuously — and for both
 	// doors those tokens are SNIPPET text, because the mutation that matters is
-	// "suppress the snippets, keep the warning" (codex round 4 ran exactly that
+	// "suppress the snippets, keep the warning" (ran exactly that
 	// and an earlier draft of this test stayed green).
 	//
 	// `item backlinks` prints its snippet through cli.Dim, and fatih/color's
@@ -653,7 +653,7 @@ func TestSnippetRenderersWarnAboutStaleSources(t *testing.T) {
 
 			// The rendered text must SURVIVE the stale leg. Suppressing stale
 			// search snippets and ALL backlink snippets while keeping the
-			// warnings left this green (codex round 4), because the backlink
+			// warnings left this green, because the backlink
 			// premise checked row headings rather than snippets.
 			for _, token := range door.present {
 				if !strings.Contains(stdout, token) {

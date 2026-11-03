@@ -199,7 +199,7 @@ func TestPadItemLink_MissingRefOrTarget(t *testing.T) {
 // TestPadItemBulkUpdate_TranslatesRefsArray verifies the catalog's
 // `refs: array<string>` param becomes the CLI's repeatable positional
 // `ref` (one positional per refs entry). Regression test for the
-// scalar/array mismatch Codex flagged on PR #354.
+// scalar/array mismatch fixed in PR #354.
 func TestPadItemBulkUpdate_TranslatesRefsArray(t *testing.T) {
 	t.Run("array of strings", func(t *testing.T) {
 		disp := &fakeDispatcher{}

@@ -96,8 +96,7 @@ type DocumentListParams struct {
 // and is what actually bounds the work.
 //
 // Enforced at WRITE time only. Titles already over the bound stay valid and
-// keep working until their next rename — no retro-breakage of stored data
-// (Dave's ruling, day-63).
+// keep working until their next rename — no retro-breakage of stored data.
 const MaxDocumentTitleRunes = 255
 
 // wikiTitleRoundTripFailure reports why emitting `[[title]]` by plain
@@ -133,7 +132,7 @@ const MaxDocumentTitleRunes = 255
 //     string, AND a link stored as `[[Alpha\|Beta]]` is invisible to the
 //     rename cascade, which searches for the raw `[[Alpha|Beta]]` only.
 //
-// The second half is why `|` and a lone `\` are refused (codex round 9),
+// The second half is why `|` and a lone `\` are refused,
 // having been ALLOWED in the first version of this validator. The property
 // tested there was "does the renderer read this back as the same title", and
 // both characters pass it. That was the wrong property: a title also has to be
@@ -164,7 +163,7 @@ func wikiTitleRoundTripFailure(title string) string {
 		return `Title may not end with "\" — it would escape the closing bracket of the [[wiki-links]] that point ` +
 			`at this document`
 	}
-	// The reason given to the caller is the TRUE one (lead ruling, BUG-2806).
+	// The reason given to the caller is the TRUE one (BUG-2806).
 	// It used to be "the rename cascade would not find" their escaped links,
 	// which BUG-2806 made false. The refusal stays anyway: lifting it needs
 	// every wiki-link consumer (web rendering and backlinks, MCP, search, the

@@ -162,7 +162,7 @@ func containsStr(s, sub string) bool {
 
 // isolateEnv points HOME and PATH at empty temp directories and chdirs into
 // an empty temp directory, so DetectTools sees none of this machine's real
-// signals (this dev machine has ~/.codex, ~/.claude, etc. — a naive test
+// signals (this dev machine has ~, ., ~, .claude, etc., a naive test
 // would false-pass without this).
 func isolateEnv(t *testing.T) (home, bin string) {
 	t.Helper()

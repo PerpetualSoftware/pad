@@ -154,7 +154,7 @@ test.describe('pane accessibility & focus management (PLAN-2105 / TASK-2122)', (
 
 		// Tab still bridges into the pane even though the click left DOM focus on
 		// the ORIGINAL row while j moved the `.focused` marker to another (the
-		// bridge keys off the row anchor, not the marker — Codex P1).
+		// bridge keys off the row anchor, not the marker).
 		await page.keyboard.press('Tab');
 		await expect.poll(() => activeInPane(page)).toBe(true);
 	});
@@ -244,7 +244,7 @@ test.describe('pane accessibility & focus management (PLAN-2105 / TASK-2122)', (
 		// Client-side nav to a DIFFERENT collection (SvelteKit reuses this
 		// [collection] page, so openItemRef flips truthy→null without a close).
 		// The focus-return effect must treat this as navigation, not a pane close
-		// — it must NOT yank focus into the newly-loaded list (Codex P2).
+		// — it must NOT yank focus into the newly-loaded list.
 		const tasksLink = page.locator(`a.nav-item[href$="/${fixture.workspaceSlug}/tasks"]`).first();
 		await expect(tasksLink).toBeVisible();
 		await tasksLink.click();
@@ -308,7 +308,7 @@ test.describe('pane accessibility & focus management (PLAN-2105 / TASK-2122)', (
 
 		// Containment backstop: a PROGRAMMATIC focus escape (not via Tab — e.g.
 		// Cmd+F focusing the search box behind the overlay) is yanked back into
-		// the pane by the focusin handler (Codex P1). Synthesize it with an
+		// the pane by the focusin handler. Synthesize it with an
 		// injected outside button.
 		await page.evaluate(() => {
 			const b = document.createElement('button');
@@ -335,7 +335,7 @@ test.describe('pane accessibility & focus management (PLAN-2105 / TASK-2122)', (
 
 		// A modal <dialog> stacked over the overlay owns its OWN focus cycle —
 		// the window-level pane trap must defer to it and NOT drag Tab back into
-		// the inert pane behind it (Codex P1). Inject one, focus inside, Tab.
+		// the inert pane behind it. Inject one, focus inside, Tab.
 		await page.evaluate(() => {
 			const dlg = document.createElement('dialog');
 			dlg.id = '__t2122_dialog';

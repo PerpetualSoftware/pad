@@ -59,7 +59,7 @@ afterEach(() => {
 describe('TASK-2946 — what loadCollections hands the cache', () => {
 	it('stamps with the DURABLE epoch, so a cold tab with no RAM epoch still caches', async () => {
 		// The path the feature actually runs on, and the one every IDB test
-		// missed by seeding epochs directly (codex round 2). The workspace
+		// missed by seeding epochs directly. The workspace
 		// layout starts this fetch BEFORE `localIndex.bootstrap`, so RAM's epoch
 		// is null here; an earlier draft bracketed the fetch with RAM and
 		// therefore refused to cache on every fresh online visit — inert in its
@@ -75,12 +75,12 @@ describe('TASK-2946 — what loadCollections hands the cache', () => {
 	});
 
 	it('completes the durable read BEFORE issuing the request, not alongside it', async () => {
-		// The property, and it is not cosmetic (codex round 3). Run concurrently,
+		// The property, and it is not cosmetic. Run concurrently,
 		// the durable read RESOLVES after the request was issued and can observe
 		// a resync that landed in between — the write then compares that later
 		// epoch against itself, agrees, and stamps an old-scope list with the new
-		// scope. Defeat by construction, which is what round 1 found and what the
-		// round 2 fix reintroduced.
+		// scope. Defeat by construction, which is what the first version did and what a later
+		// fix briefly reintroduced.
 		//
 		// Asserted by holding the epoch read PENDING and checking the request has
 		// not been issued: an ordering assertion on invocation alone would also

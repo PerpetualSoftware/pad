@@ -60,7 +60,7 @@ describe('agentNameFromMetadata', () => {
 // already hold the parsed metadata. Equivalence with agentNameFromMetadata was
 // the only thing pinning it, which covers the shared path and not this
 // function's own edges — most of them only existed incidentally inside
-// component tests (codex round 14).
+// component tests.
 describe('agentNameOf', () => {
 	it('returns the name from a parsed object', () => {
 		expect(agentNameOf({ agent: 'wren', changes: 'status' })).toBe('wren');
@@ -94,6 +94,6 @@ describe('agentNameOf', () => {
 });
 
 // The `agentActorLabel(metadata, fallback)` wrapper these last cases covered
-// was removed in codex round 3: one caller, and it hid the `?? fallback` that
+// was removed in: one caller, and it hid the `?? fallback` that
 // every other site wrote inline. Each surface's own fallback is asserted where
 // that surface is tested, which is where the casing difference actually lives.

@@ -59,7 +59,7 @@ function renderCard(collSlug: string, storedStatus: string, storedPriority: stri
 				ref: 'CAR-1', title: 'An item', collection: collSlug, status: storedStatus,
 				is_terminal: false, child_count: 0, updated_at: '2026-01-01T00:00:00Z',
 			},
-			// THE REQUIRED PROP, passed rather than left to `as never` (round 6).
+			// THE REQUIRED PROP, passed rather than left to `as never`.
 			// Omitting it type-checked because of the cast and silently exercised
 			// the permissive staleness path — a test of a branch the component
 			// no longer takes in production.

@@ -251,7 +251,7 @@ describe('crash drafts (TASK-3606)', () => {
 	});
 });
 
-// BUG-3863 (lead ruling 1): the pane holds a shown draft unless a live keeper
+// BUG-3863: the pane holds a shown draft unless a live keeper
 // in this tab last kept exactly that text for that user and item.
 describe('keeper ownership (BUG-3863)', () => {
 	it('owns exactly what it last kept, for that user and item', () => {
@@ -322,7 +322,7 @@ describe('keeper ownership (BUG-3863)', () => {
 	});
 });
 
-// BUG-3863 two-tab ruling: tab A holds a draft tab B's live keeper kept. B's
+// BUG-3863 two-tab rule: tab A holds a draft tab B's live keeper kept. B's
 // keeper reaches that held copy by its id, never by its text, and nothing
 // without its id.
 describe('a held copy of a live keeper draft in another tab (BUG-3863)', () => {

@@ -65,7 +65,7 @@ func seedDashboardZone(raw json.RawMessage) {
 	_ = cli.DisplayLocation()
 }
 
-// A zone this machine's tzdata cannot load renders in UTC, and the notice names it (r4-C1).
+// A zone this machine's tzdata cannot load renders in UTC, and the notice names it.
 func noteViewerZone(name *string, unset bool) {
 	z := usertz.Resolve(name)
 	viewerZone.loc, viewerZone.note = z.Loc, ""

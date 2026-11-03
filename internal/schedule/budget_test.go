@@ -8,8 +8,8 @@ import (
 )
 
 // noLeak runs call n times and fails if the goroutine count moved: every
-// expansion runs in the caller (TASK-4100 H1). It asserts on counts and kinds,
-// never on wall time, so it does not flake under load or -race (r2).
+// expansion runs in the caller (TASK-4100). It asserts on counts and kinds,
+// never on wall time, so it does not flake under load or -race.
 func noLeak(t *testing.T, n int, call func()) {
 	t.Helper()
 	call() // warm any lazy runtime goroutine before counting
@@ -53,7 +53,7 @@ func TestBudgetFeb29Minutely(t *testing.T) {
 	lim := Limits{MaxSteps: 1000}
 	stallCalls(t, lim, func() error { _, _, err := c.NextAfter(q, nil, lim); return err })
 	// A window the rule is known to be empty through is a final, empty answer; one
-	// reaching past what the budget examined is a CapStall (TASK-4100 r3).
+	// reaching past what the budget examined is a CapStall (TASK-4100).
 	if occ, err := c.Between(q, q.Add(24*time.Hour), nil, lim); err != nil || len(occ) != 0 {
 		t.Errorf("Between inside the examined stretch = %v %v; want an empty answer", occ, err)
 	}
@@ -81,10 +81,10 @@ func TestBudgetUnsatisfiable(t *testing.T) {
 }
 
 // TestNoGoroutineOutlivesCall is the instrument for "all work runs in the
-// caller" (TASK-4100 H1). MaxDuration is tiny, so a restored abandon path
+// caller" (TASK-4100). MaxDuration is tiny, so a restored abandon path
 // returns CapTime at 1 ms while its goroutine keeps spending the 200k-step
 // budget (about 13 ms, about 100 ms under -race); the count read here, with no
-// settle, is then about 20 higher. MaxSteps is kept short for -race (r2).
+// settle, is then about 20 higher. MaxSteps is kept short for -race.
 func TestNoGoroutineOutlivesCall(t *testing.T) {
 	c := compile(t, pinned(t, "UTC", "2025-01-01T00:00", "FREQ=MINUTELY;BYMONTH=1;BYYEARDAY=200"))
 	q := inst(t, "2025-01-01T00:00:00Z")

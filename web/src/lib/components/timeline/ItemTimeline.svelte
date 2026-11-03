@@ -70,7 +70,7 @@
 		 * REST-writes this item's `items.content` directly (not via the Y.Doc
 		 * applier), so on a peeking side whose Y.Doc is retained-alive it can be
 		 * overwritten by a later collab flush — a SAME-ITEM collision the
-		 * different-master/pane premise does NOT cover (BUG-2263 / Codex P1). The
+		 * different-master/pane premise does NOT cover (BUG-2263). The
 		 * host passes `restoreFrozen={peeking}` so restore stays confined to the
 		 * active editor. Defaults false → byte-identical for every existing caller.
 		 */
@@ -373,8 +373,8 @@
 			// attachment resolved-then-unreferenced (or a probe still in flight) keeps
 			// `attMeta`/`probed` state that a later re-reference would otherwise replay
 			// — a stale `ok` painting a broken `<img>` against an archived parent, or a
-			// stale probe mark skipping the restore re-probe (Codex rounds 1-2, the
-			// symmetric P2). All of `attMeta`/`probed`/`unresolved` describe THIS
+			// stale probe mark skipping the restore re-probe. All of
+			// `attMeta`/`probed`/`unresolved` describe THIS
 			// timeline instance's own probes (UUIDs are globally unique), so the union
 			// never misattributes an entry to another item. After a no-{#key} workspace
 			// switch the union may still carry a PRIOR workspace's id (attMeta persists
@@ -411,7 +411,7 @@
 				// HEAD). Clearing the probe mark + invalidating for a not-currently-
 				// referenced id too is what lets a re-reference AFTER the restore
 				// re-probe instead of skipping on a stale probe mark / stale cached
-				// `missing` (Codex rounds 1-2). The probe effect iterates only
+				// `missing`. The probe effect iterates only
 				// CURRENTLY-referenced ids, so bump the reactive nonce (which forces this
 				// run no-store) when a referenced id needs re-probing; the rest re-probe
 				// when they are next referenced.
@@ -624,7 +624,7 @@
 		// images mouse-openable (the delegated listeners live on the container,
 		// which survives) but with no role, no tabindex and no name — openable
 		// by mouse only, which is the dead-control failure in its other
-		// direction (Codex round 4). Reading the derived also reads `entries`,
+		// direction. Reading the derived also reads `entries`,
 		// so nothing is lost by not naming it too.
 		void visibleEntries;
 		void attMeta;
@@ -686,7 +686,7 @@
 		// from the previous load stay on screen while this one is in flight
 		// (`{#if !loading || entries.length > 0}`), so Load More is still
 		// clickable — and its cursor would be the OLD item's position sent
-		// against the NEW one (codex round 6). This function replaces entries
+		// against the NEW one. This function replaces entries
 		// with page 1 when it resolves anyway, so there is no deeper paging
 		// state being thrown away that would have survived.
 		nextCursor = null;
@@ -694,7 +694,7 @@
 		// A paging request in flight belongs to the view being replaced. Its
 		// own cleanup is guarded on item + workspace, so if it resolves while the reader
 		// is on another item nothing ever clears this and the button comes
-		// back permanently disabled (codex round 9).
+		// back permanently disabled.
 		loadingMore = false;
 		const ticket = ++viewDispatch;
 		// Whether this request owns the view right now: it either WROTE (in
@@ -727,7 +727,7 @@
 			error = err?.message ?? 'Failed to load timeline';
 		} finally {
 			// Item/workspace AND ownership: a stale request's cleanup must not clear
-			// the spinner a newer one owns (codex round 7).
+			// the spinner a newer one owns.
 			if (reqSlug === itemSlug && reqWs === wsSlug && (owned || ticket > viewApplied)) {
 				loading = false;
 			}
@@ -794,7 +794,7 @@
 	 * lexicographically `…:05.123Z` sorts BEFORE `…:05Z`, so the day one
 	 * writer stops truncating, a string sort silently reorders. Correcting a
 	 * claim this comment used to make: sub-second values are not reachable
-	 * from the current server (codex round 3 on BUG-2773).
+	 * from the current server (BUG-2773).
 	 */
 	function byNewestFirst(list: TimelineEntry[]): TimelineEntry[] {
 		return [...list].sort((a, b) => {
@@ -806,7 +806,7 @@
 	}
 
 	/**
-	 * `forKinds` is the CALLER's view filter (IDEA-2843, codex rounds 3-4).
+	 * `forKinds` is the CALLER's view filter (IDEA-2843).
 	 *
 	 * The hop loop below used to stop as soon as a page added any entry of any
 	 * kind. One feed now serves views that render different kinds, so a page of
@@ -832,8 +832,7 @@
 		loadingMore = true;
 		// A successful page clears a previous failure. Without this the banner
 		// outlives the problem and sits next to the entries it claims did not
-		// load — newly visible because the error is mirrored to the tabs now
-		// (codex round 6).
+		// load — newly visible because the error is mirrored to the tabs now.
 		error = '';
 		try {
 			for (let hop = 0; hop < MAX_EMPTY_HOPS && nextCursor; hop++) {
@@ -849,8 +848,8 @@
 				// A refresh applying while this page is in flight makes the
 				// page STALE: it was assembled before the refresh and can
 				// still contain an entry the refresh has since removed as
-				// deleted, which appending would put back on screen (codex
-				// round 4). Discard such a page rather than merge it — the
+				// deleted, which appending would put back on screen.
+				// Discard such a page rather than merge it — the
 				// cursor is untouched, so the button is still there and the
 				// next click fetches the same page against the current view.
 				const appliedAtDispatch = viewApplied;
@@ -871,7 +870,7 @@
 				// re-covers ground when one source's window ran out before
 				// another's, so a later page can carry entries NEWER than the
 				// oldest one already shown — appending those would print them
-				// below it (codex round 1). Same order the server sorts by:
+				// below it. Same order the server sorts by:
 				// created_at descending, id descending as the tie-break.
 				//
 				// Ordering lives in byNewestFirst, which compares instants
@@ -883,7 +882,7 @@
 				nextCursor = cursorFrom(resp, entries);
 				// Stop as soon as the press produced something THE CALLER can see.
 				// Counting every kind is what made this a dead button on a
-				// filtered view (codex rounds 3-4).
+				// filtered view.
 				const wanted = forKinds ?? visibleKinds;
 				const newVisible = wanted
 					? newEntries.filter((e) => wanted.includes(e.kind))
@@ -894,7 +893,7 @@
 				// server that predates next_before: the fallback re-derives
 				// the same last entry every time, and without this the hop
 				// loop turns one click into five identical requests instead of
-				// the single one this component used to make (codex round 2).
+				// the single one this component used to make.
 				if (
 					nextCursor &&
 					nextCursor.before === cursor.before &&
@@ -938,7 +937,7 @@
 		// for the id it describes. Clearing it would buy nothing and cost something
 		// real: the probe effect refills it only when `entries` next changes, so a
 		// FAILED load after the switch would leave every already-rendered image
-		// permanently un-openable for the rest of the mount (Codex round 3).
+		// permanently un-openable for the rest of the mount.
 		loadTimeline();
 	});
 
@@ -981,7 +980,7 @@
 	 * `viewApplied`, and then owns it.
 	 *
 	 * Two counters rather than one, because one cannot express both halves and
-	 * each single-counter version failed a different way (codex rounds 7-8):
+	 * each single-counter version failed a different way:
 	 * counting DISPATCHES let a refresh that then FAILED invalidate an
 	 * in-flight reload, leaving its good response discarded; counting APPLIES
 	 * let an OLDER response landing first claim the view and discard the newer
@@ -1019,8 +1018,7 @@
 		// with the server until something else redraws it. A response may
 		// write only if its ticket beats what has already written, so the
 		// NEWEST response wins whichever order they land in — an older one
-		// arriving first does write, and is then replaced (codex rounds 2
-		// and 8).
+		// arriving first does write, and is then replaced.
 		const ticket = ++viewDispatch;
 		try {
 			const resp: TimelineResponse = fetchKinds
@@ -1032,8 +1030,8 @@
 			if (ticket <= viewApplied) return;
 			viewApplied = ticket;
 			// This refresh has produced the view, so it owns the spinner an
-			// overlapped initial load will now decline to clear (codex round
-			// 8) — otherwise an empty result sits under a permanent one.
+			// overlapped initial load will now decline to clear —
+			// otherwise an empty result sits under a permanent one.
 			loading = false;
 			const freshIds = new Set(resp.entries.map((e) => e.id));
 			const existingIds = new Set(entries.map((e) => e.id));
@@ -1043,7 +1041,7 @@
 			// "always": the structured kinds carry a hand-written created_at
 			// and can arrive BACKDATED — truncated to whole seconds, but not
 			// forced to be recent — so they are merged into order rather than
-			// prepended on the assumption (codex round 3 on BUG-2765).
+			// prepended on the assumption (BUG-2765).
 			const newEntries = resp.entries.filter((e) => !existingIds.has(e.id));
 
 			// Update existing entries from the fresh response (e.g., reaction
@@ -1075,7 +1073,7 @@
 			// another returns an older row, the cursor sits NEWER than the
 			// oldest entry on the page. Treating the returned floor as the
 			// boundary then judges a live entry from the exhausted source —
-			// one this page never reached — as deleted (codex round 10).
+			// one this page never reached — as deleted.
 			//
 			// The fallback is that returned floor, for a server predating
 			// BUG-2765's cursor. It is the old, slightly-too-eager rule, and
@@ -1093,7 +1091,7 @@
 				// dropped some as unrenderable on the way, which is exactly
 				// why "not returned" still means "not on this timeline" — so
 				// an entry it does not contain is gone rather than out of
-				// window (codex round 1). This is also what makes an empty
+				// window. This is also what makes an empty
 				// final page clear the view rather than freeze it, while an
 				// empty page with more behind it still deletes nothing.
 				if (!hasMoreInFresh) return true;
@@ -1119,12 +1117,11 @@
 			// which page first delivered it. Keeping both would also have been
 			// a slow leak — an entry preserved as a roll-off dropped out of
 			// the tracked set, so a later window that expanded back over it
-			// could never remove it again (codex round 1).
+			// could never remove it again.
 			// WHAT INFERENCE CANNOT DO, stated so the next reader does not take
-			// this for a complete reconciliation (both raised by codex round 2
-			// and left open deliberately — the lead ruled option 1 for this
-			// unit and option 2, honouring deletion EVENTS, out of scope
-			// because it changes the SSE contract):
+			// this for a complete reconciliation (left open deliberately: this unit takes option 1,
+			// and option 2, honouring deletion EVENTS, is out of scope because it changes the SSE
+			// contract):
 			//
 			//   - An entry deleted BELOW a non-final page's floor is never
 			//     inspected again, so it stays on screen until a reload. The
@@ -1165,7 +1162,7 @@
 			// A newer refresh has already written the view, so this failure
 			// has nothing left to repair: retrying it would be traffic for a
 			// question that has been answered, and its answer would arrive
-			// staler than what is on screen (codex round 13).
+			// staler than what is on screen.
 			if (ticket <= viewApplied) return;
 			// The RETRY below is a send, and scheduling it is the commit this
 			// fence guards (BUG-3105). A failure belonging to the previous
@@ -1184,7 +1181,7 @@
 	// one and restamp it (the debounce merge), and neither showed here until
 	// a reload. item_updated for THIS item now re-reads the head, capped at one
 	// re-read per 10s per mounted timeline, trailing, and never while the tab is
-	// hidden (lead-ruled; the cap is what keeps an edit burst from becoming the
+	// hidden (the cap is what keeps an edit burst from becoming the
 	// shakiness the exclusion above exists to prevent). Filtered by item id:
 	// onItemEvent is workspace-wide, and without an id there is nothing to
 	// filter on, so no item_updated refresh at all. The re-read is
@@ -1394,13 +1391,13 @@
 <section class="timeline">
 	<header class="timeline-header">
 		<!-- Title and count describe what this view RENDERS, not the whole feed
-		     (IDEA-2843, codex round 3). The one feed is now split across views;
+		     (IDEA-2843). The one feed is now split across views;
 		     "Timeline 3" over an empty comments list — three activity entries,
 		     no comments — is a count of something the reader cannot see. -->
 		<h3 class="timeline-title">{title}</h3>
 		<!-- The `+` rides the feed-wide `hasMore`, so "Comments 1+" can appear
 		     when the only unfetched entries are activity or versions. Left as
-		     is deliberately (codex round 7): `+` reads as a LOWER BOUND, and a
+		     is deliberately: `+` reads as a LOWER BOUND, and a
 		     lower bound of 1 over exactly one comment is true. The alternative —
 		     dropping it unless more of THIS kind exist — cannot be known without
 		     fetching the rest of the feed, so it would trade a true imprecise

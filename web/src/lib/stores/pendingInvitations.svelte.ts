@@ -1,7 +1,7 @@
 // Pending invitations addressed to the signed-in account (BUG-2136 U2), kept
 // for the TopBar "+" badge so an invitation is visible without opening
 // anything. Self-hosted instances may send no email, so this badge IS the
-// notification (lead ruling, day 87: no new SSE kind; refetch on load, window
+// notification (no new SSE kind; refetch on load, window
 // focus and route change, and the invitee sees it on their next page view).
 //
 // The list itself is rendered by PendingInvitations inside the "+" surface,
@@ -9,7 +9,7 @@
 // remove() after an accept or decline, so the badge never lags the list.
 // Both sources share ONE order: the list reserves a token before it fetches,
 // and set() applies only when nothing newer (a refresh, a remove, another
-// list) has happened since (codex r7).
+// list) has happened since.
 import { api } from '$lib/api/client';
 import { authStore } from '$lib/stores/auth.svelte';
 import type { MyInvitation } from '$lib/types';

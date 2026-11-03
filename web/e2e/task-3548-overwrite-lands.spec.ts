@@ -5,7 +5,7 @@ import { browserLogin, EDITOR_SELECTOR, SYNC_TIMEOUT } from './lib/collab-helper
 import { authJson } from './lib/attachment-viewer';
 
 /**
- * TASK-3548 (codex, lead ruling B): an unconfirmed-edits refusal (409
+ * TASK-3548: an unconfirmed-edits refusal (409
  * content_not_applied, BUG-3542) still commits its row write, so the row's seq
  * moves under the caller's token. An Overwrite resent with that token met
  * update_conflict: the user said Overwrite and the save did not land.
@@ -180,7 +180,7 @@ test.describe('TASK-3548: Overwrite after an unconfirmed-edits refusal lands', (
 		expect(Number(saves[1]!.expected_seq)).toBeGreaterThan(Number(saves[0]!.expected_seq));
 	});
 
-	// codex P1: the playbook save sends its title. A title someone else set after
+	// The playbook save sends its title. A title someone else set after
 	// the refusal must not be put back by the overwrite: no fresh token then, and
 	// the save meets the conflict instead.
 	test('playbook editor: an overwrite does not restore a title someone else changed', async ({ page, fixture, request }) => {

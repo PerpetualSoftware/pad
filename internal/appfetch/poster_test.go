@@ -67,7 +67,7 @@ func TestPoster_PolicyAndPrivateOrigins(t *testing.T) {
 	}
 }
 
-// codex r1-r3 on U10b: a 2xx means the WHOLE request was sent, and a server
+// A 2xx means the WHOLE request was sent, and a server
 // that answers early and stops reading is a failure, never a delivery.
 func TestPoster_SuccessMeansTheWholeBodyWasSent(t *testing.T) {
 	body := make([]byte, 4<<20)
@@ -202,7 +202,7 @@ func TestPoster_VerifiesTheCertificate(t *testing.T) {
 	}
 }
 
-// codex r4 on U10b: interim answers are skipped, as net/http's Transport
+// Interim answers are skipped, as net/http's Transport
 // does; the final answer decides.
 func TestPoster_SkipsInterimAnswers(t *testing.T) {
 	srv, cfg := tlsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -219,7 +219,7 @@ func TestPoster_SkipsInterimAnswers(t *testing.T) {
 	}
 }
 
-// codex r4 on U10b: each entry admits its own path at its own addresses;
+// Each entry admits its own path at its own addresses;
 // two entries for one origin are never merged into "any path at any pin".
 func TestPoster_EntryPinsAndPathsStayPaired(t *testing.T) {
 	srv, cfg := tlsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) }))
@@ -239,7 +239,7 @@ func TestPoster_EntryPinsAndPathsStayPaired(t *testing.T) {
 	}
 }
 
-// codex r3 on U10c: failures before any request byte (dial, handshake) are
+// Failures before any request byte (dial, handshake) are
 // ErrNotSent, so a ledger does not count them as requests.
 func TestPoster_PreSendFailuresAreNotSent(t *testing.T) {
 	srv, _ := tlsServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) }))
@@ -274,7 +274,7 @@ func (f *failAfter) Write(p []byte) (int, error) {
 	return n, nil
 }
 
-// codex r4 on U10c: a write that fails before its first byte is unsent; one
+// A write that fails before its first byte is unsent; one
 // that fails part-way is not.
 func TestPoster_ZeroByteWriteFailureIsUnsent(t *testing.T) {
 	none := &countingWriter{w: &failAfter{}}

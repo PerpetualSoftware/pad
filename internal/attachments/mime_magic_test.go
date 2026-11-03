@@ -70,7 +70,7 @@ func TestBUG2963FormatsReachTheAllowlist(t *testing.T) {
 
 // TestEBMLDocTypeIsParsedNotSearched pins the DocType read in all four
 // directions. The first two are the ordinary files. The last two are the pair
-// an adversarial round used to break a substring search, and they broke it
+// that used to break a substring search, and they broke it
 // BOTH ways — the reason this is a parse now.
 //
 // Both adversarial fixtures were built by inserting a legal Void element (ID
@@ -121,7 +121,7 @@ func TestEBMLDocTypeIsParsedNotSearched(t *testing.T) {
 }
 
 // TestMatroskaDocTypeBeyondTheWindowIsWebM records a LIMITATION, not a defect
-// (BUG-2963 codex round 6; ruled not blocking for PR A).
+// (BUG-2963, ruled not blocking for PR A).
 //
 // A Void element is legal anywhere in an EBML header and may be any size. Make
 // one larger than the 512 bytes this door reads and the DocType behind it is
@@ -201,8 +201,8 @@ func TestOggStaysRefused(t *testing.T) {
 // TestADTSGate covers the one place a filename participates, in both
 // directions. The gate is on the stdlib having no SPECIFIC format opinion —
 // application/octet-stream or text/plain — and on the .aac extension. Neither
-// half is sufficient and the pair is not a formality: review found real,
-// ffmpeg-decodable AAC files being refused because only the first verdict was
+// half is sufficient and the pair is not a formality: real,
+// ffmpeg-decodable AAC files were once refused because only the first verdict was
 // accepted.
 func TestADTSGate(t *testing.T) {
 	adts := readFixture(t, "aac-adts.head512")
@@ -260,8 +260,8 @@ func TestADTSGate(t *testing.T) {
 
 	// An AAC whose payload contains "ustar" at offset 257. THIS PACKAGE
 	// refines such bytes to application/x-tar, and gating the AAC branch on
-	// that refined value refused the file under its own .aac name — a review
-	// round built a complete, ffmpeg-decodable AAC of exactly this shape. The
+	// that refined value refused the file under its own .aac name — a
+	// complete, ffmpeg-decodable AAC of exactly this shape existed. The
 	// gate reads the STANDARD LIBRARY's verdict instead, which for these bytes
 	// is "nothing identifies this", so the branch runs and the file is
 	// accepted.
@@ -289,8 +289,8 @@ func TestADTSGate(t *testing.T) {
 
 	// The signature, byte by byte. Each leg below fails for exactly one
 	// reason, because a single example leaves most of the check untested —
-	// a review round confirmed that dropping the first-byte test, or checking
-	// only one of the two layer bits, left the suite green.
+	// dropping the first-byte test, or checking
+	// only one of the two layer bits, would leave the suite green.
 	for _, tc := range []struct {
 		name   string
 		mutate func([]byte)
@@ -317,8 +317,8 @@ func TestADTSGate(t *testing.T) {
 // ordinary archive.
 //
 // The collision is SYMMETRIC. This comment used to call it asymmetric and give
-// that as the reason tar is tested first — the round-4 premise round 5
-// refuted, with flac-ustar-in-comment.head512: a FLAC's Vorbis COMMENT tags
+// that as the reason tar is tested first — a premise
+// refuted by flac-ustar-in-comment.head512: a FLAC's Vorbis COMMENT tags
 // are arbitrary UTF-8, so real audio carries "ustar" at offset 257 as readily
 // as a real tar carries an audio marker at offset zero. Any total order
 // refuses somebody. sniffOpaqueCandidates and the fixtures both say this
@@ -432,7 +432,7 @@ func TestBUG2963F5TextFamily(t *testing.T) {
 		{"answer: 42\n", "p.yml", "application/yaml", false, "the second spelling of the same mapping"},
 		{"a,b\n1,2\n", "p.csv", "text/csv", false, "csv sniffs as plain text; the name is the only thing that says otherwise"},
 		{"{\"a\": 1}\n", "p.json", "application/json", false, "JSON has no magic — it is text and a name"},
-		// EVERY leg above has wantInline false, and that is the finding this
+		// EVERY leg above has wantInline false, and that is what this
 		// table exists to make visible rather than the .js leg alone.
 		// text/plain is the only member of the text family in inlineSafe, so
 		// choosing ANY other text spelling moves the file out of inline
@@ -575,9 +575,9 @@ func TestTarAndELFAreNotDistinguishableHere(t *testing.T) {
 
 // TestMagicOnlyRecognisesWhatValidationUsedToRefuse is the WIDENING, asserted
 // rather than described. Every input here was refused by the structural
-// validation that stood between rounds 1 and 3, and is accepted now.
+// validation that existed earlier, and is accepted now.
 //
-// The ruling this implements rests on a fact about this door rather than on a
+// The change this implements rests on a fact about this door rather than on a
 // judgement: http.DetectContentType recognises audio/mpeg from the three bytes
 // "ID3", audio/mpeg is on the allowlist, and this door already serves it
 // inline. Every signature below is at least as wide as that, so recognising
@@ -719,7 +719,7 @@ func TestMagicStillHasToBeThere(t *testing.T) {
 	}
 }
 
-// TestEBMLDocTypeSurvivesPaddingPastTheHead covers a round-3 finding that the
+// TestEBMLDocTypeSurvivesPaddingPastTheHead covers a case that the
 // magic-only ruling does not touch, because the DocType parse stays: a header
 // declaring a DocType payload longer than the bytes we hold is still
 // answerable when the VALUE is complete in hand, since it ends at its first

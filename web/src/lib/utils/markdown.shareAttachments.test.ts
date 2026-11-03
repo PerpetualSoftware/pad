@@ -109,7 +109,7 @@ describe('share-page attachment rendering (BUG-2389)', () => {
 		// renderMarkdown (the wiki-link pipeline) shares the same module
 		// context and used to clear it unconditionally — a hook that
 		// renders a sub-document through it must not strand the outer
-		// share render (codex round 2).
+		// share render.
 		const nestedHook = (uuid: string, alt: string) => {
 			renderMarkdown('plain text, no refs', [], 'ws-1');
 			return renderAttachmentUnavailable(uuid, alt);

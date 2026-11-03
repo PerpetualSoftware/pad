@@ -81,7 +81,7 @@ func fieldsPatchOf(t *testing.T, body map[string]any) map[string]any {
 }
 
 func TestItemUpdate_NonEmptyAssignedUserIDLiftsToColumn(t *testing.T) {
-	// Q1 of the ruling: the compat change. This value used to land in the
+	// The compat change. This value used to land in the
 	// fields blob while the column stayed stale.
 	body := captureUpdateBody(t, "TASK-9", "--field", "assigned_user_id=user-42")
 
@@ -96,7 +96,7 @@ func TestItemUpdate_NonEmptyAssignedUserIDLiftsToColumn(t *testing.T) {
 }
 
 func TestItemUpdate_EmptyAssignedUserIDClearsTheColumn(t *testing.T) {
-	// Q2 of the ruling: falls out of the lift. The empty string reaches the
+	// Falls out of the lift. The empty string reaches the
 	// column, where the store's BUG-2566 semantics turn it into NULL.
 	body := captureUpdateBody(t, "TASK-9", "--field", "assigned_user_id=")
 
@@ -120,7 +120,7 @@ func TestItemUpdate_EmptyAssignedUserIDClearsTheColumn(t *testing.T) {
 }
 
 func TestItemUpdate_AgentRoleIDGetsIdenticalTreatment(t *testing.T) {
-	// The ruling requires the sibling column move in the same change.
+	// The sibling column moves in the same change.
 	set := captureUpdateBody(t, "TASK-9", "--field", "agent_role_id=role-7")
 	if got := set["agent_role_id"]; got != "role-7" {
 		t.Fatalf("agent_role_id column = %v, want %q", got, "role-7")
@@ -316,8 +316,8 @@ func TestItemCreate_LiftsColumnFields(t *testing.T) {
 	}
 }
 
-// TestLiftColumnFields_DeclaredKeyIsNotLifted covers the collision codex
-// round 3 found: nothing reserves `assigned_user_id` as a field name, so a
+// TestLiftColumnFields_DeclaredKeyIsNotLifted covers the collision:
+// nothing reserves `assigned_user_id` as a field name, so a
 // collection may legally DECLARE one. For that collection `--field
 // assigned_user_id=foo` means the declared field — lifting it would both
 // redirect the write to the assignment column AND drop the value the user
@@ -402,7 +402,7 @@ func TestItemUpdate_ClearFlagsAbsentWhenNotPassed(t *testing.T) {
 	}
 }
 
-// TestItemUpdate_ClearConflictsAreRejected covers codex round 1's finding —
+// TestItemUpdate_ClearConflictsAreRejected covers the conflict rules —
 // and the fact that an earlier draft of this test was VACUOUS is the reason it
 // is written this way now.
 //
@@ -474,8 +474,8 @@ func TestItemUpdate_ClearConflictsAreRejected(t *testing.T) {
 	}
 }
 
-// TestItemCreate_HasNoClearFlags pins the deliberate asymmetry (IDEA-2584
-// ruling 2). Clearing at create is a request to not-set something never set;
+// TestItemCreate_HasNoClearFlags pins the deliberate asymmetry (IDEA-2584).
+// Clearing at create is a request to not-set something never set;
 // the only honest behaviour is a no-op, which teaches a wrong affordance. If
 // someone "completes the pair", this fails and they meet the reasoning.
 func TestItemCreate_HasNoClearFlags(t *testing.T) {
@@ -577,7 +577,7 @@ func TestItemUpdate_ClearParentConflictsWithParentFlag(t *testing.T) {
 
 // TestItemUpdate_ClearParentConflictsWithFieldParentFlag and
 // TestItemUpdate_ClearParentConflictsWithFieldPlanFlag cover the two bypass
-// routes codex round 1 [P1] found: the conflict check used to run BEFORE the
+// routes: the conflict check used to run BEFORE the
 // --field loop and only inspected --parent's own value, so
 // `--clear-parent --field parent=X` reached the wire with the --field
 // entry silently overwriting the earlier `patch["parent"] = ""`, and
@@ -655,7 +655,7 @@ func TestItemUpdate_ClearParentConflictsWithFieldPlanFlag(t *testing.T) {
 }
 
 // TestItemUpdate_ClearParentRefusedWhenSchemaShadowsField promotes the
-// empirical repro from the codex round 2 finding #2 investigation to a
+// empirical repro from an earlier investigation to a
 // permanent regression test. Before this guard existed, dispatching
 // --clear-parent against a collection whose schema declares its own
 // "parent" (or "plan") field reported SUCCESS while silently blanking the

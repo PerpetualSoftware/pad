@@ -104,8 +104,7 @@ for (const key of ACCOUNT_KEYS) {
 				await expect(page.locator('button.new-btn'), `${key} on ${coll}`).toHaveCount(
 					EDITS[key].includes(coll) ? 1 : 0
 				);
-				// The sidebar's "+ New {collection}" under the nav (BUG-3258,
-				// codex round 1).
+				// The sidebar's "+ New {collection}" under the nav (BUG-3258).
 				await expect(page.locator('button.new-item-btn'), `${key} sidebar on ${coll}`).toHaveCount(
 					EDITS[key].includes(coll) ? 1 : 0
 				);

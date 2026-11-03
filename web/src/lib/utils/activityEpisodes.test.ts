@@ -99,7 +99,7 @@ describe('foldEpisodes', () => {
 		expect(eps[0].key.startsWith('agent:named:claude-code|')).toBe(true);
 	});
 
-	// Codex round 4. `agent` is a legal value for X-Pad-Agent, and a person
+	// `agent` is a legal value for X-Pad-Agent, and a person
 	// may be named `cli`. A key built from the display label alone folds
 	// either one together with the actors we have NO name for — two
 	// different claims ("this actor" vs "unattributed") sharing one key.

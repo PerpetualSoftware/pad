@@ -66,7 +66,7 @@ func TestRealPadTree_ValidatesAgainstSchema(t *testing.T) {
 }
 
 func TestRealPadTree_ExampleDriftValidator(t *testing.T) {
-	// THE DRIFT-PREVENTION CONTRACT (spec §6 / §11 Q5): every example
+	// THE DRIFT-PREVENTION CONTRACT (spec §6, §11): every example
 	// emitted in cmdhelp output MUST resolve against the live cobra
 	// command tree. A typo'd flag, a renamed/deleted command, or a
 	// stale example block in cobra Long that references a defunct

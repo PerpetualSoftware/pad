@@ -8,7 +8,7 @@ import (
 	mcpserver "github.com/PerpetualSoftware/pad/internal/mcp"
 )
 
-// BUG-3835 r8 L2: stream admission counts a listen only on a protocol version
+// BUG-3835: stream admission counts a listen only on a protocol version
 // the mount's transport serves, read through SupportsProtocolVersion. A
 // transport that does not report it (a shim wrapping the production one) is
 // taken to serve every version, and a probing modern client at a full budget

@@ -257,8 +257,8 @@ func TestBUG3648_LockFileIsTightenedWhenItExists(t *testing.T) {
 }
 
 // TestBUG3649_WipeWaitsForTheLock: a wipe racing UpdateStore could land in
-// the middle of its load-modify-save, so Wipe takes the same lock (Codex
-// round 1). Holding the lock must hold Wipe; releasing it must let Wipe
+// the middle of its load-modify-save, so Wipe takes the same lock. Holding the lock
+// must hold Wipe; releasing it must let Wipe
 // finish.
 func TestBUG3649_WipeWaitsForTheLock(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
@@ -422,8 +422,7 @@ func TestBUG3648_SaveTightensALooseSymlinkTarget(t *testing.T) {
 }
 
 // Save takes the UpdateStore lock, so a direct Save cannot interleave its
-// in-place fallback write with a locked update (scoped Codex round on the
-// row 8 fix).
+// in-place fallback write with a locked update (a row 8 fix).
 func TestBUG3649_SaveWaitsForTheLock(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
 		t.Skip("no cross-process credentials lock on this platform")
@@ -710,7 +709,7 @@ func TestBUG3649_ReadRacingTheFirstSaveTakesTheLock(t *testing.T) {
 
 // A holder that never lets go (a stopped process) is waited for only up to
 // credentialsLockWait; then the read and the write proceed unlocked, as they
-// did before the lock existed (final review round).
+// did before the lock existed.
 func TestBUG3649_AStuckHolderDoesNotHangCommands(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
 		t.Skip("no cross-process credentials lock on this platform")
@@ -756,7 +755,7 @@ func TestBUG3649_AStuckHolderDoesNotHangCommands(t *testing.T) {
 
 // A link to something that is not a regular file (/dev/null) took
 // os.WriteFile's write; it is neither chmodded nor truncated now, so it still
-// does (final review round, both hunters).
+// does.
 func TestBUG3648_SaveThroughALinkToDevNull(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("no /dev/null")
@@ -784,7 +783,7 @@ func TestBUG3648_SaveThroughALinkToDevNull(t *testing.T) {
 }
 
 // A wipe with no ~/.pad has nothing to do, and on a read-only home it must
-// not fail trying to create one (final review round).
+// not fail trying to create one.
 func TestBUG3649_WipeWithNoPadDirCreatesNothing(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX directory permissions")

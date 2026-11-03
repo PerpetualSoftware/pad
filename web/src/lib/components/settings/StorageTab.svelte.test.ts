@@ -253,7 +253,7 @@ describe('StorageTab workspace switching', () => {
 	it('ignores the first load of an A→B→A round trip, where the workspace matches again', async () => {
 		// The workspace fence can't see this one: by the time A's FIRST response
 		// lands, `wsSlug` is back at 'ws-a'. Only the generation distinguishes it
-		// from the load that is actually current (Codex round 1).
+		// from the load that is actually current.
 		const staleA = deferred<AttachmentListResponse>();
 		const staleUsageA = deferred<WorkspaceStorageInfo>();
 		listMock.mockReturnValueOnce(staleA.promise);
@@ -293,7 +293,7 @@ describe('StorageTab workspace switching', () => {
 		// The delete used the LIVE `wsSlug` after its own await, so an A→B switch
 		// mid-request let A's success handling announce the deletion and reload
 		// against B — a success toast for a row the user is no longer looking at,
-		// and a refetch of B's list on A's completion (final review round 4).
+		// and a refetch of B's list on A's completion.
 		//
 		// The broadcast is deliberately NOT fenced: it is a global side effect
 		// keyed by (workspace, id), and a switch says nothing about whether the
@@ -331,7 +331,7 @@ describe('StorageTab workspace switching', () => {
 		// The identity is back to ws-a by the time the delete resolves, so an
 		// identity compare alone lets it through. Only a view GENERATION can tell
 		// "never left" from "left and came back" — which is why the mutation
-		// fence is not the paint token (Codex round 3).
+		// fence is not the paint token.
 		listMock.mockResolvedValueOnce(response([att({ id: 'a1', filename: 'from-a.pdf' })]));
 		mountTab();
 		await settle();
@@ -359,7 +359,7 @@ describe('StorageTab workspace switching', () => {
 		expect(toastMock).not.toHaveBeenCalled();
 		// But the tab IS showing ws-a again, and the list it repainted on the way
 		// back can have raced the DELETE — so the corrective refetch still runs,
-		// against ws-a (Codex round 4).
+		// against ws-a.
 		expect(listMock.mock.calls.length).toBe(listCalls + 1);
 		expect(listMock).toHaveBeenLastCalledWith('ws-a', expect.anything());
 	});
@@ -391,8 +391,7 @@ describe('StorageTab workspace switching', () => {
 	it('does not toast for a list or usage request that fails after unmount', async () => {
 		// The loaders are plain async functions, not effects, so nothing retires
 		// their tokens on destroy unless onDestroy does it — and an error toast
-		// for a tab that is gone is a global side effect the user still sees
-		// (Codex round 5).
+		// for a tab that is gone is a global side effect the user still sees.
 		const slowList = deferred<AttachmentListResponse>();
 		const slowUsage = deferred<WorkspaceStorageInfo>();
 		listMock.mockReturnValueOnce(slowList.promise);
@@ -438,7 +437,7 @@ describe('StorageTab workspace switching', () => {
 		// the item strip, this list does not remove the row optimistically, so
 		// the same row stays clickable throughout. Two DELETEs for one row means
 		// the second 404s and the user sees a success AND an "already deleted"
-		// for a single action (final review round 2).
+		// for a single action.
 		listMock.mockResolvedValueOnce(response([att({ id: 'a1', filename: 'doc.pdf' })]));
 		mountTab();
 		await settle();
@@ -467,7 +466,7 @@ describe('StorageTab workspace switching', () => {
 	it('treats a 404 as authoritative, exactly like a success', async () => {
 		// The 404 arm claims parity with the success arm — same broadcast, same
 		// refresh — and nothing tested it: the shared descriptor's 404 test
-		// covers a different implementation (final review round 2).
+		// covers a different implementation.
 		listMock.mockResolvedValueOnce(response([att({ id: 'a1', filename: 'gone.pdf' })]));
 		mountTab();
 		await settle();

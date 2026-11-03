@@ -202,7 +202,7 @@ func TestBUG4024_ExplicitLimitStaysCappedWithTheNotice(t *testing.T) {
 	}
 }
 
-// What --limit 0 means today (BUG-4024 Q1), pinned: it is "the default", so
+// What --limit 0 means today (BUG-4024), pinned: it is "the default", so
 // the CLI clamps it to defaultItemListLimit (200) and sends limit=200, one
 // page, with the notice. It is NOT "no limit" and does not auto-page.
 func TestBUG4024_LimitZeroMeansTheDefaultCapNotUnlimited(t *testing.T) {

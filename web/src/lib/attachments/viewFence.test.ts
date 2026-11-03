@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { viewIdentity, createFence, createPaintFence } from './viewFence';
 
-// The invariant these fences encode failed four review rounds running, always
+// The invariant these fences encode failed repeatedly in earlier iterations, always
 // by comparing only PART of the identity. These tests pin the module directly:
 // the identity rules, then each of the three fences, then the two collapses
-// that a prior round proved are NOT safe.
+// that were shown to be NOT safe.
 
 describe('viewIdentity', () => {
 	it('is the whole record, not any one part', () => {
@@ -61,7 +61,7 @@ describe('viewIdentity', () => {
 		// separator FOLLOWED BY the next part's name and the name/value
 		// separator re-creates the exact byte sequence the join itself emits, so
 		// two DIFFERENT identities serialise the same — and a stale fence passes,
-		// which is the failure this module exists to prevent (Codex round 1).
+		// which is the failure this module exists to prevent.
 		// Reproduced for the NUL/SOH join this module used to use, and for
 		// separators built from the characters JSON has to escape.
 		const shapes: [string, string][] = [

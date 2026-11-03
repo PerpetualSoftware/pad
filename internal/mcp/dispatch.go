@@ -138,7 +138,7 @@ func (d *ExecDispatcher) Dispatch(ctx context.Context, cmdPath []string, cliArgs
 	//
 	// This lives HERE, not in BuildCLIArgs, because BuildCLIArgs runs for
 	// BOTH transports — env.Dispatch calls it before handing off to whichever
-	// Dispatcher is configured (codex round 2 [P1] on BUG-2850).
+	// Dispatcher is configured (BUG-2850).
 	cliArgs, err := stdioTypedFieldArgs(cmdPath, DispatchInputFromContext(ctx), cliArgs)
 	if err != nil {
 		return validationFailedFromBuildErr(strings.Join(cmdPath, " "), err), nil
@@ -168,7 +168,7 @@ func (d *ExecDispatcher) Dispatch(ctx context.Context, cmdPath []string, cliArgs
 // execs: the parent's, with the relative data-dir warning silenced
 // (config.InternalNoDataDirWarningEnv). A failed child's stderr becomes the
 // agent-facing error text, and `pad mcp serve` has already warned once on
-// its own stderr (BUG-4066 r1).
+// its own stderr (BUG-4066).
 func dispatchChildEnv() []string {
 	return append(os.Environ(), config.InternalNoDataDirWarningEnv+"=1")
 }
@@ -668,7 +668,7 @@ func toStringSlice(v any) ([]string, error) {
 	case []any:
 		out := make([]string, 0, len(t))
 		for _, e := range t {
-			// BUG-4056 r1: a JSON number element is a float64 too.
+			// BUG-4056: a JSON number element is a float64 too.
 			if number, ok := formatNumber(e); ok {
 				out = append(out, number)
 				continue

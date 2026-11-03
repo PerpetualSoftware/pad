@@ -7,9 +7,9 @@ import type { SuiteFixture } from './fixtures';
  * BUG-3157 — on the mobile board, a tap on a card's status chip moved the card
  * a lane. The chip was a one-tap CYCLE control: it advanced the status to the
  * next option immediately, and on a board grouped by status the next option IS
- * the next lane. Dave had not known the chip was a control at all.
+ * the next lane. Users did not know the chip was a control at all.
  *
- * Ruling (Dave, day 77): the chip opens a status picker on every device, and
+ * Rule: the chip opens a status picker on every device, and
  * nothing changes until an option is chosen.
  *
  * The assertion is the OUTCOME on the server, read back after the tap, not the

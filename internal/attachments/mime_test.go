@@ -90,7 +90,7 @@ func TestServeInline(t *testing.T) {
 		}
 	}
 	// application/xml, text/yaml and application/javascript were in this list
-	// until BUG-2963 F6 removed them from the allowlist as unreachable
+	// until BUG-2963 removed them from the allowlist as unreachable
 	// spellings. `must` fails on a type the allowlist refuses, so leaving them
 	// here would assert about entries that no longer exist.
 	//
@@ -255,7 +255,7 @@ func TestValidateUpload_AcceptsOfficeOpenXMLAsZipBytes(t *testing.T) {
 	}
 }
 
-// TestSniffMIME_AliasesStdlibQuirks regression-tests Codex round 3:
+// TestSniffMIME_AliasesStdlibQuirks regression-tests:
 // http.DetectContentType returns names that don't match modern IANA
 // conventions for WAV (audio/wave) and gzip (application/x-gzip).
 // SniffMIME must alias these to the canonical names so allowlist
@@ -372,7 +372,7 @@ func TestCanonicalExtForMIMECoversTheMap(t *testing.T) {
 		// refusal table — it lists .svg and .exe so uploads carrying them can
 		// be rejected — and reversing it wholesale turned a refusal list into
 		// a source of extensions that `pad attachment view` then names local
-		// files with (codex round 27).
+		// files with.
 		if _, allowed := LookupMIME(m); !allowed {
 			sawBlocked = true
 			if got != "" {
@@ -422,7 +422,7 @@ func TestCanonicalExtForMIMECoversTheMap(t *testing.T) {
 		// A preference must have something to choose AGAINST: with a single
 		// forward-map spelling the entry cannot fire — text/markdown sat
 		// here that way, "preferring" .md over a .markdown that was never in
-		// the map (codex closing round 5).
+		// the map.
 		var spellings int
 		for _, mv := range extMIMEMap {
 			if NormalizeMIME(mv) == m {
@@ -440,8 +440,8 @@ func TestCanonicalExtForMIMECoversTheMap(t *testing.T) {
 	// worse than none, so the choice must be deterministic — for EVERY entry,
 	// not only the preferred ones. The first version of this loop compared
 	// just the preference list, so a non-preferred mapping could have
-	// regressed to map-order selection while it stayed green (codex closing
-	// round 2). Now every rebuild must equal the first, and the preferences
+	// regressed to map-order selection while it stayed green. Now every rebuild
+	// must equal the first, and the preferences
 	// are additionally pinned to their declared spellings.
 	first := buildCanonicalExtForMIME()
 	for m, want := range preferredExtensions() {
@@ -471,8 +471,7 @@ func TestCanonicalExtForMIMECoversTheMap(t *testing.T) {
 // allowlist accepts more spellings than the forward map uses. The population
 // is asserted over the allowlist itself, not the four known cases, so a
 // future allowlist entry without a reverse extension fails here instead of
-// shipping another extensionless `pad attachment view` file (codex closing
-// round, BUG-2803).
+// shipping another extensionless `pad attachment view` file (BUG-2803).
 func TestEveryAllowedMIMEHasAnExtension(t *testing.T) {
 	if len(allowed) == 0 {
 		t.Fatal("premise failed: the allowlist is empty, so this asserts nothing")

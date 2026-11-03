@@ -47,8 +47,8 @@ func TestStdioFreeTextPositionalsSurviveALeadingDash(t *testing.T) {
 		{"collection create", map[string]any{"name": dash}, []string{dash}},
 		{"role create", map[string]any{"name": dash}, []string{dash}},
 		{"workspace create", map[string]any{"name": dash}, []string{dash}},
-		// A positional that is LITERALLY a flag this transport also emits
-		// (lead ruling on BUG-3142): it must stay text, and must not steal or
+		// A positional that is LITERALLY a flag this transport also emits:
+		// it must stay text, and must not steal or
 		// override the real --workspace.
 		{"item search", map[string]any{"query": "--workspace"}, []string{"--workspace"}},
 	}

@@ -7,7 +7,7 @@
  * The machinery of both lives in `src/test/identityFenceGate.ts` (TASK-3097,
  * shared with the route surfaces); this file holds ItemDetail's TABLE.
  *
- * The GATE (`refusals`, lead ruling on checkpoint 69):
+ * The GATE (`refusals`):
  *   - every unit the AST yields matches exactly one row below, and every row
  *     exactly one unit;
  *   - every row, every helper in HELPERS, and every IDENTIFIER_CALLBACKS row
@@ -25,7 +25,7 @@
  *   - A row with `may` also pins the unit's exact `code`.
  *   - A row with `may` or `startSafe` pins its enclosing context (`in`).
  *
- * Round 4's mutants and the later defect fixtures still run: the gate
+ * The earliest mutant fixtures and the later defect fixtures still run: the gate
  * refuses each of them, and the aid still reports each of them.
  */
 import { describe, it, expect } from 'vitest';
@@ -62,8 +62,7 @@ const SOURCE = readFileSync(new URL('./ItemDetail.svelte', import.meta.url), 'ut
 
 
 /**
- * Why a save-indicator settle may run after an unfenced await (BUG-3044, lead
- * ruling): it MUST run on every path, the item-switch and superseded returns
+ * Why a save-indicator settle may run after an unfenced await (BUG-3044): it MUST run on every path, the item-switch and superseded returns
  * included, or the outstanding count pins 'saving' and every SSE gate with it.
  * What keeps a stale settle from moving the NEXT item's indicator is the
  * tracker's epoch, which `saves.reset()` bumps at load. This analysis cannot
@@ -215,7 +214,7 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 		may: ['rawPendingPromptOpen'],
 	},
 	copyRefusedDraft: { reviewed: '6630af6110df', why: 'the copied text was captured before the await; the toast after it describes that copy, whichever item is shown', may: ['toastStore.show'] },
-	// BUG-3540 (codex): the restore sends the shown row's seq; a conflict refetches (fenced) and keeps the draft.
+	// BUG-3540: the restore sends the shown row's seq; a conflict refetches (fenced) and keeps the draft.
 	restoreRefusedDraft: {
 		reviewed: '9b6f7b78ab75',
 		why: 'item id, gen against loadGeneration, and the captured identity (codex r1 on TASK-3607) after every await; the finally clears this pane\'s own busy flag; a draft the item moved on from is handed to applyRefusedDraftChanges, awaited last, with nothing committed after it (TASK-3607). Re-reviewed for BUG-3850 (lead ruling 0337bf77): before that hand-off, a synchronous return while restoreBlocked (a $derived read, no await, no write). Re-reviewed for BUG-3850 r7 (lead ruling a6380212): its body is unchanged; restoreBlocked gained a synchronous !refusedDraft.baseStale read, still no await and no write. Re-reviewed for TASK-3856 r2 (lead ruling on the codex High): it first re-reads the stored draft, a synchronous localStorage read, and when that copy has the same markdown and is now baseStale it assigns refusedDraft and returns; no await precedes that write, and nothing after it changed. Re-reviewed for TASK-3856 r3 (hunter Low): that condition also requires draftAppliesAsPatch(shown, item.seq), a pure synchronous read, so a whole-body restore goes ahead; still no await before the write. Re-reviewed for BUG-3863: the TASK-3856 guard re-reads the slot the shown draft is stored in (refusedDraftSlot, a plain component-level let, read synchronously before any await), and the success clear calls resolveKeptDraft (both slots, onlyIf-guarded, synchronous) at the same place behind the same fence; no new await.',
@@ -430,7 +429,7 @@ const HELPERS: Record<string, string> = {
  * DECLARE or REBIND the names these calls pass, because such a call site may
  * sit outside every hashed unit (both `.then(ensureGraphComp)` sites do: one
  * in an `$effect`, one in `setGraphParam`), and then nothing else covers a
- * rebinding of what it defers — round 9 F4.
+ * rebinding of what it defers — a function value rebound outside every unit.
  */
 const IDENTIFIER_CALLBACKS: GateTable['identifierCallbacks'] = [
 	{ text: 'Promise.resolve().then(ensureGraphComp)', count: 2, reviewed: '6cdb881b83f0', why: 'ensureGraphComp is itself a unit in the table above' },
@@ -517,7 +516,7 @@ const TITLE_STAMP_AT_ENTRY: [string, string] = [
 	"\t\tconst gen = loadGeneration;\n\t\tconst snap = { epoch: captureIdentity() };\n\t\tconst saveTok = saves.begin();\n\t\ttry {\n\t\t\tconst updated = await api.items.update(wsSlug, targetItem.id, { title",
 ];
 
-/** saveTitle's fence and the two commits under it: the anchor most round-5 edits rewrite. */
+/** saveTitle's fence and the two commits under it: the anchor most saveTitle edits rewrite. */
 const TITLE_FENCE_AND_COMMITS =
 	"{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n";
 
@@ -533,16 +532,16 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 	});
 
 	/**
-	 * Defects found in the ANALYSIS itself by later review rounds. Each is an
+	 * Defects found in the ANALYSIS itself by later review. Each is an
 	 * edit the analysis accepted when it should not have. `refuses` is the
 	 * refusal the edit must produce — every string in one line — so an entry
 	 * cannot pass because some OTHER part of the edit happens to be refused
-	 * (round 5's E5 was refused only through an inlined helper's call, while
+	 * (one edit was refused only through an inlined helper's call, while
 	 * the `item =` write it was about went unreported).
 	 */
 	const ANALYSIS_DEFECTS: Array<{ id: string; subs: Array<[string, string]>; refuses: string[] }> = [
 		{
-			// Round 5 on #1387: `?:` was walked as `consequent && alternate`, so an
+			// `?:` was walked as `consequent && alternate`, so an
 			// unsafe consequent short-circuited the walk and the alternate's commit
 			// was never seen.
 			id: 'R5-1 a commit in the alternate of a conditional whose consequent awaits',
@@ -552,7 +551,7 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 			]],
 			refuses: ['saveTitle()', 'assigns item after an unfenced await'],
 		},
-		// Round 5 P1-1: a fence to the LEFT of an await in one test expression was
+		// A fence to the LEFT of an await in one test expression was
 		// read as holding after that await.
 		{
 			id: 'R5 E1 a fence before an await in one && test',
@@ -569,7 +568,7 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id || !(await dialogs.confirm('Keep the new title?'))) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n"]],
 			refuses: ['saveTitle()', 'assigns item after an unfenced await'],
 		},
-		// Round 5 P1-2: a callback handed to anything but the deferring names was
+		// A callback handed to anything but the deferring names was
 		// walked as if it ran inside the call, and a function-valued property was
 		// not walked at all.
 		{
@@ -636,15 +635,14 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 			refuses: ['saveTitle()', 'assigns item after an unfenced await'],
 		},
 		{
-			// Only an empty Set/Map is an allowed constructor default (lead ruling on
-			// checkpoint 63, condition 3).
+			// Only an empty Set/Map is an allowed constructor default.
 			id: 'R6 a default value that constructs something with effects',
 			subs: [['\tfunction showSaved(saveTok: SaveToken) {\n', "\tfunction showSaved(stream = new TitleStream()) {\n\t\tvoid stream;\n"]],
 			refuses: ['default value calls or assigns'],
 		},
 		{
-			// A fence boolean stops being one when it is written (round 6 ruling B,
-			// class 6); here the write, not an await, is what makes it stale.
+			// A fence boolean stops being one when it is written; here the write,
+			// not an await, is what makes it stale.
 			id: 'R6 a fence boolean overwritten after it is computed',
 			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tlet titleOk = gen === loadGeneration;\n\t\t\ttitleOk = true;\n\t\t\tif (!titleOk) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n"]],
 			refuses: ['saveTitle()', 'assigns item after an unfenced await'],
@@ -659,7 +657,7 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 			refuses: ['saveTitle()', 'assigns item after an unfenced await'],
 		},
 		{
-			// Round 6 class 9: the clear must be reached on every path to the
+			// The clear must be reached on every path to the
 			// first await. An early return before it skips it on one path.
 			id: 'R6 loadData can return before it clears the debounce',
 			subs: [[LOAD_DATA_CLEAR, '\t\tif (!item) return;\n' + LOAD_DATA_CLEAR]],
@@ -687,14 +685,14 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 			refuses: ['flushTagSaver()', 'callback window.addEventListener(…)', 'calls tagSavers.delete after an unfenced await'],
 		},
 		{
-			// Round 5 P1-4: the debounce row starts safe because loadData clears
+			// The debounce row starts safe because loadData clears
 			// contentDebounceTimer; the pin must also prove this callback IS that
 			// timer's.
 			id: 'R5 E12 the debounce callback moves onto a timer loadData does not clear',
 			subs: [['\t\tcontentDebounceTimer = setTimeout(() => {\n', '\t\tlegacyContentTimer = setTimeout(() => {\n']],
 			refuses: ['starts safe, but its setTimeout is not assigned to contentDebounceTimer'],
 		},
-		// Round 5 P2-1..P2-3: loop and switch flow.
+		// Loop and switch flow.
 		{
 			id: 'R5 E2 a commit in a for-await body',
 			subs: [[TITLE_FENCE_AND_COMMITS, TITLE_FENCE_AND_COMMITS + "\t\t\tfor await (const t of api.items.titleStream(wsSlug, targetItem.id)) {\n\t\t\t\ttitleDraft = t;\n\t\t\t}\n"]],
@@ -730,7 +728,7 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 			subs: [[TITLE_FENCE_AND_COMMITS, "{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration || item?.id !== targetItem.id) return;\n\t\t\tswitch (titleDraft) {\n\t\t\t\tcase await api.items.canonicalTitle(wsSlug):\n\t\t\t\t\treturn;\n\t\t\t}\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n"]],
 			refuses: ['saveTitle()', 'assigns item after an unfenced await'],
 		},
-		// Round 5 P2-4: an identity comparison between two STAMPS proves nothing.
+		// An identity comparison between two STAMPS proves nothing.
 		{
 			id: 'R5 E9 flushTagSaver compares two stale identity stamps',
 			subs: [['\t\t\t\tif (!identityHeld(saver.epoch)) {\n', '\t\t\t\tif (tagSavers.get(saver.itemId)!.epoch !== saver.epoch) {\n']],
@@ -746,7 +744,7 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 			subs: [['\t\t\t\tif (!identityHeld(saver.epoch)) {\n', '\t\t\t\tif (authStore.identityEpoch !== saver.itemId.length) {\n']],
 			refuses: ['flushTagSaver()', 'after an unfenced await'],
 		},
-		// Round 5 P2-5: a capture refreshed after an await makes every later check
+		// A capture refreshed after an await makes every later check
 		// against it pass, whatever the refresh is spelled as.
 		{
 			id: 'R5 E10 saveTitle refreshes its capture through a cast',
@@ -763,14 +761,14 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 			subs: [TITLE_GEN_LET, ['{ title: titleDraft.trim() });\n\t\t\tif (gen !== loadGeneration', '{ title: titleDraft.trim() });\n\t\t\tgen++;\n\t\t\tif (gen !== loadGeneration']],
 			refuses: ['saveTitle()', 'rewrites capture gen after an unfenced await'],
 		},
-		// Round 5 P2-6: every param of every function in or around the unit was a
+		// Every param of every function in or around the unit was a
 		// capture, so any of them compared to loadGeneration was a fence.
 		{
 			id: "R5 E11 updateField compares the onRefetched param to loadGeneration",
 			subs: [['\t\t\tconst fresh = await submitWithOCC(false);\n\t\t\tif (!stillCurrent()) return;\n', '\t\t\tconst fresh = await submitWithOCC(false);\n\t\t\tif (latest !== loadGeneration) return;\n']],
 			refuses: ['updateField()', 'assigns item after an unfenced await'],
 		},
-		// Round 5 P2-7 / P2-8: a row's allowance covered more than its reason, and
+		// A row's allowance covered more than its reason, and
 		// a row could re-point by a move.
 		{
 			id: 'R5 E13 the rename heal clears the override without its bridge compare',
@@ -798,7 +796,7 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 			subs: [["\t\t\t\trefetch: () => api.items.get(targetWs, targetItem.id),\n", "\t\t\t\trefetch: () => ((saveStatus = 'saving'), api.items.get(targetWs, targetItem.id)),\n"]],
 			refuses: ['updateField()', 'callback submitOrderedOCC({refetch})', 'assigns saveStatus after an unfenced await'],
 		},
-		// Round 5 P1-3: every binding anywhere in a unit, nested functions
+		// Every binding anywhere in a unit, nested functions
 		// included, made that name local for the whole unit.
 		{
 			id: 'R5 E5 a nested arrow param named item excuses an unfenced item write (adopting)',
@@ -834,8 +832,8 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 	});
 
 	/**
-	 * Round 6 on #1387: edits the guard accepted at 31f3b5e9, from the
-	 * reviewer's probe (checkpoint 63), each tagged with its class. Every one
+	 * Edits an earlier version of the guard accepted, each tagged with its
+	 * class. Every one
 	 * is either closed here or listed in KNOWN_GAPS below.
 	 */
 	const ROUND6 = (round6.mutants as Array<{ id: string; class: number; subs: string[][]; refuses: string[]; gate?: boolean }>).map((m) => ({
@@ -847,7 +845,7 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 	}));
 
 	/**
-	 * Round 7 on #1387 (checkpoint 67): edits the guard accepted at 6e1ba4af.
+	 * More edits an earlier version of the guard accepted.
 	 * An F1 edit arrives with the NESTED row the guard asks for, since without
 	 * the row it is refused for being untabled rather than for what it commits.
 	 */
@@ -887,7 +885,7 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 	});
 
 	/**
-	 * AID GAPS (checkpoint 63 condition 4; checkpoint 69 condition 4): edits
+	 * AID GAPS: edits
 	 * the ANALYSIS accepts although they reintroduce a stale commit, each with
 	 * the sentence that says why. Each is listed in the "does not see" part of
 	 * `identityFenceAst.ts`'s header. The gate refuses every one of them by a
@@ -907,13 +905,13 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 				'contrived fence: a stamp is trusted to have been recorded earlier; building one from a live read right before comparing it to a live read is a fence that cannot fail, which no author trying to comply writes',
 			subs: [[TITLE_FENCE_AND_COMMITS, '{ title: titleDraft.trim() });\n\t\t\tconst fresh = { epoch: captureIdentity() };\n\t\t\tif (authStore.identityEpoch !== fresh.epoch) return;\n\t\t\titem = withInflightTags(updated);\n\t\t\tshowSaved(saveTok);\n']],
 		},
-		// Round 7 (checkpoint 67): the reviewer's out-of-model findings.
+		// Edits outside the analysis model.
 		...(round7.gaps as Array<{ id: string; class: string; model: string; subs: string[][] }>).map((g) => ({
 			id: `${g.id} (class ${g.class})`,
 			model: g.model,
 			subs: g.subs as Array<[string, string]>,
 		})),
-		// Round 8 (checkpoint 69): recorded, not fixed, under the lead's ruling.
+		// Recorded, not fixed.
 		...(round8.aidGaps as Array<{ id: string; model: string; subs: string[][] }>).map((g) => ({
 			id: `R8 ${g.id}`,
 			model: g.model,
@@ -980,7 +978,7 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 		},
 		{
 			// A stamp rooted in a local of the unit is a stamp inside a fence
-			// boolean's initialiser too (round 7 F4: the initialiser is read in its
+			// boolean's initialiser too (the initialiser is read in its
 			// own scope).
 			id: 'a fence boolean over a stamp the unit recorded before its await',
 			old: TITLE_STAMP_AT_ENTRY[0],
@@ -1082,7 +1080,7 @@ describe('ItemDetail identity gate: a fenced unit cannot change without a re-rea
 		// `() => EXPR` RETURNS the expression; `() => { EXPR }` returns undefined.
 		// Neither the braces nor `=>` nor `function` vs `const f =` is inside any
 		// statement slice, so the verbatim text alone could not tell these apart
-		// — the collapsed form round 10 replaced could. The shape is in the text
+		// — the earlier collapsed form could. The shape is in the text
 		// now.
 		expect(GATE_BASELINE).toEqual([]);
 		const concise = '\tconst handleGone = () => (onGone ?? onClose ?? navigateToCollectionRoot)();\n';
@@ -1195,7 +1193,7 @@ describe('ItemDetail identity gate: a fenced unit cannot change without a re-rea
 
 	it('a function value rebound outside every unit changes the hash of the unit that only NAMES it (round 9 F4)', () => {
 		// Step 1: a reviewed base where saveTitle hands `applyTitle` to someone
-		// else rather than calling it — the round 8 G shape with the call removed.
+		// else rather than calling it — the same shape with the call removed.
 		const noop = '\tlet applyTitle = (next: Item): void => {\n\t\tvoid next;\n\t};\n\t$effect(() => {\n\t\tapplyTitle = (next: Item) => {\n\t\t\tvoid next;\n\t\t};\n\t});\n\n\tfunction showSaved(saveTok: SaveToken) {\n';
 		const base = SOURCE.replace('\tfunction showSaved(saveTok: SaveToken) {\n', noop).replace(
 			TITLE_FENCE_AND_COMMITS,

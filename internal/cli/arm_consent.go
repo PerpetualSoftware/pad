@@ -91,7 +91,7 @@ func ResolveAutoArmFromDisk() ArmDecision {
 	// The per-user config is read STRICTLY (config.LoadPushConfigAutoArm,
 	// not the lenient config.Load): an existing-but-unreadable config.toml
 	// means we cannot confirm the user hasn't vetoed, so the auto path
-	// must NOT arm (Codex R1 HIGH-1). Local explicit arm is a separate
+	// must NOT arm. Local explicit arm is a separate
 	// signal and is unaffected.
 	userAutoArm, err := config.LoadPushConfigAutoArm()
 	if err != nil {

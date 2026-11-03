@@ -135,8 +135,8 @@ func SessionsDir() (string, error) {
 	dir := filepath.Join(homeDir, ".pad", "sessions")
 	// The registry's records are 0600 each, but a permissive directory
 	// would let another local user see the filenames (pids) and plant
-	// files, so ensurePrivateDir tightens an existing one every time
-	// (codex round 3). Best effort: the caller's own directory.
+	// files, so ensurePrivateDir tightens an existing one every time.
+	// Best effort: the caller's own directory.
 	if err := ensurePrivateDir(dir); err != nil {
 		return "", fmt.Errorf("create sessions directory: %w", err)
 	}
@@ -152,7 +152,7 @@ func SessionsDir() (string, error) {
 // the new record).
 //
 // ok is false — FAIL CLOSED — unless the record is confirmed to be THIS
-// session's (codex round 1 on #1248): it must parse, carry this owner pid,
+// session's (#1248): it must parse, carry this owner pid,
 // pass the same OwnerLiveness verdict `pad session list` applies (socket
 // identity and pid alive with its token), and, when this process can read a
 // process-start token for the owner, carry the SAME token. A record with no
@@ -212,7 +212,7 @@ func thisSessionRegistration() (string, SessionRegistration, bool) {
 		return "", none, false
 	}
 	// The owner must be THIS process or an ancestor, where the platform can
-	// say (codex round 2): a harness-supplied pid that is alive, token-matched
+	// say: a harness-supplied pid that is alive, token-matched
 	// and yet not above us is a misconfigured session, and its row is not
 	// ours to speak for. CaptureSessionOwner records that outcome as
 	// PIDVerified=false but does not distinguish "checked and wrong" from
@@ -257,7 +257,7 @@ func RegisterSession(cwd, agent string) (SessionRecord, error) {
 		RegistrarPID: os.Getpid(),
 		Cwd:          cwd,
 		// Nanosecond precision so two registrations in one second still
-		// order (codex round 2): "newest first" must not fall back to
+		// order: "newest first" must not fall back to
 		// filename order. v1 wrote whole seconds; both parse as RFC3339.
 		RegisteredAt: time.Now().UTC().Format(time.RFC3339Nano),
 	}
@@ -362,7 +362,7 @@ func readSessionRecord(path string) (SessionRecord, error) {
 	var reg SessionRegistration
 	// Invalid UTF-8 is rejected outright: encoding/json would otherwise
 	// replace the bad bytes with U+FFFD and hand back an agent name or cwd
-	// that is not what the file says (codex round 8).
+	// that is not what the file says.
 	if !utf8.Valid(data) {
 		return malformedRecord(path), nil
 	}
@@ -376,7 +376,7 @@ func readSessionRecord(path string) (SessionRecord, error) {
 // record is well under 1 KiB (a handful of short fields); the bound is
 // generous so no legitimate writer approaches it, and it turns a
 // multi-megabyte file under a session-shaped name into a malformed row
-// instead of a memory bill at every monitor start (codex round 8).
+// instead of a memory bill at every monitor start.
 const maxRegistryRecordBytes = 64 * 1024
 
 var (
@@ -413,7 +413,7 @@ func readRegistryBytes(path string) ([]byte, error) {
 }
 
 // registrationWellFormed rejects files that parse as JSON but are not
-// something this code wrote (codex round 1 P2): `{}` would otherwise read
+// something this code wrote: `{}` would otherwise read
 // as a dead legacy record (owner pid 0) and be pruned with no age bound,
 // and `{"session_pid":1}` as a live one. Every record carries a cwd, a
 // positive registrar pid and an RFC3339 registered_at; session_pid is
@@ -466,7 +466,7 @@ func recordFor(path string, reg SessionRegistration) SessionRecord {
 		// A v1 file — or a crafted file with an explicit session_pid of 0,
 		// which JSON cannot tell from an omitted one. Either way the row
 		// is legacy: it carries no verifiable owner, so it carries no
-		// agent name and no session id either (codex round 3 — a legacy
+		// agent name and no session id either (a legacy
 		// row must never present a name it cannot have recorded).
 		rec.Legacy = true
 		rec.Agent, rec.SessionID, rec.SessionPIDVerified = "", "", false

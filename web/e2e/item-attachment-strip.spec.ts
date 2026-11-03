@@ -18,14 +18,14 @@ import {
  * The component suite (ItemAttachmentStrip.svelte.test.ts) mounts the strip
  * DIRECTLY, so every one of its assertions still passes if the ItemDetail
  * mount is deleted, moved, or handed an ungated id. Three things can only be
- * proven in a real browser, and all three were flagged by Codex review as
+ * proven in a real browser, and all three are
  * structurally invisible to jsdom:
  *
  *   1. the strip is actually mounted in the item page, showing the CURRENT
  *      item's attachments across an A→B switch (TASK-2383);
  *   2. `canDelete` is wired to ItemDetail's `mutationsEnabled` and not raw
  *      `canEdit` — a peeking master must show tiles with NO delete control
- *      (TASK-2384 / DR-6). Both the component tests (which inject the prop)
+ * (TASK-2384 / DR-6). Both the component tests (which inject the prop)
  *      and the masterFreeze unit test (which checks the bare boolean) pass
  *      even if that wiring regressed;
  *   3. the delete control is genuinely keyboard reachable. jsdom applies no
@@ -219,7 +219,7 @@ test.describe('item attachment strip', () => {
 
 		// Count attachment-LIST requests so "no refetch" is proven rather than
 		// asserted in a comment. An implementation that re-listed after the drop
-		// would otherwise pass this test identically (Codex review of TASK-2385).
+		// would otherwise pass this test identically (TASK-2385).
 		let listCalls = 0;
 		await page.route('**/api/v1/workspaces/*/attachments?*', async (route) => {
 			// The upload POST hits the same path with a query string; only count

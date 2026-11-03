@@ -66,8 +66,7 @@ type roomConn struct {
 	// during the replay window don't advance the client's cursor
 	// past replay rows it hasn't yet seen — disconnecting mid-replay
 	// after a single live cursor would otherwise leave the client's
-	// resume cursor pointing past unreplayed rows. Per Codex round
-	// 5 [P1] of TASK-1319.
+	// resume cursor pointing past unreplayed rows (TASK-1319).
 	replayDone atomic.Bool
 	// maxLiveOpLogIDDuringReplay records the highest persisted op-log
 	// id whose binary frame this conn's writeLoop fanned out before
@@ -77,7 +76,7 @@ type roomConn struct {
 	// the client cursor pointing below the highest applied op — that
 	// mismatch would trip the client's `cursor=0 + remoteSyncApplied`
 	// force_refresh path on empty-replay sessions and discard
-	// buffered pre-anchor edits. Per Codex round 21 [P1] of TASK-1319.
+	// buffered pre-anchor edits (TASK-1319).
 	maxLiveOpLogIDDuringReplay atomic.Int64
 	// canWrite reports whether this connection may PERSIST inbound
 	// sync frames. Non-editor participants (workspace viewers,
@@ -96,8 +95,8 @@ type roomConn struct {
 	// paused this connection's inbound sync persistence for the duration of a
 	// prune+reseed. Kept SEPARATE from canWrite deliberately: the mid-session
 	// auth revalidation loop writes canWrite freely, so overloading it as the
-	// restore freeze let a revalidation tick thaw the freeze mid-restore
-	// (Codex xhigh [P1]) and a failed restore silently promote a viewer to
+	// restore freeze let a revalidation tick thaw the freeze mid-restore and a
+	// failed restore silently promote a viewer to
 	// writable. readLoop drops a sync frame when EITHER frozen or !canWrite.
 	// Set under appendMu (so a readLoop already queued on appendMu observes it
 	// on the very next check) and cleared only by ForceRefreshRoom's failure
@@ -202,7 +201,7 @@ func (rc *roomConn) writeLocked(messageType int, data []byte) error {
 // writeMessageWithDeadline writes one frame with a bounded write deadline, both
 // the deadline set AND the write under writeMu — gorilla treats SetWriteDeadline
 // as a write-side method, so doing it outside the mutex would race the writeLoop
-// (BUG-2264 P2). Used by force_refresh so a slow/dead peer can't block the caller
+// (BUG-2264). Used by force_refresh so a slow/dead peer can't block the caller
 // indefinitely while it holds the per-item lock.
 func (rc *roomConn) writeMessageWithDeadline(messageType int, data []byte, deadline time.Time) error {
 	rc.writeMu.Lock()
@@ -225,7 +224,7 @@ type Room struct {
 	// awPubMu orders each awareness decision with its publish: a relayed
 	// frame's ownership check and its broadcast, and a closing connection's
 	// release and its removal, happen as one step each, so the bus carries
-	// them in the order ownership was decided (codex r2). Publish never
+	// them in the order ownership was decided. Publish never
 	// blocks (a slow subscriber is dropped), so holding it there is cheap.
 	awPubMu sync.Mutex
 	// afterAwarenessRelease runs between a release and its publish; tests
@@ -297,7 +296,7 @@ type Room struct {
 	// admittedUnregistered counts round-trips that passed enterApplierGate but have
 	// NOT yet finished registering their pending-ack entry (the enter→register gap).
 	// beginRestore drains this to 0 BEFORE the freeze scan so no admitted round-trip
-	// is missed by freezeAndFinalizePending (BUG-2276 residual 2, P1). The gap is
+	// is missed by freezeAndFinalizePending (BUG-2276 residual 2). The gap is
 	// mutex-only (pickApplier + registerPendingAck, no I/O), so the drain is
 	// microseconds — never the applier round-trip. restoreCond signals it reaching 0.
 	restoreCond          *sync.Cond
@@ -346,7 +345,7 @@ type opLogStore interface {
 	// MaxOpLogID is consulted ONLY by ForceRefreshRoom (BUG-2264), which reads
 	// it under the per-item lock WITH appendMu held (inbound persistence frozen)
 	// to set the pre-prune restore boundary = MAX+1. That fencing is why the
-	// broadcast-vs-MAX race (Codex round 6 [P1] of TASK-1319) — which kept this
+	// broadcast-vs-MAX race — which kept this
 	// off the initial-cursor path — does not apply here: no frame can be persisted
 	// but not yet delivered, because appends are frozen while we read.
 	MaxOpLogID(itemID string) (int64, bool, error)
@@ -728,7 +727,7 @@ func (r *Room) persistSyncFrames(rc *roomConn, run [][]byte) {
 	// id is the item's current MAX(id), read under appendMu: every row
 	// at or below it was published to each conn's bus before this
 	// event, so the cursor cannot overtake an undelivered binary (the
-	// round-23 hazard below).
+	//  hazard below).
 	//
 	// BUG-3253: the frames of a burst that are already waiting are persisted
 	// in ONE transaction (AppendSyncFrames), each with exactly the treatment
@@ -739,7 +738,7 @@ func (r *Room) persistSyncFrames(rc *roomConn, run [][]byte) {
 	if err == nil && len(results) != len(batch) {
 		// The contract is one result per frame. A store that answered
 		// otherwise is treated as a failed batch rather than indexed past
-		// its end (codex r2).
+		// its end.
 		err = errors.New("AppendSyncFrames did not return one result per frame")
 	}
 	if err != nil {
@@ -792,7 +791,7 @@ func (r *Room) persistSyncFrames(rc *roomConn, run [][]byte) {
 	// Sending the cursor from here (the original design)
 	// could overtake older peer ops queued in rc.bus and
 	// let the client persist a cursor past undelivered
-	// binaries — the round-23 [P1] hazard.
+	// binaries — a known hazard.
 }
 
 // publishAwareness relays a run's awareness frames, in order, when its sync
@@ -875,7 +874,7 @@ func (r *Room) writeLoop(rc *roomConn) {
 		// Sending it from readLoop directly (the previous design)
 		// could overtake a peer op already buffered in this conn's
 		// rc.bus, letting the client persist a cursor past
-		// undelivered binaries. Per Codex round 23 [P1] of TASK-1319.
+		// undelivered binaries (TASK-1319).
 
 		// Hold writeMu across the entire per-event sequence —
 		// binary frame, replayDone observation, AND either cursor
@@ -887,8 +886,7 @@ func (r *Room) writeLoop(rc *roomConn) {
 		//     got the lock, so we publish a normal live cursor).
 		// Without the wider lock, runConn could read maxLive
 		// AFTER we wrote the binary but BEFORE we recorded — the
-		// record would be lost. Per Codex round 22 [P1] of
-		// TASK-1319.
+		// record would be lost (TASK-1319).
 		rc.writeMu.Lock()
 		if !isSelf {
 			if err := rc.writeLocked(websocket.BinaryMessage, ev.Data); err != nil {
@@ -1128,7 +1126,7 @@ func (r *Room) forceRefreshConns(conns []*roomConn) {
 		payload = nil
 	}
 
-	// Fan the frame+close out per conn concurrently (additional-P2): a slow peer
+	// Fan the frame+close out per conn concurrently (additional): a slow peer
 	// already inside a deadline-free WriteMessage would otherwise block the whole
 	// loop — and the caller still holds the per-item lock, stalling that item's
 	// restore/joins/snapshots.
@@ -1138,7 +1136,7 @@ func (r *Room) forceRefreshConns(conns []*roomConn) {
 	// can't bound the wait to ACQUIRE writeMu. If the writeLoop is wedged in a
 	// deadline-free WriteMessage to a dead peer it holds writeMu indefinitely and
 	// writeMessageWithDeadline would block on writeMu.Lock() forever, hanging
-	// wg.Wait while the caller holds the per-item lock (BUG-2264 P1, Codex xhigh).
+	// wg.Wait while the caller holds the per-item lock (BUG-2264).
 	// So arm an independent timer per conn that Closes it after the deadline:
 	// conn.Close is concurrency-safe with an in-flight WriteMessage (gorilla), so
 	// it forces the wedged write to error, releasing writeMu and unblocking us.

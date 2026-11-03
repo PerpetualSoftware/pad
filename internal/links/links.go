@@ -28,8 +28,7 @@ import (
 // the rewrite goes to a separate builder, so inserted text is never
 // re-examined. That was not always so: an earlier version re-scanned its own
 // output, and a new title that re-embedded the old link (`A]] [[A`) grew the
-// string without bound inside the rename transaction (BUG-2785, codex round
-// 2; the termination test pins it).
+// string without bound inside the rename transaction (BUG-2785, 2, the termination test pins it).
 func ReplaceTitle(content, oldTitle, newTitle string) string {
 	newLink := "[[" + escapeWikiBody(newTitle) + "]]"
 	var b strings.Builder
@@ -49,7 +48,7 @@ func ReplaceTitle(content, oldTitle, newTitle string) string {
 // ProjectReplaceTitle is len(ReplaceTitle(content, oldTitle, newTitle)) and the
 // number of links it rewrites, computed WITHOUT allocating: the document
 // cascade's memory bound runs before anything proportional to the rewrite may
-// exist (BUG-2798; codex R5 on BUG-2804 for the title). A version that
+// exist (BUG-2798, BUG-2804 for the title). A version that
 // collected match indices allocated 203,928,560 bytes projecting one 2 MiB
 // body of short links, against the bound test's 52,428,800-byte ceiling.
 func ProjectReplaceTitle(content, oldTitle, newTitle string) (length, occurrences int) {
@@ -167,8 +166,7 @@ func EscapedWikiTitleLen(title string) int { return escapedWikiBodyLen(title) }
 // The title segment matches case-insensitively because resolveTitleTx
 // also resolves titles case-insensitively — a source body that wrote
 // `[[old title]]` and resolved to "Old Title" via LOWER() comparison
-// must get rewritten by this function or the cascade leaves it broken
-// (Codex review of TASK-1595 round 1).
+// must get rewritten by this function or the cascade leaves it broken.
 //
 // Returns content unchanged if `oldTitle` is empty or equal to
 // `newTitle`. Caller is responsible for invoking once per rename;
@@ -217,8 +215,7 @@ func RewriteWikiTitle(content, oldTitle, newTitle, collSlug string) string {
 // position `position` in `content`, replacing the bracket's title
 // segment with `newTitle`. Used by the rename cascade to rewrite
 // only the specific bracket whose item_wiki_links row resolves to
-// the renamed item — avoiding the broad-regex hazard from Codex
-// round 7 finding 2, where an unrelated `[[OldTitle|alias]]`
+// the renamed item — avoiding the broad-regex hazard where an unrelated `[[OldTitle|alias]]`
 // pointing at a literal-pipe-titled item B was corrupted when
 // item A "Old Title" was renamed.
 //
@@ -349,8 +346,8 @@ func RewriteBracketsAt(content string, rewrites []BracketRewrite, esc TitleEscap
 		// output is the same either way — but `applied` then counts CHANGES
 		// rather than matches, and the cascade uses that count to decide
 		// whether to write the row at all. Counting matches made a no-op
-		// rename rewrite content, bump seq, and emit events for every linker
-		// (codex R1 P2). The old code compared whole bodies to decide this;
+		// rename rewrite content, bump seq, and emit events for every linker.
+		// The old code compared whole bodies to decide this;
 		// comparing the bracket is the same question asked locally.
 		if bracketUnchanged(content, rw.Position, bracketEnd, qualified, esc, displaySuffix) {
 			continue
@@ -425,8 +422,7 @@ func ProjectRewrittenLen(content string, rewrites []BracketRewrite, esc TitleEsc
 			// reported (10 bytes, 0 applied) while the pass produced 13 bytes
 			// and applied 1 — so the cascade charged a read it never charged
 			// the rewrite for, and the bound leaked on exactly the corrupt or
-			// duplicated offsets the defensive paths exist to handle
-			// (codex R2).
+			// duplicated offsets the defensive paths exist to handle.
 			//
 			// The pass is the side that must not move: its behaviour is pinned
 			// to the descending fold the cascade used to perform. So the
@@ -436,7 +432,7 @@ func ProjectRewrittenLen(content string, rewrites []BracketRewrite, esc TitleEsc
 		// Length arithmetic only — NOTHING is built here. Concatenating a
 		// replacement per bracket to measure it would reintroduce, one layer
 		// down, exactly the allocate-then-refuse shape the cap exists to
-		// prevent (codex R1 P1).
+		// prevent.
 		length += (2 + esc.segmentLen(qualified) + len(displaySuffix) + 2) - (bracketEnd - rw.Position)
 		cursor = bracketEnd
 		applied++
@@ -481,7 +477,7 @@ func escapeWikiBody(s string) string {
 // escapedWikiBodyLen is len(escapeWikiBody(s)) WITHOUT building it.
 //
 // The projection path runs before the cascade's cap can fire, so it must not
-// materialise anything proportional to the title (codex R5, BUG-2804). This is
+// materialise anything proportional to the title (BUG-2804). This is
 // that rule applied to the escaped form.
 func escapedWikiBodyLen(s string) int {
 	n := len(s)
@@ -502,7 +498,7 @@ func escapedWikiBodyLen(s string) int {
 // called once per SOURCE — and the scan bound admits a very large number of
 // sources when their titles are short. Escaping inside those functions would
 // therefore multiply an unbounded newTitle by an unbounded source count, which
-// is the BUG-2804 R5 defect in a new costume.
+// is the BUG-2804 defect in a new costume.
 type TitleEscaper struct {
 	escTitle string
 	escSlug  string
@@ -640,7 +636,7 @@ func (e TitleEscaper) qualifiedFor(targetTitle string) (qualified, ok bool) {
 	// 3. A length check in front of it is therefore not a cheap pre-filter but
 	// a strictly narrower predicate, and it made a qualified bracket whose title
 	// folds across lengths read as index drift, leaving the link stale through
-	// the rename (codex R1 P2).
+	// the rename.
 	//
 	// The slug boundary is still located by BYTE offset, and that one is sound:
 	// collection slugs are ASCII-lowercase by construction (store.slugify), so
@@ -683,7 +679,7 @@ func scanBracketBody(content string, position int) (body string, bracketEnd int,
 			// consume one — a backslash before LF is not an escape pair to the
 			// parser, and the body fails to match at all. Treating it as a pair
 			// here made the scanner accept `[[A\<LF>B]]` that ExtractWikiLinks
-			// rejects (codex R2). Measured both ways before fixing.
+			// rejects. Measured both ways before fixing.
 			//
 			// Only LF, deliberately: the Go parser's `.` excludes exactly that.
 			// The JS renderer's `.` additionally excludes CR, U+2028 and U+2029
@@ -727,7 +723,7 @@ func (e TitleEscaper) segmentLen(qualified bool) int {
 // Allocation-free and segment-wise: it walks the existing body against the
 // escaped slug prefix, then the escaped title, then the display suffix, rather
 // than concatenating them into a candidate string — which would reintroduce
-// the per-bracket allocation the projection path must not have (codex R5).
+// the per-bracket allocation the projection path must not have.
 func bracketUnchanged(content string, position, bracketEnd int, qualified bool, esc TitleEscaper, displaySuffix string) bool {
 	body := content[position+2 : bracketEnd-2]
 	if len(body) != esc.segmentLen(qualified)+len(displaySuffix) {
@@ -779,7 +775,7 @@ func bracketRewriteAt(content string, position int, targetTitle string, esc Titl
 	// break literal-pipe titles like "A|B", which case 1 has always handled.
 	//
 	// Nothing proportional to the new title is built here — this returns a
-	// DESCRIPTION and lets each caller measure it or write it (codex R5).
+	// DESCRIPTION and lets each caller measure it or write it.
 	switch {
 	case strings.EqualFold(unescapeWikiBody(body), targetTitle):
 		// Case 1: the whole body is the title. No display segment.

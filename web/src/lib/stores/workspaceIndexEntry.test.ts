@@ -104,7 +104,7 @@ const ALLOWED: Record<string, { count: number; why: string }> = {
 	},
 };
 /**
- * A REFERENCE to the member, not just a call (codex r1): an alias taken first
+ * A REFERENCE to the member, not just a call: an alias taken first
  * (`const b = localIndex.bootstrap; b(ws)`) is a direct call in all but
  * spelling. Covered: `.` / `?.` access, `['bootstrap']`, and destructuring,
  * on `localIndex` or any name a file imports it as. Comments are stripped first — prose naming the method is

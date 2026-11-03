@@ -41,7 +41,7 @@
 	$effect(() => {
 		const s = slug;
 		// Keyed on the identity too: a note fetched for one signed-in account
-		// must never be shown to the next on the same route (codex r2).
+		// must never be shown to the next on the same route.
 		const epoch = authStore.identityEpoch;
 		const key = `${epoch}:${s}`;
 		if (!visible || !isOwner || noteFor === key) return;

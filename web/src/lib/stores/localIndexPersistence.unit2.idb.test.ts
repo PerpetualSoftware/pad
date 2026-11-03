@@ -24,7 +24,7 @@ import { LOCAL_INDEX_SCHEMA_VERSION } from './localIndexPersistence';
  *   - BUG-2635: equal-seq merge — a second tab's unmerged snapshot can't clobber
  *     a merged row's projection at the same seq.
  *
- * Per the lead's ruling these are SNAPSHOT-staleness races: plain SEQUENTIAL
+ * These are SNAPSHOT-staleness races: plain SEQUENTIAL
  * calls through the module reproduce them (IDB serializes the transactions), so
  * there is no interleaving hook.
  */

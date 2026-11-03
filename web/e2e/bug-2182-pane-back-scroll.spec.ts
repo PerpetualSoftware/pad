@@ -203,7 +203,7 @@ for (const leg of [
 	});
 }
 
-// BUG-3250 codex round 1 (P1): the pane element is reused across items, and a
+// BUG-3250: the pane element is reused across items, and a
 // link drill is a pushState, which never reaches the popstate cancel. A hold
 // still live when the reader drills on must not write A's position into B.
 // A GUARD, not a red control: today the drill replaces every child of the pane,
@@ -262,7 +262,7 @@ test('BUG-3251: a body that is still short when the restore ends leaves the read
 		expect(clamped, 'the reader was left at the top').toBeGreaterThan(max - 3);
 		// Being at the bottom is also what a stick-to-bottom mechanism would
 		// give. This one was a restore: it ended at the cap, so growth after it
-		// leaves the reader where it put them (BUG-3251 codex round 1).
+		// leaves the reader where it put them (BUG-3251).
 		await growBody(page);
 		await page.waitForTimeout(400);
 		expect(await ctx.pane.evaluate((el) => el.scrollHeight - el.clientHeight), 'premise: the body grew').toBeGreaterThan(max + 200);
@@ -291,7 +291,7 @@ test('BUG-3251: late growth inside the hold carries the reader to the saved posi
 	}
 });
 
-// BUG-3251 codex round 1: a scrollbar drag raises no wheel/touch/key event, and
+// BUG-3251: a scrollbar drag raises no wheel/touch/key event, and
 // the height rule cannot see it when it shares a frame with late growth: the
 // scroll arrives with the height already changed, so it reads as a clamp and
 // the next resize re-applies the target over the reader. The press on the

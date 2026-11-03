@@ -96,7 +96,7 @@ describe('TASK-2909 — the ask outlives an unwritten resync', () => {
 	});
 
 	it('bootstrap\u2019s own loop obeys the same guard as markCaughtUp', async () => {
-		// Review round 1 P1b: that loop cleared the flag directly, so every
+		// That loop cleared the flag directly, so every
 		// condition added to the public entry point silently did not reach it —
 		// the fourth time in PLAN-2903 a rule landed at one door and not its
 		// sibling. Reproduced by starting a resync from ANOTHER driver while
@@ -208,7 +208,7 @@ describe('TASK-2909 — the ask outlives an unwritten resync', () => {
 	});
 
 	it('bootstrap refuses the clear when a resync settles during its post-delta awaits', async () => {
-		// Review round 3 P1, and the interleaving matters: the resync must
+		// The interleaving matters: the resync must
 		// settle AFTER bootstrap's own epoch re-check and BEFORE its clear, or
 		// the loop simply re-polls and the test proves nothing. The first
 		// version of this test hit the 50-iteration cap instead — it passed, and
@@ -316,7 +316,7 @@ describe('TASK-2909 — the ask outlives an unwritten resync', () => {
 		// harm — "nothing retries" — stopped being true at TASK-2906, and
 		// holding the ask here would buy no repair while costing a wedge:
 		// `pendingResyncFor` gates a destructive decision, and a storage failure
-		// would make it permanently un-clearable (review round 1 P1).
+		// would make it permanently un-clearable.
 		localIndex.markCaughtUp(ws, localIndex.reconcileTokenFor(ws));
 		expect(localIndex.pendingResyncFor(ws)).toBe(false);
 
@@ -407,8 +407,8 @@ describe('TASK-2909 — the ask outlives an unwritten resync', () => {
 	});
 
 	it('a capture that OVERLAPPED the resync stays refused; a fresh one clears at once', async () => {
-		// The lead's hold — a refusal must not outlive its resync — plus review
-		// round 2's P1, which showed the first version answered it at the wrong
+		// A refusal must not outlive its resync, and the first version answered
+		// it at the wrong
 		// moment. A loop that captured the epoch during a resync and whose
 		// `/items-changes` response arrives AFTER that resync settles computed
 		// its answer against the PRE-snapshot cursor. `projectionResyncs` no

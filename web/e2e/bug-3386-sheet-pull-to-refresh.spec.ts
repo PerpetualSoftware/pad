@@ -3,7 +3,7 @@ import { browserLogin } from './lib/collab-helpers';
 import { CdpTouch } from './lib/attachment-viewer';
 
 /**
- * BUG-3386 (Dave's report): with the mobile Workspace sheet open, a downward
+ * BUG-3386 (user report): with the mobile Workspace sheet open, a downward
  * swipe in the collection list did not close it; at the list's top it
  * pull-to-refreshed the page instead.
  *

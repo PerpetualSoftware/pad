@@ -57,7 +57,7 @@ func Enabled(getenv func(string) string, logger *slog.Logger) bool {
 
 // PerKiBTimeout is what each KiB of a job's op-log rows adds to its hard
 // deadline (BUG-3521). The receipt: the real op-log of an 86 KB plan body
-// after three rounds of live edits (278 content-bearing rows, 470 KiB),
+// after many live edits (278 content-bearing rows, 470 KiB),
 // materialized in-process with the worker's engine, 7 runs each: median
 // 1.36 s on an idle 8-core box, 1.77 s pinned to one core at GOMAXPROCS=1,
 // about 3.8 ms per KiB at the slow end. The flat 2 s deadline (1.8 s soft)

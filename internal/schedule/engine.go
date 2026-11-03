@@ -58,7 +58,7 @@ func (c *Compiled) bound(t time.Time, loc *time.Location) time.Time {
 // elapsed rule, a UTC-labelled wall for the wall-clock path. A Z UNTIL is an
 // instant bound, so on the wall-clock path the library gets a generous wall
 // (the UNTIL reading plus wallMargin) and afterUntil filters each resolved
-// instant exactly (TASK-4100 r1).
+// instant exactly (TASK-4100).
 func (c *Compiled) until(loc *time.Location) time.Time {
 	u := c.rule.Until
 	if u.Kind == untilKindInst {
@@ -78,7 +78,7 @@ func (c *Compiled) until(loc *time.Location) time.Time {
 }
 
 // untilSpent says the rule's UNTIL lies wholly before q, so the rule can add
-// nothing at or after it (TASK-4100 r1). The wall-clock test carries a
+// nothing at or after it (TASK-4100). The wall-clock test carries a
 // wallMargin of slack for the non-monotonic gap.
 func (c *Compiled) untilSpent(loc *time.Location, q time.Time) bool {
 	if c.rule == nil || c.rule.Until == nil {
@@ -92,7 +92,7 @@ func (c *Compiled) untilSpent(loc *time.Location, q time.Time) bool {
 
 // afterUntil says an occurrence of the rule falls past a Z UNTIL, compared on
 // the resolved instant, inclusive. An RDATE is not bound by UNTIL. Elapsed
-// rules compare instants in the library already (TASK-4100 r1).
+// rules compare instants in the library already (TASK-4100).
 func (c *Compiled) afterUntil(o Occurrence) bool {
 	if c.elapsed || c.rule == nil || c.rule.Until == nil || c.rule.Until.Kind != untilKindInst || !o.At.After(c.rule.Until.Instant) {
 		return false
@@ -188,7 +188,7 @@ func (c *Compiled) probeSynced() (bool, error) {
 // merger merges the three streams of a schedule in library order: the rule's
 // generator, budgeted, alone; the RDATEs, a sorted slice; and the EXDATEs, a set.
 // The library's rrule.Set is not used to expand, so the schedule's correctness
-// does not rest on what the set does inside (TASK-4100 r3).
+// does not rest on what the set does inside (TASK-4100).
 type merger struct {
 	rule     rrule.Next
 	rr       *rrule.RRule // nil: no rule stream
@@ -232,7 +232,7 @@ func (c *Compiled) newMerger(loc *time.Location, base time.Time, lim Limits) (*m
 // reading, when bounded. A stalled rule is a state, not a failure: the RDATEs
 // below its stall position still flow, and the stream is stuck only when the
 // next thing in it could lie in the unexamined part. CapTime is checked on every
-// pass, so a long run of skipped EXDATEs is bounded too (TASK-4100 r3 D1).
+// pass, so a long run of skipped EXDATEs is bounded too (TASK-4100).
 func (m *merger) next(final time.Time, bounded bool) (time.Time, bool, error) {
 	for {
 		if time.Now().After(m.deadline) {
@@ -269,7 +269,7 @@ func (m *merger) next(final time.Time, bounded bool) (time.Time, bool, error) {
 
 func (m *merger) stalled() bool { return m.rr != nil && m.ruleDone && m.rr.Exhausted() }
 
-// stuck is the only place a CapStall comes from (TASK-4100 r3 D3). The stream
+// stuck is the only place a CapStall comes from (TASK-4100). The stream
 // has nothing below the rule's stall position that it has not yielded. If the
 // caller stops reading before that position, what it has is final and the stream
 // ends for it; otherwise an occurrence may be hiding in the unexamined part, and
@@ -363,7 +363,7 @@ func (c *Compiled) Between(from, to time.Time, view *time.Location, lim Limits) 
 	var out []Occurrence
 	// Once MaxInstances+1 distinct instants are held, the walk goes on until its
 	// key is past the bound of the (MaxInstances+1)-th smallest, so a later wall
-	// that resolves earlier (a DST gap) still makes the cut (TASK-4100 r1).
+	// that resolves earlier (a DST gap) still makes the cut (TASK-4100).
 	var stop time.Time
 	settleAt := lim.MaxInstances
 	end := c.bound(to, loc)
@@ -403,8 +403,7 @@ func (c *Compiled) Between(from, to time.Time, view *time.Location, lim Limits) 
 
 // settle sorts by instant and drops a repeated instant. It also masks a repeat
 // the merge itself might yield, so nothing at the public API shows one; the merge
-// is held to yielding each instant once by TestMergeYieldsEachInstantOnce
-// (TASK-4100 r3 f3).
+// is held to yielding each instant once by TestMergeYieldsEachInstantOnce (TASK-4100).
 func settle(out []Occurrence) []Occurrence {
 	sort.SliceStable(out, func(i, j int) bool { return out[i].At.Before(out[j].At) })
 	kept := out[:0]

@@ -39,8 +39,8 @@ func TestValidImportedBuiltinOrigin(t *testing.T) {
 		"text not its hash":    {Key: "playbook/ship", SeedHash: e.Hash(), SeedContent: e.Content + "!", SeedFields: e.Fields},
 		"oversized text":       {Key: "playbook/ship", SeedHash: e.Hash(), SeedContent: strings.Repeat("x", models.MaxBuiltinSeedBytes+1)},
 		// A NUL would be refused by the database and poison the import's
-		// transaction, so it is refused here and the origin is skipped
-		//: raw in the body, raw in the fields, escaped in the fields.
+		// transaction, so it is refused here and the origin is skipped:
+		// raw in the body, raw in the fields, escaped in the fields.
 		"raw NUL in content":    {Key: "playbook/ship", SeedHash: e.Hash(), SeedContent: "a\x00b", SeedFields: e.Fields},
 		"raw NUL in fields":     {Key: "playbook/ship", SeedHash: e.Hash(), SeedContent: e.Content, SeedFields: `{"trigger":"a` + "\x00" + `"}`},
 		"escaped NUL in fields": {Key: "playbook/ship", SeedHash: e.Hash(), SeedContent: e.Content, SeedFields: `{"trigger":"a\u0000b"}`},

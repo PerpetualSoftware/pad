@@ -54,7 +54,7 @@ package collab
 // round-trip that already passed the gate but hasn't finished registering its
 // pending-ack entry to register (admittedUnregistered → 0). Without this drain a
 // round-trip admitted just before beginRestore could register AFTER
-// freezeAndFinalizePending's scan and be missed (BUG-2276 residual 2, P1): the
+// freezeAndFinalizePending's scan and be missed (BUG-2276 residual 2): the
 // nonresponsive case would hang the applier timeout and a no-op setContent could
 // falsely ack.
 //
@@ -96,7 +96,7 @@ func (r *Room) resolveRestore() {
 // as admitted). The common path (no restore) returns immediately with waited=false
 // and ADMITS the round-trip: it is counted in admittedUnregistered until the caller
 // calls finishAdmission (after registering, or on any early bail before registering),
-// so a concurrent beginRestore drains it before the freeze scan (P1). MUST be paired
+// so a concurrent beginRestore drains it before the freeze scan. MUST be paired
 // with exactly one finishAdmission on every !waited path.
 func (r *Room) enterApplierGate() (waited bool) {
 	r.restoreMu.Lock()
@@ -119,7 +119,7 @@ func (r *Room) enterApplierGate() (waited bool) {
 // finishAdmission ends the admission span opened by a !waited enterApplierGate — call
 // it exactly once after registerPendingAck returns (success or error) or on any early
 // bail before registration. When the count hits zero it wakes a beginRestore draining
-// the admission gap. (BUG-2276 residual 2, P1.)
+// the admission gap. (BUG-2276 residual 2, .)
 func (r *Room) finishAdmission() {
 	r.restoreMu.Lock()
 	if r.admittedUnregistered > 0 {

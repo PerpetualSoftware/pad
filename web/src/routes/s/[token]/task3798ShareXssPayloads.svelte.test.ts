@@ -1,4 +1,4 @@
-// TASK-3798 (the director's audit of #2145): real XSS payloads, pinned per
+// TASK-3798 (audit of #2145): real XSS payloads, pinned per
 // share render path. The share page puts item bodies on Pad's origin for an
 // anonymous viewer through three paths: the direct item share's marked
 // pipeline, its fallback when rendering throws, and the collection share's

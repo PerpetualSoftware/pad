@@ -11,8 +11,8 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/server"
 )
 
-// The e2e harness's door for a test app origin's CA (TASK-3415, lead
-// ruling): a server built with -tags e2etest trusts the PEM CA bundle named
+// The e2e harness's door for a test app origin's CA (TASK-3415): a server built
+// with -tags e2etest trusts the PEM CA bundle named
 // by PAD_E2E_APP_CA for app manifest and artifact fetches and for webhook
 // deliveries (both read Server.SetAppFetchTLS). Release and production
 // builds do not contain this file, so no environment or config can widen

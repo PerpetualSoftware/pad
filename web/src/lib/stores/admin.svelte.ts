@@ -129,7 +129,7 @@ let error = $state('');
 async function loadStats() {
 	loading = true;
 	error = '';
-	// The identity that ASKED (BUG-3005, codex round 2). Clearing on the signal
+	// The identity that ASKED (BUG-3005). Clearing on the signal
 	// is not enough on its own: a request already in flight settles afterwards
 	// and writes the previous admin's statistics into the new session.
 	const isSameIdentity = authStore.identityFence();
@@ -164,7 +164,7 @@ export const adminStore = {
 	 */
 	clear() {
 		stats = null;
-		// FALSE, not true (codex round 2). The admin layout loads on MOUNT, and
+		// FALSE, not true. The admin layout loads on MOUNT, and
 		// a same-route admin-to-admin swap mounts nothing — leaving this true
 		// would pin the console on "Loading admin data…" forever. The layout
 		// re-issues the load on the same signal; until it lands the honest
@@ -176,8 +176,7 @@ export const adminStore = {
 
 // An admin signing out — or a swap to a non-admin on the same console route —
 // must not leave the previous admin's statistics on screen. The admin layout
-// loads on mount, and a same-route identity change mounts nothing (BUG-3005,
-// codex round 1).
+// loads on mount, and a same-route identity change mounts nothing (BUG-3005).
 authStore.onIdentityChange(() => {
 	adminStore.clear();
 });

@@ -409,7 +409,7 @@ describe('multi_relation — two edits before the first save lands', () => {
 	const editable = { field: multi, wsSlug: 'ws', username: 'dave' } as const;
 
 	it('bases the second edit on what was SENT, not on the stale prop', async () => {
-		// codex round 7, P1, in my own W7 code. `value` only catches up after the
+		// `value` only catches up after the
 		// server round trip, so two quick removes both derived from it: remove
 		// Grace then Red from [Grace,Red,Blue] sent [Red,Blue] and then
 		// [Grace,Blue] — and the parent's 409 refetch-and-retry can persist the
@@ -547,7 +547,7 @@ describe('multi_relation — the hold ends when the write does, not only when it
 	const titles = () => [...document.querySelectorAll('.relation-title')].map((n) => n.textContent);
 
 	it('a REFUSED write stops holding, so the field shows server truth again', async () => {
-		// codex round 8, R8-2. The hold released only on prop AGREEMENT, and a
+		// The hold released only on prop AGREEMENT, and a
 		// write the server refuses never agrees — so a rejected clear of a
 		// required field kept showing the rejected value forever and ignored
 		// every later server value. Settlement is the question the hold is for:
@@ -591,7 +591,7 @@ describe('multi_relation — the hold ends when the write does, not only when it
 		// The ordering half, at the hold. Two removes are outstanding; the first
 		// one's answer arrives second. Releasing on it would drop the list the
 		// user is actually looking at and hand the next edit a stale base — the
-		// round-7 defect, reintroduced through the round-8 fix.
+		// earlier defect, reintroduced by the settlement fix.
 		const { onchange, gates } = gatedConsumer('resolve');
 		render(FieldEditor, { props: { ...editable, value: [GREEN.id, RED.id, BLUE.id], onchange } });
 		await tick();
@@ -618,7 +618,7 @@ describe('multi_relation — the hold ends when the write does, not only when it
 	it('CONTROL: a consumer that answers nothing still holds until the prop agrees', async () => {
 		// Not every consumer has a server behind it — `CopyItemDialog` sets local
 		// state and re-props synchronously. Settlement is an OPTIONAL signal, and
-		// a consumer that gives none must keep the round-7 behaviour exactly:
+		// a consumer that gives none must keep the prop-agreement behaviour exactly:
 		// releasing on a write whose outcome is unknown is the lost update again.
 		const onchange = vi.fn();
 		render(FieldEditor, { props: { ...editable, value: [GREEN.id, RED.id, BLUE.id], onchange } });
@@ -635,7 +635,7 @@ describe('multi_relation — the hold ends when the write does, not only when it
 	it('CONTROL: a write that LANDS still releases onto the value the parent wrote', async () => {
 		// A CONTROL, and labelled as one after the mutation run said so: disabling
 		// the settlement path entirely leaves this leg GREEN, because a write that
-		// succeeds also makes the prop AGREE and the round-7 release fires. It is
+		// succeeds also makes the prop AGREE and the prop-agreement release fires. It is
 		// here to show the new path did not break the ordinary success, not as
 		// evidence that the new path works — the three legs above are that.
 		const gates: Array<() => void> = [];

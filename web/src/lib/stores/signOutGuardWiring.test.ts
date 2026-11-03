@@ -25,7 +25,7 @@ describe('BUG-3571: sign-out wiring', () => {
 			expect(ask).toBeLessThan(logout);
 		});
 
-		// Retro Codex review of #2041: a logout that rejects resets the discard
+		// #2041: a logout that rejects resets the discard
 		// only if it runs through signOutLogout. Every call, not just the first.
 		it(`${file} logs out only through signOutLogout()`, () => {
 			const src = readFileSync(file, 'utf8');

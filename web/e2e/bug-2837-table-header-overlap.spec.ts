@@ -5,15 +5,15 @@ import type { Page } from '@playwright/test';
 
 /**
  * BUG-2837 — in the collection TABLE view, a long field label ran into the next
- * column's label ("Next Batching / Ranking" over "Cost Share" in Dave's
- * screenshot). Field columns are `minmax(90px, 0.55fr)`, and header labels were
+ * column's label ("Next Batching / Ranking" over "Cost Share" in a
+ * reported screenshot). Field columns are `minmax(90px, 0.55fr)`, and header labels were
  * `white-space: nowrap` with nothing clipping them, so a label wider than its
  * column painted over its neighbour. Labels now wrap to two lines, then
  * ellipsis, clipped to their column, with the full label as a title.
  *
  * Measured, not eyeballed: each header label's PAINTED right edge (its text,
  * clipped by any overflow-hiding ancestor) against the next cell's left edge.
- * Dave's six labels are the fixture.
+ * The six reported labels are the fixture.
  */
 const LABELS = [
 	'Sign-up Deadline',

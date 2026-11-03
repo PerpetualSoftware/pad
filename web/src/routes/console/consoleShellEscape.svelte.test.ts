@@ -1,6 +1,6 @@
 // Runs in the jsdom vitest project (filename ends `.svelte.test.ts`).
 //
-// TASK-2430 (round-2 sweep) — the console shell owns a global Escape that
+// TASK-2430 — the console shell owns a global Escape that
 // closes its collapsible nav. (The nav's toggle is CSS-hidden above the mobile
 // breakpoint, but the gating is PURELY CSS — there is no JS media query in this
 // component — so the handler's behaviour under test is identical at any width,

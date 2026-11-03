@@ -72,7 +72,7 @@ describe('CopyItemDialog is now on the EDITABLE side of the gate (TASK-2869 / U2
 		// The PREFLIGHT'S canonical destination slug, not the raw `destWs`
 		// route value: an item opened through a workspace-UUID URL puts that
 		// UUID in destWs, and /search resolves by slug only, so the picker
-		// would silently search nothing (codex review, TASK-2869).
+		// would silently search nothing (TASK-2869).
 		expect(tag).toMatch(/wsSlug=\{pickerWsSlug\}/);
 		expect(tag).not.toMatch(/wsSlug=\{sourceWsSlug\}/);
 		expect(copyDialog).toMatch(/preflight\?\.destination\.workspace_slug \|\| destWs/);

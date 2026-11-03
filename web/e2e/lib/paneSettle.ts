@@ -15,7 +15,7 @@ const ARM_WINDOW_MS = 1000;
  * that decides what the drill may observe (a busy main thread delays both
  * timers, so the delay alone does not say which ran first).
  *
- * Which 140ms timer is the settle (codex r1): the collection host's j/k
+ * Which 140ms timer is the settle: the collection host's j/k
  * pane-follow debounce is ALSO 140ms, so the wrapper latches only a timer armed
  * AFTER the Back's traversal reached this helper's popstate listener, and
  * within ARM_WINDOW_MS of it. SvelteKit 3's popstate handler is async: it

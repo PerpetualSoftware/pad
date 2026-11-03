@@ -10,7 +10,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// BUG-3340 (codex r1 P1): a delivery that read its hook list before the
+// BUG-3340: a delivery that read its hook list before the
 // workspace was soft-deleted must stop sending at the next boundary: the
 // next retry, the next hook in the fan-out, and any redirect hop. Each test
 // deletes the workspace from inside the first request the receiver sees.

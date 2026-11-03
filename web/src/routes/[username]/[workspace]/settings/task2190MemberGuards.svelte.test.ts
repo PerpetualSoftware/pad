@@ -172,7 +172,7 @@ describe('TASK-3543: a removal asked through the shared dialog', () => {
 		expect(api.members.remove).not.toHaveBeenCalled();
 	});
 
-	// codex asked whether the changed select keeps showing the unsent role
+	// Question: whether the changed select keeps showing the unsent role
 	// when the page moves on. It cannot: a workspace change clears the member
 	// list, so the rows (and their selects) are rebuilt from the stored roles.
 	it('a self-demotion answered after the page moved sends nothing, and the rebuilt row shows the stored role', async () => {

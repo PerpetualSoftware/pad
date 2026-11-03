@@ -179,7 +179,7 @@ func reapedPid(t *testing.T) int {
 }
 
 // The reader checks lines against the SHAPE internal/cli/pidfile.go writes
-// (BUG-4068 r1 items 1 and 3, r2 items 1 and 2): braces on their own lines,
+// (BUG-4068): braces on their own lines,
 // each inner line STARTING like a two-space-indent quoted key (the rest of
 // the line is unchecked), one pid, at most 4194304; or a bare integer. It is a
 // line-shape check, not full JSON validation. The REFUSED rows do not parse,
@@ -218,7 +218,7 @@ func TestInstallRefresh_PIDFile_ReadsOnlyWhatPadWrites(t *testing.T) {
 	}
 }
 
-// DEAD is ESRCH only (BUG-4068 r1 item 2): a fake kill prints each message
+// DEAD is ESRCH only (BUG-4068): a fake kill prints each message
 // the builtin can, so EPERM and anything unrecognised are not dead.
 func TestInstallRefresh_PIDFile_OnlyESRCHIsDead(t *testing.T) {
 	for _, tc := range []struct{ name, msg, want string }{
@@ -241,7 +241,7 @@ func TestInstallRefresh_PIDFile_OnlyESRCHIsDead(t *testing.T) {
 	}
 }
 
-// The stopped-pid leg on its own (BUG-4068 r1 item 5). The e2e stopped-server
+// The stopped-pid leg on its own (BUG-4068). The e2e stopped-server
 // rows reach it too: their pre-server is this test's own child, a zombie
 // after the TERM until cleanup reaps it, and kill -0 on a zombie succeeds, so
 // the dead leg cannot answer for them. This row does not depend on reaping: a

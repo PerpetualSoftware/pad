@@ -213,7 +213,7 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 			// chip doesn't know rather than waiting for it.
 			let currentSize: number | null = null;
 
-			// A BUTTON, not an anchor (DR-12; orchestrator review of TASK-2424).
+			// A BUTTON, not an anchor (DR-12; TASK-2424).
 			// A live chip opens the options panel — it does not navigate — so an
 			// anchor was announcing it as a link and, worse, left the URL
 			// reachable by paths the click handler never sees: middle-click and
@@ -315,7 +315,7 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 			 * A deleted attachment leaves this chip looking perfectly valid —
 			 * unlike an <img>, a link makes no request until clicked, so
 			 * nothing tells it the target is gone and the user gets a 404 in a
-			 * new tab (Codex round 13). The strip broadcasts deletions, so mark
+			 * new tab. The strip broadcasts deletions, so mark
 			 * the chip dead in place instead: same .attachment-missing
 			 * treatment the markdown renderer uses for a missing reference.
 			 *
@@ -535,7 +535,7 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 				// Removing href is not enough: this handler acts on the URL
 				// itself, so a deleted chip would still do something (a 404 in a
 				// new tab, before TASK-2424; a panel for a dead row, after).
-				// Swallow the click instead (Codex round 14).
+				// Swallow the click instead.
 				event.preventDefault();
 				event.stopPropagation();
 				if (deleted) return;
@@ -593,7 +593,7 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 				// Workspace off the READER, not the static option: this editor can
 				// outlive a workspace switch, and this value keys the metadata
 				// cache — stale, it asks the previous workspace about this
-				// workspace's attachment (final review round 3).
+				// workspace's attachment.
 				const probeWs = this.options.address().workspaceSlug;
 				if (!forUuid || !probeWs) return;
 				const seqAtStart = stateSeq;
@@ -609,7 +609,7 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 					// that arrived while this HEAD was out. This probe is normally
 					// ISSUED inside the archived window, so without this fence its 404
 					// marks a chip the restore has already made live again, and nothing
-					// further would arrive to undo it (BUG-2509 / Codex round 2).
+					// further would arrive to undo it (BUG-2509).
 					if (stateSeq !== seqAtStart) return;
 					// A transient failure says nothing about whether the row
 					// exists — keep the filename-guess icon and stay
@@ -657,8 +657,7 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 					if (newUuid !== currentUuid) {
 						currentUuid = newUuid;
 						// New target ⇒ the old deletion no longer applies. Reachable
-						// via a peer's uuid swap or a ProseMirror node replacement
-						// (orchestrator's full-diff review).
+						// via a peer's uuid swap or a ProseMirror node replacement.
 						clearDeleted();
 						// New uuid ⇒ stale MIME / size; reset until HEAD probe
 						// returns for the new identifier.

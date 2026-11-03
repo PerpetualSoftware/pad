@@ -60,8 +60,8 @@ test('TASK-2979: no admin console tab is clipped at 320px', async ({ browser, fi
 		// "nothing is clipped" is a claim about wrapping rather than about a row
 		// that happened to fit. It asserts exactly that and nothing more — a
 		// renamed or dropped tab does NOT necessarily trip it, since the rest may
-		// still overflow (codex round 1 corrected an earlier comment here that
-		// claimed otherwise). What it does catch is the case that would make this
+		// still overflow (an earlier comment here claimed
+		// otherwise). What it does catch is the case that would make this
 		// leg vacuous: a tab set that starts fitting at 320px.
 		expect(bar.intrinsicWidth).toBeGreaterThan(bar.clientWidth);
 

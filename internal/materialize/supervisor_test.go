@@ -1211,7 +1211,7 @@ func TestSupervisorCloseDuringIdleStop(t *testing.T) {
 	if err := processGone(pid); err != nil {
 		t.Fatalf("Close returned while the idle-stopping worker still ran: %v", err)
 	}
-	// Its stop line names Close, not idleness (codex r2).
+	// Its stop line names Close, not idleness.
 	deadline := time.Now().Add(5 * time.Second)
 	for len(h.log.find("materialize worker stopped", "pid="+strconv.Itoa(pid))) == 0 && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)

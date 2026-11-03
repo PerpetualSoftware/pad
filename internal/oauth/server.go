@@ -127,7 +127,7 @@ type Server struct {
 //   - Refresh tokens rotate single-use. compose.OAuth2RefreshTokenGrantFactory
 //     wires fosite's standard rotation flow which calls
 //     Storage.RotateRefreshToken (revokes the entire grant family
-//     per the round-2 fix in sub-PR A) before issuing the new pair.
+//     per the fix in sub-PR A) before issuing the new pair.
 //   - Audience-bound tokens (RFC 8707). Custom AudienceMatchingStrategy
 //     from audience.go rejects any audience that isn't the canonical
 //     MCP resource URL.

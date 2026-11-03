@@ -194,7 +194,7 @@ func TestSniffISOBMFFImage_MalformedInput(t *testing.T) {
 
 	// A buffer that stops inside the 16-byte ftyp header is a truncated file,
 	// not a small one, and must not be classified from the fields that happen
-	// to be present (codex round 2, P2).
+	// to be present.
 	for n := 12; n < 16; n++ {
 		body := []byte{0, 0, 0, 16}
 		body = append(body, "ftyp"...)
@@ -207,7 +207,7 @@ func TestSniffISOBMFFImage_MalformedInput(t *testing.T) {
 
 	// A declared size of 2..15 cannot be an ftyp box — the header, major brand
 	// and minor version are 16 bytes on their own — so the bytes at 8.. are not
-	// brands of this box and must not be read as any (codex round 1, P2).
+	// brands of this box and must not be read as any.
 	// Without this the payload below, which a caller controls entirely, is
 	// classified image/heic and accepted by the upload door.
 	for size := uint32(2); size < 16; size++ {

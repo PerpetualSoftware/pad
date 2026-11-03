@@ -64,7 +64,7 @@ type liftedColumns struct {
 // defect wearing a worse hat: it was the only route an agent had to unassign.
 //
 // SCHEMA-AWARE, and deliberately stricter than the MCP side it otherwise
-// mirrors (codex round 3). A collection may legally DECLARE a field called
+// mirrors. A collection may legally DECLARE a field called
 // `assigned_user_id` — nothing reserves the name — and for such a collection
 // `--field assigned_user_id=foo` means the declared field, not the column.
 // Lifting it there would silently redirect the write AND drop the value the
@@ -272,8 +272,8 @@ Run with --help-collections to see available collections and their status values
 			// The schema lookup hits exact-match-only GetCollection, which does
 			// NOT resolve slugs server-side, so its not-found is never
 			// authoritative about an alias — always retry (nil gate) so a typed
-			// --field parses against the aliased collection's schema (Codex r2
-			// P2). Best-effort: a miss degrades to string fields either way.
+			// --field parses against the aliased collection's schema. Best-effort:
+			// a miss degrades to string fields either way.
 			if coll, err := cli.WithCollectionAliasFallback(rawSlug, nil, func(slug string) (*models.Collection, error) {
 				return client.GetCollection(ws, slug)
 			}); err == nil {
@@ -374,7 +374,7 @@ Run with --help-collections to see available collections and their status values
 			// Before the JSON early-return, and outside the ref branch below:
 			// the warning goes to STDERR, so it reaches a caller piping stdout
 			// into a parser — which is exactly the caller most likely to have
-			// sent a mistyped key and least likely to notice (codex round 2).
+			// sent a mistyped key and least likely to notice.
 			warnUndeclaredFields(item)
 			warnOptionsAdded(item)
 			warnContentPendingFlush(item)
@@ -576,7 +576,7 @@ in that collection are shown. Items with status "done" are hidden by default.`,
 			// Apply arbitrary --field key=value filters as query params.
 			//
 			// The key rule is the same one the WRITE doors use, deliberately
-			// (BUG-2870, day-60 ruling): one key string means one field at
+			// (BUG-2870): one key string means one field at
 			// every door. A padded key here would filter on a field nobody
 			// declared and come back empty, which is indistinguishable from
 			// "no rows match" — so it is refused with the same message the
@@ -891,7 +891,7 @@ on stderr instead. --format json carries it as the content_state field.`,
 				// that reached for this format to READ the item would otherwise
 				// see 0 bytes for a title-only item (TASK-3451).
 				// Not when the stored body is stale: the live document may hold
-				// text, and the warning above already says so (codex r1).
+				// text, and the warning above already says so.
 				if item.Content == "" && !models.IsContentStateStale(item.ContentState) {
 					fmt.Fprintf(os.Stderr, "%s has no body; --format markdown prints the body only. Use `pad item show %s --agent` for its title, status and fields.\n", item.Ref, item.Ref)
 				}
@@ -910,7 +910,7 @@ on stderr instead. --format json carries it as the content_state field.`,
 			// Print fields (skip internal keys like github_pr which are shown separately)
 			if item.Fields != "" && item.Fields != "{}" {
 				var fields map[string]interface{}
-				// Numbers keep their digits (BUG-3448, codex r1).
+				// Numbers keep their digits (BUG-3448).
 				if err := models.DecodeJSONKeepingNumbers([]byte(item.Fields), &fields); err == nil {
 					for k, v := range fields {
 						if models.IsReservedItemField(k) {
@@ -939,7 +939,7 @@ on stderr instead. --format json carries it as the content_state field.`,
 			// The stale-body notice for this format is the first line above,
 			// printed before the empty-body check for the reason it used to sit
 			// here: an item whose STORED body is empty while its document holds
-			// the real text is exactly that case (codex round 3).
+			// the real text is exactly that case.
 			if item.Content != "" {
 				fmt.Println(item.Content)
 			}
@@ -1215,7 +1215,7 @@ A body write with neither prints a warning, and a future release refuses it
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// AN EMPTY --parent IS REFUSED, not ignored (BUG-2941) — and it is
 			// refused HERE, before the client is built or a single request is
-			// sent (codex round 1 [P1]). The first draft put this beside the
+			// sent. The first draft put this beside the
 			// parent handling further down, which is after the GetItem below,
 			// so a refused call still made a request; a test that only watched
 			// for WRITES would have passed a version that refuses after
@@ -1328,7 +1328,7 @@ A body write with neither prints a warning, and a future release refuses it
 			// `--expected-updated-at` cannot refuse the race it exists to refuse.
 			// `seq` is bumped on every mutation of the row, so it can.
 			//
-			// PRESENCE, not value (codex round 3). `0` is the flag's zero value
+			// PRESENCE, not value. `0` is the flag's zero value
 			// AND a value a user can type, so `if expectedSeq != 0` silently
 			// DROPPED `--expected-seq 0` and sent an unguarded write — the one
 			// outcome a caller asking for a guard must never get. `Changed` is
@@ -1407,7 +1407,7 @@ A body write with neither prints a warning, and a future release refuses it
 
 				// --clear-parent, checked HERE — after the named --parent
 				// resolution, the --field overlay, AND liftColumnFields —
-				// not up front (codex round 1 [P1]). extractParentLink
+				// not up front. extractParentLink
 				// (internal/server/handlers_items.go) resolves the parent
 				// link from EITHER a "parent" or a "plan" key in fields_patch,
 				// so a competing value can arrive by three different routes:
@@ -1422,7 +1422,7 @@ A body write with neither prints a warning, and a future release refuses it
 				// closes both bypasses at once.
 				if clearParent {
 					// Refuse when the TARGET COLLECTION'S SCHEMA declares its
-					// own "parent" or "plan" field (codex round 2 finding #2).
+					// own "parent" or "plan" field.
 					// extractParentLink (internal/server/handlers_items.go
 					// ~L606-610, pre-existing documented policy: "Skip this
 					// if the schema actually defines a field with that key")
@@ -1517,7 +1517,7 @@ A body write with neither prints a warning, and a future release refuses it
 			// `assigned_user_id: ""` param cannot reach stdio at all).
 			//
 			// A SIMULTANEOUS SET-AND-CLEAR IS REJECTED, not silently
-			// resolved (codex round 1). The store's branch order is
+			// resolved. The store's branch order is
 			// `if AssignedUserID != "" { set } else if ClearAssignedUser {
 			// clear }` — so sending both makes the clear a silent no-op and
 			// the assignment win. An earlier draft of this code claimed the
@@ -1527,7 +1527,7 @@ A body write with neither prints a warning, and a future release refuses it
 			//
 			// Checked HERE, after --assign / --role resolution and after the
 			// --field lift, so it catches every route to a competing value:
-			// `--assign wren`, `--field assigned_user_id=<uuid>`, or a
+			// `--assign alice`, `--field assigned_user_id=<uuid>`, or a
 			// direct ID. A cobra MarkFlagsMutuallyExclusive would only
 			// catch the first.
 			if clearAssignedUser {
@@ -1578,7 +1578,7 @@ A body write with neither prints a warning, and a future release refuses it
 			}
 
 			// Stderr, before the JSON early-return — see the note on the
-			// create path (codex round 2).
+			// create path.
 			warnUndeclaredFields(updated)
 			warnContentPendingFlush(updated)
 			warnUnguardedContentWrite(&input)
@@ -1602,8 +1602,8 @@ A body write with neither prints a warning, and a future release refuses it
 			// write that went to an open editor. Last, not appended to the
 			// "Updated" line: the field summary above follows that line
 			// whenever the item has fields, which is nearly always, so an
-			// outcome there is exactly what `tail -1` drops (lead review of
-			// #1416; pinned with a fields-bearing item).
+			// outcome there is exactly what `tail -1` drops (#1416, pinned with a
+			// fields-bearing item).
 			if input.Content != nil {
 				fmt.Printf("  %s\n", bodyOutcome(len(item.Content), len(*input.Content), clearContent,
 					updated.Warnings != nil && updated.Warnings.ContentOutcome == models.ContentOutcomeAppliedPendingFlush))
@@ -1632,7 +1632,7 @@ A body write with neither prints a warning, and a future release refuses it
 	cmd.Flags().BoolVar(&replaceBody, "replace", false, "with --content, --stdin or --clear-content: overwrite the body on purpose, whatever changed since you read it (no version token). A body write with neither this nor --expected-seq is warned about now and will be refused in a future release (PLAN-3555)")
 	cmd.Flags().Int64Var(&expectedSeq, "expected-seq", 0, "optimistic concurrency (preferred): the `seq` you last read; rejected with a conflict if the item changed since. Unlike --expected-updated-at this distinguishes two writes inside the same second (BUG-3037)")
 	// UPDATE ONLY, and deliberately asymmetric with `item create` — do NOT
-	// "complete" the pair by adding these there (IDEA-2584 ruling). Clearing
+	// "complete" the pair by adding these there (IDEA-2584). Clearing
 	// at create is a request to not-set something that was never set: the
 	// only honest behaviour is a no-op, which teaches agents a wrong
 	// affordance and pads every create call's schema for nothing. An item is
@@ -1980,7 +1980,7 @@ Items can be referenced by issue ID (e.g. TASK-5) or slug.`,
 				return client.MoveItemWithForce(ws, args[0], input, force)
 			})
 			if err != nil {
-				// IDEA-1494 R3 P1: render the open-children rejection
+				// IDEA-1494: render the open-children rejection
 				// the same way the regular update path does, so
 				// `pad item move ... --field status=completed` against
 				// a plan with open children fails informatively.
@@ -2296,7 +2296,7 @@ func runItemCopy(opts itemCopyOptions, deps itemCopyDeps, stdout, stderr io.Writ
 				_ = cli.PrintRawJSON(stdout, rawRes)
 			}
 			// This branch is a SUCCESS — it returns nil — so it owes the
-			// same advisory as the reported one (Codex round 6). The
+			// same advisory as the reported one. The
 			// requested archive_source stands in for the result's own
 			// `archived`: a committed 2xx means the whole operation
 			// landed, and it is only the report that was lost.
@@ -2318,7 +2318,7 @@ func runItemCopy(opts itemCopyOptions, deps itemCopyDeps, stdout, stderr io.Writ
 			}
 			// A plain error either way: the key line below is the copy's own,
 			// complete advice, so main's generic BUG-3999 hint must not repeat
-			// it (r1-M2).
+			// it.
 			unknown := fmt.Errorf("copy outcome unknown: check workspace %q before re-running", targetWorkspace)
 			if deps.ServerHonorsKeys != nil && deps.ServerHonorsKeys() {
 				fmt.Fprintf(stderr, "Check the destination first:\n")
@@ -2369,7 +2369,7 @@ func runItemCopy(opts itemCopyOptions, deps itemCopyDeps, stdout, stderr io.Writ
 	// deliberately narrower and carries no relationship counters), so a
 	// restricted user who went straight to the mutation would otherwise be
 	// the only person this whole task does not reach — on the one run where
-	// it is too late to reconsider (Codex round 5).
+	// it is too late to reconsider.
 	//
 	// STDERR on purpose, and after the report: `--format json` stdout is
 	// the server's response byte for byte, and a machine-readable contract
@@ -2380,7 +2380,7 @@ func runItemCopy(opts itemCopyOptions, deps itemCopyDeps, stdout, stderr io.Writ
 	// is what HAPPENED, and the server's contract is that they agree on
 	// every successful response. When they do not, the requested operation
 	// did not fully complete, and exit 0 would tell automation that a MOVE
-	// finished while the source is still sitting there (Codex round 8).
+	// finished while the source is still sitting there.
 	//
 	// This is the opposite call from the write-failure branch above, and the
 	// difference is the whole distinction: there, the operation succeeded
@@ -2533,8 +2533,7 @@ func renderItemCopyPreflight(out io.Writer, p *cli.ItemCopyPreflight) error {
 	// …with ONE exception. `children orphaned by the move` is complete on a
 	// plain copy whatever is hidden: a copy archives nothing, so no child —
 	// visible or not — can be orphaned by it, and `no` is the whole truth.
-	// Qualifying it there would invent a risk the operation does not carry
-	// (Codex round 5).
+	// Qualifying it there would invent a risk the operation does not carry.
 	orphanRel := ""
 	if warn.RelationshipsPartial && p.ArchiveSource {
 		orphanRel = rel
@@ -2564,7 +2563,7 @@ func renderItemCopyPreflight(out io.Writer, p *cli.ItemCopyPreflight) error {
 			// with no hidden child anywhere. Asserting "those hidden
 			// children" would put a fact in the user's head the server
 			// never stated — the same class of mistake as the flat "no"
-			// this whole block exists to replace (Codex round 2).
+			// this whole block exists to replace.
 			fmt.Fprintf(w, "  Any of them that are children will be orphaned by this move, unlisted.\n")
 		}
 		fmt.Fprintf(w, "  Ask someone with full access to the workspace to review before you continue.\n")
@@ -2622,7 +2621,7 @@ func renderItemCopyPreflight(out io.Writer, p *cli.ItemCopyPreflight) error {
 // failures is the kind of thing that gets copied into one that matters.
 // overrides is what the user actually supplied, so the refusal can tell the
 // two cases apart. They read completely differently and demand different
-// next actions (Codex round 8): a field nobody supplied needs a --field
+// next actions: a field nobody supplied needs a --field
 // added, whereas a field the user DID supply and the destination rejected
 // needs a DIFFERENT value — and telling that user "no --field supplied one"
 // would send them looking for a bug in their own command line.
@@ -2704,7 +2703,7 @@ func renderItemCopyNeedsValue(out io.Writer, p *cli.ItemCopyPreflight, overrides
 	// rejected by this command's own parser, and the server has nothing to
 	// match it against either. Printing `--field =<value>` would hand the
 	// user a command that cannot work, so say what is actually wrong
-	// instead (Codex round 6). Empty keys are not currently rejected by
+	// instead. Empty keys are not currently rejected by
 	// collection-schema validation, so this is reachable.
 	unnamed := 0
 	unfillable := itemCopyTally(p.Fields.NeedsValue).UnavailableTarget
@@ -2768,10 +2767,10 @@ func renderItemCopyNeedsValue(out io.Writer, p *cli.ItemCopyPreflight, overrides
 //
 // ONE pass, ONE shape, because the alternative was measured. This started as a
 // single count, grew a second for the other reason a row cannot be supplied,
-// then a phrase function, and each addition falsified the previous round's
-// wording somewhere else: four review rounds, and every finding but the first
+// then a phrase function, and each addition falsified the previous
+// wording somewhere else: nearly every defect
 // lived in this layer while the server half stayed clean. That distribution is
-// the finding — not the individual bugs, which were each small and each real.
+// the lesson — not the individual bugs, which were each small and each real.
 //
 // So the branching is gone. Callers ask for the tally and read the fields they
 // need; there is no second definition of "unfillable" to drift from the first,
@@ -2783,8 +2782,8 @@ type itemCopyFieldTally struct {
 	// use — deleted, or unreadable (IDEA-2899).
 	UnavailableTarget int
 	// EmptyKey is rows the destination reported with no key. `--field =value`
-	// is rejected by this command's own parser, so these have been unfillable
-	// since Codex round 6; only the detailed render knew it.
+	// is rejected by this command's own parser, so these are unfillable;
+	// only the detailed render knew it.
 	EmptyKey int
 	// Unfillable is rows carrying EITHER fault. NOT the sum: one row can carry
 	// BOTH — a relation with an empty key whose target is also unavailable —
@@ -3003,7 +3002,7 @@ func itemCopyList(items []string) string {
 // own kind (BUG-3448): a playbook's block said "Convention Metadata". The two
 // system kinds that carry this metadata have exact labels; any other
 // collection is named as it is, because guessing at plurals mangles real
-// names ("Analysis", "Status"; codex r1).
+// names ("Analysis", "Status").
 func metadataKindLabel(collectionSlug, collectionName string) string {
 	switch collectionSlug {
 	case "conventions":
@@ -4252,7 +4251,7 @@ Items can be referenced by issue ID (e.g. TASK-5) or slug.`,
 				Applied map[string]any `json:"applied"`
 			}
 			// updateFailure carries the structured server error per row
-			// so MCP-driven agents see code + details (IDEA-1494 R3 P2).
+			// so MCP-driven agents see code + details (IDEA-1494).
 			// `Error` stays as the human-readable message for backward
 			// compatibility with non-MCP CLI consumers; `Code` and
 			// `Details` populate when the server returned a structured
@@ -4312,7 +4311,7 @@ Items can be referenced by issue ID (e.g. TASK-5) or slug.`,
 
 				_, err = client.UpdateItem(ws, slug, input)
 				if err != nil {
-					// IDEA-1494 R3 P2: preserve the structured server
+					// IDEA-1494: preserve the structured server
 					// error per row so the JSON envelope (and any
 					// MCP-driven agent reading it) sees code +
 					// details — not just a flattened string. The
@@ -4680,7 +4679,7 @@ func warnStaleEditSeed(item *models.Item) {
 // Stderr for warnUndeclaredFields's reason: --format json output is piped into
 // scripts and a warning on stdout would corrupt the JSON they parse.
 //
-// It deliberately states no duration, and BUG-3000's day-64 measurement is why
+// It deliberately states no duration, and BUG-3000's measurement is why
 // that must stay: the flush is NOT guaranteed to land at all. The tab flushes it,
 // or, once the item's room has closed, the server's op-log recovery does
 // (TASK-2198 U4); that recovery can fail, and an operator can turn it off

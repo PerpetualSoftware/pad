@@ -1,7 +1,7 @@
 <script module lang="ts">
 	/**
 	 * Monotonic token for the create/import operation in flight, MODULE-SCOPED
-	 * rather than per instance (BUG-2991, codex round 10).
+	 * rather than per instance (BUG-2991).
 	 *
 	 * An instance-local counter fences one component's own state and nothing
 	 * else, and this modal is destroyed and remounted routinely — a logout, a
@@ -152,8 +152,8 @@
 			importOutcome = null;
 			importAbort = null;
 			// Load templates
-			// Guarded on `loadingTemplates` as well as emptiness (codex round
-			// 5): close-and-reopen, or a destroy-and-remount, before the first
+			// Guarded on `loadingTemplates` as well as emptiness:
+			// close-and-reopen, or a destroy-and-remount, before the first
 			// response lands would otherwise issue a second request while the
 			// first is still in flight.
 			if (templates.length === 0 && !loadingTemplates) {
@@ -171,7 +171,7 @@
 		// to stop; the import finishes and appears in the workspace list.
 		importAbort?.abort();
 		// Closing ends the import's operation too, so an aborted upload does
-		// not go on polling for its outcome behind a closed dialog (codex r1).
+		// not go on polling for its outcome behind a closed dialog.
 		// The success path calls close() after its last fenced side effect,
 		// and the reopen reset below advances the token again for a close
 		// that bypasses this function (the store, directly).
@@ -183,7 +183,7 @@
 		importAbort?.abort();
 	}
 
-	// A DRAFT IS PER-USER TOO (codex round 7). The operations are fenced, but a
+	// A DRAFT IS PER-USER TOO. The operations are fenced, but a
 	// modal left open by one user kept their typed workspace name, description,
 	// chosen template and selected import FILE on screen for whoever signed in
 	// next — visible, and submittable by them. Closing is the whole fix,
@@ -195,8 +195,8 @@
 	// This instance's own lifetime. A module-scoped token says whether a NEWER
 	// operation has superseded this one; it cannot say whether the instance that
 	// started this one still exists, because a remount that starts nothing
-	// advances no counter (codex round 10, and the first version of that fix
-	// missed exactly this). A destroyed instance's continuation must not fire a
+	// advances no counter (an earlier fix missed exactly this). A destroyed instance's continuation
+	// must not fire a
 	// callback, a toast, a close or a navigation on behalf of a component
 	// nobody is looking at.
 	let alive = true;
@@ -227,7 +227,7 @@
 	async function createWorkspace() {
 		if (!newName.trim()) return;
 		// Captured for the FAILURE path only — the success path is fenced in the
-		// store, which returns null when the user changed (codex round 7).
+		// store, which returns null when the user changed.
 		const createUser = authStore.userId;
 		const myOp = ++opSeq;
 		try {
@@ -243,13 +243,13 @@
 			// navigation nobody asked for, and the server denies them anyway.
 			// No toast either — nothing failed for the user in front of us, and
 			// they did not start this create.
-			// Not the operation anyone is waiting on any more (codex round 10) —
+			// Not the operation anyone is waiting on any more —
 			// a later create/import, or a remount that started one, has
 			// superseded this. Silent return: no callback, no navigation, no
 			// close.
 			if (!alive || myOp !== opSeq) return;
 			if (!ws) {
-				// RETURN WITHOUT CLOSING (codex round 8). `close()` is global —
+				// RETURN WITHOUT CLOSING. `close()` is global —
 				// it writes `uiStore.createWorkspaceOpen` — and by the time we
 				// are here the identity listener has already closed this modal.
 				// If the new user has since opened a FRESH one, closing again
@@ -258,7 +258,7 @@
 				return;
 			}
 			// Creating a workspace is an explicit choice to work in it, so it
-			// opens as a KEPT tab (PLAN-3002 U3, lead ruling on TASK-3274).
+			// opens as a KEPT tab (PLAN-3002 U3, TASK-3274).
 			// Client-side on purpose: a CLI or MCP create stays out of the open
 			// set. Awaited so the bar shows the tab on arrival; a failed open
 			// still navigates. A new await, so the per-await fence again.
@@ -273,8 +273,8 @@
 			close();
 			goto(`/${ws.owner_username}/${ws.slug}`);
 		} catch (err: unknown) {
-			// Same fence on the failure path as on the success path (codex
-			// round 7). A create that rejects after the signed-in user changed
+			// Same fence on the failure path as on the success path.
+			// A create that rejects after the signed-in user changed
 			// reported the previous session's failure to whoever is here now,
 			// and the plan-limit branch is worse than the generic one — it
 			// would tell B their plan is full because A's was.
@@ -294,7 +294,7 @@
 	async function importWorkspace() {
 		if (!importFile) return;
 		// OPERATION TOKEN, because `importing` is COMPONENT state and the
-		// component outlives the operation (codex round 9). A stale import's
+		// component outlives the operation. A stale import's
 		// `finally` used to clear it unconditionally, so: A starts an import,
 		// identity changes, B opens the modal and starts their own — and when
 		// A's promise settles it re-enabled B's button mid-upload, offering
@@ -303,8 +303,8 @@
 		// shape and no identity change to notice.
 		const myOp = ++opSeq;
 		importing = true;
-		// Captured before the upload, checked after it (BUG-2991, codex round
-		// 4). Import is `create`'s sibling — it mints a workspace through the
+		// Captured before the upload, checked after it (BUG-2991).
+		// Import is `create`'s sibling — it mints a workspace through the
 		// same server path — and it had none of the same fencing: an import
 		// issued by user A that returns after B has signed in fired the Phase F
 		// hook for B, toasted A's workspace name at them, and navigated them to
@@ -339,13 +339,13 @@
 				}
 			});
 			if (!alive || myOp !== opSeq) return;
-			// Return without closing — see the create path for why (codex round
-			// 8): the identity listener has already closed this modal, and a
+			// Return without closing — see the create path for why:
+			// the identity listener has already closed this modal, and a
 			// second `close()` would dismiss the fresh one the new user may
 			// have opened in the meantime.
 			if (authStore.userId !== callUser) return;
 			await workspaceStore.loadAll();
-			// CHECKED AGAIN AFTER `loadAll` (codex round 5). One check after the
+			// CHECKED AGAIN AFTER `loadAll`. One check after the
 			// upload is not enough: `loadAll` is a second await, and a swap
 			// landing inside it put the callback, the toast and the navigation
 			// back in the new user's session. The rule is per-AWAIT, not
@@ -396,7 +396,7 @@
 			if (drops) toastStore.show(drops, 'info', ERROR_DURATION);
 			goto(`/${ws.owner_username}/${ws.slug}`);
 		} catch (err) {
-			// The FAILURE path needs the same fence (codex round 7). An import
+			// The FAILURE path needs the same fence. An import
 			// that rejects after the signed-in user changed reported A's error
 			// to B — an error for an operation B never started, naming a file
 			// they never chose. The comment above claimed the fence covered
@@ -442,14 +442,14 @@
 	// for an import whose 201 never arrived.
 	async function openImported(view: ImportOutcomeView) {
 		if (view.kind !== 'complete' && view.kind !== 'kept') return;
-		// Fenced like every other post-await side effect here (codex r1): a
+		// Fenced like every other post-await side effect here: a
 		// user change, an unmount or a fresh open during the tab write must
 		// not close that dialog or navigate.
 		const myOp = opSeq;
 		const callUser = authStore.userId;
 		await tabsStore.open(view.slug).catch(() => {});
 		if (!alive || myOp !== opSeq || authStore.userId !== callUser) return;
-		// Closed while the tab write was in flight (codex r2): `importing` is
+		// Closed while the tab write was in flight: `importing` is
 		// already false here, so close() did not advance the token, and the
 		// user who dismissed the dialog asked for no navigation. A reopen in
 		// between advanced it through the open reset.

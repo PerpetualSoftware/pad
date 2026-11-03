@@ -17,7 +17,7 @@ import {
  * MECHANISMS, and the jsdom unit suite does not inject component styles at all —
  * `getComputedStyle` there returns the engine default for every element, so an
  * assertion like "the layer's pointer-events is none" cannot fail and is not an
- * instrument. Two such assertions were written during codex R1 and deleted for
+ * instrument. Two such assertions were written and deleted for
  * exactly that reason.
  *
  * What lives here, and the escape each one closes:
@@ -102,7 +102,7 @@ test.describe('attachment viewer — text preview (IDEA-2712)', () => {
 		await openMarkdown(page, fixture, request, 'Text preview scroll');
 		const card = page.locator(TEXT_CARD);
 
-		// THE RIGHT SCROLLER (codex R2 #5). The app does not scroll the window —
+		// THE RIGHT SCROLLER. The app does not scroll the window —
 		// `.main-content` is the `overflow-y: auto` element (`+layout.svelte`), so
 		// asserting `window.scrollY` would have held still whatever the wheel
 		// handler did, and the leak this test exists for would have passed. Read
@@ -142,7 +142,7 @@ test.describe('attachment viewer — text preview (IDEA-2712)', () => {
 		await openMarkdown(page, fixture, request, 'Text preview selection');
 
 		// A `Range` + `addRange()` selects text even under `user-select: none`
-		// (codex R2 #4) — the first version of this test did exactly that and
+		// — the first version of this test did exactly that and
 		// could not fail. The computed style IS the mechanism, and unlike jsdom a
 		// real engine actually applies it, so reading it here is a measurement
 		// rather than an engine default.

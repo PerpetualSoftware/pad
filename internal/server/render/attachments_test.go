@@ -518,7 +518,7 @@ func TestExtractAttachmentRefs_None(t *testing.T) {
 // the Go and TS renderers must emit byte-identical chips, images and missing
 // placeholders (TASK-4195).
 //
-// Scope of the URL half (TASK-4195 r3-M1): Go builds download URLs with
+// Scope of the URL half (TASK-4195): Go builds download URLs with
 // url.PathEscape and TS with encodeURIComponent, which differ on !'()* and
 // $&+=:@. The fixture pins parity only for UUID attachment ids (store newID)
 // and workspace slugs minted since BUG-3769 ([a-z0-9-], where both encoders are

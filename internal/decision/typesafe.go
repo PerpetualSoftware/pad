@@ -327,7 +327,7 @@ func fromWire(w wireAnswer) Answer {
 // checkAnswer refuses an answer that contradicts the question it answers.
 //
 // The population is every (kind, member) cell of [Answer], enumerated in
-// the table on TASK-3116's trail (review round 2). Per kind:
+// the table on TASK-3116's trail. Per kind:
 //
 //   - every kind: Type must equal the question's kind.
 //   - choice: choice PRESENT and one of the options sent; confidence PRESENT
@@ -459,9 +459,9 @@ func (p *typesafeProvider) fitState(state any, questions map[string]wireQuestion
 	}
 	// A string state that does not fit, with fewer than two bytes of room:
 	// not even "" fits, and returning it would still send a request one or
-	// two bytes over (review round 3). This sits AFTER the string check on
+	// two bytes over. This sits AFTER the string check on
 	// purpose — a structured state is never cut, and one as small as `0`
-	// fits in a single byte (review round 4).
+	// fits in a single byte.
 	if remaining < 2 {
 		return nil, false, fmt.Errorf("decision: no room for the state beside the questions: %d byte(s) left, "+
 			"and even an empty string needs 2: %w", remaining, ErrRequestTooLarge)

@@ -260,8 +260,8 @@ func TestPadItemUpdate_FieldsNullRefused(t *testing.T) {
 // THIS TEST EXISTS BECAUSE THE FIRST FIX PUT THE REFUSAL IN THE WRONG PLACE.
 // It went into BuildCLIArgs, which env.Dispatch runs for BOTH transports, so
 // it blocked the remote door too and the native handling was never reached —
-// codex round 2 [P1], and a binding I had tested at the component (mapItemCreate
-// directly) rather than through dispatch. The refusal now lives in
+// A binding tested at the component (mapItemCreate
+// directly) rather than through dispatch was not enough. The refusal now lives in
 // ExecDispatcher, the door that actually cannot encode a structure, and this
 // asserts that everything else gets through.
 func TestPadItemUpdate_FieldsNestedValuesReachTheDispatcher(t *testing.T) {
@@ -378,8 +378,8 @@ func TestPadItemUpdate_CompatIDParamsStillAccepted(t *testing.T) {
 	}
 }
 
-// TestPadItemExport_AgentOutputPassesStrictGate covers the gap the
-// PR #1159 round-1 review found: the strict input gate runs BEFORE the
+// TestPadItemExport_AgentOutputPassesStrictGate covers the gap that
+// the strict input gate runs BEFORE the
 // action handlers, and `output` is neither schema-declared nor (was)
 // compat-listed — so an agent-supplied output path died with "unknown
 // parameter(s): output" before actionItemExport could override it to
@@ -410,7 +410,7 @@ func TestPadItemExport_AgentOutputPassesStrictGate(t *testing.T) {
 
 // TestPadItemUpdate_FieldsEmptyKeyRefused: `fields: {"": "v"}` used to
 // pass the '='-in-key check and emit a malformed `field: ["=v"]` entry
-// (PR #1159 round-1 review, bug 2). Empty keys are refused like every
+// (bug 2). Empty keys are refused like every
 // other shape error.
 func TestPadItemUpdate_FieldsEmptyKeyRefused(t *testing.T) {
 	disp, msg, isErr := dispatchPadItem(t, map[string]any{
@@ -429,8 +429,7 @@ func TestPadItemUpdate_FieldsEmptyKeyRefused(t *testing.T) {
 	}
 }
 
-// A structured `plan` or `parent` must be refused before dispatch (BUG-2850,
-// codex round 3).
+// A structured `plan` or `parent` must be refused before dispatch (BUG-2850).
 //
 // These keys are hierarchy DIRECTIVES to the server, not ordinary fields:
 // extractParentLink reads any present non-string value as one, drops the key,
@@ -475,7 +474,7 @@ func TestPadItemUpdate_StringHierarchyKeyStillAccepted(t *testing.T) {
 	}
 }
 
-// The guards must apply to PROMOTED keys too (BUG-2850, codex round 4).
+// The guards must apply to PROMOTED keys too (BUG-2850).
 //
 // `tags`, `parent`, `status` and friends are handled by an earlier branch that
 // promotes them onto dedicated top-level params. The null and hierarchy guards
@@ -526,7 +525,7 @@ func TestPadItemUpdate_PromotedKeysStillPromote(t *testing.T) {
 
 // TestPadItemUpdate_FieldArrayConflictAppliesToPromotedKeys: the
 // `fields` vs `field: ["k=v"]` conflict guard has to cover PROMOTED keys
-// too (codex round 5, BUG-2850).
+// too (BUG-2850).
 //
 // TestPadItemUpdate_FieldsConflictInFieldArrayRefused above proves the
 // guard for `effort` — a key that takes the GENERIC path, where the
@@ -595,18 +594,16 @@ func TestPadItemUpdate_FieldArrayEqualDuplicateOnPromotedKeyAllowed(t *testing.T
 	}
 }
 
-// --- codex round 6 ---
-
 // TestPadItemUpdate_HierarchyAliasConflictRefused: `parent` and `plan` are
 // ONE directive, so a conflict between them has to refuse even though the key
-// names differ (BUG-2850, codex round 6).
+// names differ (BUG-2850).
 //
 // extractParentLink (handlers_items.go) resolves the link with
 // `for _, key := range []string{"parent", "plan"}` and no early exit, so when
 // both arrive the LATER key wins. Every conflict guard in reshapeItemFields
 // matched on the SAME key name, so `fields:{"parent":"PLAN-12"}` with
 // `field:["plan=PLAN-9"]` passed every check and then relinked the item to
-// PLAN-9. Same alias bypass BUG-2078's round-1 review found on clear_parent,
+// PLAN-9. Same alias bypass BUG-2078 closed on clear_parent,
 // reached through a different door — which is why this pins both directions
 // and the top-level param as well.
 func TestPadItemUpdate_HierarchyAliasConflictRefused(t *testing.T) {
@@ -669,7 +666,7 @@ func TestPadItemUpdate_LoneHierarchyKeyStillAccepted(t *testing.T) {
 }
 
 // TestPadItemUpdate_FieldArrayKeysNormalizedForConflicts: the conflict index
-// must be normalized the way the DOOR normalizes (BUG-2850, codex round 6).
+// must be normalized the way the DOOR normalizes (BUG-2850).
 //
 // ingestFieldKVP (dispatch_http.go) USED TO TrimSpace both halves of a `key=value`
 // entry before writing it. parseFieldArray indexed the raw halves, so the
@@ -694,7 +691,7 @@ func TestPadItemUpdate_FieldArrayKeysNormalizedForConflicts(t *testing.T) {
 		}
 	})
 	// REPLACES the "padded value is not a conflict" leg of this test
-	// (BUG-2850, codex round 6). That leg asserted success for
+	// (BUG-2850). That leg asserted success for
 	// `field:["status= done"]` alongside `fields:{"status":"done"}`, and it
 	// was right while the remote door TRIMMED values — the two sources then
 	// stated the same thing, and refusing would have refused a call that
@@ -732,7 +729,7 @@ func TestPadItemUpdate_FieldArrayKeysNormalizedForConflicts(t *testing.T) {
 
 // TestPadItemUpdate_EqualPromotedDuplicateAppliesOnce: an equal duplicate on a
 // promoted key must be written ONCE, through its dedicated param — the array
-// entry has to be removed (BUG-2850, codex round 6).
+// entry has to be removed (BUG-2850).
 //
 // Leaving it produced two writes of one value by two mechanisms: `role` was
 // resolved to agent_role_id AND written as a literal `role` key into the
@@ -778,20 +775,17 @@ func TestPadItemUpdate_EqualDuplicateDropKeepsOtherFieldEntries(t *testing.T) {
 	}
 }
 
-// --- codex round 7 ---
-
 // TestPadItemUpdate_HierarchyAliasAmbiguityRefusedWithoutFieldsObject: the
 // alias guard must fire whichever doors the two hierarchy keys arrive
-// through, INCLUDING when no `fields` object is involved at all (BUG-2850,
-// codex round 7).
+// through, INCLUDING when no `fields` object is involved at all (BUG-2850).
 //
-// Round 6 put the guard inside reshapeItemFields' per-key loop, and
+// The guard first lived inside reshapeItemFields' per-key loop, and
 // reshapeItemFields returns early when `fields` is absent — so
 // `field:["parent=A","plan=B"]` walked straight past it and
 // extractParentLink's no-early-exit loop applied `plan` while the caller had
 // every reason to think `parent` was what they set. A guard a caller can step
 // around by moving the same two values into a different param is not a guard,
-// which is this unit's recurring finding stated once more.
+// the same failure shape seen repeatedly in this area.
 //
 // The pure-`field` form predates BUG-2850, so this closes a pre-existing
 // silent mis-write rather than a regression — see the note on
@@ -855,12 +849,12 @@ func TestPadItemUpdate_SingleHierarchyKeyInFieldArrayStillAccepted(t *testing.T)
 	}
 }
 
-// TestPadItemUpdate_PaddedEqualDuplicateIsCanonicalized (BUG-2850, codex
-// round 7) required a padded equal duplicate to be RE-EMITTED in canonical
+// TestPadItemUpdate_PaddedEqualDuplicateIsCanonicalized (BUG-2850) required a
+// padded equal duplicate to be RE-EMITTED in canonical
 // form rather than retained raw. It is refused outright now — see the
 // replacement below for why.
 //
-// Round 6 normalized the conflict INDEX so ` effort=l` matches
+// The conflict INDEX is normalized so ` effort=l` matches
 // `fields:{"effort":"l"}` — correct, and it stopped the padded-key bypass.
 // But the raw entry stayed in `field`, and the CLI door does not trim: stdio
 // would store an undeclared `" effort"` key and leave `effort` untouched. The
@@ -871,7 +865,7 @@ func TestPadItemUpdate_SingleHierarchyKeyInFieldArrayStillAccepted(t *testing.T)
 // succeeded before the fix too — it just wrote the wrong key.
 // REPLACES the "padded entries still caught" case of
 // TestPadItemUpdate_HierarchyAliasAmbiguityRefusedWithoutFieldsObject
-// (BUG-2850, codex round 7). The OUTCOME it asserted survives — the call is
+// (BUG-2850). The OUTCOME it asserted survives — the call is
 // refused and nothing dispatches — but the reason arrives earlier now: a
 // padded key is refused as a padded key (BUG-2870) before the hierarchy-alias
 // pass gets to observe that `parent` and `plan` were both set. So the
@@ -898,8 +892,8 @@ func TestPadItemUpdate_PaddedHierarchyEntriesRefusedEarlier(t *testing.T) {
 	}
 }
 
-// REPLACES TestPadItemUpdate_PaddedEqualDuplicateIsCanonicalized (BUG-2850,
-// codex round 8). That test asserted a padded entry equal to its `fields`
+// REPLACES TestPadItemUpdate_PaddedEqualDuplicateIsCanonicalized (BUG-2850).
+// That test asserted a padded entry equal to its `fields`
 // twin was silently REWRITTEN to canonical form and emitted once, which was
 // the best available answer while one door trimmed and the other did not:
 // canonicalizing was how the two doors were made to write the same key.
@@ -978,25 +972,23 @@ func TestPadItemUpdate_CanonicalEqualDuplicateIsUntouched(t *testing.T) {
 	}
 }
 
-// --- codex round 8 ---
-
 // TestPadItemUpdate_MixedCanonicalAndPaddedDuplicatesCollapse: one canonical
-// entry does not make its padded twin harmless (BUG-2850, codex round 8).
+// entry does not make its padded twin harmless (BUG-2850).
 //
-// Round 7's canonicalization asked whether a canonical entry was PRESENT and
+// The earlier canonicalization asked whether a canonical entry was PRESENT and
 // left the array alone if one was — so `field:["effort=l", " effort=l"]` kept
 // the padded sibling, and the doors then disagreed: HTTP trimmed and wrote
 // `effort`, the CLI does not and writes an undeclared `" effort"`. Transport
 // divergence from a call both doors accept, which is the shape this whole
 // unit is about.
 //
-// Round 8's answer was to re-emit the key ONCE, canonically, on the grounds
+// The first remedy was to re-emit the key ONCE, canonically, on the grounds
 // that collapsing the pair was not lossy — parseFieldArray already indexed
 // two entries for one key to a single value, so they were never two writes.
-// BUG-2870 refuses the padded twin instead; the finding it came from is
+// BUG-2870 refuses the padded twin instead; the problem is
 // unchanged, only the remedy.
 // REPLACES TestPadItemUpdate_MixedCanonicalAndPaddedDuplicatesCollapse
-// (BUG-2850, codex round 8). That test asserted `field:["effort=l",
+// (BUG-2850). That test asserted `field:["effort=l",
 // " effort=l"]` COLLAPSED to one canonical entry, which was the right answer
 // while HTTP trimmed the padded twin to `effort` and the CLI stored it as an
 // undeclared `" effort"`: collapsing was how the two doors were forced to
@@ -1005,7 +997,7 @@ func TestPadItemUpdate_CanonicalEqualDuplicateIsUntouched(t *testing.T) {
 // Both doors refuse the padded twin now, so there is no divergence left to
 // collapse — and a caller who wrote the same key twice, once padded, is far
 // likelier to have made a mistake than to have meant a silent de-duplication.
-// The round-8 finding it came from is unaffected: one canonical entry still
+// The padded-twin problem is unaffected: one canonical entry still
 // does not make its padded sibling harmless. It is just refused rather than
 // swallowed.
 func TestPadItemUpdate_MixedCanonicalAndPaddedDuplicatesRefused(t *testing.T) {
@@ -1026,9 +1018,7 @@ func TestPadItemUpdate_MixedCanonicalAndPaddedDuplicatesRefused(t *testing.T) {
 	}
 }
 
-// --- codex round 9 ---
-
-// TestPadItemUpdate_BothAliasesInOneFieldsObject: the round-9 P1 was REFUTED —
+// TestPadItemUpdate_BothAliasesInOneFieldsObject: a suspected gap was REFUTED —
 // this pair was already refused — but it was refused by ACCIDENT, and the
 // accident is what this pins against.
 //
@@ -1064,7 +1054,7 @@ func TestPadItemUpdate_BothAliasesInOneFieldsObject(t *testing.T) {
 }
 
 // ...and the guard must not depend on `parent` being a promoted key. This is
-// the mutation the round-9 finding would have become real through: drop
+// the mutation the both-aliases gap would have become real through: drop
 // `parent` from padItemPromotedFieldKeys and the old out[]-based check goes
 // silent, because nothing writes out["parent"] any more.
 func TestPadItemUpdate_AliasGuardDoesNotDependOnPromotion(t *testing.T) {
@@ -1088,14 +1078,14 @@ func TestPadItemUpdate_AliasGuardDoesNotDependOnPromotion(t *testing.T) {
 
 // TestPadItemUpdate_NonStringIdentityRefRefused: `assign` and `role` name a
 // person or a role, so a number is refused at the door-independent layer
-// (BUG-2850, codex round 9 P2).
+// (BUG-2850).
 //
 // The two doors disagreed about a numeric value: the HTTP dispatcher's
 // `rawAssign.(string)` turns it into "" and treats it as NOT PROVIDED —
 // silently dropping the write — while stdio emits `--assign 123` and the CLI
 // fails loudly on the lookup. Same call, one door silent and one red.
 //
-// This does NOT walk back round 6's decision to accept non-string promoted
+// This does NOT walk back the earlier decision to accept non-string promoted
 // values in general; the control leg below is that decision, still standing.
 func TestPadItemUpdate_NonStringIdentityRefRefused(t *testing.T) {
 	for _, key := range []string{"assign", "role"} {
@@ -1119,7 +1109,7 @@ func TestPadItemUpdate_NonStringIdentityRefRefused(t *testing.T) {
 }
 
 // ...and a numeric value on a NON-identity promoted key is still accepted —
-// round 6's fix, which a blanket "promoted keys must be strings" rule would
+// an earlier fix, which a blanket "promoted keys must be strings" rule would
 // have silently undone. `priority` can legitimately be a number in a custom
 // schema, and create has always passed such values through.
 func TestPadItemUpdate_NonStringPriorityStillAccepted(t *testing.T) {
@@ -1153,11 +1143,9 @@ func TestPadItemUpdate_StringIdentityRefStillAccepted(t *testing.T) {
 	}
 }
 
-// --- codex round 10 ---
-
 // TestPadItemUpdate_EmptyParentParamIsNotAnAliasConflict: an empty top-level
 // `parent` is NOT PROVIDED, so it must not collide with `fields.plan`
-// (BUG-2850, codex round 10).
+// (BUG-2850).
 //
 // Every declared string param on this tool follows that convention — it is
 // why promotedParamValue treats "" as absent and why `assign: ""` is
@@ -1184,10 +1172,10 @@ func TestPadItemUpdate_EmptyParentParamIsNotAnAliasConflict(t *testing.T) {
 // same thing. `field:["parent="]` and `fields:{"parent":""}` are the
 // documented CLEAR signal (BUG-2013 / BUG-2078) — an explicit instruction
 // that happens to look like a blank param. If this ever goes green, the
-// round-10 fix has been over-applied and a clear-plus-set pair is resolving
+// empty-hierarchy-param fix has been over-applied and a clear-plus-set pair is resolving
 // silently instead of refusing.
 func TestPadItemUpdate_EmptyClearFormsStillConflictWithTheAlias(t *testing.T) {
-	// NOTE (round 11): the `fields:{"parent":""}` half of this case moved out
+	// NOTE: the `fields:{"parent":""}` half of this case moved out
 	// to TestPadItemUpdate_EmptyHierarchyValueInFieldsRefused, because it now
 	// refuses for a DIFFERENT reason — an empty hierarchy value inside
 	// `fields` is refused outright as a silent no-op, before any alias check
@@ -1218,11 +1206,8 @@ func TestPadItemUpdate_EmptyClearFormsStillConflictWithTheAlias(t *testing.T) {
 	}
 }
 
-// --- codex round 11 ---
-
 // TestPadItemUpdate_EmptyHierarchyValueInFieldsRefused: an empty hierarchy
-// value inside `fields` was a SILENT NO-OP, so it is refused (BUG-2850,
-// codex round 11).
+// value inside `fields` was a SILENT NO-OP, so it is refused (BUG-2850).
 //
 // `fields:{"parent":""}` promotes onto the top-level `parent` param, where
 // both doors treat empty as NOT PROVIDED — promotedParamValue remotely, the
@@ -1275,7 +1260,7 @@ func TestPadItemUpdate_FieldArrayClearStillDispatches(t *testing.T) {
 }
 
 // TestPadItemUpdate_CompatIDConflictRefused: the v0.16 compat ID params
-// conflict with `fields` like any other key (BUG-2850, codex round 11).
+// conflict with `fields` like any other key (BUG-2850).
 //
 // `assigned_user_id` / `agent_role_id` are accepted at the top level as a
 // documented, never-schema-declared compat form — which is exactly why they
@@ -1324,17 +1309,15 @@ func TestPadItemUpdate_CompatIDEqualDuplicateCollapses(t *testing.T) {
 	}
 }
 
-// --- codex round 12 ---
-
 // TestPadItemUpdate_BlankTopLevelParamDoesNotBlockFields: a zero-filled
 // optional param must not refuse the `fields` answer to the same question
-// (BUG-2850, codex round 12).
+// (BUG-2850).
 //
-// The reviewer named `status`. The probe drove every key that can arrive at
+// `status` was the named case. The probe drove every key that can arrive at
 // the top level and all six promoted ones behaved identically, so this is the
-// POPULATION rather than the instance (CONVE-18). Round 10 fixed exactly this
-// for the hierarchy keys and I did not ask whether the same reasoning covered
-// their siblings — it did.
+// POPULATION rather than the instance (CONVE-18). The hierarchy keys
+// were already fixed this way, and the same reasoning covers their
+// siblings.
 //
 // `""` is "not supplied" everywhere else on this surface: promotedParamValue
 // treats it as absent, the CLI's `status != ""` guards do, `assign: ""` is
@@ -1375,8 +1358,8 @@ func TestPadItemUpdate_BlankTopLevelParamDoesNotBlockFields(t *testing.T) {
 // semantics (dispatch_http_advanced.go forwards "" verbatim for exactly these
 // two). So a blank there IS an effective directive and still conflicts.
 //
-// This is the leg that stops the round-12 fix being applied uniformly. Had I
-// taken the finding at face value across every top-level key, a clear would
+// This is the leg that stops the blank-param fix being applied uniformly. Taking
+// that rule at face value across every top-level key, a clear would
 // have been silently discarded in favour of the `fields` value — turning a
 // spurious refusal into a silent wrong write, which is the worse trade.
 func TestPadItemUpdate_BlankCompatIDIsAClearAndStillConflicts(t *testing.T) {
@@ -1398,20 +1381,18 @@ func TestPadItemUpdate_BlankCompatIDIsAClearAndStillConflicts(t *testing.T) {
 	}
 }
 
-// --- codex round 13 + the restructure ---
-
 // TestPadItemUpdate_SemanticAliasPairsRefused: `assign`/`assigned_user_id`
 // and `role`/`agent_role_id` are two names for one target, exactly like
-// `parent`/`plan` (BUG-2850, codex round 13).
+// `parent`/`plan` (BUG-2850).
 //
-// None of the five guards that existed at round 12 compared them: the alias
+// None of the five guards that existed before the restructure compared them: the alias
 // guard knew only about hierarchy, the compat guard only about same-name
 // collisions. So `assigned_user_id:"B"` with `fields:{"assign":"A"}` was
 // accepted and the doors then disagreed — resolveAssignName gives the
 // explicit ID precedence over HTTP, while BuildCLIArgs drops the compat ID
 // and emits `--assign A`. One call, two different people assigned.
 //
-// This drove the finding's POPULATION rather than its example: both
+// This drove the whole POPULATION rather than one example: both
 // directions of both pairs, plus the both-inside-`fields` and
 // field-array-vs-`fields` shapes.
 func TestPadItemUpdate_SemanticAliasPairsRefused(t *testing.T) {
@@ -1453,7 +1434,7 @@ func TestPadItemUpdate_SemanticAliasPairsRefused(t *testing.T) {
 }
 
 // TestFieldConflictProperty_AliasGroupsRefuseAcrossEverySourcePair is the
-// PROPERTY the case tests above are instances of (lead ruling after round 13).
+// PROPERTY the case tests above are instances of (the whole population, not one example).
 //
 // The case tests are kept as regressions, but they are examples, and every
 // round of this unit found the example that nobody had written. The property
@@ -1502,16 +1483,16 @@ func TestFieldConflictProperty_AliasGroupsRefuseAcrossEverySourcePair(t *testing
 						if sa == sb {
 							continue
 						}
-						// NO SKIP for the no-`fields` pairs any more (codex
-						// round 14). The property was written when the
+						// NO SKIP for the no-`fields` pairs any more. The
+						// property was written when the
 						// canonical pass ran only from inside
 						// reshapeItemFields, so param-vs-array combinations
 						// were excluded as out of scope — and that exclusion
-						// is exactly where the round-14 defect lived. Alias
+						// is exactly where the no-`fields` alias defect lived. Alias
 						// collisions now refuse whatever the sources, so the
 						// property covers every pair.
 						//
-						// The round-7 boundary is untouched and is about
+						// The same-name boundary is untouched and is about
 						// SAME-NAME duplicates, which this property never
 						// drives: last-write-wins is defensible when both
 						// sources name one key, and indefensible when two
@@ -1561,18 +1542,15 @@ func TestFieldConflictProperty_AliasGroupsRefuseAcrossEverySourcePair(t *testing
 	t.Logf("property held over %d source×alias combinations", tried)
 }
 
-// --- codex round 14 ---
-
 // TestPadItemUpdate_AliasPairsRefusedWithoutFieldsObject: alias detection must
-// reach the no-`fields` case too (BUG-2850, codex round 14).
+// reach the no-`fields` case too (BUG-2850).
 //
-// The round-13 restructure ran its canonical pass from inside
+// The canonical-pass restructure ran its canonical pass from inside
 // reshapeItemFields, which returns early without a `fields` object — so an
 // alias pair arriving through the top level and the `field` array alone
-// slipped past it. Round 7 had already built exactly this always-run guard
-// for the hierarchy pair, which is the tell: the restructure that was meant
-// to end guard accretion had itself left TWO alias mechanisms with different
-// reach. There is now one.
+// slipped past it. An always-run guard already existed for the hierarchy
+// pair only, which left TWO alias mechanisms with different reach. There is
+// now one.
 //
 // The hierarchy leg is included deliberately, as the CONTROL that used to
 // pass: it is the one pair the old always-run guard covered, so a fix that
@@ -1607,9 +1585,9 @@ func TestPadItemUpdate_AliasPairsRefusedWithoutFieldsObject(t *testing.T) {
 }
 
 // TestPadItemUpdate_EqualStructuredDuplicateCollapses: two equal STRUCTURES
-// are one unambiguous value, not a conflict (BUG-2850, codex round 14).
+// are one unambiguous value, not a conflict (BUG-2850).
 //
-// A regression the round-13 restructure introduced: the new pass refused
+// A regression the canonical-pass restructure introduced: the new pass refused
 // whenever either side was structured, where scalarEqual had always collapsed
 // equal ones. Nothing in the suite caught it — the existing tags tests pass a
 // structure on one side only — which is why this pin exists in both
@@ -1647,10 +1625,10 @@ func TestPadItemUpdate_DifferingStructuredDuplicateRefused(t *testing.T) {
 }
 
 // TestFieldConflictProperty_SourcesDerivedFromTheDeclaredSchema closes the
-// gap the lead named after round 14: the property above enumerates its
+// gap in the case tests: the property above enumerates its
 // sources by hand, and that hand-written list came from the same head as
 // detectFieldConflicts. A property whose input list mirrors the code cannot
-// see a source the code forgot — which is exactly how the round-14 defect
+// see a source the code forgot — which is exactly how the no-`fields` alias defect
 // (param-vs-array pairs excluded as "out of scope") survived a property test
 // that was supposed to generalize.
 //
@@ -1674,7 +1652,7 @@ func TestFieldConflictProperty_SourcesDerivedFromTheDeclaredSchema(t *testing.T)
 	// response (limit, format, full), or is a documented non-field flag.
 	// Each entry carries WHY it cannot collide with a `fields` key. The
 	// reasons are the point — a bare list would let a future field-writing
-	// param be silenced by adding one word to it, which is how the round-14
+	// param be silenced by adding one word to it, which is how the no-`fields`
 	// exclusion happened in the first place.
 	notFieldWriters := map[string]bool{
 		// Address the call rather than the item's fields.
@@ -1783,11 +1761,9 @@ func TestFieldConflictProperty_SourcesDerivedFromTheDeclaredSchema(t *testing.T)
 	}
 }
 
-// --- codex round 15 ---
-
 // TestPadItemUpdate_CompatIDSameNameCollisionRefusedWithoutFields: the
-// round-7 same-name exemption holds only where the doors provably agree, and
-// the compat IDs are where they do not (BUG-2850, codex round 15).
+// same-name exemption holds only where the doors provably agree, and
+// the compat IDs are where they do not (BUG-2850).
 //
 // For a schema-declared param the CLI has a real flag, so stdio receives BOTH
 // forms and its overlay order resolves them exactly as the HTTP mapper does.
@@ -1802,7 +1778,7 @@ func TestFieldConflictProperty_SourcesDerivedFromTheDeclaredSchema(t *testing.T)
 //
 // The control leg is the declared param, which must STILL resolve rather than
 // refuse. Without it this test would pass on a build that abandoned the
-// round-7 boundary altogether.
+// same-name boundary altogether.
 func TestPadItemUpdate_CompatIDSameNameCollisionRefusedWithoutFields(t *testing.T) {
 	for _, key := range []string{"assigned_user_id", "agent_role_id"} {
 		t.Run(key+" refuses", func(t *testing.T) {
@@ -1836,11 +1812,8 @@ func TestPadItemUpdate_CompatIDSameNameCollisionRefusedWithoutFields(t *testing.
 	})
 }
 
-// --- codex round 16 ---
-
 // TestPadItemUpdate_PaddedEntryCollidingWithAParamRefused: equality only
-// licenses a collapse when both doors receive the SAME write (BUG-2850,
-// codex round 16).
+// licenses a collapse when both doors receive the SAME write (BUG-2850).
 //
 // The conflict index is normalized — that is what lets a padded entry be
 // recognized as a collision at all — so `field:["k = A"]` compared EQUAL to a
@@ -1878,12 +1851,12 @@ func TestPadItemUpdate_PaddedEntryCollidingWithAParamRefused(t *testing.T) {
 	}
 }
 
-// ...and a padded entry standing ALONE is untouched. That is BUG-2870 — ruled
-// out of this PR's scope because fixing it changes what every CLI caller
+// ...and a padded entry standing ALONE is untouched. That is BUG-2870, which
+// is out of scope here because fixing it changes what every CLI caller
 // receives, not just callers who supplied the same key twice.
 //
 // This leg is the scope boundary made executable: if it ever goes red, the
-// round-16 refusal has grown into BUG-2870's territory without a ruling.
+// padded-entry refusal has grown into BUG-2870's territory.
 // REPLACES TestPadItemUpdate_PaddedEntryAloneIsUntouched (BUG-2850). That
 // test pinned a DEFERRAL rather than a desired behaviour — its own failure
 // message said "a lone padded entry is BUG-2870's business, not this PR's" —
@@ -1924,12 +1897,10 @@ func TestPadItemUpdate_CanonicalCompatDuplicateStillCollapses(t *testing.T) {
 	}
 }
 
-// --- codex round 17 ---
-
 // TestPadItemUpdate_PaddedEntryRefusedWhenFieldsDoesNotCoverTheKey: whether an
-// entry got canonicalized was a PER-KEY question (BUG-2850, codex round 17).
+// entry got canonicalized was a PER-KEY question (BUG-2850).
 //
-// Round 16 gated the padded-entry refusal on "no `fields` object", reasoning
+// The padded-entry refusal was once gated on "no `fields` object", reasoning
 // that a `fields` object caused reshapeItemFields to re-emit the entry
 // canonically. That held for keys IN the object. With `fields:{}` or a
 // `fields` carrying some other key, nothing canonicalized
@@ -1939,8 +1910,8 @@ func TestPadItemUpdate_CanonicalCompatDuplicateStillCollapses(t *testing.T) {
 //
 // BUG-2870 refuses a padded key everywhere, so all three legs refuse now and
 // the per-key distinction no longer decides anything HERE — it is still live
-// where it gates the round-15 exemption. The third leg is kept, restated, so
-// the case round 17 paid for stays visible; a canonical control was added
+// where it gates the compat-ID exemption. The third leg is kept, restated, so
+// the case that motivated the per-key gate stays visible; a canonical control was added
 // beside it to keep the three legs from collapsing into one assertion.
 func TestPadItemUpdate_PaddedEntryRefusedWhenFieldsDoesNotCoverTheKey(t *testing.T) {
 	t.Run("fields empty", func(t *testing.T) {
@@ -1964,7 +1935,7 @@ func TestPadItemUpdate_PaddedEntryRefusedWhenFieldsDoesNotCoverTheKey(t *testing
 		}
 	})
 	// REPLACES the "fields carries the key — canonicalized, so accepted" leg
-	// (BUG-2850, codex round 17). Its point was that the guard's question is
+	// (BUG-2850). Its point was that the guard's question is
 	// PER-KEY: a `fields` object covering THIS key canonicalized the padded
 	// entry, so the call was accepted, while the two legs above stayed
 	// refused. The per-key/per-request distinction it was defending is still
@@ -2001,11 +1972,9 @@ func TestPadItemUpdate_PaddedEntryRefusedWhenFieldsDoesNotCoverTheKey(t *testing
 	})
 }
 
-// --- codex round 18 ---
-
 // TestPadItemUpdate_DuplicateFieldEntriesKeepTheirMultiplicity: two `field`
 // entries naming one key are two sources, and the conflict pass must see both
-// (BUG-2850, codex round 18).
+// (BUG-2850).
 //
 // parseFieldArray indexes by NORMALIZED key, so `["effort=l", " effort=l"]`
 // collapsed into a single index slot. Iterating that index made the pass's own
@@ -2051,13 +2020,13 @@ func TestPadItemUpdate_DuplicateFieldEntriesKeepTheirMultiplicity(t *testing.T) 
 	// ...and two CANONICAL entries for one key with differing values are NOT
 	// refused — they resolve, last-write-wins, on both doors.
 	//
-	// I first wrote this leg asserting a refusal, and the code disagreed.
-	// The code was right: ingestFieldKVP (HTTP) and the --field loop in
+	// An earlier version of this leg asserted a refusal, and the code
+	// disagreed. The code was right: ingestFieldKVP (HTTP) and the --field loop in
 	// cmd_item.go (CLI) both do `map[key] = val` in entry order, so each door
-	// keeps the LAST entry and they agree. That is the round-7 boundary
+	// keeps the LAST entry and they agree. That is the same-name boundary
 	// exactly — a visible duplicate with a resolution the caller can predict
-	// — and refusing it here would have contradicted the boundary the lead
-	// confirmed, on two doors that are pinned to agree.
+	// — and refusing it here would have contradicted the boundary,
+	// which two doors are pinned to agree on.
 	//
 	// Kept as a leg rather than deleted, because it is the one that stops a
 	// future "refuse every repeated key" simplification from looking correct.
@@ -2075,14 +2044,12 @@ func TestPadItemUpdate_DuplicateFieldEntriesKeepTheirMultiplicity(t *testing.T) 
 	})
 }
 
-// --- codex round 19 ---
-
 // TestPadItemUpdate_UnrelatedFieldsObjectDoesNotForceRefusal: a `fields`
 // object carrying some OTHER key must not drag an unrelated duplicate into
-// conflict resolution (BUG-2850, codex round 19).
+// conflict resolution (BUG-2850).
 //
-// Round 17 made the padded gate per-key and left the SAME-NAME gate
-// per-request — the same mistake in the sibling gate, one round later. With
+// The padded gate is per-key; the SAME-NAME gate must be too, rather than
+// per-request. With
 // `fields:{"other":"x"}` and `field:["effort=l","effort=s"]`, `effort` is not
 // in the object, nothing arbitrates it but the doors themselves, and both keep
 // the last entry. Refusing it was a false refusal on a call that resolves
@@ -2119,7 +2086,7 @@ func TestPadItemUpdate_UnrelatedFieldsObjectDoesNotForceRefusal(t *testing.T) {
 // TestPadItemUpdate_WhitespacePreservingValuesCompareLikeWithLike: entry
 // values were trimmed for COMPARISON because ingestFieldKVP trimmed them, so
 // comparing them against an untrimmed `fields` value was apples to oranges
-// (BUG-2850, codex round 19).
+// (BUG-2850).
 //
 // `fields:{"note":" x "}` with `field:["note= x "]` read as " x " vs "x" and
 // refused, though both doors write " x ". The assertion is on what reaches
@@ -2181,7 +2148,7 @@ func TestPadItemUpdate_PaddedKeyWithWhitespaceValueIsRefused(t *testing.T) {
 }
 
 // ...and genuinely different values are still refused. Named for the trimmed
-// COMPARISON it was written against (BUG-2850, round 19); comparison is raw
+// COMPARISON it was written against (BUG-2850); comparison is raw
 // now (BUG-2870), which makes this case strictly easier to catch — " x " and
 // " y " differ under either rule. Kept because the property is the same one:
 // a comparison rule loose enough to make two different values agree is the
@@ -2197,22 +2164,20 @@ func TestPadItemUpdate_TrimmedComparisonStillCatchesRealDifferences(t *testing.T
 	}
 }
 
-// --- codex round 20 ---
-
 // TestPadItemUpdate_CompatExceptionNeedsATopLevelValue: the compat-ID
 // exception turns on a TOP-LEVEL value being present, not on the key being a
-// compat one (BUG-2850, codex round 20).
+// compat one (BUG-2850).
 //
-// Round 15's reason was specific: a top-level compat param has no CLI flag,
+// The compat-ID exception's reason is specific: a top-level compat param has no CLI flag,
 // so BuildCLIArgs DROPS it while HTTP reads it, and the doors receive
 // different writes. That asymmetry exists only for the top-level form. Two
 // `field` entries naming a compat key carry no such thing — both doors keep
 // the last and lift the same column — so refusing them applied the reason
 // past the source it was verified on.
 //
-// The second leg is round 15's own case, which must still refuse. Without it
+// The second leg is the original compat-ID case, which must still refuse. Without it
 // this test would pass on a build that dropped the compat exception
-// altogether, which is the defect round 15 existed to fix.
+// altogether, which is the defect that exception exists to fix.
 func TestPadItemUpdate_CompatExceptionNeedsATopLevelValue(t *testing.T) {
 	for _, key := range []string{"assigned_user_id", "agent_role_id"} {
 		t.Run(key+": two entries, no top-level — resolves", func(t *testing.T) {
@@ -2240,10 +2205,8 @@ func TestPadItemUpdate_CompatExceptionNeedsATopLevelValue(t *testing.T) {
 	}
 }
 
-// --- codex round 21 ---
-
 // TestPadItemUpdate_NilTopLevelIsAbsentForEveryKey: a nil top-level value is
-// absence on every door and for every key (BUG-2850, codex round 21).
+// absence on every door and for every key (BUG-2850).
 //
 // topLevelValueProvided returned true unconditionally for the compat IDs and
 // fell through to true for everything else, so a nil counted as a supplied
@@ -2251,7 +2214,7 @@ func TestPadItemUpdate_CompatExceptionNeedsATopLevelValue(t *testing.T) {
 // a nil: the HTTP mapper's `.(string)` assertion drops it and BuildCLIArgs has
 // no flag value to emit, so both doors resolve to the `fields` value.
 //
-// The finding named `assigned_user_id` / `agent_role_id`. The probe found all
+// The named case was `assigned_user_id` / `agent_role_id`. The probe found all
 // five top-level keys behaving identically, so the fix and this pin cover the
 // population rather than the instance.
 func TestPadItemUpdate_NilTopLevelIsAbsentForEveryKey(t *testing.T) {
@@ -2295,8 +2258,8 @@ func TestPadItemUpdate_EmptyCompatIDIsStillAClearAfterTheNilFix(t *testing.T) {
 // kept ignoring it. A transport divergence introduced by a fix, which is the
 // class BUG-2870 exists to close.
 func TestPadItemUpdate_EmptyParentIsDroppedNotDispatched(t *testing.T) {
-	// `comment` is carried empty ALONGSIDE the empty parent, deliberately
-	// (codex round 2 [P2]): without it this test passes an implementation
+	// `comment` is carried empty ALONGSIDE the empty parent, deliberately:
+	// without it this test passes an implementation
 	// that drops EVERY empty-valued key, which would be a much larger and
 	// undiscussed change to the tool's input handling. The assertion below
 	// is that `parent` is the only key this touches.

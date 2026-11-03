@@ -11,7 +11,7 @@
  * question into "does this compile?". That is not a coverage gap; it is an
  * instrument answering a different question than its name. It hid a real defect
  * on the collection page through ten source assertions, ten behavioural legs, a
- * 10/10 mutation matrix, four review rounds and two lead reads — the search
+ * 10/10 mutation matrix, repeated review — the search
  * dispatch effect re-armed its debounce with the previous user's typed text and
  * captured the NEW epoch, so the fence inside the timer passed and the old
  * query went to the server under the new identity.
@@ -75,7 +75,7 @@ export function bindReactiveEpoch(hook: {
  * function did NOT: it read and wrote this module's signal directly, so it
  * returned true even with both hooks disconnected and every PRECONDITION leg
  * built on it passed against exactly the non-reactive double it existed to
- * detect. Codex reproduced that. A guard that cannot fail for the case it is
+ * detect. A guard that cannot fail for the case it is
  * named after is the failure it is named after, wearing its own badge.
  *
  * Pass the values the PAGE will see: `() => authStore.identityEpoch` and

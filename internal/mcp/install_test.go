@@ -441,7 +441,7 @@ func TestAddPadEntry_HandlesEmptyAndWhitespaceFile(t *testing.T) {
 }
 
 func TestAddPadEntry_TightensPermsOnIdempotentNoop(t *testing.T) {
-	// Codex round 2 (TASK-948): the idempotent path returns BEFORE
+	// TASK-948: the idempotent path returns BEFORE
 	// writeJSONConfig, so an already-up-to-date 0644 config kept
 	// loose perms. Tighten on the no-op path too.
 	dir := t.TempDir()
@@ -472,7 +472,7 @@ func TestAddPadEntry_TightensPermsOnIdempotentNoop(t *testing.T) {
 }
 
 func TestAddPadEntry_TightensExistingFilePerms(t *testing.T) {
-	// Codex round 1 (TASK-948): os.WriteFile only honors the mode
+	// TASK-948: os.WriteFile only honors the mode
 	// when CREATING the file. If the user had a pre-existing 0644
 	// config (the system default), the install must still leave it
 	// 0600 so the credentials in OTHER MCP server entries don't leak.

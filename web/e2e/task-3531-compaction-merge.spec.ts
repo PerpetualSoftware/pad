@@ -60,7 +60,7 @@ test('a tab that slept past the dormancy sweep merges its edit (or, without comp
 			timeout: 150_000,
 			intervals: [2_000],
 			// The spec cannot see the server's environment: a timeout in mode=off
-			// usually means the server runs with PAD_OPLOG_COMPACT=on (codex).
+			// usually means the server runs with PAD_OPLOG_COMPACT=on.
 			message: `the sweep reached the item (mode=${MODE}; check the server's PAD_OPLOG_COMPACT matches)`
 		})
 		.toEqual(MODE === 'on' ? { rows: 1, compacted: true } : { rows: 0, compacted: false });

@@ -229,8 +229,8 @@ func TestAutoCreateWorkspace_UnreadableMembershipKeepsTheWorkspace(t *testing.T)
 	}
 
 	// The count alone does NOT identify this arm — the owner-success arm keeps the
-	// workspace too, so collapsing UNREADABLE into it would pass the check above
-	//. The log is what separates them.
+	// workspace too, so collapsing UNREADABLE into it would pass the check above.
+	// The log is what separates them.
 	logged := logBuf.String()
 	if !strings.Contains(logged, "KEEPING the workspace because its state is unknown") {
 		t.Errorf("the unreadable-state arm did not run; some other arm kept the workspace. log: %s", logged)

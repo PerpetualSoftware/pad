@@ -121,7 +121,7 @@ describe('activity page — Audit view', () => {
 		expect(host.querySelector('.actor-badge.agent')!.textContent!.trim()).toBe('agent');
 	});
 
-	// Codex round 1. The badge's base rule uppercases, so `Wren` and `wren`
+	// The badge's base rule uppercases, so `Wren` and `wren`
 	// rendered identically — the verbatim contract broken in CSS rather than
 	// in code, and invisible to every textContent assertion above.
 	//
@@ -145,7 +145,7 @@ describe('activity page — Audit view', () => {
 		expect(host.querySelector('.actor-badge.agent')!.classList.contains('named')).toBe(false);
 	});
 
-	// Codex round 2 — the same escaping claim at a second surface, because the
+	// The same escaping claim at a second surface, because the
 	// two views build their labels through different code paths and a future
 	// `{@html}` would land in one of them, not both. See the twin case in
 	// timelineActivityAgentName for why this passes today.
@@ -157,7 +157,7 @@ describe('activity page — Audit view', () => {
 		expect(host.querySelector('.actor-badge.agent')!.textContent!.trim()).toBe(payload);
 	});
 
-	// Codex round 11 — the badge element itself carries the isolation, since
+	// The badge element itself carries the isolation, since
 	// it sits inline with the verb, item ref and timestamp on the row.
 	it('isolates the badge so a bidi control cannot reorder the row', async () => {
 		await mountPage('audit', [act({ metadata: JSON.stringify({ agent: 'wren\u202egnimalb' }) })]);

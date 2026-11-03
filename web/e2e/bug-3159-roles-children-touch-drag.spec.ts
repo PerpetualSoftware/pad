@@ -124,7 +124,7 @@ async function rolesDrag(
 	await browserLogin(page);
 	const stamp = Date.now();
 	// Each scratch resource registers its cleanup the moment it exists, so a
-	// failure partway through setup leaks nothing (codex round 1).
+	// failure partway through setup leaks nothing.
 	const coll = await scratchCollection(fixture, request);
 	cleanups.push(() => deleteCollection(fixture, request, coll.slug));
 	// Lanes sort by NAME, so the stamp goes first: the pair sorts together and

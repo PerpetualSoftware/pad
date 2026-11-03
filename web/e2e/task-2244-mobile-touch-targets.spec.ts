@@ -4,7 +4,7 @@ import type { APIRequestContext, Locator, Page } from '@playwright/test';
 import type { SuiteFixture } from './fixtures';
 
 /**
- * TASK-2244 — touch targets at phone width (Dave's ruling, day 83: options 1+3).
+ * TASK-2244 — touch targets at phone width.
  *
  * The collection control strip grows VISIBLY to 44x44 at <=768px, so its proof is
  * the element box (boundingBox). Desktop is unchanged, pinned to the sizes
@@ -65,12 +65,12 @@ for (const view of ['list', 'board'] as const) {
 }
 
 /**
- * The strip stays ONE row where it fits (the lead's ruling on the 360 checkpoint,
+ * The strip stays ONE row where it fits (decided at the 360 checkpoint,
  * option B: the chip drops its visible "View:" prefix). A future control or a
  * longer label would otherwise re-wrap it silently, since every size assertion
  * above still passes on two rows. The realtime dot is a badge on the collection
  * ⋯ button's corner, so it can never wrap onto a row of its own: list at 360 used
- * to wrap it alone, which Dave's gate called awkward, and is now held to one row
+ * to wrap it alone, which was judged awkward, and is now held to one row
  * too.
  */
 const ONE_ROW: Array<{ width: number; view: 'list' | 'board'; withDot: boolean }> = [
@@ -367,9 +367,9 @@ for (const view of ['list', 'board'] as const) {
  *   2. no point of a neighbour control's box (both tag buttons below, and the
  *      card ⋯ above) lands on the chip. Asked that way, not as "every point
  *      hits the neighbour": a rounded tag's corner pixel hits its row, with or
- *      without any extender, and that is not what the ruling is about. A
+ *      without any extender, and that is not what this asserts. A
  *      centred extender DID land 20 of tag 0's 40 sampled points on the chip
- *      (list and board alike; the upward one lands 0), which is the measurement
+ * (list and board alike; the upward one lands 0), which is the measurement
  *      that made it upward-only.
  * The card carries tags on purpose: without them the row below is plain text,
  * and half 2 would pass on any extender, however large.

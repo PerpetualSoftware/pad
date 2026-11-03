@@ -9,7 +9,7 @@ import (
 
 // patient lifts only the wall-clock check, which is the one limit a loaded or
 // -race run can trip; MaxSteps and MaxScan stay at their defaults, so a step or
-// scan cap still shows (TASK-4100 r2).
+// scan cap still shows (TASK-4100).
 var patient = Limits{MaxDuration: 10 * time.Minute}
 
 // nextGrid is the first n instants after q on a grid of d seconds anchored at
@@ -42,7 +42,7 @@ func sameTimes(a, b []time.Time) bool {
 	return true
 }
 
-// TestStallDenseRules is the R2-H1 regression (TASK-4100 r2): rules that fire
+// TestStallDenseRules is a regression test (TASK-4100): rules that fire
 // every few minutes were refused with a cap once the query passed the day the
 // per-call step count ran out (+129d, +133d, +68d and +4165d from Start). The
 // stall budget restarts at every candidate, so each is answered far past that.
@@ -78,7 +78,7 @@ func TestStallDenseRules(t *testing.T) {
 
 // TestStallFilteredCandidatesBounded: the reset makes the expander look busy
 // whenever it produces a candidate, so a candidate our wrapper then discards
-// must not run unbounded (TASK-4100 r2).
+// must not run unbounded (TASK-4100).
 func TestStallFilteredCandidatesBounded(t *testing.T) {
 	// Produced and discarded by the walk: MINUTELY;BYSECOND=0 yields a candidate
 	// a minute, to year 9999, and visit never stops. Only the CapTime check
@@ -121,10 +121,10 @@ func TestStallFilteredCandidatesBounded(t *testing.T) {
 	}
 }
 
-// TestStallPrefetchKeepsAnswer (R2-L1): the stall after the last reachable
+// TestStallPrefetchKeepsAnswer: the stall after the last reachable
 // occurrence (the next Feb 29 is four years on) must not turn that occurrence
 // into an error: the rule stalls at a position past the answer's bound, so the
-// answer is final (TASK-4100 r2, r3).
+// answer is final (TASK-4100).
 func TestStallPrefetchKeepsAnswer(t *testing.T) {
 	c := compile(t, pinned(t, "UTC", "2103-03-01T00:00", "FREQ=MINUTELY;BYMONTH=2;BYMONTHDAY=29;BYHOUR=0;BYMINUTE=0"))
 	lim := Limits{MaxSteps: 2000} // covers 2103-03 to 2104-02-29, not the four years after
@@ -146,8 +146,8 @@ func TestStallPrefetchKeepsAnswer(t *testing.T) {
 	asCap(t, err, CapStall)
 }
 
-// TestStallKinds (R2-L2): CapStall and CapScan are different caps with
-// different limits (TASK-4100 r2).
+// TestStallKinds: CapStall and CapScan are different caps with
+// different limits (TASK-4100).
 func TestStallKinds(t *testing.T) {
 	c := compile(t, pinned(t, "UTC", "2025-01-01T00:00", "FREQ=MINUTELY;BYMONTH=1;BYYEARDAY=200"))
 	_, _, err := c.NextAfter(inst(t, "2025-01-01T00:00:00Z"), nil, Limits{})
@@ -204,8 +204,8 @@ func boundsCheck(t *testing.T, name string, c *Compiled, q time.Time) (scanned b
 }
 
 // TestBoundsPropertyOverConformanceGrid is the instrument for the stall and
-// scan bounds (TASK-4100 r2), after two rounds in which a fix to the budget
-// shipped a defect of its own. Over every conformance row and every
+// scan bounds (TASK-4100), after fixes to the budget
+// twice shipped a defect of its own. Over every conformance row and every
 // satisfiable cell of the reachability grid, a query a year or more past
 // Start returns exactly what the vendored engine produces with no budget; and
 // over every unsatisfiable cell the budget ends the walk with a CapStall.

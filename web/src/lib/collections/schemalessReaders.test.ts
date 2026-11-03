@@ -42,10 +42,9 @@ const SURFACES = [
 		src: '../../routes/[username]/[workspace]/graph/DetailCard.svelte',
 		keys: ['status', 'priority'],
 	},
-	// ADDED AFTER THE REVIEW ROUND FOUND IT (BUG-3067). I had classified this
-	// page as a non-member because `playbooks` is a SYSTEM collection and I
-	// assumed its schema could not be retyped — an assumption I wrote down as a
-	// reason and never checked. `handleUpdateCollection` has no `is_system` gate
+	// ADDED LATE (BUG-3067). This page was first classified as a non-member
+	// because `playbooks` is a SYSTEM collection and its schema was assumed
+	// not to be retypable — an assumption that was never checked. `handleUpdateCollection` has no `is_system` gate
 	// on schema edits, so it is a member like any other. The list is data now, so
 	// a missed surface is a missing ROW rather than a silent absence.
 	{
@@ -53,7 +52,7 @@ const SURFACES = [
 		src: '../../routes/[username]/[workspace]/playbooks/+page.svelte',
 		keys: ['status'],
 	},
-	// ROUND 2 found three more, two of which are fixed here. Both render SERVER
+	// A second sweep found three more, two of which are fixed here. Both render SERVER
 	// PROJECTIONS — values the server itself obtained by name — which is why a
 	// sweep for client-side `parseFields` reads kept missing them, and why the
 	// class is stated as "a value obtained by name" rather than "a value read
@@ -64,7 +63,7 @@ const SURFACES = [
 		keys: ['status', 'priority'],
 	},
 	{ name: 'ItemGraph', src: '../components/graph/ItemGraph.svelte', keys: ['status'] },
-	// ROUND 3. `OpenChildrenDialog` I had filed as unfixable client-side on the
+	// A third sweep: `OpenChildrenDialog` had been filed as unfixable client-side on the
 	// claim that its DTO carried no collection identifier — it carries
 	// `collection_slug`, and the link beside the status is built from it.
 	{ name: 'OpenChildrenDialog', src: '../components/OpenChildrenDialog.svelte', keys: ['status'] },
@@ -87,7 +86,7 @@ describe('every schema-less by-name reader routes through the shared question', 
 			// accepted an import from `shareView`, the lower-level helper — which
 			// let a surface bypass the shared question while satisfying the guard,
 			// and `graph/DetailCard` was doing exactly that for its `status` read
-			// when the review round pointed it out. The bypass is the thing this
+			// once it was spotted. The bypass is the thing this
 			// leg exists to prevent, so it cannot be an accepted spelling.
 			const body = code(s.src);
 			expect(
@@ -147,7 +146,7 @@ describe('a file is not a renderer', () => {
 });
 
 describe('the prompt substitution has ONE implementation, not two mirrors', () => {
-	// The structural half of the lead's ruling (BUG-3067). `QuickActionsMenu` and
+	// The structural half of the BUG-3067 decision. `QuickActionsMenu` and
 	// `quick-action-preview` held byte-identical copies of this substitution, and
 	// the preview module's own doc says it MIRRORS the menu so the preview shows
 	// what copying produces — which is exactly what makes a drift between them

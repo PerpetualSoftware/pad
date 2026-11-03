@@ -58,8 +58,8 @@ func reachabilityGrid(fn func(freq string, iv int, hs, ms []int, st [2]int)) {
 	}
 }
 
-// TestReachabilityCheckIsExact is the guard on the Compile check
-// (TASK-4100 r1): over a grid, Compile refuses with CodeUnsatisfiable IFF the
+// TestReachabilityCheckIsExact is the guard on the Compile check (TASK-4100): over
+// a grid, Compile refuses with CodeUnsatisfiable IFF the
 // vendored engine, run directly, yields nothing within a horizon that covers
 // the lcm of INTERVAL and the day. A disagreement either way is a failure: a
 // refusal of a schedule that fires is the worse one.

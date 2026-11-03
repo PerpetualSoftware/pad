@@ -113,7 +113,7 @@ func (s *FSStore) Stage(ctx context.Context, r io.Reader, limit int64) (*Staged,
 // its key. On a miss the temp file is renamed into place. On a hit it is
 // unlinked and the existing blob's mtime is refreshed, so a reused old blob
 // cannot read as GC-eligible to the rowless-blob sweep before the caller's
-// row commits (DOC-3371 round-12 gap 2). ctx is checked once more, immediately
+// row commits (DOC-3371). ctx is checked once more, immediately
 // before the rename.
 func (st *Staged) Commit(ctx context.Context) (string, error) {
 	if st == nil || st.done {

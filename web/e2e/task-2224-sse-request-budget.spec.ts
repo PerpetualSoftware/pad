@@ -77,7 +77,7 @@ async function createWorkspace(account: Account, name: string): Promise<string> 
 async function actAs(context: BrowserContext, account: Account) {
 	await context.setExtraHTTPHeaders({ Authorization: `Bearer ${account.token}` });
 	await quietCrossActorToasts(context);
-	// Timestamp every SSE event the PAGE receives, by type (codex r5): the
+	// Timestamp every SSE event the PAGE receives, by type: the
 	// budget's windows are decided by when events arrive in the browser, not
 	// by when the REST calls that caused them returned.
 	await context.addInitScript(() => {
@@ -112,7 +112,7 @@ function recorder(page: Page) {
 	const log: string[] = [];
 	const itemsChangesAt: number[] = [];
 	let lastAt = Date.now();
-	// Requests still open (codex r6): a response landing after the count can
+	// Requests still open: a response landing after the count can
 	// issue the next read, so quiet means none in flight AND none started.
 	const open = new Set<unknown>();
 	const isApi = (url: string) => {
@@ -135,8 +135,8 @@ function recorder(page: Page) {
 		lastAt = Date.now();
 	});
 	return {
-		/** Wait until no API request is open and none started or finished for `quietMs` (codex r4, r6). */
-		/** Resolves true once quiet; false if `maxMs` passed first (codex r7: a timeout is not quiet). */
+		/** Wait until no API request is open and none started or finished for `quietMs`. */
+		/** Resolves true once quiet; false if `maxMs` passed first (a timeout is not quiet). */
 		async quiet(quietMs: number, maxMs: number): Promise<boolean> {
 			const start = Date.now();
 			while (open.size > 0 || Date.now() - lastAt < quietMs) {
@@ -192,7 +192,7 @@ test('TASK-2224: requests per external update on the collection page, and under 
 
 	// Concurrently. The server and the browser may still spread the events on
 	// a slow box, and every max-wait window (1 s) is a legitimate run, so the
-	// bounds below scale with how the 20 events actually ARRIVED (codex r5).
+	// bounds below scale with how the 20 events actually ARRIVED.
 	const pageNow = () => page.evaluate(() => Date.now());
 	const burstStartAt = await pageNow();
 	await Promise.all(
@@ -212,15 +212,15 @@ test('TASK-2224: requests per external update on the collection page, and under 
 	// it would otherwise cost; on a box too slow for that, it says so.
 	// The budget discriminates only for events delivered within 3 s (windows
 	// <= 4, so every allowance stays under main's value: collections 5 < 20,
-	// items-changes 10 < 20, total 15 < 40; codex r3). A box too slow for that
+	// items-changes 10 < 20, total 15 < 40). A box too slow for that
 	// is not a failure of the code under test, so it records why and skips
-	// only the budget; the catch-up check below still runs (codex r4).
+	// only the budget; the catch-up check below still runs.
 	let discriminates = spanMs < 3_000;
 	if (!discriminates) {
 		testInfo.annotations.push({ type: 'skipped-budget', description: `events arrived over ${spanMs} ms` });
 	}
 	// The tab must catch up with the LAST update: a reconcile read issued
-	// after the burst finished (codex r1: a title still on screen proved nothing).
+	// after the burst finished (a title still on screen proved nothing).
 	// 20 s: a reconcile may queue behind one already in flight for up to 15 s.
 	await expect.poll(() => rec.readSince(burstDoneAt), { timeout: 20_000 }).toBe(true);
 	// Every event has arrived; let the last coalescing window (1 s max) fire

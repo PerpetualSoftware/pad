@@ -2,7 +2,7 @@
 // regression tests build on. All of these run under the `idb` vitest project,
 // whose setup (`setup-idb.ts`) installs a fresh fake-indexeddb per test.
 //
-// Design note (lead ruling on the PLAN-2636 trail): the localIndex cache
+// Design note (PLAN-2636): the localIndex cache
 // races are SNAPSHOT-staleness, not read-staleness — the stale thing is the
 // RAM snapshot handed to persistUpserts, never its own `get`, which always
 // reads committed state. IDB serializes overlapping readwrite transactions,

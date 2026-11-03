@@ -18,7 +18,7 @@ import (
 // and the transaction's own BEGIN IMMEDIATE write lock does the equivalent
 // damage.
 //
-// Found by Codex round 2 on BUG-2785, while enumerating the ways the cascade's
+// Found on BUG-2785, while enumerating the ways the cascade's
 // retry loop could fail to terminate.
 func TestReplaceTitle_TerminatesWhenNewTitleEmbedsOldToken(t *testing.T) {
 	// `[[A]]` -> `[[A]] [[A]]`, whose output still contains `[[A]]`. Against the

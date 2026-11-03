@@ -38,8 +38,8 @@ describe('IDEA-2899 — the blocked-field notice advises only where advice works
 	it('excludes a row whose KEY is empty, which --field cannot address either', () => {
 		// A required `json` field the destination reported with no key is
 		// type-shaped, blocked, and unfillable: `--field =value` is rejected by
-		// the CLI's own parser, which has refused these since Codex round 6.
-		// The dialog was printing the command anyway (review round 4).
+		// the CLI's own parser, which already refuses these.
+		// The dialog was printing the command anyway.
 		expect(source).toMatch(/f\.key\.trim\(\) !== ''/);
 	});
 

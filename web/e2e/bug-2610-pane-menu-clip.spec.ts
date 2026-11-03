@@ -6,8 +6,8 @@ import { test, type SuiteFixture } from './fixtures';
  * ANCHORED panels inside `.item-pane`, an `overflow-y:auto` scroll
  * container (which computes `overflow-x:auto` too). A right-aligned panel
  * opening from the pane's action bar extends LEFT past the pane's left
- * edge, so the container clipped it mid-text (Dave's screenshots on the
- * item: "age actions" for "Manage actions"). Both menus now use the Menu
+ * edge, so the container clipped it mid-text (seen on the
+ * item as "age actions" for "Manage actions"). Both menus now use the Menu
  * component's portal mode, which exists precisely to escape overflow
  * containment.
  *

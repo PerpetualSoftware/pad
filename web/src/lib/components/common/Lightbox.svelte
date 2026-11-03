@@ -368,8 +368,8 @@
 	// allowlisted RESOLVED MIME, so admitting unsafe/unresolved rows renders no
 	// hostile bytes (see the admission note above).
 	let resolvedMime = $derived(img ? headerMeta.fields.mime_type : null);
-	// The RESOLVED size, for the same reason `resolvedMime` exists (IDEA-2712,
-	// codex R1 #1). The `LightboxImage` seed carries `size_bytes: null` on most
+	// The RESOLVED size, for the same reason `resolvedMime` exists (IDEA-2712).
+	// The `LightboxImage` seed carries `size_bytes: null` on most
 	// producers — it is the metadata HEAD that fills it — so handing the text
 	// loader the SEED would put its metadata gate permanently in the vacuous case
 	// and leave the response gate doing all the work. That is not a hole (the
@@ -694,13 +694,13 @@
 	// within one open, so adding it would be inert anyway. The same-id
 	// safe→unsafe MIME flip that DOES need in-open coherence is already covered by
 	// `shownRenderer` above.
-	// `resolvedSize` JOINS THE KEY (IDEA-2712, codex R1 #1) for the same reason the
+	// `resolvedSize` JOINS THE KEY (IDEA-2712) for the same reason the
 	// dimensions do: the text arm's metadata gate is a function of the size, so a
 	// size that arrives LATE (the HEAD filling a null seed) is a policy that
 	// arrived late. Without it, an entry that begins with an unknown size and
 	// resolves to 4 MB has already been fetched and never re-decides.
 	//
-	// `revalidateToken` rides the same text-arm slot (codex R3 #2). A parent
+	// `revalidateToken` rides the same text-arm slot. A parent
 	// RESTORE bumps that token so an archived-at-open surface re-probes — and the
 	// image loader is driven by the probe's own answer, but a FAILED TEXT GET is
 	// not: its `error` phase is loader state, invisible to the metadata layer. So
@@ -710,7 +710,7 @@
 	// the size is — the raster arm has its own revalidation path and must not be
 	// reloaded twice.
 	//
-	// IT IS SCOPED TO THE TEXT ARM, and this key is SHARED (codex R2 #1). An
+	// IT IS SCOPED TO THE TEXT ARM, and this key is SHARED. An
 	// earlier version appended the size unconditionally with a comment calling it
 	// "inert for the raster arm, which does not read it" — false, and false in a
 	// way the comment's own reasoning hid: the RASTER arm does not read the size,
@@ -763,7 +763,7 @@
 	// CONVE-1688 self-write.
 	let paintedGen = $state(-1);
 	// Whether TOUCH gestures (pan / pinch / double-tap) may ARM: a decoded bitmap is
-	// on screen for the CURRENT element (round-1/3/4/6 P2). Stricter than
+	// on screen for the CURRENT element. Stricter than
 	// `bitmapPresent` (which is true mid-load and mid-retry): the painted rule is
 	// PRE-FIRST-PAINT-only, so it stays true across a thumb→original upgrade (element
 	// reused, token unchanged) but false during initial-load and retry-loading (the
@@ -864,7 +864,7 @@
 		// We own the wheel while frontmost — consume it even before the bitmap is
 		// measurable, so a scroll can never leak past the modal into the inert app.
 		// A wheel over the TEXT ARM's card is the one wheel this viewer does NOT own
-		// (IDEA-2712, codex R1 #3). It must reach the card so a document scrolls,
+		// (IDEA-2712). It must reach the card so a document scrolls,
 		// which means returning BEFORE `preventDefault` — every other exclusion in
 		// this handler returns after it, because those surfaces want the wheel
 		// swallowed and this one wants it delivered. Scroll chaining to the inert
@@ -1101,8 +1101,8 @@
 	// `currentTarget` to hand `abortGesture`), so a stale gesture can neither pan
 	// the reloaded image after an A→unsafe→A flip nor leak into the next press.
 	function cancelGesture(): void {
-		// Registry hygiene runs UNCONDITIONALLY, BEFORE the no-gesture early return
-		// (round-2 P1): the bitmap has vanished, so no pointer can be gesturing over
+		// Registry hygiene runs UNCONDITIONALLY, BEFORE the no-gesture early return:
+		// the bitmap has vanished, so no pointer can be gesturing over
 		// it. Drain the whole set — the mouse owner (if any) AND any touch pointers,
 		// which arm nothing in V1 but would otherwise leak here if the arm flip beats
 		// their pointerup/cancel, poisoning later pinch detection. Per-instance, so
@@ -1111,7 +1111,7 @@
 		registry.clear();
 		// Drain the double-tap detector UNCONDITIONALLY too, before the no-gesture early
 		// return: a pending first tap must not survive a bitmap loss / navigation and
-		// pair with a tap on the NEXT image (round-1 P2, follow-up). It is cheap and
+		// pair with a tap on the NEXT image. It is cheap and
 		// idempotent when there is nothing pending.
 		disarmDoubleTap();
 		if (!maybeDrag && !dragging && !pinching) return;
@@ -1163,7 +1163,7 @@
 		}
 		return false;
 	}
-	// A TOUCH gesture begins only on a PAINTED-IMAGE hit (round-2 / round-5 P2): the
+	// A TOUCH gesture begins only on a PAINTED-IMAGE hit: the
 	// stage letterbox is `pointer-events: none`, so a letterbox touch lands on the
 	// backdrop (target is the root, not the image) and stays a native tap-to-close —
 	// only a touch whose target is the image itself arms pan / joins a pinch.
@@ -1377,8 +1377,8 @@
 	}
 
 	// A pinch move — one of the two founders moved (its live position is already in
-	// the registry). Compose ONE candidate state at the FINAL scale and clamp ONCE
-	// (round-3 P1): the anchor-zoom offset around the PREVIOUS midpoint PLUS the
+	// the registry). Compose ONE candidate state at the FINAL scale and clamp ONCE:
+	// the anchor-zoom offset around the PREVIOUS midpoint PLUS the
 	// midpoint translation, so the image point under the midpoint stays under it.
 	function onPinchMove(e: PointerEvent): void {
 		if (e.pointerId !== pinchA && e.pointerId !== pinchB) return; // extra: registry only
@@ -1532,7 +1532,7 @@
 		// EVERY primary pointer — mouse, pen AND touch — enters the registry FIRST,
 		// before any arm / gate / early-return below. `onPointerUp`/`onPointerCancel`
 		// delete by id before their own guards, so a press that never arms (touch,
-		// chrome, gated, no-bitmap) still drains cleanly (round-2 P1).
+		// chrome, gated, no-bitmap) still drains cleanly.
 		registry.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
 		lastPointerType = e.pointerType;
 		// TOUCH now has a full gesture surface (TASK-2518): pan on the painted image,
@@ -1563,7 +1563,7 @@
 		// leaves `maybeDrag` latched and the next move engages a phantom drag from a
 		// dead baseline. (We already returned above if a drag is live.)
 		//
-		// Reconcile the REGISTRY at the SAME point (round-2 P1 leak-freedom): that
+		// Reconcile the REGISTRY at the SAME point (leak-freedom): that
 		// stale owner's missed off-root up never ran `registry.delete`, so its entry
 		// would linger. Drop it here — but only when it is a DIFFERENT id than this
 		// press (a same-id re-press, e.g. a mouse, already refreshed its own entry via
@@ -1664,7 +1664,7 @@
 	function onPointerUp(e: PointerEvent) {
 		registry.delete(e.pointerId); // hygiene FIRST — before the owner guards below,
 		// so a foreign / never-armed pointer (touch, chrome, gated) still drains and
-		// never leaks (round-2 P1).
+		// never leaks.
 		// A founder lifting during a pinch DEGRADES to the survivor (2→1); an extra
 		// touch's up is registry-only (already drained above). Not a tap, either.
 		if (pinching) {
@@ -1709,8 +1709,8 @@
 	function onPointerCancel(e: PointerEvent) {
 		registry.delete(e.pointerId); // hygiene FIRST — the browser claims and
 		// `pointercancel`s touches ROUTINELY; a literal owner-guarded early-return would
-		// leak every one of them (round-2 P1).
-		// PER-POINTER routing (round-3 P1): a founder cancel with a surviving co-founder
+		// leak every one of them.
+		// PER-POINTER routing: a founder cancel with a surviving co-founder
 		// is the 2→1 DEGRADE; an extra touch's cancel is registry-only.
 		if (pinching) {
 			if (e.pointerId === pinchA || e.pointerId === pinchB) endPinchPointer(e);
@@ -2241,7 +2241,7 @@
 		// control had focus — the Retry/tap-load button — and the fallback arm has no
 		// focusable content, so track the arm to re-home a stranded focus.
 		void shownRenderer;
-		// The TEXT arm's phase does the same thing and more (IDEA-2712, codex R3):
+		// The TEXT arm's phase does the same thing and more (IDEA-2712):
 		// its own Retry button unmounts on a successful retry, and — unlike every
 		// other arm — the arm's CONTENT is focusable, so a reload (a late size fill,
 		// a retry) unmounts whatever LINK inside the rendered document had focus.
@@ -2318,7 +2318,7 @@
 		// above). Only while the PDF arm is shown with a mounted preview, and never
 		// with a modifier, so the browser's own shortcuts are left alone. No phase
 		// check: the preview mounts only in the `ready` branch, and bind:this nulls
-		// `pdfPreview` in the same flush that unmounts it (TASK-4075 trail, day 40).
+		// `pdfPreview` in the same flush that unmounts it (TASK-4075).
 		if (
 			(e.key === 'PageUp' || e.key === 'PageDown') &&
 			shownRenderer === 'pdf' &&
@@ -2644,7 +2644,7 @@
 						if (el === imgEl) {
 							// Mark the paint generation ONLY when this decode was ACCEPTED — the
 							// SAME fence `decoded` applies, evaluated against the PRE-decode
-							// snapshot (round-3 P1). A stale / superseded-src load on the live
+							// snapshot. A stale / superseded-src load on the live
 							// element (a mid-swap retry race) must not arm touch gestures on pixels
 							// that are not the current request's; but a legitimately-accepted thumb
 							// MUST arm (gestures live on the thumb→original upgrade), which the
@@ -2749,7 +2749,7 @@
 			<div class="lightbox-text" class:lightbox-table={shownRenderer === 'table'}>
 				<!--
 					THE CARD IS THE INTERACTIVE SURFACE, the layer around it is not
-					(IDEA-2712, codex R1 #4). `.lightbox-text` spans the stage for
+					(IDEA-2712). `.lightbox-text` spans the stage for
 					centring only and takes `pointer-events: none`, so a click on the
 					empty area still reaches the root and closes the viewer exactly as
 					it does on every other arm. An earlier version gave the full-bleed
@@ -3070,7 +3070,7 @@
 		touch-action: none;
 	}
 
-	/* TOUCH-ACTION INTERSECTS DOWN THE ANCESTOR CHAIN (codex R2 #2). The card's
+	/* TOUCH-ACTION INTERSECTS DOWN THE ANCESTOR CHAIN. The card's
 	   `pan-x pan-y` cannot override an ancestor's `none` — the allowed behaviours for a
 	   touch are the INTERSECTION along the chain, so `none` on the stage wins and
 	   a phone could not scroll the document at all. The stage claims `none` for
@@ -3140,7 +3140,7 @@
 	   stage contrast is unreadable at length, and this arm is the only one whose
 	   content is meant to be READ rather than looked at. */
 	/* The centring layer only — NOT interactive. `pointer-events: none` is what
-	   keeps backdrop-click-to-close working on this arm (codex R1 #4); the card
+	   keeps backdrop-click-to-close working on this arm; the card
 	   inside turns them back on. */
 	.lightbox-text {
 		position: absolute;

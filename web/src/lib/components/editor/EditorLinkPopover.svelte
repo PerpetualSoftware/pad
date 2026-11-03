@@ -31,7 +31,7 @@
 		// the context `planHrefClick` uses to confirm an internal link points at
 		// a WELL-FORMED item in THIS workspace before drilling the pane
 		// (rejecting cross-workspace plain paths, non-item routes, and
-		// self-inconsistent collection/ref paths; Codex review).
+		// self-inconsistent collection/ref paths).
 		wsSlug?: string;
 		collectionPrefixes?: ReadonlyMap<string, string>;
 	} = $props();
@@ -155,7 +155,7 @@
 	// a user typed by hand via "Edit link" — an app route, a different
 	// workspace's item, a `/-/r/` resolver link — is indistinguishable from
 	// a wiki-link at the Tiptap mark level, so it's left to navigate normally
-	// rather than misrouted into the current pane's `?item=` (Codex review).
+	// rather than misrouted into the current pane's `?item=`.
 	function handleHrefClick(e: MouseEvent) {
 		const plan = planHrefClick(e, href, {
 			hasOnOpenTarget: !!onOpenTarget,

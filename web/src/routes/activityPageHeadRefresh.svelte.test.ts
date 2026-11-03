@@ -7,7 +7,7 @@ import type { Activity } from '$lib/types';
  * BUG-3160, the workspace activity page: an item event re-reads the feed's
  * head, so a row the debounce merge restamped shows at the top without a
  * reload. The page listens WORKSPACE-wide, so the throttle is the point of
- * these legs as much as the refresh is (lead ruling: at most 6 re-reads a
+ * these legs as much as the refresh is (the rule: at most 6 re-reads a
  * minute per tab, however busy the workspace).
  */
 const listActivity = vi.hoisted(() =>

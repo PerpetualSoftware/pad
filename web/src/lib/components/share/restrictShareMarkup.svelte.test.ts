@@ -73,7 +73,7 @@ describe('restrictShareMarkup (BUG-3799)', () => {
 		expect(classesIn(restrictShareMarkup(sanitized))).toEqual(before);
 		// And the allowlist holds nothing the census did not find (code's
 		// language-* is a pattern, checked above): an extra pair is a class an
-		// editor could write that the renderer never would (Codex r2).
+		// editor could write that the renderer never would.
 		const census = [...new Set(before.filter((c) => !c.startsWith('code.')))].sort();
 		expect(shareClassAllowlist()).toEqual(census);
 	});

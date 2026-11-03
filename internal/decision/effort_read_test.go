@@ -8,7 +8,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// TASK-3959 1a r2: the effort readers, tested where they live.
+// TASK-3959: the effort readers, tested where they live.
 
 func effortRow(kind, answer string) models.ItemDecision {
 	return models.ItemDecision{QuestionKey: AttentionEffort, Kind: kind, Answer: []byte(answer)}
@@ -74,7 +74,7 @@ func TestCurrentQuestionHashes_NilRunner(t *testing.T) {
 	}
 }
 
-// TASK-3959 1a r3: the hashes the reader reports are the ones the runner
+// TASK-3959: the hashes the reader reports are the ones the runner
 // stamps on a stored answer, read back from the store rather than recomputed.
 func TestCurrentQuestionHashes_MatchWhatTheRunnerStamps(t *testing.T) {
 	fx := newAttentionFixture(t)

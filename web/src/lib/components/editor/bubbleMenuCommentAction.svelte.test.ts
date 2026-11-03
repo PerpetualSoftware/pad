@@ -186,8 +186,8 @@ describe('selection toolbar — Comment action', () => {
 		// because Extract uses it as an item title where newlines would be
 		// wrong. Quoting through that would flatten two paragraphs into one
 		// run-on line — and `toBlockquote`'s blank-line handling, which has its
-		// own test, could never be reached from production at all. Found by
-		// codex round 1; this is the assertion that makes the two agree.
+		// own test, could never be reached from production at all. This is the assertion that makes
+		// the two agree.
 		expect(quoted).toEqual(['> First paragraph here.\n>\n> Second paragraph here.']);
 	});
 
@@ -195,7 +195,7 @@ describe('selection toolbar — Comment action', () => {
 		// `appendMarkdown` returns false when there is no composer to reach.
 		// Discarding that and hiding the menu would restore the exact silent
 		// no-op the handle exists to remove — the quote vanishes and the reader
-		// has no way to tell (codex round 3).
+		// has no way to tell.
 		mountMenu({ onComment: () => false });
 		selectFirstParagraph();
 		button('Comment')!.click();

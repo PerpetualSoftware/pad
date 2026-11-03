@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// BUG-3037 (codex round 1) — the remote dispatcher must REFUSE a fractional
+// BUG-3037 — the remote dispatcher must REFUSE a fractional
 // expected_seq rather than truncate it.
 //
 // int64(42.7) is 42, which is a different row state — and one that may well be

@@ -162,7 +162,7 @@ test.describe('attachment viewer — modal contract (TASK-2436)', () => {
 		fixture,
 		request
 	}) => {
-		// THE ORDERING MUTATION (TASK-2429, Codex): moving the focus restore
+		// THE ORDERING MUTATION (TASK-2429): moving the focus restore
 		// BEFORE the backdrop release passes every jsdom test, because jsdom lets
 		// you focus an inert element. In a browser it silently does nothing and
 		// the keyboard user is left on `<body>`.
@@ -603,7 +603,7 @@ test.describe('attachment viewer — modal contract (TASK-2436)', () => {
 		await expect(page.locator(VIEWER)).toHaveCount(1);
 
 		// INSTRUMENT `defaultPrevented`, because focus alone cannot distinguish the
-		// mutation (Codex round 4). With `isBlockedByModal(el)` removed from
+		// mutation. With `isBlockedByModal(el)` removed from
 		// `Lightbox.onKeydown`, the viewer WOULD act — `preventDefault()` and aim
 		// focus at its own Close button — but `showModal()` inerts the rest of the
 		// document, so that focus attempt is refused and focus stays in the dialog
@@ -707,7 +707,7 @@ test.describe('attachment viewer — modal contract (TASK-2436)', () => {
 		// "the element that opened the viewer is no longer in the document by the
 		// time it closes" is the ordinary case, not a hypothetical.
 		//
-		// WHAT THIS TEST DOES AND DOES NOT KILL (Codex round 4, recorded rather
+		// WHAT THIS TEST DOES AND DOES NOT KILL (recorded rather
 		// than papered over). It does NOT kill removal of the
 		// `openInvoker.isConnected` check: in Chromium `focus()` on a detached
 		// node is a no-op, so guarded and unguarded end in the same state. Nor

@@ -21,7 +21,7 @@
 	let opening = $state<string | null>(null);
 	let error = $state('');
 	/** The parent remounts this per item: a mint that answers after the pane
-	 *  moved on must not open the old item's app (codex U9d r1). */
+	 *  moved on must not open the old item's app. */
 	let destroyed = false;
 	onDestroy(() => {
 		destroyed = true;

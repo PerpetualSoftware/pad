@@ -122,7 +122,7 @@
 		workspaceStore.setCurrent(wsSlug);
 	});
 
-	// NO IDENTITY LISTENER HERE, deliberately (BUG-3005, lead ruling). The
+	// NO IDENTITY LISTENER HERE, deliberately (BUG-3005). The
 	// layout's listener reloads on a real identity change, and the starred
 	// store clears itself on one; everything this page shows derives from
 	// those stores, so there is nothing of its own to reset.

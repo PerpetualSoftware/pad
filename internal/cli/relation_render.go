@@ -29,7 +29,7 @@ import (
 // this layer cannot tell apart: the target is gone, or the requester may not
 // see it. "(deleted)" would assert non-existence for both, which is false for
 // half of them and is an existence claim the response does not support — the
-// same defect codex round 12 found in the copy dialog, where the UI read
+// same defect the copy dialog once had, where the UI read
 // `not_found` as "does not exist" when the server also emits it for a target
 // the caller merely cannot see. The server works to make those two
 // indistinguishable; the renderer must not undo that in the last inch.

@@ -44,7 +44,7 @@ test.describe('TASK-3590: quick capture keeps your place', () => {
 		await expect(page).toHaveURL(/\/tasks\/TASK-\d+/);
 		// The URL carries ?new=1, so the item opens with its title in the editor.
 		// Under kit 2 the follow-up goto's focus reset closed the editor at once;
-		// kit 3's reset:false keeps it open (TASK-3423, day-87 ruling, site 3).
+		// kit 3's reset:false keeps it open (TASK-3423).
 		await expect(page.locator('.title-input')).toHaveValue(`${stamp} stay 2`);
 
 		// Add and open.

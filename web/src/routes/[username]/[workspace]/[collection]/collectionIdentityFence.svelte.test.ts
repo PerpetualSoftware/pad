@@ -99,7 +99,7 @@ const sseHandlers = vi.hoisted(() => [] as Array<(e: unknown) => unknown>);
 const gotos = vi.hoisted(() => [] as string[]);
 // `goto` MOVES `page.url` here, unlike the shared no-op mock.
 //
-// Same lesson as the epoch double one level down (codex round 1 [P1]): a mock
+// Same lesson as the epoch double one level down: a mock
 // that models a dependency's SHAPE but not the behaviour the code depends on
 // turns the assertion into a tautology. The per-session reset deletes `?q=` so
 // that `loadUrlFilters()` — which the identity reload calls on success — has
@@ -459,7 +459,7 @@ describe('the collection page stops a commit when the identity moves mid-flight'
 			// The MOCK's own getter and bump, not the module signal: the first
 			// version of this helper read its own state and returned true with
 			// both hooks disconnected, so every leg below passed against the
-			// non-reactive double it exists to detect (codex round 1 [P2]).
+			// non-reactive double it exists to detect.
 			isEpochReactive(
 				() => auth.identityEpoch,
 				() => auth.bumpEpoch()
@@ -612,7 +612,7 @@ describe('the collection page stops a commit when the identity moves mid-flight'
 	});
 
 	it('RECOVERS after a sign-in: the page re-loads and the subscriptions resume', () => {
-		// THE REPAIR (BUG-3084, codex P1). Without it the fence is a one-way
+		// THE REPAIR (BUG-3084). Without it the fence is a one-way
 		// door: `identityEpochAtLoad` is re-stamped only by the page load, that
 		// load is driven by a ROUTE-keyed effect, and `routes/+layout.svelte`
 		// does not reload the tab on an anonymous -> signed-in transition. So
@@ -635,7 +635,7 @@ describe('the collection page stops a commit when the identity moves mid-flight'
 				return collectionGets[1]!;
 			});
 			// And it CLEARED first: the previous user's collection is not still
-			// on screen while the new one is being fetched (codex [P1]). Asserted
+			// on screen while the new one is being fetched. Asserted
 			// at this point deliberately — after the listener ran, before the
 			// reload resolves, which is the whole window in question.
 			expect(
@@ -776,7 +776,7 @@ describe('the collection page stops a commit when the identity moves mid-flight'
 		).toBe('body:secret');
 
 		// The query is in the ADDRESS too, which is the half the first version of
-		// this leg could not see (codex round 1 [P1]).
+		// this leg could not see.
 		page.url = new URL(`${page.url.origin}${page.url.pathname}?q=body%3Asecret`);
 		expect(page.url.searchParams.get('q'), 'precondition: the query is in the URL').toBe('body:secret');
 
@@ -865,7 +865,7 @@ describe('the collection page stops a commit when the identity moves mid-flight'
 
 	it("a query the NEW user navigates to is honoured, not swallowed by the latch", async () => {
 		// The latch suppresses ONE value — the one belonging to the session that
-		// ended — not "the next load" (codex round 2 [P2]). A bare flag was
+		// ended — not "the next load". A bare flag was
 		// consumed by whichever load ran next, including a navigation the new
 		// user makes to a different `?q=` link, whose query was then discarded
 		// although it was theirs.
@@ -987,7 +987,7 @@ describe('the collection page searches every match, not the first 200 (BUG-3710)
 		expect(vi.mocked(api.search).mock.calls.length).toBe(1);
 	});
 
-	// Heron's ruling on BUG-3710: the 1000 cap stays, but never silently.
+	// BUG-3710: the 1000 cap stays, but never silently.
 	const capPage = (from: number, n: number, total: number | undefined) => ({
 		results: Array.from({ length: n }, (_, i) => ({ item: { id: `m${from + i}` } })),
 		total,
@@ -1236,7 +1236,7 @@ describe('the collection page settles a reorder to what the server stored (BUG-3
 		expect(reorderState.current.get('b'), 'a stale read-back overwrote the newer row').toMatchObject({ seq: 22, sort_order: -1024 });
 	});
 
-	// The rework (BUG-3699 plan, Heron's ruling): bounded read-back retries,
+	// The rework (BUG-3699 plan): bounded read-back retries,
 	// then the last confirmed order and a stale scope; never an unconfirmed
 	// order that looks settled.
 	const staleCalls = () => vi.mocked(localIndex.markScopeStale).mock.calls;
@@ -1461,7 +1461,7 @@ describe('the collection page settles a reorder to what the server stored (BUG-3
 
 	// Every completion order of two overlapping reorders that both write B,
 	// each landing or refused, against a fake server: the card ends on the
-	// order the server holds (Codex r5 on #2150, the interleavings gap).
+	// order the server holds (#2150, the interleavings gap).
 	for (const r1Lands of [true, false])
 		for (const r2Lands of [true, false])
 			for (const r1First of [true, false])
@@ -1494,7 +1494,7 @@ describe('the collection page settles a reorder to what the server stored (BUG-3
 					expectEveryCardOnServer(server);
 				});
 
-	// Read-backs completing OUT OF ORDER (Heron, GO-blocking): two landed
+	// Read-backs completing OUT OF ORDER (a blocking case): two landed
 	// reorders on B, their read-backs answering newer-first and older-first.
 	for (const newerFirst of [true, false])
 		it(`overlap: both land, read-backs answer ${newerFirst ? 'newer' : 'older'} first`, async () => {

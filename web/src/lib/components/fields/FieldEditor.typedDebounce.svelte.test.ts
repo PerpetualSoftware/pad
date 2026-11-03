@@ -151,7 +151,7 @@ describe('a change from ELSEWHERE still wins (the guard this must not break)', (
 	});
 
 	it('drops the pending edit on an item switch, even to the value we just sent', async () => {
-		// The Codex round 3 [P1] this effect was built for: an editor pointed at
+		// The case this effect was built for: an editor pointed at
 		// another row must not flush item A's text onto item B, and an echo check
 		// on the VALUE ALONE cannot see the difference, since item B's value can
 		// equal what we sent for item A.
@@ -329,12 +329,12 @@ describe('the echo answers for exactly one write', () => {
 
 describe('a write that never comes home (codex round 1, finding 3)', () => {
 	it('releases the display hold when the consumer reports the write FAILED', async () => {
-		// The R8-2 failure in the typed path. Agreement alone cannot answer for a
+		// The refused-write failure in the typed path. Agreement alone cannot answer for a
 		// REFUSED write, because the value never comes back — so without a second
 		// release signal the rejected text sits on screen forever, over a server
 		// that holds something else. An earlier version of the source comment
-		// claimed nothing was pinned here; it was defending the design I had just
-		// written, and it was wrong.
+		// claimed nothing was pinned here; it was defending the design it
+		// described, and it was wrong.
 		let reject: (e: unknown) => void = () => {};
 		const onchange = vi.fn(() => new Promise((_, rj) => { reject = rj; }));
 		const { input } = mount('server text', onchange);

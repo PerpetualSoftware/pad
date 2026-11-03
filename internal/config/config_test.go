@@ -183,8 +183,8 @@ func TestCloudBaseURLIsCanonicalAppURL(t *testing.T) {
 	}
 }
 
-// TestIsCloudServerOnlyOptsInViaEnv guards the bug codex caught in PR
-// #272: a `pad init`-written `mode = "cloud"` in config.toml must NOT
+// TestIsCloudServerOnlyOptsInViaEnv guards a bug (PR
+// #272): a `pad init`-written `mode = "cloud"` in config.toml must NOT
 // turn the local pad server into a cloud-tenant deployment. Only an
 // explicit env-var opt-in (PAD_CLOUD=true|1 or PAD_MODE=cloud) should
 // flip IsCloudServer().
@@ -404,7 +404,7 @@ func TestBrowserURLPrefersExplicitURL(t *testing.T) {
 // must NOT be influenced by PublicURL, even when PublicURL is set.
 // Otherwise a developer with a host-level PUBLIC_URL set for unrelated
 // reasons would have their CLI silently route requests to that URL
-// instead of their actual local server (Codex review of BUG-899).
+// instead of their actual local server.
 func TestBaseURLIgnoresPublicURL(t *testing.T) {
 	cfg := &Config{
 		Host:      "127.0.0.1",

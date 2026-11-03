@@ -2,8 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 import { asNewUser, openTabs, show, tabBoxes } from './lib/workspace-tabs';
 
 /**
- * TASK-3312: the workspace tabs FEEL like Chrome's (Dave approved all six of the
- * lead's proposals, day 83). This file pins the behaviours:
+ * TASK-3312: the workspace tabs FEEL like Chrome's. This file pins the behaviours:
  *   - the tab uses the arrow cursor, not grab;
  *   - a middle-click closes a tab, and does not open the link;
  *   - the × shows on every tab while tabs are wide, and on hover below that;
@@ -12,7 +11,7 @@ import { asNewUser, openTabs, show, tabBoxes } from './lib/workspace-tabs';
  *     freeze is released when the pointer leaves, on a window resize, and on a
  *     tab change that did not come from this strip's own close;
  *   - with reduced motion a close has no animated phase.
- * The visual half (flare, dividers, icon, height) is Dave's screenshot gate.
+ * The visual half (flare, dividers, icon, height) is checked by screenshot.
  */
 
 const W = 1280;

@@ -184,7 +184,7 @@ export function renderArgumentsSection(args: PlaybookArgument[]): string {
  * those left, so a rename re-renders its own bullet rather than moving.
  */
 export function updateArgumentsInBody(body: string, args: PlaybookArgument[]): string {
-	// A body saved with CRLF (codex r1): a bullet's trailing \r hid it from the
+	// A body saved with CRLF: a bullet's trailing \r hid it from the
 	// parser, so its slot was missed and an edit left the old bullet beside
 	// the new one. Edit it as LF and give the CRLF back.
 	if (body.includes('\r\n')) {
@@ -374,7 +374,7 @@ export function parseArgumentsSection(body: string): PlaybookArgument[] {
  * "no default" and the server treats them the same.
  *
  * Defaults are coerced to the type the arg declares before
- * serialization (Codex round 4 P2). The UI input always types into a
+ * serialization. The UI input always types into a
  * string, but `flag` defaults should be booleans and `number` defaults
  * should be numbers — the server passes them through opaquely so the
  * client is responsible for the canonical typing.

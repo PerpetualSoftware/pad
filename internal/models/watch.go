@@ -29,8 +29,8 @@ type Watch struct {
 	// ItemCollectionID is the watched item's collection ID (populated by
 	// the same join as the fields above). Internal-only (`json:"-"`,
 	// like models.Item.LastMutation) — not part of the wire contract,
-	// consumed only by server.filterWatchesByCurrentAccess (TASK-2533,
-	// codex round 1 finding 1) to re-check the caller's CURRENT
+	// consumed only by server.filterWatchesByCurrentAccess (TASK-2533) to re-check
+	// the caller's CURRENT
 	// visibility into the watched item's collection before delivering or
 	// listing a watch, so a workspace membership or grant revoked after
 	// the watch was created can't keep leaking item metadata/events

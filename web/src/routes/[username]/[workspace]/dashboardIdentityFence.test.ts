@@ -4,7 +4,7 @@
  *
  * THE GATE BESIDE THIS (TASK-3097): `dashboardIdentityGate.test.ts` tables every async unit on
  * this page with the hash of the code it was reviewed on, and refuses any
- * edit to one until its row is re-read. That catches BUG-3084's round-4
+ * edit to one until its row is re-read. That catches BUG-3084's
  * classes, which a source scanner cannot see. This file catches what the
  * gate does not: the RULE on a NEW handler, which the gate accepts with any
  * row. Keep both. Neither is a duplicate of the other.
@@ -24,7 +24,7 @@
  *     call, so this guard says it;
  *   - the identity listener resets and does NOT reload, because the keyed
  *     effect already does, and a second load per identity change is #1378's
- *     round-1 finding on a page that had the single load built in.
+ *     finding on a page that had the single load built in.
  *
  * Every rule asks a REFUSAL question. The behavioural suite owes the other
  * half — that the page keeps working after the identity moves — and the core's
@@ -115,7 +115,7 @@ describe('the dashboard fences every async commit point', () => {
 		// give it. The fence is inside `load()`; every path funnels into it. A
 		// caller that ALSO commits beside the call — or issues its own request
 		// and commits on its continuation — is a commit point no other rule
-		// here can see. Codex round 2 constructed exactly that: an extra
+		// here can see. An extra
 		// `api.dashboard.get(wsSlug).then((dash) => { dashboard = dash; })`
 		// beside Retry's `load(wsSlug)` passed the earlier version of this rule,
 		// which only COUNTED the calls, and painted the previous user's board
@@ -370,7 +370,7 @@ describe('the dashboard fences every async commit point', () => {
 		// becomes the fix the day someone removes or reorders that early return.
 		//
 		// POSITIONAL: the call's index must fall inside an untracked span, not
-		// merely share a block with one (the codex round-1 and round-3 defeats
+		// merely share a block with one (the defeats seen
 		// on the collection page, both walked through a per-block check).
 		const body = loadEffect();
 		const spans = untrackedSpans(body);

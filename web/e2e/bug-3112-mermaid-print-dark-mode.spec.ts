@@ -55,8 +55,8 @@ async function openDoc(
  * Relative luminance (0 black .. 1 white) of the painted pixel inside the first
  * node's FILL.
  *
- * Measured on the node's SHAPE, not on `g.node`, whose box also holds the label
- * (codex round 1): the point is a few px inside the shape's left edge, past the
+ * Measured on the node's SHAPE, not on `g.node`, whose box also holds the label:
+ * the point is a few px inside the shape's left edge, past the
  * stroke, at mid-height, and the shape must be wide enough that the centred
  * label cannot reach it. The screen leg (dark fill, luminance < 0.3) is what
  * shows the point is fill rather than a light label on a dark node.

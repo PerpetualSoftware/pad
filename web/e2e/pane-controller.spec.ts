@@ -747,7 +747,7 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
 
 		// The initial (non-repeat) physical keydown pops depth 1 → 0, back at
-		// the base (A). This is the exact boundary Codex round 3 flagged: a
+		// the base (A). This is the exact boundary at risk: a
 		// naive `!e.repeat` guard scoped only to the depth>0 branch would let
 		// the FOLLOWING repeat events (now depth 0, no `.item-pane` focus) fall
 		// through to `runTopEscape()` and close the pane — all within the same
@@ -816,7 +816,7 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		// keydown listener, outside the shared escape stack): the sheet
 		// closes, and the pane beneath it must NOT also pop a drill level —
 		// a target-based dialog guard would miss this because focus never
-		// moved into the sheet (Codex review, TASK-2163).
+		// moved into the sheet (TASK-2163).
 		await page.keyboard.press('Escape');
 		await expect(sheet).toBeHidden();
 		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
@@ -828,7 +828,7 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 	// The pane chrome (⤢/↗/✕ today) grows a fourth control — a Back chevron —
 	// shown ONLY once the pane has drilled past its base (depth>0), wired to
 	// the same fenced `paneHistoryGo(-1)`/`paneNavInFlight()` traversal the
-	// depth-aware ESC handler above uses (R14). Depth is read reactively off
+	// depth-aware ESC handler above uses. Depth is read reactively off
 	// SvelteKit `page.state` inside `ItemDetail` itself (never raw
 	// `history.state`), so the chevron's visibility always matches the
 	// controller's own `paneState()` read back through the test hook.
@@ -892,8 +892,7 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		// awaits `navigatePaneTo`'s SYNCHRONOUS portion — the `goto()` it
 		// fires is fire-and-forget — so poll `page.state` to settle after
 		// each hop before firing the next; otherwise a later drill can read
-		// a still-stale depth off an in-flight earlier one (Codex review
-		// round 2, P1).
+		// a still-stale depth off an in-flight earlier one.
 		await drillTo(page, b.slug);
 		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
 		await drillTo(page, c.slug);
@@ -962,7 +961,7 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 
 		// Gate C's item fetch — the FIRST Back press (D→C) lands on it and
 		// stalls mid-load, so the SECOND Back press (fired while that fetch is
-		// still outstanding) exercises the exact race Codex round 3 flagged:
+		// still outstanding) exercises the exact race:
 		// a click while `loading` is already true from an EARLIER, unrelated
 		// load must not let the focus-restore effect latch onto that stale
 		// cycle instead of its own.

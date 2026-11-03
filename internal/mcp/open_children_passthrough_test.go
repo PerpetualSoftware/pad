@@ -1,6 +1,6 @@
 package mcp
 
-// IDEA-1494 R2 — MCP-level coverage for the open-children code/details
+// IDEA-1494 — MCP-level coverage for the open-children code/details
 // pass-through, both HTTP and stdio.
 //
 // The contract:
@@ -147,7 +147,7 @@ func TestClassifyExecError_NoMarkerFallsThrough(t *testing.T) {
 }
 
 // TestClassifyExecError_UnknownStructuredCodeFallsThrough covers
-// Codex round-3 P3 marker hardening: even with a well-formed
+// marker hardening: even with a well-formed
 // pad-structured-error/v1 marker, a code that's NOT in the allow-list
 // must not be surfaced — fall back to regex classification instead.
 // Prevents a CLI bug or third-party tool from smuggling an
@@ -172,7 +172,7 @@ Error: invalid status value
 // than parsed. Validates the "version token is parsed, not just
 // prefix-matched" property — agents on the new mcp build won't be
 // confused by stderr from a stale CLI binary that still uses the
-// pre-round-3 unversioned `pad-error:` shape.
+// older unversioned `pad-error:` shape.
 func TestClassifyExecError_OldMarkerVersionIgnored(t *testing.T) {
 	stderr := `pad-error: {"error":{"code":"open_children","message":"x"}}
 Error: invalid status value
@@ -226,7 +226,7 @@ pad-structured-error/v1: {"error":{"code":"open_children","message":"second","de
 }
 
 // TestClassifyHTTPStatus_UnknownConflictCodeFallsBackToErrConflict
-// covers Codex round-4 P2: HTTP and stdio must agree on the closed
+// covers that HTTP and stdio must agree on the closed
 // set of structured codes they surface. Pre-fix the HTTP path
 // forwarded ANY non-"conflict" code; stdio whitelisted only
 // open_children. The two transports diverged on what an agent saw
@@ -257,7 +257,7 @@ func TestClassifyHTTPStatus_UnknownConflictCodeFallsBackToErrConflict(t *testing
 // TestStructuredErrorCodeParityAcrossTransports asserts that the same
 // "unknown code" rejection produces the same envelope shape from
 // both transports — ie HTTP doesn't widen the enum behind stdio's
-// back. Round-4 P2.
+// back.
 func TestStructuredErrorCodeParityAcrossTransports(t *testing.T) {
 	httpRes := classifyHTTPStatus(context.Background(), "item update", 409,
 		[]byte(`{"error":{"code":"made_up_code","message":"x"}}`), nil)
@@ -362,7 +362,7 @@ func TestClassifyHTTPStatus_Generic403FallsToPermissionDenied(t *testing.T) {
 }
 
 // TestClassifyExecError_PlanLimitMarkerLiftsStructuredPayload exercises the
-// CLI-stdio MCP path (TASK-788 Finding A): when cli.WritePlanLimitError writes
+// CLI-stdio MCP path (TASK-788): when cli.WritePlanLimitError writes
 // the structured marker to stderr, classifyExecError must surface
 // ErrPlanLimitExceeded with the correct details — NOT a generic server_error.
 func TestClassifyExecError_PlanLimitMarkerLiftsStructuredPayload(t *testing.T) {
@@ -416,7 +416,7 @@ func TestClassifyExecError_PlanLimitWithoutMarkerFallsThrough(t *testing.T) {
 }
 
 // TestClassifyExecError_PlanLimitWorkspaceCreate exercises the workspace-create
-// CLI-stdio path (TASK-788 codex R2 Finding 2): WritePlanLimitError on the
+// CLI-stdio path (TASK-788): WritePlanLimitError on the
 // workspace-create command must round-trip through classifyExecError with
 // ErrPlanLimitExceeded and populated details.
 func TestClassifyExecError_PlanLimitWorkspaceCreate(t *testing.T) {

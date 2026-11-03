@@ -216,7 +216,7 @@ describe('FieldEditor — relation resolves by ID, in the declared collection', 
 describe('FieldEditor — a renamed target collection must not look like data loss', () => {
 	// `FieldDef.collection` holds a SLUG, and renaming a collection changes its
 	// slug without migrating the relation definitions pointing at it — nothing
-	// in `store.UpdateCollection` touches them (codex round 1 P1 on this unit).
+	// in `store.UpdateCollection` touches them.
 	// The collection check added for cross-collection resolution would then
 	// report EVERY stored value as unresolved, which is a schema problem
 	// presenting as lost data.
@@ -238,7 +238,7 @@ describe('FieldEditor — a renamed target collection must not look like data lo
 	});
 
 	it('survives the window where the index is retagged but the collection list is not', async () => {
-		// codex round 2 P1. `retagCollection` moves the ROWS immediately;
+		// `retagCollection` moves the ROWS immediately;
 		// `loadCollections` is fired with `void` — not awaited, rejection
 		// swallowed. So there is a window where the list still holds the OLD slug
 		// (so the target reads 'live') while the row already carries the NEW one.
@@ -550,7 +550,7 @@ describe('FieldEditor — relation, inline create (PLAN-2857 U8)', () => {
 	});
 
 	it('a create that lands after the user picked another row does not overwrite it', async () => {
-		// codex round 1 P1. The create is a round trip and the picker stays open
+		// The create is a round trip and the picker stays open
 		// through it, so the user can settle on a different row before it
 		// resolves. Last write wins is the WRONG rule here: the later write is
 		// the user's explicit choice and the earlier one is a promise they have
@@ -591,7 +591,7 @@ describe('FieldEditor — relation, inline create (PLAN-2857 U8)', () => {
 	});
 
 	it('a create that lands after this editor is destroyed writes nothing', async () => {
-		// codex round 1 P1, the other half. ItemDetail's fields section is
+		// The other half. ItemDetail's fields section is
 		// `{#key itemSlug}`-remounted on an item switch, so a switch DESTROYS
 		// this component — but not the in-flight promise, and `onchange` calls
 		// into the persistent parent, whose `updateField` builds its PATCH
@@ -618,7 +618,7 @@ describe('FieldEditor — relation, inline create (PLAN-2857 U8)', () => {
 	});
 
 	it('a create that lands after the user escaped out of the picker writes nothing', async () => {
-		// codex round 2 P1. Backing out is as explicit a choice as picking a
+		// Backing out is as explicit a choice as picking a
 		// different row, and it was not fenced: `oncancel` only closed the
 		// picker. The pending create then resolved and selected an item the user
 		// had just declined.
@@ -654,7 +654,7 @@ describe('FieldEditor — relation, inline create (PLAN-2857 U8)', () => {
 	});
 
 	it('a create that lands after a workspace switch writes nothing', async () => {
-		// codex round 2 P1. `ItemDetail`'s fields subtree is keyed on `itemSlug`
+		// `ItemDetail`'s fields subtree is keyed on `itemSlug`
 		// ALONE, so switching workspaces to an item carrying the SAME ref —
 		// every workspace has a TASK-5 — does not remount this component and
 		// leaves `destroyed` false. Without comparing the captured workspace to
@@ -686,7 +686,7 @@ describe('FieldEditor — relation, inline create (PLAN-2857 U8)', () => {
 	});
 
 	it('a failed create the user already escaped out of surfaces no toast', async () => {
-		// codex round 4 P2. The success path was fenced and the failure path was
+		// The success path was fenced and the failure path was
 		// not, so a create the user backed out of still threw an error over
 		// whatever they moved on to.
 		let reject!: (e: unknown) => void;
@@ -716,7 +716,7 @@ describe('FieldEditor — relation, inline create (PLAN-2857 U8)', () => {
 	});
 
 	it('a create that lands after the workspace was PURGED writes nothing and upserts nothing', async () => {
-		// codex round 6. The epoch check alone cannot see a drop: `reset()`
+		// The epoch check alone cannot see a drop: `reset()`
 		// deletes the state and the replacement starts at `scopeEpoch` 0 — which
 		// is also the value whenever no resync has ever happened, i.e. almost
 		// always. So equality passes across exactly the event it was meant to
@@ -752,7 +752,7 @@ describe('FieldEditor — relation, inline create (PLAN-2857 U8)', () => {
 	});
 
 	it('a failed create whose workspace was purged surfaces no toast', async () => {
-		// codex round 6 P2: the failure path carried a copy of SOME of the
+		// The failure path carried a copy of SOME of the
 		// success path's conditions and had drifted. Both now ask one predicate.
 		let reject!: (e: unknown) => void;
 		createApi.mockReturnValue(new Promise((_r, rj) => { reject = rj; }));
@@ -774,7 +774,7 @@ describe('FieldEditor — relation, inline create (PLAN-2857 U8)', () => {
 	});
 
 	it('a create that lands after the workspace index was reset writes nothing', async () => {
-		// codex round 5 P1. `localIndex.reset()` DELETES the workspace state and
+		// `localIndex.reset()` DELETES the workspace state and
 		// the next bootstrap starts a fresh one at `scopeEpoch` 0, so a captured
 		// epoch of 7 is NOT below the current 0 and sails through `upsert`'s
 		// one-sided guard — linking a row minted under an identity that no
@@ -801,7 +801,7 @@ describe('FieldEditor — relation, inline create (PLAN-2857 U8)', () => {
 	});
 
 	it('offers no create row while the collection list is not fresh for this workspace', async () => {
-		// codex round 1 P2. `collectionStore.collections` is a single global
+		// `collectionStore.collections` is a single global
 		// list, so during a workspace switch it still holds the PREVIOUS
 		// workspace's rows. A slug match against those yields another
 		// workspace's collection ID, and gating permission on it is asking the

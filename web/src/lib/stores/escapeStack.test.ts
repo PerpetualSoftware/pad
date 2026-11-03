@@ -105,7 +105,7 @@ describe('escapeStack', () => {
 		expect(topEscapePriority()).toBe(ESCAPE_PRIORITY.pane);
 
 		// Opening the graph drawer (30) makes IT frontmost — the pane's two-level
-		// ESC must defer while this is true (TASK-2122 Codex P2).
+		// ESC must defer while this is true (TASK-2122).
 		const offGraph = pushEscapeHandler(() => true, ESCAPE_PRIORITY.graphDrawer);
 		expect(topEscapePriority()).toBe(ESCAPE_PRIORITY.graphDrawer);
 

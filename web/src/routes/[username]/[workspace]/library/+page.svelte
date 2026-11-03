@@ -89,7 +89,7 @@
 	// so the conventions and playbooks tabs each keep their own offset.
 	const scrollRestoration = createScrollRestoration({
 		// `loading` flips true on workspace change. Length-based gate
-		// omitted (Codex P2 round 2).
+		// omitted.
 		ready: () => !loading,
 		persistKey: () =>
 			wsSlug
@@ -217,7 +217,7 @@
 	onDestroy(stopIdentityWatch);
 
 	$effect(() => {
-		// UNTRACKED (codex round 1 [P2]). `loadData` reads `authStore.identityEpoch`
+		// UNTRACKED. `loadData` reads `authStore.identityEpoch`
 		// synchronously via `captureIdentity()` before its first await, so
 		// without this the effect takes a dependency on the epoch and re-runs
 		// when the identity moves — on top of the listener above, which already

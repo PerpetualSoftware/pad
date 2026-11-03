@@ -29,8 +29,8 @@ const persistence = vi.hoisted(() => ({
 	})),
 	persistDelta: vi.fn(async () => undefined),
 	persistRemovals: vi.fn(async () => undefined),
-	// Returns the durable-commit signal IDEA-2898's caller now reads (TASK-2906
-	// round 2): true = the snapshot reached disk. Default it to the committing
+	// Returns the durable-commit signal IDEA-2898's caller now reads (TASK-2906):
+	// true = the snapshot reached disk. Default it to the committing
 	// case so these epoch-argument assertions keep testing what they name; the
 	// refusal case gets its own test below.
 	persistReplace: vi.fn(async () => true),
@@ -154,7 +154,7 @@ describe('IDEA-2898 — what the resync hands on', () => {
 	});
 
 	it('does NOT stamp the told epoch on disk when the joined resync\u2019s snapshot was refused', async () => {
-		// TASK-2906 round 2. The compare-and-set above is honest about the row
+		// TASK-2906. The compare-and-set above is honest about the row
 		// it patches but cannot see whether the `persistReplace` it is
 		// finishing on behalf of committed. Since TASK-2906 that write can be
 		// declined — its cursor lost the race to another tab — and then the
@@ -194,7 +194,7 @@ describe('IDEA-2898 — what the resync hands on', () => {
 						includes_unparented_metadata: false,
 						// No access_epoch, so the joined caller's fallback is the
 						// only thing that could move the baseline — exactly the
-						// path the round-2 finding walked.
+						// path that was once missed.
 					});
 			}) as unknown as ReturnType<typeof api.items.listIndex>,
 		);
@@ -261,7 +261,7 @@ describe('IDEA-2898 — what the resync hands on', () => {
 	});
 
 	it('withholds the durable stamp on the NULL-baseline branch too when the snapshot was refused', async () => {
-		// TASK-2906 round 2, second door. The guard belongs on BOTH branches for
+		// TASK-2906, second door. The guard belongs on BOTH branches for
 		// the same reason the stamp does, and a mutation run found this one
 		// unguarded-and-untested while its sibling above was covered — which is
 		// the failure the sibling test's own comment already warns about, one
@@ -383,7 +383,7 @@ describe('IDEA-2898 — what the resync hands on', () => {
 	});
 
 	it('hands persistDelta the CARRY-OVER marker while a refused snapshot is unrepaired', async () => {
-		// TASK-2906 round 3. Skipping the joined stamp is not enough on its own:
+		// TASK-2906. Skipping the joined stamp is not enough on its own:
 		// RAM has adopted the new epoch, and the very next delta advances the
 		// cursor and would carry that epoch onto durable rows the refused
 		// snapshot never replaced. The delta cannot be skipped — its rows and
@@ -393,8 +393,8 @@ describe('IDEA-2898 — what the resync hands on', () => {
 		// explicit `null` this shipped as: the caller also cannot vouch during
 		// the window between a resync installing its snapshot and
 		// `persistReplace` resolving, and a null committing after that replace
-		// would clobber the epoch it had just recorded (TASK-2909 review round 1
-		// P2). Carrying the stored value keeps the epoch agreeing with the ROWS
+		// would clobber the epoch it had just recorded (TASK-2909).
+		// Carrying the stored value keeps the epoch agreeing with the ROWS
 		// it describes, which is what makes the server's next epoch disagree and
 		// trigger the resync.
 		persistence.persistReplace.mockResolvedValueOnce(
@@ -525,10 +525,9 @@ describe('TASK-2922 — what an optimistic upsert hands on', () => {
 	/**
 	 * THE REPAIR PATHS, enumerated rather than sampled (CONVE-18).
 	 *
-	 * Rounds 2 and 3 both attacked the same claim — that a refused durable write
-	 * is always re-supplied — from different directions, which is a reviewer
-	 * sampling a population I had not written down. The population is small, so
-	 * here it is in full, with the leg that pins each:
+	 * The claim that a refused durable write is always re-supplied can be
+	 * attacked from several directions, so the population of cases is written
+	 * down rather than sampled. It is small, so here it is in full, with the leg that pins each:
 	 *
 	 *   1. A later delta CARRIES the row → pinned in
 	 *      localIndexScopeWriteFence.idb.test.ts.

@@ -53,8 +53,7 @@ function walk(node: Node, visit: (n: Node) => void): void {
 }
 
 /**
- * The keyed each blocks of one file, read by Svelte's own parser (codex
- * rounds 1-2: a hand scanner misread braces in strings, comments and regex
+ * The keyed each blocks of one file, read by Svelte's own parser (: a hand scanner misread braces in strings, comments and regex
  * literals, and comment or script text). The id keeps the census format:
  * `file :: each <expr> as <item>[, <index>] (<key>)`, whitespace collapsed,
  * with `#n` on the nth repeat of an identical head in one file.
@@ -89,9 +88,9 @@ const endsWithNonDigit = (s: unknown) => typeof s === 'string' && s.length > 0 &
  * literal ending in `<non-digit>${index}`; or `… + '<non-digit>' + index`. With the index LAST and after a non-digit
  * separator, the trailing digits recover it, so two positions cannot share a
  * key. `${i}${x}`, `x.id + i`, `i % 2`, `row.i`, a conditional or a function
- * of the index are not, and need an entry (codex round 2). No call is exempt,
+ * of the index are not, and need an entry. No call is exempt,
  * JSON.stringify included: what a call returns depends on what its name is
- * bound to (codex round 3).
+ * bound to.
  */
 export function keysOnPosition(keyNode: Node, index: string | undefined): boolean {
 	if (!index) return false;
@@ -178,7 +177,7 @@ describe('keyed {#each} census (TASK-3539)', () => {
 		expect(exempt("x.id + ':' + i")).toBe(true);
 		// The literal before the index ends in a non-digit, so the key's
 		// trailing digit run is exactly the index: x.id cannot make two
-		// positions collide (codex round 4 raised this; it holds).
+		// positions collide.
 		expect(exempt("x.id + 'a' + i")).toBe(true);
 		expect(exempt('JSON.stringify([x.kind, i])')).toBe(false);
 		expect(exempt('`${i}${x.suffix}`')).toBe(false);

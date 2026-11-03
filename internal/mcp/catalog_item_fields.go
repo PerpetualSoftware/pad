@@ -38,7 +38,7 @@ import (
 //     shadow such custom fields everywhere on this tool already, and
 //     the `field: ["key=value"]` path has the same collision. Writing
 //     a shadowed custom field from MCP requires renaming the field —
-//     confirmed as accepted in the PR #1159 round-1 review exchange.
+//     an accepted limitation (PR #1159).
 //   - Every other key merges into the `field` array path as a
 //     "key=value" entry, exactly as if the caller had used
 //     `field: ["key=value"]`. Server-side schema validation applies
@@ -58,7 +58,7 @@ import (
 //     round-trippable for non-scalar field types (multi_select
 //     arrays, json fields) — those refuse loudly rather than write.
 //     Array/JSON value encoding onto the `field` path is a tracked
-//     follow-up (PR #1159 round-1 review, scope note); until then the
+//     follow-up; until then the
 //     refusal names the key so the caller knows which value to move
 //     to a supported path.
 
@@ -94,15 +94,15 @@ var identityRefFieldKeys = map[string]bool{
 	"role":   true,
 }
 
-// ─── ONE CANONICAL VIEW, ONE CONFLICT CHECK (BUG-2850, lead ruling after
-// codex round 13) ───────────────────────────────────────────────────────────
+// ─── ONE CANONICAL VIEW, ONE CONFLICT CHECK (BUG-2850)
+// ───────────────────────────────────────────────────────────
 //
-// Rounds 5, 7, 11, 12 and 13 each found a defect in the PREVIOUS round's fix,
+// Successive fixes each left a defect in the PREVIOUS fix,
 // and every one was the same shape: conflict handling had accreted a separate
 // guard at each site that noticed a problem — the generic path, the promoted
 // block, the alias check, the compat-ID block, the canonicalization predicate
 // — and each guard only covered the sources its author happened to think
-// about. Round 13's finding is the proof: `assign` and `assigned_user_id` are
+// about. The proof: `assign` and `assigned_user_id` are
 // two names for one target, exactly like `parent`/`plan`, and NO guard
 // compared them, because the alias guard knew only about hierarchy and the
 // compat guard knew only about same-name collisions.
@@ -176,8 +176,8 @@ func topLevelConflictKeys() []string {
 //
 // SCOPE: it runs from BOTH action entry points (create and update) on every
 // call, whether or not a `fields` object is present. It used to run only from
-// inside reshapeItemFields, which returns early without one — codex round 14
-// found the alias pair that slipped through that gap, and the body below
+// inside reshapeItemFields, which returns early without one — an alias pair
+// slipped through that gap, and the body below
 // carries the detail.
 //
 // Two halves, with different reach:
@@ -190,45 +190,43 @@ func topLevelConflictKeys() []string {
 //
 //   - SAME-NAME collisions are adjudicated only when something will
 //     arbitrate them, which is a PER-KEY question: does the `fields` object
-//     carry THIS key (rounds 17 and 19 were each a per-request predicate
-//     standing in for it). Otherwise the doors resolve it themselves and the
-//     round-7 exemption applies — the array overlays the named param,
+//     carry THIS key (a per-request predicate
+//     standing in for it was wrong). Otherwise the doors resolve it themselves and the
+//     same-name exemption applies — the array overlays the named param,
 //     identically on both, so last-write-wins is a resolution the caller can
 //     predict. Pinned per door by the SameNameDuplicate tests.
 //
 // The exemption is NARROWER than "same name". It holds only for keys the CLI
 // can express: the v0.16 compat IDs have no flag behind them, so BuildCLIArgs
 // drops the top-level value while HTTP reads it, and those refuse instead
-// (round 15) — but only when a top-level compat value is actually present,
-// which is the asymmetry's source (round 20). A padded entry is outside it
-// too, since the doors then receive different writes (round 16).
+// — but only when a top-level compat value is actually present,
+// which is the asymmetry's source. A padded entry is outside it
+// too, since the doors then receive different writes.
 //
 // If you are about to add a condition here, say its QUANTIFIER out loud
-// first. Per-key or per-request, this key class or all of them: rounds 15,
-// 16, 17, 19, 20 and 21 were each that question answered by assumption.
+// first. Per-key or per-request, this key class or all of them: earlier
+// attempts each answered that question by assumption.
 func detectFieldConflicts(prefix string, input map[string]any) *CallToolResult {
 	// Parsed here rather than passed in, so this pass sees the same inputs
-	// whether or not a `fields` object exists (codex round 14). It used to
+	// whether or not a `fields` object exists. It used to
 	// run only from inside reshapeItemFields, which returns early without
 	// `fields` — so an ALIAS pair arriving through the top level and the
 	// `field` array alone slipped past it, and the doors diverged:
 	// `assigned_user_id:"B"` with `field:["assign=dave"]` applies the compat
 	// ID over HTTP while stdio drops it and sends only the generic field.
 	//
-	// Round 7 had already built exactly this always-run guard, for the
-	// hierarchy pair only (checkHierarchyAliasAmbiguity, now deleted). So the
-	// restructure that was supposed to end guard accretion had itself left
-	// TWO alias mechanisms with different reach. One is what the ruling
-	// asked for; this is it.
+	// An always-run guard already existed for the hierarchy pair only
+	// (checkHierarchyAliasAmbiguity, now deleted). Keeping it would have left
+	// TWO alias mechanisms with different reach, so this pass replaces it.
 	obj, _ := input["fields"].(map[string]any) // nil when absent; shape errors belong to reshapeItemFields
 	// NOTE: there is deliberately no `fieldsPresent` here any more. Both
 	// gates below ask the per-KEY question — is THIS key carried by the
-	// object — and rounds 17 and 19 were each a per-request predicate
-	// standing in for it. The variable's absence is the fix's shape: if a
-	// future gate wants "does the request have a fields object", that is
-	// almost certainly the same mistake a third time.
+	// object — and a per-request predicate standing in for it was a
+	// mistake. The variable's absence is the fix's shape: if a future gate
+	// wants "does the request have a fields object", that is almost
+	// certainly the same mistake again.
 	// The INDEX is deliberately discarded here — this pass walks the raw
-	// entries so two entries naming one key stay two contributions (round 18).
+	// entries so two entries naming one key stay two contributions.
 	fieldEntries, _, errRes := parseFieldArray(prefix, input["field"])
 	if errRes != nil {
 		// PROPAGATED, not swallowed (BUG-2870). This returned nil because the
@@ -255,7 +253,7 @@ func detectFieldConflicts(prefix string, input map[string]any) *CallToolResult {
 	sort.Strings(objKeys) // deterministic refusal text across runs
 	for _, k := range objKeys {
 		sv, err := stringifyFieldValue(obj[k])
-		// COMPARED RAW (BUG-2870, superseding codex round 19 on BUG-2850).
+		// COMPARED RAW (BUG-2870).
 		// This trimmed the comparison value because ingestFieldKVP trimmed
 		// what it stored, so a trimmed entry and an untrimmed `fields` value
 		// were apples to oranges. Neither door trims a value now, so raw IS
@@ -268,7 +266,7 @@ func detectFieldConflicts(prefix string, input map[string]any) *CallToolResult {
 		})
 	}
 
-	// ONE CONTRIBUTION PER ENTRY, not per indexed key (codex round 18).
+	// ONE CONTRIBUTION PER ENTRY, not per indexed key.
 	//
 	// parseFieldArray indexes by NORMALIZED key, so two entries naming one
 	// key collapse to a single index slot — and iterating that index made
@@ -286,20 +284,20 @@ func detectFieldConflicts(prefix string, input map[string]any) *CallToolResult {
 		// Split the way the doors split (BUG-2870). This trimmed both halves
 		// to mirror ingestFieldKVP; no door trims now, so a trimmed value here
 		// would be compared against a `fields` value that is carried raw —
-		// which is exactly the apples-to-oranges the round-19 comment was
-		// written to prevent, in the opposite direction.
+		// which is exactly the apples-to-oranges comparison that
+		// trimming was meant to prevent, in the opposite direction.
 		key, val, err := items.SplitFieldEntry(entry)
 		if errors.Is(err, items.ErrFieldEntryMalformed) {
 			continue // no '=' — the CLI owns that error surface, not this pass
 		}
 		if err != nil {
 			// REFUSED HERE, not skipped. This pass runs whether or not a
-			// `fields` object exists (round 14), and parseFieldArray does
+			// `fields` object exists, and parseFieldArray does
 			// not: `field:[" effort=l"]` with no `fields` reaches the doors
 			// through this path alone. Skipping the entry would drop it from
 			// conflict detection entirely — which is how the first version of
 			// this change turned four refusals into successes, caught by the
-			// round-15/16/18 tests below.
+			// tests below.
 			return errStructured(prefix, err)
 		}
 		add(canonicalFieldKey(key), fieldContribution{
@@ -347,17 +345,16 @@ func detectFieldConflicts(prefix string, input map[string]any) *CallToolResult {
 		// Gated on `fields` being present, because that is this merge's
 		// scope. A top-level param colliding with a `field:[]` entry and no
 		// `fields` object keeps its documented last-write-wins resolution —
-		// the round-7 boundary the lead confirmed, pinned on both doors by
+		// the same-name boundary, pinned on both doors by
 		// the SameNameDuplicate tests. Alias collisions above are NOT gated:
 		// last-write-wins is only defensible when both sources name the same
 		// key, and two names for one target have incomparable value spaces.
 		// EQUALITY ONLY LICENSES A COLLAPSE WHEN BOTH DOORS RECEIVE THE SAME
-		// WRITE — and this runs BEFORE the exemption below, deliberately
-		// (codex round 16).
+		// WRITE — and this runs BEFORE the exemption below, deliberately.
 		//
 		// THE PADDED-ENTRY CHECK THAT USED TO SIT HERE IS GONE (BUG-2870),
 		// and the decision is worth stating rather than leaving as an
-		// absence. Round 16 added it because `field:["k = A"]` compared EQUAL
+		// absence. It existed because `field:["k = A"]` compared EQUAL
 		// to a top-level `k:"A"` while the entry stayed padded on the wire —
 		// HTTP trimmed it and wrote `k`, the CLI did not and wrote a junk
 		// `"k "` key — so equality licensed a collapse the two doors would
@@ -373,36 +370,31 @@ func detectFieldConflicts(prefix string, input map[string]any) *CallToolResult {
 		//
 		// The premise it defended still holds and is still enforced, one
 		// layer earlier and for every key class: equality only licenses a
-		// collapse when both doors receive the same write. Round 15 was the
-		// same mistake in another form (a premise verified for declared
-		// params, generalized to keys it did not hold for); putting this check
-		// below the
-		// exemption would have repeated it one round later, and my first
-		// draft did exactly that.
+		// collapse when both doors receive the same write. Verifying that
+		// premise only for declared params and generalizing it to keys it did
+		// not hold for would be a mistake, and so would putting this check
+		// below the exemption.
 		//
 		// The paragraphs that stood here described WHEN a padded entry would
-		// be canonicalized — per-key rather than per-request (round 17) — and
-		// not extended to a lone padded entry because that was "BUG-2870,
-		// ruled out of this PR's scope". Both are spent: this IS BUG-2870,
+		// be canonicalized — per-key rather than per-request — and
+		// not extended to a lone padded entry because that was a separate bug,
+		// BUG-2870. Both are spent: this IS BUG-2870,
 		// nothing canonicalizes anything any more, and a padded entry is
 		// refused before it can reach a question about who covers its key.
 		//
 		// The predicate itself survives below, where it decides whether the
-		// round-15 exemption applies — a different question that has nothing
+		// compat-ID exemption applies — a different question that has nothing
 		// to do with padding. It is named `coveredByFieldsObject` rather than
-		// `canonicalized` now (codex round 2): nothing canonicalizes anything
+		// `canonicalized` now: nothing canonicalizes anything
 		// any more, and the only thing it ever really asked was whether the
 		// `fields` object carries THIS key.
 		//
-		// Third round running that I generalized a property verified on one
-		// subset to the whole: round 15 (a premise true of declared params,
-		// applied to the compat IDs), round 16's first draft (a check placed
-		// below the exemption so it covered one key class), and now a
-		// per-key property read as per-request. The predicate is the actual
-		// question it needs — is THIS key carried by the `fields` object.
-		// (Round 17 phrased it as "will anything canonicalize THIS key",
-		// which was the same test under a name that no longer describes
-		// anything the code does.)
+		// Earlier attempts generalized a property verified on one subset to
+		// the whole: a premise true of declared params applied to the compat
+		// IDs, a check placed below the exemption so it covered one key class,
+		// and a per-key property read as per-request. The predicate is the
+		// actual question it needs — is THIS key carried by the `fields`
+		// object.
 		coveredByFieldsObject := false
 		for _, c := range contribs {
 			if _, inObj := obj[c.key]; inObj {
@@ -412,16 +404,16 @@ func detectFieldConflicts(prefix string, input map[string]any) *CallToolResult {
 		}
 		// NOTE: this predicate no longer gates a padded-entry refusal — that
 		// guard is gone with BUG-2870, see above. It is still live below,
-		// where it decides whether the round-15 exemption applies, so the
+		// where it decides whether the compat-ID exemption applies, so the
 		// predicate stays and only the branch that used it went.
 
 		// ...and the exemption holds only where the doors PROVABLY agree,
-		// which is not everywhere (codex round 15).
+		// which is not everywhere.
 		//
 		// For a schema-declared param the CLI has a real flag, so stdio
 		// receives BOTH forms (`--status open --field status=done`) and its
 		// overlay order resolves them exactly as the HTTP mapper does — the
-		// premise the round-7 boundary rests on, pinned per door.
+		// premise the same-name boundary rests on, pinned per door.
 		//
 		// The v0.16 compat IDs are the exception, and being undeclared is
 		// precisely why: BuildCLIArgs emits the CLI's real flags, and there
@@ -431,12 +423,11 @@ func detectFieldConflicts(prefix string, input map[string]any) *CallToolResult {
 		// `fields` object anywhere. Last-write-wins cannot be the answer when
 		// the two doors do not receive the same writes.
 		//
-		// I generalised the round-7 premise from the params I had verified to
-		// the two whose whole nature is being unverifiable that way. This is
-		// the narrowing.
-		// PER-KEY HERE TOO (codex round 19). Round 17 made the padded gate
-		// per-key and left this one per-request — the same mistake in the
-		// sibling gate, one round later. With `fields:{"other":"x"}` and
+		// The same-name premise was verified only for declared params; the
+		// two compat IDs are unverifiable that way. This is the narrowing.
+		//
+		// PER-KEY HERE TOO: a per-request gate here would be the same mistake
+		// as a per-request padded gate. With `fields:{"other":"x"}` and
 		// `field:["effort=l","effort=s"]`, `effort` is not in the object,
 		// nothing arbitrates it but the doors themselves, and both keep the
 		// last entry — so refusing it was a false refusal on a call that
@@ -445,9 +436,9 @@ func detectFieldConflicts(prefix string, input map[string]any) *CallToolResult {
 		// `coveredByFieldsObject` is exactly the right question and is
 		// already computed above: is THIS key carried by the `fields` object.
 		// THE COMPAT EXCEPTION TURNS ON A TOP-LEVEL VALUE BEING PRESENT, not
-		// on the key being a compat one (codex round 20).
+		// on the key being a compat one.
 		//
-		// Round 15's reason was specific: a top-level compat param has no CLI
+		// The reason is specific: a top-level compat param has no CLI
 		// flag, so BuildCLIArgs DROPS it while HTTP reads it, and the doors
 		// receive different writes. That asymmetry exists only for the
 		// top-level form. Two `field` entries naming a compat key carry no
@@ -468,7 +459,7 @@ func detectFieldConflicts(prefix string, input map[string]any) *CallToolResult {
 			a, b := contribs[0], contribs[i]
 			if a.nested && b.nested {
 				// TWO STRUCTURES: equal ones collapse like any other equal
-				// duplicate (codex round 14). Refusing them unconditionally
+				// duplicate. Refusing them unconditionally
 				// was a regression the restructure introduced — `tags:["a"]`
 				// plus `fields:{"tags":["a"]}` is one unambiguous value, and
 				// scalarEqual had always collapsed it before.
@@ -498,7 +489,7 @@ func detectFieldConflicts(prefix string, input map[string]any) *CallToolResult {
 }
 
 // topLevelValueProvided reports whether a top-level param VALUE counts as
-// supplied for the duplicate checks below (codex round 12).
+// supplied for the duplicate checks below.
 //
 // An empty string does not. That is the convention every schema-declared
 // string on this tool follows — promotedParamValue treats "" as absent, the
@@ -506,18 +497,17 @@ func detectFieldConflicts(prefix string, input map[string]any) *CallToolResult {
 // so a client that zero-fills its optional params was being REFUSED for
 // asking one question, on every promoted key at once.
 //
-// Round 10 fixed exactly this for the hierarchy keys and I never asked
-// whether the same reasoning covered their siblings; it did, for all six.
-// CONVE-18: the reviewer names an instance, the fix owes the population. The
-// probe that drove all eight keys is what turned one named key into six —
-// and, below, into the two that are NOT part of the class.
+// The same reasoning that applies to the hierarchy keys covers their
+// siblings, for all six. A fix for one named key owes the whole population:
+// a probe that drove all eight keys turned one named key into six — and,
+// below, into the two that are NOT part of the class.
 //
 // THE COMPAT ID KEYS ARE EXCLUDED. For `assigned_user_id` / `agent_role_id`
 // an empty string is not absence — it is a CLEAR to NULL, the deliberate
 // v0.16 semantics (see dispatch_http_advanced.go, which forwards "" verbatim
 // for exactly these two). So a blank there IS an effective directive and DOES
 // conflict with a non-empty `fields` value, the same way `field:["parent="]`
-// does. Applying the round-12 finding uniformly would have discarded a clear
+// does. Applying this rule uniformly would have discarded a clear
 // in favour of the `fields` value — a spurious refusal traded for a silent
 // wrong write, which is the worse half of the trade.
 //
@@ -525,7 +515,7 @@ func detectFieldConflicts(prefix string, input map[string]any) *CallToolResult {
 // is FOR. That is not decoration: when only the promoted block called it, the
 // carve-out was unreachable and a mutant deleting it survived every test.
 func topLevelValueProvided(key string, v any) bool {
-	// NIL IS ABSENCE ON EVERY DOOR AND FOR EVERY KEY (codex round 21).
+	// NIL IS ABSENCE ON EVERY DOOR AND FOR EVERY KEY.
 	//
 	// Checked BEFORE the compat carve-out, which returned true
 	// unconditionally and so counted `assigned_user_id: null` as a supplied
@@ -534,8 +524,8 @@ func topLevelValueProvided(key string, v any) bool {
 	// nil beside a `fields` entry for the same key was a false refusal on a
 	// call both doors resolve to the `fields` value.
 	//
-	// The finding named the compat pair; the probe found all five top-level
-	// keys behaving identically, because the non-compat path fell through to
+	// A probe of all five top-level keys found them behaving identically,
+	// because the non-compat path fell through to
 	// `return true` as well. Fixing only the named pair would have left
 	// `status: null` refusing — the same instance-versus-population trap this
 	// unit keeps setting.
@@ -576,8 +566,8 @@ var padItemPromotedFieldKeys = map[string]bool{
 // before. Calls without `fields` are byte-for-byte unchanged.
 func actionItemCreate(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error) {
 	// ONE conflict decision, over the canonical view of every source, run
-	// whether or not a `fields` object is present (lead ruling after round
-	// 13; reach corrected after round 14).
+	// whether or not a `fields` object is present (including calls without a
+	// `fields` object).
 	if errRes := detectFieldConflicts("pad_item.create", input); errRes != nil {
 		return errRes, nil
 	}
@@ -590,8 +580,8 @@ func actionItemCreate(ctx context.Context, input map[string]any, env ActionEnv) 
 
 func actionItemUpdate(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error) {
 	// ONE conflict decision, over the canonical view of every source, run
-	// whether or not a `fields` object is present (lead ruling after round
-	// 13; reach corrected after round 14).
+	// whether or not a `fields` object is present (including calls without a
+	// `fields` object).
 	if errRes := detectFieldConflicts("pad_item.update", input); errRes != nil {
 		return errRes, nil
 	}
@@ -613,7 +603,7 @@ func actionItemUpdate(ctx context.Context, input map[string]any, env ActionEnv) 
 // is PRESENT, empty or not, so `parent: ""` became `--parent ""` and an agent
 // following the
 // documented convention would have been refused on stdio while the remote
-// door went on ignoring it (codex round 1 [P1]). That is a transport
+// door went on ignoring it. That is a transport
 // divergence created by a fix for a transport-independent bug — the same
 // class BUG-2870 exists to close, so it is not acceptable as a side effect of
 // this one.
@@ -676,7 +666,7 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *Ca
 	}
 
 	// The ORIGINAL top-level hierarchy params, snapshotted before the loop
-	// starts writing promoted keys into `out` (codex round 9).
+	// starts writing promoted keys into `out`.
 	//
 	// The alias check below reads this rather than `out`. Reading `out` made
 	// the guard work by ACCIDENT for a pair arriving wholly inside `fields`:
@@ -693,7 +683,7 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *Ca
 		if !ok {
 			continue
 		}
-		// AN EMPTY STRING IS NOT PROVIDED (codex round 10). Every declared
+		// AN EMPTY STRING IS NOT PROVIDED. Every declared
 		// string param on this tool follows that convention — it is why
 		// promotedParamValue treats "" as absent and why `assign: ""` is
 		// deliberately inert. Counting it here made `parent: ""` collide with
@@ -719,7 +709,7 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *Ca
 
 	// Promoted keys whose array entry is an equal duplicate and is therefore
 	// removed from `field` before dispatch, so the value is written once
-	// through its dedicated param (codex round 6).
+	// through its dedicated param.
 	dropFieldKeys := map[string]bool{}
 
 	// Deterministic processing (and error ordering) across runs.
@@ -733,15 +723,14 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *Ca
 		v := obj[k]
 		if k == "" {
 			// Without this, {"": "v"} would pass the '=' check below and
-			// emit a malformed `field: ["=v"]` entry (PR #1159 round-1
-			// review, bug 2).
+			// emit a malformed `field: ["=v"]` entry (bug 2).
 			return nil, errStructured(prefix, fmt.Errorf("fields: keys cannot be empty"))
 		}
 		if strings.Contains(k, "=") {
 			return nil, errStructured(prefix, fmt.Errorf("fields.%q: field keys cannot contain '='", k))
 		}
 		// THESE TWO GUARDS RUN BEFORE THE PROMOTED BRANCH, and that ordering
-		// is the fix, not a detail (codex round 4). They were below it, so
+		// is the fix, not a detail. They were below it, so
 		// `tags: null` and `parent: 42` reached the promoted path and skipped
 		// both: the null was converted into a silent no-op, and a numeric
 		// parent was dropped later by the handler. A guard that a whole class
@@ -751,14 +740,14 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *Ca
 		// "clear this field" are both readable from it, and Pad already has an
 		// explicit clear vocabulary (clear_parent, clear_assigned_user). Giving
 		// null a silent meaning here would be inventing semantics inside a bug
-		// fix; if a clear-by-null is ever wanted it should be ruled and named.
+		// fix; if a clear-by-null is ever wanted it should be specified and named.
 		if v == nil {
 			return nil, errStructured(prefix, fmt.Errorf(
 				"fields.%s: null has no defined write semantics — omit the key to leave it unchanged", k))
 		}
 
-		// HIERARCHY PSEUDO-KEYS TAKE A STRING REF, ALWAYS (BUG-2850, codex
-		// round 3). `plan` is not in padItemPromotedFieldKeys, so before this
+		// HIERARCHY PSEUDO-KEYS TAKE A STRING REF, ALWAYS (BUG-2850). `plan` is
+		// not in padItemPromotedFieldKeys, so before this
 		// it fell to the generic path and — once structures stopped being
 		// refused — a `fields:{"plan":{…}}` reached the server natively. There
 		// `extractParentLink` reads any PRESENT non-string plan/parent as a
@@ -769,7 +758,7 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *Ca
 		// keys take is a ref.
 		if hierarchyPseudoFieldKeys[k] {
 			// AN EMPTY HIERARCHY VALUE HERE IS A SILENT NO-OP, so it is
-			// refused rather than accepted (codex round 11).
+			// refused rather than accepted.
 			//
 			// `fields:{"parent":""}` promotes onto the top-level `parent`
 			// param, where BOTH doors then treat empty as NOT PROVIDED —
@@ -796,7 +785,7 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *Ca
 			}
 		}
 
-		// IDENTITY-REFERENCE KEYS TAKE A STRING, ALWAYS (codex round 9).
+		// IDENTITY-REFERENCE KEYS TAKE A STRING, ALWAYS.
 		// `assign` and `role` name a person or a role — a slug, an email, a
 		// UUID. A number has no meaning for either, and the two doors
 		// disagreed about what to do with one: the HTTP dispatcher's
@@ -807,12 +796,12 @@ func reshapeItemFields(prefix string, input map[string]any) (map[string]any, *Ca
 		//
 		// Refused here, at the door-independent layer, rather than taught to
 		// each dispatcher — that is what stops them drifting again. Note this
-		// does NOT walk back round 6's decision to accept non-string promoted
+		// does NOT walk back the decision to accept non-string promoted
 		// values generally: `priority` may legitimately be a number in a
 		// custom schema, and create has always passed such values through.
 		// These two keys are references, not values.
-		// THE v0.16 COMPAT ID PARAMS CONFLICT LIKE ANY OTHER KEY (codex
-		// round 11). `assigned_user_id` / `agent_role_id` are accepted at the
+		// THE v0.16 COMPAT ID PARAMS CONFLICT LIKE ANY OTHER KEY.
+		// `assigned_user_id` / `agent_role_id` are accepted at the
 		// top level as a documented, never-schema-declared compat form, so
 		// they are invisible to padItemPromotedFieldKeys and took the generic
 		// path — where the conflict check only looks at the `field` array.
@@ -968,7 +957,7 @@ func parseFieldArray(prefix string, raw any) ([]string, map[string]string, *Call
 	for _, e := range entries {
 		// INDEXED THE WAY THE DOORS PARSE (BUG-2870). This used to trim both
 		// halves here, mirroring ingestFieldKVP, which trimmed them at the
-		// remote door and nowhere else (codex round 6 on BUG-2850). That
+		// remote door and nowhere else (BUG-2850). That
 		// premise is gone: every door now runs items.SplitFieldEntry, which
 		// REFUSES a padded key rather than trimming it and carries the value
 		// through untouched. So the index is built by the same call the doors

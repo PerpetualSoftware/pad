@@ -148,7 +148,7 @@ test.describe('selection toolbar — Comment (IDEA-2843)', () => {
 		// Side by side, not stacked. The menu's buttons are themselves flex, so
 		// without a row layout on the container they stack — which also
 		// falsifies the width the positioner clamps against, drifting the menu
-		// over the text it points at (codex round 7). Layout is not observable
+		// over the text it points at. Layout is not observable
 		// in jsdom, so this is the only place the claim can be made.
 		const commentBox = await comment.boundingBox();
 		const extractBox = await extract.boundingBox();

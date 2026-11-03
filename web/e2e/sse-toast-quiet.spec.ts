@@ -132,9 +132,9 @@ test('CONTROL: an unflagged context still shows the creation toast — the produ
 		await createTask(request, fixture.apiToken, fixture.workspaceSlug, title, 'e2e-toast-control');
 
 		// The toast first, held the moment it shows: its 4s clock starts then,
-		// and waiting on the row before it could outlast that clock (codex r5).
+		// and waiting on the row before it could outlast that clock.
 		// Hover holds it (TASK-2202), so a slow create or SSE delivery cannot
-		// let it expire mid-burst and start a second toast either (codex r2).
+		// let it expire mid-burst and start a second toast either.
 		await expect(creationToast(page, title)).toBeVisible({ timeout: 15_000 });
 		await creationToast(page, title).hover();
 		await expect(rowFor(page, title)).toBeVisible({ timeout: 15_000 });

@@ -30,7 +30,7 @@ func captureStderr(t *testing.T, fn func()) string {
 	return <-done
 }
 
-// BUG-4066 phase 1 (lead ruling 4b4cb4ff): a relative PAD_DATA_DIR still
+// BUG-4066 phase 1 (b4cb4ff): a relative PAD_DATA_DIR still
 // resolves against this process's cwd, unchanged, but the process WARNS,
 // naming the absolute directory it resolved, because a CLI and a server in
 // different directories silently use different data.
@@ -156,7 +156,7 @@ func TestBUG4066_RelativeDataDirWarningRule(t *testing.T) {
 }
 
 // Windows: a drive-relative path ("C:data") and a rooted one with no drive
-// ("\\data") are not absolute there, so they warn (4b4cb4ff, Q4).
+// ("\\data") are not absolute there, so they warn (4b4cb4ff).
 func TestBUG4066_WindowsNonAbsolutePathsWarn(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("Windows path semantics")

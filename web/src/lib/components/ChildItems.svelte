@@ -290,7 +290,7 @@
 	// callers race concurrently (mount effect, SSE, sync, and the post-mutation
 	// refreshes below); without this a slower older fetch can resolve last and
 	// clobber `children` with a stale snapshot — and push it through
-	// onChildrenChange (Codex diff review). Plain `let` (CONVE-1688).
+	// onChildrenChange. Plain `let` (CONVE-1688).
 	let loadSeq = 0;
 
 	async function loadChildren() {
@@ -311,7 +311,7 @@
 		const isSameIdentity = authStore.identityFence();
 		// `destroyed` guards the {#key itemSlug} teardown → same-slug remount
 		// case: a late load from the old instance must not push stale children
-		// through onChildrenChange into the freshly-mounted parent (Codex).
+		// through onChildrenChange into the freshly-mounted parent.
 		const stale = () =>
 			destroyed ||
 			!isSameIdentity() ||
@@ -347,7 +347,7 @@
 			onChildrenChange?.(children);
 		} catch (err) {
 			if (stale()) return;
-			// BUG-2871, codex round 1: a FAILED same-item refresh must not destroy
+			// BUG-2871: a FAILED same-item refresh must not destroy
 			// the rows either. `error` swaps the list for `.error-msg` exactly as
 			// `loading` swaps it for the spinner, so surfacing a transient refresh
 			// failure that way reintroduces this bug through the other branch —
@@ -576,7 +576,7 @@
 		// after the form was cleared/closed.
 		clearTimeout(searchDebounceTimer);
 		// Invalidate any in-flight search so its late result can't repopulate
-		// linkResults after the form was cleared/closed (Codex diff review P1).
+		// linkResults after the form was cleared/closed.
 		searchSeq++;
 	}
 
@@ -585,7 +585,7 @@
 	// remounts us with a fresh form — this additionally covers a same-slug
 	// switch across workspaces (itemId/wsSlug change, itemSlug constant, no
 	// remount) so a stale title/collection can't be submitted against the new
-	// item (Codex diff review). Dedicated identity-trigger effect per CONVE-606;
+	// item. Dedicated identity-trigger effect per CONVE-606;
 	// reads only identity props and writes only form state (CONVE-1688-safe).
 	$effect(() => {
 		void itemId;
@@ -615,7 +615,7 @@
 		confirmCandidate = null;
 		// Leaving Link mode hides the search box — cancel a pending debounced
 		// search + invalidate any in-flight one so it can't fire/repopulate
-		// after the input is gone (Codex review P2).
+		// after the input is gone.
 		clearTimeout(searchDebounceTimer);
 		searchSeq++;
 		linkSearching = false;
@@ -704,8 +704,7 @@
 		}
 		// Query changed: invalidate any in-flight search (its result is now
 		// stale) and drop the previous results so they aren't shown or clickable
-		// during the debounce window; show loading until the new search lands
-		// (Codex review P2).
+		// during the debounce window; show loading until the new search lands.
 		searchSeq++;
 		linkResults = [];
 		linkSearching = true;
@@ -716,8 +715,7 @@
 		const q = linkSearch.trim();
 		if (!q) {
 			// Bump the sequence so any in-flight query is invalidated when the
-			// input is cleared — its late result must not repopulate results
-			// (Codex diff review P1).
+			// input is cleared — its late result must not repopulate results.
 			searchSeq++;
 			linkResults = [];
 			linkSearching = false;
@@ -781,7 +779,7 @@
 		try {
 			// SOURCE = candidate, TARGET = current item id. Address the source
 			// by stable `id` (ResolveItem tries UUID first) — not the mutable
-			// slug, which could be reclaimed by another item mid-confirm (Codex).
+			// slug, which could be reclaimed by another item mid-confirm.
 			// The server does single-parent replace + cycle detection.
 			await api.links.create(reqWs, cand.id, {
 				target_id: reqId,
@@ -1077,12 +1075,11 @@
 		<ul class="print-child-list">
 			{#each split.work as child (child.id)}
 				{@const childFields = parseFields(child)}
-				<!-- THE SECOND RENDERER IN THIS FILE, and the reason the review round
-				     found it rather than I did: fixing "ChildItems" is not fixing a
+				<!-- THE SECOND RENDERER IN THIS FILE, and the reason a sweep can miss it: fixing "ChildItems" is not fixing a
 				     FILE, it is fixing each place the file draws a value. The print
 				     view draws `status` where the interactive rows draw `priority`,
 				     so a sweep that stopped at the first hit in each file missed it
-				     (BUG-3067 round 3). -->
+				     (BUG-3067). -->
 				{@const printStatus = categoricalValueFor(collectionStore.collections, child, 'status', childFields.status, collectionsNotStaleFor(collectionStore.collectionsWorkspace, wsSlug))}
 				{@const isDone = childRowState(child, childCollections) === 'done'}
 				<li class="print-child-row" class:done={isDone}>

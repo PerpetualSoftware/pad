@@ -4,7 +4,7 @@ import type { api as ApiClient } from '$lib/api/client';
 
 type Api = typeof ApiClient;
 
-// BUG-3037 (codex round 1) — the browser MCP surface must FORWARD the OCC token.
+// BUG-3037 — the browser MCP surface must FORWARD the OCC token.
 //
 // The catalog advertises `expected_seq` / `expected_updated_at` on
 // `pad_item.action=update`, and this dispatcher dropped both: an agent driving

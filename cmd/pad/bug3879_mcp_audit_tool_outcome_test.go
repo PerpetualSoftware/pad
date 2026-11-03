@@ -64,7 +64,7 @@ func TestBUG3879_ToolOutcomeReachesTheAuditRow(t *testing.T) {
 		})
 	}
 	// mcp-go refuses an unknown tool before any tool middleware runs, with a
-	// JSON-RPC error inside a 200 (hunter r1 M1): the OnError hook's row.
+	// JSON-RPC error inside a 200: the OnError hook's row.
 	t.Run("unknown tool", func(t *testing.T) {
 		bug3879Call(t, f, f.member, f.memberPAT, "pad_no_such_tool", `{}`, models.MCPAuditResultError, "tool_not_found")
 	})
@@ -160,7 +160,7 @@ func bug3879NextRow(t *testing.T, f *capFixture, userID, tool string, before []m
 	}
 }
 
-// BUG-3879 r4: since BUG-3864 an unverified email's refused write is its own
+// BUG-3879: since BUG-3864 an unverified email's refused write is its own
 // code, email_not_verified, and it is a refusal like the other gates, so the
 // audit row says denied. The Cloud fixture is the one BUG-3864's own test
 // uses; the remote transport refuses in its gate before the request is built.

@@ -40,7 +40,7 @@
 	let quickAddSubmitting = $state(false);
 	// Which opening of the dialog a submission belongs to. The collection is
 	// not enough: dismissing and reopening the SAME collection mid-request
-	// would let the old response clear the new text (codex round 1, BUG-3115).
+	// would let the old response clear the new text (BUG-3115).
 	let quickAddSession = 0;
 	let pickerOpen = $state(false);
 	let pickerHighlight = $state(0);
@@ -165,9 +165,9 @@
 	//
 	// A request is consumed at once, even while membership is still loading, in
 	// which case no collection reads as creatable and it does nothing. Holding
-	// it until membership settled was tried (codex round 1 on BUG-3258) and
-	// withdrawn: the request is one global flag with no workspace identity, so
-	// every hold had a new cross-workspace timing hole (rounds 2 and 3). The
+	// it until membership settled was tried (BUG-3258) and withdrawn: the request is one global
+	// flag with no workspace identity, so
+	// every hold had a new cross-workspace timing hole. The
 	// window is only a workspace's FIRST resolution in a session; a repeat
 	// resolution serves the prior answer (TASK-2988).
 	$effect(() => {
@@ -193,7 +193,7 @@
 	function cancelQuickAdd() {
 		quickAddSession++;
 		// The in-flight create belongs to the opening just closed; a new one
-		// must not wait on it (codex round 2).
+		// must not wait on it.
 		quickAddSubmitting = false;
 		quickAddCollection = null;
 		quickAddTitle = '';
@@ -208,8 +208,8 @@
 		if (!wsSlug || !quickAddCollection || !quickAddTitle.trim() || quickAddSubmitting) return;
 		const coll = quickAddCollection;
 		const title = quickAddTitle.trim();
-		// Permission can change while the dialog is open (codex round 1 on
-		// BUG-3258); the dialog keeps the collection it opened on.
+		// Permission can change while the dialog is open (BUG-3258); the dialog keeps the
+		// collection it opened on.
 		if (!workspaceStore.canEditCollection(coll.id)) {
 			quickAddError = `You can't create items in ${coll.name}.`;
 			return;
@@ -304,7 +304,7 @@
 
 	function selectCollection(coll: Collection) {
 		// While a create is in flight the dialog is read-only: what was sent is
-		// what the result lands on (codex round 2).
+		// what the result lands on.
 		if (quickAddSubmitting) return;
 		quickAddCollection = coll;
 		pickerOpen = false;
@@ -640,7 +640,7 @@
 				</a>
 				{/if}
 				<!--
-					TASK-4044 3c (Option C, ruling 687eb810 Q-e): the Chat entry. Chat is
+					TASK-4044 3c (Option C): the Chat entry. Chat is
 					per user, not per workspace, so it is gated on being signed in and
 					sits OUTSIDE the `!isGuest` block: a guest member of this workspace
 					still has their own chat. href is global, not wsPrefix.
@@ -1311,7 +1311,7 @@
 	.quick-add-input::placeholder {
 		color: var(--text-muted);
 	}
-	/* Wraps on a narrow screen (TASK-3972 r1): the buttons drop below the
+	/* Wraps on a narrow screen (TASK-3972): the buttons drop below the
 	   hint, and then onto two rows themselves, rather than run past the
 	   dialog's edge. */
 	.quick-add-actions {

@@ -12,7 +12,7 @@
 // every page load performs — was uncovered. These tests assert it now fires on
 // every connect, and, importantly, that it still fires AFTER the stream is
 // open rather than before: firing early would just move the same gap, which is
-// the property TASK-1359 round 4 established and this change must not lose.
+// the property TASK-1359 established and this change must not lose.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 /** The fake EventSource instances a test has caused to be constructed. */
@@ -118,7 +118,7 @@ describe('SSE first-connect sync coverage (BUG-2540)', () => {
 	});
 
 	it('fires it AFTER the stream opens, never before', async () => {
-		// The ordering property from TASK-1359 round 4. Dispatching early would
+		// The ordering property from TASK-1359. Dispatching early would
 		// relocate the gap rather than close it: the resulting /items-changes
 		// snapshot would be taken before the subscription exists, so a mutation
 		// between snapshot and subscription would still reach nobody.

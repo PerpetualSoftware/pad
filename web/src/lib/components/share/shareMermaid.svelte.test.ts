@@ -71,7 +71,7 @@ describe('share mermaid (C120)', () => {
 		await vi.waitFor(() => expect(container.querySelector('.expansion-content .share-mermaid svg')).not.toBeNull());
 	});
 
-	// Codex round 1: the code used to be hidden up front and restored only on a
+	// The code used to be hidden up front and restored only on a
 	// rejection, so a render that never settled left the reader nothing.
 	// LAST IN THE FILE, deliberately: the render queue is one module-level
 	// promise chain, so a render that never settles holds every render queued

@@ -36,7 +36,7 @@ func outcomeServerRef(t *testing.T, stored string, pendingFlush, withRef bool) {
 			// FIELDS, deliberately: a real item nearly always has them, and the
 			// update prints a field-summary line after "Updated …". The first
 			// version of this file used field-less stubs and so never saw that
-			// the outcome was NOT the last line (lead review of #1416).
+			// the outcome was NOT the last line.
 			Fields: `{"status":"draft","priority":"high"}`}
 		if withRef {
 			n := 3
@@ -217,7 +217,7 @@ func TestThousands(t *testing.T) {
 	}
 }
 
-// --- pad item show: the stale-body notice (contract item 2, lead ruling) ---
+// --- pad item show: the stale-body notice (contract item 2) ---
 
 func staleShowServer(t *testing.T, body string) {
 	t.Helper()

@@ -329,7 +329,7 @@ func TestHasElectableApplierDuringRestoreAnswersTrue(t *testing.T) {
 
 // TestHasElectableApplierTakesNoAdmission pins that the hint is not a gate entry: it
 // must leave admittedUnregistered untouched, or a concurrent beginRestore would
-// drain against a round-trip that will never register (BUG-2276 residual 2, P1).
+// drain against a round-trip that will never register (BUG-2276 residual 2).
 func TestHasElectableApplierTakesNoAdmission(t *testing.T) {
 	bus := NewMemoryOpBus()
 	defer bus.Close()

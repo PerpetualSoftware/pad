@@ -12,7 +12,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
-// BUG-3790 (lead ruling): pad_item starred never pages. Both transports ask
+// BUG-3790: pad_item starred never pages. Both transports ask
 // for one row past the list cap, and a result that had the extra row comes
 // back trimmed to the cap with has_more and the truncation note.
 

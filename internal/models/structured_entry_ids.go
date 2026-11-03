@@ -67,7 +67,7 @@ func StructuredEntryIDKey(raw, prefix string) (key string, usable bool) {
 // would collide in the merged stream without any structured entry involved.
 // Nothing here can detect either without consulting the rows, which is the
 // dependency the whole design exists to avoid. It is latent rather than reachable through any
-// current write or import path (codex round 2, P2), and the enforcement that
+// current write or import path, and the enforcement that
 // would close it belongs at the writers or the schema, not here.
 // The cost is that a blob id that happens to be a well-formed UUID loses its
 // raw id even when nothing collides with it; that is accepted, because such an
@@ -113,7 +113,7 @@ func EnsureStructuredEntryIDs(fieldsJSON string) (fixed string, changed bool, er
 	// The timeline's FIRST stage: it parses the whole blob with a plain
 	// Unmarshal, which fails on a number outside float64's range anywhere in
 	// it, and then shows no entries at all. Such a blob has nothing on the
-	// positional path, so it is left alone (codex round 2).
+	// positional path, so it is left alone.
 	if _, ok := parseItemFields(fieldsJSON); !ok {
 		return fieldsJSON, false, nil
 	}

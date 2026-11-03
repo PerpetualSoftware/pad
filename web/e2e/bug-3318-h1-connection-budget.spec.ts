@@ -12,7 +12,7 @@ import type { Page } from '@playwright/test';
  * sat on its skeleton: `GET /collections` never reached the server.
  *
  * Measured on 7ba82300 in Playwright's Chromium: 4 open tabs, then a 5th load
- * never finishes `GET /collections` (20s) and stays a skeleton. Dave's Brave hit
+ * never finishes `GET /collections` (20s) and stays a skeleton. A Brave user hit
  * it at 3. This drives the same shape and requires the 5th load to complete.
  *
  * The e2e server is plain http://localhost, so HTTP/1.1 and its 6-per-host

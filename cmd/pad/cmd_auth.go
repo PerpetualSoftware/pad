@@ -316,7 +316,7 @@ func runHeadlessSetup(cfg *config.Config, client *cli.Client, email, name, passw
 // The IDEA-1 trigger phrase belongs in `printOnboardingHints` (which runs
 // after `pad init` / `pad workspace init`) — by then the workspace
 // exists and IDEA-1 is seeded. Calling out the trigger phrase here would
-// have sent users at a nonexistent ref (TASK-1143 / Codex review of PR
+// have sent users at a nonexistent ref (TASK-1143, PR
 // #406).
 func printPostSetupNextStepsHint() {
 	bold := color.New(color.Bold)

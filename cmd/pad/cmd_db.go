@@ -366,10 +366,10 @@ Steps:
 				return fmt.Errorf("SQLite database not found: %s", fromPath)
 			}
 
-			// BUG-3032, codex round 2 P1: REMOVE THE APPENDER rather than race it.
+			// BUG-3032: REMOVE THE APPENDER rather than race it.
 			//
-			// Round 1's post-export bundle check narrowed the TOCTOU window from
-			// "pre-pass → export" to "export → import". Round 2 was right that
+			// A post-export bundle check narrows the TOCTOU window from
+			// "pre-pass → export" to "export → import", but
 			// narrowing is not closing: the source read and the destination write
 			// are in two different databases, so no transaction can span them and
 			// no amount of re-checking makes them atomic.
@@ -409,7 +409,7 @@ Steps:
 			// makes the whole question moot.
 			cfg, cfgErr := config.Load()
 			if cfgErr != nil {
-				// FAIL CLOSED (codex round 3 P1). The previous version warned and
+				// FAIL CLOSED. The previous version warned and
 				// proceeded, on the reasoning that an unrelated config problem
 				// should not block a migration. That gets the direction backwards
 				// for this particular gate: its entire job is to establish that
@@ -475,9 +475,9 @@ Steps:
 			// database and an error naming a driver, not a cause. The scan is
 			// read-only and cheap next to the copy it guards.
 			//
-			// It does NOT repair. Dave's day-54 ruling: a migration that
-			// rewrites user content decides consent for the operator, so this
-			// prints the exact command that asks for it.
+			// It does NOT repair: a migration that rewrites user content
+			// would be deciding consent for the operator, so this prints the
+			// exact command that asks for it.
 			if err := preflightNULForMigration(srcStore, fromPath); err != nil {
 				return err
 			}
@@ -618,7 +618,7 @@ Steps:
 					return fmt.Errorf("export %s: %w (nothing has been marked; the SQLite database is unchanged)", ws.Slug, err)
 				}
 
-				// BUG-3032, codex round 1 P1: the pre-pass above closes the
+				// BUG-3032: the pre-pass above closes the
 				// all-or-nothing question, not the TOCTOU one. It reads the
 				// database at one instant; `ExportWorkspace` reads it at
 				// another, and a tab can append to the op-log in between — so a
@@ -963,7 +963,7 @@ func preflightNULForMigration(src *store.Store, fromPath string) error {
 	// tables store.MigratedTables names; a NUL in users, platform settings,
 	// sessions or the oauth tables cannot break a copy that never touches them,
 	// and blocking on one would demand the operator rewrite content unrelated
-	// to the migration they asked for (codex round 9).
+	// to the migration they asked for.
 	//
 	// The others are still REPORTED, below. They are real, `pad db scan-nul`
 	// lists them, and staying silent about a broken row because this
@@ -1030,8 +1030,8 @@ type migrateDropped struct {
 }
 
 // migrateImportWorkspaceReporting is migrateImportWorkspace that also prints
-// each schedule the import refused, as it happens, and returns them (TASK-4104
-// D2 r1-1). Print-only: the SQLite source is untouched, so nothing is lost.
+// each schedule the import refused, as it happens, and returns them (TASK-4104).
+// Print-only: the SQLite source is untouched, so nothing is lost.
 func migrateImportWorkspaceReporting(dst *store.Store, data *models.WorkspaceExport, w io.Writer) (*models.Workspace, []models.ImportScheduleDrop, error) {
 	ws, rep, err := dst.ImportWorkspaceWithReport(data, "", "", "", store.WithPreservedSlug())
 	if err != nil {
@@ -1060,5 +1060,5 @@ func printMigrateDropSummary(w io.Writer, dropped []migrateDropped, fromPath str
 }
 
 // shellQuote single-quotes s for a POSIX shell, so a printed command pastes as
-// one argument whatever s holds (TASK-4104 D2 r3-1).
+// one argument whatever s holds (TASK-4104).
 func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }

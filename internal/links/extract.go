@@ -64,7 +64,7 @@ type WikiLinkRef struct {
 	// (JS nullish coalescing — empty-string IS preserved), so an
 	// explicit empty display override renders as an empty link. We
 	// preserve that distinction in storage so the backlinks panel can
-	// reproduce it. Codex round-12 P3.
+	// reproduce it.
 	HasDisplay bool
 
 	// Position is the byte offset of the opening `[[` in the
@@ -80,8 +80,7 @@ type WikiLinkRef struct {
 	// untrimmed title lookup at web/src/lib/utils/markdown.ts::resolveWikiBody
 	// — an item literally titled `" TASK-5 "` (with surrounding
 	// whitespace) resolves via the renderer's untrimmed key but
-	// would miss a canonical-trimmed `"TASK-5"` lookup. Codex
-	// round 10 P2.
+	// would miss a canonical-trimmed `"TASK-5"` lookup.
 	//
 	// Empty for other kinds — title kind already preserves the
 	// untrimmed body in Title, and workspace_ref kinds are
@@ -93,8 +92,8 @@ type WikiLinkRef struct {
 // the renderer's REF_PATTERN constant in web/src/lib/utils/markdown.ts
 // — case-insensitive so `[[task-5]]` parses the same way the renderer
 // resolves it. Without this parity the renderer would render a mixed-
-// case ref as a clickable link while the index silently dropped it
-// (Codex round-1 P2). The Display segment is parsed separately so
+// case ref as a clickable link while the index silently dropped it.
+// The Display segment is parsed separately so
 // case-only differences in the prefix collapse to the canonical
 // uppercase form at storage time — see parseBody.
 var refPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]*-\d+$`)
@@ -143,8 +142,7 @@ var refPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]*-\d+$`)
 // had silently drifted onto unrelated code by the time anyone looked.
 //
 // Original rationale, still accurate: matching the permissive grammar
-// here keeps the index consistent with what the editor saves. Codex
-// rounds 4/7/10 P2.
+// here keeps the index consistent with what the editor saves.
 var wikiLinkPattern = regexp.MustCompile(`\[\[((?:\\.|[^\]\\])+)\]\]`)
 
 // fencedCodeRanges returns half-open `[start, end)` byte ranges that
@@ -187,7 +185,7 @@ func fencedCodeRanges(content string) [][2]int {
 		// up to 3 leading spaces but bail if we hit a 4th — the
 		// renderer would treat that line as code, not a fence opener,
 		// and we'd risk false-positive on a wiki-link inside an
-		// indented-code paragraph. Codex round-5 finding #2.
+		// indented-code paragraph.
 		fenceLineStart := i
 		spaces := 0
 		for spaces < 4 && fenceLineStart < n && content[fenceLineStart] == ' ' {
@@ -206,7 +204,7 @@ func fencedCodeRanges(content string) [][2]int {
 		// Determine the fence character. CommonMark / marked accept
 		// both backtick (`) and tilde (~) fences. The closer must
 		// use the same char as the opener and have a matching
-		// minimum run length. Codex round-6 finding #1.
+		// minimum run length.
 		fenceChar := byte(0)
 		if fenceLineStart < n {
 			switch content[fenceLineStart] {
@@ -295,7 +293,6 @@ func fencedCodeRanges(content string) [][2]int {
 // inside a still-open fence is NOT a valid closer. Without that
 // strictness, the extractor would prematurely terminate the code
 // range and leak later refs inside the still-rendered code block.
-// Codex round-6 finding #2.
 func findFenceCloser(content string, start, tickCount int, fenceChar byte) int {
 	i := start
 	n := len(content)
@@ -363,7 +360,7 @@ func findFenceCloser(content string, start, tickCount int, fenceChar byte) int {
 // includes a stray single backtick AND the wiki-link, and the link
 // must NOT be indexed because the renderer shows it as code.
 //
-// Without matching run lengths (Codex round-7 finding #2), the
+// Without matching run lengths, the
 // parser would treat the stray single backtick as a closer, end
 // the range early, and false-positive on `[[X-1]]`.
 //
@@ -409,7 +406,7 @@ func inlineCodeRanges(content string, fenced [][2]int) [][2]int {
 		// single newlines BUT a blank line (a line containing only
 		// whitespace) ends the enclosing paragraph and therefore
 		// terminates the span. We allow single-line wraps but break
-		// on blank lines — Codex round-9 P1.
+		// on blank lines.
 		closerStart := -1
 		closerEnd := -1
 		k := j
@@ -528,7 +525,7 @@ func ExtractWikiLinks(content string) []WikiLinkRef {
 // body doesn't match any of the five recognized forms. Mirrors the
 // editor's body-parsing logic in markdown.ts so server-side and
 // client-side extraction stay in lockstep — including the editor's
-// `\]`, `\|`, `\\` escape sequences (Codex round-10 P2).
+// `\]`, `\|`, `\\` escape sequences.
 func parseBody(body string) *WikiLinkRef {
 	// Split on the FIRST UNESCAPED `|`. `\|` is part of the key or
 	// display text (depending on which side of the split it's on)
@@ -537,8 +534,7 @@ func parseBody(body string) *WikiLinkRef {
 	// (post-unescape) — the renderer doesn't trim it, and the
 	// WikiLinkRef.Display doc comment promises verbatim storage.
 	// Trimming would silently differ from client behavior on
-	// padded display text like `[[TASK-1|  spaces  ]]`. Codex
-	// round-11 P3.
+	// padded display text like `[[TASK-1|  spaces  ]]`.
 	var display string
 	hasDisplay := false
 	if key, suffix, ok := splitOnUnescapedPipe(body); ok {
@@ -553,7 +549,7 @@ func parseBody(body string) *WikiLinkRef {
 	// (web/src/lib/utils/markdown.ts::resolveWikiBody). If we trimmed here,
 	// `[[ Foo ]]` would index a backlink to item "Foo" that the UI
 	// renders as broken, creating ghost entries in the backlinks
-	// panel. Codex round 9 P2.
+	// panel.
 	bodyUnescaped := unescapeWikiBody(body)
 	if bodyUnescaped == "" {
 		return nil
@@ -591,8 +587,7 @@ func parseBody(body string) *WikiLinkRef {
 	// compare against that column. The renderer accepts mixed case
 	// for input convenience; we store the canonical form so the
 	// index has one shape per (workspace, prefix, number) and
-	// downstream callers don't need to be case-aware (Codex
-	// round-1 P2).
+	// downstream callers don't need to be case-aware.
 	if refPattern.MatchString(trimmed) {
 		return &WikiLinkRef{
 			Kind:       WikiLinkKindRef,
@@ -683,8 +678,8 @@ func canonicalizeRef(ref string) string {
 }
 
 // CanonicalizeRef is the exported alias for canonicalizeRef so the
-// store layer's same-workspace workspace_ref normalization (Codex
-// round 4 P2 of TASK-1597) can use the same canonicalization without
+// store layer's same-workspace workspace_ref normalization (TASK-1597) can use the
+// same canonicalization without
 // reimplementing the prefix-uppercase logic.
 func CanonicalizeRef(ref string) string {
 	dash := strings.LastIndexByte(ref, '-')

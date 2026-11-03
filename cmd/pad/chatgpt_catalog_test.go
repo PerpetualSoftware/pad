@@ -21,7 +21,7 @@ import (
 
 // TASK-3321 U1: the ChatGPT catalog's wire contract, pinned like /mcp's
 // (TestMCPWireGolden_*). /mcp's own golden files are untouched by this unit,
-// which is the "byte-identical" half of the ruling; these are the new pair.
+// which is the "byte-identical" half of the contract; these are the new pair.
 func TestChatGPTWireGolden(t *testing.T) {
 	root := newRootCmd()
 	doc := cmdhelp.Build(root, root, cmdhelp.Options{Binary: "pad", Version: fullVersion(), Homepage: padHomepage, MaxDepth: -1})
@@ -216,7 +216,7 @@ func TestChatGPTCatalog_RefusesUndeclaredParams(t *testing.T) {
 // A `fields` number keeps the literal the caller sent through the ChatGPT
 // door, as it does through /mcp (BUG-3217): the projection must hand the
 // source handler the caller's raw bytes, not a re-encoding of the decoded
-// float64s (codex review of U1).
+// float64s.
 func TestChatGPTCatalog_KeepsFieldNumberLiterals(t *testing.T) {
 	root := newRootCmd()
 	doc := cmdhelp.Build(root, root, cmdhelp.Options{Binary: "pad", Version: fullVersion(), Homepage: padHomepage, MaxDepth: -1})

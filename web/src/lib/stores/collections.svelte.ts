@@ -23,8 +23,8 @@ let itemsWorkspace = $state<string | null>(null);
 // pairs the collections with a specific `wsSlug` — e.g. TASK-2160's editor
 // content-link gate maps collection slug → ref prefix and validates a link
 // against the CURRENT workspace — must be able to tell "these collections
-// are actually this workspace's" from "stale from the last workspace"
-// (Codex review). Null = no load completed yet.
+// are actually this workspace's" from "stale from the last workspace".
+// Null = no load completed yet.
 let collectionsWorkspace = $state<string | null>(null);
 let activeItem = $state<Item | null>(null);
 let loading = $state(false);
@@ -69,7 +69,7 @@ export const collectionStore = {
 	 * workspace slug — the collections analogue of `itemsAreFreshFor`. A
 	 * consumer that pairs collection metadata (e.g. slug → prefix) with a
 	 * specific workspace must gate on this rather than trust a possibly-stale
-	 * global array mid workspace-switch (Codex review, TASK-2160).
+	 * global array mid workspace-switch.
 	 */
 	collectionsAreFreshFor(ws: string): boolean {
 		return collectionsWorkspace === ws;
@@ -100,7 +100,7 @@ export const collectionStore = {
 	 * That is why the coalescing lives here rather than inside `loadCollections`
 	 * where it would cover every caller. Every other call site in the app is the
 	 * second intent and is correctly left alone; this is the only one that is
-	 * the first (codex round 2 asked for the population, and that is it).
+	 * the first.
 	 *
 	 * No-ops when the list is already this workspace's. Never rejects for the
 	 * fresh-already case; a genuine fetch failure rejects like `loadCollections`.
@@ -144,13 +144,13 @@ export const collectionStore = {
 		// honest if that cache held still (TASK-2946).
 		//
 		// Durable rather than `localIndex.accessEpochFor(ws)`, for two reasons
-		// that both cost the feature its common path while it was RAM-based
-		// (codex round 2): a cold tab has no RAM epoch yet, because this fetch
+		// that both cost the feature its common path while it was RAM-based:
+		// a cold tab has no RAM epoch yet, because this fetch
 		// starts before `bootstrap` runs, so every fresh visit refused to cache;
 		// and RAM is not the value `hydrateCollections` compares against, so a
 		// RAM-based bracket could agree while the fence's own value moved.
-		// THE NAMESPACE COMES FROM `authStore`, not from localIndex (codex round
-		// 3). The cache is one IDB database per (user, workspace), and
+		// THE NAMESPACE COMES FROM `authStore`, not from localIndex.
+		// The cache is one IDB database per (user, workspace), and
 		// localIndex's own `userId` is a copy captured when `bootstrap` ran —
 		// which is AFTER the layout starts this fetch. Reading it here returned
 		// null on exactly the first visit this feature exists for, writing the
@@ -169,13 +169,13 @@ export const collectionStore = {
 		// alone, via `inFlightFor`, because every other caller here knows the list
 		// MOVED and a request issued before that move cannot answer it.
 		return collectionsFlight.run(ws, async ({ isLatest }) => {
-			// STRICTLY BEFORE the request, not concurrently with it (codex round
-			// 3). Running them together looked free and was not: `Promise.all`
+			// STRICTLY BEFORE the request, not concurrently with it.
+			// Running them together looked free and was not: `Promise.all`
 			// starts both, but the durable read RESOLVES later and can observe a
 			// resync that landed AFTER the request was issued. The write would
 			// then compare that later epoch against itself, agree, and stamp an
 			// old-scope list with the new scope — the same defeat-by-construction
-			// round 1 found, reintroduced by the fix for round 2.
+			// the first version had.
 			//
 			// The join `ensureCollections` performs does not depend on the fetch
 			// being issued synchronously; it depends on the in-flight slot, which
@@ -185,7 +185,7 @@ export const collectionStore = {
 			// Drop a stale response: a newer loadCollections (e.g. a workspace
 			// switch that resolved first) has superseded this one, so writing
 			// `collections`/`collectionsWorkspace` here would clobber the newer
-			// workspace's data with this older load (Codex review).
+			// workspace's data with this older load.
 			if (!isLatest() || !isSameIdentity()) return;
 			collections = result;
 			// Stamp the array with its source workspace so consumers can tell
@@ -226,7 +226,7 @@ export const collectionStore = {
 				itemsWorkspace = ws;
 			}
 		} finally {
-			// FENCED TOO (codex round 1, P2). `loading` is module state written
+			// FENCED TOO. `loading` is module state written
 			// after an await like any other: A's load settling while B's is
 			// still in flight would clear B's flag and flash empty-state or
 			// error UI mid-load. `clear()` resets the flag on the identity
@@ -286,7 +286,7 @@ export const collectionStore = {
 		// owns it and no consumer is left waiting on a load that will never
 		// report finished.
 		loading = false;
-		// And the SINGLE-FLIGHT SLOT (codex round 2). Dropping the data while
+		// And the SINGLE-FLIGHT SLOT. Dropping the data while
 		// leaving A's promise published made this reset actively harmful: B's
 		// `ensureCollections` joined A's request, A's identity fence then
 		// refused to commit, and B was answered with no data and no request of

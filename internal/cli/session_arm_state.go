@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// Local arm-state file (PLAN-2613 S2, D4; lead ruling "OPTION 2" on the
+// Local arm-state file (PLAN-2613 S2, D4, "OPTION 2" on the
 // TASK-2617 trail). This is the concrete file contract S3's plugin
 // monitor builds against, so its rules are load-bearing and stated in
 // full here (and mirrored in the S2 evidence package):
@@ -111,7 +111,7 @@ type ArmState struct {
 	// time (0 when headless). Existence alone is not enough: a socket
 	// PATH can be reused by a later, unrelated Claude Code session, and a
 	// stale arm file keyed on that path would then arm the new session —
-	// consent-grandfathering (Codex R1 HIGH-2). The socket file's mtime is
+	// consent-grandfathering. The socket file's mtime is
 	// its bind (creation) time, so a reused path is a DIFFERENT socket
 	// with a different mtime; the reader requires an exact match, which
 	// ties the file to the specific socket instance it was armed for.
@@ -120,8 +120,8 @@ type ArmState struct {
 	// time (0 on platforms where they can't be read). They are the
 	// STRONGEST identity signal: a socket rebound at the same path gets a
 	// new inode, so this rejects both a lingering stale node reused as-is
-	// and an mtime collision on a coarse-resolution filesystem (Codex R2
-	// finding 2). Where unavailable (non-unix), the reader falls back to
+	// and an mtime collision on a coarse-resolution filesystem. Where unavailable
+	// (non-unix), the reader falls back to
 	// the mtime check alone — the documented residual on those platforms.
 	SocketIno uint64 `json:"socket_ino,omitempty"`
 	SocketDev uint64 `json:"socket_dev,omitempty"`
@@ -141,7 +141,7 @@ type ArmState struct {
 	PIDNamespace uint64 `json:"pid_ns,omitempty"`
 	// MountNamespace is the mount namespace the socket was seen in, as the
 	// session registry records it (SessionOwner.MountNamespace): set only
-	// when the socket was stat'ed with its identity (lead ruling C1). A
+	// when the socket was stat'ed with its identity (C1). A
 	// reader with another view of the filesystem cannot take the socket's
 	// absence as the session's. Zero when headless.
 	MountNamespace uint64 `json:"mnt_ns,omitempty"`
@@ -248,8 +248,7 @@ func writeArmStateFile(disarmed bool) (path string, err error) {
 	if socket != "" {
 		// Bind the file to this specific socket instance — its mtime plus,
 		// where available, its inode+device — not just the path, so a
-		// reused path (or a lingering stale node) can't revive it (HIGH-2,
-		// R2 finding 2).
+		// reused path (or a lingering stale node) can't revive it (HIGH-2).
 		if info, statErr := os.Stat(socket); statErr == nil {
 			st.SocketMtimeUnixNano = info.ModTime().UnixNano()
 			if ino, dev, ok := statIdentity(info); ok {
@@ -354,7 +353,7 @@ func readArmState() (st *ArmState, path string, err error) {
 }
 
 // armStateOwnerAlive implements the mandatory liveness check (constraint
-// 2), hardened against owner-identity reuse (Codex R1 HIGH-2). A stale
+// 2), hardened against owner-identity reuse. A stale
 // armed file must never arm a future monitor, so "alive" means the
 // recorded owner is not merely present but the SAME owner. The verdict
 // itself is OwnerLiveness (session_owner.go), shared with the session
@@ -427,8 +426,8 @@ const (
 	// armed, beating a repo's auto_arm for this session.
 	LocalArmOff
 	// LocalArmError: a local-state file EXISTS but can't be read or parsed.
-	// It resolves to NOT armed and does NOT fall back to auto_arm (Codex R1
-	// S3 HIGH-2): a corrupt file could be a disarm we can't read, and
+	// It resolves to NOT armed and does NOT fall back to auto_arm (S3 HIGH-2): a
+	// corrupt file could be a disarm we can't read, and
 	// re-arming despite a possible disarm is the consent fail-open this
 	// gate exists to prevent. Distinct from LocalArmAbsent (no file at
 	// all), which safely resolves auto_arm.
@@ -460,8 +459,8 @@ func SessionArmState() LocalArmState {
 	if err != nil {
 		// A file exists but can't be read/parsed. Fail CLOSED and do NOT
 		// reap: reaping would make the NEXT read see "absent" and fall back
-		// to auto_arm, re-arming despite a possible-but-unreadable disarm
-		// (Codex R1 S3 HIGH-2). Leaving it keeps the session consistently
+		// to auto_arm, re-arming despite a possible-but-unreadable disarm.
+		// Leaving it keeps the session consistently
 		// not-armed until a re-arm/disarm overwrites it; it is session-keyed
 		// and dies with the session anyway.
 		return LocalArmError
@@ -474,7 +473,7 @@ func SessionArmState() LocalArmState {
 		// truncated, hand-crafted, or foreign file (e.g. `{}` or
 		// `{"pid":1}`). Treat it exactly like a parse error: fail CLOSED and
 		// do NOT reap, so it can't be judged owner-dead, reaped, and then
-		// re-armed through auto_arm (Codex R2 S3 HIGH-2). Syntactic validity
+		// re-armed through auto_arm. Syntactic validity
 		// is not well-formedness.
 		return LocalArmError
 	}
@@ -483,7 +482,7 @@ func SessionArmState() LocalArmState {
 		// Dead owner: reap the stale file so it can't override a future
 		// session (constraint 2). Absent falls back to auto_arm — which is
 		// exactly the "across sessions, auto_arm remains the contract"
-		// ruling for a disarmed file too.
+		// rule for a disarmed file too.
 		reapArmFile(path)
 		return LocalArmAbsent
 	case LivenessUnknown:
@@ -535,7 +534,7 @@ var errArmStateNotHeld = fmt.Errorf("this session's arm state could not be held:
 // AND invariants writeArmStateFile always produces: a non-empty RFC3339
 // StartedAt, a positive PID, and exactly one of Armed/Disarmed set (the
 // writer sets Armed == !Disarmed). It is the fail-closed guard against a
-// syntactically-valid but semantically-garbage file (Codex R2/R4 S3):
+// syntactically-valid but semantically-garbage file:
 //   - `{}` has no StartedAt;
 //   - `{"pid":1}` has a live-looking pid (init) but no StartedAt;
 //   - `{"pid":N,"started_at":"…"}` with BOTH armed and disarmed false (or
@@ -610,7 +609,7 @@ func MarkFirstConnect() (first bool, err error) {
 // reapArmFile removes a stale arm file, but only after RE-READING it and
 // confirming it is still stale — so a concurrent `pad session arm` that
 // rewrote a fresh, live file between our first read and now is not
-// destroyed (a non-destructive reap; Codex R1 MED-1). A tiny window
+// destroyed (a non-destructive reap). A tiny window
 // remains between this re-check and the removal, but both outcomes are
 // safe: at worst a just-armed session is disarmed and must re-arm (fail
 // closed), never the reverse. Best effort throughout — a lingering file

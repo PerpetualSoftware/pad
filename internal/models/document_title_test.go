@@ -13,7 +13,7 @@ import (
 // Duplicated rather than approximated — and duplication is exactly the risk
 // here, stated rather than papered over: these are STATIC copies, so a change
 // to the TypeScript does not reach them. Nothing in this repository fails when
-// the two drift (codex round 6). What this buys is that the Go rule is derived
+// the two drift. What this buys is that the Go rule is derived
 // from a written-down grammar rather than from an opinion, and that a reader
 // can check the two by eye at the cited line numbers. Closing the drift for
 // real would need a shared fixture driven from both languages.
@@ -53,7 +53,7 @@ func roundTrips(title string) bool {
 // and non-emptiness, and those are NOT round-trip properties: a 300-rune title
 // round-trips perfectly and is still refused, for the unrelated reason that it
 // is an amplification factor on other documents. Stating the biconditional
-// over the whole validator would be false (codex round 6); the length rule has
+// over the whole validator would be false; the length rule has
 // its own tests below.
 //
 // Both directions are asserted, because either alone permits a wrong answer.
@@ -103,9 +103,9 @@ func TestDocumentTitleValidationMatchesTheRoundTripProperty(t *testing.T) {
 // behaviour around it.
 //
 // Every other length test derives its inputs from MaxDocumentTitleRunes, so
-// changing the constant to 512 would leave them all green (codex round 4).
+// changing the constant to 512 would leave them all green.
 // That is fine for arithmetic but wrong for this number: 255 is a product
-// decision Dave ruled on for BUG-2798, and a silent change to it is a silent
+// decision made for BUG-2798, and a silent change to it is a silent
 // change to how much amplification the cheap door lets through. Changing it
 // should require editing this line and noticing why.
 //
@@ -153,12 +153,12 @@ func TestDocumentTitleLengthBoundCountsRunesNotBytes(t *testing.T) {
 
 // TestDocumentTitleRejectsFormsTheCascadeCannotFind covers the two characters
 // whose refusal the round-trip property above does NOT explain — and that gap
-// is the finding, not an oversight in the table.
+// is deliberate, not an oversight in the table.
 //
 // `Alpha|Beta` and `Alpha\Beta` both round-trip perfectly: the renderer reads
 // each back as exactly the title it started from. The first version of this
-// validator accepted them for precisely that reason, and it was wrong (codex
-// round 9). A link to such a title can be STORED in escaped form —
+// validator accepted them for precisely that reason, and it was wrong. A link to
+// such a title can be STORED in escaped form —
 // `[[Alpha\|Beta]]` — which the rename cascade, searching for the raw
 // `[[Alpha|Beta]]`, will not find. The rename then succeeds and leaves those
 // links pointing at a title that no longer exists.
@@ -182,7 +182,7 @@ func TestDocumentTitleRejectsFormsTheCascadeCannotFind(t *testing.T) {
 	}
 }
 
-// BUG-2806 (lead ruling): `|` and `\` stay refused in new titles, but the
+// BUG-2806: `|` and `\` stay refused in new titles, but the
 // reason given is the true one. It used to say the rename cascade could not
 // find their escaped links, which BUG-2806 made false.
 func TestValidateDocumentTitle_PipeAndBackslashReasonIsTrue(t *testing.T) {

@@ -84,8 +84,8 @@ func pushCmd() *cobra.Command {
 			}
 			result, err := client.PushItemKeyed(ws, args[0], trimmed, pushOpKey)
 			if err != nil {
-				// AMBIGUOUS FAILURES GET SAID OUT LOUD (codex round 9 on
-				// BUG-2699). The handler publishes BEFORE it writes its
+				// AMBIGUOUS FAILURES GET SAID OUT LOUD (BUG-2699). The handler
+				// publishes BEFORE it writes its
 				// response, so an error is not proof the instruction went
 				// nowhere: a response lost in transit, a truncated body, a
 				// gateway envelope, or the server's own push_unconfirmed all
@@ -133,13 +133,13 @@ func pushCmd() *cobra.Command {
 // `unavailable` covers both the no-bus branch and a bus that was already
 // closed; both are refusals with nothing published. `archived` is the 409
 // writeItemResolveError writes when the ref names a soft-deleted item —
-// item resolution happens before anything is published (codex round 12).
+// item resolution happens before anything is published.
 //
 // ENUMERATED from the handler rather than taken one at a time: the codes
 // handlePushToItem and its helpers can write before the publish are
 // bad_request, unauthorized, unavailable, not_found (getWorkspace,
 // requireItemVisible, writeItemResolveError), archived, and internal_error,
-// plus the middleware codes below it. Round 12 named `archived`; the
+// plus the middleware codes below it. The
 // enumeration is what found `internal_error` alongside it.
 //
 // Notably ABSENT, both deliberately:

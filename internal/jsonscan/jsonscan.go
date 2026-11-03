@@ -10,7 +10,7 @@
 // same body with a fraction of either.
 //
 // THIS FILE IS THE ONLY IMPORTER of github.com/go-json-experiment/json, by
-// ruling (BUG-2812, day 80). The module is the Go team's staging copy of
+// design (BUG-2812). The module is the Go team's staging copy of
 // encoding/json/v2. THE EXIT: when encoding/json/jsontext ships without
 // GOEXPERIMENT, replace the import below with "encoding/json/jsontext", delete
 // the module from go.mod, and update nix/package.nix's vendorHash. Nothing

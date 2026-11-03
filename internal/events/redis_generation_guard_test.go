@@ -218,7 +218,7 @@ func TestEveryRotationBranchGuardsTheGenerationCounter(t *testing.T) {
 			// unconditionally.
 			//
 			// THE EPOCH IS LEFT IN PLACE AND VALID, which is what ISOLATES
-			// this branch (codex round 3). Clearing it too — the obvious
+			// this branch. Clearing it too — the obvious
 			// setup — lets the absent-epoch branch fire instead and produce
 			// an identical result, so the case passed with the id == 1 body
 			// deleted entirely. A stale epoch surviving a restarted sequence
@@ -292,7 +292,7 @@ func TestEveryRotationBranchGuardsTheGenerationCounter(t *testing.T) {
 }
 
 // The generation reaching the wire must be the one in the key, at every
-// magnitude the guard admits (BUG-2740, codex round 2).
+// magnitude the guard admits (BUG-2740).
 //
 // Redis hands an integer reply to Lua as a NUMBER, and Lua 5.1 numbers are
 // doubles printed with %.14g — so tostring() stops being faithful BELOW the
@@ -357,7 +357,7 @@ func TestThePublishedGenerationMatchesTheStoredOneAboveExactDoubleRange(t *testi
 }
 
 // A generation at or above the guard's ceiling is repaired ONCE, not rotated
-// twice inside one publish (BUG-2740, codex round 4).
+// twice inside one publish (BUG-2740).
 //
 // The two ceilings interact, and that is the whole point of this case. The
 // value next_gen accepts is about to be INCREMENTED and the result becomes the
@@ -442,7 +442,7 @@ func TestTheGenerationCeilingIsOneUnderTheEpochCeiling(t *testing.T) {
 }
 
 // A REPAIRED GENERATION CAN COLLIDE, AND WHAT CATCHES IT IS THE SEQUENCE, NOT
-// THE EPOCH (BUG-2740, codex round 5 + the lead's probe request).
+// THE EPOCH (BUG-2740).
 //
 // The repair seeds from wall-clock seconds, which is above any COUNTED
 // history but is not a monotonicity guarantee: corrupt the key twice inside
@@ -566,7 +566,7 @@ func TestACollidingRepairIsCaughtBySequenceRatherThanEpoch(t *testing.T) {
 	}
 }
 
-// A BROKEN HOST CLOCK MUST NOT BE FATAL (BUG-2740, codex round 7).
+// A BROKEN HOST CLOCK MUST NOT BE FATAL (BUG-2740).
 //
 // The seed is an input, and an unset or misconfigured clock can report zero or
 // a negative second. Before the clamp, the repair SET that at the generation

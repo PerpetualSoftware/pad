@@ -92,7 +92,7 @@ func requireScriptDeps(t *testing.T, extra ...string) {
 
 	// pgrep must actually SEE PROCESSES, not merely exist on PATH.
 	//
-	// Third narrow guard in this file, and the one that cost two CI rounds:
+	// Third narrow guard in this file, and the one that cost repeated CI failures:
 	// LookPath("pgrep") answers "is the binary installed", while the script
 	// needs "can it find a running process". In the Nix build sandbox the
 	// binary is there and the answer is empty, so the script reported "no
@@ -179,7 +179,7 @@ func ephemeralRange() (lo, hi int) {
 // asserts. The kernel never assigns a :0 port outside the range, so a port
 // outside it can only be taken by an explicit bind, which nothing else in the
 // suite does. Below the range when there is room (the usual case), else above
-// it (codex r1: a host configured with a low start).
+// it (a host configured with a low start).
 func freePort(t *testing.T) int {
 	t.Helper()
 	lo, hi := ephemeralRange()
@@ -381,8 +381,8 @@ func provePreServer(cmd *exec.Cmd, probeHost string, port int, d time.Duration, 
 	return nil
 }
 
-// THE ARTIFACT CHECK (TASK-2787, and the ordering CONVE-2687's day-74 clause
-// asks for): a binary at the shared path carrying a DIFFERENT commit — the
+// THE ARTIFACT CHECK (TASK-2787, and the ordering CONVE-2687 asks for): a binary at
+// the shared path carrying a DIFFERENT commit — the
 // reversed-ordering case, a sibling's build one merge behind — is refused,
 // and refused BEFORE anything irreversible happens.
 func TestInstallRefresh_RefusesAForeignBuildWithoutStoppingAnything(t *testing.T) {
@@ -444,8 +444,8 @@ func TestInstallRefresh_RestartsWithTheKilledArgv(t *testing.T) {
 	if !strings.Contains(res.stdout, "captured server argv") {
 		t.Fatalf("script did not capture the running server's argv; stdout=%s", res.stdout)
 	}
-	// STDERR MUST BE EMPTY on the success path. Codex round 6 found `local`
-	// used at top level, which bash answers with an error on stderr for
+	// STDERR MUST BE EMPTY on the success path. A previous version used `local`
+	// at top level, which bash answers with an error on stderr for
 	// every matching process — the script kept working and printed a
 	// spurious error on every normal refresh. Nothing here asserted on
 	// stderr, so the suite could not see it: a tool whose job is to stop
@@ -659,10 +659,10 @@ func TestInstallRefresh_StillRefusesAGenuinelyDifferentCommit(t *testing.T) {
 	}
 }
 
-// PORT FROM THE CAPTURED ARGV (codex round 1): a server started with
+// PORT FROM THE CAPTURED ARGV: a server started with
 // `--port N` is restarted with `--port N`, so the probe must go to N.
 //
-// The finding was that probing a fixed 7777 fails a HEALTHY restart, with
+// The defect was that probing a fixed 7777 fails a HEALTHY restart, with
 // this script's most confident message. Verified in the code before
 // accepting it: cmd_server.go declares `--port` with default 7777, so the
 // case is reachable. The general form is the reason it matters — the script
@@ -706,7 +706,7 @@ func TestInstallRefresh_ProbesThePortFromTheCapturedArgv(t *testing.T) {
 	}
 }
 
-// THE `--flag=value` SPELLING (codex round 2, P1): Cobra accepts both
+// THE `--flag=value` SPELLING: Cobra accepts both
 // `--port 8080` and `--port=8080`, so a parser that reads only the
 // space-separated form probes the wrong port on a healthy restart.
 //
@@ -751,7 +751,7 @@ func TestInstallRefresh_ParsesEqualsSeparatedFlags(t *testing.T) {
 	}
 }
 
-// THE NO-SETSID FALLBACK (codex round 2, P1): setsid is Linux-specific and
+// THE NO-SETSID FALLBACK: setsid is Linux-specific and
 // absent from a default macOS environment, where an unconditional call fails
 // AFTER the old server has been stopped — the one ordering this script
 // exists to avoid.
@@ -787,7 +787,7 @@ func TestInstallRefresh_RestartsWithoutSetsid(t *testing.T) {
 	}
 }
 
-// HOST AND PORT FROM THE CONFIG FILE (codex round 3, P1): a server whose
+// HOST AND PORT FROM THE CONFIG FILE: a server whose
 // bind comes from ~/.pad/config.toml alone restarts correctly and must be
 // probed there. The previous answer was a stated boundary; a permanent
 // false failure on every install for that user is not a boundary worth
@@ -837,7 +837,7 @@ func TestInstallRefresh_ResolvesHostAndPortFromTheConfigFile(t *testing.T) {
 	}
 }
 
-// IPv6 (codex round 3, P2): `::1` must be bracketed in the probe URL, or
+// IPv6: `::1` must be bracketed in the probe URL, or
 // curl is handed http://::1:PORT/... — not a URL — and a healthy
 // IPv6-bound server reads as unreachable.
 //
@@ -939,7 +939,7 @@ func TestInstallRefresh_WildcardBindMustAnswerOnLoopback(t *testing.T) {
 	}
 }
 
-// TOML INLINE COMMENTS (codex round 4, P1): `port = 8080 # local server` is
+// TOML INLINE COMMENTS: `port = 8080 # local server` is
 // valid TOML and the Go parser accepts it. A value regex that swallows the
 // comment resolves the port to "8080 # local server", probes nothing, and
 // fails every install for that user.
@@ -984,7 +984,7 @@ func TestInstallRefresh_ConfigValuesIgnoreInlineComments(t *testing.T) {
 	}
 }
 
-// THE ps FALLBACK (codex round 5, P1): macOS has no /proc, so the argv
+// THE ps FALLBACK: macOS has no /proc, so the argv
 // capture found nothing there, the restart fell back to defaults, and the
 // BUG-2897 fix was silently absent on the platform the setsid fallback had
 // just been added for.
@@ -1035,8 +1035,8 @@ func TestInstallRefresh_CapturesArgvWithoutProc(t *testing.T) {
 	}
 }
 
-// A NON-NUMERIC PAD_PORT is ignored, as the application ignores it (codex
-// round 7): config.go falls through to the next source rather than using a
+// A NON-NUMERIC PAD_PORT is ignored, as the application ignores it: config.go falls
+// through to the next source rather than using a
 // bad value, so a mistyped or inherited PAD_PORT must not make every refresh
 // fail against a server that is running fine.
 func TestInstallRefresh_IgnoresNonNumericPortValues(t *testing.T) {
@@ -1082,8 +1082,8 @@ func TestInstallRefresh_IgnoresNonNumericPortValues(t *testing.T) {
 	}
 }
 
-// FAIL CLOSED when a wildcard bind's external address cannot be determined
-// (codex rounds 5 and 8). The first version warned and exited 0 — this
+// FAIL CLOSED when a wildcard bind's external address cannot be determined.
+// The first version warned and exited 0 — this
 // unit's own defect wearing a different hat: a success line covering
 // something that was not verified.
 //
@@ -1147,7 +1147,7 @@ func TestInstallRefresh_FailsClosedWhenTheLANAddressIsUnknown(t *testing.T) {
 	}
 }
 
-// MORE THAN ONE SERVER is refused rather than guessed (codex round 9). The
+// MORE THAN ONE SERVER is refused rather than guessed. The
 // stop is a system-wide `pkill -x` and the restart can only restore one
 // argv, so a second server would be killed and left down — or restarted
 // with the wrong flags.
@@ -1322,7 +1322,7 @@ func TestInstallRefresh_RefusesWhenThePortIsHeldByAnotherProcess(t *testing.T) {
 }
 
 // A FOREIGN LISTENER BESIDE THE TARGET, on the same port at another address,
-// makes the port ambiguous and is refused (BUG-3194, codex round 1): the
+// makes the port ambiguous and is refused (BUG-3194): the
 // captured server matching is not enough when something else also holds the
 // port.
 func TestInstallRefresh_RefusesAForeignListenerBesideTheTarget(t *testing.T) {
@@ -1359,8 +1359,8 @@ func TestInstallRefresh_RefusesAForeignListenerBesideTheTarget(t *testing.T) {
 	}
 }
 
-// AN EMPTY TRAILING ARGUMENT survives the argv round trip (BUG-3194, codex
-// round 1): `read -a` dropped trailing empty fields, so the restart ran a
+// AN EMPTY TRAILING ARGUMENT survives the argv round trip (BUG-3194): `read -a`
+// dropped trailing empty fields, so the restart ran a
 // shorter command than the one it replaced.
 func TestInstallRefresh_KeepsAnEmptyTrailingArgument(t *testing.T) {
 	requireScriptDeps(t)
@@ -1397,7 +1397,7 @@ func TestInstallRefresh_KeepsAnEmptyTrailingArgument(t *testing.T) {
 }
 
 // A LONE SIBLING SERVER while this box's server is down is not the target
-// (BUG-3194, codex round 2): nothing listens on the resolved port, and the one
+// (BUG-3194): nothing listens on the resolved port, and the one
 // `server start` running takes its port from the environment, not an explicit
 // --port, which is the shape of an e2e webServer. Replacing it would restart
 // someone else's server from this install.
@@ -1436,7 +1436,7 @@ func TestInstallRefresh_RefusesALoneServerWithoutAnExplicitPort(t *testing.T) {
 }
 
 // AN UNRESOLVABLE ID IS REFUSED, even when it shares a prefix with the
-// expected one (codex round 9).
+// expected one.
 //
 // The prefix fallback existed for binaries built outside this checkout, and
 // it admitted exactly the collision that resolution was introduced to stop:
@@ -1563,8 +1563,7 @@ func TestPreServerFixtureProvesEachClaimSeparately(t *testing.T) {
 	// The PORT proof: the stub bound, but not the port the script will be
 	// told about (here STUB_PORT=0, a fixture that forgot to pass it). The
 	// chosen port stays HELD for the whole case, so the stub's port 0 can
-	// never be handed that same port, which would make both proofs true
-	// (codex round 1).
+	// never be handed that same port, which would make both proofs true.
 	t.Run("stub bound a different port", func(t *testing.T) {
 		held, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
@@ -1633,9 +1632,9 @@ func TestPreServerFixtureAcceptsItsOwnStub(t *testing.T) {
 // It exists because the scripted edit that added those calls used the pattern
 // `TestInstallRefresh_[A-Za-z]+`, which does not match a name containing a
 // DIGIT — so `TestInstallRefresh_ProbesIPv6HostsWithBrackets` silently kept
-// running in an environment that cannot support it, and CI stayed red for a
-// round on a test the fix was supposed to have covered. The set the edit
-// touched and the population it was meant to cover were not the same set, and
+// running in an environment that cannot support it, and CI stayed red on a test the
+// fix was supposed to have covered. The set the
+// edit touched and the population it was meant to cover were not the same set, and
 // nothing said so.
 //
 // Reading the source is the only instrument that can see this: every runtime
@@ -1873,7 +1872,7 @@ func TestInstallRefresh_JudgesAPortOnlyListenerByItsOwnName(t *testing.T) {
 }
 
 // An UNREADABLE server cwd is refused like a missing one, naming what was
-// read and why it failed (lead ruling on BUG-3196). Reached deterministically:
+// read and why it failed. Reached deterministically:
 // PAD_NO_PROC forces the lsof path, and a PATH without lsof leaves nothing to
 // read the cwd with.
 func TestInstallRefresh_RefusesAnUnreadableCwdNamingWhatWasRead(t *testing.T) {
@@ -1981,7 +1980,7 @@ func TestInstallRefresh_WebStampCheckUsesTheCallersCheckout(t *testing.T) {
 		// the fix must not have switched the check off.
 		{"web changed since the bundle", webChanged, repo, true},
 		// The same, run from a subdirectory of the checkout: web/ is the
-		// repository's, not <subdir>/web/ (codex r1).
+		// repository's, not <subdir>/web/.
 		{"web changed, run from a subdirectory", webChanged, filepath.Join(repo, "internal"), true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2136,7 +2135,7 @@ func TestInstallRefresh_LeavesTheOldLogFileAndNamesTheNewOne(t *testing.T) {
 	}
 }
 
-// AN UNWRITABLE LOG REFUSES BEFORE THE STOP (BUG-4064 r1, rated Medium): a
+// AN UNWRITABLE LOG REFUSES BEFORE THE STOP (BUG-4064, rated Medium): a
 // redirect that cannot open its target never runs the command, so a log found
 // unwritable after the stop would leave no server at all, an outage on the
 // box. Here the log path is a directory, which refuses for root too. The
@@ -2180,7 +2179,7 @@ func TestInstallRefresh_RefusesAnUnwritableLogBeforeStopping(t *testing.T) {
 	}
 }
 
-// THE PID FILE (BUG-4064 r1): `pad server start` claims cfg.PIDFile(),
+// THE PID FILE (BUG-4064): `pad server start` claims cfg.PIDFile(),
 // <data dir>/pad.pid (cmd/pad/cmd_server.go, config.go). The refresh clears a
 // stale one there; it used to clear $HOME/.pad/pad.pid even under
 // PAD_DATA_DIR and leave the real one behind.
@@ -2214,7 +2213,7 @@ func TestInstallRefresh_ClearsThePIDFileInTheDataDir(t *testing.T) {
 	}
 }
 
-// A RELATIVE DATA DIR (BUG-4064 r2, Medium): config.Load applies PAD_DATA_DIR
+// A RELATIVE DATA DIR (BUG-4064, Medium): config.Load applies PAD_DATA_DIR
 // verbatim, so the server resolves "data" against its own cwd, and the restart
 // runs in the server's cwd (BUG-3196). Section 2a used to prove the log under
 // the CALLER's cwd and the restart then opened it under the server's, where

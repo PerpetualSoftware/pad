@@ -4,8 +4,8 @@ import type { TimelineResponse } from '$lib/types';
 
 /**
  * BUG-3160 — the timeline re-reads its head on `item_updated` for ITS item,
- * through a throttle (at most one re-read per 10s, trailing, none while hidden;
- * lead-ruled). `item_updated` was excluded before because every content save
+ * through a throttle (at most one re-read per 10s, trailing, none while hidden). `item_updated` was
+ * excluded before because every content save
  * emits it, and refreshing on each one caused jitter and rate-limit errors, so
  * these legs pin the throttle and the item filter as hard as the refresh itself.
  * The end-to-end half (a merged activity row appearing without a reload) is
@@ -158,8 +158,8 @@ describe('ItemTimeline: item_updated re-reads the head, throttled (BUG-3160)', (
 		unmount(app!);
 		app = null;
 		// The timer itself, not only the fetch: refreshFromSSE's own `destroyed`
-		// latch would already stop a leaked timer from fetching (lead ruling:
-		// clear the timer on destroy).
+		// latch would already stop a leaked timer from fetching (the rule is to clear the timer on
+		// destroy).
 		expect(vi.getTimerCount(), 'the throttle timer outlived the component').toBe(before);
 		await advance(15_000);
 		expect(timelineListMock).not.toHaveBeenCalled();

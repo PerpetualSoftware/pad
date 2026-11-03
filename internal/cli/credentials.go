@@ -182,9 +182,9 @@ func loadStoreLocked(path string) (*CredentialStore, error) {
 // Only a file whose mtime is emptyConfirmedMinAge older than the confirmation
 // is remembered. A later save is stamped no earlier than the confirmation, so
 // on a filesystem with coarse timestamps it could otherwise land in the same
-// tick and leave the mtime unchanged (Codex r1). A file emptied within the
+// tick and leave the mtime unchanged. A file emptied within the
 // last two seconds just pays the re-read bound on each load until it ages.
-// So does a file whose mtime is in the future (clock skew, Codex r2): the age
+// So does a file whose mtime is in the future (clock skew): the age
 // check reads it as recent and never remembers it. That errs toward the
 // re-read, which is the safe side, at the cost of the bound on every load.
 var emptyConfirmed confirmedEmptyFile
@@ -206,7 +206,7 @@ func (c *confirmedEmptyFile) matches(path string, fi fs.FileInfo) bool {
 
 func (c *confirmedEmptyFile) set(path string, fi fs.FileInfo) {
 	// The stat follows the empty read, so a save can complete in between: only
-	// a state that is itself empty is remembered (Codex r4).
+	// a state that is itself empty is remembered.
 	if fi != nil && (fi.Size() != 0 || time.Since(fi.ModTime()) < emptyConfirmedMinAge) {
 		return
 	}
@@ -404,7 +404,7 @@ func (s *CredentialStore) saveLocked(path string) error {
 // as os.WriteFile's did. Anything else a link may point at (/dev/null, a
 // FIFO) is neither chmodded nor truncated, as O_TRUNC leaves it, and the
 // sync is best effort since os.WriteFile never synced: a target os.WriteFile
-// could write stays writable (final review round, both hunters).
+// could write stays writable.
 //
 // A failed stat fails the write before anything is written (BUG-3810): it
 // cannot say whether the target is a regular file to truncate, and writing
@@ -484,8 +484,7 @@ func withCredentialsLock(exclusive bool, fn func(path string, locked bool) error
 		// nothing to read, and the read is decided here, without opening a
 		// file a save may since have created. If a save created it in between,
 		// its lock exists now (Save creates the lock before the file), so take
-		// it rather than read a file that save may be truncating (Codex, 3a
-		// round on option B).
+		// it rather than read a file that save may be truncating.
 		if _, serr := os.Stat(filepath.Dir(path)); errors.Is(serr, fs.ErrNotExist) {
 			return errNoCredentialsDir
 		}
@@ -511,8 +510,8 @@ var errCredentialsLockBusy = errors.New("credentials lock is held by another pro
 
 // credentialsLockWait bounds how long a busy lock is waited for. A holder
 // that never lets go (a stopped process, a hung NFS lock) must not hang every
-// pad command, so after this the caller proceeds unlocked (final review
-// round). A variable so a test can shorten it.
+// pad command, so after this the caller proceeds unlocked.
+// A variable so a test can shorten it.
 var credentialsLockWait = 5 * time.Second
 
 // lockCredentialsRetrying takes the lock, retrying a busy lock until
@@ -581,11 +580,10 @@ func UpdateStore(fn func(*CredentialStore) error) error {
 // slate. Silently succeeds if the file is already absent.
 //
 // Under the exclusive lock, so it cannot land in the middle of a save
-// (Codex round 1, BUG-3649). Never call it from an UpdateStore callback.
+// (BUG-3649). Never call it from an UpdateStore callback.
 func WipeCredentialsFile() error {
 	// No ~/.pad, nothing to wipe: answered without creating it, which on a
-	// read-only home would fail where the wipe used to succeed (final review
-	// round).
+	// read-only home would fail where the wipe used to succeed.
 	if path, err := credentialsPath(); err == nil {
 		if _, err := os.Stat(filepath.Dir(path)); errors.Is(err, fs.ErrNotExist) {
 			return nil

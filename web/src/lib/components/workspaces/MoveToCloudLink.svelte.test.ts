@@ -1,6 +1,6 @@
 // TASK-3612: the two entry points to the move-to-Cloud guide. Each shows on
 // its own side only, and neither shows inside a mobile app's web view
-// (TASK-3299; lead ruling, day 92).
+// (TASK-3299).
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render } from '@testing-library/svelte';
 

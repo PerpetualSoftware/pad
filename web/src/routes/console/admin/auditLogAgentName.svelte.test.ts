@@ -105,7 +105,7 @@ describe('console audit log — agent attribution', () => {
 		expect(userCells()).not.toEqual(['Dave']);
 	});
 
-	// Codex round 8. The agent half of this cell is attacker-chosen text and
+	// The agent half of this cell is attacker-chosen text and
 	// the account half is not, so the two must not be concatenated into one
 	// string: a writer could pick a name that forges the "(via …)" suffix, or
 	// that carries U+202E and visually reorders the suffix appended after it.
@@ -170,7 +170,7 @@ describe('console audit log — agent attribution', () => {
 		expect(userCells()).toEqual(['Dave']);
 	});
 
-	// Codex round 6. Hoisting the row's parse out of formatMetadata left its
+	// Hoisting the row's parse out of formatMetadata left its
 	// try/catch wrapped around nothing, so a formatter that throws on
 	// well-formed JSON — `String(data.keys)` cannot convert `{"toString":null}`
 	// to a primitive — would take the whole page down instead of rendering an

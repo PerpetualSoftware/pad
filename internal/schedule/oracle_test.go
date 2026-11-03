@@ -18,7 +18,7 @@ func oracleConv(c *Compiled, loc *time.Location) func(Wall) time.Time {
 
 // oracleRule builds the vendored rule alone, as the engine hands it to the
 // library (elapsed rules fast-forwarded to base). steps is the budget; 0 is
-// unbounded. It is nil when the rule is spent before base. TASK-4100 r3.
+// unbounded. It is nil when the rule is spent before base. TASK-4100.
 func oracleRule(t *testing.T, c *Compiled, loc *time.Location, base time.Time, steps int64) *rrule.RRule {
 	t.Helper()
 	r := c.rule
@@ -47,7 +47,7 @@ func oracleRule(t *testing.T, c *Compiled, loc *time.Location, base time.Time, s
 
 // oracleNext is the vendored rrule.Set, unbudgeted: the test oracle the engine's
 // own merge is held to. withRule false leaves the rule out, for a rule known
-// never to fire (TASK-4100 r3 D4).
+// never to fire (TASK-4100).
 func oracleNext(t *testing.T, c *Compiled, loc *time.Location, base time.Time, withRule bool) func() (time.Time, bool) {
 	t.Helper()
 	conv := oracleConv(c, loc)
@@ -122,7 +122,7 @@ func refWindow(t *testing.T, c *Compiled, q time.Time, w time.Duration, withRule
 // budget with nothing left to examine below limit: the one case in which a
 // CapStall for an answer final at limit is legitimate. A rule that produces a
 // candidate past limit, or ends, or stalls at a position past limit, makes the
-// answer final, so a CapStall there is a false cap (TASK-4100 r3 D3).
+// answer final, so a CapStall there is a false cap (TASK-4100).
 func ruleStallsBy(t *testing.T, c *Compiled, loc *time.Location, base time.Time, steps int64, limit time.Time) bool {
 	t.Helper()
 	rr := oracleRule(t, c, loc, base, steps)

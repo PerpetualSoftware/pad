@@ -282,7 +282,7 @@ func TestItemCopyLinkSummary(t *testing.T) {
 	}
 }
 
-// Codex round 2. Schema keys, labels and option values are user-authored
+// Schema keys, labels and option values are user-authored
 // and travel through the server verbatim, so the renderer must not let them
 // forge structure: an option containing ", " has to stay ONE option (the
 // user is about to retype it into --field), and a newline anywhere must not
@@ -326,7 +326,7 @@ func TestRunItemCopy_HostileSchemaStringsCannotForgeStructure(t *testing.T) {
 	}
 }
 
-// Codex round 6. A needs_value entry with an empty key cannot be supplied
+// A needs_value entry with an empty key cannot be supplied
 // with --field (the parser rejects `--field =value`), so the refusal must
 // not print a command that cannot work.
 func TestRunItemCopy_RefusalHandlesAnEmptyFieldKey(t *testing.T) {
@@ -503,7 +503,7 @@ func TestRunItemCopy_DryRunPartialRelationshipsAreQualified(t *testing.T) {
 // The marker is type-agnostic; it fires just as readily for a hidden
 // parent or a hidden dependency edge with no hidden child anywhere, and a
 // sentence that asserts hidden children would put a fact in the user's
-// head the server never stated (Codex round 2).
+// head the server never stated.
 func TestRunItemCopy_DryRunPartialOnTheMovePathDoesNotAssertHiddenChildren(t *testing.T) {
 	pre := emptyPreflight()
 	pre.ArchiveSource = true
@@ -590,7 +590,7 @@ func TestRunItemCopy_DryRunUnmarkedRelationshipsStayClean(t *testing.T) {
 // hidden — a copy archives nothing, so no child can be orphaned by it.
 // Qualifying it there would invent a risk the operation does not carry,
 // and would contradict the explanatory block two lines below, which
-// correctly scopes orphaning to a move (Codex round 5).
+// correctly scopes orphaning to a move.
 func TestRunItemCopy_OrphanLineIsQualifiedOnlyOnTheMovePath(t *testing.T) {
 	render := func(t *testing.T, archive bool) string {
 		t.Helper()
@@ -633,7 +633,7 @@ func TestRunItemCopy_OrphanLineIsQualifiedOnlyOnTheMovePath(t *testing.T) {
 // --dry-run is optional, and the destructive path is the one that matters.
 // A restricted user who goes straight to the mutation must still be told
 // the relationship picture was incomplete — on the one run where it is too
-// late to reconsider (Codex round 5).
+// late to reconsider.
 func TestRunItemCopy_MutatingPathCarriesThePartialMarker(t *testing.T) {
 	run := func(t *testing.T, format string, archive bool) (string, string) {
 		t.Helper()
@@ -710,7 +710,7 @@ func TestRunItemCopy_MutatingPathCarriesThePartialMarker(t *testing.T) {
 
 	// The committed-but-unreported branch returns nil — it is a SUCCESS —
 	// so it owes the same advisory. It is also the branch where the user
-	// has the least information already (Codex round 6).
+	// has the least information already.
 	t.Run("committed but unreported", func(t *testing.T) {
 		pre := emptyPreflight()
 		pre.ArchiveSource = true
@@ -1055,7 +1055,7 @@ func TestRunItemCopy_RefusalUnderJSONEmitsThePreflight(t *testing.T) {
 // The mirror of the refusal: the SAME command, against the SAME server
 // behaviour, refuses without --field and proceeds with it.
 //
-// The fake preflight here is responsive rather than canned (Codex round 3):
+// The fake preflight here is responsive rather than canned:
 // it reports needs_value=[priority] unless the request carries a priority
 // override, exactly as the real endpoint does. A canned empty preflight
 // would have made this a test of argument forwarding wearing the label of a
@@ -1260,9 +1260,9 @@ func TestRunItemCopy_AmbiguousFailureNeverSuggestsARetry(t *testing.T) {
 
 // TASK-4131: on a server that honours idempotency keys a same-key request is
 // applied at most once, so the message names the key on exactly ONE line and
-// promises no replay (a re-run meets the preflight first, r1-M1). The error
+// promises no replay (a re-run meets the preflight first). The error
 // is plain: main's BUG-3999 hint would print the key a second time with
-// different advice (r1-M2).
+// different advice.
 func TestRunItemCopy_AmbiguousFailureOnAKeyedServerNamesTheKey(t *testing.T) {
 	d := &recordingDeps{
 		t:          t,
@@ -1319,7 +1319,7 @@ func TestRunItemCopy_AmbiguousFailureOnAKeyedServerNamesTheKey(t *testing.T) {
 	}
 }
 
-// Codex round 4. A 2xx whose body could not be read or decoded means the
+// A 2xx whose body could not be read or decoded means the
 // copy COMMITTED. Returning that as a normal error would exit non-zero and
 // tell a script the copy did not happen — the DR-13 duplicate, arrived at
 // through the reporting layer instead of the network layer.
@@ -1359,7 +1359,7 @@ func TestRunItemCopy_CommittedButUnreportedExitsZero(t *testing.T) {
 	}
 }
 
-// Codex round 8. archive_source is what was ASKED for and source.archived
+// Archive_source is what was ASKED for and source.archived
 // is what HAPPENED; the server's contract is that they agree. When they do
 // not, a MOVE did not complete, and exiting 0 would tell automation it did.
 func TestRunItemCopy_PartialMoveExitsNonZeroAndSaysWhatExists(t *testing.T) {
@@ -1441,7 +1441,7 @@ func TestRunItemCopy_MoveThatArchivedExitsZero(t *testing.T) {
 	}
 }
 
-// Codex round 8. The preflight receives the overrides, so a --field the
+// The preflight receives the overrides, so a --field the
 // destination REJECTED comes back in needs_value. Telling that user "no
 // --field supplied one" sends them hunting for a bug in their own command
 // line, and repeating the same flag as the fix is worse.
@@ -1974,11 +1974,11 @@ func TestRunItemCopy_DryRunSummaryDoesNotSuggestAnImpossibleField(t *testing.T) 
 
 // The OTHER reason a row cannot be supplied, and the one that was already here:
 // an empty key. `--field =value` is rejected by this command's own parser, and
-// the detailed render has explained that since Codex round 6 — but the summary
+// the detailed render has long explained that — but the summary
 // and the error went on advising `--field` for those rows, because the first
 // version of `itemCopyUnfillable` answered for the relation reason only.
 //
-// Review round 2. A predicate named "unfillable" that covered one of two
+// A predicate named "unfillable" that covered one of two
 // reasons is a worse trap than no predicate: correct at the site that defined
 // it, wrong everywhere it was reused.
 func TestRunItemCopy_EmptyKeyRowsAreUnfillableToo(t *testing.T) {
@@ -2025,7 +2025,7 @@ func TestRunItemCopy_EmptyKeyRowsAreUnfillableToo(t *testing.T) {
 	}
 }
 
-// Review round 3, and the sharpest miss of this unit: broadening what a
+// The sharpest miss of this unit: broadening what a
 // predicate ACTS on silently broadened what the sentence SAYS. Once
 // `itemCopyUnfillable` counted empty keys too, a set of empty-key rows selected
 // the all-unfillable branch and was explained as "the relation target is not
@@ -2096,7 +2096,7 @@ func TestRunItemCopy_UnfillableExplanationMatchesTheActualReason(t *testing.T) {
 }
 
 // ONE row carrying BOTH faults — an empty key AND an unavailable relation
-// target. Review round 4, and the fixture that matters: the mixed-case test
+// target. This is the fixture that matters: the mixed-case test
 // above uses TWO rows with one fault each, and a `continue` between the two
 // counts made a single dual-fault row report only the relation reason. Two
 // rows with one fault each and one row with two are different inputs, and only
@@ -2149,7 +2149,7 @@ func TestItemCopyTally(t *testing.T) {
 	}
 
 	// A whitespace-only key is an empty key: `--field " "=value` names nothing
-	// either, and the render has trimmed since Codex round 6.
+	// either, and the render trims.
 	if got := itemCopyTally([]cli.ItemCopyPreflightNeedsValue{{Key: "   "}}); got.EmptyKey != 1 {
 		t.Fatalf("a whitespace-only key is not counted as empty: %+v", got)
 	}

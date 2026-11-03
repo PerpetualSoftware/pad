@@ -4,7 +4,7 @@
  *
  * THE GATE BESIDE THIS (TASK-3097): `libraryIdentityGate.test.ts` tables every async unit on
  * this page with the hash of the code it was reviewed on, and refuses any
- * edit to one until its row is re-read. That catches BUG-3084's round-4
+ * edit to one until its row is re-read. That catches BUG-3084's
  * classes, which a source scanner cannot see. This file catches what the
  * gate does not: the RULE on a NEW handler, which the gate accepts with any
  * row. Keep both. Neither is a duplicate of the other.
@@ -20,7 +20,7 @@
  *     that leaves the page usable (roles board checkpoint 14);
  *   - a continuation that has LOST the identity writes no shared interaction
  *     state, because the identity listener already reset it and someone else
- *     owns it now (roles board, codex round 4).
+ *     owns it now (roles board).
  */
 import { describe, it, expect } from 'vitest';
 import { readFenceSource, withoutCatchArms, trackedEpochReadDetails } from '../../../../test/identityFenceSource';
@@ -161,7 +161,7 @@ describe('the library page fences every async commit point', () => {
 				"previous session clears a toast belonging to whoever is signed in now"
 		).toEqual([]);
 
-		// AND THEY MUST STILL DO THEIR JOB (codex round 1 [P2]). A fence is only
+		// AND THEY MUST STILL DO THEIR JOB. A fence is only
 		// half the requirement: a callback that checks the identity and then
 		// clears nothing satisfies the assertion above while leaving the toast
 		// on screen for ever. Fixing a stale-write bug by making the write never
@@ -179,7 +179,7 @@ describe('the library page fences every async commit point', () => {
 
 	it('the identity-change listener resets every piece of transient interaction state', () => {
 		// ENUMERATED rather than sampled (CONVE-35). On the roles board this
-		// class produced findings in two consecutive review rounds before it was
+		// class produced findings twice in a row before it was
 		// enumerated; carried here so this surface does not repeat that.
 		const reset = CODE.slice(CODE.indexOf('function resetTransientState()'));
 		const resetBody = reset.slice(0, reset.indexOf('\n\t}'));
@@ -216,7 +216,7 @@ describe('the library page fences every async commit point', () => {
 	});
 
 	it('a lost-identity exit writes no shared interaction state', () => {
-		// The roles board's round-4 reversal, carried here so this surface never
+		// The roles board's reversal, carried here so this surface never
 		// acquires the defect it corrected. `resetTransientState()` owns these;
 		// a stale continuation writing them again can only clobber what the NEW
 		// user is doing.
@@ -287,7 +287,7 @@ describe('the library page fences every async commit point', () => {
 		// `loadData` reads `authStore.identityEpoch` synchronously before its
 		// first await, so an un-untracked effect takes a dependency on the epoch
 		// and re-runs on every identity change — on top of the listener that
-		// already re-loads for that event (codex round 1 [P2]). Correct on
+		// already re-loads for that event. Correct on
 		// screen, double on the wire.
 		const eff = CODE.slice(CODE.indexOf('$effect(() => {'));
 		const body = eff.slice(0, eff.indexOf('\t});'));
@@ -351,8 +351,8 @@ describe('the library page fences every async commit point', () => {
 		//
 		// Exempting a whole effect was wrong and hid this unit's own defect: the
 		// search entry skipped the synchronous capture along with the timer's
-		// reads, so removing that capture's `untrack` produced ZERO offenders
-		// (codex round 2 [P2]). An entry now lists the read tokens it vouches
+		// reads, so removing that capture's `untrack` produced ZERO offenders.
+		// An entry now lists the read tokens it vouches
 		// for, and any other read in that effect is an offender.
 		const INTENDED_DEPENDENCY: Record<string, { allowedReads: string[]; why: string; afterMarker?: string }> = {};
 
@@ -361,7 +361,7 @@ describe('the library page fences every async commit point', () => {
 			const entry = Object.entries(INTENDED_DEPENDENCY).find(([k]) => block.body.includes(k));
 			// PER READ, not per block: testing for `untrack(` anywhere in the
 			// effect exempted `const e = captureIdentity(); untrack(() => x());`.
-			// POSITIONAL as well as by token (codex round 3 [P2]). Without the
+			// POSITIONAL as well as by token. Without the
 			// marker, an entry written for reads inside a timer covered a read
 			// added SYNCHRONOUSLY beside the untracked capture — which puts the
 			// dependency straight back while the rule reports nothing.

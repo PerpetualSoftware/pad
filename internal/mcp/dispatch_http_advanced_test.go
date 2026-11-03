@@ -300,11 +300,11 @@ func TestDispatchItemUpdate_SendsFieldsPatch(t *testing.T) {
 	}
 }
 
-// TestDispatchItemUpdate_TagsForwarding covers two Codex review #547
-// rounds on the same area:
-//   - round 1 [P1]: the dispatcher must forward `tags: ["a"]` array
+// TestDispatchItemUpdate_TagsForwarding covers two
+// regressions on the same area:
+//   - the dispatcher must forward `tags: ["a"]` array
 //     shapes (was filtering on string-only, silently dropped them).
-//   - round 3 [P2]: forwarding ANY non-nil value regressed the
+//   - forwarding ANY non-nil value regressed the
 //     "empty string is a no-op" behaviour; `tags: ""` would now write
 //     an empty string into the JSONB column (500 on Postgres). The
 //     fix forwards arrays unconditionally but skips empty strings.
@@ -607,7 +607,7 @@ func TestDispatchItemUpdate_LiftsAgentRoleIDFromFieldKVPToColumn(t *testing.T) {
 	// for setting the column today) get the value lifted onto
 	// the PATCH body's top-level. Otherwise the value would sit
 	// inert inside the merged fields JSON and the role assignment
-	// would no-op (Codex review #345 round 3).
+	// would no-op.
 	captured := newRequestCapture()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/workspaces/docapp/items/TASK-5", func(w http.ResponseWriter, r *http.Request) {
@@ -650,9 +650,8 @@ func TestDispatchItemUpdate_LiftsAgentRoleIDFromFieldKVPToColumn(t *testing.T) {
 func TestDispatchItemUpdate_PassesThroughAgentRoleID(t *testing.T) {
 	// Parity with mapItemCreate: agent_role_id (UUID) writes to the
 	// ItemUpdate column. The --role rejection points agents at this
-	// path, so it must actually work end-to-end (Codex review #345
-	// round 2 caught the misleading error pointing at --field, which
-	// would have put the value in the fields JSON instead).
+	// path, so it must actually work end-to-end (a misleading error pointing at
+	// --field would have put the value in the fields JSON instead).
 	captured := newRequestCapture()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/workspaces/docapp/items/TASK-5", func(w http.ResponseWriter, r *http.Request) {
@@ -779,7 +778,7 @@ func TestDispatchItemUpdate_RoleResolutionFailureSurfacesAsToolError(t *testing.
 }
 
 func TestDispatch_PrefetchesGoThroughApplyHook(t *testing.T) {
-	// Codex review #345 round 1: in-handler prefetches (members
+	// In-handler prefetches (members
 	// lookup for --assign, item.update's GET) used to bypass d.Apply,
 	// which would have meant any OAuth scope-context attached at
 	// dispatch time wouldn't apply to those side-channel reads —
@@ -928,7 +927,7 @@ func (c *requestCapture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // TestDispatchItemUpdate_NonStringPromotedValueIsNotDropped: a promoted param
 // that arrives as a NUMBER must reach the PATCH, not be silently discarded
-// (BUG-2850, codex round 6).
+// (BUG-2850).
 //
 // reshapeItemFields promotes `fields:{"priority":3}` onto the top-level
 // `priority` input with its JSON type intact, so the dispatcher sees a

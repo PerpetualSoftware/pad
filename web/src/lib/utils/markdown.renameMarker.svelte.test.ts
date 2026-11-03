@@ -99,7 +99,7 @@ describe('BUG-3315 U2: a rename does not pin the old title', () => {
 		expect(html).not.toContain('title=');
 	});
 
-	// Guard (codex r1): the save's link match must not narrow what it accepted
+	// Guard: the save's link match must not narrow what it accepted
 	// before the marker existed, e.g. an href whose last segment has a space.
 	it('a link to a slug with a space still converts, marker or not', () => {
 		const spaced = { ...task('Old Title'), slug: 'my slug', item_number: undefined } as unknown as Item;
@@ -107,7 +107,7 @@ describe('BUG-3315 U2: a rename does not pin the old title', () => {
 		expect(saveWith('see [Old Title](/u/ws/tasks/my slug "pad-follows-title:Old Title") here', [{ ...spaced, title: 'New Title' } as Item])).toBe('see [[New Title]] here');
 	});
 
-	// Guard (codex r2): a title the USER wrote on an internal link is not a
+	// Guard: a title the USER wrote on an internal link is not a
 	// marker. The save leaves such a link exactly as before U2, and the DOM keeps
 	// the tooltip.
 	it('a user-authored titled internal link is left untouched', () => {
@@ -163,7 +163,7 @@ describe('BUG-3315 U2: a rename does not pin the old title', () => {
 				expect(saveWith(md, index)).not.toContain('pad-follows-title');
 			});
 		}
-		// ...and the strip touches ONLY a real link's title (codex, after the
+		// ...and the strip touches ONLY a real link's title (after the
 		// leak fix). Text that merely mentions the marker, as a doc about this
 		// feature does, is content and must survive a save byte-identical.
 		for (const [name, body] of [
@@ -178,7 +178,7 @@ describe('BUG-3315 U2: a rename does not pin the old title', () => {
 			});
 		}
 
-		// Codex r2 of the code-aware strip: a link text ending in a backslash is
+		// Code-aware strip: a link text ending in a backslash is
 		// serialized `[a\\](...)`. Its `]` follows a backslash, but an even
 		// number of them, so it is a real link and its marker must go.
 		it('a real link whose text ends in a backslash still loses its marker', () => {
@@ -187,7 +187,7 @@ describe('BUG-3315 U2: a rename does not pin the old title', () => {
 			expect(saveWith(md, [])).not.toContain('pad-follows-title');
 		});
 
-		// Codex r3: a backtick before a fence must not pair with one after it. A
+		// A backtick before a fence must not pair with one after it. A
 		// span crossing the fence overlapped the fence's range, and the binary
 		// search then misread offsets. Here the text after the fence is a real
 		// inline span, and the marker-shaped text in it must survive.
@@ -196,7 +196,7 @@ describe('BUG-3315 U2: a rename does not pin the old title', () => {
 			expect(saveWith(body, [])).toBe(body);
 		});
 
-		// Codex r4 (did not reproduce, pinned): runs of different lengths must not
+		// Pinned (did not reproduce): runs of different lengths must not
 		// form overlapping spans. In "`a ``b ` LINK `` " the single-backtick span
 		// closes at the third run, and the "``" inside it is content, not an
 		// opener, so LINK sits OUTSIDE code and its marker must go.

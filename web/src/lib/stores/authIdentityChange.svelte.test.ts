@@ -105,7 +105,7 @@ describe('authStore.onIdentityChange', () => {
 	});
 
 	it('does NOT fire when the session request FAILS', async () => {
-		// BUG-2991, codex round 9. A rejection is a fetch error, not an identity
+		// BUG-2991. A rejection is a fetch error, not an identity
 		// signal — "not authenticated" comes back as a RESOLVED session, which
 		// is what `load`'s re-throw exists to distinguish. Treating a failed
 		// poll as a sign-out was destructive: listeners drop the workspace
@@ -152,7 +152,7 @@ describe('authStore.onIdentityChange', () => {
 
 	it('fires on a RESOLVED unauthenticated session, which is what a real sign-out looks like', async () => {
 		// The other half of the rejection rule, and the one that keeps it
-		// honest (codex round 10). `/auth/session` is public and answers 200
+		// honest. `/auth/session` is public and answers 200
 		// with `authenticated: false` for a missing or expired session, so an
 		// ordinary sign-out arrives RESOLVED. If silencing the rejection path
 		// had also silenced this, the whole identity reset would have stopped

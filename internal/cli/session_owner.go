@@ -79,7 +79,7 @@ type SessionOwner struct {
 	// is this process itself. A harness-supplied pid is otherwise a bare
 	// claim: any positive integer names SOME process, and the start token
 	// only guards against later reuse, not against a wrong pid in the
-	// first place (codex round 3). False on platforms without an ancestry
+	// first place. False on platforms without an ancestry
 	// walk, and for legacy rows.
 	PIDVerified bool `json:"session_pid_verified,omitempty"`
 	// ProcStart is the owner's process start token (procStartToken) when
@@ -92,7 +92,7 @@ type SessionOwner struct {
 	// off Linux, in rows written before it existed, and for a harness pid
 	// inherited from outside a sandbox, which the recorder cannot see. A
 	// Linux recorder that cannot read its own namespace (no procfs) writes
-	// unidentifiedNamespace instead, which no reader matches (r3, F2).
+	// unidentifiedNamespace instead, which no reader matches (F2).
 	// An additive on-disk key: older readers ignore it, and a row without
 	// it is judged by pidNamespaceRelation's unstamped rule.
 	PIDNamespace uint64 `json:"pid_ns,omitempty"`
@@ -102,19 +102,19 @@ type SessionOwner struct {
 	Socket string `json:"messaging_socket_path,omitempty"`
 	// SocketMtimeUnixNano, SocketIno, SocketDev bind the record to the
 	// specific socket INSTANCE — the same identity the arm-state file uses
-	// (Codex R1 HIGH-2 / R2 finding 2 on PLAN-2613 S2): a socket rebound at
+	// (PLAN-2613 S2): a socket rebound at
 	// the same path is a different session.
 	SocketMtimeUnixNano int64  `json:"socket_mtime_unix_nano,omitempty"`
 	SocketIno           uint64 `json:"socket_ino,omitempty"`
 	SocketDev           uint64 `json:"socket_dev,omitempty"`
 	// MountNamespace is the inode of the mount namespace the socket was
 	// seen in (currentMountNamespace — Linux), recorded only when the
-	// recorder could stat the socket and read its identity (lead ruling C1,
-	// mirroring PIDNamespace's visibility rule). A path's absence, or a
+	// recorder could stat the socket and read its identity (C1, mirroring
+	// PIDNamespace's visibility rule). A path's absence, or a
 	// different node at it, is evidence only to a reader with the same view
-	// of the filesystem; elsewhere the socket verdict is unknown (BUG-4090
-	// r1, H1/H3). unidentifiedNamespace when Linux would not name it (r3,
-	// F2). An additive on-disk key; a row without it keeps the
+	// of the filesystem; elsewhere the socket verdict is unknown (BUG-4090).
+	// unidentifiedNamespace when Linux would not name it (F2). An additive on-disk
+	// key; a row without it keeps the
 	// pre-BUG-4090 socket rule.
 	MountNamespace uint64 `json:"mnt_ns,omitempty"`
 }
@@ -185,7 +185,7 @@ func CaptureSessionOwner() (SessionOwner, error) {
 // a start token was recorded, still carry it. Either signal dead → dead.
 // Neither alone suffices for the registry: a socket node outlives a
 // SIGKILLed owner (the kernel does not unlink it), so a socket-only verdict
-// would report a crashed harness alive indefinitely (codex round 1 P1);
+// would report a crashed harness alive indefinitely;
 // and a pid alone cannot exclude reuse on platforms without a start token.
 //
 // Unknown is the third answer, and it is reserved for "could not examine",
@@ -193,7 +193,7 @@ func CaptureSessionOwner() (SessionOwner, error) {
 // (Windows), a socket the caller cannot stat (a permission or I/O error,
 // as opposed to ENOENT), or a /proc entry that cannot be read (hidepid, a
 // namespace boundary). A dead verdict is only ever issued on positive
-// evidence of absence or of a different owner (P2). The two consumers
+// evidence of absence or of a different owner. The two consumers
 // then choose: the consent gate treats unknown as not-armed, the pruner
 // leaves it alone.
 //
@@ -250,8 +250,7 @@ const (
 	// pid_ns existed, or for a pid the recorder could not see) and the
 	// reader is not in the init namespace, so the boundary may or may not
 	// be there. Only a token match stands (alive); every negative —
-	// ESRCH, a token mismatch, ENOENT, a zombie — is unknown (lead
-	// ruling, option (a), as corrected at r2).
+	// ESRCH, a token mismatch, ENOENT, a zombie — is unknown.
 	pidNSUnstampedForeign
 )
 
@@ -268,7 +267,7 @@ var mountNamespaceFn = currentMountNamespace
 // not read its own namespace (no procfs): "recorded somewhere I could not
 // name". nsfs inodes come from the proc inum allocator and are never 1, so
 // it equals no reader's namespace and every reader treats the row as
-// crossed (BUG-4090 r3, F2).
+// crossed (BUG-4090).
 const unidentifiedNamespace uint64 = 1
 
 // namespaceStamp is the value a writer records for the namespace it just
@@ -375,7 +374,7 @@ func pidLiveness(o *SessionOwner, rel pidNSRelation) Liveness {
 	// A reader that may be in another namespace never manufactures dead:
 	// ESRCH, a different process at the number, or one that vanished or is
 	// a zombie all describe whatever THIS namespace holds there. Only a
-	// token match — positive evidence — stands (lead r2 ruling on (a)).
+	// token match — positive evidence — stands.
 	negative := LivenessDead
 	if rel == pidNSUnstampedForeign {
 		negative = LivenessUnknown
@@ -386,7 +385,7 @@ func pidLiveness(o *SessionOwner, rel pidNSRelation) Liveness {
 	if o.ProcStart == "" {
 		if rel == pidNSUnstampedForeign {
 			// No token, so nothing to match: whatever answers at this number
-			// here may be any process at all (r4 ruling, A-1).
+			// here may be any process at all.
 			return LivenessUnknown
 		}
 		return LivenessAlive

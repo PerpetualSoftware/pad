@@ -162,7 +162,7 @@
 	 * byte offset, so unique except in pathological cases like
 	 * adjacent mentions); the index suffix is the unconditional
 	 * tie-breaker that guarantees uniqueness across any rendering of
-	 * the same backlinks array. Codex round 1 P1.
+	 * the same backlinks array.
 	 */
 	// The snippet is a raw slice of the source body. Since BUG-3583 a body can
 	// hold inline <strong>/<em>/<s> (a run markdown delimiters cannot express),

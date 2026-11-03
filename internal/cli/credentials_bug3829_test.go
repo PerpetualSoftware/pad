@@ -163,7 +163,7 @@ func TestBUG3829_FutureMtimeIsNotRemembered(t *testing.T) {
 
 // The stat that records a confirmed-empty file follows the empty read, so a
 // save can land in between: a non-empty state is never remembered, or a later
-// truncate keeping its mtime could match it (Codex r4).
+// truncate keeping its mtime could match it.
 func TestBUG3829_NonEmptyStateIsNotRemembered(t *testing.T) {
 	home := withTempHome(t)
 	path := writeCredsFile(t, home, twoServers)

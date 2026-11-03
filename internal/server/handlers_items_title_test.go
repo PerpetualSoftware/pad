@@ -438,8 +438,8 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 		if rerr != nil {
 			t.Fatalf("read %s: %v", name, rerr)
 		}
-		// The predicate is a UNION, and fail-open is the failure mode it is fighting
-		//: a file reaching the store through a wrapper or a variable
+		// The predicate is a UNION, and fail-open is the failure mode it is fighting:
+		// a file reaching the store through a wrapper or a variable
 		// would not match the call text, so a file that calls any of the refusal ARMS
 		// is scanned too. A refusal block lives where the arms are called, whatever it
 		// calls the store through.

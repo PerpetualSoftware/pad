@@ -1,5 +1,5 @@
 // TASK-3619: a comment upload refused for the storage limit raises the
-// plan-limit prompt, but only for the identity that started it (codex r1).
+// plan-limit prompt, but only for the identity that started it.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const m = vi.hoisted(() => ({ epoch: 0, upload: vi.fn(), shown: vi.fn() }));

@@ -203,7 +203,7 @@ func agentItemFields(raw json.RawMessage) json.RawMessage {
 		return nil
 	}
 	var fields map[string]any
-	// Numbers keep their digits through the re-marshal (BUG-3448, codex r2).
+	// Numbers keep their digits through the re-marshal (BUG-3448).
 	if err := models.DecodeJSONKeepingNumbers(raw, &fields); err != nil {
 		return raw
 	}

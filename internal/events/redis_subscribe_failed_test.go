@@ -263,7 +263,7 @@ func TestAJoinerOfAFailedEstablishmentIsRefusedToo(t *testing.T) {
 }
 
 // TestSubscribeAfterCloseIsRefused pins the closed-bus arm of the post-loop
-// check (codex round 1 on BUG-2764). Close drains the subscriber maps; a
+// check (BUG-2764). Close drains the subscriber maps; a
 // caller registering afterwards used to be handed SubscribeOK and a channel
 // nothing would ever close, so an SSE handler holding it outlived the
 // shutdown. The wrong behaviour is a channel; the right one is a refusal and
@@ -288,7 +288,7 @@ func TestSubscribeAfterCloseIsRefused(t *testing.T) {
 }
 
 // TestAWorkspaceLeftUncoveredByAFailedReplacementIsReestablishedOnTheNextPass
-// pins codex round 1's P1 on BUG-2764. Before the fix, an idle cycle whose
+// covers BUG-2764. Before the fix, an idle cycle whose
 // replacement SUBSCRIBE failed INSTALLED the dead PubSub, so the detector saw
 // it as idle and cycled it again next pass. With the failure now abandoning
 // instead, the workspace has subscribers counted and nothing behind them, and

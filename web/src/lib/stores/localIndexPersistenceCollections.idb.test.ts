@@ -84,7 +84,7 @@ describe('TASK-2946 — a cached collection list is stamped and fenced', () => {
 		// sibling tab resynced to e2 and its write landed first. Stamping the
 		// list with the DURABLE epoch would make it agree with the disk by
 		// construction and hand the fence a list fetched under a scope the cache
-		// has already left (codex round 1).
+		// has already left.
 		await persistDelta(U, WS, [row('a', 1)], '1', false, 'e2');
 		await persistCollections(U, WS, [coll('secret')], 'e1');
 

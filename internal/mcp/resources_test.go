@@ -161,7 +161,7 @@ func TestReadWorkspaces_PropagatesFetcherError(t *testing.T) {
 }
 
 func TestReadItem_DispatchesJSONAndComposesMarkdown(t *testing.T) {
-	// Codex review (round 1) caught: `pad item show --format markdown`
+	// `pad item show --format markdown`
 	// emits only item.Content (no ref/title/fields). The MCP resource
 	// promises full markdown, so we fetch JSON and compose the
 	// document here. Test guards both contracts: dispatch uses
@@ -278,9 +278,7 @@ func TestReadItem_PreservesBodyVerbatim(t *testing.T) {
 	//   - body H1 (must stay distinct from the resource heading)
 	//   - sub-heading
 	//   - em-dash and inline code fence
-	//   - schema-valid terminal status guidance (Codex round-1 fix
-	//     on PR #402 specifically: the body says "implemented", not
-	//     "done", because Ideas don't have "done".)
+	//   - schema-valid terminal status guidance
 	const fixtureContent = "# Welcome — let's get this place set up\n\n" +
 		"## What I'd find useful\n\n" +
 		"Read this carefully, then mark this idea implemented when you're ready.\n\n" +
@@ -331,8 +329,7 @@ func TestReadItem_PreservesBodyVerbatim(t *testing.T) {
 	}
 
 	// Specific fragments — em-dash, code-fenced command, schema-
-	// valid terminal status (covers the PR #402 round-1 regression
-	// guard).
+	// valid terminal status (covers the PR #402 regression guard).
 	for _, frag := range []string{
 		"# Welcome — let's get this place set up",
 		"## What I'd find useful",
@@ -638,7 +635,7 @@ func TestRead_PropagatesFetchErrors(t *testing.T) {
 }
 
 func TestRead_AppendsRootFlags(t *testing.T) {
-	// Per Codex review on TASK-945: --url root flag must reach every
+	// TASK-945: --url root flag must reach every
 	// dispatched subprocess. Resource fetches go through a separate
 	// fetcher path, so this contract has to be retested here.
 	f := &fakeFetcher{stdout: "{}"}

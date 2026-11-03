@@ -238,12 +238,12 @@ export const tabsStore = {
 		// A queued reorder must not outlive the identity that asked for it:
 		// send() takes its fence when it RUNS, which for a queued call can be
 		// after a sign-out or an account switch, so the old user's order would
-		// go out with the new user's credentials (codex r2). Fence at the call.
+		// go out with the new user's credentials. Fence at the call.
 		const isSameIdentity = authStore.identityFence();
 		const run = reorderChain.then(() => {
 			// A dropped reorder REJECTS, so a caller's follow-up (the pin a
 			// drag or a keyboard move makes) is skipped too rather than sent
-			// with the next identity's credentials (codex r4).
+			// with the next identity's credentials.
 			if (!isSameIdentity()) throw new Error('reorder dropped: the signed-in identity changed');
 			return send(() => api.workspaces.tabs.reorder(slugs));
 		});
@@ -301,7 +301,7 @@ authStore.onIdentityChange(() => {
 	committedRevision = -1;
 	// A new identity starts its own reorder queue: the old one's queued calls
 	// are dropped by their fence, but one still in flight that never settled
-	// would otherwise hold every later reorder behind it (codex r3).
+	// would otherwise hold every later reorder behind it.
 	reorderChain = Promise.resolve();
 	tabs = [];
 	loaded = false;

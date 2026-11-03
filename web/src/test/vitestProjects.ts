@@ -28,7 +28,7 @@
 //
 // What the line does NOT prove, because it counts FILES:
 //  - not that any assertion executed — a file of `.skip`ped tests counts as run
-//    (vitest's own summary reports the skips);
+// (vitest's own summary reports the skips);
 //  - not that a project SHOULD have had files: an idle project is printed, not
 //    failed, because a file filter legitimately idles one. `projectForTestFile`
 //    below is the guard for the accidental version of that;
@@ -167,7 +167,7 @@ export function formatProjectRunSummary(
 }
 
 // ---------------------------------------------------------------------------
-// Which project owns which file (BUG-3045, codex round 1 finding 3).
+// Which project owns which file (BUG-3045).
 //
 // The refusal above covers a project that cannot RUN. This covers the other way
 // the suite can be green while measuring nothing: a test file that no project's

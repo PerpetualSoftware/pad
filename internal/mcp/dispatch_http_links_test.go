@@ -343,8 +343,7 @@ func TestDispatch_ItemUnblock_WrapsDelete204AsStatusRemoved(t *testing.T) {
 	// Handler returns 204 No Content on DELETE. The CLI's
 	// `--format json` for `unblock` (and the lineage delete-link
 	// commands) prints `{"status":"removed"}`. The dispatcher must
-	// match — Codex review caught the empty-text packaging as a
-	// divergence.
+	// match; empty-text packaging would be a divergence.
 	items := map[string]itemPrefetch{
 		"TASK-5": {ID: "id-5", Slug: "task-5"},
 		"TASK-8": {ID: "id-8", Slug: "task-8"},
@@ -473,8 +472,8 @@ func unwrapItems(t *testing.T, sc any) []any {
 func TestDispatch_ItemRelated_ReturnsGroupedShape(t *testing.T) {
 	// CLI `--format json` for `related` returns
 	// {item_ref, item_title, collection, group_count, groups}.
-	// The dispatcher must mirror that — Codex review caught the
-	// raw-links shape as a divergence.
+	// The dispatcher must mirror that; the
+	// raw-links shape would be a divergence.
 	itemSlug := "task-5"
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/workspaces/docapp/items/TASK-5", func(w http.ResponseWriter, _ *http.Request) {

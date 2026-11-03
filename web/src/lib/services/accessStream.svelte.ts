@@ -231,7 +231,7 @@ function createAccessStream() {
 	//
 	// The hint is not evidence and neither is the open set: a tab closed on
 	// another device is absent from it while access is held, and a hint can be
-	// stale (codex round 1). The workspace-scoped 404 (BUG-3069) is the one
+	// stale. The workspace-scoped 404 (BUG-3069) is the one
 	// answer that means "gone for you", for a member and a guest alike, which
 	// GET /workspaces cannot say because it lists memberships only.
 	async function refetch(gone?: AccessHint) {
@@ -251,7 +251,7 @@ function createAccessStream() {
 			return;
 		}
 		// The route is re-read after every await: the user may have moved on
-		// while the refetch was in flight (codex round 1).
+		// while the refetch was in flight.
 		if (!wasInGone || !active || !isSameIdentity() || !inGone()) return;
 		if (!(await workspaceIsGone(active.slug))) return;
 		if (!isSameIdentity() || !inGone()) return;

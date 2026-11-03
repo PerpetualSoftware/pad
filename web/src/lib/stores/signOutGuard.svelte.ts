@@ -1,4 +1,4 @@
-// Signing out with unsaved edits asks first (BUG-3571, lead ruling part 1).
+// Signing out with unsaved edits asks first (BUG-3571).
 //
 // An open item registers what it would lose: `atRisk()` is true while it holds
 // edits the server may not have (the collab provider's editsAtRiskOnClose, or a
@@ -44,7 +44,7 @@ export function signOutFailed(): void {
 /**
  * Run a sign-out's logout. One that rejects resets the discard before the
  * error goes on to the caller, so an aborted sign-out never leaves an open
- * item unable to save or prompt (retro Codex review of #2041). Every sign-out
+ * item unable to save or prompt (#2041). Every sign-out
  * control logs out through this; the wiring test holds them to it.
  */
 export async function signOutLogout<T>(logout: () => Promise<T>): Promise<T> {
@@ -86,7 +86,7 @@ export async function confirmSignOut(): Promise<boolean> {
 	});
 	if (ok) {
 		// Discard what is at risk NOW as well as what was when the dialog
-		// opened (retro Codex review of #2041). The dialog is modal, so a
+		// opened (#2041). The dialog is modal, so a
 		// source can only have changed through work already in flight; one
 		// that became at risk meanwhile would otherwise have its saves stood
 		// down below without being discarded. Suppressed equals discarded.

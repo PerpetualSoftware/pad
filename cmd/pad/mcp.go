@@ -15,7 +15,7 @@ import (
 //
 //   - `pad mcp serve` — run the stdio MCP server.
 //   - `pad mcp install [agent]` — write a "pad" entry into a client's
-//     MCP config (Claude Desktop / Cursor / Windsurf / Claude Code / Codex).
+//     MCP config (Claude Desktop, Cursor, Windsurf, Claude Code).
 //   - `pad mcp uninstall <agent>` — remove the entry.
 //   - `pad mcp status` — show install state across all supported clients.
 func mcpCmd() *cobra.Command {
@@ -79,7 +79,7 @@ Existing MCP server entries (other servers configured by the user)
 are preserved — only the "pad" entry is touched.`,
 		ValidArgs: agentValidArgs(),
 		// Cobra defaults to ArbitraryArgs for cmds without Args set —
-		// silently accepts extras, which Codex caught as a UX bug
+		// silently accepts extras, which is a UX bug
 		// (`pad mcp install cursor windsurf` would only install Cursor).
 		Args:         cobra.MaximumNArgs(1),
 		SilenceUsage: true,
@@ -87,7 +87,7 @@ are preserved — only the "pad" entry is touched.`,
 			// --all is mutually exclusive with an agent name. Without
 			// this guard `pad mcp install --all cursor` would install
 			// every agent and silently drop the cursor argument,
-			// which Codex round 1 flagged as confusing.
+			// which is confusing.
 			if allFlag && len(args) > 0 {
 				return fmt.Errorf("--all cannot be combined with an agent name")
 			}

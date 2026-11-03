@@ -213,10 +213,10 @@ describe('createProjectCountReporter', () => {
 });
 
 describe('every test file belongs to a project', () => {
-	// BUG-3045, codex round 1 finding 3. The refusal covers a project that cannot
+	// BUG-3045. The refusal covers a project that cannot
 	// RUN; this covers the other way the suite goes green while measuring nothing
 	// — a test file that no project's glob matches, which is never collected and
-	// never fails. Codex checked the tree at the time and found no member; that
+	// never fails. The tree had no such file when this was written; that
 	// is exactly when a guard is worth adding, because the first one to appear
 	// would otherwise arrive silently.
 
@@ -281,7 +281,7 @@ describe('every test file belongs to a project', () => {
 });
 
 describe('vitest.config.ts actually uses all of this', () => {
-	// BUG-3045, codex round 1 finding 8, and CONVE-19: every other test in this
+	// BUG-3045 and CONVE-19: every other test in this
 	// file vouches for a FUNCTION. None of them would notice if vitest.config.ts
 	// stopped calling it, went back to probing dependencies inline, or dropped a
 	// project. These assertions read the real config.

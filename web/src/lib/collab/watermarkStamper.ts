@@ -45,7 +45,7 @@ export function createWatermarkStamper(deps: WatermarkStamperDeps): (input: Wate
 		// A cursor already sent is skipped — EXCEPT on the keepalive (pagehide)
 		// path, which always sends: an earlier ordinary request for the same
 		// cursor may still be in flight and be cancelled by the teardown, and
-		// nothing would trigger a retry after the page is gone (codex round 1).
+		// nothing would trigger a retry after the page is gone.
 		// A duplicate stamp is a no-op on the server.
 		if (!keepalive && cursor <= (lastStamped.get(itemId) ?? 0)) return;
 		lastStamped.set(itemId, cursor);
@@ -65,7 +65,7 @@ export function createWatermarkStamper(deps: WatermarkStamperDeps): (input: Wate
 				.then((res) => {
 					// A 200 that did not advance is not a success for this cursor:
 					// the body or the op-log moved under the proof. Forget it so a
-					// later flush can try again (codex round 1).
+					// later flush can try again.
 					if (res && res.advanced === false) forget();
 				}, forget);
 		} catch {

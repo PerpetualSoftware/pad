@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { decideCheckout } from './checkoutDecision';
 
 // TASK-3468: redirect only to a session priced at the interval the user
-// picked. The lead's three echo cases, plus the plain match.
+// picked. Three echo cases, plus the plain match.
 describe('decideCheckout', () => {
 	const url = 'https://checkout.stripe.com/c/pay/cs_test_1';
 

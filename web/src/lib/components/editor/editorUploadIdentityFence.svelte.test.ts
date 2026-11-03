@@ -1,4 +1,4 @@
-// BUG-3105 PR B, codex round 1: the body editor's upload callback resolves by
+// BUG-3105 PR B: the body editor's upload callback resolves by
 // INSERTING the uploaded node into the live document, so an upload that lands
 // after the signed-in user changed would write the previous user's attachment
 // into a document the next user is editing. The callback now captures an

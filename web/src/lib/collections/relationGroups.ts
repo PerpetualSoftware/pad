@@ -153,7 +153,7 @@ export function narrowRelationRow(
 }
 
 /**
- * TRIMMED (codex round 1, P1). `relationChipFor` has always trimmed, so a
+ * TRIMMED. `relationChipFor` has always trimmed, so a
  * legacy value stored as `" id-red "` produced a live CHIP and an unresolved
  * LANE — the same value described two ways by the two functions this module
  * exists to keep in agreement. The pre-TASK-2878 write path accepted any
@@ -238,7 +238,7 @@ export function relationLaneValueFor(item: Item, fieldKey: string, resolve: Reso
  *
  * The board's group `aria-label` used to format the raw column VALUE, so a lane
  * reading "COLOR-1 Red" announced as "Id-Red column" and the unresolved lane as
- * "$Unresolved column" (codex round 1). The claim this unit makes is that a
+ * "$Unresolved column". The claim this unit makes is that a
  * lane is named from its target rather than from the stored id, and a claim
  * that holds only for sighted users is not the claim.
  */
@@ -269,7 +269,7 @@ export function relationLaneAcceptsDrop(lane: Pick<RelationLane, 'state'>): bool
  *
  * Strict `===` was the whole comparison, and the board had already started
  * trimming — so an item storing `" id-red "` appeared in the `Red` LANE and
- * vanished when you filtered for `Red` (codex round 2). The same value, two
+ * vanished when you filtered for `Red`. The same value, two
  * answers, one screen apart.
  *
  * Trimming on BOTH sides rather than normalising the stored data: the write
@@ -298,8 +298,8 @@ export function relationLaneAcceptsDrop(lane: Pick<RelationLane, 'state'>): bool
  *   - `no_target` — a `relation` (or `multi_relation`) that declares no target
  *     collection. Half-written or legacy. Nothing can resolve its values, so
  *     there is nothing to label lanes with. Fixable: declare the target.
- *   - `multi_valued` — a `multi_relation`, whatever it declares. Refused by lead
- *     ruling, not by limitation: `bucketByColumn` puts every item in EXACTLY ONE
+ *   - `multi_valued` — a `multi_relation`, whatever it declares. Refused by
+ *     design, not by limitation: `bucketByColumn` puts every item in EXACTLY ONE
  *     lane (U7's proving row asserts it by placing six items and counting), and
  *     an item with three references belongs to three. The alternatives were to
  *     render the item once per target — which makes a drag between lanes mean

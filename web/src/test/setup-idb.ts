@@ -4,8 +4,7 @@
 // … — which the `idb` wrapper references) so `localIndexPersistence` — which
 // no-ops whenever `typeof indexedDB === 'undefined'` — actually exercises its
 // write/read path under test. Before this project existed the entire
-// persistence layer shipped on live-browser evidence runs only (Wren's #1148
-// finding).
+// persistence layer shipped on live-browser evidence runs only (#1148).
 //
 // `fake-indexeddb/auto` installs every IDB global once at import. A FRESH
 // `IDBFactory` per test is the isolation boundary: every test starts with zero

@@ -4,8 +4,7 @@ import { mermaidThemeForMode, collectMermaidRerenders } from './mermaidTheme';
 // BUG-3106: initMermaid passed theme:'dark' unconditionally, so every diagram
 // was drawn on the dark palette in light mode.
 //
-// Round 1 of review reshaped both functions, so these tests are written
-// against the corrected contract rather than the first attempt's.
+// These tests are written against the corrected contract of both functions.
 
 function html(attr: string | null): Element {
 	const el = document.createElement('html');
@@ -27,7 +26,7 @@ describe('mermaidThemeForMode', () => {
 		expect(mermaidThemeForMode(html('dark'), false)).toBe('dark');
 	});
 
-	// THE ROUND-1 FINDING. The first version returned 'dark' for an absent
+	// An earlier version returned 'dark' for an absent
 	// attribute on the claim that absent means dark. app.css:699 says
 	// otherwise: `@media (prefers-color-scheme: light) {
 	// :root:not([data-theme="dark"]) { ...light... } }`, so absent + OS light
@@ -94,11 +93,11 @@ describe('collectMermaidRerenders', () => {
 		expect(got[1].target).toBe(wrappers[1].querySelector('.mermaid-diagram'));
 	});
 
-	// THE ROUND-1 P1. The `code` element is the NodeView's contentDOM, so
+	// The `code` element is the NodeView's contentDOM, so
 	// ProseMirror renders decorations into it — a remote collaborator's caret
 	// is a widget whose label carries a text node with the peer's display
 	// name. The first version read `code.textContent` and so would have
-	// rendered `graph TD; A-->B;Dave`, which mermaid rejects; the resulting
+	// rendered `graph TD; A-->B;<peer name>`, which mermaid rejects; the resulting
 	// error class then made the breakage stick.
 	it('ignores decoration text in the contentDOM and uses the model source', () => {
 		const polluted =

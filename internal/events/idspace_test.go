@@ -161,7 +161,7 @@ func idsOf(events []Event) []int64 {
 }
 
 func TestConcurrentPublishesLeaveTheBufferInIDOrder(t *testing.T) {
-	// codex round 18. The id used to be assigned BEFORE the replay lock, so
+	// The id used to be assigned BEFORE the replay lock, so
 	// two concurrent publishes could take N and N+1 and append in the other
 	// order. replayBuffer.since computes oldest and newest by POSITION, so a
 	// buffer holding [N+1, N] reports N as its newest and answers a resume

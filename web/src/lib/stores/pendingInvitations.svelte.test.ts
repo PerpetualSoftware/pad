@@ -106,7 +106,7 @@ describe('pendingInvitations', () => {
 		expect(pendingInvitations.count).toBe(1);
 	});
 
-	// codex r7: the "+" list fetches on its own; it reserves a token in the
+	// The "+" list fetches on its own; it reserves a token in the
 	// store's order when it starts, so its answer cannot overwrite anything newer.
 	it('a list reserved before a forced refresh cannot overwrite that refresh', async () => {
 		pendingInvitations.set([inv('a')], pendingInvitations.reserve());

@@ -1,6 +1,6 @@
 package mcp
 
-// Regression test for the bug Codex review surfaced (TASK-1075):
+// Regression test for TASK-1075:
 // every production /mcp tool call returned 404 from the dispatcher's
 // synthesized /api/v1/... request because chi short-circuits routing
 // when the context already carries a RouteCtxKey from the parent

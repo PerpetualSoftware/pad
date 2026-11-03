@@ -125,8 +125,8 @@ export function draftEdits(base: string, draft: string): DraftEdit[] | null {
 }
 
 /**
- * The edits a kept draft's restore sends (BUG-3850, lead rulings baa63dc3 and
- * a6380212). None for a stale base: one a remote update or this tab's own send
+ * The edits a kept draft's restore sends (BUG-3850). None
+ * for a stale base: one a remote update or this tab's own send
  * outran, or the row with no confirmed snapshot. The server may hold text the
  * base lacks, and an anchor is a substring, so a patch from it would send that
  * text again and report success ('A' → 'A C U' over a stored 'A C' gives

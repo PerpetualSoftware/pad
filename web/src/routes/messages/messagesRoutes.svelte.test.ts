@@ -257,7 +257,7 @@ describe('/messages page (TASK-4044)', () => {
 		expect(getByText('Could not load your conversations.')).toBeTruthy();
 	});
 
-	// Nothing else retries a failed list while the unread fetch is fine (r1).
+	// Nothing else retries a failed list while the unread fetch is fine.
 	it('Try again reloads the list once and shows it', async () => {
 		h.listConversations.mockRejectedValueOnce(new Error('boom'));
 		const { container, getByText } = render(MessagesPage);
@@ -270,7 +270,7 @@ describe('/messages page (TASK-4044)', () => {
 		expect(container.textContent).not.toContain('Could not load');
 	});
 
-	// A failed reload keeps the last list, and must say so (r2).
+	// A failed reload keeps the last list, and must say so.
 	it('a failed reload keeps the list, says so, and Try again clears it', async () => {
 		const { container, getByText } = render(MessagesPage);
 		await settle();
@@ -799,7 +799,7 @@ describe('/messages/[n] thread write path (TASK-4044 PR 3b)', () => {
 		[...row.querySelectorAll('button')].find((b) => b.textContent === 'Reply')!.click();
 		await settle();
 		expect(container.querySelector('.reply')!.textContent).toContain('body 2');
-		// Red if Reply leaves focus on the body (r5 H3): the reader types next.
+		// Red if Reply leaves focus on the body: the reader types next.
 		expect(document.activeElement).toBe(box(container));
 		h.sendMessage.mockResolvedValue({
 			message: message(3, { mine: true, body: 'answer' }),
@@ -834,7 +834,7 @@ describe('/messages/[n] thread write path (TASK-4044 PR 3b)', () => {
 		expect(container.querySelector('article[data-seq="1"]')!.textContent).toContain('Message deleted');
 	});
 
-	// r6 L3 (N36): red with replyTo cleared before the delete resolves.
+	// Red with replyTo cleared before the delete resolves.
 	it('deleting the reply target clears the reply bar only when the delete succeeds', async () => {
 		const { container } = await openThread();
 		const menu = async (seq: number, label: string) => {
@@ -854,7 +854,7 @@ describe('/messages/[n] thread write path (TASK-4044 PR 3b)', () => {
 		expect(container.querySelector('.reply'), 'the delete succeeded: the bar goes').toBeNull();
 	});
 
-	// r6 L4 (N37): red with focus left to fall to body when Retry/Discard unmount.
+	// Red with focus left to fall to body when Retry/Discard unmount.
 	it.each(['Retry', 'Discard'])('%s on a failed bubble puts focus in the composer', async (label) => {
 		const { container } = await openThread();
 		h.sendMessage.mockRejectedValueOnce(new Error('network'));
@@ -871,7 +871,7 @@ describe('/messages/[n] thread write path (TASK-4044 PR 3b)', () => {
 		expect(document.activeElement).toBe(box(container));
 	});
 
-	// r7 M1: red with the page dropping Retry's outcome. A refused Retry discards the bubble,
+	// Red with the page dropping Retry's outcome. A refused Retry discards the bubble,
 	// so without the restore its text was gone with no notice.
 	it('a Retry refused because the quoted message was deleted puts the text back with its notice', async () => {
 		const { container } = await openThread();

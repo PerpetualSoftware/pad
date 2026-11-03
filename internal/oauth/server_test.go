@@ -300,12 +300,12 @@ func TestNormalizeAudience(t *testing.T) {
 	}
 }
 
-// TestAudienceStrategy_PathSlashIsNotEquivalent guards Codex #386
-// round 1 directly at the strategy layer: even with normalization
+// TestAudienceStrategy_PathSlashIsNotEquivalent guards #386
+// directly at the strategy layer: even with normalization
 // active, a token requested for a path-slashed audience must NOT
 // pass when the canonical is the unslashed path form (and vice
 // versa). The strict reject is what stops the audience-confusion
-// attack the round-1 review flagged.
+// attack.
 func TestAudienceStrategy_PathSlashIsNotEquivalent(t *testing.T) {
 	cases := []struct{ canonical, needle string }{
 		{"https://host/mcp", "https://host/mcp/"},
@@ -676,7 +676,7 @@ func TestStorage_RotateRefreshToken_RevokesEntireGrant(t *testing.T) {
 	// End-to-end test of fosite's rotation expectation: after
 	// RotateRefreshToken, both the refresh AND the paired access
 	// token are inactive (matches fosite's reference MemoryStore
-	// behaviour, locked in by sub-PR A's round-2 fix).
+	// behaviour, locked in by sub-PR A's fix).
 	st := testStoreOAuth(t)
 	storage := NewStorage(st, "https://mcp.test.example/mcp")
 	client, _ := st.CreateOAuthClient(models.OAuthClientCreate{Name: "C", Public: true})

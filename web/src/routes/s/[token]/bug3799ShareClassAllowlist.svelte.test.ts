@@ -1,4 +1,4 @@
-// BUG-3799 (the director's audit of #2145): the markdown sanitizer keeps any
+// BUG-3799 (audit of #2145): the markdown sanitizer keeps any
 // class, so a share body could reuse the app's global CSS to overlay the page,
 // e.g. attachment-crop-modal-shell (a 95vw x 92vh panel) for a fake sign-in,
 // or sr-only to hide the genuine text. On the share path, classes are now

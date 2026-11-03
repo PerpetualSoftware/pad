@@ -215,7 +215,7 @@ describe('TASK-2921 — a result names the workspace it was SYNCED FOR', () => {
 		// the user navigates and `setWorkspace` moves the service to 'other'.
 		// A result stamped at DELIVERY would say 'other', and the subscriber —
 		// whose own slug is derived from the route and has also moved — would
-		// have no way to tell it was A's result. That is codex round 8's finding.
+		// have no way to tell it was A's result. That is the defect this pins.
 		let release!: () => void;
 		const gate = new Promise<void>((r) => {
 			release = r;
@@ -252,7 +252,7 @@ describe('TASK-2921 — a result names the workspace it was SYNCED FOR', () => {
 		// Pass one is in flight; a sync_required arrives (deferring a second
 		// pass) and the workspace moves. The second pass issues its own request
 		// against the NEW workspace, so labelling it with the first pass's
-		// capture would name a workspace it did not sync (codex round 10).
+		// capture would name a workspace it did not sync.
 		let release!: () => void;
 		const gate = new Promise<void>((r) => {
 			release = r;

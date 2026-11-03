@@ -233,7 +233,7 @@ func sweepAllTools(t *testing.T, f projectionFixture) {
 				sort.Strings(l)
 				t.Errorf("leaks:\n  %s", strings.Join(l, "\n  "))
 			}
-			// The text fallback gets the same sweep (codex review): a client
+			// The text fallback gets the same sweep: a client
 			// that reads only text must not see what the structured content
 			// dropped.
 			if l := leaks(c.tool+"(text)", textJSON(t, res), allowed); len(l) > 0 {
@@ -249,7 +249,7 @@ func sweepAllTools(t *testing.T, f projectionFixture) {
 	}
 }
 
-// What the projection keeps is what the tools are for: P2 of the plugin's
+// What the projection keeps is what the tools are for: one of the plugin's
 // test cases reads ref, title, status and priority; a relation field reads
 // as a ref, not an id; archive_item confirms.
 func TestChatGPTProjection_KeepsWhatTheToolsAreFor(t *testing.T) {
@@ -302,7 +302,7 @@ func textJSON(t *testing.T, res *mcp.CallToolResult) any {
 }
 
 // Error results are swept too: an error that embeds item data must not
-// carry what a success would have dropped (codex review).
+// carry what a success would have dropped.
 func TestChatGPTProjection_ErrorPathsDoNotLeak(t *testing.T) {
 	f := newProjectionFixture(t)
 	for _, c := range []struct {

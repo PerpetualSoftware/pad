@@ -40,14 +40,14 @@ item.reminder_due webhook event. The poll surface is not optional: an instance
 with no webhook configured delivers reminders that way and only that way.`,
 		// `[ref]` rather than `<ref>` in Use, because cmdhelp derives the
 		// machine-readable arg spec from this string and `<ref>` would declare
-		// a REQUIRED positional that --rearm does not take (codex round 6).
+		// a REQUIRED positional that --rearm does not take.
 		// The requirement is conditional, which cmdhelp has no way to express,
 		// so the honest declaration is "optional" plus the explicit check
 		// below that names the two ways to call it.
 		//
 		// MaximumNArgs, not ExactArgs: --rearm addresses a REMINDER by id and
-		// needs no item ref, so requiring one made the flag unusable (codex
-		// round 2). The two modes are checked below rather than merged,
+		// needs no item ref, so requiring one made the flag unusable. The two modes
+		// are checked below rather than merged,
 		// because a ref supplied alongside --rearm is ambiguous — it names an
 		// item the reminder may not even belong to — and silently ignoring it
 		// is how a user learns nothing about the reminder they just moved.

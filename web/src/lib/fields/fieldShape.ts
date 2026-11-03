@@ -118,7 +118,7 @@ export type ReadAs = { ok: true; value: unknown } | { ok: false; raw: unknown };
  * bad value is shown by its own editor and changed only when the user picks a
  * new one. Mirroring the date half means mirroring Go's `time.Parse`, which
  * accepts a one-digit hour and a `+24:00` offset and refuses `+25:00`, so a
- * copy of it here would drift from it (BUG-3052 unit 2, review round 2). `json`, the
+ * copy of it here would drift from it (BUG-3052 unit 2). `json`, the
  * relation types and any type this module does not know are not judged.
  *
  * NO VALUE is `null`, `undefined` and `''`, for every type, the same set

@@ -20,7 +20,7 @@ export interface TimelineFeed {
 	 * The owner's load error. Mirrored because a second view that renders only
 	 * entries shows a FAILED load as "No timeline entries yet." — an empty
 	 * timeline and an unreachable server look identical, and the second is the
-	 * one the reader needs to know about (codex round 1).
+	 * one the reader needs to know about.
 	 */
 	error: string;
 	hasMore: boolean;
@@ -29,7 +29,7 @@ export interface TimelineFeed {
 	 * Fetch the next page, telling the owner which kinds count as progress for
 	 * THIS view. Without that the owner's hop loop stops on any new entry of
 	 * any kind, so a page of pure comments ends it having added nothing to a
-	 * changes view — a button that visibly does nothing (codex rounds 1-4).
+	 * changes view — a button that visibly does nothing.
 	 * Pass the view's kinds; omit them to use the owner's own filter.
 	 */
 	loadMore: (forKinds?: readonly string[]) => Promise<void>;

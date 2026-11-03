@@ -168,8 +168,8 @@ export function createViewerTextLoader(): ViewerTextLoader {
 				// id is the thing the user is actually looking at).
 				if (token !== loadToken || active?.img.id !== id) return;
 				if (body === null) {
-					// The response outran the bound. `oversizeBytes` stays NULL here
-					// (codex R2 #3): the declared size is either absent or — in the
+					// The response outran the bound. `oversizeBytes` stays NULL here:
+					// the declared size is either absent or — in the
 					// under-declaring case this branch exists to catch — WRONG, and
 					// echoing it produces "This file is 10 B — too large to preview",
 					// a sentence that reads as a bug in the viewer rather than a

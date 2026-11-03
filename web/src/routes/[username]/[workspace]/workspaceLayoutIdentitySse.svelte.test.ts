@@ -1,9 +1,9 @@
 // Runs in the jsdom vitest project (filename ends `.svelte.test.ts`).
 //
-// BUG-3005, codex round 2 — the persistent workspace layout across an identity
+// BUG-3005 — the persistent workspace layout across an identity
 // change. Two bindings, and neither is observable anywhere else (CONVE-19):
 //
-// A real identity change RELOADS the tab (lead ruling after round 3), so this
+// A real identity change RELOADS the tab , so this
 // layout no longer re-runs its per-workspace work and no longer remounts leaf
 // pages — the reload does both, properly, and one mechanism is the point.
 //

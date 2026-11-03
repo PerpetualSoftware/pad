@@ -97,8 +97,7 @@ test.describe('list j/k follow the rows on screen (BUG-3492)', () => {
 			await expect.poll(() => focusedTitle(page)).toBe('c');
 
 			// Every group collapsed: nothing is on screen, so j focuses nothing.
-			// An empty rendered order must not fall back to the unrendered list
-			// (codex r1).
+			// An empty rendered order must not fall back to the unrendered list.
 			await page.keyboard.press('Escape');
 			await expect.poll(() => focusedTitle(page)).toBeNull();
 			for (const h of await page.locator('.group-header').all()) await h.click();

@@ -180,7 +180,7 @@
 		let done = false;
 		let lastSet = -1;
 		let lastHeight = el.scrollHeight;
-		// No scroll anchoring while the restore runs (BUG-3250 codex round 1):
+		// No scroll anchoring while the restore runs (BUG-3250):
 		// an anchoring shift can move scrollTop with no height change, which
 		// the reader rule below would take for the reader. With it off, a
 		// layout shift moves scrollTop only by clamping, which changes height.
@@ -239,7 +239,7 @@
 	let pendingRestore: { target: number; gen: number } | null = null;
 	// pointerdown is the scrollbar: a press on it lands on the pane itself, and
 	// it is the one reader move the height rule above can miss, when a drag and
-	// late growth share a frame (BUG-3251 codex round 1). A click in the body is
+	// late growth share a frame (BUG-3251). A click in the body is
 	// the reader acting on what they see, so it ends the restore too.
 	const GESTURES = ['wheel', 'touchstart', 'keydown', 'pointerdown'] as const;
 
@@ -266,13 +266,13 @@
 
 	function handleItemReady(ready: boolean) {
 		// The pane is leaving the item it was restoring (a drill, a workspace
-		// switch): a live restore must not reach the next one (BUG-3250 codex
-		// round 1). Not-ready alone is not that signal: a same-item reload also
-		// reports it (codex round 2), so cancel only when the requested item or
+		// switch): a live restore must not reach the next one (BUG-3250). Not-ready alone is not
+		// that signal: a same-item reload also
+		// reports it, so cancel only when the requested item or
 		// workspace is no longer the one the restore started under. The item is
 		// the IMMEDIATE openItemRef, not the coalesced paneMintForRoute, which a
-		// same-path popstate holds on the old item while it settles (codex
-		// round 3). A pending restore is left alone: it is waiting for exactly
+		// same-path popstate holds on the old item while it settles.
+		// A pending restore is left alone: it is waiting for exactly
 		// this item's ready.
 		if (!ready) {
 			if (cancelRestore && (openItemRef !== restoreRef || wsSlug !== restoreWs)) {
@@ -332,12 +332,12 @@
 	// the clamp reflects real available space and a drag can never crush the
 	// list. Before the pane mounts (init / keyboard) it falls back to the
 	// viewport as a loose upper bound; the ResizeObserver below refits once
-	// the real container is measurable (Codex round 1 P2).
+	// the real container is measurable.
 	//
 	// When the container is too narrow for the 360px pane floor to leave the
 	// list a fair share (e.g. a ~800px viewport with the sidebar expanded), the
 	// floor relaxes to 40% of the usable width, so the pane can shrink below
-	// PANE_WIDTH_MIN (Codex round 2 P2). The ceiling is always 90% of the usable
+	// PANE_WIDTH_MIN. The ceiling is always 90% of the usable
 	// width, which is above that floor at every container size.
 	function paneBounds(): { min: number; max: number } {
 		let containerW = 0;
@@ -394,7 +394,7 @@
 	// first fires and sets `paneWidth`.
 	let measuredPaneWidth = $state<number | null>(null);
 	// The current bounds, mirrored into state so the divider's ARIA range
-	// tracks the relaxed floors on a cramped container (Codex round 3 P3).
+	// tracks the relaxed floors on a cramped container.
 	let ariaMin = $state(PANE_WIDTH_MIN);
 	let ariaMax = $state(PANE_WIDTH_MAX);
 
@@ -416,7 +416,7 @@
 	// default means applying it as `--pane-width` matches what CSS renders on
 	// roomy layouts (so the observer's first run causes no reflow) while a
 	// cramped container gets a fitted width that doesn't crush the list, even
-	// with NO saved preference (Codex round 3 P2).
+	// with NO saved preference.
 	function fittedPaneWidth(): number {
 		const { min, max } = paneBounds();
 		let containerW = 0;
@@ -506,7 +506,7 @@
 	//    flicker) via `nextTrapTarget`.
 	//  • focusin — the catch-all for any programmatic focus escape (Cmd+F
 	//    focusing the search box behind the overlay) — pulled straight back into
-	//    the pane (Codex P1 — Tab alone can't see these).
+	//    the pane (Tab alone can't see these).
 	//  • a MutationObserver on the pane — for the escape focusin CANNOT see: the
 	//    focused control is REMOVED (a header swapped when loading ends, the tag
 	//    suggestions unmounting 120ms after their input blurs), focus falls to
@@ -763,7 +763,7 @@
 	// The pane's actual current width — the applied width if set, else the
 	// real rendered size (the CSS clamp() default), so the FIRST keyboard
 	// nudge moves from where the pane visibly is rather than an assumed
-	// default that could be on the wrong side of it (Codex round 1 P2).
+	// default that could be on the wrong side of it.
 	function currentPaneWidth(): number {
 		if (paneWidth != null) return paneWidth;
 		if (browser && paneEl) return paneEl.getBoundingClientRect().width;
@@ -857,7 +857,7 @@
 	{#if paneMintForRoute}
 		<!--
 			Nested (not `{#key}`) on `paneMintForRoute`, not raw `openItemRef`
-			(PLAN-2154 / TASK-2166; Codex review): while the pane is ALREADY
+			(PLAN-2154, TASK-2166): while the pane is ALREADY
 			open on the SAME route, `paneMintForRoute` (== `paneMintRef`) stays
 			pinned at the last-settled ref through an entire popstate burst, so
 			this branch stays mounted and `ref` never flips mid-burst — the

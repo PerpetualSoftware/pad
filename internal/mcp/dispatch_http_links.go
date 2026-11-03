@@ -136,7 +136,7 @@ type itemPrefetch struct {
 // Goes through buildAuthedRequest so any OAuth-scope context attached
 // at dispatch time (d.Apply) applies to the prefetch the same way it
 // applies to the main request — same scope-bypass-prevention reasoning
-// behind dispatchItemUpdate's prefetch (Codex review #345 round 1).
+// behind dispatchItemUpdate's prefetch.
 func (d *HTTPHandlerDispatcher) resolveItemRef(
 	ctx context.Context,
 	user *models.User,
@@ -370,7 +370,7 @@ type relatedGroup struct {
 //	{"item_ref":..., "item_title":..., "collection":...,
 //	 "group_count": N, "groups": [{"key", "label", "entries":[...]}, ...]}
 //
-// Codex review on PR #346 caught the original raw-links shape as a
+// The original raw-links shape was a
 // behavioural divergence from the CLI; fixing it preserves the
 // "transport-equivalent to ExecDispatcher" contract this dispatcher
 // is built on.

@@ -1,6 +1,5 @@
 // Node-project test (no DOM): a SOURCE-level guard that ItemDetail's teardown
-// writes DISCARD when the signed-in identity has moved (BUG-3005, codex round
-// 4).
+// writes DISCARD when the signed-in identity has moved (BUG-3005).
 //
 // WHY THIS IS LOAD-BEARING RATHER THAN BELT-AND-BRACES. A real identity change
 // now RELOADS the tab, and a reload fires `beforeunload`. Both persistence
@@ -12,7 +11,7 @@
 // The prompt half matters as much as the flush half: `preventDefault()` on a
 // dirty editor raises the native "unsaved changes" dialog, and "Stay" CANCELS
 // the reload — leaving the new user in the previous user's page shell with the
-// stores already cleared and (since round 3) no remount left to rebuild it.
+// stores already cleared and no remount left to rebuild it.
 //
 // WHY SOURCE TEXT AND NOT A RENDER: same reasoning as
 // `itemDetailLinksSurviveFailedRefresh.test.ts` in this directory — ItemDetail
@@ -35,7 +34,7 @@ const CODE = stripComments(SRC);
 
 /** The body of a top-level function, or a thrown failure.
  *
- * FAILS CLOSED, and that is the whole reason it exists (codex round 4 [P2]).
+ * FAILS CLOSED, and that is the whole reason it exists.
  * The first version did `CODE.slice(fn, CODE.indexOf('\n\t}', fn))`, and when
  * that indexOf finds nothing it returns -1 — so `slice(fn, -1)` scanned nearly
  * the rest of the file and let unrelated flush/guard occurrences elsewhere in
@@ -58,7 +57,7 @@ describe('ItemDetail teardown writes under an identity change', () => {
 		expect(CODE).toMatch(/let\s+identityEpochAtLoad\s*=\s*authStore\.identityEpoch/);
 		const loadData = CODE.slice(CODE.indexOf('async function loadData()'));
 		const upToFirstAwait = loadData.slice(0, loadData.indexOf('await'));
-		// Read through `untrack` since BUG-3084 checkpoint 33 — a tracked read
+		// Read through `untrack` since BUG-3084 — a tracked read
 		// made the route effect re-run on every identity change. Either
 		// spelling is a re-stamp; the property pinned here is its position.
 		expect(upToFirstAwait).toMatch(
@@ -103,7 +102,7 @@ describe('ItemDetail teardown writes under an identity change', () => {
 		// wrong question — the guard's question was wider than the claim resting
 		// on it, which is the failure this file exists to catch in the source.
 		// FAIL CLOSED on a teardown listener that writes without going through
-		// the guarded function. Rewritten after codex round 4 [P1]: the first
+		// the guarded function. Rewritten because the first
 		// version rejected two literal spellings and then only checked that
 		// `runTeardownFlush()` appeared SOMEWHERE in the block — so a new
 		// handler writing through any other call, or through an alias, passed.
@@ -179,7 +178,7 @@ describe('ItemDetail teardown writes under an identity change', () => {
 		// neither of the other re-arms can reach it. A latch left set there
 		// silently swallows every later teardown flush for the life of the page
 		// — a worse loss than the one this change fixes, reached by the ordinary
-		// act of changing your mind about closing a tab (codex round 2).
+		// act of changing your mind about closing a tab.
 		const start = CODE.indexOf('const onBeforeUnload = (event: BeforeUnloadEvent) => {');
 		const end = CODE.indexOf('const onPageHide', start);
 		expect(end, 'the listener block was restructured — re-point this guard').toBeGreaterThan(start);

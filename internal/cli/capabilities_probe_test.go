@@ -62,7 +62,7 @@ func TestCollectionNotFoundIsAuthoritative_Definitive_CachesVerdict(t *testing.T
 }
 
 func TestCollectionNotFoundIsAuthoritative_Transient_FailsClosedAndReprobes(t *testing.T) {
-	// Codex r2 P1: a transient probe failure (here a 5xx) must NOT be cached as
+	// A transient probe failure (here a 5xx) must NOT be cached as
 	// "legacy" — caching it would permanently re-enable the alias retry and let
 	// a write bypass the archived/hidden protection on a resolving server.
 	h := &capsHandler{}

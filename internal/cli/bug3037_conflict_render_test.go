@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// BUG-3037 (codex round 4) — a conflict on the SEQ token must print the seq
+// BUG-3037 — a conflict on the SEQ token must print the seq
 // pair and point the retry at --expected-seq.
 //
 // Before this, UpdateConflictDetails only decoded the timestamp fields, so a

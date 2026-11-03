@@ -188,7 +188,7 @@ func TestMemoryBus_SlowSubscriberDoesNotBlockPublish(t *testing.T) {
 }
 
 // TestMemoryBus_ConcurrentPublish_MaintainsIDOrderInReplayBuffer covers
-// codex round 1 finding 4: sequence assignment and replay-buffer
+// the case where sequence assignment and replay-buffer
 // insertion used to happen under SEPARATE locks, so two concurrent
 // Publish calls could append to the ring buffer out of ID order —
 // corrupting since()'s ordering assumptions (it walks the ring
@@ -238,7 +238,7 @@ func TestMemoryBus_ConcurrentPublish_MaintainsIDOrderInReplayBuffer(t *testing.T
 }
 
 // TestMemoryBus_SubscribeAndReplaySince_NoDuplicateUnderConcurrentPublish
-// covers codex round 1 finding 3: Subscribe() and EventsSince() used to
+// covers this: Subscribe() and EventsSince() used to
 // be two separate calls, leaving a window where a Notification published
 // in between would be delivered TWICE (once via replay, once via the
 // live channel). Publishes a batch of notifications immediately after
@@ -305,8 +305,8 @@ drain:
 	}
 }
 
-// TestMemoryBus_ConcurrentPublishUnsubscribeClose_NoPanic covers codex
-// round 2 finding 3: Publish used to snapshot subscriber channels under
+// TestMemoryBus_ConcurrentPublishUnsubscribeClose_NoPanic covers this: Publish
+// used to snapshot subscriber channels under
 // the lock, release it, and send afterward — a window where a
 // concurrent Unsubscribe or Close could close a channel Publish was
 // about to send to. A send on a closed channel PANICS in Go, which

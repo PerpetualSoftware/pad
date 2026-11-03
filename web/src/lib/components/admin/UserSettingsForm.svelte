@@ -197,8 +197,8 @@
 
 	// All async handlers snapshot user.id (and the target email for the
 	// typed-confirm gate) at entry so a mid-flight modal swap to a
-	// different user can't fetch/mutate the wrong row (Codex review on
-	// PR #606). Mirrors the inline-expand handlers' pattern.
+	// different user can't fetch/mutate the wrong row.
+	// Mirrors the inline-expand handlers' pattern.
 	async function changeRole() {
 		const userId = user.id;
 		roleSaving = true;

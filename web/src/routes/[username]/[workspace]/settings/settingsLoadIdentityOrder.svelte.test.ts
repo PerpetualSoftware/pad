@@ -220,7 +220,7 @@ describe('BUG-3237: the settings load never vouches for the previous identity\'s
 
 		auth.swapTo('u2');
 		flushSync();
-		// The CONSEQUENCE first (codex r1 on #1588): click whatever copy button
+		// The CONSEQUENCE first (#1588): click whatever copy button
 		// is on screen while the new identity's load is pending. With both
 		// mechanisms removed, the previous session's button is still there and
 		// `pageIdentityHeld()` already vouches for it, so this is where the

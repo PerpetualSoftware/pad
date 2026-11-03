@@ -45,7 +45,7 @@ func newChatGPTMCPServer(doc *cmdhelp.Document, dispatcher mcpserver.Dispatcher)
 }
 
 // chatGPTMountPrerequisites is the hard prerequisite for serving the
-// ChatGPT catalog (TASK-3321, the lead's ruling): its instructions promise
+// ChatGPT catalog (TASK-3321): its instructions promise
 // that every content change is versioned first (U1b), and its responses
 // must be minimized (U3). A missing piece leaves the mount unwired.
 func chatGPTMountPrerequisites() error {

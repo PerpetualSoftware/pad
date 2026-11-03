@@ -100,7 +100,7 @@ func TestStdioSurfacesStoredStateUnreadable(t *testing.T) {
 	if !strings.Contains(env.Error.Message, models.ItemFieldDecisionLog) {
 		t.Errorf("message must carry the refusal text; got: %s", env.Error.Message)
 	}
-	// Codex round 2: the same CODE with different GUIDANCE per transport is
+	// The same CODE with different GUIDANCE per transport is
 	// the same gap as a code only one transport emits. Compared against the
 	// HTTP path's envelope rather than against a literal, so the assertion
 	// fails if either side changes alone.
@@ -122,7 +122,7 @@ func TestStdioSurfacesStoredStateUnreadable(t *testing.T) {
 	}
 }
 
-// TestNoRemoteEquivalentDoesNotAdvertiseTheBrokenPRWorkaround — Codex round 5.
+// TestNoRemoteEquivalentDoesNotAdvertiseTheBrokenPRWorkaround.
 //
 // noRemoteEquivalent's text IS the message a remote agent receives when it
 // calls `github link`, which makes it the artifact that reaches the actor. It
@@ -154,7 +154,7 @@ func TestNoRemoteEquivalentDoesNotAdvertiseTheBrokenPRWorkaround(t *testing.T) {
 	}
 }
 
-// TestReservedKeyRefusalsAgreeAcrossTransports — Codex round 7.
+// TestReservedKeyRefusalsAgreeAcrossTransports.
 //
 // Both reserved-key refusals must reach an agent as validation_failed no
 // matter which dispatcher delivered them, because that is what the catalog and
@@ -192,8 +192,8 @@ func TestReservedKeyRefusalsAgreeAcrossTransports(t *testing.T) {
 			`{"error":{"code":"malformed_override","message":"Field(s) reserved for system metadata and not settable here: implementation_notes"}}`},
 		{"update field-patch refusal (BUG-2627)", updateRefusal,
 			`{"error":{"code":"validation_error","message":"\"implementation_notes\" is system metadata and cannot be set through a field update."}}`},
-		// Codex round 8: the COPY path words its refusal differently again,
-		// and round 7's fix only covered the move wording. Same class, third
+		// The COPY path words its refusal differently again,
+		// and an earlier fix only covered the move wording. Same class, third
 		// message.
 		{"copy undeclared-override refusal", "Error: Destination collection has no field(s): github_pr",
 			`{"error":{"code":"malformed_override","message":"Destination collection has no field(s): github_pr"}}`},

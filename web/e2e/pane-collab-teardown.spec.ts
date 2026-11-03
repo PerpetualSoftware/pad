@@ -22,8 +22,7 @@ import { browserLogin, seedDoc, EDITOR_SELECTOR, SYNCED_BADGE_SELECTOR, SYNC_TIM
  * NOT FALSE-PASSING — the key design constraint. These edits are ALSO
  * persisted by timer-based backups (the 5s collab idle flush; the 1.2s
  * raw-save debounce), so a naive test passes even if the teardown flush
- * is removed — a backup timer fires later and masks the regression (Codex
- * review, TASK-2117; verified by mutation testing). Two mechanisms keep
+ * is removed — a backup timer fires later and masks the regression (TASK-2117; verified by mutation testing). Two mechanisms keep
  * these honest:
  *
  *   - Item-switch + raw-switch: loadData() CANCELS the outgoing item's

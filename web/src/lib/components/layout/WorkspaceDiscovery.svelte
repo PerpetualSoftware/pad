@@ -1,6 +1,6 @@
 <script lang="ts">
-	// The TopBar "+" discovery surface (PLAN-3002 U4 / TASK-3276, Dave's Q4
-	// ruling): search the workspaces that are NOT open as tabs, create one,
+	// The TopBar "+" discovery surface (PLAN-3002 U4 / TASK-3276): search the workspaces that are
+	// NOT open as tabs, create one,
 	// and restore a recently deleted one. Since U3 the bar shows only the open
 	// set, so this is how a workspace outside it is reached without going
 	// through /console.

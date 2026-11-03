@@ -99,7 +99,7 @@ describe('CommandPalette coll: qualifier on the server paths (BUG-3709)', () => 
 		expect(f.offset).toBe(1);
 	});
 
-	// Codex rule round on #2148: the "All workspaces" path, `is:archived`
+	// Coverage for #2148: the "All workspaces" path, `is:archived`
 	// alongside `coll:` on the supplement and Load more, and the chip's
 	// precedence over a conflicting `coll:` token.
 	it('All workspaces: scoped, every workspace, and the token is not searched for', async () => {

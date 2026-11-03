@@ -42,7 +42,7 @@
 	}: {
 		node: SelectedNode;
 		/**
-		 * THREADED RATHER THAN ARGUED (BUG-3067 round 5, lead ruling). The
+		 * THREADED RATHER THAN ARGUED (BUG-3067). The
 		 * permissive staleness default was allowed to stand only on a grep showing
 		 * every mount site sits under the `[workspace]` layout that stamps the
 		 * collection store. This component has exactly one mount site — the graph

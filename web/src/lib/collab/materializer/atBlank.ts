@@ -1,5 +1,5 @@
 // VENDORED PATCH of prosemirror-markdown `MarkdownSerializerState.atBlank`
-// (TASK-2198; lead ruling, not filed upstream).
+// (TASK-2198; not filed upstream).
 //
 // Upstream (prosemirror-markdown 1.13.4, dist/index.js):
 //

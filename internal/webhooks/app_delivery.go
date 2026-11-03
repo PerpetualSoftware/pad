@@ -65,8 +65,8 @@ type AppDelivery struct {
 	OccurredAt string
 	Body       []byte
 	// RateGate, when set, is asked before EVERY attempt, retries included,
-	// so a rate cap bounds requests rather than deliveries (codex r1 on
-	// U10c). false stops the delivery with AppRateLimited, nothing sent.
+	// so a rate cap bounds requests rather than deliveries (U10c). false stops the
+	// delivery with AppRateLimited, nothing sent.
 	RateGate func() bool
 }
 
@@ -128,7 +128,7 @@ var newDeliveryID = func() string {
 // disabled between attempts gets no further attempt.
 //
 // It returns the final result and how many requests were actually sent, so
-// the delivery ledger records real attempts (codex r2 on U10c).
+// the delivery ledger records real attempts.
 func (d *Dispatcher) DeliverAppEvent(adm AppAdmitter, poster AppPoster, dv AppDelivery) (AppResult, int) {
 	parent := d.context()
 	result, sent := AppPermanent, 0
@@ -179,8 +179,8 @@ func (d *Dispatcher) attemptApp(parent context.Context, adm AppAdmitter, poster 
 	}()
 
 	// The rate cap is asked AFTER admission: an attempt admission refuses
-	// sends nothing and must not spend the install's budget (codex r2 on
-	// U10c). The deferred EndAppDelivery releases the record.
+	// sends nothing and must not spend the install's budget (U10c). The deferred
+	// EndAppDelivery releases the record.
 	if dv.RateGate != nil && !dv.RateGate() {
 		return AppRateLimited, false
 	}
@@ -194,7 +194,7 @@ func (d *Dispatcher) attemptApp(parent context.Context, adm AppAdmitter, poster 
 	status, err := poster.Post(ctx, a.URL, dv.Body, h)
 	if err != nil {
 		// A request counts as sent only if the failure came after its bytes
-		// started going out (codex r3 on U10c).
+		// started going out.
 		sent := !errors.Is(err, appfetch.ErrRefused) && !errors.Is(err, appfetch.ErrNotSent)
 		if errors.Is(err, appfetch.ErrRefused) {
 			slog.Warn("app webhook refused by policy", "webhook_id", dv.WebhookID, "error", err)

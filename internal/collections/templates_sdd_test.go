@@ -323,7 +323,7 @@ func specPlaybookArgRequired(t *testing.T, fieldsJSON, argName string) bool {
 }
 
 // TestSpecPlaybookTargetArgumentRequirement guards against the strict
-// CLI/MCP parser bug from codex round 1: only REQUIRED args can be filled
+// CLI/MCP parser bug: only REQUIRED args can be filled
 // positionally (internal/server/handlers_playbooks.go), so `spec`'s
 // `target` must be required (matching `plan`'s `topic`) or
 // `pad playbook run spec "<topic>"` silently fails to bind it.

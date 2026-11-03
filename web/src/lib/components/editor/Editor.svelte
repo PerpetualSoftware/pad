@@ -859,7 +859,7 @@
 			// Keys typed before this deferred open are part of the query
 			// (BUG-3547, the slash menu's twin), and the open is checked the
 			// way the update handler checks it: the caret is still after the
-			// `[[`, which is still there (codex).
+			// `[[`, which is still there.
 			const from = editor.state.selection.from;
 			if (from <= linkStartPos) { closeLink(); return; }
 			const text = editor.state.doc.textBetween(linkStartPos, from, '');
@@ -1020,8 +1020,7 @@
 			// `{#key item.id...}` in ItemDetail, and a workspace switch
 			// necessarily lands on a different item, so this component is
 			// remounted and re-reads the route. If that key is ever removed, this
-			// snapshot goes stale and must become live like the composer's
-			// (final review round 4).
+			// snapshot goes stale and must become live like the composer's.
 			workspaceSlug: wsSlug,
 			itemId: itemId ?? '',
 			hostToken
@@ -1267,7 +1266,7 @@
 						const { from, empty } = _view.state.selection;
 						const at = _view.state.selection.$from;
 						// Not in code: `[[1,2]]` in a fence or inline code is
-						// ordinary text, never a link (lead review on TASK-2218).
+						// ordinary text, never a link (TASK-2218).
 						const inCode =
 							!!at.parent.type.spec.code ||
 							at.marks().some((m) => !!m.type.spec.code || m.type.name === 'code');
@@ -1445,8 +1444,8 @@
 			// Cancel an in-flight table column-resize: prosemirror-tables gates
 			// resize START on view.editable but its window mouseup completion does
 			// NOT recheck it, so a resize begun before the freeze would otherwise
-			// dispatch changed colwidths into the now-read-only doc (Codex round 3;
-			// direct Yjs repro confirmed). Clearing `dragging` (a meta-only tr — no
+			// dispatch changed colwidths into the now-read-only doc (confirmed by a direct Yjs
+			// repro). Clearing `dragging` (a meta-only tr — no
 			// doc step, no Yjs op, safe on a frozen view) makes that mouseup a
 			// no-op. The old peeking `{#key}` remount closed this by destroying the
 			// view mid-drag.
@@ -1955,7 +1954,7 @@
 		so an async re-render cannot land in the printout; the flip has to be
 		CSS, which applies at print paint.
 
-		AN APPROXIMATION, deliberately (lead ruling on the BUG-3112 trail): this
+		AN APPROXIMATION, deliberately (BUG-3112): this
 		is mermaid's DARK palette inverted, not its light one, and author
 		classDef / style colours are inverted too. hue-rotate(180deg) undoes the
 		hue half of the inversion, so a colour keeps roughly its hue with its
@@ -2316,8 +2315,7 @@
 		word-break: normal;
 		/* `pointer-events: none` would make the caret unhoverable
 		   AND hide it from selection toolbars but that's fine — we
-		   no longer rely on hover for the label (Codex review
-		   round 1 [P2]: the caret is 1-2px wide so hover is
+		   no longer rely on hover for the label (the caret is 1-2px wide so hover is
 		   effectively unreachable anyway). The label is now always
 		   visible while the peer is active, and the caret stays
 		   click-through so it doesn't intercept text-selection or

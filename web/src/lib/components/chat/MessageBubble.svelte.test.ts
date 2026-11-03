@@ -131,7 +131,7 @@ describe('MessageBubble menu', () => {
 	});
 
 	// jsdom has no focus-visible heuristic, so the match is stubbed: true is what a
-	// browser reports after keyboard focus, false after a tap or click (r5 H1).
+	// browser reports after keyboard focus, false after a tap or click.
 	const focusVisible = (on: boolean) => {
 		const real = Element.prototype.matches;
 		return vi.spyOn(Element.prototype, 'matches').mockImplementation(function (
@@ -152,7 +152,7 @@ describe('MessageBubble menu', () => {
 	});
 
 	// Red if a plain tap, which focuses the bubble but is not focus-visible, opens
-	// the menu (r5 H1: Delete would be one tap away).
+	// the menu (Delete would be one tap away).
 	it('a focus that is not focus-visible (a tap) opens nothing', async () => {
 		const spy = focusVisible(false);
 		const { container, bubble } = mount();
@@ -162,7 +162,7 @@ describe('MessageBubble menu', () => {
 		spy.mockRestore();
 	});
 
-	// Red if only a press outside the whole bubble unpins (r5 Codex M).
+	// Red if only a press outside the whole bubble unpins.
 	it('a pinned menu closes on a press inside the bubble but outside the menu', async () => {
 		vi.useFakeTimers();
 		const { container, bubble } = mount();
@@ -196,7 +196,7 @@ describe('MessageBubble menu', () => {
 		expect(menu(container)).not.toBeNull();
 	});
 
-	// Red if the native callout / context menu can open while a touch press is armed (r5 H4).
+	// Red if the native callout / context menu can open while a touch press is armed.
 	it('suppresses the native context menu while a touch press is armed, not for a mouse', async () => {
 		vi.useFakeTimers();
 		const { bubble } = mount();
@@ -213,7 +213,7 @@ describe('MessageBubble menu', () => {
 		expect(ctx()).toBe(false);
 	});
 
-	// Red if focus drops to the body when the menu unmounts (r5 H3). Returning it to the
+	// Red if focus drops to the body when the menu unmounts. Returning it to the
 	// bubble must not reopen the menu, even when the browser calls that focus visible.
 	it.each([['Copy', 1], ['Delete', 2]])('after %s focus returns to the bubble and the menu stays shut', async (_name, idx) => {
 		const writeText = vi.fn().mockResolvedValue(undefined);
@@ -314,7 +314,7 @@ describe('PendingBubble', () => {
 		expect(onDiscard).toHaveBeenCalledWith('k1');
 	});
 
-	// Red if the live region is inserted with its text, or replaced when the state changes (r5 H5).
+	// Red if the live region is inserted with its text, or replaced when the state changes.
 	it('keeps one live region mounted and changes only its text', async () => {
 		const pending = { op_key: 'k1', body: 'hello', status: 'sending' as const };
 		const props = { pending, onRetry: vi.fn(), onDiscard: vi.fn() };

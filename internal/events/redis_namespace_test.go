@@ -40,7 +40,7 @@ func TestRedisBusHonoursTheNamespace(t *testing.T) {
 	// anyone is listening — so it does not NEED the wait. It is here because
 	// this is one of the two shortest Redis-bus tests in the package and
 	// therefore what the next person copies; leaving Subscribe followed
-	// straight by Publish teaches the race (BUG-2742, codex round 10).
+	// straight by Publish teaches the race (BUG-2742).
 	waitForSubscribers(t, mr, "pad:inst-b:events:ws-1", true)
 
 	b.Publish(Event{Type: "item.created", WorkspaceID: "ws-1"})

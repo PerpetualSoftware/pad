@@ -291,8 +291,8 @@ func (s *Server) mcpBoundWrites(next http.Handler) http.Handler {
 		func() {
 			// The keepalive goroutine is stopped and joined before this
 			// handler returns, so net/http never sees a write after it
-			// (BUG-3835). Deferred, so a panicking transport stops it too
-			//: chi's Recoverer swallows the panic and the
+			// (BUG-3835). Deferred, so a panicking transport stops it too:
+			// chi's Recoverer swallows the panic and the
 			// connection may be reused. A tick between the transport's return
 			// and end() can still add one comment frame to a response that is
 			// ending, which is valid SSE.

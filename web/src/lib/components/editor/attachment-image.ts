@@ -259,7 +259,7 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 	parseHTML() {
 		return [
 			// Canonical editor form — produced by our own renderHTML and also
-			// by Codex / external HTML pastes that include the data attribute.
+			// by external HTML pastes that include the data attribute.
 			{ tag: 'img[data-attachment-id]' },
 			// Markdown round-trip form — produced when markdown-it renders
 			// `![alt](pad-attachment:UUID)` to an <img>.
@@ -333,7 +333,7 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 
 			// Latched by a confirmed deletion (not by a mere load failure).
 			// Deletion is authoritative: a load still in flight when it lands
-			// must not be allowed to paint the image back (Codex round 15).
+			// must not be allowed to paint the image back.
 			//
 			// The restore channel foreseen for PLAN-2411 now EXISTS (BUG-2509): the
 			// bus carries a parent-restore signal and this file subscribes to it
@@ -495,7 +495,7 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 					: 'This attachment could not be loaded — it may have been deleted. Click to retry.';
 				missing.style.cursor = deleted ? 'default' : 'pointer';
 				// And the INTERACTIVE SEMANTICS go with the copy, not just the
-				// cursor (DR-12; final review round 5). A confirmed deletion
+				// cursor (DR-12). A confirmed deletion
 				// makes `retryLoad` a no-op, so leaving role=button + tabindex
 				// hands a keyboard or screen-reader user a focus stop that
 				// announces itself as a button and does nothing — the same dead
@@ -537,7 +537,7 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			// event time cannot distinguish a QUEUED stale event, because the
 			// src has already been swapped to the new uuid by then — the check
 			// passes and a late failure for the OLD image hides the healthy new
-			// one (Codex round 7 caught this in the round-3 fix).
+			// one (a flaw in the earlier fix).
 			//
 			// Instead, every load gets its own listener pair, detached when the
 			// src changes. Removing a listener before the event is dispatched
@@ -592,8 +592,7 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			 */
 			function probeForMissing(forUuid: string) {
 				// Workspace off the READER, not the static option — it keys the
-				// metadata cache and this editor can outlive a workspace switch
-				// (final review round 3).
+				// metadata cache and this editor can outlive a workspace switch.
 				const probeWs = opts.address().workspaceSlug;
 				if (!forUuid || !probeWs || deleted || destroyed) return;
 				const seqAtStart = stateSeq;
@@ -869,7 +868,7 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			 * surfaces have no host mounted to receive the event, so there is
 			 * nothing to route to and nothing to say.
 			 *
-			 * It also closes a mid-phase bypass Codex found: the old gate read
+			 * It also closes a mid-phase bypass: the old gate read
 			 * `knownMime` only when truthy, so a click landing before the lazy
 			 * probe resolved opened the original file in the legacy dialog, and a
 			 * later `unsafe` answer did not close it.
@@ -1164,7 +1163,7 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 				// A confirmed deletion inertizes the WHOLE node, not just its
 				// placeholder: rotate and crop against a row that is gone can
 				// only 404, and leaving them live is the same dead-control gap
-				// the placeholder's role/tabindex removal closes (round 7).
+				// the placeholder's role/tabindex removal closes.
 				if (deleted) {
 					toolbar
 						.querySelectorAll<HTMLButtonElement>('.attachment-image-toolbar-btn')
@@ -1250,7 +1249,7 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 				// throw, and a read-only one must not receive the Yjs transaction the
 				// freeze forbids. The server-side transform still ran; only its doc
 				// reference is dropped (no crash, no committed-content loss).
-				// A FROZEN editor tells the user (BUG-2177, lead ruling day 78): the
+				// A FROZEN editor tells the user (BUG-2177): the
 				// edit is not replayed on thaw, because applying it minutes later
 				// changes the document while the user is not looking, which is worse
 				// than asking them to repeat one gesture. A destroyed editor is an
@@ -1416,7 +1415,7 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 						deleted = false;
 						// And every continuation still resolving for the OLD target is
 						// now stale. Comparing `currentUuid` alone would let a swap AWAY
-						// AND BACK pass the check again (BUG-2509 / Codex round 2).
+						// AND BACK pass the check again (BUG-2509).
 						stateSeq += 1;
 						// Nor does an activation still resolving for it. That
 						// request is already fenced (its continuation compares
@@ -1445,7 +1444,7 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 							// Detach explicitly: this branch clears the src without
 							// going through loadImage(), so the previous load's
 							// listeners would survive and a queued error could show
-							// the placeholder on a now-empty node (Codex round 8).
+							// the placeholder on a now-empty node.
 							detachLoadListeners();
 							img.removeAttribute('src');
 							img.removeAttribute('data-attachment-id');
@@ -1665,7 +1664,7 @@ function refreshToolbarState(
 	// "asked, and this is not something the processor handles" — treating the
 	// second as the first left Crop enabled for e.g. image/svg+xml, which
 	// hands the original to the crop modal for a transform the server will
-	// refuse (final review round 7).
+	// refuse.
 	const knownUnsupported = !!mime && (!format || !supportedFormats.includes(format));
 
 	btns.forEach((btn) => {

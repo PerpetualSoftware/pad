@@ -130,7 +130,7 @@ var seenPushes = newRecentSet(256, 10*time.Minute)
 
 // formatMonitorLine renders one notification as the exact stdout-line
 // contract `pad watch --stream --for-session` promises (DOC-2479):
-// "PAD demo/TASK-214 → done (Dave): fix verified" — one line, facts
+// "PAD demo/TASK-214 → done (alice): fix verified" — one line, facts
 // only, no etiquette prose (that lives in the plugin skill per DR-4).
 //
 // TASK-2533 plan interpretation: DOC-2479's example names a target
@@ -145,8 +145,8 @@ var seenPushes = newRecentSet(256, 10*time.Minute)
 // kind (status-change / assignment / comment / the reserved ask) can
 // supply uniformly from the actual payload fields.
 //
-// The workspace slug prefix (IDEA-2544 Phase 1, dispatcher review round
-// 2, codex P1) is UNIVERSAL — every kind, not push-specific — because
+// The workspace slug prefix (IDEA-2544 Phase 1) is UNIVERSAL — every kind, not
+// push-specific — because
 // the ambiguity it closes predates push: GET /api/v1/events/stream is
 // user-scoped ACROSS every workspace the caller belongs to (a watch is
 // personal, not workspace-scoped — see Store.ListWatchesForUser), so
@@ -169,7 +169,7 @@ var seenPushes = newRecentSet(256, 10*time.Minute)
 const pushKind = "push"
 
 // pushEnvelopePrefix is PLAN-2613 D5's push framing, shipped VERBATIM
-// (Dave-approved, do not redraft). %s is the pushing user — self-addressed
+// (do not redraft). %s is the pushing user — self-addressed
 // delivery makes that this session's own user (handlers_push.go forces the
 // target to the caller). The backstop D5 notes — a push can inject text
 // but cannot click a permission prompt — is why the framing tells the
@@ -380,7 +380,7 @@ func watchRemoveCmd() *cobra.Command {
 
 // monitorClient builds a Client for the monitor loop WITHOUT any of
 // getClient()'s side effects that are fatal (or interactive) for an
-// unattended background process (codex round 1 finding 5):
+// unattended background process:
 // getConfiguredConfig() calls os.Exit(1) when the client isn't
 // configured and stdin isn't a TTY, or — worse, when a TTY IS attached —
 // launches an INTERACTIVE configuration wizard that blocks on stdin and
@@ -475,7 +475,7 @@ func monitorSessionIdentity() cli.StreamSessionIdentity {
 	// auto_arm decide. It is snapshotted at connect; runWatchMonitor's
 	// disarm-watcher (below) drops the connection when it flips false
 	// mid-stream, so a within-session disarm actually stops delivery
-	// (Codex R1 S3 HIGH-1) rather than lingering until a natural reconnect
+	// rather than lingering until a natural reconnect
 	// that an idle SSE connection might never have.
 	ident.Armed = cli.ResolveAnnouncedArmed()
 	ident.Chat = ident.Armed
@@ -546,8 +546,8 @@ func runWatchMonitor(ctx context.Context) error {
 		// reconnect or exit). Cancelled on every exit path below.
 		streamCtx, cancelStream := context.WithCancel(sigCtx)
 
-		// Disarm-watcher, started BEFORE the connection is opened (Codex R2
-		// S3 HIGH-1): it re-checks consent every disarmPollInterval and
+		// Disarm-watcher, started BEFORE the connection is opened (S3 HIGH-1): it
+		// re-checks consent every disarmPollInterval and
 		// cancels streamCtx the moment consent flips to not-armed. Because
 		// the request below is built on streamCtx, cancelling aborts an
 		// in-flight Do (a stalled handshake) as well as a blocked body read,
@@ -639,8 +639,8 @@ func runWatchMonitor(ctx context.Context) error {
 		// swallowed beyond the replay buffer's own bounds.
 		//
 		// ONE EXCEPTION on a Redis-backed deployment, stated because this
-		// sentence used to promise more than the implementation delivers
-		// (codex round 6 on BUG-2698). RedisBus's resume check compares
+		// sentence used to promise more than the implementation delivers.
+		// RedisBus's resume check compares
 		// against the shared counter, and its own doc says what it cannot
 		// see: a notification published AFTER that read and missed by the
 		// answering instance is invisible to any check made there. That is
@@ -662,7 +662,7 @@ func runWatchMonitor(ctx context.Context) error {
 // last-seen event ID for Last-Event-ID resume on reconnect.
 //
 // On "sync_required" (the server's signal that it cannot vouch for the span
-// the requested Last-Event-ID asks about — TASK-2533 codex round 1 finding 6),
+// the requested Last-Event-ID asks about, TASK-2533),
 // this CLEARS the returned cursor rather than
 // leaving it at the stale value. Without this, the caller's next
 // reconnect would resend the SAME stale Last-Event-ID, the server would
@@ -718,8 +718,8 @@ func (chat *monitorChat) stream(w io.Writer, resp *http.Response, lastEventID st
 		case line == "":
 			switch eventType {
 			case "notification":
-				// Consent re-check at the last possible moment (PLAN-2613 D1,
-				// Codex R2 S3 HIGH-1): a within-session `pad session disarm`
+				// Consent re-check at the last possible moment (PLAN-2613 D1): a
+				// within-session `pad session disarm`
 				// may have landed after this connection opened but before this
 				// event. The 2s disarm-watcher will drop the connection, but a
 				// push must not be PRINTED in that window — so stop the stream

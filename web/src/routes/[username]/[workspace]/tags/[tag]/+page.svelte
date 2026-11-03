@@ -163,8 +163,8 @@
 	// collections). Synthesize a minimal collection from the metadata already
 	// embedded on the item so those rows still render — dropping them would
 	// make the header count disagree with the visible list. The empty schema
-	// means ItemCard just omits status/priority for these rows. Per Codex
-	// PR #660 round 3. Sorted last (no real sort_order available).
+	// means ItemCard just omits status/priority for these rows.
+	// Sorted last (no real sort_order available).
 	function syntheticCollection(item: Item): Collection {
 		return {
 			id: item.collection_id,

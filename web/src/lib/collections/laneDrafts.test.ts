@@ -1,5 +1,5 @@
 // Node-project test: where an unsaved lane draft saves once its lane is gone
-// (BUG-3043, lead ruling RE-HOME).
+// (BUG-3043).
 //
 // The "can Uncategorized receive it" column follows the server's validator
 // (internal/items/validate.go): a select stores '' even when required, a

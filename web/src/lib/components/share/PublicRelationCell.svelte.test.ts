@@ -6,7 +6,7 @@
 // silently changes what the owner chose to share — so the cell says what it
 // holds instead: a linked item this share cannot resolve.
 //
-// The placeholder is a BOUNDARY, not a shrug (lead ruling). Resolving it is a
+// The placeholder is a BOUNDARY, not a shrug. Resolving it is a
 // VISIBILITY question — the target may live in a collection the owner never
 // shared, and the viewer is anonymous — so it needs the per-target redaction
 // tracked in IDEA-3066, not a payload field.

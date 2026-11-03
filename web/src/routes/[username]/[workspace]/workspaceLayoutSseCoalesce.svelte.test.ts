@@ -85,7 +85,7 @@ async function settle(): Promise<void> {
 	}
 }
 
-// TASK-2224, codex r2: SSE events are coalesced before they reconcile, so a
+// TASK-2224: SSE events are coalesced before they reconcile, so a
 // layout destroyed inside the window holds callbacks awaiting a run that
 // destroy CANCELS. A cancelled callback must stop: carrying on would reload the
 // old workspace's collections and toast its events onto whatever comes next.

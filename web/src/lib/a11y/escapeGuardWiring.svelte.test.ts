@@ -370,7 +370,7 @@ describe('route-shaped driver — Escape reaches the stack, nav keys do not act'
 	});
 
 	it('VIEWER FRONTMOST OVER AN OPEN SHEET: Escape is still owned by the stack', () => {
-		// The dead-key cross-product (found in review round 5). A `role="dialog"`
+		// The dead-key cross-product. A `role="dialog"`
 		// sheet open BENEATH the viewer used to make `hasForeignEscapeOwner()`
 		// true, so the driver returned 'foreign' — while the sheet itself,
 		// correctly guarded by TASK-2430, declined. Nobody owned the key.
@@ -405,7 +405,7 @@ describe('route-shaped driver — Escape reaches the stack, nav keys do not act'
 });
 
 /**
- * TWO FURTHER GLOBAL ESCAPE OWNERS, found by TASK-2430's round-2 sweep and
+ * TWO FURTHER GLOBAL ESCAPE OWNERS, found by TASK-2430's sweep and
  * NOT in the task's original owner list. Neither route can host an attachment
  * viewer (neither mounts `ItemDetail`, so neither mounts a viewer host), but
  * `+layout.svelte` mounts `CreateWorkspaceModal` / `OpenChildrenDialog` on BOTH

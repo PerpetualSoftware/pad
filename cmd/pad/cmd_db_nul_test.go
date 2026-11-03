@@ -335,7 +335,7 @@ func plantWorkspaceSettings(t *testing.T, dbPath, wsID, blob string) {
 // TestRepairExitStatusCountsBothFailureBuckets pins the exit code.
 //
 // A repair that leaves data unrepaired and exits 0 is invisible: a script sees
-// success, and an operator who trusts the status moves on (codex round 5).
+// success, and an operator who trusts the status moves on.
 func TestRepairExitStatusCountsFailures(t *testing.T) {
 	boom := errors.New("nope")
 
@@ -380,8 +380,7 @@ func TestRepairExitStatusCountsFailures(t *testing.T) {
 	}
 }
 
-// TestPreflightIgnoresTablesTheMigrationDoesNotCopy is codex round 9's second
-// finding.
+// TestPreflightIgnoresTablesTheMigrationDoesNotCopy covers a second case.
 //
 // `migrate-to-pg` copies workspace content and nothing else — its own help says
 // users, platform settings and auth data are not migrated. A NUL in one of

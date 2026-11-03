@@ -96,7 +96,7 @@ func main() {
 		}
 	}
 	// STUB_MARKER_PROBE=<path> with STUB_PROBE_OUT=<file>: record whether
-	// <path> exists as this server starts (BUG-4066 r2). Set only in the
+	// <path> exists as this server starts (BUG-4066). Set only in the
 	// script's environment, so the one line is the RESTART's, taken inside
 	// the stop-to-restart window the refresh marker covers.
 	if probe, out := os.Getenv("STUB_MARKER_PROBE"), os.Getenv("STUB_PROBE_OUT"); probe != "" && out != "" {
@@ -111,8 +111,7 @@ func main() {
 	}
 	// STUB_STRAY_ON_START=1: this start is beaten to the port by a stray
 	// (BUG-3215, the post-probe check). The stray binds first; this process
-	// then fails its own bind and exits, as the refresh's restart did on
-	// day 79.
+	// then fails its own bind and exits, as the refresh's restart did.
 	if os.Getenv("STUB_STRAY_ON_START") == "1" {
 		spawnStray()
 	}
@@ -167,7 +166,7 @@ func main() {
 	}
 	// STUB_STRAY_ON_TERM=1: on SIGTERM, release the port and let a stray
 	// take it before exiting (BUG-3215, the pre-spawn check). That is the
-	// day-79 order: the refresh stops the server, and a CLI auto-start takes
+	// order: the refresh stops the server, and a CLI auto-start takes
 	// the port before the refresh restarts it.
 	if os.Getenv("STUB_STRAY_ON_TERM") == "1" {
 		term := make(chan os.Signal, 1)

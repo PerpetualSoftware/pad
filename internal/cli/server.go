@@ -81,7 +81,7 @@ var spawnServer = startBackgroundServer
 // process's, minus config.InternalNoDataDirWarningEnv: an MCP tool-call child
 // carries that variable so its own warning stays out of an agent-facing error,
 // and it is often the process that auto-starts the server, which is
-// long-lived and must still log the warning (BUG-4066 r3 item 2).
+// long-lived and must still log the warning (BUG-4066).
 func serverStartCommand(exePath string) *exec.Cmd {
 	cmd := exec.Command(exePath, "server", "start")
 	prefix := config.InternalNoDataDirWarningEnv + "="
@@ -116,7 +116,7 @@ func startBackgroundServer(cfg *config.Config) error {
 		return fmt.Errorf("start server: %w", err)
 	}
 
-	// The PID file is deliberately NOT written here (BUG-2965, codex round 3).
+	// The PID file is deliberately NOT written here (BUG-2965).
 	// The child claims it AFTER it binds the port, so the file always names the
 	// process that actually owns the address. Writing it from the parent, at
 	// spawn time, records a process that may never bind — and when the port is
@@ -166,7 +166,7 @@ func StopServer(cfg *config.Config) error {
 	// One read, under the ownership probe: pidFileOwner returns the record it
 	// verified, so the pid signalled below is the pid whose ownership was
 	// established. An earlier separate read left a window for a successor to
-	// claim the file between the two (codex round 1).
+	// claim the file between the two.
 	rec, owner := pidFileOwner(path)
 	if owner == pidFileStale && rec.PID == 0 {
 		// No file at all. A server started outside this CLI still holds the
@@ -187,7 +187,7 @@ func StopServer(cfg *config.Config) error {
 		// the dead process left behind.
 		// The file is already gone: pidFileOwner removed it while holding the
 		// lock, which is the only point at which no replacement can have
-		// claimed the path (codex round 2).
+		// claimed the path.
 		if portHeld(cfg.Host, cfg.Port) {
 			// Deliberately NOT "the process is gone": the recorded pid may
 			// well be alive — that is the dangerous case, since it is a
@@ -232,7 +232,7 @@ func StopServer(cfg *config.Config) error {
 	// confirmed a kill that never touched a pad server.
 	for i := 0; i < 60; i++ {
 		if processIsGone(rec.PID) {
-			// Deliberately NOT removing the file here (codex round 1): the
+			// Deliberately NOT removing the file here: the
 			// server removes its own on the way down, and by the time we
 			// observe its exit a successor may already have bound the port and
 			// claimed the path. Deleting then would unaddress the live server.
@@ -295,7 +295,7 @@ func serverResponds(host string, port int) bool {
 // marker and removes the file.
 //
 // CALL IT ONLY AFTER BINDING THE PORT. That ordering is the whole ownership
-// story and it took two codex rounds to arrive at (BUG-2965): whoever holds the
+// story and it took two attempts to arrive at (BUG-2965): whoever holds the
 // address is the process `stop` must signal, so the claim follows the bind
 // rather than racing it. A write before the bind lets a start that LOSES the
 // race record itself and then, on its way out, remove the file the winner
@@ -330,7 +330,7 @@ func ClaimPIDFile(path string) func() {
 		// Remove BEFORE dropping the lock: while we still hold it, no other
 		// server can have claimed this path, so there is nothing of anyone
 		// else's to delete. Dropping first would reopen the read-then-remove
-		// race that codex round 4 found in the previous shape.
+		// race the previous shape had.
 		if current, ok := readPIDRecord(path); ok && current.PID == rec.PID {
 			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 				slog.Warn("could not remove PID file on shutdown", "path", path, "error", err)

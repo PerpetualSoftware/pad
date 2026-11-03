@@ -78,7 +78,7 @@ describe('TimelineActivityCard agent name', () => {
 		expect(getByText('Agent')).toBeTruthy();
 	});
 
-	// Codex round 2. The name is attacker-influenced: it is whatever a client
+	// The name is attacker-influenced: it is whatever a client
 	// put in X-Pad-Agent, and the server stores it without inspection. Svelte
 	// text interpolation escapes it today, so this passes as written — the
 	// point is that it would STOP passing if any of these render paths were
@@ -94,7 +94,7 @@ describe('TimelineActivityCard agent name', () => {
 		expect(getByText(payload)).toBeTruthy();
 	});
 
-	// Codex round 11 — the element, not just the text. The chip's label sits
+	// The element, not just the text. The chip's label sits
 	// inline before the action label and timestamp, so a bidi control in a
 	// self-declared name would reorder them if the label were not isolated.
 	it('isolates the actor label so a bidi control cannot reorder the row', () => {

@@ -53,7 +53,7 @@
 	// Scroll position restoration (BUG-1425).
 	const scrollRestoration = createScrollRestoration({
 		// `playbooksCollection` flips null on workspace change. Length
-		// gate omitted (Codex P2 round 2).
+		// gate omitted.
 		ready: () => !loading && playbooksCollection !== null,
 		persistKey: () =>
 			wsSlug
@@ -120,7 +120,7 @@
 	async function loadPlaybooks(ws: string, pb: string = playbooksSlug) {
 		loading = true;
 		// Dropped when the route or the resolved slug moved while in flight
-		// (codex r1 on BUG-3481): a load for the default slug must not land
+		// (BUG-3481): a load for the default slug must not land
 		// over the one for the renamed collection that superseded it.
 		const current = () => ws === wsSlug && pb === playbooksSlug;
 		try {
@@ -181,7 +181,7 @@
 	// Only snap while the new-form is CLOSED — once the user opens the form,
 	// they may type a custom trigger (via PlaybookFormFields' "Other…" mode)
 	// that isn't in `createTriggers`. Snapping during an open form silently
-	// overwrites that custom value (Codex round 1 P2).
+	// overwrites that custom value.
 	$effect(() => {
 		if (!showNewForm && createTriggers.length > 0 && !createTriggers.includes(newTrigger)) {
 			newTrigger = createTriggers[0];
@@ -218,7 +218,7 @@
 	});
 
 	/**
-	 * The declared status FIELD, resolved once (BUG-3067 round 9).
+	 * The declared status FIELD, resolved once (BUG-3067).
 	 *
 	 * `declaredStatusOf` used to call the helper inside the sort comparator,
 	 * which reparses the collection's schema JSON on every comparison — O(n log n)
@@ -250,7 +250,7 @@
 		}
 		return items.sort((a, b) => {
 			const fa = parseFields(a), fb = parseFields(b);
-			// SORTED ON THE DECLARED VALUE, not the raw one (BUG-3067 round 8). A
+			// SORTED ON THE DECLARED VALUE, not the raw one (BUG-3067). A
 			// retyped status stores an item id, which is not an order key —
 			// `STATUS_ORDER` misses it and every such row collapses to the same
 			// default rank. Withholding the chip fixed what the row SHOWED and left
@@ -361,8 +361,8 @@
 			};
 			// Carry forward the structured `arguments` contract so a duplicated
 			// playbook keeps its arg spec — otherwise the copy's body still
-			// describes arguments but the queryable form is empty (Codex round
-			// 1 P3). invocation_slug is intentionally NOT carried; the original
+			// describes arguments but the queryable form is empty.
+			// invocation_slug is intentionally NOT carried; the original
 			// owns the slug and a duplicate would clash on the unique index.
 			if (fields.arguments !== undefined && fields.arguments !== null) {
 				dupFields.arguments = fields.arguments;
@@ -612,9 +612,9 @@
 					     `is_system`, so `status` here can be retyped to a relation
 					     exactly as on any user collection — and this page printed the
 					     stored value through `statusLabel`, and keyed its card
-					     styling off it. I had classified this site as a non-member on
-					     the assumption that a system schema was immutable, and filed
-					     that assumption without checking it; a review round found it.
+					     styling off it. This site was first classified as a non-member on
+					     the assumption that a system schema was immutable, an
+					     assumption that was never checked.
 
 					     RESOLVED FROM `playbooksCollection`, the object this page
 					     already fetched under its own stale-response guard, rather
@@ -626,7 +626,7 @@
 					     BUG-3481 the rest of the page resolves the collection by its
 					     artifact-kind trait too, so the page survives that rename. -->
 					{@const declaredStatus = categoricalValueFor(playbooksCollection ? [playbooksCollection] : [], { collection_slug: playbooksCollection?.slug }, 'status', fields.status)}
-					<!-- "NO SCHEMA YET" IS NOT "DRAFT" (BUG-3067 round 5). The two
+					<!-- "NO SCHEMA YET" IS NOT "DRAFT" (BUG-3067). The two
 					     loaders are independent — `loadPlaybooks` clears `loading` on
 					     its own — so cards render while `playbooksCollection` is still
 					     null, which the helper answers with ''. Falling through to the
@@ -639,7 +639,7 @@
 					     before this unit. That reintroduced the defect for the
 					     duration of the window it was meant to fix: a retyped status
 					     IS an id, so the raw value is the id, printed. Worse than the
-					     Draft misreport it replaced, and the review round said so.
+					     Draft misreport it replaced.
 
 					     The honest answer for an unknown schema is to claim nothing:
 					     no status chip and no draft/deprecated styling until the
@@ -704,7 +704,7 @@
 									<!-- The editor opens read-only for an account that may not
 									     write this playbook (BUG-3270), so the link says so. -->
 									<Button variant="secondary" size="sm" onclick={() => goto(`/${username}/${wsSlug}/playbooks/${itemUrlId(item)}`)}>{workspaceStore.canEditItem(item) ? 'Edit' : 'View'}</Button>
-									<!-- DISABLED WHILE THE SCHEMA IS UNKNOWN (BUG-3067 round 7).
+									<!-- DISABLED WHILE THE SCHEMA IS UNKNOWN (BUG-3067).
 									     Withholding the chip left `status` empty, and this label is
 									     computed FROM it — so every card read "Mark as Draft"
 									     regardless of what it actually held, while the handler read
@@ -719,7 +719,7 @@
 											{togglingStatus === item.slug ? '...' : nextStatusLabel(status)}
 										</Button>
 									{/if}
-									<!-- Duplicate creates a playbook (BUG-3264, codex round 1). -->
+									<!-- Duplicate creates a playbook (BUG-3264). -->
 									{#if canCreatePlaybook}
 									<Button variant="secondary" size="sm" disabled={duplicating === item.slug} onclick={() => duplicatePlaybook(item)}>
 										{duplicating === item.slug ? '...' : 'Duplicate'}

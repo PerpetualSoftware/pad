@@ -7,7 +7,7 @@ import { page } from '$app/state';
  * an item are two entries by design, and before the server fix an item under
  * two active plans was one entry per plan. The list was keyed by item_slug,
  * Svelte throws on a duplicate key during render (production builds too), and
- * the dashboard stayed on its loading skeleton (cookie-sales, day 90).
+ * the dashboard stayed on its loading skeleton (seen on a cookie-sales workspace).
  */
 const dashboardGet = vi.hoisted(() => vi.fn<(slug: string) => Promise<unknown>>());
 
