@@ -634,9 +634,8 @@ LEGACY_LOG="$HOME/.pad/server.log"
 # and any pad CLI call in that window used to AUTO-START a server of its own:
 # the caller's binary (a worktree build, or the old inode before the rename),
 # from the caller's cwd, with default flags. It then held the port against
-# this script's restart. Measured once: another session's `pad item comment`
-# took the port during a bounce, 127.0.0.1:7777 went dark, and the script
-# exited 1.
+# this script's restart. Reproduced: a `pad item comment` run during a bounce
+# took the port, 127.0.0.1:7777 went dark, and the script exited 1.
 #
 # The marker hands the window to this script. EnsureServer
 # (internal/cli/refresh_marker.go) reads it and waits instead of spawning
@@ -1047,9 +1046,8 @@ if [ "${probe_any:-0}" = "1" ] && [ "$answered" -gt 0 ]; then
 fi
 
 # WHO answered (BUG-3215). A health probe answers for whatever holds the
-# address, so a server that took the port in the window passes it: in one incident
-# the stray bound the LAN address with default flags, and had it bound
-# loopback this script would have printed success over the wrong server. The
+# address, so a server that took the port in the window passes it: a stray server bound the LAN address
+# with default flags, and had it bound loopback this script would have printed success over the wrong server. The
 # listener must be the restart this script spawned (or its direct child,
 # should `setsid` have had to fork). Checked on the failure path too, where a
 # named holder is the diagnosis a bare "did not answer" is not.
