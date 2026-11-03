@@ -30,7 +30,7 @@ type AttachmentMeta struct {
 	// DerivedVariants names the derived (thumbnail) variants the server holds
 	// for this attachment (BUG-2964), e.g. ["thumb-sm","thumb-md"].
 	//
-	// PER-VARIANT, NOT A BOOLEAN, and codex round 1 is why: derivation writes
+	// PER-VARIANT, NOT A BOOLEAN: derivation writes
 	// each variant independently, so "some thumbnail exists" does not mean the
 	// one this render will REQUEST exists. If only thumb-sm were present and the
 	// render asked for thumb-md, a boolean would say "image", the endpoint would
@@ -105,7 +105,7 @@ func IsImageMime(mime string) bool {
 // since attachments shipped.
 // imageRenderVariant is the variant this renderer puts in an <img> src. Named
 // once so the embed DECISION and the URL it produces cannot disagree about
-// which variant is being asked for — the exact disagreement codex round 1 found
+// which variant is being asked for — the exact disagreement
 // between a boolean availability flag and a specific request.
 const imageRenderVariant = "thumb-md"
 
@@ -170,7 +170,7 @@ var htmlEscaper = strings.NewReplacer(
 )
 
 // escapeHTML exists to keep byte parity with escapeHtml in
-// web/src/lib/markdown/attachments.ts (TASK-4195 r2-M1). html.EscapeString
+// web/src/lib/markdown/attachments.ts (TASK-4195). html.EscapeString
 // emits `&#34;` for a double quote where the TS side emits `&quot;`, so the
 // two renderers disagreed on any name or alt containing one. The shared
 // fixture web/src/lib/markdown/testdata/file-chip-parity.json pins the output.

@@ -165,7 +165,7 @@ func TestGetItemProgress_DefaultsToStatusWithoutSettings(t *testing.T) {
 }
 
 // TestGetItemProgress_HonorsSoftDeletedChildCollections verifies a
-// regression Codex flagged: a child whose collection was soft-deleted must
+// regression: a child whose collection was soft-deleted must
 // never be counted as ACTIVE because its collection's done rule went
 // missing. Since BUG-3428 such a child is left out of progress entirely, as
 // every other item read leaves it out, which closes that miscount at the

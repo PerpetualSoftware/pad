@@ -9,7 +9,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// BUG-3428 phase 2 (lead ruling, day 86: option A). Deleting a collection
+// BUG-3428 phase 2. Deleting a collection
 // writes no item rows, and an unrestricted caller's access_epoch was the
 // constant "all", so a warm client was never told to drop the deleted
 // collection's rows. The epoch now fingerprints the LIVE collection set for
@@ -173,7 +173,7 @@ func TestAccessEpoch_MovesWhenACollectionIsSoftDeleted_Restricted(t *testing.T) 
 	runLiveSetEpoch(t, true)
 }
 
-// Lead ruling (2): an open child in a soft-deleted collection no longer blocks
+// An open child in a soft-deleted collection no longer blocks
 // closing its parent. It is gone from the children list and from progress, and
 // a parent nobody can close because of an item nobody can see is the worse
 // state. The control is the same child blocking the close before the delete.
@@ -214,7 +214,7 @@ func TestOpenChildrenGuard_IgnoresChildrenOfSoftDeletedCollections(t *testing.T)
 	}
 }
 
-// Codex r1: a door must not pair rows read BEFORE a collection's delete with
+// A door must not pair rows read BEFORE a collection's delete with
 // the epoch AFTER it. That response would hold the deleted collection's rows
 // under the new epoch, every later poll would agree with it, and nothing would
 // evict them. The hook commits the delete right after each door's row query;
@@ -276,7 +276,7 @@ func TestItemDoorAfterRowsHookIsNilInProduction(t *testing.T) {
 	}
 }
 
-// Codex r2: the same invariant for a grant-filtered caller on /items-changes,
+// The same invariant for a grant-filtered caller on /items-changes,
 // whose epoch reads the live GRANT set too. A restricted member holds a
 // whole-collection grant on the doomed collection plus an item grant
 // elsewhere; the hook deletes the doomed collection right after the rows.

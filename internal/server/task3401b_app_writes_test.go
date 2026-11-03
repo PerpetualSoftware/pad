@@ -371,7 +371,7 @@ func (b *lazyBody) Read(p []byte) (int, error) {
 	return b.r.Read(p)
 }
 
-// Codex U6b round 1 P2: a status another writer changed between the
+// A status another writer changed between the
 // handler's read and the app's commit is not the app's change. The app
 // patches only size; no status notification may name it.
 func TestTask3401b_AnotherWritersStatusChangeIsNotTheApps(t *testing.T) {
@@ -430,7 +430,7 @@ func (b *postCommitBus) Publish(e events.Event) error {
 	return b.EventBus.Publish(e)
 }
 
-// Codex U6b round 2 P2: a write's response must not depend on a read after
+// A write's response must not depend on a read after
 // its commit. With the database gone after the commit, the create still
 // answers 201 and describes the item it wrote; a 500 would tell the app its
 // write failed and invite a duplicate.
@@ -454,7 +454,7 @@ func TestTask3401b_AFailureAfterCommitDoesNotHideTheWrite(t *testing.T) {
 	}
 }
 
-// Codex U6b round 2 P2: the response projects fields by the schema the
+// The response projects fields by the schema the
 // write validated against, read in its transaction, not the handler's
 // earlier copy. A field added with a default between the two is stored,
 // and must be in the response.
@@ -508,7 +508,7 @@ func appDoLazy(f appAPIFix, method, path string, body *lazyBody) *httptest.Respo
 	return rr
 }
 
-// Codex U6b round 3 P1: an item a human moves to another companion between
+// An item a human moves to another companion between
 // the handler's read and the comment's transaction. What the comment write
 // publishes names the collection it was written in, never the old one,
 // whose watchers would otherwise receive the comment's body.
@@ -592,7 +592,7 @@ func TestTask3401b_AMoveDuringTheBodyRefusesTheComment(t *testing.T) {
 	}
 }
 
-// Codex U6b round 3 P3: the bot renamed between admission and the write.
+// The bot renamed between admission and the write.
 // The stored author, the SSE actor and the watch actor all carry the name
 // the write's transaction read.
 func TestTask3401b_TheActorNameIsReadWithTheWrite(t *testing.T) {

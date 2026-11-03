@@ -84,7 +84,7 @@ import (
 // A path whose decoded form is valid UTF-8 AND CARRIES NO NUL — including
 // non-ASCII — is left for the router to handle, unchanged by this
 // middleware. The NUL half of that sentence is not redundant and was
-// missing until BUG-2784's ninth review round: a NUL IS valid UTF-8, so
+// missing until BUG-2784: a NUL IS valid UTF-8, so
 // "valid UTF-8 passes" is false for exactly the inputs the second half of
 // bindableText exists to catch. The reject message a few lines below says
 // the same thing in the other direction and has said so since BUG-2782 —
@@ -170,7 +170,7 @@ func ValidatePath(decorate func(http.Handler) http.Handler) func(http.Handler) h
 // not the NUL rule — a NUL terminates a C string and no encoding makes it
 // storable in a text column.
 //
-// THE SCOPE OF THAT TABLE, stated because two review rounds pushed on it
+// THE SCOPE OF THAT TABLE, stated because it was challenged
 // from opposite directions and the honest answer is narrower than either.
 // Those rows were produced with `E'…'` escapes, which the SERVER expands —
 // the byte never crosses the wire as itself. So they establish what a given
@@ -381,7 +381,7 @@ var unicodeEscapePrefix = []byte{'\\', 'u', '0', '0'}
 // real bypass rather than a stylistic one.
 //
 // The obvious fast path — "does the raw body contain that escape?" — is
-// UNSOUND, and codex round 4 on BUG-2803 demonstrated it. The escape may be
+// UNSOUND (BUG-2803). The escape may be
 // spelled obliquely: `\u005c` decodes to a BACKSLASH, so a body carrying
 // `\u005cu0000` contains no literal six-character escape anywhere in its raw
 // bytes, yet the OUTER decode manufactures one inside the string, and if that
@@ -392,8 +392,8 @@ var unicodeEscapePrefix = []byte{'\\', 'u', '0', '0'}
 //
 // The mistake was applying a fact about how a NUL is spelled INSIDE a decoded
 // string to the RAW BYTES, where the backslash itself can be written as an
-// escape. It is the same layer-confusion this whole bug is made of, three
-// rounds in a row.
+// escape. It is the same layer-confusion this whole bug is made of, hit
+// repeatedly.
 //
 // A backslash is the sound gate: every JSON escape mechanism requires one, so
 // a body with no backslash anywhere has decoded strings byte-identical to its
@@ -435,8 +435,8 @@ var unicodeEscapePrefix = []byte{'\\', 'u', '0', '0'}
 //
 // WHAT CHANGED IN BUG-2812. This used to decode the body into map[string]any
 // and walk the tree, and the tree is a lossy model of the document. Four
-// measured disagreements with the typed decode followed from that (BUG-2803
-// rounds 16-17). The scan now reads TOKENS (package jsonscan), and each of the
+// measured disagreements with the typed decode followed from that (BUG-2803).
+// The scan now reads TOKENS (package jsonscan), and each of the
 // four has an answer:
 //
 //  1. A NUL IN A SHADOWED DUPLICATE, {"fields_patch":{"orphan":"<NUL>"},
@@ -454,7 +454,7 @@ var unicodeEscapePrefix = []byte{'\\', 'u', '0', '0'}
 //     before, and now for a stated reason rather than as an accepted
 //     over-refusal. It is a repeated request member (below).
 //
-// REPEATED REQUEST MEMBERS ARE REFUSED (BUG-2812 ruling, day 80). The typed
+// REPEATED REQUEST MEMBERS ARE REFUSED (BUG-2812). The typed
 // decode gives a repeat one of two meanings depending on the destination: a
 // map member MERGES the occurrences, a struct or raw member keeps the LAST.
 // A caller who sent two cannot know which, and BUG-3219 was a write that
@@ -573,8 +573,8 @@ type bodyWalk struct {
 //
 //   - A collection may declare a user field literally named `schema` or
 //     `tags`. Treating `{"fields":{"schema":"..."}}`'s inner key as a wire key
-//     refused valid text that happened to hold a JSON example (codex round 8
-//     on BUG-2803).
+//     refused valid text that happened to hold a JSON example
+//     (BUG-2803).
 //   - Below the document Postgres parses, an escape is harmless. Measured on
 //     Postgres 17 with the check disabled: a NUL escape two levels deep
 //     imports 201, because `fields` is parsed ONCE and the inner text is
@@ -640,7 +640,7 @@ func (w *bodyWalk) value(k jsonscan.Kind, str []byte, inUserData, fold, foldElem
 			}
 			if encoded {
 				if vk == jsonscan.String {
-					// BOTH checks (codex round 9 on BUG-2803): the string
+					// BOTH checks (BUG-2803): the string
 					// itself, and the document it carries.
 					w.checkNUL(vstr)
 					if w.nulChecks && !w.found.nul && nestedDocumentDecodesNUL(string(vstr)) {
@@ -738,7 +738,7 @@ func (w *bodyWalk) checkNUL(s []byte) {
 //
 // WHY THE SCOPING EXISTS. The first version of this check recursed into ANY
 // string that parsed as a JSON document, on the argument that a structural
-// test beats a destination-typed one. Codex round 2 on BUG-2803 showed what
+// test beats a destination-typed one. BUG-2803 showed what
 // that costs: a plain-text `content` value holding a JSON snippet that merely
 // MENTIONS the escape was ACCEPTED before this branch, is stored in a text
 // column that has no problem with it, and was newly refused — including on
@@ -780,8 +780,8 @@ var jsonEncodedFieldKeys = map[string]bool{
 // first and a CASE-INSENSITIVE one otherwise, so `{"Fields":...}` and
 // `{"FIELDS":...}` both land in ItemCreate.Fields. A case-SENSITIVE lookup
 // here therefore skipped the nested walk for a body the handler went on to
-// accept, and the database answered the original 500 (codex round 16,
-// measured: `fields` refused, `Fields` and `FIELDS` accepted).
+// accept, and the database answered the original 500
+// (measured: `fields` refused, `Fields` and `FIELDS` accepted).
 //
 // This is the same defect shape as the rest of BUG-2803 — a check that agrees
 // with one layer's rules while the layer that actually consumes the value
@@ -810,7 +810,7 @@ func isJSONEncodedFieldKey(k string) bool {
 // item's `fields` blob, a collection's `schema` — for a string containing a
 // NUL. This is the layer Postgres itself parses, so an escape here is fatal
 // where one a level deeper is not.
-// ANY JSON DOCUMENT SHAPE, scalars included (codex round 1 on DOC-2823 S1).
+// ANY JSON DOCUMENT SHAPE, scalars included (DOC-2823).
 //
 // This used to test objects and arrays only, which is the right rule for
 // deciding "is this a nested document worth walking" and the WRONG one for
@@ -857,12 +857,12 @@ func readBodyForDecode(r *http.Request, maxBytes int64) ([]byte, error) {
 // result ends in a partial sequence, which is not valid UTF-8 — so a value
 // that PASSED the body check a few frames earlier becomes unbindable on its
 // way to the store, and Postgres answers 22021 for a request the server
-// already accepted. Found by the codex round 5 enumeration on BUG-2803, which
+// already accepted. Found by the BUG-2803 enumeration, which
 // asked what could still reach a text parameter unvalidated and named
 // truncation rather than any input path.
 //
 // The failure is invisible in testing with ASCII, which is why it survived
-// four review rounds aimed at the input side: every fixture in this area uses
+// repeated review aimed at the input side: every fixture in this area uses
 // ASCII names, and ASCII cannot reproduce it.
 func truncateBindableText(s string, maxBytes int) string {
 	if len(s) <= maxBytes {
@@ -893,14 +893,14 @@ func truncateBindableText(s string, maxBytes int) string {
 // THE LOGIN PATHS ARE NOT SINKS, and I wired them before reading
 // store.CreateSession, which is the mistake this note exists to stop
 // recurring. It HASHES the header (sessions.ua_hash) and never stores the
-// text — the round-5 enumeration listed "sessions.user_agent" and I took the
-// name for a column. Sanitising there would have been actively harmful:
+// text — the BUG-2803 enumeration listed "sessions.user_agent" and it was taken
+// for a column. Sanitising there would have been actively harmful:
 // login would store sha256(sanitised) while middleware_auth still compares
 // sha256(RAW), so every session belonging to a client with a non-UTF-8
 // User-Agent would fail validation. Hashing arbitrary bytes is well defined
 // and needs no help; the hash sites are deliberately untouched.
 //
-// Found by the codex round 5 enumeration on BUG-2803. The filing's own
+// The BUG-2803 filing's own
 // earlier probe had recorded User-Agent as NOT reproducing on the item-create
 // path, which was true and did not generalise: these are different sinks.
 func requestUserAgent(r *http.Request) string {
@@ -937,8 +937,8 @@ func sanitiseStoredText(s string) string {
 // "pad_<NUL>item" and "pad_item" both become "pad_item". For a User-Agent
 // that is fine; nothing decides anything on it. For a value that NAMES what a
 // request did, it is a forgery: an audit row or a metric label that cannot be
-// told apart from the genuine one it imitates (codex round 23, after round 22
-// closed the coarser version of the same hole).
+// told apart from the genuine one it imitates (an earlier fix closed
+// the coarser version of the same hole).
 //
 // Callers that store an identity must use this and mark a changed value, so
 // "was cleaned" stays visible instead of being silently absorbed. Callers that

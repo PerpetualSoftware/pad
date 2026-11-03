@@ -13,7 +13,7 @@ import (
 // BUG-3447: creating a collection published nothing, so a tab open on the
 // workspace (the first-run launchpad while an agent onboards) learned of it
 // only when some other event refreshed the sidebar, 12-40 s later. Create now
-// publishes the existing collection_updated kind (lead: prefer an existing
+// publishes the existing collection_updated kind (preferring an existing
 // kind), which the workspace layout already answers by reloading the
 // collection list, carrying the new collection's stable id and slug.
 func TestCreateCollection_PublishesCollectionUpdated(t *testing.T) {

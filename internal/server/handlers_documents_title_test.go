@@ -54,7 +54,7 @@ func TestDocumentTitleValidation_IsWiredOnBothWriteDoors(t *testing.T) {
 
 		// Controls. Without these a handler that rejected every title — or
 		// one that rejected any title containing punctuation — passes the
-		// legs above. (`Alpha|Beta` was a control here until codex round 9:
+		// legs above. (`Alpha|Beta` was once a control here:
 		// it renders correctly but its links can be stored in a form the
 		// cascade cannot find, so it moved to the refused side. The remaining
 		// controls carry the load.)
@@ -160,8 +160,8 @@ func TestRenameCascadeTooLarge_IsPermanentShapedNotRetryable(t *testing.T) {
 	}
 }
 
-// TestRenameCascadeTooLarge_IsNotMisreportedAsATitleCollision pins codex round
-// 3's P2 at the handler.
+// TestRenameCascadeTooLarge_IsNotMisreportedAsATitleCollision pins the
+// handler's behaviour.
 //
 // The UNIQUE-constraint arm identifies its error by SUBSTRING, and the refusal
 // error carries the caller's own title verbatim. So a document renamed to a
@@ -204,12 +204,12 @@ func TestRenameCascadeTooLarge_IsNotMisreportedAsATitleCollision(t *testing.T) {
 	}
 }
 
-// TestLegacyTitleDocumentStaysEditable pins codex round 10, and it is a
+// TestLegacyTitleDocumentStaysEditable pins a
 // regression this fix introduced rather than one it inherited.
 //
 // "Enforced at write time, existing titles valid until their next rename" was
-// the promise — Dave's ruling, repeated in the constant's doc comment and in
-// two commit messages. Validating every supplied title broke it for the most
+// the promise, repeated in the constant's doc comment. Validating every
+// supplied title broke it for the most
 // ordinary shape of an edit there is: a client that PATCHes the whole object,
 // title included, to change the CONTENT. Documents with a legacy title became
 // uneditable, not merely un-renameable.

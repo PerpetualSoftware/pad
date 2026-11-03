@@ -34,8 +34,8 @@ func task3462BootstrapUpdates(t *testing.T, srv *Server, ws string) (int, bool) 
 }
 
 // TASK-3462 U3a: the bootstrap counts the items an update is on offer for
-// (update_available and diverged), so an agent can mention it once. Dave's
-// ruling: a nudge on the library page and item pane, plus this count; no
+// (update_available and diverged), so an agent can mention it once.
+// Design: a nudge on the library page and item pane, plus this count; no
 // dashboard entry, and nothing ever updates on its own.
 func TestTASK3462U3a_BootstrapCountsBuiltinUpdates(t *testing.T) {
 	bothBackends(t, func(t *testing.T, srv *Server) {
@@ -75,7 +75,7 @@ func TestTASK3462U3a_BootstrapCountsBuiltinUpdates(t *testing.T) {
 	})
 }
 
-// TASK-3462 U3a (night-43 review note): version history keeps BODIES only, so
+// TASK-3462 U3a: version history keeps BODIES only, so
 // an accepted update that replaces an edited trigger, scope or arguments left
 // no record of the values it replaced. The update's change summary now names
 // each field whose value it changed, with the value it replaced.

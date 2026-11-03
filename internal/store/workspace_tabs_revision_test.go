@@ -317,8 +317,8 @@ func TestWorkspaceTabs_ListShapes(t *testing.T) {
 	}
 }
 
-// An open never inserts a tab for a soft-deleted workspace (codex round 4 on
-// BUG-3285): a tab the soft delete did not see would otherwise outlive it
+// An open never inserts a tab for a soft-deleted workspace (BUG-3285): a tab the
+// soft delete did not see would otherwise outlive it
 // and come back with a restore. The handler checked visibility before the
 // store call, so this is the answer to an open that lost that race.
 func TestWorkspaceTabs_OpenRefusesADeletedWorkspace(t *testing.T) {

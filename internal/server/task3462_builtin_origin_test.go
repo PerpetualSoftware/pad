@@ -11,7 +11,7 @@ import (
 
 // TASK-3462 U1: every door that brings a built-in convention or playbook into
 // a workspace records which one it is and which version of its text, and the
-// record follows the item through its lifecycle as the lead's bar names it:
+// record follows the item through its lifecycle:
 // soft delete and restore keep it, a move keeps it, a copy (user-made) gets
 // none, export/import round-trips it, and a request body cannot claim one.
 
@@ -177,7 +177,7 @@ func TestTASK3462_CreateBodyCannotClaimOrigin(t *testing.T) {
 	}
 }
 
-// The lifecycle the lead's bar names.
+// The lifecycle.
 func TestTASK3462_OriginThroughTheItemLifecycle(t *testing.T) {
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		slug, _ := task3462Workspace(t, srv, "Life 3462", "startup")

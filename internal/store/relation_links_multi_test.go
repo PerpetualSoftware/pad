@@ -168,7 +168,7 @@ func TestRelationIndex_BackfillCoversMultiRelationArrays(t *testing.T) {
 // ROW 22: a scalar->array RETYPE reindexes against what is STORED, not against
 // what the new schema says the shape should be.
 //
-// The lead called a garbage retype a U4 defect. It is not one, and this records
+// A garbage retype could look like a U4 defect. It is not one, and this records
 // why rather than leaving the row open: the extractor is VALUE-shaped — it
 // switches on the JSON type it finds — so after a retype the still-scalar blob
 // indexes as one row at ordinal 0, which is the honest description of what the

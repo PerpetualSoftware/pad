@@ -71,7 +71,7 @@ func (s *Store) addAppPrincipalMemberTx(tx *sql.Tx, workspaceID, botUserID, role
 }
 
 // ---------------------------------------------------------------------------
-// SPEC-6 §11 Q2, decided by Dave (DOC-3371, the answers comment): bots are
+// SPEC-6 §11 Q2 (DOC-3371, the answers comment): bots are
 // listed in a separate Apps section of the member list, and are not Pad Cloud
 // seats. Both positions of both switches stay pinned by
 // TestTask3392_MemberListAndSeatPolicy, so revisiting the decision is a change
@@ -182,8 +182,7 @@ func appPrincipalInstallID(email string) (string, bool) {
 
 // appPrincipalsOfOwnedWorkspacesTx lists the bots that are members of the
 // workspaces ownerID owns, in id order. Account deletion erases them
-// (purgeAppPrincipalsTx; lead ruling on TASK-3392: account deletion leaves no
-// orphan principals). A bot belongs to exactly one install, in one workspace.
+// (purgeAppPrincipalsTx, TASK-3392). A bot belongs to exactly one install, in one workspace.
 func (s *Store) appPrincipalsOfOwnedWorkspacesTx(tx *sql.Tx, ownerID string) ([]string, error) {
 	rows, err := tx.Query(s.q(`
 		SELECT DISTINCT u.id FROM users u

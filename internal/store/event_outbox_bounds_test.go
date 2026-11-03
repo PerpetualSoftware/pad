@@ -81,7 +81,7 @@ func TestOutboxLimitSeamsDefaultToTheProductionConstants(t *testing.T) {
 	// the Postgres round-trip test: the default suite runs on SQLite, where
 	// that test passes trivially, so a claim ceiling collapsed back to the
 	// write cap would go unnoticed in every run without PAD_TEST_POSTGRES_URL
-	//. This assertion fails on either dialect.
+	// This assertion fails on either dialect.
 	if MaxOutboxClaimableBytes <= MaxOutboxPayloadBytes {
 		t.Errorf("MaxOutboxClaimableBytes (%d) must exceed MaxOutboxPayloadBytes (%d)",
 			MaxOutboxClaimableBytes, MaxOutboxPayloadBytes)

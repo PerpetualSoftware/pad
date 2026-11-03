@@ -223,8 +223,7 @@ func TestTimeline_NeverEmitsACursorItWouldRefuse(t *testing.T) {
 	// that the update fails with "SQL logic error: malformed JSON"; the
 	// likely source is one of the expression indexes over json_extract(fields
 	// ...) rather than a column constraint, and that attribution is NOT
-	// verified. The claim corrected to what the run actually showed (codex
-	// round 8).
+	// verified. The claim is stated as what the run actually showed.
 	// The API refuses this body (BUG-2803), and since DOC-2823 S2 so do the
 	// database's own triggers — which is why the injection is bracketed by
 	// dropping and restoring them.

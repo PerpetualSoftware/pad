@@ -219,7 +219,7 @@ func TestBUG3678_RevokeRacingRefreshLeavesNothingActive_Postgres(t *testing.T) {
 // An installed app's grant is minted through the install barrier, not the
 // ordinary insert: a revoke through fosite (RFC 7009 or a refresh replay)
 // ends it the way RevokeUserAppGrant does, with the binding tombstoned
-// (codex rounds 1 and 2 on BUG-3678).
+// (BUG-3678).
 func TestBUG3678_RevokedInstallGrantMintsNothing(t *testing.T) {
 	f := task3399Fixture(t, "inst-3678", "write")
 	task3399Delegated(t, f, "req-3678-app")

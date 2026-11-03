@@ -32,7 +32,7 @@ type artifactImportResponse struct {
 // same reason it does in resolvePlaybook: with more than one collection
 // declaring a kind, picking the first and then failing the visibility check
 // lets a hidden collection shadow a visible one, so an import would be refused
-// even though a destination the caller can write to exists. Codex round 2.
+// even though a destination the caller can write to exists.
 //
 // Returns ("", nil) when no visible collection declares the kind — the caller
 // reports that as a workspace with nowhere to put this artifact.
@@ -180,8 +180,8 @@ func (s *Server) handleImportArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// IMPORT CARRIES junk relation values rather than refusing them — Dave's
-	// ruling, day 57. An artifact was written elsewhere and the importer did
+	// IMPORT CARRIES junk relation values rather than refusing them. An
+	// artifact was written elsewhere and the importer did
 	// not choose its field values; refusing would break the import of exactly
 	// the artifacts most likely to hold pre-validation junk.
 	item, cerr := s.createItemChecked(r, workspaceID, coll, schema, input, norm.Fields, "", relationsCarry)
@@ -192,7 +192,7 @@ func (s *Server) handleImportArtifact(w http.ResponseWriter, r *http.Request) {
 
 	// Carry the create's own warnings into the import response (BUG-2850).
 	//
-	// CORRECTION. Round 10 removed this merge as unreachable, on the grounds
+	// CORRECTION. This merge was once removed as unreachable, on the grounds
 	// that artifact.Decode populates Fields only from FieldKeysForKind, so no
 	// undeclared key could arrive. That check was real but it was the WRONG
 	// SIDE of the comparison: UndeclaredFieldKeys compares the field map
@@ -201,7 +201,7 @@ func (s *Server) handleImportArtifact(w http.ResponseWriter, r *http.Request) {
 	// artifact key can be undeclared THERE while being perfectly legal in the
 	// artifact.
 	//
-	// Reachable and verified (round 11, and pinned by
+	// Reachable and verified (pinned by
 	// TestImportArtifactReportsUndeclaredFieldsAgainstANarrowedSchema):
 	// narrow the conventions collection's schema to declare only `status`,
 	// import a convention carrying trigger/scope/priority — all three are
@@ -216,7 +216,7 @@ func (s *Server) handleImportArtifact(w http.ResponseWriter, r *http.Request) {
 		for _, key := range item.Warnings.UndeclaredFields {
 			warnings = append(warnings, fmt.Sprintf("field %q is not declared by the destination collection's schema; stored as-is", key))
 		}
-		// The OTHER half of the same struct (TASK-2878, codex round 8).
+		// The OTHER half of the same struct (TASK-2878).
 		// Enumerating one member of a warnings struct and forwarding it is a
 		// gap that widens every time the struct grows: `DroppedFields` was
 		// added and this loop kept reporting only what it already knew. An
@@ -375,7 +375,7 @@ func writeArtifactParseError(w http.ResponseWriter, err error) {
 	case errors.Is(err, ErrArtifactUnbindableText):
 		// "character", not "byte": the same refusal fires for a NUL
 		// manufactured by a YAML escape during parsing, where no raw NUL
-		// byte exists in the body (codex closing round 4).
+		// byte exists in the body.
 		writeError(w, http.StatusBadRequest, "invalid_body",
 			"Artifact body contains invalid UTF-8 or a NUL character")
 	case errors.Is(err, ErrArtifactUnsafeYAML):

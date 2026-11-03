@@ -393,8 +393,8 @@ func writeOutboxTx(tx *sql.Tx, s *Store, ev OutboxEvent) error {
 	// The caller declares which payload shape it just marshalled, and the
 	// taxonomy says which shape this event carries. Canonical membership only
 	// ever validated the NAME; without this, item.created could be stored with
-	// a ref-only deletion payload and the write would be accepted (Codex round
-	// 10). Pairing them here means an event and a payload that were not meant
+	// a ref-only deletion payload and the write would be accepted. Pairing them
+	// here means an event and a payload that were not meant
 	// for each other cannot reach the table at all.
 	want, known := kernelevents.PayloadFamilies(ev.EventType)
 	if !known || len(want) == 0 {
@@ -665,7 +665,7 @@ func commentPayloadWithProjection(comment *models.Comment, proj *commentAppProje
 // row's own state. The name and email are denormalized lookups a consumer can
 // resolve for itself if it is entitled to.
 //
-// SUPERSEDED AT DELETION TIME (TASK-2719, Dave's ruling day-49). This comment
+// SUPERSEDED AT DELETION TIME (TASK-2719). This comment
 // originally kept assigned_user_id unconditionally, reasoning that after the
 // account is gone it is "a dangling reference to nobody rather than a way to
 // identify anyone". That engineering call LOST to the account-deletion ruling:
@@ -816,8 +816,8 @@ func scrubUserRefsInNode(node any, userID string) bool {
 // SUPERSEDED note there for the ruling that reversed emit-time's
 // assigned_user_id decision (TASK-2719).
 //
-// UNIFORM OVER DISPATCHED AND UNDISPATCHED ROWS, deleting neither (lead
-// ruling, TASK-2719): erasure is this scrub's job and row LIFECYCLE is
+// UNIFORM OVER DISPATCHED AND UNDISPATCHED ROWS, deleting neither (TASK-2719):
+// erasure is this scrub's job and row LIFECYCLE is
 // retention's (TASK-2714) — deleting an undispatched row would break the
 // outbox durability guarantee for zero erasure gain over scrubbing it. A
 // scrubbed member row degrades from a delta to a resync signal ("a membership
@@ -831,13 +831,13 @@ func scrubUserRefsInNode(node any, userID string) bool {
 // (workspace_id,occurred_at), batch_id and (claimed_at,occurred_at), and
 // nothing on subject_id — so this is a scan over the retention window either
 // way. An earlier version of this note called subject_id indexed; it is not
-// . The CAST
+// The CAST
 // is load-bearing: payload is JSONB on Postgres and TEXT on SQLite, and LIKE
 // on jsonb is not a thing. A uuid carries no LIKE metacharacters and is
 // specific enough that false positives are rare — and harmless, because the Go
 // rewrite is a no-op when no matching key holds the id. Two invariants the
-// prefilter leans on, named so they are checkable rather than assumed (codex
-// round 1): user ids are newID() uuids (hex + dashes — no LIKE metacharacters,
+// prefilter leans on, named so they are checkable rather than assumed:
+// user ids are newID() uuids (hex + dashes — no LIKE metacharacters,
 // no characters JSON escapes, so the id appears verbatim in the stored text on
 // both dialects), and a payload is a SINGLE valid JSON value (writeOutboxTx
 // rejects anything json.Valid refuses, which includes concatenated values), so
@@ -847,8 +847,8 @@ func scrubUserRefsInNode(node any, userID string) bool {
 // once-per-account-deletion path (option (b) on the TASK-2719 trail, where (a)
 // full-scan and (c) a side-table were weighed).
 //
-// RESIDUAL WINDOW, stated rather than discovered in an audit (codex rounds 1
-// and 2): the candidate read is one snapshot inside the deletion transaction,
+// RESIDUAL WINDOW, stated rather than discovered in an audit:
+// the candidate read is one snapshot inside the deletion transaction,
 // so a row emitted CONCURRENTLY can commit after it and keep the id. SQLite's
 // single writer serializes the whole race away. On Postgres three paths stay
 // open, all bounded by TASK-2714's retention exactly like every pre-scrub
@@ -889,8 +889,8 @@ func (s *Store) ScrubOutboxUserRefsTx(tx *sql.Tx, userID string) error {
 	// reached through a different door.
 	//
 	// WHAT BATCHING DOES TO THE RESIDUAL WINDOW, stated because a reviewer
-	// asked whether keyset paging over random uuids can miss a row (codex
-	// round 1). It cannot miss a row that EXISTED when the scan began: ids are
+	// asked whether keyset paging over random uuids can miss a row.
+	// It cannot miss a row that EXISTED when the scan began: ids are
 	// fixed, the walk is ascending over every matching row above the cursor,
 	// and a row only stops matching once it has been scrubbed. What changes is
 	// concurrent commits, and it changes them in the SAFE direction — the
@@ -971,7 +971,7 @@ func (s *Store) ScrubOutboxUserRefsTx(tx *sql.Tx, userID string) error {
 
 	// The COLUMN half: member rows carry the user id as their subject —
 	// indexed, outside the JSON, and missed by anything that only rewrites
-	// payloads (TASK-2719 recon; ratified in scope by the lead). Value
+	// payloads (TASK-2719). Value
 	// equality is the precise predicate: item/comment/attachment subjects are
 	// their own row ids, never a user's.
 	if _, err := tx.Exec(s.q(`
@@ -989,7 +989,7 @@ func (s *Store) ScrubOutboxUserRefsTx(tx *sql.Tx, userID string) error {
 // are measured when candidates are selected and the claim UPDATE that follows
 // rechecks only lease and dispatch state, so a writer that GREW a payload in
 // between could push a row past the ceiling after it had been judged under it
-// . No such writer exists: this is the only UPDATE of payload in
+// No such writer exists: this is the only UPDATE of payload in
 // the tree, and it removes keys and re-marshals compactly, so the result is
 // strictly smaller. Shrinking is harmless — a row already judged claimable
 // stays claimable. Stated here rather than left implicit because it is the
@@ -1576,7 +1576,6 @@ func itemUpdatedSliceChanged(before, after *models.Item, statusKey string) (bool
 	// change status_changed will never report. Masking the key unconditionally
 	// then deleted it from BOTH snapshots, the remainder compared equal, and the
 	// mutation emitted NOTHING AT ALL: a real field change, silently unobservable
-	//.
 	//
 	// The rule that fixes it is the disjoint-delta rule read carefully: a slice
 	// belongs to status_changed only if status_changed will describe it. When it
@@ -1668,7 +1667,7 @@ func itemUpdatedSliceChanged(before, after *models.Item, statusKey string) (bool
 // to compare: items.parent_id is legacy and untouched, the link lives in its
 // own table, and seq/updated_at are excluded from the diff as metadata. So a
 // fields_patch carrying only `parent` mutated the row and emitted NOTHING
-// . The caller knows it performed a hierarchy write; the diff
+// The caller knows it performed a hierarchy write; the diff
 // cannot see it, and it must not have to.
 func (s *Store) emitItemUpdateEventsTx(tx *sql.Tx, before, after *models.Item, statusChanged bool, priorStatus, statusKey, batchID string, hierarchyChanged bool) error {
 	return s.emitItemUpdateEventsAsInstallTx(tx, before, after, statusChanged, priorStatus, statusKey, batchID, hierarchyChanged, "")
@@ -1711,7 +1710,6 @@ func (s *Store) emitItemUpdateEventsAsInstallTx(tx *sql.Tx, before, after *model
 // unclaimed read survives as the DIAGNOSTIC view — "what is still owed?" — and
 // is what tests assert against. Said plainly because a reader finding two
 // pending-row readers should not have to guess which one production uses
-// .
 //
 // DELIBERATELY CROSS-WORKSPACE AND UNAUTHORIZED, which is safe only because of
 // who may call it. The drain is a single server-internal loop that must serve
@@ -1774,8 +1772,8 @@ func (s *Store) ListPendingOutboxEvents(limit int) ([]OutboxEvent, error) {
 // not a bound. Once the lease expires another instance may legitimately claim
 // the row; without this condition the first instance's late ack would then
 // stamp a row the second instance is mid-delivery on, and its late RELEASE
-// would clear a live claim, handing the same event to a third pass (codex
-// round 3). A stale ack now matches zero rows, which is exactly right: the
+// would clear a live claim, handing the same event to a third pass.
+// A stale ack now matches zero rows, which is exactly right: the
 // event is the new claim's problem.
 func (s *Store) MarkOutboxDispatched(claimToken string, ids []string) error {
 	// TOKEN FIRST, then the empty-id short-circuit. The other order makes the
@@ -1894,7 +1892,7 @@ func (s *Store) PruneDispatchedOutbox(before string) (int64, error) {
 // leaseCutoff condition one instance's prune could delete a row another is
 // mid-delivery on: the delivery would then succeed while the ack matched zero
 // rows, and a crash in that window loses an event the outbox had committed
-// . A row whose claim has expired is fair game — that is what
+// A row whose claim has expired is fair game — that is what
 // expiry means — so this is the same predicate the claim uses, applied to
 // deletion.
 //
@@ -2351,7 +2349,7 @@ func (s *Store) EmitBulkHeaderEvent(workspaceID, batchID, op string, itemIDs []s
 	}
 	// A bulk operation that TOUCHED nothing is not an event. Note the verb:
 	// this is an empty-member-list guard, not a semantic-change guard, and the
-	// difference is visible on the wire (codex rounds 1, 2 and 5 each raised
+	// difference is visible on the wire (2 and 5 each raised
 	// it). The caller passes every row it mutated without error, which
 	// includes rows where the mutation was a no-op — untagging a tag nobody
 	// has — and the store emits member events only for real changes. So a
@@ -2449,8 +2447,7 @@ func FoldBulkHeader(header []byte, members [][]byte) ([]byte, error) {
 // envelope pseudo-field prior_status and item.updated does not, so plain
 // last-wins would keep the later row and silently drop the transition — the
 // one piece of information a "nonterminal → terminal" binding needs, lost
-// exactly in the mixed update that produces both (codex round 2, on round 1's
-// own fix).
+// exactly in the mixed update that produces both.
 func dedupeMemberSnapshots(members [][]byte) [][]byte {
 	lastAt := map[string]int{}
 	out := make([][]byte, 0, len(members))

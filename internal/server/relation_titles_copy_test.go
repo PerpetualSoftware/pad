@@ -9,9 +9,9 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// The copy door and the ruled visibility property (PLAN-2857 U6).
+// The copy door and the visibility property (PLAN-2857 U6).
 //
-// These are the legs codex round 3 named as missing, and they are the reason
+// These are legs that were missing, and they are the reason
 // the property had to move INTO the resolver. The cross-workspace copy runs the
 // resolver inside its own transaction, so a server-layer second pass could not
 // reach it: a title override narrowed correctly and then had the narrowed id
@@ -42,8 +42,8 @@ func twinsInDest(t *testing.T, f *relationFixture, title string) (*models.Item, 
 	return visible, hidden, u
 }
 
-// TestRelationTitleCopy_OverrideResolvesForACallerWhoSeesOneTwin is round 3's
-// first P1: the copy re-resolved the raw title inside its transaction and saw
+// TestRelationTitleCopy_OverrideResolvesForACallerWhoSeesOneTwin covers this: the copy
+// re-resolved the raw title inside its transaction and saw
 // `ambiguous`, so a hidden twin changed the copy's STATUS.
 func TestRelationTitleCopy_OverrideResolvesForACallerWhoSeesOneTwin(t *testing.T) {
 	f := newCopyRelationFixture(t)
@@ -64,8 +64,8 @@ func TestRelationTitleCopy_OverrideResolvesForACallerWhoSeesOneTwin(t *testing.T
 	}
 }
 
-// TestRelationTitleCopy_PreflightAndCopyAgreeOnANarrowedTitle is round 3's
-// second P1, and it is the one a per-door test cannot make: agreement between
+// TestRelationTitleCopy_PreflightAndCopyAgreeOnANarrowedTitle covers this, and it is the one a
+// per-door test cannot make: agreement between
 // two doors is a claim about the PAIR.
 //
 // Preflight applied the narrowing and the copy did not, so the preview promised

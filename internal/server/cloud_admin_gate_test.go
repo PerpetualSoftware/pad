@@ -116,7 +116,7 @@ func TestCloudAdminGate_ValidCloudSecret_PassesAuthAndCSRF(t *testing.T) {
 }
 
 // TestCloudAdminGate_BypassScopedToCloudPaths verifies the regression
-// Codex P0'd on PR #182: setting X-Cloud-Secret on a NON-cloud-admin
+// from PR #182: setting X-Cloud-Secret on a NON-cloud-admin
 // path must NOT bypass auth. Applies to every non-whitelisted route.
 func TestCloudAdminGate_BypassScopedToCloudPaths(t *testing.T) {
 	srv := testServer(t)

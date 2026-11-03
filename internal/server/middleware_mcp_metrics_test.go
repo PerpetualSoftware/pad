@@ -228,7 +228,7 @@ func gaugeValueOrZero(t *testing.T, g interface {
 }
 
 // TestRecordMCPCallMetrics_CollapsesSanitisedLabel is the WIRING leg for the
-// cleaned-identity marker (codex round 24; CONVE-19 — a direct-call test
+// cleaned-identity marker (CONVE-19 — a direct-call test
 // vouches for the component, not its binding).
 //
 // TestMetricsToolLabelIsBounded proves metricsToolLabel collapses a marked

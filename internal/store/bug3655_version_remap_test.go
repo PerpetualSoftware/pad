@@ -7,7 +7,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/diff"
 )
 
-// BUG-3655 (codex r1 and r2 on the fix): a patch in an item's history that
+// BUG-3655: a patch in an item's history that
 // does not apply must not leave the rest of the chain on the source ids, and
 // every row must end up as the reader's walk (ListItemVersionsResolvedPage)
 // resolves it: that walk skips a failed patch and resolves the row below it

@@ -59,7 +59,7 @@ func WithAPITokenAuth(ctx context.Context) context.Context {
 func WithTokenWorkspaceID(ctx context.Context, workspaceID string) context.Context {
 	// Always overwrite — passing "" must clear a stale scope set
 	// further up the context chain. Returning ctx unchanged on the
-	// empty path was a bug Codex caught in PR #343 review round 4.
+	// empty path was a bug (PR #343).
 	return context.WithValue(ctx, ctxTokenWorkspaceID, workspaceID)
 }
 
@@ -94,7 +94,7 @@ func IsAPITokenFromContext(ctx context.Context) bool {
 //
 // Without this, a PAT with scope `["read"]` could drive write MCP
 // tools because the in-process request looks pre-authenticated to
-// the handler tree. Codex review #369 round 1 flagged the gap.
+// the handler tree. (Review #369 flagged the gap.)
 //
 // Empty string clears any previously set scope.
 func WithTokenScopes(ctx context.Context, scopes string) context.Context {
@@ -148,7 +148,7 @@ func TokenScopeAllows(scopesJSON, method, path string) bool {
 //
 // Exported so the in-process MCP dispatcher can forward the same
 // allow-list onto synthesized requests via Apply, matching the
-// pattern WithTokenScopes uses (sub-PR E TASK-1027 round 1).
+// pattern WithTokenScopes uses (sub-PR E TASK-1027).
 func WithTokenAllowedWorkspaces(ctx context.Context, slugs []string) context.Context {
 	if slugs == nil {
 		return context.WithValue(ctx, ctxTokenAllowedWorkspaces, []string(nil))

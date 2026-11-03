@@ -233,7 +233,7 @@ func (s *Store) CreateAttachmentForLiveItem(a *models.Attachment, opts ...MintOp
 		return s.createAttachmentOn(s.db, a)
 	}
 	// An ownership change between the storage check's owner read and its lock
-	// is retried in a fresh transaction (codex r3 on TASK-3619): it is rare,
+	// is retried in a fresh transaction (TASK-3619): it is rare,
 	// and the next attempt locks the new owner.
 	for attempt := 1; ; attempt++ {
 		err := s.createAttachmentForLiveItemTx(a, limited, orphan)
@@ -990,7 +990,6 @@ func (s *Store) HardDeleteAttachment(id string) error {
 // stamp-to-commit span EXCEEDS orphanGCRefStaleWindow — the stamp is
 // already stale when a blocked claim re-evaluates, so the window's
 // sizing (see its comment) is what bounds this case, not the lock
-// .
 func stampAttachmentRefsTx(tx *sql.Tx, s *Store, workspaceID string, texts ...string) error {
 	if workspaceID == "" {
 		return nil
@@ -1041,7 +1040,7 @@ func stampAttachmentRefsTx(tx *sql.Tx, s *Store, workspaceID string, texts ...st
 		// only re-evaluates predicates on the row it deletes, so a
 		// fresh stamp on the parent alone cannot make a concurrently
 		// claimed thumbnail wait — locking the variant row itself does
-		//. The claim's parent NOT EXISTS stays as
+		// The claim's parent NOT EXISTS stays as
 		// the belt for variants created AFTER the stamp landed.
 		if _, err := tx.Exec(s.q(
 			`UPDATE attachments SET last_referenced_at = ? WHERE workspace_id = ? AND (id IN (`+
@@ -1368,7 +1367,7 @@ func (s *Store) AttachmentRowsExistForHashContext(ctx context.Context, hash stri
 //     (deleted_at >= graceCutoff)
 //
 // excludeID is the row currently being GC'd; we don't count it
-// against itself. Codex P2 round 3 caught the earlier version's
+// against itself. The earlier version's
 // gap: counting only deleted_at IS NULL would have GC reclaim the
 // blob from row A (soft-deleted 31d ago) even though row B is
 // also soft-deleted but still 1 day old — within grace, so its
@@ -1415,8 +1414,8 @@ func (s *Store) CountProtectingAttachmentsForHash(hash, excludeID string, graceC
 //
 // Dialect note: items.fields is TEXT on SQLite but JSONB on
 // PostgreSQL (see migrations + pgmigrations). LIKE doesn't work on
-// JSONB so the Postgres path casts to text first. Codex P1 round 2
-// caught this — without the cast, the GC's reference scan errored
+// JSONB so the Postgres path casts to text first.
+// Without the cast, the GC's reference scan errored
 // on Postgres and every never-attached row got skipped. comments.body
 // is TEXT on both dialects, so it needs no cast.
 func (s *Store) AttachmentReferenced(workspaceID, attachmentID string) (bool, error) {
@@ -1463,7 +1462,7 @@ func (s *Store) AttachmentReferenced(workspaceID, attachmentID string) (bool, er
 // have already been rehydrated — without this cascade the
 // attachment rows stay live (deleted_at IS NULL), pin their blobs
 // from orphan-GC reclamation, and continue counting toward the
-// importing user's storage usage. Codex P1 on PR #308.
+// importing user's storage usage.
 //
 // Both originals and thumbnails carry the same workspace_id, so a
 // single WHERE workspace_id = ? clause covers both. Returns the
@@ -1718,8 +1717,8 @@ func (s *Store) RemapAttachmentReferencesInWorkspace(workspaceID string, oldToNe
 	}
 	defer tx.Rollback()
 
-	// Serialise against concurrent item writes in this workspace (codex round
-	// 5 on PLAN-2857 U5). This function SCANS every item's fields and content,
+	// Serialise against concurrent item writes in this workspace
+	// (PLAN-2857). This function SCANS every item's fields and content,
 	// then writes the snapshot back — so without the lock a concurrent update
 	// can commit newer fields in between and this overwrites them.
 	//
@@ -2158,7 +2157,7 @@ func (s *Store) WorkspaceStorageUsage(workspaceID string) (int64, error) {
 // accountStorageUsageQ is the bytes of non-deleted attachments across every
 // workspace ownerID owns: the pool a per-account limit is checked against.
 //
-// A soft-deleted workspace COUNTS until it is purged (lead ruling, TASK-3619):
+// A soft-deleted workspace COUNTS until it is purged (TASK-3619):
 // its bytes are still on disk, and the cap exists to stop a full disk.
 // Leaving it out would let upload, soft-delete, upload, restore walk past the
 // cap, and restore needs no check of its own because nothing changes on disk

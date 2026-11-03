@@ -796,7 +796,7 @@ func TestGetReport_DeclaredAbandonedOptionNotCompleted(t *testing.T) {
 	}
 }
 
-// BUG-2347 (codex round 1 on #1464): workspace import enforces the same
+// BUG-2347 (#1464): workspace import enforces the same
 // subset rule as the collection create/update doors.
 func TestImportWorkspace_AbandonedOptionsMustBeTerminal(t *testing.T) {
 	t.Parallel()

@@ -9,7 +9,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
-// BUG-3366 (Dave's ruling on TASK-3345 #4: HIDE). An item-grant guest sees
+// BUG-3366 (TASK-3345 #4: HIDE). An item-grant guest sees
 // the items they were granted, and nothing about the items those link to.
 // Lineage (parent title/ref) and closure (superseded/implemented/split
 // related items) used to authorize the OTHER item by its collection, and

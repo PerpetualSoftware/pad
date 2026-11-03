@@ -63,7 +63,7 @@ func TestTask3399b_TheAppActsAsThePerson(t *testing.T) {
 	}
 }
 
-// Lead ruling R3 (TASK-3401 U6b), the delegated half: a write is the
+// TASK-3401 U6b, the delegated half: a write is the
 // PERSON's, with via_app = the install, never the bot's.
 func TestTask3401_DelegatedWriteAuthorIsThePerson(t *testing.T) {
 	f := delegatedAPIFixture(t, "write", "write", "editor")
@@ -218,7 +218,7 @@ func TestTask3399b_ACompanionReleasedMidReadWithholdsIt(t *testing.T) {
 	}
 }
 
-// Lead ruling (U6c): a delegated upload re-admits the PERSON (their
+// U6c: a delegated upload re-admits the PERSON (their
 // visibility of the item and their edit right) immediately before its row.
 func TestTask3399b_APersonNarrowedMidUploadCommitsNoRow(t *testing.T) {
 	for name, change := range map[string]string{
@@ -274,7 +274,7 @@ func TestTask3399b_APersonNarrowedMidUploadCommitsNoRow(t *testing.T) {
 	}
 }
 
-// Codex U5b-2 r1: every delegated JSON write re-admits the person after its
+// Every delegated JSON write re-admits the person after its
 // body is read; one who lost access while the body arrived writes nothing.
 func TestTask3399b_APersonLosingAccessMidBodyWritesNothing(t *testing.T) {
 	type call struct {
@@ -333,7 +333,7 @@ func TestTask3399b_APersonLosingAccessMidBodyWritesNothing(t *testing.T) {
 	}
 }
 
-// Codex U5b-2 r2: a person who sees only granted items in a companion lists
+// A person who sees only granted items in a companion lists
 // only those, and the window (has_more, next_offset) counts nothing hidden.
 func TestTask3399b_AListCountsNothingHidden(t *testing.T) {
 	f := delegatedAPIFixture(t, "write", "read", "editor")
@@ -367,7 +367,7 @@ func TestTask3399b_AListCountsNothingHidden(t *testing.T) {
 	_ = hidden
 }
 
-// Codex U5b-2 r3: the response's final re-admission step re-checks the
+// The response's final re-admission step re-checks the
 // workspace and the person's role, not only the credential.
 func TestTask3399b_ARoleDroppedDuringTheReChecksWithholdsTheResponse(t *testing.T) {
 	for name, change := range map[string]string{
@@ -397,7 +397,7 @@ func TestTask3399b_ARoleDroppedDuringTheReChecksWithholdsTheResponse(t *testing.
 	}
 }
 
-// U5b-2 x U10d (lead cross-check): a DELEGATED app write's event names the
+// U5b-2 x U10d: a DELEGATED app write's event names the
 // install that wrote it (actor_via_app, envelope via_app) AND credits the
 // person, never the install's bot.
 func TestTask3399b_ADelegatedWritesEventNamesTheInstallAndThePerson(t *testing.T) {

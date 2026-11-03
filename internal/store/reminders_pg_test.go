@@ -7,7 +7,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/kernelevents"
 )
 
-// Postgres-only pins for the fire path's row pin (IDEA-2641, codex round 12).
+// Postgres-only pins for the fire path's row pin (IDEA-2641).
 //
 // reminderFireable READS liveness; the pin HOLDS it. TestFirePathInvariant
 // covers the interleaving where the archival commits before the fire — the

@@ -241,7 +241,7 @@ func (s *Store) OpenMentionsForItems(itemIDs []string) (map[string][]NeedsMentio
 
 // NeedsSnoozesForItems returns userID's snoozes on the given items of one
 // workspace with Holds evaluated at now, keyed by item id. It is the batch of
-// GetNeedsSnooze with two scoping rules (TASK-3920, the day-19 rulings):
+// GetNeedsSnooze with two scoping rules (TASK-3920):
 //
 //   - the snooze is joined to its ITEM and scoped by items.workspace_id, never
 //     by item_needs_snoozes.workspace_id: a cross-workspace move clones the item

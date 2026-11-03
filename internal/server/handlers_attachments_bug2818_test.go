@@ -251,7 +251,7 @@ func rewriteManifestNames(t *testing.T, bundle []byte, rename map[string]string)
 }
 
 // The header and ingest drop EXACTLY the same characters, over every rune.
-// This is the lead's ruled invariant for BUG-2818 as a test: a sanitiser with
+// This is the invariant for BUG-2818 as a test: a sanitiser with
 // its own character switch (the pre-fix shape) differs on C1 and fails here.
 func TestSanitizeHeaderFilename_DropsExactlyTheIngestPredicate(t *testing.T) {
 	for r := rune(0); r <= utf8.MaxRune; r++ {

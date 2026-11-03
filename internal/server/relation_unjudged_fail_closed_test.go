@@ -17,7 +17,7 @@ import (
 // BUG-3012. The server's relation passes used to settle an unjudged
 // `wrong_collection` issue by RE-RESOLVING its value and checking visibility on
 // what came back: a second lookup that a delete could race. Visibility now
-// lives in the store resolver (the day-64 ruling), so an unjudged issue is a
+// lives in the store resolver, so an unjudged issue is a
 // feeder that skipped the resolver's visibility argument, and the pass fails
 // closed to `not_found` with no lookup.
 

@@ -50,7 +50,7 @@ type nulColumn struct {
 // carry values extracted from stored item content, which is the BUG-2814
 // re-emit in miniature — they need the raw check and no JSON parser reads them.
 //
-// The SECOND RING is included per the lead's Ruling 2: instr triggers are
+// The SECOND RING is included by design: instr triggers are
 // near-free, so caller-influenced text columns go in wholesale rather than
 // being litigated one at a time. Ruling 2 attached a condition — a
 // header-derived value (user agent, IP) must not surface as a 500 or a broken
@@ -135,14 +135,13 @@ var nulColumns = []nulColumn{
 	{"views", "name", classText},
 	// view_type is `viewType := input.ViewType` with "list" only as a fallback,
 	// on create AND update — caller text, not an enum the store validates
-	//.
 	{"views", "view_type", classText},
 
 	// agent roles
 	// tools is FREE TEXT, not JSON — migration 019 says so in as many words
 	// ("free-text notes about preferred tools/models", e.g. "Claude Code +
 	// Sonnet 4.6"). TASK-2825's census classed it J and this list inherited
-	// that; codex round 1 caught it. Classing it JSON would refuse a user's
+	// that, which was wrong. Classing it JSON would refuse a user's
 	// note that happens to be valid JSON carrying an escape.
 	{"agent_roles", "tools", classText},
 	{"agent_roles", "name", classText},
@@ -211,13 +210,13 @@ var nulColumns = []nulColumn{
 	{"comment_reactions", "emoji", classText},
 	{"oauth_clients", "logo_url", classText},
 
-	// ATTRIBUTION COLUMNS, swept as a CLASS (codex round 6, CONVE-18).
+	// ATTRIBUTION COLUMNS, swept as a CLASS (CONVE-18).
 	//
 	// Rounds 2, 3 and 6 each named one or two of these, which is the signal
 	// that the reviewer was sampling a population rather than finding
 	// instances. Enumerating every created_by / last_modified_by / source /
 	// actor / author / *_by column in the schema found SIXTEEN unprotected,
-	// against the eight round 6 listed.
+	// against the eight an earlier list had.
 	//
 	// Some are server-set today (granted_by, invited_by, uploaded_by are user
 	// ids). They go in anyway, on Ruling 2's posture for the second ring: an
@@ -240,9 +239,8 @@ var nulColumns = []nulColumn{
 	{"workspace_invitations", "invited_by", classText},
 	{"workspaces", "source", classText},
 	// Found by re-running the sweep as a PATTERN (*_by) instead of the
-	// hand-written name list round 6 used — which was an enumeration one level
+	// hand-written name list an earlier pass used — which was an enumeration one level
 	// up, and missed exactly the two names nobody thought to write down
-	//.
 	{"event_outbox", "claimed_by", classText},
 	{"oauth_connection_workspaces", "added_by", classText},
 
@@ -652,7 +650,7 @@ func (s *Store) ensureNULTriggersFor(known []string) (restored bool, err error) 
 
 	// NOTHING TO RESTORE BEFORE THE MIGRATION THAT CREATES THEM.
 	//
-	// This runs after every migration (codex round 4, to narrow the window in
+	// This runs after every migration (to narrow the window in
 	// which a rebuild has dropped the triggers), which means it also runs
 	// during a FRESH install while the early migrations are still creating the
 	// tables. Attempting the trigger SQL then fails on "no such table" — caught
@@ -690,10 +688,10 @@ func (s *Store) ensureNULTriggersFor(known []string) (restored bool, err error) 
 		files = append(files, string(data))
 	}
 
-	// TRANSACTION FIRST, THEN INSPECT (codex rounds 2 and 3).
+	// TRANSACTION FIRST, THEN INSPECT.
 	//
-	// Round 2 put the CREATE statements in a transaction, which closed the
-	// window between them. Round 3 found the window BEFORE them: checking
+	// An earlier version put the CREATE statements in a transaction, which closed the
+	// window between them. A later fix found the window BEFORE them: checking
 	// whether triggers were missing outside the transaction let a raw writer
 	// commit an invalid row between the check and the lock. The store's DSN
 	// carries _txlock=immediate, so Begin takes the write lock up front and the
@@ -816,7 +814,7 @@ func readNULTriggers(q Queryer, prefix string, out map[string]string) error {
 // for 084, and pad_nul<NNN>_ for a later file NNN.
 //
 // Separate namespaces are what keep an OLDER binary from destroying a newer
-// file's triggers (BUG-3108, codex round 1). The restore reads its triggers by
+// file's triggers (BUG-3108). The restore reads its triggers by
 // GLOB, treats any name in that namespace it does not expect as a stray, and
 // drops it. A binary that predates 094 reads 'pad_nul_*'; had 094's triggers
 // used that prefix, such a binary started with --force would drop them all.

@@ -10,8 +10,8 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// TestTask3376_RestrictedEditorViewGrantCannotWrite pins PR #1756 codex
-// round 2's P1. requireEditPermission let any editor through before it
+// TestTask3376_RestrictedEditorViewGrantCannotWrite pins PR #1756.
+// requireEditPermission let any editor through before it
 // looked at the collection, so a member with collection_access='specific'
 // who could SEE an item only through a VIEW grant could PATCH it and create
 // beside it. The editor role now reaches a collection only when the member's
@@ -122,8 +122,8 @@ func TestTask3376_RestrictedEditorViewGrantCannotWrite(t *testing.T) {
 	}
 }
 
-// A restricted member with the OWNER role keeps the full edit bypass (PR #1756
-// codex round 3, lead ruling): an owner can rewrite their own collection
+// A restricted member with the OWNER role keeps the full edit bypass (PR #1756):
+// an owner can rewrite their own collection
 // access, and the web client's canEditItem treats owners as editors
 // everywhere, so the server must agree. Same shape as the editor test above,
 // where the same request is refused: only the role differs.

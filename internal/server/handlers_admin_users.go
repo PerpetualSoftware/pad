@@ -63,8 +63,7 @@ func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
 	// present, so omitting it means "no filter" (not "false"). Uses
 	// strconv.ParseBool so the full set of canonical truthy/falsy values
 	// is accepted ("true"/"True"/"TRUE"/"1"/"t" and the parallel falses);
-	// anything else is treated as "no filter" rather than silently false
-	// (Codex review on PR #599).
+	// anything else is treated as "no filter" rather than silently false.
 	if v := q.Get("disabled"); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {
 			params.Disabled = &b
@@ -168,7 +167,7 @@ func (s *Server) handleAdminGetUser(w http.ResponseWriter, r *http.Request) {
 	// Aggregations for the list-row merge. The list endpoint returns
 	// these per-row; this single-user endpoint is hit after PATCH/POST
 	// mutations to refresh a row, so it must return the same shape or
-	// the merged row goes stale (Codex review on PR #603).
+	// the merged row goes stale.
 	storageBytes, err := s.store.UserStorageUsage(user.ID)
 	if err != nil {
 		writeInternalError(w, err)

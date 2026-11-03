@@ -141,7 +141,7 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		// The flag alone is not proof the account has no password: an account
 		// that signed up with one before password_set existed, and later
 		// linked OAuth, reads false too. So confirm-only also needs a recent
-		// sign-in (codex review).
+		// sign-in.
 		info := s.requestSessionInfo(r)
 		if info == nil || info.User.ID != fullUser.ID || info.Kind == store.SessionKindCLI || time.Since(info.CreatedAt) > accountDeleteReauthWindow {
 			writeError(w, http.StatusForbidden, "reauth_required",
@@ -236,7 +236,7 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	// answer lets the deletion proceed. Only that answer: the old sidecar's
 	// exact refusal (olderSidecarRefusedEmptyCustomer). Any other 400 from a
 	// current sidecar may come with stamped customers still billing, so it
-	// aborts like every other failure (retro Codex review of #2036).
+	// aborts like every other failure.
 	stripeWasCancelled := false
 	if s.cloudSidecar != nil {
 		err := s.cloudSidecar.CancelCustomer(fullUser.StripeCustomerID, fullUser.ID)
@@ -276,7 +276,7 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	// TASK-3365: the deletion also removes the grants this user ISSUED,
 	// possibly in workspaces someone else owns. Their workspaces are reported
 	// from the rows the transaction deleted, so a grant created after any
-	// earlier read cannot be missed (codex r2 on PR2), and kicked below.
+	// earlier read cannot be missed, and kicked below.
 	issuedGrantWorkspaces, err := s.store.DeleteAccountAtomicReport(user.ID)
 	if errors.Is(err, store.ErrLastAdmin) && !stripeWasCancelled {
 		writeLastActiveAdmin(w)
@@ -468,7 +468,7 @@ func (s *Server) accountExportVisibleCollections(ctx context.Context, r *http.Re
 		return f(r, wsID)
 	}
 	// The BUG-3334 fail-closed seam visibleCollectionIDs honours, kept on
-	// this ctx-bound read (BUG-3632 r2).
+	// this ctx-bound read (BUG-3632).
 	if s.visibleCollectionIDsFault != nil {
 		if err := s.visibleCollectionIDsFault(); err != nil {
 			return nil, err
@@ -508,7 +508,7 @@ func (s *Server) accountExportDeadline() time.Duration {
 // deadline, whatever the driver's error says: a cancelled read races
 // ctx.Done() here, and the export tells a timeout (503) from a failure (500)
 // by errors.Is, which must not depend on how a driver wraps its cancel error
-// (BUG-3632 r2).
+// (BUG-3632).
 func withinExportDeadline[T any](ctx context.Context, read func() (T, error)) (T, error) {
 	type result struct {
 		v   T
@@ -703,7 +703,7 @@ const oldSidecarEmptyCustomerRefusal = `{"error":"customer_id must start with 'c
 // non-empty customer_id without the prefix, and this door sends an empty
 // one, so on this path it can only mean the old sidecar. The body is compared
 // whole, not decoded: a decode would accept extra fields or a duplicated
-// "error" key alongside the message (retro Codex review, round 1). Anything
+// "error" key alongside the message. Anything
 // else, including another 400 or an unreadable body, is not it.
 func olderSidecarRefusedEmptyCustomer(e *billing.SidecarError) bool {
 	return e != nil && e.Status == http.StatusBadRequest &&

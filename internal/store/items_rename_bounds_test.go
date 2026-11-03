@@ -199,7 +199,7 @@ func TestItemRenameCascade_RefusesBeforeBuildingTheRewrittenBody(t *testing.T) {
 // charged for the body it had to READ — unavoidable, it is already in memory —
 // but NOT for a rewritten copy that will never be built. Charging for both
 // would let content the rewriter can never touch push a legitimate rename over
-// the cap, which is the class BUG-2798's codex round 7 caught on the document
+// the cap, which is the class BUG-2798 hit on the document
 // path in a different costume.
 //
 // Drift is simulated the only way it occurs in production: the content changes
@@ -252,7 +252,7 @@ func TestItemRenameCascade_DoesNotChargeForRewritesItWillNotPerform(t *testing.T
 	}
 }
 
-// TestItemRenameCascade_BoundsTheScanNotJustTheRewrite closes codex R4's P1.
+// TestItemRenameCascade_BoundsTheScanNotJustTheRewrite closes the case.
 //
 // The rewrite loop's cap charges CONTENT bytes. The scan that feeds it retains
 // one entry per matching link ROW, each carrying that row's target_title.

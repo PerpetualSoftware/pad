@@ -16,7 +16,7 @@ import (
 // invocation_slug, bulk move leaked the SQL error, and an unindexed unique
 // field stored the duplicate).
 //
-// The rule every door now shares (lead rulings, day 78): a computed target is
+// The rule every door now shares: a computed target is
 // never carried into (`target_computed`); a CARRIED unique collision is dropped
 // and reported (`not_unique`), naming the value and — when the caller may see
 // it — the item holding it; a SUPPLIED override or an injected default that

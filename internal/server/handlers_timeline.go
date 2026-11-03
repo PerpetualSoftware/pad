@@ -372,7 +372,7 @@ func structuredTimelineEntries(item *models.Item, before time.Time, beforeID str
 	// within a kind does.
 	//
 	// WHAT IS CLOSED, enumerated so the next reader does not have to re-derive
-	// it (BUG-2783, review round 5):
+	// it (BUG-2783):
 	//
 	//   - structured raw vs structured raw ....... the `!usedIDs[raw]` guard
 	//   - structured raw vs derived, same kind ... divert on the prefix
@@ -495,7 +495,7 @@ func buildTimeline(comments []models.Comment, activities []models.Activity, vers
 	// the only place the check is exact: comments and activities arrive
 	// through separately bounded windows, and a guard built from the
 	// comments in hand cannot see an activity whose comment fell outside the
-	// comment window (TASK-2760, codex round 2). What this set covers is the
+	// comment window (TASK-2760). What this set covers is the
 	// read skew between the two queries: the sources are read at separate
 	// instants with no shared snapshot (see TimelineEntry's doc), so a
 	// comment fetched here and hard-deleted before the activity query runs
@@ -653,7 +653,7 @@ func isAutosaveVersion(e models.TimelineEntry) bool {
 // still leaves one restore point.
 //
 // The kept row carries an AutosaveRun describing the rows it stands for
-// (PLAN-2348 U3), so the History tab can say "4 autosaves by Dave · 1:02–1:14"
+// (PLAN-2348 U3), so the History tab can say "4 autosaves by Alice · 1:02–1:14"
 // and diff the whole run. A lone autosave carries none. The run is keyed on
 // the writer too: two people's autosaves are two runs, because the History
 // card names one person.

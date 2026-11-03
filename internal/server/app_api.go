@@ -29,7 +29,7 @@ import (
 //  2. per route, the access check: a "write" row refuses a read token with
 //     403 before anything is resolved or looked up.
 //  3. per route, requireAppWorkspace: {ws} must be the token's workspace by
-//     ID (R3), else the same 404 a missing workspace gets; then every context
+//     ID, else the same 404 a missing workspace gets; then every context
 //     key the shared helpers read is set from the grant, and checked.
 //  4. the handler, which authorizes through the shared helpers under the
 //     ceiling and encodes a fixed DTO.
@@ -43,7 +43,7 @@ type appRoute struct {
 	Handler  func(*Server, http.ResponseWriter, *http.Request)
 	Auth     string // "service", "delegated" or "either"
 	// Access is "read", "write" or "stream". A stream row is a read whose
-	// body is NOT buffered (an attachment download, lead ruling for U6c): the
+	// body is NOT buffered (an attachment download, U6c): the
 	// handler re-admits the request itself, immediately before its first
 	// byte, and then streams.
 	Access string
@@ -114,7 +114,7 @@ type appStoreState struct {
 }
 
 // appETagLabel names the HKDF purpose of the etag key: server-only,
-// mandatory and persistent (lead ruling R5 on TASK-3401).
+// mandatory and persistent (TASK-3401).
 const appETagLabel = "pad-app-etag-v1"
 
 func (s *Server) appStore() (*appstore.Store, error) {
@@ -148,7 +148,7 @@ func (s *Server) appStore() (*appstore.Store, error) {
 // /workspaces/{ws}: the workspace is the token's, injected before the same
 // per-route stack runs. U11's redeem (§6: /context/redeem) is one, so a code
 // sent with any workspace in its path cannot be refused before it is
-// consumed (codex r1 on U11).
+// consumed.
 var appUnscopedRoutes = []appRoute{
 	{"POST", "/context/redeem", "appRedeemContext", (*Server).appRedeemContext, "service", "read"},
 	// The token's own binding (BUG-3416): where an app learns its install
@@ -175,16 +175,15 @@ func (s *Server) registerAppAPIRoutes(r chi.Router) {
 				if s.appBeforeHandler != nil {
 					s.appBeforeHandler()
 				}
-				// Writes are NOT re-validated after commit (lead ruling R2,
-				// U6b): a write's authority is decided inside its FencedTx
+				// Writes are NOT re-validated after commit (U6b): a write's authority is decided inside its FencedTx
 				// under the epoch fence, and refusing the response AFTER a
 				// commit would hide a write that happened and invite a
 				// duplicate retry. Re-admission before send is for reads.
 				if access == "write" {
 					// A write registers its re-checks too, so it can re-admit
 					// itself after reading its body and before its write
-					// (appReadmitBeforeWrite, codex U5b-2 r1). It is never
-					// re-validated after commit (R2).
+					// (appReadmitBeforeWrite). It is never
+					// re-validated after commit.
 					handler(s, w, r.WithContext(context.WithValue(r.Context(), appRecheckKey{}, &appRechecks{})))
 					return
 				}
@@ -237,8 +236,7 @@ func (s *Server) requireAppsAvailable(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		on, err := s.appsAvailableChecked()
 		if err != nil {
-			// A failure to read the setting is a fault, not "apps off"
-			// (codex U6c r6).
+			// A failure to read the setting is a fault, not "apps off".
 			writeInternalError(w, err)
 			return
 		}
@@ -301,7 +299,7 @@ func (s *Server) appAdmitToken(ctx context.Context, tok string) (*appContext, er
 	grant, err := s.introspectAppToken(ctx, tok)
 	if err != nil {
 		// A store failure while reading the token's state is a fault, not a
-		// refusal (codex U6c r4): a 401 invalid_token would tell the app to
+		// refusal: a 401 invalid_token would tell the app to
 		// discard a credential that is fine. Every named refusal stays a
 		// denial, and so does the OAuth library's own introspection error,
 		// which does not distinguish a storage fault from an unknown token
@@ -435,7 +433,7 @@ func (s *Server) appTokenWorkspace(next http.Handler) http.Handler {
 }
 
 // requireAppWorkspace is step 3 (RequireAppWorkspaceAccess). {ws} must be the
-// token's workspace, by ID (lead ruling R3): a slug, another workspace, or a
+// token's workspace, by ID: a slug, another workspace, or a
 // deleted one all get the workspace 404. It then sets every context key the
 // shared helpers read, from the grant and real membership, and refuses the
 // request if any is missing.
@@ -620,7 +618,7 @@ func appAddRecheck(r *http.Request, fn func(*http.Request) error) {
 }
 
 // appRevalidate re-admits the request from scratch before its response is
-// sent (codex r1 and r2): the token is introspected again (revocation,
+// sent: the token is introspected again (revocation,
 // expiry, binding, epoch, install, client), the install's access and bot are
 // read again, and the workspace, membership, role and ceiling are recomputed.
 // The result must match what the request was admitted under, and then every
@@ -672,7 +670,7 @@ func (s *Server) appRevalidate(r *http.Request) error {
 	if s.appAfterRechecks != nil {
 		s.appAfterRechecks()
 	}
-	// The credential once more, LAST (codex U6c r1 P1): the checks above take
+	// The credential once more, LAST: the checks above take
 	// time, and a revocation, disable or rotation committed while they ran
 	// would otherwise pass. Re-admission is a sequence of reads, not one
 	// snapshot, so it orders the response against a change committed before
@@ -685,7 +683,7 @@ func (s *Server) appRevalidate(r *http.Request) error {
 	if last.Grant.AuthEpoch != ac.Grant.AuthEpoch || last.Access != ac.Access || last.InstallID != ac.InstallID {
 		return fmt.Errorf("%w: the grant changed", errAppCredential)
 	}
-	// And the workspace and role once more (codex U5b-2 r3): a person's role
+	// And the workspace and role once more: a person's role
 	// is not part of the credential, so a downgrade or a workspace delete
 	// committed while the re-checks ran would otherwise pass this step.
 	lastWS, err := s.appAdmitWorkspace(last)
@@ -704,8 +702,8 @@ func (s *Server) appRevalidate(r *http.Request) error {
 // errAppCredential marks a re-admission failure that is about the
 // credential itself (revoked, expired, rotated, the install disabled), as
 // opposed to the subject's permissions. A read answers every denial with
-// 401; a write that must tell the two apart (the upload's pre-row check,
-// codex U6c r5) answers this one with 401 and the rest with 403.
+// 401; a write that must tell the two apart (the upload's pre-row check)
+// answers this one with 401 and the rest with 403.
 var errAppCredential = errors.New("app credential no longer valid")
 
 // appCredentialDenial passes a fault through and marks anything else from
@@ -732,7 +730,7 @@ func isAppTokenDenial(err error) bool {
 // appFault marks an error from re-admission as a server fault (a store or
 // database failure), not a denial: the response is withheld either way, but
 // a fault answers 500, never the 401 invalid_token that tells an app to
-// discard a credential that is fine (codex U6c r2).
+// discard a credential that is fine.
 func appFault(err error) error { return fmt.Errorf("%w: %w", errAppAdmitInternal, err) }
 
 // writeAppRevalidateError answers a failed re-admission: 500 for a fault,

@@ -32,7 +32,7 @@ func TestIsPlausibleEmail(t *testing.T) {
 
 // TestHandleLogin_ImplausibleEmail_NoBucketCreated asserts that a long
 // garbage string with no '@' does not create a bucket in the AuthEmail
-// limiter — the memory-DoS defense Codex asked for on PR #178.
+// limiter — the memory-DoS defense added in PR #178.
 func TestHandleLogin_ImplausibleEmail_NoBucketCreated(t *testing.T) {
 	srv := testServer(t)
 	bootstrapFirstUser(t, srv, "victim@example.com", "Victim")

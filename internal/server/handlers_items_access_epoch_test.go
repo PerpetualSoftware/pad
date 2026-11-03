@@ -7,7 +7,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// TestAccessEpoch_DoorsAgreeForAGrantOnASoftDeletedItem is the review-round-2
+// TestAccessEpoch_DoorsAgreeForAGrantOnASoftDeletedItem is the
 // regression, and it exists because the fixture that was supposed to prove the
 // doors agree could not have caught this: it had no item grants at all, so both
 // doors hashed the same empty list and agreed for the wrong reason.

@@ -181,7 +181,7 @@ func TestMCP_DiscoveryRoutes_RequireOAuthAvailablePerRoute(t *testing.T) {
 // TestMCP_AuthServerMetadata_MountedAndGated confirms the RFC 8414
 // authorization-server discovery doc is refused when the OAuth server
 // isn't wired, even with MCP available: without OAuth the doc must NOT
-// advertise live URLs that 404 (Codex review #372 round 3). It used to
+// advertise live URLs that 404. It used to
 // answer 503; PLAN-2310 DR-5 gates it on oauthAvailable like the
 // /oauth/* endpoints it names, so it is the same JSON 404 they give.
 // The full happy-path 200 shape assertions live in
@@ -332,7 +332,7 @@ func TestMCP_ValidPAT_ReachesTransport(t *testing.T) {
 // right shape if someone adds tests for this branch later.
 
 // TestMCP_NoToken_FallsBackToHostWhenPublicURLUnset pins the
-// regression Codex review #369 round 1 caught: when PAD_MCP_PUBLIC_URL
+// regression where, when PAD_MCP_PUBLIC_URL
 // is unset, writeMCPUnauthorized used to drop the WWW-Authenticate
 // header entirely, which broke fresh-client discovery. The header is
 // still always set; what changed (PLAN-2310 DR-3) is that the URL in it
@@ -385,7 +385,7 @@ func TestMCP_NoToken_NoHostFallbackWhenPublicURLUnset(t *testing.T) {
 }
 
 // TestMCP_ReadScopedPAT_RejectedOnWriteTool pins the security fix
-// for Codex review #369 round 1 finding 1: a PAT with scopes
+// for the following: a PAT with scopes
 // `["read"]` must NOT be able to drive write tools through /mcp.
 // MCPBearerAuth used to skip tokenScopeAllows entirely; the
 // dispatcher's synthesized in-process request bypassed TokenAuth's
@@ -810,8 +810,8 @@ func TestMCP_OAuthScopeReadOnly_StashesPadReadScope(t *testing.T) {
 	}
 }
 
-// TestOAuthScopesToJSON_FailClosedOnEmpty pins Codex review #375
-// round 1: OAuth's `scope` parameter is optional per RFC 6749 §3.3,
+// TestOAuthScopesToJSON_FailClosedOnEmpty pins the following:
+// OAuth's `scope` parameter is optional per RFC 6749 §3.3,
 // so fosite can hand back a token with empty granted scopes. Without
 // the fail-closed mapping in oauthScopesToJSON, that empty list
 // would serialize to `[]` — which tokenScopeAllows interprets as
@@ -1068,7 +1068,7 @@ func TestE2E_ClaudeDesktopFlow(t *testing.T) {
 // then 429s once the bucket is empty.
 //
 // Uses a real PAT so the rate-limit check fires (the limiter runs
-// AFTER ValidateToken — Codex review #378 round 1 — to bound the
+// AFTER ValidateToken — to bound the
 // limiter map to valid-token hashes only).
 func TestMCPRateLimit_PerToken_BucketEnforced(t *testing.T) {
 	t.Parallel()
@@ -1154,7 +1154,7 @@ func TestMCPRateLimit_PerToken_TwoTokensIndependent(t *testing.T) {
 }
 
 // TestMCPRateLimit_InvalidBearerNotRateLimited pins the post-auth-
-// validation property (Codex review #378 round 1): a bearer that
+// validation property: a bearer that
 // fails token validation must NOT consume a per-token bucket. The
 // limiter map only fills with valid-token hashes, bounding memory
 // under random-bearer spam.
@@ -1184,8 +1184,8 @@ func TestMCPRateLimit_InvalidBearerNotRateLimited(t *testing.T) {
 	}
 }
 
-// TestMCPRateLimit_OAuthRefreshTokenNotCounted pins Codex review
-// #378 round 2: the OAuth-path rate limit must run AFTER all
+// TestMCPRateLimit_OAuthRefreshTokenNotCounted pins that
+// the OAuth-path rate limit must run AFTER all
 // validation gates (refresh-vs-access, audience match, user lookup)
 // so an active-but-not-authorized bearer (e.g. refresh token used
 // against /mcp) doesn't create a limiter bucket. Without this guard
@@ -1240,7 +1240,7 @@ func TestMCPRateLimit_OAuthRefreshTokenNotCounted(t *testing.T) {
 }
 
 // TestMCPRateLimit_LimiterMapBoundedByValidTokensOnly is the
-// memory-DoS regression test for Codex review #378 round 1. After
+// memory-DoS regression test. After
 // 100 distinct invalid bearers, the per-token limiter map MUST
 // contain zero entries (or only ours from setup). Without the
 // post-auth-validation guard, every distinct bearer would create

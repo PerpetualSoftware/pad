@@ -8,7 +8,7 @@ import (
 )
 
 // BUG-3033 — the CROSS-WORKSPACE backlink query, which the same-workspace test
-// does not reach (codex round 3 P3: clearing ContentState on every
+// does not reach (clearing ContentState on every
 // cross-workspace result left that test and the existing cross-workspace tests
 // all green).
 //
@@ -85,7 +85,7 @@ func TestCrossWorkspaceBacklinkSnippetsCarryTheMarkerBothWays(t *testing.T) {
 	}
 }
 
-// TestDirectRefSearchResultsDoNotClaimTheirTitleIsStale covers codex round 3's
+// TestDirectRefSearchResultsDoNotClaimTheirTitleIsStale covers the case where
 // P2, which this unit INTRODUCED: the new CLI renderer warned that a snippet was
 // derived from a stale body on results whose snippet is the item's TITLE.
 //

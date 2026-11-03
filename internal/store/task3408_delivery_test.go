@@ -302,7 +302,7 @@ func TestTask3408_UndecryptableSecretReleasesTheRecord(t *testing.T) {
 	}
 }
 
-// codex r1 on U10b: a soft-deleted workspace keeps its installs and
+// A soft-deleted workspace keeps its installs and
 // collections; its pending events are refused at admission.
 func TestTask3408_DeletedWorkspaceRefusesAdmission(t *testing.T) {
 	f := task3408Fixture(t, "inst-wsdel")
@@ -313,7 +313,7 @@ func TestTask3408_DeletedWorkspaceRefusesAdmission(t *testing.T) {
 	wantRefused(t, err, "workspace_deleted")
 }
 
-// codex r4 on U10b: a comment an app wrote carries its install as the
+// A comment an app wrote carries its install as the
 // creator's via_app, as an app-created item does.
 func TestTask3408_CommentBlockRecordsTheWritingInstall(t *testing.T) {
 	f := task3408Fixture(t, "inst-cvia")
@@ -343,7 +343,7 @@ func TestTask3408_CommentBlockRecordsTheWritingInstall(t *testing.T) {
 	}
 }
 
-// codex r5 on U10b: an event older than the hook's deliver_from is refused.
+// An event older than the hook's deliver_from is refused.
 func TestTask3408_EventsBeforeDeliverFromAreRefused(t *testing.T) {
 	f := task3408Fixture(t, "inst-from")
 	_, err := f.s.AdmitAppDelivery(f.hookID, "item.created", f.companion.ID, "2000-01-01T00:00:00Z", "old")
@@ -396,7 +396,7 @@ func TestTask3408_SubscriptionChangeMovesDeliverFrom(t *testing.T) {
 	}
 }
 
-// codex r6 on U10b: hooks released under migration 122 get a deliver_from
+// Hooks released under migration 122 get a deliver_from
 // from their secret_delivered_at; held hooks stay NULL; set ones are kept.
 func TestTask3408_DeliverFromBackfill(t *testing.T) {
 	f := task3408Fixture(t, "inst-backfill")

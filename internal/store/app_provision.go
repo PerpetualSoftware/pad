@@ -48,7 +48,7 @@ var (
 
 // ProvisionConflictError is a provisioning-time refusal: a fact the preview
 // checked no longer holds. It names the artifact (or collection), the field,
-// and what it collided with, so the owner can act on it (lead ruling, U8b).
+// and what it collided with, so the owner can act on it (U8b).
 type ProvisionConflictError struct {
 	// Artifact is the manifest key of the artifact, or "" for a collection.
 	Artifact string
@@ -149,16 +149,16 @@ var ErrNotWorkspaceOwner = errors.New("not a workspace owner")
 
 // ProvisionAppInstall provisions an app install in one transaction.
 //
-// THE RE-CHECK IS A RE-DERIVATION (lead ruling, day 86). The transaction does
+// THE RE-CHECK IS A RE-DERIVATION. The transaction does
 // not re-verify a list of facts the preview relied on; two review rounds
 // showed that list is never complete. It runs the same normalization on the
 // transaction (derive) and the caller compares the result with the reviewed
 // digests and changes list.
 //
-// LOCKS BREAK DEPENDENCY CYCLES; THEY DO NOT COVER EVERY READ (lead ruling,
-// day 86, superseding "lock every read": that created deadlock cycles with
+// LOCKS BREAK DEPENDENCY CYCLES; THEY DO NOT COVER EVERY READ (
+// superseding "lock every read": that created deadlock cycles with
 // member removal and account deletion and could never cover an inserted
-// grant or a request-cached role; codex rounds 3-4). A writer W that changes
+// grant or a request-cached role). A writer W that changes
 // state provisioning READ, but reads nothing provisioning WRITES and
 // overwrites nothing it writes, serializes as "provision, then W": the
 // outcome equals a history in which the owner confirmed a moment earlier,
@@ -283,8 +283,8 @@ func (s *Store) ProvisionAppInstall(req ProvisionRequest, derive ProvisionDerive
 	for _, c := range req.Collections {
 		if c.Adopt {
 			// Adoption re-stamps the companion to this install; the derivation
-			// already refused unless its holder is uninstalled (lead ruling,
-			// day 86). Items' and comments' via_app stay as written: they are
+			// already refused unless its holder is uninstalled. Items' and
+			// comments' via_app stay as written: they are
 			// attribution, not ownership.
 			var id string
 			if err := tx.QueryRow(s.q(`SELECT id FROM collections WHERE workspace_id = ? AND slug = ?`), req.WorkspaceID, c.Slug).Scan(&id); err != nil {
@@ -338,7 +338,7 @@ func (s *Store) ProvisionAppInstall(req ProvisionRequest, derive ProvisionDerive
 	}
 
 	// The install client. Its first secret is discarded unseen: redeem
-	// rotates and returns the one the app holds (lead ruling, U8b Q2).
+	// rotates and returns the one the app holds (U8b Q2).
 	if _, secret, err := s.CreateInstallClientTx(tx, installID, req.RedirectURIs); err != nil {
 		return nil, fmt.Errorf("provision app: %w", err)
 	} else {
@@ -426,7 +426,7 @@ func discardSecret(s *string) { *s = "" }
 
 // IssueInstallCode mints a new install code for an ACTIVE install in
 // workspaceID: the owner's recovery when the app lost its redeem response
-// (lead ruling, U8b Q2). Earlier unconsumed codes stay valid until they
+// (U8b Q2). Earlier unconsumed codes stay valid until they
 // expire; each redeem rotates the secret.
 func (s *Store) IssueInstallCode(workspaceID, installID string) (string, time.Time, error) {
 	tx, err := s.db.Begin()
@@ -516,8 +516,8 @@ func (s *Store) RedeemInstallCode(code string) (*RedeemedInstall, error) {
 	// refused rather than spent, and the slug the answer carries is never a
 	// separate read that can fail after the commit.
 	//
-	// The read takes NO lock, deliberately (lead ruling on BUG-3416, codex
-	// r2-r4). A soft delete that commits between this read and the redeem's
+	// The read takes NO lock, deliberately
+	// (BUG-3416). A soft delete that commits between this read and the redeem's
 	// commit lets the code be spent for a workspace that is gone. That is
 	// harmless: every app door refuses a deleted workspace (the app API
 	// answers its workspace 404, webhook admission refuses a dead workspace),
@@ -566,8 +566,8 @@ func (s *Store) RedeemInstallCode(code string) (*RedeemedInstall, error) {
 // redeem route's per-install limiter, and only for a code that could still
 // redeem (unconsumed, unexpired, install active). A dead code then answers
 // exactly like an unknown one, never with a 429, so the limiter says nothing
-// about which codes exist and an old code cannot throttle a fresh one (codex
-// round 1). It decides nothing: RedeemInstallCode re-reads under its locks.
+// about which codes exist and an old code cannot throttle a fresh one. It
+// decides nothing: RedeemInstallCode re-reads under its locks.
 func (s *Store) InstallForLiveCode(code string) (string, bool) {
 	var id string
 	err := s.db.QueryRow(s.q(`SELECT c.install_id FROM app_install_codes c JOIN app_installs a ON a.id = c.install_id

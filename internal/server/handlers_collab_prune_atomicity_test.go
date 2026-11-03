@@ -19,7 +19,7 @@ import (
 // rename-cascade byte refusal, and the item-title refusal), so the window is a
 // property of the ORDERING rather than of any one of them.
 //
-// The property, as the lead set it: a refused row write leaves no op that a
+// The property: a refused row write leaves no op that a
 // later flush applies — i.e. a refusal must leave the op-log exactly as it
 // found it, neither pruned nor added to.
 //

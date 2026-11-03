@@ -227,7 +227,7 @@ func (s *Server) handleUpdateDocument(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Lock contention is RETRYABLE and must not look like a bug
-		// (BUG-2778, codex round 6). A rename serializes per workspace with a
+		// (BUG-2778). A rename serializes per workspace with a
 		// 5s lock timeout, so a burst produces SQLSTATE 55P03
 		// (lock_not_available); 40P01 is a deadlock Postgres chose to abort.
 		// Both mean "try again", and a generic 500 tells the caller the
@@ -469,8 +469,7 @@ func (s *Server) logActivityWithMetaReturningID(workspaceID, documentID, action 
 	// item action is kind=item (comments and attachments touch from their own
 	// handlers). The one caller with no item, a workspace restore, still
 	// records the write but is never counted as an item: if it is an
-	// account's first write, that first write goes uncounted (r1, Codex and
-	// the hunter).
+	// account's first write, that first write goes uncounted.
 	if documentID == "" {
 		s.store.TouchUserWrite(r.Context(), currentUserID(r))
 	} else {

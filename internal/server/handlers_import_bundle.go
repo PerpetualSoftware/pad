@@ -37,8 +37,7 @@ const defaultImportBundleMaxBytes int64 = 2 << 30 // 2 GiB
 // Independent of the per-blob cap so a deployment that LOWERS
 // PAD_ATTACHMENT_MAX_BYTES (e.g. to 1 MiB for a tightly-controlled
 // host) doesn't inadvertently reject metadata for a workspace
-// nobody intended to gate on attachment-blob limits. (Codex P2 on
-// PR #306 round 5.)
+// nobody intended to gate on attachment-blob limits.
 //
 // 100 MiB comfortably holds a workspace with many thousands of
 // items + version history. Bumped via the import bundle cap, not
@@ -172,8 +171,8 @@ func bundleTooLargeError(message string) *importStatusError {
 // import — matches whatever the upload handler accepts so an
 // operator who raised PAD_ATTACHMENT_MAX_BYTES on the source can
 // re-import the resulting export on a destination configured the
-// same way. Codex flagged the hard-coded 25 MiB cap on PR #306
-// round 4: a workspace with attachments uploaded under a larger
+// same way. A hard-coded 25 MiB cap would break this: a workspace with attachments uploaded under
+// a larger
 // cap would round-trip the export but fail the re-import.
 func (s *Server) effectiveBlobMaxBytes() int64 {
 	if s.attachmentMaxBytes > 0 {
@@ -269,7 +268,7 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 	// A PANIC skips every report below. importBundle's keep door has already
 	// kept or removed the workspace by the time it reaches here, but it does
 	// not say which, so the honest record is unknown: the client then tells
-	// the user to check their workspace list (codex r1 on BUG-3475).
+	// the user to check their workspace list (BUG-3475).
 	defer func() {
 		if p := recover(); p != nil {
 			report(importStateUnknown, nil)
@@ -306,7 +305,7 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 
 	// The bundle door gets the same --repair-nul treatment as the JSON one:
 	// a gzip import is the same import reached by a different Content-Type,
-	// and BUG-2803's round 3 already learned that giving the two doors
+	// and BUG-2803 already showed that giving the two doors
 	// different answers is how one of them keeps being forgotten.
 	repair := &nulRepairTally{Enabled: wantsNULRepair(r)}
 
@@ -324,8 +323,8 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 			return
 		}
 
-		// A TRANSPORT failure rolls the partial workspace back (BUG-3475,
-		// lead ruling). The KEEP door below exists so the importer can
+		// A TRANSPORT failure rolls the partial workspace back (BUG-3475). The KEEP door below
+		// exists so the importer can
 		// inspect what arrived, and it can only say so in this response — a
 		// response that cannot reach a client whose upload stalled or whose
 		// connection died. A kept partial nobody is told about is a husk with
@@ -363,7 +362,7 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 		// or path-traversal entry that follows the first export
 		// header), roll back the partial workspace so a malicious
 		// or malformed bundle can't pile up half-imported workspaces
-		// in the destination instance. Codex P1 on PR #308.
+		// in the destination instance.
 		//
 		// Cascade: a duplicate manifest.json or duplicate pad-export.json
 		// can fire AFTER blobs have already been rehydrated — those
@@ -372,7 +371,7 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 		// importing user's storage usage. Tombstone every attachment
 		// in the partial workspace BEFORE soft-deleting the workspace
 		// itself so orphan-GC reclaims the blobs after the grace
-		// window. Codex P1 round 2 on PR #308.
+		// window.
 		//
 		// Mid-stream errors that are NOT importStatusError (e.g.
 		// manifest decode failure after items inserted) intentionally
@@ -519,8 +518,8 @@ func (s *Server) importSummary(ws *models.Workspace, bundled store.WorkspaceCont
 }
 
 // rollBackPartialImport removes a workspace an import created and could not
-// finish, with its rehydrated attachments: the validation-reject door (codex
-// P1 on PR #308) and, since BUG-3475, the interrupted-upload door. nil means
+// finish, with its rehydrated attachments: the validation-reject door and, since BUG-3475, the
+// interrupted-upload door. nil means
 // the workspace is gone from the caller's point of view, read back from the
 // row; a non-nil error means it may still be there and the caller cannot say
 // it is gone.
@@ -531,7 +530,6 @@ func (s *Server) rollBackPartialImport(door string, ws *models.Workspace, ownerI
 	// orphan-GC, and count toward the importing user's storage usage.
 	// Tombstone every attachment in the partial workspace BEFORE removing the
 	// workspace itself so orphan-GC reclaims the blobs after the grace window.
-	// Codex P1 round 2 on PR #308.
 	if n, attErr := s.store.SoftDeleteWorkspaceAttachments(ws.ID); attErr != nil {
 		slog.Warn("import: failed to tombstone partial-workspace attachments",
 			"workspace_id", ws.ID, "error", attErr)
@@ -552,7 +550,7 @@ func (s *Server) rollBackPartialImport(door string, ws *models.Workspace, ownerI
 	}
 	// The helper also returns nil when its own delete FAILED (it logs and
 	// leaves the workspace for an operator), so whether it is gone is read
-	// from the row, not inferred from the return (codex r3 on BUG-3475). A
+	// from the row, not inferred from the return (BUG-3475). A
 	// soft-deleted workspace reads as gone: it is out of the caller's list.
 	live, err := s.store.GetWorkspaceBySlug(ws.Slug)
 	if err != nil {
@@ -605,7 +603,7 @@ func (b *importTransportBody) failed() bool {
 // Memory footprint: at most one blob (≤ effectiveBlobMaxBytes) held
 // at a time during rehydration, plus the small JSON payloads at the
 // front. A 2 GiB bundle with thousands of 25 MiB images now needs
-// ~25 MiB peak rather than ~2 GiB. (Codex P1 on PR #306 round 1.)
+// ~25 MiB peak rather than ~2 GiB.
 //
 // Split out from the handler so tests can drive it with a tar.Reader
 // over an in-memory bundle and assert on the resulting state without
@@ -772,7 +770,7 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 		// workspace that was already created by a preceding valid
 		// pad-export.json. Before pad-export.json is seen, ws is nil
 		// so this falls through to the no-workspace cleanup path
-		// anyway. Codex P1 round 3 on PR #308.
+		// anyway.
 		if !isSafeBundleEntryName(hdr.Name) {
 			return ws, &importStatusError{
 				status: http.StatusBadRequest, code: "bad_bundle",
@@ -948,8 +946,8 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 			// same check pad-export.json gets a few lines up. Without it a
 			// NUL in a manifest string reached rehydrateAttachment, whose
 			// failure is logged and SKIPPED below — so the import reported
-			// success while silently dropping the attachment (codex round 4,
-			// BUG-2803). The skip-on-failure behaviour is pre-existing and
+			// success while silently dropping the attachment (BUG-2803). The skip-on-failure
+			// behaviour is pre-existing and
 			// deliberate (a partial restore beats none); refusing the bad
 			// INPUT is what stops it from being reached that way.
 			//
@@ -1247,7 +1245,7 @@ func (s *Server) rehydrateAttachment(
 		return "", fmt.Errorf("resolve attachment store: %w", err)
 	}
 	// Fence the Put + CreateAttachment pair against orphan-GC blob
-	// deletion (Codex P2 on PR #307). The bundle import races GC the
+	// deletion. The bundle import races GC the
 	// same way uploads do — possibly more so, since a workspace
 	// re-import touches thousands of hashes in quick succession.
 	releaseInFlight := s.markUploadInFlight(hash)
@@ -1280,7 +1278,7 @@ func (s *Server) rehydrateAttachment(
 		ItemID:      newItemIDPtr,
 		UploadedBy:  uploadedBy,
 		// BUG-3379: uploadedBy is the bundle's claim, kept for fidelity
-		// (BUG-3372 ruling (1)) and never resolved to a local name.
+		// (BUG-3372) and never resolved to a local name.
 		Imported:    true,
 		StorageKey:  storageKey,
 		ContentHash: hash,
@@ -1305,7 +1303,7 @@ func (s *Server) rehydrateAttachment(
 	// stall on imaging work, and Server.Stop() waits for in-flight
 	// derivation before close. The thumbnails are not charged against the
 	// storage cap, as at upload: server-made variants never refuse
-	// (TASK-3625 ruling); only the original above is.
+	// (TASK-3625); only the original above is.
 	if allowed.Category == attachments.CategoryImage && s.imageProcessor != nil {
 		original := att.ID
 		s.goAsync(func() { s.deriveThumbnails(original) })
@@ -1404,7 +1402,7 @@ func newImportCorrelationID() string {
 
 // partialImportRollbackFailed is the category for a workspace an import
 // meant to roll back but could not remove: it may still be live, partly
-// built, and the marker is what says so (codex r1 on TASK-896).
+// built, and the marker is what says so (TASK-896).
 const partialImportRollbackFailed = "the import failed and the partial workspace could not be removed"
 
 // markPartialImport records the durable partial-import marker on a workspace

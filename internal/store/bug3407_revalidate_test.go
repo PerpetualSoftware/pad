@@ -141,7 +141,7 @@ func TestBug3407_ACarriedValueIsNotReJudged(t *testing.T) {
 	wantValidation(t, err, "changing the carried value")
 }
 
-// Control (lead condition 4): the schema moves in the same window, but the
+// Control: the schema moves in the same window, but the
 // written values still satisfy it, and the write lands. The refusals above are
 // about the value, not about any schema edit.
 func TestBug3407_ASchemaChangeTheValuesStillSatisfyDoesNotRefuse(t *testing.T) {
@@ -296,7 +296,7 @@ func TestBug3407_AnUnmovedSchemaIsNotReJudged(t *testing.T) {
 	}
 }
 
-// codex r3: an UpdateCollection that supplies a schema takes the workspace
+// An UpdateCollection that supplies a schema takes the workspace
 // seq lock even when the bytes look unchanged against its pre-transaction
 // read, because whether they moved is decided only under the locks. Here
 // the bytes really are unchanged, and the update still waits for a held seq

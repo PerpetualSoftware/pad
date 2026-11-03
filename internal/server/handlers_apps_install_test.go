@@ -500,8 +500,7 @@ func TestAppInstallPreview_PackUniqueValuesConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 	codeField := map[string]any{"key": "code", "label": "Code", "type": "text", "unique_scope": "workspace_collection", "default": "shared"}
-	// Declared twice: a single artifact must still not conflict with itself
-	//.
+	// Declared twice: a single artifact must still not conflict with itself.
 	schema["fields"] = append(schema["fields"].([]any), codeField, codeField)
 	b, _ := json.Marshal(schema)
 	sch := string(b)
@@ -628,8 +627,7 @@ func TestAppInstallPreview_InvocationSlugIndexIsMirrored(t *testing.T) {
 }
 
 // The stored-slug check uses the index's own expression: a stored ARRAY
-// "[]" collides with a defaulted text "[]" there, so the preview refuses
-// .
+// "[]" collides with a defaulted text "[]" there, so the preview refuses.
 func TestAppInstallPreview_InvocationSlugIndexExpression(t *testing.T) {
 	e := newAppsEnv(t)
 	coll, err := e.srv.store.GetCollectionBySlug(e.wsID, "conventions")
@@ -665,8 +663,7 @@ func TestAppInstallPreview_InvocationSlugIndexExpression(t *testing.T) {
 }
 
 // In-pack claims collide wherever the import's lookup (JSONFieldEquals)
-// would match: boolean true vs "true", number 1000 vs "1e3" (codex rounds
-// 9-10).
+// would match: boolean true vs "true", number 1000 vs "1e3".
 func TestClaimForms(t *testing.T) {
 	collide := func(a, b any) bool {
 		seen := map[string]bool{}
@@ -689,7 +686,7 @@ func TestClaimForms(t *testing.T) {
 		{float64(1000), "1000", true},
 		{float64(9210000000000000000), "9210000000000000000", true},
 		{float64(1000000000000000100), "1000000000000000100", true},
-		// codex round 12: exponent spelling past numericArg's integer bound,
+		// Exponent spelling past numericArg's integer bound,
 		// its negative, and a decimal spelling that SQLite rounds to the same
 		// double.
 		{float64(9210000000000000000), "9.21e18", true},
@@ -710,8 +707,7 @@ func TestClaimForms(t *testing.T) {
 }
 
 // App-authored artifact content may not carry pad-attachment: tokens or
-// [[workspace::REF]] links; ordinary [[Title]] links are fine (lead ruling,
-// U8b Q3).
+// [[workspace::REF]] links; ordinary [[Title]] links are fine (U8b Q3).
 func TestAppInstallPreview_AppContentReferenceRules(t *testing.T) {
 	for name, c := range map[string]struct {
 		edit string
@@ -754,7 +750,7 @@ func TestAppInstallPreview_AppContentReferenceRules(t *testing.T) {
 	})
 }
 
-// Lead review of U8a: the fields check fails closed. A field set that cannot
+// U8a: the fields check fails closed. A field set that cannot
 // be serialized is refused, never passed unchecked.
 func TestRefuseAppAuthoredReferences_FailsClosedOnUnserializableFields(t *testing.T) {
 	err := refuseAppAuthoredReferences("plain content", map[string]any{"bad": make(chan int)})

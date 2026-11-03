@@ -15,7 +15,7 @@ import (
 // from items.content. Content-bearing op-log rows above the flush watermark are
 // edits no row holds, so a restore that proceeds over them leaves them in no
 // version at all. The restore now refuses with content_pending_flush unless the
-// caller sends overwrite_pending_edits. These are the legs the lead's ruling
+// caller sends overwrite_pending_edits. These are the legs the ruling
 // names: pending → 409 with history intact; override → today's behaviour; no
 // pending → unchanged; and the web initiator's own flush (BUG-2271) clears it.
 

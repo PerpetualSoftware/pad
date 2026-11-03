@@ -26,8 +26,7 @@ import (
 // collab-snapshot validation rejected the PATCH because the
 // caller's op_log_cursor was incompatible with the current op-log
 // (cursor>0 + empty op-log, or cursor<MIN). The handler unwraps
-// this via errors.Is and returns 409 Conflict. Per Codex round 13
-// [P1] of TASK-1319.
+// this via errors.Is and returns 409 Conflict (TASK-1319).
 var errStaleCollabSnapshot = errors.New("collab-snapshot: cursor incompatible with op-log")
 
 // writeSnapshotBehindContentError answers a browser snapshot refused because
@@ -238,8 +237,7 @@ func (s *Server) handleListItemsIndex(w http.ResponseWriter, r *http.Request) {
 		if rerr != nil {
 			// Surfaced rather than swallowed: proceeding with the raw alias
 			// after a failed lookup would answer a database error with a
-			// successful EMPTY index, which reads as "no items" (codex
-			// round 4).
+			// successful EMPTY index, which reads as "no items".
 			writeInternalError(w, rerr)
 			return
 		}
@@ -282,7 +280,7 @@ func (s *Server) handleListItemsIndex(w http.ResponseWriter, r *http.Request) {
 	// Snapshot the workspace's MAX(seq) BEFORE the list query so the
 	// fallback cursor cannot leapfrog a concurrent insert that
 	// committed between the list query and a post-list MaxItemSeq
-	// read. Per Codex review of TASK-1353 round 1 [P1]:
+	// read (TASK-1353):
 	//
 	//   List → empty.
 	//   Concurrent INSERT lands with seq = M+1 (visible to a future
@@ -448,8 +446,7 @@ func (s *Server) handleListItemsChanges(w http.ResponseWriter, r *http.Request) 
 	// uses the include-deleted-items variant so a tombstone on a
 	// granted item still flows through — without it the grant ID
 	// disappears as soon as the item is soft-deleted, and the
-	// client never learns the row went away (Codex review of
-	// TASK-1354 round 1 [P1]).
+	// client never learns the row went away (TASK-1354).
 	fullCollIDs, grantedItemIDs, grantErr := s.guestResourceFilterIncludeDeletedItems(r, workspaceID)
 	if grantErr != nil {
 		writeInternalError(w, grantErr)
@@ -552,8 +549,8 @@ func (s *Server) handleListItemsChanges(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	// THE EPOCH USES THE LIVE GRANT SET, NOT THIS DOOR'S QUERY SET (review
-	// round 2). The query above deliberately resolves grants with deleted items
+	// THE EPOCH USES THE LIVE GRANT SET, NOT THIS DOOR'S QUERY SET. The query above
+	// deliberately resolves grants with deleted items
 	// INCLUDED, so a tombstone on a granted item still flows through
 	// (TASK-1354). The fingerprint must not: /items-index resolves LIVE grants,
 	// and a caller holding a grant on a soft-deleted item would otherwise get
@@ -743,7 +740,7 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 
 	var input models.ItemCreate
 	if err := decodeJSON(r, &input); err != nil {
-		// IDEA-1488 R2 codex P2: surface the domain-level errors from
+		// IDEA-1488: surface the domain-level errors from
 		// ItemCreate.UnmarshalJSON without the "invalid JSON: ..."
 		// wrapper from decodeJSON. PATCH and the view/collection
 		// handlers already do this; the POST path was missed in the
@@ -774,7 +771,7 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 	// Two behaviour changes on THIS door, both deliberate:
 	//   - whitespace-only titles are now refused. "   " was legal on create and
 	//     refused on artifact import; it slugifies to empty and lands on the
-	//     store's "untitled" fallback, which Dave's ruling made defensive-only.
+	//     store's "untitled" fallback, which is now defensive-only.
 	//   - titles over MaxItemTitleRunes are refused, closing BUG-2831's
 	//     dialect split at the door instead of at a Postgres btree error.
 	input.Title = models.NormalizeItemTitle(input.Title)
@@ -965,15 +962,15 @@ func (e *itemCreateError) write(w http.ResponseWriter, r *http.Request) {
 // Returns the created item (Ref/Slug populated by the store) or an
 // *itemCreateError with a status hint.
 // relationPosture says how a create door treats a relation value that does not
-// resolve. Two callers, two answers, and the difference is Dave's ruling
-// (day 57): refuse on write, carry on IMPORT.
+// resolve. Two callers, two answers, and the difference is the product rule:
+// Refuse on write, carry on IMPORT.
 //
 // An artifact is not caller input in the sense the write doors mean. It was
 // written elsewhere, possibly years ago and certainly before referent
 // validation existed, and the person importing it did not choose its field
 // values and cannot fix them from the import call. Refusing would break the
 // import of exactly the artifacts most likely to carry junk — which is what
-// Dave's ruling names: "explicitly allow import of the junk to avoid breaking
+// the product rule states: "explicitly allow import of the junk to avoid breaking
 // import".
 type relationPosture int
 
@@ -1367,8 +1364,8 @@ func writeItemRenameCascadeTooLarge(w http.ResponseWriter, err error) bool {
 // The CREATE path does not use it and cannot: createItemChecked returns a typed
 // *itemCreateError for its caller to write, rather than writing the response
 // itself, so it maps the same store error with its own errors.As block. An
-// earlier version of this comment claimed create shared this helper (codex
-// round 5) — the rule they share is the 400, not the code.
+// earlier version of this comment claimed create shared this helper — the rule they
+// share is the 400, not the code.
 //
 // The Reason is taken from the TYPED field, never by splicing err.Error(): the
 // call path wraps this error on the way up and those wrappers must not be
@@ -1770,7 +1767,7 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 	// the three UpdateItem call sites that follow. nil = no guard.
 	var openChildrenPrecheck func(tx *sql.Tx, existing *models.Item) error
 
-	// IDEA-1494 R4 P3 / BUG-2013: the parent-link change is captured
+	// BUG-2013: the parent-link change is captured
 	// here and applied INSIDE the same store transaction as the field
 	// write (see store.UpdateItemWithParentLink). A guard rejection on
 	// the status field rolls the whole tx back, and a failing link write
@@ -1808,7 +1805,7 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 		// Accepts both "parent" and "plan" as the field key.
 		// (parentValue / parentProvided are declared at outer scope so
 		// the deferred link-write block below can read them — see
-		// IDEA-1494 R4 P3.) Shared with the fields_patch path via
+		// IDEA-1494.) Shared with the fields_patch path via
 		// extractParentLink.
 		var extractOK bool
 		parentValue, parentProvided, extractOK = s.extractParentLink(w, r, workspaceID, schema, fieldMap)
@@ -1887,8 +1884,7 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 		// IDEA-1494 open-children guard. The actual check runs INSIDE
 		// the store transaction (see Store.UpdateItemWithPreCheck) so
 		// the children-list query and the parent's status write share
-		// a snapshot — closes the TOCTOU window flagged in Codex
-		// round 2 (P2). Here we just stage the inputs and the
+		// a snapshot — closes the TOCTOU window. Here we just stage the inputs and the
 		// visibility filters; the closure runs later under the
 		// workspace seq lock + parent-children advisory lock.
 		if !input.Force {
@@ -1901,7 +1897,7 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 			// filter only affects which children appear in the 409
 			// payload — hidden ones are surfaced as a count.
 			//
-			// Fail CLOSED on visibility-lookup error (Codex round-3 P1):
+			// Fail CLOSED on visibility-lookup error:
 			// a swallowed error here would leave visIDs==nil, which
 			// openChildrenGuardChildVisible treats as "no restriction"
 			// — leaking metadata for hidden children. Surfacing the
@@ -1929,7 +1925,7 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 				guestGrantedItemIDs:  guestGranted,
 			}
 			openChildrenPrecheck = func(tx *sql.Tx, existing *models.Item) error {
-				// Codex round-3 P2: classify the transition against
+				// Classify the transition against
 				// the in-tx snapshot of the parent's fields, not the
 				// pre-tx capture. A concurrent writer can change the
 				// done-field value between handler-side read and lock
@@ -1951,8 +1947,8 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 
 		// BUG-3163: a full blob may CARRY stored reserved metadata unchanged but
 		// may not change it, and omitting a stored key would delete it (the store
-		// replaces the blob), so omission is a change too (lead ruling on
-		// checkpoint 3). Composed into the precheck so the comparison is against
+		// replaces the blob), so omission is a change too. Composed into the precheck so the
+		// comparison is against
 		// the row as re-read under the write lock, on every ordering below.
 		openChildrenPrecheck = composeReservedCarryGuard(openChildrenPrecheck, callerReserved)
 
@@ -1964,7 +1960,7 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 		validated := string(validatedFields)
 		input.Fields = &validated
 
-		// IDEA-1494 R4 P3 / BUG-2013: parent-link mutations are neither
+		// BUG-2013: parent-link mutations are neither
 		// run inline here nor deferred to a post-commit write. They are
 		// staged (parentValue / parentProvided, above) and handed to
 		// UpdateItemWithParentLink, which applies them INSIDE the same
@@ -1973,7 +1969,7 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 		// History: the pre-IDEA-1494 code ran the link update inline
 		// (before the precheck), so a combined parent-change + status-flip
 		// PATCH could commit the link and then have the field write
-		// rejected by the guard. IDEA-1494 R4 P3 moved it to a post-commit
+		// rejected by the guard. IDEA-1494 moved it to a post-commit
 		// write, which fixed that direction but left the OTHER partial-
 		// commit window: field write committed, then link write failed →
 		// 500 with half the patch applied. BUG-2013 closes it for good by
@@ -2094,8 +2090,8 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 
 		// Auto-populate start_date/end_date on a status change — but ONLY when
 		// the item's CURRENT stored value for that date is empty. A partial
-		// patch must not clobber a date the caller isn't touching (Codex
-		// round 2): running autoPopulateDates against the bare patchMap would
+		// patch must not clobber a date the caller isn't touching: running autoPopulateDates
+		// against the bare patchMap would
 		// see the date key absent and always inject today, overwriting an
 		// existing end_date on a status→done patch. So we run it against a
 		// merged view (current fields ∪ patch), then lift back only a date the
@@ -2140,7 +2136,7 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 		// present a done-field value even for a patch that never touches the
 		// done key, so a priority-only patch could false-fire the guard if the
 		// row's status changed concurrently between the handler read and lock
-		// acquisition (Codex review). Merging in-tx means the "to" done-field
+		// acquisition. Merging in-tx means the "to" done-field
 		// value equals the patch's value when set, else the current value —
 		// exactly the semantics the guard's trigger conditions expect.
 		if !input.Force {
@@ -2241,7 +2237,7 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 	// applier path's row write. In either case we must not re-run UpdateItem below:
 	// we would duplicate the write and could produce two version-history rows.
 	// Instead the router hands back the post-write snapshot for the response.
-	// (Originally Codex round 9 on applyContentViaCollab's directWrite callback;
+	// (This originated with applyContentViaCollab's directWrite callback;
 	// that helper was retired with PLAN-2975's reorder and the invariant moved
 	// rather than went away.)
 	var fullWriteHandled bool
@@ -2276,19 +2272,17 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 	// `items.source`. Mutating items.source would silently flip a
 	// CLI/MCP-created item out of `WorkspaceHasAgentActivity`'s
 	// `source IN ('cli', 'mcp')` filter just because the user
-	// happened to open the editor and trigger a 5s auto-flush. Per
-	// Codex round 3 of TASK-1267 [P2].
+	// happened to open the editor and trigger a 5s auto-flush (TASK-1267).
 	//
 	// **Force-override** when the query param is set, even if the
 	// body sent a different VersionSource. Otherwise a buggy or
 	// malicious client could send `?source=collab-snapshot` (which
 	// triggers the applier-bypass) with `"version_source":"cli"`
 	// in the body, sneaking a stale browser snapshot through the
-	// op-log GC watermark check (TASK-1309 round 5 [P1] keys on
+	// op-log GC watermark check (TASK-1309 keys on
 	// VersionSource to gate watermark advancement). The query
 	// param is the trustworthy server-side signal; the body
-	// VersionSource is client-attacker-controlled. Per Codex round
-	// 6 of TASK-1309 [P2].
+	// VersionSource is client-attacker-controlled (TASK-1309).
 	// PLAN-2348 U2: the version row this update may write names its user.
 	// Internal-only field, so a body cannot set it.
 	input.ActorUserID = currentUserID(r)
@@ -2320,7 +2314,7 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 	if input.VersionSource == models.VersionSourceChatGPT {
 		_, input.VersionSource = actorFromRequest(r)
 	}
-	// TASK-3321 U1b (ruling (b)): every content change through the ChatGPT
+	// TASK-3321 U1b: every content change through the ChatGPT
 	// catalog is saved as a version FIRST, bypassing the 1h throttle, so it
 	// can always be undone from History; that is what lets update_item be
 	// non-destructive. The body must then be the live one, so a tab's
@@ -2418,13 +2412,13 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 	// from a known-bad source. The client-side guard
 	// (`forceRefreshInFlight`) covers the common case but an
 	// already-in-flight fetch can race a force_refresh and reach
-	// this handler with stale content. Per Codex round 10 [P1].
+	// this handler with stale content.
 	// Collab-snapshot path (TASK-1319). Run validation + UpdateItem
 	// under the per-item collab setup lock so concurrent prunes
 	// (PruneAndApply, schema rebuild, dormant GC) cannot land
 	// between the cursor check and the items.content write — that
 	// race would let a stale snapshot overwrite canonical content
-	// the prune just installed. Per Codex round 13 [P1].
+	// the prune just installed.
 	if collabSnapshot && input.Content != nil && s.collab != nil {
 		err := s.collab.UnderItemLock(item.ID, func() error {
 			if input.OpLogCursor != nil {
@@ -2440,7 +2434,7 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 				//     (includes cursor=0 + non-empty: a Y.Doc
 				//     populated by replay binaries whose previous
 				//     session never received the post-replay
-				//     cursor frame). Per round 12 [P1].
+				//     cursor frame).
 				var stale bool
 				switch {
 				case !hasMin && *input.OpLogCursor > 0:
@@ -2543,13 +2537,13 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 			if writeUniqueFieldHeld(w, err) {
 				return
 			}
-			// BUG-2804 / codex R2: without this the cascade refusal reaches the
+			// BUG-2804: without this the cascade refusal reaches the
 			// client as a 500 from this path only, while the plain path answers
 			// 413 for the identical store error.
 			if writeItemRenameCascadeTooLarge(w, err) {
 				return
 			}
-			// BUG-2833 / codex round 1, P2 — the identical omission, one
+			// BUG-2833 — the identical omission, one
 			// release later. This block mirrors the plain path's arms, and a
 			// PATCH carrying both content and a title reaches the store through
 			// it, so a title the store refuses under the lock would answer 500
@@ -2689,10 +2683,10 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 		if s.writePatchRefusal(w, itemRefOrSlug(*item), err) {
 			return
 		}
-		// IDEA-1494 R2: surface the open-children guard rejection as
+		// IDEA-1494: surface the open-children guard rejection as
 		// the structured 409 BEFORE the UNIQUE-constraint / generic
 		// internal-error paths can swallow it. Same shape the
-		// in-handler write produced pre-R2, but now correctly fires
+		// in-handler write produced before, but now correctly fires
 		// when the guard ran inside the store tx.
 		if details, ok := asOpenChildrenGuardError(err); ok {
 			writeOpenChildrenError(w, itemRefOrSlug(*item), details)
@@ -2768,8 +2762,7 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 	// BUG-3080: the write has COMMITTED on every path that reaches here, so
 	// this tab's mark moves now — not at the response. Enrichment below can
 	// still fail with a 500, and a mark left behind then would let this tab's
-	// older write pass its check and overwrite what was just stored (codex
-	// round 2).
+	// older write pass its check and overwrite what was just stored.
 	clientWriteApplied = true
 
 	// BUG-2013: the parent-link mutation is no longer a separate
@@ -2895,7 +2888,7 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 	// across writer identities, so whatever merges here declares the same name
 	// this comment will carry. Same window BUG-2716 closed for the two
 	// "commented" sites; here it stays open, deliberately NOT
-	// CreateCommentWithActivity (lead-ruled): this "updated" activity records
+	// CreateCommentWithActivity: this "updated" activity records
 	// a write that has already committed and must survive a comment failure,
 	// so the two-step order here is the correct one.
 	if input.Comment != nil && strings.TrimSpace(*input.Comment) != "" {
@@ -2914,8 +2907,8 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 		}
 		if cerr == nil && comment != nil {
 			s.publishCommentEvent(sseCommentCreated, workspaceID, updated.ID, comment.ID, updated.Title, updated.CollectionSlug, actor, source)
-			// item.updated_with_comment is RETIRED (SPEC-3 v1.2, Dave's
-			// ruling): a hand-rolled composite with no flood argument,
+			// item.updated_with_comment is RETIRED (SPEC-3 v1.2): a hand-rolled composite with no
+			// flood argument,
 			// which folds into the item event this update emitted plus
 			// comment.created.
 			//
@@ -2929,8 +2922,7 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 			// which is all the composite was ever standing in for.
 			//
 			// No deprecation window: webhooks are CLI-registered only today
-			// (no UI surface) and there were no known consumers at ruling
-			// time.
+			// (no UI surface) and there were no known consumers when it was retired.
 			// TASK-2533: this comment is created via a DIFFERENT code
 			// path than handleCreateComment (store.CreateComment called
 			// directly, not through POST .../comments) — a bypass Rider
@@ -3118,7 +3110,7 @@ func (s *Server) handleRestoreItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// TASK-3365: a restored item is reachable again through grants it kept,
-	// so connections on this workspace re-check now (codex r2 on PR2).
+	// so connections on this workspace re-check now.
 	s.invalidateWorkspaceAccess(item.WorkspaceID)
 
 	actor, source := actorFromRequest(r)
@@ -3287,8 +3279,8 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 			// An explicit null means "leave this unset": DELETE rather than
 			// assign nil, exactly as the copy does (items_cross_workspace_copy.go,
 			// where the reason is recorded). Assigning persisted a literal
-			// `"key": null` and suppressed the schema default; codex round 1 on
-			// BUG-2379 found the two siblings disagreeing here too.
+			// `"key": null` and suppressed the schema default (BUG-2379: the two
+			// siblings disagreed here too).
 			delete(result.Fields, k)
 			continue
 		}
@@ -3471,7 +3463,7 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// IDEA-1494 R3 P1: same open-children guard as the regular update
+	// IDEA-1494: same open-children guard as the regular update
 	// path. `pad item move ... --field status=completed` would
 	// otherwise bypass it. We classify the proposed transition
 	// against the DESTINATION collection's schema (conservative —
@@ -3590,7 +3582,7 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	// HAS a due_date — which is worse than the silence this replaced, because
 	// silence at least does not send someone looking for lost data that is
 	// sitting on the item. Filtering against the FINAL map is what makes the
-	// report true at the moment it is written (Codex round 2 P2-2).
+	// report true at the moment it is written.
 	if dropped := items.StillDropped(result.Dropped, result.Fields); len(dropped) > 0 {
 		moveAudit["dropped_fields"] = strings.Join(dropped, ", ")
 	}
@@ -4424,7 +4416,7 @@ func parseItemListParams(r *http.Request) models.ItemListParams {
 	// Every HTTP item list is bounded (BUG-3704). A missing, zero, negative or
 	// invalid limit takes the MAXIMUM, not a smaller default: a client that
 	// does not read the has-more headers then loses rows only on lists past
-	// it, never on an ordinary one (lead ruling). An explicit limit above it
+	// it, never on an ordinary one. An explicit limit above it
 	// is clamped (TASK-2000). This parser is the HTTP boundary only; internal
 	// callers of store.ListItems (dashboard, bootstrap, playbooks, ...) do not
 	// come through it and stay unbounded.
@@ -4463,7 +4455,7 @@ func parseItemListParams(r *http.Request) models.ItemListParams {
 	// contains a comma cannot be filtered for exactly, because the comma is
 	// the delimiter here. A repeated-parameter form (`?status=a&status=b`)
 	// would lift it, but an older server reads only the first value and
-	// silently NARROWS the result, so it was declined (BUG-3167 lead ruling;
+	// silently NARROWS the result, so it was declined (BUG-3167;
 	// the census found no comma-containing option values).
 	fields := make(map[string]string)
 	anyOf := make(map[string][]string)

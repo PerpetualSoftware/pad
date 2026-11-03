@@ -61,8 +61,8 @@ func TestBUG2639_GuestItemGrantsCountOnlyUnderTheirOwnCollection(t *testing.T) {
 		twoKeys := createItem(t, srv, slug, "ships", map[string]any{"title": "Matches two groups", "fields": `{"status":"shipped","stage":"complete"}`})
 		control := createItem(t, srv, slug, "tasks", map[string]any{"title": "Granted task", "fields": `{"status":"done"}`})
 		// Granted twice over: ideas is fully collection-granted AND this item
-		// carries its own grant. It must appear, and once (codex round 1 on
-		// BUG-2639 named it as the combination no leg covered).
+		// carries its own grant. It must appear, and once (BUG-2639 named it as the
+		// combination no leg covered).
 		bothWays := createItem(t, srv, slug, "ideas", map[string]any{"title": "Granted both ways", "fields": `{"status":"implemented"}`})
 
 		ideas, err := srv.store.GetCollectionBySlug(ws.ID, "ideas")

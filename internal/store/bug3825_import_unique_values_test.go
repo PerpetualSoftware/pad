@@ -108,8 +108,8 @@ func TestBUG3825_ImportLeavesDistinctValuesAlone(t *testing.T) {
 	}
 }
 
-// invocation_slug is compared as BOTH dialects' indexes compare it (hunter r1,
-// codex r1): SQLite's json_extract makes true and 1, and 1 and 1.0, equal;
+// invocation_slug is compared as BOTH dialects' indexes compare it: SQLite's
+// json_extract makes true and 1, and 1 and 1.0, equal;
 // Postgres's ->> makes the string "true" and the boolean true equal. Each pair
 // would fail the import on one dialect's index, so on both the second item
 // drops its value.
@@ -120,7 +120,7 @@ func TestBUG3825_InvocationSlugSpellingsCollideOnEitherDialect(t *testing.T) {
 		{"string-and-bool", `"true"`, `true`},
 		{"string-and-number", `"100"`, `1e2`},
 		{"number-keeps-its-scale-on-pg", `1.0`, `"1.0"`},
-		// One SQLite REAL, an IEEE binary64, for each pair (codex r3, hunter r3).
+		// One SQLite REAL, an IEEE binary64, for each pair.
 		{"one-double", `0.1`, `0.10000000000000000001`},
 		{"beyond-int64-is-a-real", `1e30`, `1000000000000000000000000000000`},
 		{"one-double-above-2^53", `9007199254740992.0`, `9007199254740993.0`},
@@ -159,7 +159,7 @@ func TestBUG3825_RepeatedUniqueDeclarationIsCheckedOnce(t *testing.T) {
 	}
 }
 
-// Values that collide under NEITHER index are both kept (codex r2, hunter r2):
+// Values that collide under NEITHER index are both kept:
 // 2^53 and 2^53+1 are distinct integers to SQLite and distinct text to
 // Postgres, and so are the number 1.5 and the string "1.50".
 func TestBUG3825_InvocationSlugValuesNeitherIndexEquatesAreKept(t *testing.T) {
@@ -183,9 +183,8 @@ func TestBUG3825_InvocationSlugValuesNeitherIndexEquatesAreKept(t *testing.T) {
 	}
 }
 
-// The slot model against the database itself (hunter r4: SQLite's decimal
-// parser and Postgres's exponent limit are not something to reason about from
-// Go). For every pair of values, the database under test says whether its
+// The slot model against the database itself. For every pair of values, the
+// database under test says whether its
 // invocation_slug index would see them as equal: SQLite by json_extract,
 // Postgres by ->>. That dialect's slots must collide exactly when it says so.
 // Equal but not colliding is the import failing on the index; colliding but
@@ -248,7 +247,7 @@ func TestBUG3825_SlotsMatchTheDatabase(t *testing.T) {
 			err := s.db.QueryRow(query, `{"v":`+a.lit+`}`, `{"v":`+b.lit+`}`).Scan(&equal)
 			if err != nil {
 				// Postgres refuses a number outside numeric's range, SQLSTATE
-				// 22003 (hunter r5: only that error, never any). Such a value
+				// 22003 (never any). Such a value
 				// cannot be stored, so it cannot collide either.
 				if s.dialect.Driver() == DriverPostgres && strings.Contains(err.Error(), "SQLSTATE 22003") {
 					refused[a.lit+" vs "+b.lit] = true
@@ -280,7 +279,7 @@ func TestBUG3825_SlotsMatchTheDatabase(t *testing.T) {
 }
 
 // Neither slot grows with the exponent: an archive is untrusted, and 1e999999
-// is ten bytes (hunter r3, codex r3).
+// is ten bytes.
 func TestBUG3825_NumberSlotsDoNotExpand(t *testing.T) {
 	for _, lit := range []string{"1e999999", "1e-999999", "1e999999999999999999999"} {
 		pg, sqlite := importNumberSlots(lit)

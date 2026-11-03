@@ -14,7 +14,7 @@ import (
 // IDEA-2883. item_reminders.workspace_id is denormalized from the item, and
 // until migration 086 nothing but a repeated read-side predicate stopped the
 // two from disagreeing. IDEA-2641 closed that class one read at a time across
-// two codex rounds and five call sites; these tests lock the constraint that
+// five call sites; these tests lock the constraint that
 // makes the disagreeing row unrepresentable instead.
 
 // reminderConstraintFixture returns a workspace with one item, plus a SECOND

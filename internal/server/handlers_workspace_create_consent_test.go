@@ -12,14 +12,15 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
-// Consent gate on workspace CREATION (IDEA-2756, Dave-ruled 2026-08-26).
+// Consent gate on workspace CREATION (IDEA-2756).
 //
 // The OAuth consent screen's `may_create_workspaces` checkbox used to gate
 // only maybeAutoAddCreatorConnection's allow-list insert: a connection whose
 // user left the box unticked could still create workspaces — invisible to it
 // when the connection carried an explicit allow-list, visible when it carried
-// the all_current_workspaces wildcard, and unconsented either way. The ruling: the checkbox is a permission on whether the
-// connected token may CREATE, so an unset flag refuses outright with a 403,
+// the all_current_workspaces wildcard, and unconsented either way. The rule: the checkbox is a
+// permission on whether the connected token may CREATE, so an unset flag
+// refuses outright with a 403,
 // mirroring handleAuditLog's consent refusal (BUG-2102).
 //
 // Two doors let an OAuth-bound caller mint a workspace, both guarded here by
@@ -44,9 +45,9 @@ import (
 // rejected before creation under every guard placement, so "no such workspace
 // exists" is true of broken and working code alike. Those legs discriminate on
 // the STATUS instead — 400 if the gate is late, 403 if it is early — which is
-// the only signal that separates the two placements. (Round 8 flagged the
-// original blanket claim; the first fix added the vacuous assertions, which is
-// the failure that claim was warning about.)
+// the only signal that separates the two placements. (An earlier blanket claim was
+// corrected; adding vacuous assertions would be the failure that claim warned
+// about.)
 //
 // By NAME rather than by slug: the name is what the request supplies verbatim,
 // while the slug is derived differently on the two paths (see lookupByName).
@@ -296,7 +297,6 @@ func TestCreateWorkspace_OAuthConnectionWithCreateConsent_CreatesAndAutoAdds(t *
 // coincidence — the guard branches on the MCP token identity, which only
 // MCPBearerAuth sets, so every caller that did not pass through it is
 // indistinguishable here. A second fixture would re-test the same branch.
-// (Codex round 3 flagged the original comment for claiming all three.)
 func TestCreateWorkspace_NonOAuthCallerUnaffected(t *testing.T) {
 	e := newConsentEnv(t, false)
 
@@ -367,7 +367,7 @@ func TestImportWorkspace_OAuthConnectionWithoutCreateConsent_403(t *testing.T) {
 // export, which a gate sitting after decodeJSONWithLimit would also refuse. This
 // leg sends a malformed body, so a gate below the decode answers 400 and only a
 // gate above it answers 403 — the same discrimination the create-side ordering
-// legs make, which the import side was missing. (Codex round 3.)
+// legs make, which the import side was missing.
 func TestImportWorkspace_ConsentRefusalPrecedesBodyDecode(t *testing.T) {
 	e := newConsentEnv(t, false)
 

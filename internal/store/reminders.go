@@ -21,8 +21,8 @@ import (
 // ONE STRING, because the drift between those two is a defect class this unit
 // hit three times: the scan filtered something the arbiter did not revalidate,
 // so a change committed between them fired a reminder that no longer
-// qualified. Round 3 was a re-armed instant, round 7 a workspace deleted
-// mid-pass, and the round-1 soft-deleted item was the same shape caught from
+// qualified. One was a re-armed instant, another a workspace deleted
+// mid-pass, and a soft-deleted item was the same shape caught from
 // the other side. Each was fixed as an instance; this is the shape.
 //
 // Written as a correlated EXISTS on item_reminders.item_id — rather than as a
@@ -403,9 +403,9 @@ func scopeClause(alias string, scope PendingReminderScope) (string, []any) {
 // filter runs above, per item. "There are more than you can see here" is the
 // strongest claim the data supports, so it is the one made.
 // VISIBILITY IS SCOPED IN SQL, not filtered afterwards, and that is the
-// round-4 correction. The round-3 bound took the first N rows and let the
+// later correction. The earlier bound took the first N rows and let the
 // caller discard the ones it could not show — which recreated, in the READ
-// path, the exact starvation the round-1 fix removed from the FIRE path:
+// path, the exact starvation the earlier fix removed from the FIRE path:
 // fifty rows the caller must drop can hide a visible reminder behind them
 // forever, with no continuation to reach it. A bounded window is only safe
 // when the discarding happens BEFORE the bound.
@@ -520,7 +520,7 @@ func (s *Store) dueReminderCandidates(nowTS string, limit int) ([]string, error)
 		limit = defaultReminderFireLimit
 	}
 	// SOFT-DELETED ITEMS ARE EXCLUDED HERE, not merely skipped downstream
-	//. fireOneReminder rolls back when it finds the item gone,
+	// FireOneReminder rolls back when it finds the item gone,
 	// which leaves the reminder ARMED and therefore a candidate again on the
 	// next pass — so a batch bounded at `limit` and ordered oldest-first can be
 	// filled entirely by archived items, and no live reminder ever fires. The
@@ -602,7 +602,7 @@ func (s *Store) dueReminderCandidates(nowTS string, limit int) ([]string, error)
 // this paragraph. Workspace liveness has no such second READ, which is why
 // dropping ITS half of the predicate does fail the pin.
 //
-// A READ IS NOT A HOLD (codex round 12, found independently by two runs on
+// A READ IS NOT A HOLD (found independently by two runs on
 // the same line). Everything above re-asserts liveness at the instant the
 // predicate is evaluated; nothing above keeps it true until the transaction
 // commits. On SQLite that gap does not exist — the DSN's _txlock=immediate
@@ -639,7 +639,7 @@ func (s *Store) dueReminderCandidates(nowTS string, limit int) ([]string, error)
 //
 // The UPDATE re-checks the FULL candidate condition — the fire mark, the
 // instant, and the shared reminderFireable predicate — so it arbitrates
-// against every actor the scan filtered for — and getting only the first was the round-3
+// against every actor the scan filtered for — and getting only the first was the earlier
 // defect. Against a concurrent TICK, `fired_at IS NULL` means both instances
 // see the same candidate and exactly one gets RowsAffected 1; the loser does
 // no work and emits nothing. Against a concurrent USER, `remind_at <= nowTS`

@@ -137,7 +137,7 @@ func TestBUG3244SchemaRebuildKeepsUnflushedEditsMarked(t *testing.T) {
 		}
 	})
 
-	// TASK-3574 (4), lead ruling: when anything is unflushed, the WHOLE op-log
+	// TASK-3574 (4): when anything is unflushed, the WHOLE op-log
 	// is set aside, the flushed base and the SyncStep1 included, because the
 	// unflushed rows build on structs in the rows below the watermark and alone
 	// replay to nothing. (This subtest used to assert only the unflushed frame

@@ -230,9 +230,9 @@ func TestOrphanGC_PreservesSharedBlob(t *testing.T) {
 	}
 }
 
-// TestOrphanGC_KeepsReferencedNeverAttachedRows pins Codex P1 on
-// PR #307 round 1: the editor's normal upload flow leaves
-// attachments.item_id NULL and only the markdown reference inside
+// TestOrphanGC_KeepsReferencedNeverAttachedRows pins that the
+// editor's normal upload flow leaves attachments.item_id NULL and only the markdown
+// reference inside
 // item.content connects them. So a "never-attached" row past the
 // grace period might still be referenced — the GC must scan item
 // content before reclaiming.
@@ -337,9 +337,8 @@ func TestOrphanGC_KeepsAttachmentReferencedFromComment(t *testing.T) {
 	}
 }
 
-// TestOrphanGC_RespectsInFlightUploads pins Codex P2 on PR #307
-// round 1: an upload that called Put but hasn't yet inserted the
-// attachments row must NOT lose its blob to GC reclamation of an
+// TestOrphanGC_RespectsInFlightUploads pins that an upload that called Put
+// but hasn't yet inserted the attachments row must NOT lose its blob to GC reclamation of an
 // older soft-deleted row sharing the same hash.
 //
 // We simulate the race by registering an in-flight hash directly,
@@ -391,9 +390,8 @@ func TestOrphanGC_RespectsInFlightUploads(t *testing.T) {
 	}
 }
 
-// TestOrphanGC_RespectsSoftDeletedInGracePeer pins Codex P2 round
-// 3: when two rows share a content_hash, GC reclaims the older one
-// past grace but MUST NOT delete the blob if the second row is
+// TestOrphanGC_RespectsSoftDeletedInGracePeer pins that when two rows share a content_hash,
+// GC reclaims the older one past grace but MUST NOT delete the blob if the second row is
 // still inside its own grace window — the second row could be
 // restored / inspected and would otherwise hit a missing blob.
 func TestOrphanGC_RespectsSoftDeletedInGracePeer(t *testing.T) {
@@ -472,7 +470,7 @@ func TestOrphanGC_RespectsSoftDeletedInGracePeer(t *testing.T) {
 	_ = sharedHash
 }
 
-// TestOrphanGC_DedupesBlobReclaimMetric pins Codex round 4: when
+// TestOrphanGC_DedupesBlobReclaimMetric pins that when
 // multiple soft-deleted peers share a content_hash and all are
 // past grace, the blob is deleted on the first peer and the
 // remaining peers' Delete calls are idempotent no-ops. The earlier
@@ -531,9 +529,8 @@ func TestOrphanGC_DedupesBlobReclaimMetric(t *testing.T) {
 	}
 }
 
-// TestInFlightUploadHashes_ConcurrentReleaseReacquire pins Codex P1
-// round 2 on PR #307: the prior sync.Map version raced when one
-// release's decrement-to-zero ran in parallel with another upload's
+// TestInFlightUploadHashes_ConcurrentReleaseReacquire pins that the prior sync.Map version raced
+// when one release's decrement-to-zero ran in parallel with another upload's
 // LoadOrStore-then-increment, leaving an in-flight upload's signal
 // invisible to the GC. The mutex-protected map closes the window.
 //

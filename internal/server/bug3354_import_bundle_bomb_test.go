@@ -238,7 +238,7 @@ func gzipBytes(t *testing.T, raw []byte) []byte {
 	return out.Bytes()
 }
 
-// Codex r1 P1: a GNU sparse entry's holes are synthesized by the tar reader
+// A GNU sparse entry's holes are synthesized by the tar reader
 // above the counted stream, so a few KiB of physical bytes declared hundreds
 // of MiB. Each entry's declared (logical) size is charged against its own
 // budget.
@@ -269,7 +269,7 @@ func TestBUG3354_SparseEntriesChargedLogically(t *testing.T) {
 	}
 }
 
-// Codex r1 P2: extension headers are consumed inside Next, invisible to the
+// Extension headers are consumed inside Next, invisible to the
 // entry count. The header blocks Next reads are counted instead.
 func TestBUG3354_ExtensionHeaderChainRefused(t *testing.T) {
 	t.Parallel()
@@ -330,7 +330,7 @@ func TestBUG3354_ReaderOverflowConvertsTo413(t *testing.T) {
 	}
 }
 
-// Codex r2: the tar reader accepts a negative base-256 size on a directory
+// The tar reader accepts a negative base-256 size on a directory
 // header, and charging it raised the logical budget, re-opening the sparse
 // bypass. A negative size is refused outright.
 func TestBUG3354_NegativeSizeRefused(t *testing.T) {
@@ -399,7 +399,7 @@ func (c *countingBody) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// Codex r3: Next walks a whole extension chain internally, so a header limit
+// Next walks a whole extension chain internally, so a header limit
 // checked after it returns is refused only after all the work is done. The
 // limit is enforced inside the walk: a chain of three times the cap, under
 // the default byte ceilings, is refused having read about a third of it.

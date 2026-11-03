@@ -212,7 +212,7 @@ func (s *Store) GetOAuthConnectionAccess(requestID string) (OAuthConnectionAcces
 // responsible for translating the consent UI's two-section radio +
 // checkbox interface (IDEA-1517 §2a) into the three Go bool fields
 // before calling here; the "default on" semantic lives at the form-
-// rendering layer, not in the store. Codex review #581 round 1 caught
+// rendering layer, not in the store. This fixes
 // the docstring/behaviour mismatch.
 func (s *Store) CreateOAuthConnection(c OAuthConnection) error {
 	if c.RequestID == "" {
@@ -623,8 +623,8 @@ func (s *Store) RemoveConnectionWorkspace(requestID, workspaceID string) error {
 // introspection hot path — when wildcard is on, slugs are irrelevant
 // — but the connections-page mutation UI needs to know whether the
 // join table actually has rows so a wildcard→specific toggle can
-// verify the user has pre-staged at least one workspace. Codex
-// review #585 round 1 caught the bug where the flags handler called
+// verify the user has pre-staged at least one workspace.
+// This fixes the bug where the flags handler called
 // GetOAuthConnectionAccess on a wildcard connection and always saw
 // zero slugs, making the toggle impossible.
 //

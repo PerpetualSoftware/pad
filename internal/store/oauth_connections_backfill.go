@@ -220,8 +220,8 @@ func (s *Store) backfillOneChain(requestID string, chain backfillChain) (created
 	allowed := extractAllowedWorkspacesFromSessionExtra(chain.SessionData)
 	allCurrent, explicit := allowed.toShape()
 
-	// Per-chain transaction (Codex review #583 round 3) so the parent
-	// row and ALL join rows land atomically. Previous round 2's gate
+	// Per-chain transaction (#583) so the parent
+	// row and ALL join rows land atomically. The previous gate
 	// "only seed slugs when parent was just created" protected
 	// user-removed workspaces from resurrection but introduced a new
 	// failure mode: if the process crashed (or AddConnectionWorkspace
@@ -233,8 +233,8 @@ func (s *Store) backfillOneChain(requestID string, chain backfillChain) (created
 	// The atomic invariant: either all rows for this chain commit, or
 	// none do. A crash mid-loop rolls the parent insert back too, so
 	// the NEXT backfill sees the chain as un-seeded and retries from
-	// scratch — preserving both Codex round 2's "no resurrection"
-	// guarantee and round 3's "no permanent partial seed."
+	// scratch — preserving both the "no resurrection"
+	// guarantee and the "no permanent partial seed."
 	//
 	// Scope: per-chain (small) tx, not whole-backfill. The original
 	// rationale for the no-transaction design was to avoid holding a
@@ -262,7 +262,7 @@ func (s *Store) backfillOneChain(requestID string, chain backfillChain) (created
 		// Parent already exists from a prior backfill or live consent
 		// flow. The new tables are authoritative — leave the row + its
 		// join entries alone. This is the path that protects user
-		// removals (Codex review round 2) from getting resurrected.
+		// removals from getting resurrected.
 		if commitErr := tx.Commit(); commitErr != nil {
 			return false, 0, 0, fmt.Errorf("commit (no-op): %w", commitErr)
 		}
@@ -320,8 +320,8 @@ func (s *Store) backfillOneChain(requestID string, chain backfillChain) (created
 	//     a real DB error mid-loop would silently emit a chain
 	//     scoped to only the slugs lookup succeeded for — and the
 	//     next backfill would short-circuit on parentExists, making
-	//     the partial scope permanent. Codex review #583 round 4
-	//     caught the gap.
+	//     the partial scope permanent. This closes
+	//     the gap.
 	for _, slug := range explicit {
 		// Through the open transaction (BUG-2778).
 		ws, getErr := s.getWorkspaceBySlugQ(tx, slug)

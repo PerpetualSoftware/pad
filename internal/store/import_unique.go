@@ -97,19 +97,19 @@ func importUniqueValue(key string, v any) (string, []string, bool) {
 
 // importNumberSlots returns a JSON number literal as each dialect's index
 // compares it. Neither expands the number, so the work is linear in the
-// literal however large its exponent (hunter r3, codex r3).
+// literal however large its exponent.
 //
 // sqlite: json_extract returns an integer literal that fits in int64 as an
-// INTEGER, and anything else as a REAL, an IEEE binary64 (codex r3: 0.1 and
+// INTEGER, and anything else as a REAL, an IEEE binary64 (0.1 and
 // 0.10000000000000001 are one REAL). SQLite compares INTEGER and REAL by
 // value, so a REAL that is exactly an int64 takes that integer's slot (1 and
 // 1.0 collide), and 2^53 and 2^53+1 stay two integers.
 //
 // pg: ->> prints a jsonb number as numeric text, which keeps the scale
-// written (1.0 prints "1.0", equal to the string "1.0", hunter r2) and
+// written (1.0 prints "1.0", equal to the string "1.0") and
 // expands an exponent (1e2 prints "100"). Two numbers print the same text
 // exactly when they have the same value and the same scale, so the slot is
-// that pair, in a form that does not grow with the exponent (codex r4: a cap
+// that pair, in a form that does not grow with the exponent (a cap
 // on expansion missed 1e1001 against its expanded digits).
 func importNumberSlots(lit string) (pg, sqlite string) {
 	return importNumericKey(lit), importNumberSQLiteValue(lit)

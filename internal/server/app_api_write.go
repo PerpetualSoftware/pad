@@ -24,7 +24,7 @@ import (
 // caps); then the side effects the parity table moves into shared functions
 // (SSE, watch notifications); then a fixed response DTO.
 //
-// Writes are not re-validated after commit (lead ruling R2): see the route
+// Writes are not re-validated after commit: see the route
 // wrapper in app_api.go.
 
 // Request DTOs: the only fields that exist.
@@ -81,7 +81,7 @@ func decodeAppJSON(r *http.Request, v any) error {
 // ignored). A delegated person (TASK-3399) will be "user" with their own id.
 func appActor(ac *appContext) store.FencedActor {
 	if ac.AuthKind == "delegated" {
-		// A person acting through the app (TASK-3399, lead ruling R3): the
+		// A person acting through the app (TASK-3399): the
 		// write is theirs, with via_app = the install; never the bot's.
 		return store.FencedActor{Kind: "user", UserID: ac.Actor.ID}
 	}
@@ -219,8 +219,7 @@ func (s *Server) appUpdateItem(w http.ResponseWriter, r *http.Request) {
 	}
 	after := wr.Item
 	s.publishItemEventWithName(sseItemUpdated, ac.WorkspaceID, after.ID, after.Title, wr.View.CollectionSlug, appActorKind(ac), wr.ActorDisplay, "app", after.Seq)
-	// Watchers hear about an app's status change as about anyone's (lead
-	// ruling R1). The signal is the fenced transaction's own, never a
+	// Watchers hear about an app's status change as about anyone's. The signal is the fenced transaction's own, never a
 	// comparison with this handler's earlier read: a status another writer
 	// changed between that read and the commit is not this write's.
 	if after.LastMutation != nil && after.LastMutation.StatusChanged {
@@ -262,7 +261,7 @@ func (s *Server) appCreateComment(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
-	// The author is server-set: the app's bot display name (lead ruling R3),
+	// The author is server-set: the app's bot display name,
 	// read in the write's transaction (Author left empty). What the write
 	// publishes is the item as that transaction found it: a human may have
 	// moved it to another companion since this handler's read, and a
@@ -373,7 +372,7 @@ func (s *Server) appDeleteComment(w http.ResponseWriter, r *http.Request) {
 }
 
 // appReadmitBeforeWrite re-admits a write after its body is read and before
-// its write, and reports false after answering (codex U5b-2 r1): a body can
+// its write, and reports false after answering: a body can
 // arrive slowly, and the person a delegated token acts for can lose access
 // meanwhile. A full re-admission (the credential, the install, the person,
 // their membership and role, and every re-check the handler registered,

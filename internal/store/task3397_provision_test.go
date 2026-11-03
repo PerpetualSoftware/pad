@@ -168,11 +168,11 @@ func TestTask3397_CollectionArchiveWaitsForProvisioning(t *testing.T) {
 	assertBlockedUntilRelease(t, f, 1, func() error { return f.s.DeleteCollection(f.dest.ID, "") })
 }
 
-// Condition (b) of the lead ruling: the two deadlock scenarios codex round 4
-// found must not deadlock. Each replays the other writer's lock order in a
+// The two deadlock scenarios
+// must not deadlock. Each replays the other writer's lock order in a
 // raw transaction around a provisioning, and fails on 40P01 in either one. A
 // future lock that recreates either cycle turns these red (both were
-// reproduced red against the round-3 lock set).
+// reproduced red against the earlier lock set).
 func task3397NoDeadlock(t *testing.T, f task3397Fix, first, second func(tx *sql.Tx) error) {
 	t.Helper()
 	w, err := f.s.db.Begin()

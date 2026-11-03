@@ -336,7 +336,7 @@ func TestTASK3365_SSEClosesOnKickWithoutWaitingForTheTick(t *testing.T) {
 }
 
 // The watch stream re-checks on a kick too, and a dead CREDENTIAL closes it
-// rather than leaving it connected and silent (lead, TASK-3365 detail 3).
+// rather than leaving it connected and silent (TASK-3365 detail 3).
 func TestTASK3365_WatchStreamClosesOnKickWhenItsCredentialDies(t *testing.T) {
 	prev := watchListRevalInterval
 	watchListRevalInterval = time.Hour

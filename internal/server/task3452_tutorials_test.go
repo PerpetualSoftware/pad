@@ -183,7 +183,7 @@ func TestTASK3452_UIDismissals(t *testing.T) {
 	})
 }
 
-// codex round 1: an allowed getpad.dev poster URL that redirects elsewhere is
+// An allowed getpad.dev poster URL that redirects elsewhere is
 // not followed.
 func TestTASK3452_PosterRedirectIsNotFollowed(t *testing.T) {
 	srv := testServer(t)
@@ -212,7 +212,7 @@ func TestTASK3452_PosterRedirectIsNotFollowed(t *testing.T) {
 	}
 }
 
-// codex round 1: a stale catalog is served at once while a slow refresh runs;
+// A stale catalog is served at once while a slow refresh runs;
 // no request waits on the network when a copy is in hand.
 func TestTASK3452_StaleCatalogServedWhileUpstreamHangs(t *testing.T) {
 	srv := testServer(t)
@@ -240,7 +240,7 @@ func TestTASK3452_StaleCatalogServedWhileUpstreamHangs(t *testing.T) {
 	}
 }
 
-// codex round 1: two dismissals racing from two devices both land, on both
+// Two dismissals racing from two devices both land, on both
 // backends (SQLite serializes writers with BEGIN IMMEDIATE; Postgres takes
 // the users row FOR NO KEY UPDATE).
 func TestTASK3452_ConcurrentDismissalsBothLand(t *testing.T) {

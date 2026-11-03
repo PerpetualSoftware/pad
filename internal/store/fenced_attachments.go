@@ -15,7 +15,7 @@ import (
 // created, in one transaction, with uploaded_by = the acting identity and
 // via_app = the install. It writes the attachments row and nothing else: no
 // item row (no seq, updated_at or etag change) and no last_referenced_at
-// stamp (DOC-3371 day-85 revisions).
+// stamp (DOC-3371).
 //
 // LOCKS. On Pad Cloud the owner's storage plan-limit lock comes before
 // everything (BeginFenced, FenceSpec.StorageLimit, BUG-3653). After the
@@ -92,7 +92,6 @@ func (f *FencedTx) attachmentUsage() (files, bytes int64, err error) {
 // keeps an upload from being counted twice: an upload releases its
 // reservation inside its own row transaction, also under the lock, so a
 // concurrent admission sees it as either a reservation or a row, never both
-// .
 func (f *FencedTx) AttachmentAdmissionUsage(itemID string, actor FencedActor) (files, bytes int64, err error) {
 	if !actor.valid() {
 		return 0, 0, ErrAppBadActor

@@ -136,7 +136,7 @@ func TestFieldValueEqualityIsTypeAware(t *testing.T) {
 		{`["done", "x"]`, []string{}},         //
 		// Numeric-looking arguments outside the JSON-number grammar never
 		// reach the numeric branch, and the text branch is type-guarded, so
-		// they find no number on either dialect (codex r3, measured).
+		// they find no number on either dialect (measured).
 		{"01", []string{}},
 		{"+1", []string{}},
 		{" 1", []string{}},
@@ -385,7 +385,7 @@ func TestFieldValueDialectResidual(t *testing.T) {
 	}
 }
 
-// Number extremes (codex rounds 1 and 2). A literal beyond float64 range
+// Number extremes. A literal beyond float64 range
 // still equals its own spelling on both dialects. The residual class stated
 // in dialect_fieldvalue.go, one case per member: SQLite rounds to int64 or
 // float64 and so equates neighbours; Postgres stays exact.
@@ -424,7 +424,7 @@ func TestFieldValueNumberExtremes(t *testing.T) {
 }
 
 // The unique probe must be able to use the invocation_slug partial index
-// (lead review of BUG-3221): a uniqueness check sits on a write path, and a
+// (BUG-3221): a uniqueness check sits on a write path, and a
 // scan grows with the data. SQLite's plan is deterministic. On Postgres the
 // planner is cost-based and this table is tiny, so seq scans are switched off
 // inside the transaction: the assertion is that the index is USABLE, which is

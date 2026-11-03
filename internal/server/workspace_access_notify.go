@@ -36,7 +36,7 @@ func (s *Server) publishWorkspaceAccessChanged(workspaceID, change string, userI
 	switch change {
 	case watchevents.AccessDeleted, watchevents.AccessRestored, watchevents.AccessPurged:
 		// One workspace kick reaches every connection on it, the users
-		// listed here included (codex r2: not one publish per user).
+		// listed here included (not one publish per user).
 		s.invalidateWorkspaceAccess(workspaceID)
 	default:
 		for _, uid := range userIDs {

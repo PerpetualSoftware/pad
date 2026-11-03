@@ -40,8 +40,7 @@ func TestTASK3351_ClaimUnlinksProvidersAndForgetsSubjects(t *testing.T) {
 }
 
 // A claim whose provider account is already bound to someone else is
-// refused WHOLE: the account it would have claimed is unchanged (codex
-// round 1, TASK-3351).
+// refused WHOLE: the account it would have claimed is unchanged (TASK-3351).
 func TestTASK3351_ClaimRefusedOnSubjectChangesNothing(t *testing.T) {
 	s := testStore(t)
 	other := createUnverifiedUser(t, s, "other@example.com")
@@ -67,7 +66,7 @@ func TestTASK3351_ClaimRefusedOnSubjectChangesNothing(t *testing.T) {
 }
 
 // A sign-in that read the link before an unlink committed cannot bind its
-// provider account afterwards (codex round 1, TASK-3351).
+// provider account afterwards (TASK-3351).
 func TestTASK3351_BindAfterUnlinkBindsNothing(t *testing.T) {
 	s := testStore(t)
 	u := createUnverifiedUser(t, s, "linked2@example.com")
@@ -86,8 +85,8 @@ func TestTASK3351_BindAfterUnlinkBindsNothing(t *testing.T) {
 }
 
 // A provider claim and a verification consume racing on one account take
-// their locks in the same order, so neither fails with a deadlock (codex
-// round 1, TASK-3351). The consume starts while the claim holds the account
+// their locks in the same order, so neither fails with a deadlock (TASK-3351).
+// The consume starts while the claim holds the account
 // lock: with the old order the claim then waited on the token the consume
 // held, and Postgres aborted one of them.
 func TestTASK3351_ClaimAndVerifyDoNotDeadlock(t *testing.T) {
@@ -118,7 +117,7 @@ func TestTASK3351_ClaimAndVerifyDoNotDeadlock(t *testing.T) {
 
 // Account deletion takes the account, then its tokens. A verification
 // consume and an account claim that start while it holds the account must
-// wait for it, not hold a token it needs (codex round 2, TASK-3351): every
+// wait for it, not hold a token it needs (TASK-3351): every
 // path now locks the account before its tokens.
 func TestTASK3351_DeletionClaimAndVerifyDoNotDeadlock(t *testing.T) {
 	s := testStore(t)
@@ -150,7 +149,7 @@ func TestTASK3351_DeletionClaimAndVerifyDoNotDeadlock(t *testing.T) {
 }
 
 // A link claim that waits for the account lock past its token's expiry
-// claims nothing (codex round 3, TASK-3351): expiry is checked when the
+// claims nothing (TASK-3351): expiry is checked when the
 // token is spent, not when it was found.
 func TestTASK3351_LinkClaimChecksExpiryAfterTheWait(t *testing.T) {
 	s := testStore(t)
@@ -170,7 +169,7 @@ func TestTASK3351_LinkClaimChecksExpiryAfterTheWait(t *testing.T) {
 	}
 }
 
-// A claim resets the identity the registrant chose (lead, on #1760): the
+// A claim resets the identity the registrant chose (#1760): the
 // username and display name can impersonate ("support", a staff name), and
 // nothing live depends on them, since the claim deleted the workspaces the
 // account owned. The username is regenerated from the claimant's name, else
@@ -215,8 +214,7 @@ func TestTASK3351_ClaimResetsTheRegistrantsIdentity(t *testing.T) {
 }
 
 // The regenerated username passes the username rules: a reserved name is
-// skipped, and a suffix never pushes it past the length limit (codex round
-// 5, TASK-3351).
+// skipped, and a suffix never pushes it past the length limit (TASK-3351).
 func TestTASK3351_ClaimUsernameFollowsTheRules(t *testing.T) {
 	s := testStore(t)
 	s.SetUsernameValidator(func(u string) error {
@@ -259,8 +257,8 @@ func TestTASK3351_ClaimUsernameFollowsTheRules(t *testing.T) {
 }
 
 // Another account taking the chosen username before the claim writes it
-// makes the claim retry with the next one, not fail (codex round 5,
-// TASK-3351). Postgres only: SQLite's BEGIN IMMEDIATE holds every other
+// makes the claim retry with the next one, not fail (TASK-3351). Postgres only:
+// SQLite's BEGIN IMMEDIATE holds every other
 // writer out for the claim's whole transaction, so the race cannot happen
 // there (and the insert below would wait on it).
 func TestTASK3351_ClaimRetriesALostUsername(t *testing.T) {
@@ -289,8 +287,8 @@ func TestTASK3351_ClaimRetriesALostUsername(t *testing.T) {
 }
 
 // When nothing derived from the name passes the rules or is free, the claim
-// still gets a valid username rather than failing (codex round 6,
-// TASK-3351): a name with no usable characters over an address whose local
+// still gets a valid username rather than failing (TASK-3351): a name with no
+// usable characters over an address whose local
 // part the generator leaves invalid ("foo--bar").
 func TestTASK3351_ClaimFallsBackToARandomUsername(t *testing.T) {
 	s := testStore(t)

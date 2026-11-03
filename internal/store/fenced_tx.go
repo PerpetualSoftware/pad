@@ -206,8 +206,8 @@ func (f *FencedTx) requireCompanionCollection(collectionID string) error {
 	if _, ok := f.companions[collectionID]; !ok {
 		return ErrNotCompanion
 	}
-	// And the collection as it stands in THIS transaction (TASK-3401 U6c,
-	// codex r1): the set above is the request's, from admission, and a
+	// And the collection as it stands in THIS transaction (TASK-3401 U6c): the
+	// set above is the request's, from admission, and a
 	// companion can stop being one while a request is in flight (deleted, or
 	// re-stamped to another install). An upload's body can take minutes, so
 	// that window is not academic.

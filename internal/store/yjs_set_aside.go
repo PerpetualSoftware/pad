@@ -20,7 +20,7 @@ import (
 // pg 072), where no op-log reader sees it, and the item holds content_state at
 // models.ContentStateSetAside until it is recovered or explicitly discarded.
 //
-// The whole log, not only that suffix (TASK-3574 (4), lead ruling): the
+// The whole log, not only that suffix (TASK-3574 (4)): the
 // unflushed rows build on structs in the rows below the watermark, so replayed
 // alone they leave every edit pending and render nothing (measured), and no
 // decoder could recover them. The base exists elsewhere only as markdown in

@@ -280,7 +280,7 @@ func TestMoveItem_ReservedOverrideKeepsItsOwnMessage(t *testing.T) {
 }
 
 // An explicit null override UNSETS the key, as the copy's does, rather than
-// storing a literal null (codex round 1 on BUG-2379).
+// storing a literal null (BUG-2379).
 func TestMoveItem_NullOverrideUnsetsTheField(t *testing.T) {
 	srv := testServer(t)
 	slug, src, dst := moveTestCollections(t, srv)

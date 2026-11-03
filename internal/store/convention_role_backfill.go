@@ -13,7 +13,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// PLAN-3598, lead ruling: a convention's role is its agent-role COLUMN, the
+// PLAN-3598: a convention's role is its agent-role COLUMN, the
 // validated reference bootstrap labels convention_index with, not the
 // free-text `role` field the skill docs used to filter on. Conventions that
 // carry only the field would drop out of every role-scoped read, so their
@@ -43,7 +43,7 @@ import (
 // full by the run that makes it.
 
 // conventionRoleInvalidLogLimit caps the per-boot detail lines for values
-// that name no live role (lead ruling).
+// that name no live role.
 const conventionRoleInvalidLogLimit = 20
 
 // ConventionRoleInvalid is one convention whose `role` field names no live

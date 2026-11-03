@@ -23,7 +23,7 @@ import (
 // event outbox, and why answers are keyed on a state hash rather than
 // items.seq.
 //
-// THE WRITE PATH NEVER WAITS ON THE NETWORK (the day-73 async-only ruling).
+// THE WRITE PATH NEVER WAITS ON THE NETWORK (the async-only rule).
 // A mutation that makes an evaluation owed inserts a decision_jobs row in its
 // own transaction and returns; the runner's tick does the provider call later.
 
@@ -670,8 +670,8 @@ func (s *Store) HasItemDecisionsAtState(itemID, questionSet, stateHash string, k
 	if len(keys) == 0 {
 		return true, nil
 	}
-	// Counted over the ASKED (key, question_hash) pairs only (codex rounds 3
-	// and 6). Counting every stored key was wrong in a way the count cannot
+	// Counted over the ASKED (key, question_hash) pairs only. Counting every
+	// stored key was wrong in a way the count cannot
 	// see: a RENAMED key keeps the total equal — the old name answered, the
 	// new one not — so the set read complete and the new key was never asked.
 	// Matching the question hash as well is what makes a reworded question or

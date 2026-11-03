@@ -306,8 +306,7 @@ func assertNoFrameWithEvent(t *testing.T, frames <-chan string, eventType string
 	}
 }
 
-// TestRefusedConnectionDoesNotCountASyncRequired is codex round 1's finding,
-// pinned. The counter's population is "sync_required signals SENT". Moving the
+// TestRefusedConnectionDoesNotCountASyncRequired is pinned. The counter's population is "sync_required signals SENT". Moving the
 // cursor parse above the subscribe (which is what closes the duplicate window)
 // put the unreadable-cursor increment on the wrong side of the admission
 // check, so a connection refused with 429 — which is never sent anything —
@@ -317,7 +316,7 @@ func assertNoFrameWithEvent(t *testing.T, frames <-chan string, eventType string
 // that IS admitted must still count, or the fix would read as correct while
 // having simply deleted the increment.
 //
-// SCOPE, recorded because codex round 3 raised it: origin/main also does not
+// SCOPE: origin/main also does not
 // count a refused connection — it parsed the cursor after admission, so the
 // question never arose there. This test therefore does NOT argue for the
 // parse-before-subscribe ordering; it is a regression test for the defect that

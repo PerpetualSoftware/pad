@@ -83,7 +83,7 @@ func (s *Server) EnsureAppItemActions(ctx context.Context) {
 
 // contextViewerVisible is the viewer re-admission for mint and redeem: the
 // human item read's own visibility rule (checkItemVisibleQ) with the
-// viewer's CURRENT role, memberships and grants (lead ruling, day 88). The
+// viewer's CURRENT role, memberships and grants. The
 // role is crossWorkspaceRole's for a bearer caller (store.ViewerRoleQ), so a
 // platform admin who is not a member does not pass on the admin cookie
 // bypass: an app is about to receive the item.
@@ -91,8 +91,7 @@ func (s *Server) contextViewerVisible() store.ContextVisibleFunc {
 	return func(q store.Queryer, item *models.Item, viewerID string) (bool, error) {
 		// Every read on q, the mint or redeem's own transaction: a pool read
 		// here would wait for a second connection while holding the first,
-		// and under load every connection can be held that way (codex r1 on
-		// U11).
+		// and under load every connection can be held that way (U11).
 		viewer, err := s.store.GetUserQ(q, viewerID)
 		if err != nil {
 			return false, err
@@ -139,7 +138,7 @@ func (s *Server) handleListItemAppActions(w http.ResponseWriter, r *http.Request
 
 // handleMintItemAppAction: POST …/items/{ref}/app-actions/{installID}/{actionKey}.
 // The caller is the viewer. The mint re-checks, under the redeem's locks,
-// everything a redeem will (lead ruling, day 88).
+// everything a redeem will.
 func (s *Server) handleMintItemAppAction(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
@@ -213,7 +212,7 @@ func (s *Server) appRedeemContext(w http.ResponseWriter, r *http.Request) {
 	}
 	// §6: a service token only (the route table's Auth column is
 	// documentation; this is the check). A refused attempt still consumes
-	// the code, as every refusal does (codex r2 on U11).
+	// the code, as every refusal does.
 	if ac.AuthKind != "service" {
 		if err := s.store.BurnContextCode(ac.InstallID, in.Code); err != nil {
 			writeInternalError(w, err)

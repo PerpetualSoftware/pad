@@ -28,10 +28,8 @@ const (
 // harness re-bootstrapping the admin then logging in fresh, the pad CLI,
 // a browser tab that re-authenticates as a different account, or simply
 // a stale cookie sitting alongside a fresh login POST) must not turn that
-// legitimate re-login into a CSRF failure. codex round 4 (via CI's E2E
-// suite, not static review — the gap the unit suite was missing) caught
-// exactly this: gating the WHOLE list on currentUser(r) == nil (round 2's
-// fix) broke /login whenever an ambient cookie was present, because
+// legitimate re-login into a CSRF failure. Gating the WHOLE list on currentUser(r) == nil broke
+// /login whenever an ambient cookie was present, because
 // login's authority is the password in the body, not the cookie.
 //
 // This is an EXACT path match (not a prefix), on purpose: a prefix match is
@@ -67,7 +65,7 @@ const (
 // (a PAT or a CLI session-bearer token) are unaffected by any of this —
 // they hit isValidatedBearerAuth's unconditional exemption further down
 // this function regardless of path or cookie presence; see that check's
-// comment for the codex-round-3 validated-vs-present distinction.
+// comment for the validated-vs-present distinction.
 var authCSRFUnconditionalExemptPaths = map[string]bool{
 	"/api/v1/auth/bootstrap":           true,
 	"/api/v1/auth/login":               true,
@@ -94,15 +92,15 @@ var authCSRFUnconditionalExemptPaths = map[string]bool{
 // register is the only entry: handleRegister is genuinely anonymous most
 // of the time (self-serve cloud signup, invitation acceptance), but it
 // also has an admin-session branch (an already-logged-in admin can
-// create a verified account with no invitation code) — codex round 2
+// create a verified account with no invitation code)
 // found that a plain path exemption let a cross-site POST ride the
 // admin's cookie straight into that branch with no CSRF token, the same
 // class of hole as oauth-unlink. Gating on currentUser(r) == nil closes
 // that branch (a session-authenticated register falls through to the
 // real double-submit check) while a genuinely anonymous register keeps
 // the exemption. This is deliberately its OWN map (not folded into the
-// unconditional set with a blanket currentUser guard, which is what
-// round 2 originally did and what round 4's CI-caught regression forced
+// unconditional set with a blanket currentUser guard, which is what an
+// earlier version did and what a CI-caught regression forced
 // apart): login/bootstrap/etc. have no session-privileged branch at all,
 // so gating them on currentUser(r) == nil was never a security
 // requirement — it just broke legitimate re-login-with-a-lingering-cookie
@@ -141,7 +139,7 @@ func (s *Server) CSRFProtect(next http.Handler) http.Handler {
 		// from the ambient session cookie — stay exempt regardless of
 		// whether SessionAuth also resolved a user for this request. See
 		// authCSRFUnconditionalExemptPaths for the full per-entry
-		// rationale and the round-4 CI regression this split fixes
+		// rationale and the CI regression this split fixes
 		// (B8, TASK-1932).
 		if authCSRFUnconditionalExemptPaths[r.URL.Path] {
 			next.ServeHTTP(w, r)
@@ -167,14 +165,14 @@ func (s *Server) CSRFProtect(next http.Handler) http.Handler {
 		//
 		// hasCloudSecretMarker only checks PRESENCE of the marker, not
 		// whether the secret is actually correct — the real check
-		// (validateCloudSecret) happens in-handler. codex round 3 caught
-		// that several of these handlers (e.g. handleSetPlan) ALSO accept
+		// (validateCloudSecret) happens in-handler. Several of these handlers
+		// (e.g. handleSetPlan) ALSO accept
 		// an admin cookie session as an alternative to the secret
 		// (`isAdmin := user != nil && ...; if !isAdmin { validateCloudSecret(...) }`)
 		// — so a marker-presence-only exemption let a cross-site request
 		// with a garbage X-Cloud-Secret ride a logged-in admin's cookie
 		// straight past CSRF into that admin branch, the same class of
-		// hole as handleRegister's in round 2. The currentUser(r) == nil
+		// hole as handleRegister's. The currentUser(r) == nil
 		// guard closes it: a request that also resolved a real session
 		// falls through to the normal double-submit check below, so the
 		// admin branch can only be reached with either the real secret or
@@ -204,7 +202,7 @@ func (s *Server) CSRFProtect(next http.Handler) http.Handler {
 		// (garbage token, wrong format, expired — anything that hit
 		// rejectInvalidBearer's public-API-path fallthrough instead of a
 		// hard 401) is exempt ONLY when no session was also resolved for
-		// this request. codex round 3: the old unconditional version of
+		// this request. The old unconditional version of
 		// this check exempted on header PRESENCE alone, so a cross-site
 		// request carrying a victim's real session cookie plus an
 		// attacker-supplied garbage Bearer header would sail past CSRF —

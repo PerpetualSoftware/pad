@@ -73,7 +73,7 @@ func TestBUG3671_AnEmailAloneNoLongerReachesASubjectBoundAccount(t *testing.T) {
 	}
 }
 
-// Lead note (a): a verified account that never linked the provider, receiving
+// A verified account that never linked the provider, receiving
 // a subject-bearing sign-in for its address, is neither bound nor signed in.
 // It follows today's link rule: oauth_provider_not_linked.
 func TestBUG3671_AnUnlinkedAccountIsNotBoundBySignIn(t *testing.T) {
@@ -104,7 +104,7 @@ func TestBUG3671_AnUnlinkedAccountIsNotBoundBySignIn(t *testing.T) {
 	}
 }
 
-// Codex r1 (Low): the refusal comes before the 2FA challenge, so a
+// The refusal comes before the 2FA challenge, so a
 // subject-less sign-in to a bound account with TOTP on gets no challenge
 // token either, while the bound subject still reaches the challenge. Since
 // BUG-3797 that refusal is oauth_subject_required.
@@ -130,7 +130,7 @@ func TestBUG3671_ASubjectlessSignInGetsNoTwoFactorChallenge(t *testing.T) {
 	}
 }
 
-// Codex r1 (Low): a subject-less oauth-link never changes a bound subject.
+// A subject-less oauth-link never changes a bound subject.
 func TestBUG3671_ASubjectlessLinkKeepsTheBoundSubject(t *testing.T) {
 	srv := testServer(t)
 	srv.SetCloudMode(oauthProviderTestSecret)

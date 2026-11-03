@@ -206,7 +206,7 @@ func TestTASK3619_SeedRewritesOnlyTheOldStorageDefaults(t *testing.T) {
 
 // Pro is one pool per ACCOUNT: bytes in one owned workspace count against an
 // upload into another, and a soft-deleted owned workspace still counts until
-// it is purged (TASK-3619, lead rulings).
+// it is purged (TASK-3619).
 func TestTASK3619_ProPoolsAcrossOwnedWorkspacesIncludingSoftDeleted(t *testing.T) {
 	f := newStorageFixture(t, "pro")
 	limit := int64(DefaultProLimits.StorageBytes)

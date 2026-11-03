@@ -134,8 +134,7 @@ func TestCheckUserLimitTreatsAnExpiredPlanAsFree(t *testing.T) {
 	}
 }
 
-// Real revisions are unix milliseconds, beyond int4 (codex: Postgres
-// inferred int4 for the bare placeholders and refused them).
+// Real revisions are unix milliseconds, beyond int4.
 func TestSetUserPlan_MillisecondRevisions(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)

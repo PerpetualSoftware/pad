@@ -4,7 +4,7 @@ import (
 	"testing"
 )
 
-// TASK-3399 (lead ruling (a) on codex U5b-1 r5): a deadlocked transaction is
+// TASK-3399: a deadlocked transaction is
 // run again from the start, at most three times.
 
 func retryRecorder(s *Store) *[]string {

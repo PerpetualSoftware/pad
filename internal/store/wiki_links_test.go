@@ -266,8 +266,8 @@ func TestWikiLinks_BackfillIdempotent(t *testing.T) {
 	}
 }
 
-// TestWikiLinks_EmptyDisplayDistinct regresses Codex round-12 P3:
-// `[[TASK|]]` (explicit empty display override) and `[[TASK]]` (no
+// TestWikiLinks_EmptyDisplayDistinct regresses `[[TASK|]]` (explicit empty
+// display override) and `[[TASK]]` (no
 // override) are distinct shapes in the editor and must store distinct
 // rows. Empty override → display_text=”, no override → display_text
 // IS NULL.
@@ -315,7 +315,7 @@ func TestWikiLinks_EmptyDisplayDistinct(t *testing.T) {
 	}
 
 	// Wire-shape check: GetBacklinks must surface the distinction
-	// via the *string typed DisplayText field. Codex round-13 P2.
+	// via the *string typed DisplayText field.
 	withBLs, _ := s.GetBacklinks(target.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
 	var withBL, noBL *models.Backlink
 	for i, bl := range withBLs {
@@ -340,7 +340,7 @@ func TestWikiLinks_EmptyDisplayDistinct(t *testing.T) {
 // TestWikiLinks_SnippetIsValidUTF8 — `snippetAround` may slice
 // `content` at boundaries that fall mid-rune. The function must
 // extend both edges to rune boundaries so the snippet is always
-// valid UTF-8. Codex round-8 P3.
+// valid UTF-8.
 func TestWikiLinks_SnippetIsValidUTF8(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
@@ -369,7 +369,7 @@ func TestWikiLinks_SnippetIsValidUTF8(t *testing.T) {
 	}
 }
 
-// TestWikiLinks_MixedCaseRefIndexed regresses Codex round-1 P2: a
+// TestWikiLinks_MixedCaseRefIndexed regresses A
 // body containing `[[task-5]]` must produce a backlink row pointing
 // at the same target as `[[TASK-5]]`. Renderer permissiveness and
 // indexer behavior have to agree, otherwise users see broken silent
@@ -408,7 +408,7 @@ func TestWikiLinks_MixedCaseRefIndexed(t *testing.T) {
 	}
 }
 
-// TestWikiLinks_VisibilityAwarePagination regresses Codex round-1 P1:
+// TestWikiLinks_VisibilityAwarePagination regresses the case:
 // when GetBacklinks is called with a visibility-restricted
 // `visibleCollectionIDs` slice, the LIMIT/OFFSET counts only visible
 // rows. A page asking for `limit=2` must return 2 visible rows even
@@ -473,7 +473,7 @@ func TestWikiLinks_VisibilityAwarePagination(t *testing.T) {
 	})
 }
 
-// TestWikiLinks_ItemGrantPagination regresses Codex round-2 P1: when
+// TestWikiLinks_ItemGrantPagination regresses When
 // a guest has an item-level grant on ONE source item in a collection
 // they can't otherwise see, the rest of that collection must NOT
 // leak into the page. Previously the handler computed
@@ -693,8 +693,8 @@ func TestWikiLinks_TitleRenameCascadesContentAndBacklinks(t *testing.T) {
 	}
 }
 
-// TestWikiLinks_TitleRenameCascadesAliasedForms regresses Codex round 1
-// finding: the cascade must preserve display aliases when rewriting
+// TestWikiLinks_TitleRenameCascadesAliasedForms regresses the case: the cascade
+// must preserve display aliases when rewriting
 // title-form links. `[[Old Title|alias]]` AND `[[old title]]` (mixed
 // case) both index via target_item_id, so without alias-aware /
 // case-insensitive rewrite, the trailing re-parse drops them.
@@ -769,8 +769,8 @@ func TestWikiLinks_CollectionQualifiedTitleResolved(t *testing.T) {
 	}
 }
 
-// TestWikiLinks_FullKeyTitleBeatsQualifiedSplit regresses Codex
-// finding #3 from the planning round: an item literally titled
+// TestWikiLinks_FullKeyTitleBeatsQualifiedSplit regresses the case #3 from the
+// planning round: an item literally titled
 // "tasks/Setup" must win stage 1 BEFORE the resolver splits on `/`
 // and looks up by collection slug. If we split first, the wrong item
 // would resolve.
@@ -801,7 +801,7 @@ func TestWikiLinks_FullKeyTitleBeatsQualifiedSplit(t *testing.T) {
 }
 
 // TestWikiLinks_BrokenPipeInBodyRetargetsOnLiteralArrival regresses
-// Codex round 4: a source body `[[A|B]]` written BEFORE any matching
+// A source body `[[A|B]]` written BEFORE any matching
 // item exists must store target_title="A|B" (the full body), not the
 // split key "A". Otherwise resolveBrokenTitleLinks for a later-
 // arriving item titled "A|B" can't find the row — the index goes
@@ -825,8 +825,8 @@ func TestWikiLinks_BrokenPipeInBodyRetargetsOnLiteralArrival(t *testing.T) {
 	}
 }
 
-// TestWikiLinks_LiteralPipeInTitleResolves regresses Codex round 3 P1:
-// an item literally titled "A|B" (pipe in title) must match
+// TestWikiLinks_LiteralPipeInTitleResolves regresses An item literally titled
+// "A|B" (pipe in title) must match
 // `[[A|B]]` in source content — the renderer's L516-525 tries the
 // full body as a title BEFORE splitting on the pipe. Without this,
 // the index would split-then-look-up "A" and either resolve to a
@@ -869,7 +869,7 @@ func TestWikiLinks_LiteralPipeInTitleFallsThroughToSplit(t *testing.T) {
 }
 
 // TestWikiLinks_SecondItemSameTitleDoesNotStealBacklinks regresses
-// Codex round 3 P2: dropping the IS NULL constraint on the stage-1
+// Dropping the IS NULL constraint on the stage-1
 // UPDATE made the broken-row flip too aggressive. A row already
 // resolved to <Foo-v1> via stage-1 literal match must stay there
 // when a SECOND item titled "Foo-v1" is created — titles aren't
@@ -906,7 +906,7 @@ func TestWikiLinks_SecondItemSameTitleDoesNotStealBacklinks(t *testing.T) {
 }
 
 // TestWikiLinks_LiteralTitleArrivalRetargetsQualifiedFallback regresses
-// Codex round 2 P2: a row resolved via qualified-fallback (stage 2)
+// A row resolved via qualified-fallback (stage 2)
 // must flip to point at a later-arriving literal-title match (stage 1
 // always wins per renderer order at markdown.ts::resolveWikiBody).
 //
@@ -1001,8 +1001,8 @@ func TestWikiLinks_TitleRenameNoChangeIsNoOp(t *testing.T) {
 	}
 }
 
-// TestWikiLinks_TitleRenameRewritesSelfReferences — Codex round 5
-// finding 2 caught: when the renamed item mentions ITSELF by its
+// TestWikiLinks_TitleRenameRewritesSelfReferences:
+// when the renamed item mentions ITSELF by its
 // (now-old) title in its body, the cascade MUST also rewrite the
 // self-reference. Otherwise a title-only rename leaves the body's
 // `[[Old Title]]` bracket pointing at a now-non-existent title
@@ -1047,7 +1047,7 @@ func TestWikiLinks_TitleRenameRewritesSelfReferences(t *testing.T) {
 }
 
 // TestWikiLinks_RefShapedWithWhitespaceFallsThroughToTitle regresses
-// Codex round 10 P2: a ref-shaped body with surrounding whitespace
+// A ref-shaped body with surrounding whitespace
 // (`[[ TASK-5 ]]`) that doesn't match any actual ref falls through
 // to title lookup using the UNTRIMMED key — matches the renderer's
 // `key.toLowerCase()` (no trim) at markdown.ts::resolveWikiBody. An item
@@ -1078,8 +1078,8 @@ func TestWikiLinks_RefShapedWithWhitespaceFallsThroughToTitle(t *testing.T) {
 	}
 }
 
-// TestWikiLinks_SoftDeletedTargetRetargetsOnNewItem regresses Codex
-// round 8 P2: when item A "Foo" resolves a backlink and is then
+// TestWikiLinks_SoftDeletedTargetRetargetsOnNewItem regresses When item A "Foo"
+// resolves a backlink and is then
 // soft-deleted, a NEW item B titled "Foo" must flip the row to
 // point at B. The renderer ignores deleted-target links, so an
 // index that keeps pointing at deleted A means GetBacklinks(B)
@@ -1112,7 +1112,7 @@ func TestWikiLinks_SoftDeletedTargetRetargetsOnNewItem(t *testing.T) {
 }
 
 // TestWikiLinks_CascadeDoesNotCorruptLiteralPipeNeighbor regresses
-// Codex round 7 finding 2: when items A "Old Title" and B
+// When items A "Old Title" and B
 // "Old Title|alias" are both referenced from one source, renaming A
 // must NOT rewrite the B reference. The prior broad-regex cascade
 // matched `[[Old Title|alias]]` against the A-rename pattern,
@@ -1169,8 +1169,8 @@ func TestWikiLinks_CascadeDoesNotCorruptLiteralPipeNeighbor(t *testing.T) {
 	}
 }
 
-// TestWikiLinks_RefShapedFallsThroughToTitle regresses Codex round 6
-// finding 1. A ref-shaped body like `[[ISO-9001]]` should resolve to
+// TestWikiLinks_RefShapedFallsThroughToTitle regresses the case 1. A ref-shaped
+// body like `[[ISO-9001]]` should resolve to
 // an item literally titled "ISO-9001" when no ISO-9001 ref-item
 // exists — the renderer falls through (markdown.ts::resolveWikiBody), so the
 // index must too. Without the fallback, GetBacklinks would never
@@ -1245,7 +1245,7 @@ func TestWikiLinks_TitleAndContentRenameLeavesUserContentVerbatim(t *testing.T) 
 	}
 }
 
-// TestWikiLinks_DuplicateSlashTitleNoTheft — Codex round 5 finding 1
+// TestWikiLinks_DuplicateSlashTitleNoTheft:
 // regression. When item "tasks/Setup" exists and a source has a
 // backlink resolved to it via stage 1 (literal match), creating a
 // SECOND item titled "tasks/Setup" must NOT steal the row. The
@@ -1583,7 +1583,7 @@ func TestWikiLinks_SuppressionCoversImplementsChildLinkType(t *testing.T) {
 }
 
 // TestWikiLinks_SuppressionFallsBackToItemsParentIDColumn: the
-// belt-and-suspenders case raised by Codex review of the followup.
+// belt-and-suspenders case from the followup.
 // `items.parent_id` is empty in real workspaces because the HTTP
 // path uses Store.SetParentLink (item_links only), BUT
 // ItemCreate.ParentID and ItemUpdate.ParentID still write to the

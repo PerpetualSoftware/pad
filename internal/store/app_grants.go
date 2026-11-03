@@ -9,7 +9,7 @@ import (
 
 // App grants (SPEC-6 U5b-1, TASK-3399): the delegated grants a person gave
 // installed apps. They are not MCP connections, and have no oauth_connections
-// row (lead ruling Q1): the install fixes the workspace and the binding the
+// row: the install fixes the workspace and the binding the
 // issuance barrier wrote carries the kind, epoch and access. The console
 // lists them read-only and revokes them, through the binding.
 
@@ -139,8 +139,8 @@ func (s *Store) revokeAppGrantOnce(requestID string, attempt *int) (installID st
 		!errors.Is(err, sql.ErrNoRows) {
 		return "", fmt.Errorf("read app grant: %w", err)
 	}
-	// The install row lock the issuance barrier takes, taken first (codex
-	// U5b-1 r1): a refresh in flight either commits before this revoke, whose
+	// The install row lock the issuance barrier takes, taken first: a refresh in
+	// flight either commits before this revoke, whose
 	// updates below then see and deactivate its rows, or reads the tombstone
 	// this writes and refuses. On SQLite the single writer orders them.
 	if s.dialect.Driver() == DriverPostgres && installID != "" {
@@ -186,7 +186,7 @@ func (s *Store) revokeAppGrantOnce(requestID string, attempt *int) (installID st
 // account disable and account claim, each of which already holds the
 // person's users row.
 //
-// LOCKS (codex U5b-1 r2 and r3). It takes no install lock: the issuance
+// LOCKS. It takes no install lock: the issuance
 // barrier share-locks a delegated grant's person BEFORE anything else, so
 // holding the person's row already orders every issuance of their grants
 // against this. An install lock here deadlocked against owner-account
@@ -207,7 +207,6 @@ func (s *Store) revokeDelegatedGrantsTx(tx *sql.Tx, userID, workspaceID string) 
 	with := func(first any) []any { return append([]any{first}, args...) }
 	// Every binding of the person in scope, tombstones included, locked in
 	// request_id order before any child row, as install teardown does
-	// (codex U5b-1 r4).
 	where := `auth_kind = 'delegated' AND delegated_user_id = ?`
 	if workspaceID != "" {
 		where += ` AND workspace_id = ?`

@@ -112,7 +112,7 @@ func (s *Store) replaceWikiLinksScoped(tx *sql.Tx, sourceItemID, workspaceID, co
 		// HasDisplay (not Display != "") distinguishes "no pipe"
 		// from "pipe with empty display." Mirrors the client
 		// renderer's `displayOverride ?? title` semantics, which
-		// preserve "". Codex round-12 P3 (Phase 1).
+		// preserve "".
 		displayText := sql.NullString{}
 		if link.HasDisplay {
 			displayText = sql.NullString{String: link.Display, Valid: true}
@@ -130,7 +130,7 @@ func (s *Store) replaceWikiLinksScoped(tx *sql.Tx, sourceItemID, workspaceID, co
 		// title-fallback path: resolved → ref row, unresolved →
 		// broken ref row. Skipping the switch ensures we never
 		// reach the WikiLinkKindRef branch's title-fallback logic.
-		// Codex round 5 P2 caught the round-4 normalization being
+		// An earlier normalization was
 		// over-aggressive — it promoted to Kind=Ref and let title
 		// fallback create ghost backlinks the renderer wouldn't
 		// produce.
@@ -206,15 +206,13 @@ func (s *Store) replaceWikiLinksScoped(tx *sql.Tx, sourceItemID, workspaceID, co
 			//   (a) If HasDisplay, try FULL body (RawKey+"|"+Display)
 			//       as a title — covers literal-pipe titles like
 			//       "ISO-9001|Spec" matching `[[ISO-9001|Spec]]`.
-			//       Codex round 7 P1.
 			//   (b) Try the raw key string as a title — covers
 			//       `[[ISO-9001]]` matching an item titled "ISO-9001".
-			//       Codex round 6 P1.
 			//
 			// Use link.RawKey (untrimmed unescaped key) NOT link.Ref
 			// (canonical trimmed) for title fallback so an item
 			// literally titled `" TASK-5 "` resolves the same way
-			// the renderer does. Codex round 10 P2.
+			// the renderer does.
 			rawKey := link.RawKey
 			if rawKey == "" {
 				rawKey = link.Ref // defensive — shouldn't happen for ref kind
@@ -287,8 +285,7 @@ func (s *Store) replaceWikiLinksScoped(tx *sql.Tx, sourceItemID, workspaceID, co
 			//       Handles legacy items whose title literally
 			//       contains a `|` — `[[A|B]]` rendered as a link
 			//       to the item titled "A|B" before falling back
-			//       to the split interpretation. Codex round 3 P1
-			//       (this PR) caught the parity gap.
+			//       to the split interpretation.
 			//   (b) The split key (Title alone) as a title.
 			//
 			// Stage (a)'s match stores target_title=fullBody and
@@ -328,7 +325,7 @@ func (s *Store) replaceWikiLinksScoped(tx *sql.Tx, sourceItemID, workspaceID, co
 					break
 				}
 			}
-			// Codex round 4: when nothing resolved AND there was a
+			// When nothing resolved AND there was a
 			// pipe, key the broken row on the FULL BODY rather than
 			// the split key. The renderer's preferred interpretation
 			// for `[[A|B]]` is "title A|B" (markdown.ts::resolveWikiBody); if an
@@ -426,8 +423,7 @@ func resolveRefTx(tx *sql.Tx, s *Store, workspaceID, prefix string, number int, 
 //
 // The order matters for items whose titles legitimately contain `/`
 // — they must match in stage 1 before stage 2's split-then-lookup
-// could ever take a different interpretation. Codex caught this on
-// the planning round (finding #3).
+// could ever take a different interpretation.
 //
 // Unresolved titles return NULL so the row persists as a broken
 // title-link, matching the same broken-row semantics resolveRefTx
@@ -610,8 +606,8 @@ func (s *Store) cascadeTitleRename(tx *sql.Tx, renamedItemID, workspaceID, oldTi
 	// unrelated literal-pipe `[[OldTitle|alias]]` brackets that
 	// happened to mention items B/C with overlapping titles alone.
 	//
-	// Codex round 7 finding 2 caught the prior broad-regex
-	// approach corrupting unrelated brackets: items A "Old Title"
+	// This replaces the prior broad-regex
+	// approach, which corrupted unrelated brackets: items A "Old Title"
 	// and B "Old Title|alias" both referenced from one source, A
 	// renamed, RewriteWikiTitle's pattern (?i:Old Title) matched
 	// both A's `[[Old Title]]` row AND B's `[[Old Title|alias]]`
@@ -622,7 +618,7 @@ func (s *Store) cascadeTitleRename(tx *sql.Tx, renamedItemID, workspaceID, oldTi
 	// target_workspace_id IS NULL filter excludes Phase-2b cross-
 	// workspace rows (TASK-1597 owns those). Self-references
 	// INCLUDED so a renamed item's own body stays consistent
-	//; GetBacklinks filters self-links
+	// GetBacklinks filters self-links
 	// at query time so the panel behavior is unchanged.
 	//
 	// ORDER BY source_id, position DESC: descending position so
@@ -661,7 +657,7 @@ func (s *Store) cascadeTitleRename(tx *sql.Tx, renamedItemID, workspaceID, oldTi
 	var works []sourceWork
 	cursor := -1
 	// The SCAN is charged against the same budget as the rewrite loop below,
-	// and refuses DURING the scan (BUG-2804 / codex R4).
+	// and refuses DURING the scan (BUG-2804).
 	//
 	// `works` holds one entry per matching LINK ROW, not per source, and each
 	// entry carries that row's target_title. Since BUG-2833 / BUG-2831 a title
@@ -887,7 +883,7 @@ func (s *Store) cascadeTitleRename(tx *sql.Tx, renamedItemID, workspaceID, oldTi
 //	    references (no item with this title-in-collection existed).
 //	(3) Literal-arrival retarget (only when newTitle contains `/`) —
 //	    target_title=newTitle, target_item_id non-NULL and not us.
-//	    Handles the arrival-order case Codex round 2 caught: if a
+//	    Handles the arrival-order case: if a
 //	    row was previously resolved to a stage-2 qualified-fallback
 //	    target and now a literal-title match exists, the renderer's
 //	    stage-1 always wins, so the row flips to us.
@@ -898,8 +894,8 @@ func (s *Store) cascadeTitleRename(tx *sql.Tx, renamedItemID, workspaceID, oldTi
 // resolved via stage 1 — if a second item titled "Foo" arrives, the
 // renderer's Array.find() is order-dependent (we can't predict which
 // the UI shows), so we leave the row pointing at the original
-// resolution rather than churning. Codex round 3 P2 caught the
-// previous broader UPDATE silently stealing such rows.
+// resolution rather than churning. The
+// previous broader UPDATE silently stole such rows.
 func (s *Store) resolveBrokenTitleLinks(tx *sql.Tx, itemID, workspaceID, collSlug, title string) error {
 	plainTitleNorm := strings.ToLower(title)
 	qualifiedTitleNorm := strings.ToLower(collSlug + "/" + title)
@@ -908,8 +904,8 @@ func (s *Store) resolveBrokenTitleLinks(tx *sql.Tx, itemID, workspaceID, collSlu
 	// when target_item_id IS NULL (never resolved) OR its current
 	// target points at a soft-deleted (or otherwise gone) item.
 	// The renderer hides deleted-target links from clicks, so the
-	// index must follow. Codex round 8 P2 caught the prior NULL-only
-	// constraint missing the soft-delete-then-create-same-title
+	// index must follow. The prior NULL-only
+	// constraint missed the soft-delete-then-create-same-title
 	// case. Subquery against items.deleted_at via NOT EXISTS so the
 	// row qualifies when its target is missing entirely (defensive
 	// against hard-delete; FK only cascades on source, not target).
@@ -958,7 +954,7 @@ func (s *Store) resolveBrokenTitleLinks(tx *sql.Tx, itemID, workspaceID, collSlu
 	// different item, and our arrival makes the renderer prefer us
 	// via stage 1.
 	//
-	// Codex round 5 finding 1: the broad UPDATE could steal rows
+	// The broad UPDATE could steal rows
 	// resolved via stage-1 literal match if a SECOND item with the
 	// same slash-containing title arrives. Distinguish stage-1
 	// (literal) from stage-2 (qualified-fallback) resolution by
@@ -1029,7 +1025,7 @@ func splitRef(ref string) (prefix string, number int, ok bool) {
 //
 // Pushing both lists into SQL (rather than post-filtering in Go) is
 // what makes LIMIT/OFFSET pagination correct for guests / restricted
-// members. Codex review of TASK-1594 round-1 P1 + round-2 P1.
+// members. See TASK-1594.
 type BacklinksVisibility struct {
 	Unrestricted      bool
 	FullCollectionIDs []string
@@ -1112,7 +1108,7 @@ func (s *Store) GetBacklinks(targetItemID, workspaceID string, limit, offset int
 	//     on a live workspace) but ItemCreate/ItemUpdate still
 	//     support it as a direct store-API surface, so a test or
 	//     future code path could bypass item_links and exercise it.
-	//     Codex review of the initial TASK-1607 followup flagged
+	//     TASK-1607 followup identified
 	//     the risk.
 	//
 	// Children-suppression (s is a child of target) =
@@ -1240,7 +1236,7 @@ func (s *Store) GetBacklinks(targetItemID, workspaceID string, limit, offset int
 		if displayText.Valid {
 			// Pointer-typed so the JSON wire shape preserves the
 			// nil-vs-empty-string distinction even when the
-			// override is "". Codex round-13 P2.
+			// override is "".
 			s := displayText.String
 			bl.DisplayText = &s
 		}
@@ -1351,7 +1347,7 @@ func (s *Store) CountBacklinks(targetItemID, workspaceID string, vis BacklinksVi
 //
 //  1. Enumerate workspaces the requester can see via
 //     Store.GetUserWorkspaces (which already unions members +
-//     grant-only guest workspaces — Codex round of the planning
+//     grant-only guest workspaces — the planning
 //     phase identified this as broader than a membership query).
 //  2. For each non-target workspace, compute per-workspace
 //     visibility via Store.ResolveBacklinksVisibility (the request-
@@ -1379,8 +1375,8 @@ func (s *Store) CountBacklinks(targetItemID, workspaceID string, vis BacklinksVi
 // pre-consent token, allow all enumerated workspaces). A slice
 // containing "*" is wildcard consent (allow all). Otherwise only
 // workspaces whose slug appears in the list contribute source rows
-// — preserves consent scope across the cross-ws boundary (Codex
-// round 2 P1 caught the prior bypass: an MCP token consented for
+// — preserves consent scope across the cross-ws boundary (a
+// prior bypass: an MCP token consented for
 // workspace A still leaked cross-ws backlinks from workspace B
 // because the cross-ws path enumerated via the user's full
 // workspace list).
@@ -1458,8 +1454,8 @@ func (s *Store) GetCrossWorkspaceBacklinks(targetWorkspaceID, targetRef, request
 	// Per-workspace cap is offset+limit because, worst case, all
 	// matching rows come from a single workspace and the global
 	// paginate slice needs at least that many rows from that
-	// workspace. Codex round 1 P2 caught the prior 1000-row
-	// ceiling silently breaking pagination beyond offset>=1000;
+	// workspace. A prior 1000-row
+	// ceiling silently broke pagination beyond offset>=1000;
 	// the slice math is what bounds the result, not this cap.
 	perWsCap := offset + limit
 
@@ -1694,7 +1690,7 @@ func snippetAround(content string, position int) string {
 	// rune, advance forward past the continuation bytes so we don't
 	// emit invalid UTF-8. Going forward (not backward) keeps the
 	// snippet anchored slightly past the link rather than slightly
-	// before it. Codex round-8 P3.
+	// before it.
 	for end < n && (content[end]&0xC0) == 0x80 {
 		end++
 	}
@@ -1760,7 +1756,7 @@ func (s *Store) buildCascadeBody(content string, rewrites []links.BracketRewrite
 // Like its document-side sibling, this is a PERMANENT refusal — retrying the
 // same rename fails identically until the workspace's content changes — so it
 // must not be blurred into the contention vocabulary that asks a client to
-// retry (BUG-2798, lead ruling day-63).
+// retry (BUG-2798).
 var ErrItemRenameCascadeTooLarge = errors.New("store: item rename cascade exceeds the content bound")
 
 // ItemRenameCascadeTooLargeError carries the refusal's NUMBERS as typed fields
@@ -1832,7 +1828,7 @@ func newItemRenameCascadeTooLargeError(newTitle string, processed int64) error {
 // transaction that rolls back. Given a real workload three orders of magnitude
 // under the cap, the generous side is the correct side.
 //
-// WHAT IT BOUNDS, corrected after codex R4 caught this comment overstating it.
+// WHAT IT BOUNDS, corrected because an earlier version overstated it.
 // An earlier version claimed the cascade's own retention was "O(1) in the
 // linker count", with the remaining k-linear retention attributed to the outbox
 // snapshots (BUG-2827). That was wrong, and wrong in the direction that matters:

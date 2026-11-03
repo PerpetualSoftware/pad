@@ -10,7 +10,7 @@ import (
 
 // BUG-2788: the startup backfill persists an id on every stored entry that
 // lacks a usable, unique one, SILENTLY (no seq, no updated_at, no outbox
-// event; lead-ruled), and an item it repaired stays writable through the
+// event), and an item it repaired stays writable through the
 // doors the Q1 census found in use: a fields_patch update and an append.
 
 func storedNoteIDs(t *testing.T, s *Store, itemID string) []string {
@@ -106,7 +106,7 @@ func TestBackfillStructuredEntryIDs(t *testing.T) {
 		t.Errorf("second run: repaired=%d err=%v, want 0", again.RowsRepaired, err)
 	}
 
-	// The lead's pin: the repaired item stays writable through the doors the
+	// Pin: the repaired item stays writable through the doors the
 	// census found in use.
 	if _, err := s.UpdateItem(it.ID, models.ItemUpdate{FieldsPatch: map[string]any{"status": "done"}}); err != nil {
 		t.Errorf("fields_patch update after the backfill: %v", err)

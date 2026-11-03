@@ -128,7 +128,7 @@ const maxNotificationClaim = 100
 // dispatcher's rule for dropping a parked entry (created before the same
 // second-truncated cutoff). The zero time bounds nothing.
 //
-// exclude lists ids that are never selected (TASK-4032 codex r1 M1): the
+// exclude lists ids that are never selected (TASK-4032): the
 // dispatcher passes the rows it already delivered but could not record, so
 // they cannot fill the batch ahead of rows that still need a push. nil or
 // empty excludes nothing. The list is one bind parameter per id; the caller
@@ -336,7 +336,7 @@ func releaseSet(claimedAt string) string {
 // after since: the rate cap's input. sent_at is stored at whole seconds, so a
 // row in since's own second cannot be placed before or after since; truncating
 // the cutoff counts that whole second, which errs toward fewer pushes, never
-// past the cap (TASK-3939 B2a codex r2).
+// past the cap (TASK-3939).
 func (s *Store) CountNotificationsSentSince(userID string, since time.Time) (int, error) {
 	var n int
 	err := s.db.QueryRow(s.q(`

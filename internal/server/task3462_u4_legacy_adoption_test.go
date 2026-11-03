@@ -10,7 +10,7 @@ import (
 // TASK-3462 U4: items made before built-in origins were recorded get one by
 // exact title (or a playbook's invocation_slug), with no seed version, so they
 // read current (text unchanged) or unknown_origin (text differs) and the 2-way
-// preview applies. Dave's ruling: no historical hashes. A one-time pass, so a
+// preview applies. No historical hashes are used. A one-time pass, so a
 // later copy (which deliberately records no origin) is never adopted, and an
 // item created after origins began being recorded is left alone.
 
@@ -140,7 +140,7 @@ func TestTASK3462U4_MatchLegacyBuiltin(t *testing.T) {
 		{"wrong kind", "playbook", "Same title", "", "body one", ""},
 		{"playbook by slug", "playbook", "Renamed", "exes", "x", "p/x"},
 		{"no match", "convention", "Other", "", "", ""},
-		// codex r1: the title names one playbook and the slug another, so it
+		// The title names one playbook and the slug another, so it
 		// is ambiguous and nothing is adopted.
 		{"title and slug disagree", "playbook", "Exes", "wyes", "x", ""},
 	}
@@ -151,7 +151,7 @@ func TestTASK3462U4_MatchLegacyBuiltin(t *testing.T) {
 	}
 }
 
-// codex r1 (High): an item created in the very second the origin migration
+// An item created in the very second the origin migration
 // was applied (timestamps are second-precision) is still a legacy item.
 func TestTASK3462U4_SameSecondAsTheMigrationIsLegacy(t *testing.T) {
 	bothBackends(t, func(t *testing.T, srv *Server) {
@@ -174,7 +174,7 @@ func TestTASK3462U4_SameSecondAsTheMigrationIsLegacy(t *testing.T) {
 	})
 }
 
-// codex r2 (High): workspace import keeps each item's created_at from the
+// Workspace import keeps each item's created_at from the
 // bundle, so an old bundle imported after the origin migration but before the
 // pass first ran would look pre-cutoff. Every import mints a NEW workspace
 // (none writes into an existing one), so the workspace's own created_at is

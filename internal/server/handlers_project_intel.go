@@ -26,7 +26,7 @@ import (
 // reshaping/default changes made here reach the MCP transport automatically
 // with no matching change required there.
 //
-// Asymmetry resolved (TASK-1894 codex round 1 / BUG-1917): handleGetProjectStandup
+// Asymmetry resolved (TASK-1894, BUG-1917): handleGetProjectStandup
 // scopes its own completed/in_progress ListItems calls through
 // projectIntelVisibility (see below), and its dashboard-derived sections
 // (blockers, suggested_next) come from buildDashboardResponse — both now sit
@@ -93,7 +93,7 @@ func itemMatchesParentFilter(item models.Item, parent string) bool {
 //
 // navVisibleIDs is the UNNARROWED result of visibleCollectionIDs — returned
 // separately from collIDs because they serve different purposes and must
-// NOT be conflated (codex R1 P1, TASK-1916): collIDs (narrowed to
+// NOT be conflated (TASK-1916): collIDs (narrowed to
 // guestResourceFilter's fullCollIDs when the caller holds any item-level
 // grants) is correct for the LIST query, exactly matching
 // handleListItems' params.CollectionIDs narrowing. But
@@ -511,7 +511,7 @@ func (s *Server) handleGetProjectChangelog(w http.ResponseWriter, r *http.Reques
 		// full-access collections when the caller holds item-level
 		// grants) — mirrors handleListItems, which lists with the
 		// narrowed set but enriches with the original visibleIDs
-		// (codex R1 P1, TASK-1916: using collIDs here dropped parent
+		// (TASK-1916: using collIDs here dropped parent
 		// fields for items whose parent lives in an item-grant-only
 		// collection, silently breaking ?parent= for that guest).
 		s.enrichItemsWithParent(r, workspaceID, items, navVisibleIDs)

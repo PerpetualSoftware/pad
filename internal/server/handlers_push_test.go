@@ -35,8 +35,8 @@ func TestPushToItem_RequiresMessage(t *testing.T) {
 	}
 }
 
-// TestPushToItem_ResponseCarriesWorkspaceSlug covers the P2 finding
-// (dispatcher review round 2, codex): a successful push's JSON response
+// TestPushToItem_ResponseCarriesWorkspaceSlug covers the response shape:
+// a successful push's JSON response
 // must carry ref/workspace/pushed/message so `pad push --format json`
 // has something real to print, and workspace must be the CANONICAL
 // slug (not merely whatever the URL happened to contain) — same
@@ -71,7 +71,7 @@ func TestPushToItem_ResponseCarriesWorkspaceSlug(t *testing.T) {
 }
 
 // TestPushToItem_RejectsOverLongMessage covers the 400-over-cap
-// validation (dispatcher review round 1): a message whose COLLAPSED
+// validation: a message whose COLLAPSED
 // length exceeds maxPushMessageLen is rejected rather than silently
 // truncated — the message is the payload, not a preview, so truncation
 // would corrupt what the user asked for. Built with extra internal
@@ -263,8 +263,8 @@ func TestPushToItem_TargetedVanishedSessionMisses(t *testing.T) {
 	ch := connectWatchStream(ctx, t, ts.URL, tok.Token)
 	waitForWatchEvent(t, ch, 3*time.Second) // connected
 
-	// Bus growth, not just "this OTHER session didn't get it" (dispatcher
-	// review round 1, codex): a targeted miss must skip the publish
+	// Bus growth, not just "this OTHER session didn't get it":
+	// a targeted miss must skip the publish
 	// entirely, not merely fail to match anyone downstream — see
 	// pushResponse.DeliveredSessions' doc comment on why. This is the
 	// seam that fails if the pre-publish snapshot-and-skip ever gets
@@ -417,7 +417,7 @@ func TestPushToItem_TargetedSessionOfAnotherUserTreatedAsVanished(t *testing.T) 
 }
 
 // TestPushToItem_TargetSessionIDOverLengthRejected covers the 400-over-cap
-// guard (dispatcher review round 1, codex): target_session_id is opaque
+// guard: target_session_id is opaque
 // and unvalidated by format, but not unbounded — decodeJSON allows request
 // bodies up to 2 MiB, so without a length cap an authenticated caller
 // could park arbitrarily large garbage strings in the bus's replay
@@ -601,7 +601,7 @@ func TestPushToItem_OmittedTargetSessionIDMatchesPreS5RequestShape(t *testing.T)
 // it is NULL.
 //
 // Null is not zero on this field — it means "published, but the presence
-// registry could not be read to count it" (BUG-2698, codex round 1 P1).
+// registry could not be read to count it" (BUG-2698).
 // Asserting through this helper makes every existing test state its own
 // premise: it expected a REAL count, and a null would be a different
 // outcome rather than a 0 that happens to compare equal. The tests that

@@ -178,7 +178,7 @@ func TestTask3394_InstallTokenRequestRules(t *testing.T) {
 }
 
 // client_credentials is for installed apps only, and a bot subject is
-// refused for any client but its own install's (lead ruling R1).
+// refused for any client but its own install's.
 func TestTask3394_ClientCredentialsIsForInstallClientsOnly(t *testing.T) {
 	srv := appOAuthServer(t, true)
 	dcr := registerTestClient(t, srv, "https://app.test/cb")
@@ -248,7 +248,7 @@ func TestTask3394_MCPRefusesABotsServiceToken(t *testing.T) {
 	}
 }
 
-// Lead ruling R2: install clients do not use the public introspection
+// Install clients do not use the public introspection
 // endpoint, and it never describes their tokens.
 func TestTask3394_PublicIntrospectionAndInstallClients(t *testing.T) {
 	srv := appOAuthServer(t, true)
@@ -334,7 +334,7 @@ func TestTask3394_TokenEndpointWithMCPOffAndAppsOn(t *testing.T) {
 	}
 }
 
-// codex r1 P2: the install-caller refusal reads credentials exactly as fosite
+// The install-caller refusal reads credentials exactly as fosite
 // does: a percent-encoded Basic client id, and a bearer in the form.
 func TestTask3394_PublicIntrospectionCallerEncodings(t *testing.T) {
 	srv := appOAuthServer(t, true)
@@ -364,7 +364,7 @@ func TestTask3394_PublicIntrospectionCallerEncodings(t *testing.T) {
 	send("bearer in the form", url.Values{"token": {mcpTok}, "access_token": {tok}}, "", "")
 }
 
-// codex r2 P2: the token endpoint classifies the client from the body fosite
+// The token endpoint classifies the client from the body fosite
 // will parse, multipart included. A multipart request from an install client
 // must meet the same rules, never reach fosite's refresh-reuse handling with
 // a grant it does not own, and so never revoke another client's family

@@ -74,7 +74,7 @@ func TestChat_EnsureDM_CreateThenIdempotent(t *testing.T) {
 	f.must(f.request("POST", chatBase, "", map[string]any{}), 400, "missing key")
 }
 
-// TASK-4039 r3: human-created DMs must be reachable through X-Pad-Agent.
+// TASK-4039: human-created DMs must be reachable through X-Pad-Agent.
 func TestChat_Ensure_RejectsUnnormalisedAgentKey(t *testing.T) {
 	t.Setenv("PAD_DISABLE_RATE_LIMITS", "")
 	f := newChatFixture(t)
@@ -172,7 +172,7 @@ func TestChat_Send_CookieSessionIgnoresAgentHeader(t *testing.T) {
 			rr := httptest.NewRecorder()
 			f.srv.ServeHTTP(rr, r)
 			if authorization != "" {
-				// TASK-4039 r1: TokenAuth rejects a stray Basic header before session auth.
+				// TASK-4039: TokenAuth rejects a stray Basic header before session auth.
 				f.must(rr, 401, "cookie with non-Bearer authorization")
 				if chatObject(t, rr)["error"].(map[string]any)["message"] != "Invalid authorization header format" {
 					t.Fatal(rr.Body.String())
@@ -202,7 +202,7 @@ func TestChat_Send_RemoteMCPWithoutNameRefused(t *testing.T) {
 		for _, name := range []string{"", "rook"} {
 			r := httptest.NewRequest("POST", path+"/messages", strings.NewReader(`{"body":"mcp"}`))
 			if inProcess {
-				// TASK-4039 r1: the dispatcher authenticates through context, without a header.
+				// TASK-4039: the dispatcher authenticates through context, without a header.
 				r = r.WithContext(WithAPITokenAuth(WithCurrentUser(r.Context(), f.owner)))
 			} else {
 				r.Header.Set("Authorization", "Bearer "+f.ownerTok)
@@ -305,7 +305,7 @@ func TestChat_NonASCII64RuneAgentKeyRoundTrip(t *testing.T) {
 	}
 }
 
-// BUG-4055 r1: an agent whose header truncates must name itself by the
+// BUG-4055: an agent whose header truncates must name itself by the
 // normalised key, never by the raw header, on both the ensure body and the
 // unread filter. Kills: any non-empty agent body refused; the body or the
 // filter compared with the raw header instead of the normalised key.
@@ -399,7 +399,7 @@ func TestChat_Ensure_ReuseIsUncharged(t *testing.T) {
 	f := newChatFixture(t)
 	f.ensure("rook")
 	for i := 0; i < 40; i++ {
-		// TASK-4039 r2: all agents share the owner's creation bucket.
+		// TASK-4039: all agents share the owner's creation bucket.
 		rr := f.request("POST", chatBase, "rook", map[string]any{})
 		f.must(rr, 200, fmt.Sprintf("reuse %d", i+1))
 		if chatObject(t, rr)["created"] != false {
@@ -857,7 +857,7 @@ func TestChat_NonMemberAdminCookieGets404(t *testing.T) {
 	}
 }
 
-// TASK-4039 r1: an identical retry survives each kind of context access loss.
+// TASK-4039: an identical retry survives each kind of context access loss.
 func TestChat_Send_OpKeyReplayAfterContextMembershipRemoved(t *testing.T) {
 	for _, loss := range []string{"member removed", "workspace soft-deleted", "token access lost"} {
 		t.Run(loss, func(t *testing.T) {
@@ -920,7 +920,7 @@ func TestChat_Send_OpKeyReplayAfterContextMembershipRemoved(t *testing.T) {
 	}
 }
 
-// TASK-4039 r1: both replay paths spend exactly one token and share exhaustion.
+// TASK-4039: both replay paths spend exactly one token and share exhaustion.
 func TestChat_RateLimit_ReplayAfterContextLoss(t *testing.T) {
 	t.Setenv("PAD_DISABLE_RATE_LIMITS", "")
 	for _, sends := range []int{19, 20} {

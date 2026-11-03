@@ -269,13 +269,13 @@ func TestCollabUpgradeRejectsRestrictedMemberForeignCollection(t *testing.T) {
 }
 
 // TestCollabUpgradeRejectsGuestWithSiblingItemGrantOnly is a
-// regression test for the round-3 over-grant bug: a guest with an
+// regression test for an over-grant bug: a guest with an
 // item-level grant on item A could upgrade /api/v1/collab/{B} for a
 // sibling item B in the same collection because VisibleCollectionIDs
 // returns the collection (so the nav can show it) even though the
 // user only has access to one specific item in it.
 //
-// Strict per-item check (round 4 fix) must surface 404 for the
+// Strict per-item check must surface 404 for the
 // sibling.
 func TestCollabUpgradeRejectsGuestWithSiblingItemGrantOnly(t *testing.T) {
 	srv := testServerWithCollab(t)

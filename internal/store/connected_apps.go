@@ -180,13 +180,7 @@ func (s *Store) ListUserOAuthConnections(userID string) ([]models.OAuthConnectio
 
 		// Hydrate from oauth_connections + oauth_connection_workspaces.
 		// Three branches:
-		//   - access lookup errored      → surface (Codex #583 round 4:
-		//                                  silently broadening to "any
-		//                                  workspace" on a real store
-		//                                  failure could expose
-		//                                  workspaces the user explicitly
-		//                                  scoped out via the Phase D
-		//                                  mutation UI).
+		//   - access lookup errored      → surface (#583).
 		//   - HasConnection == true      → project flags + slugs.
 		//   - HasConnection == false     → defensive fallback (legacy
 		//                                  "any workspace, default-on
@@ -201,7 +195,7 @@ func (s *Store) ListUserOAuthConnections(userID string) ([]models.OAuthConnectio
 		}
 		if access.HasConnection {
 			conn.AllCurrentWorkspaces = access.AllCurrentWorkspaces
-			// Pre-Codex-#585-round-2 the wildcard case set
+			// Before #585 the wildcard case set
 			// AllowedWorkspaces to nil because the slugs were
 			// "irrelevant" (wildcard covers everything). But Phase D's
 			// mutation UI lets users PRE-STAGE workspaces while

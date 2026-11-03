@@ -68,7 +68,7 @@ type AgentBootstrap struct {
 	// BuiltinUpdates counts the conventions and playbooks Pad ships whose
 	// library text changed since this workspace's copy was made (unedited, or
 	// edited too), among the ones the caller can see in full (TASK-3462 U3a).
-	// Dave's ruling: an agent mentions it once; nothing updates on its own.
+	// An agent mentions it once; nothing updates on its own.
 	// omitempty, so a workspace with nothing on offer is byte-identical to
 	// before.
 	BuiltinUpdates int `json:"builtin_updates,omitempty"`
@@ -572,8 +572,8 @@ func (s *Server) BuildAgentBootstrap(workspaceID string, user *models.User, r *h
 	// A second read would cost a full collection scan per bootstrap for data
 	// this request is holding, and — worse — would let the payload mix two
 	// snapshots, so a concurrent collection edit could produce a response whose
-	// declarations disagree with the collection metadata beside them. Codex
-	// round 3. Note this list is the VISIBILITY-FILTERED one, which is why the
+	// declarations disagree with the collection metadata beside them. Note this
+	// list is the VISIBILITY-FILTERED one, which is why the
 	// per-source visibility gate below is belt-and-braces for restricted
 	// callers rather than the only check.
 	traited := traitedFromModelCollections(collections)
@@ -885,7 +885,7 @@ func conventionPriorityRank(p string) int {
 // workspace's always-on conventions would be a behavior change well outside
 // this unit — an agent losing rules it has been following is worse than a
 // large payload. Their budget is a separate question, noted rather than
-// bundled. Codex round 5.
+// bundled.
 const bootstrapGenericIncludeCap = 50
 
 // BootstrapIncludeGroup is one declared boot payload rendered generically:

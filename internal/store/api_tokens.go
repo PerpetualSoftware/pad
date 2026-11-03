@@ -312,7 +312,7 @@ func (s *Store) ValidateToken(token string) (*models.APIToken, error) {
 }
 
 // ValidateTokenForLiveness answers "is this token still valid" WITHOUT touching
-// `last_used_at` (BUG-3007, codex round 1).
+// `last_used_at` (BUG-3007).
 //
 // Two reasons it is a separate door rather than a flag at the call site:
 //

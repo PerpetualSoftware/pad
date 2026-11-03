@@ -22,7 +22,7 @@ import (
 // under the install row's lock with a binding that records the install's
 // epoch. The app API (U6) checks those tokens in-process through
 // introspectAppToken, never through the public /oauth/introspect, which
-// refuses install clients entirely (lead ruling R2).
+// refuses install clients entirely.
 
 // requestClientID returns the client id a token or introspection request
 // authenticates as: HTTP Basic first (RFC 6749 §2.3.1), then the form.
@@ -123,7 +123,7 @@ func (s *Server) grantInstallServiceToken(ar fosite.AccessRequester, client *mod
 }
 
 // isOwnInstallBot reports whether user is the bot of client's install: the
-// one subject an install client may hold a token for (lead ruling R1).
+// one subject an install client may hold a token for.
 func (s *Server) isOwnInstallBot(client *models.OAuthClient, user *models.User) bool {
 	if client == nil || !client.IsInstallClient() || user == nil || !user.IsApp() {
 		return false
@@ -213,11 +213,11 @@ func (s *Server) introspectAppToken(ctx context.Context, token string) (*AppToke
 
 // introspectionCallerIsInstall reports whether a public /oauth/introspect
 // request authenticates as an install client, by Basic credentials or by an
-// install client's access token as the Bearer (lead ruling R2: install
+// install client's access token as the Bearer (install
 // clients do not use the public endpoint).
 //
-// It reads the caller exactly as fosite's NewIntrospectionRequest does (codex
-// r1): a bearer access token from the header, the form or the query
+// It reads the caller exactly as fosite's NewIntrospectionRequest does: a bearer access
+// token from the header, the form or the query
 // (fosite.AccessTokenFromRequest) first, and only without one, the Basic
 // credentials with the client id percent-decoded.
 func (s *Server) introspectionCallerIsInstall(r *http.Request) bool {

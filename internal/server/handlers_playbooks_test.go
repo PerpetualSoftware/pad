@@ -357,7 +357,7 @@ func TestParsePlaybookCLIArgsOptionalNotPositional(t *testing.T) {
 }
 
 // TestCoercePlaybookValueNumberRejectsBadInput verifies the number
-// coercion rejects partial tokens, NaN, and Inf — Codex round 1
+// coercion rejects partial tokens, NaN, and Inf
 // caught Sscanf("%g") accepting "1abc" silently.
 func TestCoercePlaybookValueNumberRejectsBadInput(t *testing.T) {
 	spec := PlaybookArgumentSpec{Name: "limit", Type: "number"}

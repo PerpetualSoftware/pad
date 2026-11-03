@@ -76,7 +76,7 @@ const (
 	// does. CSRFProtect reads this (via isValidatedBearerAuth) to tell
 	// "TokenAuth validated this Bearer credential" apart from "the
 	// request merely carries an Authorization: Bearer header TokenAuth
-	// never checked or rejected" — see the codex-round-3 fix note there
+	// never checked or rejected" — see the fix note there
 	// (TASK-1932).
 	ctxValidatedSessionBearer contextKey = "validated_session_bearer"
 
@@ -664,7 +664,7 @@ func isValidatedSessionBearerAuth(r *http.Request) bool {
 // rejected (the rejectInvalidBearer fallthrough on public API paths). Both
 // validated forms are unguessable secrets a CSRF attacker can't forge, so
 // CSRFProtect treats them as exempt regardless of whether a session cookie
-// is also present on the same request (TASK-1932, codex round 3).
+// is also present on the same request (TASK-1932).
 func isValidatedBearerAuth(r *http.Request) bool {
 	return isAPITokenAuth(r) || isValidatedSessionBearerAuth(r)
 }
@@ -1417,8 +1417,8 @@ func tokenScopeAllows(scopesJSON, method, path string) bool {
 }
 
 // isReadScopePOSTPath reports whether path is a POST a read-scoped token
-// may make because the handler behind it changes nothing (TASK-2863, lead
-// ruling option A on HT-1394). Exactly one path qualifies:
+// may make because the handler behind it changes nothing (TASK-2863,
+// HT-1394). Exactly one path qualifies:
 //
 //	/api/v1/workspaces/{ws}/playbooks/{ref}/run
 //

@@ -182,8 +182,7 @@ func TestApplyFailureAfterRowWriteAnswersContentNotApplied(t *testing.T) {
 	// The silent applier ACCEPTS the request and never acks, so this is the TIMED-OUT
 	// case: the request went out on the wire and the peer might have applied it. The
 	// response must say the outcome is unknown rather than assert it did not land —
-	// asserting that would state as fact something the server cannot know (codex
-	// round 1).
+	// asserting that would state as fact something the server cannot know.
 	if got, _ := details["content_outcome"].(string); got != "unknown" {
 		t.Errorf("content_outcome = %q, want \"unknown\": ErrAllAppliersTimedOut is only returned "+
 			"after an applier_request reached a peer, so the content may in fact have been applied", got)
@@ -371,7 +370,7 @@ func TestApplierSettleBudgetCoversTheMeasuredAnchoringWindow(t *testing.T) {
 // TestClassifyApplyOutcomeIsUnknownUnlessProven covers the discriminator directly,
 // including the cases the end-to-end tests cannot reach.
 //
-// Codex round 2 found the first version of this classification wrong: it asked
+// An earlier version of this classification was wrong: it asked
 // whether the error was a timeout and called everything else "not applied", which is
 // a false claim for a restore storm that sent requests across several elections, and
 // for a registerPendingAck failure returning a raw error after an earlier attempt had
@@ -508,7 +507,7 @@ func TestBUG3542_UnconfirmedEditsRefusalShape(t *testing.T) {
 		t.Fatalf("GetItem: %v", err)
 	}
 
-	// Tokenless, by ruling: refused too.
+	// Tokenless: refused too.
 	rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+item.ID,
 		map[string]interface{}{"title": "Renamed alongside", "content": "would replace the typing"})
 	if rr.Code != http.StatusConflict {

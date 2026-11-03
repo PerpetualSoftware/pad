@@ -249,7 +249,7 @@ func (s *Server) sessionStatePayload(authenticated bool, user *models.User) map[
 //  2. Neither X-Forwarded-For nor X-Real-IP is set. A legitimate local CLI
 //     talking directly to the Pad port never sets these headers. A reverse
 //     proxy forwarding public traffic always does — so this rejects the
-//     regression Codex flagged on PR #175: a local Caddy/nginx proxying
+//     regression a review flagged on PR #175: a local Caddy/nginx proxying
 //     public traffic to Pad on 127.0.0.1 would otherwise make every
 //     request look loopback and reopen the bootstrap gate.
 //
@@ -500,8 +500,8 @@ func (s *Server) destroyReplacedSessions(r *http.Request) {
 // makes Docker / Unraid bootstrapping possible without `docker exec`.
 // See TASK-1167 / PLAN-1166 and the bootstrap.go file for details.
 //
-// Cloud mode NEVER accepts the token bypass (D2/D10 — F2 from codex
-// review). A cloud bootstrap must come over loopback from the same
+// Cloud mode NEVER accepts the token bypass (D2/D10 — F2). A cloud bootstrap
+// must come over loopback from the same
 // host as part of the operator's provisioning workflow.
 //
 // The mutex wraps the entire validate → UserCount-check → CreateUser →
@@ -779,7 +779,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// would have been refused without one. Only then does an invitation that
 	// fails at its claim take the account with it; where registration is open
 	// anyway, the account is kept and the invitation reported not applied
-	// (BUG-3438, lead ruling).
+	// (BUG-3438).
 	inviteIsAdmission := invitation != nil &&
 		!(isAdmin && (!isAPITokenAuth(r) || s.adminAcceptsAPITokens())) &&
 		!(s.cloudMode && s.emailConfigured())
@@ -906,8 +906,8 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// best-effort: a send failure keeps the account (the token exists) and the
 	// user recovers via POST /auth/resend-verification.
 	//
-	// It runs BEFORE the invitation's membership and accept writes (BUG-3348
-	// codex r2): once a membership row exists a bare user delete cannot roll the
+	// It runs BEFORE the invitation's membership and accept writes (BUG-3348):
+	// once a membership row exists a bare user delete cannot roll the
 	// account back, and the invitation path's own early returns would skip
 	// a later send, stranding an unverified account with no link. A rollback
 	// further down can leave an already-sent link pointing at a deleted
@@ -1012,13 +1012,14 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		if addErr != nil {
 			// RECONCILE BEFORE DESTROYING — here too.
 			//
-			// Round 1 added an account-delete rollback here and got the ORDER of
+			// An earlier account-delete rollback here got the ORDER of
 			// reasoning wrong: the store returns the raw tx.Commit() error, so a
 			// lost acknowledgement LANDS THE MEMBERSHIP (and, since BUG-3438, the
-			// claim in the same transaction) and reports failure. Deleting the account on that error destroys a signup that
-			// actually succeeded — the BUG-3026 shape, reintroduced forty lines
+			// claim in the same transaction) and reports failure. Deleting the
+			// account on that error destroys a signup that actually succeeded — the
+			// BUG-3026 shape, reintroduced forty lines
 			// from the helper written to prevent it, by a fix for a different
-			// finding in the same unit.
+			// problem in the same unit.
 			//
 			// So ask what the row says before touching anything.
 			// Through the same seam the helper uses, so both arms of this
@@ -1083,7 +1084,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 				// ABSENT, on open registration: the account did not need the
 				// invitation, so it is KEPT and joins nothing; the invitation
 				// stays pending, and the account can accept it from its own
-				// list once whatever refused it clears (lead ruling).
+				// list once whatever refused it clears.
 				slog.Warn("invitation signup: the claim was refused; registration is open, so the account is "+
 					"kept and joins nothing",
 					"workspace_id", invitation.WorkspaceID, "user_id", user.ID, "error", addErr)
@@ -1433,7 +1434,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	// TASK-3365: the sessions presented here end below, so their OWNERS' live
 	// connections re-check their credential now. Resolved per session, not
 	// taken from the request's principal: a request can carry one user's
-	// bearer and another's cookie, and both are deleted (codex r1 on PR2).
+	// bearer and another's cookie, and both are deleted.
 	var loggedOut []string
 	defer func() {
 		for _, id := range loggedOut {

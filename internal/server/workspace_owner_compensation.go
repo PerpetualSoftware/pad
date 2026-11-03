@@ -17,7 +17,7 @@ import (
 // error was made visible by TASK-2658 and stayed non-fatal; this makes the
 // door answer "a usable workspace, or nothing".
 //
-// WHY A COMPENSATION RATHER THAN ONE TRANSACTION. The ruling's first choice was
+// WHY A COMPENSATION RATHER THAN ONE TRANSACTION. The first choice was
 // create + seed + owner in a single transaction. Measured, that is a store-wide
 // refactor rather than a unit: SeedCollectionsFromTemplate issues no SQL of its
 // own but orchestrates five public Store methods, none of which has an
@@ -136,8 +136,7 @@ func (s *Server) addOwnerOrCompensate(door, workspaceID, workspaceSlug, userID s
 }
 
 // removeUnusableWorkspace takes back a workspace that cannot be made usable,
-// and is the shared removal both of this door's failure points use (BUG-2715,
-// codex round 4).
+// and is the shared removal both of this door's failure points use (BUG-2715).
 //
 // The owner-add failure was compensated first and the SEED failure was not,
 // which left the invariant true of one step and false of the other: a seeding

@@ -11,7 +11,7 @@ import (
 )
 
 // TestItemRenameCascadeTooLarge_IsPermanentShapedNotRetryable pins the STATUS
-// and shape of the item rename cascade refusal (BUG-2804, codex R1 P2).
+// and shape of the item rename cascade refusal (BUG-2804).
 //
 // The store's refusal is a deliberate, permanent decline: the request was
 // understood, and retrying it unchanged will be declined identically until the
@@ -20,7 +20,7 @@ import (
 // says the server broke and implies a retry might help. Both halves of that are
 // false.
 //
-// The exact status is pinned rather than "not 500", per the BUG-2803 round-4
+// The exact status is pinned rather than "not 500", per the BUG-2803
 // lesson: a test asserting only the absence of the wrong answer passes on any
 // of several other wrong answers.
 //
@@ -79,8 +79,8 @@ func TestItemRenameCascadeTooLarge_IsPermanentShapedNotRetryable(t *testing.T) {
 	}
 	// The actual CAP, not the word "maximum" — a message reading "maximum
 	// exceeded" would satisfy a word check and tell the caller nothing about
-	// how far over they are. Same reasoning as the document twin's codex
-	// round 4.
+	// how far over they are. Same reasoning as the document twin's
+	// test.
 	if !strings.Contains(respBody, fmt.Sprint(int64(store.MaxItemRenameCascadeBytes))) {
 		t.Errorf("response does not state the limit %d: %s", int64(store.MaxItemRenameCascadeBytes), respBody)
 	}
@@ -146,15 +146,15 @@ func TestItemRename_OrdinaryCascadeStillSucceeds(t *testing.T) {
 	}
 }
 
-// TestItemRenameCascadeTooLarge_MappedOnTheCollabSnapshotPath closes codex R2's
-// second finding.
+// TestItemRenameCascadeTooLarge_MappedOnTheCollabSnapshotPath closes the
+// collab-snapshot gap.
 //
 // handleUpdateItem reaches store.UpdateItemWithParentLink from THREE places,
 // each with its own error block: the plain path, the collab-snapshot callback,
-// and the collab-edit callback. R1 mapped the first. This pins the second, on
+// and the collab-edit callback. The first was already mapped. This pins the second, on
 // which the identical store refusal was still answering 500.
 //
-// Why the miss is worth naming: the CONVE-18 sweep I ran after R1 asked "do
+// Why the miss is worth naming: the CONVE-18 sweep run after that asked "do
 // other HANDLERS reach this?" and correctly answered no. It never asked
 // "does THIS handler reach it more than once?" — so the population was scoped
 // to the wrong axis, and a grep for the store call inside one function would
@@ -207,7 +207,7 @@ func TestItemRenameCascadeTooLarge_MappedOnTheCollabSnapshotPath(t *testing.T) {
 }
 
 // TestItemRenameCascadeTooLarge_CollabEditPathDoesNotRunTheCascadeTwice closes
-// the other half of codex R2's second finding.
+// the other half of the same gap.
 //
 // The collab-edit path USED TO treat most callback errors as recoverable and fall
 // through to a direct write — graceful degradation for applier timeouts. A cascade
@@ -242,7 +242,7 @@ func TestItemRenameCascadeTooLarge_CollabEditPathDoesNotRunTheCascadeTwice(t *te
 
 	// Body size chosen so perLinker does NOT divide the cap evenly, and the
 	// assertion below is a TOTAL rather than an exact count: the scan charges
-	// the same budget before the rewrite loop runs (BUG-2804 / codex R4), so
+	// the same budget before the rewrite loop runs (BUG-2804), so
 	// the admitted count is a fixture detail that shifts when that charge
 	// changes. Pinning it exactly made this test fail for a reason unrelated to
 	// the property it exists for.

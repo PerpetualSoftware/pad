@@ -178,7 +178,7 @@ func validateCollectionTraits(raw string) error {
 // resolvers still have to pick one, and they pick by collection order, so
 // which collection receives an imported artifact or answers `/pad <slug>`
 // would depend on sort_order and creation time. That is a coin flip wearing a
-// rule's clothes. Codex round 7.
+// rule's clothes.
 //
 // NOT THE GUARANTEE — say so plainly rather than let the name imply more than
 // it delivers. This reads and then writes without holding a
@@ -351,7 +351,7 @@ func (s *Server) handleCreateCollection(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// A create is announced as the existing collection_updated kind (BUG-3447,
-	// lead: prefer an existing kind), carrying the new collection's stable id
+	// preferring an existing kind), carrying the new collection's stable id
 	// and slug. Open tabs reload their collection list on it, which is what
 	// lets the first-run launchpad show a collection an agent just made
 	// instead of waiting for some other event to refresh the sidebar.
@@ -516,7 +516,7 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// Field-value migrations (select-option renames) are applied ATOMICALLY
-	// inside UpdateCollection's transaction (BUG-2265 Codex P1) — a migration
+	// inside UpdateCollection's transaction (BUG-2265) — a migration
 	// failure rolls back the schema change AND the concurrency-token advance,
 	// so nothing is committed and the caller's retry works cleanly. Leave them
 	// on the input rather than extracting + running them as a separate,
@@ -580,10 +580,10 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 	// ALWAYS routed by the OLD slug (coll.Slug) — the slug sibling tabs still
 	// address. On a rename the event carries the NEW slug so those tabs can
 	// re-target instead of silently hitting the dead old slug on their next
-	// action (Codex P2). No actor/source: an item-grant subscriber receives
-	// this event, so it must not leak the owner's identity/source (Codex P1).
+	// action. No actor/source: an item-grant subscriber receives
+	// this event, so it must not leak the owner's identity/source.
 	//
-	// items_changed (Codex round 6/7 P1): a requested field migration mutates
+	// items_changed: a requested field migration mutates
 	// item `fields` JSON and advances item `seq`. Rather than a SEPARATE
 	// items_bulk_updated event (which carries op/count for items an item-grant
 	// subscriber can't see, and isn't rename-routed), fold a SANITIZED bool onto
@@ -653,7 +653,7 @@ func writeCollectionUpdateConflictError(w http.ResponseWriter, ref string, confl
 // reconcile bool). Deliberately SANITIZED — no Actor / ActorName / Source, no
 // per-item data — because this event is delivered to item-grant subscribers,
 // who must not learn the owner's identity/source or
-// anything about items they can't see (Codex P1). Clients only need the
+// anything about items they can't see. Clients only need the
 // slug(s) + itemsChanged to refresh their snapshot / re-target / reconcile.
 func (s *Server) publishCollectionEvent(eventType, workspaceID, collectionID, collectionSlug, newSlug string, itemsChanged bool) {
 	if s.events == nil {
@@ -692,7 +692,7 @@ func (s *Server) handleDeleteCollection(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Optimistic-concurrency token (BUG-2265 Codex round 8): a caller that
+	// Optimistic-concurrency token (BUG-2265): a caller that
 	// resolved the collection by stable id passes the updated_at it read so the
 	// delete 409s if a concurrent RENAME re-owned this slug with a DIFFERENT
 	// collection (or the collection changed) — never archiving the wrong one.

@@ -18,7 +18,7 @@ import (
 // indexes differently after a move, and a schema change can invalidate every
 // item in a collection with no item write at all. That second case is handled
 // by ReindexCollectionRelationLinks, called inside the schema-update
-// transaction (lead ruling on the U5 contract) — "it fixes itself on the next
+// transaction — "it fixes itself on the next
 // write" is false for items nobody edits, which is the same argument that
 // made this index materialised rather than derived.
 //
@@ -185,7 +185,7 @@ func relationKeysFromSchemaJSON(schemaJSON string) map[string]struct{} {
 // ReindexCollectionRelationLinks rebuilds the reverse index for every live
 // item in one collection.
 //
-// WHY THIS EXISTS (lead ruling on the U5 contract). The index is a function of
+// WHY THIS EXISTS. The index is a function of
 // (blob, schema), and a SCHEMA change moves the second half without touching a
 // single item. Declare a `relation` field on a collection that already holds
 // values under that key, or retype one away, and every existing item is
@@ -259,7 +259,7 @@ const relationBacklinkCap = 300
 // GetRelationBacklinks returns the live items that reference targetItemID
 // through a `relation` field, filtered to what this viewer may see.
 //
-// VISIBILITY IS THE VIEWER'S, NOT THE TRUTH (ratified, day 55). `vis` is built
+// VISIBILITY IS THE VIEWER'S, NOT THE TRUTH (ratified). `vis` is built
 // from ResolveBacklinksVisibility — the same resolver the wiki-link reverse
 // side uses, reused verbatim rather than reinvented — and the consequence is
 // on the record deliberately: "Referenced by 3" means "by 3 you can see". A
@@ -368,7 +368,7 @@ func (s *Store) GetRelationBacklinks(targetItemID, workspaceID string, limit, of
 		var b RelationBacklink
 		// item_number is NULLABLE on legacy rows — scanning it into an int
 		// errors and would take the whole list down, the same defect U6 shipped
-		// in hydration (codex round 7 there).
+		// in hydration.
 		var number sql.NullInt64
 		var schemaJSON sql.NullString
 		var prefix, collectionID string

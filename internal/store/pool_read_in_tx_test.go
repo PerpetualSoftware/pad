@@ -30,7 +30,7 @@ func TestPoolReadInsideTransaction_RenameAndItemUpdateDoNotStall(t *testing.T) {
 	// theory that the instrument was SQLite-shaped, which left the
 	// content-edit leg — the most reachable instance of the hazard — never
 	// exercised against the pool the production deployment actually uses
-	//. A one-connection pool is a property of database/sql,
+	// A one-connection pool is a property of database/sql,
 	// not of either driver.
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "PoolRead")
@@ -67,8 +67,8 @@ func TestPoolReadInsideTransaction_RenameAndItemUpdateDoNotStall(t *testing.T) {
 		}},
 		// A FIELD update reaches doneFieldKey, which reads the collection —
 		// an INDIRECT pool read that a grep for `s.db` inside transaction
-		// bodies cannot see, and that neither leg above touches (codex round
-		// 8). Three legs on the item path, each reaching a different read.
+		// bodies cannot see, and that neither leg above touches. Three legs on
+		// the item path, each reaching a different read.
 		{"item field update", func() error {
 			fields := `{"status":"done"}`
 			_, err := s.UpdateItemWithParentLink(item.ID, models.ItemUpdate{Fields: &fields}, nil, nil)

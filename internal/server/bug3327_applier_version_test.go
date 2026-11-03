@@ -86,7 +86,7 @@ func TestBUG3327_ApplierPathBodyEditLeavesAVersion(t *testing.T) {
 		t.Errorf("newest version created_by = %q, want agent", newest.CreatedBy)
 	}
 
-	// The tab's flush lands the new body in the row (codex review). It must
+	// The tab's flush lands the new body in the row. It must
 	// not store the replaced body a second time, which would put the agent's
 	// change in History under the tab user's row; and the chain must still
 	// resolve, with the agent's row's change reading previous -> next.
@@ -129,7 +129,7 @@ func TestBUG3327_ApplierPathBodyEditLeavesAVersion(t *testing.T) {
 	}
 }
 
-// The flush dedupe is limited to flushes (codex review, round 2): a user's
+// The flush dedupe is limited to flushes: a user's
 // A->B (versioned) then B->A (throttled, same writer) leaves the newest row
 // holding A, and a DIFFERENT writer's A->C must still get its own row rather
 // than have its change read as the first writer's.
@@ -166,7 +166,7 @@ func TestBUG3327_DedupeSkipsOnlyFlushes(t *testing.T) {
 	}
 }
 
-// Codex review, round 3: an ORDINARY flush (no applier edit before it) after a
+// An ORDINARY flush (no applier edit before it) after a
 // throttled revert to a versioned body must still version. Only an
 // applier-path row, which postdates the item's last direct content write, may
 // be treated as the flush's duplicate.

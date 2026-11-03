@@ -62,7 +62,7 @@ func TestBUG3769_EveryDoorSlugifiesTheWorkspaceSlug(t *testing.T) {
 
 	// Names slugify keeps nothing of fall back to "workspace", and the second
 	// such workspace takes the next suffix. Its own sequence, so it does not
-	// depend on the table's order (hunter r1 on BUG-3769).
+	// depend on the table's order (BUG-3769).
 	for i, name := range []string{"日本語", "!!!"} {
 		want := "workspace"
 		if i == 1 {

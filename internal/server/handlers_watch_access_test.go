@@ -11,7 +11,7 @@ import (
 // noBearerRequest returns a bare request with no Authorization header —
 // isBearerAuth(r) reports false for it, matching a cookie-session-style
 // caller. None of this file's tests exercise an admin user, so the
-// bearer-vs-cookie distinction (TASK-2533 codex round 2 finding 2) is
+// bearer-vs-cookie distinction (TASK-2533) is
 // inert for them either way; this just satisfies
 // computeWatchAccessVisibility's signature.
 func noBearerRequest() *http.Request {
@@ -19,7 +19,7 @@ func noBearerRequest() *http.Request {
 }
 
 // TestFilterWatchesByCurrentAccess_ExcludesRevokedMembership covers
-// codex round-1 finding 1: a watch row survives a workspace membership
+// A watch row survives a workspace membership
 // removal (nothing deletes it), so without this filter a removed user
 // would keep seeing / receiving nudges for a workspace they can no
 // longer access.
@@ -168,7 +168,7 @@ func TestListWatches_ExcludesRevokedAccess(t *testing.T) {
 }
 
 // TestFilterWatchesByCurrentAccess_ItemGrantDoesNotWidenToSiblingItem
-// covers TASK-2533 codex round 2 finding 1: VisibleCollectionIDs /
+// covers TASK-2533: VisibleCollectionIDs /
 // GuestVisibleCollectionIDs deliberately over-widen for navigation — a
 // collection ID is included in their result if the caller has an item
 // grant on ANY item inside it, explicitly leaving item-level narrowing

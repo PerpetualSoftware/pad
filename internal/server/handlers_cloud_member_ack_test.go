@@ -115,7 +115,7 @@ func assertAckLossKeepsTheWorkspace(t *testing.T, srv *Server) {
 	// So a commit count of 1 here is positive evidence that the first write landed.
 	//
 	// (Measured, after a first draft asserted 2 on the assumption that a retry
-	// reaches COMMIT — codex round 1 P3 asked for the retry to be pinned, and the
+	// reaches COMMIT — the retry should be pinned, and the
 	// obvious way to pin it encodes a mechanism that does not hold.) The retry's
 	// existence is pinned by its log line below instead.
 	if n := atomic.LoadInt32(&commits); n != 1 {
@@ -330,8 +330,8 @@ func TestAutoCreateWorkspace_WrongRoleMembershipKeepsTheWorkspace(t *testing.T) 
 
 	// THE POINT OF THIS TEST, and the count above cannot carry it: the owner arm
 	// keeps the workspace too, so folding wrong-role back into "a row exists means
-	// success" — the exact defect round 1 found — would pass the count check
-	//. What must be true is that this is reported as a FAILURE
+	// success" — the exact defect this test guards — would pass the count check
+	// What must be true is that this is reported as a FAILURE
 	// needing a human, not as a success.
 	logged := logBuf.String()
 	if !strings.Contains(logged, "carries a "+"different role") {

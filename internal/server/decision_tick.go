@@ -14,7 +14,7 @@ import (
 // The decision tick: the half of TASK-3117 that does the provider calls.
 //
 // Writes only mark an evaluation owed (a decision_jobs row, in the write's own
-// transaction — the day-73 async-only ruling). This loop claims owed jobs and
+// transaction — the async-only design). This loop claims owed jobs and
 // runs them. Same settled sweeper shape as reminder_tick.go: config struct
 // with its own mutex and stop channel, tracked by Server.bg so Stop() drains
 // it before the DB closes, recoverSweeper on the goroutine, and an injectable

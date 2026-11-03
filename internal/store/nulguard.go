@@ -97,8 +97,7 @@ func (e *InvalidTextParameterError) Unwrap() error { return ErrInvalidTextParame
 //     this comment justified it wrongly: it claimed such a value "is, on any
 //     column, a value Postgres would refuse the moment anything parsed it".
 //     That is false. Nothing parses a TEXT column, and Postgres stores the
-//     escape there as six ordinary characters quite happily (codex round 1,
-//     finding 3).
+//     escape there as six ordinary characters quite happily.
 //
 //     So the honest statement of the trade: a user pasting a JSON document
 //     that contains a live NUL escape into an item's CONTENT is refused,
@@ -110,7 +109,7 @@ func (e *InvalidTextParameterError) Unwrap() error { return ErrInvalidTextParame
 //     classification back at the sites this design exists to stop depending on,
 //     and the failure mode of over-refusal is a loud 400 naming the rule, while
 //     the failure mode of under-refusal is a NUL at rest that only the next
-//     dialect migration discovers. Flagged to the lead as a measured trade
+//     dialect migration discovers. A measured trade, flagged
 //     rather than buried here; if it is ever paid down, the mechanism is S2's
 //     column-attached triggers, which DO have the classing this layer lacks.
 //
@@ -126,7 +125,7 @@ func (e *InvalidTextParameterError) Unwrap() error { return ErrInvalidTextParame
 // bound, checks it, and WRITES THE RESOLVED VALUE BACK so the driver binds the
 // same thing that was inspected.
 //
-// Three defects in the first version, all found by codex round 3, and all of
+// Three defects in the first version, all of
 // them the same underlying error — inspecting one value and forwarding another:
 //
 //   - Value() was called for the check and the ORIGINAL Valuer was forwarded,
@@ -339,7 +338,6 @@ func (d guardDriver) Open(name string) (driver.Conn, error) {
 // The interface matters because without it sql.Open falls back to a legacy
 // connector that IGNORES the context, so a cancelled or deadlined request can
 // leave a connection attempt running — on pgx, up to its 60-second dial timeout
-// .
 type guardDriverCtx struct{ guardDriver }
 
 func (d guardDriverCtx) OpenConnector(name string) (driver.Connector, error) {

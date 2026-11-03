@@ -102,7 +102,7 @@ func TestBulkItems_RefusesAFieldTheItemsCollectionDoesNotDeclare(t *testing.T) {
 }
 
 // The same refusal on a status move COMBINED with a collection move
-// (bulkMoveCollection), found by review round 1. MigrateFields keeps only the
+// (bulkMoveCollection). MigrateFields keeps only the
 // target's declared fields, but the status override is merged after it, so a
 // target with no `status` field used to receive an orphan. `collection` is one
 // per request, so the control is a second request: the identical move into a

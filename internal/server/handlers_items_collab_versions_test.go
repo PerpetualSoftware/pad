@@ -40,8 +40,8 @@ import (
 //
 // Sister test in store/items_collab_versions_test.go covers the
 // downstream diff-reconstruction path; this one covers the
-// handler-to-store boundary that round-2 Codex review identified
-// as the missing link.
+// handler-to-store boundary that was
+// the missing link.
 func TestCollabSnapshotHTTPSourceStamping(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
@@ -124,7 +124,7 @@ func TestCollabSnapshotHTTPSourceStamping(t *testing.T) {
 
 	// Bonus assertion: items.source should still be "cli" — the
 	// auto-flush MUST NOT mutate the persisted item source. Per
-	// Codex round 3 of TASK-1267 [P2]: WorkspaceHasAgentActivity
+	// TASK-1267: WorkspaceHasAgentActivity
 	// counts items by `source IN ('cli', 'mcp')`, so a CLI-created
 	// item that gets opened and auto-flushed in the editor would
 	// silently flip out of the agent-activity tally if the handler
@@ -149,13 +149,13 @@ func TestCollabSnapshotHTTPSourceStamping(t *testing.T) {
 }
 
 // TestCollabSnapshotQueryOverridesBodyVersionSource is the TASK-1309
-// round-6 [P2] regression: a `?source=collab-snapshot` query MUST
+// regression: a `?source=collab-snapshot` query MUST
 // override any `version_source` field in the PATCH body. Otherwise
 // a buggy/malicious client could send the query (which triggers
 // the applier-bypass path and reaches Store.UpdateItem directly)
 // with `version_source: "cli"` in the body, sneaking a stale
 // browser snapshot through the op-log GC watermark policy
-// (TASK-1309 round 5 only advances the watermark when
+// (TASK-1309 only advances the watermark when
 // VersionSource != "collab-snapshot").
 //
 // We assert the version row's Source column is "collab-snapshot"
@@ -227,8 +227,8 @@ func sourcesOf(versions []models.Version) []string {
 	return out
 }
 
-// TestCollabSnapshotRejectsCursorBelowMin is the TASK-1319 round 10
-// [P1] regression: a collab-snapshot PATCH whose op_log_cursor is
+// TestCollabSnapshotRejectsCursorBelowMin is the TASK-1319
+// regression: a collab-snapshot PATCH whose op_log_cursor is
 // below the current MIN(item_yjs_updates.id) MUST be rejected at
 // the handler with 409. Such a cursor proves the flushing tab's
 // Y.Doc was built on op-log rows that no longer exist (PruneAndApply,
@@ -331,8 +331,8 @@ func TestCollabSnapshotAcceptsCursorAtOrAboveMin(t *testing.T) {
 }
 
 // TestCollabSnapshotRejectsCursorOnEmptyOpLog mirrors the WS
-// force_refresh predicate at the HTTP layer (Codex round 11 [P1]
-// of TASK-1319). A non-zero cursor against an item whose op-log
+// force_refresh predicate at the HTTP layer (TASK-1319). A non-zero cursor against an item whose
+// op-log
 // is entirely empty is, by construction, stale: the rows the
 // client claims to have applied no longer exist. Reject 409.
 func TestCollabSnapshotRejectsCursorOnEmptyOpLog(t *testing.T) {
@@ -366,8 +366,8 @@ func TestCollabSnapshotRejectsCursorOnEmptyOpLog(t *testing.T) {
 	}
 }
 
-// TestCollabSnapshotRejectsCursorZeroOnNonEmptyOpLog (round 12
-// [P1] of TASK-1319): a stateful tab whose previous session
+// TestCollabSnapshotRejectsCursorZeroOnNonEmptyOpLog (TASK-1319): a stateful tab whose previous
+// session
 // disconnected before receiving any op_log_cursor frame ends up
 // with sessionStorage cursor=0 but a non-empty Y.Doc derived from
 // prior replay binaries. On flush, it carries cursor=0 alongside
@@ -807,7 +807,7 @@ func assertNoForceRefresh(t *testing.T, conn *websocket.Conn) {
 }
 
 // TestRestoreForceRefreshesStaleSeedOnJoin is the BUG-2264 stale-SEED guard
-// (additional-P1 + Codex-xhigh): after a restore, a client that connects with a
+// After a restore, a client that connects with a
 // Y.Doc seeded from PRE-restore items.content — a cursor-0 peer whose
 // force_refresh frame was lost, or a browser that GET items.content before the
 // restore and joins after the prune — announces a ?content_seq below the

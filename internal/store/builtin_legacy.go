@@ -32,7 +32,7 @@ type LegacyBuiltinAdoption struct {
 
 // AdoptLegacyBuiltins gives items made before built-in origins were recorded
 // (TASK-3462 U4) the origin their exact title names, with no seed version, so
-// they read current or unknown_origin and the 2-way preview applies (Dave's
+// they read current or unknown_origin and the 2-way preview applies (the
 // ruling: no historical hashes).
 //
 // ONCE per instance, recorded in platform_settings, and only for items created
@@ -61,8 +61,7 @@ func (s *Store) AdoptLegacyBuiltins() (LegacyBuiltinAdoption, error) {
 	}
 
 	// The convention and playbook collections first, so the item read below
-	// touches only their items (codex r1: reading every originless item's body
-	// on the instance cost startup time and memory in proportion to it).
+	// touches only their items.
 	kindOf := map[string]string{}
 	crows, err := s.db.Query(s.q(`SELECT id, traits FROM collections WHERE deleted_at IS NULL`))
 	if err != nil {

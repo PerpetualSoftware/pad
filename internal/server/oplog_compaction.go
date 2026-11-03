@@ -20,7 +20,7 @@ import (
 // its text back. The sweep then keeps compacted logs (PruneSweepKeeping). An
 // item the store refuses (its log changed, or is no longer dormant and
 // flushed) is left to the sweep's own checks. An item whose SNAPSHOT failed is
-// KEPT and retried with backoff (TASK-3574, lead ruling): deleting its log on
+// KEPT and retried with backoff (TASK-3574): deleting its log on
 // a failed job threw away the Yjs identity compaction exists to keep.
 
 // OpLogCompactor builds a compaction snapshot. *materialize.Supervisor
@@ -29,7 +29,7 @@ type OpLogCompactor interface {
 	Snapshot(ctx context.Context, job materialize.Job) (materialize.Snapshot, error)
 }
 
-// opLogCompactionPerTick caps the snapshot jobs one GC tick runs (codex, TASK-3531):
+// opLogCompactionPerTick caps the snapshot jobs one GC tick runs (TASK-3531):
 // compaction shares the materializer's single job slot with op-log recovery,
 // which carries UNFLUSHED edits, so a large dormant backlog must not hold the
 // slot for a whole pass. Items past the cap are deferred, kept from this tick's

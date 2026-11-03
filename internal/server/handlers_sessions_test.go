@@ -88,8 +88,8 @@ func TestListSessions_EmptyWhenNothingConnected(t *testing.T) {
 	}
 }
 
-// TestListSessions_IsNotCacheable pins the Cache-Control header (codex
-// round 2, P2). The response is both per-user sensitive and short-lived
+// TestListSessions_IsNotCacheable pins the Cache-Control header.
+// The response is both per-user sensitive and short-lived
 // by nature, so a cached copy is wrong in two independent ways — see
 // handleListSessions.
 func TestListSessions_IsNotCacheable(t *testing.T) {

@@ -16,8 +16,8 @@ import (
 // logic with their own admin bypass branches; the middleware fix at
 // internal/server/middleware_auth.go does not reach them.
 //
-// Codex review (round 1) caught the gap. These tests pin the four sites
-// fixed in the same round:
+// These tests pin the four sites
+// that closed the gap:
 //
 //   1. handleSSE entry — explicit GetWorkspaceMember check after the
 //      slug resolve for bearer-borne admin.
@@ -80,7 +80,7 @@ func TestSSESubscriberStillHasAccess_AdminBearer_DeniedOnNonMember(t *testing.T)
 	}
 
 	// Bearer path — admin bypass suppressed, no membership row →
-	// denied. This is the BUG-1616 extension Codex called out.
+	// denied. This is the BUG-1616 extension.
 	if srv.sseSubscriberStillHasAccess(mkAdminBearerReq(t, "/api/v1/events?workspace="+ws.Slug, admin), ws.ID) {
 		t.Fatal("bearer-borne admin without workspace membership must NOT pass SSE revalidation (BUG-1616)")
 	}

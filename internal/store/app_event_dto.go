@@ -42,7 +42,7 @@ type AppEventEnvelope struct {
 	// person's or agent's write. From a v2 block it is the frozen
 	// actor_via_app, on every event (TASK-3411). A v1 block (written before
 	// v2, still in the outbox) has no actor: it is set on CREATE events only,
-	// from the creator, who is the writer there (lead ruling, day 87).
+	// from the creator, who is the writer there.
 	ViaApp string `json:"via_app,omitempty"`
 }
 

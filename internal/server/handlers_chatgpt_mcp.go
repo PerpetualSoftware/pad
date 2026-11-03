@@ -10,14 +10,13 @@ import (
 
 // The ChatGPT catalog's MCP mount (TASK-3321 U2b): the catalog
 // internal/mcp/chatgpt_catalog.go defines, served at its own URL, the
-// ChatGPT resource (https://mcp.getpad.dev/mcp/chatgpt on cloud, ruled
-// host A). It reuses /mcp's perimeter (configured host, bearer auth,
+// ChatGPT resource (https://mcp.getpad.dev/mcp/chatgpt on cloud, host A). It reuses /mcp's perimeter (configured host, bearer auth,
 // audit) with three differences:
 //
 //   - its OAuth audience is its own (WithMCPResource), so a /mcp token is
 //     refused here and a token minted for it is refused at /mcp (U2a);
 //   - it is OAuth-ONLY: a personal access token is refused with 401, since
-//     ChatGPT signs in through OAuth (lead's ruling);
+//     ChatGPT signs in through OAuth;
 //   - it is served only while chatGPTAvailable says so: OAuth available,
 //     the operator switch on, and the catalog's prerequisites wired.
 

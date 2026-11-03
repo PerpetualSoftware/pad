@@ -21,8 +21,8 @@ import (
 
 // Share-link asset serving (BUG-2389 2b / TASK-2637). This is the byte
 // path that lets a public share page render the image ATTACHMENTS embedded
-// in its shared content — deliberately VARIANTS ONLY (Dave-authorized:
-// rendered thumbnails, never originals or file downloads). The companion
+// in its shared content — deliberately VARIANTS ONLY (rendered
+// thumbnails, never originals or file downloads). The companion
 // minting side lives in handlers_share_links.go (mintShareAttachmentRefs).
 //
 // Two access classes, decided by two forks on the TASK-2637 trail:

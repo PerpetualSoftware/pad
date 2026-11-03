@@ -21,7 +21,7 @@ type BackfillStructuredEntryIDsResult struct {
 // such an entry (the append helpers and workspace import repair the blob), so
 // this drains the rows written before that.
 //
-// NO seq bump, NO updated_at, NO activity row, NO outbox event, lead-ruled on
+// NO seq bump, NO updated_at, NO activity row, NO outbox event, by decision on
 // BUG-2788's trail. It adds an id nobody authored and changes no content, and
 // the premise that makes a silent write safe is measured, not assumed:
 //

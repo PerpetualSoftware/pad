@@ -190,7 +190,7 @@ func defaultLeaseHolder(r *http.Request, user *models.User) string {
 	// A remote MCP caller holds under its declared client name. Two
 	// connections of one client are told apart by their worker ids
 	// (defaultLeaseWorker, TASK-3613), which replaced BUG-2772's "#xxxxxxxx"
-	// label suffix: the label is display only (lead ruling).
+	// label suffix: the label is display only.
 	if c, ok := remoteMCPCaller(r); ok && c.LeaseHolder != "" {
 		return c.LeaseHolder
 	}
@@ -242,7 +242,7 @@ type resolvedLeaseItem struct {
 //
 // holder and worker are the CALLER's. When a name-only caller collides with a
 // worker-bound lease under its own name, the message says how to get a
-// worker id (lead ruling, TASK-3613): that refusal is the collision fix, and
+// worker id (TASK-3613): that refusal is the collision fix, and
 // a caller that hits it needs the way out more than the bare fact.
 func writeLeaseHeldError(w http.ResponseWriter, ref string, held *store.LeaseHeldError, holder, worker string) {
 	msg := held.Error()

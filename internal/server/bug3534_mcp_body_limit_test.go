@@ -123,7 +123,7 @@ func TestBUG3534_LimitOnBothMountsAndBothLengthPaths(t *testing.T) {
 	}
 }
 
-// Nothing reads an unauthenticated body (codex review): an oversized one,
+// Nothing reads an unauthenticated body: an oversized one,
 // with or without a declared length, is refused 401 by auth, which the
 // pre-auth rate limit meters, with zero body bytes read.
 func TestBUG3534_UnauthenticatedBodyIsNeverRead(t *testing.T) {

@@ -336,7 +336,7 @@ func createWSForTestWithCookie(t *testing.T, srv *Server, token string) string {
 // The doors' own checks, behind the session backstop: each handler is called
 // with the bot ALREADY resolved as the current user, which no real request
 // can produce (ValidateSession refuses a bot first). This pins the second
-// layer the lead ruled for, so removing either layer alone is caught.
+// layer the design calls for, so removing either layer alone is caught.
 func TestTask3392_SessionDoorsOwnChecksRefuseABot(t *testing.T) {
 	srv := twoResourceOAuthServer(t)
 	sess := newOAuthSession(t, srv)
@@ -409,7 +409,7 @@ func TestTask3392_SessionDoorsOwnChecksRefuseABot(t *testing.T) {
 	}
 }
 
-// codex r1: an OAuth access token whose subject is a bot authenticates
+// An OAuth access token whose subject is a bot authenticates
 // nothing at /mcp, and a stored reset token for a bot changes no password.
 func TestTask3392_StoredCredentialsAreNoUseToABotOverHTTP(t *testing.T) {
 	srv := twoResourceOAuthServer(t)

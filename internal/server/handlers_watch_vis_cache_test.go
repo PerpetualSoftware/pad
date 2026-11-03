@@ -12,8 +12,8 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/watchevents"
 )
 
-// TestWatchVisCache_DeniesAfterAdminDemotion covers TASK-2533 codex
-// round 3: the round-2 watchVisCache captured *models.User ONCE at
+// TestWatchVisCache_DeniesAfterAdminDemotion covers TASK-2533:
+// the earlier watchVisCache captured *models.User ONCE at
 // connect time and never re-fetched it — reset() cleared only the
 // per-workspace map — so an admin demoted mid-connection kept
 // fullAccess (via computeWatchAccessVisibility's admin bypass) until
@@ -201,7 +201,7 @@ func TestWatchEventsStream_StopsDeliveringAfterUserDisabled(t *testing.T) {
 }
 
 // TestWatchEventsStream_RevalStillDeniesWhenWatchListReloadErrors covers
-// TASK-2533 codex round 4: on a reval tick, if ListWatchesForUser
+// TASK-2533: on a reval tick, if ListWatchesForUser
 // errored, the handler's `continue` used to skip visCache.reset()
 // entirely — the STALE identity/visibility stayed live for exactly as
 // long as that unrelated query kept failing, so a demoted or disabled
@@ -222,16 +222,16 @@ func TestWatchEventsStream_StopsDeliveringAfterUserDisabled(t *testing.T) {
 //     traffic at a user whose access is being revoked underneath them.
 //   - A watch-matched probe brings a SECOND mechanism that produces the
 //     same silence: once maxConsecutiveWatchReloadFailures is crossed,
-//     the handler clears the watch set wholesale (round 5 finding 1,
-//     covered by the test below). A bare "nothing arrived" assertion
+//     the handler clears the watch set wholesale
+//     (covered by the test below). A bare "nothing arrived" assertion
 //     would pass on that alone (team CONVE-12). The control leg closes
 //     it: a watch on an item in a STILL-granted collection must keep
 //     delivering in the same window, which is only possible while the
 //     watch set is still live — so the revoked item's silence can only
 //     be visCache.
 //
-// Uses collection-access revocation rather than "disabled" (round 4's
-// original vehicle) because a disabled user denies everything, control
+// Uses collection-access revocation rather than "disabled" (the original
+// vehicle) because a disabled user denies everything, control
 // leg included. Same reset()-must-run-unconditionally code path:
 // visCache.reset() re-derives per-workspace visibility AND re-fetches
 // the user. TestWatchEventsStream_StopsDeliveringAfterUserDisabled above
@@ -254,7 +254,7 @@ func TestWatchEventsStream_RevalStillDeniesWhenWatchListReloadErrors(t *testing.
 	//     before the control event landed, so the control leg timed out.
 	//     (BUG-2570's two CI instances.)
 	//   - The first fix (fault closure lifts the fault after two ticks)
-	//     was green-deterministic but lost DETECTION: codex rounds found
+	//     was green-deterministic but lost DETECTION: review found
 	//     that a stray successful tick — before the fault is installed,
 	//     or after it is lifted — resets visCache and reloads the watch
 	//     list, either of which silences the revoked item even under the
@@ -361,7 +361,7 @@ func TestWatchEventsStream_RevalStillDeniesWhenWatchListReloadErrors(t *testing.
 	waitForWatchEvent(t, ch, 3*time.Second)
 
 	// Force the reval tick's watch-list reload to fail — via the atomic
-	// seam (TASK-2533 codex round 5 finding 2): this write happens AFTER
+	// seam (TASK-2533): this write happens AFTER
 	// the stream's background goroutine is already running, so a plain
 	// field here would race. The closure also signals each invocation,
 	// which is what lets the test WAIT for the tick to have been
@@ -440,7 +440,7 @@ type testWatchListReloadError struct{}
 func (*testWatchListReloadError) Error() string { return "forced watch-list reload failure (test)" }
 
 // TestWatchEventsStream_WatchSetClearedAfterPersistentReloadFailures
-// covers TASK-2533 codex round 5 finding 1: `watches = fresh` only ran
+// covers TASK-2533: `watches = fresh` only ran
 // on the reload's success path, so under a PERSISTENT (not single-tick)
 // reload failure the watch set stayed live indefinitely — a dead watch
 // (removed, item deleted) would keep matching forever, and a watch
@@ -502,7 +502,7 @@ func TestWatchEventsStream_WatchSetClearedAfterPersistentReloadFailures(t *testi
 	}
 
 	// Addressed (push): MUST still deliver — it depends only on
-	// TargetUserID and visCache, which round 4 already decoupled from
+	// TargetUserID and visCache, which were already decoupled from
 	// the reload outcome.
 	rr = bearerJSON(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/push", tok.Token,
 		map[string]interface{}{"message": "still addressed during the outage"})

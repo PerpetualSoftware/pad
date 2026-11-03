@@ -364,7 +364,7 @@ func TestBUG3789_TiesComeBackInATotalOrder(t *testing.T) {
 	}
 }
 
-// Lead check (#2153): an offset past the end is an empty page that serialises
+// An offset past the end is an empty page that serialises
 // as [] (not null), with has-more false, on both bare-array lists.
 func TestBUG3789_AnOffsetPastTheEndIsAnEmptyArray(t *testing.T) {
 	srv := testServer(t)

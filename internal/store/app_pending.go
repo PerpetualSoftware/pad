@@ -342,7 +342,7 @@ func (s *Store) CollectionSlugOwnersQ(q Queryer, workspaceID string, slugs []str
 // collide with slug in idx_items_invocation_slug_per_collection, using the
 // index's OWN expression on each dialect (SQLite json_extract, Postgres
 // ->>), so it agrees with the index on every stored shape, arrays and
-// objects included (TASK-3397, codex round 8). It backs the app installer's
+// objects included (TASK-3397). It backs the app installer's
 // preview of a defaulted slug.
 func (s *Store) InvocationSlugIndexTaken(collectionID, slug string) (bool, error) {
 	return s.InvocationSlugIndexTakenQ(s.db, collectionID, slug)

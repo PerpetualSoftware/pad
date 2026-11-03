@@ -45,7 +45,7 @@ type sortOrderItem struct {
 // grant-aware). It is deliberately NOT /items/bulk's editor-role gate, which
 // would refuse a guest who can reorder their granted items today. An item the
 // caller cannot see answers exactly as an unknown one. One item the caller may
-// not edit refuses the whole request (lead ruling, day 89).
+// not edit refuses the whole request.
 //
 // Each moved item gets its own "reordered" activity row, with its from/to and
 // a reorder_batch id the feeds collapse on, so each row is filtered by the

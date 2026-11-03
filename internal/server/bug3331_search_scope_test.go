@@ -339,7 +339,7 @@ func TestBUG3331_CollectionCountsScopedToGrants(t *testing.T) {
 	}
 }
 
-// Codex r1 test gaps: the bare-number lookup and the filtered total for a
+// Test gaps: the bare-number lookup and the filtered total for a
 // restricted caller, and a fan-out over workspaces with DIFFERENT access,
 // where one workspace's full access must not widen the other's grants.
 func TestBUG3331_RestrictedNumberLookupTotalAndMixedFanOut(t *testing.T) {

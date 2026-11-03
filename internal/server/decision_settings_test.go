@@ -90,7 +90,7 @@ func getDecisionSettings(t *testing.T, srv *Server, token string) (decisionSetti
 	return resp, rr.Body.String()
 }
 
-// The lead's pin (04:35Z on TASK-3121): the key is stored through the
+// Pin (TASK-3121): the key is stored through the
 // PAD_ENCRYPTION_KEY path and never returned by ANY read — not this
 // endpoint's, not the generic settings endpoint's, not as a mask.
 func TestDecisionSettings_KeyNeverReturnedAndEncryptedAtRest(t *testing.T) {
@@ -220,7 +220,7 @@ func decisionSettingsWorkspace(t *testing.T, srv *Server) (*models.Workspace, *m
 	return ws, coll
 }
 
-// Env overrides the stored setting (day-73 ruling): GET says which fields
+// Env overrides the stored setting: GET says which fields
 // the environment sets, the effective value is the environment's, and a
 // write to such a field is refused rather than stored-but-ineffective.
 func TestDecisionSettings_EnvOverridesAndRefusesTheWrite(t *testing.T) {
@@ -365,7 +365,7 @@ func TestDecisionSettings_AdminOnlyAndInputValidation(t *testing.T) {
 }
 
 // The store boundary refuses a secret without a key instead of falling back
-// to plaintext (the lead's ruling, amended: kept as a defence, one test).
+// to plaintext (kept as a defence, one test).
 // `pad server` cannot reach this — it will not boot without a key.
 func TestSecretPlatformSetting_RefusesWithoutEncryptionKey(t *testing.T) {
 	srv := testServer(t)
@@ -397,7 +397,7 @@ func (p *blockingProvider) Ask(ctx context.Context, _ any, _ map[string]decision
 	return nil, decision.Usage{}, ctx.Err()
 }
 
-// Codex round 1 (P2): disabling the provider must end a pass already in
+// Disabling the provider must end a pass already in
 // flight, not let the old runner keep sending item data for the rest of it.
 // The job must also stay owed with no attempt counted, for whatever runs next.
 func TestDecisionSettings_DisableCancelsTheInFlightPass(t *testing.T) {
@@ -452,7 +452,7 @@ func TestDecisionSettings_DisableCancelsTheInFlightPass(t *testing.T) {
 	}
 }
 
-// Codex round 1 (P1): a settings write racing Stop() must not start a tick
+// A settings write racing Stop() must not start a tick
 // after Stop() drained the background goroutines.
 func TestDecisionSettings_NoTickStartsAfterStop(t *testing.T) {
 	clearDecisionEnv(t)
@@ -475,7 +475,7 @@ func TestDecisionSettings_NoTickStartsAfterStop(t *testing.T) {
 	}
 }
 
-// Codex round 2: a decision_api_key row that is not ciphertext — from a
+// A decision_api_key row that is not ciphertext — from a
 // restore, a migration, or a direct write — is refused, not used as a live key.
 func TestDecisionSettings_PlaintextKeyRowIsNotUsed(t *testing.T) {
 	clearDecisionEnv(t)
@@ -498,7 +498,7 @@ func TestDecisionSettings_PlaintextKeyRowIsNotUsed(t *testing.T) {
 		t.Errorf("plaintext row: effective=%+v error=%q stored_key_error=%q, want no key in effect, a build error, and a stored-key error", resp.Effective, resp.Error, resp.StoredKeyError)
 	}
 
-	// Codex round 4: an environment key overrides the unreadable row, the
+	// An environment key overrides the unreadable row, the
 	// provider runs, and the response must not claim it is not running.
 	t.Setenv("PAD_TYPESAFE_API_KEY", "env-key")
 	if err := srv.ConfigureDecisions(); err != nil {
@@ -517,7 +517,7 @@ func TestDecisionSettings_PlaintextKeyRowIsNotUsed(t *testing.T) {
 	}
 }
 
-// Codex round 4 claimed a disabled runner makes the next tick panic and kill
+// A review claimed a disabled runner makes the next tick panic and kill
 // the loop. It does not — RunOnce is nil-safe — and this pins that: the loop
 // ticks through a nil runner and still runs the provider after a re-enable.
 func TestDecisionSettings_TickLoopSurvivesDisableAndReenable(t *testing.T) {

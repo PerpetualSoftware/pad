@@ -296,7 +296,7 @@ func TestBUG4119_LowercaseRefMove(t *testing.T) {
 			if current.Ref != "TASK-5" {
 				t.Fatal(current.Ref)
 			}
-			// Advance the fixture to the lead's concrete PLAN-42 example.
+			// Advance the fixture to the concrete PLAN-42 example.
 			for n := 6; n < 42; n++ {
 				if _, err := s.CreateItem(f.Workspace.ID, task.ID, models.ItemCreate{Title: fmt.Sprintf("Filler %d", n)}); err != nil {
 					t.Fatal(err)

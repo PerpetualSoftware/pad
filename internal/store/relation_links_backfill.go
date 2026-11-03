@@ -32,8 +32,8 @@ type BackfillRelationLinksResult struct {
 // state and is indistinguishable from "never indexed" — a per-item EXISTS
 // would re-derive nearly every item on every boot, forever.
 //
-// It is also no longer "does the table have any row", which is what I wrote
-// first and which codex round 1 correctly called a P1. Rows commit per item,
+// It is also no longer "does the table have any row", which is what was written
+// first, and which was wrong. Rows commit per item,
 // so a crash partway through leaves the table NON-EMPTY AND INCOMPLETE — and
 // that guard then skips forever, with the missing edges never derived. The
 // "rebuild by deleting the table" story only ever covered deliberate deletion,
@@ -131,7 +131,7 @@ func (s *Store) BackfillRelationLinks() (*BackfillRelationLinksResult, error) {
 	rows.Close()
 
 	// BATCHED BY WORKSPACE, in bounded chunks. One transaction per ITEM was
-	// the first shape and codex round 5 was right to call it out: a 100k-item
+	// the first shape and it was too costly: a 100k-item
 	// database meant 100k transactions and 100k advisory-lock acquisitions in
 	// a synchronous startup pause, which is connection churn nobody asked for.
 	//
@@ -243,7 +243,7 @@ func (s *Store) backfillRelationChunk(workspaceID string, batch []itemRow) (int,
 	// against a concurrent SCHEMA change, which is guarded a level up by this
 	// lock: without it the backfill can read the old schema, watch
 	// UpdateCollection reindex the collection, then write rows derived from the
-	// shape it just replaced and commit last (codex rounds 3 and 4).
+	// shape it just replaced and commit last.
 	if err := s.acquireWorkspaceSeqLock(tx, workspaceID); err != nil {
 		return 0, err
 	}

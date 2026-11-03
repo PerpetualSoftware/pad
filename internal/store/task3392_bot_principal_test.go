@@ -346,7 +346,7 @@ func TestTask3392_ClaimsRefuseABot(t *testing.T) {
 	}
 }
 
-// Lead ruling: deleting an account soft-deletes the workspaces it owns, and
+// Deleting an account soft-deletes the workspaces it owns, and
 // the bots installed there go with them in the same transaction, sessions and
 // tokens included. No orphan principals.
 func TestTask3392_AccountDeletionPurgesTheBotsOfItsWorkspaces(t *testing.T) {
@@ -581,7 +581,7 @@ func TestTask3392_AdminMemberCountIsPeople(t *testing.T) {
 	}
 }
 
-// codex r1: a stored reset or verification token, however it came to exist,
+// A stored reset or verification token, however it came to exist,
 // is no credential for a bot, and neither is rotating a stored PAT.
 func TestTask3392_StoredCredentialsAreNoUseToABot(t *testing.T) {
 	s := testStore(t)
@@ -619,7 +619,7 @@ func TestTask3392_StoredCredentialsAreNoUseToABot(t *testing.T) {
 	}
 }
 
-// codex r1: a bot is never a grantee. Its access is its install's companion
+// A bot is never a grantee. Its access is its install's companion
 // collections, and a grant row would be a second lock path onto its users
 // row for account deletion to deadlock against.
 func TestTask3392_NoGrantsToABot(t *testing.T) {

@@ -712,8 +712,8 @@ func TestCopyEndpoint_PlainCopyEmitsNothingInTheSource(t *testing.T) {
 
 	// Push B's counter ahead of A's so the seq assertion below is capable of
 	// failing: with both workspaces on their first item the two seqs are
-	// equal and a crossed pair would be invisible (Codex round 24, the same
-	// trap round 20 found in the move test).
+	// equal and a crossed pair would be invisible (the same
+	// trap exists in the move test).
 	for i := 0; i < 3; i++ {
 		if _, err := f.srv.store.CreateItem(f.wsB.ID, f.collB.ID, models.ItemCreate{
 			Title:  fmt.Sprintf("Filler %d", i),
@@ -1110,7 +1110,7 @@ func TestCopyEndpoint_AuthorizationDenials(t *testing.T) {
 // interleaving the re-check exists for. Without the store invoking PreCheck
 // — or invoking it before it re-reads the source under the locks, or after
 // the first write — the copy would go through and this test fails on both
-// the status and the destination's item count (Codex round 6: the previous
+// the status and the destination's item count (the previous
 // version called the closure directly and proved nothing about the store's
 // integration).
 //
@@ -1359,11 +1359,11 @@ func TestCopyEndpoint_TypedStoreErrorsMapToStatuses(t *testing.T) {
 	// no test can schedule deterministically; DETECTION is covered on the
 	// store side by TestCopyAcrossWorkspaces_CollectionMissingSentinels, which
 	// soft-deletes each collection for real and asserts the sentinel with
-	// errors.Is (Codex round 7 — the claim used to be unsupported).
+	// errors.Is.
 	// What is asserted here is the half the handler owns: a
 	// pre-write rejection with a precise answer must never fall through to
 	// the ambiguous 500 and send the user looking for an item that provably
-	// does not exist (Codex rounds 1 and 6).
+	// does not exist.
 	t.Run("ErrCopyTargetCollectionMissing maps to collection_not_found", func(t *testing.T) {
 		f.srv.copyItemFn = func(store.CrossWorkspaceCopyRequest) (*store.CrossWorkspaceCopyResult, error) {
 			return nil, store.ErrCopyTargetCollectionMissing
@@ -1506,7 +1506,7 @@ func TestCopyEndpoint_InvalidatesDestinationStorageCache(t *testing.T) {
 // item, or the user would be told a copy failed that plainly did not.
 //
 // The panic is induced in the CACHE INVALIDATION rather than the fanout,
-// because that is the step Codex round 3 found sitting outside the guard.
+// because that is the step that once sat outside the guard.
 func TestCopyEndpoint_PostCommitPanicStillReturns201(t *testing.T) {
 	f := newCopyPreflightFixture(t)
 
@@ -1717,7 +1717,7 @@ func TestCopyEndpoint_RouteIsWired(t *testing.T) {
 	}
 }
 
-// BUG-2674 / Codex round 2 P2-3. The scope rule was proved at the MigrateFields
+// BUG-2674. The scope rule was proved at the MigrateFields
 // unit level and at the preflight, but nothing proved the MUTATING copy honours
 // it — so a call site passing the wrong scope, which is exactly the mistake the
 // required argument exists to prevent, would have shipped green.

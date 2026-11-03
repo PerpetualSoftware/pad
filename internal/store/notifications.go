@@ -204,7 +204,7 @@ func mentionDedupeKey(commentID, userID string) string {
 // Alice (TASK-3946 ruling e6a86278). The editor is never told about
 // mentioning themselves.
 //
-// Mention wins (TASK-3946 lead ruling f0fc5933): when the mention row is
+// Mention wins (TASK-3946): when the mention row is
 // actually written, the same user's still-pending comment/reply row for this
 // comment is deleted, by a conditional DELETE and never a read first, so a
 // dispatcher claim that lands in between leaves both rows. A row already

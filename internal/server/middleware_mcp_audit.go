@@ -396,8 +396,8 @@ func (s *Server) recordMCPCallMetrics(tool, status, userID string, dur time.Dura
 // then refuses the audit INSERT with 22021 and SQLite stores an
 // unprintable tool name. Nothing upstream catches it — the /mcp
 // transport decodes the JSON-RPC envelope itself rather than through
-// decodeJSON, so the body rule never sees this request (BUG-2803,
-// codex round 20; that unit's completeness map had wrongly certified
+// decodeJSON, so the body rule never sees this request (BUG-2803;
+// an earlier completeness map had wrongly certified
 // this reader as safe on the grounds that the dispatcher decodes the
 // body again, which is true and does not bear on what is persisted
 // here).
@@ -451,7 +451,7 @@ func (s *Server) boundedToolLabel(tool string) string {
 // cleaning. Cleaning is lossy, so without a marker "pad_<NUL>item" is stored
 // as "pad_item" — an audit row and a Prometheus label indistinguishable from
 // a genuine pad_item call, and mintable by anyone who can send a request
-// . Marking keeps the diagnostic value of the cleaned text
+// Marking keeps the diagnostic value of the cleaned text
 // while making the row honest about what arrived.
 //
 // The parenthesised spelling alone does NOT make the marker unforgeable — a
@@ -459,7 +459,7 @@ func (s *Server) boundedToolLabel(tool string) string {
 // reserves the whole leading-"(" namespace and re-marks anything
 // caller-supplied that enters it. Two earlier copies of this comment rested
 // the non-forgeability claim on "real names do not begin with (", the exact
-// reasoning round 25 retired (codex closing round 3).
+// reasoning a later review retired.
 const sanitisedLabelPrefix = "(sanitised) "
 
 // auditLabel applies the marker; see the body for the namespace-reservation
@@ -527,8 +527,8 @@ func parseMCPRequestBodyWithSource(body []byte) (toolName, argsHash string, sour
 	// value made entirely of NUL escapes is non-empty as decoded and empty
 	// once cleaned, so checking first passed it over the fallback and then
 	// blanked it, storing an empty tool_name. That is precisely the silent
-	// drop these fallbacks exist to prevent (codex round 21 — the boundary
-	// the round-20 sanitise created and did not test). Cleaning before the
+	// drop these fallbacks exist to prevent (the boundary the sanitise step
+	// created and did not test). Cleaning before the
 	// test makes the invariant structural instead of something every return
 	// has to remember.
 	// CLASSIFY ON THE RAW METHOD, store the sanitised one. Sanitising first
@@ -536,8 +536,8 @@ func parseMCPRequestBodyWithSource(body []byte) (toolName, argsHash string, sour
 	// so the parser extracted params.name and hashed the arguments for a
 	// method that was never tools/call — producing an audit row identical to
 	// a genuine call (measured: tool_name="pad_item" with a full args_hash).
-	// That was a regression introduced by the round-21 fix, which reordered
-	// these two steps to keep the fallback alive; codex round 22 caught it.
+	// That was a regression introduced by reordering these two steps to
+	// keep the fallback alive.
 	// Cleaning is for the value that gets STORED. Dispatch decisions read
 	// what the client actually sent.
 	if env.Method != "tools/call" {
@@ -546,7 +546,7 @@ func parseMCPRequestBodyWithSource(body []byte) (toolName, argsHash string, sour
 			return label, "", labelSource(label, method)
 		}
 		// Empty only after cleaning — keep the visible signal rather than
-		// storing "". This is the round-21 boundary, preserved.
+		// storing "". This preserves the cleaned-to-empty boundary.
 		return "(unknown)", "", models.MCPToolNameSynthesised
 	}
 	var p struct {
@@ -697,8 +697,7 @@ var _ func(http.Handler) http.Handler = (*Server)(nil).MCPAuditLog
 // Why a direct emit rather than letting the audit middleware catch
 // it: MCPAuditLog is mounted INSIDE MCPBearerAuth, so when bearer
 // auth denies before calling next.ServeHTTP, the audit middleware
-// never runs. Codex review on PR #389 round 1 caught the resulting
-// blind spot. Pre-auth rejections (missing / malformed / unknown
+// never runs, which leaves a blind spot. Pre-auth rejections (missing / malformed / unknown
 // bearer) intentionally stay un-audited because there's no user to
 // attribute the row to and the audit_trail table covers those
 // auth-event signals already.

@@ -325,7 +325,7 @@ func TestCopyAndPreflightCoerceIdentically(t *testing.T) {
 	}
 }
 
-// The parity pin the ruling asked for: an UNDECLARED number and an UNDECLARED
+// The parity pin: an UNDECLARED number and an UNDECLARED
 // object, asserting the stored native type (BUG-2850).
 //
 // Undeclared keys are accepted — a census found 168 live values under 14 such
@@ -436,7 +436,7 @@ func TestNoWarningsWhenEveryFieldIsDeclared(t *testing.T) {
 }
 
 // A nil value in fields_patch DELETES the key, so it must not be reported as
-// an undeclared field that was stored (BUG-2850, codex round 2). The warning
+// an undeclared field that was stored (BUG-2850). The warning
 // would otherwise tell the caller a field exists that the same request removed.
 func TestFieldsPatchDeleteIsNotReportedAsUndeclared(t *testing.T) {
 	t.Parallel()
@@ -494,8 +494,7 @@ func TestFieldsPatchDeleteIsNotReportedAsUndeclared(t *testing.T) {
 	}
 }
 
-// The three remaining coercion call sites, pinned (BUG-2850, lead ruling at
-// the day-11 boot).
+// The three remaining coercion call sites, pinned (BUG-2850).
 //
 // The PR's claim is "typed on every door". Five of the eight `CoerceFields`
 // sites had a test that goes red if that site alone is dropped; move, bulk

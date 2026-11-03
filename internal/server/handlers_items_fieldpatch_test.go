@@ -326,7 +326,7 @@ func TestPatchItemFieldsPatchAutoFillsEmptyDate(t *testing.T) {
 // TestPatchItemConflictWinsOverOpenChildrenGuard: when a stale
 // expected_updated_at AND a guarded terminal transition both apply, the
 // optimistic-concurrency conflict must win (the caller was operating on a
-// stale view), not the open_children guard (Codex round 2 ordering fix).
+// stale view), not the open_children guard.
 func TestPatchItemConflictWinsOverOpenChildrenGuard(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)

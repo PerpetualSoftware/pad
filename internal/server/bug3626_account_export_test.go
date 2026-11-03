@@ -145,7 +145,7 @@ func TestBUG3626_StoreErrorMidExportIsNotAValidCompleteFile(t *testing.T) {
 	}
 }
 
-// The success path: the format and version lead, the trailer says complete,
+// The success path: the format and version come first, the trailer says complete,
 // the item is in it, and the file is no longer named like a workspace bundle.
 func TestBUG3626_CompleteExportCarriesFormatAndTrailer(t *testing.T) {
 	srv := testServer(t)

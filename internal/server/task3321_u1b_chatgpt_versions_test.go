@@ -92,7 +92,7 @@ func TestU1b_PlainAPIIsNotForcedAndCannotClaimTheLabel(t *testing.T) {
 		}
 	}
 	// A collab-snapshot flush claiming the label in its body keeps the
-	// flush's own label (codex review).
+	// flush's own label.
 	rr := doRequest(srv, "PATCH", path+"?source=collab-snapshot", map[string]any{"content": "third body", "version_source": "chatgpt"})
 	if rr.Code != http.StatusOK {
 		t.Fatalf("flush: %d %s", rr.Code, rr.Body.String())

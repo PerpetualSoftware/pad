@@ -103,7 +103,7 @@ func TestPLAN3598_ItemContextBrief(t *testing.T) {
 			t.Errorf("item = %+v", resp.Item)
 		}
 		// implement also pulls the commit and PR rules the workspace declares
-		// (lead dogfood: CONVE-735, the mandatory review, is on-pr-create).
+		// (CONVE-735, the mandatory review, is on-pr-create).
 		if tr := strings.Join(resp.Triggers, ","); !strings.HasPrefix(tr, "always,on-implement,on-commit") {
 			t.Errorf("triggers = %v", resp.Triggers)
 		}
@@ -188,7 +188,7 @@ func TestPLAN3598_ItemContextRefusals(t *testing.T) {
 
 // A tiny budget keeps the item and omits the rest, each named. A part that
 // does not fit is skipped WHOLE and filling continues, so a smaller later
-// part still ships (lead dogfood: one 32 KB convention used to crowd out
+// part still ships (one 32 KB convention used to crowd out
 // everything after it). The parent chain alone stops at its first miss.
 func TestPLAN3598_ItemContextBudgetSkipsAndKeepsFilling(t *testing.T) {
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
@@ -252,7 +252,7 @@ func omittedRefs(os []itemContextOmitted) []string {
 	return out
 }
 
-// Lead dogfood, PLAN-3598: a 32 KB convention ahead of small ones in the
+// PLAN-3598: a 32 KB convention ahead of small ones in the
 // order is skipped, and the small ones after it still ship.
 func TestPLAN3598_ItemContextBigConventionDoesNotBlockSmallOnes(t *testing.T) {
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
@@ -289,7 +289,7 @@ func TestPLAN3598_ItemContextBigConventionDoesNotBlockSmallOnes(t *testing.T) {
 	})
 }
 
-// Lead dogfood, PLAN-3598: relevance order. The intent's triggers come
+// PLAN-3598: relevance order. The intent's triggers come
 // first, then role-scoped rules, then the global always ones; within a
 // tier, must before should. Never the ref string.
 func TestPLAN3598_ItemContextConventionsInRelevanceOrder(t *testing.T) {
@@ -372,7 +372,7 @@ func TestPLAN3598_ItemContextConventionsInRelevanceOrder(t *testing.T) {
 	})
 }
 
-// Lead dogfood, PLAN-3598: implement includes opening the PR, so an
+// PLAN-3598: implement includes opening the PR, so an
 // on-pr-create rule (CONVE-735, the mandatory review) is in the brief.
 func TestPLAN3598_ItemContextImplementIncludesPRRules(t *testing.T) {
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
@@ -490,7 +490,7 @@ func TestPLAN3598_ItemContextArchivedFollowsGet(t *testing.T) {
 }
 
 // The brief's open_blocker agrees with the dashboard's blocked attention
-// (lead ruling on #2094): the brief reuses firstActiveBlocker's predicate,
+// The brief reuses firstActiveBlocker's predicate,
 // so the two must not drift for any blocker. Two blockers the brief once
 // judged on its own are pinned here:
 //   - a REFERENCE doc (PLAN-3535 PR 2): an explicit link blocks until the

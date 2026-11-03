@@ -184,7 +184,7 @@ func TestBug3395_BulkCommentWritesLockRootFirst(t *testing.T) {
 	})
 }
 
-// The depth bound fails closed (codex r1 on BUG-3395): a thread that reaches
+// The depth bound fails closed (BUG-3395): a thread that reaches
 // it refuses the lock, rather than collapsing its deeper rows onto one depth
 // and losing the parent-before-child order. Not parallel: it lowers a
 // package var, and parallel tests resume only after sequential ones finish.

@@ -76,7 +76,7 @@ func TestTask3399_ADelegatedGrantPersistsThroughTheBarrier(t *testing.T) {
 }
 
 // Every persistence re-checks the epoch: a disable or rotate between
-// authorize and any later step refuses that step (the lead's required race,
+// authorize and any later step refuses that step (the required race,
 // at the store; the end-to-end race is in the server tests).
 func TestTask3399_EveryPersistenceRechecksTheEpoch(t *testing.T) {
 	steps := map[string]func(*Store, models.OAuthRequest) error{
@@ -214,7 +214,7 @@ func task3399Delegated(t *testing.T, f task3399Fix, requestID string) {
 	}
 }
 
-// Lead ruling Q1: an installed app's chains are not MCP connections. Every
+// An installed app's chains are not MCP connections. Every
 // reader that lists or counts chains as connections leaves them out; the
 // app grant is listed on its own.
 func TestTask3399_AppChainsAreNotMCPConnections(t *testing.T) {
@@ -282,7 +282,7 @@ func TestTask3399_RevokingAnAppGrantEndsItThroughTheBinding(t *testing.T) {
 	}
 }
 
-// Lead ruling Q4: the expiry sweep removes bindings whose grant has no row
+// The expiry sweep removes bindings whose grant has no row
 // left, for service and delegated grants alike; a live binding stays.
 func TestTask3399_TheSweepRemovesOrphanBindings(t *testing.T) {
 	f := task3399Fixture(t, "inst-sweep", "write")
@@ -354,7 +354,7 @@ func TestTask3399_TheBindingFixesThePerson(t *testing.T) {
 	}
 }
 
-// Codex U5b-1 r1: a revoke, a disable and re-enable, or a removal and re-add
+// A revoke, a disable and re-enable, or a removal and re-add
 // between two persistences of one grant ends it; none is forgotten.
 func TestTask3399_AChangeBetweenPersistencesIsRemembered(t *testing.T) {
 	cases := map[string]func(t *testing.T, f task3399Fix){
@@ -400,7 +400,7 @@ func TestTask3399_AChangeBetweenPersistencesIsRemembered(t *testing.T) {
 	}
 }
 
-// Codex U5b-1 r1 P1: an account disable that commits while a delegated
+// An account disable that commits while a delegated
 // issuance is between its checks and its commit does not miss the rows the
 // issuance writes. The disable waits for the issuance (the user-row share
 // lock on Postgres, the single writer on SQLite) and then revokes them.
@@ -439,7 +439,7 @@ func TestTask3399_ADisableIsOrderedAgainstIssuance(t *testing.T) {
 	}
 }
 
-// Codex U5b-1 r2 P1: a revoked grant whose tombstone the sweep removed is
+// A revoked grant whose tombstone the sweep removed is
 // not revived by a persistence already past its checks: only a grant's code
 // writes its binding, so a token persisting against none is refused.
 func TestTask3399_ASweptTombstoneRevivesNothing(t *testing.T) {
@@ -466,7 +466,7 @@ func TestTask3399_ASweptTombstoneRevivesNothing(t *testing.T) {
 	}
 }
 
-// Codex U5b-1 r2 P2: removing a member ends their delegated grants in that
+// Removing a member ends their delegated grants in that
 // workspace, so a re-add in the same second revives nothing.
 func TestTask3399_RemovingAMemberEndsTheirGrants(t *testing.T) {
 	for _, remove := range []string{"RemoveWorkspaceMember", "RemoveWorkspaceMemberAndRevokeGrants"} {
@@ -495,7 +495,7 @@ func TestTask3399_RemovingAMemberEndsTheirGrants(t *testing.T) {
 	}
 }
 
-// Codex U5b-1 r6: a grant the install's epoch has moved past (an upgrade, a
+// A grant the install's epoch has moved past (an upgrade, a
 // rotate) is already unusable, and the console does not list it.
 func TestTask3399_AGrantPastTheInstallEpochIsNotListed(t *testing.T) {
 	f := task3399Fixture(t, "inst-epoch-list", "write")
@@ -511,7 +511,7 @@ func TestTask3399_AGrantPastTheInstallEpochIsNotListed(t *testing.T) {
 	}
 }
 
-// Codex U5b-1 r7 P1: a consent decided under the person's credentials as a
+// A consent decided under the person's credentials as a
 // session resolved them cannot mint a code after those credentials changed
 // (a disable destroyed that session, then a re-enable).
 func TestTask3399_AConsentFromAStaleSessionMintsNothing(t *testing.T) {
@@ -531,7 +531,7 @@ func TestTask3399_AConsentFromAStaleSessionMintsNothing(t *testing.T) {
 	}
 }
 
-// Codex U5b-1 r7 P2: a grant consented to but not yet exchanged is listed,
+// A grant consented to but not yet exchanged is listed,
 // so its person can revoke its code.
 func TestTask3399_AnUnexchangedGrantIsListedAndRevocable(t *testing.T) {
 	f := task3399Fixture(t, "inst-unexch", "write")
@@ -553,7 +553,7 @@ func TestTask3399_AnUnexchangedGrantIsListedAndRevocable(t *testing.T) {
 	}
 }
 
-// Codex U5b-1 r8: a consent carries the membership its gate read; a removal
+// A consent carries the membership its gate read; a removal
 // and re-add before its code persists (no grant yet for the removal to
 // revoke) refuses the code.
 func TestTask3399_AConsentAcrossARemovalAndReAddMintsNothing(t *testing.T) {
@@ -570,7 +570,7 @@ func TestTask3399_AConsentAcrossARemovalAndReAddMintsNothing(t *testing.T) {
 	}
 }
 
-// Codex U5b-1 r9: a consent approved after the workspace was soft-deleted
+// A consent approved after the workspace was soft-deleted
 // persists nothing.
 func TestTask3399_ADeletedWorkspaceTakesNoGrant(t *testing.T) {
 	f := task3399Fixture(t, "inst-wsdel", "write")

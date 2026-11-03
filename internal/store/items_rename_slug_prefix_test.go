@@ -107,7 +107,7 @@ func TestItemRename_LiteralSlashTitleIsNotRewrittenAsQualified(t *testing.T) {
 	//
 	// Recorded because I got this wrong in both directions before measuring it:
 	// first asserting a retarget with a decoy that could not be stolen, then
-	// over-correcting to "the renamed item always wins", which codex R4 caught
+	// over-correcting to "the renamed item always wins", which shows up
 	// by reading resolveTitleTx's stage order rather than my summary of it.
 }
 
@@ -116,7 +116,7 @@ func TestItemRename_LiteralSlashTitleIsNotRewrittenAsQualified(t *testing.T) {
 // wrong in the other direction.
 //
 // Having measured that the wrongly-qualified bracket still found the renamed
-// item, I wrote that it "always" does. It does not. resolveTitleTx tries an
+// item, it was assumed that it "always" does. It does not. resolveTitleTx tries an
 // exact FULL-TITLE match (stage 1) before the qualified fallback (stage 2), so
 // an item literally titled `tasks/<newTitle>` — slash and all — captures
 // `[[tasks/<newTitle>]]` outright and beats the renamed item to it.

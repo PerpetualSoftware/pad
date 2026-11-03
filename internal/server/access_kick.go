@@ -11,7 +11,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/accesskick"
 )
 
-// TASK-3365 (Dave's ruling on TASK-3345 #3): revoking access must reach live
+// TASK-3365 (TASK-3345): revoking access must reach live
 // connections NOW, not on their next 60s revalidation tick. The mechanism is
 // a KICK, not new authorization: every long-lived connection (collab
 // WebSocket, /events SSE, /events/stream) already has a revalidation routine
@@ -26,7 +26,7 @@ import (
 // queues kicks must not consume. With no transport (one instance)
 // a kick is applied locally.
 //
-// The residual is accepted (lead ruling): frames already in flight between
+// The residual is accepted: frames already in flight between
 // the revoking commit and the kick landing are processed under the old
 // access, a window of bus latency plus one store check instead of up to 60s.
 
@@ -193,7 +193,7 @@ type kickPublisher struct {
 	cancel context.CancelFunc
 }
 
-// stop ends the worker, cancelling a publish it is blocked in (codex r3: a
+// stop ends the worker, cancelling a publish it is blocked in (a
 // stalled transport otherwise kept its worker and queue alive after being
 // replaced).
 func (p *kickPublisher) stop() {

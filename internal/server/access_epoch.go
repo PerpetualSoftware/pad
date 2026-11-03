@@ -73,15 +73,15 @@ func computeAccessEpoch(visibleCollectionIDs, grantedItemIDs []string) string {
 //   - Without item grants, the doors filter by the nav set, and so does this.
 //
 // grantedItemIDs must be the LIVE grant set (guestResourceFilter, not the
-// include-deleted variant): see the review-round-2 note on /items-changes.
+// include-deleted variant): see the note on /items-changes.
 //
 // liveCollectionIDs is the workspace's live collection set (BUG-3428 phase 2,
-// lead ruling: option A). Deleting a collection writes no item rows, so the
+// Option A). Deleting a collection writes no item rows, so the
 // epoch must move on its own: an unrestricted caller's epoch is the "all"
 // sentinel plus a hash of the live set, and a restricted caller's collection
 // set is intersected with it, because the item doors leave a soft-deleted
 // collection's rows out for everyone. A collection create moves it too, which
-// costs one resync per client and was ruled acceptable.
+// costs one resync per client.
 func effectiveAccessEpoch(visibleCollectionIDs, fullCollIDs, grantedItemIDs, liveCollectionIDs []string) string {
 	if visibleCollectionIDs == nil && len(grantedItemIDs) == 0 {
 		h := sha256.New()

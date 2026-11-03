@@ -440,7 +440,7 @@ func writeDCRError(w http.ResponseWriter, status int, code, msg string) {
 // 8707 clients (Claude Desktop, Cursor, ChatGPT) sending only
 // `resource=https://mcp.getpad.dev/mcp` would hit our custom
 // audienceMatchingStrategy with an empty needle and fail every
-// authorize / token request. Codex review #372 round 1.
+// authorize / token request.
 //
 // Three cases the helper handles, in priority order:
 //
@@ -508,7 +508,7 @@ func writeDCRError(w http.ResponseWriter, status int, code, msg string) {
 //     signal to detect anomalous patterns — e.g. a sudden spike in
 //     defaulted requests from a previously-unseen client_id.
 //
-// Codex review #383 caught the trade-off; we're shipping with the
+// This is a deliberate trade-off; we're shipping with the
 // mitigations above rather than reverting because the alternative is
 // "remote MCP doesn't work for any client until the entire ecosystem
 // adopts RFC 8707." A future task tracks restoring the strict reject
@@ -594,7 +594,7 @@ func (s *Server) resourceNoteClient(r *http.Request) (clientID, clientName strin
 }
 
 // noteResourceMissing records a request that omitted the RFC 8707
-// resource parameter (TASK-3363, Dave's ruling on TASK-3345 #1): one log line
+// resource parameter (TASK-3363, TASK-3345): one log line
 // naming the client (id and registered name) and one
 // pad_oauth_resource_missing_total increment per endpoint. Phase 1 measured
 // who would break; phase 2 refuses the request (errInvalidTarget), so the
@@ -618,8 +618,8 @@ func (s *Server) noteResourceMissing(r *http.Request, endpoint string) {
 // isAudienceOnly reports a request that names its target through fosite's
 // audience= and sends no RFC 8707 resource=. translateResourceToAudience
 // defers to audience= untouched, so phase 1 never counted such a request, and
-// phase 2 does not yet refuse it: it is measured first (TASK-3363, dev lead
-// ruling), enforced the release after v0.20.0. Call it BEFORE
+// phase 2 does not yet refuse it: it is measured first (TASK-3363),
+// enforced the release after v0.20.0. Call it BEFORE
 // translateResourceToAudience. The audience= value is still held to the same
 // allowed set as resource= by fosite's audience matching strategy.
 func isAudienceOnly(r *http.Request) bool {
@@ -710,7 +710,7 @@ func (s *Server) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 	defer s.observeOAuthFlowDuration("authorize", start)
 
 	// An installed app's sign-in is served while apps are available, even
-	// with MCP off (TASK-3399, codex U5b-1 r1); everything else needs OAuth.
+	// with MCP off (TASK-3399); everything else needs OAuth.
 	if !s.oauthAvailable() && !s.appSignInAvailable(r) {
 		http.NotFound(w, r)
 		return
@@ -718,8 +718,8 @@ func (s *Server) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	// fosite reads only `audience` from the form; RFC 8707 mandates
-	// `resource`. Translate before fosite parses (Codex review #372
-	// round 1). ParseForm has to run first so r.Form exists.
+	// `resource`. Translate before fosite parses.
+	// ParseForm has to run first so r.Form exists.
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "invalid query string", http.StatusBadRequest)
 		return
@@ -939,7 +939,7 @@ func (s *Server) handleOAuthAuthorizeDecide(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// RFC 8707 resource= → fosite audience= (Codex #372 round 1).
+	// RFC 8707 resource= → fosite audience=.
 	audienceOnly := isAudienceOnly(r)
 	resourceMissing := translateResourceToAudience(r, s.oauthServer.AllowedAudience())
 	if resourceMissing {
@@ -1287,7 +1287,7 @@ func (s *Server) parseConsentPayload(r *http.Request, ar fosite.AuthorizeRequest
 // calls Storage.RotateRefreshToken before issuing the new pair,
 // which under our adapter revokes the entire grant family
 // (matches fosite's reference MemoryStore behaviour, locked in
-// by sub-PR A round 2 and sub-PR B round 2 of Codex review).
+// by tests).
 //
 // On error fosite's WriteAccessError writes the JSON OAuth error
 // body; on success WriteAccessResponse writes
@@ -1312,7 +1312,7 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	// RFC 8707 resource= → fosite audience= before fosite parses.
-	// Codex review #372 round 1 caught this — without translation
+	// Without translation
 	// real RFC 8707 token-exchange requests fail audience matching.
 	// Parsed exactly as fosite parses the token request (multipart included,
 	// the same 1 MiB bound), so the client classified here is the client
@@ -1411,8 +1411,8 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 	// No tokens for an account that is gone or disabled (BUG-3349): an
 	// authorization code or refresh token issued before a disable would
 	// otherwise exchange for fresh ones, and work again after a re-enable.
-	// A bot gets one only as its OWN install client's service token (lead
-	// ruling R1 on TASK-3394); the store's issuance barrier decides it again.
+	// A bot gets one only as its OWN install client's service token
+	// (TASK-3394); the store's issuance barrier decides it again.
 	if subject := ar.GetSession().GetSubject(); subject != "" {
 		u, uerr := s.store.GetUser(subject)
 		if uerr != nil || u == nil || u.IsDisabled() || (u.IsApp() && !s.isOwnInstallBot(installClient, u)) {
@@ -1488,7 +1488,7 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 // — it passes the empty string into the revocation handlers and
 // returns nil (because both signatures look up empty and miss).
 // Without the pre-check below, "client_id but no token" would
-// silently 200 instead of 400. Codex review #373 round 3.
+// silently 200 instead of 400.
 func (s *Server) handleOAuthRevoke(w http.ResponseWriter, r *http.Request) {
 	// TASK-961: duration always observed. The revocation counter
 	// itself is emitted from internal/oauth/storage.go's
@@ -1580,7 +1580,7 @@ func (s *Server) handleOAuthIntrospect(w http.ResponseWriter, r *http.Request) {
 	session := oauth.NewSession("")
 
 	// Installed apps' clients do not use the public endpoint, and it never
-	// describes their tokens (lead ruling R2 on TASK-3394): the app API
+	// describes their tokens (TASK-3394): the app API
 	// checks its tokens in-process. Every other caller is told only about
 	// its own client's access tokens (BUG-3398, below).
 	if err := r.ParseForm(); err != nil {
@@ -2153,8 +2153,7 @@ func (s *Server) renderConsent(w http.ResponseWriter, r *http.Request, ar fosite
 	// user-controlled radios + checkboxes) would override the user's
 	// selection on submit. r.FormValue returns the first matching
 	// value, and r.PostForm["allowed_workspaces"] sees the wildcard
-	// scan match before the user's slug list. Codex review #376
-	// round 1 caught the gap.
+	// scan match before the user's slug list.
 	hidden := allowlistedAuthorizeParams(r.URL.Query())
 
 	// Per-request nonce so the consent template's inline UI-state

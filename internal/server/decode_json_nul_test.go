@@ -229,7 +229,7 @@ func jsonEncode(t *testing.T, s string) string {
 	return string(b)
 }
 
-// TestBodyDecodesNULNestedDocuments covers codex round 1's P1 on BUG-2803:
+// TestBodyDecodesNULNestedDocuments covers a BUG-2803 case:
 // several fields arrive as JSON-ENCODED STRINGS, so the escape survives the
 // OUTER decode as literal text and reappears when the destination re-parses
 // the string as JSON. Postgres refuses that with SQLSTATE 22P05 (unsupported
@@ -256,7 +256,7 @@ func TestBodyDecodesNULNestedDocuments(t *testing.T) {
 			`{"name":"w","settings":` + jsonEncode(t, innerWithNUL) + `}`, true},
 		{"a JSON-encoded ARRAY carrying the escape",
 			`{"tags":` + jsonEncode(t, `["ok","a`+esc+`b"]`) + `}`, true},
-		// codex round 4: the BACKSLASH itself can be written as an escape, so
+		// The BACKSLASH itself can be written as an escape, so
 		// the raw body carries no literal six-character sequence anywhere
 		// while the outer decode manufactures one inside the nested document.
 		// This is the case the old substring fast path let through — measured
@@ -286,7 +286,7 @@ func TestBodyDecodesNULNestedDocuments(t *testing.T) {
 			`{"title":"x","fields":` + jsonEncode(t, innerPlain) + `}`, false},
 		{"nested document whose escape is a DOUBLED backslash",
 			`{"fields":` + jsonEncode(t, innerLiteral) + `}`, false},
-		// codex round 6: these fields also accept their NATURAL shape, in
+		// These fields also accept their NATURAL shape, in
 		// which the elements are ordinary strings the server marshals itself.
 		// Nothing re-parses them, so an element that merely LOOKS like a
 		// document must not be treated as one — this refused a free-form tag
@@ -313,8 +313,8 @@ func TestBodyDecodesNULNestedDocuments(t *testing.T) {
 	}
 }
 
-// TestBodyDecodesNULLeavesTextFieldsAlone is codex round 2's finding on
-// BUG-2803, pinned so it cannot come back.
+// TestBodyDecodesNULLeavesTextFieldsAlone pins a finding on
+// BUG-2803, so it cannot come back.
 //
 // The first version of the nesting check recursed into ANY string that parsed
 // as a JSON document. That refused a plain-text `content` value holding a
@@ -448,7 +448,7 @@ func TestDecodeJSONRefusesNestedNULThroughTheHandler(t *testing.T) {
 	}
 }
 
-// TestTruncateBindableText covers codex round 5's second class on BUG-2803:
+// TestTruncateBindableText covers a second class on BUG-2803:
 // a value that PASSED the body check becomes unbindable on its way to the
 // store, because a plain s[:n] can split a rune and leave a partial sequence.
 //
@@ -512,12 +512,12 @@ func TestTruncateBindableText(t *testing.T) {
 	}
 }
 
-// TestRequestUserAgentIsBindableText covers codex round 5's third class on
+// TestRequestUserAgentIsBindableText covers a third class on
 // BUG-2803: the User-Agent header reaches activities.user_agent as text, and
 // no rule in this file sees a header. (Sessions are NOT a text sink — they
 // store only ua_hash, which is why the accounting list above exempts those
 // reads; an earlier version of this sentence claimed sessions.user_agent
-// stored text, contradicting that exemption — codex closing round 4.)
+// stored text, contradicting that exemption.)
 //
 // The disposition here is SANITISE, not refuse — a header is metadata this
 // server chose to record, not something the caller asked for, so a malformed
@@ -571,7 +571,7 @@ func TestRequestUserAgentIsBindableText(t *testing.T) {
 //
 // The FIRST version of that argument was wrong in exactly this way — it said
 // "the escape has only one spelling", which is true inside a decoded string
-// and false of the raw bytes, and codex round 4 turned that into a live
+// and false of the raw bytes, and that turned into a live
 // bypass. So the argument does not get to stand on its own reasoning: this
 // test runs the gated function against an UNGATED walk over a corpus built to
 // attack it, and any disagreement is a bypass.
@@ -634,14 +634,14 @@ func TestBodyDecodesNULGateAgreesWithAnUngatedWalk(t *testing.T) {
 }
 
 // TestDocumentActivityStoresBindableUserAgent is the WIRING leg for the
-// User-Agent sanitiser (CONVE-19, and codex round 6's second finding: a unit
+// User-Agent sanitiser (CONVE-19; a unit
 // test vouches for the helper, not for anything calling it).
 //
 // It drives a real request through the router with a malformed header and
 // reads the STORED value out of the activities row, so reverting the
 // production call site fails this even though the helper still works.
 //
-// It targets the ACTIVITY sink deliberately. The round-5 enumeration also
+// It targets the ACTIVITY sink deliberately. An earlier enumeration also
 // named "sessions.user_agent", and I wired the three login paths to the
 // sanitiser before reading store.CreateSession — which HASHES the header and
 // stores no text at all. That change was reverted: login would have stored
@@ -707,8 +707,8 @@ func TestDocumentActivityStoresBindableUserAgent(t *testing.T) {
 	}
 }
 
-// TestBodyDecodesNULUnderAJSONEncodedKeyChecksBothWays is codex round 9's P1,
-// which was a REGRESSION this branch introduced in its round-8 restructure.
+// TestBodyDecodesNULUnderAJSONEncodedKeyChecksBothWays guards against a REGRESSION that an
+// earlier restructure of this branch introduced.
 //
 // Taking the JSON-encoded branch for a listed key used to skip the plain
 // "does this string contain a NUL" check, so a direct NUL in a `fields` value
@@ -738,7 +738,7 @@ func TestBodyDecodesNULUnderAJSONEncodedKeyChecksBothWays(t *testing.T) {
 	}
 }
 
-// TestArtifactBindableTextAcceptsLiteralEscapeText is codex round 9's P2: the
+// TestArtifactBindableTextAcceptsLiteralEscapeText guards against a false positive: the
 // artifact check searched the MARSHALLED bytes for the escape, and a value
 // holding the six LITERAL characters marshals to a doubled backslash which
 // still contains that sequence — so valid content was refused. Artifacts are
@@ -769,8 +769,8 @@ func TestArtifactBindableTextAcceptsLiteralEscapeText(t *testing.T) {
 	}
 }
 
-// TestTestEmailRefusesUnusableBody is the handler-level leg codex round 13
-// found missing. Reverting handlers_admin.go to `err != nil || input.To == ""`
+// TestTestEmailRefusesUnusableBody is the handler-level leg that was
+// missing. Reverting handlers_admin.go to `err != nil || input.To == ""`
 // — which defaulted EVERY decode failure to the admin's own address — passed
 // every other test in this file, because they only exercise decodeJSON.
 //
@@ -816,8 +816,8 @@ func TestTestEmailRefusesUnusableBody(t *testing.T) {
 	}
 }
 
-// TestTextSafeHelpersAreUsedAtEveryCallSite closes the gap codex round 14
-// named: reverting a single call site back to the unsafe form leaves every
+// TestTextSafeHelpersAreUsedAtEveryCallSite closes a gap: reverting a single call site back to
+// the unsafe form leaves every
 // behavioural test green, because the surviving fixtures are ASCII and the
 // helpers' own unit tests do not care who calls them.
 //
@@ -888,7 +888,7 @@ func TestTextSafeHelpersAreUsedAtEveryCallSite(t *testing.T) {
 	}
 
 	// Exact counts, not lower bounds — a floor let a real call site vanish
-	// while the threshold stayed satisfied (codex closing round 3). Each
+	// while the threshold stayed satisfied. Each
 	// total includes the helper's own declaration (the scan counts raw
 	// occurrences), so today that is 1 declaration + 4 call sites for each.
 	// MEASURED against this package, same discipline as the reader counts
@@ -917,8 +917,8 @@ func TestTextSafeHelpersAreUsedAtEveryCallSite(t *testing.T) {
 	}
 }
 
-// TestOAuthRegisterRefusesNULBody is the last of codex round 14's three
-// unwired-call-site findings. Reverting handlers_oauth.go to a bare
+// TestOAuthRegisterRefusesNULBody is the last of three
+// unwired-call-site checks. Reverting handlers_oauth.go to a bare
 // json.NewDecoder — losing both the refusal and the size cap — would
 // otherwise leave the suite green, and the static body-reader scan cannot
 // catch it because that file is already listed for its FORM-body reads.
@@ -965,7 +965,7 @@ func TestOAuthRegisterRefusesNULBody(t *testing.T) {
 	}
 }
 
-// TestBodyDecodesNULMatchesKeysLikeTheDecoder is codex round 16: encoding/json
+// TestBodyDecodesNULMatchesKeysLikeTheDecoder covers this: encoding/json
 // matches an incoming key to a struct field by an exact match first and a
 // CASE-INSENSITIVE one otherwise, so `{"Fields":...}` lands in
 // ItemCreate.Fields exactly as `{"fields":...}` does. A case-sensitive lookup
@@ -976,8 +976,8 @@ func TestOAuthRegisterRefusesNULBody(t *testing.T) {
 func TestBodyDecodesNULMatchesKeysLikeTheDecoder(t *testing.T) {
 	inner := `{"k":"a` + escNULLiteral + `b"}`
 	// The last two are Unicode simple-fold spellings: encoding/json matches
-	// them to the same struct field, and lower-casing does NOT (codex round
-	// 17). U+017F LONG S folds to 's'; U+212A KELVIN SIGN folds to 'k'.
+	// them to the same struct field, and lower-casing does NOT.
+	// U+017F LONG S folds to 's'; U+212A KELVIN SIGN folds to 'k'.
 	for _, key := range []string{"fields", "Fields", "FIELDS", "fIeLdS", "Schema", "TAGS",
 		"\u017Fchema", "\u017FCHEMA"} {
 		body := `{"title":"x","` + key + `":` + jsonEncode(t, inner) + `}`
@@ -1053,7 +1053,7 @@ func TestBodyScanClosesTheMapModelGaps(t *testing.T) {
 }
 
 // TestBodyScanRefusesRepeatedRequestMembers pins where a repeat counts
-// (BUG-2812 ruling, day 80), and that it is judged on EVERY body rather than
+// (BUG-2812), and that it is judged on EVERY body rather than
 // only on one that carries an escape.
 func TestBodyScanRefusesRepeatedRequestMembers(t *testing.T) {
 	cases := []struct {
@@ -1271,7 +1271,7 @@ func independentDecodesNUL(t *testing.T, raw []byte) bool {
 							// ANY valid JSON document, scalars included.
 							//
 							// This was narrowed to objects and arrays in
-							// BUG-2803 codex round 27, to make the oracle
+							// BUG-2803, to make the oracle
 							// agree with production. The disagreement was
 							// real; the direction of the fix was not. Nobody
 							// measured which walker matched POSTGRES, and the
@@ -1289,7 +1289,7 @@ func independentDecodesNUL(t *testing.T, raw []byte) bool {
 							// this oracle is restored to what it always said.
 							//
 							// The lesson worth keeping: two implementations
-							// made to agree are not thereby correct. Round 27
+							// made to agree are not thereby correct. That change
 							// had two walkers and no authority, so agreement
 							// was the only available test and it picked the
 							// wrong survivor.
@@ -1337,7 +1337,7 @@ func independentDecodesNUL(t *testing.T, raw []byte) bool {
 }
 
 // TestBodyDecodesNULAgainstAnIndependentOracle checks the WALKER, which the
-// gate differential structurally cannot (codex round 22: shared-oracle blind
+// gate differential structurally cannot (shared-oracle blind
 // spot). Disagreement means one of the two is wrong and both get read - the
 // point is that a single shared bug can no longer hide.
 func TestBodyDecodesNULAgainstAnIndependentOracle(t *testing.T) {
@@ -1394,9 +1394,8 @@ func TestBodyDecodesNULAgainstAnIndependentOracle(t *testing.T) {
 
 	// Bodies whose answer is known INDEPENDENTLY of either walker, so the test
 	// can catch the two of them agreeing on a wrong answer — which is exactly
-	// what happened before: BUG-2803 round 27 made them agree by narrowing the
-	// oracle, and both were then wrong about scalars for a release (codex
-	// round 2).
+	// what happened before: BUG-2803 made them agree by narrowing the
+	// oracle, and both were then wrong about scalars for a release.
 	pinned := map[string]bool{
 		`{"fields":"\"a` + esc + `b\""}`:         true,
 		`{"fields":"\"a` + doubled + `b\""}`:     true,
@@ -1462,8 +1461,8 @@ func mapModelDecodesNUL(v any, inUserData bool) bool {
 					// NUL", and taking the JSON-encoded branch used to skip
 					// the plain check entirely — so a direct NUL in a
 					// `fields` value was accepted, reopening the door this
-					// whole change exists to close (codex round 9, a
-					// regression introduced by the round-8 restructure).
+					// whole change exists to close (a
+					// regression introduced by an earlier restructure).
 					if textguard.ContainsNUL(str) || nestedDocumentDecodesNUL(str) {
 						return true
 					}
@@ -1492,8 +1491,8 @@ func mapModelDecodesNUL(v any, inUserData bool) bool {
 }
 
 // TestRepeatFoldFollowsTheTopLevelDestination pins which objects fold member
-// names, from the destination's top-level kind (OpenCode review round 1
-// on BUG-2812 found that "the top level is always a struct" was false: two
+// names, from the destination's top-level kind (BUG-2812
+// found that "the top level is always a struct" was false: two
 // endpoints decode into a map, and three into a slice of structs).
 func TestRepeatFoldFollowsTheTopLevelDestination(t *testing.T) {
 	type s struct{ A string }

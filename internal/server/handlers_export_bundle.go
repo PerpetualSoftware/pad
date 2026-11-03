@@ -26,7 +26,7 @@ const exportBundleVersion = 1
 
 // requireUnrestrictedExportAccess denies workspace export (both the JSON
 // and tar.gz bundle forms) to a caller whose workspace access is scoped to
-// specific collections (BUG-1922). Dave's ruling: workspace export is an
+// specific collections (BUG-1922). Workspace export is an
 // owner affordance for backup/portability, not a visibility-scoped view —
 // so rather than filtering the export contents to what the caller can see
 // (which would silently produce incomplete backups), a restricted caller
@@ -161,7 +161,6 @@ func (s *Server) handleExportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 	// headers + the first tar entries are already on the wire. The
 	// trailer is set to "ok" only when every entry wrote cleanly;
 	// otherwise the client treats the file as corrupt and discards it.
-	// Codex caught the silent-corruption gap on PR #305 round 3.
 	w.Header().Set("Trailer", BundleStatusTrailer)
 
 	gzw := gzip.NewWriter(w)
@@ -293,7 +292,7 @@ func (s *Server) streamAttachmentToTar(ctx context.Context, tw *tar.Writer, a *m
 // skipped silently. So changing the output for any input makes an older
 // server drop those attachments' bytes from a newer bundle without a word.
 // That is why a reserved character in the extension ("x.p|ng") is left as is
-// here, rather than made portable (BUG-3186, lead ruling: the bundle is a
+// here, rather than made portable (BUG-3186: the bundle is a
 // machine format consumed by import). Do not change this casually.
 // Exported as a function (not a const helper) so the import path can
 // import it and resolve manifest entries without duplicating the

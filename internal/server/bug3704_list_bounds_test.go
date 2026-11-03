@@ -9,7 +9,7 @@ import (
 )
 
 // BUG-3704: every HTTP item list is bounded. A missing, zero, negative or
-// invalid limit takes the maximum (lead ruling: an old client then loses rows
+// invalid limit takes the maximum (an old client then loses rows
 // only past it), an explicit one is clamped to it, and the paging state comes
 // back in headers on every response, because the body is a bare array.
 

@@ -109,7 +109,7 @@ func beginDiagnosticTx(ctx context.Context, db *sql.DB, postgres bool, timeout t
 
 // statementTimeoutMS is a positive timeout in whole milliseconds, rounded up:
 // truncating one under 1ms would give 0, which PostgreSQL reads as no timeout
-// at all (codex on BUG-3751).
+// at all (BUG-3751).
 func statementTimeoutMS(d time.Duration) int64 {
 	return int64((d + time.Millisecond - 1) / time.Millisecond)
 }
@@ -243,7 +243,7 @@ func DiagnoseVersionTies(ctx context.Context, db *sql.DB, postgres bool, opts Di
 		}
 		// The item is classified into its own report and folded in only when
 		// it finishes: classification is CPU work the deadline must also
-		// bound (codex on BUG-3751), and a half-judged item is not a count.
+		// bound (BUG-3751), and a half-judged item is not a count.
 		if testHookBeforeClassify != nil {
 			testHookBeforeClassify(rep.ItemsScanned)
 		}
@@ -264,7 +264,7 @@ func DiagnoseVersionTies(ctx context.Context, db *sql.DB, postgres bool, opts Di
 }
 
 // testHookBeforeScan, when set, runs before each row scan of the named loop:
-// the deadline can close the rows between Next and Scan (codex on BUG-3751).
+// the deadline can close the rows between Next and Scan (BUG-3751).
 var testHookBeforeScan func(loop string)
 
 // testHookBeforeClassify, when set, runs before each item is classified,

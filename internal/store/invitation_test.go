@@ -51,8 +51,8 @@ func TestCreateInvitation_SetsExpiresAt(t *testing.T) {
 }
 
 // TestMigration044_BackfillParsesCorrectly ensures the SQLite/Postgres backfill
-// writes expires_at in a shape that parseTime can round-trip. Codex flagged
-// the first cut of this migration because the default datetime()/::TEXT casts
+// writes expires_at in a shape that parseTime can round-trip. The first cut of this migration was wrong:
+// because the default datetime()/::TEXT casts
 // produce space-separated output that parseTime silently rejects — that would
 // mark every pre-existing invitation as already expired right after upgrade.
 //

@@ -480,7 +480,7 @@ func TestUpload_RejectsUnresolvableItemID(t *testing.T) {
 // same bit ("item_not_found" => it really is absent; "not_found" => it
 // exists but is hidden from you).
 //
-// Found by the Codex review of TASK-2400 after the ordering fix landed.
+// Added for TASK-2400 after the ordering fix landed.
 func TestUpload_HiddenAndMissingItemsAreIndistinguishable(t *testing.T) {
 	srv, _ := testServerWithAttachments(t)
 
@@ -843,7 +843,7 @@ func TestUpload_NoRegistryWired(t *testing.T) {
 	}
 }
 
-// TestUpload_QuotaCheckResolves regression-tests Codex round 1 finding 3:
+// TestUpload_QuotaCheckResolves is a regression test:
 // CheckLimit("storage_bytes") returns "unknown workspace feature", so the
 // previous warning path silently dropped every probe. We now use
 // WorkspaceStorageLimit which understands byte-counted features. The
@@ -879,7 +879,7 @@ var _ = io.Discard
 var _ = models.Attachment{}
 var _ = strings.Contains
 
-// TestUpload_MultipartTextFieldsAreBindableText covers codex round 4's P2 on
+// TestUpload_MultipartTextFieldsAreBindableText covers
 // BUG-2803. The multipart body is deliberately exempt from the JSON NUL rule
 // — its payload is binary blob content and must not be scanned for text
 // validity — but its TEXT fields are a different thing. `item_id` goes to
@@ -980,8 +980,7 @@ func TestUpload_MultipartTextFieldsAreBindableText(t *testing.T) {
 		// download anchor, bundle export naming, and `pad attachment view`,
 		// whose contract is handing a path to something that opens files by
 		// extension. Dropping it made this fallback lossier than the
-		// empty-name one, which has always produced "upload.bin" (codex
-		// round 24).
+		// empty-name one, which has always produced "upload.bin".
 		if got.Filename != "upload.png" {
 			t.Errorf("expected the generic fallback to keep the storable extension, got %q", got.Filename)
 		}
@@ -1088,8 +1087,8 @@ func TestUpload_MultipartTextFieldsAreBindableText(t *testing.T) {
 
 		// PRESERVATION controls. Refusing path components must not become
 		// refusing anything unusual: "..." and a backslash are ordinary POSIX
-		// filenames and a user who uploads one should get it back (codex
-		// round 27 flagged the earlier version as over-refusing both).
+		// filenames and a user who uploads one should get it back (an earlier
+		// version over-refused both).
 		// A backslash name is legitimate on Unix too, but expressing one
 		// through a quoted Content-Disposition tests the header grammar more
 		// than it tests this guard, so it is left out deliberately rather

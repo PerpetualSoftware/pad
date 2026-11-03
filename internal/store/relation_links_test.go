@@ -204,7 +204,7 @@ func TestRelationLinks_MoveReindexesAgainstTheDestinationSchema(t *testing.T) {
 	}
 }
 
-// TestRelationLinks_SchemaChangeReindexesTheCollection is the lead's D2 ruling
+// TestRelationLinks_SchemaChangeReindexesTheCollection encodes the D2 decision
 // as a test.
 //
 // Declaring a relation field over values that already exist must index them.
@@ -381,8 +381,8 @@ func TestRelationLinks_ImportIndexesTheRemappedIDs(t *testing.T) {
 	}
 }
 
-// TestRelationLinks_RestoreAfterASchemaChangeReindexes is codex round 1's
-// second P1, and it is a hole my own site enumeration could not have found.
+// TestRelationLinks_RestoreAfterASchemaChangeReindexes guards the case:
+// it is a hole my own site enumeration could not have found.
 //
 // I enumerated the sites that WRITE items.fields. Restore writes no fields —
 // it clears deleted_at — so it never appeared. But the index depends on
@@ -437,8 +437,7 @@ func TestRelationLinks_RestoreAfterASchemaChangeReindexes(t *testing.T) {
 	}
 }
 
-// TestRelationLinks_AnInterruptedBackfillIsRetriedNotSkipped is codex round
-// 1's first P1.
+// TestRelationLinks_AnInterruptedBackfillIsRetriedNotSkipped guards the case.
 //
 // The guard used to be "does item_relation_links have any row". Rows commit
 // per item, so a crash partway through leaves the table NON-EMPTY AND
@@ -489,7 +488,7 @@ func TestRelationLinks_AnInterruptedBackfillIsRetriedNotSkipped(t *testing.T) {
 	}
 }
 
-// TestRelationLinks_BackfillClearsAStaleEdge is codex round 2's first P1.
+// TestRelationLinks_BackfillClearsAStaleEdge guards the case.
 //
 // The backfill used to SKIP an item whose blob carries no edges, as an
 // optimisation. That is wrong for exactly the state it exists to repair: an
@@ -527,8 +526,7 @@ func TestRelationLinks_BackfillClearsAStaleEdge(t *testing.T) {
 	}
 }
 
-// TestRelationLinks_ASourceInADeletedCollectionIsNotCounted is codex round 2's
-// disclosure P1.
+// TestRelationLinks_ASourceInADeletedCollectionIsNotCounted guards a disclosure case.
 //
 // DeleteCollection soft-deletes the COLLECTION and leaves its items live. The
 // reverse query joins collections, so without a deleted_at filter a source
@@ -575,7 +573,7 @@ func TestRelationLinks_ASourceInADeletedCollectionIsNotCounted(t *testing.T) {
 }
 
 // TestRelationLinks_HardDeleteCascadesTheEdges pins a claim the input matrix
-// makes and nothing else checked (codex round 4's nit).
+// makes and nothing else checked.
 //
 // The matrix says a hard delete needs no hook because `ON DELETE CASCADE` on
 // source_item_id removes the outgoing edges with the row. That is a claim
@@ -609,7 +607,7 @@ func TestRelationLinks_HardDeleteCascadesTheEdges(t *testing.T) {
 	}
 }
 
-// TestRelationLinks_BacklinkCarriesTheFieldLabel pins codex round 6's nit,
+// TestRelationLinks_BacklinkCarriesTheFieldLabel pins the case,
 // which was a field declared, documented, consumed by the UI — and never
 // populated, so every group rendered its raw key.
 //

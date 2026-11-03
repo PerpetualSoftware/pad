@@ -286,13 +286,13 @@ func (s *Server) resolveVisibleItem(w http.ResponseWriter, r *http.Request, work
 //
 // THE ARCHIVED CHECK IS A DOOR COURTESY, NOT A STORE INVARIANT, and an archive
 // that lands between this check and the store's UPDATE lets the verb through
-// (codex round 17, accepted). That is the posture of every item mutation in
+// (an accepted tradeoff). That is the posture of every item mutation in
 // this API — UpdateItem's own UPDATE is `WHERE id = ?` with no liveness
 // clause — and the outcome is benign: an ack, re-arm or delete on a reminder
 // whose item was archived a moment ago leaves rows the scan and the pending
 // surface already exclude, and RestoreItem brings back whatever state they
 // hold. Asserting liveness inside the store's WHERE would make AckReminder's
-// no-match ambiguous again ("not fired" vs "archived"), which round 12 removed
+// no-match ambiguous again ("not fired" vs "archived"), which an earlier change removed
 // on purpose; the courtesy stays at the door. See handleListItemReminders for the read
 // side of the same posture. The include-deleted load is what lets the
 // visibility check run first, so a guest who could not see the item learns
@@ -317,8 +317,8 @@ func (s *Server) resolveReminderForWrite(w http.ResponseWriter, r *http.Request,
 		writeError(w, http.StatusNotFound, "not_found", "Reminder not found")
 		return nil, nil
 	}
-	// The visibility refusal is the SAME 404 as an unknown id (TASK-3611 codex
-	// r3): requireItemVisible's "Item not found" would tell a caller who
+	// The visibility refusal is the SAME 404 as an unknown id (TASK-3611):
+	// requireItemVisible's "Item not found" would tell a caller who
 	// cannot see the item that this reminder id exists. checkItemVisible is
 	// the decision requireItemVisible makes, without its message.
 	if !appCeilingAllows(r, item.CollectionID) {
@@ -368,7 +368,7 @@ func writeReminderManaged(w http.ResponseWriter, scheduleID string) {
 		"This reminder is managed by the item's schedule; resolve it with POST .../schedule/resolve, or change or delete the schedule instead", details)
 }
 
-// Bounds for the pending-reminder read (IDEA-2641, codex round 4).
+// Bounds for the pending-reminder read (IDEA-2641).
 const (
 	// pendingReminderWindow is how many pending reminders the dashboard shows.
 	pendingReminderWindow = 50

@@ -505,7 +505,7 @@ func TestCollapseChanges(t *testing.T) {
 		},
 		{
 			name: "single structured-field same-display entry preserved",
-			// Regression for Codex round 1 [P2]: diffFields emits
+			// diffFields emits
 			// `implementation_notes: (1 note) → (1 note)` to signal that
 			// a same-cardinality replacement occurred (e.g. one note
 			// swapped for a different note). The display strings collapse
@@ -526,7 +526,7 @@ func TestCollapseChanges(t *testing.T) {
 		},
 		{
 			name: "repeated same-display structured-field entries preserved",
-			// Codex review round 2 [P2]: two PATCHes that both swapped a
+			// Two PATCHes that both swapped a
 			// single note for a different single note. Both render as
 			// `(1 note) → (1 note)` because formatChangeValue summarises
 			// by count, but the underlying notes differ each time.
@@ -549,7 +549,7 @@ func TestCollapseChanges(t *testing.T) {
 		},
 		{
 			name: "structured count-return swing preserved (lossy summaries)",
-			// Codex review round 3 [P2]: 1 note A → 2 notes A+B → 1
+			// 1 note A → 2 notes A+B → 1
 			// note B. diffFields emits both transitions; the merged
 			// shape looks like a foo→bar→foo cancellation, but the
 			// final note differs from the original. hasLossySummary
@@ -831,7 +831,7 @@ func changesOfActivity(t *testing.T, metadata string) string {
 	return c
 }
 
-// Codex round 1 on BUG-2763: with the identity guard added but the candidate
+// BUG-2763: with the identity guard added but the candidate
 // query still taking only the newest row overall, a writer that returns inside
 // the window lands on the OTHER writer's row, is refused on identity, and
 // starts a third row — so the guard fixed the attribution and broke the

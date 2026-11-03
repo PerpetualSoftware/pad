@@ -87,7 +87,7 @@ func TestTask3409_ASingleOwnerEndpointBehavesAsBefore(t *testing.T) {
 	}
 }
 
-// codex r1: an owner endpoint deactivated while an event is still owed to it
+// An owner endpoint deactivated while an event is still owed to it
 // (automatically after consecutive failures, or by its owner) is no longer
 // owed it. The event is acked, and the endpoint's drop is recorded and
 // counted rather than silent.

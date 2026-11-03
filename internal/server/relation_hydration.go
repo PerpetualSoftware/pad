@@ -73,7 +73,7 @@ func (s *Server) hydrateRelationTargets(r *http.Request, workspaceID string, ite
 		redact := func(target models.RelationTarget) models.RelationTarget {
 			// Ref OR Title: a legacy target (item_number NULL) resolves with a
 			// title and no ref, and keying on the ref alone let its title through
-			// (BUG-3366, codex r1).
+			// (BUG-3366).
 			if (target.Ref != "" || target.Title != "") && !visible(target.ID) {
 				// Resolved, but not for these eyes. Keep the id — the value IS
 				// stored — and drop what would disclose the target.

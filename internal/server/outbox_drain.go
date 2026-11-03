@@ -241,8 +241,7 @@ func (s *Server) runOutboxDrainTick() {
 	// until the 7-day retention takes them, which makes a five-minute alarm
 	// delay irrelevant to any decision anyone makes about them. The log line
 	// says exactly that and no more — the query does not look at claimed_at,
-	// and during a rolling upgrade an older binary may well be holding one
-	//.
+	// and during a rolling upgrade an older binary may well be holding one.
 	if s.shouldScanOversizedOutbox() {
 		if oversized, oerr := s.store.OversizedPendingOutbox(5); oerr != nil {
 			slog.Error("outbox drain: oversized scan failed", "error", oerr)

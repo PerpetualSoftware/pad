@@ -126,7 +126,7 @@ func task3397Epoch(t *testing.T, s *Store, id string) int64 {
 	return e
 }
 
-// codex r1 #1: rotate's phase 2 bumps the epoch again, so a grant that read
+// Rotate's phase 2 bumps the epoch again, so a grant that read
 // the phase-1 epoch while the install was disabling (and authenticated with
 // the old secret) is refused once the install is active again.
 func TestTask3397_RotateEndsGrantsFromBetweenThePhases(t *testing.T) {
@@ -149,7 +149,7 @@ func TestTask3397_RotateEndsGrantsFromBetweenThePhases(t *testing.T) {
 	}
 }
 
-// codex r1 #2: phase 1 kills every unconsumed install code, so an earlier
+// Phase 1 kills every unconsumed install code, so an earlier
 // code cannot be redeemed for a fresh secret after a rotate or after a
 // disable and re-enable. The rotate's own code works.
 func TestTask3397_TeardownInvalidatesEarlierInstallCodes(t *testing.T) {
@@ -190,7 +190,7 @@ func TestTask3397_TeardownInvalidatesEarlierInstallCodes(t *testing.T) {
 	}
 }
 
-// codex r1 #3: uninstall racing account deletion's bot purge, which deletes
+// Uninstall racing account deletion's bot purge, which deletes
 // the bot's membership, then the bot (whose FK action updates the install's
 // bot_user_id), must not deadlock. The writer here replays that order.
 func TestTask3397_UninstallDoesNotDeadlockWithTheBotPurge(t *testing.T) {
@@ -254,7 +254,7 @@ func TestTask3397_PhaseOneFencesAnAdmittedWrite(t *testing.T) {
 	}
 }
 
-// The lead's check on #1775: UninstallAppTx takes the bot's users row BEFORE
+// The check on #1775: UninstallAppTx takes the bot's users row BEFORE
 // the install row, and the issuance barrier takes the install row FOR UPDATE.
 // No cycle, for two reasons: by the time UninstallAppTx runs the install is
 // 'uninstalling', so the barrier refuses on its state check

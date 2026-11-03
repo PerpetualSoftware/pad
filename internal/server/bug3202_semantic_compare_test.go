@@ -8,7 +8,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// BUG-3202, the lead's condition: field writes now keep a number's literal, so
+// BUG-3202: field writes now keep a number's literal, so
 // one VALUE can be stored as different TEXT (1e3 and 1000). Every place that
 // compares field values must answer by value, in both directions:
 //

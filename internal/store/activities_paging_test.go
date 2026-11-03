@@ -231,7 +231,7 @@ func TestKeysetPagingWalksATimestampTieExactlyOnce(t *testing.T) {
 	}
 }
 
-// mcp_audit_log gets the same tie-break (BUG-2781, the lead's ruling): its
+// mcp_audit_log gets the same tie-break (BUG-2781): its
 // rows are append-only, but rows sharing a second still come back in scan
 // order, which can differ between two page requests. Same insertion-order
 // instrument as the activity ties test above.

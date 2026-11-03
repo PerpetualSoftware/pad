@@ -121,7 +121,7 @@ func TestSSESubscriberStillHasAccess(t *testing.T) {
 // visibility-recompute path returns the current permission snapshot on
 // every call. A regression would mean a mid-stream permission change
 // (e.g. role downgrade from editor to guest, grants revoked) is
-// ignored until the next reconnect — the exact leak Codex P1 flagged.
+// ignored until the next reconnect — the exact leak this test guards against.
 func TestComputeSSEVisibility_ReflectsCurrentGrants(t *testing.T) {
 	srv := testServer(t)
 

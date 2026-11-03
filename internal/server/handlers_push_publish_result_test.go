@@ -193,10 +193,10 @@ func TestPushToItem_SucceedsWhenPublishAccepted(t *testing.T) {
 	}
 }
 
-// TestBestEffortProducerSucceedsWhenThePublishFails — codex round 30
+// TestBestEffortProducerSucceedsWhenThePublishFails
 // (coverage-gap sweep).
 //
-// publishWatchNotification's whole ruling is that a producer layered on a
+// publishWatchNotification's whole contract is that a producer layered on a
 // committed store write DISCARDS a publish failure: the item exists, the
 // comment exists, and failing the caller's request over a lost
 // notification would tell the client its write failed when it did not.
@@ -232,8 +232,8 @@ func TestBestEffortProducerSucceedsWhenThePublishFails(t *testing.T) {
 		t.Fatalf("the comment was not persisted: %s", list.Body.String())
 	}
 
-	// THE PREMISE, asserted rather than assumed (codex round 31, and my own
-	// rule about tests asserting their own premise). Without this, the two
+	// THE PREMISE, asserted rather than assumed (a test should assert
+	// its own premise). Without this, the two
 	// checks above pass for a handler that never publishes at all — no bus,
 	// the producer removed, the notification hook deleted — so the test
 	// would be named for a failed publish it never performed.

@@ -10,7 +10,7 @@ package store
 // for whoever else is running, which is the assertion two of these tests exist
 // to make.
 //
-// Found by codex, NOT by my own sweep, and the reason is worth recording: my
+// Missed by the first sweep, and the reason is worth recording: its
 // global-mutator grep was `^var [a-z]`, which finds unexported package vars and
 // silently skips exported ones. The instrument asked "which unexported globals
 // exist" while the claim it was carrying was "which globals exist". Third

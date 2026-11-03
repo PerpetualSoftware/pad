@@ -11,7 +11,7 @@ import (
 
 // BUG-3014. A stored relation value that is not UUID-shaped was never an id,
 // so hydration marks it `stored_as_text` instead of presenting it as an id-only
-// entry (which reads as "gone or hidden"). Lead ruling, day 79: the marker is
+// entry (which reads as "gone or hidden"). The marker is
 // decided from the stored bytes alone, never from a lookup; a UUID-shaped value
 // is byte-identical to v0.49; and a UUID that fails to resolve is NOT marked.
 
@@ -153,7 +153,7 @@ func TestImportWorkspace_TitleValuedRelationHydratesAsStoredText(t *testing.T) {
 }
 
 // TestRelationValueStoredAsText_SharedVectors pins the Go predicate to the
-// table the web's copy is pinned to (lead review, day 79). KEEP IN SYNC with
+// table the web's copy is pinned to. KEEP IN SYNC with
 // web/src/lib/items/relationFieldTypes.test.ts, which reads the same file:
 // the two implementations of one contract rule can only drift by turning one
 // of the two suites red.

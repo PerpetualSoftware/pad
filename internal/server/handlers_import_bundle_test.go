@@ -188,7 +188,7 @@ func TestImportBundle_LegacyJSONStillWorks(t *testing.T) {
 }
 
 // TestImportBundle_RejectsOutOfOrderTar pins the streaming-import
-// invariant added in PR #306 round 1 (Codex P1): the bundle MUST
+// invariant added in PR #306: the bundle MUST
 // place pad-export.json + manifest.json BEFORE any blob so the
 // server can stream-rehydrate without buffering. Bundles that put
 // blobs first would still work in the previous implementation but
@@ -254,7 +254,7 @@ func TestImportBundle_RejectsBadGzip(t *testing.T) {
 // attachments. The handler now rejects the second occurrence with a
 // 400 AND rolls back the partial workspace from the first occurrence
 // so a malformed bundle can't pile up half-imported workspaces in
-// the destination. Codex P1 on PR #308.
+// the destination.
 func TestImportBundle_RejectsDuplicateExport(t *testing.T) {
 	// Build a real, valid pad-export.json by exporting an empty
 	// workspace from a live server, then assemble a tar.gz that
@@ -421,8 +421,8 @@ func TestImportBundle_RejectsPathTraversal(t *testing.T) {
 	}
 }
 
-// TestImportBundle_PathTraversalAfterExportRollsBack pins Codex P1
-// round 3 on PR #308: a path-traversal entry that follows a valid
+// TestImportBundle_PathTraversalAfterExportRollsBack pins this case: a path-traversal entry that
+// follows a valid
 // pad-export.json must trigger the workspace rollback, not just
 // return a 400 with the workspace left behind. Earlier the
 // path-traversal early-return passed nil instead of ws, so the
@@ -483,8 +483,8 @@ func TestImportBundle_PathTraversalAfterExportRollsBack(t *testing.T) {
 	}
 }
 
-// TestImportBundle_RollbackTombstonesAttachments pins Codex P1
-// round 2 on PR #308: when the duplicate-manifest guard fires AFTER
+// TestImportBundle_RollbackTombstonesAttachments pins this case: when the duplicate-manifest
+// guard fires AFTER
 // blobs have already been rehydrated, the rollback must tombstone
 // every attachment row in the partial workspace (deleted_at set) so
 // orphan-GC reclaims the blobs and per-user storage usage is
@@ -640,7 +640,7 @@ func TestIsSafeBundleEntryName(t *testing.T) {
 	}
 }
 
-// TestImportBundle_RefusesNULInExport is codex round 3's P1 on BUG-2803. The
+// TestImportBundle_RefusesNULInExport covers BUG-2803. The
 // tar.gz bundle path parses pad-export.json itself rather than through
 // decodeJSON, so it inherited none of that helper's checks: the SAME workspace
 // import, reached with Content-Type application/gzip instead of
@@ -705,7 +705,7 @@ func TestImportBundle_RefusesNULInExport(t *testing.T) {
 	}
 }
 
-// TestImportBundle_RefusesNULInManifest is the leg codex round 13 found
+// TestImportBundle_RefusesNULInManifest is the leg that was
 // missing: TestImportBundle_RefusesNULInExport builds bundles containing only
 // pad-export.json, so removing the INDEPENDENT manifest check left the suite
 // green. The manifest is a second JSON document parsed the same way and needs
@@ -774,7 +774,7 @@ func TestImportBundle_RefusesNULInManifest(t *testing.T) {
 
 	// Exactly 400, not "any error": the refusal is a caller-input verdict
 	// the release note promises, and a >=400 assertion would let it decay
-	// into a 500 unnoticed (codex closing round 8).
+	// into a 500 unnoticed.
 	if got.Code != http.StatusBadRequest {
 		t.Errorf("a manifest carrying a NUL escape must be refused with 400, got %d: %s", got.Code, got.Body.String())
 	}

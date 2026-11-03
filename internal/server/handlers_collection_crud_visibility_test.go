@@ -81,7 +81,7 @@ func TestDeleteCollection_RestrictedOwner_HiddenCollection404(t *testing.T) {
 // ─── Item-grant-only must NOT promote to collection-wide mutation rights ──
 
 // TestUpdateDeleteCollection_ItemGrantOnly_HiddenCollection404 mirrors
-// BUG-1920's codex R2 finding: VisibleCollectionIDs folds in collections
+// a BUG-1920 finding: VisibleCollectionIDs folds in collections
 // visible ONLY via an item-level grant ("so the collection appears in
 // navigation"), which would let a restricted owner holding nothing more
 // than an item grant on ONE item inside the hidden collection rename or

@@ -160,7 +160,7 @@ const movedToScanLimit = 25
 //
 // What it does do is refuse to ADD a cross-workspace disclosure on top of it.
 // authorizeCrossWorkspace applies exactly this rule to the destination side
-// (crossWorkspaceLiveCollection, "Codex round 2 P1" in that file), and the
+// (crossWorkspaceLiveCollection in that file), and the
 // source deserves the symmetric treatment: an item in a collection the
 // workspace has retired should not be the thing that reveals where a copy of
 // it lives in another workspace. One extra collection load, paid only for an

@@ -271,7 +271,7 @@ func starvedNote(gap, timeout time.Duration) string {
 
 // The middleware never clears the deadline it leaves on a connection, because
 // net/http does, after each response and on hijack. The next two tests hold
-// net/http to each clear (codex r4: one test could not tell them apart).
+// net/http to each clear (one test could not tell them apart).
 
 // After a response: a keep-alive connection's next request starts with no
 // deadline. The second request goes to an exempt route the middleware never
@@ -380,7 +380,7 @@ func TestBUG3821_ABufferedBodyIsFlushedAfterALongHandler(t *testing.T) {
 
 // The predicate reads the escaped path chi routes on. Each exempt route is
 // recognised as written; a decoded spelling of some other route that merely
-// looks like one is not (codex r5: an encoded item ref decoding to an
+// looks like one is not (an encoded item ref decoding to an
 // attachment-download path), and neither is a path that only shares a prefix.
 func TestBUG3821_TheExemptionMatchesTheRoutedPathOnly(t *testing.T) {
 	t.Parallel()

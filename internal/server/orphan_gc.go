@@ -55,7 +55,7 @@ type orphanGCResult struct {
 	// blob delete then failed — stranded bytes an operator must clean by
 	// hand. Surfaced as its own counter so a sweep summary can't read
 	// "deleted=N, blobs_reclaimed=0, skipped=0" as if nothing went wrong
-	// (BUG-2415 codex round 3).
+	// (BUG-2415).
 	BlobDeleteFailures int
 }
 
@@ -93,7 +93,7 @@ func (s *Server) runOrphanGCSweep(ctx context.Context, graceCutoff time.Time) (*
 	// BlobsReclaimed=1 — AttachmentStore.Delete treats a missing
 	// key as success, so the second row's Delete returns nil and
 	// the counter increments again. Functional cleanup is correct
-	// (idempotent); only the metric was wrong. Codex round 4.
+	// (idempotent); only the metric was wrong.
 	reclaimedThisSweep := make(map[string]bool)
 
 	for _, a := range orphans {
@@ -106,8 +106,7 @@ func (s *Server) runOrphanGCSweep(ctx context.Context, graceCutoff time.Time) (*
 		// upload first, then save the reference, but the attachments
 		// row's item_id stays NULL. Scan items.content + items.fields
 		// + comment bodies before reclaiming so the GC doesn't destroy
-		// a legitimate reference. Codex P1 on PR #307 round 1;
-		// comment-body coverage added for IDEA-1650.
+		// a legitimate reference. Comment-body coverage added for IDEA-1650.
 		// LIVE variant whose parent is tombstoned/gone (BUG-2388): the
 		// leak artifact of the old non-transactional delete cascade, and
 		// the retro-cleanup class for rows already leaked. Tried FIRST
@@ -137,8 +136,8 @@ func (s *Server) runOrphanGCSweep(ctx context.Context, graceCutoff time.Time) (*
 			// Variants (thumbnails) are never text-referenced by their
 			// OWN id — content references the original. Scan the parent's
 			// id for them, or a referenced upload would keep its original
-			// while the sweep destroyed its thumbnails (codex round 1 #4;
-			// pre-existing hole, closed alongside the claim protocol).
+			// while the sweep destroyed its thumbnails
+			// (a pre-existing hole, closed alongside the claim protocol).
 			scanID := a.ID
 			if a.ParentID != nil && *a.ParentID != "" {
 				scanID = *a.ParentID
@@ -233,7 +232,6 @@ func (s *Server) runOrphanGCSweep(ctx context.Context, graceCutoff time.Time) (*
 		//      use to gate blob deletion, otherwise a TOCTOU race
 		//      between our check and store.Delete lets a new
 		//      upload's Put land on a blob we're about to remove.
-		//      Codex P1 round 3.
 		others, err := s.store.CountProtectingAttachmentsForHash(a.ContentHash, a.ID, graceCutoff)
 		if err != nil {
 			slog.Warn("orphan GC: count protecting refs failed",
@@ -448,7 +446,7 @@ func (s *Server) runRowlessBlobSweep(ctx context.Context, blobCutoff time.Time) 
 // The row check and the delete together are bounded by
 // refusedBlobDeleteTimeout. The in-flight lock is process-wide, and every
 // upload takes it to mark its hash, so a stalled database or backend must
-// not hold it for longer than that (codex r1, r2). The request's
+// not hold it for longer than that. The request's
 // own cancellation is dropped: a client that hung up still leaves no blob.
 // refusedBlobDeleteTimeout bounds reclaimRefusedBlob's row check and
 // delete, which run under the process-wide in-flight lock.
@@ -491,7 +489,7 @@ type orphanGCConfig struct {
 // orphanGCGraceConfigured returns the effective grace period —
 // operator-configured when set, the default otherwise. Read under the
 // config mutex; used by the thumbnail refusal cleanup so its hash-
-// protection window honors SetOrphanGCConfig (BUG-2388 codex round 1).
+// protection window honors SetOrphanGCConfig (BUG-2388).
 func (s *Server) orphanGCGraceConfigured() time.Duration {
 	s.orphanGC.mu.Lock()
 	defer s.orphanGC.mu.Unlock()

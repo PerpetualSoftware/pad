@@ -301,8 +301,8 @@ func TestDeleteAttachment_HappyPath(t *testing.T) {
 	}
 }
 
-// TestDeleteAttachment_AfterParentSoftDeleted pins Codex P2 from
-// PR #303 round 3: when the parent item is soft-deleted, the
+// TestDeleteAttachment_AfterParentSoftDeleted pins PR #303: when the parent item is
+// soft-deleted, the
 // attachment row remains in the storage list (so the user can see
 // it's still consuming quota), and the Delete button must work.
 //

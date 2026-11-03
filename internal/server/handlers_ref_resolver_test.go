@@ -35,7 +35,7 @@ func newJSONRequest(t *testing.T, method, path string, body interface{}) *http.R
 
 // refResolverFixture seeds a (user, workspace, bearer-token) triple ready
 // for resolver tests that need a real owner-username (so the redirect
-// target's leading path segment is non-empty — Codex round-2 P1.3
+// target's leading path segment is non-empty
 // otherwise 404s an ownerless workspace). Returns helpers that issue
 // authenticated requests against the seeded workspace.
 type refResolverFixture struct {
@@ -121,9 +121,9 @@ func (f *refResolverFixture) seedItem(collSlug, collPrefix, title string) *model
 // TestRefResolver_Success creates a workspace + collection + item, then
 // asserts that GET /-/r/{workspace}/{REF} produces a 302 whose Location
 // header points at the canonical item URL itemUrlId() would produce on
-// the frontend. The URL shape is the round-2 sentinel /-/r/... — the
+// the frontend. The URL shape is the sentinel /-/r/... — the
 // previous /{username}/{workspace}/ref/{ref} shape risked collision with
-// pre-existing `ref`-slugged collections (Codex round-2 P1.4).
+// pre-existing `ref`-slugged collections.
 func TestRefResolver_Success(t *testing.T) {
 	f := newRefResolverFixture(t)
 	item := f.seedItem("decisions", "DECIS", "Orchestration model")
@@ -214,7 +214,7 @@ func TestRefResolver_PreSetupBypass(t *testing.T) {
 	var item models.Item
 	parseJSON(t, rr, &item)
 
-	// Pre-setup workspace has owner_id="" — Codex round-2 P1.3 says we
+	// Pre-setup workspace has owner_id="".3 says we
 	// must 404 in that case rather than emit a `//slug/...` redirect.
 	// Verify the no-broken-redirect contract holds.
 	rr = doRequest(srv, "GET", "/-/r/"+ws.Slug+"/"+item.Ref, nil)
@@ -224,11 +224,11 @@ func TestRefResolver_PreSetupBypass(t *testing.T) {
 	}
 }
 
-// TestRefResolver_RejectsRefAsCollectionSlug pins round-1 P1.1: the
-// reservation prevents `ref` from becoming a collection slug. The round-2
+// TestRefResolver_RejectsRefAsCollectionSlug pins that the
+// reservation prevents `ref` from becoming a collection slug. The
 // URL shape /-/r/... no longer collides with a `ref` collection, but
 // the reservation stays as defense in depth (and to spare ourselves the
-// round-3 risk of someone restoring the older shape and rediscovering
+// risk of someone restoring the older shape and rediscovering
 // the collision).
 func TestRefResolver_RejectsRefAsCollectionSlug(t *testing.T) {
 	f := newRefResolverFixture(t)
@@ -248,7 +248,7 @@ func TestRefResolver_RejectsRefAsCollectionSlug(t *testing.T) {
 	}
 }
 
-// TestRefResolver_URLShapeNonOverlap pins round-2 P1.4 (Option B): the
+// TestRefResolver_URLShapeNonOverlap pins that the
 // resolver URL shape `/-/r/...` cannot collide with any user-namespace
 // page URL under `/{username}/{workspace}/...` because username + slug
 // grammar both require a leading letter. We verify by routing a request
@@ -272,11 +272,11 @@ func TestRefResolver_URLShapeNonOverlap(t *testing.T) {
 	}
 }
 
-// TestCheckItemVisible_TokenizedRoleAllowsNilUser pins round-2 P1.1:
+// TestCheckItemVisible_TokenizedRoleAllowsNilUser pins that
 // the legacy workspace-scoped API token path admits requests with
-// currentUser == nil and a synthesized role ("editor"). Pre-round-2,
+// currentUser == nil and a synthesized role ("editor"). Previously,
 // checkItemVisible's nil-user check fired first and false-404'd these
-// callers; the round-2 reorder lets tokenized roles bypass the gate.
+// callers; the current ordering lets tokenized roles bypass the gate.
 func TestCheckItemVisible_TokenizedRoleAllowsNilUser(t *testing.T) {
 	srv := testServer(t)
 
@@ -321,14 +321,14 @@ func TestCheckItemVisible_TokenizedRoleAllowsNilUser(t *testing.T) {
 }
 
 // TestCheckItemVisible_AuthenticatedEditorWithRestrictedAccess pins
-// round-3: the round-2 bypass at the top of checkItemVisible originally
+// that the bypass at the top of checkItemVisible originally
 // fired for ANY role in {owner, editor}, which silently disabled the
 // per-collection visibility filter for real authenticated editor members
 // with collection_access="specific". This test seeds exactly that
 // scenario — editor + restricted access to collection A only — and
 // asserts visibility on an item in collection B returns false.
 //
-// Pre-round-3 (round-2 buggy state): returned true. Post-round-3: false.
+// The earlier buggy state returned true; the fixed state returns false.
 func TestCheckItemVisible_AuthenticatedEditorWithRestrictedAccess(t *testing.T) {
 	srv := testServer(t)
 
@@ -386,7 +386,7 @@ func TestCheckItemVisible_AuthenticatedEditorWithRestrictedAccess(t *testing.T) 
 
 	// The regression assertion: editor + "editor" role + item in
 	// collection B (NOT in their member_collection_access list) must
-	// return false. The round-2 bug returned true here, disabling the
+	// return false. The earlier bug returned true here, disabling the
 	// per-collection gate for every read AND write path through
 	// requireItemVisible / the resolver.
 	visible, err := srv.checkItemVisible(ws.ID, itemB, editor, "editor", false)
@@ -517,7 +517,7 @@ func TestCheckItemVisible_AdminBearerRestrictedRoleDeniedOnHiddenCollection(t *t
 	}
 }
 
-// TestRefResolver_RestrictedMemberWithSystemCollection pins round-2 P1.2
+// TestRefResolver_RestrictedMemberWithSystemCollection pins
 // as TASK-3376 restated it: a restricted member who is entitled to a
 // system collection, plus an item grant in an UNRELATED collection (which
 // turns on checkItemVisible's item-grants branch), must be able to resolve
@@ -574,7 +574,7 @@ func TestRefResolver_RestrictedMemberWithSystemCollection(t *testing.T) {
 
 	// Restricted member: specific access on A only, plus an item grant
 	// on itemA. That grant triggers the item-grants branch of
-	// checkItemVisible — the branch that pre-round-2 missed system
+	// checkItemVisible — the branch that once missed system
 	// collections.
 	member, err := f.srv.store.CreateUser(models.UserCreate{
 		Email: "m@example.com", Name: "M", Username: "m", Password: "pw-test-12345",
@@ -621,7 +621,7 @@ func TestRefResolver_RestrictedMemberWithSystemCollection(t *testing.T) {
 	}
 }
 
-// TestRefResolver_RestrictedMemberWithCollectionGrant pins round-1 P1.2:
+// TestRefResolver_RestrictedMemberWithCollectionGrant pins that
 // a restricted member (collection_access="specific" with only collection A
 // in their member_collection_access) PLUS a direct collection grant on
 // collection B must be able to resolve refs that live in collection B.
@@ -727,9 +727,8 @@ func TestRefResolver_AdminBearer_404OnNonMemberWorkspace(t *testing.T) {
 }
 
 // TestRefResolver_AdminBearer_404EvenWithGrant pins the membership-only
-// stance against the grant-fallback escape hatch (Codex round 1 on
-// BUG-1618). A bearer admin who is NOT a member but holds a single
-// collection grant must still get 404 — otherwise resolverWorkspaceRole
+// stance against the grant-fallback escape hatch (BUG-1618). A bearer admin who is NOT a member but holds a
+// single collection grant must still get 404 — otherwise resolverWorkspaceRole
 // would return "guest" and checkItemVisible's own admin bypass would
 // reopen full resolver access + 302 URL leakage. Mirrors
 // TestSSESubscriberStillHasAccess_AdminBearer_DeniedEvenWithGrants.

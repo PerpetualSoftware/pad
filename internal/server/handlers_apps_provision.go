@@ -144,7 +144,7 @@ func (s *Server) handleConfirmAppInstall(w http.ResponseWriter, r *http.Request)
 // compares each artifact with what the owner reviewed, first on the pool (a
 // fast, friendly refusal: 409 install_review_stale, nothing written) and then
 // again INSIDE the provisioning transaction through the returned derive
-// function, which is the guarantee (lead ruling, day 86).
+// function, which is the guarantee.
 func (s *Server) buildProvisionRequest(r *http.Request, workspaceID, ownerID string, p *store.PendingInstall, reviewed *appPreview) (*store.ProvisionRequest, store.ProvisionDeriveFunc, error) {
 	blobs, err := s.store.PendingInstallBlobs(p.ID)
 	if err != nil {

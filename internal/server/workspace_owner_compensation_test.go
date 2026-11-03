@@ -403,9 +403,9 @@ func TestOwnerCompensation_CompletesUnderASingleConnection(t *testing.T) {
 	}
 }
 
-// The three legs below cover behaviour added by codex round 1. Each exists
-// because the round's finding named a state the original code reached and the
-// tests could not see.
+// The three legs below cover behaviour added after review. Each exists
+// because it names a state the original code reached and the tests could not
+// see.
 
 // ABSENT BUT NOT ALONE. Absence of THIS caller's owner row is not absence of
 // every member — the two questions BUG-3026 separated. Deleting on the first
@@ -539,7 +539,7 @@ func TestInvitationSignup_MemberAddFails_RollsTheAccountBack(t *testing.T) {
 // SIGNUP ACK LOSS — the membership committed and reported failure anyway.
 // Deleting the account here destroys a signup that worked, which is the
 // BUG-3026 shape arriving in the door forty lines from the helper written to
-// prevent it. Added after codex round 2 found exactly that.
+// prevent it. Added because review found exactly that.
 func TestInvitationSignup_MemberAddAckLoss_KeepsTheAccountAndSucceeds(t *testing.T) {
 	srv, inv := invitedSignupServer(t)
 	logs := captureLogs(t)
@@ -580,8 +580,8 @@ func TestInvitationSignup_MemberAddAckLoss_KeepsTheAccountAndSucceeds(t *testing
 	if !strings.Contains(logs.String(), "reconciled to success") {
 		t.Errorf("the reconcile arm was not taken. log: %s", logs)
 	}
-	// The signup SUCCEEDED, so the bookkeeping must have run too (codex round
-	// 3). Without this, a regression that reconciles the membership and then
+	// The signup SUCCEEDED, so the bookkeeping must have run too.
+	// Without this, a regression that reconciles the membership and then
 	// skips the accept passes here while leaving a redeemable code behind a
 	// granted membership.
 	consumed, err := srv.store.GetInvitationByCode(inv.Code)
@@ -672,7 +672,7 @@ func TestCreateWorkspace_SeedFails_RefusesAndLeavesNoWorkspace(t *testing.T) {
 	}
 }
 
-// THE SLUG MUST COME BACK, on every compensated arm (BUG-2715, ruling (d)).
+// THE SLUG MUST COME BACK, on every compensated arm (BUG-2715).
 //
 // The comments in the helper claim the removal frees the name — the purge
 // removes the row outright (a soft delete alone does not: the slug column is

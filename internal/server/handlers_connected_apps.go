@@ -151,7 +151,7 @@ func (s *Server) handleListConnectedApps(w http.ResponseWriter, r *http.Request)
 
 	// Delegated grants given to installed apps (TASK-3399): listed on their
 	// own, read-only plus revoke, never as MCP connections (no
-	// oauth_connections row, lead ruling Q1). Additive member.
+	// oauth_connections row). Additive member.
 	grants, err := s.store.ListUserAppGrants(user.ID)
 	if err != nil {
 		writeInternalError(w, err)
@@ -397,8 +397,7 @@ func (s *Server) respondWithConnection(w http.ResponseWriter, userID, requestID 
 	}
 	// Always read the staged slugs from the join table — even when
 	// wildcard is on, the UI needs to render pre-staged rows so the
-	// user can remove a mistake before flipping wildcard off. Codex
-	// review #585 round 2 caught the gap where wildcard hid the
+	// user can remove a mistake before flipping wildcard off. Without this, wildcard would hide the
 	// staged list, leaving the user no way to manage it.
 	allowedSlugs, err := s.store.ListConnectionWorkspaceSlugs(requestID)
 	if err != nil {
@@ -481,7 +480,7 @@ func (s *Server) handleUpdateConnectedAppFlags(w http.ResponseWriter, r *http.Re
 	// nothing. The store checks it under the connection's lock, so a
 	// concurrent removal cannot empty the list between the check and the
 	// write (BUG-3338). Rows staged while the wildcard is on count, which
-	// is how a user moves from wildcard to a list (codex review #585).
+	// is how a user moves from wildcard to a list.
 	if err := s.store.SetScopeFlagsGuarded(id, body.MayCreateWorkspaces, body.AllCurrentWorkspaces, body.AllCurrentWorkspaces); err != nil {
 		if errors.Is(err, store.ErrLastConnectionWorkspace) {
 			writeError(w, http.StatusBadRequest, "empty_allowlist",

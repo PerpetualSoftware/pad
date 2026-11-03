@@ -24,10 +24,10 @@ import (
 // validated against; the store compares them under the lock and re-validates
 // only when they differ. An always-on re-check was tried first and refused:
 // the store is not a validation layer, and internal flows write below the
-// schema on purpose (lead ruling, day 86).
+// schema on purpose.
 
-// revalidateIfSchemaMovedTx is the optimistic schema compare (lead ruling,
-// day 86). validated is the schema, as the exact bytes read from the
+// revalidateIfSchemaMovedTx is the optimistic schema compare. validated is the
+// schema, as the exact bytes read from the
 // collection row, that the caller validated against; nil means the caller
 // made no such claim and nothing is checked, which keeps the store's contract
 // for internal flows that write below the schema on purpose. Otherwise the

@@ -9,7 +9,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// PLAN-3598 role backfill. Each of the lead's terms is pinned here: a valid
+// PLAN-3598 role backfill. Each term is pinned here: a valid
 // field value is copied into an EMPTY column; a set column is never
 // overwritten; the field is never cleared; a value naming no live role is
 // reported, not copied. Plus the seq bump, the system activity row, the

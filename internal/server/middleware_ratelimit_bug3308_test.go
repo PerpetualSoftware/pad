@@ -105,7 +105,7 @@ func TestIPRateLimiter_FloodCannotEvictADrainedBucket(t *testing.T) {
 	}
 }
 
-// Codex round 1: whole-token levels put a drained bucket on the same
+// Whole-token levels put a drained bucket on the same
 // level as buckets holding 0.9 tokens, so the sweep chose among them at
 // random. The ranking is finer than a token now, so the drained bucket
 // is never the one evicted. 200 trials: at the old granularity it went

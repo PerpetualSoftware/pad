@@ -697,7 +697,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// divergence this pair of endpoints exists to prevent.
 	//
 	// BOTH structural checks run here now, through the shared classifier the
-	// COPY also runs at the same point (lead ruling, day 58). The shape check
+	// COPY also runs at the same point. The shape check
 	// used to happen far below, after validation; hoisting it changes nothing
 	// this door emits — same code, same message — and makes the ORDER the
 	// thing both doors share rather than a coincidence of layout.
@@ -757,8 +757,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// answers a different one, "did the source declare this key?". When
 	// MigrateFields cannot convert a value it drops the key and its default
 	// loop refills it from the DESTINATION schema, so the key is still in the
-	// source map while the value in hand came from the destination (codex
-	// round 9).
+	// source map while the value in hand came from the destination.
 	carriedSource := store.CarriedSourceValues(currentFields, migrated.Dropped)
 
 	final := make(map[string]any, len(migrated.Fields)+len(input.FieldOverrides))
@@ -769,7 +768,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 		// from the source item, and destination-schema defaults it filled in
 		// for keys the source had nothing for. The label has to name where
 		// the FINAL value came from, and a source key holding `null` is the
-		// case where those two answers come apart (codex rounds 4 and 5):
+		// case where those two answers come apart:
 		//
 		//   - source value, non-nil            -> migrated
 		//   - source null, destination default -> default (the destination
@@ -778,8 +777,8 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 		//     carried, and nothing defaulted it, so `default` would name a
 		//     value the schema never declared
 		//
-		// The middle case was reported `migrated` until round 4 and the last
-		// was reported `default` until round 5 — one guard, wrong in both
+		// The middle case was once reported as `migrated` and the last
+		// as `default` — one guard, wrong in both
 		// directions, because "was the key present" is not "where did the
 		// value come from".
 		sv, fromSource := carriedSource[k]
@@ -827,16 +826,15 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	items.DropBlankRelations(final, items.SchemaForMigratedFields(targetSchema), func(k string) bool {
 		return origin[k] != "override"
 	})
-	// EVERY SPELLING OF "NO TARGETS", in one place and AFTER coercion (codex
-	// round 7). An empty `multi_relation` list is about to be removed by
+	// EVERY SPELLING OF "NO TARGETS", in one place and AFTER coercion.
+	// An empty `multi_relation` list is about to be removed by
 	// `normalizeEmptyRelationLists`, and validation then injects the
 	// destination default in its place — so whatever `origin` says about the
 	// removed value would be said about the default instead. On the one surface
 	// whose job is to predict what the copy will do, that attributes a value to
 	// someone who never sent it.
 	//
-	// HERE rather than in the override loop above, which is where round 6 put
-	// it and why round 7 found three more ways in. That loop sees the caller's
+	// HERE rather than in the override loop above: that loop sees the caller's
 	// RAW bytes: `"[]"` is still a string there and becomes an empty list only
 	// once `CoerceFields` has run. And it sees only OVERRIDES, so a carried
 	// empty list kept `from: "migrated"` by the same mechanism. One sweep over
@@ -903,7 +901,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// visibility collapse the late-default drops get a few lines down.
 	// `wrong_collection` is the reason that names a LIVE item, so without
 	// this a carried value pointing at one the caller cannot see reported
-	// differently from a value naming nothing: the existence oracle round 3
+	// differently from a value naming nothing: the existence oracle
 	// closed on the main pass, reached by the carried path.
 	//
 	// This is the only site where a MigrateRelationReferents drop reason
@@ -986,8 +984,8 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	}
 	// A REQUIRED relation whose default did not resolve becomes a needs_value
 	// row rather than a drop, so the preview says what the copy will do:
-	// the copy REFUSES this request, and `valid` must be false (codex round
-	// 3). Reported through the same issues slice the required check feeds, so
+	// the copy REFUSES this request, and `valid` must be false.
+	// Reported through the same issues slice the required check feeds, so
 	// it lands in the same bucket a genuinely missing required field does.
 	for _, ri := range store.RequiredRelationIssues(items.SchemaForMigratedFields(targetSchema), lateDropped) {
 		issues = append(issues, items.FieldIssue{
@@ -1007,11 +1005,10 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 		// one: a key that pass dropped is no longer carried, so the default
 		// ValidateFields put in its place is checked rather than exempted.
 		//
-		// Round 15 reported this and every mutant survived, because the probe
-		// used a source value that RESOLVED — which the relation pass never
-		// drops, so the two sets were identical by construction. Round 16
-		// supplied the shape that differs: a non-nil DANGLING source value,
-		// under which the unfixed form hands a caller who cannot see the
+		// A probe using a source value that RESOLVED cannot tell the two apart:
+		// the relation pass never drops it, so the two sets are identical by
+		// construction. The shape that differs is a non-nil DANGLING source
+		// value, under which the unfixed form hands a caller who cannot see the
 		// target collection the id of the item the default names.
 		notDefaultKeys(input.FieldOverrides,
 			store.CarriedSourceValues(currentFields, migrated.Dropped)))
@@ -1152,8 +1149,8 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 				// `select` — the validator does not police keys it has no use
 				// for — and the value was copied straight through. The CLI then
 				// printed "target collection: people" under a select, which is
-				// a relation fact asserted about a field that has none (review
-				// round 2). Gating here makes the documented contract true at
+				// a relation fact asserted about a field that has none (an earlier
+				// bug). Gating here makes the documented contract true at
 				// the only place that can make it true.
 				Collection:            relationTargetSlug(def),
 				CollectionUnavailable: def.IsRelation() && unavailableTargets[def.Collection],
@@ -1208,7 +1205,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// dropped — schema fields first, in SOURCE-schema order (MigrateFields
 	// ranges a map, so its Dropped slice arrives in nondeterministic
 	// order and must be re-sorted or repeated calls would differ).
-	// Filtered against the FINAL map first (Codex round 2 P2-2): MigrateFields
+	// Filtered against the FINAL map first: MigrateFields
 	// computes Dropped before overrides merge and before defaults are
 	// injected, so a key it lists may have been supplied since. Reporting a
 	// field as dropped in the same response that reports it CARRIED — which is
@@ -1714,8 +1711,8 @@ func appendBackedReservedKey(key string) bool {
 // remedy has to work in the state the caller is actually in (PATTE-135). If the
 // stored value for an append-backed key is ALREADY undecodable, `pad item note`
 // refuses too — so naming it without qualification would send the caller in a
-// circle, which is the failure that convention exists to prevent (Codex round
-// 1). That case gets told the truth instead: nothing user-facing repairs it.
+// circle, which is the failure that convention exists to prevent.
+// That case gets told the truth instead: nothing user-facing repairs it.
 //
 // The message carries the WHY as well as the what. "Not allowed" alone would
 // read as arbitrary policy; the reason this door is closed is that the write it

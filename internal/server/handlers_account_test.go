@@ -216,7 +216,7 @@ func TestHandleDeleteAccount_OlderSidecar400WithNoLinkedCustomerProceeds(t *test
 	}
 }
 
-// Any OTHER 400 with no linked customer aborts (retro Codex review of #2036):
+// Any OTHER 400 with no linked customer aborts:
 // only the old sidecar's exact refusal means nothing could have been
 // cancelled. A current sidecar's 400 may come while stamped customers bill.
 func TestHandleDeleteAccount_NoLinkedCustomerOther400Aborts(t *testing.T) {
@@ -391,7 +391,7 @@ func TestHandleDeleteAccount_AbortsOnSidecar4xx(t *testing.T) {
 
 // TestHandleDeleteAccount_PartialDelete_WhenLocalDeleteFailsAfterCancel
 // exercises the most dangerous state: the sidecar successfully cancelled
-// Stripe, but the local DELETE then failed. Before the round-1 fix the
+// Stripe, but the local DELETE then failed. Before the fix the
 // response claimed "No data was removed" even though billing was already
 // gone; now it returns a truthful partial_delete error and logs the
 // customer ID for operator follow-up.

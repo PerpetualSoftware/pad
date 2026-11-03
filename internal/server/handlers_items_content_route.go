@@ -63,8 +63,8 @@ const (
 //   - The COMMIT reported an error. The outcome is AMBIGUOUS: a serialization or
 //     deferred-constraint failure wrote nothing, while a lost acknowledgement means
 //     the effects ARE on disk. Nothing at this layer can tell the two apart, which
-//     is the whole difficulty rather than an aside (codex round 2 — an earlier
-//     wording asserted the effects had landed, which is only one of the cases).
+//     is the whole difficulty rather than an aside (an earlier wording asserted
+//     the effects had landed, which is only one of the cases).
 //
 // Terminal is right for all three, for two different reasons. The third is BUG-2994
 // itself: the replay may write the item twice, and no caller can know whether it
@@ -111,7 +111,7 @@ const (
 // into a retryable refusal. Nothing is written on either side of the bound.
 //
 // IT IS A RE-DECISION BUDGET, NOT A HARD REQUEST BOUND, and the difference is worth
-// stating because the name suggests otherwise (codex round 1, this unit). The
+// stating because the name suggests otherwise. The
 // deadline is only consulted between attempts, and an attempt calls PruneAndApply,
 // which can itself block on the per-item lock or on appendMu while a restore holds
 // the room. A request can therefore exceed this budget under contention. What the
@@ -125,7 +125,7 @@ const applierSettlePoll = 10 * time.Millisecond
 
 // routeContentUpdate decides which ordering a content PATCH takes and executes it.
 //
-// It returns no error, deliberately (BUG-2994, codex round 2). Every failure is
+// It returns no error, deliberately (BUG-2994). Every failure is
 // ANSWERED here, so an error returned alongside a response that has already been
 // written is a contract inviting a future caller to answer it twice. The error is
 // logged at the arm that owns it.
@@ -289,8 +289,8 @@ func (s *Server) applierFirstWrite(
 	// row write's transaction, before the live document changes, and is never
 	// written to the row.
 	rowInput.ExternalContent = &content
-	// A built-in update's seed is NOT recorded with the row (TASK-3462, codex
-	// r2): the body is not in the row yet, and if the apply below fails the
+	// A built-in update's seed is NOT recorded with the row (TASK-3462): the body
+	// is not in the row yet, and if the apply below fails the
 	// item keeps its old body, so a seed written here would claim a version
 	// the item never received and refuse every later offer to take it. It is
 	// recorded once the apply has confirmed.
@@ -308,7 +308,7 @@ func (s *Server) applierFirstWrite(
 		return contentRouteHandled, nil
 	}
 
-	// BUG-3542 (Dave's ruling): every external content write is GUARDED except
+	// BUG-3542: every external content write is GUARDED except
 	// one that asked to overwrite pending edits: an open tab holding edits the
 	// server may not have stored refuses to apply it rather than replace them.
 	guarded := !input.OverwritePendingEdits
@@ -354,7 +354,7 @@ func (s *Server) applierFirstWrite(
 // out of the collaborative document, or merely failed to confirm.
 //
 // It is written as a WHITELIST — unknown unless proven otherwise — and that is the
-// correction from codex round 2 rather than the original shape. The first version
+// correction to the original shape. The first version
 // asked whether the error was a timeout and called everything else "not applied", on
 // the reasoning that ApplyExternalContent's own anyWriteSucceeded tracking already
 // separated the two. That reasoning was one file short of true: anyWriteSucceeded is
@@ -543,14 +543,14 @@ func (s *Server) writeTypedItemRefusal(w http.ResponseWriter, item *models.Item,
 		return true
 	}
 	// BUG-3407: fields the collection's schema stopped allowing after the
-	// handler validated them, refused under the store's lock (codex r3: the
+	// handler validated them, refused under the store's lock (the
 	// collaborative-content orderings come here, not to the plain path's arm).
 	if v, ok := store.AsValidationError(err); ok {
 		writeError(w, http.StatusBadRequest, "validation_error", v.Reason)
 		return true
 	}
-	// The FIFTH arm, and the one this function was built without — found by codex
-	// round 5 as a REGRESSION, not a gap. The ordinary path maps a UNIQUE-constraint
+	// The FIFTH arm, and the one this function was built without — a REGRESSION,
+	// not a gap. The ordinary path maps a UNIQUE-constraint
 	// race to a 409 (a concurrent update that passes checkUniqueFields and then hits
 	// the partial unique index on invocation_slug), and before the reorder the
 	// applier path's row write ran through that block and inherited it. Routing the

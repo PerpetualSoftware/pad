@@ -38,7 +38,7 @@ type workspaceTabsResponse struct {
 	// is filtered after, so two answers at one revision can differ only in
 	// which rows the caller could see when each was served.
 	//
-	// KNOWN LIMIT, accepted (lead ruling on BUG-3285): the revision only
+	// KNOWN LIMIT, accepted (BUG-3285): the revision only
 	// rises in normal operation, but a database restored from a backup, or
 	// rebuilt by any path that does not carry the column's value, can serve
 	// a LOWER revision than an open page already committed. That
@@ -74,7 +74,7 @@ func findVisibleWorkspace(visible []models.Workspace, slug string) *models.Works
 //
 // The visible set is read AGAIN here rather than reused from the request's
 // start: access revoked while the write ran must not be served from the
-// earlier snapshot (codex round 1 on TASK-3256). A row the write left for a
+// earlier snapshot (TASK-3256). A row the write left for a
 // workspace revoked in that window stays stored and is hidden by this filter
 // on every read, which is the design's read-side invariant.
 func (s *Server) writeWorkspaceTabs(w http.ResponseWriter, r *http.Request, userID string, list store.WorkspaceTabList) {
@@ -286,7 +286,7 @@ func validateWorkspaceTabLastRoute(route, owner, slug string) string {
 		path = path[:i]
 	}
 	// Checked on the DECODED path too. A URL parser reads %2e%2e as a ..
-	// segment (codex round 1 on TASK-3256), so the literal checks below alone
+	// segment (TASK-3256), so the literal checks below alone
 	// let /{owner}/{ws}/%2e%2e/other through to navigate out of the
 	// workspace. Decoding everything is a superset of the dot-segment rule,
 	// and an escape that does not decode is refused. So is a '%' that SURVIVES

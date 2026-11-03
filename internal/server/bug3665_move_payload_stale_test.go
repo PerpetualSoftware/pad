@@ -8,7 +8,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// BUG-3665, codex r1 and r2: the move handler builds the moved fields from
+// BUG-3665: the move handler builds the moved fields from
 // reads taken before the move's lock: the item, the source and target
 // collections, and the target's unique-field holders. A change to any of them
 // in between was written over, or let a stale payload through. Every move,

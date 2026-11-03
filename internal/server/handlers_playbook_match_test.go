@@ -109,7 +109,7 @@ func TestPlaybookMatch_ZeroActivePlaybooksNoProviderCall(t *testing.T) {
 // filtering (draft/deprecated playbooks never reach the provider) and the
 // exact prompt text sent — so a future edit to the wording or the option
 // description shows up as a visible diff here rather than silently
-// drifting (lead's amendment 7).
+// drifting (amendment 7).
 func TestPlaybookMatch_DraftAndDeprecatedExcluded_ExactPrompt(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
@@ -217,7 +217,7 @@ func TestPlaybookMatch_OneActivePlaybookIsLegal(t *testing.T) {
 // 502 knows the provider IS configured and try-again may help; a caller
 // reading 404 should switch to slug/trigger routing instead.
 //
-// Also pins F1 (lead review): typesafe.go's client surfaces the provider's
+// Also pins F1: typesafe.go's client surfaces the provider's
 // raw 4xx body verbatim in err.Error(), and that body is the INSTANCE's
 // account state with the provider (key validity, quota, billing wording) —
 // not anything about this caller's request. A viewer-accessible endpoint
@@ -294,7 +294,7 @@ func TestPlaybookMatch_ProviderTimeoutReason(t *testing.T) {
 	}
 }
 
-// TestPlaybookMatch_RequestTooLargeIs400 pins F2 (lead review): a request
+// TestPlaybookMatch_RequestTooLargeIs400 pins F2: a request
 // refused BEFORE it reached the provider — the question set alone busts the
 // token budget, or the provider's own after-the-fact max_tokens_exceeded —
 // is a caller-fixable "too much input for one request" problem, not an
@@ -339,7 +339,7 @@ func TestPlaybookMatch_RequestTooLargeIs400(t *testing.T) {
 }
 
 // TestPlaybookMatch_OutOfSetChoiceIs502 — the provider naming an option it
-// was never offered must never pass through to the caller (lead's amendment
+// was never offered must never pass through to the caller (amendment
 // 2). Distinguished from a plain provider error only by cause, not by code:
 // both are "the provider misbehaved", covered by the same
 // decision_provider_error.

@@ -162,7 +162,7 @@ func TestExportBundle_HidesThumbnails(t *testing.T) {
 }
 
 // TestExportBundle_TruncatedBlobAbortsStream pins the close-error
-// path that Codex flagged on PR #305 round 2/3: if a backend returns
+// path from PR #305: if a backend returns
 // fewer bytes than the size_bytes column claims, the streaming
 // handler must NOT silently emit a corrupt 200. Two complementary
 // signals must surface so a downstream client can detect corruption:
@@ -240,7 +240,7 @@ func TestExportBundle_TruncatedBlobAbortsStream(t *testing.T) {
 }
 
 // TestExportBundle_SuccessTrailer pins the success path of the
-// X-Bundle-Status trailer added in PR #305 round 3: a clean stream
+// X-Bundle-Status trailer added in PR #305: a clean stream
 // sets the trailer to "ok" so a CLI can confirm the bundle is
 // complete before reporting success to the user.
 func TestExportBundle_SuccessTrailer(t *testing.T) {

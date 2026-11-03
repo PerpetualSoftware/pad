@@ -27,7 +27,7 @@ import (
 // reached through another variable is not seen, which is how every door in
 // this package is written today.
 //
-// WHAT IT CANNOT SEE, stated (codex r1 on PR2): it asks only whether the
+// WHAT IT CANNOT SEE, stated: it asks only whether the
 // function kicks SOMEWHERE, so a kick in an unrelated branch, before the
 // change, or addressed to the wrong user passes it. The behavioural legs
 // (TestTASK3365_PR2DoorsKick, ..._NarrowingAndResourceDoorsKick,
@@ -66,7 +66,7 @@ var kickWatchedStoreMethods = map[string]bool{
 	"DeleteCollectionGrant":                true,
 	"DeleteItemGrant":                      true,
 	"DeleteWorkspace":                      true,
-	// codex r1 (PR2): a grant can NARROW access (an item-level view grant
+	// A grant can NARROW access (an item-level view grant
 	// overrides a collection-level edit), and deleting or moving a resource
 	// changes who may reach it.
 	"CreateCollectionGrant": true,
@@ -197,7 +197,7 @@ func TestTASK3365_PR2DoorsKick(t *testing.T) {
 	waitKick(t, kick, "PAT revoke")
 }
 
-// codex r1 (PR2): a grant can NARROW access, and deletes and moves change who
+// A grant can NARROW access, and deletes and moves change who
 // reaches a resource; each kicks.
 func TestTASK3365_NarrowingAndResourceDoorsKick(t *testing.T) {
 	f := newAccessFixture(t, "sqlite")
@@ -244,7 +244,7 @@ func TestTASK3365_NarrowingAndResourceDoorsKick(t *testing.T) {
 	waitKick(t, wsKick, "collection delete")
 }
 
-// codex r1 (PR2): logout deletes every session the request presents, which
+// Logout deletes every session the request presents, which
 // can belong to two users; each owner is kicked.
 func TestTASK3365_LogoutKicksEachSessionOwner(t *testing.T) {
 	f := newAccessFixture(t, "sqlite")
@@ -271,7 +271,7 @@ func TestTASK3365_LogoutKicksEachSessionOwner(t *testing.T) {
 	waitKick(t, bKick, "cookie session owner")
 }
 
-// codex r2 (PR2): restore makes kept grants effective again, and the bulk
+// Restore makes kept grants effective again, and the bulk
 // archive/restore paths kick as the single-item ones do.
 func TestTASK3365_RestoreAndBulkDoorsKick(t *testing.T) {
 	f := newAccessFixture(t, "sqlite")
@@ -302,8 +302,7 @@ func TestTASK3365_RestoreAndBulkDoorsKick(t *testing.T) {
 }
 
 // Account deletion removes the grants the user ISSUED, possibly in a
-// workspace someone else owns, and kicks that workspace's connections (codex
-// r1/r2 on PR2; lead: prove the door). The workspace is NOT the deleted
+// workspace someone else owns, and kicks that workspace's connections. The workspace is NOT the deleted
 // user's, so the owned-workspace kick cannot be what fires.
 func TestTASK3365_AccountDeleteKicksIssuedGrantWorkspaces(t *testing.T) {
 	srv := testServer(t)

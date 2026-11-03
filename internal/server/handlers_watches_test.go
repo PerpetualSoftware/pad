@@ -180,8 +180,7 @@ func TestListWatches_RequiresAuth(t *testing.T) {
 
 // chunkedBearerCall is bearerCall with ContentLength forced to -1, the way a
 // chunked request arrives. The old guard (`ContentLength > 0`) silently
-// DROPPED such bodies — predicate ignored, unconditional watch, 200 (codex
-// closing round 4).
+// DROPPED such bodies — predicate ignored, unconditional watch, 200.
 func chunkedBearerCall(t *testing.T, srv *Server, method, path, token string, body []byte) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(method, path, bytes.NewReader(body))

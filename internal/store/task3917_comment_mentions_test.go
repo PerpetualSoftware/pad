@@ -462,7 +462,7 @@ func TestCommentMentions_CopyAndImportNotIndexed(t *testing.T) {
 	if err := s.db.QueryRow(s.q(`SELECT id FROM comments WHERE workspace_id = ? AND imported = 1`), dst.ID).Scan(&newID); err != nil {
 		t.Fatal(err)
 	}
-	// Imported comments are never indexed (TASK-3917 lead ruling bb0c9fc6).
+	// Imported comments are never indexed (TASK-3917).
 	wantMentions(t, s, newID, "import")
 	if n := mentionCount(t, s, `workspace_id = ?`, dst.ID); n != 0 {
 		t.Fatalf("import wrote %d mention rows", n)

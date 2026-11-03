@@ -462,7 +462,7 @@ func (s *Server) handleCreateReply(w http.ResponseWriter, r *http.Request) {
 	}
 	s.publishCommentEvent(sseCommentCreated, workspaceID, parentComment.ItemID, comment.ID, parentComment.ItemTitle, replyCollSlug, actor, source)
 
-	// TASK-2533 (codex round 1, finding 2): a reply is a SEPARATE code
+	// TASK-2533: a reply is a SEPARATE code
 	// path from handleCreateComment — it calls store.CreateComment
 	// directly here, not via POST .../comments — and was missing this
 	// hook entirely. Same kind=comment notification as a top-level

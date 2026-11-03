@@ -46,7 +46,7 @@ const appFetchDeadline = 30 * time.Second
 // (§2: defaultImportArtifactMaxBytes).
 const appArtifactMaxBytes = defaultImportArtifactMaxBytes
 
-// appNotReviewedNotice is shown with every app on every surface (Dave Q3).
+// appNotReviewedNotice is shown with every app on every surface.
 const appNotReviewedNotice = "Not reviewed by Pad. You are installing code published at this origin."
 
 // appPreview is what the owner reviews before consenting (§2 step 4).
@@ -382,8 +382,7 @@ func (s *Server) stageErr(err error) error {
 // q: the pool for a preview, the transaction for provisioning (U8b), which
 // runs it under its locks and compares the result
 // with the reviewed preview: the digest comparison IS the re-check, so no
-// fact the normalization depends on has to be listed separately (lead
-// ruling, day 86). It must stay read-only: the write-capture test asserts a
+// fact the normalization depends on has to be listed separately. It must stay read-only: the write-capture test asserts a
 // pass on the provisioning transaction writes nothing.
 //
 // upgradeOf is "" for an install; for an upgrade (U8b2) it is the install
@@ -424,8 +423,8 @@ func (s *Server) buildAppPreviewQ(q store.Queryer, r *http.Request, workspaceID 
 				e.path = fmt.Sprintf("companion_pack.collections[%d].slug", i)
 				return nil, e
 			}
-			// Adopted only from an UNINSTALLED install (lead ruling, day
-			// 86): a disabled install can be re-enabled, and taking its
+			// Adopted only from an UNINSTALLED install:
+			// a disabled install can be re-enabled, and taking its
 			// companions would break it then.
 			if holder.InstallState != "uninstalled" {
 				e := installErr(http.StatusConflict, "app_already_installed", "This app is already installed in this workspace (state %s): re-enable or uninstall it first", holder.InstallState)
@@ -454,7 +453,7 @@ func (s *Server) buildAppPreviewQ(q store.Queryer, r *http.Request, workspaceID 
 	// destination collection and field: the import creates them in order, so
 	// a later artifact de-collides its invocation_slug against them, and any
 	// other unique-scoped value it repeats is the conflict the import's unique
-	// check would refuse (codex rounds 2-4). Provisioning inserts in the same
+	// check would refuse. Provisioning inserts in the same
 	// order on one transaction and so reaches the same outcome.
 	claimed := map[string]map[string]map[string]bool{}
 	for i, a := range m.CompanionPack.Artifacts {
@@ -547,8 +546,7 @@ func (s *Server) previewArtifact(q store.Queryer, r *http.Request, workspaceID s
 	// (a default included) is checked against stored items too, through the
 	// index's own expression, and must be
 	// text: SQLite keys the index on the JSON-typed value and Postgres on its
-	// text, so a non-text slug is refused rather than guessed at (codex round
-	// 7). Provisioning re-checks every constraint inside one transaction, so
+	// text, so a non-text slug is refused rather than guessed at. Provisioning re-checks every constraint inside one transaction, so
 	// a divergence left here costs a failed install, never a partial one.
 	if raw, ok := fields["invocation_slug"]; ok && raw != nil {
 		slug, isText := raw.(string)
@@ -566,7 +564,7 @@ func (s *Server) previewArtifact(q store.Queryer, r *http.Request, workspaceID s
 		}
 	}
 	for _, key := range uniqueKeys {
-		// INVARIANT (lead ruling): the preview may refuse what the import
+		// INVARIANT: the preview may refuse what the import
 		// would accept, never the reverse; U8b's provisioning re-checks every
 		// constraint inside one transaction, so that re-check is the
 		// guarantee and this preview is advisory.
@@ -575,7 +573,7 @@ func (s *Server) previewArtifact(q store.Queryer, r *http.Request, workspaceID s
 		// could match it by: text, boolean, and number as its float64 (equal
 		// doubles is a superset of SQLite's double comparison and Postgres's
 		// exact numeric equality). Two values collide when they share any
-		// form (codex rounds 4-12).
+		// form.
 		forms := claimForms(fields[key])
 		for _, f := range forms {
 			if packClaims[key][f] {
@@ -592,7 +590,7 @@ func (s *Server) previewArtifact(q store.Queryer, r *http.Request, workspaceID s
 	// App-authored content: the owner only REVIEWED it, so it may not carry
 	// a pad-attachment: token or a [[workspace::REF]] link, and the human
 	// path's attachment stamp and cross-workspace resolution never run on it
-	// (lead ruling, U8b Q3). Ordinary [[Title]] links stay: they resolve
+	// Ordinary [[Title]] links stay: they resolve
 	// workspace-wide as on any owner write, and the preview shows them.
 	if err := refuseAppAuthoredReferences(norm.Content, fields); err != nil {
 		return nil, installErr(http.StatusUnprocessableEntity, "invalid_artifact", "Artifact %q: %v", a.Key, err)
@@ -808,7 +806,7 @@ func claimForms(v any) []string {
 	case float64:
 		// Canonicalized from its JSON serialization, which is the text the
 		// stored value has and the import compares against, through the same
-		// numericArg path a later string takes (codex round 11: formatting
+		// numericArg path a later string takes (formatting
 		// the float directly diverged near 2^63 and past 2^53).
 		if b, err := json.Marshal(t); err == nil {
 			if forms := numberForms(string(b)); len(forms) > 0 {

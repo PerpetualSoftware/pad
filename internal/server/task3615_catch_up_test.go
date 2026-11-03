@@ -14,7 +14,7 @@ import (
 // TASK-3615: the "catch me up" digest. Every fixture acts through the HTTP
 // doors as real users, so the activity rows carry the user ids the actor
 // join reads, then pins every timestamp in the workspace to one second
-// (task3615At). The join is "same item, same second" by ruling, so a run
+// (task3615At). The join is "same item, same second" by design, so a run
 // that straddled a second boundary between a transition and its activity row
 // would otherwise flake; pinning keeps the test about the rule, not the
 // clock.

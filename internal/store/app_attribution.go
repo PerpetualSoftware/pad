@@ -22,7 +22,7 @@ type AppAttribution struct {
 // attributionChunk bounds one lookup's IN list. Callers pass whole
 // responses, some unbounded (the workspace index, /items-changes up to
 // 50,000 rows), and one placeholder per row would pass SQLite's 32,766
-// variables and Postgres's 65,535 parameters (codex r1 on U9c).
+// variables and Postgres's 65,535 parameters.
 const attributionChunk = 500
 
 // attributionQuery looks up table.installCol for ids, joined to the
@@ -73,7 +73,7 @@ func (s *Store) attributionChunkQuery(q Queryer, table, installCol string, ids [
 
 // ItemsCreatedViaApp returns, for the items an app CREATED, that app
 // (items.created_via_app, set once). The item JSON's via_app is the creator,
-// agreed with the U9 label (Wren, day 88); the last app writer
+// agreed with the U9 label; the last app writer
 // (items.via_app) is not exposed here.
 func (s *Store) ItemsCreatedViaApp(itemIDs []string) (map[string]AppAttribution, error) {
 	return s.attributionQuery("items", "created_via_app", itemIDs)

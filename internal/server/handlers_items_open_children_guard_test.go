@@ -356,8 +356,8 @@ func TestOpenChildrenGuard_GuardAppliesToAnyParent(t *testing.T) {
 	}
 }
 
-// TestOpenChildrenGuard_VisibilitySanitizesPayload covers Codex round 2
-// P1: when a restricted caller updates a parent they CAN see but the
+// TestOpenChildrenGuard_VisibilitySanitizesPayload covers the case where
+// a restricted caller updates a parent they CAN see but the
 // parent has children in collections they CAN'T see, the guard's
 // invariant check still considers those hidden children (data
 // integrity — a restricted user can't slip an item past completion by
@@ -564,7 +564,7 @@ func TestOpenChildrenGuard_AllBlockersHiddenSurfaceGenericMessage(t *testing.T) 
 	if len(resp.Error.Details.OpenChildren) != 0 {
 		t.Errorf("expected empty open_children when all blockers hidden, got %v", resp.Error.Details.OpenChildren)
 	}
-	// Codex round-5 P3: open_children must serialize as `[]`, not
+	// Open_children must serialize as `[]`, not
 	// `null`, when all blockers are hidden. Clients range over the
 	// array unconditionally; `null` would break their iteration.
 	// Re-parse the raw JSON so we see the wire shape (not the Go
@@ -580,7 +580,7 @@ func TestOpenChildrenGuard_AllBlockersHiddenSurfaceGenericMessage(t *testing.T) 
 	}
 }
 
-// TestOpenChildrenGuard_TOCTOURace covers Codex round 2 P2: a child
+// TestOpenChildrenGuard_TOCTOURace covers this invariant: a child
 // status flip that races a parent-terminal update must NOT slip past
 // the guard. The race is concurrent: a goroutine waits a tick then
 // flips the last open child to terminal while the parent's PATCH is
@@ -661,7 +661,7 @@ func TestOpenChildrenGuard_TOCTOURace(t *testing.T) {
 }
 
 // TestOpenChildrenGuard_MoveItem_RejectsTerminalWithOpenChildren covers
-// Codex round-3 P1: `pad item move ... --field status=completed` now
+// `pad item move ... --field status=completed` now
 // runs the same guard as the regular update path. Without the
 // MoveItemWithPreCheck wiring, this PATCH would silently complete
 // a parent that still has open children.
@@ -750,7 +750,7 @@ func TestOpenChildrenGuard_MoveItem_ForceOverrides(t *testing.T) {
 	}
 }
 
-// TestOpenChildrenGuard_LinkMutationRace covers Codex round-3 P1: a
+// TestOpenChildrenGuard_LinkMutationRace covers this invariant: a
 // concurrent SetParentLink that attempts to attach a non-terminal
 // child to a parent while a terminal-status UPDATE on the parent is
 // in flight must not slip past the guard's view of the children set.
@@ -766,9 +766,9 @@ func TestOpenChildrenGuard_MoveItem_ForceOverrides(t *testing.T) {
 //     to terminal." The stricter post-condition ("no open child may
 //     EVER be attached to a terminal parent") would require
 //     SetParentLink to reject when the target is terminal; that is
-//     intentionally deferred — out of scope for round 3.
+//     intentionally deferred.
 //
-// Forbidden outcome (the bug round-3 P1 fixes):
+// Forbidden outcome (the bug this test pins):
 //
 //	link tx commits BEFORE parent UPDATE tx, AND parent UPDATE
 //	still succeeds. That would require the parent's precheck to
@@ -872,7 +872,7 @@ func TestOpenChildrenGuard_LinkMutationRace(t *testing.T) {
 }
 
 // TestOpenChildrenGuard_SoftDeletedCollectionSchemaHonored covers
-// Codex round-3 P3: when a child still exists in a soft-deleted
+// When a child still exists in a soft-deleted
 // collection whose schema has a custom terminal_options set, the
 // guard reads the schema via GetCollectionAnyState so the child is
 // evaluated against the custom done-field — not the default-status
@@ -922,7 +922,7 @@ func TestOpenChildrenGuard_SoftDeletedCollectionSchemaHonored(t *testing.T) {
 	}
 
 	// Now mark the plan completed. The child is `retired` — terminal
-	// per the (soft-deleted) collection's schema. With round-3 P3
+	// per the (soft-deleted) collection's schema. With that
 	// fixed, the guard reads the schema via GetCollectionAnyState
 	// and recognizes `retired` as terminal → no blocker → 200.
 	// Without the fix, the guard would fall back to the default
@@ -937,8 +937,8 @@ func TestOpenChildrenGuard_SoftDeletedCollectionSchemaHonored(t *testing.T) {
 	}
 }
 
-// TestOpenChildrenGuard_VisibilityLookupErrorFailsClosed covers Codex
-// round-3 P1: when the visibility lookup errors (DB unavailable, etc.)
+// TestOpenChildrenGuard_VisibilityLookupErrorFailsClosed covers the case
+// where the visibility lookup errors (DB unavailable, etc.)
 // the handler must fail CLOSED — 5xx, no payload — rather than fail
 // OPEN and leak hidden-child metadata via the unrestricted code path.
 //
@@ -978,8 +978,8 @@ func TestOpenChildrenGuard_VisibilityLookupErrorFailsClosed(t *testing.T) {
 	}
 }
 
-// TestOpenChildrenGuard_PrecheckReadsInTxSnapshot covers Codex round-3
-// P2: the precheck classifies the transition against the parent's
+// TestOpenChildrenGuard_PrecheckReadsInTxSnapshot covers the case
+// where the precheck classifies the transition against the parent's
 // fields as read INSIDE the tx (after locks), not the pre-tx capture.
 // We exercise this by passing a precheck closure that asserts the
 // `existing.Fields` it receives reflects a status mutation committed
@@ -1011,7 +1011,7 @@ func TestOpenChildrenGuard_PrecheckReadsInTxSnapshot(t *testing.T) {
 	// Stage 2: invoke UpdateItemWithPreCheck again, this time
 	// transitioning to a different valid value. The precheck closure
 	// records what `existing.Fields` looked like at invocation time.
-	// If round-3 P2 is broken, the closure sees the stale `active`
+	// If that is broken, the closure sees the stale `active`
 	// (the pre-tx snapshot reproducing the bug); if the fix holds,
 	// it sees the staged `completed`.
 	var seenFields string
@@ -1036,7 +1036,7 @@ func TestOpenChildrenGuard_PrecheckReadsInTxSnapshot(t *testing.T) {
 }
 
 // TestBulkUpdateStructuredFailuresCarryOpenChildrenDetails covers
-// Codex round-3 P2: the CLI's bulk-update JSON envelope now embeds
+// The CLI's bulk-update JSON envelope now embeds
 // the per-row structured server error (code + details) rather than
 // flattening it into a string, so MCP-driven agents reading the
 // stdout JSON see the same payload single-row update would deliver.
@@ -1080,8 +1080,8 @@ func TestBulkUpdateStructuredFailuresCarryOpenChildrenDetails(t *testing.T) {
 	}
 }
 
-// TestOpenChildrenGuard_MultiParentChildLocksAll covers Codex round-4
-// P1: a child item with BOTH a `parent` link to P1 AND an `implements`
+// TestOpenChildrenGuard_MultiParentChildLocksAll covers the case
+// where a child item with BOTH a `parent` link to P1 AND an `implements`
 // link to P2 (two distinct "parents" under childLinkTypes) must
 // serialize against BOTH parents' open-children guard locks when its
 // status flips. Pre-fix the LIMIT 1 lookup grabbed one parent only;
@@ -1089,7 +1089,7 @@ func TestBulkUpdateStructuredFailuresCarryOpenChildrenDetails(t *testing.T) {
 //
 // Test shape: build the multi-parent topology, then race
 // (child status flip) vs (P1 terminal-update) vs (P2 terminal-update)
-// across iterations. The forbidden outcome is the same as the round-2
+// across iterations. The forbidden outcome is the same as the TOCTOU
 // race test, applied to either parent: parent committed terminal AND
 // the child's status flip committed BEFORE the parent's commit.
 func TestOpenChildrenGuard_MultiParentChildLocksAll(t *testing.T) {
@@ -1154,7 +1154,7 @@ func TestOpenChildrenGuard_MultiParentChildLocksAll(t *testing.T) {
 		wg.Wait()
 
 		// Verify the forbidden outcome did not occur for EITHER
-		// parent. Same shape as the round-2 TOCTOU test, applied to
+		// parent. Same shape as the TOCTOU race test, applied to
 		// both. A multi-parent child whose status flip wasn't
 		// serialized against P2's lock would let P2 commit terminal
 		// with a stale view that read child=open.
@@ -1181,7 +1181,7 @@ func TestOpenChildrenGuard_MultiParentChildLocksAll(t *testing.T) {
 }
 
 // TestOpenChildrenGuard_NoDeadlockUnderReverseOrderConcurrency covers
-// Codex round-4 P2: every call site that takes pad:parent-children:*
+// Every call site that takes pad:parent-children:*
 // advisory locks now goes through AcquireParentChildrenLocks (the
 // canonical sorted multi-lock helper). Pre-fix some sites locked
 // parent-then-self; others locked sorted; concurrent reverse-order
@@ -1267,7 +1267,7 @@ func mustCreate(t *testing.T, srv *Server, wsSlug, collectionSlug string, body m
 }
 
 // TestOpenChildrenGuard_PatchAtomicRejectionPreservesParentLink
-// covers Codex round-4 P3: a PATCH that combines a parent-link
+// covers the case where a PATCH that combines a parent-link
 // change AND a status flip to terminal, against a parent with open
 // children, must reject the WHOLE PATCH — both the field write and
 // the link change. Pre-fix the link committed before the guard ran,

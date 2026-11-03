@@ -66,7 +66,7 @@ func (s *Store) GetWatchByUserItem(userID, itemID string) (*models.Watch, error)
 // the result through server.filterWatchesByCurrentAccess (or an
 // equivalent live-access check) before using it to gate delivery or a
 // listing response; not doing so leaks item/workspace metadata for
-// access the caller no longer has (TASK-2533, codex round 1 finding 1).
+// access the caller no longer has (TASK-2533).
 func (s *Store) ListWatchesForUser(userID string) ([]models.Watch, error) {
 	rows, err := s.db.Query(s.q(`
 		SELECT w.id, w.workspace_id, w.user_id, w.item_id, w.predicate, w.created_at,

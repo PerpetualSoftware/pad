@@ -33,7 +33,7 @@ import (
 // own transaction: events before the first install carry none. It never reaches an owner webhook: the
 // outbox drain strips it first (stripAppProjection).
 //
-// A data-shape problem never fails the mutation (lead ruling on #1763): an
+// A data-shape problem never fails the mutation (#1763): an
 // unparseable schema, a non-object fields blob, or a field type this build
 // does not know degrades the item block to `fields` omitted plus
 // `partial: true`, logged once per collection. Only database errors
@@ -256,7 +256,7 @@ func (s *Store) buildItemAppProjectionTx(tx *sql.Tx, item *models.Item) (*itemAp
 // the comment's own author column, the display used when the account is gone.
 //
 // commentID names the comment, so the block records the install that wrote
-// it (comments.via_app) as the creator's via_app, as an item's does (codex
+// it (comments.via_app) as the creator's via_app, as an item's does
 // r4 on U10b). Every caller computes the block while the row still exists.
 func (s *Store) buildCommentAppProjectionTx(tx *sql.Tx, commentID, itemID, userID, author, kind, parentID string) (*commentAppProjection, error) {
 	var collectionID, workspaceID string

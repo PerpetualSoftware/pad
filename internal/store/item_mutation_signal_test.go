@@ -141,7 +141,7 @@ func TestLastMutation_NoOpOnMoveWithoutStatusChange(t *testing.T) {
 }
 
 // TestLastMutation_AssignmentDelta_NotMisattributedUnderConcurrentWrite
-// covers TASK-2533 codex round 2 finding 4: the assignment-delta capture
+// covers TASK-2533: the assignment-delta capture
 // used to compare against `existing`, which stayed the STALE pre-tx
 // snapshot for any update that triggered none of {precheck,
 // ExpectedUpdatedAt, FieldsPatch} — including a plain title-only update.

@@ -179,8 +179,8 @@ func TestInvalidUTF8MergesOnKeyIncompleteRows(t *testing.T) {
 
 // The rowid merge (and the rowid address item_wiki_links already uses) reads
 // SQLite's hidden rowid. A table that DECLARED a column named rowid, _rowid_
-// or oid would shadow it, and the scan would read that column instead (codex
-// r2). None does; this makes adding one fail here rather than miscount.
+// or oid would shadow it, and the scan would read that column instead. None
+// does; this makes adding one fail here rather than miscount.
 func TestNoProtectedTableShadowsRowid(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)

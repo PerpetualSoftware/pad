@@ -243,7 +243,7 @@ func pointAtNobody(t *testing.T, srv *Server, tokenID string) {
 
 // The global routes a legacy token must be refused on, named independently
 // of legacyTokenRouteAllowed: the walk above consults that function, so a
-// route it wrongly allows would be skipped there, not caught (codex review).
+// route it wrongly allows would be skipped there, not caught.
 func TestBUG3353_NamedGlobalRoutesRefuseALegacyToken(t *testing.T) {
 	t.Setenv("PAD_DISABLE_RATE_LIMITS", "1")
 	f := newLegacyFixture(t)

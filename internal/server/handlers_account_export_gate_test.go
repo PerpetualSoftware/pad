@@ -95,7 +95,7 @@ func TestExportAccount_UnrestrictedOwner_OK(t *testing.T) {
 
 // TestExportAccount_RestrictedInOneOfTwoOwnedWorkspaces_Forbidden pins the
 // multi-workspace deny semantics: account-export can span every workspace
-// the caller owns in a single call. Per Dave's ruling, if the caller is
+// the caller owns in a single call. By design, if the caller is
 // restricted in ANY owned workspace, the WHOLE export is denied — not just
 // the restricted workspace's content silently dropped — even though a
 // second owned workspace here has fully unrestricted access.

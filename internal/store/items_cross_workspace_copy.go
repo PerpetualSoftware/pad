@@ -211,7 +211,7 @@ type CrossWorkspaceCopyRequest struct {
 	// RelationVisibility answers "may the requester see this item?" ON THE
 	// COPY'S OWN CONNECTION, so the copy can apply the visibility rule to a
 	// late-resolved destination default while it holds both workspaces'
-	// advisory locks (night-11 finding; lead ruling day-58 shape (b)).
+	// advisory locks (shape (b)).
 	//
 	// It is a callback rather than a store method because visibility is
 	// REQUEST-SCOPED — it needs the requesting user, their role in the
@@ -646,11 +646,11 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 	// over here go on to drive migration, attachment planning and the insert,
 	// and are returned in the result for the post-commit fanout — so a hook
 	// that mutated one, or retained it and mutated it later, would silently
-	// rewrite what this transaction copies or what its events say (Codex
-	// round 10). A hook has no business needing more than a read, and
+	// rewrite what this transaction copies or what its events say.
+	// A hook has no business needing more than a read, and
 	// detachedSnapshot makes that structural rather than a convention —
 	// including for every pointer- and slice-backed field, which a plain
-	// struct copy would have left aliased (Codex rounds 11 and 12).
+	// struct copy would have left aliased.
 	//
 	// The refusal is WRAPPED here rather than left to the hook. The doc on
 	// PreCheck used to ask callers to wrap it themselves, which meant a
@@ -674,7 +674,7 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 	// --- Fields: migrate -> override -> validate (DR-12). ---
 	//
 	// BEFORE THE QUOTA, and the order is a contract rather than a preference
-	//. This is pure computation over rows already read, so
+	// This is pure computation over rows already read, so
 	// running it first costs nothing and changes no invariant — the quota
 	// still runs inside the transaction and still runs before any insert,
 	// which is all DR-16 requires. What it buys is agreement with the
@@ -827,13 +827,13 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 	// --- Create in B. Advances B's seq; writes the initial version row and
 	// the wiki-link index against the POST-rewrite content (DR-9a). ---
 	// TITLE VALIDATION IS DELIBERATELY NOT APPLIED HERE (BUG-2833 / BUG-2831,
-	// raised again by codex R2 as a finding — recorded so the next reader does
+	// raised again as a finding — recorded so the next reader does
 	// not have to re-derive it).
 	//
 	// This path goes through createItemTxWithID, below store.CreateItem's
 	// write-time guard, so a source row whose title predates the bound is
 	// carried across intact. That is the intended behaviour, on the same
-	// reasoning as the grandfathering clause in UpdateItem and the lead's
+	// reasoning as the grandfathering clause in UpdateItem and the
 	// coerce-not-refuse ruling for ImportWorkspace: a copy carries a value that
 	// already exists in the database, and refusing it would break a working
 	// operation for data this product itself accepted.
@@ -1155,7 +1155,7 @@ func (s *Store) getCollectionInWorkspaceTx(tx *sql.Tx, collectionID, workspaceID
 // decode used to round. Key order and escaping are still normalised by the
 // re-encode, as in every field write. The preflight decodes the same way, so
 // the preview and the copy still AGREE, which is the one thing this pipeline
-// exists to preserve (Codex round 26 deferred the number half to BUG-3202 for
+// exists to preserve (the number half was deferred to BUG-3202 for
 // exactly that reason: it had to change for all callers at once).
 //
 // Returns the final field map (the planner's input, pre-rewrite) and the keys
@@ -1301,13 +1301,13 @@ func (s *Store) migrateCopyFields(q Queryer, destWorkspaceID string, targetColl 
 	// A REQUIRED relation whose default did not resolve cannot be left as a
 	// drop: the key is deleted AFTER validation passed, so nothing re-checks
 	// it and the item would land with a required field absent, reported valid
-	//. Re-running validation is not the answer — it would
+	// Re-running validation is not the answer — it would
 	// re-inject the same broken default. There is no valid value, so this
 	// refuses.
 	if req := RequiredRelationIssues(items.SchemaForMigratedFields(targetSchema), lateDropped); len(req) > 0 {
 		return nil, nil, nil, &FieldValidationError{Err: errors.New(RelationIssuesMessage(req))}
 	}
-	// THE EIGHTH DOOR'S VISIBILITY PASS (night-11 finding; lead ruling day-58).
+	// THE EIGHTH DOOR'S VISIBILITY PASS (night-11 finding).
 	//
 	// Every other door runs this over its late-resolved destination defaults.
 	// This one did not, and could not as written: the pass was a *Server
@@ -1318,7 +1318,7 @@ func (s *Store) migrateCopyFields(q Queryer, destWorkspaceID string, targetColl 
 	// identical request, reported the key dropped. One request, two answers,
 	// which is the DR-6 divergence this unit exists to prevent.
 	//
-	// Round 15's sweep said "applied at all five late-default sites, per
+	// An earlier sweep said "applied at all five late-default sites, per
 	// CONVE-18" and it was true of the sites reachable from `internal/server`.
 	// The class is one wider than the package. Same lesson as the rest of this
 	// unit — a rule applied at one door and not its siblings — one level up,
@@ -1353,7 +1353,7 @@ func (s *Store) migrateCopyFields(q Queryer, destWorkspaceID string, targetColl 
 	// still reported it dropped. Three surfaces, two answers, one request.
 	stillDropped := items.StillDropped(migrated.Dropped, migrated.Fields)
 	// EXCEPT for a CARRIED RELATION value that a destination default then
-	// refilled (lead ruling, day 58). Round 3's filter is right about a key
+	// refilled. The earlier filter is right about a key
 	// the caller can see is populated — but here the SOURCE'S value was
 	// genuinely discarded and what sits in the key is a different value the
 	// destination chose. Suppressing the row told the user nothing was lost
@@ -1366,7 +1366,7 @@ func (s *Store) migrateCopyFields(q Queryer, destWorkspaceID string, targetColl 
 	// about.
 	//
 	// Scoped to relation drops on purpose. A key MigrateFields dropped for a
-	// type or schema mismatch and a default refilled is round 3's case
+	// type or schema mismatch and a default refilled is the earlier filter's case
 	// unchanged, and reporting it would re-open exactly what that filter
 	// closed.
 	present := make(map[string]bool, len(stillDropped))

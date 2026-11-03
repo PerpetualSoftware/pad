@@ -700,8 +700,8 @@ func keepUnless[T any](in []T, keep bool, drop func(T) bool) []T {
 }
 
 // TestImportSurvivesOrphanedParent covers the parent_id half of the same
-// class, which my own sweep of the itemMap consumers missed and codex round 3
-// caught: the guard I added to the second pass protects the item BEING
+// class, which a sweep of the itemMap consumers missed
+// The guard added to the second pass protects the item BEING
 // updated, not the parent VALUE it writes.
 //
 // Both passes resolve a parent through itemMap, which holds an entry for an

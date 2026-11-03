@@ -100,7 +100,7 @@ func (c failingCompactor) Snapshot(context.Context, materialize.Job) (materializ
 	return materialize.Snapshot{}, errors.New("snapshot refused")
 }
 
-// TASK-3574 (3), lead ruling (this test used to assert the delete): a failed
+// TASK-3574 (3) (this test used to assert the delete): a failed
 // snapshot KEEPS the log, backs off rather than retrying every tick, and is
 // compacted once the backoff ends and the job works.
 func TestTASK3531_AFailedSnapshotKeepsTheLogAndRetriesAfterBackoff(t *testing.T) {
@@ -151,7 +151,7 @@ func (j *joinDuringSnapshot) Snapshot(ctx context.Context, job materialize.Job) 
 	return j.inner.Snapshot(ctx, job)
 }
 
-// The lock-plus-no-room contract (lead, TASK-3531): the swap runs under the
+// The lock-plus-no-room contract: the swap runs under the
 // item lock and refuses when a room is open, whatever the job read.
 func TestTASK3531_ARoomOpenedDuringTheJobBlocksTheSwap(t *testing.T) {
 	f := newRecoveryFixture(t, nil, time.Minute, materializeRecoveryConfig{})
@@ -241,7 +241,7 @@ func TestTASK3531_ACoveredResumeIsAdmittedNotRefreshed(t *testing.T) {
 	}
 }
 
-// The per-tick cap (codex): items past it are deferred, kept from this tick's
+// The per-tick cap: items past it are deferred, kept from this tick's
 // sweep (not deleted), and compacted by the next tick.
 func TestTASK3531_ItemsPastTheTickCapAreKeptForTheNextTick(t *testing.T) {
 	old := opLogCompactionPerTick

@@ -25,7 +25,7 @@ import (
 // the install, with a binding row that records the install's epoch.
 //
 // A bot principal (users.kind = 'app') holds a credential through this door
-// and no other (lead ruling R1): a service token of its OWN install's client.
+// and no other: a service token of its OWN install's client.
 // Every other insert still passes requireActiveUserTx, which refuses a bot.
 //
 // The lifecycle primitives take the caller's transaction (U8's provisioning,
@@ -70,12 +70,12 @@ const (
 	InstallAuthKindSessionKey = "app_auth_kind"
 	InstallAccessSessionKey   = "app_delegated_access"
 	// InstallPersonEpochSessionKey carries the person's credential_epoch as
-	// the consent request resolved them (codex U5b-1 r7): the barrier refuses
+	// the consent request resolved them: the barrier refuses
 	// a grant whose person's credentials changed since, so a consent posted
 	// from a session a disable destroyed cannot mint a code after a re-enable.
 	InstallPersonEpochSessionKey = "app_person_epoch"
 	// InstallMemberSinceSessionKey carries the person's membership created_at
-	// as the consent gate read it (codex U5b-1 r8): a removal and re-add
+	// as the consent gate read it: a removal and re-add
 	// between the consent and its code refuses the code.
 	InstallMemberSinceSessionKey = "app_member_since"
 )
@@ -279,8 +279,8 @@ func (s *Store) RevokeInstallClientGrantsTx(tx *sql.Tx, installID string) error 
 	if err != nil {
 		return err
 	}
-	// The bindings first, locked in request_id order (TASK-3399, codex U5b-1
-	// r4): a person's delegated revocation locks ITS bindings in the same
+	// The bindings first, locked in request_id order (TASK-3399): a person's
+	// delegated revocation locks ITS bindings in the same
 	// order before any child row, so the two meet at the first shared
 	// binding instead of crossing inside a token table, where one table
 	// order does not mean one row order.
@@ -338,8 +338,8 @@ func (s *Store) DeleteInstallClientTx(tx *sql.Tx, installID string) error {
 //     epoch the grant carries (read before its client authenticated) is
 //     still the install's;
 //   - for a service grant, refuse unless the subject is the install's own
-//     bot: the ONE door through which a bot holds a credential (lead ruling
-//     R1). For a delegated grant (TASK-3399), refuse unless the consented
+//     bot: the ONE door through which a bot holds a credential.
+//     For a delegated grant (TASK-3399), refuse unless the consented
 //     access is one the manifest offers now and the subject is a live human
 //     member under the credentials and membership the consent was given in;
 //   - insert the token row and its binding, carrying the epoch read under
@@ -358,8 +358,8 @@ func (s *Store) installIssuanceBarrierTx(tx *sql.Tx, table string, req models.OA
 	if !installID.Valid || installID.String == "" {
 		return false, nil
 	}
-	// A delegated grant's person is share-locked BEFORE the install (codex
-	// U5b-1 r2): users, then installs, then token rows is the order account
+	// A delegated grant's person is share-locked BEFORE the install: users, then
+	// installs, then token rows is the order account
 	// erase (owner, then its installs' bots), disable and member removal take,
 	// so issuance cannot hold an install while waiting for a person another
 	// transaction holds with that install next. A service grant's subject is
@@ -436,11 +436,11 @@ func (s *Store) installIssuanceBarrierTx(tx *sql.Tx, table string, req models.OA
 		// The subject must be a live HUMAN member of the install's workspace,
 		// read in this transaction: never a bot (which has its own door), and
 		// never someone removed since they consented. On Postgres the user and
-		// membership rows are share-locked (codex U5b-1 r1), so an account
+		// membership rows are share-locked, so an account
 		// disable or a member removal waits for this issuance to commit and
 		// then revokes what it wrote, or commits first and is seen here.
 		// SQLite's single writer serializes them already.
-		// The workspace must be live too (codex U5b-1 r9): a consent approved
+		// The workspace must be live too: a consent approved
 		// after a soft delete persists nothing.
 		subjQ := `SELECT u.kind, u.disabled_at, u.credential_epoch, m.created_at FROM users u
 			JOIN workspace_members m ON m.user_id = u.id AND m.workspace_id = ?
@@ -465,8 +465,8 @@ func (s *Store) installIssuanceBarrierTx(tx *sql.Tx, table string, req models.OA
 			return true, ErrInstallDelegatedSubject
 		}
 		// And the membership it was given under (a removal and re-add since
-		// the consent gate read it refuses). RESIDUAL, accepted by the lead
-		// (codex U5b-1 r9): workspace_members has no row id (its key is
+		// the consent gate read it refuses). RESIDUAL, accepted:
+		// workspace_members has no row id (its key is
 		// workspace_id, user_id, which a re-add reuses) and created_at has
 		// one-second resolution, so an owner's removal AND re-add inside one
 		// second, during an in-flight consent, still matches. It grants
@@ -502,7 +502,7 @@ func (s *Store) installIssuanceBarrierTx(tx *sql.Tx, table string, req models.OA
 	case errors.Is(err, sql.ErrNoRows) && kind == "delegated" && table != "oauth_authorization_codes" && table != "oauth_pkce_requests":
 		// Only a delegated grant's FIRST persistence (its code, at consent)
 		// writes its binding. A token persisting against no binding is a
-		// grant whose binding is gone: revoked and swept (codex U5b-1 r2), or
+		// grant whose binding is gone: revoked and swept, or
 		// erased. Never a first issuance.
 		return true, ErrInstallNotActive
 	case errors.Is(err, sql.ErrNoRows):
@@ -639,7 +639,7 @@ type InstallConsentState struct {
 	DelegatedAccess string // "read", "write", or "" (none offered)
 	AppName         string // the install's bot display name, which is the app's name
 	// AuthEpoch is read with the state, before any check the gate makes on
-	// it, and carried into the grant (codex U5b-1 r8): a disable and
+	// it, and carried into the grant: a disable and
 	// re-enable after the gate refuses the code.
 	AuthEpoch int64
 }

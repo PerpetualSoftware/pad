@@ -92,7 +92,7 @@ func (s *Store) scanColumnUTF8(c nulColumn, addr tableAddressing) ([]NULViolatio
 // findings, so a value carrying both defects is ONE violation with both kinds
 // rather than two rows the census would count twice. Matched on the rowid
 // both scans read, not on Key, which cannot identify a KeyIncomplete row
-// . Order: the NUL findings in their order, then the UTF-8-only
+// Order: the NUL findings in their order, then the UTF-8-only
 // ones in theirs.
 func mergeUTF8Violations(nul, invalid []NULViolation) []NULViolation {
 	if len(invalid) == 0 {

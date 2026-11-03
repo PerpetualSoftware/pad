@@ -230,7 +230,7 @@ func TestBUG3349_ConcurrentLimitedMintsDoNotDeadlock_Postgres(t *testing.T) {
 	}
 }
 
-// codex review round 3: an invitation code (it becomes someone's membership)
+// An invitation code (it becomes someone's membership)
 // and a share link are credentials too.
 func TestBUG3349_DisabledAccountMintsNoInvitationOrShareLink(t *testing.T) {
 	s, u, _ := activeUserFixture(t)
@@ -249,7 +249,7 @@ func TestBUG3349_DisabledAccountMintsNoInvitationOrShareLink(t *testing.T) {
 	}
 }
 
-// codex review round 3: verification decided in the consuming transaction.
+// Verification decided in the consuming transaction.
 // A disable landing after the handler's look-up still refuses, and the token
 // stays unspent.
 func TestBUG3349_EmailVerificationConsumesNothingForADisabledAccount(t *testing.T) {

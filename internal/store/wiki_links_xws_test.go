@@ -106,7 +106,7 @@ func TestWikiLinks_CrossWorkspaceNonMemberDoesNotSee(t *testing.T) {
 // in workspace B (only access via a collection_grant on one
 // collection) should see backlinks from that collection but not from
 // other collections in B. Mirrors the same-ws Phase 1 visibility
-// model — Codex round-1/2 P1 — across the cross-ws boundary.
+// model across the cross-ws boundary.
 func TestWikiLinks_CrossWorkspaceGuestSeesGrantedCollectionOnly(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
@@ -288,8 +288,9 @@ func TestWikiLinks_CrossWorkspaceSourceWorkspaceSlugPopulated(t *testing.T) {
 }
 
 // TestWikiLinks_CrossWorkspaceSameWorkspaceQualifiedNormalized regresses
-// Codex round 4 P2. The renderer treats `[[<current-ws>::TASK-1]]`
-// identically to `[[TASK-1]]` (markdown.ts::renderMarkdown (cross-workspace branch) short-circuit), so an
+// The renderer treats `[[<current-ws>::TASK-1]]`
+// identically to `[[TASK-1]]` (markdown.ts::renderMarkdown (cross-workspace
+// branch) short-circuit), so an
 // indexed workspace_ref row pointing at the current workspace must
 // be normalized to a ref-kind row at write time — otherwise the
 // link surfaces in the renderer but produces no backlink: the
@@ -327,10 +328,11 @@ func TestWikiLinks_CrossWorkspaceSameWorkspaceQualifiedNormalized(t *testing.T) 
 }
 
 // TestWikiLinks_SameWorkspaceQualifiedRefNoTitleFallback regresses
-// Codex round 5 P2. `[[<current-ws>::ISO-9001]]` where no ISO-9001
+// `[[<current-ws>::ISO-9001]]` where no ISO-9001
 // ref-item exists must NOT fall through to title lookup the way
 // bare `[[ISO-9001]]` does. The renderer's same-ws qualified path
-// (markdown.ts::wikiLinksToMarkdown (cross-workspace branch)) treats ref-misses as broken without title
+// (markdown.ts::wikiLinksToMarkdown (cross-workspace branch)) treats ref-misses
+// as broken without title
 // fallback; the index must match or it creates ghost backlinks the
 // UI doesn't render.
 func TestWikiLinks_SameWorkspaceQualifiedRefNoTitleFallback(t *testing.T) {
@@ -366,8 +368,8 @@ func TestWikiLinks_SameWorkspaceQualifiedRefNoTitleFallback(t *testing.T) {
 	}
 }
 
-// TestWikiLinks_CrossWorkspaceAdminSeesAllWorkspaces regresses Codex
-// round 1 P2: admin users have implicit access to every workspace
+// TestWikiLinks_CrossWorkspaceAdminSeesAllWorkspaces regresses Admin users have
+// implicit access to every workspace
 // (see middleware_auth.go:481), so the cross-ws enumeration must
 // use a global workspace list for admins instead of
 // GetUserWorkspaces (which returns only memberships + grant guests).
@@ -430,7 +432,7 @@ func TestWikiLinks_CrossWorkspaceAdminSeesAllWorkspaces(t *testing.T) {
 }
 
 // TestWikiLinks_CrossWorkspaceBearerAdminGrantOnlyWorkspaceFiltered
-// pins Codex's BUG-1617 round-2 finding: GetCrossWorkspaceBacklinks
+// pins the BUG-1617 case: GetCrossWorkspaceBacklinks
 // for bearer-admin must NOT include workspaces where the admin only
 // holds a guest grant. Direct bearer access to such a workspace would
 // be denied by RequireWorkspaceAccess (BUG-1616's membership-only
@@ -591,8 +593,8 @@ func TestWikiLinks_CrossWorkspaceRefNumberFallback(t *testing.T) {
 	}
 }
 
-// TestWikiLinks_CrossWorkspaceTokenAllowListFilters regresses Codex
-// round 2 P1: cross-ws traversal must honor the OAuth/MCP token's
+// TestWikiLinks_CrossWorkspaceTokenAllowListFilters regresses:
+// cross-ws traversal must honor the OAuth/MCP token's
 // workspace allow-list (TASK-952). A token consented for workspace
 // A must not return source rows from workspace B even when the
 // underlying user has B access — the consent boundary lives at the

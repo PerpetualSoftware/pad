@@ -29,7 +29,7 @@ func reminderWriteAs(srv *Server, method, path string, body any, sessionToken st
 	return rr
 }
 
-// TASK-3611 codex r3: a reminder on an item the caller cannot see answers
+// TASK-3611: a reminder on an item the caller cannot see answers
 // exactly what an unknown reminder id answers, on every by-id door (re-arm,
 // ack, delete), so a guest cannot learn that an id exists. The control is a
 // reminder on the guest's own granted item, which the same door serves.

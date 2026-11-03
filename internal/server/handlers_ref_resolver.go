@@ -25,8 +25,8 @@ var refResolverRefPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]*-\d+$`)
 // The `/-/r/` prefix is structurally impossible to collide with any
 // page route under /{username}/{workspace}/{collection}/... because
 // username and collection slugs both require a leading letter. This
-// shape sidesteps Codex round-2 P1.4 (pre-existing `ref`-slugged
-// collections in upgraded workspaces) without a migration.
+// shape sidesteps a collision with pre-existing `ref`-slugged
+// collections in upgraded workspaces, without a migration.
 //
 // 404 cases (in order of evaluation):
 //
@@ -42,7 +42,7 @@ var refResolverRefPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]*-\d+$`)
 //     redirect target requires one, and `"/" + "" + "/" + slug + …`
 //     would produce a protocol-relative URL (`//slug/…`) the browser
 //     interprets as a network-path reference. Returning 404 here is
-//     safer than emitting a broken redirect (Codex round-2 P1.3).
+//     safer than emitting a broken redirect.
 func (s *Server) handleResolveCrossWorkspaceRef(w http.ResponseWriter, r *http.Request) {
 	workspaceSlug := chi.URLParam(r, "workspace")
 	ref := chi.URLParam(r, "ref")
@@ -113,7 +113,7 @@ func (s *Server) handleResolveCrossWorkspaceRef(w http.ResponseWriter, r *http.R
 	// 5. Determine the username segment for the canonical redirect target.
 	//    The new URL shape has no URL-path username, so we always synthesize
 	//    from the workspace owner. Empty result → 404 rather than a broken
-	//    `//slug/…` protocol-relative URL (Codex round-2 P1.3).
+	//    `//slug/…` protocol-relative URL.
 	username := s.resolverOwnerUsername(ws)
 	if username == "" {
 		s.refResolverNotFound(w, r)
@@ -170,7 +170,7 @@ func (s *Server) resolverItemVisible(r *http.Request, ws *models.Workspace, item
 	// Pre-setup mode: no users yet, the whole system is open (matches
 	// RequireAuth + RequireWorkspaceAccess's fresh-install bypass). We
 	// short-circuit to visible HERE rather than calling checkItemVisible
-	// with a synthetic role because the round-2-extended checkItemVisible
+	// with a synthetic role because the extended checkItemVisible
 	// honors role-only bypasses ("owner"/"editor") for tokenized access,
 	// but the pre-setup path is conceptually distinct from a real
 	// authenticated owner — bypassing here keeps the intent explicit.
@@ -276,7 +276,7 @@ func (s *Server) resolverWorkspaceRole(ws *models.Workspace, user *models.User, 
 // username on file. Callers MUST treat empty as "can't build a valid
 // redirect" and 404 — emitting `/` + "" + `/slug/...` yields a
 // protocol-relative URL the browser interprets as a network-path
-// reference (Codex round-2 P1.3).
+// reference.
 func (s *Server) resolverOwnerUsername(ws *models.Workspace) string {
 	if ws.OwnerUsername != "" {
 		return ws.OwnerUsername

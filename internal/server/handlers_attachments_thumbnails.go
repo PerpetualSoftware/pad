@@ -106,7 +106,7 @@ func (s *Server) deriveThumbnails(parentID string) {
 		// bounds. It would be pointless for the AUTHENTICATED download path
 		// (which falls back to the original), but the SHARE byte path
 		// (TASK-2637) serves variants ONLY and never an original — the
-		// invariant Dave ruled is that every byte a share viewer receives has
+		// invariant is that every byte a share viewer receives has
 		// passed through this decode→re-encode pipeline: metadata (EXIF/GPS)
 		// dropped by construction, format normalized per ThumbnailFormat,
 		// resolution bounded. A ≤bound source therefore still needs a real

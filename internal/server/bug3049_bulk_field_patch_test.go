@@ -150,7 +150,7 @@ func TestFieldsPatchFromMerge(t *testing.T) {
 // it guards is UNREACHABLE through any door, which is why this is a unit test of
 // the arm rather than a fixture with a broken row in the database.
 //
-// Codex round 3 read the diff correctly: before this unit, the door ignored the
+// Before this unit, the door ignored the
 // unmarshal error, so the decoded map stayed empty, the caller's changes were
 // written over the top, and the unreadable bytes were replaced with a valid
 // blob. The patch conversion turned that silent repair into a store-level
@@ -163,7 +163,7 @@ func TestFieldsPatchFromMerge(t *testing.T) {
 //     fields fails json_valid — migration 056's own comment says so, and an
 //     attempt to inject one in this test failed with `SQL logic error: malformed
 //     JSON (1)`. Migration 056 also backfilled every pre-existing bad row to
-//     '{}'. So the "repair path" codex identified as lost could never fire.
+//     '{}'. So the "repair path" that looked lost could never fire.
 //  2. THE REPAIR WAS NOT WORTH KEEPING ANYWAY. It destroyed the unreadable
 //     bytes, which is the opposite of the room's standing answer for unreadable
 //     stored state (BUG-2627 part 3, BUG-2675's `stored_state_unreadable`): the
@@ -215,8 +215,7 @@ func TestBulkFieldUpdate_RefusesAnUnreadableFieldsSnapshot(t *testing.T) {
 	}
 }
 
-// An AUTO-POPULATED date must not overwrite one a concurrent writer set
-// .
+// An AUTO-POPULATED date must not overwrite one a concurrent writer set.
 //
 // autoPopulateDates stamps start_date / end_date on a status transition, but
 // only when the value is empty — and it read a snapshot from outside the write

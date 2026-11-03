@@ -166,8 +166,7 @@ func (d *postgresDialect) JSONFieldOrder(column, key, dir string) string {
 // it: its float64 value. SQLite compares an INTEGER and a REAL as doubles,
 // and Postgres compares numeric EXACTLY; two exactly equal values round to
 // the same double, so equal doubles is a superset of both. The app
-// installer's in-pack uniqueness claims key numbers on it (TASK-3397, codex
-// rounds 10-12).
+// installer's in-pack uniqueness claims key numbers on it (TASK-3397).
 func NumericClaimForms(arg string) []string {
 	if _, ok := numericArg(arg); !ok {
 		return nil

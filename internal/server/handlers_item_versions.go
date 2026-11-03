@@ -302,8 +302,7 @@ func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request
 	// version + prunes the ENTIRE op-log in ONE store transaction), publishes the
 	// stale-flush boundary, then — if a live room exists — forces every connected
 	// peer to discard its in-memory Y.Doc and rebuild from items.content. The
-	// content write, the version, and the op-log wipe are atomic (Codex xhigh
-	// [P1]): a failed commit rolls back all three, so there is no divergent
+	// content write, the version, and the op-log wipe are atomic: a failed commit rolls back all three, so there is no divergent
 	// "restored content + stale op-log" or "wiped op-log + unchanged content"
 	// state on any failure path. The pruned op-log means a reconnecting or cold
 	// client lazy-seeds from the restored content; the boundary rejects any
@@ -359,7 +358,7 @@ func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request
 		// the top of the handler. A restore that completed while this request waited
 		// for the per-item lock would otherwise leave its advanced last_restore_seq
 		// visible against a stale baseline and make reconcile falsely classify a
-		// genuine rollback of THIS attempt as landed (BUG-2276 P2).
+		// genuine rollback of THIS attempt as landed (BUG-2276).
 		var (
 			baselineSeq      int64
 			baselineCaptured bool
@@ -383,7 +382,7 @@ func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request
 					// restored item so the handler returns it AND emits the item SSE
 					// event, instead of the false 404 it would hit with updated==nil
 					// (the commit's UpdateItemWithPreCheck returned (nil, ackErr) on this
-					// path). BUG-2276 P2.
+					// path). BUG-2276.
 					updated = fresh
 				}
 				return res, rerr
@@ -432,7 +431,7 @@ func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request
 					}
 					prunedPendingEdits = n + sa
 					// Capture the pre-restore seq under the per-item + workspace seq
-					// lock, before any mutation (BUG-2276 P2 — see the baselineSeq note
+					// lock, before any mutation (BUG-2276 — see the baselineSeq note
 					// above). `existing` is the row as read at the top of the update tx.
 					baselineSeq = existing.Seq
 					baselineCaptured = true
@@ -564,7 +563,7 @@ func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request
 //     mode). A not-found re-read is UNCERTAIN, NOT rolled-back: the restore may have
 //     durably landed and a concurrent archive then soft-deleted the item — treating
 //     that as rolled-back would un-freeze stale peers onto the archived item and let
-//     them poison its op-log for a later unarchive (BUG-2276 P1). Also covers the
+//     them poison its op-log for a later unarchive (BUG-2276). Also covers the
 //     rare restore-to-identical-content tx that ALSO ack-lost (contentMatches
 //     coincidentally true while seqAdvanced is false): staying frozen is safe.
 func (s *Server) reconcileRestoreCommit(itemID, targetContent string, baselineSeq int64, baselineCaptured bool) (collab.RestoreReconcileResult, *models.Item, error) {
@@ -573,7 +572,7 @@ func (s *Server) reconcileRestoreCommit(itemID, targetContent string, baselineSe
 		return collab.RestoreReconcileResult{}, nil, fmt.Errorf("reconcile restore: read item: %w", err)
 	}
 	if fresh == nil {
-		// NOT-FOUND is UNCERTAIN, not rolled-back (BUG-2276 P1): a durable restore
+		// NOT-FOUND is UNCERTAIN, not rolled-back (BUG-2276): a durable restore
 		// could have landed and a concurrent archive then soft-deleted the item.
 		// Return an error → ForceRefreshRoom stays frozen + plain-closes, so no stale
 		// peer resumes onto the archived item's op-log.

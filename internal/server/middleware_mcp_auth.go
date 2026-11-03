@@ -83,7 +83,7 @@ func (s *Server) MCPBearerAuth(next http.Handler) http.Handler {
 		// emit path lives in middleware_mcp_audit.go's
 		// emitMCPAuditDenied — see that helper for the rationale on
 		// why we audit those branches directly here rather than from
-		// the wrapping middleware (Codex review on PR #389 round 1).
+		// the wrapping middleware.
 		mcpAuthStart := time.Now().UTC()
 
 		token, ok := extractBearer(r.Header.Get("Authorization"))
@@ -165,8 +165,7 @@ func (s *Server) handleMCPPATAuth(w http.ResponseWriter, r *http.Request, token 
 
 	// Per-token rate limit (TASK-959). Runs AFTER ALL PAT validation
 	// gates pass: ValidateToken, the legacy-workspace-scoped guard,
-	// and the GetUser lookup. Codex review #378 round 3 caught the
-	// gap where rate-limiting between ValidateToken and these later
+	// and the GetUser lookup. Rate-limiting between ValidateToken and these later
 	// gates would create limiter buckets for active-but-not-
 	// authorized tokens (legacy workspace-scoped tokens with no
 	// UserID, tokens whose user row was deleted between issuance
@@ -175,8 +174,7 @@ func (s *Server) handleMCPPATAuth(w http.ResponseWriter, r *http.Request, token 
 	if !s.checkMCPRateLimit(w, r, token) {
 		// Resolved user + token but rate-limited: emit an audit row
 		// directly. The wrapping MCPAuditLog never sees this branch
-		// because we return before next.ServeHTTP. Codex review on
-		// PR #389 round 1 — see emitMCPAuditDenied for the design
+		// because we return before next.ServeHTTP. See emitMCPAuditDenied for the design
 		// rationale.
 		s.emitMCPAuditDenied(r, user, "pat", apiToken.ID, "rate_limited", mcpAuthStart)
 		return
@@ -187,8 +185,8 @@ func (s *Server) handleMCPPATAuth(w http.ResponseWriter, r *http.Request, token 
 	// handlers that distinguish session vs token auth see the same
 	// shape they would on /api/v1/*. Cheap, future-proof.
 	ctx = context.WithValue(ctx, ctxIsAPIToken, true)
-	// ...and the same auth KIND, for the same reason (BUG-3007, codex
-	// round 2). The credential here IS a PAT in the Authorization
+	// ..and the same auth KIND, for the same reason (BUG-3007). The credential here
+	// IS a PAT in the Authorization
 	// header, so the liveness predicate's existing api_token door
 	// re-checks it verbatim — no new machinery, and this accept point
 	// stops being a hole the predicate cannot see. The OAuth branch below
@@ -201,8 +199,7 @@ func (s *Server) handleMCPPATAuth(w http.ResponseWriter, r *http.Request, token 
 	// checks. Without this, a PAT with `["read"]` scope can drive
 	// write MCP tools because the synthesized in-process request
 	// looks pre-authenticated to the handler tree, bypassing
-	// TokenAuth's chain-level scopeAllows check. Codex review
-	// #369 round 1.
+	// TokenAuth's chain-level scopeAllows check.
 	ctx = WithTokenScopes(ctx, apiToken.Scopes)
 	// Stash the token identity so the audit middleware (TASK-960)
 	// can record which PAT drove the call. Audit logging is
@@ -358,8 +355,7 @@ func (s *Server) handleMCPOAuthAuth(w http.ResponseWriter, r *http.Request, toke
 	// Per-token rate limit (TASK-959). Runs AFTER ALL OAuth
 	// validation gates pass: introspection, refresh-vs-access
 	// check, RFC 8707 audience match, subject presence, user
-	// lookup. Codex review #378 round 2 caught the gap where
-	// rate-limiting between IntrospectToken and these later gates
+	// lookup. Rate-limiting between IntrospectToken and these later gates
 	// would create limiter buckets for active-but-not-authorized
 	// tokens (refresh tokens used as bearers, wrong-audience
 	// tokens, deleted users). Moving the check to the very end
@@ -369,7 +365,6 @@ func (s *Server) handleMCPOAuthAuth(w http.ResponseWriter, r *http.Request, toke
 		// Resolved user + OAuth connection but rate-limited: emit
 		// an audit row directly. Wrapping MCPAuditLog never sees
 		// this branch because we return before next.ServeHTTP.
-		// Codex review on PR #389 round 1.
 		s.emitMCPAuditDenied(r, user, "oauth", ar.GetID(), "rate_limited", mcpAuthStart)
 		return
 	}
@@ -435,8 +430,7 @@ func (s *Server) handleMCPOAuthAuth(w http.ResponseWriter, r *http.Request, toke
 		// path would silently widen a post-Phase-C connection (where
 		// the new tables are authoritative and session.Extra is empty
 		// by design) into "no allow-list," granting access to every
-		// workspace the user is a member of. Codex review #581 round
-		// 1 caught the regression.
+		// workspace the user is a member of.
 		//
 		// Mirrors the IntrospectToken storage-error policy a few
 		// branches up: storage failures collapse to a 401 rather than
@@ -535,8 +529,8 @@ func audienceContains(haystack []string, needle string) bool {
 // Crucial fail-closed: nil / empty granted scopes map to JSON `null`
 // (which tokenScopeAllows denies via the "scopes == nil" branch),
 // NOT to `[]` (which the same function would accept as the legacy
-// "unrestricted" PAT form). Codex review #375 round 1 caught the
-// bug: OAuth's `scope` parameter is optional per RFC 6749 §3.3, so
+// "unrestricted" PAT form).
+// OAuth's `scope` parameter is optional per RFC 6749 §3.3, so
 // a client can run the auth-code flow without requesting any scopes
 // — fosite hands back a token with no granted scopes, and without
 // this guard MCPBearerAuth would treat that token as unrestricted

@@ -155,7 +155,7 @@ func TestBUG3796_ArchivedGrantedItemReachesGranteeThroughChanges(t *testing.T) {
 			}
 
 			// Paged one row at a time, the walk delivers the same two rows
-			// (hunter r1 Q1): the window and cursor are over visible rows,
+			// The window and cursor are over visible rows,
 			// and the archived granted row is one of them.
 			var walked []string
 			for _, p := range bug3791Walk(t, srv, ws.Slug, cookie, since.UnixMilli(), 1, nil) {
@@ -179,7 +179,7 @@ func TestBUG3796_ArchivedGrantedItemReachesGranteeThroughChanges(t *testing.T) {
 // A granted item is no longer tested against the visible-collection list
 // (BUG-3796), so for an app request the grant list's own ceiling is the only
 // one that applies to it. The include-deleted variant must keep an archived
-// granted item inside the ceiling and drop one outside it (hunter r1 Q1). Not
+// granted item inside the ceiling and drop one outside it. Not
 // reachable through a route today (app tokens are refused on /api/v1), so this
 // drives the filter /changes calls, as BUG-3424's test does.
 func TestBUG3796_ArchivedGrantKeepsTheAppCeiling(t *testing.T) {

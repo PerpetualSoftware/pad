@@ -676,7 +676,7 @@ func TestCopyItemAcrossWorkspaces_AttachmentsClonedAndRefsRewritten(t *testing.T
 	// as tightly, but only whole-body equality also catches the body being
 	// otherwise altered, so that is the form kept.)
 	//
-	// MUTATION C (re-runnable; round-5 amendment). In
+	// MUTATION C (re-runnable). In
 	// items_cross_workspace_copy.go, immediately after
 	// `newContent := remapAttachmentRefs(source.Content, plan.IDMap)`, insert:
 	//
@@ -1208,8 +1208,8 @@ func TestCopyAcrossWorkspaces_BadRequestBeatsQuota(t *testing.T) {
 // which resolves to nothing and is deliberately left alone (DR-11a: an
 // unresolvable ref keeps its literal text "so the copy renders exactly as
 // broken as the source did"). A naive strings.ReplaceAll over
-// "pad-attachment:"+old rewrote the `<uuid>` prefix inside it anyway (Codex
-// round 26), producing text matching neither the plan nor the user's input.
+// "pad-attachment:"+old rewrote the `<uuid>` prefix inside it anyway,
+// producing text matching neither the plan nor the user's input.
 func TestRemapAttachmentRefsTokenizesLikeThePlanner(t *testing.T) {
 	t.Parallel()
 	const (
@@ -1477,8 +1477,8 @@ func TestCopyItemAcrossWorkspaces_NoPoolIOUnderLocks(t *testing.T) {
 	// FREE-plan owner and EnforceItemLimit set, the in-transaction quota
 	// check runs its full read chain (workspace owner → user → platform
 	// plan-limit setting → count), which was the second lock-held pool-read
-	// leg Codex found after the planner/authorizer leg — the plain fixture
-	// never armed it (round 2). No plan override, so resolveLimit reaches
+	// leg, found after the planner/authorizer leg — the plain fixture
+	// never armed it. No plan override, so resolveLimit reaches
 	// the platform-settings read instead of returning early.
 	s := testStore(t)
 	owner := createTestUser(t, s, "no-pool-io-owner@example.com", "Owner", "s3cret")

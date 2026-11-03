@@ -8,7 +8,7 @@ import (
 // BUG-3538: an item under TWO active plans (a parent link to one, an
 // implements link to the other) is suggested once, not once per plan. The
 // web keys suggested_next by item_slug, and the duplicate threw during render,
-// leaving the dashboard on its loading skeleton (cookie-sales, day 90).
+// leaving the dashboard on its loading skeleton (cookie-sales).
 func TestBUG3538_SuggestedNextOncePerItemUnderTwoActivePlans(t *testing.T) {
 	t.Parallel()
 	srv := testServer(t)

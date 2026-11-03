@@ -74,7 +74,7 @@ func (s *Server) mcpAvailableWith(on bool) bool {
 // server is built at startup only when that URL is https (DR-4), so the
 // scheme check restates the construction rule rather than adding one; it
 // is here so a server wired some other way (a test, a future caller) still
-// cannot offer OAuth over http, which Dave ruled PAT-only.
+// cannot offer OAuth over http, which is PAT-only by design.
 func (s *Server) oauthAvailable() bool {
 	on, _ := s.mcpSetting()
 	return s.oauthAvailableWith(on)
@@ -182,7 +182,7 @@ func (s *Server) requireOAuthAvailable(next http.Handler) http.Handler {
 
 // requireOAuthOrAppsAvailable gates the Connected Apps list and revoke: they
 // manage MCP connections when OAuth is available, and the grants people gave
-// installed apps when apps are (TASK-3399, codex U5b-1 r1): turning MCP off
+// installed apps when apps are (TASK-3399): turning MCP off
 // must not strand an app grant its person cannot see or revoke.
 func (s *Server) requireOAuthOrAppsAvailable(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

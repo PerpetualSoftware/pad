@@ -65,8 +65,8 @@ func TestRemap_ConcurrentItemEditIsNotOverwritten(t *testing.T) {
 	//     serialised it (the defect);
 	//   - the edit's backend is seen WAITING on an advisory lock: the lock is
 	//     serialising it (the fix).
-	// A time window alone cannot tell "blocked" from "slow" (codex round 1 on
-	// BUG-2797): an edit delayed past the window under parallel load would land
+	// A time window alone cannot tell "blocked" from "slow" (BUG-2797): an edit
+	// delayed past the window under parallel load would land
 	// AFTER a lockless remap, and every assertion below would pass without the
 	// lock. Each test has its own database, so current_database() isolates this
 	// test's backends from every other test's. Neither outcome within the

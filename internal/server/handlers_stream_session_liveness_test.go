@@ -688,7 +688,7 @@ func TestEventsStream_SessionBearerIsValidatedAsASession(t *testing.T) {
 // demand — a store that cannot answer, and a credential kind nobody taught it.
 
 func TestCredentialLiveness_UnknownKindFailsClosed(t *testing.T) {
-	// The lead's ruling, and the reason the default branch is not a fallthrough
+	// The reason the default branch is not a fallthrough
 	// to "valid": a credential kind nobody taught this predicate about is a
 	// connection nobody can revoke, which is BUG-3007 under a new name. A
 	// future auth path that forgets to set `ctxAuthKind` must break LOUDLY.
@@ -722,7 +722,7 @@ func TestCredentialLiveness_NoCredentialIsValid(t *testing.T) {
 }
 
 func TestCredentialLiveness_StoreErrorKeepsTheConnection(t *testing.T) {
-	// codex round 1, HIGH. The first version of this predicate was a bool, so
+	// The first version of this predicate was a bool, so
 	// a store ERROR read as "invalid" and a transient DB blip would have closed
 	// every affected stream on the next tick — a fleet-wide reconnect storm for
 	// users whose credentials were fine. "Cannot ask" and "definitively gone"
@@ -748,7 +748,7 @@ func TestCredentialLiveness_StoreErrorKeepsTheConnection(t *testing.T) {
 }
 
 func TestValidateTokenForLiveness_DoesNotTouchLastUsed(t *testing.T) {
-	// codex round 1, MEDIUM — and a meaning problem as much as a cost one:
+	// A meaning problem as much as a cost one:
 	// `last_used_at` is what an operator reads before revoking a token, so a
 	// background liveness probe bumping it would make every idle-but-connected
 	// token look actively used.
@@ -800,7 +800,7 @@ func TestValidateTokenForLiveness_DoesNotTouchLastUsed(t *testing.T) {
 }
 
 func TestCredentialLiveness_AResolvedPrincipalWithoutAKindFailsClosed(t *testing.T) {
-	// codex round 2, P1. The empty-kind branch means "no credential on the
+	// The empty-kind branch means "no credential on the
 	// wire" — the fresh-install window and the legacy no-auth path — and it
 	// KEEPS the connection. A request that carries a resolved USER but no kind
 	// is a different animal wearing that branch's coat: somebody accepted a
@@ -839,7 +839,7 @@ func TestCredentialLiveness_AResolvedPrincipalWithoutAKindFailsClosed(t *testing
 }
 
 func TestCredentialLiveness_StoreErrorRecoversOnTheNextTick(t *testing.T) {
-	// codex round 2, P2. TestCredentialLiveness_StoreErrorKeepsTheConnection
+	// TestCredentialLiveness_StoreErrorKeepsTheConnection
 	// closes the whole store, which is a PERMANENT failure — it proves the
 	// classification and not the promise the classification is made for, that
 	// the tick TRIES AGAIN and the connection comes back under a store that
@@ -895,8 +895,8 @@ func credentialLivenessRecovery(t *testing.T, srv *Server, backend string) {
 	if _, err := db.Exec("ALTER TABLE sessions RENAME TO sessions_outage"); err != nil {
 		t.Fatalf("hide sessions table: %v", err)
 	}
-	// Restore registered IMMEDIATELY, not after the assertions (codex round 3,
-	// P2): a t.Fatalf between here and the manual restore would otherwise leave
+	// Restore registered IMMEDIATELY, not after the assertions: a t.Fatalf
+	// between here and the manual restore would otherwise leave
 	// the schema renamed for whatever shares this database. Idempotent, so the
 	// manual restore below can still happen first.
 	restored := false
@@ -936,7 +936,7 @@ func credentialLivenessRecovery(t *testing.T, srv *Server, backend string) {
 }
 
 func TestMCPBearerAuth_PATPathRecordsTheAPITokenKind(t *testing.T) {
-	// codex round 2, P1. The MCP transport is a second accept point: it
+	// The MCP transport is a second accept point: it
 	// resolves a principal without going through TokenAuth, so it has to record
 	// the credential kind itself or the liveness predicate sees a user it
 	// cannot re-check. The PAT branch needs no new door — the credential IS a

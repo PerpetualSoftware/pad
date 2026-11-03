@@ -330,7 +330,7 @@ func TestTASK3462_ListingAndUpdateRespectAccess(t *testing.T) {
 // With the item open in an editor the body travels through the live document
 // (the applier path), and the row write lands first. If the apply then fails,
 // the item keeps its old body, so its seed must stay where it was and the
-// update must still be on offer (codex r2: the seed had committed with the
+// update must still be on offer (the seed had committed with the
 // row and every later offer answered builtin_up_to_date).
 func TestTASK3462_FailedApplyLeavesTheSeedAndTheOffer(t *testing.T) {
 	restore := collab.SetApplierTimeoutsForTesting(150*time.Millisecond, 150*time.Millisecond)
@@ -381,7 +381,7 @@ func TestTASK3462_FailedApplyLeavesTheSeedAndTheOffer(t *testing.T) {
 
 // A seed that carried convention metadata the library no longer has: the
 // update removes it through the typed lowering, and the item is then current
-// with no stale reserved key (codex r3: the drop was skipped while the seed
+// with no stale reserved key (the drop was skipped while the seed
 // advanced, hiding the leftover for good).
 func TestTASK3462_UpdateClearsDroppedConventionMetadata(t *testing.T) {
 	srv := testServer(t)

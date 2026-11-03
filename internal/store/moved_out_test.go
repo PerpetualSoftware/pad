@@ -101,7 +101,7 @@ func TestListMovedOutSince(t *testing.T) {
 	}
 }
 
-// TestListMovedOutSince_PaginatesByMoveSeq is the round-2 regression:
+// TestListMovedOutSince_PaginatesByMoveSeq is a regression test:
 // pagination must order/limit by the MOVE seq, not the item's current
 // seq. An item that moved out early but then churned in the hidden
 // collection (high current seq) must not be dropped past the limit.

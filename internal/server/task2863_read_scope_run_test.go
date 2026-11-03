@@ -10,7 +10,7 @@ import (
 
 // TASK-2863: a read-scoped token may POST exactly one side-effect-free
 // path, /api/v1/workspaces/{ws}/playbooks/{ref}/run. Every other POST stays
-// refused (lead ruling: option A, one entry, not /match, /claim or
+// refused (option A, one entry, not /match, /claim or
 // /release).
 
 func TestTASK2863_ReadScopePOSTPathTable(t *testing.T) {
@@ -118,8 +118,7 @@ func TestTASK2863_ReadPATThroughTheRouter(t *testing.T) {
 		_ = json.Unmarshal(rr.Body.Bytes(), &env)
 		// TokenAuth's own refusal is the only 403 that names the scope, so
 		// for a path no route serves (where a write token gets 404) this
-		// is what says the read token was refused by the scope check
-		//.
+		// is what says the read token was refused by the scope check.
 		if rr.Code == http.StatusForbidden && env.Error.Message == "Token scope does not permit this action" {
 			return rr.Code, "scope"
 		}

@@ -227,7 +227,7 @@ func TestSSE_BUG3637_StalledReaderReleasesItsSlot(t *testing.T) {
 	}
 	assertSlotReleased(t, srv, wf)
 	// The subscription and its buffers go with the handler, not only the
-	// slot (codex final round 2). Unsubscribe is deferred on the same
+	// slot. Unsubscribe is deferred on the same
 	// return as the release, so it has run once the slot reads free.
 	if n := srv.events.SubscriberCount(); n != 0 {
 		t.Errorf("bus subscribers after the stalled stream ended = %d, want 0", n)
@@ -256,7 +256,7 @@ func newDeadlineRecorder() *deadlineRecorder {
 func (deadlineRecorder) SetWriteDeadline(time.Time) error { return nil }
 
 // A writer that cannot take a write deadline is refused before anything is
-// streamed or subscribed: the frames could not be bounded (codex r1 High).
+// streamed or subscribed: the frames could not be bounded (BUG-3637).
 // httptest.ResponseRecorder is that writer: it is a Flusher with no deadline.
 func TestSSE_BUG3637_WriterWithoutDeadlineIsRefused(t *testing.T) {
 	t.Parallel()
@@ -330,13 +330,13 @@ func TestWatchEvents_BUG3637_WriterWithoutDeadlineIsRefused(t *testing.T) {
 }
 
 // The production write deadline must outlast the keepalive cadence by a
-// stated margin, twice, on both streams (lead ruling on codex final-round
-// Low): the stalled-reader tests use a 200ms override, so on their own they
+// stated margin, twice, on both streams (BUG-3637): the stalled-reader tests use a 200ms
+// override, so on their own they
 // would pass a production bound short enough to disconnect a client that is
 // reading normally. Real constants, no overrides.
 func TestSSE_BUG3637_WriteTimeoutOutlastsTheKeepaliveCadence(t *testing.T) {
 	const margin = 2
-	// An absolute floor too (bug-hunter r4): the first stream's interval is
+	// An absolute floor too: the first stream's interval is
 	// what the bound is defined from, so the margin alone cannot fail for it
 	// if both shrink together.
 	const floor = 30 * time.Second

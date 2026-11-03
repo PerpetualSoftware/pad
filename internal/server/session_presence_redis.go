@@ -177,8 +177,8 @@ type RedisSessionPresence struct {
 	// fails EVERY session's renewal on every tick, so at a thousand
 	// sessions the unthrottled version emitted ~33 warnings a second per
 	// replica — enough to page on volume while saying nothing an operator
-	// could act on, and enough to bury the errors that matter (codex round
-	// 33). One line per interval carries the same information plus how many
+	// could act on, and enough to bury the errors that matter.
+	// One line per interval carries the same information plus how many
 	// it stands for.
 	renewLog struct {
 		last       time.Time
@@ -206,8 +206,7 @@ const (
 	// rather than lingering forever.
 	//
 	// THE COST OF THAT CHOICE, stated because it is a real regression
-	// against MemorySessionPresence and codex round 1 was right to raise
-	// it: for up to this long after an instance DIES, its sessions are
+	// against MemorySessionPresence: for up to this long after an instance DIES, its sessions are
 	// still listed, so a picker can offer one that no longer exists and a
 	// push targeted at it publishes and reaches nobody. The in-memory
 	// registry had no such window — its entries died with its process.
@@ -222,7 +221,6 @@ const (
 
 	// presenceOpTimeout bounds every Redis call this type makes, including
 	// ADD's registration write, which used to run on context.Background()
-	//.
 	//
 	// WHAT IT DOES NOT BOUND, measured rather than assumed: go-redis does
 	// not apply a command context to CONNECTION ESTABLISHMENT. Against a
@@ -617,8 +615,8 @@ func (p *RedisSessionPresence) Remove(userID string, sessionID string) {
 		// delete below.
 		//
 		// BOUNDED, and this is the branch that matters.
-		// Round 10 bounded only the post-Close fallback below, which was
-		// the wrong half: Close RETAINS its renewal entries, so a handler
+		// Bounding only the post-Close fallback below would be the wrong half:
+		// Close RETAINS its renewal entries, so a handler
 		// unwinding during shutdown finds one here and takes this path —
 		// and an unbounded `<-rn.done` against a parked renewal held
 		// http.Server.Shutdown exactly as before. Same deadline, same
@@ -661,8 +659,8 @@ func (p *RedisSessionPresence) Remove(userID string, sessionID string) {
 // partial read is not an outage" — which conflated a nil registry (a
 // configuration fact, known at startup) with a failed read (a runtime
 // one), and no consumer can tell those apart from an empty slice anyway.
-// Codex round 1 caught it: the flattened version made handleListSessions
-// answer 200 with no sessions during a Redis outage, and made a targeted
+// The flattened version would make handleListSessions
+// answer 200 with no sessions during a Redis outage, and make a targeted
 // push skip its publish and lose the instruction while reporting success.
 func (p *RedisSessionPresence) ListForUser(userID string) ([]LiveSession, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), p.timeout())
@@ -726,7 +724,7 @@ func (p *RedisSessionPresence) ListForUser(userID string) ([]LiveSession, error)
 		}
 		raw, ok := v.(string)
 		if !ok {
-			// Same ruling as the decode failure below: a value we cannot
+			// Same rule as the decode failure below: a value we cannot
 			// interpret is an UNKNOWN registry state, not an absent session.
 			//
 			// Counted for consistency with the decode branch below,
@@ -743,7 +741,7 @@ func (p *RedisSessionPresence) ListForUser(userID string) ([]LiveSession, error)
 			// REPORTED, not skipped. An earlier version
 			// dropped the row and returned a nil error, arguing that the
 			// other sessions in the list were still real. That contradicted
-			// the P1 ruling one round earlier, and in the same direction: a
+			// the rule above, and in the same direction: a
 			// silently-omitted session makes deliveredSessionCount report a
 			// number that looks complete, so a targeted push at the omitted
 			// session returns delivered_sessions:0 and is SKIPPED — the
@@ -798,9 +796,7 @@ func (p *RedisSessionPresence) ListForUser(userID string) ([]LiveSession, error)
 		return out[i].ConnectedAt.Before(out[j].ConnectedAt)
 	})
 	// Everything that could not be interpreted has already RETURNED an
-	// error above — an undecodable entry included (codex round 2 changed
-	// that, and an earlier version of this comment still described the
-	// behaviour it replaced). Reaching here means every indexed session
+	// error above — an undecodable entry included. Reaching here means every indexed session
 	// either decoded or was pruned as expired, so this list is complete
 	// as of the read.
 	return out, nil
@@ -826,7 +822,7 @@ func (p *RedisSessionPresence) Close() {
 	// lookup Remove uses to decide whether to WAIT: a handler disconnecting
 	// concurrently with Close found no renewal, skipped the wait, and ran
 	// its DEL — leaving an already-cancelled-but-still-in-flight renewal
-	// free to complete afterwards and re-create the key. That is round 1's
+	// free to complete afterwards and re-create the key. That is the
 	// resurrection bug arriving by the other door, and the fix there (wait
 	// for the goroutine) only works if Remove can still find it.
 	//

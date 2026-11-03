@@ -298,7 +298,7 @@ INSERT INTO no_such_table_xyz (id) VALUES ('boom');
 }
 
 // TestMigrationAtomicity_FailedSQLite_RestoresForeignKeysOnError guards the
-// codex-R1 P2: once `PRAGMA foreign_keys = OFF` lands on the pinned migration
+// case where once `PRAGMA foreign_keys = OFF` lands on the pinned migration
 // connection, any subsequent failure (BeginTx / execMulti / INSERT / Commit
 // / post-tx PRAGMA) returns early. The runner MUST register a deferred
 // `PRAGMA foreign_keys = ON` so the connection never goes back to the pool

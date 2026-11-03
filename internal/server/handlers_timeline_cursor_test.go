@@ -277,7 +277,7 @@ func TestExhaustedWindowCursor_PicksTheNewestFullTail(t *testing.T) {
 	}
 }
 
-// Codex round 1: truncation and an exhausted window are INDEPENDENT reasons to
+// Truncation and an exhausted window are INDEPENDENT reasons to
 // bound the cursor, and the second is not implied by the first. A source whose
 // rows all drop contributes nothing to the page, so the truncation cursor can
 // sit older than that source's tail — and every unexamined row between the two

@@ -152,7 +152,7 @@ func TestPLAN3535_MigrationMarksExistingSystemCollections(t *testing.T) {
 			var broken *models.Collection
 			if b.name != "Postgres" {
 				// SQLite only (JSONB cannot hold it): a system collection with
-				// MALFORMED settings must not abort the migration (codex).
+				// MALFORMED settings must not abort the migration.
 				broken, err = s.CreateCollection(ws.ID, models.CollectionCreate{Name: "Broken", IsSystem: true})
 				if err != nil {
 					t.Fatal(err)

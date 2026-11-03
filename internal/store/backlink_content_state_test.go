@@ -8,7 +8,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/store/storetest"
 )
 
-// BUG-3033 — backlink snippets, the door codex round 2 found and this unit's
+// BUG-3033 — backlink snippets, the door this unit's
 // sweep missed because its vantage point was internal/server, internal/mcp and
 // internal/cli. This shape is built in the STORE, so nothing reachable from
 // those three packages could see it.
@@ -82,8 +82,7 @@ func TestBacklinkSnippetsCarryTheMarkerBothWays(t *testing.T) {
 			// SOURCE ISOLATION, before anything else. An unrelated item in the
 			// same workspace is made stale; the backlink must stay unmarked.
 			// Without this leg, replacing the source correlation with "any
-			// op-log row exists anywhere" passes every assertion below (codex
-			// round 4 ran that mutation).
+			// op-log row exists anywhere" passes every assertion below.
 			unrelated, err := s.CreateItem(ws.ID, tasks, models.ItemCreate{Title: "Unrelated"})
 			if err != nil {
 				t.Fatalf("create unrelated: %v", err)

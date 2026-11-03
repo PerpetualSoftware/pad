@@ -570,8 +570,7 @@ func TestRelationDoors_MoveRefusesInvisibleOverride(t *testing.T) {
 	}
 }
 
-// A BULK collection move that discards field values must say so (codex round
-// 1, P1).
+// A BULK collection move that discards field values must say so.
 //
 // `bulkMoveCollection` has populated `result.Dropped` since MigrateFields
 // existed and NOTHING read it — BUG-2674 fixed the single-item door only, so
@@ -649,8 +648,7 @@ func (f *doorFixture) callAs(user *models.User, role string, h http.HandlerFunc,
 
 // `wrong_collection` names a LIVE item, so its message tells the caller the
 // value exists — distinguishable from the `not_found` a nonexistent value
-// gets, and therefore an existence oracle for anyone who cannot see that item
-// .
+// gets, and therefore an existence oracle for anyone who cannot see that item.
 //
 // Both legs are required. Collapsing every wrong_collection to not_found would
 // pass the first and destroy the second, and "you linked a task where a person
@@ -741,13 +739,12 @@ func TestRelationDoors_BulkUpdateResolvesInjectedRelationDefault(t *testing.T) {
 	}
 }
 
-// A whitespace-only relation value is "no reference", not a bad one (codex
-// round 6).
+// A whitespace-only relation value is "no reference", not a bad one.
 //
 // The store resolver trims and ignores it. The server wrapper checked the
 // UNTRIMMED string, so it fell through to the visibility loop — and since the
 // vanished-target arm turns a missing lookup into a refusal, `"   "` came back
-// as not_found instead of an empty field. A defect my own round-1 fix
+// as not_found instead of an empty field. A defect an earlier fix
 // introduced: before it, the same path did `continue`.
 func TestRelationDoors_WhitespaceOnlyRelationIsNotRefused(t *testing.T) {
 	f := newDoorFixture(t)
@@ -762,8 +759,7 @@ func TestRelationDoors_WhitespaceOnlyRelationIsNotRefused(t *testing.T) {
 	}
 }
 
-// The write doors have the same injected-default hole the migrate doors had
-// .
+// The write doors have the same injected-default hole the migrate doors had.
 //
 // `ValidateFields` assigns a schema default and `continue`s past its own type
 // check, and the resolver skips a non-string — so `default: 42` on a relation
@@ -877,7 +873,7 @@ func TestRelationDoors_UnresolvableStringDefaultDropsInsteadOfRefusing(t *testin
 // A schema default naming an item the caller cannot see must not hand them its
 // id.
 //
-// Round 10 filtered the caller's-input-only refusals, which correctly stopped
+// An earlier change filtered the caller's-input-only refusals, which correctly stopped
 // a default refusing the write — and also removed the VISIBILITY issues raised
 // against those keys. `ResolveLateRelationDefaults` then re-resolved them in
 // the store, which has no visibility layer, and the write's response carries
@@ -967,8 +963,7 @@ func TestRelationDoors_BulkMoveStatusIsCallerInput(t *testing.T) {
 	}
 }
 
-// A MIGRATE door's destination default gets the visibility check too (codex
-// round 13).
+// A MIGRATE door's destination default gets the visibility check too.
 //
 // The first version of `dropInvisibleRelationDefaults` skipped keys "present
 // before the late pass". At a migrate door that set includes the defaults
@@ -1114,8 +1109,8 @@ func TestRelationDoors_NullSourceDoesNotExemptDefaultFromVisibility(t *testing.T
 // the raw reason. `wrong_collection` is the one reason that names a LIVE item,
 // and every door renders these issues into a caller-visible message — so a
 // schema default pointing at an item the caller cannot see announced that the
-// item EXISTS. Same oracle round 3 closed on the main pass, reopened through
-// the late-default door round 10 added.
+// item EXISTS. Same oracle the main pass closes, reopened through
+// the late-default door.
 func TestRelationDoors_LateDefaultWrongCollectionDoesNotDiscloseExistence(t *testing.T) {
 	f := newDoorFixture(t)
 	other := mustSchemaCollection(t, f.srv, f.ws.ID, "Late Vaults", `{"fields":[]}`)
@@ -1177,9 +1172,9 @@ func TestRelationDoors_LateDefaultWrongCollectionDoesNotDiscloseExistence(t *tes
 // A BULK move owes its supplied half the same visibility check the single
 // move door runs.
 //
-// Round 11 established that `req.Status` on a bulk collection move is CALLER
+// An earlier change established that `req.Status` on a bulk collection move is CALLER
 // INPUT and wired `suppliedByCaller` so the store classifier would refuse an
-// unresolvable value instead of dropping it. What that round did not carry
+// unresolvable value instead of dropping it. What that change did not carry
 // across is the OTHER half of the supplied contract: the single move door,
 // the copy, and the preflight all call refuseInvisibleRelationOverrides
 // before handing the values to the store, because the store resolver cannot
@@ -1248,7 +1243,7 @@ func TestRelationDoors_BulkMoveRefusesInvisibleSuppliedStatus(t *testing.T) {
 // The preflight's CARRIED relation drops owe the same visibility collapse the
 // late-default drops get.
 //
-// Round 15 hoisted the collapse so `ResolveLateRelationDefaults`' issues stop
+// An earlier change hoisted the collapse so `ResolveLateRelationDefaults`' issues stop
 // naming live items to callers who cannot see them. `MigrateRelationReferents`
 // returns its issues down a second path — `relationDropReason`, rendered
 // straight into `fields.dropped[].reason` — and that path never passed through
@@ -1333,8 +1328,8 @@ func TestRelationDoors_PreflightCarriedDropDoesNotDiscloseExistence(t *testing.T
 // A NULL override does not make a stale non-nil source value stop counting as
 // carried.
 //
-// `notDefaultKeys` already knows that a nil value is not a value — round 14
-// taught it that, because ValidateFields treats a present-but-nil key as
+// `notDefaultKeys` already knows that a nil value is not a value — it
+// was taught that, because ValidateFields treats a present-but-nil key as
 // absent and injects the destination default in its place. What it checks is
 // the SUPPLIED and CARRIED maps; the carried map here is built from the
 // item's STORED blob, which holds a non-nil legacy value. So a caller who
@@ -1397,14 +1392,13 @@ func TestRelationDoors_NullOverrideDoesNotExemptDefaultFromVisibility(t *testing
 }
 
 // A supplied value that SATISFIES a required destination field must not be
-// refused by a required-field error computed before the override existed
-// .
+// refused by a required-field error computed before the override existed.
 //
 // PLAN-2357 DR-12 fixed exactly this at the SINGLE move door — the comment
 // there records that `result.Errors` is computed by MigrateFields BEFORE any
 // override, so an override that satisfied a required field still 400'd — and
-// nobody swept the fix to the bulk door. It became reachable when round 11
-// established that `req.Status` on a bulk move is caller input.
+// nobody swept the fix to the bulk door. It became reachable when
+// it was established that `req.Status` on a bulk move is caller input.
 //
 // The shape: a source `status` holding a select value cannot migrate into a
 // destination `status` declared as a required relation, so MigrateFields drops
@@ -1458,8 +1452,7 @@ func TestRelationDoors_BulkMoveAcceptsASuppliedValueForARequiredRelation(t *test
 	}
 }
 
-// A legacy item holding a NON-STRING in a relation field is still movable
-// .
+// A legacy item holding a NON-STRING in a relation field is still movable.
 //
 // The carry rule exists so that legacy items stay usable: `internal/items`
 // accepted anything in a relation field for as long as the type has existed,
@@ -1470,7 +1463,7 @@ func TestRelationDoors_BulkMoveAcceptsASuppliedValueForARequiredRelation(t *test
 // answered 400 `invalid_fields` and the bulk move failed the item, on every
 // attempt, with no way for the owner to fix it through these doors at all.
 //
-// Round 6 established that the two migration MODES must not disagree about a
+// It is established that the two migration MODES must not disagree about a
 // malformed value. They still agree; the drop is hoisted above the mode
 // switch so they agree BY CONSTRUCTION, and what they agree on is now
 // drop-and-report rather than refuse.

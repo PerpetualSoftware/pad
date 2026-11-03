@@ -22,7 +22,7 @@ import (
 // action revision, viewer) and is sent to {base_url}{path}?pad_context=code;
 // the app REDEEMS the code with its service token and receives the item.
 //
-// LOCKS (lead ruling 3, round-4 R4-3). Mint and redeem take, in this order,
+// LOCKS. Mint and redeem take, in this order,
 // the install row FOR SHARE, the item row FOR SHARE and the action row FOR
 // SHARE (Postgres; SQLite's BEGIN IMMEDIATE serializes). Every mutation that
 // can invalidate a code takes those rows exclusively, in the same order:
@@ -201,7 +201,7 @@ func manifestField(manifestJSON, key string) string {
 
 // ContextVisibleFunc decides, on q, whether viewerID can see item: the human
 // item read's own rule, with the viewer's current memberships and grants
-// (lead ruling, day 88). Supplied by the server.
+// Supplied by the server.
 type ContextVisibleFunc func(q Queryer, item *models.Item, viewerID string) (bool, error)
 
 // contextLocksQ takes the §6 locks in order on q (install, item, action) and
@@ -303,7 +303,7 @@ type MintedContext struct {
 
 // MintContextCode mints a code for viewerID's click on actionKey of
 // installID for itemID in workspaceID, after the same checks redeem makes,
-// under the same locks (lead ruling, day 88).
+// under the same locks.
 func (s *Store) MintContextCode(workspaceID, installID, actionKey, itemID, viewerID string, visible ContextVisibleFunc) (*MintedContext, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -322,7 +322,7 @@ func (s *Store) MintContextCode(workspaceID, installID, actionKey, itemID, viewe
 	}
 	// The validated origin, not the raw field: validation trims base_url
 	// while it derives the origin, but the stored manifest keeps the
-	// original string (codex r1 on U11). Refused before a code is written.
+	// original string. Refused before a code is written.
 	base, err := appmanifest.NormalizeOrigin(manifestField(c.manifest, "base_url"))
 	if err != nil {
 		return nil, ErrContextCodeRefused
@@ -554,8 +554,8 @@ func (s *Store) EnsureAppItemActions(workspaceID, installID string, specOf AppAc
 
 // ViewerRoleQ is the role a bearer caller would be admitted with to
 // workspaceID (the server's crossWorkspaceRole with isBearer set), read on q
-// so the context-code transactions do not take a second connection (codex r1
-// on U11): the member's role; nothing for a platform admin who is not a
+// so the context-code transactions do not take a second connection: the member's
+// role; nothing for a platform admin who is not a
 // member (no admin bypass for an app's viewer); "guest" for a non-member
 // holding a grant; otherwise "".
 func (s *Store) ViewerRoleQ(q Queryer, workspaceID string, user *models.User) (string, error) {

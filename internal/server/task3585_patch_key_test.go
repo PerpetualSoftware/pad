@@ -202,7 +202,7 @@ func TestTASK3585_UnknownResolvesThroughTheSameTab(t *testing.T) {
 	}
 }
 
-// The lead's ruling: with that connection gone, the retry is NOT re-planned
+// With that connection gone, the retry is NOT re-planned
 // on another tab (an insert-shaped edit keeps its anchor); it answers
 // patch_outcome_unknown with the current seq and a diff, and the other tab
 // receives nothing.

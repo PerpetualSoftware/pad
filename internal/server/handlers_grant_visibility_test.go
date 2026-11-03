@@ -107,7 +107,7 @@ func (f *restrictedOwnerVisibilityFixture) bearerHeaders() map[string]string {
 
 // grantHiddenItemToOwner gives the fixture's restricted owner an item-level
 // grant on the hidden item, independent of their collection_access
-// restriction — the item-grant-only scenario from BUG-1920's codex R2
+// restriction — the item-grant-only scenario from BUG-1920's
 // follow-up. VisibleCollectionIDs (workspace_members.go) folds
 // item-grant-derived collections into the nav-lenient visible set, but
 // requireCollectionFullyVisible must NOT treat an item grant as full access
@@ -311,7 +311,7 @@ func TestCollectionGrants_RestrictedOwner_HiddenCollection404(t *testing.T) {
 // ─── Item-grant-only must NOT promote to collection-wide access ───────
 
 // TestCollectionShareLinksAndGrants_ItemGrantOnly_HiddenCollection404 pins
-// codex R2's follow-up finding: VisibleCollectionIDs folds in collections
+// a follow-up finding: VisibleCollectionIDs folds in collections
 // that are visible ONLY via an item-level grant ("so the collection appears
 // in navigation" — workspace_members.go), which made the original
 // requireCollectionVisible pass for a restricted owner holding nothing more
@@ -627,10 +627,10 @@ func TestCollectionGrantAndShareLinkDelete_ItemGrantOnly_HiddenCollection404(t *
 }
 
 // ─── Soft-deleted collection parent must not permanently strand
-//     collection-scoped grants/share-links (BUG-1923 round-3 regression) ──
+//     collection-scoped grants/share-links (BUG-1923) ──
 
 // TestDeleteCollectionGrant_SoftDeletedCollection_StillRevocable pins a
-// regression codex R3 found in the initial BUG-1923 fix: resolving the
+// regression found in the initial BUG-1923 fix: resolving the
 // grant/link's parent via GetCollection (`deleted_at IS NULL`) would 404 the
 // delete/view-history handlers the instant the collection is soft-deleted,
 // since DeleteCollection does NOT cascade-delete collection_grants or
@@ -682,7 +682,7 @@ func TestDeleteCollectionGrant_SoftDeletedCollection_StillRevocable(t *testing.T
 }
 
 // TestDeleteCollectionGrant_SoftDeletedCollection_UnrestrictedOwnerStillRevokes
-// pins the MAIN regression case codex R3 flagged: an UNRESTRICTED owner
+// pins the MAIN regression case: an UNRESTRICTED owner
 // (member.CollectionAccess == "all" → visibleCollectionIDs == nil) must be
 // able to revoke a grant/share-link and read view-history for ANY
 // soft-deleted collection — this is the common case (most owners are

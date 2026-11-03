@@ -216,7 +216,7 @@ func TestAddCreatedWorkspaceIfPermitted_PG_RevocationWaitsOnInFlightInsert(t *te
 	}
 }
 
-// SQLite's own interleaving. Round 2 on #1389 pointed out that every other
+// SQLite's own interleaving. Note (#1389): every other
 // test here is either sequential or Postgres-only. So the SQLite branch of
 // AddCreatedWorkspaceIfPermitted could be split back into GetOAuthConnection
 // plus AddConnectionWorkspace without any SQLite test noticing, and the pool

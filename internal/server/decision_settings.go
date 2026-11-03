@@ -18,8 +18,8 @@ import (
 //
 // The stored setting is ONE of three sources handed to decision.ResolveNamed:
 // config file, then this, then the environment — later winning per field,
-// because the environment overrides the instance-admin setting (ruled day 73
-// on PLAN-3114). On Pad Cloud the environment is the ONLY source and the
+// because the environment overrides the instance-admin setting (PLAN-3114).
+// On Pad Cloud the environment is the ONLY source and the
 // setting is read-only.
 //
 // A write takes effect without a restart by rebuilding the provider and

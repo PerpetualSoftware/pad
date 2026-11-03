@@ -87,7 +87,7 @@ func waitForFrameWithEvent(t *testing.T, frames <-chan string, eventType string)
 // centuries; still parses as an int64, which the handler requires.
 const aboveAnyIncarnation = "9223372036854775806"
 
-// BUG-2731, codex round 3. A sync_required tells the client its cursor is
+// BUG-2731. A sync_required tells the client its cursor is
 // unservable — and must RETIRE that cursor, or the client keeps sending it and
 // every later reconnect on a quiet workspace is answered with sync_required
 // again, re-running a full delta sync each time. Survivable when the response
@@ -160,7 +160,7 @@ func TestOrdinaryEventsStillCarryTheirID(t *testing.T) {
 	}
 }
 
-// codex round 9 #7. writeSSEResetCursorEvent was exercised only through a
+// WriteSSEResetCursorEvent was exercised only through a
 // happy-path handler. Its two failure branches differ in KIND and the
 // difference is load-bearing: a marshal error is local to one event and must
 // not tear down a healthy stream, while a write error means the peer is gone
@@ -213,7 +213,7 @@ func TestSyncRequiredReasonDescribesTheActualCondition(t *testing.T) {
 	}
 }
 
-// codex round 10 #4. A client that sends Last-Event-ID at all believes it has
+// A client that sends Last-Event-ID at all believes it has
 // a position. If the value is unreadable, treating it as a FRESH connection
 // silently drops everything published before this subscription — the same
 // class of lie this unit exists to end, arriving through the parser rather
@@ -278,8 +278,8 @@ func TestAFreshConnectionIsNotToldToResync(t *testing.T) {
 	}
 }
 
-// The watch stream's half of the two contracts this unit aligned (codex round
-// 11). Both were introduced on the activity stream first, which left the two
+// The watch stream's half of the two contracts this unit aligned.
+// Both were introduced on the activity stream first, which left the two
 // SSE handlers silently disagreeing — the CLI masks it by clearing its own
 // cursor, so the consumer this would bite is a generic SSE client, which is
 // exactly the one nobody tests.
@@ -339,7 +339,7 @@ func assertCursorRetired(t *testing.T, frame string) {
 	}
 }
 
-// codex round 12. The handlers now answer sync_required for a cursor they
+// The handlers now answer sync_required for a cursor they
 // could not parse — a decision the BUS never sees, so without counting it here
 // the resume-gap counters undercount exactly the resyncs an operator is most
 // likely to be asked about: a client looping because it keeps sending a cursor

@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// BUG-2698 codex round 1 P1 — an unreadable presence registry.
+// BUG-2698: an unreadable presence registry.
 //
 // THE SPLIT RULE these pin: presence GATES a targeted push but only
 // COUNTS a broadcast, so an unreadable registry gets two different

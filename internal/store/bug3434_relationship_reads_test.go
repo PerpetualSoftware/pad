@@ -174,7 +174,7 @@ func TestUnparented_StillCountsAParentInASoftDeletedCollection(t *testing.T) {
 	}
 }
 
-// Codex r1: the parent filter on ListItems (and its FTS path) already treats a
+// The parent filter on ListItems (and its FTS path) already treats a
 // soft-deleted parent as no parent (BUG-734); a parent in a soft-deleted
 // collection must read the same. The live parent is the control.
 func TestListItemsParentFilter_ExcludesParentInSoftDeletedCollection(t *testing.T) {

@@ -246,8 +246,8 @@ func TestMe_GuestWithItemGrant(t *testing.T) {
 	}
 	// CRITICAL: it must NOT appear in FullAccessCollectionIDs. A guest
 	// with only an item grant cannot see siblings of the granted item;
-	// the collection is nav-visible but not fully accessible. Per Codex
-	// review round 1 (P1): canViewItem must use the strict set, not nav.
+	// the collection is nav-visible but not fully accessible.
+	// canViewItem must use the strict set, not nav.
 	for _, id := range resp.FullAccessCollectionIDs {
 		// item.CollectionID is the granted item's collection; it must NOT
 		// be present in full_access (only collection grants populate that

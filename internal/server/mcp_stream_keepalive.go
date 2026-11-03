@@ -32,7 +32,7 @@ import (
 //     except in the shrunk-buffer tests. A live client that holds
 //     TCP open and stops reading is NOT caught this way with default socket
 //     buffers: a comment per interval takes days to fill them, so no write
-//     blocks (hunter r3; /events is the same). The admission budget below is
+//     blocks (/events is the same). The admission budget below is
 //     what bounds that client. mcp-go's own heartbeat is not used: it sends
 //     JSON-RPC ping REQUESTS every client must answer.
 //   - The shared stream admission gate (stream_admission.go), taken at request
@@ -102,7 +102,7 @@ func (w *mcpStreamWriter) Write(p []byte) (int, error) {
 		// write that STARTS with the response is recognised: a write that
 		// carries a notification first and the response after it (one
 		// buffered replay) is not, and the stream may then get one more
-		// comment before end(), which is valid SSE (r7 hunter L3).
+		// comment before end(), which is valid SSE.
 		w.ended = true
 	}
 	return n, err
@@ -221,7 +221,7 @@ func mcpServedVersion(transport http.Handler) func(string) bool {
 // transport wired for this mount serve version": /mcp/chatgpt when chatgpt is
 // true, /mcp otherwise. It reads the transport the server holds, the one the
 // route is built from, so cmd/pad can check the binding as `pad server` wires
-// it rather than a transport its test constructs (BUG-3835 r8 L2, CONVE-19).
+// it rather than a transport its test constructs (BUG-3835, CONVE-19).
 // An unwired mount serves nothing.
 func (s *Server) MCPMountServesVersion(chatgpt bool, version string) bool {
 	transport := s.mcpTransport
@@ -244,10 +244,10 @@ func (s *Server) MCPMountServesVersion(chatgpt bool, version string) bool {
 // (validateModernRequest); a legacy-era listen is answered METHOD_NOT_FOUND at
 // once, and an unserved version gets its 400. So a POST whose header is not a
 // served modern version is never a listen: its body is not read here, and it
-// reaches mcp-go, whose 400 is what tells a modern client to fall back (r7
-// ruling: a 429 there would keep a probing client from ever falling back).
+// reaches mcp-go, whose 400 is what tells a modern client to fall back
+// (a 429 there would keep a probing client from ever falling back).
 // Pad serves the legacy versions only (mcp.ServedProtocolVersions), so today
-// no POST body is read for admission (r6 hunter M1).
+// no POST body is read for admission.
 //
 // When the header is modern, the whole body is read to decide it, and
 // replayed to the transport. Not a fixed-size peek: JSON key order is free,

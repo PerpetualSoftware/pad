@@ -94,7 +94,7 @@ func newMCPSessionTracker(ttl time.Duration, onChange func(count int)) *mcpSessi
 // refresh) so the gauge doesn't churn on every per-session tool call.
 //
 // Critical: onChange is called WHILE holding mu, not after the
-// unlock. Codex round 1 on PR #400 caught the race — releasing the
+// unlock. Releasing the
 // lock before the callback lets two concurrent inserts compute
 // (n=1, n=2) under the lock, then race to write Set(1) and Set(2)
 // on the gauge. Last writer wins on the gauge, but the map state
@@ -271,7 +271,7 @@ func (s *Server) stopMCPSessionTracker() {
 // No-op when the tracker isn't wired (selfhost / tests).
 //
 // ACCEPTED COST, RECORDED HERE BECAUSE THIS IS WHERE THE KEY IS CHOSEN
-// (TASK-2977, ruled day 62). This gauge is keyed on a header the MCP protocol
+// (TASK-2977). This gauge is keyed on a header the MCP protocol
 // DELETES: SEP-2567 removes session IDs in revision 2026-07-28, and a server
 // serving that revision never mints or echoes one. So in that era there is no
 // PROTOCOL-PROVIDED id for this to key on.

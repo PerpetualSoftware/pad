@@ -1428,8 +1428,7 @@ func TestCopyPreflight_RouteIsWiredAndEchoesArchiveSource(t *testing.T) {
 // TestCopyPreflight_LegacyParentIDColumnIsReported — an item created
 // through the API with a raw `parent_id` has NO parent item_links row, so
 // the link scan alone misses it. CopyItemAcrossWorkspaces scrubs the
-// column anyway, which would drop a parent the preview never announced
-// .
+// column anyway, which would drop a parent the preview never announced.
 func TestCopyPreflight_LegacyParentIDColumnIsReported(t *testing.T) {
 	f := newCopyPreflightFixture(t)
 
@@ -1517,7 +1516,7 @@ func mustLegacyPlanLink(t *testing.T, srv *Server, wsID, childID, parentID strin
 	}
 }
 
-// TestCopyPreflight_LoneLegacyPlanChildIsCounted is P2 of TASK-2369.
+// TestCopyPreflight_LoneLegacyPlanChildIsCounted covers TASK-2369.
 //
 // GetChildItems joins on store.ChildLinkTypes, which does not include the
 // legacy "plan" alias, so a child reachable ONLY by a lone "plan" edge was
@@ -1640,7 +1639,7 @@ func restrictedWarnings(t *testing.T, f *copyPreflightFixture, u *models.User) I
 	return resp.Warnings
 }
 
-// TestCopyPreflight_NoPartialMarkerOnTheCommonCase — the half of P1 that is
+// TestCopyPreflight_NoPartialMarkerOnTheCommonCase — the half of TASK-2369 that is
 // easy to lose. Closing the finding by marking every preview would make the
 // product worse: a caveat that is always there is a caveat nobody reads, and
 // the one time it means something it would be invisible.
@@ -1692,7 +1691,7 @@ func TestCopyPreflight_NoPartialMarkerOnTheCommonCase(t *testing.T) {
 	}
 }
 
-// TestCopyPreflight_PartialMarkerSurfacesHiddenRelationships is P1 of
+// TestCopyPreflight_PartialMarkerSurfacesHiddenRelationships covers
 // TASK-2369. The ACL filtering is correct and stays; what changes is that
 // "none" and "none that you can see" stop rendering identically.
 //
@@ -1972,7 +1971,7 @@ func TestCopyPreflight_PartialMarkerDoesNotLeakHiddenCount(t *testing.T) {
 	}
 }
 
-// BUG-2674 / Codex round 1 P2. MigrateFields now carries reserved system
+// BUG-2674. MigrateFields now carries reserved system
 // metadata across a collection or workspace change instead of dropping it. The
 // preflight builds `carried` by walking the DESTINATION SCHEMA, and these keys
 // are declared by no schema anywhere — so without an explicit pass they land in
@@ -2041,7 +2040,7 @@ func TestCopyPreflight_ReportsReservedMetadataAsCarried(t *testing.T) {
 	}
 }
 
-// BUG-2674, lead ruling. github_pr is REFERENTIAL system metadata: it names a
+// BUG-2674. github_pr is REFERENTIAL system metadata: it names a
 // repository belonging to the source workspace's context. It carries on an
 // intra-workspace move (context unchanged) and drops on a cross-workspace copy,
 // where carrying it would render a live PR link on an item whose project may

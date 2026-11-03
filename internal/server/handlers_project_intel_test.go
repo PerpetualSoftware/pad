@@ -388,7 +388,7 @@ func TestProjectIntelEndpoints_ScopeToVisibleCollections(t *testing.T) {
 }
 
 // TestProjectIntelEndpoints_BearerAdminRestrictedMemberIsScoped pins the
-// codex round-1 finding: projectIntelVisibility must be bearer-aware
+// ProjectIntelVisibility must be bearer-aware
 // (mirrors reportVisibleCollections / the BUG-1616/1617 pattern —
 // handlers_admin_bearer_gate_test.go). A platform admin who is only a
 // RESTRICTED member of this workspace gets the full unrestricted view over
@@ -529,9 +529,9 @@ func TestProjectIntelEndpoints_BearerAdminRestrictedMemberIsScoped(t *testing.T)
 // pins how ?parent= treats an item-grant guest whose granted item's PARENT
 // they were not granted.
 //
-// FLIPPED by BUG-3366 (Dave's ruling on TASK-3345 #4: HIDE). This test used
+// FLIPPED by BUG-3366 (TASK-3345 #4: HIDE). This test used
 // to require the guest to see that parent's link fields and match ?parent=
-// on it (codex R1 P1, TASK-1916), because enrichItemsWithParent authorized
+// on it (TASK-1916), because enrichItemsWithParent authorized
 // the parent by its COLLECTION, which is navigation-lenient for item grants.
 // Lineage is now checked per item, the relation_targets policy, so an
 // ungranted parent is not named to the guest, and filtering by it matches

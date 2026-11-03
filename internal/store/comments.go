@@ -141,7 +141,7 @@ func (s *Store) createCommentTx(tx *sql.Tx, workspaceID, itemID, userID string, 
 		}
 	}
 	// Stamp BEFORE the INSERT — see the ORDERING note on
-	// stampAttachmentRefsTx (BUG-2415, codex round 3).
+	// stampAttachmentRefsTx (BUG-2415).
 	if err := stampAttachmentRefsTx(tx, s, workspaceID, input.Body); err != nil {
 		return "", err
 	}
@@ -244,7 +244,7 @@ func (s *Store) updateComment(id, body string, editor *CommentEditor) (*models.C
 		return nil, ErrCommentDeleted
 	}
 	// Stamp BEFORE the UPDATE — see the ORDERING note on
-	// stampAttachmentRefsTx (BUG-2415, codex round 3).
+	// stampAttachmentRefsTx (BUG-2415).
 	if err := stampAttachmentRefsTx(tx, s, workspaceID, body); err != nil {
 		return nil, err
 	}
@@ -258,8 +258,8 @@ func (s *Store) updateComment(id, body string, editor *CommentEditor) (*models.C
 	}
 	// An imported comment is never indexed, edited or not: the reindex
 	// covers the whole body, so its unedited source-instance @handles would
-	// bind to local users (TASK-3917 lead ruling bb0c9fc6).
-	// Accepted cost (TASK-3917 lead ruling, day 20): a mention a local user ADDS while editing an imported comment is not indexed either.
+	// bind to local users (TASK-3917).
+	// Accepted cost (TASK-3917): a mention a local user ADDS while editing an imported comment is not indexed either.
 	var mentioned []string
 	if importedComment == 0 {
 		if mentioned, err = s.reindexCommentMentionsTx(tx, id, workspaceID, itemIDOfComment, body, true, ts); err != nil {
@@ -498,7 +498,7 @@ var ErrCommentDeleted = errors.New("this comment was deleted")
 // event in the same transaction (SPEC-3 v1.4 / TASK-2658).
 //
 // A comment with no replies is hard-deleted. A comment that still has
-// replies becomes a TOMBSTONE (BUG-3252, ruled tombstone over cascade): its
+// replies becomes a TOMBSTONE (BUG-3252, tombstone over cascade): its
 // body is blanked, its reactions go, deleted_at is set, and the row stays so
 // its replies keep their parent. Author and timestamps are kept, and
 // updated_at is NOT moved, so the derived edited marker reads as it did.
@@ -517,7 +517,7 @@ var ErrCommentDeleted = errors.New("this comment was deleted")
 // serialize. SQLite needs none of it: every transaction is BEGIN IMMEDIATE.
 //
 // Transactional as of TASK-2658 — it was a bare Exec. The delete marker is
-// what resolves the conflict round 7 exposed: without it, a hard-deleted
+// what resolves the conflict that: without it, a hard-deleted
 // comment's undispatched created/updated rows were the ONLY record it ever
 // existed, which forced a false choice between dropping committed events
 // (breaking the outbox guarantee) and delivering the deleted body forever.

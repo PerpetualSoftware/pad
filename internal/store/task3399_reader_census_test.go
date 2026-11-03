@@ -12,7 +12,7 @@ import (
 	"testing"
 )
 
-// TASK-3399 (lead ruling Q1): a delegated grant to an installed app writes
+// TASK-3399: a delegated grant to an installed app writes
 // no oauth_connections row, so it must not surface as an MCP connection
 // anywhere. Every store function whose SQL reads the connection tables or
 // treats token rows as chains is classified here. A new one fails until it

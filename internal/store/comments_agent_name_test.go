@@ -201,7 +201,7 @@ func equalStringMaps(a, b map[string]string) bool {
 	return true
 }
 
-// Codex round 2 on TASK-2760: the timeline handler suppressed a comment's
+// TASK-2760: the timeline handler suppressed a comment's
 // linked activity only when the comment was in the SAME page — comments and
 // activities being paginated separately, an activity could be fetched while
 // its comment was not, and render as a standalone "commented" card. The
@@ -244,7 +244,7 @@ func TestListDocumentActivityBeforeTime_ExcludesCommentLinkedRows(t *testing.T) 
 	}
 }
 
-// Codex round 3 on TASK-2760, two findings with one root: the join keyed on
+// TASK-2760, two findings with one root: the join keyed on
 // activity id alone, and nothing in the schema says a comment's activity
 // belongs to the comment's item.
 func TestListComments_AgentNameNeverReadAcrossItems(t *testing.T) {
@@ -292,7 +292,7 @@ func TestListComments_AgentNameNeverReadAcrossItems(t *testing.T) {
 	}
 }
 
-// Codex round 3 on TASK-2760: an item update that carries a comment links the
+// TASK-2760: an item update that carries a comment links the
 // comment to its `updated` activity, and `updated` activities are debounced —
 // a later update by the same user merges INTO the most recent row, overlaying
 // its `agent` and bumping created_at, silently re-attributing the earlier
@@ -372,7 +372,7 @@ func TestCreateActivityDebounced_NeverMergesIntoCommentLinkedRow(t *testing.T) {
 	}
 }
 
-// Codex round 6 on TASK-2760: the debounce's read-then-write is two
+// TASK-2760: the debounce's read-then-write is two
 // statements, and a comment can link the chosen row between them. The write
 // itself must refuse a linked row — this drives the write directly with the
 // row already linked, the state the race produces. The control leg pins that

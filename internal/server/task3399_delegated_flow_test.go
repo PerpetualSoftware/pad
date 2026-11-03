@@ -223,7 +223,7 @@ func TestTask3399_WriteIsChosenOnlyWhenOffered(t *testing.T) {
 	}
 }
 
-// The lead's required race: a disable or rotate between the consent
+// The required race: a disable or rotate between the consent
 // decision (the code is minted) and the token exchange refuses the exchange.
 func TestTask3399_ADisableBetweenAuthorizeAndExchangeRefusesTheToken(t *testing.T) {
 	for name, q := range map[string]string{
@@ -324,7 +324,7 @@ func (f delegatedFix) signIn(t *testing.T, access string) (string, string) {
 	return tok, g.RequestID
 }
 
-// Lead ruling Q1: the console lists an app grant on its own, read-only plus
+// The console lists an app grant on its own, read-only plus
 // revoke; every connection mutation refuses it and changes nothing.
 func TestTask3399_TheConsoleShowsAndRevokesAppGrants(t *testing.T) {
 	f := delegatedFixture(t, "inst-console", "write")
@@ -378,7 +378,7 @@ func TestTask3399_TheConsoleShowsAndRevokesAppGrants(t *testing.T) {
 	if _, err := f.srv.introspectAppToken(context.Background(), tok); err == nil {
 		t.Error("a revoked app grant's token still introspects")
 	}
-	// Through the binding (lead ruling Q1), not only the tokens.
+	// Through the binding, not only the tokens.
 	if n := count3399(t, f.srv, `SELECT COUNT(*) FROM app_token_bindings WHERE request_id = ? AND revoked_at IS NOT NULL`, reqID); n != 1 {
 		t.Error("the console revoke left no tombstone on the grant's binding")
 	}
@@ -391,7 +391,7 @@ func TestTask3399_TheConsoleShowsAndRevokesAppGrants(t *testing.T) {
 	}
 }
 
-// Codex U5b-1 r1 P2: on a self-host with apps on and MCP off, a person can
+// On a self-host with apps on and MCP off, a person can
 // still sign in to an installed app, and still see and revoke the grant.
 func TestTask3399_AppGrantsWorkWithMCPOff(t *testing.T) {
 	f := delegatedFixtureOn(t, "inst-nomcp", "write", false)

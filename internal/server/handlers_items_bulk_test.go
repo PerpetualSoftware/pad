@@ -299,7 +299,7 @@ func TestBulkItems_StatusMoveRunsOpenChildrenGuard(t *testing.T) {
 
 // TestBulkItems_CollectionMoveRunsOpenChildrenGuard confirms a bulk
 // collection move that also sets a terminal status runs the guard
-// against the destination schema (Codex round-1 finding).
+// against the destination schema.
 func TestBulkItems_CollectionMoveRunsOpenChildrenGuard(t *testing.T) {
 	srv := testServer(t)
 	ws := createWSWithCollections(t, srv)
@@ -513,8 +513,8 @@ func TestBulkItems_CollectionMoveValidatesStatusOverride(t *testing.T) {
 // TestBulkItems_AdminBearer_RestrictedMemberBlockedOnHiddenItem pins
 // BUG-1918 for handleBulkItems' own direct checkItemVisible call site
 // (the per-ref loop, distinct from the requireItemVisible shim the
-// single-item handlers use). Not part of the dispatcher's explicit test
-// sweep for this bug, but it's a call site the fix touches directly, so
+// single-item handlers use). Not part of the bug's explicit test
+// sweep, but it's a call site the fix touches directly, so
 // it gets its own coverage: a bearer-authed admin who is a restricted
 // member (collection_access="specific") gets the hidden-collection item
 // reported as a per-ref "not found" failure, same as any other
@@ -582,8 +582,8 @@ func TestBulkItems_RouteRegistered(t *testing.T) {
 // id. (Six OPS; move appears once as a status-only move, which is the field
 // path, and cross-collection move goes through the same helper.)
 //
-// This exists because the store-level test could not catch the bug codex round
-// 1 found. That test called the five store methods directly with the option,
+// This exists because the store-level test could not catch the bug it
+// guards. That test called the five store methods directly with the option,
 // so it proved the option WORKS; it said nothing about whether the handler
 // passes it. THREE CALL SITES were missing it, affecting FOUR verbs —
 // set-priority and move-status (bulkFieldUpdate), tag and untag
@@ -804,8 +804,7 @@ func TestBulkEventDelta_TagsAreDeduped(t *testing.T) {
 
 // TestBulkEventDelta_UntagDedupsWithoutTrimming: untag builds a removal SET
 // from the RAW values, so duplicates collapse but whitespace is significant —
-// the mirror image of tag, and the delta has to match each side's own rule
-// .
+// the mirror image of tag, and the delta has to match each side's own rule.
 func TestBulkEventDelta_UntagDedupsWithoutTrimming(t *testing.T) {
 	got := bulkEventDelta(&bulkItemsRequest{Op: "untag", Tags: []string{"foo", "foo", " foo "}})
 	tags, _ := got["tags"].([]string)

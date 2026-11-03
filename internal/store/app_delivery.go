@@ -23,7 +23,7 @@ import (
 // therefore always ends before its row expires, whatever the hosts' clocks
 // say, because both intervals are relative.
 //
-// STATED RESIDUAL (codex r1 on U10b): the expiry is the DATABASE's wall
+// STATED RESIDUAL: the expiry is the DATABASE's wall
 // clock, by design (DOC-3371 §5 rejects the application host's), and the
 // attempt's deadline is the application's monotonic clock. A forward step of
 // the database clock while an attempt is in flight can expire its row early,
@@ -47,7 +47,7 @@ type AppHookTarget struct {
 	InstallID string
 	// Events is the stored subscription list, so the caller can narrow to
 	// the event's collection before spending anything on a target
-	// (AppHookSubscribes; codex r1 on U10c).
+	// (AppHookSubscribes).
 	Events string
 }
 
@@ -175,8 +175,8 @@ func (s *Store) AdmitAppDelivery(webhookID, event, collectionID, occurredAt, del
 	return &AppDeliveryAdmission{URL: hook.url, Secret: plain, InstallID: installID}, nil
 }
 
-// DropOwedDelivery decides a delivery that is past the drop age (codex r2/r4
-// on U10c). In ONE transaction that takes the install row first, as
+// DropOwedDelivery decides a delivery that is past the drop age. In ONE
+// transaction that takes the install row first, as
 // admission does, it runs admission's checks: a delivery admission would
 // refuse was never owed and is recorded refused; one it would admit is
 // recorded dropped and counted on the hook. A terminal row is left alone.
@@ -288,7 +288,7 @@ func (s *Store) appDeliveryChecksQ(q Queryer, installID, webhookID, event, colle
 		return nil, &AppDeliveryRefusedError{Reason: "install_" + state}
 	}
 	// A soft-deleted workspace keeps its installs and collections, so its
-	// pending events must be refused here (codex r1 on U10b; the owner path's
+	// pending events must be refused here (the owner path's
 	// WorkspaceLive check, BUG-3340). A plain read: deletion that races this
 	// serializes as "delivered, then deleted", the BUG-3340 residual.
 	var live int

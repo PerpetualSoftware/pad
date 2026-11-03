@@ -636,7 +636,7 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 		args = append(args, traits)
 	}
 	// Settings are computed UNDER the row lock, from the row as it stands
-	// there (PLAN-3535, codex): the tracks_work carry-over must not restore a
+	// there (PLAN-3535): the tracks_work carry-over must not restore a
 	// value a concurrent writer changed after the pre-transaction read.
 	if input.SortOrder != nil {
 		sets = append(sets, "sort_order = ?")
@@ -660,7 +660,7 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 	//      Postgres needs an explicit `FOR UPDATE` row lock (it rejects `FOR
 	//      UPDATE` on SQLite syntactically, hence the driver gate). This also
 	//      closes the tokenless-writer race the advisory lock could NOT (an
-	//      advisory lock only serializes writers that also take it — Codex P1).
+	//      advisory lock only serializes writers that also take it).
 	//
 	//   2. Strictly monotonic token. Sub-second nowNano() makes same-second
 	//      collisions near-impossible, but a coarse platform clock (or an NTP
@@ -677,7 +677,7 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 	}
 	defer tx.Rollback()
 
-	// LOCK ORDER (Codex P1 deadlock fix). When this update also migrates item
+	// LOCK ORDER. When this update also migrates item
 	// field values it locks TWO things: the workspace advisory/seq lock (for
 	// the per-row seq bumps) and the collection ROW (FOR UPDATE, below). Item
 	// creation locks the same pair in the order [workspace advisory lock
@@ -849,7 +849,7 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 	}
 
 	// Apply field-value migrations (select-option renames) in the SAME tx as
-	// the schema change (BUG-2265 Codex): a migration failure rolls back the
+	// the schema change (BUG-2265): a migration failure rolls back the
 	// schema AND the concurrency-token advance, so the row is untouched and the
 	// caller's retry works cleanly — no committed-schema/stale-items split and
 	// no guaranteed-409. The workspace seq lock was already taken above (before
@@ -872,7 +872,7 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 
 	// Rebuild this collection's relation reverse index, LAST in the tx so it
 	// sees both the new schema and any field-value migration above
-	// (PLAN-2857 U5, lead ruling). A schema change can move which keys ARE
+	// (PLAN-2857 U5). A schema change can move which keys ARE
 	// relations without touching a single item, so nothing else in this
 	// transaction would repair the index — and the next per-item write never
 	// comes for items nobody edits.
@@ -986,8 +986,8 @@ func (s *Store) DeleteCollection(id string, expectedUpdatedAt string) error {
 // every row the same MAX(seq)+1, which broke the cursor contract —
 // `limit=N` could cut through an equal-seq group, the cursor would
 // advance to that shared seq, and the next `seq > cursor` poll
-// would permanently miss the remaining rows in the group (Codex
-// review of TASK-1354 round 2 [P1]).
+// would permanently miss the remaining rows in the group
+// (TASK-1354).
 //
 // Trade-off: O(N) statements instead of O(1) for the bulk path.
 // A schema-option rename is an admin one-off, so even a few
@@ -1043,7 +1043,7 @@ func (s *Store) MigrateItemFieldValues(collectionID string, migrations []models.
 
 // applyFieldMigrationsTx runs the per-row field-value migration loop on an
 // EXISTING transaction. Extracted so UpdateCollection can run the schema
-// change and its item migrations ATOMICALLY in one tx (BUG-2265 Codex: a
+// change and its item migrations ATOMICALLY in one tx (BUG-2265: a
 // migration failure must roll back the schema AND the concurrency token, or a
 // 500 leaves the row changed and every client retry blind-409s). Callers must
 // already hold the workspace seq lock (acquireWorkspaceSeqLock) so the per-row
@@ -1062,7 +1062,7 @@ func (s *Store) applyFieldMigrationsTx(tx *sql.Tx, collectionID, workspaceID str
 	var renames []map[string]any
 
 	for _, m := range migrations {
-		// A rename map is applied SIMULTANEOUSLY (BUG-3224 codex r1): every
+		// A rename map is applied SIMULTANEOUSLY (BUG-3224): every
 		// match for every old value is collected BEFORE any row is written,
 		// so a stored value is mapped at most once. Applied one rename at a
 		// time, a→b then b→c turned "a" into "c", and b→c then a→b into "b",
@@ -1500,7 +1500,7 @@ func isReservedCollectionSlug(slug string) bool {
 // same locks (IDEA-2874) — it used to be allocated on the pool before the
 // transaction opened.
 //
-// THREE THINGS IT DOES THAT AN OBVIOUS VERSION DOES NOT, each from codex review:
+// THREE THINGS IT DOES THAT AN OBVIOUS VERSION DOES NOT:
 //
 //  1. It LOCKS the rows it will rewrite (`FOR UPDATE`, ordered by id, on
 //     Postgres). Without that a concurrent schema update to a sibling can commit
