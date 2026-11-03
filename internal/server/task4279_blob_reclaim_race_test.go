@@ -124,3 +124,69 @@ func TestWorkspacePurge_KeepsBlobForAnUploadThatCommitsAfterTheCount(t *testing.
 		t.Error("blob deleted although another workspace's row, committed after the count, points at it")
 	}
 }
+
+// A recount that cannot answer (here: the sweep's context ends between the
+// early count and the lock) must keep the blob, never delete on an unknown.
+func TestOrphanGC_KeepsBlobWhenTheRecountCannotAnswer(t *testing.T) {
+	srv, slug := testServerWithAttachments(t)
+	wsID := workspaceIDForSlug(t, srv, slug)
+	if rr := doMultipartUpload(srv, slug, "victim.png", realPNG()); rr.Code != 201 {
+		t.Fatalf("upload: %d", rr.Code)
+	}
+	id := getOnlyAttachmentID(t, srv, wsID)
+	att, err := srv.store.GetAttachment(id)
+	if err != nil || att == nil {
+		t.Fatalf("GetAttachment: %v", err)
+	}
+	if rr := doRequest(srv, "DELETE", "/api/v1/workspaces/"+slug+"/attachments/"+id, nil); rr.Code != 204 {
+		t.Fatalf("delete: %d", rr.Code)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srv.orphanPostCountHook = func(string) { cancel() }
+	defer func() { srv.orphanPostCountHook = nil }()
+
+	res, err := srv.runOrphanGCSweep(ctx, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if res.BlobsReclaimed != 0 {
+		t.Errorf("BlobsReclaimed=%d, want 0: the recount could not answer", res.BlobsReclaimed)
+	}
+	if !blobPresent(t, srv, att.StorageKey) {
+		t.Error("blob deleted although the recount under the lock failed")
+	}
+}
+
+func TestWorkspacePurge_DefersWhenTheRecountCannotAnswer(t *testing.T) {
+	srv, slug := testServerWithAttachments(t)
+	if rr := doMultipartUpload(srv, slug, "doomed.png", realPNG()); rr.Code != 201 {
+		t.Fatalf("upload: %d %s", rr.Code, rr.Body.String())
+	}
+	wsID := workspaceIDForSlug(t, srv, slug)
+	att, err := srv.store.GetAttachment(getOnlyAttachmentID(t, srv, wsID))
+	if err != nil || att == nil {
+		t.Fatalf("GetAttachment: %v", err)
+	}
+	softDeleteWorkspaceAt(t, srv, wsID, time.Now().Add(-31*24*time.Hour))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srv.purgePostCountHook = func(string) { cancel() }
+	defer func() { srv.purgePostCountHook = nil }()
+
+	res, err := srv.runWorkspacePurgeSweep(ctx, time.Now().Add(-30*24*time.Hour))
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if res.BlobsReclaimed != 0 || res.Purged != 0 {
+		t.Errorf("Purged=%d BlobsReclaimed=%d, want 0 and 0: the workspace is deferred", res.Purged, res.BlobsReclaimed)
+	}
+	if !blobPresent(t, srv, att.StorageKey) {
+		t.Error("blob deleted although the recount under the lock failed")
+	}
+	if got, _ := srv.store.GetAttachment(att.ID); got == nil {
+		t.Error("attachment row removed although the workspace was deferred")
+	}
+}

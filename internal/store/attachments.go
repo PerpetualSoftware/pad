@@ -1373,9 +1373,17 @@ func (s *Store) AttachmentRowsExistForHashContext(ctx context.Context, hash stri
 // also soft-deleted but still 1 day old — within grace, so its
 // blob must stay reachable until its own grace expires.
 func (s *Store) CountProtectingAttachmentsForHash(hash, excludeID string, graceCutoff time.Time) (int, error) {
+	return s.CountProtectingAttachmentsForHashContext(context.Background(), hash, excludeID, graceCutoff)
+}
+
+// CountProtectingAttachmentsForHashContext is CountProtectingAttachmentsForHash
+// bounded by ctx, for the callers that run it while holding the process-wide
+// in-flight lock (TASK-4279): a stalled database must not hold that lock past
+// the caller's deadline.
+func (s *Store) CountProtectingAttachmentsForHashContext(ctx context.Context, hash, excludeID string, graceCutoff time.Time) (int, error) {
 	var n int
 	cutoff := graceCutoff.UTC().Format(time.RFC3339)
-	err := s.db.QueryRow(s.q(`
+	err := s.db.QueryRowContext(ctx, s.q(`
 		SELECT COUNT(*) FROM attachments
 		WHERE content_hash = ? AND id <> ?
 		  AND (deleted_at IS NULL OR deleted_at >= ?)

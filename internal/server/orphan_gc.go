@@ -262,7 +262,11 @@ func (s *Server) runOrphanGCSweep(ctx context.Context, graceCutoff time.Time) (*
 			// lock from here to the delete means any later writer blocks
 			// at markUploadInFlight until we are done, so this count is
 			// the last word on the hash.
-			again, cerr := s.store.CountProtectingAttachmentsForHash(a.ContentHash, a.ID, graceCutoff)
+			// Bounded by the same deadline as reclaimRefusedBlob's row
+			// check: the lock is process-wide and every upload takes it.
+			recountCtx, cancelRecount := context.WithTimeout(ctx, refusedBlobDeleteTimeout)
+			again, cerr := s.store.CountProtectingAttachmentsForHashContext(recountCtx, a.ContentHash, a.ID, graceCutoff)
+			cancelRecount()
 			if cerr != nil {
 				slog.Warn("orphan GC: recount under the in-flight lock failed",
 					"attachment_id", a.ID, "hash", a.ContentHash, "error", cerr)

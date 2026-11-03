@@ -344,7 +344,9 @@ func (s *Server) reclaimWorkspaceBlobs(ctx context.Context, c store.WorkspacePur
 			// GC does: an upload of this content to another workspace that
 			// committed its row between the count above and this lock is no
 			// longer in flight and was not yet visible to that count.
-			again, cerr := s.store.CountAttachmentsForStorageKeyOutsideWorkspace(a.StorageKey, c.ID)
+			recountCtx, cancelRecount := context.WithTimeout(ctx, refusedBlobDeleteTimeout)
+			again, cerr := s.store.CountAttachmentsForStorageKeyOutsideWorkspaceContext(recountCtx, a.StorageKey, c.ID)
+			cancelRecount()
 			if cerr != nil {
 				s.inFlight.Unlock()
 				slog.Warn("workspace purge: recount under the in-flight lock failed",
