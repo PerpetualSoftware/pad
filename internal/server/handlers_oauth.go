@@ -514,12 +514,24 @@ func writeDCRError(w http.ResponseWriter, status int, code, msg string) {
 // adopts RFC 8707." A future task tracks restoring the strict reject
 // once Claude / Cursor / ChatGPT all send `resource=`.
 //
+// THAT TASK IS TASK-3363, and the reasoning above is now history. Phase 1
+// counted the defaults (cloud read #1: 0 of 322 requests omitted resource),
+// and phase 2 refuses a missing resource at /authorize and
+// /authorize/decide with invalid_target, which closes the replay above:
+// no grant is made without the client naming its target. The token
+// endpoint still defaults, because resource is optional there (RFC 8707
+// §2.2) and fosite holds the requested audience to the one granted
+// (TestTASK3363_TokenExchangeWithoutResourceKeepsTheGrantedAudience).
+//
 // Mutates r.Form in place. r MUST have ParseForm called before this;
 // the OAuth handlers below parse before invoking fosite.
 //
 // It reports whether it DEFAULTED a missing resource (TASK-3363): callers
-// record that through noteResourceMissing, which phase 2 turns into a
-// refusal.
+// record that through noteResourceMissing and, since phase 2, refuse the
+// request with invalid_target once fosite has parsed it. The default is still
+// injected so fosite can parse the request far enough to return that error
+// the way RFC 6749 says (a redirect to a registered redirect_uri at the
+// authorize endpoint).
 func translateResourceToAudience(r *http.Request, canonical string) (defaulted bool) {
 	if r == nil || r.Form == nil {
 		return false
@@ -548,38 +560,98 @@ func translateResourceToAudience(r *http.Request, canonical string) (defaulted b
 	return false
 }
 
-// noteResourceMissing records a request that omitted the RFC 8707
-// resource parameter and was defaulted to the canonical audience (TASK-3363
-// phase 1, Dave's ruling on TASK-3345 #1). Phase 2, a release later, refuses
-// such a request with invalid_target; until then this measures who would
-// break: one log line naming the client (id and registered name) and one
-// pad_oauth_resource_missing_total increment per endpoint. The defaulting is
-// what lets a client registered through DCR replay a token cross-server.
-func (s *Server) noteResourceMissing(r *http.Request, endpoint string) {
-	clientID := r.Form.Get("client_id")
+// resourceNoteMaxClientID bounds the client id the note functions look up,
+// log and key the warn limiter on. These run before fosite validates the
+// client, on an unauthenticated endpoint, so the id is attacker-chosen: a
+// real client id is a short generated string, and anything longer is cut.
+const resourceNoteMaxClientID = 128
+
+// resourceNoteClient names the client of a request for the note functions:
+// the form client_id, else the id a client authenticating with HTTP Basic
+// sends there, form-urlencoded (RFC 6749 §2.3.1). The id is cut to
+// resourceNoteMaxClientID, and only an id within that bound is looked up, so
+// an oversized one costs no database read and at most a bounded map key. An
+// unknown id within the bound still costs one lookup and one limiter slot
+// (the map is cleared at resourceMissingWarnMax), as it did in phase 1.
+func (s *Server) resourceNoteClient(r *http.Request) (clientID, clientName string) {
+	clientID = r.Form.Get("client_id")
 	if clientID == "" {
-		// A client authenticating at the token endpoint with HTTP Basic
-		// sends its id there instead, form-urlencoded (RFC 6749 §2.3.1).
 		if user, _, ok := r.BasicAuth(); ok {
 			if decoded, err := url.QueryUnescape(user); err == nil {
 				clientID = decoded
 			}
 		}
 	}
-	clientName := ""
+	if len(clientID) > resourceNoteMaxClientID {
+		return clientID[:resourceNoteMaxClientID], ""
+	}
 	if clientID != "" {
 		if c, err := s.store.GetOAuthClient(clientID); err == nil && c != nil {
 			clientName = c.Name
 		}
 	}
+	return clientID, clientName
+}
+
+// noteResourceMissing records a request that omitted the RFC 8707
+// resource parameter (TASK-3363, Dave's ruling on TASK-3345 #1): one log line
+// naming the client (id and registered name) and one
+// pad_oauth_resource_missing_total increment per endpoint. Phase 1 measured
+// who would break; phase 2 refuses the request (errInvalidTarget), so the
+// counter counts refusals at authorize and decide, and the defaulted (still
+// served) exchanges at the token endpoint. Defaulting the resource at
+// authorization is what let a client registered through DCR replay a token
+// cross-server.
+func (s *Server) noteResourceMissing(r *http.Request, endpoint string) {
+	clientID, clientName := s.resourceNoteClient(r)
 	// The counter takes every request; the log takes one line per client per
 	// hour, so a popular client that omits resource cannot flood it.
 	if s.metrics != nil {
 		s.metrics.OAuthResourceMissingTotal.WithLabelValues(endpoint).Inc()
 	}
 	if s.resourceMissingWarnDue(clientID) {
-		slog.Warn("oauth: client omitted the RFC 8707 resource parameter; defaulted to the canonical audience (refused from the next phase). Logged once per client per hour; pad_oauth_resource_missing_total counts every request",
+		slog.Warn("oauth: client omitted the RFC 8707 resource parameter; refused with invalid_target at authorize and decide, defaulted at the token endpoint. Logged once per client per hour; pad_oauth_resource_missing_total counts every request",
 			"endpoint", endpoint, "client_id", clientID, "client_name", clientName)
+	}
+}
+
+// isAudienceOnly reports a request that names its target through fosite's
+// audience= and sends no RFC 8707 resource=. translateResourceToAudience
+// defers to audience= untouched, so phase 1 never counted such a request, and
+// phase 2 does not yet refuse it: it is measured first (TASK-3363, dev lead
+// ruling), enforced the release after v0.20.0. Call it BEFORE
+// translateResourceToAudience. The audience= value is still held to the same
+// allowed set as resource= by fosite's audience matching strategy.
+func isAudienceOnly(r *http.Request) bool {
+	return r != nil && r.Form != nil && len(r.Form["audience"]) > 0 && len(r.Form["resource"]) == 0
+}
+
+// noteAudienceOnly records an audience-only request at authorize or decide:
+// the same log line shape and the same pad_oauth_resource_missing_total
+// counter as noteResourceMissing, under its own endpoint label
+// (<endpoint>_audience_only) so the two predicates read separately. The
+// request is served.
+func (s *Server) noteAudienceOnly(r *http.Request, endpoint string) {
+	clientID, clientName := s.resourceNoteClient(r)
+	label := endpoint + "_audience_only"
+	if s.metrics != nil {
+		s.metrics.OAuthResourceMissingTotal.WithLabelValues(label).Inc()
+	}
+	if s.resourceMissingWarnDue("audience-only:" + clientID) {
+		slog.Warn("oauth: client sent audience= without the RFC 8707 resource parameter; served for now, refused from the release after v0.20.0. Logged once per client per hour; pad_oauth_resource_missing_total counts every request",
+			"endpoint", label, "client_id", clientID, "client_name", clientName)
+	}
+}
+
+// errInvalidTarget is RFC 8707 §2's invalid_target, which fosite does not
+// define: the request named no resource (TASK-3363 phase 2). A fresh value
+// per call, because fosite's With* helpers copy but callers may not.
+func errInvalidTarget() *fosite.RFC6749Error {
+	return &fosite.RFC6749Error{
+		ErrorField:       "invalid_target",
+		DescriptionField: "The requested resource is invalid, missing, unknown, or malformed.",
+		HintField:        "Send the RFC 8707 resource parameter naming this server's MCP resource (see /.well-known/oauth-protected-resource).",
+		CodeField:        http.StatusBadRequest,
 	}
 }
 
@@ -652,8 +724,13 @@ func (s *Server) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid query string", http.StatusBadRequest)
 		return
 	}
-	if translateResourceToAudience(r, s.oauthServer.AllowedAudience()) {
+	audienceOnly := isAudienceOnly(r)
+	resourceMissing := translateResourceToAudience(r, s.oauthServer.AllowedAudience())
+	if resourceMissing {
 		s.noteResourceMissing(r, "authorize")
+	}
+	if audienceOnly {
+		s.noteAudienceOnly(r, "authorize")
 	}
 
 	// BUG-2088: `scope` is optional (RFC 6749 §3.1.2) and our advertised
@@ -698,6 +775,13 @@ func (s *Server) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 		// never reach a consent screen so they're not "started" either.
 		s.recordOAuthFlow("failed")
 		s.oauthServer.Provider().WriteAuthorizeError(ctx, s.authorizeResponseWriter(w), ar, err)
+		return
+	}
+	// TASK-3363 phase 2: no resource, no grant. Refused after fosite parsed
+	// the request, so the error reaches the client at its redirect_uri.
+	if resourceMissing {
+		s.recordOAuthFlow("failed")
+		s.oauthServer.Provider().WriteAuthorizeError(ctx, s.authorizeResponseWriter(w), ar, errInvalidTarget())
 		return
 	}
 
@@ -856,8 +940,13 @@ func (s *Server) handleOAuthAuthorizeDecide(w http.ResponseWriter, r *http.Reque
 	}
 
 	// RFC 8707 resource= → fosite audience= (Codex #372 round 1).
-	if translateResourceToAudience(r, s.oauthServer.AllowedAudience()) {
+	audienceOnly := isAudienceOnly(r)
+	resourceMissing := translateResourceToAudience(r, s.oauthServer.AllowedAudience())
+	if resourceMissing {
 		s.noteResourceMissing(r, "decide")
+	}
+	if audienceOnly {
+		s.noteAudienceOnly(r, "decide")
 	}
 
 	ctx := r.Context()
@@ -869,6 +958,13 @@ func (s *Server) handleOAuthAuthorizeDecide(w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		s.recordOAuthFlow("failed")
 		s.oauthServer.Provider().WriteAuthorizeError(ctx, s.authorizeResponseWriter(w), ar, err)
+		return
+	}
+	// TASK-3363 phase 2, as at /authorize: the decide POST rebuilds the
+	// request from the consent form, so it is refused here too.
+	if resourceMissing {
+		s.recordOAuthFlow("failed")
+		s.oauthServer.Provider().WriteAuthorizeError(ctx, s.authorizeResponseWriter(w), ar, errInvalidTarget())
 		return
 	}
 
@@ -1277,6 +1373,14 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 		s.writeTokenError(ctx, w, fosite.ErrUnauthorizedClient.WithHint("client_credentials is for installed apps."))
 		return
 	default:
+		// NOT refused here (TASK-3363 phase 2). RFC 8707 makes resource
+		// optional at the token endpoint: a code or refresh token is already
+		// bound to the audience its authorization granted, and that grant now
+		// requires a target (refused at /authorize and /authorize/decide).
+		// Defaulting here cannot widen a grant: fosite's code and refresh
+		// handlers replace the requested audience with the stored, granted
+		// one. (It reads the audience from PostForm, which this function does
+		// not write, so the default is in practice only counted.)
 		if translateResourceToAudience(r, s.oauthServer.AllowedAudience()) {
 			s.noteResourceMissing(r, "token")
 		}
