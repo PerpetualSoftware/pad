@@ -42,7 +42,7 @@ func credentialKey(key string) bool {
 // redactQueryValue masks credentials nested inside a non-credential query
 // value: a credential path (redirect=/verify-email/<token>), a nested query
 // (next=/setup?token=x) or either of those percent-encoded more than once.
-func redactQueryValue(rawValue string) (string, bool) {
+func redactQueryValue(rawValue string, depth int) (string, bool) {
 	decoded, err := url.QueryUnescape(rawValue)
 	if err != nil {
 		return redacted, true
@@ -58,9 +58,9 @@ func redactQueryValue(rawValue string) (string, bool) {
 	// key=value pairs are redacted like a query, or a bare key=value pair.
 	var out string
 	if q := strings.IndexAny(decoded, "?#"); q >= 0 {
-		out = RedactPath(decoded[:q]) + decoded[q:q+1] + RedactQuery(RedactPath(decoded[q+1:]))
+		out = RedactPath(decoded[:q]) + decoded[q:q+1] + redactQueryDepth(RedactPath(decoded[q+1:]), depth+1)
 	} else if strings.Contains(decoded, "=") {
-		out = RedactQuery(RedactPath(decoded))
+		out = redactQueryDepth(RedactPath(decoded), depth+1)
 	} else {
 		out = RedactPath(decoded)
 	}
@@ -82,6 +82,18 @@ func RedactPath(path string) string {
 // RedactQuery preserves diagnostic parameters and their order. Decode keys
 // before checking them so percent-encoding cannot bypass credential redaction.
 func RedactQuery(raw string) string {
+	return redactQueryDepth(raw, 0)
+}
+
+// maxQueryNesting bounds the recursion on nested query values. Real redirect
+// values nest once or twice; deeper input is hostile, and redacting it whole
+// keeps the cost of an unauthenticated request linear.
+const maxQueryNesting = 4
+
+func redactQueryDepth(raw string, depth int) string {
+	if depth > maxQueryNesting {
+		return redacted
+	}
 	parts := strings.Split(raw, "&")
 	for i, part := range parts {
 		key, _, hasValue := strings.Cut(part, "=")
@@ -90,6 +102,10 @@ func RedactQuery(raw string) string {
 			return redacted
 		}
 		if !hasValue {
+			// A bare part can be a credential path: ?/verify-email/<token>.
+			if masked, changed := redactQueryValue(part, depth); changed {
+				parts[i] = masked
+			}
 			continue
 		}
 		if credentialKey(decoded) {
@@ -99,7 +115,7 @@ func RedactQuery(raw string) string {
 		// A value can itself carry a credential path, e.g.
 		// redirect=/verify-email/<token> on the login page.
 		_, val, _ := strings.Cut(part, "=")
-		if masked, changed := redactQueryValue(val); changed {
+		if masked, changed := redactQueryValue(val, depth); changed {
 			parts[i] = key + "=" + masked
 		}
 	}
@@ -127,6 +143,12 @@ func ErrorType(err error) string {
 // attributes and groups. Call sites handling external input should still use
 // the helpers so they are safe with a custom slog handler as well.
 func redactAttr(groups []string, a slog.Attr) slog.Attr {
+	// A number, bool, duration or time is a count or a measurement, never a
+	// credential (input_tokens, access_tokens swept, http_status_code).
+	switch a.Value.Kind() {
+	case slog.KindInt64, slog.KindUint64, slog.KindFloat64, slog.KindBool, slog.KindDuration, slog.KindTime:
+		return a
+	}
 	for _, group := range groups {
 		if credentialKey(group) {
 			return slog.String(a.Key, redacted)

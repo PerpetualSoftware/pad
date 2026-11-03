@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSetupWriterRedactsCredentials(t *testing.T) {
@@ -36,6 +37,33 @@ func TestSetupWriterRedactsCredentials(t *testing.T) {
 	}
 }
 
+// A hostile query that nests "?" thousands of times must cost one bounded
+// pass, not one regexp scan and one stack frame per level.
+func TestRedactQueryNestingIsBounded(t *testing.T) {
+	raw := strings.Repeat("a=?", 20000)
+	done := make(chan string, 1)
+	go func() { done <- RedactQuery(raw) }()
+	select {
+	case got := <-done:
+		if !strings.Contains(got, "REDACTED") {
+			t.Errorf("deeply nested query was not cut off: %.60q", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RedactQuery on a deeply nested query did not return in 5s")
+	}
+}
+
+func TestRedactAttrKeepsNumericCounts(t *testing.T) {
+	for _, a := range []slog.Attr{slog.Int("input_tokens", 12), slog.Int("access_tokens", 3), slog.Int("http_status_code", 502)} {
+		if got := redactAttr(nil, a); got.Value.Kind() != slog.KindInt64 || got.Value.Int64() != a.Value.Int64() {
+			t.Errorf("%s was redacted: %v", a.Key, got)
+		}
+	}
+	if got := redactAttr(nil, slog.String("access_token", "x")); got.Value.String() != "REDACTED" {
+		t.Errorf("string credential kept: %v", got)
+	}
+}
+
 func TestRedactionHelpers(t *testing.T) {
 	for _, tc := range []struct{ raw, want string }{
 		{"limit=20&%74oken=fixture", "limit=20&%74oken=REDACTED"},
@@ -54,7 +82,8 @@ func TestRedactionHelpers(t *testing.T) {
 		{"next=%2Fx%3F%2Fjoin%2Fabc", "next=%2Fx%3F%2Fjoin%2FREDACTED"},
 		{"redirect=%25252525252Fverify-email%25252525252Ftok", "redirect=%2Fverify-email%2FREDACTED"},
 		{"secret_key=a&access_key=b&otp=c&passwd=d&credentials=e", "secret_key=REDACTED&access_key=REDACTED&otp=REDACTED&passwd=REDACTED&credentials=REDACTED"},
-		{"state=token=abc","state=token%3DREDACTED"},
+		{"state=token=abc", "state=token%3DREDACTED"},
+		{"%2Fverify-email%2Ftok", "%2Fverify-email%2FREDACTED"},
 		{"user_code=ABCD&recovery_code=x&verification_code=y&request_header=z&status_code=500", "user_code=REDACTED&recovery_code=REDACTED&verification_code=REDACTED&request_header=REDACTED&status_code=500"},
 		{"invite_code=x&tokens=y&session_code=z&error_code=404", "invite_code=REDACTED&tokens=REDACTED&session_code=REDACTED&error_code=404"},
 	} {
