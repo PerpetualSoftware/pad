@@ -13,6 +13,7 @@ func TestMapItemComment_RefusesABlankMessage(t *testing.T) {
 		"empty":            "",
 		"spaces":           "   ",
 		"newlines and tab": "\n\t\n",
+		"not a string":     42,
 	} {
 		t.Run(name, func(t *testing.T) {
 			in := map[string]any{"workspace": "docapp", "ref": "TASK-5"}
