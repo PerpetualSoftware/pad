@@ -314,14 +314,14 @@ func ClaimPIDFile(path string) func() {
 	release, err := holdPIDFile(path)
 	if err != nil {
 		slog.Warn("could not claim the PID file; `pad server stop` will not be able to address this process",
-			"path", path, "error", err)
+			"pid_file", path, "error", err)
 		return func() {}
 	}
 
 	rec := currentPIDRecord()
 	if err := writePIDRecord(path, rec); err != nil {
 		slog.Warn("could not write PID file; `pad server stop` will not be able to address this process",
-			"path", path, "error", err)
+			"pid_file", path, "error", err)
 		release()
 		return func() {}
 	}
@@ -333,7 +333,7 @@ func ClaimPIDFile(path string) func() {
 		// race the previous shape had.
 		if current, ok := readPIDRecord(path); ok && current.PID == rec.PID {
 			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-				slog.Warn("could not remove PID file on shutdown", "path", path, "error", err)
+				slog.Warn("could not remove PID file on shutdown", "pid_file", path, "error", err)
 			}
 		}
 		release()

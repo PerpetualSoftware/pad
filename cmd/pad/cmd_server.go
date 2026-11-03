@@ -140,7 +140,7 @@ func serveCmd() *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("open database: %w", err)
 				}
-				slog.Info("Database using SQLite", "path", cfg.DBPath)
+				slog.Info("Database using SQLite", "db_path", cfg.DBPath)
 			}
 			defer s.Close()
 
@@ -174,9 +174,9 @@ func serveCmd() *cobra.Command {
 				// level so it shows up in typical deployments that only
 				// surface warnings-and-above.
 				slog.Warn("Encryption key generated and persisted — back up the file, or set PAD_ENCRYPTION_KEY explicitly",
-					"path", cfg.EncryptionKeyFile())
+					"key_file", cfg.EncryptionKeyFile())
 			case "file":
-				slog.Info("Encryption key loaded from file", "path", cfg.EncryptionKeyFile())
+				slog.Info("Encryption key loaded from file", "key_file", cfg.EncryptionKeyFile())
 			case "env":
 				slog.Info("Encryption key loaded from PAD_ENCRYPTION_KEY env var")
 			default:

@@ -124,7 +124,7 @@ func (s *Store) snapshotBeforeMigrate() {
 	// with a half-migrated DB — destroying the rollback point. If a snapshot
 	// for this version already exists, keep it.
 	if _, err := os.Stat(dst); err == nil {
-		slog.Info("pre-migration snapshot already exists; preserving it", "path", dst)
+		slog.Info("pre-migration snapshot already exists; preserving it", "snapshot", dst)
 		return
 	}
 
@@ -145,7 +145,7 @@ func (s *Store) snapshotBeforeMigrate() {
 		slog.Warn("pre-migration snapshot failed; continuing with migration (make sure you have your own backup)", "dest", dst, "error", err)
 		return
 	}
-	slog.Info("wrote pre-migration database snapshot", "path", dst)
+	slog.Info("wrote pre-migration database snapshot", "snapshot", dst)
 }
 
 // sanitizeVersion makes a build-version string safe as a filename suffix.
