@@ -13,7 +13,7 @@ identityGateSuite({
 	source: new URL('./+page.svelte', import.meta.url),
 	table: {
 		asyncFunctions: {
-			submitNewItem: { reviewed: 'e49c281eb86e', why: `${PAGE_AND_ENTRY}; the finally clears newItemSaving only under the identity` },
+			submitNewItem: { reviewed: '7e18149cf58f', why: `${PAGE_AND_ENTRY}; the finally clears newItemSaving only under the identity` },
 			// Re-reviewed for TASK-2204: the failure toast sits after the identity
 			// check, beside the recovery reload it explains.
 			handleLaneDrop: { reviewed: '9cb867491e2a', why: `${PAGE_AND_ENTRY}, including before the recovery reload and its toast` },
@@ -26,14 +26,14 @@ identityGateSuite({
 				// TASK-2204: both recovery reloads now toast, after the same checks.
 				// TASK-3525: the plan is also handed the dragged card's id (a
 				// synchronous planner argument); no await or check moved.
-				reviewed: '7b4ff2ada733',
+				reviewed: '5a72f123eba5',
 				why: `${PAGE_AND_ENTRY}; the identity check sits BEFORE the role write, because that write carries currentUserId; a lost-identity exit writes no shared interaction state`,
 			},
 			loadData: {
 				// Re-reviewed for BUG-3701: fetches the workspace captured at
 				// entry, and stamps workspaceAtLoad beside identityEpochAtLoad on
 				// both arms; no await or check moved.
-				reviewed: 'b010e24f70e8',
+				reviewed: '7bd4ad584d02',
 				why: 'identityHeld(epochAtEntry) then loadGen on both arms before any commit; re-stamps identityEpochAtLoad and workspaceAtLoad only after the data they vouch for; the finally clears loading on loadGen alone, deliberately (#1378)',
 			},
 			saveRole: { reviewed: 'd5057790dac8', why: `${PAGE_AND_ENTRY}, per branch; the failure toast (TASK-2204) after the check` },

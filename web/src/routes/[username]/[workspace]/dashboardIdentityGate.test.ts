@@ -12,7 +12,7 @@ identityGateSuite({
 	table: {
 		asyncFunctions: {
 			load: {
-				reviewed: '0d1d88d24e94',
+				reviewed: '37628f9f288b',
 				why: 'setCurrent and both fetches issued together at entry, under the identity captured there (TASK-2229); dashLoadSeq and identityHeld before every commit on both arms; the finally clears loading on the sequence alone, deliberately (#1378)',
 			},
 		},
@@ -24,14 +24,14 @@ identityGateSuite({
 				body: /load\(wsSlug, true\)/,
 				in: 'onMount(…)',
 				why: 'the 30s poll: calls load, which captures the identity at its own entry',
-				reviewed: 'cc587e5cf2b5',
+				reviewed: '22d185d046fc',
 			},
 			{
 				call: /^setTimeout\($/,
 				body: /load\(wsSlug, true\)/,
 				in: 'sseService.onItemEvent(…)',
 				why: 'the live-onboarding reload (BUG-3447): a debounce an item or collection event re-arms while the workspace needs onboarding; its body only calls load, which captures the identity at its own entry, and only for the workspace it was armed in (codex r1)',
-				reviewed: '223f5fffc235',
+				reviewed: '9bf802550d76',
 			},
 		],
 		helpers: {
