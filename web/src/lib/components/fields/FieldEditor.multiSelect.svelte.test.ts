@@ -168,7 +168,7 @@ describe('multi_select editor (IDEA-3223)', () => {
 	});
 });
 
-describe('multi_select editor, review round 1 (IDEA-3223)', () => {
+describe('multi_select editor (IDEA-3223)', () => {
 	it('arrow keys move focus once it is inside the list, and Enter toggles once', async () => {
 		const onchange = vi.fn();
 		const { container } = render(FieldEditor, { props: { field: labels, value: [], onchange, itemId: 'i1' } });

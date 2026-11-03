@@ -164,7 +164,7 @@ describe('an item whose group value is 0 or false still appears (BUG-3053)', () 
 	});
 });
 
-describe('dropping an item back into its own lane (codex round 1, finding 1)', () => {
+describe('dropping an item back into its own lane', () => {
 	// Reachable only BECAUSE of this fix: before it, the 0-scored item was not
 	// rendered at all, so it could not be dragged. `groupName` is a normalised
 	// lane key and the handler compared it against the RAW field value, so

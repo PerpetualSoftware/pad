@@ -35,7 +35,7 @@ describe('builtinOfferLabel (TASK-3462 U3b)', () => {
 	it('says "Library changed" for an edited one', () => {
 		expect(builtinOfferLabel([row('k', 'diverged')], 'k')?.label).toBe('Library changed');
 	});
-	it('says "Library version differs" for a copy of unknown origin (codex r1)', () => {
+	it('says "Library version differs" for a copy of unknown origin', () => {
 		expect(builtinOfferLabel([row('k', 'unknown_origin')], 'k')?.label).toBe('Library version differs');
 	});
 	it('prefers the unedited copy when two items share the key', () => {

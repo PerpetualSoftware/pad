@@ -69,9 +69,9 @@
 {/if}
 
 <!-- The list reloads only when chatStore's unread fetch succeeds, so a failed
-     list fetch beside a good unread fetch has no other way back (TASK-4044 r1):
+     list fetch beside a good unread fetch has no other way back (TASK-4044):
      chatStore's retry re-arms only for a failed UNREAD fetch.
-     A failed reload keeps the last list, and says so (r2). -->
+     A failed reload keeps the last list, and says so. -->
 {#if chatInbox.failed}
 	<p class="status">
 		{chatInbox.loaded ? "Couldn't refresh your conversations." : 'Could not load your conversations.'}

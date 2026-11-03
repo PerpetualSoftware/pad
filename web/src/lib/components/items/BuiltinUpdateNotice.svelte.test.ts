@@ -172,7 +172,7 @@ describe('BuiltinUpdateNotice', () => {
 		expect(accepted).toBe(1);
 	});
 
-	it('refuses to accept while the pane holds unsaved edits (codex r1)', async () => {
+	it('refuses to accept while the pane holds unsaved edits', async () => {
 		render();
 		state.get[0]!.resolve(offer('update_available'));
 		await settle();
@@ -185,7 +185,7 @@ describe('BuiltinUpdateNotice', () => {
 		expect(document.querySelector('.error')?.textContent).toMatch(/not reached the server/);
 	});
 
-	it('a response for the item the pane has left commits nothing (codex r1)', async () => {
+	it('a response for the item the pane has left commits nothing', async () => {
 		render();
 		state.get[0]!.resolve(offer('update_available'));
 		await settle();
@@ -203,7 +203,7 @@ describe('BuiltinUpdateNotice', () => {
 		expect(state.get.length).toBe(getsBefore);
 	});
 
-	it('a rename during the request is the same item: Accept comes back (codex r2)', async () => {
+	it('a rename during the request is the same item: Accept comes back', async () => {
 		render();
 		state.get[0]!.resolve(offer('update_available'));
 		await settle();
@@ -221,7 +221,7 @@ describe('BuiltinUpdateNotice', () => {
 		expect(acceptBtn()!.disabled).toBe(false);
 	});
 
-	it('a conflict after a rename refreshes the preview by the item\'s current ref (codex r3)', async () => {
+	it('a conflict after a rename refreshes the preview by the item\'s current ref', async () => {
 		render();
 		state.get[0]!.resolve(offer('update_available'));
 		await settle();
@@ -236,7 +236,7 @@ describe('BuiltinUpdateNotice', () => {
 		expect(state.get[state.get.length - 1]!.ref).toBe('plan-renamed');
 	});
 
-	it('saves the open editor first; text the preview did not show stops the update (codex r4)', async () => {
+	it('saves the open editor first; text the preview did not show stops the update', async () => {
 		render();
 		state.get[0]!.resolve(offer('update_available'));
 		await settle();
@@ -252,7 +252,7 @@ describe('BuiltinUpdateNotice', () => {
 		expect(document.querySelector('.error')?.textContent).toMatch(/saved first/);
 	});
 
-	it('an editor save that fails replaces nothing (codex r4)', async () => {
+	it('an editor save that fails replaces nothing', async () => {
 		render();
 		state.get[0]!.resolve(offer('update_available'));
 		await settle();
@@ -265,7 +265,7 @@ describe('BuiltinUpdateNotice', () => {
 		expect(document.querySelector('.error')?.textContent).toMatch(/could not be saved/);
 	});
 
-	it('compares against the text read with the seq, not the pane\'s copy (codex r5)', async () => {
+	it('compares against the text read with the seq, not the pane\'s copy', async () => {
 		render();
 		state.get[0]!.resolve(
 			offer('update_available', { current: { content: 'text as the server has it', fields: { trigger: 'on-commit' } } })
@@ -279,7 +279,7 @@ describe('BuiltinUpdateNotice', () => {
 		expect(document.querySelector('.field-changes')?.textContent).toContain('on-commit');
 	});
 
-	it('closes the dialog when the offer goes away under it (codex r1)', async () => {
+	it('closes the dialog when the offer goes away under it', async () => {
 		render();
 		state.get[0]!.resolve(offer('update_available'));
 		await settle();

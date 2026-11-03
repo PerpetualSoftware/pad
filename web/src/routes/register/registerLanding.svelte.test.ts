@@ -81,7 +81,7 @@ describe('register landing (TASK-3595)', () => {
 		expect(mocks.goto).toHaveBeenCalledWith('/ada/adas-workspace', { replaceState: true });
 	});
 
-	it('a taken generated name opens the field, and it stays open while typing (codex r1)', async () => {
+	it('a taken generated name opens the field, and it stays open while typing', async () => {
 		vi.useFakeTimers({ shouldAdvanceTime: true });
 		mocks.checkUsername.mockResolvedValue({ available: false, error: 'taken' });
 		render(RegisterPage);

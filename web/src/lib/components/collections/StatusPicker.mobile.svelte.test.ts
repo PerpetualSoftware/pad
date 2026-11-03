@@ -47,7 +47,7 @@ describe('StatusPicker at the mobile breakpoint', () => {
 		expect(statusRows().some((r) => card.contains(r))).toBe(false);
 	});
 
-	it('announces a dialog, and its rows are owned by a menu inside it (codex round 1)', async () => {
+	it('announces a dialog, and its rows are owned by a menu inside it', async () => {
 		const { card } = renderInCard();
 		const chip = statusChipIn(card);
 		expect(chip.getAttribute('aria-haspopup')).toBe('dialog');
@@ -62,7 +62,7 @@ describe('StatusPicker at the mobile breakpoint', () => {
 		}
 	});
 
-	it('arrow keys move between the sheet\u2019s rows, as a menu\u2019s do (codex round 2)', async () => {
+	it('arrow keys move between the sheet\u2019s rows, as a menu\u2019s do', async () => {
 		const { card } = renderInCard();
 		await fireEvent.click(statusChipIn(card));
 		await tick();

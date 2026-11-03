@@ -135,7 +135,7 @@ describe('restoreWaitsForEditor (BUG-3850)', () => {
 	});
 });
 
-describe('confirmed base: sends after the snapshot (BUG-3850, lead ruling a6380212)', () => {
+describe('confirmed base: sends after the snapshot (BUG-3850)', () => {
 	it('a send after the snapshot reports sentAfter; a confirmed refresh on a moved document clears it', () => {
 		const h = harness();
 		h.t.refresh();

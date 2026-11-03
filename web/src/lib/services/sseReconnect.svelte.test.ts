@@ -288,7 +288,7 @@ describe('owned reconnect in the SSE service (BUG-2733)', () => {
 		sse.disconnect();
 	});
 
-	it('connect() for the same workspace during backoff does not jump the queue (codex r1)', async () => {
+	it('connect() for the same workspace during backoff does not jump the queue', async () => {
 		vi.stubGlobal('fetch', refusalFetch(429, '30'));
 		const sse = await connected();
 		sources[0].fireRefused();
@@ -304,7 +304,7 @@ describe('owned reconnect in the SSE service (BUG-2733)', () => {
 		sse.disconnect();
 	});
 
-	it('a probe still in flight across disconnect() and connect() arms nothing (codex r1)', async () => {
+	it('a probe still in flight across disconnect() and connect() arms nothing', async () => {
 		// The first probe hangs until released; the second answers at once.
 		let releaseFirst!: (r: Response) => void;
 		const first = new Promise<Response>((r) => (releaseFirst = r));

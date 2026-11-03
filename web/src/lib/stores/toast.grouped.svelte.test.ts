@@ -91,7 +91,7 @@ describe('grouped creation toasts (TASK-3593)', () => {
 	});
 });
 
-describe('grouped toasts hold bounded state (TASK-3593 codex round 1)', () => {
+describe('grouped toasts hold bounded state (TASK-3593)', () => {
 	it('a long burst folds into a summary, not a list of every event', () => {
 		let calls = 0;
 		const seen: number[] = [];
@@ -138,7 +138,7 @@ describe('grouped toasts hold bounded state (TASK-3593 codex round 1)', () => {
 		expect(__groupCountForTests(), 'evicted').toBe(0);
 	});
 
-	it('an updated burst moves to the front of the history (codex r3)', () => {
+	it('an updated burst moves to the front of the history', () => {
 		created('Agent', 1);
 		vi.advanceTimersByTime(100);
 		toastStore.show('Saved', 'success');

@@ -78,7 +78,7 @@ describe('describeImportDrops (TASK-3842)', () => {
 	});
 });
 
-describe('importDropLine escapes and clips every field (TASK-3842 r2)', () => {
+describe('importDropLine escapes and clips every field (TASK-3842)', () => {
 	const base = { item: 'TASK-1', key: 'email', value: 'a@x.io', holder: 'TASK-2' };
 	const FIELDS = ['item', 'key', 'value', 'holder'] as const;
 	// RLO (Cf), LINE SEPARATOR (Zl), NEXT LINE (Cc), ZERO WIDTH SPACE (Cf).

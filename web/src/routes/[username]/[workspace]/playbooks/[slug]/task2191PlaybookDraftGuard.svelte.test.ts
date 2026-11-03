@@ -143,7 +143,7 @@ describe('TASK-2191: the playbook editor keeps a draft', () => {
 		expect(ask).not.toHaveBeenCalled();
 	});
 
-	it('an edit typed while the save is in flight stays unsaved (codex r2)', async () => {
+	it('an edit typed while the save is in flight stays unsaved', async () => {
 		const api = (await import('$lib/api/client')).api as unknown as { items: { update: ReturnType<typeof vi.fn> } };
 		let finish: (v: unknown) => void = () => {};
 		api.items.update.mockImplementationOnce(

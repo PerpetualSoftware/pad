@@ -99,7 +99,7 @@ describe('a regroup during the post-drop cooldown (BUG-3042)', () => {
 		expect(titles(screen.container)).toEqual(['car-1', 'car-2']);
 	});
 
-	it('an option REMOVED during the cooldown does not hide its cards (review round 1)', async () => {
+	it('an option REMOVED during the cooldown does not hide its cards', async () => {
 		const onLaneChange = vi.fn().mockResolvedValue(undefined);
 		const screen = render(BoardView, { props: props('status', ITEMS, onLaneChange) });
 		await moveFirstCardRight(screen.container);

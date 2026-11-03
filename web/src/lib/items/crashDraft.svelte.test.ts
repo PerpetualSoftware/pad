@@ -138,7 +138,7 @@ describe('crash drafts (TASK-3606)', () => {
 		expect(readRefusedRawDraft('u1', 'i1')).toEqual({ markdown: 'A C U', savedAt: expect.any(Number), keeper: expect.any(String), baseSeq: 4, baseBody: 'A C' });
 	});
 
-	it('BUG-3850 r5: the same markdown over a base that turned stale is written again, flagged', () => {
+	it('BUG-3850: the same markdown over a base that turned stale is written again, flagged', () => {
 		// A remote ' C' lands and the user deletes it again within one tick: the
 		// document moved (version), the markdown is what was kept, the base is stale.
 		let v = 1;
@@ -152,7 +152,7 @@ describe('crash drafts (TASK-3606)', () => {
 		expect(readRefusedRawDraft('u1', 'i1')).toEqual({ markdown: 'A U', savedAt: expect.any(Number), keeper: expect.any(String), baseSeq: 4, baseBody: 'A', baseStale: true });
 	});
 
-	it('BUG-3850 r5: the same markdown over a base body that moved at the same seq is written with that body', () => {
+	it('BUG-3850: the same markdown over a base body that moved at the same seq is written with that body', () => {
 		let v = 1;
 		let snap = { markdown: 'A U', baseSeq: 4, baseBody: 'A' };
 		const h = harness({ version: () => v, snapshot: () => snap });
@@ -163,7 +163,7 @@ describe('crash drafts (TASK-3606)', () => {
 		expect(readRefusedRawDraft('u1', 'i1')).toMatchObject({ markdown: 'A U', baseSeq: 4, baseBody: 'A U' });
 	});
 
-	it('BUG-3850 r5: the same markdown over the same body at a new seq is written with that seq', () => {
+	it('BUG-3850: the same markdown over the same body at a new seq is written with that seq', () => {
 		let v = 1;
 		let snap = { markdown: 'A U', baseSeq: 4, baseBody: 'A' };
 		const h = harness({ version: () => v, snapshot: () => snap });
@@ -174,7 +174,7 @@ describe('crash drafts (TASK-3606)', () => {
 		expect(readRefusedRawDraft('u1', 'i1')).toMatchObject({ baseSeq: 6 });
 	});
 
-	it('BUG-3850 r5: an unchanged markdown and base still skip the write', () => {
+	it('BUG-3850: an unchanged markdown and base still skip the write', () => {
 		const h = harness();
 		h.tick();
 		const first = readRefusedRawDraft('u1', 'i1')?.savedAt;
@@ -184,7 +184,7 @@ describe('crash drafts (TASK-3606)', () => {
 		expect(readRefusedRawDraft('u1', 'i1'), 'skipped: nothing was written after the clear').toBeNull();
 	});
 
-	it('BUG-3850 r8: a send flags the kept draft stale at once, before any tick (a catch-up after offline typing)', () => {
+	it('BUG-3850: a send flags the kept draft stale at once, before any tick (a catch-up after offline typing)', () => {
 		let fire: () => void = () => {};
 		const h = harness({ onSent: (fn) => ((fire = fn), () => {}) });
 		h.tick();
@@ -193,7 +193,7 @@ describe('crash drafts (TASK-3606)', () => {
 		expect(readRefusedRawDraft('u1', 'i1')).toEqual({ markdown: 'draft', savedAt: expect.any(Number), keeper: expect.any(String), baseSeq: 7, baseBody: 'base', baseStale: true });
 	});
 
-	it('BUG-3850 r8: a send rewrites once, and never with no draft, another item, or after the draft was cleared', () => {
+	it('BUG-3850: a send rewrites once, and never with no draft, another item, or after the draft was cleared', () => {
 		let fire: () => void = () => {};
 		const h = harness({ onSent: (fn) => ((fire = fn), () => {}) });
 		fire();
@@ -217,7 +217,7 @@ describe('crash drafts (TASK-3606)', () => {
 		expect(readRefusedRawDraft('u1', 'i1'), 'cleared on confirmation: nothing to flag').toBeNull();
 	});
 
-	it('BUG-3850 r9: a send never overwrites a newer draft another producer kept', () => {
+	it('BUG-3850: a send never overwrites a newer draft another producer kept', () => {
 		let fire: () => void = () => {};
 		const h = harness({ onSent: (fn) => ((fire = fn), () => {}) });
 		h.tick();
@@ -234,7 +234,7 @@ describe('crash drafts (TASK-3606)', () => {
 		expect(readRefusedRawDraft('u1', 'i1')?.markdown).toBe('draft and more');
 	});
 
-	it('BUG-3850 r8: stopping the keeper unsubscribes', () => {
+	it('BUG-3850: stopping the keeper unsubscribes', () => {
 		let unsubscribed = false;
 		const h = harness({ onSent: () => () => (unsubscribed = true) });
 		h.stop();

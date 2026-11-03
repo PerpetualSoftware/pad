@@ -390,7 +390,7 @@ describe('a write that never comes home', () => {
 	});
 });
 
-describe('an older echo does not release a newer hold (findings 2 and 4)', () => {
+describe('an older echo does not release a newer hold', () => {
 	it('keeps showing the newest send when an EARLIER value arrives', async () => {
 		const onchange = vi.fn();
 		const { input, rerender } = mount('', onchange);

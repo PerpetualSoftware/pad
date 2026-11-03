@@ -104,7 +104,7 @@ describe('Conventions: Enable all (TASK-2204)', () => {
 		expect(screen.getAllByRole('button', { name: 'Disable convention' })).toHaveLength(3);
 	});
 
-	it('a row cannot be toggled by hand while a bulk run owns it (codex r2)', async () => {
+	it('a row cannot be toggled by hand while a bulk run owns it', async () => {
 		holdNext.add('c1');
 		await fireEvent.click(await openPage());
 		await waitFor(() => { if (!held.has('c1')) throw new Error('bulk write not held yet'); });
@@ -118,7 +118,7 @@ describe('Conventions: Enable all (TASK-2204)', () => {
 		}, { timeout: 3000 });
 	});
 
-	it('a run whose last write lands after navigating to another workspace toasts nothing there (codex r1)', async () => {
+	it('a run whose last write lands after navigating to another workspace toasts nothing there', async () => {
 		const toast = vi.spyOn(toastStore, 'show');
 		holdNext.add('c3');
 		await fireEvent.click(await openPage());

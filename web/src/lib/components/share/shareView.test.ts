@@ -100,7 +100,7 @@ describe('matchesFilter', () => {
 	});
 });
 
-describe('resolveGroupField with a relation field (TASK-2998, codex round 1)', () => {
+describe('resolveGroupField with a relation field (TASK-2998)', () => {
 	function coll(fields: { key: string; type: string; options?: string[] }[], boardGroupBy?: string) {
 		return {
 			fields,
@@ -143,7 +143,7 @@ describe('resolveGroupField with a relation field (TASK-2998, codex round 1)', (
 	});
 });
 
-describe('isPublicGroupable (TASK-2998, codex round 2)', () => {
+describe('isPublicGroupable (TASK-2998)', () => {
 	function coll(fields: { key: string; type: string }[]) {
 		return { fields, settings: {} } as unknown as Parameters<typeof isPublicGroupable>[0];
 	}

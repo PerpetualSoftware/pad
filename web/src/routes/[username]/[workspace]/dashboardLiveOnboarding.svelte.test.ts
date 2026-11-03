@@ -170,7 +170,7 @@ describe('the launchpad follows the agent live (BUG-3447)', () => {
 		expect(mocks.unsubscribed).toBeGreaterThan(0);
 	});
 
-	it('a debounce armed in one workspace does not fire a load into the next (codex r1)', async () => {
+	it('a debounce armed in one workspace does not fire a load into the next', async () => {
 		await mount();
 		fire({ type: 'item_created', item_id: 'i1' });
 		page.params = { username: 'dave', workspace: 'other' };
@@ -183,7 +183,7 @@ describe('the launchpad follows the agent live (BUG-3447)', () => {
 		expect(dashboardGets(), 'the stale debounce fired a load into the next workspace').toBe(afterSwitch);
 	});
 
-	it('an event during the first load still arms a reload: that load may predate the write (codex r2)', async () => {
+	it('an event during the first load still arms a reload: that load may predate the write', async () => {
 		let answer!: (v: unknown) => void;
 		(api.dashboard.get as unknown as { mockImplementationOnce: (f: () => Promise<unknown>) => void })
 			.mockImplementationOnce(() => new Promise((r) => (answer = r)));

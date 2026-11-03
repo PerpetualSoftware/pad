@@ -125,7 +125,7 @@ test('TASK-3413 U9c: the members list shows apps in their own section, not as me
 	await expect(page.getByRole('tab', { name: /Apps/ })).toHaveAttribute('aria-selected', 'true');
 });
 
-test('TASK-3413 U9c: a long unbroken app name wraps inside the viewport (codex r1)', async ({ page, fixture, request }) => {
+test('TASK-3413 U9c: a long unbroken app name wraps inside the viewport', async ({ page, fixture, request }) => {
 	const long = 'Portal' + 'x'.repeat(120);
 	const { collSlug, item } = await seed(fixture, request);
 	await page.route(`**/api/v1/workspaces/${fixture.workspaceSlug}/**`, async (route: Route) => {

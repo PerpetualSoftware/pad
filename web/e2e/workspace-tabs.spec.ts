@@ -223,7 +223,7 @@ test.describe('workspace tab bar (TASK-3274)', () => {
 		}
 	});
 
-	test('closing the active FIRST tab lands on the tab that becomes first (Q3, lead ruling)', async ({
+	test('closing the active FIRST tab lands on the tab that becomes first (Q3)', async ({
 		page,
 		context,
 		fixture

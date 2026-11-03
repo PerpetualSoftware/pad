@@ -87,7 +87,7 @@ describe('TASK-2216: number entry', () => {
 		expect(onchange).not.toHaveBeenCalled();
 	});
 
-	it('whitespace only clears instead of saving 0, and Infinity is invalid (codex r1)', async () => {
+	it('whitespace only clears instead of saving 0, and Infinity is invalid', async () => {
 		const onchange = vi.fn();
 		const { container } = render(FieldEditor, { field: numberField, value: 3, onchange, ariaLabel: 'Effort' });
 		const input = container.querySelector<HTMLInputElement>('input.number-input')!;

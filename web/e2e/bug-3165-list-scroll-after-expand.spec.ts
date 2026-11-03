@@ -209,7 +209,7 @@ test.describe('BUG-3165: the list keeps its position across the split pane', () 
 		}
 	});
 
-	test('Back to the pre-pane entry while the page is still LOADING restores its saved position (codex r1)', async ({ page, fixture, request }) => {
+	test('Back to the pre-pane entry while the page is still LOADING restores its saved position', async ({ page, fixture, request }) => {
 		// No handoff can run while the list is loading (there is no row to
 		// anchor on), so the entry's saved offset is the only position there is:
 		// the popstate must not skip it.

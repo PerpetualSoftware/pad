@@ -55,7 +55,7 @@ describe('showPlanLimitToast raises the plan-limit prompt (TASK-3601)', () => {
 		vi.useRealTimers();
 	});
 
-	it('a newer refusal from another flow replaces the prompt and shows in its own host (codex r1)', () => {
+	it('a newer refusal from another flow replaces the prompt and shows in its own host', () => {
 		const offInvite = planLimitPrompt.registerInlineHost('invite');
 		showPlanLimitToast(err(), { scope: 'invite' });
 		expect(planLimitPrompt.current?.scope).toBe('invite');

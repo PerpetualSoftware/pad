@@ -85,7 +85,7 @@ export function identityGateSuite(g: SurfaceGate): void {
 			for (const r of g.table.identifierCallbacks) expect(r.reviewed, r.text).toMatch(REVIEWED);
 		});
 
-		it('covers every round-4 class with at least one mutant', () => {
+		it('covers every class with at least one mutant', () => {
 			const classes = new Set(g.mutants.map((m) => m.cls));
 			for (const c of [1, 2, 3, 4, 5] as const) expect(classes.has(c), `no class-${c} mutant`).toBe(true);
 		});

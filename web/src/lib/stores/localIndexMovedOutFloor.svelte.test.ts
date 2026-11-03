@@ -224,7 +224,7 @@ describe('upsert — the optimistic write path', () => {
 	});
 });
 
-describe('the floor map is bounded (codex round 1 P2)', () => {
+describe('the floor map is bounded', () => {
 	/**
 	 * The lift on the authoritative re-add paths prunes only ids that came BACK,
 	 * which is never the case for an item moved out permanently — so the cap in

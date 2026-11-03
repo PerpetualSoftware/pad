@@ -253,7 +253,7 @@ describe('api client 429 handling (TASK-2026)', () => {
 		vi.unstubAllGlobals();
 	});
 
-	it('arms a global cooldown so a follow-up GET waits out the last Retry-After instead of bursting (Codex P1)', async () => {
+	it('arms a global cooldown so a follow-up GET waits out the last Retry-After instead of bursting', async () => {
 		vi.useFakeTimers();
 		// Jitter pinned to the floor, so each retry sleeps exactly Retry-After.
 		const random = vi.spyOn(Math, 'random').mockReturnValue(0);

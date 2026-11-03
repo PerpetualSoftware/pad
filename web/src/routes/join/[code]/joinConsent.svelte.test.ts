@@ -159,7 +159,7 @@ describe('/join/[code] asks before joining (BUG-2136)', () => {
 		expect(mocks.accept).not.toHaveBeenCalled();
 	});
 
-	it('signing in with two-factor from the link lands on the card, not an accept (codex r1)', async () => {
+	it('signing in with two-factor from the link lands on the card, not an accept', async () => {
 		mocks.session.mockResolvedValue({ authenticated: false });
 		mocks.login.mockResolvedValue({ requires_2fa: true, challenge_token: 'ch' });
 		mocks.verify2FA.mockResolvedValue({});
@@ -223,7 +223,7 @@ describe('/join/[code] asks before joining (BUG-2136)', () => {
 		expect(mocks.goto).toHaveBeenCalledWith('/o/acme', { replaceState: true });
 	});
 
-	it('a different /join code under the mounted page shows and acts on THAT invitation (codex r4)', async () => {
+	it('a different /join code under the mounted page shows and acts on THAT invitation', async () => {
 		mocks.session.mockResolvedValue({ authenticated: true });
 		render(JoinPage);
 		await settle();
@@ -239,7 +239,7 @@ describe('/join/[code] asks before joining (BUG-2136)', () => {
 		expect(mocks.accept).toHaveBeenCalledWith('def456', undefined);
 	});
 
-	it('a preview for the previous code that answers late does not replace the current one (codex r4)', async () => {
+	it('a preview for the previous code that answers late does not replace the current one', async () => {
 		mocks.session.mockResolvedValue({ authenticated: true });
 		let answerA!: (v: unknown) => void;
 		mocks.preview.mockReturnValueOnce(new Promise((r) => (answerA = r)));

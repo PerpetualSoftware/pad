@@ -20,7 +20,7 @@ describe('rawSeedDecision', () => {
 		expect(rawSeedDecision({ liveNow: 'B', lastFlushed: 'A', stored: 'A', contentState: undefined }).refuse).toBe(true);
 	});
 
-	it('a deduped flush while another tab typed during the await: refused (codex R2)', () => {
+	it('a deduped flush while another tab typed during the await: refused', () => {
 		// The loop saw "A", the flush deduped against the stored "A", and the
 		// editor now holds the other tab's "A+typed".
 		expect(rawSeedDecision({ liveNow: 'A+typed', lastFlushed: 'A', stored: 'A', contentState: MARKED }).refuse).toBe(true);

@@ -174,7 +174,7 @@ describe('held kept drafts (BUG-3863)', () => {
 		expect(readRefusedRawDraft('u1', 'i1', Date.now(), 'held')?.markdown).toBe('D');
 	});
 
-	it("the live keeper's own draft stays pending (lead ruling 1)", () => {
+	it("the live keeper's own draft stays pending", () => {
 		keepRefusedRawDraft('u1', 'i1', 'mine');
 		const owns = vi.fn((md: string) => md === 'mine');
 		expect(offerKeptDraft('u1', 'i1', 'body', owns)).toMatchObject({ slot: 'pending', draft: { markdown: 'mine' } });

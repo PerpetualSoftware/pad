@@ -50,7 +50,7 @@ describe('parseSchema normalises a stored schema for rendering', () => {
 	});
 });
 
-describe('write paths keep the stored schema; editors name the repairs (codex round 1)', () => {
+describe('write paths keep the stored schema; editors name the repairs', () => {
 	const coll = (schema: unknown) => ({ schema: JSON.stringify(schema) }) as unknown as Collection;
 	const broken = {
 		fields: [

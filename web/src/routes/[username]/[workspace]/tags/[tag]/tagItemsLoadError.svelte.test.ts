@@ -78,7 +78,7 @@ describe('Tag page: a failed load is not an empty tag (TASK-2203)', () => {
 		expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
 	});
 
-	it('a failure that lands after an account swap shows nothing to the new account (codex r1)', async () => {
+	it('a failure that lands after an account swap shows nothing to the new account', async () => {
 		fake.collectionsFresh = false;
 		fake.collectionFailures = 1;
 		fence.ok = false;

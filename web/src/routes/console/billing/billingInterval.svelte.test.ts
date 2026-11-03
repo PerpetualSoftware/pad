@@ -195,7 +195,7 @@ describe('billing copy (TASK-3603)', () => {
 		expect(text).not.toContain('10 GB');
 	});
 
-	it('Pro in the app: the plan, and nothing about plans for others (codex r1)', async () => {
+	it('Pro in the app: the plan, and nothing about plans for others', async () => {
 		m.commerce = false;
 		m.plan = 'pro';
 		render(BillingPage);

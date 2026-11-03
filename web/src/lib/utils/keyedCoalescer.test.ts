@@ -38,7 +38,7 @@ describe('createKeyedCoalescer (TASK-2224)', () => {
 		expect(fn).toHaveBeenCalledTimes(3);
 	});
 
-	it('cancel drops a pending run and settles its callers, rejected (codex r1)', async () => {
+	it('cancel drops a pending run and settles its callers, rejected', async () => {
 		const fn = vi.fn(async () => 1);
 		const c = createKeyedCoalescer(fn, { waitMs: 300, maxWaitMs: 1000 });
 		const a = c.run('a').catch((e) => e);
@@ -51,7 +51,7 @@ describe('createKeyedCoalescer (TASK-2224)', () => {
 		expect(fn).not.toHaveBeenCalled();
 	});
 
-	it('a solitary call is capped by maxWaitMs too (codex r1)', async () => {
+	it('a solitary call is capped by maxWaitMs too', async () => {
 		const fn = vi.fn(async () => 1);
 		const c = createKeyedCoalescer(fn, { waitMs: 5000, maxWaitMs: 1000 });
 		void c.run('a');
@@ -68,7 +68,7 @@ describe('createKeyedCoalescer (TASK-2224)', () => {
 		expect(await Promise.all(ps)).toEqual(['boom', 'boom']);
 	});
 
-	it('cancelling a run already in flight rejects its callers at once, and its result is discarded (codex r3)', async () => {
+	it('cancelling a run already in flight rejects its callers at once, and its result is discarded', async () => {
 		let finish!: (v: number) => void;
 		const fn = vi.fn(() => new Promise<number>((r) => (finish = r)));
 		const c = createKeyedCoalescer(fn, { waitMs: 10, maxWaitMs: 100 });
@@ -81,7 +81,7 @@ describe('createKeyedCoalescer (TASK-2224)', () => {
 		finish(42); // the late result reaches nobody
 	});
 
-	it('a function that throws synchronously rejects every joined caller (codex r4)', async () => {
+	it('a function that throws synchronously rejects every joined caller', async () => {
 		const c = createKeyedCoalescer<string, number>(() => {
 			throw new Error('sync boom');
 		}, { waitMs: 10, maxWaitMs: 100 });

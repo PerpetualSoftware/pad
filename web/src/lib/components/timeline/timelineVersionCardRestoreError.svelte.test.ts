@@ -105,7 +105,7 @@ describe('TimelineVersionCard: a failed restore says so (TASK-2205)', () => {
 		expect(onRestore).toHaveBeenCalledTimes(1);
 	});
 
-	it('an error raised for one item does not show once the card shows another (codex r1)', async () => {
+	it('an error raised for one item does not show once the card shows another', async () => {
 		unmount(instance);
 		const props = $state({ version, wsSlug: 'ws', itemSlug: 'ITEM-1', currentContent: 'now', onRestore });
 		instance = mount(TimelineVersionCard, { target: root, props });
@@ -123,7 +123,7 @@ describe('TimelineVersionCard: a failed restore says so (TASK-2205)', () => {
 		expect(alertText()).toBeUndefined();
 	});
 
-	it('nor once another account is signed in (codex r2)', async () => {
+	it('nor once another account is signed in', async () => {
 		restore.mockRejectedValueOnce(new Error('boom'));
 		confirm().click();
 		await settle();
@@ -135,7 +135,7 @@ describe('TimelineVersionCard: a failed restore says so (TASK-2205)', () => {
 		expect(alertText()).toBeUndefined();
 	});
 
-	it('nor once the card shows another version of the same item (codex r3)', async () => {
+	it('nor once the card shows another version of the same item', async () => {
 		unmount(instance);
 		const props = $state({ version, wsSlug: 'ws', itemSlug: 'ITEM-1', currentContent: 'now', onRestore });
 		instance = mount(TimelineVersionCard, { target: root, props });

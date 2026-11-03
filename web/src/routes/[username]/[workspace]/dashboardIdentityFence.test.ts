@@ -413,7 +413,7 @@ describe('the dashboard fences every async commit point', () => {
 		expect(
 			listener,
 			'the identity listener reloads. The keyed load effect already reloads for this event, so ' +
-				'this is the library\'s double load (#1378 codex round 1) on a page that had the single ' +
+				'this is the library\'s double load on a page that had the single ' +
 				'one built in'
 		).not.toMatch(/\bload\(/);
 	});

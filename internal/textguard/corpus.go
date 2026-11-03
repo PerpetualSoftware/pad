@@ -78,7 +78,7 @@ var Corpus = []Case{
 	},
 	{
 		Name: "JSON-classed value carrying a RAW NUL", Value: `{"a":"x` + NUL + `y"}`, IsJSON: true, Refused: true,
-		Why: "codex round 9's regression on BUG-2803: taking the JSON branch used to SKIP the plain check, so a direct NUL in a fields blob was accepted. Both checks always.",
+		Why: "Regression on BUG-2803: taking the JSON branch used to SKIP the plain check, so a direct NUL in a fields blob was accepted. Both checks always.",
 	},
 	{
 		Name: "JSON-classed value that is not a document", Value: "just a string", IsJSON: true, Refused: false,
@@ -114,7 +114,7 @@ var Corpus = []Case{
 	},
 	{
 		Name: "JSON SCALAR document that decodes to a NUL", Value: `"` + EscNUL + `"`, IsJSON: true, Refused: true,
-		Why: "codex round 1 finding 1. A bare JSON string is a complete document to jsonb - Postgres refuses this, SQLite stored it, and the object/array-only shape test walked past it. The dialect split, reopened by a rule that was right for the HTTP gate and wrong for the store.",
+		Why: "A bare JSON string is a complete document to jsonb - Postgres refuses this, SQLite stored it, and the object/array-only shape test walked past it. The dialect split, reopened by a rule that was right for the HTTP gate and wrong for the store.",
 	},
 	{
 		Name: "JSON scalar document that is clean", Value: `"ordinary"`, IsJSON: true, Refused: false,
@@ -148,7 +148,7 @@ var Corpus = []Case{
 var StoreOverRefusals = []Case{
 	{
 		Name: "prose that happens to be a JSON document with a live escape", Value: `{"note":"documenting ` + EscNUL + ` for a reader"}`, IsJSON: false, Refused: false,
-		Why: "codex round 1, finding 3. Classed as TEXT this SHOULD be accepted, and every other layer does accept it. Not hypothetical in a documentation tool - writing about this very bug produces such a value. The store refuses it because it classes by value shape.",
+		Why: "Classed as TEXT this SHOULD be accepted, and every other layer does accept it. Not hypothetical in a documentation tool - writing about this very bug produces such a value. The store refuses it because it classes by value shape.",
 	},
 }
 

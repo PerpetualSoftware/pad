@@ -223,7 +223,7 @@ describe('Settings → Apps', () => {
 	});
 });
 
-describe('Settings → Apps focus (codex r2)', () => {
+describe('Settings → Apps focus', () => {
 	it('after install, focus lands on the code panel heading', async () => {
 		listMock.mockResolvedValue({ available: true, cloud: false, installs: [] });
 		previewMock.mockResolvedValue(previewFixture());
@@ -398,7 +398,7 @@ describe('Settings → Apps: upgrade and drafts (U9b)', () => {
 	});
 });
 
-describe('Settings → Apps: activation focus edges (U9b codex r3)', () => {
+describe('Settings → Apps: activation focus edges', () => {
 	const draft = { item_id: 'i1', ref: 'PLAYB-3', slug: 'triage', title: 'Triage', collection_slug: 'playbooks', status: 'draft', version: '1.2.0' };
 
 	async function openWithDraft() {

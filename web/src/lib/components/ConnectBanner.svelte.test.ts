@@ -93,7 +93,7 @@ describe('ConnectBanner follows agent activity live (BUG-3447)', () => {
 		expect(mocks.gets).toBe(1);
 	});
 
-	it('a re-check armed in one workspace does not fire into the next (codex r1)', async () => {
+	it('a re-check armed in one workspace does not fire into the next', async () => {
 		mocks.answers = [{ has_agent_activity: false }, { has_agent_activity: false }];
 		const r = render(ConnectBanner, { props: { wsSlug: 'ws', serverUrl: 'http://x' } });
 		await flush();
@@ -107,7 +107,7 @@ describe('ConnectBanner follows agent activity live (BUG-3447)', () => {
 		expect(banner(), "the next workspace's own answer stands").not.toBeNull();
 	});
 
-	it('an item event during the first check still re-checks: that answer may predate the write (codex r2)', async () => {
+	it('an item event during the first check still re-checks: that answer may predate the write', async () => {
 		let answer!: (v: { has_agent_activity: boolean }) => void;
 		mocks.answers = [new Promise((r) => (answer = r)), { has_agent_activity: true }];
 		render(ConnectBanner, { props: { wsSlug: 'ws', serverUrl: 'http://x' } });
@@ -121,7 +121,7 @@ describe('ConnectBanner follows agent activity live (BUG-3447)', () => {
 		expect(banner()).toBeNull();
 	});
 
-	it('a quiet re-check that overtakes the first check and fails leaves the banner showing (codex r3)', async () => {
+	it('a quiet re-check that overtakes the first check and fails leaves the banner showing', async () => {
 		let firstAnswer!: (v: { has_agent_activity: boolean }) => void;
 		const failed = Promise.reject(new Error('offline'));
 		failed.catch(() => {}); // consumed later by the mock; not unhandled

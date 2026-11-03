@@ -345,7 +345,7 @@ test('a moment the log cannot be read does not replay it', async ($, on) => {
   expect(s.toasts).toEqual(['new'])
 })
 
-test('a first look that only failed does not start the log at zero (r3)', async ($, on) => {
+test('a first look that only failed does not start the log at zero', async ($, on) => {
   const clock = mock.clock(on)
   const s = stubs(on, 'old one\nold two\n', { failStats: 1 })
   await $.session.start({ cwd: '/work/demo' })
@@ -357,7 +357,7 @@ test('a first look that only failed does not start the log at zero (r3)', async 
   expect(s.toasts).toEqual(['new'])
 })
 
-test('a rotation that shrinks the log in bytes shows the new log whole (r3)', async ($, on) => {
+test('a rotation that shrinks the log in bytes shows the new log whole', async ($, on) => {
   const clock = mock.clock(on)
   const s = stubs(on, 'é'.repeat(20) + '\n') // 41 bytes, 21 characters
   await $.session.start({ cwd: '/work/demo' })
@@ -368,7 +368,7 @@ test('a rotation that shrinks the log in bytes shows the new log whole (r3)', as
   expect(s.toasts).toEqual(['abcdefghijklmnopqrstuvwxyz0123'])
 })
 
-test('a rotation that shrinks the log in characters shows the new log whole (r3)', async ($, on) => {
+test('a rotation that shrinks the log in characters shows the new log whole', async ($, on) => {
   const clock = mock.clock(on)
   const s = stubs(on, 'abcdefghijklmnopqrstuvwxyz0123\n') // 31 bytes, 31 characters
   await $.session.start({ cwd: '/work/demo' })
