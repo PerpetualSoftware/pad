@@ -19,14 +19,23 @@ func credentialKey(key string) bool {
 	key = strings.ToLower(keySeparators.Replace(key))
 	// A plural (tokens, passwords, cookies) names the same credential.
 	for _, k := range []string{key, strings.TrimSuffix(key, "s")} {
-		for _, suffix := range []string{"token", "password", "secret", "apikey", "authorization", "cookie", "headers",
-			"invitecode", "clicode", "sessioncode", "devicecode", "signature", "jwt"} {
+		for _, suffix := range []string{"token", "password", "secret", "apikey", "authorization", "cookie", "header",
+			"signature", "jwt", "ticket", "verifier", "sessionid"} {
 			if strings.HasSuffix(k, suffix) {
 				return true
 			}
 		}
 	}
-	return key == "code" || key == "headers" || key == "header"
+	// Any *code names a one-time credential (invite, recovery, verification,
+	// device, user, totp...) unless it is a known diagnostic code.
+	if strings.HasSuffix(key, "code") {
+		switch key {
+		case "statuscode", "errorcode", "exitcode", "httpcode", "responsecode", "returncode", "countrycode", "languagecode":
+			return false
+		}
+		return true
+	}
+	return false
 }
 
 // redactQueryValue masks credentials nested inside a non-credential query
@@ -44,9 +53,13 @@ func redactQueryValue(rawValue string) (string, bool) {
 		}
 		decoded = next
 	}
-	out := decoded
-	if q := strings.Index(decoded, "?"); q >= 0 {
-		out = RedactPath(decoded[:q]) + "?" + RedactQuery(decoded[q+1:])
+	// The value may be a path with a nested query (?) or fragment (#) whose
+	// key=value pairs are redacted like a query, or a bare key=value pair.
+	var out string
+	if q := strings.IndexAny(decoded, "?#"); q >= 0 {
+		out = RedactPath(decoded[:q]) + decoded[q:q+1] + RedactQuery(decoded[q+1:])
+	} else if strings.Contains(decoded, "=") {
+		out = RedactQuery(RedactPath(decoded))
 	} else {
 		out = RedactPath(decoded)
 	}
