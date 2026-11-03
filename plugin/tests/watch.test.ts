@@ -407,6 +407,23 @@ test('two arms in flight at once start one stream (BUG-4303)', async ($, on) => 
   expect(s.spawns.length).toBe(1)
 })
 
+test('an arm that returns while the first-use check is still pending starts one stream (BUG-4303)', async ($, on) => {
+  mock.clock(on)
+  let release = () => {}
+  const gate = new Promise<void>((r) => { release = r })
+  const opts: Opts = { armed: true, gate }
+  const s = stubs(on, opts)
+  await $.session.start({ cwd: '/work/demo' })
+  const first = usePad($, 'pad bootstrap') // wake asks should-arm; the gate holds the answer
+  await settle()
+  const arm = usePad($, 'pad session arm') // the post-arm check overlaps it
+  await settle()
+  release()
+  await Promise.all([first, arm])
+  await settle()
+  expect(s.spawns.length).toBe(1)
+})
+
 test('an arm that did not take effect starts nothing (BUG-4303)', async ($, on) => {
   mock.clock(on)
   const s = stubs(on, { armed: false })
@@ -416,7 +433,7 @@ test('an arm that did not take effect starts nothing (BUG-4303)', async ($, on) 
   expect(s.spawns).toEqual([])
 })
 
-test('disconnect ends the stream and a later connect starts it again (BUG-4303)', async ($, on) => {
+test('after a disconnect the mod starts nothing; a later connect does not double the stream it holds (BUG-4303)', async ($, on) => {
   mock.clock(on)
   const opts: Opts = { armed: false }
   const s = stubs(on, opts)
@@ -426,8 +443,9 @@ test('disconnect ends the stream and a later connect starts it again (BUG-4303)'
   await usePad($, 'pad session arm')
   await settle()
   expect(s.spawns.length).toBe(1)
-  // /pad:disconnect: the wrapper sees the withdrawn consent and exits, which
-  // closes its stream; the mod holds no stream after it.
+  // /pad:disconnect ends the stream in the wrapper (pad-monitor.sh re-checks
+  // consent and exits), which no test here drives; this only pins that the
+  // mod starts nothing on a disarm and never doubles the stream it holds.
   opts.armed = false
   await usePad($, 'pad session disarm')
   s.stream.release()
