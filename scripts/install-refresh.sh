@@ -51,10 +51,10 @@ note() { printf 'install-refresh: %s\n' "$*"; }
 # flag_value prints the value of a long flag from the captured argv,
 # accepting BOTH supported spellings: `--host 1.2.3.4` and `--host=1.2.3.4`.
 #
-# The first version matched only the space-separated
-# form. Cobra accepts both, so a server started `--port=8080` was restarted
-# on 8080 and probed on 7777 — a healthy restart failed by this script's
-# most confident message. A parser that reads a subset of the syntax it is
+# Both spellings must be read. Cobra accepts both, so a parser that read only
+# the space-separated form restarted a server started `--port=8080` on 8080 and
+# probed it on 7777: a healthy restart failed by this script's most confident
+# message. A parser that reads a subset of the syntax it is
 # quoting back is the same defect class as a probe that reads half an
 # invocation.
 flag_value() {
@@ -222,13 +222,11 @@ commit_matches() {
 	# answer and it is available because `make install` runs in the repo,
 	# whose path is SRC_DIR wherever the script has moved since (BUG-3403).
 	#
-	# The previous prefix comparison was wrong: `a3a1d586`
-	# accepted `a3a1d58` even when those are DIFFERENT commits that happen
-	# to share seven characters. That is not hypothetical — it is the same
-	# mechanism that made the abbreviation grow in the first place, so the
-	# fix for the false alarm had introduced a false pass in the case the
-	# check exists for. Prefix matching cannot tell the two apart; full ids
-	# can.
+	# Prefix matching would accept `a3a1d58` for `a3a1d586` even when those are
+	# DIFFERENT commits that happen to share seven characters. That is not
+	# hypothetical: it is the same mechanism that made the abbreviation grow in
+	# the first place, and a prefix check would pass in the very case this check
+	# exists for. Prefix matching cannot tell the two apart; full ids can.
 	local a b
 	a="$(git -C "$SRC_DIR" rev-parse --verify --quiet "${expect}^{commit}" 2>/dev/null || true)"
 	b="$(git -C "$SRC_DIR" rev-parse --verify --quiet "${found}^{commit}" 2>/dev/null || true)"
@@ -868,9 +866,9 @@ fi
 # before the stop. A missing directory there would make the redirection fail
 # and the server never start, three steps upstream of the probe that reports
 # it (found on a fresh HOME by the probe-failure test).
-# setsid where it exists, plain nohup where it does not. setsid is Linux-specific and absent from a default macOS
-# environment, where an unconditional call would fail AFTER the old server
-# had been stopped — the one ordering this script exists to avoid. nohup
+# setsid where it exists, plain nohup where it does not. setsid is
+# Linux-specific and absent from a default macOS environment, where an
+# unconditional call would fail AFTER the old server had been stopped — the one ordering this script exists to avoid. nohup
 # plus the background job is sufficient detachment on both.
 # PAD_NO_SETSID forces the fallback branch. It exists because the branch is
 # otherwise unreachable on the machines this is developed and tested on —
@@ -1049,7 +1047,7 @@ if [ "${probe_any:-0}" = "1" ] && [ "$answered" -gt 0 ]; then
 fi
 
 # WHO answered (BUG-3215). A health probe answers for whatever holds the
-# address, so a server that took the port in the window passes it: once
+# address, so a server that took the port in the window passes it: in one incident
 # the stray bound the LAN address with default flags, and had it bound
 # loopback this script would have printed success over the wrong server. The
 # listener must be the restart this script spawned (or its direct child,

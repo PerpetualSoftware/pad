@@ -91,9 +91,8 @@ test-nix-hash:
 # during startup is covered as well.
 #
 # WHAT THIS DELIBERATELY DOES NOT DO: report a database that dies AFTER a
-# passing run. The post-run banner is gated on the tests having failed. The gate
-# stays, because the case for dropping it
-# does not hold — storetest.NewPostgres skips only when PAD_TEST_POSTGRES_URL
+# passing run. The post-run banner is gated on the tests having failed. The gate stays, because the case for
+# dropping it does not hold — storetest.NewPostgres skips only when PAD_TEST_POSTGRES_URL
 # is EMPTY, and a database that is gone produces t.Fatalf, not a skip. So under
 # this target a dead database always fails the tests that touch it, and exit 0
 # means every Postgres-backed test completed against a live one. Failing the
