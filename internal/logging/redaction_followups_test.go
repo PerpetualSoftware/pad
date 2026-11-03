@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -598,5 +599,32 @@ func TestRedactAttrURLValuesDoNotKeepUserinfoOrQuery(t *testing.T) {
 	}
 	if !strings.Contains(out, "example.com") {
 		t.Errorf("lost the host:\n%s", out)
+	}
+}
+
+var keyRenders atomic.Int64
+
+// countedKey counts how often the walk renders it, which is how many map
+// entries the walk read.
+type countedKey int
+
+func (k countedKey) String() string {
+	keyRenders.Add(1)
+	return strconv.Itoa(int(k))
+}
+
+func TestRedactAttrMapReadIsBoundedBeforeSorting(t *testing.T) {
+	m := make(map[countedKey]string, 50000)
+	for i := 0; i < 50000; i++ {
+		m[countedKey(i)] = "v"
+	}
+	keyRenders.Store(0)
+	buf := capture(t, "json")
+	slog.Info("big", "x", m)
+	if got := keyRenders.Load(); got > maxMapRead {
+		t.Errorf("the walk rendered %d of 50000 map keys; it must read at most %d", got, maxMapRead)
+	}
+	if !strings.Contains(buf.String(), "more") {
+		t.Errorf("a truncated map does not say so: %.200s", buf.String())
 	}
 }
