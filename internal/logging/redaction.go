@@ -20,7 +20,8 @@ func credentialKey(key string) bool {
 	// A plural (tokens, passwords, cookies) names the same credential.
 	for _, k := range []string{key, strings.TrimSuffix(key, "s")} {
 		for _, suffix := range []string{"token", "password", "secret", "apikey", "authorization", "cookie", "header",
-			"signature", "jwt", "ticket", "verifier", "sessionid"} {
+			"signature", "jwt", "ticket", "verifier", "sessionid",
+			"secretkey", "accesskey", "privatekey", "passwd", "otp", "credential"} {
 			if strings.HasSuffix(k, suffix) {
 				return true
 			}
@@ -46,7 +47,7 @@ func redactQueryValue(rawValue string) (string, bool) {
 	if err != nil {
 		return redacted, true
 	}
-	for i := 0; i < 3 && strings.Contains(decoded, "%"); i++ {
+	for i := 0; i < 16 && strings.Contains(decoded, "%"); i++ {
 		next, nerr := url.QueryUnescape(decoded)
 		if nerr != nil {
 			break
@@ -57,7 +58,7 @@ func redactQueryValue(rawValue string) (string, bool) {
 	// key=value pairs are redacted like a query, or a bare key=value pair.
 	var out string
 	if q := strings.IndexAny(decoded, "?#"); q >= 0 {
-		out = RedactPath(decoded[:q]) + decoded[q:q+1] + RedactQuery(decoded[q+1:])
+		out = RedactPath(decoded[:q]) + decoded[q:q+1] + RedactQuery(RedactPath(decoded[q+1:]))
 	} else if strings.Contains(decoded, "=") {
 		out = RedactQuery(RedactPath(decoded))
 	} else {

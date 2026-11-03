@@ -50,7 +50,11 @@ func TestRedactionHelpers(t *testing.T) {
 		{"next=/setup?token=abc&limit=20", "next=%2Fsetup%3Ftoken%3DREDACTED&limit=20"},
 		{"redirect=%252Fverify-email%252Ftok", "redirect=%2Fverify-email%2FREDACTED"},
 		{"next=%2Fsetup%23token%3Dabc", "next=%2Fsetup%23token%3DREDACTED"},
-		{"state=token=abc", "state=token%3DREDACTED"},
+		{"next=%2Fx%23%2Freset-password%2FSECRET", "next=%2Fx%23%2Freset-password%2FREDACTED"},
+		{"next=%2Fx%3F%2Fjoin%2Fabc", "next=%2Fx%3F%2Fjoin%2FREDACTED"},
+		{"redirect=%25252525252Fverify-email%25252525252Ftok", "redirect=%2Fverify-email%2FREDACTED"},
+		{"secret_key=a&access_key=b&otp=c&passwd=d&credentials=e", "secret_key=REDACTED&access_key=REDACTED&otp=REDACTED&passwd=REDACTED&credentials=REDACTED"},
+		{"state=token=abc","state=token%3DREDACTED"},
 		{"user_code=ABCD&recovery_code=x&verification_code=y&request_header=z&status_code=500", "user_code=REDACTED&recovery_code=REDACTED&verification_code=REDACTED&request_header=REDACTED&status_code=500"},
 		{"invite_code=x&tokens=y&session_code=z&error_code=404", "invite_code=REDACTED&tokens=REDACTED&session_code=REDACTED&error_code=404"},
 	} {
