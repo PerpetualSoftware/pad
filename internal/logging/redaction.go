@@ -1,7 +1,6 @@
 package logging
 
 import (
-	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -263,8 +262,7 @@ func redactAttr(groups []string, a slog.Attr) slog.Attr {
 		case nil:
 			return a
 		case error:
-			var urlErr *url.Error
-			if errors.As(v, &urlErr) {
+			if isURLError(v) {
 				return slog.String(a.Key, ErrorType(v))
 			}
 			return slog.String(a.Key, RedactText(safeErrorText(v)))
@@ -274,7 +272,7 @@ func redactAttr(groups []string, a slog.Attr) slog.Attr {
 				return a
 			}
 			if walkable(v) {
-				return slog.Any(a.Key, sanitize(reflect.ValueOf(v), 0))
+				return slog.Any(a.Key, sanitizeValue(reflect.ValueOf(v)))
 			}
 		}
 		return a

@@ -10,6 +10,7 @@ import (
 	"go/token"
 	"log/slog"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -398,7 +399,11 @@ func TestLogPathAndQueryAttrsAreRedactedAtTheCall(t *testing.T) {
 			}
 			// Alternating key, value arguments after the message.
 			if isLogCall(c) {
-				for i := 1; i+1 < len(c.Args); i += 2 {
+				first := 1
+				if strings.HasSuffix(c.Fun.(*ast.SelectorExpr).Sel.Name, "Context") {
+					first = 2 // the context precedes the message
+				}
+				for i := first; i+1 < len(c.Args); i += 2 {
 					check(c.Args[i], c.Args[i+1])
 				}
 			}
@@ -420,7 +425,7 @@ func isLogCall(c *ast.CallExpr) bool {
 		return false
 	}
 	switch sel.Sel.Name {
-	case "Debug", "Info", "Warn", "Error":
+	case "Debug", "Info", "Warn", "Error", "DebugContext", "InfoContext", "WarnContext", "ErrorContext":
 	default:
 		return false
 	}
@@ -429,6 +434,13 @@ func isLogCall(c *ast.CallExpr) bool {
 		return x.Name == "slog" || strings.Contains(strings.ToLower(x.Name), "log")
 	case *ast.SelectorExpr:
 		return strings.Contains(strings.ToLower(x.Sel.Name), "log")
+	case *ast.CallExpr:
+		// slog.Default().Info(...)
+		if inner, ok := x.Fun.(*ast.SelectorExpr); ok {
+			if id, ok := inner.X.(*ast.Ident); ok {
+				return id.Name == "slog" && inner.Sel.Name == "Default"
+			}
+		}
 	}
 	return false
 }
@@ -448,5 +460,143 @@ func moduleRoot(t *testing.T) string {
 			t.Fatal("go.mod not found above the test directory")
 		}
 		dir = parent
+	}
+}
+
+func TestRedactTextStructuredAndQueryValues(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{`{"token":{"value":"SECRET","n":1},"ok":true}`, `{"token":REDACTED,"ok":true}`},
+		{`{"tokens":["abc","def"],"ok":true}`, `{"tokens":REDACTED,"ok":true}`},
+		{`{"secret": [ "a]b", {"c":"d"} ] }`, `{"secret": REDACTED }`},
+		{`{"token":{"never":"closes"`, `{"token":REDACTED`},
+		{"GET https://x.example/cb?key=AIzaFixture&state=abc&ok=1 failed", "GET https://x.example/cb?key=REDACTED&state=REDACTED&ok=1 failed"},
+		{"worker state=running key=cache-1", "worker state=running key=cache-1"},
+		{"see [/join/abc] and {/reset-password/abc}", "see [/join/REDACTED] and {/reset-password/REDACTED}"},
+	} {
+		if got := RedactText(tc.in); got != tc.want {
+			t.Errorf("RedactText(%q)\n got %q\nwant %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+type stringerCfg struct {
+	Name     string
+	Password string
+}
+
+func (stringerCfg) String() string { return "cfg" }
+
+type secretish string
+
+type withTimes struct {
+	At   time.Time
+	Addr netip.Addr
+	Note string
+}
+
+type nilUnwrapErr struct{ inner error }
+
+func (e *nilUnwrapErr) Error() string { return e.inner.Error() }
+func (e *nilUnwrapErr) Unwrap() error { return e.inner }
+
+func TestRedactAttrMarshalersAndNamedStrings(t *testing.T) {
+	for _, format := range []string{"json", "text"} {
+		t.Run(format, func(t *testing.T) {
+			buf := capture(t, format)
+			slog.Info("stringer", "cfg", stringerCfg{Name: "n", Password: fixture})
+			slog.Info("raw", "body", json.RawMessage(`{"password":"`+fixture+`","ok":1}`))
+			slog.Info("named", "v", secretish("token="+fixture))
+			slog.Info("times", "w", withTimes{At: time.Date(2026, 11, 4, 1, 2, 3, 0, time.UTC), Addr: netip.MustParseAddr("10.0.0.7"), Note: "kept"})
+			out := buf.String()
+			if strings.Contains(out, fixture) {
+				t.Errorf("a credential reached the log:\n%s", out)
+			}
+			for _, keep := range []string{"2026-11-04", "10.0.0.7", "kept"} {
+				if !strings.Contains(out, keep) {
+					t.Errorf("lost diagnostic %q:\n%s", keep, out)
+				}
+			}
+		})
+	}
+}
+
+func TestRedactAttrKeepsCountsUnderCredentialNames(t *testing.T) {
+	buf := capture(t, "json")
+	slog.Info("counts", "usage", map[string]int{"input_tokens": 5, "code": 404},
+		"row", struct {
+			Tokens int
+			Code   int
+			Token  string
+		}{Tokens: 7, Code: 503, Token: fixture})
+	out := buf.String()
+	for _, keep := range []string{`"input_tokens":5`, `"code":404`, `"Tokens":7`, `"Code":503`} {
+		if !strings.Contains(out, keep) {
+			t.Errorf("lost count %s:\n%s", keep, out)
+		}
+	}
+	if strings.Contains(out, fixture) {
+		t.Errorf("a credential reached the log:\n%s", out)
+	}
+}
+
+func TestRedactAttrWalkCostIsBounded(t *testing.T) {
+	fan := map[string]any{}
+	for i := 0; i < 256; i++ {
+		fan[strconv.Itoa(i)] = fan
+	}
+	huge := make(map[int]string, 300000)
+	for i := 0; i < 300000; i++ {
+		huge[i] = "v"
+	}
+	done := make(chan struct{})
+	go func() {
+		buf := capture(t, "json")
+		slog.Info("fan", "x", fan)
+		slog.Info("huge", "x", huge)
+		if buf.Len() > 1<<20 {
+			t.Errorf("a bounded walk produced %d bytes", buf.Len())
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the walk of a fanned-out or huge value did not return in 10s")
+	}
+}
+
+func TestRedactAttrNestedErrorsAndOddValues(t *testing.T) {
+	buf := capture(t, "json")
+	slog.Info("nested", "x", map[string]any{
+		"e":    &url.Error{Op: "Post", URL: "https://hooks.example.com/hooks/" + fixture, Err: errors.New("boom")},
+		"hash": []byte{0xff, 0xfe, 0x01},
+	})
+	var nilErr *nilUnwrapErr
+	slog.Info("typed nil", "error", error(nilErr))
+	out := buf.String()
+	if strings.Contains(out, fixture) {
+		t.Errorf("a credential reached the log:\n%s", out)
+	}
+	if !strings.Contains(out, "<3 bytes>") {
+		t.Errorf("binary bytes are not summarised:\n%s", out)
+	}
+	if !strings.Contains(out, "typed nil") {
+		t.Errorf("a typed-nil error took the log call down:\n%s", out)
+	}
+}
+
+func TestRedactAttrURLValuesDoNotKeepUserinfoOrQuery(t *testing.T) {
+	buf := capture(t, "json")
+	u, err := url.Parse("https://user:" + fixture + "@example.com/cb?token=" + fixture + "&page=2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	slog.Info("url value", "target", u, "again", *u)
+	out := buf.String()
+	if strings.Contains(out, fixture) {
+		t.Errorf("a credential in a url.URL reached the log:\n%s", out)
+	}
+	if !strings.Contains(out, "example.com") {
+		t.Errorf("lost the host:\n%s", out)
 	}
 }
