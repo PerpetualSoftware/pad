@@ -427,8 +427,14 @@ func (s *Server) runRowlessBlobSweep(ctx context.Context, blobCutoff time.Time) 
 				if s.rowlessPreDeleteHook != nil {
 					s.rowlessPreDeleteHook(b.Hash)
 				}
-				exists, err := s.store.AttachmentRowsExistForHash(b.Hash)
+				// The row re-check and the delete share one deadline: the
+				// in-flight lock is process-wide and every upload takes it
+				// (TASK-4280). A re-check that times out keeps the blob for
+				// the next sweep; a delete that times out only logs.
+				lockedCtx, cancelLocked := context.WithTimeout(ctx, refusedBlobDeleteTimeout)
+				exists, err := s.store.AttachmentRowsExistForHashContext(lockedCtx, b.Hash)
 				if err != nil {
+					cancelLocked()
 					s.inFlight.Unlock()
 					slog.Warn("rowless-blob sweep: delete-time row re-check failed",
 						"backend", prefix, "hash", b.Hash, "error", err)
@@ -436,10 +442,12 @@ func (s *Server) runRowlessBlobSweep(ctx context.Context, blobCutoff time.Time) 
 					continue
 				}
 				if exists {
+					cancelLocked()
 					s.inFlight.Unlock()
 					continue
 				}
-				delErr := backend.Delete(ctx, b.Key)
+				delErr := backend.Delete(lockedCtx, b.Key)
+				cancelLocked()
 				s.inFlight.Unlock()
 				if delErr != nil {
 					slog.Warn("rowless-blob sweep: blob delete failed",
@@ -541,6 +549,16 @@ func (s *Server) SetOrphanGCConfig(interval, grace time.Duration) {
 		s.orphanGC.interval = interval
 	}
 	if grace > 0 {
+		// A grace shorter than a copy transaction lets the sweep claim a
+		// soft-deleted source row the copy has already planned from, and
+		// reclaim its blob before the clone commits. Floor it at the window
+		// the reference-stamp protocol already accepts for slow writers
+		// (TASK-4280).
+		if grace < orphanGCRefStaleWindow {
+			slog.Warn("orphan GC: configured grace is below the minimum and was raised",
+				"configured", grace.String(), "effective", orphanGCRefStaleWindow.String())
+			grace = orphanGCRefStaleWindow
+		}
 		s.orphanGC.grace = grace
 	}
 }
