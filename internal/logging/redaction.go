@@ -16,10 +16,17 @@ var keySeparators = strings.NewReplacer("_", "", "-", "", " ", "")
 // credentialKey also recognises compound names such as access_token,
 // webhook_secret and Proxy-Authorization, regardless of case or separators.
 func credentialKey(key string) bool {
-	// token[] and access_token[0] are array forms of the same key.
-	if i := strings.IndexByte(key, '['); i > 0 {
-		key = key[:i]
+	// token[], access_token[0] and user[password] are bracket forms: check the
+	// name and every bracketed segment.
+	for _, seg := range strings.FieldsFunc(key, func(r rune) bool { return r == '[' || r == ']' }) {
+		if credentialName(seg) {
+			return true
+		}
 	}
+	return credentialName(key)
+}
+
+func credentialName(key string) bool {
 	key = strings.ToLower(keySeparators.Replace(key))
 	// A plural (tokens, passwords, cookies, recovery_codes) names the same credential.
 	for _, k := range []string{key, strings.TrimSuffix(key, "s")} {
@@ -48,6 +55,8 @@ func credentialKey(key string) bool {
 
 const maxUnescapePasses = 16
 
+var escapeSeq = regexp.MustCompile(`%[0-9A-Fa-f]{2}`)
+
 // fullyUnescape decodes s until no escape remains. It reports false when the
 // input is malformed, or is still encoded after maxUnescapePasses: text that
 // cannot be examined cannot be shown, so callers redact it whole. A literal
@@ -60,6 +69,11 @@ func fullyUnescape(s string) (string, bool) {
 	for i := 0; i < maxUnescapePasses && strings.Contains(cur, "%"); i++ {
 		next, nerr := url.QueryUnescape(cur)
 		if nerr != nil {
+			// A bad escape after valid ones (%252F...%25zz) must not hide the
+			// still-encoded text before it.
+			if escapeSeq.MatchString(cur) {
+				return "", false
+			}
 			return cur, true
 		}
 		if next == cur {

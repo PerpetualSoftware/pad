@@ -75,8 +75,19 @@ func TestRedactQueryOpaqueEncodingIsRedacted(t *testing.T) {
 	}
 }
 
+func TestRedactQueryBadEscapeAfterValidEncoding(t *testing.T) {
+	for _, raw := range []string{
+		"next=%252Freset-password%252FSECRET%25zz",
+		"next=%253Ftoken%253DSECRET%25zz",
+	} {
+		if got := RedactQuery(raw); strings.Contains(got, "SECRET") {
+			t.Errorf("RedactQuery(%q) leaked: %q", raw, got)
+		}
+	}
+}
+
 func TestCredentialKeyForms(t *testing.T) {
-	for _, k := range []string{"recovery_codes", "invite_codes", "token[]", "access_token[0]", "Backup-Codes"} {
+	for _, k := range []string{"user[password]", "filter[token]", "recovery_codes", "invite_codes", "token[]", "access_token[0]", "Backup-Codes"} {
 		if !credentialKey(k) {
 			t.Errorf("credentialKey(%q) = false", k)
 		}
