@@ -1463,7 +1463,7 @@ func TestRelationDoors_BulkMoveAcceptsASuppliedValueForARequiredRelation(t *test
 // answered 400 `invalid_fields` and the bulk move failed the item, on every
 // attempt, with no way for the owner to fix it through these doors at all.
 //
-// It is established that the two migration MODES must not disagree about a
+// The two migration MODES must not disagree about a
 // malformed value. They still agree; the drop is hoisted above the mode
 // switch so they agree BY CONSTRUCTION, and what they agree on is now
 // drop-and-report rather than refuse.

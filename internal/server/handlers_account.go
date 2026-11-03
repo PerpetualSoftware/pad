@@ -236,7 +236,7 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	// answer lets the deletion proceed. Only that answer: the old sidecar's
 	// exact refusal (olderSidecarRefusedEmptyCustomer). Any other 400 from a
 	// current sidecar may come with stamped customers still billing, so it
-	// aborts like every other failure.
+	// aborts like every other failure (#2036).
 	stripeWasCancelled := false
 	if s.cloudSidecar != nil {
 		err := s.cloudSidecar.CancelCustomer(fullUser.StripeCustomerID, fullUser.ID)

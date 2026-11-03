@@ -184,7 +184,7 @@ func synthesizeAttachmentMetadata(headers http.Header, id string) map[string]any
 // mime.ParseMediaType so quoted filenames containing semicolons —
 // like `attachment; filename="a;b.png"` — round-trip correctly.
 // A naive `strings.Split(";")` here would chop the filename at the
-// first internal `;` and silently corrupt the result.
+// first internal `;` and silently corrupt the result (PR #350).
 //
 // Returns filepath.Base(name) so a server-emitted path-like value
 // can't escape into a directory traversal — same defensive base

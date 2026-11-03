@@ -762,7 +762,8 @@ describe('send', () => {
 		expect(pendingOf()).toHaveLength(0);
 	});
 
-	// Red with the replayed live row written over the held tombstone.
+	// The tombstone wins: red with the replayed live row written over the
+	// held tombstone.
 	it('a replayed send does not resurrect a row deleted meanwhile (window)', async () => {
 		await readyThread();
 		wireSend();
@@ -796,7 +797,7 @@ describe('send', () => {
 		expect(thread.messages.at(-1)).toMatchObject({ seq: 401, deleted: true, body: '' });
 	});
 
-	// red with the replayed row merged across the hole below the moved window.
+	// Red with the replayed row merged across the hole below the moved window.
 	it('a replayed send below the re-anchored window is history: bubble dropped, row not merged', async () => {
 		server.fill(400);
 		server.readSeq = 0;
@@ -838,8 +839,9 @@ describe('send', () => {
 		expect(thread.messages.at(-1)!.seq).toBe(200);
 	});
 
-	// Red with the held-row lookup at #applyOwn reading the window only. The detached
-	// row is the reader's tombstone; a replayed answer for its seq carries the live text and must not win (I5).
+	// Red with the held-row lookup at #applyOwn reading the window only. The
+	// detached row is the reader's tombstone; a replayed answer for its seq
+	// carries the live text and must not win (I5).
 	it('a held DETACHED tombstone beats a replayed answer for the same seq', async () => {
 		server.fill(400);
 		server.readSeq = 0;
@@ -937,7 +939,7 @@ describe('send', () => {
 		expect(thread.ownSendTick).toBeGreaterThan(scrollBefore);
 	});
 
-	// N15: Red with the window replaced by the confirmed row alone.
+	// N15: red with the window replaced by the confirmed row alone.
 	it('keeps the window and detaches the row when the newest page cannot be fetched', async () => {
 		server.fill(400);
 		server.readSeq = 0;
@@ -1211,7 +1213,7 @@ describe('3b r2 ordering', () => {
 		expect(thread.detached).toEqual([]);
 	});
 
-	// red if a delete answer merges a row the window no longer holds (B21).
+	// Red if a delete answer merges a row the window no longer holds (B21).
 	it('does not insert a tombstone below a window that a re-anchor moved', async () => {
 		server.fill(400);
 		server.readSeq = 0;
@@ -1280,7 +1282,8 @@ describe('S1 serialized window', () => {
 		expect(marks.at(-1)?.seq).toBe(7);
 	});
 
-	// A stale page cannot un-delete a row. Red with the delete applied outside the queue (N3).
+	// A stale page cannot un-delete a row. Red with the delete applied
+	// outside the queue (N3).
 	it('applies a delete after the refresh page that was fetched before it', async () => {
 		await readyThread(5);
 		let release!: () => void;
@@ -1452,7 +1455,8 @@ describe('S1 serialized window', () => {
 		return { sending, own };
 	}
 
-	// TASK-4044, N12: Red with the own apply fetching while another send is in flight.
+	// TASK-4044, N12: red with the own apply fetching while another send is
+	// in flight.
 	it('detaches the first own row without fetching while a second send is in flight (I9, N12)', async () => {
 		server.fill(400);
 		server.readSeq = 0;
@@ -1483,7 +1487,8 @@ describe('S1 serialized window', () => {
 		expect(all.sort()).toEqual([401, 402]);
 	});
 
-	// TASK-4044, N14: Red with the refresh merging a page that landed during a send.
+	// TASK-4044, N14: red with the refresh merging a page that landed during
+	// a send.
 	it('drops a refresh page that lands while a send is in flight rather than show its row twice (I9, N14)', async () => {
 		await readyThread(3);
 		wireSend();
@@ -1506,7 +1511,7 @@ describe('S1 serialized window', () => {
 		expect(pendingOf()).toHaveLength(0);
 	});
 
-	// N16: Red with #fill not rechecking for a send in flight after its await.
+	// N16: red with #fill not rechecking for a send in flight after its await.
 	it('detaches rather than fill a page that carries the row of a send retried meanwhile (I9, N16)', async () => {
 		await readyThread(3);
 		wireSend();

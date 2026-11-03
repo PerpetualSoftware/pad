@@ -24,7 +24,7 @@ func (e *RecordSentError) Error() string { return e.err.Error() }
 func (e *RecordSentError) Unwrap() error { return e.err }
 
 // RecordNotificationsSent records ids as pushed, BY ID AND NOT BY CLAIM: this
-// is the one deliberate exception to "settle only under the claim" (r4-L4).
+// is the one deliberate exception to "settle only under the claim".
 // A delivery is a fact. A claimer whose Send outlived its lease has still
 // delivered, so its late 'sent' must land on a row another instance has since
 // reclaimed (that instance's own settle is then a no-op) and on a row

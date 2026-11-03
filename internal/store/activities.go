@@ -43,7 +43,7 @@ const ActivityDebounceCooldown = 5 * time.Minute
 // produce a wrong attribution — the direction this fix exists to prevent.
 // Raising it costs a longer scan on a write path; the number is a scan
 // ceiling, not a statement about how many rows the window may hold.
-// (which read the bound as incomplete coalescing.)
+// (A reading of the bound as incomplete coalescing was declined.)
 //
 // WHAT IT DOES NOT BOUND (BUG-2770). It caps the rows
 // the GO loop examines. It says nothing about the work the database does to
@@ -58,7 +58,7 @@ const ActivityDebounceCooldown = 5 * time.Minute
 //
 // Deliberately not claiming more than that here. The earlier version of
 // this comment asserted which index the planner would use and that the cost
-// stays small; both were guesses about a planner, and two review rounds
+// stays small; both were guesses about a planner, and two rewrites
 // went into correcting them. If this write path ever shows up in a profile,
 // measure the plan on the dialect that hurts before adding an index.
 const maxDebounceCandidates = 10
@@ -142,7 +142,7 @@ func (s *Store) CreateActivityDebounced(a models.Activity) (string, error) {
 	// snapshot is already open is missed exactly as an unwritten one is.
 	// Closing that needs both rows in one transaction, which the two
 	// "commented" sites now do (BUG-2716, CreateCommentWithActivity); the
-	// "updated" site keeps its two steps by ruling, since its activity
+	// "updated" site keeps its two steps by design, since its activity
 	// records a write that already committed.
 	//
 	// THE WRITER, NOT THE ACCOUNT (BUG-2763). One account is shared by the
@@ -811,7 +811,7 @@ func (s *Store) ListUserActivity(userID string, params models.ActivityListParams
 	// at the public page-size ceiling of 50 still works without the store
 	// silently truncating to 50 and tricking next_offset into reporting
 	// null. The handler is the source of truth for the per-page maximum;
-	// this is an inner-safety cap only (#601).
+	// this is an inner-safety cap only (PR #601).
 	if limit > 100 {
 		limit = 100
 	}

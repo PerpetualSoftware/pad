@@ -520,7 +520,7 @@ func (s *Store) dueReminderCandidates(nowTS string, limit int) ([]string, error)
 		limit = defaultReminderFireLimit
 	}
 	// SOFT-DELETED ITEMS ARE EXCLUDED HERE, not merely skipped downstream
-	// FireOneReminder rolls back when it finds the item gone,
+	// fireOneReminder rolls back when it finds the item gone,
 	// which leaves the reminder ARMED and therefore a candidate again on the
 	// next pass — so a batch bounded at `limit` and ordered oldest-first can be
 	// filled entirely by archived items, and no live reminder ever fires. The

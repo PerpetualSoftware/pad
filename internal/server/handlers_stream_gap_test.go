@@ -306,7 +306,8 @@ func assertNoFrameWithEvent(t *testing.T, frames <-chan string, eventType string
 	}
 }
 
-// TestRefusedConnectionDoesNotCountASyncRequired is pinned. The counter's population is "sync_required signals SENT". Moving the
+// TestRefusedConnectionDoesNotCountASyncRequired pins that a refused
+// connection is not counted. The counter's population is "sync_required signals SENT". Moving the
 // cursor parse above the subscribe (which is what closes the duplicate window)
 // put the unreadable-cursor increment on the wrong side of the admission
 // check, so a connection refused with 429 — which is never sent anything —

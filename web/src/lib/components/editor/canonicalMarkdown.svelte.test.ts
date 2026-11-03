@@ -62,7 +62,7 @@ const notFixed: Array<[string, string]> = [
 	['nested list indent', '- a\n    - b'],
 	['body ending in a table gains a trailing newline', '| a | b |\n| --- | --- |\n| 1 | 2 |'],
 	['body ending in a task list gains a trailing newline', '- [ ] todo\n- [x] done'],
-	// The two shapes the population parity run found (BUG-3197 checkpoint 6):
+	// The two shapes the population parity run found (BUG-3197):
 	// both are reshaped by an appendTransaction plugin, which parsing alone skips.
 	['a bare URL is autolinked', 'Tracker: https://example.com/org/repo/issues/56\n\nMore text.'],
 	['an HTML table', '<table><tr><td><ul><li>a</li></ul></td></tr></table>\n\nafter'],

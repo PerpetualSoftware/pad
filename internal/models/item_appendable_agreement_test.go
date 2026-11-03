@@ -63,7 +63,7 @@ func TestStructuredFieldIsAppendableAgreesWithTheGuard(t *testing.T) {
 	}
 
 	// Malformed OUTER blobs, which the table above cannot express because it
-	// builds a well-formed object around the value. the
+	// builds a well-formed object around the value. The
 	// predicate claimed these were appendable while the helpers error on the
 	// same parse, so the refusal message prescribed a command that fails.
 	for _, k := range keys {

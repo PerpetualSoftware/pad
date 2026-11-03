@@ -135,8 +135,8 @@ func (p *itemPatch) recordEdits(applied []bodypatch.AppliedEdit) error {
 	return nil
 }
 
-// maxPatchIntervening caps the intervening writes a rebased patch lists
-// The diff is the real check.
+// maxPatchIntervening caps the intervening writes a rebased patch lists; the diff
+// is the real check.
 const maxPatchIntervening = 50
 
 func (s *Server) handlePatchItem(w http.ResponseWriter, r *http.Request) {
@@ -500,7 +500,7 @@ func (s *Server) patchViaApplier(w http.ResponseWriter, item *models.Item, input
 	}
 	p.before, p.after = ack.Before, ack.After
 	// Edits that cancel out change nothing in the tab either: refuse, writing
-	// nothing, as the no-room path does (the #2055 fix:
+	// nothing, as the no-room path does (#2055:
 	// this path used to write a version and advance seq for a no-op).
 	if ack.Before == ack.After {
 		s.writePatchRefusal(w, ref, bodypatch.ErrNoChange)
@@ -566,8 +566,8 @@ func (s *Server) writeTabPatchRefusal(w http.ResponseWriter, ref string, e *coll
 	}
 }
 
-// countPatchRefusal counts a refused patch by reason (the
-// uncovered share must be visible).
+// countPatchRefusal counts a refused patch by reason, so the
+// uncovered share is visible.
 func (s *Server) countPatchRefusal(reason string) {
 	if s.metrics == nil {
 		return

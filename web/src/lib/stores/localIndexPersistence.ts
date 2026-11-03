@@ -1063,7 +1063,7 @@ export async function hydrateCollections(
 
 /**
  * Record a new access epoch on an EXISTING cache, touching nothing else
- * (IDEA-2898, review of the reduced tip).
+ * (IDEA-2898).
  *
  * There is one caller and one reason for it. `ensureAccessScope` may JOIN a
  * resync that is already in flight rather than start one; the resync it joined
@@ -1124,8 +1124,8 @@ export async function persistAccessEpoch(
  * Like `persistDelta`'s `removeIds`, a removal lands a TOMBSTONE so a delayed
  * snapshot can't resurrect the id (BUG-2633). This path has no cursor advance
  * in hand, so it stamps the strongest floor available: the PERSISTED cursor
- * (`meta.sync`) when a sync has happened, else the removed row's OWN seq (
- * an `upsert` can persist a row before any sync writes meta.sync, and that
+ * (`meta.sync`) when a sync has happened, else the removed row's OWN seq
+ * (an `upsert` can persist a row before any sync writes meta.sync, and that
  * row must still be un-resurrectable after removal), else 0. `raiseTombstone`
  * never lowers an existing stamp.
  */

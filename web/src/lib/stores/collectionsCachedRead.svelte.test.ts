@@ -79,8 +79,8 @@ describe('TASK-2946 — what loadCollections hands the cache', () => {
 		// the durable read RESOLVES after the request was issued and can observe
 		// a resync that landed in between — the write then compares that later
 		// epoch against itself, agrees, and stamps an old-scope list with the new
-		// scope. Defeat by construction, which is what the first version did and what a later
-		// fix briefly reintroduced.
+		// scope. Defeat by construction, which is what the first version did
+		// and what a later fix briefly reintroduced.
 		//
 		// Asserted by holding the epoch read PENDING and checking the request has
 		// not been issued: an ordering assertion on invocation alone would also

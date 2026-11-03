@@ -180,7 +180,11 @@ func (s *Store) ListUserOAuthConnections(userID string) ([]models.OAuthConnectio
 
 		// Hydrate from oauth_connections + oauth_connection_workspaces.
 		// Three branches:
-		//   - access lookup errored      → surface (#583).
+		//   - access lookup errored      → surface (#583): silently
+		//                                  broadening to "any workspace" on a real
+		//                                  store failure could expose workspaces the
+		//                                  user explicitly scoped out via the Phase D
+		//                                  mutation UI.
 		//   - HasConnection == true      → project flags + slugs.
 		//   - HasConnection == false     → defensive fallback (legacy
 		//                                  "any workspace, default-on

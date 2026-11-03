@@ -91,7 +91,7 @@ export interface SyncRenameInput {
 	 * The mounted collection snapshot's slug. Must match `routeSlug` for a
 	 * heal to fire — during an A→B navigation the snapshot briefly still
 	 * belongs to A, and reconciling B's route against A's id would goto A,
-	 * hijacking the navigation (; the SSE helper's
+	 * hijacking the navigation (the SSE helper's
 	 * loadedCollectionSlug gate guards the same window).
 	 */
 	loadedCollectionSlug: string;

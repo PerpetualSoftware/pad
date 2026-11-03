@@ -15,7 +15,7 @@
 // a genuine cross-tenant leak.
 //
 // WHY ONE PACKAGE RATHER THAN A PREFIX PER FILE. internal/watchevents'
-// existing ruling is that a prefix belongs to all keyspaces at once or to
+// existing rule is that a prefix belongs to all keyspaces at once or to
 // none, because an operator rule that holds for two of three keyspaces is
 // harder to state than the flat one it replaces. This package is that
 // "at once": one value, built once in cmd/pad/cmd_server.go, passed into

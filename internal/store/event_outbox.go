@@ -503,7 +503,7 @@ func writeOutboxTx(tx *sql.Tx, s *Store, ev OutboxEvent) error {
 	// was taken as given, so `item.created` could be stored with
 	// subject_kind "comment" and nothing would notice; every test happened to
 	// pass either the correct value or none, which is exactly the blind spot
-	// that lets a bug like this survive eight review rounds.
+	// that lets a bug like this survive review.
 	kind, ok := kernelevents.SubjectKind(ev.EventType)
 	if !ok {
 		// Unreachable: IsCanonical above already established membership, and
@@ -668,11 +668,11 @@ func commentPayloadWithProjection(comment *models.Comment, proj *commentAppProje
 // SUPERSEDED AT DELETION TIME (TASK-2719). This comment
 // originally kept assigned_user_id unconditionally, reasoning that after the
 // account is gone it is "a dangling reference to nobody rather than a way to
-// identify anyone". That engineering call LOST to the account-deletion ruling:
+// identify anyone". That engineering call LOST to the account-deletion requirement:
 // "delete my account" means prompt erasure of the frozen user id too, so
 // ScrubOutboxUserRefsTx (called from DeleteAccountAtomic) removes it — and
 // every other frozen user-id key — from already-written payloads. Emit-time
-// keep and deletion-time scrub are both in force; the deletion ruling is the
+// keep and deletion-time scrub are both in force; the deletion requirement is the
 // winner wherever they would disagree.
 //
 // Deliberately NOT scrubbed: collection_*/ref and the parent fields, which are
@@ -813,7 +813,7 @@ func scrubUserRefsInNode(node any, userID string) bool {
 // ScrubOutboxUserRefsTx erases a deleted account's user id from every frozen
 // outbox payload and from the subject_id column, on the caller's transaction.
 // The account-deletion counterpart of scrubItemPII's emit-time scrub — see the
-// SUPERSEDED note there for the ruling that reversed emit-time's
+// SUPERSEDED note there for the decision that reversed emit-time's
 // assigned_user_id decision (TASK-2719).
 //
 // UNIFORM OVER DISPATCHED AND UNDISPATCHED ROWS, deleting neither (TASK-2719):
@@ -888,8 +888,8 @@ func (s *Store) ScrubOutboxUserRefsTx(tx *sql.Tx, userID string) error {
 	// matched set in a single go — the unbounded-read shape of BUG-2827
 	// reached through a different door.
 	//
-	// WHAT BATCHING DOES TO THE RESIDUAL WINDOW, stated because a reviewer
-	// asked whether keyset paging over random uuids can miss a row.
+	// WHAT BATCHING DOES TO THE RESIDUAL WINDOW, stated because it is natural to ask
+	// whether keyset paging over random uuids can miss a row.
 	// It cannot miss a row that EXISTED when the scan began: ids are
 	// fixed, the walk is ascending over every matching row above the cursor,
 	// and a row only stops matching once it has been scrubbed. What changes is
@@ -2349,8 +2349,7 @@ func (s *Store) EmitBulkHeaderEvent(workspaceID, batchID, op string, itemIDs []s
 	}
 	// A bulk operation that TOUCHED nothing is not an event. Note the verb:
 	// this is an empty-member-list guard, not a semantic-change guard, and the
-	// difference is visible on the wire (2 and 5 each raised
-	// it). The caller passes every row it mutated without error, which
+	// difference is visible on the wire. The caller passes every row it mutated without error, which
 	// includes rows where the mutation was a no-op — untagging a tag nobody
 	// has — and the store emits member events only for real changes. So a
 	// header can arrive with a count and no members.

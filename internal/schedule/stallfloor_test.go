@@ -78,7 +78,8 @@ func TestStallPosClosedForm(t *testing.T) {
 		{"minutely_ny_fall", nyZone, "2025-11-02T01:56", "FREQ=MINUTELY;INTERVAL=2;BYMINUTE=7", shapeUnit},
 		{"minutely_filtered", "UTC", "2025-01-01T00:00", "FREQ=MINUTELY;BYMONTH=1;BYYEARDAY=200", shapeFloor},
 		{"hourly_filtered_byhour", "UTC", "2025-01-01T00:00", "FREQ=HOURLY;BYHOUR=5;BYMONTH=1;BYYEARDAY=200", shapeFloor},
-		// Keep both M2 reproductions from neverpartial_test.go explicit.
+		// Keep both reproductions of the RDATE-behind-a-never-firing-rule case from
+		// neverpartial_test.go explicit.
 		{"M2_minutely", "UTC", "2025-01-01T00:00", "FREQ=MINUTELY;BYMONTH=1;BYYEARDAY=200", shapeFloor},
 		{"M2_hourly_tokyo", "Asia/Tokyo", "2025-01-01T00:00", "FREQ=HOURLY;BYMONTH=1;BYYEARDAY=200", shapeFloor},
 	} {

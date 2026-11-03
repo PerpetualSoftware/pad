@@ -320,8 +320,8 @@ func (s *Store) ResolveRelationReferentsQ(
 }
 
 // THREE READERS OF ONE SHAPE, and they are three because they answer three
-// different questions. Picking the wrong one is what went wrong,
-// twice, so the map lives here where the first of them is defined:
+// different questions. Picking the wrong one has been a defect
+// twice over, so the map lives here where the first of them is defined:
 //
 //   - `relationArrayElements` — IS THIS AN ARRAY OF STRINGS? The general shape
 //     question. Blanks are elements like any other; the caller decides.
@@ -435,7 +435,7 @@ func relationValueShapeIsValid(def models.FieldDef, raw any) bool {
 // caller deliberately emptied.
 func relationValueIsCleared(def models.FieldDef, raw any) bool {
 	if def.IsMultiRelation() {
-		// THE EMPTY LIST ONLY, and this narrowed in. It used to
+		// THE EMPTY LIST ONLY, and this was narrowed. It used to
 		// count an array of BLANKS as cleared too, by analogy with the scalar
 		// `" "`. The analogy does not hold: an empty list is the agreed
 		// spelling of "no targets", while `[" "]` is a list of ONE reference
@@ -655,9 +655,8 @@ func (s *Store) resolveRelationValueQ(
 			}, nil
 		}
 	}
-	// VISIBILITY ON THE UUID AND REF RUNGS.
-	// It belongs HERE, in the one function both types
-	// resolve through, and not in the server's post-resolution pass where the
+	// VISIBILITY ON THE UUID AND REF RUNGS. It belongs HERE, in the one
+	// function both types resolve through, and not in the server's post-resolution pass where the
 	// scalar half used to carry it alone.
 	//
 	// What the old placement cost: that pass is gated on the field TYPE, so
@@ -840,8 +839,8 @@ func (s *Store) resolveRelationTitleQ(
 	// on the store API."
 	//
 	// TWO COSTS, stated because they are real, and stated more carefully than
-	// the first version of this comment (which
-	// overstated both claims):
+	// the first version of this comment, which
+	// overstated both claims:
 	//
 	// The walk loads each candidate and asks canSee about it, so it is O(live
 	// items sharing this exact title) queries — in this collection here, and
@@ -894,7 +893,8 @@ func (s *Store) resolveRelationTitleQ(
 			if canSee == nil {
 				// Load BEFORE counting. Counting first meant a row deleted
 				// between the id page and this fetch still counted, so one
-				// remaining live match could answer `ambiguous`. A vanished row is not a match.
+				// remaining live match could answer `ambiguous`.
+				// A vanished row is not a match.
 				found, gerr := s.GetItemQ(q, id)
 				if gerr != nil {
 					return nil, nil, false, gerr
@@ -1186,7 +1186,7 @@ const (
 // flow and its own prose. Three statements of one rule is the shape that
 // invites a fourth door to state it slightly differently, which is the drift
 // TASK-2878 existed to remove. The polarity now lives HERE and nowhere else,
-// so a reviewer checking "does this door get the rule right" reads one
+// so a reader checking "does this door get the rule right" reads one
 // function, and a mutation of it breaks every site at once.
 func (o RelationOrigin) Refuses() bool {
 	return o == RelationOriginSupplied
@@ -1413,7 +1413,7 @@ func (s *Store) MigrateRelationReferentsQ(
 	// A legacy blob holding a number in a relation field was exactly that —
 	// the single move answered 400 invalid_fields and the bulk move failed
 	// the item, on every attempt, with no way for the owner to fix it except
-	// by editing the blob through some other door (F20-3).
+	// by editing the blob through some other door.
 	//
 	// `invalid_shape` rather than `not_portable` or `not_found`: the value is
 	// not a reference, so every reason describing a LOOKUP is a false account
@@ -1465,7 +1465,7 @@ func (s *Store) MigrateRelationReferentsQ(
 				// by construction, above.
 				continue
 			}
-			// ONE drop for the whole field, never per element: the ruling is
+			// ONE drop for the whole field, never per element: the rule is
 			// that a cross-workspace carry drops the value WHOLE, so an
 			// element count is not something the destination should learn and
 			// an import can never change it.
@@ -1478,7 +1478,7 @@ func (s *Store) MigrateRelationReferentsQ(
 	default:
 		// Same workspace: resolve, keep what resolves, drop what does not.
 		//
-		// WHAT SURVIVES HERE IS OBSERVABLE, AND THAT IS ACCEPTED (IDEA-2893,
+		// WHAT SURVIVES HERE IS OBSERVABLE, AND THAT IS ACCEPTED (IDEA-2893;
 		// the measurements it rests on are on that idea's
 		// trail, which is where to check this reasoning rather than take it).
 		//
@@ -1589,7 +1589,7 @@ func (s *Store) MigrateRelationReferentsQ(
 // the same as a guard that is unnecessary.
 //
 // STRICTNESS IS THE CORRECTION, and it is worth naming because the lenient
-// version was mine and lasted one review round. It mapped a non-string element
+// version was wrong. It mapped a non-string element
 // to `""` on the reasoning that one bad element should not make the value
 // un-listable — and the resolver SKIPS a blank element, so `default: [42]` was
 // accepted, stored as `[""]`, and reported to nobody. A list is one value: an

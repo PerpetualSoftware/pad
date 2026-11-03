@@ -159,7 +159,8 @@
 	/**
 	 * What the source last returned, BEFORE exclusions. Kept separate so
 	 * `results` can re-filter reactively when `excludeIds` changes — which it
-	 * does late, since `ItemDetail` loads `itemLinks` asynchronously. Deriving that filter is what lets the server-backed caller
+	 * does late, since `ItemDetail` loads `itemLinks` asynchronously. Deriving
+	 * that filter is what lets the server-backed caller
 	 * honour a late exclusion without re-issuing a request per change.
 	 */
 	let rawResults = $state<ItemIndexRow[]>([]);
@@ -380,8 +381,8 @@
 			const rows = (res.results ?? []).map((r) => r.item);
 			rawResults = rows;
 			// A TRUNCATED page is not an answer to "does this exact title
-			// exist" — the row could be on a page we never fetched. Same defect as trusting the local ranker's window, arriving
-			// from the server side.
+			// exist" — the row could be on a page we never fetched. Same defect as
+			// trusting the local ranker's window, arriving from the server side.
 			//
 			// Completeness is read from the PAGE LENGTH, not from `total`.
 			// `total` cannot answer it: when the count query
@@ -659,9 +660,9 @@
 				coldAnswered = false;
 				activeId = null;
 				loading = false;
-				// INVALIDATED, not committed and not left alone. `lastScope` means "the scope the rows on screen
-				// answer for", and this branch just removed the rows — so after
-				// it they answer for nothing, which is what null says.
+				// INVALIDATED, not committed and not left alone. `lastScope` means "the
+				// scope the rows on screen answer for", and this branch just removed the
+				// rows — so after it they answer for nothing, which is what null says.
 				//
 				// Both neighbouring mistakes fall out of that one reading. A
 				// scope change arriving while the state is dropped must not be

@@ -717,7 +717,7 @@ func TestAnUnconfirmedAdmissionIsNotCycledAsIdle(t *testing.T) {
 	t.Cleanup(func() { _ = client.Close() })
 
 	// PHASE 2, because the detector only runs there — flipping the gate in
-	// Silently un-covered this test, which the mutation matrix
+	// an earlier draft silently un-covered this test, which the mutation matrix
 	// caught: removing the install-time stamp went from DETECTED back to
 	// SURVIVED, because a phase-1 bus never scans and this was the only test
 	// that could see the zero value.

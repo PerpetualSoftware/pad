@@ -171,9 +171,8 @@ describe('BUG-2991: the create-workspace modal does not act for a session that e
 		// NON-VACUITY, and it is not decoration: before BUG-3004 was fixed the
 		// reset wiped the typed name, the submit button was disabled, the click
 		// did nothing, and this exact assertion pair passed for that reason
-		// (an earlier version of this test had that shape). "Did not navigate" is trivially true of
-		// a submit that never
-		// happened.
+		// (an earlier version of this test had that shape). "Did not
+		// navigate" is trivially true of a submit that never happened.
 		expect(api.workspaces.create).toHaveBeenCalled();
 
 		authStore.clear();

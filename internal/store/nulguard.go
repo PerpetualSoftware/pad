@@ -278,9 +278,9 @@ const nulTriggerMarker = "pad_nul_invariant"
 // classifyTriggerRefusal converts a Layer B trigger abort into the SAME typed
 // error Layer A produces, so a caller cannot tell which layer refused.
 //
-// That indistinguishability is the requirement, not a nicety. Ruling 2 admitted
-// the second ring of caller-influenced columns — user agents, IP addresses,
-// attachment filenames — on the condition that a header-derived value hitting a
+// That indistinguishability is the requirement, not a nicety. The second ring of
+// caller-influenced columns — user agents, IP addresses,
+// attachment filenames — was admitted on the condition that a header-derived value hitting a
 // trigger must not surface as a 500 or a broken login. It reaches the handler
 // as a 400 naming the rule because it becomes InvalidTextParameterError here.
 //

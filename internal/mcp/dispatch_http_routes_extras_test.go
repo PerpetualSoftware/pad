@@ -595,8 +595,7 @@ func TestMapWebhookCreate_NormalizesCommaSeparatedEventsToJSONArray(t *testing.T
 	// The store persists `events` verbatim into a column that the
 	// dispatcher's matchesEvent later parses as a JSON array. A
 	// comma-separated string never matches anything once stored.
-	// The dispatcher
-	// must normalize CLI-style commas into the JSON-array shape so
+	// The dispatcher must normalize CLI-style commas into the JSON-array shape so
 	// MCP-created webhooks actually fire.
 	_, p, body, err := mapWebhookCreate(map[string]any{
 		"workspace": "docapp",

@@ -230,11 +230,13 @@ describe('localIndex.reconcile — the door the collection route now uses', () =
 	});
 
 	it('an older, lower batch landing after a newer one cannot regress the cursor', () => {
-		// IDEA-2901 asked for this to be PINNED rather than assumed, and it was once proposed as a defect: two loops both start at cursor 10,
-		// the newer response applies 20, then the older applies 15 and progress
-		// goes backwards. It cannot happen — `applyDelta` reads `state.cursor`,
-		// compares and assigns with NO await between them, so a non-advancing
-		// batch is dropped whole by guard 1 and nothing can interleave.
+		// IDEA-2901 asked for this to be PINNED rather than assumed, and it
+		// was once proposed as a defect: two loops both start at cursor 10,
+		// the newer response applies 20, then the older applies 15 and
+		// progress goes backwards. It cannot happen — `applyDelta` reads
+		// `state.cursor`, compares and assigns with NO await between them, so
+		// a non-advancing batch is dropped whole by guard 1 and nothing can
+		// interleave.
 		//
 		// DRIVEN AT `applyDelta` SINCE BUG-3192. The first form ran two loops
 		// through `reconcile`, which now serialises its asks, so the door can no

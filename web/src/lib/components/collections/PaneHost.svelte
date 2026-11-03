@@ -452,7 +452,7 @@
 		// therefore over-counted by the ~260px sidebar — against the true
 		// flex-row width with NO visible jump. Waiting for the observer's first
 		// (async, post-paint) callback is what let an over-wide stored width
-		// flash before snapping (TASK-2114 hydration-reflow criterion; coord P2).
+		// flash before snapping (TASK-2114 hydration-reflow criterion).
 		// Runs regardless of ResizeObserver support (needs only
 		// getBoundingClientRect). `untrack` so reading storedPaneWidth/paneEl
 		// inside the fit doesn't add them as deps of this observer effect (which

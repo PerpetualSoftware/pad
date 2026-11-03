@@ -154,8 +154,8 @@ func (s *Server) deliverAppHooks(unit outboxDelivery) (owed bool, err error) {
 		}
 		if expired {
 			// Only a delivery the app was OWED is dropped and counted, and
-			// the decision is made under the install lock, as admission's is
-			// One admission would refuse is recorded
+			// the decision is made under the install lock, as admission's is:
+			// one admission would refuse is recorded
 			// refused.
 			outcome, err := s.store.DropOwedDelivery(unit.eventID, t.WebhookID, unit.eventType, collectionID, unit.occurredAt, "undelivered after "+appWebhookDropAfter.String())
 			if err != nil {

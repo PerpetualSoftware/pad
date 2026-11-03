@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 /**
- * BUG-3005. The stores still holding per-user
+ * BUG-3005. The stores found still holding per-user
  * state, plus the unfenced `loading` write in collectionStore.
  *
  * The four stores named on the item were not the population — the enumeration

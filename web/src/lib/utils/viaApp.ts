@@ -1,5 +1,5 @@
 /**
- * The "via <App>" attribution label (SPEC-6 U9c, TASK-3413; §11 Q4).
+ * The "via <App>" attribution label (SPEC-6 U9c §11 Q4, TASK-3413).
  * A write an installed app made, or a person made through one, keeps its
  * author; the app is a quiet secondary label beside it, never a second author
  * line. The server resolves the name (the app's bot name, else its origin),

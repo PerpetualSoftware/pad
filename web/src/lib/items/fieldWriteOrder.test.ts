@@ -1,4 +1,4 @@
-// Ordering for concurrent whole-list writes to ONE field (PLAN-2857, U4).
+// Ordering for concurrent whole-list writes to ONE field (PLAN-2857 U4).
 //
 // The defect this file is the instrument for is not a display glitch: the item
 // pane's 409 refetch-and-retry RE-SENDS a body the user has already replaced,
@@ -171,7 +171,7 @@ describe('submitOrderedOCC — the retry never replays a superseded body', () =>
 		// something of the same class. The caller tells a superseded write apart
 		// by asking the question this asked, and a synthesised error of the
 		// right shape would satisfy an `instanceof` while losing whatever the
-		// server said (these assertions once checked only class and
+		// server said (these assertions checked class and
 		// message, so swapping in a different Conflict stayed green).
 		expect(outcome.ok === false && outcome.e).toBe(row.lastConflict);
 	});

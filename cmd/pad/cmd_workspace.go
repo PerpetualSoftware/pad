@@ -1196,7 +1196,7 @@ Both formats can be re-imported via 'pad workspace import'.`,
 			// Stream rather than buffer. Workspaces with multi-GB of
 			// attachments would otherwise pin the entire bundle in
 			// memory before the first byte hits disk — defeats the
-			// server-side streaming design and risks OOM.
+			// server-side streaming design and risks OOM (PR #305).
 			var dest io.Writer = os.Stdout
 			var f *os.File
 			if outputFile != "" {
@@ -1298,7 +1298,7 @@ Format is detected by file extension. Override workspace name with --name.`,
 			// Stream the file rather than reading it all in. A multi-
 			// GiB bundle would otherwise pin that much memory client-
 			// side before the first byte hits the wire — defeats the
-			// server's streaming import.
+			// server's streaming import (PR #306).
 			f, err := os.Open(filePath)
 			if err != nil {
 				return fmt.Errorf("open file: %w", err)

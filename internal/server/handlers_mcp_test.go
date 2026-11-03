@@ -332,8 +332,7 @@ func TestMCP_ValidPAT_ReachesTransport(t *testing.T) {
 // right shape if someone adds tests for this branch later.
 
 // TestMCP_NoToken_FallsBackToHostWhenPublicURLUnset pins the
-// regression where, when PAD_MCP_PUBLIC_URL
-// is unset, writeMCPUnauthorized used to drop the WWW-Authenticate
+// regression where, when PAD_MCP_PUBLIC_URL is unset, writeMCPUnauthorized used to drop the WWW-Authenticate
 // header entirely, which broke fresh-client discovery. The header is
 // still always set; what changed (PLAN-2310 DR-3) is that the URL in it
 // is never derived from the request's Host any more. With no configured
@@ -385,7 +384,7 @@ func TestMCP_NoToken_NoHostFallbackWhenPublicURLUnset(t *testing.T) {
 }
 
 // TestMCP_ReadScopedPAT_RejectedOnWriteTool pins the security fix
-// for the following: a PAT with scopes
+// where a PAT with scopes
 // `["read"]` must NOT be able to drive write tools through /mcp.
 // MCPBearerAuth used to skip tokenScopeAllows entirely; the
 // dispatcher's synthesized in-process request bypassed TokenAuth's
@@ -1068,8 +1067,7 @@ func TestE2E_ClaudeDesktopFlow(t *testing.T) {
 // then 429s once the bucket is empty.
 //
 // Uses a real PAT so the rate-limit check fires (the limiter runs
-// AFTER ValidateToken — to bound the
-// limiter map to valid-token hashes only).
+// AFTER ValidateToken, to bound the limiter map to valid-token hashes only).
 func TestMCPRateLimit_PerToken_BucketEnforced(t *testing.T) {
 	t.Parallel()
 	srv := mcpEnabledTestServer(t)

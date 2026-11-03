@@ -42,7 +42,7 @@ func (d *HTTPHandlerDispatcher) resolveAssignName(
 		// An EMPTY `assign` is deliberately still a no-op, and this is
 		// the one place in TASK-2571 where the fix stops short. Do not
 		// "finish the job" by mapping it to a clear without reading
-		// this first; mapping it to a clear was proposed and is wrong.
+		// this first.
 		//
 		// `assign` is SCHEMA-DECLARED (catalog_item.go), unlike
 		// `assigned_user_id`, which an agent can only reach by knowing
@@ -327,7 +327,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 		// list is filtered by the OAuth allow-list (TASK-977). Use
 		// prefetchReq.Context() so the lister sees the same
 		// auth/token state buildHTTPRequest + d.Apply attached
-		// (same fix as executeRequest).
+		// (#379, same fix as executeRequest).
 		return packageHTTPResponse(prefetchReq.Context(), cmdKey, prefetchRec.Result(), d.Lister)
 	}
 
@@ -344,14 +344,14 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 	// CLI back-compat string) and lets ItemUpdate.UnmarshalJSON's
 	// flex parser (BUG-1144) normalize. Pre-BUG-1432 this loop
 	// filtered on `string` only, so a schema-conforming
-	// `tags: ["a"]` was silently dropped (BUG-1432).
+	// `tags: ["a"]` was silently dropped (#547).
 	//
 	// Empty string is a no-op (matches the pre-fix behaviour for
 	// non-tags string fields): ItemUpdate treats `tags: ""` as an
 	// explicit empty-string write, which would corrupt the JSONB
 	// column on Postgres (500) and the TEXT column on SQLite. Empty
 	// array `[]` is intentionally NOT filtered — that's a legitimate
-	// "clear all tags" update.
+	// "clear all tags" update (#547).
 	if v, ok := input["tags"]; ok && v != nil {
 		if s, isString := v.(string); !isString || s != "" {
 			payload["tags"] = v
@@ -376,7 +376,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 	// surprising half of the pair.
 	//
 	// NOTE the contrast with `tags` immediately above, whose empty-string
-	// filter STAYS: `tags: ""` is not a clear, it is a
+	// filter STAYS (#547): `tags: ""` is not a clear, it is a
 	// corrupt write into a JSONB/TEXT column. Same-looking guard, opposite
 	// justification — do not "unify" them.
 	if v, ok := input["assigned_user_id"].(string); ok {

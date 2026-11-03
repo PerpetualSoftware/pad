@@ -255,7 +255,7 @@ func TestValidateUpload_AcceptsOfficeOpenXMLAsZipBytes(t *testing.T) {
 	}
 }
 
-// TestSniffMIME_AliasesStdlibQuirks regression-tests:
+// TestSniffMIME_AliasesStdlibQuirks is the regression test for stdlib naming:
 // http.DetectContentType returns names that don't match modern IANA
 // conventions for WAV (audio/wave) and gzip (application/x-gzip).
 // SniffMIME must alias these to the canonical names so allowlist

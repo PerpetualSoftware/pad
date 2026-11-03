@@ -59,7 +59,7 @@ func TestUnmarkStripeEventProcessed_RoundTrip(t *testing.T) {
 }
 
 // TestUnmarkStripeEventProcessed_StaleTokenIsNoOp is the race-protection
-// test for this case. Scenario: an earlier handler
+// test for a stale unmark token. Scenario: an earlier handler
 // failure queued an unmark, but before it fired, Stripe retried and a
 // SUCCESSFUL retry re-marked the same event (fresh processed_at). If the
 // stale unmark proceeded, it would wipe the fresh marker and reopen the

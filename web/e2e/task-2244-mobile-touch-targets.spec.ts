@@ -369,7 +369,7 @@ for (const view of ['list', 'board'] as const) {
  *      hits the neighbour": a rounded tag's corner pixel hits its row, with or
  *      without any extender, and that is not what this asserts. A
  *      centred extender DID land 20 of tag 0's 40 sampled points on the chip
- * (list and board alike; the upward one lands 0), which is the measurement
+ *      (list and board alike; the upward one lands 0), which is the measurement
  *      that made it upward-only.
  * The card carries tags on purpose: without them the row below is plain text,
  * and half 2 would pass on any extender, however large.

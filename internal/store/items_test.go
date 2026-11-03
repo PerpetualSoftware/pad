@@ -1388,7 +1388,7 @@ func TestUpdateItemWithParentLink_AtomicCommit(t *testing.T) {
 // TestGetParentMap_ExcludesSoftDeletedEndpoints covers the dashboard
 // orphan-detection path: a task whose parent has been soft-deleted should
 // NOT appear in GetParentMap, so handlers_dashboard.go correctly flags the
-// task as orphaned. See BUG-734.
+// task as orphaned. See BUG-734 (PR #259).
 func TestGetParentMap_ExcludesSoftDeletedEndpoints(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)

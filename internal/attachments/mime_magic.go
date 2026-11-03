@@ -18,11 +18,11 @@ import (
 //
 //   - Magic-only matching is defeated by a real, executing ELF binary
 //     carrying "ustar" at offset 257, stored as application/x-tar.
-//   - The checksum answer to that is defeated by an ELF
+//   - The checksum that answers it is defeated by an ELF
 //     carrying a CORRECT one — and archive/tar's own Reader.Next accepts that
 //     file too. A 512-byte tar header is exactly those fields, so the two are
 //     not distinguishable at this size by anything in the standard library.
-//   - The accumulated validation refuses REAL files: PAX and
+//   - The accumulated validation refused REAL files: PAX and
 //     long-name GNU tars, legal randomized bzip2 blocks, FLAC declaring the
 //     zero sample rate RFC 9639 permits. That is this bug's own defect —
 //     refusing files people legitimately have — reintroduced by the fix.
@@ -250,8 +250,8 @@ func sniffEBMLDocType(head []byte) string {
 		if childID == docTypeID {
 			// DocType is an ASCII string whose value ENDS at the first NUL;
 			// anything after that is padding and is not part of the value
-			// (RFC 8794 §13). TrimRight was wrong here — an input
-			// produced an ffprobe-readable Matroska whose DocType payload was
+			// (RFC 8794 §13). TrimRight was wrong here — an
+			// ffprobe-readable Matroska can carry a DocType payload of
 			// "matroska\x00junk", which trimming left intact and so failed to
 			// match, storing a real Matroska as WebM.
 			return docTypeMIME(after[:childSize])

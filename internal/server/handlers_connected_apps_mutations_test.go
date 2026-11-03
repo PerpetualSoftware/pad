@@ -208,7 +208,7 @@ func TestHandleUpdateConnectedAppFlags_EmptyAllowListBlocked(t *testing.T) {
 }
 
 // TestHandleUpdateConnectedAppFlags_WildcardToSpecific_AfterPrestage is
-// the regression guard for a wildcard
+// the regression guard: a wildcard
 // connection must be able to flip to "specific workspaces" after
 // the user has pre-staged at least one workspace via the add-
 // workspace endpoint. The pre-fix code path called

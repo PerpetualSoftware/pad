@@ -158,7 +158,7 @@ func TestBUG4070_StdioNumberStringsAndFloats(t *testing.T) {
 	}
 }
 
-// TestBUG4070_EveryNumberParamIsGuarded is the population check (CONVE-35): for
+// TestBUG4070_EveryNumberParamIsGuarded is the population check (CONVE-35, decision e522d1be): for
 // every catalog tool and every param it declares
 // "number", a leading-zero string and a 2^53 float are each refused naming that
 // param, before any action runs or anything is dispatched. It walks Catalog,

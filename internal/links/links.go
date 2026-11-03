@@ -28,7 +28,8 @@ import (
 // the rewrite goes to a separate builder, so inserted text is never
 // re-examined. That was not always so: an earlier version re-scanned its own
 // output, and a new title that re-embedded the old link (`A]] [[A`) grew the
-// string without bound inside the rename transaction (BUG-2785, 2, the termination test pins it).
+// string without bound inside the rename transaction (BUG-2785; the
+// termination test pins it).
 func ReplaceTitle(content, oldTitle, newTitle string) string {
 	newLink := "[[" + escapeWikiBody(newTitle) + "]]"
 	var b strings.Builder
@@ -48,7 +49,7 @@ func ReplaceTitle(content, oldTitle, newTitle string) string {
 // ProjectReplaceTitle is len(ReplaceTitle(content, oldTitle, newTitle)) and the
 // number of links it rewrites, computed WITHOUT allocating: the document
 // cascade's memory bound runs before anything proportional to the rewrite may
-// exist (BUG-2798, BUG-2804 for the title). A version that
+// exist (BUG-2798; BUG-2804 for the title). A version that
 // collected match indices allocated 203,928,560 bytes projecting one 2 MiB
 // body of short links, against the bound test's 52,428,800-byte ceiling.
 func ProjectReplaceTitle(content, oldTitle, newTitle string) (length, occurrences int) {
@@ -166,7 +167,7 @@ func EscapedWikiTitleLen(title string) int { return escapedWikiBodyLen(title) }
 // The title segment matches case-insensitively because resolveTitleTx
 // also resolves titles case-insensitively — a source body that wrote
 // `[[old title]]` and resolved to "Old Title" via LOWER() comparison
-// must get rewritten by this function or the cascade leaves it broken.
+// must get rewritten by this function or the cascade leaves it broken (TASK-1595).
 //
 // Returns content unchanged if `oldTitle` is empty or equal to
 // `newTitle`. Caller is responsible for invoking once per rename;

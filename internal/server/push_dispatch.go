@@ -26,7 +26,7 @@ import (
 // PAD_PUSH_DISPATCH_* timing knobs through SetPushDispatchConfig (TASK-3939
 // part C); an unset knob keeps its default below.
 //
-// LEASE INVARIANT (r6-Q1): lease >= sendTimeout + leaseMargin. A claim is
+// LEASE INVARIANT: lease >= sendTimeout + leaseMargin. A claim is
 // stamped with second precision (up to 1s behind the real clock), and a Send
 // can take sendTimeout (notify.SendTimeout), so a lease shorter than that lets
 // another instance reclaim a row mid-send and push it twice. It is enforced
@@ -151,7 +151,7 @@ func (s *Server) SetPushDispatchConfig(interval, settle, lease, leaseMargin, sen
 	// sendTimeout of MaxInt64 (ParseDuration accepts up to about 2562047h), and
 	// the wrapped sum would pass the comparison below. Such a margin exceeds
 	// every representable lease, so it is the same violation (TASK-3939 part C,
-	// ruling 37e3eafa). Every other use of these durations is time.Time.Add or
+	// decision 37e3eafa). Every other use of these durations is time.Time.Add or
 	// NewTicker, which cannot wrap at this magnitude, so no cap is needed.
 	if next.leaseMargin > math.MaxInt64-next.sendTimeout || next.lease < next.sendTimeout+next.leaseMargin {
 		slog.Warn("push dispatch: config refused", "reason", "lease shorter than send timeout plus margin")
@@ -286,7 +286,7 @@ type PushDispatchApplied struct {
 // PushDispatchApplied reads the dispatcher's timings, filling defaults for
 // any unset one. Read-only; startup's wiring test reads it to prove the knobs
 // reached the dispatcher, and the interval before Start (TASK-3939 part C,
-// ruling 77a8fae7). A test-only seam, read at single-threaded startup: it
+// decision 77a8fae7). A test-only seam, read at single-threaded startup: it
 // takes the lock twice (resolve, then startedInterval), so a concurrent
 // reconfigure could give a mixed snapshot.
 func (s *Server) PushDispatchApplied() PushDispatchApplied {
@@ -399,8 +399,7 @@ func expireCutoff(start time.Time) time.Time {
 // failed one clears the ids in the chunks that committed before the failure
 // and keeps the rest, except those whose notification is past
 // pushExpireAfter (expireCutoff): the claim never selects a row created
-// before that cutoff, whether or not the expiry sweep landed (TASK-4032 r5
-// H-Q1), so nothing can re-send it, and dropping the entry is what keeps a
+// before that cutoff, whether or not the expiry sweep landed (TASK-4032), so nothing can re-send it, and dropping the entry is what keeps a
 // database that stays down from growing the set. The ids are sorted so the
 // chunking is deterministic.
 func (s *Server) retryUnrecorded(start time.Time) {

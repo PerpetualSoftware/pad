@@ -393,8 +393,7 @@ func TestDispatch_ProjectStale_FiltersInterestingTypes(t *testing.T) {
 }
 
 func TestDispatch_ProjectStale_PreservesAllFields(t *testing.T) {
-	// The previous
-	// typed-struct approach dropped `collection` (and would have
+	// The previous typed-struct approach dropped `collection` (and would have
 	// dropped any future server-side field addition). Pin that
 	// every field on each attention entry survives the filter +
 	// sort path. Treat the dispatcher's attention slice as a

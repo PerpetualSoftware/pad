@@ -41,7 +41,7 @@ func optionalInterfaces(w http.ResponseWriter) [4]bool {
 	return [4]bool{fl, hj, rf, ps}
 }
 
-// The wrapper must not hide an interface the chi writer has
+// #2186: the wrapper must not hide an interface the chi writer has
 // (io.ReaderFrom, http.Pusher) nor add one it lacks (Flusher, Hijacker).
 func TestBUG3827_WrapperKeepsTheChiWritersInterfaces(t *testing.T) {
 	rec := func() *httptest.ResponseRecorder { return httptest.NewRecorder() }

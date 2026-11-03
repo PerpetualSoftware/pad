@@ -980,7 +980,7 @@ func changelogCmd() *cobra.Command {
 }
 
 // catchUpHint is the closing line of the table and markdown output. Mark
-// caught up is web-only: the cursor is the human's (TASK-4035, ruling
+// caught up is web-only: the cursor is the human's (TASK-4035, decision
 // 380aa793), so this command has no way to move it.
 const catchUpHint = "Mark caught up is done in the web UI; this command only reads."
 
@@ -1006,7 +1006,7 @@ Read-only. It never moves your cursor; Mark caught up is done in the web UI.
 			if formatFlag == "json" {
 				// The server's JSON, re-indented, with no typed decode: a
 				// server-side shape change must not break json consumers
-				// (TASK-4035, rulings eedbf63d and cb588bde).
+				// (TASK-4035, decisions eedbf63d and cb588bde).
 				return cli.PrintJSON(raw)
 			}
 			cu, err := cli.DecodeCatchUp(raw)

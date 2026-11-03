@@ -115,8 +115,8 @@ func (c *Compiled) conv(loc *time.Location) func(Wall) time.Time {
 	return func(w Wall) time.Time { return w.naive() }
 }
 
-// newRule builds the library's rule generator alone, budgeted at steps (TASK-4100
-// H1). The elapsed path fast-forwards it to base so the distance from Start costs
+// newRule builds the library's rule generator alone, budgeted at steps (TASK-4100).
+// The elapsed path fast-forwards it to base so the distance from Start costs
 // nothing. It is nil when there is no rule or the rule is spent before base.
 func (c *Compiled) newRule(loc *time.Location, base time.Time, steps int64) (*rrule.RRule, error) {
 	r := c.rule

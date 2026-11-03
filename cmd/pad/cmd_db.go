@@ -369,8 +369,8 @@ Steps:
 			// BUG-3032: REMOVE THE APPENDER rather than race it.
 			//
 			// A post-export bundle check narrows the TOCTOU window from
-			// "pre-pass → export" to "export → import", but
-			// narrowing is not closing: the source read and the destination write
+			// "pre-pass → export" to "export → import", but narrowing
+			// is not closing: the source read and the destination write
 			// are in two different databases, so no transaction can span them and
 			// no amount of re-checking makes them atomic.
 			//

@@ -25,8 +25,8 @@
 	// The permissive default was allowed to stand only where a grep shows every
 	// mount site sits under the `[workspace]` layout that stamps the collection
 	// store. This dialog FAILS that test — it is mounted twice in the ROOT layout.
-	// So it takes the route's workspace param, and that param can be WRONG: the dialog's request
-	// can outlive a navigation, so the
+	// So it takes the route's workspace param, and that param can be WRONG: the dialog's
+	// request can outlive a navigation, so the
 	// route may name a workspace its children do not belong to. A guard fed the
 	// wrong input does not fail safe; it answers "stale" for a correct store and
 	// "fresh" for a wrong one, confidently either way.
@@ -105,10 +105,10 @@
 						</div>
 						<ul class="child-list">
 							{#each active.details.open_children as child (child.ref)}
-								<!-- I FILED THIS AS UNFIXABLE CLIENT-SIDE, claiming the DTO
+								<!-- THIS WAS FILED AS UNFIXABLE CLIENT-SIDE, claiming the DTO
 								     carried no collection identifier. It carries
 								     `collection_slug` — the link two lines below is built from
-								     it. The claim was about a shape I had not opened, in an
+								     it. The claim was about a shape nobody had opened, in an
 								     item whose whole history is enumeration claims that were
 								     not checked (BUG-3067). -->
 								{@const childStatus = categoricalValueForSlug(collectionStore.collections, child.collection_slug, 'status', child.status)}

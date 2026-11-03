@@ -223,9 +223,9 @@ handlers — onchange is never called.
 	 * with the identity it was sent for.
 	 *
 	 * "Over" is two signals, not one: `value` reflecting what we sent, or the
-	 * consumer's own settlement when it gives one. The second exists because the first cannot
-	 * answer for a write the server REFUSES —
-	 * that value never comes back, so the hold kept a rejected list on screen
+	 * consumer's own settlement when it gives one. The second exists because
+	 * the first cannot answer for a write the server REFUSES — that value never
+	 * comes back, so the hold kept a rejected list on screen
 	 * and ignored every later server value.
 	 *
 	 * The stamp is the fence, and it is structural on purpose. My first version
@@ -612,9 +612,9 @@ handlers — onchange is never called.
 			toastStore.show(limitError, 'error');
 			return;
 		}
-		// Two fences on the completion, both about the same gap: the create is a round trip and the
-		// picker stays
-		// open across it, so the world can move before it lands.
+		// Two fences on the completion, both about the same gap: the create is a
+		// round trip and the picker stays open across it, so the world can move
+		// before it lands.
 		//
 		//   * DESTROYED. `ItemDetail` wraps its fields section in
 		//     `{#key itemSlug}`, so an item switch destroys this component — but
@@ -643,7 +643,7 @@ handlers — onchange is never called.
 		// state and the replacement starts at 0 — and 0 is also the value in the
 		// overwhelmingly common case where no resync ever happened, so an
 		// equality check on it passes trivially across exactly the event it was
-		// meant to catch (it needs no coincidence to fail).
+		// meant to catch. No coincidence is needed for that: 0 is the common case.
 		const indexStillOurs = () => localIndex.resetGenerationFor(ws) === resetGen;
 		// THREE things are deliberately NOT fenced here, each raised by review
 		// and each declined for a reason that belongs next to the code rather
@@ -1283,10 +1283,9 @@ handlers — onchange is never called.
 			// Our newest send is still outstanding and this is not it: an OLDER
 			// send's echo, or an outside write. Indistinguishable, and both want
 			// the same answer — keep showing what we sent, because it is later
-			// than either. Releasing here showed the older value until the newer echo arrived. The
-			// settlement
-			// signal in `sendTyped` is what guarantees this ends even if our echo
-			// never comes.
+			// than either. Releasing here showed the older value until the newer echo
+			// arrived. The settlement signal in `sendTyped` is what guarantees this
+			// ends even if our echo never comes.
 			return;
 		}
 		if (awaitingEcho && awaitingEcho.itemId === itemId && sameTypedValue(awaitingEcho.sent, value)) {

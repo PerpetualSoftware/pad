@@ -512,7 +512,7 @@ func TestEffortBackfill_CancelStopsBetweenChunksAndWritesNoMarker(t *testing.T) 
 // never reach (they fail the hook itself). It breaks the table before the LAST
 // chunk on purpose: after any earlier chunk, the drain wait that follows reads
 // the same table and fails too, which would keep the marker unwritten even if
-// the chunk's own error were ignored (mutant M6, TASK-3921).
+// the chunk's own error were ignored (TASK-3921).
 func TestEffortBackfill_StoreFailureMidRunWritesNoMarker(t *testing.T) {
 	fx := newAttentionFixture(t)
 	for i := 0; i < 3; i++ {

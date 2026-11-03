@@ -285,7 +285,7 @@ func (s *Server) publishStructuralLinkSourceEvent(r *http.Request, workspaceID, 
 	// the source row — bumpStructuralLinkSourceTx treats it exactly like
 	// parent — so the mechanical criterion would have it emit, while v1.5's
 	// relationship-link silence would not. Deciding it inside a delivery
-	// refactor would put an event nobody ruled on onto a public wire, so it is
+	// refactor would put an event with no agreed shape onto a public wire, so it is
 	// left as it was. TASK-2723 carries the
 	// link.created / link.removed shape and this call site with it.
 	//

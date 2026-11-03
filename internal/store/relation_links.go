@@ -18,7 +18,7 @@ import (
 // indexes differently after a move, and a schema change can invalidate every
 // item in a collection with no item write at all. That second case is handled
 // by ReindexCollectionRelationLinks, called inside the schema-update
-// transaction — "it fixes itself on the next
+// transaction (the U5 contract) — "it fixes itself on the next
 // write" is false for items nobody edits, which is the same argument that
 // made this index materialised rather than derived.
 //
@@ -185,7 +185,7 @@ func relationKeysFromSchemaJSON(schemaJSON string) map[string]struct{} {
 // ReindexCollectionRelationLinks rebuilds the reverse index for every live
 // item in one collection.
 //
-// WHY THIS EXISTS. The index is a function of
+// WHY THIS EXISTS (the U5 contract). The index is a function of
 // (blob, schema), and a SCHEMA change moves the second half without touching a
 // single item. Declare a `relation` field on a collection that already holds
 // values under that key, or retype one away, and every existing item is

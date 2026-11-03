@@ -117,7 +117,7 @@ func TestWatchEventsPublishSitesAreRuled(t *testing.T) {
 			// A local alias defeats the structural check above, so the
 			// alias itself is what gets flagged: any code that reads
 			// s.watchEvents into a variable is treated as a publish site,
-			// because the ruling is about which code may HOLD the bus, not
+			// because the rule is about which code may HOLD the bus, not
 			// about how the call is spelled.
 			//
 			// Both binding forms, not just `:=`: a

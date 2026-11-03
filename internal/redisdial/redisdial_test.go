@@ -301,7 +301,7 @@ func TestTheTimeoutStillBoundsAStalledHandshake(t *testing.T) {
 	}
 }
 
-// TestAZeroTimeoutStillDialsSuccessfully is restated after
+// TestAZeroTimeoutStillDialsSuccessfully was restated after
 // the mutation matrix refused to confirm the failure mode it was named for.
 //
 // The setup is real: go-redis's Options.init() defaults DialTimeout to 5s, but

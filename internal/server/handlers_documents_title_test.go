@@ -161,7 +161,7 @@ func TestRenameCascadeTooLarge_IsPermanentShapedNotRetryable(t *testing.T) {
 }
 
 // TestRenameCascadeTooLarge_IsNotMisreportedAsATitleCollision pins the
-// handler's behaviour.
+// handler-level behaviour.
 //
 // The UNIQUE-constraint arm identifies its error by SUBSTRING, and the refusal
 // error carries the caller's own title verbatim. So a document renamed to a
@@ -209,9 +209,8 @@ func TestRenameCascadeTooLarge_IsNotMisreportedAsATitleCollision(t *testing.T) {
 //
 // "Enforced at write time, existing titles valid until their next rename" was
 // the promise, repeated in the constant's doc comment. Validating every
-// supplied title broke it for the most
-// ordinary shape of an edit there is: a client that PATCHes the whole object,
-// title included, to change the CONTENT. Documents with a legacy title became
+// supplied title broke it for the most ordinary shape of an edit there is: a client
+// that PATCHes the whole object, title included, to change the CONTENT. Documents with a legacy title became
 // uneditable, not merely un-renameable.
 //
 // The title used here cannot be created through the API any more, so it is

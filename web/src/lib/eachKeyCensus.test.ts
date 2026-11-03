@@ -53,8 +53,9 @@ function walk(node: Node, visit: (n: Node) => void): void {
 }
 
 /**
- * The keyed each blocks of one file, read by Svelte's own parser (: a hand scanner misread braces in strings, comments and regex
- * literals, and comment or script text). The id keeps the census format:
+ * The keyed each blocks of one file, read by Svelte's own parser (a hand
+ * scanner misread braces in strings, comments and regex literals, and comment
+ * or script text). The id keeps the census format:
  * `file :: each <expr> as <item>[, <index>] (<key>)`, whitespace collapsed,
  * with `#n` on the nth repeat of an identical head in one file.
  */

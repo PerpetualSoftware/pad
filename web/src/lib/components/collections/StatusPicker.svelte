@@ -5,8 +5,9 @@
 	It used to be a one-tap CYCLE control: a click advanced the status to the
 	next option immediately. On a board grouped by status the next option is the
 	next lane, so a tap meant to open the card moved it one lane instead, and on
-	touch there was no hover tooltip to say the chip was a control at all. So on every device the chip opens a picker, and nothing changes
-	until an option is chosen.
+	touch there was no hover tooltip to say the chip was a control at all.
+	So on every device the chip opens a picker, and nothing changes until an
+	option is chosen.
 
 	The picker is the shared Menu — a portaled popover on desktop, a BottomSheet
 	at the mobile breakpoint — mounted from a host portaled to <body>. The chip

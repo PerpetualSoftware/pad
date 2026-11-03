@@ -116,7 +116,7 @@ func ReservedFieldKeysIn(fields map[string]any) []string {
 // not a softening, it is the rule; refusing would hand that audience a message
 // naming a command they cannot run, which is the disease this bug family is
 // about rather than a cure for it. Do not pattern-match a new key onto the
-// exemption list; evaluate it against the predicate (2026-08-20).
+// exemption list; evaluate it against the predicate (decision of 2026-08-20).
 //
 // Today that exemption is `github_pr`, and here is the working of it. The other three reserved keys have a real writer on
 // every surface that can reach them: implementation_notes and decision_log have

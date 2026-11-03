@@ -118,7 +118,7 @@ export function registerCrashDraftKeeper(
 		// A held copy of a draft this keeper kept, whatever its text now (the
 		// user may have typed on since another tab held it), is stale too.
 		flagHeldDraftStale(last.userId, last.itemId, id);
-		// Only the draft this keeper wrote (a stale keeper must not clobber): a newer keep by another
+		// Only the draft this keeper wrote: a newer keep by another
 		// producer (keepAtRiskText) is left as it is; this one is done.
 		if (readRefusedRawDraft(last.userId, last.itemId)?.markdown !== last.markdown) {
 			setLast({ ...last, stale: true });

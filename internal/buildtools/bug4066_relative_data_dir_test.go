@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// BUG-4066 (b4cb4ff): with a relative data dir and a server whose
+// BUG-4066 (decision 4b4cb4ff): with a relative data dir and a server whose
 // cwd is not the caller's, the refresh marker used to be written under the
 // CALLER's cwd and looked for under the server's after the cd, so it leaked.
 // It is now anchored where the log is (${SERVER_CWD:-$PWD}): written and

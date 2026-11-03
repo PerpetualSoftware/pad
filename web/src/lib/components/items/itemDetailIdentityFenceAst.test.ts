@@ -62,9 +62,10 @@ const SOURCE = readFileSync(new URL('./ItemDetail.svelte', import.meta.url), 'ut
 
 
 /**
- * Why a save-indicator settle may run after an unfenced await (BUG-3044): it MUST run on every path, the item-switch and superseded returns
- * included, or the outstanding count pins 'saving' and every SSE gate with it.
- * What keeps a stale settle from moving the NEXT item's indicator is the
+ * Why a save-indicator settle may run after an unfenced await (BUG-3044): it
+ * MUST run on every path, the item-switch and superseded returns included, or
+ * the outstanding count pins 'saving' and every SSE gate with it. What keeps a
+ * stale settle from moving the NEXT item's indicator is the
  * tracker's epoch, which `saves.reset()` bumps at load. This analysis cannot
  * see that and is deliberately not taught to trust it; the claim is pinned by
  * saveTracker.svelte.test.ts 'a settle from before a reset (item switch) is
@@ -214,7 +215,8 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 		may: ['rawPendingPromptOpen'],
 	},
 	copyRefusedDraft: { reviewed: '6630af6110df', why: 'the copied text was captured before the await; the toast after it describes that copy, whichever item is shown', may: ['toastStore.show'] },
-	// BUG-3540: the restore sends the shown row's seq; a conflict refetches (fenced) and keeps the draft.
+	// BUG-3540: the restore sends the shown row's seq; a conflict refetches
+	// (fenced) and keeps the draft.
 	restoreRefusedDraft: {
 		reviewed: '9b6f7b78ab75',
 		why: 'item id, gen against loadGeneration, and the captured identity (codex r1 on TASK-3607) after every await; the finally clears this pane\'s own busy flag; a draft the item moved on from is handed to applyRefusedDraftChanges, awaited last, with nothing committed after it (TASK-3607). Re-reviewed for BUG-3850 (lead ruling 0337bf77): before that hand-off, a synchronous return while restoreBlocked (a $derived read, no await, no write). Re-reviewed for BUG-3850 r7 (lead ruling a6380212): its body is unchanged; restoreBlocked gained a synchronous !refusedDraft.baseStale read, still no await and no write. Re-reviewed for TASK-3856 r2 (lead ruling on the codex High): it first re-reads the stored draft, a synchronous localStorage read, and when that copy has the same markdown and is now baseStale it assigns refusedDraft and returns; no await precedes that write, and nothing after it changed. Re-reviewed for TASK-3856 r3 (hunter Low): that condition also requires draftAppliesAsPatch(shown, item.seq), a pure synchronous read, so a whole-body restore goes ahead; still no await before the write. Re-reviewed for BUG-3863: the TASK-3856 guard re-reads the slot the shown draft is stored in (refusedDraftSlot, a plain component-level let, read synchronously before any await), and the success clear calls resolveKeptDraft (both slots, onlyIf-guarded, synchronous) at the same place behind the same fence; no new await.',
@@ -429,7 +431,7 @@ const HELPERS: Record<string, string> = {
  * DECLARE or REBIND the names these calls pass, because such a call site may
  * sit outside every hashed unit (both `.then(ensureGraphComp)` sites do: one
  * in an `$effect`, one in `setGraphParam`), and then nothing else covers a
- * rebinding of what it defers — a function value rebound outside every unit.
+ * rebinding of what it defers.
  */
 const IDENTIFIER_CALLBACKS: GateTable['identifierCallbacks'] = [
 	{ text: 'Promise.resolve().then(ensureGraphComp)', count: 2, reviewed: '6cdb881b83f0', why: 'ensureGraphComp is itself a unit in the table above' },
@@ -532,7 +534,7 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 	});
 
 	/**
-	 * Defects found in the ANALYSIS itself by later review. Each is an
+	 * Defects found in the ANALYSIS itself after its first version. Each is an
 	 * edit the analysis accepted when it should not have. `refuses` is the
 	 * refusal the edit must produce — every string in one line — so an entry
 	 * cannot pass because some OTHER part of the edit happens to be refused
@@ -541,7 +543,7 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 	 */
 	const ANALYSIS_DEFECTS: Array<{ id: string; subs: Array<[string, string]>; refuses: string[] }> = [
 		{
-			// `?:` was walked as `consequent && alternate`, so an
+			// #1387: `?:` was walked as `consequent && alternate`, so an
 			// unsafe consequent short-circuited the walk and the alternate's commit
 			// was never seen.
 			id: 'R5-1 a commit in the alternate of a conditional whose consequent awaits',
@@ -832,9 +834,8 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 	});
 
 	/**
-	 * Edits an earlier version of the guard accepted, each tagged with its
-	 * class. Every one
-	 * is either closed here or listed in KNOWN_GAPS below.
+	 * Edits the guard accepted at 31f3b5e9, each tagged with its class. Every
+	 * one is either closed here or listed in KNOWN_GAPS below.
 	 */
 	const ROUND6 = (round6.mutants as Array<{ id: string; class: number; subs: string[][]; refuses: string[]; gate?: boolean }>).map((m) => ({
 		id: `${m.id} (class ${m.class})`,
@@ -845,7 +846,7 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 	}));
 
 	/**
-	 * More edits an earlier version of the guard accepted.
+	 * More edits the guard accepted at 6e1ba4af.
 	 * An F1 edit arrives with the NESTED row the guard asks for, since without
 	 * the row it is refused for being untabled rather than for what it commits.
 	 */
@@ -885,12 +886,11 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 	});
 
 	/**
-	 * AID GAPS: edits
-	 * the ANALYSIS accepts although they reintroduce a stale commit, each with
-	 * the sentence that says why. Each is listed in the "does not see" part of
-	 * `identityFenceAst.ts`'s header. The gate refuses every one of them by a
-	 * hash mismatch. When the aid starts reporting one, move it to
-	 * ANALYSIS_DEFECTS.
+	 * AID GAPS: edits the ANALYSIS accepts although they reintroduce a stale
+	 * commit, each with the sentence that says why. Each is listed in the
+	 * "does not see" part of `identityFenceAst.ts`'s header. The gate refuses
+	 * every one of them by a hash mismatch. When the aid starts reporting
+	 * one, move it to ANALYSIS_DEFECTS.
 	 */
 	const KNOWN_GAPS: Array<{ id: string; model: string; subs: Array<[string, string]> }> = [
 		{

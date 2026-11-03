@@ -278,7 +278,8 @@ func TestReadItem_PreservesBodyVerbatim(t *testing.T) {
 	//   - body H1 (must stay distinct from the resource heading)
 	//   - sub-heading
 	//   - em-dash and inline code fence
-	//   - schema-valid terminal status guidance
+	//   - schema-valid terminal status guidance (the body says "implemented",
+	//     not "done", because Ideas don't have "done")
 	const fixtureContent = "# Welcome — let's get this place set up\n\n" +
 		"## What I'd find useful\n\n" +
 		"Read this carefully, then mark this idea implemented when you're ready.\n\n" +

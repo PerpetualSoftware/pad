@@ -394,7 +394,7 @@ describe('the drop gate on a relation lane', () => {
 	});
 
 	it('gates on isRelationGroup, so an ordinary board is untouched', () => {
-		// THE EIGHTH WRONG-REASON TEST. It asserted only that
+		// This used to be a WRONG-REASON TEST: it asserted only that
 		// the source CONTAINS `if (isRelationGroup)` — a mutant leaving that
 		// block empty and calling `onStatusChange` unconditionally would pass.
 		// It now requires the refusal to live INSIDE that block, ahead of the
@@ -458,10 +458,9 @@ describe('the MENU move into a refused relation lane', () => {
 	 *
 	 * It was once suspected that `moveItem`'s `columnData[col] = ...` writes THROUGH
 	 * to `propColumnData`'s cached object, so restoring by assigning it back
-	 * restores nothing. That premise is FALSE (see the failure-exit block at the end of this file):
-	 * the alias mutant SURVIVES
-	 * this test, and a direct probe of the shape reports the derived's cache
-	 * unchanged by the write.
+	 * restores nothing. That premise is FALSE (see the failure-exit block at the
+	 * end of this file): the alias mutant SURVIVES this test, and a direct probe
+	 * of the shape reports the derived's cache unchanged by the write.
 	 *
 	 * What this test does prove — verified by a gate mutant killing it — is
 	 * that it drives the refusal path for real. No source guard could have done
@@ -527,11 +526,10 @@ describe('the MENU move whose WRITE fails', () => {
 	/**
 	 * The suspected alias is REFUTED, and this test is what refutes it.
 	 *
-	 * It was reasoned that the sync `$effect` assigns the
-	 * `$derived.by` VALUE into `columnData`, so `moveItem`'s
-	 * `columnData[col] = …` writes THROUGH to the derived cache — against the refusal exit and
-	 * against this one, the failure exit
-	 * where the lane write rejects and the restore rests on
+	 * It was reasoned that the sync `$effect` assigns the `$derived.by` VALUE
+	 * into `columnData`, so `moveItem`'s `columnData[col] = …` writes THROUGH to
+	 * the derived cache — against the refusal exit and against this one, the
+	 * failure exit where the lane write rejects and the restore rests on
 	 * `dropCooldown = false` alone.
 	 *
 	 * The premise does not hold. A probe over exactly that shape — a
@@ -777,9 +775,9 @@ describe('a REFUSED grouping must not write a group value (U4, codex round 1 P5)
 		// lane "+": creating there sent the lane string as the relation value.
 		// Every affordance that writes the GROUP VALUE has to ask the refusal.
 		//
-		// REWRITTEN, AND THIS LEG NO LONGER DISCRIMINATES ITS GUARD.
+		// THIS LEG NO LONGER DISCRIMINATES ITS GUARD.
 		// Its precondition used to be `.kanban-column > 1` — the named lanes
-		// really rendered, so "no +" was not "no lanes". The retained-options change removed those
+		// really rendered, so "no +" was not "no lanes". The one-lane rule removed those
 		// lanes: a refused grouping now yields the single UNCATEGORIZED lane,
 		// which withholds the "+" through `!isUncategorized` regardless of the
 		// `!groupingRefusal` gate this leg was written for. Deleting that gate

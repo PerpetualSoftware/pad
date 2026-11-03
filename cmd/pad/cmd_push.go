@@ -139,8 +139,8 @@ func pushCmd() *cobra.Command {
 // handlePushToItem and its helpers can write before the publish are
 // bad_request, unauthorized, unavailable, not_found (getWorkspace,
 // requireItemVisible, writeItemResolveError), archived, and internal_error,
-// plus the middleware codes below it. The
-// enumeration is what found `internal_error` alongside it.
+// plus the middleware codes below it. The enumeration is what found
+// `archived` and `internal_error`.
 //
 // Notably ABSENT, both deliberately:
 //   - push_unconfirmed, which exists precisely to say the outcome is

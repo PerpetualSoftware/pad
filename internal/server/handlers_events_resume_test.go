@@ -160,7 +160,7 @@ func TestOrdinaryEventsStillCarryTheirID(t *testing.T) {
 	}
 }
 
-// WriteSSEResetCursorEvent was exercised only through a
+// writeSSEResetCursorEvent was exercised only through a
 // happy-path handler. Its two failure branches differ in KIND and the
 // difference is load-bearing: a marshal error is local to one event and must
 // not tear down a healthy stream, while a write error means the peer is gone

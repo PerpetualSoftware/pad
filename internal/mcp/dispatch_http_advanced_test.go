@@ -301,7 +301,7 @@ func TestDispatchItemUpdate_SendsFieldsPatch(t *testing.T) {
 }
 
 // TestDispatchItemUpdate_TagsForwarding covers two
-// regressions on the same area:
+// regressions on the same area (#547):
 //   - the dispatcher must forward `tags: ["a"]` array
 //     shapes (was filtering on string-only, silently dropped them).
 //   - forwarding ANY non-nil value regressed the
@@ -607,7 +607,7 @@ func TestDispatchItemUpdate_LiftsAgentRoleIDFromFieldKVPToColumn(t *testing.T) {
 	// for setting the column today) get the value lifted onto
 	// the PATCH body's top-level. Otherwise the value would sit
 	// inert inside the merged fields JSON and the role assignment
-	// would no-op.
+	// would no-op (#345).
 	captured := newRequestCapture()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/workspaces/docapp/items/TASK-5", func(w http.ResponseWriter, r *http.Request) {
@@ -650,7 +650,7 @@ func TestDispatchItemUpdate_LiftsAgentRoleIDFromFieldKVPToColumn(t *testing.T) {
 func TestDispatchItemUpdate_PassesThroughAgentRoleID(t *testing.T) {
 	// Parity with mapItemCreate: agent_role_id (UUID) writes to the
 	// ItemUpdate column. The --role rejection points agents at this
-	// path, so it must actually work end-to-end (a misleading error pointing at
+	// path, so it must actually work end-to-end (#345: a misleading error pointing at
 	// --field would have put the value in the fields JSON instead).
 	captured := newRequestCapture()
 	mux := http.NewServeMux()
@@ -778,7 +778,7 @@ func TestDispatchItemUpdate_RoleResolutionFailureSurfacesAsToolError(t *testing.
 }
 
 func TestDispatch_PrefetchesGoThroughApplyHook(t *testing.T) {
-	// In-handler prefetches (members
+	// #345: in-handler prefetches (members
 	// lookup for --assign, item.update's GET) used to bypass d.Apply,
 	// which would have meant any OAuth scope-context attached at
 	// dispatch time wouldn't apply to those side-channel reads —

@@ -108,7 +108,7 @@ const notificationIDChunk = 500
 // (notify.MaxBatch; the store test pins the two together). A limit above it
 // claims maxNotificationClaim rows, and a limit <= 0 claims nothing: SQLite
 // reads a negative LIMIT as unbounded, and the read-back IN list is not
-// chunked (TASK-3939 r4-L3, r5-M1).
+// chunked (TASK-3939).
 const maxNotificationClaim = 100
 
 // ClaimPendingNotifications claims up to limit pending rows for token: rows
@@ -119,10 +119,10 @@ const maxNotificationClaim = 100
 //
 // The result is ONLY the rows this call claimed: a subset of this call's
 // candidate ids. It never exceeds limit and never includes a row the token
-// already held from an earlier call (TASK-3939 r1-H1). A held row whose lease
+// already held from an earlier call (TASK-3939). A held row whose lease
 // lapsed is a candidate again and is returned with claimed_at refreshed.
 //
-// expireCutoff is the expiry age's lower bound (TASK-4032 r5 H-Q1): a row
+// expireCutoff is the expiry age's lower bound (TASK-4032): a row
 // created before it is never selected, so the claim does not depend on the
 // expiry sweep having run and succeeded. It is the exact complement of the
 // dispatcher's rule for dropping a parked entry (created before the same
@@ -139,7 +139,7 @@ const maxNotificationClaim = 100
 // token, never the caller's. Reusing a caller token across calls, even in the
 // same second (claimed_at has second precision), is therefore safe by
 // construction: two such calls can never read back each other's rows
-// (TASK-3939 r2-F1).
+// (TASK-3939).
 func (s *Store) ClaimPendingNotifications(token string, limit int, settleCutoff, leaseCutoff, expireCutoff time.Time, exclude []string) (Claim, error) {
 	if token == "" {
 		return Claim{}, errEmptyClaimToken

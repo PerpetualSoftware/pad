@@ -714,7 +714,7 @@ func TestSeedWithEmptyTemplateNameSkipsOnboard(t *testing.T) {
 }
 
 // TestBlankWorkspaceSurvivesSeedDefaultCollections is the regression guard
-// for The server runs SeedDefaultCollections against every
+// for the bug where the server runs SeedDefaultCollections against every
 // workspace at startup as an auto-upgrade rescue. Before the fix, that hook
 // unconditionally re-materialized the standard Software-template collections
 // (tasks/ideas/plans/docs) into any workspace missing them — including

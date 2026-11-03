@@ -538,8 +538,8 @@
 									{/if}
 								</div>
 
-								<!-- Workspace allow-list editor (TASK-1524 / #585): always rendered so users in wildcard
-									 mode can pre-stage workspaces before flipping
+								<!-- Workspace allow-list editor (TASK-1524 / #585): always rendered so
+									 users in wildcard mode can pre-stage workspaces before flipping
 									 all_current_workspaces=off. The backend's
 									 empty_allowlist guard rejects the toggle when the
 									 join table is empty; pre-staging in wildcard mode

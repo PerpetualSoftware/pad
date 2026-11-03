@@ -368,7 +368,7 @@ func TestWikiLinks_SameWorkspaceQualifiedRefNoTitleFallback(t *testing.T) {
 	}
 }
 
-// TestWikiLinks_CrossWorkspaceAdminSeesAllWorkspaces regresses Admin users have
+// TestWikiLinks_CrossWorkspaceAdminSeesAllWorkspaces regresses the case where admin users have
 // implicit access to every workspace
 // (see middleware_auth.go:481), so the cross-ws enumeration must
 // use a global workspace list for admins instead of
@@ -593,7 +593,7 @@ func TestWikiLinks_CrossWorkspaceRefNumberFallback(t *testing.T) {
 	}
 }
 
-// TestWikiLinks_CrossWorkspaceTokenAllowListFilters regresses:
+// TestWikiLinks_CrossWorkspaceTokenAllowListFilters guards that
 // cross-ws traversal must honor the OAuth/MCP token's
 // workspace allow-list (TASK-952). A token consented for workspace
 // A must not return source rows from workspace B even when the

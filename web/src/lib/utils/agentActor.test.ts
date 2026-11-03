@@ -94,6 +94,6 @@ describe('agentNameOf', () => {
 });
 
 // The `agentActorLabel(metadata, fallback)` wrapper these last cases covered
-// was removed in: one caller, and it hid the `?? fallback` that
+// was removed: one caller, and it hid the `?? fallback` that
 // every other site wrote inline. Each surface's own fallback is asserted where
 // that surface is tested, which is where the casing difference actually lives.

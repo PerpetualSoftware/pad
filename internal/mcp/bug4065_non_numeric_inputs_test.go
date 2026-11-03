@@ -15,7 +15,7 @@ import (
 )
 
 // BUG-4065: a string expected_seq used to read as absent, so the content write
-// went out UNGUARDED. A plain decimal
+// went out UNGUARDED. Under decision af4bff40 a plain decimal
 // integer string is the number it spells, so "123" must reach the server as
 // expected_seq 123: a guarded write.
 func TestBUG4065_StringExpectedSeqIsAGuardedWrite(t *testing.T) {
@@ -63,11 +63,11 @@ func TestBUG4065_NumericInputAdmitsOrRefusesEveryType(t *testing.T) {
 		wantErr string // "" = accepted
 	}{
 		{"nil is absent", nil, 0, false, ""},
-		// Strings: plain decimal integers only.
+		// Strings (decision af4bff40): plain decimal integers only.
 		{"string 10", "10", 10, true, ""},
 		{"string -12", "-12", -12, true, ""},
 		{"string -0", "-0", 0, true, ""},
-		// A leading zero is refused: stdio's CLI flags
+		// A leading zero is refused (decision 5a06782e): stdio's CLI flags
 		// parse base 0, so "010" is 8 there, and reading it as 10 here would
 		// make one string two numbers.
 		{"string 010 refused", "010", 0, false, `must be a whole number, got the string "010"`},
@@ -160,7 +160,7 @@ func bug4065Doors() []bug4065Door {
 		{[]string{"workspace", "audit-log"}, map[string]any{}, "limit", top("limit"), false, "limit=7"},
 		{[]string{"item", "list"}, map[string]any{}, "limit", top("limit"), false, "limit=7"},
 		{[]string{"item", "list"}, map[string]any{}, "offset", top("offset"), false, "offset=7"},
-		// The buildQuery doors: each numeric key
+		// The buildQuery doors (decision 5a06782e): each numeric key
 		// goes through numericInput, so "7" forwards 7 and a non-number is
 		// refused, where the server's Atoi used to default it silently.
 		{[]string{"project", "standup"}, map[string]any{}, "days", top("days"), false, "days=7"},
@@ -535,7 +535,8 @@ func TestBUG4065_PadItemToolHandlerExpectedSeq(t *testing.T) {
 	}
 }
 
-// The population check: for every remote dispatch route and every parameter p its tool
+// The population check (decision 5a06782e, rebuilt per decision b9025d7c): for
+// every remote dispatch route and every parameter p its tool
 // declares "number", the route is dispatched three ways from a curated valid
 // base: p absent, p = "7", and p = each bad value. The forwarded requests are
 // compared, so the oracle does not depend on the wire name p travels under:
@@ -553,7 +554,7 @@ func TestBUG4065_PadItemToolHandlerExpectedSeq(t *testing.T) {
 //
 // Conditional reads are outside the walk: a route that reads p only when an
 // input the base does not set is present is classed "does not read". The
-// door table covers the live case, edits[].line_hint (BUG-4065).
+// door table covers the live case, edits[].line_hint (BUG-4065, decision 86de95f1).
 func TestBUG4065_NoRouteForwardsANonNumberForANumberParam(t *testing.T) {
 	toolFor := func(cmd string) string {
 		word := strings.SplitN(cmd, " ", 2)[0]

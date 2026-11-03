@@ -219,7 +219,7 @@ interface Case {
 	other?: string;
 }
 
-/** Disagreeing cases tolerated per run. Was 2 while
+/** Disagreeing cases tolerated per run. Was 2 (BUG-3557) while
  * BUG-3568 (marks on inline atoms that y-tiptap never persisted) made live tabs
  * diverge; that cause is fixed, so any disagreement now is a new defect. */
 const MAX_TAB_DISAGREEMENTS = 0;

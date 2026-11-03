@@ -13,7 +13,7 @@ import (
 // TestRelationReindexCost measures ReindexCollectionRelationLinks at scale.
 //
 // This number was asked for on TASK-2997's trail before accepting the
-// reindex-on-schema-change ruling, and the reason is worth keeping: "a rare
+// reindex-on-schema-change decision, and the reason is worth keeping: "a rare
 // owner-only operation" is a claim about FREQUENCY, and it says nothing about
 // what the operation costs when it does run. The reindex holds the
 // schema-update transaction open for its whole duration, so its cost is a
@@ -66,7 +66,7 @@ func TestRelationReindexCost(t *testing.T) {
 	t.Logf("REINDEX COST: %d items, %d edges, %s", n, count, elapsed.Round(time.Millisecond))
 
 	// And the BACKFILL over the same data, which is the startup path and the
-	// one measured here: it batches by workspace in bounded
+	// one that matters: it batches by workspace in bounded
 	// chunks, so the numbers that matter are wall time and transaction COUNT
 	// rather than time alone.
 	if _, err := s.db.Exec(s.q(`DELETE FROM item_relation_links`)); err != nil {

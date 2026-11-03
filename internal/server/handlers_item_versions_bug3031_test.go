@@ -15,8 +15,7 @@ import (
 // from items.content. Content-bearing op-log rows above the flush watermark are
 // edits no row holds, so a restore that proceeds over them leaves them in no
 // version at all. The restore now refuses with content_pending_flush unless the
-// caller sends overwrite_pending_edits. These are the legs the ruling
-// names: pending → 409 with history intact; override → today's behaviour; no
+// caller sends overwrite_pending_edits. These are the legs: pending → 409 with history intact; override → today's behaviour; no
 // pending → unchanged; and the web initiator's own flush (BUG-2271) clears it.
 
 func (f *restoreCollabFixture) restoreOverride(t *testing.T) *httptest.ResponseRecorder {
@@ -172,7 +171,7 @@ func TestRestoreWithoutPendingEditsIsUnchanged(t *testing.T) {
 	}
 }
 
-// Condition (1) of the ruling: the web initiator drains its own editor through
+// Condition (1): the web initiator drains its own editor through
 // a collab-snapshot flush before it restores (BUG-2271). That flush advances the
 // watermark past the pending row, so the restore proceeds without the override,
 // and its undo point holds what the flush saved.

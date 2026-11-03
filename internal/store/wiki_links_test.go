@@ -266,7 +266,7 @@ func TestWikiLinks_BackfillIdempotent(t *testing.T) {
 	}
 }
 
-// TestWikiLinks_EmptyDisplayDistinct regresses `[[TASK|]]` (explicit empty
+// TestWikiLinks_EmptyDisplayDistinct guards that `[[TASK|]]` (explicit empty
 // display override) and `[[TASK]]` (no
 // override) are distinct shapes in the editor and must store distinct
 // rows. Empty override → display_text=”, no override → display_text
@@ -369,7 +369,7 @@ func TestWikiLinks_SnippetIsValidUTF8(t *testing.T) {
 	}
 }
 
-// TestWikiLinks_MixedCaseRefIndexed regresses A
+// TestWikiLinks_MixedCaseRefIndexed regresses the case where a
 // body containing `[[task-5]]` must produce a backlink row pointing
 // at the same target as `[[TASK-5]]`. Renderer permissiveness and
 // indexer behavior have to agree, otherwise users see broken silent
@@ -408,7 +408,7 @@ func TestWikiLinks_MixedCaseRefIndexed(t *testing.T) {
 	}
 }
 
-// TestWikiLinks_VisibilityAwarePagination regresses the case:
+// TestWikiLinks_VisibilityAwarePagination regresses paging under visibility limits:
 // when GetBacklinks is called with a visibility-restricted
 // `visibleCollectionIDs` slice, the LIMIT/OFFSET counts only visible
 // rows. A page asking for `limit=2` must return 2 visible rows even
@@ -473,7 +473,7 @@ func TestWikiLinks_VisibilityAwarePagination(t *testing.T) {
 	})
 }
 
-// TestWikiLinks_ItemGrantPagination regresses When
+// TestWikiLinks_ItemGrantPagination regresses the case where
 // a guest has an item-level grant on ONE source item in a collection
 // they can't otherwise see, the rest of that collection must NOT
 // leak into the page. Previously the handler computed
@@ -693,7 +693,7 @@ func TestWikiLinks_TitleRenameCascadesContentAndBacklinks(t *testing.T) {
 	}
 }
 
-// TestWikiLinks_TitleRenameCascadesAliasedForms regresses the case: the cascade
+// TestWikiLinks_TitleRenameCascadesAliasedForms regresses alias handling: the cascade
 // must preserve display aliases when rewriting
 // title-form links. `[[Old Title|alias]]` AND `[[old title]]` (mixed
 // case) both index via target_item_id, so without alias-aware /
@@ -769,9 +769,8 @@ func TestWikiLinks_CollectionQualifiedTitleResolved(t *testing.T) {
 	}
 }
 
-// TestWikiLinks_FullKeyTitleBeatsQualifiedSplit regresses the case #3 from the
-// planning round: an item literally titled
-// "tasks/Setup" must win stage 1 BEFORE the resolver splits on `/`
+// TestWikiLinks_FullKeyTitleBeatsQualifiedSplit regresses the case where an item literally
+// titled "tasks/Setup" must win stage 1 BEFORE the resolver splits on `/`
 // and looks up by collection slug. If we split first, the wrong item
 // would resolve.
 func TestWikiLinks_FullKeyTitleBeatsQualifiedSplit(t *testing.T) {
@@ -825,7 +824,7 @@ func TestWikiLinks_BrokenPipeInBodyRetargetsOnLiteralArrival(t *testing.T) {
 	}
 }
 
-// TestWikiLinks_LiteralPipeInTitleResolves regresses An item literally titled
+// TestWikiLinks_LiteralPipeInTitleResolves regresses the case where an item literally titled
 // "A|B" (pipe in title) must match
 // `[[A|B]]` in source content — the renderer's L516-525 tries the
 // full body as a title BEFORE splitting on the pipe. Without this,
@@ -1078,7 +1077,7 @@ func TestWikiLinks_RefShapedWithWhitespaceFallsThroughToTitle(t *testing.T) {
 	}
 }
 
-// TestWikiLinks_SoftDeletedTargetRetargetsOnNewItem regresses When item A "Foo"
+// TestWikiLinks_SoftDeletedTargetRetargetsOnNewItem regresses the case where item A "Foo"
 // resolves a backlink and is then
 // soft-deleted, a NEW item B titled "Foo" must flip the row to
 // point at B. The renderer ignores deleted-target links, so an
@@ -1169,7 +1168,7 @@ func TestWikiLinks_CascadeDoesNotCorruptLiteralPipeNeighbor(t *testing.T) {
 	}
 }
 
-// TestWikiLinks_RefShapedFallsThroughToTitle regresses the case 1. A ref-shaped
+// TestWikiLinks_RefShapedFallsThroughToTitle regresses ref-shaped bodies. A ref-shaped
 // body like `[[ISO-9001]]` should resolve to
 // an item literally titled "ISO-9001" when no ISO-9001 ref-item
 // exists — the renderer falls through (markdown.ts::resolveWikiBody), so the

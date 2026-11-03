@@ -56,7 +56,7 @@ func TestRelationTitle_ThreeSpellingsOfOneItemStoreTheSameID(t *testing.T) {
 	}
 }
 
-// TestRelationTitle_ScopeIsTheDeclaredCollection is ruling (3)'s store half and
+// TestRelationTitle_ScopeIsTheDeclaredCollection is the store half of the scope decision and
 // the R11 guard: a title unique in the WORKSPACE but living outside the
 // field's declared collection must refuse, not resolve.
 //
@@ -95,7 +95,7 @@ func TestRelationTitle_ScopeIsTheDeclaredCollection(t *testing.T) {
 	}
 }
 
-// TestRelationTitle_AmbiguousRefusesWithItsOwnReason covers ruling (2): two
+// TestRelationTitle_AmbiguousRefusesWithItsOwnReason covers the ambiguity decision: two
 // live items in the TARGET collection sharing a title name no single one.
 //
 // It must NOT collapse into not_found, which would tell the caller the opposite

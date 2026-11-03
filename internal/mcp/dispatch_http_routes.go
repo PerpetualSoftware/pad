@@ -56,7 +56,7 @@ type routeSpec struct {
 	// integers (the catalog declares them "number"). buildQuery reads them
 	// through numericInput, so a bool, an object or a string that is not a
 	// plain decimal integer is refused naming the key; the server would
-	// otherwise Atoi it, fail and silently use its default (BUG-4065).
+	// otherwise Atoi it, fail and silently use its default (BUG-4065, decision 5a06782e).
 	// TestBUG4065_NoRouteForwardsANonNumberForANumberParam
 	// walks every route against the catalog so a new numeric key cannot be
 	// left off.
@@ -158,7 +158,7 @@ func expandPath(template string, input map[string]any) (string, error) {
 // default (parseDaysParam, the limit parsers), so forwarding it silently
 // replaced the caller's number exactly as numericInput's truncation did.
 //
-// BUG-4065: the input keys named in numeric are
+// BUG-4065 (decision 5a06782e): the input keys named in numeric are
 // integers. Each is read through numericInput whatever its type, so "7" and 7
 // both forward 7, and a bool, an object, an array, "7.5" or "abc" is refused
 // naming the key. The server's parsers Atoi these and keep their default on
@@ -348,7 +348,7 @@ func init() {
 		// `project catch-up` (TASK-4035) — the caller's own digest. A plain
 		// GET with no params: the endpoint never writes, and the cursor
 		// moves only through PUT /me/seen, which no route here maps
-		// (ruling 380aa793).
+		// (decision 380aa793).
 		"project catch-up": routeSpec{
 			method:       http.MethodGet,
 			pathTemplate: "/api/v1/workspaces/{workspace}/catch-up",
@@ -866,7 +866,7 @@ var itemPatchRoute = routeSpec{
 }.toRouteMapper()
 
 // mapItemPatch is itemPatchRoute with its two numeric inputs validated here
-// (BUG-4065, folded from BUG-4061). They used to be
+// (BUG-4065, folded from BUG-4061, decision 63360424). They used to be
 // forwarded raw, so a fraction or a non-number answered the server decode's
 // 400 bad_request rather than validation_failed naming the field. A string
 // expected_seq gets numericInput's rule here, as on update, so "123" is a
@@ -1312,9 +1312,8 @@ func normalizeWebhookEvents(raw any) (string, bool) {
 // session-default mechanism (mergeDispatchInput) auto-injects
 // `workspace` into every input — if we forwarded it here, an admin
 // listing audit entries through MCP would silently miss every entry
-// outside the session workspace. This divergence; matching the CLI's "no
-// workspace filter" behaviour
-// keeps parity. Workspace-scoping admin audit logs needs its own
+// outside the session workspace. Forwarding it would diverge from the CLI;
+// matching the CLI's "no workspace filter" behaviour keeps parity. Workspace-scoping admin audit logs needs its own
 // CLI flag (and would surface as a separate input via cmdhelp) —
 // not folding-in the implicit session value.
 func mapWorkspaceAuditLog(input map[string]any) (string, string, []byte, error) {
@@ -1838,7 +1837,8 @@ func (d *HTTPHandlerDispatcher) dispatchItemHistory(
 //     above MaxInt64 is refused as out of range;
 //   - a float32 widens exactly to float64 and gets wholeInt64's rules;
 //   - a string is admitted only as a plain decimal integer (decimalIntString),
-//     a form stdio's CLI flags read as the same number. Strings and float64 are
+//     a form stdio's CLI flags read as the same number (decision af4bff40;
+//     leading zeros are refused, decision 5a06782e). Strings and float64 are
 //     bounded at |x| < 2^53; the native Go integers keep their int64 range;
 //   - anything else is refused, naming its JSON type.
 func numericInput(v any) (int64, bool, error) {
@@ -1887,7 +1887,7 @@ func numericInput(v any) (int64, bool, error) {
 }
 
 // uint64Int64 converts an unsigned value that fits int64 and refuses a larger
-// one, rather than wrapping it negative (BUG-4065, from BUG-4061 note).
+// one, rather than wrapping it negative (BUG-4065, from BUG-4061's note).
 func uint64Int64(x uint64) (int64, error) {
 	if x > math.MaxInt64 {
 		return 0, fmt.Errorf("is out of range, got %d", x)
@@ -1899,10 +1899,10 @@ func uint64Int64(x uint64) (int64, error) {
 // ^-?(0|[1-9][0-9]*)$: an optional '-', then "0" or digits with no leading
 // zero, nothing else (no whitespace, no '+', no '.', no exponent, not empty).
 // It is parsed exactly by ParseInt and then gets the float64 path's bound,
-// |x| < 2^53, so a string accepts no value a JSON number would not. A leading
-// zero ("010", "00", "-010") is refused, not
+// |x| < 2^53, so a string accepts no value a JSON number would not
+// (decision af4bff40). A leading zero ("010", "00", "-010") is refused, not
 // read as decimal: stdio's CLI flags parse base 0, so "010" is 8 there, and
-// accepting it here as 10 would make one string two numbers (BUG-4065). "-0" is 0.
+// accepting it here as 10 would make one string two numbers (BUG-4065, decision 5a06782e). "-0" is 0.
 func decimalIntString(s string) (int64, error) {
 	digits := strings.TrimPrefix(s, "-")
 	if digits == "" || strings.TrimLeft(digits, "0123456789") != "" ||

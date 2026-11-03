@@ -446,7 +446,8 @@ describe('the collection page fences every async commit point', () => {
 	it('never lets a handler compare against the PAGE load epoch', () => {
 		// `identityEpochAtLoad` is RE-STAMPED by loadCollection, so a handler
 		// comparing against it can be defeated by a concurrent load setting it
-		// to the very value the handler is about to see (#1370). Exactly one function may read
+		// to the very value the handler is about to see (#1370).
+		// Exactly one function may read
 		// it: `pageIdentityHeld`, whose question is about the PAGE.
 		const readers: string[] = [];
 		for (const [name, body] of src.asyncFunctions()) {

@@ -15,7 +15,7 @@ import (
 // staged (below).
 //
 // The instruction and criteria of needs_human_decision are carried VERBATIM
-// from the offline eval (eval2.py, section D), which measured it at AUC 0.939
+// from the eval in scripts/decision-eval (eval2.py, section D), which measured it at AUC 0.939
 // over 70 human-tasks vs 70 tasks. Rewording it changes its question_hash and
 // re-asks every item, and the eval's figure stops describing the question
 // being asked — so change it only with a re-run.

@@ -13,7 +13,7 @@ import (
 
 // TestArtifactImport_DropsFieldKeysTheKindDoesNotDeclare pins the assumption
 // that makes the artifact door's relation-visibility question MOOT
-// (PLAN-2857).
+// (PLAN-2857 U6).
 //
 // A real-sounding concern: handleImportArtifact uses the
 // `relationsCarry` posture, so a carried relation title would be judged by the
@@ -45,7 +45,7 @@ import (
 // is a measurement of the INVISIBLE-target case specifically, which needs a
 // second principal and is not covered by either test.
 //
-// I wrote the ruled test first and it passed while asserting nothing: the field
+// The first version of this test passed while asserting nothing: the field
 // never arrived, so the leg could not tell the visibility rule from its own
 // absence, and a mutation removing the predicate entirely SURVIVED it.
 //
@@ -120,7 +120,7 @@ func TestArtifactImport_DropsFieldKeysTheKindDoesNotDeclare(t *testing.T) {
 	// HAND-BUILT BYTES, not artifact.Encode. Encode writes only the kind's
 	// known keys into frontmatter, so an artifact built through it never
 	// carries the extra key and the decode-side filter this test is about is
-	// never exercised — my first version did exactly that and a mutation
+	// never exercised — an earlier version did exactly that and a mutation
 	// widening the decode allow-list SURVIVED it.
 	data := []byte("---\n" +
 		"pad_artifact: playbook\n" +

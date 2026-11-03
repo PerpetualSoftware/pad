@@ -5,7 +5,7 @@
 //   (stripe_customer_id, from GET /auth/me). A plan granted by an admin has
 //   none, and gets a one-line note instead of a button the portal can only
 //   refuse.
-// - A customer with no live subscription still gets the portal: the
+// - A customer with no live subscription still gets the portal (R2): the
 //   gate is the customer, not the subscription.
 // - A refused portal request comes back as ?portal_error=<code>, which shows
 //   its message (a generic one for an unknown code) and is cleared from the URL.
@@ -70,7 +70,7 @@ beforeEach(() => {
 		vi.fn(async () => new Response(JSON.stringify({ free: {}, pro: {} }), { status: 200 }))
 	);
 	// Recorded AND applied, so the URL really changes, as in a browser
-	// (a recording-only mock left it unchanged).
+	// (a recording-only mock would leave it unchanged).
 	const realReplace = history.replaceState.bind(history);
 	vi.spyOn(history, 'replaceState').mockImplementation((s, t, url) => {
 		replaced.push(String(url));

@@ -10,7 +10,7 @@ import (
 // TASK-3946: @mentions enqueue a 'mention' push notification for each NEWLY
 // indexed (comment, user) pair, on create and edit only, for users who can
 // see the item (binding rule 645fab20), and a mention supersedes the same
-// user's pending comment/reply row.
+// user's pending comment/reply row (decision f0fc5933).
 
 // mentionNotifyFixture is a workspace with author A and members bob and carol,
 // each with a device, and dave, a non-member with a device.
@@ -75,7 +75,7 @@ func TestNotify_MentionOnCreateAndEditAdd(t *testing.T) {
 	}
 
 	// Remove bob, then re-add him: his mention row still exists, so the
-	// dedupe key holds and nothing new is written (ruling f0fc5933 item 4).
+	// dedupe key holds and nothing new is written (decision f0fc5933 item 4).
 	if _, err := m.s.UpdateComment(c.ID, "cc @carolm"); err != nil {
 		t.Fatal(err)
 	}

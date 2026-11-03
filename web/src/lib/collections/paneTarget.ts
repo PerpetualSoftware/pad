@@ -126,7 +126,7 @@ function parseRefNumber(candidate: string): number | null {
  * item-shaped by construction and doesn't need this check — `resolvePaneTarget`
  * trusts it outright, slug-only items included. The editor popover is
  * different: a `link` mark is indistinguishable between a wiki-link-inserted
- * item link and a human-typed arbitrary path. A
+ * item link and a human-typed arbitrary path (TASK-2160). A
  * trailing-REF-shape test ALONE isn't enough, because the pane's `?item=`
  * is scoped to the CURRENT workspace and resolved by ref NUMBER (the
  * collection segment is dropped): a link to a different workspace's item as

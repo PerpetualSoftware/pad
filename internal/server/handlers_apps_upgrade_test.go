@@ -370,7 +370,7 @@ func TestAppUpgrade_AdditiveFieldOverExistingDataRefuses(t *testing.T) {
 	}
 }
 
-// Board_group_by names the new select, so adding it would move
+// The board_group_by setting names the new select, so adding it would move
 // the done field and reclassify every existing item.
 func TestAppUpgrade_AdditiveFieldThatMovesTheDoneFieldRefuses(t *testing.T) {
 	u := newUpgradeEnv(t)

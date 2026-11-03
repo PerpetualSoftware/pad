@@ -12,14 +12,14 @@
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import type { ChatMessage } from '$lib/types';
 
-	// The thread (TASK-4044 PR 3a and 3b). The
+	// The thread (TASK-4044 PR 3a and 3b, decisions 4cf4d4b9 and 2de240d9). The
 	// store owns the window; this page owns the scroll container, the bottom
 	// sentinel that says what the reader has seen, and the reply target.
 	let raw = $derived(page.params.n ?? '');
 	let n = $derived(/^[1-9][0-9]*$/.test(raw) ? Number(raw) : null);
 
 	const thread = new ChatThread();
-	// Bumped by "Try again" so the load effect below re-runs (TASK-4044 2b-i).
+	// Bumped by "Try again" so the load effect below re-runs (TASK-4044 2b-i, decision 90709f40).
 	let retry = $state(0);
 
 	let scroller = $state<HTMLElement | null>(null);
@@ -30,7 +30,7 @@
 	let composer = $state<Composer | null>(null);
 	let lastOwnSend = 0;
 	// Loading newer messages while a send is in flight would race the send's own
-	// confirmed row into the window (TASK-4044).
+	// confirmed row into the window (TASK-4044, decision 2a03a442).
 	let sending = $derived(thread.items.some((it) => it.kind === 'pending' && it.pending.status === 'sending'));
 
 	// The presence dot polls only while this page is open.
@@ -77,8 +77,8 @@
 		}
 	});
 
-	// An own send, shown or confirmed, scrolls to the end even from further up;
-	// a row from elsewhere only follows a reader at the end.
+	// An own send, shown or confirmed, scrolls to the end even from further up
+	// (decision d87482de); a row from elsewhere only follows a reader at the end.
 	$effect(() => {
 		const sendTick = thread.ownSendTick;
 		if (!positioned || !scroller || sendTick === lastOwnSend) return;

@@ -121,7 +121,7 @@ func TestDocumentTitleBoundIsTheRuledNumber(t *testing.T) {
 }
 
 // TestDocumentTitleLengthBoundCountsRunesNotBytes pins the bound at 255
-// CHARACTERS, which is what the ruling says and what a UI counter shows.
+// CHARACTERS, which is what the bound means and what a UI counter shows.
 //
 // The multibyte legs are the counterfactual: 255 four-byte runes are 1020
 // bytes, so an implementation that reached for len() would reject them. That

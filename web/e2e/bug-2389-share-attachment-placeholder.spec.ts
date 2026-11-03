@@ -5,7 +5,8 @@ import { test, type SuiteFixture } from './fixtures';
  * BUG-2389 — the public share route rendered item content with a bare
  * marked() call, so `pad-attachment:` references became broken <img>
  * tags pointing at an unfetchable pseudo-URL. The route now renders
- * attachment-aware: until the token-scoped byte endpoint ships (2b), every reference resolves to the HONEST
+ * attachment-aware: until the token-scoped byte endpoint ships (2b),
+ * every reference resolves to the HONEST
  * "not available on shared pages" placeholder — never a broken image,
  * and never the false "missing or deleted" wording.
  *

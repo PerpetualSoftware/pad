@@ -303,7 +303,7 @@ func TestArmState_SocketMtimeFallbackMismatch(t *testing.T) {
 }
 
 // TestReapArmFile_NonDestructive: reap must NOT delete a file that was
-// re-armed with a live owner between the read and the reap (MED-1). Simulated by
+// re-armed with a live owner between the read and the reap. Simulated by
 // pointing reap at a path that currently holds a
 // live arm.
 func TestReapArmFile_NonDestructive(t *testing.T) {

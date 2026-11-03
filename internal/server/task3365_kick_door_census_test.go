@@ -302,8 +302,8 @@ func TestTASK3365_RestoreAndBulkDoorsKick(t *testing.T) {
 }
 
 // Account deletion removes the grants the user ISSUED, possibly in a
-// workspace someone else owns, and kicks that workspace's connections. The workspace is NOT the deleted
-// user's, so the owned-workspace kick cannot be what fires.
+// workspace someone else owns, and kicks that workspace's connections. The workspace is NOT
+// the deleted user's, so the owned-workspace kick cannot be what fires.
 func TestTASK3365_AccountDeleteKicksIssuedGrantWorkspaces(t *testing.T) {
 	srv := testServer(t)
 	issuerID, token := bootstrapAccountDeleteUser(t, srv, "")

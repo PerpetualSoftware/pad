@@ -136,7 +136,7 @@ func TestWorkspaceStorageInfo_FreePlanResolution(t *testing.T) {
 }
 
 // TestWorkspaceAttachments_VisibilityFilter verifies that
-// VisibleCollectionIDs gates the result set:
+// VisibleCollectionIDs gates the result set (PR #303):
 // a restricted member must not see attachments
 // in collections they can't access, and orphans (item_id IS NULL)
 // must be hidden as well so filenames don't leak.
@@ -248,8 +248,7 @@ func TestWorkspaceAttachments_VisibilityFilter(t *testing.T) {
 	}
 }
 
-// TestWorkspaceAttachments_SurfacesSoftDeletedParents pins the case
-// where an attachment whose parent item is soft-
+// TestWorkspaceAttachments_SurfacesSoftDeletedParents pins that an attachment whose parent item is soft-
 // deleted must remain in the list so the user can reclaim the
 // bytes, AND the collection-level visibility filter must still see
 // the (still-set) collection_id so restricted users with access to

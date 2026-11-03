@@ -57,7 +57,7 @@ export const PUSH_PRE_PUBLISH_ERROR_CODES: ReadonlySet<string> = new Set([
 	'permission_denied', // workspace-access middleware
 	'unavailable', // the bus isn't wired, or was already closed — nothing published
 	// The 409 for a soft-deleted item. Resolution happens before the
-	// publish, so nothing went out.
+	// publish, so nothing went out (BUG-2699).
 	'archived',
 	'rate_limited', // the client's own 429 shape; the handler never ran
 	'plan_limit_exceeded',

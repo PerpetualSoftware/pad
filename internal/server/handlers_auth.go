@@ -500,7 +500,7 @@ func (s *Server) destroyReplacedSessions(r *http.Request) {
 // makes Docker / Unraid bootstrapping possible without `docker exec`.
 // See TASK-1167 / PLAN-1166 and the bootstrap.go file for details.
 //
-// Cloud mode NEVER accepts the token bypass (D2/D10 — F2). A cloud bootstrap
+// Cloud mode NEVER accepts the token bypass (D2/D10). A cloud bootstrap
 // must come over loopback from the same
 // host as part of the operator's provisioning workflow.
 //

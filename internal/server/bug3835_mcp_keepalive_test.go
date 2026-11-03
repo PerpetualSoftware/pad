@@ -144,7 +144,8 @@ func assertPlainStreamRefusal(t *testing.T, resp *http.Response, body []byte) {
 // A subscriptions/listen POST over the budget is refused the same way, before
 // the transport runs, so it leaves no session, subscription or goroutine. The
 // listen carries a modern Mcp-Protocol-Version header, which mcp-go requires
-// before it serves one: a modern-header listen IS still counted (an always-false header gate turns this red).
+// before it serves one: a modern-header listen IS still counted
+// (an always-false header gate turns this red).
 func TestMCP_BUG3835_RefusedListenLeavesNothing(t *testing.T) {
 	f := newMCPStallFixture(t)
 	f.srv.admission().setLimits(0, 1)
@@ -272,7 +273,8 @@ func TestMCP_BUG3835_LegacyPOSTIsNotReadForAdmission(t *testing.T) {
 	}
 }
 
-// The gate's premise, pinned against mcp-go rather than read from it: a listen whose _meta is modern is served ONLY when the header
+// The gate's premise, pinned against mcp-go rather than read from it: a listen whose _meta is modern is served
+// ONLY when the header
 // is modern too, so a POST the gate skips is never a held listen. The control
 // shows this fixture's transport does serve a modern listen, so the refusals
 // are about the header and not an unsupported version. A later mcp-go that
@@ -328,7 +330,8 @@ func TestMCP_BUG3835_ListenWithoutAModernHeaderIsNeverServed(t *testing.T) {
 // A modern header the transport does NOT serve is never a listen either: the
 // body is not read, and at a full budget the request reaches mcp-go, whose
 // unsupported-version 400 is what tells a modern client to fall back. A 429
-// there would leave a probing client retrying forever (condition 1). This transport serves the legacy versions only, as pad's does.
+// there would leave a probing client retrying forever. This transport serves the legacy
+// versions only, as pad's does.
 func TestMCP_BUG3835_UnservedModernVersionIsNotCounted(t *testing.T) {
 	body := &bug3835CountingBody{Reader: strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"subscriptions/listen"}`)}
 	r := httptest.NewRequest("POST", "/mcp", nil)

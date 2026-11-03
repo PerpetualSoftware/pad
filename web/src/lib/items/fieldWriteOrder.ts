@@ -218,7 +218,8 @@ export function fieldWriteTarget(itemId: string, fieldKey: string): string {
  * and derives the next gesture from it, so `sent` already carries both. The
  * row does not, so its delta names BOTH gestures, which is right when the
  * earlier one never commits (a superseded retry is abandoned). The editor's list
- * as base would name only the later gesture and bring the earlier removal back.
+ * as base would name only the later gesture and bring the earlier removal
+ * back (BUG-3038); the test beside this pins why.
  *
  * There is no reorder gesture in the pane today (a list is only ever added to
  * or removed from). If one is added, a pure reorder has an empty delta and this

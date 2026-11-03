@@ -193,7 +193,7 @@ func (s *Store) createCommentTx(tx *sql.Tx, workspaceID, itemID, userID string, 
 
 // UpdateComment edits a comment as its own author. Production does not use
 // it: the edit handler calls UpdateCommentAs with the request's actor, so a
-// mention an admin adds is attributed to the admin (TASK-3946 ruling
+// mention an admin adds is attributed to the admin (TASK-3946, decision
 // e6a86278). It remains for tests.
 func (s *Store) UpdateComment(id, body string) (*models.Comment, error) {
 	return s.updateComment(id, body, nil)
@@ -258,7 +258,7 @@ func (s *Store) updateComment(id, body string, editor *CommentEditor) (*models.C
 	}
 	// An imported comment is never indexed, edited or not: the reindex
 	// covers the whole body, so its unedited source-instance @handles would
-	// bind to local users (TASK-3917).
+	// bind to local users (TASK-3917, decision bb0c9fc6).
 	// Accepted cost (TASK-3917): a mention a local user ADDS while editing an imported comment is not indexed either.
 	var mentioned []string
 	if importedComment == 0 {
@@ -285,7 +285,7 @@ func (s *Store) updateComment(id, body string, editor *CommentEditor) (*models.C
 			return nil, err
 		}
 		// An edited comment can be inside the recent trail a decision reads,
-		// so an edit that changed the body is a door (TASK-3117 ruling 3:
+		// so an edit that changed the body is a door (TASK-3117 decision 3:
 		// user-initiated single-item writes that change hashed state). If
 		// the comment is older than the trail window the runner finds the
 		// state unchanged and makes no call.
@@ -517,7 +517,7 @@ var ErrCommentDeleted = errors.New("this comment was deleted")
 // serialize. SQLite needs none of it: every transaction is BEGIN IMMEDIATE.
 //
 // Transactional as of TASK-2658 — it was a bare Exec. The delete marker is
-// what resolves the conflict that: without it, a hard-deleted
+// what resolves the conflict between the two: without it, a hard-deleted
 // comment's undispatched created/updated rows were the ONLY record it ever
 // existed, which forced a false choice between dropping committed events
 // (breaking the outbox guarantee) and delivering the deleted body forever.
@@ -579,7 +579,7 @@ func (s *Store) DeleteComment(id string) error {
 	if err := s.emitRefOnlyDeletionWithProjectionTx(tx, kernelevents.CommentDeleted, target.workspaceID, id, target.itemID, target.parentID, proj); err != nil {
 		return err
 	}
-	// Deleting a comment changes the recent trail (TASK-3117 ruling 3); see
+	// Deleting a comment changes the recent trail (TASK-3117 decision 3); see
 	// UpdateComment for why an out-of-window comment costs nothing.
 	if err := s.enqueueDecisionJobsForItemTx(tx, target.itemID); err != nil {
 		return err

@@ -43,13 +43,13 @@ func TestNeverAPartialAnswer(t *testing.T) {
 
 	t.Run("named", func(t *testing.T) {
 		for _, tc := range []neverCase{
-			// M1: MaxSteps=1 once dropped 03-01 from Between with no error.
+			// MaxSteps=1 once dropped 03-01 from Between with no error.
 			{name: "M1 monthly utc", spec: pinned(t, "UTC", "2096-01-20T00:00", "FREQ=MONTHLY;BYMONTH=1,3;BYMONTHDAY=1,25"), win: 45 * day, offs: []time.Duration{0}},
 			{name: "M1 monthly tokyo", spec: pinned(t, "Asia/Tokyo", "2096-01-20T09:00", "FREQ=MONTHLY;BYMONTH=1,3;BYMONTHDAY=1,25"), win: 45 * day, offs: all},
 			{name: "M1 monthly new_york", spec: pinned(t, nyZone, "2096-01-20T09:00", "FREQ=MONTHLY;BYMONTH=1,3;BYMONTHDAY=1,25"), win: 45 * day, offs: all},
 			{name: "yearly feb29 tokyo", spec: pinned(t, "Asia/Tokyo", "2093-03-01T08:30", "FREQ=YEARLY;BYMONTH=2;BYMONTHDAY=29"), win: 60 * day, offs: all},
 			{name: "weekly new_york", spec: pinned(t, nyZone, "2096-03-01T02:30", "FREQ=WEEKLY;BYDAY=SU;INTERVAL=3"), win: 45 * day, offs: all},
-			// M2: an RDATE behind a rule that never fires.
+			// An RDATE behind a rule that never fires.
 			{name: "M2 minutely", spec: pinned(t, "UTC", "2025-01-01T00:00", "FREQ=MINUTELY;BYMONTH=1;BYYEARDAY=200"), never: true, win: 6 * time.Hour, offs: all},
 			{name: "M2 hourly tokyo", spec: pinned(t, "Asia/Tokyo", "2025-01-01T00:00", "FREQ=HOURLY;BYMONTH=1;BYYEARDAY=200"), never: true, win: 6 * time.Hour, offs: all},
 		} {
@@ -57,7 +57,7 @@ func TestNeverAPartialAnswer(t *testing.T) {
 			tc.group = "named"
 			runNever(t, tc, &stats.stalls, &stats.answers)
 		}
-		// M2's exact repro: the RDATE lies below the stall position at default limits.
+		// The exact repro: the RDATE lies below the stall position at default limits.
 		spec := pinned(t, "UTC", "2025-01-01T00:00", "FREQ=MINUTELY;BYMONTH=1;BYYEARDAY=200")
 		spec.RDates = []Wall{mustWall(t, "2025-06-01T09:00")}
 		c := compile(t, spec)

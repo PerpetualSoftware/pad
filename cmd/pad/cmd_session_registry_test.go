@@ -261,7 +261,7 @@ func TestSessionList_TableMarksLegacyAndAnonymous(t *testing.T) {
 	out := runSessionCmd(t, "list")
 	// A v1 row carries no pid_ns and no start token. From the init namespace
 	// its live pid reads alive (the bare-probe residual); from any other, the
-	// number may be anyone's, so it reads unknown (BUG-4090, A-1).
+	// number may be anyone's, so it reads unknown (BUG-4090).
 	wantState := "alive (legacy)"
 	if !inInitPIDNamespace(t) {
 		wantState = "unknown (legacy)"

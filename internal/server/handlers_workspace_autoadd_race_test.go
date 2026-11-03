@@ -25,7 +25,7 @@ import (
 // SQLite only (testServer is SQLite-backed) and are sequential, so they show
 // that no decision is taken BEFORE the seam. A read-then-insert added AFTER the
 // seam would pass both, since nothing can run between its statements here
-// (an edit of exactly that shape passed review once).
+// (such an edit was written once, and it passed).
 // TestAutoAddCreatorConnection_HandlerMakesOnlyTheAtomicCall covers that half
 // by pinning every call the handler makes. The Postgres interleavings inside
 // the store method are pinned in internal/store/oauth_connections_autoadd_test.go.

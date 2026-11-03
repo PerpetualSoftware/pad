@@ -143,8 +143,8 @@ describe('TASK-2200 — workspace identity recovers after a failed cold load', (
 
 		// Still two. Unconditional cleanup would have let the older failure
 		// clear the slot the NEWER load still owns, and this
-		// would be a third request instead of a join — the race an earlier fix closed,
-		// reintroduced by its own cleanup.
+		// would be a third request instead of a join — the race an earlier
+		// fix closed, reintroduced by its own cleanup.
 		expect(list).toHaveBeenCalledTimes(2);
 
 		settle[1].resolve([ws('alpha')]);

@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// Local arm-state file (PLAN-2613 S2, D4, "OPTION 2" on the
+// Local arm-state file (PLAN-2613 S2, D4, option 2 on the
 // TASK-2617 trail). This is the concrete file contract S3's plugin
 // monitor builds against, so its rules are load-bearing and stated in
 // full here (and mirrored in the S2 evidence package):
@@ -141,7 +141,7 @@ type ArmState struct {
 	PIDNamespace uint64 `json:"pid_ns,omitempty"`
 	// MountNamespace is the mount namespace the socket was seen in, as the
 	// session registry records it (SessionOwner.MountNamespace): set only
-	// when the socket was stat'ed with its identity (C1). A
+	// when the socket was stat'ed with its identity. A
 	// reader with another view of the filesystem cannot take the socket's
 	// absence as the session's. Zero when headless.
 	MountNamespace uint64 `json:"mnt_ns,omitempty"`
@@ -248,7 +248,7 @@ func writeArmStateFile(disarmed bool) (path string, err error) {
 	if socket != "" {
 		// Bind the file to this specific socket instance — its mtime plus,
 		// where available, its inode+device — not just the path, so a
-		// reused path (or a lingering stale node) can't revive it (HIGH-2).
+		// reused path (or a lingering stale node) can't revive it.
 		if info, statErr := os.Stat(socket); statErr == nil {
 			st.SocketMtimeUnixNano = info.ModTime().UnixNano()
 			if ino, dev, ok := statIdentity(info); ok {
@@ -426,7 +426,7 @@ const (
 	// armed, beating a repo's auto_arm for this session.
 	LocalArmOff
 	// LocalArmError: a local-state file EXISTS but can't be read or parsed.
-	// It resolves to NOT armed and does NOT fall back to auto_arm (S3 HIGH-2): a
+	// It resolves to NOT armed and does NOT fall back to auto_arm: a
 	// corrupt file could be a disarm we can't read, and
 	// re-arming despite a possible disarm is the consent fail-open this
 	// gate exists to prevent. Distinct from LocalArmAbsent (no file at
@@ -568,7 +568,7 @@ func ResolveAnnouncedArmed() bool {
 		return true
 	case LocalArmOff, LocalArmError, LocalArmUnverifiable:
 		// OFF, ERROR and UNVERIFIABLE all suppress arming: an explicit
-		// disarm wins, and a local state that cannot be read (HIGH-2) or
+		// disarm wins, and a local state that cannot be read or
 		// whose owner cannot be verified (BUG-2771) fails closed rather
 		// than falling to auto_arm.
 		return false

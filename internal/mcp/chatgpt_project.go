@@ -8,7 +8,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
-// Response minimization for the ChatGPT catalog (TASK-3321 U3).
+// Response minimization for the ChatGPT catalog (TASK-3321 U3, R2).
 // OpenAI's review requires tool responses to carry only what the request
 // needs, with no counters or diagnostics.
 //

@@ -1527,7 +1527,7 @@ A body write with neither prints a warning, and a future release refuses it
 			//
 			// Checked HERE, after --assign / --role resolution and after the
 			// --field lift, so it catches every route to a competing value:
-			// `--assign alice`, `--field assigned_user_id=<uuid>`, or a
+			// `--assign wren`, `--field assigned_user_id=<uuid>`, or a
 			// direct ID. A cobra MarkFlagsMutuallyExclusive would only
 			// catch the first.
 			if clearAssignedUser {

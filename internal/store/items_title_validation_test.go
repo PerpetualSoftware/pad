@@ -211,7 +211,7 @@ func TestItemTitle_GrandfathersLegacyRows(t *testing.T) {
 	// RUNS ON BOTH DIALECTS. It used to skip on Postgres, on the stated ground
 	// that a legacy over-bound title implies a slug past the btree index-tuple
 	// cap — which is true of BUG-2804's 2 MiB fixture and FALSE of this one
-	// OverlongTitle() is 256 runes, so the slug it derives
+	// The overlongTitle() fixture is 256 runes, so the slug it derives
 	// is 256 ASCII bytes: an order of magnitude under the 2704 the cap actually
 	// enforces. The skip was reasoning by analogy with a different fixture and
 	// left the non-retroactive rule untested on the backend BUG-2831 is about.
@@ -436,7 +436,7 @@ func highEntropySlug(n int) string {
 }
 
 // TestImportWorkspace_TruncatedSlugCollidesWithALaterVerbatimSlug regresses
-// the collision case.
+// the slug collision case.
 //
 // Truncation is the only way this loop can produce two identical slugs — a
 // bundle exported from a live workspace cannot contain a duplicate, because
@@ -548,8 +548,8 @@ func TestImportWorkspace_TruncatedSlugCollidesWithALaterVerbatimSlug(t *testing.
 	}
 }
 
-// TestItemTitle_GrandfathersAVerbatimEchoOfAWhitespaceTitle regresses The
-// exemption is "a title identical to the stored one", and
+// TestItemTitle_GrandfathersAVerbatimEchoOfAWhitespaceTitle regresses the exemption:
+// it is "a title identical to the stored one", and
 // comparing only the NORMALIZED form makes that false for exactly the rows the
 // exemption exists for.
 func TestItemTitle_GrandfathersAVerbatimEchoOfAWhitespaceTitle(t *testing.T) {
@@ -572,7 +572,7 @@ func TestItemTitle_GrandfathersAVerbatimEchoOfAWhitespaceTitle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a verbatim echo of the stored title is not a rename and must be accepted: %v", err)
 	}
-	// ASSERT THE STORED BYTES, not merely that no error came back (P1). Checking
+	// ASSERT THE STORED BYTES, not merely that no error came back. Checking
 	// err == nil alone passed against a version that skipped
 	// validation and then wrote the NORMALIZED title anyway — turning a
 	// protective exemption into a silent rewrite of the row it was protecting.

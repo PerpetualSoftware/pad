@@ -759,8 +759,7 @@ user hunting for an item that provably does not exist.
 	 * The preflight response is the canonicalising round-trip: the server
 	 * resolved whatever it was given and answered with the real slug. Falls
 	 * back to `destWs` only before the first preflight has returned, at which
-	 * point no needs-value row is being rendered anyway
-	 * (TASK-2869).
+	 * point no needs-value row is being rendered anyway (TASK-2869).
 	 */
 	let pickerWsSlug = $derived(preflight?.destination.workspace_slug || destWs);
 

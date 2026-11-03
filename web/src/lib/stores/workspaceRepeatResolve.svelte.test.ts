@@ -246,7 +246,8 @@ describe('workspaceStore: repeat resolution of an already-answered workspace', (
 		// Logout is an SPA navigation (`authStore.clear()` + `goto('/login')`), so
 		// this module — and the cache in it — outlives a sign-out. Keyed by slug
 		// alone, the next user to open the same workspace would be handed the
-		// previous user's grants until their own /me settled. The first version of this fix was keyed by slug.
+		// previous user's grants until their own /me settled. The first
+		// version of this fix was keyed by slug.
 		const { workspaceStore } = await import('./workspace.svelte');
 		api.workspaces.get.mockResolvedValue(WS);
 

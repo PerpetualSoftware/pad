@@ -573,9 +573,7 @@ type bodyWalk struct {
 //
 //   - A collection may declare a user field literally named `schema` or
 //     `tags`. Treating `{"fields":{"schema":"..."}}`'s inner key as a wire key
-//     refused valid text that happened to hold a JSON example
-//
-// (BUG-2803).
+//     refused valid text that happened to hold a JSON example (BUG-2803).
 //   - Below the document Postgres parses, an escape is harmless. Measured on
 //     Postgres 17 with the check disabled: a NUL escape two levels deep
 //     imports 201, because `fields` is parsed ONCE and the inner text is
@@ -863,7 +861,7 @@ func readBodyForDecode(r *http.Request, maxBytes int64) ([]byte, error) {
 // truncation rather than any input path.
 //
 // The failure is invisible in testing with ASCII, which is why it survived
-// repeated review aimed at the input side: every fixture in this area uses
+// repeated checks aimed at the input side: every fixture in this area uses
 // ASCII names, and ASCII cannot reproduce it.
 func truncateBindableText(s string, maxBytes int) string {
 	if len(s) <= maxBytes {

@@ -254,7 +254,7 @@ type Bus interface {
 	// receiving side. Most producers publish best-effort on top of a
 	// durable store write and should discard the result deliberately —
 	// internal/server's publishWatchNotification helper is where that
-	// ruling lives. The push endpoint is the one caller that acts on it,
+	// decision lives. The push endpoint is the one caller that acts on it,
 	// because a push has no persistence to recover from.
 	//
 	// A RETURNED ERROR IS TWO DIFFERENT OUTCOMES, and a caller that acts

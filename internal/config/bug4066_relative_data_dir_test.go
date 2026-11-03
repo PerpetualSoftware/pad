@@ -30,7 +30,7 @@ func captureStderr(t *testing.T, fn func()) string {
 	return <-done
 }
 
-// BUG-4066 phase 1 (b4cb4ff): a relative PAD_DATA_DIR still
+// BUG-4066 phase 1 (decision 4b4cb4ff): a relative PAD_DATA_DIR still
 // resolves against this process's cwd, unchanged, but the process WARNS,
 // naming the absolute directory it resolved, because a CLI and a server in
 // different directories silently use different data.

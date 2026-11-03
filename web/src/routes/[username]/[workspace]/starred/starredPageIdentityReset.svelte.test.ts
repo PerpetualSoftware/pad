@@ -126,8 +126,7 @@ describe('starred page across an identity change', () => {
 		// A's starred load is out when the account changes. The STORE's identity
 		// fence refuses the settle and its listener clears the ids, so the page,
 		// which derives from them, has nothing of A's to show. Every mock carries
-		// a default beside the pending one-shot (an earlier version of this file
-		// lacked it).
+		// a default beside the pending one-shot.
 		let resolveA!: (v: unknown) => void;
 		api.items.starred.mockReturnValueOnce(new Promise((r) => { resolveA = r; }));
 		api.items.starred.mockResolvedValue([]);

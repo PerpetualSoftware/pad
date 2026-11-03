@@ -121,7 +121,7 @@ func TestEBMLDocTypeIsParsedNotSearched(t *testing.T) {
 }
 
 // TestMatroskaDocTypeBeyondTheWindowIsWebM records a LIMITATION, not a defect
-// (BUG-2963, ruled not blocking for PR A).
+// (BUG-2963; accepted as not blocking for PR A).
 //
 // A Void element is legal anywhere in an EBML header and may be any size. Make
 // one larger than the 512 bytes this door reads and the DocType behind it is
@@ -177,7 +177,7 @@ func TestMatroskaDocTypeBeyondTheWindowIsWebM(t *testing.T) {
 // recognised, and both fixtures are kept so the next person to reach for an
 // application/ogg alias meets the evidence first.
 //
-// An alias was written, ruled in, and then removed after review showed the
+// An alias was written, and then removed because the
 // question it has to answer — is this container AUDIO — cannot be answered
 // from the head of the file. Ogg multiplexes, so a second video stream's pages
 // come later than any sniff can see. Both files below are refused today
@@ -401,10 +401,10 @@ func TestBUG2963F6RemovedSpellings(t *testing.T) {
 		t.Errorf(".xml stored as %q, want text/xml", entry.MIME)
 	}
 
-	// audio/webm is unreachable too and STAYS, by ruling: separating it from
+	// audio/webm is unreachable too and STAYS, by decision: separating it from
 	// video/webm needs a track read, nobody has asked, and an unreachable
 	// entry costs nothing until someone reads the map. Asserted so a later
-	// tidy-up of "unreachable entries" has to meet the ruling first.
+	// tidy-up of "unreachable entries" has to meet that decision first.
 	if _, ok := LookupMIME("audio/webm"); !ok {
 		t.Error("audio/webm was removed; BUG-2963 F6 ruled it stays, unreachable, with its comment")
 	}
@@ -432,11 +432,11 @@ func TestBUG2963F5TextFamily(t *testing.T) {
 		{"answer: 42\n", "p.yml", "application/yaml", false, "the second spelling of the same mapping"},
 		{"a,b\n1,2\n", "p.csv", "text/csv", false, "csv sniffs as plain text; the name is the only thing that says otherwise"},
 		{"{\"a\": 1}\n", "p.json", "application/json", false, "JSON has no magic — it is text and a name"},
-		// EVERY leg above has wantInline false, and that is what this
+		// EVERY leg above has wantInline false, and that is the point this
 		// table exists to make visible rather than the .js leg alone.
 		// text/plain is the only member of the text family in inlineSafe, so
 		// choosing ANY other text spelling moves the file out of inline
-		// serving and into Content-Disposition: attachment. The ruling
+		// serving and into Content-Disposition: attachment. The decision
 		// weighed that move for .js, where it is the point; it applies
 		// equally to .md, .csv, .json, .yaml and .toml, where it is a side
 		// effect and a real one — a Markdown attachment previewed in the
@@ -444,7 +444,7 @@ func TestBUG2963F5TextFamily(t *testing.T) {
 		// on BUG-2963's trail, and in the PR body; whether those five belong
 		// in inlineSafe is an allowlist decision and not this unit's to make.
 		//
-		// The two RenderForceDownload legs. These are the ones the ruling
+		// The two RenderForceDownload legs. These are the ones the decision
 		// singled out, and their move is a second, separate one: from the
 		// chip bucket to forced download.
 		{"alert(1);\n", "p.js", "text/javascript", false, "the leg that moves a serving bucket"},
@@ -474,7 +474,7 @@ func TestBUG2963F5TextFamily(t *testing.T) {
 		})
 	}
 
-	// The bucket move, asserted as the ruling asks: exactly, on the render
+	// The bucket move, asserted as the decision requires: exactly, on the render
 	// mode itself rather than only on the type. text/plain is a chip;
 	// text/javascript is a forced download. If a future edit puts .js on an
 	// inline entry, this fails and the ServeInline legs above do not, because
@@ -623,7 +623,7 @@ func TestMagicOnlyRecognisesWhatValidationUsedToRefuse(t *testing.T) {
 		})
 	}
 
-	// The premise the whole ruling rests on, asserted so it cannot rot: the
+	// The premise the whole decision rests on, asserted so it cannot rot: the
 	// stdlib really does recognise audio/mpeg from three bytes, and this door
 	// really does serve it inline.
 	// Exactly three bytes, because three is the claim. A longer input would
@@ -639,7 +639,7 @@ func TestMagicOnlyRecognisesWhatValidationUsedToRefuse(t *testing.T) {
 	}
 }
 
-// TestRealFilesValidationUsedToRefuse is the direction that made the ruling
+// TestRealFilesValidationUsedToRefuse is the direction that made the decision
 // necessary. Each is a file a user legitimately has, refused by the structural
 // validation and accepted now. Refusing these is the defect BUG-2963 exists to
 // fix, reintroduced by its own fix.
@@ -720,7 +720,7 @@ func TestMagicStillHasToBeThere(t *testing.T) {
 }
 
 // TestEBMLDocTypeSurvivesPaddingPastTheHead covers a case that the
-// magic-only ruling does not touch, because the DocType parse stays: a header
+// magic-only decision does not touch, because the DocType parse stays: a header
 // declaring a DocType payload longer than the bytes we hold is still
 // answerable when the VALUE is complete in hand, since it ends at its first
 // NUL.
@@ -740,7 +740,7 @@ func TestEBMLDocTypeSurvivesPaddingPastTheHead(t *testing.T) {
 }
 
 // TestEBMLParseDetails covers the two DocType-walk properties that survive the
-// magic-only ruling untouched. They were lost when the structural-validation
+// magic-only decision untouched. They were lost when the structural-validation
 // tests were cut wholesale, and a mutation run caught the gap: both mutations
 // below had gone from detected to surviving.
 func TestEBMLParseDetails(t *testing.T) {

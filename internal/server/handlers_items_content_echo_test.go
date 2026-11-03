@@ -11,7 +11,7 @@ import (
 // BUG-2995: a SUCCESSFUL content PATCH through the designated applier answers 200
 // carrying the item's PREVIOUS content.
 //
-// This is the control the ruling requires: a test that drives the applier
+// This is the control: a test that drives the applier
 // path and goes red on the previous content appearing in a 200. It is written to
 // fail against the code as it stands, which is what makes its green mean anything.
 //

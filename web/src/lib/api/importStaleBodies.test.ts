@@ -6,9 +6,9 @@ import { api } from './client';
 //
 // These cases exist because a response header is middlebox- and
 // attacker-influenced input, and the two transports must suppress and display
-// exactly the same set of values. Review caught the web client accepting
-// what the CLI rejects (`Number()` trims and takes decimals); a later pass caught the
-// rest of the gap — exponent notation, hex, and integers past 2^53, all of which
+// exactly the same set of values. The web client once accepted what the
+// CLI rejects (`Number()` trims and takes decimals); the rest of the gap was
+// exponent notation, hex, and integers past 2^53, all of which
 // Go's strconv.Atoi refuses and `Number()` happily converts or rounds.
 //
 // The upload goes over XMLHttpRequest since BUG-3475 (for progress and the

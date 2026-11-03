@@ -67,7 +67,7 @@ func emailLocalByte(b byte) bool {
 // urlScan answers "is the non-space run ending at this @ a URL" in O(1) per
 // match. Matches arrive in increasing order, so advance walks each byte once
 // and an ExtractMentions call stays linear in the body (TASK-3917: a
-// backward scan per match made ", @a" repeated quadratic).
+// backward scan per match made "/@a" repeated quadratic).
 type urlScan struct {
 	pos      int // bytes before pos have been scanned
 	runStart int // start of the current non-space run

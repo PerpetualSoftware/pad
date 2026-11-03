@@ -134,7 +134,7 @@
 		} else if (e.key === 'Escape') {
 			// Gate on the dropdown actually being VISIBLE (not just searchOpen):
 			// Escape in a focused-but-empty search should fall through to the
-			// page-level deselect handler (#703).
+			// page-level deselect handler (PR #703).
 			if (dropdownVisible) {
 				e.preventDefault();
 				e.stopPropagation();

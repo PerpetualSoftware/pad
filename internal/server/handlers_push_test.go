@@ -36,8 +36,7 @@ func TestPushToItem_RequiresMessage(t *testing.T) {
 }
 
 // TestPushToItem_ResponseCarriesWorkspaceSlug covers the response shape:
-// a successful push's JSON response
-// must carry ref/workspace/pushed/message so `pad push --format json`
+// a successful push's JSON response must carry ref/workspace/pushed/message so `pad push --format json`
 // has something real to print, and workspace must be the CANONICAL
 // slug (not merely whatever the URL happened to contain) — same
 // disambiguation rationale as the monitor line's workspace prefix.
@@ -295,7 +294,7 @@ func TestPushToItem_TargetedVanishedSessionMisses(t *testing.T) {
 
 // TestPushToItem_TargetedUnarmedSessionTreatedAsMiss covers PLAN-2613
 // S1's honesty requirement for a REAL, currently-connected target that
-// simply never declared armed=true: the caller's own dispatcher-approved
+// simply never declared armed=true: the design's own
 // call — "I'd take 'known but deaf' (0 delivered, success) over an
 // error, since the session IS present" — matching this handler's
 // existing shape for a vanished or cross-user target_session_id exactly
@@ -351,7 +350,7 @@ func TestPushToItem_TargetedUnarmedSessionTreatedAsMiss(t *testing.T) {
 }
 
 // TestPushToItem_TargetedSessionOfAnotherUserTreatedAsVanished pins the
-// self-addressed boundary (dispatcher constraint, TASK-2588): a
+// self-addressed boundary (TASK-2588): a
 // target_session_id that names a REAL, currently-connected session
 // belonging to a DIFFERENT user must behave exactly like a vanished id —
 // 200, delivered_sessions=0 — never leak to that other user's session and
@@ -567,7 +566,7 @@ func TestPushToItem_BroadcastDeliveredSessionsCountsArmedOnly(t *testing.T) {
 }
 
 // TestPushToItem_OmittedTargetSessionIDMatchesPreS5RequestShape is the
-// wire-level compatibility leg (dispatcher plan): a request body in
+// wire-level compatibility leg: a request body in
 // EXACTLY the pre-S5 shape — no target_session_id key at all, not even
 // an empty string — must still be accepted and behave as pure broadcast,
 // against a server with no presence registry at all (mirroring every

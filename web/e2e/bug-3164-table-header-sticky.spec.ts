@@ -13,7 +13,7 @@ import { createWorkspace, deleteCollection, deleteWorkspace } from './lib/attach
  * with the pane open) — so `top: 0` never engaged and the header scrolled away
  * with the rows.
  *
- * Ruled option A: in table view the table fills the visible region and owns
+ * Option A: in table view the table fills the visible region and owns
  * both scroll axes, like the board.
  *
  * The legs find the element that ACTUALLY scrolls the rows vertically by
@@ -193,8 +193,8 @@ test.describe('BUG-3164: the table header stays at the top of the table while it
 			}
 			expect(await position(), 'j should reach a row far below the first screenful').toBeGreaterThanOrEqual(30);
 			// NO_ROW can never satisfy the bound, so a lost focus fails the poll
-			// instead of passing it (an earlier version used a -1 sentinel
-			// that met its own `>= -1`).
+			// instead of passing it (a -1 sentinel
+			// would meet its own `>= -1`).
 			const NO_ROW = -1e9;
 			await expect.poll(async () => (await focusedBand())?.aboveBottom ?? NO_ROW, { message: 'j moved the focus below the visible table' })
 				.toBeGreaterThanOrEqual(-1);

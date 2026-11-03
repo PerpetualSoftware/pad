@@ -94,7 +94,7 @@ func TestCopyItem_MutatingRequestIsNotReplayable(t *testing.T) {
 // outcome is genuinely unknown. The CLI must send it once and must not
 // claim to know what happened.
 //
-// Scope, stated so nobody mistakes this for more than it is (3): this is NOT the
+// Scope, stated so nobody mistakes this for more than it is: this is NOT the
 // net/http nothing-written replay case. That one needs
 // the connection to die BEFORE the request bytes go out, on a pooled
 // connection, which is a race no test can schedule — and the copy now runs

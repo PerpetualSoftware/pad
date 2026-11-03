@@ -5523,8 +5523,8 @@ describe('Lightbox — the text arm', () => {
 		expect(signals[0].aborted).toBe(true);
 	});
 
-	// WHAT THIS SUITE CAN AND CANNOT DECIDE, stated because two of the findings above are
-	// CSS-mechanism findings and a test that cannot see CSS would
+	// WHAT THIS SUITE CAN AND CANNOT DECIDE, stated because two of the regressions above are
+	// CSS-mechanism problems and a test that cannot see CSS would
 	// report the jsdom default and call it a pass. `getComputedStyle` here returns
 	// `pointer-events: auto` for EVERY element — component styles are not injected
 	// in this environment — so asserting the layer's `pointer-events: none` would
@@ -5533,9 +5533,8 @@ describe('Lightbox — the text arm', () => {
 	// So: the wheel exclusion (a HANDLER change) is asserted here, with a control
 	// leg. The pointer-events and overscroll guarantees (CSS) are asserted in
 	// `web/e2e/attachment-text-preview.spec.ts`, where a real engine applies them.
-	// This file's coverage of the wheel and overscroll guarantees is the structure the CSS keys
-	// off, and no
-	// more than that.
+	// This file's coverage of the CSS-backed guarantees is the structure the CSS keys
+	// off, and no more than that.
 
 	it('leaves the wheel to the CARD, while still owning it everywhere else (R1 #3)', async () => {
 		mountViewer({ images: [image(IMG_A, 'notes.md', 'text/markdown')] });

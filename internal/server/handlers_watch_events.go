@@ -803,9 +803,8 @@ func watchNotificationVisible(watches map[string]string, vis watchAccessVisibili
 	// of their OWN session, not a fact about the item that anyone
 	// watching it has a claim on. Watching an item must not leak a push
 	// someone else addressed to themselves — that's the whole point of
-	// TargetUserID gating it (the
-	// original code fell through to the watch-map check on a
-	// non-matching TargetUserID, so any unconditional watcher on the item
+	// TargetUserID gating it (the original code fell through
+	// to the watch-map check on a non-matching TargetUserID, so any unconditional watcher on the item
 	// received every push addressed to every other user, instruction
 	// text included). PLAN-2558 S5's session targeting (TASK-2588)
 	// inherits this same "addressed traffic is exclusive of watch-matched
@@ -845,8 +844,8 @@ func watchNotificationVisible(watches map[string]string, vis watchAccessVisibili
 		return true // unconditional watch: any notification on this item
 	}
 
-	// A `--until field=value` predicate (TASK-2533 plan interpretation,
-	// confirmed with the dispatcher): "watch this item UNTIL <condition>"
+	// A `--until field=value` predicate (TASK-2533 plan interpretation):
+	// "watch this item UNTIL <condition>"
 	// reads as a threshold, not "notify me of everything AND also flag
 	// this condition" — so a predicated watch fires ONLY on the matching
 	// status-change, not on every comment/assignment touching the item.
@@ -947,7 +946,7 @@ func parseWatchPredicate(raw string) (field, value string, ok bool) {
 //
 // Actor mapping (TASK-2533 plan interpretation): DOC-2479's payload
 // lists a single `actor` field, but the monitor's own example output —
-// `PAD TASK-214 → done: fix verified` — names a PERSON, not a
+// `PAD TASK-214 → done (Alice): fix verified` — names a PERSON, not a
 // source category ("web"/"cli"/"agent"). Notification carries both
 // (Actor = category, ActorName = display name, mirroring the existing
 // events.Event shape); this maps the wire `actor` field to ActorName

@@ -43,7 +43,7 @@ type Candidate struct {
 	// AwaitsHuman: the item is in an awaits_human collection (an ask).
 	AwaitsHuman bool
 	// AssigneeUserID is the assigned PERSON; a role-only assignment is "" and
-	// falls through every rule that needs one (TASK-3615's ruling).
+	// falls through every rule that needs one (TASK-3615).
 	AssigneeUserID string
 	// AssignedAt is when the item was last assigned to that person, or the
 	// item's creation when no assignment was recorded.
@@ -82,7 +82,7 @@ type Why struct {
 type Routing struct {
 	Rule string
 	// People are the users the winning rule routes to, in rule order. Only the
-	// winning rule's people are returned (A1: exclusive).
+	// winning rule's people are returned (exclusive).
 	People       []string
 	Why          Why
 	Because      []Because

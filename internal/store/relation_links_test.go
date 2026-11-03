@@ -381,10 +381,10 @@ func TestRelationLinks_ImportIndexesTheRemappedIDs(t *testing.T) {
 	}
 }
 
-// TestRelationLinks_RestoreAfterASchemaChangeReindexes guards the case:
-// it is a hole my own site enumeration could not have found.
+// TestRelationLinks_RestoreAfterASchemaChangeReindexes guards a restore that follows a
+// schema change: it is a hole a site enumeration could not have found.
 //
-// I enumerated the sites that WRITE items.fields. Restore writes no fields —
+// Every site that WRITES items.fields was enumerated. Restore writes no fields —
 // it clears deleted_at — so it never appeared. But the index depends on
 // (blob, schema) AND on the item being live, and the collection reindex
 // deliberately skips soft-deleted items. So: delete an item, change the
@@ -437,7 +437,8 @@ func TestRelationLinks_RestoreAfterASchemaChangeReindexes(t *testing.T) {
 	}
 }
 
-// TestRelationLinks_AnInterruptedBackfillIsRetriedNotSkipped guards the case.
+// TestRelationLinks_AnInterruptedBackfillIsRetriedNotSkipped guards an interrupted
+// backfill being retried rather than skipped.
 //
 // The guard used to be "does item_relation_links have any row". Rows commit
 // per item, so a crash partway through leaves the table NON-EMPTY AND
@@ -488,7 +489,7 @@ func TestRelationLinks_AnInterruptedBackfillIsRetriedNotSkipped(t *testing.T) {
 	}
 }
 
-// TestRelationLinks_BackfillClearsAStaleEdge guards the case.
+// TestRelationLinks_BackfillClearsAStaleEdge guards a stale edge being cleared by the backfill.
 //
 // The backfill used to SKIP an item whose blob carries no edges, as an
 // optimisation. That is wrong for exactly the state it exists to repair: an
@@ -607,7 +608,7 @@ func TestRelationLinks_HardDeleteCascadesTheEdges(t *testing.T) {
 	}
 }
 
-// TestRelationLinks_BacklinkCarriesTheFieldLabel pins the case,
+// TestRelationLinks_BacklinkCarriesTheFieldLabel pins that a backlink carries the field label,
 // which was a field declared, documented, consumed by the UI — and never
 // populated, so every group rendered its raw key.
 //
@@ -659,8 +660,8 @@ func TestRelationLinks_BacklinkCarriesTheFieldLabel(t *testing.T) {
 	}
 }
 
-// TestRelationBacklinksDoNoSecondPoolRead is the guard for the invariant round
-// 7's P1 cost me.
+// TestRelationBacklinksDoNoSecondPoolRead is the guard for the invariant that
+// backlink reads never take a second pool connection.
 //
 // GetRelationBacklinks holds the rows cursor open while it builds the result.
 // The first version of the field-LABEL lookup issued a SELECT per distinct

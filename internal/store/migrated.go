@@ -82,7 +82,7 @@ const MigratedMarker = "PAD_MIGRATED_TO_POSTGRES"
 //
 // ONE LIST, TWO CONSUMERS: the renderer below and the guard test that compares
 // it against the live schema. The INSTRUMENT that generated it is stated so a
-// reviewer can attack the instrument rather than the rows (CONVE-35): the
+// reader can attack the instrument rather than the rows (CONVE-35): the
 // live schema's table list read from sqlite_master on a fresh store.New,
 // partitioned by whether models.WorkspaceExport carries the table's contents.
 // (It was 68 tables when written; BUG-3958's census measured 91. The count is
@@ -129,9 +129,9 @@ const MigratedMarker = "PAD_MIGRATED_TO_POSTGRES"
 // Group 3 below — workspace user state the BUNDLE does not carry — is in on a
 // judgement made deliberately: the rule is refuse-rather-than-lose, and a star
 // written to an abandoned file is exactly the loss the marker exists to
-// prevent. The posture is nulcolumns.go's Ruling 2: a RAISE(ABORT) trigger
-// with no value check is near-free, and litigating a table at a time is how
-// that unit spent three rounds.
+// prevent. The posture is nulcolumns.go's second-ring posture: a RAISE(ABORT) trigger
+// with no value check is near-free, and litigating a table at a time never
+// ends.
 var migratedRefusalTables = []string{
 	// The named victim. The op-log is the durability layer for content that
 	// has not been flushed to items.content, and it is the one BUG-3032 could
@@ -151,7 +151,7 @@ var migratedRefusalTables = []string{
 	"item_versions",
 	"versions",
 	"item_reminders",
-	// TASK-3617 r4: carried since VerificationExport.
+	// TASK-3617: carried since VerificationExport.
 	"item_verifications",
 
 	// Workspace-scoped user state the bundle does NOT carry. item_stars and
@@ -191,7 +191,7 @@ var migratedRefusalTables = []string{
 	// The activity feed. It used to be excluded as derived, but CreateActivity
 	// writes on its own connection (activities.go:67), and the connected-apps
 	// handlers log OAuth connection changes, which are not refused
-	// (handlers_connected_apps.go:239, :287). BUG-3958 r1.
+	// (handlers_connected_apps.go:239, :287). BUG-3958.
 	"activities",
 	// A person's push settings (TASK-3937): choices, not delivery state.
 	"user_notification_settings",
@@ -250,7 +250,7 @@ var migratedExcludedTables = map[string]string{
 	// setMemberCollectionAccessTx updates workspace_members
 	// (workspace_members.go:667), and UpgradeAppInstall updates app_installs
 	// (app_upgrade.go:206) before its access writes (:252, :310). It was
-	// listed as auth; BUG-3958 r1 corrected that.
+	// listed as auth; BUG-3958 corrected that.
 	"member_collection_access": "derived",
 
 	// AUTH / PLATFORM: not migrated; the operator re-runs auth setup.
@@ -290,7 +290,7 @@ var migratedExcludedTables = map[string]string{
 	// Dispatch state: rows are enqueued with protected writes, but they are
 	// marked, failed, pruned and scrubbed on their own (event_outbox.go:978,
 	// 1026, 1800, 1829, 1849). A lost mark means a re-delivery, not lost
-	// content. It was listed as derived; BUG-3958 r2 corrected that.
+	// content. It was listed as derived; BUG-3958 corrected that.
 	"event_outbox":    "bookkeeping",
 	"sqlite_sequence": "bookkeeping",
 
@@ -307,7 +307,7 @@ var migratedExcludedTables = map[string]string{
 // migratedFTSBases are the FTS5 tables. Each is external-content, so besides
 // the base it has four shadow tables: <base>_config, _data, _docsize and _idx. Named rather
 // than matched by suffix, so an ordinary table that happens to end in _fts_data
-// is still classified by hand (BUG-3958 r1).
+// is still classified by hand (BUG-3958).
 var migratedFTSBases = []string{"items_fts", "comments_fts", "documents_fts"}
 
 // isFTSShadowTable reports an FTS5 table or one of its shadow tables. They are

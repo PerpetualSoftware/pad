@@ -290,7 +290,7 @@ var uninstallHookAfterStep func(step string) error
 //     admission refuses an uninstalling install and the drain ran first
 //     (U10b). Item actions and their context codes are deleted (U11). App
 //     attachments are all bound to items and stay (the U7 item-scoped
-//     ruling);
+//     rule);
 //  3. the bot: its membership (member_collection_access cascades), its
 //     sessions, API tokens and OAuth credentials, and the bot is DISABLED;
 //  4. the install becomes the tombstone, state 'uninstalled'.

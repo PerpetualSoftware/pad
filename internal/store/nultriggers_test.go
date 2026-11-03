@@ -199,7 +199,7 @@ func TestNULTriggersMatchTheList(t *testing.T) {
 	}
 }
 
-// TestTriggerRefusalIsIndistinguishableFromLayerA discharges Ruling 2's
+// TestTriggerRefusalIsIndistinguishableFromLayerA discharges the second-ring
 // condition.
 //
 // The second ring — user agents, IP addresses, attachment filenames — was
@@ -219,7 +219,7 @@ func TestTriggerRefusalIsIndistinguishableFromLayerA(t *testing.T) {
 	// WHY THERE IS NO END-TO-END LEG HERE, stated rather than faked.
 	//
 	// Testing classifyTriggerRefusal with a
-	// synthetic error would pass even if the wrapper stopped calling it. My
+	// synthetic error would pass even if the wrapper stopped calling it. The
 	// first answer was an "integration" leg that wrote a nested-document value
 	// through a guarded connection and asserted the typed error came back. It
 	// PASSED — and for the wrong reason: the refusal came from LAYER A, whose
@@ -641,7 +641,7 @@ func TestNULTriggerRestorationFailsLoudlyOnAQueryError(t *testing.T) {
 	}
 }
 
-// TestNULTriggerRestorationRemovesStrays regresses The health
+// TestNULTriggerRestorationRemovesStrays regresses a gap: the health
 // check asked only whether every EXPECTED trigger was present, so a database
 // carrying an extra pad_nul_ trigger read as healthy.
 //

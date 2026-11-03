@@ -490,7 +490,7 @@ func TestPLAN3598_ItemContextArchivedFollowsGet(t *testing.T) {
 }
 
 // The brief's open_blocker agrees with the dashboard's blocked attention
-// The brief reuses firstActiveBlocker's predicate,
+// (#2094): the brief reuses firstActiveBlocker's predicate,
 // so the two must not drift for any blocker. Two blockers the brief once
 // judged on its own are pinned here:
 //   - a REFERENCE doc (PLAN-3535 PR 2): an explicit link blocks until the

@@ -711,7 +711,7 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 	// CHANGE-SENSITIVE, not merely "a schema pointer was supplied". A client
 	// that round-trips the collection and submits identical schema bytes would
 	// otherwise pay the whole-collection reindex for a no-op, which is the
-	// same cost the icon-edit gate above exists to avoid — and my first
+	// same cost the icon-edit gate above exists to avoid — and an earlier
 	// version of this line claimed to test movement while only testing
 	// presence.
 	//
@@ -1121,7 +1121,7 @@ func (s *Store) applyFieldMigrationsTx(tx *sql.Tx, collectionID, workspaceID str
 		// Phase 2: write. Each UPDATE is a separate statement, so MAX(seq)
 		// advances between them inside the transaction — every row ends up
 		// with a unique sequential seq.
-		// NOT a decision enqueue door (TASK-3117 ruling 3). This is a system
+		// NOT a decision enqueue door (TASK-3117 decision 3). This is a system
 		// fan-out rewrite: one field migration touches every matching item, so an enqueue
 		// per row would be an unbounded provider bill for one action. The rewrite
 		// DOES change hashed decision state, so each touched item's stored

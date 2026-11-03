@@ -1155,7 +1155,7 @@ func TestCrossWorkspace_WriteCollectionNotFoundRefusesForeignVerdicts(t *testing
 
 // A restricted editor who can SEE an item in another workspace only through a
 // VIEW grant may not edit it through the cross-workspace authorizer
-// (TASK-3376): the base role reaches only the
+// (TASK-3376, PR #1756): the base role reaches only the
 // member's listed collections. The edit grant is the control.
 func TestCrossWorkspace_RestrictedEditorViewGrantIsNotEdit(t *testing.T) {
 	f := newCrossWSFixture(t)

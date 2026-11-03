@@ -688,7 +688,7 @@ func TestEventsStream_SessionBearerIsValidatedAsASession(t *testing.T) {
 // demand — a store that cannot answer, and a credential kind nobody taught it.
 
 func TestCredentialLiveness_UnknownKindFailsClosed(t *testing.T) {
-	// The reason the default branch is not a fallthrough
+	// The default branch is not a fallthrough
 	// to "valid": a credential kind nobody taught this predicate about is a
 	// connection nobody can revoke, which is BUG-3007 under a new name. A
 	// future auth path that forgets to set `ctxAuthKind` must break LOUDLY.
@@ -748,7 +748,7 @@ func TestCredentialLiveness_StoreErrorKeepsTheConnection(t *testing.T) {
 }
 
 func TestValidateTokenForLiveness_DoesNotTouchLastUsed(t *testing.T) {
-	// A meaning problem as much as a cost one:
+	// Touching it is a meaning problem as much as a cost one:
 	// `last_used_at` is what an operator reads before revoking a token, so a
 	// background liveness probe bumping it would make every idle-but-connected
 	// token look actively used.

@@ -932,8 +932,8 @@ func TestCopyEndpoint_NonStringDestinationDefaultDropsWithOrWithoutANullOverride
 //
 // Leg 3 is what makes this a test rather than an assertion: the OWNER's
 // identical copy must still resolve and store the default, so a build that
-// dropped every default cannot pass. The structure is the night reviewer's;
-// keeping it because a visibility test without the can-see control is not one.
+// dropped every default cannot pass. Keep it:
+// a visibility test without the can-see control is not one.
 func TestCopyEndpoint_InvisibleDestinationDefaultIsDroppedByTheCopyToo(t *testing.T) {
 	f := newCopyRelationFixtureWith(t, resolvableDestDefault, nil, false)
 

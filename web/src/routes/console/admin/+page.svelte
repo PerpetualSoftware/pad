@@ -118,8 +118,8 @@
 	}
 
 	// loadMore appends the next page without resetting offset. On failure,
-	// rolls back the offset so a retry doesn't skip a page (PR #604). Also guards against re-entrant calls while a page is
-	// in flight.
+	// rolls back the offset so a retry doesn't skip a page (PR #604). Also guards
+	// against re-entrant calls while a page is in flight.
 	async function loadMore() {
 		if (loadingMore || loading) return;
 		const prevOffset = offset;
@@ -162,7 +162,7 @@
 	// excluded (changes per keystroke). Status is its own URL param
 	// (rather than smuggled through has_workspaces/disabled) so all four
 	// buckets — active/inactive/disabled/no-workspace — round-trip
-	// losslessly (#604).
+	// losslessly (PR #604).
 	function syncURL() {
 		const p = buildQueryParams({ offset: 0, includeSearch: false });
 		p.delete('limit');
@@ -245,7 +245,7 @@
 		if (days < 7) return 'recent';
 		// 30 days inclusive is "stale" to match server-side
 		// computeAdminUserStatus which only flips to inactive on > 30 days
-		// (#603).
+		// (PR #603).
 		if (days <= 30) return 'stale';
 		return 'cold';
 	}

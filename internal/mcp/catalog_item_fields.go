@@ -94,8 +94,7 @@ var identityRefFieldKeys = map[string]bool{
 	"role":   true,
 }
 
-// ─── ONE CANONICAL VIEW, ONE CONFLICT CHECK (BUG-2850)
-// ───────────────────────────────────────────────────────────
+// ─── ONE CANONICAL VIEW, ONE CONFLICT CHECK (BUG-2850) ───────────────────────────────
 //
 // Successive fixes each left a defect in the PREVIOUS fix,
 // and every one was the same shape: conflict handling had accreted a separate
@@ -198,8 +197,8 @@ func topLevelConflictKeys() []string {
 //
 // The exemption is NARROWER than "same name". It holds only for keys the CLI
 // can express: the v0.16 compat IDs have no flag behind them, so BuildCLIArgs
-// drops the top-level value while HTTP reads it, and those refuse instead
-// — but only when a top-level compat value is actually present,
+// drops the top-level value while HTTP reads it, and those refuse instead,
+// but only when a top-level compat value is actually present,
 // which is the asymmetry's source. A padded entry is outside it
 // too, since the doors then receive different writes.
 //
@@ -498,7 +497,7 @@ func detectFieldConflicts(prefix string, input map[string]any) *CallToolResult {
 // asking one question, on every promoted key at once.
 //
 // The same reasoning that applies to the hierarchy keys covers their
-// siblings, for all six. A fix for one named key owes the whole population:
+// siblings, for all six. CONVE-18: a fix for one named key owes the whole population:
 // a probe that drove all eight keys turned one named key into six — and,
 // below, into the two that are NOT part of the class.
 //

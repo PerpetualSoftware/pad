@@ -834,7 +834,7 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 	// write-time guard, so a source row whose title predates the bound is
 	// carried across intact. That is the intended behaviour, on the same
 	// reasoning as the grandfathering clause in UpdateItem and the
-	// coerce-not-refuse ruling for ImportWorkspace: a copy carries a value that
+	// coerce-not-refuse rule for ImportWorkspace: a copy carries a value that
 	// already exists in the database, and refusing it would break a working
 	// operation for data this product itself accepted.
 	//
@@ -1307,7 +1307,7 @@ func (s *Store) migrateCopyFields(q Queryer, destWorkspaceID string, targetColl 
 	if req := RequiredRelationIssues(items.SchemaForMigratedFields(targetSchema), lateDropped); len(req) > 0 {
 		return nil, nil, nil, &FieldValidationError{Err: errors.New(RelationIssuesMessage(req))}
 	}
-	// THE EIGHTH DOOR'S VISIBILITY PASS (night-11 finding).
+	// THE EIGHTH DOOR'S VISIBILITY PASS.
 	//
 	// Every other door runs this over its late-resolved destination defaults.
 	// This one did not, and could not as written: the pass was a *Server

@@ -204,8 +204,8 @@ func (rl *ipRateLimiter) evictLocked(now time.Time) {
 	// level is that fraction of burst in evictLevels steps. Levels rather
 	// than a sort keep the sweep linear, and a fixed count keeps the
 	// histogram's size off the config: two buckets share a level only
-	// when they differ by under burst/evictLevels tokens (
-	// whole-token levels put a drained bucket beside ones at 0.99).
+	// when they differ by under burst/evictLevels tokens
+	// (whole-token levels put a drained bucket beside ones at 0.99).
 	type candidate struct {
 		key   string
 		level int
@@ -920,7 +920,7 @@ func (s *Server) allowChatSend(w http.ResponseWriter, convID string, actor model
 	return true
 }
 
-// TASK-4039 r2: charge only valid DM-create attempts after checking for reuse.
+// TASK-4039: charge only valid DM-create attempts after checking for reuse.
 func (s *Server) allowChatDM(w http.ResponseWriter, userID string) bool {
 	if s.rateLimiters == nil || s.rateLimiters.ChatDM == nil {
 		return true

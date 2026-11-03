@@ -118,7 +118,7 @@ func (f *bug3837Fixture) openRecorded(t *testing.T, scheme, bearer string, liste
 	t.Cleanup(cancel)
 	req := httptest.NewRequest("GET", "/mcp", nil)
 	if listen {
-		// A modern-era listen, the only kind admission counts (BUG-3835 r6).
+		// A modern-era listen, the only kind admission counts (BUG-3835).
 		req = httptest.NewRequest("POST", "/mcp",
 			strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"subscriptions/listen","params":{"_meta":{"`+
 				mcp.MetaKeyProtocolVersion+`":"`+mcp.ProtocolVersion20260728+`"}}}`))
@@ -309,7 +309,7 @@ func TestMCP_BUG3837_DeletedUserIsNotStillValid(t *testing.T) {
 	}
 }
 
-// The KEEP ruling on rotation (BUG-3837): a refresh rotation flips
+// Rotation ends the stream (BUG-3837): a refresh rotation flips
 // the old access token inactive, so a live stream opened with it ends at its
 // next tick, even though the grant is live. Pinned with its three conditions:
 // it ends at about the next tick after the rotation, it ends between frames
@@ -430,7 +430,7 @@ func TestMCP_BUG3837_UserReadFailureKeepsTheStream(t *testing.T) {
 // refresh token. In fosite v0.49.0 the fallback's error is scoped to its
 // else-if (handler/oauth2/introspector.go), so the ACCESS lookup's error is
 // the one returned: a store failure stays "could not ask" even when the
-// fallback answers not found. The decision to treat that as "could not ask" rests on that, and
+// fallback answers not found. Reading that as "could not ask" rests on that, and
 // a fosite bump could flip it silently, so it is pinned against real fosite.
 // The control is the same fallback after a definitive access answer.
 func TestMCP_BUG3837_TransientAccessErrorIsNotReadAsRevocation(t *testing.T) {

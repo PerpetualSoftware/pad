@@ -357,7 +357,7 @@ func TestWriteTypedItemRefusalIncludesTitleRefusal(t *testing.T) {
 // each with its own error block. BUG-2804 mapped the cascade refusal into the
 // plain block and missed the other two; its own comment records that as "a
 // population error, not a typo". BUG-2833 then mapped the title refusal into
-// the plain block, a reviewer named the collab-snapshot one, and the collab-edit
+// the plain block, a later sweep named the collab-snapshot one, and the collab-edit
 // one was still missing — with that comment sitting directly above the helper
 // being called.
 //
@@ -372,7 +372,7 @@ func TestWriteTypedItemRefusalIncludesTitleRefusal(t *testing.T) {
 //
 // WHAT IT COVERS AND WHAT IT DOES NOT, stated because a structural test invites
 // more confidence than it earns. It detects an arm that is DELETED, one that is
-// out of ORDER, and — and one DISABLED by being made an
+// out of ORDER, and one DISABLED by being made an
 // operand of a boolean condition, which is the shape that defeated the
 // presence-only version. All three are verified by mutation rather than
 // asserted.

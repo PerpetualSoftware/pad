@@ -131,7 +131,7 @@ func (s *Store) BackfillRelationLinks() (*BackfillRelationLinksResult, error) {
 	rows.Close()
 
 	// BATCHED BY WORKSPACE, in bounded chunks. One transaction per ITEM was
-	// the first shape and it was too costly: a 100k-item
+	// the first shape: a 100k-item
 	// database meant 100k transactions and 100k advisory-lock acquisitions in
 	// a synchronous startup pause, which is connection churn nobody asked for.
 	//

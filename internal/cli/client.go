@@ -101,7 +101,7 @@ func newClientFromURL(baseURL string) *Client {
 		// anything but a fast local link. 1 hour is generous enough
 		// for ~100 MB/s uplinks shipping a 350 GiB bundle and still
 		// caps a hung connection eventually. (PR
-		// #306 .)
+		// #306.)
 		streamClient: &http.Client{
 			Timeout: 1 * time.Hour,
 		},
@@ -787,7 +787,7 @@ type PushResult struct {
 	// many of the caller's own live sessions the push's delivery predicate
 	// matched. It was missing here while this struct's doc comment claimed
 	// to mirror the response shape, so `pad push --format json` silently
-	// dropped it (2699).
+	// dropped it (BUG-2698/2699).
 	//
 	// A POINTER, because the field is genuinely tri-state on the wire:
 	// a number is a real count; NULL means the notification was published
@@ -1572,7 +1572,7 @@ func (c *Client) ListActivity(wsSlug string, params url.Values) ([]models.Activi
 // copies, not the server's types: internal/cli does not import
 // internal/store. Rendering decodes into them; --format json is printed from the
 // body without this struct (re-indented), so a field added or retyped
-// server-side still reaches the caller (TASK-4035, rulings eedbf63d and
+// server-side still reaches the caller (TASK-4035, decisions eedbf63d and
 // cb588bde).
 type CatchUpLine struct {
 	Ref        string `json:"ref"`
@@ -1616,11 +1616,11 @@ type CatchUpResponse struct {
 
 // GetCatchUp reads the caller's catch-up digest (TASK-4035). It is a plain
 // GET: the endpoint never writes, and marking caught up (PUT /me/seen) has no
-// client method on purpose (ruling 380aa793). It returns the server's body
+// client method on purpose (decision 380aa793). It returns the server's body
 // undecoded (valid JSON, which the transport guarantees): --format json
 // prints it re-indented through PrintJSON without touching CatchUpResponse,
 // so the server stays the source of truth for json consumers. Only the table
-// and markdown renderers call DecodeCatchUp (ruling cb588bde).
+// and markdown renderers call DecodeCatchUp (decision cb588bde).
 func (c *Client) GetCatchUp(wsSlug string) (json.RawMessage, error) {
 	var raw json.RawMessage
 	if err := c.get("/workspaces/"+url.PathEscape(wsSlug)+"/catch-up", &raw); err != nil {
@@ -1929,7 +1929,7 @@ func filenameFromContentDisposition(header string) string {
 //
 // Buffers the entire response in memory; do NOT use for endpoints that
 // can return arbitrarily large bodies (e.g. workspace export bundles).
-// Reach for RawStream for those callers.
+// Reach for RawStream for those callers (TASK-884).
 func (c *Client) RawGet(path string) ([]byte, error) {
 	req, err := c.newRequest("GET", path, nil)
 	if err != nil {

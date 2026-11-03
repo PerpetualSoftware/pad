@@ -928,7 +928,7 @@ func (s *Server) handleExportWorkspace(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleImportWorkspace(w http.ResponseWriter, r *http.Request) {
 	// Every pre-body precondition, from the one place both mint doors call
 	// (BUG-2809). This used to be two gates written out here, each added
-	// separately after a reviewer found the create door had it and this one
+	// separately after the create door was found to have it and this one
 	// did not: the OAuth consent grant (IDEA-2756) and the user-scoped plan
 	// limit (BUG-2793).
 	//

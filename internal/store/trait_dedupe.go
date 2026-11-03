@@ -11,7 +11,7 @@ import (
 // collection declaring the same kernel trait, so the partial unique indexes in
 // migrations 087 / 064 can be created (TASK-2710).
 //
-// WHY THIS IS GO AND NOT SQL, and why it runs BEFORE migrate(). The ruling
+// WHY THIS IS GO AND NOT SQL, and why it runs BEFORE migrate(). The decision
 // requires every resolution to be REPORTED — it silently changes which
 // collection owns a kernel behavior, so an operator has to be able to see what
 // moved. A SQL migration cannot log: Postgres RAISE NOTICE goes nowhere
@@ -185,7 +185,7 @@ func (s *Store) dedupeTraitDeclarations() error {
 	}
 	defer tx.Rollback()
 
-	// ONE WRITE PER COLLECTION, accumulating every declaration it lost (P1). A
+	// ONE WRITE PER COLLECTION, accumulating every declaration it lost. A
 	// collection can lose BOTH — the playbooks definition
 	// declares artifact_kind AND invocation_field — and stripping them in two
 	// passes, each re-parsing the row's ORIGINAL traits, made the second write

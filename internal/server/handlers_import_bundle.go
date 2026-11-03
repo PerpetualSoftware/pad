@@ -171,9 +171,9 @@ func bundleTooLargeError(message string) *importStatusError {
 // import — matches whatever the upload handler accepts so an
 // operator who raised PAD_ATTACHMENT_MAX_BYTES on the source can
 // re-import the resulting export on a destination configured the
-// same way. A hard-coded 25 MiB cap would break this: a workspace with attachments uploaded under
-// a larger
-// cap would round-trip the export but fail the re-import.
+// same way. A hard-coded 25 MiB cap would break this: a workspace with
+// attachments uploaded under a larger cap would round-trip the export but fail
+// the re-import.
 func (s *Server) effectiveBlobMaxBytes() int64 {
 	if s.attachmentMaxBytes > 0 {
 		return s.attachmentMaxBytes
@@ -323,9 +323,8 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 			return
 		}
 
-		// A TRANSPORT failure rolls the partial workspace back (BUG-3475). The KEEP door below
-		// exists so the importer can
-		// inspect what arrived, and it can only say so in this response — a
+		// A TRANSPORT failure rolls the partial workspace back (BUG-3475). The KEEP door
+		// below exists so the importer can inspect what arrived, and it can only say so in this response — a
 		// response that cannot reach a client whose upload stalled or whose
 		// connection died. A kept partial nobody is told about is a husk with
 		// an owner (the BUG-3184 shape, now visible in their list), and a
@@ -518,9 +517,8 @@ func (s *Server) importSummary(ws *models.Workspace, bundled store.WorkspaceCont
 }
 
 // rollBackPartialImport removes a workspace an import created and could not
-// finish, with its rehydrated attachments: the validation-reject door and, since BUG-3475, the
-// interrupted-upload door. nil means
-// the workspace is gone from the caller's point of view, read back from the
+// finish, with its rehydrated attachments: the validation-reject door and, since BUG-3475,
+// the interrupted-upload door. nil means the workspace is gone from the caller's point of view, read back from the
 // row; a non-nil error means it may still be there and the caller cannot say
 // it is gone.
 func (s *Server) rollBackPartialImport(door string, ws *models.Workspace, ownerID string, cause error) error {

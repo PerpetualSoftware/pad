@@ -2,7 +2,8 @@
 // inline attachment), and y-tiptap never writes such a mark to the Y.Doc. The
 // tab that applied the mark held a document its own Y.Doc did not, so two
 // live tabs flushed different bodies. The fix forbids marks on inline atoms
-// (the InlineAtomNoMarks plugin, inlineAtomNoMarks.ts; a node spec's `marks` cannot do it). The fix names four conditions,
+// (the InlineAtomNoMarks plugin, inlineAtomNoMarks.ts; a node spec's `marks` cannot do it).
+// The fix names four conditions,
 // each a test here:
 //   (a) a Y.Doc produced on main loads byte-identically under the new schema;
 //   (b) markdown with a mark spanning a hard break round-trips unchanged;

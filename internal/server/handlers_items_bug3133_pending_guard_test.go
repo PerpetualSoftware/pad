@@ -13,7 +13,7 @@ import (
 // the row. A content write that carries a token is refused while content-bearing
 // op-log rows sit above the flush watermark; overwrite_pending_edits lifts it; a
 // tokenless write proceeds, and on the direct path it reports how many pending
-// rows its prune destroyed. These are the contract legs the ruling names.
+// rows its prune destroyed. These are the contract legs.
 
 // pendingEditFrame is a well-formed sync update with a non-empty payload that no
 // other row repeats, so the classifier marks it content-bearing — what a tab's

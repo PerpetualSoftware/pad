@@ -200,7 +200,7 @@ type RelationTarget struct {
 // `multi_relation` field (PLAN-2857 U4).
 //
 // ONE map, not two. A parallel `multi_relation_targets` key was the obvious
-// alternative and was ruled against: a consumer rendering "what does this field
+// alternative and was rejected: a consumer rendering "what does this field
 // point at?" would have to ask two questions and merge the answers, and the
 // field's key already says which shape to expect because the consumer has the
 // schema. The cost is this custom marshaller; the benefit is that there is
@@ -2094,7 +2094,7 @@ type ItemLinkCreate struct {
 // stored title already exceeds the bound keeps working, and an update that does
 // not set a title never validates one. Same grandfathering rule as documents.
 //
-// TWO PATHS DO NOT VALIDATE, both by ruling and both carrying legacy data
+// TWO PATHS DO NOT VALIDATE, both by design and both carrying legacy data
 // rather than caller input (an earlier version of this comment
 // said every door normalizes then validates, which is not true of either):
 //
@@ -2125,7 +2125,7 @@ const MaxItemTitleRunes = 255
 //
 // Every door that takes a title FROM A CALLER pairs this with
 // ValidateItemTitle and stores what it validated, never the raw input. The two
-// legacy-data paths do not, by ruling: ImportWorkspace coerces (it normalizes,
+// legacy-data paths do not, by design: ImportWorkspace coerces (it normalizes,
 // then truncates or substitutes rather than refusing) and cross-workspace copy
 // carries the source row's title through untouched. See MaxItemTitleRunes for
 // both. An earlier version of this comment said "every door", which reads as

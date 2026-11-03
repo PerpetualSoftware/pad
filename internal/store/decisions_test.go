@@ -280,7 +280,7 @@ func TestItemDecisions_LatestHidesOlderStates(t *testing.T) {
 	}
 }
 
-// Move is a door (TASK-3117 ruling 3), keyed on the TARGET collection's sets:
+// Move is a door (TASK-3117 decision 3), keyed on the TARGET collection's sets:
 // a move INTO a scoped collection makes an evaluation owed where the item's
 // old collection owed none.
 func TestDecisionJobs_MoveEnqueuesForTargetCollection(t *testing.T) {
@@ -304,7 +304,7 @@ func TestDecisionJobs_MoveEnqueuesForTargetCollection(t *testing.T) {
 	}
 }
 
-// Comment edit and delete change the trail, so they are doors too (ruling 3's
+// Comment edit and delete change the trail, so they are doors too (decision 3's
 // rule applied). An edit that leaves the body unchanged is not.
 func TestDecisionJobs_CommentEditAndDeleteEnqueue(t *testing.T) {
 	s, ws, col := decisionFixture(t)
@@ -509,7 +509,7 @@ func TestTruncateDecisionError_Boundary(t *testing.T) {
 	// Plain ASCII just over the limit pins the limit check directly: a check
 	// off by one byte (len(s) <= max+1) returns all 1025 bytes here. The
 	// rune cases above catch it too, at pad 1021 with a 2-byte rune (1025
-	// bytes), but only as a side effect of their own cut (BUG-4018 r2).
+	// bytes), but only as a side effect of their own cut (BUG-4018).
 	for _, n := range []int{maxDecisionErrorBytes + 1, 2000} {
 		over := strings.Repeat("a", n)
 		if got := truncateDecisionError(over); got != over[:maxDecisionErrorBytes] {

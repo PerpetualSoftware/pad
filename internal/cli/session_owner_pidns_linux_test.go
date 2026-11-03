@@ -312,7 +312,7 @@ func TestOwnerLiveness_PIDNamespace(t *testing.T) {
 		{"pid unstamped, foreign reader, dead pid", dead, away, LivenessUnknown},
 		{"pid unstamped, foreign reader, live pid", live, away, LivenessAlive},
 		// No token to match: a live number in a reader that may be elsewhere
-		// is not the owner by any evidence (A-1). The bare-probe residual
+		// is not the owner by any evidence. The bare-probe residual
 		// stays for the init and same-namespace readers.
 		{"pid unstamped, foreign reader, live pid, no token", bare, away, LivenessUnknown},
 		{"pid unstamped, reader pid ns unreadable, live pid, no token", bare, reader{pidErr: errNS, mnt: recordedMnt}, LivenessUnknown},
@@ -493,7 +493,7 @@ func TestWriteArmState_HeadlessRecordsPIDNamespace(t *testing.T) {
 }
 
 // TestCaptureSessionOwner_MountNamespace: mnt_ns is stamped only beside a
-// socket the recorder stat'ed with its identity (C1). A pad
+// socket the recorder stat'ed with its identity. A pad
 // started inside a sandbox by a harness outside it may not see the
 // harness's socket; stamping its own mount namespace on that row would let
 // a later reader in the same sandbox trust an ENOENT.
@@ -605,8 +605,8 @@ func zombiePID(t *testing.T) int {
 }
 
 // TestChatDirection_MountNamespace: the chat-direction file is the third
-// socket-identity writer (after the registry capture and the arm write, BUG-4090,
-// C1). It carries the socket's mount namespace, so a
+// socket-identity writer (after the registry capture and the arm write, BUG-4090).
+// It carries the socket's mount namespace, so a
 // gone socket read from another one keeps the file and stays off, and read
 // from its own reaps it.
 func TestChatDirection_MountNamespace(t *testing.T) {
@@ -650,7 +650,7 @@ func TestChatDirection_MountNamespace(t *testing.T) {
 // TestArmStateOwnerVerdict_HeadlessNoTokenForeign: a headless arm file with
 // no start token — what capture writes for a harness pid it could not see —
 // is not honoured by a reader that may be in another namespace, even when
-// some live process answers at its number there (A-1).
+// some live process answers at its number there.
 func TestArmStateOwnerVerdict_HeadlessNoTokenForeign(t *testing.T) {
 	armStateTestEnv(t, "")
 	st := &ArmState{PID: os.Getpid()} // live here, unstamped, no token
@@ -666,7 +666,7 @@ func TestArmStateOwnerVerdict_HeadlessNoTokenForeign(t *testing.T) {
 
 // TestListSessions_LegacyRowByReaderNamespace drives both branches of the
 // v1 legacy row's verdict by seam, so the non-init branch runs on an
-// ordinary runner and not only under Nix (af75879). A v1 file
+// ordinary runner and not only under Nix (decision 8af75879). A v1 file
 // has no session_pid, pid_ns or token; its owner is the socket-derived pid.
 // cmd/pad's table test asserts the same rule from whatever namespace it is
 // in.

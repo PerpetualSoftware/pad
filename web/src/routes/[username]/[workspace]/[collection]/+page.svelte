@@ -86,7 +86,7 @@
 	// members fetch. The overall `loading` indicator combines that
 	// with the localIndex bootstrap state so the empty-state CTA
 	// doesn't flash for non-empty collections while items are still
-	// hydrating (Codex P2 round 1 of TASK-1357). Scroll restoration
+	// hydrating (TASK-1357). Scroll restoration
 	// also gates on `loading`, so this prevents the "attempt-and-fail"
 	// case where filteredItems is briefly empty.
 	let metaLoading = $state(true);
@@ -131,8 +131,7 @@
 	// "relates to" badge. `$derived` so it picks up plans as they
 	// hydrate through the local index — the previous one-shot fetch
 	// in loadCollection raced the localIndex bootstrap on cold loads
-	// and could leave the badge empty until a manual refresh (Codex
-	// P3 round 1 of TASK-1357).
+	// and could leave the badge empty until a manual refresh (TASK-1357).
 	// `relationLabels` (the parent filter options) is derived below `items`.
 
 	// Saved views state
@@ -152,14 +151,13 @@
 	// position in the ranked result list. `null` means no search active.
 	// Storing the rank (not just IDs) lets `filteredItems` sort matched
 	// rows by relevance so the localSearch exact-ref hoist + boost tuning
-	// from TASK-1367 actually surfaces in the UI — Codex round 2 caught
-	// that a `Set`-only filter let `updated_at DESC` order override the
+	// from TASK-1367 actually surfaces in the UI: a `Set`-only filter let `updated_at DESC` order override the
 	// ranking.
 	let searchResultRank = $state<Map<string, number> | null>(null);
 	// The most matches one body search walks (BUG-3710), matching the
 	// server's list max (#2143). Never silent: a walk that stops here with
 	// more matches left sets `bodySearchCapped`, and the page says so,
-	// because a filter can then hide a match past the cap (Heron's ruling).
+	// because a filter can then hide a match past the cap (#2143).
 	const BODY_SEARCH_MAX = 1000;
 	let bodySearchCapped = $state(false);
 	let searchTimeout: ReturnType<typeof setTimeout>;
@@ -183,7 +181,7 @@
 	 *     workspace layout's SSE-disconnect comment already names.
 	 *
 	 * TWO CAPTURES, because there are two questions and neither answers the
-	 * other (BUG-3006 / #1370, codex round 1 [High]):
+	 * other (BUG-3006 / #1370):
 	 *
 	 *   `identityHeld(captured)` — "has the identity moved since THIS WORK
 	 *   started?" Captured at a handler's ENTRY, before its first await. An
@@ -269,7 +267,7 @@
 	// This component is REUSED across a workspace/collection switch (same
 	// route id, different `page.params`) — `wsSlug`/`collSlug` update
 	// IMMEDIATELY on any such popstate. Correcting `paneMintRef` from
-	// `afterNavigate` alone isn't enough (Codex review, PR #971 round 2):
+	// `afterNavigate` alone isn't enough (PR #971):
 	// SvelteKit commits the new `page.params`/`page.url` — and Svelte
 	// re-renders every `$derived` over them, including `wsSlug`/`collSlug`
 	// AND the `<ItemDetail>` props built from them — BEFORE `afterNavigate`
@@ -345,15 +343,14 @@
 	// the localIndex bootstrap have settled. Without this, the empty-
 	// state CTA can flash for non-empty collections while items are
 	// still hydrating, and scroll restore can be consumed against an
-	// empty filteredItems list (Codex P2 round 1).
+	// empty filteredItems list.
 	let indexState = $derived(
 		wsSlug ? localIndex.bootstrapStateFor(wsSlug) : 'ready',
 	);
 	let indexReady = $derived(indexState === 'ready');
 	// `indexError` surfaces a cold-load failure (transient /items-index
 	// failure with no cache to fall back on) AND the post-revoke
-	// reset state (`deltaSync` resets on 401/403 — see Codex P2 round
-	// 5 of TASK-1357 — and the bootstrap effect can't re-trigger on
+	// reset state (`deltaSync` resets on 401/403 — see TASK-1357 — and the bootstrap effect can't re-trigger on
 	// the same wsSlug/userId pair, so we surface the error directly
 	// when indexState rolls back to 'cold' after we'd been 'ready'
 	// or 'loading'). The template renders an error banner with a
@@ -407,9 +404,8 @@
 	// was already shown before the (possible) downgrade, so it isn't a NEW
 	// disclosure. `includesUnparentedMetadataFor` self-corrects reactively
 	// the moment a resync installs a fresh value — see the effect below.
-	// (Codex review round 2 gated this on `pendingResyncFor`; round 3 P1/P2
-	// showed that blunt gate both destroyed legitimate intent mid-resync
-	// and could wedge the chip hidden forever after a live permission
+	// (Gating this on `pendingResyncFor` was too blunt: it both destroyed
+	// legitimate intent mid-resync and could wedge the chip hidden forever after a live permission
 	// upgrade, since `pendingResync` is cleared only by `bootstrap()`'s own
 	// reconcile loop — never by the page's separate `deltaSync()` calls
 	// that also trigger a resync during a live session.)
@@ -431,8 +427,7 @@
 	// answer). Without this narrower gate, clearing on mere unavailability
 	// would permanently discard a legitimate URL/saved-view intent the
 	// instant it loaded during ANY in-flight resync — even one that was
-	// about to confirm the caller unrestricted a moment later (Codex review
-	// round 3, P1).
+	// about to confirm the caller unrestricted a moment later.
 	let isUnparentedConfirmedRestricted = $derived(
 		wsSlug
 			? unparentedConfirmedRestricted(
@@ -456,15 +451,14 @@
 	// Svelte runs effects with no parent/child relationship in declaration
 	// order when a shared dependency invalidates them in the same flush, so
 	// placing the reset first guarantees it always lands before the sync
-	// effect could read a stale value in that same tick (Codex review round
-	// 6 — relying on `metaLoading` transitioning was an ordering-fragile
+	// effect could read a stale value in that same tick (relying on `metaLoading` transitioning was an ordering-fragile
 	// proxy for "this is a new route" and also missed the case where a
 	// route's `loadCollection` call fails, so `loadUrlFilters()` never ran
 	// but `metaLoading` still flips back to `false` in the `finally`).
 	//
 	//   - `lastSyncedUnparented`: a value carried over from a PREVIOUS
 	//     collection could otherwise mask a genuine transition in the new
-	//     one (Codex review round 5, P2) — see the sync effect's comment.
+	//     one — see the sync effect's comment.
 	//   - `urlFiltersLoaded`: starts `false` for every new route; only
 	//     `loadCollection`'s own `loadUrlFilters()` call (async, run later)
 	//     flips it back, which is what actually gates the sync effect below
@@ -495,11 +489,10 @@
 	//      (metadata unknown); once metadata resolves `true` afterward,
 	//      the on-screen list becomes correctly filtered but nothing had
 	//      re-written the address bar to match — a copied/reloaded URL
-	//      would silently drop the filter (Codex review round 1).
+	//      would silently drop the filter.
 	//
 	//   Note the two conditions are independent, NOT merged into one
-	//   `unparentedApplied !== lastSyncedUnparented` check (Codex review
-	//   round 2, P2): a restricted caller loading a URL that carries the
+	//   `unparentedApplied !== lastSyncedUnparented` check: a restricted caller loading a URL that carries the
 	//   pseudo-filter has `unparentedApplied === false` BOTH before and
 	//   after clearing the stuck raw intent (it was never effective to
 	//   begin with), so that diff alone would never fire — leaving the
@@ -513,8 +506,7 @@
 	// is only ever set after mount, via URL/view load or user interaction).
 	let lastSyncedUnparented = false;
 	$effect(() => {
-		// Gate on `urlFiltersLoaded`, not `metaLoading` (Codex review round
-		// 6): `metaLoading` flips back to `false` on BOTH a successful load
+		// Gate on `urlFiltersLoaded`, not `metaLoading`: `metaLoading` flips back to `false` on BOTH a successful load
 		// (after `loadUrlFilters()` ran) AND a failed one (where it never
 		// ran) — and relying on it also implicitly assumed this effect
 		// re-runs strictly after the load-triggering effect's synchronous
@@ -549,8 +541,7 @@
 	// or another tab) while this collection was unmounted is still
 	// catchable via /items-changes. Without this, returning to the
 	// collection page after creating an item elsewhere could miss
-	// the new row until the next SSE event arrives (Codex P1 round
-	// 5 of TASK-1357).
+	// the new row until the next SSE event arrives (TASK-1357).
 	$effect(() => {
 		if (!wsSlug) return;
 		const uid = authStore.userId || null;
@@ -578,7 +569,7 @@
 	// it is NOT grant-aware like single-item CRUD. So the lane BULK actions
 	// (move/tag/untag/set-priority/assign/archive-all) are gated on role
 	// here, not canEditThisCollection, or a collection-edit-grant guest
-	// would see them and get a 403 per click (TASK-1672 / Codex round 3).
+	// would see them and get a 403 per click (TASK-1672).
 	// The single `+` create stays on canEditThisCollection (grant-aware).
 	let canBulkEdit = $derived(['owner', 'editor'].includes(workspaceStore.currentRole ?? ''));
 	// Saved views (BUG-3262), each gate the server handler's own predicate:
@@ -672,7 +663,7 @@
 	//  • RE-TARGETING an already-open pane (row-click / Enter / j-k moving
 	//    A→B→C) REPLACES, so paging through N rows doesn't stack N history
 	//    entries that Back must unwind before it can close the pane
-	//    (PLAN-2105 history policy; Codex round 2 P2). `closeItemPane`
+	//    (PLAN-2105 history policy). `closeItemPane`
 	//    likewise REPLACES.
 	// The element that opened the pane, captured so closing can return focus to
 	// it (TASK-2122). A plain ref (not $state) — it never drives the UI. The
@@ -797,7 +788,7 @@
 	// page stays mounted (PLAN-2105 / TASK-2122). Keyed off `openItemRef` going
 	// truthy→null, so it covers EVERY close path uniformly — ESC, the ✕ button,
 	// item-deleted, AND browser Back (which drops `?item=` straight from the URL
-	// without calling `closeItemPane`, Codex P2). Navigating AWAY (expand to full
+	// without calling `closeItemPane`). Navigating AWAY (expand to full
 	// page / collection rename) unmounts this whole page, so the effect never
 	// runs a truthy→null transition for those — and `resolvePaneReturnTarget`
 	// returns null once the list is gone, a second guard against stealing focus
@@ -809,8 +800,7 @@
 		// SvelteKit REUSES this component across collections/workspaces (same
 		// `[username]/[workspace]/[collection]` route), so navigating from
 		// `/ws/tasks?item=X` to `/ws/ideas` also flips openItemRef truthy→null.
-		// That's a NAVIGATION, not a pane close — don't steal focus for it (Codex
-		// P2). Only treat truthy→null as a close when the route identity is
+		// That's a NAVIGATION, not a pane close — don't steal focus for it. Only treat truthy→null as a close when the route identity is
 		// unchanged (same collection page, only `?item=` dropped).
 		const routeKey = `${username}/${wsSlug}/${collSlug}`;
 		const sameRoute = prevRouteKey === null || prevRouteKey === routeKey;
@@ -821,7 +811,7 @@
 		// Prefer the originating row; fall back to the list container (a stable
 		// tabindex=-1 landmark) so a deep-linked / filtered-out / cross-collection
 		// item — which has no `.focused` row and no captured trigger — still lands
-		// focus somewhere in the list instead of dropping it to <body> (Codex P2).
+		// focus somewhere in the list instead of dropping it to <body>.
 		const target =
 			resolvePaneReturnTarget(document, paneReturnFocusEl) ??
 			document.querySelector<HTMLElement>('.list-column');
@@ -878,13 +868,12 @@
 		// Mutual exclusivity (PLAN-2095 DR-3): a hand-crafted or legacy URL
 		// could carry both a specific-parent filter (`parent`/`phase`) AND
 		// the unparented pseudo-param at once. Resolve it the same way the
-		// interactive chip toggle does — unparented wins (Codex review
-		// round 1).
+		// interactive chip toggle does — unparented wins.
 		const resolved = resolveParentUnparentedMutex(filters, unparentedIntent);
 		unparentedFilter = resolved.unparented;
 		// Assign `activeFilters` whenever the URL expressed EITHER kind of
 		// filter intent — plain field params OR the unparented pseudo-param
-		// on its own. Gating on `filters` alone (Codex review round 2, P2)
+		// on its own. Gating on `filters` alone
 		// missed the "URL carries only `$unparented=true`, no field params"
 		// case: `filters` is empty there, so the old guard left a STALE
 		// `activeFilters.parent` from a previous navigation in place
@@ -933,16 +922,15 @@
 	 *
 	 * Enumerated rather than sampled, and the source guard holds this list
 	 * against the file's own `$state` declarations so a new piece cannot arrive
-	 * undispositioned (CONVE-35; the roles board needed two review rounds to
-	 * learn this and it is carried here rather than re-learned).
+	 * undispositioned (CONVE-35; the roles board learned this the hard way and it is
+	 * carried here rather than re-learned).
 	 */
 	function resetPerSessionState() {
 		// THE QUERY MUST NOT COME BACK, and clearing the variable alone does not
-		// achieve that (codex round 1 [P1]). `searchQuery` is restored from
+		// achieve that. `searchQuery` is restored from
 		// `?q=` by `loadUrlFilters()`, which the reload below calls on success —
 		// so the clear is undone a round-trip later and the restored query is
-		// then dispatched under the NEW epoch. Codex reproduced
-		// `api.search('secret', …)` completing after the identity reload.
+		// then dispatched under the NEW epoch: `api.search('secret', …)` completes after the identity reload.
 		//
 		// TWO mechanisms, deliberately, because they fail differently:
 		//
@@ -953,7 +941,7 @@
 		//   2. The URL rewrite, so the previous session's query does not sit in
 		//      the next user's address bar. Best-effort by nature; (1) is what
 		//      makes the behaviour correct regardless of ordering.
-		// Scoped to the VALUE, not to "the next load" (codex round 2 [P2]).
+		// Scoped to the VALUE, not to "the next load".
 		// A bare boolean is consumed by whichever load runs next — including a
 		// navigation the NEW user makes to another collection's `?q=` link,
 		// whose query is then discarded although it is theirs. Recording the
@@ -966,7 +954,7 @@
 				void goto(url.pathname + url.search, {
 					replaceState: true,
 					reset: false,
-					// PRESERVED (codex round 2 [P2]). Omitting it lets SvelteKit
+					// PRESERVED. Omitting it lets SvelteKit
 					// default the history state to `{}`, losing `paneDepth` and
 					// `paneOwned` — after which closing a drilled pane takes the
 					// replace-delete path instead of unwinding, and Back can
@@ -1010,7 +998,7 @@
 		pendingFollow = null;
 		// The default-view gate. `loadCollection` does not reset it — only the
 		// route effect does — so on a same-route identity reload it stayed true
-		// and the NEW user's default view was never applied (codex round 1 [P3]).
+		// and the NEW user's default view was never applied.
 		defaultViewApplied = false;
 	}
 
@@ -1028,7 +1016,7 @@
 		// and inheriting it silently is what this clears — but it is a
 		// behaviour change and not merely a tidy-up.
 		resetPerSessionState();
-		// CLEARED FIRST, then re-loaded (codex [P1]). `loadCollection` leaves
+		// CLEARED FIRST, then re-loaded. `loadCollection` leaves
 		// the current `collection`, saved views and progress on screen while it
 		// awaits, so re-loading alone would keep the previous user's private
 		// collection VISIBLE for the length of a round-trip. The fences stop
@@ -1094,15 +1082,15 @@
 		// `collection?.slug === collSlug` is the identity check that
 		// prevents firing against stale content when the same component
 		// instance handles a different collection URL (e.g. /tasks →
-		// /bugs). `length > 0` deliberately omitted (Codex P2 round 2).
+		// /bugs). `length > 0` deliberately omitted.
 		ready: () => !loading && collection?.slug === collSlug,
 		// persistKey is intentionally pathname-only — filter / view /
 		// archive toggles call `goto({ replaceState: true })` which
 		// rewrites `page.url.search`, and if those were in the key the
 		// helper would treat each filter combo as a separate entry,
 		// clear `pending`, re-read LS, and restore-jump the user mid-
-		// interaction. Codex BUG-1425 round 5 P2-A flagged this as a
-		// regression vs. TASK-755's pathname-only restore gate. We
+		// interaction (BUG-1425): a regression
+		// vs. TASK-755's pathname-only restore gate. We
 		// trade per-filter offset granularity (was per-`?status=open`)
 		// for stable in-page filter behavior.
 		persistKey: () =>
@@ -1185,7 +1173,7 @@
 	// position to keep: a handoff was applied for this very navigation, or —
 	// pane-to-pane, where the column never switched — the list is rendered.
 	// Otherwise (still loading, nothing anchored) the saved offset is the only
-	// position there is, so it restores (codex r1). The skip belongs to the
+	// position there is, so it restores. The skip belongs to the
 	// navigation that armed it: that navigation's own `snapshot.restore`
 	// consumes it, and the NEXT navigation releases whatever is left (an entry
 	// with no saved snapshot is never restored, so nothing would consume it).
@@ -1274,11 +1262,11 @@
 			// controls send a fresh expected_updated_at. Carries no item_id,
 			// so short-circuit before the item-delta path below.
 			if (event.type === 'collection_updated') {
-				// Match by STABLE id, not slug (Codex round 7): a replayed rename
+				// Match by STABLE id, not slug: a replayed rename
 				// event's old slug can be re-owned by a DIFFERENT collection, so a
 				// slug match could navigate away / refresh from the wrong one.
 				if (!collection || event.collection_id !== collection.id) return;
-				// Rename (Codex P2 / BUG-2272): this route's URL slug is now dead —
+				// Rename (BUG-2272): this route's URL slug is now dead —
 				// retarget to the new slug, robust to chained/replayed renames.
 				// `renameNav` (a plain, non-reactive tracker advanced synchronously
 				// on each rename goto below) is the slug we currently believe we're
@@ -1294,7 +1282,7 @@
 				// collectionStore so the sidebar/pickers point at the live slug too
 				// (they'd otherwise keep the dead slug and 404 on click).
 				if (event.new_slug) {
-					// BUG-2272 P2: resolveRenameNavTarget balances two concerns —
+					// BUG-2272: resolveRenameNavTarget balances two concerns —
 					// (1) reject a rename computed against a STALE snapshot from the
 					// PREVIOUS collection (the reused-slug X/B → Y/A window, where the
 					// stale id gate would otherwise fire a goto that hijacks the Y
@@ -1392,7 +1380,7 @@
 			if (!wsSlug || !collSlug) return;
 			// A result names the workspace it was SYNCED FOR (TASK-2921). Every
 			// subscriber compares — the field's own doc says so, and four of the
-			// five did not until codex round 9 named them.
+			// five did not until a later pass found them.
 			if (result.workspace !== wsSlug) return;
 
 			// The reconcile and `markSynced` moved to the workspace layout
@@ -1475,7 +1463,7 @@
 			if (!target) return;
 			// A user navigation already in flight would be ABORTED by our
 			// goto — route props don't update until commit, so the checks
-			// above can't see it (codex round 7 P1). Yield; the next sync
+			// above can't see it. Yield; the next sync
 			// pass retries if the strand persists.
 			if (navigating.to) return;
 			renameNav = target;
@@ -1489,13 +1477,13 @@
 			void collectionStore.loadCollections(ws);
 			const search = typeof window !== 'undefined' ? window.location.search : '';
 			// replaceState: the healed-away slug is DEAD — Back must not
-			// return to a URL that 404s (codex round 7 P2; the item-route
+			// return to a URL that 404s (the item-route
 			// healer already replaces).
 			goto(`/${username}/${ws}/${target}${search}`, { replaceState: true }).catch(() => {
 				// A cancelled/failed navigation (navigate-away guard, a
 				// racing nav) must not leave renameNav pointing at a slug
 				// we never reached — a poisoned tracker would veto every
-				// future sync heal (codex round 1 P2). Reset only if it is
+				// future sync heal. Reset only if it is
 				// still ours; a newer rename may have re-aimed it.
 				if (renameNav === target) renameNav = null;
 			});
@@ -1518,7 +1506,7 @@
 	 *
 	 * Returns true on a clean catch-up, false on any failure / cap
 	 * trip so the caller can avoid advancing its own cursor against a
-	 * stale local cache (Codex P2 round 1 of TASK-1357).
+	 * stale local cache (TASK-1357).
 	 */
 	async function deltaSync(ws: string): Promise<boolean> {
 		const epochAtEntry = captureIdentity();
@@ -1570,7 +1558,7 @@
 			// Non-plans collections: prefer child-item progress (real linked
 			// children) per item; fall back to markdown-checkbox progress for
 			// items with none (BUG-1509). `showArchived` keeps badges on
-			// archived items (PR #491 [P2]). Shared fetch+merge (TASK-2029).
+			// archived items (PR #491). Shared fetch+merge (TASK-2029).
 			const map = await fetchCollectionProgress(ws, coll, { includeArchived: showArchived });
 			if (!identityHeld(epochAtEntry)) return;
 			itemProgress = map;
@@ -1580,12 +1568,12 @@
 	// Monotonic load token (plain, non-reactive) guarding against a
 	// superseded fetch committing stale state. A slow load for
 	// collection A that resolves AFTER the route already switched to B
-	// must not overwrite B's `collection` / `metaError` / `metaLoading`
-	// (Codex race finding). Every entry bumps the token; each awaited
+	// must not overwrite B's `collection` / `metaError` / `metaLoading`.
+	// Every entry bumps the token; each awaited
 	// result checks it's still the latest before writing.
 	let loadSeq = 0;
 
-	// UNIFIED collection-snapshot generation (BUG-2265 Codex): bumped by EVERY
+	// UNIFIED collection-snapshot generation (BUG-2265): bumped by EVERY
 	// operation that assigns `collection` — loadCollection, the SSE
 	// collection_updated refresh, and handleGroupReorder — so the last-STARTED
 	// write wins and a stale in-flight continuation (e.g. a slow load resolving
@@ -1603,7 +1591,7 @@
 		// Reset for the new route; only flips back to `true` once
 		// `loadUrlFilters()` below has actually run for THIS load (guarded
 		// by the same `seq !== loadSeq` supersede-check). Deliberately NOT
-		// derived from `metaLoading` alone (Codex review round 6): on a
+		// derived from `metaLoading` alone: on a
 		// failed load (a genuine 404, or a transient error), `metaLoading`
 		// still flips back to `false` in the `finally` block below even
 		// though `loadUrlFilters()` never ran — `urlFiltersLoaded` stays
@@ -1661,11 +1649,11 @@
 					progressLabel = 'tasks';
 				} catch {
 					// Don't clear a newer load's progress badges if this
-					// stale load's progress fetch rejected (Codex round 5).
+					// stale load's progress fetch rejected.
 					if (seq !== loadSeq) return;
 					// Nor the badges of a DIFFERENT USER: a rejection is a
 					// commit too, and `seq` says nothing about who asked
-					// (BUG-3084, codex round 2).
+					// (BUG-3084).
 					if (!identityHeld(epochAtEntry)) return;
 					itemProgress = {};
 				}
@@ -1674,7 +1662,7 @@
 				// linked children, label "tasks") per item; fall back to
 				// markdown-checkbox progress (label "done") for items that
 				// have no linked children (BUG-1509). `includeArchived`
-				// keeps the archived-items toggle's badges (PR #491 [P2]).
+				// keeps the archived-items toggle's badges (PR #491).
 				try {
 					const map = await fetchCollectionProgress(ws, coll, { includeArchived });
 					if (seq !== loadSeq) return;
@@ -1683,11 +1671,11 @@
 					progressLabel = 'done';
 				} catch {
 					// Don't clear a newer load's progress badges if this
-					// stale load's progress fetch rejected (Codex round 5).
+					// stale load's progress fetch rejected.
 					if (seq !== loadSeq) return;
 					// Nor the badges of a DIFFERENT USER: a rejection is a
 					// commit too, and `seq` says nothing about who asked
-					// (BUG-3084, codex round 2).
+					// (BUG-3084).
 					if (!identityHeld(epochAtEntry)) return;
 					itemProgress = {};
 				}
@@ -1700,7 +1688,7 @@
 
 			// A newer load may have started during the progress awaits —
 			// don't apply this (stale) collection's view/sort/filter state
-			// over the current route's (Codex round 4).
+			// over the current route's.
 			if (seq !== loadSeq) return;
 			if (!identityHeld(epochAtEntry)) return;
 			// Set view mode: URL param > localStorage > collection default
@@ -1819,8 +1807,7 @@
 					return item.parent_link_id === value;
 				}
 				const fields = parseFields(item);
-				// A RELATION value is compared trimmed (TASK-2998, codex round
-				// 2). The board already trimmed, so without this an item
+				// A RELATION value is compared trimmed (TASK-2998). The board already trimmed, so without this an item
 				// storing `" id-red "` sat in the `Red` lane and vanished when
 				// you filtered for `Red` — one value, two answers, one screen
 				// apart. Every other field type keeps strict equality.
@@ -1861,7 +1848,7 @@
 		// index/delta row lands and merges it in. Requiring strict `true`
 		// made a brand-new loose item — the exact case a user creating
 		// while this filter is active most wants to see — flash out of the
-		// list immediately after creation (Codex review round 2). Every
+		// list immediately after creation. Every
 		// AUTHORITATIVE row for an unrestricted caller always carries the
 		// bit (Phase 1 / TASK-2096), so `undefined` here is bounded to that
 		// narrow optimistic window, not a permanent unknown; an item that
@@ -1881,7 +1868,7 @@
 		// localSearch's exact-ref hoist + boost tuning (TASK-1367)
 		// surfaces in the UI. Otherwise the natural `updated_at DESC`
 		// order from `localIndex.getByCollection` would override the
-		// ranking. Codex round 2 of TASK-1367.
+		// ranking (TASK-1367).
 		if (searchQuery.trim() && searchResultRank !== null) {
 			const rank = searchResultRank;
 			result = result
@@ -2082,7 +2069,7 @@
 		// Keeping this small means non-input entry points (URL load via
 		// `loadUrlFilters`, programmatic clears) get the same search
 		// behavior without duplicating the local/server dispatch logic
-		// (Codex round 1 P2: shared `?q=body:foo` URLs previously
+		// (shared `?q=body:foo` URLs previously
 		// landed in the local fallback because `loadUrlFilters` set
 		// `searchQuery` directly and never invoked the dispatch).
 		searchQuery = query;
@@ -2092,8 +2079,7 @@
 	// Search dispatch. Tracks `searchQuery` (any entry point that mutates
 	// it — typed input, URL load, programmatic clears), `wsSlug` /
 	// `collSlug` (navigation across workspaces or collections must drop
-	// stale results and re-issue against the new route — Codex round 2
-	// P2), `showArchived` (re-run local search when archived rows toggle
+	// stale results and re-issue against the new route), `showArchived` (re-run local search when archived rows toggle
 	// in/out of scope), and `indexReady` (cold load: query typed before
 	// bootstrap finishes; kick the search once the index hydrates).
 	// Body-prefix queries route to server FTS with a 200ms debounce;
@@ -2105,7 +2091,7 @@
 		// removes refresh `searchResultRank` while a query is active —
 		// without this, a row created after the query was typed would
 		// stay hidden (and a row edited out of relevance would stay
-		// visible) until the user retyped. Codex round 3 P2 of TASK-1364.
+		// visible) until the user retyped (TASK-1364).
 		void localSearch.epoch(wsSlug);
 		const trimmed = searchQuery.trim();
 		// Snapshot the route at effect-run time so a navigation mid-flight
@@ -2216,7 +2202,7 @@
 				} catch {
 					// The same fence as the success arm, including the timer:
 					// an overtaken walk whose page fails must not clear the
-					// newer run's results (BUG-3710, codex r2).
+					// newer run's results (BUG-3710).
 					if (identityHeld(epochAtSchedule) && !moved()) {
 						searchResultRank = null;
 					}
@@ -2255,7 +2241,7 @@
 	 * Write one field on one item, from a lane move or from a status chip.
 	 *
 	 * `fieldKey` is EXPLICIT because two different intents arrive here and they
-	 * do not name the same field (BUG-3057, codex enumeration round). A drag
+	 * do not name the same field (BUG-3057). A drag
 	 * between lanes means "put this item in THIS LANE" — the group field. A
 	 * status chip means "set this item's STATUS" — the `status` field and
 	 * nothing else. With `groupField` hardcoded, the TABLE's status chip, whose
@@ -2387,11 +2373,10 @@
 	// Each card's last STAMPED row while any reorder holds it unconfirmed: the
 	// order a total read-back failure restores. A reorder that starts on a card
 	// another reorder still holds finds that one's optimistic row, not a
-	// confirmed one, so the stamped row is kept from the first (Codex on #2150).
+	// confirmed one, so the stamped row is kept from the first (#2150).
 	const lastConfirmed = new Map<string, Item>();
 	// Read-back retry delays for a reorder's cards: bounded, then the scope is
-	// marked stale for a full resync instead of retrying forever (Heron's
-	// ruling on BUG-3699).
+	// marked stale for a full resync instead of retrying forever (BUG-3699).
 	const REORDER_READBACK_DELAYS_MS = [0, 500, 1000, 2000];
 
 	async function handleReorder(updates: { slug: string; sort_order: number }[], movedId?: string) {
@@ -2419,7 +2404,7 @@
 		}
 		// A card another reorder still holds unconfirmed is written too, at the
 		// value on screen: this drop asserts it, so the drop holds whether that
-		// reorder lands or is refused (Codex r5 on #2150).
+		// reorder lands or is refused (#2150).
 		const planned = new Set(plan.writes.map((w) => w.id));
 		const writes = [
 			...plan.writes,
@@ -2432,7 +2417,7 @@
 		// onReorder and resync their rendered groups from `items` at once, so
 		// without them the rows snap back until the PATCH returns. Clearing
 		// `seq` on the optimistic copy bypasses the per-row seq guard so the real
-		// response (higher seq) wins on arrival (Codex P2 round 3 of TASK-1357).
+		// response (higher seq) wins on arrival (TASK-1357).
 		// Persisted in one all-or-nothing request (TASK-3517). A refusal
 		// restores every card to its original row, which carries its original
 		// seq, so a fresher SSE row is not overwritten (BUG-3259).
@@ -2508,7 +2493,7 @@
 		// and still holds this reorder's unstamped write, is put back to its
 		// original stamped row: an order the server never confirmed must not
 		// LOOK settled. The scope is then marked stale, so the next reconcile
-		// (focus, reconnect, SSE) installs a full snapshot (Heron's ruling).
+		// (focus, reconnect, SSE) installs a full snapshot.
 		// A landed card is confirmed once the index holds a stamped row at or
 		// past its write. A refused card always reads back: the row its
 		// rollback restored is only what this reorder found.
@@ -2528,8 +2513,8 @@
 					if (!identityHeld(epochAtEntry)) return true;
 					// A later reorder holding the card OPTIMISTICALLY is the newer
 					// intent: its own read-back settles it, so this one yields
-					// (Codex on #2150). Over a STAMPED row the seq guard decides,
-					// because this write may be the server's newest (Codex r5).
+					// (#2150). Over a STAMPED row the seq guard decides,
+					// because this write may be the server's newest.
 					if (!owns(id) && localIndex.findByIdOrSlug(ws, id)?.seq === undefined) return true;
 					localIndex.upsert(ws, row, epoch);
 					// A landed card is confirmed only by a row at or past its
@@ -2686,7 +2671,7 @@
 				toastStore.show(err?.message || 'Failed to create item', 'error');
 			}
 		} finally {
-			// FENCED, and the reasoning has REVERSED (codex round 1 [P2]).
+			// FENCED, and the reasoning has REVERSED.
 			//
 			// It was unconditional on the grounds that a busy flag left true
 			// disables the affordance for ever on a page that did not remount.
@@ -2833,17 +2818,17 @@
 		// `willUnload` (external links, hard document navigations) and
 		// full unload (reload / tab close, nav.to === null) are treated
 		// like reload — drafts live only until then, and goto can't replay
-		// a native navigation anyway (Codex round 3).
+		// a native navigation anyway.
 		if (nav.willUnload) return;
 		// Same-pathname navigations are internal query/view state syncs
 		// (updateUrlFilters' replaceState on a view/filter/search change),
 		// not a real "leave" — the draft survives those (page state), so
-		// prompting would be wrong (Codex round 2).
+		// prompting would be wrong.
 		if (nav.to.url.pathname === nav.from?.url.pathname) return;
 		const url = nav.to.url;
 		// Replay Back/Forward via history.go(delta) so cancelling +
 		// re-navigating preserves history order (a goto would push the
-		// target as a NEW entry, corrupting Back). Codex round 4.
+		// target as a NEW entry, corrupting Back).
 		const popDelta = nav.type === 'popstate' ? nav.delta : undefined;
 		nav.cancel();
 		pendingNav = () => {
@@ -2887,7 +2872,7 @@
 
 	async function leaveSaveAll() {
 		if (savingDrafts) return;
-		// BUG-3043, lead ruling: a draft that cannot be saved anywhere honest
+		// BUG-3043: a draft that cannot be saved anywhere honest
 		// BLOCKS Save all, with the notice the dialog shows. Refused up front
 		// rather than after the other drafts saved, so the dialog never ends
 		// half-done around a draft it was always going to refuse.
@@ -2910,11 +2895,11 @@
 		// lost it may not touch shared interaction state — `resetPerSessionState()`
 		// already cleared this flag, synchronously, before this resumed, so
 		// clearing it again can only release a gate the NEW user is holding. Same
-		// reversal as the roles board's lost-identity exits (codex round 1 [P2]).
+		// reversal as the roles board's lost-identity exits.
 		// The pending navigation was the PREVIOUS user's intent, formed when they
 		// tried to leave the page (BUG-3084).
 		if (outcome === 'identity_moved') return;
-		// See the note on createNewItem's busy flag (codex round 1 [P2]). The
+		// See the note on createNewItem's busy flag. The
 		// outcome already says the identity held; the check is repeated in the
 		// spelling the fence's source guard reads, rather than exempted there.
 		if (identityHeld(epochAtEntry)) savingDrafts = false;
@@ -2936,7 +2921,7 @@
 		// fence's header gives: `pendingNav` was formed when the PREVIOUS user
 		// tried to leave, and this function runs when the dialog is answered,
 		// which may be after the identity moved. An entry capture taken here is
-		// already the new epoch and detects nothing (BUG-3084, codex).
+		// already the new epoch and detects nothing (BUG-3084).
 		//
 		// The drafts are still discarded — they belong to the previous session
 		// and clearing them is the safe direction — but the NAVIGATION is not
@@ -2946,7 +2931,7 @@
 		// A commit point with NO AWAIT, which is a population neither the
 		// function-level enumeration nor the await-counting rules can see. The
 		// item's own body warned this shape exists and is found by reading; it
-		// was found by a reviewer instead, which is the same thing arriving
+		// was found after the fact instead, which is the same thing arriving
 		// later.
 		if (!pageIdentityHeld()) {
 			pendingNav = null;
@@ -3063,7 +3048,7 @@
 	// sent j to the next row by UPDATE time, which after an edit to an old
 	// item is not the row below.
 	// Null until a view reports: `[]` is a real answer (every group collapsed,
-	// nothing on screen) and must not fall back to `filteredItems` (codex r1).
+	// nothing on screen) and must not fall back to `filteredItems`.
 	let listOrder = $state<string[] | null>(null);
 	function handleListOrderRendered(ids: string[]) {
 		listOrder = ids;
@@ -3238,7 +3223,7 @@
 			// the identity; the OBJECT may be stale by the time this fires,
 			// because a rename during the debounce changes the slug and
 			// `openItemPane` builds the URL from it — an id-only existence check
-			// would pass and then navigate to a dead slug (codex round 1).
+			// would pass and then navigate to a dead slug.
 			// Re-resolving also covers the row having MOVED, which is the whole
 			// point, while a row DELETED during the debounce has nothing to
 			// follow to and is skipped.
@@ -3360,7 +3345,7 @@
 			// A modal (native <dialog>, or a role="dialog" BottomSheet/DockedSheet
 			// opened from within the pane — field selects / Quick Actions / Move
 			// To) owns its own ESC — don't also pop the pane/graph/list layer
-			// underneath it (Codex P1). EXISTENCE-based, not target-based:
+			// underneath it. EXISTENCE-based, not target-based:
 			// `BottomSheet`/`DockedSheet` (both `{#if open}`-gated, so `[role=
 			// "dialog"]` only ever matches while genuinely open) don't move focus
 			// into themselves on open, so `document.activeElement` can still be
@@ -3368,7 +3353,7 @@
 			// a target-based `closest()` check misses that and would let this ESC
 			// fall through to pop/close the pane underneath the still-open sheet,
 			// which ALSO closes from its own independent window listener: two
-			// layers from one press (Codex review, TASK-2163). `dialog[open]`
+			// layers from one press (TASK-2163). `dialog[open]`
 			// (not bare `dialog`) because `Modal.svelte`'s native <dialog> is
 			// ALWAYS mounted and toggled via `showModal()`/`close()` — an
 			// existence check without `[open]` would false-positive on every page
@@ -3392,8 +3377,7 @@
 			// acts. Checked ahead of (not inside) the depth-aware branch below:
 			// gating only that branch would let repeats that arrive AFTER a
 			// depth>0→0 pop fall through to the two-level/close branches and
-			// close the pane within the same held press (Codex review,
-			// TASK-2163) — this bails the whole ESC chain for every repeat,
+			// close the pane within the same held press (TASK-2163) — this bails the whole ESC chain for every repeat,
 			// regardless of what the initial press already changed.
 			if (e.repeat) {
 				e.preventDefault();
@@ -3447,7 +3431,7 @@
 			// focus-trapped modal, so ESC there closes it via the stack. Gated on
 			// the pane being the FRONTMOST escape layer: a higher-priority layer
 			// stacked over it (e.g. the dependency-graph drawer) must own ESC
-			// first, so we defer to the stack when one is open (Codex P2). Only
+			// first, so we defer to the stack when one is open. Only
 			// fires when there's a focused list row to land on. Depth is always 0
 			// here — the depth>0 branch above returned first.
 			if (
@@ -3508,8 +3492,8 @@
 		// On the MOBILE overlay the list is hidden behind the full-screen pane, so
 		// list nav is meaningless — bail even if focus has escaped to <body> (e.g.
 		// a focused pane control was removed with no focusin to re-trap it). Without
-		// this, j/k would silently navigate the hidden list and re-target the pane
-		// (Codex P1). Desktop split is unaffected; ESC (handled above) still closes.
+		// this, j/k would silently navigate the hidden list and re-target the pane.
+		// Desktop split is unaffected; ESC (handled above) still closes.
 		if (viewport.isMobile && openItemRef) return;
 
 		// j/k/h/l are vim aliases for the arrows. They are single-character
@@ -3571,7 +3555,7 @@
 				// match the row LINK (`a.card-link` / `a.title-link`), NOT the
 				// `.focused` marker — a click focuses row A, then j/k moves the
 				// marker to B without moving DOM focus, so the focused-marker check
-				// would wrongly reject the still-focused A (Codex P1). Matching the
+				// would wrongly reject the still-focused A. Matching the
 				// anchor also EXCLUDES toolbar buttons, saved-view tabs, and in-row
 				// sub-controls, whose native Tab order must be untouched. ESC brings
 				// focus back to the list (handled above); focus lands on the
@@ -3618,7 +3602,7 @@
 	// (maxBulkItems). The old per-item archive loop had no ceiling, so
 	// chunk to keep very large filtered lanes working — one bulk call per
 	// chunk (a few SSE events instead of thousands; still far better than
-	// per-item). TASK-1672 / Codex round 1.
+	// per-item). TASK-1672 /.
 	const BULK_CHUNK = 1000;
 
 	// Longer dwell for toasts carrying an Undo so the user can react
@@ -3634,7 +3618,7 @@
 	// `ws` is captured by the caller at action time, NOT read live —
 	// the undo toast lives 7s and is global, so navigating to another
 	// workspace before clicking Undo must still target the workspace the
-	// original action ran on (Codex round 1 of TASK-1674).
+	// original action ran on (TASK-1674).
 	async function runBulkOn(
 		ws: string,
 		req: BulkItemsRequest,
@@ -3654,7 +3638,7 @@
 		// must NOT skip finalization: earlier chunks may already have
 		// mutated up to 1000+ items server-side, so we still deltaSync and
 		// report the partial result rather than leaving the UI stale behind
-		// a generic error. Codex round 2.
+		// a generic error.
 		for (let i = 0; i < req.ids.length; i += BULK_CHUNK) {
 			const chunk = req.ids.slice(i, i + BULK_CHUNK);
 			try {
@@ -3680,8 +3664,7 @@
 		const failed = req.ids.length - ok;
 		// Sync so the succeeded rows update/disappear. On deltaSync failure
 		// the mutation is still real server-side (SSE catches the cache up)
-		// — soften the toast (matches the old archive flow, Codex P3 round 2
-		// of TASK-1357).
+		// — soften the toast (matches the old archive flow, TASK-1357).
 		const synced = ok > 0 ? await deltaSync(ws) : true;
 		// Everything below writes the GLOBAL toast store, which outlives this
 		// page entirely. A result computed for the previous user must not be
@@ -3740,7 +3723,7 @@
 	// archive undoes via the bulk `restore` op; move undoes by moving the
 	// items back to their source lane (they all shared the lane's status).
 	// Both capture `ws` so a deferred Undo targets the original workspace
-	// even after the user navigates away (Codex round 1).
+	// even after the user navigates away.
 	function handleBulkArchive(items: Item[]) {
 		const ws = wsSlug;
 		return runBulkOn(ws, { op: 'archive', ids: idsOf(items) }, 'Archived', {
@@ -3854,8 +3837,7 @@
 	// `metaLoading=true` at entry, assigns `savedViews` mid-flight,
 	// then calls `loadUrlFilters()` synchronously near the end, and
 	// only flips `metaLoading=false` in the `finally` block. Running
-	// this effect on a `savedViews` change ALONE has two bugs Codex
-	// round 1 caught:
+	// this effect on a `savedViews` change ALONE has two bugs:
 	//   1. Race with URL parsing: savedViews lands before
 	//      `loadUrlFilters` does, so `searchQuery` / `activeFilters`
 	//      are still stale (empty or from the prior route), and the
@@ -3890,12 +3872,11 @@
 		// not the parsed `searchQuery` / `activeFilters` state —
 		// because:
 		//   * `?view=board` doesn't populate either, so a parsed-state
-		//     check would miss it. Codex round 2 P1.
+		//     check would miss it.
 		//   * `loadUrlFilters` doesn't clear absent params, so a
 		//     parsed-state check might still see leftover values from
 		//     the previous route on cross-collection nav and skip a
 		//     default that the new clean URL would have allowed.
-		//     Codex round 2 P2.
 		// Any URL param means user has explicit intent; the only
 		// params the collection page writes (`view`, `q`, field
 		// filters) are all user-driven, so checking for any is safe.
@@ -4002,7 +3983,7 @@
 		// Mutual exclusivity (PLAN-2095 DR-3): a legacy/hand-authored saved
 		// view could carry both a specific-parent filter and the
 		// unparented pseudo-filter at once — resolve it the same way the
-		// interactive chip toggle does (Codex review round 1).
+		// interactive chip toggle does.
 		const resolved = resolveParentUnparentedMutex(newFilters, newUnparented);
 		activeFilters = resolved.filters;
 		selectedTags = newTags;
@@ -4472,7 +4453,7 @@
 						<!-- Mobile mount of the realtime badge (IDEA-2297), as a status
 						     badge on this button's corner rather than a flex item of its
 						     own: at 360 a separate dot wrapped alone onto a second row
-						     (TASK-2244, Dave's gate). It stays a role="status" region with
+						     (TASK-2244). It stays a role="status" region with
 						     its label, and takes no taps, so the button keeps them. -->
 						{#if viewport.isMobile}
 							<span class="sse-badge">
@@ -4606,7 +4587,7 @@
 				affordances: that one offers RETRY, and retrying this is what
 				produced the storm this fix closes.
 
-				THE WORDING IS THE RULING (lead, on the fold). A non-member and a
+				THE WORDING IS THE RULE. A non-member and a
 				DELETED workspace are the same 404 by design — the server refuses
 				to say which, so neither may this. "Access revoked" would assert
 				the half that was deliberately withheld, and it is also wrong for
@@ -4948,7 +4929,7 @@
 	}
 
 	/* Table view fills .main-content the way the board does (BUG-3164, option
-	   A as ruled on its trail). The table's own `.table-scroll` then owns BOTH
+	   A as decided on its trail). The table's own `.table-scroll` then owns BOTH
 	   scroll axes: it needs `overflow-x: auto` for wide tables, which computes
 	   to auto vertically too, so it is the sticky header row's scroll
 	   container, and the header can only stick if the vertical scroll happens
@@ -5601,7 +5582,7 @@
 			gap: var(--space-1);
 		}
 
-		/* Touch targets (TASK-2244, Dave's ruling day 83): every strip control is
+		/* Touch targets (TASK-2244): every strip control is
 		   at least 44x44 here, VISIBLY. A transparent hit area on a 28px bordered
 		   button would overlap its neighbour 4px away, so a tap in the gap would
 		   be ambiguous; the buttons themselves grow. Desktop keeps 28px, and the

@@ -3,9 +3,8 @@ package watchevents
 // BUG-2651 — the half the hermetic tests structurally cannot reach: the actual
 // Redis round trip.
 //
-// The publish path is a
-// Lua script with KEYS/ARGV indexing, a wire format with an id prefix, a
-// channel name, and a subscription lifecycle — none of which a test that calls
+// The publish path is a Lua script with KEYS/ARGV indexing, a wire format
+// with an id prefix, a channel name, and a subscription lifecycle — none of which a test that calls
 // fanOutLocally directly can exercise. The need became concrete when the
 // idempotency script shipped with `ARGV[3]` while Publish passed two arguments.
 // That bug was caught by re-reading, which is not a control to rely on

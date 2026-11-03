@@ -480,11 +480,11 @@
 				// request is bounded at MAX_FETCH, so a truncated page may simply
 				// not reach a row that is still perfectly alive — and retiring a
 				// live upload would delete a good tile permanently, which is a
-				// worse failure than the resurrection this is fixing. `total` is the server's own statement of how many
-				// live rows there are and `offset` is always 0 here, so a page
-				// that holds all of them IS complete even when it is exactly
-				// MAX_FETCH long. Only when the response omits
-				// `total` does the page length have to stand in for it.
+				// worse failure than the resurrection this is fixing. `total` is the
+				// server's own statement of how many live rows there are and `offset` is
+				// always 0 here, so a page that holds all of them IS complete even when
+				// it is exactly MAX_FETCH long. Only when the response omits `total`
+				// does the page length have to stand in for it.
 				const pageIsComplete =
 					typeof res.total === 'number' ? res.total <= raw.length : raw.length < MAX_FETCH;
 				const covered = pageIsComplete ? pendingAtRequest : new Set<string>();
@@ -530,7 +530,7 @@
 				// request) are not counted — we can't tell whether `total`
 				// already includes them, and counting them unconditionally
 				// double-counts the ordinary case where the response does
-				// (two competing concerns pull in opposite directions here). The
+				// (these concerns pull in opposite directions here). The
 				// next successful load corrects it.
 				const reportedTotal = Math.max(0, (res.total ?? raw.length) - (raw.length - rows.length));
 				const trueTotal = Math.max(reportedTotal + missed.length, merged.length);
@@ -1194,8 +1194,9 @@
 				// a write into this view's local state. A view switch says
 				// nothing about whether the row is gone — and if the broadcast
 				// is skipped, no later event replaces it, so every other mounted
-				// surface stays stale on proof we already have. The rollback, the toast and the tombstone check
-				// below stay fenced: those DO touch what is on screen.
+				// surface stays stale on proof we already have. The rollback, the toast
+				// and the tombstone check below stay fenced: those DO touch what is on
+				// screen.
 				announceAttachmentDeleted(reqWsSlug, att.id);
 				return;
 			}

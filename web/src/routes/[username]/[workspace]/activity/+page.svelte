@@ -316,7 +316,7 @@
 	// stayed invisible until a reload. Any item event now re-reads the first
 	// page and folds it in by id (mergeHead). Throttled exactly as the item
 	// timeline is: at most one re-read per 10s, trailing, none while the tab is
-	// hidden (lead-ruled). The cap matters most here, because this listens
+	// hidden. The cap matters most here, because this listens
 	// WORKSPACE-wide — two busy seats must still mean at most 6 requests a
 	// minute per open tab.
 	// A head read skipped because a load was running. That load's read may have
@@ -457,7 +457,7 @@
 		//
 		// `named` drives the badge's uppercasing off. "agent" / "cli" / "web"
 		// are CATEGORY words and read as chips; a stamped name is a name, and
-		// upper-casing it would collapse `Alice` and `alice` into the same
+		// upper-casing it would collapse `Wren` and `wren` into the same
 		// pixels — breaking the verbatim contract in CSS rather than in code.
 		// The `user` kind has always opted out for exactly this reason.
 		if (actor === 'agent') {

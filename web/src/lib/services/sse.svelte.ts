@@ -130,8 +130,9 @@ type BCEnvelope =
 	// A FLAG on the existing type rather than a new type, for mixed bundles
 	// after a deploy: a peer on an older bundle ignores the unknown member and
 	// dispatches at once — unspread, but not lost. A new type would be
-	// ignored outright, and nothing guarantees that tab another sync. The other direction is the same shape: an older leader sends
-	// no flag, and a newer peer answers at once.
+	// ignored outright, and nothing guarantees that tab another sync. The
+	// other direction is the same shape: an older leader sends no flag, and a
+	// newer peer answers at once.
 	| { type: 'sync_required'; spread?: true }
 	| { type: 'status'; status: SSEStatus }
 	// A newly-joined tab asks the current leader for its live status.

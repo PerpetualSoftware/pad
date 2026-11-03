@@ -11,7 +11,7 @@
 // 2. A = parse(before), B = parse(after), each the way setContent parses
 //    (detached state, the editor's appendTransaction plugins included; see
 //    canonicalMarkdown.ts).
-// 3. Live blocks are aligned to A's (LCS) under the ruled rule: equal, or
+// 3. Live blocks are aligned to A's (LCS) under the accepted rule: equal, or
 //    differing only by a link's title attribute or by bold/italic on
 //    whitespace (invisible); a trailing empty live paragraph is ignored. A
 //    changed A block that aligns to no live block refuses unstable_roundtrip:

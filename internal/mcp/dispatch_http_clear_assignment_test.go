@@ -203,7 +203,7 @@ func TestMCPUpdate_EmptyAssignmentViaFieldFlagClears(t *testing.T) {
 // empty strings".
 //
 // `tags: ""` is NOT a clear — it is a corrupt write into a JSONB column
-// on Postgres and a TEXT column on SQLite. The guard
+// on Postgres and a TEXT column on SQLite (#547). The guard
 // that drops it sits three lines above the two this task changed and
 // looks identical; the justification is opposite. Without this test,
 // "unify the empty-string handling" is a plausible-looking future edit

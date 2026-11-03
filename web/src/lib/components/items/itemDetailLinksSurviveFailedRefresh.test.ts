@@ -183,10 +183,11 @@ describe('ItemDetail: a failed same-item links refresh keeps the links it has', 
 		// And that failure block empties `itemLinks` EXACTLY ONCE, gated. Pinning
 		// only the presence of the gated line admits an unconditional clear
 		// sitting beside it, or an `else` branch that clears anyway — both of
-		// which restore the defect while passing the assertion above. Counting is what makes the gate the only writer, and the
-		// region is the failure block matched by BALANCED BRACES rather than a
-		// fixed-length window, so a clear cannot sit just past the end of it and
-		// an unrelated edit after the block cannot fail the count.
+		// which restore the defect while passing the assertion above.
+		// Counting is what makes the gate the only writer, and the region is
+		// the failure block matched by BALANCED BRACES rather than a
+		// fixed-length window, so a clear cannot sit just past the end of it
+		// and an unrelated edit after the block cannot fail the count.
 		// The load issues links beside progress (TASK-2228) and settles it into
 		// a result, so the failure path is the `else` of `linksResult.ok`.
 		const loadStart = code.indexOf('const linksResult = await linksRead;');

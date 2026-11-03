@@ -203,7 +203,7 @@
 	// `[A-Za-z]+`, so a master whose ref is `R2-1` parsed as null, its
 	// `item_number` fell back to 0, and the self-pane guard below stopped
 	// recognising `?item=R2-1` as the master — mounting a second provider for
-	// the item already on screen.; it is the fourth
+	// the item already on screen. It is the fourth
 	// consumer found carrying its own copy of this grammar, which is the
 	// argument for the shared definition rather than for four careful edits.
 	function refNumber(candidate: string): number | null {
@@ -236,7 +236,7 @@
 		// closing the pane never trips this. Because it's a `$derived` over
 		// `page.url.pathname`, it re-nulls SYNCHRONOUSLY the instant the URL changes
 		// — before the strip `$effect` runs — so the guard never matches a bare
-		// `?item=` against the WRONG (previous) master (the late-continuation
+		// `?item=` against the WRONG (previous) master (the R14 late-continuation
 		// class). Null until identity resolves AND still matches.
 		if (masterIdentityPathname !== page.url.pathname) return null;
 		return {
@@ -488,7 +488,7 @@
 		// Detached pane (depth>0): pop exactly one drill level, consume the key.
 		// Routed through the controller's fenced `handlePaneBack` (not a bare
 		// `history.back()`), gated on `paneNavInFlight()` — a rapid double ESC
-		// can't stack a second traversal and overshoot. A no-op while a
+		// can't stack a second traversal and overshoot (R14). A no-op while a
 		// traversal is armed STILL consumes the key (never falls through to close).
 		if (
 			openItemRef &&

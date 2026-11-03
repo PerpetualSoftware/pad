@@ -256,8 +256,8 @@ func (s *Store) buildItemAppProjectionTx(tx *sql.Tx, item *models.Item) (*itemAp
 // the comment's own author column, the display used when the account is gone.
 //
 // commentID names the comment, so the block records the install that wrote
-// it (comments.via_app) as the creator's via_app, as an item's does
-// r4 on U10b). Every caller computes the block while the row still exists.
+// it (comments.via_app) as the creator's via_app, as an item's does.
+// Every caller computes the block while the row still exists.
 func (s *Store) buildCommentAppProjectionTx(tx *sql.Tx, commentID, itemID, userID, author, kind, parentID string) (*commentAppProjection, error) {
 	var collectionID, workspaceID string
 	err := tx.QueryRow(s.q(`SELECT collection_id, workspace_id FROM items WHERE id = ?`), itemID).Scan(&collectionID, &workspaceID)

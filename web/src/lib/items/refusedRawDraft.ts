@@ -314,7 +314,7 @@ export function offerKeptDraft(
 /**
  * The user resolved the shown draft `markdown` (Restore landed, Discard, or
  * nothing to restore): remove it from whichever slot holds it, and only while
- * it is still that text (BUG-3863, lead condition c).
+ * it is still that text (BUG-3863).
  */
 export function resolveKeptDraft(userId: string, itemId: string, markdown: string): void {
 	clearRefusedRawDraft(userId, itemId, markdown, 'held');

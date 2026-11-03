@@ -96,7 +96,7 @@ it.each([null, 'Asia/Tokyo'])('settings shows current zone %s and saves an uncon
  expect(fetcher.mock.calls[0]).toEqual(['/api/v1/auth/me', expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ timezone: 'Europe/Paris' }) })]);
 });
 
-// TASK-4101: a load that settles after an identity change is dropped and
+// TASK-4101 PR2a: a load that settles after an identity change is dropped and
 // the page reloads for the identity signed in now, so no save is built from the old one.
 it('a profile load that settles after an identity change is dropped and the new identity is loaded', async () => {
 	const { api } = await import('$lib/api/client');
@@ -134,7 +134,7 @@ it('both Save buttons are disabled while the profile is reloading for a new iden
 	expect(screen.getByRole('button', { name: 'Save time zone' })).toBeEnabled();
 });
 
-// TASK-4101: a PATCH response is merged into the profile, never replaces it
+// TASK-4101 PR2a: a PATCH response is merged into the profile, never replaces it
 // (the PATCH answer has no totp_enabled / oauth_providers / password_set).
 it('a time zone save keeps the 2FA state the PATCH response omits', async () => {
 	state.set.mockResolvedValue({ id: 'u1', name: 'Pat', email: 'pat@example.com', username: 'pat', timezone: 'Europe/Paris' });
@@ -165,7 +165,7 @@ it('a time zone Save counts as an explicit write', async () => {
 	await waitFor(() => expect(explicitTimezoneWrites()).toBe(before + 1));
 });
 
-// TASK-4101: a failed explicit write must not count.
+// TASK-4101 PR2a: a failed explicit write must not count.
 it('a time zone Save whose PATCH fails does not count as an explicit write', async () => {
 	const { explicitTimezoneWrites } = await import('$lib/timezone');
 	state.set.mockRejectedValue(new Error('bad zone'));
@@ -180,7 +180,7 @@ it('a time zone Save whose PATCH fails does not count as an explicit write', asy
 });
 
 
-// TASK-4101: a fenced zone Save that settles after an
+// TASK-4101 PR2a: a fenced zone Save that settles after an
 // identity change must not leave its busy flag stuck for the new identity.
 it('a zone Save in flight across an identity change does not leave Save disabled', async () => {
 	const pending = deferred<unknown>();

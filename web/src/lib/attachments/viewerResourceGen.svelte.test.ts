@@ -88,7 +88,7 @@ describe('createViewerResourceGen', () => {
 	});
 
 	it('does NOT advance on a collection-only or username-only route alias', () => {
-		// `/alice/ws/tasks/TASK-1` → `/alice/ws/bugs/TASK-1` (or a different
+		// `/dave/ws/tasks/TASK-1` → `/dave/ws/bugs/TASK-1` (or a different
 		// username for the same workspace). The route change triggers a
 		// `loadData()`, which re-adopts the SAME item under the SAME workspace,
 		// so every input this effect reads is re-asserted unchanged. That is

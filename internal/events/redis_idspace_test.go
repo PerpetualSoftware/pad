@@ -400,7 +400,7 @@ func TestACounterGoingBackwardsRaisesTheFloor(t *testing.T) {
 }
 
 func TestAPhaseOneInterleaveDoesNotDropEveryBuffer(t *testing.T) {
-	// And the reason the backwards check is gated on having
+	// This is the reason the backwards check is gated on having
 	// adopted an epoch. Phase 1 publishes with a two-call INCR-then-PUBLISH,
 	// so on any multi-instance deployment two publishers interleave routinely
 	// and a lower id arrives after a higher one as ORDINARY TRAFFIC.
@@ -958,7 +958,7 @@ func TestAnUndecodableMessageEndsThatWorkspacesCoverage(t *testing.T) {
 }
 
 func TestAScriptThatDiedBeforePublishingDoesNotBlockItsRetry(t *testing.T) {
-	// And the reason the dedupe token is CHECKED first and
+	// This is the reason the dedupe token is CHECKED first and
 	// WRITTEN last. Redis runs Lua atomically against interleaving, not with
 	// rollback: a script that errors part way through keeps whatever it
 	// already wrote. Written first, the token would survive a run that never
@@ -1219,7 +1219,7 @@ func TestAPayloadThatDecodesButIsNotOurEventEndsCoverage(t *testing.T) {
 }
 
 func TestAStragglerFromBeforeAResetIsBoundedByTheNextNewSpaceEvent(t *testing.T) {
-	// Named a window the design leaves open: once an epoch is
+	// The design leaves a window open: once an epoch is
 	// adopted, a BARE message is treated as belonging to the current space,
 	// and it does — unless the counter reset between that publisher's
 	// assignment and its publish.

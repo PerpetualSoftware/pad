@@ -188,7 +188,7 @@ func TestRequiredRelationIssues_CoversTheMultiType(t *testing.T) {
 	}
 }
 
-// SECOND PASS — all three findings were in the first FIXES, not in the
+// SECOND-ORDER CASES — all three were in the first FIXES, not in the
 // original code. Treating a correction as new code that deserves the same
 // adversarial pass is the lesson; these are its instruments.
 
@@ -306,7 +306,7 @@ func TestRelationKeysPresent_AnEmptyListIsNotCallerInput(t *testing.T) {
 	}
 }
 
-// THIRD PASS. Two of the three were again in the previous fixes; the
+// THIRD-ORDER CASES. Two of the three were again in the previous fixes; the
 // third is a pre-existing inconsistency the empty-list rule made visible.
 
 func TestMigrateMultiRelation_ABlankDefaultIsRemovedRatherThanLeftToFailValidation(t *testing.T) {
@@ -425,7 +425,7 @@ func validateMigrated(t *testing.T, fields map[string]any, schema models.Collect
 	return items.ValidateFields(fields, schema)
 }
 
-// FOURTH PASS — both findings were in the previous fix. The deletion it added ran
+// FOURTH-ORDER CASES — both were in the previous fix. The deletion it added ran
 // BEFORE the origin split, so it treated a caller's malformed override exactly
 // like a schema's malformed default. Those get opposite dispositions on purpose.
 

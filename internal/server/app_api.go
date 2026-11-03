@@ -175,8 +175,8 @@ func (s *Server) registerAppAPIRoutes(r chi.Router) {
 				if s.appBeforeHandler != nil {
 					s.appBeforeHandler()
 				}
-				// Writes are NOT re-validated after commit (U6b): a write's authority is decided inside its FencedTx
-				// under the epoch fence, and refusing the response AFTER a
+				// Writes are NOT re-validated after commit (U6b): a write's authority is
+				// decided inside its FencedTx under the epoch fence, and refusing the response AFTER a
 				// commit would hide a write that happened and invite a
 				// duplicate retry. Re-admission before send is for reads.
 				if access == "write" {

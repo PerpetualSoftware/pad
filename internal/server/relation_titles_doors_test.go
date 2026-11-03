@@ -71,7 +71,7 @@ func TestRelationTitleDoors_ThreeSpellingsAgreeThroughTheCreateDoor(t *testing.T
 }
 
 // TestRelationTitleDoors_TitleWrongCollectionDoesNotDiscloseExistence is
-// the check on the TITLE path, and it is the leg the addendum was written for.
+// the existence-disclosure check on the TITLE path, and it is the leg the addendum was written for.
 //
 // The server's collapse used to RE-RESOLVE a wrong_collection value through a
 // UUID-or-ref ladder. That ladder does not speak titles, so a title-derived

@@ -1011,7 +1011,7 @@ func (s *Server) writeCopyError(w http.ResponseWriter, r *http.Request, err erro
 // extra `"preflight"` literal at the end, which was harmless there (it hands
 // the value to a planner that writes nothing) but made the preview accept a
 // request the copy would refuse — a THIRD divergence of exactly the kind
-// DR-6 exists to prevent, found in review. One function, one answer;
+// DR-6 exists to prevent. One function, one answer;
 // both endpoints refuse identically via writeCopyActorRequired.
 func copyActorID(r *http.Request, item *models.Item) string {
 	if id := currentUserID(r); id != "" {

@@ -7,14 +7,14 @@ import { CURSOR_STORAGE_PREFIX } from '$lib/collab/wsProvider.svelte';
  * clear the persistent state a reload would NOT drop, then
  * reload.
  *
- * WHY A RELOAD RATHER THAN MORE FENCES. Each of three passes found another
- * layer of surfaces holding the previous user's data — three stores, then
- * fourteen route pages plus a connection and two caches, then the console
- * subtree, share pages, the command palette and an open dialog. The population
- * is "everything in the tab that ever held a fetch", and a per-surface fix
- * cannot terminate: it is a list somebody has to keep complete forever. A
- * reload drops every store, component, cache and in-flight request at once and
- * nothing new has to be remembered.
+ * WHY A RELOAD RATHER THAN MORE FENCES. Three successive attempts each found
+ * another layer of surfaces holding the previous user's data — three stores,
+ * then fourteen route pages plus a connection and two caches, then the
+ * console subtree, share pages, the command palette and an open dialog. The
+ * population is "everything in the tab that ever held a fetch", and a
+ * per-surface fix cannot terminate: it is a list somebody has to keep
+ * complete forever. A reload drops every store, component, cache and
+ * in-flight request at once and nothing new has to be remembered.
  *
  * WHAT THE RELOAD DOES NOT DROP is exactly this function's other half.
  * `localStorage`, `sessionStorage` and IndexedDB survive it, so those stay an

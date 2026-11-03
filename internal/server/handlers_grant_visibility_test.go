@@ -311,7 +311,7 @@ func TestCollectionGrants_RestrictedOwner_HiddenCollection404(t *testing.T) {
 // ─── Item-grant-only must NOT promote to collection-wide access ───────
 
 // TestCollectionShareLinksAndGrants_ItemGrantOnly_HiddenCollection404 pins
-// a follow-up finding: VisibleCollectionIDs folds in collections
+// the follow-up case: VisibleCollectionIDs folds in collections
 // that are visible ONLY via an item-level grant ("so the collection appears
 // in navigation" — workspace_members.go), which made the original
 // requireCollectionVisible pass for a restricted owner holding nothing more

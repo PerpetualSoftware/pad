@@ -10,7 +10,7 @@
 //   * `FieldEditor.relation.svelte.test.ts` (40 tests) is the evidence the
 //     parameterisation moved NOTHING on the scalar path. Those tests were not
 //     touched by this unit.
-//   * this file is the evidence the list behaviour is what U4 ruled: ordered,
+//   * this file is the evidence the list behaviour is what U4 decided: ordered,
 //     duplicates refused, `[]` is the one spelling of none.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/svelte';
@@ -112,7 +112,7 @@ function buttons(label: RegExp): HTMLButtonElement[] {
 describe('multi_relation — read-only rendering', () => {
 	it('renders one chip per element, in the STORED ORDER', async () => {
 		// Order is the whole reason this is a list and not a set: the field is
-		// ruled ORDERED, so a render that sorted or de-duplicated would be
+		// defined as ORDERED, so a render that sorted or de-duplicated would be
 		// showing the user something other than what the item holds.
 		render(FieldEditor, {
 			props: { field: multi, value: [GREEN.id, RED.id, BLUE.id], wsSlug: 'ws', username: 'dave', readonly: true, onchange: () => {} },
@@ -789,7 +789,7 @@ describe('multi_relation — what the round-8 enumeration found in the round-8 f
 		expect(onchange.mock.calls[1][0]).toEqual([RED.id]);
 
 		// Back again. This used to assert the old hold was still in force, "never
-		// confirmed by anything". TASK-3048 ruled the other way: a retarget
+		// confirmed by anything". TASK-3048 decided the other way: a retarget
 		// DISCARDS a hold, because on the return it would stand over a value
 		// that may have moved meanwhile. The editor shows the prop.
 		await rerender({ ...editable, value: [GREEN.id, RED.id, BLUE.id], onchange });

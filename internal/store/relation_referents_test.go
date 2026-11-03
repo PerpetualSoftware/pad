@@ -259,7 +259,7 @@ func TestResolveRelationReferents_IsDeterministicAndBatched(t *testing.T) {
 	}
 }
 
-// --- Migrate doors (PLAN-2857 U1, not door) ---
+// --- Migrate doors (PLAN-2857 U1: provenance, not door) ---
 
 func TestMigrateRelationReferents_SameWorkspaceKeepsWhatResolves(t *testing.T) {
 	t.Parallel()
@@ -435,9 +435,9 @@ func TestResolveRelationReferents_OverflowingRefDoesNotResolve(t *testing.T) {
 // Why it is owed even though this unit never touched export.go. Import writes
 // raw rows and never goes through createItemChecked, so referent validation
 // cannot have reached it; that is an argument that the behaviour is unchanged,
-// not evidence that it is correct or that it will stay. The carry is a RULING
-// (because the artifact is the
-// record) and an unpinned ruling is one refactor away from becoming a refusal
+// not evidence that it is correct or that it will stay. The carry is a DECISION:
+// an import's value HAS a home, because the artifact is the
+// record. An unpinned decision is one refactor away from becoming a refusal
 // that turns every pre-validation archive into a hard failure. Same reasoning
 // as TestImportWorkspace_CoercesTitles one file over, which this is modelled on.
 //

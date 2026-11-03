@@ -119,7 +119,7 @@ func (r *Room) enterApplierGate() (waited bool) {
 // finishAdmission ends the admission span opened by a !waited enterApplierGate — call
 // it exactly once after registerPendingAck returns (success or error) or on any early
 // bail before registration. When the count hits zero it wakes a beginRestore draining
-// the admission gap. (BUG-2276 residual 2, .)
+// the admission gap. (BUG-2276 residual 2.)
 func (r *Room) finishAdmission() {
 	r.restoreMu.Lock()
 	if r.admittedUnregistered > 0 {

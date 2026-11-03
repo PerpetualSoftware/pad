@@ -94,7 +94,7 @@ func IsAPITokenFromContext(ctx context.Context) bool {
 //
 // Without this, a PAT with scope `["read"]` could drive write MCP
 // tools because the in-process request looks pre-authenticated to
-// the handler tree. (Review #369 flagged the gap.)
+// the handler tree (#369).
 //
 // Empty string clears any previously set scope.
 func WithTokenScopes(ctx context.Context, scopes string) context.Context {

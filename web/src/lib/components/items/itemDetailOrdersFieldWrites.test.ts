@@ -134,11 +134,12 @@ describe('ItemDetail field writes are ordered', () => {
 	});
 
 	it('the forced-write success is gated on CLAIM and never on supersession', () => {
-		// A defect an earlier version of this unit introduced. A forced write that SUCCEEDED has changed the row; if the
-		// newer write then failed without writing, returning on supersession
-		// leaves the server holding the confirmed value and the pane showing the
-		// old one, with nothing left to correct it. `claim` asks whether anything
-		// newer actually WROTE, which is the question that matters here.
+		// A defect an earlier version of this unit introduced. A forced write
+		// that SUCCEEDED has changed the row; if the newer write then failed
+		// without writing, returning on supersession leaves the server
+		// holding the confirmed value and the pane showing the old one, with
+		// nothing left to correct it. `claim` asks whether anything newer
+		// actually WROTE, which is the question that matters here.
 		// Bounded at the branch's own `showSaved(saveTok)`, not at the next landmark:
 		// the DECLINED branch below it legitimately mentions supersession (for
 		// the save indicator), and a slice running into it reports that as a

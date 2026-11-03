@@ -63,7 +63,7 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// WriteJSON sets no Cache-Control and the
+	// Note writeJSON sets no Cache-Control and the
 	// jsonContentType middleware only sets Content-Type, so without
 	// this the response is heuristically cacheable. Two reasons that's
 	// wrong here, beyond matching the house pattern for per-user

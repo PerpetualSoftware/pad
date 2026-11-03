@@ -370,8 +370,8 @@ type relatedGroup struct {
 //	{"item_ref":..., "item_title":..., "collection":...,
 //	 "group_count": N, "groups": [{"key", "label", "entries":[...]}, ...]}
 //
-// The original raw-links shape was a
-// behavioural divergence from the CLI; fixing it preserves the
+// The original raw-links shape was a behavioural divergence from the CLI;
+// fixing it preserves the
 // "transport-equivalent to ExecDispatcher" contract this dispatcher
 // is built on.
 func (d *HTTPHandlerDispatcher) dispatchItemRelated(

@@ -11,7 +11,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// ARRANGEMENT CORRECTED after the split. Publish lost its
+// (Arrangement corrected after the split.) Publish lost its
 // local-counter fallback when the ID assignment fails, and the removal is the
 // fix — the fallback minted an ID from a process-local space and published it,
 // which every receiving instance reads as the counter having been reset.

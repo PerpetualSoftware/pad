@@ -69,10 +69,10 @@ func TestChatGPTCatalog_CoversEveryOperation(t *testing.T) {
 	}
 }
 
-// TestChatGPTCatalog_HintsAsRuled pins each tool's hints to the ruling,
+// TestChatGPTCatalog_HintsAsRuled pins each tool's hints to the decided values,
 // written out here rather than read back from the catalog, so the two can
 // disagree and fail. update_item is NOT destructive: every content change is
-// saved as a version first (ruling (b) on TASK-3321). archive_item is.
+// saved as a version first (decision (b) on TASK-3321). archive_item is.
 func TestChatGPTCatalog_HintsAsRuled(t *testing.T) {
 	writes := map[string]bool{ // name -> destructive
 		"create_item":  false,

@@ -4,8 +4,7 @@
 	// The two entry points to the move-to-Cloud guide (TASK-3612): the
 	// self-hosted settings page, and Cloud's New Workspace import. Never
 	// inside a mobile app's web view: the guide as a whole steers to Pad
-	// Cloud, which the app stores' anti-steering rules forbid there
-	// (TASK-3299).
+	// Cloud, which the app stores' anti-steering rules forbid there (TASK-3299).
 	interface Props {
 		/** Which side this link sits on: shown only when the instance is that side. */
 		on: 'self-hosted' | 'cloud';

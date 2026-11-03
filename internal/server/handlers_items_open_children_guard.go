@@ -435,7 +435,7 @@ const contentNotAppliedRetryAfterSeconds = 1
 // timed-out applier from an evicted one.
 //
 // `contentOutcome` is the part a first draft of this got WRONG, and the reason it is
-// a parameter rather than a constant false (a first draft got it wrong). An apply that
+// a parameter rather than a constant false. An apply that
 // TIMED OUT is not the same as one that never happened: ApplyExternalContent only
 // returns ErrAllAppliersTimedOut after an applier_request has actually gone out on
 // the wire, and the elected peer may have applied the markdown and persisted its ops

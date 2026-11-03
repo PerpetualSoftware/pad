@@ -40,8 +40,8 @@ import (
 //
 // Sister test in store/items_collab_versions_test.go covers the
 // downstream diff-reconstruction path; this one covers the
-// handler-to-store boundary that was
-// the missing link.
+// handler-to-store boundary that was the
+// missing link.
 func TestCollabSnapshotHTTPSourceStamping(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
@@ -332,8 +332,7 @@ func TestCollabSnapshotAcceptsCursorAtOrAboveMin(t *testing.T) {
 
 // TestCollabSnapshotRejectsCursorOnEmptyOpLog mirrors the WS
 // force_refresh predicate at the HTTP layer (TASK-1319). A non-zero cursor against an item whose
-// op-log
-// is entirely empty is, by construction, stale: the rows the
+// op-log is entirely empty is, by construction, stale: the rows the
 // client claims to have applied no longer exist. Reject 409.
 func TestCollabSnapshotRejectsCursorOnEmptyOpLog(t *testing.T) {
 	srv := testServer(t)
@@ -367,8 +366,7 @@ func TestCollabSnapshotRejectsCursorOnEmptyOpLog(t *testing.T) {
 }
 
 // TestCollabSnapshotRejectsCursorZeroOnNonEmptyOpLog (TASK-1319): a stateful tab whose previous
-// session
-// disconnected before receiving any op_log_cursor frame ends up
+// session disconnected before receiving any op_log_cursor frame ends up
 // with sessionStorage cursor=0 but a non-empty Y.Doc derived from
 // prior replay binaries. On flush, it carries cursor=0 alongside
 // Y.Doc-derived markdown. Without the gate, items.content would
@@ -806,8 +804,8 @@ func assertNoForceRefresh(t *testing.T, conn *websocket.Conn) {
 	}
 }
 
-// TestRestoreForceRefreshesStaleSeedOnJoin is the BUG-2264 stale-SEED guard
-// After a restore, a client that connects with a
+// TestRestoreForceRefreshesStaleSeedOnJoin is the BUG-2264 stale-SEED guard:
+// after a restore, a client that connects with a
 // Y.Doc seeded from PRE-restore items.content — a cursor-0 peer whose
 // force_refresh frame was lost, or a browser that GET items.content before the
 // restore and joins after the prune — announces a ?content_seq below the
