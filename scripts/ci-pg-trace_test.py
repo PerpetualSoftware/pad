@@ -41,7 +41,7 @@ class TraceTest(unittest.TestCase):
               "unexpected: " + MODULE + "/internal/server",
               "expected package never connected: " + MODULE + "/internal/store"]),
             # A listed package that stopped connecting means the list (or the
-            # trace marker) drifted: fatal, not a warning (TASK-4224 r1 H1).
+            # trace marker) drifted: fatal, not a warning (TASK-4224).
             ("listed package missing while others connect",
              [event(MODULE + "/cmd/pad")], "./cmd/pad\n./internal/store\n",
              1, [MODULE + "/cmd/pad"],

@@ -51,7 +51,7 @@ note() { printf 'install-refresh: %s\n' "$*"; }
 # flag_value prints the value of a long flag from the captured argv,
 # accepting BOTH supported spellings: `--host 1.2.3.4` and `--host=1.2.3.4`.
 #
-# Codex round 2 (P1): the first version matched only the space-separated
+# The first version matched only the space-separated
 # form. Cobra accepts both, so a server started `--port=8080` was restarted
 # on 8080 and probed on 7777 — a healthy restart failed by this script's
 # most confident message. A parser that reads a subset of the syntax it is
@@ -160,7 +160,7 @@ warn_relative_data_dir() {
 # all top-level, no sections), so a line match is a correct reader for it
 # rather than a hopeful one. Path resolution mirrors userConfigPath().
 #
-# Codex round 3 (P1): without this, a server whose host or port comes from
+# Without this, a server whose host or port comes from
 # the config file alone restarts correctly and is then probed on
 # 127.0.0.1:7777 and reported as failed — on EVERY install, for that user.
 # A stated boundary was the previous answer; it is a bad one when the cost of
@@ -171,8 +171,8 @@ config_value() {
 	[ -r "$path" ] || return 1
 	# Strip an inline comment before taking the value: `port = 8080 # dev`
 	# is valid TOML and the Go parser accepts it, so a regex that swallows
-	# the comment resolves the port to "8080 # dev" and probes nothing
-	# (codex round 4). A quoted value is unquoted first, so a `#` inside
+	# the comment resolves the port to "8080 # dev" and probes nothing.
+	# A quoted value is unquoted first, so a `#` inside
 	# quotes survives.
 	sed -n "s/^[[:space:]]*$key[[:space:]]*=[[:space:]]*//p" "$path" |
 		sed -e 's/^"\([^"]*\)".*$/\1/' -e 's/[[:space:]]*#.*$//' -e 's/[[:space:]]*$//' |
@@ -181,7 +181,7 @@ config_value() {
 
 # probe_url builds a health URL, bracketing IPv6 literals.
 #
-# Codex round 3 (P2): `::1` produced http://::1:7777/... — not a URL, so a
+# `::1` produced http://::1:7777/... — not a URL, so a
 # healthy IPv6-bound server reads as unreachable. Accepts a value that is
 # already bracketed, since that is how a user would write it in a flag.
 probe_url() {
@@ -222,7 +222,7 @@ commit_matches() {
 	# answer and it is available because `make install` runs in the repo,
 	# whose path is SRC_DIR wherever the script has moved since (BUG-3403).
 	#
-	# Codex round 5 (P1) on the previous prefix comparison: `a3a1d586`
+	# The previous prefix comparison was wrong: `a3a1d586`
 	# accepted `a3a1d58` even when those are DIFFERENT commits that happen
 	# to share seven characters. That is not hypothetical — it is the same
 	# mechanism that made the abbreviation grow in the first place, so the
@@ -237,7 +237,7 @@ commit_matches() {
 		return
 	fi
 
-	# FAIL CLOSED when an id cannot be resolved (codex round 9). A prefix
+	# FAIL CLOSED when an id cannot be resolved. A prefix
 	# comparison admits exactly the collision this function was rewritten to
 	# stop admitting, so keeping it as a fallback would reintroduce the
 	# defect on the path where verification is weakest.
@@ -271,8 +271,7 @@ US=$'\x1f'
 declare -A SERVER_ARGV_OF=()
 # Every element TERMINATED by the separator, not joined by it, and read back
 # with mapfile: `read -a` drops trailing empty fields, and a trailing
-# separator also keeps command substitution from stripping a final newline
-# (codex round 1).
+# separator also keeps command substitution from stripping a final newline.
 join_us() {
 	local a
 	for a in "$@"; do printf '%s%s' "$a" "$US"; done
@@ -291,7 +290,7 @@ capture_pid() {
 	[ -n "${SERVER_ARGV_OF[$pid]+x}" ] && return 0
 	# /proc where it exists, `ps` where it does not.
 	#
-	# Codex round 5 (P1): macOS has no /proc, so this loop found
+	# macOS has no /proc, so this loop found
 	# nothing there, SERVER_ARGV stayed empty, and the restart fell
 	# back to defaults — the exact defect BUG-2897 is about, silently
 	# unfixed on the platform the setsid fallback had just been added
@@ -302,8 +301,8 @@ capture_pid() {
 	# therefore exactly; `ps -o args=` returns one space-joined string,
 	# so an argument containing a space is split. Named rather than
 	# hidden: no `pad server start` flag takes such a value today.
-	# A function now (BUG-3196), so `local` is legal here; codex round 6 of
-	# BUG-3194 had removed it when this body ran at top level.
+	# A function now (BUG-3196), so `local` is legal here; BUG-3194 had
+	# removed it when this body ran at top level.
 	local argv=() line i
 	# PAD_NO_PROC forces the `ps` path. Same reasoning as PAD_NO_SETSID:
 	# the branch is unreachable on any machine with /proc, and an
@@ -376,8 +375,7 @@ TARGET_PORT="${TARGET_PORT:-7777}"
 # listener_pids prints the pids listening on TCP port $1, one per line, and
 # prints the word HIDDEN when a listener is visible but its owner is not (ss
 # without process info, lsof unable to read another process). A hidden owner
-# is refused below rather than read as "nothing is on the port" (codex
-# round 1).
+# is refused below rather than read as "nothing is on the port".
 listener_pids() {
 	local lines pids
 	if command -v ss >/dev/null 2>&1; then
@@ -430,7 +428,7 @@ done
 
 # A listener whose owner cannot be read, or ANY non-captured listener on the
 # port (even beside a captured one, on another address), makes the port
-# ambiguous: refused before anything else is considered (codex round 1).
+# ambiguous: refused before anything else is considered.
 if [ -n "$HIDDEN" ]; then
 	die "something is listening on port $TARGET_PORT but its owning process cannot be read here.
   Nothing was stopped or installed; this script will not guess which server that is."
@@ -451,7 +449,7 @@ elif [ "${#SERVER_PIDS[@]}" -eq 1 ]; then
 	# --port. Without that it is most likely a sibling's server (an e2e
 	# webServer takes its port from the environment) while this box's own
 	# server is down, and replacing it would restart someone else's server
-	# from this install (codex round 2).
+	# from this install.
 	only=()
 	mapfile -d "$US" -t only < <(printf '%s' "${SERVER_ARGV_OF[${SERVER_PIDS[0]}]}")
 	if flag_value --port "${only[@]}" >/dev/null; then
@@ -501,7 +499,7 @@ SERVER_CWD=""
 if [ -n "$TARGET_PID" ]; then
 	# What was read and why it failed, for the refusal: the path asked and
 	# the tool's own error text, which carries the errno (e.g. "Permission
-	# denied"). Lead ruling on BUG-3196.
+	# denied"). See BUG-3196.
 	cwd_source="" cwd_err=""
 	if [ -z "${PAD_NO_PROC:-}" ] && [ -d /proc ]; then
 		cwd_source="/proc/$TARGET_PID/cwd"
@@ -539,7 +537,7 @@ warn_relative_data_dir
 # The copy happens BEFORE the stop, into a temporary file beside the final
 # path, and the check runs on that snapshot.
 #
-# Codex round 2 (P1) found the window this closes: checking $BUILT and then
+# The window this closes: checking $BUILT and then
 # copying it later leaves room for another session to rebuild the shared repo
 # binary in between, so the destination check catches the swap only AFTER the
 # old server has been killed — turning a detectable race into an outage. A
@@ -584,7 +582,7 @@ fi
 # PORT resolution, in the server's own precedence order. Resolved before the
 # stop because the refresh marker names it (BUG-3215); the probe uses it too.
 #
-# Codex round 1: probing a fixed 7777 while faithfully restarting a server
+# Probing a fixed 7777 while faithfully restarting a server
 # that was started with `--port 8080` fails a HEALTHY restart, and does it
 # with this script's most confident message. The flag exists
 # (cmd_server.go: `--port`, default 7777) so the case is reachable, and the
@@ -594,8 +592,7 @@ configured_port="$(flag_value --port "${SERVER_ARGV[@]}" || true)"
 # Each source is accepted only if it is NUMERIC, mirroring the application:
 # config.go ignores a non-integer PAD_PORT and falls through to the next
 # source. Without that, a mistyped or inherited PAD_PORT is probed
-# literally and every refresh fails against a server that is running fine
-# (codex round 7).
+# literally and every refresh fails against a server that is running fine.
 PORT=""
 for candidate in "$configured_port" "${PAD_PORT:-}" "$(config_value port || true)"; do
 	if numeric "$candidate"; then
@@ -639,7 +636,7 @@ LEGACY_LOG="$HOME/.pad/server.log"
 # and any pad CLI call in that window used to AUTO-START a server of its own:
 # the caller's binary (a worktree build, or the old inode before the rename),
 # from the caller's cwd, with default flags. It then held the port against
-# this script's restart. Measured on day 79: the lead's `pad item comment`
+# this script's restart. Measured once: another session's `pad item comment`
 # took the port during a bounce, 127.0.0.1:7777 went dark, and the script
 # exited 1.
 #
@@ -685,7 +682,7 @@ if [ -n "$TARGET_PID" ]; then
 	# still_target re-reads the pid's argv the way the capture read it and
 	# succeeds only if it is still the captured server. Asked before EACH
 	# signal: a pid that exits and is recycled during the TERM wait must not
-	# receive the KILL (codex round 1). A pid that is already gone is not
+	# receive the KILL. A pid that is already gone is not
 	# signalled at all.
 	still_target() {
 		local now=()
@@ -698,7 +695,7 @@ if [ -n "$TARGET_PID" ]; then
 	}
 	if kill -0 "$TARGET_PID" 2>/dev/null; then
 		# The cwd is checked again at the last moment before the stop
-		# (BUG-3196, codex round 1): it was checked before the snapshot, and
+		# (BUG-3196): it was checked before the snapshot, and
 		# a directory removed since then would leave the server stopped with
 		# nowhere to restart it. RESIDUAL, stated: one removed between this
 		# check and the restart's `cd` still can, and the restart then fails
@@ -871,8 +868,7 @@ fi
 # before the stop. A missing directory there would make the redirection fail
 # and the server never start, three steps upstream of the probe that reports
 # it (found on a fresh HOME by the probe-failure test).
-# setsid where it exists, plain nohup where it does not. Codex round 2
-# (P1): setsid is Linux-specific and absent from a default macOS
+# setsid where it exists, plain nohup where it does not. setsid is Linux-specific and absent from a default macOS
 # environment, where an unconditional call would fail AFTER the old server
 # had been stopped — the one ordering this script exists to avoid. nohup
 # plus the background job is sufficient detachment on both.
@@ -883,7 +879,7 @@ fi
 # rather than hidden.
 # Re-read the installed binary IMMEDIATELY before executing it.
 #
-# Codex round 4 (P1): a concurrent `make install` can replace $INSTALLED
+# A concurrent `make install` can replace $INSTALLED
 # between the outcome check above and this exec, so this invocation would
 # launch a build it never verified and report success.
 #
@@ -964,7 +960,7 @@ configured_host="$(flag_value --host "${SERVER_ARGV[@]}" || true)"
 # Precedence: flag, then environment, then the config file, then the
 # default — the same order the server itself resolves them in. The config
 # file is read because leaving it out meant a permanent false failure for
-# anyone who configures the bind there (codex round 3).
+# anyone who configures the bind there.
 if [ -z "$configured_host" ]; then
 	configured_host="${PAD_HOST:-$(config_value host || true)}"
 fi
@@ -988,7 +984,7 @@ case "$configured_host" in
 	;;
 "localhost")
 	# `localhost` may resolve to either loopback family, and which one the
-	# server binds is not knowable from here (codex round 8). Requiring both
+	# server binds is not knowable from here. Requiring both
 	# would fail a healthy v4-only or v6-only bind, so this is the one case
 	# where ANY member answering is the pass — recorded because it is a
 	# deliberate exception to "every probed address must answer".
@@ -1004,7 +1000,7 @@ case "$configured_host" in
 	if [ -n "$lan" ]; then
 		probe_hosts+=("$lan")
 	else
-		# FAIL CLOSED (codex rounds 5 and 8). A wildcard bind promises the
+		# FAIL CLOSED. A wildcard bind promises the
 		# external address, and being unable to check it is not the same as
 		# it being fine. The first version warned and exited 0, which is
 		# this unit's own defect wearing a different hat: a success line
@@ -1053,7 +1049,7 @@ if [ "${probe_any:-0}" = "1" ] && [ "$answered" -gt 0 ]; then
 fi
 
 # WHO answered (BUG-3215). A health probe answers for whatever holds the
-# address, so a server that took the port in the window passes it: on day 79
+# address, so a server that took the port in the window passes it: once
 # the stray bound the LAN address with default flags, and had it bound
 # loopback this script would have printed success over the wrong server. The
 # listener must be the restart this script spawned (or its direct child,
@@ -1134,7 +1130,7 @@ else
 		# did, or when that cannot be established.
 		# :(top) anchors the pathspec at the repository root: SRC_DIR may
 		# be a subdirectory, where a bare web/ would name <subdir>/web/
-		# and find no change (codex r1 on BUG-3403).
+		# and find no change (BUG-3403).
 		if ! git -C "$SRC_DIR" diff --quiet "$web_commit" "$EXPECT_COMMIT" -- ':(top)web/' 2>/dev/null; then
 			warn "the web bundle was built at ${web_commit}, and web/ differs between that commit and ${EXPECT_COMMIT} (or that cannot be checked here): web/build is stale. Rebuild web (vite build) and refresh again."
 		fi
