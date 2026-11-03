@@ -44,8 +44,21 @@ func RedactQuery(raw string) string {
 		if err != nil || strings.Contains(part, ";") {
 			return redacted
 		}
-		if hasValue && credentialKey(decoded) {
+		if !hasValue {
+			continue
+		}
+		if credentialKey(decoded) {
 			parts[i] = key + "=" + redacted
+			continue
+		}
+		// A value can itself carry a credential path, e.g.
+		// redirect=/verify-email/<token> on the login page.
+		_, val, _ := strings.Cut(part, "=")
+		dv, verr := url.QueryUnescape(val)
+		if verr != nil {
+			parts[i] = key + "=" + redacted
+		} else if RedactPath(dv) != dv {
+			parts[i] = key + "=" + url.QueryEscape(RedactPath(dv))
 		}
 	}
 	return strings.Join(parts, "&")

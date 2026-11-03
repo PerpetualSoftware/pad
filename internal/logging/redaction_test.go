@@ -44,6 +44,9 @@ func TestRedactionHelpers(t *testing.T) {
 		{"%invalid=fixture", "REDACTED"},
 		{"limit=20;token=fixture", "REDACTED"},
 		{"tokenizer=on&limit=20", "tokenizer=on&limit=20"},
+		{"redirect=%2Fverify-email%2Ftok123&limit=20", "redirect=%2Fverify-email%2FREDACTED&limit=20"},
+		{"redirect=%2Fjoin%2Fabc&next=%2Fitems", "redirect=%2Fjoin%2FREDACTED&next=%2Fitems"},
+		{"redirect=%zz", "redirect=REDACTED"},
 	} {
 		if got := RedactQuery(tc.raw); got != tc.want {
 			t.Errorf("RedactQuery(%q) = %q, want %q", tc.raw, got, tc.want)
