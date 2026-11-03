@@ -108,9 +108,8 @@ func TestImportRepairFlagRepairsExactlyTheEscape(t *testing.T) {
 	}
 }
 
-// TestImportStrictRefusalNamesTheWorkingRemedy is the decision that a strict refusal must
-// name a working remedy, in
-// test form, and PATTE-135's rule: a suggested remedy is an untested contract
+// TestImportStrictRefusalNamesTheWorkingRemedy pins that a strict refusal must
+// name a working remedy, in test form, and PATTE-135's rule: a suggested remedy is an untested contract
 // claim until something runs it.
 //
 // So this does not merely assert that the refusal message mentions a flag. It

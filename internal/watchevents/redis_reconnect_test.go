@@ -111,8 +111,8 @@ func newCutterBus(t *testing.T, size int) (*RedisBus, *miniredis.Miniredis, *tcp
 // REASON, returning the counts. It fails the test rather than returning empty,
 // so a caller cannot mistake "not yet" for "never".
 //
-// Reason-specific rather than "any reset", which is what it was first written
-// as. Waiting on any reset lets an unrelated one satisfy the
+// Reason-specific rather than "any reset", which is the first form of this wait.
+// Waiting on any reset lets an unrelated one satisfy the
 // wait and lets the test proceed to its real assertions before the condition
 // under test has happened — the wait would then be measuring nothing, and the
 // assertions after it would be racing. It also makes the failure message name
@@ -409,8 +409,8 @@ func TestAnUndecodableMessageEndsCoverage(t *testing.T) {
 // `pubsub.Receive(subCtx)` deleted this fails 3/3 with
 // `got map[subscription_resumed:1]`.
 //
-// ONE RESIDUAL, STATED BECAUSE IT IS REAL AND MEASURED RATHER THAN DISMISSED
-// (it was raised more than once in review). The confirmation is recorded only if
+// ONE RESIDUAL, STATED BECAUSE IT IS REAL AND MEASURED RATHER THAN DISMISSED.
+// The confirmation is recorded only if
 // it arrives after newCutterBus attaches the observer, and nothing ORDERS
 // those two — so in principle a mutated constructor could let it slip through
 // unobserved and this test would pass on broken code.

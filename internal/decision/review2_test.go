@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// TASK-3116. The KIND check came first; this covers the
+// TASK-3116: the KIND check came first; this covers the
 // rest of that population: an answer can contradict its question in every
 // (kind, member) cell, not only in its kind. The rows below are that table —
 // one refusal per rule checkAnswer enforces, and an ACCEPTANCE row at each

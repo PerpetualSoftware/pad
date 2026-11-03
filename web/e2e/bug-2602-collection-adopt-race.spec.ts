@@ -20,7 +20,7 @@ import { test, type SuiteFixture } from './fixtures';
  *   2. While held, the item is MOVED src → tgt via the API. The pane's
  *      live SSE delivers item_updated; refreshCollectionIfMoved fetches
  *      TGT (not held) and adopts it — the pane renders TGT's schema
- * (its marker field label).
+ *      (its marker field label).
  *   3. The held SRC fetch is released. The continuation is generation-
  *      stale AND cross-collection: the old hatch admitted it (pane
  *      reverts to SRC's schema — the control build fails here); the

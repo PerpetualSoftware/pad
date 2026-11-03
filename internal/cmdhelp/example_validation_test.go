@@ -67,7 +67,7 @@ func TestValidateExamples_Clean(t *testing.T) {
 }
 
 func TestValidateExamples_DetectsTypoFlag(t *testing.T) {
-	// THIS IS THE DRIFT-PREVENTION CONTRACT TEST (spec §6, §11).
+	// THIS IS THE DRIFT-PREVENTION CONTRACT TEST (spec §6 / §11 Q5).
 	// A typo in an example flag — `--priorty` instead of `--priority`
 	// — MUST be detected by ValidateExamples and reported with the
 	// offending command + example index.

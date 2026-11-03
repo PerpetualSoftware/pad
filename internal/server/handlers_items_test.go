@@ -1052,8 +1052,8 @@ func TestItemCrossCollectionListing(t *testing.T) {
 	}
 }
 
-// TestCreateItemSourcePersistedFromAuth covers the fix for TASK-862: items created via the CLI were
-// persisting with source='web' (the column default) instead of 'cli',
+// TestCreateItemSourcePersistedFromAuth covers the fix for TASK-862: items created via the
+// CLI were persisting with source='web' (the column default) instead of 'cli',
 // because the handler decoded ItemCreate from the body — which has no
 // Source set by the CLI client — and only consulted actorFromRequest
 // AFTER persisting (for SSE / activity logs). With the fix, the handler

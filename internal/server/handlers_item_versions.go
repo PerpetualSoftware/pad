@@ -302,9 +302,9 @@ func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request
 	// version + prunes the ENTIRE op-log in ONE store transaction), publishes the
 	// stale-flush boundary, then — if a live room exists — forces every connected
 	// peer to discard its in-memory Y.Doc and rebuild from items.content. The
-	// content write, the version, and the op-log wipe are atomic: a failed commit rolls back all three, so there is no divergent
-	// "restored content + stale op-log" or "wiped op-log + unchanged content"
-	// state on any failure path. The pruned op-log means a reconnecting or cold
+	// content write, the version, and the op-log wipe are atomic: a failed commit rolls back all three, so there is no
+	// divergent "restored content + stale op-log" or "wiped op-log + unchanged
+	// content" state on any failure path. The pruned op-log means a reconnecting or cold
 	// client lazy-seeds from the restored content; the boundary rejects any
 	// in-flight pre-restore snapshot. This replaces the earlier
 	// applier/epoch/watermark routing: prune+reseed needs none of it.

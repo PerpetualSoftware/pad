@@ -1,6 +1,6 @@
 /**
  * BUG-3084, ItemDetail — the SITE PINS. The population and commit rules moved
- * to `itemDetailIdentityFenceAst.test.ts` (the regex rules could not see four
+ * to `itemDetailIdentityFenceAst.test.ts` (#1387: the regex rules could not see four
  * classes of edit), and the
  * mount suite `itemDetailIdentityLoad.svelte.test.ts` owns the semantics.
  *
@@ -163,7 +163,7 @@ describe('ItemDetail: children calling back after their own awaits (class C, par
 		// - already epoch-aware: EditorBubbleMenu;
 		// - PushToAgentDialog calls `onclose` after its send's await, but only
 		//   behind its own `stillMine()` check, and the parent's load closes the
-		//   dialog anyway (the child's own toast is BUG-3095's).
+		//   dialog anyway (#1387; the child's own toast is BUG-3095's).
 		// CopyItemDialog is in the table above for `onmove` / `oncopied`. Its
 		// `onclose` also fires after an await, behind `gen !== flowGen`; flowGen
 		// is bumped by the cleanup that runs when the identity key remounts it.
@@ -259,7 +259,7 @@ describe('ItemDetail: epoch reads in reactive scopes', () => {
 		// snapshot (TASK-3606: whose typing is in the editor, so a draft is never
 		// filed under the next user's key). The collab cleanup and
 		// the rich teardown flush compare against the CONTEXT's mint-time epoch
-		// instead, because a load re-stamps this one.
+		// instead (#1387), because a load re-stamps this one.
 		expect(SCRIPT.match(/identityEpochAtLoad/g)?.length).toBe(6);
 	});
 
@@ -267,7 +267,7 @@ describe('ItemDetail: epoch reads in reactive scopes', () => {
 		expect(SCRIPT).toMatch(/identityEpoch:\s*untrack\(\(\)\s*=>\s*authStore\.identityEpoch\)/);
 		expect(SCRIPT).toMatch(/const held = !ctx\.retired && authStore\.identityEpoch === ctx\.identityEpoch;/);
 		// Named `held`, not `identityHeld`: that name is the component's fence
-		// function, and a local of the same name shadows it.
+		// function, and a local of the same name shadows it (#1387).
 		expect(SCRIPT.match(/\b(?:const|let)\s+identityHeld\b/g) ?? []).toEqual([]);
 		expect(SCRIPT).toMatch(/if \(ctx && !ctx\.retired && ctx\.identityEpoch === authStore\.identityEpoch\) collabFlusher\.flushNow\(ctx, true\)/);
 		// The flag is what closes the effect-flush window, where the cleanup read

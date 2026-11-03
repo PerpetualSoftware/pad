@@ -656,7 +656,7 @@ describe('RTL / horizontal direction symmetry', () => {
 // ---------------------------------------------------------------------------
 // The hard bound: NO sequence of operations escapes [FIT, maxScale] or the pan
 // bounds. Individually-correct operations can still compose into an escape —
-// this is the property the zoom spec calls binding.
+// this is the binding property.
 // ---------------------------------------------------------------------------
 
 describe('bounds no sequence of operations can escape', () => {
@@ -756,8 +756,8 @@ describe('degenerate geometry', () => {
 });
 
 /**
- * The numerical-robustness pass
- * found three issues. Each is pinned here by a test that FAILS against the code as
+ * The numerical-robustness angle found three issues. Each is pinned here by a
+ * test that FAILS against the code as
  * it stood before the fix — the point of the exercise, since a test that passes
  * either way would have let all three back in.
  */

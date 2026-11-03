@@ -726,8 +726,8 @@ func (r *Room) persistSyncFrames(rc *roomConn, run [][]byte) {
 	// broadcast and acknowledged exactly like a stored frame. Its ack
 	// id is the item's current MAX(id), read under appendMu: every row
 	// at or below it was published to each conn's bus before this
-	// event, so the cursor cannot overtake an undelivered binary (the
-	//  hazard below).
+	// event, so the cursor cannot overtake an undelivered binary (see the
+	// hazard noted below).
 	//
 	// BUG-3253: the frames of a burst that are already waiting are persisted
 	// in ONE transaction (AppendSyncFrames), each with exactly the treatment
@@ -791,7 +791,7 @@ func (r *Room) persistSyncFrames(rc *roomConn, run [][]byte) {
 	// Sending the cursor from here (the original design)
 	// could overtake older peer ops queued in rc.bus and
 	// let the client persist a cursor past undelivered
-	// binaries — a known hazard.
+	// binaries — the hazard noted in persistSyncFrames.
 }
 
 // publishAwareness relays a run's awareness frames, in order, when its sync
@@ -1126,7 +1126,7 @@ func (r *Room) forceRefreshConns(conns []*roomConn) {
 		payload = nil
 	}
 
-	// Fan the frame+close out per conn concurrently (additional): a slow peer
+	// Fan the frame+close out per conn concurrently: a slow peer
 	// already inside a deadline-free WriteMessage would otherwise block the whole
 	// loop — and the caller still holds the per-item lock, stalling that item's
 	// restore/joins/snapshots.

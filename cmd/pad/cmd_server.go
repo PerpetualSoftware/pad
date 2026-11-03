@@ -549,7 +549,7 @@ func serveCmd() *cobra.Command {
 			// Workspace bundle import cap. Default is 2 GiB inside
 			// internal/server; PAD_IMPORT_BUNDLE_MAX_BYTES lets
 			// operators with larger exports raise the ceiling without
-			// recompiling.
+			// recompiling (PR #306).
 			if v := os.Getenv("PAD_IMPORT_BUNDLE_MAX_BYTES"); v != "" {
 				if n, perr := strconv.ParseInt(v, 10, 64); perr == nil && n > 0 {
 					srv.SetImportBundleMaxBytes(n)
@@ -1535,7 +1535,7 @@ func bootPlanBackfill(s *store.Store, cloud bool) error {
 // secret is refused before anything starts. So is a malformed or non-positive
 // PAD_PUSH_DISPATCH_* knob, or a combination whose lease is shorter than the
 // send timeout plus margin, or whose margin overflows that sum (TASK-3939
-// part C, rulings 77a8fae7 and 37e3eafa; the refusal names both
+// part C, decisions 77a8fae7 and 37e3eafa; the refusal names both
 // PAD_PUSH_DISPATCH_LEASE and _LEASE_MARGIN and states the resolved values,
 // since either can be the cause): a bad knob is
 // an operator error whether or not a gateway is set, so it is checked first

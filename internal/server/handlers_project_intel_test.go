@@ -387,8 +387,8 @@ func TestProjectIntelEndpoints_ScopeToVisibleCollections(t *testing.T) {
 	}
 }
 
-// TestProjectIntelEndpoints_BearerAdminRestrictedMemberIsScoped pins the
-// ProjectIntelVisibility must be bearer-aware
+// TestProjectIntelEndpoints_BearerAdminRestrictedMemberIsScoped pins that
+// projectIntelVisibility must be bearer-aware
 // (mirrors reportVisibleCollections / the BUG-1616/1617 pattern —
 // handlers_admin_bearer_gate_test.go). A platform admin who is only a
 // RESTRICTED member of this workspace gets the full unrestricted view over

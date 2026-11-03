@@ -156,7 +156,7 @@ func TestResumeReportsAGapWhenTheCounterAdvancesAgainDuringTheSettle(t *testing.
 	}
 }
 
-// TestResumeDoesNotResyncWhenTheCounterReadRacedAPublish,
+// TestResumeDoesNotResyncWhenTheCounterReadRacedAPublish covers
 // the other direction. A GET can land just before a publish completes and
 // return a value BELOW what this instance already holds. Comparing against
 // that stale snapshot forever meant an unnecessary full resync for a client
@@ -608,7 +608,7 @@ func TestCallerIsGoneClassifiesOnTheErrorNotTheContext(t *testing.T) {
 		{"a caller whose deadline passed", context.DeadlineExceeded, true},
 		{"a wrapped cancellation", fmt.Errorf("get counter: %w", context.Canceled), true},
 		{"a redis server error", serverErr, false},
-		// THE ROW THAT MATTERS MOST. Under the ctx.Err() form this was
+		// THE ROW THIS TEST EXISTS FOR. Under the ctx.Err() form this was
 		// suppressed whenever a disconnect coincided with it, which is the one
 		// combination an operator cannot afford to lose.
 		{"a redis failure that merely coincides with a disconnect", fmt.Errorf("counter unreadable: %w", serverErr), false},

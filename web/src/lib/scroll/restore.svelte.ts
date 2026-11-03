@@ -287,8 +287,7 @@ export function createScrollRestoration(
 			// no fresh snapshot.restore) re-read LS instead of skipping.
 			// If snapshot.restore for the NEW key already fired before
 			// this effect (popstate beat the effect to the microtask
-			// queue), `snapshotKey === key` and we preserve it.
-			// (BUG-1425)
+			// queue), `snapshotKey === key` and we preserve it (BUG-1425).
 			if (snapshotKey !== key) {
 				snapshotKey = undefined;
 			}
@@ -460,7 +459,7 @@ export function createScrollRestoration(
 				// so the gated effect will NOT re-fire, and a bare return would strand
 				// the parked offset forever. The default `.main-content`/window
 				// resolver never returns null in-browser, so existing callers are
-				// unaffected.
+				// unaffected (TASK-2171).
 				if (performance.now() - startTime > budgetMs) {
 					cleanupListeners();
 					return;

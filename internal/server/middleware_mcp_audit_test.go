@@ -497,7 +497,7 @@ func TestMCPAudit_ToolNameCannotCarryANUL(t *testing.T) {
 // This is the sanitising fix's own boundary: closing the NUL door must also
 // handle a value that is consumed entirely.
 func TestMCPAudit_SanitiseNeverEmptiesToolName(t *testing.T) {
-	// escNULLiteral, not a local literal. Rolling my own here is exactly how
+	// escNULLiteral, not a local literal. Rolling a local one here is exactly how
 	// two of these tests became vacuous: written inline, the escape is one
 	// backslash away from being the NUL itself, which is what that helper
 	// exists to prevent and what its comment already warned about.
@@ -540,7 +540,7 @@ func TestMCPAudit_SanitiseNeverEmptiesToolName(t *testing.T) {
 // full 64-character args_hash — an audit row indistinguishable from a genuine
 // pad_item call, forgeable by anyone who can send a request.
 func TestMCPAudit_RawMethodDecidesClassification(t *testing.T) {
-	// escNULLiteral, not a local literal. Rolling my own here is exactly how
+	// escNULLiteral, not a local literal. Rolling a local one here is exactly how
 	// two of these tests became vacuous: written inline, the escape is one
 	// backslash away from being the NUL itself, which is what that helper
 	// exists to prevent and what its comment already warned about.
@@ -581,7 +581,7 @@ func TestMCPAudit_RawMethodDecidesClassification(t *testing.T) {
 // property; the specific marker text is incidental and deliberately not
 // asserted beyond being distinguishable.
 func TestMCPAudit_CleanedIdentityIsNotForgeable(t *testing.T) {
-	// escNULLiteral, not a local literal. Rolling my own here is exactly how
+	// escNULLiteral, not a local literal. Rolling a local one here is exactly how
 	// two of these tests became vacuous: written inline, the escape is one
 	// backslash away from being the NUL itself, which is what that helper
 	// exists to prevent and what its comment already warned about.

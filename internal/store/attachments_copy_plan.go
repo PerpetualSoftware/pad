@@ -76,8 +76,8 @@ import (
 //     rewrites a match only when its captured id is a map key exactly. The
 //     two therefore agree on where a reference starts and ends by
 //     construction rather than by coincidence — which is the property that
-//     matters, and which a plain strings.ReplaceAll did not have (
-//     it rewrote a mapped id sitting as the PREFIX of a longer,
+//     matters, and which a plain strings.ReplaceAll did not have (it
+//     rewrote a mapped id sitting as the PREFIX of a longer,
 //     unresolvable one). Enumerating with a NARROWER pattern than the
 //     rewriter uses would leave behind a reference the rewriter never
 //     remaps — the copy would keep pointing at workspace A's UUID, which

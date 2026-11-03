@@ -75,8 +75,8 @@ func computeAccessEpoch(visibleCollectionIDs, grantedItemIDs []string) string {
 // grantedItemIDs must be the LIVE grant set (guestResourceFilter, not the
 // include-deleted variant): see the note on /items-changes.
 //
-// liveCollectionIDs is the workspace's live collection set (BUG-3428 phase 2,
-// Option A). Deleting a collection writes no item rows, so the
+// liveCollectionIDs is the workspace's live collection set (BUG-3428 phase 2).
+// Deleting a collection writes no item rows, so the
 // epoch must move on its own: an unrestricted caller's epoch is the "all"
 // sentinel plus a hash of the live set, and a restricted caller's collection
 // set is intersected with it, because the item doors leave a soft-deleted

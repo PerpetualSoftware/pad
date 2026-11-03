@@ -114,7 +114,7 @@ func orNoneLabel(status string) string {
 }
 
 // publishWatchNotification is the BEST-EFFORT publish path, and the one
-// ruling behind every non-push producer (BUG-2699).
+// rule behind every non-push producer (BUG-2699).
 //
 // Bus.Publish reports acceptance since BUG-2699, which raised the
 // question of what each of the seven production call sites should DO
@@ -132,8 +132,8 @@ func orNoneLabel(status string) string {
 // So these six discard the result — deliberately, and here rather than
 // six times over.
 //
-// DISCARDED, BUT NOT UNOBSERVED, and this helper is what makes that true
-// . An earlier version of this comment claimed both bus
+// DISCARDED, BUT NOT UNOBSERVED, and this helper is what makes that true.
+// An earlier version of this comment claimed both bus
 // implementations already log a failed publish, so discarding cost no
 // visibility. That is right for a transport failure and WRONG for the one
 // case most likely to matter: ErrBusClosed returns without logging in

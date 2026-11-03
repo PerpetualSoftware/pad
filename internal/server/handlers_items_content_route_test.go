@@ -125,7 +125,7 @@ func TestApplierPathRefusalLeavesNoOpLogRow_OpenChildren(t *testing.T) {
 }
 
 // TestApplyFailureAfterRowWriteAnswersContentNotApplied pins the hybrid outcome the
-// reorder creates and the ruled answer to it.
+// reorder creates and the answer chosen for it.
 //
 // The pre-check is a HINT: it can say yes and the apply can still fail. When it does,
 // the row write has already committed, so the response must say BOTH halves — the

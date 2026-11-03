@@ -266,8 +266,7 @@ describe('a status field holding a LIST', () => {
 describe('a stored status the schema no longer declares (BUG-3068 round 3)', () => {
 	// THE TABLE'S INSTANCE OF THE SAME -1 ARITHMETIC the card was guarded for — found by asking for
 	// the population rather than fixing one example. `options.indexOf(current)` answers -1 for a
-	// stale
-	// or hand-written status, -1 + 1 is 0, and this chip PULSES and writes, so
+	// stale or hand-written status, -1 + 1 is 0, and this chip PULSES and writes, so
 	// the silent rewrite to the first option even looks like it worked.
 	//
 	// The two legs below are the whole point of the guard's shape: the table

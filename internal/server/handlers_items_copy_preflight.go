@@ -778,8 +778,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 		//     value the schema never declared
 		//
 		// The middle case was once reported as `migrated` and the last
-		// as `default` — one guard, wrong in both
-		// directions, because "was the key present" is not "where did the
+		// as `default` — one guard, wrong in both directions, because "was the key present" is not "where did the
 		// value come from".
 		sv, fromSource := carriedSource[k]
 		destDef, declared := targetDefs[k]
@@ -835,7 +834,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// someone who never sent it.
 	//
 	// HERE rather than in the override loop above: that loop sees the caller's
-	// RAW bytes: `"[]"` is still a string there and becomes an empty list only
+	// RAW bytes, and `"[]"` is still a string there and becomes an empty list only
 	// once `CoerceFields` has run. And it sees only OVERRIDES, so a carried
 	// empty list kept `from: "migrated"` by the same mechanism. One sweep over
 	// the coerced map covers the override, the carried value and both string

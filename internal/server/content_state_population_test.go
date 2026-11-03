@@ -14,14 +14,14 @@ import (
 
 // BUG-3033, CONVE-35 — the ENUMERATION guard.
 //
-// Review of this unit repeatedly found another door of the same class,
+// This unit repeatedly turned up another door of the same class,
 // and one had its precedent already in the tree. A loop that keeps finding new
 // members is measuring the enumeration, not the code, so this test IS the
 // table: every site that turns an item body into text under another name is
 // listed with why it is safe, and anything else fails.
 //
 // It parses Go rather than grepping. The grep draft passed four controls and
-// was then walked through in four ways — a one-line function, a
+// it was then walked through in four ways — a one-line function, a
 // helper assigned to a local and called through it, a comment inside the call
 // (`PlaybookSummary /* x */ (body)`), and an argument changed below the opening
 // line of a multiline call — while failing on harmless prose that merely

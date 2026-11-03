@@ -72,7 +72,7 @@ func coerceJSONForImport(raw, defaultJSON, field, rowID, workspaceID string, exp
 // (BUG-2833 / BUG-2831). It returns the title to write and, when it changed,
 // the reason — so the caller can log one line carrying the row identity.
 //
-// COERCE, NOT REFUSE, and that is a ruling rather than a shortcut. The
+// COERCE, NOT REFUSE, and that is a deliberate decision rather than a shortcut. The
 // interactive doors (create, update, artifact import) REFUSE an empty or
 // over-long title, because they are minting a new value from a live caller who
 // can fix it. Import is restoring data this product already accepted: a
@@ -501,7 +501,7 @@ func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExpor
 		return nil, err
 	}
 
-	// Verifications (TASK-3617 r4), for the items this bundle carries, on the
+	// Verifications (TASK-3617), for the items this bundle carries, on the
 	// same rule as reminders above: a verdict whose item is absent could only
 	// be discarded on import.
 	verRows, err := q.Query(s.q(`
@@ -1250,7 +1250,7 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 		if err := stampAttachmentRefsTx(tx, s, ws.ID, it.Content, fieldsJSON); err != nil {
 			return nil, err
 		}
-		// NO EVENT IS EMITTED HERE, AND THAT IS A RULING, NOT AN OVERSIGHT.
+		// NO EVENT IS EMITTED HERE, AND THAT IS A DECISION, NOT AN OVERSIGHT.
 		// This is the second item-creation write path in the codebase — the
 		// other is insertItemTx, which owns the API paths and (from TASK-2658)
 		// the transactional event outbox. Import deliberately stays silent:
@@ -1263,7 +1263,7 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 		//
 		// The same reasoning keeps import OFF the typed-decision queue
 		// (TASK-3117): an enqueue per imported row would be one provider call
-		// per item of the archive — the fan-out ruling 3 declines for the
+		// per item of the archive — the fan-out TASK-3117 decision 3 declines for the
 		// title-rename cascade and field migrations. Unlike those, an imported
 		// item has NO answers rather than stale ones until its next direct
 		// write enqueues it. Whether import should enqueue is an open policy
@@ -1461,14 +1461,14 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 			return nil, fmt.Errorf("import comment: %w", err)
 		}
 		// Keyed by the owning item too, and never by an empty id: an
-		// occurrence binds only a comment of its own item (TASK-4104 D2 r1-3).
+		// occurrence binds only a comment of its own item (TASK-4104 D2).
 		if cm.ID != "" {
 			commentMap[cm.ItemID+"\x00"+cm.ID] = newCommentID
 		}
-		// No comment_mentions rows for imported comments (TASK-3917):
+		// No comment_mentions rows for imported comments (TASK-3917, decision bb0c9fc6):
 		// history would stay open for good, and a bundle's
 		// @handles name SOURCE-instance users that could bind to a different
-		// local user. Matches needsOthersComment (needs_snooze.go, #2231 r1).
+		// local user. Matches needsOthersComment (needs_snooze.go, #2231).
 	}
 
 	// Import item links
@@ -1640,7 +1640,7 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 		}
 	}
 
-	// Import verifications (TASK-3617 r4), keeping every value verbatim but
+	// Import verifications (TASK-3617), keeping every value verbatim but
 	// remapping the item and via ids. Each row is CHECKED BEFORE its insert,
 	// never skipped on a failed one: on Postgres a failed statement aborts the
 	// transaction and loses the whole import (BUG-2884, recorded on the

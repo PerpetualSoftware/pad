@@ -23,7 +23,7 @@ import (
 // reaches getpad.dev, and the posters are proxied here for the same reason.
 // A SELF-HOSTED server never fetches anything: both routes answer 404 and the
 // web client links out to getpad.dev/learn instead (a self-hoster's instance
-// makes no third-party calls). Server-side fetch
+// makes no third-party calls). TASK-3452 decided: server-side fetch
 // gated on cloud mode, the catalog URL a server constant, posters proxied.
 
 // tutorialsCatalogURL is the catalog's address. www, not the apex: the apex

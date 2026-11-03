@@ -213,7 +213,7 @@ func TestBug3407_ASchemaChangeWaitsForAFencedWriteThatReadTheSchema(t *testing.T
 }
 
 // A move writes destination fields its caller validated before the lock
-// : a destination schema change in between is checked too.
+// A destination schema change in between is checked too.
 func TestBug3407_AMoveIntoACollectionWhoseSchemaChangedIsRefused(t *testing.T) {
 	s, ws, _, item := bug3407Fixture(t)
 	dest, err := s.CreateCollection(ws.ID, models.CollectionCreate{Name: "Dest", Slug: "dest", Schema: bug3407Base})

@@ -98,7 +98,7 @@ type Config struct {
 	// outbound secret: see resolvePushGatewaySecret in cmd/pad.
 	PushGatewaySecret string `toml:"push_gateway_secret"`
 	// The push dispatch timing knobs (PAD_PUSH_DISPATCH_INTERVAL, _SETTLE,
-	// _LEASE, _LEASE_MARGIN; TASK-3939 part C, ruling 77a8fae7), kept as the
+	// _LEASE, _LEASE_MARGIN; TASK-3939 part C, decision 77a8fae7), kept as the
 	// raw env strings. They are parsed by PushDispatchTimings at server
 	// startup, not in Load, so a malformed value refuses `pad server start`
 	// rather than breaking every other pad command. Empty means unset: the
@@ -307,7 +307,7 @@ func userConfigPath() string {
 // pad.db; PAD_DB_PATH, applied second, wins, and its directory is the data
 // dir. set is false when neither is set.
 //
-// BUG-4066 phase 1 (b4cb4ff): a relative value still resolves
+// BUG-4066 phase 1 (decision 4b4cb4ff): a relative value still resolves
 // verbatim, against this process's own cwd, exactly as before. Because a CLI
 // and a server in different directories then use different data, the
 // process warns once (warnRelativeDataDir). Phase 2 (TASK-4072) refuses it.
@@ -406,8 +406,8 @@ func warnRelativeDataDir(name, value string) {
 //     CANNOT confirm the user's veto and must fail closed (not arm),
 //     rather than silently proceeding as if no veto existed.
 //
-// The last case is the fix for a bug where a malformed
-// config.toml in a repo that opted into auto_arm must not arm.
+// The last case exists so that a malformed
+// config.toml in a repo that opted into auto_arm cannot arm.
 func LoadPushConfigAutoArm() (*bool, error) {
 	path := userConfigPath()
 	if _, err := os.Stat(path); err != nil {
@@ -999,10 +999,10 @@ type PushDispatchTimings struct {
 }
 
 // PushDispatchTimings parses the four PAD_PUSH_DISPATCH_* knobs (TASK-3939
-// part C, ruling 77a8fae7). A knob that is set but is not a Go duration, or is
+// part C, decision 77a8fae7). A knob that is set but is not a Go duration, or is
 // not positive, is an error naming its variable; it never falls back to the
 // default. A value of only whitespace is malformed, not unset (only the empty
-// string is unset), so it refuses too (TASK-3939 part C, ruling 37e3eafa).
+// string is unset), so it refuses too (TASK-3939 part C, decision 37e3eafa).
 // The message is fixed: it does not echo the value.
 func (c *Config) PushDispatchTimings() (PushDispatchTimings, error) {
 	var t PushDispatchTimings

@@ -17,7 +17,7 @@ import (
 // Why the store needs a separate door for apps. The human mutation methods
 // each open their own transaction and carry workspace-wide side effects
 // (title cascades, broken-link resolution, slug probing, relation rebuilds),
-// and four review rounds found a new one each time. App writes therefore
+// and each review found a new one. App writes therefore
 // never call them; internal/appstore calls FencedTx methods, and a
 // type-resolved boundary test (internal/appstore) fails on anything else.
 //

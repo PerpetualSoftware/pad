@@ -523,8 +523,8 @@ func (s *Store) GetItemContentFlushedOpLogID(itemID string) (int64, bool, error)
 //     contains every edit the op-log persisted. The id is a
 //     monotonic AUTOINCREMENT/BIGSERIAL — strict id comparison
 //     avoids the false-positive that wall-clock timestamp
-//     comparison admits at second granularity (
-//     TASK-1309).
+//     comparison admits at second granularity
+//     (TASK-1309).
 //
 // Without the flush-coverage check, a browser/process death between
 // an op-log append and the next 5s collab-snapshot flush would

@@ -219,8 +219,8 @@ func (s *Server) appUpdateItem(w http.ResponseWriter, r *http.Request) {
 	}
 	after := wr.Item
 	s.publishItemEventWithName(sseItemUpdated, ac.WorkspaceID, after.ID, after.Title, wr.View.CollectionSlug, appActorKind(ac), wr.ActorDisplay, "app", after.Seq)
-	// Watchers hear about an app's status change as about anyone's. The signal is the fenced transaction's own, never a
-	// comparison with this handler's earlier read: a status another writer
+	// Watchers hear about an app's status change as about anyone's. The signal is the fenced
+	// transaction's own, never a comparison with this handler's earlier read: a status another writer
 	// changed between that read and the commit is not this write's.
 	if after.LastMutation != nil && after.LastMutation.StatusChanged {
 		s.publishWatchNotifications(ac.WorkspaceID, after, appActorKind(ac), wr.ActorDisplay)
@@ -302,7 +302,7 @@ func (s *Server) appCommentOnItem(w http.ResponseWriter, r *http.Request) (*mode
 		writeInternalError(w, err)
 		return nil, nil, nil, false
 	}
-	// First, ahead of authorship and every other refusal (DOC-3371 ruling 6).
+	// First, ahead of authorship and every other refusal (DOC-3371 decision 6).
 	// Second layer: FencedTx.lockOwnComment(itemID, commentID) binds the
 	// comment to the item again inside the write, so dropping this check
 	// still answers 404 (U6b mutant W3 survives for that reason). This one is

@@ -15,7 +15,7 @@ import type { SuiteFixture } from './fixtures';
  * Two legs per door:
  *  - LOCAL: a 256-character title never reaches the network.
  *  - SERVER: a title the client accepts is lengthened IN FLIGHT by the test
- * (route.continue with a rewritten body), so the REAL server refuses it
+ *    (route.continue with a rewritten body), so the REAL server refuses it
  *    with its real message. The client check and the server check agree by
  *    construction (testdata/item_title_limit.json), so no typed title reaches
  *    the refusal path without the rewrite; what is under test is what the

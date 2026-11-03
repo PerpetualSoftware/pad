@@ -91,8 +91,8 @@ type decisionTickConfig struct {
 // the store's write doors. A nil runner (no provider configured) removes any
 // resolver, so the doors enqueue nothing.
 //
-// The write doors' resolver is installed BEFORE the runner is published
-// . Disabling therefore stops new enqueues before the runner
+// The write doors' resolver is installed BEFORE the runner is published.
+// Disabling therefore stops new enqueues before the runner
 // goes nil, rather than leaving a window after the disable in which a write
 // still owes a job. A write whose transaction read the old resolver before
 // that point can still commit its job afterwards: it was concurrent with the

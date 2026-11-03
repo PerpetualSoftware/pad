@@ -963,7 +963,7 @@ func TestForceRefreshRoomUncertainInvalidatesInMemoryFences(t *testing.T) {
 	}
 
 	// A peer seeded at R1's generation (content_seq=10) now reconnecting is judged
-	// against the DURABLE column (=20): 10 < 20 → force_refresh. With the STALE
+	// against the DURABLE column (R2=20): 10 < 20 → force_refresh. With the STALE
 	// cache it would have compared 10 vs cached-10 (equal) and been admitted — the
 	// clobber this fix prevents.
 	srv := newCollabTestServer(t, mgr)
@@ -1587,8 +1587,7 @@ func TestRoomManagerSchemaPostRebuildClean(t *testing.T) {
 // TestPruneSweepRemovesDormantItems is the TASK-1309 happy-path test:
 // a sweep finds items whose entire op-log is older than minAge and
 // prunes them whole. Items with ANY recent activity are preserved
-// completely (no prefix-pruning, Yjs causal references would break
-// as noted in the design).
+// completely (no prefix-pruning: Yjs causal references would break).
 func TestPruneSweepRemovesDormantItems(t *testing.T) {
 	bus := NewMemoryOpBus()
 	defer bus.Close()

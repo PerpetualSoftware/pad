@@ -123,7 +123,7 @@ describe('BUG-3315 U2: a rename does not pin the old title', () => {
 		}
 	});
 
-	// THE INVARIANT (lead, before the GO): the marker never reaches stored
+	// THE INVARIANT: the marker never reaches stored
 	// markdown, on ANY path where a marked link does not convert back to
 	// [[...]]. Each case is a real save pipeline (flushPipeline, the same steps as
 	// both ItemDetail save paths) over a document a tab really produced.

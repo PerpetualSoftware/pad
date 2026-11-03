@@ -165,11 +165,11 @@
 	//
 	// A request is consumed at once, even while membership is still loading, in
 	// which case no collection reads as creatable and it does nothing. Holding
-	// it until membership settled was tried (BUG-3258) and withdrawn: the request is one global
-	// flag with no workspace identity, so
-	// every hold had a new cross-workspace timing hole. The
-	// window is only a workspace's FIRST resolution in a session; a repeat
-	// resolution serves the prior answer (TASK-2988).
+	// it until membership settled was tried (BUG-3258) and withdrawn: the
+	// request is one global flag with no workspace identity, so every hold
+	// had a new cross-workspace timing hole. The window is only a workspace's
+	// FIRST resolution in a session; a repeat resolution serves the prior
+	// answer (TASK-2988).
 	$effect(() => {
 		if (uiStore.quickAddRequested) {
 			const targetSlug = uiStore.quickAddTargetSlug;
@@ -208,8 +208,8 @@
 		if (!wsSlug || !quickAddCollection || !quickAddTitle.trim() || quickAddSubmitting) return;
 		const coll = quickAddCollection;
 		const title = quickAddTitle.trim();
-		// Permission can change while the dialog is open (BUG-3258); the dialog keeps the
-		// collection it opened on.
+		// Permission can change while the dialog is open (BUG-3258); the
+		// dialog keeps the collection it opened on.
 		if (!workspaceStore.canEditCollection(coll.id)) {
 			quickAddError = `You can't create items in ${coll.name}.`;
 			return;

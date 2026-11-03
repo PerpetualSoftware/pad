@@ -537,8 +537,8 @@ func pendingIDOf(t *testing.T, e *appsEnv) string {
 	return id
 }
 
-// A unique_scope the import does NOT enforce is not a pack conflict either
-// : two artifacts sharing that default both import, so both
+// A unique_scope the import does NOT enforce is not a pack conflict either:
+// two artifacts sharing that default both import, so both
 // preview.
 func TestAppInstallPreview_UnenforcedUniqueScopeIsNotAConflict(t *testing.T) {
 	e := newAppsEnv(t)
@@ -707,7 +707,7 @@ func TestClaimForms(t *testing.T) {
 }
 
 // App-authored artifact content may not carry pad-attachment: tokens or
-// [[workspace::REF]] links; ordinary [[Title]] links are fine (U8b Q3).
+// [[workspace::REF]] links; ordinary [[Title]] links are fine.
 func TestAppInstallPreview_AppContentReferenceRules(t *testing.T) {
 	for name, c := range map[string]struct {
 		edit string
@@ -750,7 +750,7 @@ func TestAppInstallPreview_AppContentReferenceRules(t *testing.T) {
 	})
 }
 
-// U8a: the fields check fails closed. A field set that cannot
+// The fields check fails closed. A field set that cannot
 // be serialized is refused, never passed unchecked.
 func TestRefuseAppAuthoredReferences_FailsClosedOnUnserializableFields(t *testing.T) {
 	err := refuseAppAuthoredReferences("plain content", map[string]any{"bad": make(chan int)})

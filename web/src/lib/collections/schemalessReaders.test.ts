@@ -44,15 +44,15 @@ const SURFACES = [
 	},
 	// ADDED LATE (BUG-3067). This page was first classified as a non-member
 	// because `playbooks` is a SYSTEM collection and its schema was assumed
-	// not to be retypable — an assumption that was never checked. `handleUpdateCollection` has no `is_system` gate
-	// on schema edits, so it is a member like any other. The list is data now, so
+	// not to be retypable — an assumption that was never checked.
+	// `handleUpdateCollection` has no `is_system` gate on schema edits, so it is a member like any other. The list is data now, so
 	// a missed surface is a missing ROW rather than a silent absence.
 	{
 		name: 'playbooks page',
 		src: '../../routes/[username]/[workspace]/playbooks/+page.svelte',
 		keys: ['status'],
 	},
-	// A second sweep found three more, two of which are fixed here. Both render SERVER
+	// Three more turned up later, two of which are fixed here. Both render SERVER
 	// PROJECTIONS — values the server itself obtained by name — which is why a
 	// sweep for client-side `parseFields` reads kept missing them, and why the
 	// class is stated as "a value obtained by name" rather than "a value read
@@ -63,7 +63,7 @@ const SURFACES = [
 		keys: ['status', 'priority'],
 	},
 	{ name: 'ItemGraph', src: '../components/graph/ItemGraph.svelte', keys: ['status'] },
-	// A third sweep: `OpenChildrenDialog` had been filed as unfixable client-side on the
+	// Later still: `OpenChildrenDialog` had been filed as unfixable client-side on the
 	// claim that its DTO carried no collection identifier — it carries
 	// `collection_slug`, and the link beside the status is built from it.
 	{ name: 'OpenChildrenDialog', src: '../components/OpenChildrenDialog.svelte', keys: ['status'] },

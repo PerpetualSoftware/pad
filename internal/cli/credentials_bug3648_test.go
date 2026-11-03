@@ -422,7 +422,7 @@ func TestBUG3648_SaveTightensALooseSymlinkTarget(t *testing.T) {
 }
 
 // Save takes the UpdateStore lock, so a direct Save cannot interleave its
-// in-place fallback write with a locked update (a row 8 fix).
+// in-place fallback write with a locked update (the row 8 fix).
 func TestBUG3649_SaveWaitsForTheLock(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
 		t.Skip("no cross-process credentials lock on this platform")
@@ -616,7 +616,7 @@ func swapLock(t *testing.T, fn func(lockPath string, exclusive bool) (func(), er
 
 // A filesystem without flock (NFS without lockd answers ENOLCK) served reads
 // and writes before the lock existed, so it still does: the lock is never the
-// reason a working command fails (BUG-3649 ruling).
+// reason a working command fails (BUG-3649).
 func TestBUG3649_UnsupportedLockFallsBackUnlocked(t *testing.T) {
 	home := withTempHome(t)
 	writeCredsFile(t, home, `{"version": 2, "credentials": {"http://x:7777": {"token": "t"}}}`)

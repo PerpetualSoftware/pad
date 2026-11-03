@@ -432,7 +432,7 @@ func TestBackfillOAuthConnections_Idempotent(t *testing.T) {
 	// Idempotent: chain scan re-counts but every counter for "new
 	// work" must report 0 — pre-insert existence probes prevent
 	// no-op INSERTs from incrementing the counters.
-	// This fixes the prior over-report (#583); this assertion is
+	// This guards the prior over-report (#583); this assertion is
 	// the regression guard.
 	if second.ConnectionsCreated != 0 {
 		t.Errorf("idempotent re-run ConnectionsCreated = %d, want 0", second.ConnectionsCreated)

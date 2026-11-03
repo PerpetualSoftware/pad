@@ -564,7 +564,7 @@ func TestOpenChildrenGuard_AllBlockersHiddenSurfaceGenericMessage(t *testing.T) 
 	if len(resp.Error.Details.OpenChildren) != 0 {
 		t.Errorf("expected empty open_children when all blockers hidden, got %v", resp.Error.Details.OpenChildren)
 	}
-	// Open_children must serialize as `[]`, not
+	// The open_children field must serialize as `[]`, not
 	// `null`, when all blockers are hidden. Clients range over the
 	// array unconditionally; `null` would break their iteration.
 	// Re-parse the raw JSON so we see the wire shape (not the Go
@@ -660,7 +660,7 @@ func TestOpenChildrenGuard_TOCTOURace(t *testing.T) {
 	}
 }
 
-// TestOpenChildrenGuard_MoveItem_RejectsTerminalWithOpenChildren covers
+// TestOpenChildrenGuard_MoveItem_RejectsTerminalWithOpenChildren covers the fact that
 // `pad item move ... --field status=completed` now
 // runs the same guard as the regular update path. Without the
 // MoveItemWithPreCheck wiring, this PATCH would silently complete
@@ -1035,8 +1035,8 @@ func TestOpenChildrenGuard_PrecheckReadsInTxSnapshot(t *testing.T) {
 	}
 }
 
-// TestBulkUpdateStructuredFailuresCarryOpenChildrenDetails covers
-// The CLI's bulk-update JSON envelope now embeds
+// TestBulkUpdateStructuredFailuresCarryOpenChildrenDetails covers the fact that
+// the CLI's bulk-update JSON envelope now embeds
 // the per-row structured server error (code + details) rather than
 // flattening it into a string, so MCP-driven agents reading the
 // stdout JSON see the same payload single-row update would deliver.
@@ -1267,7 +1267,7 @@ func mustCreate(t *testing.T, srv *Server, wsSlug, collectionSlug string, body m
 }
 
 // TestOpenChildrenGuard_PatchAtomicRejectionPreservesParentLink
-// covers the case where a PATCH that combines a parent-link
+// covers the rule that a PATCH that combines a parent-link
 // change AND a status flip to terminal, against a parent with open
 // children, must reject the WHOLE PATCH — both the field write and
 // the link change. Pre-fix the link committed before the guard ran,

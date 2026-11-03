@@ -230,9 +230,9 @@ func TestOrphanGC_PreservesSharedBlob(t *testing.T) {
 	}
 }
 
-// TestOrphanGC_KeepsReferencedNeverAttachedRows pins that the
-// editor's normal upload flow leaves attachments.item_id NULL and only the markdown
-// reference inside
+// TestOrphanGC_KeepsReferencedNeverAttachedRows pins (PR #307) that
+// the editor's normal upload flow leaves attachments.item_id NULL and only
+// the markdown reference inside
 // item.content connects them. So a "never-attached" row past the
 // grace period might still be referenced — the GC must scan item
 // content before reclaiming.

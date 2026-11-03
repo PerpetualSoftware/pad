@@ -311,7 +311,7 @@ func TestClaimProtocol_FiledRaceSequence(t *testing.T) {
 }
 
 // TestStampAttachmentRefs_StampsVariantsOfReferencedOriginal pins the
-// Half of the variant story: stamping a referenced
+// other half of the variant story: stamping a referenced
 // ORIGINAL also stamps rows whose parent_id points at it, so a
 // concurrently-claimed thumbnail is protected by its OWN row's stamp
 // (and, on Postgres, its own row lock) — not just the claim's parent

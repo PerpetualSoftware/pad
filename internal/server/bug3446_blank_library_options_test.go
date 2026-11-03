@@ -238,7 +238,7 @@ func TestBUG3446_LiteralItemCreateWidensOnlyByLibraryWordsAndRecordsIt(t *testin
 	})
 }
 
-// Ruling (a): an EDITOR's create may widen, bounded the same way.
+// An EDITOR's create may widen, bounded the same way.
 func TestBUG3446_EditorCreateWidens(t *testing.T) {
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		slug, wsID := bug3446BlankWorkspace(t, srv, "Blank 3446 editor")

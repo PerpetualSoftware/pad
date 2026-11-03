@@ -141,9 +141,8 @@ test.describe('attachment viewer — text preview (IDEA-2712)', () => {
 	}) => {
 		await openMarkdown(page, fixture, request, 'Text preview selection');
 
-		// A `Range` + `addRange()` selects text even under `user-select: none`
-		// — the first version of this test did exactly that and
-		// could not fail. The computed style IS the mechanism, and unlike jsdom a
+		// A `Range` + `addRange()` selects text even under `user-select: none`,
+		// and the first version of this test did exactly that and could not fail. The computed style IS the mechanism, and unlike jsdom a
 		// real engine actually applies it, so reading it here is a measurement
 		// rather than an engine default.
 		const style = await page.locator(TEXT_CARD).evaluate((el) => {

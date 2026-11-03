@@ -317,7 +317,7 @@ func binaryFetcherFor(fetcher ResourceFetcher) BinaryResourceFetcher {
 // (item.Content), losing ref/title/fields/parent-link. The resource
 // is advertised as "Full markdown content … includes title, fields,
 // body, and links," so the resource layer composes the full markdown
-// from the JSON response.
+// from the JSON response (TASK-946).
 func (r *resources) readItem(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
 	ws, kind, ref, err := parsePadURI(req.Params.URI)
 	if err != nil {

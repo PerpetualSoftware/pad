@@ -4,7 +4,7 @@
 // WHAT THIS PINS (BUG-2761). The server's mid-stream `sync_required` is sent
 // to every subscriber of every affected workspace in the same instant, and
 // every tab answered it at once. It is now answered after a per-tab random
-// delay in [0, SYNC_REQUIRED_SPREAD_MS). The decision on the item
+// delay in [0, SYNC_REQUIRED_SPREAD_MS). The decision on the item's trail
 // scopes that to the server signal ONLY: item-change reconciles
 // (`items_bulk_updated`, a collection change that rewrote items) are targeted
 // freshness and must never wait on the spread timer — the last describe pins

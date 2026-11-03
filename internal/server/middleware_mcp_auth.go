@@ -185,8 +185,8 @@ func (s *Server) handleMCPPATAuth(w http.ResponseWriter, r *http.Request, token 
 	// handlers that distinguish session vs token auth see the same
 	// shape they would on /api/v1/*. Cheap, future-proof.
 	ctx = context.WithValue(ctx, ctxIsAPIToken, true)
-	// ..and the same auth KIND, for the same reason (BUG-3007). The credential here
-	// IS a PAT in the Authorization
+	// ...and the same auth KIND, for the same reason (BUG-3007). The
+	// credential here IS a PAT in the Authorization
 	// header, so the liveness predicate's existing api_token door
 	// re-checks it verbatim — no new machinery, and this accept point
 	// stops being a hole the predicate cannot see. The OAuth branch below

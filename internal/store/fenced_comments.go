@@ -189,10 +189,10 @@ func (f *FencedTx) UpdateComment(itemID, commentID, body string, actor FencedAct
 	if _, err := f.tx.Exec(f.s.q(`UPDATE comments SET body = ?, updated_at = ? WHERE id = ?`), body, editTS, commentID); err != nil {
 		return nil, fmt.Errorf("fenced comment update: %w", err)
 	}
-	// Imported comments are never indexed (TASK-3917).
+	// Imported comments are never indexed (TASK-3917, decision bb0c9fc6).
 	// This skip is unreachable today: lockOwnComment requires user_id and
 	// via_app to match the actor, and imported rows carry neither, so an
-	// imported comment never gets here (TASK-3917 r2 F6, no test by design).
+	// imported comment never gets here (TASK-3917, no test by design).
 	// A change that gives imported rows a user_id or via_app reopens this path
 	// and owes it a test.
 	// Accepted cost (TASK-3917): a mention a local user ADDS while editing an imported comment is not indexed either.

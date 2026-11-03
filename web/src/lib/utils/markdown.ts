@@ -946,7 +946,7 @@ export function markdownToWikiLinks(markdown: string, items: Item[]): string {
 // `[Title](href "pad-follows-title:Title")`. The prefix is what tells it from a
 // title a user wrote, which is never read, stripped or hidden. The
 // prefix is RESERVED: a title a user writes that itself begins with it is read as
-// a marker.
+// a marker (by design; nothing in the product writes one).
 // It records the text as loaded, and only for a link with no explicit override
 // whose text IS the title. The save then tells "nobody edited this, it was the
 // title then" (follows the title, so `[[REF]]`) from a deliberate or edited
@@ -981,7 +981,7 @@ function codeRanges(markdown: string): Array<[number, number]> {
 	}
 	if (open !== null) fences.push([open.at, markdown.length]);
 
-	// Inline spans, in ONE left-to-right pass (: the first version rescanned
+	// Inline spans, in ONE left-to-right pass (the first version rescanned
 	// for each opening run and went superlinear). Collect the backtick runs
 	// outside fences, then pair each unconsumed run with the next run of the
 	// same length. Everything between is inside the span. A per-length pointer

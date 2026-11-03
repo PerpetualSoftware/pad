@@ -218,7 +218,7 @@ type TimelineEntry struct {
 	// way for every kind. The nested comment's value is the authoritative
 	// one — it is what the store's join wrote. Activity entries deliberately
 	// do NOT get it: their name already lives in Activity.Metadata, and a
-	// second copy there would be a second source that can drift (TASK-2760, the trail).
+	// second copy there would be a second source that can drift (TASK-2760).
 	AgentName string `json:"agent_name,omitempty"`
 	// CommentOnUpdate is set on a "comment" entry whose comment an item update
 	// carried (`pad item update --comment`, the update's "updated" activity),

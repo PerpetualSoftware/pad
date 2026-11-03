@@ -616,9 +616,9 @@ describe('ItemTimeline — attMeta lifecycle reconciliation (TASK-2510)', () => 
 				// The comment is edited AGAIN to RE-ADD the PNG_A reference.
 				await fireReload(respond([PNG_A]));
 
-				// COULD FAIL (before the broadened restore clearing): the stale `probed` mark skips
-				// the re-probe and
-				// PNG_A renders missing forever; the broadened restore clearing re-probes
+				// COULD FAIL (before the broadened restore clearing): the
+				// stale `probed` mark skips the re-probe and PNG_A renders
+				// missing forever; the broadened restore clearing re-probes
 				// it and the image returns.
 				expect(imgFor(PNG_A)).not.toBeNull();
 			} finally {

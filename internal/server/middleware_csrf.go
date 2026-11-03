@@ -28,9 +28,10 @@ const (
 // harness re-bootstrapping the admin then logging in fresh, the pad CLI,
 // a browser tab that re-authenticates as a different account, or simply
 // a stale cookie sitting alongside a fresh login POST) must not turn that
-// legitimate re-login into a CSRF failure. Gating the WHOLE list on currentUser(r) == nil broke
-// /login whenever an ambient cookie was present, because
-// login's authority is the password in the body, not the cookie.
+// legitimate re-login into a CSRF failure. CI's E2E suite caught exactly
+// this, the gap the unit suite was missing: gating the WHOLE list on
+// currentUser(r) == nil broke /login whenever an ambient cookie was
+// present, because login's authority is the password in the body, not the cookie.
 //
 // This is an EXACT path match (not a prefix), on purpose: a prefix match is
 // exactly the bug B8 flags. In particular:

@@ -26,7 +26,7 @@ export type NavKey =
 
 export interface NavDestination {
 	key: NavKey;
-	/** Built from `wsPrefix` (e.g. `/alice/docapp/insights`). */
+	/** Built from `wsPrefix` (e.g. `/dave/docapp/insights`). */
 	href: string;
 	icon: string;
 	label: string;

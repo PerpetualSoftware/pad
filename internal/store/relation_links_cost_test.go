@@ -13,7 +13,7 @@ import (
 // TestRelationReindexCost measures ReindexCollectionRelationLinks at scale.
 //
 // This number was asked for on TASK-2997's trail before accepting the
-// reindex-on-schema-change ruling, and the reason is worth keeping: "a rare
+// reindex-on-schema-change decision, and the reason is worth keeping: "a rare
 // owner-only operation" is a claim about FREQUENCY, and it says nothing about
 // what the operation costs when it does run. The reindex holds the
 // schema-update transaction open for its whole duration, so its cost is a

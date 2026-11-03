@@ -62,9 +62,10 @@ const SOURCE = readFileSync(new URL('./ItemDetail.svelte', import.meta.url), 'ut
 
 
 /**
- * Why a save-indicator settle may run after an unfenced await (BUG-3044): it MUST run on every path, the item-switch and superseded returns
- * included, or the outstanding count pins 'saving' and every SSE gate with it.
- * What keeps a stale settle from moving the NEXT item's indicator is the
+ * Why a save-indicator settle may run after an unfenced await (BUG-3044): it
+ * MUST run on every path, the item-switch and superseded returns included, or
+ * the outstanding count pins 'saving' and every SSE gate with it. What keeps a
+ * stale settle from moving the NEXT item's indicator is the
  * tracker's epoch, which `saves.reset()` bumps at load. This analysis cannot
  * see that and is deliberately not taught to trust it; the claim is pinned by
  * saveTracker.svelte.test.ts 'a settle from before a reset (item switch) is
@@ -84,7 +85,7 @@ const SETTLE_NOTE = `; its finally settles the save indicator (${SETTLE_WHY})`;
 
 /** The collab flush's `save` callback, exactly (`codeOf`): the settle allowance covers this code and nothing else. */
 const COLLAB_SAVE_CODE =
-	"async ({ ws, itemId, toSave, keepalive }) => { const genAtFlush = loadGeneration; const isForegroundCurrent = (): boolean => !keepalive && !!item && item.id === itemId && genAtFlush === loadGeneration; let saveTok: SaveToken | null = null; if (isForegroundCurrent()) { saveTok = saves.begin(); localLastSaveTime = Date.now(); // Singleton editorStore is owned by the ACTIVE side only: a FROZEN // (peeking) instance stamps its own shadow above but must not touch the // singleton (PLAN-2179 DR-2 / TASK-2181). `saveStatus` is per-instance. if (!peeking) editorStore.setLastSaveTime(Date.now()); } try { // Pass the provider's per-tab op-log cursor (TASK-1319) so the // server can advance the GC watermark when this tab is caught // up to MAX(op-log.id). When the cursor is below MAX (peer ops // not yet applied here) the server leaves the watermark // untouched — the GC sweeper must not delete rows this markdown // doesn't reflect. The cursor reflects the provider tracking // THIS item; if a navigation has already swapped to another // item the foreground flush path bails earlier on dedupe and // this code doesn't run. const opLogCursor = collabProvider && collabProvider.itemID === itemId ? collabProvider.lastOpLogID : undefined; await api.items.flushCollabContent(ws, itemId, toSave, { keepalive, opLogCursor, // BUG-3080: two teardown flushes are both dispatched before // either answers, so only the server can order them — by // this stamp. Deliberately NO expected_seq here: both would // carry the same one, and the older landing first would get // the NEWER refused. clientWrite: nextClientWrite(), }); // Post-await force_refresh check: a force_refresh frame can // arrive WHILE the PATCH is in flight (server already accepted, // items.content already overwritten — the server-side gate // covers the happens-before case where MIN had advanced past // our cursor by the time the request landed). Refuse to record // this flush as authoritative locally — returning 'skipped' // stops the flusher seeding lastFlushedContent from a // known-stale base and skips the saveStatus update. Per Codex // round 10 [P1]. if (forceRefreshInFlight) return 'skipped'; if (isForegroundCurrent()) { localLastSaveTime = Date.now(); localDirty = false; // Singleton editorStore: active side only (PLAN-2179 / TASK-2181) — // a frozen preview's remote-op flush updates only its shadow above. if (!peeking) { editorStore.setLastSaveTime(Date.now()); editorStore.setDirty(false); } if (saveTok) showSaved(saveTok); } return 'flushed'; } catch (e) { // Superseded (BUG-3080): a newer flush of this tab already // landed. Not an error, and not recorded as the last flushed // content either — this body is not what the server holds. // Classified inline rather than by a call: this catch runs after an // await with no fence of its own, and the answer is needed on // every arm, foreground or not. if (e instanceof PadApiError && e.code === 'superseded_write') return 'skipped'; if (isForegroundCurrent()) { toastStore.show('Failed to save content', 'error'); } return 'failed'; } finally { // The force_refresh and superseded returns included (BUG-3044). if (saveTok) saves.settle(saveTok); } }";
+	"async ({ ws, itemId, toSave, keepalive }) => { const genAtFlush = loadGeneration; const isForegroundCurrent = (): boolean => !keepalive && !!item && item.id === itemId && genAtFlush === loadGeneration; let saveTok: SaveToken | null = null; if (isForegroundCurrent()) { saveTok = saves.begin(); localLastSaveTime = Date.now(); // Singleton editorStore is owned by the ACTIVE side only: a FROZEN // (peeking) instance stamps its own shadow above but must not touch the // singleton (PLAN-2179 DR-2 / TASK-2181). `saveStatus` is per-instance. if (!peeking) editorStore.setLastSaveTime(Date.now()); } try { // Pass the provider's per-tab op-log cursor (TASK-1319) so the // server can advance the GC watermark when this tab is caught // up to MAX(op-log.id). When the cursor is below MAX (peer ops // not yet applied here) the server leaves the watermark // untouched \u2014 the GC sweeper must not delete rows this markdown // doesn't reflect. The cursor reflects the provider tracking // THIS item; if a navigation has already swapped to another // item the foreground flush path bails earlier on dedupe and // this code doesn't run. const opLogCursor = collabProvider && collabProvider.itemID === itemId ? collabProvider.lastOpLogID : undefined; await api.items.flushCollabContent(ws, itemId, toSave, { keepalive, opLogCursor, // BUG-3080: two teardown flushes are both dispatched before // either answers, so only the server can order them \u2014 by // this stamp. Deliberately NO expected_seq here: both would // carry the same one, and the older landing first would get // the NEWER refused. clientWrite: nextClientWrite(), }); // Post-await force_refresh check: a force_refresh frame can // arrive WHILE the PATCH is in flight (server already accepted, // items.content already overwritten \u2014 the server-side gate // covers the happens-before case where MIN had advanced past // our cursor by the time the request landed). Refuse to record // this flush as authoritative locally \u2014 returning 'skipped' // stops the flusher seeding lastFlushedContent from a // known-stale base and skips the saveStatus update. if (forceRefreshInFlight) return 'skipped'; if (isForegroundCurrent()) { localLastSaveTime = Date.now(); localDirty = false; // Singleton editorStore: active side only (PLAN-2179 / TASK-2181) \u2014 // a frozen preview's remote-op flush updates only its shadow above. if (!peeking) { editorStore.setLastSaveTime(Date.now()); editorStore.setDirty(false); } if (saveTok) showSaved(saveTok); } return 'flushed'; } catch (e) { // Superseded (BUG-3080): a newer flush of this tab already // landed. Not an error, and not recorded as the last flushed // content either \u2014 this body is not what the server holds. // Classified inline rather than by a call: this catch runs after an // await with no fence of its own, and the answer is needed on // every arm, foreground or not. if (e instanceof PadApiError && e.code === 'superseded_write') return 'skipped'; if (isForegroundCurrent()) { toastStore.show('Failed to save content', 'error'); } return 'failed'; } finally { // The force_refresh and superseded returns included (BUG-3044). if (saveTok) saves.settle(saveTok); } }";
 
 /** Top-level `async function` declarations, by name. */
 // BUG-3863: every reviewed hash re-pinned in that change other than
@@ -95,8 +96,8 @@ const COLLAB_SAVE_CODE =
 // `let refusedDraftSlot` declaration. Measured by diffing each unit's coverage
 // segments against the previous head; nothing those units run changed.
 const ASYNC_FUNCTIONS: Record<string, Row> = {
-	adoptOrConvergeToLiveCollection: { reviewed: '5a647061f75f', why: 'myGen against loadGeneration before adopting' },
-	reconcileCollectionSegment: { reviewed: 'ad1522369e6a', why: 'identityHeld after the list fetch; retags and navigates only under it' },
+	adoptOrConvergeToLiveCollection: { reviewed: 'e0c289c82bdd', why: 'myGen against loadGeneration before adopting' },
+	reconcileCollectionSegment: { reviewed: 'ebdbf8f1cb3e', why: 'identityHeld after the list fetch; retags and navigates only under it' },
 	jumpToSection: { reviewed: '761928f83944', why: 'switches this instance\'s tab and scrolls to an anchor', may: ['document.getElementById', 'document.getElementById(anchorId).scrollIntoView'] },
 	ensureGraphComp: { reviewed: 'c1565cfb8a18', why: 'lazy-loads a component module into this instance', may: ['ItemGraphComp', 'graphLoadError'] },
 	// TASK-3537: re-reviewed; this unit's body is unchanged. It re-hashed because the $lib/types import line it names lost getTerminalOptions (the dead terminalStatuses feed).
@@ -104,7 +105,7 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	// Re-reviewed for BUG-3473: the index await is skipped when the index is
 	// already ready; it adds no await and commits nothing, and every fence
 	// after the Promise.all is unchanged.
-	loadData: { reviewed: '62c3159ac13c', why: 'IS the load: myGen against loadGeneration after every await; the BUG-3198 re-read of a changed item runs after the install, keyed on the installed item id, and fences itself on itemGen' },
+	loadData: { reviewed: '45bd747f0e5d', why: 'IS the load: myGen against loadGeneration after every await; the BUG-3198 re-read of a changed item runs after the install, keyed on the installed item id, and fences itself on itemGen' },
 	startEditTitle: { reviewed: '17f04352d420', why: 'focuses and sizes the input it opened synchronously', may: ['el', 'titleInputEl.focus', 'titleInputEl.setSelectionRange'] },
 	// Re-reviewed for BUG-2836: saveTitle's own lines are unchanged (the diff
 	// touches only a $derived beside titleDraft and the textarea's aria
@@ -112,7 +113,7 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	saveTitle: { reviewed: '16e6668ada3f', why: 'gen against loadGeneration on both arms, and again after the tick that resizes a reopened editor (BUG-3115)' + SETTLE_NOTE, may: ['saves.settle'] },
 	// TASK-3537: re-reviewed; this unit's body is unchanged. It re-hashed because the $lib/types import line it names lost getTerminalOptions (the dead terminalStatuses feed).
 	updateField: {
-		reviewed: '3d660e2493cc',
+		reviewed: 'f9ec11bf3427',
 		why: 'stillCurrent() on every arm, the OCC refetch and the open-children confirm' + SETTLE_NOTE,
 		may: ['saves.settle'],
 		callbacks: {
@@ -135,7 +136,7 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	},
 	// TASK-3537: re-reviewed; this unit's body is unchanged. It re-hashed because the $lib/types import line it names lost getTerminalOptions (the dead terminalStatuses feed).
 	flushTagSaver: {
-		reviewed: '9ec4065b2101',
+		reviewed: 'a4f068897af5',
 		why: 'identityHeld(saver.epoch) before every commit and send (each batch goes through sendTagBatch, which fences its own conflict path); the unfenced writes are to this burst\'s own identity-stamped record, and the finally deletes that record only if the registry still holds it (the get)' + SETTLE_NOTE,
 		may: ['saves.settle', 'saver', 'tagSavers.get', 'tagSavers.delete'],
 	},
@@ -147,18 +148,18 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 		why: 'identityHeld(saver.epoch) before the conflict refetch and after it, so the re-send follows a check with no await between; answers null on a lost identity and the drain\'s own check stops',
 		may: ['saver'],
 	},
-	refreshCollectionIfMoved: { reviewed: '9d45f94352dd', why: 'gen against loadGeneration after the fetch' },
+	refreshCollectionIfMoved: { reviewed: 'ebc8207df3de', why: 'gen against loadGeneration after the fetch' },
 	// BUG-3192 Unit B: re-reads the server's progress when the children change.
 	refreshProgress: { reviewed: '88f486338d7b', why: 'gen against loadGeneration, plus the slug and workspace, after the fetch' },
 	// TASK-3537: re-reviewed; this unit's body is unchanged. It re-hashed because the $lib/types import line it names lost getTerminalOptions (the dead terminalStatuses feed).
-	loadTagSuggestions: { reviewed: '334395ad78d5', why: 'identityHeld after the fetch; the identity listener re-runs it' },
+	loadTagSuggestions: { reviewed: 'cbf8f9e30aba', why: 'identityHeld after the fetch; the identity listener re-runs it' },
 	stampSourceUrl: { reviewed: '2e588f7b61a6', why: 'switchedAway on both arms' },
 	// TASK-3537: re-reviewed; this unit's body is unchanged. It re-hashed because the $lib/types import line it names lost getTerminalOptions (the dead terminalStatuses feed).
-	refreshFromSource: { reviewed: '6f9dfe07bbf0', why: 'switchedAway on every arm, the await on the confirm dialog included (TASK-2221); the frozen-editor notice (BUG-2177) is after that check' },
+	refreshFromSource: { reviewed: '496e9b34a866', why: 'switchedAway on every arm, the await on the confirm dialog included (TASK-2221); the frozen-editor notice (BUG-2177) is after that check' },
 	updateAssignedUser: { reviewed: '537f55aa5db2', why: 'gen against loadGeneration on both arms' + SETTLE_NOTE, may: ['saves.settle'] },
 	updateAgentRole: { reviewed: 'ede58f197154', why: 'gen against loadGeneration on both arms' + SETTLE_NOTE, may: ['saves.settle'] },
 	flushRawIfPending: {
-		reviewed: 'c413904b1b86',
+		reviewed: '6c67091a927f',
 		why: 'genAtFlush against loadGeneration after each PATCH; the re-entrancy waiter returns state; the finally clears this drain\'s own in-flight flag' + SETTLE_NOTE,
 		may: ['saves.settle', 'rawFlushInFlight'],
 		bareAwaits: ['await new Promise((r) => setTimeout(r, 50));'],
@@ -173,20 +174,20 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	retryLinks: { reviewed: '99061afdc730', why: 'item id, workspace and itemGen after the await; commits only when nothing wrote the links since' },
 	// BUG-3036: the re-read an SSE event or sync pass deferred while a save was in
 	// flight. The SSE item_updated shape: itemGen and the item id after each await.
-	runOwedRefresh: { reviewed: 'e3bd6dd40b84', why: 'destroyed, itemGen and the item id after each await, as the SSE item_updated re-read it stands in for (destroyed since BUG-3198: the load path calls it too)' },
-	flushCollabBeforeRestore: { reviewed: '50b77f0a8b64', why: 'identityHeld before its failure toast' },
+	runOwedRefresh: { reviewed: '3a2f84926f6f', why: 'destroyed, itemGen and the item id after each await, as the SSE item_updated re-read it stands in for (destroyed since BUG-3198: the load path calls it too)' },
+	flushCollabBeforeRestore: { reviewed: '7ed00ea2d13d', why: 'identityHeld before its failure toast' },
 	closeCopyDialog: { reviewed: '1c925f081a26', why: 'restores focus after closing synchronously', may: ['paneMenuTrigger.focus'] },
 	closePushDialog: { reviewed: 'bda8c7529677', why: 'restores focus after closing synchronously', may: ['paneMenuTrigger.focus'] },
-	flushContentBeforeCopy: { reviewed: 'cfd3f67ded8f', why: 'returns a boolean to the dialog' },
+	flushContentBeforeCopy: { reviewed: '8f3e29abe837', why: 'returns a boolean to the dialog' },
 	// BUG-3230 U1: the toast moved into copyResultToast, a pure function of the result; still before the await.
 	handleCopied: { reviewed: 'eecddaafa59b', why: 'switchedAway before adopting the refreshed item' },
 	handleDelete: { reviewed: 'c331e8535525', why: 'switchedAway on both arms' },
-	handleRestore: { reviewed: 'c3a1732554a4', why: 'switchedAway on every arm' },
+	handleRestore: { reviewed: 'c3159dbc0aca', why: 'switchedAway on every arm' },
 	handleDeleteLink: { reviewed: '64385ff65a32', why: 'switchedAway after each await' },
 	// TASK-3537: re-reviewed; this unit's body is unchanged. It re-hashed because the $lib/types import line it names lost getTerminalOptions (the dead terminalStatuses feed).
 	handleCreateLink: { reviewed: '136af0b2effb', why: 'switchedAway after each await; the append is skipped when a refresh already holds the link (TASK-3539)' },
 	// TASK-3537: re-reviewed; this unit's body is unchanged. It re-hashed because the $lib/types import line it names lost getTerminalOptions (the dead terminalStatuses feed).
-	handleMove: { reviewed: '15b8abbcb40e', why: 'stillOnSource() on every arm, including inside navIfStillCurrent, and before the BUG-3200 needs-value handoff writes the dialog state' },
+	handleMove: { reviewed: 'c917615079d0', why: 'stillOnSource() on every arm, including inside navIfStillCurrent, and before the BUG-3200 needs-value handoff writes the dialog state' },
 	// BUG-3230 U0: the pending-edits question for the pane's raw and fallback
 	// saves, and the recovery offer for markdown an unload save could not store.
 	// TASK-3537: re-reviewed; this unit's body is unchanged. It re-hashed because the $lib/types import line it names lost getTerminalOptions (the dead terminalStatuses feed).
@@ -200,11 +201,11 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	// workspace and index); nothing after the await reads live state anew, and
 	// the fences after it are unchanged.
 	decideRawStale: {
-		reviewed: '536d05bd73b5',
+		reviewed: 'f15cff6e35ad',
 		why: 'item id and gen against loadGeneration after the read, after the open-tab canonical forms are computed, and after the dialog, before the base moves or the reload writes',
 	},
 	resolveRawStale: {
-		reviewed: '2eaedf365d39',
+		reviewed: '704265b427ff',
 		why: 'resends only on an outcome decideRawStale fenced; the catch checks item id and gen before its toast; the finally clears this pane\'s own one-question-at-a-time flag',
 		may: ['rawStalePromptOpen'],
 	},
@@ -214,16 +215,17 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 		may: ['rawPendingPromptOpen'],
 	},
 	copyRefusedDraft: { reviewed: '6630af6110df', why: 'the copied text was captured before the await; the toast after it describes that copy, whichever item is shown', may: ['toastStore.show'] },
-	// BUG-3540: the restore sends the shown row's seq; a conflict refetches (fenced) and keeps the draft.
+	// BUG-3540: the restore sends the shown row's seq; a conflict refetches
+	// (fenced) and keeps the draft.
 	restoreRefusedDraft: {
-		reviewed: '9b6f7b78ab75',
+		reviewed: '659f10aea990',
 		why: 'item id, gen against loadGeneration, and the captured identity (codex r1 on TASK-3607) after every await; the finally clears this pane\'s own busy flag; a draft the item moved on from is handed to applyRefusedDraftChanges, awaited last, with nothing committed after it (TASK-3607). Re-reviewed for BUG-3850 (lead ruling 0337bf77): before that hand-off, a synchronous return while restoreBlocked (a $derived read, no await, no write). Re-reviewed for BUG-3850 r7 (lead ruling a6380212): its body is unchanged; restoreBlocked gained a synchronous !refusedDraft.baseStale read, still no await and no write. Re-reviewed for TASK-3856 r2 (lead ruling on the codex High): it first re-reads the stored draft, a synchronous localStorage read, and when that copy has the same markdown and is now baseStale it assigns refusedDraft and returns; no await precedes that write, and nothing after it changed. Re-reviewed for TASK-3856 r3 (hunter Low): that condition also requires draftAppliesAsPatch(shown, item.seq), a pure synchronous read, so a whole-body restore goes ahead; still no await before the write. Re-reviewed for BUG-3863: the TASK-3856 guard re-reads the slot the shown draft is stored in (refusedDraftSlot, a plain component-level let, read synchronously before any await), and the success clear calls resolveKeptDraft (both slots, onlyIf-guarded, synchronous) at the same place behind the same fence; no new await.',
 		may: ['refusedDraftBusy'],
 	},
 	// TASK-3607: a crash draft's own changes go as a patch; the conflict and
 	// result states are keyed to the item they were computed for.
 	applyRefusedDraftChanges: {
-		reviewed: 'fabd1318b50f',
+		reviewed: '63cb6a4357a8',
 		why: 'commits before the first await are synchronous (BUG-3850, lead ruling baa63dc3: the edits come from restoreEdits(d), a pure synchronous call before the first await, null for a stale base so it takes the existing conflict branch); after the patch and after the refetch, stale() (item id, gen against loadGeneration, captured identity) before any commit or toast, both catches included (a failed refetch after a landed patch says so, codex r2); the pending-flush branch only drops the raw seed, after the fenced patch await; the finally clears this pane\'s own busy flag Re-reviewed for BUG-3863: the two clears of the shown draft (nothing to restore, and after the patch landed) now call resolveKeptDraft, which removes that same text from the held slot and then the pending one, each onlyIf-guarded; synchronous localStorage writes at the same places, behind the same fences; no new await and no new write to component state.',
 		may: ['refusedDraftBusy'],
 	},
@@ -232,20 +234,20 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 
 /** Async functions that are not top-level declarations, in the script. */
 const NESTED: SignedRow[] = [
-	{ body: /event\.type === 'collection_updated'/, why: 'SSE: callbackGen after the collection fetch, itemGen on item branches; a change or a migration arriving before this load installs its item is only RECORDED (BUG-3198), synchronously, before any await', reviewed: '5e90609777c9' },
-	{ body: /result\.type === 'caught_up'/, why: 'sync: callbackGen after the reconciliation, itemGen on item branches; a result arriving before this load installs its item is only RECORDED (BUG-3198), synchronously, before any await', reviewed: '19c8f983df49' },
+	{ body: /event\.type === 'collection_updated'/, why: 'SSE: callbackGen after the collection fetch, itemGen on item branches; a change or a migration arriving before this load installs its item is only RECORDED (BUG-3198), synchronously, before any await', reviewed: '18dd138469bc' },
+	{ body: /result\.type === 'caught_up'/, why: 'sync: callbackGen after the reconciliation, itemGen on item branches; a result arriving before this load installs its item is only RECORDED (BUG-3198), synchronously, before any await', reviewed: '7012162749db' },
 	{
 		body: /flushCollabContent\(/,
 		in: '(top level)',
 		code: COLLAB_SAVE_CODE,
 		why: 'collab save: isForegroundCurrent (genAtFlush) before UI feedback' + SETTLE_NOTE,
-		reviewed: '14480b911557',
+		reviewed: '637efa1b671a',
 		may: ['saves.settle'],
 	},
 	// TASK-3548: the raw save's answer to a refusal re-reads the row before arming the resend.
-	{ body: /sendBase && isContentNotAppliedUnconfirmed\(e\)/, why: 'raw refusal answer (TASK-3548): genAtSave against loadGeneration before the re-read and again after it, before the base moves and the resend is armed', reviewed: 'c233ba75df29' },
+	{ body: /sendBase && isContentNotAppliedUnconfirmed\(e\)/, why: 'raw refusal answer (TASK-3548): genAtSave against loadGeneration before the re-read and again after it, before the base moves and the resend is armed', reviewed: '3c46a63df9de' },
 	// BUG-3230 U0: the legacy content save's refusal handler.
-	{ body: /askToOverwritePendingEdits\(reqItem\.id, gen, pendingEditsReason\(e\)\)/, why: 'fallback refusal: switchedAway before the question, and again after it before the resend', reviewed: 'e434c3658aa8' },
+	{ body: /askToOverwritePendingEdits\(reqItem\.id, gen, pendingEditsReason\(e\)\)/, why: 'fallback refusal: switchedAway before the question, and again after it before the resend', reviewed: '60413d428fb1' },
 ];
 
 /** Async functions in the markup. */
@@ -254,7 +256,7 @@ const MARKUP: SignedRow[] = [
 	// Re-reviewed for BUG-3050 U1 (door A4): the raw-seed refusal adds no await;
 	// its post-loop editor read and the rawSeedDecision check run after the
 	// existing genAtToggle fence and write only locals and a toast.
-	{ body: /genAtToggle/, why: 'Markdown toggle: genAtToggle against loadGeneration after each await', reviewed: '2f0bd5ffb7a4' },
+	{ body: /genAtToggle/, why: 'Markdown toggle: genAtToggle against loadGeneration after each await', reviewed: '89ce2c7af393' },
 ];
 
 
@@ -266,21 +268,21 @@ const CONTINUATIONS: SignedRow[] = [
 		body: /./,
 		in: 'reconcileCollectionSegment',
 		code: '() => { if (renameOverride === bridge) renameOverride = null; }',
-		why: 'rename heal failure: clears only the bridge object this heal installed', reviewed: '56174267006f',
+		why: 'rename heal failure: clears only the bridge object this heal installed', reviewed: 'fe9feba8b696',
 		may: ['renameOverride'],
 	},
 	// TASK-3537: re-reviewed; this continuation's body is unchanged. It re-hashed because the $lib/types import line it names lost getTerminalOptions (the dead terminalStatuses feed).
 	{ call: /^setTimeout\($/, body: /copied = false/, why: 'copy-flag reset: switchedAway', reviewed: 'ae1b50ad6010' },
-	{ call: /api\.items\.get\(wsSlug, itemSlug\)\.catch\($/, body: /./, why: 'loadData item fetch: sets a flag local to that load and re-throws', reviewed: 'bc8fad55e73a' },
+	{ call: /api\.items\.get\(wsSlug, itemSlug\)\.catch\($/, body: /./, why: 'loadData item fetch: sets a flag local to that load and re-throws', reviewed: '3d4779ff8923' },
 	// BUG-3473: the background index catch-up on an already-populated index.
-	{ call: /indexBoot\.catch\($/, body: /^/, why: 'background index catch-up: swallows its failure and commits nothing', reviewed: 'fb0c62e64590' },
+	{ call: /indexBoot\.catch\($/, body: /^/, why: 'background index catch-up: swallows its failure and commits nothing', reviewed: '5d05d937a5ed' },
 	// TASK-2228: loadData issues progress and links together and settles each
 	// into a plain result object; loadData's own myGen checks after each await
 	// fence the use of those results.
-	{ call: /api\.items\.progress\(wsSlug, itemData\.slug\)\.then\(\s*$/, body: /ok: true/, why: 'loadData progress read, value arm: builds a result object and commits nothing', reviewed: '71efa629de24' },
-	{ call: /api\.items\.progress\(wsSlug, itemData\.slug\)\.then\([\s\S]*ok: true[\s\S]*,\s*$/, body: /ok: false/, why: 'loadData progress read, failure arm: builds a result object and commits nothing', reviewed: 'eca6b2652f2b' },
-	{ call: /api\.links\.list\(wsSlug, itemData\.slug\)\.then\(\s*$/, body: /ok: true/, why: 'loadData links read, value arm: builds a result object and commits nothing', reviewed: '71efa629de24' },
-	{ call: /api\.links\.list\(wsSlug, itemData\.slug\)\.then\([\s\S]*ok: true[\s\S]*,\s*$/, body: /ok: false/, why: 'loadData links read, failure arm: builds a result object and commits nothing', reviewed: 'eca6b2652f2b' },
+	{ call: /api\.items\.progress\(wsSlug, itemData\.slug\)\.then\(\s*$/, body: /ok: true/, why: 'loadData progress read, value arm: builds a result object and commits nothing', reviewed: 'fa2fa830e23c' },
+	{ call: /api\.items\.progress\(wsSlug, itemData\.slug\)\.then\([\s\S]*ok: true[\s\S]*,\s*$/, body: /ok: false/, why: 'loadData progress read, failure arm: builds a result object and commits nothing', reviewed: '80f94eb33c12' },
+	{ call: /api\.links\.list\(wsSlug, itemData\.slug\)\.then\(\s*$/, body: /ok: true/, why: 'loadData links read, value arm: builds a result object and commits nothing', reviewed: 'fa2fa830e23c' },
+	{ call: /api\.links\.list\(wsSlug, itemData\.slug\)\.then\([\s\S]*ok: true[\s\S]*,\s*$/, body: /ok: false/, why: 'loadData links read, failure arm: builds a result object and commits nothing', reviewed: '80f94eb33c12' },
 	{
 		call: /^setTimeout\($/,
 		body: /staleConnecting = true/,
@@ -289,46 +291,46 @@ const CONTINUATIONS: SignedRow[] = [
 		why: 'connection state of this instance\'s own provider', reviewed: 'b0f9f4cc5f23',
 		may: ['staleConnecting'],
 	},
-	{ call: /\.get\(refreshCtx\.wsSlug, refreshCtx\.itemId\) \.then\($/, body: /./, why: 'force-refresh fetch: refreshGen against loadGeneration. Re-reviewed for TASK-2199: the enclosing onForceRefresh first captures the edits it discards (offlineRecovery), synchronously, before any await. Re-reviewed for BUG-3526: the capture reads provider.editsMayBeMissing instead of provider.unsentLocalEdits, still synchronous and before the fetch; the continuation and its fences are unchanged. Re-reviewed for BUG-3582: only the enclosing collab effect moved (onApplierRequest converts wiki-links before its setContent, synchronously, no await, no new write); this continuation is unchanged. Re-reviewed for PLAN-3578 step 2: only the enclosing collab effect moved again (onApplierPatch added to the provider options: a synchronous plan, the bracket callback and one dispatch; no await, no generation or identity write); this continuation is unchanged Re-reviewed for the PLAN-3578 retro fix (day 91): only the enclosing collab effect\'s onApplierPatch changed, building its one dispatch through patchTransaction (hunks) instead of one replaceWith; synchronous, no await, no generation or identity write; this continuation is unchanged. Re-reviewed for BUG-3697: the enclosing onForceRefresh now sets recoveryFrozen before the capture; this continuation writes nothing new. Re-reviewed for BUG-3850: the enclosing collab effect gained onConfirmed (synchronous, refreshes the crash draft\'s confirmed base; no await, no generation or identity write); this continuation is unchanged. Re-reviewed again for BUG-3850 (lead rulings c9db9612 and 0337bf77): only the pulled confirmedBase import line changed (registerRefreshBeforeLocalChange, restoreWaitsForEditor, RESTORE_WAITS_FOR_EDITOR), and under baa63dc3 the draftPatch import line (restoreEdits for draftEdits); nothing this continuation runs changed. Re-reviewed for BUG-3850 r8 (lead ruling 33dce972): the enclosing collab effect gained onLocalSend (synchronous; it calls the crash keeper\'s listeners, which may rewrite one localStorage draft; no await, no generation or identity write); this continuation is unchanged.', reviewed: '545a7904e627' },
-	{ call: /forceRefreshNonce \+= 1; \}\) \.catch\($/, body: /./, why: 'force-refresh failure: refreshGen against loadGeneration. Re-reviewed for TASK-2199 (the synchronous capture above it), and for BUG-3526 (only the input of that capture). Re-reviewed for BUG-3582: only the enclosing collab effect moved (the synchronous wiki-link conversion in the applier); this continuation is unchanged. Re-reviewed for PLAN-3578 step 2: the enclosing collab effect gained onApplierPatch (synchronous, no await, no generation write); this continuation is unchanged Re-reviewed for the PLAN-3578 retro fix (day 91): only the enclosing collab effect\'s onApplierPatch changed, building its one dispatch through patchTransaction (hunks) instead of one replaceWith; synchronous, no await, no generation or identity write; this continuation is unchanged. Re-reviewed for BUG-3697: only its comment changed (recoveryFrozen stays true on this arm, so the editor stays read-only); it writes nothing new. Re-reviewed for BUG-3850: the enclosing collab effect gained onConfirmed (synchronous, refreshes the crash draft\'s confirmed base; no await, no generation or identity write); this continuation is unchanged. Re-reviewed again for BUG-3850 (lead rulings c9db9612 and 0337bf77): only the pulled confirmedBase import line changed (registerRefreshBeforeLocalChange, restoreWaitsForEditor, RESTORE_WAITS_FOR_EDITOR), and under baa63dc3 the draftPatch import line (restoreEdits for draftEdits); nothing this continuation runs changed. Re-reviewed for BUG-3850 r8 (lead ruling 33dce972): the enclosing collab effect gained onLocalSend (synchronous; it calls the crash keeper\'s listeners, which may rewrite one localStorage draft; no await, no generation or identity write); this continuation is unchanged.', reviewed: '19311ef01bc8' },
+	{ call: /\.get\(refreshCtx\.wsSlug, refreshCtx\.itemId\) \.then\($/, body: /./, why: 'force-refresh fetch: refreshGen against loadGeneration. Re-reviewed for TASK-2199: the enclosing onForceRefresh first captures the edits it discards (offlineRecovery), synchronously, before any await. Re-reviewed for BUG-3526: the capture reads provider.editsMayBeMissing instead of provider.unsentLocalEdits, still synchronous and before the fetch; the continuation and its fences are unchanged. Re-reviewed for BUG-3582: only the enclosing collab effect moved (onApplierRequest converts wiki-links before its setContent, synchronously, no await, no new write); this continuation is unchanged. Re-reviewed for PLAN-3578 step 2: only the enclosing collab effect moved again (onApplierPatch added to the provider options: a synchronous plan, the bracket callback and one dispatch; no await, no generation or identity write); this continuation is unchanged Re-reviewed for the PLAN-3578 retro fix (day 91): only the enclosing collab effect\'s onApplierPatch changed, building its one dispatch through patchTransaction (hunks) instead of one replaceWith; synchronous, no await, no generation or identity write; this continuation is unchanged. Re-reviewed for BUG-3697: the enclosing onForceRefresh now sets recoveryFrozen before the capture; this continuation writes nothing new. Re-reviewed for BUG-3850: the enclosing collab effect gained onConfirmed (synchronous, refreshes the crash draft\'s confirmed base; no await, no generation or identity write); this continuation is unchanged. Re-reviewed again for BUG-3850 (lead rulings c9db9612 and 0337bf77): only the pulled confirmedBase import line changed (registerRefreshBeforeLocalChange, restoreWaitsForEditor, RESTORE_WAITS_FOR_EDITOR), and under baa63dc3 the draftPatch import line (restoreEdits for draftEdits); nothing this continuation runs changed. Re-reviewed for BUG-3850 r8 (lead ruling 33dce972): the enclosing collab effect gained onLocalSend (synchronous; it calls the crash keeper\'s listeners, which may rewrite one localStorage draft; no await, no generation or identity write); this continuation is unchanged.', reviewed: '689201c22e9a' },
+	{ call: /forceRefreshNonce \+= 1; \}\) \.catch\($/, body: /./, why: 'force-refresh failure: refreshGen against loadGeneration. Re-reviewed for TASK-2199 (the synchronous capture above it), and for BUG-3526 (only the input of that capture). Re-reviewed for BUG-3582: only the enclosing collab effect moved (the synchronous wiki-link conversion in the applier); this continuation is unchanged. Re-reviewed for PLAN-3578 step 2: the enclosing collab effect gained onApplierPatch (synchronous, no await, no generation write); this continuation is unchanged Re-reviewed for the PLAN-3578 retro fix (day 91): only the enclosing collab effect\'s onApplierPatch changed, building its one dispatch through patchTransaction (hunks) instead of one replaceWith; synchronous, no await, no generation or identity write; this continuation is unchanged. Re-reviewed for BUG-3697: only its comment changed (recoveryFrozen stays true on this arm, so the editor stays read-only); it writes nothing new. Re-reviewed for BUG-3850: the enclosing collab effect gained onConfirmed (synchronous, refreshes the crash draft\'s confirmed base; no await, no generation or identity write); this continuation is unchanged. Re-reviewed again for BUG-3850 (lead rulings c9db9612 and 0337bf77): only the pulled confirmedBase import line changed (registerRefreshBeforeLocalChange, restoreWaitsForEditor, RESTORE_WAITS_FOR_EDITOR), and under baa63dc3 the draftPatch import line (restoreEdits for draftEdits); nothing this continuation runs changed. Re-reviewed for BUG-3850 r8 (lead ruling 33dce972): the enclosing collab effect gained onLocalSend (synchronous; it calls the crash keeper\'s listeners, which may rewrite one localStorage draft; no await, no generation or identity write); this continuation is unchanged.', reviewed: 'e12b2d5cf604' },
 	{
 		call: /^setTimeout\($/,
 		body: /teardownFlushed/,
 		in: 'onBeforeUnload',
 		code: '() => { teardownFlushed = false; }',
-		why: 're-arms the BUG-3005 teardown latch, itself identity-checked. Re-reviewed for TASK-2199: the prompt decision now also counts unsent collab edits and an uncopied offline version; nothing else moved. Re-reviewed for BUG-3556: the prompt reads the provider getter editsAtRiskOnClose instead of unsentLocalEdits (a read, no await, no write); nothing else moved. Re-reviewed for BUG-3571: one early return when a confirmed sign-out discard is under way (signOutDiscarding(), a module read; no await, no write); nothing else moved', reviewed: '34e281216270',
+		why: 're-arms the BUG-3005 teardown latch, itself identity-checked. Re-reviewed for TASK-2199: the prompt decision now also counts unsent collab edits and an uncopied offline version; nothing else moved. Re-reviewed for BUG-3556: the prompt reads the provider getter editsAtRiskOnClose instead of unsentLocalEdits (a read, no await, no write); nothing else moved. Re-reviewed for BUG-3571: one early return when a confirmed sign-out discard is under way (signOutDiscarding(), a module read; no await, no write); nothing else moved', reviewed: '3636760eeacf',
 		may: ['teardownFlushed'],
 	},
-	{ call: /^queueMicrotask\($/, body: /./, why: 'collab lazy seed: refuses a retired or re-identified context first. Re-reviewed for BUG-3582: seedMd above it is now computed by toEditorMarkdown, the same value as the inline conversion it replaced; the microtask is unchanged', reviewed: '76af97b065fd' },
-	{ call: /^tick\(\)\.then\($/, body: /./, why: 'schedules a focus frame; commits nothing itself', reviewed: 'acbf5de58fba' },
+	{ call: /^queueMicrotask\($/, body: /./, why: 'collab lazy seed: refuses a retired or re-identified context first. Re-reviewed for BUG-3582: seedMd above it is now computed by toEditorMarkdown, the same value as the inline conversion it replaced; the microtask is unchanged', reviewed: '7bb17281756f' },
+	{ call: /^tick\(\)\.then\($/, body: /./, why: 'schedules a focus frame; commits nothing itself', reviewed: '5e6c58358fa7' },
 	{
 		call: /^requestAnimationFrame\($/,
 		body: /./,
 		in: 'tick().then(…)',
 		code: '() => editorInstance?.commands.focus()',
-		why: 'focuses the editor after a tab switch', reviewed: '2e6779eedf41',
+		why: 'focuses the editor after a tab switch', reviewed: 'be7d07a0d7d7',
 		may: ['editorInstance.commands.focus'],
 	},
 	{
 		call: /^setTimeout\($/,
 		body: /send\(false\)\.catch\(/,
 		in: 'handleContentUpdate',
-		why: 'content debounce: loadData clears this timer before its first await, so the callback never runs across a load', reviewed: '67e4bc15d55e',
+		why: 'content debounce: loadData clears this timer before its first await, so the callback never runs across a load', reviewed: '14a170e7b49b',
 		startSafe: true,
 		pin: (src, unit) => clearsBeforeFirstAwait(src, 'loadData', 'contentDebounceTimer') ?? assignedTo(src, unit, 'contentDebounceTimer'),
 	},
 	// BUG-3230 U0: the fallback save is refused rather than replacing another
 	// tab's unstored edits; the refusal asks, then resends once on overwrite.
-	{ call: /^send\(false\)\.catch\($/, body: /./, why: 'content save refusal: switchedAway before the question, and again after it before the resend', reviewed: 'e434c3658aa8' },
-	{ call: /return send\(true\); \}\)\.then\($/, body: /^\(sent\) =>/, why: 'content save: switchedAway', reviewed: '2e73214881b5' },
-	{ call: /showSaved\(saveTok\); \}\)\.catch\($/, body: /./, why: 'content save failure: switchedAway', reviewed: '07c68bce46a9' },
+	{ call: /^send\(false\)\.catch\($/, body: /./, why: 'content save refusal: switchedAway before the question, and again after it before the resend', reviewed: '60413d428fb1' },
+	{ call: /return send\(true\); \}\)\.then\($/, body: /^\(sent\) =>/, why: 'content save: switchedAway', reviewed: 'c75b482def13' },
+	{ call: /showSaved\(saveTok\); \}\)\.catch\($/, body: /./, why: 'content save failure: switchedAway', reviewed: '59324c3b412e' },
 	{
 		call: /\.finally\($/,
 		body: /^\(\) => saves\.settle\(saveTok\)$/,
 		in: 'setTimeout(…)',
 		code: '() => saves.settle(saveTok)',
 		why: SETTLE_WHY,
-		reviewed: 'f5e4815c8218',
+		reviewed: '36f0d0732136',
 		may: ['saves.settle'],
 	},
 	// BUG-3230 U0: the unload save keeps its text in this browser before it goes
@@ -342,7 +344,7 @@ const CONTINUATIONS: SignedRow[] = [
 		in: '{save}',
 		code: "() => { clearRefusedRawDraft(draftUser, reqItemId, markdown); if (item && item.id === reqItemId && genAtSave === loadGeneration && rawContentSaver.pending === markdown) { rawContentSaver.clearPending(); editorStore.setDirty(false); localDirty = false; } }",
 		why: 'raw keepalive save: removes the kept text by the captured user and item, then genAtSave against loadGeneration',
-		reviewed: 'd49f993c8b73',
+		reviewed: '9e8f889b3c37',
 		may: ['clearRefusedRawDraft'],
 	},
 	{
@@ -353,21 +355,21 @@ const CONTINUATIONS: SignedRow[] = [
 		// BUG-3540: a stale-base refusal (update_conflict) is reported like the
 		// pending one; the kept draft stays for the next open.
 		why: 'raw keepalive failure: a superseded answer removes the kept text by the captured user and item; a refusal (pending edits or a stale base, BUG-3540) is reported whichever item is shown',
-		reviewed: 'fae1933c81a1',
+		reviewed: '2e7ce293ac05',
 		may: ['isSupersededWriteError', 'clearRefusedRawDraft', 'isUpdateConflictError', 'isEditsNotStoredRefusal', 'pendingEditsReason', 'toastStore.show'],
 	},
 	// BUG-3540: the save now also carries expected_seq; the base moves only after the fence.
-	{ call: /expected_seq: sendBase\.seq \} : \{\}\), \}\)\.then\($/, body: /^\(updated\) =>/, why: 'raw foreground save: genAtSave against loadGeneration, before the base moves (BUG-3540)', reviewed: '7e2c143067ac' },
+	{ call: /expected_seq: sendBase\.seq \} : \{\}\), \}\)\.then\($/, body: /^\(updated\) =>/, why: 'raw foreground save: genAtSave against loadGeneration, before the base moves (BUG-3540)', reviewed: '7cccd0f94241' },
 	// BUG-3230 U0: the answer to a refused raw save arms one resend.
-	{ call: /askToOverwritePendingEdits\(reqItemId, genAtSave, pendingEditsReason\(e\)\)\.then\($/, body: /./, why: 'raw refusal answer: genAtSave against loadGeneration before arming the resend', reviewed: 'c233ba75df29' },
-	{ call: /content: item\.content, content_state: item\.content_state \}\); \} \}\)\.catch\($/, body: /./, why: 'raw foreground failure: genAtSave against loadGeneration', reviewed: '80392aa194de' },
+	{ call: /askToOverwritePendingEdits\(reqItemId, genAtSave, pendingEditsReason\(e\)\)\.then\($/, body: /./, why: 'raw refusal answer: genAtSave against loadGeneration before arming the resend', reviewed: '3c46a63df9de' },
+	{ call: /content: item\.content, content_state: item\.content_state \}\); \} \}\)\.catch\($/, body: /./, why: 'raw foreground failure: genAtSave against loadGeneration', reviewed: 'bd7263ec2fa7' },
 	{
 		call: /\.finally\($/,
 		body: /^\(\) => saves\.settle\(saveTok\)$/,
 		in: '{save}',
 		code: '() => saves.settle(saveTok)',
 		why: SETTLE_WHY,
-		reviewed: '779d1cf6b4ed',
+		reviewed: 'bc3eea14c492',
 		may: ['saves.settle'],
 	},
 ];
@@ -388,8 +390,8 @@ const HELPERS: Record<string, string> = {
 	// for the editor still mounted (the teardown paths find it destroyed, so
 	// there it is a no-op), then returns the shadow.
 	currentEditorMarkdown: 'ad26da921841',
-	primeCanonicalSeed: 'f354937c6fa1',
-	adoptCollection: '56ea87102958',
+	primeCanonicalSeed: '06e270e2b786',
+	adoptCollection: '0ca6c12d2e40',
 	// BUG-3050 U3: the kept local body keeps ITS content_state. Still synchronous,
 	// reads only collabProvider and item, and commits only through withInflightTags.
 	adoptServerItem: 'e11e0282e197',
@@ -404,11 +406,11 @@ const HELPERS: Record<string, string> = {
 	// BUG-3540: re-reviewed; body unchanged, re-hashed by a name it reaches (rawContentSaver's save or rawBase); no await or fence moved.
 	// Re-reviewed for BUG-3571: one early return when a confirmed sign-out
 	// discard is under way (signOutDiscarding(), a module read); no await.
-	runTeardownFlush: '18074bc20367',
+	runTeardownFlush: 'fc3edb030c73',
 	// BUG-3124 unit B: the cursor-advance settle. Synchronous; arms the flusher's
 	// single timer only for the current, identity-held context.
 	showSaved: '456dd972dcf5',
-	settleCollabIfCurrent: 'd09b2eae8d10',
+	settleCollabIfCurrent: '81a912c694d5',
 	// BUG-2367: the move's success toast, naming any not_unique drop.
 	// Synchronous; reads only its arguments and writes only the toast store.
 	showMovedToast: '6a32f06fbd9f',
@@ -429,7 +431,7 @@ const HELPERS: Record<string, string> = {
  * DECLARE or REBIND the names these calls pass, because such a call site may
  * sit outside every hashed unit (both `.then(ensureGraphComp)` sites do: one
  * in an `$effect`, one in `setGraphParam`), and then nothing else covers a
- * rebinding of what it defers — a function value rebound outside every unit.
+ * rebinding of what it defers.
  */
 const IDENTIFIER_CALLBACKS: GateTable['identifierCallbacks'] = [
 	{ text: 'Promise.resolve().then(ensureGraphComp)', count: 2, reviewed: '6cdb881b83f0', why: 'ensureGraphComp is itself a unit in the table above' },
@@ -532,7 +534,7 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 	});
 
 	/**
-	 * Defects found in the ANALYSIS itself by later review. Each is an
+	 * Defects found in the ANALYSIS itself after its first version. Each is an
 	 * edit the analysis accepted when it should not have. `refuses` is the
 	 * refusal the edit must produce — every string in one line — so an entry
 	 * cannot pass because some OTHER part of the edit happens to be refused
@@ -541,7 +543,7 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 	 */
 	const ANALYSIS_DEFECTS: Array<{ id: string; subs: Array<[string, string]>; refuses: string[] }> = [
 		{
-			// `?:` was walked as `consequent && alternate`, so an
+			// #1387: `?:` was walked as `consequent && alternate`, so an
 			// unsafe consequent short-circuited the walk and the alternate's commit
 			// was never seen.
 			id: 'R5-1 a commit in the alternate of a conditional whose consequent awaits',
@@ -779,7 +781,7 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 			id: "R5 P2-8 the rename heal's catch moves onto the SSE rename navigation",
 			subs: [
 				[
-					"\t\t\t\treset: false,\n\t\t\t}).catch(() => {\n\t\t\t\t// A failed/cancelled navigation must not leave the override\n\t\t\t\t// bridging to a URL we never reached. Identity compare (this\n\t\t\t\t// heal's own bridge object, round 4 P2) so a cancelled older\n\t\t\t\t// navigation can't clear a newer bridge to the same slug.\n\t\t\t\tif (renameOverride === bridge) renameOverride = null;\n\t\t\t});\n",
+					"\t\t\t\treset: false,\n\t\t\t}).catch(() => {\n\t\t\t\t// A failed/cancelled navigation must not leave the override\n\t\t\t\t// bridging to a URL we never reached. Identity compare (this\n\t\t\t\t// heal's own bridge object) so a cancelled older\n\t\t\t\t// navigation can't clear a newer bridge to the same slug.\n\t\t\t\tif (renameOverride === bridge) renameOverride = null;\n\t\t\t});\n",
 					'\t\t\t\treset: false,\n\t\t\t});\n',
 				],
 				[
@@ -832,9 +834,8 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 	});
 
 	/**
-	 * Edits an earlier version of the guard accepted, each tagged with its
-	 * class. Every one
-	 * is either closed here or listed in KNOWN_GAPS below.
+	 * Edits the guard accepted at 31f3b5e9, each tagged with its class. Every
+	 * one is either closed here or listed in KNOWN_GAPS below.
 	 */
 	const ROUND6 = (round6.mutants as Array<{ id: string; class: number; subs: string[][]; refuses: string[]; gate?: boolean }>).map((m) => ({
 		id: `${m.id} (class ${m.class})`,
@@ -845,7 +846,7 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 	}));
 
 	/**
-	 * More edits an earlier version of the guard accepted.
+	 * More edits the guard accepted at 6e1ba4af.
 	 * An F1 edit arrives with the NESTED row the guard asks for, since without
 	 * the row it is refused for being untabled rather than for what it commits.
 	 */
@@ -885,12 +886,11 @@ describe('ItemDetail AST guard: round 4\'s edits are all refused (lead ruling, c
 	});
 
 	/**
-	 * AID GAPS: edits
-	 * the ANALYSIS accepts although they reintroduce a stale commit, each with
-	 * the sentence that says why. Each is listed in the "does not see" part of
-	 * `identityFenceAst.ts`'s header. The gate refuses every one of them by a
-	 * hash mismatch. When the aid starts reporting one, move it to
-	 * ANALYSIS_DEFECTS.
+	 * AID GAPS: edits the ANALYSIS accepts although they reintroduce a stale
+	 * commit, each with the sentence that says why. Each is listed in the
+	 * "does not see" part of `identityFenceAst.ts`'s header. The gate refuses
+	 * every one of them by a hash mismatch. When the aid starts reporting
+	 * one, move it to ANALYSIS_DEFECTS.
 	 */
 	const KNOWN_GAPS: Array<{ id: string; model: string; subs: Array<[string, string]> }> = [
 		{

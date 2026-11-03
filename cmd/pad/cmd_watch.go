@@ -44,8 +44,8 @@ const (
 // padddBackoff computes the delay before the Nth reconnect attempt
 // (attempt=1 is the first retry after an initial failed connection).
 // Linear and capped — extracted as a pure function so the retry math is
-// unit-testable without a real clock (per the dispatcher's ask: "unit-
-// test the decision logic, don't literally sleep").
+// unit-testable without a real clock, so the decision logic is tested
+// rather than literally slept.
 func padddBackoff(attempt int) time.Duration {
 	if attempt < 1 {
 		attempt = 1
@@ -130,7 +130,7 @@ var seenPushes = newRecentSet(256, 10*time.Minute)
 
 // formatMonitorLine renders one notification as the exact stdout-line
 // contract `pad watch --stream --for-session` promises (DOC-2479):
-// "PAD demo/TASK-214 → done (alice): fix verified" — one line, facts
+// "PAD demo/TASK-214 → done (Dave): fix verified" — one line, facts
 // only, no etiquette prose (that lives in the plugin skill per DR-4).
 //
 // TASK-2533 plan interpretation: DOC-2479's example names a target
@@ -546,7 +546,7 @@ func runWatchMonitor(ctx context.Context) error {
 		// reconnect or exit). Cancelled on every exit path below.
 		streamCtx, cancelStream := context.WithCancel(sigCtx)
 
-		// Disarm-watcher, started BEFORE the connection is opened (S3 HIGH-1): it
+		// Disarm-watcher, started BEFORE the connection is opened: it
 		// re-checks consent every disarmPollInterval and
 		// cancels streamCtx the moment consent flips to not-armed. Because
 		// the request below is built on streamCtx, cancelling aborts an
@@ -639,7 +639,7 @@ func runWatchMonitor(ctx context.Context) error {
 		// swallowed beyond the replay buffer's own bounds.
 		//
 		// ONE EXCEPTION on a Redis-backed deployment, stated because this
-		// sentence used to promise more than the implementation delivers.
+		// sentence used to promise more than the implementation delivers (BUG-2698).
 		// RedisBus's resume check compares
 		// against the shared counter, and its own doc says what it cannot
 		// see: a notification published AFTER that read and missed by the

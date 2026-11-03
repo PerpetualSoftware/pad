@@ -102,7 +102,7 @@ vi.mock('$lib/api/client', () => ({
 	// A rejection carrying `conflict: true` is a 409 only while a leg asks for it.
 	isUpdateConflictError: (e: unknown) => knobs.conflicts && (e as { conflict?: boolean } | null)?.conflict === true,
 }));
-// A REAL subscription: the no-op this replaced left the
+// A REAL subscription (#1387): the no-op this replaced left the
 // SSE callback with no driven leg at all, pinned only by the source count.
 const sseCallbacks = vi.hoisted(() => [] as Array<(event: unknown) => unknown>);
 vi.mock('$lib/services/sse.svelte', () => ({

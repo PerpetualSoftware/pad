@@ -345,9 +345,9 @@
 					await reconcileSoon.run(eventWs);
 				} catch (err) {
 					// Cancelled: the layout was destroyed inside the coalescing
-					// window, and nothing below is this callback's to do any more
-					// (carrying on reloaded the old workspace's
-					// collections and toasted onto the next screen).
+					// window, and nothing below is this callback's to do any more:
+					// carrying on reloaded the old workspace's
+					// collections and toasted onto the next screen.
 					if (err instanceof CoalescerCancelled) return;
 					// Otherwise as above: the cache-state readers own the reaction.
 				}

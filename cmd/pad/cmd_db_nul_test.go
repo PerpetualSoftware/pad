@@ -380,7 +380,8 @@ func TestRepairExitStatusCountsFailures(t *testing.T) {
 	}
 }
 
-// TestPreflightIgnoresTablesTheMigrationDoesNotCopy covers a second case.
+// TestPreflightIgnoresTablesTheMigrationDoesNotCopy pins that the NUL preflight
+// skips tables the migration does not copy.
 //
 // `migrate-to-pg` copies workspace content and nothing else — its own help says
 // users, platform settings and auth data are not migrated. A NUL in one of

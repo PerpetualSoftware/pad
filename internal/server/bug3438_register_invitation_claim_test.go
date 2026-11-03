@@ -99,8 +99,8 @@ type notJoinedBody struct {
 	} `json:"invitation_not_joined"`
 }
 
-// The account is rolled back only when the invitation
-// was the signup's ADMISSION. Where registration is open anyway (Pad Cloud
+// The account is rolled back only when the invitation was the signup's
+// ADMISSION (#1834). Where registration is open anyway (Pad Cloud
 // with a deliverable verification email, the self-serve path), the account is
 // KEPT, nothing is joined, and the response says the invitation is no longer
 // valid. The self-hosted legs above are the admission case and roll back.

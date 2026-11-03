@@ -53,7 +53,7 @@
 	let collections = $state<Collection[]>([]);
 
 	// Memoised so the effects below re-run on a change of USER and not on every
-	// replacement of the session object (codex round 3). `authStore.userId`
+	// replacement of the session object. `authStore.userId`
 	// reads the reactive `session`, so any `authStore.load()` — including the
 	// routine refetch that returns the same user — assigns a new object and
 	// would otherwise re-fire both. A `$derived` propagates only when its value
@@ -150,8 +150,7 @@
 	// remains the security boundary; this is purely a stability fix for the
 	// UX gate.
 	let isOwner = $state(false);
-	// KEYED ON (USER, WORKSPACE), not on workspace alone (BUG-2991, codex
-	// round 2). A sticky permission is an answer about a PERSON as much as
+	// KEYED ON (USER, WORKSPACE), not on workspace alone (BUG-2991). A sticky permission is an answer about a PERSON as much as
 	// about a workspace, and since BUG-2991 the store drops membership to
 	// UNKNOWN when the signed-in user changes. Unknown does not update the
 	// cache — that is the whole point of the `membershipKnown` gate below — so
@@ -236,7 +235,7 @@
 			attentionExpanded = loadExpanded(wsSlug, 'attention');
 			plansExpanded = loadExpanded(wsSlug, 'plans');
 			// Storage can throw (blocked site data); the dismissal then defaults
-			// to not dismissed rather than taking the effect down (codex r1).
+			// to not dismissed rather than taking the effect down.
 			try {
 				onboardingDismissed = localStorage.getItem(`pad-onboarding-dismissed-${wsSlug}`) === 'true';
 			} catch {
@@ -310,7 +309,7 @@
 	 * Reset ONLY — no reload. The keyed load effect below already re-runs on
 	 * an identity change (it reads `sessionUserId`, which moves with the
 	 * epoch), drops the data and reloads; a second load from here would be the
-	 * library's double load (#1378, codex round 1) on a page that has the
+	 * library's double load (#1378) on a page that has the
 	 * single one built in.
 	 *
 	 * A listener rather than a line in that effect because the effect ALSO
@@ -333,12 +332,12 @@
 	// the dashboard to refetch + re-render — a visible flicker. Wrap in
 	// `untrack` so the only tracked dep is `wsSlug` from the if-check.
 	// Keyed on (USER, WORKSPACE) — see `lastOwnerKey` above for the identity
-	// half (BUG-2991, codex round 3). A sign-in as somebody else on the same
+	// half (BUG-2991). A sign-in as somebody else on the same
 	// route changes no route param, so without the user in this key the board
 	// kept showing the previous user's items, counts and activity.
 	//
-	// The DATA IS DROPPED before the reload, not merely hidden behind `loading`
-	// (codex round 5). Relying on the loading branch was a fail-open: if the
+	// The DATA IS DROPPED before the reload, not merely hidden behind `loading`.
+	// Relying on the loading branch was a fail-open: if the
 	// new user's dashboard request FAILS, `loading` goes false with `dashboard`
 	// still holding the previous key's board, and the template renders it —
 	// the `dashError` branch sits after it. So the previous user's data came
@@ -353,8 +352,7 @@
 			dashboardSlug = null;
 			collections = [];
 			dashError = null;
-			// The aha-highlight track goes with the data it describes (codex
-			// round 9). It is keyed on `dashboardSlug`, which does NOT change
+			// The aha-highlight track goes with the data it describes. It is keyed on `dashboardSlug`, which does NOT change
 			// on a same-route identity change, so the previous user's
 			// `onboarding: true` was still standing when the new user's first
 			// response arrived with `false` — read as the true→false edge, and
@@ -419,13 +417,13 @@
 			// Ignored only once THIS workspace's board is known to be past
 			// onboarding. Before its first load commits, the load in flight may
 			// have read the state before the agent's write, so the event still
-			// arms a reload (codex r2).
+			// arms a reload.
 			if (dashboardSlug === wsSlug && !needsOnboarding) return;
 			if (event.type !== 'item_created' && event.type !== 'collection_updated') return;
 			// Trailing debounce: a burst re-arms one timer, whose body is only
 			// the fenced load() call, and only for the workspace it was armed
 			// in: a timer that outlives a workspace switch would otherwise
-			// start a load for the next one and supersede its own (codex r1).
+			// start a load for the next one and supersede its own.
 			const armedFor = wsSlug;
 			clearTimeout(liveReloadTimer);
 			liveReloadTimer = setTimeout(() => {
@@ -455,7 +453,7 @@
 	// superseded dashboard fetch committing out of order. Concurrent
 	// navigation / 30s poll / sync / retry loads can resolve in any
 	// order; only the latest may write `dashboard` / `dashboardSlug` /
-	// `dashError` / `loading` (Codex race finding). Mirrors the
+	// `dashError` / `loading`. Mirrors the
 	// collection page's `loadSeq`.
 	let dashLoadSeq = 0;
 
@@ -513,7 +511,7 @@
 				// Terminal: drop any stale dashboard for this route so the
 				// "No dashboard data available." empty state shows instead
 				// of a workspace that's since been deleted/revoked lingering
-				// on screen (Codex P2).
+				// on screen.
 				dashboard = null;
 				dashboardSlug = null;
 				dashError = null;

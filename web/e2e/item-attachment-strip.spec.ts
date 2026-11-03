@@ -25,7 +25,7 @@ import {
  *      item's attachments across an A→B switch (TASK-2383);
  *   2. `canDelete` is wired to ItemDetail's `mutationsEnabled` and not raw
  *      `canEdit` — a peeking master must show tiles with NO delete control
- * (TASK-2384 / DR-6). Both the component tests (which inject the prop)
+ *      (TASK-2384 / DR-6). Both the component tests (which inject the prop)
  *      and the masterFreeze unit test (which checks the bare boolean) pass
  *      even if that wiring regressed;
  *   3. the delete control is genuinely keyboard reachable. jsdom applies no

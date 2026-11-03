@@ -270,7 +270,7 @@ func TestImportWorkspace_LetterlessNameFallsBackToITEM(t *testing.T) {
 	}
 }
 
-// The WARN the ruling asked for: a prefix accepted ONLY because the parser
+// The WARN that is required: a prefix accepted ONLY because the parser
 // widened is visible to an operator, rather than being inferred from a resolve
 // failure that no longer happens. Untested, this is a line of code nobody
 // would notice was gone.

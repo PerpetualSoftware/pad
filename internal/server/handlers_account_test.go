@@ -216,7 +216,7 @@ func TestHandleDeleteAccount_OlderSidecar400WithNoLinkedCustomerProceeds(t *test
 	}
 }
 
-// Any OTHER 400 with no linked customer aborts:
+// Any OTHER 400 with no linked customer aborts (#2036):
 // only the old sidecar's exact refusal means nothing could have been
 // cancelled. A current sidecar's 400 may come while stamped customers bill.
 func TestHandleDeleteAccount_NoLinkedCustomerOther400Aborts(t *testing.T) {

@@ -21,7 +21,8 @@
 <div class="page">
 	{#if authStore.nativeShell}
 		<!-- The whole guide steers to Pad Cloud, which the app stores'
-		     anti-steering rules forbid in a mobile app (TASK-3299). One line: no header, no link, no steps. -->
+		     anti-steering rules forbid in a mobile app (TASK-3299).
+		     One line: no header, no link, no steps. -->
 		<p class="card">Open Pad in a browser to move a workspace.</p>
 	{:else}
 		<PageHeader

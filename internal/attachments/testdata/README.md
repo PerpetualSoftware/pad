@@ -41,7 +41,7 @@ than 512 because the whole file is.
 | `webm.head512` | FFmpeg 7.1 `-f webm` | EBML magic with DocType `webm` at offset 24 — the control that stops the DocType read from answering Matroska for everything |
 | `avi.head512` | FFmpeg 7.1 `-f avi` | RIFF/AVI, which the stdlib names `video/avi` against the allowlist's `video/x-msvideo` |
 
-### Audio/video split fixtures
+### PR B fixtures — the audio/video split (F4)
 
 | file | produced by | what it proves |
 |---|---|---|
@@ -72,7 +72,7 @@ to get them wrong. Each one broke an earlier version of these signatures.
 
 | file | produced by | what it proves |
 |---|---|---|
-| `tar-bmp-firstmember.head512` | GNU `tar -cf` on a file named `BM.txt` | a structurally valid tar the stdlib reads as `image/bmp` — a real file exercising competing detections, refused, as it always was |
+| `tar-bmp-firstmember.head512` | GNU `tar -cf` on a file named `BM.txt` | a structurally valid tar the stdlib reads as `image/bmp` — a real file exercising competing detections, refused both before the audio/video split and after it |
 | `elf-with-ustar-magic.head512` | hand-built | an ELF header with `ustar` at offset 257. It is ACCEPTED now — recognition is by magic — and the test says so. It was written when it was refused, and is kept because the case it comes from used a real, executing binary |
 | `webm-void-says-matroska.head512` | FFmpeg WebM with a Void element containing the string `matroska`, header size widened to match | a substring search calls this Matroska; its DocType is `webm` |
 | `matroska-void-padded.head512` | FFmpeg Matroska with 40 bytes of Void padding, header size widened to match | DocType moves to offset 66, past any fixed leading window — the mistyping a parse avoids, and one a search still makes |

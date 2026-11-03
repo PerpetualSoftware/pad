@@ -635,7 +635,7 @@ func TestImportArtifactUnbindableTextRejected(t *testing.T) {
 	}
 }
 
-// BUG-3100 ruling 6: `pad item import -` sends whatever stdin held, so a lost
+// BUG-3100: `pad item import -` sends whatever stdin held, so a lost
 // heredoc reaches this handler as an empty or whitespace-only artifact. It must
 // be refused, not imported as a hollow draft. Run through the real handler
 // rather than read, because the CLI does no check of its own on this door.

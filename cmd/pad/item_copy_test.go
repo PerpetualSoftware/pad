@@ -1359,7 +1359,7 @@ func TestRunItemCopy_CommittedButUnreportedExitsZero(t *testing.T) {
 	}
 }
 
-// Archive_source is what was ASKED for and source.archived
+// The archive_source flag is what was ASKED for and source.archived
 // is what HAPPENED; the server's contract is that they agree. When they do
 // not, a MOVE did not complete, and exiting 0 would tell automation it did.
 func TestRunItemCopy_PartialMoveExitsNonZeroAndSaysWhatExists(t *testing.T) {

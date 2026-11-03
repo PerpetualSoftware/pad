@@ -53,7 +53,8 @@
 	// on a flag: `workspaceStore.recoverIfMissing`, driven by the workspace
 	// layout's sync subscriber.
 	// One-shot latch so the effect below issues `loadAll` once per session
-	// rather than on every re-run. RE-ARMED ON AN IDENTITY CHANGE (BUG-2991): the workspace store now drops the previous user's list
+	// rather than on every re-run. RE-ARMED ON AN IDENTITY CHANGE (BUG-2991):
+	// the workspace store now drops the previous user's list
 	// when the signed-in user changes, and this latch is what would otherwise
 	// stop the new user's list ever being fetched — logout is an SPA
 	// navigation, so this layout stays mounted and the latch stays true. The
@@ -155,7 +156,8 @@
 			// Re-armed for the pre-reload window: this latch is THIS component's
 			// state and the reload below may not have happened yet.
 			workspacesRequested = false;
-			// WHAT A REAL IDENTITY CHANGE DOES TO THIS TAB (BUG-3005): clear the persistent state a reload
+			// WHAT A REAL IDENTITY CHANGE DOES TO THIS TAB (BUG-3005):
+			// clear the persistent state a reload
 			// would not drop, then reload.
 			//
 			// Three successive passes each found another layer of surfaces holding

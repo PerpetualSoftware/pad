@@ -1081,7 +1081,7 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 	// value here is CARRIED, and nothing on this door can refuse. Passing nil
 	// for `supplied` says that rather than leaving it implied.
 	// The supplied half owes the visibility check, exactly as at the single
-	// move door. `status` is supplied so the store classifier
+	// move door. `status` is supplied, so the store classifier
 	// would REFUSE an unresolvable value rather than drop it; it did not
 	// carry across the other half of the supplied contract, which the store
 	// resolver structurally cannot provide — see

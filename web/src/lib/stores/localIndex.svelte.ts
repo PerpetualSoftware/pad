@@ -120,7 +120,7 @@ class WorkspaceState {
 	// delta from a cursor that may be past the rows in question.
 	// PLAIN, not `$state`: nothing renders from them.
 	// A stale ask is answered only by a projection resync that STARTED after
-	// it, never by one already in flight when it was made:
+	// it, never by one already in flight when it was made (#2150):
 	// `resyncStarts` counts starts (a join is not one), `staleSince` is that
 	// count at the latest outstanding ask (null when none), and
 	// `resyncCompleted` is the start number of the newest resync that
@@ -151,11 +151,11 @@ class WorkspaceState {
 	// populated cache resyncs, which is the safe reading of "we cannot know
 	// what this was authorised for".
 	accessEpoch = $state<string | null>(null);
-	// Has the DURABLE cache been read yet this session? (IDEA-2898, review of
-	// the reduced tip.) `accessEpoch === null` and `items.size === 0` say what
-	// RAM holds, which is not the same claim: during `bootstrap`'s hydrate
-	// await, RAM is empty and the cache on disk may be full. Adopting an epoch
-	// on that evidence is the silent adopt this change exists to prevent — see
+	// Has the DURABLE cache been read yet this session? (IDEA-2898)
+	// `accessEpoch === null` and `items.size === 0` say what RAM holds, which
+	// is not the same claim: during `bootstrap`'s hydrate await, RAM is empty
+	// and the cache on disk may be full. Adopting an epoch on that evidence
+	// is the silent adopt this change exists to prevent — see
 	// `ensureAccessScope`.
 	cacheRead = $state(false);
 	// Does the durable cache reflect the MOST RECENT authoritative snapshot this
@@ -1294,9 +1294,9 @@ export const localIndex = {
 		const isStale = () => state.generation !== bootstrapGen;
 
 		// `slot.p` holds the in-flight promise so the IIFE body's
-		// `finally` can do an identity check against it. We need a level of indirection (the object)
-		// because a bare `const p = ...` puts `p` in the TDZ when the
-		// suspended async body resumes and references it.
+		// `finally` can do an identity check against it. We need a level of
+		// indirection (the object) because a bare `const p = ...` puts `p` in
+		// the TDZ when the suspended async body resumes and references it.
 		const slot: { p: Promise<void> | null } = { p: null };
 		// A reentry reads the network at once (no hydrate), so it opens no join
 		// window; see `bootstrapBeforeFirstRead`.
@@ -1571,11 +1571,12 @@ export const localIndex = {
 					}
 				}
 			} catch (err) {
-				// Same order, same reason as the reconcile catch above: a 403 on the COLD `/items-index` — the first load
-				// after a revocation, and the likeliest path of all — is reset by
-				// the global handler before it reaches here, which makes
-				// `isStale()` true and used to swallow it into a cold state with
-				// no banner.
+				// Same order, same reason as the reconcile catch above: a 403
+				// on the COLD `/items-index` — the first load after a
+				// revocation, and the likeliest path of all — is reset by the
+				// global handler before it reaches here, which makes
+				// `isStale()` true and used to swallow it into a cold state
+				// with no banner.
 				if (isAuthError(err)) {
 					dropCacheForAuthError(ws, state);
 					throw err;
@@ -1920,7 +1921,7 @@ export const localIndex = {
 			// and resync again — every reload, for a scope that has not changed
 			// since. The started-resync path has no such gap, because its
 			// fallback is applied BEFORE the persist that happens inside it.
-			// AND ONLY IF THAT RESYNC'S SNAPSHOT REACHED DISK (TASK-2906).
+			// ...AND ONLY IF THAT RESYNC'S SNAPSHOT REACHED DISK (TASK-2906).
 			// The compare-and-set below is honest about the row it
 			// patches but cannot see whether the `persistReplace` it is
 			// finishing on behalf of committed. When that write was declined —
@@ -2229,7 +2230,7 @@ export const localIndex = {
 		// ensureState (not a bare get): a rename that lands before this
 		// workspace ever hydrated must still be RECORDED, or the warm
 		// hydrate restores rows under the dead slug with nothing left to
-		// fix them.
+		// fix them (see pendingRetags on WorkspaceState).
 		const state = ensureState(ws);
 		// Ownership stamp: intent recorded under a
 		// DIFFERENT resolved auth identity is dropped, never mixed — a cold

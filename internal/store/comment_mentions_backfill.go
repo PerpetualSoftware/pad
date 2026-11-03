@@ -25,7 +25,7 @@ const commentMentionsBackfilledFlag = "comment_mentions_backfilled"
 // RE-READS the body (FOR NO KEY UPDATE on Postgres, UpdateComment's lock), so
 // a pass never writes rows from a stale snapshot over a concurrent edit.
 // Ids only are held in memory. Imported comments are skipped (imported = 0),
-// as at import and on edit: TASK-3917. A failed comment
+// as at import and on edit: TASK-3917, decision bb0c9fc6. A failed comment
 // is logged with its id and counted. Names resolve against the users that
 // exist now: for a legacy row the backfill IS the write-time resolution.
 //
@@ -105,7 +105,7 @@ func (s *Store) backfillCommentMentionsOne(id string) error {
 		return err
 	}
 	if imported == 1 {
-		return nil // never indexed (TASK-3917)
+		return nil // never indexed (TASK-3917, decision bb0c9fc6)
 	}
 	// The added list is discarded: a backfill notifies nobody (TASK-3946).
 	if _, err := s.reindexCommentMentionsTx(tx, id, workspaceID, itemID, body, live == 1, createdAt); err != nil {

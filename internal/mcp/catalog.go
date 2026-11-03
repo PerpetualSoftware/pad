@@ -602,7 +602,7 @@ func applyResultMode(result *CallToolResult, err error, structuredOnly, textOnly
 //     flag, and actionItemExport exists to OVERRIDE that key to `-`
 //     (the MCP host can't see a local path) — its doc comment says
 //     "agents send it" outright. Rejecting it at the gate would kill
-//     those calls before the override runs. Not schema-declared because
+//     those calls before the override runs (PR #1159, bug 1). Not schema-declared because
 //     advertising a param the
 //     handler always overwrites would invite more of them. The
 //     analogous `file` key on action=import is deliberately NOT

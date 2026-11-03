@@ -180,7 +180,7 @@ export function createCollabFlusher(config: CollabFlusherConfig): CollabFlusher 
 	// now stale relative to whatever triggered the reset, so committing it would
 	// re-pollute the dedupe baseline the reset just cleared. Guards the extra
 	// promise turn `await config.save()` introduces over the page's original
-	// inline await. (TASK-2082).
+	// inline await (TASK-2082).
 	let resetGeneration = 0;
 
 	// Memoize the editor's canonical form of the seed on the context (BUG-3197).
@@ -203,7 +203,7 @@ export function createCollabFlusher(config: CollabFlusherConfig): CollabFlusher 
 		// Force-refresh recovery in flight: block any new flush scheduling. The
 		// provider is destroyed but the editor component is still mounted; a
 		// local edit during this window must NOT arm a flush against the stale
-		// Y.Doc state.
+		// Y.Doc state (TASK-1319).
 		if (config.isRecovering()) return;
 		if (!ctx) return;
 		timer = setTimeout(() => {
@@ -220,7 +220,7 @@ export function createCollabFlusher(config: CollabFlusherConfig): CollabFlusher 
 		// Force-refresh recovery is in flight: any markdown derived from the
 		// soon-to-be-discarded Y.Doc is stale relative to canonical server
 		// content. Skipping here covers every direct caller (beforeunload,
-		// raw-toggle, flushNow) without per-call-site guards.
+		// raw-toggle, flushNow) without per-call-site guards (TASK-1319).
 		if (config.isRecovering()) return 'skipped';
 		const normalizedMarkdown = config.normalize(markdown);
 		// Editor-markdown-space short-circuit (BUG-1941, regression of BUG-1899).

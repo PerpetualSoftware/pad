@@ -989,7 +989,7 @@ func (s *Store) HardDeleteAttachment(id string) error {
 // unknown / foreign / typo ids. (2) a writer transaction whose
 // stamp-to-commit span EXCEEDS orphanGCRefStaleWindow — the stamp is
 // already stale when a blocked claim re-evaluates, so the window's
-// sizing (see its comment) is what bounds this case, not the lock
+// sizing (see its comment) is what bounds this case, not the lock.
 func stampAttachmentRefsTx(tx *sql.Tx, s *Store, workspaceID string, texts ...string) error {
 	if workspaceID == "" {
 		return nil
@@ -1462,7 +1462,7 @@ func (s *Store) AttachmentReferenced(workspaceID, attachmentID string) (bool, er
 // have already been rehydrated — without this cascade the
 // attachment rows stay live (deleted_at IS NULL), pin their blobs
 // from orphan-GC reclamation, and continue counting toward the
-// importing user's storage usage.
+// importing user's storage usage (PR #308).
 //
 // Both originals and thumbnails carry the same workspace_id, so a
 // single WHERE workspace_id = ? clause covers both. Returns the
@@ -1876,7 +1876,7 @@ func (s *Store) RemapAttachmentReferencesInWorkspace(workspaceID string, oldToNe
 		// list, which is the kind of claim that goes stale unread. The workspace
 		// seq lock this transaction already took above is the one the subquery
 		// needs, so this costs an indexed MAX(seq) per row and no new locking.
-		// NOT a decision enqueue door (TASK-3117 ruling 3). This is a system
+		// NOT a decision enqueue door (TASK-3117 decision 3). This is a system
 		// fan-out rewrite: one import remap touches every matching item, so an enqueue
 		// per row would be an unbounded provider bill for one action. The rewrite
 		// DOES change hashed decision state, so each touched item's stored
@@ -2396,7 +2396,7 @@ func (s *Store) checkStorageLimitTx(tx *sql.Tx, lock storageLimitLock, adding in
 	// since the read that chose the lock, the check would hold the old
 	// owner's lock while counting the new owner's pool, and two uploads could
 	// both pass it. A move after this point is an ownership transfer, which
-	// carries its bytes unchecked by ruling.
+	// carries its bytes unchecked by design.
 	if ownerID.Valid && ownerID.String != "" {
 		if owner == nil || owner.ID != lockKey {
 			return errStorageOwnerMoved

@@ -177,7 +177,7 @@
 	// 'unknown' (not read yet, or the read failed) keeps the button: the
 	// portal answers any refusal with ?portal_error=, which this page shows.
 	// A customer with no live subscription still gets the portal, for its
-	// invoices (BUG-3898).
+	// invoices (BUG-3898 R2).
 	let billingAccount = $state<'unknown' | 'yes' | 'none'>('unknown');
 
 	async function loadBillingAccount() {

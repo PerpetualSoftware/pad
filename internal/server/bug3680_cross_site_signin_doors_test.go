@@ -155,7 +155,7 @@ func TestBUG3680_BootstrapRefusesCrossSiteForms(t *testing.T) {
 }
 
 // The legitimate callers the guard must keep working beyond the same-origin
-// and headless controls above: an allowed CORS origin,
+// and headless controls above (#2146): an allowed CORS origin,
 // the X-Bootstrap-Token bootstrap from a remote host, and an admin creating
 // an account from the SPA with its session.
 

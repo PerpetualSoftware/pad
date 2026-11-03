@@ -63,9 +63,9 @@
 	// user-menu-specific additions (the brand-spec footer doesn't carry them)
 	// so they land at the end. Community sits second, as in the footer: the
 	// brand doc's rule is that a surface may omit links but never reorders
-	// the ones it keeps (TASK-2888). Keeping the same relative order as the marketing
-	// footer means a user visiting both surfaces sees the same linear pattern
-	// — a small cohesion win.
+	// the ones it keeps (TASK-2888). Keeping the same relative order as the
+	// marketing footer means a user visiting both surfaces sees the same
+	// linear pattern — a small cohesion win.
 	const cloudLinks: ResourceLink[] = [
 		{ label: 'GitHub', href: GITHUB_REPO_URL },
 		{ label: 'Community', href: COMMUNITY_URL },

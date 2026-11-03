@@ -397,8 +397,8 @@ func (s *Server) respondWithConnection(w http.ResponseWriter, userID, requestID 
 	}
 	// Always read the staged slugs from the join table — even when
 	// wildcard is on, the UI needs to render pre-staged rows so the
-	// user can remove a mistake before flipping wildcard off. Without this, wildcard would hide the
-	// staged list, leaving the user no way to manage it.
+	// user can remove a mistake before flipping wildcard off. Without this,
+	// wildcard would hide the staged list, leaving the user no way to manage it.
 	allowedSlugs, err := s.store.ListConnectionWorkspaceSlugs(requestID)
 	if err != nil {
 		writeInternalError(w, err)

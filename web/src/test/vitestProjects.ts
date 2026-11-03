@@ -28,7 +28,7 @@
 //
 // What the line does NOT prove, because it counts FILES:
 //  - not that any assertion executed — a file of `.skip`ped tests counts as run
-// (vitest's own summary reports the skips);
+//    (vitest's own summary reports the skips);
 //  - not that a project SHOULD have had files: an idle project is printed, not
 //    failed, because a file filter legitimately idles one. `projectForTestFile`
 //    below is the guard for the accidental version of that;

@@ -204,8 +204,7 @@ describe('isSamePaneTarget — same-item guard', () => {
 
 	it('an href-sourced ref-shaped candidate is likewise judged ONLY as a ref, not a slug fallback', () => {
 		// Same collision as above, via the href channel this time — a second bug:
-		// the href branch was still checking slug
-		// before ref-shape.
+		// the href branch was still checking slug before ref-shape.
 		const current = item({ id: 'id-9', slug: 'plan-6', item_number: 5, collection_prefix: 'TASK' });
 		expect(isSamePaneTarget({ href: '/alice/myws/plans/plan-6' }, current)).toBe(false);
 	});

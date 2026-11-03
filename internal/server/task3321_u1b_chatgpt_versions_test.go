@@ -12,7 +12,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// TASK-3321 U1b (ruling (b)): every content change through the ChatGPT
+// TASK-3321 U1b: every content change through the ChatGPT
 // catalog is saved as a version first, past the 1h throttle, so it can be
 // undone from History. The door is a context marker set in-process by the
 // ChatGPT tool handler; nothing on the wire can set it.

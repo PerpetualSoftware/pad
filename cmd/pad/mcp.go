@@ -15,7 +15,7 @@ import (
 //
 //   - `pad mcp serve` — run the stdio MCP server.
 //   - `pad mcp install [agent]` — write a "pad" entry into a client's
-//     MCP config (Claude Desktop, Cursor, Windsurf, Claude Code).
+//     MCP config (Claude Desktop, Cursor, Windsurf, Claude Code, Codex).
 //   - `pad mcp uninstall <agent>` — remove the entry.
 //   - `pad mcp status` — show install state across all supported clients.
 func mcpCmd() *cobra.Command {

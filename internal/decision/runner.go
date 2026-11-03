@@ -632,7 +632,7 @@ func (r *Runner) Evaluate(ctx context.Context, itemID, setName string) (called b
 	// not stopped — the window is one statement plus the request, per job.
 	//
 	// This is the ONE liveness guard on the send path. A second, earlier copy
-	// in State was redundant with it (mutant M26 survived its removal), so it
+	// in State was redundant with it (removing it broke no test), so it
 	// is gone; State serves the read path too, where nothing is sent. It runs
 	// inside the loop below, immediately before each call.
 	//

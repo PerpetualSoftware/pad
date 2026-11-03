@@ -527,7 +527,8 @@ describe('TASK-2922 — what an optimistic upsert hands on', () => {
 	 *
 	 * The claim that a refused durable write is always re-supplied can be
 	 * attacked from several directions, so the population of cases is written
-	 * down rather than sampled. It is small, so here it is in full, with the leg that pins each:
+	 * down rather than sampled. It is small, so here it is in full, with the
+	 * leg that pins each:
 	 *
 	 *   1. A later delta CARRIES the row → pinned in
 	 *      localIndexScopeWriteFence.idb.test.ts.

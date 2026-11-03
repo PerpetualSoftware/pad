@@ -312,7 +312,7 @@
 	 *
 	 * Gating every affordance that WRITES the group value is not enough while the
 	 * lanes themselves keep reading it: the board would go on bucketing under a notice
-	 * saying it did not. That is the same false premise corrected one
+	 * saying it did not. That is the same false premise as the one corrected in the
 	 * derivation below: "a multi_relation declares no options" is true of the
 	 * schemas people write and enforced nowhere, so a `multi_select` retyped to
 	 * `multi_relation` keeps `options` like `["A","A,B"]` — and a lane value is
@@ -371,7 +371,7 @@
 	 * naming `status`, the group field is unreachable from it, and a relation
 	 * lane says nothing about whether an item's status can be written.
 	 *
-	 * THE RETAINED-OPTIONS HAZARD recorded below is still real and is
+	 * THE RETAINED-OPTIONS HAZARD recorded above is still real and is
 	 * NOT closed by this line — reading the status field instead of the group
 	 * field only moves it when the two differ, and a board grouped BY a `status`
 	 * that was retyped keeps them the same field, stale `options` and all. What
@@ -698,8 +698,8 @@
 				// restore. Assigning here rather than releasing a cooldown
 				// nobody set is the same repair without the two-second window.
 				//
-				// COPIED rather than aliased — defensive, and NOT for the usual alias reasoning. It
-				// is argued that the sync effect assigns the derived VALUE into `columnData`, so a
+				// COPIED rather than aliased — defensive, and NOT because the sync effect
+				// assigns the derived VALUE into `columnData`, so a
 				// later `columnData[col] = ...` writes THROUGH to
 				// `propColumnData`'s cached object and assigning it back
 				// restores nothing. That premise is FALSE, measured rather than
@@ -715,7 +715,7 @@
 				// So the copy buys nothing against aliasing; it stays only
 				// because a restore path should not hand its caller an object
 				// somebody else owns. Do not re-derive the aliasing story from
-				// the shape of this code — it has cost real time.
+				// the shape of this code — it has misled before.
 				columnData = Object.fromEntries(
 					Object.entries(propColumnData).map(([key, list]) => [key, [...list]]),
 				);
@@ -1418,8 +1418,8 @@
 		 *   - ~3px for the badge's `box-shadow: 0 1px 3px` blur radius
 		 *   - ~2px for the hover `transform: scale(1.05)` growth at
 		 *     the typical 25-40px badge width
-		 * 12px covers all three with a small safety margin.
-		 * PR #489 corrected a misreading of the spec and then an under-sized margin.
+		 * 12px covers all three with a small safety margin (PR #489 corrected a
+		 * misreading of the spec and then an under-sized margin).
 		 *
 		 * Browser support for `overflow-clip-margin`: Chrome 90+,
 		 * Firefox 102+, Safari 16.4+ — all browsers that ship

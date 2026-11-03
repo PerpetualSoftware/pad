@@ -1286,8 +1286,7 @@ func (s *Server) parseConsentPayload(r *http.Request, ar fosite.AuthorizeRequest
 // Refresh-token rotation is implicit: fosite's flow_refresh.go
 // calls Storage.RotateRefreshToken before issuing the new pair,
 // which under our adapter revokes the entire grant family
-// (matches fosite's reference MemoryStore behaviour, locked in
-// by tests).
+// (matches fosite's reference MemoryStore behaviour).
 //
 // On error fosite's WriteAccessError writes the JSON OAuth error
 // body; on success WriteAccessResponse writes
@@ -1312,8 +1311,8 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	// RFC 8707 resource= → fosite audience= before fosite parses.
-	// Without translation
-	// real RFC 8707 token-exchange requests fail audience matching.
+	// Without translation, real RFC 8707 token-exchange requests fail
+	// audience matching.
 	// Parsed exactly as fosite parses the token request (multipart included,
 	// the same 1 MiB bound), so the client classified here is the client
 	// fosite will authenticate: a ParseForm-only read missed a multipart

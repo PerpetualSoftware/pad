@@ -3149,7 +3149,7 @@ const isStrArrOrAbsent = (v: unknown) =>
  * abandoned_options has the wrong type, makes this return no fields and the
  * resolvers use the defaults, as Go's do when its typed unmarshal fails. A
  * null entry is dropped; Go decodes it as a zero-value field, which matches
- * no key, so the answer is the same.
+ * no key, so the answer is the same (BUG-3195).
  *
  * NOT exact parity on corrupt data, stated rather than implied: Go rejects
  * the whole schema, or the whole settings object, when ANY decoded member is

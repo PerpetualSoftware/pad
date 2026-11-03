@@ -57,8 +57,7 @@ func TestRefuseUndeclaredFieldsRefusesAPatchedUndeclaredKey(t *testing.T) {
 
 	// The refused request also carries a title and a body: a refusal must
 	// stop EVERY write in the request, not just the fields blob (a guard moved
-	// below those paths would otherwise
-	// still pass).
+	// below those paths would otherwise still pass).
 	rr := doRequest(srv, "PATCH", path, map[string]interface{}{
 		"fields_patch":             map[string]any{"status": "done", "priority": "high"},
 		"title":                    "Renamed by a refused write",
@@ -102,7 +101,7 @@ func TestRefuseUndeclaredFieldsRefusesAPatchedUndeclaredKey(t *testing.T) {
 	}
 }
 
-// Condition (3): WITHOUT the flag the write is exactly what it was
+// WITHOUT the flag the write is exactly what it was
 // before BUG-3156, accepted with the key named in warnings.undeclared_fields.
 // This is also the skew behaviour: a server that predates the flag ignores it,
 // which lands here.

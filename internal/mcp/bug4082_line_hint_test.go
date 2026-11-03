@@ -12,7 +12,7 @@ import (
 // transports. Remote's mapItemPatch had it inline (BUG-4065); stdio forwarded
 // edits to the CLI unread, so a string hint was refused there where remote
 // coerced it, and 2^53 or more reached bodypatch as a line number. Both now
-// call editsWithLineHints. One table drives both
+// call editsWithLineHints. Per decision 86931478, one table drives both
 // transports, so a change to the helper turns both red and stdio == remote is
 // pinned, not asserted; and neither transport modifies the caller's map.
 

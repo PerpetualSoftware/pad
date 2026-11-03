@@ -268,7 +268,7 @@ test('an unflushed live edit is captured in the restore undo-point via the UI (B
 	await expect(editor).toContainText(beta);
 	await expect(page.locator(SYNCED_BADGE_SELECTOR)).toBeVisible();
 
-	// P3: deterministically SUPPRESS the ordinary 5s idle collab-snapshot
+	// Deterministically SUPPRESS the ordinary 5s idle collab-snapshot
 	// flush so the ONLY gamma-carrying collab-snapshot PATCH that can land is the
 	// pre-restore one — making both the outcome and the ordering assertions
 	// airtight (no reliance on "reach the click under 5s"). A route gate ABORTS

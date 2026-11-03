@@ -382,8 +382,9 @@ func (s *Server) stageErr(err error) error {
 // q: the pool for a preview, the transaction for provisioning (U8b), which
 // runs it under its locks and compares the result
 // with the reviewed preview: the digest comparison IS the re-check, so no
-// fact the normalization depends on has to be listed separately. It must stay read-only: the write-capture test asserts a
-// pass on the provisioning transaction writes nothing.
+// fact the normalization depends on has to be listed separately. It must stay
+// read-only: the write-capture test asserts a pass on the provisioning
+// transaction writes nothing.
 //
 // upgradeOf is "" for an install; for an upgrade (U8b2) it is the install
 // being upgraded, whose own companion collections are existing, not
@@ -546,8 +547,9 @@ func (s *Server) previewArtifact(q store.Queryer, r *http.Request, workspaceID s
 	// (a default included) is checked against stored items too, through the
 	// index's own expression, and must be
 	// text: SQLite keys the index on the JSON-typed value and Postgres on its
-	// text, so a non-text slug is refused rather than guessed at. Provisioning re-checks every constraint inside one transaction, so
-	// a divergence left here costs a failed install, never a partial one.
+	// text, so a non-text slug is refused rather than guessed at. Provisioning
+	// re-checks every constraint inside one transaction, so a divergence left
+	// here costs a failed install, never a partial one.
 	if raw, ok := fields["invocation_slug"]; ok && raw != nil {
 		slug, isText := raw.(string)
 		if !isText {

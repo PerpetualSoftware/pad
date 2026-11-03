@@ -92,7 +92,7 @@ type SessionOwner struct {
 	// off Linux, in rows written before it existed, and for a harness pid
 	// inherited from outside a sandbox, which the recorder cannot see. A
 	// Linux recorder that cannot read its own namespace (no procfs) writes
-	// unidentifiedNamespace instead, which no reader matches (F2).
+	// unidentifiedNamespace instead, which no reader matches.
 	// An additive on-disk key: older readers ignore it, and a row without
 	// it is judged by pidNamespaceRelation's unstamped rule.
 	PIDNamespace uint64 `json:"pid_ns,omitempty"`
@@ -109,11 +109,11 @@ type SessionOwner struct {
 	SocketDev           uint64 `json:"socket_dev,omitempty"`
 	// MountNamespace is the inode of the mount namespace the socket was
 	// seen in (currentMountNamespace — Linux), recorded only when the
-	// recorder could stat the socket and read its identity (C1, mirroring
+	// recorder could stat the socket and read its identity (mirroring
 	// PIDNamespace's visibility rule). A path's absence, or a
 	// different node at it, is evidence only to a reader with the same view
 	// of the filesystem; elsewhere the socket verdict is unknown (BUG-4090).
-	// unidentifiedNamespace when Linux would not name it (F2). An additive on-disk
+	// unidentifiedNamespace when Linux would not name it. An additive on-disk
 	// key; a row without it keeps the
 	// pre-BUG-4090 socket rule.
 	MountNamespace uint64 `json:"mnt_ns,omitempty"`

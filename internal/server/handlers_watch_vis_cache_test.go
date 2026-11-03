@@ -222,15 +222,12 @@ func TestWatchEventsStream_StopsDeliveringAfterUserDisabled(t *testing.T) {
 //     traffic at a user whose access is being revoked underneath them.
 //   - A watch-matched probe brings a SECOND mechanism that produces the
 //     same silence: once maxConsecutiveWatchReloadFailures is crossed,
-//     the handler clears the watch set wholesale
-//
-// (covered by the test below). A bare "nothing arrived" assertion
-//
-//	would pass on that alone (team CONVE-12). The control leg closes
-//	it: a watch on an item in a STILL-granted collection must keep
-//	delivering in the same window, which is only possible while the
-//	watch set is still live — so the revoked item's silence can only
-//	be visCache.
+//     the handler clears the watch set wholesale (covered by the test
+//     below). A bare "nothing arrived" assertion would pass on that alone
+//     (CONVE-12). The control leg closes it: a watch on an item in a
+//     STILL-granted collection must keep delivering in the same window,
+//     which is only possible while the watch set is still live — so the
+//     revoked item's silence can only be visCache.
 //
 // Uses collection-access revocation rather than "disabled" (the original
 // vehicle) because a disabled user denies everything, control
@@ -256,8 +253,7 @@ func TestWatchEventsStream_RevalStillDeniesWhenWatchListReloadErrors(t *testing.
 	//     before the control event landed, so the control leg timed out.
 	//     (BUG-2570's two CI instances.)
 	//   - The first fix (fault closure lifts the fault after two ticks)
-	//     was green-deterministic but lost DETECTION: review found
-	//     that a stray successful tick — before the fault is installed,
+	//     was green-deterministic but lost DETECTION, since a stray successful tick — before the fault is installed,
 	//     or after it is lifted — resets visCache and reloads the watch
 	//     list, either of which silences the revoked item even under the
 	//     regression this test guards, masking it.

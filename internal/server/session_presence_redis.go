@@ -206,7 +206,8 @@ const (
 	// rather than lingering forever.
 	//
 	// THE COST OF THAT CHOICE, stated because it is a real regression
-	// against MemorySessionPresence: for up to this long after an instance DIES, its sessions are
+	// against MemorySessionPresence: for up to this long after an
+	// instance DIES, its sessions are
 	// still listed, so a picker can offer one that no longer exists and a
 	// push targeted at it publishes and reaches nobody. The in-memory
 	// registry had no such window — its entries died with its process.
@@ -220,7 +221,7 @@ const (
 	sessionKeyTTL = 3 * sessionRenewInterval
 
 	// presenceOpTimeout bounds every Redis call this type makes, including
-	// ADD's registration write, which used to run on context.Background()
+	// ADD's registration write, which used to run on context.Background().
 	//
 	// WHAT IT DOES NOT BOUND, measured rather than assumed: go-redis does
 	// not apply a command context to CONNECTION ESTABLISHMENT. Against a
@@ -796,8 +797,8 @@ func (p *RedisSessionPresence) ListForUser(userID string) ([]LiveSession, error)
 		return out[i].ConnectedAt.Before(out[j].ConnectedAt)
 	})
 	// Everything that could not be interpreted has already RETURNED an
-	// error above — an undecodable entry included. Reaching here means every indexed session
-	// either decoded or was pruned as expired, so this list is complete
+	// error above — an undecodable entry included. Reaching here means
+	// every indexed session either decoded or was pruned as expired, so this list is complete
 	// as of the read.
 	return out, nil
 }
@@ -823,7 +824,7 @@ func (p *RedisSessionPresence) Close() {
 	// concurrently with Close found no renewal, skipped the wait, and ran
 	// its DEL — leaving an already-cancelled-but-still-in-flight renewal
 	// free to complete afterwards and re-create the key. That is the
-	// resurrection bug arriving by the other door, and the fix there (wait
+	// earlier resurrection bug arriving by the other door, and the fix there (wait
 	// for the goroutine) only works if Remove can still find it.
 	//
 	// The entries are dropped with the object instead. Close is the

@@ -427,7 +427,8 @@ func ComputeAdminUserStatusValue(disabledAt, lastWriteAt string, workspaceCount 
 // UserStorageUsage returns the SUM(size_bytes) of all non-deleted
 // attachments across workspaces owned by this user. Matches the
 // per-workspace WorkspaceStorageUsage definition. PLAN-1542 / TASK-1548
-// (#603).
+// (PR #603: the single-user endpoint needs the same aggregate as the
+// list endpoint so row-merge keeps the value fresh).
 func (s *Store) UserStorageUsage(userID string) (int64, error) {
 	var total sql.NullInt64
 	err := s.db.QueryRow(s.q(`
@@ -552,7 +553,7 @@ func (s *Store) SearchUsers(params AdminUserSearchParams) (*AdminUserSearchResul
 	// Page query needs both aggregations (the row carries them). The count
 	// query only needs the workspace_count join when HasWorkspaces filtering
 	// is active — skipping the storage SUM avoids scanning every attachment
-	// on every list call (#599).
+	// on every list call (PR #599).
 	fromClause := "FROM users u" + workspaceCountJoin + storageBytesJoin
 	countFromClause := "FROM users u"
 	if params.HasWorkspaces != nil {
@@ -718,7 +719,7 @@ type BillingAggregates struct {
 // count of new "pro" signups since `since`. Implemented as two scalar
 // SQL queries so the admin Billing dashboard does not have to materialise
 // every users row + decrypt every TOTP secret on each refresh
-// (MEDIUM, PR for TASK-827).
+// (PR for TASK-827).
 //
 // `since` is compared lexicographically against the stored RFC3339
 // created_at strings — that matches the rest of the store, where times

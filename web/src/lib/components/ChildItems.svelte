@@ -1075,8 +1075,8 @@
 		<ul class="print-child-list">
 			{#each split.work as child (child.id)}
 				{@const childFields = parseFields(child)}
-				<!-- THE SECOND RENDERER IN THIS FILE, and the reason a sweep can miss it: fixing "ChildItems" is not fixing a
-				     FILE, it is fixing each place the file draws a value. The print
+				<!-- THE SECOND RENDERER IN THIS FILE, and the reason a sweep can miss it: fixing
+				     "ChildItems" is not fixing a FILE, it is fixing each place the file draws a value. The print
 				     view draws `status` where the interactive rows draw `priority`,
 				     so a sweep that stopped at the first hit in each file missed it
 				     (BUG-3067). -->

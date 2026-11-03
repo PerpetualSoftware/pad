@@ -29,10 +29,10 @@ import (
 // in the backfill, the edit time on an edit (kept rows are unchanged).
 // Pass "" with live=false.
 //
-// Known limits, by decision (TASK-3917 r1): imported comments are NEVER
+// Known limits, by decision (TASK-3917): imported comments are NEVER
 // indexed, by import, by the backfill (imported = 0) or by an edit of an
 // imported comment (the reindex covers the whole body, so unedited
-// source-instance handles would bind): the caller skips the helper (TASK-3917).
+// source-instance handles would bind): the caller skips the helper (TASK-3917, decision bb0c9fc6).
 // Accepted cost (TASK-3917): a
 // mention a local user ADDS while editing an imported comment is not indexed
 // either. A comment mentioning more than
@@ -43,7 +43,7 @@ import (
 // migrated comment is imported = 1 and is never indexed (users are not
 // migrated either, migrated.go). The backfill resolves against the users that
 // exist NOW: for a legacy row the backfill IS its write-time resolution
-// (TASK-3917 r2). Usernames shorter than 3 characters (legacy) are never
+// (TASK-3917). Usernames shorter than 3 characters (legacy) are never
 // matched, and "end.@alice" reads as an email and is skipped.
 //
 // Every writer of comments.body or deleted_at calls this (the site guard in
@@ -65,7 +65,7 @@ func (s *Store) reindexCommentMentionsTx(tx *sql.Tx, commentID, workspaceID, ite
 
 	// Resolve in chunks (bounded IN-list), in sorted name order, and stop at
 	// MaxMentionsPerComment RESOLVED users: unresolvable names that sort early
-	// cannot evict real ones (TASK-3917 r2).
+	// cannot evict real ones (TASK-3917).
 	want := map[string]bool{} // user ids the body resolves to
 	resolved := 0
 	for i := 0; i < len(names) && resolved < links.MaxMentionsPerComment; i += links.MentionResolveChunk {

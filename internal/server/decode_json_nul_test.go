@@ -647,7 +647,7 @@ func TestBodyDecodesNULGateAgreesWithAnUngatedWalk(t *testing.T) {
 // stores no text at all. That change was reverted: login would have stored
 // sha256(sanitised) while middleware_auth still compares sha256(RAW),
 // breaking session validation for any client with a non-UTF-8 User-Agent.
-// A sink named in a review is a pointer to verify, not a finding.
+// A sink that is merely named is a pointer to verify, not a finding.
 func TestDocumentActivityStoresBindableUserAgent(t *testing.T) {
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
@@ -997,7 +997,7 @@ func TestBodyDecodesNULMatchesKeysLikeTheDecoder(t *testing.T) {
 
 // TestBodyScanClosesTheMapModelGaps pins the answers to the four measured
 // disagreements between the old map[string]any scan and encoding/json's typed
-// decode (BUG-2803 rounds 16-17), as BUG-2812's token scan gives them. They are
+// decode (BUG-2803), as BUG-2812's token scan gives them. They are
 // documented on the scan ("WHAT CHANGED IN BUG-2812"); this keeps that block
 // true. It replaced TestBodyDecodesNULKnownMapModelDisagreements, which
 // asserted the two WRONG answers on purpose so that it would fail when this
@@ -1221,7 +1221,7 @@ func TestDecodeJSONTrimsOnlyJSONWhitespace(t *testing.T) {
 //
 // The two share encoding/json and jsonEncodedFieldKeys. They deliberately do
 // not share traversal, descent, or key-matching code, which is where every
-// walker defect in this unit actually lived (rounds 1, 2, 4, 16, 17).
+// walker defect in this unit actually lived (BUG-2803).
 func independentDecodesNUL(t *testing.T, raw []byte) bool {
 	t.Helper()
 	var root any

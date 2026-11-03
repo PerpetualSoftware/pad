@@ -153,8 +153,8 @@ func TestListBeforeTime_InvalidUTF8CursorIsADialectDivergence(t *testing.T) {
 		// the encoding of the database PAD_TEST_POSTGRES_URL names — so the
 		// fixture hands back a UTF8 database even when pointed at a
 		// SQL_ASCII one. Verified: creating a database from inside a
-		// SQL_ASCII database yields UTF8 while template1 is UTF8. A review
-		// round read this test as able to FAIL on a SQL_ASCII deployment;
+		// SQL_ASCII database yields UTF8 while template1 is UTF8. An earlier
+		// reading took this test as able to FAIL on a SQL_ASCII deployment;
 		// it cannot, for that reason.
 		//
 		// The read stays anyway, because the premise is real even where the

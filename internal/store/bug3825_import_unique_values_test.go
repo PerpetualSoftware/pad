@@ -183,8 +183,9 @@ func TestBUG3825_InvocationSlugValuesNeitherIndexEquatesAreKept(t *testing.T) {
 	}
 }
 
-// The slot model against the database itself. For every pair of values, the
-// database under test says whether its
+// The slot model against the database itself: SQLite's decimal parser and
+// Postgres's exponent limit are not something to reason about from Go. For
+// every pair of values, the database under test says whether its
 // invocation_slug index would see them as equal: SQLite by json_extract,
 // Postgres by ->>. That dialect's slots must collide exactly when it says so.
 // Equal but not colliding is the import failing on the index; colliding but
@@ -247,7 +248,7 @@ func TestBUG3825_SlotsMatchTheDatabase(t *testing.T) {
 			err := s.db.QueryRow(query, `{"v":`+a.lit+`}`, `{"v":`+b.lit+`}`).Scan(&equal)
 			if err != nil {
 				// Postgres refuses a number outside numeric's range, SQLSTATE
-				// 22003 (never any). Such a value
+				// 22003 (only that error, never any). Such a value
 				// cannot be stored, so it cannot collide either.
 				if s.dialect.Driver() == DriverPostgres && strings.Contains(err.Error(), "SQLSTATE 22003") {
 					refused[a.lit+" vs "+b.lit] = true

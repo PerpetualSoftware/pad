@@ -995,7 +995,7 @@ func TestEmitBulkItemEventTx_PartitionsByMemberWorkspace(t *testing.T) {
 }
 
 // TestOutbox_StatusChangeFromEmptyCarriesEmptyPriorStatus pins the SPEC-3
-// conformance point : prior_status must be PRESENT on
+// conformance point: prior_status must be PRESENT on
 // item.status_changed even when the prior status was empty.
 //
 // An item can transition from no status at all, and that is a real status
@@ -1655,14 +1655,14 @@ func outboxBatchIDsFor(t *testing.T, s *Store, itemID string) []string {
 // bulk verbs route through it.
 //
 // THIS TEST IS NOT SUFFICIENT ON ITS OWN, and saying so is the point: it
-// proves the OPTION works, not that the handler passes it. There were
-// three handler call sites that never did.
+// proves the OPTION works, not that the handler passes it. Before the fix, three
+// handler call sites never did.
 // TestBulkItems_EveryVerbStampsOneBatchID covers that layer.
 //
 // The population is enumerated rather than sampled (CONVE-18): archive
 // (DeleteItem), restore (RestoreItem), move (MoveItemWithPreCheck), field
 // update (UpdateItemWithPreCheck) and assign (UpdateItem) are the complete set
-// of mutating store calls handlers_items_bulk.go makes. My own escalation said
+// of mutating store calls handlers_items_bulk.go makes. An earlier count said
 // four; it was five, and restore was the one missing.
 //
 // Each leg asserts the unstamped control too. Without it the test would pass

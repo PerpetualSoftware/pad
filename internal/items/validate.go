@@ -474,9 +474,8 @@ func validateFieldType(def models.FieldDef, val any) error {
 		//     `normalizeEmptyRelationLists` has already rewritten it into the
 		//     write shape's own spelling of none — an absent key on a full
 		//     write, the nil deletion sentinel on a partial one. The rule used
-		//     to say this was "the write door's job"; no door did it, which is
-		//     what was found, and it now sits at the one
-		//     entry every door passes through instead. The arm still accepts
+		//     to say this was "the write door's job"; no door did it, so the rule
+		//     now sits at the one entry every door passes through instead. The arm still accepts
 		//     the shape: a caller reaching `validateFieldType` directly (the
 		//     tests do) gets the honest answer that an empty list is legal.
 		//     Refusing it here would leave a caller no way to clear the field.

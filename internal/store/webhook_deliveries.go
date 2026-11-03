@@ -64,7 +64,8 @@ func (s *Store) RecordDelivery(eventID, webhookID, status, lastError string, att
 	ts := now()
 	// Insert first: ON CONFLICT waits for a concurrent inserter (a drop) to
 	// commit, so a row that exists afterwards can be locked and read, and an
-	// absent one is simply ours.
+	// absent one is simply ours (FOR UPDATE alone locks nothing when the row
+	// does not exist yet).
 	res, err := tx.Exec(s.q(`INSERT INTO webhook_deliveries (outbox_event_id, webhook_id, status, attempts, last_error, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (outbox_event_id, webhook_id) DO NOTHING`),
 		eventID, webhookID, status, attempts, nullIfEmpty(lastError), ts)

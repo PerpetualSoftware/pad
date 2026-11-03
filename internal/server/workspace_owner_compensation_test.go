@@ -403,9 +403,9 @@ func TestOwnerCompensation_CompletesUnderASingleConnection(t *testing.T) {
 	}
 }
 
-// The three legs below cover behaviour added after review. Each exists
-// because it names a state the original code reached and the tests could not
-// see.
+// The three legs below cover behaviour added to close gaps in the first
+// version. Each exists because it names a state the original code reached and
+// the tests could not see.
 
 // ABSENT BUT NOT ALONE. Absence of THIS caller's owner row is not absence of
 // every member — the two questions BUG-3026 separated. Deleting on the first
@@ -539,7 +539,7 @@ func TestInvitationSignup_MemberAddFails_RollsTheAccountBack(t *testing.T) {
 // SIGNUP ACK LOSS — the membership committed and reported failure anyway.
 // Deleting the account here destroys a signup that worked, which is the
 // BUG-3026 shape arriving in the door forty lines from the helper written to
-// prevent it. Added because review found exactly that.
+// prevent it. Added because that gap was real.
 func TestInvitationSignup_MemberAddAckLoss_KeepsTheAccountAndSucceeds(t *testing.T) {
 	srv, inv := invitedSignupServer(t)
 	logs := captureLogs(t)

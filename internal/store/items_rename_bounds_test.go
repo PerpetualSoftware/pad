@@ -270,7 +270,7 @@ func TestItemRenameCascade_DoesNotChargeForRewritesItWillNotPerform(t *testing.T
 // arrives with ~240,000 link rows instead of 64 — 64 MiB / (255 + 24), computed
 // for THIS bound rather than carried over from BUG-2804's few-KB ceiling.
 //
-// This is the case my own doc comment on MaxItemRenameCascadeBytes previously
+// This is the case the doc comment on MaxItemRenameCascadeBytes previously
 // claimed was impossible — it asserted the cascade's retention was O(1) in the
 // linker count and attributed the remaining k-linear growth to the outbox
 // (BUG-2827), which is a different vector entirely.

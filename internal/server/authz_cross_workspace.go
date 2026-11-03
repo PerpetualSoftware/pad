@@ -836,7 +836,7 @@ func (s *Server) crossWorkspaceEditAllowed(ws *models.Workspace, user *models.Us
 	}
 	// Base-role branch, mirroring requireEditPermission. "guest" is
 	// excluded: a guest has no role-based permission at all, only
-	// grants. Since TASK-3376 the role, like
+	// grants. Since TASK-3376 (PR #1756) the role, like
 	// requireEditPermission's, applies only inside the member's collection
 	// access: visibility can come from a VIEW grant, so "the caller can see
 	// it" no longer stands in for "the role reaches it".

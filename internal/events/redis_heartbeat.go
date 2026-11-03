@@ -24,8 +24,8 @@ import (
 // forwarding: no reconnect in 24 seconds. Do not replace this with a Ping.
 //
 // WHAT THIS DETECTS AND WHAT IT DOES NOT, stated as precisely as the mechanism
-// actually supports (which was asked to refute the claim rather than to look
-// for defects, and partly succeeded). All three limits below were
+// actually supports (it was checked by trying to refute the claim rather than
+// by looking for defects, and the claim was partly refuted). All three limits below were
 // checked against go-redis v9.22.0 rather than reasoned about:
 //
 //   - IT IS A RECEIVE-SIDE DETECTOR, not a round-trip health check. What it

@@ -75,12 +75,12 @@ describe('BUG-3207 — the layout is the ONLY full_refresh cursor writer', () =>
 	/**
 	 * A single item's reload cannot vouch for the shared
 	 * workspace cursor, so ItemDetail no longer calls markSynced. Pinned the way
-	 * the requirement reads ("a failed layout reconcile plus a successful item reload
-	 * leaves the cursor unmoved"), within the limit of a source pin: neither
-	 * route component has a harness, and the service-level half, that
-	 * markSynced is the only door that moves the cursor on a full reload, is
-	 * syncServerClockCursor.svelte.test.ts. This fails if any component outside
-	 * the layout calls it again.
+	 * the requirement reads ("a failed layout reconcile plus a successful
+	 * item reload leaves the cursor unmoved"), within the limit of a source
+	 * pin: neither route component has a harness, and the service-level half,
+	 * that markSynced is the only door that moves the cursor on a full
+	 * reload, is syncServerClockCursor.svelte.test.ts. This fails if any
+	 * component outside the layout calls it again.
 	 */
 	it('no component other than the workspace layout calls markSynced', () => {
 		const files = import.meta.glob('/src/**/*.svelte', { query: '?raw', import: 'default', eager: true }) as Record<

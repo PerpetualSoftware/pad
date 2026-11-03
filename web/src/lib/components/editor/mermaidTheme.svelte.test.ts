@@ -97,7 +97,7 @@ describe('collectMermaidRerenders', () => {
 	// ProseMirror renders decorations into it — a remote collaborator's caret
 	// is a widget whose label carries a text node with the peer's display
 	// name. The first version read `code.textContent` and so would have
-	// rendered `graph TD; A-->B;<peer name>`, which mermaid rejects; the resulting
+	// rendered `graph TD; A-->B;Dave`, which mermaid rejects; the resulting
 	// error class then made the breakage stick.
 	it('ignores decoration text in the contentDOM and uses the model source', () => {
 		const polluted =

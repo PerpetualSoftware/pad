@@ -961,7 +961,7 @@ func (s *Store) GetItemByRef(workspaceID, prefix string, number int) (*models.It
 // Ref-shaped identifiers containing any uppercase rune may use move history;
 // their misses are terminal so canonical refs cannot reach another item by slug.
 // With no uppercase rune, try only the exact current ref, then the exact,
-// case-sensitive slug. Never use move history or a number fallback (BUG-4119 r1).
+// case-sensitive slug. Never use move history or a number fallback (BUG-4119).
 func (s *Store) ResolveItem(workspaceID, identifier string) (*models.Item, error) {
 	// Try UUID lookup first (8-4-4-4-12 hex format)
 	if isUUID(identifier) {
@@ -4068,7 +4068,7 @@ func (s *Store) CreateItemLink(workspaceID string, input models.ItemLinkCreate, 
 // intentionally does NOT filter on items.deleted_at IS NULL: the only caller
 // is the immediate readback after INSERT, and a delete race against either
 // endpoint would otherwise cause the just-successful insert to return nil
-// (#259). User-facing surfaces all read links via
+// (PR #259). User-facing surfaces all read links via
 // GetItemLinks (plural) or GetParentForItem, both of which DO filter.
 func (s *Store) getItemLinkQ(q Queryer, id string) (*models.ItemLink, error) {
 	var link models.ItemLink
@@ -4277,7 +4277,7 @@ func (s *Store) DeleteItemLink(id string) error {
 	// relationship-graph link (so v1.5's silence would exclude it). The
 	// contract does not currently decide that case, and inventing an answer
 	// inside a delivery refactor is how a public wire acquires an event nobody
-	// ruled on. Tracked separately. The same note is on
+	// decided on. Tracked separately. The same note is on
 	// handlers_item_links.go, which is where a reader is likely to hit it
 	// first.
 	if linkType == models.ItemLinkTypeParent {
@@ -4349,7 +4349,7 @@ func (s *Store) setParentLinkOnce(workspaceID, itemID, parentID, createdBy, user
 	// SPEC-3 v1.6 clarification).
 	//
 	// A parent link writes the item's OWN row — it advances seq — and that is
-	// the criterion the contract uses to divide two rulings that look
+	// the criterion the contract uses to divide two decisions that look
 	// adjacent: a mutation touching the item's row emits item.updated, while a
 	// relationship-graph link (blocks / blocked-by), which writes only the
 	// links table, stays silent under v1.5.
@@ -4465,8 +4465,8 @@ func (s *Store) setParentLinkTx(tx *sql.Tx, workspaceID, itemID, parentID, creat
 	}
 
 	// Cycle detection: walk the ancestor chain from parentID to ensure itemID
-	// is not an ancestor. Run this AFTER the parent-children locks are held (PR
-	// #868): checking before the lock lets two concurrent reparents
+	// is not an ancestor. Run this AFTER the parent-children locks are held
+	// (PR #868): checking before the lock lets two concurrent reparents
 	// each pass on a stale ancestry snapshot, block on the lock, then both insert
 	// — closing the loop (A→B→C→A). Under the lock the walk reads via the tx, so
 	// it sees the edge the just-unblocked peer committed and catches the cycle.
@@ -5926,9 +5926,8 @@ func (s *Store) moveItemWithPreCheckOnce(
 
 	// A move's field OVERRIDES can inject a brand-new pad-attachment:
 	// reference into the rewritten fields blob — this write bypasses the
-	// UpdateItem core, so stamp here too, BEFORE the UPDATE (BUG-2415, #2, see
-	// the ORDERING note on
-	// stampAttachmentRefsTx).
+	// UpdateItem core, so stamp here too, BEFORE the UPDATE (BUG-2415; see
+	// the ORDERING note on stampAttachmentRefsTx).
 	if err := stampAttachmentRefsTx(tx, s, existing.WorkspaceID, newFieldsJSON); err != nil {
 		return nil, err
 	}
@@ -6033,7 +6032,7 @@ func (s *Store) moveItemWithPreCheckOnce(
 		}
 		// A move changes the collection, which is both hashed decision state
 		// and what selects the question sets, so it is an enqueue door
-		// (TASK-3117 ruling 3). Keyed on the TARGET collection's sets.
+		// (TASK-3117 decision 3). Keyed on the TARGET collection's sets.
 		if err := s.enqueueDecisionJobsTx(tx, moved.WorkspaceID, moved.ID, moved.CollectionID); err != nil {
 			return nil, err
 		}

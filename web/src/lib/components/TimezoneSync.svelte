@@ -28,7 +28,7 @@
 				const isSameIdentity = authStore.identityFence();
 				const writesBefore = explicitTimezoneWrites();
 				void api.auth.setTimezoneIfUnset(browser).then((res) => {
-					// An explicit write that succeeded after this one began wins, whatever order the answers arrive in (TASK-4101 PR2a r1 H-L2).
+					// An explicit write that succeeded after this one began wins, whatever order the answers arrive in (TASK-4101).
 					if (explicitTimezoneWrites() !== writesBefore) return;
 					if (isSameIdentity() && res.timezone !== undefined) authStore.setTimezone(userId, res.timezone);
 				}).catch(() => {}); // Unsupported browser zone: no retry this page load.

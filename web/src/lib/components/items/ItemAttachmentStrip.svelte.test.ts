@@ -2348,7 +2348,8 @@ describe('ItemAttachmentStrip', () => {
 
 	it('defers to a load still in flight instead of superseding it (no strand on failure)', async () => {
 		// A restore that superseded a still-pending mount load would strand the
-		// strip empty with no error/retry if the revalidation then failed. The revalidation instead DEFERS: the in-flight load already
+		// strip empty with no error/retry if the revalidation then failed. The
+		// revalidation instead DEFERS: the in-flight load already
 		// returns the current list (archive doesn't delete attachments), so no
 		// second fetch is issued, and that load remains responsible for the outcome.
 		props.parentArchived = true;

@@ -278,8 +278,8 @@ func TestAutoCreateWorkspaceReconcileArmsAreDistinguishable(t *testing.T) {
 
 // TestAutoCreateWorkspace_WrongRoleMembershipKeepsTheWorkspace pins the fourth arm.
 //
-// It exists because the first version of this reconcile asked the wrong question
-// : it used an EXISTENCE check, so a row carrying any role at all
+// It exists because the first version of this reconcile asked the wrong question:
+// it used an EXISTENCE check, so a row carrying any role at all
 // reconciled to success. What was attempted was an OWNER row, so a row with another
 // role means the write did NOT land — and the user cannot administer their own
 // auto-created workspace, since owner > editor > viewer.
@@ -330,7 +330,7 @@ func TestAutoCreateWorkspace_WrongRoleMembershipKeepsTheWorkspace(t *testing.T) 
 
 	// THE POINT OF THIS TEST, and the count above cannot carry it: the owner arm
 	// keeps the workspace too, so folding wrong-role back into "a row exists means
-	// success" — the exact defect this test guards — would pass the count check
+	// success" — the exact defect this test guards — would pass the count check.
 	// What must be true is that this is reported as a FAILURE
 	// needing a human, not as a success.
 	logged := logBuf.String()

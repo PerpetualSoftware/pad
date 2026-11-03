@@ -3,7 +3,7 @@ import type { APIRequestContext, Browser, BrowserContext, Page } from '@playwrig
 import { ADMIN_EMAIL, ADMIN_PASSWORD } from './global-setup';
 
 /**
- * TASK-4044 PR 3b: the write path of
+ * TASK-4044 PR 3b (decisions 4cf4d4b9, 2de240d9, d87482de): the write path of
  * /messages/[n] against the REAL server. Every value asserted is one the server
  * sends: a bearer POST with NO X-Pad-Agent is the human (mine true, source "cli"
  * from the CLI, "web" from this page); with X-Pad-Agent it is that agent. E5
@@ -174,7 +174,7 @@ test('E5b: an own send scrolls to the end even from further up', async ({ page, 
 	await expect(page.locator('article.mine', { hasText: 'from the top of the page' })).toBeInViewport();
 });
 
-// With a gap open and the newest page unreachable, the sent
+// With a gap open and the newest page unreachable (decision ec6bbe31), the sent
 // row is DETACHED: it shows below the 'Show newer messages' marker and the marker stays.
 test('E5c: a send past a gap shows below the Show newer marker while the marker stays', async ({
 	page,
@@ -247,7 +247,7 @@ test('E6: the composer rides above the emulated keyboard, and a touch long-press
 	await expect.poll(bottomOf).toBeLessThanOrEqual(viewportH);
 
 	// A REAL tap (touch events, which move focus, unlike the synthetic pointer events
-	// below) opens nothing: no menu and none of its buttons (the Q-c instrument).
+	// below) opens nothing: no menu and none of its buttons.
 	// A 500 ms press then opens the menu, and the lift that ends it presses nothing.
 	const bubble = row(page, line.seq);
 	const menuButtons = bubble.getByRole('button', { name: /^(Reply|Copy|Delete)$/ });

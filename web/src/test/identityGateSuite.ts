@@ -22,7 +22,8 @@
  * accepted, which is what makes the gate a detector of THESE edits rather
  * than of any edit.
  *
- * The aid (`analysisReport`) is not required quiet on a route surface (TASK-3097): its trusted vocabulary names ItemDetail's fences.
+ * The aid (`analysisReport`) is not required quiet on a route surface
+ * (TASK-3097): its trusted vocabulary names ItemDetail's fences.
  *
  * THE SCANNER GUARDS STAY (TASK-3097). Where a surface has a
  * regex guard beside its gate (`<surface>IdentityFence.test.ts`, built on

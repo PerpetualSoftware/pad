@@ -85,8 +85,8 @@ func TestCrossWorkspaceBacklinkSnippetsCarryTheMarkerBothWays(t *testing.T) {
 	}
 }
 
-// TestDirectRefSearchResultsDoNotClaimTheirTitleIsStale covers the case where
-// P2, which this unit INTRODUCED: the new CLI renderer warned that a snippet was
+// TestDirectRefSearchResultsDoNotClaimTheirTitleIsStale covers a defect
+// this unit INTRODUCED: the new CLI renderer warned that a snippet was
 // derived from a stale body on results whose snippet is the item's TITLE.
 //
 // The direct-ref and numeric search paths set Snippet = Item.Title and drop the

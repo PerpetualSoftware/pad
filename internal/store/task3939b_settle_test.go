@@ -260,7 +260,7 @@ func TestRecordNotificationsSent_RowsAffectedErrorReportsCommittedChunk(t *testi
 	}
 }
 
-// TASK-4032 r5 H-Q1. The claim never selects a row created before
+// TASK-4032. The claim never selects a row created before
 // expireCutoff, so it does not depend on the expiry sweep having run: a row
 // created exactly at the cutoff is claimable and one a second older is not,
 // in the candidate select and in the per-row claim UPDATE alike. The limit

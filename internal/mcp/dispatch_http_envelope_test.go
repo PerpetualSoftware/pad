@@ -326,7 +326,7 @@ func TestUnknownWorkspace_StoreError_EmptyHints(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────
 
 // TestExecuteRequest_UsesRequestContext_NotOuterContext pins
-// that the dispatcher's `executeRequest` MUST pass
+// #379: the dispatcher's `executeRequest` MUST pass
 // `req.Context()` (not the outer `ctx`) into `packageHTTPResponse`
 // so the lister sees everything `buildHTTPRequest` + `d.Apply`
 // attached: WithCurrentUser, WithAPITokenAuth, and any

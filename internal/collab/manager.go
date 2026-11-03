@@ -417,8 +417,7 @@ func (m *RoomManager) Join(itemID string, conn *websocket.Conn, since int64, con
 	for attempt := 0; attempt < 3; attempt++ {
 		// Acquire the per-item setup lock BEFORE creating the room
 		// so the schema-rebuild + force_refresh checks below can
-		// run without leaking an empty m.rooms entry on bail-out.
-		// (TASK-1319).
+		// run without leaking an empty m.rooms entry on bail-out (TASK-1319).
 		itemLock.Lock()
 
 		// Schema-mismatch rebuild (TASK-1268). Runs before the
@@ -890,8 +889,7 @@ func (m *RoomManager) runConn(room *Room, rc *roomConn, itemLock *sync.Mutex, si
 	// cannot interleave a record-vs-read window.
 	// Holding the lock means: any in-flight writeLoop event
 	// finishes its record/send before we read max; any subsequent
-	// event sees replayDone=true and emits its own live cursor.
-	// (TASK-1319).
+	// event sees replayDone=true and emits its own live cursor (TASK-1319).
 	rc.writeMu.Lock()
 	cursorID := highestReplayed
 	if cursorID < since {

@@ -248,7 +248,7 @@ func TestBUG3349_NoSessionForADisabledAccount(t *testing.T) {
 }
 
 // Share links a disabled account created are suspended: the same answer as
-// an unknown link while disabled, serving again once re-enabled (ruling).
+// an unknown link while disabled, serving again once re-enabled.
 func TestBUG3349_ShareLinksAreSuspendedWhileTheCreatorIsDisabled(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)

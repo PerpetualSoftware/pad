@@ -130,8 +130,8 @@ func (s *Store) replaceWikiLinksScoped(tx *sql.Tx, sourceItemID, workspaceID, co
 		// title-fallback path: resolved → ref row, unresolved →
 		// broken ref row. Skipping the switch ensures we never
 		// reach the WikiLinkKindRef branch's title-fallback logic.
-		// An earlier normalization was
-		// over-aggressive — it promoted to Kind=Ref and let title
+		// An earlier normalization was over-aggressive:
+		// it promoted to Kind=Ref and let title
 		// fallback create ghost backlinks the renderer wouldn't
 		// produce.
 		if link.Kind == links.WikiLinkKindWorkspaceRef {
@@ -606,8 +606,8 @@ func (s *Store) cascadeTitleRename(tx *sql.Tx, renamedItemID, workspaceID, oldTi
 	// unrelated literal-pipe `[[OldTitle|alias]]` brackets that
 	// happened to mention items B/C with overlapping titles alone.
 	//
-	// This replaces the prior broad-regex
-	// approach, which corrupted unrelated brackets: items A "Old Title"
+	// A prior broad-regex
+	// approach corrupted unrelated brackets: items A "Old Title"
 	// and B "Old Title|alias" both referenced from one source, A
 	// renamed, RewriteWikiTitle's pattern (?i:Old Title) matched
 	// both A's `[[Old Title]]` row AND B's `[[Old Title|alias]]`
@@ -666,7 +666,7 @@ func (s *Store) cascadeTitleRename(tx *sql.Tx, renamedItemID, workspaceID, oldTi
 	// created or renamed in. That does NOT retire this charge, for three
 	// reasons:
 	//
-	//   - the bound is non-retroactive by ruling, so rows written before it
+	//   - the bound is non-retroactive by design, so rows written before it
 	//     still carry unbounded target_titles, and this loop reads STORED
 	//     titles rather than the one being written;
 	//   - two paths still admit an unbounded title without a caller supplying
@@ -806,7 +806,7 @@ func (s *Store) cascadeTitleRename(tx *sql.Tx, renamedItemID, workspaceID, oldTi
 			}
 			continue
 		}
-		// NOT a decision enqueue door (TASK-3117 ruling 3). This is a system
+		// NOT a decision enqueue door (TASK-3117 decision 3). This is a system
 		// fan-out rewrite: one title rename touches every matching item, so an enqueue
 		// per row would be an unbounded provider bill for one action. The rewrite
 		// DOES change hashed decision state, so each touched item's stored
@@ -1347,8 +1347,8 @@ func (s *Store) CountBacklinks(targetItemID, workspaceID string, vis BacklinksVi
 //
 //  1. Enumerate workspaces the requester can see via
 //     Store.GetUserWorkspaces (which already unions members +
-//     grant-only guest workspaces — the planning
-//     phase identified this as broader than a membership query).
+//     grant-only guest workspaces — broader
+//     than a membership query).
 //  2. For each non-target workspace, compute per-workspace
 //     visibility via Store.ResolveBacklinksVisibility (the request-
 //     independent ACL helper — required because cross-ws traversal

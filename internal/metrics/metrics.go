@@ -384,7 +384,7 @@ type Metrics struct {
 	// CollabAppendFailuresTotal counts batches of collab sync frames whose
 	// op-log append failed (TASK-3574). The frames are still broadcast, so
 	// the edit lives only in peers until one of them persists it. EXPECT
-	// zero: any nonzero week is the ruled trigger for building the step2
+	// zero: any nonzero week is the agreed trigger for building the step2
 	// coverage check.
 	CollabAppendFailuresTotal prometheus.Counter
 
@@ -1172,9 +1172,9 @@ type OAuthActiveTokensProvider func() (int64, error)
 // surface. Prometheus tolerates a missing series cleanly (renders as
 // a gap; alerting rules can use absent() or stale-for thresholds).
 //
-// (TASK-961) The prior NewInvalidMetric
-// approach — original comment claimed Prometheus would drop the NaN,
-// but the actual behavior is whole-scrape failure.
+// The prior NewInvalidMetric approach (TASK-961) was wrong: its original
+// comment claimed Prometheus would drop the NaN, but the actual behavior is
+// whole-scrape failure.
 func (m *Metrics) RegisterOAuthActiveTokensCollector(provider OAuthActiveTokensProvider) {
 	if provider == nil {
 		return

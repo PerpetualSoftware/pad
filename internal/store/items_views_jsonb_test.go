@@ -275,7 +275,7 @@ func TestItemsViewsJSONB_SQLiteRebuildPreservesIndexesAndTriggers(t *testing.T) 
 
 	// All 8 indexes from 005/017/053/054 must be present on items.
 	// idx_items_invocation_slug_per_collection was added to migration
-	// 056 in IDEA-1486 R1.1 after the original draft forgot
+	// 056 in IDEA-1486 after the original draft forgot
 	// to recreate it; this test grew to 8 entries alongside that fix.
 	wantIndexes := map[string]bool{
 		"idx_items_collection":                     false,

@@ -963,15 +963,15 @@ func (e *itemCreateError) write(w http.ResponseWriter, r *http.Request) {
 // *itemCreateError with a status hint.
 // relationPosture says how a create door treats a relation value that does not
 // resolve. Two callers, two answers, and the difference is the product rule:
-// Refuse on write, carry on IMPORT.
+// refuse on write, carry on IMPORT.
 //
 // An artifact is not caller input in the sense the write doors mean. It was
 // written elsewhere, possibly years ago and certainly before referent
 // validation existed, and the person importing it did not choose its field
 // values and cannot fix them from the import call. Refusing would break the
 // import of exactly the artifacts most likely to carry junk — which is what
-// the product rule states: "explicitly allow import of the junk to avoid breaking
-// import".
+// the product rule states: "explicitly allow import of the junk to avoid
+// breaking import".
 type relationPosture int
 
 const (
@@ -1884,8 +1884,8 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 		// IDEA-1494 open-children guard. The actual check runs INSIDE
 		// the store transaction (see Store.UpdateItemWithPreCheck) so
 		// the children-list query and the parent's status write share
-		// a snapshot — closes the TOCTOU window. Here we just stage the inputs and the
-		// visibility filters; the closure runs later under the
+		// a snapshot — closes the TOCTOU window. Here we just stage the inputs and
+		// the visibility filters; the closure runs later under the
 		// workspace seq lock + parent-children advisory lock.
 		if !input.Force {
 			var settings models.CollectionSettings
@@ -1948,8 +1948,8 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 		// BUG-3163: a full blob may CARRY stored reserved metadata unchanged but
 		// may not change it, and omitting a stored key would delete it (the store
 		// replaces the blob), so omission is a change too. Composed into the precheck so the
-		// comparison is against
-		// the row as re-read under the write lock, on every ordering below.
+		// comparison is against the row as re-read under the write lock, on every
+		// ordering below.
 		openChildrenPrecheck = composeReservedCarryGuard(openChildrenPrecheck, callerReserved)
 
 		validatedFields, err := json.Marshal(fieldMap)
@@ -2090,8 +2090,8 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 
 		// Auto-populate start_date/end_date on a status change — but ONLY when
 		// the item's CURRENT stored value for that date is empty. A partial
-		// patch must not clobber a date the caller isn't touching: running autoPopulateDates
-		// against the bare patchMap would
+		// patch must not clobber a date the caller isn't touching: running
+		// autoPopulateDates against the bare patchMap would
 		// see the date key absent and always inject today, overwriting an
 		// existing end_date on a status→done patch. So we run it against a
 		// merged view (current fields ∪ patch), then lift back only a date the
@@ -2908,8 +2908,7 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 		if cerr == nil && comment != nil {
 			s.publishCommentEvent(sseCommentCreated, workspaceID, updated.ID, comment.ID, updated.Title, updated.CollectionSlug, actor, source)
 			// item.updated_with_comment is RETIRED (SPEC-3 v1.2): a hand-rolled composite with no
-			// flood argument,
-			// which folds into the item event this update emitted plus
+			// flood argument, which folds into the item event this update emitted plus
 			// comment.created.
 			//
 			// PRECISELY, because "item.updated + comment.created" would

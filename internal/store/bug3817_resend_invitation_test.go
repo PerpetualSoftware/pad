@@ -97,7 +97,7 @@ func TestBUG3817_ResendReplacesTheInvitation(t *testing.T) {
 }
 
 // A resend of an invitation that was accepted is refused, and the accepted
-// row and the membership stay as they were (BUG-3817 r1 M2 condition).
+// row and the membership stay as they were (BUG-3817 condition).
 func TestBUG3817_AResendOfAnAcceptedInvitationIsRefused(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)

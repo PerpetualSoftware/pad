@@ -478,7 +478,7 @@ type Server struct {
 	// that have called AttachmentStore.Put but not yet inserted the
 	// attachments row. Without this, the orphan GC could delete a
 	// blob between Put and CreateAttachment, leaving a live row that
-	// references a missing blob.
+	// references a missing blob (PR #307).
 	//
 	// A plain map + mutex rather than sync.Map: counters need
 	// atomic-with-delete semantics (decrement-then-delete-if-zero
@@ -675,8 +675,8 @@ type Server struct {
 	// fire between two test steps — an extra SUCCESSFUL tick resets the
 	// visibility cache and reloads the watch list, masking exactly the
 	// reset-skipped-on-fault regression the reval-fault test guards, and
-	// enough extra FAULTING ticks clear the watch set (both observed as
-	// a first fix attempt on BUG-2570).
+	// enough extra FAULTING ticks clear the watch set (both observed
+	// during a first fix attempt on BUG-2570).
 	//
 	// Same atomic.Pointer rationale as watchPredicatesLoadFault above:
 	// read by the stream's background goroutine (once, at stream setup)
@@ -1319,7 +1319,7 @@ func (s *Server) SetImageProcessor(p attachments.Processor) {
 // upload handler to fence Put + CreateAttachment against orphan-GC
 // blob deletions of the same hash. The counter is attachments.InFlight,
 // shared with the app store (TASK-3396); its doc carries the locking
-// rationale.
+// rationale (PR #307).
 func (s *Server) markUploadInFlight(hash string) func() {
 	return s.inFlight.Mark(hash)
 }
@@ -3884,7 +3884,7 @@ func (s *Server) requireEditPermission(w http.ResponseWriter, r *http.Request, w
 // response, for callers that report per row (bulk) rather than per request.
 //
 // An editor or owner ROLE applies only inside the collections the member's
-// access reaches (TASK-3376). Before it, the role
+// access reaches (TASK-3376, PR #1756). Before it, the role
 // short-circuited before the collection was looked at, so a member with
 // collection_access='specific' who could SEE an item through a VIEW grant
 // could edit it, comment on it and create beside it. Outside their reach the
@@ -3945,7 +3945,7 @@ func (s *Server) editorRoleReaches(r *http.Request, workspaceID, collectionID st
 // memberRoleReachesCollection is the member half of editorRoleReaches, shared
 // with the collab socket's write decision, which has no request context.
 //
-// The OWNER role always reaches. An
+// The OWNER role always reaches (PR #1756). An
 // owner can set any member's collection access, their own included
 // (handleSetMemberCollectionAccess is owner-gated with no self exception), so
 // a restriction on an owner's writes is one click from undone. It would also

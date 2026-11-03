@@ -584,7 +584,8 @@ func TestWriteGuardResolvesValuerOnce(t *testing.T) {
 	})
 
 	t.Run("an unclassifiable shape is REFUSED, not passed through", func(t *testing.T) {
-		// The allow-list's whole point. Naming text-carrying shapes one at a time never ends; this asserts the default
+		// The allow-list's whole point. Naming text-carrying shapes one at a time
+		// never ends; this asserts the default
 		// answer for anything unnamed is refusal rather than silent acceptance.
 		type unexpected struct{ Note string }
 		args := []driver.NamedValue{{Ordinal: 1, Value: unexpected{Note: "hello"}}}

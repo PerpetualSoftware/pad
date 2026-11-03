@@ -62,9 +62,9 @@ import { readFileSync } from 'node:fs';
  * the instrument agrees not to look (BUG-3084 checkpoint 21, the rule the
  * collection-page fold paid for four times over).
  *
- * Thirteen findings across #1379's rounds; two were defects in the page.
- * Eleven were these guards failing OPEN, and each guard was defeated
- * four separate times AFTER it had been fixed — every time by constructing a
+ * Thirteen findings in #1379; two were defects in the page.
+ * Eleven were these guards failing OPEN, and the guards were defeated
+ * four separate times AFTER they had been fixed — every time by constructing a
  * shape and running it, never by reading:
  *   - a disposition that covered a whole EFFECT exempted the effect's own
  *     defect: removing the `untrack` produced zero offenders;
@@ -526,7 +526,7 @@ export function trackedEpochReadDetails(
  * line all come out right, and the core's own suite drives each of them —
  * with the legacy regex run on the same fixture as the control that goes red.
  *
- * WHAT A STATEMENT IS, here. Four shapes the first scanner got
+ * WHAT A STATEMENT IS, here. Five shapes the first scanner got
  * wrong, every one accepted by the compiler:
  *   - brackets are skipped with `matchDelimiter`, which already understands
  *     strings, template interpolations and REGEX LITERALS — a hand-rolled
@@ -632,9 +632,10 @@ export function stateDeclarations(code: string): string[] {
 	const out: string[] = [];
 	const STATEMENT_START = /^[ \t]*(let|const|var|function|export|import|class|if|for|while|return|switch|try|\$effect|\$derived|\$inspect|onMount|onDestroy)\b/;
 
-	// ONE WALK over the code, literal-aware from the outside in (a regex that searched for `let` found one INSIDE a template
-	// literal and enumerated a phantom declaration, so the search itself has to
-	// skip what the statement scanner skips.
+	// ONE WALK over the code, literal-aware from the outside in: a regex that
+	// searched for `let` found one INSIDE a template literal and enumerated a
+	// phantom declaration, so the search itself has to skip what the statement
+	// scanner skips.
 	let i = 0;
 	while (i < code.length) {
 		const c = code[i]!;
@@ -733,8 +734,8 @@ function readLetStatement(code: string, from: number, out: string[], STATEMENT_S
 			// ANGLE BRACKETS. In type position every `<` opens a type. After the
 			// initialiser starts, a `<` is a type-ARGUMENT list only if it
 			// closes with a `>` that is immediately followed by `(` — the call
-			// it parameterises (`$state<Record<string, number>>({})`) — otherwise it is a comparison,
-			// spaced or not (`1<2`), and is left alone.
+			// it parameterises (`$state<Record<string, number>>({})`) — otherwise
+			// it is a comparison, spaced or not (`1<2`), and is left alone.
 			if (c === '=' && code[i + 1] === '>') { i++; continue; }
 			if (c === '<' && (initAt === -1 || angle > 0)) { angle++; continue; }
 			if (c === '<' && closesAsTypeArguments(code, i)) { angle++; continue; }

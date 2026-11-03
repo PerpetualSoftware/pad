@@ -76,7 +76,7 @@ func TestBackfillStructuredEntryIDs(t *testing.T) {
 	if len(ids) != 3 || ids[0] == "" || ids[1] != "d" || ids[2] == "d" || ids[2] == "" {
 		t.Errorf("repaired ids = %q, want [minted d minted]", ids)
 	}
-	// Silent, by ruling.
+	// Silent, by design.
 	if after.Seq != before.Seq {
 		t.Errorf("seq moved %d → %d; the backfill must not bump it", before.Seq, after.Seq)
 	}

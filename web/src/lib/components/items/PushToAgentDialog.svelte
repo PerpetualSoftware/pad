@@ -406,7 +406,8 @@ always a broadcast that went out.
 
 		void refreshPresence(gen);
 		const timer = setInterval(() => {
-			// Expire a 'known' answer that has stopped being refreshed. The stall timeout below only rescues the FIRST read; a
+			// Expire a 'known' answer that has stopped being refreshed. The stall
+			// timeout below only rescues the FIRST read; a
 			// later poll that hangs would otherwise freeze the count at its last
 			// value forever, leaving Push armed against a session list nobody has
 			// confirmed in minutes. Past PRESENCE_MAX_AGE_MS our answer carries no

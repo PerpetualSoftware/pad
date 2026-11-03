@@ -9,7 +9,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/oauth"
 )
 
-// TASK-3321 U2a (ruling (i)): the authorization server issues tokens for two
+// TASK-3321 U2a: the authorization server issues tokens for two
 // canonical resources, the /mcp URL and the ChatGPT catalog's, but every
 // token is bound to ONE, and each mount refuses a token bound to the other.
 // A request naming no resource is bound to /mcp's, as it always was.

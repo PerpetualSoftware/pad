@@ -226,7 +226,7 @@ func TestRedisSessionPresence_UndecodableEntryIsAnError(t *testing.T) {
 }
 
 // TestRedisSessionPresence_CloseDoesNotWaitForeverOnAParkedRenewal —
-// the instrument an earlier version of this file did not have.
+// the instrument that an earlier version of this file did not have.
 //
 // closeDrainTimeout was untestable while it was a constant: under the
 // production client config go-redis's own timeouts always release the

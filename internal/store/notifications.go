@@ -201,10 +201,10 @@ func mentionDedupeKey(commentID, userID string) string {
 // enqueueMentionNotificationsTx tells the users an EDIT newly mentioned. The
 // actor is the EDITOR, who wrote the mention: an admin adding @bob to Alice's
 // comment is the admin mentioning bob, and an admin adding @alice notifies
-// Alice (TASK-3946 ruling e6a86278). The editor is never told about
+// Alice (TASK-3946, decision e6a86278). The editor is never told about
 // mentioning themselves.
 //
-// Mention wins (TASK-3946): when the mention row is
+// Mention wins (TASK-3946, decision f0fc5933): when the mention row is
 // actually written, the same user's still-pending comment/reply row for this
 // comment is deleted, by a conditional DELETE and never a read first, so a
 // dispatcher claim that lands in between leaves both rows. A row already

@@ -1116,7 +1116,7 @@
 				? // sourceRef/targetRef preserve the raw ref strings: after ingest the
 					// force layout mutates source/target into node OBJECTS, so any
 					// accessor comparing endpoints against a ref (linkColor's focus-mode
-					// adjacency check) must read these instead (#702).
+					// adjacency check) must read these instead (PR #702).
 					data.edges.map((e) => ({
 						source: e.source,
 						target: e.target,
@@ -1165,7 +1165,7 @@
 		// Bulk mutations (items_bulk_updated) and replay-buffer gaps don't fan
 		// out through onItemEvent — the SSE service routes them to
 		// onSyncRequired. Either way the graph may be stale, so fold them into
-		// the same debounced refetch (#704).
+		// the same debounced refetch (PR #704).
 		const unsubscribeSync = sseService.onSyncRequired(() => scheduleRefetch());
 		return () => {
 			unsubscribeSSE?.();

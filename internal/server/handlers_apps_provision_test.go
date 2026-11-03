@@ -739,7 +739,7 @@ func TestAppInstallRedeem_DeadCodeNeverChargesTheInstallBucket(t *testing.T) {
 	}
 }
 
-// U8b: the in-transaction derivation only READS. It runs
+// The in-transaction derivation only READS. It runs
 // under the write-capture harness on a real transaction, relation passes
 // included, and must record no write. On SQLite the harness pins the store to
 // ONE connection, so a derivation that slipped a read onto the pool instead

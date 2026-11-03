@@ -105,14 +105,14 @@ func TestItemRename_LiteralSlashTitleIsNotRewrittenAsQualified(t *testing.T) {
 	// TestItemRename_LiteralSlashTitleRetargetsOntoALiteralSlashSibling below,
 	// where the decoy demonstrably gains the backlink under the unfixed code.
 	//
-	// Recorded because I got this wrong in both directions before measuring it:
-	// first asserting a retarget with a decoy that could not be stolen, then
-	// over-correcting to "the renamed item always wins", which shows up
-	// by reading resolveTitleTx's stage order rather than my summary of it.
+	// Recorded because it is easy to get wrong in both directions without
+	// measuring: first asserting a retarget with a decoy that could not be
+	// stolen, then over-correcting to "the renamed item always wins". What
+	// settles it is resolveTitleTx's actual stage order, not a summary of it.
 }
 
 // TestItemRename_LiteralSlashTitleRetargetsOntoALiteralSlashSibling is the
-// DETERMINISTIC retarget, and it exists because my first boundary note was
+// DETERMINISTIC retarget, and it exists because the first boundary note was
 // wrong in the other direction.
 //
 // Having measured that the wrongly-qualified bracket still found the renamed

@@ -44,7 +44,7 @@ type nulColumn struct {
 }
 
 // nulColumns is the 86-column population from TASK-2825 (45 JSON / 36
-// user-text / 5 derived) plus the second ring Ruling 2 admitted wholesale.
+// user-text / 5 derived) plus the second ring, admitted wholesale.
 //
 // DERIVED columns are classed as text: status_transitions and item_wiki_links
 // carry values extracted from stored item content, which is the BUG-2814
@@ -52,7 +52,7 @@ type nulColumn struct {
 //
 // The SECOND RING is included by design: instr triggers are
 // near-free, so caller-influenced text columns go in wholesale rather than
-// being litigated one at a time. Ruling 2 attached a condition — a
+// being litigated one at a time. The condition is that a
 // header-derived value (user agent, IP) must not surface as a 500 or a broken
 // login when the trigger refuses — which is why S2 also maps the trigger's
 // error, and why those columns are marked in the comments below.
@@ -212,16 +212,15 @@ var nulColumns = []nulColumn{
 
 	// ATTRIBUTION COLUMNS, swept as a CLASS (CONVE-18).
 	//
-	// Rounds 2, 3 and 6 each named one or two of these, which is the signal
-	// that the reviewer was sampling a population rather than finding
-	// instances. Enumerating every created_by / last_modified_by / source /
+	// These columns kept being named one or two at a time, which is the signal
+	// that a population was being sampled rather than instances found.
+	// Enumerating every created_by / last_modified_by / source /
 	// actor / author / *_by column in the schema found SIXTEEN unprotected,
 	// against the eight an earlier list had.
 	//
 	// Some are server-set today (granted_by, invited_by, uploaded_by are user
-	// ids). They go in anyway, on Ruling 2's posture for the second ring: an
-	// instr trigger is near-free, and litigating each one is how the last three
-	// rounds were spent.
+	// ids). They go in anyway, on the second ring's posture: an
+	// instr trigger is near-free, and litigating each one never ends.
 	{"activities", "source", classText},
 	{"attachments", "uploaded_by", classText},
 	{"collection_grants", "granted_by", classText},

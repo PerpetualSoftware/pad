@@ -517,7 +517,7 @@ func TestDecisionSettings_PlaintextKeyRowIsNotUsed(t *testing.T) {
 	}
 }
 
-// A review claimed a disabled runner makes the next tick panic and kill
+// It might be assumed that a disabled runner makes the next tick panic and kill
 // the loop. It does not — RunOnce is nil-safe — and this pins that: the loop
 // ticks through a nil runner and still runs the provider after a re-enable.
 func TestDecisionSettings_TickLoopSurvivesDisableAndReenable(t *testing.T) {

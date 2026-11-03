@@ -319,8 +319,8 @@ type RedisBus struct {
 	// boundary again. It ends when the new space passes the peak or this
 	// process restarts, since the field is in memory. The activity bus names
 	// the same loop in internal/events dropAllBuffers and declines it on an
-	// epoch change; this bus accepts it on every arm, per
-	// BUG-2743: a missed watch notification is unrecoverable, and the loop
+	// epoch change; this bus accepts it on every arm, per BUG-2743:
+	// a missed watch notification is unrecoverable, and the loop
 	// costs one refused resume per reconnect with nothing fetched.
 	//
 	// It knows only what THIS instance saw of the old space. A replica that
@@ -823,7 +823,7 @@ func (b *RedisBus) SubscribeAndReplaySince(ctx context.Context, sinceID int64) (
 // callerIsGone reports whether a Redis error is our own cancellation rather
 // than a fault worth telling an operator about.
 //
-// A FUNCTION OF THE ERROR ALONE, AND THAT IS THE FIX The first version asked
+// A FUNCTION OF THE ERROR ALONE, AND THAT IS THE FIX. The first version asked
 // ctx.Err() instead —
 // which cannot distinguish "the caller left" from "Redis failed while the
 // caller happened to be leaving", so a genuine failure coinciding with a
@@ -1049,8 +1049,8 @@ func (b *RedisBus) sharedCounter(ctx context.Context) (int64, bool) {
 		// chase. The entry-side decline catches a caller that was already
 		// gone; this catches one that left while we were asking.
 		//
-		// CLASSIFIED ON THE ERROR, NOT ON ctx.Err() Asking the context instead
-		// asks the wrong
+		// CLASSIFIED ON THE ERROR, NOT ON ctx.Err(). Asking the context
+		// instead asks the wrong
 		// question: a GENUINE Redis failure that merely coincides with a
 		// cancellation would be downgraded to Debug and vanish — precisely the
 		// signal an operator needs, hidden by the fix meant to reduce noise.

@@ -1028,7 +1028,7 @@ func (b *RedisBus) SubscribeAndReplaySince(ctx context.Context, workspaceID stri
 // and let the replay read deliver the gap. It was wrong for the population
 // this whole fix is about: a fresh subscriber (sinceID == 0) reads no replay,
 // so events arriving in the gap were skipped by fan-out and never replayed —
-// dropped outright. Keeping the note because the
+// dropped outright. The note stays because the
 // mechanism was locally coherent and the failure was one call path over.
 func (b *RedisBus) subscribeAndReplay(ctx context.Context, workspaceID string, sinceID int64, maxPerWorkspace int) (chan Event, []Event, <-chan struct{}, SubscribeOutcome) {
 	if ctx.Err() != nil {
@@ -1038,7 +1038,7 @@ func (b *RedisBus) subscribeAndReplay(ctx context.Context, workspaceID string, s
 		// THIS IS THE ONLY EARLY EXIT, deliberately. An earlier draft paired it
 		// with a cancellation break at the top of the establish loop, which
 		// the mutation matrix could only detect when BOTH were removed — and
-		// The loop-top one could exit while
+		// the reason is that the loop-top one could exit while
 		// still owning an unretired establishment record, stranding the next
 		// subscriber forever. It is gone. Past this point a cancelled caller
 		// is unwound by the code that owns the thing being unwound, never by
@@ -1756,7 +1756,7 @@ func (b *RedisBus) establishSubscription(ctx context.Context, workspaceID string
 
 	b.mu.Lock()
 	// THREE REASONS TO ABANDON, and all must retire the establishment record
-	// in THIS critical section (both P1s, BUG-2764 for the third).
+	// in THIS critical section (BUG-2764 covers the third).
 	//
 	// SUBSCRIBE failed: the client could not deliver the command (a refused
 	// dial, a write that failed, a caller's context ending mid-dial), so

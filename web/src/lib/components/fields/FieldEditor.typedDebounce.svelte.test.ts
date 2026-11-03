@@ -474,7 +474,7 @@ describe('the number field (finding 1)', () => {
 });
 
 describe('the subject can change without the row changing (finding 5)', () => {
-	// THE INTERLEAVING MATTERS, and my first draft of both legs got it wrong: they
+	// THE INTERLEAVING MATTERS, and a first draft of both legs got it wrong: they
 	// swapped the subject while an edit was still PENDING, and a pending edit is
 	// dropped by the ordinary "this is not our echo" branch whether or not the
 	// subject check exists. Both mutants survived. The window only the subject

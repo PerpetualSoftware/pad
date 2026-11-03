@@ -461,7 +461,7 @@ func TestOAuth_RotateRefreshToken_RevokesEntireGrant(t *testing.T) {
 	// per flow_refresh.go:86 and get inserted active=TRUE per our
 	// insertOAuthRequestRow contract).
 	//
-	// This fixes the previous implementation
+	// Regression guard (#370): the previous implementation
 	// that flipped only the named refresh row, leaving the previously-
 	// issued access token active until TTL expired. The test below
 	// pins the corrected behavior: after rotation, the OLD refresh +

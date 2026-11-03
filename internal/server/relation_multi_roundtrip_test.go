@@ -253,7 +253,7 @@ func equalStrings(a, b []string) bool {
 	return true
 }
 
-// The BULK door's provenance snapshot (PLAN-2857).
+// The BULK door's provenance snapshot (PLAN-2857 U4).
 //
 // `applyBulkOp` merges the item's stored blob with the caller's changes, coerces,
 // snapshots relation provenance, then validates — and validation INJECTS schema

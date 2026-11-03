@@ -636,7 +636,7 @@ export function isNetworkUnreachable(err: unknown): boolean {
  * server health, OR workspace-scoped endpoints whose 403 doesn't
  * imply workspace-wide read loss (members list, storage usage, etc.
  * 403 from those for grant-only guests is expected and shouldn't
- * purge the cache (TASK-1360).
+ * purge the cache; TASK-1360).
  *
  * The whitelist is the set of endpoints the local-first read model
  * actually consumes for items:
@@ -1655,8 +1655,7 @@ export const api = {
 			// presence without treating a clean import as a fact worth showing.
 			//
 			// A POSITIVE DECIMAL INTEGER is required, spelled the one way the CLI's
-			// staleBodyImportCount accepts it, and
-			// no looser. NOT "the one way strconv.Atoi accepts it": Atoi is
+			// staleBodyImportCount accepts it. NOT "the one way strconv.Atoi accepts it": Atoi is
 			// LOOSER than both readers, and the Go side deliberately rejects three
 			// forms it would take — a leading `+`, values above 2^53-1, and a
 			// repeated header — so that the two agree exactly. A response
@@ -2047,7 +2046,7 @@ export const api = {
 			// reject flushes from clients whose Y.Doc is populated
 			// but whose cursor was never anchored (network blip
 			// during the post-replay cursor write). Omitting on 0
-			// would silently bypass the gate.
+			// would silently bypass the gate (TASK-1319).
 			if (opts?.opLogCursor !== undefined) {
 				body.op_log_cursor = opts.opLogCursor;
 			}

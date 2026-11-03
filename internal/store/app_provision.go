@@ -150,13 +150,13 @@ var ErrNotWorkspaceOwner = errors.New("not a workspace owner")
 // ProvisionAppInstall provisions an app install in one transaction.
 //
 // THE RE-CHECK IS A RE-DERIVATION. The transaction does
-// not re-verify a list of facts the preview relied on; two review rounds
-// showed that list is never complete. It runs the same normalization on the
+// not re-verify a list of facts the preview relied on; that list
+// has proved never complete. It runs the same normalization on the
 // transaction (derive) and the caller compares the result with the reviewed
 // digests and changes list.
 //
-// LOCKS BREAK DEPENDENCY CYCLES; THEY DO NOT COVER EVERY READ (
-// superseding "lock every read": that created deadlock cycles with
+// LOCKS BREAK DEPENDENCY CYCLES; THEY DO NOT COVER EVERY READ
+// (superseding "lock every read": that created deadlock cycles with
 // member removal and account deletion and could never cover an inserted
 // grant or a request-cached role). A writer W that changes
 // state provisioning READ, but reads nothing provisioning WRITES and

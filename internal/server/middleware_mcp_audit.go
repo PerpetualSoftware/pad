@@ -697,8 +697,8 @@ var _ func(http.Handler) http.Handler = (*Server)(nil).MCPAuditLog
 // Why a direct emit rather than letting the audit middleware catch
 // it: MCPAuditLog is mounted INSIDE MCPBearerAuth, so when bearer
 // auth denies before calling next.ServeHTTP, the audit middleware
-// never runs, which leaves a blind spot. Pre-auth rejections (missing / malformed / unknown
-// bearer) intentionally stay un-audited because there's no user to
+// never runs, which leaves a blind spot. Pre-auth rejections (missing /
+// malformed / unknown bearer) intentionally stay un-audited because there's no user to
 // attribute the row to and the audit_trail table covers those
 // auth-event signals already.
 //

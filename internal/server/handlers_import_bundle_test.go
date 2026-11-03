@@ -422,8 +422,7 @@ func TestImportBundle_RejectsPathTraversal(t *testing.T) {
 }
 
 // TestImportBundle_PathTraversalAfterExportRollsBack pins this case: a path-traversal entry that
-// follows a valid
-// pad-export.json must trigger the workspace rollback, not just
+// follows a valid pad-export.json must trigger the workspace rollback, not just
 // return a 400 with the workspace left behind. Earlier the
 // path-traversal early-return passed nil instead of ws, so the
 // handler skipped the cleanup cascade.
@@ -484,8 +483,7 @@ func TestImportBundle_PathTraversalAfterExportRollsBack(t *testing.T) {
 }
 
 // TestImportBundle_RollbackTombstonesAttachments pins this case: when the duplicate-manifest
-// guard fires AFTER
-// blobs have already been rehydrated, the rollback must tombstone
+// guard fires AFTER blobs have already been rehydrated, the rollback must tombstone
 // every attachment row in the partial workspace (deleted_at set) so
 // orphan-GC reclaims the blobs and per-user storage usage is
 // correct. Without the cascade, the workspace was soft-deleted but

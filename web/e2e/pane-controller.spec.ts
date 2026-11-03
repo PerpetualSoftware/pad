@@ -828,7 +828,7 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 	// The pane chrome (⤢/↗/✕ today) grows a fourth control — a Back chevron —
 	// shown ONLY once the pane has drilled past its base (depth>0), wired to
 	// the same fenced `paneHistoryGo(-1)`/`paneNavInFlight()` traversal the
-	// depth-aware ESC handler above uses. Depth is read reactively off
+	// depth-aware ESC handler above uses (R14). Depth is read reactively off
 	// SvelteKit `page.state` inside `ItemDetail` itself (never raw
 	// `history.state`), so the chevron's visibility always matches the
 	// controller's own `paneState()` read back through the test hook.

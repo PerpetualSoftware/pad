@@ -124,7 +124,7 @@ func (g *backfillRig) marker(t *testing.T) string {
 	return m
 }
 
-// F1: Stop() while a backfill is parked mid-run cancels it, the goroutine
+// Stop() while a backfill is parked mid-run cancels it, the goroutine
 // exits (bg drains), and the marker is never written.
 func TestEffortBackfill_StopCancelsARunningBackfill(t *testing.T) {
 	g := newBackfillRig(t)
@@ -140,7 +140,7 @@ func TestEffortBackfill_StopCancelsARunningBackfill(t *testing.T) {
 	}
 }
 
-// F1: after Stop() a start does nothing: no run, no state left behind.
+// After Stop() a start does nothing: no run, no state left behind.
 func TestEffortBackfill_NoStartAfterStop(t *testing.T) {
 	g := newBackfillRig(t)
 	g.srv.stopDecisionTick()
@@ -164,10 +164,10 @@ func TestEffortBackfill_NoStartAfterStop(t *testing.T) {
 	}
 }
 
-// F2: disabling decisions while a backfill is parked before its first chunk
+// Disabling decisions while a backfill is parked before its first chunk
 // cancels it: no job is owed (rows counted, not just the marker) and no
 // marker is written. A chunk already inside OweDecisionJobs when the disable
-// lands may still commit (accepted and documented); this test does
+// lands may still commit (accepted, documented only: decision bdce2116); this test does
 // not cover that window.
 func TestEffortBackfill_DisableCancelsARunningBackfill(t *testing.T) {
 	g := newBackfillRig(t)
@@ -189,7 +189,7 @@ func TestEffortBackfill_DisableCancelsARunningBackfill(t *testing.T) {
 	}
 }
 
-// F2: replacing the runner mid-backfill cancels the old run, and the new run
+// Replacing the runner mid-backfill cancels the old run, and the new run
 // completes: both items owed, marker set, the old run having written nothing.
 func TestEffortBackfill_ReplaceCancelsTheOldRunAndTheNewOneCompletes(t *testing.T) {
 	g := newBackfillRig(t)

@@ -9,7 +9,7 @@ import (
 
 // TASK-3391: comments.source accepts 'app'. On SQLite that is a table rebuild
 // (migration 115); on Postgres a constraint swap (089). This test is
-// proof that FTS, the NUL triggers, the reaction cascade and the parent FK
+// the proof that FTS, the NUL triggers, the reaction cascade and the parent FK
 // survive, on both dialects.
 
 const migration115 = "115_comments_source_app.sql"

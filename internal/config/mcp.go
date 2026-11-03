@@ -34,7 +34,7 @@ type MCPEndpoints struct {
 	ResourceURLErr string
 
 	// ChatGPTResourceURL is the ChatGPT catalog's MCP URL and its OWN OAuth
-	// audience (TASK-3321 U2a, ruling (i)): the /mcp resource with
+	// audience (TASK-3321 U2a, decision (i)): the /mcp resource with
 	// "/chatgpt" appended to its MCP path, so https://mcp.getpad.dev (whose
 	// root the cloud proxy maps to /mcp) gives https://mcp.getpad.dev/mcp/chatgpt
 	// and https://pad.example/mcp gives https://pad.example/mcp/chatgpt. Empty
@@ -61,7 +61,7 @@ func (e MCPEndpoints) Usable() bool {
 }
 
 // HTTPS reports whether the auth-server URL is https, which is what makes
-// OAuth available (PLAN-2310 DR-4, http deployments are
+// OAuth available (PLAN-2310 DR-4: http deployments are
 // PAT-only).
 func (e MCPEndpoints) HTTPS() bool {
 	if !e.Usable() {

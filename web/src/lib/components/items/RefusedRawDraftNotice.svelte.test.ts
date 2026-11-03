@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/svelte';
 
-// BUG-3850: a patch restore that must wait for the
+// BUG-3850 (decision 0337bf77): a patch restore that must wait for the
 // editor says why, keeps Restore disabled, and still offers Copy.
 const { default: Notice } = await import('./RefusedRawDraftNotice.svelte');
 

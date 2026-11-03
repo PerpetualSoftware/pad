@@ -8,7 +8,7 @@ import (
 )
 
 // ValidateExamples is the contractual mechanism by which cmdhelp v0.1
-// prevents documentation drift (spec §6, §11). For every example in
+// prevents documentation drift (spec §6, §11 Q5). For every example in
 // every command of `doc`:
 //
 //  1. Tokenize the `cmd` string with a shell-aware splitter.

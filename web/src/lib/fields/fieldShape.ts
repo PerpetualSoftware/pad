@@ -10,7 +10,7 @@
 //
 // This module is where a raw field value is turned into something a surface
 // can use. It is the checklist as well as the code: the population below is
-// what the lead ruled should route through here (one layer, not per-surface
+// what should route through here (one layer, not per-surface
 // guards; no source scanner — the table IS the enforcement).
 //
 // ## Population (BUG-3052 census on main 4d4ab1d6; full table on the trail)

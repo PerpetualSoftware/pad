@@ -107,7 +107,7 @@ it('account switch never reuses the previous users dismissals', async () => {
 	await fireEvent.click(await screen.findByRole('button', { name: 'Keep' }));
 	await signIn(currentB, 'Europe/Paris'); await screen.findByRole('button', { name: 'Switch' });
 });
-// TASK-4101 PR2a r1 H-T: the identity fence, not only setTimezone's id check, guards
+// TASK-4101: the identity fence, not only setTimezone's id check, guards
 // the default: A signs out and back in while A's default PATCH is in flight.
 it('late default response from A cannot write into A after sign-out and back in', async () => {
 	let resolve!: (r: Response) => void;
@@ -120,7 +120,7 @@ it('late default response from A cannot write into A after sign-out and back in'
 	expect(authStore.user?.timezone).toBe('America/New_York');
 	expect(patches).toHaveLength(1);
 });
-// TASK-4101 PR2a r1 H-L2: an explicit write that begins while the default is in
+// TASK-4101: an explicit write that begins while the default is in
 // flight wins, even when the default's answer arrives last.
 it('a late default response does not overwrite an explicit write made after it', async () => {
 	let resolve!: (r: Response) => void;

@@ -1731,7 +1731,7 @@ const CmdhelpVersion = "0.1"
 //     read-only `pad_project.action=catch-up`, the caller's own catch-up
 //     digest (GET /workspaces/{ws}/catch-up, no params), on both
 //     transports. It never marks caught up: PUT /me/seen stays web-only
-//     (ruling 380aa793), so pad_project keeps its read-only annotation.
+//     (decision 380aa793), so pad_project keeps its read-only annotation.
 //     The ChatGPT surface gains a read-only `catch_up` over the same GET.
 //     No existing name, enum or param moved. Some existing tool
 //     descriptions were reworded to fewer bytes to pay for the entry; no
@@ -1929,7 +1929,7 @@ const CmdhelpVersion = "0.1"
 //     typing the server has not stored. The v0.39 check reads the op-log
 //     when the PATCH arrives and cannot see typing still on the wire; the
 //     tab can, and refuses the apply instead of replacing it. Tokenless
-//     writes are refused too, by ruling. Other fields in the call still
+//     writes are refused too, by design. Other fields in the call still
 //     land, and the content is not applied. Wait a few seconds, re-read, and
 //     resend the content; `overwrite_pending_edits: true` is the only way
 //     to replace the typing.
@@ -2157,7 +2157,7 @@ const CmdhelpVersion = "0.1"
 //     account to the workspace. Every invite now creates a pending
 //     invitation that the invitee accepts or declines (in the web app, or
 //     with `pad workspace invitations` / `accept` / `decline`, CLI-only by
-//     ruling), on both transports. The result loses the direct-add shape
+//     design), on both transports. The result loses the direct-add shape
 //     (`added`, `user_id`, `name`) and is always `{invited, code, email,
 //     role, join_url?}`, so it also stops saying whether the address has an
 //     account. A re-invite of an address with a pending invitation replaces
@@ -2185,7 +2185,7 @@ const CmdhelpVersion = "0.1"
 //     projected to fixed keys and do not carry it, nor does
 //     `pad_attachment.action=show` or the attachment resource, which build
 //     their metadata from HEAD headers. Import keeps the export's author
-//     strings and uploader ids verbatim (BUG-3372 ruling (1)); the flag says
+//     strings and uploader ids verbatim (BUG-3372); the flag says
 //     they were not verified here. Absent on every other row, so a consumer
 //     that ignores it is unaffected. Rows imported before this shipped are
 //     not marked: nothing stored distinguishes them.

@@ -27,7 +27,7 @@
  * instant into a spread of 5s (mean 2.5s). The server-sized version — spreading
  * a fleet-wide event wider and a single stream's gap not at all — is IDEA-3205.
  *
- * ONLY `sync_required`. `items_bulk_updated`
+ * ONLY `sync_required` (BUG-2761). `items_bulk_updated`
  * and a collection change that rewrote items are targeted freshness: the page
  * that is open wants them now, and delaying them is how an open page learns
  * late (BUG-3198). They dispatch immediately and are never spread.

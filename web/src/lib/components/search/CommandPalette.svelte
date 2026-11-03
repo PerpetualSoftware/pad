@@ -459,7 +459,7 @@
 					// `parsed.text` is empty and we'd otherwise fall back
 					// to the raw query (`body:`) and ship that literal
 					// token to the server. Treat as a no-op until the
-					// user keeps typing. TASK-1365.
+					// user keeps typing (TASK-1365).
 					if (parsed.body && !parsed.text) {
 						if (isSameDispatch()) {
 							results = [];
@@ -640,8 +640,8 @@
 	// hit the server, which is the only source of truth for content
 	// text. Skip the readiness / epoch reads for body queries so a
 	// concurrent SSE bump (or hydration completion) can't re-fire
-	// doSearch from offset 0 and wipe an in-flight `loadMore` append.
-	// TASK-1365.
+	// doSearch from offset 0 and wipe an in-flight `loadMore` append
+	// (TASK-1365).
 	//
 	// SAME EXCEPTION for bare-digit queries (BUG-1531): a bare digit
 	// short-circuits to `exactItemNumberLookup` — a single deterministic
@@ -1103,7 +1103,7 @@
 				     Without this branch, switching from server → local
 				     with a filter chip selected would hide the chip but
 				     keep filtering, leaving the user no clear way to
-				     remove it. TASK-1365.
+				     remove it (TASK-1365).
 			-->
 			{#if facets && query.trim()}
 				<div class="filters-row">
@@ -1347,7 +1347,7 @@
 										The local list above can span every ready workspace,
 										but the content search is a single request scoped to
 										the current workspace — say so rather than imply it
-										covers all of them. TASK-2008.
+										covers all of them (TASK-2008).
 									-->
 									<span class="content-scope">current workspace</span>
 								{/if}

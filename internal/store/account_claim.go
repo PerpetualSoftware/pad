@@ -19,7 +19,7 @@ import (
 var ErrClaimNotEligible = errors.New("account claim: not eligible")
 
 // ErrClaimNeedsSupport: the account has a billing customer, which a claim
-// must not transfer or cancel silently (TASK-3351 ruling (4)). Nothing was
+// must not transfer or cancel silently (TASK-3351 decision (4)). Nothing was
 // changed; the token is still unspent.
 var ErrClaimNeedsSupport = errors.New("account claim: needs support")
 
@@ -54,7 +54,7 @@ type AccountClaim struct {
 //  4. mark the address verified;
 //  5. remove the account from workspaces it does not own (membership,
 //     grants, watches, tabs), and soft-delete the ones it owns (TASK-3351
-//     ruling (3)): what the previous holder joined or built is not the
+//     decision (3)): what the previous holder joined or built is not the
 //     mailbox owner's.
 //
 // The caller then gives the claimant a way to set a password and kicks the

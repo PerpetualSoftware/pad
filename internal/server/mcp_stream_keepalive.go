@@ -132,8 +132,8 @@ func (w *mcpStreamWriter) keepalive() bool {
 // end stops any further keepalive. Called once the transport returns, before
 // mcpBoundWrites joins the keepalive goroutine and itself returns. It is not
 // atomic with that return: a tick that takes mu between the two writes one
-// more comment frame first, which is valid SSE on a response that is ending
-// . Nothing is written after mcpBoundWrites returns.
+// more comment frame first, which is valid SSE on a response that is ending.
+// Nothing is written after mcpBoundWrites returns.
 func (w *mcpStreamWriter) end() {
 	w.mu.Lock()
 	defer w.mu.Unlock()

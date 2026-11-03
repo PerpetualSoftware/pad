@@ -240,11 +240,11 @@ describe('SSE refresh: roll-off is not deletion (BUG-2773)', () => {
 	});
 
 	it('compares instants, not strings, at the coverage boundary', async () => {
-		// A GUARD, not a live scenario, and labelled as one: every timestamp this endpoint emits is
-		// whole-second
-		// today — the store writes RFC3339 seconds and the handler truncates
-		// the structured kinds' hand-written ones — so nothing currently
-		// produces this input. It pins the comparison the ordering MEANS:
+		// A GUARD, not a live scenario, and labelled as one: every timestamp
+		// this endpoint emits is whole-second today — the store writes
+		// RFC3339 seconds and the handler truncates the structured kinds'
+		// hand-written ones — so nothing currently produces this input. It
+		// pins the comparison the ordering MEANS:
 		// `12:00:05.500Z` is NEWER than `12:00:05Z` as an instant and SMALLER
 		// as a string, so the day a writer stops truncating, a string
 		// comparison would judge it out of window and keep an entry that was

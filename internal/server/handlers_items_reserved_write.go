@@ -24,8 +24,8 @@ import (
 //
 // A full `fields` update refuses a reserved key it would CHANGE, and that
 // includes deleting one by omitting it, because the store replaces the whole
-// blob. CARRYING the stored value
-// unchanged stays legal, since a full-blob round-trip must keep working.
+// blob. CARRYING the stored value unchanged
+// stays legal, since a full-blob round-trip must keep working.
 // Deletes have typed routes (clear_github_pr) or none. A server-side
 // "preserve what the caller left out" was weighed and rejected: it silently
 // answers a request the caller did not make.

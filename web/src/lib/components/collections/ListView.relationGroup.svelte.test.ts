@@ -202,7 +202,7 @@ describe('group reorder under relation grouping', () => {
 	);
 
 	it('gates the onGroupReorder CALL, not merely mentions the flag nearby', () => {
-		// A WRONG-REASON TEST once lived here. The first version searched the handler for
+		// This was once a WRONG-REASON TEST: the first version searched the handler for
 		// `!isRelationGroup` appearing before `onGroupReorder(` — a condition
 		// the file satisfies in several ways that leave the callback
 		// unconditional. It asserts the guard is IN the `if` that wraps the
@@ -286,8 +286,7 @@ describe('a REFUSED grouping in the list must not write a group value (U4, codex
 	 * The SAME pair of defects BoardView had, in the other view — which is the point worth keeping.
 	 * One class of missed surface is every site dispatching on field type; another is every VIEW
 	 * implementing grouping, so fixing the board alone leaves the list open. A behaviour's surface
-	 * count is a number,
-	 * and numbers get enumerated.
+	 * count is a number, and numbers get enumerated.
 	 *
 	 * The full population is {BoardView, ListView} x {drag, status chip}.
 	 * TableView implements neither: it has no grouping, and its chip is gated

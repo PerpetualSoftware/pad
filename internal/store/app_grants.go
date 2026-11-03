@@ -206,7 +206,7 @@ func (s *Store) revokeDelegatedGrantsTx(tx *sql.Tx, userID, workspaceID string) 
 	}
 	with := func(first any) []any { return append([]any{first}, args...) }
 	// Every binding of the person in scope, tombstones included, locked in
-	// request_id order before any child row, as install teardown does
+	// request_id order before any child row, as install teardown does.
 	where := `auth_kind = 'delegated' AND delegated_user_id = ?`
 	if workspaceID != "" {
 		where += ` AND workspace_id = ?`

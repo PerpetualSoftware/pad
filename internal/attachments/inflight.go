@@ -14,8 +14,8 @@ import "sync"
 //
 // Increment, map-store, decrement and delete all run under one mutex, so a
 // concurrent Active call cannot observe a stale 0 between the last release
-// and the next mark (which this type was moved
-// out of Server verbatim to preserve).
+// and the next mark (PR #307: this type was moved
+// out of Server verbatim to preserve that).
 type InFlight struct {
 	mu     sync.Mutex
 	hashes map[string]int64

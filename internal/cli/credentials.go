@@ -461,7 +461,7 @@ var credentialsLockWarning io.Writer = os.Stderr
 // (BUG-3829, loadStoreLocked).
 //
 // The lock sits on top of what os.WriteFile and os.ReadFile did and is never
-// the reason a working command fails (BUG-3649 ruling): when it cannot be
+// the reason a working command fails (BUG-3649): when it cannot be
 // taken for any reason (a read-only or foreign-owned ~/.pad, a lock file a
 // sudo run left behind, a filesystem without flock such as NFS without
 // lockd), fn runs unlocked, as before. A write says so on stderr; a read

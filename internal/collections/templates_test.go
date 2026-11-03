@@ -735,7 +735,7 @@ func TestBlankTemplateUsesMinimalVocabularies(t *testing.T) {
 	// BlankPlaybookTriggers vars. Comparing against those would be
 	// tautological (the template is built from them, so widening
 	// the var would silently widen the "minimal" definition).
-	// (PR #575.)
+	// The tautological comparison was fixed in PR #575.
 	const (
 		alwaysTrigger = "always"
 		manualTrigger = "manual"

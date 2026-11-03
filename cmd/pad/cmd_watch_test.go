@@ -24,8 +24,8 @@ func fakeSSEResponse(body string) *http.Response {
 
 // TestPadddBackoff_MonotonicUntilCap asserts the backoff grows with each
 // attempt and is capped — the decision logic behind "padd unreachable →
-// backoff retry, print nothing" (DOC-2479), unit-tested per the
-// dispatcher's ask instead of literally sleeping.
+// backoff retry, print nothing" (DOC-2479), unit-tested
+// instead of literally sleeping.
 func TestPadddBackoff_MonotonicUntilCap(t *testing.T) {
 	prev := time.Duration(0)
 	for attempt := 1; attempt <= 200; attempt++ {
@@ -159,11 +159,10 @@ func TestMonitorClient_UnconfiguredReturnsError(t *testing.T) {
 // no-.pad.toml silent-retry path (which sleeps for
 // noPadTomlRetryInterval — an hour) still returns promptly when the
 // context is cancelled, WITHOUT ever reaching client construction (there is no
-// configured client in this test's environment at all, if the loop attempted to
-// build one before the .pad.toml check, it would have to do so via a path that can
-// only return an
-// error or block, since this test provably completes quickly, neither
-// happened).
+// configured client in this test's environment at all; if the loop attempted to
+// build one before the .pad.toml check, it would have to do so via a path that
+// can only return an error or block, and since this test provably completes
+// quickly, neither happened).
 func TestRunWatchMonitor_NoPadToml_RespectsCancellation(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -233,7 +232,7 @@ func TestRunWatchMonitor_ExitsWhenNotArmed(t *testing.T) {
 // returns promptly once the context is cancelled.
 //
 // The .pad.toml sets push.auto_arm=true so the session is ARMED — otherwise
-// the S3 consent gate (HIGH-1) would exit the monitor before it ever
+// the S3 consent gate would exit the monitor before it ever
 // reaches monitorClient, making this test vacuous. Arming keeps it
 // exercising the unconfigured-client backoff path it exists to cover.
 func TestRunWatchMonitor_PadTomlPresentButUnconfigured_RespectsCancellation(t *testing.T) {

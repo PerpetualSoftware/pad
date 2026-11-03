@@ -206,7 +206,7 @@ func TestTimeline_StructuredIDCollidingWithAnActivityHidesNothing(t *testing.T) 
 // of the uniqueness rule: a raw id that collides not with another raw id but
 // with the positional fallback a sibling was already given.
 //
-// The ORDER matters and my first fixture had it wrong, which is worth
+// The ORDER matters and the first fixture had it wrong, which is worth
 // recording: a note with no id followed by a note whose blob id is
 // "note-idx-0" does NOT reach the loop — the second note's raw id is already
 // in usedIDs, so the `!usedIDs[raw]` guard sends it to the fallback branch and

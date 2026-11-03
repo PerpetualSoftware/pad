@@ -18,8 +18,8 @@ import (
 // can act through the app. The consent page's workspace is FIXED to the
 // install: no workspace choice, no wildcard, no creation flag. The person
 // chooses the access, read-only by default, and write only when the manifest
-// offers it. No oauth_connections row is written: the install fixes the workspace, and the binding the issuance
-// barrier writes carries the kind, epoch and access.
+// offers it. No oauth_connections row is written: the install fixes the workspace, and
+// the binding the issuance barrier writes carries the kind, epoch and access.
 
 // installClientOf returns the install client an authorize request names, or
 // nil for any other client.

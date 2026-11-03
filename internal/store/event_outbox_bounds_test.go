@@ -745,7 +745,7 @@ func TestScrubOnlyEverShrinksAPayload(t *testing.T) {
 	// worth a test rather than a sentence, since the next person to add a
 	// payload rewrite will not read the sentence.
 	// CONTENT CHOSEN TO EXERCISE THE ENCODERS, not just to be long. The
-	// growth path a reviewer proposed runs through the two encoders
+	// growth path that was proposed runs through the two encoders
 	// disagreeing: Go escapes <, > and & to \u003c and friends, while
 	// Postgres jsonb stores and prints them literally, so a value that costs 1
 	// byte stored costs 6 in Go's output. Non-ASCII and an exponent-form

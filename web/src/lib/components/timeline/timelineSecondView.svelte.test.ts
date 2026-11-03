@@ -228,9 +228,9 @@ describe('timeline second view — filtered pagination', () => {
 		// The hop loop used to stop on any new entry of any kind. With one feed
 		// serving views that render different kinds, a page of pure comments
 		// ended it having added nothing to a changes view — a button that
-		// visibly does nothing. It was fixed in two steps: the first fix covered the tabs and left
-		// the same class in the owner's own
-		// button, which is why the filter now travels with the request.
+		// visibly does nothing. It was fixed in two steps: the first fix
+		// covered the tabs and left the same class in the owner's own button,
+		// which is why the filter now travels with the request.
 		timelineListMock.mockReset();
 		timelineListMock
 			.mockResolvedValueOnce({ entries: [entry('comment', 'c1')], has_more: true } as unknown as TimelineResponse)

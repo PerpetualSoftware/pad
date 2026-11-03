@@ -740,7 +740,7 @@ func (s *Store) updateLinksInTx(tx *sql.Tx, workspaceID, oldTitle, newTitle stri
 		// The compare-and-set is handed the scan's TOTAL, not a pre-computed
 		// budget, so it can both bound and REPORT correctly: a retry must fit
 		// in what remains under the cap, and a refusal must name the whole
-		// operation's size rather than the re-read alone (8).
+		// operation's size rather than the re-read alone.
 		//
 		// Everything the scan counted is still held — `updates` references the
 		// original read and rewritten bodies for every linker, this one

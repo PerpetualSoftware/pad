@@ -251,9 +251,10 @@ export const authStore = {
 			})
 			.catch((err) => {
 				if (isCurrent()) session = null;
-				// DELIBERATELY NO `notifyIdentityChange()` HERE (BUG-2991). A rejection is a FETCH ERROR, not an identity
-				// signal: "not authenticated" comes back as a resolved session
-				// (that is what the re-throw below exists to distinguish), so a
+				// DELIBERATELY NO `notifyIdentityChange()` HERE (BUG-2991). A
+				// rejection is a FETCH ERROR, not an identity signal: "not
+				// authenticated" comes back as a resolved session (that is
+				// what the re-throw below exists to distinguish), so a
 				// rejected `/auth/session` says a request failed and nothing
 				// about who is signed in.
 				//

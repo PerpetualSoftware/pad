@@ -293,7 +293,7 @@ describe('localIndex access-epoch scope', () => {
 		// Nothing to evict, so a resync would buy nothing and cost a full
 		// index fetch on every cold start.
 		//
-		// PROPERTY CHANGED in review of the reduced tip, and said out loud
+		// PROPERTY CHANGED with the reduced tip (IDEA-2898), and said out loud
 		// rather than quietly rewritten: this used to hold for a workspace that
 		// had never been bootstrapped at all. It no longer does, because RAM
 		// being empty was standing in for "the cache is empty" and those are

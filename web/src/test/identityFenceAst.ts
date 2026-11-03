@@ -23,7 +23,7 @@
  *   - its outermost enclosing function;
  *   - component-level declarations of names the unit references, IMPORTS
  *     among them and `class` / `enum` / `namespace` among them,
- * transitively: a pulled declaration's own names
+ *     transitively: a pulled declaration's own names
  *     are pulled too, so `class Map` is in the hash of a unit that names
  *     only `tagSavers`. The transitivity reaches HELPERS and rebindings as
  *     well as declarations — a component-level
@@ -45,8 +45,8 @@
  * component covers it, so shrinking `DEFERRING_METHODS` or
  * `DEFERRING_FUNCTIONS` would drop units from the gate's population with no
  * row changing. `SYNC_CALLBACK_CALLEES` is hashed alongside them although
- * the GATE never reads it — it is the aid's: over-inclusion costs a bump nobody needed, while
- * leaving it out would invite a later reader to wonder which of the three
+ * the GATE never reads it — it is the aid's: over-inclusion costs a bump
+ * nobody needed, while leaving it out would invite a later reader to wonder which of the three
  * the gate depends on.
  * All of that is found by syntax, never by this analysis — with one honest
  * qualification: the gate's POPULATION is enumerated by this
@@ -189,7 +189,7 @@
  *   is read as that capture.
  * - A stamp rooted in a local is trusted to have been recorded earlier. That
  *   includes a local assigned from component state after the await,
- * and a stamp minted after the await and compared at once.
+ *   and a stamp minted after the await and compared at once.
  * - Fence booleans:
  *   - one read inside a helper's body never lapses;
  *   - one initialised from a fence boolean that has already lapsed is
@@ -224,7 +224,7 @@
  *   is a component-level statement, so swapping `onMount(() => {…})` for
  *   `$effect(() => {…})` around the two SSE units is accepted although the
  *   body then re-runs on every dependency change instead of once at mount.
- * A row's `in` catches this only where the row pins it;
+ *   A row's `in` catches this only where the row pins it;
  * - deferrals the population does not recognise, because it recognises them
  *   by spelling: listener registrations (`authStore.onIdentityChange`,
  *   `addEventListener`, service subscriptions) and callees outside the lists
@@ -304,8 +304,8 @@ export const SYNC_CALLBACK_CALLEES: Record<string, string> = {
 export const SYNC_ITERATION_METHODS = new Set(['find', 'findIndex', 'findLast', 'filter', 'map', 'flatMap', 'some', 'every', 'forEach', 'reduce', 'sort']);
 
 /**
- * Calls that commit nothing, by callee. SHORT on purpose: a new callee is a commit until it is listed here with its
- * reason, and a list that grows to absorb every refusal is the regex problem
+ * Calls that commit nothing, by callee. SHORT on purpose: a new callee is a
+ * commit until it is listed here with its reason, and a list that grows to absorb every refusal is the regex problem
  * again. Keys are the callee's source text with `?.` read as `.`.
  * There are no method-name wildcards: `*.get` once admitted `api.items.get`,
  * a request, so every entry names its receiver.
@@ -571,7 +571,7 @@ export interface PolarityScope {
 	params?: ReadonlyMap<string, CaptureKind | null>;
 	/**
 	 * When given, the fence booleans declared since the last suspension; any
-	 * other fence boolean has gone stale (H39).
+	 * other fence boolean has gone stale.
 	 */
 	live?: ReadonlySet<string>;
 }

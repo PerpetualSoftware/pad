@@ -337,13 +337,14 @@ export const workspaceStore = {
 
 	async loadAll() {
 		return loadAllFlight.run(LOAD_ALL_KEY, async ({ isLatest }) => {
-			// Captured before the request, compared after it (BUG-2991). `isLatest` is a NAVIGATION fence — its generation only
-			// advances when a newer `loadAll` starts — so it says nothing about
-			// whether the same USER is still signed in. Without this, A's list
-			// resolving after A signed out and B signed in commits A's
+			// Captured before the request, compared after it (BUG-2991).
+			// `isLatest` is a NAVIGATION fence — its generation only advances
+			// when a newer `loadAll` starts — so it says nothing about
+			// whether the same USER is still signed in. Without this, A's
+			// list resolving after A signed out and B signed in commits A's
 			// workspaces into B's store, which is the identity reset's own
-			// defect arriving through the one door the reset cannot close: the
-			// request was issued before the reset and commits after it.
+			// defect arriving through the one door the reset cannot close:
+			// the request was issued before the reset and commits after it.
 			const callUser = currentUserId();
 			// Captured before the request is issued, so it names exactly the
 			// creates the server had already seen when it answered (BUG-2981).
@@ -551,7 +552,8 @@ export const workspaceStore = {
 		// page's owner controls until the next `setCurrent`. A failed create
 		// says nothing about the current membership, so it now changes nothing.
 		//
-		// OBSERVE the sequence token at entry, CLAIM it only on success. Three orderings have to come out right and the obvious two
+		// OBSERVE the sequence token at entry, CLAIM it only on success.
+		// Three orderings have to come out right and the obvious two
 		// spellings each get one wrong:
 		//
 		//  - claiming at entry (the original) makes a FAILED create invalidate a

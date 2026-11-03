@@ -1119,9 +1119,9 @@
 			// the tracked set, so a later window that expanded back over it
 			// could never remove it again.
 			// WHAT INFERENCE CANNOT DO, stated so the next reader does not take
-			// this for a complete reconciliation (left open deliberately: this unit takes option 1,
-			// and option 2, honouring deletion EVENTS, is out of scope because it changes the SSE
-			// contract):
+			// this for a complete reconciliation (left open deliberately:
+			// this unit takes option 1, and option 2, honouring deletion
+			// EVENTS, is out of scope because it changes the SSE contract):
 			//
 			//   - An entry deleted BELOW a non-final page's floor is never
 			//     inspected again, so it stays on screen until a reload. The

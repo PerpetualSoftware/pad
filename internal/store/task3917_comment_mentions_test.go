@@ -248,7 +248,7 @@ func TestCommentMentions_IndexLifecycle(t *testing.T) {
 	wantMentions(t, s, fc.ID, "fenced tombstone clears")
 }
 
-// Guard limits, by decision (TASK-3917 r2): the census matches SQL text in Go
+// Guard limits, by decision (TASK-3917): the census matches SQL text in Go
 // source, so it does not see a table named with a schema (public.comments) or
 // a statement assembled from string pieces; the INDEXED check ignores // comment
 // lines only.
@@ -353,11 +353,11 @@ func funcBody(src, name string) string {
 // callsReindex reports whether the top-level decl name in src CALLS the
 // helper. Lines that are // comments are ignored: a doc comment naming the
 // helper (including the doc comment of the NEXT decl, which funcBody's span
-// includes) is not a call (TASK-3917 r2 F5). It is a text match, so the helper
+// includes) is not a call (TASK-3917). It is a text match, so the helper
 // named in a trailing // comment, a /* */ comment or a string literal still
 // reads as a call: that direction fails OPEN (a decl that lacks the call
 // passes), accepted because it needs the helper's exact name with "(" written
-// beside code that does not call it (TASK-3917 r3 F4).
+// beside code that does not call it (TASK-3917).
 func callsReindex(src, name string) bool {
 	var code []string
 	for _, line := range strings.Split(funcBody(src, name), "\n") {
@@ -462,7 +462,7 @@ func TestCommentMentions_CopyAndImportNotIndexed(t *testing.T) {
 	if err := s.db.QueryRow(s.q(`SELECT id FROM comments WHERE workspace_id = ? AND imported = 1`), dst.ID).Scan(&newID); err != nil {
 		t.Fatal(err)
 	}
-	// Imported comments are never indexed (TASK-3917).
+	// Imported comments are never indexed (TASK-3917, decision bb0c9fc6).
 	wantMentions(t, s, newID, "import")
 	if n := mentionCount(t, s, `workspace_id = ?`, dst.ID); n != 0 {
 		t.Fatalf("import wrote %d mention rows", n)
@@ -537,7 +537,7 @@ func TestCommentMentions_CopyAndImportNotIndexed(t *testing.T) {
 }
 
 // Unresolvable names that sort early must not evict a real user: the cap
-// applies to RESOLVED mentions (TASK-3917 r2 F4).
+// applies to RESOLVED mentions (TASK-3917).
 func TestCommentMentions_CapAfterResolution(t *testing.T) {
 	f := task3408Fixture(t, "inst-capres")
 	s := f.s

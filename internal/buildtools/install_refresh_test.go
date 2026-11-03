@@ -92,7 +92,7 @@ func requireScriptDeps(t *testing.T, extra ...string) {
 
 	// pgrep must actually SEE PROCESSES, not merely exist on PATH.
 	//
-	// Third narrow guard in this file, and the one that cost repeated CI failures:
+	// Third narrow guard in this file, and the one that cost two CI rounds:
 	// LookPath("pgrep") answers "is the binary installed", while the script
 	// needs "can it find a running process". In the Nix build sandbox the
 	// binary is there and the answer is empty, so the script reported "no
@@ -1632,9 +1632,9 @@ func TestPreServerFixtureAcceptsItsOwnStub(t *testing.T) {
 // It exists because the scripted edit that added those calls used the pattern
 // `TestInstallRefresh_[A-Za-z]+`, which does not match a name containing a
 // DIGIT — so `TestInstallRefresh_ProbesIPv6HostsWithBrackets` silently kept
-// running in an environment that cannot support it, and CI stayed red on a test the
-// fix was supposed to have covered. The set the
-// edit touched and the population it was meant to cover were not the same set, and
+// running in an environment that cannot support it, and CI stayed red for a
+// round on a test the fix was supposed to have covered. The set the edit
+// touched and the population it was meant to cover were not the same set, and
 // nothing said so.
 //
 // Reading the source is the only instrument that can see this: every runtime
@@ -2135,7 +2135,7 @@ func TestInstallRefresh_LeavesTheOldLogFileAndNamesTheNewOne(t *testing.T) {
 	}
 }
 
-// AN UNWRITABLE LOG REFUSES BEFORE THE STOP (BUG-4064, rated Medium): a
+// AN UNWRITABLE LOG REFUSES BEFORE THE STOP (BUG-4064): a
 // redirect that cannot open its target never runs the command, so a log found
 // unwritable after the stop would leave no server at all, an outage on the
 // box. Here the log path is a directory, which refuses for root too. The
@@ -2213,7 +2213,7 @@ func TestInstallRefresh_ClearsThePIDFileInTheDataDir(t *testing.T) {
 	}
 }
 
-// A RELATIVE DATA DIR (BUG-4064, Medium): config.Load applies PAD_DATA_DIR
+// A RELATIVE DATA DIR (BUG-4064): config.Load applies PAD_DATA_DIR
 // verbatim, so the server resolves "data" against its own cwd, and the restart
 // runs in the server's cwd (BUG-3196). Section 2a used to prove the log under
 // the CALLER's cwd and the restart then opened it under the server's, where

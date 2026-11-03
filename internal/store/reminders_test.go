@@ -685,7 +685,7 @@ func TestSkippedRemindersAreNotErrors(t *testing.T) {
 	}
 }
 
-// TestFractionalSecondsRoundUp —.
+// TestFractionalSecondsRoundUp
 //
 // The column is compared as a string against a whole-second clock, so seconds
 // are the stored resolution. Truncating resolved that the wrong way:
@@ -755,7 +755,7 @@ func TestAFractionalReminderDoesNotFireEarly(t *testing.T) {
 	}
 }
 
-// TestARearmedReminderIsNotFiredByAnInFlightPass —.
+// TestARearmedReminderIsNotFiredByAnInFlightPass
 //
 // A re-arm can move a reminder into the future between the candidate scan and
 // the fire. It clears fired_at, so a predicate checking only `fired_at IS NULL`
@@ -815,7 +815,7 @@ func TestARearmedReminderIsNotFiredByAnInFlightPass(t *testing.T) {
 	}
 }
 
-// TestPendingRemindersAreBounded —.
+// TestPendingRemindersAreBounded
 //
 // Every pending reminder became a suggestion prepended to a three-entry list,
 // so the payload grew without limit until somebody acknowledged them — in the
@@ -1378,7 +1378,7 @@ func TestImportNormalizesRemindAt(t *testing.T) {
 	}
 }
 
-// TestOrphanedItemDoesNotAbortTheImport —.
+// TestOrphanedItemDoesNotAbortTheImport
 //
 // An ORPHANED item — one whose collection is missing from the bundle — still
 // gets an itemMap entry, because that entry is written before the skip and
@@ -1443,7 +1443,7 @@ func TestOrphanedItemDoesNotAbortTheImport(t *testing.T) {
 	}
 }
 
-// TestImportRefusesAckWithoutFire —.
+// TestImportRefusesAckWithoutFire
 //
 // The lifecycle has three states; acked-without-fired is not one of them. A
 // bundle carrying it — which this server's export cannot produce, but a
@@ -1494,7 +1494,7 @@ func TestImportRefusesAckWithoutFire(t *testing.T) {
 	}
 }
 
-// TestAReminderWhoseWorkspaceDisagreesWithItsItemIsInert —.
+// TestAReminderWhoseWorkspaceDisagreesWithItsItemIsInert
 //
 // No door writes such a row (CreateReminder derives the pair from the item;
 // import maps within the workspace), and the table has nothing that forbids

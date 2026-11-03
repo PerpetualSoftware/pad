@@ -371,7 +371,7 @@ export class CollabProvider {
 	 * server rows but I have no anchor — propagating local edits
 	 * derived from this state can corrupt items.content via the
 	 * next 5s flush). Gating `handleDocUpdate` on this flag closes
-	 * the residual "stale Y.Doc + cursor 0" send path.
+	 * the residual "stale Y.Doc + cursor 0" send path (TASK-1319).
 	 *
 	 * Reset on `force_refresh` (the provider is destroyed there
 	 * anyway) and on construction.
@@ -401,7 +401,7 @@ export class CollabProvider {
 	 * anchor we flush them in order so the server gets every
 	 * causally-required struct — Yjs ops are incremental and a
 	 * silently-dropped keystroke can leave later ops referencing
-	 * structs no peer has.
+	 * structs no peer has (TASK-1319).
 	 *
 	 * Capped because in pathological "anchor never arrives"
 	 * scenarios the buffer could grow unbounded; once we cross
@@ -445,7 +445,7 @@ export class CollabProvider {
 	 * because the server's op-log is now empty — points to a
 	 * mid-session prune) from "Y.Doc has only local pre-anchor
 	 * edits" (safe — those were typed locally and the buffer
-	 * holds them for replay on anchor).
+	 * holds them for replay on anchor) (TASK-1319).
 	 */
 	private remoteSyncApplied = false;
 
@@ -501,7 +501,7 @@ export class CollabProvider {
 		// fresh empty Y.Doc would announce `?since=N`, the server
 		// would replay only id > N, and the client would be missing
 		// rows 1..N from its Y.Doc. Reset the stored cursor to 0 in
-		// that case so the server replays from scratch.
+		// that case so the server replays from scratch (TASK-1319).
 		const storedCursor = readStoredCursor(itemID);
 		const ydocStateVector = Y.encodeStateVector(ydoc);
 		// An empty Y.Doc's state vector is the single VARINT 0 byte
@@ -528,7 +528,7 @@ export class CollabProvider {
 			// the version the crash-draft keeper checks before serializing
 			// (TASK-3606). Counted before the echo skip below on purpose.
 			this.docVersion++;
-			// BUG-3850: remote updates alone, so a
+			// BUG-3850 (decision baa63dc3): remote updates alone, so a
 			// crash draft can tell its base predates a collaborator's change.
 			if (origin === this) this.remoteDocVersion++;
 			// Skip ops that came from us applying a server message —
@@ -569,7 +569,7 @@ export class CollabProvider {
 					// recovery callback so a late op_log_cursor
 					// can't anchor and flush the partial buffer
 					// (the dropped prefix would reintroduce the
-					// causal-missing-update bug).  round
+					// causal-missing-update bug) (TASK-1319).
 					console.warn(
 						'collab: pre-anchor buffer overflow; triggering recovery',
 					);
@@ -752,7 +752,7 @@ export class CollabProvider {
 	 *   post-sync→'reconnecting'). `handleOffline` skips this because
 	 *   it has already set state='offline' explicitly.
 	 *
-	 *  — extracting this helper so a future
+	 * Extracted as a helper so a future
 	 * teardown path doesn't drift out of sync.
 	 */
 	private runDisconnectCleanup(opts: { demoteState: boolean }): void {
@@ -1007,7 +1007,7 @@ export class CollabProvider {
 					// will pick up our state via the buffered
 					// pre-anchor flush once the cursor anchors,
 					// or via the lazy-seed rebuild after
-					// force_refresh.
+					// force_refresh (TASK-1319).
 					if (this.cursorAnchored) {
 						this.send(encoding.toUint8Array(enc));
 					}
@@ -1134,7 +1134,7 @@ export class CollabProvider {
 				// or flush would resurrect pre-prune state and
 				// overwrite canonical items.content.
 				//
-				// Trigger force-refresh recovery instead.
+				// Trigger force-refresh recovery instead (TASK-1319).
 				if (!this.cursorAnchored && msg.op_log_id === 0 && this.remoteSyncApplied) {
 					// Remote replay binaries reached us before this
 					// cursor=0 frame, but the server now reports an
@@ -1470,7 +1470,7 @@ export class CollabProvider {
 		// (a flaky proxy can ESTABLISH then immediately CLOSE before
 		// any sync frame lands); only `synced` is. The reset is owned
 		// by the syncStep2 branch and the grace timer in onOpen — the
-		// actual successful-sync edges of the state machine.
+		// actual successful-sync edges of the state machine (TASK-1264).
 		this.scheduleReconnect();
 	};
 
@@ -1558,7 +1558,7 @@ export class CollabProvider {
 	remoteDocVersion = 0;
 
 	/**
-	 * Moves each time this tab's local updates go out on a socket (BUG-3850):
+	 * Moves each time this tab's local updates go out on a socket (BUG-3850, decision a6380212):
 	 * the server may hold them before any barrier says
 	 * so. Not reactive.
 	 */

@@ -191,7 +191,7 @@ func TestRenameCascade_RefusesTheSingleDocumentAttack(t *testing.T) {
 	}
 }
 
-// TestRenameCascade_CountsRetainedBytesNotJustOutput pins the case
+// TestRenameCascade_CountsRetainedBytesNotJustOutput pins the retained-bytes case
 // against the guard that shipped in the first commit, which summed only the
 // PROJECTED OUTPUT.
 //
@@ -343,8 +343,7 @@ func TestRenameCascade_DoesNotSpendTheBudgetOnDocumentsThatDoNotLinkTheTitle(t *
 	}
 }
 
-// TestRenameCascade_RetryRecheckesTheBudgetAgainstTheGrownBody pins the case where
-// the guard used to cover only the cascade's SCAN, while the
+// TestRenameCascade_RetryRecheckesTheBudgetAgainstTheGrownBody pins the retry recheck: the guard used to cover only the cascade's SCAN, while the
 // compare-and-set's retry path re-read a linker's body and called ReplaceTitle
 // on it with no bound at all.
 //
@@ -402,7 +401,7 @@ func TestRenameCascade_RetryRecheckesTheBudgetAgainstTheGrownBody(t *testing.T) 
 	}
 }
 
-// TestRenameCascade_RetryBudgetExcludesThisDocumentsOwnStrings pins the case.
+// TestRenameCascade_RetryBudgetExcludesThisDocumentsOwnStrings pins that the retry budget excludes the document's own strings.
 // It is deliberately separate from the test above: that one catches
 // the retry check being ABSENT, this one catches it being too GENEROUS.
 //
@@ -493,7 +492,7 @@ func TestRenameCascade_RetryBudgetExcludesThisDocumentsOwnStrings(t *testing.T) 
 }
 
 // TestRenameCascade_ConcurrentEditThatRemovesTheLinkDoesNotRefuseTheRename pins
-// the case.
+// that a concurrent edit removing the link does not refuse the rename.
 //
 // When a concurrent edit removes the link entirely, ReplaceTitle has nothing to
 // replace — strings.Replace returns its input unchanged, allocating nothing.
@@ -560,7 +559,7 @@ func TestRenameCascade_ConcurrentEditThatRemovesTheLinkDoesNotRefuseTheRename(t 
 	}
 }
 
-// TestRenameCascade_CountsBothStringsNotTheLargerOne closes the case:
+// TestRenameCascade_CountsBothStringsNotTheLargerOne closes a gap:
 // every other retained-byte case here exceeds the cap under `max(read,
 // rewritten)` as well as under `read + rewritten`, so none of them can tell the
 // two arithmetics apart.
@@ -604,7 +603,7 @@ func TestRenameCascade_CountsBothStringsNotTheLargerOne(t *testing.T) {
 	}
 }
 
-// TestRenameCascade_RefusesBeforeBuildingTheRewrittenBody closes the case:
+// TestRenameCascade_RefusesBeforeBuildingTheRewrittenBody closes a gap:
 // every other oversize test asserts only THAT the rename is refused,
 // so moving links.ReplaceTitle above the guard would keep them all green while
 // destroying the point of the guard — the refusal exists so the amplified
@@ -729,7 +728,7 @@ func TestRenameCascade_DoesNotChargeCaseVariantsTheRewriterWillNotTouch(t *testi
 	}
 }
 
-// TestUpdateDocument_RefusesAnInvalidRenameEvenWhenTheHandlerDidNot pins the case:
+// TestUpdateDocument_RefusesAnInvalidRenameEvenWhenTheHandlerDidNot pins that:
 // the store validates a rename under the lock, so the guarantee does
 // not depend on a caller having checked first.
 //

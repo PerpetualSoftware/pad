@@ -174,8 +174,8 @@ func ValueDecodesNUL(v any) bool {
 //
 // The raw check runs REGARDLESS of isJSON: a JSON-classed parameter carrying a
 // literal NUL byte is refused by the same rule as any other text, and skipping
-// it for JSON-classed values is precisely a past regression
-// in the HTTP gate's own walk.
+// it for JSON-classed values is precisely the regression the
+// HTTP gate's own walk once had.
 func ParameterRefused(value string, isJSON bool) bool {
 	if ContainsNUL(value) {
 		return true

@@ -671,7 +671,7 @@ func TestSuggestedNextKeepsItsCapWithReminders(t *testing.T) {
 }
 
 // TestSuggestedNextSurvivesWithNoTaskCandidates is the leg that catches the
-// bug my own first fix introduced: `limit` is reassigned to len(candidates),
+// bug an earlier fix introduced: `limit` is reassigned to len(candidates),
 // so trimming with it would truncate to ZERO on a workspace whose only
 // entries are reminders — precisely the case the surface exists for.
 func TestSuggestedNextSurvivesWithNoTaskCandidates(t *testing.T) {

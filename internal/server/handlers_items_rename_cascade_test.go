@@ -151,8 +151,8 @@ func TestItemRename_OrdinaryCascadeStillSucceeds(t *testing.T) {
 //
 // handleUpdateItem reaches store.UpdateItemWithParentLink from THREE places,
 // each with its own error block: the plain path, the collab-snapshot callback,
-// and the collab-edit callback. The first was already mapped. This pins the second, on
-// which the identical store refusal was still answering 500.
+// and the collab-edit callback. The first was already mapped. This pins the second,
+// on which the identical store refusal was still answering 500.
 //
 // Why the miss is worth naming: the CONVE-18 sweep run after that asked "do
 // other HANDLERS reach this?" and correctly answered no. It never asked

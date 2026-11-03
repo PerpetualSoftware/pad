@@ -306,7 +306,7 @@ func TestTASK3617_PossiblyStaleFromAMergedPR(t *testing.T) {
 	}
 }
 
-// TASK-3617 r1: the retry when the item moves between the criteria read and
+// TASK-3617: the retry when the item moves between the criteria read and
 // the write. One move retries and lands, against the new seq. An item that
 // keeps moving is a 409. A move that also takes the item out of the caller's
 // reach is refused on the retry, not written: the first read's checks
@@ -408,7 +408,7 @@ func TestTASK3617_RetryRechecksAccess(t *testing.T) {
 	})
 }
 
-// TASK-3617 r2 L1: the same re-check for via. The guest can see the task on
+// TASK-3617: the same re-check for via. The guest can see the task on
 // the first read; between that read and the write the task's grant is
 // revoked and the spec moves. The retry must resolve via again and refuse,
 // not store a reference to an item the caller can no longer see.

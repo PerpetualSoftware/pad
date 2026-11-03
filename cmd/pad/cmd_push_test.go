@@ -63,8 +63,8 @@ func TestPushCmd_SendsCollapsedMessage(t *testing.T) {
 	}
 }
 
-// TestPushCmd_FormatJSON covers a defect: --format json was silently ignored — the RunE hardcoded
-// plain text regardless of formatFlag. Mirrors runCreateWatch's
+// TestPushCmd_FormatJSON covers a defect: --format json was silently ignored
+// — the RunE hardcoded plain text regardless of formatFlag. Mirrors runCreateWatch's
 // formatFlag == "json" branch (cmd_watch.go) and asserts the full
 // PushResult shape (ref, workspace, pushed, message), not just that
 // SOME JSON came out.

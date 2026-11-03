@@ -14,8 +14,8 @@ import (
 )
 
 // Tests for the first-run logs-token bootstrap flow (TASK-1167 / PLAN-1166).
-// These tests pin the security-critical contracts raised
-// in review before implementation:
+// These tests pin the security-critical contracts settled
+// before implementation:
 //
 //   - F2: cloud mode never accepts the token bypass.
 //   - F5: concurrent valid-token requests cannot create multiple admins.

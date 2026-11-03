@@ -14,7 +14,8 @@ import (
 
 // BUG-3028: "no target" on a scalar relation has ONE stored form, the key
 // absent. A blank a write SETS is refused on a required field; a legacy blank a
-// write merely CARRIES is normalised to absent without refusing. `owner` is required, `helper` is optional.
+// write merely CARRIES is normalised to absent without refusing. `owner` is required, `helper` is
+// optional.
 
 type blankFixture struct {
 	*doorFixture

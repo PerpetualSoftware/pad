@@ -214,7 +214,7 @@ func TestRefResolver_PreSetupBypass(t *testing.T) {
 	var item models.Item
 	parseJSON(t, rr, &item)
 
-	// Pre-setup workspace has owner_id="".3 says we
+	// Pre-setup workspace has owner_id="", so we
 	// must 404 in that case rather than emit a `//slug/...` redirect.
 	// Verify the no-broken-redirect contract holds.
 	rr = doRequest(srv, "GET", "/-/r/"+ws.Slug+"/"+item.Ref, nil)

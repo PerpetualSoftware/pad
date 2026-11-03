@@ -435,7 +435,7 @@ func TestWatchEventsStream_CommentNotification(t *testing.T) {
 	}
 }
 
-// TestWatchEventsStream_ReplyNotification covers this case:
+// TestWatchEventsStream_ReplyNotification covers a missed hook:
 // handleCreateReply is a SEPARATE code path from handleCreateComment (it
 // calls store.CreateComment directly via POST .../comments/{id}/replies,
 // not POST .../comments) and was missing the watch-notification hook
@@ -681,7 +681,7 @@ func TestWatchEventsStream_ArmedStreamReceivesPush(t *testing.T) {
 }
 
 // TestWatchEventsStream_ReplaySuppressesPushToUnarmedStream covers the
-// dispatcher's armed gate: it must cover the
+// a requirement: the armed gate must cover the
 // Last-Event-ID REPLAY path (SubscribeAndReplaySince's `missed` loop in
 // handleWatchEventsStream), not just live delivery through the select
 // loop. Both loops call the same watchNotificationVisible, but that
@@ -968,7 +968,7 @@ func TestWatchNotificationVisible_PushToSomeoneElseDenied(t *testing.T) {
 }
 
 // TestWatchNotificationVisible_PushToSomeoneElseDeniedEvenWithUnconditionalWatch
-// covers this bug: the original push branch returned
+// covers a bug: the original push branch returned
 // true only on a match and otherwise FELL THROUGH to the watch-map
 // check below it — so a non-target caller holding an unconditional
 // watch on the item still received the push (instruction text

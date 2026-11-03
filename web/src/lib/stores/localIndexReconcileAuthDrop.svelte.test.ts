@@ -18,7 +18,7 @@ import { localIndex } from './localIndex.svelte';
  *
  * TWO NEGATIVE LEGS ARE THE POINT. A cap hit and a transient failure must NOT
  * raise it — that is today's behaviour and this change deliberately does not
- * widen it. (The original plan anticipated the banner deriving from `pendingResyncFor`,
+ * widen it. (The decision anticipated the banner deriving from `pendingResyncFor`,
  * which is set in both those cases; that would have made the banner appear where
  * it never has. See the trail — the divergence is deliberate and declared.)
  */
@@ -99,7 +99,7 @@ describe('the reconcile’s auth-error reaction', () => {
 		// one the first fix did NOT cover. Both of bootstrap's catches checked
 		// `isStale()` BEFORE the auth branch, and the global handler's reset is
 		// exactly what makes `isStale()` true, so the revocation was swallowed
-		// into a cold state with no banner. Found by.
+		// into a cold state with no banner.
 		vi.spyOn(api.items, 'listIndex').mockImplementation(async () => {
 			localIndex.reset(ws);
 			throw new PadApiError({ code: 'forbidden', message: 'forbidden' });

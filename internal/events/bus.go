@@ -374,7 +374,7 @@ type replayBuffer struct {
 	// one logical stream whose IDs are consecutive by construction; we
 	// cannot, and no cleverer local check recovers it — see BUG-2735, which
 	// carries the two real options (a per-workspace counter, or an authority
-	// read against the shared counter) and the load arithmetic that rules
+	// read against the shared counter) and the load arithmetic that ruled
 	// the second one out.
 	//
 	// THE ID SPACE'S IDENTITY IS STILL NOT HERE, and after BUG-2736 that is a

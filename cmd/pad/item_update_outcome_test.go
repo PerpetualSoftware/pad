@@ -36,7 +36,7 @@ func outcomeServerRef(t *testing.T, stored string, pendingFlush, withRef bool) {
 			// FIELDS, deliberately: a real item nearly always has them, and the
 			// update prints a field-summary line after "Updated …". The first
 			// version of this file used field-less stubs and so never saw that
-			// the outcome was NOT the last line.
+			// the outcome was NOT the last line (#1416).
 			Fields: `{"status":"draft","priority":"high"}`}
 		if withRef {
 			n := 3
@@ -288,7 +288,7 @@ func TestItemShowStale_JSONAndAgentUntouched(t *testing.T) {
 	}
 }
 
-// The ruled asymmetry: markdown stdout stays the body VERBATIM, because it is
+// The deliberate asymmetry: markdown stdout stays the body VERBATIM, because it is
 // written back with `update --stdin` and a notice there would become content.
 func TestItemShowStale_MarkdownStdoutIsBodyOnly(t *testing.T) {
 	staleShowServer(t, "old body\n")

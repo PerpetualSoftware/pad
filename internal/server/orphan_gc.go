@@ -106,7 +106,7 @@ func (s *Server) runOrphanGCSweep(ctx context.Context, graceCutoff time.Time) (*
 		// upload first, then save the reference, but the attachments
 		// row's item_id stays NULL. Scan items.content + items.fields
 		// + comment bodies before reclaiming so the GC doesn't destroy
-		// a legitimate reference. Comment-body coverage added for IDEA-1650.
+		// a legitimate reference (PR #307). Comment-body coverage added for IDEA-1650.
 		// LIVE variant whose parent is tombstoned/gone (BUG-2388): the
 		// leak artifact of the old non-transactional delete cascade, and
 		// the retro-cleanup class for rows already leaked. Tried FIRST

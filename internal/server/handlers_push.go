@@ -36,8 +36,8 @@ type pushRequest struct {
 }
 
 // pushResponse is the body of a successful push (`pad push --format json`
-// needs a real shape, not a discarded response). Workspace is included for
-// the same reason as in the stream line — the stream is user-scoped across every workspace the
+// needs a real shape, not a discarded response). Workspace is included
+// because the stream is user-scoped across every workspace the
 // caller belongs to, so a JSON consumer needs it disambiguated same as
 // the monitor line does.
 type pushResponse struct {
@@ -70,8 +70,8 @@ type pushResponse struct {
 	// field name and wire shape are unchanged; only which registry
 	// entries qualify.
 	//
-	// SNAPSHOTTED BEFORE THE PUBLISH, not after: counting post-publish raced the very thing it reports on
-	// — a targeted session could receive the notification and then
+	// SNAPSHOTTED BEFORE THE PUBLISH, not after: counting post-publish raced
+	// the very thing it reports on — a targeted session could receive the notification and then
 	// disconnect before the count read, reporting 0 on a push that had
 	// already landed exactly once. handlePushToItem reads presence FIRST
 	// and, for a targeted push, skips the publish entirely when the
@@ -612,8 +612,7 @@ func (v *sessionVisibility) resolutions() int {
 //     narrower rule for the same situation.
 //
 // KNOWN, BOUNDED DISAGREEMENT WITH THE STREAM (accepted rather than
-// fixed). This resolves
-// visibility FRESH, while a live stream reads watchVisCache, which
+// fixed). This resolves visibility FRESH, while a live stream reads watchVisCache, which
 // refreshes on its own reval tick. So for at most one tick the two can
 // differ:
 //

@@ -29,7 +29,7 @@ describe('parseFieldChanges', () => {
 		// so they are the cases a schema-key-shaped guard could wrongly refuse.
 		// One-sided values ("field: → value") are KEPT with an empty `from` —
 		// checked against the function, after the source comment claiming they
-		// were dropped was wrong.
+		// were dropped turned out to be wrong and sent this expectation astray.
 		const parsed = parseFieldChanges(
 			'title: Old → New; role: → Implementer; assigned: Dave → Wren; due_date: → 2026-09-01',
 		);

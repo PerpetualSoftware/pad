@@ -79,7 +79,7 @@ type Store struct {
 	// cannot write each other's seam. Set it only while no request is in
 	// flight against this Store: it is READ on a write path with no
 	// synchronisation, so mutating it under live traffic is a -race
-	// finding waiting to happen (not current:
+	// finding waiting to happen (latent, not current:
 	// every test that sets it does so synchronously and none is parallel).
 	afterDebounceRead func()
 
@@ -151,7 +151,7 @@ type Store struct {
 	// request is in flight against this Store. It fires once per ATTEMPT, so
 	// a hook that issues its own update must nil the field for the duration
 	// of that nested call — and note that updateItemWithParentLinkOnce runs
-	// under retryOnParentSetChanged, so a retried update fires it again
+	// under retryOnParentSetChanged, so a retried update fires it again.
 	afterItemPreLockRead func(itemID string)
 
 	// beforeItemVersionsRead is a TEST-ONLY seam, nil in production. When set,
@@ -748,7 +748,7 @@ func (s *Store) migrate() error {
 	// already missing (a manual drop, a restored backup taken mid-rebuild) and
 	// therefore had no migration to trigger the per-migration check above.
 	//
-	// The NUL triggers are RE-ASSERTED, not merely checked (DOC-2823 S2)
+	// The NUL triggers are RE-ASSERTED, not merely checked (DOC-2823 S2).
 	//
 	// SQLite drops a table's triggers when the table is dropped, and this
 	// codebase rebuilds tables to change constraints — migrations 025, 055,

@@ -341,8 +341,8 @@
 							the first option, which is how a row gets its first status.
 							The first version of this gate required a string outright and
 							silently removed that setter, making `{}` and `{status:''}`
-							behave differently for no reason a user could see (found by
-							the enumeration round, which reproduced the difference).
+							behave differently for no reason a user could see (an
+							enumeration reproduced the difference).
 						-->
 						<!--
 							THE RELATION ARM COMES FIRST, and that ordering is load-bearing

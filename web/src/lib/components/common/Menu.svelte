@@ -202,9 +202,9 @@
 		return items()[0];
 	}
 
-	// A menu owes arrow/Home/End navigation wherever it renders (BUG-3157). In the sheet, Escape
-	// stays with BottomSheet, which owns it
-	// there along with focus return.
+	// A menu owes arrow/Home/End navigation wherever it renders (BUG-3157). In
+	// the sheet, Escape stays with BottomSheet, which owns it there along with
+	// focus return.
 	function onSheetKeydown(e: KeyboardEvent) {
 		if (e.key === 'Escape') return;
 		onKeydown(e);

@@ -27,21 +27,21 @@
  *    the path that actually reaches it, because a fence in the try block is
  *    skipped by a throw and taken by a `finally` on its own early return. A
  *    LITERAL assignment inside a `finally` is not a commit: it carries no data
- *    across the await, and it is how a busy flag clears under any identity. Each rule is pinned by the fixture legs at the
- *    bottom of this file.
+ *    across the await, and it is how a busy flag clears under any identity.
+ *    Each rule is pinned by the fixture legs at the bottom of this file.
  *
  * WHY A SECOND, SIMPLER ANALYZER RATHER THAN REUSING THE AID MODULE.
  * `src/test/identityFenceAst.ts` is a 1500-line flow analysis tuned to
  * ItemDetail's specific vocabulary — its generation counters, its capture
  * helpers, its fence booleans. Pointing it at fifteen other components would
  * mean teaching it fifteen more vocabularies, and the last six windows on this
- * family all went the same way: the review effort is spent on the GUARD's
+ * family all went the same way: the effort is spent on the GUARD's
  * defects, not the component's. So this one is deliberately small and answers a
  * narrower question, and the rest is declared below rather than discovered in
  * review.
  *
- * WHAT IT CANNOT SEE — the declared gaps, stated up front. These are not suspicions; each is a construct this guard
- * provably does not model:
+ * WHAT IT CANNOT SEE — the declared gaps, stated up front. These are not
+ * suspicions; each is a construct this guard provably does not model:
  *
  *   (a) PROVENANCE. It matches a CALL to a name bound from
  *       `authStore.identityFence()` in the same function. A predicate arriving
@@ -98,7 +98,7 @@
  *       continuations are ENUMERATED mechanically and must each appear in
  *       `KNOWN_CONTINUATIONS` — still not MODELLED: the leg proves a new one is
  *       read, not that it is fenced.
- * (g) OTHER DEFERRALS (BUG-3130). A callback run later by
+ *   (g) OTHER DEFERRALS (BUG-3130). A callback run later by
  *       anything that is not an `await` or a promise continuation — `setTimeout`
  *       / `setInterval`, `requestAnimationFrame`, `queueMicrotask`, an event
  *       listener, a store subscription — or a callback a helper runs after its
@@ -110,10 +110,11 @@
  *       member: `FieldEditor`'s typed-save debounce timer (and the blur flush
  *       of the same burst) sent a value typed under one identity as the next
  *       identity's edit — fixed in BUG-3130 with a
- *       fence captured at the burst's first keystroke. Left as a gap rather than a third table
+ *       fence captured at the burst's first keystroke. Left as a gap rather
+ *       than a third table
  *       because timers and listeners are mostly UI, and a table of them would
  *       be read as coverage of the effects they schedule, which it would not be.
- * (h) WHAT A TABLE ROW PINS (BUG-3130). A row in
+ *   (h) WHAT A TABLE ROW PINS (BUG-3130). A row in
  *       `KNOWN_OUTSIDE_FENCE` / `KNOWN_CONTINUATIONS` pins a callee (or a chain
  *       root) in a function, and how many times it occurs — not the arguments
  *       or the callback body. `toastStore.show('Copied')` becoming
@@ -826,8 +827,8 @@ function analyseSource(path: string, code: string): Analysis {
 			for (const a of ancestors) {
 				if (a !== fn && isFnNode(a)) return;
 			}
-			// A LITERAL assignment inside a `finally` is not a commit (BUG-3105): a commit carries data across the await, and
-			// a literal carries none. This is what lets a busy flag clear
+			// A LITERAL assignment inside a `finally` is not a commit (BUG-3105): a
+			// commit carries data across the await, and a literal carries none. This is what lets a busy flag clear
 			// UNCONDITIONALLY — `finally { creating = false }` must run under any
 			// identity, or a failed request leaves the component disabled. Narrow
 			// by construction: a non-literal assignment in a finally still fires,
@@ -948,8 +949,9 @@ function continuationKeys(path: string, code: string): string[] {
 /**
  * Keys with their OCCURRENCE COUNT folded in (`… ×2`) when above one — so a
  * second call of an already-classified shape in the same function changes the
- * key and fails, instead of hiding behind the row the first one earned (BUG-3130). The count is stable under edits elsewhere in the file,
- * which a line number or an ordinal is not.
+ * key and fails, instead of hiding behind the row the first one earned
+ * (BUG-3130). The count is stable under edits elsewhere in the file, which a
+ * line number or an ordinal is not.
  */
 function withCounts(counts: Map<string, number>): string[] {
 	return [...counts.entries()].map(([k, n]) => (n > 1 ? `${k} ×${n}` : k));

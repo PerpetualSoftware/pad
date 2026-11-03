@@ -542,7 +542,7 @@ func chatGPTHandler(t ChatGPTTool, source server.ToolHandlerFunc) server.ToolHan
 			// its text; answer a plain failure instead.
 			return NewErrorResult(ErrorPayload{Code: ErrServerError, Message: "The request failed."}), nil
 		}
-		// TASK-3321 U3: minimize the response before it leaves .
+		// TASK-3321 U3: minimize the response before it leaves (R2).
 		return projectChatGPTResult(t, in, res), nil
 	}
 }

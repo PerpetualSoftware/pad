@@ -195,7 +195,7 @@ func TestBUG2685_LegacyRequiredDeclarationBlocksCreate(t *testing.T) {
 // the bootstrap one is why a sweep owes its vantage point: that decode does NOT
 // land in a models.CollectionSchema — `bootstrapSchema` is a parallel struct —
 // so the type-resolved pass that found the other 23 sites could not see it. It
-// surfaced only by chasing a review finding about the OTHER door here.
+// surfaced only by chasing the OTHER door here.
 //
 // Bootstrap is the sharper of the two: the blob goes to every agent at session
 // start and the skill treats `collections[].schema` as the write contract, so a

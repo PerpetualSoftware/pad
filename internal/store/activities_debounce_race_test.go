@@ -43,7 +43,7 @@ func debounceWriter(wsID, docID, userID, changes string) models.Activity {
 
 // updatedRowsFor returns the "updated" activity rows on the document, as
 // ListDocumentActivity reports them — which means a default page of 20,
-// ordered by created_at with no tie-break, NOT "every row, newest first"
+// ordered by created_at with no tie-break, NOT "every row, newest first".
 // Every caller here first asserts the row COUNT it
 // expects and then reads rows without depending on their order, so neither
 // limitation is load-bearing; a future test that creates more than a

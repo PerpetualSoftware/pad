@@ -139,8 +139,8 @@ func TestHealthEndpointsAreMountedWhereDocumented(t *testing.T) {
 	}
 }
 
-// TestHealthReadyReportsRedisWithoutGatingOnIt makes this rule
-// executable: an unreachable Redis must be VISIBLE in the payload and
+// TestHealthReadyReportsRedisWithoutGatingOnIt makes executable the rule
+// that Redis is reported but never gates readiness: an unreachable Redis must be VISIBLE in the payload and
 // must NOT change the status code. A test that only checked the payload
 // would pass against a handler that also 503'd, which is the specific
 // regression that would take healthy replicas out of a load balancer.

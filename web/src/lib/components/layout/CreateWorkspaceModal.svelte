@@ -195,10 +195,9 @@
 	// This instance's own lifetime. A module-scoped token says whether a NEWER
 	// operation has superseded this one; it cannot say whether the instance that
 	// started this one still exists, because a remount that starts nothing
-	// advances no counter (an earlier fix missed exactly this). A destroyed instance's continuation
-	// must not fire a
-	// callback, a toast, a close or a navigation on behalf of a component
-	// nobody is looking at.
+	// advances no counter (an earlier fix missed exactly this). A destroyed
+	// instance's continuation must not fire a callback, a toast, a close or a
+	// navigation on behalf of a component nobody is looking at.
 	let alive = true;
 	onMount(() => () => { alive = false; });
 
