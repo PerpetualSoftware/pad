@@ -285,7 +285,12 @@ func (s *Server) runOrphanGCSweep(ctx context.Context, graceCutoff time.Time) (*
 				res.Skipped++
 				continue
 			}
-			if delErr := store.Delete(ctx, a.StorageKey); delErr != nil {
+			// Bounded like the recount above: the in-flight lock is held
+			// across the delete and every upload takes it.
+			delCtx, cancelDel := context.WithTimeout(ctx, refusedBlobDeleteTimeout)
+			delErr := store.Delete(delCtx, a.StorageKey)
+			cancelDel()
+			if delErr != nil {
 				// AttachmentStore.Delete documents that deleting a
 				// missing key is NOT an error, so anything reaching
 				// here is a real failure (permission, IO, etc.). The

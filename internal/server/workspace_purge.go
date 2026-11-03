@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/attachments"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/PerpetualSoftware/pad/internal/watchevents"
@@ -304,6 +305,14 @@ func (s *Server) purgeCandidate(ctx context.Context, c store.WorkspacePurgeCandi
 // guard is a per-process mutex, not distributed). A distributed purge
 // lock / backend-enumeration reclaimer is deferred with multi-instance
 // support (out of scope for v1).
+// deleteBlobBounded deletes a blob under refusedBlobDeleteTimeout. The caller
+// holds the process-wide in-flight lock, which every upload takes (TASK-4279).
+func deleteBlobBounded(ctx context.Context, backend attachments.AttachmentStore, key string) error {
+	ctx, cancel := context.WithTimeout(ctx, refusedBlobDeleteTimeout)
+	defer cancel()
+	return backend.Delete(ctx, key)
+}
+
 func (s *Server) reclaimWorkspaceBlobs(ctx context.Context, c store.WorkspacePurgeCandidate, blobs []models.Attachment, res *workspacePurgeResult) bool {
 	reclaimed := make(map[string]bool) // storage_key -> deleted this call
 	for _, a := range blobs {
@@ -366,7 +375,7 @@ func (s *Server) reclaimWorkspaceBlobs(ctx context.Context, c store.WorkspacePur
 			backend, resolveErr := s.attachments.Resolve(a.StorageKey)
 			if resolveErr != nil {
 				delErr = resolveErr
-			} else if e := backend.Delete(ctx, a.StorageKey); e != nil {
+			} else if e := deleteBlobBounded(ctx, backend, a.StorageKey); e != nil {
 				// Delete of a missing key is NOT an error per the
 				// AttachmentStore contract, so this is a real IO/
 				// permission failure.

@@ -144,12 +144,16 @@ func TestOrphanGC_KeepsBlobWhenTheRecountCannotAnswer(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	srv.orphanPostCountHook = func(string) { cancel() }
+	hookRan := false
+	srv.orphanPostCountHook = func(string) { hookRan = true; cancel() }
 	defer func() { srv.orphanPostCountHook = nil }()
 
 	res, err := srv.runOrphanGCSweep(ctx, time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatalf("sweep: %v", err)
+	}
+	if !hookRan {
+		t.Fatal("post-count hook never ran: the failed-recount leg was not exercised")
 	}
 	if res.BlobsReclaimed != 0 {
 		t.Errorf("BlobsReclaimed=%d, want 0: the recount could not answer", res.BlobsReclaimed)
@@ -173,12 +177,16 @@ func TestWorkspacePurge_DefersWhenTheRecountCannotAnswer(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	srv.purgePostCountHook = func(string) { cancel() }
+	hookRan := false
+	srv.purgePostCountHook = func(string) { hookRan = true; cancel() }
 	defer func() { srv.purgePostCountHook = nil }()
 
 	res, err := srv.runWorkspacePurgeSweep(ctx, time.Now().Add(-30*24*time.Hour))
 	if err != nil {
 		t.Fatalf("sweep: %v", err)
+	}
+	if !hookRan {
+		t.Fatal("post-count hook never ran: the failed-recount leg was not exercised")
 	}
 	if res.BlobsReclaimed != 0 || res.Purged != 0 {
 		t.Errorf("Purged=%d BlobsReclaimed=%d, want 0 and 0: the workspace is deferred", res.Purged, res.BlobsReclaimed)
