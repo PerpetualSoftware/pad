@@ -73,7 +73,7 @@ import (
 // handler or the endpoint, and that held: the STREAM HANDLER is unchanged.
 //
 // The ENDPOINT is not, and an earlier draft of this note claimed both were
-// (codex round 6). handleListSessions gained a 503 branch, because the
+//. handleListSessions gained a 503 branch, because the
 // out-of-process implementation made "I could not find out" a reachable
 // answer that the in-process one never had — the interface absorbed the
 // implementation swap, not the new failure mode the implementation brought
@@ -194,7 +194,7 @@ type LiveSession struct {
 	// deployment that needs it most.
 	//
 	// ROLLING-UPGRADE WINDOW, bounded and deliberately not tri-stated
-	// (codex round 1, P2). A session record written by a pre-BUG-2725
+	//. A session record written by a pre-BUG-2725
 	// instance has no `bearer_auth` key and decodes as false, i.e. as
 	// cookie-opened. The blast radius is exactly one case — a platform
 	// ADMIN's bearer-opened stream registered before the upgrade, which

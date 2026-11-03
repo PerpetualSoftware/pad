@@ -247,7 +247,7 @@ func TestDeleteAttachment_OrphanStillRequiresEditorRole(t *testing.T) {
 	// A full-access VIEWER member, not a stranger. Without the membership the
 	// request is refused by guestResourceFilter's restricted-user 404 and the
 	// test would pass even with the orphan role gate deleted — it wouldn't pin
-	// the rule it names (Codex round 10). As a full-access viewer the only
+	// the rule it names. As a full-access viewer the only
 	// thing standing between this user and the orphan is requireMinRole.
 	if err := srv.store.AddWorkspaceMember(f.wsID, granted.ID, "viewer"); err != nil {
 		t.Fatalf("AddWorkspaceMember: %v", err)

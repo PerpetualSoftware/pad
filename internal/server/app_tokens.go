@@ -27,7 +27,7 @@ import (
 // requestClientID returns the client id a token or introspection request
 // authenticates as: HTTP Basic first (RFC 6749 §2.3.1), then the form.
 // The Basic id is percent-decoded, as fosite decodes it before looking the
-// client up (codex r1): reading it raw would miss an encoded install client.
+// client up: reading it raw would miss an encoded install client.
 func requestClientID(r *http.Request) string {
 	if id, _, ok := r.BasicAuth(); ok && id != "" {
 		if dec, err := url.QueryUnescape(id); err == nil {
@@ -95,7 +95,7 @@ func (s *Server) prepareInstallTokenRequest(ctx context.Context, w http.Response
 // grantInstallServiceToken fills a validated client_credentials request: the
 // app scope, the app API audience, the install's bot as the subject, and the
 // install epoch read BEFORE the client authenticated (preEpoch), which the
-// store's barrier requires to still be current (codex r1 P1). fosite's
+// store's barrier requires to still be current. fosite's
 // client_credentials handler grants nothing on its own.
 func (s *Server) grantInstallServiceToken(ar fosite.AccessRequester, client *models.OAuthClient, preEpoch int64) error {
 	bot, err := s.store.AppPrincipalForInstall(client.AppInstallID)

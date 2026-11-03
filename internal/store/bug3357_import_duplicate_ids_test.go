@@ -40,7 +40,7 @@ func TestBUG3357_DuplicateSourceIDsRefused(t *testing.T) {
 		"collection": func(d *models.WorkspaceExport) {
 			d.Collections[1].ID = d.Collections[0].ID
 		},
-		// Two rows without an id collide on "" (codex r1); one is allowed.
+		// Two rows without an id collide on ""; one is allowed.
 		"item-empty": func(d *models.WorkspaceExport) {
 			d.Items[0].ID, d.Items[1].ID = "", ""
 		},

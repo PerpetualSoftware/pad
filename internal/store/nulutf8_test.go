@@ -141,7 +141,7 @@ func TestRepairInvalidUTF8KeepsJSONValid(t *testing.T) {
 }
 
 // A value whose row has an INCOMPLETE key (a NULL in its primary key, which
-// SQLite permits) and carries both defects is still ONE violation (codex r1).
+// SQLite permits) and carries both defects is still ONE violation.
 // Two such rows stay two: the merge is by rowid, which both scans read, not by
 // the partial key they share.
 func TestInvalidUTF8MergesOnKeyIncompleteRows(t *testing.T) {

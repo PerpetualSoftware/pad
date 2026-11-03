@@ -664,7 +664,7 @@ func TestStreamGaugeFollowsAReplacedMetricsInstance(t *testing.T) {
 }
 
 // TestStreamLimitRefusalContractIsIdenticalOnBothEndpoints pins what a
-// refused client actually receives (codex round 12). Both endpoints must
+// refused client actually receives. Both endpoints must
 // answer the same way, or a client that handles one correctly mishandles
 // the other — and one of them used to send the JSON error envelope under
 // Content-Type: text/event-stream, because the SSE headers were set

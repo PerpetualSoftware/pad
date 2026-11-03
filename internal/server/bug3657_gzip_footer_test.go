@@ -41,7 +41,7 @@ func TestBUG3657_CorruptGzipFooterIsRefused(t *testing.T) {
 			b[len(b)-1] ^= 0xff
 			return b
 		}(),
-		// Past the end of the gzip member (codex r1): raw bytes, and a second,
+		// Past the end of the gzip member: raw bytes, and a second,
 		// intact member carrying non-padding data after the tar terminator.
 		"raw bytes after the member": append(append([]byte(nil), good...), []byte("trailing garbage")...),
 		"a second member with data":  append(append([]byte(nil), good...), gzipMember(t, []byte("not tar padding"))...),

@@ -205,7 +205,7 @@ func TestExpectedSeq_BelowOneIsABadRequest(t *testing.T) {
 	}
 }
 
-// When BOTH tokens are sent, SEQ DECIDES (codex round 2).
+// When BOTH tokens are sent, SEQ DECIDES.
 //
 // A seq that still matches means no write has landed since the caller read the
 // row, so a differing `updated_at` cannot be a concurrent write — it is a caller

@@ -260,7 +260,7 @@ func isTextAffinity(declared string) bool {
 // something written directly.
 //
 // It matches the shapes SQLite actually creates rather than the substring
-// "_fts" anywhere in the name (codex round 1): a real table someone names
+// "_fts" anywhere in the name: a real table someone names
 // "user_fts_settings" would otherwise be skipped, and skipping a real table is
 // exactly the failure this census exists to prevent.
 func isDerivedTable(name string) bool {

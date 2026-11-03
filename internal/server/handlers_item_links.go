@@ -281,7 +281,7 @@ func (s *Server) publishStructuralLinkSourceEvent(r *http.Request, workspaceID, 
 	// says nothing about them.
 	//
 	// `implements` IS THE UNRESOLVED CASE, and this comment previously got it
-	// wrong by listing it with the silent ones (codex round 7). It DOES bump
+	// wrong by listing it with the silent ones. It DOES bump
 	// the source row — bumpStructuralLinkSourceTx treats it exactly like
 	// parent — so the mechanical criterion would have it emit, while v1.5's
 	// relationship-link silence would not. Deciding it inside a delivery

@@ -180,7 +180,7 @@ func TestRedisSessionPresence_RenewalKeepsALiveSessionListed(t *testing.T) {
 	t.Parallel()
 	mr := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	// MARGIN, deliberately generous (codex round 13). The first version ran
+	// MARGIN, deliberately generous. The first version ran
 	// a 2s fake TTL forward by 1s every 50ms of wall time, so a ~100ms
 	// scheduler pause could expire the session before a renewal ran and
 	// report "renewal broken" for a loaded CI machine. A 10s TTL tolerates

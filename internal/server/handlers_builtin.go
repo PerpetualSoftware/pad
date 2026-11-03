@@ -234,7 +234,7 @@ func builtinReplacedFields(current, patch map[string]any) string {
 			return "?"
 		}
 		// At most max bytes INCLUDING the ellipsis, cut on a rune boundary
-		// so the summary stays valid UTF-8 (codex r1).
+		// so the summary stays valid UTF-8.
 		const max = 120
 		const ellipsis = "…"
 		if len(b) <= max {
@@ -255,7 +255,7 @@ func builtinReplacedFields(current, patch map[string]any) string {
 		}
 		if had && next != nil {
 			// Canonical numbers: item fields keep a number as written, so
-			// 1e3 and 1000 would otherwise compare unequal (codex r1).
+			// 1e3 and 1000 would otherwise compare unequal.
 			ob, oerr := json.Marshal(models.CanonicalJSONNumbers(old))
 			nb, nerr := json.Marshal(models.CanonicalJSONNumbers(next))
 			if oerr == nil && nerr == nil && bytes.Equal(ob, nb) {
@@ -374,7 +374,7 @@ func (s *Server) handleBuiltinUpdate(w http.ResponseWriter, r *http.Request) {
 			}
 			if k == models.ItemFieldConvention {
 				// Reserved: cleared through the typed lowering, not the
-				// caller-facing patch (codex r3).
+				// caller-facing patch.
 				clearConvention = true
 				continue
 			}
@@ -417,7 +417,7 @@ func (s *Server) handleBuiltinUpdate(w http.ResponseWriter, r *http.Request) {
 			// version throttle's window: a diverged item's edits are
 			// what that history keeps.
 			ForceVersion: true,
-			// Recorded in the write's own transaction (codex r1).
+			// Recorded in the write's own transaction.
 			BuiltinSeed: &newSeed,
 		},
 		convention:      convention,

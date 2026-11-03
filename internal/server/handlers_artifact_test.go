@@ -575,7 +575,7 @@ func fieldString(t *testing.T, fieldsJSON, key string) string {
 }
 
 // TestImportArtifactUnbindableTextRejected covers the last body reader the
-// BUG-2803 sweep turned up (codex round 3). The artifact endpoint takes RAW
+// BUG-2803 sweep turned up. The artifact endpoint takes RAW
 // TEXT, not JSON, so it never went through decodeJSON and inherited neither
 // the NUL refusal nor the path/query rule — a body is neither a path nor a
 // query. A raw NUL or invalid UTF-8 reached the store, and Postgres answered

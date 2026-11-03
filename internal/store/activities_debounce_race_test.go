@@ -44,7 +44,7 @@ func debounceWriter(wsID, docID, userID, changes string) models.Activity {
 // updatedRowsFor returns the "updated" activity rows on the document, as
 // ListDocumentActivity reports them — which means a default page of 20,
 // ordered by created_at with no tie-break, NOT "every row, newest first"
-// (codex round 8). Every caller here first asserts the row COUNT it
+// . Every caller here first asserts the row COUNT it
 // expects and then reads rows without depending on their order, so neither
 // limitation is load-bearing; a future test that creates more than a
 // handful of rows, or that cares which of two same-second rows comes
@@ -84,7 +84,7 @@ func changesOf(t *testing.T, a models.Activity) string {
 // Against the unfixed code this fails on the competitor's change: the
 // second UPDATE overwrites the blob the competitor wrote.
 //
-// WHAT IT CANNOT DISCRIMINATE (codex round 7): an implementation that
+// WHAT IT CANNOT DISCRIMINATE: an implementation that
 // re-read the row and re-merged immediately before an unconditional UPDATE
 // would also pass, because the seam fires before that re-read. The residual
 // window — a competitor landing between such a re-read and the write — is
@@ -193,7 +193,7 @@ func TestCreateActivityDebounced_ContentionPastTheBoundKeepsTheChange(t *testing
 	}
 	// The competitors' changes must survive too. Without this, an
 	// accumulator that discarded everything it merged over would still pass
-	// on the `priority` assertion alone (codex round 7).
+	// on the `priority` assertion alone.
 	for i := 1; i <= debounceMergeAttempts; i++ {
 		want := "field" + string(rune('0'+i))
 		if !strings.Contains(all, want) {
@@ -302,7 +302,7 @@ func TestDebounceRowUnchanged(t *testing.T) {
 
 	// A store ERROR must not read as an answer. Without this leg, a
 	// classifier that swallowed errors into "unchanged" would pass every
-	// other leg here (codex round 7) — and "unchanged" is the answer that
+	// other leg here — and "unchanged" is the answer that
 	// makes the caller abandon a merge it could have retried.
 	broken := testStore(t)
 	if err := broken.DB().Close(); err != nil {
@@ -397,7 +397,7 @@ func TestMergeActivityMeta_NullBlobDoesNotPanic(t *testing.T) {
 	}
 
 	// The guard must produce a REAL merge, not a null-shaped special case:
-	// same-field runs still collapse through it (codex round 7).
+	// same-field runs still collapse through it.
 	got = mergeActivityMeta("null", `{"changes":"title: a → b; title: b → c"}`)
 	if err := json.Unmarshal([]byte(got), &m); err != nil {
 		t.Fatalf("merged blob is not JSON: %q (%v)", got, err)
@@ -466,9 +466,9 @@ func TestCreateActivityDebounced_NullMetadataRowSurvives(t *testing.T) {
 // same device TestCreateActivityDebounced_TimestampBumped already uses, and
 // The sleep runs inside the hook, so the assertion below is only meaningful
 // if the hook actually ran — which is why `fired` is checked rather than
-// assumed (codex round 8).
+// assumed.
 //
-// Boundary (codex round 7): an implementation with no CAS at all that
+// Boundary: an implementation with no CAS at all that
 // simply called now() at write time would also pass, so this is evidence
 // about WHERE the timestamp is taken, not that a retry happened. The retry
 // itself is pinned by the tests above; this one dies to the matrix mutation

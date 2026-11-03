@@ -783,7 +783,7 @@ func TestImportBundle_RefusesNULInManifest(t *testing.T) {
 	}
 
 	// And the PERSISTED state, which the HTTP answer alone does not tell you
-	// (codex round 18). A manifest refusal is NOT a rollback: it keeps the
+	//. A manifest refusal is NOT a rollback: it keeps the
 	// partial workspace, exactly as every other manifest failure does — the
 	// rollback branch fires only for *importStatusError, and mid-stream
 	// manifest failures intentionally keep what was imported (TASK-896).

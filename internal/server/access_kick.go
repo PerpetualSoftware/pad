@@ -23,7 +23,7 @@ import (
 // WORKSPACE (it was deleted, restored or purged). Across instances it travels
 // on its own transport (internal/accesskick: Redis pub/sub on cloud), NOT on
 // the client watch bus, whose sequence ids, replay buffer and per-client
-// queues kicks must not consume (codex r1). With no transport (one instance)
+// queues kicks must not consume. With no transport (one instance)
 // a kick is applied locally.
 //
 // The residual is accepted (lead ruling): frames already in flight between
@@ -166,7 +166,7 @@ func (s *Server) SetAccessKickTransport(t accesskick.Transport) {
 		s.accessKickWorker = nil
 	}
 	// An installed transport is the server's: a replaced or cleared one that
-	// owns resources is closed (codex r3).
+	// owns resources is closed.
 	if c, ok := s.accessKickTransport.(io.Closer); ok {
 		if err := c.Close(); err != nil {
 			slog.Warn("access kicks: closing the replaced transport failed", "error", err)
@@ -185,7 +185,7 @@ func (s *Server) SetAccessKickTransport(t accesskick.Transport) {
 const kickPublisherQueue = 1024
 
 // kickPublisher publishes kicks to the transport from ONE background
-// goroutine, so no request waits on Redis (codex r2): a stalled Redis costs
+// goroutine, so no request waits on Redis: a stalled Redis costs
 // the queue, never the handler that just committed an access change.
 type kickPublisher struct {
 	ch     chan accesskick.Message

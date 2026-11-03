@@ -127,7 +127,7 @@ func bigExportWorkspace(t *testing.T, srv *Server, n int) string {
 }
 
 // The attachment GET is the unauthenticated share-link shape. A client must not
-// be able to opt it out of the deadline by sending an Upgrade header (codex r4).
+// be able to opt it out of the deadline by sending an Upgrade header.
 func TestBUG3821_StalledReaderOfAnAttachmentReleasesItsHandler(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct{ name, extra string }{
@@ -319,7 +319,7 @@ func TestBUG3821_AKeepAliveConnectionStartsItsNextRequestWithNoDeadline(t *testi
 // On hijack: whatever the middleware armed is gone, so an upgraded connection
 // can write long after the response timeout. The route is not exempt, so the
 // handler gets the middleware's writer, and it hijacks by type assertion, as
-// gorilla/websocket does (codex r7).
+// gorilla/websocket does.
 func TestBUG3821_AHijackedConnectionCarriesNoDeadline(t *testing.T) {
 	t.Parallel()
 	srv := testServer(t)
@@ -434,7 +434,7 @@ func (h hijackableRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 
 // A hijacked connection whose write deadline cannot be cleared would time out
 // under its new owner, so the hijack fails and the connection is closed
-// rather than handed over with the deadline still on it (codex r8).
+// rather than handed over with the deadline still on it.
 func TestBUG3821_HijackFailsWhenTheDeadlineCannotBeCleared(t *testing.T) {
 	w := hijackableRecorder{ResponseRecorder: httptest.NewRecorder(), conn: &hijackConn{}}
 	d := &deadlineWriter{ResponseWriter: w, rc: http.NewResponseController(w), timeout: time.Second}
@@ -494,8 +494,8 @@ func TestBUG3821_AHandlersOwnDeadlineIsNotReArmed(t *testing.T) {
 }
 
 // WriteHeader arms like Write: an informational status goes to the socket at
-// once, so it must be sent under a live deadline (codex r12), and the
-// deadline is cleared again when it returns (codex r13).
+// once, so it must be sent under a live deadline, and the
+// deadline is cleared again when it returns.
 func TestBUG3821_WriteHeaderArms(t *testing.T) {
 	srv := testServer(t)
 	srv.responseWriteTimeoutOverride = time.Hour
@@ -516,7 +516,7 @@ func TestBUG3821_WriteHeaderArms(t *testing.T) {
 
 // The deadline is live only during a write: before the handler's first write
 // and after each one returns it is cleared, so the handler's own work cannot
-// run it out (codex r13). The last deadline is the one armed after the
+// run it out. The last deadline is the one armed after the
 // handler returns, for net/http's final flush.
 func TestBUG3821_NoDeadlineIsLiveWhileTheHandlerWorks(t *testing.T) {
 	srv := testServer(t)
@@ -546,12 +546,12 @@ func TestBUG3821_NoDeadlineIsLiveWhileTheHandlerWorks(t *testing.T) {
 // Over HTTP/2 a write deadline is a timer that resets the stream when it
 // fires, whether or not a write is in progress. A handler that pauses longer
 // than the timeout between two writes must still deliver its whole body to a
-// client that is reading (codex r13).
+// client that is reading.
 func TestBUG3821_AHandlerPauseOverHTTP2DoesNotResetTheStream(t *testing.T) {
 	t.Parallel()
 	srv := testServer(t)
 	// 1s, not less: a loaded runner must get the first write and flush out
-	// inside it, or the stream resets for the wrong reason (codex r14).
+	// inside it, or the stream resets for the wrong reason.
 	srv.responseWriteTimeoutOverride = time.Second
 	srv.ensureRouter()
 	srv.router.Get("/__bug3821/pause", func(w http.ResponseWriter, r *http.Request) {
@@ -609,7 +609,7 @@ func (b *blockingWriteLog) Write(p []byte) (int, error) {
 }
 
 // A write that returns while another is still blocked does not clear the
-// deadline from under it: only the last one in flight clears (codex r14).
+// deadline from under it: only the last one in flight clears.
 func TestBUG3821_AnOverlappingWriteKeepsItsDeadline(t *testing.T) {
 	srv := testServer(t)
 	srv.responseWriteTimeoutOverride = time.Hour
@@ -640,7 +640,7 @@ type panickingHeaderLog struct{ deadlineLog }
 func (p *panickingHeaderLog) WriteHeader(int) { panic("writer failed") }
 
 // A WriteHeader whose writer panics still clears its deadline, as Write and
-// Flush do, so the handler unwinding from it is not under one (codex r15).
+// Flush do, so the handler unwinding from it is not under one.
 func TestBUG3821_APanickingWriteHeaderClearsItsDeadline(t *testing.T) {
 	srv := testServer(t)
 	srv.responseWriteTimeoutOverride = time.Hour

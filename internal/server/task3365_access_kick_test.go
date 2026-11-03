@@ -84,7 +84,7 @@ func TestTASK3365_KickerCoalescesAndIsNonBlocking(t *testing.T) {
 }
 
 // deterministicFirstTick makes a connection's first revalidation land a full
-// interval out instead of anywhere inside it (codex r1): with the interval at
+// interval out instead of anywhere inside it: with the interval at
 // an hour, nothing but a kick can re-check during a test.
 func deterministicFirstTick(t *testing.T) {
 	t.Helper()
@@ -139,7 +139,7 @@ func TestTASK3365_KickCrossesInstances(t *testing.T) {
 	waitKick(t, userKick, "workspace_access_changed")
 }
 
-// Kicks never touch the client watch bus (codex r1): no sequence id, no
+// Kicks never touch the client watch bus: no sequence id, no
 // replay slot, no entry in any client's queue.
 func TestTASK3365_KicksDoNotUseTheClientWatchBus(t *testing.T) {
 	_, newTransport := miniredisTransport(t)
@@ -191,7 +191,7 @@ func (c *countingTransport) Subscribe(h func(accesskick.Message)) func() {
 }
 
 // Installing the same transport twice subscribes once; replacing it stops
-// the previous subscription (codex r1).
+// the previous subscription.
 func TestTASK3365_TransportInstallIsIdempotent(t *testing.T) {
 	srv := testServer(t)
 	first, second := &countingTransport{}, &countingTransport{}
@@ -427,7 +427,7 @@ func (b *blockingTransport) Publish(ctx context.Context, _ accesskick.Message) e
 func (b *blockingTransport) Subscribe(func(accesskick.Message)) func() { return func() {} }
 
 // A stalled transport never delays the request that published the kick, and
-// this instance's own connections are kicked at once (codex r2).
+// this instance's own connections are kicked at once.
 func TestTASK3365_StalledTransportDoesNotBlockTheRequest(t *testing.T) {
 	srv := testServer(t)
 	bt := &blockingTransport{release: make(chan struct{}), cancelled: make(chan struct{}), entered: make(chan struct{})}
@@ -452,7 +452,7 @@ func TestTASK3365_StalledTransportDoesNotBlockTheRequest(t *testing.T) {
 	waitKick(t, kick, "local kick with a stalled transport")
 
 	// Clearing the transport cancels the publish its worker is blocked in
-	// (codex r3), without the transport ever being released. The worker must
+	//, without the transport ever being released. The worker must
 	// BE in that publish first (BUG-3464): cleared before it was scheduled,
 	// it finds both `done` closed and a full queue, its select picks either
 	// at random, and choosing `done` returns without ever publishing. That

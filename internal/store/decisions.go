@@ -318,7 +318,7 @@ type DecisionJob struct {
 // debounce (not_before, TASK-3916) has passed or was never set.
 //
 // A job whose WORKSPACE is soft-deleted is not claimable: it is held in place
-// so a workspace restore finds the work still owed (codex round 5). Nothing
+// so a workspace restore finds the work still owed. Nothing
 // enqueues on restore — that would be a fan-out over every item — so keeping
 // the row is the only thing that makes a restore resume. A purge hard-deletes
 // the items, and the composite FK cascades the held rows away.
@@ -479,7 +479,7 @@ func (s *Store) FailDecisionJob(j DecisionJob, cause error, retryAfter time.Dura
 // DropDecisionJob abandons a claimed job: the item is gone, the set no
 // longer applies, or the job has exhausted its attempts.
 //
-// Generation-matched, exactly like CompleteDecisionJob (codex round 2): the
+// Generation-matched, exactly like CompleteDecisionJob: the
 // verdict is about the generation this runner claimed. A write that landed
 // mid-evaluation bumped the row to a newer generation, which is new work the
 // verdict says nothing about — so the row is released for it, not deleted.

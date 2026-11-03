@@ -269,14 +269,14 @@ func TestBodyDecodesNULNestedDocuments(t *testing.T) {
 		// the inner text is re-escaped when the blob is written and Postgres
 		// never sees an escape. Probed on Postgres 17 with the check
 		// disabled — the same body imports 201. Only the document Postgres
-		// itself parses can carry a fatal one (codex round 7).
+		// itself parses can carry a fatal one.
 		{"twice-encoded under an ordinary key is safe",
 			`{"fields":` + jsonEncode(t, `{"inner":`+jsonEncode(t, innerWithNUL)+`}`) + `}`, false},
 		// ...but a JSON-ENCODED key INSIDE the document still recurses, so
 		// this is a key rule applied at every level, not a depth limit.
 		// ...and a key that LOOKS like a wire key inside caller data is not
 		// one: a collection may declare a user field named `schema`, so the
-		// list is consulted only outside caller data (codex round 8).
+		// list is consulted only outside caller data.
 		{"a user field named like a wire key does not restart the descent",
 			`{"fields":` + jsonEncode(t, `{"schema":`+jsonEncode(t, innerWithNUL)+`}`) + `}`, false},
 
@@ -488,7 +488,7 @@ func TestTruncateBindableText(t *testing.T) {
 			// And it must keep as much as the limit allows. Without this,
 			// an implementation returning "" for every input passes every
 			// assertion above — it is bindable, within the limit, and a
-			// prefix (codex round 13).
+			// prefix.
 			if len(tc.s) <= tc.limit {
 				if got != tc.s {
 					t.Errorf("input fits the limit and must be returned unchanged, got %q", got)
@@ -1164,7 +1164,7 @@ func TestUnknownFieldRefusalThroughTheHandler(t *testing.T) {
 }
 
 // TestDecodeJSONTrimsOnlyJSONWhitespace pins that the empty-body shortcut uses
-// JSON's whitespace set, not Go's (codex round 22).
+// JSON's whitespace set, not Go's.
 //
 // bytes.TrimSpace uses unicode.IsSpace, which strips \v, \f, U+00A0 and more.
 // encoding/json accepts none of those. So a body of just "\v" trimmed to
@@ -1215,7 +1215,7 @@ func TestDecodeJSONTrimsOnlyJSONWhitespace(t *testing.T) {
 //
 // It exists because TestBodyDecodesNULGateAgreesWithAnUngatedWalk compares the
 // gated function against an "ungated" reference that calls the SAME production
-// walker (codex round 22). That comparison is valid for what it claims - it
+// walker. That comparison is valid for what it claims - it
 // pins the raw-prefix GATE - but it cannot see a defect in the walker itself,
 // because a walker bug is present identically on both sides and cancels.
 //
@@ -1317,7 +1317,7 @@ func independentDecodesNUL(t *testing.T, raw []byte) bool {
 				//
 				// Measured: before this, production=false / oracle=true on
 				// exactly that body. My corpus omitted it, so the oracle
-				// passed while being wrong (codex round 26). A one-sidedness
+				// passed while being wrong. A one-sidedness
 				// check that only asks whether BOTH answers appear does not
 				// catch a corpus that misses a whole branch of the contract.
 				nested := f.nested
@@ -1375,7 +1375,7 @@ func TestBodyDecodesNULAgainstAnIndependentOracle(t *testing.T) {
 		// descending one layer finds a NUL. It answered FALSE before only
 		// because production refused to descend into scalars at all, and the
 		// old comment explained it as "the escape stays literal text", which
-		// was never the reason (codex round 2).
+		// was never the reason.
 		//
 		// Verified against the authority rather than argued, because I first
 		// re-pinned it FALSE from that stale comment and was wrong:

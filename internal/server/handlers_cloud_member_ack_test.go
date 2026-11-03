@@ -126,7 +126,7 @@ func assertAckLossKeepsTheWorkspace(t *testing.T, srv *Server) {
 	// emitted immediately BEFORE the retry call, so it pins that the retry BRANCH
 	// was entered, not that the second INSERT executed. Nothing between the two can
 	// skip it, so the distinction is theoretical today — but a reader should not
-	// take this as proof the retry ran (codex round 2).
+	// take this as proof the retry ran.
 	if logged := logBuf.String(); !strings.Contains(logged, "add owner member failed, retrying") {
 		t.Errorf("the retry branch was not entered; without it this test does not describe the reported "+
 			"path. log: %s", logged)
@@ -147,7 +147,7 @@ func assertAckLossKeepsTheWorkspace(t *testing.T, srv *Server) {
 	//
 	// Found BY OWNER, not by position: ListWorkspaces is ORDER BY name ASC, so
 	// after[len(after)-1] is only this workspace by accident of today's empty
-	// fixture (codex round 1).
+	// fixture.
 	var ws *models.Workspace
 	for i := range after {
 		if after[i].OwnerID == user.ID {
@@ -230,7 +230,7 @@ func TestAutoCreateWorkspace_UnreadableMembershipKeepsTheWorkspace(t *testing.T)
 
 	// The count alone does NOT identify this arm — the owner-success arm keeps the
 	// workspace too, so collapsing UNREADABLE into it would pass the check above
-	// (codex round 2). The log is what separates them.
+	//. The log is what separates them.
 	logged := logBuf.String()
 	if !strings.Contains(logged, "KEEPING the workspace because its state is unknown") {
 		t.Errorf("the unreadable-state arm did not run; some other arm kept the workspace. log: %s", logged)
@@ -239,7 +239,7 @@ func TestAutoCreateWorkspace_UnreadableMembershipKeepsTheWorkspace(t *testing.T)
 	// used: that substring is also emitted by the collab restore reconcile
 	// (internal/collab/manager.go), so it could only ever produce a false FAILURE
 	// here, but a negative assertion keyed on a string another subsystem owns is
-	// fragile for no benefit (codex round 3).
+	// fragile for no benefit.
 	if strings.Contains(logged, "the owner row is present") {
 		t.Errorf("an unreadable membership state was reported as success. log: %s", logged)
 	}
@@ -279,7 +279,7 @@ func TestAutoCreateWorkspaceReconcileArmsAreDistinguishable(t *testing.T) {
 // TestAutoCreateWorkspace_WrongRoleMembershipKeepsTheWorkspace pins the fourth arm.
 //
 // It exists because the first version of this reconcile asked the wrong question
-// (codex round 1 P2): it used an EXISTENCE check, so a row carrying any role at all
+// : it used an EXISTENCE check, so a row carrying any role at all
 // reconciled to success. What was attempted was an OWNER row, so a row with another
 // role means the write did NOT land — and the user cannot administer their own
 // auto-created workspace, since owner > editor > viewer.
@@ -331,14 +331,14 @@ func TestAutoCreateWorkspace_WrongRoleMembershipKeepsTheWorkspace(t *testing.T) 
 	// THE POINT OF THIS TEST, and the count above cannot carry it: the owner arm
 	// keeps the workspace too, so folding wrong-role back into "a row exists means
 	// success" — the exact defect round 1 found — would pass the count check
-	// (codex round 2). What must be true is that this is reported as a FAILURE
+	//. What must be true is that this is reported as a FAILURE
 	// needing a human, not as a success.
 	logged := logBuf.String()
 	if !strings.Contains(logged, "carries a "+"different role") {
 		t.Errorf("the wrong-role arm did not run. log: %s", logged)
 	}
 	// This arm's own phrase rather than the bare "reconciled to success", which
-	// the collab restore reconcile also emits (codex round 3).
+	// the collab restore reconcile also emits.
 	if strings.Contains(logged, "the owner row is present") {
 		t.Errorf("a non-owner membership row was reported as success; the user cannot administer their "+
 			"own auto-created workspace. log: %s", logged)

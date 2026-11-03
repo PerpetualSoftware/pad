@@ -115,7 +115,7 @@ import (
 // identical for a GET, and DR-15 is not about them. Read the guarantee as
 // "a preflight leaves no trace a copy would have left".
 //
-// RESIDUAL, recorded rather than fixed (Codex round 3). Because DR-11
+// RESIDUAL, recorded rather than fixed. Because DR-11
 // requires attachment references to be enumerated from the FINAL
 // destination fields, a caller who may edit the source item can put a
 // `pad-attachment:<uuid>` literal into a text override and read back
@@ -694,7 +694,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// items.UndeclaredOverrideKeys, the SAME function the store's copy path
 	// calls. It moved into internal/items in TASK-2365 because two
 	// implementations of "which keys are undeclared" is precisely the DR-6
-	// divergence this pair of endpoints exists to prevent (Codex round 17).
+	// divergence this pair of endpoints exists to prevent.
 	//
 	// BOTH structural checks run here now, through the shared classifier the
 	// COPY also runs at the same point (lead ruling, day 58). The shape check
@@ -720,7 +720,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// ---- DR-12: migrate → apply overrides → THEN validate -------------
 	//
 	// LIMITATION, inherited from MigrateFields and shared with the
-	// existing intra-workspace move path (Codex round 5). Migration
+	// existing intra-workspace move path. Migration
 	// matches on key and type only — plus the option list for a select.
 	// It does not consider a relation field's `collection`, `computed`,
 	// `terminal_options` or `unique_scope`.
@@ -904,7 +904,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// `wrong_collection` is the reason that names a LIVE item, so without
 	// this a carried value pointing at one the caller cannot see reported
 	// differently from a value naming nothing: the existence oracle round 3
-	// closed on the main pass, reached by the carried path (codex round 16).
+	// closed on the main pass, reached by the carried path.
 	//
 	// This is the only site where a MigrateRelationReferents drop reason
 	// reaches a caller — move and bulk move report dropped KEYS and no
@@ -969,7 +969,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 		dropReasonByKey[key] = string(store.RelationTargetInvalidShape)
 		delete(origin, key)
 	}
-	// Relation defaults ValidateFieldsDetailed just injected (codex round 2).
+	// Relation defaults ValidateFieldsDetailed just injected.
 	// The copy runs the identical pass at the same point; a preview that
 	// reported an unresolved default as carrying while the copy dropped it
 	// would be the DR-6 divergence in a new place.
@@ -1066,7 +1066,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 			// The CANONICAL slug from the resolved workspace, never the URL
 			// parameter: /workspaces/{slug} also accepts a UUID, and echoing
 			// that back in a field a client uses to build a web route hands
-			// it a link that does not resolve (Codex round 14). Same reason
+			// it a link that does not resolve. Same reason
 			// the destination reports dst.WorkspaceSlug().
 			WorkspaceSlug:  src.WorkspaceSlug(),
 			CollectionSlug: sourceColl.Slug,
@@ -1108,7 +1108,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	//
 	// The STRIPPED schema, so a grandfathered reserved declaration is not
 	// walked here and then appended again by the reserved pass below —
-	// emitting the same key twice in one `carried` array (Codex round 4). The
+	// emitting the same key twice in one `carried` array. The
 	// existing preflight/copy parity helper collapses carried entries into a
 	// map, so it could not see the duplicate: a check that de-duplicates
 	// before comparing cannot detect duplication.
@@ -1307,7 +1307,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// already answer these questions. A caller holding nothing but an edit
 	// grant on the source item would otherwise learn the exact number and
 	// type of children and dependency edges attached to it, every one of
-	// which may live in a collection hidden from them (Codex round 3).
+	// which may live in a collection hidden from them.
 	//
 	// The trade is that a hidden child still gets left behind without being
 	// counted. That is the correct side to err on: the alternative reports
@@ -1349,7 +1349,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// never looks at items.parent_id, while an item created through the
 	// API with a raw parent_id has no link row at all. Missing those
 	// would leave children_orphaned false on a move that strands them
-	// (Codex round 12). Deduplicated by id — a child can legitimately
+	//. Deduplicated by id — a child can legitimately
 	// carry both.
 	children, err := s.store.GetChildItems(item.ID)
 	if err != nil {
@@ -1399,7 +1399,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 		//
 		// COST: this is the one case that makes an UNRESTRICTED caller pay
 		// for a per-link GetItem, which restricted callers already paid
-		// (Codex round 4). Accepted rather than batched, because the
+		//. Accepted rather than batched, because the
 		// predicate is exactly "there is a legacy 'plan' row here": a
 		// workspace with none — every workspace created since the rename,
 		// since NormalizeItemLinkType has no 'plan' alias and no write path
@@ -1474,7 +1474,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// cannot see. models.ItemCreate accepts `parent_id` on the create
 	// route and CreateItem inserts it verbatim, so this is API-reachable
 	// state, and CopyItemAcrossWorkspaces scrubs it along with the link
-	// (Codex round 11). Same visibility filter as every other
+	//. Same visibility filter as every other
 	// relationship, plus an explicit workspace guard: the column's foreign
 	// key constrains it to items(id) but says nothing about WHICH
 	// workspace, and GetItem is id-global with no workspace predicate, so
@@ -1487,7 +1487,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// so an item created with a hidden parent_id and later given a visible
 	// `parent` link carries both — and skipping the column then leaves a
 	// withheld relationship unmarked while dropped_parent reports the
-	// visible one (Codex round 1).
+	// visible one.
 	if item.ParentID != nil && *item.ParentID != "" {
 		legacyParent, pErr := s.store.GetItem(*item.ParentID)
 		if pErr != nil {
@@ -1784,7 +1784,7 @@ func dropEmptyRelationOrigins(final map[string]any, origin map[string]string, sc
 		if !exists {
 			continue
 		}
-		// NIL COUNTS TOO (codex round 8). `CoerceFields` JSON-parses a
+		// NIL COUNTS TOO. `CoerceFields` JSON-parses a
 		// multi_relation string, so the override `"null"` arrives here as a nil
 		// — a spelling of "no targets" that `IsEmptyRelationList` deliberately
 		// does not claim, since nil is the PATCH path's deletion sentinel and

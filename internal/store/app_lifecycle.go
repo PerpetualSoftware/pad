@@ -129,7 +129,7 @@ func (s *Store) BeginInstallTeardown(workspaceID, installID string, kind Teardow
 		return err
 	}
 	// Every unconsumed install code dies too: redeeming one would mint a
-	// fresh working secret, which rotate and disable exist to end (codex r1).
+	// fresh working secret, which rotate and disable exist to end.
 	if _, err := tx.Exec(s.q(`DELETE FROM app_install_codes WHERE install_id = ? AND consumed_at IS NULL`), installID); err != nil {
 		return fmt.Errorf("revoke install codes: %w", err)
 	}
@@ -221,7 +221,7 @@ func (s *Store) FinishRotate(workspaceID, installID string) (string, time.Time, 
 	// A second bump: a token request that read the phase-1 epoch while the
 	// install was disabling, and authenticated with the OLD secret, would
 	// otherwise commit a live token once this makes the install active
-	// (codex r1). Its grant carries the phase-1 epoch, which this ends.
+	//. Its grant carries the phase-1 epoch, which this ends.
 	if err := s.setInstallStateTx(tx, installID, InstallActive, true); err != nil {
 		return "", time.Time{}, err
 	}
@@ -311,7 +311,7 @@ func (s *Store) UninstallAppTx(workspaceID, installID string) error {
 	// then the install row. Account deletion purging this bot takes them in
 	// that order (membership, user, then the install row through the
 	// bot_user_id FK action); taking the install row first deadlocked with it
-	// (codex r1). The users row is FOR NO KEY UPDATE, which does not conflict
+	//. The users row is FOR NO KEY UPDATE, which does not conflict
 	// with the FK KEY SHARE a fenced app write takes on it while holding the
 	// install row FOR SHARE. SQLite: BEGIN IMMEDIATE.
 	if s.dialect.Driver() == DriverPostgres {

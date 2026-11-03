@@ -42,7 +42,7 @@ const (
 	defaultDecisionTickLimit = 20
 
 	// defaultDecisionClaimLease must outlast ONE JOB, not one pass: the
-	// runner claims jobs one at a time (codex round 4), so a lease starts
+	// runner claims jobs one at a time, so a lease starts
 	// when its own evaluation does. A lease that lapses mid-call hands the
 	// job to another instance and buys a duplicate provider call.
 	//
@@ -68,14 +68,14 @@ type decisionTickConfig struct {
 	// stopped latches once stopDecisionTick runs. Reconfiguration can start
 	// the tick at any time (TASK-3121), so without it a settings write racing
 	// Stop() could start a loop after Stop() had drained s.bg — a goroutine
-	// using a store that is about to close (codex round 1).
+	// using a store that is about to close.
 	stopped bool
 
 	// passCancel cancels the pass in flight, if any. SetDecisionRunner calls
 	// it when the runner changes, so disabling or replacing the provider
 	// stops the OLD one being called for the rest of that pass — up to
 	// `limit` more jobs of item data sent to a provider the admin turned off
-	// (codex round 1). A cancelled job's claim is released without counting
+	//. A cancelled job's claim is released without counting
 	// an attempt, so the new runner picks it up.
 	passCancel context.CancelFunc
 
@@ -92,7 +92,7 @@ type decisionTickConfig struct {
 // resolver, so the doors enqueue nothing.
 //
 // The write doors' resolver is installed BEFORE the runner is published
-// (codex round 2). Disabling therefore stops new enqueues before the runner
+// . Disabling therefore stops new enqueues before the runner
 // goes nil, rather than leaving a window after the disable in which a write
 // still owes a job. A write whose transaction read the old resolver before
 // that point can still commit its job afterwards: it was concurrent with the

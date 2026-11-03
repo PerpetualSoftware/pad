@@ -840,7 +840,7 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 		// their page loads and the reverse. Only an actual upgrade request
 		// counts as a dial; anything else under the prefix (a plain GET, a
 		// POST, a future REST route) is an ordinary API request and pays the
-		// API bucket (codex round 1).
+		// API bucket.
 		if strings.HasPrefix(path, "/api/v1/collab/") && websocket.IsWebSocketUpgrade(r) {
 			key := rateLimitKey(r, addr)
 			if !s.rateLimiters.CollabDial.allow(key) {

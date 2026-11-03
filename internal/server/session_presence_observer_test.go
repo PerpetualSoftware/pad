@@ -147,7 +147,7 @@ func TestPresenceReportsCorruptEntriesAsListFailures(t *testing.T) {
 }
 
 // TestPresenceReportsRenewAndDeregisterFailures covers the two ops the
-// earlier tests left uninstrumented (codex round 5). They matter for
+// earlier tests left uninstrumented. They matter for
 // opposite reasons, which is exactly why counting them separately was
 // worth doing: a failed RENEW under-reports (a live session expires out
 // of the picker), a failed DEREGISTER over-reports (a dead session stays

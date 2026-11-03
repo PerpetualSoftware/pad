@@ -306,7 +306,7 @@ func (s *Server) handleListItemsIndex(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The live collection set the epoch fingerprints (BUG-3428 phase 2),
-	// read BEFORE the rows (codex r1). Read after them, a delete committing
+	// read BEFORE the rows. Read after them, a delete committing
 	// in between paired the deleted collection's rows with the post-delete
 	// epoch, and no later poll would evict them. Read before, the response
 	// carries the older epoch, so the next poll sees the change and resyncs.
@@ -461,7 +461,7 @@ func (s *Server) handleListItemsChanges(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// The live collection set the epoch fingerprints (BUG-3428 phase 2),
-	// read BEFORE the rows (codex r1). Read after them, a delete committing
+	// read BEFORE the rows. Read after them, a delete committing
 	// in between paired the deleted collection's rows with the post-delete
 	// epoch, and no later poll would evict them. Read before, the response
 	// carries the older epoch, so the next poll sees the change and resyncs.
@@ -571,7 +571,7 @@ func (s *Server) handleListItemsChanges(w http.ResponseWriter, r *http.Request) 
 	// with item grants it is the set this door filters by (BUG-3347; see
 	// effectiveAccessEpoch).
 	// liveFullCollIDs / liveGrantedItemIDs are resolved BEFORE the rows,
-	// with the live collection set (codex r2): read after them, a collection
+	// with the live collection set: read after them, a collection
 	// delete in between dropped its grant from the epoch while the rows still
 	// held its items.
 	writeJSON(w, http.StatusOK, itemsChangesResponse{
@@ -1000,7 +1000,7 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 		if wanted := libraryOptionsWanted(coll, schema, fieldMap); len(wanted) > 0 {
 			// Validate against the widened schema first, on a copy (the
 			// pipeline injects defaults into its map), so a create that would
-			// be refused anyway never changes the collection (codex round 2).
+			// be refused anyway never changes the collection.
 			if _, _, _, _, cerr := s.prepareCreateFields(r, workspaceID, coll, withSelectOptions(schema, wanted), maps.Clone(fieldMap), posture); cerr != nil {
 				return nil, cerr
 			}
@@ -1076,7 +1076,7 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 		if errors.As(err, &badTitle) {
 			return nil, &itemCreateError{status: http.StatusBadRequest, code: "bad_request", message: badTitle.Reason}
 		}
-		// The NUL refusal, in this path's own envelope (codex round 1). Same
+		// The NUL refusal, in this path's own envelope. Same
 		// classification as everywhere else, same sentence; only the shape
 		// differs, because createItemChecked returns its error rather than
 		// writing it.
@@ -1194,7 +1194,7 @@ func (s *Server) prepareCreateFieldsQ(q store.Queryer, r *http.Request, workspac
 		items.DropBlankRelations(fieldMap, schema, nil)
 	}
 	// Snapshot before validation, which INJECTS schema defaults without
-	// type-checking them (codex round 7). The resolver below skips a
+	// type-checking them. The resolver below skips a
 	// non-string, so an injected `default: 42` on a relation field reached the
 	// blob unchallenged — the same hole the migrate doors had, by the same
 	// route, and closed with the same pass.
@@ -1332,7 +1332,7 @@ func (s *Server) handleGetItem(w http.ResponseWriter, r *http.Request) {
 // mapped first and the other two were missed, which is a population error, not
 // a typo: the sweep that established "bulk and restore never set Title"
 // checked other HANDLERS and never asked whether this handler had more than
-// one error block (codex R2).
+// one error block.
 //
 // The refusal is DETERMINISTIC and permanent, which is why the collab-edit
 // path must treat it as final rather than letting it fall through to the
@@ -1692,7 +1692,7 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 	// The item's CURRENT fields go into the message because a remedy has to
 	// work in the state the caller is in: when the stored value is already
 	// undecodable, `pad item note` refuses too, and naming it anyway would
-	// route the caller in a circle (Codex round 1).
+	// route the caller in a circle.
 	if bad := items.PatchRefusedFieldKeysIn(input.FieldsPatch); len(bad) > 0 {
 		writeError(w, http.StatusBadRequest, "validation_error", reservedFieldPatchMessage(bad, item.Fields))
 		return
@@ -1843,7 +1843,7 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 			return items.IsBlankRelationValue(storedFields[k])
 		})
 		// Snapshot before validation injects untyped schema defaults — see
-		// createItemChecked for the route (codex round 7).
+		// createItemChecked for the route.
 		relBefore := store.RelationKeysPresent(schema, fieldMap)
 		// BUG-3079 — see the create door for the rule.
 		defaultDrops, verr := items.ValidateFieldsWithDrops(fieldMap, schema)
@@ -2049,7 +2049,7 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 		// And only keys the patch STORES. A nil value in fields_patch is a
 		// DELETE — internal/store/items.go removes the key — so reporting it as
 		// an undeclared field would tell the caller a field was stored that the
-		// same request just removed (codex round 2). Filtered here rather than
+		// same request just removed. Filtered here rather than
 		// inside UndeclaredFieldKeys because nil means "store JSON null" on the
 		// full-fields path, where reporting it IS correct.
 		stored := make(map[string]any, len(patchMap))
@@ -2381,7 +2381,7 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 	// CONTENT writes only: the stamp orders bodies, and a stamp on a write that
 	// carries none (a title or field PATCH) neither orders nor marks anything —
 	// otherwise it could raise the mark and refuse this tab's next real content
-	// write (codex round 1).
+	// write.
 	if input.ClientWrite != nil && input.Content != nil && s.clientWrites != nil {
 		cw := input.ClientWrite
 		if cw.Tab == "" || len(cw.Tab) > 64 || cw.N < 1 {
@@ -2535,7 +2535,7 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 				writeUpdateConflictError(w, itemRefOrSlug(*item), conflict)
 				return
 			}
-			// BUG-3407 (codex r3): the collab-snapshot path's own arm.
+			// BUG-3407: the collab-snapshot path's own arm.
 			if v, ok := store.AsValidationError(err); ok {
 				writeError(w, http.StatusBadRequest, "validation_error", v.Reason)
 				return
@@ -2803,7 +2803,7 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 	// author is not, and this bug exists because the second failure is
 	// invisible. The activity row itself is still written; only its
 	// human-readable detail is dropped, and the warning names the invariant
-	// so the cause is one grep away (codex round 3).
+	// so the cause is one grep away.
 	before := updated.PreUpdate
 	if before == nil {
 		slog.Warn("item update returned no pre-image; writing the activity without a change list",
@@ -2920,7 +2920,7 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 			// comment.created.
 			//
 			// PRECISELY, because "item.updated + comment.created" would
-			// overstate it twice (codex round 1): the item half is whichever
+			// overstate it twice: the item half is whichever
 			// slice actually moved under the disjoint-delta rule — a
 			// status-only update emits item.status_changed, not item.updated
 			// — and the two events come from two SEPARATE transactions, since
@@ -3245,7 +3245,7 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 
 	// Apply overrides.
 	//
-	// Reserved keys are REFUSED rather than merged (Codex round 4). They are
+	// Reserved keys are REFUSED rather than merged. They are
 	// checked FIRST, and separately from the declared-key gate below, so a
 	// reserved key gets the message that names why — without this an override could write
 	// arbitrary junk straight into implementation_notes or decision_log,
@@ -3402,7 +3402,7 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	}
 	items.DropBlankRelations(result.Fields, items.SchemaForMigratedFields(targetSchema), nil)
 	// Relation defaults ValidateFieldsDetailed just injected, which the pass
-	// above could not have seen (codex round 2). AFTER validation, not before:
+	// above could not have seen. AFTER validation, not before:
 	// the required-field check has to see a value referent resolution dropped,
 	// which is why the main pass runs first — see ResolveLateRelationDefaults.
 	lateDropped, lateErr := s.store.ResolveLateRelationDefaults(
@@ -3419,7 +3419,7 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	// A REQUIRED relation whose default did not resolve cannot be left as a
 	// drop: the key is deleted AFTER validation passed, so nothing re-checks
 	// it and the item would land with a required field absent, reported valid
-	// (codex round 3). Re-running validation is not the answer — it would
+	//. Re-running validation is not the answer — it would
 	// re-inject the same broken default. There is no valid value, so this
 	// refuses.
 	if req := store.RequiredRelationIssues(items.SchemaForMigratedFields(targetSchema), lateDropped); len(req) > 0 {
@@ -4757,9 +4757,9 @@ var errItemChangedDuringMove = errors.New("item changed during move")
 // and moves again. Every move checks this, a forced one included (force skips
 // only the open-children guard, which runs last as guard when non-nil). The
 // inputs:
-//   - the item's collection and fields (codex r1);
+//   - the item's collection and fields;
 //   - the source collection's schema and settings, which the migration and
-//     the close-state check read (codex r2);
+//     the close-state check read;
 //   - the target collection's schema and settings, likewise (the store also
 //     re-validates the fields against the target schema under the lock,
 //     BUG-3407);

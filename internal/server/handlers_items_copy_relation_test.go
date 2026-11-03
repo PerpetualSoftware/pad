@@ -380,7 +380,7 @@ func newCopyRelationFixtureWith(t *testing.T, destDefault destDefaultKind, sourc
 }
 
 // A DESTINATION DEFAULT is not a carried referent, and must not be dropped as
-// one (codex round 1, P1).
+// one.
 //
 // `MigrateFields` fills in the destination schema's defaults for keys the
 // source item has nothing for. A classifier that splits only on "did the
@@ -440,7 +440,7 @@ func TestCopyEndpoint_EmptyCarriedRelationIsNotReportedDropped(t *testing.T) {
 }
 
 // A supplied relation override must name an item the REQUESTER CAN SEE, on the
-// copy and its preflight alike (codex round 1, P1).
+// copy and its preflight alike.
 //
 // The four write doors have always checked this; the migrate doors called the
 // store resolver directly, and the store cannot answer a request-scoped
@@ -474,7 +474,7 @@ func TestCopyEndpoint_InvisibleRelationOverrideIsRefused(t *testing.T) {
 			t.Fatalf("%s: error code = %q, want validation_error", d.name, code)
 		}
 		// The refusal must quote what the CALLER sent, never the canonical
-		// UUID (codex round 2). The store resolver rewrites a ref into its
+		// UUID. The store resolver rewrites a ref into its
 		// target's id before the visibility check runs, so a message built
 		// from the resolved value hands back the id of an item this requester
 		// may not see — confirming both its existence and its canonical
@@ -496,7 +496,7 @@ func TestCopyEndpoint_InvisibleRelationOverrideIsRefused(t *testing.T) {
 }
 
 // A destination default injected by VALIDATION — after referent resolution has
-// finished — must still be resolved (codex round 2, P1).
+// finished — must still be resolved.
 //
 // The migrate doors resolve before they validate, because the required-field
 // check has to see a value that resolution dropped. `ValidateFields` then
@@ -547,7 +547,7 @@ func TestCopyEndpoint_LateInjectedRelationDefaultIsResolved(t *testing.T) {
 }
 
 // A REQUIRED relation whose default does not resolve must REFUSE, not land the
-// item with the field absent (codex round 3).
+// item with the field absent.
 //
 // The late pass deletes the key after validation has already passed, so
 // nothing re-checks required-ness. Re-running validation is not the fix — it
@@ -595,7 +595,7 @@ func TestCopyEndpoint_RequiredRelationWithBrokenDefaultIsRefused(t *testing.T) {
 }
 
 // A source key holding `null` carries nothing, and the preflight must not
-// report the destination's default as `migrated` (codex round 4).
+// report the destination's default as `migrated`.
 //
 // `MigrateFields` keeps the key, the relation pass skips a nil value, and
 // validation then treats it as missing and fills the destination default in
@@ -686,7 +686,7 @@ func TestCopyEndpoint_NullSourceWithoutDefaultIsNotReportedAsDefault(t *testing.
 }
 
 // A relation default that is not a reference at all must be reported, not
-// silently stored (codex round 6).
+// silently stored.
 //
 // THE ROUTE MATTERS, and the review's account of it was not quite right.
 // `MigrateFields` injects destination defaults itself, so in the ordinary case
@@ -737,7 +737,7 @@ func newCopyRelationFixtureNonStringDefault(t *testing.T) *relationFixture {
 }
 
 // A destination default survives an incompatible source value, in value AND
-// in label (codex round 9).
+// in label.
 //
 // `MigrateFields` matches on key AND type, so a source `owner_ref` declared as
 // `text` cannot become a `relation`: the value is DROPPED and the default loop
@@ -862,7 +862,7 @@ func TestCopyPreflight_RelationDroppedCarriedKeyDoesNotExemptTheDefault(t *testi
 }
 
 // A malformed destination default gets the SAME answer whether or not the
-// caller sent an unrelated null override (codex round 17).
+// caller sent an unrelated null override.
 //
 // `MigrateRelationReferents` skipped non-string values on the general rule
 // that shape is ValidateFields's to reject, so one defect makes one error.
@@ -1455,10 +1455,10 @@ func TestCopyPreflight_AnEmptyMultiRelationOverrideIsNotReportedAsYourValue(t *t
 		t.Fatalf("UpdateCollection(collB): %v", err)
 	}
 
-	// THE STRING SPELLING TOO (codex round 7): a `"[]"` override is a string
+	// THE STRING SPELLING TOO: a `"[]"` override is a string
 	// until `CoerceFields` runs, so a check placed in the override loop — where
 	// round 6 put it — cannot see it. The sweep now runs after coercion.
-	// The NIL spelling too (codex round 8): `CoerceFields` JSON-parses a
+	// The NIL spelling too: `CoerceFields` JSON-parses a
 	// multi_relation string, so `"null"` arrives at the sweep as a nil.
 	for _, override := range []any{[]any{}, "[]", "null"} {
 		body := f.baseBody()

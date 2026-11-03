@@ -162,7 +162,7 @@ func (s *Server) resolveAuthorizedCopy(w http.ResponseWriter, r *http.Request) (
 	// decodeJSON, not json.NewDecoder: it wraps the body in a
 	// MaxBytesReader so field_overrides cannot be used to make the server
 	// allocate a multi-GB map on an endpoint that is designed to be called
-	// repeatedly from a live UI (Codex round 7).
+	// repeatedly from a live UI.
 	var input itemCopyPreflightRequest
 	if err := decodeJSON(r, &input); err != nil {
 		if rep := (*models.RepeatedMemberError)(nil); errors.As(err, &rep) {
@@ -194,7 +194,7 @@ func (s *Server) resolveAuthorizedCopy(w http.ResponseWriter, r *http.Request) (
 	// placeholder would "work" there — and that is exactly the trap: an
 	// earlier version supplied a `"preflight"` literal as a last resort, so
 	// the dry run happily previewed a copy the mutation would refuse
-	// outright for want of an actor (Codex round 4).
+	// outright for want of an actor.
 	actorID := copyActorID(r, item)
 	if actorID == "" {
 		writeCopyActorRequired(w)

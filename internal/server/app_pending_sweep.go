@@ -10,7 +10,7 @@ import (
 // hour, swept)"; TASK-3397). Expired reservations already stop counting
 // against the caps, because every count reads expires_at; this sweep is what
 // deletes their staged bytes, so an abandoned preview does not keep them
-// until some later install happens to sweep (codex round 1). Same lifecycle
+// until some later install happens to sweep. Same lifecycle
 // shape as the reminder tick: its own mutex and stop channel, tracked by
 // Server.bg so Stop() drains it, started only from the real bootstrap path.
 

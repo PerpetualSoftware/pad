@@ -734,7 +734,7 @@ func clearSeededOutbox(t *testing.T, srv *Server) {
 }
 
 // TestBulkEventDelta_MatchesTheMutation pins the batch header's delta to what
-// the mutation actually committed (codex round 7).
+// the mutation actually committed.
 //
 // The delta is the one field of the batch payload the drain cannot derive, so
 // nothing downstream can correct it: whatever this function says is what a
@@ -793,7 +793,7 @@ func TestBulkEventDelta_MatchesTheMutation(t *testing.T) {
 
 // TestBulkEventDelta_TagsAreDeduped: bulkTagUpdate skips a tag already in its
 // `seen` set, so ["foo", " foo "] adds ONE tag. A delta echoing both would
-// advertise a change the mutation did not make (codex round 8).
+// advertise a change the mutation did not make.
 func TestBulkEventDelta_TagsAreDeduped(t *testing.T) {
 	got := bulkEventDelta(&bulkItemsRequest{Op: "tag", Tags: []string{"foo", " foo ", "bar"}})
 	tags, _ := got["tags"].([]string)
@@ -805,7 +805,7 @@ func TestBulkEventDelta_TagsAreDeduped(t *testing.T) {
 // TestBulkEventDelta_UntagDedupsWithoutTrimming: untag builds a removal SET
 // from the RAW values, so duplicates collapse but whitespace is significant —
 // the mirror image of tag, and the delta has to match each side's own rule
-// (codex round 9).
+// .
 func TestBulkEventDelta_UntagDedupsWithoutTrimming(t *testing.T) {
 	got := bulkEventDelta(&bulkItemsRequest{Op: "untag", Tags: []string{"foo", "foo", " foo "}})
 	tags, _ := got["tags"].([]string)

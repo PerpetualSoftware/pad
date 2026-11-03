@@ -95,7 +95,7 @@ func TestRenameCascade_RefusesOnProjectedTOTAL_NotPerDocument(t *testing.T) {
 	//    them guessing.
 	// The ACTUAL numbers, not the words around them. Checking only for
 	// "maximum" and "bytes" would pass a message that says "too large, maximum
-	// bytes exceeded" and tells the caller nothing (codex round 4).
+	// bytes exceeded" and tells the caller nothing.
 	msg := err.Error()
 	if !strings.Contains(msg, fmt.Sprint(MaxRenameCascadeRetainedBytes)) {
 		t.Errorf("error message does not state the cap %d: %q", MaxRenameCascadeRetainedBytes, msg)
@@ -166,7 +166,7 @@ func TestRenameCascade_AllowsAnOrdinaryRename(t *testing.T) {
 // TestRenameCascade_RefusesBeforeBuildingTheRewrittenBody, which needs that
 // exact shape for its allocation margin. Kept separate rather than described
 // here, because a comment naming a shape the test does not build is how
-// figures rot (codex round 6).
+// figures rot.
 //
 // Kept separate from the total-versus-per-document test because it is the one
 // case a per-document guard WOULD catch — asserting both makes it explicit
@@ -480,7 +480,7 @@ func TestRenameCascade_RetryBudgetExcludesThisDocumentsOwnStrings(t *testing.T) 
 	// The refusal must JUSTIFY ITSELF: the figure it reports has to exceed the
 	// cap it cites. Reporting only the re-read body produced a refusal saying
 	// it would hold less than the limit, which reads as a server bug rather
-	// than as actionable advice (codex round 8).
+	// than as actionable advice.
 	var tooLarge *RenameCascadeTooLargeError
 	if !errors.As(err, &tooLarge) {
 		t.Fatalf("error does not carry the typed figures: %v", err)

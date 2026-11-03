@@ -290,7 +290,7 @@ func validateWorkspaceTabLastRoute(route, owner, slug string) string {
 	// let /{owner}/{ws}/%2e%2e/other through to navigate out of the
 	// workspace. Decoding everything is a superset of the dot-segment rule,
 	// and an escape that does not decode is refused. So is a '%' that SURVIVES
-	// one decode (codex round 2): %252e%252e decodes to %2e%2e, which any layer
+	// one decode: %252e%252e decodes to %2e%2e, which any layer
 	// decoding once more reads as .. again. The web app's routes are slugs and
 	// refs, so a path never needs one; the query is not checked.
 	decoded, err := url.PathUnescape(path)

@@ -156,7 +156,7 @@ func TestResolveItemCollectionSlug_ExactMatchAlwaysWins(t *testing.T) {
 	}
 }
 
-// BUG-2630 #2 (Codex round 1). The legacy semantic aliases the client-side map
+// BUG-2630 #2. The legacy semantic aliases the client-side map
 // used to apply (t/i/p/d, phase/phases -> plans) are now resolved SERVER-side,
 // so dropping client normalization — including on the remote MCP transport,
 // which cannot retry — loses nothing. `t` must reach `tasks`.
@@ -528,7 +528,7 @@ func TestBulkMove_HiddenAndUnknownTargetsAreIndistinguishable(t *testing.T) {
 	// Status alone is not the whole channel: an implementation that returned
 	// both inside a 200 envelope but with different error codes or messages
 	// would still be an oracle. Compare the per-item failure shape too
-	// (codex round 5).
+	//.
 	if normalizeBulkFailures(t, hidden.Body.String()) != normalizeBulkFailures(t, unknown.Body.String()) {
 		t.Errorf("hidden and unknown targets produced different failure envelopes:\n"+
 			"hidden: %s\nunknown: %s", hidden.Body.String(), unknown.Body.String())

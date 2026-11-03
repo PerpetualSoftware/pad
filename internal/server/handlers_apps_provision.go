@@ -237,7 +237,7 @@ func compareWithReviewed(fresh, reviewed *appPreview) error {
 		}
 		// The owner reviewed the CHANGES list too, and it can move while the
 		// stored item does not: a relation the import carries as unresolved
-		// text keeps the same bytes and gains only a warning (codex round 3).
+		// text keeps the same bytes and gains only a warning.
 		if added, removed := diffChanges(was.Changes, a.Changes); len(added)+len(removed) > 0 {
 			var parts []string
 			for _, c := range added {

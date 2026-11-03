@@ -66,7 +66,7 @@ func (s *Store) dedupeTraitDeclarations() error {
 		createdAt string
 	}
 
-	// THE EXTRACTION IS THE INDEX'S, NOT GO'S (codex round 1, P1). An earlier
+	// THE EXTRACTION IS THE INDEX'S, NOT GO'S. An earlier
 	// version parsed traits with ParseCollectionTraits and skipped rows that
 	// failed — but the indexes key on json_extract / ->>, so "declares a kind"
 	// had two spellings that could disagree: a row the Go parser rejected still

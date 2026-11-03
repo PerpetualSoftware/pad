@@ -7,7 +7,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// TASK-3462 U3b (codex r5): the state response carries the item's CURRENT
+// TASK-3462 U3b: the state response carries the item's CURRENT
 // text, read in the same request as its seq, whenever an update is on offer.
 // A client comparing against its own copy of the item could pair a fresh seq
 // with a stale body, and accept text it never showed.

@@ -55,7 +55,7 @@ const (
 // error, because PruneAndApply's own ErrRoomActiveDuringPrune is consumed by the
 // settle loop before it can reach that arm. That error splits three ways, and the
 // split is worth stating because an earlier draft of this comment claimed all of it
-// came out of a write transaction, which is not true (codex round 1):
+// came out of a write transaction, which is not true:
 //
 //   - BEFORE any transaction — GetItem, validateAssignmentScope, or db.Begin
 //     failing. Nothing was written.
@@ -237,7 +237,7 @@ func settleContentRoute(
 		// blocking wait the reorder introduces — the rest of this path was already
 		// context-blind on main and stays that way, deliberately, since threading a
 		// context into the store and the applier round-trip is a change of a
-		// different size (codex round 2). Bounding what this unit ADDED is the part
+		// different size. Bounding what this unit ADDED is the part
 		// that belongs to this unit.
 		if err := ctx.Err(); err != nil {
 			return settleUnsettled, nil

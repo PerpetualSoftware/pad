@@ -148,7 +148,7 @@ func TestItemRenameCascade_RefusesBeforeBuildingTheRewrittenBody(t *testing.T) {
 	// exact division the assertion below cannot discriminate: refusing after
 	// the build would total exactly the cap rather than exceeding it. It also
 	// must not assume a precise admitted count, because the scan charges the
-	// same budget first (codex R4) and that shifts the boundary by a source.
+	// same budget first and that shifts the boundary by a source.
 	const body = 1536 << 10 // 1.5 MiB
 	perLinker := int64(body) * 2
 	linkers := int(MaxItemRenameCascadeBytes/perLinker) + 3
@@ -344,7 +344,7 @@ func TestItemRenameCascade_BoundsTheScanNotJustTheRewrite(t *testing.T) {
 	// NOT the ~24,000 the paragraph above quotes, and the difference is the
 	// point: that figure is BUG-2804's, derived from Postgres's practical title
 	// ceiling of a few KB, and an earlier version of this comment reused it for
-	// the 255-rune bound without recomputing (codex round 5). Two ceilings, two
+	// the 255-rune bound without recomputing. Two ceilings, two
 	// numbers, one sentence away from each other.
 	//
 	// Built as legacy data so the test keeps measuring the guard rather than

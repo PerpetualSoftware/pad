@@ -602,7 +602,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		//
 		// NOT always, and the earlier wording claimed otherwise: an FTS TITLE
 		// match on an item with an empty body returns an empty snippet and an
-		// empty content while still carrying the marker (codex round 4). That
+		// empty content while still carrying the marker. That
 		// case predates this change and is not wrong in itself — the row really
 		// is behind its live document — but it is the marker describing the ROW
 		// rather than any served text, which is the one thing the sentence above

@@ -333,7 +333,7 @@ func TestArtifactExportCarriesTheMarkerBothWays(t *testing.T) {
 	}
 	// The EXACT body, not merely a non-empty one. "Non-empty" is satisfied by an
 	// export that replaced the body with unrelated text, which is the failure a
-	// marker must never be able to hide (codex round 1 P3).
+	// marker must never be able to hide.
 	if decoded.Body != body {
 		t.Errorf("the marked artifact's body is not what the item holds:\n got: %q\nwant: %q", decoded.Body, body)
 	}
@@ -466,7 +466,7 @@ func TestPlaybookSummariesCarryTheMarkerBothWays(t *testing.T) {
 		}
 		// The summary must still be THERE. Presence was asserted only BEFORE
 		// staleness, so dropping marked summaries from both doors while keeping
-		// the marker left this green (codex round 4).
+		// the marker left this green.
 		if sum, _ := entry["summary"].(string); sum == "" {
 			t.Errorf("%s: the marked entry carries no summary; the marker qualifies the text, it does not replace it", door)
 		}

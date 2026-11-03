@@ -397,7 +397,7 @@ func (s *Store) claimAccountTx(tx *sql.Tx, userID string, unusable []byte, ts, c
 		// Every grant the account held is recorded as revoked, so a refresh
 		// or code exchange that validated before the claim mints nothing
 		// after it (BUG-3678). The connection rows, read before the delete
-		// below, name grants with no token yet (codex round 4). Issuance checks this under the users row, which the
+		// below, name grants with no token yet. Issuance checks this under the users row, which the
 		// first statement holds.
 		{"record revoked oauth grants", `INSERT INTO oauth_revoked_grants (request_id, revoked_at)
 			SELECT request_id, ? FROM oauth_refresh_tokens WHERE subject = ?

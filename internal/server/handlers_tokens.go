@@ -417,7 +417,7 @@ func normalizeTokenScopesInput(w http.ResponseWriter, input *models.APITokenCrea
 		return false
 	}
 	// "" is the stored legacy unrestricted form, refused for the reason []
-	// is (Codex r2): only an omitted field gets the default.
+	// is: only an omitted field gets the default.
 	if *field == "" {
 		writeError(w, http.StatusBadRequest, "validation_error",
 			fmt.Sprintf("scopes must name at least one of: %s; omit scopes for full access", allowed))

@@ -394,7 +394,7 @@ func TestRateLimit_IPv6KeysOnThe64OutsideTheMiddleware(t *testing.T) {
 		}
 		// The right password from the sibling is refused too: the gate is
 		// charged before the compare, so a shared bucket is shared for a
-		// viewer who knows the password (codex round 2).
+		// viewer who knows the password.
 		if code := resolveShareWithPassword(srv, link.Token, "right", "["+sibling+"]").Code; code != http.StatusTooManyRequests {
 			t.Errorf("%s (same /64) with the right password got %d, want 429", sibling, code)
 		}

@@ -645,7 +645,7 @@ func TestCrossWorkspace_InvalidAndMissingInputs(t *testing.T) {
 		CrossWorkspaceCollectionNotVisible, "nonexistent collection")
 }
 
-// --- Grant / role precedence (Codex round 5) --------------------------
+// --- Grant / role precedence --------------------------
 
 // Grants widen, never narrow. requireEditPermission lets an
 // editor/owner base role win outright and only consults grants when the
@@ -774,7 +774,7 @@ func TestCrossWorkspace_GrantOnArchivedItemGivesNoRole(t *testing.T) {
 	}
 }
 
-// --- Archived collections (Codex round 2 P1) --------------------------
+// --- Archived collections --------------------------
 
 // Soft-deleting a collection leaves its items in place, and neither
 // GetItem nor VisibleCollectionIDs filters on the collection's
@@ -818,7 +818,7 @@ func TestCrossWorkspace_ArchivedCollectionDenied(t *testing.T) {
 		CrossWorkspaceCollectionNotVisible, "cookie admin vs archived collection")
 }
 
-// --- Never grant more than the front door (Codex round 2 P1) ----------
+// --- Never grant more than the front door ----------
 
 // Ownership and membership are separate persisted state.
 // RequireWorkspaceAccess has no ws.OwnerID exception — it requires the
@@ -1016,7 +1016,7 @@ var errAuthzTestLookup = errors.New("synthetic store failure")
 // a reason that separates absence from forbidden-ness. Serializing it
 // into a response would hand a caller everything the disclosure rule
 // forbids, so every field carries json:"-" as a backstop against a
-// stray json.Marshal (Codex round 7).
+// stray json.Marshal.
 func TestCrossWorkspace_VerdictDoesNotSerialize(t *testing.T) {
 	f := newCrossWSFixture(t)
 	u := f.member("ser@example.com", "seruser", "editor", f.wsA)

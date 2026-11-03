@@ -134,7 +134,7 @@ type Store struct {
 	//
 	// It exists because the scrub's BYTE budget is otherwise unobservable: it
 	// changes peak memory and nothing else, so removing it leaves every
-	// outcome assertion green (codex round 2). Counting batches is the one
+	// outcome assertion green. Counting batches is the one
 	// visible consequence of the budget doing its job.
 	afterOutboxScrubBatch func(rows int)
 
@@ -152,7 +152,7 @@ type Store struct {
 	// a hook that issues its own update must nil the field for the duration
 	// of that nested call — and note that updateItemWithParentLinkOnce runs
 	// under retryOnParentSetChanged, so a retried update fires it again
-	// (codex round 3).
+	//.
 	afterItemPreLockRead func(itemID string)
 
 	// beforeItemVersionsRead is a TEST-ONLY seam, nil in production. When set,
@@ -720,7 +720,7 @@ func (s *Store) migrate() error {
 			return err
 		}
 
-		// AFTER EACH MIGRATION, not once at the end (codex round 4).
+		// AFTER EACH MIGRATION, not once at the end.
 		//
 		// A table-rebuild migration drops that table's triggers, and until they
 		// are back the invariant is unenforced for it. Restoring once after the
@@ -1056,7 +1056,7 @@ func extractPragmas(sqlText string) (pragmas []string, rest string) {
 // (codex on #2120).
 type fkCheckResult struct {
 	// counts holds the violations per foreign key, keyed
-	// "table|parent|fkid". Counts, not rowids (codex r1): a table rebuild
+	// "table|parent|fkid". Counts, not rowids: a table rebuild
 	// renumbers rowids, so a legacy violation would look new under a rowid
 	// key, and a WITHOUT ROWID table reports no rowid at all.
 	counts map[string]int

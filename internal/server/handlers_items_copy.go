@@ -63,7 +63,7 @@ import (
 // (which this handler can also emit for a failed lookup). Those are not
 // restated per-endpoint anywhere in Pad and are not restated here; the list
 // below is the business vocabulary a copy client has to understand
-// specifically (Codex round 14).
+// specifically.
 //
 //	400 invalid_body            — the JSON body did not decode
 //	400 missing_field           — target_workspace / target_collection absent
@@ -137,7 +137,7 @@ import (
 //	                              exactly one backend. The mapping is here so
 //	                              that wiring a second backend is a one-line
 //	                              change rather than a new 500; a client need
-//	                              not handle it until then (Codex round 14).
+//	                              not handle it until then.
 //	500 copy_failed             — an AMBIGUOUS failure. See DR-13 below; the
 //	                              message tells the user to check the
 //	                              destination rather than retry.
@@ -164,7 +164,7 @@ import (
 // once", which is the exact advice this endpoint's 500 exists to contradict.
 // An agent that follows that hint duplicates the item. Routing copy through
 // the MCP dispatcher therefore requires special-casing the `copy_failed` code
-// in that classifier first — it is not a wiring-only change (Codex round 8).
+// in that classifier first — it is not a wiring-only change.
 //
 // DR-9 — THE VERDICT IS RE-CHECKED IN-TRANSACTION. The four-check ladder runs
 // at the top of the handler; inside the write transaction, against the
@@ -542,7 +542,7 @@ func (s *Server) handleCopyItem(w http.ResponseWriter, r *http.Request) {
 	// different collection and either collection can be renamed. Reporting the
 	// pre-transaction slug would attribute the source's archive event to a
 	// collection the copy did not touch and hand the client a stale slug
-	// (Codex round 1 P2).
+	//.
 	s.afterCopyCommit(r, res)
 
 	writeJSON(w, http.StatusCreated, copyResult(res, src, dst, input))
@@ -643,7 +643,7 @@ func (s *Server) copyItemAcrossWorkspaces(req store.CrossWorkspaceCopyRequest) (
 // WHAT IT DOES NOT CHECK, and why — an honest boundary is worth more than a
 // broad-sounding one. It does NOT re-read membership or grants. An earlier
 // version re-ran the whole ladder here, and that was wrong on two counts
-// (Codex round 6):
+// :
 //
 //   - It OVERCLAIMED. The authorize helpers read through s.store, not this
 //     transaction, and Postgres READ COMMITTED takes a fresh snapshot per
@@ -815,7 +815,7 @@ func (s *Server) afterCopyCommit(r *http.Request, res *store.CrossWorkspaceCopyR
 // SYNCHRONOUS, deliberately. logActivity writes a row and the SSE publish can
 // reach Redis — so this runs before the 201 and can add latency to it. That is
 // exactly what handleCreateItem, handleDeleteItem and handleMoveItem already
-// do (Codex round 3), and diverging would buy nothing:
+// do, and diverging would buy nothing:
 //
 // The webhook dispatch that used to be part of this list is gone (TASK-2714):
 // webhooks are delivered by the outbox drain now, from the row the copy's own
@@ -931,7 +931,7 @@ func (s *Server) writeCopyError(w http.ResponseWriter, r *http.Request, err erro
 	// copy's lock. Both are PRE-WRITE rejections — nothing was inserted and
 	// nothing can have committed — so neither may fall through to the
 	// ambiguous 500, which would send the user hunting for an item that
-	// provably does not exist (Codex round 1 P2). Each side keeps its own
+	// provably does not exist. Each side keeps its own
 	// disclosure posture: the source collapses to the bare "Item not found"
 	// every other source-side refusal gives, and the destination reuses the
 	// one collection_not_found answer shared with "absent" and "hidden".
@@ -961,7 +961,7 @@ func (s *Server) writeCopyError(w http.ResponseWriter, r *http.Request, err erro
 		// naming which one would report on rows the caller may not see.
 		//
 		// store.IsUniqueViolation rather than a local string match, so this
-		// and CreateItem's 409 cannot drift apart (Codex round 8). The
+		// and CreateItem's 409 cannot drift apart. The
 		// heuristic is a text match and CAN in principle misfire on an
 		// unrelated error whose message happens to contain the phrase — which
 		// is harmless here, and worth saying why: EVERY error out of
@@ -981,7 +981,7 @@ func (s *Server) writeCopyError(w http.ResponseWriter, r *http.Request, err erro
 	// Deliberately not writeInternalError: its generic text would invite the
 	// exact retry that duplicates the item.
 	// The NUL refusal is NOT ambiguous, so it must not get the ambiguous
-	// message (codex round 3). It fires at parameter binding, before any
+	// message. It fires at parameter binding, before any
 	// statement executes and long before commit, so nothing landed and a retry
 	// of the same value will be refused identically. Telling the caller to
 	// "check the destination workspace" for a copy that provably did not start

@@ -162,7 +162,7 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 	defer release()
 
 	// Subscribe FIRST, replay (if resuming) as part of the SAME atomic
-	// call when a Last-Event-ID was supplied (codex round 1 finding 3):
+	// call when a Last-Event-ID was supplied:
 	// subscribing and separately reading the replay buffer left a window
 	// where a Notification published in between would be delivered
 	// TWICE — once from the replay loop below, once again from the live
@@ -375,7 +375,7 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 	// buffered(1), so a burst coalesces into one revalidation. It stops with
 	// the stream.
 	// Registered under the wildcard workspace too: this stream spans every
-	// workspace, so every workspace kick must reach it (codex r1).
+	// workspace, so every workspace kick must reach it.
 	kick, unregisterKick := s.accessKicks().register(user.ID, workspaceWildcard)
 	defer unregisterKick()
 	revalC := make(chan time.Time, 1)

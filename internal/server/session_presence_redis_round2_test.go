@@ -29,7 +29,7 @@ func stalledRedis(t *testing.T) (addr string, accepted <-chan struct{}) {
 		t.Fatalf("listen: %v", err)
 	}
 	// Closed on the FIRST accepted connection. Callers synchronise on this
-	// rather than sleeping (codex round 13): a sleep does not establish
+	// rather than sleeping: a sleep does not establish
 	// that the call under test is in flight, so on a loaded runner the
 	// sequencing can invert and even the BROKEN implementation passes. An
 	// instrument whose discrimination depends on the scheduler is not one.
@@ -263,7 +263,7 @@ func TestRedisSessionPresence_CloseDoesNotWaitForeverOnAParkedRenewal(t *testing
 		},
 	}
 	t.Cleanup(func() {
-		// JOIN, don't just release (codex round 13). This test
+		// JOIN, don't just release. This test
 		// deliberately lets a drain time out, so it finishes with a renewal
 		// goroutine still parked; releasing it without waiting leaves it
 		// unwinding into whatever runs next, contaminating leak checks and
@@ -442,7 +442,7 @@ func TestRedisSessionPresence_RemoveIsBoundedWhenARenewalWillNotStop(t *testing.
 		},
 	}
 	t.Cleanup(func() {
-		// JOIN, don't just release (codex round 13). This test
+		// JOIN, don't just release. This test
 		// deliberately lets a drain time out, so it finishes with a renewal
 		// goroutine still parked; releasing it without waiting leaves it
 		// unwinding into whatever runs next, contaminating leak checks and

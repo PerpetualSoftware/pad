@@ -120,7 +120,7 @@ func (s *Store) AdoptLegacyBuiltins() (LegacyBuiltinAdoption, error) {
 				rows.Close()
 				return res, fmt.Errorf("scan item: %w", err)
 			}
-			// AT OR BEFORE the migration's second (codex r1): timestamps are
+			// AT OR BEFORE the migration's second: timestamps are
 			// second-precision, so an item made in that very second is still
 			// a legacy item, and missing it now would miss it for good once the
 			// marker is written. Parsed, not compared as text, because an
@@ -130,7 +130,7 @@ func (s *Store) AdoptLegacyBuiltins() (LegacyBuiltinAdoption, error) {
 			if err != nil || created.After(cutoff) {
 				continue
 			}
-			// The WORKSPACE must predate the cutoff too (codex r2): import
+			// The WORKSPACE must predate the cutoff too: import
 			// keeps each item's created_at from the bundle, so an old bundle
 			// imported after the migration but before this pass first ran
 			// would read as legacy. Every import door (workspace import,
@@ -215,7 +215,7 @@ func (s *Store) adoptLegacyWorkspace(workspaceID string, cands []legacyCandidate
 		return 0, err
 	}
 	// SQLite's write lock already serialises and it does not take the clause.
-	// The collection is read here too (codex r1): its traits decide the kind,
+	// The collection is read here too: its traits decide the kind,
 	// and the scan's copy is as stale as the item's. UpdateCollection and
 	// DeleteCollection take the workspace lock held here, so this read is
 	// current until commit.

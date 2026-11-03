@@ -198,7 +198,7 @@ func TestRegisterWithCode_CredentialsMintedBeforeTheClaimDoNotBlockTheRollback(t
 			if _, err := f.srv.store.CreateSession(u.ID, "go-test", "192.0.2.1", "", time.Hour); err != nil {
 				t.Fatalf("CreateSession: %v", err)
 			}
-			// And a public /forgot-password, which mints a reset token (codex r3).
+			// And a public /forgot-password, which mints a reset token.
 			if _, err := f.srv.store.CreatePasswordReset(u.ID); err != nil {
 				t.Fatalf("CreatePasswordReset: %v", err)
 			}

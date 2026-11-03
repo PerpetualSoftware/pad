@@ -586,7 +586,7 @@ func TestImportWorkspace_CarriesUnresolvableRelationValues(t *testing.T) {
 }
 
 // An unresolvable carried relation value survives the ID remap VERBATIM, even
-// when it contains a resolvable id as a substring (codex round 17).
+// when it contains a resolvable id as a substring.
 //
 // `remapFieldIDs` rewrote relation values with strings.ReplaceAll over the raw
 // JSON for every id in the bundle, so a value that merely CONTAINED another

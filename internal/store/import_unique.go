@@ -24,7 +24,7 @@ const importInvocationSlugKey = "invocation_slug"
 // collection's live items: every field declaring unique_scope:
 // workspace_collection, plus invocation_slug. Each key once, since a schema
 // the import stores as carried may declare one twice, and a key checked twice
-// would collide with its own claim (codex r1). Sorted, so drops are reported
+// would collide with its own claim. Sorted, so drops are reported
 // in a stable order.
 func importUniqueKeys(schema models.CollectionSchema) []string {
 	seen := map[string]bool{importInvocationSlugKey: true}
@@ -44,7 +44,7 @@ func importUniqueKeys(schema models.CollectionSchema) []string {
 // it: a non-empty string only, one slot.
 //
 // invocation_slug is checked as its INDEX compares it, and the two dialects'
-// indexes compare differently (hunter r1). Postgres reads fields->>'key', the
+// indexes compare differently. Postgres reads fields->>'key', the
 // text form, so the string "true" and the boolean true collide. SQLite reads
 // json_extract, a typed value, so true and 1 collide (a JSON true is integer
 // 1), and so do 1 and 1.0, while the string "1" and the number 1 do not. A
@@ -103,7 +103,7 @@ func importUniqueValue(key string, v any) (string, []string, bool) {
 // INTEGER, and anything else as a REAL, an IEEE binary64 (codex r3: 0.1 and
 // 0.10000000000000001 are one REAL). SQLite compares INTEGER and REAL by
 // value, so a REAL that is exactly an int64 takes that integer's slot (1 and
-// 1.0 collide), and 2^53 and 2^53+1 stay two integers (codex r2).
+// 1.0 collide), and 2^53 and 2^53+1 stay two integers.
 //
 // pg: ->> prints a jsonb number as numeric text, which keeps the scale
 // written (1.0 prints "1.0", equal to the string "1.0", hunter r2) and
@@ -130,7 +130,7 @@ func importNumberSQLiteValue(lit string) string {
 }
 
 // importNumericMaxExp bounds the exponent importNumericKey does arithmetic
-// with, so len(intPart)+exp cannot overflow (codex r5). Postgres's numeric
+// with, so len(intPart)+exp cannot overflow. Postgres's numeric
 // holds at most 131072 digits before the point and 16383 after, so no number
 // it accepts comes near it.
 const importNumericMaxExp = 1 << 24

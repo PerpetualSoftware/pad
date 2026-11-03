@@ -241,7 +241,7 @@ func TestBUG3678_RevokedInstallGrantMintsNothing(t *testing.T) {
 
 // A grant whose consent is recorded but whose first tokens are not yet
 // written is still revoked for good: its connection row names the person
-// to lock, and the record refuses the first issuance (codex round 3).
+// to lock, and the record refuses the first issuance.
 func TestBUG3678_GrantRevokedBeforeFirstIssuanceMintsNothing(t *testing.T) {
 	s := testStore(t)
 	c := newTestClient(t, s)
@@ -308,7 +308,7 @@ func TestBUG3678_TokenlessRevokeWaitsOnIssuanceLock_Postgres(t *testing.T) {
 
 // A claim also ends a grant consented to before it whose code is not yet
 // exchanged: the exchange, validated before the claim, mints nothing after
-// it (codex round 4).
+// it.
 func TestBUG3678_ClaimEndsAGrantWithNoTokenYet(t *testing.T) {
 	s := testStore(t)
 	c := newTestClient(t, s)

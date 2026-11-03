@@ -34,7 +34,7 @@ import (
 // ..._LogoutKicksEachSessionOwner, ..._RestoreAndBulkDoorsKick) pin that each
 // door kicks the right addressee. They do NOT pin ordering: they read the
 // buffered kick after the request returns, so a kick placed before the write
-// would pass them too (codex r2). Each kick follows its write's error check
+// would pass them too. Each kick follows its write's error check
 // by construction, and that is a review property, not a tested one.
 // OAuth access-token revocation is out of scope by design: an OAuth
 // credential cannot open any of the three long-lived routes this protects.

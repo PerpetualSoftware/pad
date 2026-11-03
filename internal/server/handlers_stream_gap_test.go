@@ -99,12 +99,12 @@ func TestActivityStreamAnnouncesAGapMidStream(t *testing.T) {
 		t.Errorf("pad_event_midstream_resyncs_total = %v, want 1", got)
 	}
 	// The RESUME counter must not move: existing alerts are written against
-	// it and this was not a resume (codex round 4).
+	// it and this was not a resume.
 	if got := counterValue(t, m.EventResumeGapsTotal); got != resumeBefore {
 		t.Errorf("a mid-stream gap moved the resume counter: %v -> %v", resumeBefore, got)
 	}
 
-	// THE STREAM MUST STAY OPEN (codex round 3). sync_required tells the
+	// THE STREAM MUST STAY OPEN. sync_required tells the
 	// client to reconcile, not that the connection is over — and a handler
 	// that emitted it and then returned would have passed everything above.
 	// An ordinary event arriving afterwards is the proof.
@@ -222,7 +222,7 @@ func TestWatchStreamAnnouncesAGapMidStream(t *testing.T) {
 		t.Errorf("a mid-stream gap moved the watch resume counter: %v", got)
 	}
 
-	// Same liveness claim as the activity twin (codex round 3). This stream
+	// Same liveness claim as the activity twin. This stream
 	// has no cheap ordinary event to publish — a notification needs a watch
 	// predicate to match — so the assertion is that the handler did not
 	// return: a closed frames channel is what a returned handler looks like

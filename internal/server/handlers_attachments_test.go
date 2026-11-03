@@ -988,7 +988,7 @@ func TestUpload_MultipartTextFieldsAreBindableText(t *testing.T) {
 	})
 
 	t.Run("a control-obfuscated extension does not survive the fallback", func(t *testing.T) {
-		// The one with teeth (codex round 25). A vertical tab is valid UTF-8
+		// The one with teeth. A vertical tab is valid UTF-8
 		// and not a NUL, so bindableText calls ".s<VT>vg" storable. The
 		// extension blocklist then sees no KNOWN extension and passes it,
 		// and Content-Disposition sanitising strips the control byte — so the
@@ -1067,7 +1067,7 @@ func TestUpload_MultipartTextFieldsAreBindableText(t *testing.T) {
 		// it onto a directory — the CLI builds its temp path this way, where
 		// filepath.Join(dir, "..") is dir's PARENT. It survives bindableText,
 		// and filepath.Ext("..") is "." (non-empty), so an extension check
-		// waves it through too (codex round 26).
+		// waves it through too.
 		for _, raw := range []string{"..", "./", "a/b"} {
 			rr := uploadWithRawDisposition(t,
 				`form-data; name="file"; filename=`+strconv.Quote(raw))
@@ -1096,7 +1096,7 @@ func TestUpload_MultipartTextFieldsAreBindableText(t *testing.T) {
 		// than fudged.
 		// A Windows-style path must be reduced to its leaf, not stored whole:
 		// the stored name is consumed cross-platform, and a client joining
-		// "..\\evil" onto a directory traverses upward (codex round 28).
+		// "..\\evil" onto a directory traverses upward.
 		winPath := uploadWithRawDisposition(t,
 			`form-data; name="file"; filename=`+strconv.Quote(`..\evil.png`))
 		var win struct {
@@ -1155,7 +1155,7 @@ func TestUpload_MultipartTextFieldsAreBindableText(t *testing.T) {
 		}
 		// Both byte classes, not just the NUL: a filter that rejected NULs
 		// while letting malformed UTF-8 through would have passed the
-		// earlier version of this leg (codex round 13). Invalid UTF-8 is the
+		// earlier version of this leg. Invalid UTF-8 is the
 		// class that reaches Postgres as 22021 on a UTF8 database.
 		for _, bad := range []string{"TASK-1\x00", "TASK-1\xff"} {
 			rr := upload(t, "clean.png", &bad)

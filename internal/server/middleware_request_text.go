@@ -578,7 +578,7 @@ type bodyWalk struct {
 //   - Below the document Postgres parses, an escape is harmless. Measured on
 //     Postgres 17 with the check disabled: a NUL escape two levels deep
 //     imports 201, because `fields` is parsed ONCE and the inner text is
-//     re-escaped when the blob is written (codex round 7).
+//     re-escaped when the blob is written.
 //
 // Together those make the descent into a second document exactly one level
 // deep by construction: only a string under a JSON-encoded key at request
@@ -796,7 +796,7 @@ func isJSONEncodedFieldKey(k string) bool {
 	// FOLDING, which is wider than lower-casing: U+017F LATIN SMALL LETTER
 	// LONG S folds to 's', so "ſchema" reaches the `schema` field while
 	// strings.ToLower("ſchema") is still "ſchema" and missed the allowlist
-	// (codex round 17). Fixing the ASCII half and leaving the Unicode half
+	//. Fixing the ASCII half and leaving the Unicode half
 	// would have been this bug's own pattern one more time.
 	for canonical := range jsonEncodedFieldKeys {
 		if strings.EqualFold(k, canonical) {
@@ -845,7 +845,7 @@ func readBodyForDecode(r *http.Request, maxBytes int64) ([]byte, error) {
 	// a no-op, and with a nil writer there is no automatic 413 — hitting the
 	// cap surfaces as a read error, which decodeJSONWithLimit wraps and every
 	// caller turns into a 400. That is the existing behaviour, unchanged
-	// here; only the claim about it is corrected (codex round 8).
+	// here; only the claim about it is corrected.
 	r.Body = http.MaxBytesReader(nil, r.Body, maxBytes)
 	return io.ReadAll(r.Body)
 }

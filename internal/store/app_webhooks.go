@@ -97,7 +97,7 @@ func (s *Store) upsertAppWebhookTx(tx *sql.Tx, workspaceID, installID string, sp
 	}
 	ts := now()
 	// A changed subscription list moves deliver_from: an event that occurred
-	// before the owner consented to it is never delivered (codex r5).
+	// before the owner consented to it is never delivered.
 	res, err := tx.Exec(s.q(`UPDATE webhooks SET url = ?, deliver_from = CASE WHEN events = ? THEN deliver_from ELSE ? END, events = ?, updated_at = ? WHERE app_install_id = ?`),
 		spec.URL, string(events), ts, string(events), ts, installID)
 	if err != nil {

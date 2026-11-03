@@ -131,7 +131,7 @@ func TestTask3413_ViaAppOnHumanJSON(t *testing.T) {
 			t.Fatalf("timeline: app comment %v, version %v", sawComment, sawVersion)
 		}
 
-		// Search and the outage /changes sync serve the item too (codex r1).
+		// Search and the outage /changes sync serve the item too.
 		var sr struct {
 			Results []struct {
 				Item map[string]any `json:"item"`
@@ -213,7 +213,7 @@ func TestTask3413_AttributionLookupIsChunked(t *testing.T) {
 }
 
 // pad playbook show (and pad_playbook get) serves the playbook item outside
-// the common enrichment path; it carries the creating app too (codex r1).
+// the common enrichment path; it carries the creating app too.
 func TestTask3413_PlaybookShowCarriesViaApp(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)

@@ -112,7 +112,7 @@ func parseItemVersionsLimit(raw string) int {
 		// one, and Atoi still hands back the saturated bound alongside
 		// ErrRange. Treating it as unparseable would return 0 — unbounded —
 		// so `?limit=9223372036854775808` would defeat the very ceiling this
-		// function exists to impose (codex round 4). Range-negative falls
+		// function exists to impose. Range-negative falls
 		// through to the unbounded branch below, matching a plain negative.
 		if errors.Is(err, strconv.ErrRange) && n > 0 {
 			return maxItemVersionsQueryLimit
@@ -505,7 +505,7 @@ func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request
 	// to a generic /items-changes refetch.
 	if s.events != nil {
 		s.publishActivityEvent(events.Event{
-			// Derived, not a literal (codex round 9). A raw string here is a
+			// Derived, not a literal. A raw string here is a
 			// second source of SSE vocabulary — the exact drift the taxonomy's
 			// mapping exists to end, and the harder kind to find because it
 			// does not even reference the events package.

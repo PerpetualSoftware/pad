@@ -451,7 +451,7 @@ func (s *Server) boundedToolLabel(tool string) string {
 // cleaning. Cleaning is lossy, so without a marker "pad_<NUL>item" is stored
 // as "pad_item" — an audit row and a Prometheus label indistinguishable from
 // a genuine pad_item call, and mintable by anyone who can send a request
-// (codex round 23). Marking keeps the diagnostic value of the cleaned text
+// . Marking keeps the diagnostic value of the cleaned text
 // while making the row honest about what arrived.
 //
 // The parenthesised spelling alone does NOT make the marker unforgeable — a
@@ -468,7 +468,7 @@ func auditLabel(clean string, changed bool) string {
 	// A caller can legitimately name a tool "(unknown)", or "(sanitised)
 	// pad_item", and then a genuine request is indistinguishable from a
 	// substituted one — the marker was forgeable and the older "(unknown)" /
-	// "tools/call" sentinels always were (codex round 25).
+	// "tools/call" sentinels always were.
 	//
 	// So the leading "(" is RESERVED for values this server synthesises. Any
 	// caller-supplied name that enters that namespace is marked too, whether

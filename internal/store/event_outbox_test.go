@@ -721,7 +721,7 @@ func TestOutbox_CollectionOptionRenameEmitsOneBulkEvent(t *testing.T) {
 		t.Fatalf("members = %d, want 2 — per-member snapshots are what keep item-level bindings "+
 			"evaluable across a batched delivery", len(members))
 	}
-	// MEMBER IDENTITY, not just count (Codex round 3): a reader that returned
+	// MEMBER IDENTITY, not just count: a reader that returned
 	// the same member twice, or the wrong items entirely, would satisfy a
 	// count-only assertion while making per-member binding evaluation fire on
 	// the wrong set.
@@ -1974,7 +1974,7 @@ func sameStrings(got, want []string) bool {
 // folded payload reports `count` in ITEMS.
 //
 // Without dedup the members list disagrees with the count in the same
-// payload — the wire event contradicting itself (codex round 1).
+// payload — the wire event contradicting itself.
 func TestFoldBulkHeader_KeepsOneSnapshotPerItem(t *testing.T) {
 	t.Parallel()
 	header := []byte(`{"batch_id":"b1","op":"move","count":2,"item_ids":["i1","i2"]}`)
@@ -2134,7 +2134,7 @@ func TestOutbox_StaleClaimCannotAckOrReleaseAnotherPass(t *testing.T) {
 // retention, so without a claim check one instance's prune deletes a row
 // another is mid-delivery on — the delivery then succeeds while the ack
 // matches zero rows, and a crash in that window loses an event the outbox had
-// already committed (codex round 4).
+// already committed.
 func TestOutbox_PruneUndispatchedSparesAClaimedRow(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
@@ -2174,7 +2174,7 @@ func TestOutbox_PruneUndispatchedSparesAClaimedRow(t *testing.T) {
 }
 
 // TestOutbox_SetParentLinkEmitsItemUpdated pins the fix for the create-with-
-// parent regression (codex round 4).
+// parent regression.
 //
 // CreateItem commits item.created with a PRE-LINK snapshot, and the parent
 // link lands in a separate transaction afterwards. The hand-called webhook
@@ -2243,7 +2243,7 @@ func TestOutbox_SetParentLinkEmitsItemUpdated(t *testing.T) {
 }
 
 // TestOutbox_ParentOnlyUpdateStillEmits covers the path SetParentLink's fix
-// did NOT reach (codex round 5): UpdateItemWithParentLink writes the hierarchy
+// did NOT reach: UpdateItemWithParentLink writes the hierarchy
 // inside the item-update transaction and emits from a SNAPSHOT DIFF, and a
 // parent write leaves nothing in a snapshot to diff — items.parent_id is
 // legacy and untouched, the link lives in its own table, and seq/updated_at

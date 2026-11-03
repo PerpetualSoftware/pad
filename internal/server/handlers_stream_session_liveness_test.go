@@ -851,7 +851,7 @@ func TestCredentialLiveness_StoreErrorRecoversOnTheNextTick(t *testing.T) {
 	//
 	// SQLite leg. testServer is hardwired to storetest.NewSQLite, so this one
 	// stays SQLite even under `make test-pg` — the Postgres leg below is a
-	// separate test, not the same test on another backend (codex round 3).
+	// separate test, not the same test on another backend.
 	credentialLivenessRecovery(t, testServer(t), "sqlite")
 }
 

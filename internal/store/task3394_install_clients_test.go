@@ -412,7 +412,7 @@ func TestTask3394_IssuanceRacesTheLifecycle_Postgres(t *testing.T) {
 	}{
 		{"disable (phase 1)", `UPDATE app_installs SET state = 'disabling', auth_epoch = auth_epoch + 1 WHERE id = ?`, ErrInstallNotActive, 0},
 		// The grant carries the epoch from before the rotate, so it is
-		// refused (codex r1 P1): it never binds to the epoch after it.
+		// refused: it never binds to the epoch after it.
 		{"rotate (phase 1)", `UPDATE app_installs SET auth_epoch = auth_epoch + 1 WHERE id = ?`, ErrInstallNotActive, 0},
 		{"re-enable", `UPDATE app_installs SET state = 'active' WHERE id = ?`, nil, 1},
 	}

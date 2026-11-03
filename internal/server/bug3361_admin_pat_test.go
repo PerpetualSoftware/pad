@@ -76,7 +76,7 @@ func TestBUG3361_EveryAdminRouteRefusesAnAdminPAT(t *testing.T) {
 		// and CLI (BUG-1926, Dave day 89: admin needs a session; PATs are the
 		// line). The placeholder params and empty bodies may well answer 400
 		// or 404: what must never come back is a refusal of the credential or
-		// of the role. The CONTROL makes that mean something (codex r1): a
+		// of the role. The CONTROL makes that mean something: a
 		// non-admin's session on the very same request IS refused for its role,
 		// so the role check runs before whatever 400/404 the admin then meets,
 		// and the admin's request got past it.

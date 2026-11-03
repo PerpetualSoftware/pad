@@ -181,7 +181,7 @@ func validateCollectionTraits(raw string) error {
 // rule's clothes. Codex round 7.
 //
 // NOT THE GUARANTEE — say so plainly rather than let the name imply more than
-// it delivers (Codex round 8). This reads and then writes without holding a
+// it delivers. This reads and then writes without holding a
 // lock across both, so two concurrent owner-level writes can both pass it, and
 // a rename that frees a canonical slug can produce a duplicate with no write
 // to this path at all.
@@ -522,7 +522,7 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 	// on the input rather than extracting + running them as a separate,
 	// non-atomic write.
 	// items_changed is set from whether a field MIGRATION WAS REQUESTED, NOT
-	// how many rows actually changed (Codex round 7 P1): an item-grant
+	// how many rows actually changed: an item-grant
 	// subscriber receives this flag, so keying it off the affected-row count
 	// would let a subscriber whose OWN items were unaffected infer that HIDDEN
 	// items matched the migrated value — an info leak. "Migration requested"
@@ -593,7 +593,7 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 	// field JSON — closing the clobber where a stale full-fields item update
 	// would UNDO the migration.
 	//
-	// The event carries the STABLE collection ID (Codex round 7 P1): slugs are
+	// The event carries the STABLE collection ID: slugs are
 	// mutable and reusable, and events replay, so a stale rename event could
 	// otherwise pass a subscriber's slug-based match for a DIFFERENT collection
 	// now owning the old slug. Clients match by collection_id, not slug (the
@@ -746,7 +746,7 @@ func (s *Server) handleDeleteCollection(w http.ResponseWriter, r *http.Request) 
 // the identical race answered 409 on SQLite and 500 on Postgres — and the
 // update path checked neither. Every item handler already tests both strings;
 // this is that test, named, so the next handler needing it does not invent a
-// third spelling (codex round 1, P2).
+// third spelling.
 func isUniqueViolation(err error) bool {
 	if err == nil {
 		return false
@@ -776,7 +776,7 @@ func uniqueCollectionConflictMessage(err error) string {
 		// and an item-level unique index can fail there — invocation_slug is
 		// the live example. Telling that caller their collection NAME is taken
 		// sends them to rename something that is not the problem, so the
-		// message stays honest about what it does not know (codex round 3).
+		// message stays honest about what it does not know.
 		return "This change conflicts with an existing unique value"
 	}
 }

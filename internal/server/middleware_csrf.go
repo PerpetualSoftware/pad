@@ -150,7 +150,7 @@ func (s *Server) CSRFProtect(next http.Handler) http.Handler {
 
 		// register is exempt ONLY when unauthenticated: handleRegister
 		// has an admin-session branch that DOES derive authority from the
-		// ambient cookie (codex round 2), so a session-authenticated
+		// ambient cookie, so a session-authenticated
 		// request falls through to the real double-submit check below
 		// instead of this exemption, while a genuinely anonymous request
 		// keeps it. See authCSRFSessionGatedExemptPaths's doc comment.

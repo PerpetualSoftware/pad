@@ -85,7 +85,7 @@ func (s *Server) resolveRelationReferentsAsQ(
 	// requester may not see must not hand back that item's UUID, which would
 	// confirm both its existence and its canonical identity — the existence
 	// oracle the `not_found` collapse exists to prevent, reopened by the
-	// message (codex round 2).
+	// message.
 	supplied := make(map[string]string, len(fieldMap))
 	for k, v := range fieldMap {
 		if str, isStr := v.(string); isStr {
@@ -130,7 +130,7 @@ func (s *Server) resolveRelationReferentsAsQ(
 		// value as "no reference", so an untrimmed check here refuses a value
 		// the store never objected to — and since the vanished-target arm
 		// below turns a missing lookup into a refusal, `"   "` became a
-		// not_found instead of an empty field (codex round 6).
+		// not_found instead of an empty field.
 		if !isStr || strings.TrimSpace(id) == "" {
 			continue
 		}
@@ -139,7 +139,7 @@ func (s *Server) resolveRelationReferentsAsQ(
 			// its message ("is not an item in collection X") tells the caller
 			// the value EXISTS — distinguishable from the `not_found` a
 			// nonexistent value gets, and therefore an existence oracle for
-			// anyone who cannot see that item (codex round 3). Collapse it to
+			// anyone who cannot see that item. Collapse it to
 			// `not_found` when the requester may not see the target; keep the
 			// specific message when they may, because "you linked a task
 			// where a person belongs" is the useful half of this reason.
@@ -220,7 +220,7 @@ func collapseIssue(issues []store.RelationIssue, key string, reason store.Relati
 // RequiredRelationIssues and renders the result into a 400 or a preflight
 // `needs_value` row. `wrong_collection` is the one reason that names a LIVE
 // item, so an invisible target announced that way is the existence oracle
-// round 3 closed, reopened through the door round 10 added (codex round 15).
+// round 3 closed, reopened through the door round 10 added.
 // Applied at all five late-default sites, per CONVE-18.
 //
 // Since the day-64 ruling, `store.ResolveLateRelationDefaults` takes the
@@ -361,7 +361,7 @@ func notDefaultKeys(supplied, carried map[string]any) map[string]bool {
 }
 
 // dropInvisibleRelationDefaults is the visibility check a LATE-RESOLVED
-// DEFAULT owes (codex round 11).
+// DEFAULT owes.
 //
 // `ResolveLateRelationDefaults` lives in `store` and resolves against the
 // database alone. At the write doors the caller's own values are filtered out
@@ -524,7 +524,7 @@ func (s *Server) resolveRelationsForWriteQ(
 	// The required check covers the INVISIBLE drops too. It was written for
 	// `lateDropped` and a sibling list was added beside it a round later —
 	// deleting a key after validation has passed leaves a required field
-	// absent regardless of which list recorded it (codex round 13).
+	// absent regardless of which list recorded it.
 	if required := store.RequiredRelationIssues(schema, invisible); len(required) > 0 {
 		return append(callerIssues, required...), nil, nil
 	}
@@ -557,7 +557,7 @@ func (s *Server) resolveRelationsForWriteQ(
 // the preflight and `validation_error` from the copy, and `{"owner_ref":42}`
 // returned `invalid_override` from the preflight and `validation_error` from
 // the copy. One body, two answers, which is the DR-6 divergence this pair
-// exists to prevent (codex round 19).
+// exists to prevent.
 //
 // One function rather than two orderings kept in step by hand: the previous
 // arrangement was not that anyone chose the wrong order, it was that the order

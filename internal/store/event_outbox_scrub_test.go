@@ -379,7 +379,7 @@ func TestScrubOutboxUserRefs_DispatchedRowsScrubbedNotDeleted(t *testing.T) {
 }
 
 // TestScrubOutboxUserRefs_KeyScopedAndNumberSafe pins two properties a looser
-// implementation passes every other test without (codex round 1): the walk is
+// implementation passes every other test without: the walk is
 // KEY-scoped, not value-scoped — a payload field that merely CONTAINS the
 // deleted user's id under an unrelated key survives — and numeric literals
 // cross the rewrite verbatim, so an int64 past float64's 2^53 integer range

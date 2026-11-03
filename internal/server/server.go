@@ -113,7 +113,7 @@ type Server struct {
 	// It fires once per item-update REQUEST, so a hook that issues its own
 	// update must nil the field for the duration of that nested call or it
 	// recurses without end. Every test here does exactly that; the pattern is
-	// load-bearing, not incidental (codex round 3).
+	// load-bearing, not incidental.
 	afterItemPreRead func(itemID string)
 
 	// resourceMissingLast is when noteResourceMissing last logged each
@@ -653,7 +653,7 @@ type Server struct {
 	// the identity/visibility refresh) deterministically, without
 	// needing to actually break the DB connection mid-test.
 	//
-	// atomic.Pointer, not a plain func field (codex round 5 finding 2):
+	// atomic.Pointer, not a plain func field:
 	// unlike restoreAckFault — set once, synchronously, before the single
 	// HTTP request that will read it, so goroutine-creation's own
 	// happens-before edge makes a plain field safe there — this seam is
@@ -814,7 +814,7 @@ func (s *Server) Stop() {
 	// This matters more than it did for MemoryBus, whose Close only dropped
 	// channels: RedisBus holds a receive goroutine and a Redis subscription
 	// from construction, so skipping it leaks both for the process's life
-	// (Codex round 1 P2). Closing also closes every subscriber channel, which
+	//. Closing also closes every subscriber channel, which
 	// is how a still-open SSE stream learns to unwind.
 	if s.watchEvents != nil {
 		s.watchEvents.Close()
@@ -3079,7 +3079,7 @@ func decodeJSONRepairingNUL(r *http.Request, v interface{}, maxBytes int64, t *n
 // body first and re-parses that string as the document it is. So a raw-byte
 // repair left `--repair-nul` unable to fix the single most common carrier in a
 // real export, while passing every test whose fixture put the NUL in `content`
-// (codex round 1).
+// .
 //
 // The walk below is therefore the same traversal, with the same classing, one
 // verb changed: where bodyDecodesNUL asks textguard whether a value decodes to
@@ -3096,7 +3096,7 @@ func repairBodyNULEscapes(raw []byte) (out []byte, replaced int, declined string
 		return raw, 0, ""
 	}
 
-	// DUPLICATE MEMBERS ARE A REFUSAL, NOT A REPAIR (codex round 4).
+	// DUPLICATE MEMBERS ARE A REFUSAL, NOT A REPAIR.
 	//
 	// The walk below decodes into map[string]any, where a repeated key keeps
 	// only the LAST value. The typed decode that follows does not agree: it
@@ -3243,7 +3243,7 @@ func decodeJSONBytes(raw []byte, v interface{}) error {
 	// (playbook run, share links) treated a syntactically invalid body as an
 	// ABSENT one and proceeded. Same Go-versus-spec whitespace divergence
 	// that bites when a Go trim stands in for another grammar's definition
-	// (codex round 22).
+	//.
 	if len(bytes.Trim(raw, " \t\r\n")) == 0 {
 		return fmt.Errorf("invalid JSON: %w", io.EOF)
 	}
@@ -3284,7 +3284,7 @@ func decodeJSONBytes(raw []byte, v interface{}) error {
 // ("Invalid JSON body"). The status is uniform; the wording is not. Where a
 // caller's own message would actively mislead — the OAuth registration
 // endpoint's "Request body must be JSON", for a body that IS valid JSON —
-// that caller distinguishes the two cases explicitly (codex round 8).
+// that caller distinguishes the two cases explicitly.
 //
 // The wording avoids writing the escape sequence literally: the message is
 // rendered in terminals, logs and a browser, and a literal escape in an error

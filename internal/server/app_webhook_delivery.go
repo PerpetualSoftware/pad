@@ -78,7 +78,7 @@ func (s *Server) deliverAppHooks(unit outboxDelivery) (owed bool, err error) {
 	// delivering the singles would hand an app an arbitrary subset of one
 	// operation (codex r3 on U10b). DOC-3371 §5: a bulk human edit is
 	// invisible to the app in v1; it resyncs through the API. Counted for
-	// every app hook in the workspace, folded or single (codex r4).
+	// every app hook in the workspace, folded or single.
 	if unit.batchID != "" {
 		hooks, err := s.store.ListAppWebhookTargets(unit.workspaceID, "")
 		if err != nil {

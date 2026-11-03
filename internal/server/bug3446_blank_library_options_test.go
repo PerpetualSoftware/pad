@@ -275,7 +275,7 @@ func TestBUG3446_EditorCreateWidens(t *testing.T) {
 }
 
 // The artifact import door keeps its documented clear-and-warn for a select
-// value the destination does not list; it never widens (codex round 1).
+// value the destination does not list; it never widens.
 func TestBUG3446_ArtifactImportDoesNotWiden(t *testing.T) {
 	srv := testServer(t)
 	slug, wsID := bug3446BlankWorkspace(t, srv, "Blank 3446 import")
@@ -302,7 +302,7 @@ func TestBUG3446_ArtifactImportDoesNotWiden(t *testing.T) {
 }
 
 // The schema rewrite touches the FIRST definition of a key, the one
-// validation reads, and never duplicates a value (codex round 1).
+// validation reads, and never duplicates a value.
 func TestBUG3446_AppendSelectOptionsJSON(t *testing.T) {
 	raw := `{"fields":[{"key":"trigger","type":"select","options":["always"],"x_extra":1},{"key":"trigger","type":"select","options":["always","on-commit"]}]}`
 	out, err := appendSelectOptionsJSON(raw, map[string][]string{"trigger": {"on-commit", "always"}})
@@ -317,7 +317,7 @@ func TestBUG3446_AppendSelectOptionsJSON(t *testing.T) {
 
 // A create that the widened schema would still refuse writes nothing to the
 // schema: it is validated against the widened schema before the widening is
-// stored (codex round 2). Here the trigger is a library word but the status
+// stored. Here the trigger is a library word but the status
 // is not a valid option.
 func TestBUG3446_RefusedCreateDoesNotWiden(t *testing.T) {
 	srv := testServer(t)

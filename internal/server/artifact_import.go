@@ -58,7 +58,7 @@ var ErrArtifactUnsafeYAML = errors.New("artifact import: frontmatter rejected by
 // anything here.
 //
 // "Refuses", not "cannot" — the distinction matters and the earlier wording
-// blurred it (codex round 20). PostgreSQL rejects a NUL in a text or JSON
+// blurred it. PostgreSQL rejects a NUL in a text or JSON
 // column outright; SQLite would accept one in TEXT. So this is an application
 // rule Pad applies on both dialects, not a storage limit it inherits from
 // either. Stating it as a capability would tell the next reader that SQLite
@@ -254,7 +254,7 @@ func extractFrontmatterRegion(s string) (string, bool) {
 //
 // It works by MARSHALLING the artifact and searching the result, rather than
 // walking its fields by type. The hand-written walk this replaces missed two
-// things a reviewer found immediately (codex round 8): Provenance, whose
+// things a reviewer found immediately: Provenance, whose
 // strings are rendered into a Markdown footer appended to the stored content,
 // and Arguments, whose declared type is []map[string]any — a concrete slice
 // type the walk's `[]any` case never matched. Both were reachable. A type

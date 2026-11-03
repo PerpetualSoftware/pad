@@ -162,7 +162,7 @@ func TestBUG3663_FKOffMigrationIgnoresAViolationThatPredatesIt(t *testing.T) {
 }
 
 // The legacy violation sits in a table the migration rebuilds, and the copy
-// renumbers its rowids (codex r1): it is still the same one violation, and
+// renumbers its rowids: it is still the same one violation, and
 // does not block.
 func TestBUG3663_FKOffRebuildThatRenumbersALegacyViolationIsNotRefused(t *testing.T) {
 	s := fkCheckStore(t)

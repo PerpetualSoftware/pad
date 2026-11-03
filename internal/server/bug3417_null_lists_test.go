@@ -146,12 +146,12 @@ func TestBug3417_AppsResponsesHaveNoNullLists(t *testing.T) {
 		assertNoNullLists(t, "upgrade preview", rr, http.StatusOK, typeOf[appPreview]())
 		var up appPreview
 		parseJSON(t, rr, &up)
-		// An upgrade that adds no artifacts (codex r1).
+		// An upgrade that adds no artifacts.
 		assertNoNullLists(t, "upgrade confirm", doRequestWithCookie(e.srv, "POST", ws+"/apps/"+c.InstallID+"/upgrade/confirm",
 			map[string]any{"pending_id": up.PendingID, "manifest_sha256": up.ManifestSHA256}, e.token),
 			http.StatusOK, typeOf[appUpgradeConfirmResponse]())
 
-		// A webhook-only private origin may omit `allowed` (codex r1): the
+		// A webhook-only private origin may omit `allowed`: the
 		// PUT and every later GET answer it as a list.
 		assertNoNullLists(t, "admin apps settings PUT", doRequestWithCookie(e.srv, "PUT", "/api/v1/admin/apps", map[string]any{
 			"private_origins": []map[string]any{
@@ -170,7 +170,7 @@ func TestBug3417_AppsResponsesHaveNoNullLists(t *testing.T) {
 
 	// The full manifest (events, an item action, an artifact), so the nested
 	// lists inside those elements are walked too, and an upgrade that changes
-	// the artifact, so its review's lists are (codex r2).
+	// the artifact, so its review's lists are.
 	t.Run("full manifest: preview, confirm, changed-artifact upgrade, lifecycle", func(t *testing.T) {
 		e := newProvisionEnv(t)
 		ws := "/api/v1/workspaces/" + e.ws

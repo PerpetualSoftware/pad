@@ -1090,7 +1090,7 @@ var ErrLastOwner = errors.New("a workspace must keep at least one owner")
 // concurrently. The last-owner count below only matters for a legacy row
 // whose canonical owner is NOT an owner member, and is best-effort there: it
 // takes no row locks, deliberately. Locking the other owners' rows FOR UPDATE
-// (codex r1) neither serialized a concurrent promote-then-demote under READ
+// neither serialized a concurrent promote-then-demote under READ
 // COMMITTED nor kept a lock order account deletion could agree with.
 func (s *Store) guardOwnerLossTx(tx *sql.Tx, workspaceID, userID string) error {
 	var ownerID sql.NullString

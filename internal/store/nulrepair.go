@@ -182,7 +182,7 @@ func (s *Store) repairOneNUL(v NULViolation) (bool, error) {
 	// the same document with that string's bad bytes replaced
 	// (TestRepairInvalidUTF8KeepsJSONValid). A value that was already MALFORMED
 	// JSON stays malformed: PostgreSQL refuses it for that reason too (22P02),
-	// which is outside this census and not made worse by the repair (codex r1).
+	// which is outside this census and not made worse by the repair.
 	// Then the NUL repair, on the now-valid text.
 	repaired := value
 	if invalidUTF8 {

@@ -320,7 +320,7 @@ func TestWriteGuardCoversPreparedStatements(t *testing.T) {
 func TestStoreOverRefusalsStillOverRefuse(t *testing.T) {
 	t.Parallel()
 	// NOT a skip, for the same reason as KnownGaps: an empty slice would let
-	// someone delete the record of a divergence and see green (codex round 2).
+	// someone delete the record of a divergence and see green.
 	const wantOverRefusals = 1
 	if len(textguard.StoreOverRefusals) != wantOverRefusals {
 		t.Fatalf("StoreOverRefusals has %d entries, expected %d. If one was PAID DOWN, move its case into "+
@@ -416,7 +416,7 @@ func TestWrapperAdvertisesExactlyWhatTheBaseDoes(t *testing.T) {
 				}
 				return out
 			}
-			// STATEMENT level too (codex round 3): the parity test originally
+			// STATEMENT level too: the parity test originally
 			// stopped at the connection, while guardStmt wraps statements and
 			// forwards a different set. A wrapper that hid StmtExecContext
 			// would have passed.
@@ -511,7 +511,7 @@ func TestWriteGuardSeesThroughDriverValuer(t *testing.T) {
 		t.Errorf("a clean sql.NullString must still write: %v", err)
 	}
 
-	// The NULL leg ASSERTS NULL (codex round 3). Checking only that the write
+	// The NULL leg ASSERTS NULL. Checking only that the write
 	// succeeded would pass against a normalization that turned NULL into "" —
 	// which is precisely the kind of silent conversion a guard that rewrites
 	// parameters could introduce.
@@ -536,7 +536,7 @@ func TestWriteGuardSeesThroughDriverValuer(t *testing.T) {
 // the Valuer path meaningfully on POSTGRES, because SQLite's driver lacks
 // NamedValueChecker and database/sql therefore unwraps sql.NullString before
 // the guard ever runs. That made it pass for the wrong reason by default
-// (codex round 3), and these do not depend on which driver is present.
+// , and these do not depend on which driver is present.
 func TestWriteGuardResolvesValuerOnce(t *testing.T) {
 	t.Parallel()
 	t.Run("typed-nil valuer binds NULL instead of panicking", func(t *testing.T) {
@@ -584,7 +584,7 @@ func TestWriteGuardResolvesValuerOnce(t *testing.T) {
 	})
 
 	t.Run("an unclassifiable shape is REFUSED, not passed through", func(t *testing.T) {
-		// The allow-list's whole point (codex round 4). Two rounds were spent
+		// The allow-list's whole point. Two rounds were spent
 		// naming text-carrying shapes one at a time; this asserts the default
 		// answer for anything unnamed is refusal rather than silent acceptance.
 		type unexpected struct{ Note string }

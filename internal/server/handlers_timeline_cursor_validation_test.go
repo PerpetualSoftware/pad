@@ -291,7 +291,7 @@ func TestTimeline_NeverEmitsACursorItWouldRefuse(t *testing.T) {
 // A cursor is a PAIR. `before_id` alone could never match anything — the id is
 // the tie-break at the cursor instant, and `before` defaults to a moment no row
 // shares — so it was accepted and silently ignored while the caller paged from
-// the beginning believing otherwise (codex round 4).
+// the beginning believing otherwise.
 func TestTimeline_OneSidedCursorIsRejected(t *testing.T) {
 	t.Parallel()
 	srv := testServer(t)

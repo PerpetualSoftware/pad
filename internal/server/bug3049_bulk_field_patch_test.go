@@ -216,7 +216,7 @@ func TestBulkFieldUpdate_RefusesAnUnreadableFieldsSnapshot(t *testing.T) {
 }
 
 // An AUTO-POPULATED date must not overwrite one a concurrent writer set
-// (codex round 4).
+// .
 //
 // autoPopulateDates stamps start_date / end_date on a status transition, but
 // only when the value is empty — and it read a snapshot from outside the write

@@ -113,7 +113,7 @@ func TestItemRename_LiteralSlashTitleIsNotRewrittenAsQualified(t *testing.T) {
 
 // TestItemRename_LiteralSlashTitleRetargetsOntoALiteralSlashSibling is the
 // DETERMINISTIC retarget, and it exists because my first boundary note was
-// wrong in the other direction (codex R4).
+// wrong in the other direction.
 //
 // Having measured that the wrongly-qualified bracket still found the renamed
 // item, I wrote that it "always" does. It does not. resolveTitleTx tries an

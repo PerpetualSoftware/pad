@@ -48,7 +48,7 @@ func TestNativePostgresAgreesWithTheCorpus(t *testing.T) {
 	defer func() { _, _ = db.Exec(`DROP TABLE IF EXISTS nul_differential`) }()
 
 	// KNOWN GAPS get their own leg, and it asserts POSTGRES's answer rather
-	// than ours (codex round 4). Running only Corpus here meant the recorded
+	// than ours. Running only Corpus here meant the recorded
 	// gaps were never measured against the database at all — which is how one
 	// of them carried a rationale claiming Postgres agreed with us when it
 	// does not.

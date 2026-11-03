@@ -250,7 +250,7 @@ func TestItemUpdate_NoOpPatchRecordsNoChange(t *testing.T) {
 }
 
 // TestItemUpdate_SameTitleIsNotRecordedAsARename closes the gap the previous
-// test leaves open (codex round 3): RenameAndFieldChange would also pass an
+// test leaves open: RenameAndFieldChange would also pass an
 // implementation that records a title change for EVERY non-nil input.Title,
 // including a PATCH that re-sends the title it already has.
 func TestItemUpdate_SameTitleIsNotRecordedAsARename(t *testing.T) {

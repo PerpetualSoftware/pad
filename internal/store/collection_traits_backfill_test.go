@@ -230,7 +230,7 @@ func TestFilterKeyRuleMatchesStoreSanitizer(t *testing.T) {
 }
 
 // TestImportLegacyArchiveInfersTraits locks the compatibility inference for
-// archives written before the traits column existed (Codex round 4, P1).
+// archives written before the traits column existed.
 //
 // The migration backfill cannot help here: it ran long before these rows were
 // inserted, and nothing re-runs it per import. So without inference an imported

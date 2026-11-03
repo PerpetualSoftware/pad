@@ -1150,7 +1150,7 @@ func TestCopyAcrossWorkspaces_CollectionMissingSentinels(t *testing.T) {
 // workspace's item quota as one of the things `valid` deliberately does not
 // evaluate — so if the copy tested the quota first, a malformed request into a
 // full cloud workspace would come back 403 plan_limit_exceeded from the copy
-// and 400 malformed_override from its own preview (Codex round 18). A client
+// and 400 malformed_override from its own preview. A client
 // told "you are out of room" cannot fix an override it was never told about.
 //
 // Moving field validation ahead of the quota costs nothing and weakens
@@ -1281,7 +1281,7 @@ func TestRemapAttachmentRefsTokenizesLikeThePlanner(t *testing.T) {
 // The WRAPPING is the one that matters operationally: a hook refusal is a
 // 403/404 the HTTP layer renders, not an incident, and asking every caller to
 // remember to wrap it made "forgot to wrap" a silent way to page an operator
-// over a routine permission denial (Codex round 10). The caller's own error
+// over a routine permission denial. The caller's own error
 // type still comes back out through errors.As.
 func TestCopyAcrossWorkspaces_PreCheckRefusalIsWrapped(t *testing.T) {
 	t.Parallel()
@@ -1321,9 +1321,9 @@ func TestCopyAcrossWorkspaces_PreCheckRefusalIsWrapped(t *testing.T) {
 //   - VALUE fields (Title, Content, the collection's Slug) — a plain struct
 //     copy already handles these;
 //   - a POINTER field written THROUGH (`*source.AssignedUserID = x`) — a plain
-//     struct copy aliases it, and it reaches carryAssigneeTx (Codex round 11);
+//     struct copy aliases it, and it reaches carryAssigneeTx;
 //   - a SLICE field appended to and mutated in place (ImplementationNotes) —
-//     hand-enumerated pointer cloning misses these entirely (Codex round 12),
+//     hand-enumerated pointer cloning misses these entirely,
 //     and they ride out on the source's move webhook payload.
 //
 // The last two are the ones that make this test worth having; assert on all

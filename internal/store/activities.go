@@ -130,7 +130,7 @@ func (s *Store) CreateActivityDebounced(a models.Activity) (string, error) {
 	// an earlier comment (TASK-2760, codex round 3). A linked row therefore
 	// ENDS a coalescing run; the next update starts a new one. That refusal
 	// lives in the UPDATE's own predicate and nowhere else, because a comment
-	// can link the row between this read and that write (codex round 6) — a
+	// can link the row between this read and that write — a
 	// check here would be a second guard that only looks load-bearing. That
 	// still holds with BUG-2770's compare-and-set arm on the same UPDATE:
 	// debounceRowUnchanged runs only AFTER a refusal, asks about the
@@ -205,7 +205,7 @@ func (s *Store) CreateActivityDebounced(a models.Activity) (string, error) {
 		// Merge metadata: accumulate "changes" strings from both old and new.
 		merged := mergeActivityMeta(existingMeta, a.Metadata)
 
-		// Stamped per ATTEMPT, not once before the loop (codex round 3): the
+		// Stamped per ATTEMPT, not once before the loop: the
 		// merge bumps created_at because the row now carries a change that
 		// just happened, and a retry that stamped the pre-loop instant would
 		// backdate a row whose newest change is younger than that — the
@@ -259,7 +259,7 @@ func (s *Store) CreateActivityDebounced(a models.Activity) (string, error) {
 			// since. Frozen: a fresh row starts the next run.
 			//
 			// "Frozen" is about THIS call, not forever: DeleteComment can
-			// unlink the row a moment later (codex round 8). The cost of
+			// unlink the row a moment later. The cost of
 			// having decided otherwise is one extra activity row, which is
 			// the same currency every other giving-up path here spends.
 			return s.CreateActivity(a)
@@ -296,7 +296,7 @@ func (s *Store) CreateActivityDebounced(a models.Activity) (string, error) {
 // used by both statements that ask it — the UPDATE that enforces it and the
 // probe that decides, after a refusal, which arm refused (BUG-2770).
 //
-// Shared rather than written twice on purpose (codex round 6): if the two
+// Shared rather than written twice on purpose: if the two
 // spellings could drift, the probe would answer a question the UPDATE is
 // not asking, and the disposition it picks — retry, or start a fresh row —
 // would silently be the wrong one. This makes them the same question by
@@ -461,7 +461,7 @@ func (s *Store) recentDebounceCandidateQ(q rowsQueryer, a models.Activity, cutof
 // between this probe and the next attempt, so its answer can be stale the
 // moment it returns; the loop re-reads and re-runs the CAS rather than
 // trusting it, and the worst a stale hint costs is one wasted attempt or
-// one extra activity row (codex round 7).
+// one extra activity row.
 func (s *Store) debounceRowUnchanged(id, metadata string) (bool, error) {
 	var found int
 	err := s.db.QueryRow(s.q(`
@@ -522,7 +522,7 @@ func mergeActivityMeta(existing, incoming string) string {
 	}
 	// A JSON `null` blob unmarshals with NO error and leaves the map nil,
 	// and the overlay below writes into existMap — assignment to a nil map
-	// panics (codex round 3). The error branches above cannot catch this
+	// panics. The error branches above cannot catch this
 	// because there is no error: `null` is valid JSON, valid JSONB on
 	// Postgres, and storable in the TEXT column on SQLite. Ranging over a
 	// nil newMap is already safe; existMap is the one that must be real.

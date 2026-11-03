@@ -517,7 +517,7 @@ func TestRelationDoors_CrossWorkspaceCopyAndPreflight(t *testing.T) {
 }
 
 // A supplied relation override at the MOVE door must name an item the
-// requester can see (codex round 1, P1).
+// requester can see.
 //
 // The write doors have always checked this; the migrate doors call the store
 // resolver directly, and the store cannot answer a request-scoped question.
@@ -650,7 +650,7 @@ func (f *doorFixture) callAs(user *models.User, role string, h http.HandlerFunc,
 // `wrong_collection` names a LIVE item, so its message tells the caller the
 // value exists — distinguishable from the `not_found` a nonexistent value
 // gets, and therefore an existence oracle for anyone who cannot see that item
-// (codex round 3).
+// .
 //
 // Both legs are required. Collapsing every wrong_collection to not_found would
 // pass the first and destroy the second, and "you linked a task where a person
@@ -705,7 +705,7 @@ func TestRelationDoors_WrongCollectionDoesNotDiscloseExistence(t *testing.T) {
 }
 
 // A bulk status or priority change must resolve a relation default validation
-// injects (codex round 3).
+// injects.
 //
 // `bulkFieldUpdate` looks only at the keys `changes` names — correctly, since
 // re-litigating stored values would freeze legacy items — but `ValidateFields`
@@ -763,7 +763,7 @@ func TestRelationDoors_WhitespaceOnlyRelationIsNotRefused(t *testing.T) {
 }
 
 // The write doors have the same injected-default hole the migrate doors had
-// (codex round 7).
+// .
 //
 // `ValidateFields` assigns a schema default and `continue`s past its own type
 // check, and the resolver skips a non-string — so `default: 42` on a relation
@@ -826,7 +826,7 @@ func TestRelationDoors_NonStringDefaultIsDroppedAndReportedOnWrite(t *testing.T)
 	}
 }
 
-// An unresolvable STRING default must not refuse the write (codex round 10).
+// An unresolvable STRING default must not refuse the write.
 //
 // Validation injects the default before the resolver runs, and the resolver
 // treats the whole map as caller input — so an optional relation whose schema
@@ -875,7 +875,7 @@ func TestRelationDoors_UnresolvableStringDefaultDropsInsteadOfRefusing(t *testin
 }
 
 // A schema default naming an item the caller cannot see must not hand them its
-// id (codex round 11).
+// id.
 //
 // Round 10 filtered the caller's-input-only refusals, which correctly stopped
 // a default refusing the write — and also removed the VISIBILITY issues raised
@@ -929,7 +929,7 @@ func TestRelationDoors_InvisibleRelationDefaultIsNotDisclosed(t *testing.T) {
 	}
 }
 
-// `req.Status` on a bulk collection move is CALLER INPUT (codex round 11).
+// `req.Status` on a bulk collection move is CALLER INPUT.
 //
 // The path merges exactly one field and passed `supplied=nil` on the grounds
 // that it carries no per-field overrides — true of every field except that
@@ -1023,7 +1023,7 @@ func TestRelationDoors_MoveDropsInvisibleDestinationDefault(t *testing.T) {
 	}
 }
 
-// An invisible default in a REQUIRED relation refuses (codex round 13).
+// An invisible default in a REQUIRED relation refuses.
 //
 // The required check was written for the late-dropped list and a sibling list
 // — the visibility drops — was added beside it a round later. Deleting a key
@@ -1065,7 +1065,7 @@ func TestRelationDoors_RequiredInvisibleDefaultRefuses(t *testing.T) {
 }
 
 // A NIL source value does not make the key "carried", so the destination
-// default that replaces it still gets the visibility check (codex round 14).
+// default that replaces it still gets the visibility check.
 //
 // `notDefaultKeys` counted every key present in the supplied or carried map,
 // nil included. `ValidateFields` treats a present-but-nil key as ABSENT and
@@ -1108,7 +1108,7 @@ func TestRelationDoors_NullSourceDoesNotExemptDefaultFromVisibility(t *testing.T
 }
 
 // A relation issue raised by the LATE default pass must pass through the same
-// visibility collapse the main pass applies (codex round 15).
+// visibility collapse the main pass applies.
 //
 // `store.ResolveLateRelationDefaults` cannot know who is asking, so it returns
 // the raw reason. `wrong_collection` is the one reason that names a LIVE item,
@@ -1175,7 +1175,7 @@ func TestRelationDoors_LateDefaultWrongCollectionDoesNotDiscloseExistence(t *tes
 }
 
 // A BULK move owes its supplied half the same visibility check the single
-// move door runs (codex round 16).
+// move door runs.
 //
 // Round 11 established that `req.Status` on a bulk collection move is CALLER
 // INPUT and wired `suppliedByCaller` so the store classifier would refuse an
@@ -1246,7 +1246,7 @@ func TestRelationDoors_BulkMoveRefusesInvisibleSuppliedStatus(t *testing.T) {
 }
 
 // The preflight's CARRIED relation drops owe the same visibility collapse the
-// late-default drops get (codex round 16).
+// late-default drops get.
 //
 // Round 15 hoisted the collapse so `ResolveLateRelationDefaults`' issues stop
 // naming live items to callers who cannot see them. `MigrateRelationReferents`
@@ -1331,7 +1331,7 @@ func TestRelationDoors_PreflightCarriedDropDoesNotDiscloseExistence(t *testing.T
 }
 
 // A NULL override does not make a stale non-nil source value stop counting as
-// carried (codex round 16).
+// carried.
 //
 // `notDefaultKeys` already knows that a nil value is not a value — round 14
 // taught it that, because ValidateFields treats a present-but-nil key as
@@ -1398,7 +1398,7 @@ func TestRelationDoors_NullOverrideDoesNotExemptDefaultFromVisibility(t *testing
 
 // A supplied value that SATISFIES a required destination field must not be
 // refused by a required-field error computed before the override existed
-// (codex round 19).
+// .
 //
 // PLAN-2357 DR-12 fixed exactly this at the SINGLE move door — the comment
 // there records that `result.Errors` is computed by MigrateFields BEFORE any
@@ -1459,7 +1459,7 @@ func TestRelationDoors_BulkMoveAcceptsASuppliedValueForARequiredRelation(t *test
 }
 
 // A legacy item holding a NON-STRING in a relation field is still movable
-// (codex round 20).
+// .
 //
 // The carry rule exists so that legacy items stay usable: `internal/items`
 // accepted anything in a relation field for as long as the type has existed,

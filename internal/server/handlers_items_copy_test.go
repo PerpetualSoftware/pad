@@ -342,7 +342,7 @@ func TestCopyEndpoint_PreflightAndCopyAgreeGenerally(t *testing.T) {
 }
 
 // TestCopyEndpoint_PreflightAndCopyAgreeWithNoAttributableActor is the THIRD
-// divergence, found by hunting for one (Codex round 4) rather than because it
+// divergence, found by hunting for one rather than because it
 // was already documented.
 //
 // The preflight used to fall back to a literal `"preflight"` actor when there
@@ -362,7 +362,7 @@ func TestCopyEndpoint_PreflightAndCopyAgreeGenerally(t *testing.T) {
 // This is also the coverage for the PREFLIGHT's actor_required branch: it
 // drives handleCopyItemPreflight directly and requires its answer to be
 // byte-identical to the copy's, which is a stronger assertion than a separate
-// preflight-only test would make (Codex round 10).
+// preflight-only test would make.
 func TestCopyEndpoint_PreflightAndCopyAgreeWithNoAttributableActor(t *testing.T) {
 	// A FRESH INSTALL: zero users, so crossWorkspaceRole synthesises "owner"
 	// for a nil-user caller and the four-check ladder passes. That is the only
@@ -466,7 +466,7 @@ func TestCopyEndpoint_PreflightAndCopyAgreeWithNoAttributableActor(t *testing.T)
 	// request that fails BOTH ways — no actor AND an override naming a field
 	// the destination does not declare — must get the same answer from both,
 	// or a dialog fixes the override and is then told about the actor by only
-	// one of them (Codex round 5).
+	// one of them.
 	bad := map[string]any{"not_a_field": "x"}
 	preBoth := callWith(base+"/copy/preflight", srv.handleCopyItemPreflight, bad)
 	copyBoth := callWith(base+"/copy", srv.handleCopyItem, bad)
@@ -783,7 +783,7 @@ func TestCopyEndpoint_MoveEmitsInBothWorkspaces(t *testing.T) {
 	// FORCE THE TWO SEQ SPACES APART before anything is observed. Without
 	// this the assertion below is VACUOUS: the source is workspace A's first
 	// item and the copy is workspace B's first item, so both seqs are 1 and
-	// crossing them changes nothing (Codex round 20). Filling B's counter
+	// crossing them changes nothing. Filling B's counter
 	// makes the destination's seq unmistakably B's.
 	for i := 0; i < 3; i++ {
 		if _, err := f.srv.store.CreateItem(f.wsB.ID, f.collB.ID, models.ItemCreate{
@@ -959,7 +959,7 @@ func TestCopyEndpoint_FanoutHarnessIsRealPositiveControl(t *testing.T) {
 // EVERY subtest snapshots the world and asserts it is unchanged, not just
 // that the status is right. A denial that returns 403 after having written
 // the item is the failure that matters, and a status-only assertion cannot
-// see it (Codex round 6).
+// see it.
 func TestCopyEndpoint_AuthorizationDenials(t *testing.T) {
 	t.Run("source item not visible", func(t *testing.T) {
 		f := newCopyPreflightFixture(t)
@@ -1411,7 +1411,7 @@ func TestCopyEndpoint_TypedStoreErrorsMapToStatuses(t *testing.T) {
 // TestCopyEndpoint_UsesLockedCollectionSnapshots — the store re-reads both
 // collection rows under a FOR UPDATE pin and returns them precisely so the
 // caller does not build its answer from a pre-transaction read that can be
-// stale (Codex round 1 P2).
+// stale.
 //
 // Staleness is forced rather than raced: the copyItemFn seam RENAMES the
 // source's collection between the handler's read and the store call, which is
@@ -1602,7 +1602,7 @@ func TestCopyEndpoint_ResponseIsNavigable(t *testing.T) {
 // TestCopyEndpoint_ReportsCanonicalWorkspaceSlugs — /workspaces/{slug} also
 // accepts a workspace UUID, so a response that echoes the URL parameter hands
 // a client a "workspace_slug" that is not a slug and a link that does not
-// resolve (Codex round 14). Both endpoints report the RESOLVED canonical slug,
+// resolve. Both endpoints report the RESOLVED canonical slug,
 // and both are checked here because they must agree.
 func TestCopyEndpoint_ReportsCanonicalWorkspaceSlugs(t *testing.T) {
 	f := newCopyPreflightFixture(t)
@@ -1777,7 +1777,7 @@ func TestCopyEndpoint_ReferentialMetadataTravelsOnlyWithinItsWorkspace(t *testin
 	})
 }
 
-// The scope rule is only as strong as its weakest door (Codex round 4). A
+// The scope rule is only as strong as its weakest door. A
 // cross-workspace copy drops github_pr — and an override naming that key would
 // have put it straight back, because the override merge ran AFTER migration and
 // the migrated-output validation strips reserved declarations rather than

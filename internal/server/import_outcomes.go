@@ -120,7 +120,7 @@ func (g *importOutcomeRegistry) get(userID, key string) (importOutcome, bool) {
 func (g *importOutcomeRegistry) sweepLocked() {
 	now := g.now()
 	cutoff := now.Add(-importOutcomeTTL)
-	// A RUNNING entry outlives the TTL (codex r2): an import may read for up
+	// A RUNNING entry outlives the TTL: an import may read for up
 	// to its 1h ceiling (defaultImportReadCeiling) and then still finish, and
 	// expiring its key mid-upload would let the key begin again beside it.
 	// Every path that returns records an end, so a running entry this old

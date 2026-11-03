@@ -260,7 +260,7 @@ func TestPatchItemFieldsPatchTriggersOpenChildrenGuard(t *testing.T) {
 }
 
 // TestPatchItemFieldsPatchPreservesExistingDate: a status→completed patch must
-// NOT clobber an end_date the caller isn't touching (Codex round 2). The
+// NOT clobber an end_date the caller isn't touching. The
 // auto-populate only fills a date when the current value is empty.
 func TestPatchItemFieldsPatchPreservesExistingDate(t *testing.T) {
 	srv := testServer(t)

@@ -163,7 +163,7 @@ func (s *Store) appendSyncFrameQ(q yjsExecQueryer, itemID string, data []byte, s
 	bearing := !yjsFrameIsEnvelopeNonContent(data)
 	if bearing {
 		// ONE statement answers both "is there an exact twin" and "what is
-		// MAX(id)", so no delete can land between them (codex round 1). Every
+		// MAX(id)", so no delete can land between them. Every
 		// op-log delete path removes ALL of an item's rows, so a delete after
 		// this statement would have removed an inserted copy too: under any
 		// interleaving the skip is exactly as durable as the insert it replaces.

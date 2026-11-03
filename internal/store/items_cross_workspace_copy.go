@@ -372,7 +372,7 @@ type CrossWorkspaceCopyResult struct {
 	// another collection in A, and either collection can have been renamed.
 	// A caller that builds its response or its fanout from the pre-transaction
 	// rows attributes the events to a collection the copy did not use, and
-	// hands the client a slug that no longer resolves (Codex round 1 P2).
+	// hands the client a slug that no longer resolves.
 	SourceCollection *models.Collection
 	TargetCollection *models.Collection
 
@@ -674,7 +674,7 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 	// --- Fields: migrate -> override -> validate (DR-12). ---
 	//
 	// BEFORE THE QUOTA, and the order is a contract rather than a preference
-	// (Codex round 18). This is pure computation over rows already read, so
+	//. This is pure computation over rows already read, so
 	// running it first costs nothing and changes no invariant — the quota
 	// still runs inside the transaction and still runs before any insert,
 	// which is all DR-16 requires. What it buys is agreement with the
@@ -841,7 +841,7 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 	// What it cannot do is mint an invalid title FROM CALLER INPUT — which is
 	// the guarantee this unit actually makes, and is narrower than "cannot mint
 	// an invalid title", since a legacy-invalid source row does put that title
-	// on a NEW destination row (codex round 6). The title below is
+	// on a NEW destination row. The title below is
 	// `source.Title`, read from the source row; there is no caller-supplied
 	// title on this path at all (`--field` sets destination FIELDS, never the
 	// title), so no input a user controls reaches it. The copy stays repairable
@@ -963,14 +963,14 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 // WHY NOT `out := *src`. Struct assignment copies the POINTER and SLICE
 // fields, so a hook doing `*source.AssignedUserID = "someone-else"` reaches
 // straight through into carryAssigneeTx and puts a different user on the
-// copied item (Codex round 11).
+// copied item.
 //
 // WHY NOT FIELD-BY-FIELD CLONING. That was the first fix, and it was wrong in
 // the way hand-maintained lists are always wrong: models.Item carries a dozen
 // reference-backed fields — ParentID, AssignedUserID, AgentRoleID, ItemNumber,
 // DeletedAt, IsUnparented, DerivedClosure, CodeContext, Convention, MovedTo,
 // ImplementationNotes, DecisionLog — several of which getItemTx hydrates, and
-// the enumeration missed four of them (Codex round 12). Worse, it would go
+// the enumeration missed four of them. Worse, it would go
 // stale silently the next time a field is added to the model, in a way no test
 // would notice.
 //
@@ -1292,7 +1292,7 @@ func (s *Store) migrateCopyFields(q Queryer, destWorkspaceID string, targetColl 
 	// to notice — the field is simply not there afterwards.
 	migrated.Dropped = append(migrated.Dropped, defaultDrops...)
 	// Relation defaults ValidateFields just injected, which the pass above
-	// could not have seen (codex round 2).
+	// could not have seen.
 	lateDropped, lateErr := s.ResolveLateRelationDefaultsQ(q, canSee, destWorkspaceID,
 		items.SchemaForMigratedFields(targetSchema), migrated.Fields, relBefore)
 	if lateErr != nil {
@@ -1301,7 +1301,7 @@ func (s *Store) migrateCopyFields(q Queryer, destWorkspaceID string, targetColl 
 	// A REQUIRED relation whose default did not resolve cannot be left as a
 	// drop: the key is deleted AFTER validation passed, so nothing re-checks
 	// it and the item would land with a required field absent, reported valid
-	// (codex round 3). Re-running validation is not the answer — it would
+	//. Re-running validation is not the answer — it would
 	// re-inject the same broken default. There is no valid value, so this
 	// refuses.
 	if req := RequiredRelationIssues(items.SchemaForMigratedFields(targetSchema), lateDropped); len(req) > 0 {
@@ -1345,7 +1345,7 @@ func (s *Store) migrateCopyFields(q Queryer, destWorkspaceID string, targetColl 
 	for _, ri := range append(lateDropped, invisibleDefaults...) {
 		migrated.Dropped = append(migrated.Dropped, ri.Key)
 	}
-	// Filtered against the FINAL map, matching the preflight (Codex round 3).
+	// Filtered against the FINAL map, matching the preflight.
 	// migrated.Dropped is computed before overrides merge and before defaults
 	// are injected, and this list is exposed to the caller as the 201
 	// response's warnings.dropped_fields — so without this the preview said

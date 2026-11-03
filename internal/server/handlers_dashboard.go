@@ -1451,7 +1451,7 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 				Reason:     "REMINDER due — armed for " + pr.RemindAt,
 			})
 		}
-		// ONE ENTRY PER ITEM ACROSS THE TWO SOURCES (codex round 17). An item
+		// ONE ENTRY PER ITEM ACROSS THE TWO SOURCES. An item
 		// can be both a fired reminder and an ordinary candidate (in progress,
 		// high priority, overdue); the reminder entry carries the ack handle
 		// and the ordinary one carries nothing the reminder does not, so the

@@ -581,7 +581,7 @@ func TestMCP_BUG3835_KeepaliveOnlyInsideALiveEventStream(t *testing.T) {
 }
 
 // A transport that panics after committing an event stream still stops the
-// keepalive before mcpBoundWrites unwinds (hunter r2): chi's Recoverer
+// keepalive before mcpBoundWrites unwinds: chi's Recoverer
 // swallows the panic, so a keepalive left running would write to a response
 // whose handler has returned.
 func TestMCP_BUG3835_PanickingTransportStopsTheKeepalive(t *testing.T) {
@@ -592,7 +592,7 @@ func TestMCP_BUG3835_PanickingTransportStopsTheKeepalive(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		w.(http.Flusher).Flush()
-		// Wait for a keepalive rather than sleeping a fixed time (hunter r4):
+		// Wait for a keepalive rather than sleeping a fixed time:
 		// the body is read under the writer's mutex, which every keepalive
 		// write takes, so the read neither races nor depends on scheduling.
 		mw := w.(*mcpStreamWriter)

@@ -73,9 +73,9 @@ func compressSkips(r *http.Request) bool {
 	case strings.HasPrefix(p, "/api/v1/auth/"), strings.HasPrefix(p, "/oauth/"), strings.HasPrefix(p, "/api/v1/oauth/"),
 		strings.HasSuffix(p, "/tokens") || strings.Contains(p, "/tokens/"),
 		// Reads that return a live secret, found by an exhaustive sweep of the
-		// GET routes: a workspace's claim code (codex r2)
+		// GET routes: a workspace's claim code
 		// and the members list, which still carries the plaintext code of a
-		// legacy pending invitation (codex r4). Webhook secrets are masked on
+		// legacy pending invitation. Webhook secrets are masked on
 		// reads; every other secret comes back from a write.
 		strings.HasSuffix(p, "/claim-code"), strings.HasSuffix(p, "/members") || strings.HasSuffix(p, "/members/"),
 		// A share view can carry signed, short-lived attachment references

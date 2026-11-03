@@ -142,7 +142,7 @@ func TestBUG3825_InvocationSlugSpellingsCollideOnEitherDialect(t *testing.T) {
 }
 
 // A schema declaring one unique key twice must not make an item collide with
-// its own claim (codex r1).
+// its own claim.
 func TestBUG3825_RepeatedUniqueDeclarationIsCheckedOnce(t *testing.T) {
 	s := testStore(t)
 	export := bug3825Export("code")

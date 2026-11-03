@@ -54,7 +54,7 @@ var errSSENoWriteDeadline = errors.New("event stream: the response writer does n
 
 // openSSEStream wraps w, or refuses when w cannot take a write deadline. The
 // bound is always sseFrameWriteTimeout: a method taking no timeout, so a
-// handler has no way to pass a different one (codex r4). It
+// handler has no way to pass a different one. It
 // FAILS CLOSED (codex r1 High): streaming without the deadline is the pinned
 // handler this type exists to prevent, so a writer that cannot be bounded is
 // not streamed to at all. The probe clears any deadline, which is the state

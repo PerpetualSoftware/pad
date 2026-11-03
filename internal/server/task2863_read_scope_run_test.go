@@ -119,7 +119,7 @@ func TestTASK2863_ReadPATThroughTheRouter(t *testing.T) {
 		// TokenAuth's own refusal is the only 403 that names the scope, so
 		// for a path no route serves (where a write token gets 404) this
 		// is what says the read token was refused by the scope check
-		// (codex round 1).
+		//.
 		if rr.Code == http.StatusForbidden && env.Error.Message == "Token scope does not permit this action" {
 			return rr.Code, "scope"
 		}

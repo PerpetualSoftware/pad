@@ -126,7 +126,7 @@ var imgPaintableMimes = map[string]bool{
 //
 // `wantVariant` is the variant the caller is about to put in the URL, and it
 // must be the same one — asking about a variant you will not request answers a
-// question nobody has (codex round 1). An empty wantVariant means the render
+// question nobody has. An empty wantVariant means the render
 // points at the original, so only the paintable half can carry it.
 //
 // Not a MIME prefix test, because a pure-Go build derives no HEIC thumbnail and

@@ -718,7 +718,7 @@ func (s *Store) getCollectionSlugTx(tx *sql.Tx, collectionID string) (string, er
 //
 // Exported in TASK-2365 rather than duplicated at the call site: the
 // cross-workspace copy endpoint needs exactly this test, and a second copy of
-// the same two magic strings is a place for the two to drift (Codex round 8).
+// the same two magic strings is a place for the two to drift.
 // It is a string match rather than a SQLSTATE/driver-type check because
 // internal/store is driver-agnostic and both drivers sit behind database/sql;
 // the strings are stable parts of each engine's user-facing error text.
@@ -2822,7 +2822,7 @@ func (s *Store) updateItemWithParentLinkOnce(
 		// is a genuine no-op (the row keeps the bytes it has), and anything
 		// else is validated before it is normalized in.
 		if normalized == existing.Title || *input.Title == existing.Title {
-			// NIL, not "the same bytes" (codex round 5, P1). Writing the stored
+			// NIL, not "the same bytes". Writing the stored
 			// title back leaves input.Title non-nil, and everything downstream
 			// keys on that pointer rather than on whether the value changed:
 			// the SET clause below regenerates the SLUG from slugify(title),
@@ -2848,7 +2848,7 @@ func (s *Store) updateItemWithParentLinkOnce(
 	// precheck — so a caller who lost the race gets the promised
 	// update_conflict envelope, not a semantic (e.g. open_children)
 	// rejection for a transition attempted against a row that is no longer
-	// the one they read (Codex round 2). Parsed as RFC3339 and compared with
+	// the one they read. Parsed as RFC3339 and compared with
 	// time.Equal so a round-tripped `updated_at` matches regardless of
 	// zone/format.
 	//
@@ -2877,7 +2877,7 @@ func (s *Store) updateItemWithParentLinkOnce(
 		}
 	}
 	// SEQ DECIDES when it is present, so the timestamp check below is SKIPPED
-	// rather than also run (codex round 2). Running both was an AND, which
+	// rather than also run. Running both was an AND, which
 	// contradicts the documented contract and can only produce a conflict the
 	// caller cannot act on: a seq that still matches means NO write has landed
 	// since the caller read the row, so a differing `updated_at` is not a
@@ -3172,7 +3172,7 @@ func (s *Store) updateItemWithParentLinkOnce(
 		// above, so it is ordered against every other content writer.
 		//
 		// A snapshot with NO cursor cannot show what it covers, so once the
-		// stored body has recorded one it is refused too (codex r2): its
+		// stored body has recorded one it is refused too: its
 		// edits travelled as ops and are in the op-log, so nothing durable is
 		// lost. Before any cursor is recorded (0) it is written as it always
 		// was. Cursor -1 in the error marks the missing one.
@@ -3501,7 +3501,7 @@ func (s *Store) updateItemWithParentLinkOnce(
 	// update committed while the parent link write failed. The new
 	// parent's advisory lock was already folded into the acquisition
 	// above, so setParentLinkTx's re-lock is a no-op.
-	// PROVIDED IS NOT CHANGED (codex round 6). Clearing an already-unparented
+	// PROVIDED IS NOT CHANGED. Clearing an already-unparented
 	// item deletes zero rows; forcing item.updated for it would describe a
 	// mutation that did not happen. The set branch always writes — it is a
 	// DELETE-then-INSERT that bumps the row either way.
@@ -3806,7 +3806,7 @@ func (s *Store) restoreItemOnce(id string, opt mutationOptions) (*models.Item, e
 	// the item comes back carrying whatever rows it had before, against a
 	// schema that has moved. Both directions bite — a field that became a
 	// relation leaves the restored item missing edges, one that stopped being
-	// a relation leaves it with edges it should not have (codex round 1).
+	// a relation leaves it with edges it should not have.
 	if _, err := s.replaceRelationLinks(tx, id, existing.WorkspaceID, existing.CollectionID, existing.Fields); err != nil {
 		return nil, fmt.Errorf("index relation links on restore: %w", err)
 	}
@@ -3825,7 +3825,7 @@ func (s *Store) restoreItemOnce(id string, opt mutationOptions) (*models.Item, e
 		if err := s.emitItemEventTx(tx, kernelevents.ItemRestored, restored, nil, opt.batchID); err != nil {
 			return nil, err
 		}
-		// Restore is a door (codex round 4): a job owed when the item was
+		// Restore is a door: a job owed when the item was
 		// deleted was dropped as gone, so without this the item returns with
 		// stale answers and nothing scheduled. If nothing changed while it was
 		// away, the runner finds its old answers current and makes no call.
@@ -4265,7 +4265,7 @@ func (s *Store) DeleteItemLink(id string) error {
 		}
 	}
 
-	// item.updated for a PARENT detach, on this transaction (codex round 6).
+	// item.updated for a PARENT detach, on this transaction.
 	//
 	// Same criterion as SetParentLink and the update path (SPEC-3 v1.6): the
 	// parent edge writes the source item's own row. Without this, DELETE
@@ -4598,7 +4598,7 @@ func (s *Store) clearParentLinkOnce(itemID string) error {
 	// Same criterion as SetParentLink (SPEC-3 v1.6): a parent DETACH writes
 	// the item's own row, so it emits. Removing this half would leave the
 	// attach observable and the detach silent — a consumer's model would keep
-	// a parent the user removed (codex round 6).
+	// a parent the user removed.
 	if removed {
 		child, err := s.getItemTx(tx, itemID)
 		if err != nil {
@@ -4620,7 +4620,7 @@ func (s *Store) clearParentLinkOnce(itemID string) error {
 // Returns whether a link was actually REMOVED. Callers need the distinction:
 // clearing an already-unparented item deletes zero rows and changes nothing, so
 // forcing an item.updated for it would put an event on the wire describing a
-// mutation that did not happen (codex round 6).
+// mutation that did not happen.
 func (s *Store) clearParentLinkTx(tx *sql.Tx, itemID, workspaceID string) (bool, error) {
 	// Best-effort pre-lock read of the current parent, re-verified under lock.
 	oldParentID, err := s.readParentLinkTarget(tx, itemID)
@@ -5906,7 +5906,7 @@ func (s *Store) moveItemWithPreCheckOnce(
 	// because a pool read and an in-tx read can render join-populated fields
 	// differently and the diff would report those differences as changes —
 	// comparing `existing` against the post-move snapshot violated exactly
-	// that precondition (Codex round 1, P2).
+	// that precondition.
 	preMove := existing
 	if precheck == nil {
 		// Read it once, and treat a failure as a failure. The previous shape

@@ -273,7 +273,7 @@ func (s *Store) updateComment(id, body string, editor *CommentEditor) (*models.C
 	// matches on id alone, so re-saving an identical body still touches the
 	// row (updated_at moves) and still reports one row affected. An earlier
 	// version of this comment claimed that path suppressed a no-op edit; it
-	// does not (Codex round 4). Comparing the body is what does — and it keeps
+	// does not. Comparing the body is what does — and it keeps
 	// comment.updated consistent with the item events, which emit only when a
 	// slice the taxonomy names actually moved.
 	if body != bodyBefore {
@@ -682,7 +682,7 @@ func (s *Store) lockCommentsRootFirstTx(tx *sql.Tx, scopeCol string, scopeVals .
 	// The walk up is bounded so a corrupt parent cycle cannot run forever.
 	// The bound FAILS CLOSED: a row that reaches it has an unknown depth,
 	// and collapsing it onto the bound would break the strict
-	// parent-before-child order (codex r1). The walk is quadratic in chain
+	// parent-before-child order. The walk is quadratic in chain
 	// length, which a real thread never comes near.
 	args = append(args, maxCommentLockDepth)
 	bound := fmt.Sprintf("$%d", len(args))

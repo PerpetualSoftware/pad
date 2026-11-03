@@ -130,7 +130,7 @@ func TestMCP_DiscoveryDoc_PathAwareWellKnown(t *testing.T) {
 	// The route is deliberately bounded to /mcp and /mcp/ — NOT a
 	// wildcard. The handler emits Cache-Control: public max-age, so a
 	// wildcard would hand a CDN one cacheable object per attacker-
-	// chosen suffix (codex round 2). Pin that an arbitrary suffix does
+	// chosen suffix. Pin that an arbitrary suffix does
 	// not get the doc.
 	rrBogus := doRequest(srv, "GET", "/.well-known/oauth-protected-resource/bogus", nil)
 	if ct := rrBogus.Header().Get("Content-Type"); rrBogus.Code == http.StatusOK && ct == "application/json" {

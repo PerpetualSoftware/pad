@@ -92,7 +92,7 @@ func (f *FencedTx) attachmentUsage() (files, bytes int64, err error) {
 // keeps an upload from being counted twice: an upload releases its
 // reservation inside its own row transaction, also under the lock, so a
 // concurrent admission sees it as either a reservation or a row, never both
-// (codex round 1).
+// .
 func (f *FencedTx) AttachmentAdmissionUsage(itemID string, actor FencedActor) (files, bytes int64, err error) {
 	if !actor.valid() {
 		return 0, 0, ErrAppBadActor

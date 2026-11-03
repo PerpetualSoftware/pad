@@ -210,7 +210,7 @@ func task3397NoDeadlock(t *testing.T, f task3397Fix, first, second func(tx *sql.
 	}
 }
 
-// Account deletion of the confirming owner is a real cycle (codex round 5):
+// Account deletion of the confirming owner is a real cycle:
 // its bot scan reads what provisioning writes. Lock 0 serializes the two
 // whole. Provisioning first: the deletion waits, then finds and purges the
 // new bot. Neither order may deadlock (the users-row / pending-row cycle).

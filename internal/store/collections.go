@@ -175,7 +175,7 @@ func (s *Store) createCollectionTx(tx *sql.Tx, workspaceID string, input models.
 	// refuses rather than diverging if that check and this scan ever disagree.
 	// Compared with the slug the app DECLARED, not baseSlug: a reserved slug
 	// is rewritten to `<slug>-collection` above, which is just as unaddressable
-	// to the app as a de-collided one (codex round 1).
+	// to the app as a de-collided one.
 	if viaApp != "" && slug != input.Slug {
 		return "", fmt.Errorf("%w: collection slug %q is not available", ErrAppCollectionSlugTaken, input.Slug)
 	}
@@ -701,7 +701,7 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 	// and that rebuild must not interleave with item writes: an item
 	// transaction that read the OLD schema can commit its own relation hook
 	// after the reindex has run, leaving the index matching neither the old
-	// shape nor the new one (codex round 2). So the same workspace lock the
+	// shape nor the new one. So the same workspace lock the
 	// migrations take is taken for a schema change too.
 	//
 	// Gated rather than unconditional, and that is a cost decision as much as
@@ -713,9 +713,9 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 	// otherwise pay the whole-collection reindex for a no-op, which is the
 	// same cost the icon-edit gate above exists to avoid — and my first
 	// version of this line claimed to test movement while only testing
-	// presence (codex round 3).
+	// presence.
 	//
-	// BUG-3407 (codex r3): the LOCK is taken whenever a schema is supplied,
+	// BUG-3407: the LOCK is taken whenever a schema is supplied,
 	// not only when it looks moved. Whether it moved is decided below from
 	// the schema re-read under the locks, never from the pre-transaction
 	// `existing`: a concurrent update can change the row in between, and a
@@ -729,7 +729,7 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 	}
 
 	// `slug` is re-read alongside the token, not taken from the pre-tx
-	// `existing` snapshot (codex round 1 P1). Two tokenless concurrent renames
+	// `existing` snapshot. Two tokenless concurrent renames
 	// both read the ORIGINAL slug outside the lock; the second would then
 	// retarget relations from a slug the first already migrated away from,
 	// missing them entirely and stranding them at an intermediate name. The
@@ -1173,7 +1173,7 @@ func (s *Store) applyFieldMigrationsTx(tx *sql.Tx, collectionID, workspaceID str
 	// Report ZERO on failure, not totalAffected. Every error out of this
 	// function rolls the caller's transaction back, so the row count describes
 	// writes that did not commit — a caller observing (N, err) would be reading
-	// a number for changes that never happened (Codex round 4).
+	// a number for changes that never happened.
 	members, err := s.outboxMemberSnapshotsTx(tx, touchedIDs)
 	if err != nil {
 		return 0, err
@@ -1573,7 +1573,7 @@ func (s *Store) retargetRelationFieldsTx(tx *sql.Tx, workspaceID, oldSlug, newSl
 		// rename's value on it would move the optimistic-concurrency token
 		// backwards — breaking the strictly-increasing invariant the guard above
 		// this transaction exists to maintain, and re-validating a token a
-		// client should have lost (codex round 2 P1).
+		// client should have lost.
 		stamp := fmt.Sprint(updatedAt)
 		if cur := parseTime(rowUpdatedAt); !renameToken.After(cur) {
 			stamp = cur.Add(time.Nanosecond).UTC().Format(time.RFC3339Nano)
@@ -1611,7 +1611,7 @@ func retargetRelationsInSchemaJSON(raw, oldSlug, newSlug string) (string, bool, 
 	// `interface{}` decodes every number as float64, so a large integer in a
 	// property this binary does not know about would come back CHANGED —
 	// 9007199254740993 is not representable — and a rename would silently
-	// corrupt it (codex round 2 P2).
+	// corrupt it.
 	dec := json.NewDecoder(strings.NewReader(raw))
 	dec.UseNumber()
 	var doc map[string]interface{}
@@ -1622,7 +1622,7 @@ func retargetRelationsInSchemaJSON(raw, oldSlug, newSlug string) (string, bool, 
 	// where `json.Unmarshal` would have refused it. Re-marshaling such a document
 	// would silently drop the trailing bytes, so treat it as unparseable and
 	// leave the row alone — the same posture as any other schema this migration
-	// cannot faithfully rewrite (codex round 3 P2).
+	// cannot faithfully rewrite.
 	if _, err := dec.Token(); err != io.EOF {
 		return raw, false, fmt.Errorf("trailing content after schema object")
 	}
@@ -1667,7 +1667,7 @@ func retargetRelationsInSchemaJSON(raw, oldSlug, newSlug string) (string, bool, 
 // already holds either declaration carried by def's traits — the artifact kind
 // or invocation routing — and which collection holds it.
 //
-// BOTH, not just the kind (codex round 1, P2). The playbooks definition
+// BOTH, not just the kind. The playbooks definition
 // declares artifact_kind AND invocation_field, and TASK-2710 adds a unique
 // index for each; checking only the kind left the invocation index reachable,
 // so a workspace whose invocation-routing collection had been renamed would

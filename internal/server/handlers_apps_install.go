@@ -512,7 +512,7 @@ func (s *Server) previewArtifact(q store.Queryer, r *http.Request, workspaceID s
 
 	// The create's own field pipeline (coercion, defaults, validation,
 	// relation resolution in the import's carry posture, the unique check),
-	// so the digest covers exactly what the import stores (codex round 1).
+	// so the digest covers exactly what the import stores.
 	fields, dropped, unresolved, undeclared, cerr := s.prepareCreateFieldsQ(q, r, workspaceID, coll, schema, norm.Fields, relationsCarry)
 	if cerr != nil {
 		return nil, installErr(http.StatusUnprocessableEntity, "invalid_artifact", "Artifact %q cannot be stored in %q: %s", a.Key, coll.Slug, cerr.message)
@@ -527,13 +527,13 @@ func (s *Server) previewArtifact(q store.Queryer, r *http.Request, workspaceID s
 		norm.Warnings = append(norm.Warnings, fmt.Sprintf("field %q was discarded: the destination collection's schema declares a default for it that is not a valid reference", k))
 	}
 	// Claims are recorded from the FINAL fields, after defaults, which is
-	// what the import stores (codex round 3), for invocation_slug and every
-	// unique-scoped field (codex round 4).
+	// what the import stores, for invocation_slug and every
+	// unique-scoped field.
 	// Which fields: invocation_slug always (a database unique index enforces
 	// it whatever the schema says), plus exactly the fields the import's
-	// checkUniqueFields enforces, through the same predicate (codex round 6).
+	// checkUniqueFields enforces, through the same predicate.
 	// Deduplicated: a schema may declare a key twice, and one artifact must
-	// never conflict with itself (codex round 5).
+	// never conflict with itself.
 	uniqueKeys := []string{"invocation_slug"}
 	seenKey := map[string]bool{"invocation_slug": true}
 	for _, def := range schema.Fields {
@@ -545,7 +545,7 @@ func (s *Server) previewArtifact(q store.Queryer, r *http.Request, workspaceID s
 	// invocation_slug is also covered by a database unique index per
 	// collection (056 / pg 033), whatever the schema says, so its FINAL value
 	// (a default included) is checked against stored items too, through the
-	// index's own expression (codex round 8), and must be
+	// index's own expression, and must be
 	// text: SQLite keys the index on the JSON-typed value and Postgres on its
 	// text, so a non-text slug is refused rather than guessed at (codex round
 	// 7). Provisioning re-checks every constraint inside one transaction, so

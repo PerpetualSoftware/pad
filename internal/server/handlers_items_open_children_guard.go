@@ -17,7 +17,7 @@ package server
 // The caller can override the guard with `--force` (CLI) / `force: true`
 // (MCP body field). The override still records the status change.
 //
-// ── Visibility (Codex round 2 P1) ─────────────────────────────────────
+// ── Visibility ─────────────────────────────────────
 // The invariant itself is a DATA-INTEGRITY gate, not a visibility
 // gate: we evaluate it against ALL children (so a caller with reduced
 // visibility can't close a parent that has children they don't see).
@@ -36,7 +36,7 @@ package server
 //     either coordination with someone who can or `--force` if their
 //     role permits.
 //
-// ── Atomicity (Codex round 2 P2) ──────────────────────────────────────
+// ── Atomicity ──────────────────────────────────────
 // The guard query runs INSIDE the same store transaction as the
 // UPDATE, so a concurrent child insert / child status flip can't slip
 // between the read and the write. See Store.UpdateItemWithPreCheck +

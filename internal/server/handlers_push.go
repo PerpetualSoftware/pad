@@ -25,7 +25,7 @@ type pushRequest struct {
 	// surface for SETTING it.
 	//
 	// The read side is no longer true and was corrected in place rather
-	// than left as archaeology (codex round 10): internal/cli's PushResult
+	// than left as archaeology: internal/cli's PushResult
 	// now mirrors delivered_sessions, because `pad push --format json` was
 	// silently dropping a field this response documents at length. It
 	// still never SENDS target_session_id.
@@ -95,7 +95,7 @@ type pushResponse struct {
 	// shared registry does not make it a receipt.
 	//
 	// STILL AN UPPER BOUND, not a match count, and an earlier draft of this
-	// comment claimed otherwise (codex round 6). deliveredSessionCount
+	// comment claimed otherwise. deliveredSessionCount
 	// filters on user, armed, and target id. Actual delivery ALSO applies
 	// each stream's own visibility — watchNotificationVisible's
 	// vis.allows(CollectionID, ItemID), computed per connection from the
@@ -440,7 +440,7 @@ func (s *Server) handlePushToItem(w http.ResponseWriter, r *http.Request) {
 // targeted push at an unarmed session is skipped for the identical
 // reason a targeted push at a vanished one is: a guaranteed no-op.
 //
-// UNREADABLE PRESENCE IS NOT ZERO (codex round 1, P1). The error is
+// UNREADABLE PRESENCE IS NOT ZERO. The error is
 // returned rather than folded into a 0, because 0 is a load-bearing
 // answer on this path: it makes the caller SKIP the publish for a
 // targeted push. Reporting 0 for a registry that could not be read would
@@ -603,7 +603,7 @@ func (v *sessionVisibility) resolutions() int {
 // context, mirroring watchVisCache.refreshUser: a disabled or deleted
 // user's streams must not be counted as reachable.
 //
-// TWO OUTCOMES THAT LOOK ALIKE AND ARE NOT (codex round 1, P1):
+// TWO OUTCOMES THAT LOOK ALIKE AND ARE NOT:
 //
 //   - A user who is definitively GONE or DISABLED resolves to "not
 //     visible". That is an answer, and it is the right one — such a

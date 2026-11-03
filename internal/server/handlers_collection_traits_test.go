@@ -375,7 +375,7 @@ func TestCollectionIDForKindIgnoresInvisibleCollections(t *testing.T) {
 }
 
 // TestGenericBootstrapIncludeIsBudgeted locks the SPEC-0 L4 boot budget on the
-// generic include path (Codex round 5). Without a cap, one declaration —
+// generic include path. Without a cap, one declaration —
 // bodies mode, no filter, on a large collection — makes every agent's boot
 // arbitrarily large, and nothing in the trait grammar prevents declaring it.
 //

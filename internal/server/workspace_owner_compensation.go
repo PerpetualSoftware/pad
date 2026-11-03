@@ -99,7 +99,7 @@ func (s *Server) addOwnerOrCompensate(door, workspaceID, workspaceSlug, userID s
 		// why checking is cheap, and why a non-empty answer means something has
 		// happened that this function should not be bulldozing.
 		//
-		// RESIDUAL, stated rather than implied (codex round 2): this is a
+		// RESIDUAL, stated rather than implied: this is a
 		// check-then-delete and it is NOT atomic. A member added between the
 		// list returning empty and the purge is destroyed with the workspace.
 		// The guard narrows the window; it does not close it, and only the

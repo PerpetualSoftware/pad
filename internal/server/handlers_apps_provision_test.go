@@ -535,7 +535,7 @@ func TestProvisionAppInstall_RefusesAnUnreviewedManifest(t *testing.T) {
 // A relation value reaches an artifact only through a schema default (an
 // artifact carries a fixed key set). The in-transaction derivation re-runs the
 // RESOLUTION, not a check of the id it chose, so every way the resolution can
-// change is caught (codex round 2): the target deleted, its collection
+// change is caught: the target deleted, its collection
 // archived (which skips the workspace lock), and a title default that a new
 // item makes ambiguous.
 func TestProvisionAppInstall_RelationRecheck(t *testing.T) {

@@ -45,7 +45,7 @@ func stalledStreamServer(t *testing.T, srv *Server) (*httptest.Server, *writeFai
 // writeFailures records the first write that failed on the stalled stream's
 // connection, the one whose client address watch named. A failure on any
 // other connection the server accepted is ignored, so it cannot stand in for
-// the stream's (codex r1). failed is closed when it happens.
+// the stream's. failed is closed when it happens.
 type writeFailures struct {
 	mu     sync.Mutex
 	client string

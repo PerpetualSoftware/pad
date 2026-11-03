@@ -297,7 +297,7 @@ func TestTASK3619_ConcurrentUploadsAcrossWorkspacesShareThePool(t *testing.T) {
 }
 
 // An ownership change between the owner read that picks the lock and the
-// check under it (codex r3) is detected, and the attempt retried in a fresh
+// check under it is detected, and the attempt retried in a fresh
 // transaction. The seam makes the change through the attempt's own
 // transaction (on SQLite nothing else can write while it is open), so it
 // rolls back with that attempt: a change on the first attempt only is

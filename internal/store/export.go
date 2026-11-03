@@ -651,7 +651,7 @@ func (s *Store) ImportWorkspaceWithReport(data *models.WorkspaceExport, newName 
 // reminders, relation fields), so a duplicate collapses two rows into one
 // mapping and every reference to the id lands silently on whichever row was
 // written last. It runs before the transaction opens, so a refused bundle
-// writes nothing. An EMPTY id counts like any other (codex r1): the maps key
+// writes nothing. An EMPTY id counts like any other: the maps key
 // on "" too, so two rows without an id collide and a reference written as ""
 // resolves to whichever came last. One row without an id stays importable,
 // as it always was: a hand-built export may omit ids, and a lone "" is
@@ -1160,7 +1160,7 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 		}
 		itemSlug, slugCoerced := importCoercedSlug(it.Slug)
 		// Collision resolution is keyed on the CLAIMED SET, not on whether THIS
-		// row was truncated (codex round 1, P1). Truncation is the only source
+		// row was truncated. Truncation is the only source
 		// of duplicate slugs here — a bundle exported from a live workspace
 		// cannot contain two identical slugs, because UNIQUE(workspace_id, slug)
 		// held there — but the duplicate it creates can land in EITHER order:
@@ -1494,7 +1494,7 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 		// bundle can carry the same edge twice. On Postgres the unique
 		// violation aborts the transaction, so the `continue` below could
 		// never ignore it — COMMIT failed and the whole restore was lost over
-		// a row the loop meant to drop (codex round 3). Keyed on the remapped
+		// a row the loop meant to drop. Keyed on the remapped
 		// triple because that is what the index sees.
 		edge := newSourceID + "\x00" + newTargetID + "\x00" + lk.LinkType
 		if seenLinks[edge] {
@@ -1571,7 +1571,7 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 			firedAt = rm.FiredAt
 		}
 		if rm.AckedAt != "" {
-			// ACKED WITHOUT FIRED IS NOT A STATE (codex round 11). The
+			// ACKED WITHOUT FIRED IS NOT A STATE. The
 			// lifecycle has three: armed, fired-unacked, fired-acked. A bundle
 			// carrying an acknowledgement with no fire — which this server's
 			// export cannot produce, but a hand-edited or foreign one can —
@@ -1795,7 +1795,7 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 	if report != nil {
 		// insertedItemMap, not itemMap: itemMap also names items the import
 		// skipped (their collection was missing), whose ids exist nowhere
-		// (codex r2).
+		//.
 		report.ItemIDs = insertedItemMap
 	}
 	return ws, nil
@@ -1828,7 +1828,7 @@ func remapFieldIDs(fieldsJSON string, itemMap map[string]string) string {
 	if fieldsJSON == "" {
 		return "{}"
 	}
-	// WHOLE-VALUE matches only, never a substring (codex round 17).
+	// WHOLE-VALUE matches only, never a substring.
 	//
 	// This was `strings.ReplaceAll` over the RAW id, which corrupts a value
 	// that merely CONTAINS one: with a bundle carrying ids `c-1` and a

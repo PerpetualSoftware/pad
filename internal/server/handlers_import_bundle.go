@@ -89,7 +89,7 @@ type bundleBudgetReader struct {
 	// headerWindow, while headerArmed, is a second, temporary limit around
 	// each tar.Reader.Next call: the header bytes still allowed. Next walks
 	// a whole PAX/GNU extension chain internally, so a limit checked after
-	// it returns bounds nothing (codex r3); this one stops the walk.
+	// it returns bounds nothing; this one stops the walk.
 	headerArmed    bool
 	headerWindow   int64
 	headersTripped bool
@@ -421,7 +421,7 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 					"workspace_id", ws.ID, "workspace_slug", ws.Slug, "user_id", mint.OwnerID, "error", oerr)
 				// Existence is all a read can establish: on the helper's KEEP
 				// arms the row may carry an ack-lost owner row or a non-owner
-				// membership that still permits reading (codex round 2), so
+				// membership that still permits reading, so
 				// the message says ownership is unconfirmed, not unreachable.
 				if live, lerr := s.store.GetWorkspaceBySlug(ws.Slug); lerr == nil && live == nil {
 					keptState = importStateRemoved
@@ -625,7 +625,7 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 	blobCap := s.effectiveBlobMaxBytes()
 	entries := 0
 	// Two more counters, because the physical byte count alone is not the
-	// whole cost (codex r1). A sparse entry's holes are synthesized by the tar
+	// whole cost. A sparse entry's holes are synthesized by the tar
 	// reader ABOVE the counted stream, so logical bytes get their own budget,
 	// charged by each entry's declared size. And Next consumes PAX and GNU
 	// extension headers internally, so the entry count cannot see them; the
@@ -809,7 +809,7 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 			// checks — including BUG-2803's NUL refusal. A gzip import is
 			// the same door as the JSON one, reached by a different
 			// Content-Type, so it gets the same answer rather than a 500
-			// from Postgres further down (codex round 3).
+			// from Postgres further down.
 			buf = repair.Apply(buf)
 			found := scanRequestBody(buf, foldMembers)
 			if found.nul {
@@ -871,7 +871,7 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 				// carries the "store: validation" sentinel prefix, so the very
 				// change that made this refusal actionable on the JSON door
 				// would have made it uglier here. A producer change is only
-				// finished when its consumers have been read (codex round 1).
+				// finished when its consumers have been read.
 				if v, ok := store.AsValidationError(err); ok {
 					return nil, &importStatusError{
 						status: http.StatusBadRequest, code: "bad_bundle",
@@ -954,7 +954,7 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 			// INPUT is what stops it from being reached that way.
 			//
 			// IT DOES NOT ROLL BACK, and the earlier wording implied more
-			// than it delivers (codex round 18). A plain error with a
+			// than it delivers. A plain error with a
 			// non-nil workspace keeps the partial workspace, exactly as
 			// every other manifest failure below does — the rollback branch
 			// fires only for *importStatusError, and the comment there
@@ -1029,7 +1029,7 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 				continue
 			}
 			// Before any check that can fail, so a repeat always takes the
-			// reject-and-roll-back path (codex r2).
+			// reject-and-roll-back path.
 			if rehydratedPaths[hdr.Name] {
 				return ws, &importStatusError{
 					status: http.StatusBadRequest, code: "bad_bundle",
@@ -1086,7 +1086,7 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 	// stream is a damaged bundle: the reject arm rolls the workspace back.
 	// What follows the terminator may only be tar record padding, which is
 	// zeros: gzip.Reader reads concatenated members, so a second, intact
-	// member would otherwise carry any bytes at all past the end (codex r1).
+	// member would otherwise carry any bytes at all past the end.
 	if trailing, err := drainTarPadding(budget); err != nil {
 		if budget.exceeded {
 			return ws, bundleTooLargeError(s.decompressedCapMessage(""))

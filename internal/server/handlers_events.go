@@ -400,7 +400,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 				// never reads this string, which is precisely why correcting
 				// it is free — the earlier decision to keep "Event buffer
 				// exceeded" as a deliberate non-change had it backwards
-				// (codex round 6). Eviction is now one of several reasons
+				//. Eviction is now one of several reasons
 				// this fires, so the old text named the rarest of them.
 				"reason": "This instance cannot vouch for events since your last ID. Full sync required.",
 			}); err != nil {

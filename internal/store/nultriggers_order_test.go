@@ -15,7 +15,7 @@ import (
 // a fresh raw database and records, for every column that exists at the end,
 // the LAST migration after which it appeared having been absent just before.
 //
-// Last, not first (codex round 1): a column dropped and re-added, or a table
+// Last, not first: a column dropped and re-added, or a table
 // renamed away and replaced under its old name, is introduced again, and a
 // trigger file between the two appearances would name a column that did not
 // exist when it ran.
@@ -295,7 +295,7 @@ func TestNULTriggerRestorationSkipsUnappliedFiles(t *testing.T) {
 // TestNULTriggerRestorationByAnOlderBinaryKeepsLaterFiles runs the restore as a
 // binary that knows only 084 would, against a database carrying 094's
 // triggers. That binary refuses to start on a schema ahead of it unless forced,
-// and a forced one must not destroy the newer triggers (codex round 1): they
+// and a forced one must not destroy the newer triggers: they
 // are the protection Layer B exists to keep in force while an older binary
 // writes the file.
 //

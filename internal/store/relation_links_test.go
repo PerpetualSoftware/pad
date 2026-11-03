@@ -22,7 +22,7 @@ import (
 // checked to COMPILE, and every leg here must fail. It is recorded in the
 // commit messages with its verdict. An earlier version of this comment
 // pointed at a TestRelationLinks_RemovedHookGoesStale that does not exist —
-// a claim about the file's own contents that nothing checked (codex round 7).
+// a claim about the file's own contents that nothing checked.
 
 // unrestricted is the visibility vector for a viewer who sees everything. The
 // viewer-scoped legs build their own.

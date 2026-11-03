@@ -26,7 +26,7 @@ import (
 //     same bounded writer, so a stream whose peer is gone now ends within a
 //     keepalive or two once the connection is known dead: after a reset (the
 //     first write after one can still succeed), or once TCP gives up on a
-//     half-open peer (hunter r4). A small
+//     half-open peer. A small
 //     comment never blocks long enough for the write deadline to be the
 //     detector, so that bound is not "one keepalive plus the write deadline"
 //     except in the shrunk-buffer tests. A live client that holds
@@ -133,7 +133,7 @@ func (w *mcpStreamWriter) keepalive() bool {
 // mcpBoundWrites joins the keepalive goroutine and itself returns. It is not
 // atomic with that return: a tick that takes mu between the two writes one
 // more comment frame first, which is valid SSE on a response that is ending
-// (Codex r1). Nothing is written after mcpBoundWrites returns.
+// . Nothing is written after mcpBoundWrites returns.
 func (w *mcpStreamWriter) end() {
 	w.mu.Lock()
 	defer w.mu.Unlock()

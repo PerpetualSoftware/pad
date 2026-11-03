@@ -236,7 +236,7 @@ func TestImportArtifactCarriesUnresolvableRelationValue(t *testing.T) {
 }
 
 // An import carrying ONE unresolvable caller value must still clean up the
-// destination schema's own broken defaults (codex round 15).
+// destination schema's own broken defaults.
 //
 // The write path's step 2 returned early when the caller's values had issues —
 // correct while every caller of that path REFUSED, since steps 3 and 4 only

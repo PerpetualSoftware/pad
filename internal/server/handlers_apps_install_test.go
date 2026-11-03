@@ -342,7 +342,7 @@ func TestAppsAdminSettings(t *testing.T) {
 }
 
 // The preview's normalized item is what the import would STORE: the create's
-// own defaults and validation run on it (codex round 1). A destination field
+// own defaults and validation run on it. A destination field
 // the artifact cannot satisfy refuses the preview; a schema default appears
 // in the previewed fields and so in the digest.
 func TestAppInstallPreview_RunsTheCreateFieldPipeline(t *testing.T) {
@@ -391,7 +391,7 @@ func TestAppInstallPreview_RunsTheCreateFieldPipeline(t *testing.T) {
 }
 
 // An abandoned preview's staged bytes are deleted by the background sweep,
-// not only when a later install happens to sweep (codex round 1).
+// not only when a later install happens to sweep.
 func TestAppPendingSweep_DeletesExpiredStagedBytes(t *testing.T) {
 	e := newAppsEnv(t)
 	rr := e.preview(t)
@@ -417,7 +417,7 @@ func TestAppPendingSweep_DeletesExpiredStagedBytes(t *testing.T) {
 
 // Two artifacts of one pack asking for the same invocation_slug are
 // allocated distinct slugs in the preview, as their sequential import would
-// be (codex round 2).
+// be.
 func TestAppInstallPreview_PackArtifactsDeCollideWithEachOther(t *testing.T) {
 	e := newAppsEnv(t)
 	m := e.manifest(t)
@@ -443,7 +443,7 @@ func TestAppInstallPreview_PackArtifactsDeCollideWithEachOther(t *testing.T) {
 
 // A schema DEFAULT counts as a claim: an artifact without a slug, stored with
 // the default, makes a later artifact asking for that slug de-collide, as
-// the sequential import does (codex round 3).
+// the sequential import does.
 func TestAppInstallPreview_DefaultSlugIsClaimed(t *testing.T) {
 	e := newAppsEnv(t)
 	coll, err := e.srv.store.GetCollectionBySlug(e.wsID, "playbooks")
@@ -488,7 +488,7 @@ func TestAppInstallPreview_DefaultSlugIsClaimed(t *testing.T) {
 
 // Any unique-scoped destination field, not only invocation_slug: two pack
 // artifacts storing the same unique value (here through a default) refuse
-// the preview, as the second sequential import would 409 (codex round 4).
+// the preview, as the second sequential import would 409.
 func TestAppInstallPreview_PackUniqueValuesConflict(t *testing.T) {
 	e := newAppsEnv(t)
 	coll, err := e.srv.store.GetCollectionBySlug(e.wsID, "playbooks")
@@ -501,7 +501,7 @@ func TestAppInstallPreview_PackUniqueValuesConflict(t *testing.T) {
 	}
 	codeField := map[string]any{"key": "code", "label": "Code", "type": "text", "unique_scope": "workspace_collection", "default": "shared"}
 	// Declared twice: a single artifact must still not conflict with itself
-	// (codex round 5).
+	//.
 	schema["fields"] = append(schema["fields"].([]any), codeField, codeField)
 	b, _ := json.Marshal(schema)
 	sch := string(b)
@@ -539,7 +539,7 @@ func pendingIDOf(t *testing.T, e *appsEnv) string {
 }
 
 // A unique_scope the import does NOT enforce is not a pack conflict either
-// (codex round 6): two artifacts sharing that default both import, so both
+// : two artifacts sharing that default both import, so both
 // preview.
 func TestAppInstallPreview_UnenforcedUniqueScopeIsNotAConflict(t *testing.T) {
 	e := newAppsEnv(t)
@@ -569,7 +569,7 @@ func TestAppInstallPreview_UnenforcedUniqueScopeIsNotAConflict(t *testing.T) {
 }
 
 // invocation_slug is unique per collection at the DATABASE, whatever the
-// schema declares (codex round 7): a defaulted slug that a stored item
+// schema declares: a defaulted slug that a stored item
 // already holds, and a non-text slug, both refuse the preview.
 func TestAppInstallPreview_InvocationSlugIndexIsMirrored(t *testing.T) {
 	setDefault := func(t *testing.T, e *appsEnv, def any) string {
@@ -629,7 +629,7 @@ func TestAppInstallPreview_InvocationSlugIndexIsMirrored(t *testing.T) {
 
 // The stored-slug check uses the index's own expression: a stored ARRAY
 // "[]" collides with a defaulted text "[]" there, so the preview refuses
-// (codex round 8).
+// .
 func TestAppInstallPreview_InvocationSlugIndexExpression(t *testing.T) {
 	e := newAppsEnv(t)
 	coll, err := e.srv.store.GetCollectionBySlug(e.wsID, "conventions")

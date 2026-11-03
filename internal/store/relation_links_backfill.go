@@ -103,7 +103,7 @@ func (s *Store) BackfillRelationLinks() (*BackfillRelationLinksResult, error) {
 
 	// IDS ONLY. The scan used to carry every item's `fields` blob, which put
 	// the whole database's field JSON in memory before a single row was
-	// written (codex round 6). It was never needed: each write re-reads the
+	// written. It was never needed: each write re-reads the
 	// blob under a lock, precisely because a snapshot written later is a
 	// snapshot that can be stale. Three ids per row is ~100 bytes, so 100k
 	// items is ~10MB rather than the sum of every blob.
@@ -275,7 +275,7 @@ func (s *Store) backfillRelationChunk(workspaceID string, batch []itemRow) (int,
 		// The COUNT comes from the write itself. Deriving it from the
 		// schema map captured before the pass would disagree with reality
 		// whenever a schema changed underneath — reporting a number of rows
-		// that were never written (codex round 6).
+		// that were never written.
 		n, err := s.replaceRelationLinks(tx, it.id, workspaceID, collectionID, fields)
 		if err != nil {
 			return 0, err

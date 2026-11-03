@@ -380,7 +380,7 @@ func relationArrayElements(raw any) ([]string, bool) {
 //
 // Named for the disposition and not for one origin, because naming it
 // `…DefaultShapeIsUsable` is what let the CARRIED bucket keep the lenient check
-// for a round (codex round 5): the two origins share a rule and a name that
+// for a round: the two origins share a rule and a name that
 // mentions only one of them reads as though the other is a different case.
 //
 // Same question for a scalar; STRICTER for a list, because droppable and
@@ -401,7 +401,7 @@ func relationDroppableShapeIsUsable(def models.FieldDef, raw any) bool {
 // apply, so a shape judgement does not depend on whether the caller's door had
 // already coerced.
 //
-// A schema DEFAULT is what makes this necessary (codex round 8). `CoerceFields`
+// A schema DEFAULT is what makes this necessary. `CoerceFields`
 // runs BEFORE `ValidateFields` injects a default, so an injected one is
 // uncoerced at the create door and coerced at the migrate door, where the copy
 // coerces after merging. A default written as the JSON TEXT `["<id>"]` was
@@ -959,7 +959,7 @@ func (s *Store) resolveRelationTitleQ(
 	// the property in the other direction: if the row it happened to pick was
 	// hidden the caller got not_found, while a DIFFERENT live match they can
 	// see would have earned `wrong_collection` — so a hidden match changed the
-	// answer again (codex round 4).
+	// answer again.
 	other, perr := s.firstVisibleTitleMatchQ(q, workspaceID, title, canSee)
 	if perr != nil {
 		return nil, nil, false, perr
@@ -1345,7 +1345,7 @@ func (s *Store) MigrateRelationReferentsQ(
 	if defaults := byOrigin[RelationOriginDestinationDefault]; len(defaults) > 0 {
 		// A NON-STRING default is dropped and reported here, exactly as
 		// ResolveLateRelationDefaultsQ drops one, and NOT left for
-		// ValidateFields (codex round 17).
+		// ValidateFields.
 		//
 		// The general rule a few lines up — shape is ValidateFields's to
 		// reject, so one defect produces one error — is right for a SUPPLIED
@@ -1370,7 +1370,7 @@ func (s *Store) MigrateRelationReferentsQ(
 			if !exists {
 				continue
 			}
-			// STRICT for a list (codex round 4): `relationValueShapeIsValid`
+			// STRICT for a list: `relationValueShapeIsValid`
 			// asks only "is this an array of strings", so a default of
 			// `[validID, " "]` passed here, survived resolution — which skips a
 			// blank element — and was then refused by the shape check the
@@ -1528,7 +1528,7 @@ func (s *Store) MigrateRelationReferentsQ(
 		// nothing for visibility to change. Passing the predicate here — which
 		// I did, against this file's own standing argument — meant a carried
 		// title resolved for one mover and was DROPPED for another, and the
-		// item's stored fields depended on who touched it (codex round 5).
+		// item's stored fields depended on who touched it.
 		//
 		// The disclosure the predicate exists to prevent needs a caller who
 		// TYPED the title. Supplied values and injected defaults still get it.
@@ -1685,7 +1685,7 @@ func relationListShape(raw any) ([]any, bool) {
 // of refusing. But `ValidateFields` injects defaults, so a default lands after
 // the resolver has finished and reaches the row uncanonicalised — and an
 // invalid one that the resolver deleted is put straight back, with
-// `StillDropped` then suppressing the warning about it (codex round 2).
+// `StillDropped` then suppressing the warning about it.
 //
 // Reordering the two would trade this defect for the required-field one. A
 // narrow pass over exactly the keys validation added costs one lookup in the
@@ -1834,7 +1834,7 @@ func (s *Store) ResolveLateRelationDefaultsQ(
 // by this unit's rule a default is asserted by nobody, so an unresolvable one
 // is dropped and reported, never refused — otherwise a single bad default in a
 // collection's schema makes every write into that collection fail, on a defect
-// its author has to fix somewhere else entirely (codex round 10). The migrate
+// its author has to fix somewhere else entirely. The migrate
 // doors already behaved this way; the write doors did not.
 func IssuesForCallerInput(issues []RelationIssue, presentBefore map[string]bool) []RelationIssue {
 	out := make([]RelationIssue, 0, len(issues))
@@ -1859,7 +1859,7 @@ func IssuesForCallerInput(issues []RelationIssue, presentBefore map[string]bool)
 // actually SURVIVED migration.
 //
 // The migrate doors need "which values carried", and the source map alone
-// answers a different question — "which keys the source had" (codex round 9).
+// answers a different question — "which keys the source had".
 // When MigrateFields cannot convert a source value it DROPS the key and its
 // default loop then fills the same key from the DESTINATION schema, so the
 // value sitting in the map came from the destination while the key is still
@@ -1905,7 +1905,7 @@ func hasKey(m map[string]any, key string) bool {
 // 14).
 //
 // An EXPLICIT nil in `supplied` beats a non-nil `carried`, and that is a
-// separate rule (codex round 16). Round 14 skipped nils PER MAP, so a caller
+// separate rule. Round 14 skipped nils PER MAP, so a caller
 // who nulled a key whose stored value was non-nil still had it counted — out
 // of `carried`, on the strength of a value the request had just discarded.
 // The request is the later statement about that key.
@@ -2012,7 +2012,7 @@ func (s *Store) DropInvisibleRelationDefaultsQ(
 			// workspace: either way the id in the map names nothing this
 			// requester can be shown, and leaving it there keeps a dangling
 			// canonical id AND skips the required-field handling the callers
-			// do (codex round 14).
+			// do.
 			dropped = append(dropped, RelationIssue{
 				Key: def.Key, Target: def.Collection, Reason: RelationTargetNotFound,
 			})
@@ -2147,7 +2147,7 @@ func (s *Store) HydrateRelationTargetsQ(
 			}
 		}
 	}
-	// NO EARLY RETURN ON AN EMPTY `wanted` (codex round 3). A stored
+	// NO EARLY RETURN ON AN EMPTY `wanted`. A stored
 	// `multi_relation` holding no resolvable reference still owes its key an
 	// entry — an EMPTY LIST, which says "this field points at nothing", where
 	// an absent key says "nothing hydrated this field". Returning nil here made
@@ -2201,7 +2201,7 @@ func (s *Store) HydrateRelationTargetsQ(
 			// carries NULL — and scanning NULL into an int ERRORS. This
 			// function is best-effort and its caller drops the whole map on
 			// error, so one legacy row would have silently removed
-			// `relation_targets` from the ENTIRE response (codex round 7).
+			// `relation_targets` from the ENTIRE response.
 			var number sql.NullInt64
 			if err := rows.Scan(&id, &title, &number, &collectionID, &prefix); err != nil {
 				rows.Close()
@@ -2249,7 +2249,7 @@ func (s *Store) HydrateRelationTargetsQ(
 					// rendering one as `{ref, title}` presents a Task as though it
 					// were the Colour the field promised. ID-only is the honest
 					// shape — the same one a dangling value gets, for the same
-					// reason (codex round 7).
+					// reason.
 					declaredID, known := declaredIDs[want.targetSlug]
 					if !known {
 						var derr error

@@ -114,7 +114,7 @@ func TestItemVersions_AbsentLimitIsUnbounded(t *testing.T) {
 	// MORE than the default any client applies (50). A fixture below that
 	// number cannot tell an unbounded server from one that quietly defaults
 	// to 50 — which is exactly the behaviour this test denies, so the row
-	// count is load-bearing rather than incidental (codex round 2).
+	// count is load-bearing rather than incidental.
 	const seeded = 60
 	item := seedVersionedItem(t, srv, ws, seeded)
 
@@ -188,7 +188,7 @@ func TestItemVersions_ClampArithmetic(t *testing.T) {
 // does: an implementation that resolved every version and THEN blanked the
 // fields would pass every assertion here, because the response is byte-identical
 // either way. Verified by mutation — pointing the summary branch at
-// ListItemVersionsResolvedPage leaves this file green (codex round 2).
+// ListItemVersionsResolvedPage leaves this file green.
 //
 // So the "no walk happened" half rests on two things instead: the handler's
 // summary branch calls ListItemVersionsPage, which is one line and reviewable,

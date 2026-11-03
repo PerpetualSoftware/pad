@@ -529,7 +529,7 @@ func (s *Store) SeedPlanLimits() error {
 				// every earlier cloud boot seeded, so it is the old default
 				// and not an admin's choice. Any other value is kept, and the
 				// write itself says so: an admin's change landing between the
-				// read above and this write is not overwritten (codex r2).
+				// read above and this write is not overwritten.
 				res, err := s.db.Exec(s.q(`UPDATE platform_settings SET value = ?, updated_at = ? WHERE key = ? AND value = ?`),
 					strconv.Itoa(limitsMap[feature]), now(), key, legacy)
 				if err != nil {

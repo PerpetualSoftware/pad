@@ -230,7 +230,7 @@ func (s *Store) buildItemAppProjectionTx(tx *sql.Tx, item *models.Item) (*itemAp
 		return nil, err
 	}
 	// Only the schema is needed, so only the schema is read: hydrating the
-	// whole collection row failed on legal NULL columns (codex round 1).
+	// whole collection row failed on legal NULL columns.
 	var schemaCol sql.NullString
 	err = tx.QueryRow(s.q(`SELECT schema FROM collections WHERE id = ?`), item.CollectionID).Scan(&schemaCol)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {

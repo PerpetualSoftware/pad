@@ -343,7 +343,7 @@ func (s *Store) GetRelationBacklinks(targetItemID, workspaceID string, limit, of
 	// CURSOR WAS STILL OPEN. That needs a SECOND pool connection, and when the
 	// pool is saturated the second connection never arrives — an application
 	// deadlock no SQLSTATE names, and the same class BUG-2409 closed for the
-	// collection writers (codex round 7). It was also an N+1. Selecting
+	// collection writers. It was also an N+1. Selecting
 	// `c.schema` in the one query removes both.
 	labels := map[string]map[string]string{}
 	labelFor := func(collectionID, schemaJSON, key string) string {

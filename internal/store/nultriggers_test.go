@@ -75,7 +75,7 @@ func TestNULTriggersRefuseAnUnguardedWriter(t *testing.T) {
 		if err == nil {
 			t.Fatal("a NUL in a JSON KEY was stored; json_tree exposes keys and the trigger must read them")
 		}
-		// Assert WHICH refusal (codex round 3). items.fields also carries
+		// Assert WHICH refusal. items.fields also carries
 		// migration 056's JSON constraint, so "some error" would be satisfied
 		// by a value that never reached the trigger at all.
 		if !strings.Contains(err.Error(), nulTriggerMarker) {
@@ -239,7 +239,7 @@ func TestTriggerRefusalIsIndistinguishableFromLayerA(t *testing.T) {
 	// arm-parity shape from the item-title unit, which exists because
 	// "somebody will add a fifth return and forget" is the failure that
 	// actually happens.
-	// A FAKE DRIVER, driven through the real wrapper (codex round 3).
+	// A FAKE DRIVER, driven through the real wrapper.
 	//
 	// The previous version grepped nulguard.go for the classifier's name, which
 	// a dead or commented call would satisfy. This wraps a driver that returns
@@ -381,7 +381,7 @@ func TestLayerBAgreesWithTheCorpus(t *testing.T) {
 					t.Fatalf("expected accepted, but the write failed for another reason: %v", werr)
 				}
 				// READ IT BACK. The comment used to claim persistence and the
-				// code only checked that no error came back (codex round 1) —
+				// code only checked that no error came back —
 				// which a trigger that silently discarded the row would also
 				// satisfy, and which says nothing about whether the value
 				// survived intact.
@@ -481,7 +481,7 @@ func TestNULTriggersSurviveATableRebuild(t *testing.T) {
 
 	// A STALE trigger — right name, wrong body — is the case a name-only check
 	// can never repair, because CREATE TRIGGER IF NOT EXISTS sees the name and
-	// does nothing forever (codex round 3). A mutation reverting the definition
+	// does nothing forever. A mutation reverting the definition
 	// comparison survived until this existed.
 	t.Run("a same-name trigger with a no-op body is replaced", func(t *testing.T) {
 		for _, tr := range []string{"pad_nul_items_content_ins", "pad_nul_items_content_upd"} {
@@ -522,7 +522,7 @@ func TestNULTriggersSurviveATableRebuild(t *testing.T) {
 		}
 	})
 
-	// THE NO-OP CASE, asserted on whether WORK HAPPENED (codex round 5).
+	// THE NO-OP CASE, asserted on whether WORK HAPPENED.
 	//
 	// Two earlier observables were wrong and both passed. The trigger COUNT is
 	// unchanged by a full drop-and-recreate. So are sqlite_master ROWIDs, since

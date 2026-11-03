@@ -287,7 +287,7 @@ const (
 // verdict from an item or workspace-only scope it falls through to
 // WriteDenied, so a future caller cannot use it to turn a normally hidden
 // denial into the distinctive collection_not_found response for a
-// collection the caller never named (Codex round 7).
+// collection the caller never named.
 //
 // Note the asymmetry with the SOURCE side, which uses WriteHidden: the
 // source item is addressed through the request's own workspace URL, so a
@@ -623,7 +623,7 @@ func (s *Server) authorizeCrossWorkspaceInner(r *http.Request, workspaceSlugOrID
 		// unrestricted caller) and ResolveUserPermission (which falls
 		// back to the workspace membership role when collectionID is
 		// empty). Every field is required; no "unset means it's fine"
-		// branch (Codex round 1 P1).
+		// branch.
 		if item.ID == "" || item.WorkspaceID != ws.ID || item.CollectionID == "" {
 			return crossWorkspaceDeny(CrossWorkspaceScopeMismatch, ws, role, nil)
 		}
@@ -633,7 +633,7 @@ func (s *Server) authorizeCrossWorkspaceInner(r *http.Request, workspaceSlugOrID
 		// its items in place and neither GetItem nor
 		// VisibleCollectionIDs filters on the collection's deleted_at,
 		// so an item under an archived collection would otherwise pass
-		// (Codex round 2 P1).
+		//.
 		//
 		// Only the caller-independent facts, though: the item scope
 		// deliberately does NOT apply the collection scope's
@@ -813,7 +813,7 @@ func (s *Server) crossWorkspaceRole(r *http.Request, ws *models.Workspace, user 
 // the resource-scoped answer — but it resolves item and collection
 // grants BEFORE membership, so an incidental `view` grant would demote
 // a member whose base role is editor or owner and deny an edit the
-// front door allows (Codex round 5). Fail-closed, but wrong, and
+// front door allows. Fail-closed, but wrong, and
 // divergence from requireEditPermission in either direction is how this
 // helper eventually rots.
 //

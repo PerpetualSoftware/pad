@@ -622,7 +622,7 @@ func (s *Store) cascadeTitleRename(tx *sql.Tx, renamedItemID, workspaceID, oldTi
 	// target_workspace_id IS NULL filter excludes Phase-2b cross-
 	// workspace rows (TASK-1597 owns those). Self-references
 	// INCLUDED so a renamed item's own body stays consistent
-	// (Codex round 5 finding 2); GetBacklinks filters self-links
+	//; GetBacklinks filters self-links
 	// at query time so the panel behavior is unchanged.
 	//
 	// ORDER BY source_id, position DESC: descending position so
@@ -677,7 +677,7 @@ func (s *Store) cascadeTitleRename(tx *sql.Tx, renamedItemID, workspaceID, oldTi
 	//     one — cross-workspace copy carries a legacy source title into a new
 	//     row, and ImportWorkspace coerces (so its rows are bounded, but a
 	//     pre-import row is not). "No door can receive a ~2 MiB title" would be
-	//     too strong (codex round 5);
+	//     too strong;
 	//   - even at the bound the quantity is rows x (title bytes + overhead), so
 	//     an in-range title reaches the cap at roughly 240,000 link rows.
 	//
@@ -1719,7 +1719,7 @@ func snippetAround(content string, position int) string {
 // observable — how much work a single request causes the cascade to do — is
 // only reachable from the SERVER package, whose tests cannot touch this
 // package's unexported fields. It is the instrument behind the collab-edit
-// double-work test (codex R2), which asserts that a refused rename runs the
+// double-work test, which asserts that a refused rename runs the
 // cascade ONCE rather than falling through and running it again.
 //
 // Not safe for concurrent use with in-flight renames; tests set it before

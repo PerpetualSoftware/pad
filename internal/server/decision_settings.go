@@ -246,7 +246,7 @@ type decisionSettingsResponse struct {
 	// StoredKeyError says the SAVED key cannot be read (not ciphertext, or
 	// does not decrypt). It is separate from Error because it need not stop
 	// decisions: a key from the environment or config file may be in force
-	// instead (codex round 4).
+	// instead.
 	StoredKeyError string `json:"stored_key_error,omitempty"`
 }
 
@@ -299,7 +299,7 @@ func (s *Server) buildDecisionSettingsResponseLocked() (decisionSettingsResponse
 		}
 		// A key counts as saved only if it can be READ: a row the store
 		// refuses (not ciphertext, or does not decrypt) is reported through
-		// Error, never as a usable saved key (codex round 3).
+		// Error, never as a usable saved key.
 		storedKey, kerr := s.store.GetSecretPlatformSetting(settingDecisionAPIKey)
 		resp.Stored = decisionStored{
 			Provider:  vals[settingDecisionProvider],

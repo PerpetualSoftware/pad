@@ -234,7 +234,7 @@ func TestImportOutcomeRegistry_BUG3475(t *testing.T) {
 	}
 
 	// A RUNNING entry survives the TTL while its upload may still be reading
-	// (the 1h read ceiling); a settled one does not (codex r2).
+	// (the 1h read ceiling); a settled one does not.
 	g.begin("u3", "k-long-running")
 	clock = clock.Add(importOutcomeTTL + time.Second)
 	if _, ok := g.get("u1", "k1"); ok {
@@ -252,7 +252,7 @@ func TestImportOutcomeRegistry_BUG3475(t *testing.T) {
 	}
 
 	// At the bound, the oldest SETTLED entry makes room; a running one never
-	// does, because its key is still in use (codex r1).
+	// does, because its key is still in use.
 	g2 := newImportOutcomeRegistry()
 	g2.now = func() time.Time { return clock }
 	clock = clock.Add(time.Millisecond)
@@ -298,7 +298,7 @@ func TestImportOutcomeRegistry_BUG3475(t *testing.T) {
 }
 
 // A panic after mint skips every report in the handler; the attempt must
-// still end, as unknown, rather than read running until the TTL (codex r1).
+// still end, as unknown, rather than read running until the TTL.
 func TestImportBundle_BUG3475_PanicRecordsUnknown(t *testing.T) {
 	srv := attachmentsServerOn(t, store.DriverSQLite)
 	_, tok := memberImporter(t, srv)
@@ -315,7 +315,7 @@ func TestImportBundle_BUG3475_PanicRecordsUnknown(t *testing.T) {
 // removeUnusableWorkspace returns nil even when its own delete FAILS (it logs
 // and leaves the workspace for an operator), so "removed" is read back from
 // the row: a rollback that left the workspace live must report unknown and
-// say so, never removed (codex r3). A trigger refuses the soft-delete.
+// say so, never removed. A trigger refuses the soft-delete.
 func TestImportBundle_BUG3475_RollbackThatLeavesTheWorkspaceLiveIsUnknown(t *testing.T) {
 	srv := attachmentsServerOn(t, store.DriverSQLite)
 	_, tok := memberImporter(t, srv)

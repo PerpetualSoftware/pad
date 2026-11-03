@@ -394,7 +394,7 @@ func TestMCPAudit_ClassifyResult(t *testing.T) {
 }
 
 // TestMCPAudit_ToolNameCannotCarryANUL closes a door BUG-2803's own
-// completeness map wrongly certified as safe (codex round 20).
+// completeness map wrongly certified as safe.
 //
 // That map listed middleware_mcp_audit.go as "audit capture — records the body
 // and restores it; decoding still happens in the MCP dispatcher". The first
@@ -532,7 +532,7 @@ func TestMCPAudit_SanitiseNeverEmptiesToolName(t *testing.T) {
 }
 
 // TestMCPAudit_RawMethodDecidesClassification pins that dispatch reads what the
-// client SENT while only the stored value is cleaned (codex round 22).
+// client SENT while only the stored value is cleaned.
 //
 // The round-21 fix sanitised before comparing, so "tools/<NUL>call" cleaned up
 // INTO the literal "tools/call" and the parser then extracted params.name and
@@ -568,7 +568,7 @@ func TestMCPAudit_RawMethodDecidesClassification(t *testing.T) {
 }
 
 // TestMCPAudit_CleanedIdentityIsNotForgeable pins that a value which only
-// became well-formed by cleaning cannot imitate a genuine one (codex round 23).
+// became well-formed by cleaning cannot imitate a genuine one.
 //
 // Round 22 closed the coarse version: sanitising before classifying let
 // "tools/<NUL>call" become a real tools/call and lift params.name. Classifying
@@ -630,7 +630,7 @@ func TestMCPAudit_CleanedIdentityIsNotForgeable(t *testing.T) {
 }
 
 // TestMetricsToolLabelIsBounded pins that the cleaned-identity marker costs
-// exactly ONE extra Prometheus label value, not one per tool (codex round 24).
+// exactly ONE extra Prometheus label value, not one per tool.
 //
 // The audit ROW keeps the cleaned name; an operator reading a single row needs
 // to know which tool it resembles. A metric SERIES does not, and keeping the
@@ -668,7 +668,7 @@ func TestMetricsToolLabelIsBounded(t *testing.T) {
 
 // TestMCPAudit_SynthesisedNamespaceIsReserved pins that a caller cannot name a
 // tool so that its UNMODIFIED value collides with a value this server
-// synthesises (codex round 25).
+// synthesises.
 //
 // Marking only what cleaning changed was not enough: "(unknown)" is what the
 // parser returns for a malformed body, and "(sanitised) pad_item" is what it

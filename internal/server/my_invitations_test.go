@@ -367,7 +367,7 @@ func TestAcceptInvitation_CommitErrorReconciles(t *testing.T) {
 		// An existing member whose accept landed: success at the held role, and
 		// no gain, because the transaction added no member. The member is
 		// added moments before, usually within the same second, which a
-		// created_at comparison could not tell apart (codex round 3).
+		// created_at comparison could not tell apart.
 		t.Run("landed_existing_member", func(t *testing.T) {
 			f := newAccessFixture(t, d)
 			u := f.member("existing@example.com", "viewer")

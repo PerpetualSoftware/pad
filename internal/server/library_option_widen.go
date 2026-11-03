@@ -38,7 +38,7 @@ const libraryWidenAttempts = 3
 //
 // The caller validates the create against withSelectOptions(schema, wanted)
 // BEFORE calling this, so a create the widened schema would still refuse
-// writes nothing (codex round 2). The schema write goes through
+// writes nothing. The schema write goes through
 // Store.UpdateCollection with the collection's own concurrency token, so it
 // takes the same locks as any schema edit. It is its own transaction, ahead
 // of the item insert, so a refusal after it (the plan cap at insert, a title

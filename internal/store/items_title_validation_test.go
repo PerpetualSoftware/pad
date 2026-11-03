@@ -211,7 +211,7 @@ func TestItemTitle_GrandfathersLegacyRows(t *testing.T) {
 	// RUNS ON BOTH DIALECTS. It used to skip on Postgres, on the stated ground
 	// that a legacy over-bound title implies a slug past the btree index-tuple
 	// cap — which is true of BUG-2804's 2 MiB fixture and FALSE of this one
-	// (codex round 1, P2). overlongTitle() is 256 runes, so the slug it derives
+	//. overlongTitle() is 256 runes, so the slug it derives
 	// is 256 ASCII bytes: an order of magnitude under the 2704 the cap actually
 	// enforces. The skip was reasoning by analogy with a different fixture and
 	// left the non-retroactive rule untested on the backend BUG-2831 is about.
@@ -354,7 +354,7 @@ func TestImportWorkspace_CoercesTitles(t *testing.T) {
 		if n := utf8.RuneCountInString(it.Title); n > models.MaxItemTitleRunes {
 			t.Errorf("item %s imported with a %d-rune title, over the %d bound", it.ID, n, models.MaxItemTitleRunes)
 		}
-		// The slug bound allows for the uniqueness suffix (codex round 5). A
+		// The slug bound allows for the uniqueness suffix. A
 		// truncated slug that collides is resolved to "<255 runes>-2", so a
 		// hard <= MaxItemTitleRunes assertion states the design more strictly
 		// than it is — it happens to hold for this fixture and would fail a

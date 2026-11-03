@@ -607,7 +607,7 @@ func TestRelationTitleDoors_ProbeFindsAVisibleMatchNotAnArbitraryOne(t *testing.
 	}
 }
 
-// BUG-3366 (codex r1): a LEGACY target, whose item_number is NULL, hydrates
+// BUG-3366: a LEGACY target, whose item_number is NULL, hydrates
 // with a title but no ref. Redaction used to key on the ref alone, so an
 // ungranted legacy target's title reached an item-grant guest. Any target
 // that would name an item is now checked.

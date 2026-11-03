@@ -76,7 +76,7 @@ import (
 // exists to end.
 //
 // EVICTION LOOKS EXACTLY LIKE EXPIRY, and that is survivable by design
-// rather than by luck (codex round 15). Under a maxmemory policy that can
+// rather than by luck. Under a maxmemory policy that can
 // evict live keys — `allkeys-lru`, which the repo's own docker-compose
 // configures — Redis may drop a session entry or the index while the
 // session is still connected. Nothing here can tell that from a TTL
@@ -92,7 +92,7 @@ import (
 // docs/deployment.md.
 //
 // A COMPROMISED REPLICA IS NOT IN THIS TYPE'S THREAT MODEL, and saying so
-// is more useful than implying otherwise (codex round 17). Anything holding
+// is more useful than implying otherwise. Anything holding
 // the shared Redis credentials can enumerate these keys, delete real
 // entries, insert fake armed sessions, or grow a victim's index without
 // bound — none of which this type can prevent, since it has no ownership
@@ -162,7 +162,7 @@ type RedisSessionPresence struct {
 	// onRenewWrite, when non-nil, is called by renewLoop immediately
 	// before each renewal write. Always nil in production — it exists so a
 	// test can hold a renewal INSIDE its write and prove that Remove waits
-	// for it (codex round 1, P2).
+	// for it.
 	//
 	// A seam rather than a timing loop, deliberately: the probabilistic
 	// version of that test — 50µs renewal interval, 200 add/remove
@@ -222,7 +222,7 @@ const (
 
 	// presenceOpTimeout bounds every Redis call this type makes, including
 	// ADD's registration write, which used to run on context.Background()
-	// (codex round 2, P1).
+	//.
 	//
 	// WHAT IT DOES NOT BOUND, measured rather than assumed: go-redis does
 	// not apply a command context to CONNECTION ESTABLISHMENT. Against a
@@ -264,7 +264,7 @@ const (
 // renewal is one session's renewal goroutine, held so Remove can both
 // STOP it and WAIT for it.
 //
-// The wait is the load-bearing half (codex round 1, P2). Cancelling
+// The wait is the load-bearing half. Cancelling
 // returns immediately, so a renewal already inside its write could
 // complete AFTER Remove's DEL/SREM and re-create the entry — resurrecting
 // a session that has just disconnected and leaving it in every instance's
@@ -366,7 +366,7 @@ func (p *RedisSessionPresence) sessionKey(userID, sessionID string) string {
 
 // DEPLOYMENT SCOPING, inherited from internal/watchevents/redis_bus.go's
 // note of the same name and restated here because this is a THIRD
-// keyspace living under the same rule (codex round 3).
+// keyspace living under the same rule.
 //
 // These names carry the installation's PAD_REDIS_NAMESPACE when one is
 // set, exactly as `pad:events:` / `pad:event_seq` / `pad:watchevents` do
@@ -506,7 +506,7 @@ func (p *RedisSessionPresence) Add(userID string, ident SessionIdentity, origin 
 
 // writeScript stores the session entry and indexes it, ATOMICALLY.
 //
-// Scripted rather than pipelined (codex round 14). A pipeline can apply
+// Scripted rather than pipelined. A pipeline can apply
 // partially — a dropped connection between commands leaves some sent and
 // some not — and the two halves are not equally harmless, which an earlier
 // version of this comment got wrong. An index member with no session key is
@@ -594,10 +594,10 @@ func (p *RedisSessionPresence) Remove(userID string, sessionID string) {
 	// drain rather than found here. Waiting on the WaitGroup is what covers
 	// that case: it does not return until every renewal goroutine has
 	// finished its last write, which is the property the DEL below depends
-	// on (codex round 6). Close bounds its own drain, so this cannot
+	// on. Close bounds its own drain, so this cannot
 	// outlive shutdown.
 	if closed && !ok {
-		// BOUNDED, like Close's own drain (codex round 10). An unbounded
+		// BOUNDED, like Close's own drain. An unbounded
 		// wait here reintroduces exactly what the drain deadline exists to
 		// prevent: if Close timed out on a parked renewal, that renewal is
 		// still running, so waiting on it without a deadline would hold
@@ -614,9 +614,9 @@ func (p *RedisSessionPresence) Remove(userID string, sessionID string) {
 	if ok {
 		// Stop AND wait, in that order and outside the lock. Stopping alone
 		// leaves an in-flight renewal free to re-create the entry after the
-		// delete below (codex round 1, P2).
+		// delete below.
 		//
-		// BOUNDED, and this is the branch that matters (codex round 11).
+		// BOUNDED, and this is the branch that matters.
 		// Round 10 bounded only the post-Close fallback below, which was
 		// the wrong half: Close RETAINS its renewal entries, so a handler
 		// unwinding during shutdown finds one here and takes this path —
@@ -670,7 +670,7 @@ func (p *RedisSessionPresence) ListForUser(userID string) ([]LiveSession, error)
 
 	ids, err := p.client.SMembers(ctx, p.sessionIndexKey(userID)).Result()
 	if err != nil {
-		// REPORTED, not swallowed into an empty list (codex round 1, P1).
+		// REPORTED, not swallowed into an empty list.
 		// An empty list means "nobody is listening", which makes a targeted
 		// push skip its publish and lose the instruction; an outage means
 		// "I cannot tell", which must make the caller decline to conclude
@@ -681,7 +681,7 @@ func (p *RedisSessionPresence) ListForUser(userID string) ([]LiveSession, error)
 		return nil, fmt.Errorf("session presence: read index: %w", err)
 	}
 	if len(ids) == 0 {
-		// EMPTY, not nil (codex round 5). MemorySessionPresence returns a
+		// EMPTY, not nil. MemorySessionPresence returns a
 		// non-nil empty slice, and handleListSessions marshals whatever it
 		// gets straight into `sessions` — so a nil here serialises as
 		// `"sessions": null` where the other implementation produces
@@ -740,7 +740,7 @@ func (p *RedisSessionPresence) ListForUser(userID string) ([]LiveSession, error)
 		}
 		var sess LiveSession
 		if err := json.Unmarshal([]byte(raw), &sess); err != nil {
-			// REPORTED, not skipped (codex round 2, P2). An earlier version
+			// REPORTED, not skipped. An earlier version
 			// dropped the row and returned a nil error, arguing that the
 			// other sessions in the list were still real. That contradicted
 			// the P1 ruling one round earlier, and in the same direction: a
@@ -768,7 +768,7 @@ func (p *RedisSessionPresence) ListForUser(userID string) ([]LiveSession, error)
 		out = append(out, sess)
 	}
 	if len(expired) > 0 {
-		// CONDITIONAL, not a plain SREM (codex round 2, P2). Between the
+		// CONDITIONAL, not a plain SREM. Between the
 		// MGet above and this call, a renewal can restore the very key we
 		// observed missing — which happens exactly when it is most harmful:
 		// a Redis outage long enough to expire entries, followed by
@@ -822,7 +822,7 @@ func (p *RedisSessionPresence) Close() {
 		return
 	}
 	p.closed = true
-	// STOPPED, NOT DELETED (codex round 6). Deleting here removed the very
+	// STOPPED, NOT DELETED. Deleting here removed the very
 	// lookup Remove uses to decide whether to WAIT: a handler disconnecting
 	// concurrently with Close found no renewal, skipped the wait, and ran
 	// its DEL — leaving an already-cancelled-but-still-in-flight renewal

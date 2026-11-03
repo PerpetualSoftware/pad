@@ -246,7 +246,7 @@ func (s *Server) handleOAuthRegister(w http.ResponseWriter, r *http.Request) {
 		// conflate them: a body that is not JSON, and a body that IS valid
 		// JSON but carries text the database cannot store (BUG-2803). The
 		// second one was being reported as "must be JSON", which sends a
-		// client looking for a syntax error it does not have (codex round 7).
+		// client looking for a syntax error it does not have.
 		msg := "Request body must be JSON: " + err.Error()
 		if errors.Is(err, errJSONBodyNUL) {
 			msg = err.Error()
@@ -1317,7 +1317,7 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 	// Parsed exactly as fosite parses the token request (multipart included,
 	// the same 1 MiB bound), so the client classified here is the client
 	// fosite will authenticate: a ParseForm-only read missed a multipart
-	// body, skipping the install-client rules entirely (codex r2).
+	// body, skipping the install-client rules entirely.
 	if err := r.ParseMultipartForm(1 << 20); err != nil && !errors.Is(err, http.ErrNotMultipart) {
 		http.Error(w, "Invalid form body", http.StatusBadRequest)
 		return

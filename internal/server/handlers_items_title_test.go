@@ -417,7 +417,7 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 		wantArm[w] = true
 	}
 
-	// THE FILE SET IS DERIVED, NOT LISTED (codex round 5). A hardcoded pair passes
+	// THE FILE SET IS DERIVED, NOT LISTED. A hardcoded pair passes
 	// while an unmapped block sits in a third file, which is the same
 	// under-counting this guard exists to catch — so the sources are every
 	// non-test file in the package that calls UpdateItemWithParentLink, and a file
@@ -439,7 +439,7 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 			t.Fatalf("read %s: %v", name, rerr)
 		}
 		// The predicate is a UNION, and fail-open is the failure mode it is fighting
-		// (codex round 6): a file reaching the store through a wrapper or a variable
+		//: a file reaching the store through a wrapper or a variable
 		// would not match the call text, so a file that calls any of the refusal ARMS
 		// is scanned too. A refusal block lives where the arms are called, whatever it
 		// calls the store through.
@@ -473,7 +473,7 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 
 	// ---- membership + order, per block ----
 	//
-	// PER-BLOCK, not per-file (codex round 2): counting calls across the whole
+	// PER-BLOCK, not per-file: counting calls across the whole
 	// file lets one block's duplicate mask another's omission and says nothing
 	// about order.
 	//
@@ -662,11 +662,11 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 	// `false && writeInvalidItemTitle(w, err)` short-circuits at runtime while
 	// leaving the call in the AST, so the sequence above reads as correct while
 	// every title refusal falls through to a 500. Measured — that mutant
-	// survived the presence-only version (codex round 3).
+	// survived the presence-only version.
 	//
 	// WHITELIST, not blacklist. The first attempt rejected conditions that were
 	// BinaryExpr, which `!writeInvalidItemTitle(w, err)` — a UnaryExpr — walked
-	// straight past while inverting the arm's meaning (codex round 5).
+	// straight past while inverting the arm's meaning.
 	// Enumerating the ways to disable a call is a losing game; enumerating the
 	// two ways these arms are legitimately written is not:
 	//
@@ -705,7 +705,7 @@ func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
 	//
 	// An arm that matches and then falls through has written its response and
 	// let the next arm write another, or let the request continue to the
-	// generic 500 (codex round 6). The body's last statement is a bare return
+	// generic 500. The body's last statement is a bare return
 	// in all three blocks; anything else is a behaviour change worth looking at.
 	//
 	// BOUNDARY, stated because the shared block weakened this leg and pretending

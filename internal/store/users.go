@@ -732,7 +732,7 @@ func (s *Store) CountBillingAggregates(since time.Time) (*BillingAggregates, err
 	// GROUP BY must match the projected expression — grouping on the raw
 	// `plan` column would split '' and 'free' into two result rows that
 	// both scan as "free" in Go and overwrite each other in the map,
-	// silently underreporting the free-tier count (Codex round 2).
+	// silently underreporting the free-tier count.
 	//
 	// Counted by EFFECTIVE plan (BUG-3356): a plan past its expiry is free.
 	// The expiry is decided in Go by the same models.User.EffectivePlan the

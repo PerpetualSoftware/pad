@@ -2037,7 +2037,7 @@ func (s *Server) autoCreateWorkspace(user *models.User) *models.Workspace {
 			// PRECISELY when the membership write had succeeded.
 			//
 			// TWO QUESTIONS, not one, and an earlier draft of this reconcile
-			// conflated them (codex round 1): "did MY write land?" and "is it safe
+			// conflated them: "did MY write land?" and "is it safe
 			// to destroy this workspace?". Existence answers the second; only the
 			// ROLE answers the first, because what was attempted was an OWNER row.
 			// A row carrying some other role means my write did NOT land, and also

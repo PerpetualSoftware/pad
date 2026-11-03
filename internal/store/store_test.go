@@ -234,7 +234,7 @@ func testStorePostgres(t *testing.T, baseURL string) *Store {
 		// attached, so the un-forced form left an orphaned pad_test_* database
 		// behind on exactly the path that most needs cleaning up. Pre-existing
 		// and asymmetric with the twin; corrected here because this change
-		// makes the two helpers a matched pair (codex round 2, P2).
+		// makes the two helpers a matched pair.
 		dropPostgresTemplateDB(t, baseURL, dbName)
 		t.Fatalf("open test postgres store: %v", err)
 	}

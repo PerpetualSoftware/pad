@@ -140,7 +140,7 @@ func TestRenameCascadeTooLarge_IsPermanentShapedNotRetryable(t *testing.T) {
 
 	// The actual CAP, not the word "maximum" — a message reading "maximum
 	// exceeded" would satisfy a word check and tell the caller nothing about
-	// how far over they are (codex round 4).
+	// how far over they are.
 	if !strings.Contains(respBody, fmt.Sprint(store.MaxRenameCascadeRetainedBytes)) {
 		t.Errorf("response does not state the limit %d: %s", store.MaxRenameCascadeRetainedBytes, respBody)
 	}
@@ -150,7 +150,7 @@ func TestRenameCascadeTooLarge_IsPermanentShapedNotRetryable(t *testing.T) {
 
 	// And NOT the store's internal wrapping. The handler composes this message
 	// from typed fields; splicing err.Error() published whatever prefix any
-	// layer had added on the way up (codex round 5). These two strings are the
+	// layer had added on the way up. These two strings are the
 	// wrapping that was reaching clients before.
 	for _, leak := range []string{"update links:", "store:"} {
 		if strings.Contains(respBody, leak) {

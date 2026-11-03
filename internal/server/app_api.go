@@ -197,7 +197,7 @@ func (s *Server) registerAppAPIRoutes(r chi.Router) {
 					return
 				}
 				// The handler writes into a buffer; nothing reaches the
-				// app until the grant is re-validated (codex r1 P1).
+				// app until the grant is re-validated.
 				buf := newAppResponseBuffer()
 				r = r.WithContext(context.WithValue(r.Context(), appRecheckKey{}, &appRechecks{}))
 				handler(s, buf, r)
@@ -568,7 +568,7 @@ func appCeilingAllows(r *http.Request, collectionID string) bool {
 }
 
 // appResponseBuffer holds a handler's response until the grant is
-// re-validated (codex r1 P1).
+// re-validated.
 type appResponseBuffer struct {
 	header http.Header
 	status int
@@ -640,7 +640,7 @@ func (s *Server) appRevalidate(r *http.Request) error {
 	if !ok {
 		return errors.New("no re-check holder")
 	}
-	// The gate every new request passes (codex r3): apps turned off while a
+	// The gate every new request passes: apps turned off while a
 	// read was in flight withholds it too.
 	if on, err := s.appsAvailableChecked(); err != nil {
 		return appFault(err)

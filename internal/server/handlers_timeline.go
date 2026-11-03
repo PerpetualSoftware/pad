@@ -149,7 +149,7 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 		// never match anything: `before` defaults to now+1m and no row shares
 		// that timestamp. It was therefore accepted and silently ignored, and
 		// the caller paged from the beginning believing they had a cursor
-		// (codex round 4). The documented contract is both fields or neither.
+		//. The documented contract is both fields or neither.
 		//
 		// The other direction stays supported on purpose: `before` alone is
 		// the external-client case the sentinel above exists for.
@@ -245,7 +245,7 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 	//   - an exhausted window: a source that filled its over-fetch has rows
 	//     older than its tail that were never examined — the cursor cannot be
 	//     older than that tail, or those rows fall between the two pages and
-	//     are never fetched by either (codex round 1).
+	//     are never fetched by either.
 	//
 	// Both can hold at once, and the second is not implied by the first: a
 	// source whose rows all DROP contributes nothing to `entries`, so the
@@ -500,11 +500,11 @@ func buildTimeline(comments []models.Comment, activities []models.Activity, vers
 	// instants with no shared snapshot (see TimelineEntry's doc), so a
 	// comment fetched here and hard-deleted before the activity query runs
 	// leaves its activity eligible again while the stale comment is still in
-	// memory, and both would render once (codex round 4). Two guards, two
+	// memory, and both would render once. Two guards, two
 	// distinct failure modes; neither substitutes for the other. The same
 	// skew runs the other way too: a comment created between the two reads
 	// is in neither — its activity is excluded by the query, and the comment
-	// missed the earlier read (codex round 5). Before the exclusion that
+	// missed the earlier read. Before the exclusion that
 	// window showed a ghost "commented" card with no comment behind it; now
 	// it shows nothing, and the next fetch (or the comment.created SSE
 	// event) is consistent. Neither guard can close a gap that lives between

@@ -54,7 +54,7 @@ func writeRemindAtError(w http.ResponseWriter) {
 // handleListItemReminders returns every reminder on an item, armed or fired.
 // GET /api/v1/workspaces/{slug}/items/{itemSlug}/reminders
 //
-// ARCHIVED ITEMS ARE READABLE HERE, AND ONLY HERE (codex round 16). This
+// ARCHIVED ITEMS ARE READABLE HERE, AND ONLY HERE. This
 // route follows handleGetItem: an archived item resolves read-only, so its
 // reminder history stays visible after the item is archived — which is why
 // the store's reminderOwned enforces identity and not liveness. The lifecycle
@@ -196,7 +196,7 @@ func (s *Server) handleAckReminder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if acked == nil {
-		// THE PRE-READ IS NOT CONSULTED HERE (codex round 12). AckReminder
+		// THE PRE-READ IS NOT CONSULTED HERE. AckReminder
 		// matches every fired row, acknowledged or not, so a nil answer means
 		// exactly "not fired at the instant of the ack" — or "gone", which a
 		// fresh read tells apart. The earlier form decided 409-vs-200 from the
@@ -335,7 +335,7 @@ func (s *Server) resolveReminderForWrite(w http.ResponseWriter, r *http.Request,
 		return nil, nil
 	}
 	if item.DeletedAt != nil {
-		// BY SLUG, not Ref (codex round 17): Ref is derived and EMPTY for a
+		// BY SLUG, not Ref: Ref is derived and EMPTY for a
 		// legacy item with no item_number or collection prefix, and
 		// writeItemResolveError re-resolves by what it is handed — an empty
 		// ref matches nothing and falls through to a 404 that says nothing
@@ -430,7 +430,7 @@ func (s *Server) collectPendingRemindersBounded(workspaceID string, scope store.
 			if len(out) == window {
 				// Rows AFTER this one in the page are pending reminders the
 				// caller is not being shown, so the set is truncated even if
-				// this was the last page (codex round 11). Reporting `more`
+				// this was the last page. Reporting `more`
 				// alone said "you have seen everything" while unread rows sat
 				// in the very page we stopped reading.
 				filledMidPage = i < len(page)-1

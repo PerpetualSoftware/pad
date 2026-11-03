@@ -9,7 +9,7 @@ package store
 // sessions.user_agent or any oauth table cannot break it.
 //
 // The preflight uses this to decide what to REFUSE on, not what to REPORT
-// (codex round 9). Scanning everything is right: `pad db scan-nul` is about the
+// . Scanning everything is right: `pad db scan-nul` is about the
 // database, and an operator should hear about every affected row. Blocking a
 // migration over a row it will never touch is not — it demands the operator
 // rewrite content that has nothing to do with the copy they asked for.

@@ -169,7 +169,7 @@ var ErrNotWorkspaceOwner = errors.New("not a workspace owner")
 // The locks, Postgres, in this fixed order:
 //
 //   - 0. The confirming owner's users row, FOR SHARE. Account deletion of that
-//     owner is a REAL cycle (codex round 5): its bot scan reads the bot and
+//     owner is a REAL cycle: its bot scan reads the bot and
 //     membership provisioning writes, and it deletes the owner provisioning
 //     read. Its first statement locks this row FOR NO KEY UPDATE, so either it
 //     waits for the commit and then sees the bot, or provisioning waits and

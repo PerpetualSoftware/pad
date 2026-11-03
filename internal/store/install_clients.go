@@ -56,7 +56,7 @@ var (
 )
 
 // InstallEpochSessionKey is the session-data key under which a grant carries
-// the install's epoch, read BEFORE its client authenticated (codex r1 P1). The
+// the install's epoch, read BEFORE its client authenticated. The
 // barrier refuses unless it is still the install's epoch: a request that
 // authenticated with a secret that a rotate then replaced reaches the barrier
 // after the rotate committed, still carrying the epoch from before it.
@@ -394,7 +394,7 @@ func (s *Store) installIssuanceBarrierTx(tx *sql.Tx, table string, req models.OA
 		return true, ErrInstallNotActive
 	}
 	// The epoch the grant carries, read before its client authenticated,
-	// must still be the install's (codex r1 P1).
+	// must still be the install's.
 	if carried, ok := carriedInstallEpoch(req.SessionData); !ok || carried != epoch {
 		return true, ErrInstallNotActive
 	}

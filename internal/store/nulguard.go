@@ -176,7 +176,7 @@ func normalizeAndCheck(args []driver.NamedValue) error {
 // once, but a driver with its own NamedValueChecker may recurse — so the guard
 // resolves to a FIXED POINT rather than once, or an outer valuer returning an
 // inner one would hand the guard a clean value and the driver a NUL-bearing
-// one (codex round 4). The bound exists because a cyclic valuer would hang;
+// one. The bound exists because a cyclic valuer would hang;
 // four is far past anything real.
 const maxValuerDepth = 4
 
@@ -188,7 +188,7 @@ var valuerType = reflect.TypeOf((*driver.Valuer)(nil)).Elem()
 // That rule is COPIED, not approximated: database/sql treats a nil pointer as
 // SQL NULL only when the POINTER'S ELEMENT TYPE implements Valuer, and calls a
 // pointer-receiver-only valuer even when nil. An earlier version here nil'd
-// every nil pointer valuer, which is broader than the library (codex round 4).
+// every nil pointer valuer, which is broader than the library.
 func resolveValue(v driver.Value) (driver.Value, error) {
 	for depth := 0; depth < maxValuerDepth; depth++ {
 		valuer, ok := v.(driver.Valuer)
@@ -210,7 +210,7 @@ func resolveValue(v driver.Value) (driver.Value, error) {
 
 // classify sorts a resolved parameter into text, exempt, or REFUSED.
 //
-// An ALLOW-LIST, and that is the point (codex round 4). Two rounds were spent
+// An ALLOW-LIST, and that is the point. Two rounds were spent
 // widening a text detector shape by shape — exact string, then *string and
 // named string types, then json.RawMessage — and the next round named five
 // more (json.Marshaler, fmt.Stringer, pgx's TextValuer, defined []byte aliases,
@@ -308,7 +308,7 @@ func classifyTriggerRefusal(err error) error {
 	// the position is genuinely unknown here — the error comes back from the
 	// database after the statement ran, not from inspecting an argument list.
 	// The first version used Ordinal: 0, which violated the field's documented
-	// 1-based contract and rendered as "parameter 0" (codex round 1).
+	// 1-based contract and rendered as "parameter 0".
 	return &InvalidTextParameterError{Reason: reason}
 }
 
@@ -339,7 +339,7 @@ func (d guardDriver) Open(name string) (driver.Conn, error) {
 // The interface matters because without it sql.Open falls back to a legacy
 // connector that IGNORES the context, so a cancelled or deadlined request can
 // leave a connection attempt running — on pgx, up to its 60-second dial timeout
-// (codex round 2).
+// .
 type guardDriverCtx struct{ guardDriver }
 
 func (d guardDriverCtx) OpenConnector(name string) (driver.Connector, error) {
@@ -539,7 +539,7 @@ func registerGuardedDrivers() error {
 // for, that the base implements everything the wrapper advertises flatly.
 //
 // It runs at CONNECT time, not at registration, and that is the fix for a
-// genuinely dangerous first version (codex round 3): registration opened a
+// genuinely dangerous first version: registration opened a
 // probe *sql.DB for BOTH drivers and called Conn() on each, so creating a
 // SQLite store attempted a live PostgreSQL connection using whatever the
 // environment's default host, port and credentials happened to be — network
@@ -575,7 +575,7 @@ func assertConnInterfaces(c driver.Conn) error {
 }
 
 // assertStmtInterfaces is the statement half, and it exists because the claim
-// was previously made in a COMMENT and nowhere else (codex round 3): the code
+// was previously made in a COMMENT and nowhere else: the code
 // said statement-level NamedValueChecker and ColumnConverter were "measured
 // absent on both drivers and asserted", and nothing asserted it. guardStmt does
 // not forward either, so a driver that gained one would silently lose its own

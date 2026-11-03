@@ -411,7 +411,7 @@ type execer interface {
 //     holds it no tab row of U's can appear or go, and the conditional bump
 //     and the DELETE below see the same rows. Without it, under READ
 //     COMMITTED, an open committing between the two statements is missed by
-//     the bump's EXISTS and then deleted without a bump (codex round 2).
+//     the bump's EXISTS and then deleted without a bump.
 func (s *Store) pruneWorkspaceTabIfNoAccessTx(ex execer, userID, workspaceID string) error {
 	const noAccess = `
 		  AND NOT EXISTS (SELECT 1 FROM workspace_members WHERE workspace_id = ? AND user_id = ?)

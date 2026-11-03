@@ -150,7 +150,7 @@ func (s *Server) credentialLiveness(r *http.Request) credentialLiveness {
 		//
 		// A RESOLVED PRINCIPAL WITH NO KIND IS NOT THAT CASE, and is the one
 		// way the empty branch could quietly become the exemption the default
-		// branch exists to prevent (codex round 2, P1). Somebody was
+		// branch exists to prevent. Somebody was
 		// authenticated, so a credential was accepted; an accept point that
 		// records the user and not how it established them leaves this
 		// predicate with nothing to re-check and no way to notice. Both MCP
