@@ -259,9 +259,10 @@ func (s *Server) runOrphanGCSweep(ctx context.Context, graceCutoff time.Time) (*
 			// Put, committed its row and released entirely in that gap is
 			// invisible to the in-flight check (it is no longer in flight)
 			// and to the early count (it had not committed). Holding the
-			// lock from here to the delete means any later writer blocks
-			// at markUploadInFlight until we are done, so this count is
-			// the last word on the hash.
+			// lock from here to the delete means any later writer that marks
+			// its hash blocks at markUploadInFlight until we are done, so
+			// for those writers this count is the last word on the hash.
+			// Item-copy clones do not mark (TASK-4280).
 			// Bounded by the same deadline as reclaimRefusedBlob's row
 			// check: the lock is process-wide and every upload takes it.
 			recountCtx, cancelRecount := context.WithTimeout(ctx, refusedBlobDeleteTimeout)

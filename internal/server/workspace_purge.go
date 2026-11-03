@@ -280,6 +280,14 @@ func (s *Server) purgeCandidate(ctx context.Context, c store.WorkspacePurgeCandi
 	return true
 }
 
+// deleteBlobBounded deletes a blob under refusedBlobDeleteTimeout. The caller
+// holds the process-wide in-flight lock, which every upload takes (TASK-4279).
+func deleteBlobBounded(ctx context.Context, backend attachments.AttachmentStore, key string) error {
+	ctx, cancel := context.WithTimeout(ctx, refusedBlobDeleteTimeout)
+	defer cancel()
+	return backend.Delete(ctx, key)
+}
+
 // reclaimWorkspaceBlobs deletes every physical blob owned solely by
 // workspace c, returning true only when the workspace is safe to purge —
 // i.e. every blob was either deleted or is legitimately retained because
@@ -305,14 +313,6 @@ func (s *Server) purgeCandidate(ctx context.Context, c store.WorkspacePurgeCandi
 // guard is a per-process mutex, not distributed). A distributed purge
 // lock / backend-enumeration reclaimer is deferred with multi-instance
 // support (out of scope for v1).
-// deleteBlobBounded deletes a blob under refusedBlobDeleteTimeout. The caller
-// holds the process-wide in-flight lock, which every upload takes (TASK-4279).
-func deleteBlobBounded(ctx context.Context, backend attachments.AttachmentStore, key string) error {
-	ctx, cancel := context.WithTimeout(ctx, refusedBlobDeleteTimeout)
-	defer cancel()
-	return backend.Delete(ctx, key)
-}
-
 func (s *Server) reclaimWorkspaceBlobs(ctx context.Context, c store.WorkspacePurgeCandidate, blobs []models.Attachment, res *workspacePurgeResult) bool {
 	reclaimed := make(map[string]bool) // storage_key -> deleted this call
 	for _, a := range blobs {
