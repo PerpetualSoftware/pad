@@ -47,6 +47,9 @@ func TestRedactionHelpers(t *testing.T) {
 		{"redirect=%2Fverify-email%2Ftok123&limit=20", "redirect=%2Fverify-email%2FREDACTED&limit=20"},
 		{"redirect=%2Fjoin%2Fabc&next=%2Fitems", "redirect=%2Fjoin%2FREDACTED&next=%2Fitems"},
 		{"redirect=%zz", "redirect=REDACTED"},
+		{"next=/setup?token=abc&limit=20", "next=%2Fsetup%3Ftoken%3DREDACTED&limit=20"},
+		{"redirect=%252Fverify-email%252Ftok", "redirect=%2Fverify-email%2FREDACTED"},
+		{"invite_code=x&tokens=y&session_code=z&error_code=404", "invite_code=REDACTED&tokens=REDACTED&session_code=REDACTED&error_code=404"},
 	} {
 		if got := RedactQuery(tc.raw); got != tc.want {
 			t.Errorf("RedactQuery(%q) = %q, want %q", tc.raw, got, tc.want)

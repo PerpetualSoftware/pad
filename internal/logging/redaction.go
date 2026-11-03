@@ -17,12 +17,43 @@ var keySeparators = strings.NewReplacer("_", "", "-", "", " ", "")
 // webhook_secret and Proxy-Authorization, regardless of case or separators.
 func credentialKey(key string) bool {
 	key = strings.ToLower(keySeparators.Replace(key))
-	for _, suffix := range []string{"token", "password", "secret", "apikey", "authorization", "cookie", "headers"} {
-		if strings.HasSuffix(key, suffix) {
-			return true
+	// A plural (tokens, passwords, cookies) names the same credential.
+	for _, k := range []string{key, strings.TrimSuffix(key, "s")} {
+		for _, suffix := range []string{"token", "password", "secret", "apikey", "authorization", "cookie", "headers",
+			"invitecode", "clicode", "sessioncode", "devicecode", "signature", "jwt"} {
+			if strings.HasSuffix(k, suffix) {
+				return true
+			}
 		}
 	}
 	return key == "code" || key == "headers" || key == "header"
+}
+
+// redactQueryValue masks credentials nested inside a non-credential query
+// value: a credential path (redirect=/verify-email/<token>), a nested query
+// (next=/setup?token=x) or either of those percent-encoded more than once.
+func redactQueryValue(rawValue string) (string, bool) {
+	decoded, err := url.QueryUnescape(rawValue)
+	if err != nil {
+		return redacted, true
+	}
+	for i := 0; i < 3 && strings.Contains(decoded, "%"); i++ {
+		next, nerr := url.QueryUnescape(decoded)
+		if nerr != nil {
+			break
+		}
+		decoded = next
+	}
+	out := decoded
+	if q := strings.Index(decoded, "?"); q >= 0 {
+		out = RedactPath(decoded[:q]) + "?" + RedactQuery(decoded[q+1:])
+	} else {
+		out = RedactPath(decoded)
+	}
+	if out == decoded {
+		return rawValue, false
+	}
+	return url.QueryEscape(out), true
 }
 
 var credentialPath = regexp.MustCompile(`(?s)(/(?:api/v1/(?:auth/cli/sessions|invitations|s)|auth/cli|reset-password|verify-email|join|s)/).+`)
@@ -54,11 +85,8 @@ func RedactQuery(raw string) string {
 		// A value can itself carry a credential path, e.g.
 		// redirect=/verify-email/<token> on the login page.
 		_, val, _ := strings.Cut(part, "=")
-		dv, verr := url.QueryUnescape(val)
-		if verr != nil {
-			parts[i] = key + "=" + redacted
-		} else if RedactPath(dv) != dv {
-			parts[i] = key + "=" + url.QueryEscape(RedactPath(dv))
+		if masked, changed := redactQueryValue(val); changed {
+			parts[i] = key + "=" + masked
 		}
 	}
 	return strings.Join(parts, "&")
