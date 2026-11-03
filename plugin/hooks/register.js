@@ -1028,9 +1028,11 @@ function draw($, e) {
 // reported at startup ("ended without producing output"), and an unarmed
 // session's monitor always exited, so every session opened with a notice.
 // Here an unarmed session runs nothing and shows nothing: no process, no line,
-// no notice. /pad:connect keeps its own on-skill-invoke monitor, which is also
-// the path where mods do not load; pad-monitor.sh's lockfile keeps the two from
-// streaming twice in one session.
+// no notice. A session that consents later starts its stream here too, when
+// the `pad session arm` command /pad:connect runs returns (BUG-4303).
+// /pad:connect keeps its own on-skill-invoke monitor, the path where mods do
+// not load; pad-monitor.sh's lockfile keeps the two from streaming twice in
+// one session.
 //
 // Nothing of this runs at session start (TASK-3970): a session that never
 // touches Pad never runs the CLI, never opens a socket and never starts a
@@ -1117,6 +1119,13 @@ function usesPad(e) {
   // Any server name: Pad's tools are pad_* whatever the person called the server
   // (Codex r3: `.*pad.*` in the server part missed a server named otherwise).
   return /^mcp__.+__pad_[a-z0-9_]+$/i.test(String(e.tool || ''))
+}
+
+// `pad session arm`, the command /pad:connect runs to declare consent, however
+// the skill was reached: typed, or dispatched from what the person said. As a
+// whole word with `arm` ending the third: not `disarm`, `armed` or `arm-all`.
+function armsSession(e) {
+  return e.tool === 'Bash' && /(^|[^\w.-])pad\s+session\s+arm($|[^\w-])/.test(String(e.command || ''))
 }
 
 // Silent by construction: every failure here leaves the session as it was.
@@ -1555,6 +1564,14 @@ export function register(on) {
       try { await wake($) } catch {}
     }
     const result = await next(e)
+    // BUG-4303: consent given after the session's first use of Pad. wake asked
+    // should-arm once, before any consent, so nothing else would start the
+    // stream for a session that opts in later. Ask again now that the arm has
+    // run; startWatch starts nothing if it still says no, or one is running.
+    // Not awaited and never allowed to disturb the call it follows.
+    try {
+      if (armsSession(e)) startWatch($).catch(() => {})
+    } catch {}
     // Never let the pane's refresh disturb the tool call it watched.
     try {
       if (!open || busy || mode) return result

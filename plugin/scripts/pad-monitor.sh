@@ -3,10 +3,11 @@
 #
 # Two callers run THIS script: the plugin mod (plugin/hooks/register.js),
 # which starts it on the session's first use of Pad (TASK-3970: never at
-# session start) only when `pad session should-arm` already said yes
-# (TASK-3513: an unarmed session runs and shows nothing),
-# and the on-skill-invoke:connect monitor, the explicit /pad:connect path
-# and the path where mods do not load. It is the mechanism behind D1's rule
+# session start) and again when a `pad session arm` command returns
+# (BUG-4303: a session that consents later), each time only when
+# `pad session should-arm` says yes (TASK-3513: an unarmed session runs and
+# shows nothing),
+# and the on-skill-invoke:connect monitor, the path where mods do not load. It is the mechanism behind D1's rule
 # — "no consent → no monitor process, no stream, nothing listening":
 #
 #   1. Consent gate. `pad session should-arm` decides whether this session
