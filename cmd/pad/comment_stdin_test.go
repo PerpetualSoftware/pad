@@ -40,16 +40,17 @@ func TestCommentArgument_StillPosts(t *testing.T) {
 
 func TestComment_RefusesAnEmptyBody_NothingPosted(t *testing.T) {
 	for name, tc := range map[string]struct {
-		stdin string // "" and not useStdin means the argument form
-		args  []string
+		stdin   string
+		args    []string
+		wantErr string // a fragment of the refusal's reason
 	}{
-		"empty argument":          {args: []string{"TASK-5", ""}},
-		"whitespace argument":     {args: []string{"TASK-5", " \t\n "}},
-		"empty stdin":             {stdin: "", args: []string{"TASK-5", "--stdin"}},
-		"whitespace-only stdin":   {stdin: "  \n\t\n", args: []string{"TASK-5", "--stdin"}},
-		"stdin and an argument":   {stdin: "a real body\n", args: []string{"TASK-5", "also a body", "--stdin"}},
-		"stdin and an empty arg":  {stdin: "a real body\n", args: []string{"TASK-5", "", "--stdin"}},
-		"stdin with a blank body": {stdin: "\n", args: []string{"TASK-5", "--stdin"}},
+		"empty argument":          {args: []string{"TASK-5", ""}, wantErr: "empty or whitespace-only"},
+		"whitespace argument":     {args: []string{"TASK-5", " \t\n "}, wantErr: "empty or whitespace-only"},
+		"empty stdin":             {stdin: "", args: []string{"TASK-5", "--stdin"}, wantErr: "empty or whitespace-only"},
+		"whitespace-only stdin":   {stdin: "  \n\t\n", args: []string{"TASK-5", "--stdin"}, wantErr: "empty or whitespace-only"},
+		"stdin and an argument":   {stdin: "a real body\n", args: []string{"TASK-5", "also a body", "--stdin"}, wantErr: "message argument is refused"},
+		"stdin and an empty arg":  {stdin: "a real body\n", args: []string{"TASK-5", "", "--stdin"}, wantErr: "message argument is refused"},
+		"stdin with a blank body": {stdin: "\n", args: []string{"TASK-5", "--stdin"}, wantErr: "empty or whitespace-only"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			stub := &commentStub{caps: "new"}
@@ -60,6 +61,9 @@ func TestComment_RefusesAnEmptyBody_NothingPosted(t *testing.T) {
 			err := runCommentCmd(t, stub, commentCmd(), tc.args...)
 			if err == nil {
 				t.Fatalf("exit was zero, want a refusal; writes = %v", stub.writes)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error = %q, want it to say %q", err.Error(), tc.wantErr)
 			}
 			if len(stub.writes) != 0 {
 				t.Errorf("writes = %v after a refusal, want none", stub.writes)
