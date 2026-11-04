@@ -275,7 +275,9 @@ func TestRedactAttrNestedWalkIsBounded(t *testing.T) {
 	for i := 0; i < 5000; i++ {
 		wide[strconv.Itoa(i)] = "v"
 	}
-	wide["token"] = fixture
+	for i := 0; i < 5000; i++ {
+		wide[strconv.Itoa(i)] = "token=" + fixture
+	}
 	cyc := map[string]any{}
 	cyc["self"] = cyc
 	done := make(chan string, 1)
@@ -290,6 +292,9 @@ func TestRedactAttrNestedWalkIsBounded(t *testing.T) {
 	case out := <-done:
 		if strings.Contains(out, fixture) {
 			t.Errorf("a credential survived a bounded walk: %.200s", out)
+		}
+		if !strings.Contains(out, "token=REDACTED") {
+			t.Errorf("the wide map's entries were not walked and scrubbed: %.200s", out)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("the nested walk did not return in 10s")
@@ -388,6 +393,11 @@ func f(l *slog.Logger, lg any, p, q string) {
 	slog.Info("fine", "path", RedactPath(p), "query", RedactQuery(q), "path", "/fixed")
 	_ = slog.Attr{Key: "path", Value: slog.StringValue(RedactPath(p))}
 	_ = slog.Group("g", "path", RedactPath(p))
+	slog.Info("mixed", slog.String("a", "b"), "path", p)
+	slog.Info("wrapped", "path", fmt.Sprintf("%s?%s", RedactPath(p), q))
+	l.Log(nil, slog.LevelInfo, "log", "path", p)
+	slog.Info("mixed fine", slog.String("a", "b"), "path", RedactPath(p))
+	l.Log(nil, slog.LevelInfo, "log fine", "path", RedactPath(p))
 }
 `
 	fset := token.NewFileSet()
@@ -396,7 +406,7 @@ func f(l *slog.Logger, lg any, p, q string) {
 		t.Fatal(err)
 	}
 	_, bad := pathAttrSites(fset, f, "p.go")
-	want := []int{4, 5, 6, 7, 8, 9, 10}
+	want := []int{4, 5, 6, 7, 8, 9, 10, 14, 15, 16}
 	var got []int
 	for _, b := range bad {
 		parts := strings.SplitN(b, ":", 2)
@@ -421,7 +431,7 @@ func pathAttrSites(fset *token.FileSet, f *ast.File, rel string) (sites, bad []s
 			}
 			where := fmt.Sprintf("%s:%d (%s)", rel, fset.Position(pos).Line, key)
 			sites = append(sites, where)
-			if hasCall(val, want) {
+			if directRedact(val, want) {
 				return
 			}
 			if lit, ok := val.(*ast.BasicLit); ok && lit.Kind == token.STRING {
@@ -483,6 +493,9 @@ func pathAttrSites(fset *token.FileSet, f *ast.File, rel string) (sites, bad []s
 			case "Debug", "Info", "Warn", "Error":
 			case "DebugContext", "InfoContext", "WarnContext", "ErrorContext":
 				first = 2
+			case "Log":
+				// Log(ctx, level, msg, attrs...): starting at 1 reads (level, msg) as a
+				// pair and lands on the same key/value parity as starting at 3.
 			case "With":
 				first = 0
 			case "Group":
@@ -490,10 +503,18 @@ func pathAttrSites(fset *token.FileSet, f *ast.File, rel string) (sites, bad []s
 			default:
 				return true
 			}
-			for i := first; i+1 < len(x.Args); i += 2 {
+			for i := first; i < len(x.Args); {
+				if isAttrArg(x.Args[i]) { // a slog.Attr stands alone and shifts the pairs after it
+					i++
+					continue
+				}
+				if i+1 >= len(x.Args) {
+					break
+				}
 				if key, ok := watched(x.Args[i]); ok {
 					report(x.Pos(), key, x.Args[i+1])
 				}
+				i += 2
 			}
 		}
 		return true
@@ -501,21 +522,51 @@ func pathAttrSites(fset *token.FileSet, f *ast.File, rel string) (sites, bad []s
 	return sites, bad
 }
 
-// hasCall reports whether e contains a call to a function or method called name.
-func hasCall(e ast.Expr, name string) bool {
-	found := false
-	ast.Inspect(e, func(n ast.Node) bool {
-		if c, ok := n.(*ast.CallExpr); ok {
-			switch fn := c.Fun.(type) {
-			case *ast.Ident:
-				found = found || fn.Name == name
-			case *ast.SelectorExpr:
-				found = found || fn.Sel.Name == name
+// isAttrArg reports whether e is a slog.Attr: a slog.String(...) style call or
+// a slog.Attr literal.
+func isAttrArg(e ast.Expr) bool {
+	switch x := e.(type) {
+	case *ast.CallExpr:
+		if sel, ok := x.Fun.(*ast.SelectorExpr); ok {
+			if id, ok := sel.X.(*ast.Ident); ok {
+				return id.Name == "slog"
 			}
 		}
-		return !found
-	})
-	return found
+	case *ast.CompositeLit:
+		if sel, ok := x.Type.(*ast.SelectorExpr); ok {
+			return sel.Sel.Name == "Attr"
+		}
+	}
+	return false
+}
+
+// directRedact reports whether e IS a call to name (RedactPath or
+// RedactQuery), possibly inside slog.StringValue or slog.AnyValue: not a call
+// to it somewhere in a larger expression, which could still carry the raw text.
+func directRedact(e ast.Expr, name string) bool {
+	for {
+		switch x := e.(type) {
+		case *ast.ParenExpr:
+			e = x.X
+			continue
+		case *ast.CallExpr:
+			var fn string
+			switch f := x.Fun.(type) {
+			case *ast.Ident:
+				fn = f.Name
+			case *ast.SelectorExpr:
+				fn = f.Sel.Name
+			}
+			if fn == name {
+				return true
+			}
+			if (fn == "StringValue" || fn == "AnyValue") && len(x.Args) == 1 {
+				e = x.Args[0]
+				continue
+			}
+		}
+		return false
+	}
 }
 
 func moduleRoot(t *testing.T) string {
@@ -886,5 +937,41 @@ func TestRedactAttrWalkSpendsABoundedNumberOfBytes(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("the walk of many large strings did not return in 10s")
+	}
+}
+
+// Round-5 hunter findings: diagnostics the text scrubber destroyed.
+func TestRedactTextKeepsCodesAndQueryMarksThatAreNotCredentials(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{"json status code", `{"code":404,"message":"x"}`, `{"code":404,"message":"x"}`},
+		{"exit code", "exit code=1 after 3 tries", "exit code=1 after 3 tries"},
+		{"grpc code", "rpc error: code = NotFound desc = no such item", "rpc error: code = NotFound desc = no such item"},
+		{"go printed code", "{Code:404 Msg:x}", "{Code:404 Msg:x}"},
+		{"one-time numeric code", "sent code=482913 to the user", "sent code=REDACTED to the user"},
+		{"four digit code", "pin code=4829 entered", "pin code=REDACTED entered"},
+		{"opaque code", "exchange code=abc123XYZ789 failed", "exchange code=REDACTED failed"},
+		{"lowercase word code", "code=expired and more", "code=REDACTED and more"},
+		{"sql placeholders", "exec INSERT INTO t (a,b,c,d,e,f) VALUES (?,?,?,?,?,?)", "exec INSERT INTO t (a,b,c,d,e,f) VALUES (?,?,?,?,?,?)"},
+		{"numbered placeholders", "VALUES (?1,?2,?3,?4,?5,?6,?7,?8)", "VALUES (?1,?2,?3,?4,?5,?6,?7,?8)"},
+		{"equals placeholder", "WHERE a=? AND b=? AND c=?", "WHERE a=? AND b=? AND c=?"},
+		{"question in prose", "ok?100%done and what?", "ok?100%done and what?"},
+		{"query still masked", "GET /cb?token=x&ok=1 done", "GET /cb?token=REDACTED&ok=1 done"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := RedactText(tc.in); got != tc.want {
+				t.Errorf("RedactText(%q)\n got %q\nwant %q", tc.in, got, tc.want)
+			}
+		})
+	}
+	if got := RedactText("see /x?/verify-email/tok123 done"); strings.Contains(got, "tok123") {
+		t.Errorf("a credential path as a bare query part leaked: %q", got)
+	}
+}
+
+func TestRedactTextMasksMoreHeaderNames(t *testing.T) {
+	in := "PRIVATE-TOKEN: glpat-abc\nApi-Key: k1\nX-Api-Key: k2\nAccept: */*"
+	want := "PRIVATE-TOKEN: REDACTED\nApi-Key: REDACTED\nX-Api-Key: REDACTED\nAccept: */*"
+	if got := RedactText(in); got != want {
+		t.Errorf("RedactText(%q)\n got %q\nwant %q", in, got, want)
 	}
 }

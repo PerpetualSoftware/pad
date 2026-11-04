@@ -31,7 +31,7 @@ var (
 	// has a colon (a token is often the whole userinfo).
 	reUserinfo = regexp.MustCompile(`([A-Za-z][A-Za-z0-9+.\-]*://)[^/\s?#"']+@`)
 	// A credential-bearing HTTP header written out in text: the rest of the line.
-	reHeaderLine = regexp.MustCompile(`(?i)(^|[\s"'(\[{,;])((?:proxy-)?authorization|set-cookie|cookie|x-[a-z0-9-]*(?:token|key|secret|auth|csrf|xsrf|session))[ \t]*:[ \t]*[^\r\n]+`)
+	reHeaderLine = regexp.MustCompile(`(?i)(^|[\s"'(\[{,;])((?:proxy-)?authorization|set-cookie|cookie|private-token|api-key|apikey|x-[a-z0-9-]*(?:token|key|secret|auth|csrf|xsrf|session))[ \t]*:[ \t]*[^\r\n]+`)
 	reBearer     = regexp.MustCompile(`(?i)\b(bearer)\s+([A-Za-z0-9._~+/=\-]{8,})`)
 	reBasic      = regexp.MustCompile(`(?i)\b(basic)\s+([A-Za-z0-9+/]{8,}={0,2})`)
 	// Credentials with a recognisable shape, whatever surrounds them: a Pad
@@ -96,7 +96,14 @@ func RedactText(s string) string {
 	s = reParsing.ReplaceAllStringFunc(s, func(m string) string {
 		return m[:strings.IndexByte(m, '"')] + `"` + redacted + `"`
 	})
-	s = reQuerySpan.ReplaceAllStringFunc(s, func(m string) string { return "?" + RedactQuery(m[1:]) })
+	s = reQuerySpan.ReplaceAllStringFunc(s, func(m string) string {
+		// A query has parameters (a=b) or is a bare path (?/reset-password/x).
+		// SQL placeholders (?,?,?) and a ? in prose are neither.
+		if !strings.Contains(m, "=") && !strings.HasPrefix(m, "?/") {
+			return m
+		}
+		return "?" + RedactQuery(m[1:])
+	})
 	return redactKeyValues(s)
 }
 
@@ -219,7 +226,7 @@ func redactKeyValues(s string) string {
 			to = unquotedEnd(s, k)
 			ve = to
 		}
-		if to <= from || tokenCount(s[start:end], s[from:to]) {
+		if to <= from || tokenCount(s[start:end], s[from:to]) || benignCode(s[start:end], s[from:to]) {
 			continue
 		}
 		out.WriteString(s[last:from])
@@ -238,6 +245,23 @@ func unquotedEnd(s string, k int) int {
 		e++
 	}
 	return e
+}
+
+// reCodeWord is a status-like word (NotFound, DeadlineExceeded).
+var reCodeWord = regexp.MustCompile(`^[A-Z][a-z]+(?:[A-Z][a-z]+)*$`)
+
+// benignCode reports a bare code that is a status and not a one-time code: a
+// number of up to three digits (404, an exit code) or a CamelCase word (a gRPC
+// NotFound). One-time codes are four or more digits or an opaque string; the
+// OAuth ?code= in a URL query is decided by RedactQuery, not here.
+func benignCode(key, val string) bool {
+	if strings.ToLower(keySeparators.Replace(key)) != "code" || val == "" {
+		return false
+	}
+	if len(val) <= 3 && strings.Trim(val, "0123456789") == "" {
+		return true
+	}
+	return len(val) <= 40 && reCodeWord.MatchString(val)
 }
 
 // tokenCount reports a count of tokens (max_tokens=4096, input_tokens=5): a
