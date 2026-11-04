@@ -117,7 +117,7 @@ func pidFileOwner(path string) (pidRecord, pidFileOwnership) {
 	// cleanup. A claimant that arrives during this instant retries (see
 	// holdPIDFile) rather than losing its claim.
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		slog.Warn("could not remove stale PID file", "path", path, "error", err)
+		slog.Warn("could not remove stale PID file", "pid_file", path, "error", err)
 	}
 	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 	return rec, pidFileStale
