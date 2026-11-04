@@ -628,3 +628,37 @@ func TestRedactAttrMapReadIsBoundedBeforeSorting(t *testing.T) {
 		t.Errorf("a truncated map does not say so: %.200s", buf.String())
 	}
 }
+
+func TestRedactTextDecodesEncodedKeys(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"GET https://host/cb?%74oken=secret ok", "GET https://host/cb?%74oken=REDACTED ok"},
+		{"retry %61ccess_token=abc attempt=3", "retry %61ccess_token=REDACTED attempt=3"},
+		{"next ?%2574oken=secret done", "next ?%2574oken=REDACTED done"},
+		{"retry %70assword=x%20y more", "retry %70assword=REDACTED more"},
+		// A valid escape followed by a malformed one cannot be read: masked, as RedactQuery does.
+		{"retry %74oken%zz=abc more", "retry %74oken%zz=REDACTED more"},
+		// A percent sign in ordinary text is not an encoded credential name.
+		{"disk 100%=full limit=20", "disk 100%=full limit=20"},
+		{"bad %zz=abc and %=def", "bad %zz=abc and %=def"},
+		{"width%20x=3 height=4", "width%20x=3 height=4"},
+	} {
+		if got := RedactText(tc.in); got != tc.want {
+			t.Errorf("RedactText(%q)\n got %q\nwant %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+type panicKey string
+
+func (panicKey) String() string { panic("a key whose String method panics") }
+
+// fmt itself reports a key whose String method panics, so the walk needs no
+// guard of its own; this pins that the log call and its record survive.
+func TestRedactAttrSurvivesAMapKeyThatPanics(t *testing.T) {
+	buf := capture(t, "json")
+	slog.Info("odd keys", "m", map[panicKey]string{"a": "b"}, "ok", "kept")
+	out := buf.String()
+	if !strings.Contains(out, `"ok":"kept"`) || !strings.Contains(out, "odd keys") {
+		t.Errorf("a panicking map key took the log call down or lost the record:\n%s", out)
+	}
+}

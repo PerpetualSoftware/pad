@@ -93,7 +93,22 @@ func RedactText(s string) string {
 const maxKeyLen = 64
 
 func isKeyChar(c byte) bool {
-	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '.' || c == '-' || c == '[' || c == ']'
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '.' || c == '-' || c == '[' || c == ']' || c == '%'
+}
+
+// credentialKeyText is credentialKey for a name found in text, where it may be
+// percent-encoded (?%74oken=x). An escape that cannot be decoded after valid
+// ones is treated as a credential, as RedactQuery treats a key it cannot read;
+// a lone % (100%=full) is just text.
+func credentialKeyText(key string) bool {
+	if !strings.Contains(key, "%") {
+		return credentialKey(key)
+	}
+	decoded, ok := fullyUnescape(key)
+	if !ok {
+		return escapeSeq.MatchString(key)
+	}
+	return credentialKey(decoded)
 }
 
 func isLetter(c byte) bool { return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' }
@@ -124,7 +139,7 @@ func redactKeyValues(s string) string {
 		for start > 0 && end-start < maxKeyLen && isKeyChar(s[start-1]) {
 			start--
 		}
-		for start < end && !isLetter(s[start]) {
+		for start < end && !isLetter(s[start]) && s[start] != '%' {
 			start++
 		}
 		if start == end || (s[i] == ':' && !quoted) {
@@ -132,7 +147,7 @@ func redactKeyValues(s string) string {
 		}
 		// Inside a URL's query a bare key= and state= are credentials too.
 		inQuery := start > 0 && (s[start-1] == '?' || s[start-1] == '&')
-		if !(credentialKey(s[start:end]) || (inQuery && queryCredentialKey(s[start:end]))) {
+		if !(credentialKeyText(s[start:end]) || (inQuery && queryCredentialKey(s[start:end]))) {
 			continue
 		}
 		k := i + 1
@@ -336,6 +351,7 @@ func sanitize(v reflect.Value, depth int, budget *int) any {
 		// materialised and sorted to log its first few hundred.
 		entries := make([]entry, 0, min(v.Len(), maxMapRead))
 		for it := v.MapRange(); it.Next() && len(entries) < maxMapRead; {
+			// fmt reports a key whose String method panics rather than panicking.
 			entries = append(entries, entry{fmt.Sprint(it.Key().Interface()), it.Value()})
 		}
 		sort.Slice(entries, func(i, j int) bool { return entries[i].name < entries[j].name })
