@@ -1583,3 +1583,80 @@ func TestMapKeyTextRemainingRows(t *testing.T) {
 		t.Errorf("1 MiB: %d", len(got))
 	}
 }
+
+// Self-rendering map keys (dev lead's rows): a key type that chose how it prints
+// is rendered the way the value path renders it, never by its raw underlying value.
+type keyTextMarshaled string
+
+func (keyTextMarshaled) MarshalText() ([]byte, error) { return []byte("MASKED-TEXT"), nil }
+
+type keyJSONMarshaled string
+
+func (keyJSONMarshaled) MarshalJSON() ([]byte, error) { return []byte(`"MASKED-JSON"`), nil }
+
+type keyMaskedString string
+
+func (keyMaskedString) String() string { return "MASKED-STRING" }
+
+type keyPanickingString struct{ n int }
+
+func (*keyPanickingString) String() string { panic("boom") }
+
+func TestMapKeysThatChooseHowTheyPrintAreNeverRawValues(t *testing.T) {
+	const raw = "RAW-SECRET-VALUE"
+	for _, tc := range []struct {
+		name string
+		key  any
+		want string
+	}{
+		{"masking String on a string-kind key", keyMaskedString(raw), "MASKED-STRING"},
+		{"MarshalText only on a string-kind key", keyTextMarshaled(raw), "MASKED-TEXT"},
+		{"json.Marshaler only on a string-kind key", keyJSONMarshaled(raw), "MASKED-JSON"},
+		{"*http.Cookie", &http.Cookie{Name: "sid", Value: raw}, "sid=REDACTED"},
+		{"http.Cookie", http.Cookie{Name: "sid", Value: raw}, "sid=REDACTED"},
+		{"*url.URL", &url.URL{Scheme: "https", Host: "hooks.slack.com", Path: "/services/T/B/" + raw}, "hooks.slack.com"},
+		{"panicking String", &keyPanickingString{1}, "<unprintable>"},
+	} {
+		got := mapKeyText(reflect.ValueOf(tc.key))
+		if strings.Contains(got, raw) || got != tc.want {
+			t.Errorf("%s: %q, want %q", tc.name, got, tc.want)
+		}
+	}
+	// Through the walk, with the scrub applied: the raw value is absent everywhere.
+	out, _ := sanitize(reflect.ValueOf(map[keyTextMarshaled]int{keyTextMarshaled(raw): 1}), 0, &walkBudget{nodes: 100, bytes: 1 << 20}).(map[string]any)
+	for k := range out {
+		if strings.Contains(k, raw) {
+			t.Errorf("raw value in a walked key: %q", k)
+		}
+	}
+}
+
+type keyHugeBuiltString string
+
+func (k keyHugeBuiltString) String() string { return strings.ToUpper(string(k)) }
+
+func TestMapKeyMethodOutputIsCutByTheRedactor(t *testing.T) {
+	// The method builds a new 1 MiB string (its own allocation, accepted); the
+	// redactor stores at most maxMapKeyBytes+1 bytes of it.
+	if got := mapKeyText(reflect.ValueOf(keyHugeBuiltString(strings.Repeat("a", 1<<20)))); len(got) != maxMapKeyBytes+1 {
+		t.Errorf("method output not cut: %d bytes", len(got))
+	}
+}
+
+type keyNest[T any] struct{ _ int }
+
+type keyDeepNest = keyNest[keyNest[keyNest[keyNest[keyNest[keyNest[keyNest[keyNest[keyNest[keyNest[keyNest[keyNest[keyNest[keyNest[keyNest[keyNest[keyNest[keyNest[keyNest[keyNest[keyNest[keyNest[keyNest[keyNest[keyNest[keyNest[keyNest[keyNest[keyNest[keyNest[int]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]
+
+func TestPointerKeyLabelsKeepTheirAddressWhenTheTypeNameIsLong(t *testing.T) {
+	a, b := new(keyDeepNest), new(keyDeepNest)
+	if len(reflect.TypeOf(a).String()) <= maxMapKeyBytes {
+		t.Fatalf("the type name is only %d bytes; the test needs more than %d", len(reflect.TypeOf(a).String()), maxMapKeyBytes)
+	}
+	ka, kb := mapKeyText(reflect.ValueOf(a)), mapKeyText(reflect.ValueOf(b))
+	if ka == kb {
+		t.Errorf("two distinct pointers render the same: %q", ka)
+	}
+	if !strings.Contains(ka, "0x") {
+		t.Errorf("the address was cut off: %q", ka)
+	}
+}

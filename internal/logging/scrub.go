@@ -169,11 +169,8 @@ func mapKeyText(k reflect.Value) string {
 		k = k.Elem()
 	}
 	if k.CanInterface() {
-		switch x := k.Interface().(type) {
-		case error:
-			return cutKey(safeErrorText(x))
-		case fmt.Stringer:
-			return cutKey(safeStringText(x))
+		if text, ok := selfRender(k.Interface()); ok {
+			return cutKey(text)
 		}
 	}
 	switch k.Kind() {
@@ -190,10 +187,57 @@ func mapKeyText(k reflect.Value) string {
 	case reflect.Complex64, reflect.Complex128:
 		return strconv.FormatComplex(k.Complex(), 'g', -1, k.Type().Bits())
 	case reflect.Pointer, reflect.Chan, reflect.UnsafePointer:
-		return cutKey(fmt.Sprintf("<%s %#x>", k.Type(), k.Pointer()))
+		return fmt.Sprintf("<%s %#x>", cutType(k.Type().String()), k.Pointer())
 	default:
-		return cutKey("<" + k.Type().String() + ">")
+		return "<" + cutType(k.Type().String()) + ">"
 	}
+}
+
+// selfRender renders a value that chose how it prints, for the value path and
+// the map-key path alike (one switch, so the two cannot drift): a URL reduced to
+// its host (a webhook path is often the credential), a cookie to name=REDACTED,
+// an error, a json.Marshaler, a TextMarshaler, a Stringer. ok is false for a
+// plain value. The text is neither scrubbed nor cut; the caller does that. The
+// method's own allocation is the application's cost.
+func selfRender(x any) (text string, ok bool) {
+	switch x := x.(type) {
+	case *url.URL:
+		if x == nil {
+			return "<nil>", true
+		}
+		return URLHost(x.String()), true
+	case url.URL:
+		return URLHost(x.String()), true
+	case *http.Cookie:
+		if x == nil {
+			return "<nil>", true
+		}
+		return x.Name + "=" + redacted, true
+	case http.Cookie:
+		return x.Name + "=" + redacted, true
+	case error:
+		if isURLError(x) {
+			return ErrorType(x), true
+		}
+		return safeErrorText(x), true
+	case json.Marshaler:
+		return marshalledText(func() ([]byte, error) { return json.Marshal(x) }, true), true
+	case encoding.TextMarshaler:
+		return marshalledText(x.MarshalText, false), true
+	case fmt.Stringer:
+		// A type that chose how it prints (a masked key, a clock time) keeps it.
+		return safeStringText(x), true
+	}
+	return "", false
+}
+
+// cutType bounds a type name inside a "<type ...>" label, so the address that
+// follows it is never cut off.
+func cutType(s string) string {
+	if len(s) > 64 {
+		return s[:64] + "…"
+	}
+	return s
 }
 
 // cutKey bounds a key's text to maxMapKeyBytes+1 bytes.
@@ -632,29 +676,8 @@ func sanitize(v reflect.Value, depth int, budget *walkBudget) any {
 		// Look for a self-rendering value at every level, pointer included: an
 		// error or marshaller often has its methods on the pointer type.
 		if v.CanInterface() && !(v.Kind() == reflect.Pointer && v.IsNil()) {
-			switch x := v.Interface().(type) {
-			case *url.URL:
-				// A webhook path is often the credential: keep the host, as the
-				// url-named string attributes do.
-				return URLHost(x.String())
-			case url.URL:
-				return URLHost(x.String())
-			case *http.Cookie:
-				return x.Name + "=" + redacted
-			case http.Cookie:
-				return x.Name + "=" + redacted
-			case error:
-				if isURLError(x) {
-					return ErrorType(x)
-				}
-				return budget.text(safeErrorText(x))
-			case json.Marshaler:
-				return budget.text(marshalledText(func() ([]byte, error) { return json.Marshal(x) }, true))
-			case encoding.TextMarshaler:
-				return budget.text(marshalledText(x.MarshalText, false))
-			case fmt.Stringer:
-				// A type that chose how it prints (a masked key, a clock time) keeps it.
-				return budget.text(safeStringText(x))
+			if text, ok := selfRender(v.Interface()); ok {
+				return budget.text(text)
 			}
 		}
 		if v.Kind() != reflect.Interface && v.Kind() != reflect.Pointer {
