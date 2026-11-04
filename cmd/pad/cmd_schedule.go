@@ -548,6 +548,9 @@ func agendaBounds(from, to string, days int, daysSet bool, loc *time.Location, n
 			end, clamped = limit, true
 		}
 	}
+	// The request carries whole seconds, so the window is whole seconds from here
+	// on: what is checked, sent and compared against next_from is one value.
+	start, end = start.Truncate(time.Second), end.Truncate(time.Second)
 	if !end.After(start) {
 		return start, end, false, fmt.Errorf("the window must end after it starts")
 	}

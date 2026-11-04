@@ -244,3 +244,24 @@ func TestAgendaResumeHintWithoutTzHasNone(t *testing.T) {
 		t.Fatalf("out=%q err=%v", out, err)
 	}
 }
+
+// The request sends the window end in whole seconds, so the server's next_from
+// can equal that truncated end while the user typed a fraction of a second more.
+// The comparison that decides whether there is anything to resume uses the end
+// as sent.
+func TestAgendaNoResumeHintWhenNextFromIsTheSentEnd(t *testing.T) {
+	body := `{"entries":[],"truncated":true,"next_from":"2026-11-08T05:00:00Z",` +
+		`"unexpanded":[{"schedule_id":"s1","item_ref":"TASK-8","item_title":"Busy","collection":"tasks","kind":"check","audience":"agent","reason":"scan_limit"}]}`
+	h, _ := recordingStub(func(c recordedCall) (int, string) { return 200, body })
+	root := tzCLIWithLocal(t, h, time.UTC)
+	out, _, err := tzRun(t, root, "item", "remind", "agenda", "--from", "2026-11-01T05:00:00Z", "--to", "2026-11-08T05:00:00.5Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "more after") || strings.Contains(out, "--from") {
+		t.Errorf("a resume command was printed for a cut at the window end:\n%s", out)
+	}
+	if !strings.Contains(out, "TASK-8  check  agent  scan_limit") {
+		t.Errorf("the unexpanded schedule is not named:\n%s", out)
+	}
+}
