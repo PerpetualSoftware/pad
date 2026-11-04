@@ -1139,7 +1139,7 @@ func TestRound11SchemelessURLsMapKeyURLsAndMarker(t *testing.T) {
 	}
 	start := time.Now()
 	m, _ := sanitize(reflect.ValueOf(long), 0, &walkBudget{nodes: 10000, bytes: 1 << 20}).(map[string]any)
-	if len(m) != 1 && len(m) != 256 {
+	if len(m) != 256 {
 		t.Errorf("entries: %d", len(m))
 	}
 	for k := range m {
