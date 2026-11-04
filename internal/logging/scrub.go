@@ -186,13 +186,13 @@ func mapKeyText(k reflect.Value) string {
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
 		return strconv.FormatUint(k.Uint(), 10)
 	case reflect.Float32, reflect.Float64:
-		return strconv.FormatFloat(k.Float(), 'g', -1, 64)
+		return strconv.FormatFloat(k.Float(), 'g', -1, k.Type().Bits())
 	case reflect.Complex64, reflect.Complex128:
-		return strconv.FormatComplex(k.Complex(), 'g', -1, 128)
+		return strconv.FormatComplex(k.Complex(), 'g', -1, k.Type().Bits())
 	case reflect.Pointer, reflect.Chan, reflect.UnsafePointer:
-		return fmt.Sprintf("<%s %#x>", k.Type(), k.Pointer())
+		return cutKey(fmt.Sprintf("<%s %#x>", k.Type(), k.Pointer()))
 	default:
-		return "<" + k.Type().String() + ">"
+		return cutKey("<" + k.Type().String() + ">")
 	}
 }
 

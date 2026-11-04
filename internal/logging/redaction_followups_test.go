@@ -22,6 +22,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unsafe"
 )
 
 const fixture = "credential-fixture"
@@ -1540,3 +1541,45 @@ func TestMapKeyTextByKind(t *testing.T) {
 type panicStringer struct{ s string }
 
 func (p *panicStringer) String() string { return p.s }
+
+type keyPanicError struct{}
+
+func (*keyPanicError) Error() string { panic("boom") }
+
+func TestMapKeyTextRemainingRows(t *testing.T) {
+	x := 3
+	for _, tc := range []struct {
+		name string
+		key  any
+		want string
+	}{
+		{"uint", uint(42), "42"},
+		{"float32 keeps its own precision", float32(1.1), "1.1"},
+		{"complex64 keeps its own precision", complex64(complex(1.1, 2)), "(1.1+2i)"},
+	} {
+		if got := mapKeyText(reflect.ValueOf(tc.key)); got != tc.want {
+			t.Errorf("%s: %q, want %q", tc.name, got, tc.want)
+		}
+	}
+	if got := mapKeyText(reflect.ValueOf(unsafe.Pointer(&x))); !strings.HasPrefix(got, "<unsafe.Pointer 0x") {
+		t.Errorf("unsafe pointer: %q", got)
+	}
+	// An interface wrapping a non-nil value dispatches on the value.
+	var wrapped any = keyStringKind("inner")
+	if got := mapKeyText(reflect.ValueOf(&wrapped).Elem()); got != "inner" {
+		t.Errorf("non-nil interface: %q", got)
+	}
+	if got := mapKeyText(reflect.ValueOf(&keyPanicError{})); got != "<error text unavailable>" {
+		t.Errorf("panicking Error: %q", got)
+	}
+	// The cut is exact: 256 bytes pass whole, 257 and longer are cut to 257.
+	if got := mapKeyText(reflect.ValueOf(strings.Repeat("a", maxMapKeyBytes))); len(got) != maxMapKeyBytes {
+		t.Errorf("256 bytes: %d", len(got))
+	}
+	if got := mapKeyText(reflect.ValueOf(strings.Repeat("a", maxMapKeyBytes+1))); len(got) != maxMapKeyBytes+1 {
+		t.Errorf("257 bytes: %d", len(got))
+	}
+	if got := mapKeyText(reflect.ValueOf(strings.Repeat("a", 1<<20))); len(got) != maxMapKeyBytes+1 {
+		t.Errorf("1 MiB: %d", len(got))
+	}
+}
