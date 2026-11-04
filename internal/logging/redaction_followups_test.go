@@ -666,3 +666,38 @@ func TestRedactAttrSurvivesAMapKeyThatPanics(t *testing.T) {
 		t.Errorf("a panicking map key took the log call down or lost the record:\n%s", out)
 	}
 }
+
+// RedactText runs on every string a service logs, some of it chosen by a
+// client (a Host header, the input a parse error repeats), inside a
+// synchronous log call. Each shape below was or could be quadratic; at the
+// 256 KB cap a linear scan takes milliseconds and a quadratic one seconds.
+func TestRedactTextCostIsLinearOnHostileShapes(t *testing.T) {
+	const size = maxScrubBytes - 1024
+	rep := func(unit string) string { return strings.Repeat(unit, size/len(unit)) }
+	shapes := map[string]string{
+		"semicolon pairs":            rep("a;a=;"),
+		"semicolon pairs in a query": "?" + rep("a;a=;"),
+		"ampersand pairs in a query": "?" + rep("a&a=&"),
+		"nested query values":        "?" + rep("a=?a=?"),
+		"query marks":                rep("?a"),
+		"empty queries":              rep("? "),
+		"credential keys":            rep("token="),
+		"credential pairs spaced":    rep("token = "),
+		"quoted keys":                rep(`"password":`),
+		"bearer words":               rep("Bearer "),
+		"schemes":                    rep("a://"),
+		"encoded keys":               rep("%74oken="),
+		"double encoded keys":        "?" + rep("%2574oken="),
+		"unterminated brackets":      `{"token":` + rep("[{"),
+		"long key":                   rep("a") + "=x",
+		"parse errors":               rep(`parsing "`),
+		"credential paths":           rep(" /join/x"),
+	}
+	for name, in := range shapes {
+		start := time.Now()
+		RedactText(in)
+		if d := time.Since(start); d > 3*time.Second {
+			t.Errorf("RedactText on %q (%d bytes) took %v; the scan must stay linear", name, len(in), d)
+		}
+	}
+}

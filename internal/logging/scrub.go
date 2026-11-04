@@ -39,6 +39,10 @@ var (
 	// scheme://host. A directory called s inside a filesystem path
 	// (/var/lib/pad/s/pad.db) is not one.
 	reTextPath = regexp.MustCompile(`(^|[\s"'(=,\[{]|://[^\s/"']+)(` + credentialPathPrefix + `)[^\s/?#"'<>\])}]+`)
+	// A URL query in text: from the ? to the first whitespace, quote, # or
+	// closing bracket. RedactQuery, not this file, decides what in it is a
+	// credential, so the two cannot drift apart.
+	reQuerySpan = regexp.MustCompile(`\?[^\s"'#<>)\]}]+`)
 	// strconv and time parse errors repeat their input in quotes, and time's
 	// repeats the unparsed remainder a second time.
 	reParsing = regexp.MustCompile(`(parsing(?: time)?|cannot parse|Parse[A-Za-z]*\() ?"(?:[^"\\]|\\.)*"`)
@@ -47,7 +51,8 @@ var (
 // RedactText masks credentials in free text: an error message, a response body,
 // a log message. It recognises the shapes a credential takes in text (an
 // Authorization or Cookie header, a bearer or basic credential, userinfo in a
-// URL, a Pad, JWT, Stripe or GitHub token, a credential path, a key=value or
+// URL, a Pad, JWT, Stripe or GitHub token, a credential path, a URL query
+// (handed to RedactQuery, so the two share one parser), a key=value or
 // "key":"value" pair whose key names a credential, and the input a parse error
 // repeats). A secret with none of those shapes and no credential name next to
 // it cannot be recognised, so call sites that handle one still use the typed
@@ -85,6 +90,7 @@ func RedactText(s string) string {
 	s = reParsing.ReplaceAllStringFunc(s, func(m string) string {
 		return m[:strings.IndexByte(m, '"')] + `"` + redacted + `"`
 	})
+	s = reQuerySpan.ReplaceAllStringFunc(s, func(m string) string { return "?" + RedactQuery(m[1:]) })
 	return redactKeyValues(s)
 }
 
@@ -145,9 +151,7 @@ func redactKeyValues(s string) string {
 		if start == end || (s[i] == ':' && !quoted) {
 			continue
 		}
-		// Inside a URL's query a bare key= and state= are credentials too.
-		inQuery := inURLQuery(s, start)
-		if !(credentialKeyText(s[start:end]) || (inQuery && queryCredentialKey(s[start:end]))) {
+		if !credentialKeyText(s[start:end]) {
 			continue
 		}
 		k := i + 1
@@ -198,26 +202,6 @@ func redactKeyValues(s string) string {
 	}
 	out.WriteString(s[last:])
 	return out.String()
-}
-
-// inURLQuery reports whether the name starting at s[start] is a parameter of
-// a URL query: it follows ? or &, or a ; in a token that has a ? before it
-// (a ; in prose, "queue a;state=running", separates nothing).
-func inURLQuery(s string, start int) bool {
-	if start == 0 {
-		return false
-	}
-	switch s[start-1] {
-	case '?', '&':
-		return true
-	case ';':
-		for i := start - 2; i >= 0 && s[i] != ' ' && s[i] != '\t' && s[i] != '\n' && s[i] != '\r'; i-- {
-			if s[i] == '?' {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // skipBracketed returns the index just past the bracket that closes the one at
