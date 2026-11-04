@@ -273,9 +273,6 @@ func TestRedactAttrNestedWalkIsBounded(t *testing.T) {
 	}
 	wide := make(map[string]string, 5000)
 	for i := 0; i < 5000; i++ {
-		wide[strconv.Itoa(i)] = "v"
-	}
-	for i := 0; i < 5000; i++ {
 		wide[strconv.Itoa(i)] = "token=" + fixture
 	}
 	cyc := map[string]any{}
@@ -398,6 +395,9 @@ func f(l *slog.Logger, lg any, p, q string) {
 	l.Log(nil, slog.LevelInfo, "log", "path", p)
 	slog.Info("mixed fine", slog.String("a", "b"), "path", RedactPath(p))
 	l.Log(nil, slog.LevelInfo, "log fine", "path", RedactPath(p))
+	l.Log(nil, slog.Level(2), "m", "path", p)
+	slog.Info("other package", "path", other.RedactPath(p))
+	slog.Info("logging package", "path", logging.RedactPath(p))
 }
 `
 	fset := token.NewFileSet()
@@ -406,7 +406,7 @@ func f(l *slog.Logger, lg any, p, q string) {
 		t.Fatal(err)
 	}
 	_, bad := pathAttrSites(fset, f, "p.go")
-	want := []int{4, 5, 6, 7, 8, 9, 10, 14, 15, 16}
+	want := []int{4, 5, 6, 7, 8, 9, 10, 14, 15, 16, 19, 20}
 	var got []int
 	for _, b := range bad {
 		parts := strings.SplitN(b, ":", 2)
@@ -528,8 +528,11 @@ func isAttrArg(e ast.Expr) bool {
 	switch x := e.(type) {
 	case *ast.CallExpr:
 		if sel, ok := x.Fun.(*ast.SelectorExpr); ok {
-			if id, ok := sel.X.(*ast.Ident); ok {
-				return id.Name == "slog"
+			if id, ok := sel.X.(*ast.Ident); ok && id.Name == "slog" {
+				switch sel.Sel.Name {
+				case "String", "Int", "Int64", "Uint64", "Float64", "Bool", "Duration", "Time", "Any", "Group", "GroupAttrs":
+					return true
+				}
 			}
 		}
 	case *ast.CompositeLit:
@@ -552,10 +555,15 @@ func directRedact(e ast.Expr, name string) bool {
 		case *ast.CallExpr:
 			var fn string
 			switch f := x.Fun.(type) {
-			case *ast.Ident:
+			case *ast.Ident: // inside package logging itself
 				fn = f.Name
 			case *ast.SelectorExpr:
-				fn = f.Sel.Name
+				// only logging.RedactPath; another package's function of that name proves nothing
+				if id, ok := f.X.(*ast.Ident); ok && id.Name == "logging" {
+					fn = f.Sel.Name
+				} else if f.Sel.Name == "StringValue" || f.Sel.Name == "AnyValue" {
+					fn = f.Sel.Name
+				}
 			}
 			if fn == name {
 				return true
@@ -973,5 +981,45 @@ func TestRedactTextMasksMoreHeaderNames(t *testing.T) {
 	want := "PRIVATE-TOKEN: REDACTED\nApi-Key: REDACTED\nX-Api-Key: REDACTED\nAccept: */*"
 	if got := RedactText(in); got != want {
 		t.Errorf("RedactText(%q)\n got %q\nwant %q", in, got, want)
+	}
+}
+
+// Round-6 hunter findings.
+func TestRedactTextStillReadsEncodedAndBarePathQueries(t *testing.T) {
+	for _, in := range []string{
+		"GET /x?%2Fverify-email%2FTOK123 done",
+		"GET /x?next/verify-email/TOK123 done",
+		"GET /x?token%3DSECRET123 done",
+		"GET /x?%74oken%3dSECRET123&ok=1 done",
+	} {
+		if got := RedactText(in); strings.Contains(got, "TOK123") || strings.Contains(got, "SECRET123") {
+			t.Errorf("RedactText(%q) leaked: %q", in, got)
+		}
+	}
+}
+
+func TestRedactTextKeepsSnakeCaseAndPunctuatedCodes(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{"api error code", `{"code":"inviter_scope_changed"}`, `{"code":"inviter_scope_changed"}`},
+		{"snake in text", "code=not_found and more", "code=not_found and more"},
+		{"upper snake", `{"code":"INVALID_ARGUMENT","n":1}`, `{"code":"INVALID_ARGUMENT","n":1}`},
+		{"negative number", "closed with code=-1", "closed with code=-1"},
+		{"in parentheses", "failed (code=404) twice", "failed (code=404) twice"},
+		{"sentence end", "failed with code=404.", "failed with code=404."},
+		{"word at sentence end", "failed with code=NotFound.", "failed with code=NotFound."},
+		// One-time codes still go.
+		{"four digits", "code=1006 given", "code=REDACTED given"},
+		{"lowercase word", "code=expired given", "code=REDACTED given"},
+		{"alnum", "code=ab12cd34ef given", "code=REDACTED given"},
+		{"snake with digits", "code=ab_12_cd given", "code=REDACTED given"},
+		{"single letters in snake", "code=a_b_c given", "code=REDACTED given"},
+		{"word-shaped code", "code=Abcdef given", "code=REDACTED given"},
+		{"capitalised word that is not a status", "code=Correct given", "code=REDACTED given"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := RedactText(tc.in); got != tc.want {
+				t.Errorf("RedactText(%q)\n got %q\nwant %q", tc.in, got, tc.want)
+			}
+		})
 	}
 }

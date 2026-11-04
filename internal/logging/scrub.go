@@ -97,9 +97,11 @@ func RedactText(s string) string {
 		return m[:strings.IndexByte(m, '"')] + `"` + redacted + `"`
 	})
 	s = reQuerySpan.ReplaceAllStringFunc(s, func(m string) string {
-		// A query has parameters (a=b) or is a bare path (?/reset-password/x).
+		// A query has parameters (a=b), a path (?/reset-password/x), or an encoded part.
 		// SQL placeholders (?,?,?) and a ? in prose are neither.
-		if !strings.Contains(m, "=") && !strings.HasPrefix(m, "?/") {
+		// A path inside it (/) or a percent-encoded part (%2F, %3D) can hide
+		// a credential too; plain placeholders and prose cannot.
+		if !strings.Contains(m, "=") && !strings.Contains(m, "/") && !escapeSeq.MatchString(m) {
 			return m
 		}
 		return "?" + RedactQuery(m[1:])
@@ -247,21 +249,37 @@ func unquotedEnd(s string, k int) int {
 	return e
 }
 
-// reCodeWord is a status-like word (NotFound, DeadlineExceeded).
-var reCodeWord = regexp.MustCompile(`^[A-Z][a-z]+(?:[A-Z][a-z]+)*$`)
+// grpcCodes are the gRPC status names: a word-shaped one-time code ("Abcdef")
+// must not pass as one, so these are listed, not matched by shape.
+var grpcCodes = map[string]bool{
+	"OK": true, "Ok": true, "Canceled": true, "Cancelled": true, "Unknown": true, "InvalidArgument": true,
+	"DeadlineExceeded": true, "NotFound": true, "AlreadyExists": true, "PermissionDenied": true,
+	"ResourceExhausted": true, "FailedPrecondition": true, "Aborted": true, "OutOfRange": true,
+	"Unimplemented": true, "Internal": true, "Unavailable": true, "DataLoss": true, "Unauthenticated": true,
+}
+
+// reCodeSnake is an error identifier (not_found, INVALID_ARGUMENT): letters
+// only, each part at least two of them.
+var reCodeSnake = regexp.MustCompile(`^[A-Za-z]{2,}(?:_[A-Za-z]{2,})+$`)
 
 // benignCode reports a bare code that is a status and not a one-time code: a
-// number of up to three digits (404, an exit code) or a CamelCase word (a gRPC
-// NotFound). One-time codes are four or more digits or an opaque string; the
-// OAuth ?code= in a URL query is decided by RedactQuery, not here.
+// number of up to three digits (404, -1, an exit code), a gRPC status name
+// (NotFound) or a snake_case identifier (an API error code). One-time codes
+// are four or more digits or an opaque string; the OAuth ?code= in a URL query
+// is decided by RedactQuery, not here. Punctuation that ends a sentence or
+// closes a bracket is not part of the value.
 func benignCode(key, val string) bool {
-	if strings.ToLower(keySeparators.Replace(key)) != "code" || val == "" {
+	if strings.ToLower(keySeparators.Replace(key)) != "code" {
 		return false
 	}
-	if len(val) <= 3 && strings.Trim(val, "0123456789") == "" {
+	val = strings.TrimRight(val, ").,]}!?;:")
+	if val == "" || len(val) > 40 {
+		return false
+	}
+	if digits := strings.TrimPrefix(val, "-"); len(digits) <= 3 && digits != "" && strings.Trim(digits, "0123456789") == "" {
 		return true
 	}
-	return len(val) <= 40 && reCodeWord.MatchString(val)
+	return grpcCodes[val] || reCodeSnake.MatchString(val)
 }
 
 // tokenCount reports a count of tokens (max_tokens=4096, input_tokens=5): a
