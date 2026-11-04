@@ -151,6 +151,37 @@ func opaqueRun(r string) bool {
 	return mixed || len(r) >= 16
 }
 
+// maxMapKeyBytes bounds a map key before it is scrubbed and stored: a key is a
+// name, and the walk's byte budget does not cover it.
+const maxMapKeyBytes = 256
+
+// scrubMapKey renders a map key for the log. A key holding a URL is reduced to
+// its host (a path can be the credential); any other key is scrubbed as text.
+func scrubMapKey(raw string) string {
+	if len(raw) > maxMapKeyBytes {
+		raw = raw[:maxMapKeyBytes] + "…"
+	}
+	if strings.Contains(raw, "://") {
+		return URLHost(raw)
+	}
+	return RedactText(raw)
+}
+
+// uniqueKey returns name, or name#n for the first n that is free in out. The
+// key is at most maxMapKeyBytes, so the probe is cheap.
+func uniqueKey(out map[string]any, name string) string {
+	if _, taken := out[name]; !taken {
+		return name
+	}
+	for n := 2; ; n++ {
+		if c := fmt.Sprintf("%s#%d", name, n); out[c] == nil {
+			if _, taken := out[c]; !taken {
+				return c
+			}
+		}
+	}
+}
+
 // maxKeyLen bounds a key looked for to the left of "=": real names are short,
 // and the bound keeps a long run of key characters from costing a rescan.
 const maxKeyLen = 64
@@ -555,7 +586,7 @@ func sanitize(v reflect.Value, depth int, budget *walkBudget) any {
 		entries := make([]entry, 0, min(v.Len(), maxMapRead))
 		for it := v.MapRange(); it.Next() && len(entries) < maxMapRead; {
 			// fmt reports a key whose String method panics rather than panicking.
-			entries = append(entries, entry{RedactText(fmt.Sprint(it.Key().Interface())), it.Value()})
+			entries = append(entries, entry{scrubMapKey(fmt.Sprint(it.Key().Interface())), it.Value()})
 		}
 		sort.Slice(entries, func(i, j int) bool { return entries[i].name < entries[j].name })
 		out := make(map[string]any, min(len(entries), maxWalkWidth+1))
@@ -563,14 +594,8 @@ func sanitize(v reflect.Value, depth int, budget *walkBudget) any {
 			if i == maxWalkWidth {
 				break
 			}
-			name := e.name
 			// Scrubbing can make two keys equal; keep both entries.
-			for n := 2; ; n++ {
-				if _, taken := out[name]; !taken {
-					break
-				}
-				name = fmt.Sprintf("%s#%d", e.name, n)
-			}
+			name := uniqueKey(out, e.name)
 			if credentialKey(e.name) && !scalar(e.val) || numericSecret(e.name, e.val) {
 				out[name] = redacted
 				continue
@@ -578,7 +603,7 @@ func sanitize(v reflect.Value, depth int, budget *walkBudget) any {
 			out[name] = sanitize(e.val, depth+1, budget)
 		}
 		if v.Len() > maxWalkWidth {
-			out["…"] = fmt.Sprintf("%d more", v.Len()-maxWalkWidth)
+			out[uniqueKey(out, "…")] = fmt.Sprintf("%d more", v.Len()-maxWalkWidth)
 		}
 		return out
 	case reflect.Struct:

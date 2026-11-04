@@ -289,10 +289,10 @@ func redactAttr(groups []string, a slog.Attr) slog.Attr {
 	if a.Value.Kind() != slog.KindString {
 		return a
 	}
-	if k := strings.ToLower(a.Key); strings.HasSuffix(k, "_url") || strings.HasSuffix(k, "url") && len(k) > 3 && !strings.ContainsAny(k, "_-.") {
-		// webhook_url, callbackUrl: a URL attribute is reduced to its host. A
-		// value that is not a URL (failureUrl=timeout) is text and stays.
-		if v := a.Value.String(); strings.Contains(v, "://") {
+	if k := strings.ToLower(a.Key); strings.HasSuffix(k, "url") && len(k) > 3 {
+		// webhook_url, callbackUrl, http.url: a URL attribute is reduced to its
+		// host. A value with no / or ? in it (failureUrl=timeout) is plain text and stays.
+		if v := a.Value.String(); strings.ContainsAny(v, "/?") {
 			a.Value = slog.StringValue(URLHost(v))
 		}
 	}

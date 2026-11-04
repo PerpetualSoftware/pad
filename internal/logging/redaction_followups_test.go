@@ -1114,3 +1114,57 @@ func TestRound10MapKeyCollisionsAndNonURLAttrs(t *testing.T) {
 		t.Errorf("webhook_url leaked: %v", a)
 	}
 }
+
+func TestRound11SchemelessURLsMapKeyURLsAndMarker(t *testing.T) {
+	for _, key := range []string{"webhook_url", "webhook-url", "http.url", "callbackUrl"} {
+		a := redactAttr(nil, slog.String(key, "hooks.slack.com/services/T0/B0/SECRET"))
+		if strings.Contains(a.Value.String(), "SECRET") {
+			t.Errorf("%s leaked: %v", key, a)
+		}
+	}
+	b := &walkBudget{nodes: 1000, bytes: 1 << 20}
+	if m, _ := sanitize(reflect.ValueOf(map[string]int{"https://hooks.slack.com/services/T0/B0/SECRET": 1}), 0, b).(map[string]any); len(m) != 1 {
+		t.Errorf("url key: %v", m)
+	} else {
+		for k := range m {
+			if strings.Contains(k, "SECRET") {
+				t.Errorf("url key leaked: %q", k)
+			}
+		}
+	}
+	// 256 distinct long keys that scrub to one name: bounded names, all entries kept.
+	long := map[string]int{}
+	for i := 0; i < 256; i++ {
+		long[strings.Repeat("k", 60000)+fmt.Sprintf("?token=%d", i)] = i
+	}
+	start := time.Now()
+	m, _ := sanitize(reflect.ValueOf(long), 0, &walkBudget{nodes: 10000, bytes: 1 << 20}).(map[string]any)
+	if len(m) != 1 && len(m) != 256 {
+		t.Errorf("entries: %d", len(m))
+	}
+	for k := range m {
+		if len(k) > maxMapKeyBytes+16 {
+			t.Fatalf("key not bounded: %d bytes", len(k))
+		}
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Errorf("collision handling too slow: %v", time.Since(start))
+	}
+	// A real "…" key must not be overwritten by the truncation marker. It sorts
+	// among the first entries here (ASCII keys are dropped instead), so use a
+	// map small enough that "…" is kept and the width cap still truncates.
+	mk := map[string]int{"…": 7}
+	for i := 0; i < maxWalkWidth+5; i++ {
+		mk[fmt.Sprintf("\x01%04d", i)] = i
+	}
+	m2, _ := sanitize(reflect.ValueOf(mk), 0, &walkBudget{nodes: 100000, bytes: 1 << 20}).(map[string]any)
+	more := false
+	for _, v := range m2 {
+		if sv, ok := v.(string); ok && strings.HasSuffix(sv, " more") {
+			more = true
+		}
+	}
+	if !more || m2["…"] == nil && m2["…#2"] == nil {
+		t.Errorf("marker or entry lost: more=%v entries=%d", more, len(m2))
+	}
+}
