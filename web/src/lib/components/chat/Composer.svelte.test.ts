@@ -279,3 +279,42 @@ describe('draft keeper', () => {
 		expect(sessionStorage.length).toBe(0);
 	});
 });
+
+// BUG-4312: send() empties the box before it awaits onSend. A send that throws,
+// or that never started, used to leave the person with an empty box, no bubble
+// and no word: the message was lost without a trace.
+describe('a send that does not happen', () => {
+	it('puts the text back with a notice when onSend throws', async () => {
+		const onSend = vi.fn<(b: string, r?: number) => Promise<SendOutcome>>().mockRejectedValue(new Error('boom'));
+		const { box, send, container } = mount({ onSend });
+		await type(box, 'do not lose me');
+		await fireEvent.click(send);
+		await tick();
+		expect(onSend).toHaveBeenCalledTimes(1);
+		expect(box.value).toBe('do not lose me');
+		expect(container.querySelector('[role=status]')!.textContent).toContain('could not be sent');
+	});
+
+	it('puts the text back with a notice when the send never started', async () => {
+		const onSend = vi.fn<(b: string, r?: number) => Promise<SendOutcome>>().mockResolvedValue('not_started');
+		const { box, send, container } = mount({ onSend });
+		await type(box, 'still here');
+		await fireEvent.click(send);
+		await tick();
+		expect(box.value).toBe('still here');
+		expect(container.querySelector('[role=status]')!.textContent).toContain('not ready');
+	});
+
+	it('keeps text typed after the failed send, ahead of the restored one', async () => {
+		let reject!: (e: Error) => void;
+		const onSend = vi.fn<(b: string, r?: number) => Promise<SendOutcome>>().mockReturnValue(new Promise((_, rej) => (reject = rej)));
+		const { box, send } = mount({ onSend });
+		await type(box, 'first');
+		await fireEvent.click(send);
+		await type(box, 'second');
+		reject(new Error('boom'));
+		await tick();
+		await tick();
+		expect(box.value).toBe('first\nsecond');
+	});
+});

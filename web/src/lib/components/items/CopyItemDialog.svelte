@@ -44,6 +44,7 @@ their own recovery paths; swallowing those into outcome-unknown would send the
 user hunting for an item that provably does not exist.
 -->
 <script lang="ts">
+	import { newOpKey } from '$lib/opKey';
 	import { COPY_PREFLIGHT_DEBOUNCE_MS } from '$lib/items/copyPreflightTiming';
 	import { tick, untrack } from 'svelte';
 	import Modal from '$lib/components/common/Modal.svelte';
@@ -397,7 +398,7 @@ user hunting for an item that provably does not exist.
 		submitting = false;
 		submitError = '';
 		outcomeUnknown = '';
-		opKey = crypto.randomUUID();
+		opKey = newOpKey();
 		staleReview = '';
 		destinationLost = '';
 		void loadWorkspaces();

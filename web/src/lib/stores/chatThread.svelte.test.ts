@@ -684,6 +684,36 @@ async function readyThread(rows = 3) {
 	await thread.open(1);
 }
 
+describe('send without a secure context (BUG-4312)', () => {
+	// Plain http on a LAN address is not a secure context: crypto.randomUUID is absent.
+	function withoutRandomUUID() {
+		Object.defineProperty(crypto, 'randomUUID', { value: undefined, configurable: true });
+	}
+	afterEach(() => {
+		Reflect.deleteProperty(crypto, 'randomUUID');
+	});
+
+	// Red before the fix: send() threw "crypto.randomUUID is not a function"; nothing was posted.
+	it('sends, with a usable op_key, when crypto.randomUUID does not exist', async () => {
+		await readyThread();
+		wireSend();
+		withoutRandomUUID();
+		expect(await thread.send('hello over http')).toBe('sent');
+		expect(h.sendMessage).toHaveBeenCalledTimes(1);
+		const { op_key } = h.sendMessage.mock.calls[0][1] as { op_key: string };
+		expect(op_key.length).toBeGreaterThan(8);
+		expect(op_key.length).toBeLessThanOrEqual(128);
+		expect(thread.messages.at(-1)).toMatchObject({ body: 'hello over http', mine: true });
+	});
+
+	// Red before the fix: an unready thread answered 'stale', which the composer treats as "gone", not "kept".
+	it('says the send never started when the thread is not ready, so the text comes back', async () => {
+		wireSend();
+		expect(await thread.send('too early')).toBe('not_started');
+		expect(h.sendMessage).not.toHaveBeenCalled();
+	});
+});
+
 describe('send', () => {
 	// U21: red if resolvePending appends instead of merging by seq (B2).
 	it('shows a sending bubble at once and replaces it with the confirmed row', async () => {

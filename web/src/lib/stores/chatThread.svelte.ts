@@ -50,6 +50,7 @@ import { ChatWindow, mergeBySeq, unreadDividerIndex, type WindowItem } from '$li
 import { authStore } from '$lib/stores/auth.svelte';
 import { chatStore } from '$lib/stores/chat.svelte';
 import { refKey } from '$lib/chat/refs';
+import { newOpKey } from '$lib/opKey';
 import type { ChatConversationSummary, ChatMessage, ChatMessagesResponse, ChatRef } from '$lib/types';
 
 /** Rows in the first page when nothing is unread, and in a load-earlier page. */
@@ -66,10 +67,11 @@ export type ThreadStatus = 'loading' | 'ready' | 'notFound' | 'failed';
 /**
  * How a send ended. `sent`: confirmed. `failed`: the bubble stays for Retry.
  * `stale`: the thread moved on (reopened, disposed, another identity); nothing
- * is left to show. The rest are definite refusals with no bubble: the caller
- * gets its text back.
+ * is left to show. `not_started`: the thread was not ready, so nothing was sent
+ * and nothing was shown (BUG-4312). The rest are definite refusals with no
+ * bubble: the caller gets its text back.
  */
-export type SendOutcome = 'sent' | 'failed' | 'stale' | SendBlock | 'reply_deleted' | 'reply_missing';
+export type SendOutcome = 'sent' | 'failed' | 'stale' | 'not_started' | SendBlock | 'reply_deleted' | 'reply_missing';
 
 export class ChatThread {
 	conversation = $state<ChatConversationSummary | null>(null);
@@ -369,8 +371,8 @@ export class ChatThread {
 	 */
 	async send(body: string, replyToSeq?: number): Promise<SendOutcome> {
 		const n = this.#n;
-		if (n === null || this.status !== 'ready') return 'stale';
-		const opKey = crypto.randomUUID();
+		if (n === null || this.status !== 'ready') return 'not_started';
+		const opKey = newOpKey();
 		const block = validateDraft(body, replyToSeq, opKey);
 		if (block) return block;
 		this.#win.addPending(opKey, body, replyToSeq);

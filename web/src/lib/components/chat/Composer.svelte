@@ -45,7 +45,7 @@
 	}
 
 	/** A refused send's text comes back, ahead of anything typed since, with its notice. The page uses it for a refused Retry too (r7 M1). */
-	export function restore(body: string, outcome: Exclude<SendOutcome, 'sent' | 'failed' | 'stale'>) {
+	export function restore(body: string, outcome: Exclude<SendOutcome, 'sent' | 'failed' | 'stale'> | 'send_error') {
 		text = text ? `${body}\n${text}` : body;
 		if (outcome !== 'empty') notice = NOTICE[outcome];
 	}
@@ -79,9 +79,12 @@
 		notice = '';
 		const pending = { body };
 		inFlight.push(pending);
-		let outcome: SendOutcome;
+		let outcome: SendOutcome | 'send_error';
 		try {
 			outcome = await onSend(body, target?.seq);
+		} catch {
+			// The box is already empty: a send that threw must not take the text with it (BUG-4312).
+			outcome = 'send_error';
 		} finally {
 			inFlight.splice(inFlight.indexOf(pending), 1);
 		}

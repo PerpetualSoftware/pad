@@ -96,6 +96,7 @@ could not read the presence registry to count it. Null means unknown, not zero
 always a broadcast that went out.
 -->
 <script lang="ts">
+	import { newOpKey } from '$lib/opKey';
 	import { untrack } from 'svelte';
 	import Modal from '$lib/components/common/Modal.svelte';
 	import Button from '$lib/components/common/Button.svelte';
@@ -397,7 +398,7 @@ always a broadcast that went out.
 			sending = false;
 			sendError = '';
 			outcomeUnknown = false;
-			opKey = crypto.randomUUID();
+			opKey = newOpKey();
 			sessions = [];
 			presenceState = 'checking';
 			presenceReason = '';
@@ -529,7 +530,7 @@ always a broadcast that went out.
 				if (!stillMine()) return;
 				// The server stored this miss under `key`; a resend under it
 				// would replay the miss (or 422 for another target).
-				opKey = crypto.randomUUID();
+				opKey = newOpKey();
 				selectedSessionId = '';
 				void refreshPresence(gen);
 				return;
