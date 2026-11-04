@@ -299,18 +299,27 @@ func TestRemindSubcommandsAreNestedLeaves(t *testing.T) {
 // building a fresh command tree redefines each flag and resets its value, so one
 // invocation never leaks into the next.
 func TestRemindScheduleFlagsDoNotLeakBetweenInvocations(t *testing.T) {
-	h, calls := recordingStub(func(c recordedCall) (int, string) { return 200, `{}` })
-	first := tzCLIWithLocal(t, h, time.UTC)
-	if _, _, err := tzRun(t, first, "item", "remind", "TASK-5", "--start", "2026-11-09T09:00", "--every", "daily"); err != nil {
-		t.Fatal(err)
-	}
-	n := len(calls())
-	second := tzCLIWithLocal(t, h, time.UTC)
-	_, _, err := tzRun(t, second, "item", "remind", "TASK-5", "--every", "daily")
-	if err == nil || !strings.Contains(err.Error(), "--start") {
-		t.Fatalf("a second invocation with only --every = %v; want the --start requirement", err)
-	}
-	if len(calls()) != n {
-		t.Errorf("the second invocation sent a request: %d calls, want %d", len(calls()), n)
-	}
+	// Each invocation runs in its own subtest: tzCLIWithLocal sets the global
+	// time.Local and restores it on cleanup, so two in one function would race.
+	t.Run("first sets --start", func(t *testing.T) {
+		h, calls := recordingStub(func(c recordedCall) (int, string) { return 200, `{}` })
+		root := tzCLIWithLocal(t, h, time.UTC)
+		if _, _, err := tzRun(t, root, "item", "remind", "TASK-5", "--start", "2026-11-09T09:00", "--every", "daily"); err != nil {
+			t.Fatal(err)
+		}
+		if len(calls()) == 0 {
+			t.Fatal("the first invocation sent nothing")
+		}
+	})
+	t.Run("second gives only --every", func(t *testing.T) {
+		h, calls := recordingStub(func(c recordedCall) (int, string) { return 200, `{}` })
+		root := tzCLIWithLocal(t, h, time.UTC)
+		_, _, err := tzRun(t, root, "item", "remind", "TASK-5", "--every", "daily")
+		if err == nil || !strings.Contains(err.Error(), "--start") {
+			t.Fatalf("a second invocation with only --every = %v; want the --start requirement", err)
+		}
+		if n := len(calls()); n != 0 {
+			t.Errorf("the second invocation sent %d requests, want none", n)
+		}
+	})
 }
