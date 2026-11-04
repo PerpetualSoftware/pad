@@ -198,11 +198,12 @@ func TestScheduleMissedNeverWalksBeforeTheAnchor(t *testing.T) {
 	t.Parallel()
 	f := newSchedFixture(t)
 	sc, err := f.s.createScheduleAt(f.ws.ID, f.item.ID, models.ScheduleCreate{
-		Kind: "check", Dtstart: "2000-01-01T09:00", Tz: "UTC", Rrule: "FREQ=MINUTELY;BYHOUR=9",
+		Kind: "check", Dtstart: "2000-01-01T09:00", Tz: "UTC", Rrule: "FREQ=DAILY;BYHOUR=9",
 	}, time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatalf("setup: %v", err)
 	}
+	f.seedRule(t, sc.ID, "FREQ=MINUTELY;BYHOUR=9") // under the floor: only a stored row can be
 	o := time.Date(2026, 10, 28, 9, 0, 0, 0, time.UTC)
 	f.force(t, sc, "2026-10-28T09:00:00", o.Format(time.RFC3339), o.Format(time.RFC3339))
 	f.exec(t, `UPDATE item_schedules SET anchor_wall = ? WHERE id = ?`, "2026-10-28T09:00:00", sc.ID)

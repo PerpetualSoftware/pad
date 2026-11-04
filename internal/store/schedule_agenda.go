@@ -150,8 +150,34 @@ func (s *Store) agendaOccurrences(scheduleID string, from, to time.Time) ([]agen
 // in the caller's zone) and by the INSTANT for a pinned timed one, whose elapsed
 // rules can repeat a wall.
 func (s *Store) ExpandAgenda(sc *models.ItemSchedule, view *time.Location, from, to, now time.Time) (entries []AgendaEntry, truncated bool, unavailable string, err error) {
+	x, err := s.ExpandAgendaCut(sc, view, from, to, now)
+	return x.Entries, x.Truncated, x.Unavailable, err
+}
+
+// AgendaExpansion is one schedule's expansion with where it stopped (TASK-4236).
+type AgendaExpansion struct {
+	Entries     []AgendaEntry
+	Truncated   bool
+	Unavailable string
+	// NextFrom is set when a cut ordered by time fired: every instant before it
+	// was examined, and the entries are those before it. Zero when the schedule
+	// was not cut, or when it could not be expanded at all (see Unexpanded).
+	NextFrom time.Time
+	// Unexpanded is true when a scan, time or stall cap stopped the expansion
+	// with nothing promised in the window: the schedule is named to the client,
+	// never dropped silently. Truncated is true with it.
+	Unexpanded bool
+	// Unpromised is true when a time or stall cap hit with nothing examined and
+	// no resume point: the schedule is unavailable and truncated, and the
+	// response can promise no next_from.
+	Unpromised bool
+}
+
+// ExpandAgendaCut is ExpandAgenda with the resume instant of any time-ordered
+// cut: the per-schedule entry cut, the instance cap, CapTime and CapStall.
+func (s *Store) ExpandAgendaCut(sc *models.ItemSchedule, view *time.Location, from, to, now time.Time) (AgendaExpansion, error) {
 	if sc.ErrorCode != nil {
-		return nil, false, *sc.ErrorCode, nil
+		return AgendaExpansion{Unavailable: *sc.ErrorCode}, nil
 	}
 	start := sc.Dtstart
 	if sc.AnchorWall != nil {
@@ -159,48 +185,82 @@ func (s *Store) ExpandAgenda(sc *models.ItemSchedule, view *time.Location, from,
 	}
 	rows, err := s.agendaOccurrences(sc.ID, from, to)
 	if err != nil {
-		return nil, false, "", err
+		return AgendaExpansion{}, err
 	}
+	var x AgendaExpansion
 	c, err := compileScheduleSpec(storedSpecInput(sc, start))
 	if err == nil {
-		entries, truncated, err = s.expandCompiled(c, sc, rows, view, from, to, now)
+		x, err = s.expandCompiled(c, sc, rows, view, from, to, now)
+	}
+	if x.Unexpanded {
+		return AgendaExpansion{Truncated: true, Unexpanded: true}, nil
 	}
 	if code := ScheduleErrorCode(err); code != "" {
-		return nil, false, code, nil
+		if code == "cap_time" || code == "cap_stall" {
+			// A cap with nothing examined: truncated, and no instant can be promised.
+			return AgendaExpansion{Unavailable: code, Truncated: true, Unpromised: true}, nil
+		}
+		return AgendaExpansion{Unavailable: code}, nil
 	}
 	if err != nil {
 		slog.Warn("agenda: schedule unreadable", "schedule_id", sc.ID, "error_class", fmt.Sprintf("%T", err))
-		return nil, false, "internal", nil
+		return AgendaExpansion{Unavailable: "internal"}, nil
 	}
-	if len(entries) > AgendaMaxPerSchedule {
-		entries, truncated = entries[:AgendaMaxPerSchedule], true
+	if len(x.Entries) > AgendaMaxPerSchedule {
+		// The first entry not shown is where a client resumes.
+		x.NextFrom = earlier(x.NextFrom, x.Entries[AgendaMaxPerSchedule].At)
+		x.Entries, x.Truncated = x.Entries[:AgendaMaxPerSchedule], true
 	}
-	return entries, truncated, "", nil
+	return x, nil
 }
 
-func (s *Store) expandCompiled(c *schedule.Compiled, sc *models.ItemSchedule, rows []agendaRow, view *time.Location, from, to, now time.Time) ([]AgendaEntry, bool, error) {
+// earlier is the earlier of two instants, a zero one counting as absent.
+func earlier(a, b time.Time) time.Time {
+	if a.IsZero() || (!b.IsZero() && b.Before(a)) {
+		return b
+	}
+	return a
+}
+
+func (s *Store) expandCompiled(c *schedule.Compiled, sc *models.ItemSchedule, rows []agendaRow, view *time.Location, from, to, now time.Time) (AgendaExpansion, error) {
 	loc := view
 	if !sc.Floating {
 		var err error
 		if loc, err = time.LoadLocation(c.Spec().Zone); err != nil {
-			return nil, false, fmt.Errorf("load schedule zone: %w", err)
+			return AgendaExpansion{}, fmt.Errorf("load schedule zone: %w", err)
 		}
 	}
 	lo := from
 	if floor := schedule.Resolve(loc, c.Spec().Start); floor.After(lo) {
 		lo = floor // nothing before the walk's own start
 	}
-	truncated := false
+	var x AgendaExpansion
 	occs, err := c.Between(lo, to, view, schedule.DefaultLimits)
 	var capErr *schedule.CapError
-	if errors.As(err, &capErr) && capErr.Kind == schedule.CapInstances {
-		truncated, err = true, nil
+	if errors.As(err, &capErr) {
+		switch {
+		case capErr.Kind == schedule.CapInstances:
+			// Between returned the first MaxInstances; all instants up to the last
+			// one were examined, so a client resumes one second past it.
+			x.Truncated, err = true, nil
+			if n := len(occs); n > 0 {
+				x.NextFrom = occs[n-1].At.Add(time.Second)
+			}
+		case (capErr.Kind == schedule.CapTime || capErr.Kind == schedule.CapStall) && !capErr.Resume.IsZero():
+			x.Truncated, x.NextFrom, err = true, capErr.Resume, nil
+		case capErr.Kind == schedule.CapScan:
+			// The rule cannot be walked to the window inside the scan limit; nothing
+			// in the window was examined. The schedule is named, not dropped.
+			return AgendaExpansion{Truncated: true, Unexpanded: true}, nil
+		}
+		// A time or stall cap with no resume point falls through as the error: the
+		// schedule is unavailable with its cap code, as it was before.
 	}
 	if err != nil {
-		return nil, false, err
+		return AgendaExpansion{}, err
 	}
-	entries, err := s.agendaEntries(sc, occs, rows, view, loc, lo, from, to, now)
-	return entries, truncated, err
+	x.Entries, err = s.agendaEntries(sc, occs, rows, view, loc, lo, from, to, now)
+	return x, err
 }
 
 // agendaEntries states each occurrence. loc is the zone the schedule's walls

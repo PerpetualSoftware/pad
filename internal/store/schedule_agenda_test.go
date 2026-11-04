@@ -188,7 +188,9 @@ func TestAgendaAllDayAtIsLocalMidnight(t *testing.T) {
 func TestAgendaDegradesPerSchedule(t *testing.T) {
 	t.Parallel()
 	f := newSchedFixture(t)
-	runaway, _ := f.mk(t, models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-01T00:00", Tz: "UTC", Rrule: "FREQ=MINUTELY"}, "2026-10-01T00:00:00Z")
+	runaway, _ := f.mk(t, models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-01T00:00", Tz: "UTC", Rrule: "FREQ=HOURLY"}, "2026-10-01T00:00:00Z")
+	sc0, _ := f.s.GetSchedule(f.ws.ID, runaway.ID)
+	f.seedRule(t, sc0.ID, "FREQ=MINUTELY") // under the floor: only a stored row can be
 	sc, _ := f.s.GetSchedule(f.ws.ID, runaway.ID)
 	es, truncated, unavailable, err := f.s.ExpandAgenda(sc, time.UTC, rt("2026-10-02T00:00:00Z"), rt("2026-12-30T00:00:00Z"), rt("2026-10-01T00:00:00Z"))
 	if err != nil {
