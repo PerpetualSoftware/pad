@@ -1168,3 +1168,68 @@ func TestRound11SchemelessURLsMapKeyURLsAndMarker(t *testing.T) {
 		t.Errorf("marker or entry lost: more=%v entries=%d", more, len(m2))
 	}
 }
+
+func TestFinalFoldInsCredentialNamesAndURLNamesInWalks(t *testing.T) {
+	b := func() *walkBudget { return &walkBudget{nodes: 10000, bytes: 1 << 20} }
+	type S struct {
+		Password int
+		Secret   bool
+		Token    float64
+		Pin      uint
+		Cookie   map[string]string
+		ApiKey   struct{ V string }
+		Code     int
+		Tokens   int
+		Retries  int
+		HookURL  string
+		Note     string
+	}
+	got, _ := sanitize(reflect.ValueOf(S{Password: 12345678, Secret: true, Token: 1.5, Pin: 4829, Cookie: map[string]string{"a": "b"},
+		Code: 404, Tokens: 12, Retries: 3, HookURL: "https://hooks.slack.com/services/T/B/SECRET", Note: "ok"}), 0, b()).(map[string]any)
+	for _, k := range []string{"Password", "Secret", "Token", "Pin", "Cookie", "ApiKey"} {
+		if got[k] != redacted {
+			t.Errorf("struct field %s not redacted: %v", k, got[k])
+		}
+	}
+	if got["Code"] != 404 || got["Tokens"] != 12 || got["Retries"] != 3 || got["Note"] != "ok" {
+		t.Errorf("diagnostics lost: %v", got)
+	}
+	if v, _ := got["HookURL"].(string); strings.Contains(v, "SECRET") || v == "" {
+		t.Errorf("struct url field: %v", got["HookURL"])
+	}
+	mp, _ := sanitize(reflect.ValueOf(map[string]any{"secret": 99887766, "password": true, "token": 2.5, "input_tokens": 5,
+		"webhook_url": "https://hooks.slack.com/services/T/B/SECRET", "n": 1}), 0, b()).(map[string]any)
+	for _, k := range []string{"secret", "password", "token"} {
+		if mp[k] != redacted {
+			t.Errorf("map key %s not redacted: %v", k, mp[k])
+		}
+	}
+	if mp["input_tokens"] != 5 || mp["n"] != 1 {
+		t.Errorf("map diagnostics lost: %v", mp)
+	}
+	if v, _ := mp["webhook_url"].(string); strings.Contains(v, "SECRET") {
+		t.Errorf("map url: %v", mp["webhook_url"])
+	}
+	for _, a := range []slog.Attr{slog.Int("password", 1), slog.Bool("secret", true), slog.Float64("token", 1.5), slog.Uint64("pin", 4829)} {
+		if r := redactAttr(nil, a); r.Value.String() != redacted {
+			t.Errorf("attr %s: %v", a.Key, r)
+		}
+	}
+	for _, a := range []slog.Attr{slog.Int("input_tokens", 5), slog.Int("code", 404), slog.Int("retries", 3), slog.Bool("ok", true)} {
+		if r := redactAttr(nil, a); r.Value.String() != a.Value.String() {
+			t.Errorf("attr %s changed: %v", a.Key, r)
+		}
+	}
+}
+
+func TestMapKeyBytesCountTowardTheWalkBudget(t *testing.T) {
+	m := map[string]int{}
+	for i := 0; i < 600; i++ {
+		m[fmt.Sprintf("%0200d", i)] = i
+	}
+	budget := &walkBudget{nodes: 10000, bytes: 10000}
+	out, _ := sanitize(reflect.ValueOf(m), 0, budget).(map[string]any)
+	if budget.bytes < 0 || len(out) > 51 {
+		t.Errorf("keys not charged: %d entries, %d bytes left", len(out), budget.bytes)
+	}
+}

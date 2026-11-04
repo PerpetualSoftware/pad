@@ -423,10 +423,10 @@ func numericSecretKey(key string) bool {
 	return false
 }
 
-// smallCode reports a bare code key with a value of up to three digits: a
-// status or an exit code, as benignCode accepts in text.
+// smallCode reports a code key (code, http_status_code) with a value of up to
+// three digits: a status or an exit code, as benignCode accepts in text.
 func smallCode(key string, n int64) bool {
-	return strings.ToLower(keySeparators.Replace(key)) == "code" && n > -1000 && n < 1000
+	return strings.HasSuffix(strings.ToLower(keySeparators.Replace(key)), "code") && n > -1000 && n < 1000
 }
 
 // scalar reports whether v is a number or bool: a count or a measurement,
@@ -447,7 +447,9 @@ func scalar(v reflect.Value) bool {
 	return false
 }
 
-// numericSecret reports an integer under a numeric-secret name.
+// numericSecret reports a number or bool under a credential name: slog.Int("otp", 482913),
+// {"password": 123456}, Secret bool. Two exceptions keep diagnostics: a count
+// of tokens (input_tokens=5) and a bare code that is a status (code=404).
 func numericSecret(key string, v reflect.Value) bool {
 	for v.Kind() == reflect.Interface || v.Kind() == reflect.Pointer {
 		if v.IsNil() {
@@ -455,16 +457,38 @@ func numericSecret(key string, v reflect.Value) bool {
 		}
 		v = v.Elem()
 	}
-	if !numericSecretKey(key) {
+	var n int64
+	isInt := false
+	switch v.Kind() {
+	case reflect.Bool, reflect.Float32, reflect.Float64:
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		n, isInt = v.Int(), true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		n, isInt = int64(min(v.Uint(), 1<<40)), true
+	default:
 		return false
 	}
-	switch v.Kind() {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return !smallCode(key, v.Int())
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return !smallCode(key, int64(min(v.Uint(), 1<<40)))
+	if !credentialKey(key) && !numericSecretKey(key) {
+		return false
 	}
-	return false
+	if isInt && (smallCode(key, n) || strings.HasSuffix(strings.ToLower(keySeparators.Replace(key)), "tokens")) {
+		return false
+	}
+	return true
+}
+
+// stringValue returns the string v holds (through interfaces and pointers).
+func stringValue(v reflect.Value) (string, bool) {
+	for v.Kind() == reflect.Interface || v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			return "", false
+		}
+		v = v.Elem()
+	}
+	if v.Kind() == reflect.String {
+		return v.String(), true
+	}
+	return "", false
 }
 
 // maxWalkBytes bounds the text a walk scrubs in total: 2000 nodes of 64 KiB
@@ -586,7 +610,14 @@ func sanitize(v reflect.Value, depth int, budget *walkBudget) any {
 		entries := make([]entry, 0, min(v.Len(), maxMapRead))
 		for it := v.MapRange(); it.Next() && len(entries) < maxMapRead; {
 			// fmt reports a key whose String method panics rather than panicking.
-			entries = append(entries, entry{scrubMapKey(fmt.Sprint(it.Key().Interface())), it.Value()})
+			raw := fmt.Sprint(it.Key().Interface())
+			// A key's bytes count toward the walk, as a value's do.
+			cost := min(len(raw), maxMapKeyBytes)
+			if budget.bytes < cost {
+				break
+			}
+			budget.bytes -= cost
+			entries = append(entries, entry{scrubMapKey(raw), it.Value()})
 		}
 		sort.Slice(entries, func(i, j int) bool { return entries[i].name < entries[j].name })
 		out := make(map[string]any, min(len(entries), maxWalkWidth+1))
@@ -598,6 +629,10 @@ func sanitize(v reflect.Value, depth int, budget *walkBudget) any {
 			name := uniqueKey(out, e.name)
 			if credentialKey(e.name) && !scalar(e.val) || numericSecret(e.name, e.val) {
 				out[name] = redacted
+				continue
+			}
+			if sv, ok := stringValue(e.val); ok && urlNamed(e.name) {
+				out[name] = RedactText(reduceURLText(sv))
 				continue
 			}
 			out[name] = sanitize(e.val, depth+1, budget)
@@ -621,8 +656,13 @@ func sanitize(v reflect.Value, depth int, budget *walkBudget) any {
 			if tag != "" {
 				name = tag
 			}
-			if (credentialKey(sf.Name) || credentialKey(name)) && !scalar(v.Field(i)) || numericSecret(name, v.Field(i)) {
+			f := v.Field(i)
+			if (credentialKey(sf.Name) || credentialKey(name)) && !scalar(f) || numericSecret(name, f) || numericSecret(sf.Name, f) {
 				out[name] = redacted
+				continue
+			}
+			if sv, ok := stringValue(f); ok && (urlNamed(name) || urlNamed(sf.Name)) {
+				out[name] = RedactText(reduceURLText(sv))
 				continue
 			}
 			out[name] = sanitize(v.Field(i), depth+1, budget)

@@ -238,6 +238,21 @@ func ErrorType(err error) string {
 	return fmt.Sprintf("%T", err)
 }
 
+// urlNamed reports a name that holds a URL (webhook_url, callbackUrl, http.url).
+func urlNamed(key string) bool {
+	k := strings.ToLower(key)
+	return strings.HasSuffix(k, "url") && len(k) > 3
+}
+
+// reduceURLText reduces a URL value to its host. A value with no / or ? in it
+// (failureUrl=timeout) is plain text and stays.
+func reduceURLText(v string) string {
+	if strings.ContainsAny(v, "/?") {
+		return URLHost(v)
+	}
+	return v
+}
+
 // redactAttr is a backstop for structured application logs, including With
 // attributes and groups. Call sites handling external input should still use
 // the helpers so they are safe with a custom slog handler as well.
@@ -251,9 +266,20 @@ func redactAttr(groups []string, a slog.Attr) slog.Attr {
 	// credential (input_tokens, access_tokens swept, http_status_code).
 	switch a.Value.Kind() {
 	case slog.KindInt64, slog.KindUint64, slog.KindFloat64, slog.KindBool, slog.KindDuration, slog.KindTime:
-		// A one-time code or PIN is a number too: slog.Int("otp", 482913).
-		if a.Value.Kind() == slog.KindInt64 && numericSecretKey(a.Key) && !smallCode(a.Key, a.Value.Int64()) ||
-			a.Value.Kind() == slog.KindUint64 && numericSecretKey(a.Key) && !smallCode(a.Key, int64(min(a.Value.Uint64(), 1<<40))) {
+		// A number or bool under a credential name is a credential too
+		// (slog.Int("otp", 482913)); a count of tokens and a status code are not.
+		var rv reflect.Value
+		switch a.Value.Kind() {
+		case slog.KindInt64:
+			rv = reflect.ValueOf(a.Value.Int64())
+		case slog.KindUint64:
+			rv = reflect.ValueOf(a.Value.Uint64())
+		case slog.KindFloat64:
+			rv = reflect.ValueOf(a.Value.Float64())
+		case slog.KindBool:
+			rv = reflect.ValueOf(a.Value.Bool())
+		}
+		if rv.IsValid() && numericSecret(a.Key, rv) {
 			return slog.String(a.Key, redacted)
 		}
 		return a
@@ -289,12 +315,8 @@ func redactAttr(groups []string, a slog.Attr) slog.Attr {
 	if a.Value.Kind() != slog.KindString {
 		return a
 	}
-	if k := strings.ToLower(a.Key); strings.HasSuffix(k, "url") && len(k) > 3 {
-		// webhook_url, callbackUrl, http.url: a URL attribute is reduced to its
-		// host. A value with no / or ? in it (failureUrl=timeout) is plain text and stays.
-		if v := a.Value.String(); strings.ContainsAny(v, "/?") {
-			a.Value = slog.StringValue(URLHost(v))
-		}
+	if urlNamed(a.Key) {
+		a.Value = slog.StringValue(reduceURLText(a.Value.String()))
 	}
 	switch strings.ToLower(a.Key) {
 	case "path", "reset_path":
