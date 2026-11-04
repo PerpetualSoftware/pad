@@ -227,8 +227,8 @@ func redactKeyValues(s string) string {
 			break
 		}
 		// from..to is the value to mask; ve is where scanning resumes.
-		from, ve := k, k
-		var to int
+		from := k
+		var to, ve int
 		switch s[k] {
 		case '"', '\'':
 			from = k + 1
@@ -563,11 +563,19 @@ func sanitize(v reflect.Value, depth int, budget *walkBudget) any {
 			if i == maxWalkWidth {
 				break
 			}
+			name := e.name
+			// Scrubbing can make two keys equal; keep both entries.
+			for n := 2; ; n++ {
+				if _, taken := out[name]; !taken {
+					break
+				}
+				name = fmt.Sprintf("%s#%d", e.name, n)
+			}
 			if credentialKey(e.name) && !scalar(e.val) || numericSecret(e.name, e.val) {
-				out[e.name] = redacted
+				out[name] = redacted
 				continue
 			}
-			out[e.name] = sanitize(e.val, depth+1, budget)
+			out[name] = sanitize(e.val, depth+1, budget)
 		}
 		if v.Len() > maxWalkWidth {
 			out["…"] = fmt.Sprintf("%d more", v.Len()-maxWalkWidth)

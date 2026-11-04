@@ -290,8 +290,11 @@ func redactAttr(groups []string, a slog.Attr) slog.Attr {
 		return a
 	}
 	if k := strings.ToLower(a.Key); strings.HasSuffix(k, "_url") || strings.HasSuffix(k, "url") && len(k) > 3 && !strings.ContainsAny(k, "_-.") {
-		// webhook_url, callbackUrl: a URL attribute is reduced to its host.
-		a.Value = slog.StringValue(URLHost(a.Value.String()))
+		// webhook_url, callbackUrl: a URL attribute is reduced to its host. A
+		// value that is not a URL (failureUrl=timeout) is text and stays.
+		if v := a.Value.String(); strings.Contains(v, "://") {
+			a.Value = slog.StringValue(URLHost(v))
+		}
 	}
 	switch strings.ToLower(a.Key) {
 	case "path", "reset_path":

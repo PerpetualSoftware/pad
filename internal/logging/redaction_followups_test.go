@@ -1101,3 +1101,16 @@ func TestRound9KeylessDigitsMapKeysAndURLAttrs(t *testing.T) {
 		}
 	}
 }
+
+func TestRound10MapKeyCollisionsAndNonURLAttrs(t *testing.T) {
+	got := sanitize(reflect.ValueOf(map[string]int{"https://h/cb?token=x": 1, "https://h/cb?token=y": 2}), 0, &walkBudget{nodes: 100, bytes: 1 << 20})
+	if m, _ := got.(map[string]any); len(m) != 2 {
+		t.Errorf("colliding keys lost an entry: %v", got)
+	}
+	if a := redactAttr(nil, slog.String("failureUrl", "timeout")); a.Value.String() != "timeout" {
+		t.Errorf("non-URL value in a url-named attribute: %v", a)
+	}
+	if a := redactAttr(nil, slog.String("webhook_url", "https://hooks.slack.com/services/T0/B0/SECRET")); strings.Contains(a.Value.String(), "SECRET") {
+		t.Errorf("webhook_url leaked: %v", a)
+	}
+}
