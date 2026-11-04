@@ -100,7 +100,7 @@ skills/pad/SKILL.md    agent skill
 
 ## Gates
 
-- Pre-push on the exact head: `make check`, repo guard tests, `-race` on touched packages (internal/server, internal/store: `-run` the tests exercising the diff, report the count), full `npx vitest run` in `web/`, `go test -timeout=45m` (10m default is too short for internal/server). Exit status is the verdict.
+- Pre-push on the exact head: gofmt, `make lint`, the repo guard tests, `go test -timeout=45m` on the touched packages (the 10m default is too short for internal/server), `-race` on the touched packages (internal/server, internal/store: `-run` the tests exercising the diff, report the count; CI races only main and release-*), and if `web/` changed, `npm run check` plus vitest on the changed specs. CI's Go, Go (PostgreSQL) and Web jobs run the full suites on every push, so a local full `./...` or `make test-pg` is for debugging a CI red. `make check` already runs `go test ./...`: never chain it with `make test`. Exit status is the verdict.
 - Never mark ready or merge someone else's draft PR; leave it to its author.
 - External-contributor PRs: read the full diff before approving any Actions run (workflows, action pins against upstream, `pull_request_target`, permissions, secrets). Never enable auto-approval for outside contributors; the manual gate is the security boundary.
 
