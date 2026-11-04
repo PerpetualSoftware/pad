@@ -195,7 +195,7 @@ func TestUnsatisfiableRules(t *testing.T) {
 // and the RDATE and EXDATE count and kind.
 func TestMalformedSpecFields(t *testing.T) {
 	ok := mustWall(t, "2025-03-02T09:00")
-	many := make([]Wall, 501)
+	many := make([]Wall, 1001)
 	for i := range many {
 		many[i] = ok
 	}
@@ -210,8 +210,8 @@ func TestMalformedSpecFields(t *testing.T) {
 		{"start 1969", Spec{Start: Wall{Year: 1969, Month: 12, Day: 31}, Zone: "UTC"}, CodeWall, "Start"},
 		{"start 2201", Spec{Start: Wall{Year: 2201, Month: 1, Day: 1}, Zone: "UTC"}, CodeWall, "Start"},
 		{"start Feb 30", Spec{Start: Wall{Year: 2025, Month: 2, Day: 30}, Zone: "UTC"}, CodeWall, "Start"},
-		{"501 rdates", Spec{Start: ok, Zone: "UTC", RDates: many}, CodeRange, "RDATE"},
-		{"501 exdates", Spec{Start: ok, Zone: "UTC", ExDates: many}, CodeRange, "EXDATE"},
+		{"1001 rdates", Spec{Start: ok, Zone: "UTC", RDates: many}, CodeRange, "RDATE"},
+		{"1001 exdates", Spec{Start: ok, Zone: "UTC", ExDates: many}, CodeRange, "EXDATE"},
 		{"rdate all-day vs timed", Spec{Start: ok, Zone: "UTC", RDates: []Wall{mustWall(t, "2025-03-03")}}, CodeCombination, "RDATE"},
 		{"rdate year 1969", Spec{Start: ok, Zone: "UTC", RDates: []Wall{{Year: 1969, Month: 1, Day: 1}}}, CodeWall, "RDATE"},
 	} {

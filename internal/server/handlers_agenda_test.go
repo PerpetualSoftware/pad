@@ -259,7 +259,11 @@ func TestAgendaOneRunawayScheduleDoesNotTakeItDown(t *testing.T) {
 	t.Parallel()
 	w := newAgendaWorld(t, "tasks")
 	w.item(t, "tasks", "AG normal", `{"status":"open"}`, oneShot())
-	w.item(t, "tasks", "AG runaway", `{"status":"open"}`, &models.ScheduleCreate{Kind: "check", Dtstart: "2031-03-01T00:00", Tz: "UTC", Rrule: "FREQ=MINUTELY"})
+	runawayItem := w.item(t, "tasks", "AG runaway", `{"status":"open"}`, &models.ScheduleCreate{Kind: "check", Dtstart: "2031-03-01T00:00", Tz: "UTC", Rrule: "FREQ=HOURLY"})
+	// MINUTELY is under the 15-minute floor, so only a stored row can be (TASK-4236).
+	if _, err := w.srv.store.DB().Exec(w.srv.store.D().Rebind(`UPDATE item_schedules SET rrule = 'FREQ=MINUTELY' WHERE item_id = ?`), runawayItem.ID); err != nil {
+		t.Fatal(err)
+	}
 	broken := w.item(t, "tasks", "AG broken", `{"status":"open"}`, oneShot())
 	if _, err := w.srv.store.DB().Exec(w.srv.store.D().Rebind(`UPDATE item_schedules SET error_code = 'cap_scan' WHERE item_id = ?`), broken.ID); err != nil {
 		t.Fatal(err)

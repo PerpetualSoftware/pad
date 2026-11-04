@@ -27,6 +27,19 @@ func (f *schedFixture) mk(t *testing.T, in models.ScheduleCreate, created string
 	t.Helper()
 	item := f.another(t, fmt.Sprintf("Sched %d", time.Now().UnixNano()))
 	sc, err := f.s.createScheduleAt(f.ws.ID, item.ID, in, rt(created))
+	var fe *ScheduleFieldError
+	if errors.As(err, &fe) && fe.Code == "floor" {
+		// The rule is under the 15-minute floor, which create enforces (TASK-4236).
+		// These tests model a schedule stored before the floor: create it with a
+		// daily placeholder (same first occurrence at the dtstart wall) and store
+		// the real rule directly.
+		under := in.Rrule
+		in.Rrule, in.RDates = "FREQ=DAILY", nil
+		if sc, err = f.s.createScheduleAt(f.ws.ID, item.ID, in, rt(created)); err == nil {
+			f.seedRule(t, sc.ID, under)
+			sc, err = f.s.GetSchedule(f.ws.ID, item.ID)
+		}
+	}
 	if err != nil {
 		t.Fatalf("createScheduleAt: %v", err)
 	}

@@ -24,10 +24,15 @@ type Limits struct {
 	// MaxScan additionally refuses a wall-clock query far from Start, except
 	// for COUNT rules and rules whose UNTIL is already spent (TASK-4100).
 	MaxSteps int64
+	// MaxGapWork bounds the whole RDATE loop of MinGap, the write-time floor
+	// measure (TASK-4236): up to 1000 windows share it, so they cannot hold an
+	// open transaction for 1000 walks. Zero means 4 x MaxDuration. Exceeding it is
+	// a CapTime, which depends on load and so is never an input error.
+	MaxGapWork time.Duration
 }
 
 // DefaultLimits is what a zero Limits field falls back to.
-var DefaultLimits = Limits{MaxWindow: 92 * 24 * time.Hour, MaxInstances: 500, MaxScan: 2_000_000, MaxDuration: 250 * time.Millisecond, MaxSteps: 200_000}
+var DefaultLimits = Limits{MaxWindow: 92 * 24 * time.Hour, MaxInstances: 500, MaxScan: 2_000_000, MaxDuration: 250 * time.Millisecond, MaxSteps: 200_000, MaxGapWork: time.Second}
 
 func (l Limits) fill() Limits {
 	d := DefaultLimits
@@ -45,6 +50,13 @@ func (l Limits) fill() Limits {
 	}
 	if l.MaxSteps > 0 {
 		d.MaxSteps = l.MaxSteps
+	}
+	// The default budget follows MaxDuration (4 x it; 1s at the default), so a
+	// caller that tightens MaxDuration tightens the loop with it.
+	if l.MaxGapWork > 0 {
+		d.MaxGapWork = l.MaxGapWork
+	} else if l.MaxDuration > 0 {
+		d.MaxGapWork = 4 * l.MaxDuration
 	}
 	return d
 }
@@ -67,6 +79,14 @@ var ErrCapHit = errors.New("schedule: cap hit")
 type CapError struct {
 	Kind  CapKind
 	Limit int64 // the limit that was hit (ns for window and time)
+	// Resume is set only on a CapTime or CapStall that Between returns WITH the
+	// occurrences it examined: every instant before Resume was examined, and
+	// those occurrences are the ones returned. It is always after the window's
+	// start and after every returned occurrence. Zero means no instant can be
+	// promised (TASK-4236).
+	Resume time.Time
+
+	resumeKey time.Time // the walk position the cap stopped at, in the walk's own key space
 }
 
 func (e *CapError) Error() string {

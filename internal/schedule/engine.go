@@ -1,6 +1,7 @@
 package schedule
 
 import (
+	"errors"
 	"sort"
 	"time"
 
@@ -236,7 +237,7 @@ func (c *Compiled) newMerger(loc *time.Location, base time.Time, lim Limits) (*m
 func (m *merger) next(final time.Time, bounded bool) (time.Time, bool, error) {
 	for {
 		if time.Now().After(m.deadline) {
-			return time.Time{}, false, &CapError{Kind: CapTime, Limit: int64(m.lim.MaxDuration)}
+			return time.Time{}, false, &CapError{Kind: CapTime, Limit: int64(m.lim.MaxDuration), resumeKey: m.last}
 		}
 		if !m.has && !m.ruleDone {
 			if m.head, m.has = m.rule(); !m.has {
@@ -278,7 +279,7 @@ func (m *merger) stuck(final time.Time, bounded bool) (time.Time, bool, error) {
 	if bounded && m.rr.StallPos().After(final) {
 		return time.Time{}, false, nil
 	}
-	return time.Time{}, false, &CapError{Kind: CapStall, Limit: m.lim.MaxSteps}
+	return time.Time{}, false, &CapError{Kind: CapStall, Limit: m.lim.MaxSteps, resumeKey: m.rr.StallPos()}
 }
 
 // walk feeds visit every occurrence in library order, with the key the walk is
@@ -392,13 +393,160 @@ func (c *Compiled) Between(from, to time.Time, view *time.Location, lim Limits) 
 		})
 	})
 	if err != nil {
-		return nil, err
+		return c.partial(out, from, to, loc, err)
 	}
 	out = settle(out)
 	if len(out) > lim.MaxInstances {
 		return out[:lim.MaxInstances], &CapError{Kind: CapInstances, Limit: int64(lim.MaxInstances)}
 	}
 	return out, nil
+}
+
+// resumeSlack is how far before a wall-clock walk position an instant may still
+// be unexamined: the walk is ordered by wall reading, and the offsets of a zone
+// differ by at most 26 hours (the same fact as wallMargin). UTC has no slack.
+const resumeSlack = 26 * time.Hour
+
+// partial turns a CapTime or CapStall that stopped Between into the occurrences
+// it had examined and a resume instant, when it can promise one. Every returned
+// occurrence is strictly before Resume, and Resume is strictly after from and no
+// later than to. Any other error, or a cap with no usable position, returns
+// nothing, as before: never a partial answer without the instant it is good to.
+func (c *Compiled) partial(out []Occurrence, from, to time.Time, loc *time.Location, err error) ([]Occurrence, error) {
+	var ce *CapError
+	if !errors.As(err, &ce) || (ce.Kind != CapTime && ce.Kind != CapStall) || ce.resumeKey.IsZero() {
+		return nil, err
+	}
+	var r time.Time
+	if c.elapsed {
+		r = ce.resumeKey.UTC()
+	} else {
+		r = Resolve(loc, wallOf(ce.resumeKey, c.spec.Start.AllDay))
+		if loc != time.UTC {
+			r = r.Add(-resumeSlack)
+		}
+	}
+	if r.After(to) {
+		r = to
+	}
+	if !r.After(from) {
+		return nil, err
+	}
+	out = settle(out)
+	kept := out[:0]
+	for _, o := range out {
+		if o.At.Before(r) {
+			kept = append(kept, o)
+		}
+	}
+	return kept, &CapError{Kind: ce.Kind, Limit: ce.Limit, Resume: r}
+}
+
+// gapSample is how many occurrences MinGap reads from Start. Every period of a
+// rule repeats the same time-of-day set, so the first few periods show the
+// shortest gap a rule can produce.
+const gapSample = 2000
+
+// gapSampleMax is how far MinGap reads past gapSample to get every RDATE behind
+// it: the sample stops at gapSample occurrences, or later when RDATEs remain
+// ahead of it, never past gapSampleMax.
+const gapSampleMax = 10000
+
+// MinGap measures a schedule at its write (TASK-4236). n is how many
+// occurrences the sample from Start found: gapSample, or more when an RDATE lies
+// past the first gapSample (the sample reads on until an occurrence strictly
+// after the last RDATE, at most gapSampleMax). n == 0 with a nil error means the
+// schedule has no occurrence at all from its Start. gap is the shortest distance
+// between two consecutive instants of the set (rule plus RDATEs, EXDATEs out)
+// and is meaningful when n >= 2. An RDATE the sample passes is measured against
+// its neighbours by the sample itself; an RDATE at or past what the sample read
+// gets a window of its own, [r-within+1s, r+within), so an RDATE years past the
+// sample is still seen next to a rule instant.
+//
+// A cap hit (time or stall) ends the rule sample early. What was read still
+// counts, so a sparse rule is never refused for being slow to expand; but a cap
+// hit with n == 0 returns the *CapError, since nothing is known about the
+// schedule, and so does a cap on any RDATE window. A floating schedule is read
+// in UTC. This is for create and update only, never for display expansion.
+func (c *Compiled) MinGap(within time.Duration, lim Limits) (gap time.Duration, n int, err error) {
+	loc, err := c.zoneFor(time.UTC)
+	if err != nil {
+		return 0, 0, err
+	}
+	lim = lim.fill()
+	base := Resolve(loc, c.spec.Start).Add(-time.Second)
+	// The sample reads the merged stream (rule plus RDATEs, EXDATEs out), so an
+	// RDATE the sample passes is already measured against its neighbours. It
+	// reads on past gapSample until an occurrence strictly after the last RDATE
+	// has been read (so the gap after it is measured too), up to gapSampleMax.
+	var lastR time.Time
+	for _, w := range c.spec.RDates {
+		if r := Resolve(loc, w); r.After(lastR) {
+			lastR = r
+		}
+	}
+	var ats []Occurrence
+	stopped := false
+	err = guard(func() error {
+		return c.walk(loc, base, lim, func() (time.Time, bool) { return time.Time{}, false }, func(o Occurrence, _ time.Time) bool {
+			ats = append(ats, o)
+			if len(ats) >= gapSampleMax || (len(ats) >= gapSample && o.At.After(lastR)) {
+				stopped = true
+			}
+			return stopped
+		})
+	})
+	if err != nil && (!errors.Is(err, ErrCapHit) || len(ats) == 0) {
+		return 0, 0, err
+	}
+	ats = settle(ats)
+	n = len(ats)
+	have := false
+	note := func(d time.Duration) {
+		if !have || d < gap {
+			gap, have = d, true
+		}
+	}
+	for i := 1; i < len(ats); i++ {
+		note(ats[i].At.Sub(ats[i-1].At))
+	}
+	// Every RDATE against its neighbours: [r-within+1s, r+within) holds every
+	// instant strictly closer than `within`. A window that cannot be read is an
+	// error, never a pass: the check would otherwise depend on how slow the walk
+	// to that RDATE was. The whole loop shares one budget, checked before each
+	// window, so up to 1000 RDATEs cost the budget plus one window, not 1000
+	// walks, for a caller holding an open transaction.
+	started := time.Now()
+	budget := lim.MaxGapWork
+	// horizon is the last instant the sample examined. A stream that ended on its
+	// own (a COUNT or UNTIL rule, RDATEs only) examined everything, so no RDATE
+	// needs a window; otherwise an RDATE at or past the horizon does (one AT it
+	// has not been read against what follows).
+	complete := err == nil && !stopped
+	var horizon time.Time
+	if len(ats) > 0 {
+		horizon = ats[len(ats)-1].At
+	}
+	for _, w := range c.spec.RDates {
+		r := Resolve(loc, w)
+		if complete || r.Before(horizon) {
+			continue // strictly inside the sample: measured on both sides already
+		}
+		if time.Since(started) >= budget {
+			return 0, 0, &CapError{Kind: CapTime, Limit: int64(budget)}
+		}
+		occ, werr := c.Between(r.Add(-within+time.Second), r.Add(within), time.UTC, lim)
+		if werr != nil {
+			return 0, 0, werr
+		}
+		for i := 1; i < len(occ); i++ {
+			note(occ[i].At.Sub(occ[i-1].At))
+		}
+	}
+	if !have {
+		gap = 0
+	}
+	return gap, n, nil
 }
 
 // settle sorts by instant and drops a repeated instant. It also masks a repeat

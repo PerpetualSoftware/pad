@@ -153,6 +153,55 @@ func compileScheduleSpec(in scheduleSpecInput) (*schedule.Compiled, error) {
 	})
 }
 
+// ScheduleFloor is the shortest gap allowed between two fire instants of one
+// schedule (TASK-4236). A schedule under it is refused at create and update,
+// never thinned. Display expansion and stored schedules are not limited by it.
+const ScheduleFloor = 15 * time.Minute
+
+// checkScheduleTiming runs at the user write paths only (create, and an update
+// that names timing): copy, import, restore and migrations never call it, so a
+// schedule stored before these checks still expands and fires (TASK-4236).
+//
+// One walk of the compiled schedule gives all three answers, and this is the
+// order they win in: a cap hit with nothing found is the cap's own error (the
+// schedule could not be read, which is not the same as "never occurs"); then no
+// occurrence at all from dtstart, "this schedule never occurs"; then a gap under
+// ScheduleFloor. A rule whose occurrences have all passed from NOW still has
+// occurrences from dtstart and so passes here; the create path's exhausted check
+// and an update that ends the schedule decide that, as before.
+func (s *Store) checkScheduleTiming(c *schedule.Compiled) error {
+	gap, n, err := c.MinGap(ScheduleFloor, s.scheduleWriteLimits)
+	if err != nil {
+		return err
+	}
+	spec := c.Spec()
+	field := "rrule"
+	if spec.Rule == "" {
+		field = "rdates"
+	}
+	if n == 0 {
+		return fieldErr(field, "never_occurs", "this schedule never occurs")
+	}
+	if n < 2 || gap >= ScheduleFloor {
+		return nil
+	}
+	if len(spec.RDates) > 0 && spec.Rule != "" {
+		// The RDATEs are named unless the rule alone is measurable and already
+		// under the floor: a rule that cannot be measured by itself (it never
+		// fires and needs an RDATE to compile, or a cap hit with nothing found)
+		// contributed no instants of its own.
+		alone := spec
+		alone.RDates = nil
+		field = "rdates"
+		if rc, cerr := schedule.Compile(alone); cerr == nil {
+			if g, rn, rerr := rc.MinGap(ScheduleFloor, s.scheduleWriteLimits); rerr == nil && rn >= 2 && g < ScheduleFloor {
+				field = "rrule"
+			}
+		}
+	}
+	return fieldErr(field, "floor", "schedules fire at most every 15 minutes")
+}
+
 // validateScheduleFields checks the store-owned fields. dtend is the canonical
 // wall text or "" when absent; the caller has already compiled dtstart.
 func validateScheduleFields(kind, anchor, audience string, lead int, start schedule.Wall, dtend string) (schedule.Wall, bool, error) {
@@ -389,6 +438,9 @@ func (s *Store) createScheduleAt(workspaceID, itemID string, in models.ScheduleC
 	// A floating schedule with a zone is refused by Compile as CodeZone.
 	c, err := compileScheduleSpec(scheduleSpecInput{Dtstart: in.Dtstart, Tz: in.Tz, Floating: in.Floating, Rrule: in.Rrule, RDates: in.RDates, ExDates: in.ExDates})
 	if err != nil {
+		return nil, err
+	}
+	if err := s.checkScheduleTiming(c); err != nil {
 		return nil, err
 	}
 	spec := c.Spec()
@@ -630,6 +682,14 @@ func (s *Store) updateScheduleAt(workspaceID, itemID string, upd models.Schedule
 	if timingNamed {
 		if c, err = compileScheduleSpec(next); err != nil {
 			return nil, err
+		}
+		// The floor and the no-occurrence check re-run only when the rule, dtstart,
+		// RDATEs or EXDATEs change; a tz, floating or anchor edit of an old row
+		// saves (TASK-4236).
+		if upd.Dtstart != nil || upd.Rrule != nil || upd.RDates != nil || upd.ExDates != nil {
+			if err := s.checkScheduleTiming(c); err != nil {
+				return nil, err
+			}
 		}
 		spec = c.Spec()
 	} else {

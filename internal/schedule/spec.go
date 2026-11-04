@@ -5,7 +5,8 @@ import (
 	"time"
 )
 
-const maxDates = 500
+// maxDates bounds the RDATE and the EXDATE list, each (TASK-4236).
+const maxDates = 1000
 
 // Spec is a schedule: a Start, a zone policy, an optional rule and extra or
 // excluded dates. All wall readings are zone-less; the zone is applied by the
@@ -15,8 +16,8 @@ type Spec struct {
 	Zone     string // IANA. Required when !Floating; must be "" when Floating
 	Floating bool   // false: pinned to Zone; true: resolved in the viewer's zone per call
 	Rule     string // RRULE value without "RRULE:"; "" means no rule
-	RDates   []Wall // same AllDay-ness as Start; at most 500
-	ExDates  []Wall // same; at most 500
+	RDates   []Wall // same AllDay-ness as Start; at most 1000
+	ExDates  []Wall // same; at most 1000
 }
 
 // Occurrence is one instance of a schedule.
@@ -74,7 +75,7 @@ func Compile(s Spec) (*Compiled, error) {
 		ws   []Wall
 	}{{"RDATE", s.RDates}, {"EXDATE", s.ExDates}} {
 		if len(l.ws) > maxDates {
-			return nil, malformed(CodeRange, l.part, "", "more than 500 dates")
+			return nil, malformed(CodeRange, l.part, "", fmt.Sprintf("more than %d dates", maxDates))
 		}
 		for _, w := range l.ws {
 			if err := checkWall(w, l.part); err != nil {

@@ -15,6 +15,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/collections"
 	"github.com/PerpetualSoftware/pad/internal/links"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/schedule"
 	"github.com/google/uuid"
 	_ "github.com/jackc/pgx/v5/stdlib" // PostgreSQL driver
 	_ "modernc.org/sqlite"
@@ -55,6 +56,11 @@ type Store struct {
 	// resetFloatingFault is a TEST-ONLY hook, nil in production, run first in the
 	// recipient hooks; an error from it makes the hook fail as if it never ran.
 	resetFloatingFault func() error
+
+	// scheduleWriteLimits is a TEST-ONLY seam, the zero value in production (every
+	// zero field is the default): the limits the write-time floor and
+	// no-occurrence checks run under (TASK-4236).
+	scheduleWriteLimits schedule.Limits
 	// usernameValidator, when set, is the rule a generated username must
 	// pass (the server's ValidateUsername: format, length, reserved names).
 	// An account claim regenerates one (TASK-3351).

@@ -58,6 +58,18 @@ type agendaUnavailable struct {
 	Code    string `json:"code"`
 }
 
+// agendaUnexpanded names a schedule the window could not be expanded for (a
+// scan, time or stall cap with nothing examined). It is never dropped silently.
+type agendaUnexpanded struct {
+	ScheduleID string `json:"schedule_id"`
+	ItemRef    string `json:"item_ref"`
+	ItemTitle  string `json:"item_title"`
+	Collection string `json:"collection"`
+	Kind       string `json:"kind,omitempty"`
+	Audience   string `json:"audience,omitempty"`
+	Reason     string `json:"reason"` // scan_limit
+}
+
 type agendaResponse struct {
 	From         string              `json:"from"`
 	To           string              `json:"to"`
@@ -65,6 +77,8 @@ type agendaResponse struct {
 	TimezoneNote string              `json:"timezone_note,omitempty"`
 	Entries      []agendaEntry       `json:"entries"`
 	Truncated    bool                `json:"truncated,omitempty"`
+	NextFrom     string              `json:"next_from,omitempty"`
+	Unexpanded   []agendaUnexpanded  `json:"unexpanded,omitempty"`
 	Unavailable  []agendaUnavailable `json:"unavailable,omitempty"`
 }
 
@@ -147,20 +161,39 @@ func (s *Server) handleGetAgenda(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp.Truncated = more
+	// timeCut is the earliest instant a time-ordered cut stopped at; setCut is
+	// set by a cut that is not ordered by time (the schedule scan, the time
+	// budget, the dated half), which no instant can describe: next_from is then
+	// omitted and the client narrows the window or filters (TASK-4236).
+	var timeCut time.Time
+	setCut := more
 	deadline := now.Add(agendaBudget)
 	for _, as := range schedules {
 		if time.Now().After(deadline) {
-			resp.Truncated = true
+			resp.Truncated, setCut = true, true
 			break
 		}
 		sc := as.Schedule
-		es, cut, unavailable, err := s.store.ExpandAgenda(sc, loc, from, to, now)
+		x, err := s.store.ExpandAgendaCut(sc, loc, from, to, now)
 		if err != nil {
 			writeInternalError(w, err)
 			return
 		}
+		es, cut, unavailable := x.Entries, x.Truncated, x.Unavailable
 		if unavailable != "" {
 			resp.Unavailable = append(resp.Unavailable, agendaUnavailable{ItemRef: as.ItemRef, Code: unavailable})
+		}
+		if x.Unpromised {
+			setCut = true
+		}
+		if x.Unexpanded {
+			resp.Unexpanded = append(resp.Unexpanded, agendaUnexpanded{
+				ScheduleID: sc.ID, ItemRef: as.ItemRef, ItemTitle: as.ItemTitle, Collection: as.Collection,
+				Kind: sc.Kind, Audience: sc.Audience, Reason: "scan_limit",
+			})
+		}
+		if !x.NextFrom.IsZero() && (timeCut.IsZero() || x.NextFrom.Before(timeCut)) {
+			timeCut = x.NextFrom
 		}
 		resp.Truncated = resp.Truncated || cut
 		for _, e := range es {
@@ -193,6 +226,7 @@ func (s *Server) handleGetAgenda(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp.Truncated = resp.Truncated || len(items) > agendaMaxEntries
+	setCut = setCut || len(items) > agendaMaxEntries
 	today := overdueToday(now.In(loc))
 	for _, it := range items {
 		ref := it.Ref
@@ -230,7 +264,35 @@ func (s *Server) handleGetAgenda(w http.ResponseWriter, r *http.Request) {
 		return a.subKey < b.subKey
 	})
 	if len(resp.Entries) > agendaMaxEntries {
+		// Entries are in time order, so the first one not shown is where a client
+		// resumes, when it is a schedule entry. A dated entry is selected by its
+		// calendar day, not by instant, so a cut on one promises nothing.
+		if cut := resp.Entries[agendaMaxEntries]; cut.Type == "date" {
+			setCut = true
+		} else if timeCut.IsZero() || cut.instant.Before(timeCut) {
+			timeCut = cut.instant
+		}
 		resp.Entries, resp.Truncated = resp.Entries[:agendaMaxEntries], true
+	}
+	// next_from promises every instant before it was examined, so it is never
+	// emitted when a cut that no instant describes also fired. A schedule that
+	// could not be expanded at all resumes at the window's end.
+	switch {
+	case setCut:
+	case !timeCut.IsZero():
+		// A resume point must move the client forward and stay inside the window
+		// it asked for; one that does not promises nothing.
+		if timeCut.After(to) {
+			timeCut = to
+		}
+		if timeCut.After(from) {
+			resp.NextFrom = timeCut.UTC().Format(time.RFC3339)
+		}
+	case len(resp.Unexpanded) > 0:
+		resp.NextFrom = to.UTC().Format(time.RFC3339)
+	}
+	if len(resp.Unexpanded) > 0 {
+		resp.Truncated = true
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

@@ -184,10 +184,29 @@ func TestScheduleDensityCapIs400Range(t *testing.T) {
 func TestScheduleCapScanAndCapStallAreSeparateCodes(t *testing.T) {
 	t.Parallel()
 	f := newSchedHTTP(t)
-	rr := f.do("POST", map[string]any{"kind": "check", "dtstart": "2000-01-01T09:00", "tz": "UTC", "rrule": "FREQ=MINUTELY;BYHOUR=9"})
+	// Daily at 09:00 written as a minute-level rule: its gap is a day, so it passes
+	// the 15-minute floor, and 26 years back it is a scan cap.
+	rr := f.do("POST", map[string]any{"kind": "check", "dtstart": "2000-01-01T09:00", "tz": "UTC", "rrule": "FREQ=MINUTELY;BYHOUR=9;BYMINUTE=0"})
 	f.expectErr(rr, 400, "validation_error", "cap_scan")
+	f.nothingStored()
+	// Every minute of the 09:00 hour is under the floor, and the floor is checked first.
+	rr = f.do("POST", map[string]any{"kind": "check", "dtstart": "2000-01-01T09:00", "tz": "UTC", "rrule": "FREQ=MINUTELY;BYHOUR=9"})
+	f.expectErr(rr, 400, "validation_error", "floor")
+	f.nothingStored()
 	rr = f.do("POST", map[string]any{"kind": "check", "dtstart": "2099-01-01T00:00", "tz": "UTC", "rrule": "FREQ=MINUTELY;BYMONTH=1;BYYEARDAY=200"})
 	f.expectErr(rr, 400, "validation_error", "cap_stall")
+	f.nothingStored()
+}
+
+// A cap on an RDATE window while measuring the floor is the scan cap's own
+// refusal at the edge: a 400 with the same code a rule of that shape gets, and
+// nothing stored (TASK-4236).
+func TestScheduleRDateWindowScanCapIsCapScan(t *testing.T) {
+	t.Parallel()
+	f := newSchedHTTP(t)
+	rr := f.do("POST", map[string]any{"kind": "check", "dtstart": "2031-01-01T09:00", "tz": "UTC",
+		"rrule": "FREQ=MINUTELY;BYHOUR=9;BYMINUTE=0", "rdates": []string{"2100-06-01T09:05"}})
+	f.expectErr(rr, 400, "validation_error", "cap_scan")
 	f.nothingStored()
 }
 

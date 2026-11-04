@@ -106,7 +106,7 @@ func TestStallFilteredCandidatesBounded(t *testing.T) {
 
 	// 500 consecutive EXDATEs on a dense rule: skipped in the merge, which checks CapTime on each.
 	spec := pinned(t, "UTC", "2025-01-01T00:00", "FREQ=MINUTELY;BYSECOND=0")
-	for i := 0; i < maxDates; i++ {
+	for i := 0; i < 500; i++ {
 		spec.ExDates = append(spec.ExDates, mustWall(t, time.Date(2025, 1, 1, 0, i, 0, 0, time.UTC).Format("2006-01-02T15:04:05")))
 	}
 	e := compile(t, spec)
