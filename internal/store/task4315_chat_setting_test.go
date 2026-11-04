@@ -211,15 +211,13 @@ func TestTASK4315_UpdateUserChatEnabled(t *testing.T) {
 func TestTASK4315_SchemaAheadGuard(t *testing.T) {
 	cases := []struct {
 		name      string
-		applied   string
-		embedded  string
-		fsNames   func() ([]string, error)
-		wantNewer string
+		applied string
+		fsNames func() ([]string, error)
 	}{
-		{"sqlite", "164_user_chat_enabled.sql", "163_nul_invariant_triggers_post162.sql",
-			func() ([]string, error) { return readMigrationNames(migrationsFS, "migrations") }, "163_nul_invariant_triggers_post162.sql"},
-		{"postgres", "129_user_chat_enabled.sql", "128_item_schedules.sql",
-			func() ([]string, error) { return readMigrationNames(pgMigrationsFS, "pgmigrations") }, "128_item_schedules.sql"},
+		{"sqlite", "164_user_chat_enabled.sql",
+			func() ([]string, error) { return readMigrationNames(migrationsFS, "migrations") }},
+		{"postgres", "129_user_chat_enabled.sql",
+			func() ([]string, error) { return readMigrationNames(pgMigrationsFS, "pgmigrations") }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -234,20 +232,19 @@ func TestTASK4315_SchemaAheadGuard(t *testing.T) {
 			if !found {
 				t.Fatalf("%s is not embedded", tc.applied)
 			}
-			// The old binary's list is the embedded one minus the new file.
+			// The old binary ships every migration before the new file; the
+			// database has those plus the new file. Later migrations are left
+			// out of both, so this does not break when 165 or 130 lands.
 			var old []string
-			for _, n := range names {
-				if n != tc.applied {
-					old = append(old, n)
-				}
-			}
-			if old[len(old)-1] != tc.embedded {
-				t.Fatalf("old binary's newest = %s, want %s", old[len(old)-1], tc.embedded)
-			}
 			applied := map[string]bool{}
 			for _, n := range names {
-				applied[n] = true
+				if n < tc.applied {
+					old = append(old, n)
+					applied[n] = true
+				}
 			}
+			applied[tc.applied] = true
+			wantNewer := old[len(old)-1]
 			prev := AllowSchemaAhead
 			AllowSchemaAhead = false
 			t.Cleanup(func() { AllowSchemaAhead = prev })
@@ -260,7 +257,7 @@ func TestTASK4315_SchemaAheadGuard(t *testing.T) {
 				"database schema is newer than this pad binary",
 				"1 migration(s)",
 				"(" + tc.applied + ")",
-				"the newest known to this binary is " + tc.wantNewer,
+				"the newest known to this binary is " + wantNewer,
 				"`pad start --force` (or PAD_ALLOW_SCHEMA_AHEAD=1)",
 			} {
 				if !strings.Contains(msg, part) {

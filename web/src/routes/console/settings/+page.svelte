@@ -67,6 +67,8 @@
 		chatError = '';
 		try {
 			await chatSetting.set(next);
+			// The box follows the stored value, whatever the server answered.
+			box.checked = chatSetting.enabled;
 		} catch (err) {
 			// The box flipped before the write; the stored value did not.
 			box.checked = chatSetting.enabled;
