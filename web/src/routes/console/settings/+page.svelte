@@ -5,6 +5,7 @@
 	import { onMount } from 'svelte';
 	import { api, isPlanLimitError, PadApiError } from '$lib/api/client';
 	import { showPlanLimitToast } from '$lib/billing/planLimitToast';
+	import { chatSetting } from '$lib/stores/chatSetting.svelte';
 	import { browserZone, noteExplicitTimezoneWrite, zoneOptions } from '$lib/timezone';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
@@ -53,6 +54,25 @@
 			if (isSameIdentity()) timezoneError = err instanceof Error ? err.message : 'Failed to set time zone';
 		} finally {
 			if (isSameIdentity()) timezoneSaving = false;
+		}
+	}
+
+	// Chat (TASK-4315): a per-user display preference, stored on the server.
+	let chatSaving = $state(false);
+	let chatError = $state('');
+	async function toggleChat(box: HTMLInputElement) {
+		const next = box.checked;
+		const isSameIdentity = authStore.identityFence();
+		chatSaving = true;
+		chatError = '';
+		try {
+			await chatSetting.set(next);
+		} catch (err) {
+			// The box flipped before the write; the stored value did not.
+			box.checked = chatSetting.enabled;
+			if (isSameIdentity()) chatError = err instanceof Error ? err.message : 'Failed to update the Chat setting';
+		} finally {
+			if (isSameIdentity()) chatSaving = false;
 		}
 	}
 
@@ -313,6 +333,9 @@
 			timezoneSaving = false;
 			timezoneError = '';
 			timezoneMsg = '';
+			// A Chat write in flight belonged to the previous identity too.
+			chatSaving = false;
+			chatError = '';
 			// Signed out: nothing to load, and its 401s would race the caller's own navigation (#2342 E2E).
 			if (authStore.userId) void loadProfile();
 		});
@@ -845,6 +868,25 @@
 						{profileSaving ? 'Saving...' : 'Save Changes'}
 					</Button>
 				</div>
+			</div>
+		</section>
+
+		<section class="card" id="chat">
+			<h2 class="card-title">Chat</h2>
+			<div class="card-body">
+				<label class="chat-toggle" for="chat-enabled">
+					<input
+						id="chat-enabled"
+						type="checkbox"
+						checked={chatSetting.enabled}
+						disabled={!profileReady || chatSaving}
+						onchange={(e) => toggleChat(e.currentTarget)}
+					/>
+					<span>Show Chat</span>
+				</label>
+				<p class="plan-desc">Display preference only; messages are kept either way.</p>
+				{#if chatSaving}<p role="status">Saving...</p>{/if}
+				{#if chatError}<p class="error" role="alert">{chatError}</p>{/if}
 			</div>
 		</section>
 
@@ -1553,6 +1595,12 @@
 		color: var(--text-secondary);
 		font-size: 0.85rem;
 		line-height: 1.4;
+	}
+
+	.chat-toggle {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
 	}
 
 	.primary-btn {

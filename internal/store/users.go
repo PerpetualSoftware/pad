@@ -29,7 +29,7 @@ var usernameCleanRe = regexp.MustCompile(`[^a-z0-9-]+`)
 var bcryptCost = 12
 
 // user SELECT columns — used by all user queries.
-const userColumns = `id, email, username, name, password_hash, role, avatar_url, totp_secret, totp_enabled, recovery_codes, plan, plan_expires_at, plan_source, stripe_customer_id, plan_overrides, oauth_providers, password_set, disabled_at, email_verified_at, last_active_at, last_write_at, created_at, updated_at, credential_epoch, kind, timezone`
+const userColumns = `id, email, username, name, password_hash, role, avatar_url, totp_secret, totp_enabled, recovery_codes, plan, plan_expires_at, plan_source, stripe_customer_id, plan_overrides, oauth_providers, password_set, disabled_at, email_verified_at, last_active_at, last_write_at, created_at, updated_at, credential_epoch, kind, timezone, chat_enabled`
 
 // scanUser scans a user row into a User struct.
 // The TOTP secret column is read and discarded: the User struct does not carry
@@ -41,14 +41,16 @@ func scanUser(row interface{ Scan(...interface{}) error }) (*models.User, error)
 
 	var disabledAt, emailVerifiedAt, lastActiveAt, lastWriteAt, timezone sql.NullString
 	var totpSecretUnused string
+	var chatEnabled int
 	err := row.Scan(
 		&u.ID, &u.Email, &u.Username, &u.Name, &u.PasswordHash, &u.Role, &u.AvatarURL,
 		&totpSecretUnused, &u.TOTPEnabled, &u.RecoveryCodes,
 		&u.Plan, &u.PlanExpiresAt, &u.PlanSource, &u.StripeCustomerID, &u.PlanOverrides, &u.OAuthProviders,
 		&u.PasswordSet,
 		&disabledAt, &emailVerifiedAt, &lastActiveAt, &lastWriteAt, &createdAt, &updatedAt,
-		&u.CredentialEpoch, &u.Kind, &timezone,
+		&u.CredentialEpoch, &u.Kind, &timezone, &chatEnabled,
 	)
+	u.ChatEnabled = chatEnabled != 0
 	if disabledAt.Valid {
 		u.DisabledAt = disabledAt.String
 	}
@@ -227,6 +229,16 @@ func (s *Store) UpdateUser(id string, input models.UserUpdate) (*models.User, er
 	if input.Timezone != nil {
 		sets = append(sets, "timezone = ?")
 		args = append(args, *input.Timezone)
+	}
+	if input.ChatEnabled != nil {
+		// INTEGER 0/1 on both backends. A display preference: it never
+		// touches schedules, so no resetFloatingForUser here (TASK-4315).
+		v := 0
+		if *input.ChatEnabled {
+			v = 1
+		}
+		sets = append(sets, "chat_enabled = ?")
+		args = append(args, v)
 	}
 
 	if len(sets) == 0 {
@@ -589,13 +601,14 @@ func (s *Store) SearchUsers(params AdminUserSearchParams) (*AdminUserSearchResul
 		var workspaceCount int
 		var storageBytes int64
 		var totpSecretUnused string
+		var chatEnabled int
 		if err := rows.Scan(
 			&entry.ID, &entry.Email, &entry.Username, &entry.Name, &entry.PasswordHash, &entry.Role, &entry.AvatarURL,
 			&totpSecretUnused, &entry.TOTPEnabled, &entry.RecoveryCodes,
 			&entry.Plan, &entry.PlanExpiresAt, &entry.PlanSource, &entry.StripeCustomerID, &entry.PlanOverrides, &entry.OAuthProviders,
 			&entry.PasswordSet,
 			&disabledAt, &emailVerifiedAt, &lastActiveAt, &lastWriteAt, &createdAt, &updatedAt,
-			&entry.CredentialEpoch, &entry.Kind, &timezone,
+			&entry.CredentialEpoch, &entry.Kind, &timezone, &chatEnabled,
 			&workspaceCount, &storageBytes,
 		); err != nil {
 			return nil, fmt.Errorf("search users scan: %w", err)
@@ -616,6 +629,7 @@ func (s *Store) SearchUsers(params AdminUserSearchParams) (*AdminUserSearchResul
 			tz := timezone.String
 			entry.Timezone = &tz
 		}
+		entry.ChatEnabled = chatEnabled != 0
 		entry.CreatedAt = parseTime(createdAt)
 		entry.UpdatedAt = parseTime(updatedAt)
 		entry.WorkspaceCount = workspaceCount

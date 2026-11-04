@@ -2,6 +2,7 @@
   "new_user": true,
   "token": "<string>",
   "user": {
+    "chat_enabled": false,
     "email": "<string>",
     "email_verified": true,
     "id": "<string>",

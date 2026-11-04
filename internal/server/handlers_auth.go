@@ -77,6 +77,7 @@ func sessionUserPayload(user *models.User) map[string]interface{} {
 		"plan":           user.EffectivePlan(time.Now()), // expiry enforced (BUG-3356)
 		"email_verified": user.IsEmailVerified(),
 		"timezone":       user.Timezone,
+		"chat_enabled":   user.ChatEnabled,
 	}
 }
 
@@ -1509,6 +1510,7 @@ func (s *Server) handleGetCurrentUser(w http.ResponseWriter, r *http.Request) {
 		"totp_enabled": user.TOTPEnabled,
 		"password_set": user.HasPassword(),
 		"timezone":     user.Timezone,
+		"chat_enabled": user.ChatEnabled,
 		"created_at":   user.CreatedAt,
 		"updated_at":   user.UpdatedAt,
 	}
@@ -1554,6 +1556,10 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 		// the zone being NULL, for a client's first-sign-in default.
 		Timezone *string `json:"timezone,omitempty"`
 		IfUnset  bool    `json:"if_unset,omitempty"`
+		// ChatEnabled is the caller's own Chat display preference (TASK-4315).
+		// There is no way to name another user: the target is always the
+		// authenticated caller. Absent/null = leave it.
+		ChatEnabled *bool `json:"chat_enabled,omitempty"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
@@ -1658,6 +1664,7 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 	if !input.IfUnset {
 		update.Timezone = input.Timezone
 	}
+	update.ChatEnabled = input.ChatEnabled
 	if input.NewPassword != "" {
 		update.Password = &input.NewPassword
 		// Fenced on the epoch the current password was checked under, so a
@@ -1687,15 +1694,16 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 	}
 
 	resp := map[string]interface{}{
-		"id":         updated.ID,
-		"email":      updated.Email,
-		"username":   updated.Username,
-		"name":       updated.Name,
-		"role":       updated.Role,
-		"avatar_url": updated.AvatarURL,
-		"timezone":   updated.Timezone,
-		"created_at": updated.CreatedAt,
-		"updated_at": updated.UpdatedAt,
+		"id":           updated.ID,
+		"email":        updated.Email,
+		"username":     updated.Username,
+		"name":         updated.Name,
+		"role":         updated.Role,
+		"avatar_url":   updated.AvatarURL,
+		"timezone":     updated.Timezone,
+		"chat_enabled": updated.ChatEnabled,
+		"created_at":   updated.CreatedAt,
+		"updated_at":   updated.UpdatedAt,
 	}
 	if input.NewPassword != "" {
 		s.logAuditEvent(models.ActionPasswordChanged, r, "")

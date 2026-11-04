@@ -1339,7 +1339,7 @@ export interface AuthSession {
 	// instances never emit an unverified user. Absent on older servers —
 	// authStore.emailVerified treats absent as TRUE so the verification
 	// banner never shows on self-host or before the field lands.
-	user?: { id: string; email: string; username: string; name: string; role: string; plan?: string; email_verified?: boolean; timezone?: string | null };
+	user?: { id: string; email: string; username: string; name: string; role: string; plan?: string; email_verified?: boolean; timezone?: string | null; chat_enabled?: boolean };
 }
 
 // ── WebMCP tool-surface (PLAN-1888 / TASK-1892) ────────────────────────────
@@ -3199,6 +3199,8 @@ export const api = {
 			}),
 		setTimezone: (timezone: string) =>
 			api.auth.updateProfile({ timezone }),
+		setChatEnabled: (chat_enabled: boolean) =>
+			api.auth.updateProfile({ chat_enabled }),
 		setTimezoneIfUnset: (timezone: string) =>
 			api.auth.updateProfile({ timezone, if_unset: true }),
 		unlinkProvider: (provider: string) =>
