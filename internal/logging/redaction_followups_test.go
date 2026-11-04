@@ -1398,3 +1398,145 @@ func TestSmallCodeNamesAndBoundsDirectly(t *testing.T) {
 		}
 	}
 }
+
+// Map-key population, one row per comparable reflect.Kind (see mapKeyText).
+type keyStringKind string
+
+func (k keyStringKind) String() string { return string(k) }
+
+type keyStructPlain struct{ S string }
+
+type keyStructStringer struct{ S string }
+
+func (k keyStructStringer) String() string { return k.S }
+
+type keyArrayPlain [2]string
+
+func bigKey(i int) string { return strings.Repeat("k", 4<<20) + strconv.Itoa(i) }
+
+// walkAllocs returns the walked map and the bytes allocated walking it.
+func walkAllocs(m any) (map[string]any, uint64) {
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	out, _ := sanitize(reflect.ValueOf(m), 0, &walkBudget{nodes: 1000, bytes: 1 << 20}).(map[string]any)
+	runtime.ReadMemStats(&after)
+	return out, after.TotalAlloc - before.TotalAlloc
+}
+
+func TestMapKeysOfEveryKindAreBoundedBeforeTheyAreCopied(t *testing.T) {
+	type row struct {
+		kind string
+		m    any
+	}
+	rows := []row{}
+	add := func(kind string, m any) { rows = append(rows, row{kind, m}) }
+	{
+		m := map[plainNamedKey]int{}
+		for i := 0; i < 8; i++ {
+			m[plainNamedKey(bigKey(i))] = i
+		}
+		add("string", m)
+	}
+	{
+		m := map[keyStringKind]int{}
+		for i := 0; i < 8; i++ {
+			m[keyStringKind(bigKey(i))] = i
+		}
+		add("string with a String method", m)
+	}
+	{
+		m := map[keyStructPlain]int{}
+		for i := 0; i < 8; i++ {
+			m[keyStructPlain{bigKey(i)}] = i
+		}
+		add("struct", m)
+	}
+	{
+		m := map[keyStructStringer]int{}
+		for i := 0; i < 8; i++ {
+			m[keyStructStringer{bigKey(i)}] = i
+		}
+		add("struct with a String method", m)
+	}
+	{
+		m := map[keyArrayPlain]int{}
+		for i := 0; i < 8; i++ {
+			m[keyArrayPlain{bigKey(i), "x"}] = i
+		}
+		add("array", m)
+	}
+	{
+		m := map[*keyStructPlain]int{}
+		for i := 0; i < 8; i++ {
+			m[&keyStructPlain{bigKey(i)}] = i
+		}
+		add("pointer", m)
+	}
+	{
+		m := map[any]int{}
+		for i := 0; i < 4; i++ {
+			m[keyStructPlain{bigKey(i)}] = i
+			m[keyStringKind(bigKey(i))] = i
+		}
+		add("interface", m)
+	}
+	for _, r := range rows {
+		out, copied := walkAllocs(r.m)
+		if len(out) != 8 {
+			t.Errorf("%s: %d entries, want 8", r.kind, len(out))
+		}
+		if copied > 4<<20 {
+			t.Errorf("%s: %d bytes allocated walking 8 keys of 4 MiB: a key was copied whole", r.kind, copied)
+		}
+		for k := range out {
+			if len(k) > maxMapKeyBytes+16 {
+				t.Errorf("%s: key of %d bytes", r.kind, len(k))
+			}
+		}
+	}
+}
+
+func TestMapKeyTextByKind(t *testing.T) {
+	ch := make(chan int)
+	x := 3
+	for _, tc := range []struct {
+		name string
+		key  any
+		want string
+	}{
+		{"bool", true, "true"},
+		{"int", -5, "-5"},
+		{"uint8", uint8(7), "7"},
+		{"uintptr", uintptr(9), "9"},
+		{"float", 1.5, "1.5"},
+		{"complex", complex(1, 2), "(1+2i)"},
+		{"string", "plain", "plain"},
+		{"stringer", keyStringKind("named"), "named"},
+		{"error", errors.New("boom"), "boom"},
+		{"array", [2]int{1, 2}, "<[2]int>"},
+		{"struct", struct{ A int }{1}, "<struct { A int }>"},
+	} {
+		if got := mapKeyText(reflect.ValueOf(tc.key)); got != tc.want {
+			t.Errorf("%s: %q, want %q", tc.name, got, tc.want)
+		}
+	}
+	if got := mapKeyText(reflect.ValueOf(ch)); !strings.HasPrefix(got, "<chan int 0x") {
+		t.Errorf("chan: %q", got)
+	}
+	if got := mapKeyText(reflect.ValueOf(&x)); !strings.HasPrefix(got, "<*int 0x") {
+		t.Errorf("pointer: %q", got)
+	}
+	var nilIface any
+	if got := mapKeyText(reflect.ValueOf(&nilIface).Elem()); got != "<nil>" {
+		t.Errorf("nil interface: %q", got)
+	}
+	var nilStringer *panicStringer
+	if got := mapKeyText(reflect.ValueOf(nilStringer)); got != "<unprintable>" {
+		t.Errorf("typed-nil Stringer: %q", got)
+	}
+}
+
+type panicStringer struct{ s string }
+
+func (p *panicStringer) String() string { return p.s }

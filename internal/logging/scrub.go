@@ -151,6 +151,59 @@ func opaqueRun(r string) bool {
 	return mixed || len(r) >= 16
 }
 
+// mapKeyText renders one map key for the log, never copying more than
+// maxMapKeyBytes+1 bytes of it, by the key's reflect.Kind (no size heuristic):
+//   - a type with an Error or String method: the method is called (a panic is
+//     recovered) and its output cut, so a masking String form is kept and a
+//     huge one is not copied; the method's own cost is the application's;
+//   - interface: unwrapped (nil is "<nil>"), then dispatched;
+//   - string: cut from the underlying value;
+//   - bool, int, uint, uintptr, float, complex: formatted from the value (small);
+//   - pointer, chan, unsafe pointer: the type and address, never the pointee;
+//   - array, struct and anything else: "<type>".
+func mapKeyText(k reflect.Value) string {
+	for k.Kind() == reflect.Interface {
+		if k.IsNil() {
+			return "<nil>"
+		}
+		k = k.Elem()
+	}
+	if k.CanInterface() {
+		switch x := k.Interface().(type) {
+		case error:
+			return cutKey(safeErrorText(x))
+		case fmt.Stringer:
+			return cutKey(safeStringText(x))
+		}
+	}
+	switch k.Kind() {
+	case reflect.String:
+		return cutKey(k.String())
+	case reflect.Bool:
+		return strconv.FormatBool(k.Bool())
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return strconv.FormatInt(k.Int(), 10)
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return strconv.FormatUint(k.Uint(), 10)
+	case reflect.Float32, reflect.Float64:
+		return strconv.FormatFloat(k.Float(), 'g', -1, 64)
+	case reflect.Complex64, reflect.Complex128:
+		return strconv.FormatComplex(k.Complex(), 'g', -1, 128)
+	case reflect.Pointer, reflect.Chan, reflect.UnsafePointer:
+		return fmt.Sprintf("<%s %#x>", k.Type(), k.Pointer())
+	default:
+		return "<" + k.Type().String() + ">"
+	}
+}
+
+// cutKey bounds a key's text to maxMapKeyBytes+1 bytes.
+func cutKey(s string) string {
+	if len(s) > maxMapKeyBytes {
+		return s[:maxMapKeyBytes+1]
+	}
+	return s
+}
+
 // maxMapKeyBytes bounds a map key before it is scrubbed and stored: a key is a
 // name, and the walk's byte budget does not cover it.
 const maxMapKeyBytes = 256
@@ -660,27 +713,7 @@ func sanitize(v reflect.Value, depth int, budget *walkBudget) any {
 		// materialised and sorted to log its first few hundred.
 		entries := make([]entry, 0, min(v.Len(), maxMapRead))
 		for it := v.MapRange(); it.Next() && len(entries) < maxMapRead; {
-			// fmt reports a key whose String method panics rather than panicking.
-			// A string key is cut before it is formatted; fmt would copy it whole.
-			var raw string
-			k := it.Key()
-			for k.Kind() == reflect.Interface && !k.IsNil() {
-				k = k.Elem()
-			}
-			// A plain string, or a named string too long to be a name (its String
-			// method is not consulted), is cut here; a short named string keeps
-			// its String form through fmt.
-			if k.Kind() == reflect.String && (k.Type() == reflect.TypeOf("") || k.Len() > maxMapKeyBytes) {
-				raw = k.String()
-				if len(raw) > maxMapKeyBytes {
-					raw = raw[:maxMapKeyBytes+1]
-				}
-			} else if k.Type().Size() > maxMapKeyBytes {
-				// An array or struct key too large to be a name: its type stands for it.
-				raw = "<" + k.Type().String() + ">"
-			} else {
-				raw = fmt.Sprint(it.Key().Interface())
-			}
+			raw := mapKeyText(it.Key())
 			// A key's bytes count toward the walk, as a value's do.
 			cost := min(len(raw), maxMapKeyBytes)
 			if budget.bytes < cost {
