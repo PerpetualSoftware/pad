@@ -633,7 +633,16 @@ func sanitize(v reflect.Value, depth int, budget *walkBudget) any {
 		entries := make([]entry, 0, min(v.Len(), maxMapRead))
 		for it := v.MapRange(); it.Next() && len(entries) < maxMapRead; {
 			// fmt reports a key whose String method panics rather than panicking.
-			raw := fmt.Sprint(it.Key().Interface())
+			// A string key is cut before it is formatted; fmt would copy it whole.
+			var raw string
+			if k := it.Key(); k.Kind() == reflect.String {
+				raw = k.String()
+				if len(raw) > maxMapKeyBytes {
+					raw = raw[:maxMapKeyBytes+1]
+				}
+			} else {
+				raw = fmt.Sprint(k.Interface())
+			}
 			// A key's bytes count toward the walk, as a value's do.
 			cost := min(len(raw), maxMapKeyBytes)
 			if budget.bytes < cost {

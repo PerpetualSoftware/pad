@@ -1256,3 +1256,17 @@ func TestURLNamedFieldsInWalksAreChargedToTheBudget(t *testing.T) {
 		t.Errorf("no url value was withheld past the budget")
 	}
 }
+
+func TestHugeStringMapKeyIsCutBeforeItIsFormatted(t *testing.T) {
+	m := map[string]int{strings.Repeat("k", 8<<20): 1, "ok": 2}
+	start := time.Now()
+	out, _ := sanitize(reflect.ValueOf(m), 0, &walkBudget{nodes: 100, bytes: 1 << 20}).(map[string]any)
+	if len(out) != 2 || time.Since(start) > time.Second {
+		t.Errorf("entries=%d elapsed=%v", len(out), time.Since(start))
+	}
+	for k := range out {
+		if len(k) > maxMapKeyBytes+16 {
+			t.Errorf("key of %d bytes", len(k))
+		}
+	}
+}
