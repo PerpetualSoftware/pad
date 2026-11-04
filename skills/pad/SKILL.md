@@ -134,6 +134,7 @@ Interpret the user's intent and route to the appropriate action. Here are common
 **Querying:**
 - "what's on my plate?" → role-filtered queue if a role is active, otherwise `pad project next`
 - "remind me about this on <date>" / "revisit TASK-5 next Tuesday" → `pad item remind` (IDEA-2641). The time is an **instant**, not a date — ask for a time of day rather than picking one, since the server refuses a bare date on purpose. A fired reminder shows up in `pad project next` / `ready` until someone runs `pad item ack <reminder-id>` — `next` prints the exact ack command under the entry, so you never have to go looking for the id; **finishing the item does not acknowledge it**, because a reminder is often armed precisely to fire after the work is done
+- "check this every weekday at 9" / "this is due Friday 5pm" / "what's on my agenda?" → a **schedule**: `pad item remind TASK-5 --start 2026-11-09T09:00 --every weekdays` (`--deadline hard|soft` for a due time, `--window 2h` for a span). The start is a wall time in the user's zone (no `Z`, no offset); omit `--tz` unless asked, and the server pins the account zone. Resolve an occurrence with `pad item remind done|skip|snooze|move TASK-5`; list with `pad item remind agenda`. There is no `pad cal`.
 - "what should I work on?" / "what's ready?" → `pad project ready` (actionable backlog); "what's stuck?" / "what needs attention?" → `pad project stale`
 - "show me status" / "how are we doing?" → `pad project dashboard`
 - "show me all tasks" / "list bugs" → `pad item list <collection>`
@@ -222,6 +223,11 @@ pad item remind TASK-5 --remind-at 2026-08-01T09:00:00Z   # arm a one-shot remin
 pad item reminders TASK-5                                  # armed / fired / acknowledged
 pad item ack <reminder-id>                                 # acknowledge a fired reminder
 pad item unremind <reminder-id>
+pad item remind TASK-5 --start 2026-11-09T09:00 --every weekdays   # schedule (daily weekdays weekly biweekly monthly monthly-last quarterly yearly, or an RRULE)
+pad item remind TASK-5 --start 2026-11-14 --deadline hard           # a due date (all-day) the item must not miss
+pad item remind show TASK-5                                        # kind, rule, next occurrence, missed count
+pad item remind done TASK-5 -m "shipped"                           # also skip; snooze/move take --until <RFC3339|2026-11-10T09:00|2h>
+pad item remind agenda --days 7                                    # occurrences and dated items; edit/rm change or delete a schedule
 pad item comments TASK-5                                   # each row shows its id, and "edited" once changed
 pad item comment-edit TASK-5 <comment-id> "..." [--stdin]  # correct your own comment in place instead of appending
 pad item comment-delete TASK-5 <comment-id>

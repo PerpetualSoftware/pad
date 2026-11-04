@@ -19,13 +19,16 @@ import (
 var (
 	remindAtFlag  string
 	remindRearmID string
+	remindSched   scheduleFlags
 )
 
 func remindCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "remind [ref]",
-		Short:   "Arm a reminder on an item",
-		Example: `  pad item remind TASK-5 --remind-at 2026-11-02T09:00:00Z`,
+		Use:   "remind [ref]",
+		Short: "Arm a reminder on an item",
+		Example: `  pad item remind TASK-5 --remind-at 2026-11-02T09:00:00Z
+  pad item remind TASK-5 --start 2026-11-09T09:00 --every weekdays
+  pad item remind TASK-5 --start 2026-11-14T17:00 --deadline hard`,
 		Long: `Arm a one-shot reminder that fires at a specific instant.
 
 The instant is RFC3339 and must carry a time of day — 2026-08-01T09:00:00Z, or
@@ -37,7 +40,29 @@ did not and then firing at it.
 When the reminder fires it appears in 'pad project next' and 'pad project
 ready' until you acknowledge it with 'pad item ack', and it emits an
 item.reminder_due webhook event. The poll surface is not optional: an instance
-with no webhook configured delivers reminders that way and only that way.`,
+with no webhook configured delivers reminders that way and only that way.
+
+SCHEDULES. Any of --start, --every, --deadline, --window, --anchor, --audience,
+--tz or --floating makes this a schedule instead: a deadline, a window, or a
+rule that repeats, with one outstanding occurrence at a time. --start is
+required and is a wall time with no Z or offset:
+
+  --start     2026-11-09T09:00, or 2026-11-09 for an all-day date
+  --every     daily, weekdays, weekly, biweekly, monthly, monthly-last,
+              quarterly, yearly, or an RRULE such as FREQ=WEEKLY;BYDAY=MO
+  --deadline  hard | soft (default is a plain check)
+  --window    a span from --start: a duration (90m, 2h, 3d) or an end wall
+  --anchor    calendar (default) | completion (the next one falls an interval
+              after you mark it done; plain interval rules only)
+  --audience  human | agent | both (default both)
+  --tz        IANA zone the wall is read in; default is your account zone
+  --floating  read the wall in the zone of whoever it fires for
+
+Schedule flags cannot be combined with --remind-at or --rearm. Rules only the
+server can judge (a firing floor on HOURLY and MINUTELY, anchor completion with
+a BYxxx part) are refused by it, and its message is shown unchanged.
+
+Subcommands: show, done, skip, snooze, move, agenda, edit, rm (see each --help).`,
 		// `[ref]` rather than `<ref>` in Use, because cmdhelp derives the
 		// machine-readable arg spec from this string and `<ref>` would declare
 		// a REQUIRED positional that --rearm does not take.
@@ -55,6 +80,12 @@ with no webhook configured delivers reminders that way and only that way.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()
+
+			if scheduleModeRequested(cmd) {
+				f := remindSched
+				f.RemindAt, f.Rearm = remindAtFlag, remindRearmID
+				return runScheduleCreate(cmd, args, f)
+			}
 
 			if remindAtFlag == "" {
 				return fmt.Errorf("--remind-at is required (an RFC3339 instant, e.g. 2026-08-01T09:00:00Z)")
@@ -95,6 +126,8 @@ with no webhook configured delivers reminders that way and only that way.`,
 	}
 	cmd.Flags().StringVar(&remindAtFlag, "remind-at", "", "when to fire (RFC3339 instant, e.g. 2026-08-01T09:00:00Z)")
 	cmd.Flags().StringVar(&remindRearmID, "rearm", "", "move an existing reminder by id instead of arming a new one")
+	bindScheduleFlags(cmd, &remindSched)
+	addRemindSubcommands(cmd)
 	return cmd
 }
 
