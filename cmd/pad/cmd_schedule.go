@@ -664,7 +664,12 @@ func renderAgenda(cmd *cobra.Command, resp agendaResponse, loc *time.Location, e
 		_ = w.Flush()
 	}
 	if resp.Truncated {
-		if resp.NextFrom != "" {
+		// next_from at or past the window end means only schedules that could not
+		// be expanded cut the list (they are named below); there is nothing to
+		// resume, and a command with --from at the window end would be refused.
+		if nf, err := time.Parse(time.RFC3339, resp.NextFrom); err == nil && !nf.Before(end) {
+			// nothing to resume
+		} else if resp.NextFrom != "" {
 			hint := fmt.Sprintf("pad item remind agenda --from %s --to %s", resp.NextFrom, end.UTC().Format(time.RFC3339))
 			if tz != "" {
 				hint += " --tz " + tz

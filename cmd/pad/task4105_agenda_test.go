@@ -147,6 +147,8 @@ func TestAgendaTruncationHints(t *testing.T) {
 	}{
 		{"next_from", `{` + entry + `,"truncated":true,"next_from":"2026-11-05T05:00:00Z"}`,
 			[]string{"more after 2026-11-05 00:00 EST: pad item remind agenda --from 2026-11-05T05:00:00Z --to 2026-11-08T05:00:00Z"}, []string{"incomplete"}},
+		{"next_from is the window end (only unexpanded schedules cut)", `{` + entry + `,"truncated":true,"next_from":"2026-11-08T05:00:00Z",` + unexpanded + `}`,
+			[]string{"TASK-8  check  agent  cap_instances"}, []string{"more after", "--from", "incomplete"}},
 		{"no next_from", `{` + entry + `,"truncated":true}`,
 			[]string{"list incomplete; narrow the window"}, []string{"more after"}},
 		{"unexpanded", `{` + entry + `,` + unexpanded + `}`,
