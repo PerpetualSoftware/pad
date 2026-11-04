@@ -470,3 +470,50 @@ func TestScheduleFloorSeesTheGapAfterTheLastRDate(t *testing.T) {
 		t.Fatalf("err = %v; want the floor naming rdates", err)
 	}
 }
+
+// Bundle import carries a row as it is stored: neither the floor nor the
+// no-occurrence check runs, so an older bundle with a minute-level rule, or a
+// rule that never occurs, does not start being dropped for those reasons.
+func TestImportIgnoresTheFloorAndTheNoOccurrenceCheck(t *testing.T) {
+	t.Parallel()
+	f := newSchedFixture(t)
+	data, ids := f.bundleWith(t, "under floor", "never occurs")
+	under := validSchedExport(ids["under floor"])
+	under.Rrule = "FREQ=MINUTELY;INTERVAL=5"
+	never := validSchedExport(ids["never occurs"])
+	never.Rrule = "FREQ=YEARLY;BYWEEKNO=53;BYDAY=MO;BYMONTH=2"
+	data.Schedules = append(data.Schedules, under, never)
+	dst, rep := f.importBundle(t, data, "Legacy rows")
+	for _, d := range rep.DroppedSchedules {
+		if strings.Contains(d.Reason, "15 minutes") || strings.Contains(d.Reason, "never occurs") {
+			t.Errorf("import ran a write-path check: dropped %+v", d)
+		}
+	}
+	sc, _ := f.s.GetSchedule(dst.ID, f.itemByTitle(t, dst.ID, "under floor").ID)
+	if sc == nil || sc.Rrule == nil || *sc.Rrule != "FREQ=MINUTELY;INTERVAL=5" {
+		t.Errorf("the under-floor row was not imported as stored: %+v", sc)
+	}
+}
+
+// An RDATE can give a rule that never fires its one occurrence: accepted.
+func TestScheduleCreateAnRDateRescuesARuleThatNeverFires(t *testing.T) {
+	t.Parallel()
+	f := newSchedFixture(t)
+	if err := f.tryCreate(t, models.ScheduleCreate{Kind: "check", Dtstart: "2031-03-10T09:00", Tz: "UTC",
+		Rrule: "FREQ=MINUTELY;BYMONTH=1;BYYEARDAY=200", RDates: []string{"2031-06-01T09:00"}}); err != nil {
+		t.Fatalf("a never-firing rule with an RDATE was refused: %v", err)
+	}
+}
+
+// Rule plus RDATEs less EXDATEs is the set judged: excluding every occurrence
+// leaves nothing, and create says so.
+func TestScheduleCreateRefusesASetEveryOccurrenceOfWhichIsExcluded(t *testing.T) {
+	t.Parallel()
+	f := newSchedFixture(t)
+	err := f.tryCreate(t, models.ScheduleCreate{Kind: "check", Dtstart: "2031-03-10T09:00", Tz: "UTC",
+		Rrule: "FREQ=DAILY;COUNT=2", ExDates: []string{"2031-03-10T09:00", "2031-03-11T09:00"}})
+	var fe *ScheduleFieldError
+	if !errors.As(err, &fe) || fe.Code != "never_occurs" {
+		t.Fatalf("err = %v; want never_occurs", err)
+	}
+}
