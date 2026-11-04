@@ -280,6 +280,22 @@ func (s *Store) mentionRecipientsTx(tx *sql.Tx, c *models.Comment, users []strin
 // second, and a redelivery of the same fire is the same one. There is no actor:
 // the clock fired it.
 func (s *Store) enqueueReminderNotificationTx(tx *sql.Tx, r *models.Reminder, item *models.Item) error {
+	// TASK-4238: a fire of a managed (schedule) reminder pushes only when the
+	// schedule's audience includes a human. An agent-only schedule writes no
+	// notification row; its outbox event is written by the caller as always, so
+	// webhooks and the agenda are unchanged. The audience is read here, in the
+	// fire transaction, so a change applies from the next fire. A one-shot
+	// reminder has no schedule and pushes as before.
+	if r.ScheduleID != nil {
+		var audience string
+		err := tx.QueryRow(s.q(`SELECT audience FROM item_schedules WHERE id = ?`), *r.ScheduleID).Scan(&audience)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("read reminder schedule audience: %w", err)
+		}
+		if err == nil && audience == "agent" {
+			return nil
+		}
+	}
 	to := ""
 	if item.AssignedUserID != nil {
 		to = *item.AssignedUserID
