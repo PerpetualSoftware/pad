@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -1330,6 +1331,70 @@ func TestMapKeysKeepTheirStringMethodAndInterfaceKeysAreCut(t *testing.T) {
 	for k := range out {
 		if len(k) > maxMapKeyBytes+16 {
 			t.Errorf("interface key of %d bytes", len(k))
+		}
+	}
+}
+
+type plainNamedKey string
+
+type stringerNamedKey string
+
+func (stringerNamedKey) String() string { return "MASKED-NAME" }
+
+func TestNamedStringKeyOverTheLimitIsCutBeforeFormatting(t *testing.T) {
+	// A named string type with no String method: fmt would copy each 4 MiB key whole.
+	m := map[plainNamedKey]int{}
+	for i := 0; i < 8; i++ {
+		m[plainNamedKey(strings.Repeat("k", 4<<20)+fmt.Sprint(i))] = i
+	}
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	out, _ := sanitize(reflect.ValueOf(m), 0, &walkBudget{nodes: 100, bytes: 1 << 20}).(map[string]any)
+	runtime.ReadMemStats(&after)
+	if len(out) != 8 {
+		t.Errorf("entries=%d", len(out))
+	}
+	if copied := after.TotalAlloc - before.TotalAlloc; copied > 8<<20 {
+		t.Errorf("%d bytes allocated walking 8 keys of 4 MiB: the keys were copied whole", copied)
+	}
+	// A short named key keeps its String form.
+	out, _ = sanitize(reflect.ValueOf(map[stringerNamedKey]int{"raw": 1}), 0, &walkBudget{nodes: 100, bytes: 1 << 20}).(map[string]any)
+	if _, ok := out["MASKED-NAME"]; !ok || len(out) != 1 {
+		t.Errorf("a short named key lost its String form: %v", out)
+	}
+}
+
+func TestOversizedArrayKeyIsNotFormatted(t *testing.T) {
+	type big [1 << 20]byte
+	m := map[big]int{{1}: 1, {2}: 2}
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	out, _ := sanitize(reflect.ValueOf(m), 0, &walkBudget{nodes: 100, bytes: 1 << 20}).(map[string]any)
+	runtime.ReadMemStats(&after)
+	if len(out) != 2 {
+		t.Errorf("entries=%d: %v", len(out), out)
+	}
+	if copied := after.TotalAlloc - before.TotalAlloc; copied > 4<<20 {
+		t.Errorf("%d bytes allocated for two 1 MiB array keys: the keys were formatted", copied)
+	}
+}
+
+func TestSmallCodeNamesAndBoundsDirectly(t *testing.T) {
+	for _, k := range []string{"code", "statuscode", "http_status_code", "exitcode", "returncode", "errorcode", "errcode", "grpc_code"} {
+		for _, n := range []int64{0, 404, -1, 999, -999} {
+			if !smallCode(k, n) {
+				t.Errorf("smallCode(%q, %d) = false", k, n)
+			}
+		}
+		for _, n := range []int64{1000, -1000, 482913} {
+			if smallCode(k, n) {
+				t.Errorf("smallCode(%q, %d) = true", k, n)
+			}
+		}
+	}
+	for _, k := range []string{"verification_code", "recovery_code", "invite_code", "sms_code", "token", "pin"} {
+		if smallCode(k, 123) {
+			t.Errorf("smallCode(%q, 123) = true: a one-time code would be kept", k)
 		}
 	}
 }

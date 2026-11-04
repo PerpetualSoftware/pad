@@ -667,11 +667,17 @@ func sanitize(v reflect.Value, depth int, budget *walkBudget) any {
 			for k.Kind() == reflect.Interface && !k.IsNil() {
 				k = k.Elem()
 			}
-			if k.Type() == reflect.TypeOf("") {
+			// A plain string, or a named string too long to be a name (its String
+			// method is not consulted), is cut here; a short named string keeps
+			// its String form through fmt.
+			if k.Kind() == reflect.String && (k.Type() == reflect.TypeOf("") || k.Len() > maxMapKeyBytes) {
 				raw = k.String()
 				if len(raw) > maxMapKeyBytes {
 					raw = raw[:maxMapKeyBytes+1]
 				}
+			} else if k.Type().Size() > maxMapKeyBytes {
+				// An array or struct key too large to be a name: its type stands for it.
+				raw = "<" + k.Type().String() + ">"
 			} else {
 				raw = fmt.Sprint(it.Key().Interface())
 			}
