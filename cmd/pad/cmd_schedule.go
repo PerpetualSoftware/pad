@@ -259,7 +259,7 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 	c := &cobra.Command{
 		Use:     use,
 		Short:   v.short,
-		Example: "  pad item remind " + v.use + " TASK-5" + map[bool]string{true: " --until 2h", false: ""}[needsUntil] + ` -m "why"`,
+		Example: "  pad item remind " + v.use + " TASK-5" + map[string]string{"snooze": " --until 2h", "move": " --until 2026-11-10T09:00"}[v.state] + ` -m "why"`,
 		Long:    long,
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -403,7 +403,8 @@ unchanged when it refuses: a rule that fires too often (a floor on HOURLY and
 MINUTELY rules), a rule that does not compile, --anchor completion with a
 rule that is not a plain interval, or the server being busy (retry). An edit
 that leaves no occurrence at or after now ends the schedule instead of failing.
-A timing edit that compiles clears a stored error.` + scheduleFlagHelp,
+A timing edit that compiles clears a stored error.
+` + scheduleFlagHelp,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			body, err := buildScheduleUpdate(f, flagChanged(cmd))
