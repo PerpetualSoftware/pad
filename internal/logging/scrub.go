@@ -423,10 +423,26 @@ func numericSecretKey(key string) bool {
 	return false
 }
 
-// smallCode reports a code key (code, http_status_code) with a value of up to
-// three digits: a status or an exit code, as benignCode accepts in text.
+// statusCodeNames are the names that hold a status or exit code, not a secret.
+var statusCodeNames = []string{"statuscode", "exitcode", "returncode", "errorcode", "errcode", "grpccode"}
+
+// smallCode reports a status or exit code: the bare key code, or a name on
+// statusCodeNames, with a value of up to three digits (as benignCode accepts in
+// text). verification_code=123 is not one: a one-time code keeps the credential rule.
 func smallCode(key string, n int64) bool {
-	return strings.HasSuffix(strings.ToLower(keySeparators.Replace(key)), "code") && n > -1000 && n < 1000
+	if n <= -1000 || n >= 1000 {
+		return false
+	}
+	k := strings.ToLower(keySeparators.Replace(key))
+	if k == "code" {
+		return true
+	}
+	for _, c := range statusCodeNames {
+		if strings.HasSuffix(k, c) {
+			return true
+		}
+	}
+	return false
 }
 
 // scalar reports whether v is a number or bool: a count or a measurement,
@@ -647,13 +663,17 @@ func sanitize(v reflect.Value, depth int, budget *walkBudget) any {
 			// fmt reports a key whose String method panics rather than panicking.
 			// A string key is cut before it is formatted; fmt would copy it whole.
 			var raw string
-			if k := it.Key(); k.Kind() == reflect.String {
+			k := it.Key()
+			for k.Kind() == reflect.Interface && !k.IsNil() {
+				k = k.Elem()
+			}
+			if k.Type() == reflect.TypeOf("") {
 				raw = k.String()
 				if len(raw) > maxMapKeyBytes {
 					raw = raw[:maxMapKeyBytes+1]
 				}
 			} else {
-				raw = fmt.Sprint(k.Interface())
+				raw = fmt.Sprint(it.Key().Interface())
 			}
 			// A key's bytes count toward the walk, as a value's do.
 			cost := min(len(raw), maxMapKeyBytes)

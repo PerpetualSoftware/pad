@@ -1294,3 +1294,42 @@ func TestCountNamesKeepNumbersAndSingularCredentialNamesRedact(t *testing.T) {
 		}
 	}
 }
+
+func TestOnlyStatusCodesKeepSmallNumbers(t *testing.T) {
+	for _, k := range []string{"code", "http_status_code", "exit_code", "grpc_code"} {
+		if r := redactAttr(nil, slog.Int(k, 404)); r.Value.String() != "404" {
+			t.Errorf("%s=404 redacted: %v", k, r)
+		}
+		m, _ := sanitize(reflect.ValueOf(map[string]any{k: 404.0}), 0, &walkBudget{nodes: 100, bytes: 1 << 20}).(map[string]any)
+		if m[k] != 404.0 {
+			t.Errorf("%s=404.0 in a map: %v", k, m[k])
+		}
+	}
+	for _, k := range []string{"verification_code", "recovery_code", "invite_code", "sms_code"} {
+		if r := redactAttr(nil, slog.Int(k, 123)); r.Value.String() != redacted {
+			t.Errorf("%s=123 kept: %v", k, r)
+		}
+		m, _ := sanitize(reflect.ValueOf(map[string]any{k: 123.0}), 0, &walkBudget{nodes: 100, bytes: 1 << 20}).(map[string]any)
+		if m[k] != redacted {
+			t.Errorf("%s=123.0 in a map kept: %v", k, m[k])
+		}
+	}
+}
+
+type stringerKey13 string
+
+func (stringerKey13) String() string { return "MASKED" }
+
+func TestMapKeysKeepTheirStringMethodAndInterfaceKeysAreCut(t *testing.T) {
+	out, _ := sanitize(reflect.ValueOf(map[stringerKey13]int{"raw-secret-id": 1}), 0, &walkBudget{nodes: 100, bytes: 1 << 20}).(map[string]any)
+	if _, ok := out["MASKED"]; !ok || len(out) != 1 {
+		t.Errorf("String method ignored: %v", out)
+	}
+	big := map[any]int{strings.Repeat("k", 8<<20): 1}
+	out, _ = sanitize(reflect.ValueOf(big), 0, &walkBudget{nodes: 100, bytes: 1 << 20}).(map[string]any)
+	for k := range out {
+		if len(k) > maxMapKeyBytes+16 {
+			t.Errorf("interface key of %d bytes", len(k))
+		}
+	}
+}
