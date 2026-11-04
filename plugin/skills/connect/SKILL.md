@@ -6,8 +6,8 @@ allowed-tools: ["Bash"]
 `/pad:connect` opts THIS session into Pad's live stream: it declares consent to
 receive `pad push` notifications (the security gate — no consent, no stream), wakes
 the session's push monitor, and on the FIRST connect of a session runs the workspace's
-boot ritual. Invoking this skill is also what starts the gated monitor process, so run
-it once per session you want connected.
+boot ritual. The stream starts in this session as soon as step 1's `pad session arm` returns, with no
+restart; run this once per session you want connected.
 
 If the `pad` CLI is missing (command not found), say so and point at
 https://getpad.dev/install — don't retry or guess at alternate paths. If no `.pad.toml`

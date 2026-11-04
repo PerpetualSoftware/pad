@@ -309,3 +309,150 @@ test('a line arriving mid-burst joins it: the burst ends after quiet, not after 
   await settle()
   expect(s.submitted).toEqual(['first\nlate line'])
 })
+
+// BUG-4303: the mod asks should-arm once, at the session's first use of Pad. A
+// session that opts in LATER (/pad:connect, typed or reached by intent, runs
+// `pad session arm` through Bash) used to have no path to a stream: it never
+// appeared in Chat and got no pushes. The stream now starts when the arm
+// command returns, in the same session.
+const ARMS = [
+  'pad session arm', 'pad session arm --format json', 'cd /work/demo && pad session arm', 'PAD_AGENT=x pad session arm',
+  '/usr/local/bin/pad session arm', '~/.local/bin/pad  session   arm', `bash -c "pad session arm"`, 'pad session arm; pad session first-connect --format json',
+  '(pad session arm)', 'pad\tsession\tarm',
+]
+const NOT_ARMS = [
+  'pad session disarm', 'pad session status --format json', 'pad session should-arm', 'pad session first-connect --format json',
+  'pad chat arm --accept-instructions', 'pad session armed', 'pad session arm-all', 'padd session arm', 'ls pad-session-arm',
+]
+
+test('a session that arms after its first use of Pad starts the stream when the arm returns (BUG-4303)', async ($, on) => {
+  mock.clock(on)
+  const opts: Opts = { armed: false }
+  const s = stubs(on, opts)
+  await $.session.start({ cwd: '/work/demo' })
+  await usePad($, 'pad bootstrap --format json') // the first use: not armed, so nothing starts
+  await settle()
+  expect(s.spawns).toEqual([])
+  opts.armed = true // `pad session arm` takes effect
+  await usePad($, 'pad session arm')
+  await settle()
+  expect(s.spawns.length).toBe(1)
+  expect(s.spawns[0].argv[0]).toMatch(/\/scripts\/pad-monitor\.sh$/)
+  expect(s.spawns[0].env.PAD_SESSION_PID).toBe('4242')
+})
+
+test('every shape of the arm command starts the stream, and no other command does (BUG-4303)', async ($, on) => {
+  mock.clock(on)
+  const opts: Opts = { armed: false }
+  const s = stubs(on, opts)
+  const tryCommand = async (command: string) => {
+    opts.armed = false
+    await $.session.start({ cwd: '/work/demo' })
+    await usePad($, 'pad bootstrap') // the first use: not armed
+    opts.armed = true // consent exists by the time the command returns
+    await usePad($, command)
+    await settle()
+    const started = s.spawns.length
+    // an end that stops the stream resets wake and the stream
+    await $.session.end({ reason: 'prompt_input_exit' })
+    s.spawns.length = 0
+    s.runs.length = 0
+    return [command, started]
+  }
+  for (const command of ARMS) expect(await tryCommand(command)).toEqual([command, 1])
+  for (const command of NOT_ARMS) expect(await tryCommand(command)).toEqual([command, 0])
+})
+
+test('only a Bash command arms: the same text in another tool starts nothing (BUG-4303)', async ($, on) => {
+  mock.clock(on)
+  const opts: Opts = { armed: false }
+  const s = stubs(on, opts)
+  await $.session.start({ cwd: '/work/demo' })
+  await usePad($, 'pad bootstrap')
+  opts.armed = true
+  await $.tool.call({ tool: 'Write', command: 'pad session arm' })
+  await settle()
+  expect(s.spawns).toEqual([])
+})
+
+test('a second arm, or a reconnect, does not start a second stream (BUG-4303)', async ($, on) => {
+  mock.clock(on)
+  const opts: Opts = { armed: false }
+  const s = stubs(on, opts)
+  await $.session.start({ cwd: '/work/demo' })
+  await usePad($, 'pad bootstrap')
+  opts.armed = true
+  await usePad($, 'pad session arm')
+  await usePad($, 'pad session arm')
+  await settle()
+  await usePad($, 'pad session arm')
+  await settle()
+  expect(s.spawns.length).toBe(1)
+})
+
+test('two arms in flight at once start one stream (BUG-4303)', async ($, on) => {
+  mock.clock(on)
+  let release = () => {}
+  const gate = new Promise<void>((r) => { release = r })
+  const opts: Opts = { armed: false, gate }
+  const s = stubs(on, opts)
+  await $.session.start({ cwd: '/work/demo' })
+  opts.armed = true
+  const a = usePad($, 'pad session arm')
+  const b = usePad($, 'pad session arm')
+  await settle()
+  release()
+  await Promise.all([a, b])
+  await settle()
+  expect(s.spawns.length).toBe(1)
+})
+
+test('an arm that returns while the first-use check is still pending starts one stream (BUG-4303)', async ($, on) => {
+  mock.clock(on)
+  let release = () => {}
+  const gate = new Promise<void>((r) => { release = r })
+  const opts: Opts = { armed: true, gate }
+  const s = stubs(on, opts)
+  await $.session.start({ cwd: '/work/demo' })
+  const first = usePad($, 'pad bootstrap') // wake asks should-arm; the gate holds the answer
+  await settle()
+  const arm = usePad($, 'pad session arm') // the post-arm check overlaps it
+  await settle()
+  release()
+  await Promise.all([first, arm])
+  await settle()
+  expect(s.spawns.length).toBe(1)
+})
+
+test('an arm that did not take effect starts nothing (BUG-4303)', async ($, on) => {
+  mock.clock(on)
+  const s = stubs(on, { armed: false })
+  await $.session.start({ cwd: '/work/demo' })
+  await usePad($, 'pad session arm')
+  await settle()
+  expect(s.spawns).toEqual([])
+})
+
+test('after a disconnect the mod starts nothing; a later connect does not double the stream it holds (BUG-4303)', async ($, on) => {
+  mock.clock(on)
+  const opts: Opts = { armed: false }
+  const s = stubs(on, opts)
+  await $.session.start({ cwd: '/work/demo' })
+  await usePad($, 'pad bootstrap')
+  opts.armed = true
+  await usePad($, 'pad session arm')
+  await settle()
+  expect(s.spawns.length).toBe(1)
+  // /pad:disconnect ends the stream in the wrapper (pad-monitor.sh re-checks
+  // consent and exits), which no test here drives; this only pins that the
+  // mod starts nothing on a disarm and never doubles the stream it holds.
+  opts.armed = false
+  await usePad($, 'pad session disarm')
+  s.stream.release()
+  await settle()
+  expect(s.spawns.length).toBe(1)
+  opts.armed = true
+  await usePad($, 'pad session arm')
+  await settle()
+  expect(s.spawns.length).toBe(1) // still the one stream: it has not ended yet
+})
