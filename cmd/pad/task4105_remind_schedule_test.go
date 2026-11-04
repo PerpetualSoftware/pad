@@ -19,13 +19,18 @@ func okReply(body string) func(recordedCall) (int, string) {
 	return func(recordedCall) (int, string) { return 200, body }
 }
 
+// runSched runs one CLI call against a stub in its own subtest, so each call's
+// server is closed before the next call sets the machine zone.
 func runSched(t *testing.T, reply func(recordedCall) (int, string), stdin string, args ...string) (out, stderr string, err error, calls []recordedCall) {
 	t.Helper()
-	h, get := recordingStub(reply)
-	root := tzCLIWithLocal(t, h, time.UTC)
-	root.SetIn(strings.NewReader(stdin))
-	out, stderr, err = tzRun(t, root, args...)
-	return out, stderr, err, get()
+	t.Run("call", func(t *testing.T) {
+		h, get := recordingStub(reply)
+		root := tzCLIWithLocal(t, h, time.UTC)
+		root.SetIn(strings.NewReader(stdin))
+		out, stderr, err = tzRun(t, root, args...)
+		calls = get()
+	})
+	return out, stderr, err, calls
 }
 
 func apiError(status int, code, msg, details string) func(recordedCall) (int, string) {

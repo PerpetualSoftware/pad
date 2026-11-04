@@ -109,28 +109,32 @@ func TestAgendaWindowFlags(t *testing.T) {
 		{[]string{"--from", "yesterday"}, "--from"},
 		{[]string{"--tz", "Local"}, "--tz"},
 	} {
-		h, calls := recordingStub(func(c recordedCall) (int, string) { return 200, `{"entries":[]}` })
-		root := tzCLIWithLocal(t, h, time.UTC)
-		_, _, err := tzRun(t, root, append([]string{"item", "remind", "agenda"}, tc.args...)...)
-		if err == nil || !strings.Contains(err.Error(), tc.want) {
-			t.Fatalf("%v: err=%v", tc.args, err)
-		}
-		for _, c := range calls() {
-			if strings.Contains(c.path, "agenda") {
-				t.Fatalf("%v reached the server", tc.args)
+		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
+			h, calls := recordingStub(func(c recordedCall) (int, string) { return 200, `{"entries":[]}` })
+			root := tzCLIWithLocal(t, h, time.UTC)
+			_, _, err := tzRun(t, root, append([]string{"item", "remind", "agenda"}, tc.args...)...)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("%v: err=%v", tc.args, err)
 			}
-		}
+			for _, c := range calls() {
+				if strings.Contains(c.path, "agenda") {
+					t.Fatalf("%v reached the server", tc.args)
+				}
+			}
+		})
 	}
 	// 92 days exactly is allowed, and --tz is forwarded.
-	h, calls := recordingStub(func(c recordedCall) (int, string) { return 200, `{"entries":[]}` })
-	root := tzCLIWithLocal(t, h, time.UTC)
-	if _, _, err := tzRun(t, root, "item", "remind", "agenda", "--from", "2026-11-01", "--days", "92", "--tz", "Asia/Tokyo"); err != nil {
-		t.Fatal(err)
-	}
-	q := agendaCall(t, calls())
-	if q.Get("tz") != "Asia/Tokyo" || q.Get("from") != "2026-10-31T15:00:00Z" {
-		t.Fatalf("query=%v", q)
-	}
+	t.Run("ninety-two days", func(t *testing.T) {
+		h, calls := recordingStub(func(c recordedCall) (int, string) { return 200, `{"entries":[]}` })
+		root := tzCLIWithLocal(t, h, time.UTC)
+		if _, _, err := tzRun(t, root, "item", "remind", "agenda", "--from", "2026-11-01", "--days", "92", "--tz", "Asia/Tokyo"); err != nil {
+			t.Fatal(err)
+		}
+		q := agendaCall(t, calls())
+		if q.Get("tz") != "Asia/Tokyo" || q.Get("from") != "2026-10-31T15:00:00Z" {
+			t.Fatalf("query=%v", q)
+		}
+	})
 }
 
 func TestAgendaTruncationHints(t *testing.T) {

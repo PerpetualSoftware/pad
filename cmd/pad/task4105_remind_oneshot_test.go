@@ -52,11 +52,14 @@ func TestRemindOneShotUnchanged(t *testing.T) {
 		}
 		return 404, `{"error":{"code":"not_found","message":"no"}}`
 	}
-	run := func(args ...string) (string, error, []recordedCall) {
-		h, calls := recordingStub(reply)
-		root := tzCLIWithLocal(t, h, time.UTC)
-		out, _, err := tzRun(t, root, args...)
-		return out, err, calls()
+	run := func(args ...string) (out string, err error, calls []recordedCall) {
+		t.Run("call", func(t *testing.T) {
+			h, get := recordingStub(reply)
+			root := tzCLIWithLocal(t, h, time.UTC)
+			out, _, err = tzRun(t, root, args...)
+			calls = get()
+		})
+		return
 	}
 	noSchedule := func(calls []recordedCall) {
 		t.Helper()
