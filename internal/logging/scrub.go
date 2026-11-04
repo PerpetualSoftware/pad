@@ -460,7 +460,12 @@ func numericSecret(key string, v reflect.Value) bool {
 	var n int64
 	isInt := false
 	switch v.Kind() {
-	case reflect.Bool, reflect.Float32, reflect.Float64:
+	case reflect.Bool:
+	case reflect.Float32, reflect.Float64:
+		// A JSON-decoded number is a float64: a whole one is a count or a code.
+		if f := v.Float(); f == float64(int64(f)) && f > -1<<40 && f < 1<<40 {
+			n, isInt = int64(f), true
+		}
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		n, isInt = v.Int(), true
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
@@ -471,10 +476,17 @@ func numericSecret(key string, v reflect.Value) bool {
 	if !credentialKey(key) && !numericSecretKey(key) {
 		return false
 	}
-	if isInt && (smallCode(key, n) || strings.HasSuffix(strings.ToLower(keySeparators.Replace(key)), "tokens")) {
+	if isInt && (smallCode(key, n) || pluralName(key)) {
 		return false
 	}
 	return true
+}
+
+// pluralName reports a plural name (tokens, sessions, headers): a number under
+// it is a count of them, not one of them.
+func pluralName(key string) bool {
+	k := strings.ToLower(keySeparators.Replace(key))
+	return strings.HasSuffix(k, "s") && !strings.HasSuffix(k, "ss")
 }
 
 // stringValue returns the string v holds (through interfaces and pointers).
@@ -507,6 +519,17 @@ func (b *walkBudget) text(s string) string {
 	}
 	b.bytes -= len(s)
 	return RedactText(s)
+}
+
+// urlText is text for a url-named value: reduced to its host, out of the same
+// byte budget as any other string.
+func (b *walkBudget) urlText(s string) string {
+	if len(s) > b.bytes {
+		b.bytes = 0
+		return redacted
+	}
+	b.bytes -= len(s)
+	return RedactText(reduceURLText(s))
 }
 
 // sanitizeValue is sanitize with a fresh budget.
@@ -632,7 +655,7 @@ func sanitize(v reflect.Value, depth int, budget *walkBudget) any {
 				continue
 			}
 			if sv, ok := stringValue(e.val); ok && urlNamed(e.name) {
-				out[name] = RedactText(reduceURLText(sv))
+				out[name] = budget.urlText(sv)
 				continue
 			}
 			out[name] = sanitize(e.val, depth+1, budget)
@@ -662,7 +685,7 @@ func sanitize(v reflect.Value, depth int, budget *walkBudget) any {
 				continue
 			}
 			if sv, ok := stringValue(f); ok && (urlNamed(name) || urlNamed(sf.Name)) {
-				out[name] = RedactText(reduceURLText(sv))
+				out[name] = budget.urlText(sv)
 				continue
 			}
 			out[name] = sanitize(v.Field(i), depth+1, budget)

@@ -1194,7 +1194,7 @@ func TestFinalFoldInsCredentialNamesAndURLNamesInWalks(t *testing.T) {
 	if got["Code"] != 404 || got["Tokens"] != 12 || got["Retries"] != 3 || got["Note"] != "ok" {
 		t.Errorf("diagnostics lost: %v", got)
 	}
-	if v, _ := got["HookURL"].(string); strings.Contains(v, "SECRET") || v == "" {
+	if v, _ := got["HookURL"].(string); strings.Contains(v, "SECRET") || v != "hooks.slack.com" {
 		t.Errorf("struct url field: %v", got["HookURL"])
 	}
 	mp, _ := sanitize(reflect.ValueOf(map[string]any{"secret": 99887766, "password": true, "token": 2.5, "input_tokens": 5,
@@ -1207,7 +1207,7 @@ func TestFinalFoldInsCredentialNamesAndURLNamesInWalks(t *testing.T) {
 	if mp["input_tokens"] != 5 || mp["n"] != 1 {
 		t.Errorf("map diagnostics lost: %v", mp)
 	}
-	if v, _ := mp["webhook_url"].(string); strings.Contains(v, "SECRET") {
+	if v, _ := mp["webhook_url"].(string); strings.Contains(v, "SECRET") || v != "hooks.slack.com" {
 		t.Errorf("map url: %v", mp["webhook_url"])
 	}
 	for _, a := range []slog.Attr{slog.Int("password", 1), slog.Bool("secret", true), slog.Float64("token", 1.5), slog.Uint64("pin", 4829)} {
@@ -1215,7 +1215,7 @@ func TestFinalFoldInsCredentialNamesAndURLNamesInWalks(t *testing.T) {
 			t.Errorf("attr %s: %v", a.Key, r)
 		}
 	}
-	for _, a := range []slog.Attr{slog.Int("input_tokens", 5), slog.Int("code", 404), slog.Int("retries", 3), slog.Bool("ok", true)} {
+	for _, a := range []slog.Attr{slog.Int("input_tokens", 5), slog.Float64("input_tokens", 5), slog.Float64("code", 404), slog.Int("sessions", 3), slog.Int("headers", 9), slog.Int("code", 404), slog.Int("retries", 3), slog.Bool("ok", true)} {
 		if r := redactAttr(nil, a); r.Value.String() != a.Value.String() {
 			t.Errorf("attr %s changed: %v", a.Key, r)
 		}
@@ -1231,5 +1231,28 @@ func TestMapKeyBytesCountTowardTheWalkBudget(t *testing.T) {
 	out, _ := sanitize(reflect.ValueOf(m), 0, budget).(map[string]any)
 	if budget.bytes < 0 || len(out) > 51 {
 		t.Errorf("keys not charged: %d entries, %d bytes left", len(out), budget.bytes)
+	}
+}
+
+func TestURLNamedFieldsInWalksAreChargedToTheBudget(t *testing.T) {
+	huge := "https://h/" + strings.Repeat("a", 4096)
+	m := map[string]string{}
+	for i := 0; i < 100; i++ {
+		m[fmt.Sprintf("u%03d_url", i)] = huge
+	}
+	budget := &walkBudget{nodes: 10000, bytes: 20000}
+	sanitize(reflect.ValueOf(m), 0, budget)
+	if budget.bytes != 0 && budget.bytes > 20000-4096 {
+		t.Errorf("url values were not charged: %d bytes left", budget.bytes)
+	}
+	out, _ := sanitize(reflect.ValueOf(m), 0, &walkBudget{nodes: 10000, bytes: 20000}).(map[string]any)
+	withheld := 0
+	for _, v := range out {
+		if v == redacted {
+			withheld++
+		}
+	}
+	if withheld == 0 {
+		t.Errorf("no url value was withheld past the budget")
 	}
 }
