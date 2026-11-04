@@ -114,6 +114,15 @@ func RedactText(s string) string {
 	return redactKeyValues(s)
 }
 
+func allDigits(r string) bool {
+	for i := 0; i < len(r); i++ {
+		if r[i] < '0' || r[i] > '9' {
+			return false
+		}
+	}
+	return r != ""
+}
+
 // opaqueRun reports a keyless query run that looks like a credential value:
 // token characters only, six or more, with a digit or a capital or sixteen or
 // more of them. A short lowercase word is prose or a parameter name.
@@ -135,7 +144,11 @@ func opaqueRun(r string) bool {
 			return false
 		}
 	}
-	return letter && (mixed || len(r) >= 16)
+	if !letter {
+		// All digits: a six-digit run is a numeric one-time code.
+		return allDigits(r)
+	}
+	return mixed || len(r) >= 16
 }
 
 // maxKeyLen bounds a key looked for to the left of "=": real names are short,
@@ -542,7 +555,7 @@ func sanitize(v reflect.Value, depth int, budget *walkBudget) any {
 		entries := make([]entry, 0, min(v.Len(), maxMapRead))
 		for it := v.MapRange(); it.Next() && len(entries) < maxMapRead; {
 			// fmt reports a key whose String method panics rather than panicking.
-			entries = append(entries, entry{fmt.Sprint(it.Key().Interface()), it.Value()})
+			entries = append(entries, entry{RedactText(fmt.Sprint(it.Key().Interface())), it.Value()})
 		}
 		sort.Slice(entries, func(i, j int) bool { return entries[i].name < entries[j].name })
 		out := make(map[string]any, min(len(entries), maxWalkWidth+1))

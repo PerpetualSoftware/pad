@@ -1078,3 +1078,26 @@ func TestNumericSecretsAreMasked(t *testing.T) {
 		t.Errorf("map walk: %v", got)
 	}
 }
+
+func TestRound9KeylessDigitsMapKeysAndURLAttrs(t *testing.T) {
+	if got := RedactText("GET /x?482913 failed"); got != "GET /x?REDACTED failed" {
+		t.Errorf("digits run: %q", got)
+	}
+	if got := RedactText("GET /x?1234 failed"); got != "GET /x?1234 failed" {
+		t.Errorf("short digits run: %q", got)
+	}
+	a := redactAttr(nil, slog.String("webhook_url", "https://hooks.slack.com/services/T0/B0/SECRET"))
+	if strings.Contains(a.Value.String(), "SECRET") {
+		t.Errorf("webhook_url leaked: %v", a)
+	}
+	got := sanitize(reflect.ValueOf(map[string]int{"https://h/cb?token=abcdef": 3}), 0, &walkBudget{nodes: 100, bytes: 1 << 20})
+	if m, _ := got.(map[string]any); len(m) != 1 {
+		t.Errorf("map: %v", got)
+	} else {
+		for k := range m {
+			if strings.Contains(k, "abcdef") {
+				t.Errorf("map key leaked: %q", k)
+			}
+		}
+	}
+}
