@@ -33,7 +33,7 @@ type scheduleFlags struct {
 const scheduleFlagHelp = `
   --start     wall time the first occurrence is read at: 2026-11-09T09:00, or 2026-11-09 for an all-day date (no Z, no offset)
   --every     cadence: daily, weekdays, weekly, biweekly, monthly, monthly-last, quarterly, yearly, or an RRULE such as FREQ=WEEKLY;BYDAY=MO
-  --deadline  hard | soft: a due time rather than a check
+  --deadline  hard | soft: a due time rather than a check (edit also takes none: back to a plain check)
   --window    a span from --start: a duration (90m, 2h, 3d) or an end wall (2026-11-09T17:00)
   --anchor    calendar (default) | completion (next one an interval after you mark it done)
   --audience  human | agent | both (default both)
@@ -43,7 +43,7 @@ const scheduleFlagHelp = `
 func bindScheduleFlags(cmd *cobra.Command, f *scheduleFlags) {
 	cmd.Flags().StringVar(&f.Start, "start", "", "schedule: wall time, 2026-11-09T09:00 or 2026-11-09 (no Z or offset)")
 	cmd.Flags().StringVar(&f.Every, "every", "", "schedule: daily|weekdays|weekly|biweekly|monthly|monthly-last|quarterly|yearly, or an RRULE")
-	cmd.Flags().StringVar(&f.Deadline, "deadline", "", "schedule: hard|soft makes it a deadline")
+	cmd.Flags().StringVar(&f.Deadline, "deadline", "", "schedule: hard|soft makes it a deadline (edit also takes none: a plain check)")
 	cmd.Flags().StringVar(&f.Window, "window", "", "schedule: a span from --start, a duration (90m, 2h, 3d) or an end wall")
 	cmd.Flags().StringVar(&f.Anchor, "anchor", "", "schedule: calendar|completion")
 	cmd.Flags().StringVar(&f.Audience, "audience", "", "schedule: human|agent|both")
@@ -193,6 +193,9 @@ func buildScheduleCreate(f scheduleFlags) (models.ScheduleCreate, error) {
 	if f.Deadline != "" && f.Window != "" {
 		return out, fmt.Errorf("--deadline and --window cannot be combined: a window is its own kind")
 	}
+	if f.Deadline == "none" {
+		return out, fmt.Errorf("--deadline none is an edit value (it turns a deadline back into a plain check); a new schedule is a check unless you give hard | soft")
+	}
 	if f.Deadline != "" {
 		if out.Kind, err = deadlineKind(f.Deadline); err != nil {
 			return out, err
@@ -253,11 +256,16 @@ func buildScheduleUpdate(f scheduleFlags, changed func(string) bool) (models.Sch
 		out.Dtstart = &s
 	}
 	if changed("deadline") {
-		k, err := deadlineKind(f.Deadline)
-		if err != nil {
-			return out, err
+		k := "check"
+		if f.Deadline != "none" {
+			var err error
+			if k, err = deadlineKind(f.Deadline); err != nil {
+				return out, err
+			}
 		}
-		out.Kind = &k
+		// Only a window carries dtend, so leaving the window kind clears it.
+		noEnd := ""
+		out.Kind, out.Dtend = &k, &noEnd
 	}
 	if changed("window") {
 		k := "window"
@@ -285,9 +293,9 @@ func buildScheduleUpdate(f scheduleFlags, changed func(string) bool) (models.Sch
 		tz, fl := f.Tz, false
 		out.Tz, out.Floating = &tz, &fl
 	}
-	if changed("floating") && f.Floating {
-		t := true
-		out.Floating = &t
+	if changed("floating") {
+		fl := f.Floating
+		out.Floating = &fl
 	}
 	if changed("audience") {
 		if err := checkEnum("audience", f.Audience, "human", "agent", "both"); err != nil {

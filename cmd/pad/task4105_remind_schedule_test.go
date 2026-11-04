@@ -86,6 +86,24 @@ func TestRemindScheduleRefusesLocally(t *testing.T) {
 	}
 }
 
+func TestRemindDeadlineNone(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"edit with window", []string{"edit", "TASK-5", "--deadline", "none", "--window", "2h"}, "cannot be combined"},
+		{"create", []string{"TASK-5", "--start", "2026-11-09T09:00", "--deadline", "none"}, "edit"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err, calls := runSched(t, okReply(`{}`), "", append([]string{"item", "remind"}, tc.args...)...)
+			if err == nil || !strings.Contains(err.Error(), tc.want) || len(calls) != 0 {
+				t.Fatalf("err=%v calls=%+v", err, calls)
+			}
+		})
+	}
+}
+
 // The server alone judges these; the CLI forwards the request and returns its
 // message untouched.
 func TestRemindServerRefusalsPassThrough(t *testing.T) {
@@ -163,8 +181,16 @@ func TestRemindScheduleSubcommandsHTTP(t *testing.T) {
 			lastBody: `{"tz":"Europe/Paris","floating":false}`},
 		{name: "edit floating", args: []string{"edit", "TASK-5", "--floating"}, methods: []string{"PATCH " + schedPath},
 			lastBody: `{"floating":true}`},
+		{name: "edit floating false", args: []string{"edit", "TASK-5", "--floating=false"}, methods: []string{"PATCH " + schedPath},
+			lastBody: `{"floating":false}`},
+		{name: "edit tz and floating false", args: []string{"edit", "TASK-5", "--tz", "Europe/Paris", "--floating=false"}, methods: []string{"PATCH " + schedPath},
+			lastBody: `{"tz":"Europe/Paris","floating":false}`},
+		{name: "edit deadline none", args: []string{"edit", "TASK-5", "--deadline", "none"}, methods: []string{"PATCH " + schedPath},
+			lastBody: `{"kind":"check","dtend":""}`},
+		{name: "edit hard deadline", args: []string{"edit", "TASK-5", "--deadline", "hard"}, methods: []string{"PATCH " + schedPath},
+			lastBody: `{"kind":"deadline_hard","dtend":""}`},
 		{name: "edit soft deadline", args: []string{"edit", "TASK-5", "--deadline", "soft"}, methods: []string{"PATCH " + schedPath},
-			lastBody: `{"kind":"deadline_soft"}`},
+			lastBody: `{"kind":"deadline_soft","dtend":""}`},
 		{name: "rm yes", args: []string{"rm", "TASK-5", "--yes"}, methods: []string{"DELETE " + schedPath}, outHas: []string{"Deleted the schedule on TASK-5"}},
 		{name: "rm confirmed", args: []string{"rm", "TASK-5"}, stdin: "y\n", methods: []string{"DELETE " + schedPath}, stderrHas: "[y/N]"},
 		{name: "rm declined", args: []string{"rm", "TASK-5"}, stdin: "n\n", methods: nil, stderrHas: "Cancelled"},
