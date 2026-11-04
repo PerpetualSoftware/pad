@@ -482,11 +482,23 @@ func numericSecret(key string, v reflect.Value) bool {
 	return true
 }
 
-// pluralName reports a plural name (tokens, sessions, headers): a number under
-// it is a count of them, not one of them.
+// countNames are the plurals of the credential nouns the name rule knows. A
+// number under one of them is the size of a collection (sessions=3), because a
+// plural names many credentials and holds none; the singular (token, password,
+// secret, api_key, pin) is not in the list and still redacts a number. The list
+// is closed: a name that is not on it keeps the credential rule.
+var countNames = []string{"tokens", "passwords", "secrets", "apikeys", "cookies", "sessions", "headers",
+	"credentials", "tickets", "signatures", "otps", "pins"}
+
+// pluralName reports a name whose last word is one of countNames.
 func pluralName(key string) bool {
 	k := strings.ToLower(keySeparators.Replace(key))
-	return strings.HasSuffix(k, "s") && !strings.HasSuffix(k, "ss")
+	for _, c := range countNames {
+		if strings.HasSuffix(k, c) {
+			return true
+		}
+	}
+	return false
 }
 
 // stringValue returns the string v holds (through interfaces and pointers).

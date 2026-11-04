@@ -1270,3 +1270,27 @@ func TestHugeStringMapKeyIsCutBeforeItIsFormatted(t *testing.T) {
 		}
 	}
 }
+
+func TestCountNamesKeepNumbersAndSingularCredentialNamesRedact(t *testing.T) {
+	for _, k := range []string{"tokens", "input_tokens", "passwords", "secrets", "api_keys", "cookies", "sessions", "headers", "credentials", "tickets", "signatures", "otps", "pins", "active_sessions"} {
+		a := redactAttr(nil, slog.Int(k, 7))
+		if a.Value.String() != "7" {
+			t.Errorf("count %s was redacted: %v", k, a)
+		}
+		m, _ := sanitize(reflect.ValueOf(map[string]any{k: 7, "n": 1}), 0, &walkBudget{nodes: 100, bytes: 1 << 20}).(map[string]any)
+		if m[k] != 7 {
+			t.Errorf("count %s in a map: %v", k, m[k])
+		}
+	}
+	for _, k := range []string{"token", "password", "secret", "api_key", "apikey", "pin", "otp", "session", "cookie", "access_token", "client_secret"} {
+		for _, a := range []slog.Attr{slog.Int(k, 482913), slog.Uint64(k, 482913), slog.Float64(k, 482913)} {
+			if r := redactAttr(nil, a); r.Value.String() != redacted {
+				t.Errorf("%s=%v kept: %v", k, a.Value, r)
+			}
+		}
+		m, _ := sanitize(reflect.ValueOf(map[string]any{k: 482913}), 0, &walkBudget{nodes: 100, bytes: 1 << 20}).(map[string]any)
+		if m[k] != redacted {
+			t.Errorf("%s in a map kept: %v", k, m[k])
+		}
+	}
+}
