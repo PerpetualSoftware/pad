@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"reflect"
 	"regexp"
@@ -16,8 +17,10 @@ import (
 )
 
 // maxScrubBytes bounds the text RedactText examines. Longer text is withheld
-// whole: it cannot be examined for the price of a log line.
-const maxScrubBytes = 256 << 10
+// whole: it cannot be examined for the price of a log line (a 64 KiB string
+// costs a few tens of milliseconds; a stack dump or a provider body is far
+// smaller).
+const maxScrubBytes = 64 << 10
 
 // The credential path prefixes, shared by RedactPath (which masks the whole
 // tail of a request path) and the text scrubber (which masks one segment).
@@ -26,9 +29,9 @@ const credentialPathPrefix = `/(?:api/v1/(?:auth/cli/sessions|invitations|s)|aut
 var (
 	// scheme://userinfo@host: the userinfo is a credential whether or not it
 	// has a colon (a token is often the whole userinfo).
-	reUserinfo = regexp.MustCompile(`([A-Za-z][A-Za-z0-9+.\-]*://)[^/\s?#@"']+@`)
+	reUserinfo = regexp.MustCompile(`([A-Za-z][A-Za-z0-9+.\-]*://)[^/\s?#"']+@`)
 	// A credential-bearing HTTP header written out in text: the rest of the line.
-	reHeaderLine = regexp.MustCompile(`(?i)(^|[\s"'(\[{,;])((?:proxy-)?authorization|set-cookie|cookie|x-api-key)[ \t]*:[ \t]*[^\r\n]+`)
+	reHeaderLine = regexp.MustCompile(`(?i)(^|[\s"'(\[{,;])((?:proxy-)?authorization|set-cookie|cookie|x-[a-z0-9-]*(?:token|key|secret|auth|csrf|xsrf|session))[ \t]*:[ \t]*[^\r\n]+`)
 	reBearer     = regexp.MustCompile(`(?i)\b(bearer)\s+([A-Za-z0-9._~+/=\-]{8,})`)
 	reBasic      = regexp.MustCompile(`(?i)\b(basic)\s+([A-Za-z0-9+/]{8,}={0,2})`)
 	// Credentials with a recognisable shape, whatever surrounds them: a Pad
@@ -44,8 +47,9 @@ var (
 	// credential, so the two cannot drift apart.
 	reQuerySpan = regexp.MustCompile(`\?[^\s"'#<>)\]}]+`)
 	// strconv and time parse errors repeat their input in quotes, and time's
-	// repeats the unparsed remainder a second time.
-	reParsing = regexp.MustCompile(`(parsing(?: time)?|cannot parse|Parse[A-Za-z]*\() ?"(?:[^"\\]|\\.)*"`)
+	// repeats the unparsed remainder a second time. Only those forms: "parsing
+	// config.yaml" in an ordinary message is a diagnostic.
+	reParsing = regexp.MustCompile(`(strconv\.[A-Za-z]+: parsing|parsing time|cannot parse|Parse[A-Za-z]*\() ?"(?:[^"\\]|\\.)*"`)
 )
 
 // RedactText masks credentials in free text: an error message, a response body,
@@ -64,6 +68,8 @@ func RedactText(s string) string {
 	if len(s) > maxScrubBytes {
 		return redacted
 	}
+	// json.Marshal writes & as \u0026; read it as the separator it is.
+	s = strings.ReplaceAll(s, `\u0026`, "&")
 	s = reUserinfo.ReplaceAllString(s, "${1}"+redacted+"@")
 	s = reHeaderLine.ReplaceAllString(s, "${1}${2}: "+redacted)
 	s = reBearer.ReplaceAllStringFunc(s, func(m string) string {
@@ -120,9 +126,11 @@ func credentialKeyText(key string) bool {
 func isLetter(c byte) bool { return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' }
 
 // redactKeyValues masks the value of every pair whose key names a credential:
-// key=value anywhere, and "key": value when the key is quoted. A colon after
-// an unquoted word is prose ("invalid token: expired"), not a pair. A pair
-// whose key is not a credential is stepped over at the separator, so a
+// key=value anywhere, "key": value when the key is quoted (also inside an
+// escaped string, \"key\":\"value\"), and key:value with the value right
+// behind the colon, as Go prints a map or struct (map[token:x], {Password:x}).
+// A colon followed by a space is prose ("invalid token: expired"), not a pair.
+// A pair whose key is not a credential is stepped over at the separator, so a
 // credential nested in its value (error=token=x) is still found. One pass,
 // linear in the text.
 func redactKeyValues(s string) string {
@@ -140,6 +148,9 @@ func redactKeyValues(s string) string {
 		if end > 0 && (s[end-1] == '"' || s[end-1] == '\'') {
 			quoted = true
 			end--
+			for end > 0 && s[end-1] == '\\' { // the quote of an escaped string: \"
+				end--
+			}
 		}
 		start := end
 		for start > 0 && end-start < maxKeyLen && isKeyChar(s[start-1]) {
@@ -148,7 +159,10 @@ func redactKeyValues(s string) string {
 		for start < end && !isLetter(s[start]) && s[start] != '%' {
 			start++
 		}
-		if start == end || (s[i] == ':' && !quoted) {
+		if start == end {
+			continue
+		}
+		if s[i] == ':' && !quoted && (i+1 >= len(s) || s[i+1] == ' ' || s[i+1] == '\t' || s[i+1] == '\r' || s[i+1] == '\n') {
 			continue
 		}
 		if !credentialKeyText(s[start:end]) {
@@ -161,47 +175,84 @@ func redactKeyValues(s string) string {
 		if k >= len(s) {
 			break
 		}
-		quote, ve := "", k
+		// from..to is the value to mask; ve is where scanning resumes.
+		from, to, ve := k, k, k
 		switch s[k] {
-		case '"':
-			quote = `"`
-			ve = k + 1
-			for ve < len(s) && s[ve] != '"' {
-				if s[ve] == '\\' {
+		case '"', '\'':
+			from = k + 1
+			ve = from
+			for ve < len(s) && s[ve] != s[k] {
+				if s[k] == '"' && s[ve] == '\\' {
 					ve++
 				}
 				ve++
 			}
-			ve++
-		case '\'':
-			quote = "'"
-			ve = k + 1
-			for ve < len(s) && s[ve] != '\'' {
-				ve++
+			to = min(ve, len(s))
+			ve = min(ve+1, len(s))
+		case '\\':
+			// An escaped quote opens the value: \"value\"; the value ends at the next one.
+			j := k
+			for j < len(s) && s[j] == '\\' {
+				j++
 			}
-			ve++
+			if j < len(s) && s[j] == '"' {
+				from = j + 1
+				c := from
+				for c < len(s) && !(s[c] == '"' && s[c-1] == '\\') {
+					c++
+				}
+				to = min(c, len(s))
+				for to > from && s[to-1] == '\\' {
+					to--
+				}
+				ve = min(c+1, len(s))
+			} else {
+				to = unquotedEnd(s, k)
+				ve = to
+			}
 		case '{', '[':
 			// A structured value ({"token":{"value":"x"}}, "tokens":["a","b"]) is
 			// masked whole, to its matching bracket.
-			ve = skipBracketed(s, k)
+			to = skipBracketed(s, k)
+			ve = to
 		default:
-			for ve < len(s) && !strings.ContainsRune(" \t\r\n,&;\"'}]", rune(s[ve])) {
-				ve++
-			}
+			to = unquotedEnd(s, k)
+			ve = to
 		}
-		if ve > len(s) {
-			ve = len(s)
-		}
-		if ve == k {
+		if to <= from || tokenCount(s[start:end], s[from:to]) {
 			continue
 		}
-		out.WriteString(s[last:k])
-		out.WriteString(quote + redacted + quote)
-		last = ve
+		out.WriteString(s[last:from])
+		out.WriteString(redacted)
+		last = to
 		i = ve - 1
 	}
 	out.WriteString(s[last:])
 	return out.String()
+}
+
+// unquotedEnd is the end of a bare value: up to whitespace or a delimiter.
+func unquotedEnd(s string, k int) int {
+	e := k
+	for e < len(s) && !strings.ContainsRune(" \t\r\n,&;\"'}]", rune(s[e])) {
+		e++
+	}
+	return e
+}
+
+// tokenCount reports a count of tokens (max_tokens=4096, input_tokens=5): a
+// plural name with a bare number. A singular token with a number is a credential.
+func tokenCount(key, val string) bool {
+	k := strings.ToLower(keySeparators.Replace(key))
+	if !strings.HasSuffix(k, "tokens") || val == "" {
+		return false
+	}
+	for i := 0; i < len(val); i++ {
+		if val[i] < '0' || val[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // skipBracketed returns the index just past the bracket that closes the one at
@@ -268,9 +319,27 @@ func scalar(v reflect.Value) bool {
 	return false
 }
 
-// sanitizeValue is sanitize with a fresh node budget.
+// maxWalkBytes bounds the text a walk scrubs in total: 2000 nodes of 64 KiB
+// each would cost half a gigabyte of scanning for one log line.
+const maxWalkBytes = 512 << 10
+
+// walkBudget is what one walk may still spend.
+type walkBudget struct{ nodes, bytes int }
+
+// text scrubs one string out of the walk's byte budget; past it, a string is
+// withheld.
+func (b *walkBudget) text(s string) string {
+	if len(s) > b.bytes {
+		b.bytes = 0
+		return redacted
+	}
+	b.bytes -= len(s)
+	return RedactText(s)
+}
+
+// sanitizeValue is sanitize with a fresh budget.
 func sanitizeValue(v reflect.Value) any {
-	budget := maxWalkNodes
+	budget := walkBudget{nodes: maxWalkNodes, bytes: maxWalkBytes}
 	return sanitize(v, 0, &budget)
 }
 
@@ -278,9 +347,9 @@ func sanitizeValue(v reflect.Value) any {
 // scrubbed, bounded in depth, width and total nodes so a hostile, cyclic or
 // fanned-out value costs a fixed amount. Unexported struct fields are left out.
 // A value that marshals itself is scrubbed in its marshalled form.
-func sanitize(v reflect.Value, depth int, budget *int) any {
-	*budget--
-	if depth > maxWalkDepth || *budget < 0 {
+func sanitize(v reflect.Value, depth int, budget *walkBudget) any {
+	budget.nodes--
+	if depth > maxWalkDepth || budget.nodes < 0 {
 		return redacted
 	}
 	for {
@@ -288,15 +357,28 @@ func sanitize(v reflect.Value, depth int, budget *int) any {
 		// error or marshaller often has its methods on the pointer type.
 		if v.CanInterface() && !(v.Kind() == reflect.Pointer && v.IsNil()) {
 			switch x := v.Interface().(type) {
+			case *url.URL:
+				// A webhook path is often the credential: keep the host, as the
+				// url-named string attributes do.
+				return URLHost(x.String())
+			case url.URL:
+				return URLHost(x.String())
+			case *http.Cookie:
+				return x.Name + "=" + redacted
+			case http.Cookie:
+				return x.Name + "=" + redacted
 			case error:
 				if isURLError(x) {
 					return ErrorType(x)
 				}
-				return RedactText(safeErrorText(x))
+				return budget.text(safeErrorText(x))
 			case json.Marshaler:
-				return marshalledText(func() ([]byte, error) { return json.Marshal(x) }, true)
+				return budget.text(marshalledText(func() ([]byte, error) { return json.Marshal(x) }, true))
 			case encoding.TextMarshaler:
-				return marshalledText(x.MarshalText, false)
+				return budget.text(marshalledText(x.MarshalText, false))
+			case fmt.Stringer:
+				// A type that chose how it prints (a masked key, a clock time) keeps it.
+				return budget.text(safeStringText(x))
 			}
 		}
 		if v.Kind() != reflect.Interface && v.Kind() != reflect.Pointer {
@@ -313,7 +395,7 @@ func sanitize(v reflect.Value, depth int, budget *int) any {
 	}
 	switch v.Kind() {
 	case reflect.String:
-		return RedactText(v.String())
+		return budget.text(v.String())
 	case reflect.Bool, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
 		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
 		reflect.Float32, reflect.Float64:
@@ -323,7 +405,7 @@ func sanitize(v reflect.Value, depth int, budget *int) any {
 		return nil
 	case reflect.Slice, reflect.Array:
 		if v.Type().Elem() == reflect.TypeOf(byte(0)) {
-			if v.Len() > maxScrubBytes {
+			if v.Len() > maxScrubBytes || v.Len() > budget.bytes {
 				return redacted
 			}
 			b := make([]byte, v.Len())
@@ -332,7 +414,7 @@ func sanitize(v reflect.Value, depth int, budget *int) any {
 				// Binary (a hash, a key): its bytes are not text to scrub.
 				return fmt.Sprintf("<%d bytes>", len(b))
 			}
-			return RedactText(string(b))
+			return budget.text(string(b))
 		}
 		n := v.Len()
 		if n > maxWalkWidth {
@@ -402,9 +484,9 @@ func sanitize(v reflect.Value, depth int, budget *int) any {
 	}
 }
 
-// marshalledText renders a self-marshalling value as scrubbed text. A JSON
-// string literal is unquoted, so a time or an address keeps its plain form.
-func marshalledText(marshal func() ([]byte, error), isJSON bool) (text any) {
+// marshalledText renders a self-marshalling value as text (not yet scrubbed).
+// A JSON string literal is unquoted, so a time or an address keeps its plain form.
+func marshalledText(marshal func() ([]byte, error), isJSON bool) (text string) {
 	defer func() {
 		if recover() != nil {
 			text = "<unmarshalable>"
@@ -420,7 +502,17 @@ func marshalledText(marshal func() ([]byte, error), isJSON bool) (text any) {
 			t = u
 		}
 	}
-	return RedactText(t)
+	return t
+}
+
+// safeStringText is x.String() that survives a nil receiver or a panicking method.
+func safeStringText(x fmt.Stringer) (text string) {
+	defer func() {
+		if recover() != nil {
+			text = "<unprintable>"
+		}
+	}()
+	return x.String()
 }
 
 // isURLError reports whether err's chain holds a *url.Error. A typed-nil error

@@ -11,7 +11,7 @@ import (
 
 const redacted = "REDACTED"
 
-var keySeparators = strings.NewReplacer("_", "", "-", "", " ", "")
+var keySeparators = strings.NewReplacer("_", "", "-", "", " ", "", ".", "")
 
 // credentialKey also recognises compound names such as access_token,
 // webhook_secret and Proxy-Authorization, regardless of case or separators.
@@ -34,13 +34,16 @@ func credentialName(key string) bool {
 	for _, k := range []string{key, strings.TrimSuffix(key, "s")} {
 		for _, suffix := range []string{"token", "password", "secret", "apikey", "authorization", "cookie", "header",
 			"signature", "jwt", "ticket", "verifier", "sessionid",
-			"secretkey", "accesskey", "privatekey", "passwd", "otp", "credential", "csrf", "xsrf"} {
+			"secretkey", "accesskey", "privatekey", "passwd", "otp", "credential", "csrf", "xsrf",
+			"passphrase", "encryptionkey", "signingkey", "hmackey", "masterkey", "sessionkey", "authkey",
+			"tokenvalue", "session", "sid"} {
 			if strings.HasSuffix(k, suffix) {
 				return true
 			}
 		}
-		// password_confirmation, passwordConfirm: the name starts with the word.
-		if strings.HasPrefix(k, "password") {
+		// password_confirmation, passwordConfirm: the name starts with the word;
+		// private_key_pem: it names a private key somewhere inside.
+		if strings.HasPrefix(k, "password") || strings.Contains(k, "privatekey") {
 			return true
 		}
 		if exactCredentialNames[k] {
@@ -54,7 +57,8 @@ func credentialName(key string) bool {
 			continue
 		}
 		switch k {
-		case "statuscode", "errorcode", "exitcode", "httpcode", "responsecode", "returncode", "countrycode", "languagecode":
+		case "statuscode", "errorcode", "exitcode", "httpcode", "responsecode", "returncode", "countrycode", "languagecode",
+			"decode", "encode", "unicode", "zipcode", "postcode", "barcode", "opcode", "bytecode", "sourcecode":
 			continue
 		}
 		return true
@@ -67,7 +71,7 @@ func credentialName(key string) bool {
 // sidecar and session_count.
 var exactCredentialNames = map[string]bool{
 	"auth": true, "sig": true, "sid": true, "session": true, "pwd": true, "pass": true,
-	"idtokenhint": true,
+	"idtokenhint": true, "xauth": true, "pin": true,
 }
 
 // queryCredentialKey is credentialKey for the parameters of a query string. A
@@ -268,7 +272,7 @@ func redactAttr(groups []string, a slog.Attr) slog.Attr {
 			return slog.String(a.Key, RedactText(safeErrorText(v)))
 		default:
 			// The source attribute is a *slog.Source, not data to walk.
-			if len(groups) == 0 && a.Key == slog.SourceKey {
+			if _, isSource := v.(*slog.Source); isSource {
 				return a
 			}
 			if walkable(v) {

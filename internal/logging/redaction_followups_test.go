@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -346,7 +347,7 @@ func TestLogPathAndQueryAttrsAreRedactedAtTheCall(t *testing.T) {
 		}
 		if info.IsDir() {
 			switch info.Name() {
-			case "node_modules", ".git", "web", "vendor", "testdata":
+			case "node_modules", ".git", "vendor", "testdata":
 				return filepath.SkipDir
 			}
 			return nil
@@ -359,57 +360,8 @@ func TestLogPathAndQueryAttrsAreRedactedAtTheCall(t *testing.T) {
 			return nil
 		}
 		rel, _ := filepath.Rel(root, p)
-		ast.Inspect(f, func(n ast.Node) bool {
-			c, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			check := func(keyExpr, valExpr ast.Expr) {
-				lit, ok := keyExpr.(*ast.BasicLit)
-				if !ok || lit.Kind != token.STRING {
-					return
-				}
-				key, _ := strconv.Unquote(lit.Value)
-				var want string
-				switch strings.ToLower(key) {
-				case "path", "reset_path":
-					want = "RedactPath"
-				case "query":
-					want = "RedactQuery"
-				default:
-					return
-				}
-				where := fmt.Sprintf("%s:%d (%s)", rel, fset.Position(c.Pos()).Line, key)
-				sites = append(sites, where)
-				if call, ok := valExpr.(*ast.CallExpr); ok {
-					if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == want {
-						return
-					}
-				}
-				if lit, ok := valExpr.(*ast.BasicLit); ok && lit.Kind == token.STRING {
-					return
-				}
-				bad = append(bad, where)
-			}
-			// slog.String("path", v) and slog.Any: an attribute built anywhere,
-			// including one appended to a slice before the call that logs it.
-			if sel, ok := c.Fun.(*ast.SelectorExpr); ok && len(c.Args) == 2 {
-				if x, ok := sel.X.(*ast.Ident); ok && x.Name == "slog" && (sel.Sel.Name == "String" || sel.Sel.Name == "Any") {
-					check(c.Args[0], c.Args[1])
-				}
-			}
-			// Alternating key, value arguments after the message.
-			if isLogCall(c) {
-				first := 1
-				if strings.HasSuffix(c.Fun.(*ast.SelectorExpr).Sel.Name, "Context") {
-					first = 2 // the context precedes the message
-				}
-				for i := first; i+1 < len(c.Args); i += 2 {
-					check(c.Args[i], c.Args[i+1])
-				}
-			}
-			return true
-		})
+		s, b := pathAttrSites(fset, f, rel)
+		sites, bad = append(sites, s...), append(bad, b...)
 		return nil
 	})
 	if len(sites) < 15 {
@@ -420,30 +372,150 @@ func TestLogPathAndQueryAttrsAreRedactedAtTheCall(t *testing.T) {
 	}
 }
 
-func isLogCall(c *ast.CallExpr) bool {
-	sel, ok := c.Fun.(*ast.SelectorExpr)
-	if !ok {
-		return false
+// The guard must be able to go red: these are the shapes it has to catch, and
+// the one shape it has to let through.
+func TestPathAttrGuardSeesTheShapesItGuards(t *testing.T) {
+	const src = `package p
+import "log/slog"
+func f(l *slog.Logger, lg any, p, q string) {
+	slog.Info("a", "path", p)
+	l.Warn("b", "k", 1, "query", q)
+	lg.(interface{ Error(string, ...any) }).Error("c", "path", p)
+	l = l.With("path", p)
+	slog.InfoContext(nil, "d", "reset_path", p)
+	_ = slog.Attr{Key: "path", Value: slog.StringValue(p)}
+	_ = slog.String("query", q)
+	slog.Info("fine", "path", RedactPath(p), "query", RedactQuery(q), "path", "/fixed")
+	_ = slog.Attr{Key: "path", Value: slog.StringValue(RedactPath(p))}
+	_ = slog.Group("g", "path", RedactPath(p))
+}
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "p.go", src, 0)
+	if err != nil {
+		t.Fatal(err)
 	}
-	switch sel.Sel.Name {
-	case "Debug", "Info", "Warn", "Error", "DebugContext", "InfoContext", "WarnContext", "ErrorContext":
-	default:
-		return false
+	_, bad := pathAttrSites(fset, f, "p.go")
+	want := []int{4, 5, 6, 7, 8, 9, 10}
+	var got []int
+	for _, b := range bad {
+		parts := strings.SplitN(b, ":", 2)
+		n, _ := strconv.Atoi(strings.Fields(parts[1])[0])
+		got = append(got, n)
 	}
-	switch x := sel.X.(type) {
-	case *ast.Ident:
-		return x.Name == "slog" || strings.Contains(strings.ToLower(x.Name), "log")
-	case *ast.SelectorExpr:
-		return strings.Contains(strings.ToLower(x.Sel.Name), "log")
-	case *ast.CallExpr:
-		// slog.Default().Info(...)
-		if inner, ok := x.Fun.(*ast.SelectorExpr); ok {
-			if id, ok := inner.X.(*ast.Ident); ok {
-				return id.Name == "slog" && inner.Sel.Name == "Default"
+	sort.Ints(got)
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("unredacted sites found at lines %v, want %v (%v)", got, want, bad)
+	}
+}
+
+// pathAttrSites lists the "path", "reset_path" and "query" log attributes in f
+// (sites) and those whose value is not a RedactPath/RedactQuery call or a
+// string literal (bad), as file:line (key).
+func pathAttrSites(fset *token.FileSet, f *ast.File, rel string) (sites, bad []string) {
+	ast.Inspect(f, func(n ast.Node) bool {
+		report := func(pos token.Pos, key string, val ast.Expr) {
+			want := "RedactPath"
+			if strings.EqualFold(key, "query") {
+				want = "RedactQuery"
+			}
+			where := fmt.Sprintf("%s:%d (%s)", rel, fset.Position(pos).Line, key)
+			sites = append(sites, where)
+			if hasCall(val, want) {
+				return
+			}
+			if lit, ok := val.(*ast.BasicLit); ok && lit.Kind == token.STRING {
+				return
+			}
+			bad = append(bad, where)
+		}
+		watched := func(e ast.Expr) (string, bool) {
+			lit, ok := e.(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				return "", false
+			}
+			key, _ := strconv.Unquote(lit.Value)
+			switch strings.ToLower(key) {
+			case "path", "reset_path", "query":
+				return key, true
+			}
+			return "", false
+		}
+		switch x := n.(type) {
+		case *ast.CompositeLit:
+			// slog.Attr{Key: "path", Value: ...}
+			if sel, ok := x.Type.(*ast.SelectorExpr); ok && sel.Sel.Name == "Attr" {
+				var key string
+				var val ast.Expr
+				for _, el := range x.Elts {
+					if kv, ok := el.(*ast.KeyValueExpr); ok {
+						if id, ok := kv.Key.(*ast.Ident); ok {
+							switch id.Name {
+							case "Key":
+								key, _ = watched(kv.Value)
+							case "Value":
+								val = kv.Value
+							}
+						}
+					}
+				}
+				if key != "" && val != nil {
+					report(x.Pos(), key, val)
+				}
+			}
+		case *ast.CallExpr:
+			sel, ok := x.Fun.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			// slog.String("path", v), slog.Any(...) built anywhere.
+			if id, ok := sel.X.(*ast.Ident); ok && id.Name == "slog" && (sel.Sel.Name == "String" || sel.Sel.Name == "Any") && len(x.Args) == 2 {
+				if key, ok := watched(x.Args[0]); ok {
+					report(x.Pos(), key, x.Args[1])
+				}
+				return true
+			}
+			// Alternating key, value arguments of a logger call, whatever the
+			// receiver is called: after the message (after the context for the
+			// *Context forms; from the start for With and slog.Group).
+			first := 1
+			switch sel.Sel.Name {
+			case "Debug", "Info", "Warn", "Error":
+			case "DebugContext", "InfoContext", "WarnContext", "ErrorContext":
+				first = 2
+			case "With":
+				first = 0
+			case "Group":
+				first = 1
+			default:
+				return true
+			}
+			for i := first; i+1 < len(x.Args); i += 2 {
+				if key, ok := watched(x.Args[i]); ok {
+					report(x.Pos(), key, x.Args[i+1])
+				}
 			}
 		}
-	}
-	return false
+		return true
+	})
+	return sites, bad
+}
+
+// hasCall reports whether e contains a call to a function or method called name.
+func hasCall(e ast.Expr, name string) bool {
+	found := false
+	ast.Inspect(e, func(n ast.Node) bool {
+		if c, ok := n.(*ast.CallExpr); ok {
+			switch fn := c.Fun.(type) {
+			case *ast.Ident:
+				found = found || fn.Name == name
+			case *ast.SelectorExpr:
+				found = found || fn.Sel.Name == name
+			}
+		}
+		return !found
+	})
+	return found
 }
 
 func moduleRoot(t *testing.T) string {
@@ -699,5 +771,120 @@ func TestRedactTextCostIsLinearOnHostileShapes(t *testing.T) {
 		if d := time.Since(start); d > 3*time.Second {
 			t.Errorf("RedactText on %q (%d bytes) took %v; the scan must stay linear", name, len(in), d)
 		}
+	}
+}
+
+// Hunter findings (r2-r4): shapes the text scanner and the walk missed.
+func TestRedactTextEscapedAndGoPrintedShapes(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{"escaped json", `provider said "{\"api_key\":\"abc\"}"`, `provider said "{\"api_key\":\"REDACTED\"}"`},
+		{"escaped json, more pairs", `{\"token\":\"abc\",\"ok\":1}`, `{\"token\":\"REDACTED\",\"ok\":1}`},
+		{"escaped json, spaced value", `{\"password\": \"x y z\", \"n\": 2}`, `{\"password\": \"REDACTED\", \"n\": 2}`},
+		{"escaped unterminated", `{\"token\":\"never closes`, `{\"token\":\"REDACTED`},
+		{"json-escaped ampersand", `GET /cb?a=1\u0026sig=abc ok`, `GET /cb?a=1&sig=REDACTED ok`},
+		{"go map", `map[token:x ok:1]`, `map[token:REDACTED ok:1]`},
+		{"go struct", `{Password:hunter2 Name:n}`, `{Password:REDACTED Name:n}`},
+		{"go url.Values", `map[code:[abc def] page:[2]]`, `map[code:REDACTED page:[2]]`},
+		// A colon followed by a space is prose, and other colons are not pairs.
+		{"prose colon", "invalid token: expired", "invalid token: expired"},
+		{"address", "dial tcp 10.0.0.7:5432: refused; user:0dbe0458 ok", "dial tcp 10.0.0.7:5432: refused; user:0dbe0458 ok"},
+		{"scheme", "fetch http://example.com:8080/x", "fetch http://example.com:8080/x"},
+		{"dsn with @ in the password", "dial postgres://u:p@ss@host:5432/db failed", "dial postgres://REDACTED@host:5432/db failed"},
+		{"x- header dump", "X-Auth-Token: abc\nX-CSRF-Token: def\nAccept: */*", "X-Auth-Token: REDACTED\nX-CSRF-Token: REDACTED\nAccept: */*"},
+		{"counts of tokens stay", "max_tokens=4096 input_tokens=5 token=482913 tokens=abc", "max_tokens=4096 input_tokens=5 token=REDACTED tokens=REDACTED"},
+		{"code-ending words stay", "decode=utf8 encode=on unicode=yes zipcode=90210", "decode=utf8 encode=on unicode=yes zipcode=90210"},
+		{"parse input only for parse errors", `open config: parsing "config.yaml": no such file`, `open config: parsing "config.yaml": no such file`},
+		{"strconv input", `strconv.Atoi: parsing "abc": invalid syntax`, `strconv.Atoi: parsing "REDACTED": invalid syntax`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := RedactText(tc.in); got != tc.want {
+				t.Errorf("RedactText(%q)\n got %q\nwant %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCredentialKeyNamesFromTheHunters(t *testing.T) {
+	for _, k := range []string{
+		"encryption_key", "signing_key", "hmac_key", "master_key", "session_key", "passphrase", "pin", "token_value",
+		"private_key_pem", "pad_session", "__Host-pad_session", "connect.sid", "token.value", "x-auth",
+	} {
+		if !credentialKey(k) {
+			t.Errorf("credentialKey(%q) = false", k)
+		}
+	}
+	for _, k := range []string{
+		"cache_key", "storage_key", "sort_key", "primary_key", "idempotency_key", "field_key", "redis_key",
+		"decode", "encode", "unicode", "zipcode", "session_count", "sidecar", "inside", "outside", "spin", "pinned",
+	} {
+		if credentialKey(k) {
+			t.Errorf("credentialKey(%q) = true", k)
+		}
+	}
+}
+
+type maskedKey string
+
+func (maskedKey) String() string { return "***" }
+
+type wallClock struct{ Hour, Min int }
+
+func (w wallClock) String() string { return fmt.Sprintf("%02d:%02d", w.Hour, w.Min) }
+
+func TestRedactAttrHonoursSelfMaskingStringers(t *testing.T) {
+	for _, format := range []string{"json", "text"} {
+		t.Run(format, func(t *testing.T) {
+			buf := capture(t, format)
+			slog.Info("stringers", "value", maskedKey("credential-fixture"), "at", wallClock{7, 30},
+				"nested", map[string]any{"k": maskedKey("credential-fixture")})
+			hook, err := url.Parse("https://hooks.example.com/services/T0/B0/" + fixture)
+			if err != nil {
+				t.Fatal(err)
+			}
+			slog.Info("url value", "target", hook, "again", *hook)
+			slog.Info("cookie", "c", &http.Cookie{Name: "pad_session", Value: fixture}, "cs", []*http.Cookie{{Name: "x", Value: fixture}})
+			out := buf.String()
+			if strings.Contains(out, fixture) {
+				t.Errorf("a credential reached the log:\n%s", out)
+			}
+			for _, keep := range []string{"***", "07:30", "hooks.example.com"} {
+				if !strings.Contains(out, keep) {
+					t.Errorf("lost %q:\n%s", keep, out)
+				}
+			}
+		})
+	}
+}
+
+func TestRedactAttrSourceNamedAttrIsStillWalked(t *testing.T) {
+	buf := capture(t, "json")
+	slog.Info("x", "source", struct{ Token string }{Token: fixture})
+	if strings.Contains(buf.String(), fixture) {
+		t.Errorf("an attribute merely named source skipped the walk:\n%s", buf.String())
+	}
+}
+
+func TestRedactAttrWalkSpendsABoundedNumberOfBytes(t *testing.T) {
+	big := strings.Repeat("a", 60<<10)
+	rows := make([]string, 200)
+	for i := range rows {
+		rows[i] = big
+	}
+	done := make(chan string, 1)
+	go func() {
+		buf := capture(t, "json")
+		slog.Info("many big strings", "rows", rows)
+		done <- buf.String()
+	}()
+	select {
+	case out := <-done:
+		if len(out) > 4<<20 {
+			t.Errorf("200 strings of 60 KiB produced %d bytes; the walk's byte budget did not apply", len(out))
+		}
+		if !strings.Contains(out, "REDACTED") {
+			t.Errorf("strings past the budget were not withheld:\n%.200s", out)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the walk of many large strings did not return in 10s")
 	}
 }
