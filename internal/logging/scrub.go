@@ -37,7 +37,7 @@ var (
 	// Credentials with a recognisable shape, whatever surrounds them: a Pad
 	// personal access token, a Pad session token, a JWT, a Stripe key, a
 	// GitHub token.
-	reShapes = regexp.MustCompile(`\bpad_[0-9a-f]{64}\b|\bpadsess_[A-Za-z0-9_\-]{8,}|\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]*|\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|\bwhsec_[A-Za-z0-9]{16,}|\bgh[pousr]_[A-Za-z0-9]{36,}`)
+	reShapes = regexp.MustCompile(`\bpad_[0-9a-f]{64,}|\bpad(?:sess|res|ver|wh|app|ic|ctx)_[A-Za-z0-9_\-]{8,}|\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]*|\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|\bwhsec_[A-Za-z0-9]{16,}|\bgh[pousr]_[A-Za-z0-9]{36,}`)
 	// A credential path that STARTS a path: after whitespace, a quote, or a
 	// scheme://host. A directory called s inside a filesystem path
 	// (/var/lib/pad/s/pad.db) is not one.
@@ -102,11 +102,40 @@ func RedactText(s string) string {
 		// A path inside it (/) or a percent-encoded part (%2F, %3D) can hide
 		// a credential too; plain placeholders and prose cannot.
 		if !strings.Contains(m, "=") && !strings.Contains(m, "/") && !escapeSeq.MatchString(m) {
+			// A keyless run: placeholders (?,?,?) and short prose stay; an opaque
+			// value (six or more token characters, mixed case or digits or long) goes whole.
+			if opaqueRun(m[1:]) {
+				return "?" + redacted
+			}
 			return m
 		}
 		return "?" + RedactQuery(m[1:])
 	})
 	return redactKeyValues(s)
+}
+
+// opaqueRun reports a keyless query run that looks like a credential value:
+// token characters only, six or more, with a digit or a capital or sixteen or
+// more of them. A short lowercase word is prose or a parameter name.
+func opaqueRun(r string) bool {
+	if len(r) < 6 {
+		return false
+	}
+	letter, mixed := false, false
+	for i := 0; i < len(r); i++ {
+		c := r[i]
+		switch {
+		case c >= 'a' && c <= 'z':
+			letter = true
+		case c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+			mixed = true
+			letter = letter || c > '9'
+		case c == '_' || c == '-' || c == '.' || c == '~':
+		default:
+			return false
+		}
+	}
+	return letter && (mixed || len(r) >= 16)
 }
 
 // maxKeyLen bounds a key looked for to the left of "=": real names are short,
@@ -185,7 +214,8 @@ func redactKeyValues(s string) string {
 			break
 		}
 		// from..to is the value to mask; ve is where scanning resumes.
-		from, to, ve := k, k, k
+		from, ve := k, k
+		var to int
 		switch s[k] {
 		case '"', '\'':
 			from = k + 1
@@ -258,14 +288,9 @@ var grpcCodes = map[string]bool{
 	"Unimplemented": true, "Internal": true, "Unavailable": true, "DataLoss": true, "Unauthenticated": true,
 }
 
-// reCodeSnake is an error identifier (not_found, INVALID_ARGUMENT): letters
-// only, each part at least two of them.
-var reCodeSnake = regexp.MustCompile(`^[A-Za-z]{2,}(?:_[A-Za-z]{2,})+$`)
-
 // benignCode reports a bare code that is a status and not a one-time code: a
 // number of up to three digits (404, -1, an exit code), a gRPC status name
-// (NotFound) or a snake_case identifier (an API error code). One-time codes
-// are four or more digits or an opaque string; the OAuth ?code= in a URL query
+// (NotFound). One-time codes are four or more digits or any other string; the OAuth ?code= in a URL query
 // is decided by RedactQuery, not here. Punctuation that ends a sentence or
 // closes a bracket is not part of the value.
 func benignCode(key, val string) bool {
@@ -279,7 +304,7 @@ func benignCode(key, val string) bool {
 	if digits := strings.TrimPrefix(val, "-"); len(digits) <= 3 && digits != "" && strings.Trim(digits, "0123456789") == "" {
 		return true
 	}
-	return grpcCodes[val] || reCodeSnake.MatchString(val)
+	return grpcCodes[val]
 }
 
 // tokenCount reports a count of tokens (max_tokens=4096, input_tokens=5): a
@@ -343,6 +368,23 @@ func walkable(v any) bool {
 	return false
 }
 
+// numericSecretKey reports a name that holds a one-time code or a PIN, which
+// is a number: slog.Int("otp", 482913) is a credential. A bare "code" counts
+// too, unless its value is a status (see smallCode).
+func numericSecretKey(key string) bool {
+	switch strings.ToLower(keySeparators.Replace(key)) {
+	case "otp", "totp", "pin", "passcode", "code", "verificationcode", "authcode", "mfacode", "smscode", "resetcode", "securitycode":
+		return true
+	}
+	return false
+}
+
+// smallCode reports a bare code key with a value of up to three digits: a
+// status or an exit code, as benignCode accepts in text.
+func smallCode(key string, n int64) bool {
+	return strings.ToLower(keySeparators.Replace(key)) == "code" && n > -1000 && n < 1000
+}
+
 // scalar reports whether v is a number or bool: a count or a measurement,
 // never a credential, whatever its field is called (Tokens int, input_tokens).
 func scalar(v reflect.Value) bool {
@@ -357,6 +399,26 @@ func scalar(v reflect.Value) bool {
 		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
 		reflect.Float32, reflect.Float64:
 		return true
+	}
+	return false
+}
+
+// numericSecret reports an integer under a numeric-secret name.
+func numericSecret(key string, v reflect.Value) bool {
+	for v.Kind() == reflect.Interface || v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			return false
+		}
+		v = v.Elem()
+	}
+	if !numericSecretKey(key) {
+		return false
+	}
+	switch v.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return !smallCode(key, v.Int())
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return !smallCode(key, int64(min(v.Uint(), 1<<40)))
 	}
 	return false
 }
@@ -488,7 +550,7 @@ func sanitize(v reflect.Value, depth int, budget *walkBudget) any {
 			if i == maxWalkWidth {
 				break
 			}
-			if credentialKey(e.name) && !scalar(e.val) {
+			if credentialKey(e.name) && !scalar(e.val) || numericSecret(e.name, e.val) {
 				out[e.name] = redacted
 				continue
 			}
@@ -513,7 +575,7 @@ func sanitize(v reflect.Value, depth int, budget *walkBudget) any {
 			if tag != "" {
 				name = tag
 			}
-			if (credentialKey(sf.Name) || credentialKey(name)) && !scalar(v.Field(i)) {
+			if (credentialKey(sf.Name) || credentialKey(name)) && !scalar(v.Field(i)) || numericSecret(name, v.Field(i)) {
 				out[name] = redacted
 				continue
 			}

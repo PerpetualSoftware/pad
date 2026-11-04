@@ -251,6 +251,11 @@ func redactAttr(groups []string, a slog.Attr) slog.Attr {
 	// credential (input_tokens, access_tokens swept, http_status_code).
 	switch a.Value.Kind() {
 	case slog.KindInt64, slog.KindUint64, slog.KindFloat64, slog.KindBool, slog.KindDuration, slog.KindTime:
+		// A one-time code or PIN is a number too: slog.Int("otp", 482913).
+		if a.Value.Kind() == slog.KindInt64 && numericSecretKey(a.Key) && !smallCode(a.Key, a.Value.Int64()) ||
+			a.Value.Kind() == slog.KindUint64 && numericSecretKey(a.Key) && !smallCode(a.Key, int64(min(a.Value.Uint64(), 1<<40))) {
+			return slog.String(a.Key, redacted)
+		}
 		return a
 	}
 	for _, group := range groups {

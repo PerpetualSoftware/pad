@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -387,17 +388,18 @@ func f(l *slog.Logger, lg any, p, q string) {
 	slog.InfoContext(nil, "d", "reset_path", p)
 	_ = slog.Attr{Key: "path", Value: slog.StringValue(p)}
 	_ = slog.String("query", q)
-	slog.Info("fine", "path", RedactPath(p), "query", RedactQuery(q), "path", "/fixed")
-	_ = slog.Attr{Key: "path", Value: slog.StringValue(RedactPath(p))}
-	_ = slog.Group("g", "path", RedactPath(p))
+	slog.Info("fine", "path", logging.RedactPath(p), "query", logging.RedactQuery(q), "path", "/fixed")
+	_ = slog.Attr{Key: "path", Value: slog.StringValue(logging.RedactPath(p))}
+	_ = slog.Group("g", "path", logging.RedactPath(p))
 	slog.Info("mixed", slog.String("a", "b"), "path", p)
-	slog.Info("wrapped", "path", fmt.Sprintf("%s?%s", RedactPath(p), q))
+	slog.Info("wrapped", "path", fmt.Sprintf("%s?%s", logging.RedactPath(p), q))
 	l.Log(nil, slog.LevelInfo, "log", "path", p)
-	slog.Info("mixed fine", slog.String("a", "b"), "path", RedactPath(p))
-	l.Log(nil, slog.LevelInfo, "log fine", "path", RedactPath(p))
+	slog.Info("mixed fine", slog.String("a", "b"), "path", logging.RedactPath(p))
+	l.Log(nil, slog.LevelInfo, "log fine", "path", logging.RedactPath(p))
 	l.Log(nil, slog.Level(2), "m", "path", p)
 	slog.Info("other package", "path", other.RedactPath(p))
 	slog.Info("logging package", "path", logging.RedactPath(p))
+	slog.Info("unqualified", "path", RedactPath(p))
 }
 `
 	fset := token.NewFileSet()
@@ -406,7 +408,15 @@ func f(l *slog.Logger, lg any, p, q string) {
 		t.Fatal(err)
 	}
 	_, bad := pathAttrSites(fset, f, "p.go")
-	want := []int{4, 5, 6, 7, 8, 9, 10, 14, 15, 16, 19, 20}
+	// Inside package logging an unqualified call is the helper itself.
+	inPkg, perr := parser.ParseFile(fset, "l.go", "package logging\nimport \"log/slog\"\nfunc f(p string) { slog.Info(\"x\", \"path\", RedactPath(p)) }\n", 0)
+	if perr != nil {
+		t.Fatal(perr)
+	}
+	if _, inBad := pathAttrSites(fset, inPkg, "l.go"); len(inBad) != 0 {
+		t.Errorf("an unqualified RedactPath inside package logging was reported: %v", inBad)
+	}
+	want := []int{4, 5, 6, 7, 8, 9, 10, 14, 15, 16, 19, 20, 22}
 	var got []int
 	for _, b := range bad {
 		parts := strings.SplitN(b, ":", 2)
@@ -431,7 +441,7 @@ func pathAttrSites(fset *token.FileSet, f *ast.File, rel string) (sites, bad []s
 			}
 			where := fmt.Sprintf("%s:%d (%s)", rel, fset.Position(pos).Line, key)
 			sites = append(sites, where)
-			if directRedact(val, want) {
+			if directRedact(val, want, f.Name.Name == "logging") {
 				return
 			}
 			if lit, ok := val.(*ast.BasicLit); ok && lit.Kind == token.STRING {
@@ -546,7 +556,7 @@ func isAttrArg(e ast.Expr) bool {
 // directRedact reports whether e IS a call to name (RedactPath or
 // RedactQuery), possibly inside slog.StringValue or slog.AnyValue: not a call
 // to it somewhere in a larger expression, which could still carry the raw text.
-func directRedact(e ast.Expr, name string) bool {
+func directRedact(e ast.Expr, name string, inLogging bool) bool {
 	for {
 		switch x := e.(type) {
 		case *ast.ParenExpr:
@@ -555,8 +565,10 @@ func directRedact(e ast.Expr, name string) bool {
 		case *ast.CallExpr:
 			var fn string
 			switch f := x.Fun.(type) {
-			case *ast.Ident: // inside package logging itself
-				fn = f.Name
+			case *ast.Ident: // the helper itself, only inside package logging
+				if inLogging {
+					fn = f.Name
+				}
 			case *ast.SelectorExpr:
 				// only logging.RedactPath; another package's function of that name proves nothing
 				if id, ok := f.X.(*ast.Ident); ok && id.Name == "logging" {
@@ -998,11 +1010,8 @@ func TestRedactTextStillReadsEncodedAndBarePathQueries(t *testing.T) {
 	}
 }
 
-func TestRedactTextKeepsSnakeCaseAndPunctuatedCodes(t *testing.T) {
+func TestRedactTextKeepsStatusCodesAndPunctuation(t *testing.T) {
 	for _, tc := range []struct{ name, in, want string }{
-		{"api error code", `{"code":"inviter_scope_changed"}`, `{"code":"inviter_scope_changed"}`},
-		{"snake in text", "code=not_found and more", "code=not_found and more"},
-		{"upper snake", `{"code":"INVALID_ARGUMENT","n":1}`, `{"code":"INVALID_ARGUMENT","n":1}`},
 		{"negative number", "closed with code=-1", "closed with code=-1"},
 		{"in parentheses", "failed (code=404) twice", "failed (code=404) twice"},
 		{"sentence end", "failed with code=404.", "failed with code=404."},
@@ -1011,6 +1020,8 @@ func TestRedactTextKeepsSnakeCaseAndPunctuatedCodes(t *testing.T) {
 		{"four digits", "code=1006 given", "code=REDACTED given"},
 		{"lowercase word", "code=expired given", "code=REDACTED given"},
 		{"alnum", "code=ab12cd34ef given", "code=REDACTED given"},
+		{"snake case", "code=ab_cd given", "code=REDACTED given"},
+		{"api error code", "code=not_found given", "code=REDACTED given"},
 		{"snake with digits", "code=ab_12_cd given", "code=REDACTED given"},
 		{"single letters in snake", "code=a_b_c given", "code=REDACTED given"},
 		{"word-shaped code", "code=Abcdef given", "code=REDACTED given"},
@@ -1021,5 +1032,49 @@ func TestRedactTextKeepsSnakeCaseAndPunctuatedCodes(t *testing.T) {
 				t.Errorf("RedactText(%q)\n got %q\nwant %q", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestRedactTextKeylessQueryAndPadTokenPrefixes(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{"keyless opaque run", "GET /x?abcXYZ123456 failed", "GET /x?REDACTED failed"},
+		{"placeholders", "INSERT VALUES (?,?,?,?,?,?,?,?,?,?)", "INSERT VALUES (?,?,?,?,?,?,?,?,?,?)"},
+		{"short prose", "really?yes", "really?yes"},
+		{"reset token", "no reset for padres_0123456789abcdef", "no reset for REDACTED"},
+		{"verify token", "padver_0123456789abcdef bad", "REDACTED bad"},
+		{"webhook secret", "padwh_0123456789abcdef", "REDACTED"},
+		{"app secret", "padapp_0123456789abcdef", "REDACTED"},
+		{"install code", "padic_0123456789abcdef", "REDACTED"},
+		{"ctx token", "padctx_0123456789abcdef", "REDACTED"},
+		{"pad token with suffix", "pad_" + strings.Repeat("a", 64) + "_x", "REDACTED_x"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := RedactText(tc.in); got != tc.want {
+				t.Errorf("RedactText(%q)\n got %q\nwant %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNumericSecretsAreMasked(t *testing.T) {
+	if a := redactAttr(nil, slog.Int("otp", 482913)); a.Value.String() != redacted {
+		t.Errorf("otp attr: %v", a)
+	}
+	if a := redactAttr(nil, slog.Int("pin", 4829)); a.Value.String() != redacted {
+		t.Errorf("pin attr: %v", a)
+	}
+	if a := redactAttr(nil, slog.Int("code", 404)); a.Value.String() != "404" {
+		t.Errorf("status code attr: %v", a)
+	}
+	if a := redactAttr(nil, slog.Int("code", 482913)); a.Value.String() != redacted {
+		t.Errorf("long code attr: %v", a)
+	}
+	if a := redactAttr(nil, slog.Int("input_tokens", 482913)); a.Value.String() != "482913" {
+		t.Errorf("count attr: %v", a)
+	}
+	got := sanitize(reflect.ValueOf(map[string]any{"verification_code": 123456, "code": 500, "n": 5}), 0, &walkBudget{nodes: 100, bytes: 1 << 20})
+	m, _ := got.(map[string]any)
+	if m["verification_code"] != redacted || m["code"] != 500 || m["n"] != 5 {
+		t.Errorf("map walk: %v", got)
 	}
 }
