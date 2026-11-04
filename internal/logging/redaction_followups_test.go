@@ -472,6 +472,10 @@ func TestRedactTextStructuredAndQueryValues(t *testing.T) {
 		{`{"token":{"never":"closes"`, `{"token":REDACTED`},
 		{"GET https://x.example/cb?key=AIzaFixture&state=abc&ok=1 failed", "GET https://x.example/cb?key=REDACTED&state=REDACTED&ok=1 failed"},
 		{"worker state=running key=cache-1", "worker state=running key=cache-1"},
+		// A semicolon separates parameters in a URL query, as in RedactQuery.
+		{"GET /cb?limit=1;state=abc;page=2 done", "GET /cb?limit=1;state=REDACTED;page=2 done"},
+		{"GET /cb?limit=1&page=2;key=AIzaFixture done", "GET /cb?limit=1&page=2;key=REDACTED done"},
+		{"queue a;state=running;key=cache-1", "queue a;state=running;key=cache-1"},
 		{"see [/join/abc] and {/reset-password/abc}", "see [/join/REDACTED] and {/reset-password/REDACTED}"},
 	} {
 		if got := RedactText(tc.in); got != tc.want {

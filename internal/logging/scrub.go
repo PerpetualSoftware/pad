@@ -146,7 +146,7 @@ func redactKeyValues(s string) string {
 			continue
 		}
 		// Inside a URL's query a bare key= and state= are credentials too.
-		inQuery := start > 0 && (s[start-1] == '?' || s[start-1] == '&')
+		inQuery := inURLQuery(s, start)
 		if !(credentialKeyText(s[start:end]) || (inQuery && queryCredentialKey(s[start:end]))) {
 			continue
 		}
@@ -198,6 +198,26 @@ func redactKeyValues(s string) string {
 	}
 	out.WriteString(s[last:])
 	return out.String()
+}
+
+// inURLQuery reports whether the name starting at s[start] is a parameter of
+// a URL query: it follows ? or &, or a ; in a token that has a ? before it
+// (a ; in prose, "queue a;state=running", separates nothing).
+func inURLQuery(s string, start int) bool {
+	if start == 0 {
+		return false
+	}
+	switch s[start-1] {
+	case '?', '&':
+		return true
+	case ';':
+		for i := start - 2; i >= 0 && s[i] != ' ' && s[i] != '\t' && s[i] != '\n' && s[i] != '\r'; i-- {
+			if s[i] == '?' {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // skipBracketed returns the index just past the bracket that closes the one at
