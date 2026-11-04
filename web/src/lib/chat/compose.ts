@@ -42,10 +42,12 @@ export function isRequestTooLargeError(err: unknown): boolean {
 }
 
 /** Our own copy for a refusal; never the server's sentence. */
-export const NOTICE: Record<Exclude<SendBlock, 'empty'> | 'reply_deleted' | 'reply_missing', string> = {
+export const NOTICE: Record<Exclude<SendBlock, 'empty'> | 'reply_deleted' | 'reply_missing' | 'not_started' | 'send_error', string> = {
 	too_long: 'That message is longer than 65,536 bytes. Shorten it to send.',
 	too_large:
 		'That message is too large to send: quotes, backslashes and control characters take extra space when sent. Shorten it.',
 	reply_deleted: 'The message you were replying to was deleted. Your text is kept; send it as a new message.',
-	reply_missing: 'The message you were replying to is no longer available. Your text is kept; send it as a new message.'
+	reply_missing: 'The message you were replying to is no longer available. Your text is kept; send it as a new message.',
+	not_started: 'This conversation is not ready yet, so nothing was sent. Your text is kept; try again in a moment.',
+	send_error: 'That message could not be sent. Your text is kept; try again.'
 };
