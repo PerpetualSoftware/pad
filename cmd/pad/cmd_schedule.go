@@ -511,7 +511,9 @@ const agendaMaxDays = 92
 
 // agendaBounds resolves --from/--days/--to against loc into the UTC instants
 // sent to the server.
-func agendaBounds(from, to string, days int, daysSet bool, loc *time.Location, now time.Time) (time.Time, time.Time, error) {
+// clamped reports that --days reached past the server's 92x24h cap (a DST
+// fall-back inside the span) and the end was pulled in to fit.
+func agendaBounds(from, to string, days int, daysSet bool, loc *time.Location, now time.Time) (start, end time.Time, clamped bool, err error) {
 	parse := func(flag, s string) (time.Time, error) {
 		if t, err := time.Parse(time.RFC3339, s); err == nil {
 			return t, nil
@@ -521,42 +523,38 @@ func agendaBounds(from, to string, days int, daysSet bool, loc *time.Location, n
 		}
 		return time.Time{}, fmt.Errorf("--%s %q: want an RFC3339 instant or a date (2026-11-09)", flag, s)
 	}
-	var start time.Time
 	if from == "" {
 		n := now.In(loc)
 		start = time.Date(n.Year(), n.Month(), n.Day(), 0, 0, 0, 0, loc)
 	} else {
-		var err error
 		if start, err = parse("from", from); err != nil {
-			return start, start, err
+			return start, start, false, err
 		}
 	}
-	var end time.Time
 	switch {
 	case to != "":
 		if daysSet {
-			return start, end, fmt.Errorf("--days and --to are mutually exclusive")
+			return start, end, false, fmt.Errorf("--days and --to are mutually exclusive")
 		}
-		var err error
 		if end, err = parse("to", to); err != nil {
-			return start, end, err
+			return start, end, false, err
 		}
 	default:
 		if days < 1 || days > agendaMaxDays {
-			return start, end, fmt.Errorf("--days %d: the window is capped at %d days", days, agendaMaxDays)
+			return start, end, false, fmt.Errorf("--days %d: the window is capped at %d days", days, agendaMaxDays)
 		}
 		end = start.In(loc).AddDate(0, 0, days)
 		if limit := start.Add(agendaMaxDays * 24 * time.Hour); end.After(limit) {
-			end = limit
+			end, clamped = limit, true
 		}
 	}
 	if !end.After(start) {
-		return start, end, fmt.Errorf("the window must end after it starts")
+		return start, end, false, fmt.Errorf("the window must end after it starts")
 	}
 	if end.Sub(start) > agendaMaxDays*24*time.Hour {
-		return start, end, fmt.Errorf("the window is capped at %d days", agendaMaxDays)
+		return start, end, false, fmt.Errorf("the window is capped at %d days", agendaMaxDays)
 	}
-	return start, end, nil
+	return start, end, clamped, nil
 }
 
 func remindAgendaCmd() *cobra.Command {
@@ -585,9 +583,12 @@ When the list is cut short, the last line says where to continue.`,
 				}
 				loc = l
 			}
-			start, end, err := agendaBounds(from, to, days, cmd.Flags().Changed("days"), loc, time.Now())
+			start, end, clamped, err := agendaBounds(from, to, days, cmd.Flags().Changed("days"), loc, time.Now())
 			if err != nil {
 				return err
+			}
+			if clamped && formatFlag != "json" {
+				fmt.Fprintf(os.Stderr, "note: the window was shortened to the server's 92-day limit; it ends %s\n", end.In(loc).Format("2006-01-02 15:04 MST"))
 			}
 			client, _ := getClient()
 			raw, err := client.GetAgenda(getWorkspace(), start.UTC().Format(time.RFC3339), end.UTC().Format(time.RFC3339), tz)
@@ -608,7 +609,7 @@ When the list is cut short, the last line says where to continue.`,
 			if tz != "" {
 				showLoc = loc
 			}
-			renderAgenda(cmd, resp, showLoc)
+			renderAgenda(cmd, resp, showLoc, end, tz)
 			return nil
 		},
 	}
@@ -619,7 +620,9 @@ When the list is cut short, the last line says where to continue.`,
 	return c
 }
 
-func renderAgenda(cmd *cobra.Command, resp agendaResponse, loc *time.Location) {
+// renderAgenda prints the list. end and tz are the request's window end and
+// the --tz the user gave (empty if none); the resume hint repeats them.
+func renderAgenda(cmd *cobra.Command, resp agendaResponse, loc *time.Location, end time.Time, tz string) {
 	out := cmd.OutOrStdout()
 	if len(resp.Entries) == 0 {
 		fmt.Fprintln(out, "Nothing on the agenda in this window.")
@@ -662,7 +665,11 @@ func renderAgenda(cmd *cobra.Command, resp agendaResponse, loc *time.Location) {
 	}
 	if resp.Truncated {
 		if resp.NextFrom != "" {
-			fmt.Fprintf(out, "more after %s: pad item remind agenda --from %s\n", fmtInstant(resp.NextFrom, loc), resp.NextFrom)
+			hint := fmt.Sprintf("pad item remind agenda --from %s --to %s", resp.NextFrom, end.UTC().Format(time.RFC3339))
+			if tz != "" {
+				hint += " --tz " + tz
+			}
+			fmt.Fprintf(out, "more after %s: %s\n", fmtInstant(resp.NextFrom, loc), hint)
 		} else {
 			fmt.Fprintln(out, "list incomplete; narrow the window")
 		}

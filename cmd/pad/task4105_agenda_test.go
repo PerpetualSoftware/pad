@@ -146,7 +146,7 @@ func TestAgendaTruncationHints(t *testing.T) {
 		want, not  []string
 	}{
 		{"next_from", `{` + entry + `,"truncated":true,"next_from":"2026-11-05T05:00:00Z"}`,
-			[]string{"more after 2026-11-05 00:00 EST: pad item remind agenda --from 2026-11-05T05:00:00Z"}, []string{"incomplete"}},
+			[]string{"more after 2026-11-05 00:00 EST: pad item remind agenda --from 2026-11-05T05:00:00Z --to 2026-11-08T05:00:00Z"}, []string{"incomplete"}},
 		{"no next_from", `{` + entry + `,"truncated":true}`,
 			[]string{"list incomplete; narrow the window"}, []string{"more after"}},
 		{"unexpanded", `{` + entry + `,` + unexpanded + `}`,
@@ -183,5 +183,62 @@ func TestAgendaJSONIsVerbatim(t *testing.T) {
 	out, stderr, err := tzRun(t, root, "item", "remind", "agenda", "--from", "2026-11-01", "--format", "json")
 	if err != nil || stderr != "" || !strings.Contains(out, `"future_field"`) {
 		t.Fatalf("out=%q stderr=%q err=%v", out, stderr, err)
+	}
+}
+
+func TestAgendaClampIsNotSilent(t *testing.T) {
+	run := func(t *testing.T, args ...string) (stderr string, q url.Values) {
+		t.Helper()
+		h, calls := recordingStub(func(c recordedCall) (int, string) { return 200, `{"entries":[]}` })
+		root := tzCLIWithLocal(t, h, time.UTC)
+		_, stderr, err := tzRun(t, root, append([]string{"item", "remind", "agenda"}, args...)...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return stderr, agendaCall(t, calls())
+	}
+	t.Run("fall-back shortens the window", func(t *testing.T) {
+		stderr, q := run(t, "--from", "2026-11-01", "--days", "92", "--tz", "America/New_York")
+		if q.Get("to") != "2027-02-01T04:00:00Z" {
+			t.Fatalf("to=%s", q.Get("to"))
+		}
+		for _, w := range []string{"92-day limit", "2027-01-31 23:00 EST"} {
+			if !strings.Contains(stderr, w) {
+				t.Errorf("stderr %q missing %q", stderr, w)
+			}
+		}
+	})
+	t.Run("no DST change, no note", func(t *testing.T) {
+		stderr, _ := run(t, "--from", "2026-11-01", "--days", "92", "--tz", "Asia/Tokyo")
+		if strings.Contains(stderr, "92-day") {
+			t.Fatalf("unexpected note: %q", stderr)
+		}
+	})
+}
+
+func TestAgendaResumeHintKeepsWindowAndZone(t *testing.T) {
+	body := `{"entries":[],"truncated":true,"next_from":"2026-11-05T05:00:00Z"}`
+	h, calls := recordingStub(func(c recordedCall) (int, string) { return 200, body })
+	root := tzCLIWithLocal(t, h, time.UTC)
+	out, _, err := tzRun(t, root, "item", "remind", "agenda", "--from", "2026-11-01", "--days", "30", "--tz", "Asia/Tokyo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	to := agendaCall(t, calls()).Get("to")
+	want := "pad item remind agenda --from 2026-11-05T05:00:00Z --to " + to + " --tz Asia/Tokyo"
+	if !strings.Contains(out, want) || strings.Contains(out, "--days") {
+		t.Fatalf("want %q in:\n%s", want, out)
+	}
+	if _, err := time.Parse(time.RFC3339, to); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAgendaResumeHintWithoutTzHasNone(t *testing.T) {
+	body := `{"entries":[],"truncated":true,"next_from":"2026-11-05T05:00:00Z"}`
+	h, _ := recordingStub(func(c recordedCall) (int, string) { return 200, body })
+	out, _, err := tzRun(t, tzCLIWithLocal(t, h, time.UTC), "item", "remind", "agenda", "--from", "2026-11-01")
+	if err != nil || strings.Contains(out, "--tz") || !strings.Contains(out, " --to ") {
+		t.Fatalf("out=%q err=%v", out, err)
 	}
 }
