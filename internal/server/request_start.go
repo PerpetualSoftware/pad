@@ -32,8 +32,8 @@ func requestStartFrom(ctx context.Context) time.Time {
 // cancel before the transaction included, must finish or give a clean
 // retryable answer before any hop in front of the server gives up on it:
 //
-//   - Pad Cloud's inner nginx: proxy_read_timeout 60s on `location /`
-//     (pad-cloud nginx-router.conf:267);
+//   - Pad Cloud's inner router: a 60s proxy read timeout on its catch-all
+//     location;
 //   - this server's WriteTimeout, which is unset (0) today.
 //
 // accountDeleteTxBudget is counted from request arrival. Inside it the

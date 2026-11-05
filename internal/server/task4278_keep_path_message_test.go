@@ -18,7 +18,7 @@ import (
 // text; none of it may reach the body. Text the handler or the store authored
 // for the caller (a ValidationError's Reason) still does.
 func TestKeepPathMessageNeverCarriesRawErrorText(t *testing.T) {
-	const path = "/home/dave/secret-dir/bundle-7731.tar"
+	const path = "/srv/imports/private-dir/bundle-7731.tar"
 	const sql = "INSERT INTO items (id) VALUES ($1)"
 	for name, err := range map[string]error{
 		"import workspace pg": fmt.Errorf("import workspace: %w", &pgconn.PgError{Code: "23505", Message: sql + " " + path}),

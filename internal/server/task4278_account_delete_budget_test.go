@@ -21,9 +21,8 @@ import (
 // Postgres (storetest.NewPostgres skips without PAD_TEST_POSTGRES_URL) and
 // count rows with raw SQL.
 
-// nginxProxyReadTimeout is the inner nginx's proxy_read_timeout on
-// `location /`: pad-cloud nginx-router.conf:267 (proxy_read_timeout 60s). The
-// outer nginx-proxy on the host is not in the platform repo.
+// nginxProxyReadTimeout is the inner router's 60s proxy read timeout on its
+// catch-all location. The test keeps the account-delete budget below it.
 const nginxProxyReadTimeout = 60 * time.Second
 
 func TestAccountDeleteBudgetBelowProxyTimeouts(t *testing.T) {

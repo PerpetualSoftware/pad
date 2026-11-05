@@ -436,7 +436,7 @@ func TestRemap_StopAfterFirstChunk(t *testing.T) {
 // The chunk boundary is the clock's, and the stop is an item boundary: with a
 // clock that makes every reading cost 100 ms the time budget (not the item
 // cap) ends each chunk after a handful of items, every chunk's lock hold stays
-// under the 1 s ruling, and the walk still reaches every item.
+// under the 1 s target, and the walk still reaches every item.
 func TestRemap_TimeBudgetEndsChunksAndNothingIsSkipped(t *testing.T) {
 	s := remapStore(t)
 	w := buildRemapWorld(t, s, 120)

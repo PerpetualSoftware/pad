@@ -16,7 +16,7 @@ import (
 // wrap reader or IO text (a path, SQL); only a FIXED category of it may reach
 // the response body, while errors.As still finds the typed cause.
 func TestImportRemapErrorBodyNeverCarriesPrimaryText(t *testing.T) {
-	const path = "/home/dave/secret-dir/bundle-7731.tar"
+	const path = "/srv/imports/private-dir/bundle-7731.tar"
 	const sql = "SELECT token_hash FROM api_tokens WHERE user_id = $1"
 	primaries := map[string]error{
 		"skip entry":    fmt.Errorf("skip entry %s: read: unexpected EOF near %s", path, sql),
