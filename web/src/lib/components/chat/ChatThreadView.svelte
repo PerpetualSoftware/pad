@@ -159,7 +159,8 @@
 		if (!stillCurrent()) return;
 		if (result.ok) {
 			if (replyTo?.seq === target.seq) replyTo = null;
-		} else {
+		} else if (thread.status === 'ready') {
+			// A not-found thread already shows its own page; a toast saying "Try again" would mislead.
 			toastStore.show(result.message, 'error');
 		}
 	}

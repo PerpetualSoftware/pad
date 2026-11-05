@@ -154,6 +154,8 @@
 		padding: var(--space-2) var(--space-3);
 		border-bottom: 1px solid var(--border);
 		background: transparent;
+		/* A touch long press opens the action menu: keep iOS from starting its own callout under the same hold. */
+		-webkit-touch-callout: none;
 	}
 	.bubble.human { background: var(--bg-hover); }
 	.meta {

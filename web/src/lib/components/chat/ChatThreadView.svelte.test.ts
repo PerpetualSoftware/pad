@@ -69,6 +69,18 @@ describe('frozen delete confirmation (TASK-4315)', () => {
 		expect(screen.getByText('keep this message')).toBeInTheDocument();
 		expect(h.toast).toHaveBeenCalledWith('The author no longer permits deletion', 'error');
 	});
+	it('a refusal that put the thread in not-found shows no toast (the page already says so)', async () => {
+		h.request.mockResolvedValue(true);
+		h.remove.mockImplementation(async () => {
+			h.thread.status = 'notFound';
+			return { ok: false, message: "Couldn't delete that message. Try again." };
+		});
+		render(ChatThreadView, { n: 1 });
+		await ask();
+		await tick();
+		expect(h.remove).toHaveBeenCalledWith(5);
+		expect(h.toast).not.toHaveBeenCalled();
+	});
 	it('Reply focuses the composer', async () => {
 		render(ChatThreadView, { n: 1 });
 		await fireEvent.click(screen.getByRole('button', { name: /More/ }));
