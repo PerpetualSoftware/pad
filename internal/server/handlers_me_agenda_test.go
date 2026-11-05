@@ -202,6 +202,22 @@ func TestMeAgendaMergesWorkspacesDeterministically(t *testing.T) {
 	}
 }
 
+func TestMeAgendaEntriesCarryOwnerUsername(t *testing.T) {
+	w := newAgendaWorld(t, "tasks")
+	w.srv.agendaClock = func() time.Time { return meAgendaNow }
+	it := meAgendaFacts(t, w, "tasks", "owned")
+	meAgendaExec(t, w, `UPDATE items SET created_at = ? WHERE id = ?`, "2031-03-10T09:00:00Z", it.ID)
+	es := entriesOf(meAgendaOK(t, w, w.owner, agendaWindow))
+	if len(es) == 0 {
+		t.Fatal("no entries")
+	}
+	for _, e := range es {
+		if e["owner_username"] != w.owner.Username || w.owner.Username == "" {
+			t.Fatalf("entry %v: owner_username = %v, want %q", e, e["owner_username"], w.owner.Username)
+		}
+	}
+}
+
 func TestMeAgendaBoundsAcrossTenWorkspaces(t *testing.T) {
 	for _, kind := range []string{"schedule", "date", "created", "completed"} {
 		t.Run(kind, func(t *testing.T) {

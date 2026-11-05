@@ -3695,6 +3695,7 @@ export interface AgendaEntry {
 	collection: string;
 	workspace?: string;
 	workspace_name?: string;
+	owner_username?: string;
 	wall?: string;
 	all_day?: boolean;
 	floating?: boolean;
@@ -3722,7 +3723,7 @@ export interface AgendaResponse {
 	entries: AgendaEntry[];
 	truncated?: boolean;
 	next_from?: string;
-	unavailable?: { item_ref: string; code: string; workspace?: string }[];
+	unavailable?: { item_ref: string; code: string; workspace?: string; owner_username?: string }[];
 	unexpanded?: {
 		schedule_id: string;
 		item_ref: string;
@@ -3732,5 +3733,6 @@ export interface AgendaResponse {
 		audience?: 'human' | 'agent' | 'both';
 		reason: 'scan_limit';
 		workspace?: string;
+		owner_username?: string;
 	}[];
 }

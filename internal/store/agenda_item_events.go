@@ -52,7 +52,9 @@ func (s *Store) ListCompletedForAgenda(workspaceID string, scope PendingReminder
 	if scope.CollectionIDs != nil && len(scope.CollectionIDs) == 0 && len(scope.ItemIDs) == 0 {
 		return nil, nil
 	}
-	all, err := s.ListCollections(workspaceID)
+	// The minimal read: ListCollections also counts items per collection, which
+	// would make this call's cost depend on items the caller cannot see.
+	all, err := s.ListCollectionsMinimal(workspaceID)
 	if err != nil {
 		return nil, err
 	}

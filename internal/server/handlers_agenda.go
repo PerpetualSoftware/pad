@@ -51,6 +51,9 @@ type agendaEntry struct {
 
 	Workspace     string `json:"workspace,omitempty"`
 	WorkspaceName string `json:"workspace_name,omitempty"`
+	// OwnerUsername tells apart two workspaces that share a slug under
+	// different owners.
+	OwnerUsername string `json:"owner_username,omitempty"`
 
 	instant time.Time // sort key, with Type, Workspace, ItemRef and subKey
 	subKey  string
@@ -60,6 +63,8 @@ type agendaUnavailable struct {
 	ItemRef   string `json:"item_ref"`
 	Code      string `json:"code"`
 	Workspace string `json:"workspace,omitempty"`
+	// OwnerUsername: see agendaEntry.
+	OwnerUsername string `json:"owner_username,omitempty"`
 }
 
 // agendaUnexpanded names a schedule the window could not be expanded for (a
@@ -73,6 +78,8 @@ type agendaUnexpanded struct {
 	Audience   string `json:"audience,omitempty"`
 	Reason     string `json:"reason"` // scan_limit
 	Workspace  string `json:"workspace,omitempty"`
+	// OwnerUsername: see agendaEntry.
+	OwnerUsername string `json:"owner_username,omitempty"`
 }
 
 type agendaResponse struct {

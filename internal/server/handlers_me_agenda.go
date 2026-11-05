@@ -80,14 +80,27 @@ func (s *Server) handleMeAgenda(w http.ResponseWriter, r *http.Request) {
 			writeInternalError(w, err)
 			return
 		}
+		owner := ws.OwnerUsername
+		if owner == "" && ws.OwnerID != "" {
+			// A store error is not a missing owner; a vanished owner leaves it empty.
+			u, err := s.store.GetUser(ws.OwnerID)
+			if err != nil {
+				writeInternalError(w, err)
+				return
+			}
+			if u != nil {
+				owner = u.Username
+			}
+		}
 		for i := entryStart; i < len(run.response.Entries); i++ {
-			run.response.Entries[i].Workspace, run.response.Entries[i].WorkspaceName = ws.Slug, ws.Name
+			e := &run.response.Entries[i]
+			e.Workspace, e.WorkspaceName, e.OwnerUsername = ws.Slug, ws.Name, owner
 		}
 		for i := unavailableStart; i < len(run.response.Unavailable); i++ {
-			run.response.Unavailable[i].Workspace = ws.Slug
+			run.response.Unavailable[i].Workspace, run.response.Unavailable[i].OwnerUsername = ws.Slug, owner
 		}
 		for i := unexpandedStart; i < len(run.response.Unexpanded); i++ {
-			run.response.Unexpanded[i].Workspace = ws.Slug
+			run.response.Unexpanded[i].Workspace, run.response.Unexpanded[i].OwnerUsername = ws.Slug, owner
 		}
 	}
 	run.finish()
