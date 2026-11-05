@@ -81,7 +81,7 @@ func (s *Server) requestSessionInfo(r *http.Request) *store.SessionInfo {
 	if token == "" {
 		return nil
 	}
-	info, err := s.store.ValidateSession(token)
+	info, err := s.store.ValidateSessionContext(r.Context(), token)
 	if err != nil || info == nil || info.User == nil {
 		return nil
 	}
@@ -254,6 +254,7 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 				"user_id", user.ID,
 				"customer_id", fullUser.StripeCustomerID,
 				"error", err)
+			// 500: billing sidecar HTTP failure, not a store error; the message says nothing was deleted
 			writeError(w, http.StatusInternalServerError, "billing_cancel_failed",
 				"We couldn't cancel your subscription. Your account was NOT deleted and you have NOT been charged anything new. Please try again in a few minutes or contact support.")
 			return
@@ -277,9 +278,43 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	// possibly in workspaces someone else owns. Their workspaces are reported
 	// from the rows the transaction deleted, so a grant created after any
 	// earlier read cannot be missed, and kicked below.
-	issuedGrantWorkspaces, err := s.store.DeleteAccountAtomicReport(user.ID)
+	//
+	// TASK-4278: the deletion runs under a deadline counted from the request's
+	// ARRIVAL (the Stripe call above spends from the same budget), so the
+	// whole request ends, or answers a retryable 503, before the proxy in
+	// front gives up on it. A deadline before COMMIT rolls the transaction
+	// back; one during COMMIT leaves the outcome unknown (handled below).
+	delCtx, cancelDel := context.WithDeadline(r.Context(), requestStartFrom(r.Context()).Add(accountDeleteTxBudget))
+	defer cancelDel()
+	issuedGrantWorkspaces, err := s.store.DeleteAccountAtomicReportCtx(delCtx, user.ID)
 	if errors.Is(err, store.ErrLastAdmin) && !stripeWasCancelled {
 		writeLastActiveAdmin(w)
+		return
+	}
+	if err != nil && store.IsDBRetryable(err) {
+		// Definitive class (the server said so, or the store proved no COMMIT
+		// was sent): the transaction rolled back, nothing was deleted. Unknown
+		// class (a deadline or dead connection during COMMIT): the deletion
+		// may have landed, and both the log and the body say so.
+		if stripeWasCancelled {
+			msg, unknown := stripeCancelledBusyMessage(err)
+			if unknown {
+				slog.Error("delete account: STRIPE CANCELLED, LOCAL DELETE OUTCOME UNKNOWN (COMMIT interrupted) — account may or may not be deleted",
+					"user_id", user.ID, "stripe_customer_id", fullUser.StripeCustomerID, "error", err)
+			} else {
+				slog.Error("delete account: STRIPE CANCELLED, LOCAL DELETE BUSY (rolled back) — user may retry",
+					"user_id", user.ID, "stripe_customer_id", fullUser.StripeCustomerID, "error", err)
+			}
+			writeStripeCancelledBusy(w, msg, unknown)
+			return
+		}
+		slog.Warn("delete account: database busy (rolled back, or outcome unknown: see the error class)", "user_id", user.ID, "error", err)
+		writeBusy(w, err, true)
+		return
+	}
+	if err != nil && r.Context().Err() != nil {
+		// The client went away mid-delete: rolled back, nobody to answer.
+		slog.Debug("delete account: request cancelled; rolled back", "user_id", user.ID, "error", err)
 		return
 	}
 	if err != nil {
@@ -295,11 +330,13 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 				"email", user.Email,
 				"stripe_customer_id", fullUser.StripeCustomerID,
 				"error", err)
+			// 500: a non-bound local-delete failure after Stripe was cancelled; IsDBBusy is answered above
 			writeError(w, http.StatusInternalServerError, "partial_delete",
 				"Your billing was cancelled but we couldn't delete your account data. Please contact support — our team has been notified.")
 			return
 		}
 		slog.Error("delete account: atomic deletion failed", "user_id", user.ID, "error", err)
+		// 500: a non-bound local-delete failure; IsDBBusy is answered above
 		writeError(w, http.StatusInternalServerError, "internal_error",
 			"Account deletion failed. No data was removed. Please try again or contact support.")
 		return
@@ -708,4 +745,27 @@ const oldSidecarEmptyCustomerRefusal = `{"error":"customer_id must start with 'c
 func olderSidecarRefusedEmptyCustomer(e *billing.SidecarError) bool {
 	return e != nil && e.Status == http.StatusBadRequest &&
 		strings.TrimSpace(e.Body) == oldSidecarEmptyCustomerRefusal
+}
+
+// writeStripeCancelledBusy answers the busy deletion after Stripe was
+// cancelled: a definitive rollback keeps Retry-After; an unknown COMMIT outcome
+// says "check before trying again" and so carries none.
+func writeStripeCancelledBusy(w http.ResponseWriter, msg string, unknown bool) {
+	if unknown {
+		writeBusyOutcomeUnknown(w, msg)
+		return
+	}
+	writeBusyMessage(w, msg)
+}
+
+// stripeCancelledBusyMessage words the 503 for an account deletion that hit a
+// database bound AFTER Stripe was cancelled (TASK-4278). unknown is true when
+// the error leaves the outcome open (a deadline or dead connection during
+// COMMIT): the account may already be gone, so the text must not tell the user
+// to "try again to finish". A definitive rollback may say so.
+func stripeCancelledBusyMessage(err error) (msg string, unknown bool) {
+	if store.IsDBOutcomeUnknown(err) {
+		return "Billing was already cancelled. The server was busy and may not have finished deleting your account; check before trying again.", true
+	}
+	return "Billing was already cancelled; try again to finish deleting your account", false
 }

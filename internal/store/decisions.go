@@ -261,7 +261,28 @@ type DecisionBackfillCandidate struct {
 // the set has been asked about before the question missingKey existed. The
 // caller filters by the set's current eligibility. Ordered for stable chunks.
 func (s *Store) ItemsMissingDecisionKey(set, withKey, missingKey string) ([]DecisionBackfillCandidate, error) {
-	rows, err := s.db.Query(s.q(`
+	// A whole-table read, marker-gated and run once: it gets a read
+	// transaction with a raised statement bound rather than the runtime pool's
+	// default (TASK-4278). The duration is logged so a large database's cost
+	// is on record.
+	started := time.Now()
+	// SQLite keeps its plain read: its DSN begins every transaction IMMEDIATE,
+	// which would take the write lock for a read, and it has no timeout to raise.
+	var q interface {
+		Query(string, ...any) (*sql.Rows, error)
+	} = s.db
+	if s.dialect.Driver() == DriverPostgres {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return nil, fmt.Errorf("list decision backfill candidates: begin: %w", err)
+		}
+		defer tx.Rollback() //nolint:errcheck // read-only
+		if err := s.setTxTimeouts(tx, effortCandidatesStatementTimeout.get(), effortCandidatesLockTimeout.get()); err != nil {
+			return nil, fmt.Errorf("list decision backfill candidates: %w", err)
+		}
+		q = tx
+	}
+	rows, err := q.Query(s.q(`
 		SELECT i.workspace_id, i.id
 		FROM items i
 		WHERE i.deleted_at IS NULL
@@ -282,7 +303,42 @@ func (s *Store) ItemsMissingDecisionKey(set, withKey, missingKey string) ([]Deci
 		}
 		out = append(out, c)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	slog.Info("decision backfill candidates listed", "set", set, "candidates", len(out), "duration", time.Since(started))
+	return out, nil
+}
+
+// The whole-table candidate read's bounds (TASK-4278): 30 min statement,
+// 30 s lock. Atomics only so a test can lower them
+// (SetEffortCandidatesBoundsForTesting); nothing else writes them.
+var (
+	effortCandidatesStatementTimeout = newDurationVar(30 * time.Minute)
+	effortCandidatesLockTimeout      = newDurationVar(30 * time.Second)
+)
+
+type durationVar struct{ ns atomic.Int64 }
+
+func newDurationVar(d time.Duration) *durationVar {
+	v := &durationVar{}
+	v.ns.Store(int64(d))
+	return v
+}
+
+func (v *durationVar) get() time.Duration { return time.Duration(v.ns.Load()) }
+
+// SetEffortCandidatesBoundsForTesting lowers the candidate read's statement and
+// lock bounds so a test can make it time out without waiting minutes. Returns
+// the restore. Production code MUST NOT call this.
+func SetEffortCandidatesBoundsForTesting(statement, lock time.Duration) func() {
+	ps, pl := effortCandidatesStatementTimeout.get(), effortCandidatesLockTimeout.get()
+	effortCandidatesStatementTimeout.ns.Store(int64(statement))
+	effortCandidatesLockTimeout.ns.Store(int64(lock))
+	return func() {
+		effortCandidatesStatementTimeout.ns.Store(int64(ps))
+		effortCandidatesLockTimeout.ns.Store(int64(pl))
+	}
 }
 
 // enqueueDecisionJobsForItemTx is the comment door's form: a comment knows its

@@ -611,27 +611,36 @@ func TestChat_Send_SentinelStatusTable(t *testing.T) {
 		}
 	}
 }
-func TestChat_Send_DoesNotMoveMarkers(t *testing.T) {
+
+// BUG-4320: each side's send covers everything up to it; the other side's
+// message after that stays unread.
+func TestChat_Send_AdvancesTheSendersReadMarker(t *testing.T) {
 	f := newChatFixture(t)
 	p := f.ensure("rook")
 	for _, author := range []string{"", "rook"} {
 		f.must(f.request("POST", p+"/messages", author, map[string]any{"body": "hi"}), 201, "send")
 	}
-	for _, reader := range []string{"", "rook"} {
-		rr := f.request("GET", p, reader, nil)
+	for _, tc := range []struct {
+		reader     string
+		wantRead   float64
+		wantUnread int
+	}{{"", 1, 1}, {"rook", 2, 0}} {
+		rr := f.request("GET", p, tc.reader, nil)
 		f.must(rr, 200, "detail")
-		if chatObject(t, rr)["read_seq"] != float64(0) {
-			t.Fatal(rr.Body.String())
+		if chatObject(t, rr)["read_seq"] != tc.wantRead {
+			t.Fatalf("%q detail: %s", tc.reader, rr.Body.String())
 		}
-		rr = f.request("GET", "/api/v1/me/chat/unread", reader, nil)
+		rr = f.request("GET", "/api/v1/me/chat/unread", tc.reader, nil)
 		f.must(rr, 200, "unread")
 		rows := chatObject(t, rr)["conversations"].([]any)
-		if len(rows) != 1 {
-			t.Fatal(rr.Body.String())
+		if len(rows) != tc.wantUnread {
+			t.Fatalf("%q unread rows = %d, want %d: %s", tc.reader, len(rows), tc.wantUnread, rr.Body.String())
 		}
-		row := rows[0].(map[string]any)
-		if row["read_seq"] != float64(0) || row["delivered_seq"] != float64(0) || row["unread"] != float64(1) {
-			t.Fatal(row)
+		if tc.wantUnread == 1 {
+			row := rows[0].(map[string]any)
+			if row["read_seq"] != tc.wantRead || row["delivered_seq"] != float64(0) || row["unread"] != float64(1) {
+				t.Fatalf("%q unread row: %v", tc.reader, row)
+			}
 		}
 	}
 }

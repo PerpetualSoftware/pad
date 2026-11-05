@@ -123,6 +123,7 @@ func (s *Server) handleMCPToolSurface(w http.ResponseWriter, _ *http.Request) {
 	}
 	body, err := s.toolSurfaceJSON()
 	if err != nil {
+		// 500: toolSurfaceJSON marshals the in-process catalog; no store call
 		writeError(w, http.StatusInternalServerError, "internal_error", "failed to serialize MCP tool surface")
 		return
 	}
@@ -255,6 +256,7 @@ func (s *Server) mcpBoundWrites(next http.Handler) http.Handler {
 		stream, err := s.openSSEStream(w)
 		if err != nil {
 			slog.Error("MCP: refusing to serve", "error", err)
+			// 500: openSSEStream refused (writer cannot stream); no store call
 			writeError(w, http.StatusInternalServerError, "internal_error", "Streaming not supported")
 			return
 		}

@@ -683,6 +683,25 @@ func checkImportSourceIDs(data *models.WorkspaceExport) error {
 	return nil
 }
 
+// importStatementTimeout and importLockTimeout are the per-transaction bounds of
+// a workspace import (TASK-4278): measured at one ~45 s transaction on a
+// 4,079-item workspace, far over the runtime pool's statement bound.
+const (
+	importStatementTimeout = 30 * time.Minute
+	importLockTimeout      = 5 * time.Minute
+	// importIdleInTxTimeout: the import is ONE transaction that runs Go work
+	// between its statements (slug and content handling per item, over a bundle
+	// that can hold tens of thousands of items), so the pool's 60 s
+	// idle-in-transaction bound could end it with 25P03 on a big bundle. A
+	// retry of an import creates a second workspace, so that must not happen.
+	// The other long transactions need no such override: a remap chunk holds
+	// its lock for ~700 ms; workspace purge and the effort read issue
+	// DB-side statements back to back (server time is not idle time); account
+	// deletion is DB statements only and capped at a 50 s deadline, under the
+	// 60 s default.
+	importIdleInTxTimeout = 10 * time.Minute
+)
+
 func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ownerID string, source string, report *ImportReport, opts ...MintOption) (*models.Workspace, error) {
 	if data.Version != 1 {
 		return nil, fmt.Errorf("unsupported export version: %d", data.Version)
@@ -723,6 +742,15 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 		return nil, fmt.Errorf("begin transaction: %w", err)
 	}
 	defer tx.Rollback()
+
+	// Long-write override (TASK-4278): one ~45 s transaction on a 4,079-item
+	// workspace, so it raises the runtime pool's bounds for itself only.
+	if err := s.setTxTimeouts(tx, importStatementTimeout, importLockTimeout); err != nil {
+		return nil, err
+	}
+	if err := s.setTxIdleInTxTimeout(tx, importIdleInTxTimeout); err != nil {
+		return nil, err
+	}
 
 	// createWorkspaceQ rather than CreateWorkspace: the slug probe and the
 	// read-back must run on THIS transaction, both so they see its own

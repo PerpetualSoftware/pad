@@ -408,7 +408,13 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 		// written. Which one is read from the row, not from the helper's
 		// error text. A caller with no resolved user (legacy token, fresh-
 		// install window) has nobody to attach and keeps today's answer.
-		msg := err.Error()
+		// The body never carries err.Error() verbatim (TASK-4278): the
+		// keep-path errors wrap tar entry names, filesystem paths and store
+		// text. keepPathMessage keeps what this handler authored for the
+		// client and replaces the rest with a fixed category; the full error
+		// is logged here.
+		slog.Warn("import: bundle stopped on a keep-path error", "workspace_created", ws != nil, "error", err)
+		msg := keepPathMessage(err)
 		keptState := importStateNotCreated
 		if ws != nil {
 			keptState = importStateKept
@@ -443,6 +449,20 @@ func (s *Server) handleImportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 			s.markPartialImport(ws, err, partialImportCategory(err))
 		}
 		report(keptState, ws)
+		if isRemapFailure(err) {
+			// TASK-4278: the server failed (the remap stopped between chunks,
+			// or in its first), the client did not err; and a retry would
+			// import the bundle a second time into a second workspace. A 5xx
+			// with a code no client retries on (not database_busy, no
+			// Retry-After), even when the cause was a database bound, and with
+			// plain text only: msg comes from importRemapError.Error().
+			code := importRemapFailedCode
+			if isPartialRemap(err) {
+				code = importPartiallyRemappedCode
+			}
+			writeStoreErrorNotRetryable(w, err, code, msg)
+			return
+		}
 		writeError(w, http.StatusBadRequest, "import_failed", msg)
 		return
 	}
@@ -698,10 +718,14 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 		if errors.As(retErr, &statusErr) {
 			return
 		}
-		if err := s.store.RemapAttachmentReferencesInWorkspace(ws.ID, oldAttachToNew); err != nil {
+		if err := s.runAttachmentRemap(ws.ID, oldAttachToNew); err != nil {
 			slog.Error("import: attachment reference remap failed on a kept partial workspace",
-				"workspace_id", ws.ID, "error", err)
-			retErr = fmt.Errorf("%w; attachment references were not remapped either, so some content still points at the source workspace's files", retErr)
+				"workspace_id", ws.ID, "primary_error", retErr, "error", err)
+			// The remap failure rides alongside the primary error as its own
+			// typed value, so the response path sees it (a dropped
+			// RemapPartialError would answer 400 import_failed) and its store
+			// text never reaches the body (TASK-4278).
+			retErr = &importRemapError{primary: retErr, cause: err}
 		}
 	}()
 	exportSeen := false
@@ -964,8 +988,11 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 			buf = repair.Apply(buf)
 			found := scanRequestBody(buf, foldMembers)
 			if found.nul {
-				return ws, fmt.Errorf("manifest decode: %w (workspace created but attachments not restored)%s",
-					errJSONBodyNUL, nulRepairRemedy(repair))
+				return ws, fmt.Errorf("manifest decode: %w", &nulRefusalError{
+					sentinel: errJSONBodyNUL,
+					note:     " (workspace created but attachments not restored)",
+					remedy:   nulRepairRemedy(fixedTextRepairTally(repair)),
+				})
 			}
 			if found.repeat != "" {
 				return ws, fmt.Errorf("manifest decode: %w (workspace created but attachments not restored)",
@@ -1117,12 +1144,9 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 	// which keeps the workspace, marks it partial and says so in the 400.
 	remapped = true
 	if len(oldAttachToNew) > 0 {
-		remap := func() error { return s.store.RemapAttachmentReferencesInWorkspace(ws.ID, oldAttachToNew) }
-		if s.importBundleRemapFault != nil {
-			remap = s.importBundleRemapFault
-		}
-		if err := remap(); err != nil {
-			return ws, fmt.Errorf("attachment reference remap: %w", err)
+		if err := s.runAttachmentRemap(ws.ID, oldAttachToNew); err != nil {
+			slog.Error("import: attachment reference remap failed", "workspace_id", ws.ID, "error", err)
+			return ws, &importRemapError{cause: err}
 		}
 	}
 
@@ -1434,8 +1458,160 @@ func partialImportCategory(err error) string {
 		return "the attachment manifest could not be read, so attachments were not restored"
 	case strings.HasPrefix(msg, "blob "), strings.HasPrefix(msg, "read blob"), strings.HasPrefix(msg, "skip unmanifested blob"):
 		return "an attachment file could not be read, so some attachments are missing"
-	case strings.HasPrefix(msg, "attachment reference remap"):
+	case isPartialRemap(err):
+		return "attachment references were only partly updated, so some content still points at the source workspace's files; delete this workspace and import again"
+	case isRemapFailure(err), strings.HasPrefix(msg, "attachment reference remap"):
 		return "attachment references could not be updated, so some content still points at the source workspace's files"
 	}
 	return "the bundle stopped reading partway through"
+}
+
+// nulRefusalError is the manifest NUL refusal on the keep path. Every field is
+// authored or fixed text, so keepPathMessage may return Error() whole; the
+// wrapper chain around it (store prefixes, driver text) stays in the log.
+// Unwrap keeps errors.Is(err, errJSONBodyNUL) true.
+type nulRefusalError struct {
+	sentinel error
+	note     string // fixed authored sentence
+	remedy   string // nulRepairRemedy output
+}
+
+func (e *nulRefusalError) Error() string { return e.sentinel.Error() + e.note + e.remedy }
+func (e *nulRefusalError) Unwrap() error { return e.sentinel }
+
+// keepPathMessage is the client-facing text of a keep-path error. Only text
+// this handler authored reaches it: a store.ValidationError's Reason (the
+// store marks it caller-safe), the remap error's plain Error(), and fixed
+// sentences for the errors importBundle mints from numbers and entry names.
+// Everything else (tar and gzip errors, filesystem errors, and any store or
+// SQL error wrapped by "import workspace") gets a fixed category; the caller
+// logs the full error.
+func keepPathMessage(err error) string {
+	// The remap error is tested FIRST: its primary may wrap a ValidationError,
+	// and the partial-remap text must not be replaced by that Reason.
+	if isRemapFailure(err) {
+		return err.Error() // importRemapError.Error() is plain text by construction
+	}
+	if v, ok := store.AsValidationError(err); ok {
+		return v.Reason
+	}
+	// Authored sentinels the manifest check wraps: the sentinel's OWN text
+	// only, never the wrapper chain (a store prefix or a driver's Scan text
+	// would ride along with err.Error()).
+	var repeated *models.RepeatedMemberError
+	if errors.As(err, &repeated) {
+		return repeated.Error()
+	}
+	// A typed NUL refusal carries ONLY authored text (sentinel + fixed note +
+	// the remedy sentence naming --repair-nul), so its Error() is safe whole.
+	var nulRefusal *nulRefusalError
+	if errors.As(err, &nulRefusal) {
+		return nulRefusal.Error()
+	}
+	if errors.Is(err, errJSONBodyNUL) {
+		return errJSONBodyNUL.Error()
+	}
+	var tooBig *http.MaxBytesError
+	if errors.As(err, &tooBig) {
+		return "request body too large: the import exceeds this server's upload limit"
+	}
+	msg := err.Error()
+	switch {
+	case strings.HasPrefix(msg, "manifest decode"):
+		return "manifest decode failed: the attachment manifest could not be decoded (workspace created but attachments not restored)"
+	case strings.HasPrefix(msg, "manifest version"):
+		return "the attachment manifest version is not supported by this server (workspace created but attachments not restored)"
+	case strings.HasPrefix(msg, "manifest.json exceeds"):
+		return "the attachment manifest exceeds the size limit (workspace created but attachments not restored)"
+	case strings.HasPrefix(msg, "pad-export.json exceeds"):
+		return "pad-export.json exceeds the size limit"
+	case strings.HasPrefix(msg, "blob ") && strings.Contains(msg, " exceeds "):
+		return "an attachment file exceeds the size limit; raise PAD_ATTACHMENT_MAX_BYTES on this server to allow it"
+	case strings.HasPrefix(msg, "read tar entry"):
+		return "read tar entry failed: the bundle archive is corrupt or truncated"
+	case strings.HasPrefix(msg, "import workspace"), strings.HasPrefix(msg, "read pad-export.json"):
+		return "the workspace data in the bundle could not be imported"
+	}
+	return partialImportCategory(err)
+}
+
+// isPartialRemap reports whether err carries a remap that stopped between
+// chunks (store.RemapPartialError): some items rewritten, the rest untouched.
+func isPartialRemap(err error) bool {
+	var partial *store.RemapPartialError
+	return errors.As(err, &partial)
+}
+
+// isRemapFailure reports whether err carries ANY failure of the attachment
+// reference remap, first chunk or later (importRemapError).
+func isRemapFailure(err error) bool {
+	var re *importRemapError
+	return errors.As(err, &re)
+}
+
+// importRemapFailedCode is the 500 code of a bundle import whose attachment
+// remap failed in its first chunk, or after a keep-path error: the workspace
+// is kept and marked partial, and the remedy and the
+// non-retryable rules are the same as importPartiallyRemappedCode.
+const importRemapFailedCode = "import_remap_failed"
+
+// importRemapError is the failure of the import's attachment-reference remap
+// (TASK-4278). Its Error() text is PLAIN and is what reaches the response
+// body: the cause is a store error that can carry SQL, a SQLSTATE or a table
+// name, so it is reachable only through Unwrap (for the log and for
+// errors.As), never through Error(). primary, when set, is the keep-path error
+// the remap was retrying after.
+type importRemapError struct {
+	primary error
+	cause   error
+}
+
+func (e *importRemapError) Error() string {
+	var plain string
+	var partial *store.RemapPartialError
+	if errors.As(e.cause, &partial) {
+		// RemapPartialError.Error() is plain by construction.
+		plain = partial.Error()
+	} else {
+		plain = "attachment references could not be updated, so some content still points at the source workspace's files; delete this partial workspace and import the bundle again"
+	}
+	if e.primary != nil {
+		// The primary error's own text can wrap reader or IO detail (a path,
+		// a tar entry name), so only a FIXED category derived from it reaches
+		// the body; the full error is in the server log (the deferred
+		// remap's "primary_error"). Unwrap still exposes it to errors.As.
+		return "the import also failed earlier (" + partialImportCategory(e.primary) + "); " + plain
+	}
+	return plain
+}
+
+func (e *importRemapError) Unwrap() []error {
+	var out []error
+	if e.primary != nil {
+		out = append(out, e.primary)
+	}
+	return append(out, e.cause)
+}
+
+// runAttachmentRemap runs the import's reference remap, through the
+// importBundleRemapFault test seam when a test set one.
+func (s *Server) runAttachmentRemap(workspaceID string, oldToNew map[string]string) error {
+	if s.importBundleRemapFault != nil {
+		return s.importBundleRemapFault()
+	}
+	return s.store.RemapAttachmentReferencesInWorkspace(workspaceID, oldToNew)
+}
+
+// fixedTextRepairTally returns a copy of t whose Declined reason is a fixed
+// sentence. repairBodyNULEscapes builds its reason from the document (it can
+// name a repeated JSON member from the payload), and the keep-path body must
+// carry fixed text only (TASK-4278). The other NUL doors keep the
+// original reason: they answer the uploader about the uploader's own file.
+func fixedTextRepairTally(t *nulRepairTally) *nulRepairTally {
+	if t == nil || t.Declined == "" {
+		return t
+	}
+	c := *t
+	c.Declined = "the manifest could not be repaired safely"
+	return &c
 }

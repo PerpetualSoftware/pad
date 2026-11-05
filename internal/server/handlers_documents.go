@@ -112,20 +112,6 @@ func (s *Server) handleGetDocument(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, doc)
 }
 
-// isRetryableLockError reports whether a store error is Postgres telling the
-// caller that a LOCK was not available, rather than that the request was
-// wrong. 55P03 is the lock_timeout this codebase sets on the document-rename
-// lock; 40P01 is a deadlock Postgres broke by aborting this transaction.
-// Matched on the SQLSTATE text because that is what pgx puts in the error
-// string, the same way the UNIQUE-constraint mapping above works.
-func isRetryableLockError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "SQLSTATE 55P03") || strings.Contains(msg, "SQLSTATE 40P01")
-}
-
 func (s *Server) handleUpdateDocument(w http.ResponseWriter, r *http.Request) {
 	if !requireMinRole(w, r, "editor") {
 		return
@@ -226,27 +212,27 @@ func (s *Server) handleUpdateDocument(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "conflict", "A document with this title already exists in this workspace")
 			return
 		}
-		// Lock contention is RETRYABLE and must not look like a bug
-		// (BUG-2778). A rename serializes per workspace with a
-		// 5s lock timeout, so a burst produces SQLSTATE 55P03
-		// (lock_not_available); 40P01 is a deadlock Postgres chose to abort.
-		// Both mean "try again", and a generic 500 tells the caller the
-		// opposite — that the request will never succeed. Retry-After is
-		// deliberately short: the holder is one transaction, not a queue.
-		// Same disposition for a cascade that exhausted its compare-and-set
-		// retries (BUG-2785): the rename rolled back cleanly because a linking
-		// document kept being edited underneath it. Retrying can succeed, so a
-		// 500 would be actively misleading — it says the request will never
-		// work. Distinguished by sentinel rather than message text, because
-		// this one is ours to name.
-		if isRetryableLockError(err) || errors.Is(err, store.ErrLinkCascadeContention) {
+		// A rename that the database was too busy for is RETRYABLE and must not
+		// look like a bug (BUG-2778): a burst serializes on the per-workspace
+		// rename lock (5s lock_timeout, SQLSTATE 55P03), and 40P01 is a
+		// deadlock Postgres chose to abort. TASK-4278: that is now the one
+		// shared answer, 503 database_busy with Retry-After, the same as every
+		// other bound (the old lock_contention code for these is gone;
+		// nothing else read it).
+		if store.IsDBRetryable(err) {
+			writeBusy(w, err, true)
+			return
+		}
+		// A cascade that exhausted its compare-and-set retries (BUG-2785)
+		// rolled back cleanly because a linking document kept being edited
+		// underneath it. Retrying can succeed, so a 500 would say the request
+		// will never work. It keeps its OWN code (ours to name, distinguished
+		// by sentinel) and a short Retry-After: the holder is one transaction,
+		// not a queue. Deliberately does NOT name the holder: it is a content
+		// edit, and claiming a cause the server has not established sends the
+		// reader looking in the wrong place.
+		if errors.Is(err, store.ErrLinkCascadeContention) {
 			w.Header().Set("Retry-After", "1")
-			// Deliberately does NOT name the holder. The previous wording said
-			// "another rename", but 55P03 here is just as likely to be an
-			// ordinary content edit holding the row — and after BUG-2785 the
-			// cascade-contention arm is definitely a content edit. Claiming a
-			// cause the server has not established sends the reader looking in
-			// the wrong place.
 			writeError(w, http.StatusServiceUnavailable, "lock_contention",
 				"The workspace is busy with a concurrent edit; retry in a moment")
 			return

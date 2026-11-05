@@ -599,6 +599,7 @@ func (s *Server) handleAdminResetPassword(w http.ResponseWriter, r *http.Request
 
 		resetURL := s.baseURL + "/reset-password/" + token
 		if err := s.email.SendPasswordReset(r.Context(), user.Email, user.Name, resetURL); err != nil {
+			// 500: email provider send failure, not a store error
 			writeError(w, http.StatusInternalServerError, "email_failed", "Failed to send password reset email")
 			return
 		}

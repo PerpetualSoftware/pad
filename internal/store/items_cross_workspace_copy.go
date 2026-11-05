@@ -505,6 +505,7 @@ func (s *Store) CopyItemAcrossWorkspaces(req CrossWorkspaceCopyRequest) (*CrossW
 	// An ownership change between the storage check's owner read and its
 	// check is retried in a fresh transaction, as CreateAttachmentForLiveItem
 	// does; the next attempt locks the new owner.
+	copyStarted := time.Now()
 	result, err := s.copyItemAcrossWorkspacesTx(req, sourceWorkspaceID)
 	for attempt := 1; errors.Is(err, errStorageOwnerMoved) && attempt < 3; attempt++ {
 		result, err = s.copyItemAcrossWorkspacesTx(req, sourceWorkspaceID)
@@ -547,6 +548,9 @@ func (s *Store) CopyItemAcrossWorkspaces(req CrossWorkspaceCopyRequest) (*CrossW
 			"archive_source", req.ArchiveSource,
 			"deadlock", deadlock,
 			"lock_timeout", lockTimeout,
+			// A bound (statement/lock/idle timeout, deadline, dead connection)
+			// is load, not a lock-ordering bug: it logs at WARN (TASK-4278).
+			"db_busy", IsDBBusy(err) && !deadlock,
 			"error", err,
 		}
 		if deadlock {
@@ -556,6 +560,13 @@ func (s *Store) CopyItemAcrossWorkspaces(req CrossWorkspaceCopyRequest) (*CrossW
 		}
 		return nil, err
 	}
+	// Measured, not bounded (TASK-4278): the copy holds both workspaces'
+	// advisory locks for its whole duration, so its cost is the wait every item
+	// writer in either workspace sees.
+	slog.Info("cross-workspace item copy done",
+		"source_workspace_id", sourceWorkspaceID,
+		"target_workspace_id", req.TargetWorkspaceID,
+		"duration", time.Since(copyStarted))
 	return result, nil
 }
 

@@ -17,8 +17,8 @@
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { coveredPage } from '$lib/stores/coveredPage.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
-	import { setAccessRevokedHandler, setRateLimitHandler, setIdentityProvider, setNetworkUnreachableHandler } from '$lib/api/client';
-	import { notifyServerBusy } from '$lib/api/serverBusyToast';
+	import { setAccessRevokedHandler, setRateLimitHandler, setDatabaseBusyHandler, setIdentityProvider, setNetworkUnreachableHandler } from '$lib/api/client';
+	import { notifyServerBusy, notifyDatabaseBusy } from '$lib/api/serverBusyToast';
 	import { notifyNetworkUnreachable } from '$lib/api/networkUnreachableToast';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { sweepExpiredRefusedRawDrafts } from '$lib/items/refusedRawDraft';
@@ -134,6 +134,11 @@
 	// toast-store import, matching the access-revoked split above.
 	setRateLimitHandler((retryAfterMs) => {
 		notifyServerBusy(retryAfterMs);
+	});
+	// The database bound's 503 `database_busy` (TASK-4278): one deduped toast
+	// carrying the server's plain sentence ("nothing was saved" for a write).
+	setDatabaseBusyHandler(({ message }) => {
+		notifyDatabaseBusy(message);
 	});
 	// A request whose fetch rejected before any response (TASK-2202): one
 	// deduped "can't reach the server" error toast, beside whatever the call

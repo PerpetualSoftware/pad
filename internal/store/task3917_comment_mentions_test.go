@@ -264,18 +264,18 @@ type commentWriteSite struct {
 
 // Keys are "<path from the repo root>:<enclosing top-level decl>".
 var commentWriteSites = map[string]commentWriteSite{
-	"internal/store/comments.go:createCommentTx":                         {"INDEXED: insert", 1},
-	"internal/store/comments.go:updateComment":                           {"INDEXED: edit, behind UpdateComment and UpdateCommentAs (skips imported comments)", 1},
-	"internal/store/comments.go:DeleteComment":                           {"INDEXED: tombstone; the hard DELETE cascades on comment_id", 2},
-	"internal/store/comments.go:reapTombstonesTx":                        {"CASCADE: deletes emptied tombstones, which have no rows (the tombstone write already cleared them)", 1},
-	"internal/store/fenced_comments.go:CreateComment":                    {"INDEXED: an app's insert", 1},
-	"internal/store/fenced_comments.go:UpdateComment":                    {"INDEXED: an app's edit (skips imported comments)", 1},
-	"internal/store/fenced_comments.go:DeleteComment":                    {"INDEXED: an app's tombstone; the hard DELETE cascades on comment_id", 2},
-	"internal/store/export.go:importWorkspace":                           {"BYPASS: imported history is never indexed; matches needsOthersComment (needs_snooze.go) (TASK-3917): a bundle's @handles name SOURCE-instance users", 1},
-	"internal/store/attachments.go:RemapAttachmentReferencesInWorkspace": {"BYPASS: rewrites only pad-attachment ids inside the body; it cannot add or remove an @-mention", 1},
-	"internal/store/users.go:eraseUserTx":                                {"BYPASS: nulls comments.user_id (the author); mentions are keyed on the MENTIONED user, whose rows cascade when the user row goes", 1},
-	"internal/store/workspace_purge.go:purgeWorkspaceChildDeletes":       {"CASCADE: DELETE FROM comments in the purge table; the comment_id FK removes the rows", 1},
-	"internal/store/workspace_purge.go:purgeWorkspaceDataOnce":           {"BYPASS: 'detach comment parents' only nulls parent_id", 1},
+	"internal/store/comments.go:createCommentTx":                   {"INDEXED: insert", 1},
+	"internal/store/comments.go:updateComment":                     {"INDEXED: edit, behind UpdateComment and UpdateCommentAs (skips imported comments)", 1},
+	"internal/store/comments.go:DeleteComment":                     {"INDEXED: tombstone; the hard DELETE cascades on comment_id", 2},
+	"internal/store/comments.go:reapTombstonesTx":                  {"CASCADE: deletes emptied tombstones, which have no rows (the tombstone write already cleared them)", 1},
+	"internal/store/fenced_comments.go:CreateComment":              {"INDEXED: an app's insert", 1},
+	"internal/store/fenced_comments.go:UpdateComment":              {"INDEXED: an app's edit (skips imported comments)", 1},
+	"internal/store/fenced_comments.go:DeleteComment":              {"INDEXED: an app's tombstone; the hard DELETE cascades on comment_id", 2},
+	"internal/store/export.go:importWorkspace":                     {"BYPASS: imported history is never indexed; matches needsOthersComment (needs_snooze.go) (TASK-3917): a bundle's @handles name SOURCE-instance users", 1},
+	"internal/store/attachments_remap.go:writeRemapUnit":           {"BYPASS: rewrites only pad-attachment ids inside the body; it cannot add or remove an @-mention", 1},
+	"internal/store/users.go:eraseUserTxCtx":                       {"BYPASS: nulls comments.user_id (the author); mentions are keyed on the MENTIONED user, whose rows cascade when the user row goes", 1},
+	"internal/store/workspace_purge.go:purgeWorkspaceChildDeletes": {"CASCADE: DELETE FROM comments in the purge table; the comment_id FK removes the rows", 1},
+	"internal/store/workspace_purge.go:purgeWorkspaceDataOnce":     {"BYPASS: 'detach comment parents' only nulls parent_id", 1},
 }
 
 var (

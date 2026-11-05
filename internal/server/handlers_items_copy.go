@@ -994,9 +994,20 @@ func (s *Server) writeCopyError(w http.ResponseWriter, r *http.Request, err erro
 		writeError(w, http.StatusBadRequest, "bad_request", reason)
 		return
 	}
+	const copyAmbiguousMessage = "The copy did not complete. It may or may not have landed — check the destination workspace before trying again."
+	if store.IsDBRetryable(err) {
+		// A bound or deadlock, not a bug: 503 database_busy, so a client can
+		// tell load from a fault. The wording stays retry-DISCOURAGING and
+		// there is no Retry-After, because a deadline or a dead connection can
+		// land on the commit itself (DR-13); the copy's op_key makes a re-run
+		// safe, and the message says to check first.
+		slog.Warn("cross-workspace item copy: database busy", "error", err)
+		writeError(w, http.StatusServiceUnavailable, "database_busy", copyAmbiguousMessage)
+		return
+	}
 	slog.Error("cross-workspace item copy failed", "error", err)
-	writeError(w, http.StatusInternalServerError, "copy_failed",
-		"The copy did not complete. It may or may not have landed — check the destination workspace before trying again.")
+	// 500: not a bound; the message is fixed text and never carries err.
+	writeError(w, http.StatusInternalServerError, "copy_failed", copyAmbiguousMessage)
 }
 
 // copyActorID resolves the identity a copy is attributed to: every cloned

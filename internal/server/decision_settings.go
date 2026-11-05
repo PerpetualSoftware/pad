@@ -336,7 +336,7 @@ func (s *Server) handleGetDecisionSettings(w http.ResponseWriter, r *http.Reques
 	}
 	resp, err := s.buildDecisionSettingsResponse()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to load decision settings")
+		writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to load decision settings")
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -431,20 +431,20 @@ func (s *Server) handleUpdateDecisionSettings(w http.ResponseWriter, r *http.Req
 				writeError(w, http.StatusConflict, "encryption_unavailable", "This server has no encryption key (PAD_ENCRYPTION_KEY), so it cannot store an API key. Set PAD_TYPESAFE_API_KEY in the environment instead.")
 				return
 			}
-			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to save the API key")
+			writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to save the API key")
 			return
 		}
 		changed = append(changed, settingDecisionAPIKey)
 	} else if in.ClearAPIKey {
 		if err := s.store.DeletePlatformSetting(settingDecisionAPIKey); err != nil {
-			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to clear the API key")
+			writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to clear the API key")
 			return
 		}
 		changed = append(changed, settingDecisionAPIKey)
 	}
 	if in.Provider != nil {
 		if err := s.store.SetPlatformSetting(settingDecisionProvider, provider); err != nil {
-			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to save the provider")
+			writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to save the provider")
 			return
 		}
 		changed = append(changed, settingDecisionProvider)
@@ -455,7 +455,7 @@ func (s *Server) handleUpdateDecisionSettings(w http.ResponseWriter, r *http.Req
 			v = "true"
 		}
 		if err := s.store.SetPlatformSetting(settingDecisionEnabled, v); err != nil {
-			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to save the enable toggle")
+			writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to save the enable toggle")
 			return
 		}
 		changed = append(changed, settingDecisionEnabled)
@@ -468,7 +468,7 @@ func (s *Server) handleUpdateDecisionSettings(w http.ResponseWriter, r *http.Req
 			err = s.store.SetPlatformSetting(settingDecisionModel, model)
 		}
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to save the model")
+			writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to save the model")
 			return
 		}
 		changed = append(changed, settingDecisionModel)
@@ -486,7 +486,7 @@ func (s *Server) handleUpdateDecisionSettings(w http.ResponseWriter, r *http.Req
 
 	resp, err := s.buildDecisionSettingsResponseLocked()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to load decision settings")
+		writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to load decision settings")
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)

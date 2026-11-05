@@ -403,6 +403,13 @@ func (s *Server) checkSecondFactor(w http.ResponseWriter, user *models.User, att
 		secret, err := s.store.TOTPSecretForVerify(user.ID)
 		if err != nil && !errors.Is(err, store.ErrNoTOTPSecret) {
 			slog.Error("load totp secret for second factor", "user_id", user.ID, "error", err)
+			// Logged once, above, with the user id (BUG-4019): the helpers
+			// would log it a second time, so a busy database is answered here.
+			if store.IsDBRetryable(err) {
+				writeBusy(w, err, false)
+				return false, true
+			}
+			// 500: not a bound (an undecryptable or unreadable secret); IsDBBusy is answered above.
 			writeError(w, http.StatusInternalServerError, "internal_error", "An internal error occurred")
 			return false, true
 		}

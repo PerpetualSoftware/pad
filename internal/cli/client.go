@@ -3348,7 +3348,31 @@ func (c *Client) parseError(resp *http.Response) error {
 	if apiErr, ok := err.(*APIError); ok && resp.StatusCode == http.StatusTooManyRequests {
 		apiErr.RetryAfterSeconds = parseRetryAfterSeconds(resp.Header.Get("Retry-After"))
 	}
+	if apiErr, ok := err.(*APIError); ok && resp.StatusCode == http.StatusServiceUnavailable && apiErr.Code == DatabaseBusyCode {
+		apiErr.RetryAfterSeconds = parseRetryAfterSeconds(resp.Header.Get("Retry-After"))
+		// The server's message is already plain ("The server is busy; nothing
+		// was saved. Please try again." for a write). Add only the wait.
+		if apiErr.RetryAfterSeconds > 0 {
+			apiErr.Message = strings.TrimSpace(apiErr.Message) + fmt.Sprintf(" (retry in about %ds)", apiErr.RetryAfterSeconds)
+		}
+	}
 	return err
+}
+
+// DatabaseBusyCode is the code of the server's retryable 503 when a database
+// bound (statement, lock or idle-in-transaction timeout) cut a request short
+// (TASK-4278). A write was rolled back: nothing was saved. The CLI never
+// retries a write on it by itself; only a request carrying an op_key and
+// retryableWithKey's single keyed retry (which replays, never duplicates).
+const DatabaseBusyCode = "database_busy"
+
+// IsDatabaseBusy reports whether err is, or wraps, the database_busy 503.
+func IsDatabaseBusy(err error) (*APIError, bool) {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.Code == DatabaseBusyCode {
+		return apiErr, true
+	}
+	return nil, false
 }
 
 // parseRetryAfterSeconds reads a Retry-After header in either of its two

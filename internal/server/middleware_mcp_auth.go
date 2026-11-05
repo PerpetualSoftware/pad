@@ -125,7 +125,7 @@ func (s *Server) handleMCPPATAuth(w http.ResponseWriter, r *http.Request, token 
 		// clients don't churn through reconnect loops on a backend
 		// outage. No WWW-Authenticate header — re-running
 		// discovery wouldn't help.
-		writeError(w, http.StatusInternalServerError, "internal_error", "Token validation failed.")
+		writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Token validation failed.")
 		return
 	}
 	if apiToken == nil {
@@ -209,7 +209,7 @@ func (s *Server) handleMCPPATAuth(w http.ResponseWriter, r *http.Request, token 
 	// The workspace pin, when the PAT has one (BUG-3982).
 	ctx, err = s.withTokenPin(ctx, apiToken)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "Token validation failed.")
+		writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Token validation failed.")
 		return
 	}
 

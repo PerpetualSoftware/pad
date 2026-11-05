@@ -143,6 +143,7 @@ func (s *Server) handleImportArtifact(w http.ResponseWriter, r *http.Request) {
 
 	var schema models.CollectionSchema
 	if err := models.UnmarshalItemFieldSchema([]byte(coll.Schema), &schema); err != nil {
+		// 500: stored collection schema does not parse (json), not a store error
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to parse collection schema")
 		return
 	}
@@ -151,7 +152,7 @@ func (s *Server) handleImportArtifact(w http.ResponseWriter, r *http.Request) {
 		return s.invocationSlugTaken(workspaceID, coll.ID, slug)
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to normalize the artifact")
+		writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to normalize the artifact")
 		return
 	}
 	warnings := norm.Warnings

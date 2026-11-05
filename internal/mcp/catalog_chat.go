@@ -17,7 +17,7 @@ var padChatTool = ToolDef{
 			{Name: "limit", Type: "number", Description: "Messages: 1..200; default 50."},
 			{Name: "no_mark", Type: "bool", Description: "Leave the read marker unchanged after show."},
 			{Name: "body", Type: "string", Description: "Message text."},
-			{Name: "reply_to", Type: "number", Description: "Replied-to sequence; marks read through it after send."},
+			{Name: "reply_to", Type: "number", Description: "Replied-to sequence."},
 			{Name: "op_key", Type: "string", Description: "Caller-owned idempotency key; omitted unless provided. Never auto-retry."},
 			{Name: "context_workspace", Type: "string", Description: "Reference workspace slug; stdio defaults to the cwd .pad.toml link."},
 			{Name: "seq", Type: "number", Description: "Message sequence to delete."},
@@ -51,8 +51,8 @@ Actions:
     reaches back to the last read message; empty pages mark nothing.
     Both transports report mark success, a gap, or a mark error.
     Required: target. Optional: since, limit, no_mark.
-  send — Send; ensure an unknown @name DM first. Replying marks read only
-    to reply_to; plain sends mark nothing. Never auto-retry.
+  send — Send; ensure an unknown @name DM first. A send moves your own read
+    marker to the new message, so it covers everything before it. Never auto-retry.
     Required: target, body. Optional: reply_to, op_key, context_workspace.
   delete — Delete your message, keeping a tombstone.
     Required: target, seq. Optional: none.
