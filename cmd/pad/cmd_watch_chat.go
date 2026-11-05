@@ -120,6 +120,9 @@ func formatChatLine(m monitorChatMessage, direction bool) string {
 // seenChat is only the bounded event-dedupe memory across reconnects.
 var seenChat = newRecentSet(256, 10*time.Minute)
 
+// seenUnread remembers the last unread summary line across reconnects.
+var seenUnread = newRecentSet(4, monitorUnreadWindow)
+
 // Stream HTTP rule: every chat HTTP call on the stream goroutine is bounded
 // at 3s; any failure backs that conversation off 10s (identity failure backs
 // off globally). Unread failures back off the summary separately.
@@ -133,6 +136,7 @@ type monitorChatIdentity struct{ baseURL, userID string }
 type monitorChat struct {
 	sink               chatSink
 	printed            *recentSet
+	unread             *recentSet      // the last unread summary line; its own set so message ids cannot evict it
 	printedIDs         map[string]bool // True until its retraction is written; retain every id.
 	last               map[int]int64
 	delivered          map[int]int64
@@ -149,7 +153,7 @@ type monitorChat struct {
 }
 
 func newMonitorChat(sink chatSink, printed *recentSet) *monitorChat {
-	return &monitorChat{sink: sink, printed: printed, printedIDs: map[string]bool{}, last: map[int]int64{}, delivered: map[int]int64{}, floorTimeout: monitorChatFloorTimeout, now: time.Now, retryAfter: map[int]time.Time{}}
+	return &monitorChat{sink: sink, printed: printed, unread: newRecentSet(4, monitorUnreadWindow), printedIDs: map[string]bool{}, last: map[int]int64{}, delivered: map[int]int64{}, floorTimeout: monitorChatFloorTimeout, now: time.Now, retryAfter: map[int]time.Time{}}
 }
 
 // emit prints one chat line to the agent and, once that write succeeded,
@@ -179,6 +183,7 @@ func (c *monitorChat) setIdentity(baseURL, userID string) {
 	clear(c.printed.at)
 	c.printed.order = nil
 	c.printed.mu.Unlock()
+	c.unread.forgetPrefix("")
 }
 
 func (c *monitorChat) acknowledge(number int) {
@@ -426,24 +431,22 @@ func (c *monitorChat) applySummary(w io.Writer, result monitorChatSummary) bool 
 	summary := result.unread
 	if summary.Total == 0 {
 		// An empty inbox ends the notice, so the same count later is news again.
-		c.printed.forgetPrefix(unreadSummaryKey)
+		c.unread.forgetPrefix("")
 		return true
 	}
 	// BUG-4320: print the summary at most once per window. A connect-time
 	// resync, a sync_required resync and a reconnect (which builds a new
-	// monitorChat over the same printed set) all reach here with the same count.
+	// monitorChat over the same unread memory) all reach here with the same count.
 	line := fmt.Sprintf("Pad chat: %d unread messages — use pad chat show to read them.", summary.Total)
-	key := unreadSummaryKey + line
-	if c.printed.contains(key) {
+	if c.unread.contains(line) {
 		return true
 	}
-	c.printed.forgetPrefix(unreadSummaryKey)
+	c.unread.forgetPrefix("")
 	if err := c.emit(w, line); err == nil {
-		c.printed.seen(key)
+		c.unread.seen(line)
 	}
 	return true
 }
 
-// unreadSummaryKey prefixes the summary line's entry in the printed set, apart
-// from message ids.
-const unreadSummaryKey = "unread-summary:"
+// monitorUnreadWindow is how long one summary line stays quiet.
+const monitorUnreadWindow = 10 * time.Minute

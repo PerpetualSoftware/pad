@@ -284,8 +284,8 @@ func TestReconnectPrintsUnreadSummary(t *testing.T) {
 	chatSessionEnv(t)
 	t.Setenv("PAD_AGENT", "unread-test-agent")
 	// The shared printed set remembers the summary line across tests.
-	seenChat.forgetPrefix(unreadSummaryKey)
-	t.Cleanup(func() { seenChat.forgetPrefix(unreadSummaryKey) })
+	seenUnread.forgetPrefix("")
+	t.Cleanup(func() { seenUnread.forgetPrefix("") })
 	f := &fakeChatSink{total: 3}
 	var out bytes.Buffer
 	streamWatchEventsTo(&out, fakeSSEResponse("event: sync_required\ndata: {}\n\n"), "", f)
@@ -662,6 +662,14 @@ func newSeededMonitorChat(f *fakeChatSink, printed *recentSet) *monitorChat {
 
 // BUG-4320: the unread summary prints at most once, across the connect-time
 // resync, a sync_required resync, and a reconnect that builds a new monitorChat.
+// reconnectChat builds a fresh monitorChat over a shared unread memory, as a
+// reconnect does in production.
+func reconnectChat(f *fakeChatSink, memo *recentSet) *monitorChat {
+	c := newMonitorChat(f, newRecentSet(256, 10*time.Minute))
+	c.unread = memo
+	return c
+}
+
 func TestMonitorUnreadSummaryPrintsOnce(t *testing.T) {
 	chatSessionEnv(t)
 	const marker = "unread messages"
@@ -670,7 +678,7 @@ func TestMonitorUnreadSummaryPrintsOnce(t *testing.T) {
 	t.Run("connect then sync_required in one stream", func(t *testing.T) {
 		f := &fakeChatSink{total: 4}
 		var out bytes.Buffer
-		newMonitorChat(f, newRecentSet(256, 10*time.Minute)).stream(&out, fakeSSEResponse(resync+resync), "")
+		reconnectChat(f, newRecentSet(4, 10*time.Minute)).stream(&out, fakeSSEResponse(resync+resync), "")
 		if n := strings.Count(out.String(), marker); n != 1 {
 			t.Fatalf("summary printed %d times, want 1:\n%s", n, out.String())
 		}
@@ -681,7 +689,7 @@ func TestMonitorUnreadSummaryPrintsOnce(t *testing.T) {
 		printed := newRecentSet(256, 10*time.Minute)
 		var out bytes.Buffer
 		for i := 0; i < 3; i++ {
-			newMonitorChat(f, printed).stream(&out, fakeSSEResponse(""), "")
+			reconnectChat(f, printed).stream(&out, fakeSSEResponse(""), "")
 		}
 		if n := strings.Count(out.String(), marker); n != 1 {
 			t.Fatalf("summary printed %d times over 3 connects, want 1:\n%s", n, out.String())
@@ -692,9 +700,9 @@ func TestMonitorUnreadSummaryPrintsOnce(t *testing.T) {
 		f := &fakeChatSink{total: 4}
 		printed := newRecentSet(256, 10*time.Minute)
 		var out bytes.Buffer
-		newMonitorChat(f, printed).stream(&out, fakeSSEResponse(""), "")
+		reconnectChat(f, printed).stream(&out, fakeSSEResponse(""), "")
 		f.total = 5
-		newMonitorChat(f, printed).stream(&out, fakeSSEResponse(""), "")
+		reconnectChat(f, printed).stream(&out, fakeSSEResponse(""), "")
 		if !strings.Contains(out.String(), "4 unread messages") || !strings.Contains(out.String(), "5 unread messages") {
 			t.Fatalf("want both counts printed:\n%s", out.String())
 		}
@@ -704,11 +712,11 @@ func TestMonitorUnreadSummaryPrintsOnce(t *testing.T) {
 		f := &fakeChatSink{total: 4}
 		printed := newRecentSet(256, 10*time.Minute)
 		var out bytes.Buffer
-		newMonitorChat(f, printed).stream(&out, fakeSSEResponse(""), "")
+		reconnectChat(f, printed).stream(&out, fakeSSEResponse(""), "")
 		f.total = 0
-		newMonitorChat(f, printed).stream(&out, fakeSSEResponse(""), "")
+		reconnectChat(f, printed).stream(&out, fakeSSEResponse(""), "")
 		f.total = 4
-		newMonitorChat(f, printed).stream(&out, fakeSSEResponse(""), "")
+		reconnectChat(f, printed).stream(&out, fakeSSEResponse(""), "")
 		if n := strings.Count(out.String(), "4 unread messages"); n != 2 {
 			t.Fatalf("4 unread printed %d times, want 2:\n%s", n, out.String())
 		}
@@ -720,11 +728,30 @@ func TestMonitorUnreadSummaryPrintsOnce(t *testing.T) {
 		now := time.Now()
 		printed.now = func() time.Time { return now }
 		var out bytes.Buffer
-		newMonitorChat(f, printed).stream(&out, fakeSSEResponse(""), "")
+		reconnectChat(f, printed).stream(&out, fakeSSEResponse(""), "")
 		now = now.Add(11 * time.Minute)
-		newMonitorChat(f, printed).stream(&out, fakeSSEResponse(""), "")
+		reconnectChat(f, printed).stream(&out, fakeSSEResponse(""), "")
 		if n := strings.Count(out.String(), marker); n != 2 {
 			t.Fatalf("summary printed %d times across the window, want 2:\n%s", n, out.String())
 		}
 	})
+}
+
+// BUG-4320: chat message ids cannot evict the summary line from its memory.
+func TestMonitorUnreadSummarySurvivesMessageChurn(t *testing.T) {
+	chatSessionEnv(t)
+	f := &fakeChatSink{total: 4}
+	memo := newRecentSet(4, 10*time.Minute)
+	var out bytes.Buffer
+	reconnectChat(f, memo).stream(&out, fakeSSEResponse(""), "")
+	printed := newRecentSet(256, 10*time.Minute)
+	for i := 0; i < 300; i++ {
+		printed.seen(fmt.Sprintf("msg-%d", i))
+	}
+	c := newMonitorChat(f, printed)
+	c.unread = memo
+	c.stream(&out, fakeSSEResponse(""), "")
+	if n := strings.Count(out.String(), "unread messages"); n != 1 {
+		t.Fatalf("summary printed %d times after 300 message ids, want 1:\n%s", n, out.String())
+	}
 }

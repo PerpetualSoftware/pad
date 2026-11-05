@@ -713,7 +713,9 @@ func streamWatchEventsTo(w io.Writer, resp *http.Response, lastEventID string, s
 	if len(sinks) > 0 {
 		sink = sinks[0]
 	}
-	return newMonitorChat(sink, seenChat).stream(w, resp, lastEventID)
+	chat := newMonitorChat(sink, seenChat)
+	chat.unread = seenUnread // survives reconnects, like seenChat
+	return chat.stream(w, resp, lastEventID)
 }
 
 func (chat *monitorChat) stream(w io.Writer, resp *http.Response, lastEventID string) string {
