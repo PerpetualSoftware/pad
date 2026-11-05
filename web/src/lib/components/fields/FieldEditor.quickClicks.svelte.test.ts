@@ -80,7 +80,7 @@ describe('two quick clicks are two actions (BUG-3047)', () => {
 	it('number: Increase twice from 0 sends 1, then 2', async () => {
 		const { fn } = deferredOnchange();
 		const { container } = render(FieldEditor, { props: { field: effort, value: 0, onchange: fn, itemId: 'i1' } });
-		const inc = container.querySelector('[aria-label="Increase"]') as HTMLButtonElement;
+		const inc = container.querySelector('[aria-label="Increase Effort"]') as HTMLButtonElement;
 		inc.click();
 		inc.click();
 		await tick();

@@ -115,7 +115,7 @@ describe('a typed burst belongs to the identity that typed it (BUG-3130)', () =>
 		const input = container.querySelector('input') as HTMLInputElement;
 		type(input, '40');
 		auth.changeIdentity();
-		(container.querySelector('[aria-label="Increase"]') as HTMLButtonElement).click();
+		(container.querySelector('[aria-label="Increase Effort"]') as HTMLButtonElement).click();
 		await tick();
 		// From the stored 2, not the previous user's typed 40.
 		expect(onchange.mock.calls).toEqual([[3]]);
