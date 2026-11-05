@@ -26,6 +26,7 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 }));
 vi.mock('$lib/stores/chat.svelte', () => ({ chatStore: { unreadTotal: 3 } }));
 
+import { page } from '$app/state';
 import ConsoleLayout from './+layout.svelte';
 
 const childSnippet = createRawSnippet(() => ({ render: () => `<div>child</div>` }));
@@ -40,6 +41,7 @@ async function mountLayout() {
 
 beforeEach(async () => {
 	h.chatOn = true;
+	page.url = new URL('http://localhost/console/agenda');
 	await mountLayout();
 });
 
@@ -49,12 +51,19 @@ afterEach(() => {
 });
 
 describe('console nav Chat entry (TASK-4044 3c)', () => {
-	it('is a nav-link to /messages right after "Needs you", with the unread count', () => {
+	it('is a nav-link to /messages after Agenda and "Needs you", with the unread count', () => {
 		const links = [...document.querySelectorAll<HTMLAnchorElement>('.nav-links a')];
 		const needs = links.findIndex((a) => a.getAttribute('href') === '/console/needs');
 		const chat = links.findIndex((a) => a.getAttribute('href') === '/messages');
 		expect(needs).toBeGreaterThanOrEqual(0);
-		expect(chat).toBe(needs + 1);
+		const agenda = links.findIndex((a) => a.getAttribute('href') === '/console/agenda');
+		expect(agenda).toBe(needs + 1);
+		expect(chat).toBe(agenda + 1);
+		expect(links[agenda].getAttribute('aria-current')).toBe('page');
+		expect(links[agenda].classList.contains('active')).toBe(true);
+		const workspaces = links.find((a) => a.getAttribute('href') === '/console')!;
+		expect(workspaces.getAttribute('aria-current')).toBeNull();
+		expect(workspaces.classList.contains('active')).toBe(false);
 		expect(links[chat].classList.contains('nav-link')).toBe(true);
 		expect(links[chat].getAttribute('aria-label')).toBe('Chat, 3 unread');
 		expect(links[chat].textContent).toContain('Chat');
