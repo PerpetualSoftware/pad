@@ -210,7 +210,7 @@ func TestTASK4315_UpdateUserChatEnabled(t *testing.T) {
 // Pad is forward-only, and the override is `pad start --force`.
 func TestTASK4315_SchemaAheadGuard(t *testing.T) {
 	cases := []struct {
-		name      string
+		name    string
 		applied string
 		fsNames func() ([]string, error)
 	}{
