@@ -99,7 +99,10 @@ func (s *Server) handleGetCalendar(w http.ResponseWriter, r *http.Request) {
 
 	var collSchema models.CollectionSchema
 	if coll.Schema != "" {
-		_ = models.UnmarshalItemFieldSchema([]byte(coll.Schema), &collSchema)
+		if err := models.UnmarshalItemFieldSchema([]byte(coll.Schema), &collSchema); err != nil {
+			writeInternalError(w, fmt.Errorf("collection %s: unreadable schema: %w", coll.ID, err))
+			return
+		}
 	}
 	dateField := strings.TrimSpace(r.URL.Query().Get("date_field"))
 	endField := strings.TrimSpace(r.URL.Query().Get("end_field"))
@@ -265,15 +268,9 @@ func (s *Server) handleGetCalendar(w http.ResponseWriter, r *http.Request) {
 	if len(keep) < len(cells) || placed.more {
 		resp.Truncated = true
 	}
-	resp.PartialDay = partial
-	if !sch.SetCut {
-		if !sch.TimeCut.IsZero() {
-			if d := sch.TimeCut.In(loc).Format(dayLayout); d > fromDay && d <= toDay && (nextFrom == "" || d < nextFrom) {
-				nextFrom = d
-			}
-		}
-		resp.NextFrom = nextFrom
-	}
+	var cutTruncated bool
+	resp.NextFrom, resp.PartialDay, cutTruncated = calendarPaging(nextFrom, partial, sch.TimeCut, sch.SetCut, fromDay, toDay, loc)
+	resp.Truncated = resp.Truncated || cutTruncated
 	// Nothing at or after next_from is shown, so paging from it repeats nothing.
 	var shown []models.Item
 	for _, c := range keep {
@@ -362,6 +359,34 @@ func cutCalendarDays(cells []calendarCell, limit int, toDay string) (keep []cale
 		nextFrom = ""
 	}
 	return keep, nextFrom, partial
+}
+
+// calendarPaging settles the paging fields once the day cut (nextFrom, partial)
+// and the schedules' time cut are both known.
+//
+//   - A set cut offers no next_from.
+//   - A time cut on a later day pulls next_from back to that day.
+//   - A time cut inside the first day offers none, even when the day cut also
+//     fired: a page from any later day would skip that schedule's remaining
+//     entries on the days between. The response is truncated.
+//   - partial_day is kept only when it is shown, that is, when it lies before
+//     next_from (or there is no next_from).
+func calendarPaging(nextFrom, partial string, timeCut time.Time, setCut bool, fromDay, toDay string, loc *time.Location) (next, part string, truncated bool) {
+	if !setCut {
+		next = nextFrom
+		if !timeCut.IsZero() {
+			switch d := timeCut.In(loc).Format(dayLayout); {
+			case d <= fromDay:
+				next, truncated = "", true
+			case d <= toDay && (next == "" || d < next):
+				next = d
+			}
+		}
+	}
+	if next == "" || partial < next {
+		part = partial
+	}
+	return next, part, truncated
 }
 
 func nextDay(day string) string {
@@ -489,8 +514,15 @@ func (s *Server) calendarItems(workspaceID, collID string, params models.ItemLis
 			case "created":
 				day, text = it.CreatedAt.In(loc).Format(dayLayout), it.CreatedAt.UTC().Format(time.RFC3339)
 			case "completed":
-				if at, err := time.Parse(time.RFC3339, completed[it.ID]); err == nil {
-					day, text = at.In(loc).Format(dayLayout), completed[it.ID]
+				// An item with no recorded completion (it reopened between the
+				// two reads) is on no day; one whose instant is unreadable is a
+				// fault, not a missing date.
+				if c, ok := completed[it.ID]; ok {
+					at, err := time.Parse(time.RFC3339, c)
+					if err != nil {
+						return res, fmt.Errorf("item %s: unreadable completed instant %q: %w", it.ID, c, err)
+					}
+					day, text = at.In(loc).Format(dayLayout), c
 				}
 			default:
 				text = extractFieldValue(it.Fields, dateField)

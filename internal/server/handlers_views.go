@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -140,7 +141,10 @@ func (s *Server) validateCalendarView(w http.ResponseWriter, coll *models.Collec
 	}
 	var schema models.CollectionSchema
 	if coll.Schema != "" {
-		_ = models.UnmarshalItemFieldSchema([]byte(coll.Schema), &schema)
+		if err := models.UnmarshalItemFieldSchema([]byte(coll.Schema), &schema); err != nil {
+			writeInternalError(w, fmt.Errorf("collection %s: unreadable schema: %w", coll.ID, err))
+			return false
+		}
 	}
 	if cerr := models.ValidateCalendarViewConfig(config, schema); cerr != nil {
 		writeCalendarConfigError(w, cerr)

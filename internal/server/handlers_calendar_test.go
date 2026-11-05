@@ -892,3 +892,165 @@ func TestCalendarRouteRefusesAStoredConfigWhoseFieldIsGone(t *testing.T) {
 		t.Errorf("stored stale config: %d %s", code, body)
 	}
 }
+
+// --- search carries no body; key rule; first-day cut; partial day ---
+
+func TestCalendarSearchCarriesNoContent(t *testing.T) {
+	t.Parallel()
+	w := newAgendaWorld(t, "tasks")
+	for i := 0; i < 3; i++ {
+		if _, err := w.srv.store.CreateItem(w.ws.ID, w.colls["tasks"].ID, models.ItemCreate{
+			Title: fmt.Sprintf("Needle %d", i), Content: "SECRET-BODY-TEXT", Fields: `{"due_date":"2031-03-10"}`,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Control: without a search the calendar already omits the body.
+	_, body, m := w.cal(t, w.owner, "tasks", calMarch)
+	if len(calItems(m)) != 3 || strings.Contains(string(body), "SECRET-BODY-TEXT") {
+		t.Fatalf("control: %d items, body leaked=%v", len(calItems(m)), strings.Contains(string(body), "SECRET-BODY-TEXT"))
+	}
+	_, body, m = w.cal(t, w.owner, "tasks", calMarch+"&search=Needle")
+	if len(calItems(m)) != 3 {
+		t.Fatalf("search answered %d items, want 3: %s", len(calItems(m)), body)
+	}
+	if strings.Contains(string(body), "SECRET-BODY-TEXT") {
+		t.Errorf("a calendar search returned item content: %s", body)
+	}
+}
+
+func TestCalendarRefusesADateFieldKeyTheStoreCannotRead(t *testing.T) {
+	t.Parallel()
+	w := newAgendaWorld(t, "tasks")
+	sp, err := w.srv.store.CreateCollection(w.ws.ID, models.CollectionCreate{Name: "Sp", Slug: "sp", Prefix: "SP", Schema: `{"fields":[` +
+		`{"key":"start date","type":"date"},{"key":"due_date","type":"date"}]}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.colls["sp"] = sp
+	detail := func(m map[string]any) (field, code any) {
+		e, _ := m["error"].(map[string]any)
+		d, _ := e["details"].(map[string]any)
+		return d["field"], d["code"]
+	}
+	// The route.
+	for field, query := range map[string]string{
+		"date_field": "from=2031-03-01T00:00:00Z&to=2031-03-31T00:00:00Z&date_field=start%20date",
+		"end_field":  "from=2031-03-01T00:00:00Z&to=2031-03-31T00:00:00Z&date_field=due_date&end_field=start%20date",
+	} {
+		code, body, m := w.cal(t, w.owner, "sp", query)
+		f, c := detail(m)
+		if code != http.StatusBadRequest || f != field || c != models.CalendarCodeUnsupportedKey {
+			t.Errorf("route %s: %d %s", field, code, body)
+		}
+	}
+	// View create and patch.
+	tok, err := w.srv.store.CreateSession(w.owner.ID, "web-test", "192.0.2.1", "", webSessionTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := "/api/v1/workspaces/" + w.ws.Slug + "/collections/sp/views"
+	for field, cfg := range map[string]map[string]any{
+		"date_field": {"date_field": "start date"},
+		"end_field":  {"date_field": "due_date", "end_field": "start date"},
+	} {
+		rr := doRequestWithCookie(w.srv, "POST", base, map[string]any{"name": "Bad " + field, "view_type": "calendar", "config": cfg}, tok)
+		m := map[string]any{}
+		_ = json.Unmarshal(rr.Body.Bytes(), &m)
+		if f, c := detail(m); rr.Code != http.StatusBadRequest || f != field || c != models.CalendarCodeUnsupportedKey {
+			t.Errorf("create %s: %d %s", field, rr.Code, rr.Body.String())
+		}
+	}
+	rr := doRequestWithCookie(w.srv, "POST", base, map[string]any{"name": "Good", "view_type": "calendar", "config": map[string]any{"date_field": "due_date"}}, tok)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("a plain key: %d %s", rr.Code, rr.Body.String())
+	}
+	var good map[string]any
+	_ = json.Unmarshal(rr.Body.Bytes(), &good)
+	rr = doRequestWithCookie(w.srv, "PATCH", base+"/"+good["id"].(string), map[string]any{"config": map[string]any{"date_field": "due_date", "end_field": "start date"}}, tok)
+	m := map[string]any{}
+	_ = json.Unmarshal(rr.Body.Bytes(), &m)
+	if f, c := detail(m); rr.Code != http.StatusBadRequest || f != "end_field" || c != models.CalendarCodeUnsupportedKey {
+		t.Errorf("patch: %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestCalendarPagingFirstDayTimeCut(t *testing.T) {
+	t.Parallel()
+	// A schedule's time cut falls on the first day (a time-budget cap), and
+	// the day cap also cut at 2031-03-04: no next_from may be promised.
+	cut := time.Date(2031, 3, 1, 16, 50, 0, 0, time.UTC)
+	next, part, trunc := calendarPaging("2031-03-04", "", cut, false, "2031-03-01", "2031-03-31", time.UTC)
+	if next != "" || !trunc || part != "" {
+		t.Errorf("combined first-day cut: next_from=%q partial=%q truncated=%v, want none / none / true", next, part, trunc)
+	}
+	// Without the day cut, the same.
+	if next, _, trunc = calendarPaging("", "", cut, false, "2031-03-01", "2031-03-31", time.UTC); next != "" || !trunc {
+		t.Errorf("first-day cut alone: next_from=%q truncated=%v", next, trunc)
+	}
+	// A cut on a later day still pulls next_from back to it.
+	later := time.Date(2031, 3, 3, 1, 0, 0, 0, time.UTC)
+	if next, _, _ = calendarPaging("2031-03-04", "", later, false, "2031-03-01", "2031-03-31", time.UTC); next != "2031-03-03" {
+		t.Errorf("later cut: next_from=%q, want 2031-03-03", next)
+	}
+	// A set cut offers none.
+	if next, _, _ = calendarPaging("2031-03-04", "", later, true, "2031-03-01", "2031-03-31", time.UTC); next != "" {
+		t.Errorf("set cut: next_from=%q", next)
+	}
+}
+
+func TestCalendarPagingPartialDayIsNeverAHiddenDay(t *testing.T) {
+	t.Parallel()
+	// The 5th is partial (next_from the 6th), and a time cut lands on the 5th,
+	// after the first day of the window: next_from becomes the 5th, so the 5th
+	// is not shown and cannot be reported as a partial day.
+	cut := time.Date(2031, 3, 5, 12, 0, 0, 0, time.UTC)
+	next, part, _ := calendarPaging("2031-03-06", "2031-03-05", cut, false, "2031-03-01", "2031-03-31", time.UTC)
+	if next != "2031-03-05" || part != "" {
+		t.Errorf("next_from=%q partial=%q, want 2031-03-05 and no partial day", next, part)
+	}
+	// Control: with no time cut the partial day stays.
+	next, part, _ = calendarPaging("2031-03-06", "2031-03-05", time.Time{}, false, "2031-03-01", "2031-03-31", time.UTC)
+	if next != "2031-03-06" || part != "2031-03-05" {
+		t.Errorf("control: next_from=%q partial=%q", next, part)
+	}
+}
+
+func TestCalendarCompletedInstantThatIsNoInstantIsAnError(t *testing.T) {
+	t.Parallel()
+	w := newAgendaWorld(t, "tasks")
+	done := w.item(t, "tasks", "CAL garbled", `{"status":"open"}`, nil)
+	f := `{"status":"done"}`
+	if _, err := w.srv.store.UpdateItem(done.ID, models.ItemUpdate{Fields: &f}); err != nil {
+		t.Fatal(err)
+	}
+	// Inside the window as text, but not an RFC 3339 instant.
+	if _, err := w.srv.store.DB().Exec(`UPDATE status_transitions SET created_at = ? WHERE item_id = ? AND to_status = 'done'`, "2031-03-10 not-a-time", done.ID); err != nil {
+		t.Fatal(err)
+	}
+	code, body, _ := w.cal(t, w.owner, "tasks", "from=2031-03-09T00:00:00Z&to=2031-03-12T00:00:00Z&date_field=completed")
+	if code != http.StatusInternalServerError {
+		t.Errorf("an unreadable completed instant answered %d %s, want 500", code, body)
+	}
+}
+
+func TestCalendarUnreadableCollectionSchemaIsAnInternalError(t *testing.T) {
+	t.Parallel()
+	w := newAgendaWorld(t, "tasks")
+	if _, err := w.srv.store.DB().Exec(`UPDATE collections SET schema = ? WHERE id = ?`, `{"fields": not json`, w.colls["tasks"].ID); err != nil {
+		t.Fatal(err)
+	}
+	code, body, _ := w.cal(t, w.owner, "tasks", calMarch)
+	if code != http.StatusInternalServerError {
+		t.Errorf("a malformed schema answered %d %s, want 500", code, body)
+	}
+	tok, err := w.srv.store.CreateSession(w.owner.ID, "web-test", "192.0.2.1", "", webSessionTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr := doRequestWithCookie(w.srv, "POST", "/api/v1/workspaces/"+w.ws.Slug+"/collections/tasks/views",
+		map[string]any{"name": "V", "view_type": "calendar", "config": map[string]any{"date_field": "due_date"}}, tok)
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("a calendar view on a malformed schema answered %d %s, want 500", rr.Code, rr.Body.String())
+	}
+}
