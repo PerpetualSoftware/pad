@@ -239,6 +239,7 @@ func TestCalendarGuestScoping(t *testing.T) {
 	if _, err := w.srv.store.CreateItemGrant(w.ws.ID, w.items["CAL granted"].ID, guest.ID, "view", w.owner.ID); err != nil {
 		t.Fatal(err)
 	}
+	w.item(t, "tasks", "CAL hidden sched", `{"status":"open","due_date":"2031-03-10"}`, oneShot())
 	// A busy hidden neighbour: far over the cap, on the same day, in the same
 	// collection. The guest's answer must be the one it would get without it.
 	for i := 0; i < agendaMaxEntries+100; i++ {

@@ -1,9 +1,12 @@
 package store
 
 import (
+	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -255,4 +258,78 @@ func TestFieldSpan_Overlap(t *testing.T) {
 	w.mk(t, "no end, before", `{"due_date":"2026-10-30"}`)
 	sp := models.ItemListParams{FieldSpans: []models.FieldSpan{{StartKey: "due_date", EndKey: "end_date", From: "2026-11-01", To: "2026-11-30"}}}
 	sameTitles(t, "span overlap", w.titles(t, sp), "inside", "starts before ends inside", "spans the window")
+}
+
+// The calendar narrows a schedule's items with the page's filters and ItemIDs
+// alone (CollectionIDs nil): filters and ItemIDs combine as an AND, and the
+// ids bound the read.
+func TestListItemsFiltersWithItemIDsAlone(t *testing.T) {
+	t.Parallel()
+	w := newRangeWorld(t)
+	a := w.mk(t, "a open", `{"status":"open"}`)
+	b := w.mk(t, "b done", `{"status":"done"}`)
+	w.mk(t, "c open, not asked for", `{"status":"open"}`)
+	got := w.titles(t, models.ItemListParams{ItemIDs: []string{a.ID, b.ID}, Fields: map[string]string{"status": "open"}})
+	sameTitles(t, "filter within ids", got, "a open")
+	sameTitles(t, "ids with no filter", w.titles(t, models.ItemListParams{ItemIDs: []string{a.ID, b.ID}}), "a open", "b done")
+}
+
+// TestCalendarQueryMeasure times the calendar's reads on a 4,079-item
+// collection (TASK-4239). It runs only when PAD_MEASURE_CALENDAR=1, on
+// whichever dialect testStore selects, and logs the timings.
+func TestCalendarQueryMeasure(t *testing.T) {
+	if os.Getenv("PAD_MEASURE_CALENDAR") != "1" {
+		t.Skip("set PAD_MEASURE_CALENDAR=1 to time the calendar reads")
+	}
+	w := newRangeWorld(t)
+	const n = 4079
+	var ids []string
+	for i := 0; i < n; i++ {
+		day := 1 + i%120 // four months of due dates
+		due := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC).AddDate(0, 0, day).Format("2006-01-02")
+		status := "open"
+		if i%2 == 0 {
+			status = "done"
+		}
+		it := w.mk(t, fmt.Sprintf("M %04d", i), fmt.Sprintf(`{"status":"%s","due_date":"%s","end_date":"%s"}`, status, due, due))
+		ids = append(ids, it.ID)
+	}
+	// Every second item moved open -> done: one more transition each.
+	if _, err := w.s.db.Exec(w.s.q(`UPDATE items SET created_at = '2026-10-15T12:00:00Z' WHERE workspace_id = ?`), w.wsID); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < n; i += 2 {
+		f := `{"status":"open","due_date":"2026-10-01"}`
+		if _, err := w.s.UpdateItem(ids[i], models.ItemUpdate{Fields: &f}); err != nil {
+			t.Fatal(err)
+		}
+		f = `{"status":"done","due_date":"2026-10-01"}`
+		if _, err := w.s.UpdateItem(ids[i], models.ItemUpdate{Fields: &f}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	time1 := func(name string, p models.ItemListParams) {
+		p.NoContent, p.ScopeCollectionID = true, w.coll.ID
+		start := time.Now()
+		items, err := w.s.ListItems(w.wsID, p)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		t.Logf("MEASURE %-34s %4d rows %v", name, len(items), time.Since(start).Round(time.Millisecond))
+	}
+	// The moves above happened now, so completed is read over the month of the run.
+	rng := func(key, from, to string) models.ItemListParams {
+		return models.ItemListParams{FieldRanges: []models.FieldRange{{Key: key, From: from, To: to}}, Sort: "created_at:asc", Limit: 500}
+	}
+	time1("due_date month, page 500", models.ItemListParams{FieldRanges: []models.FieldRange{{Key: "due_date", From: "2026-10-01", To: "2026-10-31"}}, Sort: "due_date:asc", Limit: 500})
+	time1("created month (widened), page 500", rng("created", "2026-10-01", "2026-10-31"))
+	time1("completed month (widened), page 500", rng("completed", time.Now().UTC().Format("2006-01")+"-01", time.Now().UTC().Format("2006-01")+"-31"))
+	time1("completed month, all", models.ItemListParams{FieldRanges: []models.FieldRange{{Key: "completed", From: time.Now().UTC().Format("2006-01") + "-01", To: time.Now().UTC().Format("2006-01") + "-31"}}})
+	time1("span due_date..end_date", models.ItemListParams{FieldSpans: []models.FieldSpan{{StartKey: "due_date", EndKey: "end_date", From: "2026-10-01", To: "2026-10-31"}}, Sort: "due_date:asc", Limit: 500})
+	start := time.Now()
+	got, err := w.s.CompletedInstants(w.wsID, w.coll.ID, ids[:500])
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("MEASURE %-34s %4d rows %v", "CompletedInstants(500 ids)", len(got), time.Since(start).Round(time.Millisecond))
 }
