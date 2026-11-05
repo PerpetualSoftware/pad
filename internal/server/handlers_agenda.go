@@ -120,6 +120,10 @@ func (s *Server) handleGetAgenda(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if r.URL.Query().Has("stale") {
+		s.handleStaleAgenda(w, r, workspaceID)
+		return
+	}
 	from, to, ok := parseAgendaWindow(w, r)
 	if !ok {
 		return

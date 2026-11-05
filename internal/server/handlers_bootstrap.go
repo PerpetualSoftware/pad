@@ -9,6 +9,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/collections"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // AgentBootstrap is the single response struct returned by the bootstrap
@@ -72,6 +73,10 @@ type AgentBootstrap struct {
 	// omitempty, so a workspace with nothing on offer is byte-identical to
 	// before.
 	BuiltinUpdates int `json:"builtin_updates,omitempty"`
+	// Agenda is the caller's schedule occurrences due today and every one still
+	// unresolved from before today (TASK-4237). Absent when there is nothing to
+	// show.
+	Agenda *BootstrapAgenda `json:"agenda,omitempty"`
 }
 
 // BootstrapCollection is the lightweight collection projection delivered
@@ -722,6 +727,12 @@ func (s *Server) BuildAgentBootstrap(workspaceID string, user *models.User, r *h
 		if entries, bErr := s.visibleWorkspaceBuiltins(r, workspaceID); bErr == nil {
 			out.BuiltinUpdates = builtinUpdatesOnOffer(entries)
 		}
+	}
+
+	// Agenda: the caller's own schedule occurrences, so it needs the request for
+	// the caller's kind and the user for their zone. Nothing to show leaves it off.
+	if r != nil && user != nil {
+		s.attachBootstrapAgenda(out, workspaceID, user, r, store.PendingReminderScope{CollectionIDs: subCollIDs, ItemIDs: subItemIDs})
 	}
 
 	return out, nil

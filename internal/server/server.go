@@ -48,6 +48,10 @@ import (
 )
 
 type Server struct {
+	// agendaClock, when set, replaces time.Now for the bootstrap agenda and its
+	// stale list. Tests only (TASK-4237).
+	agendaClock func() time.Time
+
 	// sseKeepaliveOverride, when non-zero, replaces sseKeepaliveInterval for
 	// this server's SSE streams, and watchEventsKeepaliveInterval for the
 	// watch stream's (BUG-3637). Tests only (TASK-2197): the real interval is
