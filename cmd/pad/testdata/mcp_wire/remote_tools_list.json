@@ -117,7 +117,7 @@
             "type": "string"
           },
           "reply_to": {
-            "description": "Replied-to sequence; marks read through it after send.",
+            "description": "Replied-to sequence.",
             "type": "number"
           },
           "seq": {

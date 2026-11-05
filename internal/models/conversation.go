@@ -83,7 +83,7 @@ type ConversationSend struct {
 
 // ConversationSendResult is a send's outcome. Replayed means the op_key had
 // already been used and Message is the stored message, not a new one.
-// TASK-4038: a send leaves both read and delivered markers unchanged.
+// BUG-4320: a send moves the author's own read marker to the new message and leaves delivered_seq and other members unchanged.
 // TASK-4038: Recipients contains every OTHER member identity, including the
 // human member, because the web also needs a ref-only nudge. TASK-4041 filters
 // to agent members for monitor delivery. A Replayed result has no Recipients;

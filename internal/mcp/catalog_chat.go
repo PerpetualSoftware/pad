@@ -17,7 +17,7 @@ var padChatTool = ToolDef{
 			{Name: "limit", Type: "number", Description: "Messages: 1..200; default 50."},
 			{Name: "no_mark", Type: "bool", Description: "Leave the read marker unchanged after show."},
 			{Name: "body", Type: "string", Description: "Message text."},
-			{Name: "reply_to", Type: "number", Description: "Replied-to sequence; marks read through it after send."},
+			{Name: "reply_to", Type: "number", Description: "Replied-to sequence."},
 			{Name: "op_key", Type: "string", Description: "Caller-owned idempotency key; omitted unless provided. Never auto-retry."},
 			{Name: "context_workspace", Type: "string", Description: "Reference workspace slug; stdio defaults to the cwd .pad.toml link."},
 			{Name: "seq", Type: "number", Description: "Message sequence to delete."},

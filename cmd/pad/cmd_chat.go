@@ -169,7 +169,7 @@ func chatSendCmd() *cobra.Command {
 			}
 			return nil
 		}}
-	cmd.Flags().Int64Var(&replyTo, "reply-to", 0, "Reply to this message sequence (marks read through this sequence)")
+	cmd.Flags().Int64Var(&replyTo, "reply-to", 0, "Reply to this message sequence")
 	cmd.Flags().StringVar(&opKey, "op-key", "", "Caller-owned idempotency key")
 	cmd.Flags().StringVar(&contextWorkspace, "context-workspace", "", "Workspace for resolving message references (defaults to cwd link)")
 	return cmd
