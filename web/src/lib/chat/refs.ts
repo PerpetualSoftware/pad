@@ -321,3 +321,61 @@ export function tokenizeBody(
 	pushText(msg.body.slice(pos));
 	return segs;
 }
+
+const escapeText = (s: string): string =>
+	s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
+export interface RefSwap {
+	/** Plain alphanumeric text standing in for the ref while markdown runs. */
+	token: string;
+	/** The HTML to put where the token landed; untrusted until sanitised. */
+	html: string;
+	/** The ref as written, for a token that ends up somewhere HTML cannot go. */
+	literal: string;
+}
+
+/**
+ * Markdown-renderer counterpart of tokenizeBody (TASK-4315): the same verdicts
+ * for the same refs (extractRefs, so code spans and fences are excluded and the
+ * Go extractor is matched), but expressed as tokens in the text plus the HTML
+ * each token becomes. The caller runs markdown over `text`, swaps the tokens
+ * into the result, and sanitises the whole once. `visible` becomes a
+ * /-/r/{workspace}/{REF} link, `restricted` a title-less placeholder, and
+ * anything else (unresolved, dropped by the server, a bare ref with no context
+ * workspace) is left in `text` exactly as written. Titles and display text are
+ * untrusted: they are escaped here and the sanitiser has the last word.
+ */
+export function replaceRefs(
+	body: string,
+	refs: readonly ChatRef[],
+	ctxWorkspace: string | undefined
+): { text: string; swaps: RefSwap[] } {
+	const found = body ? extractRefs(body) : [];
+	if (found.length === 0) return { text: body, swaps: [] };
+	const byKey = new Map<string, ChatRef>();
+	for (const r of refs) byKey.set(refKey(r.workspace, r.ref), r);
+	// A prefix the body does not contain, so no token can collide with authored text.
+	let n = 0;
+	while (body.includes(`zqpadref${n}x`)) n++;
+	const prefix = `zqpadref${n}x`;
+	const swaps: RefSwap[] = [];
+	let text = '';
+	let pos = 0;
+	for (const e of found) {
+		const workspace = e.workspace ?? ctxWorkspace ?? '';
+		const hit = workspace ? byKey.get(refKey(workspace, e.ref)) : undefined;
+		let html: string | null = null;
+		if (hit?.state === 'visible') {
+			const title = hit.title ? ` title="${escapeText(hit.title)}"` : '';
+			html = `<a href="/-/r/${workspace}/${e.ref}"${title}>${escapeText(e.display ?? e.ref)}</a>`;
+		} else if (hit?.state === 'restricted') {
+			html = '<span class="ref-restricted">restricted item</span>';
+		}
+		if (html === null) continue;
+		const token = `${prefix}${swaps.length}z`;
+		swaps.push({ token, html, literal: e.raw });
+		text += body.slice(pos, e.start) + token;
+		pos = e.end;
+	}
+	return { text: text + body.slice(pos), swaps };
+}
