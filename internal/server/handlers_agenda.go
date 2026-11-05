@@ -114,6 +114,21 @@ func parseAgendaWindow(w http.ResponseWriter, r *http.Request) (from, to time.Ti
 	return
 }
 
+// agendaZone reads the optional `tz` parameter, writing the 400 itself on a bad
+// name. note is set when the zone is the caller's own default.
+func agendaZone(w http.ResponseWriter, r *http.Request) (zone usertz.Zone, note string, ok bool) {
+	zone = viewerZone(r)
+	if tz := strings.TrimSpace(r.URL.Query().Get("tz")); tz != "" || r.URL.Query().Has("tz") {
+		loc, err := usertz.Validate(tz)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_tz", "`tz` must be an IANA time zone name, such as America/Los_Angeles")
+			return zone, "", false
+		}
+		return usertz.Zone{Name: tz, Loc: loc, Set: true}, "", true
+	}
+	return zone, usertz.Note(zone), true
+}
+
 // handleGetAgenda serves GET /api/v1/workspaces/{ws}/agenda?from&to&tz.
 func (s *Server) handleGetAgenda(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := s.getWorkspaceID(w, r)
@@ -124,16 +139,9 @@ func (s *Server) handleGetAgenda(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	zone, note := viewerZone(r), ""
-	if tz := strings.TrimSpace(r.URL.Query().Get("tz")); tz != "" || r.URL.Query().Has("tz") {
-		loc, err := usertz.Validate(tz)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid_tz", "`tz` must be an IANA time zone name, such as America/Los_Angeles")
-			return
-		}
-		zone = usertz.Zone{Name: tz, Loc: loc, Set: true}
-	} else {
-		note = usertz.Note(zone)
+	zone, note, ok := agendaZone(w, r)
+	if !ok {
+		return
 	}
 	loc := zone.Loc
 
@@ -160,59 +168,15 @@ func (s *Server) handleGetAgenda(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
-	resp.Truncated = more
-	// timeCut is the earliest instant a time-ordered cut stopped at; setCut is
-	// set by a cut that is not ordered by time (the schedule scan, the time
-	// budget, the dated half), which no instant can describe: next_from is then
-	// omitted and the client narrows the window or filters (TASK-4236).
-	var timeCut time.Time
-	setCut := more
-	deadline := now.Add(agendaBudget)
-	for _, as := range schedules {
-		if time.Now().After(deadline) {
-			resp.Truncated, setCut = true, true
-			break
-		}
-		sc := as.Schedule
-		x, err := s.store.ExpandAgendaCut(sc, loc, from, to, now)
-		if err != nil {
-			writeInternalError(w, err)
-			return
-		}
-		es, cut, unavailable := x.Entries, x.Truncated, x.Unavailable
-		if unavailable != "" {
-			resp.Unavailable = append(resp.Unavailable, agendaUnavailable{ItemRef: as.ItemRef, Code: unavailable})
-		}
-		if x.Unpromised {
-			setCut = true
-		}
-		if x.Unexpanded {
-			resp.Unexpanded = append(resp.Unexpanded, agendaUnexpanded{
-				ScheduleID: sc.ID, ItemRef: as.ItemRef, ItemTitle: as.ItemTitle, Collection: as.Collection,
-				Kind: sc.Kind, Audience: sc.Audience, Reason: "scan_limit",
-			})
-		}
-		if !x.NextFrom.IsZero() && (timeCut.IsZero() || x.NextFrom.Before(timeCut)) {
-			timeCut = x.NextFrom
-		}
-		resp.Truncated = resp.Truncated || cut
-		for _, e := range es {
-			out := agendaEntry{
-				Type: "schedule", At: e.At.In(loc).Format(time.RFC3339), Day: e.At.In(loc).Format("2006-01-02"),
-				Wall: e.Wall.String(), AllDay: e.Wall.AllDay, Floating: &sc.Floating, State: e.State,
-				ItemRef: as.ItemRef, ItemTitle: as.ItemTitle, Collection: as.Collection, Kind: sc.Kind, Audience: sc.Audience,
-				ScheduleID: sc.ID, Fired: e.Fired, Overdue: e.Overdue, ResolvedAt: e.ResolvedAt, Actor: e.Actor,
-				CommentID: e.CommentID, MissedCount: e.MissedCount, Stale: e.Stale, instant: e.At, subKey: sc.ID,
-			}
-			if e.Wall.AllDay {
-				out.Day = e.Wall.String() // a date, not shifted by the zone it is read in
-			}
-			if e.EffectiveAt != nil {
-				out.EffectiveAt = e.EffectiveAt.In(loc).Format(time.RFC3339)
-			}
-			resp.Entries = append(resp.Entries, out)
-		}
+	sch, err := expandAgendaSchedules(s.store, schedules, more, loc, from, to, now)
+	if err != nil {
+		writeInternalError(w, err)
+		return
 	}
+	resp.Truncated = sch.Truncated
+	resp.Entries = append(resp.Entries, sch.Entries...)
+	resp.Unexpanded, resp.Unavailable = sch.Unexpanded, sch.Unavailable
+	timeCut, setCut := sch.TimeCut, sch.SetCut
 
 	// The dated half: ListItems carries the scope, archived and terminal clauses.
 	fromDay, toDay := from.In(loc).Format("2006-01-02"), to.Add(-time.Nanosecond).In(loc).Format("2006-01-02")
@@ -295,4 +259,70 @@ func (s *Server) handleGetAgenda(w http.ResponseWriter, r *http.Request) {
 		resp.Truncated = true
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// agendaSchedules is the schedule half of an agenda-shaped answer.
+// TimeCut is the earliest instant a time-ordered cut stopped at; SetCut is set
+// by a cut that is not ordered by time (the schedule scan, the time budget),
+// which no instant can describe.
+type agendaSchedules struct {
+	Entries     []agendaEntry
+	Unexpanded  []agendaUnexpanded
+	Unavailable []agendaUnavailable
+	Truncated   bool
+	SetCut      bool
+	TimeCut     time.Time
+}
+
+// expandAgendaSchedules expands schedules over [from, to) in loc, within
+// agendaBudget, mapping each occurrence to an agendaEntry. more is the scan's
+// own "there were more schedules" flag. Shared by the agenda and the calendar.
+func expandAgendaSchedules(st *store.Store, schedules []store.AgendaSchedule, more bool, loc *time.Location, from, to, now time.Time) (agendaSchedules, error) {
+	res := agendaSchedules{Truncated: more, SetCut: more}
+	deadline := now.Add(agendaBudget)
+	for _, as := range schedules {
+		if time.Now().After(deadline) {
+			res.Truncated, res.SetCut = true, true
+			break
+		}
+		sc := as.Schedule
+		x, err := st.ExpandAgendaCut(sc, loc, from, to, now)
+		if err != nil {
+			return res, err
+		}
+		es, cut, unavailable := x.Entries, x.Truncated, x.Unavailable
+		if unavailable != "" {
+			res.Unavailable = append(res.Unavailable, agendaUnavailable{ItemRef: as.ItemRef, Code: unavailable})
+		}
+		if x.Unpromised {
+			res.SetCut = true
+		}
+		if x.Unexpanded {
+			res.Unexpanded = append(res.Unexpanded, agendaUnexpanded{
+				ScheduleID: sc.ID, ItemRef: as.ItemRef, ItemTitle: as.ItemTitle, Collection: as.Collection,
+				Kind: sc.Kind, Audience: sc.Audience, Reason: "scan_limit",
+			})
+		}
+		if !x.NextFrom.IsZero() && (res.TimeCut.IsZero() || x.NextFrom.Before(res.TimeCut)) {
+			res.TimeCut = x.NextFrom
+		}
+		res.Truncated = res.Truncated || cut
+		for _, e := range es {
+			out := agendaEntry{
+				Type: "schedule", At: e.At.In(loc).Format(time.RFC3339), Day: e.At.In(loc).Format("2006-01-02"),
+				Wall: e.Wall.String(), AllDay: e.Wall.AllDay, Floating: &sc.Floating, State: e.State,
+				ItemRef: as.ItemRef, ItemTitle: as.ItemTitle, Collection: as.Collection, Kind: sc.Kind, Audience: sc.Audience,
+				ScheduleID: sc.ID, Fired: e.Fired, Overdue: e.Overdue, ResolvedAt: e.ResolvedAt, Actor: e.Actor,
+				CommentID: e.CommentID, MissedCount: e.MissedCount, Stale: e.Stale, instant: e.At, subKey: sc.ID,
+			}
+			if e.Wall.AllDay {
+				out.Day = e.Wall.String() // a date, not shifted by the zone it is read in
+			}
+			if e.EffectiveAt != nil {
+				out.EffectiveAt = e.EffectiveAt.In(loc).Format(time.RFC3339)
+			}
+			res.Entries = append(res.Entries, out)
+		}
+	}
+	return res, nil
 }

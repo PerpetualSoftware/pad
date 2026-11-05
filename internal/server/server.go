@@ -2277,6 +2277,9 @@ func (s *Server) setupRouter() {
 							r.Delete("/grants/{grantID}", s.handleDeleteCollectionGrant)
 							r.Get("/share-links", s.handleListCollectionShareLinks)
 							r.Post("/share-links", s.handleCreateCollectionShareLink)
+							// The collection's items on a calendar, plus their schedules
+							// (TASK-4239). Read access follows the item list.
+							r.Get("/calendar", s.handleGetCalendar)
 							// Saved views within collection
 							r.Get("/views", s.handleListViews)
 							r.Post("/views", s.handleCreateView)

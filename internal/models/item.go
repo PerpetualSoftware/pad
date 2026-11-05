@@ -1941,6 +1941,21 @@ type FieldDateWindow struct {
 	From, To string
 }
 
+// FieldRange is one ItemListParams.FieldRanges entry: Key's day within
+// [From, To], both `YYYY-MM-DD`.
+type FieldRange struct {
+	Key      string
+	From, To string
+}
+
+// FieldSpan is one ItemListParams.FieldSpans entry: an item dated by StartKey
+// that is inside [From, To], or that runs from StartKey to EndKey across any
+// part of it (StartKey's day <= To and EndKey's day >= From).
+type FieldSpan struct {
+	StartKey, EndKey string
+	From, To         string
+}
+
 type ItemListParams struct {
 	CollectionSlug string
 	// ScopeCollectionID restricts to exactly one collection by ID, ANDed
@@ -1975,14 +1990,24 @@ type ItemListParams struct {
 	// ten characters (the day, in the value's own offset) are within [From, To],
 	// both `YYYY-MM-DD`. The agenda's dated half; the P2 calendar's shape.
 	FieldDateWindow *FieldDateWindow
-	Sort            string // e.g. "priority:desc,created_at:asc"
-	GroupBy         string
-	Search          string // FTS query
-	ParentID        string
-	Tag             string
-	AssignedUserID  string // filter by assigned user
-	AgentRoleID     string // filter by agent role (ID or slug)
-	ParentLinkID    string // filter by parent link (item ID of the parent)
+	// FieldRanges are ANDed day-range filters, one per entry: the day of Key's
+	// value (its first ten characters, in the value's own offset) is within
+	// [From, To]. Key is a date field, or the built-in `created` (the UTC day
+	// of created_at) or `completed` (the UTC day of the item's latest move into
+	// a positive terminal status, set only while it is still in one). An empty
+	// or invalid Key matches nothing. The calendar view's date filter.
+	FieldRanges []FieldRange
+	// FieldSpans are ANDed like FieldRanges; see FieldSpan. An entry with an
+	// empty EndKey is a plain range on StartKey.
+	FieldSpans     []FieldSpan
+	Sort           string // e.g. "priority:desc,created_at:asc"
+	GroupBy        string
+	Search         string // FTS query
+	ParentID       string
+	Tag            string
+	AssignedUserID string // filter by assigned user
+	AgentRoleID    string // filter by agent role (ID or slug)
+	ParentLinkID   string // filter by parent link (item ID of the parent)
 	// Unparented keeps only items with neither the legacy parent_id column nor
 	// an outgoing parent/implements item_link. Incoming links do not count.
 	Unparented      bool

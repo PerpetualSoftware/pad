@@ -2414,7 +2414,148 @@ func (s *Store) appendFieldFilters(workspaceID string, params models.ItemListPar
 		}
 		query += " AND (" + strings.Join(conds, " OR ") + ")"
 	}
+	if len(params.FieldRanges) > 0 || len(params.FieldSpans) > 0 {
+		completed := &completedDayCache{}
+		for _, fr := range params.FieldRanges {
+			expr, exprArgs, ok := s.fieldDayExpr(workspaceID, params, fr.Key, completed)
+			if !ok {
+				query += " AND 1 = 0" // no key to match is no match, not no filter
+				continue
+			}
+			query += " AND " + expr + " BETWEEN ? AND ?"
+			args = append(append(args, exprArgs...), fr.From, fr.To)
+		}
+		for _, sp := range params.FieldSpans {
+			start, startArgs, ok := s.fieldDayExpr(workspaceID, params, sp.StartKey, completed)
+			if !ok {
+				query += " AND 1 = 0"
+				continue
+			}
+			query += " AND (" + start + " BETWEEN ? AND ?"
+			args = append(append(args, startArgs...), sp.From, sp.To)
+			if end, endArgs, ok := s.fieldDayExpr(workspaceID, params, sp.EndKey, completed); ok {
+				// A span: it starts by the window's last day and ends on or after
+				// its first. A missing end value compares as NULL, so no span.
+				query += " OR (" + start + " <= ? AND " + end + " >= ?)"
+				args = append(append(append(args, startArgs...), sp.To), endArgs...)
+				args = append(args, sp.From)
+			}
+			query += ")"
+		}
+	}
 	return query, args
+}
+
+// completedDayCache holds the resolved `completed` expression of one list
+// query, so several ranges on it read the workspace's collections once.
+type completedDayCache struct {
+	done bool
+	expr string
+	args []any
+}
+
+// fieldDayExpr is the SQL expression for the day (YYYY-MM-DD text) of an item's
+// date under key, with its arguments, and false when key can match nothing.
+// A date field is the first ten characters of its stored value, which is the day
+// in the value's own offset on both date shapes and both dialects. `created` is
+// the UTC day of created_at. `completed` is the UTC day of the item's latest
+// transition into a positive terminal status (terminal minus abandoned, as the
+// reports resolve it), and only while the item is still in one: an abandoned,
+// reopened or never-transitioned item has none.
+func (s *Store) fieldDayExpr(workspaceID string, params models.ItemListParams, key string, completed *completedDayCache) (string, []any, bool) {
+	switch key {
+	case "created":
+		return "substr(i.created_at, 1, 10)", nil, true
+	case "completed":
+		if !completed.done {
+			completed.done = true
+			completed.expr, completed.args = s.completedExpr(workspaceID, params.ScopeCollectionID, false)
+		}
+		return completed.expr, completed.args, completed.expr != ""
+	}
+	if !isValidFieldKey(key) {
+		return "", nil, false
+	}
+	return "substr(" + s.dialect.JSONExtractText("i.fields", key) + ", 1, 10)", nil, true
+}
+
+// completedExpr builds the `completed` expression over the workspace's
+// collections (just scope, when set): the day of the item's latest move into a
+// positive terminal status, or the whole instant when instant is set. It is ""
+// when no collection can complete an item, and also when the collections cannot
+// be read: a filter that cannot be built matches nothing rather than everything.
+func (s *Store) completedExpr(workspaceID, scope string, instant bool) (string, []any) {
+	colls, err := s.ListCollectionsMinimal(workspaceID)
+	if err != nil {
+		return "", nil
+	}
+	var rcs []reportCollection
+	var cur []string
+	var curArgs []any
+	for _, c := range colls {
+		if scope != "" && c.ID != scope {
+			continue
+		}
+		rc := newReportCollection(c)
+		if len(rc.positiveTerminals) == 0 {
+			continue
+		}
+		rcs = append(rcs, rc)
+		ph := make([]string, len(rc.positiveTerminals))
+		curArgs = append(curArgs, rc.id)
+		for i, v := range rc.positiveTerminals {
+			ph[i] = "?"
+			curArgs = append(curArgs, strings.ToLower(v))
+		}
+		cur = append(cur, "(i.collection_id = ? AND LOWER("+s.dialect.JSONExtractText("i.fields", rc.doneKey)+") IN ("+strings.Join(ph, ",")+"))")
+	}
+	posExpr, posArgs := s.positiveTerminalExpr(rcs)
+	if posExpr == "" {
+		return "", nil
+	}
+	latest := "substr(MAX(st.created_at), 1, 10)"
+	if instant {
+		latest = "MAX(st.created_at)"
+	}
+	expr := "(CASE WHEN (" + strings.Join(cur, " OR ") + ") THEN (SELECT " + latest + " FROM status_transitions st WHERE st.item_id = i.id AND " + posExpr + ") END)"
+	return expr, append(curArgs, posArgs...)
+}
+
+// CompletedInstants returns, for each of itemIDs inside collectionID that is
+// currently in a positive terminal status, the instant (RFC3339 UTC) of its
+// latest move into one: the `completed` date of the calendar. An item with no
+// such move, a reopened one and an abandoned one have no entry. itemIDs must
+// already be within the caller's scope; this narrows, it never widens.
+func (s *Store) CompletedInstants(workspaceID, collectionID string, itemIDs []string) (map[string]string, error) {
+	out := map[string]string{}
+	if len(itemIDs) == 0 {
+		return out, nil
+	}
+	expr, exprArgs := s.completedExpr(workspaceID, collectionID, true)
+	if expr == "" {
+		return out, nil
+	}
+	args := append([]any{}, exprArgs...)
+	args = append(args, workspaceID, collectionID)
+	for _, id := range itemIDs {
+		args = append(args, id)
+	}
+	rows, err := s.db.Query(s.q("SELECT i.id, "+expr+" FROM items i WHERE i.workspace_id = ? AND i.collection_id = ? AND i.id IN ("+placeholders(len(itemIDs))+")"), args...)
+	if err != nil {
+		return nil, fmt.Errorf("completed instants: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var at sql.NullString
+		if err := rows.Scan(&id, &at); err != nil {
+			return nil, fmt.Errorf("scan completed instant: %w", err)
+		}
+		if at.Valid && at.String != "" {
+			out[id] = at.String
+		}
+	}
+	return out, rows.Err()
 }
 
 // StoredFieldKeys reports which of keys some item within scope stores in its
