@@ -623,3 +623,40 @@ func TestTASK4105_RemoteRefusesWronglyTypedMembers(t *testing.T) {
 		})
 	}
 }
+
+// Stdio and /mcp read the same schedule input the same way: a wrong type is
+// refused naming the first offender in a fixed order, a one-shot time never
+// rides with schedule members whatever its type, and padded values are trimmed
+// before they reach the CLI.
+func TestTASK4105_SchedulePrechecksAgreeAcrossTransports(t *testing.T) {
+	refused := map[string]struct {
+		in   map[string]any
+		want string
+	}{
+		"two wrong members name the first":    {map[string]any{"start": "2026-11-09T09:00", "every": 5.0, "tz": 7.0}, "every must be a string"},
+		"false in a string member":            {map[string]any{"remind_at": "2026-11-09T09:00:00Z", "every": false}, "every must be a string"},
+		"floating is a string":                {map[string]any{"start": "2026-11-09T09:00", "floating": "yes"}, "floating must be a boolean"},
+		"remind_at of another type with rule": {map[string]any{"start": "2026-11-09T09:00", "remind_at": 123.0}, "cannot be combined"},
+	}
+	for name, c := range refused {
+		t.Run(name, func(t *testing.T) {
+			in := copyInput(c.in)
+			in["ref"] = "TASK-1"
+			sres, disp := stdioCall(t, "remind", in)
+			rres, seen := remoteCall(t, "remind", withWorkspace(in))
+			if !sres.IsError || !rres.IsError || len(disp.gotPath) != 0 || len(seen) != 0 {
+				t.Fatalf("want both refused before dispatch; stdio=%v/%v remote=%v/%v", sres.IsError, disp.gotPath, rres.IsError, seen)
+			}
+			if !strings.Contains(textOf(sres), c.want) || !strings.Contains(textOf(rres), c.want) {
+				t.Fatalf("want %q\nstdio: %s\nremote: %s", c.want, textOf(sres), textOf(rres))
+			}
+		})
+	}
+	t.Run("padded values are trimmed before the CLI", func(t *testing.T) {
+		in := map[string]any{"ref": "TASK-1", "start": " 2026-11-09T09:00 ", "deadline": " hard"}
+		_, disp := stdioCall(t, "remind", in)
+		if !hasFlagPair(disp.gotArgs, "--deadline", "hard") || !hasFlagPair(disp.gotArgs, "--start", "2026-11-09T09:00") {
+			t.Fatalf("stdio args = %q", disp.gotArgs)
+		}
+	})
+}

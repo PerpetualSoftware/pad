@@ -22,9 +22,12 @@ var scheduleParamKeys = []string{"every", "start", "deadline", "window", "anchor
 // floating=false. A client that pads unused optional parameters with "" must
 // not be turned into a schedule, nor into an edit that clears a rule, so both
 // transports read these as not provided; stdio would otherwise send --every ""
-// to the CLI, where an empty value is a real one. given reports whether any
-// schedule parameter is left.
-func withoutInertScheduleParams(input map[string]any) (out map[string]any, given bool) {
+// to the CLI, where an empty value is a real one. Strings are trimmed, and a
+// value of the wrong type is refused (floating is a boolean, the rest are
+// strings), in the order of scheduleParamKeys, so both transports answer the
+// same input the same way. given reports whether any schedule parameter is
+// left.
+func withoutInertScheduleParams(input map[string]any) (out map[string]any, given bool, err error) {
 	out = make(map[string]any, len(input))
 	for k, v := range input {
 		out[k] = v
@@ -34,17 +37,28 @@ func withoutInertScheduleParams(input map[string]any) (out map[string]any, given
 		if !present {
 			continue
 		}
-		switch x := v.(type) {
-		case nil:
+		if v == nil {
 			delete(out, k)
-		case string:
-			if strings.TrimSpace(x) == "" {
+			continue
+		}
+		if k == "floating" {
+			b, ok := v.(bool)
+			if !ok {
+				return nil, false, fmt.Errorf("floating must be a boolean, got %T", v)
+			}
+			if !b {
 				delete(out, k)
 			}
-		case bool:
-			if !x {
-				delete(out, k)
-			}
+			continue
+		}
+		s, ok := v.(string)
+		if !ok {
+			return nil, false, fmt.Errorf("%s must be a string, got %T", k, v)
+		}
+		if s = strings.TrimSpace(s); s == "" {
+			delete(out, k)
+		} else {
+			out[k] = s
 		}
 	}
 	for _, k := range scheduleParamKeys {
@@ -53,8 +67,21 @@ func withoutInertScheduleParams(input map[string]any) (out map[string]any, given
 			break
 		}
 	}
-	return out, given
+	return out, given, nil
 }
+
+// remindAtGiven reports whether remind_at carries a value of any type: the
+// one-shot time cannot ride with schedule parameters.
+func remindAtGiven(input map[string]any) bool {
+	v, ok := input["remind_at"]
+	if !ok || v == nil {
+		return false
+	}
+	s, isStr := v.(string)
+	return !isStr || strings.TrimSpace(s) != ""
+}
+
+var errRemindAtWithSchedule = fmt.Errorf("remind_at arms a one-shot reminder and cannot be combined with schedule parameters; give the time as start (e.g. 2026-11-09T09:00)")
 
 // actionItemRemind handles pad_item.action=remind. With no schedule parameter
 // it is the one-shot reminder it always was; any schedule parameter makes it a
@@ -62,7 +89,13 @@ func withoutInertScheduleParams(input map[string]any) (out map[string]any, given
 // /mcp). Inert values are dropped first, so the one-shot form is identical on
 // both transports whatever a client pads it with.
 func actionItemRemind(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error) {
-	out, _ := withoutInertScheduleParams(input)
+	out, given, err := withoutInertScheduleParams(input)
+	if err != nil {
+		return errStructured("pad_item.remind", err), nil
+	}
+	if given && remindAtGiven(input) {
+		return errStructured("pad_item.remind", errRemindAtWithSchedule), nil
+	}
 	return env.Dispatch(ctx, []string{"item", "remind"}, out)
 }
 
@@ -70,7 +103,10 @@ func actionItemRemind(ctx context.Context, input map[string]any, env ActionEnv) 
 // only the parameters given change. An empty value is not a change, which
 // means an edit cannot clear a rule or a window by sending "".
 func actionItemScheduleEdit(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error) {
-	out, given := withoutInertScheduleParams(input)
+	out, given, err := withoutInertScheduleParams(input)
+	if err != nil {
+		return errStructured("pad_item.schedule-edit", err), nil
+	}
 	if !given {
 		return errStructured("pad_item.schedule-edit", errNothingToChange), nil
 	}

@@ -47,7 +47,11 @@ func readScheduleParams(input map[string]any) (scheduleParams, error) {
 		"every": &p.every, "start": &p.start, "deadline": &p.deadline, "window": &p.window,
 		"anchor": &p.anchor, "audience": &p.audience, "tz": &p.tz,
 	}
-	for k, dst := range strs {
+	for _, k := range scheduleParamKeys {
+		dst, isStr := strs[k]
+		if !isStr {
+			continue
+		}
 		v, ok := input[k]
 		if !ok || v == nil {
 			continue
@@ -84,8 +88,8 @@ func mapItemRemind(input map[string]any) (string, string, []byte, error) {
 	if !p.any() {
 		return itemRemindOneShot(input)
 	}
-	if s, _ := input["remind_at"].(string); strings.TrimSpace(s) != "" {
-		return "", "", nil, fmt.Errorf("remind_at arms a one-shot reminder and cannot be combined with schedule parameters; give the time as start (e.g. 2026-11-09T09:00)")
+	if remindAtGiven(input) {
+		return "", "", nil, errRemindAtWithSchedule
 	}
 	body, err := scheduleCreateBody(p)
 	if err != nil {
