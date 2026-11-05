@@ -662,6 +662,9 @@ func runStaleAgenda(cmd *cobra.Command, from, to string, daysSet bool, tz string
 			}
 			t = d
 		}
+		if t.Nanosecond() != 0 {
+			return fmt.Errorf("--from %q has a fraction of a second: give a whole-second instant", from)
+		}
 		start = t.UTC().Format(time.RFC3339)
 	}
 	client, _ := getClient()

@@ -38,7 +38,7 @@ type BootstrapAgendaRow struct {
 	At          string   `json:"at"`
 	AllDay      bool     `json:"all_day,omitempty"`
 	Kind        string   `json:"kind"` // deadline_hard | deadline_soft | check | window
-	MissedCount int      `json:"missed_count,omitempty"`
+	MissedCount int      `json:"missed_count"`
 	Stale       bool     `json:"stale,omitempty"` // missed_count >= 2
 	Resolve     []string `json:"resolve"`         // pad item remind <verb> <ref>
 }
@@ -160,6 +160,8 @@ type staleAgendaResponse struct {
 	// NextFrom is where the next page resumes (pass it as `from`); absent on the
 	// last page.
 	NextFrom string `json:"next_from,omitempty"`
+	// Truncated says the read stopped at its scan cap, so the list is a floor.
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 // handleStaleAgenda lists the occurrences the bootstrap collapsed into
@@ -167,7 +169,7 @@ type staleAgendaResponse struct {
 // caller (their items, their kind), paged by next_from.
 func (s *Server) handleStaleAgenda(w http.ResponseWriter, r *http.Request, workspaceID string) {
 	q := r.URL.Query()
-	if v := strings.TrimSpace(q.Get("stale")); v != "true" {
+	if v := q["stale"]; len(v) != 1 || strings.TrimSpace(v[0]) != "true" {
 		writeAgendaParam(w, "stale", "format", "`stale` must be true")
 		return
 	}
@@ -185,12 +187,10 @@ func (s *Server) handleStaleAgenda(w http.ResponseWriter, r *http.Request, works
 	}
 	user := currentUser(r)
 	zone, agent, ok := agendaRecipient(r, user)
-	resp := staleAgendaResponse{Tz: zone.Name, Stale: true, Entries: []BootstrapAgendaRow{}}
 	if !ok {
-		writeJSON(w, http.StatusOK, resp)
-		return
+		zone = usertz.Resolve(nil)
 	}
-	resp.TimezoneNote = usertz.Note(zone)
+	resp := staleAgendaResponse{Tz: zone.Name, Stale: true, Entries: []BootstrapAgendaRow{}, TimezoneNote: usertz.Note(zone)}
 	if tz := strings.TrimSpace(q.Get("tz")); q.Has("tz") {
 		loc, err := usertz.Validate(tz)
 		if err != nil {
@@ -198,6 +198,10 @@ func (s *Server) handleStaleAgenda(w http.ResponseWriter, r *http.Request, works
 			return
 		}
 		zone, resp.Tz, resp.TimezoneNote = usertz.Zone{Name: tz, Loc: loc, Set: true}, tz, ""
+	}
+	if !ok {
+		writeJSON(w, http.StatusOK, resp)
+		return
 	}
 	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
 	if err != nil {
@@ -226,15 +230,19 @@ func (s *Server) handleStaleAgenda(w http.ResponseWriter, r *http.Request, works
 		rows = rows[1:]
 	}
 	if len(rows) > bootstrapAgendaStalePage {
-		next := rows[bootstrapAgendaStalePage].Due
-		// A page that is all one instant would resume where it began; step past it
-		// so a client always moves forward.
-		if !next.After(rows[0].Due) {
-			next = rows[0].Due.Add(time.Second)
+		// The page takes whole instants: rows due at the same instant as the last
+		// one it would hold come with it, so next_from is strictly after every row
+		// shown and a long tie cannot be skipped or repeated.
+		n := bootstrapAgendaStalePage
+		for n < len(rows) && rows[n].Due.Equal(rows[n-1].Due) {
+			n++
 		}
-		resp.NextFrom = next.UTC().Format(time.RFC3339)
-		rows = rows[:bootstrapAgendaStalePage]
+		if n < len(rows) {
+			resp.NextFrom = rows[n].Due.UTC().Format(time.RFC3339)
+		}
+		rows = rows[:n]
 	}
+	resp.Truncated = set.Truncated
 	resp.Entries = bootstrapAgendaRows(rows, zone.Loc, now)
 	writeJSON(w, http.StatusOK, resp)
 }

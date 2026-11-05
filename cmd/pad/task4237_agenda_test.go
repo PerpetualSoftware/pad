@@ -90,3 +90,12 @@ func TestBootstrapMarkdownAgendaSection(t *testing.T) {
 		t.Errorf("an empty agenda printed a header:\n%s", none)
 	}
 }
+
+func TestAgendaStaleRefusesAFractionalFrom(t *testing.T) {
+	h, calls := recordingStub(func(c recordedCall) (int, string) { return 200, staleBody })
+	root := tzCLIWithLocal(t, h, time.UTC)
+	_, _, err := tzRun(t, root, "item", "remind", "agenda", "--stale", "--from", "2026-10-03T09:00:00.5Z")
+	if err == nil || !strings.Contains(err.Error(), "fraction of a second") || len(calls()) != 0 {
+		t.Fatalf("err = %v, requests = %d", err, len(calls()))
+	}
+}

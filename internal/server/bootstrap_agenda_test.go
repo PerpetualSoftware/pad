@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -237,5 +238,46 @@ func TestStaleAgendaIsTheCallersOwn(t *testing.T) {
 	_ = json.Unmarshal(rr.Body.Bytes(), &resp)
 	if rr.Code != http.StatusOK || len(resp.Entries) != 0 {
 		t.Fatalf("stale list = %d %+v, want empty", rr.Code, resp)
+	}
+}
+
+// A page takes whole instants: 51 rows due at one instant come back together,
+// never cut at 50 with a cursor that skips the last.
+func TestStaleAgendaTiePagesWhole(t *testing.T) {
+	t.Parallel()
+	w := newBootAgendaWorld(t, "2031-03-13T12:00:00Z")
+	for i := 0; i < 51; i++ {
+		w.sched(t, w.owner, fmt.Sprintf("tie %02d", i), "2031-01-05T09:00", "both")
+	}
+	w.sched(t, w.owner, "after", "2031-01-06T09:00", "both")
+	get := func(q string) staleAgendaResponse {
+		rr := doRequestWithHeaders(w.srv, "GET", "/api/v1/workspaces/"+w.ws.Slug+"/agenda?"+q, nil, map[string]string{"Cookie": "pad_session=" + w.tok})
+		var resp staleAgendaResponse
+		_ = json.Unmarshal(rr.Body.Bytes(), &resp)
+		return resp
+	}
+	p1 := get("stale=true")
+	if len(p1.Entries) != 51 || p1.NextFrom != "2031-01-06T09:00:00Z" {
+		t.Fatalf("page 1: %d entries, next_from %q, want 51 and the next instant", len(p1.Entries), p1.NextFrom)
+	}
+	if p2 := get("stale=true&from=" + p1.NextFrom); len(p2.Entries) != 1 || p2.NextFrom != "" {
+		t.Fatalf("page 2: %d entries, next_from %q", len(p2.Entries), p2.NextFrom)
+	}
+}
+
+// A repeated stale member is refused, and a row always carries missed_count.
+func TestStaleAgendaStrictParamsAndMissedCountAlwaysThere(t *testing.T) {
+	t.Parallel()
+	w := newBootAgendaWorld(t, "2031-03-13T12:00:00Z")
+	w.sched(t, w.owner, "yesterday", "2031-03-12T09:00", "both")
+	for _, q := range []string{"stale=true&stale=false", "stale=false&stale=true", "stale=", "stale=1"} {
+		rr := doRequestWithHeaders(w.srv, "GET", "/api/v1/workspaces/"+w.ws.Slug+"/agenda?"+q, nil, map[string]string{"Cookie": "pad_session=" + w.tok})
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("%s = %d, want 400", q, rr.Code)
+		}
+	}
+	rr := doRequestWithHeaders(w.srv, "GET", "/api/v1/workspaces/"+w.ws.Slug+"/agent/bootstrap", nil, map[string]string{"Cookie": "pad_session=" + w.tok})
+	if !strings.Contains(rr.Body.String(), `"missed_count":0`) {
+		t.Errorf("a carried row without a later missed occurrence lacks missed_count: %s", rr.Body.String())
 	}
 }
