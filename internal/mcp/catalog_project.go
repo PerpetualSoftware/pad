@@ -106,7 +106,4 @@ Actions:
   catch-up   — Your own catch-up digest: what needs you, and what others
                finished, created, reopened, commented on or did as agents since you
                last marked caught up (max 14 days). Never marks caught up.
-               Required: workspace.
-
-Use pad_project when an agent needs to summarize progress, plan next work,
-catch up on recent activity, or generate retro / standup / changelog reports.`
+               Required: workspace.`

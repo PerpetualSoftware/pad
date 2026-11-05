@@ -64,6 +64,10 @@ func parityFixtureInput() map[string]any {
 		"item_ref":          "TASK-1", // github link / unlink name their positional item-ref
 		"pr_url":            "https://github.com/acme/app/pull/42",
 		"text":              "test text",
+		"state":             "snooze", // the resolve actions: one state per action, snooze takes until
+		"occurrence_at":     "2026-11-09T09:00:00Z",
+		"occurrence":        "2026-11-09T09:00:00Z", // what the resolve routes read (the ActionFn renames occurrence_at)
+		"until":             "2099-01-01T09:00:00Z",
 	}
 }
 
@@ -129,7 +133,9 @@ func TestHTTPTransport_EveryCatalogActionRouted(t *testing.T) {
 				continue
 			}
 
-			drive(t, label, handler, parityFixtureInput())
+			input := parityFixtureInput()
+			task4105FixtureFor(label, input)
+			drive(t, label, handler, input)
 		}
 	}
 

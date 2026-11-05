@@ -149,7 +149,4 @@ Actions:
 
 An individual collection's schema is in the list response: read it there
 rather than calling list again. v0.2 does not expose a dedicated
-read-by-slug action; if you need that, file a feature request.
-
-Use pad_collection when an agent needs to discover collection types or set up
-a new one. For item-level CRUD inside a collection, use pad_item.`
+read-by-slug action; if you need that, file a feature request.`

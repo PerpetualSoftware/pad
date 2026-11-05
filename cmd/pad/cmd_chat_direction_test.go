@@ -299,6 +299,19 @@ func TestChatArmHasNoMCPPath(t *testing.T) {
 							if linkType != "" {
 								input["link_type"] = linkType
 							}
+							if name == "pad_item" {
+								// The schedule actions refuse an input with nothing to change or
+								// no window before they dispatch (TASK-4105); the shared `to` is a
+								// number for chat read.
+								switch action {
+								case "schedule-edit":
+									input["deadline"] = "hard"
+								case "schedule-resolve":
+									input["state"], input["occurrence_at"] = "done", "2026-11-09T09:00:00Z"
+								case "agenda":
+									input["from"], input["to"] = "2026-11-09T00:00:00Z", "2026-11-16T00:00:00Z"
+								}
+							}
 							rec.take()
 							req := mcpgo.CallToolRequest{}
 							req.Params.Name, req.Params.Arguments = name, input

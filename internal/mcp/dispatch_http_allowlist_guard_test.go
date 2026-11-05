@@ -392,7 +392,9 @@ func observedPaths(t *testing.T, cmdKey string) []string {
 		return rec.paths
 	}
 	if mapper, ok := routeTable[cmdKey]; ok {
-		_, urlPath, _, err := mapper(allowlistFixtureInput())
+		in := allowlistFixtureInput()
+		task4105FixtureFor(cmdKey, in)
+		_, urlPath, _, err := mapper(in)
 		if err != nil {
 			return nil
 		}
