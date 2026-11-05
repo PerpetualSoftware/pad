@@ -99,3 +99,20 @@ func TestAgendaStaleRefusesAFractionalFrom(t *testing.T) {
 		t.Fatalf("err = %v, requests = %d", err, len(calls()))
 	}
 }
+
+func TestAgendaTruncationIsDisclosed(t *testing.T) {
+	h, _ := recordingStub(func(c recordedCall) (int, string) {
+		return 200, `{"tz":"UTC","stale":true,"entries":[],"truncated":true}`
+	})
+	root := tzCLIWithLocal(t, h, time.UTC)
+	out, _, err := tzRun(t, root, "item", "remind", "agenda", "--stale")
+	if err != nil || !strings.Contains(out, "list incomplete") {
+		t.Fatalf("err=%v out=%q", err, out)
+	}
+	md := captureStdout(t, func() {
+		_ = printBootstrapMarkdown([]byte(`{"workspace":{"slug":"w","name":"W"},"user":{},"collections":[],"conventions":[],"roles":[],"playbooks":[],"agenda":{"tz":"UTC","today":"2026-11-05","truncated":true,"stale_count":2,"stale_hint":"h"}}`))
+	})
+	if !strings.Contains(md, "incomplete") {
+		t.Errorf("markdown hides the truncation:\n%s", md)
+	}
+}

@@ -253,6 +253,9 @@ func printBootstrapAgenda(a *bootstrapAgendaView) {
 	if a.StaleCount > 0 {
 		fmt.Printf("stale: %d items — %s\n", a.StaleCount, a.StaleHint)
 	}
+	if a.Truncated {
+		fmt.Println("incomplete: the server read only the first 1000 schedules, so counts are a floor")
+	}
 	fmt.Println("Resolve with: pad item remind done|skip|move <ref> (move needs --until and a reason)")
 	fmt.Println()
 }

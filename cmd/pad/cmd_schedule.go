@@ -645,6 +645,7 @@ type staleAgendaAnswer struct {
 	TimezoneNote string           `json:"timezone_note"`
 	Entries      []staleAgendaRow `json:"entries"`
 	NextFrom     string           `json:"next_from"`
+	Truncated    bool             `json:"truncated"`
 }
 
 // runStaleAgenda is `agenda --stale`: no window, only --from to resume a page.
@@ -685,6 +686,9 @@ func runStaleAgenda(cmd *cobra.Command, from, to string, daysSet bool, tz string
 	out := cmd.OutOrStdout()
 	if len(resp.Entries) == 0 {
 		fmt.Fprintln(out, "Nothing has been unresolved for more than 14 days.")
+		if resp.Truncated {
+			fmt.Fprintln(out, "list incomplete: the server read only the first 1000 schedules")
+		}
 		return nil
 	}
 	var showLoc *time.Location
@@ -709,6 +713,9 @@ func runStaleAgenda(cmd *cobra.Command, from, to string, daysSet bool, tz string
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\n", due, e.Ref, e.Title, e.Kind, e.MissedCount)
 	}
 	_ = w.Flush()
+	if resp.Truncated {
+		fmt.Fprintln(out, "list incomplete: the server read only the first 1000 schedules")
+	}
 	if resp.NextFrom != "" {
 		hint := "pad item remind agenda --stale --from " + resp.NextFrom
 		if tz != "" {

@@ -5,6 +5,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/schedule"
 )
 
@@ -135,7 +136,7 @@ func (s *Store) BootstrapAgenda(p BootstrapAgendaParams) (*BootstrapAgendaSet, e
 			continue
 		}
 		switch {
-		case sc.NextOverrideAt != nil && moved[[2]string{sc.ID, *sc.NextWall}]:
+		case sc.NextOverrideAt != nil && movedStill(moved, sc):
 			t, err := time.Parse(time.RFC3339, *sc.NextOverrideAt)
 			if err != nil {
 				continue
@@ -170,32 +171,42 @@ func (s *Store) BootstrapAgenda(p BootstrapAgendaParams) (*BootstrapAgendaSet, e
 	return set, nil
 }
 
-// movedWalls is the set of (schedule, wall) pairs holding a MOVED history row, for the
+// movedStill says the override on sc is its MOVE. A snooze after a move replaces
+// the override and leaves the moved row, so the row counts only while the
+// schedule has not been written since: a later write (a snooze, or an edit) reads
+// as not moved, and the occurrence is listed at its grid time, which errs toward
+// showing it.
+func movedStill(moved map[[2]string]string, sc *models.ItemSchedule) bool {
+	at, ok := moved[[2]string{sc.ID, *sc.NextWall}]
+	return ok && sc.UpdatedAt <= at
+}
+
+// movedWalls maps (schedule, wall) to the stamp of its MOVED history row, for the
 // schedules that hold an override. A move and a snooze both set the override;
 // only a move writes the row, and only a move defers the occurrence.
-func (s *Store) movedWalls(found []AgendaSchedule) (map[[2]string]bool, error) {
+func (s *Store) movedWalls(found []AgendaSchedule) (map[[2]string]string, error) {
 	var ids []any
 	for _, as := range found {
 		if as.Schedule.NextOverrideAt != nil {
 			ids = append(ids, as.Schedule.ID)
 		}
 	}
-	out := map[[2]string]bool{}
+	out := map[[2]string]string{}
 	if len(ids) == 0 {
 		return out, nil
 	}
-	rows, err := s.db.Query(s.q(`SELECT schedule_id, occurrence_wall FROM schedule_occurrences
+	rows, err := s.db.Query(s.q(`SELECT schedule_id, occurrence_wall, resolved_at FROM schedule_occurrences
 		WHERE state = 'moved' AND schedule_id IN (`+placeholders(len(ids))+`)`), ids...)
 	if err != nil {
 		return nil, fmt.Errorf("read moved occurrences: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var id, wall string
-		if err := rows.Scan(&id, &wall); err != nil {
+		var id, wall, at string
+		if err := rows.Scan(&id, &wall, &at); err != nil {
 			return nil, fmt.Errorf("scan moved occurrence: %w", err)
 		}
-		out[[2]string{id, wall}] = true
+		out[[2]string{id, wall}] = at
 	}
 	return out, rows.Err()
 }

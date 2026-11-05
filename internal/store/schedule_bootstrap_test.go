@@ -266,3 +266,21 @@ func TestBootstrapAgendaOrder(t *testing.T) {
 		t.Fatalf("carried = %v, want oldest first (%s, %s, %s)", got, want[1], want[2], want[0])
 	}
 }
+
+// A snooze after a move replaces the override but leaves the moved row: the
+// occurrence is listed at its grid time again, never hidden by the old move.
+func TestBootstrapAgendaSnoozeAfterMoveIsNotAMove(t *testing.T) {
+	t.Parallel()
+	f := newBootFixture(t)
+	item, _ := f.mkFor(t, f.me.ID, models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-20T09:00", Tz: "UTC", Rrule: "FREQ=DAILY"}, "2026-10-20T00:00:00Z")
+	next := rt("2026-11-10T09:00:00Z")
+	f.mustResolve(t, item, ResolveInput{OccurrenceAt: rt("2026-10-20T09:00:00Z"), State: "move", Until: &next, Actor: "user"}, "2026-10-29T08:00:00Z")
+	if set := f.read(t, false, time.UTC, "2026-10-29T12:00:00Z"); len(set.Carried)+len(set.DueToday) != 0 {
+		t.Fatalf("moved to next week: carried %d, due today %d, want none", len(set.Carried), len(set.DueToday))
+	}
+	snooze := rt("2026-10-30T09:00:00Z")
+	f.mustResolve(t, item, ResolveInput{OccurrenceAt: rt("2026-10-20T09:00:00Z"), State: "snooze", Until: &snooze, Actor: "user"}, "2026-10-29T09:00:00Z")
+	if set := f.read(t, false, time.UTC, "2026-10-29T12:00:00Z"); len(set.Carried) != 1 {
+		t.Fatalf("after a snooze, carried = %d, want the occurrence at its grid time", len(set.Carried))
+	}
+}

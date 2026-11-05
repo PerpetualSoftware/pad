@@ -117,7 +117,7 @@ func bootstrapAgendaRows(rows []store.BootstrapAgendaRow, loc *time.Location, no
 // projectBootstrapAgenda applies the limits to a read. Nil when there is
 // nothing to show.
 func projectBootstrapAgenda(set *store.BootstrapAgendaSet, zone usertz.Zone, now time.Time) *BootstrapAgenda {
-	if set == nil || len(set.DueToday)+len(set.Carried)+len(set.Stale) == 0 {
+	if set == nil || (len(set.DueToday)+len(set.Carried)+len(set.Stale) == 0 && !set.Truncated) {
 		return nil
 	}
 	loc := zone.Loc

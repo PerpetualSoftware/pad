@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
+	"github.com/PerpetualSoftware/pad/internal/usertz"
 )
 
 // TASK-4237: the bootstrap's agenda section and `agenda?stale=true`. The clock is
@@ -279,5 +281,16 @@ func TestStaleAgendaStrictParamsAndMissedCountAlwaysThere(t *testing.T) {
 	rr := doRequestWithHeaders(w.srv, "GET", "/api/v1/workspaces/"+w.ws.Slug+"/agent/bootstrap", nil, map[string]string{"Cookie": "pad_session=" + w.tok})
 	if !strings.Contains(rr.Body.String(), `"missed_count":0`) {
 		t.Errorf("a carried row without a later missed occurrence lacks missed_count: %s", rr.Body.String())
+	}
+}
+
+// A read cut by its scan cap that found nothing still says so.
+func TestBootstrapAgendaTruncatedEmptyStillShows(t *testing.T) {
+	t.Parallel()
+	if a := projectBootstrapAgenda(&store.BootstrapAgendaSet{Truncated: true}, usertz.Resolve(nil), time.Unix(0, 0)); a == nil || !a.Truncated {
+		t.Fatalf("agenda = %+v, want a section with truncated", a)
+	}
+	if a := projectBootstrapAgenda(&store.BootstrapAgendaSet{}, usertz.Resolve(nil), time.Unix(0, 0)); a != nil {
+		t.Fatalf("nothing found and not truncated: agenda = %+v, want none", a)
 	}
 }
