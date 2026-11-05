@@ -208,6 +208,13 @@ func actionItemAgenda(ctx context.Context, input map[string]any, env ActionEnv) 
 			return errStructured("pad_item.agenda", err), nil
 		}
 	}
+	// tz is the only optional member: a non-string would be dropped by the
+	// route's query mapper and sent as text by the CLI.
+	if v, present := input["tz"]; present && v != nil {
+		if _, ok := v.(string); !ok {
+			return errStructured("pad_item.agenda", fmt.Errorf("tz must be a string, got %T", v)), nil
+		}
+	}
 	return env.Dispatch(ctx, []string{"item", "remind", "agenda"}, input)
 }
 

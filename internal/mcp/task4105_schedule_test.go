@@ -727,3 +727,17 @@ func TestTASK4105_FractionalInstantsAreRefused(t *testing.T) {
 		}
 	})
 }
+
+// A non-string tz on agenda is refused, not dropped on /mcp and passed as text
+// on stdio.
+func TestTASK4105_AgendaRefusesANonStringTz(t *testing.T) {
+	in := map[string]any{"ref": "TASK-1", "from": "2026-11-09T00:00:00Z", "to": "2026-11-16T00:00:00Z", "tz": false}
+	sres, disp := stdioCall(t, "agenda", in)
+	rres, seen := remoteCall(t, "agenda", withWorkspace(in))
+	if !sres.IsError || !rres.IsError || len(disp.gotPath) != 0 || len(seen) != 0 {
+		t.Fatalf("want both refused before dispatch; stdio=%v/%v remote=%v/%v", sres.IsError, disp.gotPath, rres.IsError, seen)
+	}
+	if !strings.Contains(textOf(sres), "tz must be a string") || textOf(sres) != textOf(rres) {
+		t.Fatalf("stdio: %s\nremote: %s", textOf(sres), textOf(rres))
+	}
+}
