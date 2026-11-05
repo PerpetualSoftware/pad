@@ -1409,7 +1409,11 @@ func (s *Store) listItemsQ(q Queryer, workspaceID string, params models.ItemList
 		args = append(args, params.ParentLinkID)
 	}
 
-	query, args = s.appendFieldFilters(workspaceID, params, query, args)
+	completed, err := s.resolveCompletedDay(workspaceID, params)
+	if err != nil {
+		return nil, err
+	}
+	query, args = s.appendFieldFilters(workspaceID, params, completed, query, args)
 
 	// Non-terminal filter (BUG-2001): keep only items whose resolved done
 	// field is NOT one of their collection's terminal options. Evaluated
@@ -1421,7 +1425,9 @@ func (s *Store) listItemsQ(q Queryer, workspaceID string, params models.ItemList
 	}
 
 	// Sorting
-	query += buildItemSort(params.Sort, s.dialect)
+	orderSQL, orderArgs := s.itemOrder(params, completed)
+	query += orderSQL
+	args = append(args, orderArgs...)
 
 	// Pagination
 	if params.Limit > 0 {
@@ -2205,7 +2211,11 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 		args = append(args, params.AgentRoleID, params.AgentRoleID)
 	}
 
-	query, args = s.appendFieldFilters(workspaceID, params, query, args)
+	completed, err := s.resolveCompletedDay(workspaceID, params)
+	if err != nil {
+		return nil, err
+	}
+	query, args = s.appendFieldFilters(workspaceID, params, completed, query, args)
 
 	// Non-terminal filter (BUG-2001) — parity with the non-FTS path so a
 	// `search + non_terminal` combination hides terminal items per each
@@ -2223,8 +2233,10 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 	// PostgreSQL ts_rank(): higher = more relevant → DESC.
 	// PG FTSRank embeds the same OR-combined plainto_tsquery as FTSMatch
 	// and consumes TWO args (raw + hyphen-sanitized) — BUG-842.
-	if strings.TrimSpace(params.Sort) != "" {
-		query += buildItemSort(params.Sort, s.dialect)
+	if strings.TrimSpace(params.Sort) != "" || params.OrderByDay != "" {
+		orderSQL, orderArgs := s.itemOrder(params, completed)
+		query += orderSQL
+		args = append(args, orderArgs...)
 	} else if s.dialect.Driver() == DriverPostgres {
 		query += " ORDER BY " + ftsRank + " DESC, i.id"
 		args = append(args, params.Search, sanitizePGFTSQuery(params.Search))
@@ -2363,7 +2375,7 @@ func mergeFieldsPatch(currentJSON string, patch map[string]interface{}) (string,
 // itself and the in-process callers that pass stored or schema values got an
 // OR they never asked for. The OR is now its own member, FieldsAnyOf, and the
 // query-string parse is the one place that turns `?key=a,b` into it.
-func (s *Store) appendFieldFilters(workspaceID string, params models.ItemListParams, query string, args []any) (string, []any) {
+func (s *Store) appendFieldFilters(workspaceID string, params models.ItemListParams, completed *completedDayCache, query string, args []any) (string, []any) {
 	blankRelationFilterKeys := s.scalarRelationFilterKeys(workspaceID, params)
 	for key, value := range params.Fields {
 		if !isValidFieldKey(key) {
@@ -2415,9 +2427,8 @@ func (s *Store) appendFieldFilters(workspaceID string, params models.ItemListPar
 		query += " AND (" + strings.Join(conds, " OR ") + ")"
 	}
 	if len(params.FieldRanges) > 0 || len(params.FieldSpans) > 0 {
-		completed := &completedDayCache{}
 		for _, fr := range params.FieldRanges {
-			expr, exprArgs, ok := s.fieldDayExpr(workspaceID, params, fr.Key, completed)
+			expr, exprArgs, ok := s.fieldDayExpr(fr.Key, completed)
 			if !ok {
 				query += " AND 1 = 0" // no key to match is no match, not no filter
 				continue
@@ -2426,14 +2437,14 @@ func (s *Store) appendFieldFilters(workspaceID string, params models.ItemListPar
 			args = append(append(args, exprArgs...), fr.From, fr.To)
 		}
 		for _, sp := range params.FieldSpans {
-			start, startArgs, ok := s.fieldDayExpr(workspaceID, params, sp.StartKey, completed)
+			start, startArgs, ok := s.fieldDayExpr(sp.StartKey, completed)
 			if !ok {
 				query += " AND 1 = 0"
 				continue
 			}
 			query += " AND (" + start + " BETWEEN ? AND ?"
 			args = append(append(args, startArgs...), sp.From, sp.To)
-			if end, endArgs, ok := s.fieldDayExpr(workspaceID, params, sp.EndKey, completed); ok {
+			if end, endArgs, ok := s.fieldDayExpr(sp.EndKey, completed); ok {
 				// A span: it starts by the window's last day and ends on or after
 				// its first. A missing end value compares as NULL, so no span.
 				query += " OR (" + start + " <= ? AND " + end + " >= ?)"
@@ -2446,12 +2457,63 @@ func (s *Store) appendFieldFilters(workspaceID string, params models.ItemListPar
 	return query, args
 }
 
-// completedDayCache holds the resolved `completed` expression of one list
-// query, so several ranges on it read the workspace's collections once.
+// completedDayCache holds the resolved `completed` expressions of one list
+// query: the day (for the range filters) and the instant (for the date order).
+// Each is "" when no collection can complete an item. It is built before the
+// query text, so a failed collection read is an error, not an empty calendar.
 type completedDayCache struct {
-	done bool
-	expr string
-	args []any
+	day, instant         string
+	dayArgs, instantArgs []any
+}
+
+// resolveCompletedDay builds the cache when the query names `completed`.
+func (s *Store) resolveCompletedDay(workspaceID string, params models.ItemListParams) (*completedDayCache, error) {
+	c := &completedDayCache{}
+	var err error
+	needs := func(key string) bool { return key == "completed" }
+	day := needs(params.OrderByDay)
+	for _, fr := range params.FieldRanges {
+		day = day || needs(fr.Key)
+	}
+	for _, sp := range params.FieldSpans {
+		day = day || needs(sp.StartKey) || needs(sp.EndKey)
+	}
+	if day {
+		if c.day, c.dayArgs, err = s.completedExpr(workspaceID, params.ScopeCollectionID, false); err != nil {
+			return nil, err
+		}
+	}
+	if needs(params.OrderByDay) {
+		if c.instant, c.instantArgs, err = s.completedExpr(workspaceID, params.ScopeCollectionID, true); err != nil {
+			return nil, err
+		}
+	}
+	return c, nil
+}
+
+// itemOrder is the ORDER BY of an item list. With OrderByDay set it is the
+// date order the calendar pages by: the same value the day filters read (the
+// instant itself for `created` and `completed`, so a viewer-zone day is never
+// split across the order, and the stored value's text for a date field), then
+// the id. Without it, the list's own sort.
+func (s *Store) itemOrder(params models.ItemListParams, completed *completedDayCache) (string, []any) {
+	key := params.OrderByDay
+	if key == "" {
+		return buildItemSort(params.Sort, s.dialect), nil
+	}
+	switch key {
+	case "created":
+		return " ORDER BY i.created_at, i.id", nil
+	case "completed":
+		if completed.instant == "" {
+			return " ORDER BY i.id", nil // the filter matches nothing
+		}
+		return " ORDER BY " + completed.instant + ", i.id", completed.instantArgs
+	}
+	if !isValidFieldKey(key) {
+		return " ORDER BY i.id", nil
+	}
+	return " ORDER BY substr(" + s.dialect.JSONExtractText("i.fields", key) + ", 1, 10), i.id", nil
 }
 
 // fieldDayExpr is the SQL expression for the day (YYYY-MM-DD text) of an item's
@@ -2462,16 +2524,12 @@ type completedDayCache struct {
 // transition into a positive terminal status (terminal minus abandoned, as the
 // reports resolve it), and only while the item is still in one: an abandoned,
 // reopened or never-transitioned item has none.
-func (s *Store) fieldDayExpr(workspaceID string, params models.ItemListParams, key string, completed *completedDayCache) (string, []any, bool) {
+func (s *Store) fieldDayExpr(key string, completed *completedDayCache) (string, []any, bool) {
 	switch key {
 	case "created":
 		return "substr(i.created_at, 1, 10)", nil, true
 	case "completed":
-		if !completed.done {
-			completed.done = true
-			completed.expr, completed.args = s.completedExpr(workspaceID, params.ScopeCollectionID, false)
-		}
-		return completed.expr, completed.args, completed.expr != ""
+		return completed.day, completed.dayArgs, completed.day != ""
 	}
 	if !isValidFieldKey(key) {
 		return "", nil, false
@@ -2482,12 +2540,12 @@ func (s *Store) fieldDayExpr(workspaceID string, params models.ItemListParams, k
 // completedExpr builds the `completed` expression over the workspace's
 // collections (just scope, when set): the day of the item's latest move into a
 // positive terminal status, or the whole instant when instant is set. It is ""
-// when no collection can complete an item, and also when the collections cannot
-// be read: a filter that cannot be built matches nothing rather than everything.
-func (s *Store) completedExpr(workspaceID, scope string, instant bool) (string, []any) {
+// when no collection can complete an item. A failed collection read is an error:
+// a filter that cannot be built must not read as an empty result.
+func (s *Store) completedExpr(workspaceID, scope string, instant bool) (string, []any, error) {
 	colls, err := s.ListCollectionsMinimal(workspaceID)
 	if err != nil {
-		return "", nil
+		return "", nil, fmt.Errorf("completed expression: %w", err)
 	}
 	var rcs []reportCollection
 	var cur []string
@@ -2513,14 +2571,14 @@ func (s *Store) completedExpr(workspaceID, scope string, instant bool) (string, 
 	}
 	posExpr, posArgs := s.positiveTerminalExpr(rcs)
 	if posExpr == "" {
-		return "", nil
+		return "", nil, nil
 	}
 	latest := "substr(MAX(st.created_at), 1, 10)"
 	if instant {
 		latest = "MAX(st.created_at)"
 	}
 	expr := "(CASE WHEN (" + strings.Join(cur, " OR ") + ") THEN (SELECT " + latest + " FROM status_transitions st WHERE st.item_id = i.id AND " + posExpr + ") END)"
-	return expr, append(curArgs, posArgs...)
+	return expr, append(curArgs, posArgs...), nil
 }
 
 // CompletedInstants returns, for each of itemIDs inside collectionID that is
@@ -2533,7 +2591,10 @@ func (s *Store) CompletedInstants(workspaceID, collectionID string, itemIDs []st
 	if len(itemIDs) == 0 {
 		return out, nil
 	}
-	expr, exprArgs := s.completedExpr(workspaceID, collectionID, true)
+	expr, exprArgs, err := s.completedExpr(workspaceID, collectionID, true)
+	if err != nil {
+		return nil, err
+	}
 	if expr == "" {
 		return out, nil
 	}

@@ -1999,7 +1999,11 @@ type ItemListParams struct {
 	FieldRanges []FieldRange
 	// FieldSpans are ANDed like FieldRanges; see FieldSpan. An entry with an
 	// empty EndKey is a plain range on StartKey.
-	FieldSpans     []FieldSpan
+	FieldSpans []FieldSpan
+	// OrderByDay orders the list by the date of this key (the keys FieldRanges
+	// reads), then by id: the calendar's date order, which a paged read can stop
+	// in. It replaces Sort.
+	OrderByDay     string
 	Sort           string // e.g. "priority:desc,created_at:asc"
 	GroupBy        string
 	Search         string // FTS query

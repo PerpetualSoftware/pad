@@ -333,3 +333,81 @@ func TestCalendarQueryMeasure(t *testing.T) {
 	}
 	t.Logf("MEASURE %-34s %4d rows %v", "CompletedInstants(500 ids)", len(got), time.Since(start).Round(time.Millisecond))
 }
+
+// OrderByDay orders by the value the day filters read, for every key shape, so
+// a paged read is in date order and offset pages neither repeat nor skip.
+func TestListItems_OrderByDay(t *testing.T) {
+	t.Parallel()
+	w := newRangeWorld(t)
+	// Created in reverse of the order they are dated, so id and insert order
+	// cannot pass for the date order.
+	days := []string{"2031-03-09", "2031-03-03", "2031-03-07", "2031-03-05", "2031-03-01", "2031-03-08", "2031-03-02"}
+	var items []*models.Item
+	for i, d := range days {
+		it := w.mk(t, d, `{"status":"open","due_date":"`+d+`","my-date":"`+d+`T10:00:00-05:00"}`)
+		w.setCreated(t, it, d+"T12:00:00Z")
+		f := `{"status":"done","due_date":"` + d + `","my-date":"` + d + `T10:00:00-05:00"}`
+		if _, err := w.s.UpdateItem(it.ID, models.ItemUpdate{Fields: &f}); err != nil {
+			t.Fatal(err)
+		}
+		w.stampTransitions(t, it, d+"T08:00:00Z")
+		items = append(items, it)
+		_ = i
+	}
+	want := append([]string(nil), days...)
+	sort.Strings(want)
+	for _, key := range []string{"created", "completed", "due_date", "my-date"} {
+		var got []string
+		for off := 0; ; off += 3 { // pages of three
+			p := models.ItemListParams{OrderByDay: key, Limit: 3, Offset: off, NoContent: true,
+				FieldRanges: []models.FieldRange{{Key: key, From: "2031-03-01", To: "2031-03-31"}}}
+			page, err := w.s.ListItems(w.wsID, p)
+			if err != nil {
+				t.Fatalf("%s: %v", key, err)
+			}
+			for _, it := range page {
+				got = append(got, it.Title)
+			}
+			if len(page) < 3 {
+				break
+			}
+		}
+		if strings.Join(got, "|") != strings.Join(want, "|") {
+			t.Errorf("%s: paged order = %v, want %v", key, got, want)
+		}
+	}
+	// A key that matches nothing orders by id and reads nothing: no SQL text.
+	for _, key := range []string{"due_date') OR 1=1 --", "a.b", ""} {
+		p := models.ItemListParams{OrderByDay: key, NoContent: true,
+			FieldRanges: []models.FieldRange{{Key: key, From: "2031-03-01", To: "2031-03-31"}}}
+		page, err := w.s.ListItems(w.wsID, p)
+		if err != nil || len(page) != 0 {
+			t.Errorf("key %q: %d items, err %v", key, len(page), err)
+		}
+	}
+	_ = items
+}
+
+// A collection read that fails while the completed expression is built is an
+// error, not an empty result: an empty calendar would read as no completions.
+func TestListItems_CompletedExpressionFailureIsAnError(t *testing.T) {
+	t.Parallel()
+	w := newRangeWorld(t)
+	w.mk(t, "x", `{"status":"open"}`)
+	// ListCollectionsMinimal reads settings; the other columns it shares with
+	// the collection lookups are left alone.
+	if _, err := w.s.db.Exec(`ALTER TABLE collections RENAME COLUMN settings TO settings_renamed`); err != nil {
+		t.Fatal(err)
+	}
+	for name, p := range map[string]models.ItemListParams{
+		"range": {FieldRanges: []models.FieldRange{{Key: "completed", From: "2026-01-01", To: "2026-12-31"}}},
+		"order": {OrderByDay: "completed"},
+	} {
+		if _, err := w.s.ListItems(w.wsID, p); err == nil || !strings.Contains(err.Error(), "completed expression") {
+			t.Errorf("%s: err = %v, want the completed expression's failure", name, err)
+		}
+	}
+	if _, err := w.s.CompletedInstants(w.wsID, w.coll.ID, []string{"x"}); err == nil || !strings.Contains(err.Error(), "completed expression") {
+		t.Errorf("CompletedInstants: err = %v", err)
+	}
+}

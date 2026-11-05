@@ -24,6 +24,9 @@ type AgendaSchedule struct {
 	ItemRef    string
 	ItemTitle  string
 	Collection string // slug
+	// Terminal is set only by ListSchedulesForCalendar: the item is in a
+	// terminal status of its collection.
+	Terminal bool
 }
 
 // ListSchedulesForAgenda returns the schedules of the open, live items scope
@@ -33,13 +36,40 @@ type AgendaSchedule struct {
 // [from, to) (an early resolve ends a schedule before its due instant) never
 // push a visible schedule past it.
 func (s *Store) ListSchedulesForAgenda(workspaceID string, scope PendingReminderScope, from, to time.Time, limit int) ([]AgendaSchedule, bool, error) {
+	return s.listAgendaSchedules(workspaceID, scope, from, to, limit, false)
+}
+
+// ListSchedulesForCalendar is ListSchedulesForAgenda for the calendar, which
+// also shows what happened on a finished item. An open item qualifies exactly
+// as on the agenda. A terminal item qualifies only when one of its schedules
+// has a history row near [from, to), so finished items whose schedule never
+// ended do not sit in the scan every month. Each row says whether its item is
+// terminal (AgendaSchedule.Terminal). The scope, workspace and deleted
+// conditions are the same ones.
+func (s *Store) ListSchedulesForCalendar(workspaceID string, scope PendingReminderScope, from, to time.Time, limit int) ([]AgendaSchedule, bool, error) {
+	return s.listAgendaSchedules(workspaceID, scope, from, to, limit, true)
+}
+
+func (s *Store) listAgendaSchedules(workspaceID string, scope PendingReminderScope, from, to time.Time, limit int, includeTerminal bool) ([]AgendaSchedule, bool, error) {
 	if scope.CollectionIDs != nil && len(scope.CollectionIDs) == 0 && len(scope.ItemIDs) == 0 {
 		return nil, false, nil
 	}
 	scopeSQL, scopeArgs := scopeClause("i", scope)
-	open, openArgs := s.nonTerminalFilter(workspaceID, "i")
 	f := time.RFC3339
-	args := append(append([]any{workspaceID, from.UTC().Format(f), from.UTC().Add(-36 * time.Hour).Format(f), to.UTC().Add(36 * time.Hour).Format(f), workspaceID}, scopeArgs...), openArgs...)
+	lo, hi := from.UTC().Add(-36*time.Hour).Format(f), to.UTC().Add(36*time.Hour).Format(f)
+	open, openArgs := s.nonTerminalFilter(workspaceID, "i")
+	var doneSQL string
+	var doneArgs []any
+	if includeTerminal {
+		// ONE parenthesised expression in the place the open filter held, so no
+		// OR can escape the workspace, scope and deleted conditions before it.
+		// The terminal expression is used twice, so its arguments are passed
+		// for each use, in placeholder order.
+		doneSQL, doneArgs = s.buildChildrenDoneExpr(s.doneFiltersForWorkspace(workspaceID), "i")
+		open = "(" + open + " OR (" + doneSQL + " AND EXISTS (SELECT 1 FROM schedule_occurrences t WHERE t.schedule_id = item_schedules.id AND t.occurrence_at >= ? AND t.occurrence_at < ?)))"
+		openArgs = append(append(append(append([]any{}, openArgs...), doneArgs...), lo), hi)
+	}
+	args := append(append([]any{workspaceID, from.UTC().Format(f), lo, hi, workspaceID}, scopeArgs...), openArgs...)
 	// item_id IN (...), not a join: scheduleColumns names item_schedules.id.
 	rows, err := s.db.Query(s.q(`SELECT `+scheduleColumns+` FROM item_schedules
 		WHERE workspace_id = ? AND (ended_at IS NULL OR ended_at >= ? OR EXISTS (SELECT 1 FROM schedule_occurrences o
@@ -73,8 +103,13 @@ func (s *Store) ListSchedulesForAgenda(workspaceID string, scope PendingReminder
 	for i := range out {
 		ids[i], byID[out[i].Schedule.ItemID] = out[i].Schedule.ItemID, &out[i]
 	}
-	irows, err := s.db.Query(s.q(`SELECT i.id, i.title, i.slug, c.slug, c.prefix, i.item_number
-		FROM items i JOIN collections c ON c.id = i.collection_id WHERE i.id IN (`+placeholders(len(ids))+`)`), ids...)
+	terminalSQL, iargs := "0", []any{}
+	if includeTerminal {
+		terminalSQL = "CASE WHEN " + doneSQL + " THEN 1 ELSE 0 END"
+		iargs = append(iargs, doneArgs...)
+	}
+	irows, err := s.db.Query(s.q(`SELECT i.id, i.title, i.slug, c.slug, c.prefix, i.item_number, `+terminalSQL+`
+		FROM items i JOIN collections c ON c.id = i.collection_id WHERE i.id IN (`+placeholders(len(ids))+`)`), append(iargs, ids...)...)
 	if err != nil {
 		return nil, false, fmt.Errorf("read agenda items: %w", err)
 	}
@@ -82,11 +117,13 @@ func (s *Store) ListSchedulesForAgenda(workspaceID string, scope PendingReminder
 	for irows.Next() {
 		var id, title, slug, coll, prefix string
 		var number *int64
-		if err := irows.Scan(&id, &title, &slug, &coll, &prefix, &number); err != nil {
+		var terminal int
+		if err := irows.Scan(&id, &title, &slug, &coll, &prefix, &number, &terminal); err != nil {
 			return nil, false, fmt.Errorf("scan agenda item: %w", err)
 		}
 		a := byID[id]
 		a.ItemTitle, a.Collection, a.ItemRef = title, coll, slug // a legacy item has no ref
+		a.Terminal = terminal == 1
 		if number != nil {
 			a.ItemRef = fmt.Sprintf("%s-%d", prefix, *number)
 		}
