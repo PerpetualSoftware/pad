@@ -90,7 +90,7 @@ func TestChatRemoteStoredIdentity(t *testing.T) {
 		}
 		return raw
 	}
-	assertRead(0) // A plain send leaves the sender's marker alone.
+	assertRead(1) // A send moves the sender's own marker to the new message (BUG-4320).
 	for i := 0; i < 4; i++ {
 		if _, err := s.SendConversationMessage(models.ConversationSend{
 			ConversationID: convs[0].ID, Author: models.ConversationActor{UserID: owner.ID},
@@ -103,8 +103,10 @@ func TestChatRemoteStoredIdentity(t *testing.T) {
 	assertRead(2) // last_seq is 5, while this page returned only 1 and 2.
 	call(`{"action":"show","target":"@rook","since":2,"limit":1,"no_mark":true}`)
 	assertRead(2)
+	call(fmt.Sprintf(`{"action":"read","target":"%d","to":3}`, convs[0].Number))
+	assertRead(3) // The read action still moves the marker forward.
 	call(`{"action":"send","target":"@rook","body":"reply","reply_to":4}`)
-	assertRead(4) // The new message is seq 6.
+	assertRead(6) // The send takes seq 6, and a send covers everything up to it (BUG-4320).
 	call(`{"action":"list"}`)
 	call(`{"action":"inbox","agent":"rook"}`)
 	call(fmt.Sprintf(`{"action":"delete","target":"C%d","seq":6}`, convs[0].Number))
@@ -113,7 +115,7 @@ func TestChatRemoteStoredIdentity(t *testing.T) {
 		t.Fatalf("delete: %+v %v", page, err)
 	}
 	call(fmt.Sprintf(`{"action":"read","target":"%d","to":5}`, convs[0].Number))
-	assertRead(5)
+	assertRead(6) // Never backwards: the send already took it to 6.
 	raw = world.call("pad_chat", `{"action":"show","target":"@missing"}`, session)
 	if !strings.Contains(raw, `"isError":true`) || !strings.Contains(raw, `"code":"not_found"`) {
 		t.Fatalf("unknown DM show: %s", raw)

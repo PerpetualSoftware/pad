@@ -99,6 +99,21 @@ func newRecentSet(max int, ttl time.Duration) *recentSet {
 	return &recentSet{max: max, ttl: ttl, now: time.Now, at: map[string]time.Time{}}
 }
 
+// forgetPrefix drops every entry whose id starts with prefix.
+func (s *recentSet) forgetPrefix(prefix string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kept := s.order[:0]
+	for _, id := range s.order {
+		if strings.HasPrefix(id, prefix) {
+			delete(s.at, id)
+			continue
+		}
+		kept = append(kept, id)
+	}
+	s.order = kept
+}
+
 // seen reports whether id was recorded within the window, and records it
 // when it was not.
 func (s *recentSet) seen(id string) bool {
@@ -698,7 +713,9 @@ func streamWatchEventsTo(w io.Writer, resp *http.Response, lastEventID string, s
 	if len(sinks) > 0 {
 		sink = sinks[0]
 	}
-	return newMonitorChat(sink, seenChat).stream(w, resp, lastEventID)
+	chat := newMonitorChat(sink, seenChat)
+	chat.unread = seenUnread // survives reconnects, like seenChat
+	return chat.stream(w, resp, lastEventID)
 }
 
 func (chat *monitorChat) stream(w io.Writer, resp *http.Response, lastEventID string) string {

@@ -161,25 +161,35 @@ func TestChatDeletePublishesRetractionOnce(t *testing.T) {
 		t.Fatal("repeat published")
 	}
 }
-func TestChatSendNeverAdvancesMarkers(t *testing.T) {
+
+// BUG-4320: a send moves the sender's own read marker, never delivered_seq and
+// never the other member's marker.
+func TestChatSendAdvancesOnlyTheSendersReadMarker(t *testing.T) {
 	f := newChatFixture(t)
 	p := f.ensure("rook")
 	for _, a := range []string{"", "rook"} {
 		f.must(f.request("POST", p+"/messages", a, map[string]any{"body": "hi"}), 201, "send")
 	}
-	rows, err := f.srv.store.DB().Query(`SELECT read_seq, delivered_seq FROM conversation_members`)
+	rows, err := f.srv.store.DB().Query(`SELECT agent_key, read_seq, delivered_seq FROM conversation_members ORDER BY agent_key`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer rows.Close()
+	want := map[string]int{"": 1, "rook": 2}
+	n := 0
 	for rows.Next() {
+		var key string
 		var r, d int
-		if err := rows.Scan(&r, &d); err != nil {
+		if err := rows.Scan(&key, &r, &d); err != nil {
 			t.Fatal(err)
 		}
-		if r != 0 || d != 0 {
-			t.Fatalf("markers %d %d", r, d)
+		if r != want[key] || d != 0 {
+			t.Fatalf("member %q markers read=%d delivered=%d, want read=%d delivered=0", key, r, d, want[key])
 		}
+		n++
+	}
+	if n != len(want) {
+		t.Fatalf("members = %d, want %d", n, len(want))
 	}
 }
 func TestChatDeliveredEndpoint(t *testing.T) {

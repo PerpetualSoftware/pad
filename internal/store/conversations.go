@@ -219,7 +219,7 @@ func (s *Store) GetConversationByNumber(actor models.ConversationActor, number i
 // checks the author is a member. A send whose op_key was already used by the
 // same author in the same conversation is rolled back (no seq is spent) and
 // returns the stored message with Replayed set, whatever body it carried.
-// TASK-4038 r6: sends leave both read and delivered markers unchanged.
+// BUG-4320: a send also moves the author's own read marker to the new message; delivered_seq and other members are untouched.
 func (s *Store) SendConversationMessage(in models.ConversationSend) (*models.ConversationSendResult, error) {
 	if err := validateConversationID(in.ConversationID); err != nil {
 		return nil, err
@@ -408,10 +408,15 @@ func (s *Store) sendConversationMessageOnce(in models.ConversationSend) (*models
 		return nil, fmt.Errorf("insert message: %w", err)
 	}
 
-	// TASK-4038 r6: leave both markers alone: high-water marks would cover
-	// the other side's unseen messages. "Replying marks read" is the client's
-	// job via MarkConversationRead with the seq it actually displayed;
-	// delivered_seq moves only through MarkConversationDelivered.
+	// BUG-4320: a send moves the author's own read marker to the message it just
+	// took, which is the newest one at that moment (the seq bump above holds the
+	// conversation row). Forward only, so a stale commit cannot lower it, and it
+	// never touches another member or delivered_seq: a delivery ack is not a read.
+	if _, err := tx.Exec(s.q(`UPDATE conversation_members SET read_seq = ?
+		WHERE conversation_id = ? AND user_id = ? AND agent_key = ? AND read_seq < ?`),
+		seq, in.ConversationID, in.Author.UserID, in.Author.AgentKey, seq); err != nil {
+		return nil, fmt.Errorf("advance author read marker: %w", err)
+	}
 
 	msg, err := s.conversationMessageBySeq(tx, in.ConversationID, seq)
 	if err != nil {
