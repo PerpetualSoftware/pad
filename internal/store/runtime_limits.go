@@ -71,7 +71,14 @@ func (l RuntimeLimits) applyToDSN(connStr string) (string, error) {
 	return out, nil
 }
 
-// BoundRuntimePool replaces the startup pool with a second pool whose every
+// BoundRuntimePool is boundRuntimePool as a package function. It is not a
+// method on purpose: scripts/ci-web-census treats an exported *Store method that
+// can open a PostgreSQL connection as an unresolved receiver for every package
+// importing the store, whereas a package function is traced by name like
+// NewPostgres (see "Without go/types" in that script).
+func BoundRuntimePool(s *Store, l RuntimeLimits) error { return s.boundRuntimePool(l) }
+
+// boundRuntimePool replaces the startup pool with a second pool whose every
 // connection carries the limits as startup parameters, then closes the startup
 // pool. The startup pool is the one NewPostgres ran migrations and backfills
 // on, so those are never bounded; only work done after this call is.
@@ -82,7 +89,7 @@ func (l RuntimeLimits) applyToDSN(connStr string) (string, error) {
 // NOT concurrency-safe: it assigns s.db, so call it once, single-threaded,
 // after the startup passes and before any goroutine, sweeper or listener uses
 // the store, and before anything captures s.DB().
-func (s *Store) BoundRuntimePool(l RuntimeLimits) error {
+func (s *Store) boundRuntimePool(l RuntimeLimits) error {
 	if s.pgConnStr == "" || l.IsZero() {
 		return nil
 	}

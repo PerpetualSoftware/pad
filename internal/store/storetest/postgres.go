@@ -124,7 +124,7 @@ func newPostgres(t *testing.T, limits store.RuntimeLimits) *store.Store {
 		dropPostgresDB(t, baseURL, dbName)
 		t.Fatalf("storetest: open cloned test postgres store: %v", err)
 	}
-	if err := s.BoundRuntimePool(limits); err != nil {
+	if err := store.BoundRuntimePool(s, limits); err != nil {
 		_ = s.Close()
 		dropPostgresDB(t, baseURL, dbName)
 		t.Fatalf("storetest: bound runtime pool: %v", err)

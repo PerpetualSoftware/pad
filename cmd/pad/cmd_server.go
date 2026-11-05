@@ -1613,7 +1613,7 @@ func applyDBRuntimeLimits(s *store.Store, cfg *config.Config, dbDriver string) e
 		}
 		return nil
 	}
-	if err := s.BoundRuntimePool(store.RuntimeLimits{
+	if err := store.BoundRuntimePool(s, store.RuntimeLimits{
 		Statement: limits.Statement, Lock: limits.Lock, IdleInTx: limits.IdleInTx,
 	}); err != nil {
 		return err

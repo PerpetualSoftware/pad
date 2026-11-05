@@ -44,7 +44,7 @@ func pgOnly(t *testing.T) *Store {
 func pgBounded(t *testing.T, l RuntimeLimits) *Store {
 	t.Helper()
 	s := pgOnly(t)
-	if err := s.BoundRuntimePool(l); err != nil {
+	if err := BoundRuntimePool(s, l); err != nil {
 		t.Fatalf("BoundRuntimePool: %v", err)
 	}
 	return s
@@ -275,7 +275,7 @@ func TestStartupPool_Unbounded(t *testing.T) {
 		}
 	}
 	startup := s.db
-	if err := s.BoundRuntimePool(rtLimits()); err != nil {
+	if err := BoundRuntimePool(s, rtLimits()); err != nil {
 		t.Fatal(err)
 	}
 	if s.db == startup {
@@ -619,7 +619,7 @@ func TestBoundRuntimePool_NoopOnSQLite(t *testing.T) {
 	t.Parallel()
 	s := testStoreSQLite(t)
 	before := s.db
-	if err := s.BoundRuntimePool(rtLimits()); err != nil {
+	if err := BoundRuntimePool(s, rtLimits()); err != nil {
 		t.Fatal(err)
 	}
 	if s.db != before {
@@ -634,7 +634,7 @@ func TestBoundRuntimePool_ZeroLimitsKeepPool(t *testing.T) {
 	t.Parallel()
 	s := pgOnly(t)
 	before := s.db
-	if err := s.BoundRuntimePool(RuntimeLimits{}); err != nil {
+	if err := BoundRuntimePool(s, RuntimeLimits{}); err != nil {
 		t.Fatal(err)
 	}
 	if s.db != before {
