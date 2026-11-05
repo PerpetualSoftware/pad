@@ -140,6 +140,9 @@
 	let inviteEmail = $state('');
 	let inviteRole = $state('editor');
 	let inviting = $state(false);
+	// Which invite is the latest: a slow clipboard write of an earlier one must not rewrite the
+	// newer one's message or release its busy flag.
+	let inviteSeq = 0;
 	let inviteResult = $state<{ message: string; type: 'success' | 'error' } | null>(null);
 	let createdInvite = $state<{ email: string; url: string } | null>(null);
 	// Current-user role + isOwner now come from workspaceStore (PLAN-1100 / TASK-1101)
@@ -650,6 +653,7 @@
 		// The workspace too: the route component is reused across workspaces on the same identity,
 		// and the join link minted here belongs to this one only.
 		const reqWs = wsSlug;
+		const mySeq = ++inviteSeq;
 		inviting = true;
 		inviteResult = null;
 		createdInvite = null;
@@ -671,9 +675,12 @@
 			}
 			inviteEmail = '';
 			inviteRole = 'editor';
-			// Reload members before the clipboard write: a write that waits on a permission prompt
-			// must not leave the list stale. Its own try, so a failed reload cannot rewrite the
-			// outcome of an invitation that was created (the link is already on screen).
+			// The write starts here, straight after the response, because the browser's user-gesture
+			// window is short; the reload below runs beside it. A write that waits on a permission
+			// prompt must hold neither the list nor the form.
+			const copying = !result.added && result.join_url ? copyToClipboard(result.join_url).catch(() => false) : null;
+			// The reload has its own try, so a failed reload cannot rewrite the outcome of an
+			// invitation that was created (the link is already on screen).
 			try {
 				const memberData = await api.members.list(reqWs);
 				// Check again after the reload: an identity can change during it as
@@ -685,9 +692,11 @@
 			} catch {
 				if (!identityHeld(epochAtEntry) || wsSlug !== reqWs) return;
 			}
-			if (!result.added && result.join_url) {
-				const ok = await copyToClipboard(result.join_url).catch(() => false);
-				if (!identityHeld(epochAtEntry) || wsSlug !== reqWs) return;
+			if (copying) {
+				// Released before the wait: the form is usable while a prompt is open.
+				if (mySeq === inviteSeq) inviting = false;
+				const ok = await copying;
+				if (!identityHeld(epochAtEntry) || wsSlug !== reqWs || mySeq !== inviteSeq) return;
 				inviteResult = {
 					message: `Invitation created for ${result.email}. ` + (ok ? 'Link copied' : 'Couldn’t copy the invitation link. Copy it below and send it to the invitee.'),
 					type: ok ? 'success' : 'error'
@@ -701,7 +710,7 @@
 				inviteResult = { message: err instanceof Error ? err.message : 'Failed to invite', type: 'error' };
 			}
 		} finally {
-			inviting = false;
+			if (mySeq === inviteSeq) inviting = false;
 		}
 	}
 
@@ -757,13 +766,14 @@
 		if (!ok || !identityHeld(epochAtEntry) || reqWs !== wsSlug) return;
 		try {
 			await api.members.cancelInvitation(reqWs, invId);
-			if (!identityHeld(epochAtEntry)) return;
+			// The cancellation happened server-side; this page is only told about it while it is still
+			// the workspace it was made in (a same-email invite made elsewhere meanwhile is not ours to touch).
+			if (!identityHeld(epochAtEntry) || wsSlug !== reqWs) return;
 			invitations = invitations.filter(i => i.id !== invId);
-			// Only this workspace's retained link: a same-email invite made in another workspace meanwhile is not ours to clear.
-			if (wsSlug === reqWs && createdInvite?.email === email) createdInvite = null;
+			if (createdInvite?.email === email) createdInvite = null;
 			toastStore.show(`Invitation cancelled for ${email}`, 'success');
 		} catch {
-			if (!identityHeld(epochAtEntry)) return;
+			if (!identityHeld(epochAtEntry) || wsSlug !== reqWs) return;
 			toastStore.show('Failed to cancel invitation', 'error');
 		}
 	}

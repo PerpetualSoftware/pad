@@ -380,4 +380,60 @@ describe('BUG-4335: invitation creation and clipboard feedback', () => {
 		for (let i = 0; i < 10; i++) { await Promise.resolve(); await tick(); }
 		expect(toastStore.show).not.toHaveBeenCalled();
 	});
+
+	it('starts the auto-copy right after the invite answers, before the members reload finishes', async () => {
+		await mount();
+		const reload = deferred<{ members: never[]; invitations: (typeof pending)[] }>();
+		vi.mocked(api.members.list).mockReturnValueOnce(reload.promise as never);
+		await invite();
+		// The browser's user-gesture window is short: the write must not wait on a network round trip.
+		await waitFor(() => expect(copyToClipboard).toHaveBeenCalledWith(URL));
+		expect(api.members.list).toHaveBeenCalledTimes(2);
+		expect(screen.queryByText(/Link copied/)).toBeNull();
+		reload.resolve({ members: [], invitations: [pending] });
+		await screen.findByText(`${CREATED} Link copied`);
+	});
+
+	it('drops a members reload that lands after the page moved to another workspace', async () => {
+		await mount();
+		const stale = { id: 'stale', email: 'stale@x.test', role: 'editor', code: '', created_at: '2026-11-05T00:00:00Z' };
+		const reload = deferred<{ members: never[]; invitations: (typeof stale)[] }>();
+		vi.mocked(api.members.list).mockReturnValueOnce(reload.promise as never);
+		await invite();
+		await waitFor(() => expect(api.members.list).toHaveBeenCalledTimes(2));
+		page.params = { username: 'dave', workspace: 'other' };
+		flushSync();
+		await tick();
+		await waitFor(() => expect(vi.mocked(api.members.list).mock.calls.some(([ws]) => ws === 'other')).toBe(true));
+		reload.resolve({ members: [], invitations: [stale] });
+		for (let i = 0; i < 10; i++) { await Promise.resolve(); await tick(); }
+		expect(document.body.textContent).not.toContain('stale@x.test');
+	});
+
+	it('keeps the invite form usable while a clipboard write waits on a permission prompt', async () => {
+		const pendingCopy = deferred<boolean>();
+		vi.mocked(copyToClipboard).mockReturnValueOnce(pendingCopy.promise);
+		await mount();
+		await invite();
+		await waitFor(() => expect(api.members.list).toHaveBeenCalledTimes(2));
+		const email = screen.getByRole('textbox', { name: 'Email address to invite' }) as HTMLInputElement;
+		await waitFor(() => expect(email.disabled).toBe(false));
+		pendingCopy.resolve(true);
+		await screen.findByText(`${CREATED} Link copied`);
+	});
+
+	it('a slow clipboard write of an earlier invite does not rewrite a newer invite message', async () => {
+		const firstCopy = deferred<boolean>();
+		vi.mocked(copyToClipboard).mockReturnValueOnce(firstCopy.promise).mockResolvedValueOnce(true);
+		await mount();
+		await invite();
+		await waitFor(() => expect(api.members.list).toHaveBeenCalledTimes(2));
+		vi.mocked(api.members.invite).mockResolvedValueOnce({ email: 'b@x.test', role: 'editor', join_url: URL });
+		await invite('b@x.test');
+		await screen.findByText('Invitation created for b@x.test. Link copied');
+		firstCopy.resolve(false);
+		for (let i = 0; i < 10; i++) { await Promise.resolve(); await tick(); }
+		expect(screen.queryByText(new RegExp(COPY_FAILED))).toBeNull();
+		expect(screen.getByText('Invitation created for b@x.test. Link copied')).toBeInTheDocument();
+	});
 });

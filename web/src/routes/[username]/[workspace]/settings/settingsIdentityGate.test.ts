@@ -24,12 +24,12 @@ identityGateSuite({
 			handleCollectionCreated: { reviewed: 'd79a036401d8', why: 'identityHeld(epochAtEntry) after refreshCollections, which fences its own commit' },
 			handleCollectionUpdated: { reviewed: '2f678b54cc5f', why: 'identityHeld(epochAtEntry) after refreshCollections, which fences its own commit' },
 			handleInvite: {
-				reviewed: 'e53891289cd2',
-				why: `${ENTRY}, before the clipboard write as well as the page commits; the finally clears its own busy flag. BUG-4335: the clipboard result (including rejection mapped to false) is awaited and fenced before the message changes; the workspace the invite was made for (reqWs) is captured at entry and compared to the live one after the invite, after the reload, after the clipboard and in the catch arm, because the route component is reused across workspaces and the join link is a secret; the members reload has its own try so a failed reload cannot rewrite the outcome of a created invitation, and it runs before the clipboard write so a write that waits on a prompt cannot leave the list stale; the members apps list still follows the reload's identity check. TASK-3601: the plan-limit refusal now names its inline scope and the blocked action, a change to the call's arguments only, still after the catch arm's check`,
+				reviewed: '6ef15d10a81c',
+				why: `${ENTRY}, before the clipboard write as well as the page commits; the finally clears its own busy flag. BUG-4335: the clipboard result (including rejection mapped to false) is awaited and fenced before the message changes; the workspace the invite was made for (reqWs) is captured at entry and compared to the live one after the invite, after the reload, after the clipboard and in the catch arm, because the route component is reused across workspaces and the join link is a secret; the clipboard write starts straight after the invite response (the browser's user-gesture window is short) and the members reload, in its own try so a failed reload cannot rewrite the outcome of a created invitation, runs beside it; the busy flag is released before the wait on the write, and the late message is written only if no newer invite has started (inviteSeq), so a slow prompt holds neither the list nor the form; the members apps list still follows the reload's identity check. TASK-3601: the plan-limit refusal now names its inline scope and the blocked action, a change to the call's arguments only, still after the catch arm's check`,
 			},
 			handleCopyInvitation: { reviewed: '0e460e1fb7e5', why: 'BUG-4335: pageIdentityHeld before reading the retained link; an entry epoch, the entry workspace and pageIdentityHeld after the clipboard await, before either toast, including rejected copies' },
 			handleRemoveMember: { reviewed: '75d40e43ff80', why: `${ENTRY}. TASK-2190: the failure toast reads the server's reason through memberChangeFailure, after the check. TASK-3543: epoch and workspace captured before the confirm dialog's await and re-checked after it` },
-			handleCancelInvitation: { reviewed: 'b3b033cf20d8', why: `${ENTRY}. BUG-4335: only the matching retained link is cleared, after cancellation succeeds, the identity check holds and the page is still the workspace the cancel was made for. TASK-3543: epoch and workspace captured before the confirm dialog's await and re-checked after it` },
+			handleCancelInvitation: { reviewed: '4906c77e7360', why: `${ENTRY}. BUG-4335: the whole continuation (list filter, retained-link clear, toast) runs only while the identity holds and the page is still the workspace the cancel was made for, on both arms; only the matching retained link is cleared. TASK-3543: epoch and workspace captured before the confirm dialog's await and re-checked after it` },
 			handleChangeRole: { reviewed: '19dd4423e43b', why: `${ENTRY}. TASK-2190: the failure arm reverts the select and toasts the server's reason only after the check. TASK-3543: epoch and workspace captured before the confirm dialog's await and re-checked after it; a No reverts the select only while the page is still the one asked about` },
 			toggleAccessPanel: { reviewed: 'c4d44ff12fa0', why: `${ENTRY}; the finally clears the panel's loading flag. BUG-3698: both arms also require accessPanelHeld (the panel generation, member and workspace the read was made for), and the finally clears loading only for the current generation` },
 			saveCollectionAccess: { reviewed: 'da703725bdec', why: `${ENTRY}, the revert included; the finally clears its own busy flag. BUG-3698: the toast follows the identity check, and the form refresh and the revert also require accessPanelHeld, so they never land in another member's panel` },
@@ -44,7 +44,7 @@ identityGateSuite({
 			{ body: /copyToClipboard\(url\)/, why: 'Copy invite link: pageIdentityHeld() before reading the invitation, the workspace captured then, and pageIdentityHeld() plus the same workspace again before the toast', reviewed: '135b15b30fe5' },
 		],
 		continuations: [
-			{ call: /\.catch\($/, body: /\(\) => false/, in: 'handleInvite', why: 'BUG-4335: maps clipboard rejection to false without committing state; the awaiting caller checks its captured identity', reviewed: '52675cf8e68f' },
+			{ call: /\.catch\($/, body: /\(\) => false/, in: 'handleInvite', why: 'BUG-4335: maps clipboard rejection to false without committing state; the awaiting caller checks its captured identity', reviewed: '3df6ac852b35' },
 			{ call: /\.catch\($/, body: /\(\) => false/, in: 'handleCopyInvitation', why: 'BUG-4335: maps retry rejection to false without committing state; the awaiting caller checks its captured identity and page identity', reviewed: '800faafe38b4' },
 			{ call: /^setTimeout\($/, body: /nameStatus = 'idle'/, in: 'saveName', why: `saveName status timer: ${TIMER}`, reviewed: '2a72a8c678c4' },
 			{ call: /^setTimeout\($/, body: /contextStatus = 'idle'/, in: 'saveContext', why: `saveContext status timer: ${TIMER}`, reviewed: '8b862e3ec852' },
@@ -65,8 +65,8 @@ identityGateSuite({
 		{
 			cls: 3,
 			what: 'the invitation clipboard completion loses its own identity check',
-			old: '\t\t\t\tconst ok = await copyToClipboard(result.join_url).catch(() => false);\n\t\t\t\tif (!identityHeld(epochAtEntry) || wsSlug !== reqWs) return;\n',
-			new: '\t\t\t\tconst ok = await copyToClipboard(result.join_url).catch(() => false);\n',
+			old: '\t\t\t\tconst ok = await copying;\n\t\t\t\tif (!identityHeld(epochAtEntry) || wsSlug !== reqWs || mySeq !== inviteSeq) return;\n',
+			new: '\t\t\t\tconst ok = await copying;\n',
 			names: 'handleInvite()',
 		},
 		{
