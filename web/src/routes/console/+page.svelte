@@ -15,6 +15,7 @@
 	let workspaces = $state<Workspace[]>([]);
 	let loading = $state(true);
 	let error = $state('');
+	let retrying = $state(false);
 
 	let ownedWorkspaces = $derived(
 		workspaces.filter((w) => w.owner_id === authStore.userId)
@@ -23,7 +24,7 @@
 		workspaces.filter((w) => w.owner_id !== authStore.userId)
 	);
 
-	onMount(async () => {
+	onMount(() => {
 		// Honor the openCreate=1 query param staged by /console/new's
 		// redirect (IDEA-1516 §1). Open the modal and scrub the param
 		// from the URL so a subsequent refresh doesn't re-open it.
@@ -40,14 +41,22 @@
 			});
 		}
 
+		void loadWorkspaces();
+	});
+
+	async function loadWorkspaces() {
+		retrying = !!error;
+		loading = true;
+		error = '';
 		try {
 			workspaces = await api.workspaces.list();
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Failed to load workspaces';
 		} finally {
 			loading = false;
+			retrying = false;
 		}
-	});
+	}
 
 	function workspaceUrl(ws: Workspace): string {
 		const owner = ws.owner_username || authStore.user?.username || '';
@@ -68,10 +77,18 @@
 </svelte:head>
 
 <div class="console-page">
-	{#if loading}
-		<div class="loading">Loading workspaces...</div>
-	{:else if error}
-		<div class="error-msg">{error}</div>
+	{#if loading && !retrying}
+		<div class="loading" role="status">Loading workspaces...</div>
+	{:else if error || retrying}
+		<div class="error-msg" role={error ? 'alert' : undefined}>
+			{#if loading}
+				<p role="status">Loading workspaces...</p>
+			{:else}
+				<h2>Couldn’t load your workspaces.</h2>
+				<p>Check your connection, then try again.</p>
+			{/if}
+			<Button variant="secondary" onclick={loadWorkspaces} disabled={loading}>Retry</Button>
+		</div>
 	{:else}
 		<section class="section">
 			<div class="section-header">
