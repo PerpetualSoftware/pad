@@ -82,7 +82,7 @@ async function pick(page: Page, seq: number, action: 'Reply' | 'Copy' | 'Delete'
 
 async function typeAndSend(page: Page, text: string) {
 	await page.getByRole('textbox', { name: 'Message' }).fill(text);
-	await page.getByRole('button', { name: 'Send', exact: true }).click();
+	await page.getByRole('button', { name: /^Send to .+, conversation \d+$/ }).click();
 }
 
 test('E5: send, reply, delete own, delete an agent row, and a reply to a retracted row', async ({
@@ -238,7 +238,7 @@ test('E6: the composer rides above the emulated keyboard, and a touch long-press
 		vv.dispatchEvent(new Event('resize'));
 	}, KEYBOARD);
 	await expect.poll(bottomOf).toBeLessThanOrEqual(viewportH - KEYBOARD);
-	await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeInViewport();
+	await expect(page.getByRole('button', { name: /^Send to .+, conversation \d+$/ })).toBeInViewport();
 	await page.evaluate(() => {
 		const vv = (window as unknown as { __vv: EventTarget & { height: number } }).__vv;
 		vv.height = innerHeight;
