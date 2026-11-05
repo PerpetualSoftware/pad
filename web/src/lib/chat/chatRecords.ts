@@ -95,7 +95,9 @@ export function purgeAll(): void {
 	sealed = true;
 	for (const key of keys()) write(key, null);
 }
+/** No identity means nothing to compare against: sign-out is purgeAll's job. A session-expiry reload starts anonymous and must keep its records. */
 export function purgeNotUser(userId: string): void {
+	if (!userId) return;
 	for (const key of keys()) {
 		if (parse(key)?.userId !== userId) write(key, null);
 	}

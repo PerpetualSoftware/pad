@@ -68,9 +68,6 @@
 			draftNotice = persisted ? 'Draft kept in this tab' : 'Draft kept until this page reloads';
 		}
 	}
-	// Bodies sent and not yet answered. send() empties `text` before the POST, so on a 401 they
-	// would be in neither the box nor the stash; the keeper adds them (r6 B2-L1).
-	const inFlight: { body: string }[] = [];
 	let notice = $state('');
 	// "Saved to conversation" after a stored send (section 7): a successful POST proves storage and nothing more.
 	let saved = $state('');
@@ -125,12 +122,13 @@
 		}
 	});
 
-	// Session expiry retains identity. Preserve in-flight bodies before its redirect,
-	// and do not let the subsequent destroy overwrite that combined snapshot.
+	// Session expiry retains identity. Keep what was typed since; an unanswered body is already
+	// a pending-attempt record, and stashing it here too would offer it twice after re-login.
+	// The snapshot is final: the subsequent destroy must not overwrite it.
 	$effect(() =>
 		registerSessionExpiryKeeper(() => {
 			if (signOutDiscarding()) return;
-			setDraft(owner, conversation, [...inFlight.map((f) => f.body), text].filter((p) => p !== '').join('\n'), replySeq);
+			if (text !== '') setDraft(owner, conversation, text, replySeq);
 			expiryKept = true;
 		})
 	);
@@ -170,16 +168,12 @@
 		clearDraft(owner, conversation);
 		notice = '';
 		saved = '';
-		const pending = { body };
-		inFlight.push(pending);
 		let outcome: SendOutcome | 'send_error';
 		try {
 			outcome = await onSend(body, targetSeq);
 		} catch {
 			// The box is already empty: a send that threw must not take the text with it (BUG-4312).
 			outcome = 'send_error';
-		} finally {
-			inFlight.splice(inFlight.indexOf(pending), 1);
 		}
 		if (destroyed || outcome === 'stale') return;
 		if (outcome === 'sent' || outcome === 'failed' || outcome === 'reply_deleted' || outcome === 'reply_missing') {

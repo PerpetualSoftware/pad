@@ -67,6 +67,12 @@ describe('chat records', () => {
 		identity('B:with:colon'); expect(records.getDraft('B:with:colon', 2)?.text).toBe('B:with:colon');
 		expect(records.listPending('B:with:colon', 2)).toHaveLength(1);
 	});
+	it('purgeNotUser with no identity keeps every record (session expiry reloads with an empty identity)', () => {
+		seed('A', 1);
+		records.purgeNotUser('');
+		expect(sessionStorage.getItem('pad:chat-draft:A:1')).not.toBeNull();
+		expect(sessionStorage.getItem('pad:chat-pending:A:1:op')).not.toBeNull();
+	});
 	it('signed-out notification purges and seals without confirmSignOut', () => {
 		seed('A', 1); identity(''); expect(sessionStorage.length).toBe(0);
 		auth.userId = 'A'; records.setDraft('A', 1, 'late teardown'); expect(sessionStorage.length).toBe(0);

@@ -269,8 +269,10 @@ describe('draft keeper', () => {
 		expect(sessionStorage.length).toBe(0);
 	});
 
-	// r6 B2-L1 (N38): red with the keeper stashing only `text`, which send() has already emptied.
-	it('stashes a body whose send has not answered yet, ahead of what was typed since', async () => {
+	// An unanswered body is already a pending-attempt record (written by the thread before the POST),
+	// so the keeper stashes only what was typed since. Stashing both offered the same text twice
+	// after re-login, as a draft and as a 'Send not confirmed' bubble.
+	it('stashes only what was typed since an unanswered send, not the in-flight body', async () => {
 		const first = mount();
 		first.onSend.mockReturnValue(new Promise(() => {})); // a 401 is on its way: the send never answers
 		await type(first.box, 'in flight');
@@ -282,7 +284,7 @@ describe('draft keeper', () => {
 		first.unmount();
 		const again = mount();
 		await tick();
-		expect(again.box.value).toBe('in flight\ntyped since');
+		expect(again.box.value).toBe('typed since');
 	});
 
 	it('stops stashing a body once its send has answered', async () => {
