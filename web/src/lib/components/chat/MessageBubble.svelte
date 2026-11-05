@@ -157,6 +157,8 @@
 		/* A touch long press opens the action menu: keep iOS from starting its own callout under the same hold. */
 		-webkit-touch-callout: none;
 	}
+	/* The long press does not arm on a link, so a link keeps iOS's own long-press actions. */
+	.bubble :global(a) { -webkit-touch-callout: default; }
 	.bubble.human { background: var(--bg-hover); }
 	.meta {
 		display: flex;
