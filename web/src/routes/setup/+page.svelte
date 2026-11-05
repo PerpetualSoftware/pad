@@ -197,7 +197,7 @@
 					password = '';
 					confirmPassword = '';
 					error =
-						'This token is invalid, expired, or already used. Get a fresh token from your container logs and paste it below.';
+						'This token is invalid, expired, or already used. Get a fresh token from Pad’s startup output and paste it below.';
 				}
 			} else if (err instanceof Error && isPasswordRuleError(err.message)) {
 				passwordError = err.message;
