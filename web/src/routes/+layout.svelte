@@ -256,11 +256,12 @@
 		authReady = true;
 	});
 
-	let chatRecordsChecked = false;
+	// The first identity a tab establishes fires no change event, so sweep other identities' chat
+	// records whenever an identity is present. An anonymous page (a session-expiry reload) keeps them.
 	$effect(() => {
-		if (!authReady || chatRecordsChecked) return;
-		chatRecordsChecked = true;
-		untrack(() => purgeNotUser(authStore.userId));
+		const id = authStore.userId;
+		if (!authReady || !id) return;
+		untrack(() => purgeNotUser(id));
 	});
 
 	$effect(() => {
