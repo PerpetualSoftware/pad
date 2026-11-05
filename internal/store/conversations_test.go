@@ -777,6 +777,29 @@ func TestSendAdvancesSenderReadMarker(t *testing.T) {
 		}
 	})
 
+	t.Run("a send whose seq is below the stored marker leaves it alone", func(t *testing.T) {
+		// Sends serialize on the conversation row, so a stale commit cannot be
+		// staged with goroutines. Seed the marker above the next seq instead.
+		s := testStore(t)
+		u := chatUser(t, s, "alice")
+		c := chatDM(t, s, u, "claude")
+		human := models.ConversationActor{UserID: u.ID}
+		agent := models.ConversationActor{UserID: u.ID, AgentKey: "claude"}
+		if _, err := s.db.Exec(s.q(`UPDATE conversation_members SET read_seq = 99 WHERE conversation_id = ? AND user_id = ? AND agent_key = ?`), c.ID, u.ID, "claude"); err != nil {
+			t.Fatal(err)
+		}
+		r := chatSend(t, s, c.ID, agent, "older", "", nil)
+		if r.Message.Seq != 1 {
+			t.Fatalf("send seq = %d, want 1", r.Message.Seq)
+		}
+		if rs, _ := marks(t, s, c.ID, agent); rs != 99 {
+			t.Errorf("agent read after a send below its marker = %d, want 99", rs)
+		}
+		if rs, _ := marks(t, s, c.ID, human); rs != 0 {
+			t.Errorf("human read = %d, want 0", rs)
+		}
+	})
+
 	t.Run("concurrent sends from one member never move the marker backwards", func(t *testing.T) {
 		s := testStore(t)
 		u := chatUser(t, s, "alice")
