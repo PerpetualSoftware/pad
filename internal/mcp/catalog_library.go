@@ -84,7 +84,4 @@ Actions:
 
 The library is workspace-agnostic: list/get need no workspace context. The
 workspace param is still accepted (and honored by activate), so a session
-pinned via pad_set_workspace need not re-pass it on every call.
-
-Use pad_library when an agent needs to discover available conventions/playbooks (notably
-during the /pad onboard interview) or activate a curated entry into a workspace.`
+pinned via pad_set_workspace need not re-pass it on every call.`

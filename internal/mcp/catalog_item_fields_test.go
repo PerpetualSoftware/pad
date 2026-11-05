@@ -1704,6 +1704,13 @@ func TestFieldConflictProperty_SourcesDerivedFromTheDeclaredSchema(t *testing.T)
 		// source.
 		"remind_at": true, "reminder_id": true,
 
+		// action=remind (as a schedule) / schedule-edit / schedule-resolve /
+		// agenda (TASK-4105). A schedule is its own row with its own routes;
+		// none of these is an item field, so none can collide with `fields`.
+		"every": true, "start": true, "deadline": true, "window": true, "anchor": true,
+		"audience": true, "tz": true, "floating": true,
+		"state": true, "until": true, "occurrence_at": true, "from": true, "to": true,
+
 		// Execution-lease coordination state (#1221) — holder/expiry live on
 		// dedicated columns, never in the item's fields blob.
 		"holder": true, "ttl": true, "worker_id": true,

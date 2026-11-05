@@ -96,10 +96,19 @@ var padItemTool = ToolDef{
 		"link-pr":   refAsItemRef([]string{"github", "link"}),
 		"unlink-pr": refAsItemRef([]string{"github", "unlink"}),
 
-		"remind":       passThrough([]string{"item", "remind"}),
+		// `remind` is also the door to schedules (TASK-4105): any schedule
+		// parameter makes it one. The rest of the schedule surface rides
+		// `pad item remind <subcommand>`; see catalog_item_schedule.go.
+		"remind":       actionItemRemind,
 		"ack-reminder": passThrough([]string{"item", "ack"}),
 		"reminders":    passThrough([]string{"item", "reminders"}),
 		"unremind":     passThrough([]string{"item", "unremind"}),
+
+		"schedule":         passThrough([]string{"item", "remind", "show"}),
+		"schedule-edit":    actionItemScheduleEdit,
+		"schedule-delete":  actionItemScheduleDelete,
+		"schedule-resolve": actionItemScheduleResolve,
+		"agenda":           actionItemAgenda,
 
 		// Execution lease (#1221 / PR #1238). Agents are the motivating
 		// users of the claim primitive — two pollers that both read
@@ -176,7 +185,7 @@ var padItemTool = ToolDef{
 // keeping the schema simple to maintain.
 var padItemSchemaParams = []ParamDef{
 	// ── Targeting ──
-	{Name: "ref", Type: "string", Description: "Item reference (e.g. TASK-5, IDEA-12, PLAYB-3, CONVE-7). Required for: update, delete, restore, get, move, link, unlink, deps, context, star, unstar, comment, list-comments, edit-comment, delete-comment, note, decide, export, remind, claim, release, reminders, link-pr, unlink-pr. NOT used for ack-reminder (it addresses a REMINDER by `reminder_id`, since an item can carry several) or bulk-update (pass `refs`, an array, instead)."},
+	{Name: "ref", Type: "string", Description: "Item reference (e.g. TASK-5, IDEA-12, PLAYB-3, CONVE-7). Required for every action that names one item: all but create, list, starred, import, agenda, bulk-update (pass `refs`, an array) and ack-reminder / unremind (they address a REMINDER by `reminder_id`, since an item can carry several)."},
 	{Name: "refs", Type: "array<string>", Description: "Item references for batch operations. Required for: bulk-update (one or more refs)."},
 	{Name: "target", Type: "string", Description: "The OTHER end of a relationship. Required for: link, unlink (paired with `ref` and `link_type`). For link_type=blocks, target is the item being blocked; for blocked-by it's the blocker; for supersedes it's the superseded item; etc."},
 	{Name: "link_type", Type: "string", Description: "Type of relationship for action=link/unlink.", Enum: []string{"blocks", "blocked-by", "supersedes", "implements", "split-from"}},
@@ -195,7 +204,7 @@ var padItemSchemaParams = []ParamDef{
 	// the item's collection + typed fields. `export` returns this same
 	// text as its tool result.
 	// ── Reminders ── (IDEA-2641)
-	{Name: "remind_at", Type: "string", Description: "When a reminder should fire, as an RFC3339 INSTANT (e.g. 2026-08-01T09:00:00Z, or 2026-08-01T09:00:00-04:00 which is stored as the same moment in UTC). Required for: remind. A bare date (2026-08-01) is REFUSED, not assumed to be midnight: it names a 24-hour span, and picking an hour in it would fire at a time nobody chose."},
+	{Name: "remind_at", Type: "string", Description: "When a reminder should fire, as an RFC3339 INSTANT (e.g. 2026-08-01T09:00:00Z, or 2026-08-01T09:00:00-04:00, stored as the same moment in UTC). Required for: remind as a one-shot (no schedule parameters). A bare date (2026-08-01) is REFUSED, not assumed to be midnight."},
 	// PR metadata for action=link-pr (TASK-3611), sent as given.
 	{Name: "pr_number", Type: "number", Description: "The pull request's number (> 0). Required for: link-pr."},
 	{Name: "pr_url", Type: "string", Description: "The pull request's absolute http(s) URL. Required for: link-pr."},
@@ -203,14 +212,29 @@ var padItemSchemaParams = []ParamDef{
 	{Name: "pr_state", Type: "string", Description: "The pull request's state as you know it (e.g. open, merged, closed). Optional for: link-pr. Pad does not check it against GitHub."},
 	{Name: "pr_branch", Type: "string", Description: "The pull request's head branch. Optional for: link-pr."},
 	{Name: "pr_repo", Type: "string", Description: "The pull request's repository, owner/name. Optional for: link-pr."},
-	{Name: "reminder_id", Type: "string", Description: "A reminder's id: the `id` returned when it was armed, or a row's `id` from action=reminders. Required for: ack-reminder, unremind. Acknowledging removes a fired reminder from pad_project's next/ready surface; nothing else acknowledges one, and in particular completing the item does not."},
+	{Name: "reminder_id", Type: "string", Description: "A reminder's id: the `id` returned when it was armed, or a row's `id` from action=reminders. Required for: ack-reminder, unremind."},
+
+	// ── Schedules ── (TASK-4105)
+	{Name: "every", Type: "string", Description: "Repeat rule: daily, weekdays, weekly, biweekly, monthly, monthly-last, quarterly, yearly, or an RRULE. For remind (schedule) and schedule-edit."},
+	{Name: "start", Type: "string", Description: "Wall time, no Z or offset: 2026-11-09T09:00, or 2026-11-09 all-day. Required for: remind as a schedule. Optional for: schedule-edit."},
+	{Name: "deadline", Type: "string", Description: "hard | soft makes a deadline; omit for a plain check. schedule-edit also takes none. Not with window."},
+	{Name: "window", Type: "string", Description: "Span from start: a duration (90m, 2h, 3d) or an end wall (2026-11-09T17:00). Not with deadline."},
+	{Name: "anchor", Type: "string", Description: "calendar (default) | completion: the next one falls an interval after you mark it done."},
+	{Name: "audience", Type: "string", Description: "human | agent | both (default)."},
+	{Name: "tz", Type: "string", Description: "IANA zone the wall is read in (default: your account zone); for agenda, the zone shown. Not with floating."},
+	{Name: "floating", Type: "bool", Description: "Read the wall in the zone of whoever it fires for. Not with tz."},
+	{Name: "state", Type: "string", Description: "done | skip | snooze | move. Required for: schedule-resolve."},
+	{Name: "until", Type: "string", Description: "RFC3339 instant to re-fire (snooze) or become due (move). Required for: snooze, move."},
+	{Name: "occurrence_at", Type: "string", Description: "RFC3339 instant of the outstanding occurrence, from action=schedule (next_occurrence.at). Required for: schedule-resolve."},
+	{Name: "from", Type: "string", Description: "Window start, RFC3339 instant. Required for: agenda."},
+	{Name: "to", Type: "string", Description: "Window end, RFC3339 instant, at most 92 days after from. Required for: agenda."},
 
 	// ── Execution lease ── (#1221)
 	{Name: "holder", Type: "string", Description: "Lease holder label for action=claim/release. Optional; defaults to your agent name. Display only with a worker_id."},
 	{Name: "worker_id", Type: "string", Description: "Your lease worker id, as a claim answers it. Optional for: claim, release; pass it to resume your leases from a new connection."},
-	{Name: "ttl", Type: "string", Description: "Lease duration for action=claim, as a Go duration (e.g. \"15m\", \"1h\"): default 15m, max 24h, minimum 1s (fractions truncate). Size it to your heartbeat cadence, not to the whole job."},
+	{Name: "ttl", Type: "string", Description: "Lease duration for action=claim, as a Go duration (e.g. \"15m\", \"1h\"): default 15m, max 24h, minimum 1s (fractions truncate)."},
 
-	{Name: "artifact", Type: "string", Description: "Full portable artifact text (YAML frontmatter + Markdown body). Required for: import — this is the artifact a prior `export` produced. NOT the same as `content` (which is just the item's Markdown body)."},
+	{Name: "artifact", Type: "string", Description: "Full portable artifact text (YAML frontmatter + Markdown body). Required for: import. NOT the same as `content` (which is just the item's Markdown body)."},
 
 	// ── Status / priority / scheduling ──
 	{Name: "status", Type: "string", Description: "Item status (collection-specific enum). Optional for: create, update, list filter, bulk-update."},
@@ -226,12 +250,12 @@ var padItemSchemaParams = []ParamDef{
 	// remote path via dispatchItemList reading the dispatch input —
 	// declared only because both transports genuinely honor it (the
 	// v0.18 lesson: never advertise a param one transport drops).
-	{Name: "full", Type: "bool", Description: "For action=list, return complete item content bodies instead of the default summary shape. For action=history, include each version's resolved content body. Token-expensive on large workspaces — prefer action=get for a single item's body."},
+	{Name: "full", Type: "bool", Description: "For action=list, return complete item content bodies instead of the default summary shape. For action=history, include each version's resolved content body. Token-expensive — prefer action=get for a single item's body."},
 	{Name: "role", Type: "string", Description: "Agent role slug to assign (e.g. implementer). Optional for: create, update, list filter, context."},
 	// PLAN-3598 action=context.
 	{Name: "intent", Type: "string", Description: "Optional for: context. What you are about to do (implement, review, ...): picks the conventions whose trigger matches; without it, only always-on ones."},
 	{Name: "budget", Type: "number", Description: "Optional for: context. Size cap in characters (default 40000); whole parts past it are listed as omitted."},
-	{Name: "assign", Type: "string", Description: "User name or email to assign. Optional for: create, update, list filter. To UNASSIGN, use clear_assigned_user=true — an empty `assign` does NOT clear (it reads as \"not provided\", like every other optional string here)."},
+	{Name: "assign", Type: "string", Description: "User name or email to assign. Optional for: create, update, list filter. To UNASSIGN, use clear_assigned_user=true — an empty `assign` does NOT clear."},
 	// The canonical clear form (IDEA-2584). Booleans rather than an empty
 	// string on assign/role, for two reasons that both matter:
 	//
@@ -283,16 +307,16 @@ var padItemSchemaParams = []ParamDef{
 	// or just guessed shapes when other input shapes errored. The
 	// expanded description names the dedicated top-level params so
 	// agents don't fall back to `field` for them.
-	{Name: "field", Type: "array<string>", Description: "Setters for SCHEMA-DECLARED fields without a dedicated top-level param. Array of \"key=value\" strings (e.g. [\"due_date=2026-06-01\",\"effort=l\"]). For status/priority/category/parent/role/assign/tags use the dedicated top-level param instead. Optional for: create, update, list filter, move. Four keys are REFUSED on create, update and move (code=validation_failed, reason in the hint), each with its own writer: implementation_notes -> action=note, decision_log -> action=decide, github_pr -> action=link-pr / unlink-pr, convention -> library activation only. On create, create the item first, then note / decide on it. On create/update the `fields` OBJECT param is an equivalent alternative."},
+	{Name: "field", Type: "array<string>", Description: "Setters for SCHEMA-DECLARED fields without a dedicated top-level param. Array of \"key=value\" strings (e.g. [\"due_date=2026-06-01\",\"effort=l\"]). For status/priority/category/parent/role/assign/tags use the dedicated top-level param instead. Optional for: create, update, list filter, move. Four keys are REFUSED on create, update and move, each with its own writer: implementation_notes -> action=note, decision_log -> action=decide, github_pr -> action=link-pr / unlink-pr, convention -> library activation only. On create/update the `fields` OBJECT param is an equivalent alternative."},
 	// `fields`: the OBJECT alias for the write path (#1066). Reads
 	// return `fields` as a native object, so writing that same shape
 	// back is what agents naturally do — it used to be silently
 	// dropped. See catalog_item_fields.go for the merge contract.
-	{Name: "fields", Type: "object", Description: "Field values as one OBJECT (e.g. {\"status\":\"done\",\"effort\":\"l\"}) — the same shape reads return. Only for: create, update. Merges into the same path as `field`/the dedicated params; a key given here AND at the top level (or in `field`) with a DIFFERENT value is REFUSED, not silently resolved. Values keep their JSON type: a number stays a number; an object or array is written as-is to multi_select / json fields (BUG-2850). Two exceptions: `null` is refused (omit the key to leave a field unchanged), and parent/plan must be a string ref. Structured values work on both transports: the local stdio server passes them to the CLI as one --fields-json object."},
+	{Name: "fields", Type: "object", Description: "Field values as one OBJECT (e.g. {\"status\":\"done\",\"effort\":\"l\"}) — the same shape reads return. Only for: create, update. Merges into the same path as `field`/the dedicated params; a key given here AND at the top level (or in `field`) with a DIFFERENT value is REFUSED, not silently resolved. Values keep their JSON type: a number stays a number; an object or array is written as-is to multi_select / json fields. Two exceptions: `null` is refused (omit the key to leave a field unchanged), and parent/plan must be a string ref."},
 
 	// ── List / starred ──
 	{Name: "all", Type: "bool", Description: "Include archived/done items in list responses. Optional for: list, starred."},
-	{Name: "limit", Type: "number", Description: "Maximum results. Optional for: list, backlinks, history. Each defaults to 50, max 300. For history the window is the NEWEST N versions. starred takes no limit: it returns at most 300, most recently starred first, with has_more when more exist."},
+	{Name: "limit", Type: "number", Description: "Maximum results. Optional for: list, backlinks, history. Each defaults to 50, max 300. For history the window is the NEWEST N versions. starred takes no limit: it returns at most 300, with has_more when more exist."},
 	{Name: "offset", Type: "number", Description: "Skip the first N results (paging). Optional for: backlinks."},
 	{Name: "sort", Type: "string", Description: "Sort field. Optional for: list."},
 	{Name: "group_by", Type: "string", Description: "Group-by field. Optional for: list."},
@@ -304,7 +328,7 @@ var padItemSchemaParams = []ParamDef{
 	{Name: "message", Type: "string", Description: "Comment body. Required for: comment, edit-comment."},
 	{Name: "comment_id", Type: "string", Description: "ID of a comment on `ref` (from list-comments). Required for: edit-comment, delete-comment."},
 	{Name: "reply_to", Type: "string", Description: "Parent comment ID for threading replies. Optional for: comment."},
-	{Name: "comment", Type: "string", Description: "Audit comment explaining the change. Optional for: update."},
+	{Name: "comment", Type: "string", Description: "Audit comment explaining the change. Optional for: update, schedule-resolve (the server decides; moving a soft deadline needs one, else 400)."},
 
 	// ── Guard override ── (IDEA-1494)
 	// update/bulk-update reject non-terminal → terminal done-field
@@ -315,14 +339,14 @@ var padItemSchemaParams = []ParamDef{
 	// force=true skips the guard and still records the transition.
 	// The same flag exists on `pad item update --force` so the CLI
 	// and MCP escape hatches are identical.
-	{Name: "force", Type: "bool", Description: "Override the open-children guard. Optional for: update, bulk-update, move. When the server returns code=open_children, details.open_children lists the blocking child refs so an agent can ship them and retry, or set force=true to orphan them on purpose."},
+	{Name: "force", Type: "bool", Description: "Override the open-children guard. Optional for: update, bulk-update, move. On code=open_children, details.open_children lists the blocking child refs: ship them and retry, or set force=true to orphan them on purpose."},
 
 	// ── Optimistic concurrency ── (TASK-2022)
 	// update only. Round-trip the `updated_at` a prior get returned; the
 	// server rejects the update with code=update_conflict (409) if the item
 	// changed since, so a coordinating agent can detect a lost-update race
 	// and re-read instead of silently clobbering another writer.
-	{Name: "expected_updated_at", Type: "string", Description: "Optimistic-concurrency guard for action=update. RFC3339 updated_at you last read; the update is rejected with code=update_conflict if the item changed since. Optional."},
+	{Name: "expected_updated_at", Type: "string", Description: "Weaker guard for action=update than expected_seq: the RFC3339 updated_at you last read; rejected with code=update_conflict if the item changed since. Optional."},
 	// BUG-3037: the STRONG token, and the one an agent should reach for.
 	// `updated_at` has one-second resolution, so two writes inside one second
 	// both match it and NEITHER conflicts — an agent that reads, decides and
@@ -340,13 +364,13 @@ var padItemSchemaParams = []ParamDef{
 		},
 		"required": []any{"old", "new"},
 	}, Description: "patch: the edits, applied in order, all or nothing. Required for: patch."},
-	{Name: "op_key", Type: "string", Description: "patch, create, comment, note, decide: an idempotency key you choose (e.g. a UUID). Retrying the SAME request with the same key returns the first answer instead of applying it again; use it whenever a retry could follow an unclear outcome. A key reused for a different request is refused (idempotency_key_reused)."},
-	{Name: "undo", Type: "string", Description: "patch: invert an earlier patch on this item by its patch_id (instead of edits). Refused, writing nothing (patch_anchor_missing), when the text it changed has changed since; never reverts someone else's later edit. The undo is itself a patch."},
-	{Name: "lines", Type: "string", Description: "get: return only these body lines, numbered (\"A-B\", \"A-\" or \"A\"; 1-based), with seq and content_state, for targeting a patch. Line numbers are for reading; a patch anchors on text."},
+	{Name: "op_key", Type: "string", Description: "patch, create, comment, note, decide: an idempotency key you choose (e.g. a UUID). Retrying the SAME request with the same key returns the first answer instead of applying it again. A key reused for a different request is refused (idempotency_key_reused)."},
+	{Name: "undo", Type: "string", Description: "patch: invert an earlier patch on this item by its patch_id (instead of edits). Refused, writing nothing (patch_anchor_missing), when the text it changed has changed since; never reverts someone else's later edit."},
+	{Name: "lines", Type: "string", Description: "get: return only these body lines, numbered (\"A-B\", \"A-\" or \"A\"; 1-based), with seq and content_state, for targeting a patch."},
 	// PLAN-3555: the deliberate-overwrite opt-out. Phase 1 changes no outcome;
 	// phase 2 refuses a body write that carries neither this nor a token.
-	{Name: "replace", Type: "bool", Description: "update: true overwrites the content on purpose, whatever changed since you read it (no version token). A content write with neither this nor expected_seq is flagged warnings.unguarded_content_write now and will be refused later. Conflicts with expected_seq."},
-	{Name: "expected_seq", Type: "number", Description: "Optimistic-concurrency guard for action=update, PREFERRED over expected_updated_at. The `seq` you last read; the update is rejected with code=update_conflict if the item changed since. Unlike expected_updated_at, it tells apart two writes in the same second. Optional."},
+	{Name: "replace", Type: "bool", Description: "update: true overwrites the content on purpose, whatever changed since you read it (no version token). Conflicts with expected_seq."},
+	{Name: "expected_seq", Type: "number", Description: "Optimistic-concurrency guard for action=update, PREFERRED over expected_updated_at. The `seq` you last read; the update is rejected with code=update_conflict if the item changed since. Optional."},
 
 	// ── Notes / decisions ──
 	{Name: "summary", Type: "string", Description: "Short note headline. Required for: note."},
@@ -361,7 +385,7 @@ Actions:
   create — Create an item.
     Required: collection, title.
     Optional: status, priority, category, content, parent, role, assign, tags, field, fields.
-    Use dedicated params for those fields; the dispatcher rolls them into the item's fields JSON.
+    Use dedicated params for those fields.
     'field' is the escape hatch for SCHEMA-DECLARED custom fields without a dedicated param:
     ["key=value"]. The fields OBJECT (the shape reads return) is equivalent;
     a key with CONFLICTING values in two places is refused, not resolved.
@@ -381,9 +405,7 @@ Actions:
     Writing 'content' while a browser tab has the item open goes to that live document.
     The response echoes what you SENT with warnings.content_outcome="applied_pending_flush"
     (it describes the write, not the row); a read before a tab saves still returns the
-    PREVIOUS content. That is lag, not a failed write: re-read later (get or list with
-    full=true; default lists have no content), never re-send. Nothing guarantees that
-    save; do not wait in a loop. Markdown may normalise; compare meaning, not bytes.
+    PREVIOUS content. That is lag, not a failed write: never re-send, and do not wait in a loop.
   delete — Archive. Required: ref.
   restore — Restore an archived item. Required: ref.
   get — Read. Required: ref. Optional: lines ("40-80": numbered body lines + seq for anchors).
@@ -396,8 +418,6 @@ Actions:
     your anchor was rewritten, the edit still lands.
     A moved expected_seq does not refuse: the patch applies and returns rebased=true
     with intervening writes (complete=false when some left no record).
-    An open editor applies it to its live document, merging with the typing there;
-    the answer carries content_state="applied_pending_flush".
     Refusals write nothing: patch_anchor_missing / patch_anchor_ambiguous (re-read,
     quote current text); patch_unstable_roundtrip (editor would change unrelated
     content: send a whole-body update); patch_room_open (an older editor cannot apply patches).
@@ -418,6 +438,17 @@ Actions:
   remind — Arm a one-shot reminder. Required: ref, remind_at (RFC3339 INSTANT; bare dates refused).
     When fired, the item appears in pad_project next/ready carrying the reminder_id,
     until acknowledged. Use when deferring work.
+    With start (plus any of every, deadline, window, anchor, audience, tz, floating) instead of
+    remind_at it arms a SCHEDULE: a check, deadline or window, once or repeating.
+  schedule — Read the item's schedule. Required: ref.
+  schedule-edit — Change it; only parameters given change. Required: ref, one of the schedule
+    parameters (deadline none = plain check).
+  schedule-resolve — Resolve the outstanding occurrence. Required: ref, state, occurrence_at.
+    snooze and move also need until. A hard deadline cannot be moved: snooze it.
+  schedule-delete — Delete the schedule. Required: ref. Removes the schedule and its rule,
+    its history of resolved occurrences, and its managed reminder, so the pending occurrence
+    stops firing. Keeps the item, its comments and one-shot reminders. Cannot be undone.
+  agenda — Schedule occurrences and dated items in a window. Required: from, to (RFC3339, at most 92 days). Optional: tz.
   ack-reminder — Acknowledge a fired reminder so it leaves next/ready.
     Required: reminder_id (from the fired suggestion or arming response, NOT item ref).
     Nothing else acknowledges one: completing the item does not; it may fire after work is done.
@@ -429,7 +460,6 @@ Actions:
     Returns your worker_id. One concurrent claimer wins; a loser's 409 names the live
     holder and expiry: log it and skip, don't retry in a loop.
     Re-claim while you hold it to extend the expiry (heartbeat).
-    Leases expire: crashed holders block nobody past TTL; no reaper to wait for.
   release — Release when you finish. Required: ref. Optional: holder, worker_id.
     Another holder's live lease is refused. Absent/expired leases return released:false,
     no error; cleanup needs no precheck.

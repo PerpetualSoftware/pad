@@ -54,7 +54,7 @@ type toolSurfaceToolSummary struct {
 // action never silently advertises as read-only). Confirmed against the
 // catalog_*.go ToolDefs:
 //
-//   - pad_item:       get/list/deps/starred/list-comments/backlinks/export read;
+//   - pad_item:       get/list/deps/starred/list-comments/backlinks/export/schedule/agenda read;
 //     create/update/delete/move/restore/link/unlink/star/unstar/
 //     comment/bulk-update/note/decide/import write.
 //   - pad_workspace:  list/members/storage/audit-log/deleted read;
@@ -87,6 +87,10 @@ var readOnlyActions = map[string]map[string]bool{
 		// documented read-only in catalog_item.go (version metadata,
 		// no content body, no mutation).
 		"history": true,
+		// TASK-4105: schedule reads one item's schedule, agenda a window of
+		// them. schedule-edit, schedule-delete and schedule-resolve write.
+		"schedule": true,
+		"agenda":   true,
 	},
 	"pad_workspace": {
 		"list":      true,

@@ -70,10 +70,7 @@ Actions:
                   + always-on conventions + roles + playbook metadata + dashboard +
                   recent activity). On-demand refresh for agents that didn't get the
                   resource prefetch, or want a fresh snapshot after many mutations. Equivalent to pad://workspace/{ws}/bootstrap and to
-                  pad_set_workspace's embedded response.
-
-Use pad_meta when an agent needs to discover server capabilities, regenerate context,
-or build documentation. For runtime task work, use pad_item / pad_workspace / etc.`
+                  pad_set_workspace's embedded response.`
 
 // actionMetaServerInfo returns the minimal {name, version} pair.
 // Roughly equivalent to what the MCP handshake exposes, but available

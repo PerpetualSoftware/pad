@@ -237,8 +237,4 @@ Actions:
   match — Pick the ACTIVE playbook (or "none") that text asks for.
           Returns choice, confidence, probabilities, model.
           Required: workspace, text.
-          404 = no provider; fall back to slug/trigger routing.
-
-Use pad_playbook when an agent needs to dispatch a named procedure or read
-a playbook's declared argument contract before invoking it. For browsing
-the underlying items (search, comments, links), use pad_item.`
+          404 = no provider; fall back to slug/trigger routing.`

@@ -190,6 +190,7 @@ func runScopePopulation(t *testing.T, doc *cmdhelp.Document, scopes string) map[
 			}
 			input := parityFixtureInput()
 			input["workspace"] = "docapp"
+			task4105FixtureFor(key, input)
 			if key == "pad_library.activate" {
 				input["title"] = "Ship tasks" // a real library entry
 			}
