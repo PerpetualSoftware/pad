@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -226,7 +227,8 @@ func printBootstrapAgenda(a *bootstrapAgendaView) {
 		if r.MissedCount > 0 {
 			missed = fmt.Sprintf(", missed %d", r.MissedCount)
 		}
-		fmt.Printf("- [%s] %s — %s (%s%s)\n", r.Ref, r.Title, at, r.Kind, missed)
+		// A title is item data: one line, so it cannot open a line of its own.
+		fmt.Printf("- [%s] %s — %s (%s%s)\n", r.Ref, strings.Join(strings.Fields(r.Title), " "), at, r.Kind, missed)
 	}
 	fmt.Printf("## Agenda (%s, %s)\n", a.Today, a.Tz)
 	if a.Note != "" {

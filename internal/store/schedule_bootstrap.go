@@ -175,7 +175,9 @@ func (s *Store) BootstrapAgenda(p BootstrapAgendaParams) (*BootstrapAgendaSet, e
 // the override and leaves the moved row, so the row counts only while the
 // schedule has not been written since: a later write (a snooze, or an edit) reads
 // as not moved, and the occurrence is listed at its grid time, which errs toward
-// showing it.
+// showing it. The stamps are whole seconds, so a snooze in the same second as the
+// move still reads as the move; the occurrence then waits for the snoozed time,
+// which is when it re-fires anyway.
 func movedStill(moved map[[2]string]string, sc *models.ItemSchedule) bool {
 	at, ok := moved[[2]string{sc.ID, *sc.NextWall}]
 	return ok && sc.UpdatedAt <= at
