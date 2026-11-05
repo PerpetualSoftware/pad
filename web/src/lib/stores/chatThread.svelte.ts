@@ -483,25 +483,26 @@ export class ChatThread {
 
 	/**
 	 * Delete a message (V6, V7: idempotent, a repeat answers 200 with the same
-	 * tombstone) and merge the tombstone in place. True when it is gone.
+	 * tombstone) and merge the tombstone in place only after server success.
 	 */
-	async remove(seq: number): Promise<boolean> {
+	async remove(seq: number): Promise<{ ok: true } | { ok: false; message: string }> {
+		const fallback = "Couldn't delete that message. Try again.";
 		const n = this.#n;
-		if (n === null || this.status !== 'ready') return false;
+		if (n === null || this.status !== 'ready') return { ok: false, message: fallback };
 		const current = this.#guard();
 		try {
 			const res = await api.chat.deleteMessage(n, seq);
-			if (!current()) return false;
+			if (!current()) return { ok: false, message: fallback };
 			await this.#enqueue(current, async () => {
 				// Only a row the window or the detached list holds: a re-anchor meanwhile may have moved it (r2 H3).
 				if (this.#win.messages.some((m) => m.seq === seq)) this.#win.merge([res.message]);
 				else this.detached = this.detached.map((m) => (m.seq === seq ? res.message : m));
 				this.#publish(this.#lastSeq);
 			});
-			return current();
+			return current() ? { ok: true } : { ok: false, message: fallback };
 		} catch (err) {
 			if (current() && isNotFoundError(err)) this.status = 'notFound';
-			return false;
+			return { ok: false, message: err instanceof Error && 'code' in err && err.message ? err.message : fallback };
 		}
 	}
 

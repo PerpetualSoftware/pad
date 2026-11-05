@@ -44,6 +44,32 @@ describe('ConfirmDialog', () => {
 		expect(await answer).toBe(true);
 	});
 
+	it('focusCancel explicitly focuses Cancel on open', async () => {
+		open();
+		void confirmDialog.request({ title: 'Delete?', message: 'Gone.', confirmLabel: 'Delete', focusCancel: true });
+		await settle();
+		expect(document.activeElement).toBe(byText('Cancel'));
+	});
+
+	it('focusCancel resets focus for a queued question in an already-open dialog', async () => {
+		open();
+		void confirmDialog.request({ title: 'First', message: 'First', confirmLabel: 'Proceed' });
+		void confirmDialog.request({ title: 'Delete?', message: 'Gone.', confirmLabel: 'Delete', focusCancel: true });
+		await settle();
+		byText('Proceed')!.focus();
+		byText('Proceed')!.click();
+		await settle();
+		expect(document.activeElement).toBe(byText('Cancel'));
+	});
+
+	it('without focusCancel keeps the existing native autofocus behavior', async () => {
+		open();
+		void confirmDialog.request({ title: 'T', message: 'M', confirmLabel: 'Proceed' });
+		await settle();
+		expect(byText('Cancel')!.hasAttribute('autofocus')).toBe(true);
+		expect(byText('Proceed')!.hasAttribute('autofocus')).toBe(false);
+	});
+
 	it('Cancel answers no', async () => {
 		open();
 		const answer = confirmDialog.request({ title: 'T', message: 'M', confirmLabel: 'Replace content' });

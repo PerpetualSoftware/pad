@@ -76,8 +76,13 @@ const row = (page: Page, seq: number) => page.locator(`article[data-seq="${seq}"
 
 /** Open a row's menu the way a pointer device does, and click one action. */
 async function pick(page: Page, seq: number, action: 'Reply' | 'Copy' | 'Delete') {
-	await row(page, seq).hover();
-	await row(page, seq).getByRole('button', { name: action, exact: true }).click();
+	await row(page, seq).getByRole('button', { name: /More/ }).click();
+	await page.getByRole('menuitem', { name: action, exact: true }).click();
+	if (action === 'Delete') {
+		const dialog = page.getByRole('dialog', { name: 'Delete this message?' });
+		await expect(dialog.getByRole('button', { name: 'Cancel', exact: true })).toBeFocused();
+		await dialog.getByRole('button', { name: 'Delete', exact: true }).click();
+	}
 }
 
 async function typeAndSend(page: Page, text: string) {
@@ -108,6 +113,36 @@ async function e5(page: Page, request: APIRequestContext, fixture: Fixture) {
 	const retracted = await agentSays(request, fixture, n, agent, 'agent line three');
 	await page.goto(`/messages/${n}`);
 	await expect(row(page, retracted.seq)).toContainText('agent line three');
+
+	// Header actions never change row height or overlap the body. Native keyboard
+	// activation is covered here because jsdom does not implement button defaults.
+	const firstRow = row(page, first.seq);
+	await page.mouse.move(0, 0);
+	const initialHeight = (await firstRow.boundingBox())!.height;
+	await firstRow.hover();
+	await expect(firstRow.getByRole('button', { name: 'Reply', exact: true })).toBeVisible();
+	expect((await firstRow.boundingBox())!.height).toBe(initialHeight);
+	await page.mouse.move(0, 0);
+	await page.getByRole('link', { name: 'All conversations' }).focus();
+	const more = firstRow.getByRole('button', { name: /More/ });
+	for (let i = 0; i < 8; i++) {
+		await page.keyboard.press('Tab');
+		if (await more.evaluate(el => el === document.activeElement)) break;
+	}
+	await expect(more).toBeFocused();
+	expect((await firstRow.boundingBox())!.height).toBe(initialHeight);
+	const actions = firstRow.getByRole('button', { name: 'Copy', exact: true });
+	const actionBox = (await actions.boundingBox())!;
+	const bodyBox = (await firstRow.locator('.body').boundingBox())!;
+	expect(actionBox.y + actionBox.height).toBeLessThanOrEqual(bodyBox.y);
+	for (const key of ['Enter', 'Space']) {
+		await more.press(key);
+		await expect(page.getByRole('menuitem', { name: 'Reply', exact: true })).toBeFocused();
+		await page.keyboard.press('ArrowDown');
+		await expect(page.getByRole('menuitem', { name: 'Copy', exact: true })).toBeFocused();
+		await page.keyboard.press('Escape');
+		await expect(more).toBeFocused();
+	}
 
 	// Send through the UI: the bubble confirms to a real row with the web shape.
 	await typeAndSend(page, 'hello from the web');
@@ -200,16 +235,17 @@ test('E5c: a send past a gap shows below the Show newer marker while the marker 
 	const m = (await marker.boundingBox())!;
 	const s = (await sent.boundingBox())!;
 	expect(s.y).toBeGreaterThan(m.y);
-	// The own detached row is right-aligned like any own row, not left-aligned and full width.
+	// Both authors occupy the same full-width, left-aligned column.
 	const agentRow = (await page.locator('article.bubble:not(.mine)').last().boundingBox())!;
 	const col = (await page.locator('.scroller').boundingBox())!;
-	expect(s.x).toBeGreaterThan(agentRow.x + 100);
+	expect(s.x).toBe(agentRow.x);
+	expect(s.width).toBe(agentRow.width);
 	expect(col.x + col.width - (s.x + s.width)).toBeLessThan(40);
 	// Under web/test-results/<test dir>/; the gate script copies it to the evidence folder.
 	await page.screenshot({ path: testInfo.outputPath('q3-detached.png') });
 });
 
-test('E6: the composer rides above the emulated keyboard, and a touch long-press is the only way in', async ({
+test('E6: the composer rides above the emulated keyboard, and long-press opens the action sheet', async ({
 	page,
 	request,
 	fixture
@@ -250,10 +286,11 @@ test('E6: the composer rides above the emulated keyboard, and a touch long-press
 	// below) opens nothing: no menu and none of its buttons.
 	// A 500 ms press then opens the menu, and the lift that ends it presses nothing.
 	const bubble = row(page, line.seq);
-	const menuButtons = bubble.getByRole('button', { name: /^(Reply|Copy|Delete)$/ });
+	const menu = page.getByRole('menu', { name: new RegExp(`${agent}.*${line.seq}`) });
+	const menuButtons = menu.getByRole('menuitem');
 	await bubble.locator('.body').tap();
 	await page.waitForTimeout(700);
-	await expect(bubble.locator('.menu')).toHaveCount(0);
+	await expect(menu).toHaveCount(0);
 	await expect(menuButtons).toHaveCount(0);
 	const touch = (type: string) =>
 		bubble.dispatchEvent(type, { pointerType: 'touch', bubbles: true, clientX: 50, clientY: 50 });
@@ -261,27 +298,31 @@ test('E6: the composer rides above the emulated keyboard, and a touch long-press
 	await page.waitForTimeout(150);
 	await touch('pointerup');
 	await page.waitForTimeout(700);
-	await expect(bubble.locator('.menu')).toHaveCount(0);
+	await expect(menu).toHaveCount(0);
 	await touch('pointerdown');
-	await expect(bubble.locator('.menu')).toBeVisible({ timeout: 2000 });
+	await expect(menu).toBeVisible({ timeout: 2000 });
 	await touch('pointerup');
 	await page.waitForTimeout(300);
-	await expect(bubble.locator('.menu')).toBeVisible();
+	await expect(menu).toBeVisible();
 	expect((await listAll(request, fixture, n)).find((m) => m.seq === line.seq)!.deleted).toBe(false);
-	const boxes = await bubble.locator('.menu button').evaluateAll((els) =>
+	const boxes = await menu.getByRole('menuitem').evaluateAll((els) =>
 		els.map((e) => {
 			const r = e.getBoundingClientRect();
 			return { name: e.textContent, left: Math.round(r.left), right: Math.round(r.right), h: Math.round(r.height) };
 		})
 	);
-	console.log(`Q-c menu geometry (touch): ${JSON.stringify(boxes)}`);
-	// A real tap on the bubble body, outside the menu, closes it again; the long-press reopens it.
-	await bubble.locator('.body').tap();
-	await expect(bubble.locator('.menu')).toHaveCount(0);
+	expect(boxes).toHaveLength(3);
+	for (const box of boxes) expect(box.h).toBeGreaterThanOrEqual(44);
+	// Dismiss the sheet, then open it again through long press.
+	await page.keyboard.press('Escape');
+	await expect(menu).toHaveCount(0);
 	await touch('pointerdown');
-	await expect(bubble.locator('.menu')).toBeVisible({ timeout: 2000 });
+	await expect(menu).toBeVisible({ timeout: 2000 });
 	await touch('pointerup');
-	// Delete is its own deliberate tap, set apart from Copy.
-	await bubble.getByRole('button', { name: 'Delete', exact: true }).tap();
+	// Delete still requires explicit confirmation.
+	await menu.getByRole('menuitem', { name: 'Delete', exact: true }).tap();
+	const confirmation = page.getByRole('dialog', { name: 'Delete this message?' });
+	await expect(confirmation.getByRole('button', { name: 'Cancel', exact: true })).toBeFocused();
+	await confirmation.getByRole('button', { name: 'Delete', exact: true }).tap();
 	await expect(bubble).toContainText('Message deleted');
 });

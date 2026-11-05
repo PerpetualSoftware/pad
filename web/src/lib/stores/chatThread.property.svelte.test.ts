@@ -414,7 +414,7 @@ async function walk(seed: number, trace: string[]) {
 			const all = visibleSeqs();
 			if (!all.length) return;
 			const seq = all[Math.floor(rng() * all.length)];
-			fired.push(thread.remove(seq).then((ok) => ok && deleted.add(seq)));
+			fired.push(thread.remove(seq).then((result) => result.ok && deleted.add(seq)));
 		}],
 		[6, 'loadOlder', () => void fired.push(thread.loadOlder())],
 		[8, 'loadNewer', () => void fired.push(thread.loadNewer())],

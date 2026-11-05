@@ -27,6 +27,20 @@ describe('chat UI sources', () => {
 		expect(body).not.toMatch(/innerHTML|insertAdjacentHTML|outerHTML|createContextualFragment/);
 	});
 
+	// A touch long press opens the action menu; without this rule iOS starts its own callout and
+	// text selection under the same 500 ms hold (the rule was dropped once with the old bubble CSS).
+	it('keeps the iOS touch callout off the message row', () => {
+		const row = Object.entries(sources).find(([n]) => n.endsWith('/MessageBubble.svelte'))![1];
+		expect(row).toMatch(/\.bubble\s*\{[^}]*-webkit-touch-callout:\s*none/);
+	});
+
+	// Bodies carry links now, and the long press declines to arm on a link, so a link keeps the
+	// system's own long-press actions (open in a new tab, copy link).
+	it('leaves the system link callout on links inside the message row', () => {
+		const row = Object.entries(sources).find(([n]) => n.endsWith('/MessageBubble.svelte'))![1];
+		expect(row).toMatch(/\.bubble\s+:global\(a\)\s*\{[^}]*-webkit-touch-callout:\s*default/);
+	});
+
 	// U32: no direction toggle and no accept-instructions control in the chat UI (flex-direction is CSS).
 	it('has no direction or accept-instructions control', () => {
 		for (const [name, src] of Object.entries(sources)) {

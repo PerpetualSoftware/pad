@@ -9,6 +9,9 @@
 	import { chatInbox } from '$lib/stores/chatInbox.svelte';
 	import { ChatThread } from '$lib/stores/chatThread.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	import { authStore } from '$lib/stores/auth.svelte';
+	import { canDeleteMessage } from '$lib/chat/deletePolicy';
+	import { confirmDialog } from '$lib/stores/confirmDialog.svelte';
 	import type { ChatMessage } from '$lib/types';
 
 	// The thread (TASK-4044 PR 3a and 3b, decisions 4cf4d4b9 and 2de240d9). The
@@ -140,10 +143,25 @@
 
 	// The reply bar goes only once the delete went through, and only if it still quotes this row.
 	async function deleteMessage(m: ChatMessage) {
-		if (await thread.remove(m.seq)) {
-			if (replyTo?.seq === m.seq) replyTo = null;
+		const target = { userId: authStore.userId, n, seq: m.seq, conversationId: m.conversation_id };
+		const stillCurrent = () => authStore.userId === target.userId && n === target.n &&
+			thread.conversation?.id === target.conversationId;
+		if (!stillCurrent()) return;
+		const confirmed = await confirmDialog.request({
+			title: 'Delete this message?',
+			message: 'Delete this message? It will be removed from the conversation. This cannot undo anything an agent has already received or done.',
+			confirmLabel: 'Delete',
+			danger: true,
+			focusCancel: true
+		});
+		if (!confirmed || !stillCurrent()) return;
+		const result = await thread.remove(target.seq);
+		if (!stillCurrent()) return;
+		if (result.ok) {
+			if (replyTo?.seq === target.seq) replyTo = null;
 		} else if (thread.status === 'ready') {
-			toastStore.show("Couldn't delete that message. Try again.", 'error');
+			// A not-found thread already shows its own page; a toast saying "Try again" would mislead.
+			toastStore.show(result.message, 'error');
 		}
 	}
 
@@ -212,6 +230,7 @@
 						{/if}
 						<MessageBubble
 							message={item.message}
+							canDelete={canDeleteMessage({ message: item.message, conversation, emailVerified: authStore.emailVerified })}
 							refs={thread.refs}
 							onJumpToQuote={jumpToQuote}
 							onReply={startReply}
@@ -252,11 +271,12 @@
 					{/if}
 				</div>
 			{/if}
-			<!-- A flex column like .messages, so .bubble.mine { align-self: flex-end } applies. -->
+			<!-- Detached confirmed sends use the same full-width rows. -->
 			<div class="detached">
 				{#each thread.detached as m (m.seq)}
 					<MessageBubble
 						message={m}
+						canDelete={canDeleteMessage({ message: m, conversation, emailVerified: authStore.emailVerified })}
 						refs={thread.refs}
 						onJumpToQuote={jumpToQuote}
 						onReply={startReply}
