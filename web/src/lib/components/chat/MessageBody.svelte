@@ -28,6 +28,7 @@
 	function enhance(node: HTMLElement, _html: string) {
 		let added: HTMLElement[] = [];
 		const timers = new Set<ReturnType<typeof setTimeout>>();
+		let destroyed = false;
 		function decorate() {
 			for (const b of added) b.remove();
 			added = [];
@@ -38,6 +39,7 @@
 				btn.textContent = 'Copy code';
 				btn.addEventListener('click', async () => {
 					const ok = await copyToClipboard(pre.textContent ?? '');
+					if (destroyed) return;
 					btn.textContent = ok ? 'Copied' : 'Copy failed';
 					const t = setTimeout(() => {
 						timers.delete(t);
@@ -63,6 +65,7 @@
 		return {
 			update: decorate,
 			destroy() {
+				destroyed = true;
 				node.removeEventListener('error', onError, true);
 				for (const t of timers) clearTimeout(t);
 			}

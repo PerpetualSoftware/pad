@@ -340,6 +340,20 @@ describe('wiki refs', () => {
 		expect(d.querySelectorAll('a').length).toBeLessThanOrEqual(1);
 		expect(d.innerHTML).not.toContain('padref');
 	});
+	it('an indented code block stays inert text, with no link inside the pre', () => {
+		const d = render('    [[TASK-1]]', refs, 'docapp');
+		expect(d.querySelector('pre')).not.toBeNull();
+		expect(d.querySelector('pre a')).toBeNull();
+		expect(d.querySelector('pre')!.textContent).toContain('[[TASK-1]]');
+	});
+	it('a ref inside link text never nests an anchor', () => {
+		const d = render('[see [[TASK-1]]](https://x.example) and https://x.example/[[TASK-1]]', refs, 'docapp');
+		expect(d.querySelector('a a')).toBeNull();
+		for (const a of Array.from(d.querySelectorAll('a'))) {
+			expect(a.getAttribute('href')).not.toContain('/-/r/');
+		}
+		expect(d.textContent).toContain('[[TASK-1]]');
+	});
 	it('a ref inside emphasis and a heading still links', () => {
 		const d = render('# **[[TASK-1]]**', refs, 'docapp');
 		expect(d.querySelector('h1 strong a')).not.toBeNull();

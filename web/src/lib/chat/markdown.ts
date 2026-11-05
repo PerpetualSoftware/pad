@@ -60,13 +60,22 @@ function swapTokens(html: string, swaps: ReturnType<typeof replaceRefs>['swaps']
 	const byToken = new Map(swaps.map((s) => [s.token, s]));
 	const re = new RegExp(swaps.map((s) => s.token).join('|'), 'g');
 	// marked escapes every `<` in text, so each `<...>` run is a tag.
+	// Inside a <pre> (fenced or indented code, which marked and extractRefs may
+	// disagree on) or an <a> (a link's own text or an autolinked URL), a ref stays
+	// its literal text: code is inert, and an anchor cannot nest in an anchor.
+	let literalDepth = 0;
 	return html
 		.split(/(<[^>]*>)/)
-		.map((part) =>
-			part.startsWith('<') && part.endsWith('>')
-				? part.replace(re, (t) => escapeHtml(byToken.get(t)!.literal))
-				: part.replace(re, (t) => byToken.get(t)!.html)
-		)
+		.map((part) => {
+			if (part.startsWith('<') && part.endsWith('>')) {
+				const m = /^<(\/?)(pre|a)[\s>/]/i.exec(part);
+				if (m) literalDepth = Math.max(0, literalDepth + (m[1] ? -1 : 1));
+				return part.replace(re, (t) => escapeHtml(byToken.get(t)!.literal));
+			}
+			return part.replace(re, (t) =>
+				literalDepth > 0 ? escapeHtml(byToken.get(t)!.literal) : byToken.get(t)!.html
+			);
+		})
 		.join('');
 }
 
