@@ -17,6 +17,8 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 }));
 
 import Composer from './Composer.svelte';
+import { getDraft, purgeAll, unsealChatRecords } from '$lib/chat/chatRecords';
+import { confirmSignOut, signOutFailed } from '$lib/stores/signOutGuard.svelte';
 import { inputMode } from '$lib/chat/inputMode.svelte';
 import { runSessionExpiryKeepers } from '$lib/stores/sessionExpiryKeep';
 import type { SendOutcome } from '$lib/stores/chatThread.svelte';
@@ -65,6 +67,9 @@ function setPointer(fine: boolean) {
 
 beforeEach(() => {
 	h.userId = 'u1';
+	purgeAll();
+	unsealChatRecords();
+	signOutFailed();
 	sessionStorage.clear();
 	inputMode.reset();
 	setPointer(true);
@@ -229,7 +234,7 @@ describe('draft keeper', () => {
 		const again = mount();
 		await tick();
 		expect(again.box.value).toBe('half typed');
-		expect(sessionStorage.length).toBe(0);
+		expect(sessionStorage.length).toBe(1);
 	});
 
 	// Red if the stash ignores identity (B11).
@@ -293,8 +298,10 @@ describe('draft keeper', () => {
 		const first = mount();
 		await type(first.box, 'x');
 		first.unmount();
+		const kept = sessionStorage.getItem('pad:chat-draft:u1:3');
 		runSessionExpiryKeepers();
-		expect(sessionStorage.length).toBe(0);
+		expect(sessionStorage.getItem('pad:chat-draft:u1:3')).toBe(kept);
+		expect(getDraft('u1', 3)?.text).toBe('x');
 	});
 });
 
@@ -578,4 +585,69 @@ describe('target and delivery wording (DOC-4316 sections 5 and 7)', () => {
 		await tick();
 		expect(container.textContent).not.toMatch(/delivered|read by|accepted|will execute/i);
 	});
+});
+
+describe('persistent drafts (TASK-4315)', () => {
+	beforeEach(() => vi.useFakeTimers());
+	afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); });
+	async function save() { await vi.advanceTimersByTimeAsync(500); flushSync(); }
+	it('keeps text on A to B to A navigation, including a close before the debounce', async () => {
+		const a = mount({ n: 1 }); await type(a.box, 'draft A'); a.unmount();
+		const b = mount({ n: 2 }); expect(b.box.value).toBe(''); await type(b.box, 'draft B'); b.unmount();
+		const again = mount({ n: 1 }); await tick();
+		expect(again.box.value).toBe('draft A'); expect(again.onSend).not.toHaveBeenCalled();
+		expect(getDraft('u1', 2)?.text).toBe('draft B');
+	});
+	it('saves text and reply before teardown so they survive reload; restoration never sends', async () => {
+		const first = mount({ replyTo: target }); await type(first.box, 'reload me'); await save();
+		const stored = sessionStorage.getItem('pad:chat-draft:u1:3');
+		expect(JSON.parse(stored!)).toEqual({ userId: 'u1', n: 3, text: 'reload me', replySeq: 4 });
+		first.unmount();
+		const again = mount(); await tick(); await save();
+		expect(again.box.value).toBe('reload me'); expect(again.onSend).not.toHaveBeenCalled();
+		expect(getDraft('u1', 3)?.replySeq).toBe(4);
+		await fireEvent.click(again.send);
+		expect(again.onSend).toHaveBeenCalledWith('reload me', 4);
+	});
+	it('clears the record when text empties, including after send', async () => {
+		const first = mount(); await type(first.box, 'erase'); await save();
+		expect(getDraft('u1', 3)?.text).toBe('erase');
+		await type(first.box, ''); expect(getDraft('u1', 3)).toBeNull();
+		await type(first.box, 'send'); await save(); await fireEvent.click(first.send);
+		expect(getDraft('u1', 3)).toBeNull();
+	});
+	it('teardown and debounce after sign-out cannot write the draft back', async () => {
+		const first = mount(); await type(first.box, 'private'); await save();
+		expect(getDraft('u1', 3)?.text).toBe('private');
+		await confirmSignOut(); first.unmount(); await save();
+		expect(sessionStorage.length).toBe(0); expect(getDraft('u1', 3)).toBeNull();
+	});
+	it('refuses a stored conversation-id mismatch', async () => {
+		sessionStorage.setItem('pad:chat-draft:u1:3', JSON.stringify({ userId: 'u1', n: 99, text: 'wrong conversation', replySeq: null }));
+		const r = mount(); await tick(); expect(r.box.value).toBe(''); expect(r.onSend).not.toHaveBeenCalled();
+	});
+	it('shows the persisted notice', async () => {
+		const r = mount(); await type(r.box, 'keep'); await save();
+		expect(r.container.textContent).toContain('Draft kept in this tab');
+	});
+	it('shows the memory fallback notice and restores the memory draft', async () => {
+		vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw Error('blocked'); });
+		const r = mount(); await type(r.box, 'memory'); await save();
+		expect(r.container.textContent).toContain('Draft kept until this page reloads');
+		r.unmount(); const again = mount(); await tick(); expect(again.box.value).toBe('memory');
+	});
+	it('persists a reply change even when the text is unchanged', async () => {
+		const r = mount(); await type(r.box, 'reply later'); await save();
+		await r.rerender({ n: 3, onSend: r.onSend, onClearReply: r.onClearReply, replyTo: target });
+		await save(); expect(getDraft('u1', 3)?.replySeq).toBe(4);
+	});
+});
+
+it('refreshes a restored reply preview from authorized messages and allows cancelling it', async () => {
+	sessionStorage.setItem('pad:chat-draft:u1:3', JSON.stringify({ userId: 'u1', n: 3, text: 'reply draft', replySeq: 4 }));
+	const r = mount({ messages: [target] }); await tick();
+	expect(r.container.querySelector('.reply')?.textContent).toContain('the target');
+	await fireEvent.click(r.getByRole('button', { name: 'Cancel reply' }));
+	await fireEvent.click(r.send);
+	expect(r.onSend).toHaveBeenCalledWith('reply draft', undefined);
 });

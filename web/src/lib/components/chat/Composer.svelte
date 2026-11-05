@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import {
 		MAX_BODY_BYTES,
 		NOTICE,
@@ -7,7 +7,7 @@
 		utf8Bytes,
 		validateDraft
 	} from '$lib/chat/compose';
-	import { keepDraft, takeDraft } from '$lib/chat/draftKeeper';
+	import { getDraft, setDraft, clearDraft } from '$lib/chat/draftKeeper';
 	import { inputMode } from '$lib/chat/inputMode.svelte';
 	import type { AgentPresence } from '$lib/chat/presence';
 	import { watchKeyboardInset } from '$lib/chat/viewport';
@@ -27,6 +27,7 @@
 		title = '',
 		presence = 'unknown',
 		replyTo = null,
+		messages = [],
 		onClearReply,
 		onSend
 	}: {
@@ -37,11 +38,36 @@
 		/** The latest presence read: it shapes the words around a send, never whether one is allowed. */
 		presence?: AgentPresence;
 		replyTo?: ChatMessage | null;
+		/** Authorized rows used to refresh a restored reply preview. */
+		messages?: ChatMessage[];
 		onClearReply: () => void;
 		onSend: (body: string, replyToSeq?: number) => Promise<SendOutcome>;
 	} = $props();
 
 	let text = $state('');
+	let restoredReplySeq = $state<number | null>(null);
+	let replySeq = $derived(replyTo?.seq ?? restoredReplySeq ?? undefined);
+	let replyPreview = $derived(replyTo ?? messages.find((m) => m.seq === restoredReplySeq && !m.deleted));
+	let draftNotice = $state('');
+	// The view keys this composer by conversation; capture its owner before any teardown.
+	let owner = '';
+	let conversation = 0;
+	let expiryKept = false;
+	let destroyed = false;
+	function clearReply() {
+		restoredReplySeq = null;
+		onClearReply();
+	}
+	function saveDraft(body: string, reply: number | undefined) {
+		if (expiryKept || destroyed) return;
+		if (body === '') {
+			clearDraft(owner, conversation);
+			draftNotice = '';
+		} else {
+			const persisted = setDraft(owner, conversation, body, reply);
+			draftNotice = persisted ? 'Draft kept in this tab' : 'Draft kept until this page reloads';
+		}
+	}
 	// Bodies sent and not yet answered. send() empties `text` before the POST, so on a 401 they
 	// would be in neither the box nor the stash; the keeper adds them (r6 B2-L1).
 	const inFlight: { body: string }[] = [];
@@ -65,27 +91,47 @@
 	}
 
 	let bytes = $derived(utf8Bytes(text));
-	let block = $derived(validateDraft(text, replyTo?.seq, PLACEHOLDER_OP_KEY));
+	let block = $derived(validateDraft(text, replySeq, PLACEHOLDER_OP_KEY));
 	let showCount = $derived(bytes > MAX_BODY_BYTES * 0.75);
 	let live = $derived(!!notice || !!saved || showCount || block === 'too_large');
 
 	onMount(() => {
-		// A draft kept across a session-expiry redirect comes back for the same
-		// user on the same thread only (N8); the page keys this component by `n`.
-		text = takeDraft(authStore.userId, n);
-		return watchKeyboardInset((px) => {
+		owner = authStore.userId;
+		conversation = n;
+		const draft = getDraft(owner, conversation);
+		if (draft && draft.n === n) {
+			text = draft.text;
+			restoredReplySeq = draft.replySeq;
+		}
+		const stopViewport = watchKeyboardInset((px) => {
 			inset = px;
-			// A soft keyboard means touch: Enter stops sending until the person says otherwise.
 			if (px > 0) inputMode.enterByTouch();
 		});
+		return () => {
+			saveDraft(text, replySeq);
+			destroyed = true;
+			stopViewport();
+		};
 	});
 
-	// The redirect to /login keeps the identity, so a typed message would vanish.
-	// A confirmed sign-out is the user choosing to discard (signOutDiscarding).
+	$effect(() => {
+		const body = text;
+		const reply = replySeq;
+		// Empty drafts disappear immediately; edits coalesce, and destroy flushes them.
+		if (body === '') untrack(() => saveDraft(body, reply));
+		else {
+			const timer = setTimeout(() => untrack(() => saveDraft(body, reply)), 250);
+			return () => clearTimeout(timer);
+		}
+	});
+
+	// Session expiry retains identity. Preserve in-flight bodies before its redirect,
+	// and do not let the subsequent destroy overwrite that combined snapshot.
 	$effect(() =>
 		registerSessionExpiryKeeper(() => {
 			if (signOutDiscarding()) return;
-			keepDraft(authStore.userId, n, [...inFlight.map((f) => f.body), text].filter((p) => p !== '').join('\n'));
+			setDraft(owner, conversation, [...inFlight.map((f) => f.body), text].filter((p) => p !== '').join('\n'), replySeq);
+			expiryKept = true;
 		})
 	);
 
@@ -117,26 +163,27 @@
 	async function send() {
 		if (block) return;
 		const body = text;
-		const target = replyTo;
+		const targetSeq = replySeq;
 		// The words follow the state the person saw when they sent, not one that changed mid-flight.
 		const wasLive = agentLive;
 		text = '';
+		clearDraft(owner, conversation);
 		notice = '';
 		saved = '';
 		const pending = { body };
 		inFlight.push(pending);
 		let outcome: SendOutcome | 'send_error';
 		try {
-			outcome = await onSend(body, target?.seq);
+			outcome = await onSend(body, targetSeq);
 		} catch {
 			// The box is already empty: a send that threw must not take the text with it (BUG-4312).
 			outcome = 'send_error';
 		} finally {
 			inFlight.splice(inFlight.indexOf(pending), 1);
 		}
-		if (outcome === 'stale') return;
+		if (destroyed || outcome === 'stale') return;
 		if (outcome === 'sent' || outcome === 'failed' || outcome === 'reply_deleted' || outcome === 'reply_missing') {
-			if (replyTo?.seq === target?.seq) onClearReply();
+			if (replySeq === targetSeq) clearReply();
 		}
 		if (outcome === 'sent') saved = wasLive ? 'Saved to conversation' : 'Saved to conversation · receipt unconfirmed';
 		if (outcome === 'sent' || outcome === 'failed') return;
@@ -158,12 +205,16 @@
 			<strong>To {agentKey}</strong> · C{n}{#if title}<span class="target-title"> · {title}</span>{/if}
 		</p>
 	{/if}
-	{#if replyTo}
+	{#if replySeq !== undefined}
 		<div class="reply">
 			<span class="reply-text">
-				Replying to {replyTo.mine ? 'yourself' : replyTo.author_agent_key}: {replyTo.body}
+				{#if replyPreview}
+					Replying to {replyPreview.mine ? 'yourself' : replyPreview.author_agent_key}: {replyPreview.body}
+				{:else}
+					Replying to message #{replySeq}
+				{/if}
 			</span>
-			<button type="button" aria-label="Cancel reply" onclick={onClearReply}>×</button>
+			<button type="button" aria-label="Cancel reply" onclick={clearReply}>×</button>
 		</div>
 	{/if}
 	<div class="row">
@@ -192,6 +243,7 @@
 			aria-label={agentKey ? `Send to ${agentKey}, conversation ${n}` : undefined}>Send</button
 		>
 	</div>
+	{#if text && draftNotice}<p class="draft-note">{draftNotice}</p>{/if}
 	<p class="presence-note">{presenceNote}</p>
 	<p class="key-hint">
 		{inputMode.hardware ? 'Enter sends · Shift+Enter adds a line' : 'Enter adds a line · use Send to send'}
@@ -253,6 +305,7 @@
 	.target-title {
 		color: var(--text-secondary);
 	}
+	.draft-note,
 	.presence-note,
 	.key-hint,
 	.hardware {
