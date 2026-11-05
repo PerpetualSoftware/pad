@@ -75,3 +75,30 @@ func TestAgendaCreatedCompletedScope(t *testing.T) {
 	}
 
 }
+
+// Hidden rows that sort first must not use up the SQL limit: scope is applied
+// before ORDER BY and LIMIT, so the one visible row is still returned.
+func TestAgendaEventsScopeBeforeLimit(t *testing.T) {
+	f := newSchedFixture(t)
+	from, to := rt("2031-03-10T00:00:00Z"), rt("2031-03-11T00:00:00Z")
+	hidden := createTestCollection(t, f.s, f.ws.ID, "Hidden")
+	mk := func(collectionID, name string, at time.Time, n int) *models.Item {
+		it := createTestItem(t, f.s, f.ws.ID, collectionID, name, "")
+		f.exec(t, `UPDATE items SET created_at = ? WHERE id = ?`, at.Format(time.RFC3339), it.ID)
+		f.exec(t, `INSERT INTO status_transitions (id,item_id,workspace_id,collection_id,field_key,from_status,to_status,created_at) VALUES (?,?,?,?,'status','open','done',?)`, fmt.Sprintf("scope-%s-%d", name, n), it.ID, f.ws.ID, collectionID, at.Format(time.RFC3339))
+		return it
+	}
+	for i := 0; i < 5; i++ {
+		mk(hidden.ID, fmt.Sprintf("hidden %d", i), from.Add(time.Duration(i+1)*time.Minute), i)
+	}
+	visible := mk(f.item.CollectionID, "visible", from.Add(time.Hour), 0)
+	scope := PendingReminderScope{CollectionIDs: []string{f.item.CollectionID}}
+	for name, read := range map[string]func(string, PendingReminderScope, time.Time, time.Time, int) ([]AgendaItemEvent, error){
+		"created": f.s.ListCreatedForAgenda, "completed": f.s.ListCompletedForAgenda,
+	} {
+		got, err := read(f.ws.ID, scope, from, to, 1)
+		if err != nil || len(got) != 1 || got[0].ItemRef != visible.Ref {
+			t.Fatalf("%s: limit 1 = %v %v, want only %s", name, got, err, visible.Ref)
+		}
+	}
+}

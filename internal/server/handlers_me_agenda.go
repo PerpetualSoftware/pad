@@ -18,7 +18,7 @@ func (s *Server) handleMeAgenda(w http.ResponseWriter, r *http.Request) {
 	}
 	user := currentUser(r)
 	if user == nil {
-		writeError(w, http.StatusUnauthorized, "unauthorized", "Sign in to see what needs you")
+		writeError(w, http.StatusUnauthorized, "unauthorized", "Sign in to see your agenda")
 		return
 	}
 	from, to, ok := parseAgendaWindow(w, r)

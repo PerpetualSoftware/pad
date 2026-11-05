@@ -90,3 +90,27 @@ func TestResolveDueMentionedPerPerson(t *testing.T) {
 		}
 	}
 }
+
+// A recipient who is also one of several owners is routed by the due rule
+// alone: the fallback never carries a due claim, because the due rule takes the
+// item before it, whenever the recipient is eligible.
+func TestResolveDueRecipientOwnerIsNotFallback(t *testing.T) {
+	due := time.Date(2031, 3, 10, 9, 0, 0, 0, time.UTC)
+	created := due.Add(time.Hour)
+	c := Candidate{CreatedAt: created, Due: &due, DueRecipientID: "o1"}
+	r, ok := Resolve(c, []string{"o1", "o2"}, fakeElig{"o1": true, "o2": true})
+	if !ok || r.Rule != RuleDue || len(r.People) != 1 || r.People[0] != "o1" {
+		t.Fatalf("routing = %+v", r)
+	}
+	if r.Includes("o2") {
+		t.Fatal("the other owner is routed a reminder that is not theirs")
+	}
+	if !r.WaitingSince.Equal(due) || len(r.Because) != 1 || r.Because[0].Kind != BecauseDue {
+		t.Fatalf("recipient = %+v", r)
+	}
+	c.Due = nil
+	r, ok = Resolve(c, []string{"o1", "o2"}, fakeElig{"o1": true, "o2": true})
+	if !ok || r.Rule != RuleAdminFallback || len(r.Because) != 0 {
+		t.Fatalf("without a due claim = %+v", r)
+	}
+}
