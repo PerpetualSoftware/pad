@@ -349,6 +349,11 @@
 			invitations = [];
 			inviteResult = null;
 			createdInvite = null;
+			// An invite started under the previous (user, workspace) is retired, not just ignored while
+			// away: coming back to the same workspace must not let its late write land on a fresh page, and
+			// the form here must not stay busy for a request that no longer belongs to this page.
+			inviteSeq++;
+			inviting = false;
 			workspaceApps = [];
 			// An access panel belongs to the workspace it was opened in
 			// (BUG-3698): closing it also retires any read or save

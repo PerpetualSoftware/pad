@@ -436,4 +436,40 @@ describe('BUG-4335: invitation creation and clipboard feedback', () => {
 		expect(screen.queryByText(new RegExp(COPY_FAILED))).toBeNull();
 		expect(screen.getByText('Invitation created for b@x.test. Link copied')).toBeInTheDocument();
 	});
+
+	it('a clipboard write that settles after leaving and returning to the workspace writes nothing', async () => {
+		const pendingCopy = deferred<boolean>();
+		vi.mocked(copyToClipboard).mockReturnValueOnce(pendingCopy.promise);
+		await mount();
+		await invite();
+		await waitFor(() => expect(api.members.list).toHaveBeenCalledTimes(2));
+		page.params = { username: 'dave', workspace: 'other' };
+		flushSync();
+		await tick();
+		await waitFor(() => expect(vi.mocked(api.members.list).mock.calls.some(([ws]) => ws === 'other')).toBe(true));
+		page.params = { username: 'dave', workspace: 'ws' };
+		flushSync();
+		await tick();
+		await screen.findByRole('textbox', { name: 'Email address to invite' });
+		pendingCopy.resolve(false);
+		for (let i = 0; i < 10; i++) { await Promise.resolve(); await tick(); }
+		// The page the user returned to is a fresh one: the old invite's outcome and link are gone.
+		expect(screen.queryByText(new RegExp(COPY_FAILED))).toBeNull();
+		expect(screen.queryByText(/Link copied/)).toBeNull();
+		expect(screen.queryByRole('textbox', { name: 'Invitation link' })).toBeNull();
+	});
+
+	it('frees the invite form on the new workspace while an invite from the old one is still in flight', async () => {
+		const slow = deferred<{ email: string; role: string; join_url: string }>();
+		vi.mocked(api.members.invite).mockReturnValueOnce(slow.promise as never);
+		await mount();
+		await invite();
+		page.params = { username: 'dave', workspace: 'other' };
+		flushSync();
+		await tick();
+		await waitFor(() => expect(vi.mocked(api.members.list).mock.calls.some(([ws]) => ws === 'other')).toBe(true));
+		const email = screen.getByRole('textbox', { name: 'Email address to invite' }) as HTMLInputElement;
+		await waitFor(() => expect(email.disabled).toBe(false));
+		slow.resolve({ email: EMAIL, role: 'editor', join_url: URL });
+	});
 });
