@@ -589,6 +589,7 @@
 
 	let {
 		content = '',
+		ariaLabel = 'Item content',
 		editable = true,
 		itemId,
 		hostToken = '',
@@ -602,6 +603,7 @@
 		onImportInserted,
 	}: {
 		content?: string;
+		ariaLabel?: string;
 		editable?: boolean;
 		/**
 		 * UUID of the item being edited. Sent with attachment uploads so the
@@ -1257,6 +1259,7 @@
 				editorTick++;
 			},
 			editorProps: {
+				attributes: { 'aria-label': ariaLabel, 'aria-multiline': 'true', role: 'textbox' },
 				handleKeyDown: (_view, event) => {
 					// --- [[ link picker ---
 					// Opens on a `[` typed right after a `[` (TASK-2218, C41). It
