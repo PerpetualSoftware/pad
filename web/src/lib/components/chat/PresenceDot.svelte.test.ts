@@ -7,9 +7,9 @@ import type { AgentPresence } from '$lib/chat/presence';
 afterEach(cleanup);
 
 const STATES: Array<[AgentPresence, string]> = [
-	['online', 'Online'],
-	['busy_uncertain', 'May be working'],
-	['connected_not_accepting', 'Connected, not accepting'],
+	['online', 'Live · armed'],
+	['busy_uncertain', 'May be working · armed'],
+	['connected_not_accepting', 'Connected · not accepting'],
 	['offline', 'Offline'],
 	['unknown', 'Status unknown']
 ];
@@ -40,13 +40,31 @@ describe('PresenceDot (TASK-4044 2b-i)', () => {
 			props: { state: 'busy_uncertain', checkedAt: at }
 		});
 		const el = container.querySelector('.presence-dot')!;
-		expect(el.getAttribute('title')).toBe('May be working. Last checked 14:05:09');
-		expect(el.getAttribute('aria-label')).toBe('May be working');
-		expect(queryByLabelText('Online')).toBeNull();
+		expect(el.getAttribute('title')).toBe('May be working · armed. Last checked 14:05:09');
+		expect(el.getAttribute('aria-label')).toBe('May be working · armed');
+		expect(queryByLabelText('Live · armed')).toBeNull();
 	});
 
 	it('busy without a checkedAt omits the clause', () => {
 		const { container } = render(PresenceDot, { props: { state: 'busy_uncertain' } });
-		expect(container.querySelector('.presence-dot')?.getAttribute('title')).toBe('May be working');
+		expect(container.querySelector('.presence-dot')?.getAttribute('title')).toBe('May be working · armed');
+	});
+
+	// Section 7: shape AND text. With showLabel the words sit beside the dot, so
+	// the dot is decoration and the text is the name a screen reader reads.
+	it('showLabel writes the state beside the dot and hides the dot from assistive tech', () => {
+		const { container } = render(PresenceDot, { props: { state: 'unknown', showLabel: true } });
+		expect(container.querySelector('.presence-label')?.textContent).toBe('Status unknown');
+		const dot = container.querySelector('.presence-dot')!;
+		expect(dot.getAttribute('aria-hidden')).toBe('true');
+		expect(dot.getAttribute('role')).toBeNull();
+	});
+
+	it('detail (several armed sessions) goes in the tooltip and is not announced as the state', () => {
+		const { container } = render(PresenceDot, {
+			props: { state: 'online', showLabel: true, detail: '2 armed sessions' }
+		});
+		expect(container.querySelector('.presence-wrap')?.getAttribute('title')).toBe('Live · armed. 2 armed sessions');
+		expect(container.querySelector('.presence-label')?.textContent).toBe('Live · armed');
 	});
 });

@@ -33,6 +33,10 @@
 		})
 	);
 
+	// Agents with a conversation are cards in the list below, with their presence.
+	// The roster is who you could START a chat with (BUG-4321, product 11-05).
+	const startable = $derived(chatInbox.roster.filter((e) => e.number === null));
+
 	// Open the chat only once the POST has answered: a null means nothing started.
 	async function ensure(key: string): Promise<void> {
 		const n = await chatInbox.ensureDM(key);
@@ -47,9 +51,9 @@
 
 <ChatEmptyState />
 
-{#if chatInbox.roster.length > 0}
-	<ul class="roster" aria-label="Agents">
-		{#each chatInbox.roster as entry (entry.key)}
+{#if startable.length > 0}
+	<ul class="roster" aria-label="Agents to start a chat with">
+		{#each startable as entry (entry.key)}
 			<li>
 				<RosterRow
 					{entry}

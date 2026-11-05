@@ -163,6 +163,10 @@
 			<PresenceDot
 				state={chatInbox.presenceFor(conversation.agent_key)}
 				checkedAt={chatInbox.checkedAt}
+				detail={chatInbox.armedCount(conversation.agent_key) > 1
+					? `${chatInbox.armedCount(conversation.agent_key)} armed sessions`
+					: ''}
+				showLabel
 			/>
 			{conversation.agent_key}
 		</span>

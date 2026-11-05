@@ -155,7 +155,7 @@ const pageOf = (messages: ReturnType<typeof message>[], over: Record<string, unk
 	...over
 });
 
-const conv = (n: number) => ({
+const conv = (n: number, over: Record<string, unknown> = {}) => ({
 	id: `c${n}`,
 	number: n,
 	kind: 'direct',
@@ -165,7 +165,8 @@ const conv = (n: number) => ({
 	created_at: '',
 	updated_at: '',
 	read_seq: 0,
-	unread: 0
+	unread: 0,
+	...over
 });
 
 beforeEach(() => {
@@ -392,16 +393,42 @@ describe('/messages roster (TASK-4044 2b-ii)', () => {
 		h.sessions.mockResolvedValue({ sessions: [live('ghost')], count: 1 });
 	});
 
-	it('shows a link with the store unread badge for a DM, and a Start chat button for a session-only agent', async () => {
+	// BUG-4321: an agent with a DM is ONE card in the conversation list, carrying both its
+	// presence and its preview; the roster lists only agents with nobody to open yet.
+	it('shows a DM agent once, with presence and preview, and a session-only agent once, in the roster', async () => {
 		h.chat.unreadByNumber = { 3: 5 };
+		h.listConversations.mockResolvedValue({
+			conversations: [
+				conv(3, {
+					last_message: { seq: 1, author_agent_key: 'agent-3', author_is_human: false, excerpt: 'found an edge case', deleted: false, created_at: '' }
+				})
+			],
+			unread_total: 5
+		});
+		h.sessions.mockResolvedValue({ sessions: [live('ghost'), live('agent-3')], count: 2 });
 		const { container } = render(MessagesPage);
 		await settle();
-		const link = container.querySelector('ul[aria-label="Agents"] a[href="/messages/3"]')!;
-		expect(link.querySelector('.unread-badge')!.textContent).toBe('5');
-		expect(link.querySelector('.presence-dot')).not.toBeNull();
+		const cards = container.querySelectorAll('a[href="/messages/3"]');
+		expect(cards).toHaveLength(1);
+		expect(cards[0].querySelector('.presence-label')?.textContent).toBe('Live · armed');
+		expect(cards[0].textContent).toContain('found an edge case');
+		expect(cards[0].querySelector('.unread-badge')!.textContent).toBe('5');
+		const roster = container.querySelector('ul[aria-label="Agents to start a chat with"]')!;
+		expect(roster.querySelector('a')).toBeNull();
+		expect(roster.textContent).not.toContain('agent-3');
+		expect(roster.querySelectorAll('li')).toHaveLength(1);
 		const btn = ghostButton(container);
 		expect(btn.textContent).toContain('Start chat');
 		expect(btn.disabled).toBe(false);
+		expect(container.textContent!.match(/ghost/g)).toHaveLength(1);
+	});
+
+	it('drops the roster section when every agent already has a conversation', async () => {
+		h.sessions.mockResolvedValue({ sessions: [live('agent-3')], count: 1 });
+		const { container } = render(MessagesPage);
+		await settle();
+		expect(container.querySelector('ul[aria-label="Agents to start a chat with"]')).toBeNull();
+		expect(container.querySelectorAll('a[href="/messages/3"]')).toHaveLength(1);
 	});
 
 	it('goes to the new chat only after the POST resolves, and not on a failure', async () => {
@@ -569,9 +596,8 @@ describe('/messages/[n] thread (TASK-4044 PR 3a)', () => {
 		});
 		const { container } = render(ThreadPage);
 		await settle();
-		const dot = container.querySelector('header .presence-dot');
-		expect(dot).not.toBeNull();
-		expect(dot!.getAttribute('aria-label')).toBe('Online');
+		expect(container.querySelector('header .presence-dot')).not.toBeNull();
+		expect(container.querySelector('header .presence-label')!.textContent).toBe('Live · armed');
 	});
 
 	it('the dot reads unknown until the first sessions read lands', async () => {
@@ -579,7 +605,7 @@ describe('/messages/[n] thread (TASK-4044 PR 3a)', () => {
 		h.sessions.mockReturnValue(new Promise(() => {}));
 		const { container } = render(ThreadPage);
 		await settle();
-		expect(container.querySelector('header .presence-dot')!.getAttribute('aria-label')).toBe('Status unknown');
+		expect(container.querySelector('header .presence-label')!.textContent).toBe('Status unknown');
 	});
 
 	// Row H (TASK-4044 2b-i): a failed load needs a way back that is not a reload.
@@ -731,8 +757,20 @@ describe('/messages/[n] thread (TASK-4044 PR 3a)', () => {
 		expect([...container.querySelectorAll('button')].some((b) => b.textContent === 'Try again')).toBe(false);
 	});
 
-	// U19: busy is never certain.
-	it('a busy agent reads "May be working", never "Online"', async () => {
+	// U19: busy is never certain. It reads "May be working" only for an ARMED session
+	// (an unarmed busy one cannot receive), and never as Live.
+	it('a busy armed agent reads "May be working", never "Live"', async () => {
+		page.params = { n: '3' };
+		h.sessions.mockResolvedValue({
+			sessions: [{ id: 's', agent: 'agent-3', state: 'busy', armed: true, connected_at: '' }],
+			count: 1
+		});
+		const { container } = render(ThreadPage);
+		await settle();
+		expect(container.querySelector('header .presence-label')!.textContent).toBe('May be working · armed');
+	});
+
+	it('a busy session that is not armed reads "Connected · not accepting"', async () => {
 		page.params = { n: '3' };
 		h.sessions.mockResolvedValue({
 			sessions: [{ id: 's', agent: 'agent-3', state: 'busy', armed: false, connected_at: '' }],
@@ -740,7 +778,7 @@ describe('/messages/[n] thread (TASK-4044 PR 3a)', () => {
 		});
 		const { container } = render(ThreadPage);
 		await settle();
-		expect(container.querySelector('header .presence-dot')!.getAttribute('aria-label')).toBe('May be working');
+		expect(container.querySelector('header .presence-label')!.textContent).toBe('Connected · not accepting');
 	});
 });
 

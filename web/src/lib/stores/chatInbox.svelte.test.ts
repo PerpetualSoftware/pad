@@ -74,7 +74,8 @@ const sess = (agent: string, state: 'online' | 'busy' | 'connected_not_accepting
 	id: `s-${agent}`,
 	agent,
 	state,
-	armed: state === 'online',
+	// A busy session reads "May be working" only when armed (DOC-4316 section 7).
+	armed: state !== 'connected_not_accepting',
 	connected_at: ''
 });
 const sessResp = (...ss: ReturnType<typeof sess>[]) => ({ sessions: ss, count: ss.length });
