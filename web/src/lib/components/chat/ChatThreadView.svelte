@@ -271,6 +271,9 @@
 				<Composer
 					bind:this={composer}
 					{n}
+					agentKey={conversation?.agent_key ?? ''}
+					title={conversation?.title ?? ''}
+					presence={conversation ? chatInbox.presenceFor(conversation.agent_key) : 'unknown'}
 					{replyTo}
 					onClearReply={() => (replyTo = null)}
 					onSend={(body, replyToSeq) => thread.send(body, replyToSeq)}
