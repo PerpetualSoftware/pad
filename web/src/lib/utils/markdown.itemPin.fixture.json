@@ -1,0 +1,46 @@
+{
+	"plain": {
+		"sanitize": "hello **bold** _em_ ~~del~~",
+		"render": "<p>hello <strong>bold</strong> <em>em</em> <del>del</del></p>\n"
+	},
+	"rawHtml": {
+		"sanitize": "<img src=\"x\">",
+		"render": "<img src=\"x\">"
+	},
+	"anchors": {
+		"sanitize": "<a href=\"https://e.example/\" target=\"_blank\" rel=\"noopener noreferrer\">x</a> [md](https://e.example/a?b=1) [rel](/items/x)",
+		"render": "<p><a href=\"https://e.example/\" target=\"_blank\" rel=\"noopener noreferrer\">x</a> <a href=\"https://e.example/a?b=1\" target=\"_blank\" rel=\"noopener noreferrer\" class=\"external-link\">md<span class=\"external-icon\" aria-hidden=\"true\"> ↗</span></a> <a href=\"/items/x\">rel</a></p>\n"
+	},
+	"badSchemes": {
+		"sanitize": "[a](javascript:alert(1)) [b](data:text/html,x) ![c](blob:https://x/y)",
+		"render": "<p><a>a</a> <a>b</a> <img alt=\"c\"></p>\n"
+	},
+	"list": {
+		"sanitize": "3. three\n4. four\n\n- [ ] todo\n- [x] done",
+		"render": "<ol start=\"3\">\n<li>three</li>\n<li>four</li>\n</ol>\n<ul>\n<li><input disabled=\"\" type=\"checkbox\"> todo</li>\n<li><input checked=\"\" disabled=\"\" type=\"checkbox\"> done</li>\n</ul>\n"
+	},
+	"code": {
+		"sanitize": "```ts\nconst a = \"<b>\";\n```\n\n`inline <i>`</i></b>",
+		"render": "<pre><code class=\"language-ts\">const a = \"&lt;b&gt;\";\n</code></pre>\n<p><code>inline &lt;i&gt;</code></p>\n"
+	},
+	"table": {
+		"sanitize": "| a | b |\n|---|---|\n| 1 | 2 |",
+		"render": "<table>\n<thead>\n<tr>\n<th>a</th>\n<th>b</th>\n</tr>\n</thead>\n<tbody><tr>\n<td>1</td>\n<td>2</td>\n</tr>\n</tbody></table>\n"
+	},
+	"image": {
+		"sanitize": "![alt](https://img.example/a.png \"t\")",
+		"render": "<p><img src=\"https://img.example/a.png\" alt=\"alt\" title=\"t\"></p>\n"
+	},
+	"attachment": {
+		"sanitize": "![pic](pad-attachment:11111111-2222-3333-4444-555555555555) [f](pad-attachment:11111111-2222-3333-4444-555555555555)",
+		"render": "<p><img alt=\"pic\"> <a>f</a></p>\n"
+	},
+	"wiki": {
+		"sanitize": "see [[TASK-1]] and [[other::BUG-2|shown]] and `[[TASK-3]]`",
+		"render": "<p>see <span class=\"doc-link broken\">TASK-1</span> and <a href=\"/-/r/other/BUG-2\" class=\"doc-link cross-workspace\" rel=\"external\">shown</a> and <code>&lt;span class=\"doc-link broken\"&gt;TASK-3&lt;/span&gt;</code></p>\n"
+	},
+	"dataAttrs": {
+		"sanitize": "<span aria-label=\"y\" class=\"c\">s</span> <p id=\"i\" title=\"t\">p</p>",
+		"render": "<p><span aria-label=\"y\" class=\"c\">s</span> </p><p id=\"i\" title=\"t\">p</p><p></p>\n"
+	}
+}
