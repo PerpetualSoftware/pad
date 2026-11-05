@@ -138,7 +138,10 @@ func TestBUG3656_RemapFailureIsNotA201(t *testing.T) {
 	dest := attachmentsServerOn(t, store.DriverSQLite)
 	dest.importBundleRemapFault = func() error { return errors.New("injected remap failure") }
 	rr := postBundle(dest, "remapfails", packInterchangeBundle(t, readInterchangeGolden(t)))
-	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "attachment reference remap") {
+	// TASK-4278: a remap failure is the server's, a 500 with a plain text
+	// that carries none of the store error's own words.
+	if rr.Code != http.StatusInternalServerError || !strings.Contains(rr.Body.String(), "import_remap_failed") ||
+		strings.Contains(rr.Body.String(), "injected remap failure") {
 		t.Fatalf("a failed remap must fail the import, got %d %s", rr.Code, rr.Body.String())
 	}
 	ws, err := dest.store.GetWorkspaceBySlug("remapfails")

@@ -307,7 +307,7 @@ func (s *Server) validateSessionCookie(r *http.Request) *models.User {
 			return nil
 		}
 	}
-	session, _ := s.store.ValidateSession(cookie.Value)
+	session, _ := s.store.ValidateSessionContext(r.Context(), cookie.Value)
 	if session == nil || session.User == nil || !cookieKindAccepted(session) {
 		return nil
 	}
@@ -343,6 +343,10 @@ func (s *Server) validateSessionCookie(r *http.Request) *models.User {
 // writes a 500 and returns ok=false — the caller should return immediately.
 // The caller's own push devices move onto the replacement session; devices
 // on the user's other sessions die with those sessions (TASK-3938).
+// credentialsChangedBusyMessage is the busy answer for a step that runs AFTER
+// the credential change committed, so "nothing was saved" would be untrue.
+const credentialsChangedBusyMessage = "Your credentials were updated, but the server was too busy to refresh your session. Please sign in again."
+
 func (s *Server) rotateSessionsAfterCredentialChange(w http.ResponseWriter, r *http.Request, user *models.User) (string, bool) {
 	// TASK-3365: every session is revoked below, so the user's live
 	// connections re-check their credential now, not on their next tick.
@@ -354,12 +358,16 @@ func (s *Server) rotateSessionsAfterCredentialChange(w http.ResponseWriter, r *h
 	// and the caller signs in again, rather than receiving a session that
 	// would read as freshly signed in.
 	if info == nil || info.User.ID != user.ID {
-		if err := s.store.DeleteUserSessions(user.ID); err != nil {
+		delErr := s.store.DeleteUserSessions(user.ID)
+		if delErr != nil {
 			slog.Error("failed to invalidate sessions after credential change",
-				"user_id", user.ID, "error", err)
+				"user_id", user.ID, "error", delErr)
 		}
-		writeError(w, http.StatusInternalServerError, "internal_error",
-			"Credentials updated but failed to refresh session. Please sign in again.")
+		// delErr is nil when the invalidation worked (no readable session of
+		// this user): that is a plain 500. A busy delErr is a 503 whose wording
+		// does not say "nothing was saved": the credentials DID change.
+		writeStoreErrorBusyAs(w, r, delErr, http.StatusInternalServerError, "internal_error",
+			"Credentials updated but failed to refresh session. Please sign in again.", credentialsChangedBusyMessage)
 		return "", false
 	}
 	// The replacement keeps the replaced session's kind (BUG-3350).
@@ -388,8 +396,8 @@ func (s *Server) rotateSessionsAfterCredentialChange(w http.ResponseWriter, r *h
 	if err != nil {
 		slog.Error("failed to rotate sessions after credential change",
 			"user_id", user.ID, "error", err)
-		writeError(w, http.StatusInternalServerError, "internal_error",
-			"Credentials updated but failed to refresh session. Please sign in again.")
+		writeStoreErrorBusyAs(w, r, err, http.StatusInternalServerError, "internal_error",
+			"Credentials updated but failed to refresh session. Please sign in again.", credentialsChangedBusyMessage)
 		return "", false
 	}
 	if device == "cli" {
@@ -427,7 +435,7 @@ func (s *Server) createAuthSession(w http.ResponseWriter, r *http.Request, user 
 		return "", err
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to create session")
+		writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to create session")
 		return "", err
 	}
 	if device == "cli" {
@@ -480,7 +488,7 @@ func (s *Server) destroyReplacedSessions(r *http.Request) {
 		// TASK-3365: the replaced session may be another user's, still
 		// streaming in this browser; kick whoever held it.
 		var replacedUserID string
-		if info, verr := s.store.ValidateSession(cookie.Value); verr == nil && info != nil && info.User != nil {
+		if info, verr := s.store.ValidateSessionContext(r.Context(), cookie.Value); verr == nil && info != nil && info.User != nil {
 			replacedUserID = info.User.ID
 		}
 		if err := s.store.DeleteSession(cookie.Value); err != nil {
@@ -573,7 +581,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 
 	count, err := s.store.UserCount()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to check user count")
+		writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to check user count")
 		return
 	}
 	if count > 0 {
@@ -583,7 +591,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 
 	existing, err := s.store.GetUserByEmail(input.Email)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to check email")
+		writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to check email")
 		return
 	}
 	if existing != nil {
@@ -594,7 +602,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	// Auto-generate username from name (D1: no prompt for bootstrap)
 	username, err := s.store.EnsureUniqueUsername(store.GenerateUsername(input.Name, input.Email))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to generate username")
+		writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to generate username")
 		return
 	}
 
@@ -606,7 +614,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		Role:     "admin",
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to create user")
+		writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to create user")
 		return
 	}
 
@@ -717,7 +725,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	count, err := s.store.UserCount()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to check user count")
+		writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to check user count")
 		return
 	}
 
@@ -727,7 +735,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if input.InvitationCode != "" {
 		inv, err := s.store.GetInvitationByCode(input.InvitationCode)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to validate invitation")
+			writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to validate invitation")
 			return
 		}
 		if inv == nil {
@@ -806,7 +814,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// Check for duplicate email
 	existing, err := s.store.GetUserByEmail(input.Email)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to check email")
+		writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to check email")
 		return
 	}
 	if existing != nil {
@@ -822,7 +830,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 		existingUser, err := s.store.GetUserByUsername(input.Username)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to check username")
+			writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to check username")
 			return
 		}
 		if existingUser != nil {
@@ -833,7 +841,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		candidate := store.GenerateUsername(input.Name, input.Email)
 		unique, err := s.store.EnsureUniqueUsername(candidate)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to generate username")
+			writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to generate username")
 			return
 		}
 		input.Username = unique
@@ -869,7 +877,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		Unverified: needsVerification,
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to create user")
+		writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to create user")
 		return
 	}
 
@@ -920,7 +928,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 			if derr := s.rollbackSignup(user.ID); derr != nil {
 				slog.Error("failed to roll back user after verification-token error", "error", derr, "user_id", user.ID)
 			}
-			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to start email verification")
+			writeStoreErrorR(w, r, verr, http.StatusInternalServerError, "internal_error", "Failed to start email verification")
 			return
 		}
 		verifyURL := s.baseURL + "/verify-email/" + vtoken
@@ -1282,7 +1290,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// If no users exist, no login needed
 	count, err := s.store.UserCount()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to check user count")
+		writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to check user count")
 		return
 	}
 	if count == 0 {
@@ -1332,7 +1340,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	user, err := s.store.ValidatePassword(input.Email, input.Password)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "Authentication failed")
+		writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Authentication failed")
 		return
 	}
 	if user == nil {
@@ -1378,7 +1386,7 @@ func (s *Server) handleSessionCheck(w http.ResponseWriter, r *http.Request) {
 	// Check if any users exist
 	count, err := s.store.UserCount()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to check user count")
+		writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to check user count")
 		return
 	}
 
@@ -1443,7 +1451,7 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 	sessionOwner := func(token string) {
-		if info, err := s.store.ValidateSession(token); err == nil && info != nil && info.User != nil {
+		if info, err := s.store.ValidateSessionContext(r.Context(), token); err == nil && info != nil && info.User != nil {
 			loggedOut = append(loggedOut, info.User.ID)
 		}
 	}
@@ -1606,7 +1614,7 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 		if trimmed != user.Username {
 			existing, err := s.store.GetUserByUsername(trimmed)
 			if err != nil {
-				writeError(w, http.StatusInternalServerError, "internal_error", "Failed to check username")
+				writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to check username")
 				return
 			}
 			if existing != nil {
@@ -1645,7 +1653,7 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 		// Verify current password
 		valid, err := s.store.ValidatePassword(user.Email, input.CurrentPassword)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to validate password")
+			writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to validate password")
 			return
 		}
 		if valid == nil {
@@ -1679,7 +1687,7 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to update profile")
+		writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to update profile")
 		return
 	}
 
@@ -1688,7 +1696,7 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 		// the zone that won, whoever set it.
 		updated, err = s.store.SetUserTimezoneIfUnset(user.ID, *input.Timezone)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to update profile")
+			writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to update profile")
 			return
 		}
 	}
@@ -1927,7 +1935,7 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	// reset link instead of having to request a fresh email.
 	preUser, err := s.store.LookupPasswordReset(input.Token)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to validate reset token")
+		writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to validate reset token")
 		return
 	}
 	if preUser == nil {
@@ -1942,7 +1950,7 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	// Atomically validate and consume the reset token (prevents race conditions)
 	user, err := s.store.ConsumePasswordReset(input.Token)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to validate reset token")
+		writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to validate reset token")
 		return
 	}
 	if user == nil {
@@ -1969,7 +1977,7 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to update password")
+		writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to update password")
 		return
 	}
 
@@ -1998,7 +2006,8 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	// this reset produced (BUG-3382).
 	sessionToken, err := s.store.CreateSessionFenced(updated.ID, updated.CredentialEpoch, "web", clientIP(r), r.UserAgent(), webSessionTTL, time.Time{})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "Password updated but failed to create session")
+		writeStoreErrorBusyAs(w, r, err, http.StatusInternalServerError, "internal_error", "Password updated but failed to create session",
+			"Your password was updated, but the server was too busy to sign you in. Please sign in with the new password.")
 		return
 	}
 
@@ -2062,7 +2071,7 @@ func (s *Server) handleVerifyEmail(w http.ResponseWriter, r *http.Request) {
 
 	pending, err := s.store.LookupEmailVerification(input.Token)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to verify email")
+		writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to verify email")
 		return
 	}
 	// A disabled account does not act, here either (BUG-3349): refuse before
@@ -2092,7 +2101,7 @@ func (s *Server) handleVerifyEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to verify email")
+		writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to verify email")
 		return
 	}
 	if user == nil {

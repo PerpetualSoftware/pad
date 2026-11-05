@@ -1,0 +1,32 @@
+{
+  "Items": {
+    "broken": "Body with a table:\n\n| a | b |\n| - | - |\u0000{\"status\":\"open\"}",
+    "chained": "Draft three:\n\n![img](pad-attachment:00000000-0000-0000-0000-0000000000b1)\n\nend\u0000{\"status\":\"open\"}",
+    "commented": "body without refs\u0000{\"status\":\"open\"}",
+    "deleted": "dead body ![img](pad-attachment:00000000-0000-0000-0000-0000000000a1)\u0000{\"status\":\"open\"}",
+    "fields": "no refs in the body\u0000{\"cover\":\"pad-attachment:00000000-0000-0000-0000-0000000000b1\",\"status\":\"open\"}",
+    "plain": "one ![img](pad-attachment:00000000-0000-0000-0000-0000000000b1) two ![img](pad-attachment:00000000-0000-0000-0000-0000000000b2) three ![img](pad-attachment:00000000-0000-0000-0000-0000000000c3)\u0000{\"status\":\"open\"}",
+    "prefix": "longer id pad-attachment:00000000-0000-0000-0000-0000000000a1f and exact pad-attachment:00000000-0000-0000-0000-0000000000b1\u0000{\"status\":\"open\"}",
+    "untouched": "plain body\u0000{\"status\":\"open\"}"
+  },
+  "Comments": {
+    "cm-a": "see ![img](pad-attachment:00000000-0000-0000-0000-0000000000b1)",
+    "cm-c": "unmapped ![img](pad-attachment:00000000-0000-0000-0000-0000000000c3)",
+    "cm-deleted": "from a deleted item ![img](pad-attachment:00000000-0000-0000-0000-0000000000b2)",
+    "cm-none": "nothing here"
+  },
+  "Versions": [
+    "broken|false||old ![img](pad-attachment:00000000-0000-0000-0000-0000000000b2)",
+    "broken|true||@@ -1,12 +1,60 @@\n-Nowhere text\n+![img](pad-attachment:00000000-0000-0000-0000-0000000000b1)\n",
+    "chained|false|26ab6bab725ff5251d97e71b9f4bb88a8e70743b9f7af04619a5579ce7dd6626|A full snapshot.\n\n![img](pad-attachment:00000000-0000-0000-0000-0000000000b2)",
+    "chained|false||A full snapshot.\n\n![img](pad-attachment:00000000-0000-0000-0000-0000000000b2) More.",
+    "chained|true||@@ -4,12 +4,10 @@\n ft t\n-hree\n+wo\n :%0A%0A!\n",
+    "chained|true||@@ -70,8 +70,14 @@\n 00000b2)\n+ More.\n",
+    "commented|false|31d010ce50bb62013c0886d8d073fa422bb69c9e70034fff739559c41611dca2|body without refs",
+    "deleted|false|f70bf0857fece3e9b3deb14867efd9ee99870aa66f5d4e73ab6d14f88c87ca76|dead body ![img](pad-attachment:00000000-0000-0000-0000-0000000000a1)",
+    "fields|false|a8b813401451ee3602d9a0241ef695630f036b9361cb1dbf1ae3c6e2b6bb7389|no refs in the body",
+    "plain|false|ff29d4aa0a00e7bb76d333f69b7738166669c79c11ce907848a3383c98f65ab1|one ![img](pad-attachment:00000000-0000-0000-0000-0000000000b1) two ![img](pad-attachment:00000000-0000-0000-0000-0000000000b2) three ![img](pad-attachment:00000000-0000-0000-0000-0000000000c3)",
+    "prefix|false|0d02875854534bee3ecd00a672d6ddd1145ec2aeb9d5393d8c5307b97dcb3d51|longer id pad-attachment:00000000-0000-0000-0000-0000000000a1f and exact pad-attachment:00000000-0000-0000-0000-0000000000b1",
+    "untouched|false|90aa29738b78cfd6b4baaea7e40652fc79a95bf2f92a0981d444ebb8bc49de0f|plain body"
+  ]
+}

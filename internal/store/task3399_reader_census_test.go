@@ -58,7 +58,7 @@ var task3399ReaderCensus = map[string]string{
 	"oauth_connections_narrow.go::NarrowCurrentOnlyWildcardConnections": censusNoRow,
 	"oauth_sweep.go::SweepExpiredOAuthRows":                             censusByDesign,
 	"users.go::disableUserAndRevokeAccessTx":                            censusUserRevoke,
-	"users.go::eraseUserTx":                                             censusUserRevoke,
+	"users.go::eraseUserTxCtx":                                          censusUserRevoke,
 }
 
 const (

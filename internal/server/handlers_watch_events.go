@@ -119,6 +119,7 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 	}
 
 	if _, ok := w.(http.Flusher); !ok {
+		// 500: ResponseWriter cannot flush; no store call
 		writeError(w, http.StatusInternalServerError, "internal_error", "Streaming not supported")
 		return
 	}
@@ -127,6 +128,7 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 	stream, err := s.openSSEStream(w)
 	if err != nil {
 		slog.Error("watch-events: refusing to stream", "error", err)
+		// 500: openSSEStream refused (writer cannot stream); no store call
 		writeError(w, http.StatusInternalServerError, "internal_error", "Streaming not supported")
 		return
 	}

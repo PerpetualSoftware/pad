@@ -524,6 +524,19 @@ func serveCmd() *cobra.Command {
 				}
 			}
 
+			// TASK-4278: from here on the Postgres pool is the BOUNDED one. The
+			// startup pool (migrations, dedupe, every backfill above) ran
+			// unbounded and is closed by the swap; every connection opened after
+			// it, including recycled ones, carries statement/lock/idle-in-tx
+			// limits as startup parameters. This sits before the first listener
+			// and sweeper and before RegisterDBCollector captures s.DB(); the
+			// only goroutine started earlier, offers.Run, never touches the
+			// store. Single-threaded by construction: BoundRuntimePool assigns
+			// the store's handle.
+			if err := applyDBRuntimeLimits(s, cfg, dbDriver); err != nil {
+				return err
+			}
+
 			// Wire attachment storage. Phase 1 = filesystem only; Phase 2 will
 			// register an "s3" backend alongside (or via a MigratingStore wrapping
 			// both during the cutover). Per-file cap is set by PAD_ATTACHMENT_MAX_BYTES
@@ -1584,4 +1597,30 @@ func resolvePushGatewaySecret(c *config.Config) string {
 		explicit = c.CloudOutboundSecret
 	}
 	return billing.ResolveOutboundSecret(explicit, c.CloudSecret)
+}
+
+// applyDBRuntimeLimits swaps the store's Postgres pool for the bounded runtime
+// pool (TASK-4278). On SQLite it only says that the settings do not apply, and
+// only when one was set.
+func applyDBRuntimeLimits(s *store.Store, cfg *config.Config, dbDriver string) error {
+	limits, err := cfg.DBRuntimeLimits()
+	if err != nil {
+		return err
+	}
+	if dbDriver != "postgres" {
+		if cfg.DBStatementTimeoutRaw != "" || cfg.DBLockTimeoutRaw != "" || cfg.DBIdleInTxTimeoutRaw != "" {
+			slog.Info("PAD_DB_STATEMENT_TIMEOUT, PAD_DB_LOCK_TIMEOUT and PAD_DB_IDLE_IN_TX_TIMEOUT apply to PostgreSQL only; SQLite is bounded by busy_timeout")
+		}
+		return nil
+	}
+	if err := s.BoundRuntimePool(store.RuntimeLimits{
+		Statement: limits.Statement, Lock: limits.Lock, IdleInTx: limits.IdleInTx,
+	}); err != nil {
+		return err
+	}
+	slog.Info("Postgres runtime pool bounded",
+		"statement_timeout", limits.Statement,
+		"lock_timeout", limits.Lock,
+		"idle_in_transaction_timeout", limits.IdleInTx)
+	return nil
 }

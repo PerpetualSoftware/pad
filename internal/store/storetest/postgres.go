@@ -69,6 +69,20 @@ var (
 // identical for every test, so building it per test buys nothing.
 func NewPostgres(t *testing.T) *store.Store {
 	t.Helper()
+	return newPostgres(t, store.RuntimeLimits{})
+}
+
+// NewPostgresBounded is NewPostgres followed by BoundRuntimePool(limits): the
+// store a server runs on after boot (TASK-4278), with the startup pool already
+// closed. The clone's migrations and backfills ran on the unbounded startup
+// pool, exactly as in production.
+func NewPostgresBounded(t *testing.T, limits store.RuntimeLimits) *store.Store {
+	t.Helper()
+	return newPostgres(t, limits)
+}
+
+func newPostgres(t *testing.T, limits store.RuntimeLimits) *store.Store {
+	t.Helper()
 
 	baseURL := os.Getenv("PAD_TEST_POSTGRES_URL")
 	if baseURL == "" {
@@ -109,6 +123,11 @@ func NewPostgres(t *testing.T) *store.Store {
 	if err != nil {
 		dropPostgresDB(t, baseURL, dbName)
 		t.Fatalf("storetest: open cloned test postgres store: %v", err)
+	}
+	if err := s.BoundRuntimePool(limits); err != nil {
+		_ = s.Close()
+		dropPostgresDB(t, baseURL, dbName)
+		t.Fatalf("storetest: bound runtime pool: %v", err)
 	}
 	TracePGConnected(t, "storetest.NewPostgres")
 	t.Cleanup(func() {

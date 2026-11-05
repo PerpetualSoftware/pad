@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/PerpetualSoftware/pad/internal/email"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // unsubscribeSecret derives a stable HMAC key from the Maileroo API key.
@@ -46,6 +47,25 @@ func (s *Server) handleUnsubscribe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.store.OptOutEmail(emailAddr); err != nil {
+		if store.IsDBRetryable(err) {
+			// A page, not JSON: same 503 + Retry-After as every busy answer
+			// (TASK-4278), with the retry wording a person can act on.
+			slog.Warn("unsubscribe: database busy", "error", err)
+			w.Header().Set("Retry-After", "2")
+			msg := "The server is busy and nothing was changed. Please try this link again in a moment."
+			if store.IsDBOutcomeUnknown(err) {
+				// Cut off client-side: the opt-out may have landed. The link
+				// is idempotent, so trying it again is still the right step.
+				msg = "The server was busy and may not have finished this request. Please try this link again in a moment."
+			}
+			renderUnsubPage(w, http.StatusServiceUnavailable, unsubData{
+				Title:   "Busy",
+				Message: msg,
+			})
+			return
+		}
+		slog.Error("unsubscribe: opt-out failed", "error", err)
+		// 500: page response with fixed text; err is logged above, never shown.
 		renderUnsubPage(w, http.StatusInternalServerError, unsubData{
 			Title:   "Error",
 			Message: "Something went wrong. Please try again later.",

@@ -56,10 +56,11 @@ func (s *Server) widenLibraryOptions(r *http.Request, workspaceID string, coll *
 	for attempt := 0; attempt < libraryWidenAttempts; attempt++ {
 		fresh, err := s.store.GetCollection(coll.ID)
 		if err != nil || fresh == nil {
-			return coll, schema, nil, &itemCreateError{status: http.StatusInternalServerError, code: "internal_error", message: "Failed to read collection"}
+			return coll, schema, nil, storeItemCreateError(err, "Failed to read collection")
 		}
 		var freshSchema models.CollectionSchema
 		if err := models.UnmarshalItemFieldSchema([]byte(fresh.Schema), &freshSchema); err != nil {
+			// 500: schema JSON from the row just read does not parse; not a store error.
 			return coll, schema, nil, &itemCreateError{status: http.StatusInternalServerError, code: "internal_error", message: "Failed to parse collection schema"}
 		}
 		missing := missingLibraryOptions(freshSchema, vocab, fieldMap)
@@ -73,6 +74,7 @@ func (s *Server) widenLibraryOptions(r *http.Request, workspaceID string, coll *
 		// schema stored with one, which the write-only rule forbids.
 		widened, err := appendSelectOptionsJSON(fresh.Schema, missing)
 		if err != nil {
+			// 500: appendSelectOptionsJSON is pure JSON editing; not a store error.
 			return coll, schema, nil, &itemCreateError{status: http.StatusInternalServerError, code: "internal_error", message: "Failed to extend collection schema"}
 		}
 		updated, err := s.store.UpdateCollection(fresh.ID, models.CollectionUpdate{
@@ -84,10 +86,11 @@ func (s *Server) widenLibraryOptions(r *http.Request, workspaceID string, coll *
 		}
 		if err != nil || updated == nil {
 			slog.Error("widenLibraryOptions: UpdateCollection failed", "collection", fresh.ID, "error", err)
-			return coll, schema, nil, &itemCreateError{status: http.StatusInternalServerError, code: "internal_error", message: "Failed to extend collection schema"}
+			return coll, schema, nil, storeItemCreateError(err, "Failed to extend collection schema")
 		}
 		var updatedSchema models.CollectionSchema
 		if err := models.UnmarshalItemFieldSchema([]byte(updated.Schema), &updatedSchema); err != nil {
+			// 500: the schema the store just returned does not parse; not a store error.
 			return coll, schema, nil, &itemCreateError{status: http.StatusInternalServerError, code: "internal_error", message: "Failed to parse collection schema"}
 		}
 		s.publishCollectionEvent(events.CollectionUpdated, workspaceID, updated.ID, updated.Slug, "", false)

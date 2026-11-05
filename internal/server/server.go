@@ -1672,6 +1672,10 @@ func (s *Server) setupRouter() {
 	// that needs to verify the real TCP peer (e.g. the bootstrap loopback
 	// check) can read the untampered value from request context even on
 	// deployments with a trusted reverse proxy in front.
+	// withRequestStart is first so the request clock starts at arrival in this
+	// process, before anything else can spend time: the account-deletion
+	// deadline counts from it (TASK-4278).
+	r.Use(withRequestStart)
 	r.Use(CapturePeerAddr)
 	// RealIP is gated on PAD_TRUSTED_PROXIES. When unset (the default), proxy
 	// headers are ignored and the real TCP peer address is used everywhere.
@@ -2807,9 +2811,16 @@ func (s *Server) Prepare(addr string) {
 	// once the caller is authorised to mint (withImportReadDeadline, BUG-3184),
 	// because it reads its body while it writes and so spends server time
 	// between reads.
-	s.httpServer = &http.Server{
+	s.httpServer = newHTTPServer(addr, s.router)
+}
+
+// newHTTPServer builds the HTTP server Prepare serves, without listening, so a
+// test can read the timeouts the request path actually runs under (TASK-4278:
+// the account-deletion budget must stay below WriteTimeout).
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
 		Addr:              addr,
-		Handler:           s.router,
+		Handler:           handler,
 		ReadTimeout:       15 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       httpIdleTimeout,
@@ -2863,6 +2874,51 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		slog.Error("failed to encode JSON response", "error", err)
 	}
+}
+
+// Messages of the retryable "database busy" answer (TASK-4278). A write whose
+// transaction definitely rolled back (store.IsDBBusy: the server said so) says
+// nothing was saved. A write interrupted on the client side (a deadline or a
+// dead connection, store.IsDBOutcomeUnknown) can have been cut off during or
+// after COMMIT, so it must NOT claim that.
+const (
+	busyWriteMessage        = "The server is busy; nothing was saved. Please try again."
+	busyUnknownWriteMessage = "The server was busy and may not have finished this request. Check before trying again."
+	busyReadMessage         = "The server is busy. Please try again."
+)
+
+// writeBusy answers a request the database was too busy for (a statement,
+// lock or idle timeout, a deadlock: store.IsDBBusy; or a client-side
+// interruption: store.IsDBOutcomeUnknown): 503 with Retry-After (except
+// for an outcome-unknown write) and the
+// retryable code database_busy. write picks the wording: a write whose
+// rollback is certain also says nothing was saved; one whose outcome is
+// unknown says it may not have finished. Both classes carry the same code.
+func writeBusy(w http.ResponseWriter, err error, write bool) {
+	switch {
+	case !write:
+		writeBusyMessage(w, busyReadMessage)
+	case store.IsDBOutcomeUnknown(err):
+		writeBusyOutcomeUnknown(w, busyUnknownWriteMessage)
+	default:
+		writeBusyMessage(w, busyWriteMessage)
+	}
+}
+
+// writeBusyMessage is writeBusy with a caller-chosen message, for the one
+// path whose truth differs (account deletion after Stripe was cancelled).
+func writeBusyMessage(w http.ResponseWriter, message string) {
+	w.Header().Set("Retry-After", "2")
+	writeError(w, http.StatusServiceUnavailable, "database_busy", message)
+}
+
+// writeBusyOutcomeUnknown is the 503 for a WRITE that may have committed. Its
+// text says to check before trying again, so it carries no Retry-After: that
+// header invites an automatic retry the body tells the caller not to make.
+// (The web client retries only GETs and the CLI only keyed writes, and both
+// read a missing header as "no wait hint".)
+func writeBusyOutcomeUnknown(w http.ResponseWriter, message string) {
+	writeError(w, http.StatusServiceUnavailable, "database_busy", message)
 }
 
 func writeError(w http.ResponseWriter, status int, code, message string) {
@@ -2929,6 +2985,16 @@ func writeWorkspaceNotFound(w http.ResponseWriter, message string) {
 // message to the client. This prevents leaking SQL errors, file paths,
 // and other internal details.
 func writeInternalError(w http.ResponseWriter, err error) {
+	// A database that was too busy (statement, lock or idle timeout, deadlock,
+	// context deadline) is retryable and rolled back: answer it as such, never
+	// as a 500 (TASK-4278). First, so no later arm can claim it. This funnel
+	// has no request, so it cannot tell a write from a read and uses the
+	// neutral wording.
+	if store.IsDBRetryable(err) {
+		slog.Warn("database busy", "error", err)
+		writeBusy(w, err, false)
+		return
+	}
 	// The store's NUL refusal is a DECISION, not a fault, and it is mapped
 	// here rather than at each handler for the same reason Layer A lives at
 	// the driver: this is the one funnel every 500 already passes through, so
@@ -2984,6 +3050,71 @@ func writeInternalError(w http.ResponseWriter, err error) {
 	}
 	slog.Error("internal server error", "error", err)
 	writeError(w, http.StatusInternalServerError, "internal_error", "An internal error occurred")
+}
+
+// writeStoreErrorR answers a failed store call with the status, code and
+// message the caller chose, unless the database was merely busy (see
+// store.IsDBBusy), which is a retryable 503 database_busy instead. The real
+// error is logged, and err.Error() is NEVER sent: store errors carry SQL text
+// and SQLSTATEs. A busy answer to a write says nothing was saved when the
+// server rolled it back (store.IsDBBusy); one cut off client-side (a deadline,
+// a dead connection) says it may not have finished; one to a read says neither.
+// A request whose context is already cancelled (the client left) gets a
+// header-only 503 and no error log: there is nobody to tell. Where no request is in scope, writeInternalError is the
+// neutral-wording funnel.
+func writeStoreErrorR(w http.ResponseWriter, r *http.Request, err error, status int, code, message string) {
+	writeStoreErrorBusyAs(w, r, err, status, code, message, "")
+}
+
+// writeStoreErrorBusyAs is writeStoreErrorR for the paths where the default
+// busy wording would be untrue: a step that runs AFTER the main write
+// committed (credentials changed, then the session refresh was busy) cannot
+// say "nothing was saved". busyMessage replaces the wording; the status, code
+// and Retry-After are unchanged.
+func writeStoreErrorBusyAs(w http.ResponseWriter, r *http.Request, err error, status int, code, message, busyMessage string) {
+	if errors.Is(r.Context().Err(), context.Canceled) {
+		// The client is gone, so the body is moot, but the status is still
+		// recorded by logs and middleware: a header-only 503, never an
+		// implicit 200 (a store call that failed is not a success).
+		slog.Debug("request cancelled; store call abandoned", "error", err, "code", code)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+	if store.IsDBRetryable(err) {
+		slog.Warn("database busy", "error", err, "code", code, "method", r.Method)
+		if busyMessage != "" {
+			writeBusyMessage(w, busyMessage)
+			return
+		}
+		writeBusy(w, err, isWriteMethod(r.Method))
+		return
+	}
+	slog.Error(message, "error", err, "code", code)
+	writeError(w, status, code, message)
+}
+
+// importPartiallyRemappedCode is the 500 code of a bundle import whose
+// attachment-reference remap stopped between chunks (TASK-4278). The workspace
+// is kept and marked partial; the remedy is to delete it and import again.
+const importPartiallyRemappedCode = "import_partially_remapped"
+
+// writeStoreErrorNotRetryable answers a failed store call with a 500 and a
+// caller-chosen code that must NEVER read as retryable: a busy cause is NOT
+// mapped to 503 database_busy and no Retry-After is set, because the request
+// already did part of its work and repeating it would duplicate that work (a
+// retried import makes a second workspace). The real error is logged; its text
+// is never sent, only message, which the caller wrote.
+func writeStoreErrorNotRetryable(w http.ResponseWriter, err error, code, message string) {
+	slog.Error("request failed after part of its work was kept; not retryable", "error", err, "code", code)
+	writeError(w, http.StatusInternalServerError, code, message)
+}
+
+func isWriteMethod(m string) bool {
+	switch m {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return false
+	}
+	return true
 }
 
 // nulRefusalReason classifies the store's NUL refusal and returns the sentence

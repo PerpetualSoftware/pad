@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -183,8 +184,8 @@ func appPrincipalInstallID(email string) (string, bool) {
 // appPrincipalsOfOwnedWorkspacesTx lists the bots that are members of the
 // workspaces ownerID owns, in id order. Account deletion erases them
 // (purgeAppPrincipalsTx, TASK-3392). A bot belongs to exactly one install, in one workspace.
-func (s *Store) appPrincipalsOfOwnedWorkspacesTx(tx *sql.Tx, ownerID string) ([]string, error) {
-	rows, err := tx.Query(s.q(`
+func (s *Store) appPrincipalsOfOwnedWorkspacesTx(ctx context.Context, tx *sql.Tx, ownerID string) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, s.q(`
 		SELECT DISTINCT u.id FROM users u
 		JOIN workspace_members wm ON wm.user_id = u.id
 		JOIN workspaces w ON w.id = wm.workspace_id
@@ -210,9 +211,9 @@ func (s *Store) appPrincipalsOfOwnedWorkspacesTx(tx *sql.Tx, ownerID string) ([]
 
 // purgeAppPrincipalsTx erases each bot through eraseUserTx, in the caller's
 // transaction, which has locked their comments root first (BUG-3395).
-func (s *Store) purgeAppPrincipalsTx(tx *sql.Tx, bots []string) error {
+func (s *Store) purgeAppPrincipalsTx(ctx context.Context, tx *sql.Tx, bots []string) error {
 	for _, id := range bots {
-		if err := s.eraseUserTx(tx, id); err != nil {
+		if err := s.eraseUserTxCtx(ctx, tx, id); err != nil {
 			return fmt.Errorf("purge app principal %s: %w", id, err)
 		}
 	}

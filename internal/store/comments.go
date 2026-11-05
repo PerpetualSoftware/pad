@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -670,7 +671,7 @@ func (s *Store) lockCommentForDeleteTx(tx *sql.Tx, id string) (*commentDeleteRow
 // var only so a test can lower it.
 var maxCommentLockDepth = 10000
 
-func (s *Store) lockCommentsRootFirstTx(tx *sql.Tx, scopeCol string, scopeVals ...string) error {
+func (s *Store) lockCommentsRootFirstTxCtx(ctx context.Context, tx *sql.Tx, scopeCol string, scopeVals ...string) error {
 	if s.dialect.Driver() != DriverPostgres || len(scopeVals) == 0 {
 		return nil
 	}
@@ -686,7 +687,7 @@ func (s *Store) lockCommentsRootFirstTx(tx *sql.Tx, scopeCol string, scopeVals .
 	// length, which a real thread never comes near.
 	args = append(args, maxCommentLockDepth)
 	bound := fmt.Sprintf("$%d", len(args))
-	rows, err := tx.Query(`WITH RECURSIVE up(id, cur, depth) AS (
+	rows, err := tx.QueryContext(ctx, `WITH RECURSIVE up(id, cur, depth) AS (
 			SELECT id, parent_id, 0 FROM comments WHERE `+scopeCol+` IN (`+strings.Join(ph, ", ")+`)
 			UNION ALL
 			SELECT up.id, c.parent_id, up.depth + 1
@@ -715,6 +716,11 @@ func (s *Store) lockCommentsRootFirstTx(tx *sql.Tx, scopeCol string, scopeVals .
 		return fmt.Errorf("lock comments root first: %w", err)
 	}
 	return nil
+}
+
+// lockCommentsRootFirstTx is lockCommentsRootFirstTxCtx without a deadline.
+func (s *Store) lockCommentsRootFirstTx(tx *sql.Tx, scopeCol string, scopeVals ...string) error {
+	return s.lockCommentsRootFirstTxCtx(context.Background(), tx, scopeCol, scopeVals...)
 }
 
 // lockCommentRowTx reads one comment row, FOR UPDATE on Postgres. It returns

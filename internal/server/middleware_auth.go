@@ -148,9 +148,12 @@ func (s *Server) TokenAuth(next http.Handler) http.Handler {
 
 		// Session token (from CLI login)
 		if strings.HasPrefix(token, "padsess_") {
-			session, err := s.store.ValidateSession(token)
+			session, err := s.store.ValidateSessionContext(r.Context(), token)
 			if err != nil {
-				writeError(w, http.StatusInternalServerError, "internal_error", "Session validation failed")
+				if r.Context().Err() != nil {
+					return // client gone: nobody to answer, nothing to log (TASK-4278)
+				}
+				writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Session validation failed")
 				return
 			}
 			if session == nil {
@@ -202,7 +205,7 @@ func (s *Server) TokenAuth(next http.Handler) http.Handler {
 			// clients hold the token directly (no cookie to re-issue) — just
 			// push the row's expiry forward. Best-effort: a renewal error must
 			// not fail an otherwise-valid request.
-			if _, _, err := s.store.RenewSessionIfStale(token); err != nil {
+			if _, _, err := s.store.RenewSessionIfStaleContext(r.Context(), token); err != nil && r.Context().Err() == nil {
 				slog.Warn("session renewal failed (request allowed)", "error", err)
 			}
 			ctx := context.WithValue(r.Context(), ctxCurrentUser, session.User)
@@ -220,7 +223,7 @@ func (s *Server) TokenAuth(next http.Handler) http.Handler {
 
 		apiToken, err := s.store.ValidateToken(token)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "internal_error", "Token validation failed")
+			writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Token validation failed")
 			return
 		}
 		if apiToken == nil {
@@ -257,7 +260,7 @@ func (s *Server) TokenAuth(next http.Handler) http.Handler {
 		if apiToken.UserID != "" {
 			user, err := s.store.GetUser(apiToken.UserID)
 			if err != nil {
-				writeError(w, http.StatusInternalServerError, "internal_error", "Token validation failed")
+				writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Token validation failed")
 				return
 			}
 			if user == nil {
@@ -276,7 +279,7 @@ func (s *Server) TokenAuth(next http.Handler) http.Handler {
 		// (BUG-3982).
 		ctx, err = s.withTokenPin(ctx, apiToken)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "internal_error", "Token validation failed")
+			writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Token validation failed")
 			return
 		}
 
@@ -309,7 +312,10 @@ func (s *Server) SessionAuth(next http.Handler) http.Handler {
 			}
 		}
 
-		session, err := s.store.ValidateSession(cookie.Value)
+		session, err := s.store.ValidateSessionContext(r.Context(), cookie.Value)
+		if err != nil && r.Context().Err() != nil {
+			return // client gone: quiet (TASK-4278)
+		}
 		// A CLI session is a bearer credential, never a cookie (BUG-3350).
 		if err != nil || session == nil || !cookieKindAccepted(session) {
 			next.ServeHTTP(w, r)
@@ -351,7 +357,10 @@ func (s *Server) SessionAuth(next http.Handler) http.Handler {
 		// an otherwise-valid request. When this re-issues the CSRF cookie it
 		// also covers the "missing CSRF cookie" case below.
 		renewed := false
-		if newExpiry, didRenew, err := s.store.RenewSessionIfStale(cookie.Value); err != nil {
+		if newExpiry, didRenew, err := s.store.RenewSessionIfStaleContext(r.Context(), cookie.Value); err != nil {
+			if r.Context().Err() != nil {
+				return // client gone: quiet (TASK-4278)
+			}
 			slog.Warn("session renewal failed (request allowed)", "error", err)
 		} else if didRenew {
 			if maxAge := int(time.Until(newExpiry).Seconds()); maxAge > 0 {
@@ -731,7 +740,7 @@ func (s *Server) RequireWorkspaceAccess(next http.Handler) http.Handler {
 		// Resolve workspace: supports both UUID and slug.
 		ws, err := s.resolveWorkspace(slugOrID, currentUser(r))
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to resolve workspace")
+			writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to resolve workspace")
 			return
 		}
 		if ws == nil {
@@ -847,7 +856,7 @@ func (s *Server) RequireWorkspaceAccess(next http.Handler) http.Handler {
 
 		member, err := s.store.GetWorkspaceMember(ws.ID, user.ID)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to check workspace access")
+			writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to check workspace access")
 			return
 		}
 		if member == nil {
@@ -867,7 +876,7 @@ func (s *Server) RequireWorkspaceAccess(next http.Handler) http.Handler {
 			hasGrants, grantErr := s.store.UserHasGrantsInWorkspace(ws.ID, user.ID)
 			if grantErr != nil {
 				slog.Error("failed to check guest grants", "workspace_id", ws.ID, "user_id", user.ID, "error", grantErr)
-				writeError(w, http.StatusInternalServerError, "internal_error", "Failed to check workspace access")
+				writeStoreErrorR(w, r, grantErr, http.StatusInternalServerError, "internal_error", "Failed to check workspace access")
 				return
 			}
 			if !hasGrants {
@@ -1102,7 +1111,7 @@ func (s *Server) handleSessionIPChange(w http.ResponseWriter, r *http.Request, s
 				"client_ip", newIP,
 				"user_id", userID,
 				"error", err)
-			writeError(w, http.StatusInternalServerError, "internal_error",
+			writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error",
 				"Unable to validate session. Please try again.")
 			return sessionIPChangeTerminated
 		}
@@ -1227,7 +1236,7 @@ func (s *Server) handleSessionUAChange(w http.ResponseWriter, r *http.Request, s
 			"client_ip", clientIP(r),
 			"user_id", userID,
 			"error", err)
-		writeError(w, http.StatusInternalServerError, "internal_error",
+		writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error",
 			"Unable to validate session. Please try again.")
 		return sessionIPChangeTerminated
 	}

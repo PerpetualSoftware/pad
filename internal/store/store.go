@@ -44,6 +44,9 @@ var AllowSchemaAhead bool
 type Store struct {
 	db      *sql.DB
 	dialect Dialect
+	// pgConnStr is the Postgres connection string NewPostgres opened with
+	// (empty on SQLite). BoundRuntimePool derives the runtime pool's from it.
+	pgConnStr string
 	// deadlockRetryObserver is told each deadlock retry's site
 	// (retryOnDeadlock); deadlockInjector is a TEST-ONLY hook, nil in
 	// production, that fails an attempt just before its commit.
@@ -320,14 +323,20 @@ type Store struct {
 	afterDebounceRefusal func()
 
 	// afterRemapScan is a TEST-ONLY seam, nil in production. When set,
-	// RemapAttachmentReferencesInWorkspace calls it after scanning every item's
-	// content and fields and before writing any rewrite back: the window in
+	// RemapAttachmentReferencesInWorkspace calls it, once per chunk, after
+	// scanning the chunk's items and before writing any rewrite back: the window in
 	// which a concurrent item write would be overwritten by the remap's stale
 	// snapshot, were it not for the workspace seq lock the remap holds
 	// (BUG-2797, closed by #1328). Same usage constraints as the seams above;
 	// a hook that writes to the same workspace must do so from ANOTHER
 	// goroutine, since the calling transaction holds the lock that write needs.
 	afterRemapScan func(workspaceID string)
+
+	// remapTune is a TEST-ONLY seam, nil in production: it replaces the
+	// chunk budget, the per-chunk item cap and the clock of
+	// RemapAttachmentReferencesInWorkspace, and lets a test observe or stop
+	// the remap between chunks (TASK-4278). See remapTuning.
+	remapTune *remapTuning
 
 	// beforeMoveLock is a TEST-ONLY seam, nil in production. A move calls it
 	// after its pre-lock read of the item and before it takes the workspace
@@ -557,6 +566,19 @@ func (s *Store) startWALCheckpointer() {
 
 // openPostgresDB opens and configures a PostgreSQL connection pool.
 func openPostgresDB(connStr string) (*sql.DB, error) {
+	return openPostgresDBBounded(connStr, RuntimeLimits{})
+}
+
+// openPostgresDBBounded is openPostgresDB with the runtime limits carried as
+// DSN startup parameters, so EVERY connection the pool ever opens (including
+// replacements after ConnMaxLifetime and after a server-side termination)
+// starts with them. A session-level SET would only bind the connection it ran
+// on. All-zero limits give exactly the unbounded pool.
+func openPostgresDBBounded(connStr string, l RuntimeLimits) (*sql.DB, error) {
+	connStr, err := l.applyToDSN(connStr)
+	if err != nil {
+		return nil, err
+	}
 	// Layer A on Postgres too, deliberately. Postgres refuses a NUL natively,
 	// so the wrapper is not what makes the write safe there — it is what makes
 	// the two dialects give the SAME answer, with the same typed error, which
@@ -589,7 +611,7 @@ func NewPostgres(connStr string) (*Store, error) {
 		return nil, err
 	}
 
-	s := &Store{db: db, dialect: &postgresDialect{}}
+	s := &Store{db: db, dialect: &postgresDialect{}, pgConnStr: connStr}
 	if err := s.migratePostgres(); err != nil {
 		return nil, fmt.Errorf("migrate postgres: %w", err)
 	}

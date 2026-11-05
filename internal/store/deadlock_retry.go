@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"math/rand/v2"
@@ -41,10 +42,17 @@ func (s *Store) SetDeadlockRetryObserver(fn func(site string)) { s.deadlockRetry
 // deadlockRetryAttempts times in all, while it fails with a deadlock. Any
 // other error, and the last attempt's error, is returned unchanged.
 func (s *Store) retryOnDeadlock(site string, fn func() error) error {
+	return s.retryOnDeadlockCtx(context.Background(), site, fn)
+}
+
+// retryOnDeadlockCtx is retryOnDeadlock that stops retrying once ctx is done:
+// the attempt's own error is returned, and the backoff sleep ends early
+// (TASK-4278).
+func (s *Store) retryOnDeadlockCtx(ctx context.Context, site string, fn func() error) error {
 	var err error
 	for attempt := 1; attempt <= deadlockRetryAttempts; attempt++ {
 		err = fn()
-		if err == nil || !isDeadlockError(err) || attempt == deadlockRetryAttempts {
+		if err == nil || !isDeadlockError(err) || attempt == deadlockRetryAttempts || ctx.Err() != nil {
 			return err
 		}
 		slog.Info("store: retrying a transaction after a deadlock", "site", site, "attempt", attempt, "error", err)
@@ -54,7 +62,11 @@ func (s *Store) retryOnDeadlock(site string, fn func() error) error {
 		// Small and jittered, so two victims of one cycle do not meet again
 		// in step: 5-15 ms, then 10-30 ms.
 		base := time.Duration(attempt) * 10 * time.Millisecond
-		time.Sleep(base/2 + time.Duration(rand.Int64N(int64(base))))
+		select {
+		case <-time.After(base/2 + time.Duration(rand.Int64N(int64(base)))):
+		case <-ctx.Done():
+			return err
+		}
 	}
 	return err
 }

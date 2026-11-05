@@ -59,6 +59,19 @@ export function notifyServerBusy(retryAfterMs?: number, now: number = Date.now()
 }
 
 /**
+ * The deduped toast for a surfaced `database_busy` 503 (TASK-4278). `message`
+ * is the client's already-vetted sentence (the server's own, or the standard
+ * wording; a write's says nothing was saved). Shares the dedupe clock with
+ * notifyServerBusy so a burst of either stacks one toast.
+ */
+export function notifyDatabaseBusy(message: string, now: number = Date.now()): boolean {
+	if (now - lastShownAt < DEDUPE_WINDOW_MS) return false;
+	lastShownAt = now;
+	toastStore.showUnread(message, 'info', BUSY_TOAST_DURATION_MS);
+	return true;
+}
+
+/**
  * Test-only reset of the dedupe clock so each test starts from a clean
  * "no toast shown yet" state. Not used in production.
  */

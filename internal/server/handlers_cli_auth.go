@@ -35,7 +35,7 @@ func (s *Server) handleCreateCLIAuthSession(w http.ResponseWriter, r *http.Reque
 		UserAgent: requestUserAgent(r),
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to create CLI auth session")
+		writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to create CLI auth session")
 		return
 	}
 
@@ -71,7 +71,7 @@ func (s *Server) handlePollCLIAuthSession(w http.ResponseWriter, r *http.Request
 
 	sess, err := s.store.GetCLIAuthSession(code)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to check CLI auth session")
+		writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to check CLI auth session")
 		return
 	}
 	if sess == nil {
@@ -164,7 +164,7 @@ func (s *Server) handleApproveCLIAuthSession(w http.ResponseWriter, r *http.Requ
 	// Verify the session exists and is pending
 	sess, err := s.store.GetCLIAuthSession(code)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to check CLI auth session")
+		writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to check CLI auth session")
 		return
 	}
 	if sess == nil {
@@ -213,7 +213,7 @@ func (s *Server) handleApproveCLIAuthSession(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to create session")
+		writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to create session")
 		return
 	}
 
@@ -228,7 +228,7 @@ func (s *Server) handleApproveCLIAuthSession(w http.ResponseWriter, r *http.Requ
 			writeError(w, http.StatusConflict, "cli_auth_denied", "This sign-in is no longer waiting for approval. Run 'pad auth login' again.")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to approve CLI auth session")
+		writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to approve CLI auth session")
 		return
 	}
 
@@ -260,13 +260,13 @@ func (s *Server) handleDenyCLIAuthSession(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if !errors.Is(err, store.ErrCLIAuthNotPending) {
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to deny CLI auth session")
+		writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to deny CLI auth session")
 		return
 	}
 	sess, err := s.store.GetCLIAuthSession(code)
 	switch {
 	case err != nil:
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to check CLI auth session")
+		writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to check CLI auth session")
 	case sess == nil:
 		writeError(w, http.StatusNotFound, "not_found", "CLI auth session not found")
 	case sess.Status == "approved":

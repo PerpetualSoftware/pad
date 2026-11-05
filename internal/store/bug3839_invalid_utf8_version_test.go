@@ -238,7 +238,7 @@ func TestBUG3839_DocumentEditOfInvalidUTF8StoresTheFullBody(t *testing.T) {
 	}
 }
 
-// planVersionChainRemapTx (attachments.go): an import's attachment remap
+// planVersionChainRemap (attachments.go): an import's attachment remap
 // re-diffs each version it can resolve against its remapped successor. Here
 // the newest version's patch restores an attachment ref, and the item's
 // current body carries an invalid byte next to it, as a direct edit or an

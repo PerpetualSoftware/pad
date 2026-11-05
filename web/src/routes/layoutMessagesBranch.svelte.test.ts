@@ -24,6 +24,7 @@ vi.mock('$lib/api/client', () => {
 		setAccessRevokedHandler: () => {},
 		setIdentityProvider: () => {},
 		setRateLimitHandler: () => {},
+		setDatabaseBusyHandler: () => {},
 		setNetworkUnreachableHandler: () => {},
 		isPlanLimitError: () => false,
 		planLimitMessage: () => '',
