@@ -60,6 +60,13 @@ identityGateSuite({
 	},
 	mutants: [
 		{
+			cls: 3,
+			what: 'the invitation clipboard completion loses its own identity check',
+			old: '\t\t\t\tconst ok = await copyToClipboard(result.join_url).catch(() => false);\n\t\t\t\tif (!identityHeld(epochAtEntry)) return;\n',
+			new: '\t\t\t\tconst ok = await copyToClipboard(result.join_url).catch(() => false);\n',
+			names: 'handleInvite()',
+		},
+		{
 			cls: 1,
 			what: 'a commit between the role update and its check',
 			old: '\t\t\tawait api.members.updateRole(reqWs, userId, newRole);\n',
@@ -97,8 +104,8 @@ identityGateSuite({
 		{
 			cls: 5,
 			what: "the Copy invite link handler's second check is made conditional on something that never holds",
-			old: "if (!pageIdentityHeld()) return; toastStore.show(ok ? 'Link copied!'",
-			new: "if (!pageIdentityHeld() && url === '') return; toastStore.show(ok ? 'Link copied!'",
+			old: "if (!pageIdentityHeld()) return; toastStore.show(ok ? 'Link copied'",
+			new: "if (!pageIdentityHeld() && url === '') return; toastStore.show(ok ? 'Link copied'",
 			names: 'in markup',
 		},
 	],
