@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
@@ -232,13 +233,23 @@ func (s *Store) rotateUserSessions(userID string, epoch int64, oldSessionID, dev
 // ValidateSession hashes the provided token, looks it up, checks expiry,
 // and returns the session info including the associated user and binding
 // metadata (IP/UA). Returns nil if invalid or expired.
+//
+// Test-only convenience: request paths use ValidateSessionContext so a
+// cancelled request releases its connection (TASK-4278).
 func (s *Store) ValidateSession(token string) (*SessionInfo, error) {
+	return s.ValidateSessionContext(context.Background(), token)
+}
+
+// ValidateSessionContext is ValidateSession under ctx: a cancelled or expired
+// request context stops the query in flight (database/sql sends the cancel to
+// Postgres), so an abandoned request does not hold a pooled connection.
+func (s *Store) ValidateSessionContext(ctx context.Context, token string) (*SessionInfo, error) {
 	hash := sha256.Sum256([]byte(token))
 	tokenHash := hex.EncodeToString(hash[:])
 
 	var sessionID, userID, expiresAt, ipAddress, uaHash, createdAt, kind string
 	var renewSeconds int64
-	err := s.db.QueryRow(s.q(`
+	err := s.db.QueryRowContext(ctx, s.q(`
 		SELECT id, user_id, expires_at, ip_address, ua_hash, created_at, kind, renew_ttl_seconds FROM sessions WHERE token_hash = ?
 	`), tokenHash).Scan(&sessionID, &userID, &expiresAt, &ipAddress, &uaHash, &createdAt, &kind, &renewSeconds)
 	if err == sql.ErrNoRows {
@@ -253,7 +264,7 @@ func (s *Store) ValidateSession(token string) (*SessionInfo, error) {
 		return nil, nil
 	}
 
-	user, err := s.GetUser(userID)
+	user, err := s.GetUserContext(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -297,13 +308,21 @@ const SessionMaxLifetime = 90 * 24 * time.Hour
 // Callers should treat this as best-effort: a renewal error must not fail an
 // otherwise-valid request (the session is still valid until its current
 // expiry).
+//
+// Test-only convenience: request paths use RenewSessionIfStaleContext.
 func (s *Store) RenewSessionIfStale(token string) (time.Time, bool, error) {
+	return s.RenewSessionIfStaleContext(context.Background(), token)
+}
+
+// RenewSessionIfStaleContext is RenewSessionIfStale under ctx (TASK-4278): a
+// cancelled request stops the read or the UPDATE and returns ctx's error.
+func (s *Store) RenewSessionIfStaleContext(ctx context.Context, token string) (time.Time, bool, error) {
 	hash := sha256.Sum256([]byte(token))
 	tokenHash := hex.EncodeToString(hash[:])
 
 	var expiresAtStr, createdAtStr string
 	var renewSeconds int64
-	err := s.db.QueryRow(s.q(`
+	err := s.db.QueryRowContext(ctx, s.q(`
 		SELECT expires_at, created_at, renew_ttl_seconds FROM sessions WHERE token_hash = ?
 	`), tokenHash).Scan(&expiresAtStr, &createdAtStr, &renewSeconds)
 	if err == sql.ErrNoRows {
@@ -339,7 +358,7 @@ func (s *Store) RenewSessionIfStale(token string) (time.Time, bool, error) {
 	}
 
 	newExpiryStr := newExpiry.Format(time.RFC3339)
-	res, err := s.db.Exec(s.q(`
+	res, err := s.db.ExecContext(ctx, s.q(`
 		UPDATE sessions SET expires_at = ? WHERE token_hash = ? AND expires_at = ?
 	`), newExpiryStr, tokenHash, expiresAtStr)
 	if err != nil {

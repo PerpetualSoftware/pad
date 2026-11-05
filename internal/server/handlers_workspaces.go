@@ -414,7 +414,7 @@ func (s *Server) requireWorkspaceCreationConsent(w http.ResponseWriter, r *http.
 		}
 		slog.Error("workspace creation consent check failed to read connection",
 			"request_id", requestID, "error", err)
-		writeError(w, http.StatusInternalServerError, "internal_error",
+		writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error",
 			"Could not verify this connection's workspace-creation permission")
 		return false
 	}
@@ -508,15 +508,21 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		// could use or remove. Compensating only the owner step would have left
 		// the invariant true of one failure point and false of its neighbour.
 		userID := currentUserID(r)
-		msg := "Failed to seed collections: " + err.Error()
+		// The seed error is logged by removeUnusableWorkspace and below, never
+		// sent: it is store text (TASK-4278).
+		slog.Error("workspace seeding failed", "workspace_id", ws.ID, "error", err)
+		msg := "Failed to seed collections"
+		busyMsg := ""
 		if rerr := s.removeUnusableWorkspace("create workspace (seed)", ws.ID, ws.Slug, userID, err); rerr != nil {
 			slog.Error("workspace seeding failed and the workspace could not be removed",
 				"workspace_id", ws.ID, "workspace_slug", ws.Slug, "error", rerr)
 			// BUG-3479: the caller is told the half-made workspace survived,
 			// since it holds the name and a retry will land on name-2.
 			msg += fmt.Sprintf("; the unusable workspace %q could not be removed and still holds its name (see the server log)", ws.Slug)
+			// Not "nothing was saved": the husk survived.
+			busyMsg = fmt.Sprintf("The server was too busy to finish creating the workspace, and the unusable workspace %q still holds its name. Please try again.", ws.Slug)
 		}
-		writeError(w, http.StatusInternalServerError, "internal_error", msg)
+		writeStoreErrorBusyAs(w, r, err, http.StatusInternalServerError, "internal_error", msg, busyMsg)
 		return
 	}
 
@@ -1056,7 +1062,7 @@ func (s *Server) handleImportWorkspace(w http.ResponseWriter, r *http.Request) {
 		if writeWorkspaceSlugContended(w, err) {
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "import_failed", err.Error())
+		writeStoreErrorR(w, r, err, http.StatusInternalServerError, "import_failed", "The workspace could not be imported")
 		return
 	}
 

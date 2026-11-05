@@ -97,6 +97,11 @@ All configuration is via environment variables or a config file (`~/.pad/config.
 | `PAD_DB_DRIVER` | `sqlite` | Database driver: `sqlite` or `postgres` |
 | `PAD_DB_PATH` | `~/.pad/pad.db` | SQLite database path (ignored when using PostgreSQL). Its directory is the data dir, so it must be absolute too: a relative value is deprecated and warns |
 | `PAD_DATABASE_URL` | — | PostgreSQL connection string (required when `PAD_DB_DRIVER=postgres`) |
+| `PAD_DB_STATEMENT_TIMEOUT` | `30s` | Postgres only. Longest any one statement may run on the request path (the slowest measured legitimate statement is 0.18 s). Past it the request fails `503 database_busy` and the statement is rolled back. `0` or `off` removes the bound. Migrations, startup backfills and CLI database commands are never bound, and workspace purge, import and the attachment remap raise it for their own transaction |
+| `PAD_DB_LOCK_TIMEOUT` | `10s` | Postgres only. Longest a statement may wait for a lock. `0` or `off` removes the bound |
+| `PAD_DB_IDLE_IN_TX_TIMEOUT` | `60s` | Postgres only. Longest a session may sit idle inside an open transaction before the server ends it. `0` or `off` removes the bound |
+
+The three `PAD_DB_*_TIMEOUT` values are sent as connection startup parameters in the connection string, so every connection the pool opens or recycles is bound. **PgBouncer in transaction-pooling mode rejects startup parameters** (`unsupported startup parameter: options`): behind it, set all three to `0` and bound the database in PgBouncer or on the role (`ALTER ROLE pad SET statement_timeout = '30s'`) instead. A malformed value refuses to start rather than being ignored. They are ignored on SQLite.
 
 ### Real-time Events
 

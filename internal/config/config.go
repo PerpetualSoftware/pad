@@ -109,6 +109,15 @@ type Config struct {
 	PushDispatchLeaseRaw       string `toml:"-"`
 	PushDispatchLeaseMarginRaw string `toml:"-"`
 
+	// The Postgres runtime bounds (PAD_DB_STATEMENT_TIMEOUT,
+	// PAD_DB_LOCK_TIMEOUT, PAD_DB_IDLE_IN_TX_TIMEOUT; TASK-4278), kept as raw
+	// env strings and parsed by DBRuntimeLimits at server start so a malformed
+	// value refuses `pad server start` only. Empty means the default. Env
+	// only; ignored on SQLite.
+	DBStatementTimeoutRaw string `toml:"-"`
+	DBLockTimeoutRaw      string `toml:"-"`
+	DBIdleInTxTimeoutRaw  string `toml:"-"`
+
 	MCPPublicURL  string `toml:"mcp_public_url"`  // Canonical URL clients paste into their MCP client (e.g. https://mcp.getpad.dev — matches mcp.stripe.com / mcp.linear.app convention). Published verbatim as RFC 9728 `resource` and used as the OAuth audience binding; pad mounts the transport internally at /mcp and pad-cloud's nginx router transparently rewrites mcp.* root → /mcp so external clients see a single canonical URL regardless of internal path.
 	AuthServerURL string `toml:"auth_server_url"` // Canonical URL of the OAuth authorization server (TASK-951), e.g. https://app.getpad.dev. Embedded in protected-resource metadata's authorization_servers field.
 	// OpenAIAppsChallenge is the domain-verification token OpenAI's plugin
@@ -560,6 +569,9 @@ func Load() (*Config, error) {
 	if v := os.Getenv("PAD_PUSH_GATEWAY_SECRET"); v != "" {
 		cfg.PushGatewaySecret = v
 	}
+	cfg.DBStatementTimeoutRaw = os.Getenv("PAD_DB_STATEMENT_TIMEOUT")
+	cfg.DBLockTimeoutRaw = os.Getenv("PAD_DB_LOCK_TIMEOUT")
+	cfg.DBIdleInTxTimeoutRaw = os.Getenv("PAD_DB_IDLE_IN_TX_TIMEOUT")
 	cfg.PushDispatchIntervalRaw = os.Getenv("PAD_PUSH_DISPATCH_INTERVAL")
 	cfg.PushDispatchSettleRaw = os.Getenv("PAD_PUSH_DISPATCH_SETTLE")
 	cfg.PushDispatchLeaseRaw = os.Getenv("PAD_PUSH_DISPATCH_LEASE")
@@ -1028,4 +1040,53 @@ func (c *Config) PushDispatchTimings() (PushDispatchTimings, error) {
 		*k.dst = d
 	}
 	return t, nil
+}
+
+// Defaults for the Postgres runtime bounds (TASK-4278). Chosen from a
+// measurement on a 4,079-item workspace: the slowest legitimate default-path
+// statement took 0.18 s and idle-in-transaction time 1.3 ms, so statement 30 s
+// and idle 60 s are over 10x. lock_timeout 10s rests on the 5 s precedent in
+// the document-rename path (no lock-wait measurement exists).
+const (
+	DefaultDBStatementTimeout = 30 * time.Second
+	DefaultDBLockTimeout      = 10 * time.Second
+	DefaultDBIdleInTxTimeout  = 60 * time.Second
+)
+
+// DBRuntimeLimits is the parsed Postgres runtime bounds. A zero field means no
+// limit of that kind.
+type DBRuntimeLimits struct {
+	Statement, Lock, IdleInTx time.Duration
+}
+
+// DBRuntimeLimits parses the three PAD_DB_* bounds. Unset takes the default;
+// `0` or `off` means no limit; anything else must be a positive Go duration or
+// the error names the variable (and does not echo the value).
+func (c *Config) DBRuntimeLimits() (DBRuntimeLimits, error) {
+	var l DBRuntimeLimits
+	for _, k := range []struct {
+		env, raw string
+		def      time.Duration
+		dst      *time.Duration
+	}{
+		{"PAD_DB_STATEMENT_TIMEOUT", c.DBStatementTimeoutRaw, DefaultDBStatementTimeout, &l.Statement},
+		{"PAD_DB_LOCK_TIMEOUT", c.DBLockTimeoutRaw, DefaultDBLockTimeout, &l.Lock},
+		{"PAD_DB_IDLE_IN_TX_TIMEOUT", c.DBIdleInTxTimeoutRaw, DefaultDBIdleInTxTimeout, &l.IdleInTx},
+	} {
+		if k.raw == "" {
+			*k.dst = k.def
+			continue
+		}
+		v := strings.TrimSpace(k.raw)
+		if v == "0" || strings.EqualFold(v, "off") {
+			*k.dst = 0
+			continue
+		}
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			return DBRuntimeLimits{}, fmt.Errorf("%s must be a positive Go duration such as 30s, or 0 or off for no limit", k.env)
+		}
+		*k.dst = d
+	}
+	return l, nil
 }

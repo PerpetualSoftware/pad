@@ -302,6 +302,11 @@ function isRateLimitError(err: unknown): err is PadApiError {
 	return err instanceof PadApiError && err.code === 'rate_limited';
 }
 
+/** True for the retryable `database_busy` 503 (TASK-4278). */
+function isDatabaseBusyError(err: unknown): err is PadApiError {
+	return err instanceof PadApiError && err.code === 'database_busy';
+}
+
 /**
  * Returns true when `err` is a PadApiError with code "plan_limit_exceeded".
  * Use this at every write-operation catch block to branch on plan-gating
@@ -563,6 +568,49 @@ function notifyRateLimited(retryAfterMs?: number): void {
 		// eslint-disable-next-line no-console
 		console.warn('rate-limit handler threw', err);
 	}
+}
+
+/**
+ * Fired once per surfaced `database_busy` 503 (TASK-4278): the server's
+ * database bound (statement, lock or idle-in-transaction timeout) cut a request
+ * short. `message` is the server's own plain sentence (a write's says nothing
+ * was saved); `isWrite` lets a handler word the toast. Same split as
+ * setRateLimitHandler: client.ts stays free of the toast store.
+ */
+type DatabaseBusyHandler = (info: { message: string; isWrite: boolean; retryAfterMs?: number }) => void;
+
+let databaseBusyHandler: DatabaseBusyHandler | null = null;
+
+export function setDatabaseBusyHandler(handler: DatabaseBusyHandler | null): void {
+	databaseBusyHandler = handler;
+}
+
+function notifyDatabaseBusy(info: Parameters<DatabaseBusyHandler>[0]): void {
+	if (!databaseBusyHandler) return;
+	try {
+		databaseBusyHandler(info);
+	} catch (err) {
+		// eslint-disable-next-line no-console
+		console.warn('database-busy handler threw', err);
+	}
+}
+
+const DATABASE_BUSY_WRITE_MESSAGE = 'The server is busy; nothing was saved. Please try again.';
+const DATABASE_BUSY_READ_MESSAGE = 'The server is busy. Please try again.';
+
+/**
+ * The text shown for a `database_busy` 503. The server's own sentence is used
+ * (some sites carry custom wording), unless it is empty or looks like store
+ * text (SQL or an SQLSTATE), in which case the standard wording stands: raw
+ * database text never reaches a user.
+ */
+export function databaseBusyMessage(serverMessage: unknown, isWrite: boolean): string {
+	const fallback = isWrite ? DATABASE_BUSY_WRITE_MESSAGE : DATABASE_BUSY_READ_MESSAGE;
+	if (typeof serverMessage !== 'string' || serverMessage.trim() === '') return fallback;
+	if (/sqlstate|\bpq:|\bERROR:|\b(select|insert|update|delete)\b[\s\S]*\b(from|into|set|where)\b/i.test(serverMessage)) {
+		return fallback;
+	}
+	return serverMessage;
 }
 
 type NetworkUnreachableHandler = () => void;
@@ -1182,6 +1230,34 @@ async function requestAttempt<T>(
 		// handler owns burst dedupe so a storm doesn't stack toasts.
 		notifyRateLimited(err.retryAfterMs);
 		throw err;
+	}
+	if (resp.status === 503) {
+		// The database bound cut the request short (TASK-4278): 503 with code
+		// `database_busy` and `Retry-After`. A write was rolled back, so nothing
+		// was saved; a GET/HEAD is retried like a 429 (same bounded path), a
+		// write is NEVER retried automatically. A 503 without the code (a proxy's
+		// page) is not ours and falls through to the generic error below.
+		const body = await resp.json().catch(() => null);
+		if (body?.error?.code === 'database_busy') {
+			const retryAfterHeader = resp.headers?.get('Retry-After');
+			const retryAfterMs = parseRetryAfterMs(retryAfterHeader);
+			const retryDelayMs =
+				isIdempotent && rateLimitAttempt < MAX_RATE_LIMIT_RETRIES
+					? rateLimitRetryDelayMs(parseRetryAfterRawMs(retryAfterHeader), rateLimitAttempt)
+					: null;
+			if (retryDelayMs !== null) {
+				deadline.clear();
+				await sleep(retryDelayMs);
+				return request<T>(path, options, rateLimitAttempt + 1);
+			}
+			const message = databaseBusyMessage(body.error.message, !isIdempotent);
+			const err = new PadApiError({ code: 'database_busy', message, details: body.error.details });
+			if (retryAfterMs != null) err.retryAfterMs = retryAfterMs;
+			notifyDatabaseBusy({ message, isWrite: !isIdempotent, retryAfterMs: err.retryAfterMs });
+			throw err;
+		}
+		if (body?.error) throw new PadApiError(body.error);
+		throw new Error(`API error: ${resp.status}`);
 	}
 	if (!resp.ok) {
 		const body = await resp.json().catch(() => null);
@@ -3893,6 +3969,7 @@ export {
 	isPlanLimitError,
 	planLimitMessage,
 	isRateLimitError,
+	isDatabaseBusyError,
 	isUpdateConflictError,
 	isSupersededWriteError,
 	isContentPendingFlushError,

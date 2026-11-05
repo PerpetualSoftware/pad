@@ -162,6 +162,15 @@ func (s *Store) GetUser(id string) (*models.User, error) {
 	return s.GetUserQ(s.db, id)
 }
 
+// GetUserContext is GetUser under ctx: a cancelled context stops the query.
+func (s *Store) GetUserContext(ctx context.Context, id string) (*models.User, error) {
+	u, err := scanUser(s.db.QueryRowContext(ctx, s.q(`SELECT `+userColumns+` FROM users WHERE id = ?`), id))
+	if err != nil {
+		return nil, fmt.Errorf("get user: %w", err)
+	}
+	return u, nil
+}
+
 // GetUserQ is GetUser parameterized over its executor (see Queryer).
 func (s *Store) GetUserQ(q Queryer, id string) (*models.User, error) {
 	u, err := scanUser(q.QueryRow(s.q(`SELECT `+userColumns+` FROM users WHERE id = ?`), id))
@@ -941,14 +950,14 @@ var ErrUserNotFound = errors.New("user not found")
 // lock first and this one second; no transaction takes them in the other
 // order. Promotion and enable do not take it: they only grow the set.
 // SQLite's BEGIN IMMEDIATE already serialises every writer.
-func (s *Store) guardActiveAdminLossTx(tx *sql.Tx, userID string) error {
+func (s *Store) guardActiveAdminLossTxCtx(ctx context.Context, tx *sql.Tx, userID string) error {
 	if s.dialect.Driver() == DriverPostgres {
-		if _, err := tx.Exec("SELECT pg_advisory_xact_lock(hashtext('pad:active-admins'))"); err != nil {
+		if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(hashtext('pad:active-admins'))"); err != nil {
 			return fmt.Errorf("active admin guard: lock: %w", err)
 		}
 	}
 	var isActiveAdmin int
-	if err := tx.QueryRow(s.q(`SELECT COUNT(*) FROM users
+	if err := tx.QueryRowContext(ctx, s.q(`SELECT COUNT(*) FROM users
 		WHERE id = ? AND role = 'admin' AND kind = 'human' AND disabled_at IS NULL`), userID).Scan(&isActiveAdmin); err != nil {
 		return fmt.Errorf("active admin guard: read user: %w", err)
 	}
@@ -956,7 +965,7 @@ func (s *Store) guardActiveAdminLossTx(tx *sql.Tx, userID string) error {
 		return nil
 	}
 	var others int
-	if err := tx.QueryRow(s.q(`SELECT COUNT(*) FROM users
+	if err := tx.QueryRowContext(ctx, s.q(`SELECT COUNT(*) FROM users
 		WHERE role = 'admin' AND kind = 'human' AND disabled_at IS NULL AND id != ?`), userID).Scan(&others); err != nil {
 		return fmt.Errorf("active admin guard: count admins: %w", err)
 	}
@@ -964,6 +973,12 @@ func (s *Store) guardActiveAdminLossTx(tx *sql.Tx, userID string) error {
 		return ErrLastAdmin
 	}
 	return nil
+}
+
+// guardActiveAdminLossTx is guardActiveAdminLossTxCtx without a deadline, for
+// the transactions that carry none (TASK-4278).
+func (s *Store) guardActiveAdminLossTx(tx *sql.Tx, userID string) error {
+	return s.guardActiveAdminLossTxCtx(context.Background(), tx, userID)
 }
 
 // AdminUserMetrics carries the windowed engagement metrics rendered by the
@@ -1385,7 +1400,18 @@ func (s *Store) demoteGuardedTx(tx *sql.Tx, userID string) error {
 // reference can land inside the transaction, and its errors carry no
 // SQLSTATE for lateUserReference to match.
 func (s *Store) DeleteAccountAtomic(userID string) error {
-	return s.deleteAccountAtomic(userID, nil)
+	return s.deleteAccountAtomic(context.Background(), userID, nil)
+}
+
+// DeleteAccountAtomicCtx is DeleteAccountAtomic under ctx (TASK-4278): every
+// statement runs under it, so its deadline or cancellation rolls the
+// transaction back, and nothing is retried once it is done. On Postgres the
+// transaction's statement and lock timeouts are raised to
+// min(AccountDeleteTxTimeout, time left on ctx), so the deletion can wait out a
+// workspace purge that holds rows it needs, yet never outlasts the caller's
+// deadline.
+func (s *Store) DeleteAccountAtomicCtx(ctx context.Context, userID string) error {
+	return s.deleteAccountAtomic(ctx, userID, nil)
 }
 
 // DeleteAccountAtomicReport is DeleteAccountAtomic that also reports the
@@ -1394,14 +1420,27 @@ func (s *Store) DeleteAccountAtomic(userID string) error {
 // the call could miss a grant created in between and deleted by it. The
 // caller kicks every connection on those workspaces after the commit.
 func (s *Store) DeleteAccountAtomicReport(userID string) ([]string, error) {
+	return s.DeleteAccountAtomicReportCtx(context.Background(), userID)
+}
+
+// DeleteAccountAtomicReportCtx is DeleteAccountAtomicReport under ctx; see
+// DeleteAccountAtomicCtx.
+func (s *Store) DeleteAccountAtomicReportCtx(ctx context.Context, userID string) ([]string, error) {
 	var issued []string
-	if err := s.deleteAccountAtomic(userID, &issued); err != nil {
+	if err := s.deleteAccountAtomic(ctx, userID, &issued); err != nil {
 		return nil, err
 	}
 	return issued, nil
 }
 
-func (s *Store) deleteAccountAtomic(userID string, issuedGrantWorkspaces *[]string) error {
+// AccountDeleteTxTimeout is the most statement_timeout and lock_timeout one
+// account-deletion transaction is given (TASK-4278): it must outlast a
+// workspace purge's ~43 s row-lock hold on the largest measured workspace,
+// yet stay under every timeout on the request path. The server's request
+// deadline (accountDeleteTxBudget) caps it further.
+const AccountDeleteTxTimeout = 45 * time.Second
+
+func (s *Store) deleteAccountAtomic(ctx context.Context, userID string, issuedGrantWorkspaces *[]string) error {
 	injected := 0
 	for attempt := 1; ; attempt++ {
 		// A deadlock is retried too (BUG-3395). The comments are locked root
@@ -1418,11 +1457,11 @@ func (s *Store) deleteAccountAtomic(userID string, issuedGrantWorkspaces *[]stri
 		// Each attempt is ONE transaction with nothing outside it before
 		// the commit; the handler's kicks, invalidations, audit event and
 		// publishes run after this returns, once.
-		err := s.retryOnDeadlock("delete_account", func() error {
-			return s.deleteAccountAtomicOnce(userID, issuedGrantWorkspaces, &injected)
+		err := s.retryOnDeadlockCtx(ctx, "delete_account", func() error {
+			return s.deleteAccountAtomicOnce(ctx, userID, issuedGrantWorkspaces, &injected)
 		})
 		constraint, late := lateUserReference(err)
-		if !late {
+		if !late || ctx.Err() != nil {
 			return err
 		}
 		if attempt == deleteAccountAttempts {
@@ -1494,12 +1533,45 @@ func lateUserReference(err error) (string, bool) {
 // deletion holds the account lock (TASK-3351 lock-order test).
 var deleteAccountAfterUserLockHook func()
 
-func (s *Store) deleteAccountAtomicOnce(userID string, issuedGrantWorkspaces *[]string, injected *int) error {
-	tx, err := s.db.Begin()
+func (s *Store) deleteAccountAtomicOnce(ctx context.Context, userID string, issuedGrantWorkspaces *[]string, injected *int) error {
+	return classifyDeleteAccountError(s.deleteAccountAtomicTx(ctx, userID, issuedGrantWorkspaces, injected))
+}
+
+// classifyDeleteAccountError sorts a deletion attempt's error into the busy
+// classes. An interruption (deadline, dead connection) that hit any step
+// BEFORE the COMMIT call rolled the transaction back: no COMMIT was ever sent,
+// so the account is intact and the answer may say so (definitive class). One
+// that hit the COMMIT itself leaves the outcome unknown (TASK-4278).
+func classifyDeleteAccountError(err error) error {
+	var commitErr *commitStepError
+	if err != nil && !errors.As(err, &commitErr) && IsDBOutcomeUnknown(err) {
+		return markRolledBack(err)
+	}
+	return err
+}
+
+func (s *Store) deleteAccountAtomicTx(ctx context.Context, userID string, issuedGrantWorkspaces *[]string, injected *int) error {
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("delete account: begin tx: %w", err)
 	}
 	defer tx.Rollback()
+
+	// The first statement: raise this transaction's statement and lock
+	// timeouts to what the deadline leaves, capped at AccountDeleteTxTimeout,
+	// so a purge holding rows the deletion needs is waited out (TASK-4278).
+	budget := AccountDeleteTxTimeout
+	if dl, ok := ctx.Deadline(); ok {
+		if left := time.Until(dl); left < budget {
+			budget = left
+		}
+	}
+	if budget <= 0 {
+		return fmt.Errorf("delete account: %w", context.DeadlineExceeded)
+	}
+	if err := s.setTxTimeoutsCtx(ctx, tx, budget, budget); err != nil {
+		return fmt.Errorf("delete account: %w", err)
+	}
 
 	ts := now()
 
@@ -1516,13 +1588,13 @@ func (s *Store) deleteAccountAtomicOnce(userID string, issuedGrantWorkspaces *[]
 	// locks no row, so the users-row-first rule below is unchanged. SQLite's
 	// BEGIN IMMEDIATE already serialises every writer.
 	if s.dialect.Driver() == DriverPostgres {
-		if _, err := tx.Exec("SELECT pg_advisory_xact_lock(hashtext('pad:account-deletion'))"); err != nil {
+		if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(hashtext('pad:account-deletion'))"); err != nil {
 			return fmt.Errorf("delete account: serialise: %w", err)
 		}
 	}
 	// The sole active admin cannot delete their account (BUG-3811). Second
 	// lock, still before any row lock.
-	if err := s.guardActiveAdminLossTx(tx, userID); err != nil {
+	if err := s.guardActiveAdminLossTxCtx(ctx, tx, userID); err != nil {
 		return err
 	}
 
@@ -1546,7 +1618,7 @@ func (s *Store) deleteAccountAtomicOnce(userID string, issuedGrantWorkspaces *[]
 		lock += ` FOR NO KEY UPDATE`
 	}
 	var lockedID string
-	if err := tx.QueryRow(s.q(lock), userID).Scan(&lockedID); err != nil {
+	if err := tx.QueryRowContext(ctx, s.q(lock), userID).Scan(&lockedID); err != nil {
 		return fmt.Errorf("delete account: lock user: %w", err)
 	}
 	if deleteAccountAfterUserLockHook != nil {
@@ -1567,7 +1639,7 @@ func (s *Store) deleteAccountAtomicOnce(userID string, issuedGrantWorkspaces *[]
 		{"delete issued collection grants", "DELETE FROM collection_grants WHERE granted_by = ? RETURNING workspace_id"},
 		{"delete issued item grants", "DELETE FROM item_grants WHERE granted_by = ? RETURNING workspace_id"},
 	} {
-		rows, err := tx.Query(s.q(stmt.query), userID)
+		rows, err := tx.QueryContext(ctx, s.q(stmt.query), userID)
 		if err != nil {
 			return fmt.Errorf("delete account: %s: %w", stmt.what, err)
 		}
@@ -1595,7 +1667,7 @@ func (s *Store) deleteAccountAtomicOnce(userID string, issuedGrantWorkspaces *[]
 	// 1. Soft-delete every workspace the user OWNS. They keep their rows (and
 	// every item/activity/comment within) so the data stays recoverable; only
 	// the user identity is hard-removed below.
-	if _, err := tx.Exec(s.q(`
+	if _, err := tx.ExecContext(ctx, s.q(`
 		UPDATE workspaces SET deleted_at = ?, updated_at = ?
 		WHERE owner_id = ? AND deleted_at IS NULL
 	`), ts, ts, userID); err != nil {
@@ -1614,7 +1686,7 @@ func (s *Store) deleteAccountAtomicOnce(userID string, issuedGrantWorkspaces *[]
 	// bump would buy nothing here anyway: these workspaces are soft-deleted
 	// in this same transaction, so every tabs answer from now on filters
 	// them out on read whatever its revision.
-	if _, err := tx.Exec(s.q(`
+	if _, err := tx.ExecContext(ctx, s.q(`
 		DELETE FROM user_workspace_tabs
 		WHERE workspace_id IN (SELECT id FROM workspaces WHERE owner_id = ?)
 	`), userID); err != nil {
@@ -1627,7 +1699,7 @@ func (s *Store) deleteAccountAtomicOnce(userID string, issuedGrantWorkspaces *[]
 	// Deleting a bot locks its users row; nothing a person does locks one
 	// (a bot holds no session), and account deletions do not overlap (the
 	// advisory lock above), so this adds no lock-order hazard.
-	bots, err := s.appPrincipalsOfOwnedWorkspacesTx(tx, userID)
+	bots, err := s.appPrincipalsOfOwnedWorkspacesTx(ctx, tx, userID)
 	if err != nil {
 		return fmt.Errorf("delete account: %w", err)
 	}
@@ -1637,14 +1709,14 @@ func (s *Store) deleteAccountAtomicOnce(userID string, issuedGrantWorkspaces *[]
 	// before its parent, or one erase's comments locked while holding an
 	// earlier erase's reactions, deadlocks with it. See
 	// lockCommentsRootFirstTx.
-	if err := s.lockCommentsRootFirstTx(tx, "user_id", append(bots, userID)...); err != nil {
+	if err := s.lockCommentsRootFirstTxCtx(ctx, tx, "user_id", append(bots, userID)...); err != nil {
 		return fmt.Errorf("delete account: %w", err)
 	}
-	if err := s.purgeAppPrincipalsTx(tx, bots); err != nil {
+	if err := s.purgeAppPrincipalsTx(ctx, tx, bots); err != nil {
 		return fmt.Errorf("delete account: %w", err)
 	}
 
-	if err := s.eraseUserTx(tx, userID); err != nil {
+	if err := s.eraseUserTxCtx(ctx, tx, userID); err != nil {
 		return err
 	}
 
@@ -1652,7 +1724,7 @@ func (s *Store) deleteAccountAtomicOnce(userID string, issuedGrantWorkspaces *[]
 		return err
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("delete account: commit: %w", err)
+		return &commitStepError{err: fmt.Errorf("delete account: commit: %w", err)}
 	}
 	return nil
 }
@@ -1661,12 +1733,12 @@ func (s *Store) deleteAccountAtomicOnce(userID string, issuedGrantWorkspaces *[]
 // transaction: the de-identify, outbox scrub, delete and final delete steps of
 // account deletion. Account deletion runs it for the account and for each bot
 // it purges, so a purged bot leaves exactly what a deleted person leaves.
-func (s *Store) eraseUserTx(tx *sql.Tx, userID string) error {
+func (s *Store) eraseUserTxCtx(ctx context.Context, tx *sql.Tx, userID string) error {
 	// exec runs one cleanup statement keyed on userID, wrapping the error with
 	// context. Each statement clears a reference to the user so the final
 	// DELETE FROM users can't trip a foreign-key constraint.
 	exec := func(what, query string) error {
-		if _, err := tx.Exec(s.q(query), userID); err != nil {
+		if _, err := tx.ExecContext(ctx, s.q(query), userID); err != nil {
 			return fmt.Errorf("delete account: %s: %w", what, err)
 		}
 		return nil
@@ -1701,7 +1773,7 @@ func (s *Store) eraseUserTx(tx *sql.Tx, userID string) error {
 	// the user didn't own — until TASK-2714's retention window closes on the
 	// row. TASK-2719: "delete my account" means prompt
 	// erasure, not a bounded window.
-	if err := s.ScrubOutboxUserRefsTx(tx, userID); err != nil {
+	if err := s.ScrubOutboxUserRefsTxCtx(ctx, tx, userID); err != nil {
 		return fmt.Errorf("delete account: %w", err)
 	}
 
@@ -1732,11 +1804,16 @@ func (s *Store) eraseUserTx(tx *sql.Tx, userID string) error {
 	}
 
 	// 4. Delete the user record. Remaining references cascade (see doc comment).
-	if _, err := tx.Exec(s.q("DELETE FROM users WHERE id = ?"), userID); err != nil {
+	if _, err := tx.ExecContext(ctx, s.q("DELETE FROM users WHERE id = ?"), userID); err != nil {
 		return &finalUserDeleteError{err: err}
 	}
 
 	return nil
+}
+
+// eraseUserTx is eraseUserTxCtx without a deadline.
+func (s *Store) eraseUserTx(tx *sql.Tx, userID string) error {
+	return s.eraseUserTxCtx(context.Background(), tx, userID)
 }
 
 // --- Username backfill ---

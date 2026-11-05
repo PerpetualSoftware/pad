@@ -9,6 +9,7 @@ vi.mock('$lib/stores/toast.svelte', () => ({
 import { toastStore } from '$lib/stores/toast.svelte';
 import {
 	notifyServerBusy,
+	notifyDatabaseBusy,
 	serverBusyMessage,
 	__resetServerBusyToastForTest,
 } from './serverBusyToast';
@@ -59,5 +60,21 @@ describe('notifyServerBusy dedupe (TASK-2080)', () => {
 		// Past the window — a fresh toast is allowed.
 		expect(notifyServerBusy(undefined, 6_500)).toBe(true);
 		expect(showMock).toHaveBeenCalledTimes(2);
+	});
+});
+
+describe('notifyDatabaseBusy (TASK-4278)', () => {
+	beforeEach(() => {
+		showMock.mockClear();
+		__resetServerBusyToastForTest();
+	});
+
+	it('shows the given sentence as a non-alarming toast, deduped', () => {
+		const msg = 'The server is busy; nothing was saved. Please try again.';
+		expect(notifyDatabaseBusy(msg, 0)).toBe(true);
+		expect(notifyDatabaseBusy(msg, 100)).toBe(false);
+		expect(showMock).toHaveBeenCalledTimes(1);
+		expect(showMock.mock.calls[0][0]).toBe(msg);
+		expect(showMock.mock.calls[0][1]).toBe('info');
 	});
 });

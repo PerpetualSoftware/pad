@@ -547,7 +547,10 @@ func (s *Server) handleRunPlaybook(w http.ResponseWriter, r *http.Request) {
 
 	specs, _, err := parsePlaybookArguments(item.Fields)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		// The parse text is logged, never sent.
+		slog.Error("playbook arguments unreadable", "playbook", item.Ref, "error", err)
+		// 500: the playbook's stored arguments JSON is malformed; not a store error.
+		writeError(w, http.StatusInternalServerError, "internal_error", "This playbook's arguments are malformed. Edit the playbook and try again.")
 		return
 	}
 

@@ -7,11 +7,13 @@ import (
 	"database/sql"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
+	"github.com/PerpetualSoftware/pad/internal/textguard"
 )
 
 // BUG-2709 (the parent filing of the husk class): the bundle import's
@@ -43,6 +45,12 @@ import (
 // reject, so it takes the keep path.
 func withUndecodableManifest(t *testing.T, realBundle []byte) []byte {
 	t.Helper()
+	return withManifestBody(t, realBundle, []byte(`{not json`))
+}
+
+// withManifestBody replaces attachments/manifest.json's body with body.
+func withManifestBody(t *testing.T, realBundle, replacement []byte) []byte {
+	t.Helper()
 	gz, err := gzip.NewReader(bytes.NewReader(realBundle))
 	if err != nil {
 		t.Fatalf("gzip: %v", err)
@@ -64,7 +72,7 @@ func withUndecodableManifest(t *testing.T, realBundle []byte) []byte {
 			t.Fatalf("read entry: %v", err)
 		}
 		if hdr.Name == "attachments/manifest.json" {
-			body = []byte(`{not json`)
+			body = replacement
 		}
 		if err := outTw.WriteHeader(&tar.Header{Name: hdr.Name, Mode: 0o644, Size: int64(len(body))}); err != nil {
 			t.Fatalf("write header: %v", err)
@@ -207,5 +215,68 @@ func keepPathHelperKeepArm(t *testing.T, name string, check func(string, string)
 	}
 	if live, _ := dest.store.GetWorkspaceBySlug(name); live == nil {
 		t.Errorf("the helper's KEEP arm must leave the workspace live")
+	}
+}
+
+// A NUL inside attachments/manifest.json takes the keep path, and the client
+// body keeps the authored note and the remedy (--repair-nul, pad db
+// repair-nul) without any wrapper text (TASK-4278).
+func TestImportBundle_KeepPath_ManifestNULNamesTheRemedy(t *testing.T) {
+	bundle := withManifestBody(t, realBundleWithBlob(t), []byte(`{"version":1,"attachments":[{"filename":"a`+textguard.EscNUL+`b"}]}`))
+	dest := attachmentsServerOn(t, store.DriverSQLite)
+	_, tok := memberImporter(t, dest)
+
+	rr := importAs(dest, "nulmanifest", bundle, tok)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	for _, need := range []string{"--repair-nul", "pad db repair-nul", "attachments not restored"} {
+		if !strings.Contains(body, need) {
+			t.Errorf("body lost %q: %s", need, body)
+		}
+	}
+	for _, leak := range []string{"manifest decode", "import workspace", "SQLSTATE", "Scan error"} {
+		if strings.Contains(body, leak) {
+			t.Errorf("body carries wrapper text %q: %s", leak, body)
+		}
+	}
+}
+
+// The manifest keep-path remedy must stay fixed text through the REAL
+// call site. A manifest carrying a NUL and a repeated member, imported with
+// the repair flag, makes the repair decline with a reason built from the
+// document (the repeated member's name). That name must not reach the body.
+// Reverting the manifest site to nulRepairRemedy(repair) fails this test.
+func TestImportBundle_KeepPath_ManifestNULRemedyCarriesNoDocumentText(t *testing.T) {
+	manifest := []byte(`{"version":1,"attachments":[{"filename":"a` + textguard.EscNUL + `b"}],"zzdocmember":1,"zzdocmember":2}`)
+	bundle := withManifestBody(t, realBundleWithBlob(t), manifest)
+	dest := attachmentsServerOn(t, store.DriverSQLite)
+	_, tok := memberImporter(t, dest)
+
+	req := httptest.NewRequest("POST", "/api/v1/workspaces/import?name=nulrepairdecl&"+NULRepairQueryParam+"=1", bytes.NewReader(bundle))
+	req.Header.Set("Content-Type", "application/gzip")
+	req.RemoteAddr = "192.0.2.1:1234"
+	const csrf = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	req.AddCookie(&http.Cookie{Name: "pad_session", Value: tok})
+	req.AddCookie(&http.Cookie{Name: "pad_csrf", Value: csrf})
+	req.Header.Set("X-CSRF-Token", csrf)
+	rr := httptest.NewRecorder()
+	dest.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	if strings.Contains(body, "zzdocmember") {
+		t.Errorf("keep-path body carries document text: %s", body)
+	}
+	if !strings.Contains(body, "pad db repair-nul") {
+		t.Errorf("body lost the remedy: %s", body)
+	}
+	// Proves the repair DID decline on this input (so the leak check above is
+	// not vacuous) and that fixedTextRepairTally rewrote its reason.
+	if !strings.Contains(body, "the manifest could not be repaired safely") {
+		t.Errorf("the declined branch did not run or was not rewritten: %s", body)
 	}
 }

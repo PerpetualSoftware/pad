@@ -828,6 +828,7 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 	// Parse collection schema
 	var schema models.CollectionSchema
 	if err := models.UnmarshalItemFieldSchema([]byte(coll.Schema), &schema); err != nil {
+		// 500: stored collection schema does not parse (json), not a store error
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to parse collection schema")
 		return
 	}
@@ -928,13 +929,30 @@ type itemCreateError struct {
 	// planLimit, when set, is the store's *PlanLimitError, and write answers
 	// with the structured plan-limit 403 instead of status/code/message.
 	planLimit error
+	// cause is the store error behind a 500, when there is one. write answers
+	// a busy database (store.IsDBBusy) with the retryable 503 instead of the
+	// status/code/message, and never publishes cause's text (TASK-4278).
+	cause error
+	// busyMessage replaces the default busy wording when "nothing was saved"
+	// would be untrue (the item was created and a later step was busy).
+	busyMessage string
 }
 
 func (e *itemCreateError) Error() string { return e.message }
 
+// storeItemCreateError is a 500 itemCreateError that remembers its store
+// error so write can map a busy database to 503 database_busy.
+func storeItemCreateError(cause error, message string) *itemCreateError {
+	return &itemCreateError{status: http.StatusInternalServerError, code: "internal_error", message: message, cause: cause}
+}
+
 // write answers the request with this error.
 func (e *itemCreateError) write(w http.ResponseWriter, r *http.Request) {
 	if e.planLimit != nil && writeStorePlanLimitError(w, r, e.planLimit, "") {
+		return
+	}
+	if e.cause != nil {
+		writeStoreErrorBusyAs(w, r, e.cause, e.status, e.code, e.message, e.busyMessage)
 		return
 	}
 	writeError(w, e.status, e.code, e.message)
@@ -1016,6 +1034,7 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 	// Marshal validated/defaulted fields back
 	validatedFields, err := json.Marshal(fieldMap)
 	if err != nil {
+		// 500: json.Marshal of a map the validator just built; no store call.
 		return nil, &itemCreateError{status: http.StatusInternalServerError, code: "internal_error", message: "Failed to marshal validated fields"}
 	}
 	input.Fields = string(validatedFields)
@@ -1089,14 +1108,19 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 			return nil, &itemCreateError{status: http.StatusConflict, code: "conflict", message: "An item conflicts with an existing record (duplicate slug, title, or invocation slug)"}
 		}
 		slog.Error("createItemChecked: store.CreateItem failed", "error", err)
-		return nil, &itemCreateError{status: http.StatusInternalServerError, code: "internal_error", message: "An internal error occurred"}
+		return nil, storeItemCreateError(err, "An internal error occurred")
 	}
 
 	// Create parent link if specified
 	if parentValue != "" {
 		actor, _ := actorFromRequest(r)
 		if _, err := s.store.SetParentLinkAs(workspaceID, item.ID, parentValue, actor, currentUserID(r)); err != nil {
-			return nil, &itemCreateError{status: http.StatusInternalServerError, code: "internal_error", message: fmt.Sprintf("item created but parent link failed: %v", err)}
+			// The item exists: a busy answer must not say "nothing was saved".
+			// err.Error() is logged, never published.
+			slog.Error("createItemChecked: item created but parent link failed", "item_id", item.ID, "error", err)
+			cerr := storeItemCreateError(err, "The item was created but its parent link failed")
+			cerr.busyMessage = "The item was created, but the server was too busy to link its parent. Open the item and set the parent again."
+			return nil, cerr
 		}
 		// SetParentLink advances the source seq because it changes the
 		// local-first is_unparented bit. Re-read before publishing/returning
@@ -1211,7 +1235,7 @@ func (s *Server) prepareCreateFieldsQ(q store.Queryer, r *http.Request, workspac
 	relRefusals, droppedDefaults, relErr := s.resolveRelationsForWriteQ(
 		q, r, workspaceID, workspaceRole(r), schema, fieldMap, relBefore, posture)
 	if relErr != nil {
-		return nil, nil, nil, nil, &itemCreateError{status: http.StatusInternalServerError, code: "internal_error", message: "Failed to resolve relation references"}
+		return nil, nil, nil, nil, storeItemCreateError(relErr, "Failed to resolve relation references")
 	}
 	droppedDefaults = append(defaultDrops, droppedDefaults...)
 	if len(relRefusals) > 0 {
@@ -1781,12 +1805,13 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 	if input.Fields != nil {
 		coll, err := s.store.GetCollection(item.CollectionID)
 		if err != nil || coll == nil {
-			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to load collection")
+			writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to load collection")
 			return
 		}
 
 		var schema models.CollectionSchema
 		if err := models.UnmarshalItemFieldSchema([]byte(coll.Schema), &schema); err != nil {
+			// 500: stored collection schema does not parse (json), not a store error
 			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to parse collection schema")
 			return
 		}
@@ -1954,6 +1979,7 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 
 		validatedFields, err := json.Marshal(fieldMap)
 		if err != nil {
+			// 500: json.Marshal of the validated field map; no store call
 			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to marshal validated fields")
 			return
 		}
@@ -1993,11 +2019,12 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 	if input.FieldsPatch != nil {
 		coll, err := s.store.GetCollection(item.CollectionID)
 		if err != nil || coll == nil {
-			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to load collection")
+			writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to load collection")
 			return
 		}
 		var schema models.CollectionSchema
 		if err := models.UnmarshalItemFieldSchema([]byte(coll.Schema), &schema); err != nil {
+			// 500: stored collection schema does not parse (json), not a store error
 			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to parse collection schema")
 			return
 		}
@@ -3205,17 +3232,19 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	// Get source collection for schema
 	sourceColl, err := s.store.GetCollection(item.CollectionID)
 	if err != nil || sourceColl == nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to get source collection")
+		writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to get source collection")
 		return
 	}
 
 	// Parse schemas
 	var sourceSchema, targetSchema models.CollectionSchema
 	if err := json.Unmarshal([]byte(sourceColl.Schema), &sourceSchema); err != nil {
+		// 500: stored collection schema does not parse (json), not a store error
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to parse source schema")
 		return
 	}
 	if err := json.Unmarshal([]byte(targetColl.Schema), &targetSchema); err != nil {
+		// 500: stored collection schema does not parse (json), not a store error
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to parse target schema")
 		return
 	}
@@ -3458,6 +3487,7 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	// Serialize migrated fields
 	fieldsJSON, err := json.Marshal(result.Fields)
 	if err != nil {
+		// 500: json.Marshal of the migrated field map; no store call
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to serialize fields")
 		return
 	}

@@ -124,7 +124,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	if u := currentUser(r); u != nil && u.Role == "admin" && isBearerAuth(r) {
 		member, err := s.store.GetWorkspaceMember(ws.ID, u.ID)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to check workspace access")
+			writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to check workspace access")
 			return
 		}
 		if member == nil {
@@ -161,13 +161,13 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	if u := currentUser(r); u != nil && u.Role != "admin" {
 		member, err := s.store.GetWorkspaceMember(ws.ID, u.ID)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to check workspace access")
+			writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to check workspace access")
 			return
 		}
 		if member == nil {
 			hasGrants, grantErr := s.store.UserHasGrantsInWorkspace(ws.ID, u.ID)
 			if grantErr != nil {
-				writeError(w, http.StatusInternalServerError, "internal_error", "Failed to check workspace access")
+				writeStoreErrorR(w, r, grantErr, http.StatusInternalServerError, "internal_error", "Failed to check workspace access")
 				return
 			}
 			if !hasGrants {
@@ -187,6 +187,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 
 	// Verify streaming support
 	if _, ok := w.(http.Flusher); !ok {
+		// 500: ResponseWriter cannot flush; no store call
 		writeError(w, http.StatusInternalServerError, "internal_error", "Streaming not supported")
 		return
 	}
@@ -195,6 +196,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	stream, err := s.openSSEStream(w)
 	if err != nil {
 		slog.Error("SSE: refusing to stream", "error", err)
+		// 500: openSSEStream refused (writer cannot stream); no store call
 		writeError(w, http.StatusInternalServerError, "internal_error", "Streaming not supported")
 		return
 	}
@@ -307,6 +309,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	default:
 		slog.Error("SSE subscribe returned an unknown outcome; refusing rather than guessing",
 			"workspace", ws.Slug, "outcome", outcome.String())
+		// 500: SSE subscribe outcome is an unknown enum value; no store call
 		writeError(w, http.StatusInternalServerError, "internal_error", "Subscription failed")
 		return
 	}

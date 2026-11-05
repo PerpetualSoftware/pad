@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"strings"
 
@@ -96,7 +97,10 @@ func mirrorConventionMetadata(before, after string) (string, error) {
 	if err != nil {
 		// A ValidationError: every door answers it 400 validation_error with
 		// the Reason, and nothing is written.
-		return "", &ValidationError{Reason: "this write would leave the convention's stored metadata invalid: " + err.Error()}
+		// The Reason is caller-safe authored text only; the lower-level error
+		// is logged, never embedded (ValidationError's contract).
+		slog.Warn("convention mirror: stored metadata would be invalid", "error", err)
+		return "", &ValidationError{Reason: "stored convention metadata is invalid"}
 	}
 	next[models.ItemFieldConvention] = normalized
 	out, err := json.Marshal(next)

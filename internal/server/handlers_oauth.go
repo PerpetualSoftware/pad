@@ -1060,7 +1060,7 @@ func (s *Server) handleOAuthAuthorizeDecide(w http.ResponseWriter, r *http.Reque
 		IncludeFutureWorkspaces: decision.IncludeFutureWorkspaces,
 	}); err != nil {
 		s.recordOAuthFlow("failed")
-		writeError(w, http.StatusInternalServerError, "internal_error",
+		writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error",
 			"Could not persist connection. Please retry.")
 		return
 	}
@@ -1072,7 +1072,7 @@ func (s *Server) handleOAuthAuthorizeDecide(w http.ResponseWriter, r *http.Reque
 			// via the FK ON DELETE CASCADE in migration 059.
 			_ = s.store.DeleteOAuthConnection(ar.GetID())
 			s.recordOAuthFlow("failed")
-			writeError(w, http.StatusInternalServerError, "internal_error",
+			writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error",
 				"Could not persist workspace allow-list. Please retry.")
 			return
 		}

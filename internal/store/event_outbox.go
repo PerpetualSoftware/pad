@@ -2,6 +2,7 @@ package store
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -869,7 +870,7 @@ func scrubUserRefsInNode(node any, userID string) bool {
 // issuing tx.Exec while a tx.Query cursor is open is the BUG-2409 shape — a
 // deadlock on SQLite's single-connection transactions. The collect-then-close
 // ordering is a precondition, not a style choice.
-func (s *Store) ScrubOutboxUserRefsTx(tx *sql.Tx, userID string) error {
+func (s *Store) ScrubOutboxUserRefsTxCtx(ctx context.Context, tx *sql.Tx, userID string) error {
 	if userID == "" {
 		// An empty id would value-match nothing but LIKE-match every row —
 		// a full-table parse for a caller bug. Refuse instead.
@@ -916,7 +917,7 @@ func (s *Store) ScrubOutboxUserRefsTx(tx *sql.Tx, userID string) error {
 	}
 	cursor := ""
 	for {
-		rows, err := tx.Query(s.q(`
+		rows, err := tx.QueryContext(ctx, s.q(`
 			SELECT id, payload FROM event_outbox
 			WHERE (subject_id = ? OR CAST(payload AS TEXT) LIKE ?)
 			  AND id > ?
@@ -956,7 +957,7 @@ func (s *Store) ScrubOutboxUserRefsTx(tx *sql.Tx, userID string) error {
 			break
 		}
 		for _, c := range candidates {
-			if err := s.scrubOutboxRowTx(tx, c.id, c.payload, userID); err != nil {
+			if err := s.scrubOutboxRowTxCtx(ctx, tx, c.id, c.payload, userID); err != nil {
 				return err
 			}
 		}
@@ -974,12 +975,17 @@ func (s *Store) ScrubOutboxUserRefsTx(tx *sql.Tx, userID string) error {
 	// payloads (TASK-2719). Value
 	// equality is the precise predicate: item/comment/attachment subjects are
 	// their own row ids, never a user's.
-	if _, err := tx.Exec(s.q(`
+	if _, err := tx.ExecContext(ctx, s.q(`
 		UPDATE event_outbox SET subject_id = NULL WHERE subject_id = ?
 	`), userID); err != nil {
 		return fmt.Errorf("outbox: scrub user refs: clear subject ids: %w", err)
 	}
 	return nil
+}
+
+// ScrubOutboxUserRefsTx is ScrubOutboxUserRefsTxCtx without a deadline.
+func (s *Store) ScrubOutboxUserRefsTx(tx *sql.Tx, userID string) error {
+	return s.ScrubOutboxUserRefsTxCtx(context.Background(), tx, userID)
 }
 
 // scrubOutboxRowTx rewrites one candidate row, retrying against concurrent
@@ -1010,7 +1016,7 @@ func (s *Store) ScrubOutboxUserRefsTx(tx *sql.Tx, userID string) error {
 // The retry bound is generous for its worst case (every concurrent deletion
 // of a user sharing this payload commits between our read and our write, per
 // attempt) and exists so a livelock bug fails loudly instead of spinning.
-func (s *Store) scrubOutboxRowTx(tx *sql.Tx, id, payload, userID string) error {
+func (s *Store) scrubOutboxRowTxCtx(ctx context.Context, tx *sql.Tx, id, payload, userID string) error {
 	for attempt := 0; attempt < 5; attempt++ {
 		scrubbed, changed, err := scrubUserRefsFromPayload([]byte(payload), userID)
 		if err != nil {
@@ -1022,7 +1028,7 @@ func (s *Store) scrubOutboxRowTx(tx *sql.Tx, id, payload, userID string) error {
 		if !changed {
 			return nil
 		}
-		res, err := tx.Exec(s.q(`
+		res, err := tx.ExecContext(ctx, s.q(`
 			UPDATE event_outbox SET payload = ? WHERE id = ? AND payload = ?
 		`), string(scrubbed), id, payload)
 		if err != nil {
@@ -1037,7 +1043,7 @@ func (s *Store) scrubOutboxRowTx(tx *sql.Tx, id, payload, userID string) error {
 		}
 		// Lost the race: someone rewrote (or pruned) the row since our read.
 		var fresh sql.NullString
-		err = tx.QueryRow(s.q(`SELECT payload FROM event_outbox WHERE id = ?`), id).Scan(&fresh)
+		err = tx.QueryRowContext(ctx, s.q(`SELECT payload FROM event_outbox WHERE id = ?`), id).Scan(&fresh)
 		if err == sql.ErrNoRows {
 			// Pruned between read and write — nothing left to scrub.
 			return nil
@@ -1048,6 +1054,11 @@ func (s *Store) scrubOutboxRowTx(tx *sql.Tx, id, payload, userID string) error {
 		payload = fresh.String
 	}
 	return fmt.Errorf("outbox: scrub user refs: row %s: contended past retry bound", id)
+}
+
+// scrubOutboxRowTx is scrubOutboxRowTxCtx without a deadline.
+func (s *Store) scrubOutboxRowTx(tx *sql.Tx, id, payload, userID string) error {
+	return s.scrubOutboxRowTxCtx(context.Background(), tx, id, payload, userID)
 }
 
 // emitItemEventTx writes one item-subject event to the outbox on the caller's

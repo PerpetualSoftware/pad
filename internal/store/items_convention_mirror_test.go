@@ -75,3 +75,21 @@ func TestMirrorConvention_KeepsLargeIntegersExact(t *testing.T) {
 		t.Fatalf("re-encoding rounded a large integer: %s", out)
 	}
 }
+
+// The Reason is caller-safe authored text: it never embeds the lower-level
+// validator's error string (TASK-4278).
+func TestMirrorConvention_ReasonDoesNotEmbedLowerLevelError(t *testing.T) {
+	before := `{"trigger":"on-commit","convention":{"trigger":"on-commit"}}`
+	after := `{"trigger":"","convention":{"trigger":"on-commit"}}`
+	_, err := mirrorConventionMetadata(before, after)
+	v, ok := AsValidationError(err)
+	if !ok {
+		t.Fatalf("want a ValidationError, got %v", err)
+	}
+	if v.Reason != "stored convention metadata is invalid" {
+		t.Errorf("Reason = %q, want the exact fixed text", v.Reason)
+	}
+	if strings.Contains(v.Reason, "convention is empty") {
+		t.Errorf("Reason embeds the validator's error text: %q", v.Reason)
+	}
+}

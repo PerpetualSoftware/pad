@@ -96,7 +96,7 @@ func (s *Server) streamCredentialStillValid(r *http.Request) bool {
 func (s *Server) credentialLiveness(r *http.Request) credentialLiveness {
 	switch authKind(r) {
 	case authKindSessionBearer:
-		return s.sessionLiveness(strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")))
+		return s.sessionLiveness(r.Context(), strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")))
 
 	case authKindSessionCookie:
 		// Both names SessionAuth accepts, including the unprefixed fallback it
@@ -106,7 +106,7 @@ func (s *Server) credentialLiveness(r *http.Request) credentialLiveness {
 			if err != nil || cookie.Value == "" {
 				continue
 			}
-			return s.sessionLiveness(cookie.Value)
+			return s.sessionLiveness(r.Context(), cookie.Value)
 		}
 		// The middleware said "session cookie" and the request has none. That
 		// is not a state this server produces; treat it as unrecognised.
@@ -182,11 +182,11 @@ func (s *Server) credentialLiveness(r *http.Request) credentialLiveness {
 
 // sessionLiveness re-validates a session token, distinguishing "gone" from
 // "could not ask".
-func (s *Server) sessionLiveness(token string) credentialLiveness {
+func (s *Server) sessionLiveness(ctx context.Context, token string) credentialLiveness {
 	if token == "" {
 		return credentialInvalid
 	}
-	info, err := s.store.ValidateSession(token)
+	info, err := s.store.ValidateSessionContext(ctx, token)
 	if err != nil {
 		return credentialUnknown
 	}

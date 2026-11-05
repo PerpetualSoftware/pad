@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -60,7 +61,7 @@ func (s *Server) handleGetPlatformSettings(w http.ResponseWriter, r *http.Reques
 
 	stored, err := s.store.GetPlatformSettings()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to load settings")
+		writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to load settings")
 		return
 	}
 
@@ -138,7 +139,7 @@ func (s *Server) handleUpdatePlatformSettings(w http.ResponseWriter, r *http.Req
 		if key == settingMailerooAPIKey && value != "" {
 			current, err := s.store.GetPlatformSetting(settingMailerooAPIKey)
 			if err != nil {
-				writeError(w, http.StatusInternalServerError, "internal_error", "Failed to load setting: "+key)
+				writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to load setting: "+key)
 				return
 			}
 			if current != "" && value == maskAPIKey(current) {
@@ -146,7 +147,7 @@ func (s *Server) handleUpdatePlatformSettings(w http.ResponseWriter, r *http.Req
 			}
 		}
 		if err := s.store.SetPlatformSetting(key, value); err != nil {
-			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to save setting: "+key)
+			writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to save setting: "+key)
 			return
 		}
 	}
@@ -208,7 +209,10 @@ func (s *Server) handleTestEmail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.email.SendTest(r.Context(), input.To); err != nil {
-		writeError(w, http.StatusInternalServerError, "email_failed", "Failed to send test email: "+err.Error())
+		// The provider's error text is logged, never sent (it can carry the API response).
+		slog.Error("send test email failed", "error", err)
+		// 500: email provider send failure, not a store error.
+		writeError(w, http.StatusInternalServerError, "email_failed", "Failed to send test email. See the server log for the provider's answer.")
 		return
 	}
 

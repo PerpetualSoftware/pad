@@ -122,6 +122,7 @@ func (s *Server) handleAdminResendInvitation(w http.ResponseWriter, r *http.Requ
 		unsubURL := email.UnsubscribeURL(s.baseURL, inv.Email, s.unsubscribeSecret())
 		if err := s.email.SendInvitation(r.Context(), inv.Email, inviterName, wsName, invitationEmailURL(joinURL, inv.Proof), unsubURL); err != nil {
 			slog.Error("failed to resend invitation email", "error", err, "email", inv.Email)
+			// 500: email provider send failure, not a store error
 			writeError(w, http.StatusInternalServerError, "email_failed", "Invitation recreated but failed to send email")
 			return
 		}

@@ -265,12 +265,26 @@ func (s *Store) PurgeWorkspaceData(workspaceID string) error {
 	})
 }
 
+// purgeStatementTimeout and purgeLockTimeout are the per-transaction bounds of a
+// purge (TASK-4278), matching the 30-minute cap of the sweep that calls it.
+const (
+	purgeStatementTimeout = 30 * time.Minute
+	purgeLockTimeout      = 5 * time.Minute
+)
+
 func (s *Store) purgeWorkspaceDataOnce(workspaceID string, injected *int) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("purge workspace: begin tx: %w", err)
 	}
 	defer tx.Rollback()
+
+	// Long-write override (TASK-4278): the runtime pool's statement and lock
+	// bounds are far below purge's measured cost (one 43 s DELETE on a
+	// 4,079-item workspace), so this transaction raises both, locally.
+	if err := s.setTxTimeouts(tx, purgeStatementTimeout, purgeLockTimeout); err != nil {
+		return fmt.Errorf("purge workspace: %w", err)
+	}
 
 	// Defense-in-depth: never purge a live workspace, even if handed a
 	// bad ID. deleted_at must be set.

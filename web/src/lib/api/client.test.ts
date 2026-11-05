@@ -5,6 +5,9 @@ import {
 	isRateLimitError,
 	PadApiError,
 	setRateLimitHandler,
+	setDatabaseBusyHandler,
+	isDatabaseBusyError,
+	databaseBusyMessage,
 	isNotFoundError,
 	isUpdateConflictError,
 	isConflictOrNotFound,
@@ -491,5 +494,94 @@ describe('server.capabilities() caching (TASK-2120)', () => {
 		expect(fetchMock).not.toHaveBeenCalled();
 		// Still the warmed 'png' value, proving the cache served it (not 'jpeg').
 		expect(a.image.image_formats).toEqual(['png']);
+	});
+});
+
+// ── database_busy 503 (TASK-4278) ───────────────────────────────────────────
+
+const BUSY_READ = 'The server is busy. Please try again.';
+const BUSY_WRITE = 'The server is busy; nothing was saved. Please try again.';
+const busy = (message: string) => ({ error: { code: 'database_busy', message } });
+
+describe('api client database_busy 503 (TASK-4278)', () => {
+	beforeEach(() => {
+		vi.unstubAllGlobals();
+	});
+	afterEach(() => {
+		vi.unstubAllGlobals();
+		setDatabaseBusyHandler(null);
+	});
+
+	it('retries an idempotent GET, then returns the retry payload', async () => {
+		const fetchMock = mockFetchSequence([
+			{ status: 503, body: busy(BUSY_READ), retryAfter: '0' },
+			{ status: 200, body: [{ id: 'w1' }] },
+		]);
+		const handler = vi.fn();
+		setDatabaseBusyHandler(handler);
+		expect(await api.workspaces.list()).toEqual([{ id: 'w1' }]);
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		// A retry that recovered is not surfaced.
+		expect(handler).not.toHaveBeenCalled();
+	});
+
+	it('shows the busy message once when every GET retry is also busy', async () => {
+		const fetchMock = mockFetchSequence([{ status: 503, body: busy(BUSY_READ), retryAfter: '0' }]);
+		const handler = vi.fn();
+		setDatabaseBusyHandler(handler);
+		const err = await api.workspaces.list().catch((e) => e);
+		expect(isDatabaseBusyError(err)).toBe(true);
+		expect((err as PadApiError).message).toBe(BUSY_READ);
+		expect(fetchMock).toHaveBeenCalledTimes(1 + MAX_RATE_LIMIT_RETRIES);
+		expect(handler).toHaveBeenCalledTimes(1);
+		expect(handler.mock.calls[0][0]).toMatchObject({ message: BUSY_READ, isWrite: false });
+	});
+
+	it('shows the "nothing was saved" message once for a POST and never retries it', async () => {
+		const fetchMock = mockFetchSequence([
+			{ status: 503, body: busy(BUSY_WRITE), retryAfter: '2' },
+			{ status: 200, body: { id: 'w2' } },
+		]);
+		const handler = vi.fn();
+		setDatabaseBusyHandler(handler);
+		const err = (await api.workspaces
+			.create({ name: 'X' } as unknown as Parameters<typeof api.workspaces.create>[0])
+			.catch((e) => e)) as PadApiError;
+		expect(isDatabaseBusyError(err)).toBe(true);
+		expect(err.message).toBe(BUSY_WRITE);
+		expect(err.retryAfterMs).toBe(2000);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(handler).toHaveBeenCalledTimes(1);
+		expect(handler.mock.calls[0][0]).toMatchObject({ isWrite: true, retryAfterMs: 2000 });
+	});
+
+	it('a 503 without the database_busy code is the generic error, not ours', async () => {
+		mockFetchSequence([{ status: 503, body: { error: { code: 'unavailable', message: 'down' } } }]);
+		const handler = vi.fn();
+		setDatabaseBusyHandler(handler);
+		const err = await api.workspaces.list().catch((e) => e);
+		expect(isDatabaseBusyError(err)).toBe(false);
+		expect(handler).not.toHaveBeenCalled();
+	});
+
+	it('never shows SQL or an SQLSTATE, even if a body carried it', async () => {
+		mockFetchSequence([
+			{
+				status: 503,
+				body: busy('pq: canceling statement due to statement timeout (SQLSTATE 57014): UPDATE items SET fields = $1 WHERE id = $2'),
+				retryAfter: '0',
+			},
+		]);
+		const err = (await api.workspaces
+			.create({ name: 'X' } as unknown as Parameters<typeof api.workspaces.create>[0])
+			.catch((e) => e)) as PadApiError;
+		expect(err.message).toBe(BUSY_WRITE);
+		expect(err.message).not.toMatch(/sqlstate|update items|pq:/i);
+	});
+
+	it('databaseBusyMessage keeps a custom server sentence and falls back on empty input', () => {
+		expect(databaseBusyMessage('Custom busy wording.', true)).toBe('Custom busy wording.');
+		expect(databaseBusyMessage('', false)).toBe(BUSY_READ);
+		expect(databaseBusyMessage(undefined, true)).toBe(BUSY_WRITE);
 	});
 });
