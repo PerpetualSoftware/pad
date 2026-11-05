@@ -11,6 +11,7 @@
 	import { GITHUB_REPO_URL } from '$lib/brand/links';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { chatStore } from '$lib/stores/chat.svelte';
+	import { chatSetting } from '$lib/stores/chatSetting.svelte';
 	import UnreadBadge from '$lib/components/chat/UnreadBadge.svelte';
 	import { goto } from '$app/navigation';
 	import { api, isPlanLimitError } from '$lib/api/client';
@@ -645,7 +646,7 @@
 					sits OUTSIDE the `!isGuest` block: a guest member of this workspace
 					still has their own chat. href is global, not wsPrefix.
 				-->
-				{#if authStore.authenticated}
+				{#if authStore.authenticated && chatSetting.enabled}
 					<a
 						href="/messages"
 						class="nav-item"

@@ -2,6 +2,7 @@
 	import type { Snippet } from 'svelte';
 	import UnreadBadge from '$lib/components/chat/UnreadBadge.svelte';
 	import { chatStore } from '$lib/stores/chat.svelte';
+	import { chatSetting } from '$lib/stores/chatSetting.svelte';
 
 	// The entry to /messages (TASK-4044 PR 2a-ii, 3c). Three placements share it:
 	// the TopBar user menu, the You sheet and the /console nav bar; each passes
@@ -9,7 +10,8 @@
 	// element, so the parent styles it with :global(.<class>), and the lead/trail
 	// snippets carry the parent's own scope for its icon and chevron. Not the
 	// Sidebar footer row: it overflows on desktop (TASK-4044, comment 89264cdd,
-	// posted 04:36:46Z).
+	// posted 04:36:46Z). With the user's Chat setting off it renders nothing
+	// (TASK-4315): one gate for all three placements.
 	let {
 		class: className = '',
 		role,
@@ -27,6 +29,7 @@
 	let count = $derived(chatStore.unreadTotal);
 </script>
 
+{#if chatSetting.enabled}
 <a
 	href="/messages"
 	class={className}
@@ -39,6 +42,7 @@
 	<UnreadBadge {count} />
 	{@render trail?.()}
 </a>
+{/if}
 
 <style>
 	.chat-label {

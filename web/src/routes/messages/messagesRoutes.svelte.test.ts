@@ -26,7 +26,8 @@ const h = vi.hoisted(() => ({
 	// Bumped by a test to stand for an identity change: fences taken earlier fail.
 	identityGen: 0,
 	chat: { unreadByNumber: {} as Record<number, number> },
-	resync: vi.fn()
+	resync: vi.fn(),
+	setChat: vi.fn()
 }));
 
 class NotFound extends Error {
@@ -47,7 +48,8 @@ vi.mock('$lib/api/client', () => ({
 			sendMessage: h.sendMessage,
 			deleteMessage: h.deleteMessage
 		},
-		sessions: { list: h.sessions }
+		sessions: { list: h.sessions },
+		auth: { setChatEnabled: h.setChat }
 	},
 	isNotFoundError: (e: unknown) => e instanceof NotFound,
 	isReplyTargetDeletedError: (e: unknown) => e instanceof ReplyDeleted,
@@ -56,6 +58,13 @@ vi.mock('$lib/api/client', () => ({
 vi.mock('$lib/stores/auth.svelte', () => ({
 	authStore: {
 		load: h.load,
+		get user() {
+			return { chat_enabled: live.chatOn };
+		},
+		userId: 'u1',
+		setChatEnabled: (_id: string, on: boolean) => {
+			live.chatOn = on;
+		},
 		get authenticated() {
 			return h.authenticated;
 		},
@@ -98,7 +107,7 @@ class FakeIO {
 
 // chatStore.version as a rune, so a bump re-runs the thread's refresh effect.
 // Read lazily by the mock above, after this line has run.
-const live = $state({ version: 0 });
+const live = $state({ version: 0, chatOn: true });
 
 import MessagesLayout from './+layout.svelte';
 import MessagesPage from './+page.svelte';
@@ -162,6 +171,7 @@ const conv = (n: number) => ({
 beforeEach(() => {
 	for (const f of Object.values(h)) if (typeof f === 'function' && 'mockReset' in f) (f as ReturnType<typeof vi.fn>).mockReset();
 	h.authenticated = true;
+	live.chatOn = true;
 	h.chat.unreadByNumber = {};
 	h.load.mockResolvedValue({ authenticated: true });
 	h.listConversations.mockResolvedValue({ conversations: [conv(3)], unread_total: 0 });
@@ -221,6 +231,50 @@ describe('/messages layout (TASK-4044)', () => {
 		await settle();
 		expect(h.goto).not.toHaveBeenCalled();
 		expect(queryByTestId('child')).not.toBeNull();
+	});
+});
+
+describe('/messages with the Chat setting off (TASK-4315)', () => {
+	it('shows the Chat is off page, not the children, and starts no chat read', async () => {
+		live.chatOn = false;
+		const { queryByTestId, getByRole } = render(MessagesLayout, { props: { children: child } });
+		await settle();
+		expect(queryByTestId('child')).toBeNull();
+		expect(getByRole('heading', { name: /chat is off/i })).toBeTruthy();
+		expect(getByRole('button', { name: /turn on chat/i })).toBeTruthy();
+		expect(h.goto).not.toHaveBeenCalled();
+	});
+
+	it('turning it on saves the setting and then shows the page that was asked for, in place', async () => {
+		live.chatOn = false;
+		h.setChat.mockResolvedValue({ chat_enabled: true });
+		const { queryByTestId, getByRole } = render(MessagesLayout, { props: { children: child } });
+		await settle();
+		getByRole('button', { name: /turn on chat/i }).click();
+		await settle();
+		expect(h.setChat).toHaveBeenCalledWith(true);
+		expect(queryByTestId('child')).not.toBeNull();
+		expect(h.goto).not.toHaveBeenCalled();
+	});
+
+	it('a failed save keeps the off page and says so', async () => {
+		live.chatOn = false;
+		h.setChat.mockRejectedValue(new Error('boom'));
+		const { queryByTestId, getByRole, findByText } = render(MessagesLayout, { props: { children: child } });
+		await settle();
+		getByRole('button', { name: /turn on chat/i }).click();
+		await settle();
+		expect(queryByTestId('child')).toBeNull();
+		expect(await findByText(/couldn.t turn chat on/i)).toBeTruthy();
+	});
+
+	it('a signed-out visitor still goes to /login, not to the off page', async () => {
+		live.chatOn = false;
+		h.load.mockResolvedValue({ authenticated: false });
+		const { queryByRole } = render(MessagesLayout, { props: { children: child } });
+		await settle();
+		expect(h.goto).toHaveBeenCalledWith('/login', { replaceState: true });
+		expect(queryByRole('heading', { name: /chat is off/i })).toBeNull();
 	});
 });
 
