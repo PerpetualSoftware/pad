@@ -29,7 +29,7 @@ identityGateSuite({
 			},
 			handleCopyInvitation: { reviewed: '0e460e1fb7e5', why: 'BUG-4335: pageIdentityHeld before reading the retained link; an entry epoch, the entry workspace and pageIdentityHeld after the clipboard await, before either toast, including rejected copies' },
 			handleRemoveMember: { reviewed: '75d40e43ff80', why: `${ENTRY}. TASK-2190: the failure toast reads the server's reason through memberChangeFailure, after the check. TASK-3543: epoch and workspace captured before the confirm dialog's await and re-checked after it` },
-			handleCancelInvitation: { reviewed: '5c807eaf65d5', why: `${ENTRY}. BUG-4335: only the matching retained link is cleared, after cancellation succeeds and the identity check holds. TASK-3543: epoch and workspace captured before the confirm dialog's await and re-checked after it` },
+			handleCancelInvitation: { reviewed: 'b3b033cf20d8', why: `${ENTRY}. BUG-4335: only the matching retained link is cleared, after cancellation succeeds, the identity check holds and the page is still the workspace the cancel was made for. TASK-3543: epoch and workspace captured before the confirm dialog's await and re-checked after it` },
 			handleChangeRole: { reviewed: '19dd4423e43b', why: `${ENTRY}. TASK-2190: the failure arm reverts the select and toasts the server's reason only after the check. TASK-3543: epoch and workspace captured before the confirm dialog's await and re-checked after it; a No reverts the select only while the page is still the one asked about` },
 			toggleAccessPanel: { reviewed: 'c4d44ff12fa0', why: `${ENTRY}; the finally clears the panel's loading flag. BUG-3698: both arms also require accessPanelHeld (the panel generation, member and workspace the read was made for), and the finally clears loading only for the current generation` },
 			saveCollectionAccess: { reviewed: 'da703725bdec', why: `${ENTRY}, the revert included; the finally clears its own busy flag. BUG-3698: the toast follows the identity check, and the form refresh and the revert also require accessPanelHeld, so they never land in another member's panel` },
@@ -41,7 +41,7 @@ identityGateSuite({
 		},
 		nested: [],
 		markup: [
-			{ body: /copyToClipboard\(url\)/, why: 'Copy invite link: pageIdentityHeld() before reading the invitation and again before the toast', reviewed: '6e121da9ef2c' },
+			{ body: /copyToClipboard\(url\)/, why: 'Copy invite link: pageIdentityHeld() before reading the invitation, the workspace captured then, and pageIdentityHeld() plus the same workspace again before the toast', reviewed: '135b15b30fe5' },
 		],
 		continuations: [
 			{ call: /\.catch\($/, body: /\(\) => false/, in: 'handleInvite', why: 'BUG-4335: maps clipboard rejection to false without committing state; the awaiting caller checks its captured identity', reviewed: '52675cf8e68f' },
@@ -107,8 +107,8 @@ identityGateSuite({
 		{
 			cls: 5,
 			what: "the Copy invite link handler's second check is made conditional on something that never holds",
-			old: "if (!pageIdentityHeld()) return; toastStore.show(ok ? 'Link copied'",
-			new: "if (!pageIdentityHeld() && url === '') return; toastStore.show(ok ? 'Link copied'",
+			old: "if (!pageIdentityHeld() || wsSlug !== reqWs) return; toastStore.show(ok ? 'Link copied'",
+			new: "if ((!pageIdentityHeld() || wsSlug !== reqWs) && url === '') return; toastStore.show(ok ? 'Link copied'",
 			names: 'in markup',
 		},
 	],

@@ -340,4 +340,44 @@ describe('BUG-4335: invitation creation and clipboard feedback', () => {
 		for (let i = 0; i < 10; i++) { await Promise.resolve(); await tick(); }
 		expect(toastStore.show).not.toHaveBeenCalled();
 	});
+
+	it('a cancellation that finishes after a workspace switch does not clear the other workspace link', async () => {
+		const cancel = deferred<Record<string, never>>();
+		vi.mocked(api.members.cancelInvitation).mockReturnValueOnce(cancel.promise as never);
+		await mount();
+		await invite();
+		await screen.findByText(`${CREATED} Link copied`);
+		await waitFor(() => expect(screen.getByText('Pending acceptance')).toBeInTheDocument());
+		await fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+		await waitFor(() => expect(api.members.cancelInvitation).toHaveBeenCalledTimes(1));
+		page.params = { username: 'dave', workspace: 'other' };
+		flushSync();
+		await tick();
+		await waitFor(() => expect(vi.mocked(api.members.list).mock.calls.some(([ws]) => ws === 'other')).toBe(true));
+		await invite();
+		await screen.findByText(`${CREATED} Link copied`);
+		linkField();
+		cancel.resolve({});
+		for (let i = 0; i < 10; i++) { await Promise.resolve(); await tick(); }
+		linkField();
+	});
+
+	it('shows no copy toast from a pending-row Copy invite link after the page moved to another workspace', async () => {
+		vi.mocked(api.members.list).mockResolvedValue({
+			members: [],
+			invitations: [{ id: 'inv2', email: 'b@x.test', role: 'editor', code: 'CODE1', created_at: '2026-11-05T00:00:00Z' }]
+		});
+		await mount();
+		const pendingCopy = deferred<boolean>();
+		vi.mocked(copyToClipboard).mockReturnValueOnce(pendingCopy.promise);
+		await fireEvent.click(await screen.findByRole('button', { name: 'Copy invite link' }));
+		page.params = { username: 'dave', workspace: 'other' };
+		flushSync();
+		await tick();
+		await waitFor(() => expect(vi.mocked(api.members.list).mock.calls.some(([ws]) => ws === 'other')).toBe(true));
+		vi.mocked(toastStore.show).mockClear();
+		pendingCopy.resolve(true);
+		for (let i = 0; i < 10; i++) { await Promise.resolve(); await tick(); }
+		expect(toastStore.show).not.toHaveBeenCalled();
+	});
 });

@@ -759,7 +759,8 @@
 			await api.members.cancelInvitation(reqWs, invId);
 			if (!identityHeld(epochAtEntry)) return;
 			invitations = invitations.filter(i => i.id !== invId);
-			if (createdInvite?.email === email) createdInvite = null;
+			// Only this workspace's retained link: a same-email invite made in another workspace meanwhile is not ours to clear.
+			if (wsSlug === reqWs && createdInvite?.email === email) createdInvite = null;
 			toastStore.show(`Invitation cancelled for ${email}`, 'success');
 		} catch {
 			if (!identityHeld(epochAtEntry)) return;
@@ -1325,7 +1326,7 @@
 								<span class="inv-email">{inv.email}</span>
 								<Chip color="var(--accent-gray)">{inv.role}</Chip>
 								{#if inv.join_url || inv.code}
-									<button class="btn btn-small copy-link-btn" onclick={async () => { if (!pageIdentityHeld()) return; const url = inv.join_url || `${window.location.origin}/join/${inv.code}`; const ok = await copyToClipboard(url); if (!pageIdentityHeld()) return; toastStore.show(ok ? 'Link copied' : 'Couldn’t copy the invitation link.', ok ? 'success' : 'error'); }}>
+									<button class="btn btn-small copy-link-btn" onclick={async () => { if (!pageIdentityHeld()) return; const reqWs = wsSlug; const url = inv.join_url || `${window.location.origin}/join/${inv.code}`; const ok = await copyToClipboard(url); if (!pageIdentityHeld() || wsSlug !== reqWs) return; toastStore.show(ok ? 'Link copied' : 'Couldn’t copy the invitation link.', ok ? 'success' : 'error'); }}>
 										Copy invite link
 									</button>
 								{:else}
