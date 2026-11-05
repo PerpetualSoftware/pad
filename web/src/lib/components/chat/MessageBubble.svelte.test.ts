@@ -1,8 +1,9 @@
 // TASK-4044 PR 3a: one confirmed message. The quote chip shows the excerpt only,
 // the "sent from" label shows only when the server sent a context_workspace.
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render } from '@testing-library/svelte';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/svelte';
 import { tick } from 'svelte';
+import { toastStore } from '$lib/stores/toast.svelte';
 import MessageBubble from './MessageBubble.svelte';
 import PendingBubble from './PendingBubble.svelte';
 import UnreadDivider from './UnreadDivider.svelte';
@@ -105,196 +106,107 @@ describe('UnreadDivider', () => {
 	});
 });
 
-// ── PR 3b: the message menu (U24) ────────────────────────────────────────────
-describe('MessageBubble menu', () => {
-	const fire = (el: Element, type: string, init: Record<string, unknown> = {}) =>
-		el.dispatchEvent(new PointerEvent(type, { bubbles: true, ...init }));
-	const menu = (c: HTMLElement) => c.querySelector('.menu');
-	const mount = (message: ChatMessage = base) => {
+// TASK-4315: native button activation (Tab/Enter/Space) and layout are also
+// exercised in Playwright; jsdom does not synthesize native keyboard clicks.
+describe('MessageBubble row actions', () => {
+	const mount = (message = base, canDelete = true) => {
 		const onReply = vi.fn();
 		const onDelete = vi.fn();
-		const r = render(MessageBubble, { props: { message, onReply, onDelete } });
-		return { ...r, onReply, onDelete, bubble: r.container.querySelector('article')! };
+		return { ...render(MessageBubble, { message, canDelete, onReply, onDelete }), onReply, onDelete };
 	};
+	const more = () => screen.getByRole('button', { name: /More/ });
+	const open = async () => { await fireEvent.click(more()); await tick(); };
+	afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
-	afterEach(() => vi.useRealTimers());
-
-	it('has no menu until hovered, opens on a mouse hover and closes on leave', async () => {
-		const { container, bubble } = mount();
-		expect(menu(container)).toBeNull();
-		fire(bubble, 'pointerenter', { pointerType: 'mouse' });
-		await tick();
-		expect(menu(container)).not.toBeNull();
-		fire(bubble, 'pointerleave', { pointerType: 'mouse' });
-		await tick();
-		expect(menu(container)).toBeNull();
+	it('shows Agent, full timestamp and a persistent, tabbable More without opening on hover or focus', async () => {
+		const r = mount();
+		expect(screen.getByText('Agent')).toBeInTheDocument();
+		expect(r.container.querySelector('time')).toHaveAttribute('title', new Date(base.created_at).toLocaleString());
+		expect(more().tabIndex).toBe(0);
+		more().focus();
+		await fireEvent.pointerEnter(r.container.querySelector('article')!, { pointerType: 'mouse' });
+		expect(screen.queryByRole('menu')).toBeNull();
+		expect(screen.queryByText('Delete')).toBeNull();
 	});
-
-	// jsdom has no focus-visible heuristic, so the match is stubbed: true is what a
-	// browser reports after keyboard focus, false after a tap or click.
-	const focusVisible = (on: boolean) => {
-		const real = Element.prototype.matches;
-		return vi.spyOn(Element.prototype, 'matches').mockImplementation(function (
-			this: Element,
-			sel: string
-		) {
-			return sel === ':focus-visible' ? on : real.call(this, sel);
-		});
-	};
-
-	it('opens on keyboard focus (:focus-visible)', async () => {
-		const spy = focusVisible(true);
-		const { container, bubble } = mount();
-		bubble.focus();
-		await tick();
-		expect(menu(container)).not.toBeNull();
-		spy.mockRestore();
+	it('shows Human and You on an own human row', () => {
+		mount({ ...base, mine: true, author_is_human: true, author_agent_key: '' });
+		expect(screen.getByText('Human')).toBeInTheDocument();
+		expect(screen.getByText('You')).toBeInTheDocument();
 	});
-
-	// Red if a plain tap, which focuses the bubble but is not focus-visible, opens
-	// the menu (Delete would be one tap away).
-	it('a focus that is not focus-visible (a tap) opens nothing', async () => {
-		const spy = focusVisible(false);
-		const { container, bubble } = mount();
-		bubble.focus();
-		await tick();
-		expect(menu(container)).toBeNull();
-		spy.mockRestore();
+	it.each([true, false])('Delete is only in More when permitted=%s', async (allowed) => {
+		const r = mount(base, allowed);
+		expect(screen.queryByText('Delete')).toBeNull();
+		await open();
+		const menu = screen.getByRole('menu', { name: /codex.*5/ });
+		expect(r.container.contains(menu)).toBe(false); // portal escapes the scroller
+		if (allowed) {
+			await fireEvent.click(within(menu).getByRole('menuitem', { name: 'Delete' }));
+			expect(r.onDelete).toHaveBeenCalledWith(base);
+		} else expect(within(menu).queryByRole('menuitem', { name: 'Delete' })).toBeNull();
 	});
-
-	// Red if only a press outside the whole bubble unpins.
-	it('a pinned menu closes on a press inside the bubble but outside the menu', async () => {
-		vi.useFakeTimers();
-		const { container, bubble } = mount();
-		fire(bubble, 'pointerdown', { pointerType: 'touch' });
-		vi.advanceTimersByTime(500);
-		await tick();
-		fire(container.querySelector('.menu button')!, 'pointerdown', { pointerType: 'touch' });
-		await tick();
-		expect(menu(container)).not.toBeNull();
-		fire(container.querySelector('.body')!, 'pointerdown', { pointerType: 'touch' });
-		await tick();
-		expect(menu(container)).toBeNull();
+	it('arrow keys navigate and Escape restores focus to More', async () => {
+		mount();
+		await open();
+		const reply = screen.getByRole('menuitem', { name: 'Reply' });
+		expect(reply).toHaveFocus();
+		await fireEvent.keyDown(reply, { key: 'ArrowDown' });
+		expect(screen.getByRole('menuitem', { name: 'Copy' })).toHaveFocus();
+		await fireEvent.keyDown(document.activeElement!, { key: 'ArrowUp' });
+		expect(reply).toHaveFocus();
+		await fireEvent.keyDown(reply, { key: 'Escape' });
+		expect(screen.queryByRole('menu')).toBeNull();
+		expect(more()).toHaveFocus();
 	});
-
-	// Red if a short tap opens it (B4).
-	it('a short tap on touch opens nothing; a 500 ms press opens it', async () => {
-		vi.useFakeTimers();
-		const { container, bubble } = mount();
-		fire(bubble, 'pointerdown', { pointerType: 'touch' });
-		vi.advanceTimersByTime(300);
-		fire(bubble, 'pointerup', { pointerType: 'touch' });
-		vi.advanceTimersByTime(1000);
-		await tick();
-		expect(menu(container)).toBeNull();
-		fire(bubble, 'pointerdown', { pointerType: 'touch' });
-		vi.advanceTimersByTime(499);
-		await tick();
-		expect(menu(container)).toBeNull();
-		vi.advanceTimersByTime(1);
-		await tick();
-		expect(menu(container)).not.toBeNull();
+	it('Reply calls onReply with the message and closes', async () => {
+		const r = mount();
+		await open();
+		await fireEvent.click(screen.getByRole('menuitem', { name: 'Reply' }));
+		expect(r.onReply).toHaveBeenCalledWith(base);
+		expect(screen.queryByRole('menu')).toBeNull();
 	});
-
-	// Red if the native callout / context menu can open while a touch press is armed.
-	it('suppresses the native context menu while a touch press is armed, not for a mouse', async () => {
-		vi.useFakeTimers();
-		const { bubble } = mount();
-		const ctx = () => {
-			const e = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
-			bubble.dispatchEvent(e);
-			return e.defaultPrevented;
-		};
-		expect(ctx()).toBe(false);
-		fire(bubble, 'pointerdown', { pointerType: 'touch' });
-		vi.advanceTimersByTime(200);
-		expect(ctx()).toBe(true);
-		fire(bubble, 'pointerup', { pointerType: 'touch' });
-		expect(ctx()).toBe(false);
-	});
-
-	// Red if focus drops to the body when the menu unmounts. Returning it to the
-	// bubble must not reopen the menu, even when the browser calls that focus visible.
-	it.each([['Copy', 1], ['Delete', 2]])('after %s focus returns to the bubble and the menu stays shut', async (_name, idx) => {
+	it('Copy writes the original markdown source', async () => {
 		const writeText = vi.fn().mockResolvedValue(undefined);
 		Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
-		const spy = focusVisible(true);
-		const { container, bubble } = mount();
-		fire(bubble, 'pointerenter', { pointerType: 'mouse' });
-		await tick();
-		await fireEvent.click(container.querySelectorAll<HTMLButtonElement>('.menu button')[idx]);
-		await tick();
-		expect(document.activeElement).toBe(bubble);
-		expect(menu(container)).toBeNull();
-		spy.mockRestore();
+		const message = { ...base, body: '**bold** [[TASK-1]]' };
+		mount(message);
+		await open();
+		await fireEvent.click(screen.getByRole('menuitem', { name: 'Copy' }));
+		expect(writeText).toHaveBeenCalledWith(message.body);
 	});
-
-	it('a press that moves is a scroll, not a long-press', async () => {
-		vi.useFakeTimers();
-		const { container, bubble } = mount();
-		fire(bubble, 'pointerdown', { pointerType: 'touch', clientX: 10, clientY: 10 });
-		fire(bubble, 'pointermove', { pointerType: 'touch', clientX: 10, clientY: 60 });
-		vi.advanceTimersByTime(800);
+	it.each(['unavailable', 'denied'])('Copy offers selected text when clipboard is %s, without claiming success', async (kind) => {
+		Object.defineProperty(navigator, 'clipboard', { configurable: true, value: kind === 'unavailable' ? undefined : { writeText: vi.fn().mockRejectedValue(new Error('denied')) } });
+		const toast = vi.spyOn(toastStore, 'show');
+		mount();
+		await open();
+		await fireEvent.click(screen.getByRole('menuitem', { name: 'Copy' }));
 		await tick();
-		expect(menu(container)).toBeNull();
+		const dialog = screen.getByRole('dialog', { name: 'Select and copy this message.' });
+		const text = within(dialog).getByRole('textbox', { name: 'Select and copy this message.' }) as HTMLTextAreaElement;
+		expect(text).toHaveValue(base.body);
+		expect(text.readOnly).toBe(true);
+		expect(document.querySelectorAll('textarea')).toHaveLength(1); // no leaked legacy copy control
+		expect(text).toHaveFocus();
+		expect([text.selectionStart, text.selectionEnd]).toEqual([0, base.body.length]);
+		expect(toast).not.toHaveBeenCalledWith(expect.anything(), 'success');
 	});
-
-	it('a long-pressed menu closes on a press elsewhere', async () => {
+	it('a long press opens the same menu', async () => {
 		vi.useFakeTimers();
-		const { container, bubble } = mount();
-		fire(bubble, 'pointerdown', { pointerType: 'touch' });
+		const r = mount();
+		await fireEvent.pointerDown(r.container.querySelector('article')!, { pointerType: 'touch' });
 		vi.advanceTimersByTime(500);
 		await tick();
-		expect(menu(container)).not.toBeNull();
-		fire(document.body, 'pointerdown', { pointerType: 'touch' });
-		await tick();
-		expect(menu(container)).toBeNull();
+		expect(screen.getByRole('menu', { name: /codex.*5/ })).toBeInTheDocument();
 	});
-
-	it('Reply and Delete pass the message through, and the menu closes', async () => {
-		const { container, bubble, onReply, onDelete } = mount();
-		fire(bubble, 'pointerenter', { pointerType: 'mouse' });
-		await tick();
-		const [reply] = [...container.querySelectorAll<HTMLButtonElement>('.menu button')];
-		await fireEvent.click(reply);
-		expect(onReply).toHaveBeenCalledWith(base);
-		fire(bubble, 'pointerenter', { pointerType: 'mouse' });
-		await tick();
-		await fireEvent.click(container.querySelectorAll<HTMLButtonElement>('.menu button')[2]);
-		expect(onDelete).toHaveBeenCalledWith(base);
+	it('preserves row focus when its focused More becomes a tombstone', async () => {
+		const r = mount();
+		more().focus();
+		await r.rerender({ message: { ...base, deleted: true, body: '' }, canDelete: false, onReply: r.onReply, onDelete: r.onDelete });
+		expect(r.container.querySelector('article')).toHaveFocus();
 	});
-
-	it('Copy writes the plain body', async () => {
-		const writeText = vi.fn().mockResolvedValue(undefined);
-		Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
-		const { container, bubble } = mount();
-		fire(bubble, 'pointerenter', { pointerType: 'mouse' });
-		await tick();
-		await fireEvent.click(container.querySelectorAll<HTMLButtonElement>('.menu button')[1]);
-		expect(writeText).toHaveBeenCalledWith('the full body, longer than the excerpt');
-	});
-
-	it('offers Delete on an agent row (the server allows it) and no menu on a tombstone', async () => {
-		const live = mount();
-		fire(live.bubble, 'pointerenter', { pointerType: 'mouse' });
-		await tick();
-		expect([...live.container.querySelectorAll('.menu button')].map((b) => b.textContent)).toEqual([
-			'Reply',
-			'Copy',
-			'Delete'
-		]);
-		live.unmount();
-		const gone = mount({ ...base, deleted: true, body: '' });
-		fire(gone.bubble, 'pointerenter', { pointerType: 'mouse' });
-		await tick();
-		expect(menu(gone.container)).toBeNull();
-	});
-
-	it('is read-only without the hooks', async () => {
-		const { container } = render(MessageBubble, { props: { message: base } });
-		fire(container.querySelector('article')!, 'pointerenter', { pointerType: 'mouse' });
-		await tick();
-		expect(menu(container)).toBeNull();
+	it('tombstones have no actions and remain a programmatic focus target', () => {
+		const r = mount({ ...base, deleted: true, body: '' });
+		expect(r.container.querySelector('article')).toHaveAttribute('tabindex', '-1');
+		expect(screen.queryByRole('button')).toBeNull();
 	});
 });
 
@@ -305,6 +217,8 @@ describe('PendingBubble', () => {
 		const pending = { op_key: 'k1', body: 'hello', status: 'sending' as const };
 		const r = render(PendingBubble, { props: { pending, onRetry, onDiscard } });
 		expect(r.container.textContent).toContain('Sending…');
+		expect(r.getByText('Human')).toBeInTheDocument();
+		expect(r.getByText('You')).toBeInTheDocument();
 		expect(r.container.querySelectorAll('button')).toHaveLength(0);
 		await r.rerender({ pending: { ...pending, status: 'failed' as const }, onRetry, onDiscard });
 		const [retry, discard] = [...r.container.querySelectorAll('button')];

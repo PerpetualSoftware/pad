@@ -3,26 +3,24 @@
 	import MessageMenu from '$lib/components/chat/MessageMenu.svelte';
 	import MessageBody from '$lib/components/chat/MessageBody.svelte';
 	import type { ChatMessage, ChatRef } from '$lib/types';
+	import { tick } from 'svelte';
+	import Modal from '$lib/components/common/Modal.svelte';
+	import { copyToClipboard } from '$lib/utils/clipboard';
+	import { toastStore } from '$lib/stores/toast.svelte';
 
-	// One confirmed message (TASK-4044 PR 3a). The body is sanitised markdown
-	// (MessageBody, TASK-4315 PR 2a); the only {@html} is there, behind the Chat
-	// profile of the sanitiser. Only a ref the server called `visible` becomes a
-	// link; `restricted` is a placeholder with no href and no title; anything else
-	// stays the literal text, `[[...]]` kept (TASK-4044 3c, ruling 687eb810). A
-	// tombstone shows "Message deleted" and nothing of the body.
-	//
-	// PR 3b: with `onReply` and `onDelete` a live message has an action menu. It
-	// opens on hover or keyboard focus (:focus-visible; a tap focuses the bubble
-	// too, and must open nothing) and on a 500 ms long-press (touch). A tombstone
-	// never has one.
+	// One confirmed row. Only a ref the server called `visible` becomes a link;
+	// `restricted` is a placeholder with no href and no title; anything else
+	// stays literal, `[[...]]` kept. A tombstone has no body or actions.
 	let {
 		message,
 		refs,
 		onJumpToQuote,
 		onReply,
-		onDelete
+		onDelete,
+		canDelete = false
 	}: {
 		message: ChatMessage;
+		canDelete?: boolean;
 		/** The thread's ref verdicts; absent means every ref stays literal. */
 		refs?: ReadonlyMap<string, ChatRef>;
 		onJumpToQuote?: (seq: number) => void;
@@ -31,25 +29,47 @@
 	} = $props();
 
 	let el = $state<HTMLElement | null>(null);
-	let hovered = $state(false);
-	let focused = $state(false);
-	let pinned = $state(false);
-	let hasMenu = $derived(!message.deleted && !!onReply && !!onDelete);
-	// Set while focus is handed back to the bubble after an action: that focus is
-	// programmatic and must not reopen the menu it just closed.
-	let returning = false;
-	let menuOpen = $derived(hasMenu && (hovered || focused || pinned));
+	let more = $state<HTMLButtonElement>();
+	let menuOpen = $state(false);
+	let copyText = $state<string | null>(null);
+	let copyBox = $state<HTMLTextAreaElement>();
 
-	// A pinned (long-pressed) menu closes on a press anywhere but the menu itself.
+	// Keep focus on the row before its focused controls disappear on success.
+	$effect.pre(() => {
+		if (message.deleted && el?.contains(document.activeElement)) el.focus();
+	});
 	$effect(() => {
-		if (!pinned) return;
-		const away = (e: PointerEvent) => {
-			if (!(e.target as Element).closest?.('.menu')) pinned = false;
-		};
-		window.addEventListener('pointerdown', away, true);
-		return () => window.removeEventListener('pointerdown', away, true);
+		if (copyText !== null && copyBox) {
+			copyBox.focus();
+			copyBox.select();
+		}
 	});
 
+	function closeMenu() {
+		menuOpen = false;
+		more?.focus({ preventScroll: true });
+	}
+	async function reply() {
+		const target = message;
+		closeMenu();
+		await tick(); // let a mobile sheet return focus before the composer takes it
+		onReply?.(target);
+	}
+	async function remove() {
+		const target = message;
+		closeMenu();
+		await tick();
+		onDelete?.(target);
+	}
+	async function copy() {
+		const source = message.body;
+		closeMenu();
+		await tick();
+		const copied = await copyToClipboard(source);
+		more?.focus({ preventScroll: true });
+		if (copied) toastStore.show('Copied to clipboard', 'success');
+		else copyText = source;
+	}
 	let author = $derived(message.mine ? 'You' : message.author_agent_key || 'Unknown');
 	let time = $derived(
 		new Date(message.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
@@ -57,37 +77,40 @@
 	let quote = $derived(message.reply_to);
 </script>
 
-<!-- The article is the hover/focus/long-press target for the menu; the menu's own buttons are the interactive controls. -->
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_no_noninteractive_tabindex -->
 <article
 	class="bubble"
 	class:mine={message.mine}
+	class:human={message.author_is_human}
 	class:deleted={message.deleted}
 	id="msg-{message.seq}"
 	data-seq={message.seq}
-	tabindex={hasMenu ? 0 : message.deleted ? -1 : undefined}
+	tabindex={-1}
 	bind:this={el}
 	use:longPress={() => {
-		if (hasMenu) pinned = true;
+		if (!message.deleted) {
+			more?.focus({ preventScroll: true });
+			menuOpen = true;
+		}
 	}}
-	onpointerenter={(e) => (hovered = e.pointerType !== 'touch')}
-	onpointerleave={() => (hovered = false)}
-	onfocusin={(e) => {
-		if (!returning && (e.target as Element).matches(':focus-visible')) focused = true;
-	}}
-	onfocusout={(e) => {
-		if (!el?.contains(e.relatedTarget as Node | null)) focused = false;
-	}}
-	onkeydown={(e) => {
-		if (e.key === 'Escape') pinned = focused = hovered = false;
-	}}
-	oncontextmenu={(e) => {
-		if (pinned) e.preventDefault();
-	}}
+	oncontextmenu={(e) => { if (menuOpen) e.preventDefault(); }}
 >
 	<header class="meta">
-		<span class="author">{author}</span>
-		<time datetime={message.created_at}>{time}</time>
+		<div class="identity">
+			<span class="author">{author}</span>
+			<span>{message.author_is_human ? 'Human' : 'Agent'}</span>
+			<time datetime={message.created_at} title={new Date(message.created_at).toLocaleString()}>{time}</time>
+		</div>
+		{#if !message.deleted}
+			<div class="actions">
+				<button class="more" type="button" bind:this={more} aria-label={`More actions for ${author}, message ${message.seq}`}
+					aria-haspopup="menu" aria-expanded={menuOpen} onclick={() => { more?.focus({ preventScroll: true }); menuOpen = !menuOpen; }}>More</button>
+				<div class="quick-actions">
+					<button type="button" onclick={reply}>Reply</button>
+					<button type="button" onclick={copy}>Copy</button>
+				</div>
+			</div>
+		{/if}
 	</header>
 	{#if message.context_workspace}
 		<p class="from">sent from {message.context_workspace.name}</p>
@@ -108,44 +131,67 @@
 		{/if}
 		<MessageBody body={message.body} {refs} ctxWorkspace={message.context_workspace?.slug} />
 	{/if}
-	{#if menuOpen && onReply && onDelete}
-		<MessageMenu
-			{message}
-			{onReply}
-			{onDelete}
-			onDone={() => {
-				pinned = focused = hovered = false;
-				// The menu is about to unmount: keep focus on the bubble, not the body (r5 H3).
-				// A deleted row keeps tabindex -1, so it still holds focus as the tombstone.
-				returning = true;
-				el?.focus();
-				returning = false;
-			}}
-		/>
-	{/if}
 </article>
+
+{#if !message.deleted}
+	<MessageMenu open={menuOpen} trigger={more} {author} seq={message.seq} {canDelete}
+		onclose={() => (menuOpen = false)} onReply={reply} onCopy={copy} onDelete={remove} />
+{/if}
+<Modal open={copyText !== null} onclose={() => (copyText = null)} ariaLabel="Select and copy this message." maxWidth="440px">
+	<div class="copy-surface">
+		<label for="copy-message-{message.id}">Select and copy this message.</label>
+		<textarea id="copy-message-{message.id}" bind:this={copyBox} readonly value={copyText ?? ''} rows="6"></textarea>
+		<button type="button" onclick={() => (copyText = null)}>Close</button>
+	</div>
+</Modal>
 
 <style>
 	.bubble {
-		max-width: min(36rem, 85%);
-		align-self: flex-start;
+		box-sizing: border-box;
+		width: 100%;
+		min-width: 0;
+		align-self: stretch;
 		padding: var(--space-2) var(--space-3);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-lg);
-		background: var(--bg-secondary);
-		-webkit-touch-callout: none;
+		border-bottom: 1px solid var(--border);
+		background: transparent;
 	}
-	.bubble.mine {
-		align-self: flex-end;
-		background: var(--bg-hover);
-	}
+	.bubble.human { background: var(--bg-hover); }
 	.meta {
 		display: flex;
+		flex-wrap: wrap;
 		gap: var(--space-2);
-		align-items: baseline;
+		align-items: center;
 		font-size: 0.75rem;
 		color: var(--text-secondary);
 	}
+	.identity {
+		display: flex;
+		flex: 1 1 10rem;
+		flex-wrap: wrap;
+		gap: var(--space-2);
+		min-width: 0;
+		overflow-wrap: anywhere;
+	}
+	.actions { position: relative; flex: 0 1 10.5rem; height: 44px; margin-left: auto; }
+	.more { position: absolute; right: 0; top: 0; }
+	.quick-actions { position: absolute; right: 3.5rem; top: 0; display: flex; visibility: hidden; }
+	.bubble:hover .quick-actions, .bubble:focus-within .quick-actions { visibility: visible; }
+	button {
+		min-height: 44px;
+		min-width: 44px;
+		padding: 0 var(--space-2);
+		border: 0;
+		border-radius: var(--radius-sm);
+		background: transparent;
+		color: var(--text-primary);
+		font: inherit;
+		cursor: pointer;
+	}
+	button:hover { background: var(--bg-secondary); }
+	button:focus-visible, textarea:focus-visible { outline: 2px solid var(--text-primary); outline-offset: -2px; }
+	.copy-surface { display: grid; gap: var(--space-3); padding: var(--space-4); }
+	.copy-surface textarea { box-sizing: border-box; width: 100%; resize: vertical; color: var(--text-primary); background: var(--bg-primary); }
+	@media (pointer: coarse) { .quick-actions { display: none; } .actions { flex-basis: 3.5rem; } }
 	.author {
 		font-weight: 600;
 		color: var(--text-primary);
