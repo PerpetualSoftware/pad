@@ -364,7 +364,7 @@ var padItemSchemaParams = []ParamDef{
 		},
 		"required": []any{"old", "new"},
 	}, Description: "patch: the edits, applied in order, all or nothing. Required for: patch."},
-	{Name: "op_key", Type: "string", Description: "patch, create, comment, note, decide: an idempotency key you choose (e.g. a UUID). Retrying the SAME request with the same key returns the first answer instead of applying it again. A key reused for a different request is refused (idempotency_key_reused)."},
+	{Name: "op_key", Type: "string", Description: "patch, create, comment, note, decide: an idempotency key you choose (e.g. a UUID). Retrying the SAME request with the same key returns the first answer instead of applying it again; use it whenever a retry could follow an unclear outcome. A key reused for a different request is refused (idempotency_key_reused)."},
 	{Name: "undo", Type: "string", Description: "patch: invert an earlier patch on this item by its patch_id (instead of edits). Refused, writing nothing (patch_anchor_missing), when the text it changed has changed since; never reverts someone else's later edit."},
 	{Name: "lines", Type: "string", Description: "get: return only these body lines, numbered (\"A-B\", \"A-\" or \"A\"; 1-based), with seq and content_state, for targeting a patch."},
 	// PLAN-3555: the deliberate-overwrite opt-out. Phase 1 changes no outcome;
@@ -405,7 +405,8 @@ Actions:
     Writing 'content' while a browser tab has the item open goes to that live document.
     The response echoes what you SENT with warnings.content_outcome="applied_pending_flush"
     (it describes the write, not the row); a read before a tab saves still returns the
-    PREVIOUS content. That is lag, not a failed write: never re-send, and do not wait in a loop.
+    PREVIOUS content. That is lag, not a failed write: re-read later (get or list with
+    full=true; default lists have no content), never re-send, and do not wait in a loop.
   delete — Archive. Required: ref.
   restore — Restore an archived item. Required: ref.
   get — Read. Required: ref. Optional: lines ("40-80": numbered body lines + seq for anchors).
@@ -418,6 +419,8 @@ Actions:
     your anchor was rewritten, the edit still lands.
     A moved expected_seq does not refuse: the patch applies and returns rebased=true
     with intervening writes (complete=false when some left no record).
+    An open editor applies it to its live document, merging with the typing there;
+    the answer carries content_state="applied_pending_flush".
     Refusals write nothing: patch_anchor_missing / patch_anchor_ambiguous (re-read,
     quote current text); patch_unstable_roundtrip (editor would change unrelated
     content: send a whole-body update); patch_room_open (an older editor cannot apply patches).

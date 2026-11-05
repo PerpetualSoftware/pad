@@ -106,7 +106,7 @@ These examples and reasons accompany the rules kept in the agent-facing tool des
 
 ## Text trimmed for the prompt budget (TASK-4105)
 
-Moved here word for word when schedules and the agenda were added to `pad_item` (v0.107), so the tools/list and initialize payloads stay under the ceilings in `internal/mcp/prompt_budget_test.go`. Each entry gives the words as they were (surrounding text included, so the cut can be placed) and what stands there now. The rules in them still hold; every trimmed description kept its action names, required parameters and safety sentences.
+Moved here word for word when schedules and the agenda were added to `pad_item` (v0.107), so the tools/list and initialize payloads stay under the ceilings in `internal/mcp/prompt_budget_test.go`. Each entry gives the words as they were before the trim (surrounding text included, so the cut can be placed; for `ref` and `remind_at` that already includes this change's own schedule wording) and what stands there now. The rules in them still hold; every trimmed description kept its action names, required parameters and safety sentences.
 
 ### param remind_at
 
@@ -204,18 +204,6 @@ Now:
 starred takes no limit: it returns at most 300, with has_more when more exist.
 ```
 
-### param op_key
-
-Was:
-```text
-returns the first answer instead of applying it again; use it whenever a retry could follow an unclear outcome. A key reused
-```
-
-Now:
-```text
-returns the first answer instead of applying it again. A key reused
-```
-
 ### param undo
 
 Was:
@@ -270,22 +258,9 @@ Now:
     Writing 'content' while a browser tab has the item open goes to that live document.
     The response echoes what you SENT with warnings.content_outcome="applied_pending_flush"
     (it describes the write, not the row); a read before a tab saves still returns the
-    PREVIOUS content. That is lag, not a failed write: never re-send, and do not wait in a loop.
+    PREVIOUS content. That is lag, not a failed write: re-read later (get or list with
+    full=true; default lists have no content), never re-send, and do not wait in a loop.
 
-```
-
-### desc patch editor
-
-Was:
-```text
-    An open editor applies it to its live document, merging with the typing there;
-    the answer carries content_state="applied_pending_flush".
-
-```
-
-Now:
-```text
-(nothing: the text was removed)
 ```
 
 ### desc claim expire
