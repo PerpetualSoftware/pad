@@ -152,8 +152,10 @@ func actionItemScheduleResolve(ctx context.Context, input map[string]any, env Ac
 	if strings.TrimSpace(occ) == "" {
 		return errStructured(name, fmt.Errorf("occurrence_at is required: the RFC3339 instant of the outstanding occurrence, as action=schedule reports it (next_occurrence.at)")), nil
 	}
-	if _, err := time.Parse(time.RFC3339, occ); err != nil {
+	if t, err := time.Parse(time.RFC3339, occ); err != nil {
 		return errStructured(name, fmt.Errorf("occurrence_at %q is not an RFC3339 instant, as action=schedule reports it (next_occurrence.at)", occ)), nil
+	} else if err := wholeSecond("occurrence_at", occ, t); err != nil {
+		return errStructured(name, err), nil
 	}
 	// The optional members must be strings too: stdio would stringify a number
 	// and forward it, the remote mapper would drop it.
@@ -170,8 +172,10 @@ func actionItemScheduleResolve(ctx context.Context, input map[string]any, env Ac
 	case needsUntil && strings.TrimSpace(until) == "":
 		return errStructured(name, fmt.Errorf("until is required to %s: the RFC3339 instant it re-fires or becomes due", state)), nil
 	case needsUntil:
-		if _, err := time.Parse(time.RFC3339, until); err != nil {
+		if t, err := time.Parse(time.RFC3339, until); err != nil {
 			return errStructured(name, fmt.Errorf("until %q is not an RFC3339 instant (2026-11-10T09:00:00Z)", until)), nil
+		} else if err := wholeSecond("until", until, t); err != nil {
+			return errStructured(name, err), nil
 		}
 	case strings.TrimSpace(until) != "":
 		return errStructured(name, fmt.Errorf("until applies to snooze and move only, not %s", state)), nil
@@ -198,9 +202,22 @@ func actionItemAgenda(ctx context.Context, input map[string]any, env ActionEnv) 
 		if strings.TrimSpace(v) == "" {
 			return errStructured("pad_item.agenda", fmt.Errorf("%s is required: an RFC3339 instant (2026-11-09T00:00:00Z); the window is at most 92 days", k)), nil
 		}
-		if _, err := time.Parse(time.RFC3339, v); err != nil {
+		if t, err := time.Parse(time.RFC3339, v); err != nil {
 			return errStructured("pad_item.agenda", fmt.Errorf("%s %q is not an RFC3339 instant (2026-11-09T00:00:00Z)", k, v)), nil
+		} else if err := wholeSecond(k, v, t); err != nil {
+			return errStructured("pad_item.agenda", err), nil
 		}
 	}
 	return env.Dispatch(ctx, []string{"item", "remind", "agenda"}, input)
+}
+
+// wholeSecond refuses an instant with a fraction of a second. The CLI formats
+// instants to the second and the route keeps the fraction, so the same value
+// would land on different seconds on the two transports (an until that fires
+// early, an agenda bound that includes an occurrence on one and not the other).
+func wholeSecond(param, raw string, t time.Time) error {
+	if t.Nanosecond() != 0 {
+		return fmt.Errorf("%s %q has a fraction of a second: give a whole-second instant (2026-11-09T09:00:00Z)", param, raw)
+	}
+	return nil
 }

@@ -691,3 +691,39 @@ func TestTASK4105_ResolveRefusesANonStringComment(t *testing.T) {
 		t.Fatalf("stdio: %s\nremote: %s", textOf(sres), textOf(rres))
 	}
 }
+
+// An instant with a fraction of a second is refused on both transports: the CLI
+// formats to the second and the route keeps the fraction, so the same value
+// would land on different seconds.
+func TestTASK4105_FractionalInstantsAreRefused(t *testing.T) {
+	cases := map[string]struct {
+		action string
+		in     map[string]any
+		want   string
+	}{
+		"snooze until":  {"schedule-resolve", map[string]any{"state": "snooze", "occurrence_at": "2026-11-09T09:00:00Z", "until": "2026-11-09T09:00:00.5Z"}, "until"},
+		"occurrence_at": {"schedule-resolve", map[string]any{"state": "done", "occurrence_at": "2026-11-09T09:00:00.25Z"}, "occurrence_at"},
+		"agenda from":   {"agenda", map[string]any{"from": "2026-11-09T09:00:00.5Z", "to": "2026-11-16T00:00:00Z"}, "from"},
+		"agenda to":     {"agenda", map[string]any{"from": "2026-11-09T00:00:00Z", "to": "2026-11-16T00:00:00.1Z"}, "to"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			in := copyInput(c.in)
+			in["ref"] = "TASK-1"
+			sres, disp := stdioCall(t, c.action, in)
+			rres, seen := remoteCall(t, c.action, withWorkspace(in))
+			if !sres.IsError || !rres.IsError || len(disp.gotPath) != 0 || len(seen) != 0 {
+				t.Fatalf("want both refused before dispatch; stdio=%v/%v remote=%v/%v", sres.IsError, disp.gotPath, rres.IsError, seen)
+			}
+			if !strings.Contains(textOf(sres), "fraction of a second") || !strings.Contains(textOf(sres), c.want) || textOf(sres) != textOf(rres) {
+				t.Fatalf("stdio: %s\nremote: %s", textOf(sres), textOf(rres))
+			}
+		})
+	}
+	t.Run("a whole-second instant still goes through", func(t *testing.T) {
+		in := map[string]any{"ref": "TASK-1", "from": "2026-11-09T00:00:00Z", "to": "2026-11-16T00:00:00Z"}
+		if res, disp := stdioCall(t, "agenda", in); res.IsError || len(disp.gotArgs) == 0 {
+			t.Fatalf("stdio refused or did not dispatch: %s", textOf(res))
+		}
+	})
+}
