@@ -388,18 +388,17 @@ func TestCalendarCapIsOneAndCutsBetweenDays(t *testing.T) {
 func TestCalendarCapSchedulesCountToo(t *testing.T) {
 	t.Parallel()
 	w := newAgendaWorld(t, "tasks")
-	// 495 items dated the 10th and 10 schedules on the 11th: 505 together, over
-	// the one cap, though each kind alone is under it. Day 11 is the cut. (Few
-	// schedules: the agenda's time budget bounds how many one request expands,
-	// and a slow machine must not reach it here.)
+	// 495 items dated the 10th and one daily schedule from the 11th: together
+	// they pass the one cap on the 16th (495 + 1 entry a day, 501 with the 16th),
+	// though each kind alone is under it. The cut is a whole day, so the 11th to
+	// the 15th show. (One schedule: the agenda's time budget bounds how many a
+	// request expands, and a slow machine must not reach it here.)
 	for i := 0; i < 495; i++ {
 		w.item(t, "tasks", fmt.Sprintf("CAS item %03d", i), `{"due_date":"2031-03-10"}`, nil)
 	}
-	for i := 0; i < 10; i++ {
-		w.item(t, "tasks", fmt.Sprintf("CAS sched %03d", i), `{}`, &models.ScheduleCreate{Kind: "check", Dtstart: "2031-03-11T09:00", Tz: "UTC"})
-	}
+	w.item(t, "tasks", "CAS sched", `{}`, &models.ScheduleCreate{Kind: "check", Dtstart: "2031-03-11T09:00", Tz: "UTC", Rrule: "FREQ=DAILY"})
 	m := w.calOK(t, w.owner, "tasks", calMarch)
-	if len(calItems(m)) != 495 || len(entriesOf(m)) != 0 || m["truncated"] != true || m["next_from"] != "2031-03-11" {
+	if len(calItems(m)) != 495 || len(entriesOf(m)) != 5 || m["truncated"] != true || m["next_from"] != "2031-03-16" {
 		t.Fatalf("items %d entries %d truncated=%v next_from=%v", len(calItems(m)), len(entriesOf(m)), m["truncated"], m["next_from"])
 	}
 }
