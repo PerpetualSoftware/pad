@@ -671,6 +671,20 @@
 			}
 			inviteEmail = '';
 			inviteRole = 'editor';
+			// Reload members before the clipboard write: a write that waits on a permission prompt
+			// must not leave the list stale. Its own try, so a failed reload cannot rewrite the
+			// outcome of an invitation that was created (the link is already on screen).
+			try {
+				const memberData = await api.members.list(reqWs);
+				// Check again after the reload: an identity can change during it as
+				// easily as during the first, and this commit is member state.
+				if (!identityHeld(epochAtEntry) || wsSlug !== reqWs) return;
+				members = memberData.members ?? [];
+				invitations = memberData.invitations ?? [];
+				workspaceApps = memberData.apps ?? [];
+			} catch {
+				if (!identityHeld(epochAtEntry) || wsSlug !== reqWs) return;
+			}
 			if (!result.added && result.join_url) {
 				const ok = await copyToClipboard(result.join_url).catch(() => false);
 				if (!identityHeld(epochAtEntry) || wsSlug !== reqWs) return;
@@ -679,14 +693,6 @@
 					type: ok ? 'success' : 'error'
 				};
 			}
-			// Reload members
-			const memberData = await api.members.list(reqWs);
-			// Check again after the reload: an identity can change during it as
-			// easily as during the first, and this commit is member state.
-			if (!identityHeld(epochAtEntry) || wsSlug !== reqWs) return;
-			members = memberData.members ?? [];
-			invitations = memberData.invitations ?? [];
-			workspaceApps = memberData.apps ?? [];
 		} catch (err: unknown) {
 			if (!identityHeld(epochAtEntry) || wsSlug !== reqWs) return;
 			if (isPlanLimitError(err)) {
@@ -702,8 +708,9 @@
 	async function handleCopyInvitation() {
 		if (!pageIdentityHeld() || !createdInvite) return;
 		const epochAtEntry = captureIdentity();
+		const reqWs = wsSlug;
 		const ok = await copyToClipboard(createdInvite.url).catch(() => false);
-		if (!identityHeld(epochAtEntry) || !pageIdentityHeld()) return;
+		if (!identityHeld(epochAtEntry) || !pageIdentityHeld() || wsSlug !== reqWs) return;
 		toastStore.show(ok ? 'Link copied' : 'Couldn’t copy the invitation link. Copy it below and send it to the invitee.', ok ? 'success' : 'error');
 	}
 
@@ -1363,11 +1370,14 @@
 							<li><strong>Editor</strong>: creates and edits items.</li>
 							<li><strong>Viewer</strong>: reads only.</li>
 						</ul>
-						{#if inviteResult}
-							<p class="invite-result" role={inviteResult.type === 'error' ? 'alert' : 'status'} class:invite-success={inviteResult.type === 'success'} class:invite-error={inviteResult.type === 'error'}>
-								{inviteResult.message}
-							</p>
-						{/if}
+						<!-- Mounted before any result exists: a live region created together with its text is often not announced. -->
+						<div class="invite-live" role="status" aria-live="polite">
+							{#if inviteResult}
+								<p class="invite-result" class:invite-success={inviteResult.type === 'success'} class:invite-error={inviteResult.type === 'error'}>
+									{inviteResult.message}
+								</p>
+							{/if}
+						</div>
 						{#if createdInvite}
 							<div class="invite-row created-invite">
 								<input

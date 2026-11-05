@@ -146,7 +146,7 @@ describe('BUG-4335: invitation creation and clipboard feedback', () => {
 		linkField();
 	});
 
-	it('waits for clipboard completion before reporting copy success or refreshing members', async () => {
+	it('reports copy success only after the clipboard write completes, and does not hold the members refresh behind it', async () => {
 		const copy = deferred<boolean>();
 		vi.mocked(copyToClipboard).mockReturnValueOnce(copy.promise);
 		await mount();
@@ -155,10 +155,11 @@ describe('BUG-4335: invitation creation and clipboard feedback', () => {
 		await screen.findByText(CREATED);
 		linkField();
 		expect((screen.getByRole('textbox', { name: 'Email address to invite' }) as HTMLInputElement).value).toBe('');
-		expect(api.members.list).toHaveBeenCalledTimes(1);
+		await waitFor(() => expect(api.members.list).toHaveBeenCalledTimes(2));
+		expect(screen.queryByText(/Link copied/)).toBeNull();
 		copy.resolve(true);
 		await screen.findByText(`${CREATED} Link copied`);
-		await waitFor(() => expect(api.members.list).toHaveBeenCalledTimes(2));
+		expect(api.members.list).toHaveBeenCalledTimes(2);
 	});
 
 	it('clears the link and discards clipboard completion after an identity change', async () => {
@@ -168,15 +169,17 @@ describe('BUG-4335: invitation creation and clipboard feedback', () => {
 		await invite();
 		await waitFor(() => expect(copyToClipboard).toHaveBeenCalledWith(URL));
 		linkField();
-		changeIdentity();
+		// The members refresh already ran (it does not wait for the clipboard); the identity change adds the page's own reload.
 		await waitFor(() => expect(api.members.list).toHaveBeenCalledTimes(2));
+		changeIdentity();
+		await waitFor(() => expect(api.members.list).toHaveBeenCalledTimes(3));
 		await screen.findByRole('textbox', { name: 'Email address to invite' });
 		expect(screen.queryByRole('textbox', { name: 'Invitation link' })).toBeNull();
 		copy.resolve(true);
 		await copy.promise;
 		await tick();
 		expect(document.querySelector('.invite-result')).toBeNull();
-		expect(api.members.list).toHaveBeenCalledTimes(2);
+		expect(api.members.list).toHaveBeenCalledTimes(3);
 	});
 
 	it('discards the retry toast if the identity changes while copying', async () => {
@@ -250,17 +253,17 @@ describe('BUG-4335: invitation creation and clipboard feedback', () => {
 		await screen.findByText('Invitation created for b@x.test.');
 	});
 
-	it('announces the result line politely, and a copy failure as an alert', async () => {
+	it('puts the result line in a live region that exists before the result does', async () => {
 		await mount();
+		const region = document.querySelector('.invite-live');
+		expect(region).not.toBeNull();
+		expect(region!.getAttribute('role')).toBe('status');
+		expect(region!.getAttribute('aria-live')).toBe('polite');
+		expect(region!.textContent?.trim()).toBe('');
 		await invite();
-		const ok = await screen.findByText(`${CREATED} Link copied`);
-		expect(ok.getAttribute('role')).toBe('status');
-		cleanup();
-		vi.mocked(copyToClipboard).mockResolvedValueOnce(false);
-		await mount();
-		await invite();
-		const failed = await screen.findByText(`${CREATED} ${COPY_FAILED}`);
-		expect(failed.getAttribute('role')).toBe('alert');
+		await screen.findByText(`${CREATED} Link copied`);
+		expect(document.querySelector('.invite-live')).toBe(region);
+		expect(region!.textContent).toContain(`${CREATED} Link copied`);
 	});
 
 	it('drops an invite response that lands after the page moved to another workspace', async () => {
@@ -278,6 +281,63 @@ describe('BUG-4335: invitation creation and clipboard feedback', () => {
 		expect(screen.queryByRole('textbox', { name: 'Invitation link' })).toBeNull();
 		expect(screen.queryByText(new RegExp(`Invitation created for ${EMAIL}`))).toBeNull();
 		expect(copyToClipboard).not.toHaveBeenCalled();
+		expect(toastStore.show).not.toHaveBeenCalled();
+	});
+
+	it('keeps the invite outcome and the link when only the members reload fails', async () => {
+		await mount();
+		vi.mocked(api.members.list).mockRejectedValueOnce(new Error('network blip'));
+		await invite();
+		await screen.findByText(`${CREATED} Link copied`);
+		linkField();
+		await waitFor(() => expect(api.members.list).toHaveBeenCalledTimes(2));
+		expect(document.body.textContent).not.toContain('network blip');
+		expect(document.body.textContent).not.toContain('Failed to invite');
+		expect(api.members.invite).toHaveBeenCalledTimes(1);
+	});
+
+	it('reloads the members list without waiting for a clipboard write that has not settled', async () => {
+		const pendingCopy = deferred<boolean>();
+		vi.mocked(copyToClipboard).mockReturnValueOnce(pendingCopy.promise);
+		await mount();
+		await invite();
+		await waitFor(() => expect(api.members.list).toHaveBeenCalledTimes(2));
+		linkField();
+		pendingCopy.resolve(true);
+		await screen.findByText(`${CREATED} Link copied`);
+	});
+
+	it('writes no copy result when the page moved to another workspace during the clipboard write', async () => {
+		const pendingCopy = deferred<boolean>();
+		vi.mocked(copyToClipboard).mockReturnValueOnce(pendingCopy.promise);
+		await mount();
+		await invite();
+		await waitFor(() => expect(api.members.list).toHaveBeenCalledTimes(2));
+		page.params = { username: 'dave', workspace: 'other' };
+		flushSync();
+		await tick();
+		await waitFor(() => expect(vi.mocked(api.members.list).mock.calls.some(([ws]) => ws === 'other')).toBe(true));
+		pendingCopy.resolve(true);
+		for (let i = 0; i < 10; i++) { await Promise.resolve(); await tick(); }
+		expect(screen.queryByText(/Link copied/)).toBeNull();
+		expect(screen.queryByRole('textbox', { name: 'Invitation link' })).toBeNull();
+	});
+
+	it('shows no copy toast when the page moved to another workspace during Copy invitation link', async () => {
+		vi.mocked(copyToClipboard).mockResolvedValueOnce(false);
+		await mount();
+		await invite();
+		await screen.findByText(`${CREATED} ${COPY_FAILED}`);
+		const pendingCopy = deferred<boolean>();
+		vi.mocked(copyToClipboard).mockReturnValueOnce(pendingCopy.promise);
+		await fireEvent.click(screen.getByRole('button', { name: 'Copy invitation link' }));
+		page.params = { username: 'dave', workspace: 'other' };
+		flushSync();
+		await tick();
+		await waitFor(() => expect(vi.mocked(api.members.list).mock.calls.some(([ws]) => ws === 'other')).toBe(true));
+		vi.mocked(toastStore.show).mockClear();
+		pendingCopy.resolve(true);
+		for (let i = 0; i < 10; i++) { await Promise.resolve(); await tick(); }
 		expect(toastStore.show).not.toHaveBeenCalled();
 	});
 });
