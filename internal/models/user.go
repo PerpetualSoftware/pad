@@ -37,9 +37,13 @@ type User struct {
 	LastWriteAt     string `json:"last_write_at,omitempty"`     // Last mutating action (item/comment/attachment); see Store.TouchUserWrite. PLAN-1542 / TASK-1543.
 	// Timezone is the IANA zone the user wants days computed in; nil = never
 	// set (computed in UTC). Always validated by internal/usertz (TASK-4101).
-	Timezone  *string   `json:"timezone"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Timezone *string `json:"timezone"`
+	// ChatEnabled is the user's Chat display preference (TASK-4315): off by
+	// default, on for users who had sent a Chat message before the column
+	// existed. It hides surfaces; it is not access control.
+	ChatEnabled bool      `json:"chat_enabled"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // UserKindHuman and UserKindApp are the values of users.kind.
@@ -161,6 +165,8 @@ type UserUpdate struct {
 	// Timezone is written unconditionally; the caller validates it with
 	// usertz.Validate. Use Store.SetUserTimezoneIfUnset for the conditional write.
 	Timezone *string `json:"timezone,omitempty"`
+	// ChatEnabled sets the Chat display preference (TASK-4315).
+	ChatEnabled *bool `json:"chat_enabled,omitempty"`
 	// ExpectedEpoch, when set with Password, makes the password write
 	// conditional on the account's credential_epoch still being this value:
 	// the epoch the caller's authority (the current password, a reset token)

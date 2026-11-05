@@ -4,6 +4,9 @@ import { uniqueBy, uniqueStrings } from '$lib/utils/unique';
 
 export interface User {
 	timezone?: string | null;
+	// Chat display preference (TASK-4315): per user, off by default. A display
+	// preference only, not access control.
+	chat_enabled?: boolean;
 	id: string;
 	email: string;
 	username: string;
@@ -36,6 +39,7 @@ export interface TOTPDisableResponse {
 
 export interface UserProfileUpdate {
 	timezone?: string;
+	chat_enabled?: boolean;
 	if_unset?: boolean;
 	name?: string;
 	username?: string;

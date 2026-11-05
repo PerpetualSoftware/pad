@@ -236,6 +236,12 @@ export const authStore = {
 		session.user.timezone = timezone;
 	},
 
+	// Mirrors setTimezone: ignored unless the signed-in user is still userId.
+	setChatEnabled(userId: string, enabled: boolean) {
+		if (!session?.user || session.user.id !== userId) return;
+		session.user.chat_enabled = enabled;
+	},
+
 	async load() {
 		if (inflight) return inflight;
 		loading = true;
