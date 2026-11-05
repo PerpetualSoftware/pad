@@ -366,3 +366,38 @@ func everyContentBearingReadDoor(t *testing.T, s *store.Store) {
 		t.Fatal("Search did not return the item; this leg measured nothing")
 	})
 }
+
+// A search list asked to omit the body omits it, like every other list: the
+// full-text path used to select the column regardless of NoContent.
+func TestSearchListHonoursNoContent(t *testing.T) {
+	for _, backend := range []struct {
+		name string
+		open func(*testing.T) *store.Store
+	}{
+		{"SQLite", storetest.NewSQLite},
+		{"Postgres", storetest.NewPostgres},
+	} {
+		t.Run(backend.name, func(t *testing.T) {
+			s := backend.open(t)
+			wsID, _, item := seedStaleItem(t, s)
+			// Control: the same search with the body wanted returns it.
+			with, err := s.ListItems(wsID, models.ItemListParams{Search: "Stale"})
+			if err != nil {
+				t.Fatalf("ListItems(search): %v", err)
+			}
+			if len(with) != 1 || with[0].ID != item.ID || with[0].Content != "stored body" {
+				t.Fatalf("control: search without NoContent = %+v, want the item with its body", with)
+			}
+			without, err := s.ListItems(wsID, models.ItemListParams{Search: "Stale", NoContent: true})
+			if err != nil {
+				t.Fatalf("ListItems(search, NoContent): %v", err)
+			}
+			if len(without) != 1 || without[0].ID != item.ID {
+				t.Fatalf("search with NoContent = %+v, want the one item", without)
+			}
+			if without[0].Content != "" || without[0].ContentState != "" {
+				t.Errorf("search with NoContent returned content %q / state %q", without[0].Content, without[0].ContentState)
+			}
+		})
+	}
+}

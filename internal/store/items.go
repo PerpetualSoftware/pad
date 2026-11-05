@@ -2076,13 +2076,20 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 		archivedClause = ""
 	}
 
+	// As in ListItems: NoContent swaps the body and its marker for empty
+	// literals together, so a row never claims a stale body it does not carry.
+	contentCol, stateCol := "i.content", contentStateSQL
+	if params.NoContent {
+		contentCol, stateCol = "''", "''"
+	}
+
 	if s.dialect.Driver() == DriverPostgres {
 		// PostgreSQL: search_vector lives on the items table (aliased as "i").
 		ftsMatch := s.dialect.FTSMatch("i", "search_vector")
 		ftsRank = s.dialect.FTSRank("i", "search_vector")
 
 		query = fmt.Sprintf(`
-			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, `+contentStateSQL+`, i.fields, i.tags,
+			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, `+contentCol+`, `+stateCol+`, i.fields, i.tags,
 			       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 			       i.created_by, i.last_modified_by, i.source,
 			       i.item_number, i.seq, i.created_at, i.updated_at,
@@ -2108,7 +2115,7 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 		ftsRank = s.dialect.FTSRank("items_fts", "search_vector")
 
 		query = fmt.Sprintf(`
-			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, `+contentStateSQL+`, i.fields, i.tags,
+			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, `+contentCol+`, `+stateCol+`, i.fields, i.tags,
 			       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 			       i.created_by, i.last_modified_by, i.source,
 			       i.item_number, i.seq, i.created_at, i.updated_at,
