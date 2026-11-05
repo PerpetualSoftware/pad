@@ -26,6 +26,9 @@ const (
 	CalendarCodeUnknownField = "unknown_field"
 	CalendarCodeNotDate      = "not_date"
 	CalendarCodeConfig       = "config"
+	// CalendarCodeUnsupportedKey: a declared date field whose key the store
+	// cannot read (it has a character outside letters, digits, _ and -).
+	CalendarCodeUnsupportedKey = "unsupported_field_key"
 )
 
 // CalendarConfigError is a refusal naming the offending field.
@@ -47,6 +50,10 @@ func IsCalendarBuiltinDateField(key string) bool {
 	return false
 }
 
+func unsupportedKey(param, key string) *CalendarConfigError {
+	return &CalendarConfigError{Field: param, Code: CalendarCodeUnsupportedKey, Message: fmt.Sprintf("%s %q cannot be used by a calendar: a field key may only have letters, digits, _ and -", param, key)}
+}
+
 // ValidateCalendarFields checks a calendar's date_field and end_field against
 // the collection's schema. date_field is required: a schema date field or a
 // built-in. end_field is optional: a schema date field only.
@@ -65,6 +72,8 @@ func ValidateCalendarFields(dateField, endField string, schema CollectionSchema)
 	if !IsCalendarBuiltinDateField(dateField) {
 		found, typ := dateType(dateField)
 		switch {
+		case found && typ == "date" && !IsSafeFieldKey(dateField):
+			return unsupportedKey("date_field", dateField)
 		case !found:
 			return &CalendarConfigError{Field: "date_field", Code: CalendarCodeUnknownField, Message: fmt.Sprintf("date_field %q is not a field of this collection", dateField)}
 		case typ != "date":
@@ -74,6 +83,8 @@ func ValidateCalendarFields(dateField, endField string, schema CollectionSchema)
 	if endField != "" {
 		found, typ := dateType(endField)
 		switch {
+		case found && typ == "date" && !IsSafeFieldKey(endField):
+			return unsupportedKey("end_field", endField)
 		case !found:
 			return &CalendarConfigError{Field: "end_field", Code: CalendarCodeUnknownField, Message: fmt.Sprintf("end_field %q is not a field of this collection", endField)}
 		case typ != "date":

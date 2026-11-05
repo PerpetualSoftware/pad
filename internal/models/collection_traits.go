@@ -144,11 +144,11 @@ func (t CollectionTraits) BootstrapIncludeForKey(key string) *BootstrapInclude {
 // JSON object nor a JSON-encoded string. Mirrors ErrInvalidSettingsType.
 var ErrInvalidTraitsType = errors.New(`"traits" must be a JSON object or a JSON-encoded string`)
 
-// isStoreSafeFieldKey mirrors the item store's field-key sanitizer
-// (store.isValidFieldKey). Duplicated rather than imported because models must
-// not depend on store; the two are pinned together by
-// TestFilterKeyRuleMatchesStoreSanitizer.
-func isStoreSafeFieldKey(key string) bool {
+// IsSafeFieldKey is the one rule for a field name the item store will put into
+// a JSON path: non-empty, and only letters, digits, underscore and hyphen
+// (runes, so non-ASCII is refused). The store's sanitizer calls this, so a
+// declaration validated here cannot be one the store silently discards.
+func IsSafeFieldKey(key string) bool {
 	if key == "" {
 		return false
 	}
@@ -245,7 +245,7 @@ func (t CollectionTraits) Validate() error {
 			// nothing, so the payload is empty rather than unfiltered. Not
 			// rejected here — a collection may legitimately declare a filter
 			// on a field its items don't all carry.)
-			if !isStoreSafeFieldKey(k) {
+			if !IsSafeFieldKey(k) {
 				return fmt.Errorf("bootstrap_include[%d]: filter key %q must be alphanumeric with underscores or hyphens; the item store drops keys it cannot sanitize, which would silently apply NO filter", i, k)
 			}
 		}

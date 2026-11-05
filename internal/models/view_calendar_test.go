@@ -32,3 +32,22 @@ func TestValidateCalendarViewConfig(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateCalendarFieldsRefusesAKeyTheStoreCannotRead(t *testing.T) {
+	schema := CollectionSchema{Fields: []FieldDef{
+		{Key: "start date", Type: "date"}, {Key: "due_date", Type: "date"}, {Key: "état", Type: "date"},
+	}}
+	for name, c := range map[string]struct{ date, end, field string }{
+		"date_field space":   {"start date", "", "date_field"},
+		"end_field space":    {"due_date", "start date", "end_field"},
+		"date_field unicode": {"état", "", "date_field"},
+	} {
+		err := ValidateCalendarFields(c.date, c.end, schema)
+		if err == nil || err.Field != c.field || err.Code != CalendarCodeUnsupportedKey {
+			t.Errorf("%s: %+v, want %s/%s", name, err, c.field, CalendarCodeUnsupportedKey)
+		}
+	}
+	if err := ValidateCalendarFields("due_date", "", schema); err != nil {
+		t.Errorf("plain key refused: %+v", err)
+	}
+}
