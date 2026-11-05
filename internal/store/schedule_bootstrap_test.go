@@ -204,16 +204,51 @@ func TestBootstrapAgendaAllDayByDate(t *testing.T) {
 	}
 }
 
-// Ended schedules, done items and a future occurrence are not on the agenda.
+// A resolved one-shot (it ended), a future occurrence and an item that is done
+// are not on the agenda; the one open, past occurrence beside them is.
 func TestBootstrapAgendaLeavesOutTheRest(t *testing.T) {
 	t.Parallel()
 	f := newBootFixture(t)
 	f.mkFor(t, f.me.ID, models.ScheduleCreate{Kind: "check", Dtstart: "2026-11-02T09:00", Tz: "UTC"}, "2026-10-28T00:00:00Z")
 	over, _ := f.mkFor(t, f.me.ID, models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-28T09:00", Tz: "UTC"}, "2026-10-28T00:00:00Z")
 	f.mustResolve(t, over, ResolveInput{OccurrenceAt: rt("2026-10-28T09:00:00Z"), State: "done", Actor: "user"}, "2026-10-29T08:00:00Z")
+	archived, _ := f.mkFor(t, f.me.ID, models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-28T09:00", Tz: "UTC"}, "2026-10-28T00:00:00Z")
+	f.exec(t, `UPDATE items SET deleted_at = ? WHERE id = ?`, "2026-10-28T10:00:00Z", archived.ID)
+	open, _ := f.mkFor(t, f.me.ID, models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-28T09:00", Tz: "UTC"}, "2026-10-28T00:00:00Z")
+
 	set := f.read(t, false, time.UTC, "2026-10-29T12:00:00Z")
-	if len(set.DueToday)+len(set.Carried)+len(set.Stale) != 0 {
-		t.Fatalf("got %v %v %v, want nothing", refsOf(set.DueToday), refsOf(set.Carried), refsOf(set.Stale))
+	if got := refsOf(set.Carried); len(got) != 1 || got[0] != open.Ref || len(set.DueToday)+len(set.Stale) != 0 {
+		t.Fatalf("carried %v, due today %v, stale %v: want only %s carried", got, refsOf(set.DueToday), refsOf(set.Stale), open.Ref)
+	}
+}
+
+// A restricted caller's scope bounds the agenda: a collection they cannot see,
+// or an empty grant, lists nothing.
+func TestBootstrapAgendaRespectsScope(t *testing.T) {
+	t.Parallel()
+	f := newBootFixture(t)
+	item, _ := f.mkFor(t, f.me.ID, models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-28T09:00", Tz: "UTC"}, "2026-10-28T00:00:00Z")
+	read := func(scope PendingReminderScope) int {
+		set, err := f.s.BootstrapAgenda(BootstrapAgendaParams{WorkspaceID: f.ws.ID, UserID: f.me.ID, Scope: scope, Loc: time.UTC, Now: rt("2026-10-29T12:00:00Z")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(set.Carried)
+	}
+	if got := read(PendingReminderScope{}); got != 1 {
+		t.Fatalf("unrestricted = %d, want 1", got)
+	}
+	if got := read(PendingReminderScope{CollectionIDs: []string{item.CollectionID}}); got != 1 {
+		t.Errorf("its own collection = %d, want 1", got)
+	}
+	if got := read(PendingReminderScope{CollectionIDs: []string{"not-a-collection"}}); got != 0 {
+		t.Errorf("another collection = %d, want 0", got)
+	}
+	if got := read(PendingReminderScope{CollectionIDs: []string{}}); got != 0 {
+		t.Errorf("no visible collection = %d, want 0", got)
+	}
+	if got := read(PendingReminderScope{CollectionIDs: []string{"not-a-collection"}, ItemIDs: []string{item.ID}}); got != 1 {
+		t.Errorf("a granted item = %d, want 1", got)
 	}
 }
 

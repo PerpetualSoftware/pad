@@ -200,8 +200,45 @@ func actionItemScheduleResolve(ctx context.Context, input map[string]any, env Ac
 
 // actionItemAgenda handles pad_item.action=agenda. from and to are required
 // RFC3339 instants on both transports (the CLI also takes a date and a day
-// count; the route takes neither).
+// count; the route takes neither). With stale=true the window is replaced by the
+// caller's occurrences unresolved for more than 14 days (TASK-4237): to is
+// refused, from (optional) resumes a long list, and the stale flag itself is
+// validated here, once, so stdio and /mcp read it the same way.
 func actionItemAgenda(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error) {
+	stale := false
+	if v, present := input["stale"]; present && v != nil {
+		b, ok := v.(bool)
+		if !ok {
+			return errStructured("pad_item.agenda", fmt.Errorf("stale must be a boolean, got %T", v)), nil
+		}
+		stale = b
+	}
+	if stale {
+		if v, present := input["to"]; present && v != nil {
+			return errStructured("pad_item.agenda", fmt.Errorf("to is not allowed with stale: it lists everything unresolved for more than 14 days; pass from to resume a long list")), nil
+		}
+		in := copyInputMap(input)
+		delete(in, "to")
+		if v, present := in["from"]; present {
+			from, isString := v.(string)
+			switch {
+			case v == nil || (isString && strings.TrimSpace(from) == ""):
+				delete(in, "from") // not given, on both transports
+			case !isString:
+				return errStructured("pad_item.agenda", fmt.Errorf("from must be a string, got %T", v)), nil
+			default:
+				if t, err := time.Parse(time.RFC3339, from); err != nil {
+					return errStructured("pad_item.agenda", fmt.Errorf("from %q is not an RFC3339 instant (2026-11-09T00:00:00Z)", from)), nil
+				} else if err := wholeSecond("from", from, t); err != nil {
+					return errStructured("pad_item.agenda", err), nil
+				}
+			}
+		}
+		if err := agendaTzIsText(input); err != nil {
+			return errStructured("pad_item.agenda", err), nil
+		}
+		return env.Dispatch(ctx, []string{"item", "remind", "agenda"}, in)
+	}
 	for _, k := range []string{"from", "to"} {
 		v, _ := input[k].(string)
 		if strings.TrimSpace(v) == "" {
@@ -213,14 +250,34 @@ func actionItemAgenda(ctx context.Context, input map[string]any, env ActionEnv) 
 			return errStructured("pad_item.agenda", err), nil
 		}
 	}
-	// tz is the only optional member: a non-string would be dropped by the
-	// route's query mapper and sent as text by the CLI.
+	if err := agendaTzIsText(input); err != nil {
+		return errStructured("pad_item.agenda", err), nil
+	}
+	// A stale of false is not sent: stdio would pass --stale=false and the route
+	// a "false" the server rejects.
+	in := copyInputMap(input)
+	delete(in, "stale")
+	return env.Dispatch(ctx, []string{"item", "remind", "agenda"}, in)
+}
+
+// agendaTzIsText refuses a non-string tz: tz is the only other optional member,
+// and a non-string would be dropped by the route's query mapper and sent as text
+// by the CLI.
+func agendaTzIsText(input map[string]any) error {
 	if v, present := input["tz"]; present && v != nil {
 		if _, ok := v.(string); !ok {
-			return errStructured("pad_item.agenda", fmt.Errorf("tz must be a string, got %T", v)), nil
+			return fmt.Errorf("tz must be a string, got %T", v)
 		}
 	}
-	return env.Dispatch(ctx, []string{"item", "remind", "agenda"}, input)
+	return nil
+}
+
+func copyInputMap(in map[string]any) map[string]any {
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 // wholeSecond refuses an instant with a fraction of a second. The CLI formats

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -96,6 +97,7 @@ func printBootstrapMarkdown(raw []byte) error {
 			Trigger string `json:"trigger"`
 			Role    string `json:"role"`
 		} `json:"convention_index"`
+		Agenda    *bootstrapAgendaView `json:"agenda"`
 		Playbooks []struct {
 			Ref            string `json:"ref"`
 			Title          string `json:"title"`
@@ -115,6 +117,8 @@ func printBootstrapMarkdown(raw []byte) error {
 	} else {
 		fmt.Println()
 	}
+
+	printBootstrapAgenda(b.Agenda)
 
 	fmt.Printf("## Collections (%d)\n", len(b.Collections))
 	for _, c := range b.Collections {
@@ -179,6 +183,78 @@ func printBootstrapMarkdown(raw []byte) error {
 	// surfaces cannot word this differently.
 	warnStalePlaybookSummaries(stalePlaybookSummaries)
 	return nil
+}
+
+// bootstrapAgendaView is the bootstrap's `agenda` section (TASK-4237).
+type bootstrapAgendaView struct {
+	Tz                string               `json:"tz"`
+	Today             string               `json:"today"`
+	Note              string               `json:"note"`
+	DueToday          []bootstrapAgendaRow `json:"due_today"`
+	DueTodayMoreCount int                  `json:"due_today_more_count"`
+	Carried           []bootstrapAgendaRow `json:"carried"`
+	CarriedMoreCount  int                  `json:"carried_more_count"`
+	CarriedMoreHint   string               `json:"carried_more_hint"`
+	StaleCount        int                  `json:"stale_count"`
+	StaleHint         string               `json:"stale_hint"`
+	Truncated         bool                 `json:"truncated"`
+}
+
+type bootstrapAgendaRow struct {
+	Ref         string `json:"ref"`
+	Title       string `json:"title"`
+	At          string `json:"at"`
+	AllDay      bool   `json:"all_day"`
+	Kind        string `json:"kind"`
+	MissedCount int    `json:"missed_count"`
+}
+
+// printBootstrapAgenda renders the agenda section; nothing when it is absent.
+func printBootstrapAgenda(a *bootstrapAgendaView) {
+	if a == nil {
+		return
+	}
+	row := func(r bootstrapAgendaRow) {
+		at := r.At
+		if t, err := time.Parse(time.RFC3339, r.At); err == nil {
+			at = t.Format("2006-01-02 15:04 MST")
+			if r.AllDay {
+				at = t.Format("2006-01-02") + " all day"
+			}
+		}
+		missed := ""
+		if r.MissedCount > 0 {
+			missed = fmt.Sprintf(", missed %d", r.MissedCount)
+		}
+		fmt.Printf("- [%s] %s — %s (%s%s)\n", r.Ref, r.Title, at, r.Kind, missed)
+	}
+	fmt.Printf("## Agenda (%s, %s)\n", a.Today, a.Tz)
+	if a.Note != "" {
+		fmt.Println(a.Note)
+	}
+	if len(a.DueToday) > 0 {
+		fmt.Println("Due today:")
+		for _, r := range a.DueToday {
+			row(r)
+		}
+		if a.DueTodayMoreCount > 0 {
+			fmt.Printf("+%d more due today: pad item remind agenda\n", a.DueTodayMoreCount)
+		}
+	}
+	if len(a.Carried) > 0 {
+		fmt.Println("Carried (unresolved, oldest first):")
+		for _, r := range a.Carried {
+			row(r)
+		}
+		if a.CarriedMoreCount > 0 {
+			fmt.Printf("+%d more carried: %s\n", a.CarriedMoreCount, a.CarriedMoreHint)
+		}
+	}
+	if a.StaleCount > 0 {
+		fmt.Printf("stale: %d items — %s\n", a.StaleCount, a.StaleHint)
+	}
+	fmt.Println("Resolve with: pad item remind done|skip|move <ref> (move needs --until and a reason)")
+	fmt.Println()
 }
 
 func defaultIfEmpty(v, fallback string) string {
