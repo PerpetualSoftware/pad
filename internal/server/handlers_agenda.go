@@ -25,7 +25,7 @@ const (
 )
 
 type agendaEntry struct {
-	Type        string `json:"type"` // schedule | date
+	Type        string `json:"type"` // schedule | date | created | completed
 	At          string `json:"at"`
 	Day         string `json:"day"`
 	Wall        string `json:"wall,omitempty"`
@@ -49,13 +49,17 @@ type agendaEntry struct {
 	MissedCount int    `json:"missed_count,omitempty"`
 	Stale       bool   `json:"stale,omitempty"`
 
-	instant time.Time // sort key, with Type and ItemRef
+	Workspace     string `json:"workspace,omitempty"`
+	WorkspaceName string `json:"workspace_name,omitempty"`
+
+	instant time.Time // sort key, with Type, Workspace, ItemRef and subKey
 	subKey  string
 }
 
 type agendaUnavailable struct {
-	ItemRef string `json:"item_ref"`
-	Code    string `json:"code"`
+	ItemRef   string `json:"item_ref"`
+	Code      string `json:"code"`
+	Workspace string `json:"workspace,omitempty"`
 }
 
 // agendaUnexpanded names a schedule the window could not be expanded for (a
@@ -68,6 +72,7 @@ type agendaUnexpanded struct {
 	Kind       string `json:"kind,omitempty"`
 	Audience   string `json:"audience,omitempty"`
 	Reason     string `json:"reason"` // scan_limit
+	Workspace  string `json:"workspace,omitempty"`
 }
 
 type agendaResponse struct {
@@ -139,7 +144,6 @@ func (s *Server) handleGetAgenda(w http.ResponseWriter, r *http.Request) {
 	} else {
 		note = usertz.Note(zone)
 	}
-	loc := zone.Loc
 
 	// The dashboard's visibility, applied in SQL before any bound.
 	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
@@ -157,38 +161,74 @@ func (s *Server) handleGetAgenda(w http.ResponseWriter, r *http.Request) {
 		scope = store.PendingReminderScope{CollectionIDs: fullColl, ItemIDs: granted}
 	}
 
-	now := time.Now()
-	resp := agendaResponse{From: from.Format(time.RFC3339), To: to.Format(time.RFC3339), Tz: zone.Name, TimezoneNote: note, Entries: []agendaEntry{}}
-	schedules, more, err := s.store.ListSchedulesForAgenda(workspaceID, scope, from, to, agendaMaxScan)
-	if err != nil {
+	run := s.newAgendaRead(from, to, zone, note)
+	if err := s.appendWorkspaceAgenda(run, workspaceID, scope); err != nil {
 		writeInternalError(w, err)
 		return
 	}
-	resp.Truncated = more
-	// timeCut is the earliest instant a time-ordered cut stopped at; setCut is
-	// set by a cut that is not ordered by time (the schedule scan, the time
-	// budget, the dated half), which no instant can describe: next_from is then
-	// omitted and the client narrows the window or filters (TASK-4236).
-	var timeCut time.Time
-	setCut := more
-	deadline := now.Add(agendaBudget)
+	run.finish()
+	writeJSON(w, http.StatusOK, run.response)
+}
+
+// agendaRead holds request-wide bounds and cuts shared by both agenda doors.
+type agendaRead struct {
+	response                agendaResponse
+	from, to, now, deadline time.Time
+	loc                     *time.Location
+	remaining               int
+	scanCut                 bool
+	// A set cut cannot promise a resume instant. A time cut can.
+	setCut  bool
+	timeCut time.Time
+}
+
+func (s *Server) newAgendaRead(from, to time.Time, zone usertz.Zone, note string) *agendaRead {
+	now := s.agendaNow()
+	limit := agendaMaxScan
+	if s.agendaScanLimit > 0 {
+		limit = min(limit, s.agendaScanLimit)
+	}
+	return &agendaRead{
+		response: agendaResponse{From: from.Format(time.RFC3339), To: to.Format(time.RFC3339), Tz: zone.Name, TimezoneNote: note, Entries: []agendaEntry{}},
+		from:     from, to: to, now: now, deadline: now.Add(agendaBudget), loc: zone.Loc, remaining: limit,
+	}
+}
+
+// appendWorkspaceAgenda is the single schedule expansion and dated-item path.
+func (s *Server) appendWorkspaceAgenda(run *agendaRead, workspaceID string, scope store.PendingReminderScope) error {
+	resp := &run.response
+	from, to, now, loc := run.from, run.to, run.now, run.loc
+
+	var schedules []store.AgendaSchedule
+	if !run.scanCut {
+		var more bool
+		var err error
+		schedules, more, err = s.store.ListSchedulesForAgenda(workspaceID, scope, from, to, run.remaining)
+		if err != nil {
+			return err
+		}
+		run.remaining -= len(schedules)
+		run.scanCut = more
+		resp.Truncated = resp.Truncated || more
+		run.setCut = run.setCut || more
+	}
+
 	for _, as := range schedules {
-		if time.Now().After(deadline) {
-			resp.Truncated, setCut = true, true
+		if s.agendaNow().After(run.deadline) {
+			resp.Truncated, run.setCut = true, true
 			break
 		}
 		sc := as.Schedule
 		x, err := s.store.ExpandAgendaCut(sc, loc, from, to, now)
 		if err != nil {
-			writeInternalError(w, err)
-			return
+			return err
 		}
 		es, cut, unavailable := x.Entries, x.Truncated, x.Unavailable
 		if unavailable != "" {
 			resp.Unavailable = append(resp.Unavailable, agendaUnavailable{ItemRef: as.ItemRef, Code: unavailable})
 		}
 		if x.Unpromised {
-			setCut = true
+			run.setCut = true
 		}
 		if x.Unexpanded {
 			resp.Unexpanded = append(resp.Unexpanded, agendaUnexpanded{
@@ -196,8 +236,8 @@ func (s *Server) handleGetAgenda(w http.ResponseWriter, r *http.Request) {
 				Kind: sc.Kind, Audience: sc.Audience, Reason: "scan_limit",
 			})
 		}
-		if !x.NextFrom.IsZero() && (timeCut.IsZero() || x.NextFrom.Before(timeCut)) {
-			timeCut = x.NextFrom
+		if !x.NextFrom.IsZero() && (run.timeCut.IsZero() || x.NextFrom.Before(run.timeCut)) {
+			run.timeCut = x.NextFrom
 		}
 		resp.Truncated = resp.Truncated || cut
 		for _, e := range es {
@@ -226,11 +266,10 @@ func (s *Server) handleGetAgenda(w http.ResponseWriter, r *http.Request) {
 		Limit:           agendaMaxEntries + 1,
 	})
 	if err != nil {
-		writeInternalError(w, err)
-		return
+		return err
 	}
 	resp.Truncated = resp.Truncated || len(items) > agendaMaxEntries
-	setCut = setCut || len(items) > agendaMaxEntries
+	run.setCut = run.setCut || len(items) > agendaMaxEntries
 	today := overdueToday(now.In(loc))
 	for _, it := range items {
 		ref := it.Ref
@@ -255,13 +294,35 @@ func (s *Server) handleGetAgenda(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	return nil
+}
+
+func agendaTypeOrder(kind string) int {
+	switch kind {
+	case "schedule":
+		return 0
+	case "date":
+		return 1
+	case "created":
+		return 2
+	default:
+		return 3
+	}
+}
+
+func (run *agendaRead) finish() {
+	resp := &run.response
+	from, to := run.from, run.to
+
 	sort.SliceStable(resp.Entries, func(i, j int) bool {
 		a, b := resp.Entries[i], resp.Entries[j]
 		switch {
 		case !a.instant.Equal(b.instant):
 			return a.instant.Before(b.instant)
 		case a.Type != b.Type:
-			return a.Type == "schedule"
+			return agendaTypeOrder(a.Type) < agendaTypeOrder(b.Type)
+		case a.Workspace != b.Workspace:
+			return a.Workspace < b.Workspace
 		case a.ItemRef != b.ItemRef:
 			return a.ItemRef < b.ItemRef
 		}
@@ -269,12 +330,12 @@ func (s *Server) handleGetAgenda(w http.ResponseWriter, r *http.Request) {
 	})
 	if len(resp.Entries) > agendaMaxEntries {
 		// Entries are in time order, so the first one not shown is where a client
-		// resumes, when it is a schedule entry. A dated entry is selected by its
-		// calendar day, not by instant, so a cut on one promises nothing.
+		// resumes, when it is a schedule or item event. A dated entry is selected
+		// by calendar day, not instant, so a cut on one promises nothing.
 		if cut := resp.Entries[agendaMaxEntries]; cut.Type == "date" {
-			setCut = true
-		} else if timeCut.IsZero() || cut.instant.Before(timeCut) {
-			timeCut = cut.instant
+			run.setCut = true
+		} else if run.timeCut.IsZero() || cut.instant.Before(run.timeCut) {
+			run.timeCut = cut.instant
 		}
 		resp.Entries, resp.Truncated = resp.Entries[:agendaMaxEntries], true
 	}
@@ -282,15 +343,15 @@ func (s *Server) handleGetAgenda(w http.ResponseWriter, r *http.Request) {
 	// emitted when a cut that no instant describes also fired. A schedule that
 	// could not be expanded at all resumes at the window's end.
 	switch {
-	case setCut:
-	case !timeCut.IsZero():
+	case run.setCut:
+	case !run.timeCut.IsZero():
 		// A resume point must move the client forward and stay inside the window
 		// it asked for; one that does not promises nothing.
-		if timeCut.After(to) {
-			timeCut = to
+		if run.timeCut.After(to) {
+			run.timeCut = to
 		}
-		if timeCut.After(from) {
-			resp.NextFrom = timeCut.UTC().Format(time.RFC3339)
+		if run.timeCut.After(from) {
+			resp.NextFrom = run.timeCut.UTC().Format(time.RFC3339)
 		}
 	case len(resp.Unexpanded) > 0:
 		resp.NextFrom = to.UTC().Format(time.RFC3339)
@@ -298,5 +359,4 @@ func (s *Server) handleGetAgenda(w http.ResponseWriter, r *http.Request) {
 	if len(resp.Unexpanded) > 0 {
 		resp.Truncated = true
 	}
-	writeJSON(w, http.StatusOK, resp)
 }

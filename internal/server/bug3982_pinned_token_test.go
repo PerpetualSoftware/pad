@@ -248,6 +248,7 @@ var pinnedAllowedGlobalRoutes = map[string]bool{
 	"GET /api/v1/invitations/{code}/preview":           true,
 	"GET /api/v1/library/entry":                        true,
 	"GET /api/v1/mcp/tool-surface":                     true,
+	"GET /api/v1/me/agenda":                            true,
 	"GET /api/v1/me/needs":                             true,
 	"GET /api/v1/plan-limits":                          true,
 	"GET /api/v1/playbook-library":                     true,

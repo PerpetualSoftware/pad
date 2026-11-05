@@ -67,7 +67,7 @@ func (s *Store) ListSchedulesForAgenda(workspaceID string, scope PendingReminder
 		out = out[:limit]
 	}
 	if len(out) == 0 {
-		return nil, false, nil
+		return nil, truncated, nil
 	}
 	if err := s.fillAgendaItemFacts(out); err != nil {
 		return nil, false, err

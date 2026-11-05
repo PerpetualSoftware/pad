@@ -710,7 +710,7 @@ func runStaleAgenda(cmd *cobra.Command, from, to string, daysSet bool, tz string
 				due = t.Format("2006-01-02") + " all day"
 			}
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\n", due, e.Ref, e.Title, e.Kind, e.MissedCount)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\n", due, e.Ref, strings.Join(strings.Fields(e.Title), " "), e.Kind, e.MissedCount)
 	}
 	_ = w.Flush()
 	if resp.Truncated {

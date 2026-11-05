@@ -17,13 +17,13 @@ func TestMeAgendaBudgetIsRequestWide(t *testing.T) {
 	calls := 0
 	w.srv.agendaClock = func() time.Time {
 		calls++
-		if calls > 3 {
+		if calls > 5 {
 			return clock.Add(2 * time.Second)
 		}
 		return clock
 	}
 	m := meAgendaOK(t, w, w.owner, agendaWindow)
-	if m["truncated"] != true || m["next_from"] != nil || len(entriesOf(m)) > 1 {
+	if m["truncated"] != true || m["next_from"] != nil || len(entriesOf(m)) != 1 {
 		t.Fatalf("request budget = %v", m)
 	}
 }
