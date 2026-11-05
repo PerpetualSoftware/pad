@@ -155,7 +155,10 @@ func actionItemScheduleResolve(ctx context.Context, input map[string]any, env Ac
 	if _, err := time.Parse(time.RFC3339, occ); err != nil {
 		return errStructured(name, fmt.Errorf("occurrence_at %q is not an RFC3339 instant, as action=schedule reports it (next_occurrence.at)", occ)), nil
 	}
-	until, _ := input["until"].(string)
+	until, untilIsString := input["until"].(string)
+	if v, present := input["until"]; present && v != nil && !untilIsString {
+		return errStructured(name, fmt.Errorf("until must be a string, got %T", v)), nil
+	}
 	needsUntil := state == "snooze" || state == "move"
 	switch {
 	case needsUntil && strings.TrimSpace(until) == "":

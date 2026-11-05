@@ -660,3 +660,20 @@ func TestTASK4105_SchedulePrechecksAgreeAcrossTransports(t *testing.T) {
 		}
 	})
 }
+
+// A non-string until is refused for every state, not read as absent.
+func TestTASK4105_ResolveRefusesANonStringUntil(t *testing.T) {
+	for _, state := range []string{"done", "skip", "snooze", "move"} {
+		t.Run(state, func(t *testing.T) {
+			in := map[string]any{"ref": "TASK-1", "state": state, "occurrence_at": "2026-11-09T09:00:00Z", "until": 123.0}
+			sres, disp := stdioCall(t, "schedule-resolve", in)
+			rres, seen := remoteCall(t, "schedule-resolve", withWorkspace(in))
+			if !sres.IsError || !rres.IsError || len(disp.gotPath) != 0 || len(seen) != 0 {
+				t.Fatalf("want both refused before dispatch; stdio=%v/%v remote=%v/%v", sres.IsError, disp.gotPath, rres.IsError, seen)
+			}
+			if !strings.Contains(textOf(sres), "until must be a string") || textOf(sres) != textOf(rres) {
+				t.Fatalf("stdio: %s\nremote: %s", textOf(sres), textOf(rres))
+			}
+		})
+	}
+}
