@@ -168,8 +168,4 @@ Actions:
                permanently purged. No params. Read-only.
   restore    — Un-soft-delete a workspace by slug, provided it is still inside
                the restore window. Owner-only. Mutating but non-destructive.
-               Required: slug.
-
-Use pad_workspace when an agent needs to discover, manage membership, audit
-workspace activity, recover a soft-deleted workspace, or bring a new/additional
-workspace into this connection. For item-level operations use pad_item.`
+               Required: slug.`

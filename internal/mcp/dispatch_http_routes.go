@@ -462,10 +462,26 @@ func init() {
 		// store.ResolveItem, which accepts UUIDs, slugs and issue refs.
 		// `item ack` addresses the REMINDER instead: an item can carry
 		// several, so the id is the only thing that names one.
-		"item remind": routeSpec{
-			method:       http.MethodPost,
-			pathTemplate: "/api/v1/workspaces/{workspace}/items/{ref}/reminders",
-			bodyKeys:     []string{"remind_at"},
+		// TASK-4105: with a schedule parameter it creates a schedule instead
+		// (dispatch_http_schedule.go); without one it is the route it always was.
+		"item remind": mapItemRemind,
+		"item remind show": routeSpec{
+			method:       http.MethodGet,
+			pathTemplate: itemSchedulePathTemplate,
+		}.toRouteMapper(),
+		"item remind edit": mapItemScheduleEdit,
+		"item remind rm": routeSpec{
+			method:       http.MethodDelete,
+			pathTemplate: itemSchedulePathTemplate,
+		}.toRouteMapper(),
+		"item remind done":   mapScheduleResolve("done"),
+		"item remind skip":   mapScheduleResolve("skip"),
+		"item remind snooze": mapScheduleResolve("snooze"),
+		"item remind move":   mapScheduleResolve("move"),
+		"item remind agenda": routeSpec{
+			method:       http.MethodGet,
+			pathTemplate: "/api/v1/workspaces/{workspace}/agenda",
+			queryParams:  map[string]string{"from": "from", "to": "to", "tz": "tz"},
 		}.toRouteMapper(),
 		"item ack": routeSpec{
 			method:       http.MethodPost,

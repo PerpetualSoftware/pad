@@ -126,36 +126,42 @@ func TestReadOnlyCatalog_ActionsMatchCmdhelp(t *testing.T) {
 		// pad_item passThrough actions. link/unlink are excluded —
 		// they fan out to per-link_type cmdPaths and are tested in
 		// catalog_item_test.go instead.
-		{"pad_item", "create"}:         {"item", "create"},
-		{"pad_item", "update"}:         {"item", "update"},
-		{"pad_item", "delete"}:         {"item", "delete"},
-		{"pad_item", "get"}:            {"item", "show"},
-		{"pad_item", "list"}:           {"item", "list"},
-		{"pad_item", "move"}:           {"item", "move"},
-		{"pad_item", "restore"}:        {"item", "restore"},
-		{"pad_item", "deps"}:           {"item", "deps"},
-		{"pad_item", "context"}:        {"item", "context"},
-		{"pad_item", "remind"}:         {"item", "remind"},
-		{"pad_item", "ack-reminder"}:   {"item", "ack"},
-		{"pad_item", "reminders"}:      {"item", "reminders"},
-		{"pad_item", "unremind"}:       {"item", "unremind"},
-		{"pad_item", "link-pr"}:        {"github", "link"},
-		{"pad_item", "unlink-pr"}:      {"github", "unlink"},
-		{"pad_item", "claim"}:          {"item", "claim"},
-		{"pad_item", "release"}:        {"item", "release"},
-		{"pad_item", "patch"}:          {"item", "patch"},
-		{"pad_item", "star"}:           {"item", "star"},
-		{"pad_item", "unstar"}:         {"item", "unstar"},
-		{"pad_item", "starred"}:        {"item", "starred"},
-		{"pad_item", "comment"}:        {"item", "comment"},
-		{"pad_item", "list-comments"}:  {"item", "comments"},
-		{"pad_item", "edit-comment"}:   {"item", "comment-edit"},
-		{"pad_item", "delete-comment"}: {"item", "comment-delete"},
-		{"pad_item", "bulk-update"}:    {"item", "bulk-update"},
-		{"pad_item", "note"}:           {"item", "note"},
-		{"pad_item", "decide"}:         {"item", "decide"},
-		{"pad_item", "backlinks"}:      {"item", "backlinks"},
-		{"pad_item", "history"}:        {"item", "history"},
+		{"pad_item", "create"}:  {"item", "create"},
+		{"pad_item", "update"}:  {"item", "update"},
+		{"pad_item", "delete"}:  {"item", "delete"},
+		{"pad_item", "get"}:     {"item", "show"},
+		{"pad_item", "list"}:    {"item", "list"},
+		{"pad_item", "move"}:    {"item", "move"},
+		{"pad_item", "restore"}: {"item", "restore"},
+		{"pad_item", "deps"}:    {"item", "deps"},
+		{"pad_item", "context"}: {"item", "context"},
+		{"pad_item", "remind"}:  {"item", "remind"},
+		// Schedules ride `pad item remind <subcommand>` (TASK-4105).
+		{"pad_item", "schedule"}:         {"item", "remind", "show"},
+		{"pad_item", "schedule-edit"}:    {"item", "remind", "edit"},
+		{"pad_item", "schedule-delete"}:  {"item", "remind", "rm"},
+		{"pad_item", "schedule-resolve"}: {"item", "remind", "done"},
+		{"pad_item", "agenda"}:           {"item", "remind", "agenda"},
+		{"pad_item", "ack-reminder"}:     {"item", "ack"},
+		{"pad_item", "reminders"}:        {"item", "reminders"},
+		{"pad_item", "unremind"}:         {"item", "unremind"},
+		{"pad_item", "link-pr"}:          {"github", "link"},
+		{"pad_item", "unlink-pr"}:        {"github", "unlink"},
+		{"pad_item", "claim"}:            {"item", "claim"},
+		{"pad_item", "release"}:          {"item", "release"},
+		{"pad_item", "patch"}:            {"item", "patch"},
+		{"pad_item", "star"}:             {"item", "star"},
+		{"pad_item", "unstar"}:           {"item", "unstar"},
+		{"pad_item", "starred"}:          {"item", "starred"},
+		{"pad_item", "comment"}:          {"item", "comment"},
+		{"pad_item", "list-comments"}:    {"item", "comments"},
+		{"pad_item", "edit-comment"}:     {"item", "comment-edit"},
+		{"pad_item", "delete-comment"}:   {"item", "comment-delete"},
+		{"pad_item", "bulk-update"}:      {"item", "bulk-update"},
+		{"pad_item", "note"}:             {"item", "note"},
+		{"pad_item", "decide"}:           {"item", "decide"},
+		{"pad_item", "backlinks"}:        {"item", "backlinks"},
+		{"pad_item", "history"}:          {"item", "history"},
 
 		// pad_playbook actions (PLAN-1377 / TASK-1381). All three
 		// passThrough to `pad playbook <subcommand>`.
@@ -304,35 +310,41 @@ func TestReadOnlyCatalog_ActionsDispatchExpectedCmdPath(t *testing.T) {
 
 		// pad_item passThrough actions. link/unlink excluded — see
 		// catalog_item_test.go for their dispatch test.
-		{"pad_item", "create"}:         {"item", "create"},
-		{"pad_item", "update"}:         {"item", "update"},
-		{"pad_item", "delete"}:         {"item", "delete"},
-		{"pad_item", "get"}:            {"item", "show"},
-		{"pad_item", "list"}:           {"item", "list"},
-		{"pad_item", "move"}:           {"item", "move"},
-		{"pad_item", "restore"}:        {"item", "restore"},
-		{"pad_item", "deps"}:           {"item", "deps"},
-		{"pad_item", "context"}:        {"item", "context"},
-		{"pad_item", "remind"}:         {"item", "remind"},
-		{"pad_item", "ack-reminder"}:   {"item", "ack"},
-		{"pad_item", "reminders"}:      {"item", "reminders"},
-		{"pad_item", "unremind"}:       {"item", "unremind"},
-		{"pad_item", "link-pr"}:        {"github", "link"},
-		{"pad_item", "unlink-pr"}:      {"github", "unlink"},
-		{"pad_item", "claim"}:          {"item", "claim"},
-		{"pad_item", "release"}:        {"item", "release"},
-		{"pad_item", "patch"}:          {"item", "patch"},
-		{"pad_item", "star"}:           {"item", "star"},
-		{"pad_item", "unstar"}:         {"item", "unstar"},
-		{"pad_item", "starred"}:        {"item", "starred"},
-		{"pad_item", "comment"}:        {"item", "comment"},
-		{"pad_item", "list-comments"}:  {"item", "comments"},
-		{"pad_item", "edit-comment"}:   {"item", "comment-edit"},
-		{"pad_item", "delete-comment"}: {"item", "comment-delete"},
-		{"pad_item", "bulk-update"}:    {"item", "bulk-update"},
-		{"pad_item", "note"}:           {"item", "note"},
-		{"pad_item", "decide"}:         {"item", "decide"},
-		{"pad_item", "backlinks"}:      {"item", "backlinks"},
+		{"pad_item", "create"}:  {"item", "create"},
+		{"pad_item", "update"}:  {"item", "update"},
+		{"pad_item", "delete"}:  {"item", "delete"},
+		{"pad_item", "get"}:     {"item", "show"},
+		{"pad_item", "list"}:    {"item", "list"},
+		{"pad_item", "move"}:    {"item", "move"},
+		{"pad_item", "restore"}: {"item", "restore"},
+		{"pad_item", "deps"}:    {"item", "deps"},
+		{"pad_item", "context"}: {"item", "context"},
+		{"pad_item", "remind"}:  {"item", "remind"},
+		// Schedules ride `pad item remind <subcommand>` (TASK-4105).
+		{"pad_item", "schedule"}:         {"item", "remind", "show"},
+		{"pad_item", "schedule-edit"}:    {"item", "remind", "edit"},
+		{"pad_item", "schedule-delete"}:  {"item", "remind", "rm"},
+		{"pad_item", "schedule-resolve"}: {"item", "remind", "done"},
+		{"pad_item", "agenda"}:           {"item", "remind", "agenda"},
+		{"pad_item", "ack-reminder"}:     {"item", "ack"},
+		{"pad_item", "reminders"}:        {"item", "reminders"},
+		{"pad_item", "unremind"}:         {"item", "unremind"},
+		{"pad_item", "link-pr"}:          {"github", "link"},
+		{"pad_item", "unlink-pr"}:        {"github", "unlink"},
+		{"pad_item", "claim"}:            {"item", "claim"},
+		{"pad_item", "release"}:          {"item", "release"},
+		{"pad_item", "patch"}:            {"item", "patch"},
+		{"pad_item", "star"}:             {"item", "star"},
+		{"pad_item", "unstar"}:           {"item", "unstar"},
+		{"pad_item", "starred"}:          {"item", "starred"},
+		{"pad_item", "comment"}:          {"item", "comment"},
+		{"pad_item", "list-comments"}:    {"item", "comments"},
+		{"pad_item", "edit-comment"}:     {"item", "comment-edit"},
+		{"pad_item", "delete-comment"}:   {"item", "comment-delete"},
+		{"pad_item", "bulk-update"}:      {"item", "bulk-update"},
+		{"pad_item", "note"}:             {"item", "note"},
+		{"pad_item", "decide"}:           {"item", "decide"},
+		{"pad_item", "backlinks"}:        {"item", "backlinks"},
 
 		// pad_playbook actions (PLAN-1377 / TASK-1381).
 		{"pad_playbook", "list"}:  {"playbook", "list"},
@@ -371,6 +383,10 @@ func TestReadOnlyCatalog_ActionsDispatchExpectedCmdPath(t *testing.T) {
 		// can carry several, so `ref` cannot name one (IDEA-2641).
 		"reminder_id": "rem-1",
 		"remind_at":   "2026-08-01T09:00:00Z",
+		// pad_item.schedule-resolve needs the state and the occurrence it
+		// resolves (TASK-4105).
+		"state":         "done",
+		"occurrence_at": "2026-11-09T09:00:00Z",
 		// pad_playbook.match needs a `text` positional (TASK-3120).
 		"text": "test text",
 		// pad_item.edit-comment / delete-comment address a COMMENT on `ref`
@@ -403,6 +419,7 @@ func TestReadOnlyCatalog_ActionsDispatchExpectedCmdPath(t *testing.T) {
 				for k, v := range fixtureInput {
 					input[k] = v
 				}
+				task4105FixtureFor(key[0]+"."+key[1], input)
 				res, err := handler(context.Background(), input, env)
 				if err != nil {
 					t.Fatalf("handler returned protocol error: %v", err)
@@ -724,10 +741,30 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 				Flags:   mkFlags("workspace", "intent", "role", "budget"),
 			},
 			"item remind": {
-				Summary: "arm a reminder",
+				Summary: "arm a reminder or a schedule",
 				Args:    mkArgs("ref"),
-				Flags:   mkFlags("workspace", "remind-at", "rearm"),
+				Flags:   scheduleFlags(mkFlags("workspace", "remind-at", "rearm", "every", "start", "deadline", "window", "anchor", "audience", "tz")),
 			},
+			"item remind show": {
+				Summary: "show a schedule",
+				Args:    mkArgs("ref"),
+				Flags:   mkFlags("workspace"),
+			},
+			"item remind edit": {
+				Summary: "edit a schedule",
+				Args:    mkArgs("ref"),
+				Flags:   scheduleFlags(mkFlags("workspace", "every", "start", "deadline", "window", "anchor", "audience", "tz")),
+			},
+			"item remind rm": {
+				Summary: "delete a schedule",
+				Args:    mkArgs("ref"),
+				Flags:   map[string]cmdhelp.Flag{"workspace": {Type: "string"}, "yes": {Type: "bool"}},
+			},
+			"item remind done":   {Summary: "resolve done", Args: mkArgs("ref"), Flags: mkFlags("workspace", "comment", "occurrence")},
+			"item remind skip":   {Summary: "resolve skip", Args: mkArgs("ref"), Flags: mkFlags("workspace", "comment", "occurrence")},
+			"item remind snooze": {Summary: "resolve snooze", Args: mkArgs("ref"), Flags: mkFlags("workspace", "comment", "occurrence", "until")},
+			"item remind move":   {Summary: "resolve move", Args: mkArgs("ref"), Flags: mkFlags("workspace", "comment", "occurrence", "until")},
+			"item remind agenda": {Summary: "the agenda", Flags: mkFlags("workspace", "from", "to", "tz", "days")},
 			"item ack": {
 				Summary: "acknowledge a fired reminder",
 				Args:    mkArgs("reminder-id"),
@@ -980,4 +1017,11 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 			},
 		},
 	}
+}
+
+// scheduleFlags adds the `floating` bool to a string-flag set, as the real
+// `pad item remind` and `pad item remind edit` declare it.
+func scheduleFlags(base map[string]cmdhelp.Flag) map[string]cmdhelp.Flag {
+	base["floating"] = cmdhelp.Flag{Type: "bool"}
+	return base
 }

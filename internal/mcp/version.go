@@ -2285,7 +2285,27 @@ const CmdhelpVersion = "0.1"
 // edit ("(in edits[1])"); null is absent, and an edit that is not an object
 // keeps its path. Remote is unchanged. Behaviour only; the schemas are
 // unchanged.
-const ToolSurfaceVersion = "0.106"
+//
+// v0.107 — TASK-4105: schedules and the agenda on pad_item. The parameters
+// every, start, deadline, window, anchor, audience, tz, floating, state, until,
+// occurrence_at, from and to are new, and so are the actions schedule (read),
+// schedule-edit (PATCH), schedule-delete, schedule-resolve (state done | skip |
+// snooze | move) and agenda (read). `remind` is extended, not changed: with no
+// schedule parameter it is the one-shot reminder on both transports, exactly
+// as before; with start (or any other schedule parameter) it arms a schedule
+// (stdio `pad item remind --start ...`, remote POST .../schedule). A blank
+// string, null or floating=false is "not given" on both, so it cannot turn a
+// one-shot into a schedule or clear a rule in an edit; clearing a rule stays a
+// CLI act (`pad item remind edit --every ""`). remind_at's description now says
+// it is required only for the one-shot form, and comment's that
+// schedule-resolve takes it (optional; moving a soft deadline needs one, which
+// the server enforces with a 400). occurrence_at is required on both
+// transports, and until (snooze and move) and from and to (agenda) must be
+// RFC3339 instants on both: the CLI's wall times, durations and dates read the
+// caller's zone, which a remote caller does not have. Only schedule and agenda
+// are read-only; pad_item's tool annotation is unchanged. ChatGPT: all five
+// are deferred to v2.
+const ToolSurfaceVersion = "0.107"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a
