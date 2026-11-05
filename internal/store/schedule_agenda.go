@@ -69,6 +69,14 @@ func (s *Store) ListSchedulesForAgenda(workspaceID string, scope PendingReminder
 	if len(out) == 0 {
 		return nil, false, nil
 	}
+	if err := s.fillAgendaItemFacts(out); err != nil {
+		return nil, false, err
+	}
+	return out, truncated, nil
+}
+
+// fillAgendaItemFacts sets the item ref, title and collection of each schedule.
+func (s *Store) fillAgendaItemFacts(out []AgendaSchedule) error {
 	ids, byID := make([]any, len(out)), map[string]*AgendaSchedule{}
 	for i := range out {
 		ids[i], byID[out[i].Schedule.ItemID] = out[i].Schedule.ItemID, &out[i]
@@ -76,14 +84,14 @@ func (s *Store) ListSchedulesForAgenda(workspaceID string, scope PendingReminder
 	irows, err := s.db.Query(s.q(`SELECT i.id, i.title, i.slug, c.slug, c.prefix, i.item_number
 		FROM items i JOIN collections c ON c.id = i.collection_id WHERE i.id IN (`+placeholders(len(ids))+`)`), ids...)
 	if err != nil {
-		return nil, false, fmt.Errorf("read agenda items: %w", err)
+		return fmt.Errorf("read agenda items: %w", err)
 	}
 	defer irows.Close()
 	for irows.Next() {
 		var id, title, slug, coll, prefix string
 		var number *int64
 		if err := irows.Scan(&id, &title, &slug, &coll, &prefix, &number); err != nil {
-			return nil, false, fmt.Errorf("scan agenda item: %w", err)
+			return fmt.Errorf("scan agenda item: %w", err)
 		}
 		a := byID[id]
 		a.ItemTitle, a.Collection, a.ItemRef = title, coll, slug // a legacy item has no ref
@@ -91,7 +99,7 @@ func (s *Store) ListSchedulesForAgenda(workspaceID string, scope PendingReminder
 			a.ItemRef = fmt.Sprintf("%s-%d", prefix, *number)
 		}
 	}
-	return out, truncated, irows.Err()
+	return irows.Err()
 }
 
 // AgendaEntry is one occurrence on the agenda. At is the grid instant, in the
