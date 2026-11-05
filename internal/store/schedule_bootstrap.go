@@ -115,37 +115,15 @@ func (s *Store) BootstrapAgenda(p BootstrapAgendaParams) (*BootstrapAgendaSet, e
 	if len(found) == 0 {
 		return set, nil
 	}
-	moved, err := s.movedWalls(found)
-	if err != nil {
-		return nil, err
-	}
 	if err := s.fillAgendaItemFacts(found); err != nil {
 		return nil, err
 	}
-	for _, as := range found {
-		sc := as.Schedule
-		if sc.NextWall == nil {
-			continue
-		}
-		wall, err := schedule.ParseWall(*sc.NextWall)
-		if err != nil {
-			continue // a stored wall that will not parse is not listed
-		}
-		due, ok, err := OutstandingInstant(sc, loc)
-		if err != nil || !ok {
-			continue
-		}
-		switch {
-		case sc.NextOverrideAt != nil && movedStill(moved, sc):
-			t, err := time.Parse(time.RFC3339, *sc.NextOverrideAt)
-			if err != nil {
-				continue
-			}
-			due = t
-		case wall.AllDay:
-			due = schedule.Resolve(loc, wall) // a date, read in the caller's zone
-		}
-		row := BootstrapAgendaRow{AgendaSchedule: as, Due: due, Wall: *sc.NextWall, AllDay: wall.AllDay}
+	outstanding, err := s.outstandingAgendaRows(found, loc)
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range outstanding {
+		due := row.Due
 		switch {
 		case !due.Before(startTomorrow):
 		case !due.Before(startToday):
@@ -211,4 +189,40 @@ func (s *Store) movedWalls(found []AgendaSchedule) (map[[2]string]string, error)
 		out[[2]string{id, wall}] = at
 	}
 	return out, rows.Err()
+}
+
+// outstandingAgendaRows reads each outstanding occurrence at its effective due
+// instant. A move defers the claim; a snooze only defers its next notification.
+func (s *Store) outstandingAgendaRows(found []AgendaSchedule, loc *time.Location) ([]BootstrapAgendaRow, error) {
+	moved, err := s.movedWalls(found)
+	if err != nil {
+		return nil, err
+	}
+	var out []BootstrapAgendaRow
+	for _, as := range found {
+		sc := as.Schedule
+		if sc.NextWall == nil {
+			continue
+		}
+		wall, err := schedule.ParseWall(*sc.NextWall)
+		if err != nil {
+			continue // a stored wall that will not parse is not listed
+		}
+		due, ok, err := OutstandingInstant(sc, loc)
+		if err != nil || !ok {
+			continue
+		}
+		switch {
+		case sc.NextOverrideAt != nil && movedStill(moved, sc):
+			t, err := time.Parse(time.RFC3339, *sc.NextOverrideAt)
+			if err != nil {
+				continue
+			}
+			due = t
+		case wall.AllDay:
+			due = schedule.Resolve(loc, wall) // a date, read in the caller's zone
+		}
+		out = append(out, BootstrapAgendaRow{AgendaSchedule: as, Due: due, Wall: *sc.NextWall, AllDay: wall.AllDay})
+	}
+	return out, nil
 }

@@ -3498,7 +3498,7 @@ export interface NeedsItemInfo {
 }
 
 export interface NeedsWhy {
-	rule: 'asked' | 'mentioned' | 'assigned' | 'admin_fallback' | string;
+	rule: 'asked' | 'mentioned' | 'assigned' | 'due' | 'admin_fallback' | string;
 	text: string;
 	by?: string;
 	at?: string;
@@ -3506,7 +3506,7 @@ export interface NeedsWhy {
 }
 
 export interface NeedsBecause {
-	kind: 'human_task' | 'needs_human' | 'mention' | string;
+	kind: 'human_task' | 'needs_human' | 'mention' | 'due' | string;
 	at: string;
 	by?: string;
 	comment_id?: string;
@@ -3684,4 +3684,55 @@ export interface ChatUnreadResponse {
 export interface ChatConversationsResponse {
 	conversations: ChatConversationSummary[];
 	unread_total: number;
+}
+
+export interface AgendaEntry {
+	type: 'schedule' | 'date' | 'created' | 'completed';
+	at: string;
+	day: string;
+	item_ref: string;
+	item_title: string;
+	collection: string;
+	workspace?: string;
+	workspace_name?: string;
+	owner_username?: string;
+	wall?: string;
+	all_day?: boolean;
+	floating?: boolean;
+	state?: 'outstanding' | 'scheduled' | 'done' | 'skipped' | 'moved' | 'missed' | 'unrecorded';
+	kind?: string;
+	audience?: 'human' | 'agent' | 'both';
+	schedule_id?: string;
+	field?: string;
+	date?: string;
+	fired?: boolean;
+	overdue?: boolean;
+	effective_at?: string;
+	resolved_at?: string;
+	actor?: string;
+	comment_id?: string;
+	missed_count?: number;
+	stale?: boolean;
+}
+
+export interface AgendaResponse {
+	from: string;
+	to: string;
+	tz: string;
+	timezone_note?: string;
+	entries: AgendaEntry[];
+	truncated?: boolean;
+	next_from?: string;
+	unavailable?: { item_ref: string; code: string; workspace?: string; owner_username?: string }[];
+	unexpanded?: {
+		schedule_id: string;
+		item_ref: string;
+		item_title: string;
+		collection: string;
+		kind?: string;
+		audience?: 'human' | 'agent' | 'both';
+		reason: 'scan_limit';
+		workspace?: string;
+		owner_username?: string;
+	}[];
 }
