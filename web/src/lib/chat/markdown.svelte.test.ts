@@ -3,6 +3,7 @@
 // what a reader would be handed, never on string shape alone.
 import { describe, it, expect } from 'vitest';
 import { renderChatMarkdown } from './markdown';
+import { extractRefs } from './refs';
 import { renderMarkdown, sanitizeMarkdownHtml } from '$lib/utils/markdown';
 import { ITEM_PIN_INPUTS } from '$lib/utils/markdown.itemPin.inputs';
 import type { ChatRef } from '$lib/types';
@@ -286,6 +287,16 @@ describe('fenced code is inert', () => {
 });
 
 describe('wiki refs', () => {
+	it('keeps a ref inside code after a backslash-escaped backtick literal', () => {
+		const source = "\\`a `[[TASK-1]]`";
+		expect(extractRefs(source)).toHaveLength(1);
+		const refs: ChatRef[] = [{ workspace: 'docapp', ref: 'TASK-1', state: 'visible', title: 'Task' }];
+		const d = render(source, refs, 'docapp');
+		expect(d.querySelector('code a')).toBeNull();
+		expect(d.querySelector('code')!.textContent).toBe('[[TASK-1]]');
+		expect(render('[[TASK-1]]', refs, 'docapp').querySelector('a')?.getAttribute('href')).toBe('/-/r/docapp/TASK-1');
+	});
+
 	const refs: ChatRef[] = [
 		{ workspace: 'docapp', ref: 'TASK-1', state: 'visible', title: 'Fix the thing' },
 		{ workspace: 'docapp', ref: 'TASK-2', state: 'restricted' },
