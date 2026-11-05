@@ -668,7 +668,7 @@
 			// branch writes the CLIPBOARD — a side effect that leaves the page
 			// entirely and would hand the new user a join link minted for the
 			// previous one.
-			if (!identityHeld(epochAtEntry) || wsSlug !== reqWs) return;
+			if (!identityHeld(epochAtEntry) || wsSlug !== reqWs || mySeq !== inviteSeq) return;
 			if (result.added) {
 				inviteResult = { message: `Added ${result.name || result.email} as ${result.role}`, type: 'success' };
 			} else {
@@ -690,12 +690,12 @@
 				const memberData = await api.members.list(reqWs);
 				// Check again after the reload: an identity can change during it as
 				// easily as during the first, and this commit is member state.
-				if (!identityHeld(epochAtEntry) || wsSlug !== reqWs) return;
+				if (!identityHeld(epochAtEntry) || wsSlug !== reqWs || mySeq !== inviteSeq) return;
 				members = memberData.members ?? [];
 				invitations = memberData.invitations ?? [];
 				workspaceApps = memberData.apps ?? [];
 			} catch {
-				if (!identityHeld(epochAtEntry) || wsSlug !== reqWs) return;
+				if (!identityHeld(epochAtEntry) || wsSlug !== reqWs || mySeq !== inviteSeq) return;
 			}
 			if (copying) {
 				// Released before the wait: the form is usable while a prompt is open.
@@ -708,7 +708,7 @@
 				};
 			}
 		} catch (err: unknown) {
-			if (!identityHeld(epochAtEntry) || wsSlug !== reqWs) return;
+			if (!identityHeld(epochAtEntry) || wsSlug !== reqWs || mySeq !== inviteSeq) return;
 			if (isPlanLimitError(err)) {
 				showPlanLimitToast(err, { scope: 'invite', blocked: 'invite a member' });
 			} else {

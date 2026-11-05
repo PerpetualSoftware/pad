@@ -472,4 +472,51 @@ describe('BUG-4335: invitation creation and clipboard feedback', () => {
 		await waitFor(() => expect(email.disabled).toBe(false));
 		slow.resolve({ email: EMAIL, role: 'editor', join_url: URL });
 	});
+
+	it('an invite response that lands after leaving and returning to the workspace writes nothing', async () => {
+		const slow = deferred<{ email: string; role: string; join_url: string }>();
+		vi.mocked(api.members.invite).mockReturnValueOnce(slow.promise as never);
+		await mount();
+		await invite();
+		page.params = { username: 'dave', workspace: 'other' };
+		flushSync();
+		await tick();
+		await waitFor(() => expect(vi.mocked(api.members.list).mock.calls.some(([ws]) => ws === 'other')).toBe(true));
+		page.params = { username: 'dave', workspace: 'ws' };
+		flushSync();
+		await tick();
+		const email = (await screen.findByRole('textbox', { name: 'Email address to invite' })) as HTMLInputElement;
+		await fireEvent.input(email, { target: { value: 'typed@x.test' } });
+		slow.resolve({ email: EMAIL, role: 'editor', join_url: URL });
+		for (let i = 0; i < 10; i++) { await Promise.resolve(); await tick(); }
+		// The retired invite's response is dropped whole: no link, no message, no clipboard write,
+		// and what the user typed on the page they returned to is untouched.
+		expect(screen.queryByRole('textbox', { name: 'Invitation link' })).toBeNull();
+		expect(screen.queryByText(new RegExp(`Invitation created for ${EMAIL}`))).toBeNull();
+		expect(copyToClipboard).not.toHaveBeenCalled();
+		expect(email.value).toBe('typed@x.test');
+	});
+
+	it('an older invite response does not overwrite the link of a newer invite', async () => {
+		const first = deferred<{ email: string; role: string; join_url: string }>();
+		vi.mocked(api.members.invite).mockReturnValueOnce(first.promise as never);
+		await mount();
+		await invite();
+		// Move away and back: the first invite is retired, then a newer one is made on the fresh page.
+		page.params = { username: 'dave', workspace: 'other' };
+		flushSync();
+		await tick();
+		await waitFor(() => expect(vi.mocked(api.members.list).mock.calls.some(([ws]) => ws === 'other')).toBe(true));
+		page.params = { username: 'dave', workspace: 'ws' };
+		flushSync();
+		await tick();
+		await screen.findByRole('textbox', { name: 'Email address to invite' });
+		vi.mocked(api.members.invite).mockResolvedValueOnce({ email: 'b@x.test', role: 'editor', join_url: 'https://pad.test/join/newer' });
+		await invite('b@x.test');
+		await screen.findByText('Invitation created for b@x.test. Link copied');
+		first.resolve({ email: EMAIL, role: 'editor', join_url: URL });
+		for (let i = 0; i < 10; i++) { await Promise.resolve(); await tick(); }
+		expect((screen.getByRole('textbox', { name: 'Invitation link' }) as HTMLInputElement).value).toBe('https://pad.test/join/newer');
+		expect(screen.queryByText(new RegExp(`Invitation created for ${EMAIL}`))).toBeNull();
+	});
 });
