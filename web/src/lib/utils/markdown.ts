@@ -10,6 +10,7 @@ import {
 	resolveAttachmentImage,
 	resolveAttachmentLink
 } from '$lib/markdown/attachments';
+import { attachmentImageSrc, safeLinkHref } from '$lib/chat/urlPolicy';
 
 /**
  * The wiki-link bracket grammar — the ONE copy on the JS side.
@@ -212,8 +213,9 @@ const MARKDOWN_ALLOWED_ATTR = [
  * contexts don't render user-generated markdown anyway (items and comments
  * load via the API at runtime), so the empty fallback is a safe no-op.
  */
-export function sanitizeMarkdownHtml(html: string): string {
+export function sanitizeMarkdownHtml(html: string, profile?: 'chat'): string {
 	if (typeof window === 'undefined') return '';
+	if (profile === 'chat') return sanitizeChatHtml(html);
 	DOMPurify.addHook('afterSanitizeAttributes', enforceNoOpener);
 	try {
 		return DOMPurify.sanitize(html, {
@@ -227,6 +229,94 @@ export function sanitizeMarkdownHtml(html: string): string {
 		});
 	} finally {
 		DOMPurify.removeHook('afterSanitizeAttributes', enforceNoOpener);
+	}
+}
+
+// ── Chat profile (TASK-4315) ───────────────────────────────────────────────
+// A separate, deliberately narrower configuration for Chat message bodies:
+// explicit tag and attribute lists, no data-/aria- attributes, and per-element
+// attribute and URL rules in one hook. Nothing here is shared with the item
+// profile above, so editing one cannot loosen the other.
+
+const CHAT_ALLOWED_TAGS = [
+	'p', 'br', 'strong', 'em', 'del', 'blockquote', 'ul', 'ol', 'li', 'pre', 'code',
+	'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'a', 'table', 'thead', 'tbody', 'tr',
+	'th', 'td', 'img', 'span'
+] as const;
+
+// The union of every per-element list below; the hook narrows it per element.
+const CHAT_ALLOWED_ATTR = [
+	'href', 'title', 'target', 'rel', 'src', 'alt', 'loading', 'decoding', 'start', 'class'
+] as const;
+
+const CHAT_ELEMENT_ATTRS: Record<string, readonly string[]> = {
+	a: ['href', 'title', 'target', 'rel'],
+	img: ['src', 'alt', 'title', 'loading', 'decoding'],
+	ol: ['start'],
+	code: ['class'],
+	// Only the two classes Chat itself generates (restricted ref, inert placeholder).
+	span: ['class']
+};
+const CHAT_SPAN_CLASSES: readonly string[] = ['ref-restricted', 'md-note'];
+const CHAT_CODE_CLASS = /^language-[A-Za-z0-9_+#.\-]{1,40}$/;
+const CHAT_OL_START = /^[0-9]{1,9}$/;
+
+/**
+ * Per-element attribute and URL restrictions for the Chat profile. Anchors
+ * ALWAYS leave with target="_blank" and rel="noopener noreferrer": whatever the
+ * input carried is discarded, not merged. Images survive only on Pad's own
+ * attachment route. Runs as an `afterSanitizeAttributes` hook.
+ */
+function enforceChatNode(node: Element): void {
+	if (!node.attributes) return;
+	const tag = node.nodeName.toLowerCase();
+	const allowed = CHAT_ELEMENT_ATTRS[tag] ?? [];
+	for (const name of Array.from(node.getAttributeNames())) {
+		if (!allowed.includes(name)) node.removeAttribute(name);
+	}
+	const origin = window.location.origin;
+	if (tag === 'a') {
+		const href = node.getAttribute('href');
+		const safe = href === null ? null : safeLinkHref(href, origin);
+		if (safe === null) node.removeAttribute('href');
+		else node.setAttribute('href', safe);
+		node.setAttribute('target', '_blank');
+		node.setAttribute('rel', 'noopener noreferrer');
+	} else if (tag === 'img') {
+		const src = node.getAttribute('src');
+		const safe = src === null ? null : attachmentImageSrc(src, origin);
+		if (safe === null) {
+			node.removeAttribute('src');
+		} else {
+			node.setAttribute('src', safe);
+			node.setAttribute('loading', 'lazy');
+			node.setAttribute('decoding', 'async');
+		}
+	} else if (tag === 'ol') {
+		if (!CHAT_OL_START.test(node.getAttribute('start') ?? '')) node.removeAttribute('start');
+	} else if (tag === 'code') {
+		if (!CHAT_CODE_CLASS.test(node.getAttribute('class') ?? '')) node.removeAttribute('class');
+	} else if (tag === 'span') {
+		if (!CHAT_SPAN_CLASSES.includes(node.getAttribute('class') ?? '')) node.removeAttribute('class');
+	}
+}
+
+function sanitizeChatHtml(html: string): string {
+	DOMPurify.addHook('afterSanitizeAttributes', enforceChatNode);
+	try {
+		return DOMPurify.sanitize(html, {
+			ALLOWED_TAGS: [...CHAT_ALLOWED_TAGS],
+			ALLOWED_ATTR: [...CHAT_ALLOWED_ATTR],
+			ALLOW_DATA_ATTR: false,
+			ALLOW_ARIA_ATTR: false,
+			ALLOW_UNKNOWN_PROTOCOLS: false,
+			// Coarse first gate: http(s), or a value that is not a scheme at all
+			// (DOMPurify also runs this over non-URI attributes such as `start`).
+			// The hook above applies the real per-element policy.
+			ALLOWED_URI_REGEXP: /^(?:https?:|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i
+		});
+	} finally {
+		DOMPurify.removeHook('afterSanitizeAttributes', enforceChatNode);
 	}
 }
 
