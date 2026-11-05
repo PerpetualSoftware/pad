@@ -327,7 +327,7 @@ func TestCalendarPageFiltersExcludeItemsAndTheirSchedules(t *testing.T) {
 	// An OPEN item whose schedule is filtered out with it: its date is not the
 	// asked one, so its schedule entry must not stay on the page.
 	m = w.calOK(t, w.owner, "tasks", calMarch+"&due_date=2031-03-10")
-	eq(t, "field-filtered items", calItemTitles(m), "CAL keep")
+	eq(t, "field-filtered items", calItemTitles(m), "CAL keep", "CAL drop")
 	eq(t, "field-filtered entries", calEntryTitles(m), "CAL keep")
 
 	// A filter key the collection does not have is refused as the list refuses it.
