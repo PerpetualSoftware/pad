@@ -24,8 +24,8 @@ identityGateSuite({
 			handleCollectionCreated: { reviewed: 'd79a036401d8', why: 'identityHeld(epochAtEntry) after refreshCollections, which fences its own commit' },
 			handleCollectionUpdated: { reviewed: '2f678b54cc5f', why: 'identityHeld(epochAtEntry) after refreshCollections, which fences its own commit' },
 			handleInvite: {
-				reviewed: '29003e3a5731',
-				why: `${ENTRY}, before the clipboard write as well as the page commits; the finally clears its own busy flag. BUG-4335: the clipboard result (including rejection mapped to false) is awaited and fenced before the message changes; the members apps list still follows the reload's identity check. TASK-3601: the plan-limit refusal now names its inline scope and the blocked action, a change to the call's arguments only, still after the catch arm's check`,
+				reviewed: '402ec6bbf756',
+				why: `${ENTRY}, before the clipboard write as well as the page commits; the finally clears its own busy flag. BUG-4335: the clipboard result (including rejection mapped to false) is awaited and fenced before the message changes; the workspace the invite was made for (reqWs) is captured at entry and compared to the live one after the invite, after the clipboard and after the reload, and in the catch arm, because the route component is reused across workspaces and the join link is a secret; the members apps list still follows the reload's identity check. TASK-3601: the plan-limit refusal now names its inline scope and the blocked action, a change to the call's arguments only, still after the catch arm's check`,
 			},
 			handleCopyInvitation: { reviewed: 'e54908272d13', why: 'BUG-4335: pageIdentityHeld before reading the retained link; an entry epoch and pageIdentityHeld after the clipboard await, before either toast, including rejected copies' },
 			handleRemoveMember: { reviewed: '75d40e43ff80', why: `${ENTRY}. TASK-2190: the failure toast reads the server's reason through memberChangeFailure, after the check. TASK-3543: epoch and workspace captured before the confirm dialog's await and re-checked after it` },
@@ -44,7 +44,7 @@ identityGateSuite({
 			{ body: /copyToClipboard\(url\)/, why: 'Copy invite link: pageIdentityHeld() before reading the invitation and again before the toast', reviewed: '6e121da9ef2c' },
 		],
 		continuations: [
-			{ call: /\.catch\($/, body: /\(\) => false/, in: 'handleInvite', why: 'BUG-4335: maps clipboard rejection to false without committing state; the awaiting caller checks its captured identity', reviewed: '3cdd169c45ae' },
+			{ call: /\.catch\($/, body: /\(\) => false/, in: 'handleInvite', why: 'BUG-4335: maps clipboard rejection to false without committing state; the awaiting caller checks its captured identity', reviewed: '64e51534e055' },
 			{ call: /\.catch\($/, body: /\(\) => false/, in: 'handleCopyInvitation', why: 'BUG-4335: maps retry rejection to false without committing state; the awaiting caller checks its captured identity and page identity', reviewed: '7d2bb21bd803' },
 			{ call: /^setTimeout\($/, body: /nameStatus = 'idle'/, in: 'saveName', why: `saveName status timer: ${TIMER}`, reviewed: '2a72a8c678c4' },
 			{ call: /^setTimeout\($/, body: /contextStatus = 'idle'/, in: 'saveContext', why: `saveContext status timer: ${TIMER}`, reviewed: '8b862e3ec852' },
@@ -65,7 +65,7 @@ identityGateSuite({
 		{
 			cls: 3,
 			what: 'the invitation clipboard completion loses its own identity check',
-			old: '\t\t\t\tconst ok = await copyToClipboard(result.join_url).catch(() => false);\n\t\t\t\tif (!identityHeld(epochAtEntry)) return;\n',
+			old: '\t\t\t\tconst ok = await copyToClipboard(result.join_url).catch(() => false);\n\t\t\t\tif (!identityHeld(epochAtEntry) || wsSlug !== reqWs) return;\n',
 			new: '\t\t\t\tconst ok = await copyToClipboard(result.join_url).catch(() => false);\n',
 			names: 'handleInvite()',
 		},

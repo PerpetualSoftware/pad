@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte';
-import { tick } from 'svelte';
+import { flushSync, tick } from 'svelte';
 import { page } from '$app/state';
 import { api } from '$lib/api/client';
 import { copyToClipboard } from '$lib/utils/clipboard';
@@ -22,6 +22,8 @@ vi.mock('$lib/api/client', () => ({
 	planLimitMessage: () => '',
 	PadApiError: class extends Error {}
 }));
+// A reactive page, so a workspace switch reaches the component's derived workspace slug.
+vi.mock('$app/state', async () => ({ page: (await import('../../../../test/mocks/reactivePage.svelte')).page }));
 vi.mock('$lib/utils/clipboard', () => ({ copyToClipboard: vi.fn() }));
 vi.mock('$lib/stores/toast.svelte', () => ({
 	toastStore: { show: vi.fn(), dismiss: vi.fn(), toasts: [] },
@@ -246,5 +248,36 @@ describe('BUG-4335: invitation creation and clipboard feedback', () => {
 		expect(screen.queryByRole('textbox', { name: 'Invitation link' })).toBeNull();
 		next.resolve({ email: 'b@x.test', role: 'editor' });
 		await screen.findByText('Invitation created for b@x.test.');
+	});
+
+	it('announces the result line politely, and a copy failure as an alert', async () => {
+		await mount();
+		await invite();
+		const ok = await screen.findByText(`${CREATED} Link copied`);
+		expect(ok.getAttribute('role')).toBe('status');
+		cleanup();
+		vi.mocked(copyToClipboard).mockResolvedValueOnce(false);
+		await mount();
+		await invite();
+		const failed = await screen.findByText(`${CREATED} ${COPY_FAILED}`);
+		expect(failed.getAttribute('role')).toBe('alert');
+	});
+
+	it('drops an invite response that lands after the page moved to another workspace', async () => {
+		const slow = deferred<{ email: string; role: string; join_url: string }>();
+		vi.mocked(api.members.invite).mockReturnValueOnce(slow.promise as never);
+		await mount();
+		await invite();
+		page.params = { username: 'dave', workspace: 'other' };
+		flushSync();
+		await tick();
+		// Non-vacuity: the page really moved to the other workspace before the invite answered.
+		await waitFor(() => expect(vi.mocked(api.members.list).mock.calls.some(([ws]) => ws === 'other')).toBe(true));
+		slow.resolve({ email: EMAIL, role: 'editor', join_url: URL });
+		for (let i = 0; i < 10; i++) { await Promise.resolve(); await tick(); }
+		expect(screen.queryByRole('textbox', { name: 'Invitation link' })).toBeNull();
+		expect(screen.queryByText(new RegExp(`Invitation created for ${EMAIL}`))).toBeNull();
+		expect(copyToClipboard).not.toHaveBeenCalled();
+		expect(toastStore.show).not.toHaveBeenCalled();
 	});
 });

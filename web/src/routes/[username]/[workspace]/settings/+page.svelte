@@ -647,16 +647,19 @@
 		// Captured at ENTRY, before any await: the only epoch that cannot be
 		// re-stamped by a concurrent load.
 		const epochAtEntry = captureIdentity();
+		// The workspace too: the route component is reused across workspaces on the same identity,
+		// and the join link minted here belongs to this one only.
+		const reqWs = wsSlug;
 		inviting = true;
 		inviteResult = null;
 		createdInvite = null;
 		try {
-			const result = await api.members.invite(wsSlug, inviteEmail.trim(), inviteRole);
+			const result = await api.members.invite(reqWs, inviteEmail.trim(), inviteRole);
 			// The invite response writes the page, and one
 			// branch writes the CLIPBOARD — a side effect that leaves the page
 			// entirely and would hand the new user a join link minted for the
 			// previous one.
-			if (!identityHeld(epochAtEntry)) return;
+			if (!identityHeld(epochAtEntry) || wsSlug !== reqWs) return;
 			if (result.added) {
 				inviteResult = { message: `Added ${result.name || result.email} as ${result.role}`, type: 'success' };
 			} else {
@@ -670,22 +673,22 @@
 			inviteRole = 'editor';
 			if (!result.added && result.join_url) {
 				const ok = await copyToClipboard(result.join_url).catch(() => false);
-				if (!identityHeld(epochAtEntry)) return;
+				if (!identityHeld(epochAtEntry) || wsSlug !== reqWs) return;
 				inviteResult = {
 					message: `Invitation created for ${result.email}. ` + (ok ? 'Link copied' : 'Couldn’t copy the invitation link. Copy it below and send it to the invitee.'),
 					type: ok ? 'success' : 'error'
 				};
 			}
 			// Reload members
-			const memberData = await api.members.list(wsSlug);
+			const memberData = await api.members.list(reqWs);
 			// Check again after the reload: an identity can change during it as
 			// easily as during the first, and this commit is member state.
-			if (!identityHeld(epochAtEntry)) return;
+			if (!identityHeld(epochAtEntry) || wsSlug !== reqWs) return;
 			members = memberData.members ?? [];
 			invitations = memberData.invitations ?? [];
 			workspaceApps = memberData.apps ?? [];
 		} catch (err: unknown) {
-			if (!identityHeld(epochAtEntry)) return;
+			if (!identityHeld(epochAtEntry) || wsSlug !== reqWs) return;
 			if (isPlanLimitError(err)) {
 				showPlanLimitToast(err, { scope: 'invite', blocked: 'invite a member' });
 			} else {
@@ -1361,7 +1364,7 @@
 							<li><strong>Viewer</strong>: reads only.</li>
 						</ul>
 						{#if inviteResult}
-							<p class="invite-result" class:invite-success={inviteResult.type === 'success'} class:invite-error={inviteResult.type === 'error'}>
+							<p class="invite-result" role={inviteResult.type === 'error' ? 'alert' : 'status'} class:invite-success={inviteResult.type === 'success'} class:invite-error={inviteResult.type === 'error'}>
 								{inviteResult.message}
 							</p>
 						{/if}
