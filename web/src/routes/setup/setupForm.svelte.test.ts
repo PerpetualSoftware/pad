@@ -64,6 +64,14 @@ afterEach(() => {
 });
 
 describe('setup page forms (TASK-2259, TASK-2236)', () => {
+	it('explains where to find the token for native and Docker startup (BUG-4334)', async () => {
+		session.setup_method = 'logs_token';
+		render(SetupPage);
+		await settle();
+
+		expect(screen.getByText('Paste the token from Pad’s startup output. For Docker, use the container logs.')).toBeInTheDocument();
+	});
+
 	it('the paste-token step is a labelled form, focused, and refuses an empty submit with an alert', async () => {
 		session.setup_method = 'token';
 		const { container } = render(SetupPage);

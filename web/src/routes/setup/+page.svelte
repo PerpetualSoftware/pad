@@ -225,8 +225,7 @@
 		{:else if !token && !openMode}
 			<p class="subtitle">Paste your bootstrap token</p>
 			<p class="hint">
-				Look for the token printed in your container logs when the server
-				started. It looks like a long random string.
+				Paste the token from Pad’s startup output. For Docker, use the container logs.
 			</p>
 
 			<form class="form" method="post" novalidate onsubmit={(e) => { e.preventDefault(); handlePasteSubmit(); }}>
