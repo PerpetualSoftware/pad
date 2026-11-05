@@ -741,3 +741,22 @@ func TestTASK4105_AgendaRefusesANonStringTz(t *testing.T) {
 		t.Fatalf("stdio: %s\nremote: %s", textOf(sres), textOf(rres))
 	}
 }
+
+// A blank remind_at beside a schedule is not given on either transport: the
+// schedule is armed, and stdio does not forward an empty --remind-at.
+func TestTASK4105_BlankRemindAtBesideAScheduleIsNotGiven(t *testing.T) {
+	for _, blank := range []any{" ", "", nil} {
+		in := map[string]any{"ref": "TASK-1", "start": "2026-11-09T09:00", "remind_at": blank}
+		sres, disp := stdioCall(t, "remind", copyInput(in))
+		rres, seen := remoteCall(t, "remind", withWorkspace(in))
+		if sres.IsError || rres.IsError {
+			t.Fatalf("remind_at=%#v refused: stdio=%s remote=%s", blank, textOf(sres), textOf(rres))
+		}
+		if contains(disp.gotArgs, "--remind-at") || !hasFlagPair(disp.gotArgs, "--start", "2026-11-09T09:00") {
+			t.Errorf("remind_at=%#v: stdio args = %q", blank, disp.gotArgs)
+		}
+		if len(seen) != 1 || !strings.HasSuffix(seen[0].Path, "/schedule") {
+			t.Errorf("remind_at=%#v: remote requests = %+v", blank, seen)
+		}
+	}
+}

@@ -93,8 +93,13 @@ func actionItemRemind(ctx context.Context, input map[string]any, env ActionEnv) 
 	if err != nil {
 		return errStructured("pad_item.remind", err), nil
 	}
-	if given && remindAtGiven(input) {
-		return errStructured("pad_item.remind", errRemindAtWithSchedule), nil
+	if given {
+		if remindAtGiven(input) {
+			return errStructured("pad_item.remind", errRemindAtWithSchedule), nil
+		}
+		// A blank remind_at is not given: leave it out, so the CLI does not
+		// read an empty --remind-at as the one-shot form beside the schedule.
+		delete(out, "remind_at")
 	}
 	return env.Dispatch(ctx, []string{"item", "remind"}, out)
 }
