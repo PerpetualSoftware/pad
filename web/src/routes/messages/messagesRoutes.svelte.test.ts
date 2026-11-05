@@ -62,6 +62,7 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 			return { chat_enabled: live.chatOn };
 		},
 		userId: 'u1',
+		emailVerified: true,
 		setChatEnabled: (_id: string, on: boolean) => {
 			live.chatOn = on;
 		},
@@ -92,6 +93,8 @@ vi.mock('$lib/stores/chat.svelte', () => ({
 		}
 	}
 }));
+// The confirmation dialog is mounted in the root layout, which these route tests do not render.
+vi.mock('$lib/stores/confirmDialog.svelte', () => ({ confirmDialog: { request: vi.fn(async () => true) } }));
 vi.mock('$app/navigation', () => ({ goto: h.goto }));
 
 // An IntersectionObserver double: the test fires the callback by hand.
@@ -912,9 +915,9 @@ describe('/messages/[n] thread write path (TASK-4044 PR 3b)', () => {
 		const { container } = await openThread();
 		const del = async (seq: number) => {
 			const row = container.querySelector(`article[data-seq="${seq}"]`)!;
-			row.dispatchEvent(new PointerEvent('pointerenter', { bubbles: true, pointerType: 'mouse' }));
+			([...row.querySelectorAll('button')].find((b) => /More/.test(b.getAttribute('aria-label') ?? b.textContent ?? '')) as HTMLElement).click();
 			await settle();
-			[...row.querySelectorAll('button')].find((b) => b.textContent === 'Delete')!.click();
+			([...document.querySelectorAll('[role="menuitem"]')].find((b) => b.textContent?.trim() === 'Delete') as HTMLElement).click();
 			await settle();
 		};
 		h.deleteMessage.mockRejectedValueOnce(new Error('500'));
@@ -931,9 +934,9 @@ describe('/messages/[n] thread write path (TASK-4044 PR 3b)', () => {
 		const { container } = await openThread();
 		const menu = async (seq: number, label: string) => {
 			const row = container.querySelector(`article[data-seq="${seq}"]`)!;
-			row.dispatchEvent(new PointerEvent('pointerenter', { bubbles: true, pointerType: 'mouse' }));
+			([...row.querySelectorAll('button')].find((b) => /More/.test(b.getAttribute('aria-label') ?? b.textContent ?? '')) as HTMLElement).click();
 			await settle();
-			[...row.querySelectorAll('button')].find((b) => b.textContent === label)!.click();
+			([...document.querySelectorAll('[role="menuitem"]')].find((b) => b.textContent?.trim() === label) as HTMLElement).click();
 			await settle();
 		};
 		await menu(2, 'Reply');
