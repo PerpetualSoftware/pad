@@ -111,3 +111,26 @@ it('enables Retry again when a retry fails (BUG-4334)', async () => {
 	expect(screen.queryByRole('status')).not.toBeInTheDocument();
 	expectNoWorkspaceSections();
 });
+
+it('shows the error and Retry when the rejection has an empty message (BUG-4334)', async () => {
+	vi.mocked(api.workspaces.list).mockRejectedValueOnce(new Error(''));
+	render(ConsolePage);
+	const alert = await screen.findByRole('alert');
+	expect(within(alert).getByRole('button', { name: 'Retry' })).toBeEnabled();
+	expectNoWorkspaceSections();
+});
+
+it('announces a failed retry from a fresh alert node, not a role added to the retrying one (BUG-4334)', async () => {
+	const retry = deferredWorkspaces();
+	vi.mocked(api.workspaces.list)
+		.mockRejectedValueOnce(new Error('First failure'))
+		.mockReturnValueOnce(retry.promise);
+	render(ConsolePage);
+	await fireEvent.click(await screen.findByRole('button', { name: 'Retry' }));
+	const retrying = screen.getByRole('status').closest('.error-msg');
+	expect(retrying).not.toBeNull();
+
+	retry.reject(new Error('Retry failure'));
+	const alert = await screen.findByRole('alert');
+	expect(alert).not.toBe(retrying);
+});

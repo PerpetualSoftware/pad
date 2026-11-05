@@ -51,7 +51,7 @@
 		try {
 			workspaces = await api.workspaces.list();
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'Failed to load workspaces';
+			error = (err instanceof Error && err.message) || 'Failed to load workspaces';
 		} finally {
 			loading = false;
 			retrying = false;
@@ -79,15 +79,17 @@
 <div class="console-page">
 	{#if loading && !retrying}
 		<div class="loading" role="status">Loading workspaces...</div>
-	{:else if error || retrying}
-		<div class="error-msg" role={error ? 'alert' : undefined}>
-			{#if loading}
-				<p role="status">Loading workspaces...</p>
-			{:else}
-				<h2>Couldn’t load your workspaces.</h2>
-				<p>Check your connection, then try again.</p>
-			{/if}
-			<Button variant="secondary" onclick={loadWorkspaces} disabled={loading}>Retry</Button>
+	{:else if retrying}
+		<div class="error-msg">
+			<p role="status">Loading workspaces...</p>
+			<Button variant="secondary" disabled>Retry</Button>
+		</div>
+	{:else if error}
+		<!-- A separate node from the retrying one: a role added to an existing node is often not announced. -->
+		<div class="error-msg" role="alert">
+			<h2>Couldn’t load your workspaces.</h2>
+			<p>Check your connection, then try again.</p>
+			<Button variant="secondary" onclick={loadWorkspaces}>Retry</Button>
 		</div>
 	{:else}
 		<section class="section">
