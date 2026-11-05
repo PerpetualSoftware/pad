@@ -888,7 +888,7 @@ describe('send', () => {
 		expect(await thread.send('X')).toBe('sent'); // commits as 401 and detaches beside B
 		expect(thread.detached.map((m) => m.seq)).toEqual([401]);
 		h.deleteMessage.mockResolvedValueOnce({ message: { ...server.rows[400], body: '', deleted: true }, deleted: true });
-		expect(await thread.remove(401)).toBe(true);
+		expect(await thread.remove(401)).toEqual({ ok: true });
 		expect(thread.detached).toMatchObject([{ seq: 401, deleted: true, body: '' }]);
 		const live = msg(401, { mine: true, author_agent_key: '', author_is_human: true, source: 'web', body: 'live again' });
 		h.sendMessage.mockResolvedValueOnce({ message: live, replayed: true, refs: [], refs_truncated: false });
@@ -1153,7 +1153,7 @@ describe('remove', () => {
 		await readyThread();
 		server.tombstone(2);
 		h.deleteMessage.mockResolvedValue({ message: { ...server.rows[1] }, deleted: true });
-		expect(await thread.remove(2)).toBe(true);
+		expect(await thread.remove(2)).toEqual({ ok: true });
 		expect(h.deleteMessage).toHaveBeenCalledWith(1, 2);
 		expect(thread.messages[1]).toMatchObject({ seq: 2, deleted: true, body: '' });
 	});
@@ -1162,14 +1162,31 @@ describe('remove', () => {
 		await readyThread();
 		server.tombstone(2);
 		h.deleteMessage.mockResolvedValue({ message: { ...server.rows[1] }, deleted: false });
-		expect(await thread.remove(2)).toBe(true);
+		expect(await thread.remove(2)).toEqual({ ok: true });
 		expect(thread.messages[1].deleted).toBe(true);
+	});
+
+	it('keeps the live row until the server confirms success', async () => {
+		await readyThread();
+		let finish!: (value: unknown) => void;
+		h.deleteMessage.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+		const pending = thread.remove(2);
+		expect(thread.messages[1].deleted).toBe(false);
+		finish({ message: { ...server.rows[1], deleted: true, body: '' }, deleted: true });
+		expect(await pending).toEqual({ ok: true });
+		expect(thread.messages[1].deleted).toBe(true);
+	});
+
+	it.each([{}, new Error('Failed to fetch')])('returns the fallback without server error text (%s)', async (error) => {
+		await readyThread();
+		h.deleteMessage.mockRejectedValue(error);
+		expect(await thread.remove(2)).toEqual({ ok: false, message: "Couldn't delete that message. Try again." });
 	});
 
 	it('keeps the row when the delete fails', async () => {
 		await readyThread();
-		h.deleteMessage.mockRejectedValue(apiError('forbidden'));
-		expect(await thread.remove(2)).toBe(false);
+		h.deleteMessage.mockRejectedValue(apiError('forbidden', 'Only the author may delete this message'));
+		expect(await thread.remove(2)).toEqual({ ok: false, message: 'Only the author may delete this message' });
 		expect(thread.messages[1]).toMatchObject({ seq: 2, deleted: false, body: 'body 2' });
 		expect(thread.status).toBe('ready');
 	});
@@ -1177,7 +1194,7 @@ describe('remove', () => {
 	it('says not found when the conversation is gone', async () => {
 		await readyThread();
 		h.deleteMessage.mockRejectedValue(new NotFound());
-		expect(await thread.remove(2)).toBe(false);
+		expect(await thread.remove(2)).toEqual({ ok: false, message: "Couldn't delete that message. Try again." });
 		expect(thread.status).toBe('notFound');
 	});
 });
@@ -1257,7 +1274,7 @@ describe('ordering', () => {
 		const d = thread.remove(5);
 		expect(await thread.send('hello')).toBe('sent');
 		release();
-		expect(await d).toBe(true);
+		expect(await d).toEqual({ ok: true });
 		await flush();
 		expect(contiguous()).toBe('ok');
 		expect(seqs()).not.toContain(5);
@@ -1330,7 +1347,7 @@ describe('S1 serialized window', () => {
 		const d = thread.remove(2);
 		await flush();
 		release();
-		expect(await d).toBe(true);
+		expect(await d).toEqual({ ok: true });
 		await flush();
 		expect(thread.messages[1]).toMatchObject({ seq: 2, deleted: true });
 	});
@@ -1389,7 +1406,7 @@ describe('S1 serialized window', () => {
 		await detachedThread();
 		server.tombstone(7);
 		h.deleteMessage.mockResolvedValue({ message: { ...server.rows[6] }, deleted: true });
-		expect(await thread.remove(7)).toBe(true);
+		expect(await thread.remove(7)).toEqual({ ok: true });
 		expect(thread.detached).toMatchObject([{ seq: 7, deleted: true }]);
 		expect(seqs()).toEqual([1, 2, 3]);
 	});
