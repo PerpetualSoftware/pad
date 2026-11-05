@@ -155,10 +155,16 @@ func actionItemScheduleResolve(ctx context.Context, input map[string]any, env Ac
 	if _, err := time.Parse(time.RFC3339, occ); err != nil {
 		return errStructured(name, fmt.Errorf("occurrence_at %q is not an RFC3339 instant, as action=schedule reports it (next_occurrence.at)", occ)), nil
 	}
-	until, untilIsString := input["until"].(string)
-	if v, present := input["until"]; present && v != nil && !untilIsString {
-		return errStructured(name, fmt.Errorf("until must be a string, got %T", v)), nil
+	// The optional members must be strings too: stdio would stringify a number
+	// and forward it, the remote mapper would drop it.
+	for _, k := range []string{"until", "comment"} {
+		if v, present := input[k]; present && v != nil {
+			if _, ok := v.(string); !ok {
+				return errStructured(name, fmt.Errorf("%s must be a string, got %T", k, v)), nil
+			}
+		}
 	}
+	until, _ := input["until"].(string)
 	needsUntil := state == "snooze" || state == "move"
 	switch {
 	case needsUntil && strings.TrimSpace(until) == "":

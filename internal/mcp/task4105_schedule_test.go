@@ -677,3 +677,17 @@ func TestTASK4105_ResolveRefusesANonStringUntil(t *testing.T) {
 		})
 	}
 }
+
+// A non-string comment is refused too, not dropped on /mcp and stringified on
+// stdio.
+func TestTASK4105_ResolveRefusesANonStringComment(t *testing.T) {
+	in := map[string]any{"ref": "TASK-1", "state": "done", "occurrence_at": "2026-11-09T09:00:00Z", "comment": 17.0}
+	sres, disp := stdioCall(t, "schedule-resolve", in)
+	rres, seen := remoteCall(t, "schedule-resolve", withWorkspace(in))
+	if !sres.IsError || !rres.IsError || len(disp.gotPath) != 0 || len(seen) != 0 {
+		t.Fatalf("want both refused before dispatch; stdio=%v/%v remote=%v/%v", sres.IsError, disp.gotPath, rres.IsError, seen)
+	}
+	if !strings.Contains(textOf(sres), "comment must be a string") || textOf(sres) != textOf(rres) {
+		t.Fatalf("stdio: %s\nremote: %s", textOf(sres), textOf(rres))
+	}
+}
