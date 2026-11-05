@@ -65,7 +65,7 @@
 		const source = message.body;
 		closeMenu();
 		await tick();
-		const copied = await copyToClipboard(source);
+		const copied = await copyToClipboard(source, { legacyFallback: false });
 		more?.focus({ preventScroll: true });
 		if (copied) toastStore.show('Copied to clipboard', 'success');
 		else copyText = source;

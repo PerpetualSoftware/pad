@@ -189,6 +189,21 @@ describe('MessageBubble row actions', () => {
 		expect([text.selectionStart, text.selectionEnd]).toEqual([0, base.body.length]);
 		expect(toast).not.toHaveBeenCalledWith(expect.anything(), 'success');
 	});
+	it.each(['unavailable', 'denied'])('uses the manual surface when modern clipboard is %s even if legacy copy would succeed', async (kind) => {
+		Object.defineProperty(navigator, 'clipboard', { configurable: true, value: kind === 'unavailable' ? undefined : { writeText: vi.fn().mockRejectedValue(new Error('denied')) } });
+		const legacy = vi.fn(() => true);
+		Object.defineProperty(document, 'execCommand', { configurable: true, value: legacy });
+		try {
+			mount();
+			await open();
+			await fireEvent.click(screen.getByRole('menuitem', { name: 'Copy' }));
+			await tick();
+			expect(screen.getByRole('dialog', { name: 'Select and copy this message.' })).toBeInTheDocument();
+			expect(legacy).not.toHaveBeenCalled();
+		} finally {
+			Reflect.deleteProperty(document, 'execCommand');
+		}
+	});
 	it('a long press opens the same menu', async () => {
 		vi.useFakeTimers();
 		const r = mount();

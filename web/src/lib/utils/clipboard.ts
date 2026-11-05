@@ -1,9 +1,13 @@
 /**
  * Copy text to clipboard with fallback for non-HTTPS contexts.
  * navigator.clipboard requires secure context (HTTPS or localhost).
- * Falls back to execCommand('copy') for LAN/HTTP access.
+ * Falls back to execCommand('copy') for LAN/HTTP access unless the caller
+ * provides its own manual-copy surface and opts out.
  */
-export async function copyToClipboard(text: string): Promise<boolean> {
+export async function copyToClipboard(
+	text: string,
+	{ legacyFallback = true }: { legacyFallback?: boolean } = {}
+): Promise<boolean> {
 	// Try modern API first
 	if (navigator.clipboard?.writeText) {
 		try {
@@ -13,6 +17,8 @@ export async function copyToClipboard(text: string): Promise<boolean> {
 			// Fall through to legacy method
 		}
 	}
+
+	if (!legacyFallback) return false;
 
 	// Legacy fallback using a temporary textarea
 	const textarea = document.createElement('textarea');
