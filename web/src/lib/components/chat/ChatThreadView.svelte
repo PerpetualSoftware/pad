@@ -1,0 +1,331 @@
+<script lang="ts">
+	import { onDestroy, onMount, tick, untrack } from 'svelte';
+	import ChatBackLink from '$lib/components/chat/ChatBackLink.svelte';
+	import Composer from '$lib/components/chat/Composer.svelte';
+	import MessageBubble from '$lib/components/chat/MessageBubble.svelte';
+	import PendingBubble from '$lib/components/chat/PendingBubble.svelte';
+	import PresenceDot from '$lib/components/chat/PresenceDot.svelte';
+	import UnreadDivider from '$lib/components/chat/UnreadDivider.svelte';
+	import { chatInbox } from '$lib/stores/chatInbox.svelte';
+	import { ChatThread } from '$lib/stores/chatThread.svelte';
+	import { toastStore } from '$lib/stores/toast.svelte';
+	import type { ChatMessage } from '$lib/types';
+
+	// The thread (TASK-4044 PR 3a and 3b, decisions 4cf4d4b9 and 2de240d9). The
+	// store owns the window; this view owns the scroll container, the bottom
+	// sentinel that says what the reader has seen, and the reply target. The
+	// caller says which conversation: null is a number that cannot name one.
+	let { n }: { n: number | null } = $props();
+
+	const thread = new ChatThread();
+	// Bumped by "Try again" so the load effect below re-runs (TASK-4044 2b-i, decision 90709f40).
+	let retry = $state(0);
+
+	let scroller = $state<HTMLElement | null>(null);
+	let sentinel = $state<HTMLElement | null>(null);
+	let positioned = false;
+	let lastNewest = 0;
+	let replyTo = $state<ChatMessage | null>(null);
+	let composer = $state<Composer | null>(null);
+	let lastOwnSend = 0;
+	// Loading newer messages while a send is in flight would race the send's own
+	// confirmed row into the window (TASK-4044, decision 2a03a442).
+	let sending = $derived(thread.items.some((it) => it.kind === 'pending' && it.pending.status === 'sending'));
+
+	// The presence dot polls only while this page is open.
+	onMount(() => chatInbox.startPresence());
+	onDestroy(() => {
+		chatInbox.stopPresence();
+		thread.dispose();
+	});
+
+	$effect(() => {
+		const target = n;
+		void retry;
+		positioned = false;
+		lastNewest = 0;
+		untrack(() => {
+			replyTo = null;
+			void thread.open(target);
+		});
+	});
+
+	// First paint of a window: at the "N new" divider when there is one, else the end.
+	$effect(() => {
+		if (thread.status !== 'ready' || positioned || !scroller) return;
+		positioned = true;
+		lastNewest = thread.newestSeq;
+		void tick().then(() => {
+			const divider = scroller?.querySelector('#unread-divider');
+			if (divider) divider.scrollIntoView?.({ block: 'start' });
+			else if (scroller) scroller.scrollTop = scroller.scrollHeight;
+		});
+	});
+
+	// A new row follows the reader only when they are at the end and nothing waits
+	// beyond the window; otherwise nothing scrolls.
+	$effect(() => {
+		const newest = thread.newestSeq;
+		if (!positioned || !scroller) return;
+		const follow = newest > lastNewest && thread.atBottom && !thread.hasNewer;
+		lastNewest = newest;
+		if (follow) {
+			void tick().then(() => {
+				if (scroller) scroller.scrollTop = scroller.scrollHeight;
+			});
+		}
+	});
+
+	// An own send, shown or confirmed, scrolls to the end even from further up
+	// (decision d87482de); a row from elsewhere only follows a reader at the end.
+	$effect(() => {
+		const sendTick = thread.ownSendTick;
+		if (!positioned || !scroller || sendTick === lastOwnSend) return;
+		lastOwnSend = sendTick;
+		void tick().then(() => {
+			if (scroller) scroller.scrollTop = scroller.scrollHeight;
+		});
+	});
+
+	// The sentinel at the end of the window: in view means the reader has seen the end.
+	$effect(() => {
+		if (!sentinel || !scroller || typeof IntersectionObserver === 'undefined') return;
+		const io = new IntersectionObserver(
+			(entries) => {
+				const last = entries[entries.length - 1];
+				if (last) thread.atBottom = last.isIntersecting;
+			},
+			{ root: scroller }
+		);
+		io.observe(sentinel);
+		return () => io.disconnect();
+	});
+
+	// Mark read once the end is in view on a visible tab; also retried on a refresh.
+	$effect(() => {
+		void thread.atBottom;
+		void thread.newestSeq;
+		void thread.status;
+		untrack(() => thread.tryMarkRead());
+	});
+	onMount(() => {
+		const onVisible = () => thread.tryMarkRead();
+		document.addEventListener('visibilitychange', onVisible);
+		return () => document.removeEventListener('visibilitychange', onVisible);
+	});
+
+	async function loadOlder() {
+		const el = scroller;
+		const before = el ? el.scrollHeight - el.scrollTop : 0;
+		await thread.loadOlder();
+		await tick();
+		// Keep the row the reader was looking at where it was.
+		if (el) el.scrollTop = el.scrollHeight - before;
+	}
+
+	function jumpToUnread() {
+		scroller?.querySelector('#unread-divider')?.scrollIntoView?.({ block: 'start' });
+	}
+
+	// Reply puts the reader into the composer; the bar is there after the tick.
+	function startReply(m: ChatMessage) {
+		replyTo = m;
+		void tick().then(() => composer?.focus());
+	}
+
+	// Retry and Discard unmount with the status flip, so focus would fall to body.
+	function refocusComposer() {
+		void tick().then(() => composer?.focus());
+	}
+
+	// The reply bar goes only once the delete went through, and only if it still quotes this row.
+	async function deleteMessage(m: ChatMessage) {
+		if (await thread.remove(m.seq)) {
+			if (replyTo?.seq === m.seq) replyTo = null;
+		} else if (thread.status === 'ready') {
+			toastStore.show("Couldn't delete that message. Try again.", 'error');
+		}
+	}
+
+	function jumpToQuote(seq: number) {
+		scroller?.querySelector(`#msg-${seq}`)?.scrollIntoView?.({ block: 'center' });
+	}
+
+	let conversation = $derived(thread.conversation);
+	let dividerAt = $derived(thread.dividerIndex);
+</script>
+
+<header class="chat-header">
+	<ChatBackLink />
+	<a class="all-chats" href="/messages">All conversations</a>
+	{#if conversation}
+		<span class="presence">
+			<PresenceDot
+				state={chatInbox.presenceFor(conversation.agent_key)}
+				checkedAt={chatInbox.checkedAt}
+			/>
+			{conversation.agent_key}
+		</span>
+	{/if}
+</header>
+
+{#if thread.status === 'notFound'}
+	<h1>Conversation not found</h1>
+{:else if thread.status === 'failed'}
+	<h1>Could not load this conversation</h1>
+	<button type="button" class="retry" onclick={() => retry++}>Try again</button>
+{:else}
+	<h1>{conversation ? conversation.title || conversation.agent_key : 'Chat'}</h1>
+	{#if thread.status === 'ready'}
+		{#if thread.refreshFailed}
+			<p class="banner" role="status">
+				Couldn't refresh this conversation.
+				<button type="button" class="retry" onclick={() => void thread.refresh()}>Try again</button>
+			</p>
+		{/if}
+		{#if dividerAt >= 0}
+			<button type="button" class="jump" onclick={jumpToUnread}>Jump to unread</button>
+		{/if}
+		<div class="scroller" bind:this={scroller}>
+			{#if thread.hasOlder}
+				<div class="edge">
+					<button
+						type="button"
+						class="older"
+						disabled={thread.loadingOlder}
+						onclick={() => void loadOlder()}>Load earlier</button
+					>
+					{#if thread.olderFailed}
+						<span class="banner" role="status">Couldn't load earlier messages. Try again.</span>
+					{/if}
+				</div>
+			{/if}
+			<div class="messages">
+				{#each thread.items as item, i (item.kind === 'message' ? `m${item.message.seq}` : `p${item.pending.op_key}`)}
+					{#if item.kind === 'message'}
+						{#if i === dividerAt}
+							<UnreadDivider count={thread.unreadCount} more={thread.hasNewer} />
+						{/if}
+						<MessageBubble
+							message={item.message}
+							refs={thread.refs}
+							onJumpToQuote={jumpToQuote}
+							onReply={startReply}
+							onDelete={deleteMessage}
+						/>
+					{:else}
+						<PendingBubble
+							pending={item.pending}
+							onRetry={(k) => {
+								const body = item.pending.body;
+								// A refused Retry discards its bubble: the text comes back with its notice, as for a refused send.
+								void thread.retry(k).then((outcome) => {
+									if (outcome !== 'sent' && outcome !== 'failed' && outcome !== 'stale') composer?.restore(body, outcome);
+								});
+								refocusComposer();
+							}}
+							onDiscard={(k) => {
+								thread.discard(k);
+								refocusComposer();
+							}}
+						/>
+					{/if}
+				{:else}
+					<p class="empty">No messages yet.</p>
+				{/each}
+			</div>
+			{#if thread.hasNewer}
+				<div class="edge">
+					<button
+						type="button"
+						class="newer"
+						disabled={thread.loadingNewer || sending}
+						aria-busy={sending ? 'true' : undefined}
+						onclick={() => void thread.loadNewer()}>Show newer messages</button
+					>
+					{#if thread.newerFailed}
+						<span class="banner" role="status">Couldn't load newer messages. Try again.</span>
+					{/if}
+				</div>
+			{/if}
+			<!-- A flex column like .messages, so .bubble.mine { align-self: flex-end } applies. -->
+			<div class="detached">
+				{#each thread.detached as m (m.seq)}
+					<MessageBubble
+						message={m}
+						refs={thread.refs}
+						onJumpToQuote={jumpToQuote}
+						onReply={startReply}
+						onDelete={deleteMessage}
+					/>
+				{/each}
+			</div>
+			<div class="sentinel" bind:this={sentinel} aria-hidden="true"></div>
+		</div>
+		{#if n !== null}
+			{#key n}
+				<Composer
+					bind:this={composer}
+					{n}
+					{replyTo}
+					onClearReply={() => (replyTo = null)}
+					onSend={(body, replyToSeq) => thread.send(body, replyToSeq)}
+				/>
+			{/key}
+		{/if}
+	{/if}
+{/if}
+
+<style>
+	.chat-header {
+		display: flex;
+		gap: var(--space-4);
+		margin-bottom: var(--space-4);
+	}
+	.presence {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-2);
+		margin-left: auto;
+		font-size: 0.85rem;
+	}
+	.all-chats {
+		color: var(--text-secondary);
+		font-size: 0.85rem;
+	}
+	h1 {
+		margin: 0 0 var(--space-3);
+		font-size: 1.5rem;
+	}
+	.scroller {
+		flex: 1;
+		min-height: 0;
+		overflow-y: auto;
+		padding-bottom: var(--space-3);
+	}
+	.messages,
+	.detached {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+	}
+	.edge {
+		display: flex;
+		gap: var(--space-3);
+		align-items: center;
+		justify-content: center;
+		padding: var(--space-2) 0;
+	}
+	.banner,
+	.empty {
+		color: var(--text-secondary);
+		font-size: 0.85rem;
+	}
+	.jump {
+		align-self: flex-start;
+		margin-bottom: var(--space-2);
+	}
+	.sentinel {
+		height: 1px;
+	}
+</style>
