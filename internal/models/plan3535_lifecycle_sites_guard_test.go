@@ -48,7 +48,7 @@ var lifecycleSites = map[string]string{
 	"internal/store/items.go::nonTerminalFilter::buildChildrenDoneExpr":            "keep: as above",
 	"internal/store/items.go::listItemsQ::nonTerminalFilter":                       "keep: `pad item list` / MCP list's default open filter, a list's own items (ListItems delegates here; ListItemsQ refuses NonTerminal, BUG-3659)",
 	"internal/store/items.go::listItemsFTS::nonTerminalFilter":                     "keep: the same filter on the search-backed list",
-	"internal/store/schedule_agenda.go::ListSchedulesForAgenda::nonTerminalFilter": "keep: lists the time triggers someone attached to an item, not open work; a schedule on a reference item is deliberate (TASK-4104)",
+	"internal/store/schedule_agenda.go::listAgendaSchedules::nonTerminalFilter": "keep: lists the time triggers someone attached to an item, not open work; a schedule on a reference item is deliberate (TASK-4104)",
 
 	// Progress.
 	"internal/store/items.go::GetItemProgress::buildChildrenDoneExpr":                   "exclude: counted only where buildChildrenUncountedExpr is false",
