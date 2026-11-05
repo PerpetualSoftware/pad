@@ -673,7 +673,7 @@
 				if (!identityHeld(epochAtEntry)) return;
 				inviteResult = {
 					message: `Invitation created for ${result.email}. ` + (ok ? 'Link copied' : 'Couldn’t copy the invitation link. Copy it below and send it to the invitee.'),
-					type: 'success'
+					type: ok ? 'success' : 'error'
 				};
 			}
 			// Reload members

@@ -120,7 +120,10 @@ describe('BUG-4335: invitation creation and clipboard feedback', () => {
 		else vi.mocked(copyToClipboard).mockResolvedValueOnce(false);
 		await mount();
 		await invite();
-		await screen.findByText(`${CREATED} ${COPY_FAILED}`);
+		const failed = await screen.findByText(`${CREATED} ${COPY_FAILED}`);
+		// A failed copy is an error state, never styled as success.
+		expect(failed.classList.contains('invite-error')).toBe(true);
+		expect(failed.classList.contains('invite-success')).toBe(false);
 		linkField();
 		expect(document.body.textContent).not.toContain('Link copied');
 		await fireEvent.click(screen.getByRole('button', { name: 'Copy invitation link' }));
