@@ -655,3 +655,72 @@ func newSeededMonitorChat(f *fakeChatSink, printed *recentSet) *monitorChat {
 	}
 	return c
 }
+
+// BUG-4320: the unread summary prints at most once, across the connect-time
+// resync, a sync_required resync, and a reconnect that builds a new monitorChat.
+func TestMonitorUnreadSummaryPrintsOnce(t *testing.T) {
+	chatSessionEnv(t)
+	const marker = "unread messages"
+	resync := "event: sync_required\ndata: {}\n\n"
+
+	t.Run("connect then sync_required in one stream", func(t *testing.T) {
+		f := &fakeChatSink{total: 4}
+		var out bytes.Buffer
+		newMonitorChat(f, newRecentSet(256, 10*time.Minute)).stream(&out, fakeSSEResponse(resync+resync), "")
+		if n := strings.Count(out.String(), marker); n != 1 {
+			t.Fatalf("summary printed %d times, want 1:\n%s", n, out.String())
+		}
+	})
+
+	t.Run("a reconnect with the same count stays quiet", func(t *testing.T) {
+		f := &fakeChatSink{total: 4}
+		printed := newRecentSet(256, 10*time.Minute)
+		var out bytes.Buffer
+		for i := 0; i < 3; i++ {
+			newMonitorChat(f, printed).stream(&out, fakeSSEResponse(""), "")
+		}
+		if n := strings.Count(out.String(), marker); n != 1 {
+			t.Fatalf("summary printed %d times over 3 connects, want 1:\n%s", n, out.String())
+		}
+	})
+
+	t.Run("a changed count prints again", func(t *testing.T) {
+		f := &fakeChatSink{total: 4}
+		printed := newRecentSet(256, 10*time.Minute)
+		var out bytes.Buffer
+		newMonitorChat(f, printed).stream(&out, fakeSSEResponse(""), "")
+		f.total = 5
+		newMonitorChat(f, printed).stream(&out, fakeSSEResponse(""), "")
+		if !strings.Contains(out.String(), "4 unread messages") || !strings.Contains(out.String(), "5 unread messages") {
+			t.Fatalf("want both counts printed:\n%s", out.String())
+		}
+	})
+
+	t.Run("back to the same count after the inbox cleared prints again", func(t *testing.T) {
+		f := &fakeChatSink{total: 4}
+		printed := newRecentSet(256, 10*time.Minute)
+		var out bytes.Buffer
+		newMonitorChat(f, printed).stream(&out, fakeSSEResponse(""), "")
+		f.total = 0
+		newMonitorChat(f, printed).stream(&out, fakeSSEResponse(""), "")
+		f.total = 4
+		newMonitorChat(f, printed).stream(&out, fakeSSEResponse(""), "")
+		if n := strings.Count(out.String(), "4 unread messages"); n != 2 {
+			t.Fatalf("4 unread printed %d times, want 2:\n%s", n, out.String())
+		}
+	})
+
+	t.Run("the window expires", func(t *testing.T) {
+		f := &fakeChatSink{total: 4}
+		printed := newRecentSet(256, 10*time.Minute)
+		now := time.Now()
+		printed.now = func() time.Time { return now }
+		var out bytes.Buffer
+		newMonitorChat(f, printed).stream(&out, fakeSSEResponse(""), "")
+		now = now.Add(11 * time.Minute)
+		newMonitorChat(f, printed).stream(&out, fakeSSEResponse(""), "")
+		if n := strings.Count(out.String(), marker); n != 2 {
+			t.Fatalf("summary printed %d times across the window, want 2:\n%s", n, out.String())
+		}
+	})
+}

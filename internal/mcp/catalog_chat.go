@@ -51,8 +51,8 @@ Actions:
     reaches back to the last read message; empty pages mark nothing.
     Both transports report mark success, a gap, or a mark error.
     Required: target. Optional: since, limit, no_mark.
-  send — Send; ensure an unknown @name DM first. Replying marks read only
-    to reply_to; plain sends mark nothing. Never auto-retry.
+  send — Send; ensure an unknown @name DM first. A send moves your own read
+    marker to the new message, so it covers everything before it. Never auto-retry.
     Required: target, body. Optional: reply_to, op_key, context_workspace.
   delete — Delete your message, keeping a tombstone.
     Required: target, seq. Optional: none.

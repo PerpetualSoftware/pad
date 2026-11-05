@@ -424,8 +424,26 @@ func (c *monitorChat) applySummary(w io.Writer, result monitorChatSummary) bool 
 		return false
 	}
 	summary := result.unread
-	if summary.Total > 0 {
-		_ = c.emit(w, fmt.Sprintf("Pad chat: %d unread messages — use pad chat show to read them.", summary.Total))
+	if summary.Total == 0 {
+		// An empty inbox ends the notice, so the same count later is news again.
+		c.printed.forgetPrefix(unreadSummaryKey)
+		return true
+	}
+	// BUG-4320: print the summary at most once per window. A connect-time
+	// resync, a sync_required resync and a reconnect (which builds a new
+	// monitorChat over the same printed set) all reach here with the same count.
+	line := fmt.Sprintf("Pad chat: %d unread messages — use pad chat show to read them.", summary.Total)
+	key := unreadSummaryKey + line
+	if c.printed.contains(key) {
+		return true
+	}
+	c.printed.forgetPrefix(unreadSummaryKey)
+	if err := c.emit(w, line); err == nil {
+		c.printed.seen(key)
 	}
 	return true
 }
+
+// unreadSummaryKey prefixes the summary line's entry in the printed set, apart
+// from message ids.
+const unreadSummaryKey = "unread-summary:"

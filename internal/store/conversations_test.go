@@ -676,55 +676,130 @@ func TestSendReplyTo(t *testing.T) {
 	}
 }
 
-// TASK-4038 r6: sending must not acknowledge unseen messages from the other side.
-func TestSendLeavesMarkersAlone(t *testing.T) {
-	for _, scenario := range []string{"unseen human messages", "plain send"} {
-		t.Run(scenario, func(t *testing.T) {
-			s := testStore(t)
-			u := chatUser(t, s, "alice")
-			c := chatDM(t, s, u, "claude")
-			human := models.ConversationActor{UserID: u.ID}
-			agent := models.ConversationActor{UserID: u.ID, AgentKey: "claude"}
-			marks := func(actor models.ConversationActor) {
-				t.Helper()
-				var rs, ds int64
-				if err := s.db.QueryRow(s.q(`SELECT read_seq, delivered_seq FROM conversation_members WHERE conversation_id = ? AND user_id = ? AND agent_key = ?`), c.ID, actor.UserID, actor.AgentKey).Scan(&rs, &ds); err != nil {
-					t.Fatal(err)
-				}
-				if rs != 0 || ds != 0 {
-					t.Errorf("%q markers = %d/%d, want 0/0", actor.AgentKey, rs, ds)
-				}
-			}
-			if scenario == "unseen human messages" {
-				chatSend(t, s, c.ID, human, "m1", "", nil)
-				chatSend(t, s, c.ID, human, "m2", "", nil)
-				marks(agent)
-				r := chatSend(t, s, c.ID, agent, "m3", "", nil)
-				if r.Message.Seq != 3 {
-					t.Fatalf("m3 seq = %d, want 3", r.Message.Seq)
-				}
-				marks(agent)
-				for _, tc := range []struct {
-					actor models.ConversationActor
-					want  int
-				}{{agent, 2}, {human, 1}} {
-					rows, total, err := s.UnreadSummary(tc.actor)
-					if err != nil || len(rows) != 1 || total != tc.want {
-						t.Errorf("%q unread = %+v total=%d, want %d: %v", tc.actor.AgentKey, rows, total, tc.want, err)
-					} else if rows[0].ConversationID != c.ID || rows[0].Unread != tc.want {
-						t.Errorf("%q unread row = %+v, want conversation %s unread %d", tc.actor.AgentKey, rows[0], c.ID, tc.want)
-					}
-				}
-			} else {
-				r := chatSend(t, s, c.ID, human, "hi", "", nil)
-				marks(human)
-				marks(agent)
-				if len(r.Recipients) != 1 || r.Recipients[0] != agent {
-					t.Fatalf("recipients = %+v", r.Recipients)
-				}
-			}
-		})
+// BUG-4320: a send moves the sender's own read marker to the newest message at
+// the moment of the send. It never touches delivered_seq or another member.
+func TestSendAdvancesSenderReadMarker(t *testing.T) {
+	marks := func(t *testing.T, s *Store, convID string, actor models.ConversationActor) (int64, int64) {
+		t.Helper()
+		var rs, ds int64
+		if err := s.db.QueryRow(s.q(`SELECT read_seq, delivered_seq FROM conversation_members WHERE conversation_id = ? AND user_id = ? AND agent_key = ?`), convID, actor.UserID, actor.AgentKey).Scan(&rs, &ds); err != nil {
+			t.Fatal(err)
+		}
+		return rs, ds
 	}
+	unread := func(t *testing.T, s *Store, actor models.ConversationActor) int {
+		t.Helper()
+		_, total, err := s.UnreadSummary(actor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return total
+	}
+
+	t.Run("agent reply covers the messages it answered", func(t *testing.T) {
+		s := testStore(t)
+		u := chatUser(t, s, "alice")
+		c := chatDM(t, s, u, "claude")
+		human := models.ConversationActor{UserID: u.ID}
+		agent := models.ConversationActor{UserID: u.ID, AgentKey: "claude"}
+		for _, b := range []string{"m1", "m2", "m3", "m4"} {
+			chatSend(t, s, c.ID, human, b, "", nil)
+		}
+		if got := unread(t, s, agent); got != 4 {
+			t.Fatalf("agent unread before reply = %d, want 4", got)
+		}
+		r := chatSend(t, s, c.ID, agent, "answer", "", nil)
+		if r.Message.Seq != 5 {
+			t.Fatalf("reply seq = %d, want 5", r.Message.Seq)
+		}
+		if rs, ds := marks(t, s, c.ID, agent); rs != 5 || ds != 0 {
+			t.Errorf("agent read/delivered = %d/%d, want 5/0", rs, ds)
+		}
+		if got := unread(t, s, agent); got != 0 {
+			t.Errorf("agent unread after reply = %d, want 0", got)
+		}
+		if rs, ds := marks(t, s, c.ID, human); rs != 4 || ds != 0 {
+			t.Errorf("human markers = %d/%d, want 4/0 (its own four sends, not the reply)", rs, ds)
+		}
+		if got := unread(t, s, human); got != 1 {
+			t.Errorf("human unread = %d, want 1 (the reply)", got)
+		}
+	})
+
+	t.Run("a message after the reply stays unread", func(t *testing.T) {
+		s := testStore(t)
+		u := chatUser(t, s, "alice")
+		c := chatDM(t, s, u, "claude")
+		human := models.ConversationActor{UserID: u.ID}
+		agent := models.ConversationActor{UserID: u.ID, AgentKey: "claude"}
+		chatSend(t, s, c.ID, human, "m1", "", nil)
+		chatSend(t, s, c.ID, agent, "answer", "", nil)
+		chatSend(t, s, c.ID, human, "m3", "", nil)
+		if got := unread(t, s, agent); got != 1 {
+			t.Errorf("agent unread = %d, want 1", got)
+		}
+	})
+
+	t.Run("a human send advances the human marker", func(t *testing.T) {
+		s := testStore(t)
+		u := chatUser(t, s, "alice")
+		c := chatDM(t, s, u, "claude")
+		human := models.ConversationActor{UserID: u.ID}
+		agent := models.ConversationActor{UserID: u.ID, AgentKey: "claude"}
+		chatSend(t, s, c.ID, agent, "a1", "", nil)
+		chatSend(t, s, c.ID, agent, "a2", "", nil)
+		if got := unread(t, s, human); got != 2 {
+			t.Fatalf("human unread before send = %d, want 2", got)
+		}
+		r := chatSend(t, s, c.ID, human, "hi", "", nil)
+		if rs, ds := marks(t, s, c.ID, human); rs != r.Message.Seq || ds != 0 {
+			t.Errorf("human read/delivered = %d/%d, want %d/0", rs, ds, r.Message.Seq)
+		}
+		if got := unread(t, s, human); got != 0 {
+			t.Errorf("human unread after send = %d, want 0", got)
+		}
+		if rs, ds := marks(t, s, c.ID, agent); rs != 2 || ds != 0 {
+			t.Errorf("agent markers = %d/%d, want 2/0 (its own sends only)", rs, ds)
+		}
+	})
+
+	t.Run("an op_key replay moves nothing", func(t *testing.T) {
+		s := testStore(t)
+		u := chatUser(t, s, "alice")
+		c := chatDM(t, s, u, "claude")
+		human := models.ConversationActor{UserID: u.ID}
+		agent := models.ConversationActor{UserID: u.ID, AgentKey: "claude"}
+		chatSend(t, s, c.ID, agent, "first", "k1", nil)
+		chatSend(t, s, c.ID, human, "reply", "", nil)
+		chatSend(t, s, c.ID, agent, "first", "k1", nil)
+		if rs, _ := marks(t, s, c.ID, agent); rs != 1 {
+			t.Errorf("agent read after replay = %d, want 1", rs)
+		}
+	})
+
+	t.Run("concurrent sends from one member never move the marker backwards", func(t *testing.T) {
+		s := testStore(t)
+		u := chatUser(t, s, "alice")
+		c := chatDM(t, s, u, "claude")
+		agent := models.ConversationActor{UserID: u.ID, AgentKey: "claude"}
+		const n = 8
+		var wg sync.WaitGroup
+		for i := 0; i < n; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				if _, err := s.SendConversationMessage(models.ConversationSend{
+					ConversationID: c.ID, Author: agent, Source: "test", Body: fmt.Sprintf("c%d", i),
+				}); err != nil {
+					t.Errorf("send %d: %v", i, err)
+				}
+			}(i)
+		}
+		wg.Wait()
+		if rs, _ := marks(t, s, c.ID, agent); rs != n {
+			t.Errorf("agent read after %d concurrent sends = %d, want %d", n, rs, n)
+		}
+	})
 }
 
 // TASK-4038 r6: explain the actual replay queries, including the context-loss fallback.
@@ -1178,14 +1253,17 @@ func TestUnreadExcludesOwnAndDeleted(t *testing.T) {
 	}
 	rows := check(human, 2, 2)
 	for _, row := range rows {
-		if row.Unread != 1 || row.ReadSeq != 0 || (row.ConversationID == c.ID && (row.Number != c.Number || row.AgentKey != "claude" || row.LastSeq != 3 || row.DeliveredSeq != 1)) {
+		// BUG-4320: the human's own send in c moved its read marker to 1.
+		wantRead := int64(0)
+		if row.ConversationID == c.ID {
+			wantRead = 1
+		}
+		if row.Unread != 1 || row.ReadSeq != wantRead || (row.ConversationID == c.ID && (row.Number != c.Number || row.AgentKey != "claude" || row.LastSeq != 3 || row.DeliveredSeq != 1)) {
 			t.Fatalf("human unread row: %+v", row)
 		}
 	}
-	rows = check(agent, 1, 1)
-	if rows[0].ConversationID != c.ID || rows[0].AgentKey != "claude" || rows[0].DeliveredSeq != 3 {
-		t.Fatalf("agent unread row: %+v", rows[0])
-	}
+	// BUG-4320: the agent's replies in c covered the human message before them.
+	check(agent, 0, 0)
 	for _, actor := range []models.ConversationActor{human, agent} {
 		if _, err := s.MarkConversationRead(actor, c.ID, 999); err != nil {
 			t.Fatal(err)
