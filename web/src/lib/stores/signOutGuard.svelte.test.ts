@@ -164,3 +164,26 @@ describe('BUG-3571 part 2: sign-out purges the kept drafts', () => {
 		off();
 	});
 });
+
+// TASK-4315: all chat records, including closed threads, are purged and sealed.
+describe('chat records on sign-out', () => {
+	beforeEach(() => { signOutFailed(); sessionStorage.clear(); confirmDialog.abandonAll(); });
+	it.each([false, true])('purges and seals on the atRisk=%s path; failure permits writes again', async (atRisk) => {
+		const records = await import('$lib/chat/chatRecords');
+		records.setDraft('u1', 1, 'open');
+		records.setDraft('u1', 99, 'closed');
+		records.savePending('u1', 99, 'op', 'pending');
+		expect(sessionStorage.length).toBe(3);
+		const off = registerSignOutGuard({ atRisk: () => atRisk, discard: () => {} });
+		try {
+			const answer = confirmSignOut();
+			if (atRisk) confirmDialog.confirm();
+			expect(await answer).toBe(true);
+			expect(sessionStorage.length).toBe(0);
+			records.setDraft('u1', 1, 'teardown');
+			expect(records.getDraft('u1', 1)).toBeNull();
+			signOutFailed();
+			expect(records.setDraft('u1', 1, 'continue')).toBe(true);
+		} finally { off(); }
+	});
+});

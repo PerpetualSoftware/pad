@@ -1,7 +1,8 @@
 <script lang="ts">
+	import { purgeNotUser } from '$lib/chat/chatRecords';
 	import { modKeyLabel } from '$lib/utils/platform';
 	import '../app.css';
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
@@ -253,6 +254,13 @@
 		}
 
 		authReady = true;
+	});
+
+	let chatRecordsChecked = false;
+	$effect(() => {
+		if (!authReady || chatRecordsChecked) return;
+		chatRecordsChecked = true;
+		untrack(() => purgeNotUser(authStore.userId));
 	});
 
 	$effect(() => {
