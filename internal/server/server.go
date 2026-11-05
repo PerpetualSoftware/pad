@@ -48,6 +48,10 @@ import (
 )
 
 type Server struct {
+	// calendarPageOverride, when non-zero, replaces calendarPageSize for this
+	// server's calendar reads. Tests only.
+	calendarPageOverride int
+
 	// sseKeepaliveOverride, when non-zero, replaces sseKeepaliveInterval for
 	// this server's SSE streams, and watchEventsKeepaliveInterval for the
 	// watch stream's (BUG-3637). Tests only (TASK-2197): the real interval is

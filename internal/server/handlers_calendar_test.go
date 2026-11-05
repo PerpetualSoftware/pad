@@ -9,8 +9,10 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // TASK-4239: GET /workspaces/{ws}/collections/{coll}/calendar.
@@ -316,8 +318,7 @@ func TestCalendarPageFiltersExcludeItemsAndTheirSchedules(t *testing.T) {
 
 	m := w.calOK(t, w.owner, "tasks", calMarch) // no filter: the whole page, terminal included
 	eq(t, "unfiltered items", calItemTitles(m), "CAL keep", "CAL drop")
-	// A done item's schedule is not on the calendar: the schedules are the
-	// agenda's read, which is of open items.
+	// A done item with no recorded occurrence has no entry to show.
 	eq(t, "unfiltered entries", calEntryTitles(m), "CAL keep", "CAL keep undated")
 
 	m = w.calOK(t, w.owner, "tasks", calMarch+"&status=open")
@@ -584,5 +585,311 @@ func TestViewTypeValidation(t *testing.T) {
 	}
 	if code, m = patch(calID, map[string]any{"name": "Again"}); code != http.StatusOK {
 		t.Errorf("rename: %d %v", code, m)
+	}
+}
+
+// --- finished items' schedules (rule A for schedules) ---
+
+const calPast = calMarch
+
+var dailyPast = models.ScheduleCreate{Kind: "check", Dtstart: "2031-03-05T09:00", Tz: "UTC", Rrule: "FREQ=DAILY"}
+
+// finish records the 5 March occurrence as done and the 6 March one as skipped,
+// then moves the item to done when terminal is set.
+func (w *agendaWorld) finish(t *testing.T, title, coll string, terminal bool) *models.Item {
+	t.Helper()
+	it := w.item(t, coll, title, `{"status":"open"}`, &dailyPast)
+	for i, state := range []string{"done", "skip"} {
+		in := store.ResolveInput{OccurrenceAt: time.Date(2031, 3, 5+i, 9, 0, 0, 0, time.UTC), State: state, Actor: "user"}
+		if _, err := w.srv.store.ResolveOccurrence(w.ws.ID, it.ID, in); err != nil {
+			t.Fatalf("resolve %s %s: %v", title, state, err)
+		}
+	}
+	if terminal {
+		f := `{"status":"done"}`
+		if _, err := w.srv.store.UpdateItem(it.ID, models.ItemUpdate{Fields: &f}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return it
+}
+
+func entryStates(m map[string]any, title string) map[string]bool {
+	out := map[string]bool{}
+	for _, e := range entriesOf(m) {
+		if e["item_title"] == title {
+			out[fmt.Sprint(e["state"])] = true
+		}
+	}
+	return out
+}
+
+func TestCalendarFinishedItemShowsRecordedEntriesOnly(t *testing.T) {
+	t.Parallel()
+	w := newAgendaWorld(t, "tasks")
+	w.finish(t, "FIN done", "tasks", true)
+	w.finish(t, "FIN open", "tasks", false)
+
+	m := w.calOK(t, w.owner, "tasks", calPast)
+	fin := entryStates(m, "FIN done")
+	if !fin["done"] || !fin["skipped"] {
+		t.Errorf("a finished item shows what was recorded: states %v", fin)
+	}
+	for st := range fin {
+		if st != "done" && st != "skipped" && st != "moved" && st != "missed" {
+			t.Errorf("a finished item shows a %q entry; only recorded states belong there", st)
+		}
+	}
+	// The same schedule on an open item still shows the rest (so the test can tell).
+	open := entryStates(m, "FIN open")
+	if !open["done"] || (!open["outstanding"] && !open["scheduled"]) || len(open) < 3 {
+		t.Errorf("an open item keeps its unrecorded entries: %v", open)
+	}
+	// Day of the recorded entries is carried as for any entry.
+	for _, e := range entriesOf(m) {
+		if e["item_title"] == "FIN done" && e["state"] == "done" && e["day"] != "2031-03-05" {
+			t.Errorf("done entry day = %v", e["day"])
+		}
+	}
+
+	// A window with no history row near it: the finished item takes no entry.
+	m = w.calOK(t, w.owner, "tasks", "from=2032-03-01T00:00:00Z&to=2032-03-31T00:00:00Z&date_field=due_date")
+	if got := entryStates(m, "FIN done"); len(got) != 0 {
+		t.Errorf("a finished item with no record in the window shows %v", got)
+	}
+	if got := entryStates(m, "FIN open"); len(got) == 0 {
+		t.Errorf("an open item keeps projecting")
+	}
+
+	// The agenda is untouched, and no parameter can turn the option on.
+	for _, q := range []string{"from=2031-03-01T00:00:00Z&to=2031-03-31T00:00:00Z", "from=2031-03-01T00:00:00Z&to=2031-03-31T00:00:00Z&include_terminal=true&terminal=1"} {
+		am := w.ok(t, w.owner, q)
+		if got := entryStates(am, "FIN done"); len(got) != 0 {
+			t.Errorf("the agenda %q shows a finished item: %v", q, got)
+		}
+	}
+	// Nor on the calendar route: an unknown parameter is a list filter, refused.
+	if code, _, _ := w.cal(t, w.owner, "tasks", "from=2032-03-01T00:00:00Z&to=2032-03-31T00:00:00Z&date_field=due_date&include_terminal=true"); code != http.StatusBadRequest {
+		t.Errorf("include_terminal on the calendar: %d, want it refused as an unknown filter", code)
+	}
+}
+
+func TestCalendarFinishedItemScope(t *testing.T) {
+	t.Parallel()
+	w := newAgendaWorld(t, "tasks", "secret")
+	w.finish(t, "FS granted done", "tasks", true)
+	w.finish(t, "FS hidden done", "tasks", true)
+	w.finish(t, "FS secret done", "secret", true)
+	gone := w.finish(t, "FS deleted done", "tasks", true)
+	if err := w.srv.store.DeleteItem(gone.ID); err != nil {
+		t.Fatal(err)
+	}
+	guest := mustUser(t, w.srv, "fs-guest@example.com", "fsguest", "")
+	if _, err := w.srv.store.CreateItemGrant(w.ws.ID, w.items["FS granted done"].ID, guest.ID, "view", w.owner.ID); err != nil {
+		t.Fatal(err)
+	}
+	// Another workspace with the same shape.
+	other := newAgendaWorld(t, "tasks")
+	other.finish(t, "FS other workspace", "tasks", true)
+
+	has := func(m map[string]any, title string) bool { return len(entryStates(m, title)) > 0 }
+	m := w.calOK(t, guest, "tasks", calPast)
+	if !has(m, "FS granted done") || has(m, "FS hidden done") || has(m, "FS secret done") || has(m, "FS deleted done") || has(m, "FS other workspace") {
+		t.Errorf("guest with an item grant: %v", calEntryTitles(m))
+	}
+	m = w.calOK(t, w.owner, "tasks", calPast)
+	if !has(m, "FS granted done") || !has(m, "FS hidden done") || has(m, "FS secret done") || has(m, "FS deleted done") || has(m, "FS other workspace") {
+		t.Errorf("member: %v", calEntryTitles(m))
+	}
+}
+
+// --- paging ---
+
+func TestCalendarCarriedInSpansFillingTheCapStillPage(t *testing.T) {
+	t.Parallel()
+	w := newAgendaWorld(t, "tasks")
+	// 520 spans that began before the window and run into it: they are re-sent
+	// on every page they overlap, and count against the cap each time.
+	for i := 0; i < agendaMaxEntries+20; i++ {
+		w.item(t, "tasks", fmt.Sprintf("SPN %03d", i), `{"due_date":"2031-02-20","end_date":"2031-03-04"}`, nil)
+	}
+	from, pages := "2031-03-01", 0
+	for from != "" {
+		if pages++; pages > 10 {
+			t.Fatal("paging from next_from does not terminate")
+		}
+		m := w.calOK(t, w.owner, "tasks", "from="+from+"T00:00:00Z&to=2031-03-31T00:00:00Z&date_field=due_date&end_field=end_date")
+		its := calItems(m)
+		if from <= "2031-03-04" {
+			if len(its) != agendaMaxEntries || m["partial_day"] != from || m["truncated"] != true {
+				t.Fatalf("from %s: %d items partial_day=%v truncated=%v", from, len(its), m["partial_day"], m["truncated"])
+			}
+			for _, it := range its {
+				if it["day"] != "2031-02-20" || it["end_day"] != "2031-03-04" {
+					t.Fatalf("a carried-in span keeps its own days: %v", it)
+				}
+			}
+		} else if len(its) != 0 {
+			t.Fatalf("from %s: %d items, the spans have ended", from, len(its))
+		}
+		next, _ := m["next_from"].(string)
+		if next != "" && next <= from {
+			t.Fatalf("next_from %s does not advance past %s", next, from)
+		}
+		from = next
+	}
+	if pages != 5 { // 1 to 4 March carry them; the page from the 5th has none, and no next_from
+		t.Errorf("pages = %d", pages)
+	}
+}
+
+// bigCalendar seeds n items per day on `days` days of March 2031 in a world
+// whose collection also declares a hyphenated date field.
+func bigCalendar(t *testing.T, key string, days, per int) *agendaWorld {
+	t.Helper()
+	w := newAgendaWorld(t, "tasks")
+	hy, err := w.srv.store.CreateCollection(w.ws.ID, models.CollectionCreate{Name: "Hy", Slug: "hy", Prefix: "HY", Schema: `{"fields":[` +
+		`{"key":"status","type":"select","options":["open","done"],"default":"open","terminal_options":["done"]},{"key":"start-date","type":"date"}]}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.colls["hy"] = hy
+	coll := "tasks"
+	if key == "start-date" {
+		coll = "hy"
+	}
+	// Latest day first, so insertion order is the opposite of date order.
+	for d := days; d >= 1; d-- {
+		for i := 0; i < per; i++ {
+			day := fmt.Sprintf("2031-03-%02d", d)
+			stamp := fmt.Sprintf("%sT%02d:%02d:00Z", day, 8+i/60, i%60)
+			f := `{}`
+			switch key {
+			case "due_date", "start-date":
+				f = fmt.Sprintf(`{%q:%q}`, key, day)
+			case "completed":
+				f = `{"status":"done"}`
+			}
+			it := w.item(t, coll, fmt.Sprintf("BIG %s %02d-%02d", key, d, i), f, nil)
+			switch key {
+			case "created":
+				w.setCreated(t, it, stamp)
+			case "completed":
+				if _, err := w.srv.store.DB().Exec(`UPDATE status_transitions SET created_at = ? WHERE item_id = ? AND to_status = 'done'`, stamp, it.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+	}
+	return w
+}
+
+// The read stops once the cap is in hand, whichever key dates the items, and
+// paging from next_from covers every item once.
+func TestCalendarEarlyStopPagesWithoutGapOrRepeat(t *testing.T) {
+	t.Parallel()
+	const days, per, page = 24, 30, 100
+	for _, key := range []string{"created", "due_date", "completed", "start-date"} {
+		key := key
+		t.Run(key, func(t *testing.T) {
+			t.Parallel()
+			w := bigCalendar(t, key, days, per)
+			w.srv.calendarPageOverride = page
+			coll := "tasks"
+			if key == "start-date" {
+				coll = "hy"
+			}
+			q := func(from string) string {
+				return "from=" + from + "T00:00:00Z&to=2031-03-31T00:00:00Z&date_field=" + key
+			}
+			// The early stop itself: fewer rows read than exist.
+			c, _ := w.srv.store.GetCollectionBySlug(w.ws.ID, coll)
+			params := models.ItemListParams{ScopeCollectionID: c.ID, NoContent: true}
+			res, err := w.srv.calendarItems(w.ws.ID, c.ID, params, key, "", "2031-03-01", "2031-03-31", time.UTC)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !res.more || len(res.items) >= days*per || len(res.items) <= agendaMaxEntries {
+				t.Fatalf("early stop: more=%v read %d of %d", res.more, len(res.items), days*per)
+			}
+			seen := map[string]int{}
+			from, pages := "2031-03-01", 0
+			for from != "" {
+				if pages++; pages > 10 {
+					t.Fatal("paging does not terminate")
+				}
+				m := w.calOK(t, w.owner, coll, q(from))
+				next, _ := m["next_from"].(string)
+				if next != "" && m["truncated"] != true {
+					t.Fatalf("next_from %s without truncated", next)
+				}
+				if _, has := m["partial_day"]; has {
+					t.Fatalf("a cut between days must not set partial_day")
+				}
+				for _, it := range calItems(m) {
+					seen[it["item"].(map[string]any)["title"].(string)]++
+					if next != "" && it["day"].(string) >= next {
+						t.Fatalf("a day at or after next_from was shown: %v", it["day"])
+					}
+				}
+				from = next
+			}
+			if len(seen) != days*per {
+				t.Errorf("pages cover %d distinct items, want %d", len(seen), days*per)
+			}
+			for title, n := range seen {
+				if n != 1 {
+					t.Errorf("%s seen %d times", title, n)
+				}
+			}
+			if pages < 2 {
+				t.Errorf("expected more than one page, got %d", pages)
+			}
+		})
+	}
+}
+
+// --- views and parameters ---
+
+func TestViewPatchOfACalendarWhoseCollectionIsGone(t *testing.T) {
+	t.Parallel()
+	w := newAgendaWorld(t, "tasks")
+	extra, err := w.srv.store.CreateCollection(w.ws.ID, models.CollectionCreate{Name: "Extra", Slug: "extra", Prefix: "EX", Schema: agendaSchema})
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, err := w.srv.store.CreateView(w.ws.ID, models.ViewCreate{CollectionID: &extra.ID, Name: "Cal", ViewType: "calendar", Config: `{"date_field":"due_date"}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.srv.store.DeleteCollection(extra.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	tok, _ := w.srv.store.CreateSession(w.owner.ID, "web-test", "192.0.2.1", "", webSessionTTL)
+	rr := doRequestWithCookie(w.srv, "PATCH", "/api/v1/workspaces/"+w.ws.Slug+"/collections/tasks/views/"+view.ID,
+		map[string]any{"config": map[string]any{"date_field": "due_date"}}, tok)
+	if rr.Code != http.StatusNotFound || !strings.Contains(rr.Body.String(), "View not found") {
+		t.Errorf("PATCH of a calendar view whose collection is soft-deleted: %d %s, want the view's 404", rr.Code, rr.Body)
+	}
+}
+
+func TestCalendarRouteRefusesAStoredConfigWhoseFieldIsGone(t *testing.T) {
+	t.Parallel()
+	w := newAgendaWorld(t, "tasks")
+	// A view stored outside the handlers (an import, an app) is not checked at
+	// write time; the route that reads it is.
+	view, err := w.srv.store.CreateView(w.ws.ID, models.ViewCreate{CollectionID: &w.colls["tasks"].ID, Name: "Stale", ViewType: "calendar", Config: `{"date_field":"retired_date"}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		DateField string `json:"date_field"`
+	}
+	if err := json.Unmarshal([]byte(view.Config), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	code, body, _ := w.cal(t, w.owner, "tasks", "from=2031-03-01T00:00:00Z&to=2031-03-31T00:00:00Z&date_field="+cfg.DateField)
+	if code != http.StatusBadRequest || !strings.Contains(string(body), "retired_date") {
+		t.Errorf("stored stale config: %d %s", code, body)
 	}
 }

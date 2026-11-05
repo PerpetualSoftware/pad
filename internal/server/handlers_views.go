@@ -249,6 +249,12 @@ func (s *Server) handleUpdateView(w http.ResponseWriter, r *http.Request) {
 					writeInternalError(w, err)
 					return
 				}
+				if coll == nil {
+					// The collection is gone (soft-deleted or removed): the view
+					// answers as one that does not exist, as on a read.
+					writeError(w, http.StatusNotFound, "not_found", "View not found")
+					return
+				}
 			}
 		}
 		if !s.validateCalendarView(w, coll, viewType, config) {

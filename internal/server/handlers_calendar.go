@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -56,9 +55,6 @@ type calendarCell struct {
 	sort  string // items: the value's own text, then id
 	entry *agendaEntry
 }
-
-// calendarSortableKey is the store's sort-key rule (validSortField).
-var calendarSortableKey = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]*$`)
 
 const dayLayout = "2006-01-02"
 
@@ -210,7 +206,7 @@ func (s *Server) handleGetCalendar(w http.ResponseWriter, r *http.Request) {
 		scope = store.PendingReminderScope{CollectionIDs: []string{}, ItemIDs: ids}
 	}
 	now := time.Now()
-	schedules, more, err := s.store.ListSchedulesForAgenda(workspaceID, scope, from, to, agendaMaxScan)
+	schedules, more, err := s.store.ListSchedulesForCalendar(workspaceID, scope, from, to, agendaMaxScan)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -229,6 +225,7 @@ func (s *Server) handleGetCalendar(w http.ResponseWriter, r *http.Request) {
 	}
 	resp.Unexpanded, resp.Unavailable = sch.Unexpanded, sch.Unavailable
 	resp.Truncated = sch.Truncated || placed.more
+	sch.Entries = keepRecordedOnTerminal(sch.Entries, schedules)
 
 	// One cap across both, in day order, cut only between days.
 	sort.SliceStable(sch.Entries, func(i, j int) bool {
@@ -302,6 +299,35 @@ func (s *Server) handleGetCalendar(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// recordedStates are the states a schedule entry has once someone acted on it
+// or the day passed with a record. A finished item shows only these.
+var recordedStates = map[string]bool{"done": true, "skipped": true, "moved": true, "missed": true}
+
+// keepRecordedOnTerminal drops, for an item in a terminal status, every entry
+// without a recorded state (outstanding, scheduled, projected, overdue): an
+// upcoming or overdue entry on a finished item would say work is left. An open
+// item's entries are untouched. The decision is made here, after expansion, so
+// such an entry never leaves the server.
+func keepRecordedOnTerminal(entries []agendaEntry, schedules []store.AgendaSchedule) []agendaEntry {
+	terminal := map[string]bool{}
+	for _, as := range schedules {
+		if as.Terminal {
+			terminal[as.Schedule.ID] = true
+		}
+	}
+	if len(terminal) == 0 {
+		return entries
+	}
+	out := entries[:0:0]
+	for _, e := range entries {
+		if terminal[e.ScheduleID] && !recordedStates[e.State] {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
 // cutCalendarDays applies the cap to cells, which are in day order. It keeps
@@ -415,9 +441,12 @@ type calendarItems struct {
 // A date field is placed by its value (a date, or an instant in the value's own
 // offset); created and completed are instants and are placed on the viewer's
 // day, so the store window is widened by a day each side and the entries that
-// fall outside it after placement are dropped. Rows come in date order (SQL for
-// a date field and created; completed is read whole and ordered here), and the
-// read stops once more than the cap is in hand.
+// fall outside it after placement are dropped. Rows come in date order from SQL
+// (created and completed by the instant, a date field by its day), and the read
+// stops once more than the cap is in hand: the cut then lands on a day at or
+// before the last one loaded, so a half-loaded day is never emitted. A span
+// that began before the window is selected by overlap on every page it
+// overlaps, and is counted against the cap each time.
 func (s *Server) calendarItems(workspaceID, collID string, params models.ItemListParams, dateField, endField, fromDay, toDay string, loc *time.Location) (calendarItems, error) {
 	var res calendarItems
 	instantKey := models.IsCalendarBuiltinDateField(dateField)
@@ -430,17 +459,15 @@ func (s *Server) calendarItems(workspaceID, collID string, params models.ItemLis
 	} else {
 		params.FieldSpans = []models.FieldSpan{{StartKey: dateField, EndKey: endField, From: qFrom, To: qTo}}
 	}
-	// Rows arrive in date order only where the store can sort by the key; a key
-	// it cannot sort by (a hyphen) and completed are read whole and ordered here.
-	ordered := dateField != "completed" && (instantKey || calendarSortableKey.MatchString(dateField))
-	switch dateField {
-	case "created", "completed":
-		params.Sort = "created_at:asc"
-	default:
-		params.Sort = dateField + ":asc"
+	// Rows come in date order from SQL, by the value the filter reads (any key,
+	// completed and a hyphenated key included), so the read can stop early.
+	params.Sort, params.OrderByDay = "", dateField
+	pageSize := calendarPageSize
+	if s.calendarPageOverride > 0 {
+		pageSize = s.calendarPageOverride
 	}
-	params.Limit = calendarPageSize
-	for offset := 0; ; offset += calendarPageSize {
+	params.Limit = pageSize
+	for offset := 0; ; offset += pageSize {
 		params.Offset = offset
 		page, err := s.store.ListItems(workspaceID, params)
 		if err != nil {
@@ -498,10 +525,10 @@ func (s *Server) calendarItems(workspaceID, collID string, params models.ItemLis
 				sortDay:      sortDay, sort: text + "\x00" + it.ID,
 			})
 		}
-		if len(page) < calendarPageSize {
+		if len(page) < pageSize {
 			break
 		}
-		if ordered && len(res.items) > agendaMaxEntries {
+		if len(res.items) > agendaMaxEntries {
 			res.more = true
 			break
 		}
