@@ -3,9 +3,18 @@ import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-li
 import { flushSync } from 'svelte';
 import type { AgendaEntry, AgendaResponse } from '$lib/types';
 
-const h = vi.hoisted(() => ({ agenda: vi.fn(), view: vi.fn(), resolve: vi.fn(), user: { id: 'user-a', timezone: 'America/New_York' } as { id: string; timezone?: string } | null, epoch: 0 }));
+const h = vi.hoisted(() => ({ agenda: vi.fn(), view: vi.fn(), resolve: vi.fn(), user: { id: 'user-a', timezone: 'America/New_York' } as { id: string; timezone?: string } | null, epoch: 0, signal: null as null | { set(key: string, value: number): unknown }, browserZone: 'Europe/London' as string | null }));
 vi.mock('$lib/api/client', () => ({ api: { getMyAgenda: h.agenda, getSchedule: h.view, resolveSchedule: h.resolve } }));
-vi.mock('$lib/stores/auth.svelte', () => ({ authStore: { get user() { return h.user; }, get identityEpoch() { return h.epoch; }, identityFence() { const epoch = h.epoch; return () => epoch === h.epoch; } } }));
+vi.mock('$lib/timezone', () => ({ browserZone: () => h.browserZone }));
+vi.mock('$lib/stores/auth.svelte', async () => {
+ const { SvelteMap } = await import('svelte/reactivity');
+ const signal = new SvelteMap<string, number>(); h.signal = signal;
+ return { authStore: {
+  get user() { signal.get('auth'); return h.user; },
+  get identityEpoch() { signal.get('auth'); return h.epoch; },
+  identityFence() { const epoch = h.epoch; return () => epoch === h.epoch; }
+ } };
+});
 import Agenda from './+page.svelte';
 
 const row = (extra: Partial<AgendaEntry> = {}): AgendaEntry => ({ type: 'schedule', at: '2026-11-05T14:00:00Z', day: '2026-11-05', wall: '2026-11-05T09:00:00', floating: true, item_ref: 'EX-30', item_title: 'First item', collection: 'tasks', workspace: 'work', workspace_name: 'First workspace', owner_username: 'alice', state: 'outstanding', kind: 'deadline_soft', schedule_id: 'schedule-1', ...extra });
@@ -23,7 +32,7 @@ async function dialog(kind: 'Move' | 'Snooze') {
 async function fillTime(d: HTMLElement, value = '2026-11-06T09:30') { await fireEvent.input(within(d).getByLabelText(/New date and time|Remind me again at/), { target: { value } }); }
 
 beforeEach(() => {
- vi.resetAllMocks(); localStorage.clear(); h.user = { id: 'user-a', timezone: 'America/New_York' }; h.epoch = 0;
+ vi.resetAllMocks(); localStorage.clear(); h.user = { id: 'user-a', timezone: 'America/New_York' }; h.epoch = 0; h.browserZone = 'Europe/London';
  vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-11-05T12:00:00Z'));
  h.agenda.mockResolvedValue(response());
  h.view.mockResolvedValue({ item_ref: 'EX-30', kind: 'deadline_soft', floating: true, next_occurrence: { at: frozenAt, wall: row().wall } });
@@ -51,6 +60,31 @@ describe('agenda Day page', () => {
   expect(localStorage.getItem('pad-agenda-show-events:user-a')).toBe('0'); expect(h.agenda).toHaveBeenCalledTimes(1);
   cleanup(); await mount(); expect(screen.queryByText('Created item')).toBeNull();
   cleanup(); h.user = { id: 'user-b', timezone: 'America/New_York' }; await mount(); expect(screen.getByText('Created item')).toBeTruthy();
+ });
+ it('refetches timezone changes on the mounted page and isolates a new user preference', async () => {
+  await mount(); await fireEvent.click(screen.getByRole('checkbox'));
+  h.user = { id: 'user-a', timezone: 'Asia/Tokyo' }; h.signal?.set('auth', 1);
+  await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(2));
+  expect(h.agenda.mock.calls[1]).toEqual(['2026-11-04T15:00:00.000Z', '2026-11-05T15:00:00.000Z', 'Asia/Tokyo']);
+  h.user = { id: 'user-b', timezone: 'UTC' }; h.epoch++; h.signal?.set('auth', 2);
+  await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(3));
+  expect((screen.getByRole('checkbox') as HTMLInputElement).checked).toBe(true);
+  expect(localStorage.getItem('pad-agenda-show-events:user-b')).toBeNull();
+ });
+ it.each(['Europe/London', null])('uses the browser zone, then UTC, when the account has no zone: %s', async browserZone => {
+  h.user = { id: 'user-a' }; h.browserZone = browserZone;
+  await mount(); expect(h.agenda.mock.calls[0][2]).toBe(browserZone ?? 'UTC');
+ });
+ it('renders history styling and moved time without creating links with missing route fields', async () => {
+  h.agenda.mockResolvedValue(response([
+   row({ state: 'done', item_title: 'Finished occurrence' }),
+   row({ state: 'moved', item_ref: 'EX-31', schedule_id: 's2', item_title: 'Moved occurrence', effective_at: '2026-11-06T15:30:00Z' }),
+   row({ owner_username: '', item_ref: 'EX-32', schedule_id: 's3', item_title: 'No owner' })
+  ]));
+  render(Agenda); const done = await screen.findByRole('link', { name: 'Finished occurrence' });
+  expect(done.parentElement?.classList.contains('done')).toBe(true); expect(screen.getByLabelText('Done')).toHaveTextContent('✓');
+  expect(screen.getByText('Moved to 10:30')).toBeTruthy(); expect(screen.getByText('No owner')).toBeTruthy();
+  expect(screen.queryByRole('link', { name: 'No owner' })).toBeNull();
  });
  it('survives throwing storage with an in-memory default', async () => {
   vi.spyOn(localStorage, 'getItem').mockImplementation(() => { throw new Error('blocked'); });

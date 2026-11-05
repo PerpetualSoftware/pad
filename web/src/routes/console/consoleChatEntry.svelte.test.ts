@@ -78,13 +78,13 @@ describe('console nav Chat entry (TASK-4044 3c)', () => {
 		expect(document.querySelector('.nav-links a[href="/messages"]')).toBeNull();
 	});
 
-	it('closes the mobile menu on click', async () => {
+	it.each(['/messages', '/console/agenda'])('closes the mobile menu on click: %s', async (href) => {
 		const toggle = document.querySelector<HTMLElement>('[aria-expanded]')!;
 		toggle.click();
 		await tick();
 		flushSync();
 		expect(toggle.getAttribute('aria-expanded')).toBe('true');
-		const a = document.querySelector<HTMLAnchorElement>('.nav-links a[href="/messages"]')!;
+		const a = document.querySelector<HTMLAnchorElement>(`.nav-links a[href="${href}"]`)!;
 		a.addEventListener('click', (e) => e.preventDefault());
 		a.click();
 		await tick();
