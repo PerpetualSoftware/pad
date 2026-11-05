@@ -283,10 +283,14 @@ func TestMonitorChatUsesOwnCredentialNotEventBody(t *testing.T) {
 func TestReconnectPrintsUnreadSummary(t *testing.T) {
 	chatSessionEnv(t)
 	t.Setenv("PAD_AGENT", "unread-test-agent")
+	// The shared printed set remembers the summary line across tests.
+	seenChat.forgetPrefix(unreadSummaryKey)
+	t.Cleanup(func() { seenChat.forgetPrefix(unreadSummaryKey) })
 	f := &fakeChatSink{total: 3}
 	var out bytes.Buffer
 	streamWatchEventsTo(&out, fakeSSEResponse("event: sync_required\ndata: {}\n\n"), "", f)
-	if strings.Count(out.String(), "unread") != 2 || f.acks != 0 || f.totals != 2 || f.agent != cli.ResolveAgentName() {
+	// BUG-4320: the summary is fetched at connect and on resync (2 reads) but printed once.
+	if strings.Count(out.String(), "unread") != 1 || f.acks != 0 || f.totals != 2 || f.agent != cli.ResolveAgentName() {
 		t.Fatal(out.String(), f)
 	}
 	out.Reset()
