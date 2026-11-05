@@ -86,7 +86,7 @@ describe('MessageBubble', () => {
 		expect(container.querySelector('.quote')).toBeNull();
 	});
 
-	it('renders the body as text, never as markup', () => {
+	it('renders markup in the body as text, never as elements', () => {
 		const { container } = render(MessageBubble, {
 			props: { message: { ...base, body: '<b>bold</b> [[ws::TASK-1]]' } }
 		});
@@ -334,13 +334,15 @@ describe('MessageBubble refs', () => {
 	const withBody = (body: string, over: Partial<ChatMessage> = {}): ChatMessage => ({ ...base, body, ...over });
 	const body = (c: HTMLElement) => c.querySelector('.body') as HTMLElement;
 
-	it('a visible ref is a link to /-/r with the title and a hard reload', () => {
+	it('a visible ref is a link to /-/r with the title, in a new tab', () => {
 		const refs = map({ workspace: 'docapp', ref: 'TASK-1', state: 'visible', title: 'Ship it', collection_slug: 'tasks' });
 		const r = render(MessageBubble, { props: { message: withBody('see [[docapp::TASK-1]] now'), refs } });
 		const a = body(r.container).querySelector('a')!;
 		expect(a.getAttribute('href')).toBe('/-/r/docapp/TASK-1');
 		expect(a.getAttribute('title')).toBe('Ship it');
-		expect(a.hasAttribute('data-sveltekit-reload')).toBe(true);
+		// TASK-4315: a body link opens in a new tab (which also keeps the SvelteKit router off the server redirect).
+		expect(a.getAttribute('target')).toBe('_blank');
+		expect(a.getAttribute('rel')).toBe('noopener noreferrer');
 		expect(a.textContent).toBe('TASK-1');
 		expect(body(r.container).textContent).toBe('see TASK-1 now');
 	});
@@ -381,12 +383,13 @@ describe('MessageBubble refs', () => {
 		expect(body(r.container).querySelector('a')).toBeNull();
 	});
 
-	it('keeps newlines and spacing as text, and renders markup in the body as text', () => {
+	it('keeps line breaks, and renders markup in the body as text', () => {
 		const refs = map({ workspace: 'docapp', ref: 'TASK-1', state: 'visible', title: '<b>t</b>' });
 		const text = 'line one\n  <b>bold</b> [[docapp::TASK-1]]\nend';
 		const r = render(MessageBubble, { props: { message: withBody(text), refs } });
 		const b = body(r.container);
-		expect(b.textContent).toBe('line one\n  <b>bold</b> TASK-1\nend');
+		expect(b.querySelectorAll('br')).toHaveLength(2);
+		expect(b.textContent).toBe('line one<b>bold</b> TASK-1end');
 		expect(b.querySelector('b')).toBeNull();
 		expect(b.querySelector('a')!.getAttribute('title')).toBe('<b>t</b>');
 	});

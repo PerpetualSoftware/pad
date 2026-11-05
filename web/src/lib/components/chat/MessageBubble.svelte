@@ -1,15 +1,15 @@
 <script lang="ts">
 	import { longPress } from '$lib/chat/longPress';
 	import MessageMenu from '$lib/components/chat/MessageMenu.svelte';
-	import { tokenizeBody } from '$lib/chat/refs';
+	import MessageBody from '$lib/components/chat/MessageBody.svelte';
 	import type { ChatMessage, ChatRef } from '$lib/types';
 
-	// One confirmed message (TASK-4044 PR 3a). The body is rendered from
-	// tokenizeBody segments through Svelte text interpolation, never {@html}:
-	// bodies are plain text (IDEA-4083 tracks markdown). Only a ref the server
-	// called `visible` becomes a link; `restricted` is a placeholder with no href
-	// and no title; anything else stays the literal text, `[[...]]` kept (TASK-4044
-	// 3c, ruling 687eb810). A tombstone shows "Message deleted" and nothing of the body.
+	// One confirmed message (TASK-4044 PR 3a). The body is sanitised markdown
+	// (MessageBody, TASK-4315 PR 2a); the only {@html} is there, behind the Chat
+	// profile of the sanitiser. Only a ref the server called `visible` becomes a
+	// link; `restricted` is a placeholder with no href and no title; anything else
+	// stays the literal text, `[[...]]` kept (TASK-4044 3c, ruling 687eb810). A
+	// tombstone shows "Message deleted" and nothing of the body.
 	//
 	// PR 3b: with `onReply` and `onDelete` a live message has an action menu. It
 	// opens on hover or keyboard focus (:focus-visible; a tap focuses the bubble
@@ -55,7 +55,6 @@
 		new Date(message.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 	);
 	let quote = $derived(message.reply_to);
-	let segments = $derived(tokenizeBody(message, refs ? [...refs.values()] : []));
 </script>
 
 <!-- The article is the hover/focus/long-press target for the menu; the menu's own buttons are the interactive controls. -->
@@ -107,12 +106,7 @@
 				<span class="quote-text">{quote.deleted ? 'Deleted message' : quote.excerpt}</span>
 			</button>
 		{/if}
-		<!--
-			data-sveltekit-reload: /-/r/{ws}/{ref} is a SERVER redirect route with no
-			client route behind it, so the SvelteKit router must not take the click
-			(see DecisionChips.svelte). The segments sit on one line: .body is pre-wrap.
-		-->
-		<p class="body">{#each segments as seg, i (i)}{#if seg.type === 'link'}<a data-sveltekit-reload href={seg.href} title={seg.title}>{seg.text}</a>{:else if seg.type === 'restricted'}<span class="ref-restricted">{seg.text}</span>{:else}{seg.text}{/if}{/each}</p>
+		<MessageBody body={message.body} {refs} ctxWorkspace={message.context_workspace?.slug} />
 	{/if}
 	{#if menuOpen && onReply && onDelete}
 		<MessageMenu
@@ -163,15 +157,7 @@
 	}
 	.body {
 		margin: var(--space-1) 0 0;
-		white-space: pre-wrap;
 		overflow-wrap: anywhere;
-	}
-	.body a {
-		color: var(--accent-blue);
-	}
-	.ref-restricted {
-		font-style: italic;
-		color: var(--text-secondary);
 	}
 	.tombstone {
 		font-style: italic;
