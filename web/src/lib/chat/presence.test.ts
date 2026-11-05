@@ -1,24 +1,50 @@
 import { describe, it, expect } from 'vitest';
-import { rollupPresence, normalizeAgentName, trimSpace } from './presence';
+import { rollupPresence, armedSessionCounts, normalizeAgentName, trimSpace } from './presence';
 import type { LiveSession } from '$lib/types';
 
-function sess(agent: string | undefined, state: LiveSession['state'], id = Math.random().toString()): LiveSession {
-	return { agent, state, id, armed: state === 'online', connected_at: '2026-01-01T00:00:00Z' };
+// `armed` defaults to what the server derives for an idle session: online means armed.
+function sess(
+	agent: string | undefined,
+	state: LiveSession['state'],
+	armed: boolean = state === 'online',
+	id = Math.random().toString()
+): LiveSession {
+	return { agent, state, id, armed, connected_at: '2026-01-01T00:00:00Z' };
 }
 
 describe('rollupPresence', () => {
 	it('online beats busy beats connected_not_accepting', () => {
 		const out = rollupPresence([], [
 			sess('a', 'connected_not_accepting'),
-			sess('a', 'busy'),
+			sess('a', 'busy', true),
 			sess('a', 'online'),
 			sess('b', 'connected_not_accepting'),
-			sess('b', 'busy'),
+			sess('b', 'busy', true),
 			sess('c', 'connected_not_accepting')
 		]);
 		expect(out.get('a')).toBe('online');
 		expect(out.get('b')).toBe('busy_uncertain');
 		expect(out.get('c')).toBe('connected_not_accepting');
+	});
+
+	// The server reports busy over armed (handlers_sessions.go), so a busy session
+	// may be unarmed. Only an armed session can receive, so only it may read as
+	// "May be working": an unarmed busy one is connected, not accepting (TASK-4315 unit 5).
+	it('a busy session that is not armed reads connected, not accepting', () => {
+		const out = rollupPresence([], [sess('a', 'busy', false), sess('b', 'busy', true)]);
+		expect(out.get('a')).toBe('connected_not_accepting');
+		expect(out.get('b')).toBe('busy_uncertain');
+	});
+
+	it('an idle armed session beside a busy one is live, and beside an unarmed busy one too', () => {
+		const out = rollupPresence([], [
+			sess('a', 'online'),
+			sess('a', 'busy', true),
+			sess('b', 'online'),
+			sess('b', 'busy', false)
+		]);
+		expect(out.get('a')).toBe('online');
+		expect(out.get('b')).toBe('online');
 	});
 
 	it('an agent with a DM but no session is offline', () => {
@@ -44,6 +70,21 @@ describe('rollupPresence', () => {
 	it('normalises session names like the server so they meet the DM key', () => {
 		const out = rollupPresence(['claude'], [sess('  claude\u0007 ', 'online')]);
 		expect(out.get('claude')).toBe('online');
+		expect(out.size).toBe(1);
+	});
+});
+
+describe('armedSessionCounts', () => {
+	it('counts armed sessions per normalised agent, skipping unarmed and unnamed ones', () => {
+		const out = armedSessionCounts([
+			sess('a', 'online'),
+			sess(' a ', 'busy', true),
+			sess('a', 'connected_not_accepting'),
+			sess('b', 'busy', false),
+			sess(undefined, 'online')
+		]);
+		expect(out.get('a')).toBe(2);
+		expect(out.has('b')).toBe(false);
 		expect(out.size).toBe(1);
 	});
 });

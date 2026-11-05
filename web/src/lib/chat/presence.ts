@@ -49,12 +49,15 @@ export function normalizeAgentName(raw: string): string {
 }
 
 /**
- * One presence state per agent. The roster is the union of the DM agent keys
- * and the distinct session agent names (empty names skipped). Precedence per
- * agent: any `online` (armed) session, else any `busy`, else any
- * `connected_not_accepting`, else `offline`. `'unavailable'` (the sessions
- * endpoint could not answer) maps every agent to `unknown`: "cannot tell" is
- * never rendered as offline.
+ * One presence state per agent (DOC-4316 section 7). The roster is the union of
+ * the DM agent keys and the distinct session agent names (empty names skipped).
+ * Only an ARMED session can receive a chat notice, and the server reports `busy`
+ * over `armed` (handlers_sessions.go), so a busy session may be unarmed. Per agent:
+ * an armed session that is not busy is `online`; else armed sessions that are all
+ * busy read `busy_uncertain`; else any connected session is
+ * `connected_not_accepting` (an unarmed busy one included); else `offline`.
+ * `'unavailable'` (the sessions endpoint could not answer) maps every agent to
+ * `unknown`: "cannot tell" is never rendered as offline.
  */
 export function rollupPresence(
 	conversationAgentKeys: readonly string[],
@@ -66,26 +69,37 @@ export function rollupPresence(
 		for (const k of keys) out.set(k, 'unknown');
 		return out;
 	}
-	const states = new Map<string, Set<LiveSession['state']>>();
+	const byAgent = new Map<string, LiveSession[]>();
 	for (const s of sessions) {
 		const name = normalizeAgentName(s.agent ?? '');
 		if (name === '') continue;
-		let set = states.get(name);
-		if (!set) states.set(name, (set = new Set()));
-		set.add(s.state);
+		let list = byAgent.get(name);
+		if (!list) byAgent.set(name, (list = []));
+		list.push(s);
 	}
 	for (const k of keys) out.set(k, 'offline');
-	for (const [name, set] of states) {
+	for (const [name, list] of byAgent) {
+		const armed = list.filter((s) => s.armed);
 		out.set(
 			name,
-			set.has('online')
+			armed.some((s) => s.state !== 'busy')
 				? 'online'
-				: set.has('busy')
+				: armed.length > 0
 					? 'busy_uncertain'
-					: set.has('connected_not_accepting')
-						? 'connected_not_accepting'
-						: 'offline'
+					: 'connected_not_accepting'
 		);
+	}
+	return out;
+}
+
+/** How many ARMED sessions each named agent has, for the "2 armed sessions" detail. Agents with none are absent. */
+export function armedSessionCounts(sessions: readonly LiveSession[]): Map<string, number> {
+	const out = new Map<string, number>();
+	for (const s of sessions) {
+		if (!s.armed) continue;
+		const name = normalizeAgentName(s.agent ?? '');
+		if (name === '') continue;
+		out.set(name, (out.get(name) ?? 0) + 1);
 	}
 	return out;
 }

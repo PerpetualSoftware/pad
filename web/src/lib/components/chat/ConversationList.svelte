@@ -1,12 +1,20 @@
 <script lang="ts">
+	import PresenceDot from '$lib/components/chat/PresenceDot.svelte';
 	import UnreadBadge from '$lib/components/chat/UnreadBadge.svelte';
 	import { chatStore } from '$lib/stores/chat.svelte';
+	import { chatInbox } from '$lib/stores/chatInbox.svelte';
 	import type { ChatConversationSummary } from '$lib/types';
 
 	let { conversations }: { conversations: ChatConversationSummary[] } = $props();
 
 	function label(c: ChatConversationSummary): string {
 		return c.title || c.agent_key || `Conversation ${c.number}`;
+	}
+
+	// "2 armed sessions" only when it is more than one: one is the usual case.
+	function armedDetail(c: ChatConversationSummary): string {
+		const n = chatInbox.armedCount(c.agent_key);
+		return n > 1 ? `${n} armed sessions` : '';
 	}
 
 	function preview(c: ChatConversationSummary): string {
@@ -24,7 +32,18 @@
 		{#each conversations as c (c.id)}
 			<li>
 				<a class="row" href="/messages/{c.number}">
-					<span class="name">{label(c)}</span>
+					<span class="who">
+						<span class="name">{label(c)}</span>
+						<!-- BUG-4321: the card carries the agent's presence, so the agent needs no second row. A group's key is not an agent. -->
+						{#if c.kind === 'direct'}
+							<PresenceDot
+								state={chatInbox.presenceFor(c.agent_key)}
+								checkedAt={chatInbox.checkedAt}
+								detail={armedDetail(c)}
+								showLabel
+							/>
+						{/if}
+					</span>
 					<span class="preview" class:deleted={c.last_message?.deleted}>{preview(c)}</span>
 					<UnreadBadge count={chatStore.unreadByNumber[c.number] ?? 0} />
 				</a>
@@ -57,6 +76,12 @@
 	.row:hover {
 		background: var(--bg-hover);
 		text-decoration: none;
+	}
+	.who {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		min-width: 0;
 	}
 	.name {
 		font-weight: 600;

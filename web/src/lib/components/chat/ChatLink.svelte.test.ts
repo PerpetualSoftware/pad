@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 import { tick } from 'svelte';
 
-const h = vi.hoisted(() => ({ unread: 0, version: 0 }));
+const h = vi.hoisted(() => ({ unread: 0, version: 0, chatOn: true }));
 vi.mock('$lib/stores/chat.svelte', () => ({
 	chatStore: {
 		get unreadTotal() {
@@ -12,6 +12,14 @@ vi.mock('$lib/stores/chat.svelte', () => ({
 		// A decoy: the badge must read unreadTotal and nothing else.
 		get version() {
 			return h.version;
+		}
+	}
+}));
+
+vi.mock('$lib/stores/chatSetting.svelte', () => ({
+	chatSetting: {
+		get enabled() {
+			return h.chatOn;
 		}
 	}
 }));
@@ -26,10 +34,22 @@ async function mount(unread: number, props: Record<string, unknown> = {}) {
 	return document.querySelector('a') as HTMLAnchorElement;
 }
 
-beforeEach(() => cleanup());
+beforeEach(() => {
+	cleanup();
+	h.chatOn = true;
+});
 afterEach(() => cleanup());
 
 describe('ChatLink (TASK-4044)', () => {
+	it('renders nothing while the Chat setting is off, whatever is unread (TASK-4315)', async () => {
+		h.chatOn = false;
+		h.unread = 5;
+		render(ChatLink, { props: {} });
+		await tick();
+		expect(document.querySelector('a')).toBeNull();
+		expect(document.querySelector('.unread-badge')).toBeNull();
+	});
+
 	it('links to /messages and is labelled Chat', async () => {
 		const a = await mount(0);
 		expect(a.getAttribute('href')).toBe('/messages');

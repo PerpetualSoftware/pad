@@ -19,7 +19,12 @@ import { untrack } from 'svelte';
 import { api } from '$lib/api/client';
 import { authStore } from '$lib/stores/auth.svelte';
 import { chatStore } from '$lib/stores/chat.svelte';
-import { normalizeAgentName, rollupPresence, type AgentPresence } from '$lib/chat/presence';
+import {
+	armedSessionCounts,
+	normalizeAgentName,
+	rollupPresence,
+	type AgentPresence
+} from '$lib/chat/presence';
 import type { ChatConversationSummary, LiveSession } from '$lib/types';
 
 /** One roster row: an agent, how reachable it is, and its DM number if it has one. */
@@ -149,6 +154,12 @@ class ChatInboxStore {
 				normalizeAgentName(agentKey)
 			) ?? 'unknown'
 		);
+	}
+
+	/** Armed sessions behind this agent's presence, for the "2 armed sessions" detail; 0 when none or unread. */
+	armedCount(agentKey: string): number {
+		if (!Array.isArray(this.sessions)) return 0;
+		return armedSessionCounts(this.sessions).get(normalizeAgentName(agentKey)) ?? 0;
 	}
 
 	/**

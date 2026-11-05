@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 import { tick, flushSync } from 'svelte';
 
+const h = vi.hoisted(() => ({ chatOn: true }));
 vi.mock('$app/state', () => ({ page: { url: new URL('http://localhost/u/ws') } }));
 vi.mock('$app/navigation', () => ({ goto: vi.fn(), afterNavigate: vi.fn() }));
 vi.mock('$lib/stores/workspace.svelte', () => ({
@@ -22,6 +23,14 @@ vi.mock('$lib/components/layout/QuickCaptureSheet.svelte', async () => await imp
 vi.mock('$lib/components/layout/WorkspaceSheet.svelte', async () => await import('./bottomNavSheetStub.fixture.svelte'));
 vi.mock('$lib/components/layout/YouSheet.svelte', async () => await import('./bottomNavSheetStub.fixture.svelte'));
 
+vi.mock('$lib/stores/chatSetting.svelte', () => ({
+	chatSetting: {
+		get enabled() {
+			return h.chatOn;
+		}
+	}
+}));
+
 import BottomNav from './BottomNav.svelte';
 import { chatStore } from '$lib/stores/chat.svelte';
 
@@ -32,6 +41,7 @@ const youSlot = () =>
 
 beforeEach(() => {
 	cleanup();
+	h.chatOn = true;
 	chatStore.unreadTotal = 0;
 });
 afterEach(() => {
@@ -65,6 +75,15 @@ describe('BottomNav You-slot chat badge (TASK-4186)', () => {
 		flushSync();
 		expect(youSlot().querySelector('.unread-badge')?.textContent).toBe('2');
 		expect(youSlot().getAttribute('aria-label')).toBe('You, 2 unread chat');
+	});
+
+	it('shows no badge and a plain label while the Chat setting is off (TASK-4315)', async () => {
+		h.chatOn = false;
+		chatStore.unreadTotal = 3;
+		render(BottomNav);
+		await tick();
+		expect(document.querySelectorAll('.bottom-nav .unread-badge')).toHaveLength(0);
+		expect(youSlot().getAttribute('aria-label') ?? 'You').toBe('You');
 	});
 
 	it('only the You slot carries a badge', async () => {

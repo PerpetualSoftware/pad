@@ -17,6 +17,7 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 }));
 
 import Composer from './Composer.svelte';
+import { inputMode } from '$lib/chat/inputMode.svelte';
 import { runSessionExpiryKeepers } from '$lib/stores/sessionExpiryKeep';
 import type { SendOutcome } from '$lib/stores/chatThread.svelte';
 import type { ChatMessage } from '$lib/types';
@@ -48,13 +49,30 @@ const type = async (box: HTMLTextAreaElement, v: string) => {
 	flushSync();
 };
 
+// The primary pointer decides the default key mode: fine means a hardware keyboard.
+function setPointer(fine: boolean) {
+	Object.defineProperty(window, 'matchMedia', {
+		configurable: true,
+		writable: true,
+		value: (q: string) => ({
+			matches: q.includes('pointer: fine') ? fine : false,
+			media: q,
+			addEventListener() {},
+			removeEventListener() {}
+		})
+	});
+}
+
 beforeEach(() => {
 	h.userId = 'u1';
 	sessionStorage.clear();
+	inputMode.reset();
+	setPointer(true);
 });
 afterEach(() => {
 	cleanup();
 	Reflect.deleteProperty(window, 'visualViewport');
+	Reflect.deleteProperty(window, 'matchMedia');
 });
 
 describe('Send enable', () => {
@@ -316,5 +334,248 @@ describe('a send that does not happen', () => {
 		await tick();
 		await tick();
 		expect(box.value).toBe('first\nsecond');
+	});
+});
+
+// TASK-4099 part 0 (DOC-4316 section 5): which keys send. Product 11-04: the default follows
+// the PRIMARY pointer, (pointer: fine) means Enter sends, (pointer: coarse) means Enter adds a line.
+describe('Enter sends (TASK-4099)', () => {
+	const key = (box: HTMLTextAreaElement, init: KeyboardEventInit & { keyCode?: number }) => {
+		const ev = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true, ...init });
+		if (init.keyCode !== undefined) Object.defineProperty(ev, 'keyCode', { value: init.keyCode });
+		box.dispatchEvent(ev);
+		flushSync();
+		return ev;
+	};
+
+	it('with a fine pointer, Enter sends once and is not left to insert a newline', async () => {
+		const { box, onSend } = mount();
+		await type(box, 'hello');
+		const ev = key(box, {});
+		expect(ev.defaultPrevented).toBe(true);
+		expect(onSend).toHaveBeenCalledTimes(1);
+		expect(onSend.mock.calls[0][0]).toBe('hello');
+		expect(box.value).toBe('');
+	});
+
+	it('Shift+Enter inserts a newline: no send, default left alone', async () => {
+		const { box, onSend } = mount();
+		await type(box, 'hello');
+		const ev = key(box, { shiftKey: true });
+		expect(ev.defaultPrevented).toBe(false);
+		expect(onSend).not.toHaveBeenCalled();
+	});
+
+	it.each([['ctrlKey'], ['metaKey'], ['altKey']])('%s+Enter is not a send shortcut', async (mod) => {
+		const { box, onSend } = mount();
+		await type(box, 'hello');
+		key(box, { [mod]: true });
+		expect(onSend).not.toHaveBeenCalled();
+	});
+
+	it('never sends while an IME is composing, whichever signal the browser gives', async () => {
+		const { box, onSend } = mount();
+		await type(box, 'こんにちは');
+		key(box, { isComposing: true });
+		key(box, { keyCode: 229 });
+		box.dispatchEvent(new CompositionEvent('compositionstart'));
+		key(box, {});
+		expect(onSend).not.toHaveBeenCalled();
+	});
+
+	it('the Enter that commits a composition does not send, even after compositionend (Safari order)', async () => {
+		const { box, onSend } = mount();
+		await type(box, 'こんにちは');
+		box.dispatchEvent(new CompositionEvent('compositionstart'));
+		box.dispatchEvent(new CompositionEvent('compositionend'));
+		key(box, {});
+		expect(onSend).not.toHaveBeenCalled();
+		await new Promise((r) => setTimeout(r, 0));
+		key(box, {});
+		expect(onSend).toHaveBeenCalledTimes(1);
+	});
+
+	it('a held key sends once and its repeats neither send nor insert lines', async () => {
+		const { box, onSend } = mount();
+		await type(box, 'hello');
+		key(box, {});
+		await type(box, 'again');
+		const rep = key(box, { repeat: true });
+		expect(rep.defaultPrevented).toBe(true);
+		expect(onSend).toHaveBeenCalledTimes(1);
+	});
+
+	it('Enter on an empty box sends nothing and adds no newline', async () => {
+		const { box, onSend } = mount();
+		const ev = key(box, {});
+		expect(ev.defaultPrevented).toBe(true);
+		expect(onSend).not.toHaveBeenCalled();
+	});
+
+	it('pasting and blurring never send', async () => {
+		const { box, onSend } = mount();
+		await type(box, 'hello');
+		await fireEvent.paste(box);
+		await fireEvent.blur(box);
+		expect(onSend).not.toHaveBeenCalled();
+	});
+
+	it('with a coarse pointer, Enter inserts a newline and the Send button sends', async () => {
+		setPointer(false);
+		const { box, send, onSend } = mount();
+		await type(box, 'hello');
+		const ev = key(box, {});
+		expect(ev.defaultPrevented).toBe(false);
+		expect(onSend).not.toHaveBeenCalled();
+		await fireEvent.click(send);
+		expect(onSend).toHaveBeenCalledTimes(1);
+	});
+
+	it('no matchMedia at all is the safe default: Enter does not send', async () => {
+		Reflect.deleteProperty(window, 'matchMedia');
+		const { box, onSend } = mount();
+		await type(box, 'hello');
+		key(box, {});
+		expect(onSend).not.toHaveBeenCalled();
+	});
+
+	it('shows the key hint for the mode in force', async () => {
+		const { container } = mount();
+		expect(container.querySelector('.key-hint')!.textContent).toContain('Enter sends');
+		cleanup();
+		setPointer(false);
+		const touch = mount();
+		expect(touch.container.querySelector('.key-hint')!.textContent).toContain('Enter adds a line');
+	});
+
+	describe('Hardware keyboard setting', () => {
+		it('is offered on a coarse pointer, and turning it on makes Enter send', async () => {
+			setPointer(false);
+			const { box, onSend, getByLabelText } = mount();
+			await type(box, 'hello');
+			await fireEvent.click(getByLabelText('Hardware keyboard: Enter sends'));
+			flushSync();
+			key(box, {});
+			expect(onSend).toHaveBeenCalledTimes(1);
+		});
+
+		it('is not offered on a fine pointer, where Enter already sends', () => {
+			const { queryByLabelText } = mount();
+			expect(queryByLabelText('Hardware keyboard: Enter sends')).toBeNull();
+		});
+
+		it('is kept in memory for the tab: a fresh composer starts with it on', async () => {
+			setPointer(false);
+			const first = mount();
+			await fireEvent.click(first.getByLabelText('Hardware keyboard: Enter sends'));
+			cleanup();
+			const second = mount();
+			await type(second.box, 'hello');
+			key(second.box, {});
+			expect(second.onSend).toHaveBeenCalledTimes(1);
+		});
+
+		it('a touch on the box resets it to touch mode, even on a fine pointer (a 2-in-1 used as a tablet)', async () => {
+			const { box, onSend } = mount();
+			await type(box, 'hello');
+			box.dispatchEvent(new PointerEvent('pointerdown', { pointerType: 'touch', bubbles: true }));
+			flushSync();
+			key(box, {});
+			expect(onSend).not.toHaveBeenCalled();
+		});
+
+		it('a mouse or pen press does not change the mode', async () => {
+			const { box, onSend } = mount();
+			await type(box, 'hello');
+			box.dispatchEvent(new PointerEvent('pointerdown', { pointerType: 'mouse', bubbles: true }));
+			flushSync();
+			key(box, {});
+			expect(onSend).toHaveBeenCalledTimes(1);
+		});
+
+		it('a touch clears an override that was on', async () => {
+			setPointer(false);
+			const { box, onSend, getByLabelText } = mount();
+			await fireEvent.click(getByLabelText('Hardware keyboard: Enter sends'));
+			box.dispatchEvent(new PointerEvent('pointerdown', { pointerType: 'touch', bubbles: true }));
+			flushSync();
+			await type(box, 'hello');
+			key(box, {});
+			expect(onSend).not.toHaveBeenCalled();
+			expect((getByLabelText('Hardware keyboard: Enter sends') as HTMLInputElement).checked).toBe(false);
+		});
+
+		it('a soft keyboard coming up resets it to touch mode', async () => {
+			const vv = new EventTarget() as EventTarget & { height: number; offsetTop: number };
+			vv.height = 800;
+			vv.offsetTop = 0;
+			Object.defineProperty(window, 'visualViewport', { configurable: true, value: vv });
+			Object.defineProperty(window, 'innerHeight', { configurable: true, value: 800 });
+			const { box, onSend } = mount();
+			await type(box, 'hello');
+			vv.height = 500;
+			vv.dispatchEvent(new Event('resize'));
+			flushSync();
+			await tick();
+			key(box, {});
+			expect(onSend).not.toHaveBeenCalled();
+		});
+	});
+});
+
+describe('target and delivery wording (DOC-4316 sections 5 and 7)', () => {
+	it('names the destination above the box: agent, number and title', () => {
+		const { container } = mount({ agentKey: 'build-agent', title: 'Review', presence: 'online' });
+		const t = container.querySelector('.target')!;
+		expect(t.textContent).toContain('To build-agent');
+		expect(t.textContent).toContain('C3');
+		expect(t.textContent).toContain('Review');
+	});
+
+	it('the Send button names the agent and conversation', () => {
+		const { send } = mount({ agentKey: 'build-agent', presence: 'online' });
+		expect(send.getAttribute('aria-label')).toBe('Send to build-agent, conversation 3');
+	});
+
+	it.each([['offline'], ['connected_not_accepting']])('warns before sending to a %s agent', (presence) => {
+		const { container } = mount({ agentKey: 'a', presence });
+		expect(container.querySelector('.presence-note')!.textContent).toContain(
+			'No live armed session. Saving a message does not confirm receipt.'
+		);
+	});
+
+	it('says the status is unavailable rather than offline when presence is unknown', () => {
+		const { container } = mount({ agentKey: 'a', presence: 'unknown' });
+		expect(container.querySelector('.presence-note')!.textContent).toBe('Session status unavailable.');
+	});
+
+	it.each([['online'], ['busy_uncertain']])('has no warning for a %s agent', (presence) => {
+		const { container } = mount({ agentKey: 'a', presence });
+		expect(container.querySelector('.presence-note')!.textContent).toBe('');
+	});
+
+	it('after a send to a live agent says Saved to conversation; to any other, receipt unconfirmed', async () => {
+		const live = mount({ agentKey: 'a', presence: 'online' });
+		await type(live.box, 'hi');
+		await fireEvent.click(live.send);
+		await tick();
+		expect(live.container.querySelector('[role=status]')!.textContent).toContain('Saved to conversation');
+		expect(live.container.querySelector('[role=status]')!.textContent).not.toContain('receipt unconfirmed');
+		cleanup();
+		const off = mount({ agentKey: 'a', presence: 'offline' });
+		await type(off.box, 'hi');
+		await fireEvent.click(off.send);
+		await tick();
+		expect(off.container.querySelector('[role=status]')!.textContent).toContain(
+			'Saved to conversation · receipt unconfirmed'
+		);
+	});
+
+	it('never says delivered, read, accepted or will execute', async () => {
+		const { container, box, send } = mount({ agentKey: 'a', presence: 'offline' });
+		await type(box, 'hi');
+		await fireEvent.click(send);
+		await tick();
+		expect(container.textContent).not.toMatch(/delivered|read by|accepted|will execute/i);
 	});
 });

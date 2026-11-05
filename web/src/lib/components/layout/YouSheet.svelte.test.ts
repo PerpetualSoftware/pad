@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 import { tick, flushSync } from 'svelte';
 
+const h = vi.hoisted(() => ({ chatOn: true }));
 vi.mock('$app/navigation', () => ({ goto: vi.fn(), afterNavigate: vi.fn() }));
 vi.mock('$lib/api/client', () => ({ api: { auth: { logout: vi.fn() } } }));
 vi.mock('$lib/stores/workspace.svelte', () => ({ workspaceStore: { current: null } }));
@@ -25,11 +26,20 @@ vi.mock('$lib/stores/auth.svelte', async (orig) => {
 	};
 });
 
+vi.mock('$lib/stores/chatSetting.svelte', () => ({
+	chatSetting: {
+		get enabled() {
+			return h.chatOn;
+		}
+	}
+}));
+
 import YouSheet from './YouSheet.svelte';
 import { chatStore } from '$lib/stores/chat.svelte';
 
 beforeEach(() => {
 	cleanup();
+	h.chatOn = true;
 	chatStore.unreadTotal = 4;
 });
 afterEach(() => {
@@ -46,6 +56,15 @@ describe('YouSheet chat row (TASK-4044)', () => {
 		expect(a).not.toBeNull();
 		expect(a?.classList.contains('row')).toBe(true);
 		expect(a?.getAttribute('aria-label')).toBe('Chat, 4 unread');
+	});
+
+	it('has no Chat row while the setting is off (TASK-4315)', async () => {
+		h.chatOn = false;
+		render(YouSheet, { props: { open: true, onclose: vi.fn() } });
+		await tick();
+		flushSync();
+		expect(document.querySelector('.rows a[href="/console/settings"]')).not.toBeNull();
+		expect(document.querySelector('.rows a[href="/messages"]')).toBeNull();
 	});
 
 	it('updates the Chat row badge live', async () => {

@@ -8,6 +8,8 @@
 		validateDraft
 	} from '$lib/chat/compose';
 	import { keepDraft, takeDraft } from '$lib/chat/draftKeeper';
+	import { inputMode } from '$lib/chat/inputMode.svelte';
+	import type { AgentPresence } from '$lib/chat/presence';
 	import { watchKeyboardInset } from '$lib/chat/viewport';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { registerSessionExpiryKeeper } from '$lib/stores/sessionExpiryKeep';
@@ -21,11 +23,19 @@
 	// uses Go's TrimSpace for "empty", as the server does (N1, N2).
 	let {
 		n,
+		agentKey = '',
+		title = '',
+		presence = 'unknown',
 		replyTo = null,
 		onClearReply,
 		onSend
 	}: {
 		n: number;
+		/** Where the message goes, named above the box (DOC-4316 section 5). */
+		agentKey?: string;
+		title?: string;
+		/** The latest presence read: it shapes the words around a send, never whether one is allowed. */
+		presence?: AgentPresence;
 		replyTo?: ChatMessage | null;
 		onClearReply: () => void;
 		onSend: (body: string, replyToSeq?: number) => Promise<SendOutcome>;
@@ -36,7 +46,11 @@
 	// would be in neither the box nor the stash; the keeper adds them (r6 B2-L1).
 	const inFlight: { body: string }[] = [];
 	let notice = $state('');
+	// "Saved to conversation" after a stored send (section 7): a successful POST proves storage and nothing more.
+	let saved = $state('');
 	let inset = $state(0);
+	// An IME commit can reach keydown after compositionend (Safari), so the flag outlives it by one task.
+	let composing = false;
 
 	let box = $state<HTMLTextAreaElement | null>(null);
 	/** Reply puts the reader straight into the box (r5 H3). */
@@ -53,13 +67,17 @@
 	let bytes = $derived(utf8Bytes(text));
 	let block = $derived(validateDraft(text, replyTo?.seq, PLACEHOLDER_OP_KEY));
 	let showCount = $derived(bytes > MAX_BODY_BYTES * 0.75);
-	let live = $derived(!!notice || showCount || block === 'too_large');
+	let live = $derived(!!notice || !!saved || showCount || block === 'too_large');
 
 	onMount(() => {
 		// A draft kept across a session-expiry redirect comes back for the same
 		// user on the same thread only (N8); the page keys this component by `n`.
 		text = takeDraft(authStore.userId, n);
-		return watchKeyboardInset((px) => (inset = px));
+		return watchKeyboardInset((px) => {
+			inset = px;
+			// A soft keyboard means touch: Enter stops sending until the person says otherwise.
+			if (px > 0) inputMode.enterByTouch();
+		});
 	});
 
 	// The redirect to /login keeps the identity, so a typed message would vanish.
@@ -71,12 +89,40 @@
 		})
 	);
 
+	// Enter sends only in hardware mode, never while an IME is composing, and never on a
+	// key repeat or with a modifier. Everything else is left to the textarea.
+	function onKeydown(e: KeyboardEvent) {
+		if (e.key !== 'Enter' || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
+		if (e.isComposing || e.keyCode === 229 || composing) return;
+		if (!inputMode.hardware) return;
+		e.preventDefault();
+		if (e.repeat) return;
+		void send();
+	}
+
+	function onCompositionEnd() {
+		setTimeout(() => (composing = false), 0);
+	}
+
+	// Presence only words the send; it never blocks it (the API stores the message).
+	let agentLive = $derived(presence === 'online' || presence === 'busy_uncertain');
+	let presenceNote = $derived(
+		presence === 'unknown'
+			? 'Session status unavailable.'
+			: agentLive
+				? ''
+				: 'No live armed session. Saving a message does not confirm receipt.'
+	);
+
 	async function send() {
 		if (block) return;
 		const body = text;
 		const target = replyTo;
+		// The words follow the state the person saw when they sent, not one that changed mid-flight.
+		const wasLive = agentLive;
 		text = '';
 		notice = '';
+		saved = '';
 		const pending = { body };
 		inFlight.push(pending);
 		let outcome: SendOutcome | 'send_error';
@@ -92,6 +138,7 @@
 		if (outcome === 'sent' || outcome === 'failed' || outcome === 'reply_deleted' || outcome === 'reply_missing') {
 			if (replyTo?.seq === target?.seq) onClearReply();
 		}
+		if (outcome === 'sent') saved = wasLive ? 'Saved to conversation' : 'Saved to conversation · receipt unconfirmed';
 		if (outcome === 'sent' || outcome === 'failed') return;
 		// A definite refusal: the text comes back, ahead of anything typed since.
 		restore(body, outcome);
@@ -106,6 +153,11 @@
 		void send();
 	}}
 >
+	{#if agentKey}
+		<p class="target">
+			<strong>To {agentKey}</strong> · C{n}{#if title}<span class="target-title"> · {title}</span>{/if}
+		</p>
+	{/if}
 	{#if replyTo}
 		<div class="reply">
 			<span class="reply-text">
@@ -121,10 +173,39 @@
 			rows="2"
 			placeholder="Message"
 			aria-label="Message"
-			oninput={() => (notice = '')}
+			enterkeyhint={inputMode.hardware ? 'send' : 'enter'}
+			oninput={() => {
+				notice = '';
+				saved = '';
+			}}
+			onkeydown={onKeydown}
+			oncompositionstart={() => (composing = true)}
+			oncompositionend={onCompositionEnd}
+			onpointerdown={(e) => {
+				if (e.pointerType === 'touch') inputMode.enterByTouch();
+			}}
 		></textarea>
-		<button type="submit" class="send" disabled={block !== null}>Send</button>
+		<button
+			type="submit"
+			class="send"
+			disabled={block !== null}
+			aria-label={agentKey ? `Send to ${agentKey}, conversation ${n}` : undefined}>Send</button
+		>
 	</div>
+	<p class="presence-note">{presenceNote}</p>
+	<p class="key-hint">
+		{inputMode.hardware ? 'Enter sends · Shift+Enter adds a line' : 'Enter adds a line · use Send to send'}
+	</p>
+	{#if inputMode.offered}
+		<label class="hardware">
+			<input
+				type="checkbox"
+				checked={inputMode.hardware}
+				onchange={(e) => inputMode.setHardware(e.currentTarget.checked)}
+			/>
+			Hardware keyboard: Enter sends
+		</label>
+	{/if}
 	<!-- Mounted from the start, only its text changes: a region inserted with its text is not announced by some screen readers (r5 H5). -->
 	<p class="status" class:idle={!live} class:over={block === 'too_long' || block === 'too_large'} role="status">
 		{#if block === 'too_long'}
@@ -133,6 +214,8 @@
 			{NOTICE.too_large}
 		{:else if notice}
 			{notice}
+		{:else if saved}
+			{saved}
 		{/if}
 		{#if showCount}<span class="count">{bytes.toLocaleString()} / {MAX_BODY_BYTES.toLocaleString()} bytes</span>{/if}
 	</p>
@@ -161,6 +244,24 @@
 		border-radius: var(--radius-md, 6px);
 		background: var(--bg-secondary);
 		color: var(--text-primary);
+	}
+	.target {
+		margin: 0;
+		font-size: 0.85rem;
+		overflow-wrap: anywhere;
+	}
+	.target-title {
+		color: var(--text-secondary);
+	}
+	.presence-note,
+	.key-hint,
+	.hardware {
+		margin: 0;
+		font-size: 0.75rem;
+		color: var(--text-secondary);
+	}
+	.presence-note:empty {
+		display: none;
 	}
 	.reply {
 		display: flex;
