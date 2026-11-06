@@ -23,6 +23,11 @@ export const EACH_KEY_REASONS = {
 export type EachKeyReason = keyof typeof EACH_KEY_REASONS;
 
 export const EACH_KEY_CENSUS: Record<string, { reason: EachKeyReason; note: string }> = {
+ "lib/components/calendar/CalendarDayDialog.svelte :: each rows as row (row.key)": { reason: 'db-primary-key', note: 'calendarRows uses an item primary key plus day for each span segment; schedule rows use a separate prefix and response position. One response replaces the rows.' },
+ "lib/components/collections/CalendarView.svelte :: each (byDay.get(day) ?? []).slice(0,3) as row (row.key)": { reason: 'db-primary-key', note: 'calendarRows uses item primary key plus day, or a separately prefixed schedule response position; grouping and slicing preserve uniqueness.' },
+ "lib/components/calendar/CalendarFieldPicker.svelte :: each fields.filter(f => f.key !== 'created' && f.key !== 'completed') as field (field.key)": { reason: 'deduped', note: 'dateFields reads parseSchema, which normalizes duplicate field keys.' },
+ "lib/components/calendar/CalendarFieldPicker.svelte :: each fields as field (field.key)": { reason: 'deduped', note: 'dateFields reads parseSchema, which normalizes duplicate field keys.' },
+
 	"routes/messages/+page.svelte :: each chatInbox.roster as entry (entry.key)": { reason: 'object-or-map-keys', note: "chatInbox.roster is built by iterating the `presences` Map (rollupPresence), keyed by agent name | Map keys cannot repeat." },
 	"routes/messages/[n]/+page.svelte :: each thread.items as item, i (item.kind === 'message' ? `m${item.message.seq}` : `p${item.pending.op_key}`)": { reason: 'object-or-map-keys', note: "`thread.items` is `ChatWindow.items()` (chat/model.ts): confirmed rows rebuilt by `mergeBySeq` from a `Map` keyed by `seq`, then pending sends, which `addPending` refuses to add twice for one op_key (a crypto.randomUUID) | Map keys cannot repeat; the `m`/`p` prefixes keep the two kinds apart." },
 	"routes/messages/[n]/+page.svelte :: each thread.detached as m (m.seq)": { reason: 'db-primary-key', note: "`thread.detached` holds own rows confirmed past the window's end, each an answer to one send keyed by the conversation's seq; `#publish` drops any the window reaches and `#applyOwn` adds one seq once | (conversation_id, seq) is unique." },

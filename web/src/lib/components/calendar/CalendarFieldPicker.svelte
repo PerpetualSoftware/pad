@@ -11,7 +11,7 @@
  <select id="{uid}-date" value={config.date_field ?? ''} onchange={(e) => onchange({...config,date_field:e.currentTarget.value})}>
   <option value="" disabled>Choose a date field</option>
   <option value="created">Created</option><option value="completed">Completed</option>
-  {#each fields.filter(f => !['created','completed'].includes(f.key)) as field (field.key)}<option value={field.key}>{field.label}</option>{/each}
+  {#each fields.filter(f => f.key !== 'created' && f.key !== 'completed') as field (field.key)}<option value={field.key}>{field.label}</option>{/each}
  </select>
  <label for="{uid}-end">End field (optional)</label>
  <select id="{uid}-end" value={config.end_field ?? ''} onchange={(e) => onchange({...config,end_field:e.currentTarget.value || undefined})}>

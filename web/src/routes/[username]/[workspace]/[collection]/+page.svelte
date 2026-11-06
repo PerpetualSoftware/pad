@@ -948,6 +948,9 @@
 	 * carried here rather than re-learned).
 	 */
 	function resetPerSessionState() {
+		calendarPickerOpen = false;
+		viewSheetFields = false;
+		calendarRefresh = 0;
 		// THE QUERY MUST NOT COME BACK, and clearing the variable alone does not
 		// achieve that. `searchQuery` is restored from
 		// `?q=` by `loadUrlFilters()`, which the reload below calls on success —
