@@ -21,7 +21,7 @@ identityGateSuite({
 			deltaSync: { reviewed: '411fdaffa22b', why: 'identityHeld(epochAtEntry) after the reconcile; the page commits nothing itself' },
 			refreshProgress: { reviewed: 'db4bab6d2f71', why: `${ENTRY}, on both arms` },
 			loadCollection: {
-				reviewed: '032a40a1f6ae',
+				reviewed: '3f07cb2f8bf0',
 				why: 'loadSeq then identityHeld(epochAtEntry) after every await, with collection writes also gated on collectionGen; re-stamps identityEpochAtLoad at entry; the finally clears metaLoading on loadSeq alone, deliberately',
 			},
 			handleStatusChange: {
@@ -54,9 +54,9 @@ identityGateSuite({
 		continuations: [
 			{ call: /replaceState: true \}\)\.catch\($/, body: /./, in: 'reconcileRouteCollectionSlug', why: 'rename navigation failure: clears renameNav only if it still holds this target', reviewed: 'a9ee9d041feb' },
 			{ call: /plansProgress\(ws\)\.catch\($/, body: /./, why: 'refreshProgress fetch: a failure reads as none; commits nothing', reviewed: 'd4d3603af105' },
-			{ call: /api\.views\.list\(ws, coll\)\.catch\($/, body: /./, why: 'loadCollection views fetch: a failure reads as none; commits nothing', reviewed: '32c8736251e8' },
+			{ call: /api\.views\.list\(ws, coll\)\.catch\($/, body: /./, why: 'loadCollection views fetch: a failure reads as none; commits nothing', reviewed: 'b95fa0909634' },
 			{ call: /handleStatusChange\(item, value, 'priority'\)\.catch\($/, body: /./, why: 'card priority write (TASK-2214): the rejection was already toasted inside handleStatusChange, which fences its own commits; the catch commits nothing', reviewed: '8405d65b80af' },
-			{ call: /api\.members\.list\(ws\)\.catch\($/, body: /./, why: 'loadCollection members fetch: a failure reads as none; commits nothing', reviewed: '5f7edb421aac' },
+			{ call: /api\.members\.list\(ws\)\.catch\($/, body: /./, why: 'loadCollection members fetch: a failure reads as none; commits nothing', reviewed: 'd50d87e83266' },
 			{ call: /^setTimeout\($/, body: /BODY_SEARCH_PAGE/, why: 'search timer, as the deferred callback: the same unit as the nested row above', reviewed: '0a4e19e8c85e' },
 			{ call: /^setTimeout\($/, body: /identityHeld\(epochAtSchedule\)\) return; bypassNavGuard/, why: 'leave-guard popstate reset: identityHeld(epochAtSchedule) before clearing bypassNavGuard', reviewed: 'b3974e1c39d9' },
 			{
@@ -75,7 +75,7 @@ identityGateSuite({
 			{ call: /^requestAnimationFrame\($/, body: /saveViewInput/, in: 'openSaveView', why: FOCUS, reviewed: '05df866d1a2e' },
 		],
 		helpers: {
-			buildViewConfig: '2d8cf6d4d53a',
+			buildViewConfig: '665c63d8729f',
 			cancelPaneFollow: '95ae6c0fb20b',
 			captureIdentity: '7f6903e09e84',
 			captureReturnFocus: 'f97edb43de71',
@@ -86,10 +86,10 @@ identityGateSuite({
 			identityHeld: 'e4fd3989a707',
 			// TASK-3423 rebase: re-reviewed; only kit 3 API swaps reach it (page.url.href, goto reset:false), no await or fence moved.
 			installPaneTestHook: 'd5097f0db3e6',
-			loadUrlFilters: '8c5ca3b60338',
+			loadUrlFilters: '3f30336611ee',
 			pageIdentityHeld: 'a7bbe5de91a4',
 			runPendingNav: 'dfb7329e4a5e',
-			updateUrlFilters: 'a051adf5dd2f',
+			updateUrlFilters: 'e37d53c8b8f0',
 			writeDefaultViewId: '79d9180fa119',
 		},
 		// TASK-3423: the restore-skip release used to be handed to

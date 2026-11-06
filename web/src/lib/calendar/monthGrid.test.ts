@@ -42,7 +42,7 @@ describe('calendar dates', () => {
 });
 
 it('uses the item-list tag parameter and refuses unsupported filter combinations', async () => {
- const {calendarFilters} = await import('./presentation');
+ const {calendarFilters} = await import('./monthGrid');
  expect(calendarFilters({status:'open'},['planning'],'launch',true)).toEqual({params:{status:'open',tag:'planning',search:'launch',unparented:'true'},problem:''});
  expect(calendarFilters({},['planning','design'],'',false).problem).toContain('one tag');
  expect(calendarFilters({from:'value'},[],'',false).problem).toContain('cannot filter');
