@@ -147,7 +147,11 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 	function paneNavInFlight(): boolean {
 		// Chat's own close traversal counts too: a second history.go issued before
 		// its popstate lands would overshoot the page that opened Chat.
-		return paneGoInFlight || chatSurface.traversing;
+		// Read Chat's side FIRST: settling its latch can run a pending continuation
+		// (a reset go sets paneGoInFlight, a drill issues a goto), and that read
+		// reports true so this caller does not proceed on top of it.
+		const chatBusy = chatSurface.traversing;
+		return chatBusy || paneGoInFlight;
 	}
 
 	function clearPaneGo() {

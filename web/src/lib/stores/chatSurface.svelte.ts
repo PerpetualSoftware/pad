@@ -76,18 +76,24 @@ function surfaceKey(): string {
 	return `${page.shallow?.url.href ?? ''}|${page.state.chatDepth ?? 0}|${page.state.chatFromInbox ? 1 : 0}`;
 }
 
-function releaseGo(): void {
-	if (!goLatch) return;
+/** Release the latch; true when it ran a continuation. */
+function releaseGo(): boolean {
+	if (!goLatch) return false;
 	const { timer, then } = goLatch;
 	clearTimeout(timer);
 	goLatch = null;
 	// Only a closed surface is the page the continuation was waiting for.
-	if (then && page.shallow === null) then();
+	if (then && page.shallow === null) {
+		then();
+		return true;
+	}
+	return false;
 }
 
-/** Release the latch once its traversal has settled. */
-function settleGo(): void {
-	if (goLatch && goLatch.popped && goLatch.from !== surfaceKey()) releaseGo();
+/** Release the latch once its traversal has settled; true when that ran a continuation. */
+function settleGo(): boolean {
+	if (goLatch && goLatch.popped && goLatch.from !== surfaceKey()) return releaseGo();
+	return false;
 }
 
 // Watching it here, not only when the next Close asks, matters: Back then a fresh
@@ -111,9 +117,11 @@ if (browser) {
 	});
 }
 
+// True while pending, and also on the read that ran the continuation: that read
+// may have started a navigation of its own, so the caller must not go on as if idle.
 function traversing(): boolean {
-	settleGo();
-	return goLatch !== null;
+	const ran = settleGo();
+	return ran || goLatch !== null;
 }
 
 function go(delta: number, then: (() => void) | null = null): void {
