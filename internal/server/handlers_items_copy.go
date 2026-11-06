@@ -138,6 +138,8 @@ import (
 //	                              that wiring a second backend is a one-line
 //	                              change rather than a new 500; a client need
 //	                              not handle it until then.
+//	422 too_many_attachments    — more than 1,000 distinct attachment refs;
+//	                              nothing written; reduce refs before retrying.
 //	500 copy_failed             — an AMBIGUOUS failure. See DR-13 below; the
 //	                              message tells the user to check the
 //	                              destination rather than retry.
@@ -180,17 +182,14 @@ import (
 // DR-14 — FANOUT IS POST-COMMIT, ASYMMETRIC, AND SEQ-ATTRIBUTED. See
 // emitCopyFanout.
 //
-// COST AND RATE LIMITING. A copy holds BOTH workspaces' advisory locks for
-// the length of its transaction, and that length scales with the number of
-// attachment references in the item — each cloned row is an insert inside the
-// lock. The endpoint inherits only the general authenticated limiter
-// (600/min), which PLAN-2357 DR-16 explicitly adjudicates: "Rate limiting is
-// a P2 and deliberately deferred… a dedicated lower limit on copy and its
-// preflight is worth adding, but it is a hardening follow-on, not a
-// correctness gate." Nothing here is unbounded — variants are server-derived,
-// exactly two per original and idempotent (thumbnailSpecs), so an attacker
-// cannot inflate the per-attachment cost — but the deferral is a decision on
-// record rather than an oversight.
+// COST AND RATE LIMITING. Copies accept at most 1,000 distinct attachment
+// references across source content and final destination fields (TASK-4318).
+// An advisory count rejects oversized copies before any transaction or lock;
+// the authoritative count repeats under both workspace locks before planning
+// or inserting. Each cloned row, including server-derived variants, is still
+// an insert inside those locks. Transaction duration is measured. The endpoint
+// inherits the general authenticated limiter (600/min); a dedicated copy and
+// preflight rate limit remains deferred.
 //
 // CALLER OBLIGATIONS from CrossWorkspaceCopyResult, both honored here:
 // storageInfoCache invalidation for the DESTINATION when attachments were
@@ -918,6 +917,11 @@ func (s *Server) writeCopyError(w http.ResponseWriter, r *http.Request, err erro
 		return
 	}
 
+	if errors.Is(err, store.ErrCopyTooManyAttachments) {
+		writeError(w, http.StatusUnprocessableEntity, "too_many_attachments",
+			"This item references more than 1,000 attachments, which is too many to copy. Remove some references, then copy it again.")
+		return
+	}
 	if errors.Is(err, store.ErrCopyCrossBackendAttachments) {
 		writeError(w, http.StatusConflict, "cross_backend_attachments",
 			"This item's attachments are stored in a different storage backend than the destination workspace. Cross-backend copy is not supported.")
