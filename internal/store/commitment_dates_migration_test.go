@@ -403,7 +403,14 @@ func TestMigrationCountsOnCopy(t *testing.T) {
 		defaults = append(defaults, filepath.Join(dir, "pad.db"))
 	}
 	for _, d := range defaults {
-		if live, err := os.Stat(d); err == nil && os.SameFile(target, live) {
+		live, err := os.Stat(d)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			t.Fatal("cannot inspect a default database path, refusing to migrate")
+		}
+		if os.SameFile(target, live) {
 			t.Fatal("the default database is refused: copy it first")
 		}
 	}
