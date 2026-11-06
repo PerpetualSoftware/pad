@@ -410,11 +410,11 @@ func TestBundleV1_StillImportsThroughFourKind(t *testing.T) {
 func TestBundleV1_WithV2MembersRefused(t *testing.T) {
 	for _, member := range []string{"roles", "id", "overrides", "schedule_changes", "actual_source", "actual_done_at", "roles_null", "id_empty", "overrides_empty", "changes_empty", "actual_empty"} {
 		t.Run(member, func(t *testing.T) {
-			f, b, x := nativeBundle(t)
+			f, b, _ := nativeBundle(t)
 			v1 := bundleDecode(t, b)
 			stripV2(v1)
 			b = bundleObject(t, v1)
-			x = b["schedules"].([]any)[0].(map[string]any)
+			x := b["schedules"].([]any)[0].(map[string]any)
 			switch member {
 			case "roles_null":
 				x["roles"] = nil
