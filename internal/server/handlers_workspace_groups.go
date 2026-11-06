@@ -128,14 +128,16 @@ func readWorkspaceGroupBody(w http.ResponseWriter, r *http.Request, create bool)
 	return name, ids, true
 }
 
-func (s *Server) validateWorkspaceGroupMembers(w http.ResponseWriter, r *http.Request, user *models.User, ids *[]string) bool {
+// validateWorkspaceGroupMembers refuses any id the caller is not admitted to and
+// returns the admitted set (nil when ids is nil and nothing was read).
+func (s *Server) validateWorkspaceGroupMembers(w http.ResponseWriter, r *http.Request, user *models.User, ids *[]string) (map[string]bool, bool) {
 	if ids == nil {
-		return true
+		return nil, true
 	}
 	admitted, err := s.needsAdmittedWorkspaces(r, user)
 	if err != nil {
 		writeInternalError(w, err)
-		return false
+		return nil, false
 	}
 	allowed := map[string]bool{}
 	for _, ws := range admitted {
@@ -144,10 +146,10 @@ func (s *Server) validateWorkspaceGroupMembers(w http.ResponseWriter, r *http.Re
 	for _, id := range *ids {
 		if _, err := uuid.Parse(id); err != nil || !allowed[id] {
 			writeWorkspaceGroupError(w, store.ErrWorkspaceGroupUnknownWorkspace)
-			return false
+			return nil, false
 		}
 	}
-	return true
+	return allowed, true
 }
 
 // visibleWorkspaceGroup filters every saved member and orders by the admitted
@@ -257,7 +259,7 @@ func (s *Server) handleCreateWorkspaceGroup(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
-	if !s.validateWorkspaceGroupMembers(w, r, user, ids) {
+	if _, ok := s.validateWorkspaceGroupMembers(w, r, user, ids); !ok {
 		return
 	}
 	g, err := s.store.CreateWorkspaceGroup(r.Context(), user.ID, *name, *ids)
@@ -279,7 +281,8 @@ func (s *Server) handleUpdateWorkspaceGroup(w http.ResponseWriter, r *http.Reque
 	}
 	// Resolve ownership before parsing a body so all missing group ids have
 	// the same refusal, even when a submitted body is invalid.
-	if _, err := s.store.GetWorkspaceGroup(r.Context(), user.ID, id); err != nil {
+	current, err := s.store.GetWorkspaceGroup(r.Context(), user.ID, id)
+	if err != nil {
 		writeWorkspaceGroupError(w, err)
 		return
 	}
@@ -287,10 +290,21 @@ func (s *Server) handleUpdateWorkspaceGroup(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
-	if !s.validateWorkspaceGroupMembers(w, r, user, ids) {
+	admitted, ok := s.validateWorkspaceGroupMembers(w, r, user, ids)
+	if !ok {
 		return
 	}
-	g, err := s.store.UpdateWorkspaceGroup(r.Context(), user.ID, id, name, ids)
+	// Saved members the caller cannot see right now stay: the body can only
+	// name what the caller can see, so replacing the list must not erase them.
+	var keep []string
+	if ids != nil {
+		for _, wsID := range current.WorkspaceIDs {
+			if !admitted[wsID] {
+				keep = append(keep, wsID)
+			}
+		}
+	}
+	g, err := s.store.UpdateWorkspaceGroup(r.Context(), user.ID, id, name, ids, keep)
 	if err != nil {
 		writeWorkspaceGroupError(w, err)
 		return

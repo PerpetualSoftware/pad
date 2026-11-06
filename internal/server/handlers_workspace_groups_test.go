@@ -242,17 +242,10 @@ func TestWorkspaceGroupsTokenAdmission(t *testing.T) {
 	w := newAgendaWorld(t)
 	b := mustWorkspace(t, w.srv, "Excluded Workspace Sentinel", w.owner.ID)
 	g := groupCreate(t, w.srv, w.owner, "Both", w.ws.ID, b.ID)
-	for _, mode := range []string{"allowlist", "pin"} {
+	for _, mode := range []string{"allowlist"} {
 		t.Run(mode, func(t *testing.T) {
 			mod := func(c context.Context) context.Context {
-				if mode == "allowlist" {
-					return WithTokenAllowedWorkspaces(c, []string{w.ws.Slug})
-				}
-				ctx, err := w.srv.withTokenPin(WithTokenWorkspaceID(c, w.ws.ID), &models.APIToken{UserID: w.owner.ID, WorkspaceID: w.ws.ID})
-				if err != nil {
-					t.Fatal(err)
-				}
-				return ctx
+				return WithTokenAllowedWorkspaces(c, []string{w.ws.Slug})
 			}
 			for _, entry := range groupList(t, w.srv, w.owner, mod) {
 				if len(entry.WorkspaceIDs) != 1 || entry.WorkspaceIDs[0] != w.ws.ID {
@@ -464,5 +457,88 @@ func TestWorkspaceGroupsExportReadFailureBeforeBody(t *testing.T) {
 	groupStatus(t, rr, 500)
 	if rr.Header().Get("Content-Disposition") != "" || strings.Contains(rr.Body.String(), `"format"`) {
 		t.Fatalf("stream started: %s", rr.Body.String())
+	}
+}
+
+// A member the caller cannot see right now (access lost, maybe regained
+// later) must survive an edit made while it was hidden.
+func TestWorkspaceGroupsPatchKeepsHiddenMembers(t *testing.T) {
+	w := newAgendaWorld(t, "tasks")
+	u := mustUser(t, w.srv, "group-keeper@example.com", "groupkeeper", "")
+	other := mustWorkspace(t, w.srv, "Second Space", w.owner.ID)
+	for _, ws := range []*models.Workspace{w.ws, other} {
+		if err := w.srv.store.AddWorkspaceMember(ws.ID, u.ID, "viewer"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g := groupCreate(t, w.srv, u, "Both", w.ws.ID, other.ID)
+	if len(g.WorkspaceIDs) != 2 {
+		t.Fatalf("both members expected: %+v", g)
+	}
+	if err := w.srv.store.RemoveWorkspaceMember(other.ID, u.ID); err != nil {
+		t.Fatal(err)
+	}
+	rr := groupRequest(w.srv, u, "PATCH", groupsPath+"/"+g.ID, `{"workspace_ids":["`+w.ws.ID+`"]}`)
+	groupStatus(t, rr, 200)
+	groupNoLeak(t, rr, other)
+	if err := w.srv.store.AddWorkspaceMember(other.ID, u.ID, "viewer"); err != nil {
+		t.Fatal(err)
+	}
+	got := groupDecode(t, groupRequest(w.srv, u, "GET", groupsPath+"/"+g.ID, ""))
+	if len(got.WorkspaceIDs) != 2 {
+		t.Fatalf("hidden member was dropped by the edit: %+v", got)
+	}
+}
+
+// Named groups list in one order on both backends: lower-cased by Go, then id.
+func TestWorkspaceGroupsNamedOrderIsDialectIndependent(t *testing.T) {
+	w := newAgendaWorld(t, "tasks")
+	u := mustUser(t, w.srv, "group-order@example.com", "grouporder", "")
+	for _, name := range []string{"Éz", "éa", "Zed", "alpha"} {
+		groupCreate(t, w.srv, u, name)
+	}
+	var names []string
+	for _, g := range groupList(t, w.srv, u) {
+		if g.Kind == "named" {
+			names = append(names, g.Name)
+		}
+	}
+	want := []string{"alpha", "Zed", "éa", "Éz"}
+	if strings.Join(names, "|") != strings.Join(want, "|") {
+		t.Fatalf("order %q, want %q", names, want)
+	}
+}
+
+// A token pinned to one workspace is confined to it: every group route answers
+// 403 token_workspace_pinned from the gate, and a group the token's user owns
+// is neither read, renamed nor deleted through it.
+func TestWorkspaceGroupsPinnedTokenRefused(t *testing.T) {
+	w := newAgendaWorld(t)
+	g := groupCreate(t, w.srv, w.owner, "Private Group Sentinel", w.ws.ID)
+	pin := func(c context.Context) context.Context {
+		ctx, err := w.srv.withTokenPin(WithTokenWorkspaceID(c, w.ws.ID), &models.APIToken{UserID: w.owner.ID, WorkspaceID: w.ws.ID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ctx
+	}
+	for _, req := range []struct{ method, path, body string }{
+		{"GET", groupsPath, ""},
+		{"POST", groupsPath, `{"name":"Pinned","workspace_ids":[]}`},
+		{"GET", groupsPath + "/" + g.ID, ""},
+		{"PATCH", groupsPath + "/" + g.ID, `{"name":"Renamed"}`},
+		{"DELETE", groupsPath + "/" + g.ID, ""},
+	} {
+		rr := groupRequest(w.srv, w.owner, req.method, req.path, req.body, pin)
+		if rr.Code != http.StatusForbidden || !strings.Contains(rr.Body.String(), "token_workspace_pinned") {
+			t.Fatalf("%s %s: %d %s, want 403 token_workspace_pinned", req.method, req.path, rr.Code, rr.Body.String())
+		}
+		if strings.Contains(rr.Body.String(), "Private Group Sentinel") {
+			t.Fatalf("%s %s leaked the group name: %s", req.method, req.path, rr.Body.String())
+		}
+	}
+	groups := groupList(t, w.srv, w.owner)
+	if len(groups) != 3 || groups[2].ID != g.ID || groups[2].Name != "Private Group Sentinel" {
+		t.Fatalf("the group changed or a pinned create landed: %+v", groups)
 	}
 }

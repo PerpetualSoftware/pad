@@ -27,7 +27,7 @@ func TestWorkspaceGroupsCRUDAndOwnerScope(t *testing.T) {
 	for _, op := range []func() error{
 		func() error { _, err := s.GetWorkspaceGroup(context.Background(), b.ID, g.ID); return err },
 		func() error {
-			_, err := s.UpdateWorkspaceGroup(context.Background(), b.ID, g.ID, &name, &ids)
+			_, err := s.UpdateWorkspaceGroup(context.Background(), b.ID, g.ID, &name, &ids, nil)
 			return err
 		},
 		func() error { return s.DeleteWorkspaceGroup(context.Background(), b.ID, g.ID) },
@@ -40,12 +40,12 @@ func TestWorkspaceGroupsCRUDAndOwnerScope(t *testing.T) {
 	if err != nil || got.Name != "Saved" || len(got.WorkspaceIDs) != 1 || got.WorkspaceIDs[0] != w1.ID {
 		t.Fatalf("changed by other user: %+v %v", got, err)
 	}
-	got, err = s.UpdateWorkspaceGroup(context.Background(), a.ID, g.ID, &name, &ids)
+	got, err = s.UpdateWorkspaceGroup(context.Background(), a.ID, g.ID, &name, &ids, nil)
 	if err != nil || got.Name != name || len(got.WorkspaceIDs) != 1 || got.WorkspaceIDs[0] != w2.ID {
 		t.Fatalf("replace: %+v %v", got, err)
 	}
 	empty := []string{}
-	got, err = s.UpdateWorkspaceGroup(context.Background(), a.ID, g.ID, nil, &empty)
+	got, err = s.UpdateWorkspaceGroup(context.Background(), a.ID, g.ID, nil, &empty, nil)
 	if err != nil || got.WorkspaceIDs == nil || len(got.WorkspaceIDs) != 0 {
 		t.Fatalf("clear: %+v %v", got, err)
 	}
@@ -81,7 +81,7 @@ func TestWorkspaceGroupsCascades(t *testing.T) {
 	}
 	ws = tabsWorkspace(t, s, owner, "Another workspace")
 	ids := []string{ws.ID}
-	if _, err := s.UpdateWorkspaceGroup(context.Background(), u.ID, g.ID, nil, &ids); err != nil {
+	if _, err := s.UpdateWorkspaceGroup(context.Background(), u.ID, g.ID, nil, &ids, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.db.Exec(s.q(`DELETE FROM users WHERE id = ?`), u.ID); err != nil {
@@ -119,14 +119,14 @@ func TestWorkspaceGroupsUniqueNames(t *testing.T) {
 		t.Fatalf("Unicode duplicate: %v", err)
 	}
 	name := "MIXED"
-	if _, err := s.UpdateWorkspaceGroup(context.Background(), a.ID, g.ID, &name, nil); err != nil {
+	if _, err := s.UpdateWorkspaceGroup(context.Background(), a.ID, g.ID, &name, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	other, err := s.CreateWorkspaceGroup(context.Background(), a.ID, "Other", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.UpdateWorkspaceGroup(context.Background(), a.ID, other.ID, &name, nil); !errors.Is(err, ErrWorkspaceGroupNameTaken) {
+	if _, err := s.UpdateWorkspaceGroup(context.Background(), a.ID, other.ID, &name, nil, nil); !errors.Is(err, ErrWorkspaceGroupNameTaken) {
 		t.Fatalf("rename conflict: %v", err)
 	}
 	if _, err := s.db.Exec(s.q(`INSERT INTO user_workspace_groups (id,user_id,name,created_at,updated_at) VALUES (?,?,?,'2031-01-01','2031-01-01')`), "duplicate", a.ID, "mixed"); err == nil {

@@ -33,7 +33,7 @@ func (s *Store) workspaceGroupsQ(q Queryer, userID string, id *string) ([]models
  FROM user_workspace_groups g
  LEFT JOIN user_workspace_group_members m ON m.group_id = g.id
  WHERE `+where+`
- ORDER BY lower(g.name), g.id, m.workspace_id`), args...)
+ ORDER BY g.id, m.workspace_id`), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -53,7 +53,19 @@ func (s *Store) workspaceGroupsQ(q Queryer, userID string, id *string) ([]models
 			out[len(out)-1].WorkspaceIDs = append(out[len(out)-1].WorkspaceIDs, member.String)
 		}
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Ordered here, not in SQL: lower() folds ASCII only on SQLite and by locale
+	// on Postgres, so the same account would list in two orders.
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := strings.ToLower(out[i].Name), strings.ToLower(out[j].Name)
+		if a != b {
+			return a < b
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out, nil
 }
 
 func (s *Store) ListWorkspaceGroups(ctx context.Context, userID string) ([]models.WorkspaceGroup, error) {
@@ -112,7 +124,10 @@ func (s *Store) workspaceGroupNameAvailable(ctx context.Context, tx *sql.Tx, use
 	return rows.Err()
 }
 
-func (s *Store) replaceWorkspaceGroupMembers(ctx context.Context, tx *sql.Tx, userID, id string, ids []string) error {
+// replaceWorkspaceGroupMembers makes ids the group's members. keep names stored
+// members the caller cannot see right now: they are left in place, so an edit
+// made while access to a workspace was lost does not erase it for good.
+func (s *Store) replaceWorkspaceGroupMembers(ctx context.Context, tx *sql.Tx, userID, id string, ids, keep []string) error {
 	unique := make([]string, 0, len(ids))
 	seen := map[string]bool{}
 	for _, wsID := range ids {
@@ -121,7 +136,14 @@ func (s *Store) replaceWorkspaceGroupMembers(ctx context.Context, tx *sql.Tx, us
 			unique = append(unique, wsID)
 		}
 	}
-	if len(unique) > MaxWorkspaceGroupMembers {
+	kept := make([]string, 0, len(keep))
+	for _, wsID := range keep {
+		if !seen[wsID] {
+			seen[wsID] = true
+			kept = append(kept, wsID)
+		}
+	}
+	if len(unique)+len(kept) > MaxWorkspaceGroupMembers {
 		return ErrWorkspaceGroupMemberLimit
 	}
 	// Lock live workspaces in id order before member writes. This also
@@ -142,8 +164,16 @@ func (s *Store) replaceWorkspaceGroupMembers(ctx context.Context, tx *sql.Tx, us
 	}
 	// The owner predicate remains explicit even though the transaction has
 	// already resolved the group under that owner.
-	if _, err := tx.ExecContext(ctx, s.q(`DELETE FROM user_workspace_group_members
- WHERE group_id IN (SELECT id FROM user_workspace_groups WHERE id = ? AND user_id = ?)`), id, userID); err != nil {
+	deleteSQL := `DELETE FROM user_workspace_group_members
+ WHERE group_id IN (SELECT id FROM user_workspace_groups WHERE id = ? AND user_id = ?)`
+	deleteArgs := []any{id, userID}
+	if len(kept) > 0 {
+		deleteSQL += ` AND workspace_id NOT IN (` + placeholders(len(kept)) + `)`
+		for _, wsID := range kept {
+			deleteArgs = append(deleteArgs, wsID)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, s.q(deleteSQL), deleteArgs...); err != nil {
 		return err
 	}
 	for _, wsID := range unique {
@@ -187,7 +217,7 @@ func (s *Store) CreateWorkspaceGroup(ctx context.Context, userID, name string, i
 		}
 		return nil, err
 	}
-	if err := s.replaceWorkspaceGroupMembers(ctx, tx, userID, id, ids); err != nil {
+	if err := s.replaceWorkspaceGroupMembers(ctx, tx, userID, id, ids, nil); err != nil {
 		return nil, err
 	}
 	g, err := s.workspaceGroupQ(WithContext(ctx, tx), userID, id)
@@ -200,7 +230,9 @@ func (s *Store) CreateWorkspaceGroup(ctx context.Context, userID, name string, i
 	return g, nil
 }
 
-func (s *Store) UpdateWorkspaceGroup(ctx context.Context, userID, id string, name *string, ids *[]string) (*models.WorkspaceGroup, error) {
+// UpdateWorkspaceGroup renames the group and/or replaces its members. keep is
+// the stored members the caller cannot see; they stay when ids replaces the list.
+func (s *Store) UpdateWorkspaceGroup(ctx context.Context, userID, id string, name *string, ids *[]string, keep []string) (*models.WorkspaceGroup, error) {
 	tx, err := s.beginWorkspaceGroupWrite(ctx, userID)
 	if err != nil {
 		return nil, err
@@ -225,7 +257,7 @@ func (s *Store) UpdateWorkspaceGroup(ctx context.Context, userID, id string, nam
 		}
 	}
 	if ids != nil {
-		if err := s.replaceWorkspaceGroupMembers(ctx, tx, userID, id, *ids); err != nil {
+		if err := s.replaceWorkspaceGroupMembers(ctx, tx, userID, id, *ids, keep); err != nil {
 			return nil, err
 		}
 	}

@@ -82,8 +82,6 @@ func signedInFor(r *http.Request, workspaceID string) *models.User {
 // the caller's own to-do feed, which already filters to the pinned workspace.
 func pinnedTokenExtraRoute(method, path string) bool {
 	switch path {
-	case "/api/v1/me/workspace-groups":
-		return method == http.MethodGet || method == http.MethodPost
 	case "/api/v1/me/needs",
 		"/api/v1/me/agenda",
 		"/api/v1/auth/session",
@@ -104,10 +102,6 @@ func pinnedTokenExtraRoute(method, path string) bool {
 		return method == http.MethodPost
 	case "/api/v1/auth/check-username":
 		return method == http.MethodGet
-	}
-	if id, ok := strings.CutPrefix(path, "/api/v1/me/workspace-groups/"); ok {
-		return id != "" && !strings.Contains(id, "/") &&
-			(method == http.MethodGet || method == http.MethodPatch || method == http.MethodDelete)
 	}
 	if id, ok := strings.CutPrefix(path, "/api/v1/auth/tokens/"); ok {
 		return method == http.MethodDelete && id != "" && !strings.Contains(id, "/")

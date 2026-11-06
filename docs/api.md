@@ -360,12 +360,12 @@ The CLI is `pad item remind` (`--start`/`--every` to schedule, and the `show`, `
 
 ### Personal workspace groups (TASK-4243)
 
-Groups are private per-user workspace filters. They never grant access. These user-scoped routes sit outside the workspace access subrouter and are available through the REST API and web client only.
+Groups are private per-user workspace filters. They never grant access. These user-scoped routes sit outside the workspace access subrouter and are available through the REST API and web client only. A token pinned to one workspace is refused on all five routes with `403 token_workspace_pinned`: group names are free text and a group spans workspaces.
 
-- `GET /api/v1/me/workspace-groups` returns `200 {groups: [...]}`: computed `all` and `mine`, followed by named groups ordered by `lower(name)`, then id.
+- `GET /api/v1/me/workspace-groups` returns `200 {groups: [...]}`: computed `all` and `mine`, followed by named groups ordered by the byte order of the lower-cased name (Go `strings.ToLower`, the same on SQLite and Postgres), then id.
 - `POST /api/v1/me/workspace-groups` takes `{name, workspace_ids}` and returns the created named group with `201`.
 - `GET /api/v1/me/workspace-groups/{id}` returns one entry with `200`. The ids `all` and `mine` also work here.
-- `PATCH /api/v1/me/workspace-groups/{id}` takes any subset of `{name, workspace_ids}` and returns the updated entry with `200`. Members replace the saved list; `{}` is a no-op.
+- `PATCH /api/v1/me/workspace-groups/{id}` takes any subset of `{name, workspace_ids}` and returns the updated entry with `200`. Members replace the list the caller can see; saved members the caller cannot see right now (access lost) stay, and count toward the 100 cap. `{}` is a no-op.
 - `DELETE /api/v1/me/workspace-groups/{id}` returns `200 {id, deleted: true}`.
 
 Each entry is `{id, name, kind: "all"|"mine"|"named", workspace_ids: [...]}`; named entries also include `created_at` and `updated_at`. Member ids are ordered by workspace slug, then id. `all` is named `All workspaces` and contains every currently admitted workspace. `mine` is named `My workspaces` and contains only admitted workspaces owned by the caller. Both are computed on every request, never saved. PATCH and DELETE on either return `400 validation_error`, details `{field: "id", code: "builtin_group"}`.
