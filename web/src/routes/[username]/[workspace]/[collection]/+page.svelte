@@ -3347,6 +3347,9 @@
 			// Text-editing targets (title edit, tag input, the Tiptap editor)
 			// own ESC locally (cancel/blur) — don't hijack it into a layer-close.
 			if (isTextEntryTarget(target)) return;
+			// Focus inside the docked Chat column is Chat's: the dock has no Escape,
+			// and the pane or list beside it must not lose a layer to a key aimed at it.
+			if (target?.closest?.('[data-chat-host]')) return;
 			// A modal (native <dialog>, or a role="dialog" BottomSheet/DockedSheet
 			// opened from within the pane — field selects / Quick Actions / Move
 			// To) owns its own ESC — don't also pop the pane/graph/list layer

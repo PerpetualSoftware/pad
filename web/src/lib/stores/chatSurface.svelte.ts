@@ -15,6 +15,7 @@
 import { untrack } from 'svelte';
 import { goto } from '$app/navigation';
 import { page } from '$app/state';
+import { browser } from '$app/env';
 import { viewport } from '$lib/stores/breakpoint.svelte';
 import { authStore } from '$lib/stores/auth.svelte';
 
@@ -56,38 +57,67 @@ function plainLeftClick(e: MouseEvent): boolean {
 
 // history.go has no completion promise, so a second Close or Back issued before
 // the first one's popstate lands would pop past the opener. A traversal we issue
-// latches until the surface state it was issued from changes (the popstate
-// landed), or a bounded fallback, so a lost popstate cannot freeze Close.
-const GO_SETTLE_MS = 800;
-let goLatch: { from: string; timer: ReturnType<typeof setTimeout> } | null = null;
+// latches until it has SETTLED: its popstate has fired AND the surface state has
+// moved off the key it was issued from (Kit applies the state-only update a tick
+// after the popstate, and that update raises no afterNavigate). A state change
+// alone does not release: an open() completing mid-traversal moves the key too.
+// The fallback is only a last resort for a popstate that never arrives.
+const GO_FALLBACK_MS = 3000;
+type GoLatch = {
+	from: string;
+	popped: boolean;
+	timer: ReturnType<typeof setTimeout>;
+	/** Runs once the surface is closed and the traversal has landed. */
+	then: (() => void) | null;
+};
+let goLatch: GoLatch | null = null;
 
 function surfaceKey(): string {
 	return `${page.shallow?.url.href ?? ''}|${page.state.chatDepth ?? 0}|${page.state.chatFromInbox ? 1 : 0}`;
 }
 
 function releaseGo(): void {
-	if (goLatch) clearTimeout(goLatch.timer);
+	if (!goLatch) return;
+	const { timer, then } = goLatch;
+	clearTimeout(timer);
 	goLatch = null;
+	// Only a closed surface is the page the continuation was waiting for.
+	if (then && page.shallow === null) then();
 }
 
-// The popstate landed when the key moves. Watching it here, not only when the next
-// Close asks, matters: Back then a fresh thread returns to the key Back left.
-$effect.root(() => {
-	$effect(() => {
-		const key = surfaceKey();
-		untrack(() => {
-			if (goLatch && goLatch.from !== key) releaseGo();
+/** Release the latch once its traversal has settled. */
+function settleGo(): void {
+	if (goLatch && goLatch.popped && goLatch.from !== surfaceKey()) releaseGo();
+}
+
+// Watching it here, not only when the next Close asks, matters: Back then a fresh
+// thread returns to the key Back left, and a continuation must run unprompted.
+// Browser only: the window is the source of the popstate, and the module is also
+// imported (never run) by the build's analysis in Node.
+if (browser) {
+	window.addEventListener('popstate', () => {
+		if (goLatch) goLatch.popped = true;
+	});
+	$effect.root(() => {
+		$effect(() => {
+			surfaceKey();
+			untrack(settleGo);
 		});
 	});
-});
+}
 
 function traversing(): boolean {
-	if (goLatch && goLatch.from !== surfaceKey()) releaseGo();
+	settleGo();
 	return goLatch !== null;
 }
 
-function go(delta: number): void {
-	goLatch = { from: surfaceKey(), timer: setTimeout(releaseGo, GO_SETTLE_MS) };
+function go(delta: number, then: (() => void) | null = null): void {
+	goLatch = {
+		from: surfaceKey(),
+		popped: false,
+		then,
+		timer: setTimeout(releaseGo, GO_FALLBACK_MS)
+	};
 	history.go(delta);
 }
 
@@ -149,6 +179,21 @@ export const chatSurface = {
 		void goto(page.url.pathname + page.url.search, { replaceState: true });
 	},
 
+	/**
+	 * Close the surface, then run `run` once the page underneath is the current
+	 * one. For a navigation that must not leave Chat's entries under it (opening a
+	 * pane): they would bring Chat back when that navigation is undone. Returns
+	 * false, having done nothing, when Chat is not open; the caller then runs its
+	 * navigation itself. True means the surface took it, including a gesture that
+	 * arrived mid-traversal, which is held rather than queued.
+	 */
+	closeThen(run: () => void): boolean {
+		if (!this.isOpen || this.depth <= 0) return false;
+		if (traversing()) return true;
+		go(-this.depth, run);
+		return true;
+	},
+
 	/** From a thread to the inbox: one entry back when the inbox is the entry below. */
 	back(): void {
 		if (this.target?.kind !== 'thread' || traversing()) return;
@@ -177,5 +222,11 @@ export const chatSurface = {
 
 /** Test seam: forget any in-flight traversal. */
 export function __resetChatSurfaceForTests(): void {
-	releaseGo();
+	if (goLatch) clearTimeout(goLatch.timer);
+	goLatch = null;
+}
+
+/** Test seam: what the surface-key effect does when the state moves (jsdom's page is not reactive). */
+export function __checkChatSurfaceForTests(): void {
+	settleGo();
 }

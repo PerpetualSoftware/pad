@@ -422,7 +422,8 @@ describe('Close right after a Back that has landed', () => {
 		await settle();
 		chatSurface.back();
 		expect(go).toHaveBeenCalledTimes(1);
-		openAt('/messages', { chatDepth: 1 }); // the popstate landed
+		window.dispatchEvent(new PopStateEvent('popstate'));
+		openAt('/messages', { chatDepth: 1 }); // and Kit applied the state it landed on
 		await settle();
 		openAt('/messages/3', { chatDepth: 2, chatFromInbox: true }); // chosen again
 		await settle();

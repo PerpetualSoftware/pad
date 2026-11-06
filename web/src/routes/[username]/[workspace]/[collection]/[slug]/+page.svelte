@@ -475,6 +475,9 @@
 		const target = e.target as HTMLElement | null;
 		// Text-editing targets own ESC locally — don't hijack into a layer-close.
 		if (isTextEntryTarget(target)) return;
+		// Focus inside the docked Chat column is Chat's: the dock has no Escape, and
+		// the pane beside it must not lose a layer to a key aimed at it.
+		if (target?.closest?.('[data-chat-host]')) return;
 		// A native modal <dialog> / role="dialog" sheet owns its own ESC. The
 		// pane's own mobile overlay is `role="dialog"` too (TASK-2131) and so is
 		// the body-portaled attachment viewer (TASK-2429), but BOTH are EXCLUDED

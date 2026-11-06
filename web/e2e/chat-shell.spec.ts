@@ -271,3 +271,138 @@ test('closing the item pane while Chat is open pops Chat and the pane together',
 	await expect(region).toBeHidden();
 	await expect.poll(() => page.url()).toBe(prePaneUrl);
 });
+
+// The normal docked flow is Chat first, then a pane. Opening a pane is a real
+// navigation, so it closes the shallow Chat under it; closing the pane then goes
+// back to where the pane was opened from, and must not bring Chat back.
+test.describe('a pane opened over Chat closes without reopening Chat', () => {
+	const listUrl = (f: Fixture) => `/${f.adminUsername}/${f.workspaceSlug}/docs?view=list`;
+
+	test('Chat first, then a list row, then close the pane (dock)', async ({ page, request, fixture }, testInfo) => {
+		test.skip(testInfo.project.name !== 'desktop-chromium', 'desktop only');
+		test.setTimeout(60_000);
+		await createAdminDM(request, fixture, uniqueAgent('chat-then-pane'));
+		await seedDoc(fixture, request, 'Chat then pane');
+		await page.setViewportSize({ width: 1600, height: 900 });
+		await browserLogin(page);
+		await page.goto(listUrl(fixture));
+		const prePaneUrl = page.url();
+		const region = page.getByRole('complementary', { name: 'Chat' });
+		const pane = page.locator('.item-pane');
+
+		await chatButton(page).click();
+		await expect(region).toBeVisible();
+		await page.locator('.item-card').first().click();
+		await expect(pane).toBeVisible();
+		// The pane open is a real navigation: Chat is already closed.
+		await expect(region).toBeHidden();
+
+		await pane.locator('button[aria-label="Close pane"]').click();
+		await expect(pane).toBeHidden();
+		await expect(region).toBeHidden();
+		await expect.poll(() => page.url()).toBe(prePaneUrl);
+		// And it stays closed.
+		await page.waitForTimeout(500);
+		await expect(region).toBeHidden();
+	});
+
+	test('re-targeting the open pane from another row while Chat is open', async ({ page, request, fixture }, testInfo) => {
+		test.skip(testInfo.project.name !== 'desktop-chromium', 'desktop only');
+		test.setTimeout(60_000);
+		await createAdminDM(request, fixture, uniqueAgent('retarget'));
+		await seedDoc(fixture, request, 'Retarget one');
+		await seedDoc(fixture, request, 'Retarget two');
+		await page.setViewportSize({ width: 1600, height: 900 });
+		await browserLogin(page);
+		await page.goto(listUrl(fixture));
+		const prePaneUrl = page.url();
+		const region = page.getByRole('complementary', { name: 'Chat' });
+		const pane = page.locator('.item-pane');
+
+		await page.locator('.item-card').nth(0).click();
+		await expect(pane).toBeVisible();
+		await chatButton(page).click();
+		await expect(region).toBeVisible();
+		await page.locator('.item-card').nth(1).click();
+		await expect(pane).toBeVisible();
+		await expect(region).toBeHidden();
+
+		await pane.locator('button[aria-label="Close pane"]').click();
+		await expect(pane).toBeHidden();
+		await expect(region).toBeHidden();
+		await expect.poll(() => page.url()).toBe(prePaneUrl);
+	});
+
+	test('a pane loaded cold closes in place under Chat, and Back does not bring it back', async ({
+		page,
+		request,
+		fixture
+	}, testInfo) => {
+		test.skip(testInfo.project.name !== 'desktop-chromium', 'desktop only');
+		test.setTimeout(60_000);
+		await createAdminDM(request, fixture, uniqueAgent('cold'));
+		await seedDoc(fixture, request, 'Cold pane');
+		await page.setViewportSize({ width: 1600, height: 900 });
+		await browserLogin(page);
+		await page.goto(listUrl(fixture));
+		await page.locator('.item-card').first().click();
+		await expect(page.locator('.item-pane')).toBeVisible();
+		const item = new URL(page.url()).searchParams.get('item');
+		expect(item, 'premise: the pane URL names its item').toBeTruthy();
+		await page.goto(listUrl(fixture));
+		const coldUrl = `${listUrl(fixture)}&item=${encodeURIComponent(item!)}`;
+		await page.goto(coldUrl);
+		const region = page.getByRole('complementary', { name: 'Chat' });
+		const pane = page.locator('.item-pane');
+		await expect(pane).toBeVisible();
+
+		await chatButton(page).click();
+		await expect(region).toBeVisible();
+		await pane.locator('button[aria-label="Close pane"]').click();
+		await expect(pane).toBeHidden();
+		await expect(region).toBeHidden();
+		expect(new URL(page.url()).searchParams.has('item')).toBe(false);
+
+		// The cold entry below was edited in place, not left behind with the pane on it.
+		await page.goBack();
+		await expect.poll(() => new URL(page.url()).searchParams.has('item')).toBe(false);
+		await expect(pane).toBeHidden();
+	});
+});
+
+test('Escape pressed inside the docked Chat does not close the item pane beside it', async ({ page, request, fixture }, testInfo) => {
+	test.skip(testInfo.project.name !== 'desktop-chromium', 'desktop only');
+	test.setTimeout(60_000);
+	await createAdminDM(request, fixture, uniqueAgent('dock-escape'));
+	await seedDoc(fixture, request, 'Dock escape');
+	await page.setViewportSize({ width: 1600, height: 900 });
+	await browserLogin(page);
+	await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/docs?view=list`);
+	await page.locator('.item-card').first().click();
+	const pane = page.locator('.item-pane');
+	await expect(pane).toBeVisible();
+
+	await chatButton(page).click();
+	const region = page.getByRole('complementary', { name: 'Chat' });
+	await expect(region).toBeVisible();
+	await region.focus();
+	await page.keyboard.press('Escape');
+	await page.waitForTimeout(500);
+	// The dock has no Escape, and the key belongs to the dock while focus is in it.
+	await expect(region).toBeVisible();
+	await expect(pane).toBeVisible();
+});
+
+test('a click outside the open user menu leaves focus on the control that was clicked', async ({ page, fixture }, testInfo) => {
+	test.skip(testInfo.project.name !== 'desktop-chromium', 'desktop only');
+	await page.setViewportSize({ width: 1600, height: 900 });
+	await browserLogin(page);
+	await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/docs?view=list`);
+	const field = page.getByRole('button', { name: 'Toggle theme' });
+	await expect(field).toBeVisible();
+	await page.getByRole('button', { name: 'User menu' }).click();
+	await expect(page.getByRole('menu', { name: 'User menu' })).toBeVisible();
+	await field.click();
+	await expect(page.getByRole('menu', { name: 'User menu' })).toBeHidden();
+	await expect(field).toBeFocused();
+});

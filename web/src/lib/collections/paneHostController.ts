@@ -25,6 +25,7 @@
 import { goto, afterNavigate } from '$app/navigation';
 import { page } from '$app/state';
 import { browser } from '$app/env';
+import { chatSurface } from '$lib/stores/chatSurface.svelte';
 import { itemUrlId, type Item, type PaneTarget } from '$lib/types';
 import {
 	readPaneState,
@@ -229,15 +230,25 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 	// hand up a resolved ref, not an `Item`) first-open the pane through here.
 	function openItemPaneByRef(targetRef: string) {
 		if (paneNavInFlight()) return;
+		// Capture the trigger on the FIRST open only — re-targeting (j/k follow /
+		// row re-click on an open pane) keeps the ORIGINAL trigger as the
+		// fallback return target (TASK-2122). Before Chat is closed, which moves
+		// focus away from the control that was clicked.
+		if (!new URL(page.url.href).searchParams.has('item') && browser) {
+			deps.captureReturnFocus();
+		}
+		// A pane open is a real navigation, so it closes the shallow Chat under it.
+		// Chat's entries stay below the pane's otherwise, and closing the pane (or
+		// any replace that lands on them) would bring Chat back. Pop them first.
+		if (chatSurface.closeThen(() => openItemPaneNow(targetRef))) return;
+		openItemPaneNow(targetRef);
+	}
+
+	function openItemPaneNow(targetRef: string) {
+		if (paneNavInFlight()) return;
 		controllerActionSeq++;
 		const url = new URL(page.url.href);
 		const alreadyOpen = url.searchParams.has('item');
-		// Capture the trigger on the FIRST open only — re-targeting (j/k follow /
-		// row re-click on an open pane) keeps the ORIGINAL trigger as the
-		// fallback return target (TASK-2122).
-		if (!alreadyOpen && browser) {
-			deps.captureReturnFocus();
-		}
 		const plan = planLateralOpen(alreadyOpen, currentPaneState());
 		if (plan.kind === 'reset') {
 			// Detached (depth>0) direct row click → NEW top-level open: collapse
@@ -292,6 +303,8 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 	// `planPaneDrill`.
 	function navigatePaneTo(target: string) {
 		if (paneNavInFlight()) return;
+		// Same as a first open: a drill replaces or pushes over Chat's entries.
+		if (chatSurface.closeThen(() => navigatePaneTo(target))) return;
 		controllerActionSeq++;
 		// A pending j/k follow scheduled at a shallower depth must not fire after
 		// this drill and clobber it.
@@ -404,6 +417,16 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 
 	function closeItemPane() {
 		if (paneNavInFlight()) return;
+		// A cold-loaded base is closed by REPLACING the entry in place, which over
+		// Chat would overwrite Chat's entry and leave the pane's behind it. Pop
+		// Chat first. The other closes traverse, and count Chat's entries in
+		// `paneHistoryGo`.
+		if (
+			planPaneClose(currentPaneState()).kind === 'replace-delete' &&
+			chatSurface.closeThen(closeItemPane)
+		) {
+			return;
+		}
 		controllerActionSeq++;
 		// A pending j/k pane-follow must not re-open the pane after an explicit
 		// close (e.g. ESC while a follow debounce is in flight).

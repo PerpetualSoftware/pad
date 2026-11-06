@@ -22,7 +22,7 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 
 import { goto } from '$app/navigation';
 import { page } from '$app/state';
-import { chatSurface, parseChatPath, parseThreadNumber, __resetChatSurfaceForTests } from './chatSurface.svelte';
+import { chatSurface, parseChatPath, parseThreadNumber, __resetChatSurfaceForTests, __checkChatSurfaceForTests } from './chatSurface.svelte';
 
 const gotoMock = vi.mocked(goto);
 const asShallow = (path: string) =>
@@ -228,10 +228,13 @@ describe('close and back are not re-entrant', () => {
 		expect(go).toHaveBeenCalledTimes(1);
 	});
 
-	it('releases when the surface state actually changes', () => {
+	const popstate = () => window.dispatchEvent(new PopStateEvent('popstate'));
+
+	it('releases when the traversal lands: its popstate, then the surface state moving', () => {
 		const go = vi.spyOn(history, 'go').mockImplementation(() => {});
 		openAtDepth('/messages/4', { chatDepth: 2, chatFromInbox: true });
 		chatSurface.back();
+		popstate();
 		// the popstate landed: the inbox, one entry deep
 		openAtDepth('/messages', { chatDepth: 1 });
 		chatSurface.close();
@@ -239,14 +242,80 @@ describe('close and back are not re-entrant', () => {
 		expect(go).toHaveBeenLastCalledWith(-1);
 	});
 
-	it('releases on its own if no state change ever arrives', () => {
+	it('a state change before any popstate (an open completing mid-traversal) does not release', () => {
+		const go = vi.spyOn(history, 'go').mockImplementation(() => {});
+		openAtDepth('/messages/4', { chatDepth: 2, chatFromInbox: true });
+		chatSurface.back();
+		openAtDepth('/messages/9', { chatDepth: 3, chatFromInbox: true });
+		chatSurface.close();
+		expect(go).toHaveBeenCalledTimes(1);
+	});
+
+	it('a popstate whose state has not been applied yet does not release', () => {
+		const go = vi.spyOn(history, 'go').mockImplementation(() => {});
+		openAtDepth('/messages', { chatDepth: 1 });
+		chatSurface.close();
+		popstate();
+		chatSurface.close();
+		expect(go).toHaveBeenCalledTimes(1);
+	});
+
+	it('a slow popstate: a second close at 1000ms with none landed issues no second go', () => {
 		vi.useFakeTimers();
 		const go = vi.spyOn(history, 'go').mockImplementation(() => {});
 		openAtDepth('/messages', { chatDepth: 1 });
 		chatSurface.close();
-		vi.advanceTimersByTime(2000);
+		vi.advanceTimersByTime(1000);
+		chatSurface.close();
+		expect(go).toHaveBeenCalledTimes(1);
+	});
+
+	it('releases on a long fallback if no popstate ever arrives', () => {
+		vi.useFakeTimers();
+		const go = vi.spyOn(history, 'go').mockImplementation(() => {});
+		openAtDepth('/messages', { chatDepth: 1 });
+		chatSurface.close();
+		vi.advanceTimersByTime(3100);
 		chatSurface.close();
 		expect(go).toHaveBeenCalledTimes(2);
+	});
+});
+
+describe('closeThen: close Chat, then run what needs the page underneath', () => {
+	const popstate = () => window.dispatchEvent(new PopStateEvent('popstate'));
+
+	it('with Chat closed it does nothing and returns false, so the caller runs', () => {
+		const go = vi.spyOn(history, 'go').mockImplementation(() => {});
+		const run = vi.fn();
+		expect(chatSurface.closeThen(run)).toBe(false);
+		expect(go).not.toHaveBeenCalled();
+		expect(run).not.toHaveBeenCalled();
+	});
+
+	it('pops what Chat pushed and runs only after the traversal has landed', () => {
+		const go = vi.spyOn(history, 'go').mockImplementation(() => {});
+		(page as { shallow: unknown }).shallow = asShallow('/messages/4');
+		page.state = { chatDepth: 2, paneDepth: 0, paneOwned: true };
+		const run = vi.fn();
+		expect(chatSurface.closeThen(run)).toBe(true);
+		expect(go).toHaveBeenCalledWith(-2);
+		expect(run).not.toHaveBeenCalled();
+		popstate();
+		(page as { shallow: unknown }).shallow = null;
+		page.state = { paneDepth: 0, paneOwned: true };
+		__checkChatSurfaceForTests(); // what the surface-key effect does when the state moves
+		expect(run).toHaveBeenCalledTimes(1);
+	});
+
+	it('a gesture during a traversal is held, not queued behind it', () => {
+		const go = vi.spyOn(history, 'go').mockImplementation(() => {});
+		(page as { shallow: unknown }).shallow = asShallow('/messages');
+		page.state = { chatDepth: 1 };
+		chatSurface.close();
+		const run = vi.fn();
+		expect(chatSurface.closeThen(run)).toBe(true);
+		expect(go).toHaveBeenCalledTimes(1);
+		expect(run).not.toHaveBeenCalled();
 	});
 });
 
