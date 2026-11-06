@@ -38,8 +38,9 @@
 	}
 	onMount(measure);
 
-	// A page write held for the open Chat belongs to the page it was made on. A real
-	// navigation away (not Chat's own shallow ones) abandons it, and this runs
+	// A page write held for the open Chat, and a heal queued behind its close, belong
+	// to the page they were made on. A real navigation away (not Chat's own shallow
+	// ones) abandons them (a heal would override the user's destination), and this runs
 	// BEFORE Kit commits and clears page.shallow, so the close that follows cannot
 	// flush a write for a page being left. A navigation the draft guard cancels
 	// never gets here, so that write survives. Query-only navigations keep it.

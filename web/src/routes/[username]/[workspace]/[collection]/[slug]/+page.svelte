@@ -3,7 +3,7 @@
 	import { chatSurface } from '$lib/stores/chatSurface.svelte';
 	import { goto, afterNavigate } from '$app/navigation';
 	import { browser } from '$app/env';
-	import { onDestroy, onMount } from 'svelte';
+	import { onDestroy, onMount, untrack } from 'svelte';
 	import ItemDetail from '$lib/components/items/ItemDetail.svelte';
 	import PaneHost from '$lib/components/collections/PaneHost.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
@@ -417,15 +417,19 @@
 		if (!current || !isMasterRef(current)) return;
 		// Cannot wait (two providers on one room), and never dropped: with Chat open it
 		// closes Chat first. It reads page.url when it runs, so a queued copy is a no-op.
-		chatSurface.runAfterClose(() => {
-			const url = new URL(page.url.href);
-			if (!url.searchParams.has('item')) return;
-			url.searchParams.delete('item');
-			void goto(`${url.pathname}${url.search}`, {
-				replaceState: true,
-				reset: false,
-			});
-		});
+		// untrack: the surface reads page.shallow / page.state, and may settle a latch or run
+		// parked continuations; none of that may subscribe this effect or run as one of its reads.
+		untrack(() =>
+			chatSurface.runAfterClose(() => {
+				const url = new URL(page.url.href);
+				if (!url.searchParams.has('item')) return false;
+				url.searchParams.delete('item');
+				void goto(`${url.pathname}${url.search}`, {
+					replaceState: true,
+					reset: false,
+				});
+			})
+		);
 	});
 
 	// Text-editing target detection — copied from the collection host's ESC

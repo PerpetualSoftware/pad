@@ -3388,7 +3388,7 @@
 			// was noScroll alone: kit 3 has no scroll-only option (TASK-3423)
 			// The strip is only the address; it waits while Chat is open.
 			const stripNew = () => goto(`/${username}/${wsSlug}/${collSlug}/${itemSlug}`, { replaceState: true, reset: false });
-			if (!chatSurface.deferPageWrite('item-detail#strip-new', stripNew)) void stripNew();
+			if (!untrack(() => chatSurface.deferPageWrite('item-detail#strip-new', stripNew))) void stripNew();
 			startEditTitle();
 		}
 	});

@@ -518,6 +518,30 @@ describe('board filter, search and view writes under an open Chat', () => {
 		expect(gotos[0]).toContain('done');
 	});
 
+	it('a rename heal queued under Chat does not override a navigation that committed before Close landed', async () => {
+		await mountPage();
+		gotos.length = 0;
+		openChat();
+		sseHandlers[0]!({ type: 'collection_updated', collection_id: 'c1', collection: 'tasks', new_slug: 'jobs' });
+		await tick();
+		expect(gotos).toEqual([]);
+		// The user went somewhere else first; the page is no longer the one the heal was for.
+		page.url = new URL('http://localhost/dave/ws/other');
+		landOnBoard();
+		expect(gotos).toEqual([]);
+	});
+
+	it('the same heal still runs when the page is still the one it was queued for (control)', async () => {
+		await mountPage();
+		gotos.length = 0;
+		openChat();
+		sseHandlers[0]!({ type: 'collection_updated', collection_id: 'c1', collection: 'tasks', new_slug: 'jobs' });
+		await tick();
+		landOnBoard();
+		expect(gotos).toHaveLength(1);
+		expect(gotos[0]).toMatch(/^\/dave\/ws\/jobs/);
+	});
+
 	it('the deferred write does not trip the leave-draft guard: same pathname, no dialog, not cancelled', async () => {
 		await mountPage();
 		const board = stubProps().filter((p) => 'draftText' in p).at(-1);

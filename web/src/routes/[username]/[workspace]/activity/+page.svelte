@@ -92,13 +92,15 @@
 	// needs nothing (the newer navigation decides the URL). A rejected one
 	// falls back to the shallow replaceState, so the address bar, and with
 	// it a reload, at least stays cleared.
-	function dropFromUrl(name: 'since' | 'view') {
+	function dropFromUrl(name: 'since' | 'view'): Promise<unknown> | undefined {
 		if (!page.url.searchParams.has(name)) return;
 		// The local value is already cleared; only the address waits while Chat is open.
 		if (chatSurface.deferPageWrite(`${page.url.pathname}#drop-${name}`, () => dropFromUrl(name))) return;
 		const url = new URL(page.url.href);
 		url.searchParams.delete(name);
-		goto(url, { replaceState: true, reset: false }).catch(() => {
+		// Returned, so a deferred run waits for it: chatSurface runs the held writes one after
+		// another, each re-reading the live page.url (a second drop must start from the first's URL).
+		return goto(url, { replaceState: true, reset: false }).catch(() => {
 			try {
 				replaceState(url, page.state);
 			} catch {

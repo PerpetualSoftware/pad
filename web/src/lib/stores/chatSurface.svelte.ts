@@ -80,63 +80,84 @@ type Deferred = { pathname: string; fence: () => boolean; run: () => void | Prom
 const deferred = new Map<string, Deferred>();
 // Heals that cannot wait (a renamed slug, an aliasing ?item=): they close Chat
 // first and run after it, queued here in arrival order so a Close already in
-// flight cannot swallow them. They are never dropped.
-const heals: Array<() => void> = [];
+// flight cannot swallow them. A heal is bound to the page it was queued on (its
+// pathname): if that is no longer the page when it would run, the user went
+// somewhere else and the heal is stale, so it is skipped rather than overriding
+// them. A heal that finds nothing to do returns false.
+type Heal = { run: () => void | boolean; path: string };
+const heals: Heal[] = [];
 
-function runHeals(): void {
+/** Run the queued heals; the pathnames of those that navigated (did not return false). */
+function runHeals(): string[] {
+	const acted: string[] = [];
 	for (const h of heals.splice(0)) {
+		if (h.path !== page.url.pathname) continue;
 		try {
-			h();
+			if (h.run() !== false) acted.push(h.path);
 		} catch (e) {
 			console.error('[chatSurface] heal failed', e);
 		}
 	}
+	return acted;
 }
 
 /**
- * Run the deferred writes (insertion order, each isolated), clearing the Map
- * BEFORE running so nothing can run twice. An entry whose identity fence says the
- * signed-in user changed is skipped. Returns the settle of any async writes, or
- * null when none returned a promise.
+ * Run the deferred writes ONE AFTER ANOTHER (insertion order, each isolated),
+ * clearing the Map BEFORE running so nothing can run twice. A write that returns
+ * a promise (its navigation) is awaited before the next starts, so each re-reads
+ * the live page.url: two writes that both rebuild the URL from it would otherwise
+ * both start from the same URL and the second would overwrite the first. The
+ * identity fence is checked as each write comes up, so a user change while an
+ * earlier one was in flight skips the rest. Returns the settle of the chain, or
+ * null when every write was synchronous.
  */
 function flushDeferred(): Promise<unknown> | null {
-	const entries = [...deferred.values()];
+	const queue = [...deferred.values()];
 	deferred.clear();
-	const pending: Array<Promise<unknown>> = [];
-	for (const d of entries) {
-		if (!d.fence()) continue;
-		try {
-			const r = d.run();
-			if (r) pending.push(Promise.resolve(r));
-		} catch (e) {
-			console.error('[chatSurface] deferred write failed', e);
+	const step = (): Promise<unknown> | null => {
+		while (queue.length) {
+			const d = queue.shift()!;
+			if (!d.fence()) continue;
+			let r: void | Promise<unknown>;
+			try {
+				r = d.run();
+			} catch (e) {
+				console.error('[chatSurface] deferred write failed', e);
+				continue;
+			}
+			if (r) {
+				return Promise.resolve(r)
+					.catch((e) => console.error('[chatSurface] deferred write failed', e))
+					.then(step);
+			}
 		}
-	}
-	return pending.length ? Promise.allSettled(pending) : null;
+		return null;
+	};
+	return step();
 }
 
 /**
  * Chat is closed and the page underneath is current. With heals queued, the
- * parked continuation and the heals run, and the pending writes are dropped
- * after the heals have looked: a heal retargets the URL the writes were aimed
- * at and reads the live state itself (hasDeferredWrite). Otherwise the writes
- * run first and the continuation after they settle, so a continuation that builds
- * its URL from page.url sees the filters. True when a continuation or heal ran.
+ * parked continuation and the heals run first (a heal reads the live state itself,
+ * hasDeferredWrite), then the pending writes that a heal that actually navigated
+ * did not supersede: a heal retargets the URL the writes of ITS page were aimed
+ * at, so those are dropped; a heal that did nothing, or a write made on another
+ * page, leaves them to run. Otherwise the writes run first and the continuation
+ * after they settle, so a continuation that builds its URL from page.url sees the
+ * filters. True when a continuation or heal ran.
  */
 function onClosed(then: (() => void) | null): boolean {
-	const run = () => {
-		then?.();
-		runHeals();
-	};
 	if (heals.length) {
-		run();
-		deferred.clear();
+		then?.();
+		const acted = runHeals();
+		for (const [k, d] of deferred) if (acted.includes(d.pathname)) deferred.delete(k);
+		void flushDeferred();
 		return true;
 	}
 	const w = flushDeferred();
 	if (!then) return false;
-	if (w) void w.then(run);
-	else run();
+	if (w) void w.then(then);
+	else then();
 	return true;
 }
 
@@ -144,22 +165,31 @@ function surfaceKey(): string {
 	return `${page.shallow?.url.href ?? ''}|${page.state.chatDepth ?? 0}|${page.state.chatFromInbox ? 1 : 0}`;
 }
 
-/** Release the latch; true when it ran a continuation. */
-function releaseGo(): boolean {
+/**
+ * Release the latch; true when it ran a continuation. `fallback` is the 3s timer:
+ * the only release that runs a heal as a plain navigation with Chat still open.
+ */
+function releaseGo(fallback = false): boolean {
 	if (!goLatch) return false;
 	const { timer, then } = goLatch;
 	clearTimeout(timer);
 	goLatch = null;
 	// Only a closed surface is the page the continuation was waiting for.
 	if (page.shallow === null) return onClosed(then);
-	// The 3s fallback with Chat still open: a queued heal still happens, as the
-	// plain navigation it was before Chat handling (it replaces Chat's top entry).
-	// Deferred writes stay for the real close; a real navigation drops them.
-	if (heals.length) {
-		runHeals();
-		return true;
+	if (!heals.length) return false;
+	// A normal settle that finds Chat still open (a Back that landed on the inbox
+	// under it): the heal and the continuation keep waiting, and the close goes on
+	// from where it now is. Running the heal now would replace Chat's own entry.
+	const depth = page.state.chatDepth ?? 0;
+	if (!fallback && parseChatPath(page.shallow.url.pathname) !== null && depth > 0) {
+		go(-depth, then);
+		return false;
 	}
-	return false;
+	// The 3s fallback (or Chat is not really open): the heal still happens, as the
+	// plain navigation it was before Chat handling. Deferred writes stay for the
+	// real close; a real navigation drops them.
+	runHeals();
+	return true;
 }
 
 /** Release the latch once its traversal has settled; true when that ran a continuation. */
@@ -210,7 +240,7 @@ function go(delta: number, then: (() => void) | null = null): void {
 		from: surfaceKey(),
 		popped: false,
 		then,
-		timer: setTimeout(releaseGo, GO_FALLBACK_MS)
+		timer: setTimeout(() => releaseGo(true), GO_FALLBACK_MS)
 	};
 	history.go(delta);
 }
@@ -302,14 +332,16 @@ export const chatSurface = {
 	 * underneath, or run it now when Chat is not open. Unlike closeThen it is never
 	 * dropped: behind a Close or a parked continuation it queues, and if the
 	 * traversal never lands (3s fallback, Chat still open) it runs as a plain
-	 * navigation. `run` must read page.url inside itself.
+	 * navigation. `run` must read page.url inside itself. It is bound to the page it
+	 * was queued on and skipped if that is no longer the page; return false when it
+	 * found nothing to do, so the page's pending writes are not dropped for it.
 	 */
-	runAfterClose(run: () => void): void {
+	runAfterClose(run: () => void | boolean): void {
 		if (!this.isOpen || this.depth <= 0) {
 			run();
 			return;
 		}
-		heals.push(run);
+		heals.push({ run, path: page.url.pathname });
 		if (traversing() || goLatch) return;
 		if (this.isOpen && this.depth > 0) go(-this.depth);
 		else runHeals();
@@ -332,9 +364,13 @@ export const chatSurface = {
 		return deferred.has(key);
 	},
 
-	/** Drop held writes made on any other path (a real navigation away); null drops all. */
+	/**
+	 * Drop held writes and queued heals made on any other path (a real navigation
+	 * away); null drops all.
+	 */
 	dropDeferredExcept(pathname: string | null): void {
 		for (const [k, d] of deferred) if (d.pathname !== pathname) deferred.delete(k);
+		for (let i = heals.length - 1; i >= 0; i--) if (heals[i].path !== pathname) heals.splice(i, 1);
 	},
 
 	/** From a thread to the inbox: one entry back when the inbox is the entry below. */
