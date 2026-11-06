@@ -140,3 +140,33 @@ func TestAgendaCountsCap(t *testing.T) {
 		t.Fatalf("cap: days=%v truncated=%v err=%v", days, truncated, err)
 	}
 }
+
+// The cap covers creations and status changes together.
+func TestAgendaCountsCapIsShared(t *testing.T) {
+	f := countsFixture(t)
+	c := f.item.CollectionID
+	from, to := rt("2031-03-10T00:00:00Z"), rt("2031-03-11T00:00:00Z")
+	for i := 0; i < 2; i++ {
+		countsItem(t, f, c, fmt.Sprintf("shared %d", i), "2031-03-10T01:00:00Z", [2]string{"2031-03-10T10:00:00Z", "done"})
+	}
+	// 2 creations + 4 transitions (create rows are in the window too) = 6 rows.
+	if _, rows, truncated, err := f.s.AgendaCounts(f.ws.ID, PendingReminderScope{}, from, to, time.UTC, 5); err != nil || !truncated || rows > 6 {
+		t.Fatalf("cap 5: rows=%d truncated=%v err=%v", rows, truncated, err)
+	}
+	if _, _, truncated, err := f.s.AgendaCounts(f.ws.ID, PendingReminderScope{}, from, to, time.UTC, 6); err != nil || truncated {
+		t.Fatalf("cap 6: truncated=%v err=%v", truncated, err)
+	}
+}
+
+// A non-ASCII terminal value reads the same on SQLite and Postgres.
+func TestAgendaCountsUnicodeTerminal(t *testing.T) {
+	f := countsFixture(t)
+	c := f.item.CollectionID
+	f.exec(t, `UPDATE collections SET schema = ? WHERE id = ?`, `{"fields":[{"key":"status","type":"select","options":["open","Готово"],"default":"open","terminal_options":["Готово"]}]}`, c)
+	from, to := rt("2031-03-10T00:00:00Z"), rt("2031-03-11T00:00:00Z")
+	countsItem(t, f, c, "closed before", "2031-03-01T00:00:00Z", [2]string{"2031-03-02T00:00:00Z", "Готово"})
+	days, _, _, err := f.s.AgendaCounts(f.ws.ID, PendingReminderScope{}, from, to, time.UTC, 100)
+	if err != nil || countsGot(days) != "2031-03-10:0/0/0 " {
+		t.Fatalf("unicode terminal: %s %v", countsGot(days), err)
+	}
+}

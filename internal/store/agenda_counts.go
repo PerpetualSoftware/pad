@@ -56,11 +56,24 @@ func terminalStateExpr(colls []reportCollection) (string, []any) {
 		if len(c.allTerminals) == 0 {
 			continue
 		}
-		args = append(args, c.id, c.doneKey)
+		// No SQL LOWER: SQLite lowercases ASCII only, Postgres all of Unicode.
+		// The stored value and its Go-lowercased form are listed instead, so
+		// both backends read the same set.
+		vals := make([]string, 0, 2*len(c.allTerminals))
+		seen := map[string]bool{}
 		for _, v := range c.allTerminals {
-			args = append(args, strings.ToLower(v))
+			for _, x := range []string{v, strings.ToLower(v)} {
+				if !seen[x] {
+					seen[x] = true
+					vals = append(vals, x)
+				}
+			}
 		}
-		clauses = append(clauses, fmt.Sprintf("(st.collection_id = ? AND st.field_key = ? AND LOWER(st.to_status) IN (%s))", placeholders(len(c.allTerminals))))
+		args = append(args, c.id, c.doneKey)
+		for _, v := range vals {
+			args = append(args, v)
+		}
+		clauses = append(clauses, fmt.Sprintf("(st.collection_id = ? AND st.field_key = ? AND st.to_status IN (%s))", placeholders(len(vals))))
 	}
 	if len(clauses) == 0 {
 		return "", nil
@@ -179,6 +192,9 @@ func (s *Store) AgendaCounts(workspaceID string, scope PendingReminderScope, fro
 		return nil, 0, false, err
 	}
 	created.Close()
+	if len(events) > maxRows {
+		return nil, len(events), true, nil
+	}
 
 	var pairs []string
 	var pairArgs []any
@@ -190,7 +206,7 @@ func (s *Store) AgendaCounts(workspaceID string, scope PendingReminderScope, fro
   FROM status_transitions st JOIN items i ON i.id = st.item_id JOIN collections c ON c.id = i.collection_id
   WHERE st.workspace_id = ? AND i.workspace_id = ? AND st.created_at >= ? AND st.created_at < ?`+live+scopeSQL+`
    AND (`+strings.Join(pairs, " OR ")+`) ORDER BY st.created_at, st.seq, st.id LIMIT ?`),
-		append(append(append([]any{workspaceID, workspaceID, fromB, toB}, scopeArgs...), pairArgs...), maxRows+1)...)
+		append(append(append([]any{workspaceID, workspaceID, fromB, toB}, scopeArgs...), pairArgs...), maxRows+1-len(events))...)
 	if err != nil {
 		return nil, 0, false, fmt.Errorf("agenda counts transitions: %w", err)
 	}
