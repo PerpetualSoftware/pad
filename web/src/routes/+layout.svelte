@@ -9,6 +9,7 @@
 	import { tabsStore } from '$lib/stores/tabs.svelte';
 	import { accessStream } from '$lib/services/accessStream.svelte';
 	import { chatStore } from '$lib/stores/chat.svelte';
+	import { chatSetting } from '$lib/stores/chatSetting.svelte';
 	import TimezoneSync from '$lib/components/TimezoneSync.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import {
@@ -295,10 +296,26 @@
 				// Live gain/loss of workspaces (TASK-3275). One per tab; start()
 				// is idempotent and follows identity changes itself.
 				accessStream.start();
-				// The chat unread count (TASK-4044); idempotent, follows identity itself.
-				chatStore.start();
 			}
 		}
+	});
+
+	// The chat unread count (TASK-4044) runs only while the signed-in user has
+	// Chat on. While it is off, signed out or not yet known, the store is
+	// STOPPED, not merely unstarted: a never-started store still answers an
+	// access-stream resync with a fetch. The first run always calls one of the
+	// two (chatGate starts null), so a store is never left unstarted. chatGate
+	// is a plain edge tracker and the calls are untracked, so this effect
+	// writes nothing it reads.
+	let chatGate: boolean | null = null;
+	$effect(() => {
+		const wanted = authReady && authStore.authenticated && chatSetting.enabled;
+		untrack(() => {
+			if (wanted === chatGate) return;
+			chatGate = wanted;
+			if (wanted) chatStore.start();
+			else chatStore.stop();
+		});
 	});
 
 	function handleKeydown(e: KeyboardEvent) {

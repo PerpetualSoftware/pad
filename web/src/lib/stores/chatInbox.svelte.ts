@@ -104,6 +104,7 @@ class ChatInboxStore {
 
 	#seq = 0;
 	#stopRoot: (() => void) | null = null;
+	#owners = 0;
 	#presenceSeq = 0;
 	#presenceActive = false;
 	#presenceOwners = 0;
@@ -131,9 +132,14 @@ class ChatInboxStore {
 		});
 	}
 
-	/** Load now, and again whenever chatStore finishes an unread fetch. A second call is a no-op. */
+	/**
+	 * Load now, and again whenever chatStore finishes an unread fetch. Reference
+	 * counted like presence: a host view and a route view that overlap during a
+	 * swap each start and stop once, and the reloads run until the last owner
+	 * stops. Only the first owner loads.
+	 */
 	start(): void {
-		if (this.#stopRoot) return;
+		if (++this.#owners > 1) return;
 		this.#stopRoot = $effect.root(() => {
 			$effect(() => {
 				void chatStore.version;
@@ -142,7 +148,10 @@ class ChatInboxStore {
 		});
 	}
 
+	/** Release one owner. A stop with no matching start is a no-op. */
 	stop(): void {
+		if (this.#owners === 0) return;
+		if (--this.#owners > 0) return;
 		this.#stopRoot?.();
 		this.#stopRoot = null;
 	}
