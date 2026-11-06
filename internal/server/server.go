@@ -2129,6 +2129,12 @@ func (s *Server) setupRouter() {
 			// 404, where it used to be 412 claim_disabled.
 			r.With(s.requireOAuthAvailable).Post("/oauth/claim", s.handleOAuthClaim)
 
+			r.Get("/me/workspace-groups", s.handleListWorkspaceGroups)
+			r.Post("/me/workspace-groups", s.handleCreateWorkspaceGroup)
+			r.Get("/me/workspace-groups/{id}", s.handleGetWorkspaceGroup)
+			r.Patch("/me/workspace-groups/{id}", s.handleUpdateWorkspaceGroup)
+			r.Delete("/me/workspace-groups/{id}", s.handleDeleteWorkspaceGroup)
+
 			// The caller's open set of workspace tabs (PLAN-3002 U1 /
 			// TASK-3256). User-scoped, outside the /{slug} access subrouter;
 			// each handler checks the workspace against the caller's own

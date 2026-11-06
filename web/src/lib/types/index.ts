@@ -383,6 +383,19 @@ export interface InvitationAccepted extends InvitationAcceptedFields {
 	accepted: boolean;
 }
 
+export interface WorkspaceGroup {
+	id: string;
+	name: string;
+	kind: 'all' | 'mine' | 'named';
+	workspace_ids: string[];
+	created_at?: string;
+	updated_at?: string;
+}
+
+export interface WorkspaceGroupsResponse {
+	groups: WorkspaceGroup[];
+}
+
 // One workspace in the caller's open set: a tab in the workspace tab bar
 // (PLAN-3002 U1 / TASK-3256). Mirrors models.WorkspaceTab. The whole set is
 // server-side, so it is the same on every device.
@@ -3783,4 +3796,27 @@ export interface AgendaResponse {
 		workspace?: string;
 		owner_username?: string;
 	}[];
+}
+
+export type ScheduleResolveState = 'done' | 'skip' | 'snooze' | 'move';
+
+export interface ScheduleResolveRequest {
+	occurrence_at: string;
+	state: ScheduleResolveState;
+	comment?: string;
+	until?: string;
+}
+
+export interface ItemScheduleView {
+	item_ref: string;
+	kind: string;
+	floating: boolean;
+	ended_at?: string;
+	next_occurrence?: { at: string; wall: string };
+	[key: string]: unknown;
+}
+
+export interface ScheduleResolveResult {
+	schedule: object;
+	resolution: { occurrence_at: string; state: ScheduleResolveState; comment_id?: string; missed_recorded: number };
 }

@@ -1,4 +1,7 @@
 import type {
+	ItemScheduleView,
+	ScheduleResolveRequest,
+	ScheduleResolveResult,
 	BuiltinListEntry,
 	CatchUpResponse,
 	BuiltinStateResponse,
@@ -74,6 +77,8 @@ import type {
 	ItemGrant,
 	WorkspaceMembership,
 	WorkspaceTabsResponse,
+	WorkspaceGroup,
+	WorkspaceGroupsResponse,
 	ShareLink,
 	SharePayload,
 	TOTPSetupResponse,
@@ -1513,6 +1518,16 @@ export interface InvitationPreview {
 let serverCapabilitiesCache: Promise<ServerCapabilities> | null = null;
 
 export const api = {
+	workspaceGroups: {
+		list: () => request<WorkspaceGroupsResponse>('/me/workspace-groups'),
+		get: (id: string) => request<WorkspaceGroup>(`/me/workspace-groups/${encodeURIComponent(id)}`),
+		create: (data: { name: string; workspace_ids: string[] }) =>
+			request<WorkspaceGroup>('/me/workspace-groups', { method: 'POST', body: JSON.stringify(data) }),
+		update: (id: string, data: { name?: string; workspace_ids?: string[] }) =>
+			request<WorkspaceGroup>(`/me/workspace-groups/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(data) }),
+		remove: (id: string) =>
+			request<{ id: string; deleted: true }>(`/me/workspace-groups/${encodeURIComponent(id)}`, { method: 'DELETE' })
+	},
 	// ── Health / Version ──────────────────────────────────────────────────────
 
 	health: () => request<HealthResponse>('/health'),
@@ -3729,6 +3744,13 @@ export const api = {
 	},
 
 	// ── Needs you (TASK-3923, IDEA-3906 A6) ──────────────────────────────────
+	getSchedule: (ws: string, ref: string) =>
+		request<ItemScheduleView>(`/workspaces/${encodeURIComponent(ws)}/items/${encodeURIComponent(ref)}/schedule`),
+	resolveSchedule: (ws: string, ref: string, body: ScheduleResolveRequest) =>
+		request<ScheduleResolveResult>(`/workspaces/${encodeURIComponent(ws)}/items/${encodeURIComponent(ref)}/schedule/resolve`, {
+			method: 'POST', body: JSON.stringify(body)
+		}),
+
 	getMyAgenda: (from: string, to: string, tz?: string) => {
 		const query = new URLSearchParams({ from, to });
 		if (tz !== undefined) query.set('tz', tz);

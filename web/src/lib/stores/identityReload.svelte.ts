@@ -60,7 +60,7 @@ export function clearPersistentIdentityState(): void {
 	// the key list alone without reading a single value.
 	try {
 		for (const key of Object.keys(localStorage)) {
-			if (key.startsWith(LAST_ROUTE_PREFIX) || key.startsWith(LAST_SCROLL_PREFIX)) {
+			if (key.startsWith(LAST_ROUTE_PREFIX) || key.startsWith(LAST_SCROLL_PREFIX) || key.startsWith('pad-agenda-show-events:')) {
 				localStorage.removeItem(key);
 			}
 		}

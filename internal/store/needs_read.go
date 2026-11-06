@@ -23,7 +23,11 @@ const needsChunk = 500
 // do not make a workspace a guest one, and a soft-deleted workspace never
 // appears. The result is sorted by id. BUG-3914 reuses it for search.
 func (s *Store) GuestWorkspaceIDs(userID string) ([]string, error) {
-	rows, err := s.db.Query(s.q(`
+	return s.GuestWorkspaceIDsQ(s.db, userID)
+}
+
+func (s *Store) GuestWorkspaceIDsQ(q Queryer, userID string) ([]string, error) {
+	rows, err := q.Query(s.q(`
 		SELECT w.id FROM workspaces w
 		WHERE w.deleted_at IS NULL
 		  AND (EXISTS (SELECT 1 FROM collection_grants cg WHERE cg.workspace_id = w.id AND cg.user_id = ?)
@@ -48,13 +52,17 @@ func (s *Store) GuestWorkspaceIDs(userID string) ([]string, error) {
 // GetWorkspacesByIDs loads live workspaces by id with their owner's username,
 // in one query per chunk. Unknown and soft-deleted ids are skipped.
 func (s *Store) GetWorkspacesByIDs(ids []string) ([]models.Workspace, error) {
+	return s.GetWorkspacesByIDsQ(s.db, ids)
+}
+
+func (s *Store) GetWorkspacesByIDsQ(q Queryer, ids []string) ([]models.Workspace, error) {
 	var out []models.Workspace
 	for _, chunk := range chunkStrings(ids, needsChunk) {
 		args := make([]any, len(chunk))
 		for i, id := range chunk {
 			args[i] = id
 		}
-		rows, err := s.db.Query(s.q(`
+		rows, err := q.Query(s.q(`
 			SELECT w.id, w.name, w.slug, COALESCE(w.owner_id, ''), COALESCE(ou.username, ''), w.description, w.settings, w.source, w.created_at, w.updated_at
 			FROM workspaces w LEFT JOIN users ou ON ou.id = w.owner_id
 			WHERE w.deleted_at IS NULL AND w.id IN (`+placeholders(len(chunk))+`)
