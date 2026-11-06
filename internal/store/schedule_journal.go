@@ -85,12 +85,15 @@ type scheduleDateSnapshot struct {
 	NextAt         *string       `json:"next_at"`
 	NextWall       *string       `json:"next_wall"`
 	NextOverrideAt *string       `json:"next_override_at"`
+	AnchorWall     *string       `json:"anchor_wall"`
+	EndedAt        *string       `json:"ended_at"`
+	ErrorCode      *string       `json:"error_code"`
 }
 
 func (s *Store) scheduleSnapshotTx(tx *sql.Tx, id string) (string, error) {
 	var v scheduleDateSnapshot
 	r := &v.Roles
-	err := tx.QueryRow(s.q(`SELECT tz,floating,kind,dtstart,dtend,target_days,target_secs,earliest_days,earliest_secs,deadline_days,deadline_secs,deadline_behavior,occupied_days,occupied_secs,outcome,roles_origin,rrule,rdates,exdates,anchor,audience,lead_minutes,next_at,next_wall,next_override_at FROM item_schedules WHERE id=?`), id).Scan(&v.Tz, &v.Floating, &v.Kind, &v.Dtstart, &v.Dtend, &r.TargetDays, &r.TargetSecs, &r.EarliestDays, &r.EarliestSecs, &r.DeadlineDays, &r.DeadlineSecs, &r.DeadlineBehavior, &r.OccupiedDays, &r.OccupiedSecs, &r.Outcome, &r.Origin, &v.Rrule, &v.RDates, &v.ExDates, &v.Anchor, &v.Audience, &v.LeadMinutes, &v.NextAt, &v.NextWall, &v.NextOverrideAt)
+	err := tx.QueryRow(s.q(`SELECT tz,floating,kind,dtstart,dtend,target_days,target_secs,earliest_days,earliest_secs,deadline_days,deadline_secs,deadline_behavior,occupied_days,occupied_secs,outcome,roles_origin,rrule,rdates,exdates,anchor,audience,lead_minutes,next_at,next_wall,next_override_at,anchor_wall,ended_at,error_code FROM item_schedules WHERE id=?`), id).Scan(&v.Tz, &v.Floating, &v.Kind, &v.Dtstart, &v.Dtend, &r.TargetDays, &r.TargetSecs, &r.EarliestDays, &r.EarliestSecs, &r.DeadlineDays, &r.DeadlineSecs, &r.DeadlineBehavior, &r.OccupiedDays, &r.OccupiedSecs, &r.Outcome, &r.Origin, &v.Rrule, &v.RDates, &v.ExDates, &v.Anchor, &v.Audience, &v.LeadMinutes, &v.NextAt, &v.NextWall, &v.NextOverrideAt, &v.AnchorWall, &v.EndedAt, &v.ErrorCode)
 	if err != nil {
 		return "", fmt.Errorf("snapshot schedule: %w", err)
 	}

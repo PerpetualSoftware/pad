@@ -512,3 +512,29 @@ func TestUpdateScheduleNoOpWritesNoJournalRow(t *testing.T) {
 		t.Fatalf("a real update did not journal: %d rows, want %d", got, before+1)
 	}
 }
+
+func TestScheduleSnapshotCoversAnchorEndAndError(t *testing.T) {
+	f := newSchedFixture(t)
+	sc := f.create(t, dailyUTC)
+	snap := func() string {
+		tx, err := f.s.db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Rollback()
+		out, err := f.s.scheduleSnapshotTx(tx, sc.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	base := snap()
+	for _, set := range []string{`anchor_wall='2026-10-29T09:00:00'`, `error_code='cap_scan'`, `ended_at='2026-10-30T00:00:00Z', next_at=NULL`} {
+		f.exec(t, `UPDATE item_schedules SET `+set+` WHERE id=?`, sc.ID)
+		if snap() == base {
+			t.Fatalf("snapshot ignores %s", set)
+		}
+		f.exec(t, `UPDATE item_schedules SET anchor_wall=NULL, error_code=NULL, ended_at=NULL WHERE id=?`, sc.ID)
+		base = snap()
+	}
+}
