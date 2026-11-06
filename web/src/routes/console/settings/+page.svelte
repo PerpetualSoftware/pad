@@ -1264,19 +1264,17 @@
 			</div>
 		</section>
 
-		<!-- Danger Zone (TASK-1961) — ungated: data export works self-host too -->
-		<section class="card danger-card">
-			<h2 class="card-title danger-title">Danger Zone</h2>
+		<section class="card">
+			<h2 class="card-title">Your data</h2>
 			<div class="card-body">
-				<div class="danger-row">
-					<div class="danger-info">
-						<span class="danger-heading">Export my data</span>
-						<p class="danger-desc">
-							Download all of your account data as a single JSON file. This may
-							take a moment for large accounts.
+				<div class="data-row">
+					<div class="data-info">
+						<span class="data-heading">Export my data</span>
+						<p class="data-desc">
+							Download a JSON copy of your account data. Your data stays in Pad.
 						</p>
 					</div>
-					<Button variant="danger" onclick={exportData} disabled={exportSaving}>
+					<Button variant="secondary" onclick={exportData} disabled={exportSaving}>
 						{exportSaving ? 'Exporting...' : 'Export my data'}
 					</Button>
 				</div>
@@ -1286,9 +1284,12 @@
 				{#if exportError}
 					<p class="error" role="alert" aria-live="assertive">{exportError}</p>
 				{/if}
+			</div>
+		</section>
 
-				<hr class="danger-divider" />
-
+		<section class="card danger-card">
+			<h2 class="card-title danger-title">Danger Zone</h2>
+			<div class="card-body">
 				<!-- Delete my account (TASK-1962) -->
 				<div class="danger-row">
 					<div class="danger-info">
@@ -1973,6 +1974,7 @@
 		border-bottom-color: color-mix(in srgb, var(--accent-red) 40%, var(--border));
 	}
 
+	.data-row,
 	.danger-row {
 		display: flex;
 		align-items: flex-start;
@@ -1981,28 +1983,24 @@
 		flex-wrap: wrap;
 	}
 
+	.data-info,
 	.danger-info {
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-1);
 	}
 
+	.data-heading,
 	.danger-heading {
 		font-size: 0.9rem;
 		font-weight: 600;
 		color: var(--text-primary);
 	}
 
+	.data-desc,
 	.danger-desc {
 		font-size: 0.85rem;
 		color: var(--text-muted);
-	}
-
-	/* Divider between the export row and the delete-account block (TASK-1962) */
-	.danger-divider {
-		border: none;
-		border-top: 1px solid var(--border);
-		margin: 0;
 	}
 
 	.delete-warnings {

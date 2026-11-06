@@ -24,6 +24,16 @@ const SRC = readFileSync(resolve(__dirname, './+page.svelte'), 'utf8').replace(
 	'',
 );
 
+it('BUG-4337: an empty collection offers an item and preserves the collection name', () => {
+	const block = SRC.split('{:else if items.length === 0}')[1]?.split('{:else if filteredItems.length')[0] ?? '';
+	expect(block).toContain('<h2>No items in {collection.name} yet</h2>');
+	expect(block).toContain('<p>Create your first item to start tracking work.</p>');
+	expect(block).toContain('<button class="empty-cta" onclick={openQuickCreate}>Create item</button>');
+	expect(block).not.toContain('singularName(');
+	expect(block).toContain('{#if emptyHint}');
+	expect(block).toContain('<p>This collection is empty.</p>');
+});
+
 describe('handleGroupReorder', () => {
 	it('refuses to persist lane order for a relation field', () => {
 		const start = SRC.indexOf('async function handleGroupReorder(');

@@ -8867,7 +8867,7 @@
 		gap: 0.35em;
 		font-size: 0.85em;
 		margin-left: var(--space-2);
-		color: var(--text-muted);
+		color: var(--text-secondary);
 	}
 	.collab-state-dot {
 		width: 0.55em;
@@ -8875,15 +8875,15 @@
 		border-radius: 50%;
 		background: var(--text-muted);
 	}
-	.collab-state-synced { color: var(--accent-green); }
+	.collab-state-synced { color: var(--text-secondary); }
 	.collab-state-synced .collab-state-dot { background: var(--accent-green); }
 	.collab-state-connecting,
-	.collab-state-reconnecting { color: var(--accent-yellow, #d4a017); }
+	.collab-state-reconnecting { color: var(--text-secondary); }
 	.collab-state-connecting .collab-state-dot,
 	.collab-state-reconnecting .collab-state-dot {
 		background: var(--accent-yellow, #d4a017);
 	}
-	.collab-state-offline { color: var(--accent-red); }
+	.collab-state-offline { color: var(--text-secondary); }
 	.collab-state-offline .collab-state-dot {
 		background: var(--accent-red);
 	}

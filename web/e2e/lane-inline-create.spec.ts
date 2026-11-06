@@ -44,7 +44,7 @@ function collectionPathname(fixture: { adminUsername: string; workspaceSlug: str
 /**
  * Open the docs board with at least one item in the target lane.
  *
- * An EMPTY collection renders a "No docs yet" empty state instead of the
+ * An EMPTY collection renders a "No items in Docs yet" empty state instead of the
  * lanes, so there'd be no lane `+` to click at all — seed one `status=draft`
  * doc first so the Draft lane exists. Waits for that card so the board (fed by
  * the local index) is known-rendered before the draft flow starts.

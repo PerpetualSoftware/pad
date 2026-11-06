@@ -1,5 +1,25 @@
 import { expect, it, vi, beforeEach, afterEach, describe } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/svelte';
+import { readFileSync } from 'node:fs';
+
+it('BUG-4337: export belongs to a neutral Your data card directly before Danger Zone', () => {
+	const source = readFileSync('src/routes/console/settings/+page.svelte', 'utf8').replace(/<!--[\s\S]*?-->/g, '');
+	const cards = [...source.matchAll(/<section\b[^>]*>[\s\S]*?<\/section>/g)].map((match) => match[0]);
+	const dangerIndex = cards.findIndex((card) => card.includes('>Danger Zone</h2>'));
+	const data = cards[dangerIndex - 1];
+	expect(data).toContain('<h2 class="card-title">Your data</h2>');
+	expect(data).toMatch(/^<section class="card">/);
+	expect(data).not.toContain('danger-');
+	expect(data).toContain('Download a JSON copy of your account data. Your data stays in Pad.');
+	expect(data).toContain('<Button variant="secondary" onclick={exportData} disabled={exportSaving}>');
+	expect(data).toContain("{exportSaving ? 'Exporting...' : 'Export my data'}");
+	expect(data).toContain('<p class="success" role="status" aria-live="polite">{exportMsg}</p>');
+	expect(data).toContain('<p class="error" role="alert" aria-live="assertive">{exportError}</p>');
+	const danger = cards[dangerIndex];
+	expect(danger).not.toMatch(/<Button\b[^>]*onclick=\{exportData\}/);
+	expect(danger).not.toContain('danger-divider');
+	expect(danger).toContain('class="inline-export-link" onclick={exportData} disabled={exportSaving || deleteSaving}');
+});
 
 /**
  * TASK-4129: every settings-page settle that writes identity-bound state is fenced on the identity
