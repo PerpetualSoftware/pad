@@ -86,7 +86,9 @@
 	});
 
 	function tabKeydown<T extends string>(event: KeyboardEvent, ids: T[], current: T, select: (id: T) => void) {
-		const at = ids.indexOf(current);
+		// Alt+Arrow (Back), Cmd+Arrow, Ctrl+Home/End and the like belong to the browser or OS.
+		if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+		const at = Math.max(0, ids.indexOf(current));
 		let next = -1;
 		if (event.key === 'ArrowRight') next = (at + 1) % ids.length;
 		else if (event.key === 'ArrowLeft') next = (at - 1 + ids.length) % ids.length;
@@ -476,7 +478,7 @@
 	<div class="modal-body">
 				<!-- Primary tab strip: focus belongs to its roving tab buttons. -->
 				<!-- svelte-ignore a11y_interactive_supports_focus -->
-				<div class="primary-tabs" role="tablist"
+				<div class="primary-tabs" role="tablist" aria-label="Connection method"
 					onkeydown={(event) => tabKeydown(event, visibleTabs.map(tab => tab.id), activeTab, id => (activeTab = id))}>
 					{#each visibleTabs as tab (tab.id)}
 						<button
@@ -774,7 +776,7 @@
 
 						<!-- Focus belongs to the roving tab buttons, not their container. -->
 						<!-- svelte-ignore a11y_interactive_supports_focus -->
-						<div class="tab-strip" role="tablist"
+						<div class="tab-strip" role="tablist" aria-label="Install platform"
 							onkeydown={(event) => tabKeydown(event, installTabs.map(tab => tab.id), installTab, id => (installTab = id))}>
 							{#each installTabs as tab (tab.id)}
 								<button

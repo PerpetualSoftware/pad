@@ -88,4 +88,17 @@ describe('editor DOM accessibility attributes (BUG-4336)', () => {
 		flushSync();
 		expect(submit).toHaveBeenCalledWith(CONTENT);
 	});
+	it('exposes a read-only editor as read-only, and follows the editable prop live', () => {
+		const props = $state({ content: CONTENT, itemId: 'item-a11y', editable: false });
+		instance = mount(BodyEditor, { target, props });
+		flushSync();
+		const surface = target.querySelector<HTMLElement>('.ProseMirror')!;
+		expect(surface).toHaveAttribute('aria-readonly', 'true');
+		props.editable = true;
+		flushSync();
+		expect(surface.getAttribute('aria-readonly')).not.toBe('true');
+		props.editable = false;
+		flushSync();
+		expect(surface).toHaveAttribute('aria-readonly', 'true');
+	});
 });

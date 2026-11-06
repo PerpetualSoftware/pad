@@ -1215,6 +1215,7 @@
 		editor = new Editor({
 			element,
 			editable,
+			onCreate: ({ editor: created }) => syncReadonlyAria(created, editable),
 			extensions,
 			content,
 			onUpdate: ({ editor: e }) => {
@@ -1424,11 +1425,21 @@
 		}
 	});
 
+	// A textbox role with no read-only state is announced as editable. editorProps.attributes is
+	// fixed at construction (and `editable` flips live), so the state is kept on the DOM node here.
+	function syncReadonlyAria(instance: Editor | null | undefined, isEditable: boolean) {
+		const dom = instance?.view?.dom;
+		if (!dom) return;
+		if (isEditable) dom.removeAttribute('aria-readonly');
+		else dom.setAttribute('aria-readonly', 'true');
+	}
+
 	$effect(() => {
 		// Only react to editable prop changes, not editor state changes
 		const shouldBeEditable = editable;
 		untrack(() => {
 			editor?.setEditable(shouldBeEditable);
+			syncReadonlyAria(editor, shouldBeEditable);
 		});
 	});
 

@@ -265,6 +265,9 @@
 		border-color: var(--accent-blue);
 		background: color-mix(in srgb, var(--accent-blue) 4%, transparent);
 	}
+	.banner-cta:focus-visible {
+		outline: none;
+	}
 	.banner-cta:focus-visible::after {
 		outline: 2px solid var(--accent-blue);
 		outline-offset: 2px;

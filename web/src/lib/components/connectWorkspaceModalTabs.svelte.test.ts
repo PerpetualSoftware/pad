@@ -88,4 +88,34 @@ describe('agent connection tabs (BUG-4336)', () => {
 			expect(document.activeElement).toBe(button);
 		}
 	});
+	it.each(['altKey', 'ctrlKey', 'metaKey', 'shiftKey'] as const)('%s + an arrow key is left to the browser', (modifier) => {
+		render();
+		function untouched(strip: Element) {
+			const buttons = tabs(strip);
+			const at = buttons.findIndex(b => b.tabIndex === 0);
+			expect(at).toBeGreaterThanOrEqual(0);
+			buttons[at].focus();
+			for (const keyName of ['ArrowRight', 'ArrowLeft', 'Home', 'End']) {
+				const event = new KeyboardEvent('keydown', { key: keyName, bubbles: true, cancelable: true, [modifier]: true });
+				document.activeElement!.dispatchEvent(event);
+				expect(event.defaultPrevented).toBe(false);
+				flushSync();
+				selected(strip, at);
+				expect(document.activeElement).toBe(buttons[at]);
+			}
+		}
+		const primary = root.querySelector('.primary-tabs')!;
+		// The install strip lives in the CLI panel, the second primary tab.
+		tabs(primary)[1].click();
+		flushSync();
+		untouched(root.querySelector('[role="tablist"].tab-strip')!);
+		untouched(primary);
+	});
+	it('names both tablists', () => {
+		render();
+		tabs(root.querySelector('.primary-tabs')!)[1].click();
+		flushSync();
+		expect(root.querySelector('.primary-tabs')).toHaveAccessibleName('Connection method');
+		expect(root.querySelector('[role="tablist"].tab-strip')).toHaveAccessibleName('Install platform');
+	});
 });
