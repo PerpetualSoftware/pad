@@ -44,7 +44,7 @@
 	import Modal from '$lib/components/common/Modal.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
-	import { chatSurface } from '$lib/stores/chatSurface.svelte';
+	import { chatSurface, navigated } from '$lib/stores/chatSurface.svelte';
 	import { currentSearch } from '$lib/utils/pageLocation';
 	import { titleStore } from '$lib/stores/title.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
@@ -1348,7 +1348,7 @@
 						renameNav = target;
 						void collectionStore.loadCollections(ws);
 						// A dead slug cannot wait: with Chat open this closes it first (never dropped).
-						chatSurface.runAfterClose(() => void goto(`/${username}/${wsSlug}/${target}${healSearch()}`));
+						chatSurface.runAfterClose(() => navigated(goto(`/${username}/${wsSlug}/${target}${healSearch()}`)));
 					}
 					return;
 				}
@@ -1523,14 +1523,18 @@
 			// return to a URL that 404s (the item-route
 			// healer already replaces). With Chat open it closes first, then replaces.
 			chatSurface.runAfterClose(() => {
-				goto(`/${username}/${ws}/${target}${healSearch()}`, { replaceState: true }).catch(() => {
-					// A cancelled/failed navigation (navigate-away guard, a
-					// racing nav) must not leave renameNav pointing at a slug
-					// we never reached — a poisoned tracker would veto every
-					// future sync heal. Reset only if it is
-					// still ours; a newer rename may have re-aimed it.
-					if (renameNav === target) renameNav = null;
-				});
+				return goto(`/${username}/${ws}/${target}${healSearch()}`, { replaceState: true }).then(
+					() => true,
+					() => {
+						// A cancelled/failed navigation (navigate-away guard, a
+						// racing nav) must not leave renameNav pointing at a slug
+						// we never reached — a poisoned tracker would veto every
+						// future sync heal. Reset only if it is
+						// still ours; a newer rename may have re-aimed it.
+						if (renameNav === target) renameNav = null;
+						return false;
+					}
+				);
 			});
 		} catch {
 			// Best-effort heal — the next sync pass retries.
@@ -2677,7 +2681,7 @@
 						if (fresh.slug !== collSlug) {
 							renameNav = fresh.slug;
 							void collectionStore.loadCollections(ws);
-							chatSurface.runAfterClose(() => void goto(`/${username}/${wsSlug}/${fresh.slug}${healSearch()}`));
+							chatSurface.runAfterClose(() => navigated(goto(`/${username}/${wsSlug}/${fresh.slug}${healSearch()}`)));
 						}
 					}
 				} catch {

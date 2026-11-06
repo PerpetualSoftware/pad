@@ -25,7 +25,7 @@
 import { goto, afterNavigate } from '$app/navigation';
 import { page } from '$app/state';
 import { browser } from '$app/env';
-import { chatSurface } from '$lib/stores/chatSurface.svelte';
+import { chatSurface, navigated } from '$lib/stores/chatSurface.svelte';
 import { itemUrlId, type Item, type PaneTarget } from '$lib/types';
 import {
 	readPaneState,
@@ -415,13 +415,15 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 		// and the bypass is claimed only while the navigation it covers is in flight.
 		chatSurface.runAfterClose(() => {
 			deps.setBypassNavGuard(true);
-			void goto(url, {
-				replaceState: true,
-				reset: false,
-				state: { paneDepth: 0, paneOwned: false },
-			}).finally(() => {
-				deps.setBypassNavGuard(false);
-			});
+			return navigated(
+				goto(url, {
+					replaceState: true,
+					reset: false,
+					state: { paneDepth: 0, paneOwned: false },
+				}).finally(() => {
+					deps.setBypassNavGuard(false);
+				})
+			);
 		});
 	}
 

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page, navigating } from '$app/state';
-	import { chatSurface } from '$lib/stores/chatSurface.svelte';
+	import { chatSurface, navigated } from '$lib/stores/chatSurface.svelte';
 	import { goto, afterNavigate } from '$app/navigation';
 	import { browser } from '$app/env';
 	import { onDestroy, onMount, untrack } from 'svelte';
@@ -424,10 +424,12 @@
 				const url = new URL(page.url.href);
 				if (!url.searchParams.has('item')) return false;
 				url.searchParams.delete('item');
-				void goto(`${url.pathname}${url.search}`, {
-					replaceState: true,
-					reset: false,
-				});
+				return navigated(
+					goto(`${url.pathname}${chatSurface.searchForHeal(url.search)}`, {
+						replaceState: true,
+						reset: false,
+					})
+				);
 			})
 		);
 	});

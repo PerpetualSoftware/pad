@@ -35,7 +35,7 @@
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { pushEscapeHandler, ESCAPE_PRIORITY } from '$lib/stores/escapeStack';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
-	import { chatSurface } from '$lib/stores/chatSurface.svelte';
+	import { chatSurface, navigated, STRIP_NEW_KEY } from '$lib/stores/chatSurface.svelte';
 	import { currentHref, currentSearch } from '$lib/utils/pageLocation';
 	import { createBurstDirty } from '$lib/items/editorBurstDirty';
 	import { createChangeContext } from '$lib/timeline/changeContext';
@@ -262,7 +262,8 @@
 				// It may run after Chat has closed, so it is fenced like any continuation.
 				const identity = captureIdentity();
 				chatSurface.runAfterClose(() => {
-					if (identityHeld(identity)) void goto(u, { replaceState: true });
+					if (!identityHeld(identity)) return false;
+					return navigated(goto(u, { replaceState: true }));
 				});
 			})
 		)(url);
@@ -623,17 +624,21 @@
 			// was noScroll alone: kit 3 has no scroll-only option (TASK-3423)
 			// A dead slug cannot wait: with Chat open this closes it first (never dropped).
 			chatSurface.runAfterClose(() => {
-				if (!identityHeld(identity)) return;
-				goto(`/${username}/${ws}/${target}/${itemRef}${currentSearch()}`, {
+				if (!identityHeld(identity)) return false;
+				return goto(`/${username}/${ws}/${target}/${itemRef}${chatSurface.searchForHeal(currentSearch())}`, {
 					replaceState: true,
 					reset: false,
-				}).catch(() => {
-					// A failed/cancelled navigation must not leave the override
-					// bridging to a URL we never reached. Identity compare (this
-					// heal's own bridge object) so a cancelled older
-					// navigation can't clear a newer bridge to the same slug.
-					if (renameOverride === bridge) renameOverride = null;
-				});
+				}).then(
+					() => true,
+					() => {
+						// A failed/cancelled navigation must not leave the override
+						// bridging to a URL we never reached. Identity compare (this
+						// heal's own bridge object) so a cancelled older
+						// navigation can't clear a newer bridge to the same slug.
+						if (renameOverride === bridge) renameOverride = null;
+						return false;
+					}
+				);
 			});
 		} catch {
 			// Best-effort heal — the next sync pass retries.
@@ -1488,11 +1493,13 @@
 						// was noScroll alone: kit 3 has no scroll-only option (TASK-3423)
 						// A dead slug cannot wait: with Chat open this closes it first (never dropped).
 						chatSurface.runAfterClose(() => {
-							if (callbackGen !== loadGeneration) return;
-							void goto(`/${username}/${wsSlug}/${event.new_slug}/${itemSlug}${currentSearch()}`, {
-								replaceState: true,
-								reset: false,
-							});
+							if (callbackGen !== loadGeneration) return false;
+							return navigated(
+								goto(`/${username}/${wsSlug}/${event.new_slug}/${itemSlug}${chatSurface.searchForHeal(currentSearch())}`, {
+									replaceState: true,
+									reset: false,
+								})
+							);
 						});
 					}
 				}
@@ -3388,7 +3395,7 @@
 			// was noScroll alone: kit 3 has no scroll-only option (TASK-3423)
 			// The strip is only the address; it waits while Chat is open.
 			const stripNew = () => goto(`/${username}/${wsSlug}/${collSlug}/${itemSlug}`, { replaceState: true, reset: false });
-			if (!untrack(() => chatSurface.deferPageWrite('item-detail#strip-new', stripNew))) void stripNew();
+			if (!untrack(() => chatSurface.deferPageWrite(STRIP_NEW_KEY, stripNew))) void stripNew();
 			startEditTitle();
 		}
 	});

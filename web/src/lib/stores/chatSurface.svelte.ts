@@ -83,22 +83,62 @@ const deferred = new Map<string, Deferred>();
 // flight cannot swallow them. A heal is bound to the page it was queued on (its
 // pathname): if that is no longer the page when it would run, the user went
 // somewhere else and the heal is stale, so it is skipped rather than overriding
-// them. A heal that finds nothing to do returns false.
-type Heal = { run: () => void | boolean; path: string };
+// them. A heal REPORTS what it did: true, or a promise resolving true, means it
+// navigated (its navigation settled); anything else (false, undefined, a rejected
+// or throwing run) is "did not, or not known", and the page's held writes stay.
+type HealOutcome = void | boolean | Promise<unknown>;
+type Heal = { run: () => HealOutcome; path: string };
 const heals: Heal[] = [];
 
-/** Run the queued heals; the pathnames of those that navigated (did not return false). */
-function runHeals(): string[] {
-	const acted: string[] = [];
+/** The `?new=1` strip an ItemDetail holds; a heal that retargets the item drops `new` itself. */
+export const STRIP_NEW_KEY = 'item-detail#strip-new';
+
+/** Run the queued heals; the pathnames of those that reported a navigation. Sync unless one returned a promise. */
+function runHeals(): string[] | Promise<string[]> {
+	const outs: Array<string | null | Promise<string | null>> = [];
 	for (const h of heals.splice(0)) {
 		if (h.path !== page.url.pathname) continue;
 		try {
-			if (h.run() !== false) acted.push(h.path);
+			const r = h.run();
+			if (r === true) outs.push(h.path);
+			else if (r && typeof (r as Promise<unknown>).then === 'function') {
+				outs.push(
+					Promise.resolve(r).then(
+						(v) => (v === true ? h.path : null),
+						(e) => {
+							console.error('[chatSurface] heal failed', e);
+							return null;
+						}
+					)
+				);
+			}
 		} catch (e) {
 			console.error('[chatSurface] heal failed', e);
 		}
 	}
-	return acted;
+	if (outs.some((o) => o instanceof Promise)) {
+		return Promise.all(outs).then((all) => all.filter((p): p is string => p !== null));
+	}
+	return outs.filter((p): p is string => typeof p === 'string');
+}
+
+// The flush queues in flight (see flushDeferred): a real navigation away must reach
+// the writes still waiting in them, not only the ones in the Map.
+const flushing = new Set<Deferred[]>();
+// Heal navigations in flight: until they settle, the writes they may supersede are not flushed.
+let healWait = 0;
+
+/** Resolves when `r` settles or after GO_FALLBACK_MS, whichever first; never rejects. */
+function settledOrBounded(r: Promise<unknown>): Promise<void> {
+	return new Promise((done) => {
+		const t = setTimeout(done, GO_FALLBACK_MS);
+		Promise.resolve(r)
+			.catch((e) => console.error('[chatSurface] deferred write failed', e))
+			.then(() => {
+				clearTimeout(t);
+				done();
+			});
+	});
 }
 
 /**
@@ -106,31 +146,33 @@ function runHeals(): string[] {
  * clearing the Map BEFORE running so nothing can run twice. A write that returns
  * a promise (its navigation) is awaited before the next starts, so each re-reads
  * the live page.url: two writes that both rebuild the URL from it would otherwise
- * both start from the same URL and the second would overwrite the first. The
- * identity fence is checked as each write comes up, so a user change while an
- * earlier one was in flight skips the rest. Returns the settle of the chain, or
- * null when every write was synchronous.
+ * both start from the same URL and the second would overwrite the first. As each
+ * write comes up the identity fence AND the page are checked (a write made on
+ * another pathname is skipped, as the heals are), and dropDeferredExcept reaches
+ * the queue still waiting. A wait is bounded (GO_FALLBACK_MS): Kit's goto settles
+ * on every path but a load that never answers, and that must not hold the rest or
+ * the close's continuation. A throwing fence or write is logged and skipped, so the
+ * chain never rejects. Returns the settle of the chain, or null when every write
+ * was synchronous.
  */
 function flushDeferred(): Promise<unknown> | null {
 	const queue = [...deferred.values()];
 	deferred.clear();
+	flushing.add(queue);
 	const step = (): Promise<unknown> | null => {
 		while (queue.length) {
 			const d = queue.shift()!;
-			if (!d.fence()) continue;
 			let r: void | Promise<unknown>;
 			try {
+				if (!d.fence() || d.pathname !== page.url.pathname) continue;
 				r = d.run();
 			} catch (e) {
 				console.error('[chatSurface] deferred write failed', e);
 				continue;
 			}
-			if (r) {
-				return Promise.resolve(r)
-					.catch((e) => console.error('[chatSurface] deferred write failed', e))
-					.then(step);
-			}
+			if (r) return settledOrBounded(r).then(step);
 		}
+		flushing.delete(queue);
 		return null;
 	};
 	return step();
@@ -139,19 +181,35 @@ function flushDeferred(): Promise<unknown> | null {
 /**
  * Chat is closed and the page underneath is current. With heals queued, the
  * parked continuation and the heals run first (a heal reads the live state itself,
- * hasDeferredWrite), then the pending writes that a heal that actually navigated
+ * hasDeferredWrite), then the pending writes that a heal that reported a navigation
  * did not supersede: a heal retargets the URL the writes of ITS page were aimed
- * at, so those are dropped; a heal that did nothing, or a write made on another
- * page, leaves them to run. Otherwise the writes run first and the continuation
+ * at, so those are dropped once its navigation has settled; a heal that did nothing,
+ * failed or did not say leaves them to run (a write made on another page is skipped
+ * by the flush, which runs only writes of the current pathname). Otherwise the writes run first and the continuation
  * after they settle, so a continuation that builds its URL from page.url sees the
  * filters. True when a continuation or heal ran.
  */
 function onClosed(then: (() => void) | null): boolean {
+	// A heal's navigation is still in flight: the writes wait for it (its finish flushes them).
+	if (!heals.length && healWait > 0) {
+		then?.();
+		return true;
+	}
 	if (heals.length) {
 		then?.();
 		const acted = runHeals();
-		for (const [k, d] of deferred) if (acted.includes(d.pathname)) deferred.delete(k);
-		void flushDeferred();
+		const finish = (paths: string[]) => {
+			for (const [k, d] of deferred) if (paths.includes(d.pathname)) deferred.delete(k);
+			void flushDeferred();
+		};
+		if (Array.isArray(acted)) finish(acted);
+		else {
+			healWait++;
+			void acted.then((paths) => {
+				healWait--;
+				finish(paths);
+			});
+		}
 		return true;
 	}
 	const w = flushDeferred();
@@ -333,10 +391,12 @@ export const chatSurface = {
 	 * dropped: behind a Close or a parked continuation it queues, and if the
 	 * traversal never lands (3s fallback, Chat still open) it runs as a plain
 	 * navigation. `run` must read page.url inside itself. It is bound to the page it
-	 * was queued on and skipped if that is no longer the page; return false when it
-	 * found nothing to do, so the page's pending writes are not dropped for it.
+	 * was queued on and skipped if that is no longer the page. Report the outcome:
+	 * return true (or a promise resolving true, once the navigation settled) when it
+	 * navigated, which drops the page's pending writes; false, nothing or a rejection
+	 * keeps them.
 	 */
-	runAfterClose(run: () => void | boolean): void {
+	runAfterClose(run: () => HealOutcome): void {
 		if (!this.isOpen || this.depth <= 0) {
 			run();
 			return;
@@ -365,12 +425,28 @@ export const chatSurface = {
 	},
 
 	/**
-	 * Drop held writes and queued heals made on any other path (a real navigation
+	 * `search` for a heal's URL: without `new=` while the ?new=1 strip is held. A
+	 * heal that navigates drops the page's held writes, the strip among them, so it
+	 * carries the strip's effect itself instead of leaving ?new=1 on the new URL.
+	 */
+	searchForHeal(search: string): string {
+		if (!deferred.has(STRIP_NEW_KEY)) return search;
+		const p = new URLSearchParams(search);
+		p.delete('new');
+		const out = p.toString();
+		return out ? `?${out}` : '';
+	},
+
+	/**
+	 * Drop held writes, the writes still queued in a flush, and queued heals made on any other path (a real navigation
 	 * away); null drops all.
 	 */
 	dropDeferredExcept(pathname: string | null): void {
 		for (const [k, d] of deferred) if (d.pathname !== pathname) deferred.delete(k);
 		for (let i = heals.length - 1; i >= 0; i--) if (heals[i].path !== pathname) heals.splice(i, 1);
+		for (const q of flushing) {
+			for (let i = q.length - 1; i >= 0; i--) if (q[i].pathname !== pathname) q.splice(i, 1);
+		}
 	},
 
 	/** From a thread to the inbox: one entry back when the inbox is the entry below. */
@@ -404,10 +480,20 @@ export function __resetChatSurfaceForTests(): void {
 	if (goLatch) clearTimeout(goLatch.timer);
 	goLatch = null;
 	deferred.clear();
+	flushing.clear();
+	healWait = 0;
 	heals.length = 0;
 }
 
 /** Test seam: what the surface-key effect does when the state moves (jsdom's page is not reactive). */
 export function __checkChatSurfaceForTests(): void {
 	onSurfaceKeyMoved();
+}
+
+/** A heal's outcome from its navigation: true once it settled, false when it failed or was cancelled. */
+export function navigated(p: Promise<unknown>): Promise<boolean> {
+	return p.then(
+		() => true,
+		() => false
+	);
 }

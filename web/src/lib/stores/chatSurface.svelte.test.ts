@@ -3,7 +3,7 @@
 // spy on goto and history.go; the real traversal is proven in e2e/chat-shell.spec.ts.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const h = vi.hoisted(() => ({ mobile: false, userId: 'u1' as string | null, epoch: 0 }));
+const h = vi.hoisted(() => ({ mobile: false, userId: 'u1' as string | null, epoch: 0, fenceN: 0, throwAt: -1 }));
 vi.mock('$app/navigation', () => ({ goto: vi.fn(async () => {}) }));
 vi.mock('$lib/stores/breakpoint.svelte', () => ({
 	viewport: {
@@ -19,14 +19,18 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 		},
 		identityFence() {
 			const at = h.epoch;
-			return () => h.epoch === at;
+			const id = h.fenceN++;
+			return () => {
+				if (h.throwAt === id) throw new Error('fence boom');
+				return h.epoch === at;
+			};
 		}
 	}
 }));
 
 import { goto } from '$app/navigation';
 import { page } from '$app/state';
-import { chatSurface, parseChatPath, parseThreadNumber, __resetChatSurfaceForTests, __checkChatSurfaceForTests } from './chatSurface.svelte';
+import { chatSurface, STRIP_NEW_KEY, parseChatPath, parseThreadNumber, __resetChatSurfaceForTests, __checkChatSurfaceForTests } from './chatSurface.svelte';
 
 const gotoMock = vi.mocked(goto);
 const asShallow = (path: string) =>
@@ -40,6 +44,8 @@ beforeEach(() => {
 	h.mobile = false;
 	h.userId = 'u1';
 	h.epoch = 0;
+	h.fenceN = 0;
+	h.throwAt = -1;
 	page.url = new URL('http://localhost/alice/ws/tasks');
 	page.state = {};
 	(page as { shallow: unknown }).shallow = null;
@@ -619,7 +625,10 @@ describe('runAfterClose: a heal that cannot wait is never lost', () => {
 		const write = vi.fn();
 		const seen: boolean[] = [];
 		chatSurface.deferPageWrite('k', write);
-		chatSurface.runAfterClose(() => void seen.push(chatSurface.hasDeferredWrite('k')));
+		chatSurface.runAfterClose(() => {
+			seen.push(chatSurface.hasDeferredWrite('k'));
+			return true;
+		});
 		land();
 		// the heal could still read that a write was pending (to use live state), then it was dropped
 		expect(seen).toEqual([true]);
@@ -875,7 +884,7 @@ describe('a heal supersedes only the deferred writes it conflicts with', () => {
 		setSurface('/messages', { chatDepth: 1 });
 		const write = vi.fn();
 		chatSurface.deferPageWrite('k', write);
-		chatSurface.runAfterClose(() => {});
+		chatSurface.runAfterClose(() => true);
 		landUnder();
 		expect(write).not.toHaveBeenCalled();
 	});
@@ -890,15 +899,17 @@ describe('a heal supersedes only the deferred writes it conflicts with', () => {
 		expect(write).toHaveBeenCalledTimes(1);
 	});
 
-	it('a heal for a different path does not drop a write made on another path', () => {
+	it('a heal for a different path does not drop a write made on another path; the flush then skips it as stale', () => {
 		page.url = new URL('http://localhost/alice/ws/jobs/ITEM-1');
 		setSurface('/messages', { chatDepth: 1 });
 		const strip = vi.fn();
 		chatSurface.deferPageWrite('item-detail#strip-new', strip);
 		page.url = new URL('http://localhost/alice/ws/tasks');
-		chatSurface.runAfterClose(() => {});
+		chatSurface.runAfterClose(() => true);
 		landUnder();
-		expect(strip).toHaveBeenCalledTimes(1);
+		// not dropped by the heal (other pathname), but not run on a page it was not made for
+		expect(chatSurface.hasDeferredWrite('item-detail#strip-new')).toBe(false);
+		expect(strip).not.toHaveBeenCalled();
 	});
 
 	it('writes that survive still run after the heals, in order', () => {
@@ -912,6 +923,188 @@ describe('a heal supersedes only the deferred writes it conflicts with', () => {
 		});
 		landUnder();
 		expect(order).toEqual(['heal', 'write']);
+	});
+});
+
+describe('round 7: a serial flush follows the page, and the chain is total and bounded', () => {
+	beforeEach(() => {
+		vi.spyOn(history, 'go').mockImplementation(() => {});
+	});
+
+	it('a navigation while the first write is in flight aborts the writes still queued', async () => {
+		setSurface('/messages', { chatDepth: 1 });
+		let finish!: () => void;
+		const b = vi.fn();
+		chatSurface.deferPageWrite('a', () => new Promise<void>((r) => (finish = r)));
+		chatSurface.deferPageWrite('b', b);
+		chatSurface.close();
+		landUnder();
+		// ChatHost onNavigate for a real navigation to another page
+		chatSurface.dropDeferredExcept('/alice/ws/other');
+		page.url = new URL('http://localhost/alice/ws/other');
+		finish();
+		await flush();
+		expect(b).not.toHaveBeenCalled();
+	});
+
+	it('a write for another pathname is skipped when it comes up even with no drop', async () => {
+		setSurface('/messages', { chatDepth: 1 });
+		let finish!: () => void;
+		const b = vi.fn();
+		chatSurface.deferPageWrite('a', () => new Promise<void>((r) => (finish = r)));
+		chatSurface.deferPageWrite('b', b);
+		chatSurface.close();
+		landUnder();
+		page.url = new URL('http://localhost/alice/ws/other');
+		finish();
+		await flush();
+		expect(b).not.toHaveBeenCalled();
+	});
+
+	it('a same-path drop leaves the queued same-path write running', async () => {
+		setSurface('/messages', { chatDepth: 1 });
+		let finish!: () => void;
+		const b = vi.fn();
+		chatSurface.deferPageWrite('a', () => new Promise<void>((r) => (finish = r)));
+		chatSurface.deferPageWrite('b', b);
+		chatSurface.close();
+		landUnder();
+		chatSurface.dropDeferredExcept('/alice/ws/tasks');
+		finish();
+		await flush();
+		expect(b).toHaveBeenCalledTimes(1);
+	});
+
+	it('a throwing fence is caught: the next write, the continuation and the heals still run', async () => {
+		const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+		setSurface('/messages', { chatDepth: 1 });
+		const order: string[] = [];
+		chatSurface.deferPageWrite('a', () => void order.push('a'));
+		h.throwAt = h.fenceN;
+		chatSurface.deferPageWrite('b', () => void order.push('b'));
+		chatSurface.deferPageWrite('c', () => void order.push('c'));
+		expect(chatSurface.closeThen(() => void order.push('then'))).toBe(true);
+		landUnder();
+		await flush();
+		expect(order).toEqual(['a', 'c', 'then']);
+		expect(err).toHaveBeenCalled();
+	});
+
+	it('a write that never settles is left after 3s: the next write and the continuation run', async () => {
+		vi.useFakeTimers();
+		setSurface('/messages', { chatDepth: 1 });
+		const order: string[] = [];
+		chatSurface.deferPageWrite('a', () => new Promise<void>(() => {}));
+		chatSurface.deferPageWrite('b', () => void order.push('b'));
+		expect(chatSurface.closeThen(() => void order.push('then'))).toBe(true);
+		landUnder();
+		await vi.advanceTimersByTimeAsync(2900);
+		expect(order).toEqual([]);
+		await vi.advanceTimersByTimeAsync(200);
+		expect(order).toEqual(['b', 'then']);
+	});
+});
+
+describe('round 7: a heal drops writes only when it reports that it navigated', () => {
+	beforeEach(() => {
+		vi.spyOn(history, 'go').mockImplementation(() => {});
+		page.url = new URL('http://localhost/alice/ws/tasks');
+	});
+	const run = async (heal: () => unknown) => {
+		setSurface('/messages', { chatDepth: 1 });
+		const write = vi.fn();
+		chatSurface.deferPageWrite('k', write);
+		chatSurface.runAfterClose(heal as never);
+		landUnder();
+		await flush();
+		return write;
+	};
+
+	it('true drops the write', async () => expect(await run(() => true)).not.toHaveBeenCalled());
+	it('undefined (unknown) keeps the write', async () => expect(await run(() => undefined)).toHaveBeenCalledTimes(1));
+	it('false keeps the write', async () => expect(await run(() => false)).toHaveBeenCalledTimes(1));
+	it('a promise resolving true drops the write, only after it resolved', async () => {
+		let done!: () => void;
+		setSurface('/messages', { chatDepth: 1 });
+		const write = vi.fn();
+		chatSurface.deferPageWrite('k', write);
+		chatSurface.runAfterClose((() => new Promise<boolean>((r) => (done = () => r(true)))) as never);
+		landUnder();
+		await flush();
+		expect(write).not.toHaveBeenCalled();
+		done();
+		await flush();
+		expect(write).not.toHaveBeenCalled();
+	});
+	it('a promise resolving false keeps the write', async () =>
+		expect(await run(() => Promise.resolve(false))).toHaveBeenCalledTimes(1));
+	it('a rejected navigation keeps the write', async () => {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		expect(await run(() => Promise.reject(new Error('nav failed')))).toHaveBeenCalledTimes(1);
+	});
+	it('a throwing heal keeps the write', async () => {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		expect(
+			await run(() => {
+				throw new Error('boom');
+			})
+		).toHaveBeenCalledTimes(1);
+	});
+	it('a pending heal navigation holds the surviving writes until it settles', async () => {
+		let done!: () => void;
+		setSurface('/messages', { chatDepth: 1 });
+		const write = vi.fn();
+		chatSurface.deferPageWrite('k', write);
+		chatSurface.runAfterClose((() => new Promise<boolean>((r) => (done = () => r(false)))) as never);
+		landUnder();
+		await flush();
+		expect(write).not.toHaveBeenCalled();
+		done();
+		await flush();
+		expect(write).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe('round 7: a heal carries a held ?new=1 strip instead of leaving it behind', () => {
+	beforeEach(() => {
+		vi.spyOn(history, 'go').mockImplementation(() => {});
+	});
+
+	it('searchForHeal removes new= only while the strip is held', () => {
+		page.url = new URL('http://localhost/alice/ws/tasks/ITEM-1?new=1&view=x');
+		expect(chatSurface.searchForHeal('?new=1&view=x')).toBe('?new=1&view=x');
+		setSurface('/messages', { chatDepth: 1 });
+		chatSurface.deferPageWrite(STRIP_NEW_KEY, vi.fn());
+		expect(chatSurface.searchForHeal('?new=1&view=x')).toBe('?view=x');
+		expect(chatSurface.searchForHeal('?new=1')).toBe('');
+		expect(chatSurface.searchForHeal('')).toBe('');
+	});
+
+	it('a heal built on it navigates without new= and the strip, dropped, is not needed', async () => {
+		page.url = new URL('http://localhost/alice/ws/tasks/ITEM-1?new=1');
+		setSurface('/messages', { chatDepth: 1 });
+		const strip = vi.fn();
+		chatSurface.deferPageWrite(STRIP_NEW_KEY, strip);
+		let target = '';
+		chatSurface.runAfterClose(() => {
+			target = `/alice/ws/jobs/ITEM-1${chatSurface.searchForHeal(page.url.search)}`;
+			return true;
+		});
+		landUnder();
+		await flush();
+		expect(target).toBe('/alice/ws/jobs/ITEM-1');
+		expect(strip).not.toHaveBeenCalled();
+	});
+
+	it('the board-filter case: filters are carried by the heal, so the held filter write may drop', async () => {
+		page.url = new URL('http://localhost/alice/ws/tasks?status=open');
+		setSurface('/messages', { chatDepth: 1 });
+		const filters = vi.fn();
+		chatSurface.deferPageWrite('filters', filters);
+		chatSurface.runAfterClose(() => true);
+		landUnder();
+		await flush();
+		expect(filters).not.toHaveBeenCalled();
 	});
 });
 

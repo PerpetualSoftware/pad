@@ -63,22 +63,31 @@ const ACTS = /chatSurface\.(open|close|back|closeThen|runAfterClose|deferPageWri
  * Offsets of the `calls` that run DIRECTLY in the body of the effect whose call parens are
  * [open, close]: not inside a function written within it (an untrack() callback, an event or SSE
  * handler, a helper), which does not run as a tracked read. The effect's own callback is the root.
- * Limit: a nested function that is itself called synchronously (a .forEach callback) counts as
- * nested; untrack() is the only such wrapper the sources use.
+ * A function written directly as an argument to a synchronous iterator (forEach, map, filter, some,
+ * every, find, reduce, flatMap, sort, Array.from) or as an immediately-invoked group runs in the effect,
+ * so it is NOT exempt; an untrack(), a timer, a handler or a promise callback is.
+ * Limit: a function that reaches a synchronous caller by name (const f = () => chatSurface.close();
+ * items.forEach(f)), a helper declared in the effect and called there, and a custom higher-order
+ * function that calls its callback synchronously, are still read as nested and exempt.
  */
+const SYNC_CALLEE = /\.(?:forEach|map|filter|some|every|find|findIndex|findLast|findLastIndex|reduce|reduceRight|flatMap|sort|toSorted|from)$/;
+
 function directCalls(s: string, open: number, close: number, calls: Set<number>): number[] {
-	type Frame = { closer: string; fn: boolean; root: boolean; start: number; expr?: boolean };
+	type Frame = { closer: string; fn: boolean; root: boolean; start: number; expr?: boolean; sync?: boolean };
 	const stack: Frame[] = [];
 	const out: number[] = [];
 	let rootDone = false;
 	let lastParenStart = -1;
 	const before = (i: number) => s.slice(Math.max(0, i - 80), i).trimEnd();
+	// The function being opened is an argument written directly in a synchronous iterator's call
+	// parens, or the body of an immediately-invoked group.
+	const runsSync = () => stack.length > 0 && !!stack[stack.length - 1].sync;
 	const endExpr = () => {
 		while (stack.length && stack[stack.length - 1].expr) stack.pop();
 	};
 	for (let i = open + 1; i < close; i++) {
 		const c = s[i];
-		if (calls.has(i) && !stack.some((f) => f.fn && !f.root)) out.push(i);
+		if (calls.has(i) && !stack.some((f) => f.fn && !f.root && !f.sync)) out.push(i);
 		if (c === '/' && s[i + 1] === '/') {
 			const e = s.indexOf('\n', i);
 			i = e < 0 ? close : e;
@@ -90,19 +99,20 @@ function directCalls(s: string, open: number, close: number, calls: Set<number>)
 			let j = i + 2;
 			while (/\s/.test(s[j])) j++;
 			if (s[j] !== '{') {
-				stack.push({ closer: '', fn: true, root: !rootDone && stack.length === 0, start: i, expr: true });
+				stack.push({ closer: '', fn: true, root: !rootDone && stack.length === 0, start: i, expr: true, sync: runsSync() });
 				rootDone = true;
 			}
 			i++;
 		} else if (c === '(' || c === '[') {
-			stack.push({ closer: c === '(' ? ')' : ']', fn: false, root: false, start: i });
+			const group = c === '(' && !/[\w$)\]]$/.test(before(i));
+			stack.push({ closer: c === '(' ? ')' : ']', fn: false, root: false, start: i, sync: c === '(' && (SYNC_CALLEE.test(before(i)) || group) });
 		} else if (c === '{') {
 			const b = before(i);
 			let fn = b.endsWith('=>');
 			if (!fn && b.endsWith(')') && lastParenStart >= 0) {
 				fn = !/\b(if|for|while|switch|catch|with)$/.test(before(lastParenStart));
 			}
-			stack.push({ closer: '}', fn, root: fn && !rootDone && stack.length === 0, start: i });
+			stack.push({ closer: '}', fn, root: fn && !rootDone && stack.length === 0, start: i, sync: fn && runsSync() });
 			if (fn) rootDone = true;
 		} else if (c === ',' || c === ';') {
 			endExpr();
@@ -147,6 +157,23 @@ describe('chatSurface calls that act never run directly in a tracked effect or d
 		expect(actingCallsInEffects(readOnly)).toEqual([]);
 		// the root callback of an effect whose body is a bare expression
 		expect(actingCallsInEffects('$effect(() => chatSurface.close());')).toHaveLength(1);
+	});
+
+	it('a callback a synchronous iterator runs still runs in the effect; timers, handlers and .then do not', () => {
+		const wrap = (b: string) => `$effect(() => {\n ${b}\n});`;
+		expect(actingCallsInEffects(wrap('items.forEach(() => chatSurface.close());'))).toHaveLength(1);
+		expect(actingCallsInEffects(wrap('items.forEach((i) => { if (i) { chatSurface.close(); } });'))).toHaveLength(1);
+		expect(actingCallsInEffects(wrap('items.map(function (i) { return chatSurface.open(i); });'))).toHaveLength(1);
+		expect(actingCallsInEffects(wrap('items.filter((i) => chatSurface.closeThen(i));'))).toHaveLength(1);
+		expect(actingCallsInEffects(wrap('items.some((i) => chatSurface.back());'))).toHaveLength(1);
+		expect(actingCallsInEffects(wrap('items.reduce((a, i) => a + chatSurface.traversing, 0);'))).toHaveLength(1);
+		expect(actingCallsInEffects(wrap('(() => { chatSurface.close(); })();'))).toHaveLength(1);
+		expect(actingCallsInEffects('$effect(() => items.forEach(() => chatSurface.close()));')).toHaveLength(1);
+		expect(actingCallsInEffects(wrap('setTimeout(() => chatSurface.close(), 10);'))).toEqual([]);
+		expect(actingCallsInEffects(wrap('el.onclick = () => { chatSurface.close(); };'))).toEqual([]);
+		expect(actingCallsInEffects(wrap('p.then(() => chatSurface.close());'))).toEqual([]);
+		expect(actingCallsInEffects(wrap('items.forEach(() => setTimeout(() => chatSurface.close(), 1));'))).toEqual([]);
+		expect(actingCallsInEffects(wrap('items.forEach(() => untrack(() => chatSurface.close()));'))).toEqual([]);
 	});
 
 	it('the scan reaches the effects it polices', () => {
