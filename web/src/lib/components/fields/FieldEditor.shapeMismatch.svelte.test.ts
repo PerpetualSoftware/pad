@@ -85,7 +85,7 @@ describe('a value whose shape does not match its field (BUG-3052 unit 2)', () =>
 		expect(input).not.toBeNull();
 		expect(input.value).toBe('');
 		expect(onchange).not.toHaveBeenCalled();
-		(container.querySelector('[aria-label="Increase"]') as HTMLButtonElement).click();
+		(container.querySelector('[aria-label="Increase Effort"]') as HTMLButtonElement).click();
 		await tick();
 		// Stepped from nothing, not from the string: never 6.
 		expect(onchange.mock.calls).toEqual([[1]]);

@@ -131,12 +131,21 @@ describe('reloadForIdentityChange', () => {
 	});
 });
 
- it('clears every per-user agenda event preference on identity change', () => {
-  localStorage.setItem('pad-agenda-show-events:user-a', '0');
-  localStorage.setItem('pad-agenda-show-events:user-b', '1');
-  localStorage.setItem('pad-theme', 'dark');
-  clearPersistentIdentityState();
-  expect(localStorage.getItem('pad-agenda-show-events:user-a')).toBeNull();
-  expect(localStorage.getItem('pad-agenda-show-events:user-b')).toBeNull();
-  expect(localStorage.getItem('pad-theme')).toBe('dark');
- });
+it('clears every per-user agenda event preference on identity change', () => {
+	localStorage.setItem('pad-agenda-show-events:user-a', '0');
+	localStorage.setItem('pad-agenda-show-events:user-b', '1');
+	localStorage.setItem('pad-theme', 'dark');
+	clearPersistentIdentityState();
+	expect(localStorage.getItem('pad-agenda-show-events:user-a')).toBeNull();
+	expect(localStorage.getItem('pad-agenda-show-events:user-b')).toBeNull();
+	expect(localStorage.getItem('pad-theme')).toBe('dark');
+});
+
+it('clears chat drafts and pending attempts in every conversation', () => {
+	for (const n of [1, 99]) {
+		sessionStorage.setItem(`pad:chat-draft:u1:${n}`, JSON.stringify({ userId: 'u1', n, text: 'private', replySeq: null }));
+		sessionStorage.setItem(`pad:chat-pending:u1:${n}:op`, JSON.stringify({ userId: 'u1', n, op_key: 'op', body: 'pending', reply_seq: null }));
+	}
+	clearPersistentIdentityState();
+	expect(Object.keys(sessionStorage).filter((key) => key.startsWith('pad:chat-'))).toEqual([]);
+});

@@ -16,8 +16,8 @@
 	<header><strong>You</strong><span>Human</span></header>
 	<p class="body">{pending.body}</p>
 	<!-- Mounted for the bubble's life, only its text changes (r5 H5). -->
-	<p class="state" role="status">{pending.status === 'sending' ? 'Sending…' : 'Failed to send.'}</p>
-	{#if pending.status === 'failed'}
+	<p class="state" role="status">{pending.status === 'sending' ? 'Sending…' : pending.status === 'unconfirmed' ? 'Send not confirmed' : 'Failed to send.'}</p>
+	{#if pending.status !== 'sending'}
 		<p class="state">
 			<button type="button" onclick={() => onRetry(pending.op_key)}>Retry</button>
 			<button type="button" onclick={() => onDiscard(pending.op_key)}>Discard</button>
