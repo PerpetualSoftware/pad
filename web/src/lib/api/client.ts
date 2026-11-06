@@ -77,6 +77,8 @@ import type {
 	ItemGrant,
 	WorkspaceMembership,
 	WorkspaceTabsResponse,
+	WorkspaceGroup,
+	WorkspaceGroupsResponse,
 	ShareLink,
 	SharePayload,
 	TOTPSetupResponse,
@@ -1515,6 +1517,16 @@ export interface InvitationPreview {
 let serverCapabilitiesCache: Promise<ServerCapabilities> | null = null;
 
 export const api = {
+	workspaceGroups: {
+		list: () => request<WorkspaceGroupsResponse>('/me/workspace-groups'),
+		get: (id: string) => request<WorkspaceGroup>(`/me/workspace-groups/${encodeURIComponent(id)}`),
+		create: (data: { name: string; workspace_ids: string[] }) =>
+			request<WorkspaceGroup>('/me/workspace-groups', { method: 'POST', body: JSON.stringify(data) }),
+		update: (id: string, data: { name?: string; workspace_ids?: string[] }) =>
+			request<WorkspaceGroup>(`/me/workspace-groups/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(data) }),
+		remove: (id: string) =>
+			request<{ id: string; deleted: true }>(`/me/workspace-groups/${encodeURIComponent(id)}`, { method: 'DELETE' })
+	},
 	// ── Health / Version ──────────────────────────────────────────────────────
 
 	health: () => request<HealthResponse>('/health'),

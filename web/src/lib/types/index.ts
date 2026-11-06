@@ -383,6 +383,19 @@ export interface InvitationAccepted extends InvitationAcceptedFields {
 	accepted: boolean;
 }
 
+export interface WorkspaceGroup {
+	id: string;
+	name: string;
+	kind: 'all' | 'mine' | 'named';
+	workspace_ids: string[];
+	created_at?: string;
+	updated_at?: string;
+}
+
+export interface WorkspaceGroupsResponse {
+	groups: WorkspaceGroup[];
+}
+
 // One workspace in the caller's open set: a tab in the workspace tab bar
 // (PLAN-3002 U1 / TASK-3256). Mirrors models.WorkspaceTab. The whole set is
 // server-side, so it is the same on every device.
