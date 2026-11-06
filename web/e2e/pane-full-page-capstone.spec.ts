@@ -727,14 +727,14 @@ test.describe('full-page pane host CAPSTONE (PLAN-2154 Phase 2 / TASK-2175)', ()
 		page.on('pageerror', (err) => pageErrors.push(String(err)));
 		// A's DOWNSTREAM sub-resource GETs (progress/links) fire only if loadData
 		// proceeds PAST the post-item-GET gen-check — i.e. only if the fence failed.
-		// `loadData` fetches progress/links by the LOADED item's SLUG (ItemDetail
-		// ~L1211/1233 `itemData.slug`), NOT the `?item=` REF — so track the SLUG
-		// (plus the ref as a belt) or the fence proof is vacuous.
+		// `loadData` fetches progress/links by the LOADED item's ID (ItemDetail
+		// `itemData.id`), NOT the `?item=` REF — so track the ID (plus the slug
+		// and the ref as belts) or the fence proof is vacuous.
 		const aSubResourceGets: string[] = [];
 		page.on('request', (req) => {
 			if (req.method() !== 'GET') return;
 			const p = new URL(req.url()).pathname;
-			if (p.includes(`/items/${a.slug}/`) || p.includes(`/items/${aRef}/`)) aSubResourceGets.push(p);
+			if (p.includes(`/items/${a.id}/`) || p.includes(`/items/${a.slug}/`) || p.includes(`/items/${aRef}/`)) aSubResourceGets.push(p);
 		});
 
 		let releaseA: () => void = () => {};

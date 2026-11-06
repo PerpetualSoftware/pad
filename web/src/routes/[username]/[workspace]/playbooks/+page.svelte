@@ -74,7 +74,7 @@
 	let canCreatePlaybook = $derived(canCreateIn(playbooksSlug));
 	let canImport = $derived(canCreateIn(playbooksSlug) || canCreateIn(conventionsSlug));
 	let deleting = $state<string | null>(null);
-	let confirmDeleteSlug = $state<string | null>(null);
+	let confirmDeleteId = $state<string | null>(null);
 	let togglingStatus = $state<string | null>(null);
 	let duplicating = $state<string | null>(null);
 	let exportingSlug = $state<string | null>(null);
@@ -332,7 +332,7 @@
 			// concurrent field edit (including one from the playbook editor,
 			// which writes five keys) that landed between this row's read and
 			// this write.
-			const updated = await api.items.update(wsSlug, item.slug, { fields_patch: { status: next } });
+			const updated = await api.items.update(wsSlug, item.id, { fields_patch: { status: next } });
 			const idx = playbooks.findIndex(p => p.id === item.id);
 			if (idx !== -1) playbooks[idx] = updated;
 			toastStore.show(`Status changed to ${next}`, 'success');
@@ -340,12 +340,12 @@
 		finally { togglingStatus = null; }
 	}
 
-	async function deletePlaybook(slug: string) {
-		deleting = slug;
+	async function deletePlaybook(id: string) {
+		deleting = id;
 		try {
-			await api.items.delete(wsSlug, slug);
-			playbooks = playbooks.filter(p => p.slug !== slug);
-			confirmDeleteSlug = null; expandedId = null;
+			await api.items.delete(wsSlug, id);
+			playbooks = playbooks.filter(p => p.id !== id);
+			confirmDeleteId = null; expandedId = null;
 			toastStore.show('Playbook deleted', 'success');
 		} catch { toastStore.show('Failed to delete playbook', 'error'); }
 		finally { deleting = null; }
@@ -436,7 +436,7 @@
 			// (the import response carries ref + slug but not the collection).
 			let link: string | undefined;
 			try {
-				const created = await api.items.get(ws, result.slug);
+				const created = await api.items.get(ws, result.ref);
 				if (created.collection_slug) {
 					link = `/${user}/${ws}/${created.collection_slug}/${created.slug}`;
 				}
@@ -730,14 +730,14 @@
 									</Button>
 									{#if !workspaceStore.canEditItem(item)}
 										<!-- no delete: see the status button above -->
-									{:else if confirmDeleteSlug === item.slug}
+									{:else if confirmDeleteId === item.id}
 										<span class="delete-confirm">
 											Delete?
-											<Button variant="danger" size="sm" disabled={deleting === item.slug} onclick={() => deletePlaybook(item.slug)}>{deleting === item.slug ? '...' : 'Yes'}</Button>
-											<Button variant="secondary" size="sm" onclick={() => (confirmDeleteSlug = null)}>No</Button>
+											<Button variant="danger" size="sm" disabled={deleting === item.id} onclick={() => deletePlaybook(item.id)}>{deleting === item.id ? '...' : 'Yes'}</Button>
+											<Button variant="secondary" size="sm" onclick={() => (confirmDeleteId = null)}>No</Button>
 										</span>
 									{:else}
-										<Button variant="danger" size="sm" onclick={() => (confirmDeleteSlug = item.slug)}>Delete</Button>
+										<Button variant="danger" size="sm" onclick={() => (confirmDeleteId = item.id)}>Delete</Button>
 									{/if}
 								</div>
 							</div>

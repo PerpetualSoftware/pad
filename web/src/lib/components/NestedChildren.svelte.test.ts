@@ -60,7 +60,7 @@ async function render(statuses: unknown[], abandonedOptions: string[]) {
 		target,
 		props: {
 			wsSlug: 'ws',
-			parentSlug: 'p'
+			parentRef: 'p'
 		}
 	});
 	for (let i = 0; i < 5; i++) {

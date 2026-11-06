@@ -670,7 +670,7 @@ user hunting for an item that provably does not exist.
 		const ctl = new AbortController();
 		preflightAbort = ctl;
 		try {
-			const result = await api.items.copyPreflight(sourceWsSlug, item.slug, buildRequest(), {
+			const result = await api.items.copyPreflight(sourceWsSlug, item.id, buildRequest(), {
 				signal: ctl.signal
 			});
 			if (gen !== flowGen || pgen !== previewGen) return;
@@ -923,7 +923,7 @@ user hunting for an item that provably does not exist.
 			// 2. Re-run the preflight immediately before dispatch (advisory).
 			let fresh: ItemCopyPreflight;
 			try {
-				fresh = await api.items.copyPreflight(sourceWsSlug, item.slug, req);
+				fresh = await api.items.copyPreflight(sourceWsSlug, item.id, req);
 			} catch (e: any) {
 				if (superseded()) return;
 				if (isDestinationGoneError(e)) {
@@ -977,7 +977,7 @@ user hunting for an item that provably does not exist.
 		const key = opKey;
 		submitting = true;
 		try {
-			const result = await api.items.copy(sourceWsSlug, item.slug, req, key);
+			const result = await api.items.copy(sourceWsSlug, item.id, req, key);
 			if (gen !== flowGen) return;
 			if (!isSameIdentity()) return;
 			oncopied(result);
