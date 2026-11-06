@@ -26,9 +26,10 @@ type groupWire struct {
 }
 
 func groupRequest(s *Server, u *models.User, method, path, body string, mods ...func(context.Context) context.Context) *httptest.ResponseRecorder {
+	const testCSRF = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	r := httptest.NewRequest(method, path, strings.NewReader(body))
-	r.AddCookie(&http.Cookie{Name: csrfCookieName(s.secureCookies), Value: "workspace-groups-csrf"})
-	r.Header.Set("X-CSRF-Token", "workspace-groups-csrf")
+	r.AddCookie(&http.Cookie{Name: csrfCookieName(s.secureCookies), Value: testCSRF})
+	r.Header.Set("X-CSRF-Token", testCSRF)
 	ctx := r.Context()
 	if u != nil {
 		ctx = WithAPITokenAuth(WithCurrentUser(ctx, u))
