@@ -140,7 +140,11 @@
 	let inviteEmail = $state('');
 	let inviteRole = $state('editor');
 	let inviting = $state(false);
+	// Which invite is the latest: a slow clipboard write of an earlier one must not rewrite the
+	// newer one's message or release its busy flag.
+	let inviteSeq = 0;
 	let inviteResult = $state<{ message: string; type: 'success' | 'error' } | null>(null);
+	let createdInvite = $state<{ email: string; url: string } | null>(null);
 	// Current-user role + isOwner now come from workspaceStore (PLAN-1100 / TASK-1101)
 	// — populated by workspaceStore.setCurrent via the /me endpoint.
 
@@ -343,6 +347,13 @@
 			collections = [];
 			members = [];
 			invitations = [];
+			inviteResult = null;
+			createdInvite = null;
+			// An invite started under the previous (user, workspace) is retired, not just ignored while
+			// away: coming back to the same workspace must not let its late write land on a fresh page, and
+			// the form here must not stay busy for a request that no longer belongs to this page.
+			inviteSeq++;
+			inviting = false;
 			workspaceApps = [];
 			// An access panel belongs to the workspace it was opened in
 			// (BUG-3698): closing it also retires any read or save
@@ -644,43 +655,77 @@
 		// Captured at ENTRY, before any await: the only epoch that cannot be
 		// re-stamped by a concurrent load.
 		const epochAtEntry = captureIdentity();
+		// The workspace too: the route component is reused across workspaces on the same identity,
+		// and the join link minted here belongs to this one only.
+		const reqWs = wsSlug;
+		const mySeq = ++inviteSeq;
 		inviting = true;
 		inviteResult = null;
+		createdInvite = null;
 		try {
-			const result = await api.members.invite(wsSlug, inviteEmail.trim(), inviteRole);
-			// FIRST of two awaits. Everything below writes the page, and one
+			const result = await api.members.invite(reqWs, inviteEmail.trim(), inviteRole);
+			// The invite response writes the page, and one
 			// branch writes the CLIPBOARD — a side effect that leaves the page
 			// entirely and would hand the new user a join link minted for the
 			// previous one.
-			if (!identityHeld(epochAtEntry)) return;
+			if (!identityHeld(epochAtEntry) || wsSlug !== reqWs || mySeq !== inviteSeq) return;
 			if (result.added) {
 				inviteResult = { message: `Added ${result.name || result.email} as ${result.role}`, type: 'success' };
-			} else if (result.join_url) {
-				inviteResult = { message: `Invitation sent to ${result.email}. Link copied to clipboard!`, type: 'success' };
-				copyToClipboard(result.join_url);
 			} else {
-				inviteResult = { message: `Invitation sent to ${result.email}. Join code: ${result.code}`, type: 'success' };
+				createdInvite = result.join_url ? { email: result.email, url: result.join_url } : null;
+				inviteResult = {
+					message: `Invitation created for ${result.email}.` + (!result.join_url && result.code ? ` Join code: ${result.code}` : ''),
+					type: 'success'
+				};
 			}
 			inviteEmail = '';
 			inviteRole = 'editor';
-			// Reload members
-			const memberData = await api.members.list(wsSlug);
-			// SECOND await, checked again: an identity can change during it as
-			// easily as during the first, and this commit is member state.
-			if (!identityHeld(epochAtEntry)) return;
-			members = memberData.members ?? [];
-			invitations = memberData.invitations ?? [];
-			workspaceApps = memberData.apps ?? [];
+			// The write starts here, straight after the response, because the browser's user-gesture
+			// window is short; the reload below runs beside it. A write that waits on a permission
+			// prompt must hold neither the list nor the form.
+			const copying = !result.added && result.join_url ? copyToClipboard(result.join_url).catch(() => false) : null;
+			// The reload has its own try, so a failed reload cannot rewrite the outcome of an
+			// invitation that was created (the link is already on screen).
+			try {
+				const memberData = await api.members.list(reqWs);
+				// Check again after the reload: an identity can change during it as
+				// easily as during the first, and this commit is member state.
+				if (!identityHeld(epochAtEntry) || wsSlug !== reqWs || mySeq !== inviteSeq) return;
+				members = memberData.members ?? [];
+				invitations = memberData.invitations ?? [];
+				workspaceApps = memberData.apps ?? [];
+			} catch {
+				if (!identityHeld(epochAtEntry) || wsSlug !== reqWs || mySeq !== inviteSeq) return;
+			}
+			if (copying) {
+				// Released before the wait: the form is usable while a prompt is open.
+				if (mySeq === inviteSeq) inviting = false;
+				const ok = await copying;
+				if (!identityHeld(epochAtEntry) || wsSlug !== reqWs || mySeq !== inviteSeq) return;
+				inviteResult = {
+					message: `Invitation created for ${result.email}. ` + (ok ? 'Link copied' : 'Couldn’t copy the invitation link. Copy it below and send it to the invitee.'),
+					type: ok ? 'success' : 'error'
+				};
+			}
 		} catch (err: unknown) {
-			if (!identityHeld(epochAtEntry)) return;
+			if (!identityHeld(epochAtEntry) || wsSlug !== reqWs || mySeq !== inviteSeq) return;
 			if (isPlanLimitError(err)) {
 				showPlanLimitToast(err, { scope: 'invite', blocked: 'invite a member' });
 			} else {
 				inviteResult = { message: err instanceof Error ? err.message : 'Failed to invite', type: 'error' };
 			}
 		} finally {
-			inviting = false;
+			if (mySeq === inviteSeq) inviting = false;
 		}
+	}
+
+	async function handleCopyInvitation() {
+		if (!pageIdentityHeld() || !createdInvite) return;
+		const epochAtEntry = captureIdentity();
+		const reqWs = wsSlug;
+		const ok = await copyToClipboard(createdInvite.url).catch(() => false);
+		if (!identityHeld(epochAtEntry) || !pageIdentityHeld() || wsSlug !== reqWs) return;
+		toastStore.show(ok ? 'Link copied' : 'Couldn’t copy the invitation link. Copy it below and send it to the invitee.', ok ? 'success' : 'error');
 	}
 
 	async function handleRemoveMember(userId: string, name: string) {
@@ -726,11 +771,14 @@
 		if (!ok || !identityHeld(epochAtEntry) || reqWs !== wsSlug) return;
 		try {
 			await api.members.cancelInvitation(reqWs, invId);
-			if (!identityHeld(epochAtEntry)) return;
+			// The cancellation happened server-side; this page is only told about it while it is still
+			// the workspace it was made in (a same-email invite made elsewhere meanwhile is not ours to touch).
+			if (!identityHeld(epochAtEntry) || wsSlug !== reqWs) return;
 			invitations = invitations.filter(i => i.id !== invId);
+			if (createdInvite?.email === email) createdInvite = null;
 			toastStore.show(`Invitation cancelled for ${email}`, 'success');
 		} catch {
-			if (!identityHeld(epochAtEntry)) return;
+			if (!identityHeld(epochAtEntry) || wsSlug !== reqWs) return;
 			toastStore.show('Failed to cancel invitation', 'error');
 		}
 	}
@@ -1293,11 +1341,11 @@
 								<span class="inv-email">{inv.email}</span>
 								<Chip color="var(--accent-gray)">{inv.role}</Chip>
 								{#if inv.join_url || inv.code}
-									<button class="btn btn-small copy-link-btn" onclick={async () => { if (!pageIdentityHeld()) return; const url = inv.join_url || `${window.location.origin}/join/${inv.code}`; const ok = await copyToClipboard(url); if (!pageIdentityHeld()) return; toastStore.show(ok ? 'Link copied!' : 'Failed to copy link', ok ? 'success' : 'error'); }}>
+									<button class="btn btn-small copy-link-btn" onclick={async () => { if (!pageIdentityHeld()) return; const reqWs = wsSlug; const url = inv.join_url || `${window.location.origin}/join/${inv.code}`; const ok = await copyToClipboard(url); if (!pageIdentityHeld() || wsSlug !== reqWs) return; toastStore.show(ok ? 'Link copied' : 'Couldn’t copy the invitation link.', ok ? 'success' : 'error'); }}>
 										Copy invite link
 									</button>
 								{:else}
-									<span class="inv-sent-label">Sent via email</span>
+									<span class="inv-pending-label">Pending acceptance</span>
 								{/if}
 								{#if isOwner}
 									<Button variant="danger" size="sm" onclick={() => handleCancelInvitation(inv.id, inv.email)}>
@@ -1338,10 +1386,25 @@
 							<li><strong>Editor</strong>: creates and edits items.</li>
 							<li><strong>Viewer</strong>: reads only.</li>
 						</ul>
-						{#if inviteResult}
-							<p class="invite-result" class:invite-success={inviteResult.type === 'success'} class:invite-error={inviteResult.type === 'error'}>
-								{inviteResult.message}
-							</p>
+						<!-- Mounted before any result exists: a live region created together with its text is often not announced. -->
+						<div class="invite-live" role="status" aria-live="polite">
+							{#if inviteResult}
+								<p class="invite-result" class:invite-success={inviteResult.type === 'success'} class:invite-error={inviteResult.type === 'error'}>
+									{inviteResult.message}
+								</p>
+							{/if}
+						</div>
+						{#if createdInvite}
+							<div class="invite-row created-invite">
+								<input
+									type="text"
+									aria-label="Invitation link"
+									readonly
+									value={createdInvite.url}
+									onfocus={(event) => event.currentTarget.select()}
+								/>
+								<Button size="sm" onclick={handleCopyInvitation}>Copy invitation link</Button>
+							</div>
 						{/if}
 					</div>
 				{/if}
@@ -1636,11 +1699,12 @@
 	.inv-email { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 	.copy-link-btn { color: var(--accent-blue); border-color: var(--accent-blue); background: none; }
 	.copy-link-btn:hover { background: color-mix(in srgb, var(--accent-blue) 15%, transparent); }
-	.inv-sent-label { font-size: 0.8em; color: var(--text-muted); font-style: italic; }
+	.inv-pending-label { font-size: 0.8em; color: var(--text-muted); font-style: italic; }
 	.invite-form { margin-top: var(--space-4); }
 	.invite-form h3 { font-size: 0.9em; color: var(--text-secondary); margin-bottom: var(--space-3); }
 	.invite-row { display: flex; gap: var(--space-2); align-items: center; flex-wrap: wrap; }
 	.invite-row input { flex: 1; min-width: 180px; max-width: 300px; }
+	.created-invite { margin-top: var(--space-2); }
 	.invite-result { font-size: 0.82em; margin-top: var(--space-2); }
 	.invite-success { color: var(--accent-green); }
 	.invite-error { color: var(--accent-red); }
