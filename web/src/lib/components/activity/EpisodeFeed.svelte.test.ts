@@ -17,7 +17,7 @@ const commentsListMock = vi.hoisted(() =>
 vi.mock('$lib/api/client', () => ({
 	api: {
 		comments: {
-			list: (ws: string, slug: string) => commentsListMock(ws, slug),
+			list: (ws: string, ref: string) => commentsListMock(ws, ref),
 		},
 	},
 }));
@@ -147,7 +147,7 @@ describe('EpisodeFeed', () => {
 
 		// Enrichment ran only for the live episode's item, never the stale one.
 		expect(commentsListMock).toHaveBeenCalledTimes(1);
-		expect(commentsListMock).toHaveBeenCalledWith('ws', 'live-thing');
+		expect(commentsListMock).toHaveBeenCalledWith('ws', 'TASK-1');
 
 		const checkpoint = host.querySelector('.ep-checkpoint');
 		expect(checkpoint).not.toBeNull();
