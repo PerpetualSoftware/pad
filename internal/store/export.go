@@ -109,25 +109,44 @@ func importCoercedTitle(raw string) (string, string) {
 const importUntitledTitle = "Untitled"
 
 // importCoercedSlug bounds an imported slug (BUG-2831). Coercing only the
-// title would not close the import door: this loop writes `it.Slug` from the
-// bundle VERBATIM rather than re-deriving it, and the slug — not the title —
+// title would not close the import door: this loop takes `it.Slug` from the
+// bundle rather than re-deriving it from the title, and the slug — not the title —
 // is what carries UNIQUE(workspace_id, slug) into a Postgres btree index tuple
 // (capped at 2704 bytes in practice; see MaxItemTitleRunes for the
 // measurement). A bundle from a SQLite instance holding a 2 MiB title carries a
 // 2 MiB slug, and truncating the title alone would leave the INSERT failing
 // exactly as before.
 //
-// Untouched unless it exceeds the bound: an in-range slug is written byte for
-// byte, so nothing about ordinary round-tripping changes. Truncation can
-// collide with another row in the same workspace, which is why the caller
-// resolves the result through uniqueSlugQ inside the import transaction rather
-// than hoping — but only for coerced slugs, so the uniqueness scan does not run
-// for every row of a large import.
+// This helper leaves an in-range slug byte for byte unchanged. The caller then
+// applies importRefShapedSlug; either coercion can collide with another row's
+// slug. The caller checks its claimed set and resolves collisions through
+// uniqueSlugQ inside the import transaction, so the uniqueness scan does not
+// run for every row of a large import.
 func importCoercedSlug(raw string) (string, bool) {
 	if utf8.RuneCountInString(raw) <= models.MaxItemTitleRunes {
 		return raw, false
 	}
 	return string([]rune(raw)[:models.MaxItemTitleRunes]), true
+}
+
+// importRefShapedSlug avoids slugs that overlap the ref grammar (BUG-4119,
+// TASK-4375). It leaves non-ref-shaped slugs unchanged; otherwise it lowercases
+// the slug and appends -2, shortening the stem to fit MaxItemTitleRunes. If that
+// shortening makes the result ref-shaped again, it uses -x-2 and shortens the
+// original stem to fit instead. The extra hyphen cannot occur in a ref prefix.
+// The function is pure and deterministic.
+func importRefShapedSlug(raw string) (string, bool) {
+	if _, _, ok := parseItemRef(raw); !ok {
+		return raw, false
+	}
+	stem := []rune(strings.ToLower(raw))
+	suffix := "-2"
+	slug := string(stem[:min(len(stem), models.MaxItemTitleRunes-len(suffix))]) + suffix
+	if _, _, ok := parseItemRef(slug); ok {
+		suffix = "-x-2"
+		slug = string(stem[:min(len(stem), models.MaxItemTitleRunes-len(suffix))]) + suffix
+	}
+	return slug, true
 }
 
 // ExportWorkspace exports all data for a workspace into a portable format,
@@ -755,7 +774,7 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 	// The workspace used to be minted first, by a CreateWorkspace call that
 	// committed on its own. Eight error returns sit between that write and the
 	// commit below (begin, de-duplicate declarations, import collection, item
-	// slug-after-truncation, import item, remap item, import comment, and the
+	// slug-after-coercion, import item, remap item, import comment, and the
 	// commit itself), and every one of them returned an error while leaving the
 	// workspace row behind: named, slugged, owned by the caller, holding no
 	// collections and no items.
@@ -1214,25 +1233,26 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 				"raw_runes", utf8.RuneCountInString(it.Title))
 		}
 		itemSlug, slugCoerced := importCoercedSlug(it.Slug)
+		itemSlug, refSlugCoerced := importRefShapedSlug(itemSlug)
 		// Collision resolution is keyed on the CLAIMED SET, not on whether THIS
-		// row was truncated. Truncation is the only source
-		// of duplicate slugs here — a bundle exported from a live workspace
+		// row was coerced. Length and ref-shape coercion can create duplicate
+		// slugs here — a bundle exported from a live workspace
 		// cannot contain two identical slugs, because UNIQUE(workspace_id, slug)
-		// held there — but the duplicate it creates can land in EITHER order:
-		// a long slug truncated to "x" can be inserted BEFORE a later row whose
-		// slug is already exactly "x". Resolving only the truncated row leaves
+		// held there — but the duplicates can land in EITHER order:
+		// a coerced slug "x" can be inserted BEFORE a later row whose
+		// slug is already exactly "x". Resolving only the coerced row leaves
 		// that later, untouched row to hit the constraint and abort the entire
 		// import, which is the opposite of this loop's coerce-and-continue
 		// policy.
 		//
 		// Guarded by the map rather than by calling uniqueSlugQ unconditionally
 		// so an ordinary import of N items still issues no extra queries: the
-		// common case is a bundle with no truncation at all, where this costs
+		// common case is a bundle with no slug coercion, where this costs
 		// one map lookup per row.
 		if claimedSlugs[itemSlug] {
 			unique, uerr := s.uniqueSlugQ(tx, "items", "workspace_id", ws.ID, itemSlug)
 			if uerr != nil {
-				return nil, fmt.Errorf("import item %s: unique slug after truncation: %w", it.ID, uerr)
+				return nil, fmt.Errorf("import item %s: unique slug after coercion: %w", it.ID, uerr)
 			}
 			slog.Warn("import_workspace resolved a colliding item slug",
 				"row_id", it.ID,
@@ -1248,6 +1268,14 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 				"row_id", it.ID,
 				"workspace_id", ws.ID,
 				"raw_runes", utf8.RuneCountInString(it.Slug),
+				"slug", itemSlug)
+		}
+		if refSlugCoerced {
+			slog.Warn("import_workspace coerced item slug",
+				"reason", "ref_shaped",
+				"row_id", it.ID,
+				"workspace_id", ws.ID,
+				"requested", it.Slug,
 				"slug", itemSlug)
 		}
 		claimedSlugs[itemSlug] = true

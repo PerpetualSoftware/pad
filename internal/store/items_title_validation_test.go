@@ -438,8 +438,8 @@ func highEntropySlug(n int) string {
 // TestImportWorkspace_TruncatedSlugCollidesWithALaterVerbatimSlug regresses
 // the slug collision case.
 //
-// Truncation is the only way this loop can produce two identical slugs — a
-// bundle exported from a live workspace cannot contain a duplicate, because
+// Truncation can make this loop produce two identical slugs — a bundle
+// exported from a live workspace cannot contain a duplicate, because
 // UNIQUE(workspace_id, slug) held there. But the duplicate it creates lands in
 // either order, and the first fix resolved uniqueness ONLY for the row it had
 // truncated. Here the truncated row is inserted FIRST and the untouched row
