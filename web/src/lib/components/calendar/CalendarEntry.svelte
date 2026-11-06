@@ -14,12 +14,13 @@
   {#if row.allDay}<span>All day</span>{:else if row.at}<span>{timeLabel(row.at,zone)}</span>{/if}
   {#if row.label}<span>{row.label}</span>{/if}
   {#if row.terminal}<Chip size="sm" color={canonicalValueColor(row.terminal) ?? 'var(--accent-green)'}>{formatFieldLabel(row.terminal)}</Chip>{/if}
-  {#if state}<Chip size="sm" color="var(--accent-{state[1]})">{state[0]}</Chip>{/if}
+  {#if state}<Chip size="sm" color={row.state === 'scheduled' ? 'var(--status-blue)' : `var(--accent-${state[1]})`}>{state[0]}</Chip>{/if}
   {#if row.overdue}<Chip size="sm" color="var(--accent-red)">Overdue</Chip>{/if}
+  {#if row.stale}<Chip size="sm" color="var(--accent-amber)">Stale</Chip>{/if}
  </span>
  {#if row.start && row.end}<span class="range">{row.continues ? '‹ ' : ''}{dayLabel(row.start)} – {dayLabel(row.end)}{row.day < row.end ? ' ›' : ''}</span>{/if}
  {#if row.state === 'moved' && row.effectiveAt}<span class="range">Moved to {dayLabel(zoneDay(new Date(row.effectiveAt),zone))}, {timeLabel(row.effectiveAt,zone)}</span>{/if}
- {#if row.missedCount}<span class="range">Missed {row.missedCount}</span>{/if}
+ {#if row.missedCount}<span class="range">{row.missedCount} missed occurrences</span>{/if}
 </a>
 <style>
  .entry { display:block; padding:var(--space-2); border-radius:var(--radius-sm); color:var(--text-primary); text-decoration:none; min-width:0; overflow-wrap:anywhere; }

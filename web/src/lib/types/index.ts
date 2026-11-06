@@ -1931,6 +1931,7 @@ export interface CalendarEntry {
 	overdue?: boolean;
 	effective_at?: string;
 	missed_count?: number;
+	stale?: boolean;
 	[key: string]: unknown;
 }
 
