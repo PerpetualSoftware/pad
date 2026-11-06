@@ -127,6 +127,25 @@ function runHeals(): string[] | Promise<string[]> {
 const flushing = new Set<Deferred[]>();
 // Heal navigations in flight: until they settle, the writes they may supersede are not flushed.
 let healWait = 0;
+// The pages whose heal navigation has not settled. healWait is released at the 3s bound
+// (the close's continuation and the writes of OTHER pages go on), but a write of one of
+// these pages stays held: run on the dead URL it would supersede the heal. It runs or is
+// dropped when that heal settles, or is dropped by a real navigation (dropDeferredExcept).
+type HealMark = { paths: string[] };
+const healing = new Set<HealMark>();
+const heldByHeal = (pathname: string) => [...healing].some((m) => m.paths.includes(pathname));
+// Bumped each time a gesture proceeds, and when a real navigation drops state: a parked
+// closeThen continuation fires only if neither happened since it was parked.
+let gestureGen = 0;
+
+/** Run a close's continuation; a throw is logged and does not strand the heals or the flush. */
+function runThen(then: (() => void) | null): void {
+	try {
+		then?.();
+	} catch (e) {
+		console.error('[chatSurface] continuation failed', e);
+	}
+}
 
 /** Resolves when `r` settles or after GO_FALLBACK_MS, whichever first; never rejects. */
 function settledOrBounded(r: Promise<unknown>): Promise<void> {
@@ -156,8 +175,12 @@ function settledOrBounded(r: Promise<unknown>): Promise<void> {
  * was synchronous.
  */
 function flushDeferred(): Promise<unknown> | null {
-	const queue = [...deferred.values()];
-	deferred.clear();
+	const queue: Deferred[] = [];
+	for (const [k, d] of deferred) {
+		if (heldByHeal(d.pathname)) continue;
+		queue.push(d);
+		deferred.delete(k);
+	}
 	flushing.add(queue);
 	const step = (): Promise<unknown> | null => {
 		while (queue.length) {
@@ -192,33 +215,49 @@ function flushDeferred(): Promise<unknown> | null {
 function onClosed(then: (() => void) | null): boolean {
 	// A heal's navigation is still in flight: the writes wait for it (its finish flushes them).
 	if (!heals.length && healWait > 0) {
-		then?.();
+		runThen(then);
 		return true;
 	}
 	if (heals.length) {
-		then?.();
+		runThen(then);
+		const mark: HealMark = { paths: heals.map((h) => h.path) };
 		const acted = runHeals();
 		const finish = (paths: string[]) => {
 			for (const [k, d] of deferred) if (paths.includes(d.pathname)) deferred.delete(k);
+			// Chat reopened while the heal was pending: the writes wait for its real close.
+			if (page.shallow !== null || goLatch !== null) return;
 			void flushDeferred();
 		};
 		if (Array.isArray(acted)) finish(acted);
 		else {
-			// Bounded: a heal whose load never answers must not hold the writes forever.
-			// Past the bound nothing is known to have navigated, so none are dropped.
+			// The wait is bounded (a load that never answers must not stall the rest), but
+			// the bound only opens it for everything else: this page's writes stay held
+			// until the heal itself settles (navigated: dropped; not: run) or a real
+			// navigation drops them.
+			healing.add(mark);
 			healWait++;
-			let paths: string[] = [];
-			void settledOrBounded(acted.then((p) => void (paths = p))).then(() => {
-				healWait--;
-				finish(paths);
+			let opened = false;
+			const open = () => {
+				if (!opened) healWait--;
+				opened = true;
+			};
+			void acted.then((p) => {
+				open();
+				healing.delete(mark);
+				finish(p);
+			});
+			void settledOrBounded(acted).then(() => {
+				if (opened) return;
+				open();
+				finish([]);
 			});
 		}
 		return true;
 	}
 	const w = flushDeferred();
 	if (!then) return false;
-	if (w) void w.then(then);
-	else then();
+	if (w) void w.then(() => runThen(then));
+	else runThen(then);
 	return true;
 }
 
@@ -323,7 +362,10 @@ export const chatSurface = {
 	 * because that read may have started a navigation of its own.
 	 */
 	get traversing(): boolean {
-		return traversing();
+		const busy = traversing();
+		// An idle read is a gesture about to proceed: it cancels a continuation still parked.
+		if (!busy) gestureGen++;
+		return busy;
 	},
 
 	/** The history entries Chat has pushed on top of the page. */
@@ -382,9 +424,18 @@ export const chatSurface = {
 	 * arrived mid-traversal, which is held rather than queued.
 	 */
 	closeThen(run: () => void): boolean {
-		if (!this.isOpen || this.depth <= 0) return false;
+		if (!this.isOpen || this.depth <= 0) {
+			gestureGen++; // the caller runs its navigation now
+			return false;
+		}
 		if (traversing()) return true;
-		go(-this.depth, run);
+		// Fired only if no newer gesture proceeded and the page is still this one: it may
+		// outlive the latch inside a flush chain, where traversing() cannot see it.
+		const gen = ++gestureGen;
+		const path = page.url.pathname;
+		go(-this.depth, () => {
+			if (gen === gestureGen && page.url.pathname === path) run();
+		});
 		return true;
 	},
 
@@ -445,6 +496,11 @@ export const chatSurface = {
 	 * away); null drops all.
 	 */
 	dropDeferredExcept(pathname: string | null): void {
+		if (pathname === null || pathname !== page.url.pathname) gestureGen++;
+		for (const m of healing) {
+			m.paths = m.paths.filter((p) => p === pathname);
+			if (!m.paths.length) healing.delete(m);
+		}
 		for (const [k, d] of deferred) if (d.pathname !== pathname) deferred.delete(k);
 		for (let i = heals.length - 1; i >= 0; i--) if (heals[i].path !== pathname) heals.splice(i, 1);
 		for (const q of flushing) {
@@ -485,6 +541,8 @@ export function __resetChatSurfaceForTests(): void {
 	deferred.clear();
 	flushing.clear();
 	healWait = 0;
+	healing.clear();
+	gestureGen = 0;
 	heals.length = 0;
 }
 

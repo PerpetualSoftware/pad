@@ -1188,24 +1188,261 @@ describe('round 8: a heal that never settles cannot hold the flush', () => {
 		page.url = new URL('http://localhost/alice/ws/tasks');
 	});
 
-	it('after 3s the held writes land, and the next close flushes again', async () => {
+	// Round 11: past the bound the wait opens for everything else, but the page's own
+	// writes stay held (a late heal may still navigate); a real navigation drops them.
+	it('after 3s the wait opens, the page writes stay held, and a real navigation drops them', async () => {
 		vi.useFakeTimers();
 		setSurface('/messages', { chatDepth: 1 });
 		const write = vi.fn();
 		chatSurface.deferPageWrite('k', write);
 		chatSurface.runAfterClose((() => new Promise<boolean>(() => {})) as never);
 		landUnder();
-		await vi.advanceTimersByTimeAsync(2900);
+		await vi.advanceTimersByTimeAsync(3100);
 		expect(write).not.toHaveBeenCalled();
-		await vi.advanceTimersByTimeAsync(200);
-		expect(write).toHaveBeenCalledTimes(1);
-		// healWait is released: a later close flushes its writes
-		const next = vi.fn();
+		expect(chatSurface.hasDeferredWrite('k')).toBe(true);
+		chatSurface.dropDeferredExcept('/alice/ws/other');
+		expect(chatSurface.hasDeferredWrite('k')).toBe(false);
+	});
+});
+
+// Round 11. A held write waits for its page's heal; a parked continuation cannot fire
+// after a newer gesture; a throwing continuation strands nothing; a flush never runs
+// under a reopened Chat.
+const controlled = <T>() => {
+	let resolve!: (v: T) => void;
+	const p = new Promise<T>((r) => (resolve = r));
+	return { p, resolve };
+};
+const DEAD = 'http://localhost/alice/ws/tasks';
+const LIVE = 'http://localhost/alice/ws/tasks-new';
+
+describe('round 11: a held write waits for its page heal to settle', () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+		vi.spyOn(history, 'go').mockImplementation(() => {});
+		page.url = new URL(DEAD);
+	});
+
+	/** Chat open on the dead slug with a held filter write; a caller-style heal whose goto the test controls. */
+	const setup = (beforeLand: () => void = () => {}) => {
 		setSurface('/messages', { chatDepth: 1 });
-		chatSurface.deferPageWrite('n', next);
+		beforeLand();
+		// the write rebuilds the URL from the dead slug, as a board filter does
+		const write = vi.fn(() => {
+			page.url = new URL(`${DEAD}?f=1`);
+		});
+		chatSurface.deferPageWrite('k', write);
+		const nav = controlled<void>();
+		const state = { renameNav: 'tasks-new' as string | null, ok: undefined as boolean | undefined };
+		chatSurface.runAfterClose(() =>
+			navigated(nav.p).then((ok) => {
+				if (!ok) state.renameNav = null; // the caller's poisoned-tracker reset
+				state.ok = ok;
+				return ok;
+			})
+		);
+		landUnder();
+		return { write, nav, state };
+	};
+
+	it('a heal load past 3s: the held write does not run at the bound; the heal then commits and the write is dropped', async () => {
+		const { write, nav, state } = setup();
+		await vi.advanceTimersByTimeAsync(3100);
+		expect(write).not.toHaveBeenCalled();
+		page.url = new URL(LIVE);
+		nav.resolve();
+		await vi.advanceTimersByTimeAsync(10);
+		expect(state.ok).toBe(true);
+		expect(page.url.pathname).toBe('/alice/ws/tasks-new');
+		expect(page.url.search).toBe('');
+		expect(state.renameNav).toBe('tasks-new');
+		expect(write).not.toHaveBeenCalled();
+		expect(chatSurface.hasDeferredWrite('k')).toBe(false);
+	});
+
+	it('the same heal settling late as NOT navigated runs the held write', async () => {
+		const { write, nav, state } = setup();
+		await vi.advanceTimersByTimeAsync(3100);
+		expect(write).not.toHaveBeenCalled();
+		nav.resolve(); // a guard cancelled it: resolved, URL unchanged
+		await vi.advanceTimersByTimeAsync(10);
+		expect(state.ok).toBe(false);
+		expect(write).toHaveBeenCalledTimes(1);
+	});
+
+	it('healWait is released at the bound: another page state flushes, this page writes stay', async () => {
+		const { write } = setup(() => {
+			page.url = new URL('http://localhost/alice/ws/other');
+			chatSurface.deferPageWrite('o', vi.fn()); // held on another page
+			page.url = new URL(DEAD);
+		});
+		await vi.advanceTimersByTimeAsync(2900);
+		expect(chatSurface.hasDeferredWrite('o')).toBe(true);
+		await vi.advanceTimersByTimeAsync(200);
+		expect(chatSurface.hasDeferredWrite('o')).toBe(false);
+		expect(chatSurface.hasDeferredWrite('k')).toBe(true);
+		expect(write).not.toHaveBeenCalled();
+	});
+
+	it('a heal that never settles leaves the writes held; a real navigation drops them', async () => {
+		const { write } = setup();
+		await vi.advanceTimersByTimeAsync(10000);
+		expect(write).not.toHaveBeenCalled();
+		expect(chatSurface.hasDeferredWrite('k')).toBe(true);
+		chatSurface.dropDeferredExcept('/alice/ws/other');
+		expect(chatSurface.hasDeferredWrite('k')).toBe(false);
+		// the mark went with it: a later write on the page is not held by a heal that no longer applies
+		page.url = new URL(DEAD);
+		setSurface('/messages', { chatDepth: 1 });
+		const later = vi.fn();
+		chatSurface.deferPageWrite('n', later);
 		chatSurface.close();
 		landUnder();
 		await vi.advanceTimersByTimeAsync(10);
-		expect(next).toHaveBeenCalledTimes(1);
+		expect(later).toHaveBeenCalledTimes(1);
+		expect(write).not.toHaveBeenCalled();
+	});
+});
+
+describe('round 11: a parked continuation fires only if no newer gesture proceeded', () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+		vi.spyOn(history, 'go').mockImplementation(() => {});
+		page.url = new URL(DEAD);
+	});
+
+	/** Row click 1: parks `run`; the release finds a write in flight, so `run` lives only in the write chain. */
+	const park = () => {
+		setSurface('/messages', { chatDepth: 1 });
+		const slow = controlled<void>();
+		chatSurface.deferPageWrite('k', () => slow.p);
+		const run = vi.fn();
+		expect(chatSurface.closeThen(run)).toBe(true);
+		landUnder();
+		expect(run).not.toHaveBeenCalled();
+		return { run, slow };
+	};
+	const settle = async (slow: { resolve: (v: void) => void }) => {
+		slow.resolve();
+		await vi.advanceTimersByTimeAsync(10);
+	};
+
+	it('(control) no newer gesture: it fires once', async () => {
+		const { run, slow } = park();
+		await settle(slow);
+		expect(run).toHaveBeenCalledTimes(1);
+	});
+
+	it('(a) a second row click on the same page after the release does not let it fire', async () => {
+		const { run, slow } = park();
+		expect(chatSurface.traversing).toBe(false); // what paneNavInFlight reads: idle, the gesture proceeds
+		await settle(slow);
+		expect(run).not.toHaveBeenCalled();
+	});
+
+	it('(a2) a gesture that finds Chat closed (closeThen false) cancels it too', async () => {
+		const { run, slow } = park();
+		expect(chatSurface.closeThen(vi.fn())).toBe(false);
+		await settle(slow);
+		expect(run).not.toHaveBeenCalled();
+	});
+
+	it('(b) a sidebar navigation (another pathname) does not let it fire', async () => {
+		const { run, slow } = park();
+		chatSurface.dropDeferredExcept('/alice/ws/other');
+		page.url = new URL('http://localhost/alice/ws/other');
+		await settle(slow);
+		expect(run).not.toHaveBeenCalled();
+	});
+
+	it('(b2) a pathname change alone does not let it fire', async () => {
+		const { run, slow } = park();
+		page.url = new URL('http://localhost/alice/ws/other');
+		await settle(slow);
+		expect(run).not.toHaveBeenCalled();
+	});
+
+	it('(d) a second click during the traversal is held and does not cancel the first', async () => {
+		setSurface('/messages', { chatDepth: 1 });
+		const slow = controlled<void>();
+		chatSurface.deferPageWrite('k', () => slow.p);
+		const first = vi.fn();
+		const second = vi.fn();
+		expect(chatSurface.closeThen(first)).toBe(true);
+		expect(chatSurface.traversing).toBe(true); // a pane gesture is held here
+		expect(chatSurface.closeThen(second)).toBe(true);
+		landUnder();
+		await settle(slow);
+		expect(first).toHaveBeenCalledTimes(1);
+		expect(second).not.toHaveBeenCalled();
+	});
+});
+
+describe('round 11: a throwing continuation strands neither the heals nor the flush', () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+		vi.spyOn(history, 'go').mockImplementation(() => {});
+		page.url = new URL(DEAD);
+	});
+
+	it('heals arm: the heal and the held write still run', async () => {
+		const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+		setSurface('/messages', { chatDepth: 1 });
+		const write = vi.fn();
+		chatSurface.deferPageWrite('k', write);
+		const heal = vi.fn(() => false);
+		chatSurface.closeThen(() => {
+			throw new Error('then boom');
+		});
+		chatSurface.runAfterClose(heal);
+		expect(() => landUnder()).not.toThrow();
+		await vi.advanceTimersByTimeAsync(10);
+		expect(heal).toHaveBeenCalledTimes(1);
+		expect(write).toHaveBeenCalledTimes(1);
+		expect(err).toHaveBeenCalled();
+	});
+
+	it('no-heals arm: the writes run first and a throw after them is logged, sync and after a promise', async () => {
+		const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+		for (const slowWrite of [false, true]) {
+			err.mockClear();
+			__resetChatSurfaceForTests();
+			setSurface('/messages', { chatDepth: 1 });
+			const write = vi.fn(() => (slowWrite ? Promise.resolve() : undefined));
+			chatSurface.deferPageWrite('k', write);
+			chatSurface.closeThen(() => {
+				throw new Error('then boom');
+			});
+			expect(() => landUnder()).not.toThrow();
+			await vi.advanceTimersByTimeAsync(10);
+			expect(write).toHaveBeenCalledTimes(1);
+			expect(err).toHaveBeenCalled();
+		}
+	});
+});
+
+describe('round 11: a heal that settles does not flush under a reopened Chat', () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+		vi.spyOn(history, 'go').mockImplementation(() => {});
+		page.url = new URL(DEAD);
+	});
+
+	it('nothing flushes while Chat is open again; the next real close flushes', async () => {
+		setSurface('/messages', { chatDepth: 1 });
+		const write = vi.fn();
+		chatSurface.deferPageWrite('k', write);
+		const nav = controlled<boolean>();
+		chatSurface.runAfterClose(() => nav.p);
+		landUnder();
+		setSurface('/messages', { chatDepth: 1 }); // Chat reopened during the heal
+		nav.resolve(false);
+		await vi.advanceTimersByTimeAsync(10);
+		expect(write).not.toHaveBeenCalled();
+		expect(chatSurface.hasDeferredWrite('k')).toBe(true);
+		chatSurface.close();
+		landUnder();
+		await vi.advanceTimersByTimeAsync(10);
+		expect(write).toHaveBeenCalledTimes(1);
 	});
 });
