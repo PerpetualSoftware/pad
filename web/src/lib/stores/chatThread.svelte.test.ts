@@ -39,6 +39,7 @@ vi.mock('$lib/api/client', () => ({
 }));
 vi.mock('$lib/stores/auth.svelte', () => ({
 	authStore: {
+		get userId() { return h.state.authenticated ? 'u1' : ''; },
 		get authenticated() {
 			return h.state.authenticated;
 		},
@@ -56,6 +57,7 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 	}
 }));
 
+import { getDraft, setDraft, savePending, listPending, purgeAll, unsealChatRecords } from '$lib/chat/chatRecords';
 import { chatStore } from './chat.svelte';
 import { ChatThread, REFRESH_MAX_PAGES } from './chatThread.svelte';
 
@@ -166,7 +168,10 @@ beforeEach(() => {
 	h.markRead.mockResolvedValue({ read_seq: 0 });
 	h.sendMessage.mockReset();
 	h.deleteMessage.mockReset();
-	Object.assign(h.state, { authenticated: true, epoch: 0, listeners: [] });
+	Object.assign(h.state, { authenticated: true, epoch: 0 });
+	purgeAll();
+	unsealChatRecords();
+	sessionStorage.clear();
 	server = new FakeServer();
 	h.getConversation.mockImplementation(async () => server.summary());
 	h.listMessages.mockImplementation(async (_n: number, o: object) => server.list(o));
@@ -1864,5 +1869,94 @@ describe('refs (3c)', () => {
 			expect(thread.refs.get(key('A-1', 'w'))?.state).toBe('visible');
 			expect(thread.refs.get(key('A-1', 'other'))?.state).toBe('restricted');
 		});
+	});
+});
+
+describe('pending records (TASK-4315)', () => {
+	it('saves the attempt before POST, then removes it on success', async () => {
+		await thread.open(1);
+		h.sendMessage.mockImplementation(async (_n, payload) => {
+			expect(listPending('u1', 1)).toEqual([{ userId: 'u1', n: 1, op_key: payload.op_key, body: 'original', reply_seq: 4 }]);
+			return { message: msg(1, { mine: true }), replayed: false };
+		});
+		expect(await thread.send('original', 4)).toBe('sent');
+		expect(listPending('u1', 1)).toEqual([]);
+	});
+	it('loads an interrupted attempt as unconfirmed without POST or blocking refresh', async () => {
+		savePending('u1', 1, 'original-key', 'original', 4);
+		thread.dispose(); thread = new ChatThread();
+		await thread.open(1);
+		expect(thread.items).toEqual([{ kind: 'pending', pending: { op_key: 'original-key', body: 'original', reply_to_seq: 4, status: 'unconfirmed' } }]);
+		expect(h.sendMessage).not.toHaveBeenCalled();
+		h.listMessages.mockClear(); await thread.refresh();
+		expect(h.listMessages).toHaveBeenCalled();
+		expect(h.sendMessage).not.toHaveBeenCalled();
+	});
+	it('Retry sends the original body, reply sequence and operation key, and clears the record', async () => {
+		savePending('u1', 1, 'original-key', 'original body', 4);
+		await thread.open(1);
+		let answer!: (res: object) => void;
+		h.sendMessage.mockReturnValue(new Promise((resolve) => { answer = resolve; }));
+		const sending = thread.retry('original-key');
+		expect(h.sendMessage).toHaveBeenCalledWith(1, { body: 'original body', reply_to_seq: 4, op_key: 'original-key' });
+		expect(thread.items.at(-1)).toMatchObject({ pending: { status: 'sending' } });
+		answer({ message: msg(1, { mine: true }), replayed: true });
+		expect(await sending).toBe('sent'); expect(listPending('u1', 1)).toEqual([]);
+	});
+	it('Discard removes only the local attempt', async () => {
+		savePending('u1', 1, 'op', 'uncertain'); await thread.open(1);
+		thread.discard('op');
+		expect(listPending('u1', 1)).toEqual([]); expect(thread.items).toEqual([]);
+		expect(h.sendMessage).not.toHaveBeenCalled(); expect(h.deleteMessage).not.toHaveBeenCalled();
+	});
+	it.each([1, 2])('late success after opening conversation %s settles its own record', async (next) => {
+		await thread.open(1);
+		let answer!: (res: object) => void;
+		h.sendMessage.mockReturnValue(new Promise((resolve) => { answer = resolve; }));
+		const sending = thread.send('late success');
+		expect(listPending('u1', 1)).toHaveLength(1);
+		await thread.open(next);
+		answer({ message: msg(1, { mine: true }), replayed: false });
+		expect(await sending).toBe('stale'); expect(listPending('u1', 1)).toEqual([]);
+	});
+	it('late refusal restores only the ORIGINAL draft and leaves the open draft untouched', async () => {
+		await thread.open(1);
+		let reject!: (reason: unknown) => void;
+		h.sendMessage.mockReturnValue(new Promise((_, no) => { reject = no; }));
+		const sending = thread.send('refused body', 4);
+		setDraft('u1', 1, 'A next'); setDraft('u1', 2, 'B private draft', 8);
+		await thread.open(2);
+		reject({ code: 'reply_target_deleted' });
+		expect(await sending).toBe('stale');
+		expect(getDraft('u1', 1)).toEqual({ userId: 'u1', n: 1, text: 'refused body\nA next', replySeq: null });
+		expect(getDraft('u1', 2)).toEqual({ userId: 'u1', n: 2, text: 'B private draft', replySeq: 8 });
+		expect(listPending('u1', 1)).toEqual([]); expect(thread.items).toEqual([]);
+	});
+	it('a definite refusal in the open thread removes its pending record', async () => {
+		await thread.open(1);
+		let stored = false;
+		h.sendMessage.mockImplementation(async () => {
+			stored = listPending('u1', 1).length === 1;
+			throw { code: 'reply_target_not_found' };
+		});
+		expect(await thread.send('refused', 4)).toBe('reply_missing');
+		expect(stored).toBe(true);
+		expect(listPending('u1', 1)).toEqual([]);
+	});
+	it.each(['success', 'refusal'])('a late %s cannot settle a record from a later identity epoch', async (result) => {
+		await thread.open(1);
+		let answer!: (res: object) => void; let reject!: (reason: unknown) => void;
+		h.sendMessage.mockReturnValue(new Promise((yes, no) => { answer = yes; reject = no; }));
+		const sending = thread.send('old identity', 4);
+		const opKey = h.sendMessage.mock.calls[0][1].op_key;
+		h.state.epoch++; // another session, even when its user ID happens to match again
+		for (const fn of [...h.state.listeners]) fn('u1');
+		savePending('u1', 1, opKey, 'later session');
+		setDraft('u1', 1, 'later draft');
+		if (result === 'success') answer({ message: msg(1), replayed: false });
+		else reject({ code: 'reply_target_deleted' });
+		expect(await sending).toBe('stale');
+		expect(listPending('u1', 1)[0]?.body).toBe('later session');
+		expect(getDraft('u1', 1)?.text).toBe('later draft');
 	});
 });

@@ -295,6 +295,7 @@
 					title={conversation?.title ?? ''}
 					presence={conversation ? chatInbox.presenceFor(conversation.agent_key) : 'unknown'}
 					{replyTo}
+					messages={thread.messages}
 					onClearReply={() => (replyTo = null)}
 					onSend={(body, replyToSeq) => thread.send(body, replyToSeq)}
 				/>
