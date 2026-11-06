@@ -101,7 +101,7 @@ describe('starred page from the index (TASK-2231)', () => {
 		await starredStore.load('ws');
 		render(StarredPage);
 		await screen.findByText('Alpha');
-		await starredStore.toggle('ws', 'b', 'b');
+		await starredStore.toggle('ws', 'b');
 		await screen.findByText('Beta');
 		inOrder('Beta', 'Alpha');
 	});
@@ -132,7 +132,7 @@ describe('starred page from the index (TASK-2231)', () => {
 		await starredStore.load('ws');
 		render(StarredPage);
 		await screen.findByText('Alpha');
-		void starredStore.toggle('ws', 'a', 'a');
+		void starredStore.toggle('ws', 'a');
 		await waitFor(() => expect(screen.queryByText('Alpha')).toBeNull());
 		expect(screen.getByText('Beta')).toBeInTheDocument();
 	});

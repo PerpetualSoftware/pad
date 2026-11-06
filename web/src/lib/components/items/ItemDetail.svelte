@@ -1684,7 +1684,7 @@
 						// collection and slug must not drive them.
 						item = adoptServerItem(updated);
 						void refreshCollectionIfMoved(item);
-						const links = await refreshLinksPreservingOnFailure(reqWsSlug, item.slug);
+						const links = await refreshLinksPreservingOnFailure(reqWsSlug, item.id);
 						if (!item || item.id !== reqItemId || myItemGen !== itemGen) return;
 						itemLinks = links;
 					} catch {
@@ -1821,7 +1821,7 @@
 					const myItemGen = ++itemGen;
 					item = adoptServerItem(updated);
 					void refreshCollectionIfMoved(updated);
-					const links = await refreshLinksPreservingOnFailure(reqWsSlug, updated.slug);
+					const links = await refreshLinksPreservingOnFailure(reqWsSlug, updated.id);
 					if (!item || item.id !== reqItemId || myItemGen !== itemGen) return;
 					itemLinks = links;
 				}
@@ -1841,7 +1841,7 @@
 				// withInflightTags (BUG-3036), and the screen is then at least as
 				// new as this read — so the cursor below may still advance.
 				void refreshCollectionIfMoved(item);
-				const links = await refreshLinksPreservingOnFailure(reqWsSlug, item.slug);
+				const links = await refreshLinksPreservingOnFailure(reqWsSlug, item.id);
 				if (!item || item.id !== reqItemId || myItemGen !== itemGen) return;
 				itemLinks = links;
 				// No cursor write here (BUG-3207). This reload read ONE item, and
@@ -2299,11 +2299,11 @@
 			// pair instead of two. Each settles into a result, so the one awaited
 			// second can never surface as an unhandled rejection.
 			const progressTicket = ++progressIssued;
-			const progressRead = api.items.progress(wsSlug, itemData.slug).then(
+			const progressRead = api.items.progress(wsSlug, itemData.id).then(
 				(value) => ({ ok: true as const, value }),
 				() => ({ ok: false as const }),
 			);
-			const linksRead = api.links.list(wsSlug, itemData.slug).then(
+			const linksRead = api.links.list(wsSlug, itemData.id).then(
 				(value) => ({ ok: true as const, value }),
 				() => ({ ok: false as const }),
 			);
@@ -4037,7 +4037,7 @@
 			// Follow-ups read the row actually installed (see the SSE re-read).
 			item = adoptServerItem(updated);
 			void refreshCollectionIfMoved(item);
-			const links = await refreshLinksPreservingOnFailure(reqWsSlug, item.slug);
+			const links = await refreshLinksPreservingOnFailure(reqWsSlug, item.id);
 			if (destroyed || !item || item.id !== reqItemId || myItemGen !== itemGen) return;
 			itemLinks = links;
 		} catch {
@@ -5588,13 +5588,13 @@
 	 * retry; every success here clears it.
 	 *
 	 * Callers still re-check item identity after awaiting, since this returns
-	 * links for whatever `slug` they asked about.
+	 * links for whatever item id they asked about.
 	 */
-	async function refreshLinksPreservingOnFailure(ws: string, slug: string): Promise<ItemLink[]> {
+	async function refreshLinksPreservingOnFailure(ws: string, itemId: string): Promise<ItemLink[]> {
 		// Every caller asks about the item on screen, so it names the debt.
 		const forItemId = untrack(() => item?.id ?? null);
 		try {
-			const links = await api.links.list(ws, slug);
+			const links = await api.links.list(ws, itemId);
 			if (forItemId) linksRetry.succeeded(forItemId);
 			return links;
 		} catch {
@@ -5627,7 +5627,7 @@
 		const linksAtIssue = itemLinks;
 		let links: ItemLink[];
 		try {
-			links = await api.links.list(target.ws, item.slug);
+			links = await api.links.list(target.ws, item.id);
 		} catch {
 			return false;
 		}
@@ -6154,14 +6154,13 @@
 		// is the current item. Use the captured slug for the refresh GET and
 		// drop the result if we switched away.
 		const sourceItem = item;
-		const sourceSlug = item.slug;
 		const targetSlug = itemSlug;
 		const targetWs = wsSlug;
 		const gen = loadGeneration;
 		const direction = addLinkDirection;
-		const ends = linkEnds(direction, { slug: sourceSlug, id: sourceItem.id }, { slug: target.slug, id: target.id });
+		const ends = linkEnds(direction, { id: sourceItem.id }, { id: target.id });
 		try {
-			const newLink = await api.links.create(targetWs, ends.fromSlug, {
+			const newLink = await api.links.create(targetWs, ends.fromId, {
 				target_id: ends.targetId,
 				link_type: direction.type
 			});
@@ -6231,7 +6230,6 @@
 		// retry to fire against the new route's workspace — that
 		// could move the wrong item.
 		const sourceItem = item;
-		const sourceSlug = item.slug;
 		const sourceWs = wsSlug;
 		const sourceUsername = username;
 		const sourceCollSlug = collSlug;
@@ -6244,7 +6242,7 @@
 		const gen = loadGeneration;
 		const stillOnSource = () => !switchedAway(sourceItem, gen);
 		const doMove = (force: boolean) =>
-			api.items.move(sourceWs, sourceSlug, targetSlug, fieldOverrides, force ? { force: true } : undefined);
+			api.items.move(sourceWs, sourceItem.id, targetSlug, fieldOverrides, force ? { force: true } : undefined);
 		// After the modal resolves, only honor the success path's
 		// navigation/toast if the page is STILL on the source item.
 		// We check both `item.id` (cheap object-identity guard) AND
@@ -6881,7 +6879,7 @@
 			<BuiltinUpdateNotice
 				{wsSlug}
 				itemId={item.id}
-				itemRef={item.slug}
+				itemRef={item.id}
 				seq={item.seq ?? 0}
 				currentContent={item.content}
 				currentFields={item.fields}
@@ -6895,7 +6893,7 @@
 
 		<!-- Attention signals (TASK-3118); renders nothing without a provider. -->
 		{#if visibility.seenVisible}
-			<DecisionChips {wsSlug} itemRef={item.slug} itemId={item.id} />
+			<DecisionChips {wsSlug} itemRef={item.id} itemId={item.id} />
 		{/if}
 
 		<!-- Actions -->
@@ -6906,7 +6904,7 @@
 			<button
 				class="action-btn star-btn"
 				class:starred={starredStore.isStarred(item.id)}
-				onclick={() => { if (!item) return; starredStore.toggle(wsSlug, item.slug, item.id); }}
+				onclick={() => { if (!item) return; starredStore.toggle(wsSlug, item.id); }}
 				title={starredStore.isStarred(item.id) ? 'Unstar' : 'Star'}
 			>
 				{starredStore.isStarred(item.id) ? '★' : '☆'}
@@ -6916,7 +6914,7 @@
 			     Remounted per item and identity like QuickActionsMenu below. -->
 			{#key itemSlug}
 				{#key identityKey}
-					<ItemAppActions {wsSlug} itemSlug={item.slug} />
+					<ItemAppActions {wsSlug} itemId={item.id} />
 				{/key}
 			{/key}
 			<!-- Quick-actions menu: the prompt-copy actions are read-only and stay
@@ -8198,7 +8196,7 @@
 				open={pushDialogOpen}
 				onclose={closePushDialog}
 				{wsSlug}
-				itemSlug={item.slug}
+				itemId={item.id}
 				itemRef={formatItemRef(item) || item.slug}
 				itemTitle={item.title}
 			/>
@@ -8222,7 +8220,7 @@
 			<ShareDialog
 				{wsSlug}
 				type="item"
-				targetSlug={item.slug}
+				targetSlug={item.id}
 				targetName={formatItemRef(item) || item.title}
 				bind:open={shareDialogOpen}
 			/>

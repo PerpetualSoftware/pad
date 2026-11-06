@@ -125,13 +125,13 @@ always a broadcast that went out.
 		onclose: () => void;
 		wsSlug: string;
 		/** The item's slug, used to address the endpoint. */
-		itemSlug: string;
+		itemId: string;
 		/** Human ref for the heading and the prefill, e.g. "TASK-14". */
 		itemRef: string;
 		itemTitle: string;
 	}
 
-	let { open, onclose, wsSlug, itemSlug, itemRef, itemTitle }: Props = $props();
+	let { open, onclose, wsSlug, itemId, itemRef, itemTitle }: Props = $props();
 
 	const uid = $props.id();
 	const titleId = `push-dialog-title-${uid}`;
@@ -246,7 +246,7 @@ always a broadcast that went out.
 	 * True once this component instance has been torn down.
 	 *
 	 * `presenceGen` cannot cover this case, and assuming it could was the bug:
-	 * the parent remounts this dialog under `{#key itemSlug}`,
+	 * the parent remounts this dialog under `{#key itemId}`,
 	 * so item B gets a NEW instance with its OWN counters. A's in-flight send
 	 * therefore still sees `gen === presenceGen` — A's own, untouched — and
 	 * calls the SHARED parent `onclose`, closing the composer the user just
@@ -478,7 +478,7 @@ always a broadcast that went out.
 		try {
 			// NEVER retried automatically. An empty target sends no
 			// target_session_id at all, the pre-S5 broadcast body.
-			const result = await api.items.push(wsSlug, itemSlug, collapsed, target || undefined, key);
+			const result = await api.items.push(wsSlug, itemId, collapsed, target || undefined, key);
 			if (!isSameIdentity()) {
 				sending = false;
 				return;

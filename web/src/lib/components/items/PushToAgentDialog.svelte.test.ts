@@ -48,7 +48,7 @@ function baseProps(overrides: Record<string, unknown> = {}) {
 		open: true,
 		onclose: vi.fn(),
 		wsSlug: 'docapp',
-		itemSlug: 'fix-the-thing',
+		itemId: 'fix-the-thing',
 		itemRef: 'TASK-5',
 		itemTitle: 'Fix the thing',
 		...overrides
@@ -408,7 +408,7 @@ describe('PushToAgentDialog — message handling', () => {
 	});
 
 	it('does not close a NEW item’s composer when a destroyed instance’s send resolves', async () => {
-		// The dialog is {#key itemSlug}-remounted, so item B gets a fresh
+		// The dialog is {#key itemId}-remounted, so item B gets a fresh
 		// instance with its own generation counter — A's in-flight send would
 		// still see its own `gen` unchanged and call the SHARED parent onclose,
 		// closing B's composer. Only per-instance liveness distinguishes them.

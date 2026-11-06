@@ -47,7 +47,7 @@ beforeEach(() => {
 describe('ItemAppActions', () => {
 	it('renders nothing when no action applies', async () => {
 		listMock.mockResolvedValue([]);
-		const { container } = render(ItemAppActions, { wsSlug: 'ws', itemSlug: 'TASK-1' });
+		const { container } = render(ItemAppActions, { wsSlug: 'ws', itemId: 'TASK-1' });
 		await waitFor(() => expect(listMock).toHaveBeenCalledWith('ws', 'TASK-1'));
 		expect(container.querySelector('button')).toBeNull();
 	});
@@ -56,7 +56,7 @@ describe('ItemAppActions', () => {
 		listMock.mockResolvedValue([action]);
 		let resolve: (v: { url: string }) => void = () => {};
 		mintMock.mockReturnValue(new Promise((r) => (resolve = r)));
-		render(ItemAppActions, { wsSlug: 'ws', itemSlug: 'TASK-1' });
+		render(ItemAppActions, { wsSlug: 'ws', itemId: 'TASK-1' });
 		await fireEvent.click(await screen.findByRole('button', { name: /Open ticket/ }));
 		// Before the mint has answered: the tab exists and has no opener.
 		expect(openSpy).toHaveBeenCalledTimes(1);
@@ -71,7 +71,7 @@ describe('ItemAppActions', () => {
 	it('never follows a non-web URL', async () => {
 		listMock.mockResolvedValue([action]);
 		mintMock.mockResolvedValue({ url: 'javascript:alert(1)' });
-		render(ItemAppActions, { wsSlug: 'ws', itemSlug: 'TASK-1' });
+		render(ItemAppActions, { wsSlug: 'ws', itemId: 'TASK-1' });
 		await fireEvent.click(await screen.findByRole('button', { name: /Open ticket/ }));
 		await waitFor(() => expect(tab.close).toHaveBeenCalled());
 		expect(tab.location.replace).not.toHaveBeenCalled();
@@ -81,7 +81,7 @@ describe('ItemAppActions', () => {
 	it('a refused mint closes the tab and says only that it did not open', async () => {
 		listMock.mockResolvedValue([action]);
 		mintMock.mockRejectedValue(new Error('Not found'));
-		render(ItemAppActions, { wsSlug: 'ws', itemSlug: 'TASK-1' });
+		render(ItemAppActions, { wsSlug: 'ws', itemId: 'TASK-1' });
 		await fireEvent.click(await screen.findByRole('button', { name: /Open ticket/ }));
 		await waitFor(() => expect(tab.close).toHaveBeenCalled());
 		expect((await screen.findByRole('alert')).textContent).toBe("Couldn't open Support Portal.");
@@ -91,7 +91,7 @@ describe('ItemAppActions', () => {
 		listMock.mockResolvedValue([action]);
 		let resolve: (v: { url: string }) => void = () => {};
 		mintMock.mockReturnValue(new Promise((r) => (resolve = r)));
-		render(ItemAppActions, { wsSlug: 'ws', itemSlug: 'TASK-1' });
+		render(ItemAppActions, { wsSlug: 'ws', itemId: 'TASK-1' });
 		await fireEvent.click(await screen.findByRole('button', { name: /Open ticket/ }));
 		auth.identityEpoch = 2;
 		resolve({ url: 'https://portal.example/ctx?code=abc' });
@@ -103,7 +103,7 @@ describe('ItemAppActions', () => {
 		listMock.mockResolvedValue([action]);
 		let resolve: (v: { url: string }) => void = () => {};
 		mintMock.mockReturnValue(new Promise((r) => (resolve = r)));
-		const { unmount } = render(ItemAppActions, { wsSlug: 'ws', itemSlug: 'TASK-1' });
+		const { unmount } = render(ItemAppActions, { wsSlug: 'ws', itemId: 'TASK-1' });
 		await fireEvent.click(await screen.findByRole('button', { name: /Open ticket/ }));
 		unmount();
 		resolve({ url: 'https://portal.example/ctx?code=abc' });
@@ -115,7 +115,7 @@ describe('ItemAppActions', () => {
 		listMock.mockResolvedValue([action]);
 		mintMock.mockResolvedValue({ url: 'https://portal.example/ctx?code=abc' });
 		openSpy.mockImplementationOnce(() => null);
-		render(ItemAppActions, { wsSlug: 'ws', itemSlug: 'TASK-1' });
+		render(ItemAppActions, { wsSlug: 'ws', itemId: 'TASK-1' });
 		await fireEvent.click(await screen.findByRole('button', { name: /Open ticket/ }));
 		await waitFor(() => expect(openSpy).toHaveBeenCalledTimes(2));
 		expect(openSpy.mock.calls[1]).toEqual(['https://portal.example/ctx?code=abc', '_blank', 'noopener,noreferrer']);

@@ -527,13 +527,13 @@ async function serverTabs(account: Account): Promise<{ slug: string; ephemeral: 
 	return body.tabs.map((t) => ({ slug: t.slug, ephemeral: t.ephemeral }));
 }
 
-async function createTask(account: Account, ws: string, title: string): Promise<{ slug: string; ref: string }> {
+async function createTask(account: Account, ws: string, title: string): Promise<{ id: string; slug: string; ref: string }> {
 	const resp = await ok(
 		await account.api.post(`/api/v1/workspaces/${ws}/collections/tasks/items`, { data: { title } }),
 		`create task in ${ws}`
 	);
-	const item = (await resp.json()) as { slug: string; collection_prefix: string; item_number: number };
-	return { slug: item.slug, ref: `${item.collection_prefix}-${item.item_number}` };
+	const item = (await resp.json()) as { id: string; slug: string; collection_prefix: string; item_number: number };
+	return { id: item.id, slug: item.slug, ref: `${item.collection_prefix}-${item.item_number}` };
 }
 
 async function userId(account: Account): Promise<string> {
@@ -749,7 +749,7 @@ test.describe('landings open an ephemeral tab (TASK-3279)', () => {
 
 			const star = page.getByTitle('Star', { exact: true }).first();
 			const starred = page.waitForResponse(
-				(r) => r.request().method() === 'POST' && r.url().endsWith(`/items/${task.slug}/star`) && r.ok()
+				(r) => r.request().method() === 'POST' && r.url().endsWith(`/items/${task.id}/star`) && r.ok()
 			);
 			await star.click();
 			await starred;

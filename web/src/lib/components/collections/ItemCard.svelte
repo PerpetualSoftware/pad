@@ -174,7 +174,7 @@
 	function toggleStar(e: MouseEvent) {
 		e.preventDefault();
 		e.stopPropagation();
-		starredStore.toggle(wsSlug, item.slug, item.id);
+		starredStore.toggle(wsSlug, item.id);
 	}
 
 	// Copy the item's issue ID (e.g. IDEA-1904) without opening the card.
@@ -280,7 +280,7 @@
 				onMove={onReorderItem && onMoveItem ? (dir) => onMoveItem?.(item, dir) : undefined}
 				card={{
 					starred,
-					onToggleStar: () => starredStore.toggle(wsSlug, item.slug, item.id),
+					onToggleStar: () => starredStore.toggle(wsSlug, item.id),
 					onCopyRef: itemRef ? () => void writeRef() : undefined,
 				}}
 			/>
