@@ -58,4 +58,14 @@
 // in the part of the rule not examined (TASK-4100). CapScan is a
 // different bound: the total work from Start to the query exceeds Limits.MaxScan
 // periods. Do not "upgrade" the copy back to the module: that removes the bound.
+//
+// LINK MATH. Named date roles form an immutable graph with elapsed offsets or
+// civil days and a fixed clock in a pinned zone, resolved by Resolve. Dragging
+// recomputes the offset without detaching the link; recurring links pair by
+// immutable occurrence key. Admission and moves share structural limits of 50
+// affected nodes and 16 hops by default, returning no partial impact on failure.
+// Plans report order violations without clamping and identify changed hard
+// deadlines for renegotiation. Gates require every blocker to succeed and infer
+// no date; iterative cycle detection also reports existing cyclic gates. Link
+// math is deterministic, reads no clock and mutates no input or shared state.
 package schedule
