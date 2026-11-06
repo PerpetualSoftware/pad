@@ -20,6 +20,8 @@ import (
 // carriedSchedule is a schedule to store in a workspace other than the one it
 // came from. Empty strings mean "none". The caller has already remapped any id.
 type carriedSchedule struct {
+	Roles                    *models.ScheduleRolesExport
+	Overrides                []models.ScheduleOverrideExport
 	Kind, Dtstart, Dtend, Tz string
 	Floating                 bool
 	Rrule                    string
@@ -48,6 +50,7 @@ type carriedSchedule struct {
 // DESTINATION workspace, "" for none.
 type carriedOccurrence struct {
 	At, Wall, State, CommentID, Actor, ResolvedAt string
+	ActualDoneAt, ActualSource                    string
 }
 
 // scheduleCarryDrop says a carried schedule failed validation and was NOT
@@ -105,17 +108,20 @@ func carryWall(field, v string) (schedule.Wall, error) {
 //     from dtstart would lose a completion re-phase and a snooze), validated;
 //   - next_at and the managed row's remind_at: derived from next_wall, the
 //     override and the lead by armSchedule's own arithmetic.
-func (s *Store) insertCarriedScheduleTx(tx *sql.Tx, workspaceID, itemID string, in carriedSchedule) (string, error) {
+func (s *Store) insertCarriedScheduleTx(tx *sql.Tx, workspaceID, itemID string, in carriedSchedule) (string, []string, error) {
 	p, err := prepareCarriedSchedule(in)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
-	return s.writePreparedSchedule(tx, workspaceID, itemID, in, p, "import")
+	id, err := s.writePreparedSchedule(tx, workspaceID, itemID, in, p, "")
+	return id, p.drops, err
 }
 
 // preparedCarry is a carried schedule that passed every check, with everything
 // the write needs derived.
 type preparedCarry struct {
+	overrides                  []models.ScheduleOverrideExport
+	drops                      []string
 	spec                       schedule.Spec
 	dtend                      schedule.Wall
 	hasEnd                     bool
@@ -130,6 +136,13 @@ type preparedCarry struct {
 // (no database), so the copy preflight asks the question the copy does
 // (TASK-4104 D3).
 func prepareCarriedSchedule(in carriedSchedule) (preparedCarry, error) {
+	if err := validateCarriedRoles(in.Roles); err != nil {
+		return preparedCarry{}, err
+	}
+	overrides, drops, err := prepareCarriedOverrides(in.Overrides, in.Floating)
+	if err != nil {
+		return preparedCarry{}, err
+	}
 	c, err := compileScheduleSpec(scheduleSpecInput{Dtstart: in.Dtstart, Tz: in.Tz, Floating: in.Floating, Rrule: in.Rrule, RDates: in.RDates, ExDates: in.ExDates})
 	if err != nil {
 		return preparedCarry{}, &scheduleCarryDrop{Reason: carryReason(err)}
@@ -231,6 +244,7 @@ func prepareCarriedSchedule(in carriedSchedule) (preparedCarry, error) {
 	}
 
 	return preparedCarry{
+		overrides: overrides, drops: drops,
 		spec: spec, dtend: end, hasEnd: hasEnd, anchorWall: anchorWall, endedAt: endedAt, firedAt: firedAt, override: override,
 		createdAt: createdAt, updatedAt: updatedAt, nextAt: nextAt, nextWall: nextWall, remindAt: remindAt, occs: occs,
 	}, nil
@@ -272,18 +286,30 @@ func (s *Store) writePreparedSchedule(tx *sql.Tx, workspaceID, itemID string, in
 	}
 	for _, o := range occs {
 		if _, err := tx.Exec(s.q(`
-			INSERT INTO schedule_occurrences (id, schedule_id, occurrence_at, occurrence_wall, state, comment_id, actor, resolved_at, actual_source)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'legacy_unknown')`),
-			newID(), id, o.At, o.Wall, o.State, nilIfEmpty(o.CommentID), o.Actor, o.ResolvedAt); err != nil {
+			INSERT INTO schedule_occurrences (id, schedule_id, occurrence_at, occurrence_wall, state, comment_id, actor, resolved_at, actual_done_at, actual_source)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+			newID(), id, o.At, o.Wall, o.State, nilIfEmpty(o.CommentID), o.Actor, o.ResolvedAt, nilIfEmpty(o.ActualDoneAt), o.ActualSource); err != nil {
 			return "", fmt.Errorf("insert carried occurrence: %w", err)
 		}
 	}
-	if err := s.setLegacyRolesTx(tx, id, in.Kind, spec.Start.String(), in.Dtend); err != nil {
+	if r := in.Roles; r != nil {
+		if _, err := tx.Exec(s.q(`UPDATE item_schedules SET target_days=?,target_secs=?,earliest_days=?,earliest_secs=?,deadline_days=?,deadline_secs=?,deadline_behavior=?,occupied_days=?,occupied_secs=?,outcome=?,roles_origin=? WHERE id=?`), r.TargetDays, r.TargetSecs, r.EarliestDays, r.EarliestSecs, r.DeadlineDays, r.DeadlineSecs, r.DeadlineBehavior, r.OccupiedDays, r.OccupiedSecs, r.Outcome, r.RolesOrigin, id); err != nil {
+			return "", fmt.Errorf("write carried roles: %w", err)
+		}
+	} else if err := s.setLegacyRolesTx(tx, id, in.Kind, spec.Start.String(), in.Dtend); err != nil {
 		return "", err
 	}
-	if err := s.journalScheduleAfterTx(tx, id, source, "", "", "", "system"); err != nil {
-		return "", err
+	for _, o := range p.overrides {
+		if err := s.upsertScheduleOverrideStoredTx(tx, id, o); err != nil {
+			return "", err
+		}
 	}
+	if source != "" {
+		if err := s.journalScheduleAfterTx(tx, id, source, "", "", "", "system"); err != nil {
+			return "", err
+		}
+	}
+
 	return id, nil
 }
 
@@ -332,6 +358,16 @@ func prepareCarriedOccurrences(in []carriedOccurrence) ([]carriedOccurrence, err
 		if !oneOf(o.Actor, []string{"", "user", "agent"}) {
 			return nil, dropf("occurrence_actor", "enum")
 		}
+		if o.ActualSource == "" {
+			o.ActualSource = "legacy_unknown"
+		}
+		if !oneOf(o.ActualSource, []string{"reported", "recorded_now", "legacy_unknown"}) || (o.ActualDoneAt != "" && (o.State != "done" || o.ActualSource == "legacy_unknown")) || (o.ActualDoneAt == "" && o.ActualSource != "legacy_unknown") {
+			return nil, dropf("actual", "combination")
+		}
+		actual, err := carryInstant("actual", o.ActualDoneAt)
+		if err != nil {
+			return nil, err
+		}
 		at, err := carryInstant("occurrence_at", o.At)
 		if err != nil || at == "" {
 			return nil, dropf("occurrence_at", "instant")
@@ -348,7 +384,7 @@ func prepareCarriedOccurrences(in []carriedOccurrence) ([]carriedOccurrence, err
 			return nil, dropf("occurrence", "duplicate")
 		}
 		seenAt[at], seenWall[w.String()] = true, true
-		out = append(out, carriedOccurrence{At: at, Wall: w.String(), State: o.State, CommentID: o.CommentID, Actor: o.Actor, ResolvedAt: resolved})
+		out = append(out, carriedOccurrence{At: at, Wall: w.String(), State: o.State, CommentID: o.CommentID, Actor: o.Actor, ResolvedAt: resolved, ActualDoneAt: actual, ActualSource: o.ActualSource})
 	}
 	return out, nil
 }
@@ -380,6 +416,7 @@ func carriedFromExport(x models.ScheduleExport, commentIDs map[string]string) (c
 		RDates: rd, ExDates: ex, Anchor: x.Anchor, Audience: x.Audience, LeadMinutes: x.LeadMinutes,
 		NextWall: x.NextWall, NextAt: x.NextAt, NextOverrideAt: x.NextOverrideAt, AnchorWall: x.AnchorWall,
 		EndedAt: x.EndedAt, CreatedAt: x.CreatedAt, UpdatedAt: x.UpdatedAt,
+		Roles: x.Roles, Overrides: x.Overrides,
 	}
 	if x.Reminder != nil {
 		in.FiredAt, in.RemindAt = x.Reminder.FiredAt, x.Reminder.RemindAt
@@ -387,15 +424,15 @@ func carriedFromExport(x models.ScheduleExport, commentIDs map[string]string) (c
 	for _, o := range x.Occurrences {
 		in.Occurrences = append(in.Occurrences, carriedOccurrence{
 			At: o.OccurrenceAt, Wall: o.OccurrenceWall, State: o.State, CommentID: commentIDs[x.ItemID+"\x00"+o.CommentID],
-			Actor: o.Actor, ResolvedAt: o.ResolvedAt,
+			Actor: o.Actor, ResolvedAt: o.ResolvedAt, ActualDoneAt: o.ActualDoneAt, ActualSource: o.ActualSource,
 		})
 	}
 	return in, nil
 }
 
 // exportSchedules reads the schedules of the workspace's live items, with the
-// managed row's state and the history. Three reads on q, each finished before
-// the next starts.
+// managed row's state, roles, overrides and history. Each read on q finishes
+// before the next starts.
 func (s *Store) exportSchedules(q Queryer, workspaceID string) ([]models.ScheduleExport, error) {
 	rows, err := q.Query(s.q(`SELECT `+scheduleColumns+` FROM item_schedules
 		WHERE workspace_id = ? AND item_id IN (SELECT i.id FROM items i WHERE i.workspace_id = ? AND i.deleted_at IS NULL)
@@ -444,7 +481,7 @@ func (s *Store) exportSchedules(q Queryer, workspaceID string) ([]models.Schedul
 	rr.Close()
 
 	occ := map[string][]models.ScheduleOccurrenceExport{}
-	or, err := q.Query(s.q(`SELECT o.schedule_id, o.occurrence_at, o.occurrence_wall, o.state, COALESCE(o.comment_id, ''), o.actor, o.resolved_at
+	or, err := q.Query(s.q(`SELECT o.schedule_id, o.occurrence_at, o.occurrence_wall, o.state, COALESCE(o.comment_id, ''), o.actor, o.resolved_at, COALESCE(o.actual_done_at,''), COALESCE(o.actual_source,'legacy_unknown')
 		FROM schedule_occurrences o JOIN item_schedules sc ON sc.id = o.schedule_id
 		WHERE sc.workspace_id = ? ORDER BY o.schedule_id, o.occurrence_at`), workspaceID)
 	if err != nil {
@@ -453,7 +490,7 @@ func (s *Store) exportSchedules(q Queryer, workspaceID string) ([]models.Schedul
 	for or.Next() {
 		var id string
 		var o models.ScheduleOccurrenceExport
-		if err := or.Scan(&id, &o.OccurrenceAt, &o.OccurrenceWall, &o.State, &o.CommentID, &o.Actor, &o.ResolvedAt); err != nil {
+		if err := or.Scan(&id, &o.OccurrenceAt, &o.OccurrenceWall, &o.State, &o.CommentID, &o.Actor, &o.ResolvedAt, &o.ActualDoneAt, &o.ActualSource); err != nil {
 			or.Close()
 			return nil, fmt.Errorf("scan schedule occurrence: %w", err)
 		}
@@ -465,9 +502,18 @@ func (s *Store) exportSchedules(q Queryer, workspaceID string) ([]models.Schedul
 	}
 	or.Close()
 
+	overrides, err := s.scheduleOverridesQ(q, workspaceID)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]models.ScheduleExport, 0, len(scs))
 	for _, sc := range scs {
+		roles, err := s.scheduleRolesQ(q, sc.ID)
+		if err != nil {
+			return nil, err
+		}
 		x := models.ScheduleExport{
+			ID: sc.ID, Roles: roles, Overrides: overrides[sc.ID],
 			ItemID: sc.ItemID, Kind: sc.Kind, Dtstart: sc.Dtstart, Dtend: derefStr(sc.Dtend), Tz: derefStr(sc.Tz),
 			Floating: sc.Floating, Rrule: derefStr(sc.Rrule), Anchor: sc.Anchor, Audience: sc.Audience, LeadMinutes: sc.LeadMinutes,
 			NextAt: derefStr(sc.NextAt), NextWall: derefStr(sc.NextWall), NextOverrideAt: derefStr(sc.NextOverrideAt),
