@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { coerceBaseView } from '$lib/components/share/shareView';
 	import { safeText } from '$lib/fields/fieldShape';
 	import { page } from '$app/state';
 	import { onMount } from 'svelte';
@@ -189,12 +190,6 @@
 	// and the place the `$unparented` skip (PLAN-2095 DR-5 / TASK-2099) is
 	// enforced + pure-tested (see `shareView.test.ts`).
 
-	function coerceBaseView(value: unknown): BaseView | null {
-		if (value === 'list' || value === 'board' || value === 'table') return value;
-		// Saved views may use 'kanban' as a synonym for the board renderer.
-		if (value === 'kanban') return 'board';
-		return null;
-	}
 
 	// localStorage persistence keyed by share token (the logged-in collection
 	// page keys its own by workspace and collection, `pad-view:<ws>:<coll>`,

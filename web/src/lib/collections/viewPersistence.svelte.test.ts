@@ -79,3 +79,38 @@ describe('view and sort persistence is per workspace (C95)', () => {
 		expect(() => storeSortMode('alpha', 'tasks', 'title')).not.toThrow();
 	});
 });
+
+it('round-trips calendar mode and its fields without leaking across collections', async () => {
+ const { storeCalendarConfig, loadCalendarConfig } = await import('./viewPersistence');
+ storeViewMode('alpha', 'tasks', 'calendar');
+ storeCalendarConfig('alpha', 'tasks', {date_field:'due',end_field:'until'});
+ expect(loadViewMode('alpha', 'tasks', 'board')).toBe('calendar');
+ expect(loadCalendarConfig('alpha', 'tasks')).toEqual({date_field:'due',end_field:'until'});
+ expect(loadCalendarConfig('beta', 'tasks')).toEqual({});
+});
+
+it('omits empty calendar fields from the URL', async () => {
+ const { buildCollectionUrlParams } = await import('./paneUrlParams');
+ const params = buildCollectionUrlParams({viewMode:'calendar',calendarConfig:{},activeFilters:{},selectedTags:[],unparentedApplied:false,searchQuery:''},new URL('https://example.test/demo/tasks'));
+ expect(params.has('calendar_date')).toBe(false);
+ expect(params.has('calendar_end')).toBe(false);
+});
+
+it('ignores an empty calendar URL value on load and lets a non-empty one win', async () => {
+ const { applyCalendarUrlParam } = await import('./paneUrlParams');
+ const stored = {date_field:'due',end_field:'until'};
+ expect(applyCalendarUrlParam(stored,'calendar_date','')).toEqual(stored);
+ expect(applyCalendarUrlParam(stored,'calendar_end','')).toEqual(stored);
+ expect(applyCalendarUrlParam(stored,'calendar_date','created')).toEqual({date_field:'created',end_field:'until'});
+ expect(applyCalendarUrlParam(stored,'calendar_end','x')).toEqual({date_field:'due',end_field:'x'});
+});
+
+it('carries the calendar fields in a copied URL and preserves the open item', async () => {
+ const { buildCollectionUrlParams, KNOWN_COLLECTION_URL_PARAMS } = await import('./paneUrlParams');
+ const params = buildCollectionUrlParams({viewMode:'calendar',calendarConfig:{date_field:'created'},activeFilters:{status:'open'},selectedTags:[],unparentedApplied:false,searchQuery:''},new URL('https://example.test/demo/tasks?item=EX-1'));
+ expect(params.get('view')).toBe('calendar');
+ expect(params.get('calendar_date')).toBe('created');
+ expect(params.has('calendar_end')).toBe(false);
+ expect(params.get('item')).toBe('EX-1');
+ expect(KNOWN_COLLECTION_URL_PARAMS).toContain('calendar_date');
+});
