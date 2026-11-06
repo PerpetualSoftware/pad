@@ -1236,7 +1236,9 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 		// An operator copy (pad db migrate-to-pg, WithPreservedSlug) keeps every
 		// slug as the source has it: it is the same workspace on a new database,
 		// and the slug is already in URLs and bookmarks, as the workspace slug is.
-		// BUG-4119's resolution order already handles a legacy ref-shaped slug.
+		// A ref-shaped slug keeps the reachability it had in the source: the
+		// copy has the same items, numbers and slugs, and ResolveItem (BUG-4119)
+		// resolves them the same way.
 		// The two import doors that mint a new workspace coerce (TASK-4375).
 		refSlugCoerced := false
 		if !mintOpts.preserveSlug {
