@@ -509,8 +509,10 @@ func (s *Store) CopyItemAcrossWorkspaces(req CrossWorkspaceCopyRequest) (*CrossW
 	// Advisory cap check before BEGIN, including the storage lock. It can only
 	// REFUSE: any other outcome (a read error, a missing or moved collection, a
 	// field-migration error) is left to the transaction, so those errors keep
-	// the precedence they have under the locks, after PreCheck. The authoritative
-	// check runs under the locks.
+	// the precedence they have under the locks, after PreCheck. The cap refusal
+	// itself is the one answer that precedes PreCheck: the handler authorized this
+	// caller just before the call, and the preflight already tells the same caller
+	// the count. The authoritative check runs under the locks.
 	if s.copyExceedsAttachmentCap(req, sourceWorkspaceID) {
 		return nil, ErrCopyTooManyAttachments
 	}
