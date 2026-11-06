@@ -26,6 +26,9 @@ const (
 	CalendarCodeUnknownField = "unknown_field"
 	CalendarCodeNotDate      = "not_date"
 	CalendarCodeConfig       = "config"
+	// CalendarCodeBuiltinEnd: end_field names the built-in created or
+	// completed, which the calendar reads as instants, never as a span end.
+	CalendarCodeBuiltinEnd = "builtin_end_field"
 	// CalendarCodeUnsupportedKey: a declared date field whose key the store
 	// cannot read (it has a character outside letters, digits, _ and -).
 	CalendarCodeUnsupportedKey = "unsupported_field_key"
@@ -81,6 +84,9 @@ func ValidateCalendarFields(dateField, endField string, schema CollectionSchema)
 		}
 	}
 	if endField != "" {
+		if IsCalendarBuiltinDateField(endField) {
+			return &CalendarConfigError{Field: "end_field", Code: CalendarCodeBuiltinEnd, Message: fmt.Sprintf("end_field %q is a built-in date and cannot end a span: use a date field of the collection", endField)}
+		}
 		found, typ := dateType(endField)
 		switch {
 		case found && typ == "date" && !IsSafeFieldKey(endField):

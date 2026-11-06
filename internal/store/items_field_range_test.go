@@ -247,6 +247,31 @@ func TestFieldRange_UnsafeKeyMatchesNothing(t *testing.T) {
 		FieldRanges: []models.FieldRange{{Key: "due_date", From: "2026-11-01", To: "2026-11-30"}}}), "dated")
 }
 
+// An invalid non-empty key on either end of a span voids the whole span
+// filter: the start-range clause must not still return items.
+func TestFieldSpan_InvalidKeyVoidsTheWholeSpan(t *testing.T) {
+	t.Parallel()
+	w := newRangeWorld(t)
+	w.mk(t, "in window", `{"due_date":"2026-11-10","end_date":"2026-11-12"}`)
+	for _, key := range []string{`end'date`, `end date`, `end_date") OR 1=1 --`} {
+		for _, sp := range []models.FieldSpan{
+			{StartKey: "due_date", EndKey: key, From: "2026-11-01", To: "2026-11-30"},
+			{StartKey: key, EndKey: "end_date", From: "2026-11-01", To: "2026-11-30"},
+		} {
+			items, err := w.s.ListItems(w.wsID, models.ItemListParams{NoContent: true, FieldSpans: []models.FieldSpan{sp}})
+			if err != nil {
+				t.Errorf("%+v: error %v, want a plain empty list", sp, err)
+				continue
+			}
+			if len(items) != 0 {
+				t.Errorf("%+v matched %d items, want none", sp, len(items))
+			}
+		}
+	}
+	sameTitles(t, "empty end key is a start-only span", w.titles(t, models.ItemListParams{
+		FieldSpans: []models.FieldSpan{{StartKey: "due_date", From: "2026-11-01", To: "2026-11-30"}}}), "in window")
+}
+
 func TestFieldSpan_Overlap(t *testing.T) {
 	t.Parallel()
 	w := newRangeWorld(t)

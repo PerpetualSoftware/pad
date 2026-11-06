@@ -2449,9 +2449,14 @@ func (s *Store) appendFieldFilters(workspaceID string, params models.ItemListPar
 				query += " AND 1 = 0"
 				continue
 			}
+			end, endArgs, endOK := s.fieldDayExpr(sp.EndKey, completed)
+			if !endOK && sp.EndKey != "" {
+				query += " AND 1 = 0" // a bad end key voids the span, not just its overlap
+				continue
+			}
 			query += " AND (" + start + " BETWEEN ? AND ?"
 			args = append(append(args, startArgs...), sp.From, sp.To)
-			if end, endArgs, ok := s.fieldDayExpr(sp.EndKey, completed); ok {
+			if endOK {
 				// A span: it starts by the window's last day and ends on or after
 				// its first. A missing end value compares as NULL, so no span.
 				query += " OR (" + start + " <= ? AND " + end + " >= ?)"

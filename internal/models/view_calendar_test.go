@@ -1,6 +1,9 @@
 package models
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestValidateCalendarViewConfig(t *testing.T) {
 	schema := CollectionSchema{Fields: []FieldDef{
@@ -17,8 +20,8 @@ func TestValidateCalendarViewConfig(t *testing.T) {
 		"not a date":     {`{"date_field":"status"}`, "date_field", CalendarCodeNotDate},
 		"unknown end":    {`{"date_field":"due_date","end_field":"x"}`, "end_field", CalendarCodeUnknownField},
 		"end not date":   {`{"date_field":"due_date","end_field":"status"}`, "end_field", CalendarCodeNotDate},
-		"end is builtin": {`{"date_field":"due_date","end_field":"created"}`, "end_field", CalendarCodeUnknownField},
-		"end completed":  {`{"date_field":"due_date","end_field":"completed"}`, "end_field", CalendarCodeUnknownField},
+		"end is builtin": {`{"date_field":"due_date","end_field":"created"}`, "end_field", CalendarCodeBuiltinEnd},
+		"end completed":  {`{"date_field":"due_date","end_field":"completed"}`, "end_field", CalendarCodeBuiltinEnd},
 	} {
 		err := ValidateCalendarViewConfig(c.config, schema)
 		if err == nil || err.Field != c.field || err.Code != c.code {
@@ -49,5 +52,26 @@ func TestValidateCalendarFieldsRefusesAKeyTheStoreCannotRead(t *testing.T) {
 	}
 	if err := ValidateCalendarFields("due_date", "", schema); err != nil {
 		t.Errorf("plain key refused: %+v", err)
+	}
+}
+
+func TestValidateCalendarFieldsRefusesABuiltinEndFieldWhateverTheSchema(t *testing.T) {
+	schema := CollectionSchema{Fields: []FieldDef{
+		{Key: "due_date", Type: "date"}, {Key: "completed", Type: "date"}, {Key: "created", Type: "date"},
+	}}
+	for _, end := range []string{"created", "completed"} {
+		err := ValidateCalendarFields("due_date", end, schema)
+		if err == nil || err.Field != "end_field" || err.Code != CalendarCodeBuiltinEnd || !strings.Contains(err.Message, end) {
+			t.Errorf("end_field %s with a same-named schema field: %+v", end, err)
+		}
+		if err := ValidateCalendarViewConfig(`{"date_field":"due_date","end_field":"`+end+`"}`, schema); err == nil || err.Code != CalendarCodeBuiltinEnd {
+			t.Errorf("config end_field %s: %+v", end, err)
+		}
+	}
+	// date_field keeps naming the built-in (it shadows a same-named field).
+	for _, d := range []string{"created", "completed"} {
+		if err := ValidateCalendarFields(d, "", schema); err != nil {
+			t.Errorf("date_field %s refused: %+v", d, err)
+		}
 	}
 }
