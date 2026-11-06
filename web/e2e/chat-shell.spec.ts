@@ -7,7 +7,7 @@ import { createChatUser, loginViaForm } from './lib/chat-users';
  * TASK-4315 PR 3b: Chat opens INSIDE the Pad shell on a desktop, over the page
  * that opened it. jsdom cannot run shallow routing, so this is where it is
  * proven: the editor under an open Chat keeps its node, its text, its caret and
- * its scroll through open and close (as a dock at 1600 and as a drawer at 1100);
+ * its scroll through open and close (as a dock at 1400, narrow enough that the text re-wraps, and as a drawer at 1100);
  * browser Back and Forward walk the entries Chat pushed; a reload or a bookmark
  * of /messages/N is the same thread as a route in Pad chrome; and a number that
  * is not yours reads exactly like a number that cannot exist.
@@ -69,6 +69,31 @@ async function tagScroller(page: Page) {
 const scrollTop = (page: Page) =>
 	page.evaluate(() => (document.querySelector('[data-e2e-scroller]') as HTMLElement | null)?.scrollTop ?? -1);
 
+/**
+ * The reader's place is the content at the top of the viewport, not a raw
+ * scrollTop: the dock narrows the page by 440px, the text re-wraps (differently
+ * per font), and the browser's scroll anchoring moves scrollTop so the same
+ * paragraph stays where it was. markAnchor remembers the first paragraph in
+ * view; anchorOffset is where that paragraph sits below the scroller's top.
+ */
+const markAnchor = (page: Page) =>
+	page.evaluate((sel) => {
+		const s = document.querySelector('[data-e2e-scroller]') as HTMLElement;
+		const top = s.getBoundingClientRect().top;
+		const p = Array.from(document.querySelector(sel)!.querySelectorAll('p')).find(
+			(el) => el.getBoundingClientRect().bottom > top
+		);
+		(window as unknown as { __anchor: Element | undefined }).__anchor = p;
+		return p?.textContent?.slice(0, 20) ?? null;
+	}, EDITOR_SELECTOR);
+
+const anchorOffset = (page: Page) =>
+	page.evaluate(() => {
+		const a = (window as unknown as { __anchor?: Element }).__anchor;
+		const s = document.querySelector('[data-e2e-scroller]') as HTMLElement | null;
+		return a && a.isConnected && s ? a.getBoundingClientRect().top - s.getBoundingClientRect().top : null;
+	});
+
 const caret = (page: Page) =>
 	page.evaluate(() => {
 		const sel = window.getSelection();
@@ -87,7 +112,7 @@ const chatButton = (page: Page) => page.locator('header.topbar a.chat-button');
 const pathname = (page: Page) => new URL(page.url()).pathname;
 
 for (const [name, width, role] of [
-	['dock', 1600, 'complementary'],
+	['dock', 1400, 'complementary'],
 	['drawer', 1100, 'dialog']
 ] as const) {
 	test(`the editor keeps its node, text, caret and scroll through opening and closing Chat as a ${name}`, async ({
@@ -115,6 +140,8 @@ for (const [name, width, role] of [
 		});
 		const scrolled = await scrollTop(page);
 		expect(scrolled, 'premise: the page scrolls').toBeGreaterThan(100);
+		expect(await markAnchor(page), 'premise: a paragraph is in view').toContain('Paragraph');
+		const anchorBefore = (await anchorOffset(page))!;
 		const caretBefore = await caret(page);
 		expect(caretBefore?.text, 'premise: the caret is in the typed text').toContain('TYPED-BEFORE-CHAT');
 		const sidebarBefore = await page.locator('aside.sidebar').boundingBox();
@@ -128,13 +155,14 @@ for (const [name, width, role] of [
 		await expect(page.locator('aside.sidebar')).toBeVisible();
 		expect((await page.locator('aside.sidebar').boundingBox())!.width).toBe(sidebarBefore!.width);
 		expect(await sameEditorNode(page)).toBe(true);
-		expect(await scrollTop(page)).toBe(scrolled);
+		// Same paragraph, same place on screen (a re-wrap may move scrollTop itself).
+		expect(Math.abs((await anchorOffset(page))! - anchorBefore)).toBeLessThan(4);
 
 		await region.getByRole('button', { name: 'Close Chat' }).click();
 		await expect(region).toBeHidden();
 		await expect.poll(() => pathname(page)).toBe(itemUrl);
 		expect(await sameEditorNode(page)).toBe(true);
-		expect(await scrollTop(page)).toBe(scrolled);
+		expect(Math.abs((await anchorOffset(page))! - anchorBefore)).toBeLessThan(4);
 		await expect(page.locator(EDITOR_SELECTOR)).toContainText('TYPED-BEFORE-CHAT');
 
 		// The caret is where it was (focus went back to the Chat button, as it should);
