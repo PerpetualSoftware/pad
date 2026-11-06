@@ -4673,10 +4673,10 @@
 		{:else if items.length === 0}
 			<div class="empty-state-box">
 				<div class="empty-icon">{collection.icon || '📦'}</div>
-				<h2>No {collection.name.toLowerCase()} yet</h2>
+				<h2>No items in {collection.name} yet</h2>
 				{#if canEditThisCollection}
-					<p>Create your first {singularName().toLowerCase()} to get started.</p>
-					<button class="empty-cta" onclick={openQuickCreate}>+ Create {singularName()}</button>
+					<p>Create your first item to start tracking work.</p>
+					<button class="empty-cta" onclick={openQuickCreate}>Create item</button>
 					{#if emptyHint}
 						<p class="empty-hint">Or try: <code>{emptyHint}</code></p>
 					{/if}

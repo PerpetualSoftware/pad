@@ -1094,12 +1094,14 @@
 		position: relative;
 		background: var(--bg-tertiary);
 		border-radius: var(--radius);
-		padding: var(--space-3) var(--space-9) var(--space-3) var(--space-3);
-		min-height: 0;
+		padding: var(--space-3) var(--space-10) var(--space-3) var(--space-3);
+		min-height: var(--space-10);
 	}
 
 	.code-block pre {
 		margin: 0;
+		max-width: 100%;
+		overflow-x: auto;
 		font-family: var(--font-mono);
 		font-size: 0.82em;
 		color: var(--text-primary);
@@ -1112,6 +1114,8 @@
 		position: absolute;
 		top: var(--space-2);
 		right: var(--space-2);
+		width: var(--space-6);
+		height: var(--space-6);
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -1138,7 +1142,8 @@
 		justify-content: center;
 		background: var(--bg-tertiary);
 		border-radius: var(--radius);
-		padding: var(--space-4) var(--space-9) var(--space-4) var(--space-4);
+		padding: var(--space-4) var(--space-10) var(--space-4) var(--space-4);
+		min-height: var(--space-10);
 	}
 
 	.claim-code {
@@ -1343,6 +1348,15 @@
 	}
 
 	@media (max-width: 480px) {
+		.code-block,
+		.claim-code-row {
+			min-height: calc(44px + var(--space-2) * 2);
+			padding-right: calc(var(--space-10) + var(--space-6));
+		}
+		.copy-btn-small {
+			width: 44px;
+			height: 44px;
+		}
 		.modal-header h2 {
 			white-space: normal;
 			font-size: 1em;
