@@ -655,3 +655,66 @@ func TestBundleV2_JournalInvalidRowsAndMissingParents(t *testing.T) {
 		t.Fatalf("missing reference fallback: %+v", rows)
 	}
 }
+
+func TestBundleV2_UnknownScheduleJournalNeedsOneItem(t *testing.T) {
+	f, b, x := nativeBundle(t)
+	other := f.another(t, "Other")
+	exported := f.exportBundle(t)
+	b["items"] = bundleObject(t, exported)["items"]
+	b["schedule_changes"] = []any{testChange("a", x["item_id"].(string), "deleted-in-source"), testChange("b", other.ID, "deleted-in-source")}
+	out, rep := restoredBundle(t, f, b)
+	if len(rep.DroppedSchedules) != 1 || rep.DroppedSchedules[0].Reason != "changes:orphan" {
+		t.Fatalf("second item under one deleted schedule not dropped: %+v", rep.DroppedSchedules)
+	}
+	kept := 0
+	for _, c := range bundleObject(t, out)["schedule_changes"].([]any) {
+		if c.(map[string]any)["change_type"] == "move" {
+			kept++
+		}
+	}
+	if kept != 1 {
+		t.Fatalf("kept %d moved rows, want 1", kept)
+	}
+}
+
+func TestBundleV2_JournalRowNeedsTimeAndCleanText(t *testing.T) {
+	f, b, x := nativeBundle(t)
+	nul := testChange("nul", x["item_id"].(string), x["id"].(string))
+	nul["actor"] = "a\x00b"
+	late := testChange("late", x["item_id"].(string), x["id"].(string))
+	late["recorded_at"] = ""
+	b["schedule_changes"] = []any{nul, late}
+	_, rep := restoredBundle(t, f, b)
+	if len(rep.DroppedSchedules) != 2 {
+		t.Fatalf("unclean journal rows not dropped: %+v", rep.DroppedSchedules)
+	}
+}
+
+func TestCanonicalCarriedKeyFollowsTheDestinationZone(t *testing.T) {
+	const pinned = "2026-10-30T09:00:00Z|2026-10-30T09:00:00"
+	got, err := canonicalCarriedKey(pinned, true)
+	if err != nil || got != "2026-10-30T09:00:00" {
+		t.Fatalf("floating destination, pinned-format key: %q %v", got, err)
+	}
+	if _, err := canonicalCarriedKey("2026-10-30T09:00:00", false); err == nil {
+		t.Fatal("pinned timed destination accepted a wall-only key")
+	}
+	if got, err := canonicalCarriedKey("2026-10-30", false); err != nil || got != "2026-10-30" {
+		t.Fatalf("all-day key: %q %v", got, err)
+	}
+	a, b := testOverride(pinned), testOverride("2026-10-30T10:00:00Z|2026-10-30T09:00:00")
+	b["updated_at"] = "2026-10-29T15:00:00Z"
+	var in []models.ScheduleOverrideExport
+	for _, m := range []map[string]any{a, b} {
+		raw, _ := json.Marshal(m)
+		var o models.ScheduleOverrideExport
+		if err := json.Unmarshal(raw, &o); err != nil {
+			t.Fatal(err)
+		}
+		in = append(in, o)
+	}
+	out, drops, err := prepareCarriedOverrides(in, true)
+	if err != nil || len(out) != 1 || out[0].UpdatedAt != "2026-10-29T15:00:00Z" || len(drops) != 1 {
+		t.Fatalf("floating collapse: %+v %v %v", out, drops, err)
+	}
+}

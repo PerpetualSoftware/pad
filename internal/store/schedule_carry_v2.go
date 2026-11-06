@@ -62,7 +62,7 @@ func canonicalCarriedKey(key string, floating bool) (string, error) {
 func prepareCarriedOverrides(in []models.ScheduleOverrideExport, floating bool) ([]models.ScheduleOverrideExport, []string, error) {
 	var out []models.ScheduleOverrideExport
 	var drops []string
-	seen := map[string]bool{}
+	seenAt := map[string]int{}
 	for _, o := range in {
 		if !oneOf(o.Role, commitmentRoles) {
 			return nil, nil, dropf("override", "role")
@@ -73,10 +73,25 @@ func prepareCarriedOverrides(in []models.ScheduleOverrideExport, floating bool) 
 			continue
 		}
 		unique := key + "|" + o.Role
-		if seen[unique] {
-			return nil, nil, dropf("override", "duplicate")
+		if at, dup := seenAt[unique]; dup {
+			// A floating schedule keys by wall alone, so rows written while it was
+			// pinned can meet on one key: the later edit wins and the other is
+			// reported. Anywhere else a repeated key is a malformed bundle.
+			if !floating {
+				return nil, nil, dropf("override", "duplicate")
+			}
+			drops = append(drops, "override:duplicate")
+			if newer, err := laterInstant(o.UpdatedAt, out[at].UpdatedAt); err != nil || !newer {
+				continue
+			}
+			out = append(out[:at], out[at+1:]...)
+			for k, v := range seenAt {
+				if v > at {
+					seenAt[k] = v - 1
+				}
+			}
+			delete(seenAt, unique)
 		}
-		seen[unique] = true
 		o.OccurrenceKey = key
 		o.ValueAt, err = carryInstant("override", o.ValueAt)
 		if err != nil || o.ValueAt == "" {
@@ -94,9 +109,31 @@ func prepareCarriedOverrides(in []models.ScheduleOverrideExport, floating bool) 
 				return nil, nil, dropf("override", "instant")
 			}
 		}
+		seenAt[unique] = len(out)
 		out = append(out, o)
 	}
 	return out, drops, nil
+}
+
+func laterInstant(a, b string) (bool, error) {
+	ta, err := time.Parse(time.RFC3339, a)
+	if err != nil {
+		return false, err
+	}
+	tb, err := time.Parse(time.RFC3339, b)
+	if err != nil {
+		return false, err
+	}
+	return ta.After(tb), nil
+}
+
+func hasNUL(vals ...string) bool {
+	for _, v := range vals {
+		if strings.ContainsRune(v, 0) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Store) scheduleRolesQ(q Queryer, id string) (*models.ScheduleRolesExport, error) {
@@ -164,9 +201,20 @@ func (s *Store) restoreScheduleChangesTx(tx *sql.Tx, workspaceID string, changes
 	var kept []models.ScheduleChangeExport
 	var drops []models.ImportScheduleDrop
 	changeMap := map[string]string{}
+	owner := map[string]string{} // deleted-in-source schedule id -> the one item its rows may name
 	for _, c := range changes {
 		source, known := sources[c.ScheduleID]
 		bad := items[c.ItemID] == "" || c.ScheduleID == "" || (known && (schedules[c.ScheduleID] == "" || source.ItemID != c.ItemID)) || !oneOf(c.ChangeType, scheduleChangeTypes) || !oneOf(c.ReasonSource, []string{"system", "user"}) || (c.Role != nil && !oneOf(*c.Role, commitmentRoles))
+		if !bad {
+			if _, err := time.Parse(time.RFC3339Nano, c.RecordedAt); err != nil || hasNUL(c.Actor, c.Reason, c.RecordedAt, derefStr(c.OccurrenceKey), derefStr(c.BeforeJSON), derefStr(c.AfterJSON), derefStr(c.Role)) {
+				bad = true
+			}
+		}
+		if !bad && !known {
+			if o, seen := owner[c.ScheduleID]; seen && o != c.ItemID {
+				bad = true
+			}
+		}
 		if c.OccurrenceKey != nil && !bad {
 			floating := source.Floating
 			if !known {
@@ -184,6 +232,9 @@ func (s *Store) restoreScheduleChangesTx(tx *sql.Tx, workspaceID string, changes
 			continue
 		}
 		changeMap[c.ID] = newID()
+		if !known {
+			owner[c.ScheduleID] = c.ItemID
+		}
 		if schedules[c.ScheduleID] == "" {
 			schedules[c.ScheduleID] = newID()
 		}
