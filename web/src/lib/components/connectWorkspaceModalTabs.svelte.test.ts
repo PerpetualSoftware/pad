@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import { getByRole } from '@testing-library/dom';
+import { readFileSync } from 'node:fs';
 
 vi.mock('$lib/api/client', () => ({
 	api: { workspaces: { claimCode: vi.fn(() => new Promise(() => {})) } },
@@ -117,5 +118,12 @@ describe('agent connection tabs (BUG-4336)', () => {
 		flushSync();
 		expect(root.querySelector('.primary-tabs')).toHaveAccessibleName('Connection method');
 		expect(root.querySelector('[role="tablist"].tab-strip')).toHaveAccessibleName('Install platform');
+	});
+	it('no tabpanel rule uses display: contents, which can drop the role from the accessibility tree', () => {
+		// jsdom does not apply component CSS, so this reads the source the way the other style guards do.
+		const source = readFileSync('src/lib/components/ConnectWorkspaceModal.svelte', 'utf8');
+		const rules = [...source.matchAll(/([^{}]*\[role="tabpanel"\][^{}]*)\{([^}]*)\}/g)];
+		expect(rules.length).toBeGreaterThan(0);
+		for (const [, , declarations] of rules) expect(declarations).not.toMatch(/display:\s*contents/);
 	});
 });

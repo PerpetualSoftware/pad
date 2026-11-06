@@ -937,9 +937,12 @@
 		overflow-y: auto;
 	}
 
-	/* Keep the panel's children in the modal body's existing gap layout. */
+	/* The panel keeps a real box (display: contents can drop its role from the accessibility tree
+	   in some browsers) and lays its children out exactly as the modal body did. */
 	.modal-body > [role="tabpanel"] {
-		display: contents;
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-5);
 	}
 
 	.intro-copy {
