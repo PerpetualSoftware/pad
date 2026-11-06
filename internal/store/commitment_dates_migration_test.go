@@ -190,13 +190,17 @@ func TestCommitmentMigration_PreservesRowsAndFKs(t *testing.T) {
 	s := commitmentPreStore(t)
 	ids := commitmentSeed(t, s)
 	before := commitmentOldRows(t, s)
+	counts := map[string]int{}
+	for _, table := range []string{"event_outbox", "user_notifications"} {
+		counts[table] = s.countRows(t, `SELECT COUNT(*) FROM `+table)
+	}
 	commitmentApply(t, s)
 	if !reflect.DeepEqual(before, commitmentOldRows(t, s)) {
 		t.Fatal("legacy rows changed")
 	}
 	for _, table := range []string{"event_outbox", "user_notifications"} {
-		if n := s.countRows(t, `SELECT COUNT(*) FROM `+table); n != 0 {
-			t.Fatalf("%s=%d", table, n)
+		if n := s.countRows(t, `SELECT COUNT(*) FROM `+table); n != counts[table] {
+			t.Fatalf("%s before=%d after=%d", table, counts[table], n)
 		}
 	}
 	rows, err := s.db.Query(`PRAGMA foreign_key_check`)

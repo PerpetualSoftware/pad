@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -296,6 +297,7 @@ func TestFireAndReanchorDoNotJournal(t *testing.T) {
 				in.Tz = ""
 			}
 			sc := f.create(t, in)
+			f.force(t, sc, "2026-10-31T09:00:00", "2026-10-31T09:00:00Z", "2026-10-31T09:00:00Z")
 			entries := commitmentJournal(t, f.s, sc.ID)
 			before := commitmentSnapshot(t, entries[0].After)["roles"]
 			if _, err := f.s.FireDueReminders("2026-11-02T10:00:00Z", 0); err != nil {
@@ -373,22 +375,31 @@ func TestCarryAndImport_BackfillRolesAndJournal(t *testing.T) {
 }
 
 func TestScheduleChanges_AppendOnlyBySource(t *testing.T) {
-	files, err := filepath.Glob("*.go")
-	if err != nil {
-		t.Fatal(err)
-	}
 	pattern := regexp.MustCompile(`(?is)\b(?:UPDATE\s+|DELETE\s+FROM\s+)schedule_changes\b`)
-	for _, file := range files {
-		if strings.HasSuffix(file, "_test.go") {
-			continue
-		}
-		b, err := os.ReadFile(file)
+	err := filepath.WalkDir("../..", func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
-			t.Fatal(err)
+			return err
+		}
+		if entry.IsDir() {
+			if entry.Name() == ".git" || entry.Name() == ".cache" || entry.Name() == "node_modules" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
 		}
 		if pattern.Match(b) {
-			t.Errorf("journal mutation in %s", file)
+			t.Errorf("journal mutation in %s", path)
 		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -445,5 +456,17 @@ func TestOccurrenceKey_FloatingStableBeforeAndAfterFire(t *testing.T) {
 	}
 	if after := OccurrenceKey(cur, *cur.NextAt, *cur.NextWall); after != before || after != *sc.NextWall {
 		t.Fatalf("floating key changed %s to %s", before, after)
+	}
+}
+
+func TestResolve_AllDayDoneActualMatchesImmutableWall(t *testing.T) {
+	f := newSchedFixture(t)
+	in := dailyUTC
+	in.Dtstart = "2026-10-30"
+	sc := f.create(t, in)
+	f.exec(t, `INSERT INTO schedule_occurrences (id,schedule_id,occurrence_at,occurrence_wall,state,actor,resolved_at) VALUES (?,?,?,?,'moved','user',?)`, newID(), sc.ID, "2026-10-30T08:00:00Z", *sc.NextWall, "2026-10-29T12:00:00Z")
+	f.mustResolve(t, f.item, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "done", Actor: "user"}, "2026-10-30T10:00:00Z")
+	if f.count(t, `SELECT COUNT(*) FROM schedule_occurrences WHERE schedule_id=? AND occurrence_wall=? AND actual_done_at='2026-10-30T10:00:00Z' AND actual_source='recorded_now'`, sc.ID, *sc.NextWall) != 1 {
+		t.Fatal("all-day completion lost actual provenance")
 	}
 }
