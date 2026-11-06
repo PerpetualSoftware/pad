@@ -402,6 +402,9 @@ func TestMigrationCountsOnCopy(t *testing.T) {
 	if dir := os.Getenv("PAD_DATA_DIR"); dir != "" {
 		defaults = append(defaults, filepath.Join(dir, "pad.db"))
 	}
+	if path := os.Getenv("PAD_DB_PATH"); path != "" {
+		defaults = append(defaults, path)
+	}
 	for _, d := range defaults {
 		live, err := os.Stat(d)
 		if os.IsNotExist(err) {
