@@ -802,3 +802,38 @@ func TestOffsetOverflowAndPlanAtomicity(t *testing.T) {
 		}
 	})
 }
+
+// A civil result outside the package's supported years (1970..2200, as Wall) is refused as invalid, including the
+// day counts that pass a 64-bit seconds check and then wrap inside time.Unix (Luna r1).
+func TestOffsetCivilYearRange(t *testing.T) {
+	parent := linkTime(t, "2025-06-10T12:00:00Z")
+	day := parent.Unix() / 86400
+	maxDay := int64(1<<63-1) / 86400
+	tooFar := []struct {
+		name string
+		days int64
+	}{
+		{"seconds limit of a 64-bit day count", maxDay - day},
+		{"just under it", maxDay - day - 1},
+		{"year 2225", 200 * 365},
+		{"year 1965", -60 * 365},
+	}
+	if ^uint(0)>>32 == 0 {
+		t.Skip("requires a 64-bit day count")
+	}
+	for _, tc := range tooFar {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := Offset{Mode: OffsetCivil, Days: int(tc.days), Hour: 9, Zone: "UTC"}.Apply(parent)
+			linkWantError(t, err, ErrLinkInvalid)
+			if !got.IsZero() {
+				t.Fatalf("Apply returned %v with an error", got)
+			}
+		})
+	}
+	t.Run("a date inside the range is still applied", func(t *testing.T) {
+		got, err := Offset{Mode: OffsetCivil, Days: 170 * 365, Hour: 9, Zone: "UTC"}.Apply(parent)
+		if err != nil || got.Year() < 2190 || got.Year() > 2200 {
+			t.Fatalf("Apply = %v, %v; want a 2190s date", got, err)
+		}
+	})
+}

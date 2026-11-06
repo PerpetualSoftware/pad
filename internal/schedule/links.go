@@ -93,13 +93,18 @@ func (o Offset) Apply(parent time.Time) (time.Time, error) {
 		return time.Time{}, linkInvalid("civil zone could not be loaded")
 	}
 	day := linkDay(parent.In(loc))
-	// Work in whole UTC calendar days, not durations (which saturate at 292 years).
-	const maxDay = int64(1<<63-1) / 86400
-	if int64(o.Days) > maxDay-day || int64(o.Days) < -maxDay-day {
+	// Work in whole UTC calendar days, not durations (which saturate at 292 years). The result must be a
+	// year the package supports for a Wall (1970..2200); the span guard comes first so the seconds sum
+	// below can never wrap inside time.Unix.
+	const spanDays = int64(maxYear-minYear+2) * 366
+	if int64(o.Days) > spanDays || int64(o.Days) < -spanDays {
 		return time.Time{}, linkInvalid("civil result is out of range")
 	}
 	date := time.Unix((day+int64(o.Days))*86400, 0).UTC()
 	y, m, d := date.Date()
+	if y < minYear || y > maxYear {
+		return time.Time{}, linkInvalid("civil result is out of range")
+	}
 	return Resolve(loc, Wall{Year: y, Month: m, Day: d, Hour: o.Hour, Minute: o.Minute, Second: o.Second, AllDay: o.AllDay}), nil
 }
 
