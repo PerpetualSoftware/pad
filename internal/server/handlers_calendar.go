@@ -208,8 +208,11 @@ func (s *Server) handleGetCalendar(w http.ResponseWriter, r *http.Request) {
 		}
 		scope = store.PendingReminderScope{CollectionIDs: []string{}, ItemIDs: ids}
 	}
-	now := time.Now()
-	schedules, more, err := s.store.ListSchedulesForCalendar(workspaceID, scope, from, to, agendaMaxScan)
+	// The agenda's clock, scan limit and deadline origin, so its test seams
+	// move the calendar too.
+	run := s.newAgendaRead(from, to, zone, note)
+	now := run.now
+	schedules, more, err := s.store.ListSchedulesForCalendar(workspaceID, scope, from, to, run.remaining)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -221,7 +224,7 @@ func (s *Server) handleGetCalendar(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	sch, err := expandAgendaSchedules(s.store, schedules, loc, from, to, now, now.Add(agendaBudget), time.Now)
+	sch, err := expandAgendaSchedules(s.store, schedules, loc, from, to, now, run.deadline, s.agendaNow)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -299,14 +302,20 @@ func (s *Server) handleGetCalendar(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// recordedStates are the states a schedule entry has once someone acted on it
-// or the day passed with a record. A finished item shows only these.
+// recordedStates are the states a schedule_occurrences row can hold.
 var recordedStates = map[string]bool{"done": true, "skipped": true, "moved": true, "missed": true}
 
+// isRecordedEntry is whether e came from a history row. A row always carries
+// its resolved_at; a derived entry (outstanding, scheduled, projected, or a
+// passed occurrence derived as missed) never does.
+func isRecordedEntry(e agendaEntry) bool {
+	return e.ResolvedAt != "" && recordedStates[e.State]
+}
+
 // keepRecordedOnTerminal drops, for an item in a terminal status, every entry
-// without a recorded state (outstanding, scheduled, projected, overdue): an
-// upcoming or overdue entry on a finished item would say work is left. An open
-// item's entries are untouched. The decision is made here, after expansion, so
+// that does not come from a history row (outstanding, scheduled, projected,
+// overdue, derived missed): an upcoming or overdue entry on a finished item
+// would say work is left. An open item's entries are untouched. The decision is made here, after expansion, so
 // such an entry never leaves the server.
 func keepRecordedOnTerminal(entries []agendaEntry, schedules []store.AgendaSchedule) []agendaEntry {
 	terminal := map[string]bool{}
@@ -320,7 +329,7 @@ func keepRecordedOnTerminal(entries []agendaEntry, schedules []store.AgendaSched
 	}
 	out := entries[:0:0]
 	for _, e := range entries {
-		if terminal[e.ScheduleID] && !recordedStates[e.State] {
+		if terminal[e.ScheduleID] && !isRecordedEntry(e) {
 			continue
 		}
 		out = append(out, e)

@@ -2507,7 +2507,7 @@ func (s *Store) resolveCompletedDay(workspaceID string, params models.ItemListPa
 // date order the calendar pages by: the same value the day filters read (the
 // instant itself for `created` and `completed`, so a viewer-zone day is never
 // split across the order, and the stored value's text for a date field), then
-// the id. Without it, the list's own sort.
+// the id. The calendar's within-day sort is the same total order. Without it, the list's own sort.
 func (s *Store) itemOrder(params models.ItemListParams, completed *completedDayCache) (string, []any) {
 	key := params.OrderByDay
 	if key == "" {
@@ -2525,7 +2525,14 @@ func (s *Store) itemOrder(params models.ItemListParams, completed *completedDayC
 	if !isValidFieldKey(key) {
 		return " ORDER BY i.id", nil
 	}
-	return " ORDER BY substr(" + s.dialect.JSONExtractText("i.fields", key) + ", 1, 10), i.id", nil
+	// The value's own text, then the id, byte-wise: the order the calendar
+	// sorts a day in, so a read that stops early keeps the earliest of a day.
+	// The first ten characters are the day, so this is day order too.
+	text, id := s.dialect.JSONExtractText("i.fields", key), "i.id"
+	if s.dialect.Driver() == DriverPostgres {
+		text, id = "("+text+`) COLLATE "C"`, `i.id COLLATE "C"`
+	}
+	return " ORDER BY " + text + ", " + id, nil
 }
 
 // fieldDayExpr is the SQL expression for the day (YYYY-MM-DD text) of an item's
