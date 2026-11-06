@@ -143,7 +143,10 @@ func (s *Store) replaceWorkspaceGroupMembers(ctx context.Context, tx *sql.Tx, us
 			kept = append(kept, wsID)
 		}
 	}
-	if len(unique)+len(kept) > MaxWorkspaceGroupMembers {
+	// The cap counts only the ids the caller sent. A kept member the caller
+	// cannot see must not take a slot: it would make a 100-id edit refuse at
+	// 99 and so confirm that a hidden member exists.
+	if len(unique) > MaxWorkspaceGroupMembers {
 		return ErrWorkspaceGroupMemberLimit
 	}
 	// Lock live workspaces in id order before member writes. This also
