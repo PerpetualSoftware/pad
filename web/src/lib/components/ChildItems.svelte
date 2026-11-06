@@ -1030,7 +1030,7 @@
 								{/if}
 							</div>
 							{#if canExpand && isExpanded}
-								<NestedChildren {wsSlug} {username} parentSlug={child.slug} depth={1} maxDepth={3} {onOpenTarget} />
+								<NestedChildren {wsSlug} {username} parentRef={child.id} depth={1} maxDepth={3} {onOpenTarget} />
 							{/if}
 						</div>
 					{/each}

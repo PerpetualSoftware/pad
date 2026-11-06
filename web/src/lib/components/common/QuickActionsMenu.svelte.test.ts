@@ -349,7 +349,7 @@ describe('QuickActionsMenu push dispatch (PLAN-2558 S4)', () => {
 
 		// Template resolved (TASK-14, not the literal {ref}) and addressed by
 		// the item's slug against the workspace it was mounted for.
-		expect(pushMock.mock.calls[0]).toEqual(['ws-1', 'ship-the-thing', 'Ship TASK-14']);
+		expect(pushMock.mock.calls[0]).toEqual(['ws-1', 'i1', 'Ship TASK-14']);
 		// The clipboard is NOT a belt-and-braces second delivery: clobbering it
 		// on the happy path would take the user's clipboard for nothing.
 		expect(copyMock).not.toHaveBeenCalled();

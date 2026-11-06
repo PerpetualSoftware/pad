@@ -123,12 +123,12 @@ describe('ItemDetail: a failed same-item links refresh keeps the links it has', 
 		// Four refresh callers: the SSE adopt path, the incremental adopt path,
 		// the long-absence reload, and the refresh a save deferred (BUG-3036).
 		// All four fetch the links of the item already loaded, which is what
-		// makes preserving correct. Three spell it `item.slug` — the row they
+		// makes preserving correct. Three spell it `item.id` — the row they
 		// actually INSTALLED, since withInflightTags may refuse an older
 		// `updated` (BUG-3036) — and the incremental path, which returns before
-		// installing an older row, still spells it `updated.slug`.
-		expect(count(code, 'await refreshLinksPreservingOnFailure(reqWsSlug, item.slug)')).toBe(3);
-		expect(count(code, 'await refreshLinksPreservingOnFailure(reqWsSlug, updated.slug)')).toBe(1);
+		// installing an older row, still spells it `updated.id`.
+		expect(count(code, 'await refreshLinksPreservingOnFailure(reqWsSlug, item.id)')).toBe(3);
+		expect(count(code, 'await refreshLinksPreservingOnFailure(reqWsSlug, updated.id)')).toBe(1);
 		expect(count(code, 'await refreshLinksPreservingOnFailure(')).toBe(4);
 	});
 
@@ -192,7 +192,7 @@ describe('ItemDetail: a failed same-item links refresh keeps the links it has', 
 		// a result, so the failure path is the `else` of `linksResult.ok`.
 		const loadStart = code.indexOf('const linksResult = await linksRead;');
 		expect(loadStart).toBeGreaterThan(-1);
-		expect(code).toContain('const linksRead = api.links.list(wsSlug, itemData.slug).then(');
+		expect(code).toContain('const linksRead = api.links.list(wsSlug, itemData.id).then(');
 		const catchAt = code.indexOf('} else', code.indexOf('if (linksResult.ok)', loadStart));
 		expect(catchAt).toBeGreaterThan(loadStart);
 		const loadCatch = balancedBlock(code, catchAt + 1);

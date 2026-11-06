@@ -10,7 +10,7 @@
 	interface Props {
 		wsSlug: string;
 		username?: string;
-		parentSlug: string;
+		parentRef: string;
 		depth?: number;
 		maxDepth?: number;
 		/**
@@ -22,7 +22,7 @@
 		onOpenTarget?: (target: PaneTarget) => void;
 	}
 
-	let { wsSlug, username = '', parentSlug, depth = 1, maxDepth = 3, onOpenTarget }: Props = $props();
+	let { wsSlug, username = '', parentRef, depth = 1, maxDepth = 3, onOpenTarget }: Props = $props();
 
 
 	let children = $state<Item[]>([]);
@@ -30,14 +30,14 @@
 	let expandedIds = $state<Set<string>>(new Set());
 
 	$effect(() => {
-		void parentSlug;
+		void parentRef;
 		loadChildren();
 	});
 
 	async function loadChildren() {
 		loading = true;
 		try {
-			children = await api.items.children(wsSlug, parentSlug);
+			children = await api.items.children(wsSlug, parentRef);
 		} catch {
 			children = [];
 		} finally {
@@ -123,7 +123,7 @@
 					{/if}
 				</div>
 				{#if canExpand && isExpanded}
-					<svelte:self wsSlug={wsSlug} {username} parentSlug={child.slug} depth={depth + 1} {maxDepth} {onOpenTarget} />
+					<svelte:self wsSlug={wsSlug} {username} parentRef={child.id} depth={depth + 1} {maxDepth} {onOpenTarget} />
 				{/if}
 			</div>
 		{/each}
