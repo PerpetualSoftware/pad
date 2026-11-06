@@ -355,7 +355,7 @@
 		// WRONG item.
 		const prompt = resolvePrompt(action);
 		const ws = wsSlug;
-		const target = pushable && item ? item.slug : null;
+		const target = pushable && item ? item.id : null;
 		// The staleness-aware read, not the raw state: a click can land a whole
 		// poll interval after a 'known' answer expired.
 		const known = currentPresence();

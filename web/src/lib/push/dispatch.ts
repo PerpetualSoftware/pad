@@ -140,10 +140,10 @@ export type PushRoute = { via: 'push' } | { via: 'clipboard'; because: Clipboard
  */
 export function routePrompt(
 	prompt: string,
-	itemSlug: string | null,
+	itemId: string | null,
 	presence: PushPresence | null
 ): PushRoute {
-	if (!itemSlug) return { via: 'clipboard', because: 'not-addressable' };
+	if (!itemId) return { via: 'clipboard', because: 'not-addressable' };
 	if (isPushMessageEmpty(prompt)) return { via: 'clipboard', because: 'empty' };
 	if (isPushMessageTooLong(prompt)) return { via: 'clipboard', because: 'too-long' };
 	if (!presence || presence.state === 'unknown') {

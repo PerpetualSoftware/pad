@@ -1,13 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { LINK_DIRECTIONS, linkDirection, linkEnds, linkSentence } from './linkDirections';
 
-const current = { slug: 'task-5', id: 'id-5' };
-const picked = { slug: 'task-8', id: 'id-8' };
+const current = { id: 'id-5' };
+const picked = { id: 'id-8' };
 
 describe('Add Relationship directions (TASK-2217)', () => {
 	it('every inverse is the same type with the ends swapped', () => {
-		expect(linkEnds(linkDirection('blocks'), current, picked)).toEqual({ fromSlug: 'task-5', targetId: 'id-8' });
-		expect(linkEnds(linkDirection('blocked_by'), current, picked)).toEqual({ fromSlug: 'task-8', targetId: 'id-5' });
+		expect(linkEnds(linkDirection('blocks'), current, picked)).toEqual({ fromId: 'id-5', targetId: 'id-8' });
+		expect(linkEnds(linkDirection('blocked_by'), current, picked)).toEqual({ fromId: 'id-8', targetId: 'id-5' });
 		expect(linkDirection('blocked_by').type).toBe('blocks');
 		expect(linkDirection('parent_of')).toMatchObject({ type: 'parent', inverse: true });
 	});

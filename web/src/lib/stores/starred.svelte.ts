@@ -97,7 +97,7 @@ export const starredStore = {
 	},
 
 	/** Toggle star with optimistic update. Serialized per item. */
-	async toggle(wsSlug: string, itemSlug: string, itemId: string) {
+	async toggle(wsSlug: string, itemId: string) {
 		// Drop rapid duplicate clicks while a toggle is in flight for this item
 		if (toggleInFlight.has(itemId)) return;
 
@@ -121,9 +121,9 @@ export const starredStore = {
 		toggleInFlight.add(itemId);
 		try {
 			if (wasStarred) {
-				await api.items.unstar(wsSlug, itemSlug);
+				await api.items.unstar(wsSlug, itemId);
 			} else {
-				await api.items.star(wsSlug, itemSlug);
+				await api.items.star(wsSlug, itemId);
 			}
 		} catch {
 			// Revert on failure — only if this is still the same workspace AND

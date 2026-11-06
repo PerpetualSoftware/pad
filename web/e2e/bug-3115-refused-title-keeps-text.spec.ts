@@ -240,7 +240,7 @@ test.describe('BUG-3115: a refused title keeps the typed text', () => {
 			return route.fulfill({ response: real, json: { ...body, title: legacy } });
 		});
 		const sent: Array<Record<string, unknown>> = [];
-		await page.route(`**/api/v1/workspaces/*/items/${pb.slug}`, (route) => {
+		await page.route(`**/api/v1/workspaces/*/items/${pb.id}`, (route) => {
 			if (route.request().method() !== 'PATCH') return route.fallback();
 			const body = JSON.parse(route.request().postData() ?? '{}');
 			sent.push({ ...body });
@@ -253,7 +253,7 @@ test.describe('BUG-3115: a refused title keeps the typed text', () => {
 		await expect(page.locator('input.title-input')).toHaveValue(legacy);
 
 		const saved = page.waitForResponse(
-			(r) => r.request().method() === 'PATCH' && r.url().includes(`/items/${pb.slug}`),
+			(r) => r.request().method() === 'PATCH' && r.url().includes(`/items/${pb.id}`),
 		);
 		await page.getByRole('button', { name: 'Save', exact: true }).click();
 		const res = await saved;
@@ -275,7 +275,7 @@ test.describe('BUG-3115: a refused title keeps the typed text', () => {
 		);
 		expect(created.ok(), await created.text()).toBeTruthy();
 		const pb = (await created.json()) as { id: string; slug: string };
-		const patches = titleWrites(page, 'PATCH', `/items/${pb.slug}`);
+		const patches = titleWrites(page, 'PATCH', `/items/${pb.id}`);
 
 		await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/playbooks/${pb.slug}`);
 		const input = page.locator('input.title-input');

@@ -13,9 +13,9 @@
 	 */
 	interface Props {
 		wsSlug: string;
-		itemSlug: string;
+		itemId: string;
 	}
-	let { wsSlug, itemSlug }: Props = $props();
+	let { wsSlug, itemId }: Props = $props();
 
 	let actions = $state<ItemAppAction[]>([]);
 	let opening = $state<string | null>(null);
@@ -30,7 +30,7 @@
 	onMount(async () => {
 		const isSameIdentity = authStore.identityFence();
 		try {
-			const list = await api.items.appActions(wsSlug, itemSlug);
+			const list = await api.items.appActions(wsSlug, itemId);
 			if (!isSameIdentity()) return;
 			actions = Array.isArray(list) ? list : [];
 		} catch {
@@ -65,7 +65,7 @@
 		if (tab) tab.opener = null;
 		opening = keyOf(a);
 		try {
-			const { url } = await api.items.mintAppAction(wsSlug, itemSlug, a.install_id, a.action_key);
+			const { url } = await api.items.mintAppAction(wsSlug, itemId, a.install_id, a.action_key);
 			if (!isSameIdentity() || destroyed) {
 				tab?.close();
 				return;

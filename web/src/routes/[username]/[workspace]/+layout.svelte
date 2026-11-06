@@ -415,7 +415,7 @@
 							editorStore.setExternalChange(true);
 						} else {
 							try {
-								const updated = await api.items.get(eventWs, activeItem.slug);
+								const updated = await api.items.get(eventWs, activeItem.id);
 								// Fence the late continuation (PLAN-2179 / TASK-2181): on the
 								// focus-follows-editing host `collectionStore.activeItem`
 								// ping-pongs master↔pane on each click, so the active item may
@@ -433,7 +433,7 @@
 						const existing = collectionStore.items.find(i => i.id === event.item_id);
 						if (existing) {
 							try {
-								const updated = await api.items.get(eventWs, existing.slug);
+								const updated = await api.items.get(eventWs, existing.id);
 								collectionStore.updateItemInList(updated);
 							} catch {}
 						}
