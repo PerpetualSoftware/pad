@@ -514,7 +514,7 @@
 			// success without a link rather than 404-ing the user.
 			let link: string | undefined;
 			try {
-				const created = await api.items.get(ws, result.ref || result.slug);
+				const created = await api.items.get(ws, result.ref);
 				if (created.collection_slug) {
 					link = `/${user}/${ws}/${created.collection_slug}/${created.slug}`;
 				}

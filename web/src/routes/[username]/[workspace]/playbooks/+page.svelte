@@ -436,7 +436,7 @@
 			// (the import response carries ref + slug but not the collection).
 			let link: string | undefined;
 			try {
-				const created = await api.items.get(ws, result.ref || result.slug);
+				const created = await api.items.get(ws, result.ref);
 				if (created.collection_slug) {
 					link = `/${user}/${ws}/${created.collection_slug}/${created.slug}`;
 				}

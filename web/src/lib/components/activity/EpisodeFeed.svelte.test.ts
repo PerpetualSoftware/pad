@@ -147,7 +147,7 @@ describe('EpisodeFeed', () => {
 
 		// Enrichment ran only for the live episode's item, never the stale one.
 		expect(commentsListMock).toHaveBeenCalledTimes(1);
-		expect(commentsListMock).toHaveBeenCalledWith('ws', 'TASK-1');
+		expect(commentsListMock).toHaveBeenCalledWith('ws', 'item-live');
 
 		const checkpoint = host.querySelector('.ep-checkpoint');
 		expect(checkpoint).not.toBeNull();

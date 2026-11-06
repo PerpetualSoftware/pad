@@ -51,7 +51,7 @@
 	async function loadCheckpoint(ep: Episode) {
 		if (!ep.itemSlug) return;
 		try {
-			const comments = await api.comments.list(wsSlug, ep.itemRef ?? ep.itemSlug);
+			const comments = await api.comments.list(wsSlug, ep.latest.document_id || ep.itemRef || ep.itemSlug);
 			if (!comments || comments.length === 0) return;
 			let newest = comments[0];
 			for (const c of comments) {

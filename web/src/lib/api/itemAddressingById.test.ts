@@ -26,6 +26,8 @@ const ITEM_CALL = new RegExp(
 	[
 		// api.items.* / api.links.* taking the item as the second argument.
 		String.raw`api\.(?:items\.(?:get|update|delete|progress|copy|copyPreflight|children|push|patch|move|restore|star|unstar|decisions|backlinks|relationBacklinks|appActions|mintAppAction|starStatus)|links\.(?:list|create)|comments\.(?:list|create))\(\s*[^,()]+,\s*[A-Za-z_.]+\.slug\b`,
+		// A ref-or-slug fallback in the item argument of the same methods.
+		String.raw`api\.(?:items\.(?:get|update|delete|progress|copy|copyPreflight|children|push|patch|move|restore|star|unstar|decisions|backlinks|relationBacklinks|appActions|mintAppAction|starStatus)|links\.(?:list|create)|comments\.(?:list|create))\(\s*[^,()]+,\s*[A-Za-z_.?]+\s*(?:\|\||\?\?)\s*[A-Za-z_.]+\.slug\b`,
 		// Helpers and stores that forward their item argument to one of those.
 		String.raw`(?:refreshLinksPreservingOnFailure|starredStore\.toggle)\(\s*[^,()]+,\s*[A-Za-z_.]+\.slug\b`,
 		// Props a component forwards to an item-addressing call (ShareDialog's
@@ -50,6 +52,7 @@ describe('item-addressing web calls pass an id, not a slug (TASK-4230)', () => {
 		expect('await api.items.update(ws, item.slug, body)'.match(ITEM_CALL)).not.toBeNull();
 		expect('await api.links.list(wsSlug, itemData.slug)'.match(ITEM_CALL)).not.toBeNull();
 		expect('await api.items.update(ws, item.id, body)'.match(ITEM_CALL)).toBeNull();
+		expect('api.items.get(ws, result.ref || result.slug)'.match(ITEM_CALL)).not.toBeNull();
 		expect('api.items.appActions(wsSlug, item.slug)'.match(ITEM_CALL)).not.toBeNull();
 		expect('<ItemAppActions {wsSlug} itemId={item.slug} />'.match(ITEM_CALL)).not.toBeNull();
 		expect('api.items.move(sourceWs, sourceItem.slug, t)'.match(ITEM_CALL)).not.toBeNull();
