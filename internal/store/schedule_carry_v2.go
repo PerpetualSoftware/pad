@@ -136,6 +136,17 @@ func hasNUL(vals ...string) bool {
 	return false
 }
 
+// hasJSONNUL also sees a NUL written as a JSON escape: a JSON column is
+// refused on its decoded value, so the escaped form aborts the statement.
+func hasJSONNUL(vals ...string) bool {
+	for _, v := range vals {
+		if hasNUL(v) || strings.Contains(strings.ToLower(v), `\u0000`) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Store) scheduleRolesQ(q Queryer, id string) (*models.ScheduleRolesExport, error) {
 	var r models.ScheduleRolesExport
 	err := q.QueryRow(s.q(`SELECT target_days,target_secs,earliest_days,earliest_secs,deadline_days,deadline_secs,occupied_days,occupied_secs,deadline_behavior,outcome,roles_origin FROM item_schedules WHERE id=?`), id).Scan(&r.TargetDays, &r.TargetSecs, &r.EarliestDays, &r.EarliestSecs, &r.DeadlineDays, &r.DeadlineSecs, &r.OccupiedDays, &r.OccupiedSecs, &r.DeadlineBehavior, &r.Outcome, &r.RolesOrigin)
@@ -206,7 +217,7 @@ func (s *Store) restoreScheduleChangesTx(tx *sql.Tx, workspaceID string, changes
 		source, known := sources[c.ScheduleID]
 		bad := items[c.ItemID] == "" || c.ScheduleID == "" || (known && (schedules[c.ScheduleID] == "" || source.ItemID != c.ItemID)) || !oneOf(c.ChangeType, scheduleChangeTypes) || !oneOf(c.ReasonSource, []string{"system", "user"}) || (c.Role != nil && !oneOf(*c.Role, commitmentRoles))
 		if !bad {
-			if _, err := time.Parse(time.RFC3339Nano, c.RecordedAt); err != nil || hasNUL(c.Actor, c.Reason, c.RecordedAt, derefStr(c.OccurrenceKey), derefStr(c.BeforeJSON), derefStr(c.AfterJSON), derefStr(c.Role)) {
+			if _, err := time.Parse(time.RFC3339Nano, c.RecordedAt); err != nil || hasNUL(c.Actor, c.Reason, c.RecordedAt, c.ScheduleID, c.ItemID, derefStr(c.OccurrenceKey), derefStr(c.Role)) || hasJSONNUL(derefStr(c.BeforeJSON), derefStr(c.AfterJSON)) {
 				bad = true
 			}
 		}

@@ -683,9 +683,12 @@ func TestBundleV2_JournalRowNeedsTimeAndCleanText(t *testing.T) {
 	nul["actor"] = "a\x00b"
 	late := testChange("late", x["item_id"].(string), x["id"].(string))
 	late["recorded_at"] = ""
-	b["schedule_changes"] = []any{nul, late}
+	escaped := testChange("escaped", x["item_id"].(string), x["id"].(string))
+	escaped["after_json"] = `{"x":"\u0000"}`
+	badSchedule := testChange("badsched", x["item_id"].(string), "deleted\x00id")
+	b["schedule_changes"] = []any{nul, late, escaped, badSchedule}
 	_, rep := restoredBundle(t, f, b)
-	if len(rep.DroppedSchedules) != 2 {
+	if len(rep.DroppedSchedules) != 4 {
 		t.Fatalf("unclean journal rows not dropped: %+v", rep.DroppedSchedules)
 	}
 }
