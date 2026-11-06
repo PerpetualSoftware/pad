@@ -23,7 +23,7 @@ import (
 // primitives: CreateItem, CreateAttachment and DeleteItem each open and commit
 // their own transaction, so composing them would leave a window in which the
 // destination item exists without its attachments, or the source is archived
-// with no destination to point at. Everything below runs in ONE transaction.
+// with no destination to point at. All writes run in ONE transaction.
 //
 // AUTHORIZATION IS NOT HERE. This is a store primitive; it enforces data
 // invariants (scope, quota, seq, provenance) and nothing else. The four-step
@@ -84,9 +84,15 @@ import (
 // entirely, which is correct for a single-backend deployment.
 var ErrCopyCrossBackendAttachments = errors.New("copy item across workspaces: attachment bytes live in a different storage backend; cross-backend copy is not supported")
 
+// MaxCopyAttachmentRefs caps distinct references in a copy, not in item writes.
+const MaxCopyAttachmentRefs = 1000
+
+// ErrCopyTooManyAttachments rejects an oversized copy before any writes.
+var ErrCopyTooManyAttachments = errors.New("copy item across workspaces: too many attachment references")
+
 // ErrCopySourceCollectionMissing / ErrCopyTargetCollectionMissing are returned
 // when a collection that existed when the caller was authorized is gone by the
-// time this transaction re-reads it under the locks — soft-deleted, or (for the
+// time the copy reads it, before or under the locks — soft-deleted, or (for the
 // destination) never in the workspace the caller named.
 //
 // SENTINELS RATHER THAN fmt.Errorf, because the distinction is caller-facing.
@@ -180,8 +186,8 @@ func (e *CopyPreCheckError) Unwrap() error { return e.Err }
 
 // CrossWorkspaceCopyRequest is the complete input to CopyItemAcrossWorkspaces.
 // RelationVisibilityFunc reports whether the requester may see item, using the
-// caller-supplied executor so the answer comes from inside the copy's own
-// transaction rather than from a pool connection that cannot see its writes.
+// supplied executor. Under lock, that must be the copy's own transaction rather
+// than a pool connection that cannot see its writes.
 type RelationVisibilityFunc func(q Queryer, workspaceID string, item *models.Item) (bool, error)
 
 type CrossWorkspaceCopyRequest struct {
@@ -208,10 +214,10 @@ type CrossWorkspaceCopyRequest struct {
 	// so those errors are stale the moment an override lands).
 	FieldOverrides map[string]any
 
-	// RelationVisibility answers "may the requester see this item?" ON THE
-	// COPY'S OWN CONNECTION, so the copy can apply the visibility rule to a
-	// late-resolved destination default while it holds both workspaces'
-	// advisory locks (shape (b)).
+	// RelationVisibility answers "may the requester see this item?" using q:
+	// the pool for the advisory pre-lock field migration, and the copy's own
+	// connection under lock. This lets the copy check a late-resolved destination
+	// default without pool I/O while holding both workspace locks (shape (b)).
 	//
 	// It is a callback rather than a store method because visibility is
 	// REQUEST-SCOPED — it needs the requesting user, their role in the
@@ -493,13 +499,25 @@ func (s *Store) CopyItemAcrossWorkspaces(req CrossWorkspaceCopyRequest) (*CrossW
 	}
 
 	// Derive workspace A before opening the transaction. This read is used for
-	// NOTHING but the lock keys — every value the copy actually consumes is
-	// re-read under the locks below. An item cannot change workspace (no code
-	// path writes items.workspace_id), so a stale answer here is impossible in
-	// a way the in-tx re-read would not catch anyway.
+	// the lock keys and the advisory cap check below; every value the copy
+	// consumes is re-read under the locks.
 	sourceWorkspaceID, err := s.itemWorkspaceID(req.SourceItemID)
 	if err != nil {
 		return nil, err
+	}
+
+	// Advisory cap check before BEGIN, including the storage lock. It can only
+	// REFUSE: any other outcome (a read error, a missing or moved collection, a
+	// field-migration error) is left to the transaction, so those errors keep
+	// the precedence they have under the locks, after PreCheck. The cap refusal
+	// itself is the one answer that precedes PreCheck: the handler authorized this
+	// caller just before the call, and the preflight already tells the same caller
+	// the count. The authoritative check runs under the locks.
+	if s.copyExceedsAttachmentCap(req, sourceWorkspaceID) {
+		return nil, ErrCopyTooManyAttachments
+	}
+	if s.afterItemPreLockRead != nil {
+		s.afterItemPreLockRead(req.SourceItemID)
 	}
 
 	// An ownership change between the storage check's owner read and its
@@ -560,9 +578,9 @@ func (s *Store) CopyItemAcrossWorkspaces(req CrossWorkspaceCopyRequest) (*CrossW
 		}
 		return nil, err
 	}
-	// Measured, not bounded (TASK-4278): the copy holds both workspaces'
-	// advisory locks for its whole duration, so its cost is the wait every item
-	// writer in either workspace sees.
+	// Measure transaction duration: accepted copies hold both workspace locks.
+	// References are capped at 1,000 before locking and checked again under lock
+	// (TASK-4318); derived variant rows also contribute to the lock cost.
 	slog.Info("cross-workspace item copy done",
 		"source_workspace_id", sourceWorkspaceID,
 		"target_workspace_id", req.TargetWorkspaceID,
@@ -583,6 +601,32 @@ func (s *Store) itemWorkspaceID(itemID string) (string, error) {
 		return "", fmt.Errorf("copy item across workspaces: resolve source workspace: %w", err)
 	}
 	return workspaceID, nil
+}
+
+// copyExceedsAttachmentCap is the advisory, lock-free half of the cap. It
+// reports true only when the source, read on the pool and migrated to the
+// destination schema, references more than MaxCopyAttachmentRefs distinct
+// attachments. Every failure to decide returns false.
+func (s *Store) copyExceedsAttachmentCap(req CrossWorkspaceCopyRequest, sourceWorkspaceID string) bool {
+	source, err := s.GetItem(req.SourceItemID)
+	if err != nil || source == nil {
+		return false
+	}
+	sourceColl, err := s.GetCollection(source.CollectionID)
+	if err != nil || sourceColl == nil {
+		return false
+	}
+	targetColl, err := s.GetCollection(req.TargetCollectionID)
+	if err != nil || targetColl == nil || targetColl.WorkspaceID != req.TargetWorkspaceID {
+		return false
+	}
+	finalFields, _, _, err := s.migrateCopyFields(s.db, req.TargetWorkspaceID, targetColl, source.Fields, sourceColl, req.FieldOverrides,
+		items.ScopeFor(sourceWorkspaceID, req.TargetWorkspaceID), req.RelationVisibility)
+	if err != nil {
+		return false
+	}
+	n, err := CountAttachmentRefs(source.Content, finalFields)
+	return err == nil && n > MaxCopyAttachmentRefs
 }
 
 func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, sourceWorkspaceID string) (*CrossWorkspaceCopyResult, error) {
@@ -715,6 +759,16 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 	finalFields, dropped, notUnique, err := s.migrateCopyFields(tx, req.TargetWorkspaceID, targetColl, source.Fields, sourceColl, req.FieldOverrides, scope, req.RelationVisibility)
 	if err != nil {
 		return nil, err
+	}
+	// Authoritative cap check: the source may have grown since the advisory
+	// read. Count the planner's exact reference set without any database reads,
+	// before planning or inserting any rows.
+	n, err := CountAttachmentRefs(source.Content, finalFields)
+	if err != nil {
+		return nil, err
+	}
+	if n > MaxCopyAttachmentRefs {
+		return nil, ErrCopyTooManyAttachments
 	}
 
 	// --- Quota (DR-16), inside the transaction, before any insert. ---
@@ -1551,6 +1605,7 @@ func isExpectedCopyRejection(err error) bool {
 		errors.Is(err, ErrCopySourceCollectionMissing) ||
 		errors.Is(err, ErrCopyTargetCollectionMissing) ||
 		errors.Is(err, ErrCopyCrossBackendAttachments) ||
+		errors.Is(err, ErrCopyTooManyAttachments) ||
 		IsUniqueViolation(err)
 }
 
