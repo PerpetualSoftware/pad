@@ -174,7 +174,11 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 			pendingPaneLatch = null;
 			l?.run();
 		}, PANE_GO_SETTLE_MS);
-		history.go(delta);
+		// An open Chat surface sits on top of the pane's entries and carries the
+		// pane's state forward, so a pane traversal counts the entries Chat pushed
+		// too; otherwise it would only pop Chat and leave the pane where it was.
+		const chatEntries = page.shallow ? (page.state.chatDepth ?? 0) : 0;
+		history.go(delta - chatEntries);
 	}
 
 	// Settle the in-flight traversal on its own POPSTATE. `popstate` also covers

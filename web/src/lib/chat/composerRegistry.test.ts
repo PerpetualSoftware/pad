@@ -13,7 +13,9 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 	}
 }));
 
-import { beginSend, clearComposerRegistry, deliverRefusal, endSend, isSending, registerComposer } from './composerRegistry';
+import {
+	beginSend, clearComposerRegistry, deliverRefusal, endSend, isSending, notifyUnconfirmed, registerComposer, registerThreadView
+} from './composerRegistry';
 
 beforeEach(() => clearComposerRegistry());
 
@@ -63,5 +65,32 @@ describe('composer registry', () => {
 		expect(isSending('k2')).toBe(false);
 		endSend('k1');
 		expect(isSending('k1')).toBe(false);
+	});
+});
+
+describe('thread view registry', () => {
+	it('tells only the thread open for that user and conversation', () => {
+		const a = vi.fn();
+		const b = vi.fn();
+		registerThreadView('u1', 1, a);
+		registerThreadView('u1', 2, b);
+		notifyUnconfirmed('u1', 1, 'k');
+		notifyUnconfirmed('u2', 1, 'k');
+		expect(a).toHaveBeenCalledTimes(1);
+		expect(a).toHaveBeenCalledWith('k');
+		expect(b).not.toHaveBeenCalled();
+	});
+	it('a stale unregister leaves a newer view alone, and a cleared registry tells nobody', () => {
+		const old = vi.fn();
+		const fresh = vi.fn();
+		const dropOld = registerThreadView('u1', 1, old);
+		registerThreadView('u1', 1, fresh);
+		dropOld();
+		notifyUnconfirmed('u1', 1, 'k');
+		expect(fresh).toHaveBeenCalledTimes(1);
+		expect(old).not.toHaveBeenCalled();
+		clearComposerRegistry();
+		notifyUnconfirmed('u1', 1, 'k');
+		expect(fresh).toHaveBeenCalledTimes(1);
 	});
 });

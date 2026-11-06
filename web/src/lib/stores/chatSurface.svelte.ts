@@ -12,6 +12,7 @@
 //
 // Phone (<=768px) and route mode (the underlying URL is already /messages*) use
 // a plain `goto`; nothing here changes how a phone reaches Chat.
+import { untrack } from 'svelte';
 import { goto } from '$app/navigation';
 import { page } from '$app/state';
 import { viewport } from '$lib/stores/breakpoint.svelte';
@@ -51,6 +52,43 @@ function plainLeftClick(e: MouseEvent): boolean {
 	if (a && (a.target && a.target !== '_self')) return false;
 	if (a?.hasAttribute('download')) return false;
 	return true;
+}
+
+// history.go has no completion promise, so a second Close or Back issued before
+// the first one's popstate lands would pop past the opener. A traversal we issue
+// latches until the surface state it was issued from changes (the popstate
+// landed), or a bounded fallback, so a lost popstate cannot freeze Close.
+const GO_SETTLE_MS = 800;
+let goLatch: { from: string; timer: ReturnType<typeof setTimeout> } | null = null;
+
+function surfaceKey(): string {
+	return `${page.shallow?.url.href ?? ''}|${page.state.chatDepth ?? 0}|${page.state.chatFromInbox ? 1 : 0}`;
+}
+
+function releaseGo(): void {
+	if (goLatch) clearTimeout(goLatch.timer);
+	goLatch = null;
+}
+
+// The popstate landed when the key moves. Watching it here, not only when the next
+// Close asks, matters: Back then a fresh thread returns to the key Back left.
+$effect.root(() => {
+	$effect(() => {
+		const key = surfaceKey();
+		untrack(() => {
+			if (goLatch && goLatch.from !== key) releaseGo();
+		});
+	});
+});
+
+function traversing(): boolean {
+	if (goLatch && goLatch.from !== surfaceKey()) releaseGo();
+	return goLatch !== null;
+}
+
+function go(delta: number): void {
+	goLatch = { from: surfaceKey(), timer: setTimeout(releaseGo, GO_SETTLE_MS) };
+	history.go(delta);
 }
 
 export const chatSurface = {
@@ -101,10 +139,10 @@ export const chatSurface = {
 
 	/** Close the surface: pop what Chat pushed, which lands on the opening page. */
 	close(): void {
-		if (!this.isOpen) return;
+		if (!this.isOpen || traversing()) return;
 		const depth = this.depth;
 		if (depth > 0) {
-			history.go(-depth);
+			go(-depth);
 			return;
 		}
 		// No recorded depth (should not happen): put the underlying page back.
@@ -113,9 +151,9 @@ export const chatSurface = {
 
 	/** From a thread to the inbox: one entry back when the inbox is the entry below. */
 	back(): void {
-		if (this.target?.kind !== 'thread') return;
+		if (this.target?.kind !== 'thread' || traversing()) return;
 		if (page.state.chatFromInbox) {
-			history.go(-1);
+			go(-1);
 			return;
 		}
 		void goto('/messages', {
@@ -136,3 +174,8 @@ export const chatSurface = {
 		void this.open(href);
 	}
 };
+
+/** Test seam: forget any in-flight traversal. */
+export function __resetChatSurfaceForTests(): void {
+	releaseGo();
+}

@@ -107,6 +107,22 @@ describe('TopBar chat menu row (TASK-4044)', () => {
 	});
 });
 
+describe('TopBar chat menu row focus (TASK-4315 PR 3b)', () => {
+	it('leaves focus on the user-menu trigger, not on the row that is about to be removed', async () => {
+		render(TopBar, { props: {} });
+		await settle();
+		trigger().click();
+		await settle();
+		const a = row()!;
+		a.addEventListener('click', (e) => e.preventDefault());
+		a.focus();
+		a.click();
+		await settle();
+		expect(row()).toBeNull();
+		expect(document.activeElement).toBe(trigger());
+	});
+});
+
 describe('TopBar Chat button (TASK-4315 PR 3b)', () => {
 	const button = () => document.querySelector<HTMLAnchorElement>('header.topbar a.chat-button');
 

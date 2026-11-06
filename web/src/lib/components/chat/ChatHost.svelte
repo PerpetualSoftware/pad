@@ -9,6 +9,7 @@
 	import { chatSurface } from '$lib/stores/chatSurface.svelte';
 	import { coveredPage } from '$lib/stores/coveredPage.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
+	import { topEscapePriority, ESCAPE_PRIORITY } from '$lib/stores/escapeStack';
 	import { createFocusReturn } from '$lib/a11y/focusReturn';
 	import { isBlockedByModal } from '$lib/a11y/viewerBackdrop';
 	import { nextTrapTargetAcross } from '$lib/collections/paneFocus';
@@ -63,16 +64,29 @@
 	// Focus moves in on open and back to the invoker on close.
 	const focusReturn = createFocusReturn();
 	let wasOpen = false;
+	let shownView = '';
 	$effect(() => {
 		const isOpen = target !== null;
+		const view = target ? (target.kind === 'thread' ? `thread:${target.n}` : target.kind) : '';
 		untrack(() => {
 			if (isOpen && !wasOpen) {
 				focusReturn.save();
 				void tick().then(() => panelEl?.focus({ preventScroll: true }));
 			} else if (!isOpen && wasOpen) {
 				void tick().then(() => focusReturn.restore());
+			} else if (isOpen && view !== shownView) {
+				// Inbox to thread (or back) inside an open host destroys the link that was
+				// clicked, and focus falls to <body>. Bring it into the new view then; focus
+				// the reader put somewhere else is left alone.
+				void tick().then(() => {
+					const at = document.activeElement;
+					if (panelEl && (!at || at === document.body || !at.isConnected)) {
+						panelEl.focus({ preventScroll: true });
+					}
+				});
 			}
 			wasOpen = isOpen;
+			shownView = view;
 		});
 	});
 	$effect(() => () => void tick().then(() => focusReturn.restore()));
@@ -91,6 +105,13 @@
 		// A held Escape repeats; only the first press acts, and only when nothing
 		// frontmost (a confirm dialog, a menu's viewer) owns it.
 		if (e.key !== 'Escape' || e.repeat || isBlockedByModal(panelEl, e)) return;
+		// A layer inside the drawer (the message menu, portaled to <body>) owns the key
+		// while it is registered on the Escape stack, and a control or an IME composition
+		// that already used it has spoken for it. Page layers under the drawer (the list
+		// marker, the pane) sit below the menu priority and do not count.
+		if (e.defaultPrevented || e.isComposing) return;
+		const front = topEscapePriority();
+		if (front !== null && front >= ESCAPE_PRIORITY.menu) return;
 		chatSurface.close();
 	}
 </script>

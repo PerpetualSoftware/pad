@@ -271,6 +271,61 @@ describe('a send still in flight when the reader comes back', () => {
 		expect(listPending('u1', 1)).toEqual([]);
 	});
 
+	const pendingOf = (t: ChatThread) =>
+		t.items.flatMap((i) => (i.kind === 'pending' ? [i.pending] : []));
+
+	it('A->B->A: a send that then fails on the network surfaces as Send not confirmed, once', async () => {
+		const thread = newThread();
+		await thread.open(1);
+		const sending: Promise<SendOutcome> = thread.send('lost in transit');
+		await thread.open(2);
+		await thread.open(1);
+		expect(pendingOf(thread)).toEqual([]);
+		reject(new Error('network'));
+		expect(await sending).toBe('stale');
+		await flush();
+		expect(pendingOf(thread).map((p) => [p.body, p.status])).toEqual([['lost in transit', 'unconfirmed']]);
+		expect(listPending('u1', 1)).toHaveLength(1);
+	});
+
+	it('a fresh thread opened for the conversation also surfaces it after the failure', async () => {
+		const old = newThread();
+		await old.open(1);
+		const sending = old.send('lost too');
+		old.dispose();
+		const fresh = newThread();
+		await fresh.open(1);
+		expect(pendingOf(fresh)).toEqual([]);
+		reject(new Error('network'));
+		await sending;
+		await flush();
+		expect(pendingOf(fresh).map((p) => p.body)).toEqual(['lost too']);
+	});
+
+	it('the failure shows in no other conversation', async () => {
+		const thread = newThread();
+		await thread.open(1);
+		const sending = thread.send('mine');
+		await thread.open(2);
+		reject(new Error('network'));
+		await sending;
+		await flush();
+		expect(pendingOf(thread)).toEqual([]);
+	});
+
+	it('a refusal is not shown as unconfirmed', async () => {
+		const thread = newThread();
+		await thread.open(1);
+		const sending = thread.send('too big');
+		await thread.open(2);
+		await thread.open(1);
+		reject(Object.assign(new Error('refused'), { code: 'reply_target_deleted' }));
+		await sending;
+		await flush();
+		expect(pendingOf(thread)).toEqual([]);
+		expect(listPending('u1', 1)).toEqual([]);
+	});
+
 	it('a settled attempt is listed again by the next open (the in-flight mark is released)', async () => {
 		const thread = newThread();
 		await thread.open(1);

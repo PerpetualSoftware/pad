@@ -51,7 +51,9 @@ import { authStore } from '$lib/stores/auth.svelte';
 import { chatStore } from '$lib/stores/chat.svelte';
 import { refKey } from '$lib/chat/refs';
 import { getDraft, setDraft, savePending, removePending, listPending } from '$lib/chat/chatRecords';
-import { beginSend, deliverRefusal, endSend, isSending, type LateOutcome } from '$lib/chat/composerRegistry';
+import {
+	beginSend, deliverRefusal, endSend, isSending, notifyUnconfirmed, registerThreadView, type LateOutcome
+} from '$lib/chat/composerRegistry';
 import { newOpKey } from '$lib/opKey';
 import type { ChatConversationSummary, ChatMessage, ChatMessagesResponse, ChatRef } from '$lib/types';
 
@@ -121,6 +123,7 @@ export class ChatThread {
 	#marking = false;
 	#stopRoot: () => void;
 	#stopIdentity: () => void;
+	#stopView: () => void = () => {};
 
 	constructor() {
 		let first = true;
@@ -158,6 +161,8 @@ export class ChatThread {
 	// an identity change fetches nothing until the page opens it again (TASK-4044
 	// r1 H1, ruling on triage ba47338c). open() sets both straight after.
 	#reset() {
+		this.#stopView();
+		this.#stopView = () => {};
 		this.#n = null;
 		this.status = 'loading';
 		this.conversation = null;
@@ -238,6 +243,8 @@ export class ChatThread {
 			this.status = 'notFound';
 			return;
 		}
+		const userId = authStore.userId;
+		if (userId) this.#stopView = registerThreadView(userId, n, (opKey) => this.#surfaceUnconfirmed(n, opKey));
 		this.status = 'loading';
 		const current = this.#guard();
 		await this.#enqueue(current, async () => {
@@ -265,6 +272,26 @@ export class ChatThread {
 				if (current()) this.status = isNotFoundError(err) ? 'notFound' : 'failed';
 			}
 		});
+	}
+
+	/**
+	 * A send that was in flight when this thread opened has ended with no answer.
+	 * open() left its stored attempt out while it ran; show it as unconfirmed now.
+	 * (Still loading: open() lists it itself, the in-flight mark being gone.)
+	 */
+	#surfaceUnconfirmed(n: number, opKey: string) {
+		if (this.#n !== n || this.status !== 'ready') return;
+		if (this.#win.pending.some((p) => p.op_key === opKey)) return;
+		const record = listPending(authStore.userId, n).find((r) => r.op_key === opKey);
+		if (!record) return;
+		this.#win.pending = [
+			...this.#win.pending,
+			{
+				op_key: record.op_key, body: record.body, status: 'unconfirmed',
+				...(record.reply_seq !== null ? { reply_to_seq: record.reply_seq } : {})
+			}
+		];
+		this.#publishAfterWrite();
 	}
 
 	#enqueue(current: () => boolean, run: () => Promise<void>): Promise<void> {
@@ -465,14 +492,18 @@ export class ChatThread {
 
 	async #post(n: number, opKey: string, body: string, replyToSeq?: number): Promise<SendOutcome> {
 		beginSend(opKey);
+		const userId = authStore.userId;
+		const ended = { unanswered: false };
 		try {
-			return await this.#postOnce(n, opKey, body, replyToSeq);
+			return await this.#postOnce(n, opKey, body, replyToSeq, ended);
 		} finally {
 			endSend(opKey);
+			// After the mark is gone, so a thread still loading lists the attempt itself.
+			if (ended.unanswered && userId) notifyUnconfirmed(userId, n, opKey);
 		}
 	}
 
-	async #postOnce(n: number, opKey: string, body: string, replyToSeq?: number): Promise<SendOutcome> {
+	async #postOnce(n: number, opKey: string, body: string, replyToSeq: number | undefined, ended: { unanswered: boolean }): Promise<SendOutcome> {
 		const current = this.#guard();
 		const win = this.#win;
 		const userId = authStore.userId;
@@ -518,7 +549,10 @@ export class ChatThread {
 			if (isReplyTargetDeletedError(err)) return refused('reply_deleted');
 			if (isReplyTargetNotFoundError(err)) return refused('reply_missing');
 			if (isRequestTooLargeError(err)) return refused('too_large');
-			if (!current()) return 'stale';
+			if (!current()) {
+				ended.unanswered = true; // the attempt stays stored; a thread open now has not shown it
+				return 'stale';
+			}
 			win.failPending(opKey);
 			this.#publishAfterWrite();
 			this.#settled();
@@ -587,6 +621,7 @@ export class ChatThread {
 
 	dispose(): void {
 		this.#seq++;
+		this.#stopView();
 		this.#stopRoot();
 		this.#stopIdentity();
 	}

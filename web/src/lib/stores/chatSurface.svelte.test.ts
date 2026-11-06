@@ -22,7 +22,7 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 
 import { goto } from '$app/navigation';
 import { page } from '$app/state';
-import { chatSurface, parseChatPath, parseThreadNumber } from './chatSurface.svelte';
+import { chatSurface, parseChatPath, parseThreadNumber, __resetChatSurfaceForTests } from './chatSurface.svelte';
 
 const gotoMock = vi.mocked(goto);
 const asShallow = (path: string) =>
@@ -39,8 +39,12 @@ beforeEach(() => {
 	page.state = {};
 	(page as { shallow: unknown }).shallow = null;
 	gotoMock.mockClear();
+	__resetChatSurfaceForTests();
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+	vi.useRealTimers();
+	vi.restoreAllMocks();
+});
 
 describe('parseChatPath: the /messages route\'s own rule', () => {
 	it.each([
@@ -190,6 +194,59 @@ describe('close and back', () => {
 			replaceState: true,
 			state: { chatDepth: 1 }
 		});
+	});
+});
+
+describe('close and back are not re-entrant', () => {
+	function openAtDepth(path: string, state: Record<string, unknown>) {
+		(page as { shallow: unknown }).shallow = asShallow(path);
+		page.state = state;
+	}
+
+	it('a second close before the first traversal lands does not pop past the opener', () => {
+		const go = vi.spyOn(history, 'go').mockImplementation(() => {});
+		openAtDepth('/messages', { chatDepth: 1 });
+		chatSurface.close();
+		chatSurface.close();
+		expect(go).toHaveBeenCalledTimes(1);
+		expect(go).toHaveBeenCalledWith(-1);
+	});
+
+	it('a second back from a depth-2 thread does not pop the inbox as well', () => {
+		const go = vi.spyOn(history, 'go').mockImplementation(() => {});
+		openAtDepth('/messages/4', { chatDepth: 2, chatFromInbox: true });
+		chatSurface.back();
+		chatSurface.back();
+		expect(go).toHaveBeenCalledTimes(1);
+	});
+
+	it('a close after a back that is still travelling is also held', () => {
+		const go = vi.spyOn(history, 'go').mockImplementation(() => {});
+		openAtDepth('/messages/4', { chatDepth: 2, chatFromInbox: true });
+		chatSurface.back();
+		chatSurface.close();
+		expect(go).toHaveBeenCalledTimes(1);
+	});
+
+	it('releases when the surface state actually changes', () => {
+		const go = vi.spyOn(history, 'go').mockImplementation(() => {});
+		openAtDepth('/messages/4', { chatDepth: 2, chatFromInbox: true });
+		chatSurface.back();
+		// the popstate landed: the inbox, one entry deep
+		openAtDepth('/messages', { chatDepth: 1 });
+		chatSurface.close();
+		expect(go).toHaveBeenCalledTimes(2);
+		expect(go).toHaveBeenLastCalledWith(-1);
+	});
+
+	it('releases on its own if no state change ever arrives', () => {
+		vi.useFakeTimers();
+		const go = vi.spyOn(history, 'go').mockImplementation(() => {});
+		openAtDepth('/messages', { chatDepth: 1 });
+		chatSurface.close();
+		vi.advanceTimersByTime(2000);
+		chatSurface.close();
+		expect(go).toHaveBeenCalledTimes(2);
 	});
 });
 

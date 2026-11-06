@@ -10,6 +10,8 @@
 //   by anything but (user, n), so a refusal cannot reach another conversation.
 // - Sends: op_keys whose POST has not answered. open() does not list a stored
 //   attempt that is still in flight as "Send not confirmed". No body matching.
+//   When such a send then ends without an answer (the network), the thread now
+//   open for (user, n) is told, and shows the stored attempt then.
 import { authStore } from '$lib/stores/auth.svelte';
 import type { SendOutcome } from '$lib/stores/chatThread.svelte';
 
@@ -19,6 +21,7 @@ export type RestoreFn = (body: string, outcome: LateOutcome, replySeq: number | 
 
 const composers = new Map<string, RestoreFn>();
 const sending = new Set<string>();
+const views = new Map<string, (opKey: string) => void>();
 const slot = (userId: string, n: number) => `${userId}\u0000${n}`;
 
 /** Register the live composer; the returned function unregisters it unless a newer one replaced it. */
@@ -48,7 +51,22 @@ export function isSending(opKey: string): boolean {
 	return sending.has(opKey);
 }
 
+/** The thread open for (user, n) hears of a send that ended unanswered after it was opened. */
+export function registerThreadView(userId: string, n: number, surface: (opKey: string) => void): () => void {
+	const key = slot(userId, n);
+	views.set(key, surface);
+	return () => {
+		if (views.get(key) === surface) views.delete(key);
+	};
+}
+
+/** A send ended without an answer or a refusal: tell the thread open for (user, n), if any. */
+export function notifyUnconfirmed(userId: string, n: number, opKey: string): void {
+	views.get(slot(userId, n))?.(opKey);
+}
+
 export function clearComposerRegistry(): void {
+	views.clear();
 	composers.clear();
 	sending.clear();
 }

@@ -1,6 +1,6 @@
 import { test, expect } from './fixtures';
 import type { Page } from '@playwright/test';
-import { browserLogin, EDITOR_SELECTOR, SYNCED_BADGE_SELECTOR, SYNC_TIMEOUT } from './lib/collab-helpers';
+import { browserLogin, seedDoc, EDITOR_SELECTOR, SYNCED_BADGE_SELECTOR, SYNC_TIMEOUT } from './lib/collab-helpers';
 import { createChatUser, loginViaForm } from './lib/chat-users';
 
 /**
@@ -242,4 +242,32 @@ test('a number that is invalid reads like a number that is not yours', async ({ 
 	} finally {
 		await ctx.close();
 	}
+});
+
+test('closing the item pane while Chat is open pops Chat and the pane together', async ({ page, request, fixture }, testInfo) => {
+	test.skip(testInfo.project.name !== 'desktop-chromium', 'desktop only');
+	test.setTimeout(60_000);
+	await createAdminDM(request, fixture, uniqueAgent('pane'));
+	await seedDoc(fixture, request, 'Chat over pane');
+	await page.setViewportSize({ width: 1600, height: 900 });
+	await browserLogin(page);
+	await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/docs?view=list`);
+	const prePaneUrl = page.url();
+	const row = page.locator('.item-card').first();
+	await expect(row).toBeVisible();
+	await row.click();
+	const pane = page.locator('.item-pane');
+	await expect(pane).toBeVisible();
+
+	await chatButton(page).click();
+	const region = page.getByRole('complementary', { name: 'Chat' });
+	await expect(region).toBeVisible();
+	await expect(pane).toBeVisible();
+
+	// The pane's close counts the entries Chat pushed on top of its own, so one
+	// click leaves neither the pane nor Chat half open.
+	await pane.locator('button[aria-label="Close pane"]').click();
+	await expect(pane).toBeHidden();
+	await expect(region).toBeHidden();
+	await expect.poll(() => page.url()).toBe(prePaneUrl);
 });

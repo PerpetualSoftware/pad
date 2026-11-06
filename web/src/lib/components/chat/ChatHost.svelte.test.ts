@@ -80,6 +80,9 @@ import ChatHost from './ChatHost.svelte';
 import { page } from '$app/state';
 import { chatInbox } from '$lib/stores/chatInbox.svelte';
 import { coveredPage, __resetCoveredPageForTests } from '$lib/stores/coveredPage.svelte';
+import { pushEscapeHandler, ESCAPE_PRIORITY, _resetEscapeStackForTests } from '$lib/stores/escapeStack';
+import { uiStore } from '$lib/stores/ui.svelte';
+import { chatSurface, __resetChatSurfaceForTests } from '$lib/stores/chatSurface.svelte';
 
 Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
 
@@ -161,6 +164,8 @@ beforeEach(() => {
 afterEach(() => {
 	cleanup();
 	__resetCoveredPageForTests();
+	_resetEscapeStackForTests();
+	__resetChatSurfaceForTests();
 	chatInbox.stopPresence();
 	vi.unstubAllGlobals();
 	vi.restoreAllMocks();
@@ -356,5 +361,137 @@ describe('Conversation not found', () => {
 		const missing = b.container.querySelector('[role="complementary"]')!.innerHTML;
 		expect(b.container.textContent).toContain('Conversation not found');
 		expect(missing).toBe(invalid);
+	});
+});
+
+describe('Escape in the drawer', () => {
+	const press = (init: KeyboardEventInit = {}, before?: (e: KeyboardEvent) => void) => {
+		const e = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true, ...init });
+		before?.(e);
+		window.dispatchEvent(e);
+		return e;
+	};
+
+	async function drawer() {
+		setWidth(1100);
+		openAt('/messages', { chatDepth: 1 });
+		const r = render(ChatHost);
+		await settle();
+		expect(r.container.querySelector('[role="dialog"]')).not.toBeNull();
+		return r;
+	}
+
+	it('closes the drawer on a plain Escape', async () => {
+		const go = vi.spyOn(history, 'go').mockImplementation(() => {});
+		await drawer();
+		press();
+		expect(go).toHaveBeenCalledWith(-1);
+	});
+
+	it('leaves the key to a nested layer that owns it (a portaled menu)', async () => {
+		const go = vi.spyOn(history, 'go').mockImplementation(() => {});
+		await drawer();
+		const off = pushEscapeHandler(() => true, ESCAPE_PRIORITY.menu);
+		press();
+		expect(go).not.toHaveBeenCalled();
+		off();
+		press();
+		expect(go).toHaveBeenCalledTimes(1);
+	});
+
+	it('ignores an Escape another handler already used', async () => {
+		const go = vi.spyOn(history, 'go').mockImplementation(() => {});
+		await drawer();
+		press({}, (e) => e.preventDefault());
+		expect(go).not.toHaveBeenCalled();
+	});
+
+	it('ignores the Escape that ends IME composition', async () => {
+		const go = vi.spyOn(history, 'go').mockImplementation(() => {});
+		await drawer();
+		press({ isComposing: true });
+		expect(go).not.toHaveBeenCalled();
+	});
+});
+
+describe('Close right after a Back that has landed', () => {
+	it('is not held by that Back when the surface returns to the state Back left', async () => {
+		const go = vi.spyOn(history, 'go').mockImplementation(() => {});
+		openAt('/messages/3', { chatDepth: 2, chatFromInbox: true });
+		render(ChatHost);
+		await settle();
+		chatSurface.back();
+		expect(go).toHaveBeenCalledTimes(1);
+		openAt('/messages', { chatDepth: 1 }); // the popstate landed
+		await settle();
+		openAt('/messages/3', { chatDepth: 2, chatFromInbox: true }); // chosen again
+		await settle();
+		chatSurface.close();
+		expect(go).toHaveBeenCalledTimes(2);
+		expect(go).toHaveBeenLastCalledWith(-2);
+	});
+});
+
+describe('focus in the host', () => {
+	it('moves into the new view when the clicked link goes away (inbox to thread)', async () => {
+		h.getConversation.mockResolvedValue(conv(3));
+		openAt('/messages', { chatDepth: 1 });
+		const { container } = render(ChatHost);
+		await settle();
+		const link = container.querySelector<HTMLAnchorElement>('a[href="/messages/3"]')!;
+		link.focus();
+		expect(document.activeElement).toBe(link);
+		openAt('/messages/3', { chatDepth: 2, chatFromInbox: true });
+		await settle();
+		const panel = container.querySelector<HTMLElement>('[data-chat-host]')!;
+		expect(link.isConnected).toBe(false);
+		expect(panel.contains(document.activeElement)).toBe(true);
+	});
+
+	it('does not take focus from somewhere else on a view change', async () => {
+		openAt('/messages', { chatDepth: 1 });
+		const outside = document.createElement('button');
+		document.body.append(outside);
+		const { container } = render(ChatHost);
+		await settle();
+		outside.focus();
+		openAt('/messages/3', { chatDepth: 2, chatFromInbox: true });
+		await settle();
+		expect(document.activeElement).toBe(outside);
+		expect(container.querySelector('[data-chat-host]')).not.toBeNull();
+		outside.remove();
+	});
+
+	it('returns focus to the opener on close, and records nothing when the opener is already gone', async () => {
+		const opener = document.createElement('button');
+		document.body.append(opener);
+		opener.focus();
+		openAt('/messages', { chatDepth: 1 });
+		render(ChatHost);
+		await settle();
+		page.shallow = null;
+		await settle();
+		expect(document.activeElement).toBe(opener);
+		opener.remove();
+	});
+});
+
+describe('dock or drawer follows the sidebar', () => {
+	it('closing and reopening the sidebar re-decides without a resize', async () => {
+		setWidth(1200);
+		openAt('/messages', { chatDepth: 1 });
+		const { container } = render(ChatHost);
+		await settle();
+		const wasOpen = uiStore.sidebarOpen;
+		if (!wasOpen) uiStore.openSidebar();
+		await settle();
+		expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+		uiStore.closeSidebar();
+		await settle();
+		expect(container.querySelector('[role="complementary"]')).not.toBeNull();
+		uiStore.openSidebar();
+		await settle();
+		expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+		if (!wasOpen) uiStore.closeSidebar();
 	});
 });

@@ -453,6 +453,10 @@
 
 	function closeUserMenu() {
 		userMenuOpen = false;
+		// The row that was clicked leaves the DOM with the menu. Park focus on the
+		// trigger first so whatever the click opens (Chat remembers the focused
+		// element to return to) never records a node that is about to disappear.
+		userTriggerEl?.focus();
 	}
 
 	// ── Workspace-link click ─────────────────────────────────────────────
