@@ -27,8 +27,8 @@ describe('chat UI sources', () => {
 		expect(body).not.toMatch(/innerHTML|insertAdjacentHTML|outerHTML|createContextualFragment/);
 	});
 
-	// A touch long press opens the action menu; without this rule iOS starts its own callout and
-	// text selection under the same 500 ms hold (the rule was dropped once with the old bubble CSS).
+	// -webkit-touch-callout: none suppresses only iOS's callout menu on the row.
+	// It does not stop text selection (user-select is untouched); the long press opens our action menu instead.
 	it('keeps the iOS touch callout off the message row', () => {
 		const row = Object.entries(sources).find(([n]) => n.endsWith('/MessageBubble.svelte'))![1];
 		expect(row).toMatch(/\.bubble\s*\{[^}]*-webkit-touch-callout:\s*none/);
