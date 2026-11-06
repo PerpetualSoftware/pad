@@ -108,8 +108,14 @@ func (s *Store) scheduleRolesQ(q Queryer, id string) (*models.ScheduleRolesExpor
 	return &r, nil
 }
 
-func (s *Store) scheduleOverridesQ(q Queryer, workspaceID string) (map[string][]models.ScheduleOverrideExport, error) {
-	rows, err := q.Query(s.q(`SELECT o.schedule_id,o.occurrence_key,o.role,o.value_at,COALESCE(o.value_wall,''),o.created_at,o.updated_at FROM schedule_occurrence_overrides o JOIN item_schedules sc ON sc.id=o.schedule_id WHERE sc.workspace_id=? ORDER BY o.schedule_id,o.occurrence_key,o.role`), workspaceID)
+func (s *Store) scheduleOverridesQ(q Queryer, workspaceID, scheduleID string) (map[string][]models.ScheduleOverrideExport, error) {
+	query := `SELECT o.schedule_id,o.occurrence_key,o.role,o.value_at,COALESCE(o.value_wall,''),o.created_at,o.updated_at FROM schedule_occurrence_overrides o JOIN item_schedules sc ON sc.id=o.schedule_id WHERE sc.workspace_id=?`
+	args := []any{workspaceID}
+	if scheduleID != "" {
+		query += ` AND sc.id=?`
+		args = append(args, scheduleID)
+	}
+	rows, err := q.Query(s.q(query+` ORDER BY o.schedule_id,o.occurrence_key,o.role`), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -127,11 +133,14 @@ func (s *Store) scheduleOverridesQ(q Queryer, workspaceID string) (map[string][]
 }
 
 func (s *Store) scheduleChangesQ(q Queryer, workspaceID, scheduleID string) ([]models.ScheduleChangeExport, error) {
-	query := `SELECT id,item_id,schedule_id,occurrence_key,change_type,role,before_json,after_json,actor,reason,reason_source,root_change_id,parent_change_id,recorded_at FROM schedule_changes WHERE workspace_id=? AND item_id IN (SELECT id FROM items WHERE workspace_id=? AND deleted_at IS NULL)`
-	args := []any{workspaceID, workspaceID}
+	query := `SELECT id,item_id,schedule_id,occurrence_key,change_type,role,before_json,after_json,actor,reason,reason_source,root_change_id,parent_change_id,recorded_at FROM schedule_changes WHERE workspace_id=?`
+	args := []any{workspaceID}
 	if scheduleID != "" {
 		query += ` AND schedule_id=?`
 		args = append(args, scheduleID)
+	} else {
+		query += ` AND item_id IN (SELECT id FROM items WHERE workspace_id=? AND deleted_at IS NULL)`
+		args = append(args, workspaceID)
 	}
 	rows, err := q.Query(s.q(query+` ORDER BY recorded_at,id`), args...)
 	if err != nil {

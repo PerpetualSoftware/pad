@@ -502,7 +502,7 @@ func (s *Store) exportSchedules(q Queryer, workspaceID string) ([]models.Schedul
 	}
 	or.Close()
 
-	overrides, err := s.scheduleOverridesQ(q, workspaceID)
+	overrides, err := s.scheduleOverridesQ(q, workspaceID, "")
 	if err != nil {
 		return nil, err
 	}

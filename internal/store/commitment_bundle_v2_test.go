@@ -565,6 +565,13 @@ func TestMoveRefusedWhenRolesCannotCarry(t *testing.T) {
 	if c.count(t, `SELECT COUNT(*) FROM items`) != before || c.sched(t, c.wsA.ID, c.src.ID).EndedAt != nil {
 		t.Fatal("refused move mutated workspaces")
 	}
+	if live, err := c.s.GetItem(c.src.ID); err != nil || live == nil {
+		t.Fatalf("refused move archived source: %v", err)
+	}
+	if c.count(t, `SELECT COUNT(*) FROM schedule_changes WHERE schedule_id=?`, sc.ID) != 1 {
+		t.Fatal("refused move appended journal history")
+	}
+
 }
 
 func TestCopyPreflightMatchesCopyForNativeRoles(t *testing.T) {
