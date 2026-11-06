@@ -12,7 +12,7 @@
 </script>
 {#snippet body()}
  <div class="detail">
-  <div class="heading"><h2 id={uid}>{day ? dayLabel(day,true) : ''}</h2><Button onclick={onclose}>Close</Button></div>
+  {#if !viewport.isMobile}<div class="heading"><h2 id={uid}>{day ? dayLabel(day,true) : ''}</h2><Button onclick={onclose}>Close</Button></div>{/if}
   <p>Time zone: {zone}</p>
   <div class="entries">
    <CalendarNotice {data} {onfilters} {onlist} />
