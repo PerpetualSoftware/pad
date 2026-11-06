@@ -124,7 +124,7 @@ describe('starredStore across an identity change', () => {
 
 		let reject!: (e: unknown) => void;
 		api.items.unstar.mockReturnValueOnce(new Promise((_, r) => { reject = r; }));
-		const toggling = starredStore.toggle('ws', 'item-a-slug', 'item-a');
+		const toggling = starredStore.toggle('ws', 'item-a');
 		// PRECONDITION: the optimistic REMOVE landed, so the revert is an add.
 		expect(starredStore.isStarred('item-a')).toBe(false);
 

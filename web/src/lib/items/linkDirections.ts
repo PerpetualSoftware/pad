@@ -52,8 +52,8 @@ export function linkSentence(d: LinkDirection, thisRef: string): string {
  */
 export function linkEnds(
 	d: LinkDirection,
-	current: { slug: string; id: string },
-	picked: { slug: string; id: string }
-): { fromSlug: string; targetId: string } {
-	return d.inverse ? { fromSlug: picked.slug, targetId: current.id } : { fromSlug: current.slug, targetId: picked.id };
+	current: { id: string },
+	picked: { id: string }
+): { fromId: string; targetId: string } {
+	return d.inverse ? { fromId: picked.id, targetId: current.id } : { fromId: current.id, targetId: picked.id };
 }

@@ -165,7 +165,7 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 		bareAwaits: ['await new Promise((r) => setTimeout(r, 50));'],
 	},
 	refreshLinksPreservingOnFailure: {
-		reviewed: '24e063153ae8',
+		reviewed: '5a2b906bea09',
 		why: 'returns a value; its callers fence. BUG-2992: records the links debt against the item id captured BEFORE the await; retryLinks re-checks item, workspace and itemGen before it commits, so a record for an item no longer on screen settles with no write',
 		may: ['linksRetry.succeeded', 'linksRetry.failed'],
 	},
@@ -174,7 +174,7 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	retryLinks: { reviewed: '02f3c7b0522b', why: 'item id, workspace and itemGen after the await; commits only when nothing wrote the links since' },
 	// BUG-3036: the re-read an SSE event or sync pass deferred while a save was in
 	// flight. The SSE item_updated shape: itemGen and the item id after each await.
-	runOwedRefresh: { reviewed: '3a2f84926f6f', why: 'destroyed, itemGen and the item id after each await, as the SSE item_updated re-read it stands in for (destroyed since BUG-3198: the load path calls it too)' },
+	runOwedRefresh: { reviewed: 'd407b4b0154a', why: 'destroyed, itemGen and the item id after each await, as the SSE item_updated re-read it stands in for (destroyed since BUG-3198: the load path calls it too)' },
 	flushCollabBeforeRestore: { reviewed: '7ed00ea2d13d', why: 'identityHeld before its failure toast' },
 	closeCopyDialog: { reviewed: '1c925f081a26', why: 'restores focus after closing synchronously', may: ['paneMenuTrigger.focus'] },
 	closePushDialog: { reviewed: 'bda8c7529677', why: 'restores focus after closing synchronously', may: ['paneMenuTrigger.focus'] },
@@ -185,9 +185,9 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	handleRestore: { reviewed: 'c3159dbc0aca', why: 'switchedAway on every arm' },
 	handleDeleteLink: { reviewed: '64385ff65a32', why: 'switchedAway after each await' },
 	// TASK-3537: re-reviewed; this unit's body is unchanged. It re-hashed because the $lib/types import line it names lost getTerminalOptions (the dead terminalStatuses feed).
-	handleCreateLink: { reviewed: '136af0b2effb', why: 'switchedAway after each await; the append is skipped when a refresh already holds the link (TASK-3539)' },
+	handleCreateLink: { reviewed: '1862d54aba8d', why: 'switchedAway after each await; the append is skipped when a refresh already holds the link (TASK-3539)' },
 	// TASK-3537: re-reviewed; this unit's body is unchanged. It re-hashed because the $lib/types import line it names lost getTerminalOptions (the dead terminalStatuses feed).
-	handleMove: { reviewed: 'c917615079d0', why: 'stillOnSource() on every arm, including inside navIfStillCurrent, and before the BUG-3200 needs-value handoff writes the dialog state' },
+	handleMove: { reviewed: '254f145d162e', why: 'stillOnSource() on every arm, including inside navIfStillCurrent, and before the BUG-3200 needs-value handoff writes the dialog state' },
 	// BUG-3230 U0: the pending-edits question for the pane's raw and fallback
 	// saves, and the recovery offer for markdown an unload save could not store.
 	// TASK-3537: re-reviewed; this unit's body is unchanged. It re-hashed because the $lib/types import line it names lost getTerminalOptions (the dead terminalStatuses feed).
@@ -234,8 +234,8 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 
 /** Async functions that are not top-level declarations, in the script. */
 const NESTED: SignedRow[] = [
-	{ body: /event\.type === 'collection_updated'/, why: 'SSE: callbackGen after the collection fetch, itemGen on item branches; a change or a migration arriving before this load installs its item is only RECORDED (BUG-3198), synchronously, before any await', reviewed: '18dd138469bc' },
-	{ body: /result\.type === 'caught_up'/, why: 'sync: callbackGen after the reconciliation, itemGen on item branches; a result arriving before this load installs its item is only RECORDED (BUG-3198), synchronously, before any await', reviewed: '7012162749db' },
+	{ body: /event\.type === 'collection_updated'/, why: 'SSE: callbackGen after the collection fetch, itemGen on item branches; a change or a migration arriving before this load installs its item is only RECORDED (BUG-3198), synchronously, before any await', reviewed: '3d45012fc027' },
+	{ body: /result\.type === 'caught_up'/, why: 'sync: callbackGen after the reconciliation, itemGen on item branches; a result arriving before this load installs its item is only RECORDED (BUG-3198), synchronously, before any await', reviewed: '2aa21328adf2' },
 	{
 		body: /flushCollabContent\(/,
 		in: '(top level)',
