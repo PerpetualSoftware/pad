@@ -275,7 +275,7 @@ test.describe('BUG-3115: a refused title keeps the typed text', () => {
 		);
 		expect(created.ok(), await created.text()).toBeTruthy();
 		const pb = (await created.json()) as { id: string; slug: string };
-		const patches = titleWrites(page, 'PATCH', `/items/${pb.slug}`);
+		const patches = titleWrites(page, 'PATCH', `/items/${pb.id}`);
 
 		await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/playbooks/${pb.slug}`);
 		const input = page.locator('input.title-input');
