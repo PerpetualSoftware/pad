@@ -1910,12 +1910,60 @@ export interface View {
 	collection_id?: string;
 	name: string;
 	slug: string;
-	view_type: 'list' | 'board' | 'table';
+	view_type: 'list' | 'board' | 'table' | 'calendar';
 	config: string;
 	sort_order: number;
 	is_default: boolean;
 	created_at: string;
 	updated_at: string;
+}
+
+// ─── Calendar ────────────────────────────────────────────────────────────────
+
+/** One item placed on a day by the calendar read (TASK-4239). */
+export interface CalendarItem {
+	item: Item;
+	/** The viewer's day (YYYY-MM-DD) the item is placed on. */
+	day: string;
+	/** Last day of a span that starts on `day` (end_field), when there is one. */
+	end_day?: string;
+}
+
+export interface CalendarEntry {
+	type: 'schedule' | 'date';
+	at: string;
+	day: string;
+	item_ref: string;
+	item_title: string;
+	collection: string;
+	[key: string]: unknown;
+}
+
+export interface CalendarResponse {
+	from: string;
+	to: string;
+	tz: string;
+	timezone_note?: string;
+	items: CalendarItem[];
+	entries: CalendarEntry[];
+	/** True when the 500-entry cap cut the answer, or a schedule could not be fully expanded. */
+	truncated?: boolean;
+	/** The first day (YYYY-MM-DD) not shown; ask again from the start of it. Absent when nothing is promised. */
+	next_from?: string;
+	/** Set only when ONE day alone is over the cap: that day shows part of its entries. */
+	partial_day?: string;
+	unexpanded?: { schedule_id: string; item_ref: string; item_title: string; collection: string; reason: string }[];
+	unavailable?: { item_ref: string; code: string }[];
+}
+
+export interface CalendarQuery {
+	date_field: string;
+	end_field?: string;
+	from: string;
+	to: string;
+	tz?: string;
+	/** Any item-list filter parameter, such as status=open. */
+	[filter: string]: string | undefined;
 }
 
 // ─── Activity ────────────────────────────────────────────────────────────────

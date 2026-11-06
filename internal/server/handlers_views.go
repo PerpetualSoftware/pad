@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -113,6 +114,9 @@ func (s *Server) handleCreateView(w http.ResponseWriter, r *http.Request) {
 	}
 
 	input.CollectionID = &coll.ID
+	if !s.validateCalendarView(w, coll, input.ViewType, input.Config) {
+		return
+	}
 
 	view, err := s.store.CreateView(workspaceID, input)
 	if err != nil {
@@ -121,6 +125,37 @@ func (s *Server) handleCreateView(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, view)
+}
+
+// validateCalendarView refuses (400) a calendar view whose config does not name
+// usable fields of coll. Any other view_type is not checked. It writes the
+// refusal itself and reports whether the view may be stored.
+func (s *Server) validateCalendarView(w http.ResponseWriter, coll *models.Collection, viewType, config string) bool {
+	if viewType != models.CalendarViewType {
+		return true
+	}
+	if coll == nil {
+		writeError2(w, http.StatusBadRequest, "validation_error", "A calendar view belongs to a collection",
+			map[string]interface{}{"field": "collection_id", "code": models.CalendarCodeConfig})
+		return false
+	}
+	var schema models.CollectionSchema
+	if coll.Schema != "" {
+		if err := models.UnmarshalItemFieldSchema([]byte(coll.Schema), &schema); err != nil {
+			writeInternalError(w, fmt.Errorf("collection %s: unreadable schema: %w", coll.ID, err))
+			return false
+		}
+	}
+	if cerr := models.ValidateCalendarViewConfig(config, schema); cerr != nil {
+		writeCalendarConfigError(w, cerr)
+		return false
+	}
+	return true
+}
+
+func writeCalendarConfigError(w http.ResponseWriter, cerr *models.CalendarConfigError) {
+	writeError2(w, http.StatusBadRequest, "validation_error", cerr.Message,
+		map[string]interface{}{"field": cerr.Field, "code": cerr.Code})
 }
 
 // requireViewVisible looks up a view by ID, verifies it belongs to the
@@ -199,6 +234,36 @@ func (s *Server) handleUpdateView(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		input.Config = &config
+	}
+
+	if input.ViewType != nil || input.Config != nil {
+		// The merged result is what gets stored, so that is what is checked.
+		viewType, config := existingView.ViewType, existingView.Config
+		if input.ViewType != nil {
+			viewType = *input.ViewType
+		}
+		if input.Config != nil {
+			config = *input.Config
+		}
+		var coll *models.Collection
+		if viewType == models.CalendarViewType {
+			if existingView.CollectionID != nil {
+				var err error
+				if coll, err = s.store.GetCollection(*existingView.CollectionID); err != nil {
+					writeInternalError(w, err)
+					return
+				}
+				if coll == nil {
+					// The collection is gone (soft-deleted or removed): the view
+					// answers as one that does not exist, as on a read.
+					writeError(w, http.StatusNotFound, "not_found", "View not found")
+					return
+				}
+			}
+		}
+		if !s.validateCalendarView(w, coll, viewType, config) {
+			return
+		}
 	}
 
 	view, err := s.store.UpdateView(viewID, input)

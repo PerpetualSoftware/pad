@@ -115,7 +115,7 @@ func (s *Store) BootstrapAgenda(p BootstrapAgendaParams) (*BootstrapAgendaSet, e
 	if len(found) == 0 {
 		return set, nil
 	}
-	if err := s.fillAgendaItemFacts(found); err != nil {
+	if err := s.fillAgendaItemFacts(found, "", nil); err != nil {
 		return nil, err
 	}
 	outstanding, err := s.outstandingAgendaRows(found, loc)
