@@ -36,6 +36,7 @@
 	interface Props {
 		/** Initial markdown body. Parsed as markdown on mount. */
 		content?: string;
+		ariaLabel?: string;
 		placeholder?: string;
 		/** Workspace slug — required for attachment upload + image URLs. */
 		wsSlug: string;
@@ -75,6 +76,7 @@
 
 	let {
 		content = '',
+		ariaLabel = 'Comment',
 		placeholder = 'Write a comment…',
 		wsSlug,
 		itemId,
@@ -302,6 +304,7 @@
 				})
 			],
 			editorProps: {
+				attributes: { 'aria-label': ariaLabel, 'aria-multiline': 'true', role: 'textbox' },
 				handleKeyDown: (_view, event) => {
 					if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
 						event.preventDefault();

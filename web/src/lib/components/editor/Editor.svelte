@@ -589,6 +589,7 @@
 
 	let {
 		content = '',
+		ariaLabel = 'Item content',
 		editable = true,
 		itemId,
 		hostToken = '',
@@ -602,6 +603,7 @@
 		onImportInserted,
 	}: {
 		content?: string;
+		ariaLabel?: string;
 		editable?: boolean;
 		/**
 		 * UUID of the item being edited. Sent with attachment uploads so the
@@ -1213,6 +1215,7 @@
 		editor = new Editor({
 			element,
 			editable,
+			onCreate: ({ editor: created }) => syncReadonlyAria(created, editable),
 			extensions,
 			content,
 			onUpdate: ({ editor: e }) => {
@@ -1257,6 +1260,7 @@
 				editorTick++;
 			},
 			editorProps: {
+				attributes: { 'aria-label': ariaLabel, 'aria-multiline': 'true', role: 'textbox' },
 				handleKeyDown: (_view, event) => {
 					// --- [[ link picker ---
 					// Opens on a `[` typed right after a `[` (TASK-2218, C41). It
@@ -1421,11 +1425,21 @@
 		}
 	});
 
+	// A textbox role with no read-only state is announced as editable. editorProps.attributes is
+	// fixed at construction (and `editable` flips live), so the state is kept on the DOM node here.
+	function syncReadonlyAria(instance: Editor | null | undefined, isEditable: boolean) {
+		const dom = instance?.view?.dom;
+		if (!dom) return;
+		if (isEditable) dom.removeAttribute('aria-readonly');
+		else dom.setAttribute('aria-readonly', 'true');
+	}
+
 	$effect(() => {
 		// Only react to editable prop changes, not editor state changes
 		const shouldBeEditable = editable;
 		untrack(() => {
 			editor?.setEditable(shouldBeEditable);
+			syncReadonlyAria(editor, shouldBeEditable);
 		});
 	});
 

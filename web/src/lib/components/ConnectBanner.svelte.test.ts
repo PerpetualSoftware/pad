@@ -4,7 +4,7 @@
 // it is showing, without blanking itself during the re-check, and stops once
 // activity is seen.
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { cleanup, render } from '@testing-library/svelte';
+import { cleanup, render, screen } from '@testing-library/svelte';
 import { tick } from 'svelte';
 
 const mocks = vi.hoisted(() => ({
@@ -146,5 +146,47 @@ describe('ConnectBanner follows agent activity live (BUG-3447)', () => {
 		await flush();
 		expect(mocks.gets).toBe(2);
 		expect(banner()).toBeNull();
+	});
+});
+
+
+describe('ConnectBanner keyboard path (BUG-4336)', () => {
+	it('has a plain container and separate named sibling buttons', async () => {
+		render(ConnectBanner, { wsSlug: 'ws', serverUrl: 'http://x' });
+		await flush();
+		expect(banner()).not.toHaveAttribute('role');
+		expect(banner()).not.toHaveAttribute('tabindex');
+		const connect = screen.getByRole('button', { name: 'Connect agent' });
+		const dismiss = screen.getByRole('button', { name: 'Dismiss banner' });
+		expect(connect.parentElement).toBe(dismiss.parentElement);
+		expect(connect.contains(dismiss)).toBe(false);
+		expect(dismiss.contains(connect)).toBe(false);
+	});
+
+	it('dismisses persistently without opening the modal', async () => {
+		render(ConnectBanner, { wsSlug: 'ws', serverUrl: 'http://x' });
+		await flush();
+		screen.getByRole('button', { name: 'Dismiss banner' }).click();
+		await flush();
+		expect(localStorage.getItem('pad-connect-banner-dismissed-ws')).toBe('true');
+		expect(banner()).toBeNull();
+		expect(document.querySelector('dialog')).not.toHaveAttribute('open');
+	});
+
+	it.each(['close button', 'Escape'])('opens and returns focus after %s, even while the refresh is pending', async (closeVia) => {
+		render(ConnectBanner, { wsSlug: 'ws', serverUrl: 'http://x' });
+		await flush();
+		const opener = screen.getByRole('button', { name: 'Connect agent' });
+		opener.focus();
+		opener.click();
+		await flush();
+		expect(document.querySelector('dialog')).toHaveAttribute('open');
+		expect(opener.isConnected).toBe(false);
+		mocks.answers = [new Promise(() => {})];
+		if (closeVia === 'Escape') document.querySelector('dialog')!.dispatchEvent(new Event('cancel', { cancelable: true }));
+		else (document.querySelector('.close-btn') as HTMLButtonElement).click();
+		await flush();
+		expect(document.querySelector('dialog')).not.toHaveAttribute('open');
+		expect(screen.getByRole('button', { name: 'Connect agent' })).toHaveFocus();
 	});
 });
