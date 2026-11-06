@@ -37,6 +37,7 @@ const HELPERS = [
 // "path::helper" → [number of calls, classification].
 const SITES: Record<string, [number, string]> = {
 	'src/lib/calendar/monthGrid.ts::doneFieldTerminalOptions': [1, 'keep: calendar entries show each item’s terminal status, including reference items; no progress count'],
+	'src/lib/calendar/monthGrid.ts::getAbandonedOptions': [1, 'keep: calendar entries mark an abandoned terminal item without a completed check; no progress count'],
 	// The hub, composed of itself and of the per-collection resolvers.
 	'src/lib/collections/childProgress.ts::childState': [6, 'exclude: the hub; every counting door here asks isReferenceChild first'],
 	'src/lib/collections/childProgress.ts::isReferenceChild': [3, 'exclude: the reference predicate, asked by split / counted / count'],
