@@ -106,6 +106,8 @@
 	// link, any other link, browser back, and closing or reloading the tab
 	// (cancelling a `leave` navigation raises the browser's own prompt).
 	beforeNavigate((nav) => {
+		// Chat opening over the editor is a shallow navigation: nothing is left.
+		if (nav.shallow) return;
 		if (!dirty) return;
 		if (nav.type === 'leave') {
 			nav.cancel();

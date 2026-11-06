@@ -298,6 +298,7 @@
 		deferWhile: () => navigating.type !== null,
 	});
 	afterNavigate((nav) => {
+		if (nav.shallow) return; // the page underneath did not navigate
 		const samePathname =
 			!!nav.from && nav.to?.url.pathname === nav.from.url.pathname;
 		const effectiveType = samePathname ? nav.type : 'goto';
@@ -1183,11 +1184,13 @@
 	// (TASK-3423). Entering the page from elsewhere (a different pathname —
 	// the Back from Expand to full page) always restores.
 	let releaseRestoreSkip: (() => void) | null = null;
-	beforeNavigate(() => {
+	beforeNavigate((nav) => {
+		if (nav.shallow) return; // no scroll restore follows a shallow navigation
 		releaseRestoreSkip?.();
 		releaseRestoreSkip = null;
 	});
 	afterNavigate((nav) => {
+		if (nav.shallow) return; // keep the latch for the real navigation it belongs to
 		const handedOff = !!nav.to && handoffHref === nav.to.url.href;
 		handoffHref = null;
 		if (nav.type !== 'popstate' || !nav.from || !nav.to) return;
@@ -2813,6 +2816,8 @@
 	// null for full unload (reload / tab close / external) — drafts are
 	// kept only until reload, so those aren't guarded.
 	beforeNavigate((nav) => {
+		// A shallow navigation (Chat over the board) leaves the draft in place.
+		if (nav.shallow) return;
 		if (bypassNavGuard || !hasUnsavedDrafts || !nav.to) return;
 		// Only guard CLIENT-SIDE, in-app leaves we can replay with goto.
 		// `willUnload` (external links, hard document navigations) and

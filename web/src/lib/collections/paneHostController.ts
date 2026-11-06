@@ -184,6 +184,7 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 	// in-flight for this go's own popstate (bounded by the fallback timer). A
 	// one-phase owned close has no latch and simply releases the guard.
 	afterNavigate((nav) => {
+		if (nav.shallow) return; // not the traversal's own popstate
 		if (!paneGoInFlight) return;
 		if (nav.type !== 'popstate') return; // wait for the traversal's own popstate
 		const latch = pendingPaneLatch;
@@ -208,6 +209,7 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 	// on `!openItemRef`) or focus already landed inside the pane (the drill path,
 	// which uses `goto({keepFocus:true})`, never hits this).
 	afterNavigate((nav) => {
+		if (nav.shallow) return;
 		if (nav.type !== 'popstate' || !browser) return;
 		requestAnimationFrame(() => {
 			if (document.activeElement === document.body) deps.focusPaneRegion();

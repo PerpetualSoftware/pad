@@ -1181,6 +1181,8 @@
 	// at risk asks first. Closing or reloading the tab is the beforeunload
 	// handler's job, so a 'leave' navigation is left to it.
 	beforeNavigate((nav) => {
+		// A shallow navigation (Chat over the item) leaves the editor mounted.
+		if (nav.shallow) return;
 		if (nav.type === 'leave') return;
 		const question = leaveQuestion({
 			// BUG-3556: also typing on a socket that closed unconfirmed, or

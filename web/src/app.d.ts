@@ -13,6 +13,9 @@ declare global {
 		interface PageState {
 			paneDepth?: number;
 			paneOwned?: boolean;
+			// How many history entries the open Chat surface pushed on top of the
+			// page (TASK-4315), so Close can pop exactly those.
+			chatDepth?: number;
 		}
 		// interface Platform {}
 	}

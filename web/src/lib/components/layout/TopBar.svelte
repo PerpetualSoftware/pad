@@ -52,7 +52,10 @@
 		window.addEventListener('focus', onFocus);
 		return () => window.removeEventListener('focus', onFocus);
 	});
-	afterNavigate(() => void pendingInvitations.refresh());
+	afterNavigate((nav) => {
+		if (nav.shallow) return;
+		void pendingInvitations.refresh();
+	});
 
 	let currentSlug = $derived(workspaceStore.current?.slug ?? '');
 

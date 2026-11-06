@@ -107,6 +107,7 @@
 		deferWhile: () => navigating.type !== null,
 	});
 	afterNavigate((nav) => {
+		if (nav.shallow) return; // the page underneath did not navigate
 		const samePathname =
 			!!nav.from && nav.to?.url.pathname === nav.from.url.pathname;
 		const effectiveType = samePathname ? nav.type : 'goto';

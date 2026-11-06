@@ -30,12 +30,12 @@ const mocks = vi.hoisted(() => ({
 	// the bar refreshes on mount, window focus and every navigation.
 	invitationCount: 0,
 	refreshInvitations: vi.fn(async () => {}),
-	afterNavigate: [] as Array<() => void>,
+	afterNavigate: [] as Array<(nav: { shallow: boolean }) => void>,
 }));
 
 vi.mock('$app/navigation', () => ({
 	goto: mocks.goto,
-	afterNavigate: (fn: () => void) => mocks.afterNavigate.push(fn),
+	afterNavigate: (fn: (nav: { shallow: boolean }) => void) => mocks.afterNavigate.push(fn),
 }));
 
 vi.mock('$lib/stores/pendingInvitations.svelte', () => ({
@@ -349,7 +349,10 @@ describe('TopBar "+" invitation badge (BUG-2136 U2)', () => {
 		expect(mocks.refreshInvitations).toHaveBeenCalledTimes(2);
 		expect(mocks.refreshInvitations.mock.calls[1]).toEqual([]);
 		expect(mocks.afterNavigate).toHaveLength(1);
-		mocks.afterNavigate[0]();
+		// TASK-4315: a shallow navigation (Chat opening) is not a page change.
+		mocks.afterNavigate[0]({ shallow: true });
+		expect(mocks.refreshInvitations).toHaveBeenCalledTimes(2);
+		mocks.afterNavigate[0]({ shallow: false });
 		expect(mocks.refreshInvitations).toHaveBeenCalledTimes(3);
 		expect(mocks.refreshInvitations.mock.calls[2]).toEqual([]);
 		cleanup();

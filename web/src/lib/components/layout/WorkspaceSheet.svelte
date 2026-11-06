@@ -45,6 +45,7 @@
 
 	// Close on navigation (the tiles/collections navigate on select).
 	afterNavigate((nav) => {
+		if (nav.shallow) return;
 		if (nav.type !== 'enter' && open) onclose();
 	});
 
