@@ -134,14 +134,17 @@ func (s *Store) AgendaCounts(workspaceID string, scope PendingReminderScope, fro
 		if !ok {
 			return countOpen
 		}
-		v := strings.ToLower(status)
+		// The same rule as terminalStateExpr: the stored spelling or its
+		// lowercase form, so the start-of-window count and this replay never
+		// disagree about an item.
+		same := func(p string) bool { return status == p || status == strings.ToLower(p) }
 		for _, p := range rc.positiveTerminals {
-			if strings.ToLower(p) == v {
+			if same(p) {
 				return countDone
 			}
 		}
 		for _, p := range rc.allTerminals {
-			if strings.ToLower(p) == v {
+			if same(p) {
 				return countAbandoned
 			}
 		}

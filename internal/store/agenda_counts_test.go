@@ -170,3 +170,18 @@ func TestAgendaCountsUnicodeTerminal(t *testing.T) {
 		t.Fatalf("unicode terminal: %s %v", countsGot(days), err)
 	}
 }
+
+// A status spelled outside the schema's terminal values (an import, a legacy
+// row) is open to the start-of-window query and to the replay alike, so the
+// burn-down never counts an item the replay cannot close.
+func TestAgendaCountsOddSpellingAgrees(t *testing.T) {
+	f := countsFixture(t)
+	c := f.item.CollectionID
+	from, to := rt("2031-03-10T00:00:00Z"), rt("2031-03-11T00:00:00Z")
+	countsItem(t, f, c, "odd", "2031-03-01T00:00:00Z", [2]string{"2031-03-02T00:00:00Z", "DONE"}, [2]string{"2031-03-10T10:00:00Z", "done"})
+	days, _, _, err := f.s.AgendaCounts(f.ws.ID, PendingReminderScope{}, from, to, time.UTC, 100)
+	// Open at the start (DONE is not a schema value), closed on the day: 1 done, 0 open, burn-down 0.
+	if err != nil || countsGot(days) != "2031-03-10:1/0/0 " {
+		t.Fatalf("odd spelling: %s %v", countsGot(days), err)
+	}
+}
