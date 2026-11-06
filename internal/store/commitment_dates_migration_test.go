@@ -390,8 +390,22 @@ func TestMigrationCountsOnCopy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if home, err := os.UserHomeDir(); err == nil && abs == filepath.Join(home, ".pad", "pad.db") {
-		t.Fatal("production path refused")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal("cannot tell the default data path, refusing to migrate")
+	}
+	target, err := os.Stat(abs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaults := []string{filepath.Join(home, ".pad", "pad.db")}
+	if dir := os.Getenv("PAD_DATA_DIR"); dir != "" {
+		defaults = append(defaults, filepath.Join(dir, "pad.db"))
+	}
+	for _, d := range defaults {
+		if live, err := os.Stat(d); err == nil && os.SameFile(target, live) {
+			t.Fatal("the default database is refused: copy it first")
+		}
 	}
 	if err := registerGuardedDrivers(); err != nil {
 		t.Fatal(err)

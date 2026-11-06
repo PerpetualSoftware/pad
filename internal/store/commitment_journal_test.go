@@ -481,12 +481,18 @@ func TestResolve_AllDayDoneActualMatchesImmutableWall(t *testing.T) {
 func TestResolve_ActualWithinTheCurrentSecondIsNotFuture(t *testing.T) {
 	f := newSchedFixture(t)
 	sc := f.create(t, dailyUTC)
-	nowT := rt("2026-10-30T10:00:00Z").Add(600 * time.Millisecond)
+	second := rt("2026-10-30T10:00:00Z")
+	nowT := second.Add(400 * time.Millisecond)
 	input := ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "done", Actor: "user"}
-	reported := rt("2026-10-30T10:00:00Z").Add(400 * time.Millisecond)
-	input.ActualDoneAt = &reported
+	later := second.Add(time.Second)
+	input.ActualDoneAt = &later
+	if _, err := f.s.resolveOccurrenceAt(f.ws.ID, f.item.ID, input, nowT); err == nil {
+		t.Fatal("an actual in the next second was admitted")
+	}
+	sameSecond := second.Add(600 * time.Millisecond)
+	input.ActualDoneAt = &sameSecond
 	if _, err := f.s.resolveOccurrenceAt(f.ws.ID, f.item.ID, input, nowT); err != nil {
-		t.Fatalf("an actual inside the current second was refused: %v", err)
+		t.Fatalf("an actual later inside the current second was refused: %v", err)
 	}
 }
 
