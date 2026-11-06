@@ -582,7 +582,17 @@ func TestMigratePreflightRefusesCommitmentNUL(t *testing.T) {
 					}
 				}
 			}
-			if _, err := src.DB().Exec(`UPDATE `+tc.table+` SET `+tc.column+`=?`, "bad\x00value"); err != nil {
+			var seq int
+			var name, path string
+			if err := src.DB().QueryRow(`PRAGMA database_list`).Scan(&seq, &name, &path); err != nil {
+				t.Fatal(err)
+			}
+			raw, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(30000)")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer raw.Close()
+			if _, err := raw.Exec(`UPDATE `+tc.table+` SET `+tc.column+`=?`, "bad\x00value"); err != nil {
 				t.Fatal(err)
 			}
 			if err := preflightNULForMigration(src, "fixture.db"); err == nil {
