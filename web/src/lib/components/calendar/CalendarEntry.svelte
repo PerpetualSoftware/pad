@@ -6,10 +6,11 @@
  let {row, zone, basePath, onopen, preview = false, keyboard = true}: {row:CalendarRow;zone:string;basePath:string;onopen:(row:CalendarRow)=>void;preview?:boolean;keyboard?:boolean} = $props();
  const states: Record<string,[string,string]> = {done:['Done','green'],skipped:['Skipped','gray'],moved:['Moved','purple'],missed:['Missed','amber'],outstanding:['Outstanding','amber'],scheduled:['Scheduled','blue'],unrecorded:['No recorded state','gray']};
  let state = $derived(row.state ? states[row.state] : undefined);
- let done = $derived(!!row.terminal || row.state === 'done');
+ let done = $derived((!!row.terminal && !row.abandoned) || row.state === 'done');
+ let closed = $derived(done || !!row.abandoned);
 </script>
-<a class="entry" class:preview class:done href="{basePath}/{encodeURIComponent(row.target)}" tabindex={keyboard ? 0 : -1} onclick={(e) => { if (shouldOpenInPane(e,true)) {e.preventDefault();onopen(row);} }}>
- <span class="title">{#if done}<span aria-label="Done">✓ </span>{/if}<span class="ref">{row.ref}</span> <span class="name">{row.continues && preview ? 'Continues' : row.title}</span></span>
+<a class="entry" class:preview class:done={closed} href="{basePath}/{encodeURIComponent(row.target)}" tabindex={keyboard ? 0 : -1} onclick={(e) => { if (shouldOpenInPane(e,true)) {e.preventDefault();onopen(row);} }}>
+ <span class="title">{#if done}<span aria-label="Done">✓ </span>{:else if row.abandoned}<span aria-label={formatFieldLabel(row.terminal ?? '')}>– </span>{/if}<span class="ref">{row.ref}</span> <span class="name">{row.continues && preview ? 'Continues' : row.title}</span></span>
  <span class="meta">
   {#if row.allDay}<span>All day</span>{:else if row.at}<span>{timeLabel(row.at,zone)}</span>{/if}
   {#if row.label}<span>{row.label}</span>{/if}

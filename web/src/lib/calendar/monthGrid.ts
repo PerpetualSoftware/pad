@@ -1,4 +1,4 @@
-import { doneFieldKey, doneFieldTerminalOptions, formatItemRef, itemUrlId, parseFields, parseSchema, type CalendarResponse, type Collection, type Item } from '$lib/types';
+import { getAbandonedOptions, doneFieldKey, doneFieldTerminalOptions, formatItemRef, itemUrlId, parseFields, parseSchema, type CalendarResponse, type Collection, type Item } from '$lib/types';
 
 export type { CalendarConfig } from '$lib/collections/viewPersistence';
 import type { CalendarConfig } from '$lib/collections/viewPersistence';
@@ -83,7 +83,7 @@ export function calendarError(error: unknown): string {
 }
 export interface CalendarRow {
  key: string; day: string; ref: string; target: string; title: string; allDay: boolean;
- item?: Item; at?: string; label?: string; terminal?: string; state?: string; overdue?: boolean;
+ item?: Item; at?: string; label?: string; terminal?: string; abandoned?: boolean; state?: string; overdue?: boolean;
  start?: string; end?: string; continues?: boolean; effectiveAt?: string; missedCount?: number; stale?: boolean;
 }
 /** Keep the server's day placement; expand only the supplied inclusive item span. Rows sort by day, all-day first, items before schedule entries within a day (as the API places them), then stable server order. */
@@ -94,6 +94,7 @@ export function calendarRows(data: CalendarResponse, collection: Collection, fie
   const item = placed.item, fields = parseFields(item);
   const status = fields[doneFieldKey(collection)];
   const terminal = typeof status === 'string' && doneFieldTerminalOptions(collection).includes(status) ? status : undefined;
+  const abandoned = terminal !== undefined && getAbandonedOptions(collection).includes(terminal);
   const at = field === 'created' ? item.created_at : field === 'completed' ? undefined : fields[field];
   const span = placed.end_day && placed.end_day > placed.day;
   const covered = span && days ? days.filter(d => d >= placed.day && d <= placed.end_day!) : [placed.day];
@@ -101,7 +102,7 @@ export function calendarRows(data: CalendarResponse, collection: Collection, fie
    if (days && !days.includes(day)) continue;
    // A span cannot make the unexamined tail look complete.
    if (data.next_from && day >= data.next_from) continue;
-   rows.push({key:`item:${item.id}:${day}`,day,item,ref:formatItemRef(item) ?? '',target:itemUrlId(item),title:item.title,terminal,
+   rows.push({key:`item:${item.id}:${day}`,day,item,ref:formatItemRef(item) ?? '',target:itemUrlId(item),title:item.title,terminal,abandoned,
     allDay:!!span || (typeof at === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(at)),at:typeof at === 'string' ? at : undefined,
     label:fieldLabel(collection,field),start:span ? placed.day : undefined,end:span ? placed.end_day : undefined,continues:!!span && day !== placed.day});
   }

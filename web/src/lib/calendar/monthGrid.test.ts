@@ -63,3 +63,24 @@ describe('guards', () => {
   expect(safeZone('America/New_York')).toBe('America/New_York');
  });
 });
+describe('abandoned terminal status', () => {
+ const make = (field: object, status: string) => {
+  const c = { schema: JSON.stringify({ fields: [{ key: 'due', type: 'date', label: 'Due' }, { key: 'status', type: 'select', ...field }] }), settings: '{}' } as Collection;
+  const it1 = { ...item, fields: JSON.stringify({ due: '2026-03-08', status }) } as Item;
+  return calendarRows({ from: '', to: '', tz: 'UTC', items: [{ item: it1, day: '2026-03-08' }], entries: [] }, c, 'due')[0];
+ };
+ const declared = { terminal_options: ['done', 'abandoned'], abandoned_options: ['abandoned'] };
+ it('delivered terminal is not abandoned, declared abandoned is', () => {
+  expect(make(declared, 'done')).toMatchObject({ terminal: 'done', abandoned: false });
+  expect(make(declared, 'abandoned')).toMatchObject({ terminal: 'abandoned', abandoned: true });
+ });
+ it('falls back to the default negative terminals when none are declared', () => {
+  const r = make({ terminal_options: ['done', 'declined'] }, 'declined');
+  expect(r).toMatchObject({ terminal: 'declined', abandoned: true });
+  expect(make({ terminal_options: ['done', 'declined'] }, 'done').abandoned).toBe(false);
+ });
+ it('custom abandon word undeclared counts as delivered, declared one does not', () => {
+  expect(make({ terminal_options: ['done', 'shelved'] }, 'shelved').abandoned).toBe(false);
+  expect(make({ terminal_options: ['done', 'shelved'], abandoned_options: ['shelved'] }, 'shelved').abandoned).toBe(true);
+ });
+});

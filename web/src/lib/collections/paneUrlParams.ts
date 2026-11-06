@@ -27,7 +27,8 @@ export const PANE_ITEM_PARAM = 'item';
  * `activeFilters` as a schema-field filter. `+page.svelte` folds in the
  * collection-specific `UNPARENTED_FILTER_FIELD` on top of this base list —
  * kept here as the base so this module doesn't need to import that
- * vocabulary.
+ * vocabulary. Every name here is reserved and shadows a schema field with
+ * the same key, `calendar_date` and `calendar_end` included.
  */
 export const KNOWN_COLLECTION_URL_PARAMS: readonly string[] = ['view', 'q', 'tags', 'calendar_date', 'calendar_end', PANE_ITEM_PARAM];
 
