@@ -3502,6 +3502,8 @@
 		// viewer's Escape with no owner at all: a silently dead key, and the
 		// exact regression TASK-2429 exists to prevent.
 		if (isBlockedByModal(null)) return;
+		// The calendar owns its date-grid keys; list navigation has no rows here.
+		if (viewMode === 'calendar') return;
 
 		// Navigation keys (j/k/arrows/Enter): don't capture when focus is in an
 		// input/textarea/select or when quick-create is open.
