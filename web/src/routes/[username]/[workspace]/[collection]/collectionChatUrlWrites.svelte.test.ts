@@ -503,6 +503,21 @@ describe('board filter, search and view writes under an open Chat', () => {
 		expect(gotos[0]).toContain('q=zy');
 	});
 
+	it('a rename heal under Chat supersedes the pending filter write: no goto to the dead slug, the new slug keeps the filter', async () => {
+		await mountPage();
+		gotos.length = 0;
+		openChat();
+		(await prop<(f: Record<string, string>) => void>('onFilterChange'))({ status: 'done' });
+		sseHandlers[0]!({ type: 'collection_updated', collection_id: 'c1', collection: 'tasks', new_slug: 'jobs' });
+		await tick();
+		expect(gotos).toEqual([]);
+		landOnBoard();
+		expect(gotos.filter((g) => g.startsWith('/dave/ws/tasks'))).toEqual([]);
+		expect(gotos).toHaveLength(1);
+		expect(gotos[0]).toMatch(/^\/dave\/ws\/jobs\?/);
+		expect(gotos[0]).toContain('done');
+	});
+
 	it('the deferred write does not trip the leave-draft guard: same pathname, no dialog, not cancelled', async () => {
 		await mountPage();
 		const board = stubProps().filter((p) => 'draftText' in p).at(-1);

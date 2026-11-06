@@ -19,7 +19,8 @@
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { coveredPage } from '$lib/stores/coveredPage.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
-	import { setAccessRevokedHandler, setRateLimitHandler, setDatabaseBusyHandler, setIdentityProvider, setNetworkUnreachableHandler } from '$lib/api/client';
+	import { currentPathSearch } from '$lib/utils/pageLocation';
+	import { setAccessRevokedHandler, setRateLimitHandler, setDatabaseBusyHandler, setIdentityProvider, setNetworkUnreachableHandler, setReturnPathProvider } from '$lib/api/client';
 	import { notifyServerBusy, notifyDatabaseBusy } from '$lib/api/serverBusyToast';
 	import { notifyNetworkUnreachable } from '$lib/api/networkUnreachableToast';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
@@ -109,6 +110,8 @@
 	// here, not imported there, for the reason the handler below is: client.ts
 	// importing the auth store would make a cycle.
 	setIdentityProvider(() => authStore.userId || null);
+	// The 401 return-to target is the page, which under an open Chat is not the address bar (TASK-4315).
+	setReturnPathProvider(currentPathSearch);
 
 	setAccessRevokedHandler((scope) => {
 		// BUG-2983 widened this seam from 403-only to "this workspace is not

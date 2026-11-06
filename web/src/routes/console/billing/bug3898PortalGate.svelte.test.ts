@@ -52,7 +52,10 @@ vi.mock('$app/state', () => ({
 	page: {
 		get url() {
 			return new URL(m.url);
-		}
+		},
+		// chatSurface (imported by the page) reads these in a root effect.
+		state: {},
+		shallow: null
 	}
 }));
 

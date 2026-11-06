@@ -45,6 +45,7 @@
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { chatSurface } from '$lib/stores/chatSurface.svelte';
+	import { currentSearch } from '$lib/utils/pageLocation';
 	import { titleStore } from '$lib/stores/title.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { planLaneOrder, persistReorder } from '$lib/collections/reorderPlan';
@@ -654,6 +655,13 @@
 			{ viewMode, activeFilters, selectedTags, unparentedApplied, searchQuery, calendarConfig },
 			page.url
 		).toString();
+	// A heal's query string. A filter write still held for Chat has not reached the
+	// URL, so the live state is the truth; otherwise it is the page's own address.
+	const healSearch = () => {
+		if (!chatSurface.hasDeferredWrite(filtersWriteKey())) return currentSearch();
+		const qs = liveFilterQuery();
+		return qs ? '?' + qs : '';
+	};
 	function updateUrlFilters(): Promise<void> | undefined {
 		// An immediate sync carries the current search too, so it supersedes a
 		// pending debounced one.
@@ -1339,8 +1347,8 @@
 					if (target) {
 						renameNav = target;
 						void collectionStore.loadCollections(ws);
-						const search = typeof window !== 'undefined' ? window.location.search : '';
-						void goto(`/${username}/${wsSlug}/${target}${search}`);
+						// A dead slug cannot wait: with Chat open this closes it first (never dropped).
+						chatSurface.runAfterClose(() => void goto(`/${username}/${wsSlug}/${target}${healSearch()}`));
 					}
 					return;
 				}
@@ -1511,17 +1519,18 @@
 			// Refresh the sidebar/pickers off the dead slug too — same
 			// side-effect as the SSE + reorder-404 rename paths.
 			void collectionStore.loadCollections(ws);
-			const search = typeof window !== 'undefined' ? window.location.search : '';
 			// replaceState: the healed-away slug is DEAD — Back must not
 			// return to a URL that 404s (the item-route
-			// healer already replaces).
-			goto(`/${username}/${ws}/${target}${search}`, { replaceState: true }).catch(() => {
-				// A cancelled/failed navigation (navigate-away guard, a
-				// racing nav) must not leave renameNav pointing at a slug
-				// we never reached — a poisoned tracker would veto every
-				// future sync heal. Reset only if it is
-				// still ours; a newer rename may have re-aimed it.
-				if (renameNav === target) renameNav = null;
+			// healer already replaces). With Chat open it closes first, then replaces.
+			chatSurface.runAfterClose(() => {
+				goto(`/${username}/${ws}/${target}${healSearch()}`, { replaceState: true }).catch(() => {
+					// A cancelled/failed navigation (navigate-away guard, a
+					// racing nav) must not leave renameNav pointing at a slug
+					// we never reached — a poisoned tracker would veto every
+					// future sync heal. Reset only if it is
+					// still ours; a newer rename may have re-aimed it.
+					if (renameNav === target) renameNav = null;
+				});
 			});
 		} catch {
 			// Best-effort heal — the next sync pass retries.
@@ -2668,8 +2677,7 @@
 						if (fresh.slug !== collSlug) {
 							renameNav = fresh.slug;
 							void collectionStore.loadCollections(ws);
-							const search = typeof window !== 'undefined' ? window.location.search : '';
-							void goto(`/${username}/${wsSlug}/${fresh.slug}${search}`);
+							chatSurface.runAfterClose(() => void goto(`/${username}/${wsSlug}/${fresh.slug}${healSearch()}`));
 						}
 					}
 				} catch {

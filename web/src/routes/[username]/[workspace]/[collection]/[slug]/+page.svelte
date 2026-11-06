@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { page, navigating } from '$app/state';
+	import { chatSurface } from '$lib/stores/chatSurface.svelte';
 	import { goto, afterNavigate } from '$app/navigation';
 	import { browser } from '$app/env';
 	import { onDestroy, onMount } from 'svelte';
@@ -414,11 +415,16 @@
 		if (!masterItem) return;
 		const current = openItemRef;
 		if (!current || !isMasterRef(current)) return;
-		const url = new URL(page.url.href);
-		url.searchParams.delete('item');
-		void goto(`${url.pathname}${url.search}`, {
-			replaceState: true,
-			reset: false,
+		// Cannot wait (two providers on one room), and never dropped: with Chat open it
+		// closes Chat first. It reads page.url when it runs, so a queued copy is a no-op.
+		chatSurface.runAfterClose(() => {
+			const url = new URL(page.url.href);
+			if (!url.searchParams.has('item')) return;
+			url.searchParams.delete('item');
+			void goto(`${url.pathname}${url.search}`, {
+				replaceState: true,
+				reset: false,
+			});
 		});
 	});
 

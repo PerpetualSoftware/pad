@@ -35,6 +35,8 @@
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { pushEscapeHandler, ESCAPE_PRIORITY } from '$lib/stores/escapeStack';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
+	import { chatSurface } from '$lib/stores/chatSurface.svelte';
+	import { currentHref, currentSearch } from '$lib/utils/pageLocation';
 	import { createBurstDirty } from '$lib/items/editorBurstDirty';
 	import { createChangeContext } from '$lib/timeline/changeContext';
 	import { resolveSyncRenameTarget } from '$lib/collections/renameNav';
@@ -254,7 +256,16 @@
 	// even in the pane (the target collection differs). Full-page → the same
 	// replaceState goto as before.
 	const handleNavigateAway = (url: string) =>
-		(onNavigateAway ?? ((u: string) => goto(u, { replaceState: true })))(url);
+		(
+			onNavigateAway ??
+			((u: string) => {
+				// It may run after Chat has closed, so it is fenced like any continuation.
+				const identity = captureIdentity();
+				chatSurface.runAfterClose(() => {
+					if (identityHeld(identity)) void goto(u, { replaceState: true });
+				});
+			})
+		)(url);
 
 	let item = $state<Item | null>(null);
 	// The wsSlug the currently-held `item` was actually loaded under. Stamped
@@ -609,17 +620,20 @@
 			if (fresh) {
 				adoptCollection(fresh, collGen);
 			}
-			const search = typeof window !== 'undefined' ? window.location.search : '';
 			// was noScroll alone: kit 3 has no scroll-only option (TASK-3423)
-			goto(`/${username}/${ws}/${target}/${itemRef}${search}`, {
-				replaceState: true,
-				reset: false,
-			}).catch(() => {
-				// A failed/cancelled navigation must not leave the override
-				// bridging to a URL we never reached. Identity compare (this
-				// heal's own bridge object) so a cancelled older
-				// navigation can't clear a newer bridge to the same slug.
-				if (renameOverride === bridge) renameOverride = null;
+			// A dead slug cannot wait: with Chat open this closes it first (never dropped).
+			chatSurface.runAfterClose(() => {
+				if (!identityHeld(identity)) return;
+				goto(`/${username}/${ws}/${target}/${itemRef}${currentSearch()}`, {
+					replaceState: true,
+					reset: false,
+				}).catch(() => {
+					// A failed/cancelled navigation must not leave the override
+					// bridging to a URL we never reached. Identity compare (this
+					// heal's own bridge object) so a cancelled older
+					// navigation can't clear a newer bridge to the same slug.
+					if (renameOverride === bridge) renameOverride = null;
+				});
 			});
 		} catch {
 			// Best-effort heal — the next sync pass retries.
@@ -955,6 +969,8 @@
 			}
 			return;
 		}
+		// The drawer is derived from page.url, so a held write would not open it: close Chat first.
+		if (chatSurface.closeThen(() => setGraphParam(open))) return;
 		const has = page.url.searchParams.get('graph') === '1';
 		if (has === open) return;
 		const url = new URL(page.url.href);
@@ -1384,7 +1400,7 @@
 			month: 'long',
 			day: 'numeric'
 		});
-		printUrl = window.location.href;
+		printUrl = currentHref();
 	}
 
 	onMount(() => {
@@ -1469,11 +1485,14 @@
 							from: collSlug,
 							to: event.new_slug,
 						};
-						const search = typeof window !== 'undefined' ? window.location.search : '';
 						// was noScroll alone: kit 3 has no scroll-only option (TASK-3423)
-						void goto(`/${username}/${wsSlug}/${event.new_slug}/${itemSlug}${search}`, {
-							replaceState: true,
-							reset: false,
+						// A dead slug cannot wait: with Chat open this closes it first (never dropped).
+						chatSurface.runAfterClose(() => {
+							if (callbackGen !== loadGeneration) return;
+							void goto(`/${username}/${wsSlug}/${event.new_slug}/${itemSlug}${currentSearch()}`, {
+								replaceState: true,
+								reset: false,
+							});
 						});
 					}
 				}
@@ -3367,7 +3386,9 @@
 		if (pendingNewItemEdit && item && canEdit && !loading) {
 			pendingNewItemEdit = false;
 			// was noScroll alone: kit 3 has no scroll-only option (TASK-3423)
-			goto(`/${username}/${wsSlug}/${collSlug}/${itemSlug}`, { replaceState: true, reset: false });
+			// The strip is only the address; it waits while Chat is open.
+			const stripNew = () => goto(`/${username}/${wsSlug}/${collSlug}/${itemSlug}`, { replaceState: true, reset: false });
+			if (!chatSurface.deferPageWrite('item-detail#strip-new', stripNew)) void stripNew();
 			startEditTitle();
 		}
 	});

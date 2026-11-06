@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import { chatSurface } from '$lib/stores/chatSurface.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
 	import { goto } from '$app/navigation';
 	import { onMount, onDestroy, untrack } from 'svelte';
@@ -109,6 +110,8 @@
 	function clearAttachmentItem() {
 		const url = new URL(page.url.href);
 		if (!url.searchParams.has('attachment_item')) return;
+		// attachmentItemId derives from page.url, so a held write would not apply: close Chat first.
+		if (chatSurface.closeThen(clearAttachmentItem)) return;
 		url.searchParams.delete('attachment_item');
 		void goto(`${url.pathname}${url.search}${url.hash}`, {
 			replaceState: true,
@@ -295,7 +298,9 @@
 
 	function switchTab(tabId: string) {
 		activeTab = tabId;
-		history.replaceState(null, '', `#${tabId}`);
+		// A raw replaceState under Chat would blank Chat's entry state; it waits (tab is already shown).
+		const writeHash = () => history.replaceState(null, '', `#${tabId}`);
+		if (!chatSurface.deferPageWrite(`${page.url.pathname}#tab`, writeHash)) writeHash();
 	}
 
 	// Arrow keys on the tab list (TASK-2238): the next/previous tab, wrapping,

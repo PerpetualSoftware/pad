@@ -39,6 +39,23 @@ beforeEach(() => {
 	(page as { params: Record<string, string> }).params = {};
 });
 
+describe('PlanLimitPrompt under an open Chat (TASK-4315)', () => {
+	it('Upgrade remembers the page beneath Chat, not the /messages address in the bar', async () => {
+		window.history.replaceState({}, '', '/messages/7');
+		(page as { url: URL }).url = new URL('http://localhost/ada/ws/tasks?view=board');
+		(page as { shallow: unknown }).shallow = { url: new URL('http://localhost/messages/7'), route: null, params: null };
+		try {
+			render(PlanLimitPrompt, { scope: 'invite' });
+			planLimitPrompt.raise(err({ payer_is_you: true }), { scope: 'invite', blocked: 'invite a member' });
+			await tick();
+			await fireEvent.click(screen.getByRole('button', { name: 'Upgrade' }));
+			expect(readUpgradeResume()).toMatchObject({ path: '/ada/ws/tasks?view=board' });
+		} finally {
+			(page as { shallow: unknown }).shallow = null;
+		}
+	});
+});
+
 describe('PlanLimitPrompt (TASK-3601)', () => {
 	it('the owner: Upgrade remembers the blocked flow and goes to billing', async () => {
 		render(PlanLimitPrompt, { scope: 'invite' });

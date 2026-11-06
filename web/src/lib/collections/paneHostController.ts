@@ -411,13 +411,17 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 		}
 		// Collection rename — rebase ownership + bypass the (now-spurious) draft
 		// guard for the committed, component-reusing pathname change.
-		deps.setBypassNavGuard(true);
-		void goto(url, {
-			replaceState: true,
-			reset: false,
-			state: { paneDepth: 0, paneOwned: false },
-		}).finally(() => {
-			deps.setBypassNavGuard(false);
+		// A dead slug cannot wait: with Chat open this closes it first (never dropped),
+		// and the bypass is claimed only while the navigation it covers is in flight.
+		chatSurface.runAfterClose(() => {
+			deps.setBypassNavGuard(true);
+			void goto(url, {
+				replaceState: true,
+				reset: false,
+				state: { paneDepth: 0, paneOwned: false },
+			}).finally(() => {
+				deps.setBypassNavGuard(false);
+			});
 		});
 	}
 

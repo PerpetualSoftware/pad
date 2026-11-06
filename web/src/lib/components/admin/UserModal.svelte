@@ -15,6 +15,7 @@
   PLAN-1542 / TASK-1550.
 -->
 <script lang="ts">
+	import { chatSurface } from '$lib/stores/chatSurface.svelte';
 	import type { AdminUser } from '$lib/stores/admin.svelte';
 	import Modal from '$lib/components/common/Modal.svelte';
 	import UserSettingsForm from './UserSettingsForm.svelte';
@@ -67,6 +68,8 @@
 
 	function writeHashTab(t: UserModalTab) {
 		if (typeof window === 'undefined') return;
+		// A raw replaceState under Chat would blank Chat's entry state; the tab is already shown, the hash waits.
+		if (chatSurface.deferPageWrite('user-modal#tab', () => writeHashTab(t))) return;
 		const params = readHashParams();
 		params.set('tab', t);
 		const next = '#' + params.toString();

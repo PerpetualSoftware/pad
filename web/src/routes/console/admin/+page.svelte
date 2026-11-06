@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
+	import { chatSurface } from '$lib/stores/chatSurface.svelte';
 	import { appendUnique } from '$lib/utils/activityPaging';
 	import { adminFetch, formatDate, adminStore, type AdminUser } from '$lib/stores/admin.svelte';
 	import UserModal from '$lib/components/admin/UserModal.svelte';
@@ -164,6 +165,8 @@
 	// buckets — active/inactive/disabled/no-workspace — round-trip
 	// losslessly (PR #604).
 	function syncURL() {
+		// The filter state is local; only the address waits while Chat is open (it runs again, live).
+		if (chatSurface.deferPageWrite(`${page.url.pathname}#sync`, syncURL)) return;
 		const p = buildQueryParams({ offset: 0, includeSearch: false });
 		p.delete('limit');
 		p.delete('offset');

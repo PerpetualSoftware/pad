@@ -23,6 +23,7 @@ vi.mock('$lib/api/client', () => {
 		}),
 		setAccessRevokedHandler: () => {},
 		setIdentityProvider: () => {},
+		setReturnPathProvider: () => {},
 		setRateLimitHandler: () => {},
 		setDatabaseBusyHandler: () => {},
 		setNetworkUnreachableHandler: () => {},

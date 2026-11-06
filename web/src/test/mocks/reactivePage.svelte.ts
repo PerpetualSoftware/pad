@@ -18,4 +18,6 @@ export const page = $state({
 	data: {} as Record<string, unknown>,
 	form: null as unknown,
 	state: {} as Record<string, unknown>,
+	// The target of an open shallow navigation (Chat over the page), else null.
+	shallow: null as unknown,
 });

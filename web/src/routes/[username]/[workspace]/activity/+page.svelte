@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import { chatSurface } from '$lib/stores/chatSurface.svelte';
 	import { goto, replaceState } from '$app/navigation';
 	import { browser } from '$app/env';
 	import { onMount, onDestroy, untrack } from 'svelte';
@@ -93,6 +94,8 @@
 	// it a reload, at least stays cleared.
 	function dropFromUrl(name: 'since' | 'view') {
 		if (!page.url.searchParams.has(name)) return;
+		// The local value is already cleared; only the address waits while Chat is open.
+		if (chatSurface.deferPageWrite(`${page.url.pathname}#drop-${name}`, () => dropFromUrl(name))) return;
 		const url = new URL(page.url.href);
 		url.searchParams.delete(name);
 		goto(url, { replaceState: true, reset: false }).catch(() => {
