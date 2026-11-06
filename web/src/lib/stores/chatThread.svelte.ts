@@ -51,6 +51,7 @@ import { authStore } from '$lib/stores/auth.svelte';
 import { chatStore } from '$lib/stores/chat.svelte';
 import { refKey } from '$lib/chat/refs';
 import { getDraft, setDraft, savePending, removePending, listPending } from '$lib/chat/chatRecords';
+import { beginSend, deliverRefusal, endSend, isSending, type LateOutcome } from '$lib/chat/composerRegistry';
 import { newOpKey } from '$lib/opKey';
 import type { ChatConversationSummary, ChatMessage, ChatMessagesResponse, ChatRef } from '$lib/types';
 
@@ -252,10 +253,12 @@ export class ChatThread {
 				this.openReadSeq = page.read_seq;
 				this.#readSeq = page.read_seq;
 				this.#win.merge(page.messages);
-				this.#win.pending = listPending(authStore.userId, n).map((record) => ({
-					op_key: record.op_key, body: record.body, status: 'unconfirmed',
-					...(record.reply_seq !== null ? { reply_to_seq: record.reply_seq } : {})
-				}));
+				this.#win.pending = listPending(authStore.userId, n)
+					.filter((record) => !isSending(record.op_key)) // its POST is still running, in another view
+					.map((record) => ({
+						op_key: record.op_key, body: record.body, status: 'unconfirmed',
+						...(record.reply_seq !== null ? { reply_to_seq: record.reply_seq } : {})
+					}));
 				this.#publish(conv.unread > 0 && page.has_more ? page.last_seq : null);
 				this.status = 'ready';
 			} catch (err) {
@@ -461,6 +464,15 @@ export class ChatThread {
 	}
 
 	async #post(n: number, opKey: string, body: string, replyToSeq?: number): Promise<SendOutcome> {
+		beginSend(opKey);
+		try {
+			return await this.#postOnce(n, opKey, body, replyToSeq);
+		} finally {
+			endSend(opKey);
+		}
+	}
+
+	async #postOnce(n: number, opKey: string, body: string, replyToSeq?: number): Promise<SendOutcome> {
 		const current = this.#guard();
 		const win = this.#win;
 		const userId = authStore.userId;
@@ -468,10 +480,15 @@ export class ChatThread {
 		const refused = (outcome: SendOutcome): SendOutcome => {
 			if (!sameIdentity()) return 'stale';
 			removePending(userId, n, opKey);
-			if (!current()) {
+			// The sending composer can only take the text back while this thread still shows
+			// the conversation. Otherwise (closed, reopened, left, or the conversation was
+			// found missing, which unmounts the composer) it goes to the composer on screen
+			// now, or to the draft.
+			if (!current() || this.status !== 'ready') {
+				const reply = outcome === 'too_large' ? (replyToSeq ?? null) : null;
+				if (outcome !== 'not_started' && deliverRefusal(userId, n, body, outcome as LateOutcome, reply)) return 'stale';
 				const draft = getDraft(userId, n);
-				const reply = draft ? draft.replySeq : outcome === 'too_large' ? replyToSeq : null;
-				setDraft(userId, n, draft?.text ? `${body}\n${draft.text}` : body, reply);
+				setDraft(userId, n, draft?.text ? `${body}\n${draft.text}` : body, draft ? draft.replySeq : reply);
 				return 'stale';
 			}
 			win.discardPending(opKey);
