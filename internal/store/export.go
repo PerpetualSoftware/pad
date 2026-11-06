@@ -1249,7 +1249,14 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 		// so an ordinary import of N items still issues no extra queries: the
 		// common case is a bundle with no slug coercion, where this costs
 		// one map lookup per row.
-		if claimedSlugs[itemSlug] {
+		//
+		// The suffix uniqueSlugQ appends can itself make a hyphen-free base
+		// ref-shaped ("aaa" taken -> "aaa-2"), so each resolved slug goes back
+		// through importRefShapedSlug and the claimed check until it is both
+		// unclaimed and not ref-shaped. A coerced result always carries a
+		// hyphen in its prefix, so the next uniqueSlugQ cannot undo it, and the
+		// loop ends.
+		for claimedSlugs[itemSlug] {
 			unique, uerr := s.uniqueSlugQ(tx, "items", "workspace_id", ws.ID, itemSlug)
 			if uerr != nil {
 				return nil, fmt.Errorf("import item %s: unique slug after coercion: %w", it.ID, uerr)
@@ -1261,6 +1268,10 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 				"slug", unique,
 				"from_truncation", slugCoerced)
 			itemSlug = unique
+			if again, changed := importRefShapedSlug(itemSlug); changed {
+				itemSlug = again
+				refSlugCoerced = true
+			}
 		}
 		if slugCoerced {
 			slog.Warn("import_workspace coerced item slug",

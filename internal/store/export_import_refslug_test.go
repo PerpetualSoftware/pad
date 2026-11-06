@@ -266,3 +266,26 @@ func testImportRefSlugWarnings(t *testing.T) {
 		t.Errorf("doubly coerced slug %q is still ref-shaped", out)
 	}
 }
+
+// A collision on a hyphen-free base must not leave the resolved slug
+// ref-shaped: two over-long slugs truncate to the same 255 letters, and
+// uniqueSlugQ would give the second "aaa...a-2", which parses as a ref.
+func TestImportWorkspace_RefShapedSlugAfterCollisionSuffix(t *testing.T) {
+	t.Parallel()
+	_, _, byTitle := testImportRefSlugs(t,
+		strings.Repeat("a", 300), strings.Repeat("a", 301), strings.Repeat("a", 302))
+	seen := map[string]bool{}
+	for _, title := range []string{"Item 0", "Item 1", "Item 2"} {
+		slug := byTitle[title].Slug
+		if seen[slug] {
+			t.Errorf("duplicate slug for %s", title)
+		}
+		seen[slug] = true
+		if _, _, ok := parseItemRef(slug); ok {
+			t.Errorf("%s: slug %q (%d runes) parses as a ref", title, slug[:12], len(slug))
+		}
+	}
+	if got := byTitle["Item 0"].Slug; got != strings.Repeat("a", models.MaxItemTitleRunes) {
+		t.Errorf("first row slug = %d runes, want the plain truncation", utf8.RuneCountInString(got))
+	}
+}
