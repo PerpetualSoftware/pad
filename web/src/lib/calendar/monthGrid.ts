@@ -2,6 +2,7 @@ import { doneFieldKey, doneFieldTerminalOptions, formatItemRef, itemUrlId, parse
 
 export type { CalendarConfig } from '$lib/collections/viewPersistence';
 import type { CalendarConfig } from '$lib/collections/viewPersistence';
+export const UNSUPPORTED_FIELD = "This field can't be used on a calendar. Choose another.";
 export const STALE_FIELD = 'This date field is no longer available. Choose another field.';
 export const PARTIAL_DAY = 'Too many items to show here. Filter the calendar, or use the list.';
 const pad = (n: number) => String(n).padStart(2, '0');
@@ -55,7 +56,10 @@ export function timeLabel(at: string, zone: string): string {
  const date = new Date(at);
  return Number.isFinite(date.getTime()) ? new Intl.DateTimeFormat('en-GB', {timeZone:zone,hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(date) : '';
 }
-export function dateFields(collection: Collection) { return parseSchema(collection).fields.filter(f => f.type === 'date'); }
+/** Mirrors models.IsSafeFieldKey (internal/models/collection_traits.go): non-empty, only ASCII letters, digits, underscore, hyphen. */
+export function isSafeFieldKey(key: string): boolean { return /^[A-Za-z0-9_-]+$/.test(key); }
+/** Schema date fields the calendar API accepts as date_field or end_field: safe keys, and not shadowed by the built-in created/completed. */
+export function dateFields(collection: Collection) { return parseSchema(collection).fields.filter(f => f.type === 'date' && isSafeFieldKey(f.key) && f.key !== 'created' && f.key !== 'completed'); }
 export function fieldLabel(collection: Collection, key?: string): string {
  return key === 'created' ? 'Created' : key === 'completed' ? 'Completed' : dateFields(collection).find(f => f.key === key)?.label ?? key ?? 'Choose a date field';
 }
@@ -64,7 +68,8 @@ export function staleConfig(collection: Collection, config: CalendarConfig): boo
  return !!((config.date_field && !['created','completed'].includes(config.date_field) && !fields.some(f => f.key === config.date_field)) || (config.end_field && !fields.some(f => f.key === config.end_field)));
 }
 export function calendarError(error: unknown): string {
- const e = error as {code?: string; details?: {field?: string}};
+ const e = error as {code?: string; details?: {field?: string; code?: string}};
+ if (e?.code === 'validation_error' && ['unsupported_field_key','builtin_end_field'].includes(e.details?.code ?? '')) return UNSUPPORTED_FIELD;
  if (e?.code === 'validation_error' && ['date_field','end_field','config'].includes(e.details?.field ?? '')) return STALE_FIELD;
  if (e?.code === 'cap_window') return 'Choose a window of 92 days or less.';
  if (e?.code === 'invalid_tz' || e?.details?.field === 'tz') return 'This time zone is not available. Choose another in Settings.';

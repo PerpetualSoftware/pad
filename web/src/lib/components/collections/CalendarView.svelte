@@ -4,7 +4,7 @@
  import type { CalendarResponse, Collection, Item } from '$lib/types';
  import { authStore } from '$lib/stores/auth.svelte';
  import { viewport } from '$lib/stores/breakpoint.svelte';
- import { calendarError, calendarRows, dayLabel, fieldLabel, incomplete, incompleteDay, monthDays, monthLabel, monthWindow, moveMonth, shiftDay, staleConfig, STALE_FIELD, zoneDay, type CalendarConfig, type CalendarRow } from '$lib/calendar/monthGrid';
+ import { calendarError, calendarRows, dayLabel, fieldLabel, incomplete, incompleteDay, monthDays, monthLabel, monthWindow, moveMonth, shiftDay, staleConfig, STALE_FIELD, UNSUPPORTED_FIELD, zoneDay, type CalendarConfig, type CalendarRow } from '$lib/calendar/monthGrid';
  import CalendarToolbar from '../calendar/CalendarToolbar.svelte';
  import CalendarEntry from '../calendar/CalendarEntry.svelte';
  import CalendarNotice from '../calendar/CalendarNotice.svelte';
@@ -36,7 +36,7 @@
  let pendingFocus: string | null = null;
  let days = $derived(monthDays(month));
  let rows = $derived(data ? calendarRows(data,collection,config.date_field ?? '',month) : []);
- let stale = $derived(staleConfig(collection,config) || error === STALE_FIELD);
+ let stale = $derived(staleConfig(collection,config) || error === STALE_FIELD || error === UNSUPPORTED_FIELD);
  let focusDay = $derived(selected.startsWith(month) ? selected : today.startsWith(month) ? today : `${month}-01`);
  let leading = $derived((new Date(`${month}-01T12:00:00Z`).getUTCDay() + 6) % 7);
  let cells = $derived([...Array<string|null>(leading).fill(null), ...days, ...Array<string|null>((7 - (leading + days.length) % 7) % 7).fill(null)]);
@@ -120,7 +120,7 @@
  <CalendarToolbar {month} {zone} zoneSet={!!authStore.user?.timezone} dateLabel={fieldLabel(collection,config.date_field)} onprevious={() => pageMonth(-1)} onnext={() => pageMonth(1)} ontoday={() => chooseDay(today,true)} onfields={() => { if (onChooseFields) onChooseFields(); else pickerOpen=true; }} />
  <p class="sr-only" role="status">{monthLabel(month)}{loading ? data ? ' — Updating calendar…' : ' — Loading calendar…' : ''}</p>
  {#if stale || !config.date_field}
-  <p>{stale ? STALE_FIELD : 'Choose a date field'}</p>
+  <p>{error === UNSUPPORTED_FIELD && !staleConfig(collection,config) ? UNSUPPORTED_FIELD : stale ? STALE_FIELD : 'Choose a date field'}</p>
   <CalendarFieldPicker {collection} {config} onchange={changeConfig} />
  {:else if filterProblem}
   <p role="alert">{filterProblem}</p><Button onclick={onFilters}>Filters</Button><Button onclick={onList}>Use list</Button>
