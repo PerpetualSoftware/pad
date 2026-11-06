@@ -29,7 +29,7 @@ export const PANE_ITEM_PARAM = 'item';
  * kept here as the base so this module doesn't need to import that
  * vocabulary.
  */
-export const KNOWN_COLLECTION_URL_PARAMS: readonly string[] = ['view', 'q', 'tags', PANE_ITEM_PARAM];
+export const KNOWN_COLLECTION_URL_PARAMS: readonly string[] = ['view', 'q', 'tags', 'calendar_date', 'calendar_end', PANE_ITEM_PARAM];
 
 /**
  * Re-emit the currently-open pane ref (if any) onto `params` — the
@@ -55,6 +55,7 @@ export interface CollectionUrlFilterState {
 	 *  omitting `list` would make a copied List URL resolve back to Board for a
 	 *  viewer without the sender's localStorage. */
 	viewMode: string;
+	calendarConfig?: {date_field?: string; end_field?: string};
 	activeFilters: Record<string, string>;
 	selectedTags: string[];
 	/** The EFFECTIVE unparented-filter state (`unparentedEffective(...)`),
@@ -76,6 +77,10 @@ export function buildCollectionUrlParams(state: CollectionUrlFilterState, curren
 	// collection must survive a copied link (no localStorage) rather than
 	// silently resolving back to the collection's Board default (IDEA-2274).
 	params.set('view', state.viewMode);
+	if (state.viewMode === 'calendar' && state.calendarConfig) {
+		params.set('calendar_date', state.calendarConfig.date_field ?? '');
+		params.set('calendar_end', state.calendarConfig.end_field ?? '');
+	}
 	for (const [k, v] of Object.entries(state.activeFilters)) {
 		params.set(k, v);
 	}

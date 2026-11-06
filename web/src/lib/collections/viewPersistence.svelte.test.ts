@@ -79,3 +79,22 @@ describe('view and sort persistence is per workspace (C95)', () => {
 		expect(() => storeSortMode('alpha', 'tasks', 'title')).not.toThrow();
 	});
 });
+
+it('round-trips calendar mode and its fields without leaking across collections', async () => {
+ const { storeCalendarConfig, loadCalendarConfig } = await import('./viewPersistence');
+ storeViewMode('alpha', 'tasks', 'calendar');
+ storeCalendarConfig('alpha', 'tasks', {date_field:'due',end_field:'until'});
+ expect(loadViewMode('alpha', 'tasks', 'board')).toBe('calendar');
+ expect(loadCalendarConfig('alpha', 'tasks')).toEqual({date_field:'due',end_field:'until'});
+ expect(loadCalendarConfig('beta', 'tasks')).toEqual({});
+});
+
+it('carries the calendar fields in a copied URL and preserves the open item', async () => {
+ const { buildCollectionUrlParams, KNOWN_COLLECTION_URL_PARAMS } = await import('./paneUrlParams');
+ const params = buildCollectionUrlParams({viewMode:'calendar',calendarConfig:{date_field:'created'},activeFilters:{status:'open'},selectedTags:[],unparentedApplied:false,searchQuery:''},new URL('https://example.test/demo/tasks?item=EX-1'));
+ expect(params.get('view')).toBe('calendar');
+ expect(params.get('calendar_date')).toBe('created');
+ expect(params.get('calendar_end')).toBe('');
+ expect(params.get('item')).toBe('EX-1');
+ expect(KNOWN_COLLECTION_URL_PARAMS).toContain('calendar_date');
+});

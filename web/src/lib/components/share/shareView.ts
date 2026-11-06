@@ -123,7 +123,7 @@ export function coerceSettings(settings: unknown): PublicViewSettings {
 	const obj = coerceObject(settings);
 	const view = obj.default_view;
 	const default_view: PublicViewSettings['default_view'] =
-		view === 'board' || view === 'table' || view === 'list' ? view : 'board';
+		coerceBaseView(view) ?? 'board';
 	return {
 		default_view,
 		board_group_by: typeof obj.board_group_by === 'string' ? obj.board_group_by : undefined,
@@ -534,4 +534,10 @@ export function fieldChips(values: Record<string, unknown>, fields: FieldDef[]):
 		});
 	}
 	return out;
+}
+
+export function coerceBaseView(value: unknown): 'list' | 'board' | 'table' | null {
+ if (value === 'calendar') return 'list';
+ if (value === 'kanban') return 'board';
+ return value === 'list' || value === 'board' || value === 'table' ? value : null;
 }

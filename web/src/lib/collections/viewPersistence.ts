@@ -16,9 +16,9 @@
 
 import { SORT_OPTIONS, type SortMode } from './itemSort';
 
-export type ViewMode = 'list' | 'board' | 'table';
+export type ViewMode = 'list' | 'board' | 'table' | 'calendar';
 
-export const VIEW_MODES: readonly ViewMode[] = ['list', 'board', 'table'];
+export const VIEW_MODES: readonly ViewMode[] = ['list', 'board', 'table', 'calendar'];
 
 export function isViewMode(v: unknown): v is ViewMode {
 	return typeof v === 'string' && (VIEW_MODES as readonly string[]).includes(v);
@@ -92,4 +92,15 @@ export function loadSortMode(ws: string, coll: string): SortMode {
 
 export function storeSortMode(ws: string, coll: string, mode: SortMode): void {
 	write(sortModeKey(ws, coll), mode);
+}
+
+export interface CalendarConfig { date_field?: string; end_field?: string }
+export function loadCalendarConfig(ws: string, coll: string): CalendarConfig {
+ try {
+  const value = JSON.parse(read(`pad-calendar:${ws}:${coll}`) ?? '{}');
+  return { ...(typeof value?.date_field === 'string' ? { date_field: value.date_field } : {}), ...(typeof value?.end_field === 'string' ? { end_field: value.end_field } : {}) };
+ } catch { return {}; }
+}
+export function storeCalendarConfig(ws: string, coll: string, config: CalendarConfig): void {
+ write(`pad-calendar:${ws}:${coll}`, JSON.stringify(config));
 }
