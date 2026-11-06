@@ -14,6 +14,7 @@
 // the user (refusedRawDraft), on every item, not only the open ones: kept
 // drafts now include text kept when the user was signed out under it, and an
 // explicit sign-out leaves nothing of theirs on the device.
+import { purgeAll, unsealChatRecords } from '$lib/chat/chatRecords';
 import { confirmDialog } from './confirmDialog.svelte';
 import { authStore } from './auth.svelte';
 import { purgeRefusedRawDraftsForUser } from '$lib/items/refusedRawDraft';
@@ -38,6 +39,7 @@ export function signOutDiscarding(): boolean {
 
 /** The logout after a confirm failed: items save normally again. */
 export function signOutFailed(): void {
+	unsealChatRecords();
 	discarding = false;
 }
 
@@ -74,6 +76,7 @@ export async function confirmSignOut(): Promise<boolean> {
 	const atRisk = [...sources].filter((s) => s.atRisk());
 	if (atRisk.length === 0) {
 		purgeRefusedRawDraftsForUser(authStore.userId);
+		purgeAll();
 		return true;
 	}
 	const ok = await confirmDialog.request({
@@ -94,6 +97,7 @@ export async function confirmSignOut(): Promise<boolean> {
 		discarding = true;
 		for (const s of confirmed) s.discard();
 		purgeRefusedRawDraftsForUser(authStore.userId);
+		purgeAll();
 	}
 	return ok;
 }

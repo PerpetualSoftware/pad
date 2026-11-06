@@ -22,6 +22,7 @@
 //       refused list while its bubble waited, overlapping sends, or a gap wider
 //       than the fill bound; a fill never pages past its bound. 'rejected' is
 //       recorded for the one bubble whose own apply fetch was refused
+//   I11 the exact send payload is persisted before every POST, including retries
 //   PATHS (3b r5 A3, r6 A-M1): the run counts how often the walk reached a detach, a
 //       re-anchor, a fill that resolved, a fill that detached and a replayed answer, and fails when
 //       any count is 0, so a walk that never reaches a path cannot pass
@@ -62,6 +63,7 @@ vi.mock('$lib/api/client', async (orig) => {
 });
 vi.mock('$lib/stores/auth.svelte', () => ({
 	authStore: {
+		get userId() { return `u${h.state.epoch}`; },
 		get authenticated() {
 			return h.state.authenticated;
 		},
@@ -81,11 +83,13 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 
 import { networkUnreachableError, isNotFoundError, isReplyTargetDeletedError, isReplyTargetNotFoundError } from '$lib/api/client';
 import { isRequestTooLargeError } from '$lib/chat/compose';
+import { listPending, purgeAll, unsealChatRecords } from '$lib/chat/chatRecords';
 import { chatStore } from './chat.svelte';
 import { ChatThread, REFRESH_MAX_PAGES } from './chatThread.svelte';
 
 Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
 
+const identityListeners = [...h.state.listeners];
 const SEEDS = Number(process.env.PROP_SEEDS ?? 100);
 const ONLY = process.env.PROP_SEED === undefined ? null : Number(process.env.PROP_SEED);
 const STEPS = 80;
@@ -343,7 +347,9 @@ function wire() {
 		server.readSeq = Math.max(server.readSeq, seq);
 		return { read_seq: seq };
 	});
-	h.sendMessage.mockImplementation((_n: number, b: { body: string; op_key: string }) => {
+	h.sendMessage.mockImplementation((_n: number, b: { body: string; op_key: string; reply_to_seq?: number }) => {
+		const record = listPending(`u${h.state.epoch}`, _n).find((p) => p.op_key === b.op_key);
+		if (!record || record.body !== b.body || record.reply_seq !== (b.reply_to_seq ?? null)) fail('I11 send: original payload must be persisted before POST');
 		check('send');
 		const seen = server.byKey.get(b.op_key);
 		if (seen) return deliver('send', { message: { ...seen }, replayed: true, refs: [], refs_truncated: false }, false, b.op_key);
@@ -399,7 +405,10 @@ async function walk(seed: number, trace: string[]) {
 	reanchored = false;
 	inflight = new Map();
 	h.state.epoch = 0;
-	h.state.listeners = [];
+	h.state.listeners = [...identityListeners];
+	purgeAll();
+	unsealChatRecords();
+	sessionStorage.clear();
 	thread = new ChatThread();
 	const fired: Promise<unknown>[] = [];
 	const visibleSeqs = () => [...thread.messages, ...thread.detached].map((m) => m.seq);
@@ -521,7 +530,7 @@ describe('window ops (property)', () => {
 		expect(isReplyTargetDeletedError(REFUSALS[0]())).toBe(false);
 	});
 
-	it(`holds I1-I10 over ${ONLY === null ? SEEDS : 1} seeded walks of ${STEPS} steps`, async () => {
+	it(`holds I1-I11 over ${ONLY === null ? SEEDS : 1} seeded walks of ${STEPS} steps`, async () => {
 		const seeds = ONLY === null ? Array.from({ length: SEEDS }, (_, i) => i + 1) : [ONLY];
 		for (const seed of seeds) {
 			const trace: string[] = [];

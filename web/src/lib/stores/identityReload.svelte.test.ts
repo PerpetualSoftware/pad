@@ -130,3 +130,12 @@ describe('reloadForIdentityChange', () => {
 		expect(order).toEqual(['clear', 'reload']);
 	});
 });
+
+it('clears chat drafts and pending attempts in every conversation', () => {
+	for (const n of [1, 99]) {
+		sessionStorage.setItem(`pad:chat-draft:u1:${n}`, JSON.stringify({ userId: 'u1', n, text: 'private', replySeq: null }));
+		sessionStorage.setItem(`pad:chat-pending:u1:${n}:op`, JSON.stringify({ userId: 'u1', n, op_key: 'op', body: 'pending', reply_seq: null }));
+	}
+	clearPersistentIdentityState();
+	expect(Object.keys(sessionStorage).filter((key) => key.startsWith('pad:chat-'))).toEqual([]);
+});
