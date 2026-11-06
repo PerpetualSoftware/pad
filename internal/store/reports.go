@@ -657,6 +657,31 @@ func (s *Store) reportWIP(workspaceID string, colls []reportCollection, now time
 	return wip, nil
 }
 
+// reportCollectionFor resolves the done field and terminal values shared by
+// reports and item-level completion feeds.
+func reportCollectionFor(c models.Collection) reportCollection {
+	var schema models.CollectionSchema
+	var settings models.CollectionSettings
+	// Parse failures fall back to status + default terminals, matching
+	// scanCollectionDoneFilters' tolerance.
+	if c.Schema != "" {
+		_ = models.UnmarshalItemFieldSchema([]byte(c.Schema), &schema)
+	}
+	if c.Settings != "" {
+		_ = json.Unmarshal([]byte(c.Settings), &settings)
+	}
+	doneKey, terminals := models.TerminalValuesForDoneField(schema, settings)
+	// The shared resolver, so abandoned_options apply here too (BUG-2347).
+	_, positives := models.PositiveTerminalValuesForDoneField(schema, settings)
+	return reportCollection{
+		id:                c.ID,
+		slug:              c.Slug,
+		doneKey:           doneKey,
+		positiveTerminals: positives,
+		allTerminals:      terminals,
+	}
+}
+
 // resolveReportCollections lists the workspace's collections (optionally
 // filtered to the given slugs) and resolves each one's done field + positive
 // terminal values.
@@ -703,33 +728,9 @@ func (s *Store) resolveReportCollections(workspaceID string, opts ReportOptions)
 		if visible != nil && !visible[c.ID] {
 			continue
 		}
-		out = append(out, newReportCollection(c))
+		out = append(out, reportCollectionFor(c))
 	}
 	return out, nil
-}
-
-// newReportCollection resolves a collection's done field and its positive
-// terminal values (terminal minus abandoned). Parse failures fall back to
-// status + default terminals, matching scanCollectionDoneFilters' tolerance.
-func newReportCollection(c models.Collection) reportCollection {
-	var schema models.CollectionSchema
-	var settings models.CollectionSettings
-	if c.Schema != "" {
-		_ = models.UnmarshalItemFieldSchema([]byte(c.Schema), &schema)
-	}
-	if c.Settings != "" {
-		_ = json.Unmarshal([]byte(c.Settings), &settings)
-	}
-	doneKey, terminals := models.TerminalValuesForDoneField(schema, settings)
-	// The shared resolver, so abandoned_options apply here too (BUG-2347).
-	_, positives := models.PositiveTerminalValuesForDoneField(schema, settings)
-	return reportCollection{
-		id:                c.ID,
-		slug:              c.Slug,
-		doneKey:           doneKey,
-		positiveTerminals: positives,
-		allTerminals:      terminals,
-	}
 }
 
 // reportCreatedBuckets returns created-item counts keyed by bucket label.

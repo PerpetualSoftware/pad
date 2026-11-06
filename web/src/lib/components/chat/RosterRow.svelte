@@ -23,7 +23,7 @@
 
 {#if entry.number !== null}
 	<a class="row" href="/messages/{entry.number}">
-		<PresenceDot state={entry.presence} {checkedAt} />
+		<PresenceDot state={entry.presence} {checkedAt} showLabel />
 		<span class="name">{entry.key}</span>
 		<UnreadBadge count={chatStore.unreadByNumber[entry.number] ?? 0} />
 	</a>
@@ -34,7 +34,7 @@
 		disabled={pending || rateLimited}
 		onclick={() => onensure(entry.key)}
 	>
-		<PresenceDot state={entry.presence} {checkedAt} />
+		<PresenceDot state={entry.presence} {checkedAt} showLabel />
 		<span class="name">{entry.key}</span>
 		<span class="action">Start chat</span>
 	</button>

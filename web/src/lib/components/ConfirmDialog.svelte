@@ -7,8 +7,18 @@
 	import { confirmDialog } from '$lib/stores/confirmDialog.svelte';
 	import Modal from '$lib/components/common/Modal.svelte';
 	import Button from '$lib/components/common/Button.svelte';
+	import { tick } from 'svelte';
 
 	let active = $derived(confirmDialog.active);
+	let footer = $state<HTMLDivElement>();
+	$effect(() => {
+		const request = active;
+		if (request?.focusCancel) {
+			void tick().then(() => {
+				if (active === request) footer?.querySelector('button')?.focus();
+			});
+		}
+	});
 </script>
 
 <Modal open={!!active} onclose={() => confirmDialog.cancel()} labelledby="confirm-dialog-title" maxWidth="440px">
@@ -19,7 +29,7 @@
 		<div class="modal-body">
 			<p class="message">{active.message}</p>
 		</div>
-		<div class="modal-footer">
+		<div class="modal-footer" bind:this={footer}>
 			<Button variant="secondary" autofocus onclick={() => confirmDialog.cancel()}>{active.cancelLabel ?? 'Cancel'}</Button>
 			<Button variant={active.danger ? 'danger-solid' : 'primary'} onclick={() => confirmDialog.confirm()}>
 				{active.confirmLabel}

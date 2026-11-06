@@ -266,6 +266,7 @@
 				itemId={comment.item_id}
 				{hostToken}
 				content={comment.body}
+				ariaLabel="Edit comment"
 				placeholder="Edit comment…"
 				submitLabel="Save"
 				autofocus
@@ -320,6 +321,7 @@
 				{wsSlug}
 				itemId={comment.item_id}
 				{hostToken}
+				ariaLabel="Reply"
 				placeholder="Write a reply… (paste or drop an image to attach)"
 				submitLabel="Reply"
 				autofocus
@@ -385,6 +387,7 @@
 								itemId={comment.item_id}
 								{hostToken}
 								content={reply.body}
+								ariaLabel="Edit reply"
 								placeholder="Edit reply…"
 								submitLabel="Save"
 								autofocus

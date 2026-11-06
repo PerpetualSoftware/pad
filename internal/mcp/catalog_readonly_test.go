@@ -764,7 +764,11 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 			"item remind skip":   {Summary: "resolve skip", Args: mkArgs("ref"), Flags: mkFlags("workspace", "comment", "occurrence")},
 			"item remind snooze": {Summary: "resolve snooze", Args: mkArgs("ref"), Flags: mkFlags("workspace", "comment", "occurrence", "until")},
 			"item remind move":   {Summary: "resolve move", Args: mkArgs("ref"), Flags: mkFlags("workspace", "comment", "occurrence", "until")},
-			"item remind agenda": {Summary: "the agenda", Flags: mkFlags("workspace", "from", "to", "tz", "days")},
+			"item remind agenda": {Summary: "the agenda", Flags: func() map[string]cmdhelp.Flag {
+				f := mkFlags("workspace", "from", "to", "tz", "days")
+				f["stale"] = cmdhelp.Flag{Type: "bool"}
+				return f
+			}()},
 			"item ack": {
 				Summary: "acknowledge a fired reminder",
 				Args:    mkArgs("reminder-id"),

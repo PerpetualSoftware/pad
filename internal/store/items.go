@@ -2566,7 +2566,7 @@ func (s *Store) completedExpr(workspaceID, scope string, instant bool) (string, 
 		if scope != "" && c.ID != scope {
 			continue
 		}
-		rc := newReportCollection(c)
+		rc := reportCollectionFor(c)
 		// The done key comes from a schema, not a request, and is still held to
 		// the key rule before it reaches the SQL text.
 		if len(rc.positiveTerminals) == 0 || !isValidFieldKey(rc.doneKey) {

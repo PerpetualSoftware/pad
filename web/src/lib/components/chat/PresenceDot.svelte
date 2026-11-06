@@ -1,12 +1,20 @@
 <script lang="ts">
 	import type { AgentPresence } from '$lib/chat/presence';
 
-	let { state, checkedAt = null }: { state: AgentPresence; checkedAt?: number | null } = $props();
+	// With showLabel the state is written beside the dot (DOC-4316 section 7: shape
+	// and text, never colour alone) and the dot itself is decoration. `detail` is
+	// extra tooltip text, such as "2 armed sessions".
+	let {
+		state,
+		checkedAt = null,
+		showLabel = false,
+		detail = ''
+	}: { state: AgentPresence; checkedAt?: number | null; showLabel?: boolean; detail?: string } = $props();
 
 	const LABELS: Record<AgentPresence, string> = {
-		online: 'Online',
-		busy_uncertain: 'May be working',
-		connected_not_accepting: 'Connected, not accepting',
+		online: 'Live · armed',
+		busy_uncertain: 'May be working · armed',
+		connected_not_accepting: 'Connected · not accepting',
 		offline: 'Offline',
 		unknown: 'Status unknown'
 	};
@@ -25,15 +33,36 @@
 	// Busy is a guess (activity expires on its own), so the tooltip says when the
 	// guess was last checked.
 	let title = $derived.by(() => {
-		if (state !== 'busy_uncertain' || checkedAt == null) return label;
-		const time = new Date(checkedAt).toLocaleTimeString([], { hour12: false });
-		return `${label}. Last checked ${time}`;
+		let out = label;
+		if (state === 'busy_uncertain' && checkedAt != null) {
+			const time = new Date(checkedAt).toLocaleTimeString([], { hour12: false });
+			out += `. Last checked ${time}`;
+		}
+		return detail ? `${out}. ${detail}` : out;
 	});
 </script>
 
-<span class="presence-dot {state}" data-shape={SHAPES[state]} role="img" aria-label={label} {title}></span>
+{#if showLabel}
+	<span class="presence-wrap" {title}>
+		<span class="presence-dot {state}" data-shape={SHAPES[state]} aria-hidden="true"></span>
+		<span class="presence-label">{label}</span>
+	</span>
+{:else}
+	<span class="presence-dot {state}" data-shape={SHAPES[state]} role="img" aria-label={label} {title}></span>
+{/if}
 
 <style>
+	.presence-wrap {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-2);
+		min-width: 0;
+	}
+	.presence-label {
+		color: var(--text-secondary);
+		font-size: 0.8rem;
+		white-space: nowrap;
+	}
 	.presence-dot {
 		display: inline-block;
 		box-sizing: border-box;

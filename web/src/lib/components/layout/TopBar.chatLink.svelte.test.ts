@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 import { tick, flushSync } from 'svelte';
 
+const h = vi.hoisted(() => ({ chatOn: true }));
 vi.mock('$app/navigation', () => ({ goto: vi.fn(async () => {}), afterNavigate: vi.fn() }));
 vi.mock('$lib/api/client', () => ({
 	PadApiError: class extends Error {},
@@ -44,6 +45,14 @@ vi.mock('$lib/stores/auth.svelte', async (orig) => {
 });
 vi.mock('$lib/stores/chat.svelte', () => ({ chatStore: { unreadTotal: 2 } }));
 
+vi.mock('$lib/stores/chatSetting.svelte', () => ({
+	chatSetting: {
+		get enabled() {
+			return h.chatOn;
+		}
+	}
+}));
+
 import TopBar from './TopBar.svelte';
 
 const trigger = () => document.querySelector<HTMLButtonElement>('.user-trigger')!;
@@ -55,7 +64,10 @@ async function settle() {
 	flushSync();
 }
 
-beforeEach(() => cleanup());
+beforeEach(() => {
+	cleanup();
+	h.chatOn = true;
+});
 afterEach(() => cleanup());
 
 describe('TopBar chat menu row (TASK-4044)', () => {
@@ -68,6 +80,16 @@ describe('TopBar chat menu row (TASK-4044)', () => {
 		expect(row()).not.toBeNull();
 		expect(row()?.getAttribute('role')).toBe('menuitem');
 		expect(row()?.getAttribute('aria-label')).toBe('Chat, 2 unread');
+	});
+
+	it('has no Chat row while the setting is off (TASK-4315)', async () => {
+		h.chatOn = false;
+		render(TopBar, { props: {} });
+		await settle();
+		trigger().click();
+		await settle();
+		expect(document.querySelector('a.menu-link[href="/console/settings"]')).not.toBeNull();
+		expect(row()).toBeNull();
 	});
 
 	it('closes the menu when clicked', async () => {

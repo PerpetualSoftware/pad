@@ -16,6 +16,8 @@ export interface ConfirmRequest {
 	/** The dismiss button's label; "Cancel" when absent. Name it when the
 	 * confirm label is itself a cancel ("Cancel invitation"). */
 	cancelLabel?: string;
+	/** Explicitly focus Cancel, including when this request follows a queued one. */
+	focusCancel?: boolean;
 }
 
 interface Pending extends ConfirmRequest {

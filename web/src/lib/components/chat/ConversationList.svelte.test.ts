@@ -4,7 +4,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from '@testing-library/svelte';
 import { flushSync } from 'svelte';
 
-const h = vi.hoisted(() => ({ unreadByNumber: {} as Record<number, number> }));
+const h = vi.hoisted(() => ({
+	unreadByNumber: {} as Record<number, number>,
+	presence: {} as Record<string, string>
+}));
+vi.mock('$lib/stores/chatInbox.svelte', () => ({
+	chatInbox: {
+		presenceFor: (k: string) => h.presence[k] ?? 'unknown',
+		armedCount: (k: string) => (k === 'agent-2' ? 2 : 0),
+		checkedAt: null
+	}
+}));
 vi.mock('$lib/stores/chat.svelte', () => ({
 	chatStore: {
 		get unreadByNumber() {
@@ -34,6 +44,7 @@ function conv(n: number, over: Partial<ChatConversationSummary> = {}): ChatConve
 
 beforeEach(() => {
 	h.unreadByNumber = {};
+	h.presence = {};
 });
 afterEach(cleanup);
 
@@ -99,6 +110,42 @@ describe('ConversationList (TASK-4044)', () => {
 	it('says so for a conversation with no messages', () => {
 		const { container } = render(ConversationList, { props: { conversations: [conv(1)] } });
 		expect(container.textContent).toContain('No messages yet');
+	});
+
+	// BUG-4321: one agent, one card, carrying the preview AND the presence (section 7 wording).
+	it('a direct conversation carries its agent presence as words beside the name, with the preview', () => {
+		h.presence = { 'agent-7': 'online' };
+		const { container } = render(ConversationList, {
+			props: {
+				conversations: [
+					conv(7, {
+						last_message: { seq: 1, author_agent_key: 'agent-7', author_is_human: false, excerpt: 'hello there', deleted: false, created_at: '' }
+					})
+				]
+			}
+		});
+		expect(container.querySelectorAll('a')).toHaveLength(1);
+		const a = container.querySelector('a')!;
+		expect(a.querySelector('.presence-label')?.textContent).toBe('Live · armed');
+		expect(a.textContent).toContain('hello there');
+	});
+
+	it('an unread presence read shows Status unknown, never Offline', () => {
+		const { container } = render(ConversationList, { props: { conversations: [conv(1)] } });
+		expect(container.querySelector('.presence-label')?.textContent).toBe('Status unknown');
+	});
+
+	it('names several armed sessions in the tooltip', () => {
+		h.presence = { 'agent-2': 'online' };
+		const { container } = render(ConversationList, { props: { conversations: [conv(2)] } });
+		expect(container.querySelector('.presence-wrap')?.getAttribute('title')).toContain('2 armed sessions');
+	});
+
+	it('a group conversation shows no presence: its key is not an agent to chat with', () => {
+		const { container } = render(ConversationList, {
+			props: { conversations: [conv(3, { kind: 'group' as ChatConversationSummary['kind'], title: 'Room' })] }
+		});
+		expect(container.querySelector('.presence-dot')).toBeNull();
 	});
 
 	it('takes the pill from chatStore.unreadByNumber, not from the summary', () => {

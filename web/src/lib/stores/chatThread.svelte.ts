@@ -50,6 +50,7 @@ import { ChatWindow, mergeBySeq, unreadDividerIndex, type WindowItem } from '$li
 import { authStore } from '$lib/stores/auth.svelte';
 import { chatStore } from '$lib/stores/chat.svelte';
 import { refKey } from '$lib/chat/refs';
+import { getDraft, setDraft, savePending, removePending, listPending } from '$lib/chat/chatRecords';
 import { newOpKey } from '$lib/opKey';
 import type { ChatConversationSummary, ChatMessage, ChatMessagesResponse, ChatRef } from '$lib/types';
 
@@ -245,6 +246,10 @@ export class ChatThread {
 				this.openReadSeq = page.read_seq;
 				this.#readSeq = page.read_seq;
 				this.#win.merge(page.messages);
+				this.#win.pending = listPending(authStore.userId, n).map((record) => ({
+					op_key: record.op_key, body: record.body, status: 'unconfirmed',
+					...(record.reply_seq !== null ? { reply_to_seq: record.reply_seq } : {})
+				}));
 				this.#publish(conv.unread > 0 && page.has_more ? page.last_seq : null);
 				this.status = 'ready';
 			} catch (err) {
@@ -375,6 +380,7 @@ export class ChatThread {
 		const opKey = newOpKey();
 		const block = validateDraft(body, replyToSeq, opKey);
 		if (block) return block;
+		savePending(authStore.userId, n, opKey, body, replyToSeq);
 		this.#win.addPending(opKey, body, replyToSeq);
 		this.#publishAfterWrite();
 		this.ownSendTick++;
@@ -393,6 +399,7 @@ export class ChatThread {
 
 	/** Give up on a failed send. */
 	discard(opKey: string): void {
+		if (this.#n !== null) removePending(authStore.userId, this.#n, opKey);
 		this.#win.discardPending(opKey);
 		this.#publishAfterWrite();
 		this.#settled();
@@ -450,7 +457,17 @@ export class ChatThread {
 	async #post(n: number, opKey: string, body: string, replyToSeq?: number): Promise<SendOutcome> {
 		const current = this.#guard();
 		const win = this.#win;
+		const userId = authStore.userId;
+		const sameIdentity = authStore.identityFence();
 		const refused = (outcome: SendOutcome): SendOutcome => {
+			if (!sameIdentity()) return 'stale';
+			removePending(userId, n, opKey);
+			if (!current()) {
+				const draft = getDraft(userId, n);
+				const reply = draft ? draft.replySeq : outcome === 'too_large' ? replyToSeq : null;
+				setDraft(userId, n, draft?.text ? `${body}\n${draft.text}` : body, reply);
+				return 'stale';
+			}
 			win.discardPending(opKey);
 			this.#publishAfterWrite();
 			this.#settled();
@@ -462,6 +479,10 @@ export class ChatThread {
 				op_key: opKey,
 				...(replyToSeq !== undefined ? { reply_to_seq: replyToSeq } : {})
 			});
+			if (!sameIdentity()) return 'stale';
+			// A definite result settles storage even if the view or queued placement
+			// has moved on. Only the visible window uses the stricter thread guard.
+			removePending(userId, n, opKey);
 			if (!current()) return 'stale';
 			this.#absorbRefs(res.refs);
 			await this.#enqueue(current, () => this.#applyOwn(n, opKey, res.message, current));
@@ -470,10 +491,11 @@ export class ChatThread {
 			this.#settled();
 			return 'sent';
 		} catch (err) {
-			if (!current()) return 'stale';
+			if (!sameIdentity()) return 'stale';
 			if (isReplyTargetDeletedError(err)) return refused('reply_deleted');
 			if (isReplyTargetNotFoundError(err)) return refused('reply_missing');
 			if (isRequestTooLargeError(err)) return refused('too_large');
+			if (!current()) return 'stale';
 			win.failPending(opKey);
 			this.#publishAfterWrite();
 			this.#settled();
@@ -483,25 +505,26 @@ export class ChatThread {
 
 	/**
 	 * Delete a message (V6, V7: idempotent, a repeat answers 200 with the same
-	 * tombstone) and merge the tombstone in place. True when it is gone.
+	 * tombstone) and merge the tombstone in place only after server success.
 	 */
-	async remove(seq: number): Promise<boolean> {
+	async remove(seq: number): Promise<{ ok: true } | { ok: false; message: string }> {
+		const fallback = "Couldn't delete that message. Try again.";
 		const n = this.#n;
-		if (n === null || this.status !== 'ready') return false;
+		if (n === null || this.status !== 'ready') return { ok: false, message: fallback };
 		const current = this.#guard();
 		try {
 			const res = await api.chat.deleteMessage(n, seq);
-			if (!current()) return false;
+			if (!current()) return { ok: false, message: fallback };
 			await this.#enqueue(current, async () => {
 				// Only a row the window or the detached list holds: a re-anchor meanwhile may have moved it (r2 H3).
 				if (this.#win.messages.some((m) => m.seq === seq)) this.#win.merge([res.message]);
 				else this.detached = this.detached.map((m) => (m.seq === seq ? res.message : m));
 				this.#publish(this.#lastSeq);
 			});
-			return current();
+			return current() ? { ok: true } : { ok: false, message: fallback };
 		} catch (err) {
 			if (current() && isNotFoundError(err)) this.status = 'notFound';
-			return false;
+			return { ok: false, message: err instanceof Error && 'code' in err && err.message ? err.message : fallback };
 		}
 	}
 

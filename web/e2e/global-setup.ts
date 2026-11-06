@@ -74,6 +74,16 @@ export default async function globalSetup(config: FullConfig) {
 	}
 	const csrfHeader = { 'X-CSRF-Token': csrfCookie.value };
 
+	// Chat is a per-user display setting, off by default (TASK-4315). The suite's
+	// chat specs drive the Chat surfaces, so the shared admin starts with it on.
+	const chatOn = await api.patch('/api/v1/auth/me', {
+		headers: csrfHeader,
+		data: { chat_enabled: true }
+	});
+	if (!chatOn.ok()) {
+		throw new Error(`turning Chat on failed (${chatOn.status()}): ${await chatOn.text()}`);
+	}
+
 	// Seed the workspace. `startup` is the default template and seeds
 	// tasks/ideas/plans/docs collections so the dashboard has content.
 	const workspaces = await api.post('/api/v1/workspaces', {

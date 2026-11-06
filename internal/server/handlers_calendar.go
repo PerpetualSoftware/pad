@@ -221,11 +221,12 @@ func (s *Server) handleGetCalendar(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	sch, err := expandAgendaSchedules(s.store, schedules, more, loc, from, to, now)
+	sch, err := expandAgendaSchedules(s.store, schedules, loc, from, to, now, now.Add(agendaBudget), time.Now)
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
+	sch.Truncated, sch.SetCut = sch.Truncated || more, sch.SetCut || more
 	resp.Unexpanded, resp.Unavailable = sch.Unexpanded, sch.Unavailable
 	resp.Truncated = sch.Truncated || placed.more
 	sch.Entries = keepRecordedOnTerminal(sch.Entries, schedules)

@@ -120,12 +120,15 @@ const openMentionSQL = `
 // NeedsCandidateParams selects the items the router considers in one workspace.
 type NeedsCandidateParams struct {
 	// AwaitsCollectionIDs are the awaits_human collections: their items are
-	// candidates. FlaggedItemIDs are the needs_human items. An item with an
+	// candidates. FlaggedItemIDs are the needs_human items; DueItemIDs are
+	// items with due occurrences received by the viewer. An item with an
 	// open mention is a candidate in any non-system collection.
 	AwaitsCollectionIDs []string
 	FlaggedItemIDs      []string
+	DueItemIDs          []string
 	// ForUserID, when set, keeps only the items that user is the assignee of or
-	// holds an open mention on: the rows a non-owner caller can be routed.
+	// holds an open mention on, or that is in DueItemIDs: the rows a non-owner
+	// caller can be routed.
 	ForUserID string
 }
 
@@ -156,6 +159,12 @@ func (s *Store) NeedsCandidateItems(workspaceID string, scope CatchUpScope, p Ne
 			args = append(args, id)
 		}
 	}
+	for _, chunk := range chunkStrings(p.DueItemIDs, needsChunk) {
+		src = append(src, "i.id IN ("+placeholders(len(chunk))+")")
+		for _, id := range chunk {
+			args = append(args, id)
+		}
+	}
 	src = append(src, `EXISTS (SELECT 1 FROM comment_mentions m `+openMentionSQL+` AND m.item_id = i.id)`)
 
 	q := `
@@ -168,8 +177,15 @@ func (s *Store) NeedsCandidateItems(workspaceID string, scope CatchUpScope, p Ne
 		  AND (` + strings.Join(src, " OR ") + `)`
 	if p.ForUserID != "" {
 		q += `
-		  AND (i.assigned_user_id = ? OR EXISTS (SELECT 1 FROM comment_mentions m ` + openMentionSQL + ` AND m.item_id = i.id AND m.user_id = ?))`
+		  AND (i.assigned_user_id = ? OR EXISTS (SELECT 1 FROM comment_mentions m ` + openMentionSQL + ` AND m.item_id = i.id AND m.user_id = ?)`
 		args = append(args, p.ForUserID, p.ForUserID)
+		for _, chunk := range chunkStrings(p.DueItemIDs, needsChunk) {
+			q += " OR i.id IN (" + placeholders(len(chunk)) + ")"
+			for _, id := range chunk {
+				args = append(args, id)
+			}
+		}
+		q += ")"
 	}
 	q += ` ORDER BY i.created_at, i.id`
 

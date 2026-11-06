@@ -6,6 +6,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 import { createRawSnippet, tick, flushSync } from 'svelte';
 
+const h = vi.hoisted(() => ({ chatOn: true }));
 vi.mock('$lib/api/client', () => {
 	const never = () => new Promise(() => {});
 	return {
@@ -15,7 +16,9 @@ vi.mock('$lib/api/client', () => {
 vi.mock('$lib/stores/auth.svelte', () => ({
 	authStore: {
 		load: async () => ({ authenticated: true }),
-		user: { name: 'E2E', email: 'e2e@example.com', role: 'admin' },
+		get user() {
+			return { name: 'E2E', email: 'e2e@example.com', role: 'admin', chat_enabled: h.chatOn };
+		},
 		cloudMode: false,
 		authenticated: true,
 		onIdentityChange: () => () => {}
@@ -27,12 +30,17 @@ import ConsoleLayout from './+layout.svelte';
 
 const childSnippet = createRawSnippet(() => ({ render: () => `<div>child</div>` }));
 
-beforeEach(async () => {
+async function mountLayout() {
 	render(ConsoleLayout, { props: { children: childSnippet } });
 	for (let i = 0; i < 50 && !document.querySelector('.nav-links'); i++) {
 		await new Promise((r) => setTimeout(r, 5));
 		flushSync();
 	}
+}
+
+beforeEach(async () => {
+	h.chatOn = true;
+	await mountLayout();
 });
 
 afterEach(() => {
@@ -50,6 +58,15 @@ describe('console nav Chat entry (TASK-4044 3c)', () => {
 		expect(links[chat].classList.contains('nav-link')).toBe(true);
 		expect(links[chat].getAttribute('aria-label')).toBe('Chat, 3 unread');
 		expect(links[chat].textContent).toContain('Chat');
+	});
+
+	it('has no Chat entry while the setting is off (TASK-4315)', async () => {
+		cleanup();
+		document.body.innerHTML = '';
+		h.chatOn = false;
+		await mountLayout();
+		expect(document.querySelector('.nav-links a[href="/console/needs"]')).not.toBeNull();
+		expect(document.querySelector('.nav-links a[href="/messages"]')).toBeNull();
 	});
 
 	it('closes the mobile menu on click', async () => {

@@ -4598,7 +4598,7 @@
 				<div class="empty-icon">🔒</div>
 				<h2>This workspace isn't available</h2>
 				<p>It isn't available to you, or it no longer exists.</p>
-				<a class="empty-cta" href="/{username}">Back to your workspaces</a>
+				<a class="empty-cta" href="/console">Back to your workspaces</a>
 			</div>
 		{:else if indexError && items.length === 0}
 			<!-- localIndex bootstrap failed and the cache is empty

@@ -22,6 +22,7 @@
 	import { getActiveKey } from '$lib/nav/destinations';
 	import UnreadBadge from '$lib/components/chat/UnreadBadge.svelte';
 	import { chatStore } from '$lib/stores/chat.svelte';
+	import { chatSetting } from '$lib/stores/chatSetting.svelte';
 	import QuickCaptureSheet from '$lib/components/layout/QuickCaptureSheet.svelte';
 	import WorkspaceSheet from '$lib/components/layout/WorkspaceSheet.svelte';
 	import YouSheet from '$lib/components/layout/YouSheet.svelte';
@@ -32,7 +33,8 @@
 	let wsName = $derived(workspaceStore.current?.name ?? 'Workspace');
 	let activeKey = $derived(getActiveKey(page.url.pathname, wsPrefix));
 
-	let chatUnread = $derived(chatStore.unreadTotal);
+	// A user who turned Chat off sees no count anywhere (TASK-4315).
+	let chatUnread = $derived(chatSetting.enabled ? chatStore.unreadTotal : 0);
 
 	let workspaceOpen = $state(false);
 	let youOpen = $state(false);

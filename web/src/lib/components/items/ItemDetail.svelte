@@ -6694,6 +6694,7 @@
 				<div class="title-edit">
 				<textarea
 					class="title-input"
+					aria-label="Item title"
 					rows="1"
 					bind:this={titleInputEl}
 					bind:value={titleDraft}
@@ -7279,6 +7280,7 @@
 							<span class="field-label">{field.label}</span>
 							<div class="field-value">
 								<FieldEditor
+									ariaLabel={field.label}
 									{field}
 									value={rawFieldValue}
 									onchange={(v) => updateField(field.key, v)}

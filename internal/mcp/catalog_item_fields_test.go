@@ -1661,6 +1661,7 @@ func TestFieldConflictProperty_SourcesDerivedFromTheDeclaredSchema(t *testing.T)
 		"target":            true, // link/unlink's other end
 		"target_collection": true, // move's destination
 		"link_type":         true, // the relationship kind, not a field
+		"stale":             true, // agenda: a read filter (TASK-4237)
 
 		// Item COLUMNS, not entries in the fields blob.
 		"title": true, "content": true, "slug": true, "pinned": true,

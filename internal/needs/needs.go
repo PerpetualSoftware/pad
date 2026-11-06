@@ -12,11 +12,12 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// The four routing rules, in the order Resolve tries them.
+// The routing rules, in the order Resolve tries them.
 const (
 	RuleAsked         = "asked"
 	RuleMentioned     = "mentioned"
 	RuleAssigned      = "assigned"
+	RuleDue           = "due"
 	RuleAdminFallback = "admin_fallback"
 )
 
@@ -25,6 +26,7 @@ const (
 	BecauseHumanTask  = "human_task"
 	BecauseNeedsHuman = "needs_human"
 	BecauseMention    = "mention"
+	BecauseDue        = "due"
 )
 
 // Mention is one open @mention of a user on an item.
@@ -53,6 +55,9 @@ type Candidate struct {
 	// NeedsHuman, when set, is when the attention set's needs_human answer was
 	// written.
 	NeedsHuman *time.Time
+	// Due is the earliest outstanding due instant for DueRecipientID.
+	Due            *time.Time
+	DueRecipientID string
 }
 
 // Eligibility answers whether a user may be routed an item: a live human who
@@ -122,7 +127,8 @@ func (r Routing) Includes(userID string) bool {
 //     person is eligible;
 //  2. mentioned: the eligible people with an open @mention, by mention time;
 //  3. assigned: the assigned person, if eligible;
-//  4. admin_fallback: the eligible workspace owners.
+//  4. due: the schedule recipient, if eligible;
+//  5. admin_fallback: the eligible workspace owners.
 //
 // WaitingSince is the earliest open claim: the winning rule's own claim (the
 // item's creation for asked and the fallback, the mention for mentioned, the
@@ -178,6 +184,9 @@ func Resolve(c Candidate, owners []string, elig Eligibility) (Routing, bool) {
 	case ok(c.AssigneeUserID):
 		r.Rule, r.People, claim = RuleAssigned, []string{c.AssigneeUserID}, c.AssignedAt
 		r.Why = Why{Text: "It is assigned to you."}
+	case c.Due != nil && ok(c.DueRecipientID):
+		r.Rule, r.People, claim = RuleDue, []string{c.DueRecipientID}, *c.Due
+		r.Why = Why{Text: "A reminder of yours is due."}
 	default:
 		for _, o := range owners {
 			if ok(o) {
@@ -190,12 +199,18 @@ func Resolve(c Candidate, owners []string, elig Eligibility) (Routing, bool) {
 		r.Rule, claim = RuleAdminFallback, c.CreatedAt
 		r.Why = Why{Text: "Nobody else can take it, so it falls to the workspace owners."}
 	}
-	finish := func(x *Routing, claim time.Time) {
+	finish := func(x *Routing, claim time.Time, userID string) {
 		x.Why.Rule = x.Rule
 		if c.NeedsHuman != nil {
 			x.Because = append(x.Because, Because{Kind: BecauseNeedsHuman, At: *c.NeedsHuman})
 			if c.NeedsHuman.Before(claim) {
 				claim = *c.NeedsHuman
+			}
+		}
+		if c.Due != nil && userID != "" && userID == c.DueRecipientID {
+			x.Because = append(x.Because, Because{Kind: BecauseDue, At: *c.Due})
+			if c.Due.Before(claim) {
+				claim = *c.Due
 			}
 		}
 		x.WaitingSince = claim
@@ -205,10 +220,14 @@ func Resolve(c Candidate, owners []string, elig Eligibility) (Routing, bool) {
 		}
 	}
 	for uid, own := range r.byUser {
-		finish(&own, own.WaitingSince)
+		finish(&own, own.WaitingSince, uid)
 		r.byUser[uid] = own
 	}
-	finish(&r, claim)
+	person := ""
+	if len(r.People) == 1 {
+		person = r.People[0]
+	}
+	finish(&r, claim, person)
 	return r, true
 }
 

@@ -51,6 +51,11 @@ type Server struct {
 	// calendarPageOverride, when non-zero, replaces calendarPageSize for this
 	// server's calendar reads. Tests only.
 	calendarPageOverride int
+	// agendaClock, when set, replaces time.Now for agenda and needs reads.
+	// Tests use it to fix occurrence times and budget deadlines.
+	agendaClock func() time.Time
+	// agendaScanLimit, when positive, lowers the request-wide schedule scan cap.
+	agendaScanLimit int
 
 	// sseKeepaliveOverride, when non-zero, replaces sseKeepaliveInterval for
 	// this server's SSE streams, and watchEventsKeepaliveInterval for the
@@ -2145,6 +2150,7 @@ func (s *Server) setupRouter() {
 			// The cross-workspace needs-you inbox (TASK-3920): outside the
 			// /{slug} subrouter, so the handler admits each workspace itself.
 			r.Get("/me/needs", s.handleMeNeeds)
+			r.Get("/me/agenda", s.handleMeAgenda)
 			// Push device registration (session-only) and the account's push
 			// settings (TASK-3938).
 			r.Put("/me/push-devices/{connection_id}", s.handlePutPushDevice)

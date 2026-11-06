@@ -1,14 +1,15 @@
 import { test, expect } from './fixtures';
 
 /**
- * TASK-4044 (ruling 140d6e04): the /messages roster keeps a conversation as a
- * DM by its `kind`. The server writes 'direct' (migrations/158_conversations.sql
- * CHECK kind IN ('direct','group')); a roster filter on any other literal drops
- * every conversation, and unit fixtures cannot see that because they build their
- * own kind. This spec reads the server's real value: a DM created through the
- * API must show up in the roster as a link to /messages/<number>.
+ * TASK-4044 (ruling 140d6e04): the inbox keeps a conversation as a DM by its
+ * `kind`. The server writes 'direct' (migrations/158_conversations.sql CHECK kind
+ * IN ('direct','group')); a filter on any other literal drops every conversation,
+ * and unit fixtures cannot see that because they build their own kind. This spec
+ * reads the server's real value: a DM created through the API must show up as ONE
+ * card linking to /messages/<number>, carrying its presence, and must not also be
+ * offered in the roster of agents to start a chat with (BUG-4321).
  */
-test('the roster shows an agent with a DM as a link to its conversation', async ({
+test('an agent with a DM is one card linking to its conversation, not also a roster row', async ({
 	page,
 	request,
 	fixture
@@ -24,12 +25,13 @@ test('the roster shows an agent with a DM as a link to its conversation', async 
 
 	await page.goto('/messages');
 
-	const row = page
-		.getByRole('list', { name: 'Agents' })
-		.locator('a.row')
-		.filter({ has: page.locator('.name', { hasText: agent }) });
-	await expect(row).toHaveCount(1);
-	await expect(row).toHaveAttribute('href', `/messages/${conversation.number}`);
+	const card = page.locator(`a[href="/messages/${conversation.number}"]`);
+	await expect(card).toHaveCount(1);
+	await expect(card).toContainText(agent);
+	await expect(card.locator('.presence-label')).toBeVisible();
+	await expect(
+		page.getByRole('list', { name: 'Agents to start a chat with' }).getByText(agent)
+	).toHaveCount(0);
 });
 
 /**

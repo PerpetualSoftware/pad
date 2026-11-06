@@ -121,6 +121,7 @@ import type { CalendarQuery, CalendarResponse } from '$lib/types';
 import type {
 	NeedsListParams,
 	NeedsResponse,
+	AgendaResponse,
 	NeedsSnooze,
 	NeedsSnoozeRequest
 } from '$lib/types';
@@ -3728,6 +3729,12 @@ export const api = {
 	},
 
 	// ── Needs you (TASK-3923, IDEA-3906 A6) ──────────────────────────────────
+	getMyAgenda: (from: string, to: string, tz?: string) => {
+		const query = new URLSearchParams({ from, to });
+		if (tz !== undefined) query.set('tz', tz);
+		return request<AgendaResponse>(`/me/agenda?${query}`);
+	},
+
 	needs: {
 		/** GET /me/needs. Only the params given go on the URL. */
 		list: (params: NeedsListParams = {}) => {

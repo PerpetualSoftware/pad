@@ -4,7 +4,8 @@ import { tick } from 'svelte';
 
 const h = vi.hoisted(() => ({
 	ws: { current: { slug: 'ws', owner_username: 'u', is_guest: false } as { slug: string; owner_username: string; is_guest: boolean } },
-	auth: { authenticated: true }
+	auth: { authenticated: true },
+	chatOn: true
 }));
 
 vi.mock('$lib/api/client', () => ({
@@ -26,6 +27,13 @@ vi.mock('$lib/stores/workspace.svelte', () => ({
 	}
 }));
 vi.mock('$lib/stores/collections.svelte', async () => await import('./sidebarQuickAdd.fixture.svelte'));
+vi.mock('$lib/stores/chatSetting.svelte', () => ({
+	chatSetting: {
+		get enabled() {
+			return h.chatOn;
+		}
+	}
+}));
 vi.mock('$lib/stores/chat.svelte', () => ({ chatStore: { unreadTotal: 4 } }));
 vi.mock('$lib/stores/auth.svelte', async (orig) => {
 	const real = await orig<typeof import('$lib/stores/auth.svelte')>();
@@ -44,7 +52,10 @@ const entry = () => document.querySelector<HTMLAnchorElement>('nav.collection-na
 // TASK-4044 3c (Option C, ruling 687eb810 Q-e): chat is per user, so the entry is
 // gated on being signed in, not on the workspace's guest flag.
 describe('Sidebar Chat entry (TASK-4044 3c)', () => {
-	beforeEach(() => cleanup());
+	beforeEach(() => {
+	cleanup();
+	h.chatOn = true;
+});
 
 	it('a member sees it, after Tags, with the unread badge and a global href', async () => {
 		h.ws.current = { slug: 'ws', owner_username: 'u', is_guest: false };
@@ -66,6 +77,16 @@ describe('Sidebar Chat entry (TASK-4044 3c)', () => {
 		await tick();
 		expect(document.querySelector('a[href="/u/ws/tags"]')).toBeNull();
 		expect(entry()).not.toBeNull();
+	});
+
+	it('a signed-in user with Chat off does not see it (TASK-4315)', async () => {
+		h.ws.current = { slug: 'ws', owner_username: 'u', is_guest: false };
+		h.auth.authenticated = true;
+		h.chatOn = false;
+		render(Sidebar);
+		await tick();
+		expect(document.querySelector('nav.collection-nav')).not.toBeNull();
+		expect(entry()).toBeNull();
 	});
 
 	it('a signed-out visitor does not', async () => {
