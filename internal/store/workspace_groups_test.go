@@ -202,3 +202,41 @@ func TestWorkspaceGroupsUpdateKeepsMembersOutsideVisible(t *testing.T) {
 		t.Fatalf("members after replace: %+v", got.WorkspaceIDs)
 	}
 }
+
+// A kept member the caller cannot see must not count toward the cap: otherwise
+// a group with one hidden member refuses a 100-id edit at 99, and the refusal
+// tells the caller a hidden member exists (TASK-4244).
+func TestWorkspaceGroupsCapCountsOnlySentIDs(t *testing.T) {
+	s := testStore(t)
+	u := tabsUser(t, s, "Capcount")
+	var all []string
+	for i := 0; i < MaxWorkspaceGroupMembers+1; i++ {
+		all = append(all, tabsWorkspace(t, s, u, fmt.Sprintf("Cap %03d", i)).ID)
+	}
+	hidden := all[0]
+	g, err := s.CreateWorkspaceGroup(context.Background(), u.ID, "Full", all[:MaxWorkspaceGroupMembers])
+	if err != nil {
+		t.Fatal(err)
+	}
+	visible := map[string]bool{}
+	for _, id := range all[1:] {
+		visible[id] = true
+	}
+	ids := append([]string(nil), all[1:]...) // 100 visible ids
+	got, err := s.UpdateWorkspaceGroup(context.Background(), u.ID, g.ID, nil, &ids, visible)
+	if err != nil {
+		t.Fatalf("100 visible ids beside one hidden member: %v", err)
+	}
+	have := map[string]bool{}
+	for _, id := range got.WorkspaceIDs {
+		have[id] = true
+	}
+	if len(have) != MaxWorkspaceGroupMembers+1 || !have[hidden] {
+		t.Fatalf("hidden member not kept: %d members, hidden kept=%v", len(have), have[hidden])
+	}
+	// More than the cap sent is still refused.
+	over := append(append([]string(nil), all[1:]...), hidden)
+	if _, err := s.UpdateWorkspaceGroup(context.Background(), u.ID, g.ID, nil, &over, visible); !errors.Is(err, ErrWorkspaceGroupMemberLimit) {
+		t.Fatalf("101 sent ids: %v", err)
+	}
+}

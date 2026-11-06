@@ -19,6 +19,9 @@ const (
 	agendaMaxWindow  = 92 * 24 * time.Hour // schedule.CapWindow's own bound
 	agendaMaxEntries = 500
 	agendaMaxScan    = 1000 // schedules read per request
+	// agendaMaxCountRows bounds the item creations and status changes read for
+	// the counts series in one request.
+	agendaMaxCountRows = 20000
 	// agendaBudget bounds the expansion of a guest-callable read: a thousand
 	// schedules at the engine's own per-call time cap are otherwise unbounded.
 	agendaBudget = 1500 * time.Millisecond
@@ -92,6 +95,17 @@ type agendaResponse struct {
 	NextFrom     string              `json:"next_from,omitempty"`
 	Unexpanded   []agendaUnexpanded  `json:"unexpanded,omitempty"`
 	Unavailable  []agendaUnavailable `json:"unavailable,omitempty"`
+	// Counts is the per-day series for /me/agenda; CountsTruncated says a cap
+	// stopped it, in which case Counts is absent rather than partial.
+	Counts          []agendaCount `json:"counts,omitempty"`
+	CountsTruncated bool          `json:"counts_truncated,omitempty"`
+}
+
+type agendaCount struct {
+	Day       string `json:"day"`
+	Completed int    `json:"completed"`
+	Open      int    `json:"open"`
+	Burndown  int    `json:"burndown"`
 }
 
 func writeAgendaParam(w http.ResponseWriter, field, code, msg string) {
