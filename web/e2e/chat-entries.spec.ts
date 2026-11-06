@@ -109,9 +109,10 @@ test('E9: the /console nav shows the Chat link with the same badge', async ({ pa
 	await expectBadgeMatchesServer(page, request, fixture, entry);
 	await noHorizontalOverflow(page, '.console-nav');
 	await noHorizontalOverflow(page, '.console-nav .nav-links');
-	// Sits right after "Needs you".
+	// Sits right after "Agenda", which follows "Needs you".
 	const hrefs = await page.locator('.console-nav .nav-links a').evaluateAll((els) => els.map((e) => e.getAttribute('href')));
-	expect(hrefs.indexOf('/messages')).toBe(hrefs.indexOf('/console/needs') + 1);
+	expect(hrefs.indexOf('/console/agenda')).toBe(hrefs.indexOf('/console/needs') + 1);
+	expect(hrefs.indexOf('/messages')).toBe(hrefs.indexOf('/console/agenda') + 1);
 });
 
 test('E9: the /console Chat link works from the mobile menu', async ({ page, request, fixture }, testInfo) => {

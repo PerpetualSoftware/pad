@@ -383,6 +383,19 @@ export interface InvitationAccepted extends InvitationAcceptedFields {
 	accepted: boolean;
 }
 
+export interface WorkspaceGroup {
+	id: string;
+	name: string;
+	kind: 'all' | 'mine' | 'named';
+	workspace_ids: string[];
+	created_at?: string;
+	updated_at?: string;
+}
+
+export interface WorkspaceGroupsResponse {
+	groups: WorkspaceGroup[];
+}
+
 // One workspace in the caller's open set: a tab in the workspace tab bar
 // (PLAN-3002 U1 / TASK-3256). Mirrors models.WorkspaceTab. The whole set is
 // server-side, so it is the same on every device.
@@ -3555,7 +3568,7 @@ export interface NeedsItemInfo {
 }
 
 export interface NeedsWhy {
-	rule: 'asked' | 'mentioned' | 'assigned' | 'admin_fallback' | string;
+	rule: 'asked' | 'mentioned' | 'assigned' | 'due' | 'admin_fallback' | string;
 	text: string;
 	by?: string;
 	at?: string;
@@ -3563,7 +3576,7 @@ export interface NeedsWhy {
 }
 
 export interface NeedsBecause {
-	kind: 'human_task' | 'needs_human' | 'mention' | string;
+	kind: 'human_task' | 'needs_human' | 'mention' | 'due' | string;
 	at: string;
 	by?: string;
 	comment_id?: string;
@@ -3741,4 +3754,78 @@ export interface ChatUnreadResponse {
 export interface ChatConversationsResponse {
 	conversations: ChatConversationSummary[];
 	unread_total: number;
+}
+
+export interface AgendaEntry {
+	type: 'schedule' | 'date' | 'created' | 'completed';
+	at: string;
+	day: string;
+	item_ref: string;
+	item_title: string;
+	collection: string;
+	workspace?: string;
+	workspace_name?: string;
+	owner_username?: string;
+	wall?: string;
+	all_day?: boolean;
+	floating?: boolean;
+	state?: 'outstanding' | 'scheduled' | 'done' | 'skipped' | 'moved' | 'missed' | 'unrecorded';
+	kind?: string;
+	audience?: 'human' | 'agent' | 'both';
+	schedule_id?: string;
+	field?: string;
+	date?: string;
+	fired?: boolean;
+	overdue?: boolean;
+	effective_at?: string;
+	resolved_at?: string;
+	actor?: string;
+	comment_id?: string;
+	missed_count?: number;
+	stale?: boolean;
+}
+
+export interface AgendaResponse {
+	from: string;
+	to: string;
+	tz: string;
+	timezone_note?: string;
+	entries: AgendaEntry[];
+	truncated?: boolean;
+	next_from?: string;
+	unavailable?: { item_ref: string; code: string; workspace?: string; owner_username?: string }[];
+	unexpanded?: {
+		schedule_id: string;
+		item_ref: string;
+		item_title: string;
+		collection: string;
+		kind?: string;
+		audience?: 'human' | 'agent' | 'both';
+		reason: 'scan_limit';
+		workspace?: string;
+		owner_username?: string;
+	}[];
+}
+
+export type ScheduleResolveState = 'done' | 'skip' | 'snooze' | 'move';
+
+export interface ScheduleResolveRequest {
+	occurrence_at: string;
+	state: ScheduleResolveState;
+	comment?: string;
+	until?: string;
+}
+
+export interface ItemScheduleView {
+	item_ref: string;
+	kind: string;
+	floating: boolean;
+	ended_at?: string;
+	next_occurrence?: { at: string; wall: string };
+	[key: string]: unknown;
+}
+
+export interface ScheduleResolveResult {
+	schedule: object;
+	resolution: { occurrence_at: string; state: ScheduleResolveState; comment_id?: string; missed_recorded: number };
 }

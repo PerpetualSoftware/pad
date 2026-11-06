@@ -1,5 +1,5 @@
 <script lang="ts">
- import { dayLabel, timeLabel, zoneDay, type CalendarRow } from '$lib/calendar/presentation';
+ import { dayLabel, timeLabel, zoneDay, type CalendarRow } from '$lib/calendar/monthGrid';
  import { shouldOpenInPane } from '../collections/itemCardClick';
  import { canonicalValueColor, formatFieldLabel } from '$lib/utils/fieldColors';
  import Chip from '../common/Chip.svelte';

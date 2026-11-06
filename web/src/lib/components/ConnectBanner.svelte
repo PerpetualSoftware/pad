@@ -3,7 +3,7 @@
 	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { sseService } from '$lib/services/sse.svelte';
-	import { onDestroy } from 'svelte';
+	import { onDestroy, tick } from 'svelte';
 	import ConnectWorkspaceModal from './ConnectWorkspaceModal.svelte';
 
 	interface Props {
@@ -26,6 +26,13 @@
 	// a single tabbed surface. The banner just opens it; the modal decides
 	// the default tab based on `mcpPublicUrl` availability.
 	let connectOpen = $state(false);
+	// Only read after tick(); binding this ref must not drive an effect.
+	// svelte-ignore non_reactive_update
+	let connectButton: HTMLButtonElement | undefined;
+	async function restoreConnectFocus() {
+		await tick();
+		connectButton?.focus();
+	}
 
 	// localStorage dismiss key migration (TASK-1114). Existing users have
 	// `pad-cli-banner-dismissed-{ws}` set; we now write to the broader
@@ -112,7 +119,9 @@
 	let prevOpen = false;
 	$effect.pre(() => {
 		if (prevOpen && !connectOpen) {
-			refreshHasAgentActivity(wsSlug);
+			// Keep the known answer while checking so the opener can remount.
+			refreshHasAgentActivity(wsSlug, true);
+			void restoreConnectFocus();
 		}
 		prevOpen = connectOpen;
 	});
@@ -168,22 +177,7 @@
 </script>
 
 {#if visible}
-	<div
-		class="banner"
-		role="button"
-		tabindex="0"
-		onclick={openModal}
-		onkeydown={(e) => {
-			// Only react when the keydown originated on the banner itself —
-			// otherwise keyboard activation of nested focusable elements
-			// (e.g. the dismiss button) would also open the modal.
-			if (e.target !== e.currentTarget) return;
-			if (e.key === 'Enter' || e.key === ' ') {
-				e.preventDefault();
-				openModal();
-			}
-		}}
-	>
+	<div class="banner">
 		<span class="banner-icon" aria-hidden="true">
 			<!-- Plug icon — universal "connect a service" affordance. -->
 			<svg
@@ -206,7 +200,13 @@
 			Connect an AI agent to this workspace &rarr;
 		</span>
 		<span class="banner-actions">
-			<span class="banner-cta">Connect</span>
+			<button
+				bind:this={connectButton}
+				type="button"
+				class="banner-cta"
+				aria-label="Connect agent"
+				onclick={openModal}
+			>Connect</button>
 			<button
 				class="dismiss-btn"
 				type="button"
@@ -240,6 +240,7 @@
 	}
 
 	.banner {
+		position: relative;
 		display: flex;
 		align-items: center;
 		gap: var(--space-3);
@@ -249,16 +250,25 @@
 		border: 1px solid var(--border);
 		border-radius: var(--radius);
 		color: var(--text-secondary);
-		cursor: pointer;
 		font-size: 0.85em;
-		transition: border-color 0.15s, background 0.15s;
 		box-sizing: border-box;
 	}
-	.banner:hover {
-		border-color: var(--accent-blue);
-		background: color-mix(in srgb, var(--accent-blue) 4%, var(--bg-secondary));
+	.banner-cta::after {
+		content: '';
+		position: absolute;
+		inset: -1px;
+		border: 1px solid transparent;
+		border-radius: var(--radius);
+		transition: border-color 0.15s, background 0.15s;
 	}
-	.banner:focus-visible {
+	.banner-cta:hover::after {
+		border-color: var(--accent-blue);
+		background: color-mix(in srgb, var(--accent-blue) 4%, transparent);
+	}
+	.banner-cta:focus-visible {
+		outline: none;
+	}
+	.banner-cta:focus-visible::after {
 		outline: 2px solid var(--accent-blue);
 		outline-offset: 2px;
 	}
@@ -281,10 +291,17 @@
 		flex-shrink: 0;
 	}
 	.banner-cta {
+		padding: 0;
+		border: none;
+		background: transparent;
+		font: inherit;
+		cursor: pointer;
 		color: var(--accent-blue);
 		font-weight: 600;
 	}
 	.dismiss-btn {
+		position: relative;
+		z-index: 1;
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;

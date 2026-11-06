@@ -23,7 +23,11 @@ const needsChunk = 500
 // do not make a workspace a guest one, and a soft-deleted workspace never
 // appears. The result is sorted by id. BUG-3914 reuses it for search.
 func (s *Store) GuestWorkspaceIDs(userID string) ([]string, error) {
-	rows, err := s.db.Query(s.q(`
+	return s.GuestWorkspaceIDsQ(s.db, userID)
+}
+
+func (s *Store) GuestWorkspaceIDsQ(q Queryer, userID string) ([]string, error) {
+	rows, err := q.Query(s.q(`
 		SELECT w.id FROM workspaces w
 		WHERE w.deleted_at IS NULL
 		  AND (EXISTS (SELECT 1 FROM collection_grants cg WHERE cg.workspace_id = w.id AND cg.user_id = ?)
@@ -48,13 +52,17 @@ func (s *Store) GuestWorkspaceIDs(userID string) ([]string, error) {
 // GetWorkspacesByIDs loads live workspaces by id with their owner's username,
 // in one query per chunk. Unknown and soft-deleted ids are skipped.
 func (s *Store) GetWorkspacesByIDs(ids []string) ([]models.Workspace, error) {
+	return s.GetWorkspacesByIDsQ(s.db, ids)
+}
+
+func (s *Store) GetWorkspacesByIDsQ(q Queryer, ids []string) ([]models.Workspace, error) {
 	var out []models.Workspace
 	for _, chunk := range chunkStrings(ids, needsChunk) {
 		args := make([]any, len(chunk))
 		for i, id := range chunk {
 			args[i] = id
 		}
-		rows, err := s.db.Query(s.q(`
+		rows, err := q.Query(s.q(`
 			SELECT w.id, w.name, w.slug, COALESCE(w.owner_id, ''), COALESCE(ou.username, ''), w.description, w.settings, w.source, w.created_at, w.updated_at
 			FROM workspaces w LEFT JOIN users ou ON ou.id = w.owner_id
 			WHERE w.deleted_at IS NULL AND w.id IN (`+placeholders(len(chunk))+`)
@@ -120,12 +128,15 @@ const openMentionSQL = `
 // NeedsCandidateParams selects the items the router considers in one workspace.
 type NeedsCandidateParams struct {
 	// AwaitsCollectionIDs are the awaits_human collections: their items are
-	// candidates. FlaggedItemIDs are the needs_human items. An item with an
+	// candidates. FlaggedItemIDs are the needs_human items; DueItemIDs are
+	// items with due occurrences received by the viewer. An item with an
 	// open mention is a candidate in any non-system collection.
 	AwaitsCollectionIDs []string
 	FlaggedItemIDs      []string
+	DueItemIDs          []string
 	// ForUserID, when set, keeps only the items that user is the assignee of or
-	// holds an open mention on: the rows a non-owner caller can be routed.
+	// holds an open mention on, or that is in DueItemIDs: the rows a non-owner
+	// caller can be routed.
 	ForUserID string
 }
 
@@ -156,6 +167,12 @@ func (s *Store) NeedsCandidateItems(workspaceID string, scope CatchUpScope, p Ne
 			args = append(args, id)
 		}
 	}
+	for _, chunk := range chunkStrings(p.DueItemIDs, needsChunk) {
+		src = append(src, "i.id IN ("+placeholders(len(chunk))+")")
+		for _, id := range chunk {
+			args = append(args, id)
+		}
+	}
 	src = append(src, `EXISTS (SELECT 1 FROM comment_mentions m `+openMentionSQL+` AND m.item_id = i.id)`)
 
 	q := `
@@ -168,8 +185,15 @@ func (s *Store) NeedsCandidateItems(workspaceID string, scope CatchUpScope, p Ne
 		  AND (` + strings.Join(src, " OR ") + `)`
 	if p.ForUserID != "" {
 		q += `
-		  AND (i.assigned_user_id = ? OR EXISTS (SELECT 1 FROM comment_mentions m ` + openMentionSQL + ` AND m.item_id = i.id AND m.user_id = ?))`
+		  AND (i.assigned_user_id = ? OR EXISTS (SELECT 1 FROM comment_mentions m ` + openMentionSQL + ` AND m.item_id = i.id AND m.user_id = ?)`
 		args = append(args, p.ForUserID, p.ForUserID)
+		for _, chunk := range chunkStrings(p.DueItemIDs, needsChunk) {
+			q += " OR i.id IN (" + placeholders(len(chunk)) + ")"
+			for _, id := range chunk {
+				args = append(args, id)
+			}
+		}
+		q += ")"
 	}
 	q += ` ORDER BY i.created_at, i.id`
 

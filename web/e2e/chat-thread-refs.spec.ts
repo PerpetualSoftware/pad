@@ -101,9 +101,10 @@ test.describe('E7: refs in message bodies', () => {
 		await expect(link).toHaveText(task.ref);
 		await expect(bubble(page, row.seq).locator('.body')).toHaveText(`see ${task.ref} please`);
 
-		await link.click();
-		await page.waitForURL((u) => u.pathname.startsWith(`/${fixture.adminUsername}/${fixture.workspaceSlug}/`));
-		await expect(page.locator('body')).toContainText(task.title);
+		// TASK-4315: a body link opens in a new tab, so the conversation stays where it is.
+		const [tab] = await Promise.all([page.waitForEvent('popup'), link.click()]);
+		await tab.waitForURL((u) => u.pathname.startsWith(`/${fixture.adminUsername}/${fixture.workspaceSlug}/`));
+		await expect(tab.locator('body')).toContainText(task.title);
 	});
 
 	test('(b) and (c): a denied-workspace ref and an invented ref render identical markup', async ({

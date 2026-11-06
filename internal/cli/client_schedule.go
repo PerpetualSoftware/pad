@@ -63,3 +63,17 @@ func (c *Client) GetAgenda(wsSlug, from, to, tz string) (json.RawMessage, error)
 	var result json.RawMessage
 	return result, c.get("/workspaces/"+url.PathEscape(wsSlug)+"/agenda?"+q.Encode(), &result)
 }
+
+// GetStaleAgenda returns the occurrences unresolved for more than 14 days, oldest
+// first (TASK-4237). from (an RFC3339 instant) and tz are optional.
+func (c *Client) GetStaleAgenda(wsSlug, from, tz string) (json.RawMessage, error) {
+	q := url.Values{"stale": {"true"}}
+	if from != "" {
+		q.Set("from", from)
+	}
+	if tz != "" {
+		q.Set("tz", tz)
+	}
+	var result json.RawMessage
+	return result, c.get("/workspaces/"+url.PathEscape(wsSlug)+"/agenda?"+q.Encode(), &result)
+}

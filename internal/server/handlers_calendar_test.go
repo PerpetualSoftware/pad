@@ -1054,3 +1054,190 @@ func TestCalendarUnreadableCollectionSchemaIsAnInternalError(t *testing.T) {
 		t.Errorf("a calendar view on a malformed schema answered %d %s, want 500", rr.Code, rr.Body.String())
 	}
 }
+
+func TestCalendarRefusesABuiltinEndFieldWhateverTheSchema(t *testing.T) {
+	t.Parallel()
+	w := newAgendaWorld(t, "tasks")
+	bc, err := w.srv.store.CreateCollection(w.ws.ID, models.CollectionCreate{Name: "Bi", Slug: "bi", Prefix: "BI", Schema: `{"fields":[` +
+		`{"key":"due_date","type":"date"},{"key":"completed","type":"date"},{"key":"created","type":"date"}]}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.colls["bi"] = bc
+	detail := func(m map[string]any) (field, code any) {
+		e, _ := m["error"].(map[string]any)
+		d, _ := e["details"].(map[string]any)
+		return d["field"], d["code"]
+	}
+	tok, err := w.srv.store.CreateSession(w.owner.ID, "web-test", "192.0.2.1", "", webSessionTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := "/api/v1/workspaces/" + w.ws.Slug + "/collections/bi/views"
+	rr := doRequestWithCookie(w.srv, "POST", base, map[string]any{"name": "Good", "view_type": "calendar", "config": map[string]any{"date_field": "due_date"}}, tok)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("good view: %d %s", rr.Code, rr.Body.String())
+	}
+	var good map[string]any
+	_ = json.Unmarshal(rr.Body.Bytes(), &good)
+	for _, end := range []string{"created", "completed"} {
+		code, body, m := w.cal(t, w.owner, "bi", "from=2031-03-01T00:00:00Z&to=2031-03-31T00:00:00Z&date_field=due_date&end_field="+end)
+		if f, c := detail(m); code != http.StatusBadRequest || f != "end_field" || c != models.CalendarCodeBuiltinEnd || !strings.Contains(string(body), end) {
+			t.Errorf("route %s: %d %s", end, code, body)
+		}
+		cfg := map[string]any{"date_field": "due_date", "end_field": end}
+		rr := doRequestWithCookie(w.srv, "POST", base, map[string]any{"name": "Bad " + end, "view_type": "calendar", "config": cfg}, tok)
+		m = map[string]any{}
+		_ = json.Unmarshal(rr.Body.Bytes(), &m)
+		if f, c := detail(m); rr.Code != http.StatusBadRequest || f != "end_field" || c != models.CalendarCodeBuiltinEnd {
+			t.Errorf("create %s: %d %s", end, rr.Code, rr.Body.String())
+		}
+		rr = doRequestWithCookie(w.srv, "PATCH", base+"/"+good["id"].(string), map[string]any{"config": cfg}, tok)
+		m = map[string]any{}
+		_ = json.Unmarshal(rr.Body.Bytes(), &m)
+		if f, c := detail(m); rr.Code != http.StatusBadRequest || f != "end_field" || c != models.CalendarCodeBuiltinEnd {
+			t.Errorf("patch %s: %d %s", end, rr.Code, rr.Body.String())
+		}
+	}
+	// date_field=completed still means the built-in, even with a same-named field.
+	if code, body, _ := w.cal(t, w.owner, "bi", "from=2031-03-01T00:00:00Z&to=2031-03-31T00:00:00Z&date_field=completed"); code != http.StatusOK {
+		t.Errorf("date_field=completed: %d %s", code, body)
+	}
+}
+
+// A finished item shows only occurrences that have a history row. A later
+// passed occurrence is derived as missed with no row, and stays off the page.
+func TestCalendarFinishedItemDropsDerivedMissed(t *testing.T) {
+	t.Parallel()
+	w := newAgendaWorld(t, "tasks")
+	w.srv.agendaClock = func() time.Time { return time.Date(2031, 3, 10, 12, 0, 0, 0, time.UTC) }
+	it := w.item(t, "tasks", "DM done", `{"status":"open"}`, &dailyPast)
+	in := store.ResolveInput{OccurrenceAt: time.Date(2031, 3, 5, 9, 0, 0, 0, time.UTC), State: "done", Actor: "user"}
+	if _, err := w.srv.store.ResolveOccurrence(w.ws.ID, it.ID, in); err != nil {
+		t.Fatal(err)
+	}
+	open := w.item(t, "tasks", "DM open", `{"status":"open"}`, &dailyPast)
+	if _, err := w.srv.store.ResolveOccurrence(w.ws.ID, open.ID, in); err != nil {
+		t.Fatal(err)
+	}
+	// An explicitly recorded missed row, which only an import writes.
+	var schedID string
+	if err := w.srv.store.DB().QueryRow(`SELECT id FROM item_schedules WHERE item_id = ?`, it.ID).Scan(&schedID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.srv.store.DB().Exec(`INSERT INTO schedule_occurrences (id, schedule_id, occurrence_at, occurrence_wall, state, comment_id, actor, resolved_at)
+		VALUES ('dm-missed', ?, '2031-03-08T09:00:00Z', '2031-03-08T09:00', 'missed', NULL, 'user', '2031-03-09T00:00:00Z')`, schedID); err != nil {
+		t.Fatal(err)
+	}
+	f := `{"status":"done"}`
+	if _, err := w.srv.store.UpdateItem(it.ID, models.ItemUpdate{Fields: &f}); err != nil {
+		t.Fatal(err)
+	}
+	m := w.calOK(t, w.owner, "tasks", calPast)
+	var days []string
+	for _, e := range entriesOf(m) {
+		if e["item_title"] == "DM done" {
+			days = append(days, fmt.Sprint(e["day"], ":", e["state"]))
+		}
+	}
+	if fmt.Sprint(days) != "[2031-03-05:done 2031-03-08:missed]" {
+		t.Errorf("finished item entries = %v, want only the two recorded ones", days)
+	}
+	if got := entryStates(m, "DM open"); !got["missed"] {
+		t.Errorf("an open item keeps its derived missed entries: %v", got)
+	}
+}
+
+// The calendar reads the agenda's clock and scan limit.
+func TestCalendarHonoursAgendaSeams(t *testing.T) {
+	t.Parallel()
+	w := newAgendaWorld(t, "tasks")
+	w.srv.agendaClock = func() time.Time { return time.Date(2031, 3, 1, 0, 0, 0, 0, time.UTC) }
+	for _, title := range []string{"One", "Two", "Three"} {
+		w.item(t, "tasks", title, `{"status":"open"}`, &dailyPast)
+	}
+	state := func(m map[string]any) string {
+		for _, e := range entriesOf(m) {
+			if e["day"] == "2031-03-07" {
+				return fmt.Sprint(e["state"])
+			}
+		}
+		return ""
+	}
+	m := w.calOK(t, w.owner, "tasks", calPast)
+	if m["truncated"] == true {
+		t.Fatalf("unexpected truncation: %v", m["truncated"])
+	}
+	before := state(m)
+	w.srv.agendaClock = func() time.Time { return time.Date(2031, 3, 20, 0, 0, 0, 0, time.UTC) }
+	if after := state(w.calOK(t, w.owner, "tasks", calPast)); after == before {
+		t.Errorf("moving the agenda clock did not change the entry state (%q)", after)
+	}
+	w.srv.agendaScanLimit = 2
+	m = w.calOK(t, w.owner, "tasks", calPast)
+	if m["truncated"] != true {
+		t.Errorf("a scan limit of 2 over 3 schedules: truncated = %v", m["truncated"])
+	}
+}
+
+// More items on one day than the cap, with ids in the opposite order of their
+// time-of-day values: the SQL order and the handler's order are the same total
+// order (the value's text, then the id), so the cap keeps the earliest values.
+func TestCalendarDayOverCapKeepsEarliestByValue(t *testing.T) {
+	t.Parallel()
+	const total, page = 700, 100
+	for _, key := range []string{"created", "due_date", "completed", "start-date"} {
+		key := key
+		t.Run(key, func(t *testing.T) {
+			t.Parallel()
+			w := bigCalendar(t, key, 0, 0) // the collections only
+			w.srv.calendarPageOverride = page
+			coll := "tasks"
+			if key == "start-date" {
+				coll = "hy"
+			}
+			its := make([]*models.Item, total)
+			for i := range its {
+				f := `{}`
+				if key == "completed" {
+					f = `{"status":"done"}`
+				}
+				its[i] = w.item(t, coll, fmt.Sprintf("OVR %s %03d", key, i), f, nil)
+			}
+			sort.Slice(its, func(i, j int) bool { return its[i].ID < its[j].ID })
+			stampOf := func(rank int) string {
+				m := 1439 - rank // the largest id has the earliest value
+				return fmt.Sprintf("2031-03-02T%02d:%02d:00Z", m/60, m%60)
+			}
+			earliest := map[string]bool{}
+			for r, it := range its {
+				stamp := stampOf(r)
+				if r >= total-agendaMaxEntries {
+					earliest[it.Title] = true
+				}
+				var err error
+				switch key {
+				case "created":
+					w.setCreated(t, it, stamp)
+				case "completed":
+					_, err = w.srv.store.DB().Exec(`UPDATE status_transitions SET created_at = ? WHERE item_id = ? AND to_status = 'done'`, stamp, it.ID)
+				default:
+					_, err = w.srv.store.DB().Exec(`UPDATE items SET fields = ? WHERE id = ?`, fmt.Sprintf(`{%q:%q}`, key, stamp), it.ID)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			m := w.calOK(t, w.owner, coll, "from=2031-03-01T00:00:00Z&to=2031-03-31T00:00:00Z&date_field="+key)
+			got := calItems(m)
+			if len(got) != agendaMaxEntries || m["truncated"] != true || m["partial_day"] != "2031-03-02" {
+				t.Fatalf("shown %d truncated=%v partial_day=%v", len(got), m["truncated"], m["partial_day"])
+			}
+			for _, it := range got {
+				if title := it["item"].(map[string]any)["title"].(string); !earliest[title] {
+					t.Fatalf("%s is not among the %d earliest values of the day", title, agendaMaxEntries)
+				}
+			}
+		})
+	}
+}

@@ -85,6 +85,22 @@
 		lastOpen = open;
 	});
 
+	function tabKeydown<T extends string>(event: KeyboardEvent, ids: T[], current: T, select: (id: T) => void) {
+		// Alt+Arrow (Back), Cmd+Arrow, Ctrl+Home/End and the like belong to the browser or OS.
+		if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+		const at = Math.max(0, ids.indexOf(current));
+		let next = -1;
+		if (event.key === 'ArrowRight') next = (at + 1) % ids.length;
+		else if (event.key === 'ArrowLeft') next = (at - 1 + ids.length) % ids.length;
+		else if (event.key === 'Home') next = 0;
+		else if (event.key === 'End') next = ids.length - 1;
+		if (next < 0) return;
+		event.preventDefault();
+		select(ids[next]);
+		// Both strips keep their buttons mounted while selection changes.
+		(event.currentTarget as HTMLElement).querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
+	}
+
 	// --- CLI tab state -------------------------------------------------------
 
 	// Active install tab persists across open/close cycles — initialized
@@ -456,17 +472,22 @@
 <Modal open={open} onclose={() => (open = false)} labelledby="connect-ws-title" maxWidth="560px">
 	<div class="modal-header">
 		<h2 id="connect-ws-title">{title}</h2>
-		<button class="close-btn" type="button" onclick={() => (open = false)}>&#10005;</button>
+		<button class="close-btn" type="button" aria-label="Close agent connection" onclick={() => (open = false)}>&#10005;</button>
 	</div>
 
 	<div class="modal-body">
-				<!-- Primary tab strip -->
-				<div class="primary-tabs" role="tablist">
+				<!-- Primary tab strip: focus belongs to its roving tab buttons. -->
+				<!-- svelte-ignore a11y_interactive_supports_focus -->
+				<div class="primary-tabs" role="tablist" aria-label="Connection method"
+					onkeydown={(event) => tabKeydown(event, visibleTabs.map(tab => tab.id), activeTab, id => (activeTab = id))}>
 					{#each visibleTabs as tab (tab.id)}
 						<button
 							class="primary-tab"
 							class:active={activeTab === tab.id}
 							role="tab"
+							id="connect-tab-{tab.id}"
+							aria-controls="connect-tabpanel"
+							tabindex={activeTab === tab.id ? 0 : -1}
 							aria-selected={activeTab === tab.id}
 							type="button"
 							onclick={() => (activeTab = tab.id)}
@@ -477,6 +498,7 @@
 					{/each}
 				</div>
 
+				<div role="tabpanel" id="connect-tabpanel" aria-labelledby="connect-tab-{activeTab}">
 				{#if activeTab === 'agent'}
 					<!-- Agent / claim-code panel -->
 					{#if claimState.kind === 'loading' || claimState.kind === 'idle'}
@@ -752,12 +774,18 @@
 					<section class="step">
 						<span class="section-label">Step 1 — Install pad</span>
 
-						<div class="tab-strip" role="tablist">
+						<!-- Focus belongs to the roving tab buttons, not their container. -->
+						<!-- svelte-ignore a11y_interactive_supports_focus -->
+						<div class="tab-strip" role="tablist" aria-label="Install platform"
+							onkeydown={(event) => tabKeydown(event, installTabs.map(tab => tab.id), installTab, id => (installTab = id))}>
 							{#each installTabs as tab (tab.id)}
 								<button
 									class="tab-btn"
 									class:active={installTab === tab.id}
 									role="tab"
+									id="connect-install-{tab.id}"
+									aria-controls="connect-install-panel"
+									tabindex={installTab === tab.id ? 0 : -1}
 									aria-selected={installTab === tab.id}
 									type="button"
 									onclick={() => (installTab = tab.id)}
@@ -767,6 +795,7 @@
 							{/each}
 						</div>
 
+						<div role="tabpanel" id="connect-install-panel" aria-labelledby="connect-install-{installTab}">
 						<div class="code-block">
 							<pre>{installCommands[installTab]}</pre>
 							<button
@@ -789,6 +818,7 @@
 									<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
 								</svg>
 							</button>
+						</div>
 						</div>
 
 						<a
@@ -828,6 +858,8 @@
 						</div>
 					</section>
 				{/if}
+
+				</div>
 
 				<!-- Footer links -->
 				<div class="modal-footer-links">
@@ -903,6 +935,14 @@
 		flex-direction: column;
 		gap: var(--space-5);
 		overflow-y: auto;
+	}
+
+	/* The panel keeps a real box (display: contents can drop its role from the accessibility tree
+	   in some browsers) and lays its children out exactly as the modal body did. */
+	.modal-body > [role="tabpanel"] {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-5);
 	}
 
 	.intro-copy {

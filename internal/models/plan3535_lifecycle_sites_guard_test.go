@@ -51,6 +51,7 @@ var lifecycleSites = map[string]string{
 	"internal/store/schedule_agenda.go::listAgendaSchedules::nonTerminalFilter":       "keep: lists the time triggers someone attached to an item, not open work; a schedule on a reference item is deliberate (TASK-4104)",
 	"internal/store/schedule_agenda.go::listAgendaSchedules::doneFiltersForWorkspace": "keep: the calendar's terminal half of the same schedule read: which finished items have history rows to show, not open work (TASK-4239)",
 	"internal/store/schedule_agenda.go::listAgendaSchedules::buildChildrenDoneExpr":   "keep: the same terminal half, the done expression of the schedule read (TASK-4239)",
+	"internal/store/schedule_bootstrap.go::BootstrapAgenda::nonTerminalFilter":        "keep: lists the time triggers someone attached to an item, not open work; a schedule on a reference item is deliberate (TASK-4237)",
 
 	// Progress.
 	"internal/store/items.go::GetItemProgress::buildChildrenDoneExpr":                   "exclude: counted only where buildChildrenUncountedExpr is false",

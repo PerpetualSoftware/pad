@@ -1,6 +1,6 @@
 <script lang="ts">
  import type { CalendarResponse } from '$lib/types';
- import { dayLabel, incompleteDay, type CalendarRow } from '$lib/calendar/presentation';
+ import { dayLabel, incompleteDay, type CalendarRow } from '$lib/calendar/monthGrid';
  import { viewport } from '$lib/stores/breakpoint.svelte';
  import Modal from '../common/Modal.svelte';
  import BottomSheet from '../common/BottomSheet.svelte';

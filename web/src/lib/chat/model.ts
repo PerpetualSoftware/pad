@@ -27,7 +27,7 @@ export function unreadDividerIndex(messages: readonly ChatMessage[], openReadSeq
 	return messages.findIndex((m) => m.seq > openReadSeq && !m.mine && !m.deleted);
 }
 
-export type PendingStatus = 'sending' | 'failed';
+export type PendingStatus = 'sending' | 'failed' | 'unconfirmed';
 
 /** A send the server has not answered yet (or refused), shown as a bubble. */
 export interface PendingSend {
@@ -80,7 +80,7 @@ export class ChatWindow {
 		this.pending = this.pending.map((p) => (p.op_key === op_key ? { ...p, status: 'failed' } : p));
 	}
 
-	/** Put a failed bubble back in flight. Returns it so the caller re-sends with its op_key. */
+	/** Put a failed or unconfirmed bubble back in flight. Returns it so the caller re-sends with its op_key. */
 	retryPending(op_key: string): PendingSend | undefined {
 		this.pending = this.pending.map((p) => (p.op_key === op_key ? { ...p, status: 'sending' } : p));
 		return this.pending.find((p) => p.op_key === op_key);

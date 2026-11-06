@@ -1,7 +1,7 @@
 <script lang="ts">
  import CalendarView from '$lib/components/collections/CalendarView.svelte';
  import CalendarFieldPicker from '$lib/components/calendar/CalendarFieldPicker.svelte';
- import { calendarFilters, type CalendarConfig } from '$lib/calendar/presentation';
+ import { calendarFilters, type CalendarConfig } from '$lib/calendar/monthGrid';
  import { loadCalendarConfig, storeCalendarConfig } from '$lib/collections/viewPersistence';
 	import { isRelationType } from '$lib/items/relationFieldTypes';
 	import { ownValue } from '$lib/utils/ownValue';
@@ -4644,7 +4644,7 @@
 				<div class="empty-icon">🔒</div>
 				<h2>This workspace isn't available</h2>
 				<p>It isn't available to you, or it no longer exists.</p>
-				<a class="empty-cta" href="/{username}">Back to your workspaces</a>
+				<a class="empty-cta" href="/console">Back to your workspaces</a>
 			</div>
 		{:else if viewMode === 'calendar'}
    <CalendarView {collection} {wsSlug} basePath={`/${username}/${wsSlug}/${collSlug}`} config={calendarConfig} onConfigChange={changeCalendarConfig} onChooseFields={showCalendarFields}

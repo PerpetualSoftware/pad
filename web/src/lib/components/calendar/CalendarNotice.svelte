@@ -1,6 +1,6 @@
 <script lang="ts">
  import type { CalendarResponse } from '$lib/types';
- import { dayLabel, PARTIAL_DAY } from '$lib/calendar/presentation';
+ import { dayLabel, PARTIAL_DAY } from '$lib/calendar/monthGrid';
  import Button from '../common/Button.svelte';
  let {data, day, onfilters, onlist, onretry, keyboard = true}: {data:CalendarResponse;day?:string;onfilters:()=>void;onlist:()=>void;onretry?:()=>void;keyboard?:boolean} = $props();
 </script>

@@ -4,7 +4,7 @@
  import type { CalendarResponse, Collection, Item } from '$lib/types';
  import { authStore } from '$lib/stores/auth.svelte';
  import { viewport } from '$lib/stores/breakpoint.svelte';
- import { calendarError, calendarRows, dayLabel, fieldLabel, incomplete, incompleteDay, monthDays, monthLabel, monthWindow, moveMonth, shiftDay, staleConfig, STALE_FIELD, zoneDay, type CalendarConfig, type CalendarRow } from '$lib/calendar/presentation';
+ import { calendarError, calendarRows, dayLabel, fieldLabel, incomplete, incompleteDay, monthDays, monthLabel, monthWindow, moveMonth, shiftDay, staleConfig, STALE_FIELD, zoneDay, type CalendarConfig, type CalendarRow } from '$lib/calendar/monthGrid';
  import CalendarToolbar from '../calendar/CalendarToolbar.svelte';
  import CalendarEntry from '../calendar/CalendarEntry.svelte';
  import CalendarNotice from '../calendar/CalendarNotice.svelte';

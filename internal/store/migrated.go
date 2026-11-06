@@ -210,6 +210,8 @@ var migratedRefusalTables = []string{
 	"progress_snapshots",
 	"user_report_layouts",
 	"user_workspace_tabs",
+	"user_workspace_groups",
+	"user_workspace_group_members",
 	"item_grants",
 	"collection_grants",
 	"workspace_members",

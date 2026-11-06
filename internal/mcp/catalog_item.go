@@ -226,8 +226,9 @@ var padItemSchemaParams = []ParamDef{
 	{Name: "state", Type: "string", Description: "done | skip | snooze | move. Required for: schedule-resolve."},
 	{Name: "until", Type: "string", Description: "RFC3339 instant to re-fire (snooze) or become due (move). Required for: snooze, move."},
 	{Name: "occurrence_at", Type: "string", Description: "RFC3339 instant of the outstanding occurrence, from action=schedule (next_occurrence.at). Required for: schedule-resolve."},
-	{Name: "from", Type: "string", Description: "Window start, RFC3339 instant. Required for: agenda."},
-	{Name: "to", Type: "string", Description: "Window end, RFC3339 instant, at most 92 days after from. Required for: agenda."},
+	{Name: "from", Type: "string", Description: "Window start, RFC3339 instant. Required for: agenda; with stale, resumes the list."},
+	{Name: "to", Type: "string", Description: "Window end, RFC3339 instant, at most 92 days after from. Required for: agenda; not with stale."},
+	{Name: "stale", Type: "bool", Description: "agenda: yours unresolved over 14 days, not a window."},
 
 	// ── Execution lease ── (#1221)
 	{Name: "holder", Type: "string", Description: "Lease holder label for action=claim/release. Optional; defaults to your agent name. Display only with a worker_id."},

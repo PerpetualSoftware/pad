@@ -247,6 +247,31 @@ func TestFieldRange_UnsafeKeyMatchesNothing(t *testing.T) {
 		FieldRanges: []models.FieldRange{{Key: "due_date", From: "2026-11-01", To: "2026-11-30"}}}), "dated")
 }
 
+// An invalid non-empty key on either end of a span voids the whole span
+// filter: the start-range clause must not still return items.
+func TestFieldSpan_InvalidKeyVoidsTheWholeSpan(t *testing.T) {
+	t.Parallel()
+	w := newRangeWorld(t)
+	w.mk(t, "in window", `{"due_date":"2026-11-10","end_date":"2026-11-12"}`)
+	for _, key := range []string{`end'date`, `end date`, `end_date") OR 1=1 --`} {
+		for _, sp := range []models.FieldSpan{
+			{StartKey: "due_date", EndKey: key, From: "2026-11-01", To: "2026-11-30"},
+			{StartKey: key, EndKey: "end_date", From: "2026-11-01", To: "2026-11-30"},
+		} {
+			items, err := w.s.ListItems(w.wsID, models.ItemListParams{NoContent: true, FieldSpans: []models.FieldSpan{sp}})
+			if err != nil {
+				t.Errorf("%+v: error %v, want a plain empty list", sp, err)
+				continue
+			}
+			if len(items) != 0 {
+				t.Errorf("%+v matched %d items, want none", sp, len(items))
+			}
+		}
+	}
+	sameTitles(t, "empty end key is a start-only span", w.titles(t, models.ItemListParams{
+		FieldSpans: []models.FieldSpan{{StartKey: "due_date", From: "2026-11-01", To: "2026-11-30"}}}), "in window")
+}
+
 func TestFieldSpan_Overlap(t *testing.T) {
 	t.Parallel()
 	w := newRangeWorld(t)
@@ -409,5 +434,43 @@ func TestListItems_CompletedExpressionFailureIsAnError(t *testing.T) {
 	}
 	if _, err := w.s.CompletedInstants(w.wsID, w.coll.ID, []string{"x"}); err == nil || !strings.Contains(err.Error(), "completed expression") {
 		t.Errorf("CompletedInstants: err = %v", err)
+	}
+}
+
+// ListItemsQ on a snapshot executor reads the items from the snapshot but the
+// completed expression reads the schema from the pool, so it refuses any use
+// of `completed` there; the pool path and other keys are unaffected.
+func TestListItemsQ_CompletedNeedsTheLivePool(t *testing.T) {
+	t.Parallel()
+	w := newRangeWorld(t)
+	w.mk(t, "x", `{"status":"done","due_date":"2026-03-02"}`)
+	tx, err := w.s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+
+	for name, p := range map[string]models.ItemListParams{
+		"range":      {FieldRanges: []models.FieldRange{{Key: "completed", From: "2026-01-01", To: "2026-12-31"}}},
+		"span start": {FieldSpans: []models.FieldSpan{{StartKey: "completed", EndKey: "due_date", From: "2026-01-01", To: "2026-12-31"}}},
+		"span end":   {FieldSpans: []models.FieldSpan{{StartKey: "due_date", EndKey: "completed", From: "2026-01-01", To: "2026-12-31"}}},
+		"order":      {OrderByDay: "completed"},
+	} {
+		_, err := w.s.ListItemsQ(tx, w.wsID, p)
+		if err == nil || !strings.Contains(err.Error(), "completed filters need the live pool") {
+			t.Errorf("%s: err = %v, want the live-pool refusal", name, err)
+		}
+	}
+
+	ok := models.ItemListParams{FieldRanges: []models.FieldRange{{Key: "due_date", From: "2026-01-01", To: "2026-12-31"}}}
+	if got, err := w.s.ListItemsQ(tx, w.wsID, ok); err != nil || len(got) != 1 {
+		t.Errorf("normal key on a snapshot: %d items, err %v", len(got), err)
+	}
+	pool := models.ItemListParams{FieldRanges: []models.FieldRange{{Key: "completed", From: "2000-01-01", To: "2099-12-31"}}}
+	if _, err := w.s.ListItems(w.wsID, pool); err != nil {
+		t.Errorf("ListItems on the pool: %v", err)
+	}
+	if _, err := w.s.ListItemsQ(w.s.Q(), w.wsID, pool); err != nil {
+		t.Errorf("ListItemsQ on the pool: %v", err)
 	}
 }

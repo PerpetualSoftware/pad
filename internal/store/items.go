@@ -1272,12 +1272,35 @@ func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]m
 // ListItemsQ is ListItems on a caller-supplied executor, so it can read inside
 // a snapshot transaction (BUG-3659). Only the plain listing: search, field
 // filters and the non-terminal filter read through helpers that use the pool,
-// so a call asking for them is refused rather than half on the executor.
+// so a call asking for them is refused rather than half on the executor. The
+// same goes for `completed` in the day filters or order on a non-pool executor.
 func (s *Store) ListItemsQ(q Queryer, workspaceID string, params models.ItemListParams) ([]models.Item, error) {
 	if strings.TrimSpace(params.Search) != "" || len(params.Fields) > 0 || params.NonTerminal {
 		return nil, fmt.Errorf("ListItemsQ: search, field filters and NonTerminal are not supported on an executor")
 	}
+	if q != Queryer(s.db) && namesCompleted(params) {
+		return nil, fmt.Errorf("ListItemsQ: completed filters need the live pool, not a snapshot executor")
+	}
 	return s.listItemsQ(q, workspaceID, params)
+}
+
+// namesCompleted reports whether the day filters or order read `completed`,
+// whose expression is built from the collection schema through the pool.
+func namesCompleted(params models.ItemListParams) bool {
+	if params.OrderByDay == "completed" {
+		return true
+	}
+	for _, fr := range params.FieldRanges {
+		if fr.Key == "completed" {
+			return true
+		}
+	}
+	for _, sp := range params.FieldSpans {
+		if sp.StartKey == "completed" || sp.EndKey == "completed" {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Store) listItemsQ(q Queryer, workspaceID string, params models.ItemListParams) ([]models.Item, error) {
@@ -2449,9 +2472,14 @@ func (s *Store) appendFieldFilters(workspaceID string, params models.ItemListPar
 				query += " AND 1 = 0"
 				continue
 			}
+			end, endArgs, endOK := s.fieldDayExpr(sp.EndKey, completed)
+			if !endOK && sp.EndKey != "" {
+				query += " AND 1 = 0" // a bad end key voids the span, not just its overlap
+				continue
+			}
 			query += " AND (" + start + " BETWEEN ? AND ?"
 			args = append(append(args, startArgs...), sp.From, sp.To)
-			if end, endArgs, ok := s.fieldDayExpr(sp.EndKey, completed); ok {
+			if endOK {
 				// A span: it starts by the window's last day and ends on or after
 				// its first. A missing end value compares as NULL, so no span.
 				query += " OR (" + start + " <= ? AND " + end + " >= ?)"
@@ -2502,7 +2530,7 @@ func (s *Store) resolveCompletedDay(workspaceID string, params models.ItemListPa
 // date order the calendar pages by: the same value the day filters read (the
 // instant itself for `created` and `completed`, so a viewer-zone day is never
 // split across the order, and the stored value's text for a date field), then
-// the id. Without it, the list's own sort.
+// the id. The calendar's within-day sort is the same total order. Without it, the list's own sort.
 func (s *Store) itemOrder(params models.ItemListParams, completed *completedDayCache) (string, []any) {
 	key := params.OrderByDay
 	if key == "" {
@@ -2520,7 +2548,14 @@ func (s *Store) itemOrder(params models.ItemListParams, completed *completedDayC
 	if !isValidFieldKey(key) {
 		return " ORDER BY i.id", nil
 	}
-	return " ORDER BY substr(" + s.dialect.JSONExtractText("i.fields", key) + ", 1, 10), i.id", nil
+	// The value's own text, then the id, byte-wise: the order the calendar
+	// sorts a day in, so a read that stops early keeps the earliest of a day.
+	// The first ten characters are the day, so this is day order too.
+	text, id := s.dialect.JSONExtractText("i.fields", key), "i.id"
+	if s.dialect.Driver() == DriverPostgres {
+		text, id = "("+text+`) COLLATE "C"`, `i.id COLLATE "C"`
+	}
+	return " ORDER BY " + text + ", " + id, nil
 }
 
 // fieldDayExpr is the SQL expression for the day (YYYY-MM-DD text) of an item's
@@ -2561,7 +2596,7 @@ func (s *Store) completedExpr(workspaceID, scope string, instant bool) (string, 
 		if scope != "" && c.ID != scope {
 			continue
 		}
-		rc := newReportCollection(c)
+		rc := reportCollectionFor(c)
 		// The done key comes from a schema, not a request, and is still held to
 		// the key rule before it reaches the SQL text.
 		if len(rc.positiveTerminals) == 0 || !isValidFieldKey(rc.doneKey) {

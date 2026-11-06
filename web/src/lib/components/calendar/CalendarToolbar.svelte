@@ -1,5 +1,5 @@
 <script lang="ts">
- import { monthLabel } from '$lib/calendar/presentation';
+ import { monthLabel } from '$lib/calendar/monthGrid';
  import Button from '../common/Button.svelte';
  let {month, zone, zoneSet, dateLabel, onprevious, onnext, ontoday, onfields}: {month:string;zone:string;zoneSet:boolean;dateLabel:string;onprevious:()=>void;onnext:()=>void;ontoday:()=>void;onfields:()=>void} = $props();
 </script>

@@ -422,7 +422,7 @@
             "type": "boolean"
           },
           "from": {
-            "description": "Window start, RFC3339 instant. Required for: agenda.",
+            "description": "Window start, RFC3339 instant. Required for: agenda; with stale, resumes the list.",
             "type": "string"
           },
           "full": {
@@ -551,6 +551,10 @@
             "description": "Sort field. Optional for: list.",
             "type": "string"
           },
+          "stale": {
+            "description": "agenda: yours unresolved over 14 days, not a window.",
+            "type": "boolean"
+          },
           "start": {
             "description": "Wall time, no Z or offset: 2026-11-09T09:00, or 2026-11-09 all-day. Required for: remind as a schedule. Optional for: schedule-edit.",
             "type": "string"
@@ -587,7 +591,7 @@
             "type": "string"
           },
           "to": {
-            "description": "Window end, RFC3339 instant, at most 92 days after from. Required for: agenda.",
+            "description": "Window end, RFC3339 instant, at most 92 days after from. Required for: agenda; not with stale.",
             "type": "string"
           },
           "ttl": {

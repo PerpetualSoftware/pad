@@ -92,7 +92,7 @@ func (s *Server) handleMeNeeds(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = min(n, needsMaxLimit)
 	}
-	now := time.Now().UTC().Truncate(time.Second)
+	now := s.agendaNow().UTC().Truncate(time.Second)
 	asOf := now
 	var after *needs.Key
 	if tok := q.Get("cursor"); tok != "" {
@@ -190,15 +190,15 @@ func (s *Server) handleMeNeeds(w http.ResponseWriter, r *http.Request) {
 // BUG-3982 every door confines a pinned user token that way; this ID filter
 // predates it and is kept.
 func (s *Server) needsAdmittedWorkspaces(r *http.Request, user *models.User) ([]models.Workspace, error) {
-	member, err := s.store.GetUserWorkspaces(user.ID)
+	member, err := s.store.GetUserWorkspacesQ(s.store.QContext(r.Context()), user.ID)
 	if err != nil {
 		return nil, err
 	}
-	guestIDs, err := s.store.GuestWorkspaceIDs(user.ID)
+	guestIDs, err := s.store.GuestWorkspaceIDsQ(s.store.QContext(r.Context()), user.ID)
 	if err != nil {
 		return nil, err
 	}
-	guests, err := s.store.GetWorkspacesByIDs(guestIDs)
+	guests, err := s.store.GetWorkspacesByIDsQ(s.store.QContext(r.Context()), guestIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -331,6 +331,16 @@ func (s *Server) needsForWorkspace(r *http.Request, user *models.User, ws *model
 		}
 	}
 
+	due, err := s.store.NeedsDueOccurrences(ws.ID, scope, user.ID, asOf)
+	if err != nil {
+		return nil, false, err
+	}
+	dueIDs := make([]string, 0, len(due))
+	for id := range due {
+		dueIDs = append(dueIDs, id)
+	}
+	sort.Strings(dueIDs)
+
 	colls, err := s.store.ListCollectionsMinimal(ws.ID)
 	if err != nil {
 		return nil, false, err
@@ -401,7 +411,7 @@ func (s *Server) needsForWorkspace(r *http.Request, user *models.User, ws *model
 	if err != nil {
 		return nil, false, err
 	}
-	params := store.NeedsCandidateParams{AwaitsCollectionIDs: awaitsIDs, FlaggedItemIDs: flaggedIDs}
+	params := store.NeedsCandidateParams{AwaitsCollectionIDs: awaitsIDs, FlaggedItemIDs: flaggedIDs, DueItemIDs: dueIDs}
 	if member == nil || member.Role != "owner" {
 		params.ForUserID = user.ID
 	}
@@ -468,6 +478,9 @@ func (s *Server) needsForWorkspace(r *http.Request, user *models.User, ws *model
 		c := needs.Candidate{
 			ItemID: it.ID, CollectionID: it.CollectionID, AwaitsHuman: infos[it.CollectionID].awaits,
 			AssignedAt: it.CreatedAt, CreatedAt: it.CreatedAt,
+		}
+		if at, ok := due[it.ID]; ok {
+			c.Due, c.DueRecipientID = &at, user.ID
 		}
 		if it.AssignedUserID != nil {
 			c.AssigneeUserID = *it.AssignedUserID

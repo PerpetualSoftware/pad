@@ -2,7 +2,9 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { onMount } from 'svelte';
+	import ChatOff from '$lib/components/chat/ChatOff.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
+	import { chatSetting } from '$lib/stores/chatSetting.svelte';
 
 	let { children } = $props();
 	let ready = $state(false);
@@ -37,8 +39,13 @@
 </script>
 
 {#if ready}
-	<main class="messages-main" class:thread={isThread}>
-		{@render children()}
+	<main class="messages-main" class:thread={isThread && chatSetting.enabled}>
+		<!-- Off is a display preference (TASK-4315): the URL still answers, and says why. -->
+		{#if chatSetting.enabled}
+			{@render children()}
+		{:else}
+			<ChatOff />
+		{/if}
 	</main>
 {/if}
 

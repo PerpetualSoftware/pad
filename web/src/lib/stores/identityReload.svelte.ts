@@ -1,3 +1,4 @@
+import { purgeAll } from '$lib/chat/chatRecords';
 import { browser } from '$app/env';
 import { clearAttachmentMetadataCache } from '$lib/components/editor/attachment-metadata';
 import { CURSOR_STORAGE_PREFIX } from '$lib/collab/wsProvider.svelte';
@@ -34,6 +35,7 @@ export const LAST_SCROLL_PREFIX = 'pad-last-scroll-';
 
 export function clearPersistentIdentityState(): void {
 	if (!browser) return;
+	purgeAll();
 
 	// The editor's attachment-metadata memo. In RAM, so the reload would get it
 	// anyway — cleared here so that this function is the one place the answer
@@ -58,7 +60,7 @@ export function clearPersistentIdentityState(): void {
 	// the key list alone without reading a single value.
 	try {
 		for (const key of Object.keys(localStorage)) {
-			if (key.startsWith(LAST_ROUTE_PREFIX) || key.startsWith(LAST_SCROLL_PREFIX)) {
+			if (key.startsWith(LAST_ROUTE_PREFIX) || key.startsWith(LAST_SCROLL_PREFIX) || key.startsWith('pad-agenda-show-events:')) {
 				localStorage.removeItem(key);
 			}
 		}

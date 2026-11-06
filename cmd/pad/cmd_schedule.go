@@ -563,6 +563,7 @@ func agendaBounds(from, to string, days int, daysSet bool, loc *time.Location, n
 func remindAgendaCmd() *cobra.Command {
 	var from, to, tz string
 	var days int
+	var stale bool
 	c := &cobra.Command{
 		Use:   "agenda",
 		Short: "List scheduled occurrences and dated items",
@@ -575,7 +576,11 @@ The window starts at --from (an RFC3339 instant or a date; default the start of
 today in your zone) and runs --days days (default 7) or to --to. It is capped at
 92 days. --tz names the zone floating schedules are read in and times are shown in.
 
-When the list is cut short, the last line says where to continue.`,
+When the list is cut short, the last line says where to continue.
+
+--stale lists instead what 'pad bootstrap' collapses into "stale: K items": your
+occurrences unresolved for more than 14 days, oldest first. It takes no window;
+--from resumes a long list where the last line said.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			loc := cli.DisplayLocation()
@@ -585,6 +590,9 @@ When the list is cut short, the last line says where to continue.`,
 					return fmt.Errorf("--tz %q: %v", tz, err)
 				}
 				loc = l
+			}
+			if stale {
+				return runStaleAgenda(cmd, from, to, cmd.Flags().Changed("days"), tz, loc)
 			}
 			start, end, clamped, err := agendaBounds(from, to, days, cmd.Flags().Changed("days"), loc, time.Now())
 			if err != nil {
@@ -620,7 +628,102 @@ When the list is cut short, the last line says where to continue.`,
 	c.Flags().IntVar(&days, "days", 7, "window length in days (max 92)")
 	c.Flags().StringVar(&to, "to", "", "window end: RFC3339 instant or date (exclusive with --days)")
 	c.Flags().StringVar(&tz, "tz", "", "IANA zone for floating schedules and for the times shown")
+	c.Flags().BoolVar(&stale, "stale", false, "list your occurrences unresolved for more than 14 days instead (no window; --from resumes)")
 	return c
+}
+
+type staleAgendaRow struct {
+	Ref         string `json:"ref"`
+	Title       string `json:"title"`
+	At          string `json:"at"`
+	AllDay      bool   `json:"all_day"`
+	Kind        string `json:"kind"`
+	MissedCount int    `json:"missed_count"`
+}
+
+type staleAgendaAnswer struct {
+	TimezoneNote string           `json:"timezone_note"`
+	Entries      []staleAgendaRow `json:"entries"`
+	NextFrom     string           `json:"next_from"`
+	Truncated    bool             `json:"truncated"`
+}
+
+// runStaleAgenda is `agenda --stale`: no window, only --from to resume a page.
+func runStaleAgenda(cmd *cobra.Command, from, to string, daysSet bool, tz string, loc *time.Location) error {
+	if to != "" || daysSet {
+		return errors.New("--stale takes no window: drop --to and --days; use --from to resume a long list")
+	}
+	var start string
+	if from != "" {
+		t, err := time.Parse(time.RFC3339, from)
+		if err != nil {
+			d, derr := time.ParseInLocation("2006-01-02", from, loc)
+			if derr != nil {
+				return fmt.Errorf("--from %q: want an RFC3339 instant or a date (2026-11-09)", from)
+			}
+			t = d
+		}
+		if t.Nanosecond() != 0 {
+			return fmt.Errorf("--from %q has a fraction of a second: give a whole-second instant", from)
+		}
+		start = t.UTC().Format(time.RFC3339)
+	}
+	client, _ := getClient()
+	raw, err := client.GetStaleAgenda(getWorkspace(), start, tz)
+	if err != nil {
+		return err
+	}
+	if formatFlag == "json" {
+		return cli.PrintJSON(raw)
+	}
+	var resp staleAgendaAnswer
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return fmt.Errorf("unreadable agenda answer: %w", err)
+	}
+	if resp.TimezoneNote != "" {
+		fmt.Fprintln(os.Stderr, resp.TimezoneNote)
+	}
+	out := cmd.OutOrStdout()
+	if len(resp.Entries) == 0 {
+		fmt.Fprintln(out, "Nothing has been unresolved for more than 14 days.")
+		if resp.Truncated {
+			fmt.Fprintln(out, "list incomplete: the server read only the first 1000 schedules")
+		}
+		return nil
+	}
+	var showLoc *time.Location
+	if tz != "" {
+		showLoc = loc
+	}
+	w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "DUE\tREF\tTITLE\tKIND\tMISSED")
+	for _, e := range resp.Entries {
+		due := e.At
+		if t, err := time.Parse(time.RFC3339, e.At); err == nil {
+			if showLoc != nil {
+				t = t.In(showLoc)
+			} else {
+				t = t.In(cli.DisplayLocation())
+			}
+			due = t.Format("2006-01-02 15:04 MST")
+			if e.AllDay {
+				due = t.Format("2006-01-02") + " all day"
+			}
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\n", due, e.Ref, strings.Join(strings.Fields(e.Title), " "), e.Kind, e.MissedCount)
+	}
+	_ = w.Flush()
+	if resp.Truncated {
+		fmt.Fprintln(out, "list incomplete: the server read only the first 1000 schedules")
+	}
+	if resp.NextFrom != "" {
+		hint := "pad item remind agenda --stale --from " + resp.NextFrom
+		if tz != "" {
+			hint += " --tz " + tz
+		}
+		fmt.Fprintf(out, "more after %s: %s\n", fmtInstant(resp.NextFrom, showLoc), hint)
+	}
+	return nil
 }
 
 // renderAgenda prints the list. end and tz are the request's window end and

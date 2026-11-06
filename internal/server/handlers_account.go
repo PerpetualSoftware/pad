@@ -639,6 +639,25 @@ func (s *Server) handleExportAccount(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	groups, err := withinExportDeadline(ctx, func() ([]models.WorkspaceGroup, error) {
+		groups, err := s.store.ListWorkspaceGroups(ctx, user.ID)
+		if err != nil {
+			return nil, err
+		}
+		admitted, err := s.needsAdmittedWorkspaces(r.WithContext(ctx), user)
+		if err != nil {
+			return nil, err
+		}
+		for i := range groups {
+			groups[i] = visibleWorkspaceGroup(groups[i], admitted)
+		}
+		return groups, nil
+	})
+	if err != nil {
+		refuseAccountExportBeforeBody(w, user.ID, "listing workspace groups", err)
+		return
+	}
+
 	if f := s.accountExportHooks.afterPreflight; f != nil {
 		f()
 	}
@@ -666,6 +685,9 @@ func (s *Server) handleExportAccount(w http.ResponseWriter, r *http.Request) {
 		"created_at":   user.CreatedAt,
 		"updated_at":   user.UpdatedAt,
 	})
+
+	w.Write([]byte(",\n  \"workspace_groups\": "))
+	enc.Encode(groups)
 
 	w.Write([]byte(",\n  \"workspaces\": [\n"))
 

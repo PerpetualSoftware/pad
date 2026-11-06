@@ -1722,7 +1722,7 @@ handlers — onchange is never called.
 			class="number-btn"
 			type="button"
 			tabindex={-1}
-			aria-label="Decrease"
+			aria-label="Decrease {ariaLabel ?? field.label}"
 			onmousedown={(e) => e.preventDefault()}
 			onclick={() => handleNumberStep(-1)}
 		>
@@ -1750,7 +1750,7 @@ handlers — onchange is never called.
 			class="number-btn"
 			type="button"
 			tabindex={-1}
-			aria-label="Increase"
+			aria-label="Increase {ariaLabel ?? field.label}"
 			onmousedown={(e) => e.preventDefault()}
 			onclick={() => handleNumberStep(1)}
 		>

@@ -83,6 +83,7 @@ func signedInFor(r *http.Request, workspaceID string) *models.User {
 func pinnedTokenExtraRoute(method, path string) bool {
 	switch path {
 	case "/api/v1/me/needs",
+		"/api/v1/me/agenda",
 		"/api/v1/auth/session",
 		"/api/v1/auth/me",
 		"/api/v1/auth/tokens":

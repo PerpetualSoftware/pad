@@ -97,21 +97,31 @@ func (s *Store) listAgendaSchedules(workspaceID string, scope PendingReminderSco
 		out = out[:limit]
 	}
 	if len(out) == 0 {
-		return nil, false, nil
+		return nil, truncated, nil
 	}
+	if err := s.fillAgendaItemFacts(out, doneSQL, doneArgs); err != nil {
+		return nil, false, err
+	}
+	return out, truncated, nil
+}
+
+// fillAgendaItemFacts sets the item ref, title and collection of each schedule.
+// A non-empty doneSQL (the terminal expression, with its args) also sets each
+// row's Terminal; an empty one leaves it false.
+func (s *Store) fillAgendaItemFacts(out []AgendaSchedule, doneSQL string, doneArgs []any) error {
 	ids, byID := make([]any, len(out)), map[string]*AgendaSchedule{}
 	for i := range out {
 		ids[i], byID[out[i].Schedule.ItemID] = out[i].Schedule.ItemID, &out[i]
 	}
 	terminalSQL, iargs := "0", []any{}
-	if includeTerminal {
+	if doneSQL != "" {
 		terminalSQL = "CASE WHEN " + doneSQL + " THEN 1 ELSE 0 END"
 		iargs = append(iargs, doneArgs...)
 	}
 	irows, err := s.db.Query(s.q(`SELECT i.id, i.title, i.slug, c.slug, c.prefix, i.item_number, `+terminalSQL+`
 		FROM items i JOIN collections c ON c.id = i.collection_id WHERE i.id IN (`+placeholders(len(ids))+`)`), append(iargs, ids...)...)
 	if err != nil {
-		return nil, false, fmt.Errorf("read agenda items: %w", err)
+		return fmt.Errorf("read agenda items: %w", err)
 	}
 	defer irows.Close()
 	for irows.Next() {
@@ -119,7 +129,7 @@ func (s *Store) listAgendaSchedules(workspaceID string, scope PendingReminderSco
 		var number *int64
 		var terminal int
 		if err := irows.Scan(&id, &title, &slug, &coll, &prefix, &number, &terminal); err != nil {
-			return nil, false, fmt.Errorf("scan agenda item: %w", err)
+			return fmt.Errorf("scan agenda item: %w", err)
 		}
 		a := byID[id]
 		a.ItemTitle, a.Collection, a.ItemRef = title, coll, slug // a legacy item has no ref
@@ -128,7 +138,7 @@ func (s *Store) listAgendaSchedules(workspaceID string, scope PendingReminderSco
 			a.ItemRef = fmt.Sprintf("%s-%d", prefix, *number)
 		}
 	}
-	return out, truncated, irows.Err()
+	return irows.Err()
 }
 
 // AgendaEntry is one occurrence on the agenda. At is the grid instant, in the

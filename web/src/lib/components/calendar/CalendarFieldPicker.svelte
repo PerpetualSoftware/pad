@@ -1,6 +1,6 @@
 <script lang="ts">
  import type { Collection } from '$lib/types';
- import { dateFields, type CalendarConfig } from '$lib/calendar/presentation';
+ import { dateFields, type CalendarConfig } from '$lib/calendar/monthGrid';
  import Button from '../common/Button.svelte';
  let {collection, config, onchange, onclose}: {collection:Collection;config:CalendarConfig;onchange:(config:CalendarConfig)=>void;onclose?:()=>void} = $props();
  const uid = $props.id();

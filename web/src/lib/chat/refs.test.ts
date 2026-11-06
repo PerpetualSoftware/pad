@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { canonicalizeRef, extractRefs, tokenizeBody } from './refs';
+import { canonicalizeRef, extractRefs, replaceRefs, tokenizeBody } from './refs';
 import type { ChatRef } from '$lib/types';
 
 const found = (c: string) => extractRefs(c).map((r) => (r.workspace ? `${r.workspace}::${r.ref}` : r.ref));
@@ -116,5 +116,60 @@ describe('tokenizeBody', () => {
 
 	it('returns nothing for a tombstone', () => {
 		expect(tokenizeBody({ body: '', context_workspace: undefined, deleted: true }, refs)).toEqual([]);
+	});
+});
+
+describe('replaceRefs (TASK-4315)', () => {
+	const refs: ChatRef[] = [
+		{ workspace: 'docapp', ref: 'TASK-1', state: 'visible', title: 'Fix "it" <now>' },
+		{ workspace: 'docapp', ref: 'TASK-2', state: 'restricted', title: 'SECRET TITLE' },
+		{ workspace: 'docapp', ref: 'TASK-3', state: 'unresolved' },
+		{ workspace: 'other', ref: 'BUG-9', state: 'visible', title: 'Other' }
+	];
+	const swapAll = (r: ReturnType<typeof replaceRefs>) => r.swaps.reduce((t, s) => t.replace(s.token, s.html), r.text);
+
+	it('swaps visible and restricted refs for tokens and leaves everything else as written', () => {
+		const r = replaceRefs('a [[TASK-1]] b [[TASK-2]] c [[TASK-3]] d [[TASK-4]]', refs, 'docapp');
+		expect(r.swaps).toHaveLength(2);
+		expect(r.text).toContain('[[TASK-3]]');
+		expect(r.text).toContain('[[TASK-4]]');
+		expect(r.text).not.toContain('[[TASK-1]]');
+		expect(r.text).not.toContain('[[TASK-2]]');
+	});
+	it('a visible ref becomes a /-/r link with an escaped title', () => {
+		const r = replaceRefs('[[TASK-1]]', refs, 'docapp');
+		expect(swapAll(r)).toBe('<a href="/-/r/docapp/TASK-1" title="Fix &quot;it&quot; &lt;now&gt;">TASK-1</a>');
+	});
+	it('a restricted ref carries no title, ref or workspace', () => {
+		const html = swapAll(replaceRefs('[[TASK-2]]', refs, 'docapp'));
+		expect(html).toBe('<span class="ref-restricted">restricted item</span>');
+	});
+	it('uses the explicit workspace and display, and never guesses a workspace', () => {
+		expect(swapAll(replaceRefs('[[other::BUG-9|a <b>]]', refs, undefined))).toBe(
+			'<a href="/-/r/other/BUG-9" title="Other">a &lt;b&gt;</a>'
+		);
+		expect(replaceRefs('[[TASK-1]]', refs, undefined).swaps).toHaveLength(0);
+		expect(replaceRefs('[[TASK-1]]', refs, 'other').swaps).toHaveLength(0);
+	});
+	it('excludes code spans and fences, like extractRefs', () => {
+		const r = replaceRefs('`[[TASK-1]]`\n\n```\n[[TASK-1]]\n```\n\n[[TASK-1]]', refs, 'docapp');
+		expect(r.swaps).toHaveLength(1);
+		expect(r.text.match(/\[\[TASK-1\]\]/g)).toHaveLength(2);
+	});
+	it('picks tokens the body cannot already contain', () => {
+		const first = replaceRefs('[[TASK-1]]', refs, 'docapp').swaps[0].token;
+		const r = replaceRefs(`${first} [[TASK-1]]`, refs, 'docapp');
+		expect(r.swaps[0].token).not.toBe(first);
+		expect(r.text.split(r.swaps[0].token)).toHaveLength(2);
+	});
+	it('tokens are plain alphanumerics, so markdown cannot alter them', () => {
+		for (const s of replaceRefs('[[TASK-1]] [[TASK-2]]', refs, 'docapp').swaps) expect(s.token).toMatch(/^[a-z0-9]+$/);
+	});
+	it('no refs means no change', () => {
+		expect(replaceRefs('plain', refs, 'docapp')).toEqual({ text: 'plain', swaps: [] });
+		expect(replaceRefs('', refs, 'docapp')).toEqual({ text: '', swaps: [] });
+	});
+	it('tokenizeBody still works unchanged', () => {
+		expect(tokenizeBody({ body: 'x [[TASK-1]]', deleted: false, context_workspace: { slug: 'docapp', name: 'D' } }, refs).map((s) => s.type)).toEqual(['text', 'link']);
 	});
 });

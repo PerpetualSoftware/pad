@@ -481,7 +481,7 @@ func init() {
 		"item remind agenda": routeSpec{
 			method:       http.MethodGet,
 			pathTemplate: "/api/v1/workspaces/{workspace}/agenda",
-			queryParams:  map[string]string{"from": "from", "to": "to", "tz": "tz"},
+			queryParams:  map[string]string{"from": "from", "to": "to", "tz": "tz", "stale": "stale"},
 		}.toRouteMapper(),
 		"item ack": routeSpec{
 			method:       http.MethodPost,
