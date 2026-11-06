@@ -272,6 +272,7 @@ var nulColumns = []nulColumn{
 	// before the store sees it; the trigger holds the rule for every writer.
 	// The table's other text columns are ids and timestamps the server mints.
 	{"user_workspace_tabs", "last_route", classText},
+	{"user_workspace_groups", "name", classText},
 	// TASK-3462: a built-in's seed text. Written by this binary from its own
 	// library, and by a workspace import from the bundle (validated, and the
 	// text must hash to the seed hash, but a hash can be computed for any
@@ -363,11 +364,15 @@ var nulTriggerMigrations = []string{
 	"159_nul_invariant_triggers_post158.sql",
 	"161_nul_invariant_triggers_post160.sql",
 	"163_nul_invariant_triggers_post162.sql",
+	"166_nul_invariant_triggers_post165.sql",
 }
 
 // nulColumnTriggerFile assigns a column to a trigger file other than the
 // first. Every column not named here is in nulTriggerMigrations[0].
 var nulColumnTriggerFile = map[string]string{
+	// 165 introduced the table (TASK-4243).
+	"user_workspace_groups.name": "166_nul_invariant_triggers_post165.sql",
+
 	"items.lease_holder":   "094_nul_invariant_triggers_post084.sql",
 	"item_decisions.model": "094_nul_invariant_triggers_post084.sql",
 	// 098 introduced the table (TASK-3256).
@@ -491,6 +496,13 @@ func NULProtectedColumns() []nulColumn {
 // dispatcher's claim and send columns (TASK-3939) do not exist yet.
 // user_notification_settings is written by PutNotificationSettings.
 var nulExcluded = map[string]string{
+	"user_workspace_groups.id":                  "server-minted group UUID (TASK-4243)",
+	"user_workspace_groups.user_id":             "authenticated user UUID, a foreign key to users(id) (TASK-4243)",
+	"user_workspace_groups.created_at":          "server timestamp from nowNano() (TASK-4243)",
+	"user_workspace_groups.updated_at":          "server timestamp from nowNano() (TASK-4243)",
+	"user_workspace_group_members.group_id":     "owner-scoped group UUID, a foreign key to user_workspace_groups(id) (TASK-4243)",
+	"user_workspace_group_members.workspace_id": "admission-checked workspace UUID, a foreign key to workspaces(id) (TASK-4243)",
+
 	"item_schedules.id":                      "server-minted schedule UUID (TASK-4102, migration 162)",
 	"item_schedules.workspace_id":            "server-minted workspace UUID from the resolved item (TASK-4102, migration 162)",
 	"item_schedules.item_id":                 "server-minted item UUID, a foreign key to items(id) (TASK-4102, migration 162)",

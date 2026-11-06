@@ -64,6 +64,8 @@ compress /api/v1/me/needs
 compress /api/v1/me/notification-settings
 compress /api/v1/me/notifications/{id}
 compress /api/v1/me/ui-dismissals
+compress /api/v1/me/workspace-groups
+compress /api/v1/me/workspace-groups/{id}
 compress /api/v1/me/workspace-tabs/
 skip /api/v1/oauth/clients/{id}/public-info
 compress /api/v1/plan-limits

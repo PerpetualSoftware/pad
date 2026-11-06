@@ -190,15 +190,15 @@ func (s *Server) handleMeNeeds(w http.ResponseWriter, r *http.Request) {
 // BUG-3982 every door confines a pinned user token that way; this ID filter
 // predates it and is kept.
 func (s *Server) needsAdmittedWorkspaces(r *http.Request, user *models.User) ([]models.Workspace, error) {
-	member, err := s.store.GetUserWorkspaces(user.ID)
+	member, err := s.store.GetUserWorkspacesQ(s.store.QContext(r.Context()), user.ID)
 	if err != nil {
 		return nil, err
 	}
-	guestIDs, err := s.store.GuestWorkspaceIDs(user.ID)
+	guestIDs, err := s.store.GuestWorkspaceIDsQ(s.store.QContext(r.Context()), user.ID)
 	if err != nil {
 		return nil, err
 	}
-	guests, err := s.store.GetWorkspacesByIDs(guestIDs)
+	guests, err := s.store.GetWorkspacesByIDsQ(s.store.QContext(r.Context()), guestIDs)
 	if err != nil {
 		return nil, err
 	}
