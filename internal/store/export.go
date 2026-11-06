@@ -1233,7 +1233,15 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 				"raw_runes", utf8.RuneCountInString(it.Title))
 		}
 		itemSlug, slugCoerced := importCoercedSlug(it.Slug)
-		itemSlug, refSlugCoerced := importRefShapedSlug(itemSlug)
+		// An operator copy (pad db migrate-to-pg, WithPreservedSlug) keeps every
+		// slug as the source has it: it is the same workspace on a new database,
+		// and the slug is already in URLs and bookmarks, as the workspace slug is.
+		// BUG-4119's resolution order already handles a legacy ref-shaped slug.
+		// The two import doors that mint a new workspace coerce (TASK-4375).
+		refSlugCoerced := false
+		if !mintOpts.preserveSlug {
+			itemSlug, refSlugCoerced = importRefShapedSlug(itemSlug)
+		}
 		// Collision resolution is keyed on the CLAIMED SET, not on whether THIS
 		// row was coerced. Length and ref-shape coercion can create duplicate
 		// slugs here — a bundle exported from a live workspace
@@ -1268,6 +1276,9 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 				"slug", unique,
 				"from_truncation", slugCoerced)
 			itemSlug = unique
+			if mintOpts.preserveSlug {
+				continue
+			}
 			if again, changed := importRefShapedSlug(itemSlug); changed {
 				itemSlug = again
 				refSlugCoerced = true

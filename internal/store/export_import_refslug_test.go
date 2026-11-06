@@ -289,3 +289,74 @@ func TestImportWorkspace_RefShapedSlugAfterCollisionSuffix(t *testing.T) {
 		t.Errorf("first row slug = %d runes, want the plain truncation", utf8.RuneCountInString(got))
 	}
 }
+
+// importRefSlugBundle is a bundle whose slugs include ref-shaped ones, for the
+// preserved-slug (pad db migrate-to-pg) and plain-door comparison.
+func importRefSlugBundle(slug string) *models.WorkspaceExport {
+	const stamp = "2026-11-06T00:00:00Z"
+	bundle := &models.WorkspaceExport{
+		Version: 1, ExportedAt: stamp,
+		Workspace: models.WorkspaceExportMeta{Name: "Ref slugs", Slug: slug},
+		Collections: []models.CollectionExport{{
+			ID: "c1", Name: "Tasks", Slug: "tasks", Prefix: "TASK", Schema: `{"fields":[]}`,
+			CreatedAt: stamp, UpdatedAt: stamp,
+		}},
+	}
+	for i, itemSlug := range []string{"release-2", "IDENT-10", "my-doc"} {
+		bundle.Items = append(bundle.Items, models.ItemExport{
+			ID: fmt.Sprintf("row-%d", i), CollectionID: "c1", ItemNumber: i + 1,
+			Title: fmt.Sprintf("Item %d", i), Slug: itemSlug, Fields: `{}`, Tags: `[]`,
+			CreatedAt: stamp, UpdatedAt: stamp,
+		})
+	}
+	return bundle
+}
+
+func importedSlugsByTitle(t *testing.T, s *Store, wsID string) map[string]string {
+	t.Helper()
+	items, err := s.ListItems(wsID, models.ItemListParams{})
+	if err != nil {
+		t.Fatalf("ListItems: %v", err)
+	}
+	out := make(map[string]string, len(items))
+	for _, item := range items {
+		out[item.Title] = item.Slug
+	}
+	return out
+}
+
+// pad db migrate-to-pg copies a workspace to a new database with
+// WithPreservedSlug, and an operator copy keeps every slug as the source has
+// it (a slug is already in URLs and bookmarks). Only the plain import doors
+// coerce a ref-shaped slug (TASK-4375).
+func TestImportWorkspace_PreservedSlugKeepsRefShapedSlugs(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+
+	ws, err := s.ImportWorkspace(importRefSlugBundle("ref-slugs-copy"), "", "", "", WithPreservedSlug())
+	if err != nil {
+		t.Fatalf("ImportWorkspace (preserved): %v", err)
+	}
+	got := importedSlugsByTitle(t, s, ws.ID)
+	for title, want := range map[string]string{"Item 0": "release-2", "Item 1": "IDENT-10", "Item 2": "my-doc"} {
+		if got[title] != want {
+			t.Errorf("preserved copy: %s slug = %q, want %q byte for byte", title, got[title], want)
+		}
+	}
+}
+
+func TestImportWorkspace_PlainDoorStillCoercesRefShapedSlugs(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+
+	ws, err := s.ImportWorkspace(importRefSlugBundle("ref-slugs-plain"), "Plain door", "", "")
+	if err != nil {
+		t.Fatalf("ImportWorkspace (plain): %v", err)
+	}
+	got := importedSlugsByTitle(t, s, ws.ID)
+	for title, want := range map[string]string{"Item 0": "release-2-2", "Item 1": "ident-10-2", "Item 2": "my-doc"} {
+		if got[title] != want {
+			t.Errorf("plain door: %s slug = %q, want %q", title, got[title], want)
+		}
+	}
+}
