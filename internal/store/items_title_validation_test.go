@@ -531,9 +531,14 @@ func TestImportWorkspace_TruncatedSlugCollidesWithALaterVerbatimSlug(t *testing.
 		t.Errorf("the second row kept slug %q, so nothing collided with it — the first row was not truncated onto it",
 			prefix)
 	}
-	if !strings.HasPrefix(exactRowSlug, prefix+"-") {
-		t.Errorf("the second row's slug = %q, want the %d-rune prefix plus a uniqueness suffix",
-			exactRowSlug, models.MaxItemTitleRunes)
+	// uniqueSlugQ's `<prefix>-2` is itself ref-shaped (a hyphen-free letter
+	// prefix and a number), so the import re-coerces it to the bounded
+	// `-x-2` form (TASK-4375).
+	if want := prefix[:models.MaxItemTitleRunes-len("-x-2")] + "-x-2"; exactRowSlug != want {
+		t.Errorf("the second row's slug = %q, want %q", exactRowSlug, want)
+	}
+	if _, _, ok := parseItemRef(exactRowSlug); ok {
+		t.Errorf("the second row's slug %q parses as an item ref", exactRowSlug)
 	}
 	// Both rows survive AND stay distinguishable — a "fix" that let one
 	// overwrite the other would also produce two unique slugs.
