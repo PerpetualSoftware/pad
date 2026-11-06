@@ -56,6 +56,8 @@ type Server struct {
 	agendaClock func() time.Time
 	// agendaScanLimit, when positive, lowers the request-wide schedule scan cap.
 	agendaScanLimit int
+	// agendaCountsLimit, when positive, lowers the rows the counts series may read.
+	agendaCountsLimit int
 
 	// sseKeepaliveOverride, when non-zero, replaces sseKeepaliveInterval for
 	// this server's SSE streams, and watchEventsKeepaliveInterval for the

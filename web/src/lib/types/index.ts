@@ -3785,6 +3785,17 @@ export interface AgendaEntry {
 	stale?: boolean;
 }
 
+/** One local day of the /me/agenda counts series (TASK-4244). */
+export interface AgendaDayCount {
+	day: string;
+	/** Items that reached a positive terminal value that day. */
+	completed: number;
+	/** Items still open at the day's end. */
+	open: number;
+	/** Of the items open at the window's start, how many are still open at the day's end. */
+	burndown: number;
+}
+
 export interface AgendaResponse {
 	from: string;
 	to: string;
@@ -3793,6 +3804,9 @@ export interface AgendaResponse {
 	entries: AgendaEntry[];
 	truncated?: boolean;
 	next_from?: string;
+	/** /me/agenda only. Absent when counts_truncated: a partial series is never sent. */
+	counts?: AgendaDayCount[];
+	counts_truncated?: boolean;
 	unavailable?: { item_ref: string; code: string; workspace?: string; owner_username?: string }[];
 	unexpanded?: {
 		schedule_id: string;

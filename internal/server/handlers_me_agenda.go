@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/PerpetualSoftware/pad/internal/usertz"
 )
@@ -19,6 +20,14 @@ func (s *Server) handleMeAgenda(w http.ResponseWriter, r *http.Request) {
 	user := currentUser(r)
 	if user == nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Sign in to see your agenda")
+		return
+	}
+	// A pinned token never names a group. The refusal is decided here, before
+	// any group is looked up or the parameter is read, so the answer is the same
+	// for its own group, an unknown id and the built-ins, and says nothing about
+	// which ids exist. Without the parameter it keeps the one workspace it has.
+	if pin := tokenPinFrom(r.Context()); pin != nil && r.URL.Query().Has("group") {
+		writeTokenWorkspaceDeniedFor(w, pin)
 		return
 	}
 	from, to, ok := parseAgendaWindow(w, r)
@@ -42,12 +51,22 @@ func (s *Server) handleMeAgenda(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
+	admitted, ok = s.agendaGroupWorkspaces(w, r, user, admitted)
+	if !ok {
+		return
+	}
 	sort.Slice(admitted, func(i, j int) bool {
 		if admitted[i].Slug != admitted[j].Slug {
 			return admitted[i].Slug < admitted[j].Slug
 		}
 		return admitted[i].ID < admitted[j].ID
 	})
+	days, _ := store.AgendaCountDays(from, to, zone.Loc)
+	counts := make([]agendaCount, len(days))
+	for i, d := range days {
+		counts[i].Day = d
+	}
+	countRows, countsCut := 0, false
 	for _, ws := range admitted {
 		elig := &needsEligibility{s: s, wsID: ws.ID, cache: map[string]*needsVisibility{}}
 		vis := elig.visibility(user.ID)
@@ -69,7 +88,29 @@ func (s *Server) handleMeAgenda(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if s.agendaExpired(run) {
+			countsCut = true
 			break
+		}
+		if !countsCut {
+			budget := agendaMaxCountRows
+			if s.agendaCountsLimit > 0 {
+				budget = min(budget, s.agendaCountsLimit)
+			}
+			series, rows, cut, err := s.store.AgendaCounts(ws.ID, scope, from, to, zone.Loc, budget-countRows)
+			if err != nil {
+				writeInternalError(w, err)
+				return
+			}
+			countRows += rows
+			if cut {
+				countsCut = true
+			} else {
+				for i := range counts {
+					counts[i].Completed += series[i].Completed
+					counts[i].Open += series[i].Open
+					counts[i].Burndown += series[i].Burndown
+				}
+			}
 		}
 		entryStart, unavailableStart, unexpandedStart := len(run.response.Entries), len(run.response.Unavailable), len(run.response.Unexpanded)
 		if err := s.appendWorkspaceAgenda(run, ws.ID, scope); err != nil {
@@ -103,8 +144,57 @@ func (s *Server) handleMeAgenda(w http.ResponseWriter, r *http.Request) {
 			run.response.Unexpanded[i].Workspace, run.response.Unexpanded[i].OwnerUsername = ws.Slug, owner
 		}
 	}
+	if countsCut {
+		// A partial series would read as a total: send none, and say why.
+		run.response.CountsTruncated, run.response.Truncated, run.setCut = true, true, true
+	} else {
+		run.response.Counts = counts
+	}
 	run.finish()
 	writeJSON(w, http.StatusOK, run.response)
+}
+
+// agendaGroupWorkspaces narrows the admitted workspaces to the requested
+// group: all (the default), mine, or a saved group of the caller's own. Another
+// user's group answers 404 as it does on the group routes. Members the caller
+// cannot see are dropped by the same filter the group routes use, so a group
+// reaches no workspace the caller could not already read.
+func (s *Server) agendaGroupWorkspaces(w http.ResponseWriter, r *http.Request, user *models.User, admitted []models.Workspace) ([]models.Workspace, bool) {
+	if !r.URL.Query().Has("group") {
+		return admitted, true
+	}
+	id := strings.TrimSpace(r.URL.Query().Get("group"))
+	switch {
+	case id == "":
+		writeAgendaParam(w, "group", "format", "`group` must be all, mine or a saved group id")
+		return nil, false
+	case id == "all":
+		return admitted, true
+	case id == "mine":
+		kept := make([]models.Workspace, 0, len(admitted))
+		for _, ws := range admitted {
+			if ws.OwnerID == user.ID {
+				kept = append(kept, ws)
+			}
+		}
+		return kept, true
+	}
+	g, err := s.store.GetWorkspaceGroup(r.Context(), user.ID, id)
+	if err != nil {
+		writeWorkspaceGroupError(w, err)
+		return nil, false
+	}
+	members := map[string]bool{}
+	for _, wsID := range visibleWorkspaceGroup(*g, admitted).WorkspaceIDs {
+		members[wsID] = true
+	}
+	kept := make([]models.Workspace, 0, len(admitted))
+	for _, ws := range admitted {
+		if members[ws.ID] {
+			kept = append(kept, ws)
+		}
+	}
+	return kept, true
 }
 
 func (s *Server) agendaExpired(run *agendaRead) bool {
