@@ -46,4 +46,6 @@ it('uses the item-list tag parameter and refuses unsupported filter combinations
  expect(calendarFilters({status:'open'},['planning'],'launch',true)).toEqual({params:{status:'open',tag:'planning',search:'launch',unparented:'true'},problem:''});
  expect(calendarFilters({},['planning','design'],'',false).problem).toContain('one tag');
  expect(calendarFilters({from:'value'},[],'',false).problem).toContain('cannot filter');
+ expect(calendarFilters({},[],'',false,{includeArchived:true}).problem).toContain('Archived items');
+ expect(calendarFilters({},[],'body:launch',false,{structuredSearch:true}).problem).toContain('search shortcuts');
 });

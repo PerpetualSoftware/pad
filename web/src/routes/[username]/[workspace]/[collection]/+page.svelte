@@ -1954,7 +1954,10 @@
 	let emptyHint = $derived(ownValue(emptyHintMap, collSlug) ?? null);
 
 	let filtersOpen = $state(false);
- let calendarFilter = $derived(calendarFilters(activeFilters, selectedTags, searchQuery, unparentedApplied));
+ let calendarFilter = $derived(calendarFilters(activeFilters, selectedTags, searchQuery, unparentedApplied, {
+  includeArchived: showArchived || parsedSearch.archived,
+  structuredSearch: parsedSearch.body || !!parsedSearch.collection || parsedSearch.itemNumber !== undefined || !!parsedSearch.ref,
+ }));
 	let hasActiveFilters = $derived(searchQuery.trim() !== '' || Object.keys(activeFilters).length > 0 || selectedTags.length > 0 || unparentedApplied);
 
 	// ── Viewport detection ───────────────────────────────────────────────

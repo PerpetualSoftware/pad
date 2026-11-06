@@ -108,11 +108,15 @@ export function incomplete(data: CalendarResponse): boolean {
 export function incompleteDay(data: CalendarResponse, day: string): boolean {
  return data.partial_day === day || !!(incomplete(data) && (!data.next_from || day >= data.next_from || data.unexpanded?.length || data.unavailable?.length));
 }
-export function calendarFilters(filters: Record<string,string>, tags: string[], search: string, unparented: boolean) {
+export function calendarFilters(filters: Record<string,string>, tags: string[], search: string, unparented: boolean, options: {includeArchived?:boolean;structuredSearch?:boolean} = {}) {
  const params: Record<string,string> = {...filters};
  if (tags.length === 1) params.tag = tags[0];
  if (search.trim()) params.search = search.trim();
  if (unparented) params.unparented = 'true';
  const reserved = ['date_field','end_field','from','to','tz'].find(key => key in filters);
- return { params, problem: tags.length > 1 ? 'The calendar supports one tag filter at a time. Choose one tag, or use the list.' : reserved ? `The calendar cannot filter by “${reserved}”. Use the list for this filter.` : '' };
+ const problem = options.includeArchived ? 'Archived items are not available in Calendar. Hide archived items, or use the list.'
+  : options.structuredSearch ? 'The calendar does not support search shortcuts. Use plain text, or use the list.'
+  : tags.length > 1 ? 'The calendar supports one tag filter at a time. Choose one tag, or use the list.'
+  : reserved ? `The calendar cannot filter by “${reserved}”. Use the list for this filter.` : '';
+ return { params, problem };
 }
