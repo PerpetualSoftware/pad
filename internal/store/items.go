@@ -1272,12 +1272,35 @@ func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]m
 // ListItemsQ is ListItems on a caller-supplied executor, so it can read inside
 // a snapshot transaction (BUG-3659). Only the plain listing: search, field
 // filters and the non-terminal filter read through helpers that use the pool,
-// so a call asking for them is refused rather than half on the executor.
+// so a call asking for them is refused rather than half on the executor. The
+// same goes for `completed` in the day filters or order on a non-pool executor.
 func (s *Store) ListItemsQ(q Queryer, workspaceID string, params models.ItemListParams) ([]models.Item, error) {
 	if strings.TrimSpace(params.Search) != "" || len(params.Fields) > 0 || params.NonTerminal {
 		return nil, fmt.Errorf("ListItemsQ: search, field filters and NonTerminal are not supported on an executor")
 	}
+	if q != Queryer(s.db) && namesCompleted(params) {
+		return nil, fmt.Errorf("ListItemsQ: completed filters need the live pool, not a snapshot executor")
+	}
 	return s.listItemsQ(q, workspaceID, params)
+}
+
+// namesCompleted reports whether the day filters or order read `completed`,
+// whose expression is built from the collection schema through the pool.
+func namesCompleted(params models.ItemListParams) bool {
+	if params.OrderByDay == "completed" {
+		return true
+	}
+	for _, fr := range params.FieldRanges {
+		if fr.Key == "completed" {
+			return true
+		}
+	}
+	for _, sp := range params.FieldSpans {
+		if sp.StartKey == "completed" || sp.EndKey == "completed" {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Store) listItemsQ(q Queryer, workspaceID string, params models.ItemListParams) ([]models.Item, error) {

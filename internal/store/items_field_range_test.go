@@ -436,3 +436,41 @@ func TestListItems_CompletedExpressionFailureIsAnError(t *testing.T) {
 		t.Errorf("CompletedInstants: err = %v", err)
 	}
 }
+
+// ListItemsQ on a snapshot executor reads the items from the snapshot but the
+// completed expression reads the schema from the pool, so it refuses any use
+// of `completed` there; the pool path and other keys are unaffected.
+func TestListItemsQ_CompletedNeedsTheLivePool(t *testing.T) {
+	t.Parallel()
+	w := newRangeWorld(t)
+	w.mk(t, "x", `{"status":"done","due_date":"2026-03-02"}`)
+	tx, err := w.s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+
+	for name, p := range map[string]models.ItemListParams{
+		"range":      {FieldRanges: []models.FieldRange{{Key: "completed", From: "2026-01-01", To: "2026-12-31"}}},
+		"span start": {FieldSpans: []models.FieldSpan{{StartKey: "completed", EndKey: "due_date", From: "2026-01-01", To: "2026-12-31"}}},
+		"span end":   {FieldSpans: []models.FieldSpan{{StartKey: "due_date", EndKey: "completed", From: "2026-01-01", To: "2026-12-31"}}},
+		"order":      {OrderByDay: "completed"},
+	} {
+		_, err := w.s.ListItemsQ(tx, w.wsID, p)
+		if err == nil || !strings.Contains(err.Error(), "completed filters need the live pool") {
+			t.Errorf("%s: err = %v, want the live-pool refusal", name, err)
+		}
+	}
+
+	ok := models.ItemListParams{FieldRanges: []models.FieldRange{{Key: "due_date", From: "2026-01-01", To: "2026-12-31"}}}
+	if got, err := w.s.ListItemsQ(tx, w.wsID, ok); err != nil || len(got) != 1 {
+		t.Errorf("normal key on a snapshot: %d items, err %v", len(got), err)
+	}
+	pool := models.ItemListParams{FieldRanges: []models.FieldRange{{Key: "completed", From: "2000-01-01", To: "2099-12-31"}}}
+	if _, err := w.s.ListItems(w.wsID, pool); err != nil {
+		t.Errorf("ListItems on the pool: %v", err)
+	}
+	if _, err := w.s.ListItemsQ(w.s.Q(), w.wsID, pool); err != nil {
+		t.Errorf("ListItemsQ on the pool: %v", err)
+	}
+}
