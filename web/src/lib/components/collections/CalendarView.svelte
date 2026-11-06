@@ -4,7 +4,7 @@
  import type { CalendarResponse, Collection, Item } from '$lib/types';
  import { authStore } from '$lib/stores/auth.svelte';
  import { viewport } from '$lib/stores/breakpoint.svelte';
- import { calendarError, calendarRows, dayLabel, fieldLabel, incomplete, incompleteDay, monthDays, monthLabel, monthWindow, moveMonth, shiftDay, staleConfig, STALE_FIELD, UNSUPPORTED_FIELD, zoneDay, type CalendarConfig, type CalendarRow } from '$lib/calendar/monthGrid';
+ import { calendarError, calendarRows, dayLabel, fieldLabel, incomplete, incompleteDay, monthDays, monthLabel, monthWindow, moveMonth, shiftDay, safeZone, staleConfig, STALE_FIELD, UNSUPPORTED_FIELD, zoneDay, type CalendarConfig, type CalendarRow } from '$lib/calendar/monthGrid';
  import CalendarToolbar from '../calendar/CalendarToolbar.svelte';
  import CalendarEntry from '../calendar/CalendarEntry.svelte';
  import CalendarNotice from '../calendar/CalendarNotice.svelte';
@@ -21,7 +21,19 @@
   onFilters?:()=>void;onList?:()=>void;onClearFilters?:()=>void;refreshKey?:number;pickerOpen?:boolean;initialMonth?:string;
  } = $props();
  const uid = $props.id();
- let zone = $derived(authStore.user?.timezone || 'UTC');
+ let zone = $derived(safeZone(authStore.user?.timezone));
+ // Filters settle before a request is made, so typing does not fire one per key.
+ const FILTER_SETTLE_MS = 250;
+ let applied = $state(untrack(() => ({filters, filterProblem})));
+ let settleTimer: ReturnType<typeof setTimeout> | undefined;
+ $effect(() => {
+  const next = {filters, filterProblem};
+  const key = JSON.stringify(next);
+  clearTimeout(settleTimer);
+  if (key === untrack(() => JSON.stringify(applied))) return;
+  settleTimer = setTimeout(() => { applied = next; }, FILTER_SETTLE_MS);
+  return () => clearTimeout(settleTimer);
+ });
  let today = $derived(zoneDay(new Date(),zone));
  let month = $state(untrack(() => initialMonth ?? zoneDay(new Date(), zone).slice(0,7)));
  let selected = $state('');
@@ -33,6 +45,8 @@
  let root: HTMLElement;
  let ticket = 0;
  let loadedScope = '';
+ let loadedBase = '';
+ let lastUnrelated = '';
  let pendingFocus: string | null = null;
  let days = $derived(monthDays(month));
  let rows = $derived(data ? calendarRows(data,collection,config.date_field ?? '',month) : []);
@@ -48,26 +62,35 @@
  });
 
  $effect(() => {
-  const scope = JSON.stringify([wsSlug,collection.id,collection.schema,config,filters,filterProblem,month,zone,authStore.identityEpoch]);
+  const {filters: appliedFilters, filterProblem: appliedProblem} = applied;
+  const unrelated = JSON.stringify([wsSlug,collection.id,collection.schema,config,appliedFilters,appliedProblem,zone,authStore.identityEpoch]);
+  // Month, collection, field and zone invalidate the grid; a filter change keeps it until the new result lands.
+  const base = JSON.stringify([wsSlug,collection.id,collection.schema,config,month,zone,authStore.identityEpoch]);
+  const scope = JSON.stringify([base,appliedFilters,appliedProblem]);
   refreshKey; retry;
-  const query = {...filters,...config,date_field:config.date_field ?? '',...monthWindow(month,zone),tz:zone};
-  const invalid = staleConfig(collection,config) || !config.date_field || !!filterProblem;
+  const query = {...appliedFilters,...config,date_field:config.date_field ?? '',...monthWindow(month,zone),tz:zone};
+  const invalid = staleConfig(collection,config) || !config.date_field || !!appliedProblem;
   const request = ++ticket;
   const held = authStore.identityFence();
   const ws = wsSlug, coll = collection.slug;
   untrack(() => {
    const same = scope === loadedScope;
-   if (!same || invalid) { data = null; openedDay = null; }
+   const sameBase = base === loadedBase;
+   // A pending keyboard focus belongs to a month change only.
+   if (unrelated !== lastUnrelated) pendingFocus = null;
+   lastUnrelated = unrelated;
+   if (!sameBase || invalid) { data = null; openedDay = null; }
    error = ''; loading = !invalid;
-   if (invalid) return;
+   if (invalid) { pendingFocus = null; return; }
    api.calendar.get(ws,coll,query).then(result => {
     if (request !== ticket || !held()) return;
-    data = result; loadedScope = scope; loading = false;
+    data = result; loadedScope = scope; loadedBase = base; loading = false;
    }).catch(reason => {
     if (request !== ticket || !held()) return;
-    error = calendarError(reason); loading = false;
-    if (error === STALE_FIELD) data = null;
-    else if (same && data && error === 'Could not load calendar.') error = 'Could not update calendar. Showing the previous result.';
+    error = calendarError(reason); loading = false; pendingFocus = null;
+    if (error === STALE_FIELD || error === UNSUPPORTED_FIELD) data = null;
+    else if (!same) data = null;
+    else if (data && error === 'Could not load calendar.') error = 'Could not update calendar. Showing the previous result.';
    });
   });
   return () => { ticket++; };
@@ -116,21 +139,21 @@
  function cellLabel(day:string) { return `${dayLabel(day,true)}${day===today ? ', Today' : ''}, ${byDay.get(day)?.length ?? 0} entries${data && incompleteDay(data,day) ? ', Incomplete' : ''}`; }
 </script>
 
-<section class="calendar" bind:this={root} aria-label="Calendar">
+<section class="calendar" class:updating={loading && !!data} bind:this={root} aria-label="Calendar" aria-busy={loading && !!data}>
  <CalendarToolbar {month} {zone} zoneSet={!!authStore.user?.timezone} dateLabel={fieldLabel(collection,config.date_field)} onprevious={() => pageMonth(-1)} onnext={() => pageMonth(1)} ontoday={() => chooseDay(today,true)} onfields={() => { if (onChooseFields) onChooseFields(); else pickerOpen=true; }} />
  <p class="sr-only" role="status">{monthLabel(month)}{loading ? data ? ' — Updating calendar…' : ' — Loading calendar…' : ''}</p>
  {#if stale || !config.date_field}
   <p>{error === UNSUPPORTED_FIELD && !staleConfig(collection,config) ? UNSUPPORTED_FIELD : stale ? STALE_FIELD : 'Choose a date field'}</p>
   <CalendarFieldPicker {collection} {config} onchange={changeConfig} />
- {:else if filterProblem}
-  <p role="alert">{filterProblem}</p><Button onclick={onFilters}>Filters</Button><Button onclick={onList}>Use list</Button>
+ {:else if applied.filterProblem}
+  <p role="alert">{applied.filterProblem}</p><Button onclick={onFilters}>Filters</Button><Button onclick={onList}>Use list</Button>
  {:else}
   {#if error}<div role="alert"><p>{error}</p>{#if error.includes('time zone')}<a href="/console/settings">Time zone settings</a>{:else}<Button onclick={() => retry++}>Try again</Button>{/if}</div>{/if}
   {#if loading && !data}<ContentSkeleton />{/if}
   {#if data}
    <CalendarNotice {data} onfilters={onFilters} onlist={onList} onretry={() => retry++} />
    {#if !rows.length && !incomplete(data)}
-    {#if Object.keys(filters).length}<p>No entries match these filters.</p><Button onclick={onClearFilters}>Clear filters</Button>
+    {#if Object.keys(applied.filters).length}<p>No entries match these filters.</p><Button onclick={onClearFilters}>Clear filters</Button>
     {:else}<p>No entries this month.</p><p>Choose another month or date field.</p>{/if}
    {/if}
    {#if viewport.isMobile}
@@ -179,6 +202,7 @@
 {/if}
 <style>
  .calendar { min-width:0; padding:var(--space-4); }
+ .updating { opacity:0.6; }
  .week, .weekdays { display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); }
  .weekdays { color:var(--text-secondary); text-align:center; font-size:12px; padding:var(--space-2) 0; }
  .month-grid { border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; }

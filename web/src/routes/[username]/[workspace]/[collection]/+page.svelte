@@ -68,7 +68,7 @@
 		viewHasUnparentedFilter,
 	} from '$lib/collections/unparentedFilter';
 	import { relationFilterMatches } from '$lib/collections/relationGroups';
-	import { KNOWN_COLLECTION_URL_PARAMS, buildCollectionUrlParams } from '$lib/collections/paneUrlParams';
+	import { KNOWN_COLLECTION_URL_PARAMS, applyCalendarUrlParam, buildCollectionUrlParams } from '$lib/collections/paneUrlParams';
 	import { type ResolvedPaneState } from '$lib/collections/paneController';
 	import { createPaneController } from '$lib/collections/paneHostController';
 	import { resolvePaneReturnTarget } from '$lib/collections/paneFocus';
@@ -872,10 +872,8 @@
 			// shared table link used to open as the board.
 			if (k === 'view' && isViewMode(v)) {
 				viewMode = v;
-			} else if (k === 'calendar_date') {
-				calendarConfig = {...calendarConfig, date_field: v};
-			} else if (k === 'calendar_end') {
-				calendarConfig = {...calendarConfig, end_field: v || undefined};
+			} else if (k === 'calendar_date' || k === 'calendar_end') {
+				calendarConfig = applyCalendarUrlParam(calendarConfig, k, v);
 			} else if (k === 'q') {
 				// Skipped exactly once after an identity change, and only for
 				// the value that belonged to the session which just ended — a

@@ -64,6 +64,15 @@ export interface CollectionUrlFilterState {
 	searchQuery: string;
 }
 
+/** Apply one `calendar_date` / `calendar_end` URL value to a stored config.
+ *  An empty value is ignored so it cannot erase a stored field; a non-empty one wins. */
+export function applyCalendarUrlParam<C extends { date_field?: string; end_field?: string }>(config: C, key: string, value: string): C {
+	if (!value) return config;
+	if (key === 'calendar_date') return { ...config, date_field: value };
+	if (key === 'calendar_end') return { ...config, end_field: value };
+	return config;
+}
+
 /**
  * Build the full query-string params for `updateUrlFilters` — view mode,
  * active field filters, tags, the unparented pseudo-filter, search, and the
@@ -78,8 +87,9 @@ export function buildCollectionUrlParams(state: CollectionUrlFilterState, curren
 	// silently resolving back to the collection's Board default (IDEA-2274).
 	params.set('view', state.viewMode);
 	if (state.viewMode === 'calendar' && state.calendarConfig) {
-		params.set('calendar_date', state.calendarConfig.date_field ?? '');
-		params.set('calendar_end', state.calendarConfig.end_field ?? '');
+		// An empty value would overwrite the receiver's stored field on load.
+		if (state.calendarConfig.date_field) params.set('calendar_date', state.calendarConfig.date_field);
+		if (state.calendarConfig.end_field) params.set('calendar_end', state.calendarConfig.end_field);
 	}
 	for (const [k, v] of Object.entries(state.activeFilters)) {
 		params.set(k, v);

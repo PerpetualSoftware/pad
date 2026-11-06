@@ -86,10 +86,12 @@ identityGateSuite({
 			identityHeld: 'e4fd3989a707',
 			// TASK-3423 rebase: re-reviewed; only kit 3 API swaps reach it (page.url.href, goto reset:false), no await or fence moved.
 			installPaneTestHook: 'd5097f0db3e6',
-			loadUrlFilters: '3f30336611ee',
+			// TASK-4240: re-reviewed; the calendar_date/calendar_end branch now calls the synchronous applyCalendarUrlParam (empty value ignored). No await, fence or state write moved.
+			loadUrlFilters: 'c371dfd4e69d',
 			pageIdentityHeld: 'a7bbe5de91a4',
 			runPendingNav: 'dfb7329e4a5e',
-			updateUrlFilters: 'e37d53c8b8f0',
+			// TASK-4240: body unchanged; re-hashed by the paneUrlParams import line it names (applyCalendarUrlParam added). No await or fence moved.
+			updateUrlFilters: 'a2f10fea539a',
 			writeDefaultViewId: '79d9180fa119',
 		},
 		// TASK-3423: the restore-skip release used to be handed to

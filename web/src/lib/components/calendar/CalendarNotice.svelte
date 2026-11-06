@@ -1,6 +1,6 @@
 <script lang="ts">
  import type { CalendarResponse } from '$lib/types';
- import { dayLabel, PARTIAL_DAY } from '$lib/calendar/monthGrid';
+ import { dayLabel, PARTIAL_DAY, shiftDay } from '$lib/calendar/monthGrid';
  import Button from '../common/Button.svelte';
  let {data, day, onfilters, onlist, onretry, keyboard = true}: {data:CalendarResponse;day?:string;onfilters:()=>void;onlist:()=>void;onretry?:()=>void;keyboard?:boolean} = $props();
 </script>
@@ -9,7 +9,7 @@
 {/if}
 {#if !day && data.truncated}
  <div class="notice">
-  {#if data.next_from}<p>Calendar is incomplete. <span>more after {dayLabel(data.next_from)}</span></p>
+  {#if data.next_from}<p>Calendar is incomplete. <span>more after {dayLabel(shiftDay(data.next_from, -1))}</span></p>
   {:else}<p>Calendar is incomplete. Filter the calendar, or use the list.</p>{/if}
   <div class="actions"><Button tabindex={keyboard ? 0 : -1} size="sm" onclick={onfilters}>Filters</Button><Button tabindex={keyboard ? 0 : -1} size="sm" onclick={onlist}>Use list</Button></div>
  </div>

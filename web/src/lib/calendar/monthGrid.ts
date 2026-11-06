@@ -9,6 +9,12 @@ const pad = (n: number) => String(n).padStart(2, '0');
 const dateParts = (day: string) => day.split('-').map(Number);
 const dateString = (date: Date) => `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`;
 
+/** A usable IANA zone, or UTC when the value is empty or Intl rejects it. */
+export function safeZone(zone: string | null | undefined): string {
+ if (!zone) return 'UTC';
+ try { new Intl.DateTimeFormat('en-CA', { timeZone: zone }); return zone; } catch { return 'UTC'; }
+}
+
 export function zoneDay(instant: Date, zone: string): string {
  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(instant);
  const get = (key: string) => parts.find(p => p.type === key)!.value;
@@ -80,7 +86,7 @@ export interface CalendarRow {
  item?: Item; at?: string; label?: string; terminal?: string; state?: string; overdue?: boolean;
  start?: string; end?: string; continues?: boolean; effectiveAt?: string; missedCount?: number; stale?: boolean;
 }
-/** Preserve server placement and order; expand only the supplied inclusive item span. */
+/** Keep the server's day placement; expand only the supplied inclusive item span. Rows sort by day, all-day first, items before schedule entries within a day (as the API places them), then stable server order. */
 export function calendarRows(data: CalendarResponse, collection: Collection, field: string, month?: string): CalendarRow[] {
  const rows: CalendarRow[] = [];
  const days = month ? monthDays(month) : undefined;

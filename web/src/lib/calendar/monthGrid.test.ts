@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { monthWindow, monthDays, calendarRows, timeLabel, moveMonth } from './monthGrid';
+import { monthWindow, monthDays, calendarRows, timeLabel, moveMonth, isSafeFieldKey, safeZone } from './monthGrid';
 import type { CalendarResponse, Collection, Item } from '$lib/types';
 const collection = { schema: JSON.stringify({ fields: [{ key: 'due', type: 'date', label: 'Due' }, { key: 'status', type: 'select', terminal_options: ['finished'] }] }), settings: '{}' } as Collection;
 const item = { id: '1', slug: 'plan', title: 'Plan', fields: '{"due":"2026-03-08","status":"finished"}' } as Item;
@@ -48,4 +48,18 @@ it('uses the item-list tag parameter and refuses unsupported filter combinations
  expect(calendarFilters({from:'value'},[],'',false).problem).toContain('cannot filter');
  expect(calendarFilters({},[],'',false,{includeArchived:true}).problem).toContain('Archived items');
  expect(calendarFilters({},[],'body:launch',false,{structuredSearch:true}).problem).toContain('search shortcuts');
+});
+
+describe('guards', () => {
+ it('rejects keys with a trailing newline or NUL', () => {
+  expect(isSafeFieldKey('a\n')).toBe(false);
+  expect(isSafeFieldKey('a\u0000')).toBe(false);
+  expect(isSafeFieldKey('a_b-1')).toBe(true);
+ });
+ it('falls back to UTC for an invalid zone', () => {
+  expect(safeZone('Not/AZone')).toBe('UTC');
+  expect(safeZone('')).toBe('UTC');
+  expect(safeZone(undefined)).toBe('UTC');
+  expect(safeZone('America/New_York')).toBe('America/New_York');
+ });
 });
