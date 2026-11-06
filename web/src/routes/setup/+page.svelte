@@ -197,7 +197,7 @@
 					password = '';
 					confirmPassword = '';
 					error =
-						'This token is invalid, expired, or already used. Get a fresh token from your container logs and paste it below.';
+						'This token is invalid, expired, or already used. Get a fresh token from Pad’s startup output and paste it below.';
 				}
 			} else if (err instanceof Error && isPasswordRuleError(err.message)) {
 				passwordError = err.message;
@@ -225,8 +225,7 @@
 		{:else if !token && !openMode}
 			<p class="subtitle">Paste your bootstrap token</p>
 			<p class="hint">
-				Look for the token printed in your container logs when the server
-				started. It looks like a long random string.
+				Paste the token from Pad’s startup output. For Docker, use the container logs.
 			</p>
 
 			<form class="form" method="post" novalidate onsubmit={(e) => { e.preventDefault(); handlePasteSubmit(); }}>

@@ -1,8 +1,8 @@
 <script lang="ts">
 	// 'logs_token' added in TASK-1167 / PLAN-1166: the server returns this
 	// value when running self-host with no users + a loaded first-run
-	// bootstrap token. It tells the user to grab the token from container
-	// logs and finish setup at /setup#token=<x>. Cloud mode never returns
+	// bootstrap token. It directs the user to startup output to finish
+	// setup in the browser. Cloud mode never returns
 	// 'logs_token' (D10/F9).
 	//
 	// 'open' added for PAD_BYPASS_SETUP_TOKEN: the operator opted into
@@ -42,27 +42,18 @@
 			</div>
 		</div>
 	{:else if setupMethod === 'logs_token'}
+		<h2>Finish setting up Pad</h2>
 		<p class="body">
-			This Pad instance is fresh. The first-run bootstrap token was logged on startup —
-			grab it from your container logs and finish setup in your browser.
+			Open the setup link printed when Pad started. If you started Pad in a terminal, look there. For Docker, run
+			<code class="inline">docker logs &lt;container&gt;</code> and find “Pad first-run setup”.
 		</p>
 
 		<div class="instructions">
-			<div class="instruction">
-				<p class="instruction-label">Find the token</p>
-				<code>docker logs &lt;container&gt; 2&gt;&amp;1 | grep -A1 'Pad first-run setup'</code>
-			</div>
-
 			<div class="instruction">
 				<p class="instruction-label">Then continue setup</p>
 				<a href="/setup">Open setup page</a>
 			</div>
 		</div>
-
-		<p class="hint">
-			You can also paste the URL printed in the logs directly — it points at
-			<code>/setup</code> with the token in the URL fragment.
-		</p>
 	{:else}
 		<p class="body">Initialize Pad on the server host first, then come back here.</p>
 

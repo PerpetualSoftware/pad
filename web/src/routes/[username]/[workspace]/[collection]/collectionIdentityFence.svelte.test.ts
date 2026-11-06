@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { cleanup, render, waitFor } from '@testing-library/svelte';
+import { cleanup, render, screen, waitFor } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import { bindReactiveEpoch, isEpochReactive } from '../../../../test/identityEpochMock.svelte';
 import { bindReactiveCounter } from '../../../../test/reactiveCounter.svelte';
@@ -449,6 +449,31 @@ async function mountPage() {
 	});
 	return rendered;
 }
+
+describe('unavailable workspace recovery (BUG-4334)', () => {
+	afterEach(() => {
+		cleanup();
+		vi.restoreAllMocks();
+	});
+
+	it.each([
+		{ username: 'river-pilot', workspace: 'harbor-notes' },
+		{ username: 'meadow-owner', workspace: 'meadow-notes' },
+	])('returns to the console from /$username/$workspace/tasks', async ({ username, workspace }) => {
+		vi.spyOn(localIndex, 'accessRevokedFor').mockReturnValue(true);
+		vi.spyOn(localIndex, 'getByCollection').mockReturnValue([]);
+		collectionGets.length = 0;
+		page.params = { username, workspace, collection: 'tasks' };
+		page.url = new URL(`http://localhost/${username}/${workspace}/tasks`);
+		render(CollectionPage);
+		await waitFor(() => expect(collectionGets.length).toBeGreaterThan(0));
+		collectionGets[0].resolve({ ...COLLECTION });
+
+		expect(await screen.findByRole('heading', { name: "This workspace isn't available" })).toBeInTheDocument();
+		expect(screen.getByText("It isn't available to you, or it no longer exists.")).toBeInTheDocument();
+		expect(screen.getByRole('link', { name: 'Back to your workspaces' })).toHaveAttribute('href', '/console');
+	});
+});
 
 describe('the collection page stops a commit when the identity moves mid-flight', () => {
 	it('PRECONDITION: the faked identity epoch is reactive', () => {
