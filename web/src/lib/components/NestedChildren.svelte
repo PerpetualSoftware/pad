@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { api } from '$lib/api/client';
 	import type { Item, PaneTarget } from '$lib/types';
-	import { parseFields, formatItemRef, itemUrlId } from '$lib/types';
+	import { parseFields, formatItemRef } from '$lib/types';
 	import { childRowState, countChildProgress, isReferenceChild } from '$lib/collections/childProgress';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { collectionsNotStaleFor, categoricalValueFor } from '$lib/collections/categoricalFieldValue';
@@ -123,7 +123,7 @@
 					{/if}
 				</div>
 				{#if canExpand && isExpanded}
-					<svelte:self wsSlug={wsSlug} {username} parentRef={itemUrlId(child)} depth={depth + 1} {maxDepth} {onOpenTarget} />
+					<svelte:self wsSlug={wsSlug} {username} parentRef={child.id} depth={depth + 1} {maxDepth} {onOpenTarget} />
 				{/if}
 			</div>
 		{/each}

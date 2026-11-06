@@ -6856,7 +6856,7 @@
 			<BuiltinUpdateNotice
 				{wsSlug}
 				itemId={item.id}
-				itemRef={itemUrlId(item)}
+				itemRef={item.id}
 				seq={item.seq ?? 0}
 				currentContent={item.content}
 				currentFields={item.fields}
@@ -6870,7 +6870,7 @@
 
 		<!-- Attention signals (TASK-3118); renders nothing without a provider. -->
 		{#if visibility.seenVisible}
-			<DecisionChips {wsSlug} itemRef={itemUrlId(item)} itemId={item.id} />
+			<DecisionChips {wsSlug} itemRef={item.id} itemId={item.id} />
 		{/if}
 
 		<!-- Actions -->
@@ -8197,7 +8197,7 @@
 			<ShareDialog
 				{wsSlug}
 				type="item"
-				targetSlug={itemUrlId(item)}
+				targetSlug={item.id}
 				targetName={formatItemRef(item) || item.title}
 				bind:open={shareDialogOpen}
 			/>

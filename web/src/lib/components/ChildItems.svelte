@@ -11,7 +11,7 @@
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { titleLimitError } from '$lib/items/titleLimit';
 	import type { Item, Collection, PaneTarget } from '$lib/types';
-	import { parseFields, parseSchema, formatItemRef, itemUrlId } from '$lib/types';
+	import { parseFields, parseSchema, formatItemRef } from '$lib/types';
 	import { collectionsNotStaleFor, categoricalValueFor } from '$lib/collections/categoricalFieldValue';
 	import { laneKey } from '$lib/collections/boardColumns';
 	import { safeText } from '$lib/fields/fieldShape';
@@ -1030,7 +1030,7 @@
 								{/if}
 							</div>
 							{#if canExpand && isExpanded}
-								<NestedChildren {wsSlug} {username} parentRef={itemUrlId(child)} depth={1} maxDepth={3} {onOpenTarget} />
+								<NestedChildren {wsSlug} {username} parentRef={child.id} depth={1} maxDepth={3} {onOpenTarget} />
 							{/if}
 						</div>
 					{/each}

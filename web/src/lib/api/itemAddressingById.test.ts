@@ -30,7 +30,7 @@ const ITEM_CALL = new RegExp(
 		String.raw`(?:refreshLinksPreservingOnFailure|starredStore\.toggle)\(\s*[^,()]+,\s*[A-Za-z_.]+\.slug\b`,
 		// Props a component forwards to an item-addressing call (ShareDialog's
 		// targetSlug is also a collection slug, so only an item's is matched).
-		String.raw`(?:itemRef|parentRef|parentSlug)=\{\s*[A-Za-z_.?]+\.slug\b`,
+		String.raw`(?:itemRef|parentRef|parentSlug)=\{\s*(?:itemUrlId\()?[A-Za-z_.?]+\.slug\b|(?:itemRef|parentRef|targetSlug)=\{\s*itemUrlId\(`,
 		String.raw`targetSlug=\{\s*item[A-Za-z]*\.slug\b`,
 	].join('|'),
 	'g'
@@ -53,6 +53,7 @@ describe('item-addressing web calls pass an id, not a slug (TASK-4230)', () => {
 		expect('api.items.move(sourceWs, sourceItem.slug, t)'.match(ITEM_CALL)).not.toBeNull();
 		expect('starredStore.toggle(wsSlug, item.slug, item.id)'.match(ITEM_CALL)).not.toBeNull();
 		expect('<DecisionChips {wsSlug} itemRef={item.slug} />'.match(ITEM_CALL)).not.toBeNull();
-		expect('<DecisionChips {wsSlug} itemRef={itemUrlId(item)} />'.match(ITEM_CALL)).toBeNull();
+		expect('<DecisionChips {wsSlug} itemRef={item.id} />'.match(ITEM_CALL)).toBeNull();
+		expect('<DecisionChips {wsSlug} itemRef={itemUrlId(item)} />'.match(ITEM_CALL)).not.toBeNull();
 	});
 });

@@ -430,7 +430,7 @@
 				<BuiltinUpdateNotice
 					{wsSlug}
 					itemId={item?.id ?? ''}
-					itemRef={item ? itemUrlId(item) : ''}
+					itemRef={item?.id ?? ''}
 					seq={item?.seq ?? 0}
 					currentContent={item?.content ?? ''}
 					currentFields={item?.fields ?? ''}
