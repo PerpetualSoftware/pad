@@ -69,7 +69,10 @@ func TestWorkspaceGroupsCascades(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.db.Exec(s.q(`DELETE FROM workspaces WHERE id = ?`), ws.ID); err != nil {
+	if err := s.DeleteWorkspace(ws.Slug); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PurgeWorkspaceData(ws.ID); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.GetWorkspaceGroup(context.Background(), u.ID, g.ID)
@@ -108,6 +111,12 @@ func TestWorkspaceGroupsUniqueNames(t *testing.T) {
 	}
 	if _, err := s.CreateWorkspaceGroup(context.Background(), b.ID, "mixed", nil); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := s.CreateWorkspaceGroup(context.Background(), a.ID, "Äpfel", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateWorkspaceGroup(context.Background(), a.ID, "äPFEL", nil); !errors.Is(err, ErrWorkspaceGroupNameTaken) {
+		t.Fatalf("Unicode duplicate: %v", err)
 	}
 	name := "MIXED"
 	if _, err := s.UpdateWorkspaceGroup(context.Background(), a.ID, g.ID, &name, nil); err != nil {

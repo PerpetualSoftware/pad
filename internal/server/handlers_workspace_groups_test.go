@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
@@ -26,9 +27,11 @@ type groupWire struct {
 
 func groupRequest(s *Server, u *models.User, method, path, body string, mods ...func(context.Context) context.Context) *httptest.ResponseRecorder {
 	r := httptest.NewRequest(method, path, strings.NewReader(body))
+	r.AddCookie(&http.Cookie{Name: csrfCookieName(s.secureCookies), Value: "workspace-groups-csrf"})
+	r.Header.Set("X-CSRF-Token", "workspace-groups-csrf")
 	ctx := r.Context()
 	if u != nil {
-		ctx = WithCurrentUser(ctx, u)
+		ctx = WithAPITokenAuth(WithCurrentUser(ctx, u))
 	}
 	for _, mod := range mods {
 		ctx = mod(ctx)
@@ -179,6 +182,19 @@ func TestWorkspaceGroupsOwnerIsolation(t *testing.T) {
 	if got := groupList(t, w.srv, b); len(got) != 3 || got[2].Name != "Private" {
 		t.Fatalf("shared state: %+v", got)
 	}
+	rr := groupRequest(w.srv, w.owner, "DELETE", groupsPath+"/"+g.ID, "")
+	groupStatus(t, rr, 200)
+	var deleted struct {
+		ID      string `json:"id"`
+		Deleted bool   `json:"deleted"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &deleted); err != nil {
+		t.Fatal(err)
+	}
+	if deleted.ID != g.ID || !deleted.Deleted {
+		t.Fatalf("delete response: %s", rr.Body.String())
+	}
+	groupStatus(t, groupRequest(w.srv, w.owner, "GET", groupsPath+"/"+g.ID, ""), 404)
 }
 
 func TestWorkspaceGroupsPrincipals(t *testing.T) {
@@ -311,7 +327,10 @@ func TestWorkspaceGroupsStrictBodiesAndReplacement(t *testing.T) {
 			})
 		}
 		for _, field := range []string{"name", "workspace_ids"} {
-			groupError(t, groupRequest(w.srv, w.owner, method, path, fmt.Sprintf(`{"%s":null}`, field)), 400, "validation_error", field, "required")
+			body := map[string]any{"name": "Original", "workspace_ids": []string{}}
+			body[field] = nil
+			raw, _ := json.Marshal(body)
+			groupError(t, groupRequest(w.srv, w.owner, method, path, string(raw)), 400, "validation_error", field, "required")
 		}
 	}
 	before := groupRequest(w.srv, w.owner, "GET", groupsPath+"/"+g.ID, "")
