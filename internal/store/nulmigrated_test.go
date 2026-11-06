@@ -35,10 +35,11 @@ func TestMigratedTablesCoversTheExport(t *testing.T) {
 		// TASK-3617 r4.
 		"Verifications": "item_verifications",
 		// TASK-4104 D2; its occurrences ride inside it (nestedTables).
-		"Schedules": "item_schedules",
+		"Schedules":       "item_schedules",
+		"ScheduleChanges": "schedule_changes",
 	}
 	// Tables carried inside another section rather than a section of their own.
-	nestedTables := map[string]bool{"schedule_occurrences": true}
+	nestedTables := map[string]bool{"schedule_occurrences": true, "schedule_occurrence_overrides": true}
 
 	migrated := MigratedTables()
 

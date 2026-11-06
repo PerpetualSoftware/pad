@@ -551,3 +551,43 @@ func TestPreflightRefusesInvalidUTF8(t *testing.T) {
 		}
 	})
 }
+
+func TestMigratePreflightRefusesCommitmentNUL(t *testing.T) {
+	for _, tc := range []struct{ table, column string }{{"schedule_changes", "reason"}, {"schedule_occurrence_overrides", "occurrence_key"}} {
+		t.Run(tc.table, func(t *testing.T) {
+			src, _ := migrationCommitment(t)
+			if err := preflightNULForMigration(src, "fixture.db"); err != nil {
+				t.Fatal(err)
+			}
+			rows, err := src.DB().Query(`SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name=?`, tc.table)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var names []string
+			for rows.Next() {
+				var n string
+				if err := rows.Scan(&n); err != nil {
+					t.Fatal(err)
+				}
+				names = append(names, n)
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+			rows.Close()
+			for _, n := range names {
+				if strings.HasPrefix(n, "pad_nul") {
+					if _, err := src.DB().Exec(`DROP TRIGGER "` + n + `"`); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if _, err := src.DB().Exec(`UPDATE `+tc.table+` SET `+tc.column+`=?`, "bad\x00value"); err != nil {
+				t.Fatal(err)
+			}
+			if err := preflightNULForMigration(src, "fixture.db"); err == nil {
+				t.Fatal("preflight accepted commitment NUL")
+			}
+		})
+	}
+}

@@ -200,6 +200,9 @@ func TestExportImportRoundTripSchedules(t *testing.T) {
 		}
 		out := map[string]models.ScheduleExport{}
 		for _, sc := range jsonRoundTrip(t, d).Schedules {
+			if id := reflect.ValueOf(&sc).Elem().FieldByName("ID"); id.IsValid() {
+				id.SetString("")
+			}
 			sc.ItemID = titles[sc.ItemID]
 			for i := range sc.Occurrences {
 				sc.Occurrences[i].CommentID = ""
