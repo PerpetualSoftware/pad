@@ -121,6 +121,12 @@ describe('a guard read that settles the Chat latch', () => {
 		landed({ paneDepth: 0, paneOwned: true });
 		c.openItemPaneByRef('TASK-9');
 		expect(goto).toHaveBeenCalledTimes(1);
+		// The one goto is the continuation's (TASK-5), not the gesture's own: a count
+		// alone would also pass if the latch released without running the continuation
+		// and the TASK-9 open then issued its own goto.
+		const target = String(vi.mocked(goto).mock.calls[0][0]);
+		expect(target).toContain('TASK-5');
+		expect(target).not.toContain('TASK-9');
 		c.clearPaneGo();
 	});
 

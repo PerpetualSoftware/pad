@@ -145,7 +145,11 @@ export const chatSurface = {
 		return this.target !== null;
 	},
 
-	/** A traversal Chat issued has not settled yet: no other history.go may be issued. */
+	/**
+	 * A traversal Chat issued has not settled yet: no other history.go may be issued.
+	 * Also true once, on the read that settles it and runs its parked continuation,
+	 * because that read may have started a navigation of its own.
+	 */
 	get traversing(): boolean {
 		return traversing();
 	},
