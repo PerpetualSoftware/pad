@@ -826,8 +826,14 @@ func (s *Store) updateScheduleAt(workspaceID, itemID string, upd models.Schedule
 	if err := s.setLegacyRolesTx(tx, cur.ID, kind, spec.Start.String(), dtend); err != nil {
 		return nil, err
 	}
-	if err := s.journalScheduleAfterTx(tx, cur.ID, "update", "", "", before, "system"); err != nil {
+	after, err := s.scheduleSnapshotTx(tx, cur.ID)
+	if err != nil {
 		return nil, err
+	}
+	if after != before {
+		if err := s.journalScheduleChangeTx(tx, cur.ID, "update", "", "", before, after, "system"); err != nil {
+			return nil, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("update schedule: %w", err)

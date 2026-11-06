@@ -477,3 +477,38 @@ func TestResolve_AllDayDoneActualMatchesImmutableWall(t *testing.T) {
 		t.Fatal("all-day completion lost actual provenance")
 	}
 }
+
+func TestResolve_ActualWithinTheCurrentSecondIsNotFuture(t *testing.T) {
+	f := newSchedFixture(t)
+	sc := f.create(t, dailyUTC)
+	nowT := rt("2026-10-30T10:00:00Z").Add(600 * time.Millisecond)
+	input := ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "done", Actor: "user"}
+	reported := rt("2026-10-30T10:00:00Z").Add(400 * time.Millisecond)
+	input.ActualDoneAt = &reported
+	if _, err := f.s.resolveOccurrenceAt(f.ws.ID, f.item.ID, input, nowT); err != nil {
+		t.Fatalf("an actual inside the current second was refused: %v", err)
+	}
+}
+
+func TestUpdateScheduleNoOpWritesNoJournalRow(t *testing.T) {
+	f := newSchedFixture(t)
+	sc := f.create(t, dailyUTC)
+	before := len(commitmentJournal(t, f.s, sc.ID))
+	same := sc.Audience
+	if _, err := f.s.UpdateSchedule(f.ws.ID, f.item.ID, models.ScheduleUpdate{Audience: &same}); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(commitmentJournal(t, f.s, sc.ID)); got != before {
+		t.Fatalf("a no-op update journaled: %d rows, want %d", got, before)
+	}
+	other := "human"
+	if sc.Audience == "human" {
+		other = "agent"
+	}
+	if _, err := f.s.UpdateSchedule(f.ws.ID, f.item.ID, models.ScheduleUpdate{Audience: &other}); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(commitmentJournal(t, f.s, sc.ID)); got != before+1 {
+		t.Fatalf("a real update did not journal: %d rows, want %d", got, before+1)
+	}
+}

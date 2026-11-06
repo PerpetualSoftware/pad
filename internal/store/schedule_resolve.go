@@ -107,10 +107,11 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 		if in.State != "done" {
 			return nil, fieldErr("actual_done_at", "combination", "actual completion is for done")
 		}
-		if in.ActualDoneAt.After(nowT) {
+		reported := in.ActualDoneAt.UTC().Truncate(time.Second)
+		if reported.After(nowT) {
 			return nil, fieldErr("actual_done_at", "range", "actual completion cannot be in the future")
 		}
-		actual, actualSource = in.ActualDoneAt.UTC().Truncate(time.Second), "reported"
+		actual, actualSource = reported, "reported"
 	}
 	switch in.State {
 	case "done", "skip":
