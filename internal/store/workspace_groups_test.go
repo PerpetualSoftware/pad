@@ -173,3 +173,32 @@ func TestWorkspaceGroupsConcurrentUserCap(t *testing.T) {
 		}
 	}
 }
+
+// The members to keep are read inside the write transaction, from the set of
+// workspaces the caller can see, so a concurrent edit cannot be undone by a
+// stale snapshot taken before it.
+func TestWorkspaceGroupsUpdateKeepsMembersOutsideVisible(t *testing.T) {
+	s := testStore(t)
+	u := tabsUser(t, s, "Keepvisible")
+	w1 := tabsWorkspace(t, s, u, "Keep one")
+	w2 := tabsWorkspace(t, s, u, "Keep two")
+	w3 := tabsWorkspace(t, s, u, "Keep three")
+	g, err := s.CreateWorkspaceGroup(context.Background(), u.ID, "Saved", []string{w1.ID, w2.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	visible := map[string]bool{w1.ID: true, w3.ID: true}
+	ids := []string{w3.ID}
+	got, err := s.UpdateWorkspaceGroup(context.Background(), u.ID, g.ID, nil, &ids, visible)
+	if err != nil {
+		t.Fatal(err)
+	}
+	have := map[string]bool{}
+	for _, id := range got.WorkspaceIDs {
+		have[id] = true
+	}
+	// w1 was visible and left out of the new list: gone. w2 was not visible: kept.
+	if len(have) != 2 || !have[w2.ID] || !have[w3.ID] {
+		t.Fatalf("members after replace: %+v", got.WorkspaceIDs)
+	}
+}

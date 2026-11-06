@@ -542,3 +542,19 @@ func TestWorkspaceGroupsPinnedTokenRefused(t *testing.T) {
 		t.Fatalf("the group changed or a pinned create landed: %+v", groups)
 	}
 }
+
+// A UUID is the same id in any letter case; the stored member is the canonical
+// lower-case spelling.
+func TestWorkspaceGroupsAcceptsUppercaseUUID(t *testing.T) {
+	w := newAgendaWorld(t, "tasks")
+	u := mustUser(t, w.srv, "group-upper@example.com", "groupupper", "")
+	if err := w.srv.store.AddWorkspaceMember(w.ws.ID, u.ID, "viewer"); err != nil {
+		t.Fatal(err)
+	}
+	rr := groupRequest(w.srv, u, "POST", groupsPath, `{"name":"Upper","workspace_ids":["`+strings.ToUpper(w.ws.ID)+`"]}`)
+	groupStatus(t, rr, 201)
+	got := groupDecode(t, rr)
+	if len(got.WorkspaceIDs) != 1 || got.WorkspaceIDs[0] != w.ws.ID {
+		t.Fatalf("members: %+v, want [%s]", got.WorkspaceIDs, w.ws.ID)
+	}
+}

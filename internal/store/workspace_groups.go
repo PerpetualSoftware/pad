@@ -230,9 +230,12 @@ func (s *Store) CreateWorkspaceGroup(ctx context.Context, userID, name string, i
 	return g, nil
 }
 
-// UpdateWorkspaceGroup renames the group and/or replaces its members. keep is
-// the stored members the caller cannot see; they stay when ids replaces the list.
-func (s *Store) UpdateWorkspaceGroup(ctx context.Context, userID, id string, name *string, ids *[]string, keep []string) (*models.WorkspaceGroup, error) {
+// UpdateWorkspaceGroup renames the group and/or replaces its members. visible
+// is the set of workspaces the caller can see; when ids replaces the list, the
+// stored members outside visible stay. They are read here, inside the
+// transaction, so a concurrent edit is never undone from a stale snapshot. A
+// nil visible keeps nothing.
+func (s *Store) UpdateWorkspaceGroup(ctx context.Context, userID, id string, name *string, ids *[]string, visible map[string]bool) (*models.WorkspaceGroup, error) {
 	tx, err := s.beginWorkspaceGroupWrite(ctx, userID)
 	if err != nil {
 		return nil, err
@@ -257,6 +260,14 @@ func (s *Store) UpdateWorkspaceGroup(ctx context.Context, userID, id string, nam
 		}
 	}
 	if ids != nil {
+		var keep []string
+		if visible != nil {
+			for _, wsID := range g.WorkspaceIDs {
+				if !visible[wsID] {
+					keep = append(keep, wsID)
+				}
+			}
+		}
 		if err := s.replaceWorkspaceGroupMembers(ctx, tx, userID, id, *ids, keep); err != nil {
 			return nil, err
 		}

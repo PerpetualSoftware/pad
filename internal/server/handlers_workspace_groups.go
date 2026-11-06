@@ -143,11 +143,14 @@ func (s *Server) validateWorkspaceGroupMembers(w http.ResponseWriter, r *http.Re
 	for _, ws := range admitted {
 		allowed[ws.ID] = true
 	}
-	for _, id := range *ids {
-		if _, err := uuid.Parse(id); err != nil || !allowed[id] {
+	for i, id := range *ids {
+		parsed, err := uuid.Parse(id)
+		if err != nil || !allowed[parsed.String()] {
 			writeWorkspaceGroupError(w, store.ErrWorkspaceGroupUnknownWorkspace)
 			return nil, false
 		}
+		// A UUID is one id in any letter case; store the canonical spelling.
+		(*ids)[i] = parsed.String()
 	}
 	return allowed, true
 }
@@ -281,8 +284,7 @@ func (s *Server) handleUpdateWorkspaceGroup(w http.ResponseWriter, r *http.Reque
 	}
 	// Resolve ownership before parsing a body so all missing group ids have
 	// the same refusal, even when a submitted body is invalid.
-	current, err := s.store.GetWorkspaceGroup(r.Context(), user.ID, id)
-	if err != nil {
+	if _, err := s.store.GetWorkspaceGroup(r.Context(), user.ID, id); err != nil {
 		writeWorkspaceGroupError(w, err)
 		return
 	}
@@ -294,17 +296,7 @@ func (s *Server) handleUpdateWorkspaceGroup(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
-	// Saved members the caller cannot see right now stay: the body can only
-	// name what the caller can see, so replacing the list must not erase them.
-	var keep []string
-	if ids != nil {
-		for _, wsID := range current.WorkspaceIDs {
-			if !admitted[wsID] {
-				keep = append(keep, wsID)
-			}
-		}
-	}
-	g, err := s.store.UpdateWorkspaceGroup(r.Context(), user.ID, id, name, ids, keep)
+	g, err := s.store.UpdateWorkspaceGroup(r.Context(), user.ID, id, name, ids, admitted)
 	if err != nil {
 		writeWorkspaceGroupError(w, err)
 		return
