@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount, tick, untrack } from 'svelte';
+	import { onNavigate } from '$app/navigation';
 	import { page } from '$app/state';
 	import ChatInboxView from '$lib/components/chat/ChatInboxView.svelte';
 	import ChatThreadView from '$lib/components/chat/ChatThreadView.svelte';
@@ -36,6 +37,16 @@
 		sidebarPx = Number.isFinite(v) ? v : 260;
 	}
 	onMount(measure);
+
+	// A page write held for the open Chat belongs to the page it was made on. A real
+	// navigation away (not Chat's own shallow ones) abandons it, and this runs
+	// BEFORE Kit commits and clears page.shallow, so the close that follows cannot
+	// flush a write for a page being left. A navigation the draft guard cancels
+	// never gets here, so that write survives. Query-only navigations keep it.
+	onNavigate((nav) => {
+		if (nav.shallow) return;
+		chatSurface.dropDeferredExcept(nav.to?.url.pathname ?? null);
+	});
 
 	const target = $derived(authStore.authenticated ? chatSurface.target : null);
 	// The console has no sidebar to subtract.

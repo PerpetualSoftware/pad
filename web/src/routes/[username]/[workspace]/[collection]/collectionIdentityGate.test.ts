@@ -81,6 +81,8 @@ identityGateSuite({
 			captureReturnFocus: 'f97edb43de71',
 			clearActiveView: 'e083431f7f1a',
 			defaultViewKey: '538c4231d0be',
+			// TASK-4315: pure key for a deferred write; reads page.url, writes nothing.
+			filtersWriteKey: '17c408771030',
 			fieldLabelFor: '97d4689b8359',
 			formatLabel: 'a65fe92ea9fc',
 			identityHeld: 'e4fd3989a707',
@@ -88,10 +90,15 @@ identityGateSuite({
 			installPaneTestHook: 'd5097f0db3e6',
 			// TASK-4240: re-reviewed; the calendar_date/calendar_end branch now calls the synchronous applyCalendarUrlParam (empty value ignored). No await, fence or state write moved.
 			loadUrlFilters: 'c371dfd4e69d',
+			// TASK-4315: the query updateUrlFilters writes, factored out; pure read of local state and page.url.
+			liveFilterQuery: '632eb66c3311',
 			pageIdentityHeld: 'a7bbe5de91a4',
 			runPendingNav: 'dfb7329e4a5e',
 			// TASK-4240: body unchanged; re-hashed by the paneUrlParams import line it names (applyCalendarUrlParam added). No await or fence moved.
-			updateUrlFilters: 'a2f10fea539a',
+			// TASK-4315: re-reviewed. It now holds itself behind chatSurface.deferPageWrite while Chat is open (the entry
+			// carries its own authStore.identityFence(), checked when it runs), and its query comes from liveFilterQuery().
+			// No await, commit or fence of this page moved.
+			updateUrlFilters: '4e40609d5a2c',
 			writeDefaultViewId: '79d9180fa119',
 		},
 		// TASK-3423: the restore-skip release used to be handed to

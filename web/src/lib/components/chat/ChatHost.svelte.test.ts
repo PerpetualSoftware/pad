@@ -13,6 +13,7 @@ const h = vi.hoisted(() => ({
 	sessions: vi.fn(),
 	goto: vi.fn(),
 	resync: vi.fn(),
+	onNavigate: vi.fn(),
 	chatOn: true
 }));
 
@@ -21,7 +22,12 @@ class NotFound extends Error {
 }
 
 vi.mock('$app/state', async () => await import('../../../test/mocks/app-state-reactive.svelte'));
-vi.mock('$app/navigation', () => ({ goto: h.goto, beforeNavigate: () => {}, afterNavigate: () => {} }));
+vi.mock('$app/navigation', () => ({
+	goto: h.goto,
+	beforeNavigate: () => {},
+	afterNavigate: () => {},
+	onNavigate: h.onNavigate
+}));
 vi.mock('$lib/api/client', () => ({
 	api: {
 		chat: {
@@ -82,7 +88,7 @@ import { chatInbox } from '$lib/stores/chatInbox.svelte';
 import { coveredPage, __resetCoveredPageForTests } from '$lib/stores/coveredPage.svelte';
 import { pushEscapeHandler, ESCAPE_PRIORITY, _resetEscapeStackForTests } from '$lib/stores/escapeStack';
 import { uiStore } from '$lib/stores/ui.svelte';
-import { chatSurface, __resetChatSurfaceForTests } from '$lib/stores/chatSurface.svelte';
+import { chatSurface, __resetChatSurfaceForTests, __checkChatSurfaceForTests } from '$lib/stores/chatSurface.svelte';
 
 Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' });
 
@@ -141,7 +147,7 @@ function setWidth(w: number) {
 }
 
 beforeEach(() => {
-	for (const f of [h.getConversation, h.markRead, h.listMessages, h.listConversations, h.sessions, h.goto, h.resync]) f.mockReset();
+	for (const f of [h.getConversation, h.markRead, h.listMessages, h.listConversations, h.sessions, h.goto, h.resync, h.onNavigate]) f.mockReset();
 	live.chatOn = true;
 	h.listConversations.mockResolvedValue({ conversations: [conv(3)], unread_total: 0 });
 	h.getConversation.mockResolvedValue(conv(3));
@@ -494,5 +500,68 @@ describe('dock or drawer follows the sidebar', () => {
 		await settle();
 		expect(container.querySelector('[role="dialog"]')).not.toBeNull();
 		if (!wasOpen) uiStore.closeSidebar();
+	});
+});
+
+describe('a real navigation drops a deferred page write (onNavigate)', () => {
+	type Nav = { shallow: boolean; to: { url: URL } | null };
+	const nav = (path: string | null, shallow = false): Nav => ({
+		shallow,
+		to: path === null ? null : { url: new URL(`http://localhost${path}`) }
+	});
+	const registered = () => h.onNavigate.mock.calls.at(-1)?.[0] as (n: Nav) => void;
+
+	function deferOne() {
+		openAt('/messages');
+		const run = vi.fn();
+		expect(chatSurface.deferPageWrite('k', run)).toBe(true);
+		return run;
+	}
+	function closeChat() {
+		page.shallow = null;
+		page.state = {};
+		__checkChatSurfaceForTests();
+	}
+
+	it('registers one onNavigate callback at mount', async () => {
+		render(ChatHost);
+		await settle();
+		expect(h.onNavigate).toHaveBeenCalledTimes(1);
+	});
+
+	it('a non-shallow navigation to another path drops the write', async () => {
+		const run = deferOne();
+		render(ChatHost);
+		await settle();
+		registered()(nav('/alice/ws/other'));
+		closeChat();
+		expect(run).not.toHaveBeenCalled();
+	});
+
+	it('a navigation to the same path keeps the write', async () => {
+		const run = deferOne();
+		render(ChatHost);
+		await settle();
+		registered()(nav('/alice/ws/tasks'));
+		closeChat();
+		expect(run).toHaveBeenCalledTimes(1);
+	});
+
+	it('a shallow navigation (Chat opening a thread) is ignored', async () => {
+		const run = deferOne();
+		render(ChatHost);
+		await settle();
+		registered()(nav('/messages/4', true));
+		closeChat();
+		expect(run).toHaveBeenCalledTimes(1);
+	});
+
+	it('a navigation with no target drops everything', async () => {
+		const run = deferOne();
+		render(ChatHost);
+		await settle();
+		registered()(nav(null));
+		closeChat();
+		expect(run).not.toHaveBeenCalled();
 	});
 });

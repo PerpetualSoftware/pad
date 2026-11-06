@@ -72,6 +72,74 @@ type GoLatch = {
 };
 let goLatch: GoLatch | null = null;
 
+// Page-owned URL writes (a board filter, a search, a view) made while Chat is
+// open. A shallow navigation or a replaceState under an open Chat would rewrite
+// Chat's own history entry, so the write waits here and runs once Chat has
+// closed, by whatever path (see onClosed). One entry per key: last wins.
+type Deferred = { pathname: string; fence: () => boolean; run: () => void | Promise<unknown> };
+const deferred = new Map<string, Deferred>();
+// Heals that cannot wait (a renamed slug, an aliasing ?item=): they close Chat
+// first and run after it, queued here in arrival order so a Close already in
+// flight cannot swallow them. They are never dropped.
+const heals: Array<() => void> = [];
+
+function runHeals(): void {
+	for (const h of heals.splice(0)) {
+		try {
+			h();
+		} catch (e) {
+			console.error('[chatSurface] heal failed', e);
+		}
+	}
+}
+
+/**
+ * Run the deferred writes (insertion order, each isolated), clearing the Map
+ * BEFORE running so nothing can run twice. An entry whose identity fence says the
+ * signed-in user changed is skipped. Returns the settle of any async writes, or
+ * null when none returned a promise.
+ */
+function flushDeferred(): Promise<unknown> | null {
+	const entries = [...deferred.values()];
+	deferred.clear();
+	const pending: Array<Promise<unknown>> = [];
+	for (const d of entries) {
+		if (!d.fence()) continue;
+		try {
+			const r = d.run();
+			if (r) pending.push(Promise.resolve(r));
+		} catch (e) {
+			console.error('[chatSurface] deferred write failed', e);
+		}
+	}
+	return pending.length ? Promise.allSettled(pending) : null;
+}
+
+/**
+ * Chat is closed and the page underneath is current. With heals queued, the
+ * parked continuation and the heals run, and the pending writes are dropped
+ * after the heals have looked: a heal retargets the URL the writes were aimed
+ * at and reads the live state itself (hasDeferredWrite). Otherwise the writes
+ * run first and the continuation after they settle, so a continuation that builds
+ * its URL from page.url sees the filters. True when a continuation or heal ran.
+ */
+function onClosed(then: (() => void) | null): boolean {
+	const run = () => {
+		then?.();
+		runHeals();
+	};
+	if (heals.length) {
+		run();
+		deferred.clear();
+		return true;
+	}
+	const w = flushDeferred();
+	if (!then) return false;
+	if (w) void w.then(run);
+	else run();
+	return true;
+}
+
 function surfaceKey(): string {
 	return `${page.shallow?.url.href ?? ''}|${page.state.chatDepth ?? 0}|${page.state.chatFromInbox ? 1 : 0}`;
 }
@@ -83,8 +151,12 @@ function releaseGo(): boolean {
 	clearTimeout(timer);
 	goLatch = null;
 	// Only a closed surface is the page the continuation was waiting for.
-	if (then && page.shallow === null) {
-		then();
+	if (page.shallow === null) return onClosed(then);
+	// The 3s fallback with Chat still open: a queued heal still happens, as the
+	// plain navigation it was before Chat handling (it replaces Chat's top entry).
+	// Deferred writes stay for the real close; a real navigation drops them.
+	if (heals.length) {
+		runHeals();
 		return true;
 	}
 	return false;
@@ -100,6 +172,15 @@ function settleGo(): boolean {
 // thread returns to the key Back left, and a continuation must run unprompted.
 // Browser only: the window is the source of the popstate, and the module is also
 // imported (never run) by the build's analysis in Node.
+// What the surface-key effect does. A user Back with no latch lands on the page
+// underneath with nothing to release, so what waited runs here; with a latch
+// live, releaseGo owns the close. At depth 2 the first Back leaves the inbox
+// open, so nothing runs until the second.
+function onSurfaceKeyMoved(): void {
+	settleGo();
+	if (!goLatch && page.shallow === null) onClosed(null);
+}
+
 if (browser) {
 	// Kit's own popstate listener may have applied the state before this one
 	// runs, so the effect has already looked and seen popped=false: settle here
@@ -112,7 +193,7 @@ if (browser) {
 	$effect.root(() => {
 		$effect(() => {
 			surfaceKey();
-			untrack(settleGo);
+			untrack(onSurfaceKeyMoved);
 		});
 	});
 }
@@ -216,6 +297,46 @@ export const chatSurface = {
 		return true;
 	},
 
+	/**
+	 * For a heal that cannot wait: close Chat, then run `run` on the page
+	 * underneath, or run it now when Chat is not open. Unlike closeThen it is never
+	 * dropped: behind a Close or a parked continuation it queues, and if the
+	 * traversal never lands (3s fallback, Chat still open) it runs as a plain
+	 * navigation. `run` must read page.url inside itself.
+	 */
+	runAfterClose(run: () => void): void {
+		if (!this.isOpen || this.depth <= 0) {
+			run();
+			return;
+		}
+		heals.push(run);
+		if (traversing() || goLatch) return;
+		if (this.isOpen && this.depth > 0) go(-this.depth);
+		else runHeals();
+	},
+
+	/**
+	 * Hold a page-owned URL write while Chat is open. True: it is held (last write
+	 * per `key` wins) and runs, live, once Chat closes by any path; the caller
+	 * returns. False: run it now. A real navigation to another path drops it (the
+	 * ChatHost onNavigate hook); so does a change of signed-in user.
+	 */
+	deferPageWrite(key: string, run: () => void | Promise<unknown>): boolean {
+		if (!this.isOpen || this.routeMode || !authStore.userId) return false;
+		deferred.set(key, { pathname: page.url.pathname, fence: authStore.identityFence(), run });
+		return true;
+	},
+
+	/** A write is held under `key` (a heal uses live state instead of the URL then). */
+	hasDeferredWrite(key: string): boolean {
+		return deferred.has(key);
+	},
+
+	/** Drop held writes made on any other path (a real navigation away); null drops all. */
+	dropDeferredExcept(pathname: string | null): void {
+		for (const [k, d] of deferred) if (d.pathname !== pathname) deferred.delete(k);
+	},
+
 	/** From a thread to the inbox: one entry back when the inbox is the entry below. */
 	back(): void {
 		if (this.target?.kind !== 'thread' || traversing()) return;
@@ -246,9 +367,11 @@ export const chatSurface = {
 export function __resetChatSurfaceForTests(): void {
 	if (goLatch) clearTimeout(goLatch.timer);
 	goLatch = null;
+	deferred.clear();
+	heals.length = 0;
 }
 
 /** Test seam: what the surface-key effect does when the state moves (jsdom's page is not reactive). */
 export function __checkChatSurfaceForTests(): void {
-	settleGo();
+	onSurfaceKeyMoved();
 }

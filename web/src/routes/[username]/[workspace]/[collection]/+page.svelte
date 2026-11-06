@@ -44,6 +44,7 @@
 	import Modal from '$lib/components/common/Modal.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
+	import { chatSurface } from '$lib/stores/chatSurface.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { planLaneOrder, persistReorder } from '$lib/collections/reorderPlan';
@@ -644,24 +645,31 @@
 	// The search box's debounced URL sync (TASK-2232); see scheduleSearchUrlSync.
 	const SEARCH_URL_SYNC_MS = 250;
 	let searchUrlSyncTimer: ReturnType<typeof setTimeout> | undefined;
-	function updateUrlFilters() {
+	// The board's filter/search/view state is local, so the URL is only a mirror of
+	// it. Under an open Chat that write waits (it would rewrite Chat's own history
+	// entry): the key is per page, and the write reads live state when it runs.
+	const filtersWriteKey = () => `${page.url.pathname}#filters`;
+	const liveFilterQuery = () =>
+		buildCollectionUrlParams(
+			{ viewMode, activeFilters, selectedTags, unparentedApplied, searchQuery, calendarConfig },
+			page.url
+		).toString();
+	function updateUrlFilters(): Promise<void> | undefined {
 		// An immediate sync carries the current search too, so it supersedes a
 		// pending debounced one.
 		clearTimeout(searchUrlSyncTimer);
 		searchUrlSyncTimer = undefined;
 		if (!collSlug || !wsSlug) return;
-		const params = buildCollectionUrlParams(
-			{ viewMode, activeFilters, selectedTags, unparentedApplied, searchQuery, calendarConfig },
-			page.url
-		);
-		const qs = params.toString();
+		// Runs again, live, once Chat has closed (chatSurface.deferPageWrite).
+		if (chatSurface.deferPageWrite(filtersWriteKey(), updateUrlFilters)) return;
+		const qs = liveFilterQuery();
 		const newUrl = `/${username}/${wsSlug}/${collSlug}${qs ? '?' + qs : ''}`;
 		// This same-page `goto` PRESERVES `?item=` (via buildCollectionUrlParams),
 		// so it MUST re-emit the pane depth+ownership stamp too — a bare
 		// replaceState would blank `page.state` and desync the close arithmetic
 		// (an owned pane would lose ownership and close via replaceState-delete
 		// instead of go(-1)). PLAN-2154 R13. Harmless no-op when no pane is open.
-		goto(newUrl, {
+		return goto(newUrl, {
 			replaceState: true,
 			reset: false,
 			state: currentPaneState(),

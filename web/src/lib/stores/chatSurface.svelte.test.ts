@@ -3,7 +3,7 @@
 // spy on goto and history.go; the real traversal is proven in e2e/chat-shell.spec.ts.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const h = vi.hoisted(() => ({ mobile: false, userId: 'u1' as string | null }));
+const h = vi.hoisted(() => ({ mobile: false, userId: 'u1' as string | null, epoch: 0 }));
 vi.mock('$app/navigation', () => ({ goto: vi.fn(async () => {}) }));
 vi.mock('$lib/stores/breakpoint.svelte', () => ({
 	viewport: {
@@ -16,6 +16,10 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 	authStore: {
 		get userId() {
 			return h.userId;
+		},
+		identityFence() {
+			const at = h.epoch;
+			return () => h.epoch === at;
 		}
 	}
 }));
@@ -35,6 +39,7 @@ function click(init: MouseEventInit = {}): MouseEvent {
 beforeEach(() => {
 	h.mobile = false;
 	h.userId = 'u1';
+	h.epoch = 0;
 	page.url = new URL('http://localhost/alice/ws/tasks');
 	page.state = {};
 	(page as { shallow: unknown }).shallow = null;
@@ -334,6 +339,309 @@ describe('closeThen: close Chat, then run what needs the page underneath', () =>
 		expect(chatSurface.closeThen(run)).toBe(true);
 		expect(go).toHaveBeenCalledTimes(1);
 		expect(run).not.toHaveBeenCalled();
+	});
+});
+
+describe('deferPageWrite: a page-owned URL write waits for Chat to close', () => {
+	const popstate = () => window.dispatchEvent(new PopStateEvent('popstate'));
+	const setShallow = (path: string | null, state: Record<string, unknown>) => {
+		(page as { shallow: unknown }).shallow = path === null ? null : asShallow(path);
+		page.state = state;
+	};
+	/** Chat open at `depth` over /alice/ws/tasks. */
+	const openAt = (depth: number) =>
+		setShallow(depth === 1 ? '/messages' : '/messages/4', depth === 1 ? { chatDepth: 1 } : { chatDepth: 2, chatFromInbox: true });
+	/** What Kit does when the traversal lands on the page underneath. */
+	const land = () => {
+		popstate();
+		setShallow(null, {});
+		__checkChatSurfaceForTests();
+	};
+
+	it('returns false and defers nothing when Chat is closed', () => {
+		const run = vi.fn();
+		expect(chatSurface.deferPageWrite('k', run)).toBe(false);
+		__checkChatSurfaceForTests();
+		expect(run).not.toHaveBeenCalled();
+	});
+
+	it('returns false in route mode (the page itself is /messages)', () => {
+		page.url = new URL('http://localhost/messages/3');
+		(page as { shallow: unknown }).shallow = asShallow('/messages/3');
+		expect(chatSurface.deferPageWrite('k', vi.fn())).toBe(false);
+	});
+
+	it('returns false without a signed-in identity', () => {
+		openAt(1);
+		h.userId = null;
+		expect(chatSurface.deferPageWrite('k', vi.fn())).toBe(false);
+	});
+
+	it('returns false on a phone, where Chat is a plain route and never a surface', () => {
+		h.mobile = true;
+		expect(chatSurface.deferPageWrite('k', vi.fn())).toBe(false);
+	});
+
+	it('holds the write while Chat is open and runs it once Chat has closed', () => {
+		vi.spyOn(history, 'go').mockImplementation(() => {});
+		openAt(1);
+		const run = vi.fn();
+		expect(chatSurface.deferPageWrite('k', run)).toBe(true);
+		chatSurface.close();
+		expect(run).not.toHaveBeenCalled();
+		land();
+		expect(run).toHaveBeenCalledTimes(1);
+		__checkChatSurfaceForTests();
+		expect(run).toHaveBeenCalledTimes(1);
+	});
+
+	it('last write wins per key; different keys all run, in insertion order', () => {
+		vi.spyOn(history, 'go').mockImplementation(() => {});
+		openAt(1);
+		const order: string[] = [];
+		chatSurface.deferPageWrite('a', () => void order.push('a1'));
+		chatSurface.deferPageWrite('b', () => void order.push('b'));
+		chatSurface.deferPageWrite('a', () => void order.push('a2'));
+		chatSurface.close();
+		land();
+		expect(order).toEqual(['a2', 'b']);
+	});
+
+	it('Close with a closeThen continuation: the write runs first, the continuation after it settles', async () => {
+		vi.spyOn(history, 'go').mockImplementation(() => {});
+		openAt(2);
+		const order: string[] = [];
+		let finish!: () => void;
+		chatSurface.deferPageWrite('k', () => {
+			order.push('write-start');
+			return new Promise<void>((r) => {
+				finish = () => {
+					order.push('write-done');
+					r();
+				};
+			});
+		});
+		expect(chatSurface.closeThen(() => void order.push('continuation'))).toBe(true);
+		land();
+		expect(order).toEqual(['write-start']);
+		finish();
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(order).toEqual(['write-start', 'write-done', 'continuation']);
+	});
+
+	it('closeThen with nothing deferred still runs the continuation synchronously', () => {
+		vi.spyOn(history, 'go').mockImplementation(() => {});
+		openAt(1);
+		const run = vi.fn();
+		chatSurface.closeThen(run);
+		land();
+		expect(run).toHaveBeenCalledTimes(1);
+	});
+
+	it('browser Back with no latch flushes (depth 1)', () => {
+		openAt(1);
+		const run = vi.fn();
+		chatSurface.deferPageWrite('k', run);
+		setShallow(null, {});
+		__checkChatSurfaceForTests();
+		expect(run).toHaveBeenCalledTimes(1);
+	});
+
+	it('browser Back at depth 2: the first Back leaves it pending, the second lands it', () => {
+		openAt(2);
+		const run = vi.fn();
+		chatSurface.deferPageWrite('k', run);
+		setShallow('/messages', { chatDepth: 1 });
+		__checkChatSurfaceForTests();
+		expect(run).not.toHaveBeenCalled();
+		setShallow(null, {});
+		__checkChatSurfaceForTests();
+		expect(run).toHaveBeenCalledTimes(1);
+	});
+
+	it('a live latch owns the flush: the effect does not run it ahead of the continuation', () => {
+		vi.spyOn(history, 'go').mockImplementation(() => {});
+		openAt(1);
+		const order: string[] = [];
+		chatSurface.deferPageWrite('k', () => void order.push('write'));
+		chatSurface.closeThen(() => void order.push('continuation'));
+		// Kit moved the state first; the latch has not seen its popstate yet.
+		setShallow(null, {});
+		__checkChatSurfaceForTests();
+		expect(order).toEqual([]);
+		popstate();
+		expect(order).toEqual(['write', 'continuation']);
+	});
+
+	it('dropDeferredExcept drops other-path entries and keeps same-path ones', () => {
+		vi.spyOn(history, 'go').mockImplementation(() => {});
+		openAt(1);
+		const here = vi.fn();
+		const elsewhere = vi.fn();
+		chatSurface.deferPageWrite('k', here);
+		page.url = new URL('http://localhost/alice/ws/other');
+		chatSurface.deferPageWrite('k2', elsewhere);
+		chatSurface.dropDeferredExcept('/alice/ws/other');
+		setShallow(null, {});
+		__checkChatSurfaceForTests();
+		expect(here).not.toHaveBeenCalled();
+		expect(elsewhere).toHaveBeenCalledTimes(1);
+	});
+
+	it('dropDeferredExcept(null) drops everything', () => {
+		openAt(1);
+		const run = vi.fn();
+		chatSurface.deferPageWrite('k', run);
+		chatSurface.dropDeferredExcept(null);
+		setShallow(null, {});
+		__checkChatSurfaceForTests();
+		expect(run).not.toHaveBeenCalled();
+	});
+
+	it('an identity change before Chat closes drops the write', () => {
+		openAt(1);
+		const run = vi.fn();
+		chatSurface.deferPageWrite('k', run);
+		h.epoch++;
+		setShallow(null, {});
+		__checkChatSurfaceForTests();
+		expect(run).not.toHaveBeenCalled();
+	});
+
+	it('a throwing write stops neither the others nor the continuation, and never runs twice', () => {
+		vi.spyOn(history, 'go').mockImplementation(() => {});
+		openAt(1);
+		const second = vi.fn();
+		const cont = vi.fn();
+		chatSurface.deferPageWrite('a', () => {
+			throw new Error('boom');
+		});
+		chatSurface.deferPageWrite('b', second);
+		chatSurface.closeThen(cont);
+		land();
+		expect(second).toHaveBeenCalledTimes(1);
+		expect(cont).toHaveBeenCalledTimes(1);
+		__checkChatSurfaceForTests();
+		popstate();
+		expect(second).toHaveBeenCalledTimes(1);
+	});
+
+	it('the fallback release with the surface still open keeps the write for the real close', () => {
+		vi.useFakeTimers();
+		vi.spyOn(history, 'go').mockImplementation(() => {});
+		openAt(1);
+		const run = vi.fn();
+		chatSurface.deferPageWrite('k', run);
+		chatSurface.close();
+		vi.advanceTimersByTime(3100);
+		expect(run).not.toHaveBeenCalled();
+		setShallow(null, {});
+		__checkChatSurfaceForTests();
+		expect(run).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe('runAfterClose: a heal that cannot wait is never lost', () => {
+	const popstate = () => window.dispatchEvent(new PopStateEvent('popstate'));
+	const openAt1 = () => {
+		(page as { shallow: unknown }).shallow = asShallow('/messages');
+		page.state = { chatDepth: 1 };
+	};
+	const land = () => {
+		popstate();
+		(page as { shallow: unknown }).shallow = null;
+		page.state = {};
+		__checkChatSurfaceForTests();
+	};
+
+	it('mid-Close (latch occupied, no continuation), the heal chains onto the Close in flight', () => {
+		const go = vi.spyOn(history, 'go').mockImplementation(() => {});
+		openAt1();
+		chatSurface.close();
+		const heal = vi.fn();
+		chatSurface.runAfterClose(heal);
+		expect(go).toHaveBeenCalledTimes(1);
+		expect(heal).not.toHaveBeenCalled();
+		land();
+		expect(heal).toHaveBeenCalledTimes(1);
+	});
+
+	it('behind a pane continuation already parked: both run, the pane first', () => {
+		vi.spyOn(history, 'go').mockImplementation(() => {});
+		openAt1();
+		const order: string[] = [];
+		chatSurface.closeThen(() => void order.push('pane'));
+		chatSurface.runAfterClose(() => void order.push('heal'));
+		land();
+		expect(order).toEqual(['pane', 'heal']);
+	});
+
+	it('several heals run in the order they arrived, once each', () => {
+		vi.spyOn(history, 'go').mockImplementation(() => {});
+		openAt1();
+		const order: string[] = [];
+		chatSurface.runAfterClose(() => void order.push('a'));
+		chatSurface.runAfterClose(() => void order.push('b'));
+		land();
+		__checkChatSurfaceForTests();
+		expect(order).toEqual(['a', 'b']);
+	});
+
+	it('the fallback with the surface still open runs the heal as a plain navigation (today)', () => {
+		vi.useFakeTimers();
+		vi.spyOn(history, 'go').mockImplementation(() => {});
+		openAt1();
+		const heal = vi.fn();
+		chatSurface.runAfterClose(heal);
+		vi.advanceTimersByTime(3100);
+		expect(heal).toHaveBeenCalledTimes(1);
+		// and it is not run a second time when the surface does close
+		land();
+		expect(heal).toHaveBeenCalledTimes(1);
+	});
+
+	it('a throwing heal does not stop the next one', () => {
+		vi.spyOn(history, 'go').mockImplementation(() => {});
+		openAt1();
+		const next = vi.fn();
+		chatSurface.runAfterClose(() => {
+			throw new Error('boom');
+		});
+		chatSurface.runAfterClose(next);
+		land();
+		expect(next).toHaveBeenCalledTimes(1);
+	});
+
+	it('a heal supersedes pending page writes: they would land on the dead URL', () => {
+		vi.spyOn(history, 'go').mockImplementation(() => {});
+		openAt1();
+		const write = vi.fn();
+		const seen: boolean[] = [];
+		chatSurface.deferPageWrite('k', write);
+		chatSurface.runAfterClose(() => void seen.push(chatSurface.hasDeferredWrite('k')));
+		land();
+		// the heal could still read that a write was pending (to use live state), then it was dropped
+		expect(seen).toEqual([true]);
+		expect(write).not.toHaveBeenCalled();
+		expect(chatSurface.hasDeferredWrite('k')).toBe(false);
+	});
+
+	it('runAfterClose runs now when Chat is closed', () => {
+		const heal = vi.fn();
+		chatSurface.runAfterClose(heal);
+		expect(heal).toHaveBeenCalledTimes(1);
+	});
+
+	it('runAfterClose with Chat open closes first and runs after the landing', () => {
+		const go = vi.spyOn(history, 'go').mockImplementation(() => {});
+		openAt1();
+		const heal = vi.fn();
+		chatSurface.runAfterClose(heal);
+		expect(go).toHaveBeenCalledWith(-1);
+		expect(heal).not.toHaveBeenCalled();
+		land();
+		expect(heal).toHaveBeenCalledTimes(1);
 	});
 });
 
