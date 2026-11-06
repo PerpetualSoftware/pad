@@ -31,8 +31,39 @@ const NEEDS: Partial<Record<SiteKind, RegExp>> = {
 	deferred: /chatSurface\.deferPageWrite\(/,
 	'close-then': /chatSurface\.closeThen\(/,
 	'after-close': /chatSurface\.runAfterClose\(/,
-	'page-location': /\b(currentHref|currentSearch|currentPathSearch|setReturnPathProvider)\b/
+	'page-location': /\b(currentHref|currentSearch|currentPathSearch|setReturnPathProvider|returnPathProvider)\b/
 };
+
+/**
+ * The text of the top-level function, effect or handler a line sits in: the nearest line above it
+ * indented at most one tab (the script's or the factory's top level) that opens a block, through the
+ * line that closes it at that indent. A line outside any such block (markup, module scope) gets the
+ * whole file: the check can then only say the file carries the call, which is the limit of this test.
+ */
+function enclosing(lines: string[], idx: number): string {
+	const indent = (l: string) => l.length - l.trimStart().length;
+	const tabs = (l: string) => (l.match(/^\t*/) ?? [''])[0].length;
+	if (tabs(lines[idx]) <= 1) return lines.slice(idx, idx + 1).join('\n');
+	let start = -1;
+	for (let i = idx - 1; i >= 0; i--) {
+		const t = lines[i];
+		if (t.trim() === '') continue;
+		if (tabs(t) <= 1 && /[{(>]\s*$/.test(t.trimEnd()) && indent(t) <= 1) {
+			start = i;
+			break;
+		}
+	}
+	if (start < 0) return lines.join('\n');
+	const base = tabs(lines[start]);
+	let end = lines.length - 1;
+	for (let j = start + 1; j < lines.length; j++) {
+		if (tabs(lines[j]) <= base && /^[\t ]*[})\]]/.test(lines[j])) {
+			end = j;
+			break;
+		}
+	}
+	return lines.slice(start, end + 1).join('\n');
+}
 
 describe('the scanner', () => {
 	it('sees code and skips full-line comments and imports', () => {
@@ -70,13 +101,38 @@ describe('every history or address-bar site is classified (TASK-4315)', () => {
 		expect(bad).toEqual([]);
 	});
 
-	it('a handled row names a file that still carries the call that handles it', () => {
+	it('a reason is not a shared prefix with an empty tail, and is not cut off', () => {
+		// "no Chat host: ." passes a length check on its prefix alone. What follows the last colon is
+		// the part that is about THIS site, so it must say something.
+		const tail = (why: string) => why.slice(why.lastIndexOf(':') + 1).replace(/[.\s]/g, '');
+		const bad = SITES.filter((s) => tail(s.why).length < 10 || s.why.trimEnd().endsWith('...')).map((s) => `${s.file}  ${s.text}  =>  ${s.why.slice(-60)}`);
+		expect(bad).toEqual([]);
+	});
+
+	it('a reason cites no line numbers (they rot); name the code instead', () => {
+		const LINE_REF = /\blines?\s+\d|\.(?:svelte|ts):\d|(?<![\w.$-])\d{2,4}(?![\w.$%-])\s+(?:can|is|are|runs)\b|\bat\s+\d{2,4}\b|\(\d{2,4}\)|\bsibling read at/;
+		const bad = SITES.filter((s) => LINE_REF.test(s.why)).map((s) => `${s.file}  ${s.text}`);
+		expect(bad).toEqual([]);
+	});
+
+	it('a handled row names a call that sits in the same function as the site', () => {
 		const missing: string[] = [];
 		for (const s of SITES) {
 			const need = NEEDS[s.kind];
-			if (need && !need.test(readFileSync(SRC + s.file, 'utf8'))) missing.push(`${s.file} (${s.kind})`);
+			if (!need) continue;
+			const lines = readFileSync(SRC + s.file, 'utf8').split('\n');
+			const at = lines.map((l, i) => (l.trim() === s.text ? i : -1)).filter((i) => i >= 0);
+			// How many of the identical lines have the call in their own function: at least the row's n.
+			const good = at.filter((i) => need.test(enclosing(lines, i))).length;
+			if (good < s.n) missing.push(`${s.file} (${s.kind}): ${s.text}`);
 		}
-		expect([...new Set(missing)], 'the treatment was removed but the row still claims it').toEqual([]);
+		expect(missing, 'the treatment is not in the same function as the site the row claims it for').toEqual([]);
+	});
+
+	it('enclosing() finds the top-level function of a site, and nothing wider', () => {
+		const src = ['<script>', '\tfunction a() {', '\t\tif (x) {', '\t\t\tgoto(1);', '\t\t}', '\t}', '\tfunction b() {', '\t\tchatSurface.closeThen(f);', '\t}', '</script>'];
+		expect(enclosing(src, 3)).toContain('goto(1)');
+		expect(enclosing(src, 3)).not.toContain('closeThen');
 	});
 
 	it('the shapes that bit before are all handled, not waved through', () => {
