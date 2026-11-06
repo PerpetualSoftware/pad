@@ -1523,18 +1523,16 @@
 			// return to a URL that 404s (the item-route
 			// healer already replaces). With Chat open it closes first, then replaces.
 			chatSurface.runAfterClose(() => {
-				return goto(`/${username}/${ws}/${target}${healSearch()}`, { replaceState: true }).then(
-					() => true,
-					() => {
-						// A cancelled/failed navigation (navigate-away guard, a
-						// racing nav) must not leave renameNav pointing at a slug
-						// we never reached — a poisoned tracker would veto every
-						// future sync heal. Reset only if it is
-						// still ours; a newer rename may have re-aimed it.
-						if (renameNav === target) renameNav = null;
-						return false;
-					}
-				);
+				return navigated(goto(`/${username}/${ws}/${target}${healSearch()}`, { replaceState: true })).then((ok) => {
+					// A cancelled/failed navigation (navigate-away guard, a
+					// racing nav; a guard cancels without rejecting) must not
+					// leave renameNav pointing at a slug we never reached — a
+					// poisoned tracker would veto every future sync heal.
+					// Reset only if it is still ours; a newer rename may have
+					// re-aimed it.
+					if (!ok && renameNav === target) renameNav = null;
+					return ok;
+				});
 			});
 		} catch {
 			// Best-effort heal — the next sync pass retries.

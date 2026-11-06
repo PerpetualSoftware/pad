@@ -15,7 +15,7 @@ identityGateSuite({
 	table: {
 		asyncFunctions: {
 			reconcileRouteCollectionSlug: {
-				reviewed: 'a0b8b1a44708',
+				reviewed: '759629cd7cca',
 				why: 'the route (ws, slug), then identityHeld(epochAtEntry), then the collection id and navigating.to, before the retag, the sidebar refresh and the goto',
 			},
 			deltaSync: { reviewed: '411fdaffa22b', why: 'identityHeld(epochAtEntry) after the reconcile; the page commits nothing itself' },
@@ -52,8 +52,7 @@ identityGateSuite({
 		],
 		markup: [],
 		continuations: [
-			{ call: /replaceState: true \}\)\.then\(\s*$/, body: /^\(\) => true$/, in: 'chatSurface.runAfterClose(…)', why: 'rename navigation success arm: reports true to the surface, commits nothing', reviewed: '50f5321ad3ce' },
-			{ call: /replaceState: true \}\)\.then\([\s\S]*,\s*$/, body: /renameNav = null/, in: 'chatSurface.runAfterClose(…)', why: 'rename navigation failure: clears renameNav only if it still holds this target, and reports false to the surface', reviewed: '4ff9728ab04b' },
+			{ call: /replaceState: true \}\)\)\.then\($/, body: /renameNav = null/, in: 'chatSurface.runAfterClose(…)', why: 'rename navigation outcome: when it did not commit (failed, or a guard cancelled it) clears renameNav only if it still holds this target; reports the outcome to the surface', reviewed: 'fbd3c8f94338' },
 			{ call: /plansProgress\(ws\)\.catch\($/, body: /./, why: 'refreshProgress fetch: a failure reads as none; commits nothing', reviewed: 'd4d3603af105' },
 			{ call: /api\.views\.list\(ws, coll\)\.catch\($/, body: /./, why: 'loadCollection views fetch: a failure reads as none; commits nothing', reviewed: 'b95fa0909634' },
 			{ call: /handleStatusChange\(item, value, 'priority'\)\.catch\($/, body: /./, why: 'card priority write (TASK-2214): the rejection was already toasted inside handleStatusChange, which fences its own commits; the catch commits nothing', reviewed: '8405d65b80af' },

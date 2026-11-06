@@ -30,7 +30,7 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 
 import { goto } from '$app/navigation';
 import { page } from '$app/state';
-import { chatSurface, STRIP_NEW_KEY, parseChatPath, parseThreadNumber, __resetChatSurfaceForTests, __checkChatSurfaceForTests } from './chatSurface.svelte';
+import { chatSurface, navigated, STRIP_NEW_KEY, parseChatPath, parseThreadNumber, __resetChatSurfaceForTests, __checkChatSurfaceForTests } from './chatSurface.svelte';
 
 const gotoMock = vi.mocked(goto);
 const asShallow = (path: string) =>
@@ -940,8 +940,8 @@ describe('round 7: a serial flush follows the page, and the chain is total and b
 		chatSurface.close();
 		landUnder();
 		// ChatHost onNavigate for a real navigation to another page
+		// page.url stays on the SAME path: only the pruning of the running queue can stop b
 		chatSurface.dropDeferredExcept('/alice/ws/other');
-		page.url = new URL('http://localhost/alice/ws/other');
 		finish();
 		await flush();
 		expect(b).not.toHaveBeenCalled();
@@ -1027,13 +1027,26 @@ describe('round 7: a heal drops writes only when it reports that it navigated', 
 		let done!: () => void;
 		setSurface('/messages', { chatDepth: 1 });
 		const write = vi.fn();
+		const later = vi.fn();
 		chatSurface.deferPageWrite('k', write);
 		chatSurface.runAfterClose((() => new Promise<boolean>((r) => (done = () => r(true)))) as never);
+		expect(chatSurface.hasDeferredWrite('k')).toBe(true);
 		landUnder();
 		await flush();
+		// still held while the heal's navigation is pending
+		expect(chatSurface.hasDeferredWrite('k')).toBe(true);
 		expect(write).not.toHaveBeenCalled();
 		done();
 		await flush();
+		expect(chatSurface.hasDeferredWrite('k')).toBe(false);
+		expect(write).not.toHaveBeenCalled();
+		// a later flush has nothing of it to run
+		setSurface('/messages', { chatDepth: 1 });
+		chatSurface.deferPageWrite('later', later);
+		chatSurface.close();
+		landUnder();
+		await flush();
+		expect(later).toHaveBeenCalledTimes(1);
 		expect(write).not.toHaveBeenCalled();
 	});
 	it('a promise resolving false keeps the write', async () =>
@@ -1134,5 +1147,65 @@ describe('handleLinkClick', () => {
 		e.preventDefault();
 		chatSurface.handleLinkClick(e, '/messages/9');
 		expect(gotoMock).not.toHaveBeenCalled();
+	});
+});
+
+describe('round 8: a heal reports a navigation only when it committed', () => {
+	beforeEach(() => {
+		vi.spyOn(history, 'go').mockImplementation(() => {});
+		page.url = new URL('http://localhost/alice/ws/tasks');
+	});
+	const runNav = async (nav: () => Promise<unknown>) => {
+		setSurface('/messages', { chatDepth: 1 });
+		const write = vi.fn();
+		chatSurface.deferPageWrite('k', write);
+		chatSurface.runAfterClose(() => navigated(nav()));
+		landUnder();
+		await flush();
+		return write;
+	};
+
+	it('a goto a guard cancelled (resolves, URL unchanged) keeps the held write', async () => {
+		expect(await runNav(async () => {})).toHaveBeenCalledTimes(1);
+	});
+	it('a goto that committed (URL moved) drops the held write', async () => {
+		expect(
+			await runNav(async () => {
+				await Promise.resolve(); // goto commits after it was called, never synchronously
+				page.url = new URL('http://localhost/alice/ws/tasks?new=0');
+			})
+		).not.toHaveBeenCalled();
+	});
+	it('a rejected goto keeps the held write', async () => {
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		expect(await runNav(() => Promise.reject(new Error('nav failed')))).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe('round 8: a heal that never settles cannot hold the flush', () => {
+	beforeEach(() => {
+		vi.spyOn(history, 'go').mockImplementation(() => {});
+		page.url = new URL('http://localhost/alice/ws/tasks');
+	});
+
+	it('after 3s the held writes land, and the next close flushes again', async () => {
+		vi.useFakeTimers();
+		setSurface('/messages', { chatDepth: 1 });
+		const write = vi.fn();
+		chatSurface.deferPageWrite('k', write);
+		chatSurface.runAfterClose((() => new Promise<boolean>(() => {})) as never);
+		landUnder();
+		await vi.advanceTimersByTimeAsync(2900);
+		expect(write).not.toHaveBeenCalled();
+		await vi.advanceTimersByTimeAsync(200);
+		expect(write).toHaveBeenCalledTimes(1);
+		// healWait is released: a later close flushes its writes
+		const next = vi.fn();
+		setSurface('/messages', { chatDepth: 1 });
+		chatSurface.deferPageWrite('n', next);
+		chatSurface.close();
+		landUnder();
+		await vi.advanceTimersByTimeAsync(10);
+		expect(next).toHaveBeenCalledTimes(1);
 	});
 });

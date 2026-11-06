@@ -625,20 +625,19 @@
 			// A dead slug cannot wait: with Chat open this closes it first (never dropped).
 			chatSurface.runAfterClose(() => {
 				if (!identityHeld(identity)) return false;
-				return goto(`/${username}/${ws}/${target}/${itemRef}${chatSurface.searchForHeal(currentSearch())}`, {
-					replaceState: true,
-					reset: false,
-				}).then(
-					() => true,
-					() => {
-						// A failed/cancelled navigation must not leave the override
-						// bridging to a URL we never reached. Identity compare (this
-						// heal's own bridge object) so a cancelled older
-						// navigation can't clear a newer bridge to the same slug.
-						if (renameOverride === bridge) renameOverride = null;
-						return false;
-					}
-				);
+				return navigated(
+					goto(`/${username}/${ws}/${target}/${itemRef}${chatSurface.searchForHeal(currentSearch())}`, {
+						replaceState: true,
+						reset: false,
+					})
+				).then((ok) => {
+					// A failed/cancelled navigation (a guard cancels without rejecting)
+					// must not leave the override bridging to a URL we never reached.
+					// Identity compare (this heal's own bridge object) so a cancelled
+					// older navigation can't clear a newer bridge to the same slug.
+					if (!ok && renameOverride === bridge) renameOverride = null;
+					return ok;
+				});
 			});
 		} catch {
 			// Best-effort heal — the next sync pass retries.

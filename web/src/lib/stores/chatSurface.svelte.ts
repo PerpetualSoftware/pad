@@ -204,8 +204,11 @@ function onClosed(then: (() => void) | null): boolean {
 		};
 		if (Array.isArray(acted)) finish(acted);
 		else {
+			// Bounded: a heal whose load never answers must not hold the writes forever.
+			// Past the bound nothing is known to have navigated, so none are dropped.
 			healWait++;
-			void acted.then((paths) => {
+			let paths: string[] = [];
+			void settledOrBounded(acted.then((p) => void (paths = p))).then(() => {
 				healWait--;
 				finish(paths);
 			});
@@ -490,10 +493,18 @@ export function __checkChatSurfaceForTests(): void {
 	onSurfaceKeyMoved();
 }
 
-/** A heal's outcome from its navigation: true once it settled, false when it failed or was cancelled. */
-export function navigated(p: Promise<unknown>): Promise<boolean> {
+const urlKey = () => page.url.pathname + page.url.search;
+
+/**
+ * A heal's outcome from its navigation: true only when the navigation committed.
+ * Kit's goto RESOLVES, it does not reject, when a beforeNavigate guard cancels it, so
+ * a settled promise is not enough: the URL must have moved from where it was when the
+ * heal started. Call it on the goto the heal just issued (the URL read is synchronous).
+ * False when it failed, was cancelled, or went nowhere.
+ */
+export function navigated(p: Promise<unknown>, before: string = urlKey()): Promise<boolean> {
 	return p.then(
-		() => true,
+		() => urlKey() !== before,
 		() => false
 	);
 }

@@ -98,7 +98,7 @@ const COLLAB_SAVE_CODE =
 const ASYNC_FUNCTIONS: Record<string, Row> = {
 	adoptOrConvergeToLiveCollection: { reviewed: 'e0c289c82bdd', why: 'myGen against loadGeneration before adopting' },
 	// TASK-4315: re-reviewed. The heal's goto moved into chatSurface.runAfterClose (runs at once with Chat closed, else after Chat closes); the identity checks and the renameOverride claim still precede it.
-	reconcileCollectionSegment: { reviewed: '753a11f0daf7', why: 'identityHeld after the list fetch; retags and navigates only under it' },
+	reconcileCollectionSegment: { reviewed: 'a956dbfbae5e', why: 'identityHeld after the list fetch; retags and navigates only under it' },
 	jumpToSection: { reviewed: '761928f83944', why: 'switches this instance\'s tab and scrolls to an anchor', may: ['document.getElementById', 'document.getElementById(anchorId).scrollIntoView'] },
 	ensureGraphComp: { reviewed: 'c1565cfb8a18', why: 'lazy-loads a component module into this instance', may: ['ItemGraphComp', 'graphLoadError'] },
 	// TASK-3537: re-reviewed; this unit's body is unchanged. It re-hashed because the $lib/types import line it names lost getTerminalOptions (the dead terminalStatuses feed).
@@ -265,18 +265,12 @@ const MARKUP: SignedRow[] = [
 const CONTINUATIONS: SignedRow[] = [
 	{
 		// SvelteKit 3 replaced goto's noScroll with reset: false (TASK-3423).
-		call: /\$\{itemRef\}\$\{chatSurface\.searchForHeal\(currentSearch\(\)\)\}`, \{ replaceState: true, reset: false, \}\)\.then\(\s*$/,
-		body: /^\(\) => true$/,
-		in: 'chatSurface.runAfterClose(…)',
-		code: '() => true',
-		why: 'rename heal success arm: reports true to the surface, commits nothing', reviewed: '0eebbd487da1',
-	},
-	{
-		call: /\$\{itemRef\}\$\{chatSurface\.searchForHeal\(currentSearch\(\)\)\}`, \{ replaceState: true, reset: false, \}\)\.then\([\s\S]*,\s*$/,
+		call: /\$\{itemRef\}\$\{chatSurface\.searchForHeal\(currentSearch\(\)\)\}`, \{ replaceState: true, reset: false, \}\)\s*\)\.then\($/,
 		body: /renameOverride = null/,
 		in: 'chatSurface.runAfterClose(…)',
-		code: '() => { if (renameOverride === bridge) renameOverride = null; return false; }',
-		why: 'rename heal failure: clears only the bridge object this heal installed, and reports false to the surface', reviewed: '334ccb8fcfbd',
+		code: '(ok) => { if (!ok && renameOverride === bridge) renameOverride = null; return ok; }',
+		why: 'rename heal outcome: when the navigation did not commit (failed, or a guard cancelled it), clears only the bridge object this heal installed; reports the outcome to the surface',
+		reviewed: 'fb80ea895495',
 		may: ['renameOverride'],
 	},
 	// TASK-3537: re-reviewed; this continuation's body is unchanged. It re-hashed because the $lib/types import line it names lost getTerminalOptions (the dead terminalStatuses feed).
@@ -782,15 +776,15 @@ describe('ItemDetail AST guard: every edit in the first fixture set is refused',
 		// a row could re-point by a move.
 		{
 			id: 'the rename heal clears the override without its bridge compare',
-			subs: [['\t\t\t\tif (renameOverride === bridge) renameOverride = null;\n', '\t\t\t\trenameOverride = null;\n']],
+			subs: [['\t\t\t\t\tif (!ok && renameOverride === bridge) renameOverride = null;\n', '\t\t\t\t\tif (!ok) renameOverride = null;\n']],
 			refuses: ['matches 0 table rows'],
 		},
 		{
 			id: "the rename heal's catch moves onto the SSE rename navigation",
 			subs: [
 				[
-					"\t\t\t\t\treset: false,\n\t\t\t\t}).then(\n\t\t\t\t\t() => true,\n\t\t\t\t\t() => {\n\t\t\t\t\t\t// A failed/cancelled navigation must not leave the override\n\t\t\t\t\t\t// bridging to a URL we never reached. Identity compare (this\n\t\t\t\t\t\t// heal's own bridge object) so a cancelled older\n\t\t\t\t\t\t// navigation can't clear a newer bridge to the same slug.\n\t\t\t\t\t\tif (renameOverride === bridge) renameOverride = null;\n\t\t\t\t\t\treturn false;\n\t\t\t\t\t}\n\t\t\t\t);\n",
-					'\t\t\t\t\treset: false,\n\t\t\t\t});\n',
+					"\t\t\t\t\t\treset: false,\n\t\t\t\t\t})\n\t\t\t\t).then((ok) => {\n\t\t\t\t\t// A failed/cancelled navigation (a guard cancels without rejecting)\n\t\t\t\t\t// must not leave the override bridging to a URL we never reached.\n\t\t\t\t\t// Identity compare (this heal's own bridge object) so a cancelled\n\t\t\t\t\t// older navigation can't clear a newer bridge to the same slug.\n\t\t\t\t\tif (!ok && renameOverride === bridge) renameOverride = null;\n\t\t\t\t\treturn ok;\n\t\t\t\t});\n",
+					'\t\t\t\t\t\treset: false,\n\t\t\t\t\t})\n\t\t\t\t);\n',
 				],
 				[
 					'\t\t\t\t\t\t\t\t\treset: false,\n\t\t\t\t\t\t\t\t})\n',
