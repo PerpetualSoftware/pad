@@ -324,7 +324,7 @@
 			let saved: Item;
 			try {
 				// BUG-3230 U3: a body applied to an open tab's live document says so.
-				saved = await api.items.update(wsSlug, item.slug, payload);
+				saved = await api.items.update(wsSlug, item.id, payload);
 				saveNote = contentOutcomeNotice(saved);
 			} catch (err) {
 				if (!isEditsNotStoredRefusal(err)) throw err;

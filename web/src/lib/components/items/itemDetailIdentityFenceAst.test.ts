@@ -105,7 +105,7 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	// BUG-3473: the index await is skipped when the index is
 	// already ready; it adds no await and commits nothing, and every fence
 	// after the Promise.all is unchanged.
-	loadData: { reviewed: '45bd747f0e5d', why: 'IS the load: myGen against loadGeneration after every await; the BUG-3198 re-read of a changed item runs after the install, keyed on the installed item id, and fences itself on itemGen' },
+	loadData: { reviewed: '8fd307a3848c', why: 'IS the load: myGen against loadGeneration after every await; the BUG-3198 re-read of a changed item runs after the install, keyed on the installed item id, and fences itself on itemGen' },
 	startEditTitle: { reviewed: '17f04352d420', why: 'focuses and sizes the input it opened synchronously', may: ['el', 'titleInputEl.focus', 'titleInputEl.setSelectionRange'] },
 	// BUG-2836: saveTitle's own lines are unchanged (the diff
 	// touches only a $derived beside titleDraft and the textarea's aria
@@ -171,7 +171,7 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	},
 	// BUG-2992: the links retry the helper above records. itemGen doubles as
 	// the identity fence, because the identity listener's loadData bumps it.
-	retryLinks: { reviewed: '99061afdc730', why: 'item id, workspace and itemGen after the await; commits only when nothing wrote the links since' },
+	retryLinks: { reviewed: '02f3c7b0522b', why: 'item id, workspace and itemGen after the await; commits only when nothing wrote the links since' },
 	// BUG-3036: the re-read an SSE event or sync pass deferred while a save was in
 	// flight. The SSE item_updated shape: itemGen and the item id after each await.
 	runOwedRefresh: { reviewed: '3a2f84926f6f', why: 'destroyed, itemGen and the item id after each await, as the SSE item_updated re-read it stands in for (destroyed since BUG-3198: the load path calls it too)' },
@@ -273,16 +273,16 @@ const CONTINUATIONS: SignedRow[] = [
 	},
 	// TASK-3537: re-reviewed; this continuation's body is unchanged. It re-hashed because the $lib/types import line it names lost getTerminalOptions (the dead terminalStatuses feed).
 	{ call: /^setTimeout\($/, body: /copied = false/, why: 'copy-flag reset: switchedAway', reviewed: 'ae1b50ad6010' },
-	{ call: /api\.items\.get\(wsSlug, itemSlug\)\.catch\($/, body: /./, why: 'loadData item fetch: sets a flag local to that load and re-throws', reviewed: '3d4779ff8923' },
+	{ call: /api\.items\.get\(wsSlug, itemSlug\)\.catch\($/, body: /./, why: 'loadData item fetch: sets a flag local to that load and re-throws', reviewed: '148482a670b5' },
 	// BUG-3473: the background index catch-up on an already-populated index.
-	{ call: /indexBoot\.catch\($/, body: /^/, why: 'background index catch-up: swallows its failure and commits nothing', reviewed: '5d05d937a5ed' },
+	{ call: /indexBoot\.catch\($/, body: /^/, why: 'background index catch-up: swallows its failure and commits nothing', reviewed: 'fc6dc93fa05f' },
 	// TASK-2228: loadData issues progress and links together and settles each
 	// into a plain result object; loadData's own myGen checks after each await
 	// fence the use of those results.
-	{ call: /api\.items\.progress\(wsSlug, itemData\.slug\)\.then\(\s*$/, body: /ok: true/, why: 'loadData progress read, value arm: builds a result object and commits nothing', reviewed: 'fa2fa830e23c' },
-	{ call: /api\.items\.progress\(wsSlug, itemData\.slug\)\.then\([\s\S]*ok: true[\s\S]*,\s*$/, body: /ok: false/, why: 'loadData progress read, failure arm: builds a result object and commits nothing', reviewed: '80f94eb33c12' },
-	{ call: /api\.links\.list\(wsSlug, itemData\.slug\)\.then\(\s*$/, body: /ok: true/, why: 'loadData links read, value arm: builds a result object and commits nothing', reviewed: 'fa2fa830e23c' },
-	{ call: /api\.links\.list\(wsSlug, itemData\.slug\)\.then\([\s\S]*ok: true[\s\S]*,\s*$/, body: /ok: false/, why: 'loadData links read, failure arm: builds a result object and commits nothing', reviewed: '80f94eb33c12' },
+	{ call: /api\.items\.progress\(wsSlug, itemData\.id\)\.then\(\s*$/, body: /ok: true/, why: 'loadData progress read, value arm: builds a result object and commits nothing', reviewed: '06a2d604c633' },
+	{ call: /api\.items\.progress\(wsSlug, itemData\.id\)\.then\([\s\S]*ok: true[\s\S]*,\s*$/, body: /ok: false/, why: 'loadData progress read, failure arm: builds a result object and commits nothing', reviewed: '6275c82be462' },
+	{ call: /api\.links\.list\(wsSlug, itemData\.id\)\.then\(\s*$/, body: /ok: true/, why: 'loadData links read, value arm: builds a result object and commits nothing', reviewed: '06a2d604c633' },
+	{ call: /api\.links\.list\(wsSlug, itemData\.id\)\.then\([\s\S]*ok: true[\s\S]*,\s*$/, body: /ok: false/, why: 'loadData links read, failure arm: builds a result object and commits nothing', reviewed: '6275c82be462' },
 	{
 		call: /^setTimeout\($/,
 		body: /staleConnecting = true/,

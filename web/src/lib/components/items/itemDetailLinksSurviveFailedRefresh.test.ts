@@ -192,7 +192,7 @@ describe('ItemDetail: a failed same-item links refresh keeps the links it has', 
 		// a result, so the failure path is the `else` of `linksResult.ok`.
 		const loadStart = code.indexOf('const linksResult = await linksRead;');
 		expect(loadStart).toBeGreaterThan(-1);
-		expect(code).toContain('const linksRead = api.links.list(wsSlug, itemData.slug).then(');
+		expect(code).toContain('const linksRead = api.links.list(wsSlug, itemData.id).then(');
 		const catchAt = code.indexOf('} else', code.indexOf('if (linksResult.ok)', loadStart));
 		expect(catchAt).toBeGreaterThan(loadStart);
 		const loadCatch = balancedBlock(code, catchAt + 1);

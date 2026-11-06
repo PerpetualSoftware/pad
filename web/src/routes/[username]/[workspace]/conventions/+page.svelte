@@ -270,7 +270,7 @@
 			// state, reverted on failure); only the WIRE shape changes, so a
 			// concurrent edit to another field cannot be reverted by this
 			// write.
-			await api.items.update(workspace, item.slug, { fields_patch: { status: newStatus } });
+			await api.items.update(workspace, item.id, { fields_patch: { status: newStatus } });
 			toastStore.show(wasActive ? 'Convention disabled' : 'Convention enabled', 'success');
 		} catch {
 			// Revert
@@ -334,7 +334,7 @@
 	async function deleteConvention(item: Item) {
 		if (!workspace) return;
 		try {
-			await api.items.delete(workspace, item.slug);
+			await api.items.delete(workspace, item.id);
 			conventions = conventions.filter(c => c.id !== item.id);
 			toastStore.show('Convention deleted', 'success');
 			confirmDelete = null;
@@ -414,7 +414,7 @@
 		try {
 			let updated: Item;
 			try {
-				updated = await api.items.update(workspace, item.slug, write);
+				updated = await api.items.update(workspace, item.id, write);
 			} catch (err) {
 				if (!isEditsNotStoredRefusal(err)) throw err;
 				const reason = pendingEditsReason(err);
@@ -514,7 +514,7 @@
 			// success without a link rather than 404-ing the user.
 			let link: string | undefined;
 			try {
-				const created = await api.items.get(ws, result.slug);
+				const created = await api.items.get(ws, result.ref || result.slug);
 				if (created.collection_slug) {
 					link = `/${user}/${ws}/${created.collection_slug}/${created.slug}`;
 				}
@@ -574,7 +574,7 @@
 					// BUG-3049: status-only patch, per row. Same reasoning as
 					// toggleStatus above — the local blob write is optimistic UI
 					// state, the wire write names only the key it owns.
-					await api.items.update(ws, item.slug, { fields_patch: { status: targetStatus } });
+					await api.items.update(ws, item.id, { fields_patch: { status: targetStatus } });
 					done++;
 				} catch {
 					// Only the key this run wrote, and only if it still holds this

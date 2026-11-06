@@ -2278,11 +2278,11 @@
 			// pair instead of two. Each settles into a result, so the one awaited
 			// second can never surface as an unhandled rejection.
 			const progressTicket = ++progressIssued;
-			const progressRead = api.items.progress(wsSlug, itemData.slug).then(
+			const progressRead = api.items.progress(wsSlug, itemData.id).then(
 				(value) => ({ ok: true as const, value }),
 				() => ({ ok: false as const }),
 			);
-			const linksRead = api.links.list(wsSlug, itemData.slug).then(
+			const linksRead = api.links.list(wsSlug, itemData.id).then(
 				(value) => ({ ok: true as const, value }),
 				() => ({ ok: false as const }),
 			);
@@ -5604,7 +5604,7 @@
 		const linksAtIssue = itemLinks;
 		let links: ItemLink[];
 		try {
-			links = await api.links.list(target.ws, item.slug);
+			links = await api.links.list(target.ws, item.id);
 		} catch {
 			return false;
 		}
@@ -6893,7 +6893,7 @@
 			     Remounted per item and identity like QuickActionsMenu below. -->
 			{#key itemSlug}
 				{#key identityKey}
-					<ItemAppActions {wsSlug} itemSlug={item.slug} />
+					<ItemAppActions {wsSlug} itemId={item.id} />
 				{/key}
 			{/key}
 			<!-- Quick-actions menu: the prompt-copy actions are read-only and stay
@@ -8175,7 +8175,7 @@
 				open={pushDialogOpen}
 				onclose={closePushDialog}
 				{wsSlug}
-				itemSlug={item.slug}
+				itemId={item.id}
 				itemRef={formatItemRef(item) || item.slug}
 				itemTitle={item.title}
 			/>
