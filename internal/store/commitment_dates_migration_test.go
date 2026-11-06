@@ -103,7 +103,7 @@ func commitmentOldRows(t *testing.T, s *Store) []string {
 	t.Helper()
 	var out []string
 	for _, q := range []string{
-		`SELECT id,kind,dtstart,COALESCE(dtend,''),COALESCE(next_at,''),COALESCE(next_wall,''),COALESCE(next_override_at,''),COALESCE(ended_at,''),exdates FROM item_schedules ORDER BY id`,
+		`SELECT id,kind,dtstart,COALESCE(dtend,''),COALESCE(next_at,''),COALESCE(next_wall,''),COALESCE(next_override_at,''),COALESCE(ended_at,''),exdates,COALESCE(tz,''),floating,COALESCE(rrule,''),rdates,anchor,audience,lead_minutes,COALESCE(anchor_wall,''),COALESCE(error_code,''),created_at,updated_at FROM item_schedules ORDER BY id`,
 		`SELECT id,schedule_id,occurrence_at,occurrence_wall,state,actor,resolved_at FROM schedule_occurrences ORDER BY id`,
 		`SELECT id,schedule_id,remind_at,COALESCE(fired_at,'') FROM item_reminders WHERE schedule_id IS NOT NULL ORDER BY id`,
 	} {
@@ -138,6 +138,11 @@ func TestCommitmentMigration_BackfillsAllFourKinds(t *testing.T) {
 	s := commitmentPreStore(t)
 	commitmentSeed(t, s)
 	commitmentApply(t, s)
+	commitmentCheckRoles(t, s)
+}
+
+func commitmentCheckRoles(t *testing.T, s *Store) {
+	t.Helper()
 	rows, err := s.db.Query(`SELECT kind,dtstart,COALESCE(dtend,''),target_days,target_secs,earliest_days,earliest_secs,deadline_days,deadline_secs,deadline_behavior,occupied_days,occupied_secs,outcome,roles_origin FROM item_schedules`)
 	if err != nil {
 		t.Fatal(err)
@@ -184,6 +189,9 @@ func TestCommitmentMigration_BackfillsAllFourKinds(t *testing.T) {
 	if n != 28 {
 		t.Fatalf("rows=%d", n)
 	}
+	if n := s.countRows(t, `SELECT COUNT(*) FROM schedule_occurrences WHERE actual_source='legacy_unknown' AND actual_done_at IS NULL`); n != 28 {
+		t.Fatalf("unknown actuals=%d", n)
+	}
 }
 
 func TestCommitmentMigration_PreservesRowsAndFKs(t *testing.T) {
@@ -195,6 +203,7 @@ func TestCommitmentMigration_PreservesRowsAndFKs(t *testing.T) {
 		counts[table] = s.countRows(t, `SELECT COUNT(*) FROM `+table)
 	}
 	commitmentApply(t, s)
+	commitmentCheckRoles(t, s)
 	if !reflect.DeepEqual(before, commitmentOldRows(t, s)) {
 		t.Fatal("legacy rows changed")
 	}
@@ -278,7 +287,11 @@ func TestCommitmentMigration_PostgresBackfillAndRollback(t *testing.T) {
 			s.mustExec(t, `ALTER TABLE `+table+` DROP COLUMN `+col+` CASCADE`)
 		}
 	}
-	commitmentSeed(t, s)
+	ids := commitmentSeed(t, s)
+	counts := map[string]int{}
+	for _, table := range []string{"event_outbox", "user_notifications"} {
+		counts[table] = s.countRows(t, `SELECT COUNT(*) FROM `+table)
+	}
 	before := commitmentOldRows(t, s)
 	body := commitmentSQL(t, true)
 	if err := applyPostgresMigration(s.db, "999_commitment_bad.sql", body+`INSERT INTO schedule_occurrence_overrides (id,schedule_id,occurrence_key,role,value_at,created_at,updated_at) VALUES ('bad','absent','key','target','2026-11-02T00:00:00Z','now','now');`); err == nil {
@@ -291,12 +304,25 @@ func TestCommitmentMigration_PostgresBackfillAndRollback(t *testing.T) {
 		t.Fatal("partial DDL survived")
 	}
 	commitmentApply(t, s)
+	commitmentCheckRoles(t, s)
 	if !reflect.DeepEqual(before, commitmentOldRows(t, s)) {
 		t.Fatal("legacy rows changed")
 	}
 	if n := s.countRows(t, `SELECT COUNT(*) FROM item_schedules WHERE roles_origin='legacy_backfill' AND (kind<>'deadline_hard' OR (deadline_days=0 AND deadline_secs=0 AND deadline_behavior='stays_owed')) AND (kind<>'window' OR occupied_days IS NOT NULL)`); n != 28 {
 		t.Fatal("PG backfill")
 	}
+	for table, want := range counts {
+		if got := s.countRows(t, `SELECT COUNT(*) FROM `+table); got != want {
+			t.Fatalf("%s before=%d after=%d", table, want, got)
+		}
+	}
+	s.mustExec(t, `DELETE FROM item_schedules WHERE id=?`, ids[0])
+	for _, table := range []string{"schedule_occurrences", "item_reminders"} {
+		if n := s.countRows(t, `SELECT COUNT(*) FROM `+table+` WHERE schedule_id=?`, ids[0]); n != 0 {
+			t.Fatal("cascade failed")
+		}
+	}
+
 }
 
 var commitmentChecks = []string{
@@ -357,6 +383,10 @@ func TestMigrationCountsOnCopy(t *testing.T) {
 		t.Skip("PAD_MIGRATION_COPY not set")
 	}
 	abs, err := filepath.Abs(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	abs, err = filepath.EvalSymlinks(abs)
 	if err != nil {
 		t.Fatal(err)
 	}

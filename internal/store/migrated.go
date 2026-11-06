@@ -170,6 +170,8 @@ var migratedRefusalTables = []string{
 	// write here edits a copy that is gone.
 	"item_schedules",
 	"schedule_occurrences",
+	"schedule_occurrence_overrides",
+	"schedule_changes",
 	// A person's "mark caught up" cursor per workspace (TASK-3615 PR A),
 	// the same class: the bundle does not carry it (BUG-3958).
 	"workspace_read_cursors",

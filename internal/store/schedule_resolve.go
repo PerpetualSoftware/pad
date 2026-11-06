@@ -73,6 +73,7 @@ type ResolveComment struct {
 
 // ResolveInput is what a caller resolves: the occurrence it saw and what to do.
 type ResolveInput struct {
+	ActualDoneAt *time.Time
 	OccurrenceAt time.Time
 	State        string     // done | skip | snooze | move
 	Until        *time.Time // snooze: the re-fire instant. move: the new due instant
@@ -101,6 +102,16 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 	// Every stamp and walk of a resolve is a whole second: the engine's walls
 	// are, and an elapsed grid must read back exactly from its start.
 	nowT = nowT.UTC().Truncate(time.Second)
+	actual, actualSource := nowT, "recorded_now"
+	if in.ActualDoneAt != nil {
+		if in.State != "done" {
+			return nil, fieldErr("actual_done_at", "combination", "actual completion is for done")
+		}
+		if in.ActualDoneAt.After(nowT) {
+			return nil, fieldErr("actual_done_at", "range", "actual completion cannot be in the future")
+		}
+		actual, actualSource = in.ActualDoneAt.UTC().Truncate(time.Second), "reported"
+	}
 	switch in.State {
 	case "done", "skip":
 		if in.Until != nil {
@@ -181,6 +192,10 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 		return nil, &ErrScheduleBroken{Code: *sc.ErrorCode}
 	}
 
+	before, err := s.scheduleSnapshotTx(tx, sc.ID)
+	if err != nil {
+		return nil, err
+	}
 	ts := nowT.Format(time.RFC3339)
 	res := &ResolveResult{}
 	commentID := ""
@@ -236,6 +251,16 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 				return nil, err
 			}
 		}
+		key, role := OccurrenceKey(sc, xAt, xWall), ""
+		if in.State == "move" {
+			role = "target"
+			if err := s.upsertScheduleOverrideTx(tx, sc.ID, key, role, until, nil); err != nil {
+				return nil, err
+			}
+		}
+		if err := s.journalScheduleAfterTx(tx, sc.ID, in.State, key, role, before, in.Actor); err != nil {
+			return nil, err
+		}
 		return s.commitResolve(tx, workspaceID, itemID, res)
 	}
 
@@ -264,7 +289,18 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 		return nil, err
 	}
 
-	occ, found, anchorWall, c, err := s.nextAfterResolve(sc, rec, x, nowT)
+	completion := nowT
+	if in.State == "done" {
+		column, identity := "occurrence_at", xAt
+		if len(xWall) == 10 {
+			column, identity = "occurrence_wall", xWall
+		}
+		if _, err := tx.Exec(s.q(`UPDATE schedule_occurrences SET actual_done_at=?,actual_source=? WHERE schedule_id=? AND `+column+`=?`), NormalizeInstant(actual), actualSource, sc.ID, identity); err != nil {
+			return nil, err
+		}
+		completion = actual
+	}
+	occ, found, anchorWall, c, err := s.nextAfterResolve(sc, rec, x, nowT, completion)
 	if errors.Is(err, errNoExactStart) {
 		// Unreachable for a real zone (see exactElapsedStart): the schedule goes
 		// to its error state, like a stored rule that no longer compiles, not a 500.
@@ -306,6 +342,9 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 			return nil, err
 		}
 	}
+	if err := s.journalScheduleAfterTx(tx, sc.ID, in.State, OccurrenceKey(sc, xAt, xWall), "", before, in.Actor); err != nil {
+		return nil, err
+	}
 	return s.commitResolve(tx, workspaceID, itemID, res)
 }
 
@@ -324,9 +363,9 @@ func (s *Store) commitResolve(tx *sql.Tx, workspaceID, itemID string, res *Resol
 // anchor_wall to store. A calendar schedule takes the first instance after both
 // now-1s and the resolved occurrence (so an early resolve does not return the
 // occurrence it just closed, and an instance at exactly now-1s is missed, never
-// also next). A completion schedule takes a recurrence interval from now. Both
+// also next). A completion schedule takes an interval from actual completion. Both
 // walk the Compiled built from anchor_wall, never from a dtstart years back.
-func (s *Store) nextAfterResolve(sc *models.ItemSchedule, rec *time.Location, x, nowT time.Time) (schedule.Occurrence, bool, *string, *schedule.Compiled, error) {
+func (s *Store) nextAfterResolve(sc *models.ItemSchedule, rec *time.Location, x, nowT, actual time.Time) (schedule.Occurrence, bool, *string, *schedule.Compiled, error) {
 	anchorWall := sc.AnchorWall
 	if sc.Anchor == "completion" {
 		var hasDates = len(sc.RDates) > 0 || len(sc.ExDates) > 0
@@ -337,7 +376,7 @@ func (s *Store) nextAfterResolve(sc *models.ItemSchedule, rec *time.Location, x,
 		if plain {
 			// A legacy row that is not a plain interval falls through to the
 			// calendar path rather than being stranded.
-			return s.nextAfterCompletion(sc, rule, rec, x, nowT)
+			return s.nextAfterCompletion(sc, rule, rec, x, actual)
 		}
 	}
 	start := sc.Dtstart
@@ -374,7 +413,7 @@ func (s *Store) nextAfterResolve(sc *models.ItemSchedule, rec *time.Location, x,
 	return occ, found, anchorWall, c, err
 }
 
-func (s *Store) nextAfterCompletion(sc *models.ItemSchedule, rule schedule.Rule, rec *time.Location, x, nowT time.Time) (schedule.Occurrence, bool, *string, *schedule.Compiled, error) {
+func (s *Store) nextAfterCompletion(sc *models.ItemSchedule, rule schedule.Rule, rec *time.Location, x, actual time.Time) (schedule.Occurrence, bool, *string, *schedule.Compiled, error) {
 	none := func(err error) (schedule.Occurrence, bool, *string, *schedule.Compiled, error) {
 		return schedule.Occurrence{}, false, nil, nil, err
 	}
@@ -389,7 +428,7 @@ func (s *Store) nextAfterCompletion(sc *models.ItemSchedule, rule schedule.Rule,
 			return none(fmt.Errorf("load schedule zone: %w", err))
 		}
 	}
-	w, ok, err := completionWall(sc, rule, loc, nowT)
+	w, ok, err := completionWall(sc, rule, loc, actual)
 	if err != nil {
 		return none(err)
 	}
@@ -402,7 +441,7 @@ func (s *Store) nextAfterCompletion(sc *models.ItemSchedule, rule schedule.Rule,
 	// exactly (see exactElapsedStart), and still contains done+span.
 	span := completionSpan(rule)
 	if span > 0 {
-		st, ok := exactElapsedStart(loc, span, nowT)
+		st, ok := exactElapsedStart(loc, span, actual)
 		if !ok {
 			return none(errNoExactStart)
 		}
@@ -425,7 +464,7 @@ func (s *Store) nextAfterCompletion(sc *models.ItemSchedule, rule schedule.Rule,
 	// occurrence this resolve closed, as on the calendar path.
 	floor := schedule.Resolve(loc, w)
 	if span > 0 {
-		floor = nowT.Add(span)
+		floor = actual.Add(span)
 	}
 	floor = floor.Add(-time.Second)
 	if x.After(floor) {
@@ -510,7 +549,7 @@ func (s *Store) upsertOccurrenceTx(tx *sql.Tx, scheduleID, at, wall, state, comm
 	}
 	for _, k := range keys {
 		res, err := tx.Exec(s.q(`
-			UPDATE schedule_occurrences SET occurrence_wall = ?, state = ?, comment_id = ?, actor = ?, resolved_at = ?
+			UPDATE schedule_occurrences SET occurrence_wall = ?, state = ?, comment_id = ?, actor = ?, resolved_at = ?, actual_done_at = NULL, actual_source = NULL
 			WHERE schedule_id = ? AND `+k.col+` = ?`), wall, state, nilIfEmpty(commentID), actor, ts, scheduleID, k.val)
 		if err != nil {
 			return fmt.Errorf("update occurrence: %w", err)
@@ -543,5 +582,18 @@ func (s *Store) insertMissedTx(tx *sql.Tx, scheduleID string, o schedule.Occurre
 		return 0, fmt.Errorf("insert missed occurrence: %w", err)
 	}
 	n, err := res.RowsAffected()
-	return int(n), err
+	if err != nil {
+		return 0, err
+	}
+	if n > 0 {
+		var floating bool
+		if err := tx.QueryRow(s.q(`SELECT floating FROM item_schedules WHERE id=?`), scheduleID).Scan(&floating); err != nil {
+			return 0, err
+		}
+		sc := &models.ItemSchedule{Floating: floating}
+		if err := s.journalScheduleAfterTx(tx, scheduleID, "missed_recorded", OccurrenceKey(sc, NormalizeInstant(o.At), o.Wall.String()), "", "", "system"); err != nil {
+			return 0, err
+		}
+	}
+	return int(n), nil
 }

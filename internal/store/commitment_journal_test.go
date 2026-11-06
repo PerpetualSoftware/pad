@@ -299,7 +299,19 @@ func TestFireAndReanchorDoNotJournal(t *testing.T) {
 			sc := f.create(t, in)
 			f.force(t, sc, "2026-10-31T09:00:00", "2026-10-31T09:00:00Z", "2026-10-31T09:00:00Z")
 			entries := commitmentJournal(t, f.s, sc.ID)
-			before := commitmentSnapshot(t, entries[0].After)["roles"]
+			f.exec(t, `UPDATE item_schedules SET target_days=-2,target_secs=300,earliest_days=-3,earliest_secs=30,deadline_days=1,deadline_secs=900,deadline_behavior='stays_owed',occupied_days=0,occupied_secs=1800,outcome='attend',roles_origin='native' WHERE id=?`, sc.ID)
+			roles := func() []any {
+				values := make([]any, 11)
+				pointers := make([]any, len(values))
+				for i := range values {
+					pointers[i] = &values[i]
+				}
+				if err := f.s.db.QueryRow(f.s.q(`SELECT target_days,target_secs,earliest_days,earliest_secs,deadline_days,deadline_secs,deadline_behavior,occupied_days,occupied_secs,outcome,roles_origin FROM item_schedules WHERE id=?`), sc.ID).Scan(pointers...); err != nil {
+					t.Fatal(err)
+				}
+				return values
+			}
+			before := roles()
 			if _, err := f.s.FireDueReminders("2026-11-02T10:00:00Z", 0); err != nil {
 				t.Fatal(err)
 			}
@@ -307,12 +319,7 @@ func TestFireAndReanchorDoNotJournal(t *testing.T) {
 			if !reflect.DeepEqual(entries, after) {
 				t.Fatal("fire journaled")
 			}
-			var td, ts int
-			var dd, od sql.NullInt64
-			if err := f.s.db.QueryRow(f.s.q(`SELECT target_days,target_secs,deadline_days,occupied_days FROM item_schedules WHERE id=?`), sc.ID).Scan(&td, &ts, &dd, &od); err != nil {
-				t.Fatal(err)
-			}
-			if td != 0 || ts != 0 || dd.Valid || od.Valid || before == nil {
+			if !reflect.DeepEqual(before, roles()) {
 				t.Fatal("roles changed")
 			}
 			cur, err := f.s.GetSchedule(f.ws.ID, f.item.ID)

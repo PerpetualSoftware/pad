@@ -336,8 +336,8 @@ func mustExec(t *testing.T, db *sql.DB, query string, args ...any) {
 func TestScanCostFiguresMatchTheList(t *testing.T) {
 	t.Parallel()
 	const (
-		wantTotal = 169
-		wantJSON  = 27
+		wantTotal = 179
+		wantJSON  = 29
 	)
 
 	cols := NULProtectedColumns()
