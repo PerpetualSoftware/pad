@@ -498,41 +498,20 @@ func (s *Store) CopyItemAcrossWorkspaces(req CrossWorkspaceCopyRequest) (*CrossW
 		return nil, fmt.Errorf("copy item across workspaces: actor is required")
 	}
 
-	// Advisory cap check before BEGIN, including the storage lock. Use the same
-	// final-fields pipeline as the transaction so dropped or overridden source
-	// references do not cause a false refusal. Everything is re-read under lock.
-	source, err := s.GetItem(req.SourceItemID)
+	// Derive workspace A before opening the transaction. This read is used for
+	// the lock keys and the advisory cap check below; every value the copy
+	// consumes is re-read under the locks.
+	sourceWorkspaceID, err := s.itemWorkspaceID(req.SourceItemID)
 	if err != nil {
 		return nil, err
 	}
-	if source == nil {
-		return nil, sql.ErrNoRows
-	}
-	sourceWorkspaceID := source.WorkspaceID
-	sourceColl, err := s.GetCollection(source.CollectionID)
-	if err != nil {
-		return nil, err
-	}
-	if sourceColl == nil {
-		return nil, ErrCopySourceCollectionMissing
-	}
-	targetColl, err := s.GetCollection(req.TargetCollectionID)
-	if err != nil {
-		return nil, err
-	}
-	if targetColl == nil || targetColl.WorkspaceID != req.TargetWorkspaceID {
-		return nil, ErrCopyTargetCollectionMissing
-	}
-	finalFields, _, _, err := s.migrateCopyFields(s.db, req.TargetWorkspaceID, targetColl, source.Fields, sourceColl, req.FieldOverrides,
-		items.ScopeFor(sourceWorkspaceID, req.TargetWorkspaceID), req.RelationVisibility)
-	if err != nil {
-		return nil, err
-	}
-	n, err := CountAttachmentRefs(source.Content, finalFields)
-	if err != nil {
-		return nil, err
-	}
-	if n > MaxCopyAttachmentRefs {
+
+	// Advisory cap check before BEGIN, including the storage lock. It can only
+	// REFUSE: any other outcome (a read error, a missing or moved collection, a
+	// field-migration error) is left to the transaction, so those errors keep
+	// the precedence they have under the locks, after PreCheck. The authoritative
+	// check runs under the locks.
+	if s.copyExceedsAttachmentCap(req, sourceWorkspaceID) {
 		return nil, ErrCopyTooManyAttachments
 	}
 	if s.afterItemPreLockRead != nil {
@@ -605,6 +584,47 @@ func (s *Store) CopyItemAcrossWorkspaces(req CrossWorkspaceCopyRequest) (*CrossW
 		"target_workspace_id", req.TargetWorkspaceID,
 		"duration", time.Since(copyStarted))
 	return result, nil
+}
+
+// itemWorkspaceID reads an item's workspace, including soft-deleted rows so a
+// copy of an already-archived source fails with a clear "not found" from the
+// in-tx re-read rather than a confusing nil here.
+func (s *Store) itemWorkspaceID(itemID string) (string, error) {
+	var workspaceID string
+	err := s.db.QueryRow(s.q(`SELECT workspace_id FROM items WHERE id = ?`), itemID).Scan(&workspaceID)
+	if err == sql.ErrNoRows {
+		return "", sql.ErrNoRows
+	}
+	if err != nil {
+		return "", fmt.Errorf("copy item across workspaces: resolve source workspace: %w", err)
+	}
+	return workspaceID, nil
+}
+
+// copyExceedsAttachmentCap is the advisory, lock-free half of the cap. It
+// reports true only when the source, read on the pool and migrated to the
+// destination schema, references more than MaxCopyAttachmentRefs distinct
+// attachments. Every failure to decide returns false.
+func (s *Store) copyExceedsAttachmentCap(req CrossWorkspaceCopyRequest, sourceWorkspaceID string) bool {
+	source, err := s.GetItem(req.SourceItemID)
+	if err != nil || source == nil {
+		return false
+	}
+	sourceColl, err := s.GetCollection(source.CollectionID)
+	if err != nil || sourceColl == nil {
+		return false
+	}
+	targetColl, err := s.GetCollection(req.TargetCollectionID)
+	if err != nil || targetColl == nil || targetColl.WorkspaceID != req.TargetWorkspaceID {
+		return false
+	}
+	finalFields, _, _, err := s.migrateCopyFields(s.db, req.TargetWorkspaceID, targetColl, source.Fields, sourceColl, req.FieldOverrides,
+		items.ScopeFor(sourceWorkspaceID, req.TargetWorkspaceID), req.RelationVisibility)
+	if err != nil {
+		return false
+	}
+	n, err := CountAttachmentRefs(source.Content, finalFields)
+	return err == nil && n > MaxCopyAttachmentRefs
 }
 
 func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, sourceWorkspaceID string) (*CrossWorkspaceCopyResult, error) {

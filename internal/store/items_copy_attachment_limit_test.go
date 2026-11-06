@@ -200,3 +200,20 @@ func TestCopyAttachmentLimitUsesFinalFields(t *testing.T) {
 		})
 	}
 }
+
+// The advisory cap check can only refuse. A request that fails field
+// migration (an override naming a key the destination does not declare) must
+// reach the transaction and get PreCheck's answer, as it did before the cap.
+func TestCopyAttachmentLimitAdvisoryErrorsDoNotPreemptPreCheck(t *testing.T) {
+	f := newCopyFixture(t)
+	src := createTestItem(t, f.s, f.wsA.ID, f.colA.ID, "Under the limit", "plain body")
+	denied := errors.New("pre-check denied")
+	req := f.req()
+	req.SourceItemID = src.ID
+	req.FieldOverrides = map[string]any{"no_such_destination_key": "x"}
+	req.PreCheck = func(*sql.Tx, *models.Item, *models.Collection) error { return denied }
+	_, err := f.s.CopyItemAcrossWorkspaces(req)
+	if !errors.Is(err, denied) {
+		t.Fatalf("copy error = %v, want the PreCheck denial", err)
+	}
+}
