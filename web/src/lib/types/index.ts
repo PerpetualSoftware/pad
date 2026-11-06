@@ -3736,3 +3736,26 @@ export interface AgendaResponse {
 		owner_username?: string;
 	}[];
 }
+
+export type ScheduleResolveState = 'done' | 'skip' | 'snooze' | 'move';
+
+export interface ScheduleResolveRequest {
+	occurrence_at: string;
+	state: ScheduleResolveState;
+	comment?: string;
+	until?: string;
+}
+
+export interface ItemScheduleView {
+	item_ref: string;
+	kind: string;
+	floating: boolean;
+	ended_at?: string;
+	next_occurrence?: { at: string; wall: string };
+	[key: string]: unknown;
+}
+
+export interface ScheduleResolveResult {
+	schedule: object;
+	resolution: { occurrence_at: string; state: ScheduleResolveState; comment_id?: string; missed_recorded: number };
+}

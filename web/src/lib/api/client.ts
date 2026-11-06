@@ -1,4 +1,7 @@
 import type {
+	ItemScheduleView,
+	ScheduleResolveRequest,
+	ScheduleResolveResult,
 	BuiltinListEntry,
 	CatchUpResponse,
 	BuiltinStateResponse,
@@ -3716,6 +3719,13 @@ export const api = {
 	},
 
 	// ── Needs you (TASK-3923, IDEA-3906 A6) ──────────────────────────────────
+	getSchedule: (ws: string, ref: string) =>
+		request<ItemScheduleView>(`/workspaces/${encodeURIComponent(ws)}/items/${encodeURIComponent(ref)}/schedule`),
+	resolveSchedule: (ws: string, ref: string, body: ScheduleResolveRequest) =>
+		request<ScheduleResolveResult>(`/workspaces/${encodeURIComponent(ws)}/items/${encodeURIComponent(ref)}/schedule/resolve`, {
+			method: 'POST', body: JSON.stringify(body)
+		}),
+
 	getMyAgenda: (from: string, to: string, tz?: string) => {
 		const query = new URLSearchParams({ from, to });
 		if (tz !== undefined) query.set('tz', tz);

@@ -139,6 +139,7 @@
 						class:active={isActive('/console') &&
 							!isActive('/console/settings') &&
 							!isActive('/console/needs') &&
+							!isActive('/console/agenda') &&
 							!isActive('/console/billing') &&
 							!isActive('/console/admin') &&
 							!isActive('/console/deleted-workspaces') &&
@@ -146,6 +147,7 @@
 						aria-current={(isActive('/console') &&
 							!isActive('/console/settings') &&
 							!isActive('/console/needs') &&
+							!isActive('/console/agenda') &&
 							!isActive('/console/billing') &&
 							!isActive('/console/admin') &&
 							!isActive('/console/deleted-workspaces') &&
@@ -161,6 +163,15 @@
 						aria-current={(isActive('/console/needs')) ? 'page' : undefined}
 					>
 						Needs you
+					</a>
+					<a
+						href="/console/agenda"
+						class="nav-link"
+						onclick={closeMobileMenu}
+						class:active={isActive('/console/agenda')}
+						aria-current={isActive('/console/agenda') ? 'page' : undefined}
+					>
+						Agenda
 					</a>
 					<!-- TASK-4044 3c: the Chat entry. ChatLink owns its element, so the
 					     sibling look comes from the :global(.chat-nav-link) rules below. -->
