@@ -21,7 +21,7 @@ identityGateSuite({
 			deltaSync: { reviewed: '411fdaffa22b', why: 'identityHeld(epochAtEntry) after the reconcile; the page commits nothing itself' },
 			refreshProgress: { reviewed: 'db4bab6d2f71', why: `${ENTRY}, on both arms` },
 			loadCollection: {
-				reviewed: '00cf0f834bc6',
+				reviewed: '3f07cb2f8bf0',
 				why: 'loadSeq then identityHeld(epochAtEntry) after every await, with collection writes also gated on collectionGen; re-stamps identityEpochAtLoad at entry; the finally clears metaLoading on loadSeq alone, deliberately',
 			},
 			handleStatusChange: {
@@ -45,8 +45,8 @@ identityGateSuite({
 			deleteView: { reviewed: '7eb2057eabec', why: ENTRY },
 		},
 		nested: [
-			{ body: /event\.type === 'collection_updated'/, why: "SSE item events: pageIdentityHeld() at entry; the refresh arm checks collGen, the slug, then identityHeld(epochAtEntry) before its write", reviewed: '58bab6ae8c6e' },
-			{ body: /result\.workspace !== wsSlug/, why: 'sync results: pageIdentityHeld() at entry, identityHeld(epochAtEntry) after the progress refresh', reviewed: '7ca774ef594f' },
+			{ body: /event\.type === 'collection_updated'/, why: "SSE item events: pageIdentityHeld() at entry; the refresh arm checks collGen, the slug, then identityHeld(epochAtEntry) before its write", reviewed: 'a889a07d3f00' },
+			{ body: /result\.workspace !== wsSlug/, why: 'sync results: pageIdentityHeld() at entry, identityHeld(epochAtEntry) after the progress refresh', reviewed: '9fdbdcd835e5' },
 			{ body: /BODY_SEARCH_PAGE/, why: 'search timer, as an async function: identityHeld(epochAtSchedule) at fire time and after EVERY page of the search, with the query, route and archived-flag snapshots (TASK-2864) and the timer it fired under (a newer run of the effect supersedes it), on the success AND catch arms; one commit after the walk (BUG-3710); the cap flag commits beside the rank map under the same fence', reviewed: '0a4e19e8c85e' },
 			{ body: /REORDER_READBACK_DELAYS_MS/, why: 'reorder read-back per card (BUG-3699/3700, landed or refused): identityHeld(epochAtEntry) after every wait and after the read, before the upsert, which the scope epoch and the seq guard also fence; a failed read commits nothing and retries on the bounded schedule; a refused card always reads back, a landed one stops once a stamped row at or past its seq is held, and a read older than its write is retried; a read for a card a later reorder holds optimistically is not applied, over a stamped row the seq guard decides', reviewed: '4f0b499f34d7' },
 		],
@@ -54,9 +54,9 @@ identityGateSuite({
 		continuations: [
 			{ call: /replaceState: true \}\)\.catch\($/, body: /./, in: 'reconcileRouteCollectionSlug', why: 'rename navigation failure: clears renameNav only if it still holds this target', reviewed: 'a9ee9d041feb' },
 			{ call: /plansProgress\(ws\)\.catch\($/, body: /./, why: 'refreshProgress fetch: a failure reads as none; commits nothing', reviewed: 'd4d3603af105' },
-			{ call: /api\.views\.list\(ws, coll\)\.catch\($/, body: /./, why: 'loadCollection views fetch: a failure reads as none; commits nothing', reviewed: '1233edf3d866' },
+			{ call: /api\.views\.list\(ws, coll\)\.catch\($/, body: /./, why: 'loadCollection views fetch: a failure reads as none; commits nothing', reviewed: 'b95fa0909634' },
 			{ call: /handleStatusChange\(item, value, 'priority'\)\.catch\($/, body: /./, why: 'card priority write (TASK-2214): the rejection was already toasted inside handleStatusChange, which fences its own commits; the catch commits nothing', reviewed: '8405d65b80af' },
-			{ call: /api\.members\.list\(ws\)\.catch\($/, body: /./, why: 'loadCollection members fetch: a failure reads as none; commits nothing', reviewed: '983919e9dcba' },
+			{ call: /api\.members\.list\(ws\)\.catch\($/, body: /./, why: 'loadCollection members fetch: a failure reads as none; commits nothing', reviewed: 'd50d87e83266' },
 			{ call: /^setTimeout\($/, body: /BODY_SEARCH_PAGE/, why: 'search timer, as the deferred callback: the same unit as the nested row above', reviewed: '0a4e19e8c85e' },
 			{ call: /^setTimeout\($/, body: /identityHeld\(epochAtSchedule\)\) return; bypassNavGuard/, why: 'leave-guard popstate reset: identityHeld(epochAtSchedule) before clearing bypassNavGuard', reviewed: 'b3974e1c39d9' },
 			{
@@ -75,7 +75,7 @@ identityGateSuite({
 			{ call: /^requestAnimationFrame\($/, body: /saveViewInput/, in: 'openSaveView', why: FOCUS, reviewed: '05df866d1a2e' },
 		],
 		helpers: {
-			buildViewConfig: '5516adadc557',
+			buildViewConfig: '665c63d8729f',
 			cancelPaneFollow: '95ae6c0fb20b',
 			captureIdentity: '7f6903e09e84',
 			captureReturnFocus: 'f97edb43de71',
@@ -86,10 +86,12 @@ identityGateSuite({
 			identityHeld: 'e4fd3989a707',
 			// TASK-3423 rebase: re-reviewed; only kit 3 API swaps reach it (page.url.href, goto reset:false), no await or fence moved.
 			installPaneTestHook: 'd5097f0db3e6',
-			loadUrlFilters: '83ef5adfb7ab',
+			// TASK-4240: re-reviewed; the calendar_date/calendar_end branch now calls the synchronous applyCalendarUrlParam (empty value ignored). No await, fence or state write moved.
+			loadUrlFilters: 'c371dfd4e69d',
 			pageIdentityHeld: 'a7bbe5de91a4',
 			runPendingNav: 'dfb7329e4a5e',
-			updateUrlFilters: '7a89333a8621',
+			// TASK-4240: body unchanged; re-hashed by the paneUrlParams import line it names (applyCalendarUrlParam added). No await or fence moved.
+			updateUrlFilters: 'a2f10fea539a',
 			writeDefaultViewId: '79d9180fa119',
 		},
 		// TASK-3423: the restore-skip release used to be handed to

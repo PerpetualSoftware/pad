@@ -529,7 +529,7 @@ export interface QuickAction {
 
 export interface CollectionSettings {
 	layout: 'fields-primary' | 'content-primary' | 'balanced';
-	default_view: 'list' | 'board' | 'table';
+	default_view: 'list' | 'board' | 'table' | 'calendar';
 	board_group_by?: string;
 	list_sort_by?: string;
 	list_group_by?: string;
@@ -1898,6 +1898,8 @@ export interface TimelineResponse {
 // ─── Views ───────────────────────────────────────────────────────────────────
 
 export interface ViewConfig {
+	date_field?: string;
+	end_field?: string;
 	filters?: { field: string; op: string; value: any }[];
 	sort?: { field: string; direction: 'asc' | 'desc' }[];
 	group_by?: string;
@@ -1936,6 +1938,13 @@ export interface CalendarEntry {
 	item_ref: string;
 	item_title: string;
 	collection: string;
+	schedule_id?: string;
+	all_day?: boolean;
+	state?: string;
+	overdue?: boolean;
+	effective_at?: string;
+	missed_count?: number;
+	stale?: boolean;
 	[key: string]: unknown;
 }
 

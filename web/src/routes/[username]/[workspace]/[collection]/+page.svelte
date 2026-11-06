@@ -1,4 +1,8 @@
 <script lang="ts">
+ import CalendarView from '$lib/components/collections/CalendarView.svelte';
+ import CalendarFieldPicker from '$lib/components/calendar/CalendarFieldPicker.svelte';
+ import { calendarFilters, type CalendarConfig } from '$lib/calendar/monthGrid';
+ import { loadCalendarConfig, storeCalendarConfig } from '$lib/collections/viewPersistence';
 	import { isRelationType } from '$lib/items/relationFieldTypes';
 	import { ownValue } from '$lib/utils/ownValue';
 	import { page, navigating } from '$app/state';
@@ -64,7 +68,7 @@
 		viewHasUnparentedFilter,
 	} from '$lib/collections/unparentedFilter';
 	import { relationFilterMatches } from '$lib/collections/relationGroups';
-	import { KNOWN_COLLECTION_URL_PARAMS, buildCollectionUrlParams } from '$lib/collections/paneUrlParams';
+	import { KNOWN_COLLECTION_URL_PARAMS, applyCalendarUrlParam, buildCollectionUrlParams } from '$lib/collections/paneUrlParams';
 	import { type ResolvedPaneState } from '$lib/collections/paneController';
 	import { createPaneController } from '$lib/collections/paneHostController';
 	import { resolvePaneReturnTarget } from '$lib/collections/paneFocus';
@@ -106,6 +110,20 @@
 	// load so a later success cannot leave it standing.
 	let metaFromCache = $state(false);
 	let viewMode = $state<ViewMode>('board');
+ let calendarConfig = $state<CalendarConfig>({});
+ let calendarPickerOpen = $state(false);
+ let viewSheetFields = $state(false);
+ let calendarRefresh = $state(0);
+ function changeCalendarConfig(config: CalendarConfig) {
+  calendarConfig = config;
+  storeCalendarConfig(wsSlug, collSlug, config);
+  updateUrlFilters();
+ }
+ function showCalendarFields() {
+  if (viewport.isMobile) { viewSheetFields = true; viewSheetOpen = true; }
+  else { viewMenuOpen = false; calendarPickerOpen = true; }
+ }
+
 	// Page-wide within-group sort (TASK-1670 / IDEA-1648). 'manual' is the
 	// stored sort_order (drag order). Persisted per collection.
 	let sortMode = $state<SortMode>('manual');
@@ -632,7 +650,7 @@
 		searchUrlSyncTimer = undefined;
 		if (!collSlug || !wsSlug) return;
 		const params = buildCollectionUrlParams(
-			{ viewMode, activeFilters, selectedTags, unparentedApplied, searchQuery },
+			{ viewMode, activeFilters, selectedTags, unparentedApplied, searchQuery, calendarConfig },
 			page.url
 		);
 		const qs = params.toString();
@@ -854,6 +872,8 @@
 			// shared table link used to open as the board.
 			if (k === 'view' && isViewMode(v)) {
 				viewMode = v;
+			} else if (k === 'calendar_date' || k === 'calendar_end') {
+				calendarConfig = applyCalendarUrlParam(calendarConfig, k, v);
 			} else if (k === 'q') {
 				// Skipped exactly once after an identity change, and only for
 				// the value that belonged to the session which just ended — a
@@ -926,6 +946,9 @@
 	 * carried here rather than re-learned).
 	 */
 	function resetPerSessionState() {
+		calendarPickerOpen = false;
+		viewSheetFields = false;
+		calendarRefresh = 0;
 		// THE QUERY MUST NOT COME BACK, and clearing the variable alone does not
 		// achieve that. `searchQuery` is restored from
 		// `?q=` by `loadUrlFilters()`, which the reload below calls on success —
@@ -1256,6 +1279,7 @@
 			// an event already dispatched into this callback is past that point.
 			if (!pageIdentityHeld()) return;
 			const epochAtEntry = captureIdentity();
+			if (event.collection_id === collection?.id || event.collection === collSlug) calendarRefresh++;
 			// BUG-2265 sibling broadcast: another client changed THIS
 			// collection's settings/schema. Refresh the page's own
 			// `collection` snapshot so its list-header quick actions / edit
@@ -1382,6 +1406,7 @@
 			// subscriber compares — the field's own doc says so, and four of the
 			// five did not until a later pass found them.
 			if (result.workspace !== wsSlug) return;
+			calendarRefresh++;
 
 			// The reconcile and `markSynced` moved to the workspace layout
 			// (TASK-2921) — both are workspace-level, and `markSynced` needs the
@@ -1695,6 +1720,7 @@
 			const settings = parseSettings(collData);
 			const defaultMode: ViewMode = isViewMode(settings.default_view) ? settings.default_view : 'board';
 			viewMode = loadViewMode(ws, coll, defaultMode);
+			calendarConfig = loadCalendarConfig(ws, coll);
 			sortMode = loadSortMode(ws, coll);
 
 			// Override with URL params if present
@@ -1926,6 +1952,10 @@
 	let emptyHint = $derived(ownValue(emptyHintMap, collSlug) ?? null);
 
 	let filtersOpen = $state(false);
+ let calendarFilter = $derived(calendarFilters(activeFilters, selectedTags, searchQuery, unparentedApplied, {
+  includeArchived: showArchived || parsedSearch.archived,
+  structuredSearch: parsedSearch.body || !!parsedSearch.collection || parsedSearch.itemNumber !== undefined || !!parsedSearch.ref,
+ }));
 	let hasActiveFilters = $derived(searchQuery.trim() !== '' || Object.keys(activeFilters).length > 0 || selectedTags.length > 0 || unparentedApplied);
 
 	// ── Viewport detection ───────────────────────────────────────────────
@@ -1949,7 +1979,8 @@
 	const VIEW_CHOICES = [
 		{ mode: 'list' as const, label: 'List', icon: '☰' },
 		{ mode: 'board' as const, label: 'Board', icon: '▦' },
-		{ mode: 'table' as const, label: 'Table', icon: '☷' }
+		{ mode: 'table' as const, label: 'Table', icon: '☷' },
+		{ mode: 'calendar' as const, label: 'Calendar', icon: '▦' }
 	];
 
 	let viewModeIcon = $derived(VIEW_CHOICES.find((v) => v.mode === viewMode)?.icon ?? '▦');
@@ -1959,10 +1990,10 @@
 	// re-mount the open sheet. Reads the shared breakpoint flag; writes only
 	// `viewSheetOpen`, so no self-invalidation.
 	$effect(() => {
-		if (!viewport.isMobile) viewSheetOpen = false;
+		if (!viewport.isMobile) { viewSheetOpen = false; viewSheetFields = false; }
 	});
 	let viewModeLabel = $derived(
-		viewMode === 'list' ? 'List' : viewMode === 'board' ? 'Board' : 'Table'
+		VIEW_CHOICES.find(v => v.mode === viewMode)?.label ?? 'List'
 	);
 	// The view trigger names the active saved view when there is one
 	// (TASK-3592); a view deleted while active falls back to the mode.
@@ -2002,7 +2033,9 @@
 	function selectViewMode(mode: ViewMode) {
 		saveViewMode(mode);
 		updateUrlFilters();
+		if (mode === 'calendar' && !calendarConfig.date_field && viewport.isMobile) { viewSheetFields = true; return; }
 		viewSheetOpen = false;
+		if (mode === 'calendar' && !calendarConfig.date_field) calendarPickerOpen = true;
 	}
 
 	function singularName(): string {
@@ -3473,6 +3506,8 @@
 		// viewer's Escape with no owner at all: a silently dead key, and the
 		// exact regression TASK-2429 exists to prevent.
 		if (isBlockedByModal(null)) return;
+		// The calendar owns its date-grid keys; list navigation has no rows here.
+		if (viewMode === 'calendar') return;
 
 		// Navigation keys (j/k/arrows/Enter): don't capture when focus is in an
 		// input/textarea/select or when quick-create is open.
@@ -3910,7 +3945,7 @@
 	});
 
 	function buildViewConfig(): ViewConfig {
-		const config: ViewConfig = {};
+		const config: ViewConfig = viewMode === 'calendar' ? {...calendarConfig} : {};
 		// Defensive mutex enforcement (PLAN-2095 DR-3): the interactive
 		// handlers already keep `activeFilters.parent`/`phase` and
 		// `unparentedFilter` mutually exclusive, but a saved view should
@@ -3953,6 +3988,7 @@
 		// Parse and apply config
 		let config: ViewConfig = {};
 		try { config = JSON.parse(view.config); } catch {}
+		if (vt === 'calendar') { calendarConfig = {date_field: config.date_field, end_field: config.end_field}; storeCalendarConfig(wsSlug, collSlug, calendarConfig); }
 
 		// Apply filters
 		const newFilters: Record<string, string> = {};
@@ -4171,7 +4207,7 @@
 					<h1>
 						{#if collection.icon}<span class="collection-icon">{collection.icon}</span>{/if}
 						{collection.name}
-						<span class="item-count">{itemCountLabel}</span>
+						{#if viewMode !== 'calendar'}<span class="item-count">{itemCountLabel}</span>{/if}
 					</h1>
 
 					<!-- Realtime stream status (PLAN-1984 / TASK-2027): surfaces the
@@ -4212,10 +4248,15 @@
 							-->
 							<BottomSheet
 								open={viewSheetOpen}
-								onclose={() => (viewSheetOpen = false)}
-								title="Choose view"
+								onclose={() => { viewSheetOpen = false; viewSheetFields = false; }}
+								title={viewSheetFields ? "Choose a date field" : "Choose view"}
+                                focusKey={String(viewSheetFields)}
 							>
 								<div class="view-sheet-body">
+                                    {#if viewSheetFields}
+                                     <button class="view-sheet-option" onclick={() => viewSheetFields=false}>Back</button>
+                                     <CalendarFieldPicker {collection} config={calendarConfig} onchange={changeCalendarConfig} onclose={() => { viewSheetOpen=false; viewSheetFields=false; }} />
+                                    {:else}
 									<button
 										class="view-sheet-option"
 										class:active={viewMode === 'list'}
@@ -4243,7 +4284,9 @@
 										<span class="view-sheet-icon">&#9783;</span>
 										<span>Table</span>
 									</button>
-									<!--
+									<button class="view-sheet-option" class:active={viewMode === 'calendar'} type="button" onclick={() => selectViewMode('calendar')}><span class="view-sheet-icon" aria-hidden="true">▦</span><span>Calendar</span></button>
+                                    {#if viewMode === 'calendar'}<button class="view-sheet-option" onclick={showCalendarFields}>Date field…</button>{/if}
+                                    <!--
 										Saved views (TASK-3589): selecting one works on a phone as
 										on the desktop menu. Managing them (save, delete, make
 										default) stays on the desktop for now.
@@ -4276,7 +4319,8 @@
 											</button>
 										{/each}
 									{/if}
-								</div>
+								{/if}
+                                </div>
 							</BottomSheet>
 						{/if}
 					{:else}
@@ -4307,14 +4351,14 @@
 										icon={choice.icon}
 										checked={viewMode === choice.mode}
 										onclick={() => {
-											saveViewMode(choice.mode);
-											updateUrlFilters();
+											selectViewMode(choice.mode);
 											viewMenuOpen = false;
 										}}
 									>
 										{choice.label}
 									</MenuItem>
 								{/each}
+                                {#if viewMode === 'calendar'}<MenuItem onclick={showCalendarFields}>Date field…</MenuItem>{/if}
 								{#if savedViews.length > 0}
 									<div class="menu-divider" role="separator"></div>
 									<div class="menu-label">Saved views</div>
@@ -4366,7 +4410,7 @@
 						</div>
 					{/if}
 
-					{#if viewMode !== 'table'}
+					{#if viewMode !== 'table' && viewMode !== 'calendar'}
 						<div class="menu-anchor">
 							<button
 								class="toolbar-icon-btn"
@@ -4505,7 +4549,7 @@
 						onclick={() => (filtersOpen = true)}
 						title="Show filters"
 					>
-						<span class="filter-summary-count">{itemCountLabel}</span>
+						{#if viewMode !== 'calendar'}<span class="filter-summary-count">{itemCountLabel}</span>{/if}
 						{#if filterSummary.length > 0}
 							<span class="filter-summary-parts">· {filterSummary.join(' · ')}</span>
 						{/if}
@@ -4600,6 +4644,12 @@
 				<p>It isn't available to you, or it no longer exists.</p>
 				<a class="empty-cta" href="/console">Back to your workspaces</a>
 			</div>
+		{:else if viewMode === 'calendar'}
+   <CalendarView {collection} {wsSlug} basePath={`/${username}/${wsSlug}/${collSlug}`} config={calendarConfig} onConfigChange={changeCalendarConfig} onChooseFields={showCalendarFields}
+    filters={calendarFilter.params} filterProblem={calendarFilter.problem} refreshKey={calendarRefresh} bind:pickerOpen={calendarPickerOpen}
+    onItemOpen={openItemPane} onItemRefOpen={paneController.openItemPaneByRef}
+    onFilters={() => filtersOpen=true} onList={() => selectViewMode('list')}
+    onClearFilters={clearActiveView} />
 		{:else if indexError && items.length === 0}
 			<!-- localIndex bootstrap failed and the cache is empty
 			     (e.g. transient /items-index failure on cold load,

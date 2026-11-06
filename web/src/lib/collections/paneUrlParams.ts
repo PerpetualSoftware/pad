@@ -27,9 +27,10 @@ export const PANE_ITEM_PARAM = 'item';
  * `activeFilters` as a schema-field filter. `+page.svelte` folds in the
  * collection-specific `UNPARENTED_FILTER_FIELD` on top of this base list —
  * kept here as the base so this module doesn't need to import that
- * vocabulary.
+ * vocabulary. Every name here is reserved and shadows a schema field with
+ * the same key, `calendar_date` and `calendar_end` included.
  */
-export const KNOWN_COLLECTION_URL_PARAMS: readonly string[] = ['view', 'q', 'tags', PANE_ITEM_PARAM];
+export const KNOWN_COLLECTION_URL_PARAMS: readonly string[] = ['view', 'q', 'tags', 'calendar_date', 'calendar_end', PANE_ITEM_PARAM];
 
 /**
  * Re-emit the currently-open pane ref (if any) onto `params` — the
@@ -55,12 +56,22 @@ export interface CollectionUrlFilterState {
 	 *  omitting `list` would make a copied List URL resolve back to Board for a
 	 *  viewer without the sender's localStorage. */
 	viewMode: string;
+	calendarConfig?: {date_field?: string; end_field?: string};
 	activeFilters: Record<string, string>;
 	selectedTags: string[];
 	/** The EFFECTIVE unparented-filter state (`unparentedEffective(...)`),
 	 *  not raw intent — see `writeUnparentedParam`. */
 	unparentedApplied: boolean;
 	searchQuery: string;
+}
+
+/** Apply one `calendar_date` / `calendar_end` URL value to a stored config.
+ *  An empty value is ignored so it cannot erase a stored field; a non-empty one wins. */
+export function applyCalendarUrlParam<C extends { date_field?: string; end_field?: string }>(config: C, key: string, value: string): C {
+	if (!value) return config;
+	if (key === 'calendar_date') return { ...config, date_field: value };
+	if (key === 'calendar_end') return { ...config, end_field: value };
+	return config;
 }
 
 /**
@@ -76,6 +87,11 @@ export function buildCollectionUrlParams(state: CollectionUrlFilterState, curren
 	// collection must survive a copied link (no localStorage) rather than
 	// silently resolving back to the collection's Board default (IDEA-2274).
 	params.set('view', state.viewMode);
+	if (state.viewMode === 'calendar' && state.calendarConfig) {
+		// An empty value would overwrite the receiver's stored field on load.
+		if (state.calendarConfig.date_field) params.set('calendar_date', state.calendarConfig.date_field);
+		if (state.calendarConfig.end_field) params.set('calendar_end', state.calendarConfig.end_field);
+	}
 	for (const [k, v] of Object.entries(state.activeFilters)) {
 		params.set(k, v);
 	}

@@ -215,3 +215,9 @@ describe('matchesFilter on a stored value String() cannot convert (BUG-3052)', (
 		expect(matchesFilter(item, { field: 'status', op: 'in', value: ['open'] })).toBe(false);
 	});
 });
+
+it('renders calendar share views and collection defaults through the list', async () => {
+ const { coerceBaseView, coerceSettings } = await import('./shareView');
+ expect(coerceBaseView('calendar')).toBe('list');
+ expect(coerceSettings({default_view:'calendar'}).default_view).toBe('list');
+});
