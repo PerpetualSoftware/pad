@@ -37,6 +37,9 @@ async function createAdminDM(request: import('@playwright/test').APIRequestConte
 	return n;
 }
 
+// A latch that rode its 3s fallback would miss this by a wide margin.
+const FAST_MS = 1500;
+
 const LONG = Array.from({ length: 120 }, (_, i) => `Paragraph ${i + 1}. ${'lorem ipsum '.repeat(8)}`).join('\n\n');
 
 async function seedLongDoc(request: import('@playwright/test').APIRequestContext, f: Fixture) {
@@ -244,6 +247,30 @@ test('a number that is invalid reads like a number that is not yours', async ({ 
 	}
 });
 
+test('Close and Back are usable again at once after a completed one', async ({ page, request, fixture }, testInfo) => {
+	test.skip(testInfo.project.name !== 'desktop-chromium', 'desktop only');
+	const n = await createAdminDM(request, fixture, uniqueAgent('again'));
+	await page.setViewportSize({ width: 1600, height: 900 });
+	const home = `/${fixture.adminUsername}/${fixture.workspaceSlug}`;
+	await page.goto(home);
+	await expect(chatButton(page)).toBeVisible();
+	const homePath = pathname(page);
+	const region = page.getByRole('complementary', { name: 'Chat' });
+
+	for (let round = 0; round < 2; round++) {
+		await chatButton(page).click();
+		await expect(region).toBeVisible();
+		await region.locator(`a[href="/messages/${n}"]`).click();
+		await expect.poll(() => pathname(page)).toBe(`/messages/${n}`);
+		// Back to the inbox, then Close straight after: neither waits on a fallback.
+		await region.getByRole('link', { name: 'All conversations' }).click();
+		await expect.poll(() => pathname(page), { timeout: FAST_MS }).toBe('/messages');
+		await region.getByRole('button', { name: 'Close Chat' }).click();
+		await expect.poll(() => pathname(page), { timeout: FAST_MS }).toBe(homePath);
+		await expect(region).toBeHidden({ timeout: FAST_MS });
+	}
+});
+
 test('closing the item pane while Chat is open pops Chat and the pane together', async ({ page, request, fixture }, testInfo) => {
 	test.skip(testInfo.project.name !== 'desktop-chromium', 'desktop only');
 	test.setTimeout(60_000);
@@ -293,14 +320,15 @@ test.describe('a pane opened over Chat closes without reopening Chat', () => {
 		await chatButton(page).click();
 		await expect(region).toBeVisible();
 		await page.locator('.item-card').first().click();
-		await expect(pane).toBeVisible();
+		// The latch released on the traversal's own popstate, not its 3s fallback.
+		await expect(pane).toBeVisible({ timeout: FAST_MS });
 		// The pane open is a real navigation: Chat is already closed.
-		await expect(region).toBeHidden();
+		await expect(region).toBeHidden({ timeout: FAST_MS });
 
 		await pane.locator('button[aria-label="Close pane"]').click();
-		await expect(pane).toBeHidden();
+		await expect(pane).toBeHidden({ timeout: FAST_MS });
 		await expect(region).toBeHidden();
-		await expect.poll(() => page.url()).toBe(prePaneUrl);
+		await expect.poll(() => page.url(), { timeout: FAST_MS }).toBe(prePaneUrl);
 		// And it stays closed.
 		await page.waitForTimeout(500);
 		await expect(region).toBeHidden();
@@ -325,7 +353,7 @@ test.describe('a pane opened over Chat closes without reopening Chat', () => {
 		await expect(region).toBeVisible();
 		await page.locator('.item-card').nth(1).click();
 		await expect(pane).toBeVisible();
-		await expect(region).toBeHidden();
+		await expect(region).toBeHidden({ timeout: FAST_MS });
 
 		await pane.locator('button[aria-label="Close pane"]').click();
 		await expect(pane).toBeHidden();

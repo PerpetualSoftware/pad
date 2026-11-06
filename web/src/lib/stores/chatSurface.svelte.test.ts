@@ -260,6 +260,24 @@ describe('close and back are not re-entrant', () => {
 		expect(go).toHaveBeenCalledTimes(1);
 	});
 
+	it('reverse order: a closeThen continuation runs on the popstate, not the fallback', () => {
+		vi.useFakeTimers();
+		vi.spyOn(history, 'go').mockImplementation(() => {});
+		(page as { shallow: unknown }).shallow = asShallow('/messages/4');
+		page.state = { chatDepth: 2 };
+		const run = vi.fn();
+		expect(chatSurface.closeThen(run)).toBe(true);
+		// Kit applied page.state first; the surface-key effect looked with popped still false.
+		(page as { shallow: unknown }).shallow = null;
+		page.state = {};
+		__checkChatSurfaceForTests();
+		expect(run).not.toHaveBeenCalled();
+		// No read of the surface in between: only the popstate itself can release it,
+		// and the fake clock has not moved, so the 3000ms fallback cannot have.
+		popstate();
+		expect(run).toHaveBeenCalledTimes(1);
+	});
+
 	it('a slow popstate: a second close at 1000ms with none landed issues no second go', () => {
 		vi.useFakeTimers();
 		const go = vi.spyOn(history, 'go').mockImplementation(() => {});

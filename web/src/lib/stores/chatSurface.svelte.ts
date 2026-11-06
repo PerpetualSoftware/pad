@@ -95,8 +95,13 @@ function settleGo(): void {
 // Browser only: the window is the source of the popstate, and the module is also
 // imported (never run) by the build's analysis in Node.
 if (browser) {
+	// Kit's own popstate listener may have applied the state before this one
+	// runs, so the effect has already looked and seen popped=false: settle here
+	// too, and either order releases.
 	window.addEventListener('popstate', () => {
-		if (goLatch) goLatch.popped = true;
+		if (!goLatch) return;
+		goLatch.popped = true;
+		settleGo();
 	});
 	$effect.root(() => {
 		$effect(() => {
@@ -130,6 +135,11 @@ export const chatSurface = {
 
 	get isOpen(): boolean {
 		return this.target !== null;
+	},
+
+	/** A traversal Chat issued has not settled yet: no other history.go may be issued. */
+	get traversing(): boolean {
+		return traversing();
 	},
 
 	/** The history entries Chat has pushed on top of the page. */
