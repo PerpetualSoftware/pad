@@ -127,3 +127,39 @@ it('falls back to UTC for an invalid stored time zone', async () => {
   expect(api.calendar.get).toHaveBeenCalledWith('demo','tasks',expect.objectContaining({tz:'UTC'}));
  } finally { spy.mockRestore(); }
 });
+it('adopts the incoming collection filters in the same tick, never mixing in the previous collection', async () => {
+ const other = { ...collection, id:'d', slug:'notes' } as Collection;
+ const view = mount({filters:{status:'open'}});
+ await screen.findByRole('button',{name:'+2 more'});
+ vi.mocked(api.calendar.get).mockClear();
+ await view.rerender({collection:other,filters:{tag:'b'}});
+ await new Promise(r => setTimeout(r, 400));
+ const calls = vi.mocked(api.calendar.get).mock.calls;
+ expect(calls.length).toBeGreaterThan(0);
+ for (const [, slug, query] of calls) {
+  expect(slug).toBe('notes');
+  expect(query).toEqual(expect.objectContaining({tag:'b'}));
+  expect(query).not.toHaveProperty('status');
+ }
+});
+it('adopts the incoming filter problem in the same tick when the workspace changes', async () => {
+ const view = mount({filters:{status:'open'}});
+ await screen.findByRole('button',{name:'+2 more'});
+ vi.mocked(api.calendar.get).mockClear();
+ await view.rerender({wsSlug:'other',filters:{},filterProblem:'These filters cannot be shown on a calendar.'});
+ expect(await screen.findByRole('alert')).toHaveTextContent('These filters cannot be shown on a calendar.');
+ expect(api.calendar.get).not.toHaveBeenCalled();
+});
+it('labels the zone as chosen only when the stored zone is valid', async () => {
+ const spy = vi.spyOn(authStore, 'user', 'get').mockReturnValue({timezone:'Not/AZone'} as never);
+ try {
+  mount(); await screen.findByRole('button',{name:'+2 more'});
+  expect(screen.getByText('UTC · Set time zone')).toBeInTheDocument();
+  expect(screen.queryByText('Time zone: UTC')).toBeNull();
+ } finally { spy.mockRestore(); }
+ const ok = vi.spyOn(authStore, 'user', 'get').mockReturnValue({timezone:'America/New_York'} as never);
+ try {
+  mount(); await screen.findAllByRole('button',{name:'+2 more'});
+  expect(screen.getByText('Time zone: America/New_York')).toBeInTheDocument();
+ } finally { ok.mockRestore(); }
+});

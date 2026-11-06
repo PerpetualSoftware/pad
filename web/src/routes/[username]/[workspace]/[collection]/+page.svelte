@@ -4410,7 +4410,7 @@
 						</div>
 					{/if}
 
-					{#if viewMode !== 'table'}
+					{#if viewMode !== 'table' && viewMode !== 'calendar'}
 						<div class="menu-anchor">
 							<button
 								class="toolbar-icon-btn"

@@ -23,17 +23,23 @@
  const uid = $props.id();
  let zone = $derived(safeZone(authStore.user?.timezone));
  // Filters settle before a request is made, so typing does not fire one per key.
+ // A change of workspace, collection or schema adopts the incoming filters at once:
+ // the previous collection's settled filters never meet the new collection.
  const FILTER_SETTLE_MS = 250;
  let applied = $state(untrack(() => ({filters, filterProblem})));
  let settleTimer: ReturnType<typeof setTimeout> | undefined;
+ let appliedScope = untrack(() => JSON.stringify([wsSlug, collection.id, collection.schema]));
  $effect(() => {
+  const scope = JSON.stringify([wsSlug, collection.id, collection.schema]);
   const next = {filters, filterProblem};
   const key = JSON.stringify(next);
   clearTimeout(settleTimer);
+  if (scope !== appliedScope) { appliedScope = scope; applied = next; return; }
   if (key === untrack(() => JSON.stringify(applied))) return;
   settleTimer = setTimeout(() => { applied = next; }, FILTER_SETTLE_MS);
   return () => clearTimeout(settleTimer);
  });
+ let zoneSet = $derived(!!authStore.user?.timezone && zone === authStore.user.timezone);
  let today = $derived(zoneDay(new Date(),zone));
  let month = $state(untrack(() => initialMonth ?? zoneDay(new Date(), zone).slice(0,7)));
  let selected = $state('');
@@ -140,7 +146,7 @@
 </script>
 
 <section class="calendar" class:updating={loading && !!data} bind:this={root} aria-label="Calendar" aria-busy={loading && !!data}>
- <CalendarToolbar {month} {zone} zoneSet={!!authStore.user?.timezone} dateLabel={fieldLabel(collection,config.date_field)} onprevious={() => pageMonth(-1)} onnext={() => pageMonth(1)} ontoday={() => chooseDay(today,true)} onfields={() => { if (onChooseFields) onChooseFields(); else pickerOpen=true; }} />
+ <CalendarToolbar {month} {zone} zoneSet={zoneSet} dateLabel={fieldLabel(collection,config.date_field)} onprevious={() => pageMonth(-1)} onnext={() => pageMonth(1)} ontoday={() => chooseDay(today,true)} onfields={() => { if (onChooseFields) onChooseFields(); else pickerOpen=true; }} />
  <p class="sr-only" role="status">{monthLabel(month)}{loading ? data ? ' — Updating calendar…' : ' — Loading calendar…' : ''}</p>
  {#if stale || !config.date_field}
   <p>{error === UNSUPPORTED_FIELD && !staleConfig(collection,config) ? UNSUPPORTED_FIELD : stale ? STALE_FIELD : 'Choose a date field'}</p>
