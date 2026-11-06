@@ -12,6 +12,7 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { chatStore } from '$lib/stores/chat.svelte';
 	import { chatSetting } from '$lib/stores/chatSetting.svelte';
+	import { chatSurface } from '$lib/stores/chatSurface.svelte';
 	import UnreadBadge from '$lib/components/chat/UnreadBadge.svelte';
 	import { goto } from '$app/navigation';
 	import { api, isPlanLimitError } from '$lib/api/client';
@@ -652,7 +653,10 @@
 						class="nav-item"
 						class:active={isMessagesPage}
 						aria-label={chatStore.unreadTotal > 0 ? `Chat, ${chatStore.unreadTotal} unread` : 'Chat'}
-						onclick={() => uiStore.onNavigate()}
+						onclick={(e) => {
+							uiStore.onNavigate();
+							chatSurface.handleLinkClick(e, '/messages');
+						}}
 					>
 						<span class="nav-icon">💬</span>
 						<span class="nav-label">Chat</span>

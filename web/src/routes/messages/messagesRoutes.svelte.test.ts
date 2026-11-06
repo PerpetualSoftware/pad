@@ -183,6 +183,8 @@ beforeEach(() => {
 	h.listMessages.mockResolvedValue(pageOf([]));
 	h.sessions.mockResolvedValue({ sessions: [], count: 0 });
 	page.params = {};
+	// The route tests render the /messages route itself: Chat is in route mode.
+	page.url = new URL('http://localhost/messages');
 	lastWorkspace.clear();
 	// The inbox is a singleton: start each test from a cold one.
 	chatInbox.conversations = [];

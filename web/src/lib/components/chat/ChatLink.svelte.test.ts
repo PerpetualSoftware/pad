@@ -3,7 +3,16 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 import { tick } from 'svelte';
 
-const h = vi.hoisted(() => ({ unread: 0, version: 0, chatOn: true }));
+const h = vi.hoisted(() => ({ unread: 0, version: 0, chatOn: true, opened: [] as string[] }));
+vi.mock('$lib/stores/chatSurface.svelte', () => ({
+	chatSurface: {
+		handleLinkClick: (e: MouseEvent, href: string) => {
+			if (e.ctrlKey) return;
+			e.preventDefault();
+			h.opened.push(href);
+		}
+	}
+}));
 vi.mock('$lib/stores/chat.svelte', () => ({
 	chatStore: {
 		get unreadTotal() {
@@ -82,5 +91,25 @@ describe('ChatLink (TASK-4044)', () => {
 		a.addEventListener('click', (e) => e.preventDefault());
 		a.click();
 		expect(onclick).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe('ChatLink click (TASK-4315 PR 3b)', () => {
+	it('runs the caller\'s onclick, then opens through the Chat surface', async () => {
+		h.opened = [];
+		const onclick = vi.fn();
+		const a = await mount(0, { onclick });
+		a.click();
+		expect(onclick).toHaveBeenCalledTimes(1);
+		expect(h.opened).toEqual(['/messages']);
+	});
+
+	it('a modified click still runs onclick and leaves the href alone', async () => {
+		h.opened = [];
+		const onclick = vi.fn();
+		const a = await mount(0, { onclick });
+		a.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true }));
+		expect(onclick).toHaveBeenCalledTimes(1);
+		expect(h.opened).toEqual([]);
 	});
 });

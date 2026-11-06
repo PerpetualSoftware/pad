@@ -26,6 +26,8 @@
 	import { sweepExpiredRefusedRawDrafts } from '$lib/items/refusedRawDraft';
 	import Sidebar from '$lib/components/layout/Sidebar.svelte';
 	import TopBar from '$lib/components/layout/TopBar.svelte';
+	import ChatHost from '$lib/components/chat/ChatHost.svelte';
+	import ChatButton from '$lib/components/chat/ChatButton.svelte';
 	import CommandPalette from '$lib/components/search/CommandPalette.svelte';
 	import ToastContainer from '$lib/components/common/ToastContainer.svelte';
 	import PlanLimitPrompt from '$lib/components/billing/PlanLimitPrompt.svelte';
@@ -423,17 +425,24 @@
 	<!-- Auth check in progress — blank screen to avoid flash -->
 {:else if isAuthPage || isSharePage}
 	{@render children()}
-{:else if isConsolePage || isMessagesPage}
+{:else if isConsolePage || (isMessagesPage && uiStore.isMobile)}
 	<!--
-		Console pages (and /messages, the chat inbox, which has no workspace shell
-		either) render their own chrome and bypass the app shell
+		Console pages (and /messages on a phone, the chat inbox, which has no
+		workspace shell there) render their own chrome and bypass the app shell
 		below, but they still need the global CreateWorkspaceModal +
 		toast surface — the /console "Create Workspace" CTA and the
 		/console/new redirect (TASK-1529) both fire
 		`uiStore.openCreateWorkspace()`, which is a no-op unless the
 		modal is actually mounted somewhere in the tree.
+
+		On a desktop /messages the shell below renders, so Chat keeps Pad's chrome
+		(TASK-4315). The page is wrapped so an open Chat drawer can make it inert
+		without remounting it; the Chat host itself sits outside the wrapper.
 	-->
-	{@render children()}
+	<div style="display: contents" inert={coveredPage.active}>
+		{@render children()}
+	</div>
+	<ChatHost />
 	<CreateWorkspaceModal
 		onWorkspaceCreated={(ws) => uiStore.requestConnectAfterNavigate(ws.slug)}
 	/>
@@ -492,6 +501,10 @@
 					<path d="M3 6L8 11L13 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
 				</svg>
 			</button>
+			<!-- The bar is collapsed: Chat stays one click away beside its expand tab. -->
+			<div class="topbar-collapsed-chat" inert={coveredPage.active}>
+				<ChatButton compact />
+			</div>
 		{/if}
 		<div class="app-shell">
 			<Sidebar />
@@ -514,6 +527,7 @@
 		</div>
 	</div>
 
+	<ChatHost />
 	<CommandPalette />
 	<!--
 		Stage the Connect-modal auto-open signal (PLAN-1519 / TASK-1526)
@@ -605,6 +619,12 @@
 		padding: 0;
 		opacity: 0.5;
 		transition: opacity 0.2s ease, color 0.15s ease, background 0.15s ease;
+	}
+	.topbar-collapsed-chat {
+		position: absolute;
+		top: 0;
+		left: calc(50% + 32px);
+		z-index: 10;
 	}
 	.app-layout:hover .topbar-expand-btn {
 		opacity: 1;

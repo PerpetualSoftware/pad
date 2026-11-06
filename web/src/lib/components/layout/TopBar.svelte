@@ -21,6 +21,7 @@
 	import { workspaceRestoreTarget } from '$lib/utils/workspace-route';
 	import { tabLanding } from '$lib/utils/tabLanding';
 	import ChatLink from '$lib/components/chat/ChatLink.svelte';
+	import ChatButton from '$lib/components/chat/ChatButton.svelte';
 	import { pendingInvitations } from '$lib/stores/pendingInvitations.svelte';
 
 	let { mobile = false }: { mobile?: boolean } = $props();
@@ -750,6 +751,7 @@
 		</div>
 
 		<div class="topbar-right">
+			<ChatButton />
 			<button
 				class="collapse-btn"
 				onclick={() => uiStore.closeTopbar()}

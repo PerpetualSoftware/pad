@@ -16,6 +16,8 @@ declare global {
 			// How many history entries the open Chat surface pushed on top of the
 			// page (TASK-4315), so Close can pop exactly those.
 			chatDepth?: number;
+			// The open thread was reached from the open inbox, so Back pops one entry.
+			chatFromInbox?: boolean;
 		}
 		// interface Platform {}
 	}

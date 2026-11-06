@@ -97,6 +97,12 @@ export class ChatThread {
 	/** Set by the page from its bottom sentinel. */
 	atBottom = $state(false);
 	/**
+	 * False while the view is hidden or covered (a drawer under another overlay):
+	 * what the reader cannot see is not read. Set by the view; a closed surface
+	 * has no thread at all.
+	 */
+	active = $state(true);
+	/**
 	 * The ref verdicts this reader has been shown, by refKey (workspace, REF).
 	 * Verdicts are per reader, so #reset clears them (TASK-4044 3c M32).
 	 */
@@ -530,12 +536,12 @@ export class ChatThread {
 
 	/**
 	 * Tell the server what was DISPLAYED: the newest confirmed seq in the window,
-	 * and only while the bottom sentinel is in view on a visible tab. Never marks
+	 * and only while the bottom sentinel is in view on a visible tab and the view is active. Never marks
 	 * locally on a failure; the next refresh or visibility change retries.
 	 */
 	tryMarkRead(): void {
 		const n = this.#n;
-		if (n === null || this.status !== 'ready' || !this.atBottom || this.#marking) return;
+		if (n === null || this.status !== 'ready' || !this.atBottom || !this.active || this.#marking) return;
 		if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
 		const seq = this.newestSeq;
 		if (seq <= this.#readSeq) return;

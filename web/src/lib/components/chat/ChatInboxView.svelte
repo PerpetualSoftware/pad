@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
 	import ChatBackLink from '$lib/components/chat/ChatBackLink.svelte';
 	import RosterRow from '$lib/components/chat/RosterRow.svelte';
@@ -7,6 +6,11 @@
 	import ChatEmptyState from '$lib/components/chat/ChatEmptyState.svelte';
 	import { chatEmptyKind } from '$lib/chat/emptyState';
 	import { chatInbox } from '$lib/stores/chatInbox.svelte';
+	import { chatSurface } from '$lib/stores/chatSurface.svelte';
+
+	// `variant` says where it renders: the /messages route, or the Chat host (dock
+	// or drawer) in the shell, which has its own Close.
+	let { variant = 'route' }: { variant?: 'route' | 'host' } = $props();
 
 	// A late POST answer must not pull the user back after they leave (TASK-4044).
 	let mounted = true;
@@ -40,12 +44,16 @@
 	// Open the chat only once the POST has answered: a null means nothing started.
 	async function ensure(key: string): Promise<void> {
 		const n = await chatInbox.ensureDM(key);
-		if (n !== null && mounted) await goto(`/messages/${n}`);
+		if (n !== null && mounted) await chatSurface.open(`/messages/${n}`);
 	}
 </script>
 
 <header class="chat-header">
-	<ChatBackLink />
+	{#if variant === 'host'}
+		<button type="button" class="close-chat" onclick={() => chatSurface.close()}>Close Chat</button>
+	{:else}
+		<ChatBackLink />
+	{/if}
 	<h1>Chat</h1>
 </header>
 
@@ -85,6 +93,9 @@
 {/if}
 
 <style>
+	.close-chat {
+		align-self: flex-start;
+	}
 	.chat-header {
 		display: flex;
 		flex-direction: column;

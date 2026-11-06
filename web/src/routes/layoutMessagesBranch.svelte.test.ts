@@ -1,9 +1,10 @@
 // Runs in the jsdom vitest project (filename ends `.svelte.test.ts`).
 //
-// TASK-4044: /messages (the chat inbox) renders without the workspace shell.
-// The root layout is the shell for every other route, so this pins both halves:
-// /messages and /messages/3 get no Sidebar and no TopBar, and a workspace route,
-// /console and /messagesfoo still do.
+// TASK-4044 / TASK-4315: /messages is a standalone page on a phone and a page
+// inside the Pad shell on a desktop. The root layout is the shell for every other
+// route, so this pins both halves: on a desktop /messages and /messages/3 get the
+// Sidebar, the TopBar and one <main>; on a phone they get none of them; /console
+// never does; a workspace route and /messagesfoo always do.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 import { createRawSnippet, tick } from 'svelte';
@@ -118,13 +119,25 @@ describe('TASK-4044: the root layout gives /messages no workspace shell', () => 
 		expect({ sidebar: hasSidebar(), topbar: hasTopBar() }).toEqual({ sidebar: true, topbar: true });
 	});
 
-	it.each(['/messages', '/messages/3'])('%s renders its child with no Sidebar and no TopBar', async (path) => {
+	it.each(['/messages', '/messages/3'])('%s on a desktop renders its child inside the Sidebar and the TopBar', async (path) => {
+		await mountAt(path);
+		expect({ child: hasChild(), sidebar: hasSidebar(), topbar: hasTopBar() }).toEqual({
+			child: true,
+			sidebar: true,
+			topbar: true,
+		});
+		expect(document.querySelectorAll('main').length).toBe(1);
+	});
+
+	it.each(['/messages', '/messages/3'])('%s on a phone is standalone: no Sidebar, no TopBar', async (path) => {
+		vp.mobile = true;
 		await mountAt(path);
 		expect({ child: hasChild(), sidebar: hasSidebar(), topbar: hasTopBar() }).toEqual({
 			child: true,
 			sidebar: false,
 			topbar: false,
 		});
+		expect(document.querySelector('.chat-panel')).toBeNull();
 	});
 
 	it('/messagesfoo is not the chat inbox: it keeps the shell', async () => {
@@ -132,7 +145,8 @@ describe('TASK-4044: the root layout gives /messages no workspace shell', () => 
 		expect({ sidebar: hasSidebar(), topbar: hasTopBar() }).toEqual({ sidebar: true, topbar: true });
 	});
 
-	it('/messages keeps the toast surface', async () => {
+	it.each([false, true])('/messages keeps the toast surface (phone: %s)', async (mobile) => {
+		vp.mobile = mobile;
 		await mountAt('/messages');
 		expect(document.querySelector('.toast-container [data-toast-region="polite"]')).not.toBeNull();
 	});

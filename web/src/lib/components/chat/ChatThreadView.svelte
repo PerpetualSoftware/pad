@@ -12,13 +12,21 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { canDeleteMessage } from '$lib/chat/deletePolicy';
 	import { confirmDialog } from '$lib/stores/confirmDialog.svelte';
+	import { chatSurface } from '$lib/stores/chatSurface.svelte';
 	import type { ChatMessage } from '$lib/types';
 
 	// The thread (TASK-4044 PR 3a and 3b, decisions 4cf4d4b9 and 2de240d9). The
 	// store owns the window; this view owns the scroll container, the bottom
 	// sentinel that says what the reader has seen, and the reply target. The
 	// caller says which conversation: null is a number that cannot name one.
-	let { n }: { n: number | null } = $props();
+	// `variant` says where it renders: the /messages route, or the Chat host (dock
+	// or drawer) in the shell, which has its own Close. `active` is false while the
+	// host is covered by another overlay: a thread nobody can see is not read.
+	let {
+		n,
+		variant = 'route',
+		active = true
+	}: { n: number | null; variant?: 'route' | 'host'; active?: boolean } = $props();
 
 	const thread = new ChatThread();
 	// Bumped by "Try again" so the load effect below re-runs (TASK-4044 2b-i, decision 90709f40).
@@ -104,9 +112,14 @@
 		return () => io.disconnect();
 	});
 
+	$effect(() => {
+		thread.active = active;
+	});
+
 	// Mark read once the end is in view on a visible tab; also retried on a refresh.
 	$effect(() => {
 		void thread.atBottom;
+		void thread.active;
 		void thread.newestSeq;
 		void thread.status;
 		untrack(() => thread.tryMarkRead());
@@ -174,8 +187,14 @@
 </script>
 
 <header class="chat-header">
-	<ChatBackLink />
-	<a class="all-chats" href="/messages">All conversations</a>
+	{#if variant === 'host'}
+		<button type="button" class="close-chat" onclick={() => chatSurface.close()}>Close Chat</button>
+	{:else}
+		<ChatBackLink />
+	{/if}
+	<a class="all-chats" href="/messages" onclick={(e) => chatSurface.handleLinkClick(e, '/messages')}
+		>All conversations</a
+	>
 	{#if conversation}
 		<span class="presence">
 			<PresenceDot
@@ -305,6 +324,9 @@
 {/if}
 
 <style>
+	.close-chat {
+		align-self: flex-start;
+	}
 	.chat-header {
 		display: flex;
 		gap: var(--space-4);

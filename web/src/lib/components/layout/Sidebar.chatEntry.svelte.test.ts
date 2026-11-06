@@ -5,7 +5,18 @@ import { tick } from 'svelte';
 const h = vi.hoisted(() => ({
 	ws: { current: { slug: 'ws', owner_username: 'u', is_guest: false } as { slug: string; owner_username: string; is_guest: boolean } },
 	auth: { authenticated: true },
-	chatOn: true
+	chatOn: true,
+	opened: [] as string[]
+}));
+vi.mock('$lib/stores/chatSurface.svelte', () => ({
+	chatSurface: {
+		isOpen: false,
+		handleLinkClick: (e: MouseEvent, href: string) => {
+			if (e.ctrlKey) return;
+			e.preventDefault();
+			h.opened.push(href);
+		}
+	}
 }));
 
 vi.mock('$lib/api/client', () => ({
@@ -96,5 +107,23 @@ describe('Sidebar Chat entry (TASK-4044 3c)', () => {
 		await tick();
 		expect(document.querySelector('nav.collection-nav')).not.toBeNull();
 		expect(entry()).toBeNull();
+	});
+});
+
+describe('Sidebar Chat entry click (TASK-4315 PR 3b)', () => {
+	it('a plain click opens the Chat surface; a modified click keeps the plain href', async () => {
+		cleanup();
+		h.chatOn = true;
+		h.opened = [];
+		h.ws.current = { slug: 'ws', owner_username: 'u', is_guest: false };
+		h.auth.authenticated = true;
+		render(Sidebar);
+		await tick();
+		const a = entry()!;
+		a.click();
+		expect(h.opened).toEqual(['/messages']);
+		a.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true }));
+		expect(h.opened).toEqual(['/messages']);
+		expect(a.getAttribute('href')).toBe('/messages');
 	});
 });

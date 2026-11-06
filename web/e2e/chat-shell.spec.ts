@@ -1,0 +1,245 @@
+import { test, expect } from './fixtures';
+import type { Page } from '@playwright/test';
+import { browserLogin, EDITOR_SELECTOR, SYNCED_BADGE_SELECTOR, SYNC_TIMEOUT } from './lib/collab-helpers';
+import { createChatUser, loginViaForm } from './lib/chat-users';
+
+/**
+ * TASK-4315 PR 3b: Chat opens INSIDE the Pad shell on a desktop, over the page
+ * that opened it. jsdom cannot run shallow routing, so this is where it is
+ * proven: the editor under an open Chat keeps its node, its text, its caret and
+ * its scroll through open and close (as a dock at 1600 and as a drawer at 1100);
+ * browser Back and Forward walk the entries Chat pushed; a reload or a bookmark
+ * of /messages/N is the same thread as a route in Pad chrome; and a number that
+ * is not yours reads exactly like a number that cannot exist.
+ * Desktop only: a phone keeps the standalone /messages route in this PR.
+ */
+
+type Fixture = { apiToken: string; baseURL: string; workspaceSlug: string; adminUsername: string };
+
+const headers = (f: Fixture, agent?: string) => ({
+	Authorization: `Bearer ${f.apiToken}`,
+	'Content-Type': 'application/json',
+	...(agent ? { 'X-Pad-Agent': agent } : {})
+});
+
+const uniqueAgent = (tag: string) =>
+	`e2e-${tag}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+
+async function createAdminDM(request: import('@playwright/test').APIRequestContext, f: Fixture, agent: string) {
+	const res = await request.post('/api/v1/me/conversations', { headers: headers(f), data: { agent_key: agent } });
+	expect(res.ok(), await res.text()).toBe(true);
+	const n = ((await res.json()) as { conversation: { number: number } }).conversation.number;
+	const say = await request.post(`/api/v1/me/conversations/${n}/messages`, {
+		headers: headers(f, agent),
+		data: { body: 'hello from the agent' }
+	});
+	expect(say.status(), await say.text()).toBe(201);
+	return n;
+}
+
+const LONG = Array.from({ length: 120 }, (_, i) => `Paragraph ${i + 1}. ${'lorem ipsum '.repeat(8)}`).join('\n\n');
+
+async function seedLongDoc(request: import('@playwright/test').APIRequestContext, f: Fixture) {
+	const res = await request.post(`/api/v1/workspaces/${f.workspaceSlug}/collections/docs/items`, {
+		headers: headers(f),
+		data: { title: `Chat shell ${Date.now()}`, content: LONG }
+	});
+	expect(res.ok(), await res.text()).toBe(true);
+	return (await res.json()) as { slug: string; ref: string };
+}
+
+/** The nearest scrollable ancestor of the editor, tagged so it can be found again. */
+async function tagScroller(page: Page) {
+	await page.evaluate((sel) => {
+		const ed = document.querySelector(sel) as HTMLElement;
+		(window as unknown as { __editor: Element }).__editor = ed;
+		let el: HTMLElement | null = ed.parentElement;
+		while (el) {
+			const oy = getComputedStyle(el).overflowY;
+			if ((oy === 'auto' || oy === 'scroll') && el.scrollHeight > el.clientHeight + 50) break;
+			el = el.parentElement;
+		}
+		el?.setAttribute('data-e2e-scroller', '1');
+	}, EDITOR_SELECTOR);
+}
+
+const scrollTop = (page: Page) =>
+	page.evaluate(() => (document.querySelector('[data-e2e-scroller]') as HTMLElement | null)?.scrollTop ?? -1);
+
+const caret = (page: Page) =>
+	page.evaluate(() => {
+		const sel = window.getSelection();
+		return sel && sel.anchorNode
+			? { text: sel.anchorNode.textContent?.slice(0, 40) ?? '', offset: sel.anchorOffset, collapsed: sel.isCollapsed }
+			: null;
+	});
+
+const sameEditorNode = (page: Page) =>
+	page.evaluate(
+		(sel) => (window as unknown as { __editor: Element }).__editor === document.querySelector(sel),
+		EDITOR_SELECTOR
+	);
+
+const chatButton = (page: Page) => page.locator('header.topbar a.chat-button');
+const pathname = (page: Page) => new URL(page.url()).pathname;
+
+for (const [name, width, role] of [
+	['dock', 1600, 'complementary'],
+	['drawer', 1100, 'dialog']
+] as const) {
+	test(`the editor keeps its node, text, caret and scroll through opening and closing Chat as a ${name}`, async ({
+		page,
+		request,
+		fixture
+	}, testInfo) => {
+		test.skip(testInfo.project.name !== 'desktop-chromium', 'desktop only');
+		test.setTimeout(90_000);
+		await createAdminDM(request, fixture, uniqueAgent(`keep-${name}`));
+		const doc = await seedLongDoc(request, fixture);
+		await page.setViewportSize({ width, height: 900 });
+		await browserLogin(page);
+		const itemUrl = `/${fixture.adminUsername}/${fixture.workspaceSlug}/docs/${doc.slug}`;
+		await page.goto(itemUrl);
+		await expect(page.locator(SYNCED_BADGE_SELECTOR)).toBeVisible({ timeout: SYNC_TIMEOUT });
+		await tagScroller(page);
+
+		await page.locator(EDITOR_SELECTOR).click();
+		await page.keyboard.press('Control+Home');
+		await page.keyboard.type('TYPED-BEFORE-CHAT ');
+		await page.evaluate(() => {
+			const s = document.querySelector('[data-e2e-scroller]') as HTMLElement | null;
+			if (s) s.scrollTop = 600;
+		});
+		const scrolled = await scrollTop(page);
+		expect(scrolled, 'premise: the page scrolls').toBeGreaterThan(100);
+		const caretBefore = await caret(page);
+		expect(caretBefore?.text, 'premise: the caret is in the typed text').toContain('TYPED-BEFORE-CHAT');
+		const sidebarBefore = await page.locator('aside.sidebar').boundingBox();
+
+		await chatButton(page).click();
+		const region = page.getByRole(role, { name: 'Chat' });
+		await expect(region).toBeVisible();
+		expect(pathname(page)).toBe('/messages');
+		await expect(region.getByRole('button', { name: 'Close Chat' })).toBeVisible();
+		// Opening Chat neither collapses the sidebar nor remounts the page.
+		await expect(page.locator('aside.sidebar')).toBeVisible();
+		expect((await page.locator('aside.sidebar').boundingBox())!.width).toBe(sidebarBefore!.width);
+		expect(await sameEditorNode(page)).toBe(true);
+		expect(await scrollTop(page)).toBe(scrolled);
+
+		await region.getByRole('button', { name: 'Close Chat' }).click();
+		await expect(region).toBeHidden();
+		await expect.poll(() => pathname(page)).toBe(itemUrl);
+		expect(await sameEditorNode(page)).toBe(true);
+		expect(await scrollTop(page)).toBe(scrolled);
+		await expect(page.locator(EDITOR_SELECTOR)).toContainText('TYPED-BEFORE-CHAT');
+
+		// The caret is where it was (focus went back to the Chat button, as it should);
+		// putting focus in the editor again continues typing in place.
+		expect(await caret(page)).toEqual(caretBefore);
+		await page.locator(EDITOR_SELECTOR).focus();
+		await page.keyboard.type('AFTER');
+		await expect(page.locator(EDITOR_SELECTOR)).toContainText('TYPED-BEFORE-CHAT AFTER');
+	});
+}
+
+test('Back and Forward walk the entries Chat pushed', async ({ page, request, fixture }, testInfo) => {
+	test.skip(testInfo.project.name !== 'desktop-chromium', 'desktop only');
+	const agent = uniqueAgent('history');
+	const n = await createAdminDM(request, fixture, agent);
+	await page.setViewportSize({ width: 1600, height: 900 });
+	const home = `/${fixture.adminUsername}/${fixture.workspaceSlug}`;
+	await page.goto(home);
+	await expect(chatButton(page)).toBeVisible();
+	const homePath = pathname(page);
+
+	await chatButton(page).click();
+	const region = page.getByRole('complementary', { name: 'Chat' });
+	await expect(region).toBeVisible();
+	expect(pathname(page)).toBe('/messages');
+
+	await region.locator(`a[href="/messages/${n}"]`).click();
+	await expect.poll(() => pathname(page)).toBe(`/messages/${n}`);
+	await expect(region.getByText('hello from the agent')).toBeVisible();
+
+	await page.goBack();
+	await expect.poll(() => pathname(page)).toBe('/messages');
+	await expect(region).toBeVisible();
+	await expect(region.locator(`a[href="/messages/${n}"]`)).toBeVisible();
+
+	await page.goBack();
+	await expect.poll(() => pathname(page)).toBe(homePath);
+	await expect(region).toBeHidden();
+
+	await page.goForward();
+	await expect.poll(() => pathname(page)).toBe('/messages');
+	await expect(region).toBeVisible();
+
+	// The thread's own back control returns to the inbox in one entry, and Close pops all of them.
+	await region.locator(`a[href="/messages/${n}"]`).click();
+	await expect.poll(() => pathname(page)).toBe(`/messages/${n}`);
+	await region.getByRole('link', { name: 'All conversations' }).click();
+	await expect.poll(() => pathname(page)).toBe('/messages');
+	await region.locator(`a[href="/messages/${n}"]`).click();
+	await expect.poll(() => pathname(page)).toBe(`/messages/${n}`);
+	await region.getByRole('button', { name: 'Close Chat' }).click();
+	await expect.poll(() => pathname(page)).toBe(homePath);
+	await expect(region).toBeHidden();
+});
+
+test('a reload or bookmark of /messages/N is the same thread as a route inside Pad chrome', async ({
+	page,
+	request,
+	fixture
+}, testInfo) => {
+	test.skip(testInfo.project.name !== 'desktop-chromium', 'desktop only');
+	const n = await createAdminDM(request, fixture, uniqueAgent('direct'));
+	await page.setViewportSize({ width: 1600, height: 900 });
+	const home = `/${fixture.adminUsername}/${fixture.workspaceSlug}`;
+	await page.goto(home);
+	await chatButton(page).click();
+	await page.getByRole('complementary', { name: 'Chat' }).locator('a[href^="/messages/"]').first().click();
+	await expect.poll(() => pathname(page)).toMatch(/^\/messages\/\d+$/);
+
+	for (const how of ['reload', 'bookmark'] as const) {
+		if (how === 'reload') await page.reload();
+		else await page.goto(`/messages/${n}`);
+		await expect(page.locator('aside.sidebar')).toBeVisible();
+		await expect(page.locator('header.topbar')).toBeVisible();
+		await expect(page.locator('main')).toHaveCount(1);
+		await expect(page.locator('main.main-content').getByText('hello from the agent')).toBeVisible();
+		// A route, not the surface: no dock, no drawer, no second thread.
+		await expect(page.locator('[data-chat-host]')).toHaveCount(0);
+		await expect(page.locator('.scroller')).toHaveCount(1);
+	}
+});
+
+test('a number that is invalid reads like a number that is not yours', async ({ page, browser, request, fixture }, testInfo) => {
+	test.skip(testInfo.project.name !== 'desktop-chromium', 'desktop only');
+	const n = await createAdminDM(request, fixture, uniqueAgent('private'));
+	await page.setViewportSize({ width: 1600, height: 900 });
+	const seen = new Map<string, string>();
+	for (const path of ['/messages/abc', '/messages/0', '/messages/007', '/messages/987654']) {
+		await page.goto(path);
+		const main = page.locator('main.main-content');
+		await expect(main.getByRole('heading', { name: 'Conversation not found' })).toBeVisible();
+		await expect(main.getByRole('textbox', { name: 'Message' })).toHaveCount(0);
+		seen.set(path, (await main.locator('.messages-main').innerText()).trim());
+	}
+	expect(new Set(seen.values()).size, JSON.stringify([...seen])).toBe(1);
+
+	// Same-account access: another account asking for admin's real conversation number.
+	const other = await createChatUser('shellOther');
+	const ctx = await browser.newContext({ baseURL: fixture.baseURL });
+	try {
+		const p = await ctx.newPage();
+		await p.setViewportSize({ width: 1600, height: 900 });
+		await loginViaForm(p, other.email);
+		await p.goto(`/messages/${n}`);
+		const main = p.locator('main.main-content');
+		await expect(main.getByRole('heading', { name: 'Conversation not found' })).toBeVisible();
+		expect((await main.locator('.messages-main').innerText()).trim()).toBe([...seen.values()][0]);
+	} finally {
+		await ctx.close();
+	}
+});

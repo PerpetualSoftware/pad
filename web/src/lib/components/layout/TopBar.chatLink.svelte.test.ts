@@ -31,6 +31,7 @@ vi.mock('$lib/stores/auth.svelte', async (orig) => {
 	const real = await orig<typeof import('$lib/stores/auth.svelte')>();
 	const fake = {
 		user: { name: 'Ada', email: 'ada@example.com', role: 'member' },
+		authenticated: true,
 		commerceAllowed: false,
 		cloudMode: false,
 		mcpPublicUrl: '',
@@ -103,5 +104,29 @@ describe('TopBar chat menu row (TASK-4044)', () => {
 		await settle();
 		expect(trigger().getAttribute('aria-expanded')).toBe('false');
 		expect(row()).toBeNull();
+	});
+});
+
+describe('TopBar Chat button (TASK-4315 PR 3b)', () => {
+	const button = () => document.querySelector<HTMLAnchorElement>('header.topbar a.chat-button');
+
+	it('the desktop bar shows it with the unread count, without opening the menu', async () => {
+		render(TopBar, { props: {} });
+		await settle();
+		expect(button()).not.toBeNull();
+		expect(button()?.getAttribute('aria-label')).toBe('Chat, 2 unread');
+	});
+
+	it('shows nothing while Chat is off', async () => {
+		h.chatOn = false;
+		render(TopBar, { props: {} });
+		await settle();
+		expect(button()).toBeNull();
+	});
+
+	it('the phone bar is unchanged: no Chat button', async () => {
+		render(TopBar, { props: { mobile: true } });
+		await settle();
+		expect(button()).toBeNull();
 	});
 });

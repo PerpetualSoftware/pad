@@ -2,6 +2,7 @@
 	import PresenceDot from '$lib/components/chat/PresenceDot.svelte';
 	import UnreadBadge from '$lib/components/chat/UnreadBadge.svelte';
 	import { chatStore } from '$lib/stores/chat.svelte';
+	import { chatSurface } from '$lib/stores/chatSurface.svelte';
 	import type { RosterEntry } from '$lib/stores/chatInbox.svelte';
 
 	let {
@@ -22,7 +23,11 @@
 </script>
 
 {#if entry.number !== null}
-	<a class="row" href="/messages/{entry.number}">
+	<a
+		class="row"
+		href="/messages/{entry.number}"
+		onclick={(e) => chatSurface.handleLinkClick(e, `/messages/${entry.number}`)}
+	>
 		<PresenceDot state={entry.presence} {checkedAt} showLabel />
 		<span class="name">{entry.key}</span>
 		<UnreadBadge count={chatStore.unreadByNumber[entry.number] ?? 0} />
