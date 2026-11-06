@@ -49,6 +49,16 @@ type publicShareView struct {
 	SortOrder int             `json:"sort_order"`
 }
 
+// publicShareViewType is the view_type a public payload carries. A calendar
+// view has no public renderer, so a shared reader gets the list (TASK-4239);
+// the calendar route itself is not reachable through a share token.
+func publicShareViewType(viewType string) string {
+	if viewType == models.CalendarViewType {
+		return "list"
+	}
+	return viewType
+}
+
 // validateShareLinkOpts checks that share link creation constraints are sane.
 // Returns an error message string (empty if valid).
 func validateShareLinkOpts(expiresAt *string, maxViews *int) string {
@@ -766,7 +776,7 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 			publicViews = append(publicViews, publicShareView{
 				Name:      v.Name,
 				Slug:      v.Slug,
-				ViewType:  v.ViewType,
+				ViewType:  publicShareViewType(v.ViewType),
 				Config:    config,
 				IsDefault: v.IsDefault,
 				SortOrder: v.SortOrder,

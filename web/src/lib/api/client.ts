@@ -122,6 +122,7 @@ import type {
 	CollectionFieldUsage
 } from '$lib/types';
 import type { ImportSummary, ImportUniqueDrop } from '$lib/types';
+import type { CalendarQuery, CalendarResponse } from '$lib/types';
 import type {
 	NeedsListParams,
 	NeedsResponse,
@@ -2770,6 +2771,18 @@ export const api = {
 			request<void>(`/workspaces/${ws}/collections/${coll}/views/${viewId}`, {
 				method: 'DELETE'
 			})
+	},
+
+	// ── Calendar ──────────────────────────────────────────────────────────────
+
+	calendar: {
+		get: (ws: string, coll: string, query: CalendarQuery) => {
+			const qs = new URLSearchParams();
+			for (const [k, v] of Object.entries(query)) {
+				if (v !== undefined && v !== '') qs.set(k, v);
+			}
+			return request<CalendarResponse>(`/workspaces/${ws}/collections/${coll}/calendar?${qs.toString()}`);
+		}
 	},
 
 	// ── Dashboard ─────────────────────────────────────────────────────────────

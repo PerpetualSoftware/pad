@@ -102,6 +102,7 @@ compress /api/v1/workspaces/{slug}/changes
 skip /api/v1/workspaces/{slug}/claim-code
 compress /api/v1/workspaces/{slug}/collections/
 compress /api/v1/workspaces/{slug}/collections/{collSlug}/
+compress /api/v1/workspaces/{slug}/collections/{collSlug}/calendar
 compress /api/v1/workspaces/{slug}/collections/{collSlug}/checkbox-progress
 compress /api/v1/workspaces/{slug}/collections/{collSlug}/child-progress
 compress /api/v1/workspaces/{slug}/collections/{collSlug}/field-usage
