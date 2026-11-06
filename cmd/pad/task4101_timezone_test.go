@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,17 +26,48 @@ func tzCLI(t *testing.T, handler http.HandlerFunc) *cobra.Command {
 	return tzCLIWithLocal(t, handler, time.FixedZone("Machine", 9*3600))
 }
 
+// tzServer is the stub server the latest tzCLIWithLocal call started. Every
+// server goroutine reads time.Local (time.Now), so the helper closes it, and
+// waits for its connections, before any write to time.Local. A test that calls
+// the helper more than once on the same t (a loop) would otherwise write the
+// zone while the first call's server is still serving, because t.Cleanup runs
+// only when the whole test ends (BUG-4370).
+var tzServer struct {
+	sync.Mutex
+	srv *httptest.Server
+}
+
+// tzCloseServer closes the helper's current stub server. httptest.Server.Close
+// returns only after every connection goroutine is done, which orders their
+// reads of time.Local before the write that follows.
+func tzCloseServer() {
+	tzServer.Lock()
+	srv := tzServer.srv
+	tzServer.srv = nil
+	tzServer.Unlock()
+	if srv != nil {
+		srv.Close()
+	}
+}
+
 // tzCLIWithLocal sets the machine zone BEFORE the stub server starts: its
-// goroutines read time.Local, so a later write is a data race (TASK-4101).
+// goroutines read time.Local, so a later write is a data race (TASK-4101). The
+// zone is written only while no stub server of this helper is running, and is
+// restored only after the server it started has closed.
 func tzCLIWithLocal(t *testing.T, handler http.HandlerFunc, local *time.Location) *cobra.Command {
 	t.Helper()
+	tzCloseServer()
 	t.Setenv("TZ", "UTC")
 	old := time.Local
 	time.Local = local
 	t.Cleanup(func() { time.Local = old })
 	setTempHomeMain(t)
 	srv := httptest.NewServer(handler)
-	t.Cleanup(srv.Close)
+	tzServer.Lock()
+	tzServer.srv = srv
+	tzServer.Unlock()
+	// Registered after the restore above, so it runs first.
+	t.Cleanup(tzCloseServer)
 	t.Setenv("PAD_URL", srv.URL)
 	t.Setenv("PAD_TOKEN", "pad_test")
 	root := newRootCmd()
