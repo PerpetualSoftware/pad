@@ -4,7 +4,7 @@ import { deleteCollection } from './lib/attachment-viewer';
 
 /**
  * TASK-2211 (audit C6): a tag filter that matches nothing rendered the
- * brand-new-collection state ("No tasks yet…" + "+ Create Task") under a header
+ * brand-new-collection state ("No items in Tasks yet…" + "Create item") under a header
  * counting the collection's items, because the "No matches" branch did not
  * count the tag filter, and its Clear filters left the tags in place, so it
  * could lead into that dead end. Now: "No matches", and Clear filters clears

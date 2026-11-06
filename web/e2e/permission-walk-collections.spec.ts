@@ -252,7 +252,7 @@ for (const [held, pattern] of Object.entries(HOLDS)) {
 for (const key of ['owner', 'editor', 'viewer', 'viewerTasksEdit'] as const) {
 	test(`${key}: empty-state create CTA renders iff the account may edit the collection`, async ({ page }) => {
 		await open(page, key, '/docs');
-		await expect(page.getByRole('heading', { name: 'No docs yet' })).toBeVisible();
+		await expect(page.getByRole('heading', { name: 'No items in Docs yet' })).toBeVisible();
 		await expect(page.locator('button.empty-cta')).toHaveCount(
 			key === 'owner' || key === 'editor' ? 1 : 0
 		);
