@@ -390,7 +390,7 @@ func TestMigrationCountsOnCopy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if abs == "/home/dave/.pad/pad.db" {
+	if home, err := os.UserHomeDir(); err == nil && abs == filepath.Join(home, ".pad", "pad.db") {
 		t.Fatal("production path refused")
 	}
 	if err := registerGuardedDrivers(); err != nil {
