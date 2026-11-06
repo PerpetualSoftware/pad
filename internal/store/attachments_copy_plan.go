@@ -109,10 +109,9 @@ const attachmentRefPrefix = "pad-attachment:"
 
 // attachmentPlanChunk bounds how many ids go into a single IN (...) list.
 // Host-parameter limits are real and build-dependent — historically 999 on
-// SQLite, higher on modern builds, 65535 on Postgres — and a copied item
-// will not come close. The bound exists so that the question never has to
-// be asked: a pathological body that blew the limit would fail the query,
-// and this planner's failure mode reads as "no attachments to copy".
+// SQLite, higher on modern builds, 65535 on Postgres. Copies cap referenced
+// IDs at 1,000, and parent/variant expansion can add IDs; chunking keeps each
+// query below the host-parameter limit.
 const attachmentPlanChunk = 400
 
 // AttachmentCopyRequest is the planner's complete input.
@@ -625,6 +624,13 @@ func storageKeyBackend(key string) string {
 		return ""
 	}
 	return prefix
+}
+
+// CountAttachmentRefs counts the distinct IDs the planner enumerates, including
+// unresolved references. It uses the same JSON field encoding and needs no reads.
+func CountAttachmentRefs(content string, fields map[string]any) (int, error) {
+	refs, err := attachmentRefsIn(content, fields)
+	return len(refs), err
 }
 
 // attachmentRefsIn returns the distinct attachment UUIDs referenced by the

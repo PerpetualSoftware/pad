@@ -155,6 +155,8 @@ type Store struct {
 	// locked re-read load-bearing: without it a test cannot tell a pre-image
 	// taken from the pre-lock read apart from one taken under the lock, and a
 	// mutation swapping the two survives.
+	// CopyItemAcrossWorkspaces also uses it after the advisory cap check and
+	// before BEGIN to exercise growth before its authoritative under-lock check.
 	//
 	// Same usage constraint as afterDebounceRead: set it only while no other
 	// request is in flight against this Store. It fires once per ATTEMPT, so

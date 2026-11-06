@@ -98,6 +98,9 @@ import (
 //	                           copy so the preview cannot promise something
 //	                           the copy would refuse.
 //
+// More than 1,000 distinct attachment references returns 422
+// too_many_attachments, identical to the copy, before attachment planning.
+//
 // NON-MUTATION is part of the contract (DR-15), scoped to the COPY's own
 // domain: the handler creates no item, no attachment rows and no
 // provenance row, advances NEITHER workspace's seq, and emits no
@@ -1513,6 +1516,15 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// the FINAL destination fields — never the source's raw fields, which
 	// would count blobs referenced only by keys migration dropped and
 	// overstate AttachmentBytes.
+	n, err := store.CountAttachmentRefs(item.Content, final)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if n > store.MaxCopyAttachmentRefs {
+		s.writeCopyError(w, r, store.ErrCopyTooManyAttachments)
+		return
+	}
 	plan, err := s.store.PlanAttachmentCopy(store.AttachmentCopyRequest{
 		SourceWorkspaceID: item.WorkspaceID,
 		TargetWorkspaceID: dst.WorkspaceID(),
