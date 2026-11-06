@@ -25,8 +25,8 @@ export type EachKeyReason = keyof typeof EACH_KEY_REASONS;
 export const EACH_KEY_CENSUS: Record<string, { reason: EachKeyReason; note: string }> = {
  "lib/components/calendar/CalendarDayDialog.svelte :: each rows as row (row.key)": { reason: 'db-primary-key', note: 'calendarRows uses an item primary key plus day for each span segment; schedule rows use a separate prefix and response position. One response replaces the rows.' },
  "lib/components/collections/CalendarView.svelte :: each (byDay.get(day) ?? []).slice(0,3) as row (row.key)": { reason: 'db-primary-key', note: 'calendarRows uses item primary key plus day, or a separately prefixed schedule response position; grouping and slicing preserve uniqueness.' },
- "lib/components/calendar/CalendarFieldPicker.svelte :: each fields.filter(f => f.key !== 'created' && f.key !== 'completed') as field (field.key)": { reason: 'deduped', note: 'dateFields reads parseSchema, which normalizes duplicate field keys.' },
  "lib/components/calendar/CalendarFieldPicker.svelte :: each fields as field (field.key)": { reason: 'deduped', note: 'dateFields reads parseSchema, which normalizes duplicate field keys.' },
+ "lib/components/calendar/CalendarFieldPicker.svelte :: each fields as field (field.key) #2": { reason: 'deduped', note: 'dateFields reads parseSchema, which normalizes duplicate field keys.' },
 
 	"lib/components/calendar/AgendaDayList.svelte :: each entries as entry (entryKey(entry))": { reason: 'db-primary-key', note: "One agenda answer: type, workspace, owner, item ref, schedule id or field, and instant identify each entry." },
 	"routes/console/agenda/+page.svelte :: each groups as group (group.day)": { reason: 'grouped-by-key', note: "groupEntries creates one Map entry per server day." },
