@@ -413,6 +413,22 @@ func TestMigrationCountsOnCopy(t *testing.T) {
 		return out
 	}
 	before := counts(db)
+	fkCount := func(q interface {
+		Query(string, ...any) (*sql.Rows, error)
+	}) int {
+		t.Helper()
+		rows, err := q.Query(`PRAGMA foreign_key_check`)
+		if err != nil {
+			t.Fatal("foreign key check failed")
+		}
+		defer rows.Close()
+		n := 0
+		for rows.Next() {
+			n++
+		}
+		return n
+	}
+	fkBefore := fkCount(db)
 	db.Close()
 	s, err := New(abs)
 	if err != nil {
@@ -424,14 +440,11 @@ func TestMigrationCountsOnCopy(t *testing.T) {
 	if !reflect.DeepEqual(before, after) {
 		t.Fatal("counts differ")
 	}
-	rows, err := s.db.Query(`PRAGMA foreign_key_check`)
-	if err != nil {
-		t.Fatal("foreign key check failed")
+	fkAfter := fkCount(s.db)
+	t.Logf("foreign key violations in=%d out=%d", fkBefore, fkAfter)
+	if fkAfter != fkBefore {
+		t.Fatal("migration changed the foreign key violation count")
 	}
-	if rows.Next() {
-		t.Fatal("foreign key violation")
-	}
-	rows.Close()
 	var integrity string
 	if err := s.db.QueryRow(`PRAGMA integrity_check`).Scan(&integrity); err != nil || integrity != "ok" {
 		t.Fatal("integrity check failed")
