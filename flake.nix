@@ -31,7 +31,7 @@
         default = pkgs.mkShell {
           packages = with pkgs; [
             go_1_26
-            nodejs_24
+            nodejs_26
             golangci-lint
             sqlite
             gopls
