@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sync"
 	"testing"
 	"time"
@@ -501,5 +502,42 @@ func TestDeadlineEvalFractionalSecondOverride(t *testing.T) {
 	}
 	if got := f.eval(t, "2026-10-26T11:00:02Z", 0); got.Missed != 1 {
 		t.Fatalf("after the override: %+v", got)
+	}
+}
+
+// The Postgres scan guard admits exactly the text the cast accepts. The table
+// is generated: years around the leap rules and the range ends, every month,
+// every day 1 to 32, and offsets around the 15:59 limit. Go's own parser is the
+// oracle for the calendar; the year and offset limits are Postgres's.
+func TestPgInstantShapePopulation(t *testing.T) {
+	t.Parallel()
+	re := regexp.MustCompile(pgInstantShape)
+	offsets := []struct {
+		text string
+		ok   bool
+	}{{"Z", true}, {"+00:00", true}, {"-12:00", true}, {"+15:59", true}, {"-15:00", true}, {"+16:00", false}, {"+20:00", false}, {"+23:59", false}}
+	n := 0
+	for _, year := range []int{0, 1, 4, 100, 400, 1900, 2000, 2023, 2024, 2026, 2100, 9999} {
+		for month := 1; month <= 13; month++ {
+			for day := 1; day <= 32; day++ {
+				for _, off := range offsets {
+					text := fmt.Sprintf("%04d-%02d-%02dT10:20:30.5%s", year, month, day, off.text)
+					_, err := time.Parse(time.RFC3339Nano, text)
+					want := err == nil && year >= 1 && off.ok
+					if got := re.MatchString(text); got != want {
+						t.Errorf("%s: guard=%v, want %v", text, got, want)
+					}
+					n++
+				}
+			}
+		}
+	}
+	for _, text := range []string{"2026-10-26T24:00:00Z", "2026-10-26T10:60:00Z", "2026-10-26T10:00:60Z", "2026-10-26", "2026-10-26 10:00:00Z", "2026-10-26T10:00:00", "not-an-instant", ""} {
+		if re.MatchString(text) {
+			t.Errorf("%q: guard accepted it", text)
+		}
+	}
+	if n < 1000 {
+		t.Fatalf("population too small: %d", n)
 	}
 }

@@ -132,12 +132,19 @@ func scanDeadline(row interface{ Scan(...any) error }, approximate bool) (deadli
 	return d, err
 }
 
-// pgInstantShape admits only text the Postgres cast to timestamptz accepts:
-// real month and day ranges (February stops at the 28th, so a leap day reads as
-// unparsed, which only affects scan order because Go resolves every row
-// exactly), a valid clock and an offset. It replaces pg_input_is_valid, which
-// needs Postgres 16.
-const pgInstantShape = `^[0-9]{4}-((0[13578]|1[02])-(0[1-9]|[12][0-9]|3[01])|(0[469]|11)-(0[1-9]|[12][0-9]|30)|02-(0[1-9]|1[0-9]|2[0-8]))T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\.[0-9]+)?(Z|[+-]([01][0-9]|2[0-3]):[0-5][0-9])$`
+// pgInstantShape admits exactly the RFC3339 text the Postgres cast to
+// timestamptz accepts: years 0001 to 9999, real month and day ranges with leap
+// years, a valid clock, and an offset up to 15:59. Anything else reads as
+// unparsed (sorts first), so one bad row never fails the page query; Go
+// resolves every row exactly and reports the bad one. It replaces
+// pg_input_is_valid, which needs Postgres 16. TestPgInstantShapePopulation
+// generates the edge cases.
+const (
+	pgYear         = `(000[1-9]|00[1-9][0-9]|0[1-9][0-9]{2}|[1-9][0-9]{3})`
+	pgLeapYear     = `(([0-9]{2}(0[48]|[2468][048]|[13579][26]))|((0[48]|[2468][048]|[13579][26])00))`
+	pgDate         = `(` + pgYear + `-((0[13578]|1[02])-(0[1-9]|[12][0-9]|3[01])|(0[469]|11)-(0[1-9]|[12][0-9]|30)|02-(0[1-9]|1[0-9]|2[0-8]))|` + pgLeapYear + `-02-29)`
+	pgInstantShape = `^` + pgDate + `T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\.[0-9]+)?(Z|[+-](0[0-9]|1[0-5]):[0-5][0-9])$`
+)
 
 func (s *Store) deadlinePage(now time.Time, cursor *deadlineCandidate) ([]deadlineCandidate, error) {
 	epoch := func(col string) string { return `CAST(strftime('%s',` + col + `) AS REAL)` }
