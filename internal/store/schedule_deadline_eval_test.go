@@ -569,3 +569,42 @@ func TestDeadlineEvalSkipsTerminalItemsAndRecordsOnReopen(t *testing.T) {
 		t.Errorf("evidence %d, events %d, want 1 and 1", f.deadlineEvidence(t), f.deadlineNotices(t))
 	}
 }
+
+// Terminal is judged by each workspace's own terminal options: the same status
+// word closes an item in one workspace and leaves it open in another.
+func TestDeadlineEvalTerminalIsPerWorkspace(t *testing.T) {
+	t.Parallel()
+	f := newSchedFixture(t)
+	other := createTestWorkspace(t, f.s, "Custom")
+	col, err := f.s.CreateCollection(other.ID, models.CollectionCreate{
+		Name:   "Jobs",
+		Schema: `{"fields":[{"key":"status","type":"select","options":["open","wrapped-up"],"default":"open","terminal_options":["wrapped-up"]}]}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := createTestItem(t, f.s, other.ID, col.ID, "Closed here", "")
+	f.exec(t, `UPDATE items SET fields = ? WHERE id = ?`, `{"status":"wrapped-up"}`, closed.ID)
+	mk := func(wsID, itemID string) *models.ItemSchedule {
+		sc, err := f.s.createScheduleAt(wsID, itemID, models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-01T09:00", Tz: "UTC", Rrule: "FREQ=DAILY"}, schedNow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.nativeDeadline(t, sc, "stays_owed", 3600)
+		return sc
+	}
+	inOther := mk(other.ID, closed.ID)
+	// The same word in the fixture workspace is no terminal status there.
+	f.exec(t, `UPDATE items SET fields = ? WHERE id = ?`, `{"status":"wrapped-up"}`, f.item.ID)
+	inFixture := mk(f.ws.ID, f.item.ID)
+
+	got := f.eval(t, "2026-10-26T12:00:00Z", 0)
+	if got.Missed != 1 {
+		t.Fatalf("missed %d, want only the item the workspace does not close", got.Missed)
+	}
+	for id, want := range map[string]int{inOther.ID: 0, inFixture.ID: 1} {
+		if n := f.count(t, `SELECT COUNT(*) FROM schedule_changes WHERE schedule_id=? AND change_type='missed_recorded' AND role='deadline'`, id); n != want {
+			t.Errorf("schedule %s: %d miss rows, want %d", id, n, want)
+		}
+	}
+}

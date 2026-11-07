@@ -186,6 +186,12 @@ func (s *Store) deadlinePage(now time.Time, cursor *deadlineCandidate) ([]deadli
 // judged by each workspace's own terminal options as the agenda does. A terminal
 // item never shows overdue work; a reopened one is evaluated again and records
 // its miss then. One query per workspace on the page.
+//
+// It runs on the scan page, never inside the per-row transaction: the terminal
+// options are read through the pool, and a read that waits for a second
+// connection while the transaction holds the first can hang a small pool. An
+// item that turns terminal between the page and the pin is the one case it can
+// miss, and recording a miss for it then is harmless.
 func (s *Store) openDeadlineCandidates(q Queryer, candidates []deadlineCandidate) ([]deadlineCandidate, error) {
 	byWorkspace := map[string][]string{}
 	for _, d := range candidates {
@@ -371,13 +377,6 @@ func (s *Store) evaluateDeadline(candidate deadlineCandidate, nowT time.Time) (b
 	}
 	if err = d.resolve(); err != nil {
 		return false, err
-	}
-	open, err := s.openDeadlineCandidates(tx, []deadlineCandidate{d})
-	if err != nil {
-		return false, err
-	}
-	if len(open) == 0 {
-		return false, nil
 	}
 	states, err := s.deadlineJournal(tx, []deadlineCandidate{d})
 	if err != nil {
