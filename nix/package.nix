@@ -3,7 +3,7 @@
   stdenv,
   buildGoModule,
   go_1_26,
-  nodejs_24,
+  nodejs_26,
   importNpmLock,
 }:
 
@@ -30,13 +30,13 @@ let
     sourceRoot = "source/web";
 
     nativeBuildInputs = [
-      nodejs_24
+      nodejs_26
       importNpmLock.hooks.linkNodeModulesHook
     ];
 
     npmDeps = importNpmLock.buildNodeModules {
       npmRoot = ../web;
-      nodejs = nodejs_24;
+      nodejs = nodejs_26;
     };
 
     buildPhase = ''
