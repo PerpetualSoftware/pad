@@ -311,12 +311,19 @@ func (s *Store) SetCommitmentRoles(workspaceID, itemID string, roles models.Comm
 // leaves later misses recorded. A row that is not native with a deadline has
 // nothing to renegotiate and is refused.
 func (s *Store) RenegotiateDeadline(workspaceID, itemID, actor string, until time.Time, reason string) error {
+	return s.renegotiateDeadlineAt(workspaceID, itemID, actor, until, reason, time.Now())
+}
+
+func (s *Store) renegotiateDeadlineAt(workspaceID, itemID, actor string, until time.Time, reason string, now time.Time) error {
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
 		return fieldErr("reason", "required", "renegotiating a deadline needs a reason")
 	}
 	if until.IsZero() {
 		return fieldErr("until", "required", "renegotiating a deadline needs the new deadline")
+	}
+	if !until.After(now) || until.After(now.Add(maxResolveUntil)) {
+		return fieldErr("until", "range", "until must be after now and within 366 days")
 	}
 	if actor == "" {
 		actor = "user"
@@ -354,15 +361,19 @@ func (s *Store) RenegotiateDeadline(workspaceID, itemID, actor string, until tim
 	if err != nil || key == "" {
 		return fmt.Errorf("renegotiate deadline: outstanding key: %w", err)
 	}
-	before, err := s.scheduleSnapshotTx(tx, sc.ID)
+	overrides, err := s.occurrenceOverrides(tx, sc.ID, key)
 	if err != nil {
 		return err
 	}
+	prior, err := resolveRoleValue(loc, *sc.NextWall, *roles.DeadlineDays, *roles.DeadlineSecs, overrideFor(overrides, "deadline"))
+	if err != nil {
+		return err
+	}
+	// The journal row carries the old and new deadline values, because the
+	// override row is overwritten by the next renegotiation.
+	before := fmt.Sprintf(`{"deadline":%q}`, prior.value)
+	after := fmt.Sprintf(`{"deadline":%q}`, until.UTC().Format(time.RFC3339Nano))
 	if err := s.upsertScheduleOverrideTx(tx, sc.ID, key, "deadline", until, nil); err != nil {
-		return err
-	}
-	after, err := s.scheduleSnapshotTx(tx, sc.ID)
-	if err != nil {
 		return err
 	}
 	if err := s.journalScheduleChangeReasonTx(tx, sc.ID, "move", key, "deadline", before, after, actor, reason, "user"); err != nil {

@@ -213,7 +213,7 @@ func TestRenegotiateDeadlineWritesOverrideAndJournalsMoveUserReason(t *testing.T
 	f := newSchedFixture(t)
 	sc := f.nativeCommit(t)
 	until := rt("2026-10-27T14:00:00Z")
-	if err := f.s.RenegotiateDeadline(f.ws.ID, f.item.ID, "user", until, "  client asked for more time "); err != nil {
+	if err := f.s.renegotiateDeadlineAt(f.ws.ID, f.item.ID, "user", until, "  client asked for more time ", renegNow); err != nil {
 		t.Fatal(err)
 	}
 	if n := f.count(t, `SELECT COUNT(*) FROM schedule_occurrence_overrides WHERE schedule_id=? AND occurrence_key=? AND role='deadline' AND value_at=?`, sc.ID, deadlineKey, "2026-10-27T14:00:00Z"); n != 1 {
@@ -232,7 +232,7 @@ func TestRenegotiateDeadlineWritesOverrideAndJournalsMoveUserReason(t *testing.T
 		t.Fatalf("deadline = %v", got.Roles.Deadline)
 	}
 	// A second renegotiation replaces the override.
-	if err := f.s.RenegotiateDeadline(f.ws.ID, f.item.ID, "user", rt("2026-10-28T14:00:00Z"), "again"); err != nil {
+	if err := f.s.renegotiateDeadlineAt(f.ws.ID, f.item.ID, "user", rt("2026-10-28T14:00:00Z"), "again", renegNow); err != nil {
 		t.Fatal(err)
 	}
 	if n := f.count(t, `SELECT COUNT(*) FROM schedule_occurrence_overrides WHERE schedule_id=? AND role='deadline'`, sc.ID); n != 1 {
@@ -246,7 +246,7 @@ func TestRenegotiateRequiresReason(t *testing.T) {
 	sc := f.nativeCommit(t)
 	before := len(f.journal(t, sc.ID))
 	for _, reason := range []string{"", "   ", "\t\n"} {
-		err := f.s.RenegotiateDeadline(f.ws.ID, f.item.ID, "user", rt("2026-10-27T14:00:00Z"), reason)
+		err := f.s.renegotiateDeadlineAt(f.ws.ID, f.item.ID, "user", rt("2026-10-27T14:00:00Z"), reason, renegNow)
 		var fe *ScheduleFieldError
 		if !errors.As(err, &fe) || fe.Field != "reason" || fe.Code != "required" {
 			t.Fatalf("reason %q: %v", reason, err)
@@ -261,13 +261,13 @@ func TestRenegotiateRefusesRowWithoutNativeDeadline(t *testing.T) {
 	t.Parallel()
 	f := newSchedFixture(t)
 	f.commitFixture(t, "deadline_hard") // legacy
-	err := f.s.RenegotiateDeadline(f.ws.ID, f.item.ID, "user", rt("2026-10-27T14:00:00Z"), "why")
+	err := f.s.renegotiateDeadlineAt(f.ws.ID, f.item.ID, "user", rt("2026-10-27T14:00:00Z"), "why", renegNow)
 	var fe *ScheduleFieldError
 	if !errors.As(err, &fe) || fe.Field != "deadline" {
 		t.Fatalf("legacy row: %v", err)
 	}
 	g := newSchedFixture(t)
-	if err := g.s.RenegotiateDeadline(g.ws.ID, g.item.ID, "user", rt("2026-10-27T14:00:00Z"), "why"); !errors.Is(err, ErrScheduleNotFound) {
+	if err := g.s.renegotiateDeadlineAt(g.ws.ID, g.item.ID, "user", rt("2026-10-27T14:00:00Z"), "why", renegNow); !errors.Is(err, ErrScheduleNotFound) {
 		t.Fatalf("no schedule: %v", err)
 	}
 }
@@ -283,7 +283,7 @@ func TestRenegotiateOnConvertedRowKeepsLaterMissesRecorded(t *testing.T) {
 		t.Fatalf("converted row recorded a miss: %+v", got)
 	}
 	until := time.Now().UTC().Add(48 * time.Hour).Truncate(time.Second)
-	if err := f.s.RenegotiateDeadline(f.ws.ID, f.item.ID, "user", until, "more time"); err != nil {
+	if err := f.s.renegotiateDeadlineAt(f.ws.ID, f.item.ID, "user", until, "more time", renegNow); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.eval(t, until.Add(-time.Second).Format(time.RFC3339), 0); got.Missed != 0 {
@@ -305,7 +305,7 @@ func TestOnlyConversionWritesLegacyBackfillBeforeJSON(t *testing.T) {
 	}
 	// renegotiation, a miss, the assignee step, a late on-time report, a move.
 	until := time.Now().UTC().Add(48 * time.Hour).Truncate(time.Second)
-	if err := f.s.RenegotiateDeadline(f.ws.ID, f.item.ID, "user", until, "later"); err != nil {
+	if err := f.s.renegotiateDeadlineAt(f.ws.ID, f.item.ID, "user", until, "later", renegNow); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.eval(t, until.Add(time.Second).Format(time.RFC3339), 0); got.Missed != 1 {
@@ -531,5 +531,36 @@ func TestAssigneeChangeRollsBackWithItemUpdate(t *testing.T) {
 	f.updateAssignee(t, a.ID)
 	if n := len(f.assigneeRows(t, sc.ID)); n != 1 {
 		t.Fatalf("committed update journal rows = %d", n)
+	}
+}
+
+// renegNow is the clock the renegotiation tests run at: before every deadline they use.
+var renegNow = rt("2026-10-26T00:00:00Z")
+
+func TestRenegotiateJournalCarriesOldAndNewDeadline(t *testing.T) {
+	t.Parallel()
+	f := newSchedFixture(t)
+	sc := f.nativeCommit(t)
+	if err := f.s.renegotiateDeadlineAt(f.ws.ID, f.item.ID, "user", rt("2026-10-27T14:00:00Z"), "one", renegNow); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.renegotiateDeadlineAt(f.ws.ID, f.item.ID, "user", rt("2026-10-28T14:00:00Z"), "two", renegNow); err != nil {
+		t.Fatal(err)
+	}
+	rows := f.journal(t, sc.ID)
+	e := rows[len(rows)-1]
+	if !strings.Contains(*e.BeforeJSON, "2026-10-27T14:00:00Z") || !strings.Contains(*e.AfterJSON, "2026-10-28T14:00:00Z") || strings.Contains(*e.BeforeJSON, "legacy_backfill") {
+		t.Fatalf("before=%s after=%s", *e.BeforeJSON, *e.AfterJSON)
+	}
+}
+
+func TestRenegotiateUntilRange(t *testing.T) {
+	t.Parallel()
+	f := newSchedFixture(t)
+	f.nativeCommit(t)
+	for _, until := range []time.Time{renegNow, renegNow.Add(-time.Hour), renegNow.Add(maxResolveUntil + time.Hour)} {
+		if err := f.s.renegotiateDeadlineAt(f.ws.ID, f.item.ID, "user", until, "why", renegNow); err == nil {
+			t.Fatalf("until %v accepted", until)
+		}
 	}
 }
