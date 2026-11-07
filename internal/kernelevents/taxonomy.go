@@ -32,7 +32,7 @@
 // contract's shape, not running code.
 package kernelevents
 
-// Canonical event names — the events/1 set (SPEC-3 §Taxonomy, v1.7; TASK-4351).
+// Canonical event names — the events/1 set (SPEC-3 §Taxonomy, v1.7).
 //
 // item.restored and item.bulk_updated were admitted in v1.1 during TASK-2658
 // recon: restore is a live first-class mutation whose silence would let an
