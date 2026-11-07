@@ -20,6 +20,7 @@ type seededWorkspace struct {
 	commentID   string
 	docID       string
 	shareLinkID string
+	scheduleID  string
 	mcpAuditID  string
 }
 
@@ -41,6 +42,7 @@ var wsChildTables = []string{
 	// item_schedules (TASK-4102): same, its composite FK to items cascades;
 	// schedule_occurrences and the managed item_reminders row cascade from it.
 	"item_schedules",
+	"schedule_changes",
 	// comment_mentions (TASK-3917): same, its FKs to comments, items and
 	// workspaces cascade.
 	"comment_mentions",
@@ -197,8 +199,23 @@ func seedFullWorkspace(t *testing.T, s *Store, u *models.User, name string) seed
 	s.mustExec(t, `INSERT INTO mcp_audit_log (id, timestamp, user_id, workspace_id, token_kind, token_ref, tool_name, args_hash, result_status, latency_ms, request_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		mcpAuditID, ts, u.ID, ws.ID, "pat", "tok-1", "pad_item", "", "ok", 0, "req-"+newID())
 
+	sc, err := s.createScheduleAt(ws.ID, item1.ID, models.ScheduleCreate{Kind: "check", Dtstart: "2199-01-01T09:00:00", Tz: "UTC"}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.upsertScheduleOverrideTx(tx, sc.ID, OccurrenceKey(sc, *sc.NextAt, *sc.NextWall), "target", time.Date(2199, 1, 2, 9, 0, 0, 0, time.UTC), nil); err != nil {
+		tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
 	return seededWorkspace{
-		wsID: ws.ID, slug: ws.Slug, item1: item1.ID, item2: item2.ID,
+		scheduleID: sc.ID, wsID: ws.ID, slug: ws.Slug, item1: item1.ID, item2: item2.ID,
 		commentID: commentID, docID: docID, shareLinkID: shareLinkID, mcpAuditID: mcpAuditID,
 	}
 }
@@ -212,6 +229,7 @@ func (s *Store) totalChildRows(t *testing.T, sw seededWorkspace) int {
 	for _, tbl := range wsChildTables {
 		total += s.countRows(t, `SELECT COUNT(*) FROM `+tbl+` WHERE workspace_id = ?`, sw.wsID)
 	}
+	total += s.countRows(t, `SELECT COUNT(*) FROM schedule_occurrence_overrides WHERE schedule_id = ?`, sw.scheduleID)
 	// Item/parent-scoped tables without a workspace_id column.
 	total += s.countRows(t, `SELECT COUNT(*) FROM comment_reactions WHERE comment_id = ?`, sw.commentID)
 	total += s.countRows(t, `SELECT COUNT(*) FROM item_versions WHERE item_id IN (?, ?)`, sw.item1, sw.item2)

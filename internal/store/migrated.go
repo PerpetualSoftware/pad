@@ -164,12 +164,12 @@ var migratedRefusalTables = []string{
 	// A person's needs-you dismissals and deferrals (TASK-3918), the same
 	// class as item_stars: per-user workspace state the bundle does not carry.
 	"item_needs_snoozes",
-	// Time-trigger schedules and their resolved occurrences (TASK-4102): carried
-	// by models.WorkspaceExport.Schedules since TASK-4104 D2 (their managed
-	// reminder rows ride inside it), so these rows now live in PostgreSQL and a
-	// write here edits a copy that is gone.
+	// Schedules, occurrence actuals, sparse overrides and journal rows travel
+	// through the workspace bundle. Writes to this abandoned copy are refused.
 	"item_schedules",
 	"schedule_occurrences",
+	"schedule_occurrence_overrides",
+	"schedule_changes",
 	// A person's "mark caught up" cursor per workspace (TASK-3615 PR A),
 	// the same class: the bundle does not carry it (BUG-3958).
 	"workspace_read_cursors",

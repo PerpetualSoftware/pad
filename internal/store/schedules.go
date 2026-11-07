@@ -511,6 +511,12 @@ func (s *Store) createScheduleAt(workspaceID, itemID string, in models.ScheduleC
 	if err := s.insertManagedReminderTx(tx, workspaceID, itemID, id, NormalizeInstant(arm.RemindAt)); err != nil {
 		return nil, err
 	}
+	if err := s.setLegacyRolesTx(tx, id, in.Kind, spec.Start.String(), in.Dtend); err != nil {
+		return nil, err
+	}
+	if err := s.journalScheduleAfterTx(tx, id, "create", "", "", "", "system"); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("create schedule: %w", err)
 	}
@@ -608,6 +614,10 @@ func (s *Store) updateScheduleAt(workspaceID, itemID string, upd models.Schedule
 
 	cur, err := s.getScheduleQ(tx, workspaceID, itemID, true)
 	if err != nil || cur == nil {
+		return nil, err
+	}
+	before, err := s.scheduleSnapshotTx(tx, cur.ID)
+	if err != nil {
 		return nil, err
 	}
 	// The item may have been archived while this waited on the schedule row: a
@@ -813,6 +823,18 @@ func (s *Store) updateScheduleAt(workspaceID, itemID string, upd models.Schedule
 			}
 		}
 	}
+	if err := s.setLegacyRolesTx(tx, cur.ID, kind, spec.Start.String(), dtend); err != nil {
+		return nil, err
+	}
+	after, err := s.scheduleSnapshotTx(tx, cur.ID)
+	if err != nil {
+		return nil, err
+	}
+	if after != before {
+		if err := s.journalScheduleChangeTx(tx, cur.ID, "update", "", "", before, after, "system"); err != nil {
+			return nil, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("update schedule: %w", err)
 	}
@@ -885,6 +907,13 @@ func (s *Store) DeleteSchedule(workspaceID, itemID string) (bool, error) {
 	defer tx.Rollback()
 	cur, err := s.getScheduleQ(tx, workspaceID, itemID, true)
 	if err != nil || cur == nil {
+		return false, err
+	}
+	before, err := s.scheduleSnapshotTx(tx, cur.ID)
+	if err != nil {
+		return false, err
+	}
+	if err := s.journalScheduleChangeTx(tx, cur.ID, "delete", "", "", before, "", "system"); err != nil {
 		return false, err
 	}
 	if err := s.deleteManagedReminderTx(tx, cur.ID); err != nil {

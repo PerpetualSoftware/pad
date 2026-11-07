@@ -333,6 +333,16 @@ var nulColumns = []nulColumn{
 	{"item_schedules", "anchor_wall", classText},
 	{"schedule_occurrences", "occurrence_wall", classText},
 	{"schedule_occurrences", "actor", classText},
+	{"item_schedules", "outcome", classText},
+	{"schedule_occurrence_overrides", "occurrence_key", classText},
+	{"schedule_occurrence_overrides", "role", classText},
+	{"schedule_occurrence_overrides", "value_wall", classText},
+	{"schedule_changes", "occurrence_key", classText},
+	{"schedule_changes", "role", classText},
+	{"schedule_changes", "before_json", classJSON},
+	{"schedule_changes", "after_json", classJSON},
+	{"schedule_changes", "actor", classText},
+	{"schedule_changes", "reason", classText},
 }
 
 // nulTriggerMigrations are the generated trigger files, in migration order.
@@ -365,6 +375,7 @@ var nulTriggerMigrations = []string{
 	"161_nul_invariant_triggers_post160.sql",
 	"163_nul_invariant_triggers_post162.sql",
 	"166_nul_invariant_triggers_post165.sql",
+	"168_nul_invariant_triggers_post167.sql",
 }
 
 // nulColumnTriggerFile assigns a column to a trigger file other than the
@@ -410,16 +421,26 @@ var nulColumnTriggerFile = map[string]string{
 	// 160 added the column (TASK-4101).
 	"users.timezone": "161_nul_invariant_triggers_post160.sql",
 	// 162 introduced the tables (TASK-4102).
-	"item_schedules.dtstart":               "163_nul_invariant_triggers_post162.sql",
-	"item_schedules.dtend":                 "163_nul_invariant_triggers_post162.sql",
-	"item_schedules.tz":                    "163_nul_invariant_triggers_post162.sql",
-	"item_schedules.rrule":                 "163_nul_invariant_triggers_post162.sql",
-	"item_schedules.rdates":                "163_nul_invariant_triggers_post162.sql",
-	"item_schedules.exdates":               "163_nul_invariant_triggers_post162.sql",
-	"item_schedules.next_wall":             "163_nul_invariant_triggers_post162.sql",
-	"item_schedules.anchor_wall":           "163_nul_invariant_triggers_post162.sql",
-	"schedule_occurrences.occurrence_wall": "163_nul_invariant_triggers_post162.sql",
-	"schedule_occurrences.actor":           "163_nul_invariant_triggers_post162.sql",
+	"item_schedules.dtstart":                       "163_nul_invariant_triggers_post162.sql",
+	"item_schedules.dtend":                         "163_nul_invariant_triggers_post162.sql",
+	"item_schedules.tz":                            "163_nul_invariant_triggers_post162.sql",
+	"item_schedules.rrule":                         "163_nul_invariant_triggers_post162.sql",
+	"item_schedules.rdates":                        "163_nul_invariant_triggers_post162.sql",
+	"item_schedules.exdates":                       "163_nul_invariant_triggers_post162.sql",
+	"item_schedules.next_wall":                     "163_nul_invariant_triggers_post162.sql",
+	"item_schedules.anchor_wall":                   "163_nul_invariant_triggers_post162.sql",
+	"schedule_occurrences.occurrence_wall":         "163_nul_invariant_triggers_post162.sql",
+	"schedule_occurrences.actor":                   "163_nul_invariant_triggers_post162.sql",
+	"item_schedules.outcome":                       "168_nul_invariant_triggers_post167.sql",
+	"schedule_occurrence_overrides.occurrence_key": "168_nul_invariant_triggers_post167.sql",
+	"schedule_occurrence_overrides.role":           "168_nul_invariant_triggers_post167.sql",
+	"schedule_occurrence_overrides.value_wall":     "168_nul_invariant_triggers_post167.sql",
+	"schedule_changes.occurrence_key":              "168_nul_invariant_triggers_post167.sql",
+	"schedule_changes.role":                        "168_nul_invariant_triggers_post167.sql",
+	"schedule_changes.before_json":                 "168_nul_invariant_triggers_post167.sql",
+	"schedule_changes.after_json":                  "168_nul_invariant_triggers_post167.sql",
+	"schedule_changes.actor":                       "168_nul_invariant_triggers_post167.sql",
+	"schedule_changes.reason":                      "168_nul_invariant_triggers_post167.sql",
 }
 
 // nulTriggerFileFor names the trigger file a column's triggers are rendered
@@ -496,6 +517,25 @@ func NULProtectedColumns() []nulColumn {
 // dispatcher's claim and send columns (TASK-3939) do not exist yet.
 // user_notification_settings is written by PutNotificationSettings.
 var nulExcluded = map[string]string{
+	"item_schedules.deadline_behavior":          "fixed enum constrained by CHECK (TASK-4349)",
+	"item_schedules.roles_origin":               "fixed origin enum constrained by CHECK (TASK-4349)",
+	"schedule_occurrences.actual_source":        "fixed provenance enum constrained by CHECK (TASK-4349)",
+	"schedule_occurrences.actual_done_at":       "UTC instant formatted from a parsed time (TASK-4349)",
+	"schedule_occurrence_overrides.id":          "server UUID (TASK-4349)",
+	"schedule_occurrence_overrides.schedule_id": "schedule UUID foreign key (TASK-4349)",
+	"schedule_occurrence_overrides.value_at":    "UTC instant formatted from a parsed time (TASK-4349)",
+	"schedule_occurrence_overrides.created_at":  "server timestamp (TASK-4349)",
+	"schedule_occurrence_overrides.updated_at":  "server timestamp (TASK-4349)",
+	"schedule_changes.id":                       "server UUID (TASK-4349)",
+	"schedule_changes.workspace_id":             "workspace UUID foreign key (TASK-4349)",
+	"schedule_changes.item_id":                  "resolved item UUID (TASK-4349)",
+	"schedule_changes.schedule_id":              "resolved schedule UUID (TASK-4349)",
+	"schedule_changes.change_type":              "fixed change enum constrained by CHECK (TASK-4349)",
+	"schedule_changes.reason_source":            "fixed provenance enum constrained by CHECK (TASK-4349)",
+	"schedule_changes.root_change_id":           "server UUID (TASK-4349)",
+	"schedule_changes.parent_change_id":         "server UUID (TASK-4349)",
+	"schedule_changes.recorded_at":              "server timestamp (TASK-4349)",
+
 	"user_workspace_groups.id":                  "server-minted group UUID (TASK-4243)",
 	"user_workspace_groups.user_id":             "authenticated user UUID, a foreign key to users(id) (TASK-4243)",
 	"user_workspace_groups.created_at":          "server timestamp from nowNano() (TASK-4243)",
@@ -948,8 +988,10 @@ func renderNULTriggerMigration(file string) string {
 	var b strings.Builder
 	if file == nulTriggerMigrations[0] {
 		b.WriteString(nulTriggerMigrationHeader)
-	} else {
+	} else if file < "168_" {
 		b.WriteString(nulLaterTriggerMigrationHeader)
+	} else {
+		b.WriteString(strings.ReplaceAll(nulLaterTriggerMigrationHeader, "084's", "those of 084"))
 	}
 	for _, c := range cols {
 		for _, ev := range []struct{ suffix, on string }{

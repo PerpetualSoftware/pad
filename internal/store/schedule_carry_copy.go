@@ -15,7 +15,7 @@ import (
 // preflight asks the same planScheduleCarry the copy runs.
 //
 // The destination is armed FRESH: its timing, kind, audience and lead carry, its
-// history does not, a COPY drops its snooze, and its outstanding occurrence is
+// resolved occurrences do not, a COPY drops its snooze, and its outstanding occurrence is
 // the first one strictly after the copy instant. A copy never fires an occurrence that is
 // already due or past. The one exception is a MOVE of a source whose current
 // occurrence is OUTSTANDING and due, whether it has fired (and is unresolved) or
@@ -54,7 +54,7 @@ type ScheduleCarryReport struct {
 	// Carried is true when the destination got a schedule.
 	Carried bool
 	// HistoryDropped is how many resolved occurrences the source schedule has:
-	// a copy never carries history.
+	// copies and moves drop resolved occurrences.
 	HistoryDropped int
 	// Skipped is the reason a source schedule was not carried: "ended", a
 	// timing code (timing:syntax, timing:cap_scan, ...), "exhausted" (the rule
@@ -89,9 +89,10 @@ func scheduleCarryTerminal(reason string) bool { return reason == "ended" || rea
 
 // scheduleCarryPlan is what a copy would do with the source schedule.
 type scheduleCarryPlan struct {
-	src    *models.ItemSchedule
-	in     carriedSchedule
-	report ScheduleCarryReport
+	src     *models.ItemSchedule
+	changes []models.ScheduleChangeExport
+	in      carriedSchedule
+	report  ScheduleCarryReport
 }
 
 // carryLimits bounds the search for the destination's first occurrence. A
@@ -104,12 +105,13 @@ var carryLimits = schedule.DefaultLimits
 // floating schedule. srcView is the SOURCE recipient's zone, read on a move only,
 // to place the source's own outstanding occurrence. A non-empty reason means the
 // schedule is not carried.
-func carriedFromLive(sc *models.ItemSchedule, move bool, view, srcView *time.Location, nowT time.Time) (carriedSchedule, string) {
+func carriedFromLive(sc *models.ItemSchedule, roles *models.ScheduleRolesExport, move bool, view, srcView *time.Location, nowT time.Time) (carriedSchedule, string) {
 	if sc.EndedAt != nil || sc.NextWall == nil {
 		return carriedSchedule{}, "ended"
 	}
 	in := carriedSchedule{
-		Kind: sc.Kind, Dtstart: sc.Dtstart, Dtend: derefStr(sc.Dtend), Tz: derefStr(sc.Tz), Floating: sc.Floating,
+		Roles: roles,
+		Kind:  sc.Kind, Dtstart: sc.Dtstart, Dtend: derefStr(sc.Dtend), Tz: derefStr(sc.Tz), Floating: sc.Floating,
 		Rrule: derefStr(sc.Rrule), RDates: sc.RDates, ExDates: sc.ExDates, Anchor: sc.Anchor, Audience: sc.Audience,
 		LeadMinutes: sc.LeadMinutes, AnchorWall: derefStr(sc.AnchorWall),
 	}
@@ -181,6 +183,10 @@ func (s *Store) planScheduleCarry(q Queryer, workspaceID, itemID string, who sch
 	if err != nil || sc == nil {
 		return nil, err
 	}
+	roles, err := s.scheduleRolesQ(q, sc.ID)
+	if err != nil {
+		return nil, err
+	}
 	if lock {
 		// The reminder's fired_at reads through a subquery that, on Postgres under
 		// read committed, can keep the snapshot from before the row lock was won:
@@ -209,7 +215,30 @@ func (s *Store) planScheduleCarry(q Queryer, workspaceID, itemID string, who sch
 			return nil, err
 		}
 	}
-	in, skip := carriedFromLive(sc, move, view, srcView, nowT)
+	in, skip := carriedFromLive(sc, roles, move, view, srcView, nowT)
+	if move && skip == "" {
+		samePending := in.NextAt == derefStr(sc.NextAt)
+		if sc.Floating {
+			samePending = in.NextWall == derefStr(sc.NextWall)
+		}
+		if samePending {
+			overrides, err := s.scheduleOverridesQ(q, workspaceID, sc.ID)
+			if err != nil {
+				return nil, err
+			}
+			pendingKey := OccurrenceKey(sc, derefStr(sc.NextAt), derefStr(sc.NextWall))
+			for _, o := range overrides[sc.ID] {
+				key, err := canonicalCarriedKey(o.OccurrenceKey, sc.Floating)
+				if err == nil && key == pendingKey {
+					o.OccurrenceKey = key
+					in.Overrides = append(in.Overrides, o)
+				}
+			}
+		}
+		if p.changes, err = s.scheduleChangesQ(q, workspaceID, sc.ID); err != nil {
+			return nil, err
+		}
+	}
 	if skip == "" {
 		if _, err := prepareCarriedSchedule(in); err != nil {
 			var drop *scheduleCarryDrop
@@ -257,8 +286,26 @@ func (s *Store) carrySourceScheduleTx(tx *sql.Tx, sourceWorkspaceID, sourceItemI
 		return ScheduleCarryReport{}, err
 	}
 	if p.report.Carried {
-		if _, err := s.insertCarriedScheduleTx(tx, targetWorkspaceID, targetItemID, p.in); err != nil {
+		prepared, err := prepareCarriedSchedule(p.in)
+		if err != nil {
+			return ScheduleCarryReport{}, err
+		}
+		marker := "carry"
+		if move {
+			marker = ""
+		}
+		id, err := s.writePreparedSchedule(tx, targetWorkspaceID, targetItemID, p.in, prepared, marker)
+		if err != nil {
 			return ScheduleCarryReport{}, fmt.Errorf("copy item across workspaces: carry schedule: %w", err)
+		}
+		if move {
+			_, err = s.restoreScheduleChangesTx(tx, targetWorkspaceID, p.changes, map[string]string{sourceItemID: targetItemID}, map[string]string{p.src.ID: id}, map[string]models.ScheduleExport{p.src.ID: {ItemID: sourceItemID, Floating: p.src.Floating}})
+			if err != nil {
+				return ScheduleCarryReport{}, err
+			}
+			if err := s.journalScheduleAfterTx(tx, id, "carry", "", "", "", "system"); err != nil {
+				return ScheduleCarryReport{}, err
+			}
 		}
 	}
 	if move && p.src.EndedAt == nil {
@@ -272,6 +319,10 @@ func (s *Store) carrySourceScheduleTx(tx *sql.Tx, sourceWorkspaceID, sourceItemI
 // endScheduleTx ends a schedule without a rule edit: the schedule row first, then
 // its managed reminder, the order every schedule writer uses. History is kept.
 func (s *Store) endScheduleTx(tx *sql.Tx, scheduleID string) error {
+	before, err := s.scheduleSnapshotTx(tx, scheduleID)
+	if err != nil {
+		return err
+	}
 	ts := now()
 	if _, err := tx.Exec(s.q(`
 		UPDATE item_schedules SET ended_at = ?, next_at = NULL, next_wall = NULL, next_override_at = NULL,
@@ -279,5 +330,8 @@ func (s *Store) endScheduleTx(tx *sql.Tx, scheduleID string) error {
 		WHERE id = ?`), ts, ts, scheduleID); err != nil {
 		return fmt.Errorf("copy item across workspaces: end source schedule: %w", err)
 	}
-	return s.deleteManagedReminderTx(tx, scheduleID)
+	if err := s.deleteManagedReminderTx(tx, scheduleID); err != nil {
+		return err
+	}
+	return s.journalScheduleAfterTx(tx, scheduleID, "end", "", "", before, "system")
 }
