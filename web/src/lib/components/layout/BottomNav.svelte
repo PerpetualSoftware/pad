@@ -1,9 +1,11 @@
 <!--
 	BottomNav — mobile-only persistent bottom navigation (PLAN-1694).
 
-	Five slots: Workspace · Search · Quick-capture (center ＋) · Activity · You.
-	"Workspace", "You" and the center ＋ open docked sheets (DockedSheet) that
-	anchor ABOVE this bar, so the nav stays visible and the active slot stays lit:
+	Five slots: Workspace · Search · Quick-capture (center ＋) · Chat · You.
+	"Workspace", "You", "Chat" and the center ＋ open docked sheets (DockedSheet) that
+	anchor ABOVE this bar, so the nav stays visible and the active slot stays lit.
+	Activity has no slot of its own: it is a tile in the Workspace sheet.
+	  - ChatHost's phone sheet — the Chat slot (ChatSlot) opens it, badge included.
 	  - WorkspaceSheet — switcher card + Navigate + Collections.
 	  - YouSheet — account (profile, theme, settings, sign out, …).
 	  - QuickCaptureSheet — pick a collection, type a title, create (BUG-1765).
@@ -20,9 +22,8 @@
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { avatarColor, avatarInitial } from '$lib/utils/avatar';
 	import { getActiveKey } from '$lib/nav/destinations';
-	import UnreadBadge from '$lib/components/chat/UnreadBadge.svelte';
-	import { chatStore } from '$lib/stores/chat.svelte';
-	import { chatSetting } from '$lib/stores/chatSetting.svelte';
+	import { chatSurface } from '$lib/stores/chatSurface.svelte';
+	import ChatSlot from '$lib/components/layout/ChatSlot.svelte';
 	import QuickCaptureSheet from '$lib/components/layout/QuickCaptureSheet.svelte';
 	import WorkspaceSheet from '$lib/components/layout/WorkspaceSheet.svelte';
 	import YouSheet from '$lib/components/layout/YouSheet.svelte';
@@ -33,19 +34,16 @@
 	let wsName = $derived(workspaceStore.current?.name ?? 'Workspace');
 	let activeKey = $derived(getActiveKey(page.url.pathname, wsPrefix));
 
-	// A user who turned Chat off sees no count anywhere (TASK-4315).
-	let chatUnread = $derived(chatSetting.enabled ? chatStore.unreadTotal : 0);
-
 	let workspaceOpen = $state(false);
 	let youOpen = $state(false);
 	let captureOpen = $state(false);
 
-	// "Workspace" owns all in-workspace navigation except Activity (its own
-	// slot), so light it whenever the active page is workspace content.
-	let onWorkspaceContent = $derived(!!activeKey && activeKey !== 'activity');
+	// "Workspace" owns all in-workspace navigation, Activity included, so light it
+	// whenever the active page is workspace content.
+	let onWorkspaceContent = $derived(!!activeKey);
 
 	// Tap toggles: a second tap on the active slot closes its surface. Opening
-	// any of the four surfaces (Workspace / You / Search / Quick-capture)
+	// any of the surfaces (Workspace / You / Search / Quick-capture / Chat)
 	// closes the others (BUG-1765).
 	function closeAllSurfaces() {
 		workspaceOpen = false;
@@ -53,28 +51,41 @@
 		captureOpen = false;
 		uiStore.closeSearch();
 	}
+	// With the Chat sheet open, another slot waits for Chat to close (its history
+	// entries must not stay under the next surface), then runs. Chat closed: now.
+	function afterChat(run: () => void) {
+		if (!chatSurface.closeThen(run)) run();
+	}
 	function toggleWorkspace() {
-		const next = !workspaceOpen;
-		closeAllSurfaces();
-		workspaceOpen = next;
+		afterChat(() => {
+			const next = !workspaceOpen;
+			closeAllSurfaces();
+			workspaceOpen = next;
+		});
 	}
 	function toggleYou() {
-		const next = !youOpen;
-		closeAllSurfaces();
-		youOpen = next;
+		afterChat(() => {
+			const next = !youOpen;
+			closeAllSurfaces();
+			youOpen = next;
+		});
 	}
 	function toggleSearch() {
-		const next = !uiStore.searchOpen;
-		closeAllSurfaces();
-		if (next) {
-			uiStore.openSearch();
-			uiStore.onNavigate();
-		}
+		afterChat(() => {
+			const next = !uiStore.searchOpen;
+			closeAllSurfaces();
+			if (next) {
+				uiStore.openSearch();
+				uiStore.onNavigate();
+			}
+		});
 	}
 	function toggleCapture() {
-		const next = !captureOpen;
-		closeAllSurfaces();
-		captureOpen = next;
+		afterChat(() => {
+			const next = !captureOpen;
+			closeAllSurfaces();
+			captureOpen = next;
+		});
 	}
 
 	// Drive the .main-content reflow only while the bar is actually shown —
@@ -136,18 +147,7 @@
 			<span class="bn-capture-plus" aria-hidden="true">＋</span>
 		</button>
 
-		<a
-			class="bn-item"
-			class:active={activeKey === 'activity'}
-			href={`${wsPrefix}/activity`}
-			onclick={() => {
-				closeAllSurfaces();
-				uiStore.onNavigate();
-			}}
-		>
-			<span class="bn-icon" aria-hidden="true">📋</span>
-			<span class="bn-label">Activity</span>
-		</a>
+		<ChatSlot onopen={closeAllSurfaces} />
 
 		<button
 			class="bn-item"
@@ -156,12 +156,8 @@
 			onclick={toggleYou}
 			aria-haspopup="dialog"
 			aria-expanded={youOpen}
-			aria-label={chatUnread > 0 ? `You, ${chatUnread} unread chat` : undefined}
 		>
-			<span class="bn-icon bn-you-icon" aria-hidden="true">
-				👤
-				<span class="bn-badge"><UnreadBadge count={chatUnread} /></span>
-			</span>
+			<span class="bn-icon" aria-hidden="true">👤</span>
 			<span class="bn-label">You</span>
 		</button>
 	</nav>
@@ -214,17 +210,6 @@
 	.bn-icon {
 		font-size: 1.2em;
 		line-height: 1;
-	}
-	/* The You icon anchors the chat unread badge (TASK-4186). */
-	.bn-you-icon {
-		position: relative;
-	}
-	.bn-badge {
-		position: absolute;
-		top: -6px;
-		left: 55%;
-		font-size: 1rem;
-		pointer-events: none;
 	}
 	.bn-avatar {
 		width: 22px;

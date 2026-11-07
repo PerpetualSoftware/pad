@@ -1,8 +1,9 @@
 <script lang="ts">
 	import { page, navigating } from '$app/state';
+	import { chatSurface, navigated } from '$lib/stores/chatSurface.svelte';
 	import { goto, afterNavigate } from '$app/navigation';
 	import { browser } from '$app/env';
-	import { onDestroy, onMount } from 'svelte';
+	import { onDestroy, onMount, untrack } from 'svelte';
 	import ItemDetail from '$lib/components/items/ItemDetail.svelte';
 	import PaneHost from '$lib/components/collections/PaneHost.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
@@ -107,6 +108,7 @@
 		deferWhile: () => navigating.type !== null,
 	});
 	afterNavigate((nav) => {
+		if (nav.shallow) return; // the page underneath did not navigate
 		const samePathname =
 			!!nav.from && nav.to?.url.pathname === nav.from.url.pathname;
 		const effectiveType = samePathname ? nav.type : 'goto';
@@ -413,12 +415,23 @@
 		if (!masterItem) return;
 		const current = openItemRef;
 		if (!current || !isMasterRef(current)) return;
-		const url = new URL(page.url.href);
-		url.searchParams.delete('item');
-		void goto(`${url.pathname}${url.search}`, {
-			replaceState: true,
-			reset: false,
-		});
+		// Cannot wait (two providers on one room), and never dropped: with Chat open it
+		// closes Chat first. It reads page.url when it runs, so a queued copy is a no-op.
+		// untrack: the surface reads page.shallow / page.state, and may settle a latch or run
+		// parked continuations; none of that may subscribe this effect or run as one of its reads.
+		untrack(() =>
+			chatSurface.runAfterClose(() => {
+				const url = new URL(page.url.href);
+				if (!url.searchParams.has('item')) return false;
+				url.searchParams.delete('item');
+				return navigated(
+					goto(`${url.pathname}${chatSurface.searchForHeal(url.search)}`, {
+						replaceState: true,
+						reset: false,
+					})
+				);
+			})
+		);
 	});
 
 	// Text-editing target detection — copied from the collection host's ESC
@@ -474,6 +487,9 @@
 		const target = e.target as HTMLElement | null;
 		// Text-editing targets own ESC locally — don't hijack into a layer-close.
 		if (isTextEntryTarget(target)) return;
+		// Focus inside the docked Chat column is Chat's: the dock has no Escape, and
+		// the pane beside it must not lose a layer to a key aimed at it.
+		if (target?.closest?.('[data-chat-host]')) return;
 		// A native modal <dialog> / role="dialog" sheet owns its own ESC. The
 		// pane's own mobile overlay is `role="dialog"` too (TASK-2131) and so is
 		// the body-portaled attachment viewer (TASK-2429), but BOTH are EXCLUDED

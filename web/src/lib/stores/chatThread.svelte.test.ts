@@ -566,6 +566,18 @@ describe('mark read', () => {
 		expect(h.markRead).not.toHaveBeenCalled();
 	});
 
+	it('sends nothing while the thread is covered (active is false), and marks once it is shown again', async () => {
+		await opened();
+		thread.active = false;
+		thread.tryMarkRead();
+		await flush();
+		expect(h.markRead).not.toHaveBeenCalled();
+		thread.active = true;
+		thread.tryMarkRead();
+		await flush();
+		expect(h.markRead).toHaveBeenCalledWith(1, 3);
+	});
+
 	it('sends the displayed seq, not last_seq, when a gap hides newer rows', async () => {
 		server.fill(300);
 		server.readSeq = 10;

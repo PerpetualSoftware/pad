@@ -1,6 +1,7 @@
 // The signed-in user's Chat display preference (TASK-4315). Off by default.
 // It is a display preference, not access control: nothing here gates the API,
-// and no surface reads it yet (each Chat surface checks it in its own PR).
+// and the Chat surfaces (shell, entries, inbox and thread) read it to decide
+// whether to show themselves.
 //
 // The value lives on the auth session's user, so it follows the user across
 // reloads and devices, and an identity change drops it with the session.

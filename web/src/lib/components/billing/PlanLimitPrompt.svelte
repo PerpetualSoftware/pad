@@ -10,6 +10,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
+	import { currentPathSearch } from '$lib/utils/pageLocation';
 	import { planLimitPrompt, currentPlace } from '$lib/billing/planLimitPrompt.svelte';
 	import { BILLING_PATH } from '$lib/billing/planLimitPrompt';
 	import { saveUpgradeResume } from '$lib/billing/upgradeResume';
@@ -34,7 +35,7 @@
 
 	function upgrade() {
 		if (!p) return;
-		saveUpgradeResume(window.location.pathname + window.location.search, p.blocked);
+		saveUpgradeResume(currentPathSearch(), p.blocked);
 		planLimitPrompt.dismiss();
 		goto(BILLING_PATH);
 	}

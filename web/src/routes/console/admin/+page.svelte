@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
+	import { chatSurface } from '$lib/stores/chatSurface.svelte';
 	import { appendUnique } from '$lib/utils/activityPaging';
 	import { adminFetch, formatDate, adminStore, type AdminUser } from '$lib/stores/admin.svelte';
 	import UserModal from '$lib/components/admin/UserModal.svelte';
@@ -163,7 +164,9 @@
 	// (rather than smuggled through has_workspaces/disabled) so all four
 	// buckets — active/inactive/disabled/no-workspace — round-trip
 	// losslessly (PR #604).
-	function syncURL() {
+	function syncURL(): Promise<unknown> | undefined {
+		// The filter state is local; only the address waits while Chat is open (it runs again, live).
+		if (chatSurface.deferPageWrite(`${page.url.pathname}#sync`, syncURL)) return;
 		const p = buildQueryParams({ offset: 0, includeSearch: false });
 		p.delete('limit');
 		p.delete('offset');
@@ -174,7 +177,8 @@
 		if (statusFilter) p.set('status', statusFilter);
 		const qs = p.toString();
 		const target = qs ? `?${qs}` : page.url.pathname;
-		goto(target, { replaceState: true, reset: false });
+		// Returned so a deferred run is awaited before the next held write starts.
+		return goto(target, { replaceState: true, reset: false });
 	}
 
 	// hydrateFromURL pulls filter/sort state off the URL on first load

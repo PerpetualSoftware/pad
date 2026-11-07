@@ -2,6 +2,7 @@
 	import { onDestroy, untrack } from 'svelte';
 	import { ownValue } from '$lib/utils/ownValue';
 	import { page } from '$app/state';
+	import { chatSurface } from '$lib/stores/chatSurface.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api/client';
@@ -109,6 +110,8 @@
 
 	function selectTab(tab: 'conventions' | 'playbooks', focus = false) {
 		if (tab !== activeTab) {
+			// activeTab derives from page.url, so a held write would not switch it: close Chat first.
+			if (chatSurface.closeThen(() => selectTab(tab, focus))) return;
 			const url = new URL(page.url.href);
 			url.searchParams.set('tab', tab);
 			// replaceState: switching tabs is not a navigation to come back

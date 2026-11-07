@@ -511,6 +511,19 @@ export function setIdentityProvider(provider: (() => string | null) | null): voi
 	identityProvider = provider;
 }
 
+let returnPathProvider: (() => string) | null = null;
+
+/**
+ * Register where a session-expiry redirect should return to. Registered by the
+ * root layout (TASK-4315): under an open Chat the address bar says /messages/N
+ * while the page is beneath it, and client.ts cannot import $app/state because
+ * the headless materializer bundles this module without SvelteKit. Default: the
+ * address bar.
+ */
+export function setReturnPathProvider(provider: (() => string) | null): void {
+	returnPathProvider = provider;
+}
+
 function currentIdentity(): string | null | undefined {
 	if (!identityProvider) return undefined;
 	try {
@@ -1126,7 +1139,7 @@ async function requestAttempt<T>(
 		// IDEA-1927 §B2(c)) — /login already validates and consumes
 		// `?redirect=` (see $lib/auth/redirect.ts).
 		if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
-			const target = window.location.pathname + window.location.search;
+			const target = returnPathProvider?.() || window.location.pathname + window.location.search;
 			redirectToLogin(`/login?redirect=${encodeURIComponent(target)}`);
 		}
 		throw new PadApiError({ code: 'unauthorized', message: 'Authentication required' });

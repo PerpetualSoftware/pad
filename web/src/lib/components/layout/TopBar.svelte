@@ -21,6 +21,7 @@
 	import { workspaceRestoreTarget } from '$lib/utils/workspace-route';
 	import { tabLanding } from '$lib/utils/tabLanding';
 	import ChatLink from '$lib/components/chat/ChatLink.svelte';
+	import ChatButton from '$lib/components/chat/ChatButton.svelte';
 	import { pendingInvitations } from '$lib/stores/pendingInvitations.svelte';
 
 	let { mobile = false }: { mobile?: boolean } = $props();
@@ -52,7 +53,10 @@
 		window.addEventListener('focus', onFocus);
 		return () => window.removeEventListener('focus', onFocus);
 	});
-	afterNavigate(() => void pendingInvitations.refresh());
+	afterNavigate((nav) => {
+		if (nav.shallow) return;
+		void pendingInvitations.refresh();
+	});
 
 	let currentSlug = $derived(workspaceStore.current?.slug ?? '');
 
@@ -449,6 +453,10 @@
 
 	function closeUserMenu() {
 		userMenuOpen = false;
+		// The row that was clicked leaves the DOM with the menu. Park focus on the
+		// trigger first so whatever the click opens (Chat remembers the focused
+		// element to return to) never records a node that is about to disappear.
+		userTriggerEl?.focus();
 	}
 
 	// ── Workspace-link click ─────────────────────────────────────────────
@@ -747,6 +755,7 @@
 		</div>
 
 		<div class="topbar-right">
+			<ChatButton />
 			<button
 				class="collapse-btn"
 				onclick={() => uiStore.closeTopbar()}

@@ -8,7 +8,7 @@ import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/svelte';
 
 const session = vi.hoisted(() => ({ setup_method: 'token' as string }));
-const calls = vi.hoisted(() => ({ bootstrap: 0, reject: '', rejectCode: '' }));
+const calls = vi.hoisted(() => ({ bootstrap: 0, reject: '', rejectCode: '', token: '' }));
 
 vi.mock('$lib/api/client', () => {
 	class PadApiError extends Error {
@@ -18,8 +18,9 @@ vi.mock('$lib/api/client', () => {
 		PadApiError,
 		api: {
 			auth: {
-				bootstrap: vi.fn(async () => {
+				bootstrap: vi.fn(async (_email: string, _name: string, _password: string, token: string) => {
 					calls.bootstrap++;
+					calls.token = token;
 					if (calls.reject) {
 						const rejection = new PadApiError(calls.reject);
 						rejection.code = calls.rejectCode;
@@ -62,6 +63,7 @@ beforeEach(() => {
 	calls.bootstrap = 0;
 	calls.reject = '';
 	calls.rejectCode = '';
+	calls.token = '';
 	history.replaceState({}, '', '/setup');
 });
 afterEach(() => {
@@ -185,5 +187,38 @@ describe('setup page forms (TASK-2259, TASK-2236)', () => {
 		expect(document.getElementById('setup-password-error')).toBeNull();
 		expect(screen.getByRole('alert').textContent).toContain('Something else went wrong');
 		expect(input.getAttribute('aria-invalid')).not.toBe('true');
+	});
+
+	// BUG-4342: the startup banner prints the whole setup URL, never a bare
+	// token, so the paste step takes either form.
+	async function pasteThenSubmit(pasted: string) {
+		session.setup_method = 'token';
+		render(SetupPage);
+		await settle();
+		const paste = screen.getByLabelText('Bootstrap token');
+		await fireEvent.input(paste, { target: { value: pasted } });
+		await fireEvent.submit(paste.closest('form')!);
+		await settle();
+		await fireEvent.input(screen.getByLabelText('Email'), { target: { value: 'admin@example.com' } });
+		await fireEvent.input(screen.getByLabelText('Name'), { target: { value: 'Admin' } });
+		await fireEvent.input(screen.getByLabelText('Password', { exact: true }), { target: { value: 'long-enough-pass-1' } });
+		await fireEvent.input(screen.getByLabelText('Confirm password'), { target: { value: 'long-enough-pass-1' } });
+		await fireEvent.submit(screen.getByLabelText('Email').closest('form')!);
+		await settle();
+	}
+
+	it('accepts the whole setup URL the startup banner prints (BUG-4342)', async () => {
+		await pasteThenSubmit('http://localhost:7777/setup#token=abc123_-XYZ');
+		expect(calls.token).toBe('abc123_-XYZ');
+	});
+
+	it('accepts the setup URL with surrounding whitespace and a percent-encoded token (BUG-4342)', async () => {
+		await pasteThenSubmit('  http://<your-host>:7777/setup#token=a%2Bb%3D  \n');
+		expect(calls.token).toBe('a+b=');
+	});
+
+	it('still accepts a bare token (BUG-4342)', async () => {
+		await pasteThenSubmit('  abc123_-XYZ ');
+		expect(calls.token).toBe('abc123_-XYZ');
 	});
 });

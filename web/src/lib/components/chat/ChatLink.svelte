@@ -3,6 +3,7 @@
 	import UnreadBadge from '$lib/components/chat/UnreadBadge.svelte';
 	import { chatStore } from '$lib/stores/chat.svelte';
 	import { chatSetting } from '$lib/stores/chatSetting.svelte';
+	import { chatSurface } from '$lib/stores/chatSurface.svelte';
 
 	// The entry to /messages (TASK-4044 PR 2a-ii, 3c). Three placements share it:
 	// the TopBar user menu, the You sheet and the /console nav bar; each passes
@@ -34,7 +35,10 @@
 	href="/messages"
 	class={className}
 	{role}
-	{onclick}
+	onclick={(e) => {
+		onclick?.();
+		chatSurface.handleLinkClick(e, '/messages');
+	}}
 	aria-label={count > 0 ? `Chat, ${count} unread` : 'Chat'}
 >
 	{@render lead?.()}

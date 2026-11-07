@@ -102,7 +102,9 @@ func TestImportWorkspaceItemNumberCompatibility(t *testing.T) {
 				},
 			}
 			for i, number := range tc.numbers {
-				slug := fmt.Sprintf("item-%d", i)
+				// Keep the fixture's slugs outside the ref grammar so this
+				// test isolates item-number compatibility (TASK-4375).
+				slug := fmt.Sprintf("item-row-%d", i)
 				bundle.Items = append(bundle.Items, models.ItemExport{
 					ID: slug, CollectionID: bundle.Collections[i].ID, Title: slug, Slug: slug,
 					ItemNumber: number, CreatedAt: timestamp, UpdatedAt: timestamp,

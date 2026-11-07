@@ -44,6 +44,8 @@
 	import Modal from '$lib/components/common/Modal.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
+	import { chatSurface, navigated } from '$lib/stores/chatSurface.svelte';
+	import { currentSearch } from '$lib/utils/pageLocation';
 	import { titleStore } from '$lib/stores/title.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { planLaneOrder, persistReorder } from '$lib/collections/reorderPlan';
@@ -316,6 +318,7 @@
 		deferWhile: () => navigating.type !== null,
 	});
 	afterNavigate((nav) => {
+		if (nav.shallow) return; // the page underneath did not navigate
 		const samePathname =
 			!!nav.from && nav.to?.url.pathname === nav.from.url.pathname;
 		const effectiveType = samePathname ? nav.type : 'goto';
@@ -643,24 +646,38 @@
 	// The search box's debounced URL sync (TASK-2232); see scheduleSearchUrlSync.
 	const SEARCH_URL_SYNC_MS = 250;
 	let searchUrlSyncTimer: ReturnType<typeof setTimeout> | undefined;
-	function updateUrlFilters() {
+	// The board's filter/search/view state is local, so the URL is only a mirror of
+	// it. Under an open Chat that write waits (it would rewrite Chat's own history
+	// entry): the key is per page, and the write reads live state when it runs.
+	const filtersWriteKey = () => `${page.url.pathname}#filters`;
+	const liveFilterQuery = () =>
+		buildCollectionUrlParams(
+			{ viewMode, activeFilters, selectedTags, unparentedApplied, searchQuery, calendarConfig },
+			page.url
+		).toString();
+	// A heal's query string. A filter write still held for Chat has not reached the
+	// URL, so the live state is the truth; otherwise it is the page's own address.
+	const healSearch = () => {
+		if (!chatSurface.hasDeferredWrite(filtersWriteKey())) return currentSearch();
+		const qs = liveFilterQuery();
+		return qs ? '?' + qs : '';
+	};
+	function updateUrlFilters(): Promise<void> | undefined {
 		// An immediate sync carries the current search too, so it supersedes a
 		// pending debounced one.
 		clearTimeout(searchUrlSyncTimer);
 		searchUrlSyncTimer = undefined;
 		if (!collSlug || !wsSlug) return;
-		const params = buildCollectionUrlParams(
-			{ viewMode, activeFilters, selectedTags, unparentedApplied, searchQuery, calendarConfig },
-			page.url
-		);
-		const qs = params.toString();
+		// Runs again, live, once Chat has closed (chatSurface.deferPageWrite).
+		if (chatSurface.deferPageWrite(filtersWriteKey(), updateUrlFilters)) return;
+		const qs = liveFilterQuery();
 		const newUrl = `/${username}/${wsSlug}/${collSlug}${qs ? '?' + qs : ''}`;
 		// This same-page `goto` PRESERVES `?item=` (via buildCollectionUrlParams),
 		// so it MUST re-emit the pane depth+ownership stamp too — a bare
 		// replaceState would blank `page.state` and desync the close arithmetic
 		// (an owned pane would lose ownership and close via replaceState-delete
 		// instead of go(-1)). PLAN-2154 R13. Harmless no-op when no pane is open.
-		goto(newUrl, {
+		return goto(newUrl, {
 			replaceState: true,
 			reset: false,
 			state: currentPaneState(),
@@ -1206,11 +1223,13 @@
 	// (TASK-3423). Entering the page from elsewhere (a different pathname —
 	// the Back from Expand to full page) always restores.
 	let releaseRestoreSkip: (() => void) | null = null;
-	beforeNavigate(() => {
+	beforeNavigate((nav) => {
+		if (nav.shallow) return; // no scroll restore follows a shallow navigation
 		releaseRestoreSkip?.();
 		releaseRestoreSkip = null;
 	});
 	afterNavigate((nav) => {
+		if (nav.shallow) return; // keep the latch for the real navigation it belongs to
 		const handedOff = !!nav.to && handoffHref === nav.to.url.href;
 		handoffHref = null;
 		if (nav.type !== 'popstate' || !nav.from || !nav.to) return;
@@ -1328,8 +1347,8 @@
 					if (target) {
 						renameNav = target;
 						void collectionStore.loadCollections(ws);
-						const search = typeof window !== 'undefined' ? window.location.search : '';
-						void goto(`/${username}/${wsSlug}/${target}${search}`);
+						// A dead slug cannot wait: with Chat open this closes it first (never dropped).
+						chatSurface.runAfterClose(() => navigated(goto(`/${username}/${wsSlug}/${target}${healSearch()}`)));
 					}
 					return;
 				}
@@ -1500,17 +1519,20 @@
 			// Refresh the sidebar/pickers off the dead slug too — same
 			// side-effect as the SSE + reorder-404 rename paths.
 			void collectionStore.loadCollections(ws);
-			const search = typeof window !== 'undefined' ? window.location.search : '';
 			// replaceState: the healed-away slug is DEAD — Back must not
 			// return to a URL that 404s (the item-route
-			// healer already replaces).
-			goto(`/${username}/${ws}/${target}${search}`, { replaceState: true }).catch(() => {
-				// A cancelled/failed navigation (navigate-away guard, a
-				// racing nav) must not leave renameNav pointing at a slug
-				// we never reached — a poisoned tracker would veto every
-				// future sync heal. Reset only if it is
-				// still ours; a newer rename may have re-aimed it.
-				if (renameNav === target) renameNav = null;
+			// healer already replaces). With Chat open it closes first, then replaces.
+			chatSurface.runAfterClose(() => {
+				return navigated(goto(`/${username}/${ws}/${target}${healSearch()}`, { replaceState: true })).then((ok) => {
+					// A cancelled/failed navigation (navigate-away guard, a
+					// racing nav; a guard cancels without rejecting) must not
+					// leave renameNav pointing at a slug we never reached — a
+					// poisoned tracker would veto every future sync heal.
+					// Reset only if it is still ours; a newer rename may have
+					// re-aimed it.
+					if (!ok && renameNav === target) renameNav = null;
+					return ok;
+				});
 			});
 		} catch {
 			// Best-effort heal — the next sync pass retries.
@@ -2657,8 +2679,7 @@
 						if (fresh.slug !== collSlug) {
 							renameNav = fresh.slug;
 							void collectionStore.loadCollections(ws);
-							const search = typeof window !== 'undefined' ? window.location.search : '';
-							void goto(`/${username}/${wsSlug}/${fresh.slug}${search}`);
+							chatSurface.runAfterClose(() => navigated(goto(`/${username}/${wsSlug}/${fresh.slug}${healSearch()}`)));
 						}
 					}
 				} catch {
@@ -2846,6 +2867,8 @@
 	// null for full unload (reload / tab close / external) — drafts are
 	// kept only until reload, so those aren't guarded.
 	beforeNavigate((nav) => {
+		// A shallow navigation (Chat over the board) leaves the draft in place.
+		if (nav.shallow) return;
 		if (bypassNavGuard || !hasUnsavedDrafts || !nav.to) return;
 		// Only guard CLIENT-SIDE, in-app leaves we can replay with goto.
 		// `willUnload` (external links, hard document navigations) and
@@ -3375,6 +3398,9 @@
 			// Text-editing targets (title edit, tag input, the Tiptap editor)
 			// own ESC locally (cancel/blur) — don't hijack it into a layer-close.
 			if (isTextEntryTarget(target)) return;
+			// Focus inside the docked Chat column is Chat's: the dock has no Escape,
+			// and the pane or list beside it must not lose a layer to a key aimed at it.
+			if (target?.closest?.('[data-chat-host]')) return;
 			// A modal (native <dialog>, or a role="dialog" BottomSheet/DockedSheet
 			// opened from within the pane — field selects / Quick Actions / Move
 			// To) owns its own ESC — don't also pop the pane/graph/list layer

@@ -135,6 +135,71 @@ describe('chatInbox (TASK-4044)', () => {
 		inbox.start();
 		await flush();
 		expect(h.list).toHaveBeenCalledTimes(1);
+		inbox.stop();
+		inbox.stop();
+	});
+
+	describe('owners are reference counted (TASK-4315)', () => {
+		it('start/start/stop leaves it running', async () => {
+			inbox.start();
+			inbox.start();
+			inbox.stop();
+			await flush();
+			const before = h.list.mock.calls.length;
+			chat.resync();
+			await flush();
+			expect(h.list.mock.calls.length).toBe(before + 1);
+			inbox.stop();
+		});
+
+		it('start/start/stop/stop ends it', async () => {
+			inbox.start();
+			inbox.start();
+			inbox.stop();
+			inbox.stop();
+			await flush();
+			const before = h.list.mock.calls.length;
+			chat.resync();
+			await flush();
+			expect(h.list.mock.calls.length).toBe(before);
+		});
+
+		it('an extra stop does not underflow: the next start still needs one stop', async () => {
+			inbox.stop();
+			inbox.stop();
+			inbox.start();
+			await flush();
+			expect(h.list).toHaveBeenCalledTimes(1);
+			chat.resync();
+			await flush();
+			expect(h.list).toHaveBeenCalledTimes(2);
+			inbox.stop();
+			chat.resync();
+			await flush();
+			expect(h.list).toHaveBeenCalledTimes(2);
+		});
+
+		it('start after a full stop restarts and loads again', async () => {
+			inbox.start();
+			await flush();
+			inbox.stop();
+			inbox.start();
+			await flush();
+			expect(h.list).toHaveBeenCalledTimes(2);
+			inbox.stop();
+		});
+
+		it('a swap where the new owner starts before the old one stops keeps one owner', async () => {
+			inbox.start(); // the old view
+			inbox.start(); // the new view
+			inbox.stop(); // the old view leaves late
+			await flush();
+			const before = h.list.mock.calls.length;
+			chat.resync();
+			await flush();
+			expect(h.list.mock.calls.length).toBe(before + 1);
+			inbox.stop();
+		});
 	});
 
 	it('one hint followed by a successful run produces exactly ONE list reload', async () => {

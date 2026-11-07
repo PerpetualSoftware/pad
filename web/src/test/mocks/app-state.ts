@@ -19,6 +19,8 @@ export const page = {
 	data: {} as Record<string, unknown>,
 	form: null as unknown,
 	state: {} as Record<string, unknown>,
+	// The target of a shallow `goto` (SvelteKit 3), null when there is none.
+	shallow: null as { url: URL; route: { id: string } | null; params: Record<string, string> | null } | null,
 };
 
 export const navigating = { from: null, to: null, type: null, complete: null };

@@ -5,6 +5,7 @@ import { cleanup, render } from '@testing-library/svelte';
 import { flushSync } from 'svelte';
 
 const h = vi.hoisted(() => ({
+	opened: [] as string[],
 	unreadByNumber: {} as Record<number, number>,
 	presence: {} as Record<string, string>
 }));
@@ -13,6 +14,15 @@ vi.mock('$lib/stores/chatInbox.svelte', () => ({
 		presenceFor: (k: string) => h.presence[k] ?? 'unknown',
 		armedCount: (k: string) => (k === 'agent-2' ? 2 : 0),
 		checkedAt: null
+	}
+}));
+vi.mock('$lib/stores/chatSurface.svelte', () => ({
+	chatSurface: {
+		handleLinkClick: (e: MouseEvent, href: string) => {
+			if (e.ctrlKey) return;
+			e.preventDefault();
+			h.opened.push(href);
+		}
 	}
 }));
 vi.mock('$lib/stores/chat.svelte', () => ({
@@ -157,5 +167,30 @@ describe('ConversationList (TASK-4044)', () => {
 		expect(getByLabelText('4 unread')).toBeTruthy();
 		expect(queryByLabelText('9 unread')).toBeNull();
 		expect(queryByLabelText('5 unread')).toBeNull();
+	});
+});
+
+describe('opening a conversation (TASK-4315 PR 3b)', () => {
+	beforeEach(() => {
+		h.opened = [];
+	});
+
+	it('a plain click goes through the Chat surface and keeps the href for everything else', () => {
+		const { container } = render(ConversationList, { conversations: [conv(5)] });
+		const a = container.querySelector('a.row') as HTMLAnchorElement;
+		expect(a.getAttribute('href')).toBe('/messages/5');
+		const plain = new MouseEvent('click', { bubbles: true, cancelable: true });
+		a.dispatchEvent(plain);
+		expect(h.opened).toEqual(['/messages/5']);
+		expect(plain.defaultPrevented).toBe(true);
+	});
+
+	it('a modified click is left to the browser (direct entry)', () => {
+		const { container } = render(ConversationList, { conversations: [conv(5)] });
+		const a = container.querySelector('a.row') as HTMLAnchorElement;
+		const modified = new MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true });
+		a.dispatchEvent(modified);
+		expect(h.opened).toEqual([]);
+		expect(modified.defaultPrevented).toBe(false);
 	});
 });

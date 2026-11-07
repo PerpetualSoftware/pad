@@ -5,6 +5,7 @@ import {
 	isRateLimitError,
 	PadApiError,
 	setRateLimitHandler,
+	setReturnPathProvider,
 	setDatabaseBusyHandler,
 	isDatabaseBusyError,
 	databaseBusyMessage,
@@ -143,6 +144,25 @@ describe('api client 401 handling (BUG-1929)', () => {
 		expect(win.location.href).toBe(
 			`/login?redirect=${encodeURIComponent('/some/workspace/items?foo=bar')}`
 		);
+	});
+
+	it('the return-to path comes from the registered provider (the page beneath an open Chat), not the address bar', async () => {
+		const win = stubWindow('/messages/7');
+		setReturnPathProvider(() => '/ws/tasks?status=done');
+		try {
+			mockFetchOnce(401, { error: { code: 'unauthorized', message: 'Not logged in' } });
+			await expect(api.items.list('some-workspace')).rejects.toMatchObject({ code: 'unauthorized' });
+			expect(win.location.href).toBe(`/login?redirect=${encodeURIComponent('/ws/tasks?status=done')}`);
+		} finally {
+			setReturnPathProvider(null);
+		}
+	});
+
+	it('CONTROL: with no provider registered the return-to path is the address bar', async () => {
+		const win = stubWindow('/ws/tasks', '?status=done');
+		mockFetchOnce(401, { error: { code: 'unauthorized', message: 'Not logged in' } });
+		await expect(api.items.list('some-workspace')).rejects.toMatchObject({ code: 'unauthorized' });
+		expect(win.location.href).toBe(`/login?redirect=${encodeURIComponent('/ws/tasks?status=done')}`);
 	});
 
 	it('does not redirect (or loop) when the 401 fires while already on /login', async () => {

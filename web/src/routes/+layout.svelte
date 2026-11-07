@@ -9,6 +9,7 @@
 	import { tabsStore } from '$lib/stores/tabs.svelte';
 	import { accessStream } from '$lib/services/accessStream.svelte';
 	import { chatStore } from '$lib/stores/chat.svelte';
+	import { chatSetting } from '$lib/stores/chatSetting.svelte';
 	import TimezoneSync from '$lib/components/TimezoneSync.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import {
@@ -18,13 +19,17 @@
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { coveredPage } from '$lib/stores/coveredPage.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
-	import { setAccessRevokedHandler, setRateLimitHandler, setDatabaseBusyHandler, setIdentityProvider, setNetworkUnreachableHandler } from '$lib/api/client';
+	import { currentPathSearch } from '$lib/utils/pageLocation';
+	import { setAccessRevokedHandler, setRateLimitHandler, setDatabaseBusyHandler, setIdentityProvider, setNetworkUnreachableHandler, setReturnPathProvider } from '$lib/api/client';
 	import { notifyServerBusy, notifyDatabaseBusy } from '$lib/api/serverBusyToast';
 	import { notifyNetworkUnreachable } from '$lib/api/networkUnreachableToast';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { sweepExpiredRefusedRawDrafts } from '$lib/items/refusedRawDraft';
 	import Sidebar from '$lib/components/layout/Sidebar.svelte';
 	import TopBar from '$lib/components/layout/TopBar.svelte';
+	import ChatHost from '$lib/components/chat/ChatHost.svelte';
+	import GlobalBottomBar from '$lib/components/layout/GlobalBottomBar.svelte';
+	import ChatButton from '$lib/components/chat/ChatButton.svelte';
 	import CommandPalette from '$lib/components/search/CommandPalette.svelte';
 	import ToastContainer from '$lib/components/common/ToastContainer.svelte';
 	import PlanLimitPrompt from '$lib/components/billing/PlanLimitPrompt.svelte';
@@ -106,6 +111,8 @@
 	// here, not imported there, for the reason the handler below is: client.ts
 	// importing the auth store would make a cycle.
 	setIdentityProvider(() => authStore.userId || null);
+	// The 401 return-to target is the page, which under an open Chat is not the address bar (TASK-4315).
+	setReturnPathProvider(currentPathSearch);
 
 	setAccessRevokedHandler((scope) => {
 		// BUG-2983 widened this seam from 403-only to "this workspace is not
@@ -295,10 +302,26 @@
 				// Live gain/loss of workspaces (TASK-3275). One per tab; start()
 				// is idempotent and follows identity changes itself.
 				accessStream.start();
-				// The chat unread count (TASK-4044); idempotent, follows identity itself.
-				chatStore.start();
 			}
 		}
+	});
+
+	// The chat unread count (TASK-4044) runs only while the signed-in user has
+	// Chat on. While it is off, signed out or not yet known, the store is
+	// STOPPED, not merely unstarted: a never-started store still answers an
+	// access-stream resync with a fetch. The first run always calls one of the
+	// two (chatGate starts null), so a store is never left unstarted. chatGate
+	// is a plain edge tracker and the calls are untracked, so this effect
+	// writes nothing it reads.
+	let chatGate: boolean | null = null;
+	$effect(() => {
+		const wanted = authReady && authStore.authenticated && chatSetting.enabled;
+		untrack(() => {
+			if (wanted === chatGate) return;
+			chatGate = wanted;
+			if (wanted) chatStore.start();
+			else chatStore.stop();
+		});
 	});
 
 	function handleKeydown(e: KeyboardEvent) {
@@ -406,17 +429,26 @@
 	<!-- Auth check in progress — blank screen to avoid flash -->
 {:else if isAuthPage || isSharePage}
 	{@render children()}
-{:else if isConsolePage || isMessagesPage}
+{:else if isConsolePage || (isMessagesPage && uiStore.isMobile)}
 	<!--
-		Console pages (and /messages, the chat inbox, which has no workspace shell
-		either) render their own chrome and bypass the app shell
+		Console pages (and /messages on a phone, the chat inbox, which has no
+		workspace shell there) render their own chrome and bypass the app shell
 		below, but they still need the global CreateWorkspaceModal +
 		toast surface — the /console "Create Workspace" CTA and the
 		/console/new redirect (TASK-1529) both fire
 		`uiStore.openCreateWorkspace()`, which is a no-op unless the
 		modal is actually mounted somewhere in the tree.
+
+		On a desktop /messages the shell below renders, so Chat keeps Pad's chrome
+		(TASK-4315). The page is wrapped so an open Chat drawer can make it inert
+		without remounting it; the Chat host itself sits outside the wrapper.
 	-->
-	{@render children()}
+	<div style="display: contents" inert={coveredPage.active}>
+		{@render children()}
+	</div>
+	<ChatHost />
+	<!-- The compact phone bar: a sibling of the host, outside the inert wrapper above, so it stays live under the Chat sheet. -->
+	<GlobalBottomBar />
 	<CreateWorkspaceModal
 		onWorkspaceCreated={(ws) => uiStore.requestConnectAfterNavigate(ws.slug)}
 	/>
@@ -475,6 +507,10 @@
 					<path d="M3 6L8 11L13 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
 				</svg>
 			</button>
+			<!-- The bar is collapsed: Chat stays one click away beside its expand tab. -->
+			<div class="topbar-collapsed-chat" inert={coveredPage.active}>
+				<ChatButton compact />
+			</div>
 		{/if}
 		<div class="app-shell">
 			<Sidebar />
@@ -491,12 +527,21 @@
 					</svg>
 				</button>
 			{/if}
-			<main class="main-content" inert={coveredPage.active && !coveredPage.keepsBottomNav}>
+			<!--
+				A sheet that keeps the bottom nav live leaves <main> live only inside a
+				workspace, where BottomNav is in it. Elsewhere the bar is GlobalBottomBar,
+				mounted outside <main>, so <main> goes inert like any covered page.
+			-->
+			<main class="main-content" inert={coveredPage.active && !(coveredPage.keepsBottomNav && inWorkspace)}>
 				{@render children()}
 			</main>
 		</div>
 	</div>
 
+	<ChatHost />
+	{#if !inWorkspace}
+		<GlobalBottomBar />
+	{/if}
 	<CommandPalette />
 	<!--
 		Stage the Connect-modal auto-open signal (PLAN-1519 / TASK-1526)
@@ -588,6 +633,12 @@
 		padding: 0;
 		opacity: 0.5;
 		transition: opacity 0.2s ease, color 0.15s ease, background 0.15s ease;
+	}
+	.topbar-collapsed-chat {
+		position: absolute;
+		top: 0;
+		left: calc(50% + 32px);
+		z-index: 10;
 	}
 	.app-layout:hover .topbar-expand-btn {
 		opacity: 1;
