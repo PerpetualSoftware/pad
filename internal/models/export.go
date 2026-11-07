@@ -1,8 +1,14 @@
 package models
 
+// Supported workspace bundle versions.
+const (
+	WorkspaceExportVersion1 = 1
+	WorkspaceExportVersion  = 2
+)
+
 // WorkspaceExport is the complete portable representation of a workspace.
 type WorkspaceExport struct {
-	Version      int                 `json:"version"` // Export format version (1)
+	Version      int                 `json:"version"` // Workspace export format version.
 	ExportedAt   string              `json:"exported_at"`
 	Workspace    WorkspaceExportMeta `json:"workspace"`
 	Collections  []CollectionExport  `json:"collections"`
@@ -24,35 +30,36 @@ type WorkspaceExport struct {
 	// regenerates. Without them a SQLite->Postgres migration drops every one.
 	// Additive and omitempty, like reminders, so the format version holds.
 	Verifications []VerificationExport `json:"verifications,omitempty"`
-	// Schedules round-trip too (TASK-4104 D2): the time trigger attached to an
-	// item, with its resolved-occurrence history. Additive and omitempty, so
-	// the format version holds and a bundle without the member imports as it
-	// always did.
-	Schedules []ScheduleExport `json:"schedules,omitempty"`
+	// Schedules include commitment roles, overrides and occurrence actuals.
+	Schedules       []ScheduleExport       `json:"schedules,omitempty"`
+	ScheduleChanges []ScheduleChangeExport `json:"schedule_changes,omitempty"`
+	hasV2Members    bool
 }
 
-// ScheduleExport is one item schedule in a workspace bundle. Ids are not
-// carried (the import mints them), nor is error_code (a rule that compiles on
-// the destination is healthy; the fire path rediscovers a cap) nor the managed
-// reminder's ack mark (a managed row cannot be acknowledged).
+// ScheduleExport is one item schedule in a workspace bundle. ID is a source
+// key for remapping and is never stored at the destination. error_code is
+// recomputed; the managed reminder acknowledgement is not carried.
 //
 // RDates and ExDates are []any, not []string, so ONE malformed entry (a
 // number, an object) is a dropped and reported schedule at import rather than
 // a decode failure that loses the whole bundle. The import re-marshals them
 // from the parsed values and never keeps the bundle's text (BUG-4193).
 type ScheduleExport struct {
-	ItemID      string `json:"item_id"`
-	Kind        string `json:"kind"`
-	Dtstart     string `json:"dtstart"`
-	Dtend       string `json:"dtend,omitempty"`
-	Tz          string `json:"tz,omitempty"`
-	Floating    bool   `json:"floating,omitempty"`
-	Rrule       string `json:"rrule,omitempty"`
-	RDates      []any  `json:"rdates,omitempty"`
-	ExDates     []any  `json:"exdates,omitempty"`
-	Anchor      string `json:"anchor"`
-	Audience    string `json:"audience"`
-	LeadMinutes int    `json:"lead_minutes,omitempty"`
+	ID          string                   `json:"id,omitempty"`
+	Roles       *ScheduleRolesExport     `json:"roles,omitempty"`
+	Overrides   []ScheduleOverrideExport `json:"overrides,omitempty"`
+	ItemID      string                   `json:"item_id"`
+	Kind        string                   `json:"kind"`
+	Dtstart     string                   `json:"dtstart"`
+	Dtend       string                   `json:"dtend,omitempty"`
+	Tz          string                   `json:"tz,omitempty"`
+	Floating    bool                     `json:"floating,omitempty"`
+	Rrule       string                   `json:"rrule,omitempty"`
+	RDates      []any                    `json:"rdates,omitempty"`
+	ExDates     []any                    `json:"exdates,omitempty"`
+	Anchor      string                   `json:"anchor"`
+	Audience    string                   `json:"audience"`
+	LeadMinutes int                      `json:"lead_minutes,omitempty"`
 
 	// The outstanding occurrence. Empty on an ended schedule.
 	NextAt         string `json:"next_at,omitempty"`
@@ -69,6 +76,49 @@ type ScheduleExport struct {
 	Occurrences []ScheduleOccurrenceExport `json:"occurrences,omitempty"`
 }
 
+// ScheduleRolesExport carries the stored offsets from the recurrence seed.
+type ScheduleRolesExport struct {
+	TargetDays       int     `json:"target_days"`
+	TargetSecs       int     `json:"target_secs"`
+	EarliestDays     *int    `json:"earliest_days,omitempty"`
+	EarliestSecs     *int    `json:"earliest_secs,omitempty"`
+	DeadlineDays     *int    `json:"deadline_days,omitempty"`
+	DeadlineSecs     *int    `json:"deadline_secs,omitempty"`
+	OccupiedDays     *int    `json:"occupied_days,omitempty"`
+	OccupiedSecs     *int    `json:"occupied_secs,omitempty"`
+	DeadlineBehavior *string `json:"deadline_behavior,omitempty"`
+	Outcome          string  `json:"outcome,omitempty"`
+	RolesOrigin      string  `json:"roles_origin"`
+}
+
+// ScheduleOverrideExport is a sparse override of one occurrence role.
+type ScheduleOverrideExport struct {
+	OccurrenceKey string `json:"occurrence_key"`
+	Role          string `json:"role"`
+	ValueAt       string `json:"value_at"`
+	ValueWall     string `json:"value_wall,omitempty"`
+	CreatedAt     string `json:"created_at"`
+	UpdatedAt     string `json:"updated_at"`
+}
+
+// ScheduleChangeExport retains journal rows independently of live schedules.
+type ScheduleChangeExport struct {
+	ID             string  `json:"id"`
+	ItemID         string  `json:"item_id"`
+	ScheduleID     string  `json:"schedule_id"`
+	OccurrenceKey  *string `json:"occurrence_key,omitempty"`
+	ChangeType     string  `json:"change_type"`
+	Role           *string `json:"role,omitempty"`
+	BeforeJSON     *string `json:"before_json,omitempty"`
+	AfterJSON      *string `json:"after_json,omitempty"`
+	Actor          string  `json:"actor"`
+	Reason         string  `json:"reason"`
+	ReasonSource   string  `json:"reason_source"`
+	RootChangeID   string  `json:"root_change_id"`
+	ParentChangeID *string `json:"parent_change_id,omitempty"`
+	RecordedAt     string  `json:"recorded_at"`
+}
+
 // ScheduleReminderExport is the managed reminder's lifecycle.
 type ScheduleReminderExport struct {
 	RemindAt string `json:"remind_at"`
@@ -78,6 +128,8 @@ type ScheduleReminderExport struct {
 // ScheduleOccurrenceExport is one resolved occurrence. CommentID names a
 // comment of the same bundle (CommentExport.ID); the import remaps it.
 type ScheduleOccurrenceExport struct {
+	ActualDoneAt   string `json:"actual_done_at,omitempty"`
+	ActualSource   string `json:"actual_source,omitempty"`
 	OccurrenceAt   string `json:"occurrence_at"`
 	OccurrenceWall string `json:"occurrence_wall"`
 	State          string `json:"state"`
@@ -252,9 +304,8 @@ type ItemExport struct {
 	//
 	// Additive with NO WorkspaceExport.Version bump, deliberately: no bundle
 	// decode path sets DisallowUnknownFields, so an older binary ignores this
-	// key, while ImportWorkspace compares `data.Version != 1` with EXACT
-	// equality — a bump would reject bundles in BOTH directions for an added
-	// optional key.
+	// key. ImportWorkspace accepts supported workspace bundle versions; optional
+	// content-state metadata does not change their meaning.
 	//
 	// Why the bundle needs its own marker rather than inheriting one: this is
 	// not a late read. WorkspaceExport carries no op-log, and ImportWorkspace

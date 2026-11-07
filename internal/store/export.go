@@ -258,7 +258,7 @@ func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExpor
 	}
 
 	export := &models.WorkspaceExport{
-		Version:    1,
+		Version:    models.WorkspaceExportVersion,
 		ExportedAt: time.Now().UTC().Format(time.RFC3339),
 		Workspace: models.WorkspaceExportMeta{
 			Name:        ws.Name,
@@ -501,6 +501,10 @@ func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExpor
 		return nil, err
 	}
 
+	if export.ScheduleChanges, err = s.scheduleChangesQ(q, ws.ID, ""); err != nil {
+		return nil, err
+	}
+
 	// Verifications (TASK-3617), for the items this bundle carries, on the
 	// same rule as reminders above: a verdict whose item is absent could only
 	// be discarded on import.
@@ -680,6 +684,26 @@ func checkImportSourceIDs(data *models.WorkspaceExport) error {
 		}
 		seen[it.ID] = true
 	}
+	seen = map[string]bool{}
+	for _, sc := range data.Schedules {
+		if sc.ID == "" {
+			if data.ScheduleChanges != nil || sc.Overrides != nil {
+				return invalidf("schedule id is required for overrides and journal rows")
+			}
+			continue
+		}
+		if seen[sc.ID] {
+			return invalidf("duplicate schedule id %q", sc.ID)
+		}
+		seen[sc.ID] = true
+	}
+	seen = map[string]bool{}
+	for _, c := range data.ScheduleChanges {
+		if c.ID == "" || seen[c.ID] {
+			return invalidf("missing or duplicate schedule change id %q", c.ID)
+		}
+		seen[c.ID] = true
+	}
 	return nil
 }
 
@@ -703,8 +727,11 @@ const (
 )
 
 func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ownerID string, source string, report *ImportReport, opts ...MintOption) (*models.Workspace, error) {
-	if data.Version != 1 {
+	if data.Version < models.WorkspaceExportVersion1 || data.Version > models.WorkspaceExportVersion {
 		return nil, fmt.Errorf("unsupported export version: %d", data.Version)
+	}
+	if data.Version == models.WorkspaceExportVersion1 && data.HasV2ScheduleMembers() {
+		return nil, fmt.Errorf("export version 1 contains version 2 schedule members")
 	}
 	if err := checkImportSourceIDs(data); err != nil {
 		return nil, err
@@ -1641,6 +1668,14 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 	// reminder row export left out and recomputes the instants. A schedule that
 	// fails is dropped, counted and reported; its item and the import survive.
 	scheduled := map[string]bool{}
+	scheduleMap := map[string]string{}
+	sourceSchedules := map[string]models.ScheduleExport{}
+	var importedSchedules []string
+	for _, sx := range data.Schedules {
+		if sx.ID != "" {
+			sourceSchedules[sx.ID] = sx
+		}
+	}
 	for _, sx := range data.Schedules {
 		newItemID := itemMap[sx.ItemID]
 		var err error
@@ -1652,8 +1687,17 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 		default:
 			var in carriedSchedule
 			if in, err = carriedFromExport(sx, commentMap); err == nil {
-				if _, err = s.insertCarriedScheduleTx(tx, ws.ID, newItemID, in); err == nil {
+				var id string
+				var drops []string
+				if id, drops, err = s.insertCarriedScheduleTx(tx, ws.ID, newItemID, in); err == nil {
 					scheduled[newItemID] = true
+					if sx.ID != "" {
+						scheduleMap[sx.ID] = id
+					}
+					importedSchedules = append(importedSchedules, id)
+					for _, reason := range drops {
+						report.DroppedSchedules = append(report.DroppedSchedules, models.ImportScheduleDrop{Item: itemRefs[newItemID], Reason: reason})
+					}
 				}
 			}
 		}
@@ -1665,6 +1709,20 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 		}
 		if err != nil {
 			return nil, fmt.Errorf("import schedule: %w", err)
+		}
+	}
+
+	changeDrops, err := s.restoreScheduleChangesTx(tx, ws.ID, data.ScheduleChanges, insertedItemMap, scheduleMap, sourceSchedules)
+	if err != nil {
+		return nil, err
+	}
+	for _, d := range changeDrops {
+		d.Item = itemRefs[d.Item]
+		report.DroppedSchedules = append(report.DroppedSchedules, d)
+	}
+	for _, id := range importedSchedules {
+		if err := s.journalScheduleAfterTx(tx, id, "import", "", "", "", "system"); err != nil {
+			return nil, err
 		}
 	}
 

@@ -340,7 +340,7 @@ func TestCarryAndImport_BackfillRolesAndJournal(t *testing.T) {
 			result := c.do(t, move)
 			dst := c.sched(t, c.wsB.ID, result.Item.ID)
 			entries := commitmentJournal(t, c.s, dst.ID)
-			if len(entries) != 1 || entries[0].Type != "carry" {
+			if (!move && (len(entries) != 1 || entries[0].Type != "carry")) || (move && (len(entries) != 2 || entries[0].Type != "create" || entries[1].Type != "carry")) {
 				t.Fatal("carry journal")
 			}
 			if c.count(t, `SELECT COUNT(*) FROM item_schedules WHERE id=? AND deadline_days=0 AND deadline_behavior='stays_owed'`, dst.ID) != 1 {
@@ -360,9 +360,7 @@ func TestCarryAndImport_BackfillRolesAndJournal(t *testing.T) {
 	sc := f.create(t, in)
 	f.mustResolve(t, f.item, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "done", Actor: "user"}, "2026-10-30T10:00:00Z")
 	bundle := f.exportBundle(t)
-	if bundle.Version != 1 {
-		t.Fatal("bundle version changed")
-	}
+	stripV2(bundle)
 	ws, _ := f.importBundle(t, bundle, "Imported dates")
 	item := f.itemByTitle(t, ws.ID, f.item.Title)
 	dst, err := f.s.GetSchedule(ws.ID, item.ID)

@@ -347,7 +347,9 @@ Uses application-level export/import to transfer all workspace data.
 This reads each workspace from the SQLite database and imports it into
 the PostgreSQL database. Users, platform settings, and auth data are
 NOT migrated — only workspace content (collections, items, comments,
-links, versions). A schedule the import refuses is reported, not migrated.
+links, versions, reminders, verifications, schedules, occurrence actuals,
+overrides and schedule changes). A schedule or change the import refuses is
+reported, not migrated.
 
 Steps:
   1. Set up a fresh PostgreSQL database
@@ -1051,9 +1053,9 @@ func printMigrateDropSummary(w io.Writer, dropped []migrateDropped, fromPath str
 	if total == 0 {
 		return
 	}
-	fmt.Fprintf(w, "\n%d schedule(s) were NOT carried to PostgreSQL. Their rows are still in %s, which is now marked\n", total, fromPath)
-	fmt.Fprintf(w, "as migrated, so pad will not open it: read them with sqlite3 %s (tables item_schedules and\n", shellQuote(fromPath))
-	fmt.Fprintln(w, "schedule_occurrences), or from a `pad db backup` copy taken before the migration. Per workspace:")
+	fmt.Fprintf(w, "\n%d schedule record(s) (schedules, overrides or journal rows) were NOT carried to PostgreSQL. Their rows are still in %s, which is now marked\n", total, fromPath)
+	fmt.Fprintf(w, "as migrated, so pad will not open it: read them with sqlite3 %s (tables item_schedules,\n", shellQuote(fromPath))
+	fmt.Fprintln(w, "schedule_occurrences, schedule_occurrence_overrides and schedule_changes), or from a `pad db backup` copy taken before the migration. Per workspace:")
 	for _, d := range dropped {
 		fmt.Fprintf(w, "  %s: %d\n", d.Workspace, len(d.Drops))
 	}

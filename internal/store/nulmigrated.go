@@ -3,8 +3,8 @@ package store
 // MigratedTables names the tables `pad db migrate-to-pg` actually copies.
 //
 // The migration is application-level: it walks workspaces and runs
-// ExportWorkspace / ImportWorkspace on each. That reads seven tables and no
-// others — the command's own help says users, platform settings and auth data
+// ExportWorkspace / ImportWorkspace on each. Only exported workspace content
+// is carried; users, platform settings and auth data
 // are NOT migrated — so a NUL in users.name, platform_settings.value,
 // sessions.user_agent or any oauth table cannot break it.
 //
@@ -50,7 +50,9 @@ func MigratedTables() map[string]bool {
 		// occurrence actor) and have NUL-protected columns, so the preflight
 		// scans them before a migration copies them. schedule_occurrences rides
 		// inside WorkspaceExport.Schedules rather than a section of its own.
-		"item_schedules":       true,
-		"schedule_occurrences": true,
+		"item_schedules":                true,
+		"schedule_occurrences":          true,
+		"schedule_occurrence_overrides": true,
+		"schedule_changes":              true,
 	}
 }

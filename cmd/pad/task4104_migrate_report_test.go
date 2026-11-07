@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"os/exec"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -55,8 +56,9 @@ func TestTASK4104_MigrateReportsDroppedSchedules(t *testing.T) {
 	if err != nil || got == nil {
 		t.Fatalf("migrate import: %v", err)
 	}
-	if len(drops) != 1 {
-		t.Fatalf("drops %+v, want 1", drops)
+	want := []models.ImportScheduleDrop{{Item: "TASK-2", Reason: "timing:combination"}, {Item: "TASK-2", Reason: "changes:orphan"}}
+	if !reflect.DeepEqual(drops, want) {
+		t.Fatalf("drops %+v, want %+v", drops, want)
 	}
 	if !strings.Contains(out.String(), "dropped schedule: ") {
 		t.Errorf("no per-drop line in %q", out.String())
@@ -65,8 +67,8 @@ func TestTASK4104_MigrateReportsDroppedSchedules(t *testing.T) {
 	printMigrateDropSummary(&sum, []migrateDropped{{Workspace: "Migrate Drop", Drops: drops}}, "/data/pad.db")
 	// The source is marked migrated (pad refuses to open it), so the summary
 	// must say how the rows can still be read (TASK-4104).
-	for _, want := range []string{"Migrate Drop", "1 schedule", "NOT carried", "/data/pad.db",
-		"marked\nas migrated, so pad will not open it", "sqlite3 '/data/pad.db'", "item_schedules", "schedule_occurrences", "pad db backup"} {
+	for _, want := range []string{"Migrate Drop", "2 schedule", "NOT carried", "/data/pad.db",
+		"marked\nas migrated, so pad will not open it", "sqlite3 '/data/pad.db'", "item_schedules", "schedule_occurrences", "schedule_occurrence_overrides", "schedule_changes", "pad db backup"} {
 		if !strings.Contains(sum.String(), want) {
 			t.Errorf("summary lacks %q: %q", want, sum.String())
 		}
