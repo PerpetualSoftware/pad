@@ -45,6 +45,8 @@ func (f *schedFixture) create(t *testing.T, in models.ScheduleCreate) *models.It
 	if err != nil {
 		t.Fatalf("createScheduleAt: %v", err)
 	}
+	f.exec(t, `UPDATE item_schedules SET created_at=? WHERE id=?`, schedNow.Format(time.RFC3339), sc.ID)
+	sc.CreatedAt = schedNow.Format(time.RFC3339)
 	return sc
 }
 

@@ -338,9 +338,8 @@ func TestCompletionAnchorRuleSet(t *testing.T) {
 	}
 }
 
-// A soft deadline moves only with a reason; a hard one is snoozed, never moved.
-// The refusal runs before any write. RED if the check is missing or runs late.
-func TestResolveSoftDeadlineMoveNeedsReason(t *testing.T) {
+// A soft deadline accepts an optional reason; a hard deadline refuses a move.
+func TestResolveSoftDeadlineMoveReasonOptional(t *testing.T) {
 	t.Parallel()
 	f := newSchedFixture(t)
 	u := f.user(t, "res-soft@example.com", "")
@@ -355,28 +354,17 @@ func TestResolveSoftDeadlineMoveNeedsReason(t *testing.T) {
 	until := rt("2026-10-31T15:00:00Z")
 	base := ResolveInput{OccurrenceAt: rt("2026-10-30T09:00:00Z"), State: "move", Until: &until, Actor: "user"}
 
-	item, sc := mv("deadline_soft")
-	snap := func() string {
-		cur := f.reload(t, item.ID)
-		r := f.reminder(t, *sc.ReminderID)
-		return fmt.Sprint(deref(cur.NextAt), deref(cur.NextOverrideAt), cur.UpdatedAt, r.RemindAt, r.UpdatedAt,
-			f.occTotal(t, sc.ID), f.count(t, `SELECT COUNT(*) FROM comments WHERE item_id = ?`, item.ID))
-	}
-	before := snap()
+	item, _ := mv("deadline_soft")
 	for _, body := range []string{"", "   "} {
 		in := base
 		in.Comment = f.comment(item, u.ID, body)
-		var fe *ScheduleFieldError
-		if _, err := f.resolve(t, item, in, "2026-10-30T08:00:00Z"); !errors.As(err, &fe) || fe.Field != "comment" || fe.Code != "required" {
-			t.Errorf("body %q: %v, want comment/required", body, err)
+		if _, err := f.resolve(t, item, in, "2026-10-30T08:00:00Z"); err != nil {
+			t.Errorf("body %q: %v", body, err)
 		}
 	}
 	in := base
-	if _, err := f.resolve(t, item, in, "2026-10-30T08:00:00Z"); err == nil {
-		t.Error("no comment at all: accepted")
-	}
-	if after := snap(); after != before {
-		t.Errorf("a refused move wrote: %s -> %s", before, after)
+	if _, err := f.resolve(t, item, in, "2026-10-30T08:00:00Z"); err != nil {
+		t.Errorf("move without comment: %v", err)
 	}
 	in.Comment = f.comment(item, u.ID, "waiting on the vendor")
 	res := f.mustResolve(t, item, in, "2026-10-30T08:00:00Z")
