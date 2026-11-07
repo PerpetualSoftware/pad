@@ -575,3 +575,22 @@ func TestRenegotiateRangeUsesStoredInstant(t *testing.T) {
 		t.Fatal("a deadline that rounds past the limit was accepted")
 	}
 }
+
+// A schedule that is not native with a deadline never gets a correction row, even
+// when a miss row exists for its key and the report is on time: the resolve
+// still succeeds.
+func TestLateOnTimeReportOnLegacyRowWritesNoCorrection(t *testing.T) {
+	t.Parallel()
+	f := newSchedFixture(t)
+	sc := f.commitFixture(t, "deadline_hard") // legacy_backfill
+	f.exec(t, `INSERT INTO schedule_changes (id,workspace_id,item_id,schedule_id,occurrence_key,change_type,role,after_json,actor,reason,reason_source,root_change_id,recorded_at) VALUES (?,?,?,?,?,'missed_recorded','deadline',?,'system','','system',?,?)`,
+		"legacy-miss", f.ws.ID, f.item.ID, sc.ID, deadlineKey, `{"deadline":"2026-10-26T10:00:00Z"}`, "legacy-miss", nowNano())
+	at := rt("2026-10-26T09:30:00Z")
+	f.mustResolve(t, f.item, ResolveInput{State: "done", ActualDoneAt: &at, OccurrenceAt: rt(deadlineOccAt), View: time.UTC, Actor: "user"}, "2026-10-26T11:00:00Z")
+	if n := f.count(t, `SELECT COUNT(*) FROM schedule_changes WHERE schedule_id=? AND change_type='done' AND role='deadline'`, sc.ID); n != 0 {
+		t.Fatalf("correction rows on a legacy row = %d", n)
+	}
+	if n := f.count(t, `SELECT COUNT(*) FROM schedule_changes WHERE id='legacy-miss'`); n != 1 {
+		t.Fatal("the miss row was not kept")
+	}
+}
