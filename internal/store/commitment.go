@@ -322,6 +322,11 @@ func (s *Store) renegotiateDeadlineAt(workspaceID, itemID, actor string, until t
 	if until.IsZero() {
 		return fieldErr("until", "required", "renegotiating a deadline needs the new deadline")
 	}
+	// Validate and journal the value that is stored: the override writer rounds
+	// a fractional second up.
+	if n, err := time.Parse(time.RFC3339, NormalizeInstant(until)); err == nil {
+		until = n
+	}
 	if !until.After(now) || until.After(now.Add(maxResolveUntil)) {
 		return fieldErr("until", "range", "until must be after now and within 366 days")
 	}

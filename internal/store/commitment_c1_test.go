@@ -564,3 +564,14 @@ func TestRenegotiateUntilRange(t *testing.T) {
 		}
 	}
 }
+
+func TestRenegotiateRangeUsesStoredInstant(t *testing.T) {
+	t.Parallel()
+	f := newSchedFixture(t)
+	f.nativeCommit(t)
+	now := renegNow.Add(500 * time.Millisecond)
+	// now+366d is inside the limit only before the writer rounds it up.
+	if err := f.s.renegotiateDeadlineAt(f.ws.ID, f.item.ID, "user", now.Add(maxResolveUntil), "why", now); err == nil {
+		t.Fatal("a deadline that rounds past the limit was accepted")
+	}
+}
