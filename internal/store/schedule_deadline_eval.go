@@ -87,7 +87,9 @@ func (d *deadlineCandidate) resolve() error {
 		end := wallOf(civil)
 		end.AllDay = true
 		d.at = schedule.Resolve(loc, end).UTC()
-	} else {
+	} else if d.override != nil || !d.sc.Floating {
+		// A floating deadline keeps its wall as the evidence value, so a change of
+		// the recipient zone cannot record the same deadline twice.
 		value = d.at.Format(time.RFC3339Nano)
 	}
 	b, err := json.Marshal(struct {
@@ -134,7 +136,7 @@ func (s *Store) deadlinePage(now time.Time, cursor *deadlineCandidate) ([]deadli
 	epoch := func(col string) string { return `CAST(strftime('%s',` + col + `) AS REAL)` }
 	if s.dialect.Driver() == DriverPostgres {
 		epoch = func(col string) string {
-			return `CASE WHEN pg_input_is_valid(` + col + `, 'timestamp with time zone') THEN CAST(EXTRACT(EPOCH FROM CAST(` + col + ` AS timestamp with time zone)) AS double precision) END`
+			return `CASE WHEN ` + col + ` ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$' THEN CAST(EXTRACT(EPOCH FROM CAST(` + col + ` AS timestamp with time zone)) AS double precision) END`
 		}
 	}
 	// Invalid instants sort first so Go reports the row error and keeps scanning.
@@ -184,7 +186,7 @@ func (s *Store) deadlineJournal(q Queryer, candidates []deadlineCandidate) (map[
 		return states, nil
 	}
 	rows, err := q.Query(s.q(`SELECT schedule_id,COALESCE(occurrence_key,''),COALESCE(role,''),change_type,COALESCE(before_json,''),COALESCE(after_json,''),recorded_at
- FROM schedule_changes WHERE schedule_id IN (`+placeholders(len(ids))+`) AND ((change_type='missed_recorded' AND role='deadline') OR before_json IS NOT NULL)`), ids...)
+ FROM schedule_changes WHERE schedule_id IN (`+placeholders(len(ids))+`) AND ((change_type='missed_recorded' AND role='deadline') OR (change_type<>'missed_recorded' AND before_json LIKE '%legacy_backfill%'))`), ids...)
 	if err != nil {
 		return nil, err
 	}
@@ -219,7 +221,8 @@ func (d deadlineCandidate) eligible(now time.Time, state deadlineJournalState) b
 
 // EvaluateDeadlines scans without locks, then pins and rechecks each due row.
 // Overdue stays-owed rows are rescanned each tick: recorded rows cost reads,
-// but never consume a cap slot. No occurrence is closed by this pass.
+// but never consume a cap slot. Only a miss recorded by this pass counts toward
+// the cap, so a row that keeps failing cannot starve the rows behind it. No occurrence is closed by this pass.
 func (s *Store) EvaluateDeadlines(nowTS string, limit int) (DeadlineEvalResult, error) {
 	var result DeadlineEvalResult
 	nowT, err := time.Parse(time.RFC3339, nowTS)
@@ -261,7 +264,6 @@ func (s *Store) EvaluateDeadlines(nowTS string, limit int) (DeadlineEvalResult, 
 			if !d.eligible(nowT, state) {
 				continue
 			}
-			result.Evaluated++
 			missed, err := s.evaluateDeadline(d, nowT)
 			if err != nil {
 				var busy interface{ Code() int }
@@ -270,6 +272,7 @@ func (s *Store) EvaluateDeadlines(nowTS string, limit int) (DeadlineEvalResult, 
 				}
 			} else if missed {
 				result.Missed++
+				result.Evaluated++
 			}
 			if result.Evaluated == limit {
 				result.CapHit = true

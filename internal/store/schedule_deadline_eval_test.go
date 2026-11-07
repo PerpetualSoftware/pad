@@ -153,7 +153,9 @@ func TestDeadlineEvalRecordedRowsDoNotOccupyTheCap(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		f.eval(t, "2026-10-26T12:00:00Z", 1)
 	}
-	f.overdueSchedule(t, "Late arrival", "lapses")
+	late := f.overdueSchedule(t, "Late arrival", "lapses")
+	// An id tiebreak would otherwise decide the order: make the late row sort last.
+	f.exec(t, `UPDATE item_schedules SET next_at=?, next_wall=? WHERE id=?`, "2026-10-26T10:00:00Z", "2026-10-26T10:00:00", late.ID)
 	if got := f.eval(t, "2026-10-26T12:00:00Z", 1); got.Missed != 1 {
 		t.Errorf("late row: missed %d, want 1 on the first pass after it", got.Missed)
 	}
@@ -299,8 +301,19 @@ func TestDeadlineEvalFloatingRecipientZone(t *testing.T) {
 	if got := f.eval(t, "2026-11-02T18:00:01Z", 0); got.Missed != 1 {
 		t.Fatalf("recipient instant: %+v", got)
 	}
-	if n := f.count(t, `SELECT COUNT(*) FROM schedule_changes WHERE role='deadline' AND occurrence_key='2026-11-02T09:00:00' AND after_json=?`, `{"deadline":"2026-11-02T18:00:00Z"}`); n != 1 {
-		t.Fatal("floating evidence mismatch")
+	if n := f.count(t, `SELECT COUNT(*) FROM schedule_changes WHERE role='deadline' AND occurrence_key='2026-11-02T09:00:00' AND after_json=?`, `{"deadline":"2026-11-02T10:00:00"}`); n != 1 {
+		t.Fatal("floating evidence mismatch: want the deadline wall, not the recipient instant")
+	}
+	// A new recipient zone moves the instant but not the deadline: no second miss.
+	f.exec(t, `UPDATE users SET timezone=? WHERE id=?`, "Asia/Tokyo", u.ID)
+	if got := f.eval(t, "2026-11-03T00:00:00Z", 0); got.Missed != 0 {
+		t.Errorf("after a zone change: %+v, want no second miss", got)
+	}
+	if n := f.deadlineEvidence(t); n != 1 {
+		t.Errorf("evidence rows = %d, want 1", n)
+	}
+	if n := f.deadlineNotices(t); n != 1 {
+		t.Errorf("events = %d, want 1", n)
 	}
 }
 
