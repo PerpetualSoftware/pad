@@ -257,7 +257,11 @@ func (s *Store) carrySourceScheduleTx(tx *sql.Tx, sourceWorkspaceID, sourceItemI
 		return ScheduleCarryReport{}, err
 	}
 	if p.report.Carried {
-		if _, err := s.insertCarriedScheduleTx(tx, targetWorkspaceID, targetItemID, p.in); err != nil {
+		prepared, err := prepareCarriedSchedule(p.in)
+		if err != nil {
+			return ScheduleCarryReport{}, err
+		}
+		if _, err := s.writePreparedSchedule(tx, targetWorkspaceID, targetItemID, p.in, prepared, "carry"); err != nil {
 			return ScheduleCarryReport{}, fmt.Errorf("copy item across workspaces: carry schedule: %w", err)
 		}
 	}
@@ -272,6 +276,10 @@ func (s *Store) carrySourceScheduleTx(tx *sql.Tx, sourceWorkspaceID, sourceItemI
 // endScheduleTx ends a schedule without a rule edit: the schedule row first, then
 // its managed reminder, the order every schedule writer uses. History is kept.
 func (s *Store) endScheduleTx(tx *sql.Tx, scheduleID string) error {
+	before, err := s.scheduleSnapshotTx(tx, scheduleID)
+	if err != nil {
+		return err
+	}
 	ts := now()
 	if _, err := tx.Exec(s.q(`
 		UPDATE item_schedules SET ended_at = ?, next_at = NULL, next_wall = NULL, next_override_at = NULL,
@@ -279,5 +287,8 @@ func (s *Store) endScheduleTx(tx *sql.Tx, scheduleID string) error {
 		WHERE id = ?`), ts, ts, scheduleID); err != nil {
 		return fmt.Errorf("copy item across workspaces: end source schedule: %w", err)
 	}
-	return s.deleteManagedReminderTx(tx, scheduleID)
+	if err := s.deleteManagedReminderTx(tx, scheduleID); err != nil {
+		return err
+	}
+	return s.journalScheduleAfterTx(tx, scheduleID, "end", "", "", before, "system")
 }

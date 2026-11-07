@@ -110,7 +110,7 @@ func (s *Store) insertCarriedScheduleTx(tx *sql.Tx, workspaceID, itemID string, 
 	if err != nil {
 		return "", err
 	}
-	return s.writePreparedSchedule(tx, workspaceID, itemID, in, p)
+	return s.writePreparedSchedule(tx, workspaceID, itemID, in, p, "import")
 }
 
 // preparedCarry is a carried schedule that passed every check, with everything
@@ -238,7 +238,7 @@ func prepareCarriedSchedule(in carriedSchedule) (preparedCarry, error) {
 
 // writePreparedSchedule stores a prepared carry: the schedule, its managed row
 // (none when ended) and its history.
-func (s *Store) writePreparedSchedule(tx *sql.Tx, workspaceID, itemID string, in carriedSchedule, p preparedCarry) (string, error) {
+func (s *Store) writePreparedSchedule(tx *sql.Tx, workspaceID, itemID string, in carriedSchedule, p preparedCarry, source string) (string, error) {
 	spec, end, hasEnd, anchorWall, endedAt, firedAt, override := p.spec, p.dtend, p.hasEnd, p.anchorWall, p.endedAt, p.firedAt, p.override
 	createdAt, updatedAt, nextAt, nextWall, remindAt, occs := p.createdAt, p.updatedAt, p.nextAt, p.nextWall, p.remindAt, p.occs
 	// Everything is valid: write.
@@ -272,11 +272,17 @@ func (s *Store) writePreparedSchedule(tx *sql.Tx, workspaceID, itemID string, in
 	}
 	for _, o := range occs {
 		if _, err := tx.Exec(s.q(`
-			INSERT INTO schedule_occurrences (id, schedule_id, occurrence_at, occurrence_wall, state, comment_id, actor, resolved_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`),
+			INSERT INTO schedule_occurrences (id, schedule_id, occurrence_at, occurrence_wall, state, comment_id, actor, resolved_at, actual_source)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'legacy_unknown')`),
 			newID(), id, o.At, o.Wall, o.State, nilIfEmpty(o.CommentID), o.Actor, o.ResolvedAt); err != nil {
 			return "", fmt.Errorf("insert carried occurrence: %w", err)
 		}
+	}
+	if err := s.setLegacyRolesTx(tx, id, in.Kind, spec.Start.String(), in.Dtend); err != nil {
+		return "", err
+	}
+	if err := s.journalScheduleAfterTx(tx, id, source, "", "", "", "system"); err != nil {
+		return "", err
 	}
 	return id, nil
 }
