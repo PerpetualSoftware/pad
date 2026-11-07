@@ -259,11 +259,24 @@ func (s *Store) CreateCommitmentSchedule(workspaceID, itemID string, in models.S
 	return s.createScheduleRolesAt(workspaceID, itemID, in, &r, time.Now())
 }
 
+// sameDeadline reports whether two role sets carry the same deadline offset and
+// behavior; a deadline present on one side only is a difference.
+func sameDeadline(a, b scheduleRoles) bool {
+	eq := func(x, y *int) bool { return (x == nil) == (y == nil) && (x == nil || *x == *y) }
+	return eq(a.DeadlineDays, b.DeadlineDays) && eq(a.DeadlineSecs, b.DeadlineSecs) &&
+		(a.DeadlineBehavior == nil) == (b.DeadlineBehavior == nil) &&
+		(a.DeadlineBehavior == nil || *a.DeadlineBehavior == *b.DeadlineBehavior)
+}
+
 // SetCommitmentRoles replaces a schedule's role columns and marks them native.
 // Writing a legacy_backfill row converts it, and the journal row it writes is the
 // only one whose before_json shows roles_origin legacy_backfill beside an
 // after_json of native: the deadline evaluator reads that pair as the conversion
 // and records no miss for a deadline already past at that moment.
+//
+// A schedule that has a deadline keeps it here: a different deadline offset or
+// behavior, or no deadline, is ErrHardDeadlineRenegotiate (RenegotiateDeadline
+// is the one door that moves it). Other roles change freely.
 func (s *Store) SetCommitmentRoles(workspaceID, itemID string, roles models.CommitmentRolesInput) (*models.ItemSchedule, error) {
 	r, err := rolesFromInput(roles)
 	if err != nil {
@@ -283,6 +296,13 @@ func (s *Store) SetCommitmentRoles(workspaceID, itemID string, roles models.Comm
 	}
 	if sc == nil {
 		return nil, ErrScheduleNotFound
+	}
+	cur, err := s.scheduleRolesOf(tx, sc)
+	if err != nil {
+		return nil, err
+	}
+	if cur.DeadlineDays != nil && !sameDeadline(cur, r) {
+		return nil, ErrHardDeadlineRenegotiate
 	}
 	before, err := s.scheduleSnapshotTx(tx, sc.ID)
 	if err != nil {

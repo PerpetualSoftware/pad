@@ -187,6 +187,10 @@ func writeScheduleError(w http.ResponseWriter, err error) bool {
 			"This item already has a schedule. PATCH changes it and DELETE removes it.")
 	case errors.Is(err, store.ErrReminderManaged):
 		writeReminderManaged(w, "")
+	case errors.Is(err, store.ErrHardDeadlineRenegotiate):
+		writeError2(w, http.StatusConflict, "hard_deadline",
+			"A hard deadline changes only by renegotiation: POST .../commitment/renegotiate, with a reason",
+			map[string]interface{}{"field": "deadline", "code": "combination"})
 	default:
 		writeInternalError(w, err)
 	}

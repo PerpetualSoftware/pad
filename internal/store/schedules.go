@@ -42,6 +42,10 @@ const allDayFireHour = 9
 var (
 	// ErrScheduleExists is CreateSchedule's answer when the item already has one.
 	ErrScheduleExists = errors.New("item already has a schedule")
+	// ErrHardDeadlineRenegotiate is the answer to a write that would move or
+	// loosen a native commitment's deadline outside a renegotiation: a hard
+	// deadline changes only through RenegotiateDeadline, which records who and why.
+	ErrHardDeadlineRenegotiate = errors.New("a hard deadline changes only by renegotiation")
 	// ErrScheduleItemGone is the answer when the item is not a live item of the
 	// workspace; missing, archived and foreign are indistinguishable on purpose
 	// (the existence-oracle posture ErrReminderItemGone takes).
@@ -741,6 +745,17 @@ func (s *Store) updateScheduleAt(workspaceID, itemID string, upd models.Schedule
 		spec.Rule != deref(cur.Rrule) || anchor != cur.Anchor ||
 		!equalStringSlices(wallStrings(spec.RDates), cur.RDates) || !equalStringSlices(wallStrings(spec.ExDates), cur.ExDates)
 	timingEdit := timingNamed && (timingChanged || cur.ErrorCode != nil)
+	if timingEdit {
+		// A native commitment's deadline is its seed wall plus an offset, so a
+		// timing edit moves it. That is a renegotiation, not a schedule edit.
+		roles, err := s.scheduleRolesOf(tx, cur)
+		if err != nil {
+			return nil, err
+		}
+		if roles.Origin == "native" && roles.DeadlineDays != nil {
+			return nil, ErrHardDeadlineRenegotiate
+		}
+	}
 
 	ts := now()
 	nextAt, nextWall, override := cur.NextAt, cur.NextWall, cur.NextOverrideAt

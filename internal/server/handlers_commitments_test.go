@@ -215,3 +215,55 @@ func TestCanRenegotiateCommitment(t *testing.T) {
 		})
 	}
 }
+
+func TestCommitmentPatchRefusesHardDeadlineChange(t *testing.T) {
+	t.Parallel()
+	f := newSchedHTTP(t)
+	readCommitment(t, commitmentCall(f, "POST", commitmentBody()), 201)
+	roles := func(edit func(map[string]any)) map[string]any {
+		m := map[string]any{}
+		for k, v := range commitmentBody()["roles"].(map[string]any) {
+			m[k] = v
+		}
+		edit(m)
+		return map[string]any{"roles": m}
+	}
+	before := f.count(`SELECT COUNT(*) FROM schedule_changes WHERE change_type='update'`)
+	for name, edit := range map[string]func(map[string]any){
+		"deadline value":    func(m map[string]any) { m["deadline_days"] = 2 },
+		"deadline seconds":  func(m map[string]any) { m["deadline_secs"] = 60 },
+		"deadline behavior": func(m map[string]any) { m["deadline_behavior"] = "lapses" },
+		"deadline removed": func(m map[string]any) {
+			delete(m, "deadline_days")
+			delete(m, "deadline_secs")
+			delete(m, "deadline_behavior")
+		},
+	} {
+		rr := commitmentCall(f, "PATCH", roles(edit))
+		if rr.Code != 409 || !strings.Contains(rr.Body.String(), "hard_deadline") || !strings.Contains(rr.Body.String(), "/commitment/renegotiate") {
+			t.Fatalf("%s: %d %s", name, rr.Code, rr.Body.String())
+		}
+	}
+	if n := f.count(`SELECT COUNT(*) FROM schedule_changes WHERE change_type='update'`); n != before {
+		t.Fatalf("a refused patch wrote %d journal rows", n-before)
+	}
+	// A role other than the deadline still changes, and so does an unchanged deadline.
+	c := readCommitment(t, commitmentCall(f, "PATCH", roles(func(m map[string]any) { m["outcome"] = "done" })), 200)
+	if c.Roles.Outcome != "done" {
+		t.Fatalf("outcome %+v", c.Roles)
+	}
+}
+
+func TestSchedulePatchRefusesTimingEditOnNativeHardDeadline(t *testing.T) {
+	t.Parallel()
+	f := newSchedHTTP(t)
+	readCommitment(t, commitmentCall(f, "POST", commitmentBody()), 201)
+	rr := f.as(f.token(f.owner, ""), "PATCH", f.path(f.item), map[string]any{"dtstart": "2099-02-01T09:00"})
+	if rr.Code != 409 || !strings.Contains(rr.Body.String(), "hard_deadline") {
+		t.Fatalf("timing edit: %d %s", rr.Code, rr.Body.String())
+	}
+	// A non-timing edit is still allowed.
+	if rr := f.as(f.token(f.owner, ""), "PATCH", f.path(f.item), map[string]any{"lead_minutes": 5}); rr.Code != 200 {
+		t.Fatalf("lead edit: %d %s", rr.Code, rr.Body.String())
+	}
+}
