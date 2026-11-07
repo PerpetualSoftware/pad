@@ -341,16 +341,16 @@ func TestPLAN3598_ItemContextConventionsInRelevanceOrder(t *testing.T) {
 		if len(cs) < 3 {
 			t.Fatalf("too few conventions to check the order: %v", convRefs(cs))
 		}
-		if cs[0].Trigger == "always" || conventionPriorityRank(cs[0].Priority) != conventionPriorityRank("must") {
+		if cs[0].Trigger == "always" || models.ConventionPriorityRank(cs[0].Priority) != models.ConventionPriorityRank("must") {
 			t.Errorf("the first convention is not an intent-trigger must rule: %+v", cs[0])
 		}
 		for i := 1; i < len(cs); i++ {
 			a, b := cs[i-1], cs[i]
-			if tier(a) > tier(b) || (tier(a) == tier(b) && conventionPriorityRank(a.Priority) > conventionPriorityRank(b.Priority)) {
+			if tier(a) > tier(b) || (tier(a) == tier(b) && models.ConventionPriorityRank(a.Priority) > models.ConventionPriorityRank(b.Priority)) {
 				t.Errorf("%s (%s/%s) sorts before %s (%s/%s)", a.Ref, a.Trigger, a.Priority, b.Ref, b.Trigger, b.Priority)
 			}
 			// Within one tier and priority, the smaller body first.
-			if tier(a) == tier(b) && conventionPriorityRank(a.Priority) == conventionPriorityRank(b.Priority) && len(a.Content) > len(b.Content) {
+			if tier(a) == tier(b) && models.ConventionPriorityRank(a.Priority) == models.ConventionPriorityRank(b.Priority) && len(a.Content) > len(b.Content) {
 				t.Errorf("%s (%d bytes) sorts before the smaller %s (%d bytes)", a.Ref, len(a.Content), b.Ref, len(b.Content))
 			}
 		}

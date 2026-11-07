@@ -1448,7 +1448,10 @@ func (s *Store) listItemsQ(q Queryer, workspaceID string, params models.ItemList
 	}
 
 	// Sorting
-	orderSQL, orderArgs := s.itemOrder(params, completed)
+	orderSQL, orderArgs, err := s.itemOrder(workspaceID, params, completed)
+	if err != nil {
+		return nil, err
+	}
 	query += orderSQL
 	args = append(args, orderArgs...)
 
@@ -2264,7 +2267,10 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 	// PG FTSRank embeds the same OR-combined plainto_tsquery as FTSMatch
 	// and consumes TWO args (raw + hyphen-sanitized) — BUG-842.
 	if strings.TrimSpace(params.Sort) != "" || params.OrderByDay != "" {
-		orderSQL, orderArgs := s.itemOrder(params, completed)
+		orderSQL, orderArgs, err := s.itemOrder(workspaceID, params, completed)
+		if err != nil {
+			return nil, err
+		}
 		query += orderSQL
 		args = append(args, orderArgs...)
 	} else if s.dialect.Driver() == DriverPostgres {
@@ -2531,22 +2537,27 @@ func (s *Store) resolveCompletedDay(workspaceID string, params models.ItemListPa
 // instant itself for `created` and `completed`, so a viewer-zone day is never
 // split across the order, and the stored value's text for a date field), then
 // the id. The calendar's within-day sort is the same total order. Without it, the list's own sort.
-func (s *Store) itemOrder(params models.ItemListParams, completed *completedDayCache) (string, []any) {
+func (s *Store) itemOrder(workspaceID string, params models.ItemListParams, completed *completedDayCache) (string, []any, error) {
 	key := params.OrderByDay
 	if key == "" {
-		return buildItemSort(params.Sort, s.dialect), nil
+		ranks, err := s.selectSortRanks(workspaceID, params)
+		if err != nil {
+			return "", nil, err
+		}
+		order, args := buildItemSortRanked(params.Sort, s.dialect, ranks)
+		return order, args, nil
 	}
 	switch key {
 	case "created":
-		return " ORDER BY i.created_at, i.id", nil
+		return " ORDER BY i.created_at, i.id", nil, nil
 	case "completed":
 		if completed.instant == "" {
-			return " ORDER BY i.id", nil // the filter matches nothing
+			return " ORDER BY i.id", nil, nil // the filter matches nothing
 		}
-		return " ORDER BY " + completed.instant + ", i.id", completed.instantArgs
+		return " ORDER BY " + completed.instant + ", i.id", completed.instantArgs, nil
 	}
 	if !isValidFieldKey(key) {
-		return " ORDER BY i.id", nil
+		return " ORDER BY i.id", nil, nil
 	}
 	// The value's own text, then the id, byte-wise: the order the calendar
 	// sorts a day in, so a read that stops early keeps the earliest of a day.
@@ -2555,7 +2566,7 @@ func (s *Store) itemOrder(params models.ItemListParams, completed *completedDayC
 	if s.dialect.Driver() == DriverPostgres {
 		text, id = "("+text+`) COLLATE "C"`, `i.id COLLATE "C"`
 	}
-	return " ORDER BY " + text + ", " + id, nil
+	return " ORDER BY " + text + ", " + id, nil, nil
 }
 
 // fieldDayExpr is the SQL expression for the day (YYYY-MM-DD text) of an item's
@@ -6328,8 +6339,19 @@ var validSortField = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]*$`)
 // key otherwise come back in an unspecified order, and an offset page could
 // then repeat one row and skip another.
 func buildItemSort(sort string, dialect Dialect) string {
+	order, _ := buildItemSortRanked(sort, dialect, nil)
+	return order
+}
+
+// buildItemSortRanked is buildItemSort with the select-field ranks of
+// selectSortRanks (BUG-4400): a field named in ranks sorts by its rank
+// expression, then by the raw value (so values outside every option order
+// among themselves as before). Its args bind the rank expression's
+// placeholders, in order.
+func buildItemSortRanked(sort string, dialect Dialect, ranks map[string]selectSortRank) (string, []any) {
+	var args []any
 	if sort == "" {
-		return " ORDER BY i.pinned DESC, i.updated_at DESC, i.id"
+		return " ORDER BY i.pinned DESC, i.updated_at DESC, i.id", nil
 	}
 
 	var parts []string
@@ -6373,12 +6395,18 @@ func buildItemSort(sort string, dialect Dialect) string {
 			}
 			// BUG-3221/BUG-3218: numbers numerically, then strings, booleans,
 			// other shapes, and NULLs last, on both dialects.
+			if r, ok := ranks[col]; ok {
+				expr, a := r.orderBy(dialect, col, dir)
+				parts = append(parts, expr)
+				args = append(args, a...)
+				continue
+			}
 			parts = append(parts, dialect.JSONFieldOrder("i.fields", col, dir))
 		}
 	}
 
 	if len(parts) == 0 {
-		return " ORDER BY i.pinned DESC, i.updated_at DESC, i.id"
+		return " ORDER BY i.pinned DESC, i.updated_at DESC, i.id", nil
 	}
 	hasID := false
 	for _, p := range parts {
@@ -6389,7 +6417,7 @@ func buildItemSort(sort string, dialect Dialect) string {
 	if !hasID {
 		parts = append(parts, "i.id")
 	}
-	return " ORDER BY " + strings.Join(parts, ", ")
+	return " ORDER BY " + strings.Join(parts, ", "), args
 }
 
 // shouldCreateItemVersion mirrors ShouldCreateVersion but queries
