@@ -132,11 +132,18 @@ func scanDeadline(row interface{ Scan(...any) error }, approximate bool) (deadli
 	return d, err
 }
 
+// pgInstantShape admits only text the Postgres cast to timestamptz accepts:
+// real month and day ranges (February stops at the 28th, so a leap day reads as
+// unparsed, which only affects scan order because Go resolves every row
+// exactly), a valid clock and an offset. It replaces pg_input_is_valid, which
+// needs Postgres 16.
+const pgInstantShape = `^[0-9]{4}-((0[13578]|1[02])-(0[1-9]|[12][0-9]|3[01])|(0[469]|11)-(0[1-9]|[12][0-9]|30)|02-(0[1-9]|1[0-9]|2[0-8]))T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\.[0-9]+)?(Z|[+-]([01][0-9]|2[0-3]):[0-5][0-9])$`
+
 func (s *Store) deadlinePage(now time.Time, cursor *deadlineCandidate) ([]deadlineCandidate, error) {
 	epoch := func(col string) string { return `CAST(strftime('%s',` + col + `) AS REAL)` }
 	if s.dialect.Driver() == DriverPostgres {
 		epoch = func(col string) string {
-			return `CASE WHEN ` + col + ` ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$' THEN CAST(EXTRACT(EPOCH FROM CAST(` + col + ` AS timestamp with time zone)) AS double precision) END`
+			return `CASE WHEN ` + col + ` ~ '` + pgInstantShape + `' THEN CAST(EXTRACT(EPOCH FROM CAST(` + col + ` AS timestamp with time zone)) AS double precision) END`
 		}
 	}
 	// Invalid instants sort first so Go reports the row error and keeps scanning.

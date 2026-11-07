@@ -465,14 +465,20 @@ func TestDeadlineEvalSeedDisplacementAcrossDST(t *testing.T) {
 
 func TestDeadlineEvalMalformedInstantDoesNotStopPass(t *testing.T) {
 	t.Parallel()
-	for _, field := range []string{"next_at", "override"} {
-		t.Run(field, func(t *testing.T) {
+	// Shaped like an instant but not one: it must not make the scan query itself fail.
+	for _, tc := range []struct{ field, value string }{
+		{"next_at", "not-an-instant"}, {"override", "not-an-instant"},
+		{"next_at", "2026-13-45T00:00:00Z"}, {"override", "2026-13-45T00:00:00Z"},
+		{"next_at", "2026-02-30T00:00:00Z"}, {"override", "2026-02-30T00:00:00Z"},
+	} {
+		field := tc.field
+		t.Run(tc.field+"/"+tc.value, func(t *testing.T) {
 			f := newSchedFixture(t)
 			bad := f.overdueSchedule(t, "Malformed instant", "stays_owed")
 			if field == "next_at" {
-				f.exec(t, `UPDATE item_schedules SET next_at='not-an-instant' WHERE id=?`, bad.ID)
+				f.exec(t, `UPDATE item_schedules SET next_at=? WHERE id=?`, tc.value, bad.ID)
 			} else {
-				f.deadlineOverride(t, bad, "not-an-instant")
+				f.deadlineOverride(t, bad, tc.value)
 			}
 			f.overdueSchedule(t, "Valid instant", "stays_owed")
 			got, err := f.s.EvaluateDeadlines("2026-10-26T12:00:00Z", 0)
@@ -480,5 +486,20 @@ func TestDeadlineEvalMalformedInstantDoesNotStopPass(t *testing.T) {
 				t.Fatalf("result=%+v error=%v", got, err)
 			}
 		})
+	}
+}
+
+// A deadline override stored with fractional seconds still reads as an instant
+// on both dialects, so the row is scanned in order and recorded once.
+func TestDeadlineEvalFractionalSecondOverride(t *testing.T) {
+	t.Parallel()
+	f := newSchedFixture(t)
+	sc := f.overdueSchedule(t, "Fractional", "stays_owed")
+	f.deadlineOverride(t, sc, "2026-10-26T11:00:00.5Z")
+	if got := f.eval(t, "2026-10-26T10:59:59Z", 0); got.Missed != 0 {
+		t.Fatalf("before the override: %+v", got)
+	}
+	if got := f.eval(t, "2026-10-26T11:00:02Z", 0); got.Missed != 1 {
+		t.Fatalf("after the override: %+v", got)
 	}
 }
