@@ -267,3 +267,13 @@ func TestSchedulePatchRefusesTimingEditOnNativeHardDeadline(t *testing.T) {
 		t.Fatalf("lead edit: %d %s", rr.Code, rr.Body.String())
 	}
 }
+
+func TestCommitmentPatchConvertsLegacyHardDeadlineFreely(t *testing.T) {
+	t.Parallel()
+	f := newSchedHTTP(t)
+	f.create(map[string]any{"kind": "deadline_hard", "dtstart": "2099-01-01T09:00", "tz": "UTC"})
+	c := readCommitment(t, commitmentCall(f, "PATCH", map[string]any{"roles": commitmentBody()["roles"]}), 200)
+	if c.Roles.RolesOrigin != "native" || c.Roles.Deadline == nil || *c.Roles.Deadline != "2099-01-02T09:00:00Z" {
+		t.Fatalf("legacy hard deadline conversion: %+v", c.Roles)
+	}
+}
