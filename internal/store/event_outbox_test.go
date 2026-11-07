@@ -1405,7 +1405,7 @@ func TestWriteOutboxTx_RejectsMismatchedPayloadFamily(t *testing.T) {
 // independent copy lands as this unit's first commit.
 func TestCanonicalEventsAreFullyDeclared(t *testing.T) {
 	t.Parallel()
-	// The events/1 set at SPEC-3 v1.7. Adding, removing or re-homing an entry
+	// The events/1 set at SPEC-3 v1.8. Adding, removing or re-homing an entry
 	// here is a CONTRACT CHANGE: update the spec version and the taxonomy's
 	// doc comment in the same commit.
 	want := map[string]struct {
@@ -1413,46 +1413,48 @@ func TestCanonicalEventsAreFullyDeclared(t *testing.T) {
 		family  []string
 		sse     string
 	}{
-		"item.created":        {kernelevents.SubjectItem, []string{kernelevents.PayloadItemSnapshot}, "item_created"},
-		"item.updated":        {kernelevents.SubjectItem, []string{kernelevents.PayloadItemSnapshot}, "item_updated"},
-		"item.status_changed": {kernelevents.SubjectItem, []string{kernelevents.PayloadItemSnapshot}, "item_updated"},
-		"item.moved":          {kernelevents.SubjectItem, []string{kernelevents.PayloadItemSnapshot}, "item_updated"},
-		"item.deleted":        {kernelevents.SubjectItem, []string{kernelevents.PayloadItemSnapshot}, "item_archived"},
-		"item.restored":       {kernelevents.SubjectItem, []string{kernelevents.PayloadItemSnapshot}, "item_restored"},
-		"item.bulk_updated":   {kernelevents.SubjectItemBatch, []string{kernelevents.PayloadItemBatch, kernelevents.PayloadItemBatchHeader}, "items_bulk_updated"},
-		"comment.created":     {kernelevents.SubjectComment, []string{kernelevents.PayloadCommentSnapshot}, "comment_created"},
-		"comment.updated":     {kernelevents.SubjectComment, []string{kernelevents.PayloadCommentSnapshot}, "comment_updated"},
-		"comment.deleted":     {kernelevents.SubjectComment, []string{kernelevents.PayloadRefOnly}, "comment_deleted"},
-		"attachment.added":    {kernelevents.SubjectAttachment, []string{kernelevents.PayloadAttachmentSnapshot}, ""},
-		"attachment.removed":  {kernelevents.SubjectAttachment, []string{kernelevents.PayloadRefOnly}, ""},
-		"member.joined":       {kernelevents.SubjectMember, []string{kernelevents.PayloadMember}, ""},
-		"pack.installed":      {kernelevents.SubjectPack, []string{kernelevents.PayloadPack}, ""},
-		"pack.upgraded":       {kernelevents.SubjectPack, []string{kernelevents.PayloadPack}, ""},
-		"pack.disabled":       {kernelevents.SubjectPack, []string{kernelevents.PayloadPack}, ""},
-		"item.reminder_due":   {kernelevents.SubjectReminder, []string{kernelevents.PayloadReminder}, ""},
+		"item.created":         {kernelevents.SubjectItem, []string{kernelevents.PayloadItemSnapshot}, "item_created"},
+		"item.updated":         {kernelevents.SubjectItem, []string{kernelevents.PayloadItemSnapshot}, "item_updated"},
+		"item.status_changed":  {kernelevents.SubjectItem, []string{kernelevents.PayloadItemSnapshot}, "item_updated"},
+		"item.moved":           {kernelevents.SubjectItem, []string{kernelevents.PayloadItemSnapshot}, "item_updated"},
+		"item.deleted":         {kernelevents.SubjectItem, []string{kernelevents.PayloadItemSnapshot}, "item_archived"},
+		"item.restored":        {kernelevents.SubjectItem, []string{kernelevents.PayloadItemSnapshot}, "item_restored"},
+		"item.bulk_updated":    {kernelevents.SubjectItemBatch, []string{kernelevents.PayloadItemBatch, kernelevents.PayloadItemBatchHeader}, "items_bulk_updated"},
+		"comment.created":      {kernelevents.SubjectComment, []string{kernelevents.PayloadCommentSnapshot}, "comment_created"},
+		"comment.updated":      {kernelevents.SubjectComment, []string{kernelevents.PayloadCommentSnapshot}, "comment_updated"},
+		"comment.deleted":      {kernelevents.SubjectComment, []string{kernelevents.PayloadRefOnly}, "comment_deleted"},
+		"attachment.added":     {kernelevents.SubjectAttachment, []string{kernelevents.PayloadAttachmentSnapshot}, ""},
+		"attachment.removed":   {kernelevents.SubjectAttachment, []string{kernelevents.PayloadRefOnly}, ""},
+		"member.joined":        {kernelevents.SubjectMember, []string{kernelevents.PayloadMember}, ""},
+		"pack.installed":       {kernelevents.SubjectPack, []string{kernelevents.PayloadPack}, ""},
+		"pack.upgraded":        {kernelevents.SubjectPack, []string{kernelevents.PayloadPack}, ""},
+		"pack.disabled":        {kernelevents.SubjectPack, []string{kernelevents.PayloadPack}, ""},
+		"item.reminder_due":    {kernelevents.SubjectReminder, []string{kernelevents.PayloadReminder}, ""},
+		"item.deadline_missed": {kernelevents.SubjectItem, []string{kernelevents.PayloadItemSnapshot}, ""},
 	}
 
 	// The name constants are pinned to their wire strings separately, because
 	// the map above is keyed on literals: a renamed constant would otherwise
 	// slip through as long as the table and the constant moved together.
 	for constant, wire := range map[string]string{
-		kernelevents.ItemCreated:       "item.created",
-		kernelevents.ItemUpdated:       "item.updated",
-		kernelevents.ItemStatusChanged: "item.status_changed",
-		kernelevents.ItemMoved:         "item.moved",
-		kernelevents.ItemDeleted:       "item.deleted",
-		kernelevents.ItemRestored:      "item.restored",
-		kernelevents.ItemBulkUpdated:   "item.bulk_updated",
-		kernelevents.CommentCreated:    "comment.created",
-		kernelevents.CommentUpdated:    "comment.updated",
-		kernelevents.CommentDeleted:    "comment.deleted",
-		kernelevents.AttachmentAdded:   "attachment.added",
-		kernelevents.AttachmentRemoved: "attachment.removed",
-		kernelevents.MemberJoined:      "member.joined",
-		kernelevents.PackInstalled:     "pack.installed",
-		kernelevents.PackUpgraded:      "pack.upgraded",
-		kernelevents.PackDisabled:      "pack.disabled",
-		kernelevents.ItemReminderDue:   "item.reminder_due",
+		kernelevents.ItemCreated:        "item.created",
+		kernelevents.ItemUpdated:        "item.updated",
+		kernelevents.ItemStatusChanged:  "item.status_changed",
+		kernelevents.ItemMoved:          "item.moved",
+		kernelevents.ItemDeleted:        "item.deleted",
+		kernelevents.ItemRestored:       "item.restored",
+		kernelevents.ItemBulkUpdated:    "item.bulk_updated",
+		kernelevents.CommentCreated:     "comment.created",
+		kernelevents.CommentUpdated:     "comment.updated",
+		kernelevents.CommentDeleted:     "comment.deleted",
+		kernelevents.AttachmentAdded:    "attachment.added",
+		kernelevents.AttachmentRemoved:  "attachment.removed",
+		kernelevents.MemberJoined:       "member.joined",
+		kernelevents.PackInstalled:      "pack.installed",
+		kernelevents.PackUpgraded:       "pack.upgraded",
+		kernelevents.PackDisabled:       "pack.disabled",
+		kernelevents.ItemReminderDue:    "item.reminder_due",
+		kernelevents.ItemDeadlineMissed: "item.deadline_missed",
 	} {
 		if constant != wire {
 			t.Errorf("event name constant = %q, want %q on the wire", constant, wire)

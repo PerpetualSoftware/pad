@@ -32,7 +32,7 @@
 // contract's shape, not running code.
 package kernelevents
 
-// Canonical event names — the events/1 set (SPEC-3 §Taxonomy, v1.7).
+// Canonical event names — the events/1 set (SPEC-3 §Taxonomy, v1.8).
 //
 // item.restored and item.bulk_updated were admitted in v1.1 during TASK-2658
 // recon: restore is a live first-class mutation whose silence would let an
@@ -43,6 +43,10 @@ package kernelevents
 // (IDEA-2641): it is the first canonical event with no user mutation behind
 // it — a scheduler tick produces it — which is why it needed a version to be
 // admitted in rather than arriving as a side effect of the feature.
+//
+// item.deadline_missed was admitted in v1.8 (TASK-4351): a scheduler tick
+// records it when a hard deadline passes unmet, an item event for the watch
+// stream that carries no notification.
 const (
 	// ItemCreated fires on item creation. Payload carries the post-create
 	// snapshot.
@@ -153,6 +157,9 @@ const (
 	// The name keeps the `item.` prefix because the reminder has no meaning
 	// apart from its item and consumers filter this family by prefix.
 	ItemReminderDue = "item.reminder_due"
+
+	// ItemDeadlineMissed records a missed deadline value on an outstanding occurrence.
+	ItemDeadlineMissed = "item.deadline_missed"
 )
 
 // Subject kinds — what an event is about. Stored alongside the event so a
@@ -279,23 +286,24 @@ const (
 )
 
 var canonical = map[string]eventSpec{
-	ItemCreated:       {SubjectItem, []string{PayloadItemSnapshot}, "item_created"},
-	ItemUpdated:       {SubjectItem, []string{PayloadItemSnapshot}, "item_updated"},
-	ItemStatusChanged: {SubjectItem, []string{PayloadItemSnapshot}, "item_updated"},
-	ItemMoved:         {SubjectItem, []string{PayloadItemSnapshot}, "item_updated"},
-	ItemDeleted:       {SubjectItem, []string{PayloadItemSnapshot}, "item_archived"},
-	ItemRestored:      {SubjectItem, []string{PayloadItemSnapshot}, "item_restored"},
-	ItemBulkUpdated:   {SubjectItemBatch, []string{PayloadItemBatch, PayloadItemBatchHeader}, "items_bulk_updated"},
-	CommentCreated:    {SubjectComment, []string{PayloadCommentSnapshot}, "comment_created"},
-	CommentUpdated:    {SubjectComment, []string{PayloadCommentSnapshot}, "comment_updated"},
-	CommentDeleted:    {SubjectComment, []string{PayloadRefOnly}, "comment_deleted"},
-	AttachmentAdded:   {SubjectAttachment, []string{PayloadAttachmentSnapshot}, ""},
-	AttachmentRemoved: {SubjectAttachment, []string{PayloadRefOnly}, ""},
-	MemberJoined:      {SubjectMember, []string{PayloadMember}, ""},
-	PackInstalled:     {SubjectPack, []string{PayloadPack}, ""},
-	PackUpgraded:      {SubjectPack, []string{PayloadPack}, ""},
-	PackDisabled:      {SubjectPack, []string{PayloadPack}, ""},
-	ItemReminderDue:   {SubjectReminder, []string{PayloadReminder}, ""},
+	ItemCreated:        {SubjectItem, []string{PayloadItemSnapshot}, "item_created"},
+	ItemUpdated:        {SubjectItem, []string{PayloadItemSnapshot}, "item_updated"},
+	ItemStatusChanged:  {SubjectItem, []string{PayloadItemSnapshot}, "item_updated"},
+	ItemMoved:          {SubjectItem, []string{PayloadItemSnapshot}, "item_updated"},
+	ItemDeleted:        {SubjectItem, []string{PayloadItemSnapshot}, "item_archived"},
+	ItemRestored:       {SubjectItem, []string{PayloadItemSnapshot}, "item_restored"},
+	ItemBulkUpdated:    {SubjectItemBatch, []string{PayloadItemBatch, PayloadItemBatchHeader}, "items_bulk_updated"},
+	CommentCreated:     {SubjectComment, []string{PayloadCommentSnapshot}, "comment_created"},
+	CommentUpdated:     {SubjectComment, []string{PayloadCommentSnapshot}, "comment_updated"},
+	CommentDeleted:     {SubjectComment, []string{PayloadRefOnly}, "comment_deleted"},
+	AttachmentAdded:    {SubjectAttachment, []string{PayloadAttachmentSnapshot}, ""},
+	AttachmentRemoved:  {SubjectAttachment, []string{PayloadRefOnly}, ""},
+	MemberJoined:       {SubjectMember, []string{PayloadMember}, ""},
+	PackInstalled:      {SubjectPack, []string{PayloadPack}, ""},
+	PackUpgraded:       {SubjectPack, []string{PayloadPack}, ""},
+	PackDisabled:       {SubjectPack, []string{PayloadPack}, ""},
+	ItemReminderDue:    {SubjectReminder, []string{PayloadReminder}, ""},
+	ItemDeadlineMissed: {SubjectItem, []string{PayloadItemSnapshot}, ""},
 }
 
 // PayloadFamilies returns every payload shape a canonical event may carry, and
