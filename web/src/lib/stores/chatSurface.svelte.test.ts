@@ -1335,9 +1335,53 @@ describe('round 11: a parked continuation fires only if no newer gesture proceed
 
 	it('(a) a second row click on the same page after the release does not let it fire', async () => {
 		const { run, slow } = park();
-		expect(chatSurface.traversing).toBe(false); // what paneNavInFlight reads: idle, the gesture proceeds
+		expect(chatSurface.traversing).toBe(false); // what paneNavInFlight reads: idle
+		expect(chatSurface.closeThen(vi.fn())).toBe(false); // ... and the gesture proceeds
 		await settle(slow);
 		expect(run).not.toHaveBeenCalled();
+	});
+
+	it('(c1) a read that finds the latch idle and then navigates nowhere does not cancel it', async () => {
+		const { run, slow } = park();
+		expect(chatSurface.traversing).toBe(false); // a background click, a blocked ESC
+		await settle(slow);
+		expect(run).toHaveBeenCalledTimes(1);
+	});
+
+	it('(c2) a same-pathname navigation (new query) after the chain\'s own one cancels it', async () => {
+		const { run, slow } = park();
+		chatSurface.noteNavigation(); // the write chain's own goto
+		chatSurface.noteNavigation(); // a sidebar link with ?view=
+		await settle(slow);
+		expect(run).not.toHaveBeenCalled();
+	});
+
+	it('(c3) a filter write goto from the page, arriving before the chain\'s own, cancels it', async () => {
+		const { run, slow } = park();
+		chatSurface.noteNavigation(); // the page's filter write
+		chatSurface.noteNavigation(); // the write chain's own goto
+		await settle(slow);
+		expect(run).not.toHaveBeenCalled();
+	});
+
+	it('(c4) the flush chain\'s own navigation does not cancel the continuation parked behind it', async () => {
+		const { run, slow } = park();
+		chatSurface.noteNavigation();
+		await settle(slow);
+		expect(run).toHaveBeenCalledTimes(1);
+	});
+
+	it('(c5) a heal\'s own navigation does not cancel the continuation', async () => {
+		setSurface('/messages', { chatDepth: 1 });
+		const heal = controlled<boolean>();
+		const run = vi.fn();
+		chatSurface.closeThen(run);
+		chatSurface.runAfterClose(() => heal.p);
+		landUnder();
+		chatSurface.noteNavigation(); // the heal's goto
+		heal.resolve(true);
+		await vi.advanceTimersByTimeAsync(10);
+		expect(run).toHaveBeenCalledTimes(1);
 	});
 
 	it('(a2) a gesture that finds Chat closed (closeThen false) cancels it too', async () => {

@@ -46,6 +46,7 @@
 	// never gets here, so that write survives. Query-only navigations keep it.
 	onNavigate((nav) => {
 		if (nav.shallow) return;
+		chatSurface.noteNavigation();
 		chatSurface.dropDeferredExcept(nav.to?.url.pathname ?? null);
 	});
 
