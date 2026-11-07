@@ -72,7 +72,7 @@
 		"idb": "^8.0.4",
 		"layercake": "11.0.0",
 		"lowlight": "^3.3.0",
-		"mermaid": "^12.1.0",
+		"mermaid": "^12.3.0",
 		"minisearch": "7.2.0",
 		"pdfjs-dist": "6.4.299",
 		"qrcode": "^1.5.4",
