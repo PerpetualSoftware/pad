@@ -297,7 +297,7 @@ func TestTimingEditKeepsResolvedOverrides(t *testing.T) {
 		{"pinned to floating", models.ScheduleUpdate{Floating: ptr(true)}, "2026-10-30T09:00:00"},
 		{"floating to pinned", models.ScheduleUpdate{Floating: ptr(false), Tz: ptr("UTC")}, "2026-10-30T09:00:00Z|2026-10-30T09:00:00"},
 	} {
-		f.update(t, step.upd)
+		f.updateAt(t, step.upd, "2026-10-30T23:00:00Z")
 		var keys []string
 		rows, err := f.s.db.Query(f.s.q(`SELECT occurrence_key FROM schedule_occurrence_overrides WHERE schedule_id=?`), sc.ID)
 		if err != nil {
@@ -324,13 +324,30 @@ func TestTimingEditKeepsPastMovedOverride(t *testing.T) {
 	if n := f.count(t, `SELECT COUNT(*) FROM schedule_occurrence_overrides WHERE schedule_id=?`, sc.ID); n != 1 {
 		t.Fatalf("fixture overrides=%d, want 1", n)
 	}
-	f.update(t, models.ScheduleUpdate{Floating: ptr(true)})
+	f.updateAt(t, models.ScheduleUpdate{Floating: ptr(true)}, "2026-11-02T13:00:00Z")
 	if n := f.count(t, `SELECT COUNT(*) FROM schedule_occurrence_overrides WHERE schedule_id=? AND occurrence_key=?`, sc.ID, "2026-10-30T09:00:00"); n != 1 {
 		t.Fatalf("the past-moved occurrence lost its override: %d", n)
 	}
 	entries := moveEntries(t, f, sc.ID)
 	if e := entries[len(entries)-1]; e.Reason == "Occurrence overrides cleared" {
 		t.Fatalf("a kept override was reported as cleared: %+v", e)
+	}
+}
+
+func TestTimingEditClearsOverrideOfOccurrenceThatReturnsAsOpen(t *testing.T) {
+	f := newSchedFixture(t)
+	sc := f.create(t, dailyUTC)
+	// The outstanding occurrence is still ahead of now; it is moved to a past target.
+	f.mustResolve(t, f.item, moveInput(sc, "2026-10-30T07:00:00Z"), "2026-10-30T08:00:00Z")
+	if n := f.count(t, `SELECT COUNT(*) FROM schedule_occurrence_overrides WHERE schedule_id=?`, sc.ID); n != 1 {
+		t.Fatalf("fixture overrides=%d, want 1", n)
+	}
+	// A rule edit puts the moved occurrence back on the grid as the open one.
+	f.updateAt(t, models.ScheduleUpdate{Rrule: ptr("FREQ=DAILY;INTERVAL=2")}, "2026-10-30T08:30:00Z")
+	got := f.reload(t, f.item.ID)
+	open := OccurrenceKey(got, *got.NextAt, *got.NextWall)
+	if n := f.count(t, `SELECT COUNT(*) FROM schedule_occurrence_overrides WHERE schedule_id=? AND occurrence_key=?`, sc.ID, open); n != 0 {
+		t.Fatalf("the open occurrence %s kept an override", open)
 	}
 }
 

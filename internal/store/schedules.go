@@ -825,7 +825,7 @@ func (s *Store) updateScheduleAt(workspaceID, itemID string, upd models.Schedule
 	}
 	clearedOverrides := false
 	if timingEdit {
-		n, err := s.rekeyResolvedOverridesTx(tx, cur, spec.Floating)
+		n, err := s.rekeyResolvedOverridesTx(tx, cur, spec.Floating, nextAt, nextWall)
 		if err != nil {
 			return nil, err
 		}
@@ -964,7 +964,7 @@ func equalStringSlices(a, b []string) bool {
 // (done, skipped, missed, or moved past a later one) is no longer on the grid and has no target column of
 // its own, so its override stays, re-keyed to the new key form. It returns how
 // many override rows were removed.
-func (s *Store) rekeyResolvedOverridesTx(tx *sql.Tx, cur *models.ItemSchedule, newFloating bool) (int, error) {
+func (s *Store) rekeyResolvedOverridesTx(tx *sql.Tx, cur *models.ItemSchedule, newFloating bool, newAt, newWall *string) (int, error) {
 	type resolved struct{ at, wall string }
 	rows, err := tx.Query(s.q(`SELECT occurrence_at, occurrence_wall, state FROM schedule_occurrences WHERE schedule_id=?`), cur.ID)
 	if err != nil {
@@ -973,6 +973,10 @@ func (s *Store) rekeyResolvedOverridesTx(tx *sql.Tx, cur *models.ItemSchedule, n
 	outstanding := ""
 	if cur.NextAt != nil && cur.NextWall != nil {
 		outstanding = OccurrenceKey(cur, *cur.NextAt, *cur.NextWall)
+	}
+	newOpen := ""
+	if newAt != nil && newWall != nil {
+		newOpen = OccurrenceKey(&models.ItemSchedule{Floating: newFloating}, *newAt, *newWall)
 	}
 	rekey := map[string]string{}
 	for rows.Next() {
@@ -985,7 +989,11 @@ func (s *Store) rekeyResolvedOverridesTx(tx *sql.Tx, cur *models.ItemSchedule, n
 		if state == "moved" && outstanding != "" && OccurrenceKey(cur, r.at, r.wall) == outstanding {
 			continue // still the open occurrence: back on the grid
 		}
-		rekey[OccurrenceKey(cur, r.at, r.wall)] = OccurrenceKey(&models.ItemSchedule{Floating: newFloating}, r.at, r.wall)
+		key := OccurrenceKey(&models.ItemSchedule{Floating: newFloating}, r.at, r.wall)
+		if key == newOpen {
+			continue // the edit put it back on the grid as the open occurrence
+		}
+		rekey[OccurrenceKey(cur, r.at, r.wall)] = key
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()

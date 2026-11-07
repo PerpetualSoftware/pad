@@ -59,6 +59,16 @@ func (f *schedFixture) update(t *testing.T, upd models.ScheduleUpdate) *models.I
 	return sc
 }
 
+// updateAt is update at a chosen clock.
+func (f *schedFixture) updateAt(t *testing.T, upd models.ScheduleUpdate, at string) *models.ItemSchedule {
+	t.Helper()
+	sc, err := f.s.updateScheduleAt(f.ws.ID, f.item.ID, upd, rt(at))
+	if err != nil {
+		t.Fatalf("updateScheduleAt: %v", err)
+	}
+	return sc
+}
+
 // managed returns the schedule's managed reminder row.
 func (f *schedFixture) managed(t *testing.T, sc *models.ItemSchedule) *models.Reminder {
 	t.Helper()
