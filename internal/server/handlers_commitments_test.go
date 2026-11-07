@@ -277,3 +277,68 @@ func TestCommitmentPatchConvertsLegacyHardDeadlineFreely(t *testing.T) {
 		t.Fatalf("legacy hard deadline conversion: %+v", c.Roles)
 	}
 }
+
+func TestDeleteCommitmentWithDeadlineNeedsAuthority(t *testing.T) {
+	t.Parallel()
+	f := newSchedHTTP(t)
+	editor := f.member("del-editor@example.com", "editor")
+	other := f.member("del-other@example.com", "editor")
+	assign := func(id string) {
+		t.Helper()
+		if _, err := f.srv.store.UpdateItem(f.item.ID, models.ItemUpdate{AssignedUserID: &id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	remade := func() {
+		t.Helper()
+		if rr := commitmentCall(f, "GET", nil); rr.Code == 404 {
+			readCommitment(t, commitmentCall(f, "POST", commitmentBody()), 201)
+		}
+	}
+	for _, path := range []string{commitmentPath(f), f.path(f.item)} {
+		remade()
+		assign(editor.ID)
+		// An editor who is not the assignee is refused, and nothing is deleted.
+		rr := f.as(f.token(other, ""), "DELETE", path, nil)
+		if rr.Code != 403 || !strings.Contains(rr.Body.String(), "deadline_owner_required") {
+			t.Fatalf("%s other editor: %d %s", path, rr.Code, rr.Body.String())
+		}
+		readCommitment(t, commitmentCall(f, "GET", nil), 200)
+		// The assignee may.
+		if rr := f.as(f.token(editor, ""), "DELETE", path, nil); rr.Code != 200 {
+			t.Fatalf("%s assignee: %d %s", path, rr.Code, rr.Body.String())
+		}
+		// A workspace owner may.
+		remade()
+		if rr := f.as(f.token(f.owner, ""), "DELETE", path, nil); rr.Code != 200 {
+			t.Fatalf("%s owner: %d %s", path, rr.Code, rr.Body.String())
+		}
+		// With no assignee any editor may.
+		remade()
+		assign("")
+		if rr := f.as(f.token(other, ""), "DELETE", path, nil); rr.Code != 200 {
+			t.Fatalf("%s unassigned: %d %s", path, rr.Code, rr.Body.String())
+		}
+	}
+}
+
+func TestDeleteScheduleWithoutNativeDeadlineIsUnchanged(t *testing.T) {
+	t.Parallel()
+	f := newSchedHTTP(t)
+	editor := f.member("del2-editor@example.com", "editor")
+	other := f.member("del2-other@example.com", "editor")
+	if _, err := f.srv.store.UpdateItem(f.item.ID, models.ItemUpdate{AssignedUserID: &editor.ID}); err != nil {
+		t.Fatal(err)
+	}
+	// A legacy row deletes as before, and so does a native row with no deadline.
+	f.create(okSchedule)
+	if rr := f.as(f.token(other, ""), "DELETE", f.path(f.item), nil); rr.Code != 200 {
+		t.Fatalf("legacy: %d %s", rr.Code, rr.Body.String())
+	}
+	body := commitmentBody()
+	body["roles"] = map[string]any{"target_days": 0, "target_secs": 0, "outcome": "shipped"}
+	readCommitment(t, commitmentCall(f, "POST", body), 201)
+	if rr := f.as(f.token(other, ""), "DELETE", commitmentPath(f), nil); rr.Code != 200 {
+		t.Fatalf("native without deadline: %d %s", rr.Code, rr.Body.String())
+	}
+}

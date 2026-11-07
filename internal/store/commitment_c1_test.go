@@ -594,3 +594,42 @@ func TestLateOnTimeReportOnLegacyRowWritesNoCorrection(t *testing.T) {
 		t.Fatal("the miss row was not kept")
 	}
 }
+
+// Converting a legacy hard deadline that has already passed: the evaluator reads
+// native rows only, so the old deadline's miss is never recorded, before or after
+// the conversion. Only the deadline the conversion sets is judged afterwards, and
+// only if it is later than the conversion itself.
+func TestConvertingAPastLegacyHardDeadlineRecordsNoMissForTheOldOne(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		days, secs int
+		laterMiss  string // when the new deadline passes, "" if it never records
+	}{
+		"new deadline in the future": {1, 0, "2026-10-27T09:00:01Z"},
+		"new deadline already past":  {0, 1800, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newSchedFixture(t)
+			sc := f.create(t, models.ScheduleCreate{Kind: "deadline_hard", Dtstart: "2026-10-01T09:00", Tz: "UTC", Rrule: "FREQ=DAILY"})
+			f.force(t, sc, "2026-10-26T09:00:00", deadlineOccAt, deadlineOccAt)
+			if got := f.eval(t, "2026-10-26T10:00:00Z", 0); got.Missed != 0 {
+				t.Fatalf("a legacy row is never evaluated: %+v", got)
+			}
+			in := models.CommitmentRolesInput{DeadlineDays: ptr(tc.days), DeadlineSecs: ptr(tc.secs), DeadlineBehavior: ptr("stays_owed")}
+			if _, err := f.s.SetCommitmentRoles(f.ws.ID, f.item.ID, in); err != nil {
+				t.Fatal(err)
+			}
+			f.exec(t, `UPDATE schedule_changes SET recorded_at=? WHERE schedule_id=? AND change_type='update'`, "2026-10-26T10:00:00Z", sc.ID)
+			if got := f.eval(t, "2026-10-26T10:00:01Z", 0); got.Missed != 0 {
+				t.Fatalf("the old deadline's miss must not appear after the conversion: %+v", got)
+			}
+			want := 0
+			if tc.laterMiss != "" {
+				want = 1
+			}
+			if got := f.eval(t, "2026-10-28T00:00:00Z", 0); got.Missed != want {
+				t.Fatalf("later: missed %d, want %d", got.Missed, want)
+			}
+		})
+	}
+}

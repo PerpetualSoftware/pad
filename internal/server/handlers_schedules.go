@@ -544,6 +544,27 @@ func (s *Server) handleDeleteItemSchedule(w http.ResponseWriter, r *http.Request
 		writeScheduleNotFound(w)
 		return
 	}
+	// Deleting a native schedule that has a deadline, then posting a new one,
+	// would be a way around the renegotiation rule: the same people who may
+	// renegotiate may remove it. The item's own delete is a different door.
+	hard, err := s.store.CommitmentHasDeadline(workspaceID, item.ID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if hard {
+		allowed, err := s.canRenegotiateCommitment(r, workspaceID, item)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		if !allowed {
+			writeError2(w, http.StatusForbidden, "deadline_owner_required",
+				"A schedule with a hard deadline is removed only by the item's assignee or a workspace owner",
+				map[string]interface{}{"field": "deadline", "code": "authority"})
+			return
+		}
+	}
 	removed, err := s.store.DeleteSchedule(workspaceID, item.ID)
 	if err != nil {
 		writeInternalError(w, err)
