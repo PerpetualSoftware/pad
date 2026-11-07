@@ -16,6 +16,18 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 	}
 }));
 
+import { kb } from '$lib/chat/uiKeyboard.fixture.svelte';
+// A real soft keyboard cannot be raised in jsdom: keyboardVisible is driven by hand.
+vi.mock('$lib/stores/ui.svelte', async (orig) => {
+	const actual = await orig<typeof import('$lib/stores/ui.svelte')>();
+	return {
+		...actual,
+		uiStore: new Proxy(actual.uiStore, {
+			get: (t, k) => (k === 'keyboardVisible' ? kb.visible : Reflect.get(t, k))
+		})
+	};
+});
+
 import Composer from './Composer.svelte';
 import { getDraft, purgeAll, unsealChatRecords } from '$lib/chat/chatRecords';
 import { confirmSignOut, signOutFailed } from '$lib/stores/signOutGuard.svelte';
@@ -76,6 +88,7 @@ beforeEach(() => {
 });
 afterEach(() => {
 	cleanup();
+	kb.visible = false;
 	Reflect.deleteProperty(window, 'visualViewport');
 	Reflect.deleteProperty(window, 'matchMedia');
 });
@@ -187,38 +200,46 @@ describe('sending', () => {
 });
 
 // U25
-describe('keyboard offset', () => {
-	function fakeViewport(height: number, offsetTop = 0) {
-		const vv = Object.assign(new EventTarget(), { height, offsetTop });
+describe('keyboard', () => {
+	// The surface that contains the composer fits the visual viewport (viewportOwner);
+	// the composer itself no longer lifts, or the lift would be applied twice.
+	it('never lifts itself and holds no viewport listeners', () => {
+		const vv = Object.assign(new EventTarget(), { height: window.innerHeight, offsetTop: 0 });
 		Object.defineProperty(window, 'visualViewport', { configurable: true, value: vv });
-		return vv;
-	}
-
-	it('lifts the composer by the covered height on a viewport resize', async () => {
-		const vv = fakeViewport(window.innerHeight);
+		const add = vi.spyOn(vv, 'addEventListener');
 		const { container } = mount();
 		const form = container.querySelector<HTMLElement>('form.composer')!;
-		expect(form.style.marginBottom).toBe('');
 		vv.height = window.innerHeight - 300;
 		vv.dispatchEvent(new Event('resize'));
 		flushSync();
-		expect(form.style.marginBottom).toBe('300px');
-		vv.height = window.innerHeight;
-		vv.dispatchEvent(new Event('resize'));
-		flushSync();
 		expect(form.style.marginBottom).toBe('');
+		expect(add).not.toHaveBeenCalled();
 	});
 
-	// Red if the handler is not removed on destroy (B6).
-	it('removes its viewport listeners when destroyed', () => {
-		const vv = fakeViewport(window.innerHeight);
-		const add = vi.spyOn(vv, 'addEventListener');
-		const remove = vi.spyOn(vv, 'removeEventListener');
-		const { unmount } = mount();
-		expect(add.mock.calls.map((c) => c[0]).sort()).toEqual(['resize', 'scroll']);
-		unmount();
-		expect(remove.mock.calls.map((c) => c[0]).sort()).toEqual(['resize', 'scroll']);
-		for (const [i, c] of add.mock.calls.entries()) expect(remove.mock.calls[i][1]).toBe(c[1]);
+	it('a soft keyboard coming up enters touch mode once, on the false to true edge', async () => {
+		setPointer(true);
+		const spy = vi.spyOn(inputMode, 'enterByTouch');
+		mount();
+		expect(spy).not.toHaveBeenCalled();
+		kb.visible = true;
+		flushSync();
+		expect(spy).toHaveBeenCalledTimes(1);
+		flushSync();
+		expect(spy).toHaveBeenCalledTimes(1);
+		kb.visible = false;
+		flushSync();
+		expect(spy).toHaveBeenCalledTimes(1);
+		kb.visible = true;
+		flushSync();
+		expect(spy).toHaveBeenCalledTimes(2);
+	});
+
+	it('a keyboard already up when the composer mounts counts as touch', () => {
+		kb.visible = true;
+		const spy = vi.spyOn(inputMode, 'enterByTouch');
+		mount();
+		flushSync();
+		expect(spy).toHaveBeenCalledTimes(1);
 	});
 });
 
@@ -515,15 +536,9 @@ describe('Enter sends (TASK-4099)', () => {
 		});
 
 		it('a soft keyboard coming up resets it to touch mode', async () => {
-			const vv = new EventTarget() as EventTarget & { height: number; offsetTop: number };
-			vv.height = 800;
-			vv.offsetTop = 0;
-			Object.defineProperty(window, 'visualViewport', { configurable: true, value: vv });
-			Object.defineProperty(window, 'innerHeight', { configurable: true, value: 800 });
 			const { box, onSend } = mount();
 			await type(box, 'hello');
-			vv.height = 500;
-			vv.dispatchEvent(new Event('resize'));
+			kb.visible = true;
 			flushSync();
 			await tick();
 			key(box, {});

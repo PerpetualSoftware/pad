@@ -11,7 +11,7 @@
 	import { getDraft, setDraft, clearDraft } from '$lib/chat/draftKeeper';
 	import { inputMode } from '$lib/chat/inputMode.svelte';
 	import type { AgentPresence } from '$lib/chat/presence';
-	import { watchKeyboardInset } from '$lib/chat/viewport';
+	import { uiStore } from '$lib/stores/ui.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { registerSessionExpiryKeeper } from '$lib/stores/sessionExpiryKeep';
 	import { signOutDiscarding } from '$lib/stores/signOutGuard.svelte';
@@ -72,7 +72,6 @@
 	let notice = $state('');
 	// "Saved to conversation" after a stored send (section 7): a successful POST proves storage and nothing more.
 	let saved = $state('');
-	let inset = $state(0);
 	// An IME commit can reach keydown after compositionend (Safari), so the flag outlives it by one task.
 	let composing = false;
 
@@ -104,16 +103,21 @@
 		}
 		// A refusal that outlives its sender (dock closed, conversation left and re-entered) lands here.
 		const unregister = registerComposer(owner, conversation, (body, outcome, reply) => restore(body, outcome, reply));
-		const stopViewport = watchKeyboardInset((px) => {
-			inset = px;
-			if (px > 0) inputMode.enterByTouch();
-		});
 		return () => {
 			saveDraft(text, replySeq);
 			destroyed = true;
 			unregister();
-			stopViewport();
 		};
+	});
+
+	// A soft keyboard coming up means touch: Enter stops sending. The surface holding the
+	// composer fits the visual viewport (viewportOwner); this box does not lift itself.
+	// Edge-triggered with a plain `let`, so it neither reads nor writes reactive state.
+	let keyboardWas = false;
+	$effect(() => {
+		const up = uiStore.keyboardVisible;
+		if (up && !keyboardWas) inputMode.enterByTouch();
+		keyboardWas = up;
 	});
 
 	$effect(() => {
@@ -193,7 +197,6 @@
 
 <form
 	class="composer"
-	style:margin-bottom={inset > 0 ? `${inset}px` : undefined}
 	onsubmit={(e) => {
 		e.preventDefault();
 		void send();
