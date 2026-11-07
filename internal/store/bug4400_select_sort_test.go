@@ -149,3 +149,27 @@ func TestBUG4400_SearchPathSortsTheSame(t *testing.T) {
 		t.Errorf("search + priority:desc: %v, want %v", got, want)
 	}
 }
+
+// A collection that holds the key as a NUMBER (not a select) keeps its numeric
+// order inside the "no rank" group of a workspace-wide list (hunter r1, finding 1).
+func TestBUG4400_NonSelectCollectionKeepsNumericOrder(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "BUG-4400 mixed types")
+	sel := selectSortCollection(t, s, ws.ID, "Sel", "priority", []string{"low", "high"})
+	num, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name:   "Num",
+		Schema: `{"fields":[{"key":"status","type":"select","options":["open","done"],"default":"open","required":true},{"key":"priority","type":"number"}]}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selectSortItem(t, s, ws.ID, sel.ID, "s-high", "priority", "high")
+	for title, v := range map[string]int{"n-9": 9, "n-10": 10, "n-2": 2} {
+		if _, err := s.CreateItem(ws.ID, num.ID, models.ItemCreate{Title: title, Fields: fmt.Sprintf(`{"status":"open","priority":%d}`, v)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, want := listTitles(t, s, ws.ID, models.ItemListParams{Sort: "priority:asc"}), []string{"s-high", "n-2", "n-9", "n-10"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("asc: %v, want %v", got, want)
+	}
+}

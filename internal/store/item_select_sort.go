@@ -177,5 +177,9 @@ func (r selectSortRank) orderBy(d Dialect, key, dir string) (string, []any) {
 		rank.WriteString(" END)")
 	}
 	rank.WriteString(" END)")
-	return fmt.Sprintf("%s ASC, %s %s, %s %s", group.String(), rank.String(), dir, d.JSONFieldText("i.fields", key), dir), append(args, rankArgs...)
+	// The tail is the field's ordinary order (numbers numerically, then
+	// strings, NULLs last), so an item in a collection that does not declare
+	// the key as a select, or holds a value outside the options, orders as
+	// it did before this rank existed.
+	return fmt.Sprintf("%s ASC, %s %s, %s", group.String(), rank.String(), dir, d.JSONFieldOrder("i.fields", key, dir)), append(args, rankArgs...)
 }
