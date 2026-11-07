@@ -612,6 +612,12 @@ func parseResolveInstant(w http.ResponseWriter, field string, raw *string) (time
 // schedule: done and skip advance it, snooze and move keep it outstanding.
 // POST /api/v1/workspaces/{slug}/items/{itemSlug}/schedule/resolve
 func (s *Server) handleResolveItemSchedule(w http.ResponseWriter, r *http.Request) {
+	s.resolveItemSchedule(w, r, false)
+}
+
+// resolveItemSchedule shares the resolve write and its side effects. Each door
+// decodes its own strict body; the schedule door keeps its original wire shape.
+func (s *Server) resolveItemSchedule(w http.ResponseWriter, r *http.Request, commitment bool) {
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -623,7 +629,16 @@ func (s *Server) handleResolveItemSchedule(w http.ResponseWriter, r *http.Reques
 	if !s.requireEditPermission(w, r, workspaceID, item.ID, item.CollectionID) {
 		return
 	}
-	body, err := strictScheduleBody[scheduleResolveBody](r)
+	var err error
+	var body scheduleResolveBody
+	var actualDoneAt *string
+	if commitment {
+		var b commitmentResolveBody
+		b, err = strictScheduleBody[commitmentResolveBody](r)
+		body, actualDoneAt = b.scheduleResolveBody, b.ActualDoneAt
+	} else {
+		body, err = strictScheduleBody[scheduleResolveBody](r)
+	}
 	if err != nil {
 		writeScheduleBodyError(w)
 		return
@@ -646,6 +661,17 @@ func (s *Server) handleResolveItemSchedule(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		in.Until = &u
+	}
+	if actualDoneAt != nil {
+		actual, ok := parseResolveInstant(w, "actual_done_at", actualDoneAt)
+		if !ok {
+			return
+		}
+		if in.State != "done" {
+			writeResolveField(w, "actual_done_at", "state", "actual_done_at cannot be set unless state is done")
+			return
+		}
+		in.ActualDoneAt = &actual
 	}
 	in.Actor, _ = actorFromRequest(r)
 	var commentInput models.CommentCreate
@@ -685,6 +711,19 @@ func (s *Server) handleResolveItemSchedule(w http.ResponseWriter, r *http.Reques
 			ActorName:    actorNameFromRequest(r),
 			Summary:      truncateForSummary(res.Comment.Body, 120),
 		})
+	}
+	if commitment {
+		c, err := s.store.GetCommitment(workspaceID, item.ID)
+		if errors.Is(err, store.ErrScheduleNotFound) {
+			writeScheduleNotFound(w)
+			return
+		}
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"commitment": c, "resolution": resolution})
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"schedule":   s.buildScheduleView(r, item, res.Schedule),
