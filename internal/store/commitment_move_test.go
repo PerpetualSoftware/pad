@@ -262,6 +262,61 @@ func TestWindowEndEditKeepsMovedTargetAndReminder(t *testing.T) {
 	assertMoveArm(t, f, sc, "2026-10-31T10:00:00Z")
 }
 
+func TestPastMoveRecordsPassedOverInstances(t *testing.T) {
+	f := newSchedFixture(t)
+	sc := f.create(t, dailyUTC)
+	now := "2026-11-02T12:00:00Z"
+	want, _, err := ScheduleMissed(sc, time.UTC, rt(now))
+	if err != nil || want == 0 {
+		t.Fatalf("fixture needs passed-over instances: %d %v", want, err)
+	}
+	res := f.mustResolve(t, f.item, moveInput(sc, "2026-11-01T00:00:00Z"), now)
+	if n := f.count(t, `SELECT COUNT(*) FROM schedule_occurrences WHERE schedule_id=? AND state='missed'`, sc.ID); n != want || res.MissedRecorded != want {
+		t.Fatalf("missed rows=%d reported=%d, want %d", n, res.MissedRecorded, want)
+	}
+}
+
+func TestTimingEditKeepsResolvedOverrides(t *testing.T) {
+	f := newSchedFixture(t)
+	sc := f.create(t, dailyUTC)
+	first := moveInput(sc, "2026-10-30T20:00:00Z")
+	f.mustResolve(t, f.item, first, moveNow)
+	done := first
+	done.State, done.Until = "done", nil
+	f.mustResolve(t, f.item, done, "2026-10-30T21:00:00Z")
+	sc = f.reload(t, f.item.ID)
+	f.mustResolve(t, f.item, moveInput(sc, "2026-10-31T20:00:00Z"), "2026-10-30T22:00:00Z")
+	if n := f.count(t, `SELECT COUNT(*) FROM schedule_occurrence_overrides WHERE schedule_id=?`, sc.ID); n != 2 {
+		t.Fatalf("fixture overrides=%d, want 2", n)
+	}
+	for _, step := range []struct {
+		name string
+		upd  models.ScheduleUpdate
+		key  string
+	}{
+		{"pinned to floating", models.ScheduleUpdate{Floating: ptr(true)}, "2026-10-30T09:00:00"},
+		{"floating to pinned", models.ScheduleUpdate{Floating: ptr(false), Tz: ptr("UTC")}, "2026-10-30T09:00:00Z|2026-10-30T09:00:00"},
+	} {
+		f.update(t, step.upd)
+		var keys []string
+		rows, err := f.s.db.Query(f.s.q(`SELECT occurrence_key FROM schedule_occurrence_overrides WHERE schedule_id=?`), sc.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for rows.Next() {
+			var k string
+			if err := rows.Scan(&k); err != nil {
+				t.Fatal(err)
+			}
+			keys = append(keys, k)
+		}
+		rows.Close()
+		if len(keys) != 1 || keys[0] != step.key {
+			t.Fatalf("%s: override keys %v, want only the resolved occurrence as %q", step.name, keys, step.key)
+		}
+	}
+}
+
 func TestMoveFloatingAndPinnedArm(t *testing.T) {
 	for _, floating := range []bool{false, true} {
 		t.Run(map[bool]string{false: "pinned", true: "floating"}[floating], func(t *testing.T) {
@@ -323,6 +378,9 @@ func TestActualDoneLowerBound(t *testing.T) {
 			var capErr *schedule.CapError
 			if !errors.As(err, &fe) || fe.Field != "actual_done_at" || errors.As(err, &capErr) {
 				t.Fatalf("want actual_done_at field error, got %T: %v", err, err)
+			}
+			if tc.name == "before creation" && !strings.Contains(fe.Message, "2026-10-29T12:00:00Z") {
+				t.Fatalf("the refusal does not name the earliest date allowed: %q", fe.Message)
 			}
 			if f.occTotal(t, sc.ID) != 0 || len(moveEntries(t, f, sc.ID)) != 1 {
 				t.Fatal("invalid actual persisted changes")

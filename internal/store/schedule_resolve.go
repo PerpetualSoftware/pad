@@ -157,7 +157,7 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 			return nil, fmt.Errorf("parse schedule created_at: %w", err)
 		}
 		if actual.Before(created.Truncate(time.Second)) {
-			return nil, fieldErr("actual_done_at", "range", "actual completion cannot be before schedule creation")
+			return nil, fieldErr("actual_done_at", "range", "actual completion cannot be before schedule creation; the earliest allowed is "+created.UTC().Truncate(time.Second).Format(time.RFC3339))
 		}
 	}
 	if in.State == "move" && sc.Kind == "deadline_hard" {
@@ -261,9 +261,11 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 			}
 		}
 		if in.State == "move" && !until.After(nowT) {
-			if err := s.armAfterPastMoveTx(tx, sc, rec, x, nowT); err != nil {
+			n, err := s.armAfterPastMoveTx(tx, sc, rec, x, nowT, ts)
+			if err != nil {
 				return nil, err
 			}
+			res.MissedRecorded += n
 		} else if ok, err := s.rearmManagedReminderTx(tx, sc.ID, NormalizeInstant(fire)); err != nil {
 			return nil, err
 		} else if !ok {
@@ -327,7 +329,7 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 	}
 	occ, found, anchorWall, c, err := s.nextAfterResolve(sc, rec, x, nowT, completion)
 	var capErr *schedule.CapError
-	if in.ActualDoneAt != nil && errors.As(err, &capErr) {
+	if in.ActualDoneAt != nil && sc.Anchor == "completion" && errors.As(err, &capErr) {
 		return nil, fieldErr("actual_done_at", "range", "actual completion exceeds schedule expansion limits")
 	}
 	if errors.Is(err, errNoExactStart) {
@@ -377,25 +379,38 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 	return s.commitResolve(tx, workspaceID, itemID, res)
 }
 
-// armAfterPastMoveTx leaves the moved target in history and arms the next future instance.
-func (s *Store) armAfterPastMoveTx(tx *sql.Tx, sc *models.ItemSchedule, rec *time.Location, x, nowT time.Time) error {
+// armAfterPastMoveTx leaves the moved target in history, records the instances
+// the move passed over like a done or skip does, and arms the next future one.
+func (s *Store) armAfterPastMoveTx(tx *sql.Tx, sc *models.ItemSchedule, rec *time.Location, x, nowT time.Time, ts string) (int, error) {
+	missed, _, err := missedOccurrences(sc, rec, nowT)
+	if err != nil {
+		return 0, err
+	}
+	recorded := 0
+	for _, m := range missed {
+		n, err := s.insertMissedTx(tx, sc.ID, m, ts)
+		if err != nil {
+			return 0, err
+		}
+		recorded += n
+	}
 	calendar := *sc
 	calendar.Anchor = "calendar"
 	occ, found, anchor, c, err := s.nextAfterResolve(&calendar, rec, x, nowT.Add(time.Second), nowT)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if !found {
-		return s.deleteManagedReminderTx(tx, sc.ID)
+		return recorded, s.deleteManagedReminderTx(tx, sc.ID)
 	}
 	arm, err := armSchedule(c, occ, sc.LeadMinutes, nil)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	loc := rec
 	if !sc.Floating {
 		if loc, err = time.LoadLocation(*sc.Tz); err != nil {
-			return err
+			return 0, err
 		}
 	}
 	fire := fireInstant(occ.At, occ.Wall, loc, sc.LeadMinutes, nil)
@@ -403,14 +418,14 @@ func (s *Store) armAfterPastMoveTx(tx *sql.Tx, sc *models.ItemSchedule, rec *tim
 		fire = occ.At
 	}
 	if _, err := tx.Exec(s.q(`UPDATE item_schedules SET next_at=?,next_wall=?,next_override_at=NULL,anchor_wall=? WHERE id=?`), NormalizeInstant(arm.NextAt), arm.NextWall.String(), nullStr(anchor), sc.ID); err != nil {
-		return fmt.Errorf("advance past moved target: %w", err)
+		return 0, fmt.Errorf("advance past moved target: %w", err)
 	}
 	if ok, err := s.rearmManagedReminderTx(tx, sc.ID, NormalizeInstant(fire)); err != nil {
-		return err
+		return 0, err
 	} else if !ok {
-		return s.insertManagedReminderTx(tx, sc.WorkspaceID, sc.ItemID, sc.ID, NormalizeInstant(fire))
+		return recorded, s.insertManagedReminderTx(tx, sc.WorkspaceID, sc.ItemID, sc.ID, NormalizeInstant(fire))
 	}
-	return nil
+	return recorded, nil
 }
 
 func (s *Store) commitResolve(tx *sql.Tx, workspaceID, itemID string, res *ResolveResult) (*ResolveResult, error) {

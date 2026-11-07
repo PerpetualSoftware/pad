@@ -825,11 +825,7 @@ func (s *Store) updateScheduleAt(workspaceID, itemID string, upd models.Schedule
 	}
 	clearedOverrides := false
 	if timingEdit {
-		result, err := tx.Exec(s.q(`DELETE FROM schedule_occurrence_overrides WHERE schedule_id=?`), cur.ID)
-		if err != nil {
-			return nil, fmt.Errorf("clear schedule overrides: %w", err)
-		}
-		n, err := result.RowsAffected()
+		n, err := s.rekeyResolvedOverridesTx(tx, cur, spec.Floating)
 		if err != nil {
 			return nil, err
 		}
@@ -961,4 +957,51 @@ func equalStringSlices(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// rekeyResolvedOverridesTx runs on a timing, rule or floating edit. An open
+// occurrence is back on the grid, so its override goes. A resolved occurrence
+// (done, skipped or missed) is no longer on the grid and has no target column of
+// its own, so its override stays, re-keyed to the new key form. It returns how
+// many override rows were removed.
+func (s *Store) rekeyResolvedOverridesTx(tx *sql.Tx, cur *models.ItemSchedule, newFloating bool) (int, error) {
+	type resolved struct{ at, wall string }
+	rows, err := tx.Query(s.q(`SELECT occurrence_at, occurrence_wall FROM schedule_occurrences WHERE schedule_id=? AND state IN ('done','skipped','missed')`), cur.ID)
+	if err != nil {
+		return 0, fmt.Errorf("read resolved occurrences: %w", err)
+	}
+	rekey := map[string]string{}
+	for rows.Next() {
+		var r resolved
+		if err := rows.Scan(&r.at, &r.wall); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		rekey[OccurrenceKey(cur, r.at, r.wall)] = OccurrenceKey(&models.ItemSchedule{Floating: newFloating}, r.at, r.wall)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	rows.Close()
+	old, err := s.scheduleOverridesQ(tx, cur.WorkspaceID, cur.ID)
+	if err != nil {
+		return 0, err
+	}
+	removed := 0
+	for _, o := range old[cur.ID] {
+		if _, err := tx.Exec(s.q(`DELETE FROM schedule_occurrence_overrides WHERE schedule_id=? AND occurrence_key=? AND role=?`), cur.ID, o.OccurrenceKey, o.Role); err != nil {
+			return 0, fmt.Errorf("clear schedule override: %w", err)
+		}
+		key, kept := rekey[o.OccurrenceKey]
+		if !kept {
+			removed++
+			continue
+		}
+		o.OccurrenceKey = key
+		if err := s.upsertScheduleOverrideStoredTx(tx, cur.ID, o); err != nil {
+			return 0, err
+		}
+	}
+	return removed, nil
 }
