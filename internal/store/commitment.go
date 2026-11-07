@@ -139,7 +139,7 @@ func overrideFor(m map[string]string, role string) *string {
 // GetCommitment reads an item's schedule as roles: the effective value of each
 // role for the outstanding occurrence with that occurrence's overrides applied,
 // the occurrence key, and the journal rows that carry the deadline's history (the
-// recorded misses and the corrections that answer them). Legacy rows read through
+// recorded misses, corrections, renegotiations and assignee changes). Legacy rows read through
 // legacyRoles, in the same shape as native ones. ErrScheduleNotFound when the
 // item has no schedule.
 func (s *Store) GetCommitment(workspaceID, itemID string) (*models.Commitment, error) {
@@ -198,7 +198,10 @@ func (s *Store) GetCommitment(workspaceID, itemID string) (*models.Commitment, e
 		// missed_recorded, with no role, and is not the deadline's history.
 		deadlineRow := c.Role != nil && *c.Role == "deadline"
 		correction := c.ChangeType == "done" && deadlineRow && c.ParentChangeID != nil
-		if !(c.ChangeType == "missed_recorded" && deadlineRow) && !correction {
+		move := c.ChangeType == "move" && deadlineRow && c.ReasonSource == "user"
+		assignee := c.ChangeType == "update" && c.Role == nil && c.BeforeJSON == nil &&
+			c.ReasonSource == "system" && strings.HasPrefix(c.Reason, "Assignee changed from ") && strings.Contains(c.Reason, " to ")
+		if !(c.ChangeType == "missed_recorded" && deadlineRow) && !correction && !move && !assignee {
 			continue
 		}
 		out.Journal = append(out.Journal, models.CommitmentChange{ID: c.ID, ChangeType: c.ChangeType, OccurrenceKey: c.OccurrenceKey, Role: c.Role,
