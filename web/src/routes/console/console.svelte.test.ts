@@ -112,6 +112,28 @@ it('enables Retry again when a retry fails (BUG-4334)', async () => {
 	expectNoWorkspaceSections();
 });
 
+it('returns keyboard focus to Retry when a retry fails (BUG-4342)', async () => {
+	const retry = deferredWorkspaces();
+	vi.mocked(api.workspaces.list)
+		.mockRejectedValueOnce(new Error('First failure'))
+		.mockReturnValueOnce(retry.promise);
+	render(ConsolePage);
+	const first = await screen.findByRole('button', { name: 'Retry' });
+	first.focus();
+	await fireEvent.click(first);
+
+	retry.reject(new Error('Retry failure'));
+	const alert = await screen.findByRole('alert');
+	expect(document.activeElement).toBe(within(alert).getByRole('button', { name: 'Retry' }));
+});
+
+it('does not take focus on the first failure, only after a retry (BUG-4342)', async () => {
+	vi.mocked(api.workspaces.list).mockRejectedValueOnce(new Error('First failure'));
+	render(ConsolePage);
+	const alert = await screen.findByRole('alert');
+	expect(document.activeElement).not.toBe(within(alert).getByRole('button', { name: 'Retry' }));
+});
+
 it('shows the error and Retry when the rejection has an empty message (BUG-4334)', async () => {
 	vi.mocked(api.workspaces.list).mockRejectedValueOnce(new Error(''));
 	render(ConsolePage);
