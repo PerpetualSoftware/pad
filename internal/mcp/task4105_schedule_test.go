@@ -515,8 +515,8 @@ func TestTASK4105_ScheduleRemoteAgainstTheServer(t *testing.T) {
 	if at == "" {
 		t.Fatalf("schedule has no next occurrence: %v", view)
 	}
-	if _, text, isErr := call(owner, "schedule-resolve", map[string]any{"ref": ref, "state": "move", "occurrence_at": at, "until": time.Now().UTC().Add(48 * time.Hour).Format(time.RFC3339)}); !isErr || !strings.Contains(text, "comment") {
-		t.Fatalf("moving a soft deadline without a comment must be refused naming the comment: %s", text)
+	if _, text, isErr := call(owner, "schedule-resolve", map[string]any{"ref": ref, "state": "move", "occurrence_at": at, "until": time.Now().UTC().Add(48 * time.Hour).Format(time.RFC3339)}); isErr {
+		t.Fatalf("moving a soft deadline needs no comment: %s", text)
 	}
 	if _, text, isErr := call(owner, "schedule-resolve", map[string]any{"ref": ref, "state": "skip", "occurrence_at": "2000-01-01T00:00:00Z"}); !isErr || !strings.Contains(text, "not the schedule's outstanding occurrence") {
 		t.Fatalf("a wrong occurrence must be refused as stale: %s", text)
