@@ -326,6 +326,11 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 			return nil, err
 		}
 		completion = actual
+		if in.ActualDoneAt != nil {
+			if err := s.recordOnTimeCorrectionTx(tx, sc, OccurrenceKey(sc, xAt, xWall), actual); err != nil {
+				return nil, err
+			}
+		}
 	}
 	occ, found, anchorWall, c, err := s.nextAfterResolve(sc, rec, x, nowT, completion)
 	var capErr *schedule.CapError

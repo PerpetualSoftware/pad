@@ -3827,6 +3827,11 @@ func (s *Store) updateItemWithParentLinkOnce(
 		if err := s.enqueueAssignedNotificationTx(tx, updated, mutSignal.ToAssignedUserID, input.ActorUserID, updated.LastModifiedBy == "agent"); err != nil {
 			return nil, err
 		}
+		// TASK-4351: a commitment's journal records who held it. Same
+		// transaction, so the journal and the assignee cannot disagree.
+		if err := s.journalAssigneeChangeTx(tx, updated.ID, mutSignal.FromAssignedUserID, mutSignal.ToAssignedUserID); err != nil {
+			return nil, err
+		}
 	}
 	// Enqueued on EVERY update, including ones that change nothing a
 	// question can see: whether the state changed is the runner's state-hash
