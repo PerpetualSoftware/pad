@@ -306,9 +306,9 @@ func (s *Store) SetCommitmentRoles(workspaceID, itemID string, roles models.Comm
 // move, role deadline, reason_source user. A reason is required.
 //
 // It does not check who may renegotiate: the caller owns authority. The journal
-// row's before_json is the schedule's snapshot, which of a native row never
-// carries roles_origin legacy_backfill, so a renegotiation after a conversion
-// leaves later misses recorded. A row that is not native with a deadline has
+// row's before_json and after_json are {"deadline": value} objects with the old
+// and the new deadline and no roles_origin member, so a renegotiation after a
+// conversion leaves later misses recorded. A row that is not native with a deadline has
 // nothing to renegotiate and is refused.
 func (s *Store) RenegotiateDeadline(workspaceID, itemID, actor string, until time.Time, reason string) error {
 	return s.renegotiateDeadlineAt(workspaceID, itemID, actor, until, reason, time.Now())

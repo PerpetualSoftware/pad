@@ -283,7 +283,7 @@ func TestRenegotiateOnConvertedRowKeepsLaterMissesRecorded(t *testing.T) {
 		t.Fatalf("converted row recorded a miss: %+v", got)
 	}
 	until := time.Now().UTC().Add(48 * time.Hour).Truncate(time.Second)
-	if err := f.s.renegotiateDeadlineAt(f.ws.ID, f.item.ID, "user", until, "more time", renegNow); err != nil {
+	if err := f.s.renegotiateDeadlineAt(f.ws.ID, f.item.ID, "user", until, "more time", time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.eval(t, until.Add(-time.Second).Format(time.RFC3339), 0); got.Missed != 0 {
@@ -305,7 +305,7 @@ func TestOnlyConversionWritesLegacyBackfillBeforeJSON(t *testing.T) {
 	}
 	// renegotiation, a miss, the assignee step, a late on-time report, a move.
 	until := time.Now().UTC().Add(48 * time.Hour).Truncate(time.Second)
-	if err := f.s.renegotiateDeadlineAt(f.ws.ID, f.item.ID, "user", until, "later", renegNow); err != nil {
+	if err := f.s.renegotiateDeadlineAt(f.ws.ID, f.item.ID, "user", until, "later", time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.eval(t, until.Add(time.Second).Format(time.RFC3339), 0); got.Missed != 1 {
