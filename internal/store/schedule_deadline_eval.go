@@ -182,6 +182,50 @@ func (s *Store) deadlinePage(now time.Time, cursor *deadlineCandidate) ([]deadli
 	return out, rows.Err()
 }
 
+// openDeadlineCandidates drops the candidates whose item is in a terminal status,
+// judged by each workspace's own terminal options as the agenda does. A terminal
+// item never shows overdue work; a reopened one is evaluated again and records
+// its miss then. One query per workspace on the page.
+func (s *Store) openDeadlineCandidates(q Queryer, candidates []deadlineCandidate) ([]deadlineCandidate, error) {
+	byWorkspace := map[string][]string{}
+	for _, d := range candidates {
+		byWorkspace[d.sc.WorkspaceID] = append(byWorkspace[d.sc.WorkspaceID], d.sc.ItemID)
+	}
+	open := map[string]bool{}
+	for workspaceID, ids := range byWorkspace {
+		filter, filterArgs := s.nonTerminalFilter(workspaceID, "i")
+		args := []any{workspaceID}
+		for _, id := range ids {
+			args = append(args, id)
+		}
+		args = append(args, filterArgs...)
+		rows, err := q.Query(s.q(`SELECT i.id FROM items i WHERE i.workspace_id = ? AND i.id IN (`+placeholders(len(ids))+`) AND `+filter), args...)
+		if err != nil {
+			return nil, fmt.Errorf("deadline items: %w", err)
+		}
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			open[id] = true
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+	}
+	out := candidates[:0:0]
+	for _, d := range candidates {
+		if open[d.sc.ItemID] {
+			out = append(out, d)
+		}
+	}
+	return out, nil
+}
+
 type deadlineJournalState struct {
 	recorded  bool
 	converted time.Time
@@ -267,6 +311,10 @@ func (s *Store) EvaluateDeadlines(nowTS string, limit int) (DeadlineEvalResult, 
 			}
 			resolved = append(resolved, d)
 		}
+		resolved, err = s.openDeadlineCandidates(s.db, resolved)
+		if err != nil {
+			return result, errors.Join(append(errs, err)...)
+		}
 		states, err := s.deadlineJournal(s.db, resolved)
 		if err != nil {
 			return result, errors.Join(append(errs, err)...)
@@ -323,6 +371,13 @@ func (s *Store) evaluateDeadline(candidate deadlineCandidate, nowT time.Time) (b
 	}
 	if err = d.resolve(); err != nil {
 		return false, err
+	}
+	open, err := s.openDeadlineCandidates(tx, []deadlineCandidate{d})
+	if err != nil {
+		return false, err
+	}
+	if len(open) == 0 {
+		return false, nil
 	}
 	states, err := s.deadlineJournal(tx, []deadlineCandidate{d})
 	if err != nil {

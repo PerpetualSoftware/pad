@@ -541,3 +541,31 @@ func TestPgInstantShapePopulation(t *testing.T) {
 		t.Fatalf("population too small: %d", n)
 	}
 }
+
+// An item in a terminal status never shows overdue work: no miss and no event
+// while it is done, and a reopened item past its stays-owed deadline records
+// its miss then, once.
+func TestDeadlineEvalSkipsTerminalItemsAndRecordsOnReopen(t *testing.T) {
+	t.Parallel()
+	f := newSchedFixture(t)
+	sc := f.create(t, models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-01T09:00", Tz: "UTC", Rrule: "FREQ=DAILY"})
+	f.nativeDeadline(t, sc, "stays_owed", 3600)
+	f.exec(t, `UPDATE items SET fields = ? WHERE id = ?`, `{"status":"done"}`, f.item.ID)
+
+	if got := f.eval(t, "2026-10-26T12:00:00Z", 0); got.Missed != 0 || got.Evaluated != 0 {
+		t.Fatalf("done item: %+v, want no miss", got)
+	}
+	if f.deadlineEvidence(t) != 0 || f.deadlineNotices(t) != 0 {
+		t.Fatalf("done item wrote evidence %d, events %d", f.deadlineEvidence(t), f.deadlineNotices(t))
+	}
+	f.exec(t, `UPDATE items SET fields = ? WHERE id = ?`, `{"status":"open"}`, f.item.ID)
+	if got := f.eval(t, "2026-10-26T12:00:30Z", 0); got.Missed != 1 {
+		t.Fatalf("reopened item: %+v, want one miss", got)
+	}
+	if got := f.eval(t, "2026-10-26T12:01:00Z", 0); got.Missed != 0 {
+		t.Errorf("second pass after reopen: %+v, want none", got)
+	}
+	if f.deadlineEvidence(t) != 1 || f.deadlineNotices(t) != 1 {
+		t.Errorf("evidence %d, events %d, want 1 and 1", f.deadlineEvidence(t), f.deadlineNotices(t))
+	}
+}
