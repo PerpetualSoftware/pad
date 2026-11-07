@@ -128,4 +128,6 @@ test('E9: the /console Chat link works from the mobile menu', async ({ page, req
 	await noHorizontalOverflow(page, '.console-nav .nav-links.open');
 	await page.locator(entry).click();
 	await page.waitForURL((u) => u.pathname === '/messages');
+	// At phone width Chat is the sheet over the console (TASK-4315 PR 4), not a page of its own.
+	await expect(page.locator('.ds-panel[aria-label="Chat"]')).toBeVisible();
 });

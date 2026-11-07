@@ -10,13 +10,13 @@
 // `goto(…, { shallow: true, state })` REPLACES `page.state`, so every call here
 // spreads the current state first (the split pane's depth lives there).
 //
-// Phone (<=768px) and route mode (the underlying URL is already /messages*) use
-// a plain `goto`; nothing here changes how a phone reaches Chat.
+// Route mode (the underlying URL is already /messages*) uses a plain `goto`.
+// A phone opens the same shallow surface as the dock and drawer; ChatHost renders
+// it as a full-height sheet above the bottom bar.
 import { untrack } from 'svelte';
 import { goto } from '$app/navigation';
 import { page } from '$app/state';
 import { browser } from '$app/env';
-import { viewport } from '$lib/stores/breakpoint.svelte';
 import { authStore } from '$lib/stores/auth.svelte';
 
 export type ChatTarget =
@@ -381,7 +381,7 @@ export const chatSurface = {
 	/** Open Chat on `href` (/messages or /messages/N). */
 	async open(href: string): Promise<void> {
 		const next = parseChatPath(new URL(href, page.url.href).pathname);
-		if (!next || viewport.isMobile || this.routeMode || !authStore.userId) {
+		if (!next || this.routeMode || !authStore.userId) {
 			await goto(href);
 			return;
 		}

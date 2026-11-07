@@ -2,8 +2,8 @@
 	WorkspaceSheet — the mobile "Workspace" slot surface (PLAN-1694, TASK-1701).
 
 	A docked sheet (DockedSheet, anchored above the nav) for moving around the
-	current workspace: a Navigate tile grid (Dashboard/Insights/Roles/Starred/
-	Tags/Settings) and the Collections list.
+	current workspace: a Navigate tile grid (Dashboard/Activity/Insights/Roles/
+	Starred/Tags/Settings) and the Collections list.
 
 	The workspace *switcher* used to live here as a card; IDEA-1835 moved it to
 	the persistent top bar (MobileContextBar), so this sheet is now navigation
@@ -27,11 +27,10 @@
 	let isGuest = $derived(workspaceStore.current?.is_guest ?? false);
 	let activeKey = $derived(getActiveKey(page.url.pathname, wsPrefix));
 
-	// Navigate tiles: every static destination except Activity (its own nav
-	// slot); Settings dropped for guests.
+	// Navigate tiles: every static destination (Activity has no bottom-bar slot of
+	// its own); Settings dropped for guests.
 	let navDestinations = $derived(
 		getPrimaryDestinations(wsPrefix)
-			.filter((d) => d.key !== 'activity')
 			.filter((d) => !(d.guestHidden && isGuest))
 	);
 

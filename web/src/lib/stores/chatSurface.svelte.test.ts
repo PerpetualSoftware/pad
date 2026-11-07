@@ -129,11 +129,14 @@ describe('open', () => {
 		});
 	});
 
-	it('phone: a plain goto, no shallow, no state', async () => {
+	it('phone: opens as a shallow navigation with a chat depth, like the dock and drawer', async () => {
 		h.mobile = true;
 		await chatSurface.open('/messages/4');
 		expect(gotoMock).toHaveBeenCalledTimes(1);
-		expect(gotoMock).toHaveBeenCalledWith('/messages/4');
+		expect(gotoMock).toHaveBeenCalledWith('/messages/4', {
+			shallow: true,
+			state: { chatDepth: 1, chatFromInbox: undefined }
+		});
 	});
 
 	it('already in route mode: a plain goto', async () => {
@@ -383,9 +386,15 @@ describe('deferPageWrite: a page-owned URL write waits for Chat to close', () =>
 		expect(chatSurface.deferPageWrite('k', vi.fn())).toBe(false);
 	});
 
-	it('returns false on a phone, where Chat is a plain route and never a surface', () => {
+	it('returns false on a phone while Chat is closed', () => {
 		h.mobile = true;
 		expect(chatSurface.deferPageWrite('k', vi.fn())).toBe(false);
+	});
+
+	it('holds the write on a phone while Chat is open (the sheet is a surface now)', () => {
+		h.mobile = true;
+		openAt(1);
+		expect(chatSurface.deferPageWrite('k', vi.fn())).toBe(true);
 	});
 
 	it('holds the write while Chat is open and runs it once Chat has closed', () => {

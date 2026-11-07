@@ -6,6 +6,7 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { chatSetting } from '$lib/stores/chatSetting.svelte';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
+	import { useViewportFit } from '$lib/chat/viewportOwner.svelte';
 
 	let { children } = $props();
 	let ready = $state(false);
@@ -17,6 +18,12 @@
 	// it renders inside the shell's <main>, so it is a plain region there (one main
 	// landmark per page).
 	let standalone = $derived(viewport.isMobile);
+
+	// A standalone phone thread fits the visual viewport while the soft keyboard is up,
+	// so its composer is never covered (the same owner the Chat sheet uses). Under the
+	// shell (iPad in route mode) there is no owner: the browser scrolls the box into view.
+	const fit = useViewportFit();
+	let fitted = $derived(standalone && isThread && chatSetting.enabled ? fit.box : null);
 
 	// A sign-out, or a swap to a signed-out identity, while /messages is open sends
 	// the visitor to /login (TASK-4044 2b-ii, row J). Read-only on authStore.
@@ -50,6 +57,11 @@
 		class="messages-main"
 		class:standalone
 		class:thread={isThread && chatSetting.enabled}
+		style:position={fitted ? 'fixed' : undefined}
+		style:top={fitted ? `${fitted.top}px` : undefined}
+		style:left={fitted ? '0' : undefined}
+		style:right={fitted ? '0' : undefined}
+		style:height={fitted ? `${fitted.height}px` : undefined}
 	>
 		<!-- Off is a display preference (TASK-4315): the URL still answers, and says why. -->
 		{#if chatSetting.enabled}
@@ -83,8 +95,13 @@
 		padding-bottom: calc(var(--space-4) + env(safe-area-inset-bottom));
 	}
 
+	/* The bar below (GlobalBottomBar) takes its height, and the body's bottom padding
+	   under it, while it is shown; with the keyboard up the bar is gone. */
 	.messages-main.thread.standalone {
 		height: 100dvh;
+	}
+	:global(body.has-bottom-nav) .messages-main.thread.standalone {
+		height: calc(100dvh - var(--bottom-nav-height) - env(safe-area-inset-bottom, 0px));
 	}
 
 	@media (max-width: 640px) {
