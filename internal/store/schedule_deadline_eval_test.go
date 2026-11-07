@@ -169,15 +169,25 @@ func TestDeadlineEvalConcurrentPassesRecordOnce(t *testing.T) {
 		f.overdueSchedule(t, fmt.Sprintf("Race %d", i), "stays_owed")
 	}
 	var wg sync.WaitGroup
+	results := make(chan DeadlineEvalResult, 4)
 	for i := 0; i < 4; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			// A losing pass may report a busy row; the count below is the verdict.
-			_, _ = f.s.EvaluateDeadlines("2026-10-26T12:00:00Z", 0)
+			result, _ := f.s.EvaluateDeadlines("2026-10-26T12:00:00Z", 0)
+			results <- result
 		}()
 	}
 	wg.Wait()
+	close(results)
+	total := 0
+	for result := range results {
+		total += result.Missed
+	}
+	if n := f.deadlineEvidence(t); total != n {
+		t.Fatalf("reported misses = %d, committed rows = %d", total, n)
+	}
 	f.eval(t, "2026-10-26T12:00:30Z", 0)
 	if n := f.deadlineEvidence(t); n != rows {
 		t.Errorf("evidence rows = %d, want %d", n, rows)
@@ -375,19 +385,20 @@ func TestDeadlineEvalNoNotificationsAndItemEvent(t *testing.T) {
 	sc := f.overdueSchedule(t, "No notification", "stays_owed")
 	u := f.user(t, "deadline-no-notification@example.com", "UTC")
 	f.assign(t, sc.ItemID, u.ID)
-	before := f.count(t, `SELECT COUNT(*) FROM notifications`)
+	addDevice(t, f.s, u.ID)
+	before := f.count(t, `SELECT COUNT(*) FROM user_notifications`)
 	if got := f.eval(t, "2026-10-26T12:00:00Z", 0); got.Missed != 1 {
 		t.Fatalf("miss: %+v", got)
 	}
-	if n := f.count(t, `SELECT COUNT(*) FROM notifications`); n != before {
+	if n := f.count(t, `SELECT COUNT(*) FROM user_notifications`); n != before {
 		t.Fatalf("notifications changed %d -> %d", before, n)
 	}
-	var subject, family, payload string
-	if err := f.s.db.QueryRow(f.s.q(`SELECT subject_id,payload_family,payload FROM event_outbox WHERE event_type=?`), kernelevents.ItemDeadlineMissed).Scan(&subject, &family, &payload); err != nil {
+	var subject, kind, payload string
+	if err := f.s.db.QueryRow(f.s.q(`SELECT subject_id,subject_kind,payload FROM event_outbox WHERE event_type=?`), kernelevents.ItemDeadlineMissed).Scan(&subject, &kind, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if subject != sc.ItemID || family != kernelevents.PayloadItemSnapshot {
-		t.Fatalf("event subject/family: %s %s", subject, family)
+	if subject != sc.ItemID || kind != kernelevents.SubjectItem {
+		t.Fatalf("event subject/kind: %s %s", subject, kind)
 	}
 	var body map[string]any
 	if err := json.Unmarshal([]byte(payload), &body); err != nil {
@@ -420,5 +431,21 @@ func TestDeadlineEvalBadRowDoesNotStopPass(t *testing.T) {
 	got, err := f.s.EvaluateDeadlines("2026-10-26T12:00:00Z", 0)
 	if err == nil || got.Missed != 1 {
 		t.Fatalf("result=%+v error=%v", got, err)
+	}
+}
+
+func TestDeadlineEvalSeedDisplacementAcrossDST(t *testing.T) {
+	t.Parallel()
+	f := newSchedFixture(t)
+	sc := f.create(t, models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-31T09:00", Tz: "America/New_York"})
+	f.exec(t, `UPDATE item_schedules SET roles_origin='native',target_days=5,target_secs=3600,deadline_days=1,deadline_secs=0,deadline_behavior='stays_owed' WHERE id=?`, sc.ID)
+	if got := f.eval(t, "2026-11-01T13:59:59Z", 0); got.Missed != 0 {
+		t.Fatalf("before civil deadline: %+v", got)
+	}
+	if got := f.eval(t, "2026-11-01T14:00:01Z", 0); got.Missed != 1 {
+		t.Fatalf("after civil deadline: %+v", got)
+	}
+	if n := f.count(t, `SELECT COUNT(*) FROM schedule_changes WHERE role='deadline' AND after_json=?`, `{"deadline":"2026-11-01T14:00:00Z"}`); n != 1 {
+		t.Fatal("seed-relative deadline mismatch")
 	}
 }
