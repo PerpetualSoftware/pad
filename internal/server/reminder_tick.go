@@ -162,4 +162,14 @@ func (s *Server) runReminderTick() {
 	if len(fired) > 0 {
 		slog.Info("reminder tick: fired reminders", "count", len(fired))
 	}
+	result, err := s.store.EvaluateDeadlines(nowTS, limit)
+	if err != nil {
+		slog.Error("reminder tick: deadline evaluation failed", "error", err, "missed", result.Missed)
+	}
+	if result.CapHit {
+		slog.Warn("reminder tick: deadline evaluation reached cap", "cap", result.Evaluated)
+	}
+	if result.Missed > 0 {
+		slog.Info("reminder tick: missed deadlines", "count", result.Missed)
+	}
 }

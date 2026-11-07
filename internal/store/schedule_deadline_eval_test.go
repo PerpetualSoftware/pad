@@ -449,3 +449,23 @@ func TestDeadlineEvalSeedDisplacementAcrossDST(t *testing.T) {
 		t.Fatal("seed-relative deadline mismatch")
 	}
 }
+
+func TestDeadlineEvalMalformedInstantDoesNotStopPass(t *testing.T) {
+	t.Parallel()
+	for _, field := range []string{"next_at", "override"} {
+		t.Run(field, func(t *testing.T) {
+			f := newSchedFixture(t)
+			bad := f.overdueSchedule(t, "Malformed instant", "stays_owed")
+			if field == "next_at" {
+				f.exec(t, `UPDATE item_schedules SET next_at='not-an-instant' WHERE id=?`, bad.ID)
+			} else {
+				f.deadlineOverride(t, bad, "not-an-instant")
+			}
+			f.overdueSchedule(t, "Valid instant", "stays_owed")
+			got, err := f.s.EvaluateDeadlines("2026-10-26T12:00:00Z", 0)
+			if err == nil || got.Missed != 1 {
+				t.Fatalf("result=%+v error=%v", got, err)
+			}
+		})
+	}
+}
