@@ -438,8 +438,8 @@ func highEntropySlug(n int) string {
 // TestImportWorkspace_TruncatedSlugCollidesWithALaterVerbatimSlug regresses
 // the slug collision case.
 //
-// Truncation is the only way this loop can produce two identical slugs — a
-// bundle exported from a live workspace cannot contain a duplicate, because
+// Truncation can make this loop produce two identical slugs — a bundle
+// exported from a live workspace cannot contain a duplicate, because
 // UNIQUE(workspace_id, slug) held there. But the duplicate it creates lands in
 // either order, and the first fix resolved uniqueness ONLY for the row it had
 // truncated. Here the truncated row is inserted FIRST and the untouched row
@@ -531,9 +531,14 @@ func TestImportWorkspace_TruncatedSlugCollidesWithALaterVerbatimSlug(t *testing.
 		t.Errorf("the second row kept slug %q, so nothing collided with it — the first row was not truncated onto it",
 			prefix)
 	}
-	if !strings.HasPrefix(exactRowSlug, prefix+"-") {
-		t.Errorf("the second row's slug = %q, want the %d-rune prefix plus a uniqueness suffix",
-			exactRowSlug, models.MaxItemTitleRunes)
+	// uniqueSlugQ's `<prefix>-2` is itself ref-shaped (a hyphen-free letter
+	// prefix and a number), so the import re-coerces it to the bounded
+	// `-x-2` form (TASK-4375).
+	if want := prefix[:models.MaxItemTitleRunes-len("-x-2")] + "-x-2"; exactRowSlug != want {
+		t.Errorf("the second row's slug = %q, want %q", exactRowSlug, want)
+	}
+	if _, _, ok := parseItemRef(exactRowSlug); ok {
+		t.Errorf("the second row's slug %q parses as an item ref", exactRowSlug)
 	}
 	// Both rows survive AND stay distinguishable — a "fix" that let one
 	// overwrite the other would also produce two unique slugs.

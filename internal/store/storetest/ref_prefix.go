@@ -112,8 +112,9 @@ func NewRefSlugFixture(t *testing.T, postgres bool) (RefPrefixFixture, *models.I
 	return f, slugged
 }
 
-// NewImportedUppercaseRefSlugFixture imports IDENT-10 verbatim, the real door
-// for uppercase slugs. A different item owns #10; there is no IDENT collection.
+// NewImportedUppercaseRefSlugFixture restores a legacy imported IDENT-10 slug.
+// Import now coerces ref-shaped slugs (TASK-4375), so the fixture seeds the old
+// value directly. A different item owns #10; there is no IDENT collection.
 func NewImportedUppercaseRefSlugFixture(t *testing.T, postgres bool) (RefPrefixFixture, *models.Item) {
 	t.Helper()
 	var s *store.Store
@@ -142,6 +143,13 @@ func NewImportedUppercaseRefSlugFixture(t *testing.T, postgres bool) (RefPrefixF
 	holder, err := s.GetItemByRef(ws.ID, "CONVE", 10)
 	if err != nil || holder == nil {
 		t.Fatalf("imported number holder CONVE-10: got=%v err=%v", holder, err)
+	}
+	legacy, err := s.GetItemByRef(ws.ID, "DOC", 11)
+	if err != nil || legacy == nil {
+		t.Fatalf("imported slug owner DOC-11: got=%v err=%v", legacy, err)
+	}
+	if _, err := s.DB().Exec(s.D().Rebind(`UPDATE items SET slug = ? WHERE id = ?`), "IDENT-10", legacy.ID); err != nil {
+		t.Fatalf("restore legacy uppercase slug: %v", err)
 	}
 	// Control: a case-sensitive slug lookup really can find the imported row.
 	slugged, err := s.GetItemBySlug(ws.ID, "IDENT-10")

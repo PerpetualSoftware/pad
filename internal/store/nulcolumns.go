@@ -66,9 +66,9 @@ var nulColumns = []nulColumn{
 	// it was true of one write path and false of another — the lesson this
 	// cluster keeps re-teaching. The API path derives the slug through slugify,
 	// whose [a-z0-9-] output cannot carry a NUL. ImportWorkspace has its OWN
-	// INSERT and writes the BUNDLE's slug verbatim: importCoercedSlug returns
-	// it unchanged whenever it is inside the length bound, so a crafted bundle
-	// puts any bytes it likes in this column.
+	// INSERT and keeps the BUNDLE's slug unless length or ref-shape coercion
+	// applies. Neither coercion sanitizes NUL bytes, so a crafted bundle can
+	// still put a NUL in this column.
 	{"items", "slug", classText},
 
 	// Attribution columns. The handlers let a request body's value win over the
