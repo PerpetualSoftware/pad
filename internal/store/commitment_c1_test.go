@@ -648,3 +648,31 @@ func TestDeleteScheduleCheckedProtectsANativeDeadline(t *testing.T) {
 		t.Fatalf("allowed delete: %v %v", removed, err)
 	}
 }
+
+func TestDeleteScheduleCheckedLeavesOtherSchedulesAlone(t *testing.T) {
+	t.Parallel()
+	t.Run("legacy row", func(t *testing.T) {
+		f := newSchedFixture(t)
+		f.create(t, models.ScheduleCreate{Kind: "deadline_hard", Dtstart: "2026-10-01T09:00", Tz: "UTC", Rrule: "FREQ=DAILY"})
+		if removed, err := f.s.DeleteScheduleChecked(f.ws.ID, f.item.ID, false); !removed || err != nil {
+			t.Fatalf("legacy: %v %v", removed, err)
+		}
+	})
+	t.Run("native without a deadline", func(t *testing.T) {
+		f := newSchedFixture(t)
+		in := nativeRoles()
+		in.DeadlineDays, in.DeadlineSecs, in.DeadlineBehavior = nil, nil, nil
+		if _, err := f.s.createScheduleRolesAt(f.ws.ID, f.item.ID, models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-01T09:00", Tz: "UTC", Rrule: "FREQ=DAILY"}, ptr(mustRoles(t, in)), schedNow); err != nil {
+			t.Fatal(err)
+		}
+		if removed, err := f.s.DeleteScheduleChecked(f.ws.ID, f.item.ID, false); !removed || err != nil {
+			t.Fatalf("native without deadline: %v %v", removed, err)
+		}
+	})
+	t.Run("no schedule", func(t *testing.T) {
+		f := newSchedFixture(t)
+		if removed, err := f.s.DeleteScheduleChecked(f.ws.ID, f.item.ID, false); removed || err != nil {
+			t.Fatalf("missing: %v %v", removed, err)
+		}
+	})
+}
