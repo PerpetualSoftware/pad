@@ -259,22 +259,6 @@ func (s *Store) CreateCommitmentSchedule(workspaceID, itemID string, in models.S
 	return s.createScheduleRolesAt(workspaceID, itemID, in, &r, time.Now())
 }
 
-// CommitmentHasDeadline reports whether the item's schedule is native and has a
-// deadline role: the promise that only its assignee or an owner takes away.
-// False for no schedule, a legacy_backfill row, or a native row without a
-// deadline.
-func (s *Store) CommitmentHasDeadline(workspaceID, itemID string) (bool, error) {
-	sc, err := s.GetSchedule(workspaceID, itemID)
-	if err != nil || sc == nil {
-		return false, err
-	}
-	roles, err := s.scheduleRolesOf(s.db, sc)
-	if err != nil {
-		return false, err
-	}
-	return roles.Origin == "native" && roles.DeadlineDays != nil, nil
-}
-
 // sameDeadline reports whether two role sets carry the same deadline offset and
 // behavior; a deadline present on one side only is a difference.
 func sameDeadline(a, b scheduleRoles) bool {

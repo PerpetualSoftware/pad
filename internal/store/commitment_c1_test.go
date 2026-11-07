@@ -633,3 +633,18 @@ func TestConvertingAPastLegacyHardDeadlineRecordsNoMissForTheOldOne(t *testing.T
 		})
 	}
 }
+
+func TestDeleteScheduleCheckedProtectsANativeDeadline(t *testing.T) {
+	t.Parallel()
+	f := newSchedFixture(t)
+	f.nativeCommit(t)
+	if removed, err := f.s.DeleteScheduleChecked(f.ws.ID, f.item.ID, false); removed || !errors.Is(err, ErrDeadlineDeleteAuthority) {
+		t.Fatalf("refused delete: %v %v", removed, err)
+	}
+	if sc := f.reload(t, f.item.ID); sc == nil {
+		t.Fatal("a refused delete removed the schedule")
+	}
+	if removed, err := f.s.DeleteScheduleChecked(f.ws.ID, f.item.ID, true); !removed || err != nil {
+		t.Fatalf("allowed delete: %v %v", removed, err)
+	}
+}
