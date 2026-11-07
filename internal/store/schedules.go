@@ -961,21 +961,29 @@ func equalStringSlices(a, b []string) bool {
 
 // rekeyResolvedOverridesTx runs on a timing, rule or floating edit. An open
 // occurrence is back on the grid, so its override goes. A resolved occurrence
-// (done, skipped or missed) is no longer on the grid and has no target column of
+// (done, skipped, missed, or moved past a later one) is no longer on the grid and has no target column of
 // its own, so its override stays, re-keyed to the new key form. It returns how
 // many override rows were removed.
 func (s *Store) rekeyResolvedOverridesTx(tx *sql.Tx, cur *models.ItemSchedule, newFloating bool) (int, error) {
 	type resolved struct{ at, wall string }
-	rows, err := tx.Query(s.q(`SELECT occurrence_at, occurrence_wall FROM schedule_occurrences WHERE schedule_id=? AND state IN ('done','skipped','missed')`), cur.ID)
+	rows, err := tx.Query(s.q(`SELECT occurrence_at, occurrence_wall, state FROM schedule_occurrences WHERE schedule_id=?`), cur.ID)
 	if err != nil {
 		return 0, fmt.Errorf("read resolved occurrences: %w", err)
+	}
+	outstanding := ""
+	if cur.NextAt != nil && cur.NextWall != nil {
+		outstanding = OccurrenceKey(cur, *cur.NextAt, *cur.NextWall)
 	}
 	rekey := map[string]string{}
 	for rows.Next() {
 		var r resolved
-		if err := rows.Scan(&r.at, &r.wall); err != nil {
+		var state string
+		if err := rows.Scan(&r.at, &r.wall, &state); err != nil {
 			rows.Close()
 			return 0, err
+		}
+		if state == "moved" && outstanding != "" && OccurrenceKey(cur, r.at, r.wall) == outstanding {
+			continue // still the open occurrence: back on the grid
 		}
 		rekey[OccurrenceKey(cur, r.at, r.wall)] = OccurrenceKey(&models.ItemSchedule{Floating: newFloating}, r.at, r.wall)
 	}

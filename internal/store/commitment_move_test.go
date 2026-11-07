@@ -317,6 +317,23 @@ func TestTimingEditKeepsResolvedOverrides(t *testing.T) {
 	}
 }
 
+func TestTimingEditKeepsPastMovedOverride(t *testing.T) {
+	f := newSchedFixture(t)
+	sc := f.create(t, dailyUTC)
+	f.mustResolve(t, f.item, moveInput(sc, "2026-11-01T00:00:00Z"), "2026-11-02T12:00:00Z")
+	if n := f.count(t, `SELECT COUNT(*) FROM schedule_occurrence_overrides WHERE schedule_id=?`, sc.ID); n != 1 {
+		t.Fatalf("fixture overrides=%d, want 1", n)
+	}
+	f.update(t, models.ScheduleUpdate{Floating: ptr(true)})
+	if n := f.count(t, `SELECT COUNT(*) FROM schedule_occurrence_overrides WHERE schedule_id=? AND occurrence_key=?`, sc.ID, "2026-10-30T09:00:00"); n != 1 {
+		t.Fatalf("the past-moved occurrence lost its override: %d", n)
+	}
+	entries := moveEntries(t, f, sc.ID)
+	if e := entries[len(entries)-1]; e.Reason == "Occurrence overrides cleared" {
+		t.Fatalf("a kept override was reported as cleared: %+v", e)
+	}
+}
+
 func TestMoveFloatingAndPinnedArm(t *testing.T) {
 	for _, floating := range []bool{false, true} {
 		t.Run(map[bool]string{false: "pinned", true: "floating"}[floating], func(t *testing.T) {
