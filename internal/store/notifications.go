@@ -286,14 +286,24 @@ func (s *Store) enqueueReminderNotificationTx(tx *sql.Tx, r *models.Reminder, it
 	// webhooks and the agenda are unchanged. The audience is read here, in the
 	// fire transaction, so a change applies from the next fire. A one-shot
 	// reminder has no schedule and pushes as before.
+	target := ""
 	if r.ScheduleID != nil {
 		var audience string
-		err := tx.QueryRow(s.q(`SELECT audience FROM item_schedules WHERE id = ?`), *r.ScheduleID).Scan(&audience)
+		var floating bool
+		var wall sql.NullString
+		err := tx.QueryRow(s.q(`SELECT audience,floating,next_wall FROM item_schedules WHERE id = ?`), *r.ScheduleID).Scan(&audience, &floating, &wall)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("read reminder schedule audience: %w", err)
 		}
 		if err == nil && audience == "agent" {
 			return nil
+		}
+		if r.OccurrenceAt != nil && wall.Valid {
+			key := OccurrenceKey(&models.ItemSchedule{Floating: floating}, *r.OccurrenceAt, wall.String)
+			err := tx.QueryRow(s.q(`SELECT value_at FROM schedule_occurrence_overrides WHERE schedule_id=? AND occurrence_key=? AND role='target'`), *r.ScheduleID, key).Scan(&target)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("read reminder target: %w", err)
+			}
 		}
 	}
 	to := ""
@@ -313,6 +323,11 @@ func (s *Store) enqueueReminderNotificationTx(tx *sql.Tx, r *models.Reminder, it
 		stamp = *r.FireStamp
 	case r.FiredAt != nil:
 		stamp = *r.FiredAt // a snapshot with no stamp (never from the fire path)
+	}
+	if target != "" {
+		// The armed fire instant joins the target: a repeated move to one target
+		// arms the same instant and pushes once, while a snooze arms a later one.
+		stamp = "target:" + target + ":" + r.RemindAt
 	}
 	// A managed row is re-armed in place for each occurrence, so the key names
 	// the occurrence as well as the arming: reminder:<id>:<occurrence_at>:<stamp>.

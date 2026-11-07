@@ -45,12 +45,24 @@ func (f *schedFixture) create(t *testing.T, in models.ScheduleCreate) *models.It
 	if err != nil {
 		t.Fatalf("createScheduleAt: %v", err)
 	}
+	f.exec(t, `UPDATE item_schedules SET created_at=? WHERE id=?`, schedNow.Format(time.RFC3339), sc.ID)
+	sc.CreatedAt = schedNow.Format(time.RFC3339)
 	return sc
 }
 
 func (f *schedFixture) update(t *testing.T, upd models.ScheduleUpdate) *models.ItemSchedule {
 	t.Helper()
 	sc, err := f.s.updateScheduleAt(f.ws.ID, f.item.ID, upd, schedNow)
+	if err != nil {
+		t.Fatalf("updateScheduleAt: %v", err)
+	}
+	return sc
+}
+
+// updateAt is update at a chosen clock.
+func (f *schedFixture) updateAt(t *testing.T, upd models.ScheduleUpdate, at string) *models.ItemSchedule {
+	t.Helper()
+	sc, err := f.s.updateScheduleAt(f.ws.ID, f.item.ID, upd, rt(at))
 	if err != nil {
 		t.Fatalf("updateScheduleAt: %v", err)
 	}

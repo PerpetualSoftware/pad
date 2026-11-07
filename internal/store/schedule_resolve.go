@@ -13,9 +13,9 @@ import (
 
 // Resolving a schedule's outstanding occurrence (TASK-4103 C2b, DOC-4098).
 //
-// done and skip close the occurrence and advance the schedule to the next one;
-// snooze and move keep it outstanding and re-arm the same managed row at a new
-// instant. Everything is ONE transaction: the optional comment and its activity,
+// done and skip close the occurrence and advance the schedule to the next one.
+// Snooze changes reminder timing; move changes the target. A past move arms
+// only the next future occurrence. Everything is ONE transaction: the optional comment and its activity,
 // the occurrence rows, the schedule and the managed reminder commit together or
 // not at all.
 //
@@ -30,8 +30,7 @@ import (
 // finds the advanced schedule and is stale; the exactly-once guarantee rests on
 // the pin and the stale check inside the transaction, not on a unique index.
 
-// maxResolveUntil bounds a snooze or move: `until` is after now and at most this
-// far ahead.
+// maxResolveUntil bounds how far ahead a snooze or move may land.
 const maxResolveUntil = 366 * 24 * time.Hour
 
 var (
@@ -107,6 +106,9 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 		if in.State != "done" {
 			return nil, fieldErr("actual_done_at", "combination", "actual completion is for done")
 		}
+		if in.ActualDoneAt.IsZero() {
+			return nil, fieldErr("actual_done_at", "range", "actual completion cannot be zero")
+		}
 		reported := in.ActualDoneAt.UTC().Truncate(time.Second)
 		if reported.After(nowT) {
 			return nil, fieldErr("actual_done_at", "range", "actual completion cannot be in the future")
@@ -122,8 +124,11 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 		if in.Until == nil {
 			return nil, fieldErr("until", "required", "snooze and move need until")
 		}
-		if !in.Until.After(nowT) || in.Until.After(nowT.Add(maxResolveUntil)) {
+		if in.State == "snooze" && !in.Until.After(nowT) {
 			return nil, fieldErr("until", "range", "until must be after now and within 366 days")
+		}
+		if in.Until.After(nowT.Add(maxResolveUntil)) {
+			return nil, fieldErr("until", "range", "until must be within 366 days")
 		}
 	default:
 		return nil, fieldErr("state", "enum", "state must be one of done, skip, snooze, move")
@@ -146,15 +151,17 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 		return nil, ErrScheduleNotFound
 	}
 
-	if in.State == "move" {
-		switch sc.Kind {
-		case "deadline_hard":
-			return nil, fieldErr("state", "combination", "a hard deadline cannot be moved; snooze it, or change its kind")
-		case "deadline_soft":
-			if in.Comment == nil || strings.TrimSpace(in.Comment.Input.Body) == "" {
-				return nil, fieldErr("comment", "required", "moving a soft deadline needs a comment saying why")
-			}
+	if in.ActualDoneAt != nil {
+		created, err := time.Parse(time.RFC3339Nano, sc.CreatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse schedule created_at: %w", err)
 		}
+		if actual.Before(created.Truncate(time.Second)) {
+			return nil, fieldErr("actual_done_at", "range", "actual completion cannot be before schedule creation; the earliest allowed is "+created.UTC().Truncate(time.Second).Format(time.RFC3339))
+		}
+	}
+	if in.State == "move" && sc.Kind == "deadline_hard" {
+		return nil, fieldErr("state", "combination", "a hard deadline cannot be moved; snooze it, or change its kind")
 	}
 
 	if sc.EndedAt != nil || sc.NextAt == nil || sc.NextWall == nil {
@@ -200,7 +207,7 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 	ts := nowT.Format(time.RFC3339)
 	res := &ResolveResult{}
 	commentID := ""
-	if in.Comment != nil {
+	if in.Comment != nil && (in.State != "move" || strings.TrimSpace(in.Comment.Input.Body) != "") {
 		in.Comment.Input.ActivityID, err = s.createActivityQ(tx, in.Comment.Activity)
 		if err != nil {
 			return nil, fmt.Errorf("insert activity for resolution: %w", err)
@@ -225,7 +232,7 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 			// fireInstant, unchanged, lands exactly on until.
 			override = until.Add(time.Duration(sc.LeadMinutes) * time.Minute)
 		}
-		fireLoc := boundZone
+		fireLoc := rec
 		if !sc.Floating {
 			if fireLoc, err = time.LoadLocation(*sc.Tz); err != nil {
 				return nil, fmt.Errorf("load schedule zone: %w", err)
@@ -235,31 +242,50 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 		if err != nil {
 			return nil, fmt.Errorf("parse next_wall: %w", err)
 		}
-		// The occurrence is frozen at the instant the caller saw (next_at), so a
-		// later zone change cannot move the re-fire off it (C2b-1).
 		fire := fireInstant(x, wall, fireLoc, sc.LeadMinutes, &override)
+		if in.State == "move" && !fire.After(nowT) {
+			fire = until
+		}
 		if _, err := tx.Exec(s.q(`UPDATE item_schedules SET next_at = ?, next_override_at = ?, updated_at = ? WHERE id = ?`),
 			xAt, override.UTC().Format(time.RFC3339), ts, sc.ID); err != nil {
 			return nil, fmt.Errorf("snooze schedule: %w", err)
 		}
-		if ok, err := s.rearmManagedReminderTx(tx, sc.ID, NormalizeInstant(fire)); err != nil {
-			return nil, err
-		} else if !ok {
-			return nil, errors.New("schedule has no managed reminder")
-		}
-		if in.State == "move" {
-			if err := s.upsertOccurrenceTx(tx, sc.ID, xAt, xWall, "moved", commentID, in.Actor, ts); err != nil {
-				return nil, err
-			}
-		}
 		key, role := OccurrenceKey(sc, xAt, xWall), ""
 		if in.State == "move" {
 			role = "target"
+			if err := s.upsertOccurrenceTx(tx, sc.ID, xAt, xWall, "moved", commentID, in.Actor, ts); err != nil {
+				return nil, err
+			}
 			if err := s.upsertScheduleOverrideTx(tx, sc.ID, key, role, until, nil); err != nil {
 				return nil, err
 			}
 		}
-		if err := s.journalScheduleAfterTx(tx, sc.ID, in.State, key, role, before, in.Actor); err != nil {
+		if in.State == "move" && !until.After(nowT) {
+			n, err := s.armAfterPastMoveTx(tx, sc, rec, x, nowT, ts)
+			if err != nil {
+				return nil, err
+			}
+			res.MissedRecorded += n
+		} else if ok, err := s.rearmManagedReminderTx(tx, sc.ID, NormalizeInstant(fire)); err != nil {
+			return nil, err
+		} else if !ok {
+			if err := s.insertManagedReminderTx(tx, workspaceID, itemID, sc.ID, NormalizeInstant(fire)); err != nil {
+				return nil, err
+			}
+		}
+		if in.State == "move" {
+			reason, source := "Rescheduled", "system"
+			if in.Comment != nil && strings.TrimSpace(in.Comment.Input.Body) != "" {
+				reason, source = in.Comment.Input.Body, "user"
+			}
+			after, err := s.scheduleSnapshotTx(tx, sc.ID)
+			if err != nil {
+				return nil, err
+			}
+			if err := s.journalScheduleChangeReasonTx(tx, sc.ID, in.State, key, role, before, after, in.Actor, reason, source); err != nil {
+				return nil, err
+			}
+		} else if err := s.journalScheduleChangeTx(tx, sc.ID, in.State, key, "", "", "", in.Actor); err != nil {
 			return nil, err
 		}
 		return s.commitResolve(tx, workspaceID, itemID, res)
@@ -302,6 +328,10 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 		completion = actual
 	}
 	occ, found, anchorWall, c, err := s.nextAfterResolve(sc, rec, x, nowT, completion)
+	var capErr *schedule.CapError
+	if in.ActualDoneAt != nil && sc.Anchor == "completion" && errors.As(err, &capErr) {
+		return nil, fieldErr("actual_done_at", "range", "actual completion exceeds schedule expansion limits")
+	}
 	if errors.Is(err, errNoExactStart) {
 		// Unreachable for a real zone (see exactElapsedStart): the schedule goes
 		// to its error state, like a stored rule that no longer compiles, not a 500.
@@ -347,6 +377,55 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 		return nil, err
 	}
 	return s.commitResolve(tx, workspaceID, itemID, res)
+}
+
+// armAfterPastMoveTx leaves the moved target in history, records the instances
+// the move passed over like a done or skip does, and arms the next future one.
+func (s *Store) armAfterPastMoveTx(tx *sql.Tx, sc *models.ItemSchedule, rec *time.Location, x, nowT time.Time, ts string) (int, error) {
+	missed, _, err := missedOccurrences(sc, rec, nowT)
+	if err != nil {
+		return 0, err
+	}
+	recorded := 0
+	for _, m := range missed {
+		n, err := s.insertMissedTx(tx, sc.ID, m, ts)
+		if err != nil {
+			return 0, err
+		}
+		recorded += n
+	}
+	calendar := *sc
+	calendar.Anchor = "calendar"
+	occ, found, anchor, c, err := s.nextAfterResolve(&calendar, rec, x, nowT.Add(time.Second), nowT)
+	if err != nil {
+		return 0, err
+	}
+	if !found {
+		return recorded, s.deleteManagedReminderTx(tx, sc.ID)
+	}
+	arm, err := armSchedule(c, occ, sc.LeadMinutes, nil)
+	if err != nil {
+		return 0, err
+	}
+	loc := rec
+	if !sc.Floating {
+		if loc, err = time.LoadLocation(*sc.Tz); err != nil {
+			return 0, err
+		}
+	}
+	fire := fireInstant(occ.At, occ.Wall, loc, sc.LeadMinutes, nil)
+	if !fire.After(nowT) {
+		fire = occ.At
+	}
+	if _, err := tx.Exec(s.q(`UPDATE item_schedules SET next_at=?,next_wall=?,next_override_at=NULL,anchor_wall=? WHERE id=?`), NormalizeInstant(arm.NextAt), arm.NextWall.String(), nullStr(anchor), sc.ID); err != nil {
+		return 0, fmt.Errorf("advance past moved target: %w", err)
+	}
+	if ok, err := s.rearmManagedReminderTx(tx, sc.ID, NormalizeInstant(fire)); err != nil {
+		return 0, err
+	} else if !ok {
+		return recorded, s.insertManagedReminderTx(tx, sc.WorkspaceID, sc.ItemID, sc.ID, NormalizeInstant(fire))
+	}
+	return recorded, nil
 }
 
 func (s *Store) commitResolve(tx *sql.Tx, workspaceID, itemID string, res *ResolveResult) (*ResolveResult, error) {
@@ -592,7 +671,7 @@ func (s *Store) insertMissedTx(tx *sql.Tx, scheduleID string, o schedule.Occurre
 			return 0, err
 		}
 		sc := &models.ItemSchedule{Floating: floating}
-		if err := s.journalScheduleAfterTx(tx, scheduleID, "missed_recorded", OccurrenceKey(sc, NormalizeInstant(o.At), o.Wall.String()), "", "", "system"); err != nil {
+		if err := s.journalScheduleChangeTx(tx, scheduleID, "missed_recorded", OccurrenceKey(sc, NormalizeInstant(o.At), o.Wall.String()), "", "", "", "system"); err != nil {
 			return 0, err
 		}
 	}

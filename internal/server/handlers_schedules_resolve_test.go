@@ -95,7 +95,7 @@ func TestScheduleResolveStrictBodyAndFields(t *testing.T) {
 		{"bad state", map[string]any{"occurrence_at": resolveX, "state": "later"}, "state", "enum"},
 		{"snooze without until", map[string]any{"occurrence_at": resolveX, "state": "snooze"}, "until", "required"},
 		{"done with until", map[string]any{"occurrence_at": resolveX, "state": "done", "until": resolveX}, "until", "combination"},
-		{"until in the past", map[string]any{"occurrence_at": resolveX, "state": "move", "until": past}, "until", "range"},
+		{"snooze until in the past", map[string]any{"occurrence_at": resolveX, "state": "snooze", "until": past}, "until", "range"},
 	} {
 		rr := f.resolve(c.body)
 		if rr.Code != 400 {

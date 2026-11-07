@@ -24,24 +24,32 @@ type commitmentEntry struct {
 
 func commitmentJournal(t *testing.T, s *Store, id string) []commitmentEntry {
 	t.Helper()
-	rows, err := s.db.Query(s.q(`SELECT id,change_type,COALESCE(occurrence_key,''),COALESCE(role,''),COALESCE(before_json,''),COALESCE(after_json,''),actor,reason,reason_source,root_change_id,parent_change_id FROM schedule_changes WHERE schedule_id=? ORDER BY recorded_at,id`), id)
+	var workspaceID string
+	err := s.db.QueryRow(s.q(`SELECT workspace_id FROM schedule_changes WHERE schedule_id=? LIMIT 1`), id).Scan(&workspaceID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
+	rows, err := s.scheduleChangesQ(s.db, workspaceID, id)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var out []commitmentEntry
-	for rows.Next() {
-		var e commitmentEntry
-		if err := rows.Scan(&e.ID, &e.Type, &e.Key, &e.Role, &e.Before, &e.After, &e.Actor, &e.Reason, &e.Source, &e.Root, &e.Parent); err != nil {
-			t.Fatal(err)
+	for _, row := range rows {
+		e := commitmentEntry{ID: row.ID, Type: row.ChangeType, Key: derefStr(row.OccurrenceKey), Role: derefStr(row.Role), Before: derefStr(row.BeforeJSON), After: derefStr(row.AfterJSON), Actor: row.Actor, Reason: row.Reason, Source: row.ReasonSource, Root: row.RootChangeID}
+		if row.ParentChangeID != nil {
+			e.Parent = sql.NullString{String: *row.ParentChangeID, Valid: true}
 		}
-		if e.Source != "system" || e.Reason != "" || e.Root != e.ID || e.Parent.Valid {
+		wantReason := ""
+		if e.Type == "move" {
+			wantReason = "Rescheduled"
+		}
+		if e.Source != "system" || e.Reason != wantReason || e.Root != e.ID || e.Parent.Valid {
 			t.Fatalf("journal provenance: %+v", e)
 		}
 		out = append(out, e)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
 	}
 	return out
 }
@@ -282,7 +290,10 @@ func TestSnoozeIsJournaledButWritesNoOverride(t *testing.T) {
 	if f.count(t, `SELECT COUNT(*) FROM schedule_occurrence_overrides WHERE schedule_id=?`, sc.ID) != 0 {
 		t.Fatal("snooze wrote role override")
 	}
-	if commitmentSnapshot(t, entries[1].After)["next_override_at"] != NormalizeInstant(until) {
+	if entries[1].Before != "" || entries[1].After != "" {
+		t.Fatal("snooze journaled a date change")
+	}
+	if cur := f.reload(t, f.item.ID); cur.NextOverrideAt == nil || *cur.NextOverrideAt != NormalizeInstant(until) {
 		t.Fatal("snooze semantics changed")
 	}
 }

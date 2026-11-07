@@ -823,6 +823,14 @@ func (s *Store) updateScheduleAt(workspaceID, itemID string, upd models.Schedule
 			}
 		}
 	}
+	clearedOverrides := false
+	if timingEdit {
+		n, err := s.rekeyResolvedOverridesTx(tx, cur, spec.Floating, nextAt, nextWall)
+		if err != nil {
+			return nil, err
+		}
+		clearedOverrides = n > 0
+	}
 	if err := s.setLegacyRolesTx(tx, cur.ID, kind, spec.Start.String(), dtend); err != nil {
 		return nil, err
 	}
@@ -830,8 +838,12 @@ func (s *Store) updateScheduleAt(workspaceID, itemID string, upd models.Schedule
 	if err != nil {
 		return nil, err
 	}
-	if after != before {
-		if err := s.journalScheduleChangeTx(tx, cur.ID, "update", "", "", before, after, "system"); err != nil {
+	if after != before || clearedOverrides {
+		reason := ""
+		if clearedOverrides {
+			reason = "Occurrence overrides cleared"
+		}
+		if err := s.journalScheduleChangeReasonTx(tx, cur.ID, "update", "", "", before, after, "system", reason, "system"); err != nil {
 			return nil, err
 		}
 	}
@@ -945,4 +957,67 @@ func equalStringSlices(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// rekeyResolvedOverridesTx runs on a timing, rule or floating edit. An open
+// occurrence is back on the grid, so its override goes. A resolved occurrence
+// (done, skipped, missed, or moved past a later one) is no longer on the grid and has no target column of
+// its own, so its override stays, re-keyed to the new key form. It returns how
+// many override rows were removed.
+func (s *Store) rekeyResolvedOverridesTx(tx *sql.Tx, cur *models.ItemSchedule, newFloating bool, newAt, newWall *string) (int, error) {
+	type resolved struct{ at, wall string }
+	rows, err := tx.Query(s.q(`SELECT occurrence_at, occurrence_wall, state FROM schedule_occurrences WHERE schedule_id=?`), cur.ID)
+	if err != nil {
+		return 0, fmt.Errorf("read resolved occurrences: %w", err)
+	}
+	outstanding := ""
+	if cur.NextAt != nil && cur.NextWall != nil {
+		outstanding = OccurrenceKey(cur, *cur.NextAt, *cur.NextWall)
+	}
+	newOpen := ""
+	if newAt != nil && newWall != nil {
+		newOpen = OccurrenceKey(&models.ItemSchedule{Floating: newFloating}, *newAt, *newWall)
+	}
+	rekey := map[string]string{}
+	for rows.Next() {
+		var r resolved
+		var state string
+		if err := rows.Scan(&r.at, &r.wall, &state); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		if state == "moved" && outstanding != "" && OccurrenceKey(cur, r.at, r.wall) == outstanding {
+			continue // still the open occurrence: back on the grid
+		}
+		key := OccurrenceKey(&models.ItemSchedule{Floating: newFloating}, r.at, r.wall)
+		if key == newOpen {
+			continue // the edit put it back on the grid as the open occurrence
+		}
+		rekey[OccurrenceKey(cur, r.at, r.wall)] = key
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	rows.Close()
+	old, err := s.scheduleOverridesQ(tx, cur.WorkspaceID, cur.ID)
+	if err != nil {
+		return 0, err
+	}
+	removed := 0
+	for _, o := range old[cur.ID] {
+		if _, err := tx.Exec(s.q(`DELETE FROM schedule_occurrence_overrides WHERE schedule_id=? AND occurrence_key=? AND role=?`), cur.ID, o.OccurrenceKey, o.Role); err != nil {
+			return 0, fmt.Errorf("clear schedule override: %w", err)
+		}
+		key, kept := rekey[o.OccurrenceKey]
+		if !kept {
+			removed++
+			continue
+		}
+		o.OccurrenceKey = key
+		if err := s.upsertScheduleOverrideStoredTx(tx, cur.ID, o); err != nil {
+			return 0, err
+		}
+	}
+	return removed, nil
 }
