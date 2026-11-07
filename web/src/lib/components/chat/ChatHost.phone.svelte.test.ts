@@ -352,6 +352,19 @@ describe('Escape in the phone sheet', () => {
 		expect(go).toHaveBeenCalledTimes(1);
 	});
 
+	it('leaves the key to an open bottom sheet (the message menu on a phone owns it there)', async () => {
+		const go = vi.spyOn(history, 'go').mockImplementation(() => {});
+		await phone();
+		const menu = document.createElement('div');
+		menu.className = 'bs-sheet';
+		document.body.append(menu);
+		press();
+		expect(go).not.toHaveBeenCalled();
+		menu.remove();
+		press();
+		expect(go).toHaveBeenCalledTimes(1);
+	});
+
 	it('ignores an Escape another handler already used', async () => {
 		const go = vi.spyOn(history, 'go').mockImplementation(() => {});
 		await phone();

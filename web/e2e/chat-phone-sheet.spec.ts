@@ -54,7 +54,7 @@ test('the bar has Workspace, Search, plus, Chat, You; the badge is on Chat', asy
 	await expect(bar(page)).toBeVisible();
 	const names = await bar(page)
 		.locator('.bn-item')
-		.evaluateAll((els) => els.map((e) => (e.getAttribute('aria-label') ?? e.textContent ?? '').trim().replace(/,.*/, '').replace(/\s+/g, ' ')));
+		.evaluateAll((els) => els.map((e) => e.querySelector('.bn-label')?.textContent?.trim() ?? e.getAttribute('aria-label')));
 	expect(names).toEqual(['Workspace', 'Search', 'Quick capture', 'Chat', 'You']);
 	await expect(bar(page).getByText('Activity', { exact: true })).toHaveCount(0);
 	await expect(chatSlot(page).locator('.unread-badge')).toBeVisible({ timeout: 15_000 });
@@ -162,6 +162,15 @@ test('a soft keyboard: the composer stays inside the visual viewport, no double 
 	});
 	const { n } = await seedDM(request, fixture, 'kb');
 	await page.goto(home(fixture));
+	// The init script ran before layout, so its height may not be the settled one. Make the
+	// fake the settled height and let the app re-capture its keyboard-closed baseline
+	// (it does so on orientationchange), as a real rotation would.
+	await page.evaluate(() => {
+		const vv = (window as unknown as { __vv: { height: number } & EventTarget }).__vv;
+		vv.height = window.innerHeight;
+		window.dispatchEvent(new Event('orientationchange'));
+	});
+	await page.waitForTimeout(500);
 	await chatSlot(page).click();
 	await sheet(page).locator(`a[href="/messages/${n}"]`).click();
 	const box = sheet(page).getByRole('textbox', { name: 'Message' });

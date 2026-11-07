@@ -140,6 +140,13 @@
 		return front !== null && front >= ESCAPE_PRIORITY.menu;
 	}
 
+	// On a phone the message menu is a BottomSheet, which owns Escape without a stack
+	// entry (Menu hands it over), and its window listener runs after the sheet's: an open
+	// one is in front of this sheet, so the key is its to take.
+	function phoneEscapeYields(e: KeyboardEvent): boolean {
+		return escapeYields(e) || document.querySelector('.bs-sheet') !== null;
+	}
+
 	function onKeydown(e: KeyboardEvent) {
 		if (!drawer || !panelEl) return;
 		if (e.key === 'Tab') {
@@ -184,7 +191,7 @@
 		ownScroller
 		label="Chat"
 		fit={fit.box}
-		escapeBlocked={escapeYields}
+		escapeBlocked={phoneEscapeYields}
 		onclose={() => chatSurface.close()}
 	>
 		<div class="chat-body phone">
