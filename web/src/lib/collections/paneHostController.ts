@@ -25,6 +25,7 @@
 import { goto, afterNavigate } from '$app/navigation';
 import { page } from '$app/state';
 import { browser } from '$app/env';
+import { chatSurface, navigated } from '$lib/stores/chatSurface.svelte';
 import { itemUrlId, type Item, type PaneTarget } from '$lib/types';
 import {
 	readPaneState,
@@ -144,7 +145,13 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 	let pendingPaneLatch: { seq: number; run: () => boolean } | null = null;
 
 	function paneNavInFlight(): boolean {
-		return paneGoInFlight;
+		// Chat's own close traversal counts too: a second history.go issued before
+		// its popstate lands would overshoot the page that opened Chat.
+		// Read Chat's side FIRST: settling its latch can run a pending continuation
+		// (a reset go sets paneGoInFlight, a drill issues a goto), and that read
+		// reports true so this caller does not proceed on top of it.
+		const chatBusy = chatSurface.traversing;
+		return chatBusy || paneGoInFlight;
 	}
 
 	function clearPaneGo() {
@@ -174,7 +181,11 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 			pendingPaneLatch = null;
 			l?.run();
 		}, PANE_GO_SETTLE_MS);
-		history.go(delta);
+		// An open Chat surface sits on top of the pane's entries and carries the
+		// pane's state forward, so a pane traversal counts the entries Chat pushed
+		// too; otherwise it would only pop Chat and leave the pane where it was.
+		const chatEntries = page.shallow ? (page.state.chatDepth ?? 0) : 0;
+		history.go(delta - chatEntries);
 	}
 
 	// Settle the in-flight traversal on its own POPSTATE. `popstate` also covers
@@ -184,6 +195,7 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 	// in-flight for this go's own popstate (bounded by the fallback timer). A
 	// one-phase owned close has no latch and simply releases the guard.
 	afterNavigate((nav) => {
+		if (nav.shallow) return; // not the traversal's own popstate
 		if (!paneGoInFlight) return;
 		if (nav.type !== 'popstate') return; // wait for the traversal's own popstate
 		const latch = pendingPaneLatch;
@@ -208,6 +220,7 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 	// on `!openItemRef`) or focus already landed inside the pane (the drill path,
 	// which uses `goto({keepFocus:true})`, never hits this).
 	afterNavigate((nav) => {
+		if (nav.shallow) return;
 		if (nav.type !== 'popstate' || !browser) return;
 		requestAnimationFrame(() => {
 			if (document.activeElement === document.body) deps.focusPaneRegion();
@@ -223,15 +236,25 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 	// hand up a resolved ref, not an `Item`) first-open the pane through here.
 	function openItemPaneByRef(targetRef: string) {
 		if (paneNavInFlight()) return;
+		// Capture the trigger on the FIRST open only — re-targeting (j/k follow /
+		// row re-click on an open pane) keeps the ORIGINAL trigger as the
+		// fallback return target (TASK-2122). Before Chat is closed, which moves
+		// focus away from the control that was clicked.
+		if (!new URL(page.url.href).searchParams.has('item') && browser) {
+			deps.captureReturnFocus();
+		}
+		// A pane open is a real navigation, so it closes the shallow Chat under it.
+		// Chat's entries stay below the pane's otherwise, and closing the pane (or
+		// any replace that lands on them) would bring Chat back. Pop them first.
+		if (chatSurface.closeThen(() => openItemPaneNow(targetRef))) return;
+		openItemPaneNow(targetRef);
+	}
+
+	function openItemPaneNow(targetRef: string) {
+		if (paneNavInFlight()) return;
 		controllerActionSeq++;
 		const url = new URL(page.url.href);
 		const alreadyOpen = url.searchParams.has('item');
-		// Capture the trigger on the FIRST open only — re-targeting (j/k follow /
-		// row re-click on an open pane) keeps the ORIGINAL trigger as the
-		// fallback return target (TASK-2122).
-		if (!alreadyOpen && browser) {
-			deps.captureReturnFocus();
-		}
 		const plan = planLateralOpen(alreadyOpen, currentPaneState());
 		if (plan.kind === 'reset') {
 			// Detached (depth>0) direct row click → NEW top-level open: collapse
@@ -286,6 +309,8 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 	// `planPaneDrill`.
 	function navigatePaneTo(target: string) {
 		if (paneNavInFlight()) return;
+		// Same as a first open: a drill replaces or pushes over Chat's entries.
+		if (chatSurface.closeThen(() => navigatePaneTo(target))) return;
 		controllerActionSeq++;
 		// A pending j/k follow scheduled at a shallower depth must not fire after
 		// this drill and clobber it.
@@ -386,18 +411,34 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 		}
 		// Collection rename — rebase ownership + bypass the (now-spurious) draft
 		// guard for the committed, component-reusing pathname change.
-		deps.setBypassNavGuard(true);
-		void goto(url, {
-			replaceState: true,
-			reset: false,
-			state: { paneDepth: 0, paneOwned: false },
-		}).finally(() => {
-			deps.setBypassNavGuard(false);
+		// A dead slug cannot wait: with Chat open this closes it first (never dropped),
+		// and the bypass is claimed only while the navigation it covers is in flight.
+		chatSurface.runAfterClose(() => {
+			deps.setBypassNavGuard(true);
+			return navigated(
+				goto(url, {
+					replaceState: true,
+					reset: false,
+					state: { paneDepth: 0, paneOwned: false },
+				}).finally(() => {
+					deps.setBypassNavGuard(false);
+				})
+			);
 		});
 	}
 
 	function closeItemPane() {
 		if (paneNavInFlight()) return;
+		// A cold-loaded base is closed by REPLACING the entry in place, which over
+		// Chat would overwrite Chat's entry and leave the pane's behind it. Pop
+		// Chat first. The other closes traverse, and count Chat's entries in
+		// `paneHistoryGo`.
+		if (
+			planPaneClose(currentPaneState()).kind === 'replace-delete' &&
+			chatSurface.closeThen(closeItemPane)
+		) {
+			return;
+		}
 		controllerActionSeq++;
 		// A pending j/k pane-follow must not re-open the pane after an explicit
 		// close (e.g. ESC while a follow debounce is in flight).

@@ -97,7 +97,8 @@ const COLLAB_SAVE_CODE =
 // segments against the previous head; nothing those units run changed.
 const ASYNC_FUNCTIONS: Record<string, Row> = {
 	adoptOrConvergeToLiveCollection: { reviewed: 'e0c289c82bdd', why: 'myGen against loadGeneration before adopting' },
-	reconcileCollectionSegment: { reviewed: 'ebdbf8f1cb3e', why: 'identityHeld after the list fetch; retags and navigates only under it' },
+	// TASK-4315: re-reviewed. The heal's goto moved into chatSurface.runAfterClose (runs at once with Chat closed, else after Chat closes); the identity checks and the renameOverride claim still precede it.
+	reconcileCollectionSegment: { reviewed: 'a956dbfbae5e', why: 'identityHeld after the list fetch; retags and navigates only under it' },
 	jumpToSection: { reviewed: '761928f83944', why: 'switches this instance\'s tab and scrolls to an anchor', may: ['document.getElementById', 'document.getElementById(anchorId).scrollIntoView'] },
 	ensureGraphComp: { reviewed: 'c1565cfb8a18', why: 'lazy-loads a component module into this instance', may: ['ItemGraphComp', 'graphLoadError'] },
 	// TASK-3537: re-reviewed; this unit's body is unchanged. It re-hashed because the $lib/types import line it names lost getTerminalOptions (the dead terminalStatuses feed).
@@ -234,8 +235,8 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 
 /** Async functions that are not top-level declarations, in the script. */
 const NESTED: SignedRow[] = [
-	{ body: /event\.type === 'collection_updated'/, why: 'SSE: callbackGen after the collection fetch, itemGen on item branches; a change or a migration arriving before this load installs its item is only RECORDED (BUG-3198), synchronously, before any await', reviewed: '3d45012fc027' },
-	{ body: /result\.type === 'caught_up'/, why: 'sync: callbackGen after the reconciliation, itemGen on item branches; a result arriving before this load installs its item is only RECORDED (BUG-3198), synchronously, before any await', reviewed: '2aa21328adf2' },
+	{ body: /event\.type === 'collection_updated'/, why: 'SSE: callbackGen after the collection fetch, itemGen on item branches; a change or a migration arriving before this load installs its item is only RECORDED (BUG-3198), synchronously, before any await', reviewed: 'ff2f3cb32725' },
+	{ body: /result\.type === 'caught_up'/, why: 'sync: callbackGen after the reconciliation, itemGen on item branches; a result arriving before this load installs its item is only RECORDED (BUG-3198), synchronously, before any await', reviewed: 'ea16023fb62c' },
 	{
 		body: /flushCollabContent\(/,
 		in: '(top level)',
@@ -264,11 +265,12 @@ const MARKUP: SignedRow[] = [
 const CONTINUATIONS: SignedRow[] = [
 	{
 		// SvelteKit 3 replaced goto's noScroll with reset: false (TASK-3423).
-		call: /reset: false, \}\)\.catch\($/,
-		body: /./,
-		in: 'reconcileCollectionSegment',
-		code: '() => { if (renameOverride === bridge) renameOverride = null; }',
-		why: 'rename heal failure: clears only the bridge object this heal installed', reviewed: 'fe9feba8b696',
+		call: /\$\{itemRef\}\$\{chatSurface\.searchForHeal\(currentSearch\(\)\)\}`, \{ replaceState: true, reset: false, \}\)\s*\)\.then\($/,
+		body: /renameOverride = null/,
+		in: 'chatSurface.runAfterClose(…)',
+		code: '(ok) => { if (!ok && renameOverride === bridge) renameOverride = null; return ok; }',
+		why: 'rename heal outcome: when the navigation did not commit (failed, or a guard cancelled it), clears only the bridge object this heal installed; reports the outcome to the surface',
+		reviewed: 'fb80ea895495',
 		may: ['renameOverride'],
 	},
 	// TASK-3537: re-reviewed; this continuation's body is unchanged. It re-hashed because the $lib/types import line it names lost getTerminalOptions (the dead terminalStatuses feed).
@@ -399,10 +401,10 @@ const HELPERS: Record<string, string> = {
 	autoResizeTitle: '7b1e2fcd0526',
 	captureIdentity: '01f30996ab05',
 	handleGone: 'fafcb8c8c429',
-	handleNavigateAway: '44ad4f59673b',
+	handleNavigateAway: 'c0c770199458',
 	identityHeld: '1c5505d51f73',
 	navigateToCollectionRoot: '5976f087a8ca',
-	refreshPrintMeta: '2312cc481ca5',
+	refreshPrintMeta: 'dd0d221ad908',
 	// BUG-3540: re-reviewed; body unchanged, re-hashed by a name it reaches (rawContentSaver's save or rawBase); no await or fence moved.
 	// BUG-3571: one early return when a confirmed sign-out
 	// discard is under way (signOutDiscarding(), a module read); no await.
@@ -774,19 +776,19 @@ describe('ItemDetail AST guard: every edit in the first fixture set is refused',
 		// a row could re-point by a move.
 		{
 			id: 'the rename heal clears the override without its bridge compare',
-			subs: [['\t\t\t\tif (renameOverride === bridge) renameOverride = null;\n', '\t\t\t\trenameOverride = null;\n']],
+			subs: [['\t\t\t\t\tif (!ok && renameOverride === bridge) renameOverride = null;\n', '\t\t\t\t\tif (!ok) renameOverride = null;\n']],
 			refuses: ['matches 0 table rows'],
 		},
 		{
 			id: "the rename heal's catch moves onto the SSE rename navigation",
 			subs: [
 				[
-					"\t\t\t\treset: false,\n\t\t\t}).catch(() => {\n\t\t\t\t// A failed/cancelled navigation must not leave the override\n\t\t\t\t// bridging to a URL we never reached. Identity compare (this\n\t\t\t\t// heal's own bridge object) so a cancelled older\n\t\t\t\t// navigation can't clear a newer bridge to the same slug.\n\t\t\t\tif (renameOverride === bridge) renameOverride = null;\n\t\t\t});\n",
-					'\t\t\t\treset: false,\n\t\t\t});\n',
+					"\t\t\t\t\t\treset: false,\n\t\t\t\t\t})\n\t\t\t\t).then((ok) => {\n\t\t\t\t\t// A failed/cancelled navigation (a guard cancels without rejecting)\n\t\t\t\t\t// must not leave the override bridging to a URL we never reached.\n\t\t\t\t\t// Identity compare (this heal's own bridge object) so a cancelled\n\t\t\t\t\t// older navigation can't clear a newer bridge to the same slug.\n\t\t\t\t\tif (!ok && renameOverride === bridge) renameOverride = null;\n\t\t\t\t\treturn ok;\n\t\t\t\t});\n",
+					'\t\t\t\t\t\treset: false,\n\t\t\t\t\t})\n\t\t\t\t);\n',
 				],
 				[
-					'\t\t\t\t\t\t\treset: false,\n\t\t\t\t\t\t});\n',
-					'\t\t\t\t\t\t\treset: false,\n\t\t\t\t\t\t}).catch(() => {\n\t\t\t\t\t\t\tif (renameOverride === bridge) renameOverride = null;\n\t\t\t\t\t\t});\n',
+					'\t\t\t\t\t\t\t\t\treset: false,\n\t\t\t\t\t\t\t\t})\n',
+					'\t\t\t\t\t\t\t\t\treset: false,\n\t\t\t\t\t\t\t\t}).catch(() => {\n\t\t\t\t\t\t\t\t\tif (renameOverride === bridge) renameOverride = null;\n\t\t\t\t\t\t\t\t})\n',
 				],
 			],
 			refuses: ['matches 0 table rows'],

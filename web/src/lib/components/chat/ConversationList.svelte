@@ -3,6 +3,7 @@
 	import UnreadBadge from '$lib/components/chat/UnreadBadge.svelte';
 	import { chatStore } from '$lib/stores/chat.svelte';
 	import { chatInbox } from '$lib/stores/chatInbox.svelte';
+	import { chatSurface } from '$lib/stores/chatSurface.svelte';
 	import type { ChatConversationSummary } from '$lib/types';
 
 	let { conversations }: { conversations: ChatConversationSummary[] } = $props();
@@ -31,7 +32,11 @@
 	<ul class="conversation-list">
 		{#each conversations as c (c.id)}
 			<li>
-				<a class="row" href="/messages/{c.number}">
+				<a
+					class="row"
+					href="/messages/{c.number}"
+					onclick={(e) => chatSurface.handleLinkClick(e, `/messages/${c.number}`)}
+				>
 					<span class="who">
 						<span class="name">{label(c)}</span>
 						<!-- BUG-4321: the card carries the agent's presence, so the agent needs no second row. A group's key is not an agent. -->

@@ -31,6 +31,7 @@
 	// another site/app still has prior history (PLAN-1694).
 	let inAppNavs = $state(0);
 	afterNavigate((nav) => {
+		if (nav.shallow) return;
 		if (nav.type !== 'enter') inAppNavs += 1;
 	});
 

@@ -54,6 +54,7 @@
 
 	// Close on navigation (console links leave the workspace).
 	afterNavigate((nav) => {
+		if (nav.shallow) return;
 		if (nav.type !== 'enter' && open) onclose();
 	});
 

@@ -35,6 +35,8 @@
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { pushEscapeHandler, ESCAPE_PRIORITY } from '$lib/stores/escapeStack';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
+	import { chatSurface, navigated, STRIP_NEW_KEY } from '$lib/stores/chatSurface.svelte';
+	import { currentHref, currentSearch } from '$lib/utils/pageLocation';
 	import { createBurstDirty } from '$lib/items/editorBurstDirty';
 	import { createChangeContext } from '$lib/timeline/changeContext';
 	import { resolveSyncRenameTarget } from '$lib/collections/renameNav';
@@ -254,7 +256,17 @@
 	// even in the pane (the target collection differs). Full-page → the same
 	// replaceState goto as before.
 	const handleNavigateAway = (url: string) =>
-		(onNavigateAway ?? ((u: string) => goto(u, { replaceState: true })))(url);
+		(
+			onNavigateAway ??
+			((u: string) => {
+				// It may run after Chat has closed, so it is fenced like any continuation.
+				const identity = captureIdentity();
+				chatSurface.runAfterClose(() => {
+					if (!identityHeld(identity)) return false;
+					return navigated(goto(u, { replaceState: true }));
+				});
+			})
+		)(url);
 
 	let item = $state<Item | null>(null);
 	// The wsSlug the currently-held `item` was actually loaded under. Stamped
@@ -609,17 +621,23 @@
 			if (fresh) {
 				adoptCollection(fresh, collGen);
 			}
-			const search = typeof window !== 'undefined' ? window.location.search : '';
 			// was noScroll alone: kit 3 has no scroll-only option (TASK-3423)
-			goto(`/${username}/${ws}/${target}/${itemRef}${search}`, {
-				replaceState: true,
-				reset: false,
-			}).catch(() => {
-				// A failed/cancelled navigation must not leave the override
-				// bridging to a URL we never reached. Identity compare (this
-				// heal's own bridge object) so a cancelled older
-				// navigation can't clear a newer bridge to the same slug.
-				if (renameOverride === bridge) renameOverride = null;
+			// A dead slug cannot wait: with Chat open this closes it first (never dropped).
+			chatSurface.runAfterClose(() => {
+				if (!identityHeld(identity)) return false;
+				return navigated(
+					goto(`/${username}/${ws}/${target}/${itemRef}${chatSurface.searchForHeal(currentSearch())}`, {
+						replaceState: true,
+						reset: false,
+					})
+				).then((ok) => {
+					// A failed/cancelled navigation (a guard cancels without rejecting)
+					// must not leave the override bridging to a URL we never reached.
+					// Identity compare (this heal's own bridge object) so a cancelled
+					// older navigation can't clear a newer bridge to the same slug.
+					if (!ok && renameOverride === bridge) renameOverride = null;
+					return ok;
+				});
 			});
 		} catch {
 			// Best-effort heal — the next sync pass retries.
@@ -955,6 +973,8 @@
 			}
 			return;
 		}
+		// The drawer is derived from page.url, so a held write would not open it: close Chat first.
+		if (chatSurface.closeThen(() => setGraphParam(open))) return;
 		const has = page.url.searchParams.get('graph') === '1';
 		if (has === open) return;
 		const url = new URL(page.url.href);
@@ -1181,6 +1201,8 @@
 	// at risk asks first. Closing or reloading the tab is the beforeunload
 	// handler's job, so a 'leave' navigation is left to it.
 	beforeNavigate((nav) => {
+		// A shallow navigation (Chat over the item) leaves the editor mounted.
+		if (nav.shallow) return;
 		if (nav.type === 'leave') return;
 		const question = leaveQuestion({
 			// BUG-3556: also typing on a socket that closed unconfirmed, or
@@ -1382,7 +1404,7 @@
 			month: 'long',
 			day: 'numeric'
 		});
-		printUrl = window.location.href;
+		printUrl = currentHref();
 	}
 
 	onMount(() => {
@@ -1467,11 +1489,16 @@
 							from: collSlug,
 							to: event.new_slug,
 						};
-						const search = typeof window !== 'undefined' ? window.location.search : '';
 						// was noScroll alone: kit 3 has no scroll-only option (TASK-3423)
-						void goto(`/${username}/${wsSlug}/${event.new_slug}/${itemSlug}${search}`, {
-							replaceState: true,
-							reset: false,
+						// A dead slug cannot wait: with Chat open this closes it first (never dropped).
+						chatSurface.runAfterClose(() => {
+							if (callbackGen !== loadGeneration) return false;
+							return navigated(
+								goto(`/${username}/${wsSlug}/${event.new_slug}/${itemSlug}${chatSurface.searchForHeal(currentSearch())}`, {
+									replaceState: true,
+									reset: false,
+								})
+							);
 						});
 					}
 				}
@@ -3365,7 +3392,9 @@
 		if (pendingNewItemEdit && item && canEdit && !loading) {
 			pendingNewItemEdit = false;
 			// was noScroll alone: kit 3 has no scroll-only option (TASK-3423)
-			goto(`/${username}/${wsSlug}/${collSlug}/${itemSlug}`, { replaceState: true, reset: false });
+			// The strip is only the address; it waits while Chat is open.
+			const stripNew = () => goto(`/${username}/${wsSlug}/${collSlug}/${itemSlug}`, { replaceState: true, reset: false });
+			if (!untrack(() => chatSurface.deferPageWrite(STRIP_NEW_KEY, stripNew))) void stripNew();
 			startEditTitle();
 		}
 	});

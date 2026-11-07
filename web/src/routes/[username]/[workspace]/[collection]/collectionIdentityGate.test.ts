@@ -15,7 +15,7 @@ identityGateSuite({
 	table: {
 		asyncFunctions: {
 			reconcileRouteCollectionSlug: {
-				reviewed: '2657d19b2a92',
+				reviewed: '759629cd7cca',
 				why: 'the route (ws, slug), then identityHeld(epochAtEntry), then the collection id and navigating.to, before the retag, the sidebar refresh and the goto',
 			},
 			deltaSync: { reviewed: '411fdaffa22b', why: 'identityHeld(epochAtEntry) after the reconcile; the page commits nothing itself' },
@@ -30,7 +30,7 @@ identityGateSuite({
 			},
 			handleReorder: { reviewed: '6b5001d2be7c', why: 'optimistic upserts before any await (persistReorder applies them before its one request); identityHeld(epochAtEntry) after the request, before each settle, and before a refusal restores the original rows (BUG-3259, TASK-3517). TASK-3525: the moved card id is passed to the synchronous planner; no await or check moved. BUG-3699/3700 rework: each card carries the token of the reorder that wrote it; a settle, rollback or final restore touches only a card still holding it, never writes a landed write without a seq, and never over a row at or past the landed seq; after the request it returns unless identityHeld(epochAtEntry), reads every written card back on a bounded retry, re-checks identityHeld(epochAtEntry) after the reads, restores an unconfirmed card to its last stamped row (kept across overlapping reorders in lastConfirmed) and marks the scope stale; writes every card another reorder still holds, at its visible value' },
 			handleGroupReorder: {
-				reviewed: '1b7180edc2a7',
+				reviewed: 'c985c8e6e4b7',
 				why: 'collGen, the route, then identityHeld(epochAtEntry) before the collection write; the conflict path checks identity BEFORE its re-read request (BUG-3238) and after it, before the reseed and navigation; both toasts fenced. TASK-3539: the schema it writes back is parseStoredSchema (the stored form), not the render-normalised one; no await or check moved',
 			},
 			createNewItem: { reviewed: 'fd2027bde6ed', why: `${ENTRY}, the navigation into the new item included; the finally clears creatingNew only under the identity` },
@@ -45,25 +45,25 @@ identityGateSuite({
 			deleteView: { reviewed: '7eb2057eabec', why: ENTRY },
 		},
 		nested: [
-			{ body: /event\.type === 'collection_updated'/, why: "SSE item events: pageIdentityHeld() at entry; the refresh arm checks collGen, the slug, then identityHeld(epochAtEntry) before its write", reviewed: 'a889a07d3f00' },
+			{ body: /event\.type === 'collection_updated'/, why: "SSE item events: pageIdentityHeld() at entry; the refresh arm checks collGen, the slug, then identityHeld(epochAtEntry) before its write", reviewed: '93fe8835b650' },
 			{ body: /result\.workspace !== wsSlug/, why: 'sync results: pageIdentityHeld() at entry, identityHeld(epochAtEntry) after the progress refresh', reviewed: '9fdbdcd835e5' },
 			{ body: /BODY_SEARCH_PAGE/, why: 'search timer, as an async function: identityHeld(epochAtSchedule) at fire time and after EVERY page of the search, with the query, route and archived-flag snapshots (TASK-2864) and the timer it fired under (a newer run of the effect supersedes it), on the success AND catch arms; one commit after the walk (BUG-3710); the cap flag commits beside the rank map under the same fence', reviewed: '0a4e19e8c85e' },
 			{ body: /REORDER_READBACK_DELAYS_MS/, why: 'reorder read-back per card (BUG-3699/3700, landed or refused): identityHeld(epochAtEntry) after every wait and after the read, before the upsert, which the scope epoch and the seq guard also fence; a failed read commits nothing and retries on the bounded schedule; a refused card always reads back, a landed one stops once a stamped row at or past its seq is held, and a read older than its write is retried; a read for a card a later reorder holds optimistically is not applied, over a stamped row the seq guard decides', reviewed: '4f0b499f34d7' },
 		],
 		markup: [],
 		continuations: [
-			{ call: /replaceState: true \}\)\.catch\($/, body: /./, in: 'reconcileRouteCollectionSlug', why: 'rename navigation failure: clears renameNav only if it still holds this target', reviewed: 'a9ee9d041feb' },
+			{ call: /replaceState: true \}\)\)\.then\($/, body: /renameNav = null/, in: 'chatSurface.runAfterClose(…)', why: 'rename navigation outcome: when it did not commit (failed, or a guard cancelled it) clears renameNav only if it still holds this target; reports the outcome to the surface', reviewed: 'fbd3c8f94338' },
 			{ call: /plansProgress\(ws\)\.catch\($/, body: /./, why: 'refreshProgress fetch: a failure reads as none; commits nothing', reviewed: 'd4d3603af105' },
 			{ call: /api\.views\.list\(ws, coll\)\.catch\($/, body: /./, why: 'loadCollection views fetch: a failure reads as none; commits nothing', reviewed: 'b95fa0909634' },
 			{ call: /handleStatusChange\(item, value, 'priority'\)\.catch\($/, body: /./, why: 'card priority write (TASK-2214): the rejection was already toasted inside handleStatusChange, which fences its own commits; the catch commits nothing', reviewed: '8405d65b80af' },
 			{ call: /api\.members\.list\(ws\)\.catch\($/, body: /./, why: 'loadCollection members fetch: a failure reads as none; commits nothing', reviewed: 'd50d87e83266' },
 			{ call: /^setTimeout\($/, body: /BODY_SEARCH_PAGE/, why: 'search timer, as the deferred callback: the same unit as the nested row above', reviewed: '0a4e19e8c85e' },
-			{ call: /^setTimeout\($/, body: /identityHeld\(epochAtSchedule\)\) return; bypassNavGuard/, why: 'leave-guard popstate reset: identityHeld(epochAtSchedule) before clearing bypassNavGuard', reviewed: 'b3974e1c39d9' },
+			{ call: /^setTimeout\($/, body: /identityHeld\(epochAtSchedule\)\) return; bypassNavGuard/, why: 'leave-guard popstate reset: identityHeld(epochAtSchedule) before clearing bypassNavGuard. TASK-4315: the enclosing guard now returns first on a shallow navigation; the reset and its fence did not move', reviewed: 'd112d92b84d9' },
 			{
 				call: /^goto\(url\)\.finally\($/,
 				body: /./,
 				why: 'leave-guard goto reset: identityHeld(epochAtSchedule) before clearing bypassNavGuard, like its popstate sibling (BUG-3238)',
-				reviewed: 'b3974e1c39d9',
+				reviewed: 'd112d92b84d9',
 			},
 			{ call: /^requestAnimationFrame\($/, body: /quickCreateInput/, in: 'openQuickCreate', why: FOCUS, reviewed: '972b02cb1dc6' },
 			{ call: /^requestAnimationFrame\($/, body: /searchInputEl/, in: 'uiStore.registerCollectionSearch(…)', why: FOCUS, reviewed: '60d471361647' },
@@ -81,17 +81,26 @@ identityGateSuite({
 			captureReturnFocus: 'f97edb43de71',
 			clearActiveView: 'e083431f7f1a',
 			defaultViewKey: '538c4231d0be',
+			// TASK-4315: pure key for a deferred write; reads page.url, writes nothing.
+			filtersWriteKey: '17c408771030',
 			fieldLabelFor: '97d4689b8359',
 			formatLabel: 'a65fe92ea9fc',
+			// TASK-4315: pure read (query string a heal carries); reads page.url and local state, writes nothing.
+			healSearch: '6d2696853158',
 			identityHeld: 'e4fd3989a707',
 			// TASK-3423 rebase: re-reviewed; only kit 3 API swaps reach it (page.url.href, goto reset:false), no await or fence moved.
 			installPaneTestHook: 'd5097f0db3e6',
 			// TASK-4240: re-reviewed; the calendar_date/calendar_end branch now calls the synchronous applyCalendarUrlParam (empty value ignored). No await, fence or state write moved.
 			loadUrlFilters: 'c371dfd4e69d',
+			// TASK-4315: the query updateUrlFilters writes, factored out; pure read of local state and page.url.
+			liveFilterQuery: '632eb66c3311',
 			pageIdentityHeld: 'a7bbe5de91a4',
 			runPendingNav: 'dfb7329e4a5e',
 			// TASK-4240: body unchanged; re-hashed by the paneUrlParams import line it names (applyCalendarUrlParam added). No await or fence moved.
-			updateUrlFilters: 'a2f10fea539a',
+			// TASK-4315: re-reviewed. It now holds itself behind chatSurface.deferPageWrite while Chat is open (the entry
+			// carries its own authStore.identityFence(), checked when it runs), and its query comes from liveFilterQuery().
+			// No await, commit or fence of this page moved.
+			updateUrlFilters: '2ec6c983aff2',
 			writeDefaultViewId: '79d9180fa119',
 		},
 		// TASK-3423: the restore-skip release used to be handed to

@@ -51,6 +51,9 @@ import { authStore } from '$lib/stores/auth.svelte';
 import { chatStore } from '$lib/stores/chat.svelte';
 import { refKey } from '$lib/chat/refs';
 import { getDraft, setDraft, savePending, removePending, listPending } from '$lib/chat/chatRecords';
+import {
+	beginSend, deliverRefusal, endSend, isSending, notifyUnconfirmed, registerThreadView, type LateOutcome
+} from '$lib/chat/composerRegistry';
 import { newOpKey } from '$lib/opKey';
 import type { ChatConversationSummary, ChatMessage, ChatMessagesResponse, ChatRef } from '$lib/types';
 
@@ -97,6 +100,12 @@ export class ChatThread {
 	/** Set by the page from its bottom sentinel. */
 	atBottom = $state(false);
 	/**
+	 * False while the view is hidden or covered (a drawer under another overlay):
+	 * what the reader cannot see is not read. Set by the view; a closed surface
+	 * has no thread at all.
+	 */
+	active = $state(true);
+	/**
 	 * The ref verdicts this reader has been shown, by refKey (workspace, REF).
 	 * Verdicts are per reader, so #reset clears them (TASK-4044 3c M32).
 	 */
@@ -114,6 +123,7 @@ export class ChatThread {
 	#marking = false;
 	#stopRoot: () => void;
 	#stopIdentity: () => void;
+	#stopView: () => void = () => {};
 
 	constructor() {
 		let first = true;
@@ -151,6 +161,8 @@ export class ChatThread {
 	// an identity change fetches nothing until the page opens it again (TASK-4044
 	// r1 H1, ruling on triage ba47338c). open() sets both straight after.
 	#reset() {
+		this.#stopView();
+		this.#stopView = () => {};
 		this.#n = null;
 		this.status = 'loading';
 		this.conversation = null;
@@ -231,6 +243,8 @@ export class ChatThread {
 			this.status = 'notFound';
 			return;
 		}
+		const userId = authStore.userId;
+		if (userId) this.#stopView = registerThreadView(userId, n, (opKey) => this.#surfaceUnconfirmed(n, opKey));
 		this.status = 'loading';
 		const current = this.#guard();
 		await this.#enqueue(current, async () => {
@@ -246,16 +260,38 @@ export class ChatThread {
 				this.openReadSeq = page.read_seq;
 				this.#readSeq = page.read_seq;
 				this.#win.merge(page.messages);
-				this.#win.pending = listPending(authStore.userId, n).map((record) => ({
-					op_key: record.op_key, body: record.body, status: 'unconfirmed',
-					...(record.reply_seq !== null ? { reply_to_seq: record.reply_seq } : {})
-				}));
+				this.#win.pending = listPending(authStore.userId, n)
+					.filter((record) => !isSending(record.op_key)) // its POST is still running, in another view
+					.map((record) => ({
+						op_key: record.op_key, body: record.body, status: 'unconfirmed',
+						...(record.reply_seq !== null ? { reply_to_seq: record.reply_seq } : {})
+					}));
 				this.#publish(conv.unread > 0 && page.has_more ? page.last_seq : null);
 				this.status = 'ready';
 			} catch (err) {
 				if (current()) this.status = isNotFoundError(err) ? 'notFound' : 'failed';
 			}
 		});
+	}
+
+	/**
+	 * A send that was in flight when this thread opened has ended with no answer.
+	 * open() left its stored attempt out while it ran; show it as unconfirmed now.
+	 * (Still loading: open() lists it itself, the in-flight mark being gone.)
+	 */
+	#surfaceUnconfirmed(n: number, opKey: string) {
+		if (this.#n !== n || this.status !== 'ready') return;
+		if (this.#win.pending.some((p) => p.op_key === opKey)) return;
+		const record = listPending(authStore.userId, n).find((r) => r.op_key === opKey);
+		if (!record) return;
+		this.#win.pending = [
+			...this.#win.pending,
+			{
+				op_key: record.op_key, body: record.body, status: 'unconfirmed',
+				...(record.reply_seq !== null ? { reply_to_seq: record.reply_seq } : {})
+			}
+		];
+		this.#publishAfterWrite();
 	}
 
 	#enqueue(current: () => boolean, run: () => Promise<void>): Promise<void> {
@@ -455,6 +491,19 @@ export class ChatThread {
 	}
 
 	async #post(n: number, opKey: string, body: string, replyToSeq?: number): Promise<SendOutcome> {
+		beginSend(opKey);
+		const userId = authStore.userId;
+		const ended = { unanswered: false };
+		try {
+			return await this.#postOnce(n, opKey, body, replyToSeq, ended);
+		} finally {
+			endSend(opKey);
+			// After the mark is gone, so a thread still loading lists the attempt itself.
+			if (ended.unanswered && userId) notifyUnconfirmed(userId, n, opKey);
+		}
+	}
+
+	async #postOnce(n: number, opKey: string, body: string, replyToSeq: number | undefined, ended: { unanswered: boolean }): Promise<SendOutcome> {
 		const current = this.#guard();
 		const win = this.#win;
 		const userId = authStore.userId;
@@ -462,10 +511,15 @@ export class ChatThread {
 		const refused = (outcome: SendOutcome): SendOutcome => {
 			if (!sameIdentity()) return 'stale';
 			removePending(userId, n, opKey);
-			if (!current()) {
+			// The sending composer can only take the text back while this thread still shows
+			// the conversation. Otherwise (closed, reopened, left, or the conversation was
+			// found missing, which unmounts the composer) it goes to the composer on screen
+			// now, or to the draft.
+			if (!current() || this.status !== 'ready') {
+				const reply = outcome === 'too_large' ? (replyToSeq ?? null) : null;
+				if (outcome !== 'not_started' && deliverRefusal(userId, n, body, outcome as LateOutcome, reply)) return 'stale';
 				const draft = getDraft(userId, n);
-				const reply = draft ? draft.replySeq : outcome === 'too_large' ? replyToSeq : null;
-				setDraft(userId, n, draft?.text ? `${body}\n${draft.text}` : body, reply);
+				setDraft(userId, n, draft?.text ? `${body}\n${draft.text}` : body, draft ? draft.replySeq : reply);
 				return 'stale';
 			}
 			win.discardPending(opKey);
@@ -495,7 +549,10 @@ export class ChatThread {
 			if (isReplyTargetDeletedError(err)) return refused('reply_deleted');
 			if (isReplyTargetNotFoundError(err)) return refused('reply_missing');
 			if (isRequestTooLargeError(err)) return refused('too_large');
-			if (!current()) return 'stale';
+			if (!current()) {
+				ended.unanswered = true; // the attempt stays stored; a thread open now has not shown it
+				return 'stale';
+			}
 			win.failPending(opKey);
 			this.#publishAfterWrite();
 			this.#settled();
@@ -530,12 +587,12 @@ export class ChatThread {
 
 	/**
 	 * Tell the server what was DISPLAYED: the newest confirmed seq in the window,
-	 * and only while the bottom sentinel is in view on a visible tab. Never marks
+	 * and only while the bottom sentinel is in view on a visible tab and the view is active. Never marks
 	 * locally on a failure; the next refresh or visibility change retries.
 	 */
 	tryMarkRead(): void {
 		const n = this.#n;
-		if (n === null || this.status !== 'ready' || !this.atBottom || this.#marking) return;
+		if (n === null || this.status !== 'ready' || !this.atBottom || !this.active || this.#marking) return;
 		if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
 		const seq = this.newestSeq;
 		if (seq <= this.#readSeq) return;
@@ -564,6 +621,7 @@ export class ChatThread {
 
 	dispose(): void {
 		this.#seq++;
+		this.#stopView();
 		this.#stopRoot();
 		this.#stopIdentity();
 	}

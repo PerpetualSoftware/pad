@@ -1,9 +1,10 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import { parseThreadNumber } from '$lib/stores/chatSurface.svelte';
 	import ChatThreadView from '$lib/components/chat/ChatThreadView.svelte';
 
 	let raw = $derived(page.params.n ?? '');
-	let n = $derived(/^[1-9][0-9]*$/.test(raw) ? Number(raw) : null);
+	let n = $derived(parseThreadNumber(raw));
 </script>
 
 <svelte:head>

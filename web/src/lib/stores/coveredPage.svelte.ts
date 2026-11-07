@@ -39,6 +39,10 @@ export const coveredPage = {
 	get active(): boolean {
 		return entries.length > 0;
 	},
+	/** How many overlays cover the page (the Chat drawer counts itself). */
+	get count(): number {
+		return entries.length;
+	},
 	/** True while a covering overlay needs the bottom nav to stay live. */
 	get keepsBottomNav(): boolean {
 		return entries.some((e) => e.keepBottomNav);

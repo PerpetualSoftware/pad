@@ -31,7 +31,7 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 }));
 vi.mock('$lib/stores/toast.svelte', () => ({ toastStore: { show: vi.fn() } }));
 vi.mock('$app/navigation', () => ({ goto: vi.fn() }));
-vi.mock('$app/state', () => ({ page: { url: new URL('http://localhost/console/billing') } }));
+vi.mock('$app/state', () => ({ page: { url: new URL('http://localhost/console/billing'), state: {}, shallow: null } }));
 
 import BillingPage from './+page.svelte';
 

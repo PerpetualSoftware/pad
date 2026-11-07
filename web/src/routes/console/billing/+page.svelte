@@ -7,6 +7,7 @@
 	import Button from '$lib/components/common/Button.svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
+	import { chatSurface } from '$lib/stores/chatSurface.svelte';
 	import { onMount, onDestroy } from 'svelte';
 	import { readUpgradeResume, clearUpgradeResume, type UpgradeResume } from '$lib/billing/upgradeResume';
 	import { portalErrorMessage } from '$lib/billing/portalError';
@@ -164,6 +165,9 @@
 
 	function clearQueryParam(name: string) {
 		if (typeof window === 'undefined') return;
+		// Under an open Chat the bar holds Chat's address, so the param would not be found: wait, then run
+		// against the real address (window.location, since a raw replace does not move page.url).
+		if (chatSurface.deferPageWrite(`${page.url.pathname}#qp-${name}`, () => clearQueryParam(name))) return;
 		const url = new URL(window.location.href);
 		if (url.searchParams.has(name)) {
 			url.searchParams.delete(name);

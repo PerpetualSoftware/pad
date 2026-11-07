@@ -7,6 +7,7 @@
 		utf8Bytes,
 		validateDraft
 	} from '$lib/chat/compose';
+	import { registerComposer, type LateOutcome } from '$lib/chat/composerRegistry';
 	import { getDraft, setDraft, clearDraft } from '$lib/chat/draftKeeper';
 	import { inputMode } from '$lib/chat/inputMode.svelte';
 	import type { AgentPresence } from '$lib/chat/presence';
@@ -82,8 +83,9 @@
 	}
 
 	/** A refused send's text comes back, ahead of anything typed since, with its notice. The page uses it for a refused Retry too (r7 M1). */
-	export function restore(body: string, outcome: Exclude<SendOutcome, 'sent' | 'failed' | 'stale'> | 'send_error') {
+	export function restore(body: string, outcome: LateOutcome | 'not_started' | 'send_error', replyToSeq: number | null = null) {
 		text = text ? `${body}\n${text}` : body;
+		if (replyToSeq !== null && replySeq === undefined) restoredReplySeq = replyToSeq;
 		if (outcome !== 'empty') notice = NOTICE[outcome];
 	}
 
@@ -100,6 +102,8 @@
 			text = draft.text;
 			restoredReplySeq = draft.replySeq;
 		}
+		// A refusal that outlives its sender (dock closed, conversation left and re-entered) lands here.
+		const unregister = registerComposer(owner, conversation, (body, outcome, reply) => restore(body, outcome, reply));
 		const stopViewport = watchKeyboardInset((px) => {
 			inset = px;
 			if (px > 0) inputMode.enterByTouch();
@@ -107,6 +111,7 @@
 		return () => {
 			saveDraft(text, replySeq);
 			destroyed = true;
+			unregister();
 			stopViewport();
 		};
 	});

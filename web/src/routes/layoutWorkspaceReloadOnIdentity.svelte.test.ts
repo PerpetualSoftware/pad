@@ -26,6 +26,7 @@ vi.mock('$lib/api/client', () => ({
 	// BUG-2983 added this seam; the layout calls it at module scope, so a mock
 	// without it throws before any assertion runs.
 	setIdentityProvider: () => {},
+	setReturnPathProvider: () => {},
 	setRateLimitHandler: () => {},
 	setDatabaseBusyHandler: () => {},
 	setNetworkUnreachableHandler: () => {},
@@ -51,6 +52,7 @@ vi.mock('$app/navigation', () => ({
 	goto: vi.fn(),
 	beforeNavigate: () => {},
 	afterNavigate: () => {},
+	onNavigate: () => {},
 	invalidateAll: vi.fn(),
 	pushState: vi.fn(),
 	replaceState: vi.fn(),
