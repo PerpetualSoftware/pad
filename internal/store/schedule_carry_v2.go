@@ -1,9 +1,11 @@
 package store
 
 import (
+	"cmp"
 	"database/sql"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"time"
 
@@ -203,7 +205,25 @@ func (s *Store) scheduleChangesQ(q Queryer, workspaceID, scheduleID string) ([]m
 		}
 		out = append(out, c)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	instants := make(map[string]time.Time, len(out))
+	for _, c := range out {
+		at, err := time.Parse(time.RFC3339Nano, c.RecordedAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse journal recorded_at: %w", err)
+		}
+		instants[c.ID] = at
+	}
+	// RFC3339Nano text does not sort chronologically within a second.
+	slices.SortFunc(out, func(a, b models.ScheduleChangeExport) int {
+		if order := instants[a.ID].Compare(instants[b.ID]); order != 0 {
+			return order
+		}
+		return cmp.Compare(a.ID, b.ID)
+	})
+	return out, nil
 }
 
 // restoreScheduleChangesTx maps only retained rows, so causal references never

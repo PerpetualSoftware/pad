@@ -341,13 +341,16 @@ func TestMissedRecordNoSnapshot(t *testing.T) {
 
 func TestTimingEditClearsOverrides(t *testing.T) {
 	for _, floating := range []bool{false, true} {
-		for _, edit := range []string{"start", "rule", "floating", "zone", "rdates", "exdates", "anchor", "lead"} {
+		for _, edit := range []string{"start", "end", "rule", "floating", "zone", "rdates", "exdates", "anchor", "lead", "noop"} {
 			t.Run(map[bool]string{false: "pinned", true: "floating"}[floating]+"/"+edit, func(t *testing.T) {
 				if floating && edit == "zone" {
 					t.Skip("floating schedules have no zone")
 				}
 				f := newSchedFixture(t)
 				in := dailyUTC
+				if edit == "end" {
+					in.Kind, in.Dtend = "window", "2026-10-30T10:00"
+				}
 				in.Floating = floating
 				if floating {
 					in.Tz = ""
@@ -364,6 +367,8 @@ func TestTimingEditClearsOverrides(t *testing.T) {
 				switch edit {
 				case "start":
 					upd.Dtstart = ptr("2026-11-01T09:00")
+				case "end":
+					upd.Dtend = ptr("2026-10-30T11:00")
 				case "rule":
 					upd.Rrule = ptr("FREQ=WEEKLY")
 				case "floating":
@@ -381,16 +386,18 @@ func TestTimingEditClearsOverrides(t *testing.T) {
 					upd.Anchor = ptr("completion")
 				case "lead":
 					upd.LeadMinutes = ptr(15)
+				case "noop":
+					upd.Rrule = sc.Rrule
 				}
 				f.update(t, upd)
 				want := 0
-				if edit == "lead" {
+				if edit == "lead" || edit == "noop" {
 					want = 1
 				}
 				if n := f.count(t, `SELECT COUNT(*) FROM schedule_occurrence_overrides WHERE schedule_id=?`, sc.ID); n != want {
 					t.Fatalf("overrides=%d, want %d", n, want)
 				}
-				if edit != "lead" {
+				if edit != "lead" && edit != "noop" {
 					entries := moveEntries(t, f, sc.ID)
 					e := entries[len(entries)-1]
 					if e.ChangeType != "update" || e.ReasonSource != "system" || e.Reason != "Occurrence overrides cleared" {
@@ -400,6 +407,29 @@ func TestTimingEditClearsOverrides(t *testing.T) {
 			})
 		}
 	}
+	t.Run("rollback", func(t *testing.T) {
+		f := newSchedFixture(t)
+		if f.s.dialect.Driver() != DriverSQLite {
+			t.Skip("SQLite fault injection")
+		}
+		sc := moveSchedule(t, f, "check", 0, "FREQ=DAILY")
+		f.mustResolve(t, f.item, moveInput(sc, "2026-10-31T10:00:00Z"), moveNow)
+		before := commitmentOldRows(t, f.s)
+		overrides, err := f.s.scheduleOverridesQ(f.s.db, f.ws.ID, sc.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		entries := moveEntries(t, f, sc.ID)
+		f.exec(t, `CREATE TRIGGER clear_overrides_fail BEFORE INSERT ON schedule_changes WHEN NEW.change_type='update' BEGIN SELECT CASE WHEN EXISTS (SELECT 1 FROM schedule_occurrence_overrides) THEN RAISE(ABORT,'overrides not cleared') ELSE RAISE(ABORT,'journal refused after clear') END; END`)
+		_, err = f.s.updateScheduleAt(f.ws.ID, f.item.ID, models.ScheduleUpdate{Floating: ptr(true)}, schedNow)
+		if err == nil || !strings.Contains(err.Error(), "journal refused after clear") {
+			t.Fatalf("fault did not follow clear: %v", err)
+		}
+		after, err := f.s.scheduleOverridesQ(f.s.db, f.ws.ID, sc.ID)
+		if err != nil || !reflect.DeepEqual(overrides, after) || !reflect.DeepEqual(before, commitmentOldRows(t, f.s)) || !reflect.DeepEqual(entries, moveEntries(t, f, sc.ID)) {
+			t.Fatal("failed timing edit persisted changes")
+		}
+	})
 }
 
 func TestHardDeadlineMoveStillRefused(t *testing.T) {

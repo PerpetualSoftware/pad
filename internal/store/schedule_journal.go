@@ -102,9 +102,13 @@ func (s *Store) scheduleSnapshotTx(tx *sql.Tx, id string) (string, error) {
 }
 
 func (s *Store) journalScheduleChangeTx(tx *sql.Tx, id, change, key, role, before, after, actor string) error {
+	return s.journalScheduleChangeReasonTx(tx, id, change, key, role, before, after, actor, "", "system")
+}
+
+func (s *Store) journalScheduleChangeReasonTx(tx *sql.Tx, id, change, key, role, before, after, actor, reason, source string) error {
 	changeID := newID()
-	_, err := tx.Exec(s.q(`INSERT INTO schedule_changes (id,workspace_id,item_id,schedule_id,occurrence_key,change_type,role,before_json,after_json,actor,root_change_id,recorded_at)
- SELECT ?,workspace_id,item_id,id,?,?,?,?,?,?,?,? FROM item_schedules WHERE id=?`), changeID, nilIfEmpty(key), change, nilIfEmpty(role), nilIfEmpty(before), nilIfEmpty(after), actor, changeID, nowNano(), id)
+	_, err := tx.Exec(s.q(`INSERT INTO schedule_changes (id,workspace_id,item_id,schedule_id,occurrence_key,change_type,role,before_json,after_json,actor,reason,reason_source,root_change_id,recorded_at)
+ SELECT ?,workspace_id,item_id,id,?,?,?,?,?,?,?,?,?,? FROM item_schedules WHERE id=?`), changeID, nilIfEmpty(key), change, nilIfEmpty(role), nilIfEmpty(before), nilIfEmpty(after), actor, reason, source, changeID, nowNano(), id)
 	if err != nil {
 		return fmt.Errorf("journal schedule change: %w", err)
 	}

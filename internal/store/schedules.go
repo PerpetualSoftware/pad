@@ -823,6 +823,18 @@ func (s *Store) updateScheduleAt(workspaceID, itemID string, upd models.Schedule
 			}
 		}
 	}
+	clearedOverrides := false
+	if timingEdit || (upd.Dtend != nil && dtend != deref(cur.Dtend)) {
+		result, err := tx.Exec(s.q(`DELETE FROM schedule_occurrence_overrides WHERE schedule_id=?`), cur.ID)
+		if err != nil {
+			return nil, fmt.Errorf("clear schedule overrides: %w", err)
+		}
+		n, err := result.RowsAffected()
+		if err != nil {
+			return nil, err
+		}
+		clearedOverrides = n > 0
+	}
 	if err := s.setLegacyRolesTx(tx, cur.ID, kind, spec.Start.String(), dtend); err != nil {
 		return nil, err
 	}
@@ -830,8 +842,12 @@ func (s *Store) updateScheduleAt(workspaceID, itemID string, upd models.Schedule
 	if err != nil {
 		return nil, err
 	}
-	if after != before {
-		if err := s.journalScheduleChangeTx(tx, cur.ID, "update", "", "", before, after, "system"); err != nil {
+	if after != before || clearedOverrides {
+		reason := ""
+		if clearedOverrides {
+			reason = "Occurrence overrides cleared"
+		}
+		if err := s.journalScheduleChangeReasonTx(tx, cur.ID, "update", "", "", before, after, "system", reason, "system"); err != nil {
 			return nil, err
 		}
 	}
