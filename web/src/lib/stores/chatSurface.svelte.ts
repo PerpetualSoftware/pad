@@ -134,13 +134,9 @@ let healWait = 0;
 type HealMark = { paths: string[] };
 const healing = new Set<HealMark>();
 const heldByHeal = (pathname: string) => [...healing].some((m) => m.paths.includes(pathname));
-// Bumped when a gesture proceeds (closeThen) and when a real navigation starts
-// (noteNavigation): a parked closeThen continuation fires only if neither happened since it
-// was parked. ownNavs holds one token per awaited flush-chain write: the navigation that
-// write issues is consumed by noteNavigation, so only navigations beyond the chain's own
-// (in whatever order they arrive) cancel the continuation parked behind the chain.
+// Bumped each time a gesture proceeds, and when a real navigation drops state: a parked
+// closeThen continuation fires only if neither happened since it was parked.
 let gestureGen = 0;
-const ownNavs = new Set<object>();
 
 /** Run a close's continuation; a throw is logged and does not strand the heals or the flush. */
 function runThen(then: (() => void) | null): void {
@@ -197,14 +193,7 @@ function flushDeferred(): Promise<unknown> | null {
 				console.error('[chatSurface] deferred write failed', e);
 				continue;
 			}
-			if (r) {
-				const tok = {};
-				ownNavs.add(tok);
-				return settledOrBounded(r).then(() => {
-					ownNavs.delete(tok);
-					return step();
-				});
-			}
+			if (r) return settledOrBounded(r).then(step);
 		}
 		flushing.delete(queue);
 		return null;
@@ -373,7 +362,10 @@ export const chatSurface = {
 	 * because that read may have started a navigation of its own.
 	 */
 	get traversing(): boolean {
-		return traversing();
+		const busy = traversing();
+		// An idle read is a gesture about to proceed: it cancels a continuation still parked.
+		if (!busy) gestureGen++;
+		return busy;
 	},
 
 	/** The history entries Chat has pushed on top of the page. */
@@ -499,13 +491,6 @@ export const chatSurface = {
 		return out ? `?${out}` : '';
 	},
 
-	/** A real (non-shallow) navigation started: it cancels a parked continuation unless it is a flush-chain write's own. */
-	noteNavigation(): void {
-		const own = ownNavs.values().next();
-		if (own.done) gestureGen++;
-		else ownNavs.delete(own.value);
-	},
-
 	/**
 	 * Drop held writes, the writes still queued in a flush, and queued heals made on any other path (a real navigation
 	 * away); null drops all.
@@ -558,7 +543,6 @@ export function __resetChatSurfaceForTests(): void {
 	healWait = 0;
 	healing.clear();
 	gestureGen = 0;
-	ownNavs.clear();
 	heals.length = 0;
 }
 

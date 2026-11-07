@@ -547,16 +547,6 @@ describe('a real navigation drops a deferred page write (onNavigate)', () => {
 		expect(run).toHaveBeenCalledTimes(1);
 	});
 
-	it('a non-shallow navigation notes a navigation; a shallow one does not', async () => {
-		render(ChatHost);
-		await settle();
-		const spy = vi.spyOn(chatSurface, 'noteNavigation');
-		registered()(nav('/alice/ws/tasks'));
-		expect(spy).toHaveBeenCalledTimes(1);
-		registered()(nav('/messages/4', true));
-		expect(spy).toHaveBeenCalledTimes(1);
-	});
-
 	it('a shallow navigation (Chat opening a thread) is ignored', async () => {
 		const run = deferOne();
 		render(ChatHost);
