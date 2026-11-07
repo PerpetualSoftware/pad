@@ -428,6 +428,12 @@ func (s *Store) CreateSchedule(workspaceID, itemID string, in models.ScheduleCre
 }
 
 func (s *Store) createScheduleAt(workspaceID, itemID string, in models.ScheduleCreate, nowT time.Time) (*models.ItemSchedule, error) {
+	return s.createScheduleRolesAt(workspaceID, itemID, in, nil, nowT)
+}
+
+// createScheduleRolesAt creates the schedule with the legacy roles derived from
+// its kind, or with native roles when roles is given.
+func (s *Store) createScheduleRolesAt(workspaceID, itemID string, in models.ScheduleCreate, roles *scheduleRoles, nowT time.Time) (*models.ItemSchedule, error) {
 	anchor, audience := in.Anchor, in.Audience
 	if anchor == "" {
 		anchor = "calendar"
@@ -511,7 +517,11 @@ func (s *Store) createScheduleAt(workspaceID, itemID string, in models.ScheduleC
 	if err := s.insertManagedReminderTx(tx, workspaceID, itemID, id, NormalizeInstant(arm.RemindAt)); err != nil {
 		return nil, err
 	}
-	if err := s.setLegacyRolesTx(tx, id, in.Kind, spec.Start.String(), in.Dtend); err != nil {
+	if roles != nil {
+		if err := s.writeNativeRolesTx(tx, id, *roles); err != nil {
+			return nil, err
+		}
+	} else if err := s.setLegacyRolesTx(tx, id, in.Kind, spec.Start.String(), in.Dtend); err != nil {
 		return nil, err
 	}
 	if err := s.journalScheduleAfterTx(tx, id, "create", "", "", "", "system"); err != nil {

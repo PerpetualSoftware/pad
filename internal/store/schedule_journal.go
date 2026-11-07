@@ -106,9 +106,19 @@ func (s *Store) journalScheduleChangeTx(tx *sql.Tx, id, change, key, role, befor
 }
 
 func (s *Store) journalScheduleChangeReasonTx(tx *sql.Tx, id, change, key, role, before, after, actor, reason, source string) error {
+	return s.journalScheduleChangeLineageTx(tx, id, change, key, role, before, after, actor, reason, source, "", "")
+}
+
+// journalScheduleChangeLineageTx writes a row that answers an earlier one: its
+// parent is parentID and its root is rootID. With both empty the row is its own
+// root and has no parent.
+func (s *Store) journalScheduleChangeLineageTx(tx *sql.Tx, id, change, key, role, before, after, actor, reason, source, parentID, rootID string) error {
 	changeID := newID()
-	_, err := tx.Exec(s.q(`INSERT INTO schedule_changes (id,workspace_id,item_id,schedule_id,occurrence_key,change_type,role,before_json,after_json,actor,reason,reason_source,root_change_id,recorded_at)
- SELECT ?,workspace_id,item_id,id,?,?,?,?,?,?,?,?,?,? FROM item_schedules WHERE id=?`), changeID, nilIfEmpty(key), change, nilIfEmpty(role), nilIfEmpty(before), nilIfEmpty(after), actor, reason, source, changeID, nowNano(), id)
+	if rootID == "" {
+		rootID = changeID
+	}
+	_, err := tx.Exec(s.q(`INSERT INTO schedule_changes (id,workspace_id,item_id,schedule_id,occurrence_key,change_type,role,before_json,after_json,actor,reason,reason_source,root_change_id,parent_change_id,recorded_at)
+ SELECT ?,workspace_id,item_id,id,?,?,?,?,?,?,?,?,?,?,? FROM item_schedules WHERE id=?`), changeID, nilIfEmpty(key), change, nilIfEmpty(role), nilIfEmpty(before), nilIfEmpty(after), actor, reason, source, rootID, nilIfEmpty(parentID), nowNano(), id)
 	if err != nil {
 		return fmt.Errorf("journal schedule change: %w", err)
 	}
