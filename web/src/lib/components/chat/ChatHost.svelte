@@ -5,9 +5,11 @@
 	import ChatInboxView from '$lib/components/chat/ChatInboxView.svelte';
 	import ChatThreadView from '$lib/components/chat/ChatThreadView.svelte';
 	import ChatOff from '$lib/components/chat/ChatOff.svelte';
+	import DockedSheet from '$lib/components/layout/DockedSheet.svelte';
+	import { useViewportFit } from '$lib/chat/viewportOwner.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { chatSetting } from '$lib/stores/chatSetting.svelte';
-	import { chatSurface } from '$lib/stores/chatSurface.svelte';
+	import { chatSurface, type ChatTarget } from '$lib/stores/chatSurface.svelte';
 	import { coveredPage } from '$lib/stores/coveredPage.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { topEscapePriority, ESCAPE_PRIORITY } from '$lib/stores/escapeStack';
@@ -19,6 +21,9 @@
 	// OUTSIDE every `inert` wrapper it causes. It renders only while a shallow
 	// Chat navigation is open (chatSurface), so a closed host has no inbox, no
 	// thread, no sentinel and no poller. The page underneath stays mounted.
+	//
+	// A phone (uiStore.isMobile) gets neither: the same body in a full-height DockedSheet
+	// above the bottom bar, which owns its own focus, Escape, cover and gestures.
 	//
 	// Wide enough: a 440px column beside the work (a labelled complementary
 	// region; the body gets --chat-dock-width and shrinks). Otherwise a right
@@ -54,12 +59,18 @@
 	const sidebarShown = $derived(
 		!uiStore.isMobile && uiStore.sidebarOpen && !page.url.pathname.startsWith('/console')
 	);
-	const docked = $derived(width - (sidebarShown ? sidebarPx : 0) >= DOCK_PX + MIN_CONTENT_PX);
-	const drawer = $derived(target !== null && !docked);
+	const phone = $derived(target !== null && uiStore.isMobile);
+	const docked = $derived(
+		!uiStore.isMobile && width - (sidebarShown ? sidebarPx : 0) >= DOCK_PX + MIN_CONTENT_PX
+	);
+	const drawer = $derived(target !== null && !docked && !uiStore.isMobile);
 
 	// Another overlay over the drawer (or over a dock) hides the thread: the
-	// drawer's own cover does not count against it.
-	const active = $derived(coveredPage.count <= (drawer ? 1 : 0));
+	// drawer's own cover does not count against it, nor does the phone sheet's.
+	const active = $derived(coveredPage.count <= (drawer || phone ? 1 : 0));
+
+	// The box to fit inside while the keyboard is up (null otherwise).
+	const fit = useViewportFit();
 
 	$effect(() => {
 		if (!target || !docked) return;
@@ -73,6 +84,14 @@
 		return coveredPage.enter({ keepBottomNav: false });
 	});
 
+	// The sheet put focus back on the opener; when that is gone (focus fell to <body>),
+	// the Chat slot of the bottom bar is the next best place.
+	function focusSlotIfLost() {
+		const at = document.activeElement;
+		if (at && at !== document.body && at.isConnected) return;
+		document.querySelector<HTMLElement>('[data-chat-slot]')?.focus({ preventScroll: true });
+	}
+
 	// Focus moves in on open and back to the invoker on close.
 	const focusReturn = createFocusReturn();
 	let wasOpen = false;
@@ -80,7 +99,15 @@
 	$effect(() => {
 		const isOpen = target !== null;
 		const view = target ? (target.kind === 'thread' ? `thread:${target.n}` : target.kind) : '';
+		const onPhone = uiStore.isMobile;
 		untrack(() => {
+			if (onPhone) {
+				// DockedSheet owns focus on a phone; only the fallback below is ours.
+				if (!isOpen && wasOpen) void tick().then(() => tick()).then(focusSlotIfLost);
+				wasOpen = isOpen;
+				shownView = view;
+				return;
+			}
 			if (isOpen && !wasOpen) {
 				focusReturn.save();
 				void tick().then(() => panelEl?.focus({ preventScroll: true }));
@@ -103,6 +130,16 @@
 	});
 	$effect(() => () => void tick().then(() => focusReturn.restore()));
 
+	// True when something else has spoken for this Escape: a control or an IME composition
+	// that already used it, or a layer inside the surface (the message menu, portaled to
+	// <body>) registered on the Escape stack. Page layers under the surface sit below the
+	// menu priority and do not count. Shared by the drawer and the phone sheet.
+	function escapeYields(e: KeyboardEvent): boolean {
+		if (e.defaultPrevented || e.isComposing) return true;
+		const front = topEscapePriority();
+		return front !== null && front >= ESCAPE_PRIORITY.menu;
+	}
+
 	function onKeydown(e: KeyboardEvent) {
 		if (!drawer || !panelEl) return;
 		if (e.key === 'Tab') {
@@ -121,17 +158,40 @@
 		// while it is registered on the Escape stack, and a control or an IME composition
 		// that already used it has spoken for it. Page layers under the drawer (the list
 		// marker, the pane) sit below the menu priority and do not count.
-		if (e.defaultPrevented || e.isComposing) return;
-		const front = topEscapePriority();
-		if (front !== null && front >= ESCAPE_PRIORITY.menu) return;
+		if (escapeYields(e)) return;
 		chatSurface.close();
 	}
 </script>
 
 <svelte:window onresize={measure} onkeydown={onKeydown} />
 
+{#snippet body(t: ChatTarget)}
+	{#if !chatSetting.enabled}
+		<button type="button" class="close-chat" onclick={() => chatSurface.close()}>Close Chat</button>
+		<ChatOff />
+	{:else if t.kind === 'inbox'}
+		<ChatInboxView variant="host" />
+	{:else}
+		<ChatThreadView n={t.kind === 'thread' ? t.n : null} variant="host" {active} />
+	{/if}
+{/snippet}
+
 <!-- The docked column sits beside the page; the global rule below makes room for it. -->
-{#if target}
+{#if target && uiStore.isMobile}
+	<DockedSheet
+		open
+		fill
+		ownScroller
+		label="Chat"
+		fit={fit.box}
+		escapeBlocked={escapeYields}
+		onclose={() => chatSurface.close()}
+	>
+		<div class="chat-body phone">
+			{@render body(target)}
+		</div>
+	</DockedSheet>
+{:else if target}
 	{#if drawer}
 		<!-- svelte-ignore a11y_click_events_have_key_events -->
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -149,14 +209,7 @@
 		tabindex="-1"
 	>
 		<div class="chat-body">
-			{#if !chatSetting.enabled}
-				<button type="button" class="close-chat" onclick={() => chatSurface.close()}>Close Chat</button>
-				<ChatOff />
-			{:else if target.kind === 'inbox'}
-				<ChatInboxView variant="host" />
-			{:else}
-				<ChatThreadView n={target.kind === 'thread' ? target.n : null} variant="host" {active} />
-			{/if}
+			{@render body(target)}
 		</div>
 	</div>
 {/if}
@@ -184,6 +237,10 @@
 	.chat-panel.drawer {
 		width: min(480px, 100vw);
 		box-shadow: var(--shadow-md);
+	}
+	/* Inside the phone sheet the bar below owns the bottom safe area. */
+	.chat-body.phone {
+		padding-bottom: var(--space-4);
 	}
 	.chat-backdrop {
 		position: fixed;
