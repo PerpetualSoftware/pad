@@ -325,7 +325,9 @@ func (s *Store) enqueueReminderNotificationTx(tx *sql.Tx, r *models.Reminder, it
 		stamp = *r.FiredAt // a snapshot with no stamp (never from the fire path)
 	}
 	if target != "" {
-		stamp = "target:" + target
+		// The armed fire instant joins the target: a repeated move to one target
+		// arms the same instant and pushes once, while a snooze arms a later one.
+		stamp = "target:" + target + ":" + r.RemindAt
 	}
 	// A managed row is re-armed in place for each occurrence, so the key names
 	// the occurrence as well as the arming: reminder:<id>:<occurrence_at>:<stamp>.

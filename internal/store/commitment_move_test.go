@@ -227,6 +227,27 @@ func TestPushOneShotPerTargetTime(t *testing.T) {
 	}
 }
 
+func TestSnoozeAfterFiredMovePushesAgain(t *testing.T) {
+	f := newSchedFixture(t)
+	u := f.user(t, "move-snooze-push@example.com", "UTC")
+	addDevice(t, f.s, u.ID)
+	f.assign(t, f.item.ID, u.ID)
+	sc := moveSchedule(t, f, "check", 0, "")
+	in := moveInput(sc, "2026-10-31T09:00:00Z")
+	f.mustResolve(t, f.item, in, moveNow)
+	f.fire(t, "2026-10-31T09:00:00Z")
+	if n := len(f.notifications(t, u.ID)); n != 1 {
+		t.Fatalf("after the moved fire: notifications=%d, want 1", n)
+	}
+	in.State, in.Until = "snooze", ptr(rt("2026-10-31T09:15:00Z"))
+	f.mustResolve(t, f.item, in, "2026-10-31T09:01:00Z")
+	f.fire(t, "2026-10-31T09:15:00Z")
+	f.fire(t, "2026-10-31T09:15:00Z")
+	if n := len(f.notifications(t, u.ID)); n != 2 {
+		t.Fatalf("after the snooze fire: notifications=%d, want 2", n)
+	}
+}
+
 func TestMoveFloatingAndPinnedArm(t *testing.T) {
 	for _, floating := range []bool{false, true} {
 		t.Run(map[bool]string{false: "pinned", true: "floating"}[floating], func(t *testing.T) {
