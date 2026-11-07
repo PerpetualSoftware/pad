@@ -2,7 +2,7 @@ import { test, expect } from './fixtures';
 import type { APIRequestContext } from '@playwright/test';
 
 /**
- * TASK-4186 PR A: the chat unread badge on the mobile bottom bar's You slot,
+ * TASK-4186 PR A / TASK-4315 PR 4: the chat unread badge on the mobile bottom bar's Chat slot,
  * on the REAL mobile-chromium project (Pixel 7). chat-entries.spec.ts fakes
  * mobile widths inside desktop-chromium; this one runs only on the phone
  * project. The badge is compared with GET /api/v1/me/chat/unread `total`.
@@ -38,7 +38,7 @@ async function unreadTotal(request: APIRequestContext, f: Fixture): Promise<numb
 
 const label = (total: number) => (total > 99 ? '99+' : String(total));
 
-test('the You slot badge matches the server, opens the sheet, and Chat lands on /messages', async ({
+test('the Chat slot badge matches the server and opens the Chat sheet; You keeps a Chat row', async ({
 	page,
 	request,
 	fixture
@@ -46,15 +46,17 @@ test('the You slot badge matches the server, opens the sheet, and Chat lands on 
 	test.skip(testInfo.project.name !== 'mobile-chromium', 'this spec targets the real phone project (Pixel 7)');
 	await seedUnread(request, fixture);
 	await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}`);
+	const chat = page.locator('.bottom-nav [data-chat-slot]');
 	const you = page.locator('.bottom-nav button.bn-item', { hasText: 'You' });
-	await expect(you).toBeVisible();
+	await expect(chat).toBeVisible();
+	await expect(you.locator('.unread-badge')).toHaveCount(0);
 
 	// Other specs share this admin's inbox, so the server total is re-read on each poll.
 	await expect
 		.poll(
 			async () => {
 				const total = await unreadTotal(request, fixture);
-				const badge = you.locator('.unread-badge');
+				const badge = chat.locator('.unread-badge');
 				const shown = (await badge.count()) ? ((await badge.first().textContent()) ?? '').trim() : '';
 				return shown === (total > 0 ? label(total) : '');
 			},
@@ -66,7 +68,10 @@ test('the You slot badge matches the server, opens the sheet, and Chat lands on 
 	const m = await page.locator('.bottom-nav').evaluate((e) => ({ sw: e.scrollWidth, cw: e.clientWidth }));
 	expect(m.sw, `.bottom-nav scrollWidth ${m.sw} > clientWidth ${m.cw}`).toBeLessThanOrEqual(m.cw);
 
+	// The You sheet keeps its own Chat row, and it opens the same sheet.
 	await you.click();
 	await page.locator('.rows a[href="/messages"]').click();
 	await page.waitForURL((u) => u.pathname === '/messages');
+	await expect(page.locator('.ds-panel[aria-label="Chat"]')).toBeVisible();
+	await expect(page.locator('.bottom-nav')).toBeVisible();
 });
