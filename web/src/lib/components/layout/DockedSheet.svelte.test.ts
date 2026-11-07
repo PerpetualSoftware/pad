@@ -433,3 +433,105 @@ describe('DockedSheet — pull down in the content (BUG-3386)', () => {
 		expect(onclose).not.toHaveBeenCalled();
 	});
 });
+
+// TASK-4315 PR 4: the phone Chat sheet opts into more of the shell. Every
+// option is off by default, so the other sheets are untouched.
+describe('DockedSheet opt-in options (phone Chat sheet)', () => {
+	const content = () => document.querySelector('.ds-content') as HTMLElement;
+
+	it('defaults: capped height, scrolling content, no fit box, content drag armed', async () => {
+		const onclose = vi.fn();
+		render(DockedSheet, { props: baseProps({ onclose }) });
+		await tick();
+		flushSync();
+		expect(panel().classList.contains('ds-fill')).toBe(false);
+		expect(content().classList.contains('ds-own-scroller')).toBe(false);
+		expect(panel().style.top).toBe('');
+		expect(panel().style.height).toBe('');
+		const c = content();
+		c.dispatchEvent(touch('touchstart', 100));
+		c.dispatchEvent(touch('touchmove', 150));
+		c.dispatchEvent(touch('touchmove', 300));
+		flushSync();
+		expect(panel().style.transform).not.toBe('');
+	});
+
+	it('fill: the panel takes the full available height', async () => {
+		render(DockedSheet, { props: baseProps({ fill: true }) });
+		await tick();
+		flushSync();
+		expect(panel().classList.contains('ds-fill')).toBe(true);
+	});
+
+	it('ownScroller: the content is a plain column and a content drag never moves the sheet', async () => {
+		const onclose = vi.fn();
+		render(DockedSheet, { props: baseProps({ onclose, ownScroller: true }) });
+		await tick();
+		flushSync();
+		expect(content().classList.contains('ds-own-scroller')).toBe(true);
+		const c = content();
+		c.dispatchEvent(touch('touchstart', 100));
+		c.dispatchEvent(touch('touchmove', 150));
+		c.dispatchEvent(touch('touchmove', 400));
+		flushSync();
+		expect(panel().style.transform).toBe('');
+		c.dispatchEvent(touch('touchend', 400));
+		expect(onclose).not.toHaveBeenCalled();
+	});
+
+	it('ownScroller: the grip still drags the sheet closed', async () => {
+		const onclose = vi.fn();
+		render(DockedSheet, { props: baseProps({ onclose, ownScroller: true }) });
+		await tick();
+		flushSync();
+		grip().dispatchEvent(touch('touchstart', 100));
+		grip().dispatchEvent(touch('touchmove', 300));
+		flushSync();
+		expect(panel().style.transform).toBe('translateY(200px)');
+		grip().dispatchEvent(touch('touchend', 300));
+		expect(onclose).toHaveBeenCalledTimes(1);
+	});
+
+	it('fit: the panel and backdrop take the box, bottom released', async () => {
+		render(DockedSheet, { props: baseProps({ fit: { top: 12, height: 300 } }) });
+		await tick();
+		flushSync();
+		expect(panel().style.top).toBe('12px');
+		expect(panel().style.height).toBe('300px');
+		expect(panel().style.bottom).toBe('auto');
+		const bd = document.querySelector('.ds-backdrop') as HTMLElement;
+		expect(bd.style.top).toBe('12px');
+		expect(bd.style.height).toBe('300px');
+		expect(bd.style.bottom).toBe('auto');
+	});
+
+	it('fit null: no inline geometry', async () => {
+		render(DockedSheet, { props: baseProps({ fit: null }) });
+		await tick();
+		flushSync();
+		expect(panel().style.top).toBe('');
+		expect(panel().style.bottom).toBe('');
+	});
+
+	it('escapeBlocked: Escape yields while it returns true, closes when it returns false', async () => {
+		const onclose = vi.fn();
+		let blocked = true;
+		render(DockedSheet, { props: baseProps({ onclose, escapeBlocked: () => blocked }) });
+		await tick();
+		flushSync();
+		window.dispatchEvent(escape());
+		expect(onclose).not.toHaveBeenCalled();
+		blocked = false;
+		window.dispatchEvent(escape());
+		expect(onclose).toHaveBeenCalledTimes(1);
+	});
+
+	it('without escapeBlocked, Escape closes as before', async () => {
+		const onclose = vi.fn();
+		render(DockedSheet, { props: baseProps({ onclose }) });
+		await tick();
+		flushSync();
+		window.dispatchEvent(escape());
+		expect(onclose).toHaveBeenCalledTimes(1);
+	});
+});

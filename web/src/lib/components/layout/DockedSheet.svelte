@@ -23,11 +23,23 @@
 		open,
 		onclose,
 		label = 'Menu',
+		fill = false,
+		ownScroller = false,
+		escapeBlocked,
+		fit = null,
 		children
 	}: {
 		open: boolean;
 		onclose: () => void;
 		label?: string;
+		/** Take the full available height (to the top safe area) instead of ~2/3. */
+		fill?: boolean;
+		/** The body scrolls itself: no content-drag dismiss; only the grip drags. */
+		ownScroller?: boolean;
+		/** True when a layer in front owns this Escape (the sheet then leaves it). */
+		escapeBlocked?: (e: KeyboardEvent) => boolean;
+		/** A viewport-owner box (keyboard up): panel and backdrop use it, bottom released. */
+		fit?: { top: number; height: number } | null;
 		children: Snippet;
 	} = $props();
 
@@ -221,6 +233,7 @@
 		// this line is exactly `blockedByFrontLayer()` as before — the empty-stack
 		// contract 2430 broke is kept intact.
 		if (blockedByFrontLayer(e)) return;
+		if (escapeBlocked?.(e)) return;
 		onclose();
 	}
 </script>
@@ -230,13 +243,24 @@
 {#if open}
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<div class="ds-backdrop" onclick={onclose} transition:fade={{ duration: 160 }}></div>
+	<div
+		class="ds-backdrop"
+		style:top={fit ? `${fit.top}px` : undefined}
+		style:height={fit ? `${fit.height}px` : undefined}
+		style:bottom={fit ? 'auto' : undefined}
+		onclick={onclose}
+		transition:fade={{ duration: 160 }}
+	></div>
 	<div
 		bind:this={panelEl}
 		class="ds-panel"
+		class:ds-fill={fill}
 		role="dialog"
 		aria-label={label}
 		tabindex="-1"
+		style:top={fit ? `${fit.top}px` : undefined}
+		style:height={fit ? `${fit.height}px` : undefined}
+		style:bottom={fit ? 'auto' : undefined}
 		style:transform={dragY ? `translateY(${dragY}px)` : undefined}
 		style:transition={dragging ? 'none' : undefined}
 		transition:fly={{ y: 360, duration: 240, easing: cubicOut }}
@@ -253,11 +277,12 @@
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div
 			class="ds-content"
+			class:ds-own-scroller={ownScroller}
 			bind:this={contentEl}
-			ontouchstart={onContentTouchStart}
-			ontouchmove={onContentTouchMove}
-			ontouchend={onContentTouchEnd}
-			ontouchcancel={onContentTouchEnd}
+			ontouchstart={ownScroller ? undefined : onContentTouchStart}
+			ontouchmove={ownScroller ? undefined : onContentTouchMove}
+			ontouchend={ownScroller ? undefined : onContentTouchEnd}
+			ontouchcancel={ownScroller ? undefined : onContentTouchEnd}
 		>
 			{@render children()}
 		</div>
@@ -290,6 +315,11 @@
 		box-shadow: 0 -16px 48px rgba(0, 0, 0, 0.45);
 		overscroll-behavior: contain;
 	}
+	/* Phone Chat: the full height above the bar, never under the top safe area. */
+	.ds-panel.ds-fill {
+		height: calc(100dvh - var(--bottom-nav-height) - env(safe-area-inset-bottom, 0px) - env(safe-area-inset-top, 0px));
+		max-height: none;
+	}
 	.ds-grip {
 		display: flex;
 		align-items: center;
@@ -315,6 +345,13 @@
 		padding: 0 0 var(--space-3);
 		flex: 1 1 auto;
 		min-height: 0;
+	}
+	/* The body owns its own scroller (a thread list), so the sheet only clips. */
+	.ds-content.ds-own-scroller {
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
+		padding: 0;
 	}
 	/* And no page pull-to-refresh at all while a sheet is open (BUG-3386):
 	   a drag on the backdrop, on the grip, or on a list too short to scroll
