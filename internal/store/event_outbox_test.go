@@ -1405,7 +1405,7 @@ func TestWriteOutboxTx_RejectsMismatchedPayloadFamily(t *testing.T) {
 // independent copy lands as this unit's first commit.
 func TestCanonicalEventsAreFullyDeclared(t *testing.T) {
 	t.Parallel()
-	// The events/1 set at SPEC-3 v1.7. Adding, removing or re-homing an entry
+	// The events/1 set at SPEC-3 v1.8. Adding, removing or re-homing an entry
 	// here is a CONTRACT CHANGE: update the spec version and the taxonomy's
 	// doc comment in the same commit.
 	want := map[string]struct {

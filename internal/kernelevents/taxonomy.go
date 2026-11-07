@@ -32,7 +32,7 @@
 // contract's shape, not running code.
 package kernelevents
 
-// Canonical event names — the events/1 set (SPEC-3 §Taxonomy, v1.7).
+// Canonical event names — the events/1 set (SPEC-3 §Taxonomy, v1.8).
 //
 // item.restored and item.bulk_updated were admitted in v1.1 during TASK-2658
 // recon: restore is a live first-class mutation whose silence would let an
@@ -43,6 +43,10 @@ package kernelevents
 // (IDEA-2641): it is the first canonical event with no user mutation behind
 // it — a scheduler tick produces it — which is why it needed a version to be
 // admitted in rather than arriving as a side effect of the feature.
+//
+// item.deadline_missed was admitted in v1.8 (TASK-4351): a scheduler tick
+// records it when a hard deadline passes unmet, an item event for the watch
+// stream that carries no notification.
 const (
 	// ItemCreated fires on item creation. Payload carries the post-create
 	// snapshot.

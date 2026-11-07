@@ -153,7 +153,9 @@ func (s *Store) deadlinePage(now time.Time, cursor *deadlineCandidate) ([]deadli
 			return `CASE WHEN ` + col + ` ~ '` + pgInstantShape + `' THEN CAST(EXTRACT(EPOCH FROM CAST(` + col + ` AS timestamp with time zone)) AS double precision) END`
 		}
 	}
-	// Invalid instants sort first so Go reports the row error and keeps scanning.
+	// An instant that fails the guard reads as NULL. When no other instant is
+	// available the row sorts first, so Go reports the row error and the scan
+	// goes on; when the schedule has a valid next_at the row is ordered by that.
 	approx := `COALESCE(` + epoch("o.value_at") + `,` + epoch("sc.next_at") + `+sc.deadline_days*86400.0+sc.deadline_secs,0.0)`
 	query := `WITH deadlines AS (SELECT ` + deadlineColumnsSQL + `,` + approx + ` AS approximate` + deadlineFromSQL + `)
  SELECT * FROM deadlines WHERE approximate<=?`
