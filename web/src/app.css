@@ -1155,6 +1155,11 @@ dialog.attachment-crop-modal::backdrop {
 	body.has-bottom-nav .main-content {
 		padding-bottom: calc(var(--bottom-nav-height) + env(safe-area-inset-bottom, 0px));
 	}
+	/* Pages with no app shell (the console, a standalone /messages) get the compact
+	   GlobalBottomBar (TASK-4315): the document keeps room for it. */
+	body.has-bottom-nav:not(:has(.main-content)) {
+		padding-bottom: calc(var(--bottom-nav-height) + env(safe-area-inset-bottom, 0px));
+	}
 	/*
 		Contextual top bar on detail screens (MobileContextBar, PLAN-1694
 		Phase 2). It's position: fixed; top: 0 and toggles body.has-context-bar

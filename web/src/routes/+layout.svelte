@@ -28,6 +28,7 @@
 	import Sidebar from '$lib/components/layout/Sidebar.svelte';
 	import TopBar from '$lib/components/layout/TopBar.svelte';
 	import ChatHost from '$lib/components/chat/ChatHost.svelte';
+	import GlobalBottomBar from '$lib/components/layout/GlobalBottomBar.svelte';
 	import ChatButton from '$lib/components/chat/ChatButton.svelte';
 	import CommandPalette from '$lib/components/search/CommandPalette.svelte';
 	import ToastContainer from '$lib/components/common/ToastContainer.svelte';
@@ -446,6 +447,8 @@
 		{@render children()}
 	</div>
 	<ChatHost />
+	<!-- The compact phone bar: a sibling of the host, outside the inert wrapper above, so it stays live under the Chat sheet. -->
+	<GlobalBottomBar />
 	<CreateWorkspaceModal
 		onWorkspaceCreated={(ws) => uiStore.requestConnectAfterNavigate(ws.slug)}
 	/>
@@ -524,13 +527,21 @@
 					</svg>
 				</button>
 			{/if}
-			<main class="main-content" inert={coveredPage.active && !coveredPage.keepsBottomNav}>
+			<!--
+				A sheet that keeps the bottom nav live leaves <main> live only inside a
+				workspace, where BottomNav is in it. Elsewhere the bar is GlobalBottomBar,
+				mounted outside <main>, so <main> goes inert like any covered page.
+			-->
+			<main class="main-content" inert={coveredPage.active && !(coveredPage.keepsBottomNav && inWorkspace)}>
 				{@render children()}
 			</main>
 		</div>
 	</div>
 
 	<ChatHost />
+	{#if !inWorkspace}
+		<GlobalBottomBar />
+	{/if}
 	<CommandPalette />
 	<!--
 		Stage the Connect-modal auto-open signal (PLAN-1519 / TASK-1526)
