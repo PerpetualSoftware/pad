@@ -16,6 +16,8 @@
 	let loading = $state(true);
 	let error = $state('');
 	let retrying = $state(false);
+	// Plain let: read once by the error node's mount action, never rendered.
+	let refocusRetry = false;
 
 	let ownedWorkspaces = $derived(
 		workspaces.filter((w) => w.owner_id === authStore.userId)
@@ -46,6 +48,7 @@
 
 	async function loadWorkspaces() {
 		retrying = !!error;
+		refocusRetry = retrying;
 		loading = true;
 		error = '';
 		try {
@@ -56,6 +59,15 @@
 			loading = false;
 			retrying = false;
 		}
+	}
+
+	// A retry swaps the Retry button for a disabled one and back, so the
+	// keyboard user's focus falls to the page. When the error node comes back
+	// after a retry, put focus on its Retry button (BUG-4342).
+	function focusRetryAfterRetry(node: HTMLElement) {
+		if (!refocusRetry) return;
+		refocusRetry = false;
+		node.querySelector('button')?.focus();
 	}
 
 	function workspaceUrl(ws: Workspace): string {
@@ -86,7 +98,7 @@
 		</div>
 	{:else if error}
 		<!-- A separate node from the retrying one: a role added to an existing node is often not announced. -->
-		<div class="error-msg" role="alert">
+		<div class="error-msg" role="alert" use:focusRetryAfterRetry>
 			<h2>Couldn’t load your workspaces.</h2>
 			<p>Check your connection, then try again.</p>
 			<Button variant="secondary" onclick={loadWorkspaces}>Retry</Button>

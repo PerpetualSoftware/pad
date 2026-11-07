@@ -138,6 +138,20 @@
 		}
 	});
 
+	// The startup banner prints the whole setup URL (`.../setup#token=<TOKEN>`),
+	// never a bare token, so the paste step takes either: a pasted URL yields
+	// the value after `token=` in its fragment, anything else is the token
+	// itself. Decoded the same way as the fragment read at init (BUG-4342).
+	function tokenFromPaste(pasted: string): string {
+		const match = /^[a-z][a-z0-9+.-]*:\/\/[^\s#]*#(?:[^\s]*&)?token=([^\s&]*)/i.exec(pasted);
+		if (!match) return pasted;
+		try {
+			return decodeURIComponent(match[1]);
+		} catch {
+			return match[1];
+		}
+	}
+
 	function handlePasteSubmit() {
 		error = '';
 		const trimmed = pastedToken.trim();
@@ -145,7 +159,7 @@
 			error = 'Please paste your bootstrap token.';
 			return;
 		}
-		token = trimmed;
+		token = tokenFromPaste(trimmed);
 		pastedToken = '';
 	}
 

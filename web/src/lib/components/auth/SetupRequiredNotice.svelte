@@ -90,6 +90,14 @@
 		gap: var(--space-4);
 	}
 
+	h2 {
+		margin: 0;
+		color: var(--text-primary);
+		font-size: 1.1rem;
+		font-weight: 600;
+		line-height: 1.3;
+	}
+
 	.subtitle {
 		color: var(--text-muted);
 		font-size: 0.95rem;
