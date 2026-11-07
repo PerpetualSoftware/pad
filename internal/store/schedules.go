@@ -824,7 +824,7 @@ func (s *Store) updateScheduleAt(workspaceID, itemID string, upd models.Schedule
 		}
 	}
 	clearedOverrides := false
-	if timingEdit || (upd.Dtend != nil && dtend != deref(cur.Dtend)) {
+	if timingEdit {
 		result, err := tx.Exec(s.q(`DELETE FROM schedule_occurrence_overrides WHERE schedule_id=?`), cur.ID)
 		if err != nil {
 			return nil, fmt.Errorf("clear schedule overrides: %w", err)

@@ -248,6 +248,20 @@ func TestSnoozeAfterFiredMovePushesAgain(t *testing.T) {
 	}
 }
 
+func TestWindowEndEditKeepsMovedTargetAndReminder(t *testing.T) {
+	f := newSchedFixture(t)
+	sc := f.create(t, models.ScheduleCreate{Kind: "window", Dtstart: "2026-10-30T09:00", Dtend: "2026-10-30T10:00", Tz: "UTC"})
+	f.mustResolve(t, f.item, moveInput(sc, "2026-10-31T10:00:00Z"), moveNow)
+	f.update(t, models.ScheduleUpdate{Dtend: ptr("2026-10-30T11:00")})
+	if n := f.count(t, `SELECT COUNT(*) FROM schedule_occurrence_overrides WHERE schedule_id=? AND role='target'`, sc.ID); n != 1 {
+		t.Fatalf("the end edit dropped the moved target row: %d", n)
+	}
+	if n := f.count(t, `SELECT COUNT(*) FROM item_schedules WHERE id=? AND next_override_at IS NOT NULL`, sc.ID); n != 1 {
+		t.Fatal("the end edit cleared the stored moved target")
+	}
+	assertMoveArm(t, f, sc, "2026-10-31T10:00:00Z")
+}
+
 func TestMoveFloatingAndPinnedArm(t *testing.T) {
 	for _, floating := range []bool{false, true} {
 		t.Run(map[bool]string{false: "pinned", true: "floating"}[floating], func(t *testing.T) {
@@ -412,13 +426,13 @@ func TestTimingEditClearsOverrides(t *testing.T) {
 				}
 				f.update(t, upd)
 				want := 0
-				if edit == "lead" || edit == "noop" {
+				if edit == "lead" || edit == "noop" || edit == "end" {
 					want = 1
 				}
 				if n := f.count(t, `SELECT COUNT(*) FROM schedule_occurrence_overrides WHERE schedule_id=?`, sc.ID); n != want {
 					t.Fatalf("overrides=%d, want %d", n, want)
 				}
-				if edit != "lead" && edit != "noop" {
+				if edit != "lead" && edit != "noop" && edit != "end" {
 					entries := moveEntries(t, f, sc.ID)
 					e := entries[len(entries)-1]
 					if e.ChangeType != "update" || e.ReasonSource != "system" || e.Reason != "Occurrence overrides cleared" {
