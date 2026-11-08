@@ -2,9 +2,9 @@ name: Nix
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'release-*']
   pull_request:
-    branches: [main]
+    branches: [main, 'release-*']
 
 concurrency:
   # PR runs share a group per ref and supersede each other — a newer push to the
