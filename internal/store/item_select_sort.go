@@ -38,12 +38,11 @@ type selectSortRank struct {
 // selectSortKeys are the fields whose select values rank by PriorityRank.
 func isRankedPriorityKey(key string) bool { return key == "priority" || key == "severity" }
 
-// selectSortRanks returns the rank table of every select field the sort
-// names, keyed by field key. It reads the collections only when the sort
-// names a non-builtin field.
-func (s *Store) selectSortRanks(workspaceID string, params models.ItemListParams) (map[string]selectSortRank, error) {
+// sortFieldKeys is the set of field keys a sort names, leaving out the
+// built-in columns and any key a field name cannot be.
+func sortFieldKeys(sort string) map[string]bool {
 	keys := map[string]bool{}
-	for _, seg := range strings.Split(params.Sort, ",") {
+	for _, seg := range strings.Split(sort, ",") {
 		col := strings.TrimSpace(strings.SplitN(seg, ":", 2)[0])
 		switch col {
 		case "", "title", "created_at", "updated_at", "sort_order", "_num", "_id":
@@ -53,6 +52,14 @@ func (s *Store) selectSortRanks(workspaceID string, params models.ItemListParams
 			}
 		}
 	}
+	return keys
+}
+
+// selectSortRanks returns the rank table of every select field the sort
+// names, keyed by field key. It reads the collections only when the sort
+// names a non-builtin field.
+func (s *Store) selectSortRanks(workspaceID string, params models.ItemListParams) (map[string]selectSortRank, error) {
+	keys := sortFieldKeys(params.Sort)
 	if len(keys) == 0 {
 		return nil, nil
 	}

@@ -173,3 +173,24 @@ func TestBUG4400_NonSelectCollectionKeepsNumericOrder(t *testing.T) {
 		t.Errorf("asc: %v, want %v", got, want)
 	}
 }
+
+// A field sort reads the collection schemas through the pool, so ListItemsQ
+// refuses it on a snapshot executor instead of mixing the two (Luna r2h).
+func TestBUG4400_ListItemsQRefusesFieldSortOnSnapshot(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "BUG-4400 snapshot")
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := s.ListItemsQ(tx, ws.ID, models.ItemListParams{Sort: "priority:desc"}); err == nil {
+		t.Errorf("a field sort on a transaction executor was accepted")
+	}
+	if _, err := s.ListItemsQ(tx, ws.ID, models.ItemListParams{Sort: "title:asc"}); err != nil {
+		t.Errorf("a built-in sort on a transaction executor was refused: %v", err)
+	}
+	if _, err := s.ListItemsQ(s.db, ws.ID, models.ItemListParams{Sort: "priority:desc"}); err != nil {
+		t.Errorf("a field sort on the pool was refused: %v", err)
+	}
+}

@@ -1281,6 +1281,12 @@ func (s *Store) ListItemsQ(q Queryer, workspaceID string, params models.ItemList
 	if q != Queryer(s.db) && namesCompleted(params) {
 		return nil, fmt.Errorf("ListItemsQ: completed filters need the live pool, not a snapshot executor")
 	}
+	// A sort on a field ranks select values from the collection schemas, read
+	// through the pool (BUG-4400): on a snapshot executor that would pair the
+	// snapshot's items with live schemas, so it is refused like `completed`.
+	if q != Queryer(s.db) && len(sortFieldKeys(params.Sort)) > 0 {
+		return nil, fmt.Errorf("ListItemsQ: a sort on a field needs the live pool, not a snapshot executor")
+	}
 	return s.listItemsQ(q, workspaceID, params)
 }
 
