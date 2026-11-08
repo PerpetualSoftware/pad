@@ -9,10 +9,9 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// The push queue's enqueue side (TASK-3937). Every function here runs on the
-// CALLER's transaction, so a notification commits with the write that caused
-// it or not at all. The settings a recipient has chosen are the dispatcher's
-// to apply, not the enqueue's.
+// The push queue enqueue side (TASK-3937). Transaction helpers commit a
+// notification with the write that caused it; a refused renegotiation opens
+// its own short transaction. Recipient settings are applied at dispatch.
 //
 // A row is written ONLY for a user with at least one push_devices row (the
 // EXISTS in enqueueNotificationsTx), so until device registration lands
@@ -21,12 +20,9 @@ import (
 // calls the enqueue owed: merged migrations are immutable, so this comment,
 // not that one, is the current description.
 //
-// Recipients are NOT access-checked here. Removing a member leaves them an
-// item's created_by and possibly its assignee, so a row can be written for
-// someone who can no longer see the item. Once the dispatcher is wired
-// into the server (TASK-3939 part B2c; B1 and B2a only build it), it re-checks
-// current membership and item visibility at send and skips the row: that is
-// the privacy gate.
+// Most recipients are not access-checked by enqueueNotificationsTx: the
+// dispatcher re-checks membership and item visibility before sending. Mention,
+// unassigned and renegotiation_refused notices also check visibility at enqueue.
 //
 // @mention notifications (TASK-3946) are built from the users
 // reindexCommentMentionsTx newly indexed, at the comment create and edit
@@ -34,11 +30,13 @@ import (
 // copies no comments) or the backfill.
 
 const (
-	notifyAssigned = "assigned"
-	notifyComment  = "comment"
-	notifyReply    = "reply"
-	notifyReminder = "reminder"
-	notifyMention  = "mention"
+	notifyAssigned             = "assigned"
+	notifyUnassigned           = "unassigned"
+	notifyRenegotiationRefused = "renegotiation_refused"
+	notifyComment              = "comment"
+	notifyReply                = "reply"
+	notifyReminder             = "reminder"
+	notifyMention              = "mention"
 )
 
 // notifyFact is one notification owed to one user.
@@ -112,6 +110,85 @@ func (s *Store) enqueueAssignedNotificationTx(tx *sql.Tx, item *models.Item, toU
 		ActorUserID: actorUserID, ActorIsAgent: actorIsAgent,
 		DedupeKey: fmt.Sprintf("assigned:%s:%d", item.ID, item.Seq),
 	}})
+}
+
+// notificationRecipientVisibleTx applies the same bearer visibility rule as
+// mentions and dispatch: membership and grants, never a platform admin bypass.
+func (s *Store) notificationRecipientVisibleTx(tx *sql.Tx, item *models.Item, userID string) (bool, error) {
+	user, err := s.GetUserQ(tx, userID)
+	if err != nil {
+		return false, err
+	}
+	// The resolver returns nil/nil for a missing user as well as full access.
+	if user == nil {
+		return false, nil
+	}
+	full, granted, err := s.ResolveBacklinksVisibilityQ(tx, userID, item.WorkspaceID, false, true)
+	if err != nil {
+		return false, fmt.Errorf("resolve notification visibility: %w", err)
+	}
+	return (full == nil && granted == nil) || slices.Contains(full, item.CollectionID) || slices.Contains(granted, item.ID), nil
+}
+
+// enqueueUnassignedNotificationTx tells the previous assignee the item left
+// them. The journal id identifies a commitment change; other items use the seq.
+func (s *Store) enqueueUnassignedNotificationTx(tx *sql.Tx, item *models.Item, fromUser, journalID, actorUserID string, actorIsAgent bool) error {
+	if fromUser == "" || fromUser == actorUserID {
+		return nil
+	}
+	visible, err := s.notificationRecipientVisibleTx(tx, item, fromUser)
+	if err != nil || !visible {
+		return err
+	}
+	key := "unassigned:" + journalID
+	if journalID == "" {
+		key = fmt.Sprintf("unassigned:%s:%d", item.ID, item.Seq)
+	}
+	return s.enqueueNotificationsTx(tx, []notifyFact{{
+		UserID: fromUser, WorkspaceID: item.WorkspaceID, ItemID: item.ID, Kind: notifyUnassigned,
+		ActorUserID: actorUserID, ActorIsAgent: actorIsAgent, DedupeKey: key,
+	}})
+}
+
+// EnqueueRenegotiationRefusedNotification tells the current assignee about a
+// refused attempt, once per item, acting user and UTC day. Assignment is read
+// under the same item and workspace pin held through visibility and enqueue.
+func (s *Store) EnqueueRenegotiationRefusedNotification(workspaceID, itemID, actorUserID string, actorIsAgent bool) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	lock := ""
+	if s.dialect.Driver() == DriverPostgres {
+		lock = " FOR NO KEY UPDATE OF i, w"
+	}
+	item := &models.Item{ID: itemID, WorkspaceID: workspaceID}
+	var assigned sql.NullString
+	err = tx.QueryRow(s.q(`SELECT i.collection_id, i.assigned_user_id FROM items i
+        JOIN workspaces w ON w.id=i.workspace_id
+        WHERE i.id=? AND i.workspace_id=? AND i.deleted_at IS NULL AND w.deleted_at IS NULL`+lock), itemID, workspaceID).Scan(&item.CollectionID, &assigned)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("pin refusal notification item: %w", err)
+	}
+	if assigned.String == "" || assigned.String == actorUserID {
+		return nil
+	}
+	visible, err := s.notificationRecipientVisibleTx(tx, item, assigned.String)
+	if err != nil || !visible {
+		return err
+	}
+	if err := s.enqueueNotificationsTx(tx, []notifyFact{{
+		UserID: assigned.String, WorkspaceID: workspaceID, ItemID: itemID, Kind: notifyRenegotiationRefused,
+		ActorUserID: actorUserID, ActorIsAgent: actorIsAgent,
+		DedupeKey: "reneg-refused:" + itemID + ":" + actorUserID + ":" + now()[:10],
+	}}); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // commentRecipients collects who a comment concerns, first kind wins. It is a

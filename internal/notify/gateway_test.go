@@ -198,12 +198,14 @@ func TestGateway_ErrorsNeverCarrySecretOrToken(t *testing.T) {
 
 func TestBody_FixedAndContentFree(t *testing.T) {
 	want := map[string]string{
-		KindAssigned: "You were assigned an item",
-		KindComment:  "New comment on your item",
-		KindReply:    "New reply to your comment",
-		KindReminder: "Reminder due",
-		KindMention:  "You were mentioned",
-		KindSummary:  "You have 7 new notifications",
+		KindAssigned:             "You were assigned an item",
+		KindUnassigned:           "You were unassigned from an item",
+		KindRenegotiationRefused: "A deadline change on your item was refused",
+		KindComment:              "New comment on your item",
+		KindReply:                "New reply to your comment",
+		KindReminder:             "Reminder due",
+		KindMention:              "You were mentioned",
+		KindSummary:              "You have 7 new notifications",
 	}
 	for kind, body := range want {
 		m, ok := NewMessage("m0", "ios", "t", kind, "nid-1", "cid-1", 7)

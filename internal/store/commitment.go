@@ -429,14 +429,21 @@ func (s *Store) recordOnTimeCorrectionTx(tx *sql.Tx, sc *models.ItemSchedule, ke
 // item's native schedule with a deadline. It is ONE statement that selects the
 // schedule and inserts nothing when the item has none, so an item with no such
 // schedule pays that one lookup and no write; UpdateItem calls it only when the
-// assignee changed.
-func (s *Store) journalAssigneeChangeTx(tx *sql.Tx, itemID, from, to string) error {
+// assignee changed. It returns the inserted id, or empty when none was written.
+func (s *Store) journalAssigneeChangeTx(tx *sql.Tx, itemID, from, to string) (string, error) {
 	changeID := newID()
-	_, err := tx.Exec(s.q(`INSERT INTO schedule_changes (id,workspace_id,item_id,schedule_id,change_type,actor,reason,reason_source,root_change_id,recorded_at)
+	res, err := tx.Exec(s.q(`INSERT INTO schedule_changes (id,workspace_id,item_id,schedule_id,change_type,actor,reason,reason_source,root_change_id,recorded_at)
  SELECT ?,workspace_id,item_id,id,'update','system',?,'system',?,? FROM item_schedules WHERE item_id=? AND roles_origin='native' AND deadline_days IS NOT NULL`),
 		changeID, "Assignee changed from "+from+" to "+to, changeID, nowNano(), itemID)
 	if err != nil {
-		return fmt.Errorf("journal assignee change: %w", err)
+		return "", fmt.Errorf("journal assignee change: %w", err)
 	}
-	return nil
+	n, err := res.RowsAffected()
+	if err != nil {
+		return "", fmt.Errorf("journal assignee change rows: %w", err)
+	}
+	if n == 0 {
+		return "", nil
+	}
+	return changeID, nil
 }

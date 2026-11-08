@@ -9,7 +9,7 @@ import (
 )
 
 // The push dispatcher's privacy gates (TASK-3939 part B1). The enqueue writes
-// a row for anyone with a device and checks nothing, so THIS is where a row
+// some rows with only a device check, so this is where every row
 // stops being about something its recipient may no longer see. A row that
 // fails a gate is skipped with a recorded reason and never reaches the
 // gateway. A gate that cannot be evaluated is not a denial: the caller
@@ -23,6 +23,7 @@ const (
 	skipWorkspaceGone  = "workspace_gone"
 	skipNotVisible     = "not_visible"
 	skipNoLongerAssign = "no_longer_assigned"
+	skipAssignedAgain  = "assigned_again"
 	skipCommentGone    = "comment_gone"
 	skipSettingOff     = "setting_off"
 	skipAgentOff       = "agent_activity_off"
@@ -133,9 +134,13 @@ func (s *Server) notificationAccess(c *pushGateCache, n store.Notification) (ite
 	}
 
 	switch n.Kind {
-	case notify.KindAssigned:
+	case notify.KindAssigned, notify.KindRenegotiationRefused:
 		if item.AssignedUserID == nil || *item.AssignedUserID != n.UserID {
 			return nil, skipNoLongerAssign, nil
+		}
+	case notify.KindUnassigned:
+		if item.AssignedUserID != nil && *item.AssignedUserID == n.UserID {
+			return nil, skipAssignedAgain, nil
 		}
 	case notify.KindComment, notify.KindReply, notify.KindMention:
 		cm, ok := c.comments[n.CommentID]
@@ -159,7 +164,7 @@ func (s *Server) notificationAccess(c *pushGateCache, n store.Notification) (ite
 func kindEnabled(set models.NotificationSettings, n store.Notification) (reason string) {
 	var on bool
 	switch n.Kind {
-	case notify.KindAssigned:
+	case notify.KindAssigned, notify.KindUnassigned, notify.KindRenegotiationRefused:
 		on = set.NotifyAssigned
 	case notify.KindComment:
 		on = set.NotifyComments

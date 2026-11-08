@@ -2,16 +2,18 @@ package notify
 
 import "fmt"
 
-// Notification kinds as the gateway carries them in data.kind. The five
+// Notification kinds as the gateway carries them in data.kind. The
 // per-event kinds are user_notifications.kind; KindSummary is the one push
 // that stands for several.
 const (
-	KindAssigned = "assigned"
-	KindComment  = "comment"
-	KindReply    = "reply"
-	KindReminder = "reminder"
-	KindMention  = "mention"
-	KindSummary  = "summary"
+	KindAssigned             = "assigned"
+	KindUnassigned           = "unassigned"
+	KindRenegotiationRefused = "renegotiation_refused"
+	KindComment              = "comment"
+	KindReply                = "reply"
+	KindReminder             = "reminder"
+	KindMention              = "mention"
+	KindSummary              = "summary"
 )
 
 // Title is the fixed title of every push.
@@ -34,6 +36,10 @@ func Text(kind string, count int) (body string, ok bool) {
 	switch kind {
 	case KindAssigned:
 		return "You were assigned an item", true
+	case KindUnassigned:
+		return "You were unassigned from an item", true
+	case KindRenegotiationRefused:
+		return "A deadline change on your item was refused", true
 	case KindComment:
 		return "New comment on your item", true
 	case KindReply:

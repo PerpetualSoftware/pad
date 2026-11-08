@@ -487,7 +487,7 @@ type tickWarn struct{ unavailable, badRequest bool }
 // kindPriority breaks a created_at tie between rows of one group, so the kind
 // of a mixed group is deterministic (ids are random).
 var kindPriority = map[string]int{
-	notify.KindReminder: 0, notify.KindComment: 1, notify.KindAssigned: 2, notify.KindReply: 3, notify.KindMention: 4,
+	notify.KindReminder: 0, notify.KindComment: 1, notify.KindAssigned: 2, notify.KindReply: 3, notify.KindMention: 4, notify.KindUnassigned: 5, notify.KindRenegotiationRefused: 6,
 }
 
 // runPushDispatchTick is one pass. ctx is the shutdown signal.
