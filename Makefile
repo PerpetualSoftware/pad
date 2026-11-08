@@ -124,6 +124,13 @@ test-nix-hash:
 #   docker compose -p <project> down -v
 # From inside the worktree itself, `make test-pg-project` prints the name and
 # `make test-pg-down` does it for you.
+# internal/server runs only the tests that touch PostgreSQL (TASK-4402): its
+# `testServer` is SQLite even here, so the other ~3,200 tests would only run the
+# SQLite suite a second time. scripts/pg-test-run.py names them (a test, or a
+# function it calls, uses bothBackends / testServerPostgres / a PostgreSQL
+# fixture); TEST_PG_FULL_SERVER=1 runs the whole package. CI's PostgreSQL jobs
+# do not use this target: they set PAD_TEST_POSTGRES_URL themselves and run
+# every package in full.
 # TEST_PG_PKGS narrows the run. Defaults to everything, which is what a gate
 # wants; a narrower value is for checking this target's own plumbing (e.g. the
 # concurrency acceptance) without two full-suite runs. A gate leg reported from
@@ -192,8 +199,25 @@ test-pg:
 		exit 1; \
 	fi; \
 	echo "test-pg: Postgres on 127.0.0.1:$$port (project $(TEST_PG_PROJECT))"; \
-	PAD_TEST_POSTGRES_URL="$$url" go test -timeout=45m $(TEST_PG_PKGS) -v -count=1; \
-	EXIT_CODE=$$?; \
+	srv=github.com/PerpetualSoftware/pad/internal/server; \
+	pkgs=$$(go list $(TEST_PG_PKGS)); \
+	run=""; \
+	if [ -z "$(TEST_PG_FULL_SERVER)" ] && printf '%s\n' "$$pkgs" | grep -qx "$$srv"; then \
+		run=$$(python3 scripts/pg-test-run.py internal/server) || run=""; \
+	fi; \
+	if [ -n "$$run" ]; then \
+		echo "test-pg: internal/server runs only the tests that touch PostgreSQL (TEST_PG_FULL_SERVER=1 runs the whole package)"; \
+		rest=$$(printf '%s\n' "$$pkgs" | grep -vx "$$srv"); \
+		EXIT_CODE=0; \
+		if [ -n "$$rest" ]; then \
+			PAD_TEST_POSTGRES_URL="$$url" go test -timeout=45m $$rest -v -count=1; EXIT_CODE=$$?; \
+		fi; \
+		PAD_TEST_POSTGRES_URL="$$url" go test -timeout=45m "$$srv" -run "$$run" -v -count=1; srv_rc=$$?; \
+		[ $$EXIT_CODE -ne 0 ] || EXIT_CODE=$$srv_rc; \
+	else \
+		PAD_TEST_POSTGRES_URL="$$url" go test -timeout=45m $(TEST_PG_PKGS) -v -count=1; \
+		EXIT_CODE=$$?; \
+	fi; \
 	if command -v pg_isready >/dev/null 2>&1; then \
 		pg_isready -h 127.0.0.1 -p "$$port" -U pad -q; still_up=$$?; \
 	else \
