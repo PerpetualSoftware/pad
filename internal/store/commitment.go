@@ -139,7 +139,7 @@ func overrideFor(m map[string]string, role string) *string {
 // GetCommitment reads an item's schedule as roles: the effective value of each
 // role for the outstanding occurrence with that occurrence's overrides applied,
 // the occurrence key, and the journal rows that carry the deadline's history (the
-// recorded misses and the corrections that answer them). Legacy rows read through
+// recorded misses, corrections, renegotiations and assignee changes). Legacy rows read through
 // legacyRoles, in the same shape as native ones. ErrScheduleNotFound when the
 // item has no schedule.
 func (s *Store) GetCommitment(workspaceID, itemID string) (*models.Commitment, error) {
@@ -198,7 +198,10 @@ func (s *Store) GetCommitment(workspaceID, itemID string) (*models.Commitment, e
 		// missed_recorded, with no role, and is not the deadline's history.
 		deadlineRow := c.Role != nil && *c.Role == "deadline"
 		correction := c.ChangeType == "done" && deadlineRow && c.ParentChangeID != nil
-		if !(c.ChangeType == "missed_recorded" && deadlineRow) && !correction {
+		move := c.ChangeType == "move" && deadlineRow && c.ReasonSource == "user"
+		assignee := c.ChangeType == "update" && c.Role == nil && c.BeforeJSON == nil &&
+			c.ReasonSource == "system" && strings.HasPrefix(c.Reason, "Assignee changed from ") && strings.Contains(c.Reason, " to ")
+		if !(c.ChangeType == "missed_recorded" && deadlineRow) && !correction && !move && !assignee {
 			continue
 		}
 		out.Journal = append(out.Journal, models.CommitmentChange{ID: c.ID, ChangeType: c.ChangeType, OccurrenceKey: c.OccurrenceKey, Role: c.Role,
@@ -256,11 +259,26 @@ func (s *Store) CreateCommitmentSchedule(workspaceID, itemID string, in models.S
 	return s.createScheduleRolesAt(workspaceID, itemID, in, &r, time.Now())
 }
 
+// sameDeadline reports whether two role sets carry the same deadline offset and
+// behavior; a deadline present on one side only is a difference.
+func sameDeadline(a, b scheduleRoles) bool {
+	eq := func(x, y *int) bool { return (x == nil) == (y == nil) && (x == nil || *x == *y) }
+	return eq(a.DeadlineDays, b.DeadlineDays) && eq(a.DeadlineSecs, b.DeadlineSecs) &&
+		(a.DeadlineBehavior == nil) == (b.DeadlineBehavior == nil) &&
+		(a.DeadlineBehavior == nil || *a.DeadlineBehavior == *b.DeadlineBehavior)
+}
+
 // SetCommitmentRoles replaces a schedule's role columns and marks them native.
 // Writing a legacy_backfill row converts it, and the journal row it writes is the
 // only one whose before_json shows roles_origin legacy_backfill beside an
 // after_json of native: the deadline evaluator reads that pair as the conversion
 // and records no miss for a deadline already past at that moment.
+//
+// A native schedule that has a deadline keeps it here: a different deadline
+// offset or behavior, or no deadline, is ErrHardDeadlineRenegotiate
+// (RenegotiateDeadline is the one door that moves it). Other roles change
+// freely. A legacy_backfill row has no native renegotiation path, so its first
+// write here sets the deadline.
 func (s *Store) SetCommitmentRoles(workspaceID, itemID string, roles models.CommitmentRolesInput) (*models.ItemSchedule, error) {
 	r, err := rolesFromInput(roles)
 	if err != nil {
@@ -280,6 +298,13 @@ func (s *Store) SetCommitmentRoles(workspaceID, itemID string, roles models.Comm
 	}
 	if sc == nil {
 		return nil, ErrScheduleNotFound
+	}
+	cur, err := s.scheduleRolesOf(tx, sc)
+	if err != nil {
+		return nil, err
+	}
+	if cur.Origin == "native" && cur.DeadlineDays != nil && !sameDeadline(cur, r) {
+		return nil, ErrHardDeadlineRenegotiate
 	}
 	before, err := s.scheduleSnapshotTx(tx, sc.ID)
 	if err != nil {

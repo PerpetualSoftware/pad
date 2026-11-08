@@ -288,7 +288,7 @@ func TestManagedReminderRefusalNamesResolve(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()
 	writeReminderManaged(rr, "")
-	if !strings.Contains(rr.Body.String(), "POST .../schedule/resolve") {
+	if !strings.Contains(rr.Body.String(), "POST .../commitment/resolve, or change or delete the commitment instead") {
 		t.Errorf("message = %s", rr.Body.String())
 	}
 }
