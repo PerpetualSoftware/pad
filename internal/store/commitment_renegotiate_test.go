@@ -363,6 +363,7 @@ func TestRenegotiateStaleRevisionAndRequired(t *testing.T) {
 		})
 	}
 }
+
 // An ended schedule has no outstanding occurrence, so every renegotiation is
 // refused with schedule/ended, preview and apply, both scopes, and nothing is
 // stored. A preview taken while live and applied after the end gets the same
