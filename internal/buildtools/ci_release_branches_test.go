@@ -193,8 +193,11 @@ func TestCIWorkflow_NixRefusesStaleVendorHashOffMain(t *testing.T) {
 		if fold(s.If) != refuseIf {
 			t.Errorf("nix step %q if = %q, want exactly %q", s.Name, s.If, refuseIf)
 		}
-		if !strings.Contains(s.Run, refusePRMsg) || !strings.Contains(s.Run, refuseMsg) {
-			t.Errorf("nix step %q run must carry both the push message and the pull-request message", s.Name)
+		// The script whole, so the event test, the message each event gets and
+		// the exit that fails the job cannot drift apart unseen.
+		wantRun := "if [ \"$GITHUB_EVENT_NAME\" = pull_request ]; then\n" + refusePRMsg + "\nelse\n" + refuseMsg + "\nfi\nexit 1\n"
+		if fold(s.Run) != fold(wantRun) {
+			t.Errorf("nix step %q run = %q, want %q", s.Name, s.Run, wantRun)
 		}
 		if !strings.Contains(s.Run, "exit 1") {
 			t.Errorf("nix step %q must fail the job (exit 1)", s.Name)
