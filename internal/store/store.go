@@ -42,6 +42,11 @@ var BinaryVersion = "dev"
 var AllowSchemaAhead bool
 
 type Store struct {
+	// beforeCommitmentPin is a TEST-ONLY hook, nil in production. It runs
+	// before renegotiation and checked deletion acquire their transaction locks.
+	// Set it only while no other request is in flight against this Store.
+	beforeCommitmentPin func()
+
 	db      *sql.DB
 	dialect Dialect
 	// pgConnStr is the Postgres connection string NewPostgres opened with

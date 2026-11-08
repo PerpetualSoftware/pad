@@ -553,11 +553,16 @@ func (s *Server) handleDeleteItemSchedule(w http.ResponseWriter, r *http.Request
 		writeInternalError(w, err)
 		return
 	}
-	removed, err := s.store.DeleteScheduleChecked(workspaceID, item.ID, allowed)
+	removed, err := s.store.DeleteScheduleChecked(workspaceID, item.ID, allowed, commitmentAssigneeGuard(r, item))
+	if s.writeScheduleItemGone(w, r, workspaceID, err) {
+		return
+	}
+	if errors.Is(err, store.ErrDeadlineDeleteChanged) {
+		writeCommitmentChanged(w)
+		return
+	}
 	if errors.Is(err, store.ErrDeadlineDeleteAuthority) {
-		writeError2(w, http.StatusForbidden, "deadline_owner_required",
-			"A schedule with a hard deadline is removed only by the item's assignee or a workspace owner",
-			map[string]interface{}{"field": "deadline", "code": "authority"})
+		writeDeadlineOwnerRequired(w)
 		return
 	}
 	if err != nil {

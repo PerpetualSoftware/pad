@@ -638,13 +638,13 @@ func TestDeleteScheduleCheckedProtectsANativeDeadline(t *testing.T) {
 	t.Parallel()
 	f := newSchedFixture(t)
 	f.nativeCommit(t)
-	if removed, err := f.s.DeleteScheduleChecked(f.ws.ID, f.item.ID, false); removed || !errors.Is(err, ErrDeadlineDeleteAuthority) {
+	if removed, err := f.s.DeleteScheduleChecked(f.ws.ID, f.item.ID, false, nil); removed || !errors.Is(err, ErrDeadlineDeleteAuthority) {
 		t.Fatalf("refused delete: %v %v", removed, err)
 	}
 	if sc := f.reload(t, f.item.ID); sc == nil {
 		t.Fatal("a refused delete removed the schedule")
 	}
-	if removed, err := f.s.DeleteScheduleChecked(f.ws.ID, f.item.ID, true); !removed || err != nil {
+	if removed, err := f.s.DeleteScheduleChecked(f.ws.ID, f.item.ID, true, nil); !removed || err != nil {
 		t.Fatalf("allowed delete: %v %v", removed, err)
 	}
 }
@@ -654,7 +654,7 @@ func TestDeleteScheduleCheckedLeavesOtherSchedulesAlone(t *testing.T) {
 	t.Run("legacy row", func(t *testing.T) {
 		f := newSchedFixture(t)
 		f.create(t, models.ScheduleCreate{Kind: "deadline_hard", Dtstart: "2026-10-01T09:00", Tz: "UTC", Rrule: "FREQ=DAILY"})
-		if removed, err := f.s.DeleteScheduleChecked(f.ws.ID, f.item.ID, false); !removed || err != nil {
+		if removed, err := f.s.DeleteScheduleChecked(f.ws.ID, f.item.ID, false, nil); !removed || err != nil {
 			t.Fatalf("legacy: %v %v", removed, err)
 		}
 	})
@@ -665,14 +665,27 @@ func TestDeleteScheduleCheckedLeavesOtherSchedulesAlone(t *testing.T) {
 		if _, err := f.s.createScheduleRolesAt(f.ws.ID, f.item.ID, models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-01T09:00", Tz: "UTC", Rrule: "FREQ=DAILY"}, ptr(mustRoles(t, in)), schedNow); err != nil {
 			t.Fatal(err)
 		}
-		if removed, err := f.s.DeleteScheduleChecked(f.ws.ID, f.item.ID, false); !removed || err != nil {
+		if removed, err := f.s.DeleteScheduleChecked(f.ws.ID, f.item.ID, false, nil); !removed || err != nil {
 			t.Fatalf("native without deadline: %v %v", removed, err)
 		}
 	})
 	t.Run("no schedule", func(t *testing.T) {
 		f := newSchedFixture(t)
-		if removed, err := f.s.DeleteScheduleChecked(f.ws.ID, f.item.ID, false); removed || err != nil {
+		if removed, err := f.s.DeleteScheduleChecked(f.ws.ID, f.item.ID, false, nil); removed || err != nil {
 			t.Fatalf("missing: %v %v", removed, err)
 		}
 	})
+}
+
+// A delete that needs no authority decision (an owner, or an unguarded caller)
+// must not depend on reading the schedule's roles: a legacy window row whose
+// stored dates no longer parse still deletes.
+func TestDeleteScheduleCheckedUnguardedDoesNotReadRoles(t *testing.T) {
+	t.Parallel()
+	f := newSchedFixture(t)
+	sc := f.create(t, models.ScheduleCreate{Kind: "window", Dtstart: "2026-10-30T09:00", Dtend: "2026-10-30T10:00", Tz: "UTC"})
+	f.exec(t, `UPDATE item_schedules SET dtstart=? WHERE id=?`, "not-a-date", sc.ID)
+	if removed, err := f.s.DeleteScheduleChecked(f.ws.ID, f.item.ID, true, nil); !removed || err != nil {
+		t.Fatalf("unguarded delete of a legacy row with unreadable dates: removed=%v err=%v", removed, err)
+	}
 }

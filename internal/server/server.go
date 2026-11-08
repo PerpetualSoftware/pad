@@ -2455,6 +2455,7 @@ func (s *Server) setupRouter() {
 						r.Patch("/commitment", s.handleUpdateItemCommitment)
 						r.Delete("/commitment", s.handleDeleteItemSchedule)
 						r.Post("/commitment/resolve", s.handleResolveItemCommitment)
+						r.Post("/commitment/renegotiate", s.handleRenegotiateItemCommitment)
 						// Verifications (TASK-3617): per-criterion verdicts
 						// on the item that carries the acceptance criteria,
 						// judged against its present text at read time.

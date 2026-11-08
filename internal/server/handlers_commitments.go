@@ -22,6 +22,24 @@ func (s *Server) canRenegotiateCommitment(r *http.Request, workspaceID string, i
 	return s.canEditInCollection(r, workspaceID, item.ID, item.CollectionID)
 }
 
+// commitmentAssigneeGuard preserves the snapshot the authority decision used.
+// Workspace owners can act regardless of assignment.
+func commitmentAssigneeGuard(r *http.Request, item *models.Item) *string {
+	if workspaceRole(r) == "owner" {
+		return nil
+	}
+	assigned := ""
+	if item.AssignedUserID != nil {
+		assigned = *item.AssignedUserID
+	}
+	return &assigned
+}
+
+func writeCommitmentChanged(w http.ResponseWriter) {
+	writeError2(w, http.StatusConflict, "commitment_changed", "The commitment changed; re-preview before applying",
+		map[string]interface{}{"field": "revision", "code": "stale"})
+}
+
 // writeItemCommitment re-reads the roles and journal after a successful write.
 func (s *Server) writeItemCommitment(w http.ResponseWriter, workspaceID, itemID string, status int) {
 	c, err := s.store.GetCommitment(workspaceID, itemID)
@@ -164,4 +182,81 @@ type commitmentResolveBody struct {
 
 func (s *Server) handleResolveItemCommitment(w http.ResponseWriter, r *http.Request) {
 	s.resolveItemSchedule(w, r, true)
+}
+
+func writeDeadlineOwnerRequired(w http.ResponseWriter) {
+	writeError2(w, http.StatusForbidden, "deadline_owner_required",
+		"A schedule with a hard deadline is removed or changed only by the item's assignee or a workspace owner; to remove or change a hard deadline use POST .../commitment/renegotiate",
+		map[string]interface{}{"field": "deadline", "code": "authority"})
+}
+
+func (s *Server) handleRenegotiateItemCommitment(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := s.getWorkspaceID(w, r)
+	if !ok {
+		return
+	}
+	item := s.resolveVisibleItem(w, r, workspaceID)
+	if item == nil {
+		return
+	}
+	if !s.requireEditPermission(w, r, workspaceID, item.ID, item.CollectionID) {
+		return
+	}
+	allowed, err := s.canRenegotiateCommitment(r, workspaceID, item)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if !allowed {
+		writeDeadlineOwnerRequired(w)
+		return
+	}
+	body, err := strictScheduleBody[models.CommitmentRenegotiateInput](r)
+	if err != nil {
+		writeScheduleBodyError(w)
+		return
+	}
+	result, err := s.store.RenegotiateCommitment(workspaceID, item.ID, currentUserID(r), body, commitmentAssigneeGuard(r, item))
+	if errors.Is(err, store.ErrCommitmentChanged) {
+		writeCommitmentChanged(w)
+		return
+	}
+	if s.writeScheduleItemGone(w, r, workspaceID, err) {
+		return
+	}
+	if errors.Is(err, store.ErrScheduleNotFound) {
+		writeScheduleNotFound(w)
+		return
+	}
+	if writeScheduleError(w, err) {
+		return
+	}
+	if body.Preview {
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
+	sc, err := s.store.GetSchedule(workspaceID, item.ID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if sc == nil {
+		writeScheduleNotFound(w)
+		return
+	}
+	fields := []string{}
+	if body.Deadline != nil {
+		fields = append(fields, "deadline")
+	}
+	if body.DeadlineOffset != nil {
+		fields = append(fields, "deadline_offset")
+	}
+	if body.DeadlineBehavior != nil {
+		fields = append(fields, "deadline_behavior")
+	}
+	if body.RemoveDeadline {
+		fields = append(fields, "remove_deadline")
+	}
+	s.recordScheduleWrite(r, workspaceID, item, "schedule_updated", scheduleActivityMeta(sc.Kind, fields))
+	s.writeItemCommitment(w, workspaceID, item.ID, http.StatusOK)
 }

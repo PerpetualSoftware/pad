@@ -101,6 +101,14 @@ func (s *Store) scheduleSnapshotTx(tx *sql.Tx, id string) (string, error) {
 	return string(b), err
 }
 
+// Journal population: schedule create/update/delete and resolves; native role
+// writes; occurrence and series renegotiations (RenegotiateCommitment); deadline
+// evaluation, on-time corrections and assignee changes; carry and restore.
+// Readers: GetCommitment selects deadline renegotiations by role and user source
+// as well as move/update; deadlineJournal identifies conversions by the roles
+// origin snapshots; recordOnTimeCorrectionTx selects deadline misses; bundle and
+// carry readers preserve all rows through scheduleChangesQ. A change type alone
+// does not identify a conversion or a deadline renegotiation.
 func (s *Store) journalScheduleChangeTx(tx *sql.Tx, id, change, key, role, before, after, actor string) error {
 	return s.journalScheduleChangeReasonTx(tx, id, change, key, role, before, after, actor, "", "system")
 }

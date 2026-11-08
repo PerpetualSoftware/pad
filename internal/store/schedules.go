@@ -49,6 +49,8 @@ var (
 	// ErrDeadlineDeleteAuthority is DeleteScheduleChecked's answer when the actor
 	// may not take a native schedule's deadline away.
 	ErrDeadlineDeleteAuthority = errors.New("a schedule with a hard deadline is removed only by its assignee or an owner")
+	// ErrDeadlineDeleteChanged refuses a delete based on a stale assignee.
+	ErrDeadlineDeleteChanged = errors.New("the commitment changed; re-preview before applying")
 	// ErrScheduleItemGone is the answer when the item is not a live item of the
 	// workspace; missing, archived and foreign are indistinguishable on purpose
 	// (the existence-oracle posture ErrReminderItemGone takes).
@@ -940,32 +942,52 @@ func parseWalls(ws []string) ([]schedule.Wall, error) {
 // DeleteSchedule removes an item's schedule, its managed reminder row and its
 // resolved occurrences, reporting whether there was one.
 func (s *Store) DeleteSchedule(workspaceID, itemID string) (bool, error) {
-	return s.DeleteScheduleChecked(workspaceID, itemID, true)
+	return s.DeleteScheduleChecked(workspaceID, itemID, true, nil)
 }
 
 // DeleteScheduleChecked is DeleteSchedule for a caller that has decided whether
 // the actor may take a deadline away. A native schedule that has a deadline is
 // removed only when mayDropDeadline is true; otherwise nothing is deleted and
 // the answer is ErrDeadlineDeleteAuthority. The deadline is read under the
-// schedule's row lock, in the delete's own transaction, so a deadline added
-// while the call waits is still seen.
-func (s *Store) DeleteScheduleChecked(workspaceID, itemID string, mayDropDeadline bool) (bool, error) {
+// joint schedule pin, in the delete's own transaction, so a deadline added
+// while the call waits is still seen. For a native deadline, expectedAssignee
+// guards that authority decision; nil means it does not depend on assignment.
+func (s *Store) DeleteScheduleChecked(workspaceID, itemID string, mayDropDeadline bool, expectedAssignee *string) (bool, error) {
+	if s.beforeCommitmentPin != nil {
+		s.beforeCommitmentPin()
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return false, fmt.Errorf("delete schedule: %w", err)
 	}
 	defer tx.Rollback()
-	cur, err := s.getScheduleQ(tx, workspaceID, itemID, true)
+	if err := s.pinScheduleTx(tx, workspaceID, itemID); err != nil {
+		if errors.Is(err, ErrScheduleNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	cur, err := s.getScheduleQ(tx, workspaceID, itemID, false)
 	if err != nil || cur == nil {
 		return false, err
 	}
-	if !mayDropDeadline {
+	// The roles are read only when an authority decision depends on them: a
+	// caller that may drop a deadline and carries no assignee guard needs no
+	// read, so a row whose legacy dates no longer parse still deletes.
+	if !mayDropDeadline || expectedAssignee != nil {
 		roles, err := s.scheduleRolesOf(tx, cur)
 		if err != nil {
 			return false, err
 		}
 		if roles.Origin == "native" && roles.DeadlineDays != nil {
-			return false, ErrDeadlineDeleteAuthority
+			if matches, err := s.commitmentAssigneeMatchesTx(tx, itemID, expectedAssignee); err != nil {
+				return false, err
+			} else if !matches {
+				return false, ErrDeadlineDeleteChanged
+			}
+			if !mayDropDeadline {
+				return false, ErrDeadlineDeleteAuthority
+			}
 		}
 	}
 	before, err := s.scheduleSnapshotTx(tx, cur.ID)
