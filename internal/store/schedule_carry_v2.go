@@ -226,12 +226,13 @@ func (s *Store) scheduleChangesQ(q Queryer, workspaceID, scheduleID string) ([]m
 	return out, nil
 }
 
-// restoreScheduleChangesTx maps only retained rows, so causal references never
-// point at a discarded change. Unknown schedules represent deleted schedules.
-func (s *Store) restoreScheduleChangesTx(tx *sql.Tx, workspaceID string, changes []models.ScheduleChangeExport, items, schedules map[string]string, sources map[string]models.ScheduleExport) ([]models.ImportScheduleDrop, error) {
+// classifyScheduleChanges splits changes into the rows a restore keeps and the
+// drops it reports. It writes nothing and mutates neither map argument, so a
+// preview can count what a commit will drop with the same function. A known
+// source schedule must map to a non-empty destination id.
+func classifyScheduleChanges(changes []models.ScheduleChangeExport, items, schedules map[string]string, sources map[string]models.ScheduleExport) ([]models.ScheduleChangeExport, []models.ImportScheduleDrop) {
 	var kept []models.ScheduleChangeExport
 	var drops []models.ImportScheduleDrop
-	changeMap := map[string]string{}
 	owner := map[string]string{} // deleted-in-source schedule id -> the one item its rows may name
 	for _, c := range changes {
 		source, known := sources[c.ScheduleID]
@@ -262,14 +263,24 @@ func (s *Store) restoreScheduleChangesTx(tx *sql.Tx, workspaceID string, changes
 			drops = append(drops, models.ImportScheduleDrop{Item: items[c.ItemID], Reason: "changes:orphan"})
 			continue
 		}
-		changeMap[c.ID] = newID()
 		if !known {
 			owner[c.ScheduleID] = c.ItemID
 		}
+		kept = append(kept, c)
+	}
+	return kept, drops
+}
+
+// restoreScheduleChangesTx maps only retained rows, so causal references never
+// point at a discarded change. Unknown schedules represent deleted schedules.
+func (s *Store) restoreScheduleChangesTx(tx *sql.Tx, workspaceID string, changes []models.ScheduleChangeExport, items, schedules map[string]string, sources map[string]models.ScheduleExport) ([]models.ImportScheduleDrop, error) {
+	kept, drops := classifyScheduleChanges(changes, items, schedules, sources)
+	changeMap := map[string]string{}
+	for _, c := range kept {
+		changeMap[c.ID] = newID()
 		if schedules[c.ScheduleID] == "" {
 			schedules[c.ScheduleID] = newID()
 		}
-		kept = append(kept, c)
 	}
 	for _, c := range kept {
 		root := changeMap[c.RootChangeID]
