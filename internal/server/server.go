@@ -2445,15 +2445,10 @@ func (s *Server) setupRouter() {
 						r.Post("/reminders", s.handleCreateItemReminder)
 						// Item schedules (TASK-4102): the time trigger whose
 						// outstanding occurrence is a managed reminder row.
-						r.Get("/schedule", s.handleGetItemSchedule)
-						r.Post("/schedule", s.handleCreateItemSchedule)
-						r.Patch("/schedule", s.handleUpdateItemSchedule)
-						r.Delete("/schedule", s.handleDeleteItemSchedule)
-						r.Post("/schedule/resolve", s.handleResolveItemSchedule)
 						r.Get("/commitment", s.handleGetItemCommitment)
 						r.Post("/commitment", s.handleCreateItemCommitment)
 						r.Patch("/commitment", s.handleUpdateItemCommitment)
-						r.Delete("/commitment", s.handleDeleteItemSchedule)
+						r.Delete("/commitment", s.handleDeleteItemCommitment)
 						r.Post("/commitment/resolve", s.handleResolveItemCommitment)
 						r.Post("/commitment/renegotiate", s.handleRenegotiateItemCommitment)
 						// Verifications (TASK-3617): per-criterion verdicts

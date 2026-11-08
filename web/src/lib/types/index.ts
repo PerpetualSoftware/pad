@@ -3823,23 +3823,69 @@ export interface AgendaResponse {
 
 export type ScheduleResolveState = 'done' | 'skip' | 'snooze' | 'move';
 
-export interface ScheduleResolveRequest {
+export interface CommitmentResolveRequest {
+ actual_done_at?: string;
 	occurrence_at: string;
 	state: ScheduleResolveState;
 	comment?: string;
 	until?: string;
 }
 
-export interface ItemScheduleView {
-	item_ref: string;
-	kind: string;
-	floating: boolean;
-	ended_at?: string;
-	next_occurrence?: { at: string; wall: string };
-	[key: string]: unknown;
+export interface CommitmentRoles {
+ target: string | null;
+ earliest: string | null;
+ deadline: string | null;
+ deadline_behavior: 'lapses' | 'stays_owed' | null;
+ occupied_until: string | null;
+ outcome: string;
+ roles_origin: 'native' | 'legacy_backfill';
 }
 
-export interface ScheduleResolveResult {
-	schedule: object;
+export interface ItemCommitmentView {
+ schedule_id: string;
+ item_id: string;
+ item_ref: string;
+ roles: CommitmentRoles;
+ occurrence_key?: string;
+ journal: CommitmentChange[];
+ id: string;
+ dtstart: string;
+ tz?: string;
+ floating: boolean;
+ rrule?: string;
+ rdates: string[];
+ exdates: string[];
+ anchor: 'calendar' | 'completion';
+ audience: 'human' | 'agent' | 'both';
+ lead_minutes: number;
+ next_occurrence?: { at: string; wall: string };
+ next_override_at?: string;
+ missed_count?: number;
+ missed_truncated?: boolean;
+ stale?: boolean;
+ ended_at?: string;
+ error_code?: string;
+ reminder_id?: string;
+ created_at: string;
+ updated_at: string;
+ timezone_note?: string;
+}
+
+export interface CommitmentChange {
+ id: string;
+ change_type: string;
+ occurrence_key?: string;
+ role?: string;
+ after_json?: string;
+ actor: string;
+ reason?: string;
+ reason_source: string;
+ root_change_id: string;
+ parent_change_id?: string;
+ recorded_at: string;
+}
+
+export interface CommitmentResolveResult {
+	commitment: ItemCommitmentView;
 	resolution: { occurrence_at: string; state: ScheduleResolveState; comment_id?: string; missed_recorded: number };
 }

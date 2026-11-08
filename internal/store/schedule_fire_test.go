@@ -840,8 +840,9 @@ func TestScheduleFloatingFiresInTheNewZoneWhenTheTimezoneHookFails(t *testing.T)
 	}
 }
 
-// Postgres: UpdateSchedule takes the item before the schedule, like every other
-// writer. With another transaction holding the item FOR UPDATE it waits at the
+// Postgres: an update takes the item before the schedule, like every other
+// writer: pinScheduleTx locks the item, the workspace and the schedule in one
+// statement. With another transaction holding the item FOR UPDATE it waits at the
 // item and the schedule row is still free.
 func TestScheduleUpdateWaitsOnTheItemBeforeTheSchedule(t *testing.T) {
 	pgURL := os.Getenv("PAD_TEST_POSTGRES_URL")
@@ -866,7 +867,7 @@ func TestScheduleUpdateWaitsOnTheItemBeforeTheSchedule(t *testing.T) {
 		_, err := f.s.updateScheduleAt(f.ws.ID, f.item.ID, models.ScheduleUpdate{LeadMinutes: &l}, schedNow)
 		done <- err
 	}()
-	waitForLockWait(t, f.s, "FOR KEY SHARE", done)
+	waitForLockWait(t, f.s, "FOR NO KEY UPDATE OF", done)
 
 	// The schedule row is still free: the update has not reached it.
 	probe, err := f.s.db.Begin()

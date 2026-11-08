@@ -565,7 +565,7 @@ func TestHardDeadlineMoveStillRefused(t *testing.T) {
 	before := commitmentOldRows(t, f.s)
 	_, err := f.resolve(t, f.item, moveInput(sc, "2026-10-31T10:00:00Z"), moveNow)
 	var fe *ScheduleFieldError
-	if !errors.As(err, &fe) || fe.Field != "state" || fe.Code != "combination" || fe.Message != "a hard deadline cannot be moved; snooze it, or change its kind" {
+	if !errors.As(err, &fe) || fe.Field != "state" || fe.Code != "combination" || fe.Message != "a hard deadline cannot be moved; use POST .../commitment/renegotiate with a reason" {
 		t.Fatalf("hard deadline error=%v", err)
 	}
 	if !reflect.DeepEqual(before, commitmentOldRows(t, f.s)) || len(moveEntries(t, f, sc.ID)) != 1 {

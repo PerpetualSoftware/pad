@@ -148,6 +148,11 @@ func prepareCarriedSchedule(in carriedSchedule) (preparedCarry, error) {
 		return preparedCarry{}, &scheduleCarryDrop{Reason: carryReason(err)}
 	}
 	spec := c.Spec()
+	if in.Roles != nil && in.Roles.RolesOrigin == "native" {
+		if _, err := occupiedEnd(spec.Start.String(), scheduleRolesFromExport(in.Roles)); err != nil {
+			return preparedCarry{}, &scheduleCarryDrop{Reason: carryReason(err)}
+		}
+	}
 	end, hasEnd, err := validateScheduleFields(in.Kind, in.Anchor, in.Audience, in.LeadMinutes, spec.Start, in.Dtend)
 	if err == nil {
 		err = validateAnchorRule(in.Anchor, spec)
@@ -257,24 +262,41 @@ func (s *Store) writePreparedSchedule(tx *sql.Tx, workspaceID, itemID string, in
 	createdAt, updatedAt, nextAt, nextWall, remindAt, occs := p.createdAt, p.updatedAt, p.nextAt, p.nextWall, p.remindAt, p.occs
 	// Everything is valid: write.
 	id := newID()
-	var dtend, tzVal, rrule any
+	optional := func(value string) *string {
+		if value == "" {
+			return nil
+		}
+		return ptr(value)
+	}
+	textPointer := func(value any) *string {
+		if value == nil {
+			return nil
+		}
+		return ptr(value.(string))
+	}
+	sc := &models.ItemSchedule{ID: id, WorkspaceID: workspaceID, ItemID: itemID, Kind: in.Kind, Dtstart: spec.Start.String(), Floating: spec.Floating,
+		RDates: wallStrings(spec.RDates), ExDates: wallStrings(spec.ExDates), Anchor: in.Anchor, Audience: in.Audience, LeadMinutes: in.LeadMinutes,
+		NextAt: textPointer(nextAt), NextWall: textPointer(nextWall), NextOverrideAt: optional(override), AnchorWall: optional(anchorWall), EndedAt: optional(endedAt), CreatedAt: createdAt, UpdatedAt: updatedAt}
 	if hasEnd {
-		dtend = end.String()
+		sc.Dtend = ptr(end.String())
 	}
 	if !spec.Floating {
-		tzVal = spec.Zone
+		sc.Tz = ptr(spec.Zone)
 	}
-	if spec.Rule != "" {
-		rrule = spec.Rule
+	sc.Rrule = optional(spec.Rule)
+	var roles *scheduleRoles
+	if in.Roles != nil {
+		r := scheduleRolesFromExport(in.Roles)
+		roles = &r
 	}
-	if _, err := tx.Exec(s.q(`
-		INSERT INTO item_schedules (id, workspace_id, item_id, kind, dtstart, dtend, tz, floating, rrule, rdates, exdates,
-			anchor, audience, lead_minutes, next_at, next_wall, next_override_at, anchor_wall, ended_at, error_code, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`),
-		id, workspaceID, itemID, in.Kind, spec.Start.String(), dtend, tzVal, s.dialect.BoolToInt(spec.Floating), rrule,
-		mustJSON(wallStrings(spec.RDates)), mustJSON(wallStrings(spec.ExDates)), in.Anchor, in.Audience, in.LeadMinutes,
-		nextAt, nextWall, nilIfEmpty(override), nilIfEmpty(anchorWall), nilIfEmpty(endedAt), createdAt, updatedAt); err != nil {
-		return "", fmt.Errorf("insert carried schedule: %w", err)
+	var err error
+	if roles != nil && roles.Origin == "native" {
+		err = s.writeNativeRolesTx(tx, sc, *roles, true)
+	} else {
+		err = s.insertScheduleTx(tx, sc, roles)
+	}
+	if err != nil {
+		return "", err
 	}
 	if endedAt == "" {
 		if _, err := tx.Exec(s.q(`
@@ -292,12 +314,10 @@ func (s *Store) writePreparedSchedule(tx *sql.Tx, workspaceID, itemID string, in
 			return "", fmt.Errorf("insert carried occurrence: %w", err)
 		}
 	}
-	if r := in.Roles; r != nil {
-		if _, err := tx.Exec(s.q(`UPDATE item_schedules SET target_days=?,target_secs=?,earliest_days=?,earliest_secs=?,deadline_days=?,deadline_secs=?,deadline_behavior=?,occupied_days=?,occupied_secs=?,outcome=?,roles_origin=? WHERE id=?`), r.TargetDays, r.TargetSecs, r.EarliestDays, r.EarliestSecs, r.DeadlineDays, r.DeadlineSecs, r.DeadlineBehavior, r.OccupiedDays, r.OccupiedSecs, r.Outcome, r.RolesOrigin, id); err != nil {
-			return "", fmt.Errorf("write carried roles: %w", err)
+	if roles == nil {
+		if err := s.setLegacyRolesTx(tx, id, in.Kind, spec.Start.String(), in.Dtend); err != nil {
+			return "", err
 		}
-	} else if err := s.setLegacyRolesTx(tx, id, in.Kind, spec.Start.String(), in.Dtend); err != nil {
-		return "", err
 	}
 	for _, o := range p.overrides {
 		if err := s.upsertScheduleOverrideStoredTx(tx, id, o); err != nil {

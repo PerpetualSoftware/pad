@@ -385,6 +385,7 @@ func observedPaths(t *testing.T, cmdKey string) []string {
 	}
 	if fn, ok := d.specialRoutes()[cmdKey]; ok {
 		input := allowlistFixtureInput()
+		task4105FixtureFor(cmdKey, input)
 		if strings.HasPrefix(cmdKey, "chat ") {
 			input["target"] = "C12"
 		}
@@ -435,6 +436,7 @@ func observedCalls(t *testing.T, cmdKey string) []string {
 	}
 	if fn, ok := d.specialRoutes()[cmdKey]; ok {
 		input := allowlistFixtureInput()
+		task4105FixtureFor(cmdKey, input)
 		if strings.HasPrefix(cmdKey, "chat ") {
 			input["target"] = "C12"
 		}

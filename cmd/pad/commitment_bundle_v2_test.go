@@ -35,7 +35,8 @@ func migrationCommitment(t *testing.T) (*store.Store, *models.WorkspaceExport) {
 			t.Fatal(err)
 		}
 	}
-	exec(`UPDATE item_schedules SET target_days=1,earliest_days=-1,earliest_secs=-60,deadline_days=3,deadline_secs=0,deadline_behavior='lapses',occupied_days=0,occupied_secs=3600,roles_origin='native',outcome='Renewed' WHERE id=?`, sc.ID)
+	// Seed a consistent native label: the carry writer derives hard from deadline roles.
+	exec(`UPDATE item_schedules SET kind='deadline_hard',target_days=1,earliest_days=-1,earliest_secs=-60,deadline_days=3,deadline_secs=0,deadline_behavior='lapses',occupied_days=0,occupied_secs=3600,roles_origin='native',outcome='Renewed' WHERE id=?`, sc.ID)
 	key := *sc.NextAt + "|" + *sc.NextWall
 	exec(`INSERT INTO schedule_occurrence_overrides (id,schedule_id,occurrence_key,role,value_at,value_wall,created_at,updated_at) VALUES ('override',?,?,'target','2030-01-01T12:00:00Z','2030-01-01T12:00:00','2026-11-01T12:00:00Z','2026-11-01T12:00:00Z')`, sc.ID, key)
 	exec(`INSERT INTO schedule_occurrences (id,schedule_id,occurrence_at,occurrence_wall,state,actor,resolved_at,actual_done_at,actual_source) VALUES ('actual',?,'2029-12-31T09:00:00Z','2029-12-31T09:00:00','done','user','2029-12-31T11:00:00Z','2029-12-31T10:00:00Z','reported')`, sc.ID)

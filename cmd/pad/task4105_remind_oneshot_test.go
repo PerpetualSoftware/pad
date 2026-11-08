@@ -64,7 +64,7 @@ func TestRemindOneShotUnchanged(t *testing.T) {
 	noSchedule := func(calls []recordedCall) {
 		t.Helper()
 		for _, c := range calls {
-			if strings.Contains(c.path, "/schedule") {
+			if strings.Contains(c.path, "/commitment") {
 				t.Fatalf("one-shot touched the schedule API: %+v", c)
 			}
 		}
