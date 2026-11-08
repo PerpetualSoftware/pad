@@ -553,7 +553,11 @@ func (s *Server) handleDeleteItemSchedule(w http.ResponseWriter, r *http.Request
 		writeInternalError(w, err)
 		return
 	}
-	removed, err := s.store.DeleteScheduleChecked(workspaceID, item.ID, allowed)
+	removed, err := s.store.DeleteScheduleChecked(workspaceID, item.ID, allowed, commitmentAssigneeGuard(r, item))
+	if errors.Is(err, store.ErrDeadlineDeleteChanged) {
+		writeCommitmentChanged(w)
+		return
+	}
 	if errors.Is(err, store.ErrDeadlineDeleteAuthority) {
 		writeDeadlineOwnerRequired(w)
 		return

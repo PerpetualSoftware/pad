@@ -24,13 +24,13 @@ type renegotiationPlan struct {
 }
 
 // RenegotiateCommitment previews or applies one plan. Authority belongs to the
-// handler. The clock is taken after pinning so a wait for the lock cannot hide
-// a deadline that passed while this call waited.
-func (s *Store) RenegotiateCommitment(workspaceID, itemID, actor string, in models.CommitmentRenegotiateInput) (*models.CommitmentRenegotiation, error) {
-	return s.renegotiateCommitmentAt(workspaceID, itemID, actor, in, time.Time{})
+// handler; expectedAssignee guards its decision (nil for an owner). The clock
+// is taken after pinning so a wait cannot hide a deadline that passed meanwhile.
+func (s *Store) RenegotiateCommitment(workspaceID, itemID, actor string, in models.CommitmentRenegotiateInput, expectedAssignee *string) (*models.CommitmentRenegotiation, error) {
+	return s.renegotiateCommitmentAt(workspaceID, itemID, actor, in, time.Time{}, expectedAssignee)
 }
 
-func (s *Store) renegotiateCommitmentAt(workspaceID, itemID, actor string, in models.CommitmentRenegotiateInput, nowT time.Time) (*models.CommitmentRenegotiation, error) {
+func (s *Store) renegotiateCommitmentAt(workspaceID, itemID, actor string, in models.CommitmentRenegotiateInput, nowT time.Time, expectedAssignee *string) (*models.CommitmentRenegotiation, error) {
 	in.Reason = strings.TrimSpace(in.Reason)
 	if in.Reason == "" {
 		return nil, fieldErr("reason", "required", "renegotiating a deadline needs a reason")
@@ -65,6 +65,9 @@ func (s *Store) renegotiateCommitmentAt(workspaceID, itemID, actor string, in mo
 	// Load workspace terminal options before the transaction, as the evaluator
 	// does: nonTerminalFilter uses the pool, which may have only one connection.
 	filter, args := s.nonTerminalFilter(workspaceID, "i")
+	if s.beforeCommitmentPin != nil {
+		s.beforeCommitmentPin()
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, err
@@ -72,6 +75,11 @@ func (s *Store) renegotiateCommitmentAt(workspaceID, itemID, actor string, in mo
 	defer tx.Rollback()
 	if err := s.pinScheduleTx(tx, workspaceID, itemID); err != nil {
 		return nil, err
+	}
+	if matches, err := s.commitmentAssigneeMatchesTx(tx, itemID, expectedAssignee); err != nil {
+		return nil, err
+	} else if !matches {
+		return nil, ErrCommitmentChanged
 	}
 	sc, err := s.getScheduleQ(tx, workspaceID, itemID, false)
 	if err != nil {
@@ -274,4 +282,22 @@ func (s *Store) planRenegotiationTx(tx *sql.Tx, sc *models.ItemSchedule, in mode
 	p.before = deadlineRolesSnapshot(cur)
 	p.after = deadlineRolesSnapshot(p.roles)
 	return p, nil
+}
+
+// commitmentAssigneeMatchesTx checks the assignee used by the handler authority
+// decision. A nil guard means authority does not depend on the assignee;
+// a pointer to an empty string means the item was unassigned.
+func (s *Store) commitmentAssigneeMatchesTx(tx *sql.Tx, itemID string, expected *string) (bool, error) {
+	if expected == nil {
+		return true, nil
+	}
+	// pinScheduleTx holds FOR NO KEY UPDATE on the item. UpdateItem locks that
+	// row with its UPDATE before journaling assignment, so a reassignment cannot
+	// commit after our pin until this tx ends. This separate plain SELECT sees
+	// reassignment committed before the pin without upgrading the item lock.
+	var assigned sql.NullString
+	if err := tx.QueryRow(s.q(`SELECT assigned_user_id FROM items WHERE id=?`), itemID).Scan(&assigned); err != nil {
+		return false, err
+	}
+	return assigned.String == *expected, nil
 }

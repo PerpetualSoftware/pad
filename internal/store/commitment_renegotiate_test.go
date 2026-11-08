@@ -59,7 +59,7 @@ func applyRenegotiation(t *testing.T, f *schedFixture, in models.CommitmentReneg
 	t.Helper()
 	in.Preview = true
 	before := renegotiateState(t, f.s)
-	p, err := f.s.renegotiateCommitmentAt(f.ws.ID, f.item.ID, "acting-user", in, now)
+	p, err := f.s.renegotiateCommitmentAt(f.ws.ID, f.item.ID, "acting-user", in, now, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func applyRenegotiation(t *testing.T, f *schedFixture, in models.CommitmentReneg
 	}
 	in.Preview = false
 	in.Revision = p.Revision
-	a, err := f.s.renegotiateCommitmentAt(f.ws.ID, f.item.ID, "acting-user", in, now)
+	a, err := f.s.renegotiateCommitmentAt(f.ws.ID, f.item.ID, "acting-user", in, now, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func TestRenegotiateSeriesCasesAndPastUntouched(t *testing.T) {
 				if f.count(t, `SELECT COUNT(*) FROM schedule_occurrence_overrides WHERE role='deadline' AND occurrence_key=?`, deadlineKey) != 0 {
 					t.Fatal("deadline overrides remain")
 				}
-				if ok, err := f.s.DeleteScheduleChecked(f.ws.ID, f.item.ID, false); err != nil || !ok {
+				if ok, err := f.s.DeleteScheduleChecked(f.ws.ID, f.item.ID, false, nil); err != nil || !ok {
 					t.Fatalf("deadline-less delete %v %v", ok, err)
 				}
 			} else if name == "offset" {
@@ -293,7 +293,7 @@ func TestRenegotiateAtomicAfterMissAndChange(t *testing.T) {
 			} else {
 				in.Deadline = ptr("2026-10-27T14:00:00Z")
 			}
-			p, err := f.s.renegotiateCommitmentAt(f.ws.ID, f.item.ID, "acting-user", in, rt("2026-10-26T11:00:00Z"))
+			p, err := f.s.renegotiateCommitmentAt(f.ws.ID, f.item.ID, "acting-user", in, rt("2026-10-26T11:00:00Z"), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -301,7 +301,7 @@ func TestRenegotiateAtomicAfterMissAndChange(t *testing.T) {
 			in.Revision = p.Revision
 			f.exec(t, `CREATE TRIGGER renegotiate_fail BEFORE INSERT ON schedule_changes WHEN NEW.reason_source='user' BEGIN SELECT RAISE(ABORT,'renegotiation journal refused'); END`)
 			before := renegotiateState(t, f.s)
-			_, err = f.s.renegotiateCommitmentAt(f.ws.ID, f.item.ID, "acting-user", in, rt("2026-10-26T11:00:00Z"))
+			_, err = f.s.renegotiateCommitmentAt(f.ws.ID, f.item.ID, "acting-user", in, rt("2026-10-26T11:00:00Z"), nil)
 			if err == nil {
 				t.Fatal("injected error ignored")
 			}
@@ -319,12 +319,12 @@ func TestRenegotiateStaleRevisionAndRequired(t *testing.T) {
 			f.nativeCommit(t)
 			in := seriesRequest()
 			in.RemoveDeadline = true
-			p, err := f.s.renegotiateCommitmentAt(f.ws.ID, f.item.ID, "acting-user", in, renegNow)
+			p, err := f.s.renegotiateCommitmentAt(f.ws.ID, f.item.ID, "acting-user", in, renegNow, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
 			in.Preview = false
-			_, err = f.s.renegotiateCommitmentAt(f.ws.ID, f.item.ID, "acting-user", in, renegNow)
+			_, err = f.s.renegotiateCommitmentAt(f.ws.ID, f.item.ID, "acting-user", in, renegNow, nil)
 			var fe *ScheduleFieldError
 			if !errors.As(err, &fe) || fe.Field != "revision" || fe.Code != "required" {
 				t.Fatalf("missing revision %v", err)
@@ -344,7 +344,7 @@ func TestRenegotiateStaleRevisionAndRequired(t *testing.T) {
 			}
 			in.Revision = p.Revision
 			before := renegotiateState(t, f.s)
-			_, err = f.s.renegotiateCommitmentAt(f.ws.ID, f.item.ID, "acting-user", in, renegNow)
+			_, err = f.s.renegotiateCommitmentAt(f.ws.ID, f.item.ID, "acting-user", in, renegNow, nil)
 			if !errors.Is(err, ErrCommitmentChanged) {
 				t.Fatalf("stale revision %v", err)
 			}
@@ -423,13 +423,13 @@ func TestRenegotiateSeriesRefusesNewPastDeadline(t *testing.T) {
 					// Obtain the same revision with an allowed plan; requests are not hashed.
 					valid := seriesRequest()
 					valid.DeadlineBehavior = ptr("lapses")
-					p, err := f.s.renegotiateCommitmentAt(f.ws.ID, f.item.ID, "user", valid, rt(deadlineOccAt))
+					p, err := f.s.renegotiateCommitmentAt(f.ws.ID, f.item.ID, "user", valid, rt(deadlineOccAt), nil)
 					if err != nil {
 						t.Fatal(err)
 					}
 					in.Revision = p.Revision
 				}
-				_, err := f.s.renegotiateCommitmentAt(f.ws.ID, f.item.ID, "user", in, rt(deadlineOccAt))
+				_, err := f.s.renegotiateCommitmentAt(f.ws.ID, f.item.ID, "user", in, rt(deadlineOccAt), nil)
 				var fe *ScheduleFieldError
 				if !errors.As(err, &fe) || fe.Field != "deadline_offset" || fe.Code != "range" || fe.Message != "the new deadline is already past" {
 					t.Errorf("preview=%v: got %v", preview, err)

@@ -627,3 +627,87 @@ func TestCommitmentRenegotiateSeriesPastDeadlineHTTP(t *testing.T) {
 		})
 	}
 }
+
+func TestCommitmentAssigneeGuard(t *testing.T) {
+	t.Parallel()
+	for _, operation := range []string{"occurrence", "preview", "series", "delete commitment", "delete schedule"} {
+		for _, authority := range []string{"reassigned", "was unassigned", "unchanged", "owner"} {
+			t.Run(operation+"/"+authority, func(t *testing.T) {
+				f := newSchedHTTP(t)
+				readCommitment(t, commitmentCall(f, "POST", commitmentBody()), 201)
+				assignee := f.member("guard-assigned@example.com", "editor")
+				other := f.member("guard-other@example.com", "editor")
+				if authority != "was unassigned" {
+					if _, err := f.srv.store.UpdateItem(f.item.ID, models.ItemUpdate{AssignedUserID: &assignee.ID}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				actor := assignee
+				if authority == "owner" {
+					actor = f.owner
+				}
+				method, path, body := "POST", commitmentPath(f)+"/renegotiate", any(renegotiateBody())
+				switch operation {
+				case "preview":
+					body.(map[string]any)["preview"] = true
+				case "series":
+					in := map[string]any{"scope": "series", "reason": "agreed", "remove_deadline": true, "preview": true}
+					rr := renegotiateCall(f, actor, in)
+					if rr.Code != 200 {
+						t.Fatalf("preview: %d %s", rr.Code, rr.Body.String())
+					}
+					in["revision"], in["preview"] = schedMap(t, rr)["revision"], false
+					body = in
+				case "delete commitment":
+					method, path, body = "DELETE", commitmentPath(f), nil
+				case "delete schedule":
+					method, path, body = "DELETE", f.path(f.item), nil
+				}
+				var beforeCommitment *models.Commitment
+				var beforeSchedule *models.ItemSchedule
+				journalN, called := 0, false
+				restore := f.srv.store.SetBeforeCommitmentPinHookForTesting(func() {
+					called = true
+					if authority != "unchanged" {
+						if _, err := f.srv.store.UpdateItem(f.item.ID, models.ItemUpdate{AssignedUserID: &other.ID}); err != nil {
+							t.Fatal(err)
+						}
+					}
+					var err error
+					beforeCommitment, err = f.srv.store.GetCommitment(f.ws.ID, f.item.ID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					beforeSchedule, err = f.srv.store.GetSchedule(f.ws.ID, f.item.ID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					journalN = f.count(`SELECT COUNT(*) FROM schedule_changes`)
+				})
+				defer restore()
+				rr := f.as(f.token(actor, ""), method, path, body)
+				if !called {
+					t.Fatal("request did not reach the pre-pin hook")
+				}
+				if authority == "unchanged" || authority == "owner" {
+					if rr.Code != 200 {
+						t.Fatalf("authorized request: %d %s", rr.Code, rr.Body.String())
+					}
+					return
+				}
+				f.expectErr(rr, 409, "commitment_changed", "stale")
+				afterCommitment, err := f.srv.store.GetCommitment(f.ws.ID, f.item.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				afterSchedule, err := f.srv.store.GetSchedule(f.ws.ID, f.item.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(beforeCommitment, afterCommitment) || !reflect.DeepEqual(beforeSchedule, afterSchedule) || journalN != f.count(`SELECT COUNT(*) FROM schedule_changes`) {
+					t.Fatal("stale authority wrote schedule or journal")
+				}
+			})
+		}
+	}
+}

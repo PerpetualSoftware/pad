@@ -22,6 +22,24 @@ func (s *Server) canRenegotiateCommitment(r *http.Request, workspaceID string, i
 	return s.canEditInCollection(r, workspaceID, item.ID, item.CollectionID)
 }
 
+// commitmentAssigneeGuard preserves the snapshot the authority decision used.
+// Workspace owners can act regardless of assignment.
+func commitmentAssigneeGuard(r *http.Request, item *models.Item) *string {
+	if workspaceRole(r) == "owner" {
+		return nil
+	}
+	assigned := ""
+	if item.AssignedUserID != nil {
+		assigned = *item.AssignedUserID
+	}
+	return &assigned
+}
+
+func writeCommitmentChanged(w http.ResponseWriter) {
+	writeError2(w, http.StatusConflict, "commitment_changed", "The commitment changed; re-preview before applying",
+		map[string]interface{}{"field": "revision", "code": "stale"})
+}
+
 // writeItemCommitment re-reads the roles and journal after a successful write.
 func (s *Server) writeItemCommitment(w http.ResponseWriter, workspaceID, itemID string, status int) {
 	c, err := s.store.GetCommitment(workspaceID, itemID)
@@ -198,10 +216,9 @@ func (s *Server) handleRenegotiateItemCommitment(w http.ResponseWriter, r *http.
 		writeScheduleBodyError(w)
 		return
 	}
-	result, err := s.store.RenegotiateCommitment(workspaceID, item.ID, currentUserID(r), body)
+	result, err := s.store.RenegotiateCommitment(workspaceID, item.ID, currentUserID(r), body, commitmentAssigneeGuard(r, item))
 	if errors.Is(err, store.ErrCommitmentChanged) {
-		writeError2(w, http.StatusConflict, "commitment_changed", "The commitment changed; re-preview before applying",
-			map[string]interface{}{"field": "revision", "code": "stale"})
+		writeCommitmentChanged(w)
 		return
 	}
 	if s.writeScheduleItemGone(w, r, workspaceID, err) {

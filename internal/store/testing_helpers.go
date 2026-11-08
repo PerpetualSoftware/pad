@@ -348,3 +348,11 @@ func (s *Store) SetRotateFaultHookForTesting(hook func() error) (restore func())
 	s.rotateFault = hook
 	return func() { s.rotateFault = prev }
 }
+
+// SetBeforeCommitmentPinHookForTesting sets the pre-lock commitment seam.
+// Production code must not call this. Set it only with no request in flight.
+func (s *Store) SetBeforeCommitmentPinHookForTesting(hook func()) (restore func()) {
+	prev := s.beforeCommitmentPin
+	s.beforeCommitmentPin = hook
+	return func() { s.beforeCommitmentPin = prev }
+}
