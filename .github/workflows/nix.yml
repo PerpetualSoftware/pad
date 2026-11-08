@@ -15,7 +15,7 @@ concurrency:
   # run never performs it. `cancel-in-progress: false` is not enough on its own —
   # GitHub holds only ONE pending run per group, so a third push evicts the
   # queued second, and the eviction looks exactly like a run that decided there
-  # was nothing to do. A per-commit group cannot be evicted by anything.
+  # was nothing to do. A per-ref-and-commit group (the ref keeps a release-* push at a main SHA out of main's group) is evicted by nothing but a re-push of that same ref and commit.
   #
   # What an evicted heal costs is now DELAY, not the fix. Since BUG-2974 the
   # heal is gated on the committed hash rather than on what the push touched, so
@@ -26,7 +26,7 @@ concurrency:
   # What that trades for: two main runs can reach the push step at once, and the
   # loser gets a non-fast-forward rejection and goes red. That is the right
   # direction — a red job is read, and the next push to main heals anyway.
-  group: nix-${{ github.event_name == 'push' && github.sha || github.ref }}
+  group: nix-${{ github.event_name == 'push' && format('{0}-{1}', github.ref, github.sha) || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:

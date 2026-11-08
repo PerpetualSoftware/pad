@@ -60,3 +60,19 @@ GO-2026-6809  crypto/x509 (go1.26.10)
 # symbol-precise local scan (`make vuln`) reports it only at module level,
 # with 0 package results (BUG-2085). Accepted permanently.
 GO-2026-5932  x/crypto/openpgp: unmaintained (uncalled)
+#
+# GO-2026-6911 (2026-11-06): mcp-go client/transport, SSRF and credential
+# disclosure through a followed redirect. The advisory names no fixed
+# version, so no bump clears it. pad's Nix artifact does not link the
+# package: `go list -deps ./cmd/pad` shows only mcp-go/mcp, /tracing and
+# /server, and the one import of mcp-go/client is internal/mcp/server_test.go.
+# The stripped build (-s -w) lets govulncheck match the advisory's symbol
+# names without a linked package, so this scan reports them. The guard on
+# shipped use is the "Run govulncheck" step in ci.yml, which scans an
+# unstripped `go build` of ./cmd/pad: it is symbol-precise, so if shipped
+# code ever reaches client/transport that job fails whatever this file says.
+# Reopen the acceptance before any shipped import of mcp-go/client, an MCP
+# client feature, or a second subPackage in nix/package.nix. Remove this
+# entry when the advisory gets a fixed version and pad bumps past it, or
+# when vulnscan.sh warns it is no longer reported.
+GO-2026-6911  mcp-go client/transport: SSRF, no fixed version (not linked)
