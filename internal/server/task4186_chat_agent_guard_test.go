@@ -13,6 +13,7 @@ import (
 // real handler. A row the guard refuses and the server accepts is a false
 // refusal; the reverse is a guard that stopped guarding.
 func TestChat_AgentChatTargetGuardParity(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	for _, tc := range agentchatcases.Cases() {
 		if tc.Key == "" {
@@ -32,6 +33,7 @@ func TestChat_AgentChatTargetGuardParity(t *testing.T) {
 }
 
 func TestNormalizeAgentNameDelegatesToModels(t *testing.T) {
+	t.Parallel()
 	for _, tc := range agentchatcases.Cases() {
 		for _, in := range []string{tc.Caller, tc.Key} {
 			if got, want := normalizeAgentName(in), models.NormalizeAgentName(in); got != want {

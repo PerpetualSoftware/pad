@@ -16,6 +16,7 @@ import (
 // set. Both doors now share that rule. Every role is still listed on both:
 // roles are workspace metadata, and only the count describes items.
 func TestBUG3257_RoleCountsDescribeOnlyVisibleItems(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		slug := createWSWithCollections(t, srv)
 		ws, err := srv.store.GetWorkspaceBySlug(slug)

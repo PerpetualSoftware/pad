@@ -29,6 +29,7 @@ import (
 // the operator opted into open bootstrap, and a non-loopback request
 // with no token header succeeds.
 func TestBypassSetupToken_NonLoopback_NoHeaderAccepted(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetBypassSetupToken(true)
 
@@ -54,6 +55,7 @@ func TestBypassSetupToken_NonLoopback_NoHeaderAccepted(t *testing.T) {
 // EnsureBootstrapToken. We verify that by checking the in-memory
 // state and the absence of a file in a temp dir we control.
 func TestBypassSetupToken_DoesNotLoadToken(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetBypassSetupToken(true)
 
@@ -74,6 +76,7 @@ func TestBypassSetupToken_DoesNotLoadToken(t *testing.T) {
 // regression check for "did the bypass plumbing accidentally open up
 // the default config too?"
 func TestBypassSetupToken_NonLoopback_NoBypass_StillRejected(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	// Note: NOT calling SetBypassSetupToken(true) — bypass stays off.
 
@@ -92,6 +95,7 @@ func TestBypassSetupToken_NonLoopback_NoBypass_StillRejected(t *testing.T) {
 // Defense-in-depth — cmd/pad/main.go also gates the bypass wiring
 // with !cfg.IsCloudServer(), but the server must defend itself.
 func TestBypassSetupToken_CloudMode_StillLockedDown(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetCloudMode("test-cloud-secret")
 	srv.SetBypassSetupToken(true) // operator misconfiguration
@@ -113,6 +117,7 @@ func TestBypassSetupToken_CloudMode_StillLockedDown(t *testing.T) {
 // succeeds. Bypass is purely additive — it doesn't replace the
 // loopback gate.
 func TestBypassSetupToken_LoopbackStillWorks(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	// Bypass off.
 
@@ -126,6 +131,7 @@ func TestBypassSetupToken_LoopbackStillWorks(t *testing.T) {
 // frontend signal: with bypass on + zero users, the session payload
 // returns setup_method=open so /setup skips the paste-token UI.
 func TestBypassSetupToken_SessionCheck_AdvertisesOpen(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetBypassSetupToken(true)
 
@@ -155,6 +161,7 @@ func TestBypassSetupToken_SessionCheck_AdvertisesOpen(t *testing.T) {
 // allows, so the frontend doesn't tell the user to copy a token
 // they don't need.
 func TestBypassSetupToken_SessionCheck_BypassWinsOverLogsToken(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	configureBootstrapToken(t, srv)
 	srv.SetBypassSetupToken(true)
@@ -175,6 +182,7 @@ func TestBypassSetupToken_SessionCheck_BypassWinsOverLogsToken(t *testing.T) {
 // the operator set the env var, just like it never advertises
 // 'logs_token'.
 func TestBypassSetupToken_SessionCheck_CloudModeIgnoresBypass(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetCloudMode("test-cloud-secret")
 	srv.SetBypassSetupToken(true) // ignored
@@ -195,6 +203,7 @@ func TestBypassSetupToken_SessionCheck_CloudModeIgnoresBypass(t *testing.T) {
 // is created, subsequent bootstrap POSTs return 409 regardless of
 // the bypass flag — it doesn't degrade into open registration.
 func TestBypassSetupToken_AfterBootstrap_GateClosed(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetBypassSetupToken(true)
 
@@ -222,6 +231,7 @@ func TestBypassSetupToken_AfterBootstrap_GateClosed(t *testing.T) {
 // break operators who flip bypass on at runtime via some hypothetical
 // future admin endpoint while a token is still loaded).
 func TestBypassSetupToken_DoesNotClearLoadedToken(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	// Seed a token first.

@@ -12,6 +12,7 @@ import (
 // same projection bootstrap uses; the dedicated endpoint lets callers
 // skip the rest of the bootstrap blob when they only need the catalog.
 func TestPlaybookList(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -50,6 +51,7 @@ func TestPlaybookList(t *testing.T) {
 // resolution path — `pad playbook show ship` should find the playbook
 // regardless of its underlying ref or item slug.
 func TestPlaybookShowByInvocationSlug(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -74,6 +76,7 @@ func TestPlaybookShowByInvocationSlug(t *testing.T) {
 // identifier isn't an invocation_slug, fall through to ResolveItem
 // (UUID / ref / item slug).
 func TestPlaybookShowByRef(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -97,6 +100,7 @@ func TestPlaybookShowByRef(t *testing.T) {
 // surface non-playbook items even when their ref matches — keeps
 // /pad <slug> routing from accidentally picking up a TASK.
 func TestPlaybookShowRejectsNonPlaybook(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -116,6 +120,7 @@ func TestPlaybookShowRejectsNonPlaybook(t *testing.T) {
 // and surfaces required-but-missing args in the unbound list (so the
 // agent can prompt the user rather than failing the call).
 func TestPlaybookRunBindsArgs(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -201,6 +206,7 @@ func TestPlaybookRunBindsArgs(t *testing.T) {
 // (JSON body field OR the `allow-draft` bareword in raw_args). The run
 // response also echoes the playbook status.
 func TestPlaybookRunDraftGate(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -253,6 +259,7 @@ func TestPlaybookRunDraftGate(t *testing.T) {
 // the playbook's status (which lives inside the fields JSON) to a
 // top-level `status` key.
 func TestPlaybookShowIncludesStatus(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -276,6 +283,7 @@ func TestPlaybookShowIncludesStatus(t *testing.T) {
 // the right errors for each malformed-input class. The CLI relays
 // these to the user verbatim, so the messages need to be specific.
 func TestParsePlaybookCLIArgsErrors(t *testing.T) {
+	t.Parallel()
 	specs := []PlaybookArgumentSpec{
 		{Name: "target", Type: "ref", Required: true},
 		{Name: "merge-strategy", Type: "enum", Enum: []string{"squash", "merge"}},
@@ -320,6 +328,7 @@ func TestParsePlaybookCLIArgsErrors(t *testing.T) {
 // with no required args — the previous EOF-string check rejected
 // the legitimate no-args call.
 func TestPlaybookRunAcceptsEmptyBody(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -340,6 +349,7 @@ func TestPlaybookRunAcceptsEmptyBody(t *testing.T) {
 // declared before a required one, a bareword token must skip past
 // the optional and fill the required slot.
 func TestParsePlaybookCLIArgsOptionalNotPositional(t *testing.T) {
+	t.Parallel()
 	specs := []PlaybookArgumentSpec{
 		{Name: "merge-strategy", Type: "enum", Enum: []string{"squash", "rebase"}}, // optional, first
 		{Name: "target", Type: "ref", Required: true},                              // required, second
@@ -360,6 +370,7 @@ func TestParsePlaybookCLIArgsOptionalNotPositional(t *testing.T) {
 // coercion rejects partial tokens, NaN, and Inf
 // caught Sscanf("%g") accepting "1abc" silently.
 func TestCoercePlaybookValueNumberRejectsBadInput(t *testing.T) {
+	t.Parallel()
 	spec := PlaybookArgumentSpec{Name: "limit", Type: "number"}
 
 	good := []struct {
@@ -407,6 +418,7 @@ func indexOf(s, sub string) int {
 // returns an empty array rather than null, matching bootstrap's
 // contract.
 func TestPlaybookListEmptyShape(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 

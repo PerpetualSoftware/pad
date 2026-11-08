@@ -52,6 +52,7 @@ func countSource(sources []string, want string) int {
 }
 
 func TestU1b_EveryChatGPTBodyEditIsVersioned(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	item := createTaskWithFields(t, srv, slug, "Item", `{"status":"open"}`)
@@ -80,6 +81,7 @@ func TestU1b_EveryChatGPTBodyEditIsVersioned(t *testing.T) {
 // body claiming version_source "chatgpt" neither forces a version nor wears
 // the label.
 func TestU1b_PlainAPIIsNotForcedAndCannotClaimTheLabel(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	item := createTaskWithFields(t, srv, slug, "Item", `{"status":"open"}`)
@@ -113,6 +115,7 @@ func TestU1b_PlainAPIIsNotForcedAndCannotClaimTheLabel(t *testing.T) {
 // with the chat-facing message, and nothing is written: the version would
 // miss the tab's typing and an undo would lose it.
 func TestU1b_PendingTabEditsRefuseTheChatGPTEdit(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	item := createTaskWithFields(t, srv, slug, "Item", `{"status":"open"}`)

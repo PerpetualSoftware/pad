@@ -77,6 +77,7 @@ func doRequestWithHeadersFromAddr(srv *Server, method, path string, body interfa
 // the bootstrap succeeds, the file is deleted, and the in-memory token
 // is cleared.
 func TestBootstrapToken_NonLoopback_HeaderAccepted(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	tokenPath := configureBootstrapToken(t, srv)
 
@@ -102,6 +103,7 @@ func TestBootstrapToken_NonLoopback_HeaderAccepted(t *testing.T) {
 // for self-host without a token configured (regression coverage —
 // existing behavior must not change).
 func TestBootstrapToken_NonLoopback_NoHeader(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	configureBootstrapToken(t, srv)
 
@@ -113,6 +115,7 @@ func TestBootstrapToken_NonLoopback_NoHeader(t *testing.T) {
 
 // TestBootstrapToken_NonLoopback_WrongHeader covers wrong-token rejection.
 func TestBootstrapToken_NonLoopback_WrongHeader(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	configureBootstrapToken(t, srv)
 
@@ -130,6 +133,7 @@ func TestBootstrapToken_NonLoopback_WrongHeader(t *testing.T) {
 // header. This prevents the secret from landing in any caller's access
 // log, browser history, or proxy log.
 func TestBootstrapToken_NonLoopback_QueryRejected(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	configureBootstrapToken(t, srv)
 
@@ -146,6 +150,7 @@ func TestBootstrapToken_NonLoopback_QueryRejected(t *testing.T) {
 // admin is created, the same token cannot be reused — even by the same
 // client.
 func TestBootstrapToken_Replay_AfterConsume(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	configureBootstrapToken(t, srv)
 
@@ -182,6 +187,7 @@ func TestBootstrapToken_Replay_AfterConsume(t *testing.T) {
 // loaded. This test forces the token in anyway to pin the
 // defense-in-depth check inside handleBootstrap itself.
 func TestBootstrapToken_CloudMode_NoBypass(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetCloudMode("test-cloud-secret")
 	configureBootstrapToken(t, srv)
@@ -205,6 +211,7 @@ func TestBootstrapToken_CloudMode_NoBypass(t *testing.T) {
 // validate → check-UserCount → CreateUser → consume sequence so the
 // loser sees an empty in-memory token after the winner consumes.
 func TestBootstrapToken_ConcurrentRace(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	configureBootstrapToken(t, srv)
 
@@ -253,6 +260,7 @@ func TestBootstrapToken_ConcurrentRace(t *testing.T) {
 // users exist — the frontend's SetupRequiredNotice branches on this to
 // render the "paste your bootstrap token from the container logs" UI.
 func TestBootstrapToken_SessionCheck_LogsToken(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	configureBootstrapToken(t, srv)
 
@@ -274,6 +282,7 @@ func TestBootstrapToken_SessionCheck_LogsToken(t *testing.T) {
 // fallback: when no token is configured (e.g. read-only data dir per
 // D7), the session payload returns the existing local_cli value.
 func TestBootstrapToken_SessionCheck_LocalCLI_NoToken(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	// Note: NOT calling configureBootstrapToken — leaves token empty.
 
@@ -293,6 +302,7 @@ func TestBootstrapToken_SessionCheck_LocalCLI_NoToken(t *testing.T) {
 // a token is somehow loaded (shouldn't happen via cmd/pad/main.go but
 // the handler must defend itself anyway).
 func TestBootstrapToken_SessionCheck_CloudMode_NoLogsToken(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetCloudMode("test-cloud-secret")
 	configureBootstrapToken(t, srv)
@@ -314,6 +324,7 @@ func TestBootstrapToken_SessionCheck_CloudMode_NoLogsToken(t *testing.T) {
 // case doesn't trigger preflight, so this test specifically configures
 // CORS to exercise the preflight path.
 func TestBootstrapToken_CORSPreflightAllowsHeader(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetCORSOrigins("https://other.example.com")
 

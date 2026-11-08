@@ -3,6 +3,7 @@ package server
 import "testing"
 
 func TestMeAgendaScanCapIsRequestWide(t *testing.T) {
+	t.Parallel()
 	w := newAgendaWorld(t, "tasks")
 	other := meAgendaWorkspace(t, w, "Other")
 	w.srv.agendaScanLimit = 3

@@ -46,6 +46,7 @@ func twinsInDest(t *testing.T, f *relationFixture, title string) (*models.Item, 
 // re-resolved the raw title inside its transaction and saw
 // `ambiguous`, so a hidden twin changed the copy's STATUS.
 func TestRelationTitleCopy_OverrideResolvesForACallerWhoSeesOneTwin(t *testing.T) {
+	t.Parallel()
 	f := newCopyRelationFixture(t)
 	visible, hidden, u := twinsInDest(t, f, "Twin In B")
 
@@ -71,6 +72,7 @@ func TestRelationTitleCopy_OverrideResolvesForACallerWhoSeesOneTwin(t *testing.T
 // Preflight applied the narrowing and the copy did not, so the preview promised
 // a value the copy then refused or dropped.
 func TestRelationTitleCopy_PreflightAndCopyAgreeOnANarrowedTitle(t *testing.T) {
+	t.Parallel()
 	f := newCopyRelationFixture(t)
 	visible, _, u := twinsInDest(t, f, "Agreed Twin")
 

@@ -31,6 +31,7 @@ func bug3870PreviewCanGrant(t *testing.T, f *accessFixture, code, tok string) bo
 }
 
 func TestBUG3870_AMemberWithADeadInvitationIsAlreadyIn(t *testing.T) {
+	t.Parallel()
 	losses := append([]bug3770Loss{}, bug3770Losses...)
 	losses = append(losses, bug3770Loss{"restricted to specific collections", func(f *accessFixture, u *models.User) {
 		if err := f.srv.store.SetMemberCollectionAccess(f.wsID, u.ID, "specific", nil); err != nil {
@@ -75,6 +76,7 @@ func TestBUG3870_AMemberWithADeadInvitationIsAlreadyIn(t *testing.T) {
 // reports the dead invitation, so the true above is the membership and not
 // the session.
 func TestBUG3870_ANonMemberInviteeStillSeesTheDeadInvitation(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newAccessFixture(t, d)
 		email := "outsider-3870@example.com"

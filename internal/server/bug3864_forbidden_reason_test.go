@@ -38,6 +38,7 @@ func bug3864Refusal(t *testing.T, rr *httptest.ResponseRecorder) (code, message,
 }
 
 func TestBUG3864_TheConsentAllowListNamesItself(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	owner := mustCreateUser(t, srv, "owner@example.com", "Owner", "")
 	ws := mustCreateOwnedWorkspace(t, srv, "Refused", owner)
@@ -55,6 +56,7 @@ func TestBUG3864_TheConsentAllowListNamesItself(t *testing.T) {
 }
 
 func TestBUG3864_CrossWorkspaceRefusalsNameTheirGate(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		access     CrossWorkspaceAccess
 		code       string
@@ -76,6 +78,7 @@ func TestBUG3864_CrossWorkspaceRefusalsNameTheirGate(t *testing.T) {
 // a caller with no workspace role (a platform admin who is not a member) has
 // no role to change, so neither is told to ask for one.
 func TestBUG3864_RequireMinRoleSaysRoleOnlyWhenARoleCanFixIt(t *testing.T) {
+	t.Parallel()
 	for role, want := range map[string]string{
 		"viewer": forbiddenReasonRole,
 		"guest":  forbiddenReasonNoAccess,
@@ -101,6 +104,7 @@ func TestBUG3864_RequireMinRoleSaysRoleOnlyWhenARoleCanFixIt(t *testing.T) {
 // through the router with real tokens, so the role on context is the one the
 // auth middleware put there. A guest holds grants, not a role.
 func TestBUG3864_InlineRoleGatesSayRoleOrNoAccess(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	owner := mustCreateUser(t, srv, "owner@example.com", "Owner", "")
 	ws := mustCreateOwnedWorkspace(t, srv, "Gated", owner)

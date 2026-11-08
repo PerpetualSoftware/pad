@@ -65,10 +65,12 @@ func assertNonRetryableRemapAnswer(t *testing.T, srv *Server, rr *httptest.Respo
 }
 
 func TestTASK4278_RemapFirstChunkFailure_SQLite(t *testing.T) {
+	t.Parallel()
 	remapFirstChunkFailure(t, store.DriverSQLite)
 }
 
 func TestTASK4278_RemapFirstChunkFailure_Postgres(t *testing.T) {
+	t.Parallel()
 	remapFirstChunkFailure(t, store.DriverPostgres)
 }
 
@@ -94,10 +96,12 @@ func remapFirstChunkFailure(t *testing.T, driver store.DriverType) {
 }
 
 func TestTASK4278_DeferredRemapFailureOnKeptWorkspace_SQLite(t *testing.T) {
+	t.Parallel()
 	deferredRemapFailure(t, store.DriverSQLite)
 }
 
 func TestTASK4278_DeferredRemapFailureOnKeptWorkspace_Postgres(t *testing.T) {
+	t.Parallel()
 	deferredRemapFailure(t, store.DriverPostgres)
 }
 

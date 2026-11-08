@@ -6,6 +6,7 @@ import (
 )
 
 func TestDiffFieldsPrimitives(t *testing.T) {
+	t.Parallel()
 	got := diffFields(
 		`{"status":"open","priority":"medium"}`,
 		`{"status":"in-progress","priority":"high"}`,
@@ -21,6 +22,7 @@ func TestDiffFieldsPrimitives(t *testing.T) {
 }
 
 func TestDiffFieldsAddedRemovedFields(t *testing.T) {
+	t.Parallel()
 	// Newly added field — old map missing the key.
 	got := diffFields(`{"status":"open"}`, `{"status":"open","priority":"high"}`)
 	want := "priority: → high"
@@ -30,6 +32,7 @@ func TestDiffFieldsAddedRemovedFields(t *testing.T) {
 }
 
 func TestDiffFieldsImplementationNotesSummarised(t *testing.T) {
+	t.Parallel()
 	// Add the first implementation note. Without the structured-field
 	// formatting this used to render as
 	//   `implementation_notes: → [map[created_at:... details:... summary:...]]`
@@ -50,6 +53,7 @@ func TestDiffFieldsImplementationNotesSummarised(t *testing.T) {
 }
 
 func TestDiffFieldsImplementationNotesPluralised(t *testing.T) {
+	t.Parallel()
 	old := `{"implementation_notes":[{"summary":"first"}]}`
 	updated := `{"implementation_notes":[{"summary":"first"},{"summary":"second"},{"summary":"third"}]}`
 
@@ -61,6 +65,7 @@ func TestDiffFieldsImplementationNotesPluralised(t *testing.T) {
 }
 
 func TestDiffFieldsDecisionLogSummarised(t *testing.T) {
+	t.Parallel()
 	old := `{"status":"active"}`
 	updated := `{"status":"active","decision_log":[{"id":"d1","decision":"Store notes in reserved field keys","rationale":"Avoid a new table"}]}`
 
@@ -80,6 +85,7 @@ func TestDiffFieldsDecisionLogSummarised(t *testing.T) {
 }
 
 func TestDiffFieldsGenericStructuredFieldsFallback(t *testing.T) {
+	t.Parallel()
 	// An unknown array-of-objects field should still produce a summary,
 	// not a raw map repr.
 	old := `{"status":"open"}`
@@ -96,6 +102,7 @@ func TestDiffFieldsGenericStructuredFieldsFallback(t *testing.T) {
 }
 
 func TestDiffFieldsObjectFieldFallback(t *testing.T) {
+	t.Parallel()
 	// A bare object field — also previously dumped as `map[k:v]`.
 	old := `{"status":"open"}`
 	updated := `{"status":"open","convention":{"trigger":"on-implement","scope":"all"}}`
@@ -108,6 +115,7 @@ func TestDiffFieldsObjectFieldFallback(t *testing.T) {
 }
 
 func TestDiffFieldsHandlesInvalidJSON(t *testing.T) {
+	t.Parallel()
 	if got := diffFields("not-json", `{"a":1}`); got != "" {
 		t.Errorf("diffFields invalid old: expected empty, got %q", got)
 	}
@@ -117,6 +125,7 @@ func TestDiffFieldsHandlesInvalidJSON(t *testing.T) {
 }
 
 func TestFormatChangeValueNilSafe(t *testing.T) {
+	t.Parallel()
 	if got := formatChangeValue("status", nil); got != "" {
 		t.Errorf("formatChangeValue(nil): expected empty, got %q", got)
 	}
@@ -132,6 +141,7 @@ func TestFormatChangeValueNilSafe(t *testing.T) {
 // but coarse — which is acceptable: the activity card also shows the actor
 // + timestamp, so the user knows something changed and can drill in.
 func TestDiffFieldsSameCardinalityArrayChangeStillReported(t *testing.T) {
+	t.Parallel()
 	old := `{"implementation_notes":[{"id":"n1","summary":"original"}]}`
 	updated := `{"implementation_notes":[{"id":"n1","summary":"revised"}]}`
 
@@ -151,6 +161,7 @@ func TestDiffFieldsSameCardinalityArrayChangeStillReported(t *testing.T) {
 // (e.g. `convention`) now both stringify to `(object)`, so an in-place edit
 // would have been silently dropped. Confirm DeepEqual catches it.
 func TestDiffFieldsObjectMutationStillReported(t *testing.T) {
+	t.Parallel()
 	old := `{"convention":{"trigger":"on-implement","scope":"all"}}`
 	updated := `{"convention":{"trigger":"on-commit","scope":"all"}}`
 

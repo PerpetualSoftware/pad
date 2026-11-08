@@ -44,6 +44,7 @@ func delegatedAPIFixture(t *testing.T, offered, access, role string) delegatedAP
 }
 
 func TestTask3399b_TheAppActsAsThePerson(t *testing.T) {
+	t.Parallel()
 	f := delegatedAPIFixture(t, "write", "write", "editor")
 	rr := appGet(f.srv, f.path("/me"), f.token)
 	if rr.Code != http.StatusOK {
@@ -126,6 +127,7 @@ func TestTask3401_DelegatedWriteAuthorIsThePerson(t *testing.T) {
 // §4 step 4: the token's access is the LESSER of the person's consent and
 // what the manifest offers now; and the person's role still applies.
 func TestTask3399b_AccessIsTheLesser(t *testing.T) {
+	t.Parallel()
 	create := func(f delegatedAPIFix) int {
 		return appDo(f.srv, "POST", f.path("/collections/requests/items"), f.token, map[string]any{"title": "x"}).Code
 	}
@@ -154,6 +156,7 @@ func TestTask3399b_AccessIsTheLesser(t *testing.T) {
 // their credentials) stops their token at the NEXT request, even where no
 // revocation reached the token itself.
 func TestTask3399b_ThePersonIsCheckedOnEveryRequest(t *testing.T) {
+	t.Parallel()
 	cases := map[string]func(t *testing.T, f delegatedAPIFix){
 		"membership removed": func(t *testing.T, f delegatedAPIFix) {
 			if _, err := f.srv.store.DB().Exec(`DELETE FROM workspace_members WHERE user_id = ? AND workspace_id = ?`, f.person.ID, f.ws.ID); err != nil {
@@ -193,6 +196,7 @@ func TestTask3399b_ThePersonIsCheckedOnEveryRequest(t *testing.T) {
 // The person's own visibility bounds what the app sees as them: the request
 // ceiling (U6a), not only the companion set.
 func TestTask3399b_ThePersonsVisibilityBoundsTheApp(t *testing.T) {
+	t.Parallel()
 	f := delegatedAPIFixture(t, "write", "read", "editor")
 	if _, err := f.srv.store.DB().Exec(`UPDATE workspace_members SET collection_access = 'specific' WHERE user_id = ? AND workspace_id = ?`, f.person.ID, f.ws.ID); err != nil {
 		t.Fatal(err)
@@ -207,6 +211,7 @@ func TestTask3399b_ThePersonsVisibilityBoundsTheApp(t *testing.T) {
 // in flight withholds the response (the store's bot ceiling does not cover a
 // person).
 func TestTask3399b_ACompanionReleasedMidReadWithholdsIt(t *testing.T) {
+	t.Parallel()
 	f := delegatedAPIFixture(t, "write", "read", "editor")
 	f.srv.appAfterHandler = func() {
 		if _, err := f.srv.store.DB().Exec(`UPDATE collections SET via_app = NULL WHERE id = ?`, f.companion.ID); err != nil {
@@ -221,6 +226,7 @@ func TestTask3399b_ACompanionReleasedMidReadWithholdsIt(t *testing.T) {
 // U6c: a delegated upload re-admits the PERSON (their
 // visibility of the item and their edit right) immediately before its row.
 func TestTask3399b_APersonNarrowedMidUploadCommitsNoRow(t *testing.T) {
+	t.Parallel()
 	for name, change := range map[string]string{
 		"collection access narrowed": `UPDATE workspace_members SET collection_access = 'specific' WHERE user_id = ?`,
 		"role dropped to viewer":     `UPDATE workspace_members SET role = 'viewer' WHERE user_id = ?`,
@@ -277,6 +283,7 @@ func TestTask3399b_APersonNarrowedMidUploadCommitsNoRow(t *testing.T) {
 // Every delegated JSON write re-admits the person after its
 // body is read; one who lost access while the body arrived writes nothing.
 func TestTask3399b_APersonLosingAccessMidBodyWritesNothing(t *testing.T) {
+	t.Parallel()
 	type call struct {
 		method, path string
 		body         map[string]any
@@ -336,6 +343,7 @@ func TestTask3399b_APersonLosingAccessMidBodyWritesNothing(t *testing.T) {
 // A person who sees only granted items in a companion lists
 // only those, and the window (has_more, next_offset) counts nothing hidden.
 func TestTask3399b_AListCountsNothingHidden(t *testing.T) {
+	t.Parallel()
 	f := delegatedAPIFixture(t, "write", "read", "editor")
 	// A second companion item the person will not be granted.
 	hidden, err := f.srv.store.CreateItem(f.ws.ID, f.companion.ID, models.ItemCreate{Title: "Hidden", ActorUserID: f.person.ID})
@@ -370,6 +378,7 @@ func TestTask3399b_AListCountsNothingHidden(t *testing.T) {
 // The response's final re-admission step re-checks the
 // workspace and the person's role, not only the credential.
 func TestTask3399b_ARoleDroppedDuringTheReChecksWithholdsTheResponse(t *testing.T) {
+	t.Parallel()
 	for name, change := range map[string]string{
 		"role dropped":      `UPDATE workspace_members SET role = 'viewer' WHERE user_id = ?`,
 		"workspace deleted": `UPDATE workspaces SET deleted_at = '2026-01-01T00:00:00Z' WHERE id = (SELECT workspace_id FROM workspace_members WHERE user_id = ? LIMIT 1)`,
@@ -401,6 +410,7 @@ func TestTask3399b_ARoleDroppedDuringTheReChecksWithholdsTheResponse(t *testing.
 // install that wrote it (actor_via_app, envelope via_app) AND credits the
 // person, never the install's bot.
 func TestTask3399b_ADelegatedWritesEventNamesTheInstallAndThePerson(t *testing.T) {
+	t.Parallel()
 	f := delegatedAPIFixture(t, "write", "write", "editor")
 	if _, err := f.srv.store.DB().Exec(`DELETE FROM event_outbox`); err != nil {
 		t.Fatal(err)

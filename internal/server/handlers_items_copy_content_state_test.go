@@ -20,6 +20,7 @@ import (
 // and TestListItemsPendingContentFlushNamesOnlyStaleItems, which parameterise
 // over both backends.
 func TestCopyEndpoint_WarnsWhenTheCopiedBodyIsBehindTheLiveDocument(t *testing.T) {
+	t.Parallel()
 	t.Run("a current source is not marked", func(t *testing.T) {
 		// THE CONTROL, first: the field is populated from the store result
 		// unconditionally, so a source whose row is current must produce no key

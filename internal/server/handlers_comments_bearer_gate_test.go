@@ -100,6 +100,7 @@ func newCommentBearerGateFixture(t *testing.T) *commentBearerGateFixture {
 // member's comment (403, same shape as any other non-author non-admin),
 // while a cookie-session admin retains the existing web-UI affordance.
 func TestUpdateComment_AdminBearer_DeniedOnOthersComment(t *testing.T) {
+	t.Parallel()
 	f := newCommentBearerGateFixture(t)
 
 	rr := doRequestWithCookie(f.srv, "POST",
@@ -131,6 +132,7 @@ func TestUpdateComment_AdminBearer_DeniedOnOthersComment(t *testing.T) {
 // check is independent of the admin branch: a bearer-authed admin can
 // still edit a comment they themselves authored.
 func TestUpdateComment_AdminBearer_CanEditOwnComment(t *testing.T) {
+	t.Parallel()
 	f := newCommentBearerGateFixture(t)
 
 	rr := doRequestWithHeaders(f.srv, "POST",
@@ -157,6 +159,7 @@ func TestUpdateComment_AdminBearer_CanEditOwnComment(t *testing.T) {
 // now also out of reach for a bearer-authed admin — only a cookie-session
 // admin can still edit it.
 func TestUpdateComment_AdminBearer_NullUserIDDenied(t *testing.T) {
+	t.Parallel()
 	f := newCommentBearerGateFixture(t)
 
 	item, err := f.srv.store.GetItemBySlug(f.ws.ID, f.itemSlug)

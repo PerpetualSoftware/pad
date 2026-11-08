@@ -23,6 +23,7 @@ func task3462ListBuiltins(t *testing.T, srv *Server, ws string) []builtinListEnt
 // "update" to text it already holds. Swept over every door: each template's
 // seeds, and an activation of every library entry, all read current at once.
 func TestTASK3462U3a_EverySeedAndActivationReadsCurrent(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		for _, tmpl := range collections.ListTemplates() {
 			slug, _ := task3462Workspace(t, srv, "Sweep "+tmpl.Name, tmpl.Name)

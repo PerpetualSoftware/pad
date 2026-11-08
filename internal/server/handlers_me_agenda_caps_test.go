@@ -50,6 +50,7 @@ func TestMeAgendaCreatedCompletedSQLCaps(t *testing.T) {
 }
 
 func TestMeAgendaUnavailableVisibility(t *testing.T) {
+	t.Parallel()
 	w := newAgendaWorld(t, "tasks", "secret")
 	visible := w.item(t, "tasks", "Unreadable", `{}`, oneShot())
 	hidden := w.item(t, "secret", "Hidden unreadable", `{}`, oneShot())

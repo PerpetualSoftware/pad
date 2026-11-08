@@ -35,6 +35,7 @@ func get(t *testing.T, h http.Handler, path string, hdr map[string]string) *http
 }
 
 func TestCompressGzipsJSONForAClientThatAcceptsIt(t *testing.T) {
+	t.Parallel()
 	h := CompressResponses(jsonHandler())
 	resp := get(t, h, "/api/v1/workspaces/w/items-index", map[string]string{"Accept-Encoding": "gzip"})
 	if resp.Header.Get("Content-Encoding") != "gzip" {
@@ -59,6 +60,7 @@ func TestCompressGzipsJSONForAClientThatAcceptsIt(t *testing.T) {
 }
 
 func TestCompressLeavesSkippedResponsesAlone(t *testing.T) {
+	t.Parallel()
 	h := CompressResponses(jsonHandler())
 	for _, c := range []struct {
 		path string
@@ -96,6 +98,7 @@ func TestCompressLeavesSkippedResponsesAlone(t *testing.T) {
 
 // The attachment skip is the per-file routes, not the list beside them.
 func TestCompressStillCompressesTheAttachmentList(t *testing.T) {
+	t.Parallel()
 	h := CompressResponses(jsonHandler())
 	resp := get(t, h, "/api/v1/workspaces/w/attachments", map[string]string{"Accept-Encoding": "gzip"})
 	if ce := resp.Header.Get("Content-Encoding"); ce != "gzip" {
@@ -104,6 +107,7 @@ func TestCompressStillCompressesTheAttachmentList(t *testing.T) {
 }
 
 func TestCompressSkipsTypesNotWorthCompressing(t *testing.T) {
+	t.Parallel()
 	h := CompressResponses(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/png")
 		_, _ = w.Write([]byte(strings.Repeat("\x89PNG", 500)))
@@ -153,6 +157,7 @@ func TestCompressDoesNotBufferAnSSEStream(t *testing.T) {
 }
 
 func TestCompressIsWiredIntoTheServer(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	req := httptest.NewRequest("GET", "/api/v1/health", nil)
 	req.Header.Set("Accept-Encoding", "gzip")
@@ -166,6 +171,7 @@ func TestCompressIsWiredIntoTheServer(t *testing.T) {
 // A write's response is never compressed: every secret the API mints comes
 // back from one. Nor a HEAD's: its Content-Length is the answer.
 func TestCompressLeavesWriteResponsesAlone(t *testing.T) {
+	t.Parallel()
 	h := CompressResponses(jsonHandler())
 	for _, m := range []string{"POST", "PUT", "PATCH", "DELETE", "HEAD"} {
 		req := httptest.NewRequest(m, "/api/v1/workspaces/w/members/invite", nil)

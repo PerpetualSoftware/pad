@@ -20,6 +20,7 @@ import (
 // the app router exposes none of the grant-path doors), so the test drives the
 // filter the doors share, with the app context a request would carry.
 func TestBug3424_ItemGrantPathKeepsTheAppCeiling(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	mk := func(email, role string) *models.User {
 		u, err := srv.store.CreateUser(models.UserCreate{Email: email, Name: email, Password: "correct-horse-battery-staple", Role: role})

@@ -12,6 +12,7 @@ import (
 // with that raw name as the slug, and the next request to the workspace's
 // own export URL could not even be built.
 func TestBUG3769_ImportNameOverrideGetsAUsableSlug(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	rr := doRequest(srv, "POST", "/api/v1/workspaces", map[string]string{"name": "Source 3769"})
 	if rr.Code != http.StatusCreated {

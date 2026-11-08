@@ -117,6 +117,7 @@ func (e *appsEnv) minimalManifest(version string) map[string]any {
 }
 
 func TestBug3417_AppsResponsesHaveNoNullLists(t *testing.T) {
+	t.Parallel()
 	t.Run("owner and admin doors over a minimal install", func(t *testing.T) {
 		e := newProvisionEnv(t)
 		e.publish(t, e.minimalManifest("1.0.0"))
@@ -276,6 +277,7 @@ func TestBug3417_AppsResponsesHaveNoNullLists(t *testing.T) {
 // slice field today. One that gains one must be added to the census above
 // (and given a non-null default) before this passes.
 func TestBug3417_AppEventDTOsHaveNoListFields(t *testing.T) {
+	t.Parallel()
 	for _, typ := range []reflect.Type{
 		typeOf[store.AppItemEvent](), typeOf[store.AppItemDeletedEvent](),
 		typeOf[store.AppCommentEvent](), typeOf[store.AppCommentDeletedEvent](),

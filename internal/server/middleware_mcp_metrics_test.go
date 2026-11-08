@@ -97,6 +97,7 @@ func TestRecordMCPCallMetrics_NilMetrics(t *testing.T) {
 // (no MCP-origin gate — the dispatcher is by construction MCP-only).
 // Also verifies nil-metrics safety.
 func TestRecordMCPTierMismatch(t *testing.T) {
+	t.Parallel()
 	s := &Server{metrics: metrics.New()}
 
 	s.RecordMCPTierMismatch(http.MethodPost, "/api/v1/workspaces/x/items")
@@ -125,6 +126,7 @@ func TestRecordMCPTierMismatch(t *testing.T) {
 // silently skipped so /api/v1 traffic doesn't pollute the MCP-specific
 // counter.
 func TestRecordMCPAuthzDenial_GatedOnMCPOrigin(t *testing.T) {
+	t.Parallel()
 	s := &Server{metrics: metrics.New()}
 
 	// Request without MCP identity → no-op.
@@ -180,6 +182,7 @@ func TestObserveOAuthFlowDuration(t *testing.T) {
 
 // TestRecordOAuthFlow covers the OAuth-flow stage counter.
 func TestRecordOAuthFlow(t *testing.T) {
+	t.Parallel()
 	s := &Server{metrics: metrics.New()}
 	s.recordOAuthFlow("started")
 	s.recordOAuthFlow("started")

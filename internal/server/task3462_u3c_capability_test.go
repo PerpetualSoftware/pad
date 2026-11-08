@@ -10,6 +10,7 @@ import (
 // (no route, a bare 404) from an item made from no built-in (404
 // not_builtin), so this build says it serves the built-in state and update.
 func TestTASK3462U3c_CapabilityAdvertisesBuiltinUpdate(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	rr := doRequest(srv, http.MethodGet, "/api/v1/server/capabilities", nil)
 	if rr.Code != http.StatusOK {

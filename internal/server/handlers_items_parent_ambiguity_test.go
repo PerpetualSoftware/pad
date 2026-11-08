@@ -48,6 +48,7 @@ func assertAmbiguityRefused(t *testing.T, rr interface {
 }
 
 func TestPatchItem_ParentClearPlusParentID_Refused(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	parent, child := seedParentAndChild(t, srv, slug)
@@ -62,6 +63,7 @@ func TestPatchItem_ParentClearPlusParentID_Refused(t *testing.T) {
 }
 
 func TestPatchItem_ParentSetPlusParentID_Refused(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	parent, child := seedParentAndChild(t, srv, slug)
@@ -74,6 +76,7 @@ func TestPatchItem_ParentSetPlusParentID_Refused(t *testing.T) {
 }
 
 func TestPatchItem_PlanAliasPlusParentID_Refused(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	parent, child := seedParentAndChild(t, srv, slug)
@@ -86,6 +89,7 @@ func TestPatchItem_PlanAliasPlusParentID_Refused(t *testing.T) {
 }
 
 func TestPatchItem_FullFieldsParentPlusParentID_Refused(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	parent, child := seedParentAndChild(t, srv, slug)
@@ -102,6 +106,7 @@ func TestPatchItem_FullFieldsParentPlusParentID_Refused(t *testing.T) {
 // Controls: each hierarchy write ALONE keeps working exactly as before —
 // the guard must refuse the pair, not either member.
 func TestPatchItem_ParentViaFieldsPatchAlone_StillWorks(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	parent, child := seedParentAndChild(t, srv, slug)
@@ -115,6 +120,7 @@ func TestPatchItem_ParentViaFieldsPatchAlone_StillWorks(t *testing.T) {
 }
 
 func TestPatchItem_TopLevelParentIDAlone_StillWorks(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	parent, child := seedParentAndChild(t, srv, slug)

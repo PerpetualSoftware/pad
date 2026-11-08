@@ -42,6 +42,7 @@ func task3539Workspace(t *testing.T, srv *Server, name string) *models.Workspace
 }
 
 func TestTASK3539_SchemaWritesRefuseRepeatsAndBlanks(t *testing.T) {
+	t.Parallel()
 	for _, door := range []string{"create", "update"} {
 		for _, tc := range task3539BadSchemas {
 			t.Run(door+"/"+tc.name, func(t *testing.T) {
@@ -70,6 +71,7 @@ func TestTASK3539_SchemaWritesRefuseRepeatsAndBlanks(t *testing.T) {
 // Control: the same doors accept a clean schema, so the refusals above are
 // about the repeats and not about the request shape.
 func TestTASK3539_CleanSchemaIsAccepted(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := task3539Workspace(t, srv, "Clean")
 	base := "/api/v1/workspaces/" + ws.Slug + "/collections"
@@ -88,6 +90,7 @@ func TestTASK3539_CleanSchemaIsAccepted(t *testing.T) {
 // and an update that sends no schema applies. Sending it back is refused,
 // naming the repeat, which is how its owner learns what to fix.
 func TestTASK3539_StoredRepeatStillReadsAndIsNamedOnRewrite(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := task3539Workspace(t, srv, "Legacy")
 	broken := task3539BadSchemas[0].schema
@@ -120,6 +123,7 @@ func TestTASK3539_StoredRepeatStillReadsAndIsNamedOnRewrite(t *testing.T) {
 // redirect_uris array as sent, so a repeated URI blanked the connected-apps
 // page (keyed by URI) for every user of that client. It is registered once.
 func TestTASK3539_DCRRegistersARepeatedRedirectURIOnce(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	rr := doRequest(srv, "POST", "/oauth/register", map[string]any{
 		"client_name":   "Repeater",

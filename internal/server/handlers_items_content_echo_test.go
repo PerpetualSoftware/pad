@@ -152,6 +152,7 @@ func keysOf(m map[string]any) []string {
 // route-independent: wherever the content reached the row, there is nothing pending,
 // so the marker must be absent.
 func TestBUG2995_NoPendingMarkerWhenTheContentIsInTheRow(t *testing.T) {
+	t.Parallel()
 	srv := testServerWithCollab(t)
 	slug := createWSWithCollections(t, srv)
 	item := createTaskWithFields(t, srv, slug, "Item", `{"status":"open"}`)

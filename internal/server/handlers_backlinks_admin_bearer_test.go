@@ -25,6 +25,7 @@ import (
 // wsB owned by a different user, with a source item that wiki-links
 // the target via `[[wsA-slug::TASK-N]]`.
 func TestCrossWorkspaceBacklinks_AdminBearer_OnlySeesMembershipWorkspaces(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	admin, err := srv.store.CreateUser(models.UserCreate{

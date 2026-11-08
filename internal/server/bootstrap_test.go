@@ -14,6 +14,7 @@ import (
 // directory yields a freshly-generated token written with mode 0600 in
 // the expected on-disk location.
 func TestEnsureBootstrapToken_GeneratesAndPersists(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	token, path, err := EnsureBootstrapToken(dir)
 	if err != nil {
@@ -57,6 +58,7 @@ func TestEnsureBootstrapToken_GeneratesAndPersists(t *testing.T) {
 // the same data directory returns the same token (D1: persists across
 // restarts; do not regenerate).
 func TestEnsureBootstrapToken_LoadsExisting(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	first, _, err := EnsureBootstrapToken(dir)
 	if err != nil {
@@ -76,6 +78,7 @@ func TestEnsureBootstrapToken_LoadsExisting(t *testing.T) {
 // token file 0644 hands the secret to other local users on a multi-user
 // host, which defeats the whole point of the file-system gate.
 func TestEnsureBootstrapToken_RejectsOverlyPermissiveFile(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("permission bits are POSIX-only")
 	}
@@ -100,6 +103,7 @@ func TestEnsureBootstrapToken_RejectsOverlyPermissiveFile(t *testing.T) {
 // created token file being silently treated as valid (which would leave
 // any X-Bootstrap-Token: "" request matching).
 func TestEnsureBootstrapToken_EmptyFileIsAnError(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".bootstrap-token")
 	if err := os.WriteFile(path, []byte(""), 0600); err != nil {
@@ -119,6 +123,7 @@ func TestEnsureBootstrapToken_EmptyFileIsAnError(t *testing.T) {
 // Server must NOT abort startup over this — the caller's responsibility
 // is to log a warning and proceed with no token.
 func TestEnsureBootstrapToken_ReadOnlyDataDir(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("permission bits are POSIX-only")
 	}
@@ -143,6 +148,7 @@ func TestEnsureBootstrapToken_ReadOnlyDataDir(t *testing.T) {
 // data directory. Both should converge on identical tokens — the loser
 // reads the winner's fully-written file.
 func TestEnsureBootstrapToken_ConcurrentRace(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	const N = 8
 
@@ -176,6 +182,7 @@ func TestEnsureBootstrapToken_ConcurrentRace(t *testing.T) {
 // behind by a previous successful bootstrap whose `os.Remove` somehow
 // failed. Startup with UserCount > 0 is supposed to mop it up.
 func TestCleanupStaleBootstrapToken(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 
 	// No file → no error.
@@ -201,6 +208,7 @@ func TestCleanupStaleBootstrapToken(t *testing.T) {
 // presence, checkBootstrapToken validates the header, consume clears
 // in-memory + removes the file.
 func TestServer_BootstrapTokenLifecycle(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	tokenPath := filepath.Join(dir, ".bootstrap-token")
 	if err := os.WriteFile(tokenPath, []byte("real-token-value\n"), 0600); err != nil {
@@ -265,6 +273,7 @@ func TestServer_BootstrapTokenLifecycle(t *testing.T) {
 // frontend GET and is scrubbed by replaceState; the POST endpoint never
 // reads from the query.
 func TestServer_BootstrapTokenHeaderOnly_NoQuerySupport(t *testing.T) {
+	t.Parallel()
 	srv := &Server{}
 	srv.SetBootstrapToken("real-token-value", "")
 

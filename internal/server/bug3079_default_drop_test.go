@@ -33,6 +33,7 @@ type bug3079Created struct {
 }
 
 func TestBUG3079_CreateDoorDropsAnInvalidDefault(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSWithCollections(t, srv)
 
@@ -89,6 +90,7 @@ func TestBUG3079_CreateDoorDropsAnInvalidDefault(t *testing.T) {
 }
 
 func TestBUG3079_CreateDoorStillAppliesAGoodDefault(t *testing.T) {
+	t.Parallel()
 	// Control at the door, for the reason the unit control exists: every
 	// assertion above is satisfied by a build that drops every default.
 	srv := testServer(t)
@@ -125,6 +127,7 @@ func TestBUG3079_CreateDoorStillAppliesAGoodDefault(t *testing.T) {
 }
 
 func TestBUG3079_RequiredFieldWithABadDefaultRefusesAndSaysWhy(t *testing.T) {
+	t.Parallel()
 	// The ruled edge, at the door: dropping leaves a required field absent, so
 	// the create is refused — and the message names the DEFAULT, because a bare
 	// "field is required" points the reader at a request that never mentioned it.

@@ -25,6 +25,7 @@ func bug3704List(t *testing.T, srv *Server, path string) ([]models.Item, string,
 }
 
 func TestBUG3704_ItemListsAreBoundedAndPaged(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		slug, wsID := task3462Workspace(t, srv, "Bounds 3704", "startup")
 		tasks, err := srv.store.GetCollectionBySlug(wsID, "tasks")
@@ -68,6 +69,7 @@ func TestBUG3704_ItemListsAreBoundedAndPaged(t *testing.T) {
 // Paging by next-offset visits every row exactly once, also on the ?search=
 // path, which used to drop the offset, and across rows that tie on the sort.
 func TestBUG3704_PagingVisitsEveryRowOnce(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		slug, wsID := task3462Workspace(t, srv, "Paging 3704", "startup")
 		tasks, err := srv.store.GetCollectionBySlug(wsID, "tasks")

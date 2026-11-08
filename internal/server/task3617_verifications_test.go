@@ -29,6 +29,7 @@ func task3617Path(slug string, item models.Item) string {
 }
 
 func TestTASK3617_RecordAndRead(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		slug := createWSWithCollections(t, srv)
 		spec := createItem(t, srv, slug, "docs", map[string]any{"title": "Spec", "content": task3617Body})
@@ -148,6 +149,7 @@ func TestTASK3617_Refusals(t *testing.T) {
 // the guest cannot see gets the same answer as one that does not exist, and a
 // via ref recorded by someone else is not disclosed to the guest.
 func TestTASK3617_GuestVisibility(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		slug := createWSWithCollections(t, srv)
 		ws, err := srv.store.GetWorkspaceBySlug(slug)
@@ -357,6 +359,7 @@ func TestTASK3617_RetryOnAMovedItem(t *testing.T) {
 }
 
 func TestTASK3617_RetryRechecksAccess(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		slug := createWSWithCollections(t, srv)
 		ws, err := srv.store.GetWorkspaceBySlug(slug)
@@ -413,6 +416,7 @@ func TestTASK3617_RetryRechecksAccess(t *testing.T) {
 // revoked and the spec moves. The retry must resolve via again and refuse,
 // not store a reference to an item the caller can no longer see.
 func TestTASK3617_RetryRechecksVia(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		slug := createWSWithCollections(t, srv)
 		ws, err := srv.store.GetWorkspaceBySlug(slug)

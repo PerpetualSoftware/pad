@@ -39,6 +39,7 @@ func colls(ids ...string) []models.Collection {
 func allSee() scopeSet { return newScopeSet(needs.Scope{Unrestricted: true}) }
 
 func TestNeedsYouSignals_FanoutCycleTerminates(t *testing.T) {
+	t.Parallel()
 	// A blocks B, B blocks A, A blocks C: two items, and the cycle ends.
 	g := newBlocksGraph([]store.BlocksEdge{edge("A", "B", "c"), edge("B", "A", "c"), edge("A", "C", "c")}, colls("c"))
 	if n := g.fanout("A", allSee()); n != 2 {
@@ -71,6 +72,7 @@ func TestNeedsYouSignals_FanoutCycleTerminates(t *testing.T) {
 }
 
 func TestNeedsYouSignals_FanoutSkipsHidden(t *testing.T) {
+	t.Parallel()
 	edges := []store.BlocksEdge{
 		edge("A", "B", "hiddenColl"), edge("B", "C", "seenColl"), // C is behind a hidden B
 		edge("A", "D", "seenColl"), edge("D", "E", "seenColl"), // E behind D, all seen
@@ -98,6 +100,7 @@ func TestNeedsYouSignals_FanoutSkipsHidden(t *testing.T) {
 // Every form of scope that does not grant anything fails closed: nothing is
 // counted, whatever the graph holds.
 func TestNeedsYouSignals_FanoutFailsClosed(t *testing.T) {
+	t.Parallel()
 	g := newBlocksGraph([]store.BlocksEdge{edge("A", "B", "c"), edge("B", "C", "c")}, colls("c"))
 	for name, sc := range map[string]needs.Scope{
 		"both lists nil":                  {},
@@ -118,6 +121,7 @@ func TestNeedsYouSignals_FanoutFailsClosed(t *testing.T) {
 
 // A target whose collection is not known is neither counted nor expanded.
 func TestNeedsYouSignals_FanoutUnknownCollectionFailsClosed(t *testing.T) {
+	t.Parallel()
 	g := newBlocksGraph([]store.BlocksEdge{edge("A", "B", "ghost"), edge("B", "C", "c")}, colls("c"))
 	if n := g.fanout("A", allSee()); n != 0 {
 		t.Fatalf("fan-out = %d, want 0 (B's collection is unknown, so B and C stay out)", n)
@@ -126,6 +130,7 @@ func TestNeedsYouSignals_FanoutUnknownCollectionFailsClosed(t *testing.T) {
 
 // D agrees with the dashboard's server-local day (overdueToday), not the UTC day.
 func TestNeedsYouSignals_DeadlineUsesServerLocalDay(t *testing.T) {
+	t.Parallel()
 	loc := time.FixedZone("UTC-8", -8*3600)
 	// 03:00 UTC on the 11th is 19:00 on the 10th locally.
 	now := time.Date(2026, 3, 11, 3, 0, 0, 0, time.UTC)
@@ -145,6 +150,7 @@ func TestNeedsYouSignals_DeadlineUsesServerLocalDay(t *testing.T) {
 
 // The scorer's overdue verdict is the dashboard's, for every stored shape.
 func TestNeedsYouSignals_DeadlineOverdueMatchesDashboard(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC)
 	today := overdueToday(now.In(time.UTC))
 	for _, v := range []string{
@@ -174,6 +180,7 @@ func TestNeedsYouSignals_DeadlineOverdueMatchesDashboard(t *testing.T) {
 // are the unweighted inputs; the values are round(100 * weighted sum), chosen
 // away from .5 boundaries.
 func TestNeedsYouSignals_ImportancePartsPinned(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC)
 	day := func(n float64) time.Time { return now.Add(-time.Duration(n * 24 * float64(time.Hour))) }
 	qh := map[string]string{decision.AttentionNeedsHuman: "h"}
@@ -262,6 +269,7 @@ func TestNeedsYouSignals_ImportancePartsPinned(t *testing.T) {
 
 // A weighted sum that is exactly .325 rounds up whatever order it was summed in.
 func TestNeedsYouSignals_ImportanceRoundingSnapped(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC)
 	// high .1875 + H .05 + A (12.25 days / 14 = .875) .0875 = .325 -> 32.5 -> 33.
 	r := &needs.Row{WaitingSince: now.Add(-294 * time.Hour)}
@@ -279,6 +287,7 @@ func TestNeedsYouSignals_ImportanceRoundingSnapped(t *testing.T) {
 
 // H is a probability: a stored value outside [0,1] cannot push importance past its bounds.
 func TestNeedsYouSignals_NeedsHumanProbabilityClamped(t *testing.T) {
+	t.Parallel()
 	r := &needs.Row{WaitingSince: nfxT0}
 	qh := map[string]string{decision.AttentionNeedsHuman: "h"}
 	ans := func(p string) []models.ItemDecision {
@@ -296,6 +305,7 @@ func TestNeedsYouSignals_NeedsHumanProbabilityClamped(t *testing.T) {
 
 // "judged to need a human" is given from the attention threshold up, not below it.
 func TestNeedsYouSignals_NeedsHumanWhyAtThreshold(t *testing.T) {
+	t.Parallel()
 	r := &needs.Row{WaitingSince: nfxT0}
 	qh := map[string]string{decision.AttentionNeedsHuman: "h"}
 	for _, c := range []struct {
@@ -311,6 +321,7 @@ func TestNeedsYouSignals_NeedsHumanWhyAtThreshold(t *testing.T) {
 }
 
 func TestNeedsYouSignals_HeuristicWithoutRunner(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		title string
 		runes int
@@ -358,6 +369,7 @@ func mediumAnswer(choice string, p float64, qhash string) models.ItemDecision {
 }
 
 func TestNeedsYouSignals_HintTable(t *testing.T) {
+	t.Parallel()
 	qh := map[string]string{decision.AttentionEffort: "qe", decision.AttentionEffortMedium: "qm", decision.AttentionNeedsHuman: "qn", decision.AttentionHighStakes: "qs"}
 	row := &needs.Row{Item: needs.ItemInfo{Title: "Ship it"}}
 	level := func(l int) string {
@@ -447,6 +459,7 @@ func TestNeedsYouSignals_HintTable(t *testing.T) {
 // Why is a fixed vocabulary: whatever the inputs, a scorer emits only strings
 // from needsWhyVocabulary (the list docs/api.md publishes), never the title.
 func TestNeedsYouSignals_WhyOnlyFromTheVocabulary(t *testing.T) {
+	t.Parallel()
 	vocab := map[string]bool{}
 	for _, w := range needsWhyVocabulary {
 		vocab[w] = true
@@ -489,6 +502,7 @@ func TestNeedsYouSignals_WhyOnlyFromTheVocabulary(t *testing.T) {
 // A request does each of a workspace's batch reads once, though two scorers
 // want them, and the next request does them again: the memo is request-scoped.
 func TestNeedsYouSignals_MemoReadsOncePerRequest(t *testing.T) {
+	t.Parallel()
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newNfx(t, srv)
 		owner, alice := f.user("owner"), f.user("alice")
@@ -537,6 +551,7 @@ func (s *scoreStub) Score(_ context.Context, _ needs.Viewer, _ needs.Scope, rows
 }
 
 func TestNeedsYouSort_CursorStableAcrossPages(t *testing.T) {
+	t.Parallel()
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newNfx(t, srv)
 		owner, alice := f.user("owner"), f.user("alice")
@@ -616,6 +631,7 @@ func TestNeedsYouSort_CursorStableAcrossPages(t *testing.T) {
 // Through a real server.New and the router (team CONVE-19): the scorers New
 // registers fill both scores, and sort=importance and simplicity order by them.
 func TestNeedsYouSignals_BindingThroughServeHTTP(t *testing.T) {
+	t.Parallel()
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newNfx(t, srv)
 		owner, alice := f.user("owner"), f.user("alice")
@@ -665,6 +681,7 @@ func TestNeedsYouSignals_BindingThroughServeHTTP(t *testing.T) {
 // Through the router: a request with a cursor scores at the cursor's as_of,
 // not the wall clock, so every page measures age and deadlines from one moment.
 func TestNeedsYouSignals_CursorPageScoresAtAsOf(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	f := newNfx(t, srv)
 	owner, alice := f.user("owner"), f.user("alice")
@@ -708,6 +725,7 @@ func TestNeedsYouSignals_CursorPageScoresAtAsOf(t *testing.T) {
 
 // docs/api.md publishes the Why vocabulary; the code's list and the doc agree.
 func TestNeedsYouSignals_VocabularyIsDocumented(t *testing.T) {
+	t.Parallel()
 	doc, err := os.ReadFile("../../docs/api.md")
 	if err != nil {
 		t.Fatal(err)
@@ -723,6 +741,7 @@ func TestNeedsYouSignals_VocabularyIsDocumented(t *testing.T) {
 // what that member may see. The row blocks an item they cannot see; the hidden
 // item must add nothing, and the same viewer with full access scores higher.
 func TestNeedsYouSignals_RestrictedViewerScoreHasNoHiddenBlocks(t *testing.T) {
+	t.Parallel()
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newNfx(t, srv)
 		owner, alice, guest := f.user("owner"), f.user("alice"), f.user("guest")
@@ -806,6 +825,7 @@ func TestNeedsYouSignals_RestrictedViewerScoreHasNoHiddenBlocks(t *testing.T) {
 // A batch read that fails leaves the rows unscored and says so: each real
 // scorer reports degraded with the error, and sets no score from partial data.
 func TestNeedsYouSignals_ReadFailureDegrades(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	if err := srv.store.DB().Close(); err != nil {
 		t.Fatal(err)
@@ -832,6 +852,7 @@ func TestNeedsYouSignals_ReadFailureDegrades(t *testing.T) {
 // it stands counts and says so. A stale answer whose refresh is owed is held,
 // as the flag rule holds it.
 func TestNeedsYouSignals_NeedsHumanNeedsFullCurrency(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	f := newNfx(t, srv)
 	owner := f.user("owner")
@@ -892,6 +913,7 @@ func TestNeedsYouSignals_NeedsHumanNeedsFullCurrency(t *testing.T) {
 // invalid_cursor. as_of's far-future case is deliberately absent: it is
 // clamped, not refused (TestNeedsYouSort_FutureAsOfIsClamped).
 func TestNeedsYouSort_CursorFieldsAreChecked(t *testing.T) {
+	t.Parallel()
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newNfx(t, srv)
 		owner, alice := f.user("owner"), f.user("alice")
@@ -1004,6 +1026,7 @@ func TestNeedsYouSort_FutureAsOfIsClamped(t *testing.T) {
 // clamp: a time outside int64 nanoseconds wrapped in UnixNano, and the cursor
 // named a different instant from the row's key.
 func TestNeedsYouSort_OddBoundaryTimesPageThrough(t *testing.T) {
+	t.Parallel()
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newNfx(t, srv)
 		owner, alice := f.user("owner"), f.user("alice")

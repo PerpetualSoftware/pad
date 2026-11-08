@@ -33,6 +33,7 @@ import (
 // measured PATCH {"title": ""} being accepted and applied while POST refused
 // the same input with 400 "Title is required".
 func TestPatchItemEmptyTitleRefused(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSWithCollections(t, srv)
 	item := createTaskWithFields(t, srv, ws, "Original Title", `{"status":"open"}`)
@@ -67,6 +68,7 @@ func TestPatchItemEmptyTitleRefused(t *testing.T) {
 // ("NOT independently verified end-to-end: I read the store error and the
 // handler's fall-through"). This measures it.
 func TestPatchItemOverlongTitleRefusedAs400(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSWithCollections(t, srv)
 	item := createTaskWithFields(t, srv, ws, "Short", `{"status":"open"}`)
@@ -89,6 +91,7 @@ func TestPatchItemOverlongTitleRefusedAs400(t *testing.T) {
 // CREATE door. "   " was accepted here before this unit and refused by the
 // artifact-import door whose comment claimed to mirror this one.
 func TestCreateItemWhitespaceOnlyTitleRefused(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSWithCollections(t, srv)
 
@@ -108,6 +111,7 @@ func TestCreateItemWhitespaceOnlyTitleRefused(t *testing.T) {
 // SQLite and produced `index row requires 24064 bytes, maximum size is 8191`
 // on Postgres.
 func TestCreateItemOverlongTitleRefused(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSWithCollections(t, srv)
 
@@ -126,6 +130,7 @@ func TestCreateItemOverlongTitleRefused(t *testing.T) {
 // door that validates the trimmed string and stores the raw one leaves the row
 // holding a value nothing checked.
 func TestItemTitleTrimmedOverTheWire(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSWithCollections(t, srv)
 
@@ -166,6 +171,7 @@ func TestItemTitleTrimmedOverTheWire(t *testing.T) {
 // refactor. Testing the mapping directly is the honest way to cover a branch
 // whose only production trigger is a race.
 func TestWriteInvalidItemTitleMapsTo400(t *testing.T) {
+	t.Parallel()
 	t.Run("maps the typed refusal", func(t *testing.T) {
 		rr := httptest.NewRecorder()
 		if !writeInvalidItemTitle(rr, &store.InvalidItemTitleError{Reason: "Title is required"}) {
@@ -219,6 +225,7 @@ func TestWriteInvalidItemTitleMapsTo400(t *testing.T) {
 // pre-check lives in the handler, so calling it directly reaches the store
 // refusal that no HTTP request can.
 func TestCreateItemCheckedMapsStoreTitleRefusalTo400(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	wsSlug := createWSWithCollections(t, srv)
 	ws, err := srv.store.GetWorkspaceBySlug(wsSlug)
@@ -277,6 +284,7 @@ func TestCreateItemCheckedMapsStoreTitleRefusalTo400(t *testing.T) {
 // when it was left out, which is exactly why this exists: the omission is invisible
 // from the outside.
 func TestWriteTypedItemRefusalIncludesTitleRefusal(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	item := &models.Item{ID: "item-1", Ref: "TASK-1", Slug: "task-1"}
 
@@ -393,6 +401,7 @@ func TestWriteTypedItemRefusalIncludesTitleRefusal(t *testing.T) {
 // the lock window. Driving that from a test needs a store-level seam that does
 // not exist. The helper itself is unit-tested; these arms' job is to call it.
 func TestUpdateItemErrorBlocksMapEveryStoreRefusal(t *testing.T) {
+	t.Parallel()
 	// TWO FILES since PLAN-2975, and the second one is why the expected block
 	// count changed rather than the guard weakening.
 	//
@@ -777,6 +786,7 @@ func armsIn(ifStmt *ast.IfStmt, want []string) []string {
 // job here is to refuse early and change nothing; a normalization on the way
 // through is a decision, and decisions belong under the lock.
 func TestPatchItemVerbatimEchoOfALegacyTitleIsANoOp(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	wsSlug := createWSWithCollections(t, srv)
 	item := createTaskWithFields(t, srv, wsSlug, "Ordinary", `{"status":"open"}`)

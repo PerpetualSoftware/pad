@@ -47,6 +47,7 @@ func toolSurfaceFixture() ([]byte, error) {
 // TestMCPToolSurface_RequiresAuth pins the auth gate: with a user
 // present (no fresh-install bypass), an unauthenticated GET must 401.
 func TestMCPToolSurface_RequiresAuth(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetToolSurfaceHandler(toolSurfaceFixture)
 
@@ -64,6 +65,7 @@ func TestMCPToolSurface_RequiresAuth(t *testing.T) {
 // authenticated caller gets 200 with the nine catalog tools and
 // read_only flags present on every action.
 func TestMCPToolSurface_AuthedReturnsCatalog(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetToolSurfaceHandler(toolSurfaceFixture)
 
@@ -126,6 +128,7 @@ func TestMCPToolSurface_AuthedReturnsCatalog(t *testing.T) {
 // server state. The fixture body is a closed set of keys; the endpoint
 // must pass it through verbatim and add nothing.
 func TestMCPToolSurface_NoLeakage(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetToolSurfaceHandler(toolSurfaceFixture)
 
@@ -155,6 +158,7 @@ func TestMCPToolSurface_NoLeakage(t *testing.T) {
 // SetToolSurfaceHandler was never called, the endpoint 404s rather than
 // panicking or returning an empty 200.
 func TestMCPToolSurface_NotWired(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	// Intentionally NOT calling SetToolSurfaceHandler.
 

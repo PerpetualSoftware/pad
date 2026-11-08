@@ -231,6 +231,7 @@ func TestAppInstallPreview_StagesAndPreviews(t *testing.T) {
 
 // Every refusal releases its reservation and stages nothing.
 func TestAppInstallPreview_Refusals(t *testing.T) {
+	t.Parallel()
 	for name, c := range map[string]struct {
 		mutate func(t *testing.T, e *appsEnv)
 		status int
@@ -292,6 +293,7 @@ func TestAppInstallPreview_Refusals(t *testing.T) {
 }
 
 func TestAppInstallPreview_Gates(t *testing.T) {
+	t.Parallel()
 	e := newAppsEnv(t)
 	// Apps off: the routes answer 404.
 	if rr := doRequestWithCookie(e.srv, "PUT", "/api/v1/admin/apps", map[string]any{"enabled": false}, e.token); rr.Code != http.StatusOK {
@@ -320,6 +322,7 @@ func TestAppInstallPreview_Gates(t *testing.T) {
 }
 
 func TestAppsAdminSettings(t *testing.T) {
+	t.Parallel()
 	e := newAppsEnv(t)
 	rr := doRequestWithCookie(e.srv, "PUT", "/api/v1/admin/apps", map[string]any{
 		"private_origins": []map[string]any{{"origin": "https://x.example", "fetch": true}},
@@ -346,6 +349,7 @@ func TestAppsAdminSettings(t *testing.T) {
 // the artifact cannot satisfy refuses the preview; a schema default appears
 // in the previewed fields and so in the digest.
 func TestAppInstallPreview_RunsTheCreateFieldPipeline(t *testing.T) {
+	t.Parallel()
 	addField := func(t *testing.T, e *appsEnv, field map[string]any) {
 		t.Helper()
 		coll, err := e.srv.store.GetCollectionBySlug(e.wsID, "playbooks")
@@ -393,6 +397,7 @@ func TestAppInstallPreview_RunsTheCreateFieldPipeline(t *testing.T) {
 // An abandoned preview's staged bytes are deleted by the background sweep,
 // not only when a later install happens to sweep.
 func TestAppPendingSweep_DeletesExpiredStagedBytes(t *testing.T) {
+	t.Parallel()
 	e := newAppsEnv(t)
 	rr := e.preview(t)
 	if rr.Code != http.StatusOK {
@@ -419,6 +424,7 @@ func TestAppPendingSweep_DeletesExpiredStagedBytes(t *testing.T) {
 // allocated distinct slugs in the preview, as their sequential import would
 // be.
 func TestAppInstallPreview_PackArtifactsDeCollideWithEachOther(t *testing.T) {
+	t.Parallel()
 	e := newAppsEnv(t)
 	m := e.manifest(t)
 	second := []byte(strings.Replace(string(e.files["/pack/ship.md"]), "title: Ship a change", "title: Ship again", 1))
@@ -445,6 +451,7 @@ func TestAppInstallPreview_PackArtifactsDeCollideWithEachOther(t *testing.T) {
 // the default, makes a later artifact asking for that slug de-collide, as
 // the sequential import does.
 func TestAppInstallPreview_DefaultSlugIsClaimed(t *testing.T) {
+	t.Parallel()
 	e := newAppsEnv(t)
 	coll, err := e.srv.store.GetCollectionBySlug(e.wsID, "playbooks")
 	if err != nil || coll == nil {
@@ -490,6 +497,7 @@ func TestAppInstallPreview_DefaultSlugIsClaimed(t *testing.T) {
 // artifacts storing the same unique value (here through a default) refuse
 // the preview, as the second sequential import would 409.
 func TestAppInstallPreview_PackUniqueValuesConflict(t *testing.T) {
+	t.Parallel()
 	e := newAppsEnv(t)
 	coll, err := e.srv.store.GetCollectionBySlug(e.wsID, "playbooks")
 	if err != nil || coll == nil {
@@ -541,6 +549,7 @@ func pendingIDOf(t *testing.T, e *appsEnv) string {
 // two artifacts sharing that default both import, so both
 // preview.
 func TestAppInstallPreview_UnenforcedUniqueScopeIsNotAConflict(t *testing.T) {
+	t.Parallel()
 	e := newAppsEnv(t)
 	coll, err := e.srv.store.GetCollectionBySlug(e.wsID, "playbooks")
 	if err != nil || coll == nil {
@@ -571,6 +580,7 @@ func TestAppInstallPreview_UnenforcedUniqueScopeIsNotAConflict(t *testing.T) {
 // schema declares: a defaulted slug that a stored item
 // already holds, and a non-text slug, both refuse the preview.
 func TestAppInstallPreview_InvocationSlugIndexIsMirrored(t *testing.T) {
+	t.Parallel()
 	setDefault := func(t *testing.T, e *appsEnv, def any) string {
 		t.Helper()
 		coll, err := e.srv.store.GetCollectionBySlug(e.wsID, "conventions")
@@ -629,6 +639,7 @@ func TestAppInstallPreview_InvocationSlugIndexIsMirrored(t *testing.T) {
 // The stored-slug check uses the index's own expression: a stored ARRAY
 // "[]" collides with a defaulted text "[]" there, so the preview refuses.
 func TestAppInstallPreview_InvocationSlugIndexExpression(t *testing.T) {
+	t.Parallel()
 	e := newAppsEnv(t)
 	coll, err := e.srv.store.GetCollectionBySlug(e.wsID, "conventions")
 	if err != nil || coll == nil {
@@ -665,6 +676,7 @@ func TestAppInstallPreview_InvocationSlugIndexExpression(t *testing.T) {
 // In-pack claims collide wherever the import's lookup (JSONFieldEquals)
 // would match: boolean true vs "true", number 1000 vs "1e3".
 func TestClaimForms(t *testing.T) {
+	t.Parallel()
 	collide := func(a, b any) bool {
 		seen := map[string]bool{}
 		for _, f := range claimForms(a) {
@@ -709,6 +721,7 @@ func TestClaimForms(t *testing.T) {
 // App-authored artifact content may not carry pad-attachment: tokens or
 // [[workspace::REF]] links; ordinary [[Title]] links are fine.
 func TestAppInstallPreview_AppContentReferenceRules(t *testing.T) {
+	t.Parallel()
 	for name, c := range map[string]struct {
 		edit string
 		ok   bool
@@ -753,6 +766,7 @@ func TestAppInstallPreview_AppContentReferenceRules(t *testing.T) {
 // The fields check fails closed. A field set that cannot
 // be serialized is refused, never passed unchecked.
 func TestRefuseAppAuthoredReferences_FailsClosedOnUnserializableFields(t *testing.T) {
+	t.Parallel()
 	err := refuseAppAuthoredReferences("plain content", map[string]any{"bad": make(chan int)})
 	if err == nil {
 		t.Fatal("an unserializable field set passed the reference check")

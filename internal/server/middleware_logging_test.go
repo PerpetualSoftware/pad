@@ -11,6 +11,7 @@ import (
 // disk. Other keys must be untouched so logs remain useful for
 // diagnosis.
 func TestRedactQueryString(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		in   string

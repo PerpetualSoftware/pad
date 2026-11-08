@@ -31,6 +31,7 @@ func settingsLayout(t *testing.T, raw string) string {
 // write does NOT land.
 
 func TestUpdateCollection_OptimisticConcurrency(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -169,6 +170,7 @@ func TestUpdateCollection_OptimisticConcurrency(t *testing.T) {
 // that re-owned the slug (or any change) 409s instead of archiving the wrong
 // collection. Mirrors the update OCC.
 func TestDeleteCollection_OptimisticConcurrency(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 

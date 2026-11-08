@@ -57,6 +57,7 @@ func entryOf(t *testing.T, d *upgradeDiff, kind, key string) upgradeDiffEntry {
 }
 
 func TestUpgradeDiff_Classes(t *testing.T) {
+	t.Parallel()
 	old := diffBase()
 
 	same, err := diffUpgrade(old, clone(old), diffDigests, diffFresh("r1", "n1"))
@@ -145,6 +146,7 @@ func TestUpgradeDiff_Classes(t *testing.T) {
 }
 
 func TestUpgradeDiff_Refusals(t *testing.T) {
+	t.Parallel()
 	old := diffBase()
 	for name, mut := range map[string]func(m *appmanifest.Manifest){
 		"app id": func(m *appmanifest.Manifest) { m.ID = "acme/other" },
@@ -200,6 +202,7 @@ func addField(f models.FieldDef) func(m *appmanifest.Manifest) {
 // The stored manifest writes an unset config_schema as null; a fresh parse
 // leaves it empty. They are the same declaration, not a change.
 func TestUpgradeDiff_AbsentConfigSchemaIsNotAChange(t *testing.T) {
+	t.Parallel()
 	old := diffBase()
 	old.ConfigSchema = []byte("null")
 	n := clone(old)
@@ -213,6 +216,7 @@ func TestUpgradeDiff_AbsentConfigSchemaIsNotAChange(t *testing.T) {
 // A name declared twice is the union of its declarations, so a
 // widening cannot hide behind a duplicate.
 func TestUpgradeDiff_DuplicateEventNamesAreUnioned(t *testing.T) {
+	t.Parallel()
 	old := diffBase()
 	n := clone(old)
 	n.Events = []appmanifest.Event{{Name: "item.created", Collections: []string{"other"}}, {Name: "item.created", Collections: []string{"tickets"}}}

@@ -69,6 +69,7 @@ func bug3791Walk(t *testing.T, srv *Server, slug, cookie string, sinceMs int64, 
 }
 
 func TestBUG3791_ChangesIsBounded(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		slug, wsID := task3462Workspace(t, srv, "Bounds 3791", "startup")
 		tasks, err := srv.store.GetCollectionBySlug(wsID, "tasks")
@@ -94,6 +95,7 @@ func TestBUG3791_ChangesIsBounded(t *testing.T) {
 // page already returned, to a row no page has reached yet, or a new row, is
 // returned by a later page of the same walk.
 func TestBUG3791_WalkSeesEveryChangeIncludingMidWalkWrites(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		slug, wsID := task3462Workspace(t, srv, "Walk 3791", "startup")
 		tasks, err := srv.store.GetCollectionBySlug(wsID, "tasks")
@@ -210,6 +212,7 @@ func TestBUG3791_WalkSeesEveryChangeIncludingMidWalkWrites(t *testing.T) {
 // walk returns only the rows they may see, and the has-more probe does not count
 // hidden rows, so a page followed only by hidden rows is the last page.
 func TestBUG3791_WalkWindowIsOverVisibleRows(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ownerCookie := bootstrapFirstUser(t, srv, "owner@test.com", "Owner")
 	rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces", map[string]string{"name": "Vis 3791"}, ownerCookie)
@@ -291,6 +294,7 @@ func TestBUG3791_WalkWindowIsOverVisibleRows(t *testing.T) {
 }
 
 func TestBUG3791_CursorIsValidated(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug, wsID := task3462Workspace(t, srv, "Cursor 3791", "startup")
 	base := "/api/v1/workspaces/" + slug + "/changes"

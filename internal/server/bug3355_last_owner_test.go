@@ -33,6 +33,7 @@ func (f *accessFixture) roleOf(userID string) string {
 }
 
 func TestBUG3355_RoleMustBeKnown(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newAccessFixture(t, d)
 		ed := f.member("ed@example.com", "editor")
@@ -47,6 +48,7 @@ func TestBUG3355_RoleMustBeKnown(t *testing.T) {
 }
 
 func TestBUG3355_CanonicalOwnerCannotBeDemotedOrRemoved(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newAccessFixture(t, d)
 		co := f.member("co@example.com", "owner") // a second owner
@@ -80,6 +82,7 @@ func TestBUG3355_CanonicalOwnerCannotBeDemotedOrRemoved(t *testing.T) {
 // A legacy workspace whose canonical owner holds no owner membership: the
 // member doors must still never leave it with zero owners.
 func TestBUG3355_LastOwnerCannotLeave(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newAccessFixture(t, d)
 		last := f.member("last@example.com", "owner")

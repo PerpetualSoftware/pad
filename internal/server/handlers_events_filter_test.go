@@ -14,6 +14,7 @@ import (
 //     DIFFERENT collection can't pass visibility for a collection the subscriber
 //     can't actually see.
 func TestSSEEventVisibleFor(t *testing.T) {
+	t.Parallel()
 	const tasksID = "coll-tasks"
 	const secretsID = "coll-secrets"
 	const otherID = "coll-other"

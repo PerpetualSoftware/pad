@@ -243,6 +243,7 @@ func gzipBytes(t *testing.T, raw []byte) []byte {
 // of MiB. Each entry's declared (logical) size is charged against its own
 // budget.
 func TestBUG3354_SparseEntriesChargedLogically(t *testing.T) {
+	t.Parallel()
 	raw := rawTarEntry(t, "pad-export.json", tar.TypeReg, exportJSONFrom(t))
 	const logicalSize = 96 << 20
 	for i := 0; i < 3; i++ {
@@ -334,6 +335,7 @@ func TestBUG3354_ReaderOverflowConvertsTo413(t *testing.T) {
 // header, and charging it raised the logical budget, re-opening the sparse
 // bypass. A negative size is refused outright.
 func TestBUG3354_NegativeSizeRefused(t *testing.T) {
+	t.Parallel()
 	raw := rawTarEntry(t, "pad-export.json", tar.TypeReg, exportJSONFrom(t))
 	dir := rawTarEntry(t, "dir/", tar.TypeDir, nil)
 	// Size field (bytes 124..135) in base-256: high bit set, two's complement.

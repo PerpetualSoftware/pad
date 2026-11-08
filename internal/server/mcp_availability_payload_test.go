@@ -12,6 +12,7 @@ import (
 // mcp_available and oauth_available, evaluated per request, so the console can
 // key Connected Apps on the OAuth path rather than on cloud mode.
 func TestMCPAvailabilityInPayloads(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name       string
 		url        string

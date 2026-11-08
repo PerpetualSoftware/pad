@@ -95,6 +95,7 @@ func (bug3632ExpiredCtx) Done() <-chan struct{} { return nil }
 func (bug3632ExpiredCtx) Err() error            { return context.DeadlineExceeded }
 
 func TestBUG3632_AReadFailingPastTheDeadlineReportsTheDeadline(t *testing.T) {
+	t.Parallel()
 	driverErr := errors.New("interrupted (9)") // wraps no context error
 	_, err := withinExportDeadline(bug3632ExpiredCtx{context.Background()}, func() (int, error) { return 0, driverErr })
 	if !errors.Is(err, context.DeadlineExceeded) {
@@ -111,6 +112,7 @@ func TestBUG3632_AReadFailingPastTheDeadlineReportsTheDeadline(t *testing.T) {
 // fail-closed seam visibleCollectionIDs honours, so a failing access read
 // refuses the export rather than letting it through.
 func TestBUG3632_ExportPreflightFailsClosed(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	tok := bug3626Owner(t, srv)
 	srv.visibleCollectionIDsFault = func() error { return errors.New("bug3632: injected access-read failure") }

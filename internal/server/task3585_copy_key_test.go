@@ -25,6 +25,7 @@ func countInColl(t *testing.T, f *copyPreflightFixture) int {
 }
 
 func TestTASK3585_CopyReplaysTheFirstCopy(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 	body := f.resolvableBody()
 	body["op_key"] = "cp-1"
@@ -53,6 +54,7 @@ func TestTASK3585_CopyReplaysTheFirstCopy(t *testing.T) {
 // A move archives its source, so a retry must replay rather than meet the
 // archived source as a refusal or a second copy.
 func TestTASK3585_MoveReplaysAfterTheSourceIsArchived(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 	body := f.resolvableBody()
 	body["archive_source"] = true
@@ -68,6 +70,7 @@ func TestTASK3585_MoveReplaysAfterTheSourceIsArchived(t *testing.T) {
 }
 
 func TestTASK3585_RefusedCopyReleasesItsKey(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 	bad := f.baseBody() // ticket is required with no default: refused
 	bad["op_key"] = "cp-2"
@@ -86,6 +89,7 @@ func TestTASK3585_RefusedCopyReleasesItsKey(t *testing.T) {
 // never copied this item gets the ladder's own 409 archived, and a different
 // request under a used key is 422.
 func TestTASK3585_ArchivedSourcePathRefusesWhatTheKeyDoesNotSettle(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 	move := f.resolvableBody()
 	move["archive_source"] = true

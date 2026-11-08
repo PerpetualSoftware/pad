@@ -78,6 +78,7 @@ func pathErrorCode(t *testing.T, rr *httptest.ResponseRecorder) string {
 // keeps the 500 reachable as evidence is the mutation matrix, since
 // unwiring ValidatePath fails that test.
 func TestValidatePathRejectsUnbindablePathText(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
 
@@ -140,6 +141,7 @@ func TestValidatePathRejectsUnbindablePathText(t *testing.T) {
 // percent-escape, or to anything non-ASCII, would pass the test above and
 // break real callers. These cases are what tells the two apart.
 func TestValidatePathAllowsValidText(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
 
@@ -185,6 +187,7 @@ func TestValidatePathAllowsValidText(t *testing.T) {
 }
 
 func TestBindableText(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		in   string
 		want bool
@@ -221,6 +224,7 @@ func TestBindableText(t *testing.T) {
 //
 // Skips unless PAD_TEST_POSTGRES_URL is set; runs under `make test-pg`.
 func TestValidatePathPostgresNoInternalError(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("PAD_TEST_POSTGRES_URL") == "" {
 		t.Skip("PAD_TEST_POSTGRES_URL not set — the 500 only reproduces on Postgres")
 	}
@@ -268,6 +272,7 @@ func TestValidatePathPostgresNoInternalError(t *testing.T) {
 // the assertion is parity with the API's own errors rather than a list of
 // header names copied from a spec.
 func TestValidatePathRejectionLooksLikeEveryOtherAPIError(t *testing.T) {
+	t.Parallel()
 	const allowed = "https://app.example.com"
 
 	srv := testServer(t)
@@ -363,6 +368,7 @@ func TestValidatePathRejectionLooksLikeEveryOtherAPIError(t *testing.T) {
 // durable block), so skipping it for a rejected request defeats no state
 // that outlives the request.
 func TestValidatePathRejectsBeforeAuthAndRateLimit(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
 

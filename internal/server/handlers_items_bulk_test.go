@@ -42,6 +42,7 @@ func itemFields(t *testing.T, srv *Server, ws, slug string) map[string]any {
 }
 
 func TestBulkItems_SetPriority(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSWithCollections(t, srv)
 
@@ -69,6 +70,7 @@ func TestBulkItems_SetPriority(t *testing.T) {
 }
 
 func TestBulkItems_MoveStatus(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSWithCollections(t, srv)
 
@@ -94,6 +96,7 @@ func TestBulkItems_MoveStatus(t *testing.T) {
 }
 
 func TestBulkItems_TagAndUntag(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSWithCollections(t, srv)
 
@@ -144,6 +147,7 @@ func TestBulkItems_TagAndUntag(t *testing.T) {
 }
 
 func TestBulkItems_Archive(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSWithCollections(t, srv)
 
@@ -174,6 +178,7 @@ func TestBulkItems_Archive(t *testing.T) {
 // followed by a bulk restore brings the items back, resolving the
 // archived (soft-deleted) rows that ResolveItem normally hides.
 func TestBulkItems_Restore(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSWithCollections(t, srv)
 
@@ -215,6 +220,7 @@ func TestBulkItems_Restore(t *testing.T) {
 }
 
 func TestBulkItems_PartialFailure(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSWithCollections(t, srv)
 
@@ -239,6 +245,7 @@ func TestBulkItems_PartialFailure(t *testing.T) {
 }
 
 func TestBulkItems_Validation(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSWithCollections(t, srv)
 
@@ -267,6 +274,7 @@ func TestBulkItems_Validation(t *testing.T) {
 // status move to a terminal value is rejected (per-row) while the
 // item still has open children — same guard the single PATCH path runs.
 func TestBulkItems_StatusMoveRunsOpenChildrenGuard(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSWithCollections(t, srv)
 
@@ -301,6 +309,7 @@ func TestBulkItems_StatusMoveRunsOpenChildrenGuard(t *testing.T) {
 // collection move that also sets a terminal status runs the guard
 // against the destination schema.
 func TestBulkItems_CollectionMoveRunsOpenChildrenGuard(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSWithCollections(t, srv)
 
@@ -472,6 +481,7 @@ collect:
 // override on a collection move is validated against the target schema —
 // an out-of-options value is rejected (per-row), not written.
 func TestBulkItems_CollectionMoveValidatesStatusOverride(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSWithCollections(t, srv)
 
@@ -521,6 +531,7 @@ func TestBulkItems_CollectionMoveValidatesStatusOverride(t *testing.T) {
 // restricted member — not silently archived via the old unconditional
 // admin bypass — while the visible-collection item still succeeds.
 func TestBulkItems_AdminBearer_RestrictedMemberBlockedOnHiddenItem(t *testing.T) {
+	t.Parallel()
 	f := newBearerGateItemFixture(t)
 
 	rr := doRequestWithHeaders(f.srv, "POST", "/api/v1/workspaces/"+f.ws.Slug+"/items/bulk",
@@ -563,6 +574,7 @@ func TestBulkItems_AdminBearer_RestrictedMemberBlockedOnHiddenItem(t *testing.T)
 // /items/{itemSlug} param route, so it must not be treated as an item
 // slug, and a GET to it (no handler) must not resolve as an item.
 func TestBulkItems_RouteRegistered(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSWithCollections(t, srv)
 	a := createBulkTestItem(t, srv, ws, "A", `{"status":"open"}`)
@@ -595,6 +607,7 @@ func TestBulkItems_RouteRegistered(t *testing.T) {
 // parameter into helper SIGNATURES is not the same work as passing it at every
 // CALL. Only a test at the layer that owns the call sites can tell them apart.
 func TestBulkItems_EveryVerbStampsOneBatchID(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		body map[string]any
@@ -740,6 +753,7 @@ func clearSeededOutbox(t *testing.T, srv *Server) {
 // nothing downstream can correct it: whatever this function says is what a
 // webhook consumer believes happened.
 func TestBulkEventDelta_MatchesTheMutation(t *testing.T) {
+	t.Parallel()
 	strptr := func(s string) *string { return &s }
 
 	t.Run("tag trims the way bulkTagUpdate does", func(t *testing.T) {
@@ -795,6 +809,7 @@ func TestBulkEventDelta_MatchesTheMutation(t *testing.T) {
 // `seen` set, so ["foo", " foo "] adds ONE tag. A delta echoing both would
 // advertise a change the mutation did not make.
 func TestBulkEventDelta_TagsAreDeduped(t *testing.T) {
+	t.Parallel()
 	got := bulkEventDelta(&bulkItemsRequest{Op: "tag", Tags: []string{"foo", " foo ", "bar"}})
 	tags, _ := got["tags"].([]string)
 	if len(tags) != 2 || tags[0] != "foo" || tags[1] != "bar" {
@@ -806,6 +821,7 @@ func TestBulkEventDelta_TagsAreDeduped(t *testing.T) {
 // from the RAW values, so duplicates collapse but whitespace is significant —
 // the mirror image of tag, and the delta has to match each side's own rule.
 func TestBulkEventDelta_UntagDedupsWithoutTrimming(t *testing.T) {
+	t.Parallel()
 	got := bulkEventDelta(&bulkItemsRequest{Op: "untag", Tags: []string{"foo", "foo", " foo "}})
 	tags, _ := got["tags"].([]string)
 	if len(tags) != 2 || tags[0] != "foo" || tags[1] != " foo " {

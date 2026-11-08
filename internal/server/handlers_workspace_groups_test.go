@@ -107,6 +107,7 @@ func groupError(t *testing.T, rr *httptest.ResponseRecorder, status int, code, f
 }
 
 func TestWorkspaceGroupsLostAccessPrivacy(t *testing.T) {
+	t.Parallel()
 	for _, loss := range []string{"membership", "guest", "soft-delete"} {
 		t.Run(loss, func(t *testing.T) {
 			w := newAgendaWorld(t, "tasks")
@@ -158,6 +159,7 @@ func TestWorkspaceGroupsLostAccessPrivacy(t *testing.T) {
 }
 
 func TestWorkspaceGroupsOwnerIsolation(t *testing.T) {
+	t.Parallel()
 	w := newAgendaWorld(t)
 	b := mustUser(t, w.srv, "group-b@example.com", "groupb", "")
 	g := groupCreate(t, w.srv, w.owner, "Private", w.ws.ID)
@@ -199,6 +201,7 @@ func TestWorkspaceGroupsOwnerIsolation(t *testing.T) {
 }
 
 func TestWorkspaceGroupsPrincipals(t *testing.T) {
+	t.Parallel()
 	w := newAgendaWorld(t)
 	app := func(c context.Context) context.Context { return context.WithValue(c, appCtxKey{}, &appContext{}) }
 	want := newNfx(t, w.srv).get(w.owner, "", app)
@@ -214,6 +217,7 @@ func TestWorkspaceGroupsPrincipals(t *testing.T) {
 }
 
 func TestWorkspaceGroupsSaveRefusalIsPrivateAndAtomic(t *testing.T) {
+	t.Parallel()
 	w := newAgendaWorld(t)
 	u := mustUser(t, w.srv, "save-group@example.com", "savegroup", "")
 	g := groupCreate(t, w.srv, u, "Original")
@@ -239,6 +243,7 @@ func TestWorkspaceGroupsSaveRefusalIsPrivateAndAtomic(t *testing.T) {
 }
 
 func TestWorkspaceGroupsTokenAdmission(t *testing.T) {
+	t.Parallel()
 	w := newAgendaWorld(t)
 	b := mustWorkspace(t, w.srv, "Excluded Workspace Sentinel", w.owner.ID)
 	g := groupCreate(t, w.srv, w.owner, "Both", w.ws.ID, b.ID)
@@ -278,6 +283,7 @@ func TestWorkspaceGroupsTokenAdmission(t *testing.T) {
 }
 
 func TestWorkspaceGroupsBuiltinsAndOrdering(t *testing.T) {
+	t.Parallel()
 	w := newAgendaWorld(t)
 	other := mustUser(t, w.srv, "other-group@example.com", "othergroup", "")
 	before := groupList(t, w.srv, w.owner)
@@ -308,6 +314,7 @@ func TestWorkspaceGroupsBuiltinsAndOrdering(t *testing.T) {
 }
 
 func TestWorkspaceGroupsStrictBodiesAndReplacement(t *testing.T) {
+	t.Parallel()
 	w := newAgendaWorld(t)
 	g := groupCreate(t, w.srv, w.owner, "Original", w.ws.ID)
 	for _, method := range []string{"POST", "PATCH"} {
@@ -346,6 +353,7 @@ func TestWorkspaceGroupsStrictBodiesAndReplacement(t *testing.T) {
 }
 
 func TestWorkspaceGroupsLimitsAndNames(t *testing.T) {
+	t.Parallel()
 	w := newAgendaWorld(t)
 	for _, name := range []string{"", "   ", strings.Repeat("é", 61), "bad\nname"} {
 		groupError(t, groupRequest(w.srv, w.owner, "POST", groupsPath, fmt.Sprintf(`{"name":%q,"workspace_ids":[]}`, name)), 400, "validation_error", "name", "range")
@@ -371,6 +379,7 @@ func TestWorkspaceGroupsLimitsAndNames(t *testing.T) {
 }
 
 func TestWorkspaceGroupsConcurrentCap(t *testing.T) {
+	t.Parallel()
 	w := newAgendaWorld(t)
 	w.srv.ensureRouter()
 	var wg sync.WaitGroup
@@ -402,6 +411,7 @@ func TestWorkspaceGroupsConcurrentCap(t *testing.T) {
 }
 
 func TestWorkspaceGroupsExport(t *testing.T) {
+	t.Parallel()
 	w := newAgendaWorld(t)
 	empty := groupRequest(w.srv, w.owner, "GET", "/api/v1/auth/export", "")
 	groupStatus(t, empty, 200)
@@ -449,6 +459,7 @@ func TestWorkspaceGroupsExport(t *testing.T) {
 }
 
 func TestWorkspaceGroupsExportReadFailureBeforeBody(t *testing.T) {
+	t.Parallel()
 	w := newAgendaWorld(t)
 	if _, err := w.srv.store.DB().Exec(`DROP TABLE IF EXISTS user_workspace_groups`); err != nil {
 		t.Fatal(err)
@@ -463,6 +474,7 @@ func TestWorkspaceGroupsExportReadFailureBeforeBody(t *testing.T) {
 // A member the caller cannot see right now (access lost, maybe regained
 // later) must survive an edit made while it was hidden.
 func TestWorkspaceGroupsPatchKeepsHiddenMembers(t *testing.T) {
+	t.Parallel()
 	w := newAgendaWorld(t, "tasks")
 	u := mustUser(t, w.srv, "group-keeper@example.com", "groupkeeper", "")
 	other := mustWorkspace(t, w.srv, "Second Space", w.owner.ID)
@@ -492,6 +504,7 @@ func TestWorkspaceGroupsPatchKeepsHiddenMembers(t *testing.T) {
 
 // Named groups list in one order on both backends: lower-cased by Go, then id.
 func TestWorkspaceGroupsNamedOrderIsDialectIndependent(t *testing.T) {
+	t.Parallel()
 	w := newAgendaWorld(t, "tasks")
 	u := mustUser(t, w.srv, "group-order@example.com", "grouporder", "")
 	for _, name := range []string{"Éz", "éa", "Zed", "alpha"} {
@@ -513,6 +526,7 @@ func TestWorkspaceGroupsNamedOrderIsDialectIndependent(t *testing.T) {
 // 403 token_workspace_pinned from the gate, and a group the token's user owns
 // is neither read, renamed nor deleted through it.
 func TestWorkspaceGroupsPinnedTokenRefused(t *testing.T) {
+	t.Parallel()
 	w := newAgendaWorld(t)
 	g := groupCreate(t, w.srv, w.owner, "Private Group Sentinel", w.ws.ID)
 	pin := func(c context.Context) context.Context {
@@ -546,6 +560,7 @@ func TestWorkspaceGroupsPinnedTokenRefused(t *testing.T) {
 // A UUID is the same id in any letter case; the stored member is the canonical
 // lower-case spelling.
 func TestWorkspaceGroupsAcceptsUppercaseUUID(t *testing.T) {
+	t.Parallel()
 	w := newAgendaWorld(t, "tasks")
 	u := mustUser(t, w.srv, "group-upper@example.com", "groupupper", "")
 	if err := w.srv.store.AddWorkspaceMember(w.ws.ID, u.ID, "viewer"); err != nil {

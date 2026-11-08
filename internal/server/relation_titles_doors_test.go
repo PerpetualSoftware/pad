@@ -46,6 +46,7 @@ func scalarTarget(t *testing.T, set models.RelationTargetSet) models.RelationTar
 }
 
 func TestRelationTitleDoors_ThreeSpellingsAgreeThroughTheCreateDoor(t *testing.T) {
+	t.Parallel()
 	f := newDoorFixture(t)
 	path := "/api/v1/workspaces/" + f.ws.Slug + "/collections/" + f.tasks.Slug + "/items"
 	params := map[string]string{"collSlug": f.tasks.Slug}
@@ -81,6 +82,7 @@ func TestRelationTitleDoors_ThreeSpellingsAgreeThroughTheCreateDoor(t *testing.T
 // resolver now judges visibility itself and the server never looks a value up
 // twice (BUG-3012).
 func TestRelationTitleDoors_TitleWrongCollectionDoesNotDiscloseExistence(t *testing.T) {
+	t.Parallel()
 	f := newDoorFixture(t)
 	// A live item in a collection that is NOT the relation's declared target,
 	// addressed by its TITLE.
@@ -132,6 +134,7 @@ func TestRelationTitleDoors_TitleWrongCollectionDoesNotDiscloseExistence(t *test
 // claim: the read door returns relation_targets, and a dangling value comes
 // back ID-ONLY and PRESENT rather than omitted.
 func TestRelationTitleDoors_ReadHydratesTheTarget(t *testing.T) {
+	t.Parallel()
 	f := newDoorFixture(t)
 
 	live := f.seed(`{"owner_ref":"` + f.target.ID + `"}`)
@@ -184,6 +187,7 @@ func TestRelationTitleDoors_ReadHydratesTheTarget(t *testing.T) {
 // hand back exactly what the collapse withholds — a second door onto the fact
 // the first one closes.
 func TestRelationTitleDoors_ReadDoesNotHydrateAnInvisibleTarget(t *testing.T) {
+	t.Parallel()
 	f := newDoorFixture(t)
 
 	it := f.seed(`{"owner_ref":"` + f.target.ID + `"}`)
@@ -278,6 +282,7 @@ func (f *doorFixture) createByTitle(user *models.User, title, itemTitle string) 
 }
 
 func TestRelationTitleDoors_AmbiguityIsCountedOverVISIBLEMatchesOnly(t *testing.T) {
+	t.Parallel()
 	f := newDoorFixture(t)
 	// Two live people share a title. The OWNER sees both.
 	twinA, err := f.srv.store.CreateItem(f.ws.ID, f.people.ID, models.ItemCreate{Title: "Robin", CreatedBy: f.owner.ID})
@@ -347,6 +352,7 @@ func TestRelationTitleDoors_AmbiguityIsCountedOverVISIBLEMatchesOnly(t *testing.
 // set — and a hydration filtered on it hands them the ref and title of EVERY
 // person any item points at.
 func TestRelationTitleDoors_HydrationUsesITEMVisibilityNotCollectionVisibility(t *testing.T) {
+	t.Parallel()
 	f := newDoorFixture(t)
 
 	granted, err := f.srv.store.CreateItem(f.ws.ID, f.people.ID, models.ItemCreate{Title: "Granted Person", CreatedBy: f.owner.ID})
@@ -460,6 +466,7 @@ func TestRelationTitleDoors_VisibilityNarrowingHasNoCountBoundary(t *testing.T) 
 // gap: the three ambiguity legs only drove CREATE, and each door
 // reaches the resolver by its own route.
 func TestRelationTitleDoors_UpdateDoorAppliesTheSameNarrowing(t *testing.T) {
+	t.Parallel()
 	f := newDoorFixture(t)
 	twinA, err := f.srv.store.CreateItem(f.ws.ID, f.people.ID, models.ItemCreate{Title: "Sam", CreatedBy: f.owner.ID})
 	if err != nil {
@@ -499,6 +506,7 @@ func TestRelationTitleDoors_UpdateDoorAppliesTheSameNarrowing(t *testing.T) {
 // they were the sole match and DROPPED when a twin they cannot see existed. The
 // reason said nothing, and the outcome said everything.
 func TestRelationTitleDoors_LateDefaultResolvesForACallerWhoSeesOne(t *testing.T) {
+	t.Parallel()
 	f := newDoorFixture(t)
 
 	visible, err := f.srv.store.CreateItem(f.ws.ID, f.people.ID, models.ItemCreate{Title: "Morgan", CreatedBy: f.owner.ID})
@@ -560,6 +568,7 @@ func TestRelationTitleDoors_LateDefaultResolvesForACallerWhoSeesOne(t *testing.T
 // though a DIFFERENT live match they can see would have earned the specific
 // reason. A hidden match changed the answer again.
 func TestRelationTitleDoors_ProbeFindsAVisibleMatchNotAnArbitraryOne(t *testing.T) {
+	t.Parallel()
 	f := newDoorFixture(t)
 
 	// Two collections, NEITHER of them the relation's declared target, each
@@ -612,6 +621,7 @@ func TestRelationTitleDoors_ProbeFindsAVisibleMatchNotAnArbitraryOne(t *testing.
 // ungranted legacy target's title reached an item-grant guest. Any target
 // that would name an item is now checked.
 func TestRelationTitleDoors_LegacyTargetWithoutRefIsRedacted(t *testing.T) {
+	t.Parallel()
 	f := newDoorFixture(t)
 	if _, err := f.srv.store.DB().Exec(f.srv.store.D().Rebind(`UPDATE items SET item_number = NULL WHERE id = ?`), f.target.ID); err != nil {
 		t.Fatalf("make the target legacy: %v", err)

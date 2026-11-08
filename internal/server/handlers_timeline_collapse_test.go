@@ -133,6 +133,7 @@ func intp(v int) *int { return &v }
 // PLAN-2348 U3: the kept row says what it stands for, and two writers'
 // autosaves are two runs.
 func TestCollapseAutosaveBursts_RunDescribesDroppedRows(t *testing.T) {
+	t.Parallel()
 	base := time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC)
 	in := []models.TimelineEntry{
 		autosaveBy("a3", "dave", base.Add(2*time.Minute), intp(3), intp(1)),
@@ -161,6 +162,7 @@ func TestCollapseAutosaveBursts_RunDescribesDroppedRows(t *testing.T) {
 }
 
 func TestCollapseAutosaveBursts_SplitsByWriter(t *testing.T) {
+	t.Parallel()
 	base := time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC)
 	in := []models.TimelineEntry{
 		autosaveBy("b2", "ann", base.Add(3*time.Minute), intp(1), intp(0)),
@@ -178,6 +180,7 @@ func TestCollapseAutosaveBursts_SplitsByWriter(t *testing.T) {
 }
 
 func TestCollapseAutosaveBursts_UnknownCountsLeaveRunUncounted(t *testing.T) {
+	t.Parallel()
 	base := time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC)
 	out := collapseAutosaveBursts([]models.TimelineEntry{
 		autosaveBy("a2", "dave", base.Add(time.Minute), intp(4), intp(1)),
@@ -189,6 +192,7 @@ func TestCollapseAutosaveBursts_UnknownCountsLeaveRunUncounted(t *testing.T) {
 }
 
 func TestCollapseAutosaveBursts_LoneAutosaveHasNoRun(t *testing.T) {
+	t.Parallel()
 	base := time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC)
 	out := collapseAutosaveBursts([]models.TimelineEntry{autosaveBy("a1", "dave", base, intp(1), intp(0))})
 	if out[0].AutosaveRun != nil {
@@ -200,6 +204,7 @@ func TestCollapseAutosaveBursts_LoneAutosaveHasNoRun(t *testing.T) {
 // usually carry no user id, so the user check alone let them merge, and the
 // run keeps only its head's provenance.
 func TestCollapseAutosaveBursts_ImportedNeverFoldsWithNative(t *testing.T) {
+	t.Parallel()
 	base := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
 	native := autosaveEntry("native", base)
 	imported := autosaveEntry("imported", base.Add(-time.Minute))

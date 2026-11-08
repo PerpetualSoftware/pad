@@ -15,6 +15,7 @@ import (
 // the installed app that wrote them, and the name outlives the install.
 
 func TestTask3413_ViaAppOnHumanJSON(t *testing.T) {
+	t.Parallel()
 	f := appAPIFixture(t, "read")
 	db := f.srv.store.DB()
 	exec := func(q string, args ...any) {
@@ -197,6 +198,7 @@ func TestTask3413_ViaAppOnHumanJSON(t *testing.T) {
 // The lookup is chunked: one IN list per response would pass SQLite's
 // 32,766-variable limit on a large unbounded response.
 func TestTask3413_AttributionLookupIsChunked(t *testing.T) {
+	t.Parallel()
 	f := appAPIFixture(t, "read")
 	ids := make([]string, 0, 40001)
 	for i := 0; i < 40000; i++ {
@@ -215,6 +217,7 @@ func TestTask3413_AttributionLookupIsChunked(t *testing.T) {
 // pad playbook show (and pad_playbook get) serves the playbook item outside
 // the common enrichment path; it carries the creating app too.
 func TestTask3413_PlaybookShowCarriesViaApp(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	pb := createItem(t, srv, slug, "playbooks", map[string]interface{}{
@@ -247,6 +250,7 @@ func TestTask3413_PlaybookShowCarriesViaApp(t *testing.T) {
 // The role board, a comment edit's response and the account export carry
 // the attribution too.
 func TestTask3413_RoleBoardCommentEditAndExport(t *testing.T) {
+	t.Parallel()
 	f := appAPIFixture(t, "read")
 	db := f.srv.store.DB()
 	exec := func(q string, args ...any) {

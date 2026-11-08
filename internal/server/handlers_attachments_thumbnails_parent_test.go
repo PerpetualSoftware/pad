@@ -102,6 +102,7 @@ func assertVariants(t *testing.T, srv *Server, parentID string) {
 // fixture and the source bytes with the skip tests below, so if this one
 // fails they stop being evidence.
 func TestThumbnails_DerivedForLiveParentItem(t *testing.T) {
+	t.Parallel()
 	f := newDerivationFixture(t)
 	attID := f.attachTo(t, &f.itemID)
 
@@ -114,6 +115,7 @@ func TestThumbnails_DerivedForLiveParentItem(t *testing.T) {
 // The item is soft-deleted before derivation runs, so the variants would be
 // quota-counted bytes that the blob path (DR-13) refuses to serve.
 func TestThumbnails_SkippedForArchivedParentItem(t *testing.T) {
+	t.Parallel()
 	f := newDerivationFixture(t)
 	attID := f.attachTo(t, &f.itemID)
 
@@ -139,6 +141,7 @@ func TestThumbnails_SkippedForArchivedParentItem(t *testing.T) {
 // names no item at all. attachments.item_id carries no FK, so this shape is
 // representable until PLAN-2397's repair lands.
 func TestThumbnails_SkippedForUnresolvableParentItem(t *testing.T) {
+	t.Parallel()
 	f := newDerivationFixture(t)
 	ghost := "00000000-0000-0000-0000-0000000000ff"
 	attID := f.attachTo(t, &ghost)
@@ -152,6 +155,7 @@ func TestThumbnails_SkippedForUnresolvableParentItem(t *testing.T) {
 // that resolves, but to an item in ANOTHER workspace. Resolution alone would
 // pass; only the workspace-identity half of the check catches it.
 func TestThumbnails_SkippedForForeignWorkspaceParentItem(t *testing.T) {
+	t.Parallel()
 	f := newDerivationFixture(t)
 
 	other, err := f.srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Elsewhere"})
@@ -182,6 +186,7 @@ func TestThumbnails_SkippedForForeignWorkspaceParentItem(t *testing.T) {
 // has no item to check, so derivation must still run. Guards against the
 // skip being implemented as "no live item ⇒ skip".
 func TestThumbnails_DerivedForOrphanAttachment(t *testing.T) {
+	t.Parallel()
 	f := newDerivationFixture(t)
 	attID := f.attachTo(t, nil)
 

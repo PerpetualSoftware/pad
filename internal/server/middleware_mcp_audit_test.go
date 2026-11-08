@@ -179,6 +179,7 @@ func TestMCPAudit_NonToolsCallMethod_RecordsMethodAsToolName(t *testing.T) {
 }
 
 func TestMCPAudit_HashCanonicalJSON_IsOrderIndependent(t *testing.T) {
+	t.Parallel()
 	// Same fields, different order → same hash. This is the
 	// "group similar calls together" property the spec wants.
 	a := hashCanonicalJSON([]byte(`{"action":"list","collection":"tasks"}`))
@@ -206,6 +207,7 @@ func TestMCPAudit_HashCanonicalJSON_IsOrderIndependent(t *testing.T) {
 }
 
 func TestMCPAudit_ParseRequestBody(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name        string
 		body        string
@@ -233,6 +235,7 @@ func TestMCPAudit_ParseRequestBody(t *testing.T) {
 }
 
 func TestMCPAudit_BufferFull_DropsAndIncrementsCounter(t *testing.T) {
+	t.Parallel()
 	srv, user, _ := auditedMCPServer(t)
 	if srv.mcpAudit == nil {
 		t.Fatal("mcpAudit writer not started")
@@ -369,6 +372,7 @@ func TestMCPAudit_RateLimited_RecordsDeniedRow(t *testing.T) {
 }
 
 func TestMCPAudit_ClassifyResult(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		status int
 		want   models.MCPAuditResultStatus
@@ -497,6 +501,7 @@ func TestMCPAudit_ToolNameCannotCarryANUL(t *testing.T) {
 // This is the sanitising fix's own boundary: closing the NUL door must also
 // handle a value that is consumed entirely.
 func TestMCPAudit_SanitiseNeverEmptiesToolName(t *testing.T) {
+	t.Parallel()
 	// escNULLiteral, not a local literal. Rolling a local one here is exactly how
 	// two of these tests became vacuous: written inline, the escape is one
 	// backslash away from being the NUL itself, which is what that helper
@@ -540,6 +545,7 @@ func TestMCPAudit_SanitiseNeverEmptiesToolName(t *testing.T) {
 // full 64-character args_hash — an audit row indistinguishable from a genuine
 // pad_item call, forgeable by anyone who can send a request.
 func TestMCPAudit_RawMethodDecidesClassification(t *testing.T) {
+	t.Parallel()
 	// escNULLiteral, not a local literal. Rolling a local one here is exactly how
 	// two of these tests became vacuous: written inline, the escape is one
 	// backslash away from being the NUL itself, which is what that helper
@@ -581,6 +587,7 @@ func TestMCPAudit_RawMethodDecidesClassification(t *testing.T) {
 // property; the specific marker text is incidental and deliberately not
 // asserted beyond being distinguishable.
 func TestMCPAudit_CleanedIdentityIsNotForgeable(t *testing.T) {
+	t.Parallel()
 	// escNULLiteral, not a local literal. Rolling a local one here is exactly how
 	// two of these tests became vacuous: written inline, the escape is one
 	// backslash away from being the NUL itself, which is what that helper
@@ -641,6 +648,7 @@ func TestMCPAudit_CleanedIdentityIsNotForgeable(t *testing.T) {
 // and unbounded (BUG-2817, pre-existing); that is why this collapses rather
 // than passing the marked name through.
 func TestMetricsToolLabelIsBounded(t *testing.T) {
+	t.Parallel()
 	genuine := metricsToolLabel("pad_item")
 	if genuine != "pad_item" {
 		t.Fatalf("premise failed: an unmarked name must reach metrics unchanged, got %q", genuine)
@@ -676,6 +684,7 @@ func TestMetricsToolLabelIsBounded(t *testing.T) {
 // choose. The leading "(" is now reserved, so any caller value entering that
 // namespace is marked and therefore differs from the synthesised one.
 func TestMCPAudit_SynthesisedNamespaceIsReserved(t *testing.T) {
+	t.Parallel()
 	nul := escNULLiteral
 
 	// What the server synthesises, obtained from the server rather than

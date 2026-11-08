@@ -124,6 +124,7 @@ func mkUser(t *testing.T, srv *Server, email string) *models.User {
 // affordance the UI already renders for them, and matching what upload
 // already allows (BUG-1661).
 func TestDeleteAttachment_GrantBasedEditorCanDelete(t *testing.T) {
+	t.Parallel()
 	srv, _ := testServerWithAttachments(t)
 	f := newDeleteAuthzFixture(t, srv)
 
@@ -142,6 +143,7 @@ func TestDeleteAttachment_GrantBasedEditorCanDelete(t *testing.T) {
 // access: a VIEW grant is not an EDIT grant. requireEditPermission rejects
 // it with 403 (the item is visible, so non-disclosure doesn't apply).
 func TestDeleteAttachment_ViewGrantCannotDelete(t *testing.T) {
+	t.Parallel()
 	srv, _ := testServerWithAttachments(t)
 	f := newDeleteAuthzFixture(t, srv)
 
@@ -162,6 +164,7 @@ func TestDeleteAttachment_ViewGrantCannotDelete(t *testing.T) {
 // returns 404 rather than 403. A 403 here would confirm the attachment
 // exists — the non-disclosure behavior the handler deliberately preserves.
 func TestDeleteAttachment_InvisibleItemIs404Not403(t *testing.T) {
+	t.Parallel()
 	srv, _ := testServerWithAttachments(t)
 	f := newDeleteAuthzFixture(t, srv)
 
@@ -189,6 +192,7 @@ func TestDeleteAttachment_InvisibleItemIs404Not403(t *testing.T) {
 // flat editor gate blocked by accident. The handler now rejects a parent item
 // whose WorkspaceID isn't the requested workspace, before either check.
 func TestDeleteAttachment_ForeignItemGrantCannotReachAcrossWorkspaces(t *testing.T) {
+	t.Parallel()
 	srv, _ := testServerWithAttachments(t)
 
 	// Workspace B: the attacker holds a genuine edit grant here.
@@ -240,6 +244,7 @@ func TestDeleteAttachment_ForeignItemGrantCannotReachAcrossWorkspaces(t *testing
 // context to authorize against, so a grant on some other item must not
 // unlock it.
 func TestDeleteAttachment_OrphanStillRequiresEditorRole(t *testing.T) {
+	t.Parallel()
 	srv, _ := testServerWithAttachments(t)
 	f := newDeleteAuthzFixture(t, srv)
 
@@ -292,6 +297,7 @@ func TestDeleteAttachment_OrphanStillRequiresEditorRole(t *testing.T) {
 //
 // The four denials compared are the ones a prober can actually reach.
 func TestDeleteAttachment_DenialBodiesAreByteIdentical(t *testing.T) {
+	t.Parallel()
 	srv, _ := testServerWithAttachments(t)
 	f := newDeleteAuthzFixture(t, srv)
 
@@ -400,6 +406,7 @@ func TestDeleteAttachment_DenialBodiesAreByteIdentical(t *testing.T) {
 // differently for each (403 for a viewer, success for an editor) — and NEITHER
 // may be distinguishable from the lookup miss.
 func TestDeleteAttachment_OrphanRefusedToRestrictedMember(t *testing.T) {
+	t.Parallel()
 	srv, _ := testServerWithAttachments(t)
 	f := newDeleteAuthzFixture(t, srv)
 
@@ -459,6 +466,7 @@ func TestDeleteAttachment_OrphanRefusedToRestrictedMember(t *testing.T) {
 // The 400 is still correct FOR AN AUTHORIZED CALLER — asserted here so the
 // fix cannot regress into blanket-404ing a legitimate mistake.
 func TestDeleteAttachment_DerivedRowIsNotAnOracle(t *testing.T) {
+	t.Parallel()
 	srv, _ := testServerWithAttachments(t)
 	f := newDeleteAuthzFixture(t, srv)
 

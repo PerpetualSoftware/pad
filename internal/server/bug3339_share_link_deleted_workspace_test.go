@@ -13,6 +13,7 @@ import (
 // later), and the token lookup never checked the workspace, so a link kept
 // serving the deleted workspace's content for the whole restore window.
 func TestBUG3339_ShareLinkStopsResolvingWhenWorkspaceDeleted(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ownerCookie := bootstrapFirstUser(t, srv, "owner@test.com", "Owner")
 	rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces", map[string]string{"name": "Shared WS"}, ownerCookie)

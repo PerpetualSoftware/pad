@@ -23,10 +23,12 @@ import (
 // every rollback arm and on a clean import.
 
 func TestImportPartialMarker_KeepPathMarks_SQLite(t *testing.T) {
+	t.Parallel()
 	importPartialMarkerKeepPath(t, store.DriverSQLite)
 }
 
 func TestImportPartialMarker_KeepPathMarks_Postgres(t *testing.T) {
+	t.Parallel()
 	importPartialMarkerKeepPath(t, store.DriverPostgres)
 }
 
@@ -135,6 +137,7 @@ func importPartialMarkerKeepPath(t *testing.T, driver store.DriverType) {
 
 // A PATCH without the member leaves the marker alone.
 func TestImportPartialMarker_OrdinaryPatchKeepsMarker(t *testing.T) {
+	t.Parallel()
 	bundle := withUndecodableManifest(t, realBundleWithBlob(t))
 	dest := attachmentsServerOn(t, store.DriverSQLite)
 	_, tok := memberImporter(t, dest)
@@ -152,6 +155,7 @@ func TestImportPartialMarker_OrdinaryPatchKeepsMarker(t *testing.T) {
 
 // Rollback arms and a clean import leave no marker behind.
 func TestImportPartialMarker_RollbackAndSuccessUnmarked(t *testing.T) {
+	t.Parallel()
 	real := realBundleWithBlob(t)
 	dest := attachmentsServerOn(t, store.DriverSQLite)
 	u, tok := memberImporter(t, dest)
@@ -190,6 +194,7 @@ func TestImportPartialMarker_RollbackAndSuccessUnmarked(t *testing.T) {
 // The marker is instance-local: an export of a marked workspace does not
 // carry it.
 func TestImportPartialMarker_NotExported(t *testing.T) {
+	t.Parallel()
 	bundle := withUndecodableManifest(t, realBundleWithBlob(t))
 	dest := attachmentsServerOn(t, store.DriverSQLite)
 	_, tok := memberImporter(t, dest)
@@ -209,6 +214,7 @@ func TestImportPartialMarker_NotExported(t *testing.T) {
 // marked too: on the transport arm and on the validation arm. A
 // trigger refuses the soft-delete, as in the BUG-3475 test.
 func TestImportPartialMarker_FailedRollbackMarks(t *testing.T) {
+	t.Parallel()
 	real := realBundleWithBlob(t)
 	srv := attachmentsServerOn(t, store.DriverSQLite)
 	_, tok := memberImporter(t, srv)
@@ -244,6 +250,7 @@ func TestImportPartialMarker_FailedRollbackMarks(t *testing.T) {
 // Who reads the note: owners, and instance admins who are MEMBERS. An admin
 // admitted as a guest reads the workspace as a guest.
 func TestImportPartialMarker_NoteReaders(t *testing.T) {
+	t.Parallel()
 	admin := &models.User{ID: "a", Role: "admin"}
 	member := &models.User{ID: "m", Role: "member"}
 	for _, c := range []struct {

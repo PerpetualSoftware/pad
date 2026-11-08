@@ -27,6 +27,7 @@ func (f *accessFixture) itemIn(coll string, body map[string]any) models.Item {
 }
 
 func TestBUG3366_GuestDoesNotSeeUngrantedLineage(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newAccessFixture(t, d)
 		parent := f.itemIn("tasks", map[string]any{"title": "Secret parent", "fields": `{"status":"open"}`})

@@ -173,6 +173,7 @@ func runParityCase(t *testing.T, c parityCase) parityResult {
 }
 
 func TestArtifactImportParity(t *testing.T) {
+	t.Parallel()
 	got := map[string]parityResult{}
 	for _, c := range artifactParityCases() {
 		got[c.name] = runParityCase(t, c)

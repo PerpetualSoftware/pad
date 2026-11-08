@@ -25,6 +25,7 @@ func collectionAccessPath(f *restrictedOwnerVisibilityFixture, targetUserID stri
 // self-escalation arm: a restricted owner cannot PATCH their own record to
 // mode="all", over either auth class.
 func TestSetMemberCollectionAccess_RestrictedOwner_SelfToAll_Forbidden(t *testing.T) {
+	t.Parallel()
 	f := newRestrictedOwnerVisibilityFixture(t)
 	path := collectionAccessPath(f, f.ownerID)
 	body := map[string]interface{}{"mode": "all"}
@@ -46,6 +47,7 @@ func TestSetMemberCollectionAccess_RestrictedOwner_SelfToAll_Forbidden(t *testin
 // outside their own visible set, even alongside a visible one, and even
 // when the target is themselves.
 func TestSetMemberCollectionAccess_RestrictedOwner_HiddenID_Forbidden(t *testing.T) {
+	t.Parallel()
 	f := newRestrictedOwnerVisibilityFixture(t)
 	path := collectionAccessPath(f, f.ownerID)
 	body := map[string]interface{}{
@@ -69,6 +71,7 @@ func TestSetMemberCollectionAccess_RestrictedOwner_HiddenID_Forbidden(t *testing
 // pins the cross-member leak arm: a restricted owner cannot grant a
 // DIFFERENT member a collection the granting owner cannot themselves see.
 func TestSetMemberCollectionAccess_RestrictedOwner_CrossMemberHiddenID_Forbidden(t *testing.T) {
+	t.Parallel()
 	f := newRestrictedOwnerVisibilityFixture(t)
 	grantee := f.seedGrantee(t)
 	if err := f.srv.store.AddWorkspaceMember(f.ws.ID, grantee.ID, "editor"); err != nil {
@@ -99,6 +102,7 @@ func TestSetMemberCollectionAccess_RestrictedOwner_CrossMemberHiddenID_Forbidden
 // visible set, including an empty collection_ids list (which grants
 // nothing and cannot escalate).
 func TestSetMemberCollectionAccess_RestrictedOwner_WithinScope_OK(t *testing.T) {
+	t.Parallel()
 	f := newRestrictedOwnerVisibilityFixture(t)
 
 	rr := doRequestWithHeaders(f.srv, "PUT", collectionAccessPath(f, f.ownerID),
@@ -124,6 +128,7 @@ func TestSetMemberCollectionAccess_RestrictedOwner_WithinScope_OK(t *testing.T) 
 // raw here would let a single-item grant escalate into full collection-wide
 // member_collection_access.
 func TestSetMemberCollectionAccess_RestrictedOwner_ItemGrantOnly_StillForbidden(t *testing.T) {
+	t.Parallel()
 	f := newRestrictedOwnerVisibilityFixture(t)
 	f.grantHiddenItemToOwner(t)
 
@@ -141,6 +146,7 @@ func TestSetMemberCollectionAccess_RestrictedOwner_ItemGrantOnly_StillForbidden(
 // TestSetMemberCollectionAccess_UnrestrictedOwner_OK confirms the guard is a
 // no-op for an unrestricted (mode "all") owner — the common case.
 func TestSetMemberCollectionAccess_UnrestrictedOwner_OK(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	owner, err := srv.store.CreateUser(models.UserCreate{

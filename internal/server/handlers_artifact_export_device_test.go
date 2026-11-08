@@ -12,6 +12,7 @@ import (
 // slugged like a Windows device named a device. The name is prefixed "_",
 // by the one device rule attachments use (BUG-2822).
 func TestArtifactExportFilename_BUG3185_DeviceStemIsPrefixed(t *testing.T) {
+	t.Parallel()
 	cases := []struct{ slug, want string }{
 		{"nul", "_nul.pad.md"},
 		{"con", "_con.pad.md"},
@@ -34,6 +35,7 @@ func TestArtifactExportFilename_BUG3185_DeviceStemIsPrefixed(t *testing.T) {
 // The binding leg: the export ENDPOINT carries the prefixed name in its
 // Content-Disposition, which is what both clients save under.
 func TestExportArtifact_BUG3185_DeviceSlugHeaderIsPrefixed(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
 	pb := createItem(t, srv, ws, "playbooks", map[string]interface{}{

@@ -10,6 +10,7 @@ import (
 // reply routes. The CLI refuses it first; this is the server's own answer,
 // which the web UI and the HTTP MCP tools reach directly.
 func TestCreateComment_RefusesABlankBody(t *testing.T) {
+	t.Parallel()
 	f := newAttributionFixture(t)
 	path := "/api/v1/workspaces/" + f.ws.Slug + "/items/" + f.item.Slug + "/comments"
 

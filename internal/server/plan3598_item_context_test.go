@@ -93,6 +93,7 @@ func ctxIndex(xs []string, x string) int {
 }
 
 func TestPLAN3598_ItemContextBrief(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newCtxFixture(t, d)
 		resp, code, body := f.context(f.ownerTok, "?intent=implement&role=implementer")
@@ -169,6 +170,7 @@ func TestPLAN3598_ItemContextBrief(t *testing.T) {
 }
 
 func TestPLAN3598_ItemContextRefusals(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newCtxFixture(t, d)
 		_, code, body := f.context(f.ownerTok, "?intent=nonsense")
@@ -191,6 +193,7 @@ func TestPLAN3598_ItemContextRefusals(t *testing.T) {
 // part still ships (one 32 KB convention used to crowd out
 // everything after it). The parent chain alone stops at its first miss.
 func TestPLAN3598_ItemContextBudgetSkipsAndKeepsFilling(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newCtxFixture(t, d)
 		full, _, _ := f.context(f.ownerTok, "?intent=implement")
@@ -255,6 +258,7 @@ func omittedRefs(os []itemContextOmitted) []string {
 // PLAN-3598: a 32 KB convention ahead of small ones in the
 // order is skipped, and the small ones after it still ship.
 func TestPLAN3598_ItemContextBigConventionDoesNotBlockSmallOnes(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newCtxFixture(t, d)
 		conv, err := f.srv.store.GetCollectionBySlug(f.wsID, "conventions")
@@ -293,6 +297,7 @@ func TestPLAN3598_ItemContextBigConventionDoesNotBlockSmallOnes(t *testing.T) {
 // first, then role-scoped rules, then the global always ones; within a
 // tier, must before should. Never the ref string.
 func TestPLAN3598_ItemContextConventionsInRelevanceOrder(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newCtxFixture(t, d)
 		resp, code, body := f.context(f.ownerTok, "?intent=implement&role=implementer")
@@ -375,6 +380,7 @@ func TestPLAN3598_ItemContextConventionsInRelevanceOrder(t *testing.T) {
 // PLAN-3598: implement includes opening the PR, so an
 // on-pr-create rule (CONVE-735, the mandatory review) is in the brief.
 func TestPLAN3598_ItemContextImplementIncludesPRRules(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newCtxFixture(t, d)
 		conv, err := f.srv.store.GetCollectionBySlug(f.wsID, "conventions")
@@ -406,6 +412,7 @@ func TestPLAN3598_ItemContextImplementIncludesPRRules(t *testing.T) {
 // A guest granted only the task sees nothing about the ancestor, blocker or
 // linked item: not as parts, not in omitted, not in conflicts.
 func TestPLAN3598_ItemContextGuestSeesOnlyGrantedItems(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newCtxFixture(t, d)
 		guest := mkUser(t, f.srv, "ctx-guest@example.com")
@@ -468,6 +475,7 @@ func TestPLAN3598_ItemContextGuestSeesOnlyGrantedItems(t *testing.T) {
 // it: to a caller who can read it, and as the same 404 as a missing item to
 // one who cannot.
 func TestPLAN3598_ItemContextArchivedFollowsGet(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newCtxFixture(t, d)
 		if err := f.srv.store.DeleteItem(f.task.ID); err != nil {
@@ -501,6 +509,7 @@ func TestPLAN3598_ItemContextArchivedFollowsGet(t *testing.T) {
 // Each blocked task has no other blocker, so the dashboard's first active
 // blocker can only be the one under test.
 func TestPLAN3598_ItemContextBlockerAgreesWithDashboard(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newCtxFixture(t, d)
 		blockedBy := func(title string, blocker models.Item) models.Item {

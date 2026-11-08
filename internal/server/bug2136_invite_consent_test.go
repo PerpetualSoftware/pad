@@ -42,6 +42,7 @@ func myInvitationIDs(t *testing.T, f *accessFixture, tok string) []string {
 }
 
 func TestBUG2136_InviteAsksAVerifiedExistingUser(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newAccessFixture(t, d)
 		invitee := mkUser(t, f.srv, "existing@example.com")
@@ -79,6 +80,7 @@ func TestBUG2136_InviteAsksAVerifiedExistingUser(t *testing.T) {
 }
 
 func TestBUG2136_ReinviteReplacesThePendingInvitation(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newAccessFixture(t, d)
 		invitee := mkUser(t, f.srv, "again@example.com")
@@ -118,6 +120,7 @@ func TestBUG2136_ReinviteReplacesThePendingInvitation(t *testing.T) {
 }
 
 func TestBUG2136_DeclineByID(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newAccessFixture(t, d)
 		invitee := mkUser(t, f.srv, "decliner@example.com")
@@ -167,6 +170,7 @@ func TestBUG2136_DeclineByID(t *testing.T) {
 }
 
 func TestBUG2136_DeclineByCode(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newAccessFixture(t, d)
 		invitee := mkUser(t, f.srv, "code-decliner@example.com")
@@ -194,6 +198,7 @@ func TestBUG2136_DeclineByCode(t *testing.T) {
 // both on Postgres without the lock): accepting both is one membership and no
 // error, because a second accept by a member is idempotent (BUG-3281).
 func TestBUG2136_SiblingInvitationsAcceptCleanly(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newAccessFixture(t, d)
 		invitee := mkUser(t, f.srv, "twin@example.com")
@@ -227,6 +232,7 @@ func TestBUG2136_SiblingInvitationsAcceptCleanly(t *testing.T) {
 
 // Inviting an existing member is still refused.
 func TestBUG2136_InvitingAMemberIsRefused(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newAccessFixture(t, d)
 		m := mkUser(t, f.srv, "already@example.com")

@@ -16,6 +16,7 @@ import (
 // listed, every one of them answers. The listed leg is the control: the same
 // requests, the same item, only the listing differs.
 func TestTask3376_SystemCollectionSurfaces(t *testing.T) {
+	t.Parallel()
 	f := newRefResolverFixture(t)
 	st := f.srv.store
 

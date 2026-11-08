@@ -30,6 +30,7 @@ func task3595OnlyWorkspacePath(t *testing.T, srv *Server, email string) (string,
 }
 
 func TestTask3595_CloudRegisterReturnsTheNewWorkspacePath(t *testing.T) {
+	t.Parallel()
 	srv, _ := newCloudEmailServer(t)
 	rr := doRequest(srv, "POST", "/api/v1/auth/register", map[string]string{
 		"email":    "first3595@example.com",
@@ -52,6 +53,7 @@ func TestTask3595_CloudRegisterReturnsTheNewWorkspacePath(t *testing.T) {
 }
 
 func TestTask3595_OAuthSignupReturnsTheWorkspacePathOnlyForANewUser(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetCloudMode(oauthProviderTestSecret)
 	login := func() map[string]any {
@@ -91,6 +93,7 @@ func TestTask3595_OAuthSignupReturnsTheWorkspacePathOnlyForANewUser(t *testing.T
 // arm returns nil, so the doors omit workspace_path and the user lands where
 // they always did.
 func TestTask3595_AutoCreateReturnsNilWhenItFailsAndOffCloud(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ghost := &models.User{ID: "ghost-3595", Name: "Ghost", Username: "ghost3595", Email: "ghost3595@example.com"}
 	if ws := srv.autoCreateWorkspace(ghost); ws != nil {

@@ -12,6 +12,7 @@ import (
 // own success had reached. The claim now comes first. The control: a NEW
 // create at the cap is still refused.
 func TestTASK3585_CreateAtTheLimitReplays(t *testing.T) {
+	t.Parallel()
 	e := newRestoreLimitEnv(t)
 	e.setCap(t, e.liveItems(t)+1)
 	path := "/api/v1/workspaces/" + e.home.Slug + "/collections/tasks/items"

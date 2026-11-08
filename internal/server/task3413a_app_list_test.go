@@ -18,6 +18,7 @@ func (e *appsEnv) listInstalls(t *testing.T, token string) (int, appInstallListR
 }
 
 func TestTask3413a_TheListNamesEveryInstallWithItsStateAndHook(t *testing.T) {
+	t.Parallel()
 	e := newProvisionEnv(t)
 	code, out := e.listInstalls(t, e.token)
 	if code != http.StatusOK || !out.Available || len(out.Installs) != 0 {
@@ -57,6 +58,7 @@ func TestTask3413a_TheListNamesEveryInstallWithItsStateAndHook(t *testing.T) {
 }
 
 func TestTask3413a_OnlyAnOwnerListsInstalls(t *testing.T) {
+	t.Parallel()
 	e := newProvisionEnv(t)
 	for _, role := range []string{"editor", "viewer"} {
 		user, token := loginTestUserAs(t, e.srv, role+"@test.com", role, "password123")
@@ -70,6 +72,7 @@ func TestTask3413a_OnlyAnOwnerListsInstalls(t *testing.T) {
 }
 
 func TestTask3413a_AppsOffSaysSoInsteadOfAnEmptyList(t *testing.T) {
+	t.Parallel()
 	e := newProvisionEnv(t)
 	p := e.stagePreview(t)
 	if rr := e.confirm(t, p, p.ManifestSHA256); rr.Code != http.StatusCreated {

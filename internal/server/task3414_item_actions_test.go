@@ -80,6 +80,7 @@ func (f u11Fix) redeem(code string) *httptest.ResponseRecorder {
 }
 
 func TestTask3414_MintRedeemAndReplay(t *testing.T) {
+	t.Parallel()
 	f := u11Fixture(t)
 	// The list for the item pane.
 	rr := doRequestWithCookie(f.srv, "GET", f.itemPath(f.item.ID, "/app-actions"), nil, f.viewerTok)
@@ -131,6 +132,7 @@ func TestTask3414_MintRedeemAndReplay(t *testing.T) {
 // Every refusal of a redeem is one body, whatever the reason; and a
 // mismatch burns the code (consume first).
 func TestTask3414_RedeemRefusalsAreIndistinguishable(t *testing.T) {
+	t.Parallel()
 	f := u11Fixture(t)
 	db := f.srv.store.DB()
 	exec := func(q string, args ...any) {
@@ -223,6 +225,7 @@ func TestTask3414_RedeemRefusalsAreIndistinguishable(t *testing.T) {
 // The mint re-checks what the redeem will, with one
 // refusal body.
 func TestTask3414_MintRefusalsAreIndistinguishable(t *testing.T) {
+	t.Parallel()
 	f := u11Fixture(t)
 	status, _, _, want := f.mint(t, f.item.ID, "no-such-install", "open")
 	if status != http.StatusNotFound {
@@ -273,6 +276,7 @@ func TestTask3414_MintRefusalsAreIndistinguishable(t *testing.T) {
 // Access revoked between mint and redeem refuses
 // the redeem, read from the viewer's CURRENT memberships, not the mint's.
 func TestTask3414_RevokedBetweenMintAndRedeem(t *testing.T) {
+	t.Parallel()
 	f := u11Fixture(t)
 	status, _, code, body := f.mint(t, f.item.ID, f.in.id, "open")
 	if status != http.StatusOK {
@@ -291,6 +295,7 @@ func TestTask3414_RevokedBetweenMintAndRedeem(t *testing.T) {
 // changes one gives it a new revision, one that removes it retires it;
 // uninstall deletes them; installs from before U11 are backfilled.
 func TestTask3414_ActionRowsFollowTheManifest(t *testing.T) {
+	t.Parallel()
 	u := newUpgradeEnv(t)
 	db := u.srv.store.DB()
 	row := func() (label, path, colls string, rev int, active bool) {
@@ -375,6 +380,7 @@ func (f u11Fix) otherCompanion(t *testing.T) string {
 // with a token from the new epoch: the code is bound to the epoch it was
 // minted under (§6).
 func TestTask3414_CodeFromAnEarlierEpochIsRefused(t *testing.T) {
+	t.Parallel()
 	f := u11Fixture(t)
 	status, _, code, body := f.mint(t, f.item.ID, f.in.id, "open")
 	if status != http.StatusOK {
@@ -401,6 +407,7 @@ func TestTask3414_CodeFromAnEarlierEpochIsRefused(t *testing.T) {
 // app may be handed an item for: the membership-only stance, not the admin
 // cookie bypass.
 func TestTask3414_NonMemberAdminCannotLaunch(t *testing.T) {
+	t.Parallel()
 	f := u11Fixture(t)
 	admin, tok := loginTestUserAs(t, f.srv, "admin-3414@example.com", "Ada Admin", "pw-3414-admin")
 	if _, err := f.srv.store.DB().Exec(`UPDATE users SET role = 'admin' WHERE id = ?`, admin.ID); err != nil {
@@ -416,6 +423,7 @@ func TestTask3414_NonMemberAdminCannotLaunch(t *testing.T) {
 // app item DTO's keys. The root-mounted routes are exactly the context
 // redeem and BUG-3416's GET /me, both reads.
 func TestTask3414_RedeemRouteCensus(t *testing.T) {
+	t.Parallel()
 	want := map[string]string{"POST /context/redeem": "appRedeemContext", "GET /me": "appInstallMe"}
 	if len(appUnscopedRoutes) != len(want) {
 		t.Fatalf("unscoped routes: %+v", appUnscopedRoutes)
@@ -450,6 +458,7 @@ func TestTask3414_RedeemRouteCensus(t *testing.T) {
 // §6: a service token only; a person's delegated token is refused with the
 // same body.
 func TestTask3414_DelegatedTokenCannotRedeem(t *testing.T) {
+	t.Parallel()
 	d := delegatedAPIFixture(t, "read", "read", "editor")
 	f := u11Prepare(t, d.appAPIFix)
 	_, _, code, body := f.mint(t, f.item.ID, f.in.id, "open")
@@ -472,6 +481,7 @@ func TestTask3414_DelegatedTokenCannotRedeem(t *testing.T) {
 // The URL is built from the validated origin, not the raw
 // stored base_url.
 func TestTask3414_URLUsesTheNormalizedOrigin(t *testing.T) {
+	t.Parallel()
 	f := u11Fixture(t)
 	if _, err := f.srv.store.DB().Exec(`UPDATE app_installs SET manifest = ? WHERE id = ?`, `{"title":"Portal","base_url":"  https://Portal.Example:443  "}`, f.in.id); err != nil {
 		t.Fatal(err)

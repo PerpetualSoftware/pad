@@ -6,6 +6,7 @@ import (
 )
 
 func TestNormalizeRecoveryCode(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		in, want string
 	}{
@@ -28,6 +29,7 @@ func TestNormalizeRecoveryCode(t *testing.T) {
 // entropy, unpadded). The previous 8-char hex form carried only 32 bits
 // — below what NIST SP 800-63B considers acceptable for backup codes.
 func TestGenerateRecoveryCodes_EntropyShape(t *testing.T) {
+	t.Parallel()
 	codes, err := generateRecoveryCodes(8)
 	if err != nil {
 		t.Fatalf("generateRecoveryCodes: %v", err)

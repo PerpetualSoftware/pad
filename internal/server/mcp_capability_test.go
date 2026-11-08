@@ -97,6 +97,7 @@ func TestE2E_HTTPSSelfHostFlow(t *testing.T) {
 // resource in any spelling (cloud's audience is compared byte-for-byte
 // and its historical header was resource + the well-known suffix).
 func TestProtectedResourceMetadataURL(t *testing.T) {
+	t.Parallel()
 	for in, want := range map[string]string{
 		"https://mcp.getpad.dev":        "https://mcp.getpad.dev/.well-known/oauth-protected-resource",
 		"https://mcp.getpad.dev/":       "https://mcp.getpad.dev/.well-known/oauth-protected-resource",

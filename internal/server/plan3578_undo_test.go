@@ -9,6 +9,7 @@ import (
 // an ordinary patch of its own.
 
 func TestPLAN3578_UndoRoundTrip(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	f := newPatchFixture(t, srv, "intro\nthe quick brown fox\nend\n")
 	original := f.current(t).Content
@@ -38,6 +39,7 @@ func TestPLAN3578_UndoRoundTrip(t *testing.T) {
 }
 
 func TestPLAN3578_UndoRefusesOverALaterChange(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	f := newPatchFixture(t, srv, "alpha beta gamma\n")
 	_, out := f.patch(t, map[string]any{"edits": edits("beta", "BETA")})
@@ -58,6 +60,7 @@ func TestPLAN3578_UndoRefusesOverALaterChange(t *testing.T) {
 }
 
 func TestPLAN3578_UndoNamesOnlyThisItemsPatch(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	a := newPatchFixture(t, srv, "one\n")
 	_, out := a.patch(t, map[string]any{"edits": edits("one", "ONE")})

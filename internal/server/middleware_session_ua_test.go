@@ -69,6 +69,7 @@ func countUAChangeEvents(t *testing.T, srv *Server) int {
 // slog-only behavior exactly, so existing self-host audit feeds are
 // untouched).
 func TestSessionUAChange_LogOnlyDefault(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	const boundUA = "pad-cli/1.0 (session-bound)"
 	token := uaBoundSession(t, srv, "ua-logonly@example.com", boundUA)
@@ -101,6 +102,7 @@ func TestSessionUAChange_LogOnlyDefault(t *testing.T) {
 // session presenting a different User-Agent is rejected (401), the session
 // is destroyed, and an ActionSessionUAChanged audit row is written.
 func TestSessionUAChange_StrictRevokes(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetIPChangeEnforce("strict")
 	const boundUA = "pad-cli/1.0 (session-bound)"
@@ -133,6 +135,7 @@ func TestSessionUAChange_StrictRevokes(t *testing.T) {
 // the CLI session-bearer path (Authorization: Bearer padsess_...), which
 // runs through TokenAuth rather than SessionAuth.
 func TestSessionUAChange_StrictBearerRevokes(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetIPChangeEnforce("strict")
 	const boundUA = "pad-cli/1.0 (session-bound)"

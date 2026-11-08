@@ -75,6 +75,7 @@ func bug3812Count(codes []int, want int) int {
 }
 
 func TestBUG3812_ConcurrentCreatesHoldOneValueOnce(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		slug := createWSWithCollections(t, srv)
 		bug3812Collection(t, srv, slug)
@@ -96,6 +97,7 @@ func TestBUG3812_ConcurrentCreatesHoldOneValueOnce(t *testing.T) {
 
 // Both PATCH shapes: a full `fields` replace and a `fields_patch` merge.
 func TestBUG3812_ConcurrentPatchesHoldOneValueOnce(t *testing.T) {
+	t.Parallel()
 	for _, shape := range []string{"fields", "fields_patch"} {
 		t.Run(shape, func(t *testing.T) {
 			bothBackends(t, func(t *testing.T, srv *Server) {
@@ -138,6 +140,7 @@ func TestBUG3812_ConcurrentPatchesHoldOneValueOnce(t *testing.T) {
 // check ran on the pool before the move's lock, so concurrent moves of items
 // carrying one value could all land it.
 func TestBUG3812_ConcurrentBulkMovesHoldOneValueOnce(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		slug := createWSWithCollections(t, srv)
 		bug3812Collection(t, srv, slug)

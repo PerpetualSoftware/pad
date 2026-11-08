@@ -19,6 +19,7 @@ import (
 // meaningful — it proves the payload was populated before the rename, so a
 // zero afterwards is the rename's doing and not an empty fixture.
 func TestConventionsCollectionSurvivesRename(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -92,6 +93,7 @@ func TestConventionsCollectionSurvivesRename(t *testing.T) {
 // OBSERVED FAILING on origin/main 6e7d34c6 before the fix: playbooks 1 -> 0
 // and GET /playbooks/ship 200 -> 404.
 func TestPlaybooksCollectionSurvivesRename(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 

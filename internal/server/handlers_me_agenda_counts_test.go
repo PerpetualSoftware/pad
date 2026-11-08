@@ -47,6 +47,7 @@ func pinTo(t *testing.T, w *agendaWorld) func(context.Context) context.Context {
 }
 
 func TestMeAgendaCountsSeries(t *testing.T) {
+	t.Parallel()
 	w := newAgendaWorld(t, "tasks")
 	meAgendaFacts(t, w, "tasks", "One")
 	meAgendaFacts(t, w, "tasks", "Two")
@@ -59,6 +60,7 @@ func TestMeAgendaCountsSeries(t *testing.T) {
 // A hidden item in a readable workspace moves no count, and a guest sees only
 // what an item grant opens in a restricted collection.
 func TestMeAgendaCountsHiddenAndGuest(t *testing.T) {
+	t.Parallel()
 	w := newAgendaWorld(t, "tasks", "secret")
 	member := mustUser(t, w.srv, "counts-member@example.com", "countsmember", "")
 	if err := w.srv.store.AddWorkspaceMember(w.ws.ID, member.ID, "viewer"); err != nil {
@@ -85,6 +87,7 @@ func TestMeAgendaCountsHiddenAndGuest(t *testing.T) {
 }
 
 func TestMeAgendaCountsRevokedWorkspaceDrops(t *testing.T) {
+	t.Parallel()
 	w := newAgendaWorld(t, "tasks")
 	other := meAgendaWorkspace(t, w, "Other")
 	u := mustUser(t, w.srv, "counts-revoked@example.com", "countsrevoked", "")
@@ -108,6 +111,7 @@ func TestMeAgendaCountsRevokedWorkspaceDrops(t *testing.T) {
 
 // 23:30 local on the 10th lands on the 10th, not the 11th UTC.
 func TestMeAgendaCountsLocalDay(t *testing.T) {
+	t.Parallel()
 	w := newAgendaWorld(t, "tasks")
 	it := meAgendaFacts(t, w, "tasks", "Late")
 	meAgendaExec(t, w, `UPDATE items SET created_at = ? WHERE id = ?`, "2031-03-01T00:00:00Z", it.ID)
@@ -123,6 +127,7 @@ func TestMeAgendaCountsLocalDay(t *testing.T) {
 }
 
 func TestMeAgendaGroupParameter(t *testing.T) {
+	t.Parallel()
 	w := newAgendaWorld(t, "tasks")
 	other := meAgendaWorkspace(t, w, "Other")
 	stranger := mustUser(t, w.srv, "counts-stranger@example.com", "countsstranger", "")
@@ -164,6 +169,7 @@ func TestMeAgendaGroupParameter(t *testing.T) {
 // its own, unknown or built in. With no group it stays inside its workspace in
 // the entries and the counts.
 func TestMeAgendaGroupPinnedToken(t *testing.T) {
+	t.Parallel()
 	w := newAgendaWorld(t, "tasks")
 	other := meAgendaWorkspace(t, w, "Other")
 	meAgendaFacts(t, w, "tasks", "Pinned")
@@ -193,6 +199,7 @@ func TestMeAgendaGroupPinnedToken(t *testing.T) {
 }
 
 func TestMeAgendaCountsCap(t *testing.T) {
+	t.Parallel()
 	w := newAgendaWorld(t, "tasks")
 	meAgendaFacts(t, w, "tasks", "One")
 	meAgendaFacts(t, w, "tasks", "Two")

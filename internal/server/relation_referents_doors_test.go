@@ -194,6 +194,7 @@ func assertRefused(t *testing.T, door string, rr *httptest.ResponseRecorder) {
 // --- doors 1-2: supplied-only writes -----------------------------------
 
 func TestRelationDoors_Create(t *testing.T) {
+	t.Parallel()
 	t.Run("supplied unresolvable is refused", func(t *testing.T) {
 		f := newDoorFixture(t)
 		rr := f.call(f.srv.handleCreateItem, "POST",
@@ -229,6 +230,7 @@ func TestRelationDoors_Create(t *testing.T) {
 }
 
 func TestRelationDoors_UpdateFields(t *testing.T) {
+	t.Parallel()
 	f := newDoorFixture(t)
 	item := f.seed(`{"status":"open"}`)
 
@@ -246,6 +248,7 @@ func TestRelationDoors_UpdateFields(t *testing.T) {
 // --- doors 3-4: the two doors that see BOTH provenances ----------------
 
 func TestRelationDoors_UpdateFieldsPatch(t *testing.T) {
+	t.Parallel()
 	t.Run("supplied unresolvable is refused", func(t *testing.T) {
 		f := newDoorFixture(t)
 		item := f.seed(`{"status":"open"}`)
@@ -277,6 +280,7 @@ func TestRelationDoors_UpdateFieldsPatch(t *testing.T) {
 }
 
 func TestRelationDoors_BulkUpdate(t *testing.T) {
+	t.Parallel()
 	t.Run("a carried value the operation does not touch is left alone", func(t *testing.T) {
 		// Same claim as the fields_patch leg, and the door is easier to get
 		// wrong: `bulkFieldUpdate` merges the item's STORED blob with the
@@ -334,6 +338,7 @@ func (f *doorFixture) requestFor() *http.Request {
 // can hold that, and it vouches for the FUNCTION, not for a binding that does
 // not exist yet.
 func TestRelationDoors_BulkUpdateSuppliedBranch(t *testing.T) {
+	t.Parallel()
 	t.Run("an unresolvable supplied change is refused", func(t *testing.T) {
 		f := newDoorFixture(t)
 		item := f.seed(`{"status":"open"}`)
@@ -382,6 +387,7 @@ func (f *doorFixture) targetCollection() *models.Collection {
 }
 
 func TestRelationDoors_Move(t *testing.T) {
+	t.Parallel()
 	t.Run("supplied unresolvable override is refused", func(t *testing.T) {
 		f := newDoorFixture(t)
 		dst := f.targetCollection()
@@ -442,6 +448,7 @@ func TestRelationDoors_Move(t *testing.T) {
 }
 
 func TestRelationDoors_BulkMove(t *testing.T) {
+	t.Parallel()
 	t.Run("a resolvable carried value SURVIVES", func(t *testing.T) {
 		f := newDoorFixture(t)
 		dst := f.targetCollection()
@@ -488,6 +495,7 @@ func TestRelationDoors_BulkMove(t *testing.T) {
 // complete. The AGREEMENT between them is the pin's claim, not this table's.
 
 func TestRelationDoors_CrossWorkspaceCopyAndPreflight(t *testing.T) {
+	t.Parallel()
 	t.Run("copy: carried drops, supplied unresolvable refuses", func(t *testing.T) {
 		f := newCopyRelationFixture(t)
 
@@ -525,6 +533,7 @@ func TestRelationDoors_CrossWorkspaceCopyAndPreflight(t *testing.T) {
 // the cross-workspace half of this rule, where it is NOT, is pinned in
 // TestCopyEndpoint_InvisibleRelationOverrideIsRefused.
 func TestRelationDoors_MoveRefusesInvisibleOverride(t *testing.T) {
+	t.Parallel()
 	f := newDoorFixture(t)
 	dst := f.targetCollection()
 	item := f.seed(`{"status":"open"}`)
@@ -582,6 +591,7 @@ func TestRelationDoors_MoveRefusesInvisibleOverride(t *testing.T) {
 // per-item outcome list with no room for this, and the timeline is where
 // someone asking "what happened to my item" actually looks.
 func TestRelationDoors_BulkMoveReportsDroppedFields(t *testing.T) {
+	t.Parallel()
 	f := newDoorFixture(t)
 	dst := f.targetCollection()
 	item := f.seed(fmt.Sprintf(`{"status":"open","owner_ref":%q}`, badRef))
@@ -654,6 +664,7 @@ func (f *doorFixture) callAs(user *models.User, role string, h http.HandlerFunc,
 // pass the first and destroy the second, and "you linked a task where a person
 // belongs" is the useful half of this reason.
 func TestRelationDoors_WrongCollectionDoesNotDiscloseExistence(t *testing.T) {
+	t.Parallel()
 	f := newDoorFixture(t)
 	// A live item in a collection that is NOT the relation's declared target.
 	other := mustSchemaCollection(t, f.srv, f.ws.ID, "Vaults", `{"fields":[]}`)
@@ -710,6 +721,7 @@ func TestRelationDoors_WrongCollectionDoesNotDiscloseExistence(t *testing.T) {
 // runs first and INJECTS schema defaults, so a defaulted relation was
 // persisted raw: never canonicalised, never checked against its collection.
 func TestRelationDoors_BulkUpdateResolvesInjectedRelationDefault(t *testing.T) {
+	t.Parallel()
 	f := newDoorFixture(t)
 	defaulted := mustSchemaCollection(t, f.srv, f.ws.ID, "Defaulted", fmt.Sprintf(`{"fields":[
 		{"key":"status","label":"Status","type":"select","options":["open","done"]},
@@ -747,6 +759,7 @@ func TestRelationDoors_BulkUpdateResolvesInjectedRelationDefault(t *testing.T) {
 // as not_found instead of an empty field. A defect an earlier fix
 // introduced: before it, the same path did `continue`.
 func TestRelationDoors_WhitespaceOnlyRelationIsNotRefused(t *testing.T) {
+	t.Parallel()
 	f := newDoorFixture(t)
 
 	rr := f.call(f.srv.handleCreateItem, "POST",
@@ -772,6 +785,7 @@ func TestRelationDoors_WhitespaceOnlyRelationIsNotRefused(t *testing.T) {
 // author has to fix elsewhere. Reported in the write's warnings, so the drop is
 // not silent.
 func TestRelationDoors_NonStringDefaultIsDroppedAndReportedOnWrite(t *testing.T) {
+	t.Parallel()
 	f := newDoorFixture(t)
 	bad := mustSchemaCollection(t, f.srv, f.ws.ID, "Bad Default", fmt.Sprintf(`{"fields":[
 		{"key":"status","label":"Status","type":"select","options":["open","done"]},
@@ -833,6 +847,7 @@ func TestRelationDoors_NonStringDefaultIsDroppedAndReportedOnWrite(t *testing.T)
 // Both legs matter. The caller's OWN bad value must still be refused, or this
 // fix would have quietly disabled the door.
 func TestRelationDoors_UnresolvableStringDefaultDropsInsteadOfRefusing(t *testing.T) {
+	t.Parallel()
 	f := newDoorFixture(t)
 	coll := mustSchemaCollection(t, f.srv, f.ws.ID, "Dangling Default", fmt.Sprintf(`{"fields":[
 		{"key":"status","label":"Status","type":"select","options":["open","done"]},
@@ -883,6 +898,7 @@ func TestRelationDoors_UnresolvableStringDefaultDropsInsteadOfRefusing(t *testin
 // Dropped, not refused: the schema author chose the value and the caller can
 // neither fix it nor be blamed for it. What they must not get is the id.
 func TestRelationDoors_InvisibleRelationDefaultIsNotDisclosed(t *testing.T) {
+	t.Parallel()
 	f := newDoorFixture(t)
 	coll := mustSchemaCollection(t, f.srv, f.ws.ID, "Hidden Default", fmt.Sprintf(`{"fields":[
 		{"key":"status","label":"Status","type":"select","options":["open","done"]},
@@ -937,6 +953,7 @@ func TestRelationDoors_InvisibleRelationDefaultIsNotDisclosed(t *testing.T) {
 // so it stops being a silent no-op" — which is exactly why this survived. A
 // branch nobody can reach is a branch nobody checks.
 func TestRelationDoors_BulkMoveStatusIsCallerInput(t *testing.T) {
+	t.Parallel()
 	f := newDoorFixture(t)
 	// A destination whose `status` is a relation rather than a select.
 	dst := mustSchemaCollection(t, f.srv, f.ws.ID, "Status As Relation", fmt.Sprintf(`{"fields":[
@@ -972,6 +989,7 @@ func TestRelationDoors_BulkMoveStatusIsCallerInput(t *testing.T) {
 // predicate is now "not a destination default": the caller's own values and
 // the values carried from the source, both excluded for their own reasons.
 func TestRelationDoors_MoveDropsInvisibleDestinationDefault(t *testing.T) {
+	t.Parallel()
 	f := newDoorFixture(t)
 	dst := mustSchemaCollection(t, f.srv, f.ws.ID, "Move Hidden Default", fmt.Sprintf(`{"fields":[
 		{"key":"status","label":"Status","type":"select","options":["open","done"]},
@@ -1025,6 +1043,7 @@ func TestRelationDoors_MoveDropsInvisibleDestinationDefault(t *testing.T) {
 // after validation has passed leaves a required field absent regardless of
 // which list recorded it, so the check has to cover both.
 func TestRelationDoors_RequiredInvisibleDefaultRefuses(t *testing.T) {
+	t.Parallel()
 	f := newDoorFixture(t)
 	coll := mustSchemaCollection(t, f.srv, f.ws.ID, "Required Hidden", fmt.Sprintf(`{"fields":[
 		{"key":"status","label":"Status","type":"select","options":["open","done"]},
@@ -1069,6 +1088,7 @@ func TestRelationDoors_RequiredInvisibleDefaultRefuses(t *testing.T) {
 // that a nil has been mistaken for a value; rounds 4 and 5 were the same
 // distinction in the origin label.
 func TestRelationDoors_NullSourceDoesNotExemptDefaultFromVisibility(t *testing.T) {
+	t.Parallel()
 	f := newDoorFixture(t)
 	dst := mustSchemaCollection(t, f.srv, f.ws.ID, "Null Then Hidden Default", fmt.Sprintf(`{"fields":[
 		{"key":"status","label":"Status","type":"select","options":["open","done"]},
@@ -1112,6 +1132,7 @@ func TestRelationDoors_NullSourceDoesNotExemptDefaultFromVisibility(t *testing.T
 // item EXISTS. Same oracle the main pass closes, reopened through
 // the late-default door.
 func TestRelationDoors_LateDefaultWrongCollectionDoesNotDiscloseExistence(t *testing.T) {
+	t.Parallel()
 	f := newDoorFixture(t)
 	other := mustSchemaCollection(t, f.srv, f.ws.ID, "Late Vaults", `{"fields":[]}`)
 	secret, err := f.srv.store.CreateItem(f.ws.ID, other.ID, models.ItemCreate{
@@ -1185,6 +1206,7 @@ func TestRelationDoors_LateDefaultWrongCollectionDoesNotDiscloseExistence(t *tes
 // So a caller who cannot see the relation's target collection could name a
 // live item in it and have the value stored, receiving its canonical id back.
 func TestRelationDoors_BulkMoveRefusesInvisibleSuppliedStatus(t *testing.T) {
+	t.Parallel()
 	f := newDoorFixture(t)
 	dst := mustSchemaCollection(t, f.srv, f.ws.ID, "Bulk Status Relation", fmt.Sprintf(`{"fields":[
 		{"key":"status","label":"Status","type":"relation","collection":%q}
@@ -1255,6 +1277,7 @@ func TestRelationDoors_BulkMoveRefusesInvisibleSuppliedStatus(t *testing.T) {
 // The two legs are the whole test: a hidden-but-live target and a dangling
 // value must produce the SAME reason for a caller who can see neither.
 func TestRelationDoors_PreflightCarriedDropDoesNotDiscloseExistence(t *testing.T) {
+	t.Parallel()
 	f := newDoorFixture(t)
 	// A collection the restricted caller cannot see, holding a live item.
 	secret := mustSchemaCollection(t, f.srv, f.ws.ID, "Secret People", `{"fields":[]}`)
@@ -1342,6 +1365,7 @@ func TestRelationDoors_PreflightCarriedDropDoesNotDiscloseExistence(t *testing.T
 // set. The existing null-source test does not reach it — that fixture has no
 // stored value to go stale.
 func TestRelationDoors_NullOverrideDoesNotExemptDefaultFromVisibility(t *testing.T) {
+	t.Parallel()
 	f := newDoorFixture(t)
 	dst := mustSchemaCollection(t, f.srv, f.ws.ID, "Null Override Dest", fmt.Sprintf(`{"fields":[
 		{"key":"status","label":"Status","type":"select","options":["open","done"]},
@@ -1406,6 +1430,7 @@ func TestRelationDoors_NullOverrideDoesNotExemptDefaultFromVisibility(t *testing
 // good referent in the same request, and the move was refused for a field the
 // request had just filled.
 func TestRelationDoors_BulkMoveAcceptsASuppliedValueForARequiredRelation(t *testing.T) {
+	t.Parallel()
 	f := newDoorFixture(t)
 	dst := mustSchemaCollection(t, f.srv, f.ws.ID, "Bulk Required Relation", fmt.Sprintf(`{"fields":[
 		{"key":"status","label":"Status","type":"relation","collection":%q,"required":true}
@@ -1468,6 +1493,7 @@ func TestRelationDoors_BulkMoveAcceptsASuppliedValueForARequiredRelation(t *test
 // switch so they agree BY CONSTRUCTION, and what they agree on is now
 // drop-and-report rather than refuse.
 func TestRelationDoors_CarriedNonStringRelationDropsInsteadOfRefusing(t *testing.T) {
+	t.Parallel()
 	f := newDoorFixture(t)
 	dst := mustSchemaCollection(t, f.srv, f.ws.ID, "NonString Carried Dest", fmt.Sprintf(`{"fields":[
 		{"key":"status","label":"Status","type":"select","options":["open","done"]},
@@ -1543,6 +1569,7 @@ func TestRelationDoors_CarriedNonStringRelationDropsInsteadOfRefusing(t *testing
 // (a UUID-or-ref ladder cannot speak titles), and it was the untested half of
 // the fix, so both legs are asserted here.
 func TestRelationDoors_PreflightCarriedTitleWrongCollectionIsJudgedPerRequester(t *testing.T) {
+	t.Parallel()
 	f := newDoorFixture(t)
 	secret := mustSchemaCollection(t, f.srv, f.ws.ID, "Secret Titles", `{"fields":[]}`)
 	hidden, err := f.srv.store.CreateItem(f.ws.ID, secret.ID, models.ItemCreate{

@@ -175,12 +175,14 @@ func assertNotEmailBlocked(t *testing.T, rr *httptest.ResponseRecorder, what str
 // ---------------------------------------------------------------------
 
 func TestVerifiedEmail_CoreWrite_Session_BlocksUnverified(t *testing.T) {
+	t.Parallel()
 	f := newVerifiedEmailFixture(t, true)
 	rr := doRequestWithCookie(f.srv, "POST", f.itemsPath(), map[string]any{"title": "blocked"}, f.unv.session)
 	assertBlocked(t, rr, "unverified session item-create")
 }
 
 func TestVerifiedEmail_CoreWrite_PAT_BlocksUnverified(t *testing.T) {
+	t.Parallel()
 	f := newVerifiedEmailFixture(t, true)
 	rr := veDoBearer(f.srv, "POST", f.itemsPath(), map[string]any{"title": "blocked"}, f.unv.bearer)
 	assertBlocked(t, rr, "unverified PAT item-create")
@@ -191,6 +193,7 @@ func TestVerifiedEmail_CoreWrite_PAT_BlocksUnverified(t *testing.T) {
 // ---------------------------------------------------------------------
 
 func TestVerifiedEmail_VerifiedUser_PassesAllPerimeters(t *testing.T) {
+	t.Parallel()
 	f := newVerifiedEmailFixture(t, true)
 
 	// Core write via session → 201.
@@ -218,6 +221,7 @@ func TestVerifiedEmail_VerifiedUser_PassesAllPerimeters(t *testing.T) {
 // ---------------------------------------------------------------------
 
 func TestVerifiedEmail_SelfHost_NoOp(t *testing.T) {
+	t.Parallel()
 	f := newVerifiedEmailFixture(t, false) // NOT cloud mode
 
 	// An unverified user on a self-hosted instance writes freely — the
@@ -239,18 +243,21 @@ func TestVerifiedEmail_SelfHost_NoOp(t *testing.T) {
 // ---------------------------------------------------------------------
 
 func TestVerifiedEmail_TokenCreate_BlocksUnverified(t *testing.T) {
+	t.Parallel()
 	f := newVerifiedEmailFixture(t, true)
 	rr := doRequestWithCookie(f.srv, "POST", "/api/v1/auth/tokens", map[string]any{"name": "sneaky"}, f.unv.session)
 	assertBlocked(t, rr, "unverified token-create")
 }
 
 func TestVerifiedEmail_PatchMe_BlocksUnverified(t *testing.T) {
+	t.Parallel()
 	f := newVerifiedEmailFixture(t, true)
 	rr := doRequestWithCookie(f.srv, "PATCH", "/api/v1/auth/me", map[string]any{"name": "Renamed"}, f.unv.session)
 	assertBlocked(t, rr, "unverified PATCH /me")
 }
 
 func TestVerifiedEmail_CLISessionApprove_BlocksUnverified(t *testing.T) {
+	t.Parallel()
 	f := newVerifiedEmailFixture(t, true)
 	// A pending CLI session so the block can't be attributed to a 404.
 	sess, err := f.srv.store.CreateCLIAuthSession()
@@ -270,6 +277,7 @@ func TestVerifiedEmail_CLISessionApprove_BlocksUnverified(t *testing.T) {
 // ---------------------------------------------------------------------
 
 func TestVerifiedEmail_ImportURL_BlocksUnverified(t *testing.T) {
+	t.Parallel()
 	f := newVerifiedEmailFixture(t, true)
 	rr := doRequestWithCookie(f.srv, "POST", "/api/v1/import/url", map[string]any{"url": "https://example.com"}, f.unv.session)
 	assertBlocked(t, rr, "unverified import/url")
@@ -280,6 +288,7 @@ func TestVerifiedEmail_ImportURL_BlocksUnverified(t *testing.T) {
 // ---------------------------------------------------------------------
 
 func TestVerifiedEmail_Reads_AllowedForUnverified(t *testing.T) {
+	t.Parallel()
 	f := newVerifiedEmailFixture(t, true)
 	// GET /me (session identity) works.
 	if rr := doRequestWithCookie(f.srv, "GET", "/api/v1/auth/me", nil, f.unv.session); rr.Code != http.StatusOK {
@@ -292,6 +301,7 @@ func TestVerifiedEmail_Reads_AllowedForUnverified(t *testing.T) {
 }
 
 func TestVerifiedEmail_Logout_AllowedForUnverified(t *testing.T) {
+	t.Parallel()
 	f := newVerifiedEmailFixture(t, true)
 	rr := doRequestWithCookie(f.srv, "POST", "/api/v1/auth/logout", nil, f.unv.session)
 	assertNotEmailBlocked(t, rr, "unverified logout")
@@ -301,6 +311,7 @@ func TestVerifiedEmail_Logout_AllowedForUnverified(t *testing.T) {
 }
 
 func TestVerifiedEmail_DeleteAccount_AllowedForUnverified(t *testing.T) {
+	t.Parallel()
 	f := newVerifiedEmailFixture(t, true)
 	// delete-account requires the account password in the body.
 	rr := doRequestWithCookie(f.srv, "POST", "/api/v1/auth/delete-account",
@@ -313,6 +324,7 @@ func TestVerifiedEmail_DeleteAccount_AllowedForUnverified(t *testing.T) {
 // ---------------------------------------------------------------------
 
 func TestVerifiedEmail_InvitationAccept_CarveOut(t *testing.T) {
+	t.Parallel()
 	f := newVerifiedEmailFixture(t, true)
 
 	// A second workspace the unverified user is NOT yet a member of,
@@ -379,6 +391,7 @@ func veCollabMember(t *testing.T, srv *Server, wsName, email string, unverified 
 }
 
 func TestVerifiedEmail_CollabUpgrade_BlocksUnverified(t *testing.T) {
+	t.Parallel()
 	srv := testServerWithCollab(t)
 	srv.SetCloudMode("ve-secret")
 	bootstrapFirstUser(t, srv, "admin@ve.test", "Admin")
@@ -410,6 +423,7 @@ func TestVerifiedEmail_CollabUpgrade_BlocksUnverified(t *testing.T) {
 }
 
 func TestVerifiedEmail_CollabUpgrade_AllowsVerified(t *testing.T) {
+	t.Parallel()
 	srv := testServerWithCollab(t)
 	srv.SetCloudMode("ve-secret")
 	bootstrapFirstUser(t, srv, "admin@ve.test", "Admin")
@@ -455,6 +469,7 @@ func veOAuthUnverifiedSession(t *testing.T, srv *Server, email string) string {
 }
 
 func TestVerifiedEmail_OAuthAuthorizeDecide_BlocksUnverified(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	sessionToken := veOAuthUnverifiedSession(t, srv, "oauth-unv@ve.test")
 	clientID := registerTestClient(t, srv, "https://app.test/cb")
@@ -484,6 +499,7 @@ func TestVerifiedEmail_OAuthAuthorizeDecide_BlocksUnverified(t *testing.T) {
 }
 
 func TestVerifiedEmail_OAuthAuthorize_BlocksUnverified(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	sessionToken := veOAuthUnverifiedSession(t, srv, "oauth-unv2@ve.test")
 	clientID := registerTestClient(t, srv, "https://app.test/cb")
@@ -505,6 +521,7 @@ func TestVerifiedEmail_OAuthAuthorize_BlocksUnverified(t *testing.T) {
 // BUG-2136: declining by code is the other answer to the same
 // invitation, so it passes the gate exactly as accepting does.
 func TestVerifiedEmail_InvitationDecline_CarveOut(t *testing.T) {
+	t.Parallel()
 	f := newVerifiedEmailFixture(t, true)
 	admin, err := f.srv.store.GetUserByEmail("admin@ve.test")
 	if err != nil || admin == nil {
@@ -526,6 +543,7 @@ func TestVerifiedEmail_InvitationDecline_CarveOut(t *testing.T) {
 }
 
 func TestVerifiedEmailExemptPath_InvitationAnswersOnly(t *testing.T) {
+	t.Parallel()
 	for path, want := range map[string]bool{
 		"/api/v1/invitations/abc/accept":        true,
 		"/api/v1/invitations/abc/decline":       true,

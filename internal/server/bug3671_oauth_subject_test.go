@@ -13,6 +13,7 @@ import (
 // refused (TASK-3351). A sign-in carrying NO subject is refused too, bound or
 // not, since BUG-3797 (it was refused only once one was bound).
 func TestBUG3671_AnEmailAloneNoLongerReachesASubjectBoundAccount(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetCloudMode(oauthProviderTestSecret)
 	login := func(email, subject string) *httptest.ResponseRecorder {
@@ -77,6 +78,7 @@ func TestBUG3671_AnEmailAloneNoLongerReachesASubjectBoundAccount(t *testing.T) {
 // a subject-bearing sign-in for its address, is neither bound nor signed in.
 // It follows today's link rule: oauth_provider_not_linked.
 func TestBUG3671_AnUnlinkedAccountIsNotBoundBySignIn(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetCloudMode(oauthProviderTestSecret)
 	bootstrapFirstUser(t, srv, "pw@example.com", "Password User")
@@ -109,6 +111,7 @@ func TestBUG3671_AnUnlinkedAccountIsNotBoundBySignIn(t *testing.T) {
 // token either, while the bound subject still reaches the challenge. Since
 // BUG-3797 that refusal is oauth_subject_required.
 func TestBUG3671_ASubjectlessSignInGetsNoTwoFactorChallenge(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetCloudMode(oauthProviderTestSecret)
 	linkedTOTPUser(t, srv, "totp@example.com", true)
@@ -132,6 +135,7 @@ func TestBUG3671_ASubjectlessSignInGetsNoTwoFactorChallenge(t *testing.T) {
 
 // A subject-less oauth-link never changes a bound subject.
 func TestBUG3671_ASubjectlessLinkKeepsTheBoundSubject(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetCloudMode(oauthProviderTestSecret)
 	if rr := postOAuthLogin(t, srv, map[string]interface{}{"provider": "google", "email": "kept@example.com", "email_verified": true, "subject": "g-kept"}); rr.Code != http.StatusOK {

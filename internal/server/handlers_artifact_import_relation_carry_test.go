@@ -34,6 +34,7 @@ import (
 // a door that reports a drop it also performs, which is the failure BUG-3015
 // describes.
 func TestImportArtifactCarriesAndReportsUnresolvableRelations(t *testing.T) {
+	t.Parallel()
 	const (
 		carriedAsSent = "carried"
 		droppedKey    = "dropped"

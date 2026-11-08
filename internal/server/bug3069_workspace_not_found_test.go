@@ -68,6 +68,7 @@ func assertUnmarkedNotFound(t *testing.T, rr *httptest.ResponseRecorder) {
 }
 
 func TestBUG3069_WorkspaceRefusalIsMarkedThroughTheRouter(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	owner := mustCreateUser(t, srv, "owner-3069@example.com", "Owner", "admin")
 	outsider := mustCreateUser(t, srv, "outsider-3069@example.com", "Outsider", "member")
@@ -119,6 +120,7 @@ func TestBUG3069_WorkspaceRefusalIsMarkedThroughTheRouter(t *testing.T) {
 }
 
 func TestBUG3069_SSEWorkspaceRefusalIsMarked(t *testing.T) {
+	t.Parallel()
 	srv := testServerWithEvents(t)
 	owner := mustCreateUser(t, srv, "owner-sse-3069@example.com", "Owner", "admin")
 	outsider := mustCreateUser(t, srv, "outsider-sse-3069@example.com", "Outsider", "member")
@@ -138,6 +140,7 @@ func TestBUG3069_SSEWorkspaceRefusalIsMarked(t *testing.T) {
 }
 
 func TestBUG3069_CollabWorkspaceRefusalCarriesTheMarker(t *testing.T) {
+	t.Parallel()
 	// authorizeCollabAccess's vanished-workspace branch returns a typed
 	// error that handleCollab writes; the item's workspace id names nothing.
 	// A direct call, because an item whose workspace row is gone cannot be
@@ -158,6 +161,7 @@ func TestBUG3069_CollabWorkspaceRefusalCarriesTheMarker(t *testing.T) {
 }
 
 func TestBUG3069_GuestHiddenItemIsNotMarked(t *testing.T) {
+	t.Parallel()
 	// A guest (item grant, no membership) RESOLVES the workspace, so an item
 	// outside their grant is an item-level 404 and must not carry the
 	// marker: a client that purged on it would lock the guest out of the

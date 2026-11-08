@@ -267,6 +267,7 @@ func needsValueByKey(resp ItemCopyPreflight, key string) (ItemCopyPreflightNeeds
 // that carries, one with no counterpart, one whose value the destination
 // cannot take, and one required-and-unsatisfiable.
 func TestCopyPreflight_Buckets(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 	resp := f.ok(f.baseBody())
 
@@ -337,6 +338,7 @@ func TestCopyPreflight_Buckets(t *testing.T) {
 // implementation that reads them still reports `ticket` as missing after
 // the caller has supplied it.
 func TestCopyPreflight_OverrideClearsNeedsValue(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 
 	body := f.baseBody()
@@ -366,6 +368,7 @@ func TestCopyPreflight_OverrideClearsNeedsValue(t *testing.T) {
 // TestCopyPreflight_InvalidOverrideRejected is DR-12's other half: the
 // override is type-checked, which the pre-fix move path never did.
 func TestCopyPreflight_InvalidOverrideRejected(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 
 	body := f.baseBody()
@@ -385,6 +388,7 @@ func TestCopyPreflight_InvalidOverrideRejected(t *testing.T) {
 // the destination schema does not declare is refused rather than silently
 // dropped, so a dialog cannot show a value that will never land.
 func TestCopyPreflight_MalformedOverrideRejected(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 
 	body := f.baseBody()
@@ -403,6 +407,7 @@ func TestCopyPreflight_MalformedOverrideRejected(t *testing.T) {
 // an explicit null removes the key, which for a REQUIRED destination field
 // means it comes back as needs_value rather than being written as nil.
 func TestCopyPreflight_NullOverrideUnsetsAndReappears(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 
 	body := f.baseBody()
@@ -424,6 +429,7 @@ func TestCopyPreflight_NullOverrideUnsetsAndReappears(t *testing.T) {
 // non-zero value in one scenario, because the point of the set is that
 // none of it may be silent (DR-17).
 func TestCopyPreflight_WarningsAllReported(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 	s := f.srv.store
 
@@ -535,6 +541,7 @@ func TestCopyPreflight_WarningsAllReported(t *testing.T) {
 // TestCopyPreflight_AssigneeCarriesWhenMemberOfDestination is DR-8's
 // affirmative half: the common same-owner case loses nothing.
 func TestCopyPreflight_AssigneeCarriesWhenMemberOfDestination(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 	// The fixture owner is a member of BOTH workspaces.
 	if _, err := f.srv.store.UpdateItem(f.source.ID, models.ItemUpdate{AssignedUserID: &f.owner.ID}); err != nil {
@@ -553,6 +560,7 @@ func TestCopyPreflight_AssigneeCarriesWhenMemberOfDestination(t *testing.T) {
 // TestCopyPreflight_ChildrenNotOrphanedOnPlainCopy — the weighting is the
 // archive_source flag's job, not the client's.
 func TestCopyPreflight_ChildrenNotOrphanedOnPlainCopy(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 	child := mustItem(t, f.srv, f.wsA.ID, f.collA.ID, "Kid")
 	if _, err := f.srv.store.SetParentLink(f.wsA.ID, child.ID, f.source.ID, f.owner.ID); err != nil {
@@ -577,6 +585,7 @@ func TestCopyPreflight_ChildrenNotOrphanedOnPlainCopy(t *testing.T) {
 // requirement that "destination workspace not accessible", "collection not
 // found" and "malformed override" are told apart.
 func TestCopyPreflight_ErrorStatusesAreDistinguishable(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 
 	// A workspace the caller is a stranger to.
@@ -626,6 +635,7 @@ func TestCopyPreflight_ErrorStatusesAreDistinguishable(t *testing.T) {
 // the move and update paths report, and only to a caller who can already
 // see the archived row.
 func TestCopyPreflight_ArchivedSourceReports409(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 	if err := f.srv.store.DeleteItem(f.source.ID); err != nil {
 		t.Fatalf("DeleteItem: %v", err)
@@ -678,6 +688,7 @@ func (f *copyPreflightFixture) restrictedEditor(email, username string, aColls, 
 // and learns nothing about either side. This is the exfiltration direction
 // — the more damaging of the two.
 func TestCopyPreflight_SourceItemNotVisible(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 	// Restricted in A to a collection the source is NOT in; unrestricted
 	// enough in B to write there, so only the source check can refuse.
@@ -697,6 +708,7 @@ func TestCopyPreflight_SourceItemNotVisible(t *testing.T) {
 // copy is a read out of A, but DR-10b requires EDIT on the source, and the
 // refusal is the same non-disclosing 404 as invisibility.
 func TestCopyPreflight_SourceEditDenied(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 	viewer := mustUser(t, f.srv, "viewer-a@example.com", "vieweruser", "")
 	if err := f.srv.store.AddWorkspaceMember(f.wsA.ID, viewer.ID, "viewer"); err != nil {
@@ -718,6 +730,7 @@ func TestCopyPreflight_SourceEditDenied(t *testing.T) {
 // refusal is byte-identical to the one for a collection that does not exist
 // — otherwise the endpoint enumerates hidden collections one slug at a time.
 func TestCopyPreflight_DestinationCollectionNotVisible(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 	u := f.restrictedEditor("hidden-dst@example.com", "hiddendst",
 		[]string{f.collA.ID}, []string{f.collB.ID})
@@ -747,6 +760,7 @@ func TestCopyPreflight_DestinationCollectionNotVisible(t *testing.T) {
 // TestCopyPreflight_DestinationEditDenied — the collection is visible but
 // the caller is a viewer in B, so check 4 refuses.
 func TestCopyPreflight_DestinationEditDenied(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 	u := mustUser(t, f.srv, "viewer-b@example.com", "viewerbuser", "")
 	if err := f.srv.store.AddWorkspaceMember(f.wsA.ID, u.ID, "editor"); err != nil {
@@ -771,6 +785,7 @@ func TestCopyPreflight_DestinationEditDenied(t *testing.T) {
 // verdict — a destination verdict built for someone who could not read the
 // source is a disclosure the source check was supposed to prevent.
 func TestCopyPreflight_SourceCheckRunsBeforeDestination(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 	otherA := mustSchemaCollection(t, f.srv, f.wsA.ID, "Other A", srcSchemaJSON)
 	// Hidden source AND a destination workspace they are a stranger to.
@@ -793,6 +808,7 @@ func TestCopyPreflight_SourceCheckRunsBeforeDestination(t *testing.T) {
 // the destination must be checked by hand. This is the denial a naive
 // implementation misses.
 func TestCopyPreflight_TokenAllowListEnforcedOnDestination(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 
 	rr := f.call(f.owner, reqOpts{
@@ -887,6 +903,7 @@ func (f *copyPreflightFixture) maxSeq(workspaceID string) int64 {
 // call repeatedly from a live UI as the user changes the destination, so it
 // is called several times with several bodies.
 func TestCopyPreflight_WritesNothing(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 
 	// Give the source an attachment reference and an assignment so the
@@ -1032,6 +1049,7 @@ const webhookQuietWindow = 750 * time.Millisecond
 // is stable. Go map iteration order makes this a real risk: the bucket
 // lists and MigrateFields' Dropped slice all originate from maps.
 func TestCopyPreflight_RepeatedCallsAreByteIdentical(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 	body := f.baseBody()
 	body["field_overrides"] = map[string]any{"ticket": "T-1"}
@@ -1048,6 +1066,7 @@ func TestCopyPreflight_RepeatedCallsAreByteIdentical(t *testing.T) {
 // the TypeScript consumer: `[]`, never `null`, and the same for the two
 // link maps.
 func TestCopyPreflight_EmptyBucketsAreArraysNotNull(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 	// A destination whose schema is identical to the source's: nothing
 	// drops, nothing is missing.
@@ -1102,6 +1121,7 @@ func TestCopyPreflight_EmptyBucketsAreArraysNotNull(t *testing.T) {
 // full-collection-access semantics and would refuse them. Swapping the
 // scope silently narrows a legitimate caller out.
 func TestCopyPreflight_SourceIsItemScopedNotCollectionScoped(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 
 	guest := mustUser(t, f.srv, "grantguest@example.com", "grantguest", "")
@@ -1141,6 +1161,7 @@ func TestCopyPreflight_SourceIsItemScopedNotCollectionScoped(t *testing.T) {
 // exact number and type of relationships attached to it, every one of
 // which may live in a collection hidden from them.
 func TestCopyPreflight_RelationshipCountersAreACLFiltered(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 	s := f.srv.store
 
@@ -1216,6 +1237,7 @@ func TestCopyPreflight_RelationshipCountersAreACLFiltered(t *testing.T) {
 // That is a different fact from a type mismatch, and labelling it
 // "incompatible_type" tells a dialog to explain the wrong thing.
 func TestCopyPreflight_OrphanSourceKeyHasItsOwnReason(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 
 	// `ticket` is declared by the DESTINATION but not by the source
@@ -1256,6 +1278,7 @@ func TestCopyPreflight_OrphanSourceKeyHasItsOwnReason(t *testing.T) {
 // required field with no default becomes needs_value (asserted separately
 // in TestCopyPreflight_NullOverrideUnsetsAndReappears).
 func TestCopyPreflight_NullOverrideOnDefaultedFieldRedefaults(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 	// A destination whose `status` is required AND defaulted.
 	defaulted := mustSchemaCollection(t, f.srv, f.wsB.ID, "Defaulted B", `{"fields":[
@@ -1284,6 +1307,7 @@ func TestCopyPreflight_NullOverrideOnDefaultedFieldRedefaults(t *testing.T) {
 // json.NewDecoder. Without the cap a single request allocates the whole
 // blob.
 func TestCopyPreflight_OversizedBodyIsRejected(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 
 	// Comfortably past defaultJSONBodyLimit (2 MiB).
@@ -1312,6 +1336,7 @@ func TestCopyPreflight_OversizedBodyIsRejected(t *testing.T) {
 // TestCopyPreflight_MalformedOverrideMessageIsBounded — the 400 must not
 // echo an unbounded slice of caller-supplied keys back at them.
 func TestCopyPreflight_MalformedOverrideMessageIsBounded(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 
 	overrides := map[string]any{}
@@ -1337,6 +1362,7 @@ func TestCopyPreflight_MalformedOverrideMessageIsBounded(t *testing.T) {
 // quotes the offending value verbatim, so an override carrying a ~2 MiB
 // string would be reflected back in full without a cap.
 func TestCopyPreflight_InvalidOverrideMessageIsBounded(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 
 	// `code` has pattern ^[0-9]+$, so any long non-numeric string fails
@@ -1370,6 +1396,7 @@ func TestCopyPreflight_InvalidOverrideMessageIsBounded(t *testing.T) {
 // here. Add a third child link type to the store without this and the
 // preflight starts reporting parent/child edges as dependency blockers.
 func TestPreflightHierarchyTypesCoverStoreChildren(t *testing.T) {
+	t.Parallel()
 	for _, lt := range store.ChildLinkTypes() {
 		if !hierarchyLinkTypes[lt] {
 			t.Errorf("store.ChildLinkTypes contains %q but the preflight does not classify it as hierarchy — "+
@@ -1390,6 +1417,7 @@ func TestPreflightHierarchyTypesCoverStoreChildren(t *testing.T) {
 // registration and the middleware chain are covered too — every other
 // test in this file hand-builds the chi context.
 func TestCopyPreflight_RouteIsWiredAndEchoesArchiveSource(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	wsA := createWSForTest(t, srv)
 	wsARow, err := srv.store.GetWorkspaceBySlug(wsA)
@@ -1430,6 +1458,7 @@ func TestCopyPreflight_RouteIsWiredAndEchoesArchiveSource(t *testing.T) {
 // the link scan alone misses it. CopyItemAcrossWorkspaces scrubs the
 // column anyway, which would drop a parent the preview never announced.
 func TestCopyPreflight_LegacyParentIDColumnIsReported(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 
 	parent := mustItem(t, f.srv, f.wsA.ID, f.collA.ID, "Column Parent")
@@ -1524,6 +1553,7 @@ func mustLegacyPlanLink(t *testing.T, srv *Server, wsID, childID, parentID strin
 // `children_orphaned: false` for a child archiving the source does in fact
 // strand — the quiet data loss DR-17 forbids.
 func TestCopyPreflight_LoneLegacyPlanChildIsCounted(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 
 	child := mustItem(t, f.srv, f.wsA.ID, f.collA.ID, "Legacy plan child")
@@ -1574,6 +1604,7 @@ func TestCopyPreflight_LoneLegacyPlanChildIsCounted(t *testing.T) {
 // of the same edge: OUTGOING, it is the item's own parent, and the copy is
 // unparented whichever alias expressed it.
 func TestCopyPreflight_LoneLegacyPlanParentIsReported(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 
 	parent := mustItem(t, f.srv, f.wsA.ID, f.collA.ID, "Legacy plan parent")
@@ -1593,6 +1624,7 @@ func TestCopyPreflight_LoneLegacyPlanParentIsReported(t *testing.T) {
 // rest of the block applies. A hidden legacy child stays uncounted; it is
 // the marker, not the number, that admits it exists.
 func TestCopyPreflight_LegacyPlanChildIsStillACLFiltered(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 	secretA := mustSchemaCollection(t, f.srv, f.wsA.ID, "Secret A", srcSchemaJSON)
 	u := f.restrictedEditor("legacy-acl@example.com", "legacyacl",
@@ -1644,6 +1676,7 @@ func restrictedWarnings(t *testing.T, f *copyPreflightFixture, u *models.User) I
 // product worse: a caveat that is always there is a caveat nobody reads, and
 // the one time it means something it would be invisible.
 func TestCopyPreflight_NoPartialMarkerOnTheCommonCase(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 	s := f.srv.store
 	openA := mustSchemaCollection(t, f.srv, f.wsA.ID, "Open A", srcSchemaJSON)
@@ -1699,6 +1732,7 @@ func TestCopyPreflight_NoPartialMarkerOnTheCommonCase(t *testing.T) {
 // so a marker set by an earlier step can never stand in for one a later
 // step failed to set.
 func TestCopyPreflight_PartialMarkerSurfacesHiddenRelationships(t *testing.T) {
+	t.Parallel()
 	// setup returns a fixture whose restricted editor can see only the
 	// source's collection, plus the hidden collection to seed into.
 	setup := func(t *testing.T, tag string) (*copyPreflightFixture, *models.Collection, *models.User) {
@@ -1834,6 +1868,7 @@ func TestCopyPreflight_PartialMarkerSurfacesHiddenRelationships(t *testing.T) {
 // stranded when something will. Recorded here so the trade is a decision
 // on the record rather than an oversight.
 func TestCopyPreflight_PartialMarkerForAnItemGrantOnlyGuest(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 	secret := mustSchemaCollection(t, f.srv, f.wsA.ID, "Secret", srcSchemaJSON)
 
@@ -1900,6 +1935,7 @@ func TestCopyPreflight_PartialMarkerForAnItemGrantOnlyGuest(t *testing.T) {
 // a field-by-field comparison, precisely so a future field that does vary
 // fails here instead of shipping.
 func TestCopyPreflight_PartialMarkerDoesNotLeakHiddenCount(t *testing.T) {
+	t.Parallel()
 	build := func(t *testing.T, tag string, seed func(f *copyPreflightFixture, secret *models.Collection)) []byte {
 		t.Helper()
 		f := newCopyPreflightFixture(t)
@@ -1984,6 +2020,7 @@ func TestCopyPreflight_PartialMarkerDoesNotLeakHiddenCount(t *testing.T) {
 // dropped it; asserting only persistence would pass if the report stayed
 // silent — which is the exact defect being closed.
 func TestCopyPreflight_ReportsReservedMetadataAsCarried(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 
 	notes := `[{"id":"note-1","summary":"must be reported and must survive"}]`
@@ -2051,6 +2088,7 @@ func TestCopyPreflight_ReportsReservedMetadataAsCarried(t *testing.T) {
 // misleading here: no schema declares this key anywhere, so it is equally true
 // of the source and says nothing about why the value is being left behind.
 func TestCopyPreflight_ReportsReferentialMetadataAsNotPortable(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 
 	seeded := `{"status":"open","priority":"low","impact":"large","count":7,"code":"abc",` +

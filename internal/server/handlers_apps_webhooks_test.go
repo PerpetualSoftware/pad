@@ -64,6 +64,7 @@ func (u *upgradeEnv) issueAndRedeem(t *testing.T) map[string]string {
 }
 
 func TestAppWebhook_HeldUntilRedeem(t *testing.T) {
+	t.Parallel()
 	u := newUpgradeEnv(t)
 	h := u.hook(t)
 	if h == nil {
@@ -134,6 +135,7 @@ func TestAppWebhook_PausedWhileDisabled(t *testing.T) {
 }
 
 func TestAppWebhook_NoEventsNoHook(t *testing.T) {
+	t.Parallel()
 	e := newProvisionEnv(t)
 	m := e.manifest(t)
 	delete(m, "events")
@@ -159,6 +161,7 @@ func TestAppWebhook_NoEventsNoHook(t *testing.T) {
 
 // The owner's webhook doors never see the app's hook: list, delete, test.
 func TestAppWebhook_HiddenFromOwnerDoors(t *testing.T) {
+	t.Parallel()
 	u := newUpgradeEnv(t)
 	h := u.hook(t)
 	base := "/api/v1/workspaces/" + u.ws + "/webhooks"
@@ -185,6 +188,7 @@ func TestAppWebhook_HiddenFromOwnerDoors(t *testing.T) {
 }
 
 func TestAppWebhook_FollowsUpgrade(t *testing.T) {
+	t.Parallel()
 	u := newUpgradeEnv(t)
 	u.issueAndRedeem(t)
 	before := u.hook(t)
@@ -230,6 +234,7 @@ func TestAppWebhook_FollowsUpgrade(t *testing.T) {
 }
 
 func TestAppWebhook_UninstallRemovesIt(t *testing.T) {
+	t.Parallel()
 	u := newUpgradeEnv(t)
 	rr := doRequestWithCookie(u.srv, "POST", "/api/v1/workspaces/"+u.ws+"/apps/"+u.installID+"/uninstall", nil, u.token)
 	if rr.Code != http.StatusOK {
@@ -242,6 +247,7 @@ func TestAppWebhook_UninstallRemovesIt(t *testing.T) {
 
 // Installs provisioned before U10 get their hook at start, held, once.
 func TestAppWebhook_Backfill(t *testing.T) {
+	t.Parallel()
 	u := newUpgradeEnv(t)
 	u.issueAndRedeem(t)
 	db := u.srv.store.DB()
@@ -284,6 +290,7 @@ func TestAppWebhook_Backfill(t *testing.T) {
 // holds a companion's slug but is not the app's is never subscribed (the app
 // would receive events about data it was never granted).
 func TestAppWebhook_ResolvesOnlyOwnCompanions(t *testing.T) {
+	t.Parallel()
 	u := newUpgradeEnv(t)
 	db := u.srv.store.DB()
 	if _, err := db.Exec(`DELETE FROM webhooks WHERE app_install_id = ?`, u.installID); err != nil {
@@ -305,6 +312,7 @@ func TestAppWebhook_ResolvesOnlyOwnCompanions(t *testing.T) {
 // A backfill working from a stale list never touches an
 // existing hook and reads the manifest under the install lock.
 func TestAppWebhook_BackfillNeverOverridesAnUpgrade(t *testing.T) {
+	t.Parallel()
 	u := newUpgradeEnv(t)
 	u.issueAndRedeem(t)
 	u.m["version"] = "1.0.1"

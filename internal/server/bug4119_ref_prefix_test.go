@@ -12,6 +12,7 @@ import (
 )
 
 func TestBUG4119_HTTPWrongPrefix(t *testing.T) {
+	t.Parallel()
 	for _, pg := range []bool{false, true} {
 		for _, exists := range []bool{false, true} {
 			for _, method := range []string{"POST", "PATCH", "DELETE"} {
@@ -38,6 +39,7 @@ func TestBUG4119_HTTPWrongPrefix(t *testing.T) {
 }
 
 func TestBUG4119_HTTPImportedUppercaseRefSlug(t *testing.T) {
+	t.Parallel()
 	for _, pg := range []bool{false, true} {
 		for _, method := range []string{http.MethodGet, http.MethodPatch, http.MethodDelete} {
 			t.Run(fmt.Sprintf("pg=%t/%s", pg, method), func(t *testing.T) {
@@ -63,6 +65,7 @@ func TestBUG4119_HTTPImportedUppercaseRefSlug(t *testing.T) {
 }
 
 func TestBUG4119_HTTPMovedRefAndTerminalMiss(t *testing.T) {
+	t.Parallel()
 	for _, pg := range []bool{false, true} {
 		t.Run(fmt.Sprintf("pg=%t", pg), func(t *testing.T) {
 			f := storetest.NewRefPrefixFixture(t, pg, false)
@@ -116,6 +119,7 @@ func TestBUG4119_HTTPMovedRefAndTerminalMiss(t *testing.T) {
 }
 
 func TestBUG4119_RelationWrongPrefix(t *testing.T) {
+	t.Parallel()
 	for _, pg := range []bool{false, true} {
 		for _, exists := range []bool{false, true} {
 			t.Run(fmt.Sprintf("pg=%t/ident=%t", pg, exists), func(t *testing.T) {
@@ -150,6 +154,7 @@ func TestBUG4119_RelationWrongPrefix(t *testing.T) {
 }
 
 func TestBUG4119_HTTPLowercaseRefSlug(t *testing.T) {
+	t.Parallel()
 	for _, pg := range []bool{false, true} {
 		for _, route := range []struct {
 			name, method, suffix string
@@ -279,6 +284,7 @@ func TestBUG4119_HTTPLowercaseRefSlug(t *testing.T) {
 }
 
 func TestBUG4119_HTTPLowercaseOldRef(t *testing.T) {
+	t.Parallel()
 	for _, pg := range []bool{false, true} {
 		t.Run(fmt.Sprintf("pg=%t", pg), func(t *testing.T) {
 			f, _ := storetest.NewRefSlugFixture(t, pg)

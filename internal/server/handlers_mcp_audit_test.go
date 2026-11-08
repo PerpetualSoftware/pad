@@ -45,6 +45,7 @@ func seedAuditRow(t *testing.T, srv *Server, userID string, kind models.TokenKin
 }
 
 func TestHandleMCPConnectionAudit_OwnerOnly(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	alice, aliceTok := loginTestUser(t, srv)
@@ -80,6 +81,7 @@ func TestHandleMCPConnectionAudit_OwnerOnly(t *testing.T) {
 }
 
 func TestHandleMCPConnectionAudit_RequiresAuth(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	rr := doRequest(srv, "GET", "/api/v1/connected-apps/anything/audit", nil)
 	if rr.Code != http.StatusUnauthorized && rr.Code != http.StatusForbidden {
@@ -88,6 +90,7 @@ func TestHandleMCPConnectionAudit_RequiresAuth(t *testing.T) {
 }
 
 func TestHandleMCPConnectionAudit_DTOShape(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	user, tok := loginTestUser(t, srv)
 	// Workspace-bound row to exercise the workspace_id field too.
@@ -141,6 +144,7 @@ func TestHandleMCPConnectionAudit_DTOShape(t *testing.T) {
 }
 
 func TestHandleAdminMCPAudit_RejectsNonAdmin(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	_, tok := loginTestUser(t, srv) // default role: user, not admin
 	rr := doAuthedRequest(srv, "GET", "/api/v1/admin/mcp-audit", nil, tok)
@@ -150,6 +154,7 @@ func TestHandleAdminMCPAudit_RejectsNonAdmin(t *testing.T) {
 }
 
 func TestHandleAdminMCPAudit_AdminSeesAcrossUsers(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	admin, adminTok := loginTestUser(t, srv)
 	// Promote to admin so the /admin/mcp-audit gate passes.
@@ -183,6 +188,7 @@ func TestHandleAdminMCPAudit_AdminSeesAcrossUsers(t *testing.T) {
 }
 
 func TestParseMCPAuditPaging_CapsAt200(t *testing.T) {
+	t.Parallel()
 	req := httptest.NewRequest("GET", "/?limit=10000&offset=50", nil)
 	limit, offset := parseMCPAuditPaging(req)
 	if limit != 200 {
@@ -208,6 +214,7 @@ func TestParseMCPAuditPaging_CapsAt200(t *testing.T) {
 // every resolution path; this pins that the handler sends them, and leaves
 // an unresolvable connection empty rather than inventing a name.
 func TestHandleAdminMCPAudit_NamesUsersAndConnections(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	admin, adminTok := loginTestUser(t, srv)
 	if err := srv.store.SetUserRole(admin.ID, "admin"); err != nil {

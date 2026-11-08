@@ -14,6 +14,7 @@ import (
 // and updated_at. The handler used to restore by ID, commit, and only then
 // compare workspaces and re-delete as a separate write.
 func TestBUG3335_RestoreDocumentIsScopedToTheURLWorkspace(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ownerCookie := bootstrapFirstUser(t, srv, "owner@test.com", "Owner")
 	mkWS := func(name string) *models.Workspace {

@@ -14,6 +14,7 @@ import (
 // /release).
 
 func TestTASK2863_ReadScopePOSTPathTable(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		path string
 		want bool
@@ -81,6 +82,7 @@ func TestTASK2863_ReadScopePOSTPathTable(t *testing.T) {
 // handler's 200; its other POSTs get TokenAuth's scope refusal, matched
 // on its message; a write token's same POSTs are not refused for scope.
 func TestTASK2863_ReadPATThroughTheRouter(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	createItem(t, srv, slug, "playbooks", map[string]interface{}{

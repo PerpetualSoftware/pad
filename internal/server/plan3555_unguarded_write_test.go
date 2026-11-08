@@ -15,6 +15,7 @@ import (
 // a guarded or deliberate one is not, an append-only one is not, and only an
 // agent door's unguarded CONTENT write is told so in the response.
 func TestPLAN3555_UnguardedWritesCountedByDoorAndKind(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	m := metrics.New()
 	srv.SetMetrics(m)
@@ -95,6 +96,7 @@ func TestPLAN3555_UnguardedWritesCountedByDoorAndKind(t *testing.T) {
 // carries content_write, changed_at and changed_by_kind; the same conflict on
 // a field-only write keeps the old answer.
 func TestPLAN3555_ContentConflictSaysDoNotResend(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	item := createTaskWithFields(t, srv, slug, "Item", `{"status":"open"}`)

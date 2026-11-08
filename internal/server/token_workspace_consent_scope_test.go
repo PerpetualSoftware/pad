@@ -68,6 +68,7 @@ func mustCreateOwnedWorkspace(t *testing.T, srv *Server, name string, owner *mod
 }
 
 func TestHandleListWorkspaces_FiltersByConsentAllowList(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	user := mustCreateUser(t, srv, "u@test.com", "U", "member")
 	alpha := mustCreateOwnedWorkspace(t, srv, "Alpha", user)
@@ -111,6 +112,7 @@ func TestHandleListWorkspaces_FiltersByConsentAllowList(t *testing.T) {
 }
 
 func TestHandleListDeletedWorkspaces_FiltersByConsentAllowList(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	user := mustCreateUser(t, srv, "u@test.com", "U", "member")
 	ws := mustCreateOwnedWorkspace(t, srv, "Gone", user)
@@ -166,6 +168,7 @@ func TestHandleListDeletedWorkspaces_FiltersByConsentAllowList(t *testing.T) {
 }
 
 func TestHandleRestoreWorkspace_GatedByConsentAllowList(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	user := mustCreateUser(t, srv, "owner@test.com", "Owner", "member")
 	ws := mustCreateOwnedWorkspace(t, srv, "Gone", user)
@@ -197,6 +200,7 @@ func TestHandleRestoreWorkspace_GatedByConsentAllowList(t *testing.T) {
 }
 
 func TestHandleSearch_ConsentScopesResults(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	user := mustCreateUser(t, srv, "u@test.com", "U", "member")
 	alpha := mustCreateOwnedWorkspace(t, srv, "Alpha", user)
@@ -275,6 +279,7 @@ func TestHandleSearch_ConsentScopesResults(t *testing.T) {
 }
 
 func TestHandleAuditLog_DeniedForConsentScopedToken(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	admin := mustCreateUser(t, srv, "admin@test.com", "Admin", "admin")
 
@@ -307,6 +312,7 @@ func TestHandleAuditLog_DeniedForConsentScopedToken(t *testing.T) {
 // maps to it), so this drives the handler with the context MCPBearerAuth would
 // build, as the other tests in this file do.
 func TestHandleReorderWorkspaces_GatedByConsentAllowList(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	user := mustCreateUser(t, srv, "u@test.com", "U", "member")
 	alpha := mustCreateOwnedWorkspace(t, srv, "Alpha", user)

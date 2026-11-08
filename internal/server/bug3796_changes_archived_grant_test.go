@@ -183,6 +183,7 @@ func TestBUG3796_ArchivedGrantedItemReachesGranteeThroughChanges(t *testing.T) {
 // reachable through a route today (app tokens are refused on /api/v1), so this
 // drives the filter /changes calls, as BUG-3424's test does.
 func TestBUG3796_ArchivedGrantKeepsTheAppCeiling(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	mkUser := func(email, role string) *models.User {
 		u, err := srv.store.CreateUser(models.UserCreate{Email: email, Name: email, Password: "correct-horse-battery-staple", Role: role})

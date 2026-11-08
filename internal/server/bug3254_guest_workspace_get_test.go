@@ -46,6 +46,7 @@ func bug3254Guest(t *testing.T, srv *Server) (slug, token, memberToken string) {
 }
 
 func TestBUG3254_GetWorkspaceMarksAGuest(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		slug, token, memberToken := bug3254Guest(t, srv)
 

@@ -38,6 +38,7 @@ func rl3310Exhaust(t *testing.T, srv *Server, path, remote, session string) {
 }
 
 func TestRateLimit_AnonymousHoldsOneAPIBucketAcrossArms(t *testing.T) {
+	t.Parallel()
 	const (
 		authDefault = "/api/v1/auth/session"
 		general     = "/api/v1/workspaces"
@@ -64,6 +65,7 @@ func TestRateLimit_AnonymousHoldsOneAPIBucketAcrossArms(t *testing.T) {
 // as their other API requests do, so changing address does not refill it
 // and an anonymous neighbour on their address is not charged for them.
 func TestRateLimit_SignedInAuthDefaultUsesTheUserBucket(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	freezeRefill(t, srv)
 	session := bootstrapFirstUser(t, srv, "rl3310@test.com", "RL")

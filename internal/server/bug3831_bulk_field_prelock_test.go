@@ -73,6 +73,7 @@ func bug3831Item(t *testing.T, srv *Server) (wsID string, item models.Item) {
 }
 
 func TestBUG3831_CoercionOnlyKeyDoesNotOverwriteAConcurrentEdit(t *testing.T) {
+	t.Parallel()
 	for name, mk := range bug3831Backends(t) {
 		t.Run(name, func(t *testing.T) {
 			srv := mk(t)
@@ -118,6 +119,7 @@ func TestBUG3831_CoercionOnlyKeyDoesNotOverwriteAConcurrentEdit(t *testing.T) {
 }
 
 func TestBUG3831_AutoDateKeepsAConcurrentNonStringValue(t *testing.T) {
+	t.Parallel()
 	for name, mk := range bug3831Backends(t) {
 		t.Run(name, func(t *testing.T) {
 			srv := mk(t)
@@ -162,6 +164,7 @@ func TestBUG3831_AutoDateKeepsAConcurrentNonStringValue(t *testing.T) {
 // The over-drop control: a key the CALLER sets is never dropped, and a stored
 // value that is already canonical is untouched.
 func TestDropCoercionOnlyKeys(t *testing.T) {
+	t.Parallel()
 	stored := map[string]any{"points": "3", "status": "planning", "size": float64(2)}
 	coerced := map[string]any{"points": float64(3), "status": "planning", "size": float64(2)}
 	patch := map[string]any{"points": float64(3), "status": "active", "size": float64(4)}

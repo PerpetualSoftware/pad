@@ -19,6 +19,7 @@ import (
 // context-loading calls; any of the expected keys missing would silently
 // break greeting behavior.
 func TestBootstrapEmptyWorkspace(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -66,6 +67,7 @@ func TestBootstrapEmptyWorkspace(t *testing.T) {
 // hasn't been set up yet — say /pad onboard"). If this test breaks,
 // the nudge fires forever or never.
 func TestBootstrapNeedsOnboardingFlag(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -124,6 +126,7 @@ func TestBootstrapNeedsOnboardingFlag(t *testing.T) {
 // blank workspace and the design's premise collapses. PLAN-1496 /
 // TASK-1507.
 func TestBootstrapBlankWorkspaceOnboardReady(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	rr := doRequest(srv, "POST", "/api/v1/workspaces", map[string]string{
 		"name":     "Blank Onboard Ready",
@@ -179,6 +182,7 @@ func TestBootstrapBlankWorkspaceOnboardReady(t *testing.T) {
 // Otherwise startup/scrum/product workspaces would never show the
 // nudge and the /pad onboard discovery loop falls apart.
 func TestBootstrapNeedsOnboardingIgnoresTemplateSeeds(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	rr := doRequest(srv, "POST", "/api/v1/workspaces", map[string]string{
 		"name":     "Startup Needs Onboarding",
@@ -205,6 +209,7 @@ func TestBootstrapNeedsOnboardingIgnoresTemplateSeeds(t *testing.T) {
 // must serialize as [] not null so the agent skill can iterate without
 // defensive nil checks.
 func TestBootstrapEmptyArraysNotNull(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -253,6 +258,7 @@ func TestBootstrapEmptyArraysNotNull(t *testing.T) {
 // pass all the positive assertions silently. Mirrors the contract
 // that TestBootstrapEmptyArraysNotNull guards on the dedup side.
 func TestBootstrapRoleProjection(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -325,6 +331,7 @@ func TestBootstrapRoleProjection(t *testing.T) {
 // swap doesn't trip the check. Detected differences are listed with
 // the field name so the failure message points at the gap directly.
 func TestBootstrapFieldDefMirrorsModelsFieldDef(t *testing.T) {
+	t.Parallel()
 	canonical := reflect.TypeOf(models.FieldDef{})
 	mirror := reflect.TypeOf(bootstrapFieldDef{})
 
@@ -379,6 +386,7 @@ func TestBootstrapFieldDefMirrorsModelsFieldDef(t *testing.T) {
 // the original bytes verbatim rather than blocking the bootstrap
 // response.
 func TestTrimRedundantSchemaLabels(t *testing.T) {
+	t.Parallel()
 	t.Run("drops-redundant-labels", func(t *testing.T) {
 		in := []byte(`{"fields":[{"key":"status","label":"Status","type":"select"}]}`)
 		out := trimRedundantSchemaLabels(in)
@@ -444,6 +452,7 @@ func TestTrimRedundantSchemaLabels(t *testing.T) {
 // projection — slug, invocation_slug, has_arguments — without leaking
 // the body (which is intentionally omitted from bootstrap for size).
 func TestBootstrapIncludesPlaybookMetadata(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -490,6 +499,7 @@ func TestBootstrapIncludesPlaybookMetadata(t *testing.T) {
 // point is that triggered conventions are DISCOVERABLE without their bodies
 // flooding the bootstrap.
 func TestBootstrapConventionIndex(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -617,6 +627,7 @@ const bootstrapSizeBudget = 9 * 1024
 // On failure, the per-section breakdown is logged so the regression's
 // origin is obvious without re-running locally.
 func TestBootstrapSizeBudget(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	seedBootstrapSizeFixture(t, srv, slug)
@@ -764,6 +775,7 @@ func jsonLen(v interface{}) int {
 // making a bootstrap-side cap unreachable in production. This test
 // covers all five live caps under the same contract.
 func TestCapBootstrapDashboard(t *testing.T) {
+	t.Parallel()
 	// dashCounts is the per-array size knob the test uses to construct
 	// a DashboardResponse with arbitrary fill levels. Each field can be
 	// set independently so subtests can exercise specific caps without
@@ -929,6 +941,7 @@ func assertOverflow(t *testing.T, name string, got, want int) {
 // already are) and forgets to carry these two fields, the JSON assertion
 // fails even though `out.Degraded` would still compile.
 func TestBootstrapDashboardCarriesDegraded(t *testing.T) {
+	t.Parallel()
 	t.Run("degraded-flows-through", func(t *testing.T) {
 		d := &DashboardResponse{
 			Degraded:         true,
@@ -986,6 +999,7 @@ func TestBootstrapDashboardCarriesDegraded(t *testing.T) {
 // from the bootstrap path so the rule (skip headings, take first non-empty
 // paragraph, cap at ~240 chars) doesn't drift silently.
 func TestPlaybookSummaryPrefersFirstParagraph(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		body string
@@ -1044,6 +1058,7 @@ func TestPlaybookSummaryPrefersFirstParagraph(t *testing.T) {
 // while a cookie session keeps the pre-existing unrestricted admin view.
 // Mirrors TestDashboard_AdminBearer_RestrictedMemberIsScoped's fixture.
 func TestBootstrap_AdminBearer_RestrictedMemberIsScoped(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	admin, err := srv.store.CreateUser(models.UserCreate{

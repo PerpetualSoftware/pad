@@ -60,6 +60,7 @@ func decodeSetPlan(t *testing.T, rr *httptest.ResponseRecorder) setPlanResponse 
 }
 
 func TestSetPlan_StripeFreeDoesNotClobberManualPro(t *testing.T) {
+	t.Parallel()
 	srv, _, u := planSourceServer(t)
 
 	// An operator grants pro; an omitted source is manual.
@@ -83,6 +84,7 @@ func TestSetPlan_StripeFreeDoesNotClobberManualPro(t *testing.T) {
 }
 
 func TestSetPlan_StripeFreeLowersStripePro(t *testing.T) {
+	t.Parallel()
 	srv, _, u := planSourceServer(t)
 
 	got := decodeSetPlan(t, postSetPlan(t, srv, map[string]string{"user_id": u.ID, "plan": "pro", "source": "stripe"}))
@@ -96,6 +98,7 @@ func TestSetPlan_StripeFreeLowersStripePro(t *testing.T) {
 }
 
 func TestSetPlan_RejectsUnknownSource(t *testing.T) {
+	t.Parallel()
 	srv, _, u := planSourceServer(t)
 	rr := postSetPlan(t, srv, map[string]string{"user_id": u.ID, "plan": "pro", "source": "apple"})
 	if rr.Code != http.StatusBadRequest {
@@ -113,6 +116,7 @@ func TestSetPlan_RejectsUnknownSource(t *testing.T) {
 // The admin console's plan change is an operator's explicit choice: it
 // lowers a Stripe pro, and the user detail then reports the source.
 func TestAdminUpdateUser_PlanForcesAndReportsSource(t *testing.T) {
+	t.Parallel()
 	srv, adminToken, u := planSourceServer(t)
 	decodeSetPlan(t, postSetPlan(t, srv, map[string]string{"user_id": u.ID, "plan": "pro", "source": "stripe"}))
 

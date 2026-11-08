@@ -27,6 +27,7 @@ import (
 // open that carried nothing. Each assertion names what that leaves behind
 // (CONVE-12): a 200, an event-stream body, a held admission slot.
 func TestWatchStreamIsRefusedWhenTheInstanceHasNoSubscription(t *testing.T) {
+	t.Parallel()
 	mr := miniredis.RunT(t)
 	var rejected atomic.Int64
 	mr.Server().SetPreHook(func(p *server.Peer, cmd string, _ ...string) bool {

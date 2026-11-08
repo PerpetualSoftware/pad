@@ -210,6 +210,7 @@ func errorCode(t *testing.T, rr *httptest.ResponseRecorder) string {
 // --- POST /api/v1/workspaces ---
 
 func TestCreateWorkspace_OAuthConnectionWithoutCreateConsent_403(t *testing.T) {
+	t.Parallel()
 	e := newConsentEnv(t, false)
 
 	rr := e.createWorkspace("Refused WS", e.requestID)
@@ -229,6 +230,7 @@ func TestCreateWorkspace_OAuthConnectionWithoutCreateConsent_403(t *testing.T) {
 // lower, this request answers 400 and the caller learns its body shape was
 // wrong rather than that it may not create workspaces at all.
 func TestCreateWorkspace_ConsentRefusalPrecedesBodyValidation(t *testing.T) {
+	t.Parallel()
 	e := newConsentEnv(t, false)
 
 	rr := e.do("POST", "/api/v1/workspaces", "application/json",
@@ -245,6 +247,7 @@ func TestCreateWorkspace_ConsentRefusalPrecedesBodyValidation(t *testing.T) {
 // guard placed between decodeJSON and the name check would pass the test above
 // and fail this one.
 func TestCreateWorkspace_ConsentRefusalPrecedesNameValidation(t *testing.T) {
+	t.Parallel()
 	e := newConsentEnv(t, false)
 
 	rr := e.do("POST", "/api/v1/workspaces", "application/json",
@@ -260,6 +263,7 @@ func TestCreateWorkspace_ConsentRefusalPrecedesNameValidation(t *testing.T) {
 // Without this, a guard that refused every OAuth caller would pass every
 // refusal test in this file.
 func TestCreateWorkspace_OAuthConnectionWithCreateConsent_CreatesAndAutoAdds(t *testing.T) {
+	t.Parallel()
 	e := newConsentEnv(t, true)
 
 	rr := e.createWorkspace("Allowed WS", e.requestID)
@@ -298,6 +302,7 @@ func TestCreateWorkspace_OAuthConnectionWithCreateConsent_CreatesAndAutoAdds(t *
 // MCPBearerAuth sets, so every caller that did not pass through it is
 // indistinguishable here. A second fixture would re-test the same branch.
 func TestCreateWorkspace_NonOAuthCallerUnaffected(t *testing.T) {
+	t.Parallel()
 	e := newConsentEnv(t, false)
 
 	rr := e.createWorkspace("Pat Made This", "")
@@ -313,6 +318,7 @@ func TestCreateWorkspace_NonOAuthCallerUnaffected(t *testing.T) {
 // missing-row case must ALLOW — treating "no row" as "no permission" would
 // refuse every un-backfilled grant.
 func TestCreateWorkspace_PrePhaseCGrantWithoutConnectionRow_Allowed(t *testing.T) {
+	t.Parallel()
 	e := newConsentEnv(t, false)
 
 	rr := e.createWorkspace("Legacy Grant WS", "req-no-such-connection")
@@ -348,6 +354,7 @@ func (e *consentEnv) exportBody(t *testing.T) []byte {
 }
 
 func TestImportWorkspace_OAuthConnectionWithoutCreateConsent_403(t *testing.T) {
+	t.Parallel()
 	e := newConsentEnv(t, false)
 	body := e.exportBody(t)
 
@@ -369,6 +376,7 @@ func TestImportWorkspace_OAuthConnectionWithoutCreateConsent_403(t *testing.T) {
 // gate above it answers 403 — the same discrimination the create-side ordering
 // legs make, which the import side was missing.
 func TestImportWorkspace_ConsentRefusalPrecedesBodyDecode(t *testing.T) {
+	t.Parallel()
 	e := newConsentEnv(t, false)
 
 	rr := e.do("POST", "/api/v1/workspaces/import?name=Malformed-Refused",
@@ -390,6 +398,7 @@ func TestImportWorkspace_ConsentRefusalPrecedesBodyDecode(t *testing.T) {
 // the consent refusal, so the assertion discriminates placement rather than
 // merely re-testing the JSON leg.
 func TestImportWorkspace_BundlePathRefusedBeforeParsing(t *testing.T) {
+	t.Parallel()
 	e := newConsentEnv(t, false)
 
 	rr := e.do("POST", "/api/v1/workspaces/import?name=Bundle-Refused",
@@ -405,6 +414,7 @@ func TestImportWorkspace_BundlePathRefusedBeforeParsing(t *testing.T) {
 // Control: import still works for a connection that may create. Without this,
 // a guard that refused all imports outright would pass the two legs above.
 func TestImportWorkspace_WithCreateConsent_Imports(t *testing.T) {
+	t.Parallel()
 	e := newConsentEnv(t, true)
 	body := e.exportBody(t)
 
@@ -422,6 +432,7 @@ func TestImportWorkspace_WithCreateConsent_Imports(t *testing.T) {
 // non-OAuth class because the guard branches on an identity only MCPBearerAuth
 // sets.
 func TestImportWorkspace_NonOAuthCallerUnaffected(t *testing.T) {
+	t.Parallel()
 	e := newConsentEnv(t, false)
 	body := e.exportBody(t)
 
@@ -438,6 +449,7 @@ func TestImportWorkspace_NonOAuthCallerUnaffected(t *testing.T) {
 // "forbidden" alone will retry. Pinned loosely (the actionable noun, not the
 // whole sentence) so rewording stays cheap.
 func TestCreateWorkspace_RefusalMessageNamesTheRemedy(t *testing.T) {
+	t.Parallel()
 	e := newConsentEnv(t, false)
 
 	rr := e.createWorkspace("Message WS", e.requestID)

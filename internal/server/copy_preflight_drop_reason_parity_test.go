@@ -72,6 +72,7 @@ func dropReasonMapBody(t *testing.T, src string) string {
 }
 
 func TestCopyPreflightDropReasonsAreRenderedByTheDialog(t *testing.T) {
+	t.Parallel()
 	reasons := preflightDropReasons()
 	if len(reasons) < 6 {
 		t.Fatalf("preflightDropReasons() returned %d entries; the enumeration looks truncated, "+

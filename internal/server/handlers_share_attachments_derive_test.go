@@ -116,6 +116,7 @@ func jpegWithEXIF(t *testing.T, w, h int) []byte {
 // Pin (a): a ≤1024px image (the live 64×64 case) renders on a share page via
 // a REAL derived variant — lazy-derived at resolve, no original ever served.
 func TestShareAssetDerive_SmallImageRendersViaVariant(t *testing.T) {
+	t.Parallel()
 	f := newDerivingShareFixture(t)
 	orig := f.seedRawOriginal(t, f.itemID, "image/png", realPNGImage(t, 64, 64))
 	f.setContent(t, f.itemID, imageRef(orig))
@@ -143,6 +144,7 @@ func TestShareAssetDerive_SmallImageRendersViaVariant(t *testing.T) {
 // Pin (b): an EXIF-bearing source yields variant bytes with NO EXIF. Verify
 // the BYTES, not intent.
 func TestShareAssetDerive_StripsEXIF(t *testing.T) {
+	t.Parallel()
 	f := newDerivingShareFixture(t)
 	src := jpegWithEXIF(t, 1600, 1200) // >1024 so a genuine downscale happens too
 	orig := f.seedRawOriginal(t, f.itemID, "image/jpeg", src)
@@ -169,6 +171,7 @@ func TestShareAssetDerive_StripsEXIF(t *testing.T) {
 // Pin (c): format normalization — PNG source stays PNG (alpha survives),
 // non-PNG (JPEG) normalizes to JPEG per ThumbnailFormat.
 func TestShareAssetDerive_FormatNormalization(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		mime     string

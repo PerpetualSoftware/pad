@@ -38,6 +38,7 @@ func importWorkspaceJSON(t *testing.T, srv *Server, export models.WorkspaceExpor
 }
 
 func TestBUG3379_ImportedCommentsAndVersionsAreMarked(t *testing.T) {
+	t.Parallel()
 	src := testServer(t)
 	srcSlug := createWSForTest(t, src)
 	rr := doRequest(src, "POST", "/api/v1/workspaces/"+srcSlug+"/collections/tasks/items",
@@ -132,6 +133,7 @@ func TestBUG3379_ImportedCommentsAndVersionsAreMarked(t *testing.T) {
 // An imported attachment's uploaded_by is the source instance's claim. It
 // is never resolved to a local name, even when it is a real member's id.
 func TestBUG3379_ImportedAttachmentNamesNoUploader(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	// Upload while the instance has no accounts yet; creating one ends that.
 	id, _, _ := uploadSource(t, srv, slug, "native.txt")
@@ -178,6 +180,7 @@ func TestBUG3379_ImportedAttachmentNamesNoUploader(t *testing.T) {
 
 // The bundle import marks the attachment rows it writes.
 func TestBUG3379_BundleImportMarksAttachments(t *testing.T) {
+	t.Parallel()
 	src, srcSlug := testServerWithAttachments(t)
 	uploadSource(t, src, srcSlug, "carried.txt")
 	rr := doRequest(src, "GET", "/api/v1/workspaces/"+srcSlug+"/export?format=tar", nil)

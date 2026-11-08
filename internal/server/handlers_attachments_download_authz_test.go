@@ -217,6 +217,7 @@ func assertBlobDenied(t *testing.T, rr *httptest.ResponseRecorder, method, label
 // attachment's bytes. Covers the full matrix the acceptance criteria name —
 // original + both variants × GET + HEAD.
 func TestDownload_ItemGrantGuestCanFetch(t *testing.T) {
+	t.Parallel()
 	srv, _ := testServerWithAttachments(t)
 	f := newDownloadAuthzFixture(t, srv)
 
@@ -245,6 +246,7 @@ func TestDownload_ItemGrantGuestCanFetch(t *testing.T) {
 // chain. The guest holds no item grant; visibility comes from the
 // collection.
 func TestDownload_CollectionGrantGuestCanFetch(t *testing.T) {
+	t.Parallel()
 	srv, _ := testServerWithAttachments(t)
 	f := newDownloadAuthzFixture(t, srv)
 
@@ -273,6 +275,7 @@ func TestDownload_CollectionGrantGuestCanFetch(t *testing.T) {
 // addressed by its OWN id, not just via ?variant= on the parent. That path
 // must run the same gate (variants carry the parent's item_id, so it does).
 func TestDownload_DirectVariantFetchHonorsTheGate(t *testing.T) {
+	t.Parallel()
 	srv, _ := testServerWithAttachments(t)
 	f := newDownloadAuthzFixture(t, srv)
 
@@ -297,6 +300,7 @@ func TestDownload_DirectVariantFetchHonorsTheGate(t *testing.T) {
 // handler runs, so that fixture would pass vacuously and prove nothing about
 // the handler's own ordering or its cache header.
 func TestDownload_InvisibleItemIs404NotForbidden(t *testing.T) {
+	t.Parallel()
 	srv, _ := testServerWithAttachments(t)
 	f := newDownloadAuthzFixture(t, srv)
 
@@ -326,6 +330,7 @@ func TestDownload_InvisibleItemIs404NotForbidden(t *testing.T) {
 // takes its attachments' bytes offline. The DELETE path deliberately
 // diverges; TestDeleteAttachment_* covers that side.
 func TestDownload_SoftDeletedParentIs404(t *testing.T) {
+	t.Parallel()
 	srv, _ := testServerWithAttachments(t)
 	f := newDownloadAuthzFixture(t, srv)
 
@@ -360,6 +365,7 @@ func TestDownload_SoftDeletedParentIs404(t *testing.T) {
 // A view grant in B must not authorize reading A's bytes. The workspace
 // identity check runs before visibility, so this is a 404 either way.
 func TestDownload_ForeignItemParentIs404(t *testing.T) {
+	t.Parallel()
 	srv, _ := testServerWithAttachments(t)
 	b := newDownloadAuthzFixture(t, srv)
 
@@ -406,6 +412,7 @@ func TestDownload_ForeignItemParentIs404(t *testing.T) {
 // behaviour and the broken one both answer 200. The assertion has to be on
 // the BYTES — the foreign child's content must never appear.
 func TestDownload_ForeignVariantIsNotServed(t *testing.T) {
+	t.Parallel()
 	srv, _ := testServerWithAttachments(t)
 
 	// Workspace A: the caller is authorized for this original, which has no
@@ -480,6 +487,7 @@ func TestDownload_ForeignVariantIsNotServed(t *testing.T) {
 // "this id names a live orphan here" while a bad id answers 404 — an
 // existence oracle for orphan UUIDs that the old pre-lookup gate didn't have.
 func TestDownload_OrphanKeepsFlatViewerGate(t *testing.T) {
+	t.Parallel()
 	srv, _ := testServerWithAttachments(t)
 	f := newDownloadAuthzFixture(t, srv)
 
@@ -527,6 +535,7 @@ func TestDownload_OrphanKeepsFlatViewerGate(t *testing.T) {
 //
 // Both restricted roles are covered because the flat gate admits both.
 func TestDownload_OrphanRefusedToRestrictedMember(t *testing.T) {
+	t.Parallel()
 	srv, _ := testServerWithAttachments(t)
 	f := newDownloadAuthzFixture(t, srv)
 
@@ -584,6 +593,7 @@ func TestDownload_OrphanRefusedToRestrictedMember(t *testing.T) {
 // role check with a visibility check; an ordinary unrestricted viewer must
 // still be served.
 func TestDownload_ViewerStillReadsItemBoundAttachment(t *testing.T) {
+	t.Parallel()
 	srv, _ := testServerWithAttachments(t)
 	f := newDownloadAuthzFixture(t, srv)
 
@@ -600,6 +610,7 @@ func TestDownload_ViewerStillReadsItemBoundAttachment(t *testing.T) {
 // wrong-workspace guard, re-pinned with the cache directive the denial now
 // carries.
 func TestDownload_CrossWorkspaceAttachmentIs404(t *testing.T) {
+	t.Parallel()
 	srv, _ := testServerWithAttachments(t)
 	f := newDownloadAuthzFixture(t, srv)
 

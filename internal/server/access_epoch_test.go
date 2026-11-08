@@ -10,6 +10,7 @@ import (
 // the property is worth a test (CONVE-12: assert what the wrong behaviour
 // would do, not what the right behaviour leaves looking unchanged).
 func TestComputeAccessEpoch(t *testing.T) {
+	t.Parallel()
 	t.Run("stable across input ordering", func(t *testing.T) {
 		// A different row order out of the store must not read as a changed
 		// access set. If it did, every poll would trigger a full authoritative
@@ -75,6 +76,7 @@ func TestComputeAccessEpoch(t *testing.T) {
 // full-access set, and a nil full-access set is still a FILTERED caller, never
 // the unrestricted sentinel.
 func TestEffectiveAccessEpoch(t *testing.T) {
+	t.Parallel()
 	nav := []string{"c-kept", "c-deleted"}
 	full := []string{"c-kept"}
 	grants := []string{"i-1"}

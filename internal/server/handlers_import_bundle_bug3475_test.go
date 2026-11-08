@@ -70,10 +70,12 @@ func importStatus(t *testing.T, srv *Server, key, token string) (int, importOutc
 }
 
 func TestImportBundle_BUG3475_Outcomes_SQLite(t *testing.T) {
+	t.Parallel()
 	importOutcomes3475(t, store.DriverSQLite)
 }
 
 func TestImportBundle_BUG3475_Outcomes_Postgres(t *testing.T) {
+	t.Parallel()
 	importOutcomes3475(t, store.DriverPostgres)
 }
 
@@ -159,6 +161,7 @@ func importOutcomes3475(t *testing.T, driver store.DriverType) {
 // for a well-formed key; a malformed key on the import itself is refused
 // before any of the body is read.
 func TestImportStatus_BUG3475_Refusals(t *testing.T) {
+	t.Parallel()
 	full := realBundleWithBlob(t)
 	srv := attachmentsServerOn(t, store.DriverSQLite)
 	_, tokA := memberImporter(t, srv)
@@ -300,6 +303,7 @@ func TestImportOutcomeRegistry_BUG3475(t *testing.T) {
 // A panic after mint skips every report in the handler; the attempt must
 // still end, as unknown, rather than read running until the TTL.
 func TestImportBundle_BUG3475_PanicRecordsUnknown(t *testing.T) {
+	t.Parallel()
 	srv := attachmentsServerOn(t, store.DriverSQLite)
 	_, tok := memberImporter(t, srv)
 	panicAfterMint(srv)
@@ -317,6 +321,7 @@ func TestImportBundle_BUG3475_PanicRecordsUnknown(t *testing.T) {
 // the row: a rollback that left the workspace live must report unknown and
 // say so, never removed. A trigger refuses the soft-delete.
 func TestImportBundle_BUG3475_RollbackThatLeavesTheWorkspaceLiveIsUnknown(t *testing.T) {
+	t.Parallel()
 	srv := attachmentsServerOn(t, store.DriverSQLite)
 	_, tok := memberImporter(t, srv)
 	if _, err := srv.store.DB().Exec(`CREATE TRIGGER t3475_no_soft_delete BEFORE UPDATE OF deleted_at ON workspaces

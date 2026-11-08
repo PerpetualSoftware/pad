@@ -178,6 +178,7 @@ var nfxT0 = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 func nfxDay(d int) time.Time { return nfxT0.AddDate(0, 0, d) }
 
 func TestNeedsMe_NoAuth401(t *testing.T) {
+	t.Parallel()
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newNfx(t, srv)
 		f.user("someone") // once a user exists, the API needs a credential
@@ -191,6 +192,7 @@ func TestNeedsMe_NoAuth401(t *testing.T) {
 }
 
 func TestNeedsMe_AppContextRefused(t *testing.T) {
+	t.Parallel()
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newNfx(t, srv)
 		u := f.user("alice")
@@ -205,6 +207,7 @@ func TestNeedsMe_AppContextRefused(t *testing.T) {
 }
 
 func TestNeedsMe_CrossWorkspace(t *testing.T) {
+	t.Parallel()
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newNfx(t, srv)
 		owner, alice := f.user("owner"), f.user("alice")
@@ -255,6 +258,7 @@ func TestNeedsMe_CrossWorkspace(t *testing.T) {
 }
 
 func TestNeedsMe_RestrictedMemberNoLeak(t *testing.T) {
+	t.Parallel()
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newNfx(t, srv)
 		owner, alice := f.user("owner"), f.user("alice")
@@ -294,6 +298,7 @@ func TestNeedsMe_RestrictedMemberNoLeak(t *testing.T) {
 }
 
 func TestNeedsMe_GuestItemGrantOnly(t *testing.T) {
+	t.Parallel()
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newNfx(t, srv)
 		owner, guest := f.user("owner"), f.user("guest")
@@ -311,6 +316,7 @@ func TestNeedsMe_GuestItemGrantOnly(t *testing.T) {
 }
 
 func TestNeedsMe_UnknownVsHiddenWorkspaceIdentical(t *testing.T) {
+	t.Parallel()
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newNfx(t, srv)
 		owner, alice, stranger := f.user("owner"), f.user("alice"), f.user("stranger")
@@ -335,6 +341,7 @@ func TestNeedsMe_UnknownVsHiddenWorkspaceIdentical(t *testing.T) {
 }
 
 func TestNeedsMe_TokenAllowlist(t *testing.T) {
+	t.Parallel()
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newNfx(t, srv)
 		owner, alice := f.user("owner"), f.user("alice")
@@ -363,6 +370,7 @@ func TestNeedsMe_TokenAllowlist(t *testing.T) {
 // A user-bound token scoped to one workspace stays in it (stricter than search;
 // BUG-3982).
 func TestNeedsMe_WorkspaceBoundTokenStaysInIt(t *testing.T) {
+	t.Parallel()
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newNfx(t, srv)
 		owner, alice := f.user("owner"), f.user("alice")
@@ -383,6 +391,7 @@ func TestNeedsMe_WorkspaceBoundTokenStaysInIt(t *testing.T) {
 }
 
 func TestNeedsMe_BearerAdminNotUnrestricted(t *testing.T) {
+	t.Parallel()
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newNfx(t, srv)
 		admin, alice, owner := f.user("boss"), f.user("alice"), f.user("owner")
@@ -425,6 +434,7 @@ func TestNeedsMe_BearerAdminNotUnrestricted(t *testing.T) {
 }
 
 func TestNeedsMe_PaginationTotalOrder(t *testing.T) {
+	t.Parallel()
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newNfx(t, srv)
 		owner, alice := f.user("owner"), f.user("alice")
@@ -558,6 +568,7 @@ func (s *recordingScorer) Score(_ context.Context, v needs.Viewer, sc needs.Scop
 }
 
 func TestNeedsMe_DegradedPerWorkspace(t *testing.T) {
+	t.Parallel()
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newNfx(t, srv)
 		owner, alice := f.user("owner"), f.user("alice")
@@ -603,6 +614,7 @@ func TestNeedsMe_DegradedPerWorkspace(t *testing.T) {
 }
 
 func TestNeedsMe_DegradedOnlyOnProviderError(t *testing.T) {
+	t.Parallel()
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newNfx(t, srv)
 		owner, alice := f.user("owner"), f.user("alice")
@@ -643,6 +655,7 @@ func TestNeedsMe_DegradedOnlyOnProviderError(t *testing.T) {
 // an item whose state cannot be built, hidden from the caller, sets no bit on
 // their response; the same failure on a visible item does degrade.
 func TestNeedsMe_DegradedNotLeakedByHiddenItemFailure(t *testing.T) {
+	t.Parallel()
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newNfx(t, srv)
 		owner, alice := f.user("owner"), f.user("alice")
@@ -680,6 +693,7 @@ func TestNeedsMe_DegradedNotLeakedByHiddenItemFailure(t *testing.T) {
 }
 
 func TestNeedsMe_RoutingRulesAndWaitingSince(t *testing.T) {
+	t.Parallel()
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newNfx(t, srv)
 		owner, alice, bob := f.user("owner"), f.user("alice"), f.user("bob")
@@ -742,6 +756,7 @@ func TestNeedsMe_RoutingRulesAndWaitingSince(t *testing.T) {
 }
 
 func TestNeedsMe_NeedsHumanClaim(t *testing.T) {
+	t.Parallel()
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newNfx(t, srv)
 		owner := f.user("owner")
@@ -772,6 +787,7 @@ func TestNeedsMe_NeedsHumanClaim(t *testing.T) {
 // user that does not exist answers (nil, nil, nil), which is also its
 // "unrestricted" sentinel. A missing user must get nothing.
 func TestNeedsEligibility_MissingUserGetsNothing(t *testing.T) {
+	t.Parallel()
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newNfx(t, srv)
 		owner := f.user("owner")
@@ -802,6 +818,7 @@ func TestNeedsEligibility_MissingUserGetsNothing(t *testing.T) {
 }
 
 func TestNeedsMe_SnoozeMovedItem(t *testing.T) {
+	t.Parallel()
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newNfx(t, srv)
 		owner, alice := f.user("owner"), f.user("alice")
@@ -840,6 +857,7 @@ func TestNeedsMe_SnoozeMovedItem(t *testing.T) {
 }
 
 func TestNeedsMe_SnoozeLostAccess(t *testing.T) {
+	t.Parallel()
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newNfx(t, srv)
 		owner, alice, carol := f.user("owner"), f.user("alice"), f.user("carol")
@@ -879,6 +897,7 @@ func TestNeedsMe_SnoozeLostAccess(t *testing.T) {
 // End to end: with two open mentions on one item, each person's
 // row carries only their own mention.
 func TestNeedsMe_MentionedRowIsPerCaller(t *testing.T) {
+	t.Parallel()
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newNfx(t, srv)
 		owner, alice, bob, carol := f.user("owner"), f.user("alice"), f.user("bob"), f.user("carol")
@@ -920,6 +939,7 @@ func TestNeedsMe_MentionedRowIsPerCaller(t *testing.T) {
 // candidate that reached the list another way, even when the workspace has a
 // truly flagged item (which is what makes the decision rows get read at all).
 func TestNeedsMe_UnsurfacedNeedsHumanRowIgnored(t *testing.T) {
+	t.Parallel()
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newNfx(t, srv)
 		owner, alice := f.user("owner"), f.user("alice")
@@ -951,6 +971,7 @@ func TestNeedsMe_UnsurfacedNeedsHumanRowIgnored(t *testing.T) {
 // A forged as_of in the future is clamped to now: a defer still in force is
 // still hiding its item.
 func TestNeedsMe_ForgedFutureAsOfClamped(t *testing.T) {
+	t.Parallel()
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newNfx(t, srv)
 		owner, alice := f.user("owner"), f.user("alice")
@@ -975,6 +996,7 @@ func TestNeedsMe_ForgedFutureAsOfClamped(t *testing.T) {
 // to put in the route. The row is still the caller's, so it is returned with
 // an empty path, never the network-path reference "//<ws>/...".
 func TestNeedsMe_UnresolvableOwnerHasNoDeepLink(t *testing.T) {
+	t.Parallel()
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newNfx(t, srv)
 		owner, alice := f.user("owner"), f.user("alice")
@@ -1012,6 +1034,7 @@ func TestNeedsMe_UnresolvableOwnerHasNoDeepLink(t *testing.T) {
 // fail for that one row on both backends; the empty username is what sends the
 // builder to the GetUser fallback at all (the workspace join supplies it otherwise).
 func TestNeedsMe_OwnerLookupErrorFailsTheRequest(t *testing.T) {
+	t.Parallel()
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newNfx(t, srv)
 		owner, alice := f.user("owner"), f.user("alice")

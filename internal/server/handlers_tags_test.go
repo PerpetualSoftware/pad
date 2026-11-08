@@ -28,6 +28,7 @@ func seedTaggedItem(t *testing.T, srv *Server, ws, coll, title, tags string) {
 // together — both the cross-collection `?tag=` filter and the `/tags`
 // enumeration endpoint are exercised here.
 func TestTagsAcrossCollections(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSWithCollections(t, srv)
 

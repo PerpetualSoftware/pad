@@ -11,6 +11,7 @@ import (
 // inviter, failed the inviter foreign key, and answered 500. It now answers
 // the setup window's own refusal, 409 setup_required, and writes nothing.
 func TestInviteInTheSetupWindowAnswersSetupRequired(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	if n, err := srv.store.UserCount(); err != nil || n != 0 {
 		t.Fatalf("premise: a fresh install has no users; count=%d err=%v", n, err)

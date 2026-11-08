@@ -16,6 +16,7 @@ import (
 
 // Direct path: the flag alone refuses, and nothing moves.
 func TestRefusePendingEditsRefusesWithoutAToken_Direct(t *testing.T) {
+	t.Parallel()
 	f := newBug3133Fixture(t)
 	f.seedPending(t)
 	before, _ := f.srv.store.GetItem(f.item.ID)
@@ -48,6 +49,7 @@ func TestRefusePendingEditsRefusesWithoutAToken_Direct(t *testing.T) {
 // The control that makes the leg above mean something: the SAME write without
 // the flag is the pre-U0 raw save, and it deletes the other tab's edit.
 func TestRefusePendingEditsControl_WithoutTheFlagTheEditIsPruned(t *testing.T) {
+	t.Parallel()
 	f := newBug3133Fixture(t)
 	f.seedPending(t)
 	rr := doRequest(f.srv, "PATCH", f.path, map[string]any{"content": "raw save"})
@@ -61,6 +63,7 @@ func TestRefusePendingEditsControl_WithoutTheFlagTheEditIsPruned(t *testing.T) {
 
 // overwrite_pending_edits lifts it: the user chose to replace the edits.
 func TestRefusePendingEditsOverrideProceeds(t *testing.T) {
+	t.Parallel()
 	f := newBug3133Fixture(t)
 	f.seedPending(t)
 	rr := doRequest(f.srv, "PATCH", f.path, map[string]any{
@@ -82,6 +85,7 @@ func TestRefusePendingEditsOverrideProceeds(t *testing.T) {
 
 // Nothing pending: the flag changes nothing, and no warning key reaches the wire.
 func TestRefusePendingEditsCleanItemIsUnchanged(t *testing.T) {
+	t.Parallel()
 	f := newBug3133Fixture(t)
 	rr := doRequest(f.srv, "PATCH", f.path, map[string]any{
 		"content":              "raw save",
@@ -98,6 +102,7 @@ func TestRefusePendingEditsCleanItemIsUnchanged(t *testing.T) {
 // No row version is compared: two raw saves sent from one stale read both land.
 // This is why the pane can use the flag where it cannot use expected_seq.
 func TestRefusePendingEditsComparesNoRowVersion(t *testing.T) {
+	t.Parallel()
 	f := newBug3133Fixture(t)
 	for _, body := range []string{"first raw save", "second raw save"} {
 		rr := doRequest(f.srv, "PATCH", f.path, map[string]any{
@@ -115,6 +120,7 @@ func TestRefusePendingEditsComparesNoRowVersion(t *testing.T) {
 
 // A field-only write is not guarded by the flag either: the edits are body edits.
 func TestRefusePendingEditsIgnoresFieldOnlyWrites(t *testing.T) {
+	t.Parallel()
 	f := newBug3133Fixture(t)
 	f.seedPending(t)
 	rr := doRequest(f.srv, "PATCH", f.path, map[string]any{

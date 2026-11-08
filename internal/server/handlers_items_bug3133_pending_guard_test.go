@@ -89,6 +89,7 @@ func decodeWrite(t *testing.T, rr *httptest.ResponseRecorder) models.Item {
 // Leg 1 (direct path): token + pending → 409 content_pending_flush, and nothing
 // moves: not the body, not the seq, not the op-log.
 func TestPendingGuardRefusesTokenedContentWrite_Direct(t *testing.T) {
+	t.Parallel()
 	for _, tok := range []string{"expected_seq", "expected_updated_at"} {
 		t.Run(tok, func(t *testing.T) {
 			f := newBug3133Fixture(t)
@@ -128,6 +129,7 @@ func TestPendingGuardRefusesTokenedContentWrite_Direct(t *testing.T) {
 // Leg 2: the same write with overwrite_pending_edits proceeds, the prune runs,
 // and the warning names what it destroyed.
 func TestPendingGuardOverrideProceedsAndReportsThePrune(t *testing.T) {
+	t.Parallel()
 	f := newBug3133Fixture(t)
 	f.seedPending(t)
 	rr := doRequest(f.srv, "PATCH", f.path, map[string]any{
@@ -153,6 +155,7 @@ func TestPendingGuardOverrideProceedsAndReportsThePrune(t *testing.T) {
 // Leg 3: a tokenless direct write with pending rows proceeds (tokenless means
 // replace) and carries the warning.
 func TestPendingGuardTokenlessWriteProceedsWithWarning(t *testing.T) {
+	t.Parallel()
 	f := newBug3133Fixture(t)
 	f.seedPending(t)
 	rr := doRequest(f.srv, "PATCH", f.path, map[string]any{"content": "replacement body"})
@@ -168,6 +171,7 @@ func TestPendingGuardTokenlessWriteProceedsWithWarning(t *testing.T) {
 // Leg 4: no pending rows → the write is unchanged — 200, and no warning key on
 // the wire at all, so a clean write stays byte-identical to before.
 func TestPendingGuardCleanItemIsUnchanged(t *testing.T) {
+	t.Parallel()
 	for _, withToken := range []bool{true, false} {
 		name := "tokenless"
 		if withToken {
@@ -197,6 +201,7 @@ func TestPendingGuardCleanItemIsUnchanged(t *testing.T) {
 // A stale token with pending rows answers update_conflict, not the new code: the
 // token is the more basic failure, and a caller must re-read either way.
 func TestPendingGuardStaleTokenStillAnswersUpdateConflict(t *testing.T) {
+	t.Parallel()
 	f := newBug3133Fixture(t)
 	f.seedPending(t)
 	stale := f.seq(t)
@@ -215,6 +220,7 @@ func TestPendingGuardStaleTokenStillAnswersUpdateConflict(t *testing.T) {
 // A token-carrying write WITHOUT content is not guarded: the unflushed edits are
 // body edits, and a fields write cannot replace them.
 func TestPendingGuardIgnoresFieldOnlyWrites(t *testing.T) {
+	t.Parallel()
 	f := newBug3133Fixture(t)
 	f.seedPending(t)
 	rr := doRequest(f.srv, "PATCH", f.path, map[string]any{

@@ -14,6 +14,7 @@ import "testing"
 // destination-only default; neither is this shape, where the source value was
 // present, non-null and discarded.
 func TestBUG2684_PreflightLabelsADroppedThenDefaultedKeyAsDefault(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 	// The fixture's source has count=7 (number); here the destination's
 	// `count` is a select that cannot hold 7, with a default.

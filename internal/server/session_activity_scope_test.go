@@ -9,6 +9,7 @@ import (
 )
 
 func TestSessionActivityTokenScopes(t *testing.T) {
+	t.Parallel()
 	srv := testServerWithPresence(t)
 	_, _, _, user := setupWatchTestUser(t, srv)
 	for _, scope := range []string{"read", "pad:read", "write"} {

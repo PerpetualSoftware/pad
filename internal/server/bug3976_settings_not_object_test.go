@@ -79,6 +79,7 @@ func errorEnvelope(t *testing.T, body []byte) (code, message string) {
 
 // Door 1, the defect: a flags-only PATCH over corrupt stored settings.
 func TestBUG3976_TypedMemberOverNonObjectStoredSettings(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newBUG3976Fixture(t, d)
 		for i, shape := range nonObjectSettings {
@@ -109,6 +110,7 @@ func TestBUG3976_TypedMemberOverNonObjectStoredSettings(t *testing.T) {
 // merge. The request decoder refuses them (IDEA-1488); these rows pin the
 // measured answer (BUG-3976 checkpoint 1) so neither door regresses to a 500.
 func TestBUG3976_IncomingNonObjectSettingsWithTypedMember(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newBUG3976Fixture(t, d)
 		for i, shape := range nonObjectSettings {
@@ -134,6 +136,7 @@ func TestBUG3976_IncomingNonObjectSettingsWithTypedMember(t *testing.T) {
 // Control: a full settings write repairs a corrupt row, and the typed member
 // then works. The refusal leaves a way out.
 func TestBUG3976_FullSettingsWriteRepairsTheRow(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newBUG3976Fixture(t, d)
 		for _, member := range typedSettingMembers {
@@ -154,6 +157,7 @@ func TestBUG3976_FullSettingsWriteRepairsTheRow(t *testing.T) {
 // The sentinel at the store, for both members and both store doors (create
 // and update), so the handlers' errors.Is has something to match.
 func TestBUG3976_StoreWrapsErrSettingsNotObject(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newBUG3976Fixture(t, d)
 		yes := true

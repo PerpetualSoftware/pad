@@ -195,6 +195,7 @@ func (f *copyAttachmentFixture) destinationContent(itemID string) string {
 // secret PNG comes back 200 with its exact bytes from workspace B, which is
 // the exfiltration the bug describes.
 func TestCopy_HiddenAttachmentIsNotCloned(t *testing.T) {
+	t.Parallel()
 	f := newCopyAttachmentFixture(t)
 	f.setSourceContent("![](pad-attachment:" + f.secretAtt.ID + ")")
 
@@ -245,6 +246,7 @@ func TestCopy_HiddenAttachmentIsNotCloned(t *testing.T) {
 // cannot see" and "this UUID names nothing" is an oracle the caller can
 // query at will.
 func TestCopyPreflight_HiddenAttachmentReadsAsDangling(t *testing.T) {
+	t.Parallel()
 	f := newCopyAttachmentFixture(t)
 
 	f.setSourceContent("![](pad-attachment:" + f.secretAtt.ID + ")")
@@ -282,6 +284,7 @@ func TestCopyPreflight_HiddenAttachmentReadsAsDangling(t *testing.T) {
 // and must still be refused. Only the orphan case needs a restricted
 // caller, because the orphan rule IS about restriction.
 func TestCopy_UnauthorizedParentsAreAllUnresolvable(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// setup returns the attachment id to reference.
@@ -369,6 +372,7 @@ func TestCopy_UnauthorizedParentsAreAllUnresolvable(t *testing.T) {
 // copies of workspace-level uploads. Same rule, same asymmetry, as the read
 // path's orphan gate.
 func TestCopy_OrphanCopiesForAnUnrestrictedCaller(t *testing.T) {
+	t.Parallel()
 	f := newCopyAttachmentFixture(t)
 	orphan := putBlob(t, f.srv, &models.Attachment{
 		WorkspaceID: f.wsA.ID, Filename: "orphan.png",
@@ -391,6 +395,7 @@ func TestCopy_OrphanCopiesForAnUnrestrictedCaller(t *testing.T) {
 // source item — which they hold — so what is being pinned is precisely the
 // visibility boundary and not the caller's role.
 func TestCopy_VisibleAttachmentsStillClone(t *testing.T) {
+	t.Parallel()
 	f := newCopyAttachmentFixture(t)
 
 	origBody := distinctPNG(t, 0x11)

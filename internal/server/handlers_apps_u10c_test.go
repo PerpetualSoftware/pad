@@ -37,6 +37,7 @@ func ownerSink(t *testing.T, e *deliveryEnv, status *atomic.Int32) *atomic.Int32
 // An app held back by its rate cap for several passes causes exactly ONE
 // delivery to an owner hook that succeeded.
 func TestAppDelivery_RateLimitedAppDoesNotDuplicateOwnerDeliveries(t *testing.T) {
+	t.Parallel()
 	e := newDeliveryEnv(t)
 	e.redeemNow(t)
 	var ok atomic.Int32
@@ -91,6 +92,7 @@ func TestAppDelivery_RateLimitedAppDoesNotDuplicateOwnerDeliveries(t *testing.T)
 // An owner hook that FAILED is retried as today, while an app endpoint that
 // already received the event is not sent it again.
 func TestAppDelivery_FailingOwnerRetriedAppNotResent(t *testing.T) {
+	t.Parallel()
 	e := newDeliveryEnv(t)
 	e.redeemNow(t)
 	var down atomic.Int32
@@ -112,6 +114,7 @@ func TestAppDelivery_FailingOwnerRetriedAppNotResent(t *testing.T) {
 // An app endpoint that failed transiently is retried, and once delivered is
 // done.
 func TestAppDelivery_TransientAppRetriedUntilDelivered(t *testing.T) {
+	t.Parallel()
 	e := newDeliveryEnv(t)
 	e.redeemNow(t)
 	e.status["/hooks"] = http.StatusServiceUnavailable
@@ -135,6 +138,7 @@ func TestAppDelivery_TransientAppRetriedUntilDelivered(t *testing.T) {
 // Undelivered after 24 h: dropped, counted on the hook and shown to the
 // owner, never sent; the event is no longer owed to the app.
 func TestAppDelivery_DroppedAfter24Hours(t *testing.T) {
+	t.Parallel()
 	e := newDeliveryEnv(t)
 	e.redeemNow(t)
 	e.item(t, e.companion.ID, "Old")
@@ -182,6 +186,7 @@ func TestAppDelivery_DropBoundary(t *testing.T) {
 // A skipped event (no projection) is recorded, so an owner hook's retry
 // does not count it again.
 func TestAppDelivery_SkipIsCountedOnce(t *testing.T) {
+	t.Parallel()
 	e := newDeliveryEnv(t)
 	m := metrics.New()
 	e.srv.SetMetrics(m)
@@ -215,6 +220,7 @@ func (e *deliveryEnv) setAppRate(t *testing.T, limit rate.Limit, burst int) {
 // An event in a collection the app is not subscribed to
 // spends none of its rate budget.
 func TestAppDelivery_UnrelatedCollectionsSpendNoBudget(t *testing.T) {
+	t.Parallel()
 	e := newDeliveryEnv(t)
 	e.redeemNow(t)
 	e.setAppRate(t, 0, 1) // one token, never refilled
@@ -233,6 +239,7 @@ func TestAppDelivery_UnrelatedCollectionsSpendNoBudget(t *testing.T) {
 
 // The cap bounds REQUESTS, retries included.
 func TestAppDelivery_RateCapCountsEveryAttempt(t *testing.T) {
+	t.Parallel()
 	e := newDeliveryEnv(t)
 	e.redeemNow(t)
 	e.setAppRate(t, 0, 2) // two requests, never refilled
@@ -250,6 +257,7 @@ func TestAppDelivery_RateCapCountsEveryAttempt(t *testing.T) {
 // The limiter map does not grow without bound, and pruning
 // drops only idle (full-bucket) entries.
 func TestAppRateLimiter_PrunesIdle(t *testing.T) {
+	t.Parallel()
 	l := appRateLimiter{by: map[string]*rate.Limiter{}, limit: 10, burst: 60}
 	busy := rate.NewLimiter(l.limit, l.burst)
 	busy.AllowN(time.Now(), 60) // spent: not idle
@@ -269,6 +277,7 @@ func TestAppRateLimiter_PrunesIdle(t *testing.T) {
 // A bulk skip is recorded, so an owner hook's retry of
 // the same unit does not count it again.
 func TestAppDelivery_BulkSkipCountedOnce(t *testing.T) {
+	t.Parallel()
 	e := newDeliveryEnv(t)
 	m := metrics.New()
 	e.srv.SetMetrics(m)
@@ -296,6 +305,7 @@ func TestAppDelivery_BulkSkipCountedOnce(t *testing.T) {
 // An old event the app was never owed (before its
 // deliver_from) is refused, not dropped and counted.
 func TestAppDelivery_NotOwedIsNotDropped(t *testing.T) {
+	t.Parallel()
 	e := newDeliveryEnv(t)
 	e.redeemNow(t)
 	e.item(t, e.companion.ID, "Before the hook")
@@ -331,6 +341,7 @@ func TestAppDelivery_RefusalsSpendNoBudget(t *testing.T) {
 
 // The ledger counts requests actually sent.
 func TestAppDelivery_LedgerCountsRequests(t *testing.T) {
+	t.Parallel()
 	e := newDeliveryEnv(t)
 	e.redeemNow(t)
 	e.status["/hooks"] = http.StatusServiceUnavailable

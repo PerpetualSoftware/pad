@@ -48,6 +48,7 @@ func storedCustomer(t *testing.T, srv *Server, userID string) string {
 }
 
 func TestStripeCustomerID_CompareAndSet(t *testing.T) {
+	t.Parallel()
 	srv, u := task3549Server(t)
 
 	if rr := setCustomer(t, srv, u.ID, "cus_first"); rr.Code != http.StatusOK {
@@ -81,6 +82,7 @@ func TestStripeCustomerID_CompareAndSet(t *testing.T) {
 }
 
 func TestStripeCustomerID_ReplaceIsNotTheSidecars(t *testing.T) {
+	t.Parallel()
 	srv, u := task3549Server(t)
 	if rr := setCustomer(t, srv, u.ID, "cus_first"); rr.Code != http.StatusOK {
 		t.Fatalf("first set: %d", rr.Code)
@@ -97,6 +99,7 @@ func TestStripeCustomerID_ReplaceIsNotTheSidecars(t *testing.T) {
 }
 
 func TestStripeCustomerID_StoreCASIgnoresAnUnknownUser(t *testing.T) {
+	t.Parallel()
 	srv, _ := task3549Server(t)
 	got, err := srv.store.SetUserStripeCustomerIDIfUnset("no-such-user", "cus_x")
 	if err != nil || got != "" {
@@ -105,6 +108,7 @@ func TestStripeCustomerID_StoreCASIgnoresAnUnknownUser(t *testing.T) {
 }
 
 func TestUserByID_ReturnsTheStoredCustomer(t *testing.T) {
+	t.Parallel()
 	srv, u := task3549Server(t)
 	get := func(path string) *httptest.ResponseRecorder {
 		req := cloudAdminReq(t, "GET", path, nil, map[string]string{"X-Cloud-Secret": task3549Secret})
@@ -140,6 +144,7 @@ func TestUserByID_ReturnsTheStoredCustomer(t *testing.T) {
 }
 
 func TestStripeCustomerID_AnAdminUserMayReplace(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	adminToken := bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
 	srv.SetCloudMode(task3549Secret)

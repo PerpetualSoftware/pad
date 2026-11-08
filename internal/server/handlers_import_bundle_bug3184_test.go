@@ -162,10 +162,12 @@ func assertKeptThroughTheDoor(t *testing.T, srv *Server, userID, token, slug str
 }
 
 func TestImportBundle_BUG3184_TarNextFailureGoesThroughTheKeepDoor_SQLite(t *testing.T) {
+	t.Parallel()
 	tarNextFailureGoesThroughTheKeepDoor(t, store.DriverSQLite)
 }
 
 func TestImportBundle_BUG3184_TarNextFailureGoesThroughTheKeepDoor_Postgres(t *testing.T) {
+	t.Parallel()
 	tarNextFailureGoesThroughTheKeepDoor(t, store.DriverPostgres)
 }
 
@@ -390,6 +392,7 @@ func TestImportBundle_BUG3184_TheDeadlineStillBoundsTheClient(t *testing.T) {
 // A writer without a connection keeps the body and the server-wide deadline:
 // the fallback is today's behaviour, never a failed import.
 func TestWithImportReadDeadline_UnsupportedWriterLeavesTheBodyAlone(t *testing.T) {
+	t.Parallel()
 	srv := &Server{}
 	req := httptest.NewRequest("POST", "/", strings.NewReader("x"))
 	orig := req.Body

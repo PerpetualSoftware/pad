@@ -8,6 +8,7 @@ import (
 )
 
 func TestParseTrustedProxyCIDRs(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		spec     string
@@ -75,6 +76,7 @@ func TestParseTrustedProxyCIDRs(t *testing.T) {
 }
 
 func TestTrustedProxyRealIP_NoProxies_HeadersIgnored(t *testing.T) {
+	t.Parallel()
 	// When no trusted proxies are configured, proxy headers are completely
 	// ignored and the real TCP peer address wins.
 	var seen string
@@ -94,6 +96,7 @@ func TestTrustedProxyRealIP_NoProxies_HeadersIgnored(t *testing.T) {
 }
 
 func TestTrustedProxyRealIP_UntrustedPeer_HeadersIgnored(t *testing.T) {
+	t.Parallel()
 	// Proxy headers from an untrusted peer must be ignored even when the
 	// trust list is non-empty.
 	var seen string
@@ -114,6 +117,7 @@ func TestTrustedProxyRealIP_UntrustedPeer_HeadersIgnored(t *testing.T) {
 }
 
 func TestTrustedProxyRealIP_TrustedPeer_XRealIPUsed(t *testing.T) {
+	t.Parallel()
 	var seen string
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen = r.RemoteAddr
@@ -132,6 +136,7 @@ func TestTrustedProxyRealIP_TrustedPeer_XRealIPUsed(t *testing.T) {
 }
 
 func TestTrustedProxyRealIP_TrustedPeer_XFFTrustedHopSkipped(t *testing.T) {
+	t.Parallel()
 	var seen string
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen = r.RemoteAddr
@@ -150,6 +155,7 @@ func TestTrustedProxyRealIP_TrustedPeer_XFFTrustedHopSkipped(t *testing.T) {
 }
 
 func TestCapturePeerAddr_PreservesOriginalRemoteAddr(t *testing.T) {
+	t.Parallel()
 	// CapturePeerAddr installs the raw peer into context BEFORE TrustedProxyRealIP
 	// has a chance to rewrite it — so downstream handlers can always fetch the
 	// real TCP peer, even on deployments with trusted proxies.
@@ -176,6 +182,7 @@ func TestCapturePeerAddr_PreservesOriginalRemoteAddr(t *testing.T) {
 }
 
 func TestRawPeerAddr_FallsBackToRemoteAddrWithoutMiddleware(t *testing.T) {
+	t.Parallel()
 	// In tests (or any call path that skips CapturePeerAddr), rawPeerAddr
 	// falls back to r.RemoteAddr rather than returning empty.
 	req := httptest.NewRequest("GET", "/", nil)
@@ -186,6 +193,7 @@ func TestRawPeerAddr_FallsBackToRemoteAddrWithoutMiddleware(t *testing.T) {
 }
 
 func TestTrustedProxyRealIP_TrustedPeer_InvalidHeaderIgnored(t *testing.T) {
+	t.Parallel()
 	var seen string
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen = r.RemoteAddr
@@ -211,6 +219,7 @@ func TestTrustedProxyRealIP_TrustedPeer_InvalidHeaderIgnored(t *testing.T) {
 // marked "spoof" are the shapes the leftmost-entry, X-Real-IP-first parse
 // resolved to the attacker's chosen address.
 func TestTrustedProxyRealIP_BUG3323_ResolvesRightmostUntrustedHop(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name      string
 		xff, xrip string
@@ -254,6 +263,7 @@ func TestTrustedProxyRealIP_BUG3323_ResolvesRightmostUntrustedHop(t *testing.T) 
 // A proxy that appends its hop as a SEPARATE X-Forwarded-For field leaves
 // the client's own value in the first field, the only one Header.Get reads.
 func TestTrustedProxyRealIP_BUG3323_ReadsEveryXFFField(t *testing.T) {
+	t.Parallel()
 	var seen string
 	mw := TrustedProxyRealIP(ParseTrustedProxyCIDRs("10.0.0.0/8"))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen = r.RemoteAddr
@@ -270,6 +280,7 @@ func TestTrustedProxyRealIP_BUG3323_ReadsEveryXFFField(t *testing.T) {
 
 // The same headers from an UNTRUSTED peer change nothing, walk or no walk.
 func TestTrustedProxyRealIP_BUG3323_UntrustedPeerStillIgnored(t *testing.T) {
+	t.Parallel()
 	var seen string
 	mw := TrustedProxyRealIP(ParseTrustedProxyCIDRs("10.0.0.0/8"))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen = r.RemoteAddr

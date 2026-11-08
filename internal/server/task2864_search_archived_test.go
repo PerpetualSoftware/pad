@@ -99,6 +99,7 @@ func task2864Archive(t *testing.T, e *bug3331Env, ref string) {
 }
 
 func TestTASK2864_SearchIncludeArchived(t *testing.T) {
+	t.Parallel()
 	e := bug3331Setup(t)
 	member := e.asCookie("member")
 

@@ -8,6 +8,7 @@ import (
 )
 
 func TestInvitationEmailMatches(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, email, invited string
 		want                 bool

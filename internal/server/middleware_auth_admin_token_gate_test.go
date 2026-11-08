@@ -30,6 +30,7 @@ import (
 // (isAPITokenAuth(r)) suppresses the bypass and the regular membership
 // check produces a 403.
 func TestRequireWorkspaceAccess_AdminPAT_DeniedOnNonMemberWorkspace(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	// One platform admin, plus a regular user who owns the workspace.
@@ -93,6 +94,7 @@ func TestRequireWorkspaceAccess_AdminPAT_DeniedOnNonMemberWorkspace(t *testing.T
 // stray collection grant somewhere shouldn't reach that collection's
 // workspace through the token surface.
 func TestRequireWorkspaceAccess_AdminPAT_DeniedEvenWithGuestGrants(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	admin, err := srv.store.CreateUser(models.UserCreate{
@@ -155,6 +157,7 @@ func TestRequireWorkspaceAccess_AdminPAT_DeniedEvenWithGuestGrants(t *testing.T)
 // gate accidentally denies admins even on workspaces they legitimately
 // joined.
 func TestRequireWorkspaceAccess_AdminPAT_AllowedOnMemberWorkspace(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	admin, err := srv.store.CreateUser(models.UserCreate{
@@ -197,6 +200,7 @@ func TestRequireWorkspaceAccess_AdminPAT_AllowedOnMemberWorkspace(t *testing.T) 
 // Reproduces the user-reported expansion: "admin really shouldn't be
 // able to access workspaces it's not a member of via CLI either."
 func TestRequireWorkspaceAccess_AdminCLISessionBearer_DeniedOnNonMember(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	admin, err := srv.store.CreateUser(models.UserCreate{
@@ -244,6 +248,7 @@ func TestRequireWorkspaceAccess_AdminCLISessionBearer_DeniedOnNonMember(t *testi
 // expected behavior for the /console/admin pages and the workspace
 // switcher, and the BUG-1616 fix must NOT regress it.
 func TestRequireWorkspaceAccess_AdminSession_StillBypassesNonMember(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	admin, err := srv.store.CreateUser(models.UserCreate{

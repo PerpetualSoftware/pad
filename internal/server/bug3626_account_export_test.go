@@ -82,6 +82,7 @@ func parsesAsCompleteExport(body []byte) bool {
 }
 
 func TestBUG3626_TimedOutExportIsNotAValidCompleteFile(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	tok := bug3626Owner(t, srv)
 
@@ -101,6 +102,7 @@ func TestBUG3626_TimedOutExportIsNotAValidCompleteFile(t *testing.T) {
 // account. Each read is failed through its seam: a broken table fails an
 // earlier query and answers 500 before the body starts, which proves nothing.
 func TestBUG3626_StoreErrorMidExportIsNotAValidCompleteFile(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name   string
 		break_ func(srv *Server, calls *atomic.Int32)
@@ -148,6 +150,7 @@ func TestBUG3626_StoreErrorMidExportIsNotAValidCompleteFile(t *testing.T) {
 // The success path: the format and version come first, the trailer says complete,
 // the item is in it, and the file is no longer named like a workspace bundle.
 func TestBUG3626_CompleteExportCarriesFormatAndTrailer(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	tok := bug3626Owner(t, srv)
 

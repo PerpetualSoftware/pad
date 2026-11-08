@@ -104,6 +104,7 @@ func t4137NoSession(t *testing.T, rr *httptest.ResponseRecorder) {
 }
 
 func TestTASK4137_PKCEBound_VerifiesFromOtherIP(t *testing.T) {
+	t.Parallel()
 	f := newT4137Fixture(t)
 	ch := f.challengeFor(t, t4137IPA, map[string]interface{}{"two_factor_pkce_challenge": t4137Chall})
 	rr := f.verify(t4137IPB, map[string]interface{}{
@@ -115,6 +116,7 @@ func TestTASK4137_PKCEBound_VerifiesFromOtherIP(t *testing.T) {
 }
 
 func TestTASK4137_PKCEBound_WrongOrMissingVerifier_401(t *testing.T) {
+	t.Parallel()
 	f := newT4137Fixture(t)
 	ch := f.challengeFor(t, t4137IPA, map[string]interface{}{"two_factor_pkce_challenge": t4137Chall})
 	code := validTOTPCode(t, t4137Secret)
@@ -137,6 +139,7 @@ func TestTASK4137_PKCEBound_WrongOrMissingVerifier_401(t *testing.T) {
 }
 
 func TestTASK4137_IPBound_WithVerifier_401(t *testing.T) {
+	t.Parallel()
 	// Absent and JSON null both mint IP-bound (docs/api.md): the right verifier is refused.
 	for _, extra := range []map[string]interface{}{nil, {"two_factor_pkce_challenge": nil}} {
 		f := newT4137Fixture(t)
@@ -158,6 +161,7 @@ func TestTASK4137_IPBound_WithVerifier_401(t *testing.T) {
 
 // A pkce failure and an IP mismatch are indistinguishable on the wire.
 func TestTASK4137_PKCEFailureAndIPMismatch_IdenticalResponses(t *testing.T) {
+	t.Parallel()
 	f := newT4137Fixture(t)
 	pk := f.challengeFor(t, t4137IPA, map[string]interface{}{"two_factor_pkce_challenge": t4137Chall})
 	ip := f.challengeFor(t, t4137IPA, nil)
@@ -185,6 +189,7 @@ func TestTASK4137_PKCEFailureAndIPMismatch_IdenticalResponses(t *testing.T) {
 }
 
 func TestTASK4137_BadPKCEChallenge_400(t *testing.T) {
+	t.Parallel()
 	f := newT4137Fixture(t)
 	for name, c := range map[string]string{
 		"42 chars": t4137Chall[:42], "44 chars": t4137Chall + "A", "bad char": t4137Chall[:42] + "+",
@@ -200,6 +205,7 @@ func TestTASK4137_BadPKCEChallenge_400(t *testing.T) {
 // A malformed challenge is refused before any account lookup: an unknown and
 // a known address (and one with no 2FA) get byte-identical answers.
 func TestTASK4137_BadPKCEChallenge_NoAccountOracle(t *testing.T) {
+	t.Parallel()
 	f := newT4137Fixture(t)
 	var first string
 	for _, email := range []string{"pkce@example.com", "nobody@example.com"} {
@@ -217,6 +223,7 @@ func TestTASK4137_BadPKCEChallenge_NoAccountOracle(t *testing.T) {
 }
 
 func TestTASK4137_BadCodeVerifier_400(t *testing.T) {
+	t.Parallel()
 	f := newT4137Fixture(t)
 	ch := f.challengeFor(t, t4137IPA, map[string]interface{}{"two_factor_pkce_challenge": t4137Chall})
 	for name, v := range map[string]string{
@@ -230,6 +237,7 @@ func TestTASK4137_BadCodeVerifier_400(t *testing.T) {
 }
 
 func TestTASK4137_PKCEBound_SeventhCode_429(t *testing.T) {
+	t.Parallel()
 	f := newT4137Fixture(t)
 	ch := f.challengeFor(t, t4137IPA, map[string]interface{}{"two_factor_pkce_challenge": t4137Chall})
 	for i := 1; i <= 7; i++ {
@@ -249,6 +257,7 @@ func TestTASK4137_PKCEBound_SeventhCode_429(t *testing.T) {
 }
 
 func TestTASK4137_PKCEBound_CodeReplay_401(t *testing.T) {
+	t.Parallel()
 	f := newT4137Fixture(t)
 	code := validTOTPCode(t, t4137Secret)
 	for i, want := range []int{http.StatusOK, http.StatusUnauthorized} {
@@ -261,6 +270,7 @@ func TestTASK4137_PKCEBound_CodeReplay_401(t *testing.T) {
 }
 
 func TestTASK4137_PKCEBound_EpochFence(t *testing.T) {
+	t.Parallel()
 	f := newT4137Fixture(t)
 	ch := f.challengeFor(t, t4137IPA, map[string]interface{}{"two_factor_pkce_challenge": t4137Chall})
 	pw := "a-new-password-123"
@@ -284,6 +294,7 @@ func t4137Legacy(userID, binding string, epoch int64, secret []byte) string {
 }
 
 func TestTASK4137_LegacyBareIPBinding(t *testing.T) {
+	t.Parallel()
 	f := newT4137Fixture(t)
 	sec := f.srv.twoFAChallengeSecret
 	code := validTOTPCode(t, t4137Secret)

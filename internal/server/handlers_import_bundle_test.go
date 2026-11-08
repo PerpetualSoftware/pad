@@ -28,6 +28,7 @@ import (
 // stage drops a UUID or fails to rewrite content, the final item
 // won't render the image and this test catches it.
 func TestImportBundle_RoundTrip(t *testing.T) {
+	t.Parallel()
 	// 1. Source workspace: upload an attachment, attach it to an
 	//    item, embed the pad-attachment: reference in the item's
 	//    markdown content.
@@ -162,6 +163,7 @@ func TestImportBundle_RoundTrip(t *testing.T) {
 // still works alongside the new bundle path. Hits the same endpoint
 // with JSON content-type — must route to the existing handler.
 func TestImportBundle_LegacyJSONStillWorks(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 
 	if rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/docs/items",
@@ -195,6 +197,7 @@ func TestImportBundle_LegacyJSONStillWorks(t *testing.T) {
 // would force buffering of every blob — we now reject them up front
 // with a clear error rather than silently buffering.
 func TestImportBundle_RejectsOutOfOrderTar(t *testing.T) {
+	t.Parallel()
 	srv, _ := testServerWithAttachments(t)
 
 	// Hand-craft a tar.gz where a blob entry comes BEFORE
@@ -231,6 +234,7 @@ func TestImportBundle_RejectsOutOfOrderTar(t *testing.T) {
 // regressions where the gzip-reader error gets swallowed and the
 // handler proceeds with a half-decompressed stream.
 func TestImportBundle_RejectsBadGzip(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	// Wire the attachment registry so the dispatcher doesn't 503.
 	srv.SetAttachments(attachments.NewRegistry(), 0)
@@ -256,6 +260,7 @@ func TestImportBundle_RejectsBadGzip(t *testing.T) {
 // so a malformed bundle can't pile up half-imported workspaces in
 // the destination.
 func TestImportBundle_RejectsDuplicateExport(t *testing.T) {
+	t.Parallel()
 	// Build a real, valid pad-export.json by exporting an empty
 	// workspace from a live server, then assemble a tar.gz that
 	// includes it twice.
@@ -311,6 +316,7 @@ func TestImportBundle_RejectsDuplicateExport(t *testing.T) {
 // manifest's keys would look orphaned — mark as a consumed-skip and
 // be lost.
 func TestImportBundle_RejectsDuplicateManifest(t *testing.T) {
+	t.Parallel()
 	src, srcSlug := testServerWithAttachments(t)
 	rr := doRequest(src, "GET", "/api/v1/workspaces/"+srcSlug+"/export", nil)
 	if rr.Code != http.StatusOK {
@@ -381,6 +387,7 @@ func TestImportBundle_RejectsDuplicateManifest(t *testing.T) {
 // NUL-bearing header name, so we can't exercise that path through
 // the integration handler.
 func TestImportBundle_RejectsPathTraversal(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		entry   string
@@ -427,6 +434,7 @@ func TestImportBundle_RejectsPathTraversal(t *testing.T) {
 // path-traversal early-return passed nil instead of ws, so the
 // handler skipped the cleanup cascade.
 func TestImportBundle_PathTraversalAfterExportRollsBack(t *testing.T) {
+	t.Parallel()
 	// Real pad-export.json so the first entry creates a workspace.
 	src, srcSlug := testServerWithAttachments(t)
 	rr := doRequest(src, "GET", "/api/v1/workspaces/"+srcSlug+"/export", nil)
@@ -502,6 +510,7 @@ func TestImportBundle_PathTraversalAfterExportRollsBack(t *testing.T) {
 // rehydration of the original bundle's entries before the duplicate
 // guard fires.
 func TestImportBundle_RollbackTombstonesAttachments(t *testing.T) {
+	t.Parallel()
 	// Source workspace: upload a real PNG so the bundle has a real
 	// blob entry the destination must rehydrate before hitting the
 	// duplicate at the end.
@@ -609,6 +618,7 @@ func TestImportBundle_RollbackTombstonesAttachments(t *testing.T) {
 // — so we test the helper directly to keep the defense-in-depth
 // guarantees verifiable.
 func TestIsSafeBundleEntryName(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		in   string
@@ -648,6 +658,7 @@ func TestIsSafeBundleEntryName(t *testing.T) {
 // 400 proves nothing here — this path answers 400 for a dozen unrelated
 // reasons (bad gzip, out-of-order tar, duplicate entries).
 func TestImportBundle_RefusesNULInExport(t *testing.T) {
+	t.Parallel()
 	src, srcSlug := testServerWithAttachments(t)
 	rr := doRequest(src, "GET", "/api/v1/workspaces/"+srcSlug+"/export", nil)
 	if rr.Code != http.StatusOK {
@@ -712,6 +723,7 @@ func TestImportBundle_RefusesNULInExport(t *testing.T) {
 // Both bundles carry a valid export; they differ only in the manifest, so a
 // refusal cannot come from the export half.
 func TestImportBundle_RefusesNULInManifest(t *testing.T) {
+	t.Parallel()
 	src, srcSlug := testServerWithAttachments(t)
 	rr := doRequest(src, "GET", "/api/v1/workspaces/"+srcSlug+"/export", nil)
 	if rr.Code != http.StatusOK {
@@ -804,6 +816,7 @@ func TestImportBundle_RefusesNULInManifest(t *testing.T) {
 // takes the bundle's claim when it is a known value, and "unknown" otherwise
 // (never "caller" for a history nobody recorded).
 func TestImportedFilenameSource(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		observed attachments.FilenameSource
 		claimed  string

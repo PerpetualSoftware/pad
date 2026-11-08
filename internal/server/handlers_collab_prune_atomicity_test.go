@@ -49,6 +49,7 @@ func seedOpLog(t *testing.T, srv *Server, itemID string, n int) {
 }
 
 func TestCollabDirectWrite_RefusedWriteLeavesTheOpLogIntact(t *testing.T) {
+	t.Parallel()
 	srv := testServerWithCollab(t)
 	slug := createWSWithCollections(t, srv)
 	item := createTaskWithFields(t, srv, slug, "Item", `{"status":"open"}`)
@@ -88,6 +89,7 @@ func TestCollabDirectWrite_RefusedWriteLeavesTheOpLogIntact(t *testing.T) {
 // over the content just written; a refusal must roll it back, a success must
 // keep it.
 func TestCollabDirectWrite_SuccessfulWriteStillPrunes(t *testing.T) {
+	t.Parallel()
 	srv := testServerWithCollab(t)
 	slug := createWSWithCollections(t, srv)
 	item := createTaskWithFields(t, srv, slug, "Item", `{"status":"open"}`)
@@ -122,6 +124,7 @@ func TestCollabDirectWrite_SuccessfulWriteStillPrunes(t *testing.T) {
 // one is refused by the guard itself, inside the transaction the prune now
 // shares — a different arm reaching the same rollback.
 func TestCollabDirectWrite_OpenChildrenRefusalAlsoLeavesTheOpLog(t *testing.T) {
+	t.Parallel()
 	srv := testServerWithCollab(t)
 	slug := createWSWithCollections(t, srv)
 	plan, _ := seedParentAndChildren(t, srv, slug, []string{"open"})

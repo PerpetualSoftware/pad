@@ -24,6 +24,7 @@ import (
 // from one store function, in one nested object, and a schedule-less copy's
 // response is unchanged.
 func TestCopyEndpoint_ScheduleObjectMatchesThePreflight(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name        string
 		setup       func(t *testing.T, f *copyPreflightFixture)
@@ -94,6 +95,7 @@ func TestCopyEndpoint_ScheduleObjectMatchesThePreflight(t *testing.T) {
 // client can tell "skipped" from "no schedule" from "an older server"; a
 // schedule-less copy names no schedule member at all.
 func TestCopyEndpoint_ScheduleObjectKeepsItsZeroValues(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 	body := f.resolvableBody()
 	if rr := f.call(f.owner, reqOpts{}, body); strings.Contains(rr.Body.String(), "schedule") {
@@ -118,6 +120,7 @@ func TestCopyEndpoint_ScheduleObjectKeepsItsZeroValues(t *testing.T) {
 // r1-3: cap_time is load-dependent: the copy answers 503 schedule_busy with
 // Retry-After, and a refused move answers 409 schedule_not_carried.
 func TestWriteCopyErrorMapsTheScheduleRefusals(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 	r := httptest.NewRequest("POST", "/", nil)
 
@@ -146,6 +149,7 @@ func TestWriteCopyErrorMapsTheScheduleRefusals(t *testing.T) {
 // assignee and the copier's UTC-11 zone reads it). The rule's last occurrence is
 // an hour ahead of UTC now: ahead in UTC-11, behind in UTC+14.
 func TestPreflightReadsAFloatingScheduleInTheCopiersZone(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 	ahead := mustUser(t, f.srv, "d3f-ahead@example.com", "d3fahead", "")
 	if _, err := f.srv.store.SetUserTimezoneIfUnset(ahead.ID, "Pacific/Kiritimati"); err != nil {
@@ -301,6 +305,7 @@ const (
 // D3 fix1-e: a schedule write on an ARCHIVED item answers 409 archived and on a
 // missing one 404, for create, PATCH and resolve alike (the door's pre-check).
 func TestScheduleWritesAnswer409ForAnArchivedItemAnd404ForAMissingOne(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 	mustSchedule(t, f)
 	if err := f.srv.store.DeleteItem(f.source.ID); err != nil {
@@ -333,6 +338,7 @@ func TestScheduleWritesAnswer409ForAnArchivedItemAnd404ForAMissingOne(t *testing
 // the caller. The parked PG rows below drive the same answer through the real
 // handlers.
 func TestWriteScheduleItemGoneRereadsTheItem(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 	if err := f.srv.store.DeleteItem(f.source.ID); err != nil {
 		t.Fatal(err)

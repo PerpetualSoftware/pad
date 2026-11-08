@@ -16,6 +16,7 @@ import (
 // mean a silently-drifting SSE stream keeps feeding events to a user
 // who lost access.
 func TestSSESubscriberStillHasAccess(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	// Setup: one admin, one workspace owned by admin, one regular user
@@ -123,6 +124,7 @@ func TestSSESubscriberStillHasAccess(t *testing.T) {
 // (e.g. role downgrade from editor to guest, grants revoked) is
 // ignored until the next reconnect — the exact leak this test guards against.
 func TestComputeSSEVisibility_ReflectsCurrentGrants(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	admin, err := srv.store.CreateUser(models.UserCreate{
@@ -182,6 +184,7 @@ func TestComputeSSEVisibility_ReflectsCurrentGrants(t *testing.T) {
 // the cached user snapshot from request context is trusted
 // indefinitely (admin-forever bug).
 func TestSSESubscriberStillHasAccess_AdminDemotion(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	admin, err := srv.store.CreateUser(models.UserCreate{
@@ -234,6 +237,7 @@ func TestSSESubscriberStillHasAccess_AdminDemotion(t *testing.T) {
 // GetUser inside computeSSEVisibility, visibleCollectionIDs would read
 // the cached Role="admin" from request context and keep returning nil.
 func TestComputeSSEVisibility_DemotedAdminGetsFilter(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	admin, err := srv.store.CreateUser(models.UserCreate{

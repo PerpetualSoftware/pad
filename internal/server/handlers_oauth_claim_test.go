@@ -138,6 +138,7 @@ func (e *claimTestEnv) doClaim(body any, extraReqID string) *httptest.ResponseRe
 }
 
 func TestHandleOAuthClaim_ClaimSecretDisabled412(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	user, err := srv.store.CreateUser(models.UserCreate{
 		Email: "d@example.com", Name: "D", Password: "pw-disabled-12345",
@@ -172,6 +173,7 @@ func TestHandleOAuthClaim_ClaimSecretDisabled412(t *testing.T) {
 }
 
 func TestHandleOAuthClaim_BadRequest400(t *testing.T) {
+	t.Parallel()
 	e := newClaimTestEnv(t)
 	cases := []struct {
 		name string
@@ -193,6 +195,7 @@ func TestHandleOAuthClaim_BadRequest400(t *testing.T) {
 }
 
 func TestHandleOAuthClaim_WorkspaceNotFound404(t *testing.T) {
+	t.Parallel()
 	e := newClaimTestEnv(t)
 	rr := e.doClaim(map[string]string{"workspace": "no-such-ws", "code": "123456"}, "")
 	assertWorkspaceNotFound(t, rr, "Workspace not found.")
@@ -202,6 +205,7 @@ func TestHandleOAuthClaim_WorkspaceNotFound404(t *testing.T) {
 }
 
 func TestHandleOAuthClaim_NotAMember404(t *testing.T) {
+	t.Parallel()
 	e := newClaimTestEnv(t)
 	// Create a second workspace owned by someone else; the PAT user
 	// isn't a member. 404 (uniform with "not found" so existence isn't
@@ -222,6 +226,7 @@ func TestHandleOAuthClaim_NotAMember404(t *testing.T) {
 }
 
 func TestHandleOAuthClaim_WrongCode401(t *testing.T) {
+	t.Parallel()
 	e := newClaimTestEnv(t)
 	rr := e.doClaim(map[string]string{"workspace": e.wsSlug, "code": "000000"}, "")
 	if rr.Code != http.StatusUnauthorized {
@@ -230,6 +235,7 @@ func TestHandleOAuthClaim_WrongCode401(t *testing.T) {
 }
 
 func TestHandleOAuthClaim_PATCallerOK_NoSideEffect(t *testing.T) {
+	t.Parallel()
 	e := newClaimTestEnv(t)
 	rr := e.doClaim(map[string]string{"workspace": e.wsSlug, "code": e.claimCode}, "")
 	if rr.Code != http.StatusOK {
@@ -251,6 +257,7 @@ func TestHandleOAuthClaim_PATCallerOK_NoSideEffect(t *testing.T) {
 }
 
 func TestHandleOAuthClaim_OAuthCaller_NoConnectionRow_412(t *testing.T) {
+	t.Parallel()
 	e := newClaimTestEnv(t)
 	// OAuth-grant context BUT no row in oauth_connections — Phase-A
 	// state: write path lands in Phase C. Handler must return 412
@@ -265,6 +272,7 @@ func TestHandleOAuthClaim_OAuthCaller_NoConnectionRow_412(t *testing.T) {
 }
 
 func TestHandleOAuthClaim_OAuthCaller_Inserts_Idempotent(t *testing.T) {
+	t.Parallel()
 	e := newClaimTestEnv(t)
 	requestID := "fake-grant-chain"
 	// Seed the connection row so the FK + pre-check is happy.

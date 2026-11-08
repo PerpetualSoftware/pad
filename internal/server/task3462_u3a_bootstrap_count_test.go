@@ -38,6 +38,7 @@ func task3462BootstrapUpdates(t *testing.T, srv *Server, ws string) (int, bool) 
 // Design: a nudge on the library page and item pane, plus this count; no
 // dashboard entry, and nothing ever updates on its own.
 func TestTASK3462U3a_BootstrapCountsBuiltinUpdates(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		slug, _ := task3462Workspace(t, srv, "Count 3462", "startup")
 
@@ -80,6 +81,7 @@ func TestTASK3462U3a_BootstrapCountsBuiltinUpdates(t *testing.T) {
 // no record of the values it replaced. The update's change summary now names
 // each field whose value it changed, with the value it replaced.
 func TestTASK3462U3a_UpdateRecordsReplacedFields(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		slug, _ := task3462Workspace(t, srv, "Replaced 3462", "startup")
 		plan := task3462ItemByTitle(t, srv, slug, "playbooks", "Plan a new initiative")

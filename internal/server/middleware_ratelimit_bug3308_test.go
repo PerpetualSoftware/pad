@@ -43,6 +43,7 @@ func freezeRefill(t *testing.T, srv *Server) {
 }
 
 func TestRateLimitAddr(t *testing.T) {
+	t.Parallel()
 	cases := []struct{ in, want string }{
 		{"192.0.2.7", "192.0.2.7"},
 		{"::ffff:192.0.2.7", "192.0.2.7"},
@@ -65,6 +66,7 @@ func TestRateLimitAddr(t *testing.T) {
 // keys arrive inside the retention window. Caps under 8 are included:
 // there the 7/8 low-water mark rounds to the cap itself.
 func TestIPRateLimiter_CapBoundsTheMap(t *testing.T) {
+	t.Parallel()
 	for _, maxEntries := range []int{1, 4, 64} {
 		rl := newIPRateLimiter(rateLimitConfig{Rate: rate.Limit(1.0 / 3600), Burst: 5, MaxEntries: maxEntries})
 		t.Cleanup(rl.Stop)
@@ -82,6 +84,7 @@ func TestIPRateLimiter_CapBoundsTheMap(t *testing.T) {
 // burst. A drained bucket is evicted last, so it survives every sweep the
 // flood triggers and its owner stays refused.
 func TestIPRateLimiter_FloodCannotEvictADrainedBucket(t *testing.T) {
+	t.Parallel()
 	rl := newIPRateLimiter(rateLimitConfig{Rate: rate.Limit(1.0 / 3600), Burst: 5, MaxEntries: 16})
 	t.Cleanup(rl.Stop)
 
@@ -133,6 +136,7 @@ func TestIPRateLimiter_SweepRanksBelowAToken(t *testing.T) {
 // A burst of 0 or below has no level to rank by; the sweep must neither
 // panic nor let the map grow.
 func TestIPRateLimiter_NonPositiveBurstStaysBounded(t *testing.T) {
+	t.Parallel()
 	for _, burst := range []int{0, -1, -5} {
 		rl := newIPRateLimiter(rateLimitConfig{Rate: 1, Burst: burst, MaxEntries: 8})
 		for i := 0; i < 100; i++ {
@@ -149,6 +153,7 @@ func TestIPRateLimiter_NonPositiveBurstStaysBounded(t *testing.T) {
 // a fresh limiter starts full. A partly spent bucket survives a sweep that
 // full ones can satisfy.
 func TestIPRateLimiter_SweepDropsFullBucketsBeforeSpentOnes(t *testing.T) {
+	t.Parallel()
 	rl := newIPRateLimiter(rateLimitConfig{Rate: rate.Limit(1.0 / 3600), Burst: 5, MaxEntries: 16})
 	t.Cleanup(rl.Stop)
 
@@ -181,6 +186,7 @@ func TestIPRateLimiter_SweepDropsFullBucketsBeforeSpentOnes(t *testing.T) {
 // (burst 1 at 1/min), so the minute's retention survives the floor
 // newIPRateLimiter applies (BUG-3638), and each key's only token is spent.
 func TestIPRateLimiter_SweepDropsIdleKeys(t *testing.T) {
+	t.Parallel()
 	rl := newIPRateLimiter(rateLimitConfig{Rate: rate.Limit(1.0 / 60), Burst: 1, MaxEntries: 8, Retention: time.Minute})
 	t.Cleanup(rl.Stop)
 	for i := 0; i < 8; i++ {
@@ -202,6 +208,7 @@ func TestIPRateLimiter_SweepDropsIdleKeys(t *testing.T) {
 // not refuse an address in the next /64. Driven through ServeHTTP so the
 // test fails if any door keys on the raw address.
 func TestRateLimit_IPv6KeysOnThe64AtEveryDoor(t *testing.T) {
+	t.Parallel()
 	const (
 		first   = "2001:db8:1:2::1"
 		sibling = "2001:db8:1:2:ffff:ffff:ffff:fffe"
@@ -284,6 +291,7 @@ func TestRateLimit_IPv6KeysOnThe64AtEveryDoor(t *testing.T) {
 // dual-stack listener) keys on the same bucket as its plain IPv4 form,
 // through the router, not only in rateLimitAddr's table.
 func TestRateLimit_IPv4MappedSharesTheIPv4Bucket(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	freezeRefill(t, srv)
 	send := func(remote string) int {
@@ -317,6 +325,7 @@ func TestRateLimit_IPv4MappedSharesTheIPv4Bucket(t *testing.T) {
 // and the share-password per-address bucket. The /mcp pre-auth charge is
 // in the door table above, through the router.
 func TestRateLimit_IPv6KeysOnThe64OutsideTheMiddleware(t *testing.T) {
+	t.Parallel()
 	const (
 		first   = "2001:db8:1:2::1"
 		sibling = "2001:db8:1:2::2"

@@ -114,6 +114,7 @@ func loginUser(t *testing.T, srv *Server, email, password string) string {
 }
 
 func TestRBAC_ViewerBlockedFromItemMutations(t *testing.T) {
+	t.Parallel()
 	env := setupRBACEnv(t)
 
 	// Create an item as owner first
@@ -155,6 +156,7 @@ func TestRBAC_ViewerBlockedFromItemMutations(t *testing.T) {
 }
 
 func TestRBAC_EditorAllowedItemMutations(t *testing.T) {
+	t.Parallel()
 	env := setupRBACEnv(t)
 
 	// Editor can create items
@@ -186,6 +188,7 @@ func TestRBAC_EditorAllowedItemMutations(t *testing.T) {
 }
 
 func TestRBAC_EditorBlockedFromOwnerOperations(t *testing.T) {
+	t.Parallel()
 	env := setupRBACEnv(t)
 
 	tests := []struct {
@@ -215,6 +218,7 @@ func TestRBAC_EditorBlockedFromOwnerOperations(t *testing.T) {
 }
 
 func TestRBAC_OwnerAllowedEverything(t *testing.T) {
+	t.Parallel()
 	env := setupRBACEnv(t)
 
 	// Owner can create items
@@ -245,6 +249,7 @@ func TestRBAC_OwnerAllowedEverything(t *testing.T) {
 }
 
 func TestRBAC_ViewerBlockedFromDocumentMutations(t *testing.T) {
+	t.Parallel()
 	env := setupRBACEnv(t)
 
 	// Create a doc as owner
@@ -283,6 +288,7 @@ func TestRBAC_ViewerBlockedFromDocumentMutations(t *testing.T) {
 }
 
 func TestRBAC_ViewerBlockedFromCommentCreation(t *testing.T) {
+	t.Parallel()
 	env := setupRBACEnv(t)
 
 	// Create item as owner
@@ -305,6 +311,7 @@ func TestRBAC_ViewerBlockedFromCommentCreation(t *testing.T) {
 }
 
 func TestRBAC_ViewerCanReadEverything(t *testing.T) {
+	t.Parallel()
 	env := setupRBACEnv(t)
 
 	// Create items/data as owner
@@ -332,6 +339,7 @@ func TestRBAC_ViewerCanReadEverything(t *testing.T) {
 }
 
 func TestRBAC_EditorBlockedFromAgentRoleMutations(t *testing.T) {
+	t.Parallel()
 	env := setupRBACEnv(t)
 
 	rr := doRequestWithCookie(env.srv, "POST", "/api/v1/workspaces/"+env.wsSlug+"/agent-roles", map[string]interface{}{
@@ -343,6 +351,7 @@ func TestRBAC_EditorBlockedFromAgentRoleMutations(t *testing.T) {
 }
 
 func TestRBAC_ViewerBlockedFromItemLinkMutations(t *testing.T) {
+	t.Parallel()
 	env := setupRBACEnv(t)
 
 	// Create two items as owner
@@ -376,6 +385,7 @@ func TestRBAC_ViewerBlockedFromItemLinkMutations(t *testing.T) {
 }
 
 func TestRBAC_SearchScopedToUserWorkspaces(t *testing.T) {
+	t.Parallel()
 	env := setupRBACEnv(t)
 
 	// Create an item in the workspace the editor belongs to

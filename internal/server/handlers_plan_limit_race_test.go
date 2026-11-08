@@ -75,6 +75,7 @@ func (e *planLimitEnv) ownedWorkspaces(t *testing.T) int {
 // --- U1: workspaces (create door) ---
 
 func TestPlanLimitRace_Workspaces_CompetingCreateInWindow_Refused(t *testing.T) {
+	t.Parallel()
 	e := newPlanLimitEnv(t)
 	limit := e.capAtOneMore(t, "workspaces", e.ownedWorkspaces(t))
 
@@ -102,6 +103,7 @@ func TestPlanLimitRace_Workspaces_CompetingCreateInWindow_Refused(t *testing.T) 
 // The JSON import door reaches the same pre-check (beginWorkspaceMint) and
 // then ImportWorkspace, whose check runs last inside the import transaction.
 func TestPlanLimitRace_WorkspacesImport_CompetingCreateInWindow_Refused(t *testing.T) {
+	t.Parallel()
 	e := newPlanLimitEnv(t)
 	body := e.exportBody(t) // mints a workspace, so the cap is taken after it
 	limit := e.capAtOneMore(t, "workspaces", e.ownedWorkspaces(t))
@@ -128,6 +130,7 @@ func TestPlanLimitRace_WorkspacesImport_CompetingCreateInWindow_Refused(t *testi
 }
 
 func TestPlanLimitRace_WorkspacesImport_NoCompetitor_Admitted(t *testing.T) {
+	t.Parallel()
 	e := newPlanLimitEnv(t)
 	body := e.exportBody(t)
 	limit := e.capAtOneMore(t, "workspaces", e.ownedWorkspaces(t))
@@ -176,6 +179,7 @@ func (e *planLimitEnv) mustBeRefusedAtCap(t *testing.T, rr *httptest.ResponseRec
 }
 
 func TestPlanLimitRace_Workspaces_NoCompetitor_Admitted(t *testing.T) {
+	t.Parallel()
 	e := newPlanLimitEnv(t)
 	limit := e.capAtOneMore(t, "workspaces", e.ownedWorkspaces(t))
 
@@ -228,6 +232,7 @@ func ownedTokens(t *testing.T, env *tokenAuthEnv) int {
 }
 
 func TestPlanLimitRace_Tokens_CompetingCreateInWindow_Refused(t *testing.T) {
+	t.Parallel()
 	env, limit := newTokenLimitEnv(t)
 
 	ran := false
@@ -257,6 +262,7 @@ func TestPlanLimitRace_Tokens_CompetingCreateInWindow_Refused(t *testing.T) {
 }
 
 func TestPlanLimitRace_Tokens_NoCompetitor_Admitted(t *testing.T) {
+	t.Parallel()
 	env, limit := newTokenLimitEnv(t)
 
 	rr := doRequestWithBearer(env.srv, "POST", "/api/v1/auth/tokens", env.sessTok, map[string]any{"name": "alone"})
@@ -273,6 +279,7 @@ func TestPlanLimitRace_Tokens_NoCompetitor_Admitted(t *testing.T) {
 // it is now refused with the same envelope, and the message says the cap is
 // per user, because the request names a workspace.
 func TestPlanLimit_WorkspaceTokenDoor_RefusedAtUserCap(t *testing.T) {
+	t.Parallel()
 	env, _ := newTokenLimitEnv(t)
 	// Fill the one remaining slot through the user door first.
 	if rr := doRequestWithBearer(env.srv, "POST", "/api/v1/auth/tokens", env.sessTok,
@@ -299,6 +306,7 @@ func TestPlanLimit_WorkspaceTokenDoor_RefusedAtUserCap(t *testing.T) {
 
 // Control for the leg above: under the cap the workspace door still mints.
 func TestPlanLimit_WorkspaceTokenDoor_AdmittedUnderUserCap(t *testing.T) {
+	t.Parallel()
 	env, limit := newTokenLimitEnv(t)
 
 	rr := doRequestWithBearer(env.srv, "POST", "/api/v1/workspaces/"+env.ws.Slug+"/tokens", env.sessTok,
@@ -389,6 +397,7 @@ func bundleLimitRace(t *testing.T, compete bool) (*httptest.ResponseRecorder, in
 }
 
 func TestPlanLimitRace_WorkspacesBundle_CompetingCreateInWindow_Refused(t *testing.T) {
+	t.Parallel()
 	rr, got, limit, ran, srv := bundleLimitRace(t, true)
 	if !ran {
 		t.Fatal("planLimitAdmittedHook never ran for the bundle import; the leg measured nothing")
@@ -408,6 +417,7 @@ func TestPlanLimitRace_WorkspacesBundle_CompetingCreateInWindow_Refused(t *testi
 }
 
 func TestPlanLimitRace_WorkspacesBundle_NoCompetitor_Admitted(t *testing.T) {
+	t.Parallel()
 	rr, got, limit, ran, _ := bundleLimitRace(t, false)
 	if !ran {
 		t.Fatal("planLimitAdmittedHook never ran for the bundle import; the leg measured nothing")
@@ -563,31 +573,37 @@ func (e *planLimitEnv) webhookRace(t *testing.T) workspaceRace {
 }
 
 func TestPlanLimitRace_Items_CompetingCreateInWindow_Refused(t *testing.T) {
+	t.Parallel()
 	e := newPlanLimitEnv(t)
 	e.runWorkspaceRace(t, e.itemCreateRace(t), true)
 }
 
 func TestPlanLimitRace_Items_NoCompetitor_Admitted(t *testing.T) {
+	t.Parallel()
 	e := newPlanLimitEnv(t)
 	e.runWorkspaceRace(t, e.itemCreateRace(t), false)
 }
 
 func TestPlanLimitRace_ItemsImport_CompetingCreateInWindow_Refused(t *testing.T) {
+	t.Parallel()
 	e := newPlanLimitEnv(t)
 	e.runWorkspaceRace(t, e.itemImportRace(t), true)
 }
 
 func TestPlanLimitRace_ItemsImport_NoCompetitor_Admitted(t *testing.T) {
+	t.Parallel()
 	e := newPlanLimitEnv(t)
 	e.runWorkspaceRace(t, e.itemImportRace(t), false)
 }
 
 func TestPlanLimitRace_Webhooks_CompetingCreateInWindow_Refused(t *testing.T) {
+	t.Parallel()
 	e := newPlanLimitEnv(t)
 	e.runWorkspaceRace(t, e.webhookRace(t), true)
 }
 
 func TestPlanLimitRace_Webhooks_NoCompetitor_Admitted(t *testing.T) {
+	t.Parallel()
 	e := newPlanLimitEnv(t)
 	e.runWorkspaceRace(t, e.webhookRace(t), false)
 }
@@ -615,6 +631,7 @@ func (e *planLimitEnv) runSelfHostedAtCap(t *testing.T, r workspaceRace) {
 }
 
 func TestPlanLimit_SelfHosted_NotEnforced(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		race func(e *planLimitEnv, t *testing.T) workspaceRace

@@ -10,6 +10,7 @@ import (
 // is served by the same SPA handler, so its response must carry
 // form-action 'self'.
 func TestBUG3669_SharePageCSPRestrictsFormAction(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetWebUI(webFS(map[string]string{"index.html": "<!doctype html><html><head></head></html>"}))
 	for _, path := range []string{"/s/some-token", "/"} {

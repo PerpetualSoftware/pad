@@ -18,6 +18,7 @@ import (
 // plan_overrides JSON; this test guards against regressions in the
 // admin user-detail page contract.
 func TestAdminUpdateUser_StorageOverrideRoundTrip(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	adminToken := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
 
@@ -115,6 +116,7 @@ func TestAdminUpdateUser_StorageOverrideRoundTrip(t *testing.T) {
 // This test pins the OTHER half of the contract — that omitting
 // the field is genuinely a no-op.
 func TestAdminUpdateUser_OmittedOverridesPreserved(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	adminToken := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
 
@@ -169,6 +171,7 @@ func TestAdminUpdateUser_OmittedOverridesPreserved(t *testing.T) {
 // new audit-log path doesn't accidentally accept unauthorized
 // requests through some other branch.
 func TestAdminUpdateUser_NonAdminForbidden(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
 	memberToken := registerNonAdmin(t, srv, "member@test.com", "Member")
@@ -221,6 +224,7 @@ func itoa(n int) string {
 // the DISTINCT ActionEmailVerifiedByAdmin action; and the same now-verified
 // session is unblocked.
 func TestAdminVerifyEmail_ForceVerifiesUnverifiedUser(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	adminToken := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
 	// Cloud mode makes RequireVerifiedEmail live so the before/after gate is
@@ -328,6 +332,7 @@ func TestAdminVerifyEmail_ForceVerifiesUnverifiedUser(t *testing.T) {
 // RequireVerifiedEmail middleware is a no-op and requireAdmin is the sole
 // gate under test.
 func TestAdminVerifyEmail_NonAdminForbidden(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
 	memberToken := registerNonAdmin(t, srv, "member@test.com", "Member")

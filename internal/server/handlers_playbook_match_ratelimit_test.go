@@ -37,6 +37,7 @@ func matchNoneProvider() *fakeMatchProvider {
 }
 
 func TestDecisionProviderBucketDefaults(t *testing.T) {
+	t.Parallel()
 	rl := NewRateLimiters()
 	t.Cleanup(rl.Stop)
 	if got, want := rl.DecisionProvider.config.Rate, rate.Limit(30.0/60.0); got != want {
@@ -50,6 +51,7 @@ func TestDecisionProviderBucketDefaults(t *testing.T) {
 // The burst is spent by calls that reach the provider; the next one is a 429
 // carrying Retry-After, and the provider is not called for it.
 func TestPlaybookMatch_DecisionRateLimitIs429WithRetryAfter(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	pinDecisionBucket(t, srv)
 	slug := createWSWithCollections(t, srv)
@@ -89,6 +91,7 @@ func TestPlaybookMatch_DecisionRateLimitIs429WithRetryAfter(t *testing.T) {
 // unconfigured provider's 404, a 400 for bad text, and zero active playbooks.
 // After many of each, the full burst is still available.
 func TestPlaybookMatch_NonSpendingRequestsConsumeNoToken(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	pinDecisionBucket(t, srv)
 	slug := createWSWithCollections(t, srv)
@@ -137,6 +140,7 @@ func TestPlaybookMatch_NonSpendingRequestsConsumeNoToken(t *testing.T) {
 // RateLimiters.Stop documents that every limiter must be in its list or its
 // cleanup goroutine leaks (BUG-851). Enforced here rather than trusted.
 func TestRateLimitersStopCoversEveryLimiter(t *testing.T) {
+	t.Parallel()
 	rl := NewRateLimiters()
 	rl.Stop()
 	v := reflect.ValueOf(rl).Elem()

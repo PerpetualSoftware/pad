@@ -82,6 +82,7 @@ import (
 //     inaccurate. BUG-3050 closed it in three units: the writes (U1), the agent
 //     push (U2) and the renders (U3, `web/src/lib/items/staleBody.ts`).
 func TestBodyDerivedTextSitesAreAllRuledOn(t *testing.T) {
+	t.Parallel()
 	// The helpers whose output is item-body text under another name. Adding one
 	// here is how this guard learns about a new shape.
 	helpers := map[string]bool{

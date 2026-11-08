@@ -14,6 +14,7 @@ import (
 // workspace soft-deleted mid-tick still reads by its slug until reset(),
 // and a failed resolve is retried rather than remembered.
 func TestBUG3773WatchPayloadSlugIsMemoisedPerTick(t *testing.T) {
+	t.Parallel()
 	srv := testServerWithWatchEvents(t)
 	user, err := srv.store.CreateUser(models.UserCreate{Email: "bug3773@example.com", Name: "Watcher", Password: "pass-bug3773-xyz"})
 	if err != nil {

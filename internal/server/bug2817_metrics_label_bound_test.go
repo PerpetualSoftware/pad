@@ -90,6 +90,7 @@ func TestMCPToolMetricsLabel_IsBoundedByTheKnownNames(t *testing.T) {
 // With no predicate wired, every name is "unknown": an unwired server cannot
 // mint caller-chosen series.
 func TestMCPToolMetricsLabel_UnwiredIsUnknown(t *testing.T) {
+	t.Parallel()
 	s := &Server{metrics: metrics.New()}
 	r := httptest.NewRequest(http.MethodPost, "/mcp", nil)
 	s.recordMCPCallMetrics("pad_item", "ok", "user-1", 0, r, http.StatusOK)
@@ -105,6 +106,7 @@ func TestMCPToolMetricsLabel_UnwiredIsUnknown(t *testing.T) {
 // and Go's server accepts any token as a method. N invented methods add ONE
 // label value; the standard methods keep theirs.
 func TestHTTPMetricsMethodLabel_IsBounded(t *testing.T) {
+	t.Parallel()
 	m := metrics.New()
 	r := chi.NewRouter()
 	r.Use(MetricsMiddleware(m))

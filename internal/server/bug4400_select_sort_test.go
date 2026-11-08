@@ -13,6 +13,7 @@ import (
 // `item list --sort` and the MCP item list both call) ranks priority the way
 // the dashboard does, whatever order each collection declares its options in.
 func TestBUG4400_ListSortRanksPriority(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSWithCollections(t, srv)
 	wsm, _ := srv.store.GetWorkspaceBySlug(ws)

@@ -102,6 +102,7 @@ func storedMembers(t *testing.T, srv *Server, itemID string) []string {
 }
 
 func TestMultiRelationRoundTrip_RefListSurvivesWriteReadExportImport(t *testing.T) {
+	t.Parallel()
 	f := newMultiDoorFixture(t)
 	grace, ada, barbara := f.members[0], f.members[1], f.members[2]
 
@@ -195,6 +196,7 @@ func TestMultiRelationRoundTrip_RefListSurvivesWriteReadExportImport(t *testing.
 // The negative half of the design row, and the half a partial store would pass
 // if it were only asserted on the status code.
 func TestMultiRelationRoundTrip_OneBadElementRefusesTheWholeWrite(t *testing.T) {
+	t.Parallel()
 	f := newMultiDoorFixture(t)
 	before := f.crewCount()
 
@@ -220,6 +222,7 @@ func TestMultiRelationRoundTrip_OneBadElementRefusesTheWholeWrite(t *testing.T) 
 // CONTROL for the leg above. A door that refused EVERY array would satisfy both
 // of its assertions, and this file would read as proof of a working feature.
 func TestMultiRelationRoundTrip_ControlTheSameShapeIsAcceptedWhenEveryElementResolves(t *testing.T) {
+	t.Parallel()
 	f := newMultiDoorFixture(t)
 	before := f.crewCount()
 
@@ -267,6 +270,7 @@ func equalStrings(a, b []string) bool {
 // otherwise one bad default in a schema fails every bulk update into that
 // collection, on a defect its author has to fix somewhere else entirely.
 func TestBulkUpdate_AnInjectedMultiRelationDefaultIsDroppedNotRefused(t *testing.T) {
+	t.Parallel()
 	f := newDoorFixture(t)
 	// `priority` is the vehicle because the bulk request has no arbitrary
 	// fields map: `set-priority` is a caller-named change, and a collection is
@@ -315,6 +319,7 @@ func TestBulkUpdate_AnInjectedMultiRelationDefaultIsDroppedNotRefused(t *testing
 // Without this, a gate that skipped every relation key would pass the leg above
 // and silently stop checking bulk relation writes altogether.
 func TestBulkUpdate_ControlASuppliedUnresolvableValueIsStillRefused(t *testing.T) {
+	t.Parallel()
 	f := newDoorFixture(t)
 	crews := mustSchemaCollection(t, f.srv, f.ws.ID, "Crews", `{"fields":[
 		{"key":"status","label":"Status","type":"select","options":["open","done"]},

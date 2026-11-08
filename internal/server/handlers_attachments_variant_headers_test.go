@@ -23,6 +23,7 @@ import (
 // handlers_attachments_download_mime_test.go — same package, same shapes.
 
 func TestDownloadAttachment_ServedVariantHeader(t *testing.T) {
+	t.Parallel()
 	srv, slug, wsID, itemID := mimeDispoFixture(t)
 	orig := seedStoredRow(t, srv, wsID, itemID, "image/png", "shot.png", []byte("PNGBYTES"), "", "")
 
@@ -61,6 +62,7 @@ func TestDownloadAttachment_ServedVariantHeader(t *testing.T) {
 }
 
 func TestDownloadAttachment_DerivedHeader(t *testing.T) {
+	t.Parallel()
 	t.Run("none when this build derived nothing", func(t *testing.T) {
 		srv, slug, wsID, itemID := mimeDispoFixture(t)
 		// A HEIC on a build whose processor cannot decode it: the row exists,

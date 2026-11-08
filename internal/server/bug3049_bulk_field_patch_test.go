@@ -28,6 +28,7 @@ import (
 // contain the concurrent key. See TestFieldsPatchFromMerge for the diff
 // helper's own legs.
 func TestBulkFieldUpdate_DoesNotRevertAConcurrentWriteToAnotherField(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	wsSlug := createWSWithCollections(t, srv)
 	item := createTaskWithFields(t, srv, wsSlug, "Bulk target", `{"status":"open","priority":"high"}`)
@@ -98,6 +99,7 @@ func mustGetItemFields(t *testing.T, srv *Server, itemID string) string {
 // what it omits, and what it deletes. The omission is the whole point — every
 // key it leaves out is a key this write can no longer revert.
 func TestFieldsPatchFromMerge(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name           string
 		stored, merged map[string]any
@@ -174,6 +176,7 @@ func TestFieldsPatchFromMerge(t *testing.T) {
 // snapshot whose Fields do not parse. It does NOT assert anything about a row,
 // because no row can be in this state.
 func TestBulkFieldUpdate_RefusesAnUnreadableFieldsSnapshot(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	wsSlug := createWSWithCollections(t, srv)
 	item := createTaskWithFields(t, srv, wsSlug, "Unreadable snapshot", `{"status":"open"}`)
@@ -227,6 +230,7 @@ func TestBulkFieldUpdate_RefusesAnUnreadableFieldsSnapshot(t *testing.T) {
 // The caller-supplied case is deliberately NOT affected: a date in `changes` is
 // an explicit write and stays in the patch.
 func TestBulkFieldUpdate_AutoDateDoesNotOverwriteAConcurrentDate(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	wsSlug := createWSWithCollections(t, srv)
 

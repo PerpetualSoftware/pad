@@ -110,6 +110,7 @@ func decodeBillingStats(t *testing.T, rr *httptest.ResponseRecorder) AdminBillin
 // --- Tests ---
 
 func TestAdminBillingStats_SelfHostReturns404(t *testing.T) {
+	t.Parallel()
 	// Outside cloud mode the route group is gated by requireCloudMode and
 	// must disappear entirely from an authenticated admin's view — no
 	// "feature unavailable" disclosure, just 404 like any unrelated path.
@@ -124,6 +125,7 @@ func TestAdminBillingStats_SelfHostReturns404(t *testing.T) {
 }
 
 func TestAdminBillingStats_NonAdminReturns403(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	// Bootstrap MUST happen before SetCloudMode — bootstrap is disabled
 	// in cloud mode (registration there flows through OAuth/invitations).
@@ -139,6 +141,7 @@ func TestAdminBillingStats_NonAdminReturns403(t *testing.T) {
 }
 
 func TestAdminBillingStats_AdminWithSidecarReachable_MergesLocalAndRemote(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	now := time.Now().UTC()
 	recent := now.Add(-5 * 24 * time.Hour)
@@ -232,6 +235,7 @@ func TestAdminBillingStats_AdminWithSidecarReachable_MergesLocalAndRemote(t *tes
 }
 
 func TestAdminBillingStats_NoSidecarConfigured_DegradesToLocalOnly(t *testing.T) {
+	t.Parallel()
 	// Cloud mode is on but PAD_CLOUD_SIDECAR_URL was never set, so
 	// cloudSidecar is nil. The endpoint must still serve local data with
 	// cloud_unreachable=true.
@@ -265,6 +269,7 @@ func TestAdminBillingStats_NoSidecarConfigured_DegradesToLocalOnly(t *testing.T)
 }
 
 func TestAdminBillingStats_SidecarTransportError_DegradesToLocalOnly(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	adminToken := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
 	srv.SetCloudMode("cloud-secret")
@@ -284,6 +289,7 @@ func TestAdminBillingStats_SidecarTransportError_DegradesToLocalOnly(t *testing.
 }
 
 func TestAdminBillingStats_SidecarSidecarError_DegradesToLocalOnly(t *testing.T) {
+	t.Parallel()
 	// A non-200 from pad-cloud (e.g. wrong cloud secret, upstream Stripe
 	// 5xx) is reported as a *billing.SidecarError. The handler must treat
 	// it the same way as a transport error: cloud_unreachable=true, local
@@ -306,6 +312,7 @@ func TestAdminBillingStats_SidecarSidecarError_DegradesToLocalOnly(t *testing.T)
 }
 
 func TestAdminBillingStats_StripeNotConfigured_PropagatesFlag(t *testing.T) {
+	t.Parallel()
 	// pad-cloud returns stripe_configured=false when STRIPE_SECRET_KEY is
 	// unset; the proxy must surface that flag verbatim AND keep
 	// cloud_unreachable=false (the sidecar IS reachable, it just has no

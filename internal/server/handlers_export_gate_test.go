@@ -12,6 +12,7 @@ import (
 // no role exclusion — BUG-1920) must be denied the export outright rather
 // than receiving a filtered subset, over either auth class.
 func TestExportWorkspace_RestrictedOwner_Forbidden(t *testing.T) {
+	t.Parallel()
 	f := newRestrictedOwnerVisibilityFixture(t)
 
 	path := "/api/v1/workspaces/" + f.ws.Slug + "/export"
@@ -31,6 +32,7 @@ func TestExportWorkspace_RestrictedOwner_Forbidden(t *testing.T) {
 // owner must never see even a truncated tar, which would still contain
 // pad-export.json with the full unfiltered workspace inside it.
 func TestExportWorkspaceBundle_RestrictedOwner_Forbidden(t *testing.T) {
+	t.Parallel()
 	f := newRestrictedOwnerVisibilityFixture(t)
 
 	path := "/api/v1/workspaces/" + f.ws.Slug + "/export?format=tar"
@@ -64,6 +66,7 @@ func TestExportWorkspaceBundle_RestrictedOwner_Forbidden(t *testing.T) {
 // workspace access still gets the JSON export exactly as before. The
 // tar-bundle equivalent is already pinned by TestExportBundle_RoundTrip.
 func TestExportWorkspace_UnrestrictedOwner_OK(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSForTest(t, srv)
 

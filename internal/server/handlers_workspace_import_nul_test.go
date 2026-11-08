@@ -63,6 +63,7 @@ func importWithQuery(t *testing.T, srv *Server, query string, body []byte) *http
 // TestImportOfAnAffectedExportIsRefusedAndTheRemedyWorks is BUG-2810's filed
 // symptom and its fix, in one test, in that order.
 func TestImportOfAnAffectedExportIsRefusedAndTheRemedyWorks(t *testing.T) {
+	t.Parallel()
 	affected := nulExportBody(t, "before"+textguard.NUL+"after")
 
 	// The fixture must actually carry the escape, or everything below passes
@@ -155,6 +156,7 @@ func TestImportOfAnAffectedExportIsRefusedAndTheRemedyWorks(t *testing.T) {
 // check missing on exactly this door for the same reason,
 // and the plan-limit unit found its gate missing there too.
 func TestImportBundle_RepairFlagCoversTheBundleDoorToo(t *testing.T) {
+	t.Parallel()
 	src, srcSlug := testServerWithAttachments(t)
 	rr := doRequest(src, "GET", "/api/v1/workspaces/"+srcSlug+"/export", nil)
 	if rr.Code != http.StatusOK {
@@ -227,6 +229,7 @@ func TestImportBundle_RepairFlagCoversTheBundleDoorToo(t *testing.T) {
 // text). Every fixture that put the NUL in `content` passed while this did not
 // work, which is how the gap went unnoticed.
 func TestImportRepairsANULInsideAFieldsBlob(t *testing.T) {
+	t.Parallel()
 	// A JSON column has TWO at-rest shapes and they export DIFFERENTLY, which
 	// is the distinction this fixture exists to hold:
 	//
@@ -324,6 +327,7 @@ func TestImportRepairsANULInsideAFieldsBlob(t *testing.T) {
 // to rewrite. Without this leg the JSON column would only ever be tested in the
 // shape the document pass handles.
 func TestImportRepairsARawNULInsideAFieldsBlob(t *testing.T) {
+	t.Parallel()
 	storedBlob := `{"note":"x` + textguard.NUL + `y"}`
 	body, err := json.Marshal(models.WorkspaceExport{
 		Version:   1,

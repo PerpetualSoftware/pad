@@ -27,6 +27,7 @@ func gzipMember(t *testing.T, b []byte) []byte {
 // gzip footer (the CRC-32 and length that verify the whole archive) was never
 // checked. A tar EOF is not success until the gzip stream ends cleanly.
 func TestBUG3657_CorruptGzipFooterIsRefused(t *testing.T) {
+	t.Parallel()
 	good := packInterchangeBundle(t, readInterchangeGolden(t))
 	cases := map[string][]byte{
 		"footer truncated": good[:len(good)-8],
