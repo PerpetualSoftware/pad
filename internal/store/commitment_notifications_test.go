@@ -203,3 +203,18 @@ func TestCommitmentNotices_RefusalNeedsNativeDeadline(t *testing.T) {
 		}
 	}
 }
+
+// An ended schedule has no live deadline to change, so a refusal notifies nobody.
+func TestCommitmentNotices_RefusalIgnoresEndedSchedule(t *testing.T) {
+	f, recipient, actor := noticeFixture(t, true)
+	addDevice(t, f.s, recipient.ID)
+	f.s.mustExec(t, `UPDATE item_schedules SET ended_at=?, next_at=NULL, next_wall=NULL WHERE item_id=?`, "2026-01-01T00:00:00Z", f.item.ID)
+	refusalNotice(t, f.s, f.ws.ID, f.item.ID, actor.ID, false)
+	var n int
+	if err := f.s.db.QueryRow(f.s.q(`SELECT COUNT(*) FROM user_notifications WHERE kind='renegotiation_refused'`)).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("rows=%d", n)
+	}
+}
