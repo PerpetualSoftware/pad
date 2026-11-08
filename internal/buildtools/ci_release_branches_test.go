@@ -131,10 +131,16 @@ func TestCIWorkflows_RunOnMainAndReleasePushes(t *testing.T) {
 		}
 	}
 
-	// Pull requests are unchanged: PRs into main only.
+	// Pull requests run into main and into release-* (TASK-4403), so a
+	// backport is gated on the PR and not only after it lands.
 	ci := readWorkflow(t, "ci.yml")
-	if ci.On.PullRequest == nil || !slices.Equal(ci.On.PullRequest.Branches, []string{"main"}) {
-		t.Errorf("ci.yml: on.pull_request = %+v, want branches [main]", ci.On.PullRequest)
+	if ci.On.PullRequest == nil {
+		t.Fatalf("ci.yml: on.pull_request is missing")
+	}
+	prBranches := slices.Clone(ci.On.PullRequest.Branches)
+	slices.Sort(prBranches)
+	if !slices.Equal(prBranches, want) {
+		t.Errorf("ci.yml: on.pull_request.branches = %v, want %v", ci.On.PullRequest.Branches, want)
 	}
 	if keys := slices.Sorted(maps.Keys(ci.PullRequest)); !slices.Equal(keys, []string{"branches"}) {
 		t.Errorf("ci.yml: on.pull_request keys = %v, want only [branches]", keys)
