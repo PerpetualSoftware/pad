@@ -56,6 +56,10 @@ type ScheduleCarryReport struct {
 	// HistoryDropped is how many resolved occurrences the source schedule has:
 	// copies and moves drop resolved occurrences.
 	HistoryDropped int
+	// ChangesDropped is how many journal rows of the source schedule do not
+	// reach the destination: every row on a copy or when nothing is carried, and
+	// on a carried move the rows the restore refuses.
+	ChangesDropped int
 	// Skipped is the reason a source schedule was not carried: "ended", a
 	// timing code (timing:syntax, timing:cap_scan, ...), "exhausted" (the rule
 	// has no occurrence after now) or another carry reason. "" when carried.
@@ -255,6 +259,15 @@ func (s *Store) planScheduleCarry(q Queryer, workspaceID, itemID string, who sch
 		return nil, &ScheduleNotCarriedError{Reason: skip}
 	}
 	p.in, p.report.Skipped, p.report.Carried = in, skip, skip == ""
+	if p.report.Carried && move {
+		// The commit restores these rows with the same classifier, so the
+		// preview and the commit agree. The destination ids are placeholders:
+		// the classifier reads only whether a known schedule maps to one.
+		_, drops := classifyScheduleChanges(p.changes, map[string]string{itemID: itemID}, map[string]string{sc.ID: sc.ID}, map[string]models.ScheduleExport{sc.ID: {ItemID: itemID, Floating: sc.Floating}})
+		p.report.ChangesDropped = len(drops)
+	} else if err := q.QueryRow(s.q(`SELECT COUNT(*) FROM schedule_changes WHERE schedule_id = ?`), sc.ID).Scan(&p.report.ChangesDropped); err != nil {
+		return nil, fmt.Errorf("count schedule journal: %w", err)
+	}
 	return p, nil
 }
 

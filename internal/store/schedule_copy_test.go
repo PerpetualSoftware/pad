@@ -1277,3 +1277,42 @@ func TestScheduleRecipientZoneIsTheAssigneeElseTheCreator(t *testing.T) {
 		t.Errorf("assignee and creator: %s, want the assignee's America/Los_Angeles", got)
 	}
 }
+
+// A copy carries no journal row, so every row is reported dropped, and the
+// preflight reports the same number.
+func TestCopyReportsJournalRowsDropped(t *testing.T) {
+	t.Parallel()
+	c := newSchedCopy(t)
+	sc := c.schedule(t, daily())
+	var rows int
+	if err := c.s.db.QueryRow(c.s.q(`SELECT COUNT(*) FROM schedule_changes WHERE schedule_id = ?`), sc.ID).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows == 0 {
+		t.Fatal("fixture wrote no journal rows")
+	}
+	pre, err := c.s.PreviewScheduleCarry(c.s.db, c.wsA.ID, c.src.ID, "", c.actor, false, copyNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := c.do(t, false)
+	if res.Schedule.ChangesDropped != rows || pre.ChangesDropped != rows {
+		t.Fatalf("copy %d, preview %d, want %d", res.Schedule.ChangesDropped, pre.ChangesDropped, rows)
+	}
+}
+
+// A carried move keeps every valid row; the classifier reports the rest, and
+// the preview and the restore share it.
+func TestClassifyScheduleChangesReportsOrphans(t *testing.T) {
+	t.Parallel()
+	good := models.ScheduleChangeExport{ID: "a", ItemID: "i", ScheduleID: "s", ChangeType: "update", ReasonSource: "system", RecordedAt: "2026-10-26T10:00:00Z"}
+	badType := good
+	badType.ID, badType.ChangeType = "b", "nope"
+	badItem := good
+	badItem.ID, badItem.ItemID = "c", "other"
+	kept, drops := classifyScheduleChanges([]models.ScheduleChangeExport{good, badType, badItem},
+		map[string]string{"i": "i2"}, map[string]string{"s": "s2"}, map[string]models.ScheduleExport{"s": {ItemID: "i"}})
+	if len(kept) != 1 || kept[0].ID != "a" || len(drops) != 2 {
+		t.Fatalf("kept %d, drops %d", len(kept), len(drops))
+	}
+}

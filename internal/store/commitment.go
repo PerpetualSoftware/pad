@@ -349,7 +349,14 @@ func (s *Store) renegotiateDeadlineAt(workspaceID, itemID, actor string, until t
 		return fieldErr("until", "required", "renegotiating a deadline needs the new deadline")
 	}
 	value := until.Format(time.RFC3339Nano)
-	_, err := s.renegotiateCommitmentAt(workspaceID, itemID, actor, models.CommitmentRenegotiateInput{Reason: reason, Deadline: &value}, nowT, nil)
+	// An apply needs the preview's revision under both scopes, so this one-step
+	// door previews first and applies what it saw.
+	in := models.CommitmentRenegotiateInput{Reason: reason, Deadline: &value, Preview: true}
+	p, err := s.renegotiateCommitmentAt(workspaceID, itemID, actor, in, nowT, nil)
+	if err == nil {
+		in.Preview, in.Revision = false, p.Revision
+		_, err = s.renegotiateCommitmentAt(workspaceID, itemID, actor, in, nowT, nil)
+	}
 	var field *ScheduleFieldError
 	if errors.As(err, &field) && field.Field == "deadline" && (field.Code == "range" || field.Code == "required") {
 		return fieldErr("until", field.Code, field.Error())
@@ -422,14 +429,21 @@ func (s *Store) recordOnTimeCorrectionTx(tx *sql.Tx, sc *models.ItemSchedule, ke
 // item's native schedule with a deadline. It is ONE statement that selects the
 // schedule and inserts nothing when the item has none, so an item with no such
 // schedule pays that one lookup and no write; UpdateItem calls it only when the
-// assignee changed.
-func (s *Store) journalAssigneeChangeTx(tx *sql.Tx, itemID, from, to string) error {
+// assignee changed. It returns the inserted id, or empty when none was written.
+func (s *Store) journalAssigneeChangeTx(tx *sql.Tx, itemID, from, to string) (string, error) {
 	changeID := newID()
-	_, err := tx.Exec(s.q(`INSERT INTO schedule_changes (id,workspace_id,item_id,schedule_id,change_type,actor,reason,reason_source,root_change_id,recorded_at)
+	res, err := tx.Exec(s.q(`INSERT INTO schedule_changes (id,workspace_id,item_id,schedule_id,change_type,actor,reason,reason_source,root_change_id,recorded_at)
  SELECT ?,workspace_id,item_id,id,'update','system',?,'system',?,? FROM item_schedules WHERE item_id=? AND roles_origin='native' AND deadline_days IS NOT NULL`),
 		changeID, "Assignee changed from "+from+" to "+to, changeID, nowNano(), itemID)
 	if err != nil {
-		return fmt.Errorf("journal assignee change: %w", err)
+		return "", fmt.Errorf("journal assignee change: %w", err)
 	}
-	return nil
+	n, err := res.RowsAffected()
+	if err != nil {
+		return "", fmt.Errorf("journal assignee change rows: %w", err)
+	}
+	if n == 0 {
+		return "", nil
+	}
+	return changeID, nil
 }

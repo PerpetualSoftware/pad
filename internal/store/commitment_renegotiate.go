@@ -58,9 +58,9 @@ func (s *Store) renegotiateCommitmentAt(workspaceID, itemID, actor string, in mo
 		if !in.RemoveDeadline && in.DeadlineOffset == nil && in.DeadlineBehavior == nil {
 			return nil, fieldErr("deadline", "combination", "a series change needs deadline_offset, deadline_behavior or remove_deadline")
 		}
-		if !in.Preview && in.Revision == "" {
-			return nil, fieldErr("revision", "required", "a series apply needs the preview revision")
-		}
+	}
+	if !in.Preview && in.Revision == "" {
+		return nil, fieldErr("revision", "required", "an apply needs the preview revision")
 	}
 	// Load workspace terminal options before the transaction, as the evaluator
 	// does: nonTerminalFilter uses the pool, which may have only one connection.

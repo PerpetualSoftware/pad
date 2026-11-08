@@ -4884,4 +4884,7 @@ func printItemCopySchedule(w *itemCopyWriter, sc *cli.ItemCopySchedule) {
 	if sc.HistoryDropped > 0 {
 		fmt.Fprintf(w, "  %-32s %d\n", "schedule history dropped", sc.HistoryDropped)
 	}
+	if sc.ChangesDropped > 0 {
+		fmt.Fprintf(w, "  %-32s %d\n", "schedule journal rows dropped", sc.ChangesDropped)
+	}
 }

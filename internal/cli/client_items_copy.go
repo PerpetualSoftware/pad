@@ -282,6 +282,7 @@ type ItemCopyResultWarnings struct {
 type ItemCopySchedule struct {
 	Carried        bool `json:"carried"`
 	HistoryDropped int  `json:"history_dropped"`
+	ChangesDropped int  `json:"changes_dropped"`
 	Skipped        *struct {
 		Reason string `json:"reason"`
 	} `json:"skipped,omitempty"`
