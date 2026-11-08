@@ -2,12 +2,12 @@ name: CI
 
 on:
   # release-* runs the full push suite, so the exact SHA a release is tagged
-  # at carries CI of its own (TASK-4253). PRs into release-* get no run; the
-  # push that lands them does.
+  # at carries CI of its own (TASK-4253), and a PR into release-* runs the same
+  # suite before it lands.
   push:
     branches: [main, 'release-*']
   pull_request:
-    branches: [main]
+    branches: [main, 'release-*']
 
 concurrency:
   # Per branch and SHA on a push, so a push never cancels or replaces another
