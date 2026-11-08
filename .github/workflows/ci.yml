@@ -2,12 +2,13 @@ name: CI
 
 on:
   # release-* runs the full push suite, so the exact SHA a release is tagged
-  # at carries CI of its own (TASK-4253). PRs into release-* get no run; the
-  # push that lands them does.
+  # at carries CI of its own (TASK-4253), and a PR into release-* runs the PR
+  # suite before it lands (the race steps stay push-only, so they run on the
+  # release push, not on the PR).
   push:
     branches: [main, 'release-*']
   pull_request:
-    branches: [main]
+    branches: [main, 'release-*']
 
 concurrency:
   # Per branch and SHA on a push, so a push never cancels or replaces another
@@ -1052,14 +1053,22 @@ jobs:
       # Only main is healed (push-vendor-hash below), so on any other push the
       # recompute above would let the steps below pass on a tree that is not
       # the committed one: on release-*, a tag at this SHA would ship a flake
-      # that does not build. A PR is still judged on the recomputed tree, and
-      # main is healed after its run (TASK-4253).
-      - name: Refuse a stale vendorHash on a push off main
+      # that does not build. The same goes for a PR into release-*: it would
+      # pass on the recomputed tree and then fail on the release push, with no
+      # heal to follow, so it is refused here and the PR carries the hash. A
+      # PR into main is still judged on the recomputed tree, because main is
+      # healed after its run (TASK-4253, TASK-4403).
+      - name: Refuse a stale vendorHash off main (a push, or a PR into release-*)
         if: >-
           steps.vendorhash.outputs.bumped == 'true' &&
-          github.event_name == 'push' && github.ref != 'refs/heads/main'
+          ((github.event_name == 'push' && github.ref != 'refs/heads/main') ||
+          (github.event_name == 'pull_request' && startsWith(github.base_ref, 'release-')))
         run: |
-          echo "::error::nix/package.nix has a stale vendorHash at $GITHUB_SHA on $GITHUB_REF_NAME, and only main is healed. Bring main's healed vendorHash into this branch and push again."
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            echo "::error::nix/package.nix has a stale vendorHash in this pull request into $GITHUB_BASE_REF, and only main is healed. Commit the vendorHash printed by the Recompute step above into nix/package.nix and push again."
+          else
+            echo "::error::nix/package.nix has a stale vendorHash at $GITHUB_SHA on $GITHUB_REF_NAME, and only main is healed. Bring main's healed vendorHash into this branch and push again."
+          fi
           exit 1
 
       - name: Carry the recomputed package.nix to the push job
