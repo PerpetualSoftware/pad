@@ -818,8 +818,8 @@ func projectBootstrapConventions(items []models.Item) []AgentBootstrapConvention
 		})
 	}
 	sort.SliceStable(out, func(i, j int) bool {
-		pi := conventionPriorityRank(out[i].Priority)
-		pj := conventionPriorityRank(out[j].Priority)
+		pi := models.ConventionPriorityRank(out[i].Priority)
+		pj := models.ConventionPriorityRank(out[j].Priority)
 		if pi != pj {
 			return pi < pj
 		}
@@ -860,24 +860,6 @@ func projectConventionIndex(items []models.Item) []AgentBootstrapConventionMeta 
 		return out[i].Ref < out[j].Ref
 	})
 	return out
-}
-
-// conventionPriorityRank ranks convention priority strings
-// (must > should > nice-to-have). Lower rank = higher priority. Unknown
-// values rank last so untyped data doesn't dominate the head of the list.
-// Distinct from the task `priorityRank` in handlers_dashboard.go because
-// conventions and tasks have disjoint priority vocabularies.
-func conventionPriorityRank(p string) int {
-	switch p {
-	case "must":
-		return 0
-	case "should":
-		return 1
-	case "nice-to-have":
-		return 2
-	default:
-		return 3
-	}
 }
 
 // bootstrapGenericIncludeCap bounds how many items ONE declared payload may

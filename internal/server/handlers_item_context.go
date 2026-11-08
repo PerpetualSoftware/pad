@@ -597,7 +597,7 @@ func (s *Server) contextConventions(r *http.Request, workspaceID string, conv *c
 		if ti, tj := tier(out[i]), tier(out[j]); ti != tj {
 			return ti < tj
 		}
-		if pi, pj := conventionPriorityRank(out[i].Priority), conventionPriorityRank(out[j].Priority); pi != pj {
+		if pi, pj := models.ConventionPriorityRank(out[i].Priority), models.ConventionPriorityRank(out[j].Priority); pi != pj {
 			return pi < pj
 		}
 		if li, lj := len(out[i].Content), len(out[j].Content); li != lj {
