@@ -259,6 +259,15 @@ func (s *Store) planRenegotiationTx(tx *sql.Tx, sc *models.ItemSchedule, in mode
 		if err != nil {
 			return nil, err
 		}
+		// A behavior-only change or a kept override leaves the effective deadline
+		// alone. Refuse only a changed effective deadline that is already past.
+		if !next.expires.Equal(prior.expires) && !next.expires.After(nowT) {
+			field := "deadline_offset"
+			if in.DeadlineOffset == nil {
+				field = "deadline_behavior"
+			}
+			return nil, fieldErr(field, "range", "the new deadline is already past")
+		}
 		view.NewDeadline = ptr(next.value)
 	}
 	p.change = "update"

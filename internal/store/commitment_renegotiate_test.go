@@ -407,3 +407,37 @@ func TestRenegotiateRemovalPreservesResolvedMovedDeadlineOverride(t *testing.T) 
 		t.Error("preview reports clearing an absent outstanding override")
 	}
 }
+
+func TestRenegotiateSeriesRefusesNewPastDeadline(t *testing.T) {
+	t.Parallel()
+	for _, secs := range []int{-1, 0} {
+		t.Run((time.Duration(secs) * time.Second).String(), func(t *testing.T) {
+			f := newSchedFixture(t)
+			f.nativeCommit(t)
+			in := seriesRequest()
+			in.DeadlineOffset = &models.CommitmentDeadlineOffset{DeadlineDays: i(0), DeadlineSecs: i(secs)}
+			before := renegotiateState(t, f.s)
+			for _, preview := range []bool{true, false} {
+				in.Preview = preview
+				if !preview {
+					// Obtain the same revision with an allowed plan; requests are not hashed.
+					valid := seriesRequest()
+					valid.DeadlineBehavior = ptr("lapses")
+					p, err := f.s.renegotiateCommitmentAt(f.ws.ID, f.item.ID, "user", valid, rt(deadlineOccAt))
+					if err != nil {
+						t.Fatal(err)
+					}
+					in.Revision = p.Revision
+				}
+				_, err := f.s.renegotiateCommitmentAt(f.ws.ID, f.item.ID, "user", in, rt(deadlineOccAt))
+				var fe *ScheduleFieldError
+				if !errors.As(err, &fe) || fe.Field != "deadline_offset" || fe.Code != "range" || fe.Message != "the new deadline is already past" {
+					t.Errorf("preview=%v: got %v", preview, err)
+				}
+				if !reflect.DeepEqual(before, renegotiateState(t, f.s)) {
+					t.Fatal("refused offset wrote rows")
+				}
+			}
+		})
+	}
+}

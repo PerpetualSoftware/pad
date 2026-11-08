@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -561,5 +562,68 @@ func TestCommitmentRenegotiateStaleRevisionHTTP(t *testing.T) {
 	f.expectErr(rr, 409, "commitment_changed", "")
 	if !strings.Contains(rr.Body.String(), "re-preview") || before != f.count(`SELECT COUNT(*) FROM schedule_changes`) {
 		t.Fatalf("conflict %s", rr.Body.String())
+	}
+}
+
+func TestCommitmentRenegotiateSeriesPastDeadlineHTTP(t *testing.T) {
+	t.Parallel()
+	for _, change := range []string{"shorten", "lengthen", "behavior on passed deadline"} {
+		t.Run(change, func(t *testing.T) {
+			f := newSchedHTTP(t)
+			create := commitmentBody()
+			create["dtstart"] = time.Now().UTC().Add(24 * time.Hour).Truncate(time.Second).Format("2006-01-02T15:04:05")
+			if change == "behavior on passed deadline" {
+				create["roles"].(map[string]any)["deadline_days"] = -2
+			} else {
+				create["roles"].(map[string]any)["deadline_days"] = 0
+			}
+			before := readCommitment(t, commitmentCall(f, "POST", create), 201)
+			body := map[string]any{"reason": "agreed", "scope": "series", "preview": true}
+			if change == "behavior on passed deadline" {
+				body["deadline_behavior"] = "lapses"
+			} else {
+				days := 1
+				if change == "shorten" {
+					days = -2
+				}
+				body["deadline_offset"] = map[string]any{"deadline_days": days, "deadline_secs": 0}
+			}
+			// Obtain a revision without modifying the current schedule.
+			valid := map[string]any{"reason": "agreed", "scope": "series", "preview": true, "deadline_behavior": "lapses"}
+			rr := renegotiateCall(f, f.owner, valid)
+			if rr.Code != 200 {
+				t.Fatalf("revision preview: %d %s", rr.Code, rr.Body.String())
+			}
+			revision := schedMap(t, rr)["revision"]
+			journalN := f.count(`SELECT COUNT(*) FROM schedule_changes`)
+			for _, preview := range []bool{true, false} {
+				body["preview"] = preview
+				body["revision"] = revision
+				rr = renegotiateCall(f, f.owner, body)
+				if change == "shorten" {
+					d := f.expectErr(rr, 400, "validation_error", "range")
+					if d["field"] != "deadline_offset" || !strings.Contains(rr.Body.String(), "the new deadline is already past") {
+						t.Fatalf("range refusal: %s", rr.Body.String())
+					}
+					after := readCommitment(t, commitmentCall(f, "GET", nil), 200)
+					if !reflect.DeepEqual(before, after) || journalN != f.count(`SELECT COUNT(*) FROM schedule_changes`) || f.count(`SELECT COUNT(*) FROM schedule_occurrence_overrides`) != 0 {
+						t.Fatal("refused series change wrote")
+					}
+				} else if preview {
+					if rr.Code != 200 || journalN != f.count(`SELECT COUNT(*) FROM schedule_changes`) {
+						t.Fatalf("preview: %d %s", rr.Code, rr.Body.String())
+					}
+				} else {
+					after := readCommitment(t, rr, 200)
+					if change == "behavior on passed deadline" {
+						if *before.Roles.Deadline != *after.Roles.Deadline || *after.Roles.DeadlineBehavior != "lapses" || len(after.Journal) < 2 || after.Journal[len(after.Journal)-2].ChangeType != "missed_recorded" {
+							t.Fatalf("behavior change lost deadline or miss: %+v", after)
+						}
+					} else if *before.Roles.Deadline >= *after.Roles.Deadline {
+						t.Fatal("lengthened offset did not apply")
+					}
+				}
+			}
+		})
 	}
 }
