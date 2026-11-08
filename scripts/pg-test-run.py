@@ -26,6 +26,15 @@ def functions(path):
         yield m.group(1), src[m.start():end if end >= 0 else len(src)]
 
 
+def touches(body, helpers):
+    """A seed matches as a PREFIX (NewPostgres also matches NewPostgresBounded);
+    a helper function name found by the fixpoint matches exactly."""
+    seeds = r"(?<![\w])(?:%s)" % "|".join(map(re.escape, SEEDS))
+    if re.search(seeds, body):
+        return True
+    return bool(helpers) and re.search(r"(?<![\w])(?:%s)(?![\w])" % "|".join(map(re.escape, helpers)), body) is not None
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
@@ -33,18 +42,18 @@ def main():
     for path in glob.glob(sys.argv[1].rstrip("/") + "/*.go"):
         for name, body in functions(path):
             funcs.setdefault(name, []).append(body)
-    tokens = set(SEEDS)
+    tokens = set()  # helper names found below, matched exactly
     changed = True
     while changed:
         changed = False
         for name, bodies in funcs.items():
             if name in tokens or name.startswith("Test"):
                 continue
-            if any(re.search(r"(?<![\w])(%s)(?![\w])" % "|".join(map(re.escape, tokens)), b) for b in bodies):
+            if any(touches(b, tokens) for b in bodies):
                 tokens.add(name)
                 changed = True
-    pat = re.compile(r"(?<![\w])(%s)(?![\w])" % "|".join(map(re.escape, tokens)))
-    tests = sorted(n for n, bs in funcs.items() if n.startswith("Test") and any(pat.search(b) for b in bs))
+    
+    tests = sorted(n for n, bs in funcs.items() if n.startswith("Test") and any(touches(b, tokens) for b in bs))
     if not tests:
         sys.exit(1)
     print("^(" + "|".join(tests) + ")$")
