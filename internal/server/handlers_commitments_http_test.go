@@ -68,7 +68,7 @@ func (f *schedHTTP) member(email, role string) *models.User {
 }
 
 func (f *schedHTTP) path(it *models.Item) string {
-	return "/api/v1/workspaces/" + f.ws.Slug + "/items/" + it.Slug + "/schedule"
+	return "/api/v1/workspaces/" + f.ws.Slug + "/items/" + it.Slug + "/commitment"
 }
 
 // do sends as the owner. A string body is sent verbatim.
@@ -146,7 +146,7 @@ func (f *schedHTTP) nothingStored() {
 	}
 }
 
-var okSchedule = map[string]any{"kind": "check", "dtstart": "2099-01-01T09:00", "tz": "UTC", "rrule": "FREQ=DAILY"}
+var okSchedule = map[string]any{"roles": map[string]any{}, "dtstart": "2099-01-01T09:00", "tz": "UTC", "rrule": "FREQ=DAILY"}
 
 func (f *schedHTTP) create(body any) map[string]any {
 	f.t.Helper()
@@ -157,9 +157,28 @@ func (f *schedHTTP) create(body any) map[string]any {
 	return schedMap(f.t, rr)
 }
 
+// createLegacy seeds an existing legacy row through its store-only door.
+func (f *schedHTTP) createLegacy(body any) {
+	f.t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	var in models.ScheduleCreate
+	if err := json.Unmarshal(raw, &in); err != nil {
+		f.t.Fatal(err)
+	}
+	if in.Kind == "" {
+		in.Kind = "check"
+	}
+	if _, err := f.srv.store.CreateSchedule(f.ws.ID, f.item.ID, in); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
 // The density cap: a rule whose BYxxx lists multiply past the budget is a
 // 400 range on FREQ over HTTP, not collapsed into another code.
-func TestScheduleDensityCapIs400Range(t *testing.T) {
+func TestCommitmentDensityCapIs400Range(t *testing.T) {
 	t.Parallel()
 	f := newSchedHTTP(t)
 	list := func(n int) string {
@@ -173,7 +192,7 @@ func TestScheduleDensityCapIs400Range(t *testing.T) {
 	if len(rule) != 465 {
 		t.Fatalf("rule is %d bytes, want 465", len(rule))
 	}
-	rr := f.do("POST", map[string]any{"kind": "check", "dtstart": "2099-01-01T09:00", "tz": "UTC", "rrule": rule})
+	rr := f.do("POST", map[string]any{"roles": map[string]any{}, "dtstart": "2099-01-01T09:00", "tz": "UTC", "rrule": rule})
 	d := f.expectErr(rr, 400, "validation_error", "range")
 	if d["part"] != "FREQ" {
 		t.Errorf("part = %v, want FREQ", d["part"])
@@ -181,19 +200,19 @@ func TestScheduleDensityCapIs400Range(t *testing.T) {
 	f.nothingStored()
 }
 
-func TestScheduleCapScanAndCapStallAreSeparateCodes(t *testing.T) {
+func TestCommitmentCapScanAndCapStallAreSeparateCodes(t *testing.T) {
 	t.Parallel()
 	f := newSchedHTTP(t)
 	// Daily at 09:00 written as a minute-level rule: its gap is a day, so it passes
 	// the 15-minute floor, and 26 years back it is a scan cap.
-	rr := f.do("POST", map[string]any{"kind": "check", "dtstart": "2000-01-01T09:00", "tz": "UTC", "rrule": "FREQ=MINUTELY;BYHOUR=9;BYMINUTE=0"})
+	rr := f.do("POST", map[string]any{"roles": map[string]any{}, "dtstart": "2000-01-01T09:00", "tz": "UTC", "rrule": "FREQ=MINUTELY;BYHOUR=9;BYMINUTE=0"})
 	f.expectErr(rr, 400, "validation_error", "cap_scan")
 	f.nothingStored()
 	// Every minute of the 09:00 hour is under the floor, and the floor is checked first.
-	rr = f.do("POST", map[string]any{"kind": "check", "dtstart": "2000-01-01T09:00", "tz": "UTC", "rrule": "FREQ=MINUTELY;BYHOUR=9"})
+	rr = f.do("POST", map[string]any{"roles": map[string]any{}, "dtstart": "2000-01-01T09:00", "tz": "UTC", "rrule": "FREQ=MINUTELY;BYHOUR=9"})
 	f.expectErr(rr, 400, "validation_error", "floor")
 	f.nothingStored()
-	rr = f.do("POST", map[string]any{"kind": "check", "dtstart": "2099-01-01T00:00", "tz": "UTC", "rrule": "FREQ=MINUTELY;BYMONTH=1;BYYEARDAY=200"})
+	rr = f.do("POST", map[string]any{"roles": map[string]any{}, "dtstart": "2099-01-01T00:00", "tz": "UTC", "rrule": "FREQ=MINUTELY;BYMONTH=1;BYYEARDAY=200"})
 	f.expectErr(rr, 400, "validation_error", "cap_stall")
 	f.nothingStored()
 }
@@ -201,10 +220,10 @@ func TestScheduleCapScanAndCapStallAreSeparateCodes(t *testing.T) {
 // A cap on an RDATE window while measuring the floor is the scan cap's own
 // refusal at the edge: a 400 with the same code a rule of that shape gets, and
 // nothing stored (TASK-4236).
-func TestScheduleRDateWindowScanCapIsCapScan(t *testing.T) {
+func TestCommitmentRDateWindowScanCapIsCapScan(t *testing.T) {
 	t.Parallel()
 	f := newSchedHTTP(t)
-	rr := f.do("POST", map[string]any{"kind": "check", "dtstart": "2031-01-01T09:00", "tz": "UTC",
+	rr := f.do("POST", map[string]any{"roles": map[string]any{}, "dtstart": "2031-01-01T09:00", "tz": "UTC",
 		"rrule": "FREQ=MINUTELY;BYHOUR=9;BYMINUTE=0", "rdates": []string{"2100-06-01T09:05"}})
 	f.expectErr(rr, 400, "validation_error", "cap_scan")
 	f.nothingStored()
@@ -362,11 +381,11 @@ func TestUnmanagedReminderStillMutable(t *testing.T) {
 	}
 }
 
-func TestScheduleCRUDHTTP(t *testing.T) {
+func TestCommitmentCRUDHTTP(t *testing.T) {
 	t.Parallel()
 	f := newSchedHTTP(t)
 	created := f.create(okSchedule)
-	for _, k := range []string{"workspace_id", "item_id", "next_at"} {
+	for _, k := range []string{"workspace_id", "kind", "dtend", "next_at"} {
 		if _, ok := created[k]; ok {
 			t.Errorf("view carries %q", k)
 		}
@@ -441,11 +460,11 @@ func schedJSONEqual(t *testing.T, raw []byte, want map[string]any) bool {
 	return string(a) == string(b)
 }
 
-func TestSchedulePatchNullClears(t *testing.T) {
+func TestCommitmentPatchNullClears(t *testing.T) {
 	t.Parallel()
 	f := newSchedHTTP(t)
 	f.create(map[string]any{
-		"kind": "window", "dtstart": "2099-01-01T09:00", "dtend": "2099-01-01T10:00", "tz": "UTC",
+		"roles": map[string]any{"occupied_days": 0, "occupied_secs": 3600}, "dtstart": "2099-01-01T09:00", "tz": "UTC",
 		"rrule": "FREQ=DAILY", "rdates": []string{"2099-01-05T09:00"}, "exdates": []string{"2099-01-03T09:00"},
 	})
 	rr := f.do("PATCH", map[string]any{"rdates": nil, "exdates": nil})
@@ -464,10 +483,10 @@ func TestSchedulePatchNullClears(t *testing.T) {
 	if m = schedMap(t, rr); rr.Code != 200 || m["rrule"] != nil {
 		t.Fatalf("empty rrule: %d %s", rr.Code, rr.Body.String())
 	}
-	// dtend is required on a window: clearing it is the store's `required`.
-	f.expectErr(f.do("PATCH", map[string]any{"dtend": nil}), 400, "validation_error", "required")
+	// The end is derived; direct input is refused by member name.
+	f.expectErr(f.do("PATCH", map[string]any{"dtend": nil}), 400, "validation_error", "not_accepted")
 
-	for _, field := range []string{"kind", "dtstart", "tz", "floating", "anchor", "audience", "lead_minutes"} {
+	for _, field := range []string{"roles", "dtstart", "tz", "floating", "anchor", "audience", "lead_minutes"} {
 		d := f.expectErr(f.do("PATCH", `{"`+field+`": null}`), 400, "validation_error", "required")
 		if d["field"] != field {
 			t.Errorf("%s: details.field = %v", field, d["field"])
@@ -475,18 +494,18 @@ func TestSchedulePatchNullClears(t *testing.T) {
 	}
 	before := f.do("GET", nil).Body.String()
 	rr = f.do("PATCH", `{}`)
-	if rr.Code != 200 || f.do("GET", nil).Body.String() != before {
+	if rr.Code != 400 || f.do("GET", nil).Body.String() != before {
 		t.Errorf("empty PATCH = %d, and the schedule changed", rr.Code)
 	}
 }
 
 // On POST, null on a required member is `required`, as on PATCH; null on an
 // optional one is the member left out (TASK-4102 PR2 r1, C-M1).
-func TestSchedulePostNullMembers(t *testing.T) {
+func TestCommitmentPostNullMembers(t *testing.T) {
 	t.Parallel()
-	for _, field := range []string{"kind", "dtstart"} {
+	for _, field := range []string{"roles", "dtstart"} {
 		f := newSchedHTTP(t)
-		body := map[string]any{"kind": "check", "dtstart": "2099-01-01T09:00", "tz": "UTC"}
+		body := map[string]any{"roles": map[string]any{}, "dtstart": "2099-01-01T09:00", "tz": "UTC"}
 		body[field] = nil
 		d := f.expectErr(f.do("POST", body), 400, "validation_error", "required")
 		if d["field"] != field {
@@ -497,14 +516,14 @@ func TestSchedulePostNullMembers(t *testing.T) {
 
 	view := func(body map[string]any) map[string]any {
 		m := newSchedHTTP(t).create(body)
-		for _, k := range []string{"id", "item_ref", "reminder_id", "created_at", "updated_at"} {
+		for _, k := range []string{"id", "schedule_id", "item_id", "item_ref", "reminder_id", "created_at", "updated_at"} {
 			delete(m, k)
 		}
 		return m
 	}
-	base := map[string]any{"kind": "check", "dtstart": "2099-01-01T09:00"}
+	base := map[string]any{"roles": map[string]any{}, "dtstart": "2099-01-01T09:00"}
 	want := view(base)
-	for _, field := range []string{"dtend", "tz", "floating", "rrule", "rdates", "exdates", "anchor", "audience", "lead_minutes"} {
+	for _, field := range []string{"tz", "floating", "rrule", "rdates", "exdates", "anchor", "audience", "lead_minutes"} {
 		body := map[string]any{field: nil}
 		for k, v := range base {
 			body[k] = v
@@ -515,22 +534,22 @@ func TestSchedulePostNullMembers(t *testing.T) {
 	}
 }
 
-func TestScheduleStrictBody(t *testing.T) {
+func TestCommitmentStrictBody(t *testing.T) {
 	t.Parallel()
 	f := newSchedHTTP(t)
 	bad := map[string]string{
-		"misspelt member":  `{"kind":"check","dtstart":"2099-01-01T09:00","tz":"UTC","rrulee":"FREQ=DAILY"}`,
-		"repeated member":  `{"kind":"check","kind":"check","dtstart":"2099-01-01T09:00","tz":"UTC"}`,
-		"NUL":              `{"kind":"check","dtstart":"2099-01-01T09:00","tz":"UT\u0000C"}`,
-		"wrong type":       `{"kind":"check","dtstart":"2099-01-01T09:00","tz":"UTC","lead_minutes":"soon"}`,
+		"misspelt member":  `{"roles":{},"dtstart":"2099-01-01T09:00","tz":"UTC","rrulee":"FREQ=DAILY"}`,
+		"repeated member":  `{"roles":{},"roles":{},"dtstart":"2099-01-01T09:00","tz":"UTC"}`,
+		"NUL":              `{"roles":{},"dtstart":"2099-01-01T09:00","tz":"UT\u0000C"}`,
+		"wrong type":       `{"roles":{},"dtstart":"2099-01-01T09:00","tz":"UTC","lead_minutes":"soon"}`,
 		"not an object":    `[]`,
 		"null":             `null`,
 		"a number":         `5`,
 		"a string":         `"x"`,
 		"empty":            ``,
 		"whitespace only":  " \n\t\r ",
-		"list wrong type":  `{"kind":"check","dtstart":"2099-01-01T09:00","tz":"UTC","rdates":"x"}`,
-		"floating as text": `{"kind":"check","dtstart":"2099-01-01T09:00","floating":"yes"}`,
+		"list wrong type":  `{"roles":{},"dtstart":"2099-01-01T09:00","tz":"UTC","rdates":"x"}`,
+		"floating as text": `{"roles":{},"dtstart":"2099-01-01T09:00","floating":"yes"}`,
 	}
 	for _, body := range bad {
 		f.expectErr(f.do("POST", body), 400, "invalid_body", "")
@@ -540,7 +559,7 @@ func TestScheduleStrictBody(t *testing.T) {
 	f.create(okSchedule)
 	for name, body := range map[string]string{
 		"misspelt": `{"rrulee":"FREQ=DAILY"}`, "repeated": `{"lead_minutes":1,"lead_minutes":2}`,
-		"NUL": `{"kind":"ch\u0000eck"}`, "wrong type": `{"lead_minutes":"x"}`, "bool as text": `{"floating":"no"}`,
+		"NUL": `{"audience":"h\u0000uman"}`, "wrong type": `{"lead_minutes":"x"}`, "bool as text": `{"floating":"no"}`,
 		"list wrong type": `{"rdates":5}`, "not an object": `[]`, "null": `null`, "a number": `5`,
 		"a string": `"x"`, "empty": ``, "whitespace only": " \n\t\r ",
 	} {
@@ -556,7 +575,7 @@ func TestScheduleStrictBody(t *testing.T) {
 		t.Errorf("PATCH after whitespace = %d %s", rr.Code, rr.Body.String())
 	}
 	g := newSchedHTTP(t)
-	if rr := g.do("POST", " \n\t\r"+`{"kind":"check","dtstart":"2099-01-01T09:00","tz":"UTC"}`); rr.Code != 201 {
+	if rr := g.do("POST", " \n\t\r"+`{"roles":{},"dtstart":"2099-01-01T09:00","tz":"UTC"}`); rr.Code != 201 {
 		t.Errorf("POST after whitespace = %d %s", rr.Code, rr.Body.String())
 	}
 }
@@ -577,7 +596,7 @@ var scheduleBadInputs = []struct {
 	{"wall", map[string]any{"dtstart": "2099-01-01T09:00Z"}},
 }
 
-func TestScheduleMalformedCodesOnCreateAndPatch(t *testing.T) {
+func TestCommitmentMalformedCodesOnCreateAndPatch(t *testing.T) {
 	t.Parallel()
 	f := newSchedHTTP(t)
 	for _, tc := range scheduleBadInputs {
@@ -606,11 +625,11 @@ func TestScheduleMalformedCodesOnCreateAndPatch(t *testing.T) {
 	}
 }
 
-func TestScheduleFieldErrors(t *testing.T) {
+func TestCommitmentFieldErrors(t *testing.T) {
 	t.Parallel()
 	f := newSchedHTTP(t)
 	with := func(k string, v any) map[string]any {
-		b := map[string]any{"kind": "check", "dtstart": "2099-01-01T09:00", "tz": "UTC"}
+		b := map[string]any{"roles": map[string]any{}, "dtstart": "2099-01-01T09:00", "tz": "UTC"}
 		b[k] = v
 		return b
 	}
@@ -618,15 +637,15 @@ func TestScheduleFieldErrors(t *testing.T) {
 		name, code, field string
 		body              map[string]any
 	}{
-		{"kind", "enum", "kind", with("kind", "bogus")},
+		{"kind", "not_accepted", "kind", with("kind", "bogus")},
 		{"anchor", "enum", "anchor", with("anchor", "bogus")},
 		{"audience", "enum", "audience", with("audience", "bogus")},
 		{"lead low", "range", "lead_minutes", with("lead_minutes", -1)},
 		{"lead high", "range", "lead_minutes", with("lead_minutes", 44641)},
-		{"window no dtend", "required", "dtend", with("kind", "window")},
-		{"dtend on non-window", "combination", "dtend", with("dtend", "2099-01-01T10:00")},
-		{"window all-day mismatch", "combination", "dtend", map[string]any{"kind": "window", "dtstart": "2099-01-01", "dtend": "2099-01-02T10:00", "tz": "UTC"}},
-		{"dtend before dtstart", "range", "dtend", map[string]any{"kind": "window", "dtstart": "2099-01-01T09:00", "dtend": "2099-01-01T08:00", "tz": "UTC"}},
+		{"window label refused", "not_accepted", "kind", with("kind", "window")},
+		{"direct end refused", "not_accepted", "dtend", with("dtend", "2099-01-01T10:00")},
+		{"window all-day mismatch", "combination", "occupied_until", map[string]any{"roles": map[string]any{"occupied_days": 1, "occupied_secs": 3600}, "dtstart": "2099-01-01", "tz": "UTC"}},
+		{"occupied end before start", "range", "occupied_until", map[string]any{"roles": map[string]any{"occupied_days": 0, "occupied_secs": -3600}, "dtstart": "2099-01-01T09:00", "tz": "UTC"}},
 	}
 	for _, tc := range cases {
 		d := f.expectErr(f.do("POST", tc.body), 400, "validation_error", tc.code)
@@ -637,12 +656,12 @@ func TestScheduleFieldErrors(t *testing.T) {
 	f.nothingStored()
 }
 
-func TestScheduleExhausted(t *testing.T) {
+func TestCommitmentExhausted(t *testing.T) {
 	t.Parallel()
 	f := newSchedHTTP(t)
 	for _, b := range []map[string]any{
-		{"kind": "deadline_hard", "dtstart": "2020-01-01T09:00", "tz": "UTC"},
-		{"kind": "check", "dtstart": "2020-01-01T09:00", "tz": "UTC", "rrule": "FREQ=DAILY;UNTIL=20200201T000000Z"},
+		{"roles": map[string]any{"deadline_days": 0, "deadline_secs": 0, "deadline_behavior": "stays_owed"}, "dtstart": "2020-01-01T09:00", "tz": "UTC"},
+		{"roles": map[string]any{}, "dtstart": "2020-01-01T09:00", "tz": "UTC", "rrule": "FREQ=DAILY;UNTIL=20200201T000000Z"},
 	} {
 		f.expectErr(f.do("POST", b), 400, "validation_error", "exhausted")
 	}
@@ -654,7 +673,7 @@ func TestScheduleExhausted(t *testing.T) {
 	}
 }
 
-func TestScheduleExistsAndConcurrentCreate(t *testing.T) {
+func TestCommitmentExistsAndConcurrentCreate(t *testing.T) {
 	t.Parallel()
 	f := newSchedHTTP(t)
 	f.create(okSchedule)
@@ -685,10 +704,10 @@ func TestScheduleExistsAndConcurrentCreate(t *testing.T) {
 	}
 }
 
-func TestScheduleShorthandIsNormalized(t *testing.T) {
+func TestCommitmentShorthandIsNormalized(t *testing.T) {
 	t.Parallel()
 	f := newSchedHTTP(t)
-	m := f.create(map[string]any{"kind": "check", "dtstart": "2099-01-01T09:00", "tz": "UTC", "rrule": "weekly"})
+	m := f.create(map[string]any{"roles": map[string]any{}, "dtstart": "2099-01-01T09:00", "tz": "UTC", "rrule": "weekly"})
 	want, err := schedule.NormalizeRule("weekly")
 	if err != nil {
 		t.Fatal(err)
@@ -698,10 +717,10 @@ func TestScheduleShorthandIsNormalized(t *testing.T) {
 	}
 }
 
-func TestScheduleTimezoneDefault(t *testing.T) {
+func TestCommitmentTimezoneDefault(t *testing.T) {
 	t.Parallel()
 	body := func(extra map[string]any) map[string]any {
-		b := map[string]any{"kind": "check", "dtstart": "2099-01-01T09:00"}
+		b := map[string]any{"roles": map[string]any{}, "dtstart": "2099-01-01T09:00"}
 		for k, v := range extra {
 			b[k] = v
 		}
@@ -761,7 +780,7 @@ func TestScheduleTimezoneDefault(t *testing.T) {
 
 // A floating schedule's next_at bound is never shown; next_occurrence.at is the
 // wall read in the CALLER's zone.
-func TestScheduleFloatingViewUsesCallerZone(t *testing.T) {
+func TestCommitmentFloatingViewUsesCallerZone(t *testing.T) {
 	t.Parallel()
 	f := newSchedHTTP(t)
 	tokyo := f.member("sched-tokyo@example.com", "editor")
@@ -774,7 +793,7 @@ func TestScheduleFloatingViewUsesCallerZone(t *testing.T) {
 	if _, err := f.srv.store.DB().Exec(f.srv.store.D().Rebind(`UPDATE items SET assigned_user_id = ? WHERE id = ?`), la.ID, f.item.ID); err != nil {
 		t.Fatal(err)
 	}
-	f.create(map[string]any{"kind": "check", "dtstart": "2099-01-01T09:00", "floating": true})
+	f.create(map[string]any{"roles": map[string]any{}, "dtstart": "2099-01-01T09:00", "floating": true})
 	read := func(u *models.User) map[string]any {
 		rr := f.as(f.token(u, ""), "GET", f.path(f.item), nil)
 		if rr.Code != 200 {
@@ -795,7 +814,7 @@ func TestScheduleFloatingViewUsesCallerZone(t *testing.T) {
 	}
 }
 
-func TestScheduleActivityAndSSE(t *testing.T) {
+func TestCommitmentActivityAndSSE(t *testing.T) {
 	t.Parallel()
 	f := newSchedHTTPOn(t, testServerWithEvents(t))
 	ch, _, _ := f.srv.events.Subscribe(context.Background(), f.ws.ID)
@@ -830,7 +849,7 @@ func TestScheduleActivityAndSSE(t *testing.T) {
 		return out
 	}
 	const secret = "FREQ=DAILY;BYHOUR=7;BYMINUTE=13"
-	f.create(map[string]any{"kind": "check", "dtstart": "2099-01-01T09:00", "tz": "UTC", "rrule": secret})
+	f.create(map[string]any{"roles": map[string]any{}, "dtstart": "2099-01-01T09:00", "tz": "UTC", "rrule": secret})
 	if n := drain(); n != 1 {
 		t.Errorf("create published %d item_updated events", n)
 	}
@@ -838,9 +857,9 @@ func TestScheduleActivityAndSSE(t *testing.T) {
 	if n := drain(); n != 1 {
 		t.Errorf("update published %d", n)
 	}
-	// An empty PATCH is a read (TASK-4102 PR2 ruling, P2): no publish here, and
+	// An empty PATCH is refused: no publish here, and
 	// the one-row schedule_updated check below proves it logged nothing.
-	if rr := f.do("PATCH", `{}`); rr.Code != 200 {
+	if rr := f.do("PATCH", `{}`); rr.Code != 400 {
 		t.Errorf("empty PATCH %d %s", rr.Code, rr.Body.String())
 	}
 	if n := drain(); n != 0 {
@@ -851,7 +870,7 @@ func TestScheduleActivityAndSSE(t *testing.T) {
 		t.Errorf("delete published %d", n)
 	}
 	for action, want := range map[string]string{
-		"schedule_created": `"kind":"check"`, "schedule_updated": `"fields":["rrule","lead_minutes"]`, "schedule_deleted": `"kind":"check"`,
+		"schedule_created": `"kind":"check"`, "schedule_updated": `"fields":["lead_minutes","rrule"]`, "schedule_deleted": `"kind":"check"`,
 	} {
 		rows := acts(action)
 		if len(rows) != 1 || !strings.Contains(rows[0], want) {
@@ -866,7 +885,7 @@ func TestScheduleActivityAndSSE(t *testing.T) {
 
 	// A refused write logs and publishes nothing.
 	before := f.count(`SELECT COUNT(*) FROM activities WHERE document_id = ?`, f.item.ID)
-	f.do("POST", map[string]any{"kind": "check", "dtstart": "2099-01-01T09:00", "tz": "UTC", "rrule": "FREQ=BOGUS"})
+	f.do("POST", map[string]any{"roles": map[string]any{}, "dtstart": "2099-01-01T09:00", "tz": "UTC", "rrule": "FREQ=BOGUS"})
 	f.create(okSchedule)
 	drain()
 	f.do("PATCH", map[string]any{"rrule": "FREQ=BOGUS"})
@@ -878,7 +897,7 @@ func TestScheduleActivityAndSSE(t *testing.T) {
 	}
 }
 
-func TestScheduleAuthMatrix(t *testing.T) {
+func TestCommitmentAuthMatrix(t *testing.T) {
 	t.Parallel()
 	f := newSchedHTTP(t)
 	editor := f.member("sched-editor@example.com", "editor")
@@ -942,7 +961,7 @@ func TestScheduleAuthMatrix(t *testing.T) {
 		t.Errorf("read token: POST %d PATCH %d DELETE %d", po, pa, de)
 	}
 	// Unknown item: 404 on all four verbs.
-	gp := "/api/v1/workspaces/" + f.ws.Slug + "/items/NOPE-99999/schedule"
+	gp := "/api/v1/workspaces/" + f.ws.Slug + "/items/NOPE-99999/commitment"
 	for _, m := range []string{"GET", "POST", "PATCH", "DELETE"} {
 		if rr := f.as(f.token(f.owner, ""), m, gp, okSchedule); rr.Code != 404 {
 			t.Errorf("unknown item %s = %d", m, rr.Code)
@@ -963,10 +982,10 @@ func TestScheduleAuthMatrix(t *testing.T) {
 // The view carries missed_count, missed_truncated and stale (TASK-4103 C2a): the
 // instances that passed after the outstanding occurrence, which is not counted.
 // A healthy schedule carries none of the three members.
-func TestScheduleViewCarriesMissedCountAndStale(t *testing.T) {
+func TestCommitmentViewCarriesMissedCountAndStale(t *testing.T) {
 	t.Parallel()
 	f := newSchedHTTP(t)
-	f.create(map[string]any{"kind": "check", "dtstart": "2099-01-01T09:00", "tz": "UTC", "rrule": "FREQ=HOURLY"})
+	f.create(map[string]any{"roles": map[string]any{}, "dtstart": "2099-01-01T09:00", "tz": "UTC", "rrule": "FREQ=HOURLY"})
 	get := func() map[string]any {
 		rr := f.do("GET", nil)
 		if rr.Code != 200 {
@@ -1003,7 +1022,7 @@ func TestScheduleViewCarriesMissedCountAndStale(t *testing.T) {
 // A floating row with a rule that no longer compiles fires into a fired row; the
 // view's next_occurrence.at is the instant in the recipient's zone, not the
 // UTC+14 bound (TASK-4103 C2a r1 H-M2).
-func TestScheduleViewOfBrokenFiredFloatingRowIsExact(t *testing.T) {
+func TestCommitmentViewOfBrokenFiredFloatingRowIsExact(t *testing.T) {
 	t.Parallel()
 	f := newSchedHTTP(t)
 	tokyo := f.member("sched-brk-tokyo@example.com", "editor")
@@ -1014,7 +1033,7 @@ func TestScheduleViewOfBrokenFiredFloatingRowIsExact(t *testing.T) {
 	if _, err := db.Exec(d.Rebind(`UPDATE items SET assigned_user_id = ? WHERE id = ?`), tokyo.ID, f.item.ID); err != nil {
 		t.Fatal(err)
 	}
-	f.create(map[string]any{"kind": "check", "dtstart": "2099-01-01T09:00", "floating": true, "rrule": "FREQ=DAILY"})
+	f.create(map[string]any{"roles": map[string]any{}, "dtstart": "2099-01-01T09:00", "floating": true, "rrule": "FREQ=DAILY"})
 	if _, err := db.Exec(d.Rebind(`UPDATE item_schedules SET rrule = ? WHERE item_id = ?`), "FREQ=DAILY;BOGUS=1", f.item.ID); err != nil {
 		t.Fatal(err)
 	}

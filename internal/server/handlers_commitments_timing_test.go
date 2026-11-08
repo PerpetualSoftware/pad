@@ -17,11 +17,6 @@ func commitmentSnapshot(t *testing.T, f *schedHTTP) string {
 	out := []any{}
 	for _, table := range []string{"item_schedules", "schedule_changes", "item_reminders", "schedule_occurrence_overrides"} {
 		rows, err := f.srv.store.DB().Query("SELECT * FROM " + table + " ORDER BY id")
-		if table == "schedule_occurrence_overrides" { // this table has a composite key
-			if err != nil {
-				rows, err = f.srv.store.DB().Query("SELECT * FROM " + table + " ORDER BY schedule_id,occurrence_key,role")
-			}
-		}
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -79,11 +74,16 @@ func TestCommitmentTimingMatrix(t *testing.T) {
 	for _, origin := range []string{"native deadline", "native check", "legacy_backfill"} {
 		for _, actor := range []string{"owner", "assignee"} {
 			for _, tc := range []struct {
-				name  string
-				value any
+				name        string
+				value, want any
 			}{
-				{"dtstart", "2099-01-02T09:00"}, {"tz", "Europe/Paris"}, {"floating", true},
-				{"rrule", "FREQ=WEEKLY"}, {"anchor", "completion"}, {"rdates", []string{"2099-01-02T10:00"}}, {"exdates", []string{"2099-01-02T09:00"}},
+				{"dtstart", "2099-01-02T09:00", "2099-01-02T09:00:00"},
+				{"tz", "Europe/Paris", "Europe/Paris"},
+				{"floating", true, true},
+				{"rrule", "FREQ=WEEKLY", "FREQ=WEEKLY"},
+				{"anchor", "completion", "completion"},
+				{"rdates", []string{"2099-01-02T10:00"}, []any{"2099-01-02T10:00:00"}},
+				{"exdates", []string{"2099-01-02T09:00"}, []any{"2099-01-02T09:00:00"}},
 			} {
 				t.Run(origin+"/"+actor+"/"+tc.name, func(t *testing.T) {
 					f := timingFixture(t, strings.Fields(origin)[0], origin == "native deadline")
@@ -106,6 +106,9 @@ func TestCommitmentTimingMatrix(t *testing.T) {
 						}
 					} else {
 						readCommitment(t, rr, 200)
+						if got := schedMap(t, rr)[tc.name]; !reflect.DeepEqual(got, tc.want) {
+							t.Fatalf("%s=%v want %v", tc.name, got, tc.want)
+						}
 						if commitmentSnapshot(t, f) == before {
 							t.Fatal("edit did not apply")
 						}
@@ -160,7 +163,7 @@ func TestCommitmentTimingExceptionsAndAtomicity(t *testing.T) {
 
 func TestCommitmentCreateContractAndResponse(t *testing.T) {
 	for _, method := range []string{"POST", "PATCH"} {
-		for _, field := range []string{"kind", "dtend"} {
+		for _, field := range []string{"kind", "dtend", "Kind", "DTEND"} {
 			t.Run(method+"/"+field, func(t *testing.T) {
 				f := newSchedHTTP(t)
 				body := map[string]any{"dtstart": "2099-01-01T09:00", "roles": map[string]any{}, field: nil}
@@ -210,7 +213,7 @@ func TestCommitmentCreateContractAndResponse(t *testing.T) {
 }
 
 func TestCommitmentOccupiedValidationAtEveryDoor(t *testing.T) {
-	for _, door := range []string{"create", "roles", "timing", "renegotiate"} {
+	for _, door := range []string{"create", "roles", "timing", "renegotiate", "renegotiate occurrence"} {
 		for _, tc := range []struct {
 			name, start string
 			days, secs  int
@@ -224,7 +227,7 @@ func TestCommitmentOccupiedValidationAtEveryDoor(t *testing.T) {
 				if door != "create" {
 					in := models.ScheduleCreate{Kind: "check", Dtstart: tc.start, Tz: "UTC", Rrule: "FREQ=DAILY"}
 					r := models.CommitmentRolesInput{}
-					if door == "renegotiate" {
+					if strings.HasPrefix(door, "renegotiate") {
 						d, s, b := 1, 0, "stays_owed"
 						r.DeadlineDays = &d
 						r.DeadlineSecs = &s
@@ -235,14 +238,17 @@ func TestCommitmentOccupiedValidationAtEveryDoor(t *testing.T) {
 						t.Fatal(err)
 					}
 					method, body = "PATCH", map[string]any{"roles": roles}
-					if door == "timing" || door == "renegotiate" {
+					if door == "timing" || strings.HasPrefix(door, "renegotiate") {
 						if _, err := f.srv.store.DB().Exec("UPDATE item_schedules SET occupied_days=?,occupied_secs=? WHERE id=?", tc.days, tc.secs, sc.ID); err != nil {
 							t.Fatal(err)
 						}
 						body = map[string]any{"dtstart": strings.Replace(tc.start, "01-01", "01-02", 1)}
 					}
-					if door == "renegotiate" {
+					if strings.HasPrefix(door, "renegotiate") {
 						method, path, body = "POST", path+"/renegotiate", map[string]any{"scope": "series", "reason": "agreed", "remove_deadline": true, "preview": true}
+						if door == "renegotiate occurrence" {
+							body = map[string]any{"reason": "agreed", "deadline": time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339), "preview": true}
+						}
 					}
 				}
 				before := commitmentSnapshot(t, f)
@@ -304,5 +310,21 @@ func TestCommitmentResolveUsesDeadlineRole(t *testing.T) {
 	}
 	if !reflect.DeepEqual(before, commitmentSnapshot(t, f)) {
 		t.Fatal("refused move wrote")
+	}
+}
+
+func TestCommitmentCombinedWindowAndStartUsesEditedRoles(t *testing.T) {
+	f := newSchedHTTP(t)
+	d, s := 0, 7200
+	if _, err := f.srv.store.CreateCommitmentSchedule(f.ws.ID, f.item.ID, models.ScheduleCreate{Dtstart: "2099-01-01T09:00", Tz: "UTC"}, models.CommitmentRolesInput{OccupiedDays: &d, OccupiedSecs: &s}); err != nil {
+		t.Fatal(err)
+	}
+	readCommitment(t, commitmentCall(f, "PATCH", map[string]any{"dtstart": "2099-01-02", "roles": map[string]any{"occupied_days": 1, "occupied_secs": 0}}), 200)
+	sc, err := f.srv.store.GetSchedule(f.ws.ID, f.item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sc.Kind != "window" || sc.Dtend == nil || *sc.Dtend != "2099-01-03" {
+		t.Fatalf("combined window: %+v", sc)
 	}
 }

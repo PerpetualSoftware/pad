@@ -76,6 +76,11 @@ func TestRemindScheduleCreate(t *testing.T) {
 }
 
 func TestRemindScheduleRefusesLocally(t *testing.T) {
+	// Retain the one-shot rearm mixing assertion from the old flag parse table;
+	// rearm is deliberately outside the shared commitment flags.
+	if _, err := buildScheduleCreate(scheduleFlags{Start: "2026-11-09T09:00", Rearm: "r1"}); err == nil || !strings.Contains(err.Error(), "--start") {
+		t.Fatalf("mixed rearm: %v", err)
+	}
 	_, _, err, calls := runSched(t, okReply(`{}`), "", "item", "remind", "TASK-5", "--every", "daily")
 	if err == nil || !strings.Contains(err.Error(), "--start is required") || len(calls) != 0 {
 		t.Fatalf("err=%v calls=%+v", err, calls)

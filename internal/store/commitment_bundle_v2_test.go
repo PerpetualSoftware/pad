@@ -110,7 +110,6 @@ func TestExportVersionIsTwo(t *testing.T) {
 func TestBundleV2_RoundTripNativeCommitment(t *testing.T) {
 	f := newSchedFixture(t)
 	sc := f.create(t, dailyUTC)
-	f.exec(t, `UPDATE item_schedules SET target_days=2,target_secs=1800,earliest_days=-1,earliest_secs=-600,deadline_days=3,deadline_secs=7200,deadline_behavior='lapses',occupied_days=0,occupied_secs=5400,outcome='Certificate renewed',roles_origin='native' WHERE id=?`, sc.ID)
 	actual := rt("2026-10-30T08:00:00Z")
 	f.mustResolve(t, f.item, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "done", Actor: "user", ActualDoneAt: &actual}, "2026-10-30T10:00:00Z")
 	cur := f.reload(t, f.item.ID)
@@ -119,6 +118,11 @@ func TestBundleV2_RoundTripNativeCommitment(t *testing.T) {
 	key := OccurrenceKey(cur, *cur.NextAt, *cur.NextWall)
 	until := rt("2026-11-01T12:00:00Z")
 	f.mustResolve(t, f.item, ResolveInput{OccurrenceAt: rt(*cur.NextAt), State: "move", Actor: "user", Until: &until}, "2026-10-31T11:00:00Z")
+	// Seed the moved target before adding a native deadline: resolve cannot move
+	// a commitment that already carries that role.
+	if _, err := f.s.SetCommitmentRoles(f.ws.ID, f.item.ID, models.CommitmentRolesInput{TargetDays: 2, TargetSecs: 1800, EarliestDays: i(-1), EarliestSecs: i(-600), DeadlineDays: i(3), DeadlineSecs: i(7200), DeadlineBehavior: ptr("lapses"), OccupiedDays: i(0), OccupiedSecs: i(5400), Outcome: "Certificate renewed"}); err != nil {
+		t.Fatal(err)
+	}
 	f.exec(t, `UPDATE schedule_occurrence_overrides SET value_wall=?,created_at=?,updated_at=? WHERE schedule_id=? AND occurrence_key=?`, "2026-11-01T12:00:00", "2026-10-31T12:00:00.123456789Z", "2026-10-31T13:00:00.987654321Z", sc.ID, key)
 	src := f.exportBundle(t)
 	sm := bundleObject(t, src)
@@ -241,6 +245,8 @@ func TestBundleV2_FloatingAndAllDayKeys(t *testing.T) {
 				if allDay {
 					wall = "2026-10-30"
 					x["dtstart"], x["next_wall"] = wall, wall
+					roles := x["roles"].(map[string]any)
+					roles["occupied_days"], roles["occupied_secs"] = 1, 0
 				}
 				key := "2026-10-30T09:00:00Z|" + wall
 				x["overrides"] = []any{testOverride(key)}

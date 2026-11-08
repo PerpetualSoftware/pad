@@ -14,15 +14,6 @@ func commitmentBase(wsSlug, ref string) string {
 	return "/workspaces/" + url.PathEscape(wsSlug) + "/items/" + url.PathEscape(ref) + "/commitment"
 }
 
-// CommitmentResolve is the body of POST .../commitment/resolve.
-type CommitmentResolve struct {
-	OccurrenceAt string `json:"occurrence_at"`
-	State        string `json:"state"`
-	Comment      string `json:"comment,omitempty"`
-	Until        string `json:"until,omitempty"`
-	ActualDoneAt string `json:"actual_done_at,omitempty"`
-}
-
 // GetItemCommitment returns an item's schedule view.
 func (c *Client) GetItemCommitment(wsSlug, ref string) (json.RawMessage, error) {
 	var result json.RawMessage
@@ -48,7 +39,7 @@ func (c *Client) DeleteItemCommitment(wsSlug, ref string) (json.RawMessage, erro
 }
 
 // ResolveItemCommitment resolves the outstanding occurrence.
-func (c *Client) ResolveItemCommitment(wsSlug, ref string, in CommitmentResolve) (json.RawMessage, error) {
+func (c *Client) ResolveItemCommitment(wsSlug, ref string, in any) (json.RawMessage, error) {
 	var result json.RawMessage
 	return result, c.post(commitmentBase(wsSlug, ref)+"/resolve", in, &result)
 }

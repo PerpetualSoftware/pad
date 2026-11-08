@@ -2298,14 +2298,18 @@ const CmdhelpVersion = "0.1"
 // one-shot into a schedule or clear a rule in an edit; clearing a rule stays a
 // CLI act (`pad item remind edit --every ""`). remind_at's description now says
 // it is required only for the one-shot form, and comment's that
-// schedule-resolve takes it (optional; deadline changes require renegotiation, which
-// the server enforces with a 400). occurrence_at is required on both
+// schedule-resolve takes it as optional audit text. Deadline changes use
+// POST .../commitment/renegotiate. occurrence_at is required on both
 // transports, and until (snooze and move) and from and to (agenda) must be
 // RFC3339 instants on both: the CLI's wall times, durations and dates read the
 // caller's zone, which a remote caller does not have. Only schedule and agenda
 // are read-only; pad_item's tool annotation is unchanged. ChatGPT: all five
 // are deferred to v2.
-const ToolSurfaceVersion = "0.107"
+// v0.108 — TASK-4351: /commitment replaces the five /schedule routes. Schedule
+// read/create/edit responses expose roles and timing, without kind or dtend.
+// Existing CLI/MCP flags map to roles through one shared helper. Native deadline
+// timing edits return hard_deadline; use commitment/renegotiate with a reason.
+const ToolSurfaceVersion = "0.108"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

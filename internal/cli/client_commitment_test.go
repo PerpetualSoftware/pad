@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"github.com/PerpetualSoftware/pad/internal/schedule"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -22,7 +23,7 @@ func TestCommitmentResolveForwardsActualDoneAt(t *testing.T) {
 		_, _ = w.Write([]byte(`{}`))
 	}))
 	defer ts.Close()
-	var in CommitmentResolve
+	var in schedule.CommitmentResolve
 	if err := json.Unmarshal([]byte(`{"state":"done","occurrence_at":"2026-11-08T10:00:00Z","actual_done_at":"2026-11-08T09:00:00Z"}`), &in); err != nil {
 		t.Fatal(err)
 	}

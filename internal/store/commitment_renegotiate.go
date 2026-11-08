@@ -205,6 +205,9 @@ func (s *Store) planRenegotiationTx(tx *sql.Tx, sc *models.ItemSchedule, in mode
 		return nil, fieldErr("deadline", "combination", "the schedule has no outstanding occurrence")
 	}
 	cur := scheduleRolesFromExport(stored)
+	if _, err := occupiedEnd(sc.Dtstart, cur); err != nil {
+		return nil, err
+	}
 	prior, err := resolveRoleValue(loc, *sc.NextWall, *cur.DeadlineDays, *cur.DeadlineSecs, overrideFor(overrides, "deadline"))
 	if err != nil {
 		return nil, err
@@ -258,9 +261,6 @@ func (s *Store) planRenegotiationTx(tx *sql.Tx, sc *models.ItemSchedule, in mode
 	}
 	p.roles, err = rolesFromInput(input)
 	if err != nil {
-		return nil, err
-	}
-	if _, err := occupiedEnd(sc.Dtstart, p.roles); err != nil {
 		return nil, err
 	}
 	view.NewDeadlineBehavior = p.roles.DeadlineBehavior

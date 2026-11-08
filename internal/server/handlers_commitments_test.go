@@ -14,7 +14,7 @@ import (
 )
 
 func commitmentPath(f *schedHTTP) string {
-	return strings.TrimSuffix(f.path(f.item), "/schedule") + "/commitment"
+	return f.path(f.item)
 }
 func commitmentCall(f *schedHTTP, method string, body any) *httptest.ResponseRecorder {
 	return f.as(f.token(f.owner, ""), method, commitmentPath(f), body)
@@ -43,9 +43,6 @@ func TestCommitmentReadCreateDelete(t *testing.T) {
 	f := newSchedHTTP(t)
 	missing := commitmentCall(f, "GET", nil)
 	f.expectErr(missing, 404, "not_found", "")
-	if legacy := f.do("GET", nil); legacy.Body.String() != missing.Body.String() {
-		t.Fatal("no-schedule responses differ")
-	}
 	c := readCommitment(t, commitmentCall(f, "POST", commitmentBody()), 201)
 	if c.Roles.RolesOrigin != "native" || c.Roles.Outcome != "shipped" || c.Roles.Target == nil || *c.Roles.Target != resolveX || c.Roles.Deadline == nil || *c.Roles.Deadline != "2099-01-02T09:00:00Z" {
 		t.Fatalf("roles: %+v", c.Roles)
@@ -66,7 +63,7 @@ func TestCommitmentReadCreateDelete(t *testing.T) {
 func TestCommitmentLegacyPatchConversion(t *testing.T) {
 	t.Parallel()
 	f := newSchedHTTP(t)
-	f.create(okSchedule)
+	f.createLegacy(okSchedule)
 	c := readCommitment(t, commitmentCall(f, "GET", nil), 200)
 	if c.Roles.RolesOrigin != "legacy_backfill" {
 		t.Fatalf("legacy: %+v", c)
@@ -160,8 +157,8 @@ func TestCommitmentResolveActualDoneAt(t *testing.T) {
 			t.Fatalf("details %v", d)
 		}
 	}
-	// The schedule endpoint must still refuse the additive commitment member.
-	f.expectErr(f.resolve(map[string]any{"occurrence_at": resolveX, "state": "done", "actual_done_at": resolveX}), 400, "invalid_body", "")
+	// The replacement endpoint accepts the member and validates its value.
+	f.expectErr(f.resolve(map[string]any{"occurrence_at": resolveX, "state": "done", "actual_done_at": resolveX}), 400, "validation_error", "range")
 	// Force an outstanding past occurrence, then use the real evaluator to record its miss.
 	at := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Second)
 	wall := at.Format("2006-01-02T15:04:05")
@@ -256,7 +253,7 @@ func TestCommitmentPatchRefusesHardDeadlineChange(t *testing.T) {
 	}
 }
 
-func TestSchedulePatchRefusesTimingEditOnNativeHardDeadline(t *testing.T) {
+func TestCommitmentPatchRefusesTimingEditOnNativeHardDeadline(t *testing.T) {
 	t.Parallel()
 	f := newSchedHTTP(t)
 	readCommitment(t, commitmentCall(f, "POST", commitmentBody()), 201)
@@ -273,7 +270,7 @@ func TestSchedulePatchRefusesTimingEditOnNativeHardDeadline(t *testing.T) {
 func TestCommitmentPatchConvertsLegacyHardDeadlineFreely(t *testing.T) {
 	t.Parallel()
 	f := newSchedHTTP(t)
-	f.create(map[string]any{"kind": "deadline_hard", "dtstart": "2099-01-01T09:00", "tz": "UTC"})
+	f.createLegacy(map[string]any{"kind": "deadline_hard", "dtstart": "2099-01-01T09:00", "tz": "UTC"})
 	c := readCommitment(t, commitmentCall(f, "PATCH", map[string]any{"roles": commitmentBody()["roles"]}), 200)
 	if c.Roles.RolesOrigin != "native" || c.Roles.Deadline == nil || *c.Roles.Deadline != "2099-01-02T09:00:00Z" {
 		t.Fatalf("legacy hard deadline conversion: %+v", c.Roles)
@@ -639,7 +636,7 @@ func TestCommitmentRenegotiateSeriesPastDeadlineHTTP(t *testing.T) {
 
 func TestCommitmentAssigneeGuard(t *testing.T) {
 	t.Parallel()
-	for _, operation := range []string{"occurrence", "preview", "series", "delete commitment", "delete schedule"} {
+	for _, operation := range []string{"occurrence", "preview", "series", "delete commitment"} {
 		for _, authority := range []string{"reassigned", "was unassigned", "unchanged", "owner"} {
 			t.Run(operation+"/"+authority, func(t *testing.T) {
 				f := newSchedHTTP(t)
@@ -678,8 +675,6 @@ func TestCommitmentAssigneeGuard(t *testing.T) {
 					body = in
 				case "delete commitment":
 					method, path, body = "DELETE", commitmentPath(f), nil
-				case "delete schedule":
-					method, path, body = "DELETE", f.path(f.item), nil
 				}
 				var beforeCommitment *models.Commitment
 				var beforeSchedule *models.ItemSchedule

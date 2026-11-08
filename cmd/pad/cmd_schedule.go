@@ -263,7 +263,7 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 		Long:    long,
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			req := cli.CommitmentResolve{State: v.state, Comment: comment}
+			req := schedule.CommitmentResolve{State: v.state, Comment: comment}
 			if needsUntil {
 				if until == "" {
 					return fmt.Errorf("--until is required for %s", v.use)
@@ -315,7 +315,7 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 	return c
 }
 
-func resolveSentence(state, ref string, req cli.CommitmentResolve, s scheduleView) string {
+func resolveSentence(state, ref string, req schedule.CommitmentResolve, s scheduleView) string {
 	occ := fmtInstant(req.OccurrenceAt, nil)
 	switch state {
 	case "snooze":

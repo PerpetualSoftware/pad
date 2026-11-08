@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strings"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
@@ -47,20 +48,19 @@ func writeCommitmentChanged(w http.ResponseWriter) {
 type commitmentView struct {
 	*models.Commitment
 	scheduleView
-	Kind  *string `json:"kind,omitempty"`
-	Dtend *string `json:"dtend,omitempty"`
+}
+
+func (s *Server) buildCommitmentView(r *http.Request, workspaceID string, item *models.Item, sc *models.ItemSchedule, note string) (*commitmentView, error) {
+	c, err := s.store.GetCommitment(workspaceID, item.ID)
+	if err != nil {
+		return nil, err
+	}
+	v := s.buildScheduleView(r, item, sc)
+	v.TimezoneNote = note
+	return &commitmentView{Commitment: c, scheduleView: v}, nil
 }
 
 func (s *Server) writeItemCommitment(w http.ResponseWriter, r *http.Request, workspaceID string, item *models.Item, status int, note string) {
-	c, err := s.store.GetCommitment(workspaceID, item.ID)
-	if errors.Is(err, store.ErrScheduleNotFound) {
-		writeScheduleNotFound(w)
-		return
-	}
-	if err != nil {
-		writeInternalError(w, err)
-		return
-	}
 	sc, err := s.store.GetSchedule(workspaceID, item.ID)
 	if err != nil {
 		writeInternalError(w, err)
@@ -70,9 +70,16 @@ func (s *Server) writeItemCommitment(w http.ResponseWriter, r *http.Request, wor
 		writeScheduleNotFound(w)
 		return
 	}
-	v := s.buildScheduleView(r, item, sc)
-	v.TimezoneNote = note
-	writeJSON(w, status, commitmentView{Commitment: c, scheduleView: v})
+	v, err := s.buildCommitmentView(r, workspaceID, item, sc, note)
+	if errors.Is(err, store.ErrScheduleNotFound) {
+		writeScheduleNotFound(w)
+		return
+	}
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	writeJSON(w, status, v)
 }
 
 // readCommitmentBody gives retired members the same field error on POST and
@@ -88,8 +95,8 @@ func readCommitmentBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
 		writeScheduleBodyError(w)
 		return nil, false
 	}
-	for _, name := range []string{"kind", "dtend"} {
-		if _, found := members[name]; found {
+	for name := range members {
+		if strings.EqualFold(name, "kind") || strings.EqualFold(name, "dtend") {
 			writeError2(w, http.StatusBadRequest, "validation_error", name+" is not accepted", map[string]interface{}{"field": name, "code": "not_accepted"})
 			return nil, false
 		}
@@ -102,7 +109,7 @@ func (s *Server) handleGetItemCommitment(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	// Like GET /schedule, archived items are readable.
+	// Archived items are readable.
 	item, err := s.store.ResolveItemIncludeDeleted(workspaceID, chi.URLParam(r, "itemSlug"))
 	if err != nil {
 		writeInternalError(w, err)
@@ -275,7 +282,7 @@ type commitmentResolveBody struct {
 }
 
 func (s *Server) handleResolveItemCommitment(w http.ResponseWriter, r *http.Request) {
-	s.resolveItemSchedule(w, r, true)
+	s.resolveItemSchedule(w, r)
 }
 
 func writeDeadlineOwnerRequired(w http.ResponseWriter) {

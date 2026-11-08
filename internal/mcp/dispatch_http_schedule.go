@@ -4,20 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/PerpetualSoftware/pad/internal/models"
 	"net/http"
 	"strings"
 
+	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/schedule"
 )
 
 // Remote mappers for the schedule actions of pad_item (TASK-4105). They build
-// the same request bodies the CLI builds from its flags (cmd/pad/commitment_flags.go);
+// the same request bodies the CLI builds from its flags (internal/schedule/commitment_flags.go);
 // the parameters carry the flags' names. Rules only the server can judge (the
 // firing floor on HOURLY and MINUTELY rules, anchor completion with a BYxxx
 // part, an occurrence that never comes) are left to it, and its message is
-// returned unchanged. The rule text is sent as given: the server normalizes
-// the shorthands and RRULE text itself.
+// returned unchanged. The shared helper canonicalizes rule syntax; the server
+// validates the complete timing.
 
 const (
 	itemSchedulePathTemplate = "/api/v1/workspaces/{workspace}/items/{ref}/commitment"
@@ -103,7 +103,7 @@ func mapItemScheduleEdit(input map[string]any) (string, string, []byte, error) {
 	if err != nil {
 		return "", "", nil, err
 	}
-	body, err := scheduleUpdateBody(p, currentStart(input))
+	body, err := scheduleUpdateBody(p, "")
 	if err != nil {
 		return "", "", nil, err
 	}
@@ -136,15 +136,15 @@ func mapScheduleResolve(state string) RouteMapper {
 		if strings.TrimSpace(occ) == "" {
 			return "", "", nil, fmt.Errorf("occurrence_at is required: the RFC3339 instant of the outstanding occurrence")
 		}
-		body := map[string]any{"state": state, "occurrence_at": occ}
+		body := schedule.CommitmentResolve{State: state, OccurrenceAt: occ}
 		if c, _ := input["comment"].(string); c != "" {
-			body["comment"] = c
+			body.Comment = c
 		}
 		if actual, _ := input["actual_done_at"].(string); actual != "" {
-			body["actual_done_at"] = actual
+			body.ActualDoneAt = actual
 		}
 		if u, _ := input["until"].(string); u != "" {
-			body["until"] = u
+			body.Until = u
 		}
 		raw, err := json.Marshal(body)
 		if err != nil {
@@ -166,11 +166,6 @@ func scheduleUpdateBody(p scheduleParams, currentStart string) (map[string]any, 
 	return schedule.CommitmentBody(commitmentFlags(p), func(name string) bool { return p.given[name] }, currentStart)
 }
 
-func currentStart(input map[string]any) string {
-	value, _ := input["commitment_start"].(string)
-	return value
-}
-
 // dispatchItemCommitmentEdit prefetches only when a window offset needs the
 // current start. Other edits stay a single PATCH, including deadline refusals.
 func (d *HTTPHandlerDispatcher) dispatchItemCommitmentEdit(ctx context.Context, input map[string]any, user *models.User) (*CallToolResult, error) {
@@ -178,6 +173,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemCommitmentEdit(ctx context.Context, 
 	if err != nil {
 		return validationFailedResult("item remind edit", err.Error(), "Check the schedule flags."), nil
 	}
+	start := ""
 	if p.given["window"] && !p.given["start"] && !p.given["deadline"] {
 		path, err := expandPath(itemSchedulePathTemplate, input)
 		if err != nil {
@@ -197,16 +193,16 @@ func (d *HTTPHandlerDispatcher) dispatchItemCommitmentEdit(ctx context.Context, 
 		if err := json.Unmarshal(raw, &current); err != nil {
 			return nil, err
 		}
-		copied := make(map[string]any, len(input)+1)
-		for k, v := range input {
-			copied[k] = v
-		}
-		copied["commitment_start"] = current.Dtstart
-		input = copied
+		start = current.Dtstart
 	}
-	method, path, body, err := mapItemScheduleEdit(input)
+	body, err := scheduleUpdateBody(p, start)
 	if err != nil {
 		return validationFailedResult("item remind edit", err.Error(), "Check the schedule flags."), nil
 	}
-	return d.executeRequest(ctx, "item remind edit", user, method, path, body)
+	method, path, raw, err := marshalScheduleRequest(http.MethodPatch, itemSchedulePathTemplate, input, body)
+	if err != nil {
+		return validationFailedResult("item remind edit", err.Error(), "Pass workspace and ref."), nil
+	}
+
+	return d.executeRequest(ctx, "item remind edit", user, method, path, raw)
 }

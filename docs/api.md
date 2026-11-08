@@ -326,7 +326,9 @@ An agent gets a chat identity, and a roster entry on `/messages`, from a connect
 
 The web roster is built from the caller's own `GET /sessions` plus their existing DMs, so an agent with no name, or none connected, has no entry; the empty `/messages` page explains this only when both reads answered (a pending or failed list, or a `503` from `/sessions`, is unknown and never shown as "no agents"). An agent's own DM is `@<its-name>`: a name that differs from the caller's `X-Pad-Agent` is another agent's DM and is refused.
 
-### Item schedules (TASK-4102)
+### Item commitments (TASK-4351)
+
+Release note: `/commitment` replaces `/schedule`. The five old GET, POST, PATCH, DELETE and POST resolve routes now return 404. There are no aliases or compatibility routes.
 
 The CLI is `pad item remind` (`--start`/`--every` to schedule, and the `show`, `done`, `skip`, `snooze`, `move`, `agenda`, `edit` and `rm` subcommands; there is no `pad cal`); the MCP actions are `pad_item` `remind` (with `start`), `schedule`, `schedule-edit`, `schedule-delete` and `schedule-resolve` (docs/mcp.md, v0.108), with commitment reads and resolves in the web client. One schedule per item; the schedule is the RULE, and its single outstanding occurrence is carried by a managed reminder row (`reminder_id`) that the reminder tick fires.
 

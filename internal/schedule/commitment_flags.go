@@ -196,3 +196,12 @@ func commitmentWindowEnd(start Wall, value string) (Wall, error) {
 	}
 	return Wall{}, bad
 }
+
+// CommitmentResolve is the body of POST .../commitment/resolve.
+type CommitmentResolve struct {
+	OccurrenceAt string `json:"occurrence_at"`
+	State        string `json:"state"`
+	Comment      string `json:"comment,omitempty"`
+	Until        string `json:"until,omitempty"`
+	ActualDoneAt string `json:"actual_done_at,omitempty"`
+}

@@ -556,10 +556,10 @@ func (s *Store) insertScheduleTx(tx *sql.Tx, sc *models.ItemSchedule, native *sc
 	if native != nil {
 		r = *native
 	}
-	_, err := tx.Exec(s.q(`INSERT INTO item_schedules (id,workspace_id,item_id,kind,dtstart,dtend,tz,floating,rrule,rdates,exdates,anchor,audience,lead_minutes,next_at,next_wall,created_at,updated_at,
+	_, err := tx.Exec(s.q(`INSERT INTO item_schedules (id,workspace_id,item_id,kind,dtstart,dtend,tz,floating,rrule,rdates,exdates,anchor,audience,lead_minutes,next_at,next_wall,next_override_at,anchor_wall,ended_at,error_code,created_at,updated_at,
  target_days,target_secs,earliest_days,earliest_secs,deadline_days,deadline_secs,deadline_behavior,occupied_days,occupied_secs,outcome,roles_origin)
- VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`),
-		sc.ID, sc.WorkspaceID, sc.ItemID, sc.Kind, sc.Dtstart, nullStr(sc.Dtend), nullStr(sc.Tz), s.dialect.BoolToInt(sc.Floating), nullStr(sc.Rrule), mustJSON(sc.RDates), mustJSON(sc.ExDates), sc.Anchor, sc.Audience, sc.LeadMinutes, nullStr(sc.NextAt), nullStr(sc.NextWall), sc.CreatedAt, sc.UpdatedAt,
+ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`),
+		sc.ID, sc.WorkspaceID, sc.ItemID, sc.Kind, sc.Dtstart, nullStr(sc.Dtend), nullStr(sc.Tz), s.dialect.BoolToInt(sc.Floating), nullStr(sc.Rrule), mustJSON(sc.RDates), mustJSON(sc.ExDates), sc.Anchor, sc.Audience, sc.LeadMinutes, nullStr(sc.NextAt), nullStr(sc.NextWall), nullStr(sc.NextOverrideAt), nullStr(sc.AnchorWall), nullStr(sc.EndedAt), nullStr(sc.ErrorCode), sc.CreatedAt, sc.UpdatedAt,
 		r.TargetDays, r.TargetSecs, r.EarliestDays, r.EarliestSecs, r.DeadlineDays, r.DeadlineSecs, r.DeadlineBehavior, r.OccupiedDays, r.OccupiedSecs, r.Outcome, r.Origin)
 	if isUniqueViolation(err) {
 		return ErrScheduleExists
@@ -769,7 +769,7 @@ func (s *Store) updateCommitmentAt(workspaceID, itemID string, upd models.Schedu
 			return nil, err
 		}
 	}
-	if upd.Dtstart != nil && upd.Dtend == nil && storedRoles.OccupiedDays != nil {
+	if roles == nil && upd.Dtstart != nil && upd.Dtend == nil && storedRoles.OccupiedDays != nil {
 		derivedEnd, err := occupiedEnd(spec.Start.String(), storedRoles)
 		if err != nil {
 			return nil, err
@@ -787,7 +787,11 @@ func (s *Store) updateCommitmentAt(workspaceID, itemID string, upd models.Schedu
 			return nil, err
 		}
 	}
-	end, hasEnd, err := validateScheduleFields(kind, anchor, audience, lead, spec.Start, dtend)
+	validationKind, validationEnd := kind, dtend
+	if roles != nil {
+		validationKind, validationEnd = "check", ""
+	}
+	end, hasEnd, err := validateScheduleFields(validationKind, anchor, audience, lead, spec.Start, validationEnd)
 	if err != nil {
 		return nil, err
 	}
@@ -808,6 +812,9 @@ func (s *Store) updateCommitmentAt(workspaceID, itemID string, upd models.Schedu
 		return nil, ErrHardDeadlineRenegotiate
 	}
 
+	if !timingEdit && roles == nil && kind == cur.Kind && anchor == cur.Anchor && audience == cur.Audience && lead == cur.LeadMinutes && dtend == deref(cur.Dtend) {
+		return cur, nil
+	}
 	ts := now()
 	nextAt, nextWall, override := cur.NextAt, cur.NextWall, cur.NextOverrideAt
 	anchorWall, endedAt, errCode := cur.AnchorWall, cur.EndedAt, cur.ErrorCode

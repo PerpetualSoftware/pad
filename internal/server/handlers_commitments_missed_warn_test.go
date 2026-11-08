@@ -31,7 +31,7 @@ func (l *lockedBuf) count(sub string) int {
 // every read. The warning is logged once per schedule edit, not once per GET,
 // and the limiter holds one entry per schedule however often it is edited
 // (TASK-4103 C2b-4). RED with the unguarded log.
-func TestScheduleViewMissedWarningIsRateLimitedPerEdit(t *testing.T) {
+func TestCommitmentViewMissedWarningIsRateLimitedPerEdit(t *testing.T) {
 	f := newSchedHTTP(t) // not parallel: it swaps the default logger
 	sc := f.create(okSchedule)
 	id := sc["id"].(string)
@@ -84,11 +84,11 @@ func TestScheduleViewMissedWarningIsRateLimitedPerEdit(t *testing.T) {
 	}
 }
 
-// TestScheduleViewMissedWarningNeverRegressesOrDuplicates pins the limiter's
+// TestCommitmentViewMissedWarningNeverRegressesOrDuplicates pins the limiter's
 // atomicity (TASK-4103 C2b-i r1-1): a view built from a snapshot older than the
 // one last warned at neither logs nor moves the stored value back, and
 // concurrent first reads log once.
-func TestScheduleViewMissedWarningNeverRegressesOrDuplicates(t *testing.T) {
+func TestCommitmentViewMissedWarningNeverRegressesOrDuplicates(t *testing.T) {
 	f := newSchedHTTP(t) // not parallel: it swaps the default logger
 	sc := f.create(okSchedule)
 	id := sc["id"].(string)
@@ -134,10 +134,10 @@ func TestScheduleViewMissedWarningNeverRegressesOrDuplicates(t *testing.T) {
 	}
 }
 
-// TestScheduleViewMissedWarningIsEvicted pins the limiter's bound (TASK-4103
+// TestCommitmentViewMissedWarningIsEvicted pins the limiter's bound (TASK-4103
 // C2b-i r1-2): an entry leaves when the schedule's count succeeds again and
 // when the schedule is deleted.
-func TestScheduleViewMissedWarningIsEvicted(t *testing.T) {
+func TestCommitmentViewMissedWarningIsEvicted(t *testing.T) {
 	f := newSchedHTTP(t)
 	sc := f.create(okSchedule)
 	id := sc["id"].(string)
