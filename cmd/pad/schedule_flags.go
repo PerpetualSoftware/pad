@@ -27,7 +27,7 @@ type scheduleFlags struct {
 const scheduleFlagHelp = `
   --start     wall time the first occurrence is read at: 2026-11-09T09:00, or 2026-11-09 for an all-day date (no Z, no offset)
   --every     cadence: daily, weekdays, weekly, biweekly, monthly, monthly-last, quarterly, yearly, or an RRULE such as FREQ=WEEKLY;BYDAY=MO
-  --deadline  hard | soft: a due time rather than a check (edit also takes none: back to a plain check)
+  --deadline  hard: a deadline that stays owed; soft or none (edit): no deadline, and a window stays
   --window    a span from --start: a duration (90m, 2h, 3d) or an end wall (2026-11-09T17:00)
   --anchor    calendar (default) | completion (next one an interval after you mark it done)
   --audience  human | agent | both (default both)
@@ -37,7 +37,7 @@ const scheduleFlagHelp = `
 func bindScheduleFlags(cmd *cobra.Command, f *scheduleFlags) {
 	cmd.Flags().StringVar(&f.Start, "start", "", "schedule: wall time, 2026-11-09T09:00 or 2026-11-09 (no Z or offset)")
 	cmd.Flags().StringVar(&f.Every, "every", "", "schedule: daily|weekdays|weekly|biweekly|monthly|monthly-last|quarterly|yearly, or an RRULE")
-	cmd.Flags().StringVar(&f.Deadline, "deadline", "", "schedule: hard|soft makes it a deadline (edit also takes none: a plain check)")
+	cmd.Flags().StringVar(&f.Deadline, "deadline", "", "schedule: hard sets a deadline; soft or none (edit) clears it and keeps any window")
 	cmd.Flags().StringVar(&f.Window, "window", "", "schedule: a span from --start, a duration (90m, 2h, 3d) or an end wall")
 	cmd.Flags().StringVar(&f.Anchor, "anchor", "", "schedule: calendar|completion")
 	cmd.Flags().StringVar(&f.Audience, "audience", "", "schedule: human|agent|both")

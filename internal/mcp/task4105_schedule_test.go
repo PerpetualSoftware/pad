@@ -572,7 +572,7 @@ func TestTASK4105_EditReadsEmptyMembersAsNotGiven(t *testing.T) {
 			t.Errorf("stdio args = %q", disp.gotArgs)
 		}
 		_, seen := remoteCall(t, "schedule-edit", withWorkspace(in))
-		if len(seen) != 1 || seen[0].Body != `{"roles":{"deadline_behavior":"stays_owed","deadline_days":0,"deadline_secs":0,"target_days":0,"target_secs":0}}` {
+		if len(seen) != 1 || seen[0].Body != `{"roles":{"deadline_behavior":"stays_owed","deadline_days":0,"deadline_secs":0}}` {
 			t.Fatalf("remote requests = %+v", seen)
 		}
 	})
