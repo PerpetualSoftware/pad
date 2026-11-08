@@ -2,8 +2,9 @@ name: CI
 
 on:
   # release-* runs the full push suite, so the exact SHA a release is tagged
-  # at carries CI of its own (TASK-4253), and a PR into release-* runs the same
-  # suite before it lands.
+  # at carries CI of its own (TASK-4253), and a PR into release-* runs the PR
+  # suite before it lands (the race steps stay push-only, so they run on the
+  # release push, not on the PR).
   push:
     branches: [main, 'release-*']
   pull_request:
