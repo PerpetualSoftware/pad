@@ -100,7 +100,7 @@ func TestNativeDeadlineAddedThenRenegotiatedAway(t *testing.T) {
 	for _, occupied := range []bool{false, true} {
 		t.Run(map[bool]string{false: "check", true: "window"}[occupied], func(t *testing.T) {
 			f := newSchedFixture(t)
-			sc := f.commitFixture(t, "check")
+			f.commitFixture(t, "check")
 			roles := models.CommitmentRolesInput{DeadlineDays: i(1), DeadlineSecs: i(0), DeadlineBehavior: ptr("stays_owed")}
 			if occupied {
 				roles.OccupiedDays = i(0)
