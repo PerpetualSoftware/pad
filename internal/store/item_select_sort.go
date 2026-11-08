@@ -43,7 +43,9 @@ func isRankedPriorityKey(key string) bool { return key == "priority" || key == "
 func sortFieldKeys(sort string) map[string]bool {
 	keys := map[string]bool{}
 	for _, seg := range strings.Split(sort, ",") {
-		col := strings.TrimSpace(strings.SplitN(seg, ":", 2)[0])
+		// Not trimmed: buildItemSortRanked reads the column as written, and a
+		// key it would skip must not load ranks.
+		col := strings.SplitN(strings.TrimSpace(seg), ":", 2)[0]
 		switch col {
 		case "", "title", "created_at", "updated_at", "sort_order", "_num", "_id":
 		default:
@@ -71,7 +73,9 @@ func (s *Store) selectSortRanks(workspaceID string, params models.ItemListParams
 		if params.ScopeCollectionID != "" && id != params.ScopeCollectionID {
 			return false
 		}
-		if len(params.CollectionIDs) == 0 {
+		// ItemIDs are individual grants that may sit outside CollectionIDs, so
+		// with them the list can hold any collection's items.
+		if len(params.CollectionIDs) == 0 || len(params.ItemIDs) > 0 {
 			return true
 		}
 		for _, c := range params.CollectionIDs {

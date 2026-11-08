@@ -194,3 +194,34 @@ func TestBUG4400_ListItemsQRefusesFieldSortOnSnapshot(t *testing.T) {
 		t.Errorf("a field sort on the pool was refused: %v", err)
 	}
 }
+
+// A list with CollectionIDs AND ItemIDs holds items of a collection reached
+// only by an individual grant; that collection ranks too (Luna r3).
+func TestBUG4400_GrantedItemOutsideCollectionIDsRanks(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "BUG-4400 grants")
+	a := selectSortCollection(t, s, ws.ID, "Alpha", "priority", []string{"low", "medium", "high"})
+	b := selectSortCollection(t, s, ws.ID, "Beta", "priority", []string{"high", "medium", "low"})
+	selectSortItem(t, s, ws.ID, a.ID, "a-low", "priority", "low")
+	selectSortItem(t, s, ws.ID, a.ID, "a-high", "priority", "high")
+	selectSortItem(t, s, ws.ID, b.ID, "b-low", "priority", "low")
+	selectSortItem(t, s, ws.ID, b.ID, "b-high", "priority", "high")
+	var grantedID string
+	items, err := s.ListItems(ws.ID, models.ItemListParams{CollectionIDs: []string{b.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, it := range items {
+		if it.Title == "b-high" {
+			grantedID = it.ID
+		}
+	}
+	got := listTitles(t, s, ws.ID, models.ItemListParams{CollectionIDs: []string{a.ID}, ItemIDs: []string{grantedID}, Sort: "priority:asc,title:asc"})
+	if want := []string{"a-low", "a-high", "b-high"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("asc: %v, want %v", got, want)
+	}
+	got = listTitles(t, s, ws.ID, models.ItemListParams{CollectionIDs: []string{a.ID}, ItemIDs: []string{grantedID}, Sort: "priority:desc,title:asc"})
+	if want := []string{"a-high", "b-high", "a-low"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("desc: %v, want %v", got, want)
+	}
+}
