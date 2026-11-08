@@ -35,7 +35,7 @@ type CommitmentRoles struct {
 // A correction names the miss it answers in ParentChangeID and shares its root.
 type CommitmentChange struct {
 	ID             string  `json:"id"`
-	ChangeType     string  `json:"change_type"` // missed_recorded | done | move | update (assignee)
+	ChangeType     string  `json:"change_type"` // missed_recorded | done | move | update (deadline or assignee)
 	OccurrenceKey  *string `json:"occurrence_key,omitempty"`
 	Role           *string `json:"role,omitempty"`
 	AfterJSON      *string `json:"after_json,omitempty"`
@@ -62,4 +62,43 @@ type CommitmentRolesInput struct {
 	OccupiedDays     *int    `json:"occupied_days,omitempty"`
 	OccupiedSecs     *int    `json:"occupied_secs,omitempty"`
 	Outcome          string  `json:"outcome,omitempty"`
+}
+
+// CommitmentDeadlineOffset uses the deadline fields of CommitmentRolesInput.
+// Pointers preserve its paired-field validation, including an omitted member.
+type CommitmentDeadlineOffset struct {
+	DeadlineDays *int `json:"deadline_days"`
+	DeadlineSecs *int `json:"deadline_secs"`
+}
+
+type CommitmentRenegotiateInput struct {
+	Reason           string                    `json:"reason"`
+	Scope            string                    `json:"scope"`
+	Deadline         *string                   `json:"deadline"`
+	DeadlineOffset   *CommitmentDeadlineOffset `json:"deadline_offset"`
+	DeadlineBehavior *string                   `json:"deadline_behavior"`
+	RemoveDeadline   bool                      `json:"remove_deadline"`
+	Revision         string                    `json:"revision"`
+	Preview          bool                      `json:"preview"`
+}
+
+type CommitmentRenegotiationPreview struct {
+	Scope                   string                    `json:"scope"`
+	OccurrenceKey           string                    `json:"occurrence_key"`
+	AppliesFrom             string                    `json:"applies_from"`
+	CurrentDeadline         *string                   `json:"current_deadline"`
+	NewDeadline             *string                   `json:"new_deadline"`
+	CurrentDeadlineBehavior *string                   `json:"current_deadline_behavior"`
+	NewDeadlineBehavior     *string                   `json:"new_deadline_behavior"`
+	CurrentOffset           *CommitmentDeadlineOffset `json:"current_offset"`
+	NewOffset               *CommitmentDeadlineOffset `json:"new_offset"`
+	MissRecordedFirst       bool                      `json:"miss_recorded_first"`
+	MissOccurrenceKey       *string                   `json:"miss_occurrence_key"`
+	KeepsDeadlineOverride   bool                      `json:"keeps_deadline_override"`
+	ClearsDeadlineOverrides bool                      `json:"clears_deadline_overrides"`
+}
+
+type CommitmentRenegotiation struct {
+	Preview  CommitmentRenegotiationPreview `json:"preview"`
+	Revision string                         `json:"revision"`
 }

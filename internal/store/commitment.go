@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -198,10 +199,10 @@ func (s *Store) GetCommitment(workspaceID, itemID string) (*models.Commitment, e
 		// missed_recorded, with no role, and is not the deadline's history.
 		deadlineRow := c.Role != nil && *c.Role == "deadline"
 		correction := c.ChangeType == "done" && deadlineRow && c.ParentChangeID != nil
-		move := c.ChangeType == "move" && deadlineRow && c.ReasonSource == "user"
+		renegotiation := (c.ChangeType == "move" || c.ChangeType == "update") && deadlineRow && c.ReasonSource == "user"
 		assignee := c.ChangeType == "update" && c.Role == nil && c.BeforeJSON == nil &&
 			c.ReasonSource == "system" && strings.HasPrefix(c.Reason, "Assignee changed from ") && strings.Contains(c.Reason, " to ")
-		if !(c.ChangeType == "missed_recorded" && deadlineRow) && !correction && !move && !assignee {
+		if !(c.ChangeType == "missed_recorded" && deadlineRow) && !correction && !renegotiation && !assignee {
 			continue
 		}
 		out.Journal = append(out.Journal, models.CommitmentChange{ID: c.ID, ChangeType: c.ChangeType, OccurrenceKey: c.OccurrenceKey, Role: c.Role,
@@ -336,83 +337,24 @@ func (s *Store) SetCommitmentRoles(workspaceID, itemID string, roles models.Comm
 // conversion leaves later misses recorded. A row that is not native with a deadline has
 // nothing to renegotiate and is refused.
 func (s *Store) RenegotiateDeadline(workspaceID, itemID, actor string, until time.Time, reason string) error {
-	return s.renegotiateDeadlineAt(workspaceID, itemID, actor, until, reason, time.Now())
+	return s.renegotiateDeadlineAt(workspaceID, itemID, actor, until, reason, time.Time{})
 }
 
-func (s *Store) renegotiateDeadlineAt(workspaceID, itemID, actor string, until time.Time, reason string, now time.Time) error {
-	reason = strings.TrimSpace(reason)
-	if reason == "" {
+func (s *Store) renegotiateDeadlineAt(workspaceID, itemID, actor string, until time.Time, reason string, nowT time.Time) error {
+	// Preserve this store door's existing until field vocabulary.
+	if strings.TrimSpace(reason) == "" {
 		return fieldErr("reason", "required", "renegotiating a deadline needs a reason")
 	}
 	if until.IsZero() {
 		return fieldErr("until", "required", "renegotiating a deadline needs the new deadline")
 	}
-	// Validate and journal the value that is stored: the override writer rounds
-	// a fractional second up.
-	if n, err := time.Parse(time.RFC3339, NormalizeInstant(until)); err == nil {
-		until = n
+	value := until.Format(time.RFC3339Nano)
+	_, err := s.renegotiateCommitmentAt(workspaceID, itemID, actor, models.CommitmentRenegotiateInput{Reason: reason, Deadline: &value}, nowT)
+	var field *ScheduleFieldError
+	if errors.As(err, &field) && field.Field == "deadline" && (field.Code == "range" || field.Code == "required") {
+		return fieldErr("until", field.Code, field.Error())
 	}
-	if !until.After(now) || until.After(now.Add(maxResolveUntil)) {
-		return fieldErr("until", "range", "until must be after now and within 366 days")
-	}
-	if actor == "" {
-		actor = "user"
-	}
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("renegotiate deadline: %w", err)
-	}
-	defer tx.Rollback()
-	if err := s.pinScheduleTx(tx, workspaceID, itemID); err != nil {
-		return err
-	}
-	sc, err := s.getScheduleQ(tx, workspaceID, itemID, false)
-	if err != nil {
-		return err
-	}
-	if sc == nil {
-		return ErrScheduleNotFound
-	}
-	roles, err := s.scheduleRolesQ(tx, sc.ID)
-	if err != nil {
-		return err
-	}
-	if roles.RolesOrigin != "native" || roles.DeadlineDays == nil {
-		return fieldErr("deadline", "combination", "the schedule has no native deadline to renegotiate")
-	}
-	if sc.EndedAt != nil || sc.NextWall == nil {
-		return fieldErr("deadline", "combination", "the schedule has no outstanding occurrence")
-	}
-	loc, err := s.scheduleViewZone(tx, sc)
-	if err != nil {
-		return err
-	}
-	key, err := outstandingKey(sc, loc)
-	if err != nil || key == "" {
-		return fmt.Errorf("renegotiate deadline: outstanding key: %w", err)
-	}
-	overrides, err := s.occurrenceOverrides(tx, sc.ID, key)
-	if err != nil {
-		return err
-	}
-	prior, err := resolveRoleValue(loc, *sc.NextWall, *roles.DeadlineDays, *roles.DeadlineSecs, overrideFor(overrides, "deadline"))
-	if err != nil {
-		return err
-	}
-	// The journal row carries the old and new deadline values, because the
-	// override row is overwritten by the next renegotiation.
-	before := fmt.Sprintf(`{"deadline":%q}`, prior.value)
-	after := fmt.Sprintf(`{"deadline":%q}`, until.UTC().Format(time.RFC3339Nano))
-	if err := s.upsertScheduleOverrideTx(tx, sc.ID, key, "deadline", until, nil); err != nil {
-		return err
-	}
-	if err := s.journalScheduleChangeReasonTx(tx, sc.ID, "move", key, "deadline", before, after, actor, reason, "user"); err != nil {
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("renegotiate deadline: %w", err)
-	}
-	return nil
+	return err
 }
 
 // recordOnTimeCorrectionTx answers a recorded miss when a completion reported at

@@ -368,39 +368,61 @@ func (s *Store) evaluateDeadline(candidate deadlineCandidate, nowT time.Time) (b
 		}
 		return false, err
 	}
-	d, err := scanDeadline(tx.QueryRow(s.q(`SELECT `+deadlineColumnsSQL+deadlineFromSQL+` AND sc.id=?`), candidate.sc.ID), false)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
+	d, err := s.deadlineMissCandidateTx(tx, candidate.sc.ID, nowT)
+	if err != nil || d == nil {
 		return false, err
 	}
-	if err = d.resolve(); err != nil {
+	if err := s.recordDeadlineMissTx(tx, *d); err != nil {
 		return false, err
 	}
-	states, err := s.deadlineJournal(tx, []deadlineCandidate{d})
-	if err != nil {
-		return false, err
-	}
-	state := states[d.sc.ID]
-	if state.err != nil {
-		return false, state.err
-	}
-	if !d.eligible(nowT, state) {
-		return false, nil
-	}
-	if err = s.journalScheduleChangeTx(tx, d.sc.ID, "missed_recorded", d.key, "deadline", "", d.after, "system"); err != nil {
-		return false, err
-	}
-	item, err := s.getItemTx(tx, d.sc.ItemID)
-	if err != nil {
-		return false, err
-	}
-	if err = s.emitItemEventTx(tx, kernelevents.ItemDeadlineMissed, item, nil, ""); err != nil {
-		return false, err
-	}
-	if err = tx.Commit(); err != nil {
+	if err := tx.Commit(); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+// deadlineMissCandidateTx rechecks the current deadline and the evaluator's
+// canonical journal dedupe under the schedule pin. It writes nothing, so a
+// renegotiation preview uses the same decision as the evaluator and apply.
+// The caller has already checked the item's terminal status.
+func (s *Store) deadlineMissCandidateTx(tx *sql.Tx, scheduleID string, nowT time.Time) (*deadlineCandidate, error) {
+	d, err := scanDeadline(tx.QueryRow(s.q(`SELECT `+deadlineColumnsSQL+deadlineFromSQL+` AND sc.id=?`), scheduleID), false)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err = d.resolve(); err != nil {
+		return nil, err
+	}
+	states, err := s.deadlineJournal(tx, []deadlineCandidate{d})
+	if err != nil {
+		return nil, err
+	}
+	state := states[d.sc.ID]
+	if state.err != nil {
+		return nil, state.err
+	}
+	if !d.eligible(nowT, state) {
+		return nil, nil
+	}
+	return &d, nil
+}
+
+// recordDeadlineMissTx is the evaluator's writer, also used before applying a
+// renegotiation. Both callers hold the schedule pin and use the same eligibility
+// and dedupe read, so a later tick cannot record the old miss a second time.
+func (s *Store) recordDeadlineMissTx(tx *sql.Tx, d deadlineCandidate) error {
+	if err := s.journalScheduleChangeTx(tx, d.sc.ID, "missed_recorded", d.key, "deadline", "", d.after, "system"); err != nil {
+		return err
+	}
+	item, err := s.getItemTx(tx, d.sc.ItemID)
+	if err != nil {
+		return err
+	}
+	if err = s.emitItemEventTx(tx, kernelevents.ItemDeadlineMissed, item, nil, ""); err != nil {
+		return err
+	}
+	return nil
 }
