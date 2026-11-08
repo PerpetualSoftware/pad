@@ -459,7 +459,11 @@ func (s *Store) createScheduleRolesAt(workspaceID, itemID string, in models.Sche
 		return nil, err
 	}
 	spec := c.Spec()
-	end, hasEnd, err := validateScheduleFields(in.Kind, anchor, audience, in.LeadMinutes, spec.Start, in.Dtend)
+	validationKind, validationEnd := in.Kind, in.Dtend
+	if roles != nil {
+		validationKind, validationEnd = "check", ""
+	}
+	end, hasEnd, err := validateScheduleFields(validationKind, anchor, audience, in.LeadMinutes, spec.Start, validationEnd)
 	if err != nil {
 		return nil, err
 	}
@@ -508,30 +512,33 @@ func (s *Store) createScheduleRolesAt(workspaceID, itemID string, in models.Sche
 	if spec.Rule != "" {
 		rrule = spec.Rule
 	}
-	if _, err := tx.Exec(s.q(`
-		INSERT INTO item_schedules (id, workspace_id, item_id, kind, dtstart, dtend, tz, floating, rrule, rdates, exdates,
-			anchor, audience, lead_minutes, next_at, next_wall, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
-		id, workspaceID, itemID, in.Kind, spec.Start.String(), dtend, tzVal, s.dialect.BoolToInt(spec.Floating), rrule,
-		mustJSON(wallStrings(spec.RDates)), mustJSON(wallStrings(spec.ExDates)), anchor, audience, in.LeadMinutes,
-		NormalizeInstant(arm.NextAt), arm.NextWall.String(), ts, ts); err != nil {
-		if isUniqueViolation(err) {
-			return nil, ErrScheduleExists
-		}
-		if isForeignKeyViolation(err) { // the item went away after the liveness check
-			return nil, ErrScheduleItemGone
-		}
-		return nil, fmt.Errorf("create schedule: %w", err)
+	sc := &models.ItemSchedule{ID: id, WorkspaceID: workspaceID, ItemID: itemID, Kind: in.Kind, Dtstart: spec.Start.String(),
+		Floating: spec.Floating, RDates: wallStrings(spec.RDates), ExDates: wallStrings(spec.ExDates), Anchor: anchor, Audience: audience, LeadMinutes: in.LeadMinutes,
+		NextAt: ptr(NormalizeInstant(arm.NextAt)), NextWall: ptr(arm.NextWall.String()), CreatedAt: ts, UpdatedAt: ts}
+	if dtend != nil {
+		sc.Dtend = ptr(dtend.(string))
+	}
+	if tzVal != nil {
+		sc.Tz = ptr(tzVal.(string))
+	}
+	if rrule != nil {
+		sc.Rrule = ptr(rrule.(string))
+	}
+	if roles != nil {
+		err = s.writeNativeRolesTx(tx, sc, *roles, true)
+	} else {
+		err = s.insertScheduleTx(tx, sc, nil)
+	}
+	if err != nil {
+		return nil, err
 	}
 	if err := s.insertManagedReminderTx(tx, workspaceID, itemID, id, NormalizeInstant(arm.RemindAt)); err != nil {
 		return nil, err
 	}
-	if roles != nil {
-		if err := s.writeNativeRolesTx(tx, id, *roles); err != nil {
+	if roles == nil {
+		if err := s.setLegacyRolesTx(tx, id, in.Kind, spec.Start.String(), in.Dtend); err != nil {
 			return nil, err
 		}
-	} else if err := s.setLegacyRolesTx(tx, id, in.Kind, spec.Start.String(), in.Dtend); err != nil {
-		return nil, err
 	}
 	if err := s.journalScheduleAfterTx(tx, id, "create", "", "", "", "system"); err != nil {
 		return nil, err
@@ -540,6 +547,30 @@ func (s *Store) createScheduleRolesAt(workspaceID, itemID string, in models.Sche
 		return nil, fmt.Errorf("create schedule: %w", err)
 	}
 	return s.GetSchedule(workspaceID, itemID)
+}
+
+// insertScheduleTx stores the initial kind/end and native role columns in the
+// same statement. Legacy callers populate their roles immediately afterwards.
+func (s *Store) insertScheduleTx(tx *sql.Tx, sc *models.ItemSchedule, native *scheduleRoles) error {
+	r := scheduleRoles{Origin: "legacy_backfill"}
+	if native != nil {
+		r = *native
+	}
+	_, err := tx.Exec(s.q(`INSERT INTO item_schedules (id,workspace_id,item_id,kind,dtstart,dtend,tz,floating,rrule,rdates,exdates,anchor,audience,lead_minutes,next_at,next_wall,created_at,updated_at,
+ target_days,target_secs,earliest_days,earliest_secs,deadline_days,deadline_secs,deadline_behavior,occupied_days,occupied_secs,outcome,roles_origin)
+ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`),
+		sc.ID, sc.WorkspaceID, sc.ItemID, sc.Kind, sc.Dtstart, nullStr(sc.Dtend), nullStr(sc.Tz), s.dialect.BoolToInt(sc.Floating), nullStr(sc.Rrule), mustJSON(sc.RDates), mustJSON(sc.ExDates), sc.Anchor, sc.Audience, sc.LeadMinutes, nullStr(sc.NextAt), nullStr(sc.NextWall), sc.CreatedAt, sc.UpdatedAt,
+		r.TargetDays, r.TargetSecs, r.EarliestDays, r.EarliestSecs, r.DeadlineDays, r.DeadlineSecs, r.DeadlineBehavior, r.OccupiedDays, r.OccupiedSecs, r.Outcome, r.Origin)
+	if isUniqueViolation(err) {
+		return ErrScheduleExists
+	}
+	if isForeignKeyViolation(err) {
+		return ErrScheduleItemGone
+	}
+	if err != nil {
+		return fmt.Errorf("create schedule: %w", err)
+	}
+	return nil
 }
 
 // requireLiveItemTx asserts the item is a live item of the workspace and, on
@@ -611,28 +642,32 @@ func (s *Store) UpdateSchedule(workspaceID, itemID string, upd models.ScheduleUp
 }
 
 func (s *Store) updateScheduleAt(workspaceID, itemID string, upd models.ScheduleUpdate, nowT time.Time) (*models.ItemSchedule, error) {
+	sc, err := s.updateCommitmentAt(workspaceID, itemID, upd, nil, nowT)
+	if errors.Is(err, ErrScheduleNotFound) {
+		return nil, nil
+	}
+	return sc, err
+}
+
+func (s *Store) updateCommitmentAt(workspaceID, itemID string, upd models.ScheduleUpdate, roles *scheduleRoles, nowT time.Time) (*models.ItemSchedule, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, fmt.Errorf("update schedule: %w", err)
 	}
 	defer tx.Rollback()
 
-	// Item before schedule, like every other writer (fire pins item, workspace,
-	// schedule). FOR KEY SHARE is enough: it waits for a writer holding the item
-	// FOR UPDATE and keeps the item from being deleted under the revive path's
-	// managed-row insert. A missing item is not an error here; the schedule read
-	// below then finds nothing.
-	if s.dialect.Driver() == DriverPostgres {
-		var one int
-		err := tx.QueryRow(s.q(`SELECT 1 FROM items WHERE id = ? AND workspace_id = ? FOR KEY SHARE`),
-			itemID, workspaceID).Scan(&one)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("update schedule: lock item: %w", err)
-		}
+	if err := s.pinScheduleTx(tx, workspaceID, itemID); err != nil {
+		return nil, err
 	}
-
-	cur, err := s.getScheduleQ(tx, workspaceID, itemID, true)
-	if err != nil || cur == nil {
+	cur, err := s.getScheduleQ(tx, workspaceID, itemID, false)
+	if err != nil {
+		return nil, err
+	}
+	if cur == nil {
+		return nil, ErrScheduleNotFound
+	}
+	storedRoles, err := s.scheduleRolesOf(tx, cur)
+	if err != nil {
 		return nil, err
 	}
 	before, err := s.scheduleSnapshotTx(tx, cur.ID)
@@ -734,6 +769,24 @@ func (s *Store) updateScheduleAt(workspaceID, itemID string, upd models.Schedule
 			return nil, err
 		}
 	}
+	if upd.Dtstart != nil && upd.Dtend == nil && storedRoles.OccupiedDays != nil {
+		derivedEnd, err := occupiedEnd(spec.Start.String(), storedRoles)
+		if err != nil {
+			return nil, err
+		}
+		if kind == "window" {
+			dtend = derefStr(derivedEnd)
+		}
+	}
+	if roles != nil {
+		if _, err := occupiedEnd(spec.Start.String(), *roles); err != nil {
+			return nil, err
+		}
+	} else if storedRoles.Origin == "native" {
+		if _, err := occupiedEnd(spec.Start.String(), storedRoles); err != nil {
+			return nil, err
+		}
+	}
 	end, hasEnd, err := validateScheduleFields(kind, anchor, audience, lead, spec.Start, dtend)
 	if err != nil {
 		return nil, err
@@ -750,16 +803,9 @@ func (s *Store) updateScheduleAt(workspaceID, itemID string, upd models.Schedule
 		spec.Rule != deref(cur.Rrule) || anchor != cur.Anchor ||
 		!equalStringSlices(wallStrings(spec.RDates), cur.RDates) || !equalStringSlices(wallStrings(spec.ExDates), cur.ExDates)
 	timingEdit := timingNamed && (timingChanged || cur.ErrorCode != nil)
-	if timingEdit {
-		// A native commitment's deadline is its seed wall plus an offset, so a
-		// timing edit moves it. That is a renegotiation, not a schedule edit.
-		roles, err := s.scheduleRolesOf(tx, cur)
-		if err != nil {
-			return nil, err
-		}
-		if roles.Origin == "native" && roles.DeadlineDays != nil {
-			return nil, ErrHardDeadlineRenegotiate
-		}
+	if storedRoles.Origin == "native" && storedRoles.DeadlineDays != nil &&
+		(timingEdit || (timingNamed && cur.EndedAt != nil) || (roles != nil && !sameDeadline(storedRoles, *roles))) {
+		return nil, ErrHardDeadlineRenegotiate
 	}
 
 	ts := now()
@@ -817,15 +863,26 @@ func (s *Store) updateScheduleAt(workspaceID, itemID string, upd models.Schedule
 	if hasEnd {
 		dtendVal = end.String()
 	}
-	if _, err := tx.Exec(s.q(`
-		UPDATE item_schedules SET kind = ?, dtstart = ?, dtend = ?, tz = ?, floating = ?, rrule = ?, rdates = ?, exdates = ?,
-			anchor = ?, audience = ?, lead_minutes = ?, next_at = ?, next_wall = ?, next_override_at = ?, anchor_wall = ?,
-			ended_at = ?, error_code = ?, updated_at = ?
-		WHERE id = ?`),
-		kind, spec.Start.String(), dtendVal, tzVal, s.dialect.BoolToInt(spec.Floating), rrule,
+	if roles != nil {
+		edited := *cur
+		edited.Dtstart, edited.Anchor, edited.Audience, edited.LeadMinutes = spec.Start.String(), anchor, audience, lead
+		if err := s.writeNativeRolesTx(tx, &edited, *roles, false); err != nil {
+			return nil, err
+		}
+		kind, dtend = edited.Kind, derefStr(edited.Dtend)
+		dtendVal = nullStr(edited.Dtend)
+	}
+	derivedColumns := "kind=?,dtend=?,"
+	args := []any{kind, dtendVal}
+	if roles != nil {
+		derivedColumns = ""
+		args = nil
+	}
+	args = append(args, spec.Start.String(), tzVal, s.dialect.BoolToInt(spec.Floating), rrule,
 		mustJSON(wallStrings(spec.RDates)), mustJSON(wallStrings(spec.ExDates)), anchor, audience, lead,
-		nullStr(nextAt), nullStr(nextWall), nullStr(override), nullStr(anchorWall), nullStr(endedAt), nullStr(errCode), ts,
-		cur.ID); err != nil {
+		nullStr(nextAt), nullStr(nextWall), nullStr(override), nullStr(anchorWall), nullStr(endedAt), nullStr(errCode), ts, cur.ID)
+	if _, err := tx.Exec(s.q(`UPDATE item_schedules SET `+derivedColumns+`dtstart=?,tz=?,floating=?,rrule=?,rdates=?,exdates=?,
+ anchor=?,audience=?,lead_minutes=?,next_at=?,next_wall=?,next_override_at=?,anchor_wall=?,ended_at=?,error_code=?,updated_at=? WHERE id=?`), args...); err != nil {
 		return nil, fmt.Errorf("update schedule: %w", err)
 	}
 
@@ -861,8 +918,10 @@ func (s *Store) updateScheduleAt(workspaceID, itemID string, upd models.Schedule
 		}
 		clearedOverrides = n > 0
 	}
-	if err := s.setLegacyRolesTx(tx, cur.ID, kind, spec.Start.String(), dtend); err != nil {
-		return nil, err
+	if storedRoles.Origin == "legacy_backfill" && roles == nil {
+		if err := s.setLegacyRolesTx(tx, cur.ID, kind, spec.Start.String(), dtend); err != nil {
+			return nil, err
+		}
 	}
 	after, err := s.scheduleSnapshotTx(tx, cur.ID)
 	if err != nil {
@@ -870,6 +929,9 @@ func (s *Store) updateScheduleAt(workspaceID, itemID string, upd models.Schedule
 	}
 	if after != before || clearedOverrides {
 		reason := ""
+		if roles != nil {
+			reason = rolesWriteReason
+		}
 		if clearedOverrides {
 			reason = "Occurrence overrides cleared"
 		}

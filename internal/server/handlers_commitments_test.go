@@ -20,7 +20,7 @@ func commitmentCall(f *schedHTTP, method string, body any) *httptest.ResponseRec
 	return f.as(f.token(f.owner, ""), method, commitmentPath(f), body)
 }
 func commitmentBody() map[string]any {
-	return map[string]any{"kind": "check", "dtstart": "2099-01-01T09:00", "roles": map[string]any{
+	return map[string]any{"dtstart": "2099-01-01T09:00", "roles": map[string]any{
 		"target_days": 0, "target_secs": 0, "deadline_days": 1, "deadline_secs": 0, "deadline_behavior": "stays_owed", "outcome": "shipped"}}
 }
 func readCommitment(t *testing.T, rr *httptest.ResponseRecorder, status int) models.Commitment {
@@ -101,13 +101,13 @@ func TestCommitmentInvalidRolesAndStrictBodies(t *testing.T) {
 		}
 		f.nothingStored()
 	}
-	for _, body := range []string{`null`, `{"kind":"check","dtstart":"2099-01-01","roles":{"typo":1}}`, `{"roles":{},"roles":{}}`} {
+	for _, body := range []string{`null`, `{"dtstart":"2099-01-01","roles":{"typo":1}}`, `{"roles":{},"roles":{}}`} {
 		f.expectErr(commitmentCall(f, "POST", body), 400, "invalid_body", "")
 	}
 	for _, method := range []string{"POST", "PATCH"} {
 		f.expectErr(commitmentCall(f, method, `{}`), 400, "validation_error", "required")
 	}
-	f.expectErr(commitmentCall(f, "POST", `{"kind":null,"dtstart":"2099-01-01","roles":{}}`), 400, "validation_error", "required")
+	f.expectErr(commitmentCall(f, "POST", `{"kind":null,"dtstart":"2099-01-01","roles":{}}`), 400, "validation_error", "not_accepted")
 }
 
 func TestCommitmentPermissionDoors(t *testing.T) {

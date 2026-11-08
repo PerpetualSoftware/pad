@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -21,15 +22,6 @@ import (
 // check (store.compileScheduleSpec is the single door), so this file maps
 // requests onto it and its errors back onto the API's vocabulary. It adds no
 // second parser for rules or walls.
-
-// scheduleMembers is the fixed allowlist of request member names, in the order
-// an update's activity entry lists them. The activity metadata is built from
-// the intersection of the body's keys with this list, so it holds names only
-// and can never carry rule text or a wall.
-var scheduleMembers = []string{
-	"kind", "dtstart", "dtend", "tz", "floating", "rrule", "rdates", "exdates",
-	"anchor", "audience", "lead_minutes",
-}
 
 // scheduleOccurrenceView is next_occurrence.
 type scheduleOccurrenceView struct {
@@ -389,8 +381,16 @@ func isJSONNull(raw json.RawMessage) bool { return string(raw) == "null" }
 // writes the response itself and returns ok=false on a refusal. fields is the
 // allowlisted member names the body carried.
 func toScheduleUpdate(w http.ResponseWriter, b schedulePatchBody) (upd models.ScheduleUpdate, fields []string, ok bool) {
-	raws := b.present()
-	for _, name := range scheduleMembers {
+	return scheduleUpdateFromMembers(w, b.present())
+}
+
+func scheduleUpdateFromMembers(w http.ResponseWriter, raws map[string]json.RawMessage) (upd models.ScheduleUpdate, fields []string, ok bool) {
+	names := make([]string, 0, len(raws))
+	for name := range raws {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
 		raw := raws[name]
 		if raw == nil {
 			continue

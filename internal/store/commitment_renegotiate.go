@@ -122,7 +122,7 @@ func (s *Store) renegotiateCommitmentAt(workspaceID, itemID, actor string, in mo
 			return nil, err
 		}
 	} else {
-		if err := s.writeNativeRolesTx(tx, sc.ID, plan.roles); err != nil {
+		if err := s.writeNativeRolesTx(tx, sc, plan.roles, false); err != nil {
 			return nil, err
 		}
 		if in.RemoveDeadline {
@@ -258,6 +258,9 @@ func (s *Store) planRenegotiationTx(tx *sql.Tx, sc *models.ItemSchedule, in mode
 	}
 	p.roles, err = rolesFromInput(input)
 	if err != nil {
+		return nil, err
+	}
+	if _, err := occupiedEnd(sc.Dtstart, p.roles); err != nil {
 		return nil, err
 	}
 	view.NewDeadlineBehavior = p.roles.DeadlineBehavior
