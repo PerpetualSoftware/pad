@@ -497,6 +497,7 @@ func TestBUG3821_AHandlersOwnDeadlineIsNotReArmed(t *testing.T) {
 // once, so it must be sent under a live deadline, and the
 // deadline is cleared again when it returns.
 func TestBUG3821_WriteHeaderArms(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.responseWriteTimeoutOverride = time.Hour
 	log := &deadlineLog{ResponseRecorder: httptest.NewRecorder()}
@@ -519,6 +520,7 @@ func TestBUG3821_WriteHeaderArms(t *testing.T) {
 // run it out. The last deadline is the one armed after the
 // handler returns, for net/http's final flush.
 func TestBUG3821_NoDeadlineIsLiveWhileTheHandlerWorks(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.responseWriteTimeoutOverride = time.Hour
 	log := &deadlineLog{ResponseRecorder: httptest.NewRecorder()}
@@ -611,6 +613,7 @@ func (b *blockingWriteLog) Write(p []byte) (int, error) {
 // A write that returns while another is still blocked does not clear the
 // deadline from under it: only the last one in flight clears.
 func TestBUG3821_AnOverlappingWriteKeepsItsDeadline(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.responseWriteTimeoutOverride = time.Hour
 	log := &blockingWriteLog{ResponseRecorder: httptest.NewRecorder(), writing: make(chan struct{}), release: make(chan struct{})}
@@ -642,6 +645,7 @@ func (p *panickingHeaderLog) WriteHeader(int) { panic("writer failed") }
 // A WriteHeader whose writer panics still clears its deadline, as Write and
 // Flush do, so the handler unwinding from it is not under one.
 func TestBUG3821_APanickingWriteHeaderClearsItsDeadline(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.responseWriteTimeoutOverride = time.Hour
 	log := &panickingHeaderLog{deadlineLog{ResponseRecorder: httptest.NewRecorder()}}

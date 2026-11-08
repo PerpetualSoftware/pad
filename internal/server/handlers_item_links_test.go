@@ -8,6 +8,7 @@ import (
 )
 
 func TestCreateItemLinkAcceptsCanonicalLineageTypes(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -41,6 +42,7 @@ func TestCreateItemLinkAcceptsCanonicalLineageTypes(t *testing.T) {
 }
 
 func TestCreateItemLinkRejectsInvalidLineageTypes(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -68,6 +70,7 @@ func TestCreateItemLinkRejectsInvalidLineageTypes(t *testing.T) {
 }
 
 func TestCreateItemLinkRejectsDuplicatesAndSelfLinks(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -111,6 +114,7 @@ func TestCreateItemLinkRejectsDuplicatesAndSelfLinks(t *testing.T) {
 }
 
 func TestGetItemLinksIncludesEnrichedMetadata(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 

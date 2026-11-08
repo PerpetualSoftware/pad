@@ -17,6 +17,7 @@ import (
 // response names the repeated member in warnings.collapsed_duplicate_keys.
 // A top-level and a nested repeat, at each door.
 func TestCollectionTraitsWithRepeatedMembersAreStoredCollapsed(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name, traits, member, wantKind string
 	}{
@@ -83,6 +84,7 @@ func TestCollectionTraitsWithRepeatedMembersAreStoredCollapsed(t *testing.T) {
 // The control direction: traits with no repeat are stored exactly as sent and
 // the response carries no warnings key at all.
 func TestCollectionTraitsWithoutRepeatsAreStoredVerbatim(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Clean"})
 	if err != nil {
@@ -108,6 +110,7 @@ func TestCollectionTraitsWithoutRepeatsAreStoredVerbatim(t *testing.T) {
 // stored collapsed, and is "0" on a clean import so a client can tell that
 // apart from a server that predates it. The store test pins what is stored.
 func TestWorkspaceImportReportsCollapsedDuplicateKeys(t *testing.T) {
+	t.Parallel()
 	const ts = "2026-09-25T12:00:00Z"
 	for _, tc := range []struct {
 		name, fields, want string

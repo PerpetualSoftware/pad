@@ -97,6 +97,7 @@ var kickExemptFuncs = map[string]string{
 }
 
 func TestTASK3365_EveryAccessDoorKicks(t *testing.T) {
+	t.Parallel()
 	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)

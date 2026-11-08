@@ -39,6 +39,7 @@ func rawJSONRequest(srv *Server, method, path, body string) *httptest.ResponseRe
 var escNULLiteral = string([]byte{'\\', 'u', '0', '0', '0', '0'})
 
 func TestBodyDecodesNUL(t *testing.T) {
+	t.Parallel()
 	esc := escNULLiteral
 	cases := []struct {
 		name string
@@ -90,6 +91,7 @@ func TestBodyDecodesNUL(t *testing.T) {
 // reading of JSON escaping; asserting it against encoding/json pins the
 // property the fix depends on.
 func TestBodyDecodesNULAgreesWithTheDecoder(t *testing.T) {
+	t.Parallel()
 	esc := escNULLiteral
 	bodies := []string{
 		`{"title":"hello"}`,
@@ -145,6 +147,7 @@ func anyHasNUL(v any) bool {
 // value rather than error. That is deliberate: on SQLite the refusal can only
 // come from this fix, so a green here cannot be the database doing the work.
 func TestDecodeJSONRefusesNULThroughTheHandler(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	rr := rawJSONRequest(srv, "POST", "/api/v1/workspaces/",
@@ -201,6 +204,7 @@ func TestDecodeJSONRefusesNULThroughTheHandler(t *testing.T) {
 // empty body; json.Unmarshal answers a SyntaxError, which that check cannot
 // see. Without this, an empty-body playbook run starts returning 400.
 func TestDecodeJSONKeepsEmptyBodyEOF(t *testing.T) {
+	t.Parallel()
 	for _, body := range []string{"", "   ", "\n\t "} {
 		req := httptest.NewRequest("POST", "/", strings.NewReader(body))
 		var v map[string]any
@@ -237,6 +241,7 @@ func jsonEncode(t *testing.T, s string) string {
 // produces — a different error precisely because the outer string is pure
 // ASCII and never trips the text-encoding check.
 func TestBodyDecodesNULNestedDocuments(t *testing.T) {
+	t.Parallel()
 	esc := escNULLiteral
 
 	innerWithNUL := `{"k":"a` + esc + `b"}`       // decodes to a NUL when parsed
@@ -324,6 +329,7 @@ func TestBodyDecodesNULNestedDocuments(t *testing.T) {
 // is a worse failure than the narrow door the unscoped recursion closed, so
 // the recursion is now scoped to the keys that actually carry JSON documents.
 func TestBodyDecodesNULLeavesTextFieldsAlone(t *testing.T) {
+	t.Parallel()
 	doc := `{"k":"a` + escNULLiteral + `b"}`
 	for _, key := range []string{"content", "title", "summary", "body", "description"} {
 		body := `{"` + key + `":` + jsonEncode(t, doc) + `}`
@@ -347,6 +353,7 @@ func TestBodyDecodesNULLeavesTextFieldsAlone(t *testing.T) {
 // over-inclusion note at jsonEncodedFieldKeys), so this asserts one direction
 // only, deliberately.
 func TestJSONEncodedFieldKeysCoversTheModels(t *testing.T) {
+	t.Parallel()
 	entries, err := os.ReadDir("../models")
 	if err != nil {
 		t.Fatalf("read models dir: %v", err)
@@ -392,6 +399,7 @@ func TestJSONEncodedFieldKeysCoversTheModels(t *testing.T) {
 // — the inner text is re-escaped when the blob is written), while the same
 // escape IN that document must be refused.
 func TestBodyDecodesNULDescendsExactlyOneLevel(t *testing.T) {
+	t.Parallel()
 	inner := `{"k":"a` + escNULLiteral + `b"}`
 
 	atTheParsedLayer := `{"fields":` + jsonEncode(t, inner) + `}`
@@ -419,6 +427,7 @@ func TestBodyDecodesNULDescendsExactlyOneLevel(t *testing.T) {
 // nested case, on SQLite for the same reason as the single-layer one: there
 // the write would SUCCEED, so a green cannot be the database doing the work.
 func TestDecodeJSONRefusesNestedNULThroughTheHandler(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	rr := rawJSONRequest(srv, "POST", "/api/v1/workspaces/",
@@ -457,6 +466,7 @@ func TestDecodeJSONRefusesNestedNULThroughTheHandler(t *testing.T) {
 // from multi-byte runes deliberately, and each asserts the OUTPUT is valid
 // UTF-8 rather than merely short.
 func TestTruncateBindableText(t *testing.T) {
+	t.Parallel()
 	// é is 2 bytes, 中 is 3, 𝄞 is 4 — one case per continuation length, so a
 	// walk-back that is off by one cannot pass them all.
 	for _, tc := range []struct {
@@ -524,6 +534,7 @@ func TestTruncateBindableText(t *testing.T) {
 // one must not turn a fine request into a 400. That difference from every
 // other check in this file is the thing worth pinning.
 func TestRequestUserAgentIsBindableText(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		ua   string
@@ -576,6 +587,7 @@ func TestRequestUserAgentIsBindableText(t *testing.T) {
 // test runs the gated function against an UNGATED walk over a corpus built to
 // attack it, and any disagreement is a bypass.
 func TestBodyDecodesNULGateAgreesWithAnUngatedWalk(t *testing.T) {
+	t.Parallel()
 	ungated := func(raw []byte) bool {
 		var v any
 		if err := json.Unmarshal(raw, &v); err != nil {
@@ -649,6 +661,7 @@ func TestBodyDecodesNULGateAgreesWithAnUngatedWalk(t *testing.T) {
 // breaking session validation for any client with a non-UTF-8 User-Agent.
 // A sink that is merely named is a pointer to verify, not a finding.
 func TestDocumentActivityStoresBindableUserAgent(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
 
@@ -716,6 +729,7 @@ func TestDocumentActivityStoresBindableUserAgent(t *testing.T) {
 // questions are different and both must be asked: does the string ITSELF
 // carry a NUL, and does the document it carries contain an escape.
 func TestBodyDecodesNULUnderAJSONEncodedKeyChecksBothWays(t *testing.T) {
+	t.Parallel()
 	esc := escNULLiteral
 
 	// A direct escape in the fields STRING (not inside a nested document):
@@ -744,6 +758,7 @@ func TestBodyDecodesNULUnderAJSONEncodedKeyChecksBothWays(t *testing.T) {
 // still contains that sequence — so valid content was refused. Artifacts are
 // documentation; text about a JSON escape is exactly what one carries.
 func TestArtifactBindableTextAcceptsLiteralEscapeText(t *testing.T) {
+	t.Parallel()
 	esc := escNULLiteral
 	ok := artifact.Artifact{
 		Title: "Escapes",
@@ -778,6 +793,7 @@ func TestArtifactBindableTextAcceptsLiteralEscapeText(t *testing.T) {
 // into one: an ABSENT body legitimately means "send it to me", while a body
 // that is present and REFUSED must not be reinterpreted as that default.
 func TestTestEmailRefusesUnusableBody(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	token := bootstrapFirstUser(t, srv, "admin-mail@example.com", "Admin")
 	mock := mockMailerooEndpoint(t, http.StatusOK, true)
@@ -832,6 +848,7 @@ func TestTestEmailRefusesUnusableBody(t *testing.T) {
 // none of the safe form also fails, so a scan that silently matched nothing
 // cannot pass forever.
 func TestTextSafeHelpersAreUsedAtEveryCallSite(t *testing.T) {
+	t.Parallel()
 	// A plain byte slice of a caller string can split a rune and produce
 	// invalid UTF-8; truncateBindableText is the only allowed form.
 	unsafeTruncate := regexp.MustCompile(`\b(name|suggested|input\.Name|Name)\s*=\s*\w+(\.\w+)*\[:\d+\]`)
@@ -927,6 +944,7 @@ func TestTextSafeHelpersAreUsedAtEveryCallSite(t *testing.T) {
 // answering "Request body must be JSON" sends a client hunting a syntax error
 // it does not have.
 func TestOAuthRegisterRefusesNULBody(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetCloudMode("cloud-secret-for-test")
 	o, err := newTestOAuthServer(t, srv)
@@ -974,6 +992,7 @@ func TestOAuthRegisterRefusesNULBody(t *testing.T) {
 //
 // Measured before the fix: `fields` refused, `Fields` and `FIELDS` accepted.
 func TestBodyDecodesNULMatchesKeysLikeTheDecoder(t *testing.T) {
+	t.Parallel()
 	inner := `{"k":"a` + escNULLiteral + `b"}`
 	// The last two are Unicode simple-fold spellings: encoding/json matches
 	// them to the same struct field, and lower-casing does NOT.
@@ -1003,6 +1022,7 @@ func TestBodyDecodesNULMatchesKeysLikeTheDecoder(t *testing.T) {
 // asserted the two WRONG answers on purpose so that it would fail when this
 // landed, and it did.
 func TestBodyScanClosesTheMapModelGaps(t *testing.T) {
+	t.Parallel()
 	// (1) A NUL in a shadowed duplicate. The typed decode MERGES a repeated
 	// map member, so the NUL would reach the store. Every occurrence is a
 	// token, so it is seen, and the repeat is reported too.
@@ -1056,6 +1076,7 @@ func TestBodyScanClosesTheMapModelGaps(t *testing.T) {
 // (BUG-2812), and that it is judged on EVERY body rather than
 // only on one that carries an escape.
 func TestBodyScanRefusesRepeatedRequestMembers(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name, body, want string
 	}{
@@ -1091,6 +1112,7 @@ func TestBodyScanRefusesRepeatedRequestMembers(t *testing.T) {
 // router, on a member that no per-struct check guards, so the 400 can only come
 // from the body scan.
 func TestDecodeJSONRefusesARepeatedMember(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSWithCollections(t, srv)
 	it := createTaskWithFields(t, srv, ws, "orig", `{"status":"open"}`)
@@ -1123,6 +1145,7 @@ func TestDecodeJSONRefusesARepeatedMember(t *testing.T) {
 // explanation of the change would be wrong even though its status code
 // stayed right.
 func TestUnknownFieldRefusalThroughTheHandler(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	rr := rawJSONRequest(srv, "POST", "/api/v1/workspaces/",
@@ -1176,6 +1199,7 @@ func TestUnknownFieldRefusalThroughTheHandler(t *testing.T) {
 // EOF (or the playbook contract breaks), and non-JSON whitespace must NOT (or
 // the divergence is still there).
 func TestDecodeJSONTrimsOnlyJSONWhitespace(t *testing.T) {
+	t.Parallel()
 
 	for _, tc := range []struct {
 		name    string
@@ -1341,6 +1365,7 @@ func independentDecodesNUL(t *testing.T, raw []byte) bool {
 // spot). Disagreement means one of the two is wrong and both get read - the
 // point is that a single shared bug can no longer hide.
 func TestBodyDecodesNULAgainstAnIndependentOracle(t *testing.T) {
+	t.Parallel()
 	esc := escNULLiteral
 	bs := string([]byte{'\\', 'u', '0', '0', '5', 'c'})
 	doubled := `\\` + "u0000"
@@ -1495,6 +1520,7 @@ func mapModelDecodesNUL(v any, inUserData bool) bool {
 // found that "the top level is always a struct" was false: two
 // endpoints decode into a map, and three into a slice of structs).
 func TestRepeatFoldFollowsTheTopLevelDestination(t *testing.T) {
+	t.Parallel()
 	type s struct{ A string }
 	for _, c := range []struct {
 		name string
@@ -1537,6 +1563,7 @@ func TestRepeatFoldFollowsTheTopLevelDestination(t *testing.T) {
 // /workspaces/reorder decodes into a slice of structs, where encoding/json
 // reads "Slug" into the slug field and the first value is lost.
 func TestReorderRefusesACaseVariantRepeat(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	owner := mustCreateUser(t, srv, "owner-reorder-2812@example.com", "Owner", "admin")
 	ws := mustCreateOwnedWorkspace(t, srv, "Reorder 2812", owner)

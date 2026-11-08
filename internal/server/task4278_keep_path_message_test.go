@@ -18,6 +18,7 @@ import (
 // text; none of it may reach the body. Text the handler or the store authored
 // for the caller (a ValidationError's Reason) still does.
 func TestKeepPathMessageNeverCarriesRawErrorText(t *testing.T) {
+	t.Parallel()
 	const path = "/srv/imports/private-dir/bundle-7731.tar"
 	const sql = "INSERT INTO items (id) VALUES ($1)"
 	for name, err := range map[string]error{
@@ -44,6 +45,7 @@ func TestKeepPathMessageNeverCarriesRawErrorText(t *testing.T) {
 }
 
 func TestKeepPathMessageKeepsAuthoredText(t *testing.T) {
+	t.Parallel()
 	err := fmt.Errorf("import workspace: %w", &store.ValidationError{Reason: `collection prefix "!!" is not importable; edit the prefix`})
 	if got := keepPathMessage(err); got != `collection prefix "!!" is not importable; edit the prefix` {
 		t.Errorf("a ValidationError's Reason must reach the client unchanged, got %q", got)
@@ -65,6 +67,7 @@ func TestKeepPathMessageKeepsAuthoredText(t *testing.T) {
 // An outcome-unknown write says "check before trying again", so it carries no
 // Retry-After; a definitive rollback keeps it.
 func TestWriteBusyRetryAfterByClass(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		err        error
 		write      bool
@@ -94,6 +97,7 @@ func TestWriteBusyRetryAfterByClass(t *testing.T) {
 // never with the wrapper chain around them (a store prefix, a driver's Scan
 // text, an SQLSTATE).
 func TestKeepPathMessageSentinelsDropWrapperText(t *testing.T) {
+	t.Parallel()
 	const scan = `Scan error on column index 3, name "fields": SQLSTATE 22P02`
 	rep := &models.RepeatedMemberError{Member: "a field-values member"}
 	for name, tc := range map[string]struct {
@@ -130,6 +134,7 @@ func TestKeepPathMessageSentinelsDropWrapperText(t *testing.T) {
 
 // A remap failure whose primary wraps a ValidationError keeps the remap text.
 func TestKeepPathMessageRemapBeatsValidationError(t *testing.T) {
+	t.Parallel()
 	primary := fmt.Errorf("import workspace: %w", &store.ValidationError{Reason: "collection prefix is not importable"})
 	re := &importRemapError{primary: primary, cause: errors.New("scan: SELECT secret")}
 	got := keepPathMessage(re)
@@ -146,6 +151,7 @@ func TestKeepPathMessageRemapBeatsValidationError(t *testing.T) {
 // is deliberate and pinned: remap, then ValidationError, then the authored
 // sentinels.
 func TestKeepPathMessagePrecedenceValidationBeforeSentinels(t *testing.T) {
+	t.Parallel()
 	v := &store.ValidationError{Reason: "authored reason"}
 	for name, other := range map[string]error{
 		"repeated": &models.RepeatedMemberError{Member: "m"},
@@ -161,6 +167,7 @@ func TestKeepPathMessagePrecedenceValidationBeforeSentinels(t *testing.T) {
 // repair's Declined reason is built from the document and can name a member
 // from the payload; it must not reach the keep-path body.
 func TestNulRefusalRemedyNeverCarriesDocumentText(t *testing.T) {
+	t.Parallel()
 	tally := &nulRepairTally{Enabled: true, Declined: `repeated member "payload_member_name"`}
 	if !strings.Contains(nulRepairRemedy(tally), "payload_member_name") {
 		t.Fatal("precondition: the unsanitised remedy should carry the declined reason")

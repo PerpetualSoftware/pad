@@ -43,6 +43,7 @@ func doMetricsRequest(srv *Server, remoteAddr, authHeader string) *httptest.Resp
 // callers succeed, everyone else gets 403. Safe default for self-hosters
 // running Prometheus on the same box.
 func TestMetricsAuth_TokenUnset_LoopbackOnly(t *testing.T) {
+	t.Parallel()
 	srv := newMetricsTestServer(t, "")
 
 	rr := doMetricsRequest(srv, "127.0.0.1:12345", "")
@@ -59,6 +60,7 @@ func TestMetricsAuth_TokenUnset_LoopbackOnly(t *testing.T) {
 // TestMetricsAuth_TokenSet_RequiresBearer: with PAD_METRICS_TOKEN set,
 // every scrape — even loopback — must present the correct Bearer token.
 func TestMetricsAuth_TokenSet_RequiresBearer(t *testing.T) {
+	t.Parallel()
 	srv := newMetricsTestServer(t, "super-secret-token")
 
 	// Missing header → 401
@@ -95,6 +97,7 @@ func TestMetricsAuth_TokenSet_RequiresBearer(t *testing.T) {
 // TestMetricsAuth_NoMetricsMeans404 sanity-checks that /metrics is
 // simply not routed when metrics are disabled (SetMetrics never called).
 func TestMetricsAuth_NoMetricsMeans404(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t) // no SetMetrics
 	rr := doMetricsRequest(srv, "127.0.0.1:1", "")
 	if rr.Code != http.StatusNotFound {

@@ -296,6 +296,7 @@ func TestResendVerification_InvalidatesPriorTokenAndIsEnumerationSafe(t *testing
 // ---------------------------------------------------------------------
 
 func TestSelfHostRegister_StaysRestricted(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	bootstrapFirstUser(t, srv, "admin@pad.test", "Admin")
 	// Email fully configured, but NOT cloud mode.
@@ -320,6 +321,7 @@ func TestSelfHostRegister_StaysRestricted(t *testing.T) {
 // ---------------------------------------------------------------------
 
 func TestCloudRegister_UnverifiableConfig_StaysClosed(t *testing.T) {
+	t.Parallel()
 	// (a) Cloud, usable base URL, but NO email sender wired.
 	t.Run("no email sender", func(t *testing.T) {
 		srv := testServer(t)
@@ -434,6 +436,7 @@ func TestCloudRegister_UnverifiableConfig_StaysClosed(t *testing.T) {
 // the invite response, so holding it proves nothing about the address.
 // Accepting by code grants the membership and leaves the account unverified.
 func TestInviteAccept_CodeDoesNotVerify(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	bootstrapFirstUser(t, srv, "admin@pad.test", "Admin")
 	srv.cloudMode = true // so RequireVerifiedEmail is live and the carve-out matters

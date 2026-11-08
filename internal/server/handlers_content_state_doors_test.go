@@ -51,6 +51,7 @@ func decodeMap(t *testing.T, body []byte) map[string]any {
 // superseded steps. PlaybookRunResponse hoists four values out of the item into
 // a hand-built shape, so it inherits nothing.
 func TestPlaybookRunCarriesTheMarkerBothWays(t *testing.T) {
+	t.Parallel()
 	srv := testServerWithCollab(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -102,6 +103,7 @@ func TestPlaybookRunCarriesTheMarkerBothWays(t *testing.T) {
 // field silently. Named in PlaybookRunResponse.ContentState's doc comment as the
 // guard that keeps the two doors from diverging.
 func TestPlaybookShowInheritsTheContentStateMarker(t *testing.T) {
+	t.Parallel()
 	srv := testServerWithCollab(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -141,6 +143,7 @@ func TestPlaybookShowInheritsTheContentStateMarker(t *testing.T) {
 // TestBootstrapConventionBodiesCarryTheMarkerBothWays covers the second door an
 // agent ACTS on: a stale convention is a rule followed after it changed.
 func TestBootstrapConventionBodiesCarryTheMarkerBothWays(t *testing.T) {
+	t.Parallel()
 	srv := testServerWithCollab(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -196,6 +199,7 @@ func TestBootstrapConventionBodiesCarryTheMarkerBothWays(t *testing.T) {
 // marker even when the item is stale, because it carries no body. A marker on an
 // absent body is a claim about something the group does not serve.
 func TestBootstrapGenericIncludeBodiesCarryTheMarkerBothWays(t *testing.T) {
+	t.Parallel()
 	srv := testServerWithCollab(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -288,6 +292,7 @@ func TestBootstrapGenericIncludeBodiesCarryTheMarkerBothWays(t *testing.T) {
 // (no key, no blank line, no reordering), and a MARKED artifact still decodes
 // with body and fields intact, so `pad item import` is unaffected.
 func TestArtifactExportCarriesTheMarkerBothWays(t *testing.T) {
+	t.Parallel()
 	srv := testServerWithCollab(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -391,6 +396,7 @@ func TestArtifactExportCarriesTheMarkerBothWays(t *testing.T) {
 // third leg is the constraint that keeps the marker honest: a playbook with no
 // summary makes no claim about one, even while its row is stale.
 func TestPlaybookSummariesCarryTheMarkerBothWays(t *testing.T) {
+	t.Parallel()
 	srv := testServerWithCollab(t)
 	slug := createWSWithCollections(t, srv)
 

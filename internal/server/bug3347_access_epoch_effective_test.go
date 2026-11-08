@@ -25,6 +25,7 @@ import (
 // doors filter by the nav set, the epoch already agrees with what they serve,
 // and the test would pass on the old code for the wrong reason.
 func TestAccessEpoch_TracksTheEffectiveSetForItemGrantCallers(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	owner, err := srv.store.CreateUser(models.UserCreate{
@@ -163,6 +164,7 @@ func TestAccessEpoch_TracksTheEffectiveSetForItemGrantCallers(t *testing.T) {
 // send sync_required when the fault starts and again when it clears, with no
 // access change either time.
 func TestSSEAccessEpochAdvance_DegradedSnapshotNeitherAnnouncesNorMovesTheBase(t *testing.T) {
+	t.Parallel()
 	// c-kept stays a live collection throughout (BUG-3428 phase 2: the epoch
 	// intersects the caller's set with the live set), so the narrowing below
 	// is the caller's access changing, not the workspace's collections.
@@ -197,6 +199,7 @@ func TestSSEAccessEpochAdvance_DegradedSnapshotNeitherAnnouncesNorMovesTheBase(t
 // VisibleCollectionIDs site on its own. The later site cannot be failed alone
 // by renaming a table, because VisibleCollectionIDs reads the same table first.
 func TestComputeSSEVisibility_StoreFaultMarksDegraded(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	owner, err := srv.store.CreateUser(models.UserCreate{
 		Email: "owner@example.com", Name: "Owner", Password: "correct-horse-battery-staple", Role: "admin",

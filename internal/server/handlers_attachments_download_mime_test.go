@@ -126,6 +126,7 @@ const svgBytes = `<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</scri
 
 // A legacy row stored as image/svg+xml is force-downloaded — GET and HEAD both.
 func TestDownload_SVGLabeledRowForcedAsAttachment(t *testing.T) {
+	t.Parallel()
 	srv, slug, wsID, itemID := mimeDispoFixture(t)
 	id := seedStoredRow(t, srv, wsID, itemID, "image/svg+xml", "diagram.svg", []byte(svgBytes), "", "")
 
@@ -141,6 +142,7 @@ func TestDownload_SVGLabeledRowForcedAsAttachment(t *testing.T) {
 // An extensionless SVG that was sniffed and stored as text/xml (on the upload
 // allowlist as a RenderChip type) is force-downloaded.
 func TestDownload_TextXMLForcedAsAttachment(t *testing.T) {
+	t.Parallel()
 	srv, slug, wsID, itemID := mimeDispoFixture(t)
 	id := seedStoredRow(t, srv, wsID, itemID, "text/xml", "drawing", []byte(svgBytes), "", "")
 
@@ -153,6 +155,7 @@ func TestDownload_TextXMLForcedAsAttachment(t *testing.T) {
 // An unrecognized stored MIME is force-downloaded AND served as opaque
 // octet-stream bytes, never echoed back as a type the browser might act on.
 func TestDownload_UnknownMIMEForcedAsAttachmentOctetStream(t *testing.T) {
+	t.Parallel()
 	srv, slug, wsID, itemID := mimeDispoFixture(t)
 	id := seedStoredRow(t, srv, wsID, itemID, "application/x-not-a-real-type", "mystery.bin", []byte("whatever"), "", "")
 
@@ -169,6 +172,7 @@ func TestDownload_UnknownMIMEForcedAsAttachmentOctetStream(t *testing.T) {
 // applies: a derived row wearing a non-inline-safe MIME is force-downloaded too
 // (a contrived svg-typed variant stands in for the general case).
 func TestDownload_VariantForcedAsAttachment(t *testing.T) {
+	t.Parallel()
 	srv, slug, wsID, itemID := mimeDispoFixture(t)
 	parent := seedStoredRow(t, srv, wsID, itemID, "image/png", "pic.png", realPNG(), "", "")
 	// A derived variant carrying an unsafe MIME — the handler resolves it via the
@@ -182,6 +186,7 @@ func TestDownload_VariantForcedAsAttachment(t *testing.T) {
 // PDF stays inline (browser preview) — the fix must not break legitimate inline
 // types.
 func TestDownload_PDFStaysInline(t *testing.T) {
+	t.Parallel()
 	srv, slug, wsID, itemID := mimeDispoFixture(t)
 	id := seedStoredRow(t, srv, wsID, itemID, "application/pdf", "doc.pdf", []byte("%PDF-1.4 minimal"), "", "")
 
@@ -199,6 +204,7 @@ func TestDownload_PDFStaysInline(t *testing.T) {
 
 // Plain text stays inline.
 func TestDownload_PlainTextStaysInline(t *testing.T) {
+	t.Parallel()
 	srv, slug, wsID, itemID := mimeDispoFixture(t)
 	id := seedStoredRow(t, srv, wsID, itemID, "text/plain", "notes.txt", []byte("hello"), "", "")
 

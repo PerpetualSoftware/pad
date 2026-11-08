@@ -10,6 +10,7 @@ import (
 )
 
 func TestCLIAuthScheme(t *testing.T) {
+	t.Parallel()
 	// Parse a trusted proxy CIDR once for reuse.
 	trustedCIDRs := ParseTrustedProxyCIDRs("10.0.0.0/8")
 	if len(trustedCIDRs) != 1 {

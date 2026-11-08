@@ -17,6 +17,7 @@ import (
 // The documented external contract is unchanged: `?status=open,done` (what
 // `pad item list --status open,done` sends) returns items in either status.
 func TestBUG3167_QueryCommaIsStillAnOr(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		slug := createWSWithCollections(t, srv)
 		open := createItem(t, srv, slug, "tasks", map[string]any{"title": "Open one", "fields": `{"status":"open"}`})
@@ -47,6 +48,7 @@ func TestBUG3167_QueryCommaIsStillAnOr(t *testing.T) {
 // it a false conflict, and a real duplicate "a,b" was never found by that
 // lookup. The lookup is exact now.
 func TestBUG3167_UniqueCheckTreatsACommaValueAsOneValue(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		slug := createWSWithCollections(t, srv)
 		if rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections", map[string]any{
@@ -72,6 +74,7 @@ func TestBUG3167_UniqueCheckTreatsACommaValueAsOneValue(t *testing.T) {
 // the resolver as the whole string and was refused; it still is, rather than
 // turning into an OR over a `parent` field no item stores.
 func TestBUG3167_CommaParentFilterIsStillRefused(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		slug := createWSWithCollections(t, srv)
 		a := createItem(t, srv, slug, "plans", map[string]any{"title": "Plan A"})
@@ -89,6 +92,7 @@ func TestBUG3167_CommaParentFilterIsStillRefused(t *testing.T) {
 // without a comma stays verbatim in Fields, a repeated key keeps its FIRST
 // value, and known parameters never become field filters.
 func TestBUG3167_ParseLowersOnlyCommaValues(t *testing.T) {
+	t.Parallel()
 	r := httptest.NewRequest("GET", "/x?status=open%2C+done&priority=+high+&stage=a%2C&owner=first&owner=second&sort=title", nil)
 	p := parseItemListParams(r)
 	if got := p.FieldsAnyOf["status"]; !reflect.DeepEqual(got, []string{"open", "done"}) {

@@ -77,6 +77,7 @@ func (s *archivingStore) Put(ctx context.Context, hash, mime string, r io.Reader
 // and it would be unreadable and quota-counted for as long as the item stays
 // archived.
 func TestUpload_ItemArchivedMidUploadIsRefused(t *testing.T) {
+	t.Parallel()
 	srv, _ := testServerWithAttachments(t)
 
 	dir := t.TempDir()
@@ -141,6 +142,7 @@ func TestUpload_ItemArchivedMidUploadIsRefused(t *testing.T) {
 // bound to the item. Without it a handler that refused EVERY item-bound
 // upload would pass the refusal assertions vacuously.
 func TestUpload_LiveItemStillSucceeds(t *testing.T) {
+	t.Parallel()
 	srv, _ := testServerWithAttachments(t)
 	slug, item := uploadItemFixture(t, srv, "UploadLiveControl")
 

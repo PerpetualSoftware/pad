@@ -31,6 +31,7 @@ func notesOn(t *testing.T, srv *Server, path string) []models.ItemImplementation
 }
 
 func TestTASK3585_AppendReplaysTheEntryItMade(t *testing.T) {
+	t.Parallel()
 	srv, path := appendKeyFixture(t)
 	body := map[string]any{"append_implementation_note": map[string]any{"summary": "Keyed note"}, "source": "cli", "op_key": "n-1"}
 	first := doRequest(srv, "PATCH", path, body)
@@ -55,6 +56,7 @@ func TestTASK3585_AppendReplaysTheEntryItMade(t *testing.T) {
 }
 
 func TestTASK3585_KeyOnANonAppendUpdateIsRefused(t *testing.T) {
+	t.Parallel()
 	srv, path := appendKeyFixture(t)
 	for _, body := range []map[string]any{
 		{"title": "Renamed", "op_key": "u-1"},
@@ -74,6 +76,7 @@ func TestTASK3585_KeyOnANonAppendUpdateIsRefused(t *testing.T) {
 }
 
 func TestTASK3585_AppendWithoutAKeyIsUnchanged(t *testing.T) {
+	t.Parallel()
 	srv, path := appendKeyFixture(t)
 	body := map[string]any{"append_decision": map[string]any{"decision": "Unkeyed"}}
 	for i := 0; i < 2; i++ {

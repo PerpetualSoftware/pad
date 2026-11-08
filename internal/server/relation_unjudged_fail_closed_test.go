@@ -27,6 +27,7 @@ import (
 // `wrong_collection`; so `not_found` here is only reachable without the second
 // lookup. A judged issue in the same slice is left alone.
 func TestUnjudgedWrongCollectionFailsClosed(t *testing.T) {
+	t.Parallel()
 	f := newDoorFixture(t)
 	r := httptest.NewRequest("POST", "/", nil)
 	r = r.WithContext(WithCurrentUser(r.Context(), f.owner))
@@ -61,6 +62,7 @@ func TestUnjudgedWrongCollectionFailsClosed(t *testing.T) {
 // textual, so line breaks, argument order and an intermediate variable do not
 // matter.
 func TestRelationFeedersPassTheRequesterVisibility(t *testing.T) {
+	t.Parallel()
 	fset := token.NewFileSet()
 
 	// 1. Which store functions take a RelationVisibilityFunc?

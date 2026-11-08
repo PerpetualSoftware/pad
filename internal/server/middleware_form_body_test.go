@@ -52,6 +52,7 @@ func oauthFormBodyServer(t *testing.T, driver store.DriverType) *Server {
 // validator that refused everything, or that broke the body handed on to
 // the handler, fails here rather than passing as "400".
 func TestOAuthFormBodyRefusesUnbindableText(t *testing.T) {
+	t.Parallel()
 	for _, driver := range []store.DriverType{store.DriverSQLite, store.DriverPostgres} {
 		t.Run(string(driver), func(t *testing.T) {
 			srv := oauthFormBodyServer(t, driver)
@@ -141,6 +142,7 @@ func serveFormBody(h http.HandlerFunc, ct string, body io.Reader) *httptest.Resp
 }
 
 func TestValidateFormBody(t *testing.T) {
+	t.Parallel()
 	h := ValidateFormBody(formBodyEcho)
 	const form = "application/x-www-form-urlencoded"
 

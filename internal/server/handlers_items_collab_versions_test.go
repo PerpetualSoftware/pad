@@ -237,6 +237,7 @@ func sourcesOf(versions []models.Version) []string {
 // Accepting it would overwrite items.content with markdown derived
 // from a known-bad source.
 func TestCollabSnapshotRejectsCursorBelowMin(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -298,6 +299,7 @@ func TestCollabSnapshotRejectsCursorBelowMin(t *testing.T) {
 // TestCollabSnapshotAcceptsCursorAtOrAboveMin is the negative test:
 // a cursor at or above MIN passes the gate.
 func TestCollabSnapshotAcceptsCursorAtOrAboveMin(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -335,6 +337,7 @@ func TestCollabSnapshotAcceptsCursorAtOrAboveMin(t *testing.T) {
 // op-log is entirely empty is, by construction, stale: the rows the
 // client claims to have applied no longer exist. Reject 409.
 func TestCollabSnapshotRejectsCursorOnEmptyOpLog(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -372,6 +375,7 @@ func TestCollabSnapshotRejectsCursorOnEmptyOpLog(t *testing.T) {
 // Y.Doc-derived markdown. Without the gate, items.content would
 // be overwritten by the stale view.
 func TestCollabSnapshotRejectsCursorZeroOnNonEmptyOpLog(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -414,6 +418,7 @@ func TestCollabSnapshotRejectsCursorZeroOnNonEmptyOpLog(t *testing.T) {
 // is a post-restore snapshot and is accepted. Requires the RoomManager (the
 // boundary lives there and the check runs only on the s.collab != nil path).
 func TestCollabSnapshotRejectedBelowRestoreBoundary(t *testing.T) {
+	t.Parallel()
 	srv := testServerWithCollab(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -502,6 +507,7 @@ func TestCollabSnapshotRejectedBelowRestoreBoundary(t *testing.T) {
 // boundary is the only thing standing between a stale cursor-0 flush and the
 // restored content.
 func TestCollabSnapshotRejectedBelowDurableRestoreBoundaryAfterRestart(t *testing.T) {
+	t.Parallel()
 	srv := testServerWithCollab(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -754,6 +760,7 @@ func TestRestorePrunesStalePeerOpAndFencesStaleCursor(t *testing.T) {
 // the restore still writes items.content=restored and prunes any stale op-log, so
 // a later cold connect lazy-seeds the restored content.
 func TestRestoreNoRoomStillPrunesAndWrites(t *testing.T) {
+	t.Parallel()
 	f := newRestoreCollabFixture(t, "NoRoom") // no dialReady → no live room
 	if _, err := f.srv.store.AppendYjsUpdate(f.itemID, []byte{0x00, 0x01}, "1"); err != nil {
 		t.Fatalf("seed stale op: %v", err)

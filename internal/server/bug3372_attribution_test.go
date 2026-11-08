@@ -69,6 +69,7 @@ func withForged(body map[string]any, forged bool) map[string]any {
 }
 
 func TestBUG3372_CommentAttributionIsTheRequests(t *testing.T) {
+	t.Parallel()
 	f := newAttributionFixture(t)
 	parent := f.do(t, "POST", "/items/"+f.item.Slug+"/comments", map[string]any{"body": "parent"})
 
@@ -102,6 +103,7 @@ func readUserColumns(t *testing.T, srv *Server, query, id string) (string, strin
 }
 
 func TestBUG3372_ItemAttributionIsTheRequests(t *testing.T) {
+	t.Parallel()
 	f := newAttributionFixture(t)
 	for _, forged := range []bool{false, true} {
 		name := map[bool]string{false: "control", true: "forged"}[forged]
@@ -141,6 +143,7 @@ func TestBUG3372_ItemAttributionIsTheRequests(t *testing.T) {
 }
 
 func TestBUG3372_LinkAttributionIsTheRequests(t *testing.T) {
+	t.Parallel()
 	f := newAttributionFixture(t)
 	for _, forged := range []bool{false, true} {
 		name := map[bool]string{false: "control", true: "forged"}[forged]
@@ -171,6 +174,7 @@ func TestBUG3372_LinkAttributionIsTheRequests(t *testing.T) {
 // own writes) but bounded: no control characters, at most 64 runes, and a
 // header that is nothing but those does not make the request an agent's.
 func TestBUG3372_AgentNameIsBounded(t *testing.T) {
+	t.Parallel()
 	req := func(v string) *http.Request {
 		r := httptest.NewRequest("GET", "/", nil)
 		r.Header.Set("X-Pad-Agent", v)
@@ -204,6 +208,7 @@ func TestBUG3372_AgentNameIsBounded(t *testing.T) {
 // A cross-workspace copy creates a row in the destination; the copier is
 // the account that created it.
 func TestBUG3372_CopyRecordsTheCopiersAccount(t *testing.T) {
+	t.Parallel()
 	f := newAttributionFixture(t)
 	dst := mustCreateOwnedWorkspace(t, f.srv, "Attribution 3372 Dest", f.user)
 	dstColl := mustCollection(t, f.srv, dst.ID, "Tasks")
@@ -228,6 +233,7 @@ func TestBUG3372_CopyRecordsTheCopiersAccount(t *testing.T) {
 
 // A bulk edit records the account that made it, as a single update does.
 func TestBUG3372_BulkUpdateRecordsTheAccount(t *testing.T) {
+	t.Parallel()
 	f := newAttributionFixture(t)
 	bulk := f.do(t, "POST", "/items/bulk", map[string]any{"op": "tag", "ids": []string{f.item.ID}, "tags": []string{"x3372"}})
 	if updated, _ := bulk["updated"].([]any); len(updated) != 1 {
@@ -242,6 +248,7 @@ func TestBUG3372_BulkUpdateRecordsTheAccount(t *testing.T) {
 // The legacy document endpoints are still mounted; they stamp attribution
 // from the request too.
 func TestBUG3372_DocumentAttributionIsTheRequests(t *testing.T) {
+	t.Parallel()
 	f := newAttributionFixture(t)
 	for _, forged := range []bool{false, true} {
 		name := map[bool]string{false: "control", true: "forged"}[forged]
@@ -273,6 +280,7 @@ func TestBUG3372_DocumentAttributionIsTheRequests(t *testing.T) {
 // or agent saying "web" is not the web editor, and used to write no audit
 // row at all.
 func TestBUG3372_AutosaveHintNeedsAWebRequest(t *testing.T) {
+	t.Parallel()
 	f := newAttributionFixture(t)
 	doc := f.do(t, "POST", "/documents", map[string]any{"title": "autosave 3372", "content": "x"})
 	docID := doc["id"].(string)

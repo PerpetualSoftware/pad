@@ -12,6 +12,7 @@ import (
 // BUG-3653 part B: an app upload past the plan's storage cap answers 403
 // storage_limit_reached, with no totals (DOC-3371 §4).
 func TestBUG3653_AppStorageLimitIs403WithoutTotals(t *testing.T) {
+	t.Parallel()
 	rr := httptest.NewRecorder()
 	writeAppStoreError(rr, store.ErrAppStorageLimit)
 	if rr.Code != http.StatusForbidden || !strings.Contains(rr.Body.String(), `"storage_limit_reached"`) {

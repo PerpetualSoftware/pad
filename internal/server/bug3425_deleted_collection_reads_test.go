@@ -13,6 +13,7 @@ import (
 // soft-deleted collection's items showed up as nodes for an unrestricted
 // viewer. The live task is the control.
 func TestGraphExcludesItemsOfSoftDeletedCollections(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	ws, err := srv.store.GetWorkspaceBySlug(slug)
@@ -53,6 +54,7 @@ func TestGraphExcludesItemsOfSoftDeletedCollections(t *testing.T) {
 // The account data export keeps a user's items from collections they deleted,
 // exactly as before BUG-3425 (it opts back in with IncludeDeletedCollections).
 func TestExportAccount_KeepsItemsOfSoftDeletedCollections(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	owner, err := srv.store.CreateUser(models.UserCreate{
 		Email: "export-3425@example.com", Name: "Export Owner", Username: "export-3425",

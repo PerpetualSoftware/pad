@@ -31,6 +31,7 @@ func bug3634Restricted(t *testing.T, f *accessFixture) (*models.User, string, st
 }
 
 func TestBUG3634_RestrictedOwnerCannotInvite(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newAccessFixture(t, d)
 		_, coTok, _ := bug3634Restricted(t, f)
@@ -51,6 +52,7 @@ func TestBUG3634_RestrictedOwnerCannotInvite(t *testing.T) {
 // An invitation a restricted owner created before this fix, or created
 // while unrestricted and restricted since, grants nothing when accepted.
 func TestBUG3634_InvitationFromARestrictedInviterJoinsNothing(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newAccessFixture(t, d)
 		co, _, _ := bug3634Restricted(t, f)
@@ -83,6 +85,7 @@ func TestBUG3634_InvitationFromARestrictedInviterJoinsNothing(t *testing.T) {
 }
 
 func TestBUG3634_RestrictedOwnerChangesRolesOnlyWithinItsScope(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newAccessFixture(t, d)
 		_, coTok, tasksID := bug3634Restricted(t, f)
@@ -117,6 +120,7 @@ func TestBUG3634_RestrictedOwnerChangesRolesOnlyWithinItsScope(t *testing.T) {
 // The register-with-code door refuses the same invitation. Self-hosted, the
 // invitation is the signup's admission, so the account is rolled back.
 func TestBUG3634_RegisterWithARestrictedInvitersCodeIsRefused(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newAccessFixture(t, d)
 		co, _, _ := bug3634Restricted(t, f)
@@ -149,6 +153,7 @@ func TestBUG3634_RegisterWithARestrictedInvitersCodeIsRefused(t *testing.T) {
 // Where registration is open, the account is kept and joins nothing, and
 // the response says why.
 func TestBUG3634_OpenRegistrationKeepsTheAccountAndSaysWhy(t *testing.T) {
+	t.Parallel()
 	srv, _ := newCloudEmailServer(t)
 	admin, err := srv.store.GetUserByEmail("admin@pad.test")
 	if err != nil || admin == nil {

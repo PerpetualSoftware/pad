@@ -45,6 +45,7 @@ func (f *doorFixture) getRelationBacklinks(user *models.User, role string, targe
 // the endpoint reads the index, and it carries the field key that makes a
 // relation backlink different from a wiki one.
 func TestRelationBacklinksDoor_ReportsTheEdgeWithItsFieldKey(t *testing.T) {
+	t.Parallel()
 	f := newDoorFixture(t)
 	source := f.seed(`{"owner_ref":"` + f.target.ID + `"}`)
 
@@ -73,6 +74,7 @@ func TestRelationBacklinksDoor_ReportsTheEdgeWithItsFieldKey(t *testing.T) {
 // naive implementation does, and it leaks the existence of items the viewer
 // cannot see.
 func TestRelationBacklinksDoor_TheCountIsTheViewersNotTheTruth(t *testing.T) {
+	t.Parallel()
 	f := newDoorFixture(t)
 
 	// Two sources point at the same target. The restricted viewer is granted

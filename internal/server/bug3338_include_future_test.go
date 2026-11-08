@@ -28,6 +28,7 @@ func storedIncludeFuture(t *testing.T, srv *Server, requestID string) bool {
 }
 
 func TestBUG3338_FlagsPatchIgnoresIncludeFuture(t *testing.T) {
+	t.Parallel()
 	srv, _ := connectedAppsTestServer(t)
 	_, tok, _ := seedConnectedAppForMutations(t, srv, "bug3338-flags")
 
@@ -59,6 +60,7 @@ func TestBUG3338_FlagsPatchIgnoresIncludeFuture(t *testing.T) {
 }
 
 func TestBUG3338_LimitToCurrentSnapshotsMemberships(t *testing.T) {
+	t.Parallel()
 	srv, _ := connectedAppsTestServer(t)
 	user, tok := loginTestUser(t, srv)
 	if err := srv.store.CreateOAuthConnection(store.OAuthConnection{
@@ -133,6 +135,7 @@ func TestBUG3338_LimitToCurrentSnapshotsMemberships(t *testing.T) {
 // The snapshot is what the wildcard reaches today, which includes a
 // workspace the user reaches only as a guest through a grant.
 func TestBUG3338_LimitToCurrentKeepsGuestWorkspaces(t *testing.T) {
+	t.Parallel()
 	srv, _ := connectedAppsTestServer(t)
 	user, tok := loginTestUser(t, srv)
 	owner, _ := loginTestUserAs(t, srv, "owner3338@example.test", "Owner", "pw-3338-abcdefgh")
@@ -188,6 +191,7 @@ func TestBUG3338_LimitToCurrentKeepsGuestWorkspaces(t *testing.T) {
 // The empty-list rule on removal and on turning the wildcard off is
 // enforced by the store under the connection's lock.
 func TestBUG3338_GuardedWritesRefuseAnEmptyList(t *testing.T) {
+	t.Parallel()
 	srv, _ := connectedAppsTestServer(t)
 	user, _ := loginTestUser(t, srv)
 	wsID, _ := mustSeedWorkspaceForMutation(t, srv, user.ID, "bug3338-only", "owner")
@@ -220,6 +224,7 @@ func TestBUG3338_GuardedWritesRefuseAnEmptyList(t *testing.T) {
 }
 
 func TestBUG3338_LimitToCurrentRefusals(t *testing.T) {
+	t.Parallel()
 	srv, _ := connectedAppsTestServer(t)
 	user, tok := loginTestUser(t, srv)
 	if err := srv.store.CreateOAuthConnection(store.OAuthConnection{

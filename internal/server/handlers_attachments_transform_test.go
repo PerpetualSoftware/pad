@@ -56,6 +56,7 @@ func uploadIntegrationPNG(t *testing.T, srv *Server, slug string, w, h int) (id,
 }
 
 func TestTransform_Rotate90SwapsWidthHeight(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	id, _ := uploadIntegrationPNG(t, srv, slug, 800, 400)
 	srv.Stop() // drain thumbnail goroutine
@@ -98,6 +99,7 @@ func TestTransform_Rotate90SwapsWidthHeight(t *testing.T) {
 }
 
 func TestTransform_Rotate180KeepsDimensions(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	id, _ := uploadIntegrationPNG(t, srv, slug, 800, 400)
 	srv.Stop()
@@ -114,6 +116,7 @@ func TestTransform_Rotate180KeepsDimensions(t *testing.T) {
 }
 
 func TestTransform_RotateRejectsBadDegrees(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	id, _ := uploadIntegrationPNG(t, srv, slug, 100, 100)
 	srv.Stop()
@@ -128,6 +131,7 @@ func TestTransform_RotateRejectsBadDegrees(t *testing.T) {
 }
 
 func TestTransform_UnknownOperationIs400(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	id, _ := uploadIntegrationPNG(t, srv, slug, 100, 100)
 	srv.Stop()
@@ -139,6 +143,7 @@ func TestTransform_UnknownOperationIs400(t *testing.T) {
 }
 
 func TestTransform_NonExistentAttachmentIs404(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	defer srv.Stop()
 
@@ -150,6 +155,7 @@ func TestTransform_NonExistentAttachmentIs404(t *testing.T) {
 }
 
 func TestTransform_CrossWorkspaceReturns404(t *testing.T) {
+	t.Parallel()
 	// Upload into A, attempt transform from B — must be 404, not 403.
 	srv, slugA := testServerWithAttachments(t)
 	slugB := createWSForTest(t, srv)
@@ -163,6 +169,7 @@ func TestTransform_CrossWorkspaceReturns404(t *testing.T) {
 }
 
 func TestTransform_DisabledWhenNoProcessor(t *testing.T) {
+	t.Parallel()
 	// Upload via a server WITH a processor (so we have a real attachment to point at),
 	// then unwire the processor and verify transform reports the disabled state.
 	srv, slug := testServerWithAttachments(t)
@@ -181,6 +188,7 @@ func TestTransform_DisabledWhenNoProcessor(t *testing.T) {
 }
 
 func TestTransform_ProducesNewBlob(t *testing.T) {
+	t.Parallel()
 	// Sanity: rotating an image creates a fresh content-addressed
 	// blob with a different hash + size. Without this, a regression
 	// that returned the parent's row would silently break the
@@ -221,6 +229,7 @@ func TestTransform_ProducesNewBlob(t *testing.T) {
 }
 
 func TestTransform_ServedDownloadDecodesAtNewDimensions(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	id, _ := uploadIntegrationPNG(t, srv, slug, 800, 400)
 	srv.Stop()
@@ -253,6 +262,7 @@ func TestTransform_ServedDownloadDecodesAtNewDimensions(t *testing.T) {
 }
 
 func TestTransform_CropProducesNewBlobAtRectDimensions(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	id, _ := uploadIntegrationPNG(t, srv, slug, 800, 400)
 	srv.Stop()
@@ -301,6 +311,7 @@ func TestTransform_CropProducesNewBlobAtRectDimensions(t *testing.T) {
 }
 
 func TestTransform_CropClipsToImageBounds(t *testing.T) {
+	t.Parallel()
 	// Rect that extends past the image must clip rather than 400.
 	// The processor's Crop intersects with image bounds and the
 	// editor relies on this — its rounding can yield rect+1px past
@@ -329,6 +340,7 @@ func TestTransform_CropClipsToImageBounds(t *testing.T) {
 }
 
 func TestTransform_CropRejectsBadRect(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	id, _ := uploadIntegrationPNG(t, srv, slug, 100, 100)
 	srv.Stop()
@@ -368,6 +380,7 @@ func TestTransform_CropRejectsBadRect(t *testing.T) {
 }
 
 func TestTransform_DerivedRowInheritsUploadedByFromParent(t *testing.T) {
+	t.Parallel()
 	// A user who rotates someone else's upload should NOT take
 	// ownership of the resulting blob. The transform pipeline
 	// inherits parent.UploadedBy (same policy as the thumbnail
@@ -401,6 +414,7 @@ func TestTransform_DerivedRowInheritsUploadedByFromParent(t *testing.T) {
 }
 
 func TestTransform_DeletedParentReturns404(t *testing.T) {
+	t.Parallel()
 	// Edge: the editor sends a transform after the user soft-deleted
 	// the original (race or stale UI). 404, not 500 / corrupt blob.
 	srv, slug := testServerWithAttachments(t)

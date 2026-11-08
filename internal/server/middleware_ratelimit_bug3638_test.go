@@ -20,6 +20,7 @@ func refillWindow(burst int, r rate.Limit) time.Duration {
 // comes back with a full one. Fields are found by reflection so a limiter
 // added later is checked without being listed here.
 func TestRateLimiters_RetentionCoversRefill(t *testing.T) {
+	t.Parallel()
 	rls := NewRateLimiters()
 	defer rls.Stop()
 
@@ -110,6 +111,7 @@ func TestNewIPRateLimiter_RaisesShortRetention(t *testing.T) {
 // takes to refill, must still be refused. Before the fix the sweep deleted
 // the drained bucket and the next request got a fresh burst of 5.
 func TestRateLimiters_IdleBucketIsNotReset(t *testing.T) {
+	t.Parallel()
 	rls := NewRateLimiters()
 	defer rls.Stop()
 	rl := rls.Register

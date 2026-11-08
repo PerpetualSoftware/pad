@@ -12,6 +12,7 @@ import (
 // both gates plus the two output modes (reset link / temp password).
 
 func TestLocalReset_RejectsRemoteRequest(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
 
@@ -25,6 +26,7 @@ func TestLocalReset_RejectsRemoteRequest(t *testing.T) {
 }
 
 func TestLocalReset_DisabledInCloudMode(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.cloudMode = true
 	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
@@ -40,6 +42,7 @@ func TestLocalReset_DisabledInCloudMode(t *testing.T) {
 }
 
 func TestLocalReset_UnknownEmail(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
 
@@ -52,6 +55,7 @@ func TestLocalReset_UnknownEmail(t *testing.T) {
 }
 
 func TestLocalReset_ResetLinkCompletesLogin(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	// A configured public base URL must come back as an absolute, shareable
 	// reset_url — not just the path.
@@ -104,6 +108,7 @@ func TestLocalReset_ResetLinkCompletesLogin(t *testing.T) {
 }
 
 func TestLocalReset_TempPasswordLogsIn(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
 

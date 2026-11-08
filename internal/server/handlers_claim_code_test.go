@@ -103,6 +103,7 @@ func (e *claimTestEnv) doClaimCodeGet() *httptest.ResponseRecorder {
 }
 
 func TestHandleWorkspaceClaimCode_Disabled412(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	user, err := srv.store.CreateUser(models.UserCreate{
 		Email: "cc-disabled@example.com", Name: "D", Password: "pw-disabled-12345",
@@ -135,6 +136,7 @@ func TestHandleWorkspaceClaimCode_Disabled412(t *testing.T) {
 }
 
 func TestHandleWorkspaceClaimCode_NotAMember404(t *testing.T) {
+	t.Parallel()
 	e := newClaimCodeEnv(t)
 	// Spin up a workspace the PAT user isn't a member of —
 	// RequireWorkspaceAccess returns 404 (uniform with "not found").
@@ -158,6 +160,7 @@ func TestHandleWorkspaceClaimCode_NotAMember404(t *testing.T) {
 }
 
 func TestHandleWorkspaceClaimCode_GrantOnlyGuest_403(t *testing.T) {
+	t.Parallel()
 	e := newClaimCodeEnv(t)
 	// RequireWorkspaceAccess admits grant-only guests (item-scoped
 	// access without workspace membership). Claim-code redemption
@@ -200,6 +203,7 @@ func TestHandleWorkspaceClaimCode_GrantOnlyGuest_403(t *testing.T) {
 }
 
 func TestHandleWorkspaceClaimCode_OK_FreshCode(t *testing.T) {
+	t.Parallel()
 	e := newClaimCodeEnv(t)
 	rr := e.doClaimCodeGet()
 	if rr.Code != http.StatusOK {
@@ -298,6 +302,7 @@ func TestHandleWorkspaceClaimCode_Suppressed_ExplicitAllowlistRow(t *testing.T) 
 }
 
 func TestHandleWorkspaceClaimCode_Suppressed_RevokedConnection_NotSuppressed(t *testing.T) {
+	t.Parallel()
 	e := newClaimCodeEnv(t)
 	// Connection row exists but no ACTIVE tokens in the chain — the
 	// "active" predicate in IsWorkspaceCoveredForUser must filter

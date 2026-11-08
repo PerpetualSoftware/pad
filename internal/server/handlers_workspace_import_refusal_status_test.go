@@ -22,6 +22,7 @@ import (
 // The sibling bundle-import door already answered 400 for this class, so the
 // two doors onto one refusal disagreed; this pins the alignment.
 func TestImportWorkspace_UnimportablePrefixIs400WithTheReason(t *testing.T) {
+	t.Parallel()
 	srv, user := importLimitFixture(t, 0)
 
 	// A collection whose prefix cannot be derived OR validated: "!!" is not a
@@ -77,6 +78,7 @@ func TestImportWorkspace_UnimportablePrefixIs400WithTheReason(t *testing.T) {
 // Version 0 is refused inside ImportWorkspace as an unsupported export, which
 // is not a ValidationError, so it must still surface as a 500.
 func TestImportWorkspace_RealFailuresStayA500(t *testing.T) {
+	t.Parallel()
 	srv, user := importLimitFixture(t, 0)
 
 	body, err := json.Marshal(models.WorkspaceExport{
@@ -100,6 +102,7 @@ func TestImportWorkspace_RealFailuresStayA500(t *testing.T) {
 // improved one door would have made its sibling's message worse — the producer
 // change was not finished until the consumers had been read.
 func TestImportBundle_UnimportablePrefixKeepsTheReasonClean(t *testing.T) {
+	t.Parallel()
 	// The bundle door needs attachment storage configured — without it the
 	// request is refused 503 before it reaches the import at all, which is how
 	// the first version of this test "failed" for a reason unrelated to what

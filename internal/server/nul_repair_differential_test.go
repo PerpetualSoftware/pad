@@ -17,6 +17,7 @@ import (
 // through the gate exactly as the refusal leg drives the original, with the
 // same key-derived classing.
 func TestHTTPGateAcceptsEveryRepairedCorpusValue(t *testing.T) {
+	t.Parallel()
 	for _, c := range textguard.Corpus {
 		t.Run(c.Name, func(t *testing.T) {
 			repaired := textguard.Repair(c.Value, c.IsJSON)
@@ -46,6 +47,7 @@ func TestHTTPGateAcceptsEveryRepairedCorpusValue(t *testing.T) {
 // doubled-backslash literal decodes to no NUL at all, so rewriting it would
 // corrupt a legitimate value.
 func TestImportRepairFlagRepairsExactlyTheEscape(t *testing.T) {
+	t.Parallel()
 	esc := textguard.EscNUL
 	backslash := esc[:1]
 
@@ -117,6 +119,7 @@ func TestImportRepairFlagRepairsExactlyTheEscape(t *testing.T) {
 // asserts the gate then accepts it — which is the only version of this test
 // that would fail if the message named a flag that did not work.
 func TestImportStrictRefusalNamesTheWorkingRemedy(t *testing.T) {
+	t.Parallel()
 	failing := []byte(`{"items":[{"content":"x` + textguard.EscNUL + `y"}]}`)
 
 	// Precondition: strict really does refuse this body. Without it the test
@@ -163,6 +166,7 @@ func TestImportStrictRefusalNamesTheWorkingRemedy(t *testing.T) {
 // call site that forgets to thread the flag gets the strict behaviour rather
 // than a silently repairing import.
 func TestNULRepairTallyDefaultsToStrict(t *testing.T) {
+	t.Parallel()
 	body := []byte(`{"content":"x` + textguard.EscNUL + `y"}`)
 
 	var nilTally *nulRepairTally
@@ -198,6 +202,7 @@ func TestNULRepairTallyDefaultsToStrict(t *testing.T) {
 // Each leg asserts the gate ACCEPTS the repaired body, which is the property
 // the flag exists to deliver, and that the count is reported.
 func TestRepairFlagReachesTheNestedAndObliqueForms(t *testing.T) {
+	t.Parallel()
 	esc := textguard.EscNUL
 	backslash := esc[:1]
 
@@ -256,6 +261,7 @@ func TestRepairFlagReachesTheNestedAndObliqueForms(t *testing.T) {
 // corrupt a document that merely writes ABOUT this bug, which in a
 // documentation tool is not hypothetical.
 func TestRepairFlagLeavesALiteralAlone(t *testing.T) {
+	t.Parallel()
 	esc := textguard.EscNUL
 	backslash := esc[:1]
 	body := []byte(`{"content":"x` + backslash + esc + `y"}`)
@@ -285,6 +291,7 @@ func TestRepairFlagLeavesALiteralAlone(t *testing.T) {
 // accepted cases must come back byte-identical, which is what catches a walk
 // that rewrites something nobody complained about.
 func TestBodyRepairMirrorsTheGateOverTheCorpus(t *testing.T) {
+	t.Parallel()
 	for _, c := range textguard.Corpus {
 		t.Run(c.Name, func(t *testing.T) {
 			key := "content"
@@ -334,6 +341,7 @@ func TestBodyRepairMirrorsTheGateOverTheCorpus(t *testing.T) {
 // integer that came back as 1e+06 would be a silent data change nobody asked
 // for. json.Number is why this passes; without UseNumber it does not.
 func TestBodyRepairPreservesEverythingElse(t *testing.T) {
+	t.Parallel()
 	body := []byte(`{"version":1,"big":9007199254740993,"ratio":1.5,"flag":true,"nothing":null,` +
 		`"text":"a < b & c > d","list":[1,2,3],"content":"x` + textguard.EscNUL + `y"}`)
 
@@ -389,6 +397,7 @@ func TestBodyRepairPreservesEverythingElse(t *testing.T) {
 // real export cannot contain duplicate members — json.Marshal does not emit
 // them — so this costs nothing an operator meets by accident.
 func TestRepairDeclinesADuplicateMemberBody(t *testing.T) {
+	t.Parallel()
 	esc := textguard.EscNUL
 	body := []byte(`{"content":"x` + esc + `y","workspace":{"name":"a"},"workspace":{"slug":"b"}}`)
 
@@ -429,6 +438,7 @@ func TestRepairDeclinesADuplicateMemberBody(t *testing.T) {
 // exists for is one a decode cannot show you: by the time there is a map, the
 // duplicate is gone.
 func TestFirstDuplicateJSONKey(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		in   string

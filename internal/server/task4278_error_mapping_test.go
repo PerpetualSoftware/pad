@@ -43,6 +43,7 @@ var no500ExemptFuncs = map[string]bool{
 var no500AllowList = map[string]string{}
 
 func TestNo500DiscardsStoreError(t *testing.T) {
+	t.Parallel()
 	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
@@ -325,6 +326,7 @@ func TestBusyMapping_IdleTermination(t *testing.T) {
 // --- unit: the helpers --------------------------------------------------------
 
 func TestWriteStoreErrorR_Shapes(t *testing.T) {
+	t.Parallel()
 	plain := errors.New(`pq: relation "items" does not exist (SQLSTATE 42P01)`)
 	rr := httptest.NewRecorder()
 	writeStoreErrorR(rr, httptest.NewRequest("GET", "/x", nil), plain, http.StatusInternalServerError, "internal_error", "Failed to load it")
@@ -367,6 +369,7 @@ func TestWriteStoreErrorR_Shapes(t *testing.T) {
 }
 
 func TestItemCreateError_BusyCauseIsMapped(t *testing.T) {
+	t.Parallel()
 	busy := fmt.Errorf("insert: %w", &pgconn.PgError{Code: "57014", Message: "canceling statement due to statement timeout"})
 	rr := httptest.NewRecorder()
 	storeItemCreateError(busy, "An internal error occurred").write(rr, httptest.NewRequest("POST", "/x", nil))
@@ -382,6 +385,7 @@ func TestItemCreateError_BusyCauseIsMapped(t *testing.T) {
 // BUG-2778 reconciled: a busy rename is database_busy now; a cascade that ran
 // out of retries keeps its own lock_contention code.
 func TestDocumentRename_BusyClassification(t *testing.T) {
+	t.Parallel()
 	for _, code := range []string{"55P03", "40P01", "57014"} {
 		if !store.IsDBBusy(fmt.Errorf("rename: %w", &pgconn.PgError{Code: code})) {
 			t.Errorf("SQLSTATE %s must be busy", code)

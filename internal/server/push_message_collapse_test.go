@@ -52,6 +52,7 @@ func loadPushCollapseCases(t *testing.T) []pushCollapseCase {
 // table. If either implementation drifts, exactly one of the two goes red and
 // names the case.
 func TestPushMessageCollapseFixture(t *testing.T) {
+	t.Parallel()
 	for _, tc := range loadPushCollapseCases(t) {
 		t.Run(tc.Name, func(t *testing.T) {
 			// The exact expression handlePushToItem applies to input.Message.

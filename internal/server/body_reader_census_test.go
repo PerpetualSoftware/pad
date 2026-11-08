@@ -205,6 +205,7 @@ func declName(d ast.Decl) string {
 // three that must NOT count. A census that went blind to any form fails here,
 // by name, rather than by a count drifting in the production table.
 func TestBodyReaderCensusSeesTheFormsTheParserMissed(t *testing.T) {
+	t.Parallel()
 	sites := collectRequestBodyReads(t, filepath.Join("testdata", "bodyreaders"))
 	found := map[string]int{}
 	for _, s := range sites {
@@ -457,6 +458,7 @@ func collectRequestHandoffs(t *testing.T, dir string) []requestHandoff {
 // here until someone decides. Body-READING callees are pinned per call site,
 // like the readers above; the rest are pinned by callee.
 func TestEveryRequestHandoffIsClassified(t *testing.T) {
+	t.Parallel()
 	notReaders := map[string]string{
 		"github.com/go-chi/chi/v5.URLParam":               "reads the route context, not the body",
 		"net/http.NotFound":                               "writes a 404; reads nothing of the request body",

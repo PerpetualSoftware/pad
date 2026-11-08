@@ -32,6 +32,7 @@ import (
 )
 
 func TestImportArtifactReportsUndeclaredFieldsAgainstANarrowedSchema(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
 
@@ -82,6 +83,7 @@ func TestImportArtifactReportsUndeclaredFieldsAgainstANarrowedSchema(t *testing.
 // also the control that shows the test above is testing the narrowing and not
 // merely the presence of the keys.
 func TestImportArtifactAgainstTheDefaultSchemaNamesNothingUndeclared(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
 
@@ -128,6 +130,7 @@ func TestImportArtifactAgainstTheDefaultSchemaNamesNothingUndeclared(t *testing.
 // number is never type-checked by ValidateFields, so it reaches the write and
 // is dropped there.
 func TestImportArtifactReportsDroppedRelationDefault(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
 
@@ -177,6 +180,7 @@ func TestImportArtifactReportsDroppedRelationDefault(t *testing.T) {
 // The artifact is the record, so the value is kept — and reported, so the
 // import is never silently lossy.
 func TestImportArtifactCarriesUnresolvableRelationValue(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
 
@@ -254,6 +258,7 @@ func TestImportArtifactCarriesUnresolvableRelationValue(t *testing.T) {
 //   - `owner_ref`, a broken destination DEFAULT that step 3 is what drops
 //     (TestImportArtifactReportsDroppedRelationDefault).
 func TestImportArtifactCleansBrokenDefaultsDespiteACarriedJunkValue(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
 

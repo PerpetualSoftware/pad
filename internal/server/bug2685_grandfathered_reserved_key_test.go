@@ -82,6 +82,7 @@ type httpResult struct {
 // a legacy `implementation_notes: text` declaration that blob fails
 // validateFieldType, so the collection's items cannot be annotated at all.
 func TestBUG2685_LegacyDeclarationRefusesTheSystemsOwnWrite(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSWithCollections(t, srv)
 	grandfatherReservedKey(t, srv, ws, "tasks", models.FieldDef{
@@ -132,6 +133,7 @@ func TestBUG2685_LegacyDeclarationRefusesTheSystemsOwnWrite(t *testing.T) {
 // Note what is NOT asserted: that the junk is refused. Refusing is the other
 // class and is out of this unit — see the BUG-2685 trail.
 func TestBUG2685_ADeclarationDoesNotDecideWhetherAWriteSucceeds(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSWithCollections(t, srv)
 
@@ -175,6 +177,7 @@ func TestBUG2685_ADeclarationDoesNotDecideWhetherAWriteSucceeds(t *testing.T) {
 // Nothing in a create request mentions implementation_notes, and no client
 // surface offers it, so the 400 names a field the caller cannot supply.
 func TestBUG2685_LegacyRequiredDeclarationBlocksCreate(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSWithCollections(t, srv)
 	grandfatherReservedKey(t, srv, ws, "tasks", models.FieldDef{
@@ -226,6 +229,7 @@ func bug2685PresentationWorkspace(t *testing.T) (*Server, string) {
 // telling it to render system metadata as an ordinary field. Pinned here so the
 // contract change stays deliberate.
 func TestBUG2685_PublicSharePayloadDoesNotPublishAGrandfatheredDeclaration(t *testing.T) {
+	t.Parallel()
 	srv, ws := bug2685PresentationWorkspace(t)
 
 	// Minted through the store rather than the HTTP door: that door records
@@ -280,6 +284,7 @@ func TestBUG2685_PublicSharePayloadDoesNotPublishAGrandfatheredDeclaration(t *te
 }
 
 func TestBUG2685_BootstrapDoesNotPublishAGrandfatheredDeclarationToEveryAgent(t *testing.T) {
+	t.Parallel()
 	srv, ws := bug2685PresentationWorkspace(t)
 
 	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+ws+"/agent/bootstrap", nil)

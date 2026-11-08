@@ -23,6 +23,7 @@ import (
 // declared leg is the control: a check that refused everything, or that
 // consulted the wrong collection, fails it.
 func TestBulkItems_RefusesAFieldTheItemsCollectionDoesNotDeclare(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name  string
 		body  map[string]any
@@ -108,6 +109,7 @@ func TestBulkItems_RefusesAFieldTheItemsCollectionDoesNotDeclare(t *testing.T) {
 // per request, so the control is a second request: the identical move into a
 // target that DOES declare `status` must apply.
 func TestBulkItems_CollectionMoveRefusesAStatusTheTargetDoesNotDeclare(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	ws, err := srv.store.GetWorkspaceBySlug(slug)

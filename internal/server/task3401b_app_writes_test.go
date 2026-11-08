@@ -63,6 +63,7 @@ func (f appAPIFix) count(t *testing.T, q string, args ...any) int {
 
 // Every write row: its happy path, and its response's key set is its DTO's.
 func TestTask3401b_WriteCensus(t *testing.T) {
+	t.Parallel()
 	f := appAPIFixture(t, "write")
 	seen := map[string]bool{}
 
@@ -134,6 +135,7 @@ func TestTask3401b_WriteCensus(t *testing.T) {
 
 // Request DTOs: their field sets are the spec table's.
 func TestTask3401b_RequestDTOFieldSets(t *testing.T) {
+	t.Parallel()
 	check := func(name string, v any, want ...string) {
 		got := []string{}
 		tp := reflect.TypeOf(v)
@@ -154,6 +156,7 @@ func TestTask3401b_RequestDTOFieldSets(t *testing.T) {
 
 // Every write row refuses a READ token with 403, and nothing is written.
 func TestTask3401b_EveryWriteRowRefusesAReadToken(t *testing.T) {
+	t.Parallel()
 	f := appAPIFixture(t, "read")
 	items := f.count(t, `SELECT COUNT(*) FROM items`)
 	comments := f.count(t, `SELECT COUNT(*) FROM comments`)
@@ -189,6 +192,7 @@ func TestTask3401b_EveryWriteRowRefusesAReadToken(t *testing.T) {
 // companion (the system collection) is refused, by requireEditPermission
 // ahead of the editor fast path, for a bot whose membership reaches it.
 func TestTask3401b_TheWriteRule(t *testing.T) {
+	t.Parallel()
 	f := appAPIFixture(t, "write")
 	rr := appDo(f.srv, "POST", f.path("/collections/"+f.system.Slug+"/items"), f.token, map[string]any{"title": "Into the system"})
 	if rr.Code != http.StatusForbidden {
@@ -214,6 +218,7 @@ func TestTask3401b_TheWriteRule(t *testing.T) {
 }
 
 func TestTask3401b_UpdateRefusals(t *testing.T) {
+	t.Parallel()
 	f := appAPIFixture(t, "write")
 	human := createTestUserDirect(t, f.srv, "maker-3401b@example.com")
 	humanItem, err := f.srv.store.CreateItem(f.ws.ID, f.companion.ID, models.ItemCreate{Title: "Human made", ActorUserID: human.ID})
@@ -251,6 +256,7 @@ func TestTask3401b_UpdateRefusals(t *testing.T) {
 }
 
 func TestTask3401b_CommentRules(t *testing.T) {
+	t.Parallel()
 	f := appAPIFixture(t, "write")
 	// A person's comment on the app's item: the app may not change it.
 	if rr := appDo(f.srv, "PATCH", f.path("/items/"+f.item.ID+"/comments/"+f.comment.ID), f.token, map[string]any{"body": "edited by the app"}); rr.Code != http.StatusForbidden {
@@ -274,6 +280,7 @@ func TestTask3401b_CommentRules(t *testing.T) {
 // disable committed before its handler runs, is refused inside its FencedTx
 // and writes nothing.
 func TestTask3401b_ADisableBeforeTheHandlerRefusesTheWrite(t *testing.T) {
+	t.Parallel()
 	for name, change := range map[string]string{
 		"disable": `UPDATE app_installs SET state = 'disabling', auth_epoch = auth_epoch + 1 WHERE id = ?`,
 		"rotate":  `UPDATE app_installs SET auth_epoch = auth_epoch + 1 WHERE id = ?`,
@@ -435,6 +442,7 @@ func (b *postCommitBus) Publish(e events.Event) error {
 // answers 201 and describes the item it wrote; a 500 would tell the app its
 // write failed and invite a duplicate.
 func TestTask3401b_AFailureAfterCommitDoesNotHideTheWrite(t *testing.T) {
+	t.Parallel()
 	f := appAPIFixture(t, "write")
 	var id string
 	f.srv.SetEventBus(&postCommitBus{EventBus: events.New(), after: func() {
@@ -459,6 +467,7 @@ func TestTask3401b_AFailureAfterCommitDoesNotHideTheWrite(t *testing.T) {
 // earlier copy. A field added with a default between the two is stored,
 // and must be in the response.
 func TestTask3401b_TheResponseUsesTheWritesSchema(t *testing.T) {
+	t.Parallel()
 	f := appAPIFixture(t, "write")
 	body := &lazyBody{build: func() []byte {
 		var schema models.CollectionSchema
@@ -568,6 +577,7 @@ func TestTask3401b_ACommentPublishesTheItemsCollectionAtWriteTime(t *testing.T) 
 // TASK-3399 U5b-2: an item moved while the comment's body is still arriving
 // is refused by the pre-write re-admission, and nothing is written.
 func TestTask3401b_AMoveDuringTheBodyRefusesTheComment(t *testing.T) {
+	t.Parallel()
 	f := appAPIFixture(t, "write")
 	other, err := f.srv.store.CreateCollection(f.ws.ID, models.CollectionCreate{Name: "Escalations", Slug: "escalations", Schema: task3401Schema})
 	if err != nil {

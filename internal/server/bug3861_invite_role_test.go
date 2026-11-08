@@ -14,6 +14,7 @@ import (
 // It now answers the role-change door's 400 and writes nothing. The known
 // roles, and the empty role's editor default, still invite.
 func TestBUG3861_InviteRoleMustBeKnown(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newAccessFixture(t, d)
 		invitePath := "/api/v1/workspaces/" + f.wsSlug + "/members/invite"
@@ -78,6 +79,7 @@ func TestBUG3861_InviteRoleMustBeKnown(t *testing.T) {
 // role changes none of their answers. In the setup window (no users, no auth)
 // the door still answers BUG-3544's 409 setup_required, not the 400.
 func TestBUG3861_SetupWindowRefusalPrecedesRoleCheck(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	if n, err := srv.store.UserCount(); err != nil || n != 0 {
 		t.Fatalf("premise: a fresh install has no users; count=%d err=%v", n, err)
@@ -93,6 +95,7 @@ func TestBUG3861_SetupWindowRefusalPrecedesRoleCheck(t *testing.T) {
 // The last refusal the handler makes before the role check: inviting an
 // existing member answers 409 conflict whatever the role says.
 func TestBUG3861_AlreadyMemberRefusalPrecedesRoleCheck(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newAccessFixture(t, d)
 		f.member("ed@example.com", "editor")

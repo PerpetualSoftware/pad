@@ -11,6 +11,7 @@ import (
 // no visibility list, no grants. Admins are normalized by the auth
 // middleware to role="owner" regardless of formal membership.
 func TestMe_OwnerAdmin(t *testing.T) {
+	t.Parallel()
 	env := setupRBACEnv(t)
 
 	rr := doRequestWithCookie(env.srv, "GET", "/api/v1/workspaces/"+env.wsSlug+"/me", nil, env.ownerToken)
@@ -40,6 +41,7 @@ func TestMe_OwnerAdmin(t *testing.T) {
 
 // TestMe_EditorMember pins the editor-with-all-access shape.
 func TestMe_EditorMember(t *testing.T) {
+	t.Parallel()
 	env := setupRBACEnv(t)
 
 	rr := doRequestWithCookie(env.srv, "GET", "/api/v1/workspaces/"+env.wsSlug+"/me", nil, env.editorToken)
@@ -66,6 +68,7 @@ func TestMe_EditorMember(t *testing.T) {
 // must include the grant so the frontend canEditCollection helper can
 // override the role-based deny.
 func TestMe_ViewerWithCollectionGrant(t *testing.T) {
+	t.Parallel()
 	env := setupRBACEnv(t)
 
 	// Find an existing collection in the workspace to grant against.
@@ -120,6 +123,7 @@ func TestMe_ViewerWithCollectionGrant(t *testing.T) {
 // can answer canViewCollection (broad) and canViewItem (strict) without
 // re-deriving the cascade.
 func TestMe_RestrictedMember(t *testing.T) {
+	t.Parallel()
 	env := setupRBACEnv(t)
 
 	ws, err := env.srv.store.GetWorkspaceBySlug(env.wsSlug)
@@ -176,6 +180,7 @@ func TestMe_RestrictedMember(t *testing.T) {
 // the item-grant's collection into visible_collection_ids so the
 // collection appears in nav.
 func TestMe_GuestWithItemGrant(t *testing.T) {
+	t.Parallel()
 	env := setupRBACEnv(t)
 
 	ws, err := env.srv.store.GetWorkspaceBySlug(env.wsSlug)
@@ -265,6 +270,7 @@ func TestMe_GuestWithItemGrant(t *testing.T) {
 // the handler itself never runs. Either status is acceptable; what matters
 // is that /me does not leak data to a stranger.
 func TestMe_NonMemberNoGrants_NoAccess(t *testing.T) {
+	t.Parallel()
 	env := setupRBACEnv(t)
 
 	rr := doRequestWithBearer(env.srv, "POST", "/api/v1/auth/register", env.ownerToken, map[string]string{

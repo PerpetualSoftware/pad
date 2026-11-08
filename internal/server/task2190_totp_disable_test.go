@@ -53,6 +53,7 @@ func totpEnabled(t *testing.T, srv *Server, userID string) bool {
 }
 
 func TestTOTPDisable_TASK2190_PasswordlessUsesTheCode(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	userID, secret, tok := passwordlessTOTPUser(t, srv, "nopw-2190@example.com")
 
@@ -77,6 +78,7 @@ func TestTOTPDisable_TASK2190_PasswordlessUsesTheCode(t *testing.T) {
 }
 
 func TestTOTPDisable_TASK2190_PasswordlessRecoveryCode(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	codes, err := generateRecoveryCodes(2)
 	if err != nil {
@@ -95,6 +97,7 @@ func TestTOTPDisable_TASK2190_PasswordlessRecoveryCode(t *testing.T) {
 // The code path is login's limiter, counted per user: after six wrong codes
 // even the RIGHT one is refused, and 2FA stays on.
 func TestTOTPDisable_TASK2190_AttemptsAreLimited(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	if srv.rateLimiters == nil || srv.rateLimiters.RecoveryCode == nil {
 		t.Skip("rate limiting disabled in this environment (PAD_DISABLE_RATE_LIMITS)")
@@ -124,6 +127,7 @@ func TestTOTPDisable_TASK2190_AttemptsAreLimited(t *testing.T) {
 
 // An account WITH a password still needs it: a code is not a way around it.
 func TestTOTPDisable_TASK2190_PasswordAccountStillNeedsThePassword(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	user, tok := loginTestUserAs(t, srv, "pw-2190@example.com", "Has Password", bug3322Password)
 	secret := enableTOTPForDeleteUser(t, srv, user.ID)

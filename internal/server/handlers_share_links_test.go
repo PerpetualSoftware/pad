@@ -261,6 +261,7 @@ func TestResolveCollectionShareLink_EnrichedPayload(t *testing.T) {
 // the read-only switcher (TASK-1682) can reliably fall back to
 // settings.default_view without a null check.
 func TestResolveCollectionShareLink_NoViewsEmptyArray(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSForTest(t, srv)
 

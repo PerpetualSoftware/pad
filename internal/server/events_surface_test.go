@@ -31,6 +31,7 @@ import (
 // events.* is asserted alongside as a second leg, so a drift between the Go
 // constants and the client's strings is attributed rather than just reported.
 func TestDerivedSSENamesMatchTheLegacyWireVocabulary(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		derived    string

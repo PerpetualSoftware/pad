@@ -199,6 +199,7 @@ func assertAllowed(t *testing.T, got CrossWorkspaceAccess, label string) {
 // an editor in the REQUEST's workspace and a stranger to the target gets
 // nothing there, even with the request context claiming "editor".
 func TestCrossWorkspace_EditorInAOnly(t *testing.T) {
+	t.Parallel()
 	f := newCrossWSFixture(t)
 	u := f.member("a-editor@example.com", "aeditor", "editor", f.wsA)
 	r := f.request(u, reqOpts{wsRoleCtx: "editor", wsIDCtx: f.wsA.ID})
@@ -235,6 +236,7 @@ func TestCrossWorkspace_EditorInAOnly(t *testing.T) {
 // requireEditPermission got fixed, delete it — but do NOT start calling
 // requireEditPermission cross-workspace.
 func TestCrossWorkspace_RequireEditPermissionIsWrongForSecondWorkspace(t *testing.T) {
+	t.Parallel()
 	f := newCrossWSFixture(t)
 	u := f.member("trap@example.com", "trapuser", "editor", f.wsA)
 	r := f.request(u, reqOpts{wsRoleCtx: "editor", wsIDCtx: f.wsA.ID})
@@ -254,6 +256,7 @@ func TestCrossWorkspace_RequireEditPermissionIsWrongForSecondWorkspace(t *testin
 }
 
 func TestCrossWorkspace_EditorInBoth(t *testing.T) {
+	t.Parallel()
 	f := newCrossWSFixture(t)
 	u := f.member("both@example.com", "bothuser", "editor", f.wsA)
 	if err := f.srv.store.AddWorkspaceMember(f.wsB.ID, u.ID, "editor"); err != nil {
@@ -274,6 +277,7 @@ func TestCrossWorkspace_EditorInBoth(t *testing.T) {
 }
 
 func TestCrossWorkspace_ViewerInB(t *testing.T) {
+	t.Parallel()
 	f := newCrossWSFixture(t)
 	u := f.member("view@example.com", "viewuser", "editor", f.wsA)
 	if err := f.srv.store.AddWorkspaceMember(f.wsB.ID, u.ID, "viewer"); err != nil {
@@ -297,6 +301,7 @@ func TestCrossWorkspace_ViewerInB(t *testing.T) {
 // place (RequireWorkspaceAccess) and a second workspace never goes
 // through it.
 func TestCrossWorkspace_TokenAllowlist(t *testing.T) {
+	t.Parallel()
 	f := newCrossWSFixture(t)
 	u := f.member("tok@example.com", "tokuser", "editor", f.wsA)
 	if err := f.srv.store.AddWorkspaceMember(f.wsB.ID, u.ID, "editor"); err != nil {
@@ -366,6 +371,7 @@ func TestCrossWorkspace_TokenAllowlist(t *testing.T) {
 // The allow-list is tested against the CANONICAL slug, so addressing the
 // workspace by UUID must not bypass it.
 func TestCrossWorkspace_TokenAllowlistAppliesToUUIDAddressing(t *testing.T) {
+	t.Parallel()
 	f := newCrossWSFixture(t)
 	u := f.member("uuid@example.com", "uuiduser", "editor", f.wsA)
 	if err := f.srv.store.AddWorkspaceMember(f.wsB.ID, u.ID, "editor"); err != nil {
@@ -382,6 +388,7 @@ func TestCrossWorkspace_TokenAllowlistAppliesToUUIDAddressing(t *testing.T) {
 // message, since that message confirms the workspace exists. The role
 // check is ranked ahead of the allow-list check precisely for this.
 func TestCrossWorkspace_TokenDenialNeverConfirmsExistenceToStranger(t *testing.T) {
+	t.Parallel()
 	f := newCrossWSFixture(t)
 	admin := mustUser(t, f.srv, "admin@example.com", "adminuser", "admin")
 	r := f.request(admin, reqOpts{bearer: true, setAllowed: true, allowed: []string{f.wsA.Slug}})
@@ -396,6 +403,7 @@ func TestCrossWorkspace_TokenDenialNeverConfirmsExistenceToStranger(t *testing.T
 // --- Bearer-vs-cookie admin split (BUG-1616/1617) ---------------------
 
 func TestCrossWorkspace_AdminBearerVsCookieSplit(t *testing.T) {
+	t.Parallel()
 	f := newCrossWSFixture(t)
 	admin := mustUser(t, f.srv, "padmin@example.com", "padmin", "admin")
 
@@ -422,6 +430,7 @@ func TestCrossWorkspace_AdminBearerVsCookieSplit(t *testing.T) {
 // A bearer-borne admin holding a stray grant in B still gets nothing:
 // the membership-only stance skips the guest-grants fallback entirely.
 func TestCrossWorkspace_BearerAdminWithStrayGrantStillDenied(t *testing.T) {
+	t.Parallel()
 	f := newCrossWSFixture(t)
 	admin := mustUser(t, f.srv, "strayadmin@example.com", "strayadmin", "admin")
 	if _, err := f.srv.store.CreateItemGrant(f.wsB.ID, f.itemB.ID, admin.ID, "edit", f.ownerBoth.ID); err != nil {
@@ -448,6 +457,7 @@ func TestCrossWorkspace_BearerAdminWithStrayGrantStillDenied(t *testing.T) {
 // --- Soft-deleted target ----------------------------------------------
 
 func TestCrossWorkspace_SoftDeletedWorkspaceDenied(t *testing.T) {
+	t.Parallel()
 	f := newCrossWSFixture(t)
 	u := f.member("sd@example.com", "sduser", "editor", f.wsA)
 	if err := f.srv.store.AddWorkspaceMember(f.wsB.ID, u.ID, "owner"); err != nil {
@@ -483,6 +493,7 @@ func TestCrossWorkspace_SoftDeletedWorkspaceDenied(t *testing.T) {
 // nav-lenient VisibleCollectionIDs set (and hence ResolveUserPermission's
 // own gate) would wave through.
 func TestCrossWorkspace_RestrictedEditorHiddenCollection(t *testing.T) {
+	t.Parallel()
 	f := newCrossWSFixture(t)
 	u := f.member("restricted@example.com", "restricteduser", "editor", f.wsA)
 	if err := f.srv.store.AddWorkspaceMember(f.wsB.ID, u.ID, "editor"); err != nil {
@@ -533,6 +544,7 @@ func TestCrossWorkspace_RestrictedEditorHiddenCollection(t *testing.T) {
 // --- Guests holding only item grants ----------------------------------
 
 func TestCrossWorkspace_GuestItemGrantOnly(t *testing.T) {
+	t.Parallel()
 	f := newCrossWSFixture(t)
 	u := f.member("g@example.com", "guser", "editor", f.wsA)
 	if _, err := f.srv.store.CreateItemGrant(f.wsB.ID, f.itemB.ID, u.ID, "edit", f.ownerBoth.ID); err != nil {
@@ -563,6 +575,7 @@ func TestCrossWorkspace_GuestItemGrantOnly(t *testing.T) {
 
 // A guest with a full COLLECTION grant may create into that collection.
 func TestCrossWorkspace_GuestCollectionGrant(t *testing.T) {
+	t.Parallel()
 	f := newCrossWSFixture(t)
 	u := f.member("gc@example.com", "gcuser", "editor", f.wsA)
 	if _, err := f.srv.store.CreateCollectionGrant(f.wsB.ID, f.collB.ID, u.ID, "edit", f.ownerBoth.ID); err != nil {
@@ -579,6 +592,7 @@ func TestCrossWorkspace_GuestCollectionGrant(t *testing.T) {
 // --- Scope hygiene -----------------------------------------------------
 
 func TestCrossWorkspace_ScopeMismatch(t *testing.T) {
+	t.Parallel()
 	f := newCrossWSFixture(t)
 	u := f.member("sm@example.com", "smuser", "editor", f.wsA)
 	if err := f.srv.store.AddWorkspaceMember(f.wsB.ID, u.ID, "owner"); err != nil {
@@ -621,6 +635,7 @@ func TestCrossWorkspace_ScopeMismatch(t *testing.T) {
 }
 
 func TestCrossWorkspace_InvalidAndMissingInputs(t *testing.T) {
+	t.Parallel()
 	f := newCrossWSFixture(t)
 	u := f.member("iv@example.com", "ivuser", "owner", f.wsB)
 	r := f.request(u, reqOpts{})
@@ -653,6 +668,7 @@ func TestCrossWorkspace_InvalidAndMissingInputs(t *testing.T) {
 // an incidental view grant silently demotes a member the front door
 // would allow.
 func TestCrossWorkspace_GrantsWidenNeverNarrow(t *testing.T) {
+	t.Parallel()
 	f := newCrossWSFixture(t)
 
 	// Viewer in B plus an edit grant → the grant wins.
@@ -699,6 +715,7 @@ func TestCrossWorkspace_GrantsWidenNeverNarrow(t *testing.T) {
 // listed leg is the control: the same scopes pass once the collection is
 // granted, so the unlisted denials are about the listing, not the fixture.
 func TestCrossWorkspace_RestrictedMemberSystemCollection(t *testing.T) {
+	t.Parallel()
 	f := newCrossWSFixture(t)
 	sysColl, err := f.srv.store.CreateCollection(f.wsB.ID, models.CollectionCreate{Name: "Conventions B", IsSystem: true})
 	if err != nil {
@@ -753,6 +770,7 @@ func TestCrossWorkspace_RestrictedMemberSystemCollection(t *testing.T) {
 // filters archived resources, so the "guest" role must not be
 // synthesized from one.
 func TestCrossWorkspace_GrantOnArchivedItemGivesNoRole(t *testing.T) {
+	t.Parallel()
 	f := newCrossWSFixture(t)
 	u := f.member("ag@example.com", "aguser", "editor", f.wsA)
 	if _, err := f.srv.store.CreateItemGrant(f.wsB.ID, f.itemB.ID, u.ID, "edit", f.ownerBoth.ID); err != nil {
@@ -781,6 +799,7 @@ func TestCrossWorkspace_GrantOnArchivedItemGivesNoRole(t *testing.T) {
 // deleted_at — so nothing downstream of the helper would notice. Both
 // scopes must refuse.
 func TestCrossWorkspace_ArchivedCollectionDenied(t *testing.T) {
+	t.Parallel()
 	f := newCrossWSFixture(t)
 	u := f.member("ac@example.com", "acuser", "editor", f.wsA)
 	if err := f.srv.store.AddWorkspaceMember(f.wsB.ID, u.ID, "owner"); err != nil {
@@ -828,6 +847,7 @@ func TestCrossWorkspace_ArchivedCollectionDenied(t *testing.T) {
 // (BUG-1618, a deliberate widening for its cookie-only redirect route);
 // the cross-workspace helper deliberately does not reuse it.
 func TestCrossWorkspace_OwnerWithoutMembershipRowMatchesFrontDoor(t *testing.T) {
+	t.Parallel()
 	f := newCrossWSFixture(t)
 	owner := mustUser(t, f.srv, "solo@example.com", "solouser", "")
 	ws, err := f.srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Unjoined", OwnerID: owner.ID})
@@ -867,6 +887,7 @@ func TestCrossWorkspace_OwnerWithoutMembershipRowMatchesFrontDoor(t *testing.T) 
 // A legacy workspace-scoped API token is an editor in ITS workspace and a
 // stranger everywhere else.
 func TestCrossWorkspace_LegacyWorkspaceScopedToken(t *testing.T) {
+	t.Parallel()
 	f := newCrossWSFixture(t)
 	r := f.request(nil, reqOpts{noUser: true, bearer: true, tokenWorkspaceID: f.wsA.ID,
 		wsRoleCtx: "editor", wsIDCtx: f.wsA.ID})
@@ -890,6 +911,7 @@ func TestCrossWorkspace_LegacyWorkspaceScopedToken(t *testing.T) {
 
 // An anonymous caller on an initialized instance gets nothing.
 func TestCrossWorkspace_AnonymousDenied(t *testing.T) {
+	t.Parallel()
 	f := newCrossWSFixture(t)
 	r := f.request(nil, reqOpts{noUser: true})
 	assertDenied(t, f.srv.AuthorizeCrossWorkspaceRead(r, f.wsB.Slug, CrossWorkspaceItemScope(f.itemB)),
@@ -901,6 +923,7 @@ func TestCrossWorkspace_AnonymousDenied(t *testing.T) {
 // Fresh install (no users yet): the instance is open, mirroring
 // RequireWorkspaceAccess's UserCount == 0 bypass.
 func TestCrossWorkspace_FreshInstall(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Solo"})
 	if err != nil {
@@ -920,6 +943,7 @@ func TestCrossWorkspace_FreshInstall(t *testing.T) {
 
 // "Absent" and "forbidden" must be byte-identical on the read posture.
 func TestCrossWorkspace_WriteHiddenIsIndistinguishable(t *testing.T) {
+	t.Parallel()
 	f := newCrossWSFixture(t)
 	u := f.member("d@example.com", "duser", "editor", f.wsA)
 	r := f.request(u, reqOpts{wsRoleCtx: "editor", wsIDCtx: f.wsA.ID})
@@ -966,6 +990,7 @@ func TestCrossWorkspace_WriteHiddenIsIndistinguishable(t *testing.T) {
 // WriteDenied acknowledges, but still refuses to distinguish absent from
 // forbidden.
 func TestCrossWorkspace_WriteDeniedDoesNotDistinguishAbsence(t *testing.T) {
+	t.Parallel()
 	f := newCrossWSFixture(t)
 	u := f.member("wd@example.com", "wduser", "editor", f.wsA)
 	r := f.request(u, reqOpts{wsRoleCtx: "editor", wsIDCtx: f.wsA.ID})
@@ -1018,6 +1043,7 @@ var errAuthzTestLookup = errors.New("synthetic store failure")
 // forbids, so every field carries json:"-" as a backstop against a
 // stray json.Marshal.
 func TestCrossWorkspace_VerdictDoesNotSerialize(t *testing.T) {
+	t.Parallel()
 	f := newCrossWSFixture(t)
 	u := f.member("ser@example.com", "seruser", "editor", f.wsA)
 	r := f.request(u, reqOpts{wsRoleCtx: "editor", wsIDCtx: f.wsA.ID})
@@ -1049,6 +1075,7 @@ func TestCrossWorkspace_VerdictDoesNotSerialize(t *testing.T) {
 // With the store closed underneath it, every path must deny rather than
 // allow.
 func TestCrossWorkspace_FailsClosedOnStoreError(t *testing.T) {
+	t.Parallel()
 	f := newCrossWSFixture(t)
 	u := f.member("fc@example.com", "fcuser", "editor", f.wsA)
 	if err := f.srv.store.AddWorkspaceMember(f.wsB.ID, u.ID, "owner"); err != nil {
@@ -1090,6 +1117,7 @@ func TestCrossWorkspace_FailsClosedOnStoreError(t *testing.T) {
 // caller never mentioned. The flag makes that misuse impossible rather
 // than merely discouraged.
 func TestCrossWorkspace_WriteCollectionNotFoundRefusesForeignVerdicts(t *testing.T) {
+	t.Parallel()
 	f := newCrossWSFixture(t)
 	u := f.member("wcnf@example.com", "wcnfuser", "editor", f.wsA)
 	if err := f.srv.store.AddWorkspaceMember(f.wsB.ID, u.ID, "editor"); err != nil {
@@ -1158,6 +1186,7 @@ func TestCrossWorkspace_WriteCollectionNotFoundRefusesForeignVerdicts(t *testing
 // (TASK-3376, PR #1756): the base role reaches only the
 // member's listed collections. The edit grant is the control.
 func TestCrossWorkspace_RestrictedEditorViewGrantIsNotEdit(t *testing.T) {
+	t.Parallel()
 	f := newCrossWSFixture(t)
 	u := f.member("vg@example.com", "vguser", "editor", f.wsA)
 	if err := f.srv.store.AddWorkspaceMember(f.wsB.ID, u.ID, "editor"); err != nil {

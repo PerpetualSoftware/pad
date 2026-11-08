@@ -148,6 +148,7 @@ func carriedFrom(pre ItemCopyPreflight, key string) string {
 }
 
 func TestCopyEndpoint_PreflightAndCopyAgreeOnRelationReferents(t *testing.T) {
+	t.Parallel()
 	t.Run("a carried relation drops identically on both doors", func(t *testing.T) {
 		f := newCopyRelationFixture(t)
 		body := f.baseBody()
@@ -393,6 +394,7 @@ func newCopyRelationFixtureWith(t *testing.T, destDefault destDefaultKind, sourc
 // and the default never enters the migrated map, which is the arrangement that
 // hid this.
 func TestCopyEndpoint_DestinationDefaultRelationIsNotDroppedAsNotPortable(t *testing.T) {
+	t.Parallel()
 	f := newCopyRelationFixtureWith(t, resolvableDestDefault, nil, false)
 	body := f.baseBody()
 
@@ -423,6 +425,7 @@ func TestCopyEndpoint_DestinationDefaultRelationIsNotDroppedAsNotPortable(t *tes
 // An EMPTY relation value is a cleared field, not a referent, and reporting it
 // as dropped tells a user they lost something they never had.
 func TestCopyEndpoint_EmptyCarriedRelationIsNotReportedDropped(t *testing.T) {
+	t.Parallel()
 	empty := ""
 	f := newCopyRelationFixtureWith(t, noDestDefault, &empty, false)
 
@@ -449,6 +452,7 @@ func TestCopyEndpoint_EmptyCarriedRelationIsNotReportedDropped(t *testing.T) {
 // The unrestricted owner leg is the control: without it this passes against a
 // build that refuses every override.
 func TestCopyEndpoint_InvisibleRelationOverrideIsRefused(t *testing.T) {
+	t.Parallel()
 	f := newCopyRelationFixture(t)
 	body := f.baseBody()
 	body["field_overrides"] = map[string]any{"owner_ref": f.targetB.Ref}
@@ -506,6 +510,7 @@ func TestCopyEndpoint_InvisibleRelationOverrideIsRefused(t *testing.T) {
 //   - a default the resolver DELETED as unresolvable is put straight back,
 //     with StillDropped then suppressing the warning about it.
 func TestCopyEndpoint_LateInjectedRelationDefaultIsResolved(t *testing.T) {
+	t.Parallel()
 	t.Run("a null override lets the default in, and it is resolved", func(t *testing.T) {
 		f := newCopyRelationFixtureWith(t, resolvableDestDefault, nil, false)
 		body := f.baseBody()
@@ -557,6 +562,7 @@ func TestCopyEndpoint_LateInjectedRelationDefaultIsResolved(t *testing.T) {
 // the split this pair has everywhere else: the preview says what is wrong, the
 // copy refuses. `valid` must be false either way.
 func TestCopyEndpoint_RequiredRelationWithBrokenDefaultIsRefused(t *testing.T) {
+	t.Parallel()
 	f := newCopyRelationFixtureWith(t, unresolvableDestDefault, nil, true)
 	body := f.baseBody()
 
@@ -603,6 +609,7 @@ func TestCopyEndpoint_RequiredRelationWithBrokenDefaultIsRefused(t *testing.T) {
 // user "this came across" from "this is the destination's default", so naming
 // the wrong one is the preview lying about the thing it exists to report.
 func TestCopyEndpoint_NullSourceRelationIsNotReportedAsMigrated(t *testing.T) {
+	t.Parallel()
 	f := newCopyRelationFixtureNullSource(t)
 
 	pre := f.ok(f.baseBody())
@@ -656,6 +663,7 @@ func newCopyRelationFixtureNullSource(t *testing.T) *relationFixture {
 // guard, wrong in both directions, because "was the key present in the source"
 // is not "where did the final value come from".
 func TestCopyEndpoint_NullSourceWithoutDefaultIsNotReportedAsDefault(t *testing.T) {
+	t.Parallel()
 	f := newCopyRelationFixtureWith(t, noDestDefault, nil, false)
 	src, err := f.srv.store.CreateItem(f.wsA.ID, f.collA.ID, models.ItemCreate{
 		Title:     "Null, undefaulted",
@@ -698,6 +706,7 @@ func TestCopyEndpoint_NullSourceWithoutDefaultIsNotReportedAsDefault(t *testing.
 // way a non-string reaches a relation field unchallenged, and the
 // late-default pass owns values that arrive from defaults.
 func TestCopyEndpoint_NonStringRelationDefaultIsReported(t *testing.T) {
+	t.Parallel()
 	f := newCopyRelationFixtureNonStringDefault(t)
 	body := f.baseBody()
 	body["field_overrides"] = map[string]any{"owner_ref": nil}
@@ -758,6 +767,7 @@ func newCopyRelationFixtureNonStringDefault(t *testing.T) *relationFixture {
 // what the word says. This test pins the OUTCOME — which is worth holding
 // however it is reached — and claims nothing about the classification.
 func TestCopyEndpoint_DefaultAfterIncompatibleSourceIsNotTreatedAsCarried(t *testing.T) {
+	t.Parallel()
 	f := newCopyRelationFixtureIncompatibleSource(t)
 
 	pre := f.ok(f.baseBody())
@@ -830,6 +840,7 @@ func newCopyRelationFixtureIncompatibleSource(t *testing.T) *relationFixture {
 // probe could not have failed. THIS fixture uses a non-nil DANGLING source
 // value, which is the only shape that makes the two sets differ.
 func TestCopyPreflight_RelationDroppedCarriedKeyDoesNotExemptTheDefault(t *testing.T) {
+	t.Parallel()
 	dangling := badRef
 	f := newCopyRelationFixtureWith(t, resolvableDestDefault, &dangling, true)
 
@@ -877,6 +888,7 @@ func TestCopyPreflight_RelationDroppedCarriedKeyDoesNotExemptTheDefault(t *testi
 // non-string-default test sends the override and therefore only ever
 // exercised the forgiving path.
 func TestCopyEndpoint_NonStringDestinationDefaultDropsWithOrWithoutANullOverride(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		override bool
@@ -935,6 +947,7 @@ func TestCopyEndpoint_NonStringDestinationDefaultDropsWithOrWithoutANullOverride
 // dropped every default cannot pass. Keep it:
 // a visibility test without the can-see control is not one.
 func TestCopyEndpoint_InvisibleDestinationDefaultIsDroppedByTheCopyToo(t *testing.T) {
+	t.Parallel()
 	f := newCopyRelationFixtureWith(t, resolvableDestDefault, nil, false)
 
 	// Editor in both workspaces: sees the source collection in A and the
@@ -1007,6 +1020,7 @@ func TestCopyEndpoint_InvisibleDestinationDefaultIsDroppedByTheCopyToo(t *testin
 // The preflight already discloses it, in the carried row's `"from":"default"`.
 // This makes the copy say it too, so the pair agrees.
 func TestCopyEndpoint_CarriedRelationDropIsReportedEvenWhenADefaultRefillsIt(t *testing.T) {
+	t.Parallel()
 	dangling := badRef
 	f := newCopyRelationFixtureWith(t, resolvableDestDefault, &dangling, false)
 
@@ -1057,6 +1071,7 @@ func TestCopyEndpoint_CarriedRelationDropIsReportedEvenWhenADefaultRefillsIt(t *
 // Driven as a table over BOTH doors on ONE body: asserting them separately is
 // what let them drift, since each door's own test passed.
 func TestCopyEndpoint_PreflightAndCopyAgreeOnOverridePrecedence(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// override builds the body from the fixture, so the invisible-item
@@ -1133,6 +1148,7 @@ func TestCopyEndpoint_PreflightAndCopyAgreeOnOverridePrecedence(t *testing.T) {
 // which is what makes the dialog show an honest blocked state rather than an
 // unscoped picker offering SOURCE-workspace items.
 func TestCopyPreflight_RequiredRelationNeedsValueCarriesItsCollection(t *testing.T) {
+	t.Parallel()
 	f := newCopyRelationFixtureWith(t, noDestDefault, nil, true)
 
 	pre := f.ok(f.baseBody())
@@ -1203,6 +1219,7 @@ func needsValueRow(pre ItemCopyPreflight, key string) *ItemCopyPreflightNeedsVal
 // would refuse rows the user could have filled in, which is a worse failure and
 // invisible to whoever hits it.
 func TestCopyPreflight_RelationNeedsValueReportsADeletedTarget(t *testing.T) {
+	t.Parallel()
 	f := newCopyRelationFixtureWith(t, noDestDefault, nil, true)
 
 	// CONTROL LEG FIRST, on the same fixture, so the two legs differ in exactly
@@ -1242,6 +1259,7 @@ func TestCopyPreflight_RelationNeedsValueReportsADeletedTarget(t *testing.T) {
 // The other half of the same defect, and the half the client provably cannot
 // compute: the collection EXISTS and this caller cannot read it.
 func TestCopyPreflight_RelationNeedsValueReportsAnUnreadableTarget(t *testing.T) {
+	t.Parallel()
 	f := newCopyRelationFixtureWith(t, noDestDefault, nil, true)
 
 	// An editor who may copy INTO the destination collection but may NOT read
@@ -1283,6 +1301,7 @@ func TestCopyPreflight_RelationNeedsValueReportsAnUnreadableTarget(t *testing.T)
 // not report", never as "unavailable". A client that blocked on absence would
 // refuse every row against a server predating this change.
 func TestCopyPreflight_AvailableRelationTargetOmitsTheFlagEntirely(t *testing.T) {
+	t.Parallel()
 	f := newCopyRelationFixtureWith(t, noDestDefault, nil, true)
 
 	rr := f.call(f.owner, reqOpts{}, f.baseBody())
@@ -1307,6 +1326,7 @@ func TestCopyPreflight_AvailableRelationTargetOmitsTheFlagEntirely(t *testing.T)
 // Found by a surviving mutant, not by inspection: dropping the type gate left
 // every other test in this file green.
 func TestCopyPreflight_OnlyRelationRowsCarryTheUnavailableFlag(t *testing.T) {
+	t.Parallel()
 	f := newCopyRelationFixtureWith(t, noDestDefault, nil, true)
 
 	// A destination schema where a NON-relation required field names the same
@@ -1367,6 +1387,7 @@ func TestCopyPreflight_OnlyRelationRowsCarryTheUnavailableFlag(t *testing.T) {
 // The weaker case — an empty picker that says nothing about why it is empty —
 // is IDEA-2905, and it belongs to the picker rather than to this flag.
 func TestCopyPreflight_AnEmptyButReadableTargetIsNotReportedUnavailable(t *testing.T) {
+	t.Parallel()
 	f := newCopyRelationFixtureWith(t, noDestDefault, nil, true)
 
 	// targetsB is live and readable; remove its only item so the picker there
@@ -1394,6 +1415,7 @@ func TestCopyPreflight_AnEmptyButReadableTargetIsNotReportedUnavailable(t *testi
 // why. The flag's whole purpose is to say "this row is unfixable from in here",
 // and that is exactly as true of a list as of a single reference.
 func TestCopyPreflight_MultiRelationRowCarriesTheUnavailableFlag(t *testing.T) {
+	t.Parallel()
 	f := newCopyRelationFixtureWith(t, noDestDefault, nil, true)
 
 	schema := fmt.Sprintf(`{"fields":[
@@ -1440,6 +1462,7 @@ func TestCopyPreflight_MultiRelationRowCarriesTheUnavailableFlag(t *testing.T) {
 // to predict what the copy will do, attributing a value to someone who never
 // sent it is the whole failure.
 func TestCopyPreflight_AnEmptyMultiRelationOverrideIsNotReportedAsYourValue(t *testing.T) {
+	t.Parallel()
 	f := newCopyRelationFixtureWith(t, noDestDefault, nil, true)
 
 	schema := fmt.Sprintf(`{"fields":[
@@ -1489,6 +1512,7 @@ func TestCopyPreflight_AnEmptyMultiRelationOverrideIsNotReportedAsYourValue(t *t
 // a branch that dropped every multi_relation override would satisfy the leg
 // above and silently stop the preflight reporting overrides at all.
 func TestCopyPreflight_ControlANonEmptyMultiRelationOverrideIsStillYours(t *testing.T) {
+	t.Parallel()
 	f := newCopyRelationFixtureWith(t, noDestDefault, nil, true)
 
 	schema := fmt.Sprintf(`{"fields":[
@@ -1529,6 +1553,7 @@ func carriedRowFor(pre ItemCopyPreflight, key string) *ItemCopyPreflightCarried 
 // fix is one sweep over the coerced map rather than a branch in the override
 // loop: that loop never sees a carried value at all.
 func TestCopyPreflight_ACarriedEmptyMultiRelationIsNotReportedAsMigrated(t *testing.T) {
+	t.Parallel()
 	f := newCopyRelationFixtureWith(t, noDestDefault, nil, true)
 
 	schema := fmt.Sprintf(`{"fields":[
@@ -1561,6 +1586,7 @@ func TestCopyPreflight_ACarriedEmptyMultiRelationIsNotReportedAsMigrated(t *test
 // LEGITIMATE STORED VALUE, not a spelling of absence. Dropping it would discard
 // the caller's own value and mislabel whatever replaced it.
 func TestCopyPreflight_ACoercedNullOnAJSONFieldIsStillTheCallersValue(t *testing.T) {
+	t.Parallel()
 	f := newCopyRelationFixtureWith(t, noDestDefault, nil, true)
 
 	schema := `{"fields":[

@@ -45,6 +45,7 @@ func doRequestWithBearer(srv *Server, method, path, bearer string, body interfac
 // handleSessionCheck and return the public payload (setup_required: true
 // on a fresh server).
 func TestTokenAuth_PublicPath_InvalidSessionFallsThrough(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	rec := doRequestWithBearer(srv, "GET", "/api/v1/auth/session",
@@ -66,6 +67,7 @@ func TestTokenAuth_PublicPath_InvalidSessionFallsThrough(t *testing.T) {
 // somehow sent garbage) must also fall through on public paths. Pre-fix
 // this 401'd at the format-check before token parsing.
 func TestTokenAuth_PublicPath_MalformedAuthHeaderFallsThrough(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	req := httptest.NewRequest("GET", "/api/v1/auth/session", nil)
@@ -84,6 +86,7 @@ func TestTokenAuth_PublicPath_MalformedAuthHeaderFallsThrough(t *testing.T) {
 // prefix) must also fall through on public paths. Symmetry with the
 // session-token branch.
 func TestTokenAuth_PublicPath_InvalidAPITokenFormatFallsThrough(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	rec := doRequestWithBearer(srv, "GET", "/api/v1/auth/session", "totally-not-a-pad-token", nil)
@@ -98,6 +101,7 @@ func TestTokenAuth_PublicPath_InvalidAPITokenFormatFallsThrough(t *testing.T) {
 // fall through on public paths. (Caller saved a token, the server's
 // token table got wiped, caller now wants to re-auth.)
 func TestTokenAuth_PublicPath_InvalidAPITokenFallsThrough(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	// pad_<64 hex chars> is the format ValidateToken expects. We use 64
@@ -118,6 +122,7 @@ func TestTokenAuth_PublicPath_InvalidAPITokenFallsThrough(t *testing.T) {
 // BUG-1227 — without this fallthrough the user can't even log in to
 // fix their stale credentials.
 func TestTokenAuth_PublicPath_LoginRecoversWithStaleBearer(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	// Bootstrap a real user so we have valid creds to log in with.
 	bootstrapFirstUser(t, srv, "user@example.com", "User")
@@ -140,6 +145,7 @@ func TestTokenAuth_PublicPath_LoginRecoversWithStaleBearer(t *testing.T) {
 // Hits a workspace endpoint after an admin exists, so RequireAuth is
 // engaged.
 func TestTokenAuth_ProtectedPath_StillRejectsInvalidBearer(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	// Bootstrap so RequireAuth gates non-public paths (it short-circuits
 	// when UserCount == 0 to allow first-time setup).

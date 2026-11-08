@@ -10,6 +10,7 @@ import (
 // created between the first registration and the re-register is still SENT:
 // G7 reads devs[0].CreatedAt and must not see the re-register as a new device.
 func TestPushDispatch_ReregisterKeepsPendingRowDeliverable(t *testing.T) {
+	t.Parallel()
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newPdx(t, srv)
 		// The device was first registered 2h ago; the row is 30m old, after that
@@ -35,6 +36,7 @@ func TestPushDispatch_ReregisterKeepsPendingRowDeliverable(t *testing.T) {
 // again). Carol's pending row must reach no message; bob's row, created after
 // bob's ORIGINAL registration, is sent.
 func TestPushDispatch_CrossUserReclaimRoutesToTheLatestRegistrant(t *testing.T) {
+	t.Parallel()
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newPdx(t, srv)
 		carol := f.user("carol")
@@ -65,6 +67,7 @@ func TestPushDispatch_CrossUserReclaimRoutesToTheLatestRegistrant(t *testing.T) 
 // sequence, so bob's pending row reaches no message and carol's is sent.
 // Kills: the ownership clause comparing updated_at then id.
 func TestPushDispatch_SameSecondReclaimIgnoresIDOrder(t *testing.T) {
+	t.Parallel()
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newPdx(t, srv)
 		carol := f.user("carol")

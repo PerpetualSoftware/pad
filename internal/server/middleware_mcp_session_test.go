@@ -20,6 +20,7 @@ import (
 // touches refresh lastSeen but do NOT fire onChange (no gauge churn
 // per per-session tool call).
 func TestMCPSessionTracker_TouchInsertsAndDeduplicates(t *testing.T) {
+	t.Parallel()
 	var fired int
 	var lastCount int
 	tr := newMCPSessionTracker(time.Minute, func(n int) {
@@ -50,6 +51,7 @@ func TestMCPSessionTracker_TouchInsertsAndDeduplicates(t *testing.T) {
 // TestMCPSessionTracker_TouchEmptyIDIsNoOp guards against a stray
 // empty header dropping a phantom entry into the map.
 func TestMCPSessionTracker_TouchEmptyIDIsNoOp(t *testing.T) {
+	t.Parallel()
 	var fired int
 	tr := newMCPSessionTracker(time.Minute, func(int) { fired++ })
 
@@ -65,6 +67,7 @@ func TestMCPSessionTracker_TouchEmptyIDIsNoOp(t *testing.T) {
 // TestMCPSessionTracker_EvictRemovesAndFires verifies evict bumps
 // onChange ONLY when an entry was actually present.
 func TestMCPSessionTracker_EvictRemovesAndFires(t *testing.T) {
+	t.Parallel()
 	var fired int
 	var lastCount int
 	tr := newMCPSessionTracker(time.Minute, func(n int) {
@@ -138,6 +141,7 @@ func TestMCPSessionTracker_SweepEvictsStale(t *testing.T) {
 // TestMCPSessionTracker_NilOnChangeIsSafe verifies the tracker works
 // without an onChange callback (used by tests / non-metrics builds).
 func TestMCPSessionTracker_NilOnChangeIsSafe(t *testing.T) {
+	t.Parallel()
 	tr := newMCPSessionTracker(time.Minute, nil)
 	tr.touch("a")
 	tr.touch("b")
@@ -153,6 +157,7 @@ func TestMCPSessionTracker_NilOnChangeIsSafe(t *testing.T) {
 // is just that the final size is what the call counts say it should
 // be.
 func TestMCPSessionTracker_ConcurrentTouchEvict(t *testing.T) {
+	t.Parallel()
 	tr := newMCPSessionTracker(time.Minute, nil)
 
 	const goroutines = 16
@@ -193,6 +198,7 @@ func TestMCPSessionTracker_ConcurrentTouchEvict(t *testing.T) {
 // matches the actual map size at observation time — no `recorded[i] <
 // recorded[i-1]` after a sequence of pure inserts.
 func TestMCPSessionTracker_OnChangeUnderLock(t *testing.T) {
+	t.Parallel()
 	const goroutines = 32
 	const opsPerGoroutine = 50
 
@@ -281,6 +287,7 @@ func TestMCPSessionTracker_RunStopsCleanly(t *testing.T) {
 // request header (subsequent calls), touches on success, evicts on
 // DELETE.
 func TestServer_TrackMCPSession_LifecycleHappyPath(t *testing.T) {
+	t.Parallel()
 	s := &Server{metrics: metrics.New()}
 	s.startMCPSessionTracker()
 	defer s.stopMCPSessionTracker()
@@ -328,6 +335,7 @@ func TestServer_TrackMCPSession_LifecycleHappyPath(t *testing.T) {
 // against the bug the original v1 logic also tried to handle: a 500
 // on initialize must NOT register a session.
 func TestServer_TrackMCPSession_FailedInitializeDoesNotOpen(t *testing.T) {
+	t.Parallel()
 	s := &Server{metrics: metrics.New()}
 	s.startMCPSessionTracker()
 	defer s.stopMCPSessionTracker()
@@ -356,6 +364,7 @@ func TestServer_TrackMCPSession_FailedInitializeDoesNotOpen(t *testing.T) {
 // the corner where the inner handler returned an error before
 // mcp-go got to set the response header.
 func TestServer_TrackMCPSession_NoIDIsNoOp(t *testing.T) {
+	t.Parallel()
 	s := &Server{metrics: metrics.New()}
 	s.startMCPSessionTracker()
 	defer s.stopMCPSessionTracker()
@@ -372,6 +381,7 @@ func TestServer_TrackMCPSession_NoIDIsNoOp(t *testing.T) {
 // a clean no-op on Servers that never wired the tracker (selfhost /
 // tests).
 func TestServer_TrackMCPSession_NilTrackerIsSafe(t *testing.T) {
+	t.Parallel()
 	s := &Server{metrics: metrics.New()}
 	// Intentionally NOT calling startMCPSessionTracker.
 	noHeader := func(string) string { return "" }
@@ -382,6 +392,7 @@ func TestServer_TrackMCPSession_NilTrackerIsSafe(t *testing.T) {
 // "called twice from a test that flips MCP transport state" path.
 // First call wires the tracker; second is a no-op.
 func TestServer_StartMCPSessionTracker_Idempotent(t *testing.T) {
+	t.Parallel()
 	s := &Server{metrics: metrics.New()}
 	s.startMCPSessionTracker()
 	tracker1 := s.mcpSessions
@@ -399,6 +410,7 @@ func TestServer_StartMCPSessionTracker_Idempotent(t *testing.T) {
 // status. Otherwise a transient 5xx on the DELETE path would leave
 // the session pinned in the gauge until TTL eviction.
 func TestServer_TrackMCPSession_DeleteEvictsOnAnyStatus(t *testing.T) {
+	t.Parallel()
 	s := &Server{metrics: metrics.New()}
 	s.startMCPSessionTracker()
 	defer s.stopMCPSessionTracker()

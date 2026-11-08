@@ -107,6 +107,7 @@ type b2367NotUnique struct {
 }
 
 func TestBUG2367_SingleMove(t *testing.T) {
+	t.Parallel()
 	t.Run("a carried collision is dropped and named; the computed field is not carried", func(t *testing.T) {
 		f := newB2367Fixture(t)
 		rr := doRequest(f.srv, "POST", "/api/v1/workspaces/"+f.ws+"/items/"+f.source["slug"].(string)+"/move",
@@ -203,6 +204,7 @@ func TestBUG2367_SingleMove(t *testing.T) {
 }
 
 func TestBUG2367_BulkMove(t *testing.T) {
+	t.Parallel()
 	f := newB2367Fixture(t)
 	rr := doRequest(f.srv, "POST", "/api/v1/workspaces/"+f.ws+"/items/bulk",
 		map[string]any{"ids": []string{f.source["id"].(string)}, "op": "move", "collection": "dst"})
@@ -235,6 +237,7 @@ func TestBUG2367_BulkMove(t *testing.T) {
 // The preflight and the copy must drop the same keys with the same words
 // (DR-6), same workspace and across workspaces.
 func TestBUG2367_PreflightAndCopyAgree(t *testing.T) {
+	t.Parallel()
 	for _, cross := range []bool{false, true} {
 		t.Run(fmt.Sprintf("cross_workspace=%v", cross), func(t *testing.T) {
 			f := newB2367Fixture(t)

@@ -86,6 +86,7 @@ func (f *task2188Fixture) patchSchema(t *testing.T, schema string, migrations []
 }
 
 func TestFieldUsage_TASK2188_Counts(t *testing.T) {
+	t.Parallel()
 	f := newTask2188Fixture(t)
 	u := f.usage(t)
 
@@ -103,6 +104,7 @@ func TestFieldUsage_TASK2188_Counts(t *testing.T) {
 }
 
 func TestFieldUsage_TASK2188_UpdateNamesWhatItOrphaned(t *testing.T) {
+	t.Parallel()
 	f := newTask2188Fixture(t)
 
 	// Remove note, remove status's "blocked", rename tags "a" → "alpha" (a
@@ -148,6 +150,7 @@ func TestFieldUsage_TASK2188_UpdateNamesWhatItOrphaned(t *testing.T) {
 // An edit that removes nothing carries no orphan report, and neither does a
 // removal no item holds a value for: the response is byte-identical to before.
 func TestFieldUsage_TASK2188_NothingOrphanedNoWarning(t *testing.T) {
+	t.Parallel()
 	f := newTask2188Fixture(t)
 	added := f.patchSchema(t, `{"fields":[
 		{"key":"status","type":"select","options":["open","blocked","done","later"],"default":"open"},
@@ -173,6 +176,7 @@ func TestFieldUsage_TASK2188_NothingOrphanedNoWarning(t *testing.T) {
 // keeps it, setting the field to it again is refused, and a full-fields write
 // that carries it unchanged is refused too.
 func TestFieldUsage_TASK2188_OrphanedOptionOnLaterWrites(t *testing.T) {
+	t.Parallel()
 	f := newTask2188Fixture(t)
 	f.patchSchema(t, `{"fields":[
 		{"key":"status","type":"select","options":["open","done"],"default":"open"},
@@ -207,6 +211,7 @@ func TestFieldUsage_TASK2188_OrphanedOptionOnLaterWrites(t *testing.T) {
 // The read has the PATCH's gates: an editor cannot read it, and an owner
 // restricted away from a collection gets the 404 the PATCH gives.
 func TestFieldUsage_TASK2188_Gates(t *testing.T) {
+	t.Parallel()
 	f := newRestrictedOwnerVisibilityFixture(t)
 	hidden := doRequestWithHeaders(f.srv, "GET", "/api/v1/workspaces/"+f.ws.Slug+"/collections/"+f.hiddenColl.Slug+"/field-usage", nil, f.bearerHeaders())
 	hiddenPatch := doRequestWithHeaders(f.srv, "PATCH", "/api/v1/workspaces/"+f.ws.Slug+"/collections/"+f.hiddenColl.Slug, map[string]any{"name": "x"}, f.bearerHeaders())

@@ -107,6 +107,7 @@ func verifyAppSignature(t *testing.T, secret string, h recordedHook) {
 }
 
 func TestAppDelivery_HeldUntilRedeemThenDelivered(t *testing.T) {
+	t.Parallel()
 	e := newDeliveryEnv(t)
 	e.item(t, e.companion.ID, "Before redeem")
 	e.tick(t)
@@ -156,6 +157,7 @@ func TestAppDelivery_HeldUntilRedeemThenDelivered(t *testing.T) {
 }
 
 func TestAppDelivery_OnlyTheAppsCollections(t *testing.T) {
+	t.Parallel()
 	e := newDeliveryEnv(t)
 	e.redeemNow(t)
 	other, err := e.srv.store.CreateCollection(e.wsID, models.CollectionCreate{Name: "Internal", Slug: "internal"})
@@ -170,6 +172,7 @@ func TestAppDelivery_OnlyTheAppsCollections(t *testing.T) {
 }
 
 func TestAppDelivery_CommentEvent(t *testing.T) {
+	t.Parallel()
 	e := newDeliveryEnv(t)
 	// Subscribe to comment.created as well.
 	e.m["version"] = "1.0.1"
@@ -207,6 +210,7 @@ func TestAppDelivery_CommentEvent(t *testing.T) {
 }
 
 func TestAppDelivery_DisabledAndRotatedDeliverNothing(t *testing.T) {
+	t.Parallel()
 	e := newDeliveryEnv(t)
 	e.redeemNow(t)
 	base := "/api/v1/workspaces/" + e.ws + "/apps/" + e.installID
@@ -238,6 +242,7 @@ func TestAppDelivery_DisabledAndRotatedDeliverNothing(t *testing.T) {
 }
 
 func TestAppDelivery_RedirectIsNotFollowed(t *testing.T) {
+	t.Parallel()
 	e := newDeliveryEnv(t)
 	e.redeemNow(t)
 	e.status["/hooks"] = http.StatusFound
@@ -255,6 +260,7 @@ func TestAppDelivery_RedirectIsNotFollowed(t *testing.T) {
 }
 
 func TestAppDelivery_TransientStaysOwed(t *testing.T) {
+	t.Parallel()
 	e := newDeliveryEnv(t)
 	e.redeemNow(t)
 	e.status["/hooks"] = http.StatusServiceUnavailable
@@ -271,6 +277,7 @@ func TestAppDelivery_TransientStaysOwed(t *testing.T) {
 // An event without an app-projection block is skipped, never rebuilt from
 // live state.
 func TestAppDelivery_NoProjectionIsSkipped(t *testing.T) {
+	t.Parallel()
 	e := newDeliveryEnv(t)
 	e.redeemNow(t)
 	e.item(t, e.companion.ID, "Stripped")
@@ -345,6 +352,7 @@ func TestAppDelivery_StopEndsAPendingRetry(t *testing.T) {
 // claimed alone or folded, so the app never sees an arbitrary subset of one
 // operation (DOC-3371 §5: bulk edits are invisible to apps in v1).
 func TestAppDelivery_BulkMembersAreNotDelivered(t *testing.T) {
+	t.Parallel()
 	e := newDeliveryEnv(t)
 	// Subscribe to item.updated as well.
 	e.m["version"] = "1.0.1"
@@ -386,6 +394,7 @@ func TestAppDelivery_BulkMembersAreNotDelivered(t *testing.T) {
 // A folded bulk batch delivers nothing to apps and is
 // counted, like a member claimed alone.
 func TestAppDelivery_FoldedBulkIsCountedNotDelivered(t *testing.T) {
+	t.Parallel()
 	e := newDeliveryEnv(t)
 	m := metrics.New()
 	e.srv.SetMetrics(m)

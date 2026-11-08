@@ -37,6 +37,7 @@ func sessionExpiry(t *testing.T, srv *Server, token string) time.Time {
 }
 
 func TestTASK3975_CLIApprovalFromAnEightyFiveDayWebSession_GetsFullWindow(t *testing.T) {
+	t.Parallel()
 	srv, u, token := oauthOnlyCloud(t)
 	ageAllSessions(t, srv, u.ID, 85*24*time.Hour)
 	pending, err := srv.store.CreateCLIAuthSession()
@@ -73,6 +74,7 @@ func TestTASK3975_CLIApprovalFromAnEightyFiveDayWebSession_GetsFullWindow(t *tes
 // Dating the CLI token from the approval must not make it a fresh sign-in
 // for the confirm-only delete recency check (BUG-3336).
 func TestTASK3975_CLITokenFromOldSessionStillCannotConfirmDelete(t *testing.T) {
+	t.Parallel()
 	srv, u, token := oauthOnlyCloud(t)
 	ageAllSessions(t, srv, u.ID, 85*24*time.Hour)
 	pending, _ := srv.store.CreateCLIAuthSession()
@@ -90,6 +92,7 @@ func TestTASK3975_CLITokenFromOldSessionStillCannotConfirmDelete(t *testing.T) {
 // A credential-change rotation REPLACES the session, so it keeps the
 // replaced session's cap (it must not extend a stolen session's life).
 func TestTASK3975_RotationKeepsParentCap(t *testing.T) {
+	t.Parallel()
 	srv, u, _ := oauthOnlyCloud(t)
 	// A 7-day web session, so the 90-day cap (5 days away) binds rather than
 	// the session's own window, which a rotation keeps (BUG-3978).

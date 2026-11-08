@@ -69,6 +69,7 @@ func meAgendaFacts(t *testing.T, w *agendaWorld, coll, title string) *models.Ite
 }
 
 func TestMeAgendaRefusesApp(t *testing.T) {
+	t.Parallel()
 	w := newAgendaWorld(t)
 	app := func(ctx context.Context) context.Context { return context.WithValue(ctx, appCtxKey{}, &appContext{}) }
 	rr := meAgendaGet(t, w, w.owner, "", app)
@@ -79,6 +80,7 @@ func TestMeAgendaRefusesApp(t *testing.T) {
 }
 
 func TestMeAgendaRequiresAuth(t *testing.T) {
+	t.Parallel()
 	w := newAgendaWorld(t)
 	rr := meAgendaGet(t, w, nil, agendaWindow)
 	if rr.Code != 401 {
@@ -98,6 +100,7 @@ func meAgendaWorkspace(t *testing.T, w *agendaWorld, name string) *agendaWorld {
 }
 
 func TestMeAgendaTokenAllowlist(t *testing.T) {
+	t.Parallel()
 	w := newAgendaWorld(t, "tasks")
 	other := meAgendaWorkspace(t, w, "Other")
 	meAgendaFacts(t, w, "tasks", "Allowed")
@@ -130,6 +133,7 @@ func TestMeAgendaTokenAllowlist(t *testing.T) {
 }
 
 func TestMeAgendaGuestRestrictedCollection(t *testing.T) {
+	t.Parallel()
 	w := newAgendaWorld(t, "tasks", "secret")
 	meAgendaFacts(t, w, "secret", "Hidden")
 	granted := meAgendaFacts(t, w, "secret", "Granted")
@@ -143,6 +147,7 @@ func TestMeAgendaGuestRestrictedCollection(t *testing.T) {
 }
 
 func TestMeAgendaHiddenItemNotCounted(t *testing.T) {
+	t.Parallel()
 	w := newAgendaWorld(t, "tasks", "secret")
 	u := mustUser(t, w.srv, "member-me-agenda@example.com", "membermeagenda", "")
 	if err := w.srv.store.AddWorkspaceMember(w.ws.ID, u.ID, "viewer"); err != nil {
@@ -160,6 +165,7 @@ func TestMeAgendaHiddenItemNotCounted(t *testing.T) {
 }
 
 func TestMeAgendaLostAccessDropsSilently(t *testing.T) {
+	t.Parallel()
 	w := newAgendaWorld(t, "tasks")
 	meAgendaFacts(t, w, "tasks", "Lost")
 	u := mustUser(t, w.srv, "lost-me-agenda@example.com", "lostmeagenda", "")
@@ -180,6 +186,7 @@ func TestMeAgendaLostAccessDropsSilently(t *testing.T) {
 }
 
 func TestMeAgendaMergesWorkspacesDeterministically(t *testing.T) {
+	t.Parallel()
 	w := newAgendaWorld(t, "tasks")
 	other := meAgendaWorkspace(t, w, "Zebra")
 	for _, world := range []*agendaWorld{other, w} {
@@ -203,6 +210,7 @@ func TestMeAgendaMergesWorkspacesDeterministically(t *testing.T) {
 }
 
 func TestMeAgendaEntriesCarryOwnerUsername(t *testing.T) {
+	t.Parallel()
 	w := newAgendaWorld(t, "tasks")
 	w.srv.agendaClock = func() time.Time { return meAgendaNow }
 	it := meAgendaFacts(t, w, "tasks", "owned")
@@ -219,6 +227,7 @@ func TestMeAgendaEntriesCarryOwnerUsername(t *testing.T) {
 }
 
 func TestMeAgendaBoundsAcrossTenWorkspaces(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"schedule", "date", "created", "completed"} {
 		t.Run(kind, func(t *testing.T) {
 			w := newAgendaWorld(t, "tasks")
@@ -277,6 +286,7 @@ func TestMeAgendaBoundsAcrossTenWorkspaces(t *testing.T) {
 }
 
 func TestMeAgendaCreatedCompleted(t *testing.T) {
+	t.Parallel()
 	w := newAgendaWorld(t, "tasks", "secret")
 	u := mustUser(t, w.srv, "complete-me-agenda@example.com", "completemeagenda", "")
 	if err := w.srv.store.AddWorkspaceMember(w.ws.ID, u.ID, "viewer"); err != nil {
@@ -318,6 +328,7 @@ func TestMeAgendaCreatedCompleted(t *testing.T) {
 }
 
 func TestMeAgendaTzDefaults(t *testing.T) {
+	t.Parallel()
 	w := newAgendaWorld(t, "tasks")
 	w.srv.agendaClock = func() time.Time { return meAgendaNow }
 	tz := "America/Los_Angeles"
@@ -339,6 +350,7 @@ func TestMeAgendaTzDefaults(t *testing.T) {
 }
 
 func TestMeAgendaWindowValidation(t *testing.T) {
+	t.Parallel()
 	w := newAgendaWorld(t)
 	for _, tc := range []struct{ name, query, code string }{
 		{"missing from", "to=2031-03-11T00:00:00Z", "required"},
@@ -359,6 +371,7 @@ func TestMeAgendaWindowValidation(t *testing.T) {
 }
 
 func TestMeAgendaNoAdmissionIsEmpty(t *testing.T) {
+	t.Parallel()
 	w := newAgendaWorld(t, "tasks")
 	meAgendaFacts(t, w, "tasks", "Excluded")
 	never := mustUser(t, w.srv, "empty-me-agenda@example.com", "emptymeagenda", "")

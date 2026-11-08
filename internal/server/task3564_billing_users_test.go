@@ -13,6 +13,7 @@ import (
 // must re-sync (a stored Stripe customer, or a stripe-sourced plan), and only
 // those, behind the same cloud-secret rule as its siblings.
 func TestBillingUsersPagesTheUsersTheSweepNeeds(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
 	srv.SetCloudMode(cloudContractSecret)

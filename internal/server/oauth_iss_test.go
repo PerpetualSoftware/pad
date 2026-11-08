@@ -153,6 +153,7 @@ func TestOAuth_AuthorizeRefusesFormPost(t *testing.T) {
 }
 
 func TestWithIssParam(t *testing.T) {
+	t.Parallel()
 	const iss = "https://app.getpad.dev"
 	cases := []struct{ in, want string }{
 		{"https://c.test/cb?code=a&state=s", "https://c.test/cb?code=a&iss=https%3A%2F%2Fapp.getpad.dev&state=s"},

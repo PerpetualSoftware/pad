@@ -12,6 +12,7 @@ import (
 // Kills: the handler passing the author (or nothing) as the editor; the store
 // attributing edit mentions to the author.
 func TestUpdateComment_AdminEditMentionIsFromTheEditor(t *testing.T) {
+	t.Parallel()
 	env := setupRBACEnv(t)
 	st := env.srv.store
 	env.srv.SetPushGateway(pushTestGateway)

@@ -15,6 +15,7 @@ import (
 // makes that distinguishable; these pin the split itself.
 
 func TestListen_RefusesAPortAlreadyHeld(t *testing.T) {
+	t.Parallel()
 	held, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("seed listener: %v", err)

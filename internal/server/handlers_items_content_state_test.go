@@ -16,6 +16,7 @@ import (
 // The population is enumerated on the BUG-3000 trail. The doors driven here are the
 // ones a caller reaches for first: the single-item read and the list.
 func TestContentStateReachesTheHTTPReadDoors(t *testing.T) {
+	t.Parallel()
 	srv := testServerWithCollab(t)
 	slug := createWSWithCollections(t, srv)
 	item := createTaskWithFields(t, srv, slug, "Stale body", `{"status":"open"}`)
@@ -104,6 +105,7 @@ func TestContentStateReachesTheHTTPReadDoors(t *testing.T) {
 // the item DTO depends on; a marker that were always present would satisfy every
 // positive assertion here and break that instead.
 func TestPublicShareDoorsCarryTheMarkerBothWays(t *testing.T) {
+	t.Parallel()
 	srv := testServerWithCollab(t)
 	slug := createWSWithCollections(t, srv)
 	item := createTaskWithFields(t, srv, slug, "Shared body", `{"status":"open"}`)

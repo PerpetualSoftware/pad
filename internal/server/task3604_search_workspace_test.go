@@ -13,6 +13,7 @@ import (
 // from the same access check that admitted that workspace. A caller who
 // cannot see a workspace never receives its results, nor its slug.
 func TestTask3604_CrossWorkspaceSearchLabelsOnlyAdmittedWorkspaces(t *testing.T) {
+	t.Parallel()
 	e := bug3331Setup(t)
 	type hit struct{ title, slug, owner string }
 	run := func(t *testing.T, do func(string) *bug3331Result) ([]hit, string) {

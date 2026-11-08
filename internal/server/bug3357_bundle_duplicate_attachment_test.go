@@ -17,6 +17,7 @@ import (
 // in the store (internal/store/bug3357_import_duplicate_ids_test.go) and
 // covers both import doors.
 func TestBUG3357_BundleDuplicateAttachmentIDRefused(t *testing.T) {
+	t.Parallel()
 	manifest := func(ids ...string) []byte {
 		m := models.AttachmentManifest{Version: 1}
 		for i, id := range ids {

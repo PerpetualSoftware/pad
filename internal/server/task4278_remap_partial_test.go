@@ -22,10 +22,12 @@ import (
 // text tells the importer plainly to delete the workspace and import again,
 // and carries none of the store's error text (which can carry SQL).
 func TestTASK4278_RemapStoppedBetweenChunks_SQLite(t *testing.T) {
+	t.Parallel()
 	remapStoppedBetweenChunks(t, store.DriverSQLite)
 }
 
 func TestTASK4278_RemapStoppedBetweenChunks_Postgres(t *testing.T) {
+	t.Parallel()
 	remapStoppedBetweenChunks(t, store.DriverPostgres)
 }
 

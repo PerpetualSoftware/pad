@@ -37,6 +37,7 @@ func (c *capturedLog) snapshot() []map[string]any {
 // is tested. A burst of publishFailureLogBurst lines, then one per
 // publishFailureLogEvery, each reporting what it suppressed.
 func TestPublishFailureLogIsRateBounded(t *testing.T) {
+	t.Parallel()
 	now := time.Unix(1_700_000_000, 0)
 	var logs capturedLog
 	l := &publishFailureLog{now: func() time.Time { return now }, log: logs.log}
@@ -88,6 +89,7 @@ func TestPublishFailureLogIsRateBounded(t *testing.T) {
 
 // The line names outcome, event type and workspace, and never the payload.
 func TestPublishFailureLogCarriesNoPayload(t *testing.T) {
+	t.Parallel()
 	var logs capturedLog
 	l := &publishFailureLog{log: logs.log}
 	l.record(fmt.Errorf("events: redis publish: %w", fmt.Errorf("connection refused")), events.Event{

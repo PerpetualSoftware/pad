@@ -13,6 +13,7 @@ import (
 // ones: a caller who NAMES a tool "(unknown)" or "tools/call" must never read
 // as the server's placeholder.
 func TestParseMCPRequestBodyWithSource(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name, body string
 		wantName   string

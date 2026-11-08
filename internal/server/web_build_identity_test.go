@@ -15,6 +15,7 @@ func webFS(files map[string]string) fstest.MapFS {
 }
 
 func TestIdentifyWebBuild_DigestTracksContentAndPaths(t *testing.T) {
+	t.Parallel()
 	base := map[string]string{
 		"index.html":              "<html></html>",
 		"_app/immutable/start.js": "console.log(1)",
@@ -41,6 +42,7 @@ func TestIdentifyWebBuild_DigestTracksContentAndPaths(t *testing.T) {
 }
 
 func TestIdentifyWebBuild_ReadsStamp(t *testing.T) {
+	t.Parallel()
 	id := identifyWebBuild(webFS(map[string]string{
 		"index.html":       "x",
 		webBuildSourceFile: `{"commit":"abc123","dirty":2}`,
@@ -64,6 +66,7 @@ func TestIdentifyWebBuild_ReadsStamp(t *testing.T) {
 }
 
 func TestHealth_ReportsServedWebBundle(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetWebUI(webFS(map[string]string{
 		"index.html":       "<html></html>",
@@ -95,6 +98,7 @@ func TestHealth_ReportsServedWebBundle(t *testing.T) {
 }
 
 func TestHealth_NoWebUI_NoWebMember(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	rr := doRequest(srv, http.MethodGet, "/api/v1/health", nil)
 	var resp map[string]interface{}

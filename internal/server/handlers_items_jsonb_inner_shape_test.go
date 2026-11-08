@@ -23,6 +23,7 @@ import (
 //   - PATCH item with `{"tags": "garbage"}` → 200 — wrong
 
 func TestPatchItem_JSONEncodedStringInnerShapeValidated(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -110,6 +111,7 @@ func TestPatchItem_JSONEncodedStringInnerShapeValidated(t *testing.T) {
 // POST/PATCH handlers do. These tests assert the POST path now
 // matches the rest of the surface.
 func TestCreateItem_JSONEncodedStringInnerShapeValidated(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	createPath := "/api/v1/workspaces/" + slug + "/collections/tasks/items"

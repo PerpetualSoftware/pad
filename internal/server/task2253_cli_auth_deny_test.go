@@ -41,6 +41,7 @@ func pollCLIAuth(t *testing.T, srv *Server, code string) (int, map[string]any) {
 }
 
 func TestTASK2253_PendingPollCarriesWhoAsked(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	bootstrapFirstUser(t, srv, "owner@test.com", "Owner")
 
@@ -64,6 +65,7 @@ func TestTASK2253_PendingPollCarriesWhoAsked(t *testing.T) {
 }
 
 func TestTASK2253_DenyIsFinalAndReachesTheCLIAsAnError(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	token := bootstrapFirstUser(t, srv, "owner@test.com", "Owner")
 	code := createCLIAuthSessionFrom(t, srv, "pad-cli/1.0")
@@ -97,6 +99,7 @@ func TestTASK2253_DenyIsFinalAndReachesTheCLIAsAnError(t *testing.T) {
 }
 
 func TestTASK2253_DenyAfterApproveIsRefused(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	token := bootstrapFirstUser(t, srv, "owner@test.com", "Owner")
 	code := createCLIAuthSessionFrom(t, srv, "pad-cli/1.0")
@@ -116,6 +119,7 @@ func TestTASK2253_DenyAfterApproveIsRefused(t *testing.T) {
 }
 
 func TestTASK2253_DenyUnknownCode(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	token := bootstrapFirstUser(t, srv, "owner@test.com", "Owner")
 	rr := doRequestWithCookie(srv, "POST", "/api/v1/auth/cli/sessions/0123456789abcdef0123456789abcdef/deny", nil, token)
@@ -129,6 +133,7 @@ func TestTASK2253_DenyUnknownCode(t *testing.T) {
 // reports ErrCLIAuthNotPending, which the handler answers 409 after ending
 // the session it minted.
 func TestTASK2253_StoreRefusesApprovingADeniedSession(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	bootstrapFirstUser(t, srv, "owner@test.com", "Owner")
 	code := createCLIAuthSessionFrom(t, srv, "pad-cli/1.0")

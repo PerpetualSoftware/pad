@@ -17,6 +17,7 @@ import (
 // collection" events to every member, collection-restricted ones included.
 
 func TestBUG3343_ItemEventWithoutCollectionIsNotWorkspaceLevel(t *testing.T) {
+	t.Parallel()
 	restricted := sseVisibility{
 		visibleSlugSet:   map[string]bool{"tasks": true},
 		visibleCollIDSet: map[string]bool{"tasks-id": true},

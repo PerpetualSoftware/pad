@@ -92,6 +92,7 @@ func bug2659Want(t *testing.T, got []string, want ...string) {
 // exactly. Red on main: the literal filter matched no `task` and answered
 // nothing, which is why clients normalised.
 func TestSearchCollectionShorthandResolves(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := bug2659Workspace(t, srv, createWSForTest(t, srv))
 	bug2659Item(t, srv, ws.ID, bug2659Collection(t, srv, ws.ID, "tasks"), "in tasks")
@@ -101,6 +102,7 @@ func TestSearchCollectionShorthandResolves(t *testing.T) {
 
 // Exact beats alias: with both `task` and `tasks`, `task` is `task`.
 func TestSearchCollectionExactBeatsAlias(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := bug2659Workspace(t, srv, createWSForTest(t, srv))
 	bug2659Item(t, srv, ws.ID, bug2659Collection(t, srv, ws.ID, "tasks"), "in tasks")
@@ -113,6 +115,7 @@ func TestSearchCollectionExactBeatsAlias(t *testing.T) {
 // Per workspace: the same input names `task` in one workspace and resolves to
 // `tasks` in another, in one unscoped search. No single slug can say that.
 func TestSearchCollectionResolvesPerWorkspace(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	a := bug2659Workspace(t, srv, createWSForTest(t, srv))
 	b := bug2659Workspace(t, srv, createWSForTest(t, srv))
@@ -126,6 +129,7 @@ func TestSearchCollectionResolvesPerWorkspace(t *testing.T) {
 // The membership fan-out (a signed-in caller, no workspace named) resolves
 // the same way.
 func TestSearchCollectionResolvesAcrossMemberships(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	token := bootstrapFirstUser(t, srv, "owner-2659@test.com", "Owner")
 	var slugs []string
@@ -149,6 +153,7 @@ func TestSearchCollectionResolvesAcrossMemberships(t *testing.T) {
 // An archived `task` still claims its name: the filter does not fall through
 // to `tasks` in that workspace.
 func TestSearchCollectionArchivedNameClaimsItself(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := bug2659Workspace(t, srv, createWSForTest(t, srv))
 	bug2659Item(t, srv, ws.ID, bug2659Collection(t, srv, ws.ID, "tasks"), "in tasks")
@@ -162,6 +167,7 @@ func TestSearchCollectionArchivedNameClaimsItself(t *testing.T) {
 
 // A name that resolves nowhere answers an empty 200, as before.
 func TestSearchCollectionUnknownIsEmpty(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := bug2659Workspace(t, srv, createWSForTest(t, srv))
 	bug2659Item(t, srv, ws.ID, bug2659Collection(t, srv, ws.ID, "tasks"), "in tasks")
@@ -170,6 +176,7 @@ func TestSearchCollectionUnknownIsEmpty(t *testing.T) {
 }
 
 func TestCapabilitiesAdvertiseSearchCollectionResolution(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	rr := doRequest(srv, "GET", "/api/v1/server/capabilities", nil)
 	if rr.Code != http.StatusOK {

@@ -20,6 +20,7 @@ import (
 // Cheap pure-function unit test; the integration flow is covered
 // separately in handlers_mcp_test.go's MCP+OAuth test surface.
 func TestTokenAllowedWorkspaceMatches(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		allowed []string
@@ -79,6 +80,7 @@ func TestTokenAllowedWorkspaceMatches(t *testing.T) {
 // defense-in-depth pattern for context values that callers might
 // reuse across requests.
 func TestWithTokenAllowedWorkspaces_DefensiveCopy(t *testing.T) {
+	t.Parallel()
 	original := []string{"foo", "bar"}
 	ctx := WithTokenAllowedWorkspaces(context.Background(), original)
 
@@ -95,6 +97,7 @@ func TestWithTokenAllowedWorkspaces_DefensiveCopy(t *testing.T) {
 // reader returns a fresh slice — a caller mutating the returned
 // value must not corrupt the context-stored allow-list either.
 func TestTokenAllowedWorkspacesFromContext_ReturnsCopy(t *testing.T) {
+	t.Parallel()
 	ctx := WithTokenAllowedWorkspaces(context.Background(), []string{"foo", "bar"})
 
 	got := TokenAllowedWorkspacesFromContext(ctx)
@@ -113,6 +116,7 @@ func TestTokenAllowedWorkspacesFromContext_ReturnsCopy(t *testing.T) {
 // list rather than gating one slug: nil/wildcard → nil (no filter); explicit
 // list → a set; empty (non-nil) list → empty set (fail closed).
 func TestTokenAllowedWorkspaceSet(t *testing.T) {
+	t.Parallel()
 	set := func(slugs []string) map[string]struct{} {
 		ctx := context.Background()
 		if slugs != nil {

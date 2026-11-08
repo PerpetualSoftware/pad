@@ -12,6 +12,7 @@ import (
 // relation defaults the import dropped because they named no imported item,
 // and is "0" when none were. The store test pins what is stored.
 func TestWorkspaceImportReportsDroppedRelationDefaults(t *testing.T) {
+	t.Parallel()
 	const ts = "2026-09-25T12:00:00Z"
 	const item = "11111111-1111-4111-8111-111111111111"
 	for _, tc := range []struct{ name, def, want string }{

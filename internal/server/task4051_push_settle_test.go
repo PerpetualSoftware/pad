@@ -12,6 +12,7 @@ import (
 // chunk's ids parked. Kills: M3b, M3c.
 // The tick caller at push_dispatch.go:824 is an equivalent mutant today (prefix always 0).
 func TestPushDispatch_RetryUnrecordedClearsOnlyLandedIDs(t *testing.T) {
+	t.Parallel()
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newPdx(t, srv)
 		const chunk = 500 // store.notificationIDChunk

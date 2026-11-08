@@ -3,6 +3,7 @@ package server
 import "testing"
 
 func TestRemovedScheduleRoutesReturn404(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		method, suffix string
 		body           any

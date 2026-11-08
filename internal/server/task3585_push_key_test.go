@@ -55,6 +55,7 @@ func pushOnce(t *testing.T, srv *Server, slug, itemSlug, token, key string) *htt
 }
 
 func TestTASK3585_PushReplaysWithoutRedelivering(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	bus := &capturingBus{}
 	srv.SetWatchEventsBus(bus)
@@ -74,6 +75,7 @@ func TestTASK3585_PushReplaysWithoutRedelivering(t *testing.T) {
 }
 
 func TestTASK3585_AmbiguousPushIsNotRedelivered(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	bus := &capturingBus{err: errors.New("redis: i/o timeout")}
 	srv.SetWatchEventsBus(bus)
@@ -98,6 +100,7 @@ func TestTASK3585_AmbiguousPushIsNotRedelivered(t *testing.T) {
 }
 
 func TestTASK3585_ClosedBusReleasesThePushKey(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	bus := &capturingBus{err: watchevents.ErrBusClosed}
 	srv.SetWatchEventsBus(bus)

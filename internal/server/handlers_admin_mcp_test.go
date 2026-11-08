@@ -36,6 +36,7 @@ func mcpServer(t *testing.T, cfg config.Config, env *bool) (*Server, string) {
 // An install that never touched the setting reads as off, from the stored
 // setting, unlocked. This is the upgrade case: nothing turns on by itself.
 func TestAdminMCP_DefaultIsOff(t *testing.T) {
+	t.Parallel()
 	srv, token := mcpServer(t, config.Config{URL: "https://pad.example.com"}, nil)
 	got := decodeMCPSettings(t, doRequestWithCookie(srv, "GET", "/api/v1/admin/mcp", nil, token))
 	if got.Enabled || got.Source != mcpSourceSetting || got.Locked || got.Readiness.State != "off" {
@@ -49,6 +50,7 @@ func TestAdminMCP_DefaultIsOff(t *testing.T) {
 // Turning it on with a usable https origin: on, OAuth and PATs, and the
 // DR-1 predicate agrees with the panel.
 func TestAdminMCP_EnableHTTPS(t *testing.T) {
+	t.Parallel()
 	srv, token := mcpServer(t, config.Config{URL: "https://pad.example.com"}, nil)
 	got := decodeMCPSettings(t, doRequestWithCookie(srv, "PUT", "/api/v1/admin/mcp", map[string]any{"enabled": true}, token))
 	rd := got.Readiness
@@ -82,6 +84,7 @@ func TestAdminMCP_EnableHTTPS(t *testing.T) {
 }
 
 func TestAdminMCP_HTTPIsPATOnly(t *testing.T) {
+	t.Parallel()
 	srv, token := mcpServer(t, config.Config{PublicURL: "http://pad.lan:7777"}, nil)
 	got := decodeMCPSettings(t, doRequestWithCookie(srv, "PUT", "/api/v1/admin/mcp", map[string]any{"enabled": true}, token))
 	if got.Readiness.State != "on" || got.Readiness.HTTPS || len(got.Readiness.AuthMethods) != 1 || got.Readiness.AuthMethods[0] != "pat" {
@@ -91,6 +94,7 @@ func TestAdminMCP_HTTPIsPATOnly(t *testing.T) {
 
 // On without a usable origin is blocked, with the reason, and not available.
 func TestAdminMCP_BlockedWithoutOrigin(t *testing.T) {
+	t.Parallel()
 	for name, cfg := range map[string]config.Config{
 		"no origin":       {Host: "0.0.0.0", Port: 7777},
 		"unusable origin": {URL: "https://pad.example.com/sub"},
@@ -111,6 +115,7 @@ func TestAdminMCP_BlockedWithoutOrigin(t *testing.T) {
 // PAD_MCP_ENABLED forces the value and locks the toggle: GET reports it,
 // PUT is refused 409 set_by_environment and stores nothing.
 func TestAdminMCP_EnvironmentLock(t *testing.T) {
+	t.Parallel()
 	off := false
 	srv, token := mcpServer(t, config.Config{URL: "https://pad.example.com"}, &off)
 	if err := srv.store.SetPlatformSetting(settingMCPEnabled, "true"); err != nil {
@@ -141,6 +146,7 @@ func TestAdminMCP_EnvironmentLock(t *testing.T) {
 
 // Cloud is always on, and the toggle is the operator's.
 func TestAdminMCP_Cloud(t *testing.T) {
+	t.Parallel()
 	srv, token := mcpServer(t, config.Config{PublicURL: "https://app.getpad.dev", MCPPublicURL: "https://mcp.getpad.dev"}, nil)
 	srv.SetCloudMode("cloud-secret")
 	got := decodeMCPSettings(t, doRequestWithCookie(srv, "GET", "/api/v1/admin/mcp", nil, token))
@@ -157,6 +163,7 @@ func TestAdminMCP_Cloud(t *testing.T) {
 // closed. The control leg shows the stored value reads as on first, so the
 // off after the failure is caused by the failure.
 func TestAdminMCP_SettingReadErrorIsOff(t *testing.T) {
+	t.Parallel()
 	srv, _ := mcpServer(t, config.Config{URL: "https://pad.example.com"}, nil)
 	if err := srv.store.SetPlatformSetting(settingMCPEnabled, "true"); err != nil {
 		t.Fatal(err)
@@ -176,6 +183,7 @@ func TestAdminMCP_SettingReadErrorIsOff(t *testing.T) {
 }
 
 func TestAdminMCP_RequiresAdminAndABody(t *testing.T) {
+	t.Parallel()
 	srv, token := mcpServer(t, config.Config{URL: "https://pad.example.com"}, nil)
 	if _, err := srv.store.CreateUser(models.UserCreate{Email: "member@example.com", Name: "Member", Password: "correct-horse-battery-staple", Role: "member"}); err != nil {
 		t.Fatal(err)

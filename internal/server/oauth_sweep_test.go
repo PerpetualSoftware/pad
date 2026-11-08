@@ -174,6 +174,7 @@ func TestOAuthSweep_LiveChainAndReplay(t *testing.T) {
 // grace; codes add the code lifespan to the refresh lifespan, since the
 // first refresh token starts at the exchange (BUG-3301 retention).
 func TestOAuthSweepCutoffs(t *testing.T) {
+	t.Parallel()
 	srv, o := oauthEnabledTestServer(t)
 	l := o.Lifespans()
 	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)

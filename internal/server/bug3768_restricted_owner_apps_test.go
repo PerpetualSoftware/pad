@@ -47,6 +47,7 @@ func bug3768Restrict(t *testing.T, e *appsEnv, userID string) {
 }
 
 func TestBUG3768_RestrictedOwnerCannotGrantAnApp(t *testing.T) {
+	t.Parallel()
 	u := newUpgradeEnv(t)
 	co, coID := bug3768CoOwner(t, u.appsEnv)
 	bug3768Restrict(t, u.appsEnv, coID)
@@ -115,6 +116,7 @@ func TestBUG3768_RestrictedOwnerCannotGrantAnApp(t *testing.T) {
 // The confirm doors check the restriction at confirm time, not only at
 // preview: an owner restricted after staging cannot finish.
 func TestBUG3768_RestrictedAfterStagingCannotConfirm(t *testing.T) {
+	t.Parallel()
 	u := newUpgradeEnv(t)
 	co, coID := bug3768CoOwner(t, u.appsEnv)
 

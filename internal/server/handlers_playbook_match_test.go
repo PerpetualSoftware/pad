@@ -60,6 +60,7 @@ func matchRequestBody(text string) map[string]any {
 // TestPlaybookMatch_NoProviderIs404 — the fall-back-to-slug/trigger-routing
 // case: no typed-decision provider configured at all.
 func TestPlaybookMatch_NoProviderIs404(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -83,6 +84,7 @@ func TestPlaybookMatch_NoProviderIs404(t *testing.T) {
 // error, and — since a Choice needs at least two options and "none" alone
 // isn't a meaningful question — no provider call is made at all.
 func TestPlaybookMatch_ZeroActivePlaybooksNoProviderCall(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	p := &fakeMatchProvider{}
@@ -111,6 +113,7 @@ func TestPlaybookMatch_ZeroActivePlaybooksNoProviderCall(t *testing.T) {
 // description shows up as a visible diff here rather than silently
 // drifting.
 func TestPlaybookMatch_DraftAndDeprecatedExcluded_ExactPrompt(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -184,6 +187,7 @@ func TestPlaybookMatch_DraftAndDeprecatedExcluded_ExactPrompt(t *testing.T) {
 // refuses a Choice with fewer than 2 options, so a workspace with exactly
 // one active playbook would otherwise have no legal question to ask.
 func TestPlaybookMatch_OneActivePlaybookIsLegal(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	only := createItem(t, srv, slug, "playbooks", map[string]interface{}{
@@ -224,6 +228,7 @@ func TestPlaybookMatch_OneActivePlaybookIsLegal(t *testing.T) {
 // must never echo it. The fake's error deliberately contains a
 // secret-looking string; the response must not.
 func TestPlaybookMatch_ProviderErrorIs502(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	createItem(t, srv, slug, "playbooks", map[string]interface{}{
@@ -264,6 +269,7 @@ func TestPlaybookMatch_ProviderErrorIs502(t *testing.T) {
 // fake provider can return any error) reads distinctly from an ordinary
 // upstream failure, still under the same decision_provider_error code.
 func TestPlaybookMatch_ProviderTimeoutReason(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	createItem(t, srv, slug, "playbooks", map[string]interface{}{
@@ -301,6 +307,7 @@ func TestPlaybookMatch_ProviderTimeoutReason(t *testing.T) {
 // outage, and must answer 400 match_request_too_large rather than the
 // generic 502 decision_provider_error a raw error would fall into.
 func TestPlaybookMatch_RequestTooLargeIs400(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		err  error
@@ -344,6 +351,7 @@ func TestPlaybookMatch_RequestTooLargeIs400(t *testing.T) {
 // both are "the provider misbehaved", covered by the same
 // decision_provider_error.
 func TestPlaybookMatch_OutOfSetChoiceIs502(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	createItem(t, srv, slug, "playbooks", map[string]interface{}{
@@ -381,6 +389,7 @@ func TestPlaybookMatch_OutOfSetChoiceIs502(t *testing.T) {
 // gates. The at-limit leg reaches the provider (no length refusal), the
 // over-limit leg never does.
 func TestPlaybookMatch_TextBounds(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	createItem(t, srv, slug, "playbooks", map[string]interface{}{
@@ -422,6 +431,7 @@ func TestPlaybookMatch_TextBounds(t *testing.T) {
 // router's normal auth stack doesn't expose a way to authenticate as a
 // grant-only guest in-process.
 func TestPlaybookMatch_InvisiblePlaybookExcludedFromOptions(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	// createWSWithCollections seeds the real "playbooks" system collection
 	// (with its real bootstrap_include trait) via the startup template —

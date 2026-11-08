@@ -20,6 +20,7 @@ func inboxNotice(user string) watchevents.Notification {
 }
 
 func TestChatInboxDeliveryPredicate(t *testing.T) {
+	t.Parallel()
 	deliver := func(p watchStreamPrefs, user string, n watchevents.Notification) bool {
 		return watchStreamDelivers(map[string]string{"": ""}, watchAccessVisibility{}, user, "", p, n)
 	}
@@ -56,6 +57,7 @@ func TestChatInboxDeliveryPredicate(t *testing.T) {
 // all behind the cookie or token middleware, and the revalidation tick denies
 // a bot), so the app clauses of the pref are covered here, directly.
 func TestChatInboxPrefHonouredOnlyForPersonCookie(t *testing.T) {
+	t.Parallel()
 	person := &models.User{ID: "u"}
 	bot := &models.User{ID: "b", Kind: models.UserKindApp}
 	for _, tc := range []struct {
@@ -93,6 +95,7 @@ func TestChatInboxPrefHonouredOnlyForPersonCookie(t *testing.T) {
 // its excerpt and reply seq (the monitor's line needs them); the human notice
 // has neither, and no agent key.
 func TestChatPublishInboxNoticeIsRefOnlyAgentNoticeKeepsExcerpt(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	p := f.ensure("rook")
 	f.must(f.request("POST", p+"/messages", "rook", map[string]any{"body": "first"}), 201, "agent send")
@@ -119,6 +122,7 @@ func TestChatPublishInboxNoticeIsRefOnlyAgentNoticeKeepsExcerpt(t *testing.T) {
 }
 
 func TestChatPublishInboxDeleteDedupesAuthor(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	p := f.ensure("rook")
 	f.must(f.request("POST", p+"/messages", "", map[string]any{"body": "mine"}), 201, "human send")

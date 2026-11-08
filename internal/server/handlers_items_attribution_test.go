@@ -21,6 +21,7 @@ import (
 // pass against a server that hardcoded "agent", which is the same defect
 // pointing the other way.
 func TestItemAttribution_AgentVsHuman(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		agent string // X-Pad-Agent value; empty = human
@@ -84,6 +85,7 @@ func TestItemAttribution_AgentVsHuman(t *testing.T) {
 // the writer's kind is the request's, so an agent cannot file its write as a
 // human's, nor a human as an agent's, by saying so in the body.
 func TestItemAttribution_BodyValueDoesNotWin(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createTestWorkspaceViaAPI(t, srv)
 
@@ -155,6 +157,7 @@ func createTestWorkspaceViaAPI(t *testing.T, srv *Server) string {
 // human leg here is the control that proves the assertion isn't just reading a
 // hardcoded default.
 func TestItemLinkAttribution_AgentVsHuman(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		agent string

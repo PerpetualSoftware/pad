@@ -19,6 +19,7 @@ import (
 // TestCreateCollection_RejectsReservedFieldKeys covers the create path:
 // "parent" and "plan" are rejected, everything else still works.
 func TestCreateCollection_RejectsReservedFieldKeys(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	createPath := "/api/v1/workspaces/" + slug + "/collections"
@@ -86,6 +87,7 @@ func TestCreateCollection_RejectsReservedFieldKeys(t *testing.T) {
 // added "parent"/"plan" field is rejected, but a key already present in
 // the collection's prior schema is grandfathered in.
 func TestUpdateCollection_ReservedFieldKeys(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 

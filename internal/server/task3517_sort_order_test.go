@@ -59,6 +59,7 @@ func (f *sortFixture) reorderedRows(t *testing.T) []models.Activity {
 }
 
 func TestTASK3517_ReorderAppliesEveryEntryAndLogsPerItemRows(t *testing.T) {
+	t.Parallel()
 	f := newSortFixture(t)
 	a := mustItem(t, f.srv, f.ws.ID, f.coll.ID, "a")
 	b := mustItem(t, f.srv, f.ws.ID, f.coll.ID, "b")
@@ -128,6 +129,7 @@ func TestTASK3517_ReorderAppliesEveryEntryAndLogsPerItemRows(t *testing.T) {
 }
 
 func TestTASK3517_ReorderIsAllOrNothingOnAnUneditableItem(t *testing.T) {
+	t.Parallel()
 	f := newSortFixture(t)
 	mine := mustItem(t, f.srv, f.ws.ID, f.coll.ID, "granted for edit")
 	viewOnly := mustItem(t, f.srv, f.ws.ID, f.coll.ID, "granted for view")
@@ -180,6 +182,7 @@ func TestTASK3517_ReorderIsAllOrNothingOnAnUneditableItem(t *testing.T) {
 }
 
 func TestTASK3517_ReorderRefusesMalformedRequests(t *testing.T) {
+	t.Parallel()
 	f := newSortFixture(t)
 	a := mustItem(t, f.srv, f.ws.ID, f.coll.ID, "a")
 	got, _ := f.srv.store.GetItem(a.ID)
@@ -212,6 +215,7 @@ func TestTASK3517_ReorderRefusesMalformedRequests(t *testing.T) {
 // batch back, so a delete between the handler's checks and the write cannot
 // leave a partial order.
 func TestTASK3517_StoreRollsBackOnAMissingRow(t *testing.T) {
+	t.Parallel()
 	f := newSortFixture(t)
 	a := mustItem(t, f.srv, f.ws.ID, f.coll.ID, "a")
 	gone := mustItem(t, f.srv, f.ws.ID, f.coll.ID, "gone")
@@ -234,6 +238,7 @@ func TestTASK3517_StoreRollsBackOnAMissingRow(t *testing.T) {
 // Each moved item emits item.updated in the batch, and the batch gets one
 // header, so webhooks see one reorder rather than N unrelated updates.
 func TestTASK3517_ReorderEmitsBatchedOutboxEvents(t *testing.T) {
+	t.Parallel()
 	f := newSortFixture(t)
 	a := mustItem(t, f.srv, f.ws.ID, f.coll.ID, "a")
 	b := mustItem(t, f.srv, f.ws.ID, f.coll.ID, "b")
@@ -279,6 +284,7 @@ func TestTASK3517_ReorderEmitsBatchedOutboxEvents(t *testing.T) {
 // the rows the caller can see, so a long drag does not push everything else
 // out (TASK-3517).
 func TestTASK3517_DashboardCollapsesAReorderBatch(t *testing.T) {
+	t.Parallel()
 	f := newSortFixture(t)
 	entries := []any{}
 	for i := 0; i < 12; i++ {

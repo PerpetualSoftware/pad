@@ -77,6 +77,7 @@ type bug3322ErrorBody struct {
 }
 
 func TestOAuthLogin_TOTPUser_GetsChallengeNotSession(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetCloudMode(oauthProviderTestSecret)
 	userID, secret := linkedTOTPUser(t, srv, "totp-oauth@example.com", true)
@@ -126,6 +127,7 @@ func TestOAuthLogin_TOTPUser_GetsChallengeNotSession(t *testing.T) {
 // mints the session, so the refusal above is the TOTP check and not some
 // other refusal this fixture would hit anyway.
 func TestOAuthLogin_NonTOTPUser_StillGetsSession(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetCloudMode(oauthProviderTestSecret)
 	userID, _ := linkedTOTPUser(t, srv, "plain-oauth@example.com", false)
@@ -146,6 +148,7 @@ func TestOAuthLogin_NonTOTPUser_StillGetsSession(t *testing.T) {
 // browser's address arrives only as a forwarded header, which pad must honour
 // from a TRUSTED peer and ignore from anyone else.
 func TestOAuthLogin_TOTPChallenge_BindsForwardedIPOnlyFromTrustedPeer(t *testing.T) {
+	t.Parallel()
 	const browser = "198.51.100.7"
 	mint := func(t *testing.T, srv *Server, peer string) string {
 		t.Helper()
@@ -194,6 +197,7 @@ func TestOAuthLogin_TOTPChallenge_BindsForwardedIPOnlyFromTrustedPeer(t *testing
 }
 
 func TestResetPassword_TOTPUser_MintsNoSession(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	user, oldTok := loginTestUserAs(t, srv, "totp-reset@example.com", "Reset", bug3322Password)
 	enableTOTPForDeleteUser(t, srv, user.ID)
@@ -240,6 +244,7 @@ func TestResetPassword_TOTPUser_MintsNoSession(t *testing.T) {
 
 // Control: without TOTP the reset still signs the user in, as before.
 func TestResetPassword_NonTOTPUser_StillMintsSession(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	user, _ := loginTestUserAs(t, srv, "plain-reset@example.com", "Reset", bug3322Password)
 	resetTok, err := srv.store.CreatePasswordReset(user.ID)

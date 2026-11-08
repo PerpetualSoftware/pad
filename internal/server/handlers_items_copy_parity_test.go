@@ -444,6 +444,7 @@ func (f *copyPreflightFixture) breakGrantLookups() {
 // A ladder that resolved a different destination on one path would fail here
 // even though every denial row still passed.
 func TestCopyAuthorizationParityMatrix_ResolvedSnapshot(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 	body := f.resolvableBody()
 
@@ -501,6 +502,7 @@ func TestCopyAuthorizationParityMatrix_ResolvedSnapshot(t *testing.T) {
 // keeps the plain case inside the matrix so the matrix is complete on its
 // own terms.
 func TestCopyAuthorizationParityMatrix_NoAttributableActor(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	// CreateWorkspace WITHOUT a membership row: with no users there is nobody
 	// to be a member, and workspace_members has a foreign key onto users.
@@ -573,6 +575,7 @@ func TestCopyAuthorizationParityMatrix_NoAttributableActor(t *testing.T) {
 // required-field checks. Either mutation fails this test and several rows of
 // the matrix above; revert it afterwards.
 func TestCopyAuthorizationParityMatrix_Ordering(t *testing.T) {
+	t.Parallel()
 	// Resolve BEFORE decode: a malformed body sent for an item the caller
 	// cannot see must report the ITEM, not the body. Reporting invalid_body
 	// here tells a stranger their JSON reached a real resolution step.

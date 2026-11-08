@@ -25,6 +25,7 @@ import (
 //     what decides. They have to be one definition, and this is the only place
 //     that can catch them drifting apart.
 func TestSSEVisibilityAccessEpoch_TracksNarrowingAndMatchesTheItemDoors(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	owner, err := srv.store.CreateUser(models.UserCreate{

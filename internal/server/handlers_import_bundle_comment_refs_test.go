@@ -25,6 +25,7 @@ import (
 )
 
 func TestImportBundle_RemapsCommentOnlyAttachmentRefs(t *testing.T) {
+	t.Parallel()
 	src, srcSlug := testServerWithAttachments(t)
 
 	body := realPNG()

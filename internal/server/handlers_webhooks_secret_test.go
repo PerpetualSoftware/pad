@@ -82,6 +82,7 @@ func TestWebhookSecret_MaskedExceptOnCreate(t *testing.T) {
 // request whose secret starts with the reserved "enc:" marker is rejected, so a
 // user plaintext can never masquerade as ciphertext at rest.
 func TestWebhookSecret_RejectsReservedPrefix(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	token := bootstrapFirstUser(t, srv, "owner@test.com", "Owner")
 	owner, err := srv.store.GetUserByEmail("owner@test.com")

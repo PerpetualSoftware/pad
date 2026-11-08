@@ -10,6 +10,7 @@ import (
 // BUG-3879: how a failed tool call's structured error code becomes the
 // audit row's (result_status, error_kind).
 func TestClassifyMCPToolOutcome(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		code, reason string
 		wantStatus   models.MCPAuditResultStatus
@@ -40,6 +41,7 @@ func TestClassifyMCPToolOutcome(t *testing.T) {
 }
 
 func TestRecordMCPToolOutcome_RefusalOutranksError(t *testing.T) {
+	t.Parallel()
 	for _, order := range [][2]string{{"validation_failed", "permission_denied"}, {"permission_denied", "validation_failed"}} {
 		ctx, sink := WithMCPToolOutcomeSink(context.Background())
 		RecordMCPToolOutcome(ctx, order[0], "")
@@ -59,6 +61,7 @@ func TestRecordMCPToolOutcome_RefusalOutranksError(t *testing.T) {
 }
 
 func TestRecordMCPToolOutcome_NoSinkIsANoOp(t *testing.T) {
+	t.Parallel()
 	RecordMCPToolOutcome(context.Background(), "permission_denied", "") // must not panic
 	_, sink := WithMCPToolOutcomeSink(context.Background())
 	if _, _, ok := sink.Outcome(); ok {

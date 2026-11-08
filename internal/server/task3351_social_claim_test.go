@@ -13,6 +13,7 @@ import (
 // config, a leftover env var) used to answer oauth-login, which creates
 // accounts and mints sessions on the caller's word about an email.
 func TestTASK3351_SidecarOAuthRoutesAreCloudOnly(t *testing.T) {
+	t.Parallel()
 	for _, path := range []string{"/api/v1/auth/oauth-login", "/api/v1/auth/oauth-link", "/api/v1/auth/oauth-unlink"} {
 		t.Run(path, func(t *testing.T) {
 			srv := testServer(t)
@@ -58,6 +59,7 @@ func oauthIdentityRows(t *testing.T, srv *Server, provider, subject string) int 
 // account asserting the same address is refused, and the refusal names the
 // way back in (TASK-3351 U2).
 func TestTASK3351_ProviderSubjectBindsOnNextLoginThenMustMatch(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetCloudMode(oauthProviderTestSecret)
 	login := func(subject string) *httptest.ResponseRecorder {
@@ -121,6 +123,7 @@ func TestTASK3351_ProviderSubjectBindsOnNextLoginThenMustMatch(t *testing.T) {
 // A provider account already bound to one pad account signs in to no other,
 // and creates no account for the new address it asserts.
 func TestTASK3351_SubjectBoundElsewhereCreatesNothing(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetCloudMode(oauthProviderTestSecret)
 	if rr := postOAuthLogin(t, srv, map[string]interface{}{"provider": "google", "email": "first@example.com", "email_verified": true, "subject": "g-1"}); rr.Code != http.StatusOK {
@@ -138,6 +141,7 @@ func TestTASK3351_SubjectBoundElsewhereCreatesNothing(t *testing.T) {
 // Unlinking forgets the bound provider account, so a relink binds the new
 // one.
 func TestTASK3351_UnlinkForgetsTheSubject(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetCloudMode(oauthProviderTestSecret)
 	if rr := postOAuthLogin(t, srv, map[string]interface{}{"provider": "google", "email": "u@example.com", "email_verified": true, "subject": "g-old"}); rr.Code != http.StatusOK {
@@ -166,6 +170,7 @@ func TestTASK3351_UnlinkForgetsTheSubject(t *testing.T) {
 // oauth-link binds too, and refuses a provider account bound elsewhere
 // before linking anything.
 func TestTASK3351_LinkBindsAndRefusesASubjectBoundElsewhere(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetCloudMode(oauthProviderTestSecret)
 	if rr := postOAuthLogin(t, srv, map[string]interface{}{"provider": "google", "email": "a@example.com", "email_verified": true, "subject": "g-a"}); rr.Code != http.StatusOK {
@@ -197,6 +202,7 @@ func TestTASK3351_LinkBindsAndRefusesASubjectBoundElsewhere(t *testing.T) {
 }
 
 func TestTASK3351_SubjectMustBePrintable(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetCloudMode(oauthProviderTestSecret)
 	for _, bad := range []string{"g\x00x", "g\nx", strings.Repeat("x", 256)} {

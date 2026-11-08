@@ -45,6 +45,7 @@ func doRequestWithCookieFrom(srv *Server, method, path string, body interface{},
 // PAD_IP_CHANGE_ENFORCE=strict, a session that presents a different client
 // IP is allowed through but an ActionSessionIPChanged audit row is written.
 func TestSessionIPChange_LogOnlyDefault(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	token := bootstrapFirstUser(t, srv, "admin@example.com", "Admin") // bootstrap creates from 127.0.0.1
 
@@ -82,6 +83,7 @@ func TestSessionIPChange_LogOnlyDefault(t *testing.T) {
 // session is destroyed (so a stolen token can't be retried from the same
 // new IP).
 func TestSessionIPChange_StrictRejects(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetIPChangeEnforce("strict")
 	token := bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
@@ -116,6 +118,7 @@ func TestSessionIPChange_StrictRejects(t *testing.T) {
 // if DeleteSession were ever separated from the rotation, a follow-up
 // request from the new IP could pass authentication.
 func TestSessionIPChange_StrictDestroysSessionAtomically(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetIPChangeEnforce("strict")
 	token := bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
@@ -149,6 +152,7 @@ func TestSessionIPChange_StrictDestroysSessionAtomically(t *testing.T) {
 // auth group), but cookie hygiene still applies for API clients that
 // present cookies (e.g. the web UI's fetch calls).
 func TestSessionIPChange_StrictClearsCookies(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetIPChangeEnforce("strict")
 	token := bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
@@ -178,6 +182,7 @@ func TestSessionIPChange_StrictClearsCookies(t *testing.T) {
 // can't be reused, but the request falls through so the user can log in
 // again or the health probe succeeds.
 func TestSessionIPChange_StrictAllowsPublicAPIPaths(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetIPChangeEnforce("strict")
 	token := bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
@@ -225,6 +230,7 @@ func TestSessionIPChange_StrictAllowsPublicAPIPaths(t *testing.T) {
 // even when many concurrent requests arrive from the new IP before any
 // of them has observed the rotated value.
 func TestSessionIPChange_CASDedupesRace(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	token := bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
 
@@ -260,6 +266,7 @@ func TestSessionIPChange_CASDedupesRace(t *testing.T) {
 // and the old LastIndex(":") approach would return "2001:db8:" —
 // mangled and unusable for session-IP audits.
 func TestClientIP_IPv6NotMangled(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		remoteAddr string
 		want       string
@@ -288,6 +295,7 @@ func TestClientIP_IPv6NotMangled(t *testing.T) {
 // valid token calls could be rejected purely because an unrelated
 // browser tab dropped a stale cookie into the request.
 func TestSessionAuth_ShortCircuitsOnAPITokenAuth(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	// Bootstrap + create the token BEFORE enabling strict mode, so the
 	// setup calls (which come from 127.0.0.1 vs doRequestWithCookie's
@@ -357,6 +365,7 @@ func TestSessionAuth_ShortCircuitsOnAPITokenAuth(t *testing.T) {
 // single canonical form so the session-IP-change comparison doesn't
 // spuriously fire on "0000:0000:0000:0000:0000:0000:0000:0001" vs "::1".
 func TestCanonicalIP(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		in, want string
 	}{
@@ -379,6 +388,7 @@ func TestCanonicalIP(t *testing.T) {
 // TestSetIPChangeEnforce_CaseInsensitive verifies the setter accepts
 // common variants without surprises.
 func TestSetIPChangeEnforce_CaseInsensitive(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	cases := []struct {
 		in   string

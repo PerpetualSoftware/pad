@@ -29,6 +29,7 @@ func isoBMFFFixture(t *testing.T, name string) []byte {
 // mime_not_allowed with "application/octet-stream" — through this exact handler,
 // which is the one the web UI and the mobile share sheet both post to.
 func TestUpload_AcceptsRealISOBMFFStillImages(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		fixture  string
 		filename string
@@ -70,6 +71,7 @@ func TestUpload_AcceptsRealISOBMFFStillImages(t *testing.T) {
 // A file named .heic whose bytes are an executable is still refused, and a real
 // HEIC named .jpg is still stored as what its BYTES say.
 func TestUpload_ISOBMFFStillRefusesNonImageBytes(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	exe := []byte("MZ\x90\x00\x03\x00\x00\x00\x04\x00\x00\x00\xff\xff")
 	if rr := doMultipartUpload(srv, slug, "totally-a-photo.heic", exe); rr.Code != http.StatusUnsupportedMediaType {

@@ -16,6 +16,7 @@ import (
 // dashboard's suggested_next array (that's all `pad project next` ever
 // showed, post BUG-987 bug 6).
 func TestProjectNextEndpoint_MatchesDashboardSuggestedNext(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -52,6 +53,7 @@ func TestProjectNextEndpoint_MatchesDashboardSuggestedNext(t *testing.T) {
 // and the handleListItems bare-array convention) — never a null/undefined
 // body a client would have to special-case.
 func TestProjectNextEndpoint_EmptyWorkspaceReturnsEmptyArrayNotNull(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -65,6 +67,7 @@ func TestProjectNextEndpoint_EmptyWorkspaceReturnsEmptyArrayNotNull(t *testing.T
 }
 
 func TestProjectNextEndpoint_RequiresAuth(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
@@ -90,6 +93,7 @@ func backdateItemUpdatedAt(t *testing.T, srv *Server, itemID string, daysAgo int
 }
 
 func TestProjectStandupEndpoint_HappyPath(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -134,6 +138,7 @@ func TestProjectStandupEndpoint_HappyPath(t *testing.T) {
 // HTTP transport forwards `days` as-is and relies on this same gate
 // (TASK-1916) rather than replicating it.
 func TestProjectStandupEndpoint_DaysParam_FiltersOldCompletions(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -173,6 +178,7 @@ func TestProjectStandupEndpoint_DaysParam_FiltersOldCompletions(t *testing.T) {
 }
 
 func TestProjectStandupEndpoint_RequiresAuth(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
@@ -186,6 +192,7 @@ func TestProjectStandupEndpoint_RequiresAuth(t *testing.T) {
 // ── changelog ────────────────────────────────────────────────────────────────
 
 func TestProjectChangelogEndpoint_HappyPath(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -233,6 +240,7 @@ func TestProjectChangelogEndpoint_HappyPath(t *testing.T) {
 // since-wins behavior (cmd/pad/main.go changelogCmd's if/else): both since
 // and days given → since wins, no 400.
 func TestProjectChangelogEndpoint_SinceOverridesDays(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -257,6 +265,7 @@ func TestProjectChangelogEndpoint_SinceOverridesDays(t *testing.T) {
 }
 
 func TestProjectChangelogEndpoint_InvalidSinceReturns400(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -270,6 +279,7 @@ func TestProjectChangelogEndpoint_InvalidSinceReturns400(t *testing.T) {
 // itemMatchesParentFilter: case-insensitive match against the item's parent
 // ref.
 func TestProjectChangelogEndpoint_ParentFilter(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -304,6 +314,7 @@ func TestProjectChangelogEndpoint_ParentFilter(t *testing.T) {
 }
 
 func TestProjectChangelogEndpoint_RequiresAuth(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
@@ -322,6 +333,7 @@ func TestProjectChangelogEndpoint_RequiresAuth(t *testing.T) {
 // /changelog, mirroring the restricted-member pattern already used for
 // child-progress (handlers_items_test.go) and the report endpoint.
 func TestProjectIntelEndpoints_ScopeToVisibleCollections(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	ws, err := srv.store.GetWorkspaceBySlug(slug)
@@ -396,6 +408,7 @@ func TestProjectIntelEndpoints_ScopeToVisibleCollections(t *testing.T) {
 // their actual grant over a bearer token (PAT/CLI/OAuth) — never leaking
 // the hidden collection's completions through standup or changelog.
 func TestProjectIntelEndpoints_BearerAdminRestrictedMemberIsScoped(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	admin, err := srv.store.CreateUser(models.UserCreate{
@@ -545,6 +558,7 @@ func TestProjectIntelEndpoints_BearerAdminRestrictedMemberIsScoped(t *testing.T)
 // item-level grant on `child` in "tasks", whose parent `parentItem` also
 // lives in "tasks".
 func TestProjectChangelogEndpoint_GuestParentFilter_ItemGrantOnlyCollection(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	ws, err := srv.store.GetWorkspaceBySlug(slug)
@@ -650,6 +664,7 @@ func TestProjectChangelogEndpoint_GuestParentFilter_ItemGrantOnlyCollection(t *t
 // those items under completed just because "disabled" is in the global
 // DefaultTerminalStatuses union.
 func TestProjectStandupEndpoint_DisabledConventionNotCompleted(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -685,6 +700,7 @@ func TestProjectStandupEndpoint_DisabledConventionNotCompleted(t *testing.T) {
 // global DefaultTerminalStatuses union. A collection that only declares
 // "shipped" as terminal must not report a "done" item as completed.
 func TestProjectStandupEndpoint_HonorsCollectionTerminalOptions(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -720,6 +736,7 @@ func TestProjectStandupEndpoint_HonorsCollectionTerminalOptions(t *testing.T) {
 }
 
 func TestProjectChangelogEndpoint_DisabledConventionNotCompleted(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 

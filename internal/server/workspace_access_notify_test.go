@@ -151,6 +151,7 @@ func forEachDialect(t *testing.T, fn func(t *testing.T, driver store.DriverType)
 }
 
 func TestWorkspaceAccessChanged_Create(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		srv := attachmentsServerOn(t, d)
 		srv.SetWatchEventsBus(watchevents.New())
@@ -172,6 +173,7 @@ func TestWorkspaceAccessChanged_Create(t *testing.T) {
 }
 
 func TestWorkspaceAccessChanged_ImportJSONAndBundle(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newAccessFixture(t, d)
 		for _, format := range []string{"json", "tar"} {
@@ -201,6 +203,7 @@ func TestWorkspaceAccessChanged_ImportJSONAndBundle(t *testing.T) {
 }
 
 func TestWorkspaceAccessChanged_InviteExistingUser(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newAccessFixture(t, d)
 		invitee := mkUser(t, f.srv, "invitee@example.com")
@@ -220,6 +223,7 @@ func TestWorkspaceAccessChanged_InviteExistingUser(t *testing.T) {
 }
 
 func TestWorkspaceAccessChanged_InvitationAccept(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newAccessFixture(t, d)
 		since := f.mark()
@@ -243,6 +247,7 @@ func TestWorkspaceAccessChanged_InvitationAccept(t *testing.T) {
 }
 
 func TestWorkspaceAccessChanged_CollectionGrants(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newAccessFixture(t, d)
 		guest := mkUser(t, f.srv, "guest@example.com")
@@ -272,6 +277,7 @@ func TestWorkspaceAccessChanged_CollectionGrants(t *testing.T) {
 }
 
 func TestWorkspaceAccessChanged_ItemGrants(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newAccessFixture(t, d)
 		guest := mkUser(t, f.srv, "item-guest@example.com")
@@ -290,6 +296,7 @@ func TestWorkspaceAccessChanged_ItemGrants(t *testing.T) {
 }
 
 func TestWorkspaceAccessChanged_MemberRemoval(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newAccessFixture(t, d)
 		gone := f.member("gone@example.com", "editor")
@@ -307,6 +314,7 @@ func TestWorkspaceAccessChanged_MemberRemoval(t *testing.T) {
 }
 
 func TestWorkspaceAccessChanged_SoftDeleteRestorePurge(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newAccessFixture(t, d)
 		f.member("member@example.com", "viewer")
@@ -342,6 +350,7 @@ func TestWorkspaceAccessChanged_SoftDeleteRestorePurge(t *testing.T) {
 }
 
 func TestWorkspaceAccessChanged_AccountDeletion(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newAccessFixture(t, d)
 		f.member("member@example.com", "editor")
@@ -544,6 +553,7 @@ func TestWorkspaceAccessChanged_ReplayHonoursOptIn(t *testing.T) {
 // carries an AccessChange, so DOC-2479's shape cannot move under existing
 // consumers.
 func TestWatchEventPayload_ExistingKindsAreByteIdentical(t *testing.T) {
+	t.Parallel()
 	srv := testServerWithWatchEvents(t)
 	cache := &watchVisCache{s: srv, slugs: make(map[string]string)}
 	for _, kind := range []string{watchevents.KindStatusChange, watchevents.KindAssignment, watchevents.KindComment, watchevents.KindPush, watchevents.KindAsk} {

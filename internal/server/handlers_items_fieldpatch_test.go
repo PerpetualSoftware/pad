@@ -40,6 +40,7 @@ func decodeItemFields(t *testing.T, fieldsJSON string) map[string]any {
 // field-level merge (IDEA-1480 / TASK-2022): a PATCH carrying `fields_patch`
 // changes only the named key and preserves the rest of the blob.
 func TestPatchItemFieldsPatchMerges(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	item := createTaskWithFields(t, srv, slug, "Item", `{"status":"open","priority":"high"}`)
@@ -64,6 +65,7 @@ func TestPatchItemFieldsPatchMerges(t *testing.T) {
 // TestPatchItemFieldsPatchNullDeletes verifies the JSON-null delete sentinel
 // over the wire.
 func TestPatchItemFieldsPatchNullDeletes(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	item := createTaskWithFields(t, srv, slug, "Item", `{"status":"open","priority":"high"}`)
@@ -87,6 +89,7 @@ func TestPatchItemFieldsPatchNullDeletes(t *testing.T) {
 
 // TestPatchItemFieldsAndFieldsPatchMutuallyExclusive: sending both is a 400.
 func TestPatchItemFieldsAndFieldsPatchMutuallyExclusive(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	item := createTaskWithFields(t, srv, slug, "Item", `{"status":"open"}`)
@@ -103,6 +106,7 @@ func TestPatchItemFieldsAndFieldsPatchMutuallyExclusive(t *testing.T) {
 // TestPatchItemFieldsPatchValidatesAgainstSchema: an out-of-enum select value
 // in the patch is rejected with a validation error.
 func TestPatchItemFieldsPatchValidatesAgainstSchema(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	item := createTaskWithFields(t, srv, slug, "Item", `{"status":"open"}`)
@@ -119,6 +123,7 @@ func TestPatchItemFieldsPatchValidatesAgainstSchema(t *testing.T) {
 // required schema field (status on tasks) is a 400 — it would leave a blob
 // the full-update validator would reject.
 func TestPatchItemFieldsPatchRejectsDeletingRequiredField(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	item := createTaskWithFields(t, srv, slug, "Item", `{"status":"open","priority":"high"}`)
@@ -143,6 +148,7 @@ func TestPatchItemFieldsPatchRejectsDeletingRequiredField(t *testing.T) {
 // pad-structured-error shape (code=update_conflict + details), and the item
 // is left unchanged.
 func TestPatchItemExpectedUpdatedAtConflict(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	item := createTaskWithFields(t, srv, slug, "Item", `{"status":"open"}`)
@@ -191,6 +197,7 @@ func TestPatchItemExpectedUpdatedAtConflict(t *testing.T) {
 // TestPatchItemExpectedUpdatedAtMatchSucceeds: round-tripping the item's real
 // updated_at lets the update through.
 func TestPatchItemExpectedUpdatedAtMatchSucceeds(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	item := createTaskWithFields(t, srv, slug, "Item", `{"status":"open"}`)
@@ -208,6 +215,7 @@ func TestPatchItemExpectedUpdatedAtMatchSucceeds(t *testing.T) {
 // TestPatchItemExpectedUpdatedAtMalformed: a non-RFC3339 token is a 400, not a
 // 500 or a silent pass.
 func TestPatchItemExpectedUpdatedAtMalformed(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	item := createTaskWithFields(t, srv, slug, "Item", `{"status":"open"}`)
@@ -226,6 +234,7 @@ func TestPatchItemExpectedUpdatedAtMalformed(t *testing.T) {
 // path): marking a parent terminal via fields_patch while it has a
 // non-terminal child is rejected with the structured open_children 409.
 func TestPatchItemFieldsPatchTriggersOpenChildrenGuard(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -263,6 +272,7 @@ func TestPatchItemFieldsPatchTriggersOpenChildrenGuard(t *testing.T) {
 // NOT clobber an end_date the caller isn't touching. The
 // auto-populate only fills a date when the current value is empty.
 func TestPatchItemFieldsPatchPreservesExistingDate(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -296,6 +306,7 @@ func TestPatchItemFieldsPatchPreservesExistingDate(t *testing.T) {
 // TestPatchItemFieldsPatchAutoFillsEmptyDate: when end_date is empty, a
 // status→completed patch DOES auto-fill it (the feature still works).
 func TestPatchItemFieldsPatchAutoFillsEmptyDate(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -328,6 +339,7 @@ func TestPatchItemFieldsPatchAutoFillsEmptyDate(t *testing.T) {
 // optimistic-concurrency conflict must win (the caller was operating on a
 // stale view), not the open_children guard.
 func TestPatchItemConflictWinsOverOpenChildrenGuard(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -357,6 +369,7 @@ func TestPatchItemConflictWinsOverOpenChildrenGuard(t *testing.T) {
 // `pad item history` and the MCP `pad_item.history` action consume: after a
 // content change, the version list carries at least one row.
 func TestListItemVersionsHTTP(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	item := createTaskWithFields(t, srv, slug, "Item", `{"status":"open"}`)

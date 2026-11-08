@@ -65,6 +65,7 @@ func TestAttachmentUploadedHeaders_OriginalAndVariant(t *testing.T) {
 // An uploader that does not resolve to a named user (the "system" default,
 // a deleted account) leaves the name out rather than inventing one.
 func TestAttachmentUploadedHeaders_UnresolvedUploaderHasNoName(t *testing.T) {
+	t.Parallel()
 	srv, _ := testServerWithAttachments(t)
 	f := newDownloadAuthzFixture(t, srv)
 	viewer := mkUser(t, srv, "viewer-3319b@test.com")
@@ -85,6 +86,7 @@ func TestAttachmentUploadedHeaders_UnresolvedUploaderHasNoName(t *testing.T) {
 
 // The share page serves attachments to anonymous viewers: it names no one.
 func TestAttachmentUploadedHeaders_ShareRouteNamesNoOne(t *testing.T) {
+	t.Parallel()
 	f := newShareAssetFixture(t)
 	orig := putBlob(t, f.srv, &models.Attachment{
 		WorkspaceID: f.wsID, ItemID: &f.itemID, Filename: "s.png", UploadedBy: f.ownerID,

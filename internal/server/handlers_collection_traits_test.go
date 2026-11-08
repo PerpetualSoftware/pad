@@ -19,6 +19,7 @@ import (
 // disarm. This test locks the fix: an update that says nothing about traits
 // leaves them exactly as they were.
 func TestCollectionTraitsSurviveOrdinarySchemaEdit(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -55,6 +56,7 @@ func TestCollectionTraitsSurviveOrdinarySchemaEdit(t *testing.T) {
 // TestCollectionTraitsExplicitClear proves the preservation above is not a
 // one-way door: a caller that MEANS to clear declarations still can.
 func TestCollectionTraitsExplicitClear(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -77,6 +79,7 @@ func TestCollectionTraitsExplicitClear(t *testing.T) {
 // wrong behavior rather than a loud error, which is the exact failure mode
 // traits exist to remove.
 func TestCollectionTraitsRejectMalformed(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -123,6 +126,7 @@ func TestCollectionTraitsRejectMalformed(t *testing.T) {
 // migration — declare the traits, so a NEWLY created workspace never depends
 // on the backfill having run.
 func TestSeededCollectionsDeclareTraits(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -183,6 +187,7 @@ func collectionTraits(t *testing.T, srv *Server, wsSlug, collSlug string) models
 // build cannot encode is simply not exportable — a 400, exactly like a
 // collection declaring no kind at all.
 func TestArtifactExportRefusesUnknownDeclaredKind(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -230,6 +235,7 @@ func TestArtifactExportRefusesUnknownDeclaredKind(t *testing.T) {
 // the hidden item and the test fails. If the visible collection sorted first
 // the assertion would pass either way and prove nothing.
 func TestResolvePlaybookIgnoresInvisibleCollections(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	wsSlug := createWSWithCollections(t, srv)
 
@@ -315,6 +321,7 @@ func TestResolvePlaybookIgnoresInvisibleCollections(t *testing.T) {
 // As above, the HIDDEN collection is the seeded one so it sorts first —
 // otherwise the assertion passes with or without the fix.
 func TestCollectionIDForKindIgnoresInvisibleCollections(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	wsSlug := createWSWithCollections(t, srv)
 
@@ -381,6 +388,7 @@ func TestCollectionIDForKindIgnoresInvisibleCollections(t *testing.T) {
 // Also asserts the overflow signal: an agent must be able to tell a truncated
 // payload from a complete one, or it reads a prefix as the whole set.
 func TestGenericBootstrapIncludeIsBudgeted(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	wsSlug := createWSWithCollections(t, srv)
 
@@ -440,6 +448,7 @@ func TestGenericBootstrapIncludeIsBudgeted(t *testing.T) {
 // lands, or which collection answers an invocation slug, a coin flip. Refused
 // with a conflict rather than resolved silently.
 func TestTraitConflictsRefused(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	wsSlug := createWSWithCollections(t, srv)
 
@@ -503,6 +512,7 @@ func TestTraitConflictsRefused(t *testing.T) {
 // naming one with the other mode would be quietly ignored — the payload comes
 // out in the projection's shape regardless of what the declaration said.
 func TestFirstPartyKeyModeIsPinned(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	wsSlug := createWSWithCollections(t, srv)
 

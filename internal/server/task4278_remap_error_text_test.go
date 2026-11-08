@@ -16,6 +16,7 @@ import (
 // wrap reader or IO text (a path, SQL); only a FIXED category of it may reach
 // the response body, while errors.As still finds the typed cause.
 func TestImportRemapErrorBodyNeverCarriesPrimaryText(t *testing.T) {
+	t.Parallel()
 	const path = "/srv/imports/private-dir/bundle-7731.tar"
 	const sql = "SELECT token_hash FROM api_tokens WHERE user_id = $1"
 	primaries := map[string]error{
@@ -51,6 +52,7 @@ func TestImportRemapErrorBodyNeverCarriesPrimaryText(t *testing.T) {
 // a definitive rollback may say "try again to finish"; an unknown COMMIT
 // outcome must not.
 func TestStripeCancelledBusyMessageByClass(t *testing.T) {
+	t.Parallel()
 	const retry = "Billing was already cancelled; try again to finish deleting your account"
 	const unknownMsg = "Billing was already cancelled. The server was busy and may not have finished deleting your account; check before trying again."
 	for name, tc := range map[string]struct {

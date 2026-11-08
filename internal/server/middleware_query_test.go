@@ -342,6 +342,7 @@ func TestValidateQueryRejectionLooksLikeEveryOtherAPIError(t *testing.T) {
 //
 // Skips unless PAD_TEST_POSTGRES_URL is set; runs under `make test-pg`.
 func TestValidateQueryPostgresNoInternalError(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("PAD_TEST_POSTGRES_URL") == "" {
 		t.Skip("PAD_TEST_POSTGRES_URL not set — the 500 only reproduces on Postgres")
 	}

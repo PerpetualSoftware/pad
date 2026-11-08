@@ -19,6 +19,7 @@ import (
 // a claim that finds no row refuses the signup and rolls the account back,
 // as the two accept doors do since BUG-2136.
 func TestRegisterWithCode_InvitationGoneBeforeClaimJoinsNothing(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newAccessFixture(t, d)
 		register := func(email, code string) *httptest.ResponseRecorder {
@@ -166,6 +167,7 @@ func TestRegisterWithCode_OpenRegistrationKeepsTheAccountWhenTheInvitationIsGone
 // longer proves the claim landed. A failed claim beside a membership that came
 // from elsewhere must not be reported as a joined signup.
 func TestRegisterWithCode_FailedClaimBesideAMembershipIsNotAJoin(t *testing.T) {
+	t.Parallel()
 	e := newAcceptLimitEnv(t)
 	inv := e.invite(t, "beside@example.com")
 	// The claim fails (the workspace reaches its cap in the window), and the
@@ -187,6 +189,7 @@ func TestRegisterWithCode_FailedClaimBesideAMembershipIsNotAJoin(t *testing.T) {
 // a session, and /forgot-password a reset token, before the claim. The
 // rollback must still remove the account.
 func TestRegisterWithCode_CredentialsMintedBeforeTheClaimDoNotBlockTheRollback(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newAccessFixture(t, d)
 		inv := f.invite("signedin@example.com", "editor")
@@ -275,6 +278,7 @@ func TestRegisterWithCode_OpenRegistrationKeepsTheAccountWhenTheClaimIsRefused(t
 // in the window) at ITS role, and the signup must report that role, as the
 // accept doors do, not the invitation's.
 func TestRegisterWithCode_ReportsTheRoleTheAccountHolds(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newAccessFixture(t, d)
 		inv := f.invite("added@example.com", "editor")
@@ -347,6 +351,7 @@ func TestRegisterWithCode_OpenRegistrationRefusedClaimNeedsNoReconcileRead(t *te
 // FAILS, the signup must not answer as if it had been rolled back: the
 // account still holds the email.
 func TestRegisterWithCode_FailedRollbackIsNotReportedAsARollback(t *testing.T) {
+	t.Parallel()
 	f := newAccessFixture(t, store.DriverSQLite)
 	inv := f.invite("stuck@example.com", "editor")
 	f.srv.registerInvitationPreClaimHook = func(invID string) {

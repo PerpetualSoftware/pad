@@ -87,6 +87,7 @@ func assertCarriesEntry(t *testing.T, srv *Server, it models.Item, key string) {
 // Template seeding records the origin of every seeded convention and
 // playbook, and none for a sample item.
 func TestTASK3462_TemplateSeedRecordsOrigin(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		slug, wsID := task3462Workspace(t, srv, "Seeded 3462", "startup")
 		assertCarriesEntry(t, srv, task3462ItemByTitle(t, srv, slug, "playbooks", "Ship tasks"), "playbook/ship")
@@ -114,6 +115,7 @@ func TestTASK3462_TemplateSeedRecordsOrigin(t *testing.T) {
 // The activate door records the origin, by key or by title, and stores what
 // a template seed of the same entry stores.
 func TestTASK3462_ActivateRecordsOriginAndMatchesTheSeed(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		slug, _ := task3462Workspace(t, srv, "Blank 3462", "blank")
 		for _, body := range []map[string]string{
@@ -158,6 +160,7 @@ func TestTASK3462_ActivateRecordsOriginAndMatchesTheSeed(t *testing.T) {
 
 // A request body cannot claim an origin for its own text.
 func TestTASK3462_CreateBodyCannotClaimOrigin(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug, _ := task3462Workspace(t, srv, "Claim 3462", "blank")
 	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/playbooks/items", map[string]any{
@@ -179,6 +182,7 @@ func TestTASK3462_CreateBodyCannotClaimOrigin(t *testing.T) {
 
 // The lifecycle.
 func TestTASK3462_OriginThroughTheItemLifecycle(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		slug, _ := task3462Workspace(t, srv, "Life 3462", "startup")
 		ship := task3462ItemByTitle(t, srv, slug, "playbooks", "Ship tasks")
@@ -291,6 +295,7 @@ func TestTASK3462_OriginThroughTheItemLifecycle(t *testing.T) {
 // coverage moved here when the server took the resolution over), and only
 // falls back to the canonical slug when nothing declares it.
 func TestTASK3462_ActivateFollowsTheDeclaredKind(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		slug, wsID := task3462Workspace(t, srv, "Renamed 3462", "blank")
 		conv, err := srv.store.GetCollectionBySlug(wsID, "conventions")

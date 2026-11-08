@@ -101,6 +101,7 @@ func pendingOutboxCount(t *testing.T, srv *Server) int {
 // reaches the wire once, carrying its row id as the dedupe key, and stops
 // being pending.
 func TestOutboxDrain_DeliversAndAcksASingleEvent(t *testing.T) {
+	t.Parallel()
 	srv, sink, ws := drainFixture(t)
 	col := createDrainCollection(t, srv, ws.ID)
 	item := createDrainItem(t, srv, ws.ID, col.ID, "Delivered once")
@@ -145,6 +146,7 @@ func TestOutboxDrain_DeliversAndAcksASingleEvent(t *testing.T) {
 // TestOutboxDrain_TransientFailureLeavesTheEventPending: the durable retry is
 // the drain's, and it is the reason the outbox exists. A 5xx must not ack.
 func TestOutboxDrain_TransientFailureLeavesTheEventPending(t *testing.T) {
+	t.Parallel()
 	srv, sink, ws := drainFixture(t)
 	col := createDrainCollection(t, srv, ws.ID)
 	createDrainItem(t, srv, ws.ID, col.ID, "Retried")
@@ -168,6 +170,7 @@ func TestOutboxDrain_TransientFailureLeavesTheEventPending(t *testing.T) {
 // in a way no retry fixes must not hold the workspace's queue. The control leg
 // is the transient test above — same shape, opposite ack.
 func TestOutboxDrain_PermanentFailureAcks(t *testing.T) {
+	t.Parallel()
 	srv, sink, ws := drainFixture(t)
 	col := createDrainCollection(t, srv, ws.ID)
 	createDrainItem(t, srv, ws.ID, col.ID, "Rejected")
@@ -209,6 +212,7 @@ func createDrainItem(t *testing.T, srv *Server, workspaceID, collectionID, title
 // bulk action must reach a webhook consumer as ONE delivery carrying every
 // member, not as N single-item deliveries.
 func TestOutboxDrain_FoldsABatchIntoOneWireEvent(t *testing.T) {
+	t.Parallel()
 	srv, sink, ws := drainFixture(t)
 	col := createDrainCollection(t, srv, ws.ID)
 
@@ -283,6 +287,7 @@ func TestOutboxDrain_FoldsABatchIntoOneWireEvent(t *testing.T) {
 // batch for one operation — correlated by the batch id both carry, which is
 // why batch_id is on the wire at all.
 func TestOutboxDrain_MembersWithoutTheirHeaderDeliverIndividually(t *testing.T) {
+	t.Parallel()
 	srv, sink, ws := drainFixture(t)
 	col := createDrainCollection(t, srv, ws.ID)
 
@@ -366,6 +371,7 @@ func TestOutboxDrain_MembersWithoutTheirHeaderDeliverIndividually(t *testing.T) 
 // wiped the pending set on its first pass. The defaults now live in one
 // resolver, and this asserts the second line of defence behind it.
 func TestOutboxDrain_RetentionRefusesANonPositiveWindow(t *testing.T) {
+	t.Parallel()
 	srv, _, ws := drainFixture(t)
 	col := createDrainCollection(t, srv, ws.ID)
 	createDrainItem(t, srv, ws.ID, col.ID, "Still owed")
@@ -399,6 +405,7 @@ func TestOutboxDrain_RetentionRefusesANonPositiveWindow(t *testing.T) {
 // point ran first. A zero max age is not a small misconfiguration — it makes
 // the retention cutoff `now`.
 func TestOutboxDrain_SettingsResolveToPositiveDefaults(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	got := srv.resolveOutboxDrainSettings()
 

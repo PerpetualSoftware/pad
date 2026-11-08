@@ -13,6 +13,7 @@ import (
 // subject-bearing sign-in still signed in on its email alone, and a new
 // address still made an account.
 func TestBUG3797_ASignInWithoutASubjectIsRefusedForEveryProvider(t *testing.T) {
+	t.Parallel()
 	for _, provider := range []string{"github", "google", "apple"} {
 		t.Run(provider, func(t *testing.T) {
 			srv := testServer(t)

@@ -9,6 +9,7 @@ import (
 // after it. Driven through the HTTP profile change and the HTTP reset, so the
 // test vouches for the wiring, not only the store.
 func TestBUG3679_ProfilePasswordChangeKillsOutstandingResetLink(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	const oldPwd = "an-Old-Passphrase-For-3679!"
 	const ownerPwd = "the-Owners-New-Passphrase-3679!"

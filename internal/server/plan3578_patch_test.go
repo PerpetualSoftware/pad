@@ -56,6 +56,7 @@ func edits(pairs ...string) []map[string]any {
 }
 
 func TestPLAN3578_PatchAppliesAndReturnsTheDiff(t *testing.T) {
+	t.Parallel()
 	f := newPatchFixture(t, testServer(t), "alpha\nbeta\ngamma\n")
 	before := f.current(t)
 	code, out := f.patch(t, map[string]any{"edits": edits("beta", "BETA"), "expected_seq": before.Seq})
@@ -81,6 +82,7 @@ func TestPLAN3578_PatchAppliesAndReturnsTheDiff(t *testing.T) {
 }
 
 func TestPLAN3578_PatchRefusals(t *testing.T) {
+	t.Parallel()
 	f := newPatchFixture(t, testServer(t), "one\ntwo two\n")
 	body := f.current(t).Content
 	for _, c := range []struct {
@@ -114,6 +116,7 @@ func TestPLAN3578_PatchRefusals(t *testing.T) {
 // A moved seq is applied over when the anchors still match, and reported:
 // the intervening write, stamped in the chain, and complete.
 func TestPLAN3578_RebaseReportsTheInterveningWrites(t *testing.T) {
+	t.Parallel()
 	f := newPatchFixture(t, testServer(t), "alpha\nbeta\n")
 	read := f.current(t)
 	// Someone else edits another part of the body, through the PATCH door.
@@ -141,6 +144,7 @@ func TestPLAN3578_RebaseReportsTheInterveningWrites(t *testing.T) {
 
 // A write that recorded no stamped entry breaks the chain: complete is false.
 func TestPLAN3578_UnstampedWriteBreaksTheChain(t *testing.T) {
+	t.Parallel()
 	f := newPatchFixture(t, testServer(t), "alpha\nbeta\n")
 	read := f.current(t)
 	// A store write with no handler records no activity entry at all.
@@ -185,6 +189,7 @@ func TestPLAN3578_PatchRefusedWhileAnEditorIsOpen(t *testing.T) {
 }
 
 func TestPLAN3578_PatchRefusedOverUnflushedEdits(t *testing.T) {
+	t.Parallel()
 	srv := testServerWithCollab(t)
 	f := newPatchFixture(t, srv, "alpha\n")
 	if _, err := srv.store.AppendYjsUpdate(f.item.ID, []byte{0x00, 0x02, 0x04, 0x01, 0x9A, 0x7C, 0x00}, "1"); err != nil {
@@ -203,6 +208,7 @@ func TestPLAN3578_PatchRefusedOverUnflushedEdits(t *testing.T) {
 // The seq-chain and patch keys are bookkeeping: an agent's body-only patch
 // renders its version card, never an empty activity card.
 func TestPLAN3578_PatchLeavesNoEmptyTimelineCard(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	token, ws, slug := debounceFixture(t, srv)
 	rr := authedAgentRequest(t, srv, token, "wren", "PATCH", "/api/v1/workspaces/"+ws+"/items/"+slug,

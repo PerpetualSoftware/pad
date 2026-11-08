@@ -41,6 +41,7 @@ func tz4101Me(t *testing.T, srv *Server, token string) map[string]any {
 }
 
 func TestTASK4101_PatchTimezone(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		_, token := tz4101User(t, srv, "tz4101a")
 		if tz, present := tz4101Me(t, srv, token)["timezone"]; !present || tz != nil {
@@ -80,6 +81,7 @@ func TestTASK4101_PatchTimezone(t *testing.T) {
 // Q5: the browser's first-sign-in default must never overwrite a zone the user
 // chose elsewhere.
 func TestTASK4101_IfUnsetNeverOverwrites(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		_, token := tz4101User(t, srv, "tz4101b")
 		patch := func(body map[string]any) (int, string) {
@@ -115,6 +117,7 @@ func TestTASK4101_IfUnsetNeverOverwrites(t *testing.T) {
 }
 
 func TestTASK4101_TZMismatchDismissals(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		u, token := tz4101User(t, srv, "tz4101c")
 		put := func(key string) *httpResp {
@@ -166,6 +169,7 @@ func TestTASK4101_TZMismatchDismissals(t *testing.T) {
 }
 
 func TestTASK4101_DismissalKeyUnescape(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		u, token := tz4101User(t, srv, "tz4101escape")
 		const pair = "tz-mismatch:America/New_York|Europe/London"
@@ -210,6 +214,7 @@ func TestTASK4101_DismissalKeyUnescape(t *testing.T) {
 // CONVE-19: the HTTP scorer must receive the viewer's zone. The cursor pins
 // as_of to 23:30 UTC (tomorrow in Kiritimati) using the existing paging seam.
 func TestTASK4101_NeedsOverdueUsesViewerZone(t *testing.T) {
+	t.Parallel()
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		u, token := tz4101User(t, srv, "tz4101needs")
 		zone := "Pacific/Kiritimati"
@@ -274,6 +279,7 @@ func knownZones(t *testing.T) ([]string, error) {
 // are 25 hours apart, so at every instant their calendar days differ: a task
 // due on Pago_Pago's today is late for Kiritimati and not for Pago_Pago.
 func TestTASK4101_OverdueUsesViewerZone(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	kiri, kiriTok := tz4101User(t, srv, "tz4101k")
 	pago, pagoTok := tz4101User(t, srv, "tz4101p")
@@ -347,6 +353,7 @@ func TestTASK4101_OverdueUsesViewerZone(t *testing.T) {
 // deadlinePart reads "today" in the viewer's zone; with none it is UTC, not the
 // server's local zone.
 func TestTASK4101_DeadlinePartDefaultsToUTC(t *testing.T) {
+	t.Parallel()
 	// 2026-03-10 23:30 UTC is already 03-11 in Kiritimati.
 	now := time.Date(2026, 3, 10, 23, 30, 0, 0, time.UTC)
 	fields := `{"due_date":"2026-03-10"}`
@@ -361,6 +368,7 @@ func TestTASK4101_DeadlinePartDefaultsToUTC(t *testing.T) {
 
 // A status change stamps start_date with the ACTOR's day.
 func TestTASK4101_AutoStampsActorsDay(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	kiri, kiriTok := tz4101User(t, srv, "tz4101s")
 	pago, pagoTok := tz4101User(t, srv, "tz4101t")
@@ -410,6 +418,7 @@ func TestTASK4101_AutoStampsActorsDay(t *testing.T) {
 }
 
 func TestTZ4101_DayBracketRetries(t *testing.T) {
+	t.Parallel()
 	days := []string{"old", "new", "new", "new"}
 	reads, requests := 0, 0
 	day := tz4101StableDay(t, func() string { d := days[reads]; reads++; return d }, func() { requests++ })

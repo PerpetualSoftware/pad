@@ -27,6 +27,7 @@ import (
 // arrives as the string value of a JSON-encoded field key, a text one as an
 // ordinary field.
 func TestHTTPGateAgreesWithTheCorpus(t *testing.T) {
+	t.Parallel()
 	for _, c := range textguard.Corpus {
 		t.Run(c.Name, func(t *testing.T) {
 			// The gate's classing is by KEY. "fields" is a JSON-encoded field
@@ -60,6 +61,7 @@ func TestHTTPGateAgreesWithTheCorpus(t *testing.T) {
 // scan. The gate reads JSON bodies; this goes in as a query-shaped write via
 // the item update handler with the NUL already decoded server-side.
 func TestStoreRefusalAnswers400(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSWithCollections(t, srv)
 	item := createTaskWithFields(t, srv, ws, "Subject", `{"status":"open"}`)

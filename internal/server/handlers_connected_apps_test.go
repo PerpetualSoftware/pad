@@ -92,6 +92,7 @@ func newSignatureForTest() string {
 }
 
 func TestHandleListConnectedApps_RequiresCloudMode(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t) // no SetCloudMode
 	_, tok := loginTestUser(t, srv)
 	rr := doAuthedRequest(srv, "GET", "/api/v1/connected-apps", nil, tok)
@@ -101,6 +102,7 @@ func TestHandleListConnectedApps_RequiresCloudMode(t *testing.T) {
 }
 
 func TestHandleListConnectedApps_ReturnsOnlyOwnConnections(t *testing.T) {
+	t.Parallel()
 	srv, clientID := connectedAppsTestServer(t)
 	alice, aliceTok := loginTestUser(t, srv)
 	bob, err := srv.store.CreateUser(models.UserCreate{
@@ -133,6 +135,7 @@ func TestHandleListConnectedApps_ReturnsOnlyOwnConnections(t *testing.T) {
 }
 
 func TestHandleListConnectedApps_DTOShapeAndAuditEnrichment(t *testing.T) {
+	t.Parallel()
 	srv, clientID := connectedAppsTestServer(t)
 	user, tok := loginTestUser(t, srv)
 
@@ -219,6 +222,7 @@ func TestHandleListConnectedApps_DTOShapeAndAuditEnrichment(t *testing.T) {
 }
 
 func TestHandleRevokeConnectedApp_OwnerOnly(t *testing.T) {
+	t.Parallel()
 	srv, clientID := connectedAppsTestServer(t)
 	alice, aliceTok := loginTestUser(t, srv)
 	bob, err := srv.store.CreateUser(models.UserCreate{
@@ -247,6 +251,7 @@ func TestHandleRevokeConnectedApp_OwnerOnly(t *testing.T) {
 }
 
 func TestHandleRevokeConnectedApp_HappyPathAndIdempotent(t *testing.T) {
+	t.Parallel()
 	srv, clientID := connectedAppsTestServer(t)
 	user, tok := loginTestUser(t, srv)
 	seedGrantChain(t, srv, clientID, user.ID, "revoke-me", "", "pad:read")
@@ -280,6 +285,7 @@ func TestHandleRevokeConnectedApp_HappyPathAndIdempotent(t *testing.T) {
 }
 
 func TestHandleRevokeConnectedApp_UnknownChain(t *testing.T) {
+	t.Parallel()
 	srv, _ := connectedAppsTestServer(t)
 	_, tok := loginTestUser(t, srv)
 	rr := doAuthedDeleteWithCSRF(srv, "/api/v1/connected-apps/no-such-chain", tok)
@@ -289,6 +295,7 @@ func TestHandleRevokeConnectedApp_UnknownChain(t *testing.T) {
 }
 
 func TestHandleRevokeConnectedApp_WritesAuditTrail(t *testing.T) {
+	t.Parallel()
 	srv, clientID := connectedAppsTestServer(t)
 	user, tok := loginTestUser(t, srv)
 	seedGrantChain(t, srv, clientID, user.ID, "audit-trail-chain", "", "pad:read")

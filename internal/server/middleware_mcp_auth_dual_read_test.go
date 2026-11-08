@@ -24,6 +24,7 @@ import (
 // We cover both directly. Since BUG-3337 a connection row, when present,
 // is authoritative and Extra is ignored; Extra decides only without one.
 func TestMergeAllowedWorkspaces(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		extra  []string

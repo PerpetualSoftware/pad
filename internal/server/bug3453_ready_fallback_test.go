@@ -34,6 +34,7 @@ func suggestionTitles(resp DashboardResponse) []string {
 }
 
 func TestBUG3453_MovedInBacklogIsReady(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		slug := createWSWithCollections(t, srv)
 		bug3453Bugs(t, srv, slug)
@@ -65,6 +66,7 @@ func TestBUG3453_MovedInBacklogIsReady(t *testing.T) {
 }
 
 func TestBUG3453_FallbackRanksByPriorityOrSeverityThenAge(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	bug3453Bugs(t, srv, slug)
@@ -88,6 +90,7 @@ func TestBUG3453_FallbackRanksByPriorityOrSeverityThenAge(t *testing.T) {
 // The fallback admits only WORKABLE collections (not system, and the schema
 // declares priority or severity), and never a done or blocked item.
 func TestBUG3453_FallbackExclusions(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	bug3453Bugs(t, srv, slug)
@@ -120,6 +123,7 @@ func TestBUG3453_FallbackExclusions(t *testing.T) {
 // that comparator removed, the old critical bug takes a slot
 // ([In flight, Old critical bug, Critical]) and this fails.
 func TestBUG3453_FullListUnchanged(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	bug3453Bugs(t, srv, slug)

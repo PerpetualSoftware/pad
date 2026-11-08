@@ -14,6 +14,7 @@ import (
 const copyAttachmentLimitMessage = "This item references more than 1,000 attachments, which is too many to copy. Remove some references, then copy it again."
 
 func TestCopyPreflightAttachmentLimit(t *testing.T) {
+	t.Parallel()
 	for _, n := range []int{1000, 1001} {
 		t.Run(fmt.Sprint(n), func(t *testing.T) {
 			f := newCopyPreflightFixture(t)

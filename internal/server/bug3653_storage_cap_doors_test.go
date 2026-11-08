@@ -66,6 +66,7 @@ func planLimitRefusal(t *testing.T, body []byte, code int) map[string]any {
 // past its 40. A direct upload of those bytes is refused; the copy was not.
 // Self-hosted (cloud off) is not limited and still copies.
 func TestBUG3653_CopyPastTheStorageLimitIs403(t *testing.T) {
+	t.Parallel()
 	for _, cloud := range []bool{true, false} {
 		srv := testServer(t)
 		srv.cloudMode = cloud
@@ -125,6 +126,7 @@ func TestBUG3653_CopyPastTheStorageLimitIs403(t *testing.T) {
 // with the plan-limit 403 and leaves no workspace behind. Self-hosted imports
 // it.
 func TestBUG3653_ImportPastTheStorageLimitIs403(t *testing.T) {
+	t.Parallel()
 	bundle := realBundleWithBlob(t)
 	for _, cloud := range []bool{true, false} {
 		srv := attachmentsServerOn(t, store.DriverSQLite)

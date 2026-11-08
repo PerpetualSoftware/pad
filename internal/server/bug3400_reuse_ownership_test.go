@@ -146,6 +146,7 @@ func TestBug3400_CodeReuseByAnotherClientRevokesNothing(t *testing.T) {
 // preflight, so the presenter here is a public DCR client, which reaches
 // fosite and therefore this check.)
 func TestBug3400_SpentTokenOfAConfidentialClientCannotBeBurnedByAnother(t *testing.T) {
+	t.Parallel()
 	f := delegatedFixture(t, "inst-3400", "read")
 	code, _ := codeFrom(f.decide(t, f.authorizeParams(), "approve", ""))
 	if code == "" {

@@ -39,6 +39,7 @@ func bootstrapFirstUser(t *testing.T, srv *Server, email, name string) string {
 }
 
 func TestAuthBootstrapFlow(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	rr := doRequest(srv, "GET", "/api/v1/auth/session", nil)
@@ -100,6 +101,7 @@ func TestAuthBootstrapFlow(t *testing.T) {
 // "" with [] otherwise. The connect modal keys on both, so each state is
 // driven through the router, on the setup payload and the session payload.
 func TestAuthSessionMCPURLAndAuth(t *testing.T) {
+	t.Parallel()
 	on, off := true, false
 	cases := []struct {
 		name     string
@@ -199,6 +201,7 @@ var servedOffer = fixedOffer{
 // null otherwise (TASK-3577; TASK-800 before it). Both are always present, in
 // the setup payload too, so a refactor cannot quietly always expose the CTA.
 func TestAuthSessionBillingAvailable(t *testing.T) {
+	t.Parallel()
 	session := func(t *testing.T, srv *Server) map[string]interface{} {
 		t.Helper()
 		rr := doRequest(srv, "GET", "/api/v1/auth/session", nil)
@@ -264,6 +267,7 @@ func TestAuthSessionBillingAvailable(t *testing.T) {
 // unset the mode is auto, and with the sidecar down that still gives
 // billing_available false: auto fails closed.
 func TestAuthSessionBillingBothUnsetSidecarDown(t *testing.T) {
+	t.Parallel()
 	mode, _ := billing.ResolveMode("", false, "", false)
 	if mode != billing.ModeAuto {
 		t.Fatalf("both unset: mode %q, want auto", mode)
@@ -290,6 +294,7 @@ func TestAuthSessionBillingBothUnsetSidecarDown(t *testing.T) {
 // pre-setup payload (no users yet — the shell validates fresh servers too) and
 // the post-setup authenticated/unauthenticated payload.
 func TestAuthSessionEmitsVersion(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.version = "1.2.3"
 
@@ -320,6 +325,7 @@ func TestAuthSessionEmitsVersion(t *testing.T) {
 }
 
 func TestAuthBootstrapRequiresLoopback(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	rr := doRequest(srv, "POST", "/api/v1/auth/bootstrap", map[string]string{
@@ -333,6 +339,7 @@ func TestAuthBootstrapRequiresLoopback(t *testing.T) {
 }
 
 func TestAuthLoginFlow(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	bootstrapFirstUser(t, srv, "user@test.com", "Test User")
 
@@ -369,6 +376,7 @@ func TestAuthLoginFlow(t *testing.T) {
 }
 
 func TestAuthLoginRequiresSetupWhenNoUsers(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	rr := doRequest(srv, "POST", "/api/v1/auth/login", map[string]string{
@@ -381,6 +389,7 @@ func TestAuthLoginRequiresSetupWhenNoUsers(t *testing.T) {
 }
 
 func TestFreshInstanceRegistrationIsForbidden(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	rr := doRequest(srv, "POST", "/api/v1/auth/register", map[string]string{
@@ -394,6 +403,7 @@ func TestFreshInstanceRegistrationIsForbidden(t *testing.T) {
 }
 
 func TestInvitationRegistrationFlow(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	adminToken := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
 
@@ -458,6 +468,7 @@ func TestInvitationRegistrationFlow(t *testing.T) {
 }
 
 func TestAuthRegistrationValidation(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	rr := doRequest(srv, "POST", "/api/v1/auth/register", map[string]string{
@@ -496,6 +507,7 @@ func TestAuthRegistrationValidation(t *testing.T) {
 }
 
 func TestAuthLogout(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	token := bootstrapFirstUser(t, srv, "user@test.com", "Test")
 
@@ -513,6 +525,7 @@ func TestAuthLogout(t *testing.T) {
 }
 
 func TestAuthRequiredWhenUsersExist(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	rr := doRequest(srv, "GET", "/api/v1/workspaces", nil)
@@ -539,6 +552,7 @@ func TestAuthRequiredWhenUsersExist(t *testing.T) {
 }
 
 func TestAuthMeEndpoint(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	token := bootstrapFirstUser(t, srv, "me@test.com", "Me Test")
 
@@ -567,6 +581,7 @@ func TestAuthMeEndpoint(t *testing.T) {
 // TASK-1957: a user created via OAuth (no password) must report
 // password_set=false so the client can offer confirm-only account deletion.
 func TestAuthMeReportsPasswordSetForOAuthUser(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	// Bootstrap a first user so the instance is initialized and auth is enforced.
 	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
@@ -596,6 +611,7 @@ func TestAuthMeReportsPasswordSetForOAuthUser(t *testing.T) {
 }
 
 func TestDuplicateRegistration(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	adminToken := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
 

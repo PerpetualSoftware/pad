@@ -39,6 +39,7 @@ func createDocForTest(t *testing.T, srv *Server, wsSlug, title, content string) 
 // with the same table. The update legs are the ones that would have caught the
 // original defect: before this fix a PATCH could set any title at all.
 func TestDocumentTitleValidation_IsWiredOnBothWriteDoors(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	docID := createDocForTest(t, srv, slug, "Starting Title", "body")
@@ -103,6 +104,7 @@ func TestDocumentTitleValidation_IsWiredOnBothWriteDoors(t *testing.T) {
 // this is permanent ("this rename cannot be performed as asked"). Answering
 // this one from the retryable family would tell a client to retry forever.
 func TestRenameCascadeTooLarge_IsPermanentShapedNotRetryable(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -175,6 +177,7 @@ func TestRenameCascadeTooLarge_IsPermanentShapedNotRetryable(t *testing.T) {
 // is here rather than in the store because the defect is entirely in the
 // handler's classification order.
 func TestRenameCascadeTooLarge_IsNotMisreportedAsATitleCollision(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -217,6 +220,7 @@ func TestRenameCascadeTooLarge_IsNotMisreportedAsATitleCollision(t *testing.T) {
 // written straight to the store — which is exactly the population the
 // grandfathering clause is about.
 func TestLegacyTitleDocumentStaysEditable(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 

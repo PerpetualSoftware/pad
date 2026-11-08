@@ -94,6 +94,7 @@ func (e *acceptLimitEnv) accountExists(t *testing.T, email string) bool {
 // --- A1: authenticated accept ---
 
 func TestAcceptLimit_Existing_AtCap_RefusedAndPending(t *testing.T) {
+	t.Parallel()
 	e := newAcceptLimitEnv(t)
 	inv := e.invite(t, "existing@example.com")
 	limit := e.members(t)
@@ -112,6 +113,7 @@ func TestAcceptLimit_Existing_AtCap_RefusedAndPending(t *testing.T) {
 }
 
 func TestAcceptLimit_Existing_UnderCap_Admitted(t *testing.T) {
+	t.Parallel()
 	e := newAcceptLimitEnv(t)
 	inv := e.invite(t, "existing@example.com")
 	limit := e.members(t) + 1
@@ -134,6 +136,7 @@ func TestAcceptLimit_Existing_UnderCap_Admitted(t *testing.T) {
 // the count. Control: TestAcceptLimit_Existing_AtCap_RefusedAndPending, the
 // same cap refusing a non-member.
 func TestAcceptLimit_ExistingMember_AtCap_Idempotent(t *testing.T) {
+	t.Parallel()
 	e := newAcceptLimitEnv(t)
 	u, err := e.srv.store.CreateUser(models.UserCreate{Email: "member@example.com", Name: "Member", Password: "pw-member-12345"})
 	if err != nil {
@@ -165,6 +168,7 @@ func TestAcceptLimit_ExistingMember_AtCap_Idempotent(t *testing.T) {
 // --- A2: register with an invitation ---
 
 func TestAcceptLimit_Register_AtCap_RefusedNoAccountPending(t *testing.T) {
+	t.Parallel()
 	e := newAcceptLimitEnv(t)
 	inv := e.invite(t, "newcomer@example.com")
 	limit := e.members(t)
@@ -186,6 +190,7 @@ func TestAcceptLimit_Register_AtCap_RefusedNoAccountPending(t *testing.T) {
 }
 
 func TestAcceptLimit_Register_UnderCap_Admitted(t *testing.T) {
+	t.Parallel()
 	e := newAcceptLimitEnv(t)
 	inv := e.invite(t, "newcomer@example.com")
 	limit := e.members(t) + 1
@@ -206,6 +211,7 @@ func TestAcceptLimit_Register_UnderCap_Admitted(t *testing.T) {
 // --- self-hosted: no cap applies at either door ---
 
 func TestAcceptLimit_SelfHosted_NotEnforced(t *testing.T) {
+	t.Parallel()
 	for _, door := range []string{"existing", "register"} {
 		t.Run(door, func(t *testing.T) {
 			e := newAcceptLimitEnv(t)
@@ -281,6 +287,7 @@ func (e *acceptLimitEnv) setOwnerName(t *testing.T, name string) {
 }
 
 func TestAcceptLimit_Refusal_NamesOwnerByDisplayName(t *testing.T) {
+	t.Parallel()
 	for _, door := range []string{"existing", "register"} {
 		t.Run(door, func(t *testing.T) {
 			e := newAcceptLimitEnv(t)
@@ -301,6 +308,7 @@ func TestAcceptLimit_Refusal_NamesOwnerByDisplayName(t *testing.T) {
 }
 
 func TestAcceptLimit_Refusal_OwnerWithoutName(t *testing.T) {
+	t.Parallel()
 	e := newAcceptLimitEnv(t)
 	e.setOwnerName(t, "   ")
 	inv := e.invite(t, "existing@example.com")
@@ -315,6 +323,7 @@ func TestAcceptLimit_Refusal_OwnerWithoutName(t *testing.T) {
 // membership write. The account the request created must be rolled back and
 // the invitation left pending, and the answer is the invitee refusal, not 500.
 func TestAcceptLimit_Register_CompetingAddInWindow_RolledBack(t *testing.T) {
+	t.Parallel()
 	e := newAcceptLimitEnv(t)
 	inv := e.invite(t, "racer@example.com")
 	limit := e.members(t) + 1

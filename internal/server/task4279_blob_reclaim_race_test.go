@@ -29,6 +29,7 @@ func lateUploadRow(wsID string, base *models.Attachment) *models.Attachment {
 }
 
 func TestOrphanGC_KeepsBlobForAnUploadThatCommitsAfterTheCount(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	wsID := workspaceIDForSlug(t, srv, slug)
 
@@ -75,6 +76,7 @@ func TestOrphanGC_KeepsBlobForAnUploadThatCommitsAfterTheCount(t *testing.T) {
 }
 
 func TestWorkspacePurge_KeepsBlobForAnUploadThatCommitsAfterTheCount(t *testing.T) {
+	t.Parallel()
 	srv, doomedSlug := testServerWithAttachments(t)
 	keeperSlug := createWSForTest(t, srv)
 
@@ -128,6 +130,7 @@ func TestWorkspacePurge_KeepsBlobForAnUploadThatCommitsAfterTheCount(t *testing.
 // A recount that cannot answer (here: the sweep's context ends between the
 // early count and the lock) must keep the blob, never delete on an unknown.
 func TestOrphanGC_KeepsBlobWhenTheRecountCannotAnswer(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	wsID := workspaceIDForSlug(t, srv, slug)
 	if rr := doMultipartUpload(srv, slug, "victim.png", realPNG()); rr.Code != 201 {
@@ -164,6 +167,7 @@ func TestOrphanGC_KeepsBlobWhenTheRecountCannotAnswer(t *testing.T) {
 }
 
 func TestWorkspacePurge_DefersWhenTheRecountCannotAnswer(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	if rr := doMultipartUpload(srv, slug, "doomed.png", realPNG()); rr.Code != 201 {
 		t.Fatalf("upload: %d %s", rr.Code, rr.Body.String())

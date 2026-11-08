@@ -52,6 +52,7 @@ func (f *b2367StateFixture) move(target string, overrides map[string]any) (int, 
 const b2367StateMessage = `this would change the item from done (status "done") to open (status "new"); set status explicitly to one of: new, implemented, rejected`
 
 func TestBUG2367_CloseState_SingleMove(t *testing.T) {
+	t.Parallel()
 	t.Run("a done item that would land open is refused, naming the field and its values", func(t *testing.T) {
 		f := newB2367StateFixture(t)
 		code, body := f.move("dst-ideas", nil)
@@ -85,6 +86,7 @@ func TestBUG2367_CloseState_SingleMove(t *testing.T) {
 }
 
 func TestBUG2367_CloseState_BulkMove(t *testing.T) {
+	t.Parallel()
 	f := newB2367StateFixture(t)
 	rr := doRequest(f.srv, "POST", "/api/v1/workspaces/"+f.ws+"/items/bulk",
 		map[string]any{"ids": []string{f.done["id"].(string)}, "op": "move", "collection": "dst-ideas"})
@@ -108,6 +110,7 @@ func TestBUG2367_CloseState_BulkMove(t *testing.T) {
 }
 
 func TestBUG2367_CloseState_PreflightAndCopy(t *testing.T) {
+	t.Parallel()
 	f := newB2367StateFixture(t)
 	base := "/api/v1/workspaces/" + f.ws + "/items/" + f.done["slug"].(string)
 	body := map[string]any{"target_workspace": f.ws, "target_collection": "dst-ideas"}

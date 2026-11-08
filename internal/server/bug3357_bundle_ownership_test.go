@@ -103,6 +103,7 @@ func bundleWithAttachmentOnBeta(t *testing.T) (bundle []byte, blobPath string) {
 // the bundle door used to attach the rehydrated attachment through the SLUG,
 // so it landed on the wrong item. It now uses the import's source-id map.
 func TestBUG3357_AttachmentOwnershipSurvivesASlugCollision(t *testing.T) {
+	t.Parallel()
 	bundle, _ := bundleWithAttachmentOnBeta(t)
 	bundle = rewriteBundle(t, bundle, func(e *models.WorkspaceExport) {
 		var alpha, beta int = -1, -1
@@ -150,6 +151,7 @@ func TestBUG3357_AttachmentOwnershipSurvivesASlugCollision(t *testing.T) {
 // The same blob path twice in the tar rehydrated the attachment
 // twice, and references followed the last copy.
 func TestBUG3357_RepeatedBlobEntryRefused(t *testing.T) {
+	t.Parallel()
 	bundle, blobPath := bundleWithAttachmentOnBeta(t)
 	dest, _ := testServerWithAttachments(t)
 	rr := postBundle(dest, "RepeatWS", rewriteBundle(t, bundle, nil, blobPath))
@@ -170,6 +172,7 @@ func TestBUG3357_RepeatedBlobEntryRefused(t *testing.T) {
 // whose second copy is over the per-blob cap still takes the reject-and-roll-
 // back path instead of the keep path.
 func TestBUG3357_OversizedRepeatStillRollsBack(t *testing.T) {
+	t.Parallel()
 	bundle, blobPath := bundleWithAttachmentOnBeta(t)
 	gz, _ := gzip.NewReader(bytes.NewReader(bundle))
 	tr := tar.NewReader(gz)

@@ -343,6 +343,7 @@ func TestSSESubscriberCleanup(t *testing.T) {
 // Error case tests use doRequest since they return immediately
 
 func TestSSEMissingWorkspace(t *testing.T) {
+	t.Parallel()
 	srv := testServerWithEvents(t)
 	rr := doRequest(srv, "GET", "/api/v1/events?workspace=nonexistent", nil)
 	if rr.Code != http.StatusNotFound {
@@ -351,6 +352,7 @@ func TestSSEMissingWorkspace(t *testing.T) {
 }
 
 func TestSSEMissingWorkspaceParam(t *testing.T) {
+	t.Parallel()
 	srv := testServerWithEvents(t)
 	rr := doRequest(srv, "GET", "/api/v1/events", nil)
 	if rr.Code != http.StatusBadRequest {
@@ -359,6 +361,7 @@ func TestSSEMissingWorkspaceParam(t *testing.T) {
 }
 
 func TestSSENoEventBus(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t) // no event bus
 	rr := doRequest(srv, "GET", "/api/v1/events?workspace=test", nil)
 	if rr.Code != http.StatusServiceUnavailable {
@@ -490,6 +493,7 @@ func (f *failingWriter) WriteHeader(_ int)           {}
 // can exit cleanly when the client has gone away. Previously the error
 // was silently dropped from fmt.Fprintf and the handler kept looping.
 func TestWriteSSEEvent_SurfacesWriteErrors(t *testing.T) {
+	t.Parallel()
 	want := fmt.Errorf("broken pipe")
 	fw := &failingWriter{err: want}
 
@@ -510,6 +514,7 @@ func TestWriteSSEEvent_SurfacesWriteErrors(t *testing.T) {
 // the caller would otherwise tear down a healthy stream because one
 // payload had an un-marshalable field. BUG-1532.
 func TestWriteSSEEvent_MarshalErrorIsLocal(t *testing.T) {
+	t.Parallel()
 	// Channels aren't JSON-encodable; json.Marshal returns
 	// UnsupportedTypeError.
 	got := writeSSEEvent(httptest.NewRecorder(), "weird", 0, make(chan int))
@@ -524,6 +529,7 @@ func TestWriteSSEEvent_MarshalErrorIsLocal(t *testing.T) {
 // process start, but having it in the test suite gives an immediate,
 // readable failure during local development. BUG-1532.
 func TestSSEKeepaliveIdleTimeoutInvariant(t *testing.T) {
+	t.Parallel()
 	if 3*sseKeepaliveInterval >= httpIdleTimeout {
 		t.Fatalf("invariant: 3 × sseKeepaliveInterval (%s) must be < httpIdleTimeout (%s)",
 			3*sseKeepaliveInterval, httpIdleTimeout)

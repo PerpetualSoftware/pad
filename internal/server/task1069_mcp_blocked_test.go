@@ -27,6 +27,7 @@ func healthBody(t *testing.T, srv *Server) map[string]any {
 }
 
 func TestTASK1069_MCPBlockedReason(t *testing.T) {
+	t.Parallel()
 	on, off := true, false
 	for _, tc := range []struct {
 		name       string
@@ -76,6 +77,7 @@ func TestTASK1069_MCPBlockedReason(t *testing.T) {
 // The health flag says only THAT MCP is blocked. The reason names
 // configuration and stays on the admin endpoint.
 func TestTASK1069_HealthDoesNotLeakTheReason(t *testing.T) {
+	t.Parallel()
 	on := true
 	srv, _ := mcpServer(t, config.Config{URL: "not a url"}, &on)
 	body := healthBody(t, srv)

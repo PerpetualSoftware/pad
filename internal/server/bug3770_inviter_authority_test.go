@@ -54,6 +54,7 @@ func bug3770Inviter(t *testing.T, f *accessFixture, email string, loss func(*acc
 }
 
 func TestBUG3770_EveryAcceptDoorRefusesAnInviterWhoLostTheAuthority(t *testing.T) {
+	t.Parallel()
 	type door struct {
 		name string
 		// run tries the door as invitee (nil for the register door, which
@@ -138,6 +139,7 @@ func TestBUG3770_EveryAcceptDoorRefusesAnInviterWhoLostTheAuthority(t *testing.T
 // Control, per door: an inviter who is still an owner is offered and accepted
 // as before, so the refusal above is the loss and not the fixture.
 func TestBUG3770_AnInviterStillAnOwnerIsAcceptedAtEveryDoor(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		for _, dr := range []string{"by id", "by code", "register"} {
 			f := newAccessFixture(t, d)

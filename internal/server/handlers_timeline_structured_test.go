@@ -77,6 +77,7 @@ func kindsOf(entries []models.TimelineEntry) map[string]int {
 // merged only comments, activities and versions, so the response carried zero
 // entries for either kind no matter how many the item held.
 func TestItemTimeline_SurfacesNotesAndDecisions(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createTestWorkspaceViaAPI(t, srv)
 
@@ -136,6 +137,7 @@ func TestItemTimeline_SurfacesNotesAndDecisions(t *testing.T) {
 // Actor attribution has to survive the trip, because these entries are the one
 // place created_by is client-declared (BUG-2542) and the UI labels them with it.
 func TestItemTimeline_StructuredEntriesCarryActor(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createTestWorkspaceViaAPI(t, srv)
 
@@ -173,6 +175,7 @@ func TestItemTimeline_StructuredEntriesCarryActor(t *testing.T) {
 // reappear on EVERY page. This drives the same (created_at, id) predicate the
 // SQL sources use, through the real handler.
 func TestItemTimeline_StructuredEntriesRespectCursor(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createTestWorkspaceViaAPI(t, srv)
 
@@ -198,6 +201,7 @@ func TestItemTimeline_StructuredEntriesRespectCursor(t *testing.T) {
 // id decides. An entry whose id sorts at or above before_id was already shown
 // on the previous page and must not repeat; one below it is still owed.
 func TestItemTimeline_StructuredCursorTieBreaksOnID(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createTestWorkspaceViaAPI(t, srv)
 
@@ -225,6 +229,7 @@ func TestItemTimeline_StructuredCursorTieBreaksOnID(t *testing.T) {
 // rather than an array (BUG-2627) — which must contribute nothing rather than
 // erroring the whole timeline.
 func TestItemTimeline_StructuredEntriesTolerateHostileShapes(t *testing.T) {
+	t.Parallel()
 	t.Run("missing created_at anchors at the item, not the zero time", func(t *testing.T) {
 		srv := testServer(t)
 		ws := createTestWorkspaceViaAPI(t, srv)
@@ -322,6 +327,7 @@ func TestItemTimeline_StructuredEntriesTolerateHostileShapes(t *testing.T) {
 // An item with neither field must produce exactly the timeline it produced
 // before this change — the control leg for "the new sources are additive".
 func TestItemTimeline_NoStructuredEntriesIsUnchanged(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createTestWorkspaceViaAPI(t, srv)
 	item := timelineItemWithStructured(t, srv, ws, "", "")
@@ -403,6 +409,7 @@ func assertEachEntryOnce(t *testing.T, seen []string, want ...string) {
 // timeline endpoint has a Postgres-specific paging history (BUG-1086), so the
 // paging invariant is asserted on both drivers rather than assumed portable.
 func TestItemTimeline_StructuredPagingIsExactlyOnce(t *testing.T) {
+	t.Parallel()
 	run := func(t *testing.T, srv *Server, wsSlug string) {
 		t.Helper()
 		item := timelineItemWithStructured(t, srv, wsSlug,
@@ -439,6 +446,7 @@ func TestItemTimeline_StructuredPagingIsExactlyOnce(t *testing.T) {
 // comparing against the sentinel literally would drop every note at the cursor
 // instant while keeping every decision — an arbitrary split with no rationale.
 func TestItemTimeline_StructuredSentinelCursorKeepsBothKinds(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createTestWorkspaceViaAPI(t, srv)
 
@@ -463,6 +471,7 @@ func TestItemTimeline_StructuredSentinelCursorKeepsBothKinds(t *testing.T) {
 // for an absent one). Comparing full-precision Go times against a truncated
 // SQL cursor is two different predicates on one page boundary.
 func TestItemTimeline_StructuredCursorMatchesSQLTruncation(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createTestWorkspaceViaAPI(t, srv)
 
@@ -582,6 +591,7 @@ func TestItemTimeline_FractionalStructuredEntryDoesNotSkipSameSecondRows(t *test
 // loadMore dedupes by id and would drop the older entry, and the cursor cannot
 // page past two entries it cannot tell apart.
 func TestItemTimeline_StructuredDuplicateIDsAreDisambiguated(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createTestWorkspaceViaAPI(t, srv)
 
@@ -616,6 +626,7 @@ func TestItemTimeline_StructuredDuplicateIDsAreDisambiguated(t *testing.T) {
 // Unit-level coverage of the cursor predicate itself, including the nil-item
 // guard the handler can't reach but callers could.
 func TestStructuredTimelineEntries_CursorPredicate(t *testing.T) {
+	t.Parallel()
 	at := func(s string) time.Time {
 		ts, err := time.Parse(time.RFC3339, s)
 		if err != nil {

@@ -11,6 +11,7 @@ import (
 // through the settings whitelist, defaults to false on a fresh instance, and
 // is surfaced in the /api/v1/auth/session payload reflecting the stored value.
 func TestWebMCPSetting_AdminPatchPersistsAndSessionReflects(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	adminToken := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
 
@@ -73,6 +74,7 @@ func TestWebMCPSetting_AdminPatchPersistsAndSessionReflects(t *testing.T) {
 // TestWebMCPSetting_NonAdminForbidden pins that a non-admin can't toggle the
 // webmcp_enabled setting through the admin PATCH endpoint.
 func TestWebMCPSetting_NonAdminForbidden(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
 	memberToken := registerNonAdmin(t, srv, "member@test.com", "Member")

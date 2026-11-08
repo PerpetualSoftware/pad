@@ -44,6 +44,7 @@ func decodeErrorBody(t *testing.T, body string) (code, message string) {
 }
 
 func TestCollectionPrefixRefusal_IsActionableAtEveryDoor(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	createPath := "/api/v1/workspaces/" + slug + "/collections"
@@ -121,6 +122,7 @@ func TestCollectionPrefixRefusal_IsActionableAtEveryDoor(t *testing.T) {
 // message must still be the default-collection one rather than a generic
 // validation string.
 func TestDeleteDefaultCollection_RefusalSurvivedTheTypeSwap(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 

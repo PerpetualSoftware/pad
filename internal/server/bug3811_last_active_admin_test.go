@@ -16,6 +16,7 @@ import (
 // The sole admin's account deletion is refused BEFORE the Stripe cancel,
 // which cannot be undone, and the account is untouched.
 func TestBUG3811_SoleAdminCannotDeleteTheirAccount(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	token := bootstrapFirstUser(t, srv, "only-admin@test.com", "Only Admin")
 	u, err := srv.store.GetUserByEmail("only-admin@test.com")

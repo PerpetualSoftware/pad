@@ -15,6 +15,7 @@ import (
 // predicate, so any owner of any workspace could destroy another workspace's
 // integrations given the object ID (cross-workspace IDOR).
 func TestWebhookTokenCrossWorkspaceIDOR(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	// Admin owns the VICTIM workspace (A) and its webhook + API token.

@@ -140,6 +140,7 @@ func countByDoc(rows []models.Activity) map[string]int {
 }
 
 func TestBUG3687_FeedPagesCountOnlyVisibleRows(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		f := newBUG3687Fixture(t, srv)
 		f.seed(t, f.task.ID, 3, bug3687Older)
@@ -162,6 +163,7 @@ func TestBUG3687_FeedPagesCountOnlyVisibleRows(t *testing.T) {
 }
 
 func TestBUG3687_FeedItemGrantNarrowsItsCollection(t *testing.T) {
+	t.Parallel()
 	// A restricted member with tasks access AND a grant on one idea sees the
 	// ideas collection only through that grant: its sibling's rows stay out,
 	// and a run of them does not starve the page.
@@ -199,6 +201,7 @@ func (f bug3687Fixture) dashboard(t *testing.T, tok string) []DashboardActivity 
 }
 
 func TestBUG3687_DashboardRecentActivityNotStarvedByHiddenRows(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		f := newBUG3687Fixture(t, srv)
 		f.seed(t, f.task.ID, 3, bug3687Older)
@@ -222,6 +225,7 @@ func TestBUG3687_DashboardRecentActivityNotStarvedByHiddenRows(t *testing.T) {
 }
 
 func TestBUG3687_DashboardGuestNotStarvedByWorkspaceLevelRows(t *testing.T) {
+	t.Parallel()
 	// A guest is never shown workspace-level activity on the dashboard; a run
 	// of it newer than the guest's granted item used to fill all 30 rows.
 	bothBackends(t, func(t *testing.T, srv *Server) {
@@ -251,6 +255,7 @@ func TestBUG3687_DashboardGuestNotStarvedByWorkspaceLevelRows(t *testing.T) {
 }
 
 func TestBUG3687_DashboardNotStarvedByRowsOfMissingItems(t *testing.T) {
+	t.Parallel()
 	// Rows naming an item that no longer exists pass the feed
 	// as workspace-level, but the dashboard drops them, so 30 of them used to
 	// fill its window as surely as hidden rows did.
@@ -278,6 +283,7 @@ func TestBUG3687_DashboardNotStarvedByRowsOfMissingItems(t *testing.T) {
 }
 
 func TestBUG3687_FeedBearerAdminIsScopedAndNotStarved(t *testing.T) {
+	t.Parallel()
 	// A platform admin who is a restricted member, over a bearer token, is
 	// scoped to that membership (BUG-1617), and the scope is in the query too.
 	bothBackends(t, func(t *testing.T, srv *Server) {
@@ -315,6 +321,7 @@ func TestBUG3687_FeedBearerAdminIsScopedAndNotStarved(t *testing.T) {
 }
 
 func TestBUG3687_UnscopedDashboardNotStarvedByRowsOfMissingItems(t *testing.T) {
+	t.Parallel()
 	// A cookie-session platform admin has no visibility scope,
 	// so the exclusion of missing-item rows cannot ride on that scope.
 	bothBackends(t, func(t *testing.T, srv *Server) {

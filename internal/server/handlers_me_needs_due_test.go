@@ -9,6 +9,7 @@ import (
 )
 
 func TestMeNeedsDueHumanOccurrence(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, audience, action          string
 		creator, away, terminal, hidden bool
@@ -92,6 +93,7 @@ func TestMeNeedsDueHumanOccurrence(t *testing.T) {
 }
 
 func TestMeNeedsDueNotOnOtherPersonsRow(t *testing.T) {
+	t.Parallel()
 	w := newBootAgendaWorld(t, "2031-03-10T12:00:00Z")
 	f := newNfx(t, w.srv)
 	recipient := f.user("recipient")
@@ -118,6 +120,7 @@ func TestMeNeedsDueNotOnOtherPersonsRow(t *testing.T) {
 }
 
 func TestMeNeedsDueScopeBeforeCap(t *testing.T) {
+	t.Parallel()
 	w := newBootAgendaWorld(t, "2031-03-10T12:00:00Z")
 	f := newNfx(t, w.srv)
 	viewer := f.user("recipient")

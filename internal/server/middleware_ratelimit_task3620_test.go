@@ -22,6 +22,7 @@ func countUntil429(srv *Server, path, remote string, max int) int {
 }
 
 func TestRateLimit_HealthHasItsOwnBoundedBucket(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	freezeRefill(t, srv)
 	const addr = "192.0.2.70:1"
@@ -56,6 +57,7 @@ func TestRateLimit_HealthHasItsOwnBoundedBucket(t *testing.T) {
 }
 
 func TestRateLimit_HealthProbesDoNotSpendTheAPIBucket(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	freezeRefill(t, srv)
 	const addr = "192.0.2.72:1"

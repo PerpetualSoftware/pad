@@ -37,6 +37,7 @@ func countComments(t *testing.T, srv *Server, path, body string) int {
 }
 
 func TestTASK3585_CommentReplaysTheCommentItMade(t *testing.T) {
+	t.Parallel()
 	srv, path := commentKeyFixture(t)
 	body := map[string]any{"body": "Keyed comment", "op_key": "k-1"}
 	first := doRequest(srv, "POST", path, body)
@@ -56,6 +57,7 @@ func TestTASK3585_CommentReplaysTheCommentItMade(t *testing.T) {
 }
 
 func TestTASK3585_RefusedCommentReleasesItsKey(t *testing.T) {
+	t.Parallel()
 	srv, path := commentKeyFixture(t)
 	bad := doRequestWithHeaders(srv, "POST", path, map[string]any{"body": "Reply", "parent_id": "no-such-comment"}, map[string]string{"Idempotency-Key": "k-2"})
 	if bad.Code < 400 {
@@ -68,6 +70,7 @@ func TestTASK3585_RefusedCommentReleasesItsKey(t *testing.T) {
 }
 
 func TestTASK3585_CommentReplayOfADeletedComment(t *testing.T) {
+	t.Parallel()
 	srv, path := commentKeyFixture(t)
 	body := map[string]any{"body": "Then deleted", "op_key": "k-3"}
 	first := doRequest(srv, "POST", path, body)

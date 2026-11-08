@@ -40,6 +40,7 @@ func capUpload(srv *Server, slug, token string, body []byte) *httptest.ResponseR
 // and that existing files stay; under the limit it lands. Self-hosted mode
 // (no WithPlanLimit) is not refused.
 func TestTASK3619_UploadPastTheStorageLimitIs403(t *testing.T) {
+	t.Parallel()
 	for _, cloud := range []bool{true, false} {
 		srv := testServer(t)
 		srv.cloudMode = cloud
@@ -104,6 +105,7 @@ func TestTASK3619_UploadPastTheStorageLimitIs403(t *testing.T) {
 }
 
 func TestTASK3619_HumanBytes(t *testing.T) {
+	t.Parallel()
 	for n, want := range map[int64]string{
 		0: "0 B", 1023: "1023 B", 1024: "1 KB", 1536: "1.5 KB",
 		524288000: "500 MB", 1 << 30: "1 GB", 1610612736: "1.5 GB",

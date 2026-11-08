@@ -71,6 +71,7 @@ func (u *upgradeEnv) botID(t *testing.T) string {
 // The removed companion is RELEASED: via_app cleared, out of the bot's access,
 // the collection and its items kept.
 func TestAppUpgrade_RemovalsOnlyReleaseTheCompanion(t *testing.T) {
+	t.Parallel()
 	u := newUpgradeEnv(t)
 	companion, err := u.srv.store.GetCollectionBySlug(u.wsID, "portal-tickets")
 	if err != nil || companion == nil {
@@ -134,6 +135,7 @@ func TestAppUpgrade_RemovalsOnlyReleaseTheCompanion(t *testing.T) {
 // A changed artifact lands as a NEW draft; the installed item is untouched.
 // An unchanged artifact makes no draft.
 func TestAppUpgrade_ChangedArtifactIsANewDraft(t *testing.T) {
+	t.Parallel()
 	u := newUpgradeEnv(t)
 	before := u.count(t, `SELECT COUNT(*) FROM items WHERE source_pack IS NOT NULL`)
 	digestsOf := func() string {
@@ -197,6 +199,7 @@ func TestAppUpgrade_ChangedArtifactIsANewDraft(t *testing.T) {
 // Additive optional fields are appended to the current schema; a new
 // companion is created and granted to the bot.
 func TestAppUpgrade_AdditiveFieldAndNewCompanion(t *testing.T) {
+	t.Parallel()
 	u := newUpgradeEnv(t)
 	pack := u.m["companion_pack"].(map[string]any)
 	coll := pack["collections"].([]any)[0].(map[string]any)
@@ -229,6 +232,7 @@ func TestAppUpgrade_AdditiveFieldAndNewCompanion(t *testing.T) {
 // Refusals, at preview: a changed field, a removed field, and a non-optional
 // addition. Nothing is staged.
 func TestAppUpgrade_SchemaRefusals(t *testing.T) {
+	t.Parallel()
 	for name, edit := range map[string]func(fields []any) []any{
 		"changed field": func(f []any) []any { f[0].(map[string]any)["options"] = []any{"open"}; return f },
 		"removed field": func(f []any) []any { return f[:0] },
@@ -257,6 +261,7 @@ func TestAppUpgrade_SchemaRefusals(t *testing.T) {
 // The install moved between preview and confirm (another upgrade landed, or
 // it was disabled): the confirm refuses and writes nothing.
 func TestAppUpgrade_InstallMovedRefuses(t *testing.T) {
+	t.Parallel()
 	u := newUpgradeEnv(t)
 	u.m["version"] = "1.0.1"
 	u.publish(t, u.m)
@@ -280,6 +285,7 @@ func TestAppUpgrade_InstallMovedRefuses(t *testing.T) {
 // An upgrade's pending record never provisions as a fresh install, and an
 // install's never confirms as an upgrade.
 func TestAppUpgrade_RecordsDoNotCross(t *testing.T) {
+	t.Parallel()
 	u := newUpgradeEnv(t)
 	u.m["version"] = "1.0.1"
 	u.publish(t, u.m)
@@ -316,6 +322,7 @@ func (u *upgradeEnv) addTicketField(f map[string]any) {
 // An owner renamed a companion; the upgrade cannot map it by
 // slug, so it refuses rather than leaving it the app's.
 func TestAppUpgrade_RenamedCompanionRefuses(t *testing.T) {
+	t.Parallel()
 	u := newUpgradeEnv(t)
 	c, _ := u.srv.store.GetCollectionBySlug(u.wsID, "portal-tickets")
 	if _, err := u.srv.store.DB().Exec(`UPDATE collections SET slug = 'renamed-tickets' WHERE id = ?`, c.ID); err != nil {
@@ -332,6 +339,7 @@ func TestAppUpgrade_RenamedCompanionRefuses(t *testing.T) {
 // A restrictive upgrade bumps the epoch (admitted writes and
 // earlier tokens die); a neutral one does not.
 func TestAppUpgrade_RestrictiveUpgradeBumpsTheEpoch(t *testing.T) {
+	t.Parallel()
 	u := newUpgradeEnv(t)
 	e0 := u.epoch(t)
 	u.m["version"] = "1.0.1"
@@ -357,6 +365,7 @@ func TestAppUpgrade_RestrictiveUpgradeBumpsTheEpoch(t *testing.T) {
 
 // Items already hold values under the key a field would declare.
 func TestAppUpgrade_AdditiveFieldOverExistingDataRefuses(t *testing.T) {
+	t.Parallel()
 	u := newUpgradeEnv(t)
 	c, _ := u.srv.store.GetCollectionBySlug(u.wsID, "portal-tickets")
 	if _, err := u.srv.store.CreateItem(u.wsID, c.ID, models.ItemCreate{Title: "held", Fields: `{"code":"same"}`}); err != nil {
@@ -373,6 +382,7 @@ func TestAppUpgrade_AdditiveFieldOverExistingDataRefuses(t *testing.T) {
 // The board_group_by setting names the new select, so adding it would move
 // the done field and reclassify every existing item.
 func TestAppUpgrade_AdditiveFieldThatMovesTheDoneFieldRefuses(t *testing.T) {
+	t.Parallel()
 	u := newUpgradeEnv(t)
 	c, _ := u.srv.store.GetCollectionBySlug(u.wsID, "portal-tickets")
 	if _, err := u.srv.store.DB().Exec(`UPDATE collections SET settings = '{"board_group_by":"resolution"}' WHERE id = ?`, c.ID); err != nil {
@@ -389,6 +399,7 @@ func TestAppUpgrade_AdditiveFieldThatMovesTheDoneFieldRefuses(t *testing.T) {
 // An ARCHIVED item's value counts too, since a restore would bring
 // it back unchecked under the new field.
 func TestAppUpgrade_AdditiveFieldOverArchivedDataRefuses(t *testing.T) {
+	t.Parallel()
 	u := newUpgradeEnv(t)
 	c, _ := u.srv.store.GetCollectionBySlug(u.wsID, "portal-tickets")
 	it, err := u.srv.store.CreateItem(u.wsID, c.ID, models.ItemCreate{Title: "archived holder", Fields: `{"code":"same"}`})

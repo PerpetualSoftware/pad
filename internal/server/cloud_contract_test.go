@@ -66,6 +66,7 @@ func contractShape(v any) any {
 }
 
 func TestCloudContract(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
 	srv.SetCloudMode(cloudContractSecret)

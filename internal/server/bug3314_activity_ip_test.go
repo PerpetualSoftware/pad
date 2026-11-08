@@ -102,6 +102,7 @@ func bug3314AssertClean(t *testing.T, door, body string) {
 }
 
 func TestBUG3314_MemberDoorsCarryNoIPOrUserAgent(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		w := bug3314Setup(t, srv)
 		base := "/api/v1/workspaces/" + w.slug
@@ -117,6 +118,7 @@ func TestBUG3314_MemberDoorsCarryNoIPOrUserAgent(t *testing.T) {
 }
 
 func TestBUG3314_GuestTimelineCarriesNoIPOrUserAgent(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		w := bug3314Setup(t, srv)
 		base := "/api/v1/workspaces/" + w.slug + "/items/" + w.itemSlug
@@ -128,6 +130,7 @@ func TestBUG3314_GuestTimelineCarriesNoIPOrUserAgent(t *testing.T) {
 // The audit surfaces keep them: that is what they are for, and the fix must not
 // have been made by dropping the columns everywhere.
 func TestBUG3314_AdminAuditLogKeepsIPAndUserAgent(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		w := bug3314Setup(t, srv)
 		for door, path := range map[string]string{

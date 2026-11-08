@@ -78,6 +78,7 @@ func createdID(t *testing.T, rr *httptest.ResponseRecorder) string {
 }
 
 func TestRelationBlank_CreateSetsBlank(t *testing.T) {
+	t.Parallel()
 	for _, blank := range []string{"", "   "} {
 		t.Run(fmt.Sprintf("%q", blank), func(t *testing.T) {
 			f := newBlankFixture(t)
@@ -94,6 +95,7 @@ func TestRelationBlank_CreateSetsBlank(t *testing.T) {
 }
 
 func TestRelationBlank_PatchSetsBlank(t *testing.T) {
+	t.Parallel()
 	f := newBlankFixture(t)
 	item := f.seedRaw(fmt.Sprintf(`{"status":"open","owner":%q,"helper":%q}`, f.target.ID, f.target.ID))
 	// Blanking a required relation is refused — the same answer deleting it gets.
@@ -111,6 +113,7 @@ func TestRelationBlank_PatchSetsBlank(t *testing.T) {
 // The provenance leg that must NOT refuse: a legacy blank on a REQUIRED field,
 // carried by writes that do not touch it, lands as key-absent.
 func TestRelationBlank_CarriedLegacyBlankIsNormalisedNotRefused(t *testing.T) {
+	t.Parallel()
 	t.Run("fields_patch on another key", func(t *testing.T) {
 		f := newBlankFixture(t)
 		item := f.seedRaw(`{"status":"open","owner":""}`)
@@ -138,6 +141,7 @@ func TestRelationBlank_CarriedLegacyBlankIsNormalisedNotRefused(t *testing.T) {
 }
 
 func TestRelationBlank_Move(t *testing.T) {
+	t.Parallel()
 	t.Run("override setting a required target field blank is refused", func(t *testing.T) {
 		f := newBlankFixture(t)
 		item := f.seed(`{"status":"open"}`)
@@ -171,6 +175,7 @@ func TestRelationBlank_Move(t *testing.T) {
 // `?owner=` on a collection-scoped list asks for every item with no owner,
 // whichever of the three spellings it is stored in — and not the one that has one.
 func TestRelationBlank_EmptyFilterMatchesAllThreeSpellings(t *testing.T) {
+	t.Parallel()
 	f := newBlankFixture(t)
 	absent := f.seedRaw(`{"status":"open"}`)
 	empty := f.seedRaw(`{"status":"open","helper":""}`)
@@ -199,6 +204,7 @@ func TestRelationBlank_EmptyFilterMatchesAllThreeSpellings(t *testing.T) {
 
 // Bulk update: `changes` is what the write SETS; the stored row is carried.
 func TestRelationBlank_BulkUpdateCarriesALegacyBlank(t *testing.T) {
+	t.Parallel()
 	f := newBlankFixture(t)
 	item := f.seedRaw(`{"status":"open","owner":""}`)
 	rr := f.call(f.srv.handleBulkItems, "POST",
@@ -220,6 +226,7 @@ func TestRelationBlank_BulkUpdateCarriesALegacyBlank(t *testing.T) {
 // Cross-workspace copy and its preflight: a carried blank into a REQUIRED
 // destination relation lands as absent on both, and neither refuses it.
 func TestRelationBlank_CopyCarriesALegacyBlank(t *testing.T) {
+	t.Parallel()
 	blank := "  "
 	f := newCopyRelationFixtureWith(t, noDestDefault, &blank, true)
 	pre := f.ok(f.baseBody())
@@ -245,6 +252,7 @@ func TestRelationBlank_CopyCarriesALegacyBlank(t *testing.T) {
 // A blank OVERRIDE is a value the copy SETS: into a required destination
 // relation it must be refused, as any required field left without a value is.
 func TestRelationBlank_CopyBlankOverrideIntoRequiredIsRefused(t *testing.T) {
+	t.Parallel()
 	f := newCopyRelationFixtureWith(t, noDestDefault, nil, true)
 	body := f.baseBody()
 	body["field_overrides"] = map[string]any{"owner_ref": " "}
@@ -261,6 +269,7 @@ func TestRelationBlank_CopyBlankOverrideIntoRequiredIsRefused(t *testing.T) {
 // Bulk move to another collection carries every relation (it takes no relation
 // overrides), so a legacy blank lands as absent in the target.
 func TestRelationBlank_BulkMoveCarriesALegacyBlank(t *testing.T) {
+	t.Parallel()
 	f := newBlankFixture(t)
 	item := f.seed(`{"status":"open","owner_ref":""}`)
 	dst := mustSchemaCollection(t, f.srv, f.ws.ID, "BulkDest", fmt.Sprintf(`{"fields":[
@@ -287,6 +296,7 @@ func TestRelationBlank_BulkMoveCarriesALegacyBlank(t *testing.T) {
 // `required` by injection, and on an optional field it leaves
 // the key absent without reporting a drop, since nothing was lost.
 func TestRelationBlank_BlankDefaultIsNoDefault(t *testing.T) {
+	t.Parallel()
 	f := newBlankFixture(t)
 	coll := mustSchemaCollection(t, f.srv, f.ws.ID, "Defaulted", fmt.Sprintf(`{"fields":[
 		{"key":"owner","label":"Owner","type":"relation","collection":%q,"required":true,"default":""}

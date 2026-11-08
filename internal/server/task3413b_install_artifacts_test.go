@@ -11,6 +11,7 @@ import (
 // provisioned, so the owner can activate its drafts.
 
 func TestTask3413b_TheInstallListsItsProvisionedItems(t *testing.T) {
+	t.Parallel()
 	e := newProvisionEnv(t)
 	p := e.stagePreview(t)
 	if len(p.Artifacts) == 0 {
@@ -70,6 +71,7 @@ func TestTask3413b_TheInstallListsItsProvisionedItems(t *testing.T) {
 // The prefix is compared in characters: an origin whose host is not ASCII
 // still finds its items.
 func TestTask3413b_ANonASCIIOriginFindsItsItems(t *testing.T) {
+	t.Parallel()
 	e := newProvisionEnv(t)
 	p := e.stagePreview(t)
 	if rr := e.confirm(t, p, p.ManifestSHA256); rr.Code != http.StatusCreated {
@@ -98,6 +100,7 @@ func TestTask3413b_ANonASCIIOriginFindsItsItems(t *testing.T) {
 // provisioned: those live in system collections, never companions, and app
 // writes are companion-only (appWriteAllows).
 func TestTask3413b_TheAppCannotActivateItsOwnDrafts(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"service", "delegated owner"} {
 		t.Run(kind, func(t *testing.T) {
 			var f appAPIFix

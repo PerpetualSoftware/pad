@@ -22,6 +22,7 @@ import (
 // and that survives the substitution. The store-side tests own the question of
 // whether the refusal fires at the right size.
 func TestWriteInternalErrorMapsTheOutboxRowCapRefusal(t *testing.T) {
+	t.Parallel()
 	rec := httptest.NewRecorder()
 	writeInternalError(rec, fmt.Errorf("update item: %w", &store.OversizedOutboxPayloadError{
 		EventType: "item.bulk_updated",
@@ -70,6 +71,7 @@ func TestWriteInternalErrorMapsTheOutboxRowCapRefusal(t *testing.T) {
 // without it the test above passes just as well against a writeInternalError
 // that answers 413 to everything.
 func TestWriteInternalErrorStillFallsThroughToFiveHundred(t *testing.T) {
+	t.Parallel()
 	rec := httptest.NewRecorder()
 	writeInternalError(rec, fmt.Errorf("some unrelated failure"))
 	if rec.Code != http.StatusInternalServerError {
@@ -86,6 +88,7 @@ func TestWriteInternalErrorStillFallsThroughToFiveHundred(t *testing.T) {
 // whole contract: the first tick after a restart reports promptly, and the
 // interval keeps it off the hot path afterwards.
 func TestOversizedOutboxScanIsThrottled(t *testing.T) {
+	t.Parallel()
 	s := &Server{}
 	if !s.shouldScanOversizedOutbox() {
 		t.Fatal("the first call refused to scan; a restart must report an existing oversized row " +
@@ -112,6 +115,7 @@ func TestOversizedOutboxScanIsThrottled(t *testing.T) {
 // observable that reaches the call site is the stamp — a tick that consulted
 // the throttle has set it, and one that skipped straight to the query has not.
 func TestOutboxDrainTickConsultsTheThrottle(t *testing.T) {
+	t.Parallel()
 	srv, _, _ := drainFixture(t)
 
 	if !srv.outboxDrain.lastOversizedScan.IsZero() {

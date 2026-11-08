@@ -82,6 +82,7 @@ func exportBody(t *testing.T) []byte {
 // path. The free plan allows store.DefaultFreeLimits.Workspaces; a user who
 // already owns that many must be refused.
 func TestImportWorkspace_EnforcesThePlanLimit(t *testing.T) {
+	t.Parallel()
 	atLimit := store.DefaultFreeLimits.Workspaces
 	srv, user := importLimitFixture(t, atLimit)
 
@@ -107,6 +108,7 @@ func TestImportWorkspace_EnforcesThePlanLimit(t *testing.T) {
 // anything reads it, so an invalid body reaching a 403 rather than a parse
 // error is itself the assertion.
 func TestImportWorkspace_EnforcesThePlanLimitOnTheBundlePathToo(t *testing.T) {
+	t.Parallel()
 	atLimit := store.DefaultFreeLimits.Workspaces
 	srv, user := importLimitFixture(t, atLimit)
 
@@ -131,6 +133,7 @@ func TestImportWorkspace_EnforcesThePlanLimitOnTheBundlePathToo(t *testing.T) {
 // cannot be decoded: reaching 403 rather than a decode error is only possible
 // if nothing read the body first.
 func TestImportWorkspace_EnforcesThePlanLimitBeforeReadingTheJSONBody(t *testing.T) {
+	t.Parallel()
 	atLimit := store.DefaultFreeLimits.Workspaces
 	srv, user := importLimitFixture(t, atLimit)
 
@@ -149,6 +152,7 @@ func TestImportWorkspace_EnforcesThePlanLimitBeforeReadingTheJSONBody(t *testing
 // gate that refused every import — or one wired to the wrong feature key —
 // passes both tests above while breaking the feature outright.
 func TestImportWorkspace_UnderTheLimitIsNotRefused(t *testing.T) {
+	t.Parallel()
 	srv, user := importLimitFixture(t, store.DefaultFreeLimits.Workspaces-1)
 
 	rr := importRequest(t, srv, user, "application/json", exportBody(t))
@@ -163,6 +167,7 @@ func TestImportWorkspace_UnderTheLimitIsNotRefused(t *testing.T) {
 // obligation: enforceUserPlanLimit is a no-op off cloud, and this fix must not
 // quietly introduce a limit on self-hosted instances, which have no plans.
 func TestImportWorkspace_SelfHostedIsUnaffected(t *testing.T) {
+	t.Parallel()
 	atLimit := store.DefaultFreeLimits.Workspaces
 	srv, user := importLimitFixture(t, atLimit)
 	srv.cloudMode = false // the only difference from the refusing case
@@ -182,6 +187,7 @@ func TestImportWorkspace_SelfHostedIsUnaffected(t *testing.T) {
 // RequireAuth's legacy-token gate in front of it. "Nothing" is asserted as a
 // fact about the data: no workspace is created and nobody is charged.
 func TestImportWorkspace_NoResolvedUserIsRefused(t *testing.T) {
+	t.Parallel()
 	srv, user := importLimitFixture(t, store.DefaultFreeLimits.Workspaces)
 
 	before, err := srv.store.CheckUserLimit(user.ID, "workspaces")

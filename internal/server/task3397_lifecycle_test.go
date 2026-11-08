@@ -60,6 +60,7 @@ func installEpoch(t *testing.T, srv *Server, id string) int64 {
 // Disable kills every token, refuses new ones, and re-enable never revives a
 // pre-disable token (the epoch never moves back), while fresh ones work.
 func TestTask3397_DisableAndReenable(t *testing.T) {
+	t.Parallel()
 	srv := appOAuthServer(t, true)
 	in := lifecycleInstall(t, srv, "inst-disable")
 	tok := mintServiceToken(t, srv, in)
@@ -107,6 +108,7 @@ func TestTask3397_DisableAndReenable(t *testing.T) {
 // Rotate: old tokens die, the old secret stops authenticating, and the new
 // install code redeems for the secret the app uses from then on.
 func TestTask3397_Rotate(t *testing.T) {
+	t.Parallel()
 	srv := appOAuthServer(t, true)
 	in := lifecycleInstall(t, srv, "inst-rotate")
 	tok := mintServiceToken(t, srv, in)
@@ -142,6 +144,7 @@ func TestTask3397_Rotate(t *testing.T) {
 // bot cannot mint a credential through any door even with the kind gate
 // taken away, which pins "disabled" as a second, independent lock.
 func TestTask3397_UninstallKeepsADisabledBotAndTheTombstone(t *testing.T) {
+	t.Parallel()
 	srv := appOAuthServer(t, true)
 	in := lifecycleInstall(t, srv, "inst-uninstall")
 	tok := mintServiceToken(t, srv, in)
@@ -200,6 +203,7 @@ func TestTask3397_UninstallKeepsADisabledBotAndTheTombstone(t *testing.T) {
 
 // Attribution survives: what the bot wrote keeps its via_app and its user id.
 func TestTask3397_UninstallKeepsAttribution(t *testing.T) {
+	t.Parallel()
 	srv := appOAuthServer(t, true)
 	in := lifecycleInstall(t, srv, "inst-attrib")
 	coll, err := srv.store.CreateCollection(in.wsID, models.CollectionCreate{Name: "Tickets", Slug: "tickets"})
@@ -231,6 +235,7 @@ func TestTask3397_UninstallKeepsAttribution(t *testing.T) {
 // Wrong states answer a typed refusal, and the doors resume a call left
 // between the phases.
 func TestTask3397_LifecycleStatesAndResume(t *testing.T) {
+	t.Parallel()
 	srv := appOAuthServer(t, true)
 	in := lifecycleInstall(t, srv, "inst-states")
 	var se *store.InstallStateError
@@ -267,6 +272,7 @@ func TestTask3397_LifecycleStatesAndResume(t *testing.T) {
 // wrong-state refusal, enable, rotate (a code that redeems), uninstall
 // (repeatable), and a reinstall that adopts the tombstone's companion.
 func TestTask3397_LifecycleDoors(t *testing.T) {
+	t.Parallel()
 	e := newProvisionEnv(t)
 	p := e.stagePreview(t)
 	rr := e.confirm(t, p, p.ManifestSHA256)

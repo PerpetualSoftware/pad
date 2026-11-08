@@ -28,6 +28,7 @@ import (
 //     PRESENT; scoping by the group's collections must not drop a granted
 //     item whose collection the caller holds no collection grant on.
 func TestBUG2639_GuestItemGrantsCountOnlyUnderTheirOwnCollection(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		slug := createWSWithCollections(t, srv)
 		ws, err := srv.store.GetWorkspaceBySlug(slug)
@@ -135,6 +136,7 @@ func TestBUG2639_GuestItemGrantsCountOnlyUnderTheirOwnCollection(t *testing.T) {
 // Since BUG-3167 the store matches exactly, the "x,y" group matches only a
 // literal "x,y", and this pins the outcome whichever mechanism holds it.
 func TestBUG2639_CompletedWorkListsAnItemOnce(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		slug := createWSWithCollections(t, srv)
 		if rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections", map[string]any{

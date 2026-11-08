@@ -94,6 +94,7 @@ func (f *leaseFixtureServer) call(t *testing.T, token, action string, body map[s
 // Claim → contended claim → release → re-claim: the full lifecycle, with
 // the 409 envelope naming the live holder and expiry.
 func TestItemLease_ClaimContendReleaseReclaim(t *testing.T) {
+	t.Parallel()
 	f := setupLeaseFixture(t)
 
 	// A claims with an explicit holder string.
@@ -166,6 +167,7 @@ func TestItemLease_ClaimContendReleaseReclaim(t *testing.T) {
 // tie-in: the identity the token carries is the identity the lease
 // records unless the caller says otherwise.
 func TestItemLease_DefaultHolderIsAuthenticatedIdentity(t *testing.T) {
+	t.Parallel()
 	f := setupLeaseFixture(t)
 
 	rr := f.call(t, f.tokenA, "claim", map[string]any{})
@@ -218,6 +220,7 @@ func TestItemLease_TTLBounds(t *testing.T) {
 // (the CSRF middleware answers 403 before auth resolves), so accept
 // either refusal shape; the invariant is that NO lease gets written.
 func TestItemLease_ClaimRequiresAuth(t *testing.T) {
+	t.Parallel()
 	f := setupLeaseFixture(t)
 
 	rr := f.call(t, "", "claim", map[string]any{})
@@ -286,6 +289,7 @@ func TestItemLease_GetItemCarriesLiveLeaseOmitsExpired(t *testing.T) {
 
 // The workspace item list decorates leased items and only leased items.
 func TestItemLease_ListDecoratesLeasedItems(t *testing.T) {
+	t.Parallel()
 	f := setupLeaseFixture(t)
 
 	if rr := f.call(t, f.tokenA, "claim", map[string]any{"holder": "runner"}); rr.Code != http.StatusOK {

@@ -18,6 +18,7 @@ import (
 // no role exclusion — BUG-1920) must be denied the account export outright,
 // over either auth class, mirroring BUG-1922's own gate.
 func TestExportAccount_RestrictedOwner_Forbidden(t *testing.T) {
+	t.Parallel()
 	f := newRestrictedOwnerVisibilityFixture(t)
 
 	cases := []struct {
@@ -60,6 +61,7 @@ func TestExportAccount_RestrictedOwner_Forbidden(t *testing.T) {
 // leaves currentUser(r) nil — handleExportAccount's own explicit auth
 // check would then 401 rather than exercise the success path.
 func TestExportAccount_UnrestrictedOwner_OK(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	owner, err := srv.store.CreateUser(models.UserCreate{
@@ -100,6 +102,7 @@ func TestExportAccount_UnrestrictedOwner_OK(t *testing.T) {
 // the restricted workspace's content silently dropped — even though a
 // second owned workspace here has fully unrestricted access.
 func TestExportAccount_RestrictedInOneOfTwoOwnedWorkspaces_Forbidden(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	owner, err := srv.store.CreateUser(models.UserCreate{

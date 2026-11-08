@@ -58,6 +58,7 @@ func tabSlugs(r workspaceTabsResponse) string {
 }
 
 func TestWorkspaceTabsAPI_OpenReorderPatchClose(t *testing.T) {
+	t.Parallel()
 	f := newTabsFixture(t)
 	a := mustCreateOwnedWorkspace(t, f.srv, "Alpha", f.user)
 	b := mustCreateOwnedWorkspace(t, f.srv, "Beta", f.user)
@@ -112,6 +113,7 @@ func TestWorkspaceTabsAPI_OpenReorderPatchClose(t *testing.T) {
 }
 
 func TestWorkspaceTabsAPI_LastRouteIsSameWorkspaceOnly(t *testing.T) {
+	t.Parallel()
 	f := newTabsFixture(t)
 	b := mustCreateOwnedWorkspace(t, f.srv, "B", f.user)
 	// A sibling whose slug extends b's, so a prefix check without the
@@ -171,6 +173,7 @@ func TestWorkspaceTabsAPI_LastRouteIsSameWorkspaceOnly(t *testing.T) {
 // A workspace the caller cannot see answers exactly what an unknown slug
 // answers, on every door, and never lands in the open set.
 func TestWorkspaceTabsAPI_InvisibleWorkspaceIsNotAnOracle(t *testing.T) {
+	t.Parallel()
 	f := newTabsFixture(t)
 	other := mustCreateUser(t, f.srv, "other@test.com", "Other", "member")
 	theirs := mustCreateOwnedWorkspace(t, f.srv, "Theirs", other)
@@ -201,6 +204,7 @@ func TestWorkspaceTabsAPI_InvisibleWorkspaceIsNotAnOracle(t *testing.T) {
 // The invariant is enforced on READ: a row whose workspace the caller lost by
 // a path that never pruned it is not served.
 func TestWorkspaceTabsAPI_ReadFilterHidesALostWorkspace(t *testing.T) {
+	t.Parallel()
 	f := newTabsFixture(t)
 	owner := mustCreateUser(t, f.srv, "owner@test.com", "Owner", "member")
 	ws := mustCreateOwnedWorkspace(t, f.srv, "Shared", owner)
@@ -229,6 +233,7 @@ func TestWorkspaceTabsAPI_ReadFilterHidesALostWorkspace(t *testing.T) {
 // an empty default) has no /{owner}/{ws} prefix, and the path the web app
 // would build, //{ws}, is protocol-relative. No last_route is stored for it.
 func TestWorkspaceTabsAPI_NoLastRouteWithoutAnOwnerUsername(t *testing.T) {
+	t.Parallel()
 	f := newTabsFixture(t)
 	legacy := mustCreateUser(t, f.srv, "legacy@test.com", "Legacy", "member")
 	ws := mustCreateOwnedWorkspace(t, f.srv, "Old", legacy)
@@ -247,6 +252,7 @@ func TestWorkspaceTabsAPI_NoLastRouteWithoutAnOwnerUsername(t *testing.T) {
 }
 
 func TestWorkspaceTabsAPI_RequiresAUser(t *testing.T) {
+	t.Parallel()
 	f := newTabsFixture(t)
 	rec := doRequest(f.srv, "GET", "/api/v1/me/workspace-tabs/", nil)
 	if rec.Code != http.StatusUnauthorized {
@@ -259,6 +265,7 @@ func TestWorkspaceTabsAPI_RequiresAUser(t *testing.T) {
 // close of a slug outside the visible set writes nothing and answers like a
 // GET.
 func TestWorkspaceTabsAPI_EveryAnswerCarriesTheRevision(t *testing.T) {
+	t.Parallel()
 	f := newTabsFixture(t)
 	a := mustCreateOwnedWorkspace(t, f.srv, "RevAlpha", f.user)
 	b := mustCreateOwnedWorkspace(t, f.srv, "RevBeta", f.user)

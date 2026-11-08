@@ -26,6 +26,7 @@ import (
 const nginxProxyReadTimeout = 60 * time.Second
 
 func TestAccountDeleteBudgetBelowProxyTimeouts(t *testing.T) {
+	t.Parallel()
 	if accountDeleteStmtTimeout >= accountDeleteTxBudget || accountDeleteLockTimeout >= accountDeleteTxBudget {
 		t.Fatalf("statement %s / lock %s timeouts must stay below the %s request budget",
 			accountDeleteStmtTimeout, accountDeleteLockTimeout, accountDeleteTxBudget)
@@ -43,6 +44,7 @@ func TestAccountDeleteBudgetBelowProxyTimeouts(t *testing.T) {
 }
 
 func TestWriteBusy(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		write bool
 		err   error
@@ -212,6 +214,7 @@ func TestDeleteAccountDeadlineFromRequestArrival(t *testing.T) {
 // The session middleware answers a request whose context is already done with
 // nothing at all: no 500 body, no error log, and the query is not run.
 func TestSessionAuth_CancelledContextIsQuiet(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	token := bootstrapFirstUser(t, srv, "quiet@test.com", "Quiet")
 	ctx, cancel := context.WithCancel(context.Background())

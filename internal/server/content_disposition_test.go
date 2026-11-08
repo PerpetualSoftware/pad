@@ -23,6 +23,7 @@ var contentDispositionNames = []string{
 }
 
 func TestContentDispositionRoundTripsEveryName(t *testing.T) {
+	t.Parallel()
 	for _, name := range contentDispositionNames {
 		h := contentDisposition("attachment", name)
 		disp, params, err := mime.ParseMediaType(h)
@@ -41,6 +42,7 @@ func TestContentDispositionRoundTripsEveryName(t *testing.T) {
 // A name that travels plain is byte-identical to the `%q` form every site
 // used, so this change is invisible for every ASCII name in the product.
 func TestContentDispositionPlainNameUnchanged(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"plain.txt", "with space.txt", "my-item.pad.md", "ws-export.tar.gz"} {
 		if got, was := contentDisposition("inline", name), fmt.Sprintf(`inline; filename=%q`, name); got != was {
 			t.Errorf("%q: %q, was %q", name, got, was)
@@ -55,6 +57,7 @@ func TestContentDispositionPlainNameUnchanged(t *testing.T) {
 // of the download header is the name the server stored. NBSP and ZWSP were
 // the measured corruption (BUG-3190 checkpoint 1).
 func TestAttachmentDownloadCarriesTheStoredName(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	for _, name := range []string{"plain.txt", "résumé.txt", "会議.txt", "a b.txt", "a​b.txt", "é.txt", "per%cent.txt"} {
 		rr := doMultipartUpload(srv, slug, name, []byte("hello"))

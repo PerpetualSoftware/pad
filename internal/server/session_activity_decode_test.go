@@ -7,6 +7,7 @@ import (
 )
 
 func TestSessionActivityMalformedBody(t *testing.T) {
+	t.Parallel()
 	srv := testServerWithPresence(t)
 	_, _, tok, _ := setupWatchTestUser(t, srv)
 	rr := presenceRequest(t, srv, http.MethodPost, tok.Token, presenceWorkerA, `{"state":`)
@@ -24,6 +25,7 @@ func TestSessionActivityMalformedBody(t *testing.T) {
 }
 
 func TestSessionActivityNullTimestamp(t *testing.T) {
+	t.Parallel()
 	srv := testServerWithPresence(t)
 	_, _, tok, _ := setupWatchTestUser(t, srv)
 	rr := presenceRequest(t, srv, http.MethodPost, tok.Token, presenceWorkerA, `{"state":"busy","at":null}`)
