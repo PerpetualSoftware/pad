@@ -30,11 +30,12 @@ type CommitmentRoles struct {
 }
 
 // CommitmentChange is one journal row of the deadline's history: a recorded
-// miss, or the correction that records a late report of an on-time completion.
+// miss, its on-time completion correction, a deadline renegotiation, or an
+// assignee change.
 // A correction names the miss it answers in ParentChangeID and shares its root.
 type CommitmentChange struct {
 	ID             string  `json:"id"`
-	ChangeType     string  `json:"change_type"` // missed_recorded | done
+	ChangeType     string  `json:"change_type"` // missed_recorded | done | move | update (assignee)
 	OccurrenceKey  *string `json:"occurrence_key,omitempty"`
 	Role           *string `json:"role,omitempty"`
 	AfterJSON      *string `json:"after_json,omitempty"`
