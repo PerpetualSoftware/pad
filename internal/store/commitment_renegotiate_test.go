@@ -313,12 +313,21 @@ func TestRenegotiateAtomicAfterMissAndChange(t *testing.T) {
 }
 func TestRenegotiateStaleRevisionAndRequired(t *testing.T) {
 	t.Parallel()
-	for _, change := range []string{"roles", "resolve", "override"} {
-		t.Run(change, func(t *testing.T) {
+	for _, tc := range []struct{ scope, change string }{
+		{"series", "roles"}, {"series", "resolve"}, {"series", "override"},
+		{"occurrence", "roles"}, {"occurrence", "resolve"}, {"occurrence", "override"},
+	} {
+		change := tc.change
+		t.Run(tc.scope+" "+change, func(t *testing.T) {
 			f := newSchedFixture(t)
 			f.nativeCommit(t)
 			in := seriesRequest()
-			in.RemoveDeadline = true
+			if tc.scope == "occurrence" {
+				in.Scope = "occurrence"
+				in.Deadline = ptr("2026-10-27T14:00:00Z")
+			} else {
+				in.RemoveDeadline = true
+			}
 			p, err := f.s.renegotiateCommitmentAt(f.ws.ID, f.item.ID, "acting-user", in, renegNow, nil)
 			if err != nil {
 				t.Fatal(err)

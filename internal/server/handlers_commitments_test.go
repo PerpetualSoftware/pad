@@ -368,6 +368,12 @@ func TestCommitmentRenegotiateOccurrenceAuthorityAndJournal(t *testing.T) {
 				actor = f.owner
 			}
 			body := renegotiateBody()
+			body["preview"] = true
+			pv := renegotiateCall(f, actor, body)
+			if pv.Code != 200 {
+				t.Fatalf("preview: %d %s", pv.Code, pv.Body.String())
+			}
+			body["revision"], body["preview"] = schedMap(t, pv)["revision"], false
 			rr := renegotiateCall(f, actor, body)
 			c = readCommitment(t, rr, 200)
 			if c.Roles.Deadline == nil || *c.Roles.Deadline != body["deadline"] {
@@ -390,10 +396,11 @@ func TestCommitmentRenegotiateRefusalsAndStrictBody(t *testing.T) {
 	for _, tc := range []struct{ body, field, code, top string }{
 		{`{}`, "reason", "required", "validation_error"},
 		{`{"reason":"  ","deadline":"bad"}`, "reason", "required", "validation_error"},
-		{`{"reason":"why"}`, "deadline", "required", "validation_error"},
-		{`{"reason":"why","deadline":"bad"}`, "deadline", "format", "validation_error"},
-		{`{"reason":"why","deadline":"2000-01-01T00:00:00Z"}`, "deadline", "range", "validation_error"},
-		{`{"reason":"why","deadline":"2099-01-01T00:00:00Z"}`, "deadline", "range", "validation_error"},
+		{`{"reason":"why","preview":true}`, "deadline", "required", "validation_error"},
+		{`{"reason":"why"}`, "revision", "required", "validation_error"},
+		{`{"reason":"why","preview":true,"deadline":"bad"}`, "deadline", "format", "validation_error"},
+		{`{"reason":"why","preview":true,"deadline":"2000-01-01T00:00:00Z"}`, "deadline", "range", "validation_error"},
+		{`{"reason":"why","preview":true,"deadline":"2099-01-01T00:00:00Z"}`, "deadline", "range", "validation_error"},
 		{`{"reason":"why","remove_deadline":true}`, "scope", "combination", "validation_error"},
 		{`{"reason":"why","scope":"other"}`, "scope", "enum", "validation_error"},
 		{`{"reason":"why","scope":"series","remove_deadline":true}`, "revision", "required", "validation_error"},
@@ -536,7 +543,9 @@ func TestCommitmentRenegotiateRequiresNativeDeadline(t *testing.T) {
 			} else {
 				f.create(okSchedule)
 			}
-			for _, body := range []any{renegotiateBody(), map[string]any{"reason": "why", "scope": "series", "preview": true, "remove_deadline": true}} {
+			occurrence := renegotiateBody()
+			occurrence["preview"] = true
+			for _, body := range []any{occurrence, map[string]any{"reason": "why", "scope": "series", "preview": true, "remove_deadline": true}} {
 				f.expectErr(renegotiateCall(f, f.owner, body), 400, "validation_error", "combination")
 			}
 		})
@@ -650,6 +659,15 @@ func TestCommitmentAssigneeGuard(t *testing.T) {
 				switch operation {
 				case "preview":
 					body.(map[string]any)["preview"] = true
+				case "occurrence":
+					in := renegotiateBody()
+					in["preview"] = true
+					rr := renegotiateCall(f, actor, in)
+					if rr.Code != 200 {
+						t.Fatalf("preview: %d %s", rr.Code, rr.Body.String())
+					}
+					in["revision"], in["preview"] = schedMap(t, rr)["revision"], false
+					body = in
 				case "series":
 					in := map[string]any{"scope": "series", "reason": "agreed", "remove_deadline": true, "preview": true}
 					rr := renegotiateCall(f, actor, in)

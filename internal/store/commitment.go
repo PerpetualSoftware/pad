@@ -349,7 +349,14 @@ func (s *Store) renegotiateDeadlineAt(workspaceID, itemID, actor string, until t
 		return fieldErr("until", "required", "renegotiating a deadline needs the new deadline")
 	}
 	value := until.Format(time.RFC3339Nano)
-	_, err := s.renegotiateCommitmentAt(workspaceID, itemID, actor, models.CommitmentRenegotiateInput{Reason: reason, Deadline: &value}, nowT, nil)
+	// An apply needs the preview's revision under both scopes, so this one-step
+	// door previews first and applies what it saw.
+	in := models.CommitmentRenegotiateInput{Reason: reason, Deadline: &value, Preview: true}
+	p, err := s.renegotiateCommitmentAt(workspaceID, itemID, actor, in, nowT, nil)
+	if err == nil {
+		in.Preview, in.Revision = false, p.Revision
+		_, err = s.renegotiateCommitmentAt(workspaceID, itemID, actor, in, nowT, nil)
+	}
 	var field *ScheduleFieldError
 	if errors.As(err, &field) && field.Field == "deadline" && (field.Code == "range" || field.Code == "required") {
 		return fieldErr("until", field.Code, field.Error())
