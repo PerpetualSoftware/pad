@@ -220,22 +220,6 @@ type DashboardReminder struct {
 // itemBlockedByActive helper (BUG-990); its visibility + non-done blocker
 // filtering is identical.
 
-// priorityRank returns a sort rank for task priority (lower = higher priority).
-func priorityRank(priority string) int {
-	switch strings.ToLower(priority) {
-	case "critical":
-		return 0
-	case "high":
-		return 1
-	case "medium":
-		return 2
-	case "low":
-		return 3
-	default:
-		return 4
-	}
-}
-
 // isActiveStatus returns true if the status indicates work actively in progress.
 // It excludes both initial/queued states and terminal/completed states.
 // itemNumber is the item's workspace-sequential number, 0 when unset.
@@ -618,8 +602,8 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 	}
 	// Sort active items: by priority rank then by most recently updated
 	sort.Slice(resp.ActiveItems, func(i, j int) bool {
-		pi := priorityRank(resp.ActiveItems[i].Priority)
-		pj := priorityRank(resp.ActiveItems[j].Priority)
+		pi := models.PriorityRank(resp.ActiveItems[i].Priority)
+		pj := models.PriorityRank(resp.ActiveItems[j].Priority)
 		if pi != pj {
 			return pi < pj
 		}
@@ -1157,7 +1141,7 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 				item:          task,
 				plan:          dp.Title,
 				status:        taskStatus,
-				priority:      priorityRank(pri),
+				priority:      models.PriorityRank(pri),
 				inProgress:    isInProgress,
 				overdue:       isOverdue,
 				overdueReason: overdueReasonOrEmpty(odField, odValue, isOverdue),
@@ -1235,9 +1219,9 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 			// else the severity. A Bugs collection declares only severity,
 			// so a high-severity bug ranks with high-priority tasks rather
 			// than below every task that has any priority at all.
-			rank := priorityRank(pri)
+			rank := models.PriorityRank(pri)
 			if pri == "" {
-				rank = priorityRank(extractFieldValue(item.Fields, "severity"))
+				rank = models.PriorityRank(extractFieldValue(item.Fields, "severity"))
 			}
 			candidates = append(candidates, suggestion{
 				item:     item,
@@ -1264,7 +1248,7 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 			item:          item,
 			plan:          "", // empty plan name signals orphan in the reason text below
 			status:        taskStatus,
-			priority:      priorityRank(pri),
+			priority:      models.PriorityRank(pri),
 			inProgress:    isInProgress,
 			overdue:       isOverdue,
 			overdueReason: overdueReasonOrEmpty(odField, odValue, isOverdue),
