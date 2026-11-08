@@ -242,8 +242,14 @@ func TestRenegotiateMissFirstAndTickDedupe(t *testing.T) {
 			if !a.Preview.MissRecordedFirst || str(a.Preview.MissOccurrenceKey) != deadlineKey || f.deadlineEvidence(t) != 1 {
 				t.Fatalf("old miss lost %+v", a)
 			}
+			if n := f.count(t, `SELECT COUNT(*) FROM schedule_changes WHERE schedule_id=? AND change_type='missed_recorded' AND role='deadline' AND occurrence_key=?`, sc.ID, deadlineKey); n != 1 {
+				t.Fatalf("after renegotiation: old deadline miss rows = %d, want 1", n)
+			}
 			if got := f.eval(t, "2026-10-26T10:00:02Z", 0); got.Missed != 0 || f.deadlineEvidence(t) != 1 {
 				t.Fatalf("tick duplicate %+v", got)
+			}
+			if n := f.count(t, `SELECT COUNT(*) FROM schedule_changes WHERE schedule_id=? AND change_type='missed_recorded' AND role='deadline' AND occurrence_key=?`, sc.ID, deadlineKey); n != 1 {
+				t.Fatalf("after evaluator tick: old deadline miss rows = %d, want 1", n)
 			}
 			rows := f.journal(t, sc.ID)
 			if rows[n].ChangeType != "missed_recorded" || rows[n+1].ReasonSource != "user" {
