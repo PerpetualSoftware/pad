@@ -170,7 +170,8 @@ func TestCIWorkflow_VendorHashHealRunsOnlyOnMainPushes(t *testing.T) {
 }
 
 // Off main nothing heals, so a stale committed vendorHash must fail the Nix
-// job on a push there instead of passing on the recomputed tree.
+// job on a push there, and on a PR into release-*, instead of passing on the
+// recomputed tree.
 func TestCIWorkflow_NixRefusesStaleVendorHashOffMain(t *testing.T) {
 	ci := readWorkflow(t, "ci.yml")
 	job, ok := ci.Jobs["nix"]
@@ -186,15 +187,14 @@ func TestCIWorkflow_NixRefusesStaleVendorHashOffMain(t *testing.T) {
 			continue
 		}
 		refuse = i
-		terms := conjuncts(t, "nix step "+s.Name, s.If)
-		for _, need := range []string{
-			"steps.vendorhash.outputs.bumped == 'true'",
-			"github.event_name == 'push'",
-			"github.ref != 'refs/heads/main'",
-		} {
-			if !slices.Contains(terms, need) {
-				t.Errorf("nix step %q if = %q; it must include the term %q", s.Name, s.If, need)
-			}
+		// Pinned whole: a push off main, or a pull request whose base is a
+		// release-* branch (TASK-4403). A PR into main stays judged on the
+		// recomputed tree, because main is healed after its run.
+		if fold(s.If) != refuseIf {
+			t.Errorf("nix step %q if = %q, want exactly %q", s.Name, s.If, refuseIf)
+		}
+		if !strings.Contains(s.Run, refusePRMsg) || !strings.Contains(s.Run, refuseMsg) {
+			t.Errorf("nix step %q run must carry both the push message and the pull-request message", s.Name)
 		}
 		if !strings.Contains(s.Run, "exit 1") {
 			t.Errorf("nix step %q must fail the job (exit 1)", s.Name)
@@ -306,9 +306,12 @@ fi
 // strip: a copied guard, or a new use of $GITHUB_REF_NAME, still fails.
 const (
 	healIf    = "github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.nix.outputs.vendor_hash_bumped == 'true'"
-	refuseIf  = "steps.vendorhash.outputs.bumped == 'true' && github.event_name == 'push' && github.ref != 'refs/heads/main'"
+	refuseIf  = "steps.vendorhash.outputs.bumped == 'true' && ((github.event_name == 'push' && github.ref != 'refs/heads/main') || (github.event_name == 'pull_request' && startsWith(github.base_ref, 'release-')))"
 	refuseMsg = `echo "::error::nix/package.nix has a stale vendorHash at $GITHUB_SHA on $GITHUB_REF_NAME, and only main is healed. Bring main's healed vendorHash into this branch and push again."`
-	stopLine  = `echo "# STOP THE LINE: a race run on $GITHUB_REF_NAME failed or did not finish"`
+	// The same step's message for a pull request into release-*, which names its
+	// base; the push message above is kept as it was.
+	refusePRMsg = `echo "::error::nix/package.nix has a stale vendorHash in this pull request into $GITHUB_BASE_REF, and only main is healed. Commit the vendorHash printed by the Recompute step above into nix/package.nix and push again."`
+	stopLine    = `echo "# STOP THE LINE: a race run on $GITHUB_REF_NAME failed or did not finish"`
 )
 
 // branchMarks are the ways a workflow can read the branch, matched without
@@ -472,7 +475,7 @@ func TestCIWorkflows_NoOtherBranchGates(t *testing.T) {
 					var took bool
 					if step, took = takeIf(step, refuseIf); took {
 						refusals++
-						lineAllow = append(lineAllow, refuseMsg)
+						lineAllow = append(lineAllow, refuseMsg, refusePRMsg)
 					}
 				}
 				if hits := branchHits(step, lineAllow); len(hits) > 0 {
