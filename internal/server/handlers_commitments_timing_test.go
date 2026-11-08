@@ -71,6 +71,7 @@ func timingFixture(t *testing.T, origin string, deadline bool) *schedHTTP {
 }
 
 func TestCommitmentTimingMatrix(t *testing.T) {
+	t.Parallel()
 	for _, origin := range []string{"native deadline", "native check", "legacy_backfill"} {
 		for _, actor := range []string{"owner", "assignee"} {
 			for _, tc := range []struct {
@@ -120,6 +121,7 @@ func TestCommitmentTimingMatrix(t *testing.T) {
 }
 
 func TestCommitmentTimingExceptionsAndAtomicity(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		body map[string]any
@@ -162,6 +164,7 @@ func TestCommitmentTimingExceptionsAndAtomicity(t *testing.T) {
 }
 
 func TestCommitmentCreateContractAndResponse(t *testing.T) {
+	t.Parallel()
 	for _, method := range []string{"POST", "PATCH"} {
 		for _, field := range []string{"kind", "dtend", "Kind", "DTEND"} {
 			t.Run(method+"/"+field, func(t *testing.T) {
@@ -213,6 +216,7 @@ func TestCommitmentCreateContractAndResponse(t *testing.T) {
 }
 
 func TestCommitmentOccupiedValidationAtEveryDoor(t *testing.T) {
+	t.Parallel()
 	for _, door := range []string{"create", "roles", "timing", "renegotiate", "renegotiate occurrence"} {
 		for _, tc := range []struct {
 			name, start string
@@ -265,6 +269,7 @@ func TestCommitmentOccupiedValidationAtEveryDoor(t *testing.T) {
 }
 
 func TestCommitmentWindowTimingPreservesOffset(t *testing.T) {
+	t.Parallel()
 	for _, origin := range []string{"native", "legacy_backfill"} {
 		for _, start := range []string{"2099-01-01T08:00", "2099-01-01T12:00"} {
 			t.Run(origin+"/"+start, func(t *testing.T) {
@@ -298,6 +303,7 @@ func TestCommitmentWindowTimingPreservesOffset(t *testing.T) {
 }
 
 func TestCommitmentResolveUsesDeadlineRole(t *testing.T) {
+	t.Parallel()
 	f := timingFixture(t, "native", true)
 	if _, err := f.srv.store.DB().Exec("UPDATE item_schedules SET kind='check',dtend=NULL WHERE item_id=?", f.item.ID); err != nil {
 		t.Fatal(err)
@@ -314,6 +320,7 @@ func TestCommitmentResolveUsesDeadlineRole(t *testing.T) {
 }
 
 func TestCommitmentCombinedWindowAndStartUsesEditedRoles(t *testing.T) {
+	t.Parallel()
 	f := newSchedHTTP(t)
 	d, s := 0, 7200
 	if _, err := f.srv.store.CreateCommitmentSchedule(f.ws.ID, f.item.ID, models.ScheduleCreate{Dtstart: "2099-01-01T09:00", Tz: "UTC"}, models.CommitmentRolesInput{OccupiedDays: &d, OccupiedSecs: &s}); err != nil {
