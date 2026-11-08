@@ -186,3 +186,20 @@ func TestCommitmentNotices_RefusalReadsCurrentAssignee(t *testing.T) {
 		t.Fatalf("rows=%d", n)
 	}
 }
+
+// A refusal on an item with no native deadline attempted nothing a deadline
+// owner guards, so it notifies nobody.
+func TestCommitmentNotices_RefusalNeedsNativeDeadline(t *testing.T) {
+	for _, native := range []bool{false, true} {
+		f, recipient, actor := noticeFixture(t, native)
+		addDevice(t, f.s, recipient.ID)
+		refusalNotice(t, f.s, f.ws.ID, f.item.ID, actor.ID, false)
+		var n int
+		if err := f.s.db.QueryRow(f.s.q(`SELECT COUNT(*) FROM user_notifications WHERE kind='renegotiation_refused'`)).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if want := map[bool]int{false: 0, true: 1}[native]; n != want {
+			t.Fatalf("native=%v rows=%d want %d", native, n, want)
+		}
+	}
+}

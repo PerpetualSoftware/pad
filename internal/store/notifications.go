@@ -151,7 +151,8 @@ func (s *Store) enqueueUnassignedNotificationTx(tx *sql.Tx, item *models.Item, f
 }
 
 // EnqueueRenegotiationRefusedNotification tells the current assignee about a
-// refused attempt, once per item, acting user and UTC day. Assignment is read
+// refused attempt on an item with a native deadline, once per item, acting
+// user and UTC day. Assignment is read
 // under the same item and workspace pin held through visibility and enqueue.
 func (s *Store) EnqueueRenegotiationRefusedNotification(workspaceID, itemID, actorUserID string, actorIsAgent bool) error {
 	tx, err := s.db.Begin()
@@ -167,7 +168,8 @@ func (s *Store) EnqueueRenegotiationRefusedNotification(workspaceID, itemID, act
 	var assigned sql.NullString
 	err = tx.QueryRow(s.q(`SELECT i.collection_id, i.assigned_user_id FROM items i
         JOIN workspaces w ON w.id=i.workspace_id
-        WHERE i.id=? AND i.workspace_id=? AND i.deleted_at IS NULL AND w.deleted_at IS NULL`+lock), itemID, workspaceID).Scan(&item.CollectionID, &assigned)
+        WHERE i.id=? AND i.workspace_id=? AND i.deleted_at IS NULL AND w.deleted_at IS NULL
+        AND EXISTS (SELECT 1 FROM item_schedules sc WHERE sc.item_id=i.id AND sc.roles_origin='native' AND sc.deadline_days IS NOT NULL)`+lock), itemID, workspaceID).Scan(&item.CollectionID, &assigned)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
