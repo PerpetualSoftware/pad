@@ -313,12 +313,21 @@ func TestRenegotiateAtomicAfterMissAndChange(t *testing.T) {
 }
 func TestRenegotiateStaleRevisionAndRequired(t *testing.T) {
 	t.Parallel()
-	for _, change := range []string{"roles", "resolve", "override"} {
-		t.Run(change, func(t *testing.T) {
+	for _, tc := range []struct{ scope, change string }{
+		{"series", "roles"}, {"series", "resolve"}, {"series", "override"},
+		{"occurrence", "roles"}, {"occurrence", "resolve"}, {"occurrence", "override"},
+	} {
+		change := tc.change
+		t.Run(tc.scope+" "+change, func(t *testing.T) {
 			f := newSchedFixture(t)
 			f.nativeCommit(t)
 			in := seriesRequest()
-			in.RemoveDeadline = true
+			if tc.scope == "occurrence" {
+				in.Scope = "occurrence"
+				in.Deadline = ptr("2026-10-27T14:00:00Z")
+			} else {
+				in.RemoveDeadline = true
+			}
 			p, err := f.s.renegotiateCommitmentAt(f.ws.ID, f.item.ID, "acting-user", in, renegNow, nil)
 			if err != nil {
 				t.Fatal(err)
@@ -352,6 +361,48 @@ func TestRenegotiateStaleRevisionAndRequired(t *testing.T) {
 				t.Fatal("stale apply wrote")
 			}
 		})
+	}
+}
+
+// An ended schedule has no outstanding occurrence, so every renegotiation is
+// refused with schedule/ended, preview and apply, both scopes, and nothing is
+// stored. A preview taken while live and applied after the end gets the same
+// refusal, not the stale-revision answer.
+func TestRenegotiateRefusesEndedSchedule(t *testing.T) {
+	t.Parallel()
+	for _, scope := range []string{"occurrence", "series"} {
+		for _, preview := range []bool{true, false} {
+			scope, preview := scope, preview
+			t.Run(scope+map[bool]string{true: " preview", false: " apply"}[preview], func(t *testing.T) {
+				f := newSchedFixture(t)
+				f.nativeCommit(t)
+				in := seriesRequest()
+				if scope == "occurrence" {
+					in.Scope = "occurrence"
+					in.Deadline = ptr("2026-10-27T14:00:00Z")
+				} else {
+					in.RemoveDeadline = true
+				}
+				p, err := f.s.renegotiateCommitmentAt(f.ws.ID, f.item.ID, "acting-user", in, renegNow, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				f.exec(t, `UPDATE item_schedules SET ended_at=?, next_at=NULL, next_wall=NULL WHERE item_id=?`, "2026-10-25T00:00:00Z", f.item.ID)
+				in.Preview = preview
+				if !preview {
+					in.Revision = p.Revision
+				}
+				before := renegotiateState(t, f.s)
+				_, err = f.s.renegotiateCommitmentAt(f.ws.ID, f.item.ID, "acting-user", in, renegNow, nil)
+				var fe *ScheduleFieldError
+				if !errors.As(err, &fe) || fe.Field != "schedule" || fe.Code != "ended" {
+					t.Fatalf("ended schedule answered %v", err)
+				}
+				if !reflect.DeepEqual(before, renegotiateState(t, f.s)) {
+					t.Fatal("refused renegotiation wrote")
+				}
+			})
+		}
 	}
 }
 func TestRenegotiateSeriesConvertedRowLaterMiss(t *testing.T) {

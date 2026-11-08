@@ -58,9 +58,9 @@ func (s *Store) renegotiateCommitmentAt(workspaceID, itemID, actor string, in mo
 		if !in.RemoveDeadline && in.DeadlineOffset == nil && in.DeadlineBehavior == nil {
 			return nil, fieldErr("deadline", "combination", "a series change needs deadline_offset, deadline_behavior or remove_deadline")
 		}
-		if !in.Preview && in.Revision == "" {
-			return nil, fieldErr("revision", "required", "a series apply needs the preview revision")
-		}
+	}
+	if !in.Preview && in.Revision == "" {
+		return nil, fieldErr("revision", "required", "an apply needs the preview revision")
 	}
 	// Load workspace terminal options before the transaction, as the evaluator
 	// does: nonTerminalFilter uses the pool, which may have only one connection.
@@ -87,6 +87,12 @@ func (s *Store) renegotiateCommitmentAt(workspaceID, itemID, actor string, in mo
 	}
 	if sc == nil {
 		return nil, ErrScheduleNotFound
+	}
+	// An ended schedule has no outstanding occurrence to move. Refuse it here,
+	// under the pin, before the plan or the revision comparison, so every scope
+	// and both modes answer the same code and nothing is stored.
+	if sc.EndedAt != nil {
+		return nil, fieldErr("schedule", "ended", "the commitment has ended; there is no outstanding occurrence to renegotiate")
 	}
 	if nowT.IsZero() {
 		nowT = time.Now()

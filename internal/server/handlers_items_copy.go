@@ -327,6 +327,7 @@ type ItemCopyResultWarnings struct {
 type ItemCopySchedule struct {
 	Carried        bool                     `json:"carried"`
 	HistoryDropped int                      `json:"history_dropped"`
+	ChangesDropped int                      `json:"changes_dropped"`
 	Skipped        *ItemCopyScheduleSkipped `json:"skipped,omitempty"`
 }
 
@@ -343,7 +344,7 @@ func itemCopyScheduleView(r store.ScheduleCarryReport) *ItemCopySchedule {
 	if !r.HasSchedule {
 		return nil
 	}
-	v := &ItemCopySchedule{Carried: r.Carried, HistoryDropped: r.HistoryDropped}
+	v := &ItemCopySchedule{Carried: r.Carried, HistoryDropped: r.HistoryDropped, ChangesDropped: r.ChangesDropped}
 	if r.Skipped != "" {
 		v.Skipped = &ItemCopyScheduleSkipped{Reason: r.Skipped}
 	}

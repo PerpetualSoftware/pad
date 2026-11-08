@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -208,6 +209,10 @@ func (s *Server) handleRenegotiateItemCommitment(w http.ResponseWriter, r *http.
 		return
 	}
 	if !allowed {
+		actor, _ := actorFromRequest(r)
+		if err := s.store.EnqueueRenegotiationRefusedNotification(workspaceID, item.ID, currentUserID(r), actor == "agent"); err != nil {
+			slog.Warn("enqueue renegotiation refusal notification", "workspace_id", workspaceID, "item_id", item.ID, "error", err)
+		}
 		writeDeadlineOwnerRequired(w)
 		return
 	}
