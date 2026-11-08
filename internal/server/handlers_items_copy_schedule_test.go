@@ -229,7 +229,7 @@ func TestPGParkedSchedulePatchAnswers409WhenAMoveArchivesTheItem(t *testing.T) {
 
 	patched := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		r := httptest.NewRequest("PATCH", "/api/v1/workspaces/"+f.wsA.Slug+"/items/"+f.source.Slug+"/schedule",
+		r := httptest.NewRequest("PATCH", "/api/v1/workspaces/"+f.wsA.Slug+"/items/"+f.source.Slug+"/commitment",
 			strings.NewReader(`{"dtstart":"2099-02-01T09:00"}`))
 		r.Header.Set("Content-Type", "application/json")
 		ctx := WithCurrentUser(r.Context(), f.owner)
@@ -239,7 +239,7 @@ func TestPGParkedSchedulePatchAnswers409WhenAMoveArchivesTheItem(t *testing.T) {
 		rctx.URLParams.Add("slug", f.wsA.Slug)
 		rctx.URLParams.Add("itemSlug", f.source.Slug)
 		rr := httptest.NewRecorder()
-		srv.handleUpdateItemSchedule(rr, r.WithContext(context.WithValue(ctx, chi.RouteCtxKey, rctx)))
+		srv.handleUpdateItemCommitment(rr, r.WithContext(context.WithValue(ctx, chi.RouteCtxKey, rctx)))
 		patched <- rr
 	}()
 	deadline := time.Now().Add(10 * time.Second)
@@ -247,7 +247,7 @@ func TestPGParkedSchedulePatchAnswers409WhenAMoveArchivesTheItem(t *testing.T) {
 		var waiting bool
 		if err := srv.store.DB().QueryRow(`SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid <> pg_backend_pid()
 			AND datname = current_database() AND state = 'active' AND wait_event_type = 'Lock' AND query LIKE '%' || $1 || '%')`,
-			"FOR UPDATE").Scan(&waiting); err != nil {
+			"FOR NO KEY UPDATE").Scan(&waiting); err != nil {
 			t.Fatal(err)
 		}
 		if waiting {
@@ -285,7 +285,7 @@ func mustSchedule(t *testing.T, f *copyPreflightFixture) *models.ItemSchedule {
 // scheduleReq builds a schedule request the way the router would, for a handler
 // called directly.
 func (f *copyPreflightFixture) scheduleReq(method, itemSlug, suffix, body string) *http.Request {
-	r := httptest.NewRequest(method, "/api/v1/workspaces/"+f.wsA.Slug+"/items/"+itemSlug+"/schedule"+suffix, strings.NewReader(body))
+	r := httptest.NewRequest(method, "/api/v1/workspaces/"+f.wsA.Slug+"/items/"+itemSlug+"/commitment"+suffix, strings.NewReader(body))
 	r.Header.Set("Content-Type", "application/json")
 	ctx := WithCurrentUser(r.Context(), f.owner)
 	ctx = contextWithWorkspaceRoleForTest(ctx, "owner")
@@ -297,7 +297,7 @@ func (f *copyPreflightFixture) scheduleReq(method, itemSlug, suffix, body string
 }
 
 const (
-	createScheduleBody  = `{"kind":"check","dtstart":"2099-01-01T09:00","tz":"UTC","rrule":"FREQ=DAILY"}`
+	createScheduleBody  = `{"roles":{},"dtstart":"2099-01-01T09:00","tz":"UTC","rrule":"FREQ=DAILY"}`
 	resolveScheduleBody = `{"occurrence_at":"2099-01-01T09:00:00Z","state":"done"}`
 	patchScheduleBody   = `{"dtstart":"2099-02-01T09:00"}`
 )
@@ -315,9 +315,9 @@ func TestScheduleWritesAnswer409ForAnArchivedItemAnd404ForAMissingOne(t *testing
 		name, method, suffix, body string
 		h                          func(http.ResponseWriter, *http.Request)
 	}{
-		{"create", "POST", "", createScheduleBody, f.srv.handleCreateItemSchedule},
-		{"patch", "PATCH", "", patchScheduleBody, f.srv.handleUpdateItemSchedule},
-		{"resolve", "POST", "/resolve", resolveScheduleBody, f.srv.handleResolveItemSchedule},
+		{"create", "POST", "", createScheduleBody, f.srv.handleCreateItemCommitment},
+		{"patch", "PATCH", "", patchScheduleBody, f.srv.handleUpdateItemCommitment},
+		{"resolve", "POST", "/resolve", resolveScheduleBody, f.srv.handleResolveItemCommitment},
 	} {
 		rr := httptest.NewRecorder()
 		tc.h(rr, f.scheduleReq(tc.method, f.source.Slug, tc.suffix, tc.body))
@@ -433,7 +433,7 @@ func TestPGParkedScheduleCreateAndResolveAnswer409WhenAMoveArchivesTheItem(t *te
 		srv := New(storetest.NewPostgres(t))
 		t.Cleanup(srv.Stop)
 		f := newCopyPreflightFixtureOn(t, srv)
-		rr := f.parkedScheduleWrite(srv.handleCreateItemSchedule, "POST", "", createScheduleBody, "FOR SHARE")
+		rr := f.parkedScheduleWrite(srv.handleCreateItemCommitment, "POST", "", createScheduleBody, "FOR SHARE")
 		if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), `"archived"`) {
 			t.Fatalf("parked create = %d %s, want 409 archived", rr.Code, rr.Body.String())
 		}
@@ -443,7 +443,7 @@ func TestPGParkedScheduleCreateAndResolveAnswer409WhenAMoveArchivesTheItem(t *te
 		t.Cleanup(srv.Stop)
 		f := newCopyPreflightFixtureOn(t, srv)
 		mustSchedule(t, f)
-		rr := f.parkedScheduleWrite(srv.handleResolveItemSchedule, "POST", "/resolve", resolveScheduleBody, "FOR NO KEY UPDATE")
+		rr := f.parkedScheduleWrite(srv.handleResolveItemCommitment, "POST", "/resolve", resolveScheduleBody, "FOR NO KEY UPDATE")
 		if rr.Code != http.StatusConflict || !strings.Contains(rr.Body.String(), `"archived"`) {
 			t.Fatalf("parked resolve = %d %s, want 409 archived", rr.Code, rr.Body.String())
 		}

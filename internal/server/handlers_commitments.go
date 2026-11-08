@@ -5,6 +5,8 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"sort"
+	"strings"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
@@ -41,9 +43,34 @@ func writeCommitmentChanged(w http.ResponseWriter) {
 		map[string]interface{}{"field": "revision", "code": "stale"})
 }
 
-// writeItemCommitment re-reads the roles and journal after a successful write.
-func (s *Server) writeItemCommitment(w http.ResponseWriter, workspaceID, itemID string, status int) {
-	c, err := s.store.GetCommitment(workspaceID, itemID)
+// commitmentView adds the schedule view to the commitment without exposing the
+// stored kind and dtend. Every successful read/write uses this builder.
+type commitmentView struct {
+	*models.Commitment
+	scheduleView
+}
+
+func (s *Server) buildCommitmentView(r *http.Request, workspaceID string, item *models.Item, sc *models.ItemSchedule, note string) (*commitmentView, error) {
+	c, err := s.store.GetCommitment(workspaceID, item.ID)
+	if err != nil {
+		return nil, err
+	}
+	v := s.buildScheduleView(r, item, sc)
+	v.TimezoneNote = note
+	return &commitmentView{Commitment: c, scheduleView: v}, nil
+}
+
+func (s *Server) writeItemCommitment(w http.ResponseWriter, r *http.Request, workspaceID string, item *models.Item, status int, note string) {
+	sc, err := s.store.GetSchedule(workspaceID, item.ID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if sc == nil {
+		writeScheduleNotFound(w)
+		return
+	}
+	v, err := s.buildCommitmentView(r, workspaceID, item, sc, note)
 	if errors.Is(err, store.ErrScheduleNotFound) {
 		writeScheduleNotFound(w)
 		return
@@ -52,7 +79,29 @@ func (s *Server) writeItemCommitment(w http.ResponseWriter, workspaceID, itemID 
 		writeInternalError(w, err)
 		return
 	}
-	writeJSON(w, status, c)
+	writeJSON(w, status, v)
+}
+
+// readCommitmentBody gives retired members the same field error on POST and
+// PATCH, including null. The strict decoder still judges every other member.
+func readCommitmentBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	raw, err := readBodyForDecode(r, defaultJSONBodyLimit)
+	if err != nil {
+		writeScheduleBodyError(w)
+		return nil, false
+	}
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &members); err != nil {
+		writeScheduleBodyError(w)
+		return nil, false
+	}
+	for name := range members {
+		if strings.EqualFold(name, "kind") || strings.EqualFold(name, "dtend") {
+			writeError2(w, http.StatusBadRequest, "validation_error", name+" is not accepted", map[string]interface{}{"field": name, "code": "not_accepted"})
+			return nil, false
+		}
+	}
+	return raw, true
 }
 
 func (s *Server) handleGetItemCommitment(w http.ResponseWriter, r *http.Request) {
@@ -60,7 +109,7 @@ func (s *Server) handleGetItemCommitment(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	// Like GET /schedule, archived items are readable.
+	// Archived items are readable.
 	item, err := s.store.ResolveItemIncludeDeleted(workspaceID, chi.URLParam(r, "itemSlug"))
 	if err != nil {
 		writeInternalError(w, err)
@@ -73,7 +122,7 @@ func (s *Server) handleGetItemCommitment(w http.ResponseWriter, r *http.Request)
 	if !s.requireItemVisible(w, r, workspaceID, item) {
 		return
 	}
-	s.writeItemCommitment(w, workspaceID, item.ID, http.StatusOK)
+	s.writeItemCommitment(w, r, workspaceID, item, http.StatusOK, "")
 }
 
 type commitmentCreateBody struct {
@@ -93,9 +142,8 @@ func (s *Server) handleCreateItemCommitment(w http.ResponseWriter, r *http.Reque
 	if !s.requireEditPermission(w, r, workspaceID, item.ID, item.CollectionID) {
 		return
 	}
-	raw, err := readBodyForDecode(r, defaultJSONBodyLimit)
-	if err != nil {
-		writeScheduleBodyError(w)
+	raw, ok := readCommitmentBody(w, r)
+	if !ok {
 		return
 	}
 	body, err := scheduleBodyBytes[commitmentCreateBody](raw)
@@ -105,15 +153,10 @@ func (s *Server) handleCreateItemCommitment(w http.ResponseWriter, r *http.Reque
 	}
 	// Preserve the schedule create door's required-null field errors.
 	var required struct {
-		Kind    json.RawMessage `json:"kind"`
 		Dtstart json.RawMessage `json:"dtstart"`
 	}
 	if err := json.Unmarshal(raw, &required); err != nil {
 		writeScheduleBodyError(w)
-		return
-	}
-	if isJSONNull(required.Kind) {
-		writeScheduleRequired(w, "kind")
 		return
 	}
 	if isJSONNull(required.Dtstart) {
@@ -125,19 +168,31 @@ func (s *Server) handleCreateItemCommitment(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	req := body.ScheduleCreate
+	note := ""
 	if !req.Floating && req.Tz == "" {
-		req.Tz, _ = defaultScheduleZone(r)
+		req.Tz, note = defaultScheduleZone(r)
 	}
 	sc, err := s.store.CreateCommitmentSchedule(workspaceID, item.ID, req, *body.Roles)
 	if s.writeScheduleItemGone(w, r, workspaceID, err) || writeScheduleError(w, err) {
 		return
 	}
 	s.recordScheduleWrite(r, workspaceID, item, "schedule_created", scheduleActivityMeta(sc.Kind, nil))
-	s.writeItemCommitment(w, workspaceID, item.ID, http.StatusCreated)
+	s.writeItemCommitment(w, r, workspaceID, item, http.StatusCreated, note)
 }
 
+// This type is the single accepted-member list for PATCH. Raw fields preserve
+// absence and null; strict decoding refuses every undeclared member.
 type commitmentPatchBody struct {
-	Roles *models.CommitmentRolesInput `json:"roles"`
+	Dtstart     json.RawMessage `json:"dtstart,omitempty"`
+	Tz          json.RawMessage `json:"tz,omitempty"`
+	Floating    json.RawMessage `json:"floating,omitempty"`
+	Rrule       json.RawMessage `json:"rrule,omitempty"`
+	RDates      json.RawMessage `json:"rdates,omitempty"`
+	ExDates     json.RawMessage `json:"exdates,omitempty"`
+	Anchor      json.RawMessage `json:"anchor,omitempty"`
+	Audience    json.RawMessage `json:"audience,omitempty"`
+	LeadMinutes json.RawMessage `json:"lead_minutes,omitempty"`
+	Roles       json.RawMessage `json:"roles,omitempty"`
 }
 
 func (s *Server) handleUpdateItemCommitment(w http.ResponseWriter, r *http.Request) {
@@ -152,16 +207,61 @@ func (s *Server) handleUpdateItemCommitment(w http.ResponseWriter, r *http.Reque
 	if !s.requireEditPermission(w, r, workspaceID, item.ID, item.CollectionID) {
 		return
 	}
-	body, err := strictScheduleBody[commitmentPatchBody](r)
+	raw, ok := readCommitmentBody(w, r)
+	if !ok {
+		return
+	}
+	body, err := scheduleBodyBytes[commitmentPatchBody](raw)
 	if err != nil {
 		writeScheduleBodyError(w)
 		return
 	}
-	if body.Roles == nil {
-		writeScheduleRequired(w, "roles")
+	// Marshal the declared fields to collect only present members. This keeps
+	// validation and activity member names tied to the strict body's definition.
+	declared, _ := json.Marshal(body)
+	var members map[string]json.RawMessage
+	_ = json.Unmarshal(declared, &members)
+	if len(members) == 0 {
+		writeScheduleRequired(w, "body")
 		return
 	}
-	sc, err := s.store.SetCommitmentRoles(workspaceID, item.ID, *body.Roles)
+	fields := make([]string, 0, len(members))
+	for name := range members {
+		fields = append(fields, name)
+	}
+	sort.Strings(fields)
+	var roles *models.CommitmentRolesPatch
+	if body.Roles != nil {
+		if isJSONNull(body.Roles) {
+			writeScheduleRequired(w, "roles")
+			return
+		}
+		roles = &models.CommitmentRolesPatch{}
+		parsed, err := scheduleBodyBytes[models.CommitmentRolesPatch](body.Roles)
+		if err != nil {
+			writeScheduleBodyError(w)
+			return
+		}
+		*roles = parsed
+	}
+	delete(members, "roles")
+	upd, _, ok := scheduleUpdateFromMembers(w, members)
+	if !ok {
+		return
+	}
+	note := ""
+	if upd.Floating != nil && !*upd.Floating && upd.Tz == nil {
+		cur, err := s.store.GetSchedule(workspaceID, item.ID)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		if cur != nil && cur.Floating {
+			name, n := defaultScheduleZone(r)
+			upd.Tz, note = &name, n
+		}
+	}
+	sc, err := s.store.UpdateCommitment(workspaceID, item.ID, upd, roles)
 	if s.writeScheduleItemGone(w, r, workspaceID, err) {
 		return
 	}
@@ -172,8 +272,8 @@ func (s *Server) handleUpdateItemCommitment(w http.ResponseWriter, r *http.Reque
 	if writeScheduleError(w, err) {
 		return
 	}
-	s.recordScheduleWrite(r, workspaceID, item, "schedule_updated", scheduleActivityMeta(sc.Kind, []string{"roles"}))
-	s.writeItemCommitment(w, workspaceID, item.ID, http.StatusOK)
+	s.recordScheduleWrite(r, workspaceID, item, "schedule_updated", scheduleActivityMeta(sc.Kind, fields))
+	s.writeItemCommitment(w, r, workspaceID, item, http.StatusOK, note)
 }
 
 type commitmentResolveBody struct {
@@ -182,7 +282,7 @@ type commitmentResolveBody struct {
 }
 
 func (s *Server) handleResolveItemCommitment(w http.ResponseWriter, r *http.Request) {
-	s.resolveItemSchedule(w, r, true)
+	s.resolveItemSchedule(w, r)
 }
 
 func writeDeadlineOwnerRequired(w http.ResponseWriter) {
@@ -263,5 +363,5 @@ func (s *Server) handleRenegotiateItemCommitment(w http.ResponseWriter, r *http.
 		fields = append(fields, "remove_deadline")
 	}
 	s.recordScheduleWrite(r, workspaceID, item, "schedule_updated", scheduleActivityMeta(sc.Kind, fields))
-	s.writeItemCommitment(w, workspaceID, item.ID, http.StatusOK)
+	s.writeItemCommitment(w, r, workspaceID, item, http.StatusOK, "")
 }

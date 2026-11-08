@@ -122,7 +122,7 @@ func (s *Store) renegotiateCommitmentAt(workspaceID, itemID, actor string, in mo
 			return nil, err
 		}
 	} else {
-		if err := s.writeNativeRolesTx(tx, sc.ID, plan.roles); err != nil {
+		if err := s.writeNativeRolesTx(tx, sc, plan.roles, false); err != nil {
 			return nil, err
 		}
 		if in.RemoveDeadline {
@@ -205,6 +205,9 @@ func (s *Store) planRenegotiationTx(tx *sql.Tx, sc *models.ItemSchedule, in mode
 		return nil, fieldErr("deadline", "combination", "the schedule has no outstanding occurrence")
 	}
 	cur := scheduleRolesFromExport(stored)
+	if _, err := occupiedEnd(sc.Dtstart, cur); err != nil {
+		return nil, err
+	}
 	prior, err := resolveRoleValue(loc, *sc.NextWall, *cur.DeadlineDays, *cur.DeadlineSecs, overrideFor(overrides, "deadline"))
 	if err != nil {
 		return nil, err

@@ -217,7 +217,7 @@ var padItemSchemaParams = []ParamDef{
 	// ── Schedules ── (TASK-4105)
 	{Name: "every", Type: "string", Description: "Repeat rule: daily, weekdays, weekly, biweekly, monthly, monthly-last, quarterly, yearly, or an RRULE. For remind (schedule) and schedule-edit."},
 	{Name: "start", Type: "string", Description: "Wall time, no Z or offset: 2026-11-09T09:00, or 2026-11-09 all-day. Required for: remind as a schedule. Optional for: schedule-edit."},
-	{Name: "deadline", Type: "string", Description: "hard | soft makes a deadline; omit for a plain check. schedule-edit also takes none. Not with window."},
+	{Name: "deadline", Type: "string", Description: "hard makes a deadline; soft or omit for no deadline. schedule-edit: soft and none clear it and keep any window. Not with window."},
 	{Name: "window", Type: "string", Description: "Span from start: a duration (90m, 2h, 3d) or an end wall (2026-11-09T17:00). Not with deadline."},
 	{Name: "anchor", Type: "string", Description: "calendar (default) | completion: the next one falls an interval after you mark it done."},
 	{Name: "audience", Type: "string", Description: "human | agent | both (default)."},
@@ -329,7 +329,7 @@ var padItemSchemaParams = []ParamDef{
 	{Name: "message", Type: "string", Description: "Comment body. Required for: comment, edit-comment."},
 	{Name: "comment_id", Type: "string", Description: "ID of a comment on `ref` (from list-comments). Required for: edit-comment, delete-comment."},
 	{Name: "reply_to", Type: "string", Description: "Parent comment ID for threading replies. Optional for: comment."},
-	{Name: "comment", Type: "string", Description: "Audit comment explaining the change. Optional for: update, schedule-resolve (the server decides; moving a soft deadline needs one, else 400)."},
+	{Name: "comment", Type: "string", Description: "Audit comment explaining the change. Optional for: update, schedule-resolve."},
 
 	// ── Guard override ── (IDEA-1494)
 	// update/bulk-update reject non-terminal → terminal done-field
@@ -446,9 +446,9 @@ Actions:
     remind_at it arms a SCHEDULE: a check, deadline or window, once or repeating.
   schedule — Read the item's schedule. Required: ref.
   schedule-edit — Change it; only parameters given change. Required: ref, one of the schedule
-    parameters (deadline none = plain check).
+    parameters (deadline soft or none clears the deadline and keeps any window).
   schedule-resolve — Resolve the outstanding occurrence. Required: ref, state, occurrence_at.
-    snooze and move also need until. A hard deadline cannot be moved: snooze it.
+    snooze and move also need until. A hard deadline changes through POST .../commitment/renegotiate with a reason.
   schedule-delete — Delete the schedule. Required: ref. Removes the schedule and its rule,
     its history of resolved occurrences, and its managed reminder, so the pending occurrence
     stops firing. Keeps the item, its comments and one-shot reminders. Cannot be undone.

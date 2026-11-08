@@ -85,7 +85,7 @@ var errRemindAtWithSchedule = fmt.Errorf("remind_at arms a one-shot reminder and
 
 // actionItemRemind handles pad_item.action=remind. With no schedule parameter
 // it is the one-shot reminder it always was; any schedule parameter makes it a
-// schedule (`pad item remind --start ...` on stdio, POST .../schedule on
+// schedule (`pad item remind --start ...` on stdio, POST .../commitment on
 // /mcp). Inert values are dropped first, so the one-shot form is identical on
 // both transports whatever a client pads it with.
 func actionItemRemind(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error) {

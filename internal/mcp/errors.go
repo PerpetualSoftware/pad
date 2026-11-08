@@ -498,9 +498,12 @@ const storedStateUnreadableHint = "Retrying will not help — the item's stored 
 // declarations block at the top of this file should also be added
 // for type safety in test assertions.
 var allowedStructuredErrorCodes = map[string]struct{}{
-	"agent_name_required": {}, // TASK-4042: remote chat needs declared clientInfo.name.
-	"open_children":       {}, // IDEA-1494
-	"plan_limit_exceeded": {}, // TASK-788
+	"hard_deadline":           {},
+	"deadline_owner_required": {},
+	"commitment_changed":      {},
+	"agent_name_required":     {}, // TASK-4042: remote chat needs declared clientInfo.name.
+	"open_children":           {}, // IDEA-1494
+	"plan_limit_exceeded":     {}, // TASK-788
 	// BUG-3098. No catalog action reaches an invitation accept today; the
 	// entry keeps a future one from collapsing it to permission_denied.
 	"workspace_member_limit": {},

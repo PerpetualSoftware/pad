@@ -122,7 +122,7 @@
 		actionError = ''; announcement = '';
 		let viewing = true;
 		try {
-			const view = await api.getSchedule(entry.workspace!, entry.item_ref);
+			const view = await api.getCommitment(entry.workspace!, entry.item_ref);
 			if (!sameIdentity()) return;
 			if (view.ended_at || !view.next_occurrence || !entry.wall || view.next_occurrence.wall !== entry.wall) {
 				actionError = staleCopy;
@@ -130,7 +130,7 @@
 				return;
 			}
 			viewing = false;
-			await api.resolveSchedule(entry.workspace!, entry.item_ref, {
+			await api.resolveCommitment(entry.workspace!, entry.item_ref, {
 				occurrence_at: view.next_occurrence.at, state,
 				...(until !== undefined ? { until } : {}),
 				...(comment !== undefined ? { comment } : {})

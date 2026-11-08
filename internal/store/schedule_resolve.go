@@ -160,8 +160,14 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 			return nil, fieldErr("actual_done_at", "range", "actual completion cannot be before schedule creation; the earliest allowed is "+created.UTC().Truncate(time.Second).Format(time.RFC3339))
 		}
 	}
-	if in.State == "move" && sc.Kind == "deadline_hard" {
-		return nil, fieldErr("state", "combination", "a hard deadline cannot be moved; snooze it, or change its kind")
+	if in.State == "move" {
+		roles, err := s.scheduleRolesOf(tx, sc)
+		if err != nil {
+			return nil, err
+		}
+		if roles.DeadlineDays != nil {
+			return nil, fieldErr("state", "combination", "a hard deadline cannot be moved; use POST .../commitment/renegotiate with a reason")
+		}
 	}
 
 	if sc.EndedAt != nil || sc.NextAt == nil || sc.NextWall == nil {

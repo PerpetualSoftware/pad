@@ -1,5 +1,7 @@
 package models
 
+import "encoding/json"
+
 // Commitment is the roles half of an item's schedule as the commitment
 // contract reads it (TASK-4351): the effective role values of the outstanding
 // occurrence, with that occurrence's overrides applied, and the journal rows
@@ -62,6 +64,34 @@ type CommitmentRolesInput struct {
 	OccupiedDays     *int    `json:"occupied_days,omitempty"`
 	OccupiedSecs     *int    `json:"occupied_secs,omitempty"`
 	Outcome          string  `json:"outcome,omitempty"`
+}
+
+// CommitmentRolePatchValue preserves absent, null and value on a PATCH member.
+// A nil Value means clear only when Present is true.
+type CommitmentRolePatchValue[T any] struct {
+	Present bool
+	Value   *T
+}
+
+func (p *CommitmentRolePatchValue[T]) UnmarshalJSON(raw []byte) error {
+	p.Present = true
+	return json.Unmarshal(raw, &p.Value)
+}
+
+// CommitmentRolesPatch edits only named members. Pairing is checked against
+// the stored roles under the schedule transaction lock, never during decoding.
+// POST continues to use CommitmentRolesInput's full-object semantics.
+type CommitmentRolesPatch struct {
+	TargetDays       CommitmentRolePatchValue[int]    `json:"target_days"`
+	TargetSecs       CommitmentRolePatchValue[int]    `json:"target_secs"`
+	EarliestDays     CommitmentRolePatchValue[int]    `json:"earliest_days"`
+	EarliestSecs     CommitmentRolePatchValue[int]    `json:"earliest_secs"`
+	DeadlineDays     CommitmentRolePatchValue[int]    `json:"deadline_days"`
+	DeadlineSecs     CommitmentRolePatchValue[int]    `json:"deadline_secs"`
+	DeadlineBehavior CommitmentRolePatchValue[string] `json:"deadline_behavior"`
+	OccupiedDays     CommitmentRolePatchValue[int]    `json:"occupied_days"`
+	OccupiedSecs     CommitmentRolePatchValue[int]    `json:"occupied_secs"`
+	Outcome          CommitmentRolePatchValue[string] `json:"outcome"`
 }
 
 // CommitmentDeadlineOffset uses the deadline fields of CommitmentRolesInput.

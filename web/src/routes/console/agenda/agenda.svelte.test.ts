@@ -4,7 +4,7 @@ import { flushSync } from 'svelte';
 import type { AgendaEntry, AgendaResponse } from '$lib/types';
 
 const h = vi.hoisted(() => ({ agenda: vi.fn(), view: vi.fn(), resolve: vi.fn(), user: { id: 'user-a', timezone: 'America/New_York' } as { id: string; timezone?: string } | null, epoch: 0, signal: null as null | { set(key: string, value: number): unknown }, browserZone: 'Europe/London' as string | null }));
-vi.mock('$lib/api/client', () => ({ api: { getMyAgenda: h.agenda, getSchedule: h.view, resolveSchedule: h.resolve } }));
+vi.mock('$lib/api/client', () => ({ api: { getMyAgenda: h.agenda, getCommitment: h.view, resolveCommitment: h.resolve } }));
 vi.mock('$lib/timezone', () => ({ browserZone: () => h.browserZone }));
 vi.mock('$lib/stores/auth.svelte', async () => {
  const { SvelteMap } = await import('svelte/reactivity');

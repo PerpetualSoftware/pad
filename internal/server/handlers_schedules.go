@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -22,15 +23,6 @@ import (
 // requests onto it and its errors back onto the API's vocabulary. It adds no
 // second parser for rules or walls.
 
-// scheduleMembers is the fixed allowlist of request member names, in the order
-// an update's activity entry lists them. The activity metadata is built from
-// the intersection of the body's keys with this list, so it holds names only
-// and can never carry rule text or a wall.
-var scheduleMembers = []string{
-	"kind", "dtstart", "dtend", "tz", "floating", "rrule", "rdates", "exdates",
-	"anchor", "audience", "lead_minutes",
-}
-
 // scheduleOccurrenceView is next_occurrence.
 type scheduleOccurrenceView struct {
 	At   string `json:"at"`
@@ -42,9 +34,7 @@ type scheduleOccurrenceView struct {
 type scheduleView struct {
 	ID             string                  `json:"id"`
 	ItemRef        string                  `json:"item_ref"`
-	Kind           string                  `json:"kind"`
 	Dtstart        string                  `json:"dtstart"`
-	Dtend          *string                 `json:"dtend,omitempty"`
 	Tz             *string                 `json:"tz,omitempty"`
 	Floating       bool                    `json:"floating"`
 	Rrule          *string                 `json:"rrule,omitempty"`
@@ -80,7 +70,7 @@ func (s *Server) buildScheduleView(r *http.Request, item *models.Item, sc *model
 		ref = item.Slug // a legacy item with no ref (see handleCreateItemReminder's resolver)
 	}
 	v := scheduleView{
-		ID: sc.ID, ItemRef: ref, Kind: sc.Kind, Dtstart: sc.Dtstart, Dtend: sc.Dtend,
+		ID: sc.ID, ItemRef: ref, Dtstart: sc.Dtstart,
 		Tz: sc.Tz, Floating: sc.Floating, Rrule: sc.Rrule,
 		RDates: nonNilStrings(sc.RDates), ExDates: nonNilStrings(sc.ExDates),
 		Anchor: sc.Anchor, Audience: sc.Audience, LeadMinutes: sc.LeadMinutes,
@@ -241,35 +231,6 @@ func scheduleBodyBytes[T any](raw []byte) (T, error) {
 	return strictBodyBytes[T](raw)
 }
 
-// strictScheduleCreateBody is strictScheduleBody for POST, which also reports
-// a required member sent as null: decoding null into a string leaves it
-// unset, so without this `kind: null` read as an enum error and `dtstart:
-// null` as a wall error rather than PATCH's `required`. Null on an optional
-// member stays the member left out (TASK-4102 PR2 r1, C-M1).
-func strictScheduleCreateBody(r *http.Request) (req models.ScheduleCreate, nullField string, err error) {
-	raw, err := readBodyForDecode(r, defaultJSONBodyLimit)
-	if err != nil {
-		return req, "", err
-	}
-	if req, err = scheduleBodyBytes[models.ScheduleCreate](raw); err != nil {
-		return req, "", err
-	}
-	var required struct {
-		Kind    json.RawMessage `json:"kind"`
-		Dtstart json.RawMessage `json:"dtstart"`
-	}
-	if err := json.Unmarshal(raw, &required); err != nil {
-		return req, "", err
-	}
-	switch {
-	case string(required.Kind) == "null":
-		return req, "kind", nil
-	case string(required.Dtstart) == "null":
-		return req, "dtstart", nil
-	}
-	return req, "", nil
-}
-
 // scheduleActivityMeta is the names-only metadata of a schedule write.
 func scheduleActivityMeta(kind string, fields []string) string {
 	m := map[string]any{"kind": kind}
@@ -288,131 +249,35 @@ func (s *Server) recordScheduleWrite(r *http.Request, workspaceID string, item *
 	s.publishItemVerified(workspaceID, item, r)
 }
 
-// handleGetItemSchedule returns an item's schedule.
-// GET /api/v1/workspaces/{slug}/items/{itemSlug}/schedule
-//
-// Like the reminders list, an ARCHIVED item resolves read-only.
-func (s *Server) handleGetItemSchedule(w http.ResponseWriter, r *http.Request) {
-	workspaceID, ok := s.getWorkspaceID(w, r)
-	if !ok {
-		return
-	}
-	item, err := s.store.ResolveItemIncludeDeleted(workspaceID, chi.URLParam(r, "itemSlug"))
-	if err != nil {
-		writeInternalError(w, err)
-		return
-	}
-	if item == nil {
-		writeError(w, http.StatusNotFound, "not_found", "Item not found")
-		return
-	}
-	if !s.requireItemVisible(w, r, workspaceID, item) {
-		return
-	}
-	sc, err := s.store.GetSchedule(workspaceID, item.ID)
-	if err != nil {
-		writeInternalError(w, err)
-		return
-	}
-	if sc == nil {
-		writeScheduleNotFound(w)
-		return
-	}
-	writeJSON(w, http.StatusOK, s.buildScheduleView(r, item, sc))
-}
-
-// handleCreateItemSchedule creates an item's schedule.
-// POST /api/v1/workspaces/{slug}/items/{itemSlug}/schedule
-func (s *Server) handleCreateItemSchedule(w http.ResponseWriter, r *http.Request) {
-	workspaceID, ok := s.getWorkspaceID(w, r)
-	if !ok {
-		return
-	}
-	item := s.resolveVisibleItem(w, r, workspaceID)
-	if item == nil {
-		return
-	}
-	if !s.requireEditPermission(w, r, workspaceID, item.ID, item.CollectionID) {
-		return
-	}
-	req, nullField, err := strictScheduleCreateBody(r)
-	if err != nil {
-		writeScheduleBodyError(w)
-		return
-	}
-	if nullField != "" {
-		writeScheduleRequired(w, nullField)
-		return
-	}
-	note := ""
-	if !req.Floating && req.Tz == "" {
-		req.Tz, note = defaultScheduleZone(r)
-	}
-	sc, err := s.store.CreateSchedule(workspaceID, item.ID, req)
-	if s.writeScheduleItemGone(w, r, workspaceID, err) || writeScheduleError(w, err) {
-		return
-	}
-	s.recordScheduleWrite(r, workspaceID, item, "schedule_created", scheduleActivityMeta(sc.Kind, nil))
-	v := s.buildScheduleView(r, item, sc)
-	v.TimezoneNote = note
-	writeJSON(w, http.StatusCreated, v)
-}
-
-// schedulePatchBody holds each member raw so key presence, and an explicit
-// null, are known. An absent member is a nil RawMessage.
-type schedulePatchBody struct {
-	Kind        json.RawMessage `json:"kind"`
-	Dtstart     json.RawMessage `json:"dtstart"`
-	Dtend       json.RawMessage `json:"dtend"`
-	Tz          json.RawMessage `json:"tz"`
-	Floating    json.RawMessage `json:"floating"`
-	Rrule       json.RawMessage `json:"rrule"`
-	RDates      json.RawMessage `json:"rdates"`
-	ExDates     json.RawMessage `json:"exdates"`
-	Anchor      json.RawMessage `json:"anchor"`
-	Audience    json.RawMessage `json:"audience"`
-	LeadMinutes json.RawMessage `json:"lead_minutes"`
-}
-
-func (b schedulePatchBody) present() map[string]json.RawMessage {
-	return map[string]json.RawMessage{
-		"kind": b.Kind, "dtstart": b.Dtstart, "dtend": b.Dtend, "tz": b.Tz,
-		"floating": b.Floating, "rrule": b.Rrule, "rdates": b.RDates, "exdates": b.ExDates,
-		"anchor": b.Anchor, "audience": b.Audience, "lead_minutes": b.LeadMinutes,
-	}
-}
-
 func isJSONNull(raw json.RawMessage) bool { return string(raw) == "null" }
 
-// toScheduleUpdate maps a patch body onto the store's update. null clears
-// dtend, rrule, rdates and exdates; on any other member it is `required`. It
-// writes the response itself and returns ok=false on a refusal. fields is the
-// allowlisted member names the body carried.
-func toScheduleUpdate(w http.ResponseWriter, b schedulePatchBody) (upd models.ScheduleUpdate, fields []string, ok bool) {
-	raws := b.present()
-	for _, name := range scheduleMembers {
+func scheduleUpdateFromMembers(w http.ResponseWriter, raws map[string]json.RawMessage) (upd models.ScheduleUpdate, fields []string, ok bool) {
+	names := make([]string, 0, len(raws))
+	for name := range raws {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
 		raw := raws[name]
 		if raw == nil {
 			continue
 		}
 		fields = append(fields, name)
 		null := isJSONNull(raw)
-		clearable := name == "dtend" || name == "rrule" || name == "rdates" || name == "exdates"
+		clearable := name == "rrule" || name == "rdates" || name == "exdates"
 		if null && !clearable {
 			writeScheduleRequired(w, name)
 			return upd, nil, false
 		}
 		var err error
 		switch name {
-		case "kind", "dtstart", "tz", "anchor", "audience", "dtend", "rrule":
+		case "dtstart", "tz", "anchor", "audience", "rrule":
 			var v string
 			if !null {
 				err = json.Unmarshal(raw, &v)
 			}
 			p := &v
 			switch name {
-			case "kind":
-				upd.Kind = p
 			case "dtstart":
 				upd.Dtstart = p
 			case "tz":
@@ -421,8 +286,6 @@ func toScheduleUpdate(w http.ResponseWriter, b schedulePatchBody) (upd models.Sc
 				upd.Anchor = p
 			case "audience":
 				upd.Audience = p
-			case "dtend":
-				upd.Dtend = p
 			case "rrule":
 				upd.Rrule = p
 			}
@@ -456,74 +319,9 @@ func toScheduleUpdate(w http.ResponseWriter, b schedulePatchBody) (upd models.Sc
 	return upd, fields, true
 }
 
-// handleUpdateItemSchedule changes an item's schedule.
-// PATCH /api/v1/workspaces/{slug}/items/{itemSlug}/schedule
-func (s *Server) handleUpdateItemSchedule(w http.ResponseWriter, r *http.Request) {
-	workspaceID, ok := s.getWorkspaceID(w, r)
-	if !ok {
-		return
-	}
-	item := s.resolveVisibleItem(w, r, workspaceID)
-	if item == nil {
-		return
-	}
-	if !s.requireEditPermission(w, r, workspaceID, item.ID, item.CollectionID) {
-		return
-	}
-	body, err := strictScheduleBody[schedulePatchBody](r)
-	if err != nil {
-		writeScheduleBodyError(w)
-		return
-	}
-	upd, fields, ok := toScheduleUpdate(w, body)
-	if !ok {
-		return
-	}
-	if len(fields) == 0 {
-		// {} changes nothing: answer with the schedule, without a write that
-		// would only move updated_at.
-		cur, err := s.store.GetSchedule(workspaceID, item.ID)
-		if err != nil {
-			writeInternalError(w, err)
-			return
-		}
-		if cur == nil {
-			writeScheduleNotFound(w)
-			return
-		}
-		writeJSON(w, http.StatusOK, s.buildScheduleView(r, item, cur))
-		return
-	}
-	note := ""
-	if upd.Floating != nil && !*upd.Floating && upd.Tz == nil {
-		// Leaving floating without naming a zone takes the caller's, like create.
-		cur, err := s.store.GetSchedule(workspaceID, item.ID)
-		if err != nil {
-			writeInternalError(w, err)
-			return
-		}
-		if cur != nil && cur.Floating {
-			name, n := defaultScheduleZone(r)
-			upd.Tz, note = &name, n
-		}
-	}
-	sc, err := s.store.UpdateSchedule(workspaceID, item.ID, upd)
-	if s.writeScheduleItemGone(w, r, workspaceID, err) || writeScheduleError(w, err) {
-		return
-	}
-	if sc == nil {
-		writeScheduleNotFound(w)
-		return
-	}
-	s.recordScheduleWrite(r, workspaceID, item, "schedule_updated", scheduleActivityMeta(sc.Kind, fields))
-	v := s.buildScheduleView(r, item, sc)
-	v.TimezoneNote = note
-	writeJSON(w, http.StatusOK, v)
-}
-
-// handleDeleteItemSchedule removes an item's schedule and its managed reminder.
-// DELETE /api/v1/workspaces/{slug}/items/{itemSlug}/schedule
-func (s *Server) handleDeleteItemSchedule(w http.ResponseWriter, r *http.Request) {
+// handleDeleteItemCommitment removes an item's schedule and its managed reminder.
+// DELETE /api/v1/workspaces/{slug}/items/{itemSlug}/commitment
+func (s *Server) handleDeleteItemCommitment(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -578,7 +376,7 @@ func (s *Server) handleDeleteItemSchedule(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, map[string]any{"id": cur.ID, "deleted": true})
 }
 
-// scheduleResolveBody is POST .../schedule/resolve. Every member is a pointer so
+// scheduleResolveBody is POST .../commitment/resolve. Every member is a pointer so
 // a missing one is told apart from an empty one.
 type scheduleResolveBody struct {
 	OccurrenceAt *string `json:"occurrence_at"`
@@ -632,16 +430,9 @@ func parseResolveInstant(w http.ResponseWriter, field string, raw *string) (time
 	return t, true
 }
 
-// handleResolveItemSchedule resolves the outstanding occurrence of an item's
-// schedule: done and skip advance it, snooze and move keep it outstanding.
-// POST /api/v1/workspaces/{slug}/items/{itemSlug}/schedule/resolve
-func (s *Server) handleResolveItemSchedule(w http.ResponseWriter, r *http.Request) {
-	s.resolveItemSchedule(w, r, false)
-}
-
-// resolveItemSchedule shares the resolve write and its side effects. Each door
-// decodes its own strict body; the schedule door keeps its original wire shape.
-func (s *Server) resolveItemSchedule(w http.ResponseWriter, r *http.Request, commitment bool) {
+// resolveItemSchedule resolves through the commitment door and publishes the
+// existing schedule and comment side effects.
+func (s *Server) resolveItemSchedule(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -653,16 +444,8 @@ func (s *Server) resolveItemSchedule(w http.ResponseWriter, r *http.Request, com
 	if !s.requireEditPermission(w, r, workspaceID, item.ID, item.CollectionID) {
 		return
 	}
-	var err error
-	var body scheduleResolveBody
-	var actualDoneAt *string
-	if commitment {
-		var b commitmentResolveBody
-		b, err = strictScheduleBody[commitmentResolveBody](r)
-		body, actualDoneAt = b.scheduleResolveBody, b.ActualDoneAt
-	} else {
-		body, err = strictScheduleBody[scheduleResolveBody](r)
-	}
+	b, err := strictScheduleBody[commitmentResolveBody](r)
+	body, actualDoneAt := b.scheduleResolveBody, b.ActualDoneAt
 	if err != nil {
 		writeScheduleBodyError(w)
 		return
@@ -736,23 +519,12 @@ func (s *Server) resolveItemSchedule(w http.ResponseWriter, r *http.Request, com
 			Summary:      truncateForSummary(res.Comment.Body, 120),
 		})
 	}
-	if commitment {
-		c, err := s.store.GetCommitment(workspaceID, item.ID)
-		if errors.Is(err, store.ErrScheduleNotFound) {
-			writeScheduleNotFound(w)
-			return
-		}
-		if err != nil {
-			writeInternalError(w, err)
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"commitment": c, "resolution": resolution})
+	v, err := s.buildCommitmentView(r, workspaceID, item, res.Schedule, "")
+	if err != nil {
+		writeInternalError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"schedule":   s.buildScheduleView(r, item, res.Schedule),
-		"resolution": resolution,
-	})
+	writeJSON(w, http.StatusOK, map[string]any{"commitment": v, "resolution": resolution})
 }
 
 // resolveActivityMeta is the names-only metadata of a resolution: the schedule's

@@ -13,7 +13,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// TASK-4103 C2b: POST .../schedule/resolve over HTTP.
+// TASK-4103 C2b: POST .../commitment/resolve over HTTP.
 
 // The first occurrence of okSchedule: a daily UTC rule from 2099, so a resolve
 // here is an early one (nothing has passed).
@@ -34,7 +34,7 @@ func (f *schedHTTP) comments() int {
 	return f.count(`SELECT COUNT(*) FROM comments WHERE item_id = ?`, f.item.ID)
 }
 
-func TestScheduleResolveEnvelope(t *testing.T) {
+func TestCommitmentResolveEnvelope(t *testing.T) {
 	t.Parallel()
 	f := newSchedHTTP(t)
 	sc := f.create(okSchedule)
@@ -43,7 +43,7 @@ func TestScheduleResolveEnvelope(t *testing.T) {
 		t.Fatalf("resolve: %d %s", rr.Code, rr.Body.String())
 	}
 	m := schedMap(t, rr)
-	view, _ := m["schedule"].(map[string]any)
+	view, _ := m["commitment"].(map[string]any)
 	res, _ := m["resolution"].(map[string]any)
 	next, _ := view["next_occurrence"].(map[string]any)
 	if view["id"] != sc["id"] || next["at"] != "2099-01-02T09:00:00Z" || next["wall"] != "2099-01-02T09:00:00" {
@@ -64,7 +64,7 @@ func TestScheduleResolveEnvelope(t *testing.T) {
 	}
 }
 
-func TestScheduleResolveStrictBodyAndFields(t *testing.T) {
+func TestCommitmentResolveStrictBodyAndFields(t *testing.T) {
 	t.Parallel()
 	f := newSchedHTTP(t)
 	f.create(okSchedule)
@@ -111,10 +111,10 @@ func TestScheduleResolveStrictBodyAndFields(t *testing.T) {
 	}
 }
 
-func TestScheduleResolveStaleAndBroken(t *testing.T) {
+func TestCommitmentResolveStaleAndBroken(t *testing.T) {
 	t.Parallel()
 	f := newSchedHTTP(t)
-	f.create(map[string]any{"kind": "check", "dtstart": "2099-01-01T09:00", "tz": "UTC"}) // a one-shot
+	f.create(map[string]any{"roles": map[string]any{}, "dtstart": "2099-01-01T09:00", "tz": "UTC"}) // a one-shot
 	d := f.expectErr(f.resolve(map[string]any{"occurrence_at": "2099-01-01T10:00:00Z", "state": "done"}), 409, "stale", "")
 	next, _ := d["next_occurrence"].(map[string]any)
 	if d["ended"] != false || next["at"] != resolveX || next["wall"] != "2099-01-01T09:00:00" {
@@ -140,7 +140,7 @@ func TestScheduleResolveStaleAndBroken(t *testing.T) {
 	}
 }
 
-func TestScheduleResolveAuthMatrix(t *testing.T) {
+func TestCommitmentResolveAuthMatrix(t *testing.T) {
 	t.Parallel()
 	f := newSchedHTTP(t)
 	editor := f.member("sched-res-editor@example.com", "editor")
@@ -175,7 +175,7 @@ func TestScheduleResolveAuthMatrix(t *testing.T) {
 			t.Errorf("%s = %d %s", u.Username, rr.Code, rr.Body.String())
 		}
 	}
-	gp := "/api/v1/workspaces/" + f.ws.Slug + "/items/NOPE-99999/schedule/resolve"
+	gp := "/api/v1/workspaces/" + f.ws.Slug + "/items/NOPE-99999/commitment/resolve"
 	if rr := f.as(f.token(f.owner, ""), "POST", gp, body); rr.Code != 404 {
 		t.Errorf("unknown item = %d", rr.Code)
 	}
@@ -188,7 +188,7 @@ func TestScheduleResolveAuthMatrix(t *testing.T) {
 // The activity is names-only, one item_updated per resolve, the comment event
 // only when a comment was sent, and a refused resolve writes and publishes
 // nothing.
-func TestScheduleResolveActivityAndSSE(t *testing.T) {
+func TestCommitmentResolveActivityAndSSE(t *testing.T) {
 	t.Parallel()
 	f := newSchedHTTPOn(t, testServerWithEvents(t))
 	ch, _, _ := f.srv.events.Subscribe(context.Background(), f.ws.ID)
@@ -268,15 +268,15 @@ func TestScheduleResolveActivityAndSSE(t *testing.T) {
 
 // completion needs a plain interval: refused on create and on PATCH, with the
 // anchor named; a plain interval is accepted.
-func TestScheduleCompletionAnchorRuleSetHTTP(t *testing.T) {
+func TestCommitmentCompletionAnchorRuleSetHTTP(t *testing.T) {
 	t.Parallel()
 	f := newSchedHTTP(t)
-	rr := f.do("POST", map[string]any{"kind": "check", "dtstart": "2099-01-01T09:00", "tz": "UTC", "rrule": "FREQ=WEEKLY;BYDAY=MO", "anchor": "completion"})
+	rr := f.do("POST", map[string]any{"roles": map[string]any{}, "dtstart": "2099-01-01T09:00", "tz": "UTC", "rrule": "FREQ=WEEKLY;BYDAY=MO", "anchor": "completion"})
 	if d := f.expectErr(rr, 400, "validation_error", "combination"); d["field"] != "anchor" {
 		t.Errorf("create details = %v", d)
 	}
 	f.nothingStored()
-	f.create(map[string]any{"kind": "check", "dtstart": "2099-01-01T09:00", "tz": "UTC", "rrule": "FREQ=WEEKLY", "anchor": "completion"})
+	f.create(map[string]any{"roles": map[string]any{}, "dtstart": "2099-01-01T09:00", "tz": "UTC", "rrule": "FREQ=WEEKLY", "anchor": "completion"})
 	rr = f.do("PATCH", map[string]any{"rrule": "FREQ=WEEKLY;COUNT=3"})
 	if d := f.expectErr(rr, 400, "validation_error", "combination"); d["field"] != "anchor" {
 		t.Errorf("patch details = %v", d)

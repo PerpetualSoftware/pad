@@ -746,9 +746,8 @@ func TestUpdateScheduleOfAnArchivedItemIsRefused(t *testing.T) {
 }
 
 // PG: the move holds the item and the schedule through its commit. A timing edit
-// parked on the schedule row (it passed the item's KEY SHARE, which the archive
-// does not conflict with) must find the item archived when it gets the row, and
-// leave the ended schedule ended.
+// parked on pinScheduleTx's row locks must find the item archived when it gets
+// them, and leave the ended schedule ended.
 func TestPGUpdateParkedOnTheScheduleWhileAMoveCommitsIsRefused(t *testing.T) {
 	if os.Getenv("PAD_TEST_POSTGRES_URL") == "" {
 		t.Skip("PAD_TEST_POSTGRES_URL not set: row locks only exist on Postgres")
@@ -765,7 +764,7 @@ func TestPGUpdateParkedOnTheScheduleWhileAMoveCommitsIsRefused(t *testing.T) {
 		_, err := c.s.updateScheduleAt(c.wsA.ID, c.src.ID, models.ScheduleUpdate{Dtstart: &d}, copyNow)
 		patched <- err
 	}()
-	waitForLockWait(t, c.s, "FOR UPDATE", patched)
+	waitForLockWait(t, c.s, "FOR NO KEY UPDATE OF", patched)
 	release()
 	if err := <-moved; err != nil {
 		t.Fatalf("move: %v", err)

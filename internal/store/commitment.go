@@ -227,23 +227,90 @@ func rolesFromInput(in models.CommitmentRolesInput) (scheduleRoles, error) {
 	if (in.DeadlineDays == nil) != (in.DeadlineBehavior == nil) {
 		return r, fieldErr("deadline_behavior", "combination", "a deadline and its behavior are set together")
 	}
+	return r, validateRoleValues(r)
+}
+
+// validateRoleValues checks members independently; it does not check pairing.
+func validateRoleValues(in scheduleRoles) error {
 	if in.DeadlineBehavior != nil && !oneOf(*in.DeadlineBehavior, []string{"lapses", "stays_owed"}) {
-		return r, fieldErr("deadline_behavior", "enum", "deadline_behavior must be lapses or stays_owed")
+		return fieldErr("deadline_behavior", "enum", "deadline_behavior must be lapses or stays_owed")
 	}
 	for _, n := range []*int{&in.TargetDays, &in.TargetSecs, in.EarliestDays, in.EarliestSecs, in.DeadlineDays, in.DeadlineSecs, in.OccupiedDays, in.OccupiedSecs} {
 		if n != nil && (int64(*n) < math.MinInt32 || int64(*n) > math.MaxInt32) {
-			return r, fieldErr("roles", "range", "a role offset is out of range")
+			return fieldErr("roles", "range", "a role offset is out of range")
 		}
 	}
 	if hasNUL(in.Outcome) {
-		return r, fieldErr("outcome", "enum", "outcome cannot contain a NUL")
+		return fieldErr("outcome", "enum", "outcome cannot contain a NUL")
 	}
-	return r, nil
+	return nil
 }
 
-func (s *Store) writeNativeRolesTx(tx *sql.Tx, id string, r scheduleRoles) error {
-	_, err := tx.Exec(s.q(`UPDATE item_schedules SET target_days=?,target_secs=?,earliest_days=?,earliest_secs=?,deadline_days=?,deadline_secs=?,deadline_behavior=?,occupied_days=?,occupied_secs=?,outcome=?,roles_origin='native',updated_at=? WHERE id=?`),
-		r.TargetDays, r.TargetSecs, r.EarliestDays, r.EarliestSecs, r.DeadlineDays, r.DeadlineSecs, r.DeadlineBehavior, r.OccupiedDays, r.OccupiedSecs, r.Outcome, now(), id)
+// occupiedEnd applies an offset using the schedule's own civil arithmetic.
+// Validate it even when a deadline takes precedence over the window label.
+func occupiedEnd(start string, r scheduleRoles) (*string, error) {
+	if r.OccupiedDays == nil {
+		return nil, nil
+	}
+	w, err := schedule.ParseWall(start)
+	if err != nil {
+		return nil, err
+	}
+	if w.AllDay && *r.OccupiedSecs != 0 {
+		return nil, fieldErr("occupied_until", "combination", "occupied_until must be all-day exactly when dtstart is")
+	}
+	civil := time.Date(w.Year, w.Month, w.Day, w.Hour, w.Minute, w.Second, 0, time.UTC).AddDate(0, 0, *r.OccupiedDays).Add(time.Duration(*r.OccupiedSecs) * time.Second)
+	end := wallOf(civil)
+	end.AllDay = w.AllDay
+	_, wallErr := schedule.ParseWall(end.String())
+	if wallErr != nil || end.String() <= w.String() {
+		return nil, fieldErr("occupied_until", "range", "occupied_until must be after dtstart and within the wall date range")
+	}
+	return ptr(end.String()), nil
+}
+
+// deriveNativeScheduleFields derives the stored label and window end. A hard
+// deadline takes precedence over occupied_until, whose role columns remain
+// intact: no date is lost. Existing check/deadline_soft labels survive only
+// when neither role exists; removing a deadline never leaves its old label.
+func deriveNativeScheduleFields(kind, start string, r scheduleRoles, creating bool) (string, *string, error) {
+	end, err := occupiedEnd(start, r)
+	if err != nil {
+		return "", nil, err
+	}
+	if r.DeadlineDays != nil {
+		return "deadline_hard", nil, nil
+	}
+	if end != nil {
+		return "window", end, nil
+	}
+	if !creating && (kind == "check" || kind == "deadline_soft") {
+		return kind, nil, nil
+	}
+	return "check", nil, nil
+}
+
+// writeNativeRolesTx is every native roles writer's door. Derivation and all
+// validation precede its single UPDATE (or the create INSERT), so the table's
+// kind/dtend CHECK always sees the derived pair together with the role columns.
+func (s *Store) writeNativeRolesTx(tx *sql.Tx, sc *models.ItemSchedule, r scheduleRoles, creating bool) error {
+	kind, end, err := deriveNativeScheduleFields(sc.Kind, sc.Dtstart, r, creating)
+	if err != nil {
+		return err
+	}
+	start, err := schedule.ParseWall(sc.Dtstart)
+	if err != nil {
+		return err
+	}
+	if _, _, err := validateScheduleFields(kind, sc.Anchor, sc.Audience, sc.LeadMinutes, start, derefStr(end)); err != nil {
+		return err
+	}
+	sc.Kind, sc.Dtend = kind, end
+	if creating {
+		return s.insertScheduleTx(tx, sc, &r)
+	}
+	_, err = tx.Exec(s.q(`UPDATE item_schedules SET kind=?,dtend=?,target_days=?,target_secs=?,earliest_days=?,earliest_secs=?,deadline_days=?,deadline_secs=?,deadline_behavior=?,occupied_days=?,occupied_secs=?,outcome=?,roles_origin='native',updated_at=? WHERE id=?`),
+		kind, nullStr(end), r.TargetDays, r.TargetSecs, r.EarliestDays, r.EarliestSecs, r.DeadlineDays, r.DeadlineSecs, r.DeadlineBehavior, r.OccupiedDays, r.OccupiedSecs, r.Outcome, now(), sc.ID)
 	if err != nil {
 		return fmt.Errorf("write schedule roles: %w", err)
 	}
@@ -281,50 +348,123 @@ func sameDeadline(a, b scheduleRoles) bool {
 // freely. A legacy_backfill row has no native renegotiation path, so its first
 // write here sets the deadline.
 func (s *Store) SetCommitmentRoles(workspaceID, itemID string, roles models.CommitmentRolesInput) (*models.ItemSchedule, error) {
-	r, err := rolesFromInput(roles)
-	if err != nil {
+	// This internal full-object door retains its replacement semantics.
+	if _, err := rolesFromInput(roles); err != nil {
 		return nil, err
 	}
-	tx, err := s.db.Begin()
-	if err != nil {
-		return nil, fmt.Errorf("set schedule roles: %w", err)
+	p := models.CommitmentRolesPatch{
+		TargetDays: fullRolePatchValue(&roles.TargetDays), TargetSecs: fullRolePatchValue(&roles.TargetSecs),
+		EarliestDays: fullRolePatchValue(roles.EarliestDays), EarliestSecs: fullRolePatchValue(roles.EarliestSecs),
+		DeadlineDays: fullRolePatchValue(roles.DeadlineDays), DeadlineSecs: fullRolePatchValue(roles.DeadlineSecs),
+		DeadlineBehavior: fullRolePatchValue(roles.DeadlineBehavior),
+		OccupiedDays:     fullRolePatchValue(roles.OccupiedDays), OccupiedSecs: fullRolePatchValue(roles.OccupiedSecs),
+		Outcome: fullRolePatchValue(&roles.Outcome),
 	}
-	defer tx.Rollback()
-	if err := s.pinScheduleTx(tx, workspaceID, itemID); err != nil {
-		return nil, err
+	return s.UpdateCommitment(workspaceID, itemID, models.ScheduleUpdate{}, &p)
+}
+
+func fullRolePatchValue[T any](v *T) models.CommitmentRolePatchValue[T] {
+	return models.CommitmentRolePatchValue[T]{Present: true, Value: v}
+}
+
+// validateRolesPatch checks only individual members before opening a transaction.
+// Pairing and deadline protection depend on the locked stored roles instead.
+func validateRolesPatch(p models.CommitmentRolesPatch) error {
+	named := false
+	for _, field := range []struct {
+		name  string
+		value models.CommitmentRolePatchValue[int]
+	}{
+		{"target_days", p.TargetDays}, {"target_secs", p.TargetSecs},
+		{"earliest_days", p.EarliestDays}, {"earliest_secs", p.EarliestSecs},
+		{"deadline_days", p.DeadlineDays}, {"deadline_secs", p.DeadlineSecs},
+		{"occupied_days", p.OccupiedDays}, {"occupied_secs", p.OccupiedSecs},
+	} {
+		if !field.value.Present {
+			continue
+		}
+		named = true
+		if field.value.Value == nil && (field.name == "target_days" || field.name == "target_secs") {
+			return fieldErr(field.name, "required", "a target is required")
+		}
+		if n := field.value.Value; n != nil && (int64(*n) < math.MinInt32 || int64(*n) > math.MaxInt32) {
+			return fieldErr("roles", "range", "a role offset is out of range")
+		}
 	}
-	sc, err := s.getScheduleQ(tx, workspaceID, itemID, false)
-	if err != nil {
-		return nil, err
+	if p.Outcome.Present && p.Outcome.Value == nil {
+		return fieldErr("outcome", "required", "outcome is required")
 	}
-	if sc == nil {
-		return nil, ErrScheduleNotFound
+	if !named && !p.Outcome.Present && !p.DeadlineBehavior.Present {
+		return fieldErr("roles", "required", "at least one roles member is required")
 	}
-	cur, err := s.scheduleRolesOf(tx, sc)
-	if err != nil {
-		return nil, err
+	values := scheduleRoles{}
+	if p.DeadlineBehavior.Present {
+		values.DeadlineBehavior = p.DeadlineBehavior.Value
 	}
-	if cur.Origin == "native" && cur.DeadlineDays != nil && !sameDeadline(cur, r) {
-		return nil, ErrHardDeadlineRenegotiate
+	if p.Outcome.Present {
+		values.Outcome = *p.Outcome.Value
 	}
-	before, err := s.scheduleSnapshotTx(tx, sc.ID)
-	if err != nil {
-		return nil, err
+	return validateRoleValues(values)
+}
+
+func mergeRolesPatch(stored scheduleRoles, p models.CommitmentRolesPatch) (scheduleRoles, error) {
+	in := models.CommitmentRolesInput{TargetDays: stored.TargetDays, TargetSecs: stored.TargetSecs,
+		EarliestDays: stored.EarliestDays, EarliestSecs: stored.EarliestSecs,
+		DeadlineDays: stored.DeadlineDays, DeadlineSecs: stored.DeadlineSecs, DeadlineBehavior: stored.DeadlineBehavior,
+		OccupiedDays: stored.OccupiedDays, OccupiedSecs: stored.OccupiedSecs, Outcome: stored.Outcome}
+	if p.TargetDays.Present {
+		in.TargetDays = *p.TargetDays.Value
 	}
-	if err := s.writeNativeRolesTx(tx, sc.ID, r); err != nil {
-		return nil, err
+	if p.TargetSecs.Present {
+		in.TargetSecs = *p.TargetSecs.Value
 	}
-	after, err := s.scheduleSnapshotTx(tx, sc.ID)
-	if err != nil {
-		return nil, err
+	for _, f := range []struct {
+		p    models.CommitmentRolePatchValue[int]
+		into **int
+	}{
+		{p.EarliestDays, &in.EarliestDays}, {p.EarliestSecs, &in.EarliestSecs},
+		{p.DeadlineDays, &in.DeadlineDays}, {p.DeadlineSecs, &in.DeadlineSecs},
+		{p.OccupiedDays, &in.OccupiedDays}, {p.OccupiedSecs, &in.OccupiedSecs},
+	} {
+		if f.p.Present {
+			*f.into = f.p.Value
+		}
 	}
-	if err := s.journalScheduleChangeReasonTx(tx, sc.ID, "update", "", "", before, after, "system", rolesWriteReason, "system"); err != nil {
-		return nil, err
+	if p.DeadlineBehavior.Present {
+		in.DeadlineBehavior = p.DeadlineBehavior.Value
 	}
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("set schedule roles: %w", err)
+	if p.Outcome.Present {
+		in.Outcome = *p.Outcome.Value
 	}
-	return s.GetSchedule(workspaceID, itemID)
+	// Explicit clearing requires the whole pair, even if it is already absent.
+	null := func(p models.CommitmentRolePatchValue[int]) bool { return p.Present && p.Value == nil }
+	for _, pair := range []struct {
+		name string
+		a, b models.CommitmentRolePatchValue[int]
+	}{
+		{"earliest", p.EarliestDays, p.EarliestSecs}, {"deadline", p.DeadlineDays, p.DeadlineSecs}, {"occupied_until", p.OccupiedDays, p.OccupiedSecs},
+	} {
+		if (null(pair.a) || null(pair.b)) && !(null(pair.a) && null(pair.b)) {
+			return scheduleRoles{}, fieldErr(pair.name, "combination", pair.name+" days and secs are cleared together")
+		}
+	}
+	deadlineNull := null(p.DeadlineDays) || null(p.DeadlineSecs)
+	behaviorNull := p.DeadlineBehavior.Present && p.DeadlineBehavior.Value == nil
+	if deadlineNull != behaviorNull {
+		return scheduleRoles{}, fieldErr("deadline_behavior", "combination", "a deadline and its behavior are cleared together")
+	}
+	return rolesFromInput(in)
+}
+
+// UpdateCommitment judges the stored timing and the partial roles request under
+// one pin, then writes both or neither. Authority is HTTP's job.
+func (s *Store) UpdateCommitment(workspaceID, itemID string, upd models.ScheduleUpdate, roles *models.CommitmentRolesPatch) (*models.ItemSchedule, error) {
+	if roles != nil {
+		if err := validateRolesPatch(*roles); err != nil {
+			return nil, err
+		}
+	}
+	return s.updateCommitmentAt(workspaceID, itemID, upd, roles, time.Now())
 }
 
 // RenegotiateDeadline moves the outstanding occurrence's deadline to until: a
