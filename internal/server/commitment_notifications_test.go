@@ -126,3 +126,53 @@ func TestCommitmentNotices_RefusalResponseUnchanged(t *testing.T) {
 		t.Fatal("refusal subscribed")
 	}
 }
+
+// An ended schedule has nothing to renegotiate: a caller with authority gets the
+// stated ended refusal for every scope and mode, and one without keeps the
+// byte-identical 403 and sends no notice.
+func TestRenegotiateEndedScheduleRefusal(t *testing.T) {
+	f := newSchedHTTP(t)
+	editor := f.member("ended-editor@example.com", "editor")
+	readCommitment(t, commitmentCall(f, "POST", commitmentBody()), 201)
+	if _, err := f.srv.store.UpdateItem(f.item.ID, models.ItemUpdate{AssignedUserID: &f.owner.ID, ActorUserID: f.owner.ID}); err != nil {
+		t.Fatal(err)
+	}
+	plain, err := f.srv.store.CreateSession(f.owner.ID, "ios", "", "", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := f.srv.store.ValidateSession(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.srv.store.RegisterPushDevice(f.owner.ID, session.ID, "ended-device", "ios", "ended-token", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.srv.store.DB().Exec(`UPDATE item_schedules SET ended_at='2026-01-01T00:00:00Z', next_at=NULL, next_wall=NULL WHERE item_id=?`, f.item.ID); err != nil {
+		t.Fatal(err)
+	}
+	path := commitmentPath(f) + "/renegotiate"
+	bodies := map[string]string{
+		"series preview":     `{"reason":"r","scope":"series","remove_deadline":true,"preview":true}`,
+		"series apply":       `{"reason":"r","scope":"series","remove_deadline":true,"revision":"x"}`,
+		"occurrence preview": `{"reason":"r","scope":"occurrence","deadline":"2099-01-05T09:00:00Z","preview":true}`,
+		"occurrence apply":   `{"reason":"r","scope":"occurrence","deadline":"2099-01-05T09:00:00Z","revision":"x"}`,
+	}
+	for name, body := range bodies {
+		rr := f.as(f.token(f.owner, ""), "POST", path, body)
+		if rr.Code != 400 || !strings.Contains(rr.Body.String(), `"ended"`) || !strings.Contains(rr.Body.String(), `"schedule"`) {
+			t.Fatalf("%s authorised: %d %s", name, rr.Code, rr.Body.String())
+		}
+	}
+	denied := httptest.NewRecorder()
+	writeDeadlineOwnerRequired(denied)
+	for name, body := range bodies {
+		rr := f.as(f.token(editor, ""), "POST", path, body)
+		if rr.Code != denied.Code || rr.Body.String() != denied.Body.String() {
+			t.Fatalf("%s unauthorised: %d %s", name, rr.Code, rr.Body.String())
+		}
+	}
+	if n := f.count(`SELECT COUNT(*) FROM user_notifications`); n != 0 {
+		t.Fatalf("ended schedule sent %d notices", n)
+	}
+}

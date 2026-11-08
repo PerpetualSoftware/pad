@@ -88,6 +88,12 @@ func (s *Store) renegotiateCommitmentAt(workspaceID, itemID, actor string, in mo
 	if sc == nil {
 		return nil, ErrScheduleNotFound
 	}
+	// An ended schedule has no outstanding occurrence to move. Refuse it here,
+	// under the pin, before the plan or the revision comparison, so every scope
+	// and both modes answer the same code and nothing is stored.
+	if sc.EndedAt != nil {
+		return nil, fieldErr("schedule", "ended", "the commitment has ended; there is no outstanding occurrence to renegotiate")
+	}
 	if nowT.IsZero() {
 		nowT = time.Now()
 	}
