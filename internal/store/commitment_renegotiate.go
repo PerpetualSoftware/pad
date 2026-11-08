@@ -112,9 +112,9 @@ func (s *Store) renegotiateCommitmentAt(workspaceID, itemID, actor string, in mo
 			return nil, err
 		}
 		if in.RemoveDeadline {
-			// Keys are canonical UTC instants for pinned timed schedules, walls
-			// otherwise. Their order identifies the outstanding and later instances.
-			if _, err := tx.Exec(s.q(`DELETE FROM schedule_occurrence_overrides WHERE schedule_id=? AND role='deadline' AND occurrence_key>=?`), sc.ID, plan.result.Preview.AppliesFrom); err != nil {
+			// Deadline overrides are written only for the outstanding occurrence.
+			// Other keys can belong to resolved occurrences even when they sort later.
+			if _, err := tx.Exec(s.q(`DELETE FROM schedule_occurrence_overrides WHERE schedule_id=? AND role='deadline' AND occurrence_key=?`), sc.ID, plan.result.Preview.OccurrenceKey); err != nil {
 				return nil, err
 			}
 		}
@@ -249,7 +249,7 @@ func (s *Store) planRenegotiationTx(tx *sql.Tx, sc *models.ItemSchedule, in mode
 	view.NewDeadlineBehavior = p.roles.DeadlineBehavior
 	if in.RemoveDeadline {
 		view.NewOffset = nil
-		view.ClearsDeadlineOverrides = true
+		view.ClearsDeadlineOverrides = overrideFor(overrides, "deadline") != nil
 	} else {
 		view.NewOffset = &models.CommitmentDeadlineOffset{DeadlineDays: p.roles.DeadlineDays, DeadlineSecs: p.roles.DeadlineSecs}
 		// An outstanding override is an explicit earlier renegotiation: keep it

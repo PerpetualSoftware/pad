@@ -145,8 +145,6 @@ func TestRenegotiateSeriesCasesAndPastUntouched(t *testing.T) {
 			default:
 				in.RemoveDeadline = true
 			}
-			// A future override belongs to the deadline too and must disappear on removal.
-			f.exec(t, `INSERT INTO schedule_occurrence_overrides (id,schedule_id,occurrence_key,role,value_at,created_at,updated_at) VALUES (?,?,?,'deadline',?,?,?)`, newID(), sc.ID, "2026-10-28T09:00:00Z|2026-10-28T09:00:00", "2026-10-29T10:00:00Z", now(), now())
 			reminder := renegotiateRows(t, f.s, "item_reminders", "")
 			a := applyRenegotiation(t, f, in, rt("2026-10-26T09:30:00Z"))
 			if a.Preview.AppliesFrom != deadlineKey || a.Preview.OccurrenceKey != deadlineKey {
@@ -179,7 +177,7 @@ func TestRenegotiateSeriesCasesAndPastUntouched(t *testing.T) {
 				if c.Roles.Deadline != nil || c.Roles.DeadlineBehavior != nil || after["deadline_days"] != nil || after["deadline_secs"] != nil || after["deadline_behavior"] != nil {
 					t.Fatalf("deadline remains %+v %v", c, after)
 				}
-				if f.count(t, `SELECT COUNT(*) FROM schedule_occurrence_overrides WHERE role='deadline' AND occurrence_key>=?`, deadlineKey) != 0 {
+				if f.count(t, `SELECT COUNT(*) FROM schedule_occurrence_overrides WHERE role='deadline' AND occurrence_key=?`, deadlineKey) != 0 {
 					t.Fatal("deadline overrides remain")
 				}
 				if ok, err := f.s.DeleteScheduleChecked(f.ws.ID, f.item.ID, false); err != nil || !ok {
@@ -217,7 +215,7 @@ func TestRenegotiateSeriesKeepsExplicitOverrideAndRemovalClearsIt(t *testing.T) 
 	in = seriesRequest()
 	in.RemoveDeadline = true
 	p = applyRenegotiation(t, f, in, renegNow)
-	if p.Preview.KeepsDeadlineOverride || p.Preview.NewDeadline != nil || f.count(t, `SELECT COUNT(*) FROM schedule_occurrence_overrides WHERE occurrence_key=?`, deadlineKey) != 0 {
+	if !p.Preview.ClearsDeadlineOverrides || p.Preview.KeepsDeadlineOverride || p.Preview.NewDeadline != nil || f.count(t, `SELECT COUNT(*) FROM schedule_occurrence_overrides WHERE occurrence_key=?`, deadlineKey) != 0 {
 		t.Fatal("removal kept override")
 	}
 }
@@ -368,5 +366,38 @@ func TestRenegotiateSeriesConvertedRowLaterMiss(t *testing.T) {
 	}
 	if got := f.eval(t, rt(*c.Roles.Deadline).Add(time.Second).Format(time.RFC3339), 0); got.Missed != 1 {
 		t.Fatalf("conversion marker suppressed later miss %+v", got)
+	}
+}
+
+func TestRenegotiateRemovalPreservesResolvedMovedDeadlineOverride(t *testing.T) {
+	t.Parallel()
+	f := newSchedFixture(t)
+	sc := f.nativeCommit(t)
+	// Seed an earlier wall whose moved instant sorts after the next instance.
+	f.force(t, sc, "2026-10-25T09:00:00", "2026-10-28T09:00:00Z", "2026-10-28T09:00:00Z")
+	if err := f.s.renegotiateDeadlineAt(f.ws.ID, f.item.ID, "user", rt("2026-10-29T14:00:00Z"), "more time", renegNow); err != nil {
+		t.Fatal(err)
+	}
+	moved := f.reload(t, f.item.ID)
+	movedKey := OccurrenceKey(moved, *moved.NextAt, *moved.NextWall)
+	f.mustResolve(t, f.item, ResolveInput{OccurrenceAt: rt(*moved.NextAt), State: "done", Actor: "user", View: time.UTC}, "2026-10-26T08:30:00Z")
+	f.force(t, sc, "2026-10-26T09:00:00", deadlineOccAt, deadlineOccAt)
+	outstanding := f.reload(t, f.item.ID)
+	key := OccurrenceKey(outstanding, *outstanding.NextAt, *outstanding.NextWall)
+	if movedKey <= key {
+		t.Fatalf("fixture must sort resolved moved key after outstanding: %s / %s", movedKey, key)
+	}
+	before := renegotiateRows(t, f.s, "schedule_occurrence_overrides", "WHERE occurrence_key=? AND role='deadline'", movedKey)
+	if before == "[]" {
+		t.Fatal("missing resolved deadline override")
+	}
+	in := seriesRequest()
+	in.RemoveDeadline = true
+	p := applyRenegotiation(t, f, in, renegNow)
+	if before != renegotiateRows(t, f.s, "schedule_occurrence_overrides", "WHERE occurrence_key=? AND role='deadline'", movedKey) {
+		t.Error("resolved moved deadline override changed")
+	}
+	if p.Preview.ClearsDeadlineOverrides {
+		t.Error("preview reports clearing an absent outstanding override")
 	}
 }
