@@ -1,6 +1,7 @@
 package schedule
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -109,6 +110,30 @@ func TestRemindParseTable(t *testing.T) {
 			_, err := CommitmentBody(tc.in, nil, "")
 			if err == nil || !strings.Contains(err.Error(), tc.frag) {
 				t.Fatalf("want error containing %q, got %v", tc.frag, err)
+			}
+		})
+	}
+}
+
+func TestCommitmentEditRolesBody(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		flags CommitmentFlags
+		want  string
+	}{
+		{"hard", CommitmentFlags{Deadline: "hard"}, `{"roles":{"deadline_behavior":"stays_owed","deadline_days":0,"deadline_secs":0}}`},
+		{"soft", CommitmentFlags{Deadline: "soft"}, `{"roles":{"deadline_behavior":null,"deadline_days":null,"deadline_secs":null}}`},
+		{"none", CommitmentFlags{Deadline: "none"}, `{"roles":{"deadline_behavior":null,"deadline_days":null,"deadline_secs":null}}`},
+		{"window", CommitmentFlags{Window: "2h"}, `{"roles":{"occupied_days":0,"occupied_secs":7200}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			given := func(n string) bool {
+				return n == "deadline" && tc.flags.Deadline != "" || n == "window" && tc.flags.Window != ""
+			}
+			body, err := CommitmentBody(tc.flags, given, "2099-01-01T09:00")
+			raw, _ := json.Marshal(body)
+			if err != nil || string(raw) != tc.want {
+				t.Fatalf("body=%s err=%v want %s", raw, err, tc.want)
 			}
 		})
 	}

@@ -140,9 +140,6 @@ func mapScheduleResolve(state string) RouteMapper {
 		if c, _ := input["comment"].(string); c != "" {
 			body.Comment = c
 		}
-		if actual, _ := input["actual_done_at"].(string); actual != "" {
-			body.ActualDoneAt = actual
-		}
 		if u, _ := input["until"].(string); u != "" {
 			body.Until = u
 		}

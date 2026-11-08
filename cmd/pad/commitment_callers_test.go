@@ -111,3 +111,14 @@ func TestCommitmentCLIErrorMarker(t *testing.T) {
 		})
 	}
 }
+
+func TestCommitmentEndedDisplay(t *testing.T) {
+	const body = `{"item_ref":"TASK-5","dtstart":"2099-01-01T09:00:00","roles":{"target":null,"earliest":null,"deadline":null,"occupied_until":null}}`
+	out, _, err, _ := runSched(t, okReply(body), "", "item", "remind", "show", "TASK-5")
+	if err != nil || !strings.Contains(strings.Join(strings.Fields(out), " "), "Kind: ended") {
+		t.Fatalf("no outstanding display %q %v", out, err)
+	}
+	if strings.Contains(decodeScheduleView(json.RawMessage(body)).summary("TASK-5"), ": check,") {
+		t.Fatal("summary says check")
+	}
+}

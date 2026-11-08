@@ -230,14 +230,14 @@ func (s *Server) handleUpdateItemCommitment(w http.ResponseWriter, r *http.Reque
 		fields = append(fields, name)
 	}
 	sort.Strings(fields)
-	var roles *models.CommitmentRolesInput
+	var roles *models.CommitmentRolesPatch
 	if body.Roles != nil {
 		if isJSONNull(body.Roles) {
 			writeScheduleRequired(w, "roles")
 			return
 		}
-		roles = &models.CommitmentRolesInput{}
-		parsed, err := scheduleBodyBytes[models.CommitmentRolesInput](body.Roles)
+		roles = &models.CommitmentRolesPatch{}
+		parsed, err := scheduleBodyBytes[models.CommitmentRolesPatch](body.Roles)
 		if err != nil {
 			writeScheduleBodyError(w)
 			return

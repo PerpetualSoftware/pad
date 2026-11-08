@@ -252,11 +252,11 @@ func TestTASK4105_ScheduleReadEditDelete(t *testing.T) {
 			in   map[string]any
 			want map[string]any
 		}{
-			{"deadline none returns to a check", map[string]any{"deadline": "none"}, map[string]any{"roles": map[string]any{"target_days": float64(0), "target_secs": float64(0)}}},
-			{"deadline hard", map[string]any{"deadline": "hard"}, map[string]any{"roles": map[string]any{"target_days": float64(0), "target_secs": float64(0), "deadline_days": float64(0), "deadline_secs": float64(0), "deadline_behavior": "stays_owed"}}},
+			{"deadline none clears only the deadline", map[string]any{"deadline": "none"}, map[string]any{"roles": map[string]any{"deadline_days": nil, "deadline_secs": nil, "deadline_behavior": nil}}},
+			{"deadline hard", map[string]any{"deadline": "hard"}, map[string]any{"roles": map[string]any{"deadline_days": float64(0), "deadline_secs": float64(0), "deadline_behavior": "stays_owed"}}},
 			{"start and rule", map[string]any{"start": "2026-11-16T10:00", "every": "weekly"}, map[string]any{"dtstart": "2026-11-16T10:00:00", "rrule": "FREQ=WEEKLY"}},
-			{"a window by end wall", map[string]any{"window": "2026-11-09T17:00"}, map[string]any{"roles": map[string]any{"target_days": float64(0), "target_secs": float64(0), "occupied_days": float64(0), "occupied_secs": float64(28800)}}},
-			{"a window by duration with the start", map[string]any{"start": "2026-11-09T09:00", "window": "90m"}, map[string]any{"dtstart": "2026-11-09T09:00:00", "roles": map[string]any{"target_days": float64(0), "target_secs": float64(0), "occupied_days": float64(0), "occupied_secs": float64(5400)}}},
+			{"a window by end wall", map[string]any{"window": "2026-11-09T17:00"}, map[string]any{"roles": map[string]any{"occupied_days": float64(0), "occupied_secs": float64(28800)}}},
+			{"a window by duration with the start", map[string]any{"start": "2026-11-09T09:00", "window": "90m"}, map[string]any{"dtstart": "2026-11-09T09:00:00", "roles": map[string]any{"occupied_days": float64(0), "occupied_secs": float64(5400)}}},
 			{"tz pins", map[string]any{"tz": "Europe/Paris"}, map[string]any{"tz": "Europe/Paris", "floating": false}},
 			{"floating unpins", map[string]any{"floating": true}, map[string]any{"floating": true}},
 			{"audience and anchor", map[string]any{"audience": "human", "anchor": "calendar"}, map[string]any{"audience": "human", "anchor": "calendar"}},
@@ -731,5 +731,18 @@ func TestTASK4105_BlankRemindAtBesideAScheduleIsNotGiven(t *testing.T) {
 		if len(seen) != 1 || !strings.HasSuffix(seen[0].Path, "/commitment") {
 			t.Errorf("remind_at=%#v: remote requests = %+v", blank, seen)
 		}
+	}
+}
+
+func TestCommitmentResolveBodyHasOnlySupportedMembers(t *testing.T) {
+	_, _, raw, err := mapScheduleResolve("done")(map[string]any{"workspace": "w", "ref": "TASK-1", "occurrence": "2099-01-01T09:00:00Z", "comment": "done", "until": "2099-01-02T09:00:00Z", "actual_done_at": "2099-01-01T08:00:00Z"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(raw, &got)
+	want := map[string]any{"state": "done", "occurrence_at": "2099-01-01T09:00:00Z", "comment": "done", "until": "2099-01-02T09:00:00Z"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("body %s", raw)
 	}
 }

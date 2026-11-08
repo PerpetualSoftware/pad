@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -649,7 +650,7 @@ func (s *Store) updateScheduleAt(workspaceID, itemID string, upd models.Schedule
 	return sc, err
 }
 
-func (s *Store) updateCommitmentAt(workspaceID, itemID string, upd models.ScheduleUpdate, roles *scheduleRoles, nowT time.Time) (*models.ItemSchedule, error) {
+func (s *Store) updateCommitmentAt(workspaceID, itemID string, upd models.ScheduleUpdate, partial *models.CommitmentRolesPatch, nowT time.Time) (*models.ItemSchedule, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, fmt.Errorf("update schedule: %w", err)
@@ -669,6 +670,21 @@ func (s *Store) updateCommitmentAt(workspaceID, itemID string, upd models.Schedu
 	storedRoles, err := s.scheduleRolesOf(tx, cur)
 	if err != nil {
 		return nil, err
+	}
+	// Merge only after pinScheduleTx and the transaction's storedRoles read.
+	var roles *scheduleRoles
+	if partial != nil {
+		merged, err := mergeRolesPatch(storedRoles, *partial)
+		if err != nil {
+			return nil, err
+		}
+		if storedRoles.Origin == "native" && storedRoles.DeadlineDays != nil && !sameDeadline(storedRoles, merged) {
+			return nil, ErrHardDeadlineRenegotiate
+		}
+		// Origin participates: a deliberate legacy edit still converts and journals.
+		if !reflect.DeepEqual(storedRoles, merged) {
+			roles = &merged
+		}
 	}
 	before, err := s.scheduleSnapshotTx(tx, cur.ID)
 	if err != nil {
@@ -808,7 +824,7 @@ func (s *Store) updateCommitmentAt(workspaceID, itemID string, upd models.Schedu
 		!equalStringSlices(wallStrings(spec.RDates), cur.RDates) || !equalStringSlices(wallStrings(spec.ExDates), cur.ExDates)
 	timingEdit := timingNamed && (timingChanged || cur.ErrorCode != nil)
 	if storedRoles.Origin == "native" && storedRoles.DeadlineDays != nil &&
-		(timingEdit || (timingNamed && cur.EndedAt != nil) || (roles != nil && !sameDeadline(storedRoles, *roles))) {
+		(timingEdit || (timingNamed && cur.EndedAt != nil)) {
 		return nil, ErrHardDeadlineRenegotiate
 	}
 

@@ -107,11 +107,18 @@ func (v scheduleView) next() string {
 	return fmtInstant(v.NextOccurrence.At, nil)
 }
 
+func (v scheduleView) kindLabel() string {
+	if v.EndedAt != nil || (v.Roles.Target == nil && v.Roles.Earliest == nil && v.Roles.Deadline == nil && v.Roles.OccupiedUntil == nil) {
+		return "ended"
+	}
+	return schedule.CommitmentKind(v.Roles.Deadline != nil, v.Roles.OccupiedUntil != nil)
+}
+
 func (v scheduleView) summary(ref string) string {
 	if v.ItemRef != "" {
 		ref = v.ItemRef
 	}
-	s := fmt.Sprintf("%s: %s, %s from %s %s", ref, schedule.CommitmentKind(v.Roles.Deadline != nil, v.Roles.OccupiedUntil != nil), describeRule(v.Rrule), fmtWall(v.Dtstart), v.zoneLabel())
+	s := fmt.Sprintf("%s: %s, %s from %s %s", ref, v.kindLabel(), describeRule(v.Rrule), fmtWall(v.Dtstart), v.zoneLabel())
 	s = strings.TrimRight(s, " ")
 	if v.Roles.OccupiedUntil != nil {
 		s += " until " + fmtInstant(*v.Roles.OccupiedUntil, nil)
@@ -195,7 +202,7 @@ whether the schedule is active, ended or in error.`,
 			}
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
 			fmt.Fprintf(w, "Item:\t%s\n", ref)
-			fmt.Fprintf(w, "Kind:\t%s\n", schedule.CommitmentKind(v.Roles.Deadline != nil, v.Roles.OccupiedUntil != nil))
+			fmt.Fprintf(w, "Kind:\t%s\n", v.kindLabel())
 			fmt.Fprintf(w, "Rule:\t%s\n", describeRule(v.Rrule))
 			fmt.Fprintf(w, "Starts:\t%s %s\n", fmtWall(v.Dtstart), v.zoneLabel())
 			if v.Roles.OccupiedUntil != nil {

@@ -2309,6 +2309,7 @@ const CmdhelpVersion = "0.1"
 // read/create/edit responses expose roles and timing, without kind or dtend.
 // Existing CLI/MCP flags map to roles through one shared helper. Native deadline
 // timing edits return hard_deadline; use commitment/renegotiate with a reason.
+// PATCH roles edits only named members; omitted offsets and outcome are kept.
 const ToolSurfaceVersion = "0.108"
 
 // MetaVersionURI is the canonical URI of the queryable version document.

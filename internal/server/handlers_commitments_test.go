@@ -233,9 +233,7 @@ func TestCommitmentPatchRefusesHardDeadlineChange(t *testing.T) {
 		"deadline seconds":  func(m map[string]any) { m["deadline_secs"] = 60 },
 		"deadline behavior": func(m map[string]any) { m["deadline_behavior"] = "lapses" },
 		"deadline removed": func(m map[string]any) {
-			delete(m, "deadline_days")
-			delete(m, "deadline_secs")
-			delete(m, "deadline_behavior")
+			m["deadline_days"], m["deadline_secs"], m["deadline_behavior"] = nil, nil, nil
 		},
 	} {
 		rr := commitmentCall(f, "PATCH", roles(edit))

@@ -72,13 +72,20 @@ func CommitmentBody(f CommitmentFlags, changed func(string) bool, currentStart s
 		}
 	}
 	if create || given("deadline") || given("window") {
-		roles := map[string]any{"target_days": 0, "target_secs": 0}
+		roles := map[string]any{}
+		if create {
+			roles["target_days"], roles["target_secs"] = 0, 0
+		}
 		if given("deadline") {
 			switch f.Deadline {
 			case "hard":
 				roles["deadline_days"], roles["deadline_secs"], roles["deadline_behavior"] = 0, 0, "stays_owed"
 			case "soft":
+				if !create {
+					roles["deadline_days"], roles["deadline_secs"], roles["deadline_behavior"] = nil, nil, nil
+				}
 			case "none":
+				roles["deadline_days"], roles["deadline_secs"], roles["deadline_behavior"] = nil, nil, nil
 				if create {
 					return nil, fmt.Errorf("--deadline none is an edit value; a new schedule is a check unless you give hard | soft")
 				}
@@ -203,5 +210,4 @@ type CommitmentResolve struct {
 	State        string `json:"state"`
 	Comment      string `json:"comment,omitempty"`
 	Until        string `json:"until,omitempty"`
-	ActualDoneAt string `json:"actual_done_at,omitempty"`
 }

@@ -128,7 +128,7 @@ func TestCommitmentTimingExceptionsAndAtomicity(t *testing.T) {
 		{"audience", map[string]any{"audience": "human"}, 200},
 		{"lead", map[string]any{"lead_minutes": 30}, 200},
 		{"noop", map[string]any{"dtstart": "2099-01-01T09:00"}, 200},
-		{"invalid roles", map[string]any{"dtstart": "2099-01-02T09:00", "roles": map[string]any{"deadline_days": 1}}, 400},
+		{"invalid roles", map[string]any{"dtstart": "2099-01-02T09:00", "roles": map[string]any{"earliest_days": 1}}, 400},
 		{"compensating offset", map[string]any{"dtstart": "2099-01-02T09:00", "roles": map[string]any{"deadline_days": 0, "deadline_secs": 0, "deadline_behavior": "stays_owed"}}, 409},
 		{"ended", map[string]any{"rrule": "FREQ=WEEKLY"}, 409},
 	} {
