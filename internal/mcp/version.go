@@ -2293,12 +2293,12 @@ const CmdhelpVersion = "0.1"
 // snooze | move) and agenda (read). `remind` is extended, not changed: with no
 // schedule parameter it is the one-shot reminder on both transports, exactly
 // as before; with start (or any other schedule parameter) it arms a schedule
-// (stdio `pad item remind --start ...`, remote POST .../schedule). A blank
+// (stdio `pad item remind --start ...`, remote POST .../commitment). A blank
 // string, null or floating=false is "not given" on both, so it cannot turn a
 // one-shot into a schedule or clear a rule in an edit; clearing a rule stays a
 // CLI act (`pad item remind edit --every ""`). remind_at's description now says
 // it is required only for the one-shot form, and comment's that
-// schedule-resolve takes it (optional; moving a soft deadline needs one, which
+// schedule-resolve takes it (optional; deadline changes require renegotiation, which
 // the server enforces with a 400). occurrence_at is required on both
 // transports, and until (snooze and move) and from and to (agenda) must be
 // RFC3339 instants on both: the CLI's wall times, durations and dates read the

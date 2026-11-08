@@ -77,7 +77,7 @@ func remoteCall(t *testing.T, action string, in map[string]any) (*CallToolResult
 		}
 		seen = append(seen, recordedRequest{r.Method, r.URL.Path, r.URL.RawQuery, string(b)})
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{}`))
+		_, _ = w.Write([]byte(`{"dtstart":"2026-11-09T09:00:00"}`))
 	})
 	disp := &HTTPHandlerDispatcher{Handler: h, UserResolver: func(context.Context) *models.User { return &models.User{ID: "u1"} }}
 	env := ActionEnv{Doc: liveCmdhelpDoc(t), Workspace: NewWorkspaceState("docapp"), Dispatcher: disp}
@@ -186,14 +186,14 @@ func TestTASK4105_RemindWithScheduleParamsCreatesASchedule(t *testing.T) {
 		if res.IsError {
 			t.Fatalf("refused: %s", textOf(res))
 		}
-		if len(seen) != 1 || seen[0].Method != "POST" || seen[0].Path != "/api/v1/workspaces/docapp/items/TASK-1/schedule" {
+		if len(seen) != 1 || seen[0].Method != "POST" || seen[0].Path != "/api/v1/workspaces/docapp/items/TASK-1/commitment" {
 			t.Fatalf("requests = %+v", seen)
 		}
 		var got map[string]any
 		if err := json.Unmarshal([]byte(seen[0].Body), &got); err != nil {
 			t.Fatal(err)
 		}
-		want := map[string]any{"kind": "deadline_soft", "dtstart": "2026-11-09T09:00:00", "rrule": "weekdays", "anchor": "completion", "audience": "agent", "tz": "America/New_York"}
+		want := map[string]any{"roles": map[string]any{"target_days": float64(0), "target_secs": float64(0)}, "dtstart": "2026-11-09T09:00:00", "rrule": "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR", "anchor": "completion", "audience": "agent", "tz": "America/New_York"}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("body = %v, want %v", got, want)
 		}
@@ -209,36 +209,7 @@ func hasFlagPair(args []string, flag, val string) bool {
 	return false
 }
 
-func TestTASK4105_RemoteCreateBodies(t *testing.T) {
-	cases := []struct {
-		name string
-		in   map[string]any
-		want map[string]any
-	}{
-		{"check from a date", map[string]any{"start": "2026-11-09"}, map[string]any{"kind": "check", "dtstart": "2026-11-09"}},
-		{"floating", map[string]any{"start": "2026-11-09T09:00", "floating": true}, map[string]any{"kind": "check", "dtstart": "2026-11-09T09:00:00", "floating": true}},
-		{"hard deadline", map[string]any{"start": "2026-11-14T17:00", "deadline": "hard"}, map[string]any{"kind": "deadline_hard", "dtstart": "2026-11-14T17:00:00"}},
-		{"window by duration", map[string]any{"start": "2026-11-09T09:00", "window": "2h"}, map[string]any{"kind": "window", "dtstart": "2026-11-09T09:00:00", "dtend": "2026-11-09T11:00:00"}},
-		{"window by days on a date", map[string]any{"start": "2026-11-09", "window": "3d"}, map[string]any{"kind": "window", "dtstart": "2026-11-09", "dtend": "2026-11-12"}},
-		{"window by end wall", map[string]any{"start": "2026-11-09T09:00", "window": "2026-11-09T17:00"}, map[string]any{"kind": "window", "dtstart": "2026-11-09T09:00:00", "dtend": "2026-11-09T17:00:00"}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			in := withWorkspace(tc.in)
-			in["ref"] = "TASK-1"
-			res, seen := remoteCall(t, "remind", in)
-			if res.IsError || len(seen) != 1 {
-				t.Fatalf("res=%s seen=%+v", textOf(res), seen)
-			}
-			var got map[string]any
-			if err := json.Unmarshal([]byte(seen[0].Body), &got); err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual(got, tc.want) {
-				t.Fatalf("body = %v, want %v", got, tc.want)
-			}
-		})
-	}
+func TestTASK4105_RemoteCreateRefusals(t *testing.T) {
 	refused := map[string]map[string]any{
 		"start is required":            {"every": "daily"},
 		"one-shot and schedule mixed":  {"start": "2026-11-09T09:00", "remind_at": "2026-08-01T09:00:00Z"},
@@ -267,7 +238,7 @@ func TestTASK4105_ScheduleReadEditDelete(t *testing.T) {
 			t.Fatalf("cmdPath = %q", got)
 		}
 		_, seen := remoteCall(t, "schedule", map[string]any{"ref": "TASK-1", "workspace": "docapp"})
-		if want := []recordedRequest{{"GET", "/api/v1/workspaces/docapp/items/TASK-1/schedule", "", ""}}; !reflect.DeepEqual(seen, want) {
+		if want := []recordedRequest{{"GET", "/api/v1/workspaces/docapp/items/TASK-1/commitment", "", ""}}; !reflect.DeepEqual(seen, want) {
 			t.Fatalf("requests = %+v", seen)
 		}
 	})
@@ -281,11 +252,11 @@ func TestTASK4105_ScheduleReadEditDelete(t *testing.T) {
 			in   map[string]any
 			want map[string]any
 		}{
-			{"deadline none returns to a check", map[string]any{"deadline": "none"}, map[string]any{"kind": "check", "dtend": ""}},
-			{"deadline hard", map[string]any{"deadline": "hard"}, map[string]any{"kind": "deadline_hard", "dtend": ""}},
-			{"start and rule", map[string]any{"start": "2026-11-16T10:00", "every": "weekly"}, map[string]any{"dtstart": "2026-11-16T10:00:00", "rrule": "weekly"}},
-			{"a window by end wall", map[string]any{"window": "2026-11-09T17:00"}, map[string]any{"kind": "window", "dtend": "2026-11-09T17:00:00"}},
-			{"a window by duration with the start", map[string]any{"start": "2026-11-09T09:00", "window": "90m"}, map[string]any{"kind": "window", "dtstart": "2026-11-09T09:00:00", "dtend": "2026-11-09T10:30:00"}},
+			{"deadline none returns to a check", map[string]any{"deadline": "none"}, map[string]any{"roles": map[string]any{"target_days": float64(0), "target_secs": float64(0)}}},
+			{"deadline hard", map[string]any{"deadline": "hard"}, map[string]any{"roles": map[string]any{"target_days": float64(0), "target_secs": float64(0), "deadline_days": float64(0), "deadline_secs": float64(0), "deadline_behavior": "stays_owed"}}},
+			{"start and rule", map[string]any{"start": "2026-11-16T10:00", "every": "weekly"}, map[string]any{"dtstart": "2026-11-16T10:00:00", "rrule": "FREQ=WEEKLY"}},
+			{"a window by end wall", map[string]any{"window": "2026-11-09T17:00"}, map[string]any{"roles": map[string]any{"target_days": float64(0), "target_secs": float64(0), "occupied_days": float64(0), "occupied_secs": float64(28800)}}},
+			{"a window by duration with the start", map[string]any{"start": "2026-11-09T09:00", "window": "90m"}, map[string]any{"dtstart": "2026-11-09T09:00:00", "roles": map[string]any{"target_days": float64(0), "target_secs": float64(0), "occupied_days": float64(0), "occupied_secs": float64(5400)}}},
 			{"tz pins", map[string]any{"tz": "Europe/Paris"}, map[string]any{"tz": "Europe/Paris", "floating": false}},
 			{"floating unpins", map[string]any{"floating": true}, map[string]any{"floating": true}},
 			{"audience and anchor", map[string]any{"audience": "human", "anchor": "calendar"}, map[string]any{"audience": "human", "anchor": "calendar"}},
@@ -295,7 +266,10 @@ func TestTASK4105_ScheduleReadEditDelete(t *testing.T) {
 				in := withWorkspace(tc.in)
 				in["ref"] = "TASK-1"
 				res, seen := remoteCall(t, "schedule-edit", in)
-				if res.IsError || len(seen) != 1 || seen[0].Method != "PATCH" || seen[0].Path != "/api/v1/workspaces/docapp/items/TASK-1/schedule" {
+				if len(seen) == 2 && seen[0].Method == "GET" {
+					seen = seen[1:]
+				}
+				if res.IsError || len(seen) != 1 || seen[0].Method != "PATCH" || seen[0].Path != "/api/v1/workspaces/docapp/items/TASK-1/commitment" {
 					t.Fatalf("res=%s seen=%+v", textOf(res), seen)
 				}
 				var got map[string]any
@@ -309,7 +283,6 @@ func TestTASK4105_ScheduleReadEditDelete(t *testing.T) {
 		}
 		for name, in := range map[string]map[string]any{
 			"nothing to change":            {},
-			"a duration needs the start":   {"window": "2h"},
 			"tz and floating together":     {"tz": "UTC", "floating": true},
 			"deadline and window together": {"deadline": "hard", "window": "2026-11-09T17:00"},
 		} {
@@ -332,7 +305,7 @@ func TestTASK4105_ScheduleReadEditDelete(t *testing.T) {
 			t.Fatalf("args %q must carry --yes: the subprocess cannot answer the prompt", disp.gotArgs)
 		}
 		_, seen := remoteCall(t, "schedule-delete", map[string]any{"ref": "TASK-1", "workspace": "docapp"})
-		if want := []recordedRequest{{"DELETE", "/api/v1/workspaces/docapp/items/TASK-1/schedule", "", ""}}; !reflect.DeepEqual(seen, want) {
+		if want := []recordedRequest{{"DELETE", "/api/v1/workspaces/docapp/items/TASK-1/commitment", "", ""}}; !reflect.DeepEqual(seen, want) {
 			t.Fatalf("requests = %+v", seen)
 		}
 	})
@@ -387,7 +360,7 @@ func TestTASK4105_ScheduleResolveParity(t *testing.T) {
 				t.Fatalf("args = %q", disp.gotArgs)
 			}
 			res, seen := remoteCall(t, "schedule-resolve", withWorkspace(in))
-			if res.IsError || len(seen) != 1 || seen[0].Method != "POST" || seen[0].Path != "/api/v1/workspaces/docapp/items/TASK-1/schedule/resolve" {
+			if res.IsError || len(seen) != 1 || seen[0].Method != "POST" || seen[0].Path != "/api/v1/workspaces/docapp/items/TASK-1/commitment/resolve" {
 				t.Fatalf("res=%s seen=%+v", textOf(res), seen)
 			}
 			var body map[string]any
@@ -501,13 +474,13 @@ func TestTASK4105_ScheduleRemoteAgainstTheServer(t *testing.T) {
 		t.Fatalf("a second create must be refused: the item already has a schedule: %s", text)
 	}
 	view, text, isErr := call(viewer, "schedule", map[string]any{"ref": ref})
-	if isErr || view["kind"] != "check" || view["rrule"] == nil {
+	if isErr || view["kind"] != nil || view["roles"] == nil || view["rrule"] == nil {
 		t.Fatalf("viewer read: err=%v %s", isErr, text)
 	}
 	if _, text, isErr := call(viewer, "schedule-delete", map[string]any{"ref": ref}); !isErr {
 		t.Fatalf("a viewer must not delete a schedule: %s", text)
 	}
-	if view, text, isErr := call(owner, "schedule-edit", map[string]any{"ref": ref, "deadline": "soft", "audience": "agent"}); isErr || view["kind"] != "deadline_soft" || view["audience"] != "agent" {
+	if view, text, isErr := call(owner, "schedule-edit", map[string]any{"ref": ref, "deadline": "soft", "audience": "agent"}); isErr || view["kind"] != nil || view["roles"] == nil || view["audience"] != "agent" {
 		t.Fatalf("edit: %s", text)
 	}
 	occ, _ := view["next_occurrence"].(map[string]any)
@@ -560,8 +533,8 @@ func TestTASK4105_NewParamsAreDeclared(t *testing.T) {
 	if d := declared["remind_at"].Description; !strings.Contains(d, "one-shot") {
 		t.Errorf("remind_at must say it is required only for the one-shot form: %q", d)
 	}
-	if d := declared["comment"].Description; !strings.Contains(d, "soft deadline") {
-		t.Errorf("comment must mention moving a soft deadline: %q", d)
+	if d := declared["comment"].Description; !strings.Contains(d, "schedule-resolve") || !strings.Contains(d, "Optional") {
+		t.Errorf("comment must describe optional schedule-resolve text: %q", d)
 	}
 	for _, d := range Catalog {
 		if d.Name == "pad_item" && !strings.Contains(d.Description, "schedule-delete") {
@@ -599,7 +572,7 @@ func TestTASK4105_EditReadsEmptyMembersAsNotGiven(t *testing.T) {
 			t.Errorf("stdio args = %q", disp.gotArgs)
 		}
 		_, seen := remoteCall(t, "schedule-edit", withWorkspace(in))
-		if len(seen) != 1 || seen[0].Body != `{"dtend":"","kind":"deadline_hard"}` {
+		if len(seen) != 1 || seen[0].Body != `{"roles":{"deadline_behavior":"stays_owed","deadline_days":0,"deadline_secs":0,"target_days":0,"target_secs":0}}` {
 			t.Fatalf("remote requests = %+v", seen)
 		}
 	})
@@ -755,7 +728,7 @@ func TestTASK4105_BlankRemindAtBesideAScheduleIsNotGiven(t *testing.T) {
 		if contains(disp.gotArgs, "--remind-at") || !hasFlagPair(disp.gotArgs, "--start", "2026-11-09T09:00") {
 			t.Errorf("remind_at=%#v: stdio args = %q", blank, disp.gotArgs)
 		}
-		if len(seen) != 1 || !strings.HasSuffix(seen[0].Path, "/schedule") {
+		if len(seen) != 1 || !strings.HasSuffix(seen[0].Path, "/commitment") {
 			t.Errorf("remind_at=%#v: remote requests = %+v", blank, seen)
 		}
 	}

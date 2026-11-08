@@ -1,7 +1,7 @@
 import type {
-	ItemScheduleView,
-	ScheduleResolveRequest,
-	ScheduleResolveResult,
+	ItemCommitmentView,
+	CommitmentResolveRequest,
+	CommitmentResolveResult,
 	BuiltinListEntry,
 	CatchUpResponse,
 	BuiltinStateResponse,
@@ -3757,10 +3757,10 @@ export const api = {
 	},
 
 	// ── Needs you (TASK-3923, IDEA-3906 A6) ──────────────────────────────────
-	getSchedule: (ws: string, ref: string) =>
-		request<ItemScheduleView>(`/workspaces/${encodeURIComponent(ws)}/items/${encodeURIComponent(ref)}/schedule`),
-	resolveSchedule: (ws: string, ref: string, body: ScheduleResolveRequest) =>
-		request<ScheduleResolveResult>(`/workspaces/${encodeURIComponent(ws)}/items/${encodeURIComponent(ref)}/schedule/resolve`, {
+	getCommitment: (ws: string, ref: string) =>
+		request<ItemCommitmentView>(`/workspaces/${encodeURIComponent(ws)}/items/${encodeURIComponent(ref)}/commitment`),
+	resolveCommitment: (ws: string, ref: string, body: CommitmentResolveRequest) =>
+		request<CommitmentResolveResult>(`/workspaces/${encodeURIComponent(ws)}/items/${encodeURIComponent(ref)}/commitment/resolve`, {
 			method: 'POST', body: JSON.stringify(body)
 		}),
 

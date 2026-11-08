@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -81,6 +82,16 @@ func silenceWarningsForCompletion(args []string) {
 // lifts this line instead of guessing a code from that prose.
 func writeRootStructuredError(w io.Writer, err error) {
 	defer writeOpKeyHint(w, err)
+	var commitmentErr *cli.APIError
+	if errors.As(err, &commitmentErr) {
+		switch commitmentErr.Code {
+		case "hard_deadline", "deadline_owner_required", "commitment_changed":
+			if data, encodeErr := json.Marshal(map[string]any{"error": commitmentErr}); encodeErr == nil {
+				fmt.Fprintln(w, cli.StructuredErrorMarker+string(data))
+			}
+			return
+		}
+	}
 	if apiErr, ok := cli.IsRateLimited(err); ok {
 		cli.WriteRateLimitedError(w, apiErr)
 		return

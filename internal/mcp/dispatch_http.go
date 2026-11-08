@@ -471,6 +471,7 @@ func (d *HTTPHandlerDispatcher) buildSpecialRoutes() map[string]specialDispatchF
 		"chat delete":         d.dispatchChat("delete"),
 		"chat read":           d.dispatchChat("read"),
 		"item update":         d.dispatchItemUpdate,
+		"item remind edit":    d.dispatchItemCommitmentEdit,
 		"item show":           d.dispatchItemShow,
 		"item list":           d.dispatchItemList,
 		"item history":        d.dispatchItemHistory,

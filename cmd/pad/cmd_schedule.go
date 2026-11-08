@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/PerpetualSoftware/pad/internal/cli"
+	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/schedule"
 	"github.com/PerpetualSoftware/pad/internal/usertz"
 )
@@ -29,23 +30,22 @@ type scheduleOccurrence struct {
 // scheduleView decodes the fields the table output reads. Anything else the
 // server adds stays in the raw body, which --format json prints untouched.
 type scheduleView struct {
-	ItemRef         string              `json:"item_ref"`
-	Kind            string              `json:"kind"`
-	Dtstart         string              `json:"dtstart"`
-	Dtend           *string             `json:"dtend"`
-	Tz              *string             `json:"tz"`
-	Floating        bool                `json:"floating"`
-	Rrule           *string             `json:"rrule"`
-	Anchor          string              `json:"anchor"`
-	Audience        string              `json:"audience"`
-	NextOccurrence  *scheduleOccurrence `json:"next_occurrence"`
-	NextOverrideAt  *string             `json:"next_override_at"`
-	MissedCount     int                 `json:"missed_count"`
-	MissedTruncated bool                `json:"missed_truncated"`
-	Stale           bool                `json:"stale"`
-	EndedAt         *string             `json:"ended_at"`
-	ErrorCode       *string             `json:"error_code"`
-	TimezoneNote    string              `json:"timezone_note"`
+	ItemRef         string                 `json:"item_ref"`
+	Roles           models.CommitmentRoles `json:"roles"`
+	Dtstart         string                 `json:"dtstart"`
+	Tz              *string                `json:"tz"`
+	Floating        bool                   `json:"floating"`
+	Rrule           *string                `json:"rrule"`
+	Anchor          string                 `json:"anchor"`
+	Audience        string                 `json:"audience"`
+	NextOccurrence  *scheduleOccurrence    `json:"next_occurrence"`
+	NextOverrideAt  *string                `json:"next_override_at"`
+	MissedCount     int                    `json:"missed_count"`
+	MissedTruncated bool                   `json:"missed_truncated"`
+	Stale           bool                   `json:"stale"`
+	EndedAt         *string                `json:"ended_at"`
+	ErrorCode       *string                `json:"error_code"`
+	TimezoneNote    string                 `json:"timezone_note"`
 }
 
 const instantLayout = "2006-01-02 15:04 MST"
@@ -111,10 +111,10 @@ func (v scheduleView) summary(ref string) string {
 	if v.ItemRef != "" {
 		ref = v.ItemRef
 	}
-	s := fmt.Sprintf("%s: %s, %s from %s %s", ref, v.Kind, describeRule(v.Rrule), fmtWall(v.Dtstart), v.zoneLabel())
+	s := fmt.Sprintf("%s: %s, %s from %s %s", ref, schedule.CommitmentKind(v.Roles.Deadline != nil, v.Roles.OccupiedUntil != nil), describeRule(v.Rrule), fmtWall(v.Dtstart), v.zoneLabel())
 	s = strings.TrimRight(s, " ")
-	if v.Dtend != nil {
-		s += " until " + fmtWall(*v.Dtend)
+	if v.Roles.OccupiedUntil != nil {
+		s += " until " + fmtInstant(*v.Roles.OccupiedUntil, nil)
 	}
 	if v.EndedAt != nil {
 		return s + "; ended"
@@ -145,7 +145,7 @@ func runScheduleCreate(cmd *cobra.Command, args []string, f scheduleFlags) error
 		return err
 	}
 	client, _ := getClient()
-	raw, err := client.CreateItemSchedule(getWorkspace(), args[0], body)
+	raw, err := client.CreateItemCommitment(getWorkspace(), args[0], body)
 	if err != nil {
 		return err
 	}
@@ -173,7 +173,7 @@ whether the schedule is active, ended or in error.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
-			raw, err := client.GetItemSchedule(getWorkspace(), args[0])
+			raw, err := client.GetItemCommitment(getWorkspace(), args[0])
 			if err != nil {
 				return err
 			}
@@ -195,11 +195,11 @@ whether the schedule is active, ended or in error.`,
 			}
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
 			fmt.Fprintf(w, "Item:\t%s\n", ref)
-			fmt.Fprintf(w, "Kind:\t%s\n", v.Kind)
+			fmt.Fprintf(w, "Kind:\t%s\n", schedule.CommitmentKind(v.Roles.Deadline != nil, v.Roles.OccupiedUntil != nil))
 			fmt.Fprintf(w, "Rule:\t%s\n", describeRule(v.Rrule))
 			fmt.Fprintf(w, "Starts:\t%s %s\n", fmtWall(v.Dtstart), v.zoneLabel())
-			if v.Dtend != nil {
-				fmt.Fprintf(w, "Ends:\t%s\n", fmtWall(*v.Dtend))
+			if v.Roles.OccupiedUntil != nil {
+				fmt.Fprintf(w, "Ends:\t%s\n", fmtInstant(*v.Roles.OccupiedUntil, nil))
 			}
 			fmt.Fprintf(w, "Anchor:\t%s\n", v.Anchor)
 			fmt.Fprintf(w, "Audience:\t%s\n", v.Audience)
@@ -239,7 +239,7 @@ var resolveVerbs = []resolveVerb{
 	{"move", "move", "Move the outstanding occurrence to a new time"},
 }
 
-const commentHelp = "comment recorded on the item; optional, but moving a soft deadline needs one (the server answers 400 otherwise)"
+const commentHelp = "comment recorded on the item; optional"
 
 func remindResolveCmd(v resolveVerb) *cobra.Command {
 	var comment, occurrence, until string
@@ -254,7 +254,7 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 	case "snooze":
 		long += "\n\n--until is an RFC3339 instant, a wall time read in your zone (2026-11-10T09:00), or a duration from now (2h, 1d). A bare date is refused. The occurrence stays outstanding and re-fires once at --until."
 	case "move":
-		long += "\n\n--until is an RFC3339 instant or a wall time read in your zone (2026-11-10T09:00); a bare date is refused. The occurrence stays outstanding and becomes due at --until. A hard deadline cannot be moved (snooze it); moving a soft deadline needs --comment."
+		long += "\n\n--until is an RFC3339 instant or a wall time read in your zone (2026-11-10T09:00); a bare date is refused. The occurrence stays outstanding and becomes due at --until. A hard deadline changes through POST .../commitment/renegotiate with a reason."
 	}
 	c := &cobra.Command{
 		Use:     use,
@@ -263,7 +263,7 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 		Long:    long,
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			req := cli.ScheduleResolve{State: v.state, Comment: comment}
+			req := cli.CommitmentResolve{State: v.state, Comment: comment}
 			if needsUntil {
 				if until == "" {
 					return fmt.Errorf("--until is required for %s", v.use)
@@ -282,7 +282,7 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 				}
 				req.OccurrenceAt = occurrence
 			} else {
-				raw, err := client.GetItemSchedule(ws, args[0])
+				raw, err := client.GetItemCommitment(ws, args[0])
 				if err != nil {
 					return err
 				}
@@ -292,7 +292,7 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 				}
 				req.OccurrenceAt = sv.NextOccurrence.At
 			}
-			raw, err := client.ResolveItemSchedule(ws, args[0], req)
+			raw, err := client.ResolveItemCommitment(ws, args[0], req)
 			if err != nil {
 				return staleHint(err, args[0])
 			}
@@ -300,10 +300,10 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 				return cli.PrintJSON(raw)
 			}
 			var resp struct {
-				Schedule scheduleView `json:"schedule"`
+				Commitment scheduleView `json:"commitment"`
 			}
 			_ = json.Unmarshal(raw, &resp)
-			fmt.Println(resolveSentence(v.state, args[0], req, resp.Schedule))
+			fmt.Println(resolveSentence(v.state, args[0], req, resp.Commitment))
 			return nil
 		},
 	}
@@ -315,7 +315,7 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 	return c
 }
 
-func resolveSentence(state, ref string, req cli.ScheduleResolve, s scheduleView) string {
+func resolveSentence(state, ref string, req cli.CommitmentResolve, s scheduleView) string {
 	occ := fmtInstant(req.OccurrenceAt, nil)
 	switch state {
 	case "snooze":
@@ -407,12 +407,21 @@ A timing edit that compiles clears a stored error.
 ` + scheduleFlagHelp,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			body, err := buildScheduleUpdate(f, flagChanged(cmd))
+			client, _ := getClient()
+			currentStart := ""
+			// An end wall and a duration both need the stored start to form an offset.
+			if cmd.Flags().Changed("window") && !cmd.Flags().Changed("start") && !cmd.Flags().Changed("deadline") {
+				raw, err := client.GetItemCommitment(getWorkspace(), args[0])
+				if err != nil {
+					return err
+				}
+				currentStart = decodeScheduleView(raw).Dtstart
+			}
+			body, err := buildScheduleUpdate(f, flagChanged(cmd), currentStart)
 			if err != nil {
 				return err
 			}
-			client, _ := getClient()
-			raw, err := client.UpdateItemSchedule(getWorkspace(), args[0], body)
+			raw, err := client.UpdateItemCommitment(getWorkspace(), args[0], body)
 			if err != nil {
 				return err
 			}
@@ -457,7 +466,7 @@ confirmation unless --yes is given.`,
 				}
 			}
 			client, _ := getClient()
-			raw, err := client.DeleteItemSchedule(getWorkspace(), args[0])
+			raw, err := client.DeleteItemCommitment(getWorkspace(), args[0])
 			if err != nil {
 				return err
 			}

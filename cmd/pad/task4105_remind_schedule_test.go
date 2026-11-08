@@ -9,11 +9,11 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/cmdhelp"
 )
 
-const weekdaysView = `{"id":"s1","item_ref":"TASK-5","kind":"check","dtstart":"2026-11-09T09:00:00","tz":"America/New_York","floating":false,"rrule":"FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR","anchor":"calendar","audience":"both","next_occurrence":{"at":"2026-11-09T14:00:00Z","wall":"2026-11-09T09:00:00"},"missed_count":3,"stale":true}`
+const weekdaysView = `{"id":"s1","item_ref":"TASK-5","roles":{"target":"2026-11-09T14:00:00Z","deadline":null,"occupied_until":null},"dtstart":"2026-11-09T09:00:00","tz":"America/New_York","floating":false,"rrule":"FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR","anchor":"calendar","audience":"both","next_occurrence":{"at":"2026-11-09T14:00:00Z","wall":"2026-11-09T09:00:00"},"missed_count":3,"stale":true}`
 
-const resolved = `{"schedule":` + weekdaysView + `,"resolution":{"occurrence_at":"2026-11-09T14:00:00Z","state":"done","missed_recorded":0}}`
+const resolved = `{"commitment":` + weekdaysView + `,"resolution":{"occurrence_at":"2026-11-09T14:00:00Z","state":"done","missed_recorded":0}}`
 
-const schedPath = "/workspaces/test/items/TASK-5/schedule"
+const schedPath = "/workspaces/test/items/TASK-5/commitment"
 
 func okReply(body string) func(recordedCall) (int, string) {
 	return func(recordedCall) (int, string) { return 200, body }
@@ -62,7 +62,7 @@ func TestRemindScheduleCreate(t *testing.T) {
 	}
 	var body map[string]any
 	_ = json.Unmarshal([]byte(calls[0].body), &body)
-	if _, hasTz := body["tz"]; hasTz || body["rrule"] != "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR" || body["dtstart"] != "2026-11-09T09:00:00" || body["kind"] != "check" {
+	if _, hasTz := body["tz"]; hasTz || body["rrule"] != "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR" || body["dtstart"] != "2026-11-09T09:00:00" || body["roles"] == nil || body["kind"] != nil || body["dtend"] != nil {
 		t.Fatalf("body=%s", calls[0].body)
 	}
 
@@ -178,19 +178,19 @@ func TestRemindScheduleSubcommandsHTTP(t *testing.T) {
 		{name: "edit clears rule", args: []string{"edit", "TASK-5", "--every", ""}, methods: []string{"PATCH " + schedPath},
 			lastBody: `{"rrule":""}`},
 		{name: "edit tz", args: []string{"edit", "TASK-5", "--tz", "Europe/Paris"}, methods: []string{"PATCH " + schedPath},
-			lastBody: `{"tz":"Europe/Paris","floating":false}`},
+			lastBody: `{"floating":false,"tz":"Europe/Paris"}`},
 		{name: "edit floating", args: []string{"edit", "TASK-5", "--floating"}, methods: []string{"PATCH " + schedPath},
 			lastBody: `{"floating":true}`},
 		{name: "edit floating false", args: []string{"edit", "TASK-5", "--floating=false"}, methods: []string{"PATCH " + schedPath},
 			lastBody: `{"floating":false}`},
 		{name: "edit tz and floating false", args: []string{"edit", "TASK-5", "--tz", "Europe/Paris", "--floating=false"}, methods: []string{"PATCH " + schedPath},
-			lastBody: `{"tz":"Europe/Paris","floating":false}`},
+			lastBody: `{"floating":false,"tz":"Europe/Paris"}`},
 		{name: "edit deadline none", args: []string{"edit", "TASK-5", "--deadline", "none"}, methods: []string{"PATCH " + schedPath},
-			lastBody: `{"kind":"check","dtend":""}`},
+			lastBody: `{"roles":{"target_days":0,"target_secs":0}}`},
 		{name: "edit hard deadline", args: []string{"edit", "TASK-5", "--deadline", "hard"}, methods: []string{"PATCH " + schedPath},
-			lastBody: `{"kind":"deadline_hard","dtend":""}`},
+			lastBody: `{"roles":{"deadline_behavior":"stays_owed","deadline_days":0,"deadline_secs":0,"target_days":0,"target_secs":0}}`},
 		{name: "edit soft deadline", args: []string{"edit", "TASK-5", "--deadline", "soft"}, methods: []string{"PATCH " + schedPath},
-			lastBody: `{"kind":"deadline_soft","dtend":""}`},
+			lastBody: `{"roles":{"target_days":0,"target_secs":0}}`},
 		{name: "rm yes", args: []string{"rm", "TASK-5", "--yes"}, methods: []string{"DELETE " + schedPath}, outHas: []string{"Deleted the schedule on TASK-5"}},
 		{name: "rm confirmed", args: []string{"rm", "TASK-5"}, stdin: "y\n", methods: []string{"DELETE " + schedPath}, stderrHas: "[y/N]"},
 		{name: "rm declined", args: []string{"rm", "TASK-5"}, stdin: "n\n", methods: nil, stderrHas: "Cancelled"},

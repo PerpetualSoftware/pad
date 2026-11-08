@@ -3,8 +3,6 @@ package cli
 import (
 	"encoding/json"
 	"net/url"
-
-	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // --- Item schedules and the agenda ---
@@ -12,46 +10,47 @@ import (
 // Each method returns the server's body as raw JSON so a field the server adds
 // later is not dropped on the way to --format json.
 
-func scheduleBase(wsSlug, ref string) string {
-	return "/workspaces/" + url.PathEscape(wsSlug) + "/items/" + url.PathEscape(ref) + "/schedule"
+func commitmentBase(wsSlug, ref string) string {
+	return "/workspaces/" + url.PathEscape(wsSlug) + "/items/" + url.PathEscape(ref) + "/commitment"
 }
 
-// ScheduleResolve is the body of POST .../schedule/resolve.
-type ScheduleResolve struct {
+// CommitmentResolve is the body of POST .../commitment/resolve.
+type CommitmentResolve struct {
 	OccurrenceAt string `json:"occurrence_at"`
 	State        string `json:"state"`
 	Comment      string `json:"comment,omitempty"`
 	Until        string `json:"until,omitempty"`
+	ActualDoneAt string `json:"actual_done_at,omitempty"`
 }
 
-// GetItemSchedule returns an item's schedule view.
-func (c *Client) GetItemSchedule(wsSlug, ref string) (json.RawMessage, error) {
+// GetItemCommitment returns an item's schedule view.
+func (c *Client) GetItemCommitment(wsSlug, ref string) (json.RawMessage, error) {
 	var result json.RawMessage
-	return result, c.get(scheduleBase(wsSlug, ref), &result)
+	return result, c.get(commitmentBase(wsSlug, ref), &result)
 }
 
-// CreateItemSchedule attaches a schedule to an item.
-func (c *Client) CreateItemSchedule(wsSlug, ref string, in models.ScheduleCreate) (json.RawMessage, error) {
+// CreateItemCommitment attaches a schedule to an item.
+func (c *Client) CreateItemCommitment(wsSlug, ref string, in map[string]any) (json.RawMessage, error) {
 	var result json.RawMessage
-	return result, c.post(scheduleBase(wsSlug, ref), in, &result)
+	return result, c.post(commitmentBase(wsSlug, ref), in, &result)
 }
 
-// UpdateItemSchedule changes an item's schedule.
-func (c *Client) UpdateItemSchedule(wsSlug, ref string, in models.ScheduleUpdate) (json.RawMessage, error) {
+// UpdateItemCommitment changes an item's schedule.
+func (c *Client) UpdateItemCommitment(wsSlug, ref string, in map[string]any) (json.RawMessage, error) {
 	var result json.RawMessage
-	return result, c.patch(scheduleBase(wsSlug, ref), in, &result)
+	return result, c.patch(commitmentBase(wsSlug, ref), in, &result)
 }
 
-// DeleteItemSchedule removes an item's schedule and its managed reminder.
-func (c *Client) DeleteItemSchedule(wsSlug, ref string) (json.RawMessage, error) {
+// DeleteItemCommitment removes an item's schedule and its managed reminder.
+func (c *Client) DeleteItemCommitment(wsSlug, ref string) (json.RawMessage, error) {
 	var result json.RawMessage
-	return result, c.deleteWithResult(scheduleBase(wsSlug, ref), &result)
+	return result, c.deleteWithResult(commitmentBase(wsSlug, ref), &result)
 }
 
-// ResolveItemSchedule resolves the outstanding occurrence.
-func (c *Client) ResolveItemSchedule(wsSlug, ref string, in ScheduleResolve) (json.RawMessage, error) {
+// ResolveItemCommitment resolves the outstanding occurrence.
+func (c *Client) ResolveItemCommitment(wsSlug, ref string, in CommitmentResolve) (json.RawMessage, error) {
 	var result json.RawMessage
-	return result, c.post(scheduleBase(wsSlug, ref)+"/resolve", in, &result)
+	return result, c.post(commitmentBase(wsSlug, ref)+"/resolve", in, &result)
 }
 
 // GetAgenda returns the workspace agenda for [from, to). tz is optional.
