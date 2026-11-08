@@ -711,3 +711,23 @@ func TestCommitmentAssigneeGuard(t *testing.T) {
 		}
 	}
 }
+
+// The item can leave between the handler's read and the store's lock. Delete
+// answers like every other schedule door (the archived answer), never a 500.
+func TestDeleteCommitmentItemGoneBeforeLockIsArchived(t *testing.T) {
+	t.Parallel()
+	f := newSchedHTTP(t)
+	readCommitment(t, commitmentCall(f, "POST", commitmentBody()), 201)
+	restore := f.srv.store.SetBeforeCommitmentPinHookForTesting(func() {
+		if err := f.srv.store.DeleteItem(f.item.ID); err != nil {
+			t.Fatal(err)
+		}
+	})
+	defer restore()
+	for _, path := range []string{commitmentPath(f)} {
+		rr := f.as(f.token(f.owner, ""), "DELETE", path, nil)
+		if rr.Code != 409 || !strings.Contains(rr.Body.String(), `"archived"`) {
+			t.Fatalf("%s: %d %s", path, rr.Code, rr.Body.String())
+		}
+	}
+}

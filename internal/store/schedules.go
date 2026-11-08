@@ -971,18 +971,23 @@ func (s *Store) DeleteScheduleChecked(workspaceID, itemID string, mayDropDeadlin
 	if err != nil || cur == nil {
 		return false, err
 	}
-	roles, err := s.scheduleRolesOf(tx, cur)
-	if err != nil {
-		return false, err
-	}
-	if roles.Origin == "native" && roles.DeadlineDays != nil {
-		if matches, err := s.commitmentAssigneeMatchesTx(tx, itemID, expectedAssignee); err != nil {
+	// The roles are read only when an authority decision depends on them: a
+	// caller that may drop a deadline and carries no assignee guard needs no
+	// read, so a row whose legacy dates no longer parse still deletes.
+	if !mayDropDeadline || expectedAssignee != nil {
+		roles, err := s.scheduleRolesOf(tx, cur)
+		if err != nil {
 			return false, err
-		} else if !matches {
-			return false, ErrDeadlineDeleteChanged
 		}
-		if !mayDropDeadline {
-			return false, ErrDeadlineDeleteAuthority
+		if roles.Origin == "native" && roles.DeadlineDays != nil {
+			if matches, err := s.commitmentAssigneeMatchesTx(tx, itemID, expectedAssignee); err != nil {
+				return false, err
+			} else if !matches {
+				return false, ErrDeadlineDeleteChanged
+			}
+			if !mayDropDeadline {
+				return false, ErrDeadlineDeleteAuthority
+			}
 		}
 	}
 	before, err := s.scheduleSnapshotTx(tx, cur.ID)

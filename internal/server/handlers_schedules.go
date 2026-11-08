@@ -554,6 +554,9 @@ func (s *Server) handleDeleteItemSchedule(w http.ResponseWriter, r *http.Request
 		return
 	}
 	removed, err := s.store.DeleteScheduleChecked(workspaceID, item.ID, allowed, commitmentAssigneeGuard(r, item))
+	if s.writeScheduleItemGone(w, r, workspaceID, err) {
+		return
+	}
 	if errors.Is(err, store.ErrDeadlineDeleteChanged) {
 		writeCommitmentChanged(w)
 		return

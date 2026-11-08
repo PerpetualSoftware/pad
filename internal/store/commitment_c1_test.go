@@ -676,3 +676,16 @@ func TestDeleteScheduleCheckedLeavesOtherSchedulesAlone(t *testing.T) {
 		}
 	})
 }
+
+// A delete that needs no authority decision (an owner, or an unguarded caller)
+// must not depend on reading the schedule's roles: a legacy window row whose
+// stored dates no longer parse still deletes.
+func TestDeleteScheduleCheckedUnguardedDoesNotReadRoles(t *testing.T) {
+	t.Parallel()
+	f := newSchedFixture(t)
+	sc := f.create(t, models.ScheduleCreate{Kind: "window", Dtstart: "2026-10-30T09:00", Dtend: "2026-10-30T10:00", Tz: "UTC"})
+	f.exec(t, `UPDATE item_schedules SET dtstart=? WHERE id=?`, "not-a-date", sc.ID)
+	if removed, err := f.s.DeleteScheduleChecked(f.ws.ID, f.item.ID, true, nil); !removed || err != nil {
+		t.Fatalf("unguarded delete of a legacy row with unreadable dates: removed=%v err=%v", removed, err)
+	}
+}
