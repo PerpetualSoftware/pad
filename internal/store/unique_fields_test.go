@@ -11,6 +11,7 @@ import (
 // the caller may see it: the drop already says the value is taken, but the
 // holder's ref would disclose an item behind a grant the caller lacks.
 func TestDropCarriedUniqueCollisions_HolderNamedOnlyWhenVisible(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Unique WS")
 	schema := `{"fields":[{"key":"invocation_slug","label":"Slug","type":"text","unique_scope":"workspace_collection"},{"key":"code","label":"Code","type":"text"}]}`

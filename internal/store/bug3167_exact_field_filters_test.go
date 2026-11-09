@@ -14,6 +14,7 @@ import (
 // covered: the plain one and the FTS one (a non-empty Search), which carried
 // their own copy of the split.
 func TestBUG3167_FieldsMatchExactlyAndAnyOfIsExplicit(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "BUG-3167")
 	coll, err := s.CreateCollection(ws.ID, models.CollectionCreate{
@@ -72,6 +73,7 @@ func TestBUG3167_FieldsMatchExactlyAndAnyOfIsExplicit(t *testing.T) {
 // an `OR 1=1` payload returns everything, the same answer the guard gives, and
 // a first draft of this test using it survived the guard's removal.
 func TestBUG3167_FieldsAnyOfSkipsAnInvalidKey(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "BUG-3167 keys")
 	coll := createTestCollection(t, s, ws.ID, "Tasks")

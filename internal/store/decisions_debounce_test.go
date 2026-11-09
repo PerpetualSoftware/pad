@@ -62,6 +62,7 @@ func retitle(t *testing.T, s *Store, itemID, title string) {
 // A first evaluation is never delayed: an item with no answers for the set is
 // claimable at once, with not_before NULL.
 func TestDecisionJobs_FirstEvaluationNotDebounced(t *testing.T) {
+	t.Parallel()
 	s, ws, col := debounceFixture(t)
 	item := createTestItem(t, s, ws.ID, col.ID, "Fresh", "")
 	if j := mustJob(t, s, item.ID, "triage"); j.NotBefore != "" {
@@ -127,6 +128,7 @@ func TestDecisionJobs_DebounceDefersReask(t *testing.T) {
 // (COALESCE(old, new)) rather than pushing it back, so a stream of comments
 // cannot postpone the re-ask indefinitely.
 func TestDecisionJobs_DebounceCoalescesRacingComments(t *testing.T) {
+	t.Parallel()
 	s, ws, col := debounceFixture(t)
 	item := createTestItem(t, s, ws.ID, col.ID, "Chatty", "")
 	c := claimN(t, s)
@@ -167,6 +169,7 @@ func TestDecisionJobs_DebounceCoalescesRacingComments(t *testing.T) {
 // not_before from the answers the run just stored, so the newer state waits a
 // window after this run instead of being asked on the very next tick.
 func TestDecisionJobs_SupersededCompletionSetsNotBefore(t *testing.T) {
+	t.Parallel()
 	s, ws, col := debounceFixture(t)
 	item := createTestItem(t, s, ws.ID, col.ID, "Race", "")
 	c := claimN(t, s)
@@ -198,6 +201,7 @@ func TestDecisionJobs_SupersededCompletionSetsNotBefore(t *testing.T) {
 // and NULL once it has passed, never this completion's now plus the window.
 // One subtest per leg, so each can go red on its own.
 func TestDecisionJobs_SupersededNoCallKeepsTheOlderWindow(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		age  time.Duration
@@ -230,6 +234,7 @@ func TestDecisionJobs_SupersededNoCallKeepsTheOlderWindow(t *testing.T) {
 // The window runs from the LATEST evaluation, not the first: an item asked
 // two hours ago and again ten minutes ago is inside its window.
 func TestDecisionJobs_DebounceUsesLatestEvaluation(t *testing.T) {
+	t.Parallel()
 	s, ws, col := debounceFixture(t)
 	item := createTestItem(t, s, ws.ID, col.ID, "Twice", "")
 	c := claimN(t, s)
@@ -251,6 +256,7 @@ func TestDecisionJobs_DebounceUsesLatestEvaluation(t *testing.T) {
 // A set with no window (a per-comment set) is never debounced, beside one
 // that is: the window is per set, not global.
 func TestDecisionJobs_PerCommentSetNotDebounced(t *testing.T) {
+	t.Parallel()
 	s, ws, col := debounceFixture(t, "triage", "per-comment")
 	item := createTestItem(t, s, ws.ID, col.ID, "Both", "")
 	c := claimN(t, s)

@@ -10,6 +10,7 @@ import (
 // via testStore.
 
 func TestOweDecisionJobs_DebounceAndCoalescing(t *testing.T) {
+	t.Parallel()
 	s, ws, col := debounceFixture(t)
 	// Install a resolver that owes nothing, so the creations below leave no jobs.
 	s.SetDecisionSetResolver(func(string) []string { return nil })
@@ -43,6 +44,7 @@ func TestOweDecisionJobs_DebounceAndCoalescing(t *testing.T) {
 }
 
 func TestItemsMissingDecisionKey(t *testing.T) {
+	t.Parallel()
 	s, ws, col := decisionFixture(t)
 	ask := func(itemID string, keys ...string) {
 		for _, k := range keys {
@@ -86,6 +88,7 @@ func TestItemsMissingDecisionKey(t *testing.T) {
 // CountClaimableDecisionJobs counts what ClaimDecisionJobs could take now: not
 // a claimed job, not a debounced one, not a retired one, nor another item's.
 func TestCountClaimableDecisionJobs(t *testing.T) {
+	t.Parallel()
 	s, ws, col := debounceFixture(t)
 	s.SetDecisionSetResolver(func(string) []string { return nil })
 	recent := createTestItem(t, s, ws.ID, col.ID, "Recent", "")

@@ -31,6 +31,7 @@ import (
 // success.
 
 func TestExportWorkspaceMarksOnlyItemsWhoseDocumentIsAhead(t *testing.T) {
+	t.Parallel()
 	for _, backend := range []struct {
 		name string
 		open func(*testing.T) *store.Store
@@ -113,6 +114,7 @@ func TestExportWorkspaceMarksOnlyItemsWhoseDocumentIsAhead(t *testing.T) {
 // gets its own control leg: a gate that listed every item would refuse every
 // migration, and a gate that listed none would refuse nothing.
 func TestListItemsPendingContentFlushNamesOnlyStaleItems(t *testing.T) {
+	t.Parallel()
 	for _, backend := range []struct {
 		name string
 		open func(*testing.T) *store.Store
@@ -178,6 +180,7 @@ func TestListItemsPendingContentFlushNamesOnlyStaleItems(t *testing.T) {
 // collections at all, so any collection-liveness or collection-existence clause
 // on the gate's side silently shrinks its population.
 func TestGatePopulationEqualsTheBundlesMarkedPopulation(t *testing.T) {
+	t.Parallel()
 	for _, backend := range []struct {
 		name string
 		open func(*testing.T) *store.Store

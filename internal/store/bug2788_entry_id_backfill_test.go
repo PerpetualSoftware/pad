@@ -27,6 +27,7 @@ func storedNoteIDs(t *testing.T, s *Store, itemID string) []string {
 }
 
 func TestBackfillStructuredEntryIDs(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Backfill"})
 	if err != nil {
@@ -124,6 +125,7 @@ func TestBackfillStructuredEntryIDs(t *testing.T) {
 // Workspace import is the one live door that brings entries in as written
 // elsewhere; it persists ids before the row exists.
 func TestImportWorkspacePersistsStructuredEntryIDs(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	src, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Src"})
 	if err != nil {

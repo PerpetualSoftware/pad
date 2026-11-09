@@ -33,6 +33,7 @@ func dupFixture(t *testing.T) *models.WorkspaceExport {
 }
 
 func TestBUG3357_DuplicateSourceIDsRefused(t *testing.T) {
+	t.Parallel()
 	cases := map[string]func(d *models.WorkspaceExport){
 		"item": func(d *models.WorkspaceExport) {
 			d.Items[1].ID = d.Items[0].ID
@@ -78,6 +79,7 @@ func TestBUG3357_DuplicateSourceIDsRefused(t *testing.T) {
 // inserted. An item the import skips (its collection is missing) has an id
 // that exists nowhere, and the bundle door would attach to it.
 func TestBUG3357_ItemIDsOmitSkippedItems(t *testing.T) {
+	t.Parallel()
 	data := dupFixture(t)
 	skipped := data.Items[0].ID
 	data.Items[0].CollectionID = "no-such-collection"

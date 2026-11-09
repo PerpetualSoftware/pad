@@ -10,6 +10,7 @@ import (
 // cascade write [[TASK-1]] into every linker, and the index and the renderer
 // resolve a reference before a title, so the links moved to item 1.
 func TestBUG3693_RenameToAReferenceShapedTitleKeepsItsLinks(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Refs")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -58,6 +59,7 @@ func TestBUG3693_RenameToAReferenceShapedTitleKeepsItsLinks(t *testing.T) {
 // another item's ref: the cascade writes the collection-qualified title,
 // which resolves by title, so the links stay on it.
 func TestBUG3693_PrefixlessItemRenamedToARefKeepsItsLinks(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Refs")
 	tasks := createTestCollection(t, s, ws.ID, "Tasks")

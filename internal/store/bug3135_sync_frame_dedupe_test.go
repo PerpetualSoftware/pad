@@ -51,6 +51,7 @@ func appendSync(t *testing.T, s *store.Store, itemID string, frame []byte) store
 }
 
 func TestAppendSyncFrameSkipsAnExactDuplicate(t *testing.T) {
+	t.Parallel()
 	for _, b := range contentBackends() {
 		t.Run(b.name, func(t *testing.T) {
 			s := b.open(t)
@@ -80,6 +81,7 @@ func TestAppendSyncFrameSkipsAnExactDuplicate(t *testing.T) {
 // must not make the new frame a duplicate. This is the only way to stand in for
 // a sha256 collision, which cannot be constructed.
 func TestAppendSyncFrameHashMatchWithDifferentBytesIsStored(t *testing.T) {
+	t.Parallel()
 	for _, b := range contentBackends() {
 		t.Run(b.name, func(t *testing.T) {
 			s := b.open(t)
@@ -106,6 +108,7 @@ func TestAppendSyncFrameHashMatchWithDifferentBytesIsStored(t *testing.T) {
 // (different bytes, same effect — stored and marked non-bearing, as before),
 // and an envelope non-content frame repeated (SyncStep1 is not looked up).
 func TestAppendSyncFrameStoresWhatIsNotAnExactDuplicate(t *testing.T) {
+	t.Parallel()
 	for _, b := range contentBackends() {
 		t.Run(b.name, func(t *testing.T) {
 			s := b.open(t)

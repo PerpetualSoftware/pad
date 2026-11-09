@@ -14,6 +14,7 @@ import (
 // UPDATE moves. This reruns 054's backfill on rows whose physical (ctid)
 // order differs from their id order and checks the numbering follows id.
 func TestBUG3751_Migration054OrdersSameSecondTiesByID(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("PAD_TEST_POSTGRES_URL") == "" {
 		t.Skip("054 is the Postgres migration; ctid exists only there")
 	}

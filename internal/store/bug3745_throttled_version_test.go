@@ -14,6 +14,7 @@ import (
 // onto the new body, History resolves it against content it was never made
 // from, and the old version picks up text that did not exist yet.
 func TestBUG3745_ThrottledWriteKeepsTheNewestVersionExact(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Throttle")
 	col := createTestCollection(t, s, ws.ID, "Docs")
@@ -78,6 +79,7 @@ func TestBUG3745_ThrottledWriteKeepsTheNewestVersionExact(t *testing.T) {
 // The property: after any run of throttled writes, every version in the
 // reverse chain still resolves to exactly the body it recorded.
 func TestBUG3745_EveryVersionResolvesExactlyAfterThrottledWrites(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Chain")
 	col := createTestCollection(t, s, ws.ID, "Docs")
@@ -138,6 +140,7 @@ func TestBUG3745_EveryVersionResolvesExactlyAfterThrottledWrites(t *testing.T) {
 // the rewritten text sits far from the patch's hunk, so an unrebased patch
 // still applies and carries the rewrite into the old version.
 func TestBUG3745_SystemRewritesKeepTheNewestVersionExact(t *testing.T) {
+	t.Parallel()
 	long := func(head, tail string) string {
 		lines := []string{head}
 		for i := 0; i < 30; i++ {
@@ -213,6 +216,7 @@ func TestBUG3745_SystemRewritesKeepTheNewestVersionExact(t *testing.T) {
 // A newest version stored in full needs no rebase, but its line counts
 // still describe the change it covers, which the throttled write extended.
 func TestBUG3745_FullBodyVersionCountsFollowTheThrottledWrite(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Counts")
 	col := createTestCollection(t, s, ws.ID, "Docs")

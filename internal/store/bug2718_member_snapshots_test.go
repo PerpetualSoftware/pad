@@ -17,6 +17,7 @@ import (
 // (getItemTx + scrubItemPII), so the comparison is against the old behaviour,
 // not a restatement of the new code.
 func TestOutboxMemberSnapshotsMatchPerMemberReads(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Members"})
 	if err != nil {

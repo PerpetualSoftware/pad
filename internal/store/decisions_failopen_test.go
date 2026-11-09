@@ -72,6 +72,7 @@ func decisionLease(t *testing.T, s *Store, itemID string) time.Time {
 }
 
 func TestFailDecisionJob_RefusedMessageIsRecordedFixed(t *testing.T) {
+	t.Parallel()
 	s, ws, col := decisionFixture(t)
 	s.SetDecisionSetResolver(func(string) []string { return nil })
 	item := createTestItem(t, s, ws.ID, col.ID, "Poison", "")
@@ -102,6 +103,7 @@ func TestFailDecisionJob_RefusedMessageIsRecordedFixed(t *testing.T) {
 }
 
 func TestFailDecisionJob_BothWritesRefusedReturnsBoth(t *testing.T) {
+	t.Parallel()
 	s, ws, col := decisionFixture(t)
 	s.SetDecisionSetResolver(func(string) []string { return nil })
 	item := createTestItem(t, s, ws.ID, col.ID, "Poison", "")
@@ -122,6 +124,7 @@ func TestFailDecisionJob_BothWritesRefusedReturnsBoth(t *testing.T) {
 }
 
 func TestFailDecisionJob_EmptyMessageIsAFailureNotASupersede(t *testing.T) {
+	t.Parallel()
 	cases := map[string]error{"empty error": errors.New(""), "nil cause": nil}
 	for name, cause := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -151,6 +154,7 @@ func TestFailDecisionJob_EmptyMessageIsAFailureNotASupersede(t *testing.T) {
 // ruling Q1). A real Postgres server only sends well-formed codes, so the
 // shape check is pinned here by direct call.
 func TestDecisionSQLState(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name string
 		err  error
@@ -179,6 +183,7 @@ func TestDecisionSQLState(t *testing.T) {
 // the state a committed first write leaves (attempts moved, its message
 // stored) and the poison trigger then refuses FailDecisionJob's first UPDATE.
 func TestFailDecisionJob_FirstWriteCommittedIsNotCountedTwice(t *testing.T) {
+	t.Parallel()
 	s, ws, col := decisionFixture(t)
 	s.SetDecisionSetResolver(func(string) []string { return nil })
 	item := createTestItem(t, s, ws.ID, col.ID, "Committed", "")

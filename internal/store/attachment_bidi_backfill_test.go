@@ -11,6 +11,7 @@ import (
 // The SQL selection is built from bidiControlRunes and the Go check from
 // unicode.Bidi_Control; this keeps them the same set.
 func TestBidiControlRunesIsTheProperty(t *testing.T) {
+	t.Parallel()
 	var want []rune
 	for r := rune(0); r <= unicode.MaxRune; r++ {
 		if unicode.Is(unicode.Bidi_Control, r) {
@@ -51,6 +52,7 @@ func storedFilename(t *testing.T, s *Store, id string) string {
 // BUG-3153: rows stored before ingest dropped Bidi_Control characters are
 // rewritten to their SERVED name, once, and nothing else is touched.
 func TestBackfillBidiAttachmentFilenames(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Bidi Legacy")
 
@@ -112,6 +114,7 @@ func TestBackfillBidiAttachmentFilenames(t *testing.T) {
 // A rename that leaves a Bidi_Control character would be selected again on
 // every boot, so it is refused and not written.
 func TestBackfillBidiAttachmentFilenamesRefusesARenameThatLeavesOne(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Bidi Refuse")
 	a := seedAttachmentNamed(t, s, ws, "x\u202Egvs.txt")
@@ -132,6 +135,7 @@ func TestBackfillBidiAttachmentFilenamesRefusesARenameThatLeavesOne(t *testing.T
 // between the select and the update stands and is not counted. The rename
 // callback runs in that gap, which makes the interleaving deterministic.
 func TestBackfillBidiAttachmentFilenamesKeepsAConcurrentRename(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Bidi Concurrent")
 	a := seedAttachmentNamed(t, s, ws, "x\u202Egvs.txt")
@@ -157,6 +161,7 @@ func TestBackfillBidiAttachmentFilenamesKeepsAConcurrentRename(t *testing.T) {
 // row per rune, each rewritten. The runes come from unicode.Bidi_Control, NOT
 // from bidiControlRunes, so a member missing from the SQL list fails here.
 func TestBackfillBidiAttachmentFilenamesSelectsEveryBidiControl(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Bidi Every Rune")
 	seeded := map[string]rune{}
@@ -185,6 +190,7 @@ func TestBackfillBidiAttachmentFilenamesSelectsEveryBidiControl(t *testing.T) {
 // name as the caller's own must stop saying so. Every other source value is
 // still true after the rewrite and is left alone.
 func TestBackfillBidiAttachmentFilenamesKeepsProvenanceTrue(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Bidi Prov"})
 	if err != nil {

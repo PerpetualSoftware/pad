@@ -16,6 +16,7 @@ func retryRecorder(s *Store) *[]string {
 // Attempt 1 does all its writes, then fails as a deadlock just before its
 // commit; attempt 2 commits the whole effect, once.
 func TestTask3399_ADeadlockedAttemptIsRunAgainFromTheStart(t *testing.T) {
+	t.Parallel()
 	cases := map[string]func(t *testing.T, f task3399Fix) (run func() error, check func(t *testing.T)){
 		"remove_workspace_member": func(t *testing.T, f task3399Fix) (func() error, func(t *testing.T)) {
 			return func() error { return f.s.RemoveWorkspaceMember(f.ws.ID, f.person.ID) }, func(t *testing.T) {
@@ -80,6 +81,7 @@ func TestTask3399_ADeadlockedAttemptIsRunAgainFromTheStart(t *testing.T) {
 // Three deadlocks in a row: the last error is returned unchanged, and
 // nothing any attempt wrote is committed.
 func TestTask3399_DeadlockRetriesAreBounded(t *testing.T) {
+	t.Parallel()
 	f := task3399Fixture(t, "inst-dl-bound", "write")
 	task3399Delegated(t, f, "req-dlb")
 	sites := retryRecorder(f.s)

@@ -18,6 +18,7 @@ import (
 // tests never overlap parallel ones, so the rule is simply: a test that calls
 // slog.SetDefault does not call t.Parallel().
 func TestSlogCaptureTestsAreNotParallel(t *testing.T) {
+	t.Parallel()
 	files, err := filepath.Glob("*_test.go")
 	if err != nil {
 		t.Fatal(err)

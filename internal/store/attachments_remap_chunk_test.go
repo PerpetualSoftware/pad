@@ -20,6 +20,7 @@ import (
 // that code (see remapGoldenPath), so this is a comparison against the OLD
 // function's output, not against the new one's own idea of correct.
 func TestRemap_SingleChunkEquivalence(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsID := remapEquivalenceFixture(t, s)
 	before := dumpRemapState(t, s, wsID)
@@ -252,6 +253,7 @@ func (w *remapWorld) itemKeys(it remapWorldItem) []string {
 // byte-for-byte as it was, references dangling exactly as before; and (3) a
 // rerun must complete the rest, and a further run must change nothing.
 func TestRemap_StopAfterFirstChunk(t *testing.T) {
+	t.Parallel()
 	s := remapStore(t)
 	w := buildRemapWorld(t, s, 20)
 
@@ -477,6 +479,7 @@ func TestRemap_TimeBudgetEndsChunksAndNothingIsSkipped(t *testing.T) {
 
 // The item cap alone bounds a chunk when the clock never advances.
 func TestRemap_ItemCapBoundsAChunk(t *testing.T) {
+	t.Parallel()
 	s := remapStore(t)
 	w := buildRemapWorld(t, s, 40)
 	// Items that need no rewrite, interleaved by id with the ones that do, so a
@@ -511,6 +514,7 @@ func TestRemap_ItemCapBoundsAChunk(t *testing.T) {
 }
 
 func TestRemapPartialError_IsPlainAndKeepsItsCause(t *testing.T) {
+	t.Parallel()
 	cause := errors.New("update item x: pq: SELECT secret FROM users")
 	err := error(&RemapPartialError{Chunks: 3, Items: 190, Cause: cause})
 	if strings.Contains(err.Error(), "SELECT") || strings.Contains(err.Error(), "pq:") {

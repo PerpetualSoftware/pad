@@ -10,6 +10,7 @@ import (
 // BUG-3355: both removal doors (with and without revoking grants) and the
 // role door refuse the canonical owner and the last owner member.
 func TestBUG3355_StoreRemovalGuards(t *testing.T) {
+	t.Parallel()
 	removers := map[string]func(s *Store, ws, user string) error{
 		"remove":               (*Store).RemoveWorkspaceMember,
 		"remove-revoke-grants": (*Store).RemoveWorkspaceMemberAndRevokeGrants,
