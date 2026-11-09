@@ -344,7 +344,7 @@ describe('inline image missing placeholder', () => {
 			failLoad();
 			await settle();
 			expect(placeholder().title).toBe('This attachment has been deleted');
-			expect(target.querySelector<HTMLImageElement>('img')?.style.display).toBe('none');
+			expect(target.querySelector<HTMLImageElement>('img[data-attachment-id]')?.style.display).toBe('none');
 		}
 
 		function announceRestore(itemId = 'item-A', workspaceSlug = 'ws') {
@@ -378,7 +378,7 @@ describe('inline image missing placeholder', () => {
 
 			expect(placeholder().style.display).not.toBe('none');
 			expect(placeholder().title).toBe('This attachment has been deleted');
-			expect(target.querySelector<HTMLImageElement>('img')?.style.display).toBe('none');
+			expect(target.querySelector<HTMLImageElement>('img[data-attachment-id]')?.style.display).toBe('none');
 		});
 
 		it('leaves the placeholder alone when the re-probe is transient — no evidence either way', async () => {
@@ -389,7 +389,7 @@ describe('inline image missing placeholder', () => {
 			await settle();
 
 			expect(placeholder().style.display).not.toBe('none');
-			expect(target.querySelector<HTMLImageElement>('img')?.style.display).toBe('none');
+			expect(target.querySelector<HTMLImageElement>('img[data-attachment-id]')?.style.display).toBe('none');
 		});
 
 		it('ignores a signal for another item — routing is by address, not broadcast', async () => {
@@ -453,12 +453,12 @@ describe('inline image missing placeholder', () => {
 			// until a `load` fires, so a broken fence looks identical at this instant.
 			// The observable consequence of a (wrong) heal is the cache-busted reload
 			// it arms — assert THAT.
-			expect(target.querySelector<HTMLImageElement>('img')?.getAttribute('src')).not.toContain(
+			expect(target.querySelector<HTMLImageElement>('img[data-attachment-id]')?.getAttribute('src')).not.toContain(
 				'restored='
 			);
 			expect(placeholder().style.display).not.toBe('none');
 			expect(placeholder().title).toBe('This attachment has been deleted');
-			expect(target.querySelector<HTMLImageElement>('img')?.style.display).toBe('none');
+			expect(target.querySelector<HTMLImageElement>('img[data-attachment-id]')?.style.display).toBe('none');
 		});
 
 		/**
@@ -482,7 +482,7 @@ describe('inline image missing placeholder', () => {
 			// The superseded probe answers first, positively — and is ignored.
 			releases[0]({ status: 'ok', mime: 'image/png', size: 10 });
 			await settle();
-			expect(target.querySelector<HTMLImageElement>('img')?.getAttribute('src')).not.toContain(
+			expect(target.querySelector<HTMLImageElement>('img[data-attachment-id]')?.getAttribute('src')).not.toContain(
 				'restored='
 			);
 
@@ -517,11 +517,11 @@ describe('inline image missing placeholder', () => {
 
 			// Again: the reload is what a heal would arm, and the placeholder's
 			// visibility alone would pass with the fence removed.
-			expect(target.querySelector<HTMLImageElement>('img')?.getAttribute('src')).not.toContain(
+			expect(target.querySelector<HTMLImageElement>('img[data-attachment-id]')?.getAttribute('src')).not.toContain(
 				'restored='
 			);
 			expect(placeholder().style.display).not.toBe('none');
-			expect(target.querySelector<HTMLImageElement>('img')?.style.display).toBe('none');
+			expect(target.querySelector<HTMLImageElement>('img[data-attachment-id]')?.style.display).toBe('none');
 		});
 
 		it('re-probes with no-store — escaping the archived window\'s cached answer is the point', async () => {
@@ -555,7 +555,7 @@ describe('inline image missing placeholder', () => {
 			probeMock.mockResolvedValue({ status: 'ok', mime: 'image/png', size: 10 });
 			announceRestore();
 			await settle();
-			target.querySelector<HTMLImageElement>('img')?.dispatchEvent(new Event('load'));
+			target.querySelector<HTMLImageElement>('img[data-attachment-id]')?.dispatchEvent(new Event('load'));
 			expect(placeholder().style.display).toBe('none');
 
 			// Only now does the stale archived-window probe answer.
@@ -563,7 +563,7 @@ describe('inline image missing placeholder', () => {
 			await settle();
 
 			expect(placeholder().style.display).toBe('none');
-			expect(target.querySelector<HTMLImageElement>('img')?.style.display).not.toBe('none');
+			expect(target.querySelector<HTMLImageElement>('img[data-attachment-id]')?.style.display).not.toBe('none');
 		});
 
 		/**
@@ -594,7 +594,7 @@ describe('inline image missing placeholder', () => {
 			release({ status: 'ok', mime: 'image/png', size: 10 });
 			await settle();
 
-			expect(target.querySelector<HTMLImageElement>('img')?.getAttribute('src')).not.toContain(
+			expect(target.querySelector<HTMLImageElement>('img[data-attachment-id]')?.getAttribute('src')).not.toContain(
 				'restored='
 			);
 		});
