@@ -32,6 +32,12 @@ import (
 // and any of them serialise at the workspace lock, and a resolve of a child
 // (which holds the child item and waits for the workspace) never needs anything
 // the cascade holds.
+//
+// The seeds and the link component are read before the schedule locks, and a
+// cross-workspace move takes no workspace row, so it can commit while a link
+// writer waits for a schedule lock. After the locks the pin re-reads liveness
+// and the stored links, and answers ErrScheduleLinkNotFound when an end moved
+// away or its link is gone. It takes no lock for that.
 
 // maxLinkComponent bounds the links one transaction will read. The per-move
 // limits (50 nodes, 16 hops) bound a footprint, not a whole component.
@@ -40,6 +46,10 @@ const maxLinkComponent = 500
 var (
 	// ErrScheduleLinkNotFound is the answer for a link, or an end of one, the caller cannot read.
 	ErrScheduleLinkNotFound = errors.New("schedule link not found")
+	// ErrScheduleLinked refuses an edit of a schedule that is an end of a link
+	// when the edit would shift a date the link supplies: its timing, or a role
+	// an edge uses. Nothing is written. The route maps it to 409.
+	ErrScheduleLinked = errors.New("this schedule is linked; unlink it before changing its timing or a linked role")
 	// ErrLinkEditRequired refuses a link or gate write without edit on both ends.
 	ErrLinkEditRequired = errors.New("linking commitments needs edit on both items")
 	// ErrLinkViolationAck refuses an apply that would put a date outside one of
@@ -196,13 +206,28 @@ func (c *commitmentComponent) itemOf(scheduleID string) string {
 // component that already holds more than maxLinkComponent links, so it can be
 // repaired.
 func (s *Store) pinCommitmentTx(tx *sql.Tx, workspaceID, openFilter string, openArgs []any, overCap bool, rootItemID string, extraItemIDs ...string) (*commitmentComponent, error) {
+	return s.pinCommitmentOpt(tx, workspaceID, openFilter, openArgs, overCap, false, rootItemID, extraItemIDs...)
+}
+
+// pinCommitmentOpt is pinCommitmentTx. With withDeleted the root item and the
+// seed schedules are found whether or not their item is soft-deleted: the one
+// caller is DeleteScheduleLink, which must be able to remove a link whose end
+// was deleted. The lock order is the same (root item by id, workspace, then the
+// component), a deleted root is locked like a live one, and liveness is still
+// read from the items, so a deleted end is never live in the component.
+func (s *Store) pinCommitmentOpt(tx *sql.Tx, workspaceID, openFilter string, openArgs []any, overCap, withDeleted bool, rootItemID string, extraItemIDs ...string) (*commitmentComponent, error) {
+	liveItem := ` AND deleted_at IS NULL`
+	liveJoin := ` AND i.deleted_at IS NULL`
+	if withDeleted {
+		liveItem, liveJoin = "", ""
+	}
 	pg := s.dialect.Driver() == DriverPostgres
 	lock := ""
 	if pg {
 		lock = ` FOR NO KEY UPDATE`
 	}
 	var one string
-	err := tx.QueryRow(s.q(`SELECT id FROM items WHERE id=? AND workspace_id=? AND deleted_at IS NULL`+lock), rootItemID, workspaceID).Scan(&one)
+	err := tx.QueryRow(s.q(`SELECT id FROM items WHERE id=? AND workspace_id=?`+liveItem+lock), rootItemID, workspaceID).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrScheduleItemGone
 	} else if err != nil {
@@ -215,9 +240,10 @@ func (s *Store) pinCommitmentTx(tx *sql.Tx, workspaceID, openFilter string, open
 		return nil, fmt.Errorf("pin commitment workspace: %w", err)
 	}
 	seeds := map[string]bool{}
+	var seedOrder []string // the root's schedule first, then each extra's
 	for i, item := range append([]string{rootItemID}, extraItemIDs...) {
 		var id string
-		err := tx.QueryRow(s.q(`SELECT sc.id FROM item_schedules sc JOIN items i ON i.id=sc.item_id WHERE sc.item_id=? AND sc.workspace_id=? AND i.deleted_at IS NULL`), item, workspaceID).Scan(&id)
+		err := tx.QueryRow(s.q(`SELECT sc.id FROM item_schedules sc JOIN items i ON i.id=sc.item_id WHERE sc.item_id=? AND sc.workspace_id=?`+liveJoin), item, workspaceID).Scan(&id)
 		if errors.Is(err, sql.ErrNoRows) {
 			if i == 0 {
 				return nil, ErrScheduleNotFound
@@ -227,6 +253,7 @@ func (s *Store) pinCommitmentTx(tx *sql.Tx, workspaceID, openFilter string, open
 			return nil, fmt.Errorf("pin commitment schedule: %w", err)
 		}
 		seeds[id] = true
+		seedOrder = append(seedOrder, id)
 	}
 	c := &commitmentComponent{scheds: map[string]*models.ItemSchedule{}, live: map[string]bool{}, terminal: map[string]bool{}}
 	known := map[string]bool{}
@@ -292,6 +319,9 @@ func (s *Store) pinCommitmentTx(tx *sql.Tx, workspaceID, openFilter string, open
 			}
 		}
 	}
+	if s.afterCommitmentLocks != nil {
+		s.afterCommitmentLocks(tx)
+	}
 	for _, id := range ids {
 		sc, err := s.getScheduleByIDQ(tx, id)
 		if err != nil {
@@ -302,7 +332,7 @@ func (s *Store) pinCommitmentTx(tx *sql.Tx, workspaceID, openFilter string, open
 		}
 	}
 	// Liveness and terminal state are one plain read, after the schedule and
-	// reminder locks: the cascade never locks a child item. Nothing re-reads it.
+	// reminder locks: the cascade never locks a child item.
 	openExpr, liveArgs := "1", args
 	if openFilter != "" {
 		openExpr, liveArgs = openFilter, append(append([]any{}, openArgs...), args...)
@@ -311,17 +341,82 @@ func (s *Store) pinCommitmentTx(tx *sql.Tx, workspaceID, openFilter string, open
 	if err != nil {
 		return nil, fmt.Errorf("read link liveness: %w", err)
 	}
-	defer rows.Close()
 	for rows.Next() {
 		var id string
 		var open bool
 		if err := rows.Scan(&id, &open); err != nil {
+			rows.Close()
 			return nil, err
 		}
 		c.live[id] = true
 		c.terminal[id] = !open
 	}
-	return c, rows.Err()
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	// Everything above up to the schedule locks was read without them. On
+	// Postgres a transaction that held a schedule lock (a cross-workspace move
+	// takes no workspace row) may have committed while this one waited: it can
+	// have archived an end, ended its schedule and deleted its links. The reads
+	// after the locks saw that, so check the seeds and the links against them. No
+	// new lock is taken. Nothing can have ADDED a link to the component: every
+	// link writer holds the workspace row this transaction holds.
+	for i, id := range seedOrder {
+		switch {
+		case c.scheds[id] == nil && i == 0:
+			return nil, ErrScheduleNotFound
+		case !withDeleted && !c.live[id] && i == 0:
+			return nil, ErrScheduleItemGone
+		case c.scheds[id] == nil || (!withDeleted && !c.live[id]):
+			return nil, ErrScheduleLinkNotFound
+		}
+	}
+	if err := s.keepStoredLinks(tx, workspaceID, c); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+// keepStoredLinks drops from the component the links that no longer exist.
+func (s *Store) keepStoredLinks(tx *sql.Tx, workspaceID string, c *commitmentComponent) error {
+	if len(c.links) == 0 {
+		return nil
+	}
+	args := []any{workspaceID}
+	for _, l := range c.links {
+		args = append(args, l.ID)
+	}
+	rows, err := tx.Query(s.q(`SELECT id FROM schedule_links WHERE workspace_id=? AND id IN (`+placeholders(len(c.links))+`)`), args...)
+	if err != nil {
+		return fmt.Errorf("re-read link component: %w", err)
+	}
+	stored := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		stored[id] = true
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	if len(stored) == len(c.links) {
+		return nil
+	}
+	kept := c.links[:0:0]
+	for _, l := range c.links {
+		if stored[l.ID] {
+			kept = append(kept, l)
+		}
+	}
+	c.links = kept
+	return nil
 }
 
 func (s *Store) drainIDs(tx *sql.Tx, query string, args []any) error {
@@ -438,6 +533,11 @@ func (s *Store) CreateScheduleLink(workspaceID string, in models.ScheduleLinkCre
 		return nil, err
 	}
 	c, err := s.pinCommitmentTx(tx, workspaceID, openFilter, openArgs, false, in.ParentItemID, in.ChildItemID)
+	if errors.Is(err, ErrScheduleItemGone) {
+		// A soft-deleted parent is the root the pin cannot find: answer as for an
+		// unreadable end, which is what a soft-deleted child already gets.
+		return nil, ErrScheduleLinkNotFound
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -600,6 +700,11 @@ func (s *Store) UpdateScheduleLink(workspaceID, linkID string, upd models.Schedu
 		return nil, err
 	}
 	c, err := s.pinCommitmentTx(tx, workspaceID, openFilter, openArgs, true, parentItem, childItem)
+	if errors.Is(err, ErrScheduleItemGone) {
+		// A soft-deleted parent is the root the pin cannot find; answer as for an
+		// unreadable end, not with a code that tells the two apart.
+		return nil, ErrScheduleLinkNotFound
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -673,9 +778,15 @@ func (s *Store) UpdateScheduleLink(workspaceID, linkID string, upd models.Schedu
 		allDay = 1
 	}
 	next.UpdatedAt = nowNano()
-	if _, err := tx.Exec(s.q(`UPDATE schedule_links SET offset_mode=?,offset_elapsed=?,offset_days=?,offset_clock=?,offset_all_day=?,offset_zone=?,cancel_policy=?,updated_at=? WHERE id=?`),
-		next.Offset.Mode, next.Offset.ElapsedSecs, next.Offset.Days, next.Offset.ClockSecs, allDay, next.Offset.Zone, next.CancelPolicy, next.UpdatedAt, linkID); err != nil {
+	res, err := tx.Exec(s.q(`UPDATE schedule_links SET offset_mode=?,offset_elapsed=?,offset_days=?,offset_clock=?,offset_all_day=?,offset_zone=?,cancel_policy=?,updated_at=? WHERE id=?`),
+		next.Offset.Mode, next.Offset.ElapsedSecs, next.Offset.Days, next.Offset.ClockSecs, allDay, next.Offset.Zone, next.CancelPolicy, next.UpdatedAt, linkID)
+	if err != nil {
 		return nil, fmt.Errorf("update schedule link: %w", err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return nil, err
+	} else if n == 0 {
+		return nil, ErrScheduleLinkNotFound
 	}
 	if apply {
 		if err := s.applyLinkedPlanTx(tx, p, linkActor(upd.Move), strings.TrimSpace(upd.Move.Reason), linkWriteWhy, s.linkNow().UTC().Truncate(time.Second), budget); err != nil {
@@ -709,11 +820,20 @@ func (s *Store) DeleteScheduleLink(workspaceID, linkID string, access models.Com
 	if err := s.setTxTimeoutsCtx(budget.ctx, tx, linkTxBudget, linkTxBudget); err != nil {
 		return err
 	}
-	if _, err := s.pinCommitmentTx(tx, workspaceID, "", nil, true, parentItem, childItem); err != nil {
+	// The root is the parent's item whether or not it is soft-deleted: it is
+	// pinned by id, first, then the workspace, as for a live link. A deleted end
+	// is read as part of the component but is never live in it.
+	if _, err := s.pinCommitmentOpt(tx, workspaceID, "", nil, true, true, parentItem, childItem); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(s.q(`DELETE FROM schedule_links WHERE id=? AND workspace_id=?`), linkID, workspaceID); err != nil {
+	res, err := tx.Exec(s.q(`DELETE FROM schedule_links WHERE id=? AND workspace_id=?`), linkID, workspaceID)
+	if err != nil {
 		return fmt.Errorf("delete schedule link: %w", err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n == 0 {
+		return ErrScheduleLinkNotFound
 	}
 	return budget.commit(tx)
 }
@@ -746,4 +866,57 @@ func (s *Store) ListScheduleLinks(workspaceID, itemID string, access models.Comm
 		}
 	}
 	return out, rows.Err()
+}
+
+// linkedRolesTx names the roles of scheduleID that some link uses, on whichever
+// end the schedule is. It is empty for a schedule with no link. It is one plain
+// read, taken under the schedule's own pin, so a link writer (which needs the
+// workspace lock this transaction holds) cannot add an edge between the read
+// and the commit.
+func (s *Store) linkedRolesTx(tx *sql.Tx, scheduleID string) (map[string]bool, error) {
+	rows, err := tx.Query(s.q(`SELECT parent_schedule_id, parent_role, child_role FROM schedule_links WHERE parent_schedule_id=? OR child_schedule_id=?`), scheduleID, scheduleID)
+	if err != nil {
+		return nil, fmt.Errorf("read linked roles: %w", err)
+	}
+	defer rows.Close()
+	used := map[string]bool{}
+	for rows.Next() {
+		var parent, pr, cr string
+		if err := rows.Scan(&parent, &pr, &cr); err != nil {
+			return nil, err
+		}
+		if parent == scheduleID {
+			used[pr] = true
+		} else {
+			used[cr] = true
+		}
+	}
+	return used, rows.Err()
+}
+
+// roleOffsetsDiffer reports whether the offsets of the named role differ.
+func roleOffsetsDiffer(role string, a, b scheduleRoles) bool {
+	same := func(x, y *int) bool { return (x == nil) == (y == nil) && (x == nil || *x == *y) }
+	switch role {
+	case "target":
+		return a.TargetDays != b.TargetDays || a.TargetSecs != b.TargetSecs
+	case "earliest":
+		return !same(a.EarliestDays, b.EarliestDays) || !same(a.EarliestSecs, b.EarliestSecs)
+	case "deadline":
+		return !same(a.DeadlineDays, b.DeadlineDays) || !same(a.DeadlineSecs, b.DeadlineSecs)
+	case "occupied_until":
+		return !same(a.OccupiedDays, b.OccupiedDays) || !same(a.OccupiedSecs, b.OccupiedSecs)
+	}
+	return false
+}
+
+// guardLinkedRoles is ErrScheduleLinked when a role an edge uses differs
+// between the two role sets. Roles no edge uses are free.
+func guardLinkedRoles(used map[string]bool, before, after scheduleRoles) error {
+	for role := range used {
+		if roleOffsetsDiffer(role, before, after) {
+			return ErrScheduleLinked
+		}
+	}
+	return nil
 }

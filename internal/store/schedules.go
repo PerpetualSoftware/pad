@@ -671,11 +671,22 @@ func (s *Store) updateCommitmentAt(workspaceID, itemID string, upd models.Schedu
 	if err != nil {
 		return nil, err
 	}
+	// An edge reads this schedule's dates: a timing edit, or a change to a role an
+	// edge uses, would leave the other end where the link no longer puts it. The
+	// link refusal comes before the hard-deadline one, which is about who may
+	// change a deadline, not about whether the dates may move at all.
+	linked, err := s.linkedRolesTx(tx, cur.ID)
+	if err != nil {
+		return nil, err
+	}
 	// Merge only after pinScheduleTx and the transaction's storedRoles read.
 	var roles *scheduleRoles
 	if partial != nil {
 		merged, err := mergeRolesPatch(storedRoles, *partial)
 		if err != nil {
+			return nil, err
+		}
+		if err := guardLinkedRoles(linked, storedRoles, merged); err != nil {
 			return nil, err
 		}
 		if storedRoles.Origin == "native" && storedRoles.DeadlineDays != nil && !sameDeadline(storedRoles, merged) {
@@ -823,6 +834,9 @@ func (s *Store) updateCommitmentAt(workspaceID, itemID string, upd models.Schedu
 		spec.Rule != deref(cur.Rrule) || anchor != cur.Anchor ||
 		!equalStringSlices(wallStrings(spec.RDates), cur.RDates) || !equalStringSlices(wallStrings(spec.ExDates), cur.ExDates)
 	timingEdit := timingNamed && (timingChanged || cur.ErrorCode != nil)
+	if len(linked) > 0 && timingEdit {
+		return nil, ErrScheduleLinked
+	}
 	if storedRoles.Origin == "native" && storedRoles.DeadlineDays != nil &&
 		(timingEdit || (timingNamed && cur.EndedAt != nil)) {
 		return nil, ErrHardDeadlineRenegotiate
@@ -943,6 +957,21 @@ func (s *Store) updateCommitmentAt(workspaceID, itemID string, upd models.Schedu
 	}
 	if storedRoles.Origin == "legacy_backfill" && roles == nil {
 		if err := s.setLegacyRolesTx(tx, cur.ID, kind, spec.Start.String(), dtend); err != nil {
+			return nil, err
+		}
+	}
+	if len(linked) > 0 {
+		// A legacy row derives its roles from kind and dtend, so an edit that names
+		// no role can still move one.
+		edited, err := s.getScheduleQ(tx, workspaceID, itemID, false)
+		if err != nil {
+			return nil, err
+		}
+		now, err := s.scheduleRolesOf(tx, edited)
+		if err != nil {
+			return nil, err
+		}
+		if err := guardLinkedRoles(linked, storedRoles, now); err != nil {
 			return nil, err
 		}
 	}
