@@ -17,6 +17,7 @@ func pendingOwner(t *testing.T, s *Store, n int) string {
 }
 
 func TestPendingInstall_PerOwnerCap(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Apps")
 	owner := pendingOwner(t, s, 1)
@@ -35,6 +36,7 @@ func TestPendingInstall_PerOwnerCap(t *testing.T) {
 }
 
 func TestPendingInstall_InstanceBytesCap(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Apps")
 	max := int(PendingInstanceBytes / PendingInstallBytes)
@@ -51,6 +53,7 @@ func TestPendingInstall_InstanceBytesCap(t *testing.T) {
 // The full charge is held while fetching, however little has been staged, and
 // reduced to the staged bytes only when the fetch ends.
 func TestPendingInstall_ChargeIsHeldUntilTheFetchEnds(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Apps")
 	max := int(PendingInstanceBytes / PendingInstallBytes)
@@ -97,6 +100,7 @@ func TestPendingInstall_ChargeIsHeldUntilTheFetchEnds(t *testing.T) {
 }
 
 func TestPendingInstall_StagingCannotExceedTheInstallCap(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Apps")
 	p, err := s.ReservePendingInstall(ws.ID, pendingOwner(t, s, 1), "https://app.example")
@@ -116,6 +120,7 @@ func TestPendingInstall_StagingCannotExceedTheInstallCap(t *testing.T) {
 }
 
 func TestPendingInstall_ScopingDeleteAndSweep(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Apps")
 	other := createTestWorkspace(t, s, "Other")
@@ -170,6 +175,7 @@ func TestPendingInstall_ScopingDeleteAndSweep(t *testing.T) {
 // serializes them; on Postgres the owner row lock and the instance advisory
 // lock do.
 func TestPendingInstall_ConcurrentReservationsRespectBothCaps(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Apps")
 	shared := pendingOwner(t, s, 0)

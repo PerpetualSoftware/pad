@@ -42,6 +42,7 @@ func setAsideOne(t *testing.T, s *store.Store, itemID string) {
 }
 
 func TestSetAsideMovesRowsAndMarksTheItem(t *testing.T) {
+	t.Parallel()
 	eachBackend(t, func(t *testing.T, s *store.Store) {
 		_, _, item := seedStaleItem(t, s)
 		setAsideOne(t, s, item.ID)
@@ -76,6 +77,7 @@ func TestSetAsideMovesRowsAndMarksTheItem(t *testing.T) {
 // The bundle carries set-aside rows (condition a) and an import reattaches
 // them, so the imported item reads the same state as its source.
 func TestSetAsideRoundTripsThroughTheBundle(t *testing.T) {
+	t.Parallel()
 	eachBackend(t, func(t *testing.T, s *store.Store) {
 		_, _, item := seedStaleItem(t, s)
 		setAsideOne(t, s, item.ID)
@@ -126,6 +128,7 @@ func TestSetAsideRoundTripsThroughTheBundle(t *testing.T) {
 // A bundle row that did not come from a server is skipped, not stored and not
 // fatal: this file's lenient import precedent.
 func TestSetAsideImportSkipsMalformedRows(t *testing.T) {
+	t.Parallel()
 	s := storetest.NewSQLite(t)
 	_, _, item := seedStaleItem(t, s)
 	setAsideOne(t, s, item.ID)
@@ -165,6 +168,7 @@ func TestSetAsideImportSkipsMalformedRows(t *testing.T) {
 // the bundle, so an item holding only those is not refused; an item holding
 // both still is, although its content_state reads superseded_set_aside.
 func TestMigrationGateAsksTheOpLogOnly(t *testing.T) {
+	t.Parallel()
 	eachBackend(t, func(t *testing.T, s *store.Store) {
 		wsID, _, item := seedStaleItem(t, s)
 		setAsideOne(t, s, item.ID)

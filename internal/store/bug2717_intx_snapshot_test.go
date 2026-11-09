@@ -76,6 +76,7 @@ func assertOwnSnapshot(t *testing.T, s *Store, got *models.Item, what string) {
 }
 
 func TestRestoreReturnsItsOwnCommittedSnapshot(t *testing.T) {
+	t.Parallel()
 	s, it, _ := bug2717Fixture(t)
 	if err := s.DeleteItem(it.ID); err != nil {
 		t.Fatalf("DeleteItem: %v", err)
@@ -89,6 +90,7 @@ func TestRestoreReturnsItsOwnCommittedSnapshot(t *testing.T) {
 }
 
 func TestMoveReturnsItsOwnCommittedSnapshot(t *testing.T) {
+	t.Parallel()
 	s, it, target := bug2717Fixture(t)
 	concurrentRetitle(t, s)
 	got, err := s.MoveItemWithPreCheck(it.ID, target.ID, "{}", nil)

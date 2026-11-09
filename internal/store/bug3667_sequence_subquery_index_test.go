@@ -15,6 +15,7 @@ import (
 //
 // The plan helper and the backend split are BUG-3668's (explainPlan).
 func TestBUG3667_SequenceSubqueriesAreIndexed(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	census := []struct{ site, table, query string }{
 		{"nextTransitionSeqSubquery (status changes)", "status_transitions",

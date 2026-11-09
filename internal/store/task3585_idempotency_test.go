@@ -13,6 +13,7 @@ import (
 // transaction, replay, and lease takeover.
 
 func TestTASK3585_ClaimCompleteReplay(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Idem")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -88,6 +89,7 @@ func TestTASK3585_TakeoverAfterADeadClaim(t *testing.T) {
 }
 
 func TestTASK3585_ReleaseAndUnknown(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Idem3")
 	c, _ := s.ClaimIdempotencyKey(ws.ID, "u", "k", "patch", "h", time.Minute)

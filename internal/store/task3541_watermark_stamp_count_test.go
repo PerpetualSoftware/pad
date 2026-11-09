@@ -14,6 +14,7 @@ import (
 // and log the unverified case. A stamp over only non-content rows (a
 // SyncStep1) reports zero. Behaviour is unchanged.
 func TestStampContentWatermarkCountsCoveredContentRows(t *testing.T) {
+	t.Parallel()
 	for _, b := range []struct {
 		name string
 		open func(*testing.T) *store.Store

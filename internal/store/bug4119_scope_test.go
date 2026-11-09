@@ -7,6 +7,7 @@ import (
 )
 
 func TestBUG4119_WikiScope(t *testing.T) {
+	t.Parallel()
 	for _, pg := range []bool{false, true} {
 		t.Run(fmt.Sprintf("pg=%t", pg), func(t *testing.T) {
 			var s *Store

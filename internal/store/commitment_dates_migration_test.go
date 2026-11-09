@@ -135,6 +135,7 @@ func commitmentOldRows(t *testing.T, s *Store) []string {
 }
 
 func TestCommitmentMigration_BackfillsAllFourKinds(t *testing.T) {
+	t.Parallel()
 	s := commitmentPreStore(t)
 	commitmentSeed(t, s)
 	commitmentApply(t, s)
@@ -195,6 +196,7 @@ func commitmentCheckRoles(t *testing.T, s *Store) {
 }
 
 func TestCommitmentMigration_PreservesRowsAndFKs(t *testing.T) {
+	t.Parallel()
 	s := commitmentPreStore(t)
 	ids := commitmentSeed(t, s)
 	before := commitmentOldRows(t, s)
@@ -229,6 +231,7 @@ func TestCommitmentMigration_PreservesRowsAndFKs(t *testing.T) {
 }
 
 func TestCommitmentMigration_ExistingActualsStayUnknown(t *testing.T) {
+	t.Parallel()
 	s := commitmentPreStore(t)
 	ids := commitmentSeed(t, s)
 	for i, state := range []string{"skipped", "moved", "missed"} {
@@ -241,6 +244,7 @@ func TestCommitmentMigration_ExistingActualsStayUnknown(t *testing.T) {
 }
 
 func TestCommitmentMigration_RollsBackOnInvalidFK(t *testing.T) {
+	t.Parallel()
 	s := commitmentPreStore(t)
 	commitmentSeed(t, s)
 	body := commitmentSQL(t, false) + `INSERT INTO schedule_occurrence_overrides (id,schedule_id,occurrence_key,role,value_at,created_at,updated_at) VALUES ('bad','absent','key','target','2026-11-02T00:00:00Z','now','now');`
@@ -259,6 +263,7 @@ func TestCommitmentMigration_RollsBackOnInvalidFK(t *testing.T) {
 }
 
 func TestCommitmentMigration_PGLockTimeoutDeclared(t *testing.T) {
+	t.Parallel()
 	body := commitmentSQL(t, true)
 	if !strings.HasPrefix(body, "SET LOCAL lock_timeout = '5s';\n") {
 		t.Fatal("missing transaction-local lock timeout")
@@ -276,6 +281,7 @@ func TestCommitmentMigration_PGLockTimeoutDeclared(t *testing.T) {
 }
 
 func TestCommitmentMigration_PostgresBackfillAndRollback(t *testing.T) {
+	t.Parallel()
 	url := os.Getenv("PAD_TEST_POSTGRES_URL")
 	if url == "" {
 		t.Skip("PAD_TEST_POSTGRES_URL not set")
@@ -337,6 +343,7 @@ var commitmentChecks = []string{
 }
 
 func TestCommitmentMigration_NoRebuild(t *testing.T) {
+	t.Parallel()
 	s := commitmentPreStore(t)
 	commitmentSeed(t, s)
 	var before string
@@ -378,6 +385,7 @@ func TestCommitmentMigration_NoRebuild(t *testing.T) {
 }
 
 func TestMigrationCountsOnCopy(t *testing.T) {
+	t.Parallel()
 	path := os.Getenv("PAD_MIGRATION_COPY")
 	if path == "" {
 		t.Skip("PAD_MIGRATION_COPY not set")

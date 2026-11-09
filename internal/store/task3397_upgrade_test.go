@@ -78,6 +78,7 @@ func TestTask3397_UpgradeDoesNotDeadlockWithAFencedWrite(t *testing.T) {
 // The install moved since the preview (its manifest hash, or its state): the
 // upgrade refuses and writes nothing.
 func TestTask3397_UpgradeRefusesAMovedInstall(t *testing.T) {
+	t.Parallel()
 	for name, move := range map[string]string{
 		"manifest": `UPDATE app_installs SET manifest_sha256 = '3333333333333333333333333333333333333333333333333333333333333333' WHERE id = ?`,
 		"state":    `UPDATE app_installs SET state = 'uninstalled' WHERE id = ?`,
@@ -103,6 +104,7 @@ func TestTask3397_UpgradeRefusesAMovedInstall(t *testing.T) {
 // install, whatever the caller (the handler refuses first; this is the
 // transaction's own guard).
 func TestTask3397_ProvisionRefusesAnUpgradeRecord(t *testing.T) {
+	t.Parallel()
 	f, req := task3397UpgradeFix(t, "inst-up-cross")
 	_, err := f.s.ProvisionAppInstall(ProvisionRequest{
 		PendingID: req.PendingID, WorkspaceID: req.WorkspaceID, OwnerID: req.OwnerID,
@@ -118,6 +120,7 @@ func TestTask3397_ProvisionRefusesAnUpgradeRecord(t *testing.T) {
 // derivation's companion check normally catches it first; this is the
 // transaction's own backstop).
 func TestTask3397_UpgradeNeverSkipsAnUnresolvedRelease(t *testing.T) {
+	t.Parallel()
 	f, req := task3397UpgradeFix(t, "inst-up-release")
 	_, err := f.s.UpgradeAppInstall(req, func(_ Queryer, inst *InstallUpgradeState) (*UpgradePlan, error) {
 		p := task3397Plan(inst)

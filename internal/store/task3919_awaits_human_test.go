@@ -10,6 +10,7 @@ import (
 // across a settings write that does not mention it, settable on its own
 // without touching other keys, and turned off by an explicit false.
 func TestTASK3919_AwaitsHumanRoundTrip(t *testing.T) {
+	t.Parallel()
 	for _, b := range contentBackends() {
 		t.Run(b.name, func(t *testing.T) {
 			s := b.open(t)

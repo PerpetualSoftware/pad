@@ -72,6 +72,7 @@ func (g bug3678Grant) activeTokens(t *testing.T) int {
 }
 
 func TestBUG3678_RevokeBeforeRotateMintsNothing(t *testing.T) {
+	t.Parallel()
 	g := bug3678Fixture(t)
 	if err := g.s.RevokeUserOAuthConnection(g.user, g.request); err != nil {
 		t.Fatal(err)
@@ -87,6 +88,7 @@ func TestBUG3678_RevokeBeforeRotateMintsNothing(t *testing.T) {
 // The revoke lands after the rotation and before the new pair is written:
 // only an issuance-time check can refuse it.
 func TestBUG3678_RevokeAfterRotateMintsNothing(t *testing.T) {
+	t.Parallel()
 	g := bug3678Fixture(t)
 	if err := g.s.RotateRefreshToken(g.request, "r1"); err != nil {
 		t.Fatal(err)
@@ -110,6 +112,7 @@ func TestBUG3678_RevokeAfterRotateMintsNothing(t *testing.T) {
 // A claim ends every grant its account held, and a refresh in flight must
 // not bring one back.
 func TestBUG3678_ClaimEndsGrantsForGood(t *testing.T) {
+	t.Parallel()
 	g := bug3678Fixture(t)
 	u := createUnverifiedUser(t, g.s, "claim-3678@example.com")
 	g.user = u.ID
@@ -145,6 +148,7 @@ func TestBUG3678_ClaimEndsGrantsForGood(t *testing.T) {
 }
 
 func TestBUG3678_SecondRotationOfOneTokenFails(t *testing.T) {
+	t.Parallel()
 	g := bug3678Fixture(t)
 	if err := g.refresh("a2", "r2"); err != nil {
 		t.Fatalf("first refresh: %v", err)
@@ -160,6 +164,7 @@ func TestBUG3678_SecondRotationOfOneTokenFails(t *testing.T) {
 // The replacement refresh token rotates in its turn: spending the presented
 // token conditionally does not strand the pair it minted.
 func TestBUG3678_ReplacementTokenRotates(t *testing.T) {
+	t.Parallel()
 	g := bug3678Fixture(t)
 	if err := g.refresh("a2", "r2"); err != nil {
 		t.Fatal(err)
@@ -221,6 +226,7 @@ func TestBUG3678_RevokeRacingRefreshLeavesNothingActive_Postgres(t *testing.T) {
 // ends it the way RevokeUserAppGrant does, with the binding tombstoned
 // (BUG-3678).
 func TestBUG3678_RevokedInstallGrantMintsNothing(t *testing.T) {
+	t.Parallel()
 	f := task3399Fixture(t, "inst-3678", "write")
 	task3399Delegated(t, f, "req-3678-app")
 	if err := f.s.RevokeOAuthGrant("req-3678-app"); err != nil {
@@ -243,6 +249,7 @@ func TestBUG3678_RevokedInstallGrantMintsNothing(t *testing.T) {
 // written is still revoked for good: its connection row names the person
 // to lock, and the record refuses the first issuance.
 func TestBUG3678_GrantRevokedBeforeFirstIssuanceMintsNothing(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	c := newTestClient(t, s)
 	if err := s.CreateOAuthConnection(OAuthConnection{RequestID: "req-3678-first", UserID: "user-123", Name: "x"}); err != nil {
@@ -310,6 +317,7 @@ func TestBUG3678_TokenlessRevokeWaitsOnIssuanceLock_Postgres(t *testing.T) {
 // exchanged: the exchange, validated before the claim, mints nothing after
 // it.
 func TestBUG3678_ClaimEndsAGrantWithNoTokenYet(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	c := newTestClient(t, s)
 	u := createUnverifiedUser(t, s, "claim-first-3678@example.com")

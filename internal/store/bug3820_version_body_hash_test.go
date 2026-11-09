@@ -62,6 +62,7 @@ func bug3820Resolve(t *testing.T, s *Store, itemID string) map[string]models.Ver
 }
 
 func TestBUG3820_Instrument_FuzzyApplyReturnsAWrongBodyWithNoError(t *testing.T) {
+	t.Parallel()
 	got, err := diff.ApplyPatch(bug3820V3, diff.CreateReversePatch(bug3820V1, bug3820V2))
 	if err != nil || got == bug3820V1 {
 		t.Fatalf("instrument: the repro no longer fuzzes (err=%v); every leg below would pass vacuously", err)
@@ -74,6 +75,7 @@ func TestBUG3820_Instrument_FuzzyApplyReturnsAWrongBodyWithNoError(t *testing.T)
 // The repro from the item: v3 -> v2 breaks, then v2 -> v1 (no hash) must
 // come back unverified and refused, not as the fuzzy body.
 func TestBUG3820_UnhashedRowBelowABreakIsUnverifiedAndRefused(t *testing.T) {
+	t.Parallel()
 	s, itemID := bug3820Item(t, []bug3820Row{
 		{"r2", bug3820Broken, true, ""},
 		{"r1", diff.CreateReversePatch(bug3820V1, bug3820V2), true, ""},
@@ -102,6 +104,7 @@ func TestBUG3820_UnhashedRowBelowABreakIsUnverifiedAndRefused(t *testing.T) {
 
 // A hashed row whose patch applies (fuzzily) to the wrong base is refused.
 func TestBUG3820_HashedRowAppliedToTheWrongBaseIsRefused(t *testing.T) {
+	t.Parallel()
 	s, itemID := bug3820Item(t, []bug3820Row{
 		{"r2", bug3820Broken, true, ""},
 		{"r1", diff.CreateReversePatch(bug3820V1, bug3820V2), true, versionBodySHA256(bug3820V1)},
@@ -118,6 +121,7 @@ func TestBUG3820_HashedRowAppliedToTheWrongBaseIsRefused(t *testing.T) {
 // The same hashed row on its real base verifies, and a verified row ends the
 // broken stretch: an unhashed row below it resolves normally.
 func TestBUG3820_VerifiedRowReanchorsTheWalk(t *testing.T) {
+	t.Parallel()
 	s, itemID := bug3820Item(t, []bug3820Row{
 		{"r3", bug3820Broken, true, ""},
 		{"r2", diff.CreateReversePatch(bug3820V2, bug3820V3), true, versionBodySHA256(bug3820V2)},
@@ -134,6 +138,7 @@ func TestBUG3820_VerifiedRowReanchorsTheWalk(t *testing.T) {
 
 // A full-body row re-anchors the walk the same way.
 func TestBUG3820_SnapshotRowReanchorsTheWalk(t *testing.T) {
+	t.Parallel()
 	s, itemID := bug3820Item(t, []bug3820Row{
 		{"r3", bug3820Broken, true, ""},
 		{"r2", bug3820V2, false, ""},
@@ -150,6 +155,7 @@ func TestBUG3820_SnapshotRowReanchorsTheWalk(t *testing.T) {
 
 // Without a break, an unhashed (legacy) row is trusted as before.
 func TestBUG3820_UnhashedRowWithNoBreakAboveIsTrusted(t *testing.T) {
+	t.Parallel()
 	s, itemID := bug3820Item(t, []bug3820Row{
 		{"r2", diff.CreateReversePatch(bug3820V2, bug3820V3), true, ""},
 		{"r1", diff.CreateReversePatch(bug3820V1, bug3820V2), true, ""},
@@ -163,6 +169,7 @@ func TestBUG3820_UnhashedRowWithNoBreakAboveIsTrusted(t *testing.T) {
 // Every writer stamps the hash of the body its row stands for, and a chain
 // written through the store verifies end to end.
 func TestBUG3820_WritersStampTheBodyHash(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "BUG-3820 writers")
 	col := createTestCollection(t, s, ws.ID, "Docs")
@@ -200,6 +207,7 @@ func TestBUG3820_WritersStampTheBodyHash(t *testing.T) {
 // A throttled write rebases the newest row (BUG-3745); its hash still
 // verifies, because the body it stands for did not change.
 func TestBUG3820_RebaseKeepsTheRowVerifiable(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "BUG-3820 rebase")
 	col := createTestCollection(t, s, ws.ID, "Docs")
@@ -226,6 +234,7 @@ func TestBUG3820_RebaseKeepsTheRowVerifiable(t *testing.T) {
 
 // A rebase never rewrites a hashed row whose rebuilt body is not its own.
 func TestBUG3820_RebaseLeavesAMismatchedRowAlone(t *testing.T) {
+	t.Parallel()
 	s, itemID := bug3820Item(t, []bug3820Row{
 		{"r1", diff.CreateReversePatch(bug3820V1, bug3820V2), true, versionBodySHA256(bug3820V1)},
 	})
@@ -251,6 +260,7 @@ func TestBUG3820_RebaseLeavesAMismatchedRowAlone(t *testing.T) {
 // Export carries the hash; import keeps a well-formed one and drops a
 // malformed one to NULL.
 func TestBUG3820_ImportKeepsAWellFormedHashOnly(t *testing.T) {
+	t.Parallel()
 	good := versionBodySHA256(bug3820V1)
 	if importedBodySHA256(good) != good {
 		t.Fatal("a well-formed hash must be kept")
@@ -266,6 +276,7 @@ func TestBUG3820_ImportKeepsAWellFormedHashOnly(t *testing.T) {
 // remapped body's hash, so the chain still verifies; an unhashed row stays
 // unhashed.
 func TestBUG3820_AttachmentRemapRehashesVerifiedRowsOnly(t *testing.T) {
+	t.Parallel()
 	oldID, newID := "00000000-0000-0000-0000-0000000000a1", "00000000-0000-0000-0000-0000000000b2"
 	ref := func(id string) string { return "![chart](pad-attachment:" + id + ")" }
 	b1 := "Intro.\n\n" + ref(oldID) + "\n\nOne.\n"
@@ -323,6 +334,7 @@ func TestBUG3820_AttachmentRemapRehashesVerifiedRowsOnly(t *testing.T) {
 // exporting instance's claim; a contradiction means the body cannot be
 // verified).
 func TestBUG3820_ExportImportRoundTripKeepsTheChainVerifiable(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "BUG-3820 export")
 	col := createTestCollection(t, s, ws.ID, "Docs")

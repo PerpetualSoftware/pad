@@ -109,6 +109,7 @@ func seedItemBody(t *testing.T, s *store.Store, pg bool, body string) (*models.I
 
 // UpdateItem (items.go, the version row for an edit) on both shapes.
 func TestBUG3839_ItemEditOfInvalidUTF8StoresTheFullBody(t *testing.T) {
+	t.Parallel()
 	for _, backend := range contentBackends() {
 		for _, sh := range bug3839Shapes {
 			t.Run(backend.name+"/"+sh.name, func(t *testing.T) {
@@ -145,6 +146,7 @@ func TestBUG3839_ItemEditOfInvalidUTF8StoresTheFullBody(t *testing.T) {
 // rebaseNewestVersionPatch (items.go): a throttled edit rebases the newest
 // version's patch onto the new body, which is where the invalid text lands.
 func TestBUG3839_ThrottledEditOntoInvalidUTF8RebasesToTheFullBody(t *testing.T) {
+	t.Parallel()
 	for _, backend := range contentBackends() {
 		for _, sh := range bug3839Shapes {
 			t.Run(backend.name+"/"+sh.name, func(t *testing.T) {
@@ -187,6 +189,7 @@ func TestBUG3839_ThrottledEditOntoInvalidUTF8RebasesToTheFullBody(t *testing.T) 
 
 // UpdateDocument (documents.go), the legacy documents' version row.
 func TestBUG3839_DocumentEditOfInvalidUTF8StoresTheFullBody(t *testing.T) {
+	t.Parallel()
 	for _, backend := range contentBackends() {
 		for _, sh := range bug3839Shapes {
 			t.Run(backend.name+"/"+sh.name, func(t *testing.T) {
@@ -248,6 +251,7 @@ func TestBUG3839_DocumentEditOfInvalidUTF8StoresTheFullBody(t *testing.T) {
 // refusal the patch applied fuzzily over the invalid byte, and the row was
 // re-diffed from a body it never recorded.
 func TestBUG3839_AttachmentRemapOverInvalidUTF8LeavesARowThatReadsPatchFailed(t *testing.T) {
+	t.Parallel()
 	oldID, newID := "00000000-0000-0000-0000-0000000000a1", "00000000-0000-0000-0000-0000000000b2"
 	ref := func(id string) string { return "![chart](pad-attachment:" + id + ")" }
 	for _, backend := range contentBackends() {
@@ -346,6 +350,7 @@ func seedDiffVersion(t *testing.T, s *store.Store, itemID, patch string) {
 // patch was made from another base. The row reads as patch_failed instead of
 // panicking the request.
 func TestBUG3839_ItemHistoryRefusesARowGoDiffCannotApply(t *testing.T) {
+	t.Parallel()
 	valid := bug3839Long("See the notes.")
 	for _, backend := range contentBackends() {
 		for _, sh := range []struct{ name, current, patch string }{
@@ -375,6 +380,7 @@ func TestBUG3839_ItemHistoryRefusesARowGoDiffCannotApply(t *testing.T) {
 
 // The legacy documents' walk (ListVersionsResolved) over the same rows.
 func TestBUG3839_DocumentHistoryRefusesARowGoDiffCannotApply(t *testing.T) {
+	t.Parallel()
 	valid := bug3839Long("See the notes.")
 	for _, backend := range contentBackends() {
 		for _, sh := range []struct{ name, current, patch string }{
@@ -418,6 +424,7 @@ func TestBUG3839_DocumentHistoryRefusesARowGoDiffCannotApply(t *testing.T) {
 // the stored body before a throttled edit replaces it. When go-diff cannot
 // apply it, the edit lands and the row is left as it was.
 func TestBUG3839_ThrottledEditOverARowGoDiffCannotApplyLeavesTheRow(t *testing.T) {
+	t.Parallel()
 	valid := bug3839Long("See the notes.")
 	for _, backend := range contentBackends() {
 		for _, sh := range []struct{ name, current, patch string }{

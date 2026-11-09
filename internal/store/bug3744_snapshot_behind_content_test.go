@@ -51,6 +51,7 @@ func contentOf(t *testing.T, s *Store, itemID string) string {
 // The audit's scenario: cursors 10 and 11, the 11 flush lands, then the
 // delayed 10 arrives.
 func TestBUG3744_DelayedOlderSnapshotIsRefused(t *testing.T) {
+	t.Parallel()
 	s, itemID, ids := bug3744Item(t, 2)
 	if err := snapshot(s, itemID, "newer", ids[1]); err != nil {
 		t.Fatalf("newer snapshot: %v", err)
@@ -76,6 +77,7 @@ func TestBUG3744_DelayedOlderSnapshotIsRefused(t *testing.T) {
 // so it never moves the watermark, and comparing against the watermark alone
 // would still let the older body through.
 func TestBUG3744_OlderSnapshotRefusedWhenNewerWasBelowMax(t *testing.T) {
+	t.Parallel()
 	s, itemID, ids := bug3744Item(t, 3)
 	if err := snapshot(s, itemID, "middle", ids[1]); err != nil {
 		t.Fatalf("middle snapshot: %v", err)
@@ -96,6 +98,7 @@ func TestBUG3744_OlderSnapshotRefusedWhenNewerWasBelowMax(t *testing.T) {
 // A server-driven full write covers every row there is, so a snapshot from
 // before it is refused too.
 func TestBUG3744_SnapshotOlderThanAServerWriteIsRefused(t *testing.T) {
+	t.Parallel()
 	s, itemID, ids := bug3744Item(t, 2)
 	body := "server"
 	if _, err := s.UpdateItem(itemID, models.ItemUpdate{Content: &body, LastModifiedBy: "user"}); err != nil {
@@ -113,6 +116,7 @@ func TestBUG3744_SnapshotOlderThanAServerWriteIsRefused(t *testing.T) {
 
 // Controls: the same cursor and a newer cursor are written.
 func TestBUG3744_SameOrNewerCursorIsWritten(t *testing.T) {
+	t.Parallel()
 	s, itemID, ids := bug3744Item(t, 2)
 	if err := snapshot(s, itemID, "a", ids[0]); err != nil {
 		t.Fatalf("first: %v", err)
@@ -131,6 +135,7 @@ func TestBUG3744_SameOrNewerCursorIsWritten(t *testing.T) {
 // A snapshot without a cursor cannot show what it covers: refused once the
 // stored body has recorded one, written as before when none has.
 func TestBUG3744_CursorlessSnapshotRefusedOnceACursorIsRecorded(t *testing.T) {
+	t.Parallel()
 	s, itemID, ids := bug3744Item(t, 1)
 	bare := func(body string) error {
 		_, err := s.UpdateItem(itemID, models.ItemUpdate{

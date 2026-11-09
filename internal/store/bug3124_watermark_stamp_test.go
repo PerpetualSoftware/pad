@@ -13,6 +13,7 @@ import (
 // parameter typing (`? = (SELECT COALESCE(MAX(id), 0) …)`) is the part most
 // likely to differ between SQLite and Postgres.
 func TestStampContentWatermarkIfCaughtUp(t *testing.T) {
+	t.Parallel()
 	for _, b := range []struct {
 		name string
 		open func(*testing.T) *store.Store

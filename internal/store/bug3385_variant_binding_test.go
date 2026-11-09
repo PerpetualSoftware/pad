@@ -21,6 +21,7 @@ import (
 // variant unbound, so the bound leg is about the parent's state and not a
 // constant.
 func TestBug3385_VariantTakesParentsCurrentBinding(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Bug 3385")
 	coll := createTestCollection(t, s, ws.ID, "Docs")

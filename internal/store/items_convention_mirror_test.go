@@ -26,6 +26,7 @@ func mirrorOf(t *testing.T, before, after string) map[string]any {
 const stored = `{"trigger":"always","scope":"all","priority":"should","enforcement":"should","convention":{"trigger":"always","surfaces":["all"],"enforcement":"should"}}`
 
 func TestMirrorConvention_ChangedKeysFlowIntoTheCopy(t *testing.T) {
+	t.Parallel()
 	after := `{"trigger":"on-commit","scope":"all","priority":"must","enforcement":"must","convention":{"trigger":"always","surfaces":["all"],"enforcement":"should"}}`
 	c := mirrorOf(t, stored, after)
 	if c["trigger"] != "on-commit" || c["enforcement"] != "must" {
@@ -37,6 +38,7 @@ func TestMirrorConvention_ChangedKeysFlowIntoTheCopy(t *testing.T) {
 }
 
 func TestMirrorConvention_ScopeAndPriorityAreTheFallbackKeys(t *testing.T) {
+	t.Parallel()
 	after := `{"trigger":"always","scope":"cli","priority":"nice-to-have","enforcement":"should","convention":{"trigger":"always","surfaces":["all"],"enforcement":"should"}}`
 	c := mirrorOf(t, stored, after)
 	if s, _ := c["surfaces"].([]any); len(s) != 1 || s[0] != "cli" {
@@ -48,6 +50,7 @@ func TestMirrorConvention_ScopeAndPriorityAreTheFallbackKeys(t *testing.T) {
 }
 
 func TestMirrorConvention_NoCopyNoChange(t *testing.T) {
+	t.Parallel()
 	before := `{"trigger":"always","n":12345678901234567890}`
 	after := `{"trigger":"on-commit","n":12345678901234567890}`
 	out, err := mirrorConventionMetadata(before, after)
@@ -57,6 +60,7 @@ func TestMirrorConvention_NoCopyNoChange(t *testing.T) {
 }
 
 func TestMirrorConvention_UnmirroredChangeLeavesBytesAlone(t *testing.T) {
+	t.Parallel()
 	after := `{"trigger":"always","scope":"all","priority":"should","enforcement":"should","status":"draft","convention":{"trigger":"always","surfaces":["all"],"enforcement":"should"}}`
 	out, err := mirrorConventionMetadata(stored, after)
 	if err != nil || out != after {
@@ -65,6 +69,7 @@ func TestMirrorConvention_UnmirroredChangeLeavesBytesAlone(t *testing.T) {
 }
 
 func TestMirrorConvention_KeepsLargeIntegersExact(t *testing.T) {
+	t.Parallel()
 	before := `{"trigger":"always","n":12345678901234567890,"convention":{"trigger":"always"}}`
 	after := `{"trigger":"on-commit","n":12345678901234567890,"convention":{"trigger":"always"}}`
 	out, err := mirrorConventionMetadata(before, after)
@@ -79,6 +84,7 @@ func TestMirrorConvention_KeepsLargeIntegersExact(t *testing.T) {
 // The Reason is caller-safe authored text: it never embeds the lower-level
 // validator's error string (TASK-4278).
 func TestMirrorConvention_ReasonDoesNotEmbedLowerLevelError(t *testing.T) {
+	t.Parallel()
 	before := `{"trigger":"on-commit","convention":{"trigger":"on-commit"}}`
 	after := `{"trigger":"","convention":{"trigger":"on-commit"}}`
 	_, err := mirrorConventionMetadata(before, after)

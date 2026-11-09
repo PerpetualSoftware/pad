@@ -45,6 +45,7 @@ func mustJob(t *testing.T, s *Store, itemID, set string) *DecisionJobState {
 // The nil-provider case: no resolver installed means every door writes nothing.
 // The doors are exercised for real, so a pass is not a door that never ran.
 func TestDecisionJobs_NoResolverEnqueuesNothing(t *testing.T) {
+	t.Parallel()
 	s, ws, col := decisionFixture(t)
 	item := createTestItem(t, s, ws.ID, col.ID, "Quiet", "body")
 	title := "Quiet, renamed"
@@ -72,6 +73,7 @@ func TestDecisionJobs_NoResolverEnqueuesNothing(t *testing.T) {
 // Each of the three doors enqueues, and repeats coalesce into ONE row whose
 // generation counts the writes.
 func TestDecisionJobs_EachDoorEnqueuesAndCoalesces(t *testing.T) {
+	t.Parallel()
 	s, ws, col := decisionFixture(t)
 	s.SetDecisionSetResolver(func(slug string) []string {
 		if slug != col.Slug {
@@ -105,6 +107,7 @@ func TestDecisionJobs_EachDoorEnqueuesAndCoalesces(t *testing.T) {
 }
 
 func TestDecisionJobs_ResolverScopesByCollection(t *testing.T) {
+	t.Parallel()
 	s, ws, col := decisionFixture(t)
 	other := createTestCollection(t, s, ws.ID, "Ideas")
 	s.SetDecisionSetResolver(func(slug string) []string {
@@ -125,6 +128,7 @@ func TestDecisionJobs_ResolverScopesByCollection(t *testing.T) {
 
 // A claim is exclusive until its lease lapses, and then any runner may take it.
 func TestDecisionJobs_ClaimIsExclusiveUntilLeaseLapses(t *testing.T) {
+	t.Parallel()
 	s, ws, col := decisionFixture(t)
 	s.SetDecisionSetResolver(func(string) []string { return []string{"triage"} })
 	item := createTestItem(t, s, ws.ID, col.ID, "Claim", "")
@@ -159,6 +163,7 @@ func TestDecisionJobs_ClaimIsExclusiveUntilLeaseLapses(t *testing.T) {
 // A write that lands mid-evaluation leaves the job owed: completion of the
 // older generation releases rather than deletes.
 func TestDecisionJobs_ReenqueueDuringEvaluationSurvivesCompletion(t *testing.T) {
+	t.Parallel()
 	s, ws, col := decisionFixture(t)
 	s.SetDecisionSetResolver(func(string) []string { return []string{"triage"} })
 	item := createTestItem(t, s, ws.ID, col.ID, "Race", "")
@@ -194,6 +199,7 @@ func TestDecisionJobs_ReenqueueDuringEvaluationSurvivesCompletion(t *testing.T) 
 }
 
 func TestDecisionJobs_FailureBacksOff(t *testing.T) {
+	t.Parallel()
 	s, ws, col := decisionFixture(t)
 	s.SetDecisionSetResolver(func(string) []string { return []string{"triage"} })
 	item := createTestItem(t, s, ws.ID, col.ID, "Fail", "")
@@ -284,6 +290,7 @@ func TestItemDecisions_LatestHidesOlderStates(t *testing.T) {
 // a move INTO a scoped collection makes an evaluation owed where the item's
 // old collection owed none.
 func TestDecisionJobs_MoveEnqueuesForTargetCollection(t *testing.T) {
+	t.Parallel()
 	s, ws, col := decisionFixture(t)
 	other := createTestCollection(t, s, ws.ID, "Ideas")
 	s.SetDecisionSetResolver(func(slug string) []string {
@@ -307,6 +314,7 @@ func TestDecisionJobs_MoveEnqueuesForTargetCollection(t *testing.T) {
 // Comment edit and delete change the trail, so they are doors too (decision 3's
 // rule applied). An edit that leaves the body unchanged is not.
 func TestDecisionJobs_CommentEditAndDeleteEnqueue(t *testing.T) {
+	t.Parallel()
 	s, ws, col := decisionFixture(t)
 	item := createTestItem(t, s, ws.ID, col.ID, "Trail", "")
 	c, err := s.CreateComment(ws.ID, item.ID, "", models.CommentCreate{Author: "a", Body: "first"})
@@ -338,6 +346,7 @@ func TestDecisionJobs_CommentEditAndDeleteEnqueue(t *testing.T) {
 // Dropping a claim (retry limit, gone item) must not take a
 // NEWER generation with it — a write that landed mid-evaluation is still owed.
 func TestDecisionJobs_DropPreservesANewerGeneration(t *testing.T) {
+	t.Parallel()
 	s, ws, col := decisionFixture(t)
 	s.SetDecisionSetResolver(func(string) []string { return []string{"triage"} })
 	item := createTestItem(t, s, ws.ID, col.ID, "Drop", "")
@@ -372,6 +381,7 @@ func TestDecisionJobs_DropPreservesANewerGeneration(t *testing.T) {
 // so a count over every stored key would report it complete and the new key
 // would never be answered.
 func TestItemDecisions_HasStateCountsOnlyTheAskedKeys(t *testing.T) {
+	t.Parallel()
 	s, ws, col := decisionFixture(t)
 	item := createTestItem(t, s, ws.ID, col.ID, "Keys", "")
 	row := func(key string) models.ItemDecision {
@@ -398,6 +408,7 @@ func TestItemDecisions_HasStateCountsOnlyTheAskedKeys(t *testing.T) {
 // gone; without an enqueue on restore the item would come back with stale
 // answers and nothing scheduled.
 func TestDecisionJobs_RestoreEnqueues(t *testing.T) {
+	t.Parallel()
 	s, ws, col := decisionFixture(t)
 	s.SetDecisionSetResolver(func(string) []string { return []string{"triage"} })
 	item := createTestItem(t, s, ws.ID, col.ID, "Phoenix", "")
@@ -440,6 +451,7 @@ func failOneAttentionJob(t *testing.T, s *Store, wsID, itemID, msg string) *Deci
 // failure is recorded: attempts counted, the set reads as failing, and the
 // job is no longer owed (BUG-4018; Postgres TEXT refuses invalid UTF-8).
 func TestFailDecisionJob_RecordsAnyMessage(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name, msg string
 		want      func(string) bool
@@ -489,6 +501,7 @@ func lastRuneStartAtOrBelow(pad, w, n, limit int) int {
 }
 
 func TestTruncateDecisionError_Boundary(t *testing.T) {
+	t.Parallel()
 	for _, r := range []string{"é", "€", "😀"} {
 		w := len(r)
 		for pad := 1010; pad <= 1024; pad++ {
@@ -522,6 +535,7 @@ func TestTruncateDecisionError_Boundary(t *testing.T) {
 // U+FFFD), so it must run BEFORE the cut or the stored value can exceed the
 // limit (BUG-4018).
 func TestFailDecisionJob_SanitiseBeforeCut(t *testing.T) {
+	t.Parallel()
 	interleaved := strings.Repeat("a\xff", 400)
 	cases := []struct {
 		name, msg, want string
