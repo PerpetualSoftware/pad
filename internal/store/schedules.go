@@ -828,6 +828,23 @@ func (s *Store) updateCommitmentAt(workspaceID, itemID string, upd models.Schedu
 		return nil, ErrHardDeadlineRenegotiate
 	}
 
+	// An edge reads this schedule's dates: a timing edit, or a change to a role an
+	// edge uses, would leave the other end where the link no longer puts it.
+	linked, err := s.linkedRolesTx(tx, cur.ID)
+	if err != nil {
+		return nil, err
+	}
+	if len(linked) > 0 {
+		if timingEdit || (timingNamed && cur.EndedAt != nil) {
+			return nil, ErrScheduleLinked
+		}
+		if roles != nil {
+			if err := guardLinkedRoles(linked, storedRoles, *roles); err != nil {
+				return nil, err
+			}
+		}
+	}
+
 	if !timingEdit && roles == nil && kind == cur.Kind && anchor == cur.Anchor && audience == cur.Audience && lead == cur.LeadMinutes && dtend == deref(cur.Dtend) {
 		return cur, nil
 	}
@@ -943,6 +960,21 @@ func (s *Store) updateCommitmentAt(workspaceID, itemID string, upd models.Schedu
 	}
 	if storedRoles.Origin == "legacy_backfill" && roles == nil {
 		if err := s.setLegacyRolesTx(tx, cur.ID, kind, spec.Start.String(), dtend); err != nil {
+			return nil, err
+		}
+	}
+	if len(linked) > 0 {
+		// A legacy row derives its roles from kind and dtend, so an edit that names
+		// no role can still move one.
+		edited, err := s.getScheduleQ(tx, workspaceID, itemID, false)
+		if err != nil {
+			return nil, err
+		}
+		now, err := s.scheduleRolesOf(tx, edited)
+		if err != nil {
+			return nil, err
+		}
+		if err := guardLinkedRoles(linked, storedRoles, now); err != nil {
 			return nil, err
 		}
 	}

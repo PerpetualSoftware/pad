@@ -40,6 +40,10 @@ const maxLinkComponent = 500
 var (
 	// ErrScheduleLinkNotFound is the answer for a link, or an end of one, the caller cannot read.
 	ErrScheduleLinkNotFound = errors.New("schedule link not found")
+	// ErrScheduleLinked refuses an edit of a schedule that is an end of a link
+	// when the edit would shift a date the link supplies: its timing, or a role
+	// an edge uses. Nothing is written. The route maps it to 409.
+	ErrScheduleLinked = errors.New("this schedule is linked; unlink it before changing its timing or a linked role")
 	// ErrLinkEditRequired refuses a link or gate write without edit on both ends.
 	ErrLinkEditRequired = errors.New("linking commitments needs edit on both items")
 	// ErrLinkViolationAck refuses an apply that would put a date outside one of
@@ -746,4 +750,57 @@ func (s *Store) ListScheduleLinks(workspaceID, itemID string, access models.Comm
 		}
 	}
 	return out, rows.Err()
+}
+
+// linkedRolesTx names the roles of scheduleID that some link uses, on whichever
+// end the schedule is. It is empty for a schedule with no link. It is one plain
+// read, taken under the schedule's own pin, so a link writer (which needs the
+// workspace lock this transaction holds) cannot add an edge between the read
+// and the commit.
+func (s *Store) linkedRolesTx(tx *sql.Tx, scheduleID string) (map[string]bool, error) {
+	rows, err := tx.Query(s.q(`SELECT parent_schedule_id, parent_role, child_role FROM schedule_links WHERE parent_schedule_id=? OR child_schedule_id=?`), scheduleID, scheduleID)
+	if err != nil {
+		return nil, fmt.Errorf("read linked roles: %w", err)
+	}
+	defer rows.Close()
+	used := map[string]bool{}
+	for rows.Next() {
+		var parent, pr, cr string
+		if err := rows.Scan(&parent, &pr, &cr); err != nil {
+			return nil, err
+		}
+		if parent == scheduleID {
+			used[pr] = true
+		} else {
+			used[cr] = true
+		}
+	}
+	return used, rows.Err()
+}
+
+// roleOffsetsDiffer reports whether the offsets of the named role differ.
+func roleOffsetsDiffer(role string, a, b scheduleRoles) bool {
+	same := func(x, y *int) bool { return (x == nil) == (y == nil) && (x == nil || *x == *y) }
+	switch role {
+	case "target":
+		return a.TargetDays != b.TargetDays || a.TargetSecs != b.TargetSecs
+	case "earliest":
+		return !same(a.EarliestDays, b.EarliestDays) || !same(a.EarliestSecs, b.EarliestSecs)
+	case "deadline":
+		return !same(a.DeadlineDays, b.DeadlineDays) || !same(a.DeadlineSecs, b.DeadlineSecs)
+	case "occupied_until":
+		return !same(a.OccupiedDays, b.OccupiedDays) || !same(a.OccupiedSecs, b.OccupiedSecs)
+	}
+	return false
+}
+
+// guardLinkedRoles is ErrScheduleLinked when a role an edge uses differs
+// between the two role sets. Roles no edge uses are free.
+func guardLinkedRoles(used map[string]bool, before, after scheduleRoles) error {
+	for role := range used {
+		if roleOffsetsDiffer(role, before, after) {
+			return ErrScheduleLinked
+		}
+	}
+	return nil
 }

@@ -122,6 +122,19 @@ func (s *Store) renegotiateCommitmentAt(workspaceID, itemID, actor string, in mo
 			return nil, err
 		}
 	} else {
+		linked, err := s.linkedRolesTx(tx, sc.ID)
+		if err != nil {
+			return nil, err
+		}
+		if len(linked) > 0 {
+			stored, err := s.scheduleRolesOf(tx, sc)
+			if err != nil {
+				return nil, err
+			}
+			if err := guardLinkedRoles(linked, stored, plan.roles); err != nil {
+				return nil, err
+			}
+		}
 		if err := s.writeNativeRolesTx(tx, sc, plan.roles, false); err != nil {
 			return nil, err
 		}
