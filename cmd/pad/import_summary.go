@@ -30,8 +30,9 @@ func printImportDrops(w io.Writer, drops []models.ImportUniqueDrop) {
 // D2); the item itself imported.
 func printImportScheduleDrops(w io.Writer, drops []models.ImportScheduleDrop) {
 	for _, d := range drops {
-		if d.Count > 1 {
-			// An aggregate stands for many records and has no item.
+		if d.Count > 0 {
+			// An aggregate (any nonzero Count, even one record) stands for records
+			// that have no item.
 			fmt.Fprintf(w, "  dropped schedule records: %d (%s)\n", d.Count, d.Reason)
 			continue
 		}

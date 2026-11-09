@@ -202,3 +202,28 @@ func TestTASK4353_MigrateReportCountsAggregateDrops(t *testing.T) {
 		}
 	}
 }
+
+// An aggregate of ONE record (exactly 10,001 links, or a single override row past
+// a ceiling) is still an aggregate: it has no item, and saying "(item not
+// imported)" for it would be false. Count is how a drop says so, so any nonzero
+// Count is an aggregate, in the import output and in the migrate summary.
+func TestTASK4353_MigrateReportCountsAOneRecordAggregate(t *testing.T) {
+	drops := []models.ImportScheduleDrop{{Reason: "links:bundle_limit", Count: 1}}
+	var lines bytes.Buffer
+	printImportScheduleDrops(&lines, drops)
+	if !strings.Contains(lines.String(), "dropped schedule records: 1 (links:bundle_limit)") || strings.Contains(lines.String(), "item not imported") {
+		t.Errorf("per-drop output for an aggregate of one: %q", lines.String())
+	}
+	var single bytes.Buffer
+	printImportScheduleDrops(&single, []models.ImportScheduleDrop{{Reason: "item:not_imported"}})
+	if !strings.Contains(single.String(), "dropped schedule: (item not imported) (item:not_imported)") {
+		t.Errorf("a single drop with no item still says so: %q", single.String())
+	}
+	var sum bytes.Buffer
+	printMigrateDropSummary(&sum, []migrateDropped{{Workspace: "Edge", Drops: append(drops, models.ImportScheduleDrop{Item: "TASK-3", Reason: "links:cycle"})}}, "/data/pad.db")
+	for _, want := range []string{"2 schedule record(s)", "  Edge: 2"} {
+		if !strings.Contains(sum.String(), want) {
+			t.Errorf("summary lacks %q: %q", want, sum.String())
+		}
+	}
+}

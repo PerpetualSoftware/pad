@@ -497,15 +497,17 @@ func (st *linkImport) check(x models.ScheduleLinkExport, schedules map[string]st
 	} else if err != nil {
 		return linkVerdict{}, err
 	}
-	// The cascade drops an edge whose parent has no outstanding occurrence, so
-	// the child's dates matter only when the parent has them.
-	var childNode *linkNode
-	if parentNode != nil {
-		if childNode, err = child.outstanding(st.s, st.tx); errors.Is(err, errScheduleDates) {
-			return refuse(reasonDates)
-		} else if err != nil {
-			return linkVerdict{}, err
-		}
+	// The child's dates are read whatever state the parent is in. The range check
+	// below needs them only when both ends have dates, but a later linked move
+	// reads the dates of every live schedule of the component (planLinkedTx), so a
+	// child whose dates cannot be read would make a move on ANY schedule of its
+	// component fail, even under an ended parent. A live create of the link is
+	// refused, and so is its import. A child that is merely ended is not an error.
+	childNode, err := child.outstanding(st.s, st.tx)
+	if errors.Is(err, errScheduleDates) {
+		return refuse(reasonDates)
+	} else if err != nil {
+		return linkVerdict{}, err
 	}
 	if !derivedInRange(off, parentNode, childNode, x.ParentRole) {
 		return refuse("links:offset")

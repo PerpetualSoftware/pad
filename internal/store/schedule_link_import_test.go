@@ -727,9 +727,12 @@ func TestBundleLinks_ImportSurfacesAFailureToReadTheParentsDates(t *testing.T) {
 	src := f.exportBundle(t)
 	ids := bundleScheduleIDs(t, src)
 	link := linkObject(ids["P"], ids["C1"], "target", "target", elapsedOffset(60))
+	// Both ends ended: no end has dates to read, so nothing reads the (hidden)
+	// table. The dates of every accepted link's two ends are read, whatever the
+	// other end is.
 	ended := func(m map[string]any) {
 		for _, v := range m["schedules"].([]any) {
-			if x := v.(map[string]any); x["id"] == ids["P"] {
+			if x := v.(map[string]any); x["id"] == ids["P"] || x["id"] == ids["C1"] {
 				x["ended_at"] = "2030-03-05T00:00:00Z"
 				delete(x, "next_at")
 				delete(x, "next_wall")
@@ -737,7 +740,7 @@ func TestBundleLinks_ImportSurfacesAFailureToReadTheParentsDates(t *testing.T) {
 			}
 		}
 	}
-	// Reading a parent's outstanding dates reads its occurrence overrides.
+	// Reading an end's outstanding dates reads its occurrence overrides.
 	f.exec(t, `ALTER TABLE schedule_occurrence_overrides RENAME TO schedule_occurrence_overrides_hidden`)
 	try := func(mutate func(map[string]any)) (*models.Workspace, ImportReport, error) {
 		m := bundleObject(t, src)
@@ -839,4 +842,137 @@ func TestBundleLinks_ImportDoesNotRangeCheckALinkToAnEndedChild(t *testing.T) {
 			t.Fatalf("report=%+v", rep.DroppedSchedules)
 		}
 	})
+}
+
+// roleEdit gives the named schedules stored role data, with the dates and kind of
+// schedule the case needs.
+func roleEdit(roles map[string]any, allDay bool, titles ...string) func(map[string]any, map[string]string) {
+	return func(m map[string]any, ids map[string]string) {
+		for _, v := range m["schedules"].([]any) {
+			x := v.(map[string]any)
+			for _, title := range titles {
+				if x["id"] != ids[title] {
+					continue
+				}
+				if allDay {
+					x["dtstart"], x["next_wall"], x["next_at"] = "2030-03-04", "2030-03-04", "2030-03-04T00:00:00Z"
+				}
+				x["roles"] = roles
+			}
+		}
+	}
+}
+
+func endSchedules(titles ...string) func(map[string]any, map[string]string) {
+	return func(m map[string]any, ids map[string]string) {
+		for _, v := range m["schedules"].([]any) {
+			x := v.(map[string]any)
+			for _, title := range titles {
+				if x["id"] == ids[title] {
+					x["ended_at"] = "2030-03-05T00:00:00Z"
+					delete(x, "next_at")
+					delete(x, "next_wall")
+					delete(x, "reminder")
+				}
+			}
+		}
+	}
+}
+
+func both(edits ...func(map[string]any, map[string]string)) func(map[string]any, map[string]string) {
+	return func(m map[string]any, ids map[string]string) {
+		for _, e := range edits {
+			e(m, ids)
+		}
+	}
+}
+
+var earliestAWeekBefore100kDays = map[string]any{"target_days": 0, "target_secs": 0, "earliest_days": -100000, "earliest_secs": 0, "roles_origin": "native"}
+
+// The dates of the CHILD are read for every accepted link too, whatever state the
+// parent is in: a later linked move reads the dates of every live schedule of the
+// component (planLinkedTx), so an exotic child that came in under an ended parent
+// would make a move on any other schedule of it fail. A live create of that link is
+// refused; so is the import of it. An ended child itself is not an error.
+func TestBundleLinks_ImportDropsALinkWhoseChildHasNoReadableDates(t *testing.T) {
+	f := newLinkBundleFix(t)
+	ids := bundleScheduleIDs(t, f.exportBundle(t))
+	exoticChild := roleEdit(earliestAWeekBefore100kDays, true, "C1")
+	t.Run("live parent", func(t *testing.T) {
+		ws, rep := importWithLinks(t, f, exoticChild, linkObject(ids["P"], ids["C1"], "target", "target", elapsedOffset(60)))
+		if len(rep.DroppedSchedules) != 1 || rep.DroppedSchedules[0].Reason != "links:dates" {
+			t.Fatalf("report=%+v, want links:dates", rep.DroppedSchedules)
+		}
+		if f.count(t, `SELECT COUNT(*) FROM schedule_links WHERE workspace_id=?`, ws.ID) != 0 {
+			t.Fatal("the link was stored")
+		}
+	})
+	t.Run("ended parent", func(t *testing.T) {
+		toExotic := linkObject(ids["D"], ids["C1"], "target", "target", elapsedOffset(60))
+		toLive := linkObject(ids["D"], ids["C2"], "target", "target", elapsedOffset(60))
+		ws, rep := importWithLinks(t, f, both(endSchedules("D"), exoticChild), toExotic, toLive)
+		if len(rep.DroppedSchedules) != 1 || rep.DroppedSchedules[0].Reason != "links:dates" || rep.DroppedSchedules[0].Item == "" {
+			t.Fatalf("report=%+v, want only the link to the exotic child dropped as links:dates", rep.DroppedSchedules)
+		}
+		if f.count(t, `SELECT COUNT(*) FROM schedule_links WHERE workspace_id=?`, ws.ID) != 1 {
+			t.Fatal("want the link to the live child kept")
+		}
+	})
+}
+
+// isScheduleDataError has two arms, and a schedule.MalformedError (the year 1756
+// of the test above) is only one. A timed schedule whose earliest role is
+// 2,147,483,647 days after it formats as a seven-digit year, which time.Parse then
+// refuses with a *time.ParseError: also a fact about the schedule's data.
+func TestBundleLinks_ImportClassifiesAParseErrorOfADateAsData(t *testing.T) {
+	f := newLinkBundleFix(t)
+	ids := bundleScheduleIDs(t, f.exportBundle(t))
+	far := map[string]any{"target_days": 0, "target_secs": 0, "earliest_days": 2147483647, "earliest_secs": 0, "roles_origin": "native"}
+	ws, rep := importWithLinks(t, f, roleEdit(far, false, "P"), linkObject(ids["P"], ids["C1"], "target", "target", elapsedOffset(60)))
+	if len(rep.DroppedSchedules) != 1 || rep.DroppedSchedules[0].Reason != "links:dates" {
+		t.Fatalf("report=%+v, want links:dates", rep.DroppedSchedules)
+	}
+	if f.count(t, `SELECT COUNT(*) FROM schedule_links WHERE workspace_id=?`, ws.ID) != 0 {
+		t.Fatal("the link was stored")
+	}
+}
+
+// Refused override rows past the individually listed ones are counted per reason,
+// not in one shared count: here two reasons, the second of which has exactly one
+// row, an aggregate of one record.
+func TestBundleLinks_ImportFoldsRefusedOverrideRowsPerReason(t *testing.T) {
+	old := maxOverrideDropEntries
+	maxOverrideDropEntries = 2
+	t.Cleanup(func() { maxOverrideDropEntries = old })
+	f := newLinkBundleFix(t)
+	ids := bundleScheduleIDs(t, f.exportBundle(t))
+	rows := []any{goodOverride()} // the row the duplicates repeat
+	for i := 0; i < 4; i++ {      // refused as invalid: the first two are listed, two are counted
+		bad := goodOverride()
+		bad["occurrence_key"] = fmt.Sprintf("not an occurrence key %d", i)
+		rows = append(rows, bad)
+	}
+	dup := goodOverride() // a repeat of the first row's key: refused as duplicate, past the listed ones
+	rows = append(rows, dup)
+	l := linkObject(ids["P"], ids["C1"], "target", "target", elapsedOffset(60))
+	l["overrides"] = rows
+	_, rep := importWithLinks(t, f, nil, l)
+	type entry struct {
+		reason string
+		count  int
+	}
+	var got []entry
+	for _, d := range rep.DroppedSchedules {
+		got = append(got, entry{d.Reason, d.Count})
+	}
+	want := []entry{{"link_overrides:invalid", 0}, {"link_overrides:invalid", 0}, {"link_overrides:duplicate", 1}, {"link_overrides:invalid", 2}}
+	sort.Slice(got, func(i, j int) bool {
+		return got[i].count < got[j].count || got[i].count == got[j].count && got[i].reason < got[j].reason
+	})
+	sort.Slice(want, func(i, j int) bool {
+		return want[i].count < want[j].count || want[i].count == want[j].count && want[i].reason < want[j].reason
+	})
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("entries %+v, want %+v (two listed invalid rows, one duplicate counted alone, two invalid counted together)", got, want)
+	}
 }
