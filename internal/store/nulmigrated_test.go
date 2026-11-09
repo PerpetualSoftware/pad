@@ -37,9 +37,11 @@ func TestMigratedTablesCoversTheExport(t *testing.T) {
 		// TASK-4104 D2; its occurrences ride inside it (nestedTables).
 		"Schedules":       "item_schedules",
 		"ScheduleChanges": "schedule_changes",
+		// TASK-4353; its overrides ride inside it (nestedTables).
+		"ScheduleLinks": "schedule_links",
 	}
 	// Tables carried inside another section rather than a section of their own.
-	nestedTables := map[string]bool{"schedule_occurrences": true, "schedule_occurrence_overrides": true}
+	nestedTables := map[string]bool{"schedule_occurrences": true, "schedule_occurrence_overrides": true, "schedule_link_overrides": true}
 
 	migrated := MigratedTables()
 
@@ -84,5 +86,32 @@ func TestMigratedTablesCoversTheExport(t *testing.T) {
 			t.Errorf("MigratedTables lists %q, which no export section reads; the preflight would "+
 				"refuse a migration over a table it does not copy", table)
 		}
+	}
+}
+
+// A table the migration copies is also one whose writes the abandoned SQLite
+// file must refuse afterwards: copied rows live in PostgreSQL, so a later write
+// to the old file edits a copy that is gone. Time links joined the copy in
+// TASK-4353; schedule_gates is the part of that unit the bundle does not carry
+// yet, so it is refused (a write would be lost) and not listed as carried.
+func TestMigratedCarriedTablesAreRefused(t *testing.T) {
+	t.Parallel()
+	refused := map[string]bool{}
+	for _, n := range MigratedRefusalTables() {
+		refused[n] = true
+	}
+	carried := MigratedTables()
+	for table := range carried {
+		if !refused[table] {
+			t.Errorf("MigratedTables lists %q, but migratedRefusalTables does not: a write to the abandoned file after the migration would be lost", table)
+		}
+	}
+	for _, table := range []string{"schedule_links", "schedule_link_overrides"} {
+		if !carried[table] || !refused[table] {
+			t.Errorf("%s: carried=%v refused=%v, want both", table, carried[table], refused[table])
+		}
+	}
+	if carried["schedule_gates"] || !refused["schedule_gates"] {
+		t.Errorf("schedule_gates: carried=%v refused=%v, want refused and not carried until the bundle carries gates", carried["schedule_gates"], refused["schedule_gates"])
 	}
 }

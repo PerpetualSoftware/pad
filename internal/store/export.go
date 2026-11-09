@@ -524,6 +524,22 @@ func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExpor
 		return nil, err
 	}
 
+	// Time links (TASK-4353): only those whose BOTH ends are schedules of this
+	// bundle, so an end that is not (its item is deleted) never appears, and
+	// the bundle names nothing about it. The count of links left out is kept
+	// for the caller and logged; it travels in no bundle.
+	inBundle := make(map[string]bool, len(export.Schedules))
+	for _, sx := range export.Schedules {
+		inBundle[sx.ID] = true
+	}
+	if export.ScheduleLinks, export.OmittedScheduleLinks, err = s.exportScheduleLinksQ(q, ws.ID, inBundle); err != nil {
+		return nil, err
+	}
+	if export.OmittedScheduleLinks > 0 {
+		slog.Warn("workspace export: left out schedule links with an end that is not in the bundle",
+			"workspace_id", ws.ID, "count", export.OmittedScheduleLinks)
+	}
+
 	// Verifications (TASK-3617), for the items this bundle carries, on the
 	// same rule as reminders above: a verdict whose item is absent could only
 	// be discarded on import.

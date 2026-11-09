@@ -170,10 +170,12 @@ var migratedRefusalTables = []string{
 	"schedule_occurrences",
 	"schedule_occurrence_overrides",
 	"schedule_changes",
-	// Time links and gates (TASK-4353). The bundle does not carry them yet:
-	// export and import of links lands before the routes that create them.
+	// Time links and their per-occurrence overrides travel through the bundle
+	// too (TASK-4353, bundle version 3; MigratedTables lists them as carried).
 	"schedule_links",
 	"schedule_link_overrides",
+	// Gates are the part of TASK-4353 the bundle does NOT carry yet: a write to
+	// the abandoned copy must refuse rather than be lost.
 	"schedule_gates",
 	"schedule_forecasts",
 	"schedule_forecast_events",
