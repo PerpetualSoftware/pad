@@ -653,8 +653,18 @@ func (s *Store) UpdateScheduleLink(workspaceID, linkID string, upd models.Schedu
 	if upd.Move.Preview {
 		return &models.ScheduleLinkResult{Moved: *moved}, nil
 	}
-	if upd.Offset != nil && p != nil {
-		if err := s.replaceLinkOverrideTx(tx, p, linkID, next.Offset); err != nil {
+	if upd.Offset != nil {
+		// The plan is nil when the parent has no outstanding occurrence; the child's
+		// own occurrence still takes the new offset, with nothing to move.
+		var childNode *linkNode
+		if p != nil {
+			childNode = p.nodes[next.ChildSchedule]
+		} else if c.live[next.ChildSchedule] {
+			if childNode, err = s.linkNodeTx(tx, c.scheds[next.ChildSchedule]); err != nil {
+				return nil, err
+			}
+		}
+		if err := s.replaceLinkOverrideTx(tx, c, childNode, linkID, next.Offset, linkActor(upd.Move)); err != nil {
 			return nil, err
 		}
 	}

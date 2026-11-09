@@ -280,6 +280,13 @@ func (s *Store) settleLinkedPlan(p *linkedPlan, budget *linkBudget, o linkedOpti
 	if err := budget.check(); err != nil {
 		return nil, false, err
 	}
+	// A preview the world has moved past is the first refusal, before authority
+	// or a reason: the token is opaque and fixed-length and the answer is the same
+	// for any hidden change, so it reveals nothing. With no revision supplied the
+	// order below stands.
+	if !o.preview && o.revision != "" && o.revision != p.revision {
+		return nil, false, ErrCommitmentChanged
+	}
 	// Authority over each deadline the change makes. The same refusal for a
 	// deadline the caller cannot read, cannot edit, or one among many.
 	for _, ch := range p.impact.HardDeadlines {
@@ -305,9 +312,6 @@ func (s *Store) settleLinkedPlan(p *linkedPlan, budget *linkBudget, o linkedOpti
 	res := s.linkedResult(p, o.access, renegotiates)
 	if o.preview {
 		return res, false, nil
-	}
-	if o.revision != "" && o.revision != p.revision {
-		return nil, false, ErrCommitmentChanged
 	}
 	if (renegotiates || len(violations) > 0) && o.revision == "" {
 		return nil, false, fieldErr("revision", "required", "this change needs the preview revision")
@@ -357,11 +361,6 @@ func (s *Store) planLinkedTx(tx *sql.Tx, c *commitmentComponent, workspaceID, it
 		if parent == nil || child == nil {
 			continue
 		}
-		// A finished dependent is history: nothing moves it, and nothing below it
-		// follows, so a link out of a finished non-root node is not an edge.
-		if c.terminal[l.ParentSchedule] && l.ParentSchedule != p.root {
-			continue
-		}
 		off, skip, err := s.effectiveLinkOffset(tx, l, child.key, l.ID != "" && l.ID == c.explicitLink)
 		if err != nil {
 			return nil, err
@@ -373,14 +372,21 @@ func (s *Store) planLinkedTx(tx *sql.Tx, c *commitmentComponent, workspaceID, it
 			continue
 		}
 		l.Offset = off
+		// A direct move of the child is the child's own drag, so it is recorded
+		// even when the parent is finished.
+		if direct && l.ChildSchedule == p.root && l.ChildRole == linkRoleName(role) {
+			p.incoming, p.incomingOffset = &c.links[i], off
+		}
+		// A finished dependent is history: nothing moves it, and nothing below it
+		// follows, so a link out of a finished non-root node is not an edge.
+		if c.terminal[l.ParentSchedule] && l.ParentSchedule != p.root {
+			continue
+		}
 		e, err := l.edge()
 		if err != nil {
 			return nil, err
 		}
 		edges = append(edges, e)
-		if direct && l.ChildSchedule == p.root && l.ChildRole == linkRoleName(role) {
-			p.incoming, p.incomingOffset = &c.links[i], off
-		}
 	}
 	g, err := schedule.NewGraph(edges)
 	if err != nil {
@@ -663,19 +669,13 @@ func (s *Store) keepLinkAtNewOffsetTx(tx *sql.Tx, p *linkedPlan) error {
 }
 
 // replaceLinkOverrideTx drops the per-occurrence offset a drag left on the
-// child's outstanding occurrence when the link's offset is written explicitly:
-// the new offset is the offset for that occurrence now. The reset is journalled
-// on the child (an update row naming the offset it replaced). A
+// child's outstanding occurrence (n; nil when it has none) when the link's
+// offset is written explicitly: the new offset is the offset for that occurrence
+// now. The reset is journalled on the child under actor (an update row naming
+// the offset it replaced). A finished child is history and is left alone, and a
 // no-longer-needed mark stays; its occurrence was skipped by the plan.
-func (s *Store) replaceLinkOverrideTx(tx *sql.Tx, p *linkedPlan, linkID string, now models.ScheduleLinkOffset) error {
-	var childSched string
-	for _, l := range p.c.links {
-		if l.ID == linkID {
-			childSched = l.ChildSchedule
-		}
-	}
-	n := p.nodes[childSched]
-	if n == nil {
+func (s *Store) replaceLinkOverrideTx(tx *sql.Tx, c *commitmentComponent, n *linkNode, linkID string, now models.ScheduleLinkOffset, actor string) error {
+	if n == nil || c.terminal[n.sc.ID] {
 		return nil
 	}
 	var mode sql.NullString
@@ -697,5 +697,5 @@ func (s *Store) replaceLinkOverrideTx(tx *sql.Tx, p *linkedPlan, linkID string, 
 	}
 	before, _ := json.Marshal(o)
 	after, _ := json.Marshal(now)
-	return s.journalScheduleChangeRowTx(tx, newID(), n.sc.ID, "update", n.key, "", string(before), string(after), "user", "Link offset replaced a dragged offset", "system", "", "")
+	return s.journalScheduleChangeRowTx(tx, newID(), n.sc.ID, "update", n.key, "", string(before), string(after), actor, "Link offset replaced a dragged offset", "system", "", "")
 }

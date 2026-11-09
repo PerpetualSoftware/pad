@@ -104,6 +104,11 @@ func TestALinkToADeadlineIsARenegotiationAtWriteTime(t *testing.T) {
 	}
 	// Authority over the deadline it changes: item 1 is edited, but a deadline below it is not.
 	f.linkRaw(t, 1, 2, "deadline", "deadline", oneDay)
+	// The link above changed the component, so the first preview is stale: take a current one.
+	prev, err = f.create(0, 1, "target", "deadline", oneDay, models.LinkWriteOptions{Reason: "slip", Preview: true}, f.allEdit())
+	if err != nil {
+		t.Fatal(err)
+	}
 	_, one := f.create(0, 1, "target", "deadline", oneDay, models.LinkWriteOptions{Reason: "slip", Revision: prev.Moved.Revision}, f.access(0, 1))
 	if !errors.Is(one, ErrDeadlineApprovalRequired) {
 		t.Fatalf("a hidden dependent deadline: %v", one)
