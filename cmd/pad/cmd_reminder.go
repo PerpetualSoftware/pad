@@ -10,25 +10,33 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/cli"
 )
 
-// `pad item remind` and friends — the CLI half of IDEA-2641 / GitHub #1010.
+// `pad remind` (alias `pad item remind`) and friends — the CLI half of IDEA-2641 / GitHub #1010.
 //
 // The verbs mirror the lifecycle rather than inventing a vocabulary: arm
 // (`remind`), see (`reminders`), move (`remind --rearm`), acknowledge (`ack`),
 // disarm (`unremind`).
 
-var (
-	remindAtFlag  string
-	remindRearmID string
-	remindSched   scheduleFlags
-)
+// remindCmd is `pad remind`; itemRemindCmd is the same command under `pad item`,
+// kept because `pad item remind` is what the MCP stdio door dispatches. Cobra
+// cannot parent one command object twice, so each form is built fresh, with its
+// own flag state.
+func remindCmd() *cobra.Command     { return newRemindCmd(false) }
+func itemRemindCmd() *cobra.Command { return newRemindCmd(true) }
 
-func remindCmd() *cobra.Command {
+const remindAliasNote = "This is an alias of 'pad remind'; the two are the same command.\n\n"
+
+func newRemindCmd(alias bool) *cobra.Command {
+	var (
+		remindAtFlag  string
+		remindRearmID string
+		remindSched   scheduleFlags
+	)
 	cmd := &cobra.Command{
 		Use:   "remind [ref]",
 		Short: "Arm a reminder on an item",
-		Example: `  pad item remind TASK-5 --remind-at 2026-11-02T09:00:00Z
-  pad item remind TASK-5 --start 2026-11-09T09:00 --every weekdays
-  pad item remind TASK-5 --start 2026-11-14T17:00 --deadline hard`,
+		Example: `  pad remind TASK-5 --remind-at 2026-11-02T09:00:00Z
+  pad remind TASK-5 --start 2026-11-09T09:00 --every weekdays
+  pad remind TASK-5 --start 2026-11-14T17:00 --deadline hard`,
 		Long: `Arm a one-shot reminder that fires at a specific instant.
 
 The instant is RFC3339 and must carry a time of day — 2026-08-01T09:00:00Z, or
@@ -62,7 +70,7 @@ Schedule flags cannot be combined with --remind-at or --rearm. Rules only the
 server can judge (a firing floor on HOURLY and MINUTELY, anchor completion with
 a BYxxx part) are refused by it, and its message is shown unchanged.
 
-Subcommands: show, done, skip, snooze, move, agenda, edit, rm (see each --help).`,
+Subcommands: show, done, skip, snooze, move, renegotiate, agenda, edit, rm (see each --help).`,
 		// `[ref]` rather than `<ref>` in Use, because cmdhelp derives the
 		// machine-readable arg spec from this string and `<ref>` would declare
 		// a REQUIRED positional that --rearm does not take.
@@ -123,6 +131,9 @@ Subcommands: show, done, skip, snooze, move, agenda, edit, rm (see each --help).
 			fmt.Printf("Reminder armed on %s for %s (id %s)\n", item.Ref, r.RemindAt, r.ID)
 			return nil
 		},
+	}
+	if alias {
+		cmd.Long = remindAliasNote + cmd.Long
 	}
 	cmd.Flags().StringVar(&remindAtFlag, "remind-at", "", "when to fire (RFC3339 instant, e.g. 2026-08-01T09:00:00Z)")
 	cmd.Flags().StringVar(&remindRearmID, "rearm", "", "move an existing reminder by id instead of arming a new one")

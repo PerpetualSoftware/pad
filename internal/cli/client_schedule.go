@@ -44,6 +44,13 @@ func (c *Client) ResolveItemCommitment(wsSlug, ref string, in any) (json.RawMess
 	return result, c.post(commitmentBase(wsSlug, ref)+"/resolve", in, &result)
 }
 
+// RenegotiateItemCommitment previews (in.preview true) or applies a deadline
+// change. A preview answers {preview, revision}; an apply answers the schedule view.
+func (c *Client) RenegotiateItemCommitment(wsSlug, ref string, in map[string]any) (json.RawMessage, error) {
+	var result json.RawMessage
+	return result, c.post(commitmentBase(wsSlug, ref)+"/renegotiate", in, &result)
+}
+
 // GetAgenda returns the workspace agenda for [from, to). tz is optional.
 func (c *Client) GetAgenda(wsSlug, from, to, tz string) (json.RawMessage, error) {
 	q := url.Values{"from": {from}, "to": {to}}

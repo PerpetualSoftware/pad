@@ -210,4 +210,6 @@ type CommitmentResolve struct {
 	State        string `json:"state"`
 	Comment      string `json:"comment,omitempty"`
 	Until        string `json:"until,omitempty"`
+	// ActualDoneAt is when the work was really finished, for state done only.
+	ActualDoneAt string `json:"actual_done_at,omitempty"`
 }
