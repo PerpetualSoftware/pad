@@ -1712,6 +1712,11 @@ func TestFieldConflictProperty_SourcesDerivedFromTheDeclaredSchema(t *testing.T)
 		"audience": true, "tz": true, "floating": true,
 		"state": true, "until": true, "occurrence_at": true, "from": true, "to": true,
 
+		// schedule-resolve's actual_done_at and schedule-renegotiate (TASK-4356):
+		// schedule rows, never item fields.
+		"actual_done_at": true, "reason": true, "scope": true, "deadline_days": true, "deadline_secs": true,
+		"deadline_behavior": true, "remove_deadline": true, "revision": true, "preview": true,
+
 		// Execution-lease coordination state (#1221) — holder/expiry live on
 		// dedicated columns, never in the item's fields blob.
 		"holder": true, "ttl": true, "worker_id": true,

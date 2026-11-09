@@ -68,6 +68,7 @@ func parityFixtureInput() map[string]any {
 		"occurrence_at":     "2026-11-09T09:00:00Z",
 		"occurrence":        "2026-11-09T09:00:00Z", // what the resolve routes read (the ActionFn renames occurrence_at)
 		"until":             "2099-01-01T09:00:00Z",
+		"reason":            "slipped", // schedule-renegotiate
 	}
 }
 

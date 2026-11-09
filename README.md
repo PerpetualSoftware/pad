@@ -406,7 +406,7 @@ the per-user clients (including Codex) and skip it.
 
 | Tool | Actions |
 |---|---|
-| `pad_item` | `create`, `update`, `delete`, `get`, `list`, `move`, `restore`, `link`, `unlink`, `deps`, `context`, `star`, `unstar`, `starred`, `comment`, `list-comments`, `edit-comment`, `delete-comment`, `backlinks`, `bulk-update`, `note`, `decide`, `export`, `import`, `history`, `remind`, `ack-reminder`, `reminders`, `unremind`, `schedule`, `schedule-edit`, `schedule-resolve`, `schedule-delete`, `agenda`, `link-pr`, `unlink-pr`, `claim`, `release`, `patch` |
+| `pad_item` | `create`, `update`, `delete`, `get`, `list`, `move`, `restore`, `link`, `unlink`, `deps`, `context`, `star`, `unstar`, `starred`, `comment`, `list-comments`, `edit-comment`, `delete-comment`, `backlinks`, `bulk-update`, `note`, `decide`, `export`, `import`, `history`, `remind`, `ack-reminder`, `reminders`, `unremind`, `schedule`, `schedule-edit`, `schedule-resolve`, `schedule-renegotiate`, `schedule-delete`, `agenda`, `link-pr`, `unlink-pr`, `claim`, `release`, `patch` |
 | `pad_workspace` | `list`, `members`, `invite`, `storage`, `audit-log`, `create`, `claim`, `deleted`, `restore` |
 | `pad_collection` | `list`, `create`, `update`, `delete`, `list-archived`, `restore` |
 | `pad_project` | `dashboard`, `next`, `ready`, `stale`, `standup`, `changelog`, `report`, `activity`, `catch-up` |

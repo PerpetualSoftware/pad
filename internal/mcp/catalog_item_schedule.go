@@ -164,7 +164,7 @@ func actionItemScheduleResolve(ctx context.Context, input map[string]any, env Ac
 	}
 	// The optional members must be strings too: stdio would stringify a number
 	// and forward it, the remote mapper would drop it.
-	for _, k := range []string{"until", "comment"} {
+	for _, k := range []string{"until", "comment", "actual_done_at"} {
 		if v, present := input[k]; present && v != nil {
 			if _, ok := v.(string); !ok {
 				return errStructured(name, fmt.Errorf("%s must be a string, got %T", k, v)), nil
@@ -185,6 +185,19 @@ func actionItemScheduleResolve(ctx context.Context, input map[string]any, env Ac
 	case strings.TrimSpace(until) != "":
 		return errStructured(name, fmt.Errorf("until applies to snooze and move only, not %s", state)), nil
 	}
+	// actual_done_at is for done, and a blank one is not given.
+	actual := ""
+	if a, _ := input["actual_done_at"].(string); strings.TrimSpace(a) != "" {
+		actual = strings.TrimSpace(a)
+		if state != "done" {
+			return errStructured(name, fmt.Errorf("actual_done_at applies to done only, not %s", state)), nil
+		}
+		if t, err := time.Parse(time.RFC3339, actual); err != nil {
+			return errStructured(name, fmt.Errorf("actual_done_at %q is not an RFC3339 instant (2026-11-08T18:30:00Z)", actual)), nil
+		} else if err := wholeSecond("actual_done_at", actual, t); err != nil {
+			return errStructured(name, err), nil
+		}
+	}
 	out := make(map[string]any, len(input)+1)
 	for k, v := range input {
 		if k != "state" && k != "occurrence_at" && k != "until" {
@@ -192,6 +205,12 @@ func actionItemScheduleResolve(ctx context.Context, input map[string]any, env Ac
 		}
 	}
 	out["occurrence"] = occ
+	// A blank actual_done_at is not given: leave it out for the route, and give
+	// the CLI its --at only when there is a value.
+	delete(out, "actual_done_at")
+	if actual != "" {
+		out["actual_done_at"], out["at"] = actual, actual
+	}
 	if needsUntil {
 		out["until"] = until
 	}
@@ -289,4 +308,89 @@ func wholeSecond(param, raw string, t time.Time) error {
 		return fmt.Errorf("%s %q has a fraction of a second: give a whole-second instant (2026-11-09T09:00:00Z)", param, raw)
 	}
 	return nil
+}
+
+// renegotiateStringKeys are the string members of schedule-renegotiate. A blank
+// one is not given on either transport.
+var renegotiateStringKeys = []string{"reason", "scope", "deadline", "deadline_behavior", "revision"}
+
+// actionItemScheduleRenegotiate handles pad_item.action=schedule-renegotiate:
+// a preview unless preview=false, which applies the revision a preview returned.
+// What both transports must agree on is decided here: types, the reason, the
+// revision an apply needs, and the instant. Which members go with which scope
+// is the server's to judge, and its message is returned unchanged. The CLI
+// names a few members differently (--deadline-offset-days, --behavior, --apply),
+// so the input also carries those flag names for stdio; the remote mapper reads
+// the declared names.
+func actionItemScheduleRenegotiate(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error) {
+	const name = "pad_item.schedule-renegotiate"
+	out := make(map[string]any, len(input)+2)
+	for k, v := range input {
+		out[k] = v
+	}
+	for _, k := range renegotiateStringKeys {
+		v, present := out[k]
+		delete(out, k)
+		if !present || v == nil {
+			continue
+		}
+		s, ok := v.(string)
+		if !ok {
+			return errStructured(name, fmt.Errorf("%s must be a string, got %T", k, v)), nil
+		}
+		if s = strings.TrimSpace(s); s != "" {
+			out[k] = s
+		}
+	}
+	if _, ok := out["reason"]; !ok {
+		return errStructured(name, fmt.Errorf("reason is required: a deadline is renegotiated with a reason on record")), nil
+	}
+	apply := false
+	for _, k := range []string{"preview", "remove_deadline"} {
+		v, present := out[k]
+		delete(out, k)
+		if !present || v == nil {
+			continue
+		}
+		b, ok := v.(bool)
+		if !ok {
+			return errStructured(name, fmt.Errorf("%s must be a boolean, got %T", k, v)), nil
+		}
+		switch {
+		case k == "preview" && !b:
+			apply = true
+		case k == "remove_deadline" && b:
+			out["remove_deadline"] = true
+		}
+	}
+	if apply {
+		if _, ok := out["revision"]; !ok {
+			return errStructured(name, fmt.Errorf("revision is required to apply: preview first (preview omitted or true) and pass the revision it returns")), nil
+		}
+		out["preview"], out["apply"] = false, true
+	}
+	if d, ok := out["deadline"].(string); ok {
+		if t, err := time.Parse(time.RFC3339, d); err != nil {
+			return errStructured(name, fmt.Errorf("deadline %q is not an RFC3339 instant (2099-01-01T09:00:00Z)", d)), nil
+		} else if err := wholeSecond("deadline", d, t); err != nil {
+			return errStructured(name, err), nil
+		}
+	}
+	for _, k := range []string{"deadline_days", "deadline_secs"} {
+		v, present := out[k]
+		delete(out, k)
+		if !present || v == nil {
+			continue
+		}
+		if _, ok, err := intParam(map[string]any{k: v}, k); err != nil {
+			return errStructured(name, err), nil
+		} else if ok {
+			out[k] = v
+			out[strings.Replace(k, "deadline_", "deadline_offset_", 1)] = v
+		}
+	}
+	if b, ok := out["deadline_behavior"]; ok {
+		out["behavior"] = b
+	}
+	return env.Dispatch(ctx, []string{"item", "remind", "renegotiate"}, out)
 }

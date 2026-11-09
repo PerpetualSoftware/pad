@@ -2311,7 +2311,16 @@ const CmdhelpVersion = "0.1"
 // timing edits return hard_deadline; use commitment/renegotiate with a reason.
 // PATCH roles edits only named members; omitted offsets and outcome are kept.
 // schedule-edit deadline soft or none clears the deadline and keeps any window.
-const ToolSurfaceVersion = "0.108"
+// v0.109 — TASK-4356: additive. pad_item schedule-resolve takes actual_done_at
+// (RFC3339, done only; the same refusals on both transports), and the new
+// action schedule-renegotiate previews or applies a deadline change through
+// POST .../commitment/renegotiate (reason required; preview unless preview is
+// false, which needs the revision a preview returned). Nine new parameters:
+// actual_done_at, reason, scope, deadline_days, deadline_secs,
+// deadline_behavior, remove_deadline, revision and preview; deadline also
+// names the new instant for schedule-renegotiate. No existing parameter or
+// action changes shape. ChatGPT: schedule-renegotiate is deferred to v2.
+const ToolSurfaceVersion = "0.109"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a
