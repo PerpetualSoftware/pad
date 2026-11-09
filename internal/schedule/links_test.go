@@ -837,3 +837,81 @@ func TestOffsetCivilYearRange(t *testing.T) {
 		}
 	})
 }
+
+// Elapsed and civil results follow one range rule: the result's year is within minYear..maxYear, and both modes
+// refuse with ErrLinkInvalid (TASK-4353).
+func TestOffsetResultRangeBothModes(t *testing.T) {
+	elapsed := func(d time.Duration) Offset { return Offset{Mode: OffsetElapsed, Elapsed: d} }
+	civil := func(zone string, days int, h, m, s int) Offset {
+		return Offset{Mode: OffsetCivil, Days: days, Hour: h, Minute: m, Second: s, Zone: zone}
+	}
+	tests := []struct {
+		name   string
+		parent string
+		off    Offset
+		ok     bool
+	}{
+		{"elapsed upper edge accepted", "2200-12-31T23:59:59Z", elapsed(0), true},
+		{"elapsed upper edge plus 1s refused", "2200-12-31T23:59:59Z", elapsed(time.Second), false},
+		{"elapsed 2190 plus 20 years refused", "2190-01-01T00:00:00Z", elapsed(20 * 365 * 24 * time.Hour), false},
+		{"elapsed lower edge accepted", "1970-01-01T00:00:00Z", elapsed(0), true},
+		{"elapsed lower edge minus 1s refused", "1970-01-01T00:00:00Z", elapsed(-time.Second), false},
+		{"civil UTC upper accepted", "2200-12-30T00:00:00Z", civil("UTC", 1, 23, 59, 59), true},
+		{"civil UTC upper refused", "2200-12-30T00:00:00Z", civil("UTC", 2, 0, 0, 0), false},
+		{"civil UTC lower accepted", "1970-01-02T00:00:00Z", civil("UTC", -1, 0, 0, 0), true},
+		{"civil UTC lower refused", "1970-01-02T00:00:00Z", civil("UTC", -2, 0, 0, 0), false},
+		{"civil east upper accepted", "2200-12-30T00:00:00Z", civil("Asia/Tokyo", 1, 23, 59, 59), true},
+		{"civil east upper refused", "2200-12-30T00:00:00Z", civil("Asia/Tokyo", 2, 0, 0, 0), false},
+		{"civil east lower accepted", "1970-01-02T12:00:00Z", civil("Asia/Tokyo", -1, 12, 0, 0), true},
+		{"civil east lower refused", "1970-01-02T12:00:00Z", civil("Asia/Tokyo", -2, 12, 0, 0), false},
+		{"civil west upper accepted", "2200-12-30T12:00:00Z", civil("America/Los_Angeles", 1, 23, 0, 0), true},
+		{"civil west upper refused", "2200-12-30T12:00:00Z", civil("America/Los_Angeles", 2, 0, 0, 0), false},
+		{"civil west lower accepted", "1970-01-02T12:00:00Z", civil("America/Los_Angeles", -1, 12, 0, 0), true},
+		{"civil west lower refused", "1970-01-02T12:00:00Z", civil("America/Los_Angeles", -2, 12, 0, 0), false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := tc.off.Apply(linkTime(t, tc.parent))
+			if tc.ok {
+				if err != nil {
+					t.Fatalf("Apply: %v", err)
+				}
+				return
+			}
+			linkWantError(t, err, ErrLinkInvalid)
+			if !errors.Is(err, ErrLinkInvalid) || !got.IsZero() {
+				t.Fatalf("Apply = %v, %v; want zero and ErrLinkInvalid", got, err)
+			}
+		})
+	}
+}
+
+func TestOffsetFromDropElapsedRange(t *testing.T) {
+	parent := linkTime(t, "2025-01-01T00:00:00Z")
+	_, err := OffsetFromDrop(OffsetElapsed, parent, linkTime(t, "2200-12-31T23:59:59Z"), "", false)
+	if err != nil {
+		t.Fatalf("in-range drop: %v", err)
+	}
+	_, err = OffsetFromDrop(OffsetElapsed, parent, linkTime(t, "2201-01-01T00:00:00Z"), "", false)
+	linkWantError(t, err, ErrLinkInvalid)
+	_, err = OffsetFromDrop(OffsetElapsed, parent, linkTime(t, "1969-12-31T23:59:59Z"), "", false)
+	linkWantError(t, err, ErrLinkInvalid)
+}
+
+func TestPlanRootDateRange(t *testing.T) {
+	at := linkTime(t, "2025-06-10T12:00:00Z")
+	edges := []Edge{linkEdge("a", "b")}
+	for _, to := range []string{"2201-01-01T00:00:00Z", "1969-12-31T23:59:59Z"} {
+		st := linkState(edges, at)
+		before := linkClone(st)
+		got, err := linkGraph(t, edges).Plan(st, Move{linkNode("a"), RoleTarget, linkTime(t, to)}, LinkLimits{})
+		linkWantError(t, err, ErrLinkInvalid)
+		if !reflect.DeepEqual(got, Impact{}) || !reflect.DeepEqual(st, before) {
+			t.Fatalf("%s: partial impact or mutated state", to)
+		}
+	}
+	edges[0].Offset = Offset{Mode: OffsetElapsed}
+	if _, err := linkGraph(t, edges).Plan(linkState(edges, at), Move{linkNode("a"), RoleTarget, linkTime(t, "2200-12-31T23:59:59Z")}, LinkLimits{}); err != nil {
+		t.Fatalf("edge root date: %v", err)
+	}
+}
