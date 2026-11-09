@@ -83,6 +83,17 @@ func TestACancelledParentOccurrenceMarksOnlyTheLinkedChildUnderTheExplicitPolicy
 	if n, _ := f.cancelRows(t, 2); n != 0 {
 		t.Fatalf("the waiting child has %d no-longer-needed journal rows", n)
 	}
+	// The child's journal is read by people who may not read the parent: its row
+	// names neither the parent item nor its schedule.
+	var row string
+	if err := f.s.db.QueryRow(f.s.q(`SELECT COALESCE(reason,'') || COALESCE(before_json,'') || COALESCE(after_json,'') || COALESCE(occurrence_key,'') FROM schedule_changes WHERE schedule_id=? AND change_type='update' AND reason LIKE 'No longer needed%'`), f.scheds[1].ID).Scan(&row); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{f.items[0].ID, f.scheds[0].ID, f.items[2].ID} {
+		if strings.Contains(row, id) {
+			t.Fatalf("the journal row names %s: %s", id, row)
+		}
+	}
 	// The series is untouched: not ended, not advanced, no occurrence resolved.
 	after := f.reload(t, f.items[1].ID)
 	if after.EndedAt != nil || *after.NextAt != *before.NextAt || *after.NextWall != *before.NextWall {

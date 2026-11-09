@@ -97,10 +97,10 @@ func (s *Store) markChildrenNoLongerNeededTx(tx *sql.Tx, parent *models.ItemSche
 		if err := s.upsertLinkOverrideTx(tx, p.link, key, nil, nowNano()); err != nil {
 			return err
 		}
-		// Named for the occurrence and the actor, never for the parent: the child's
-		// readers may not be able to read it.
+		// The row says nothing of the parent, not even that there is one: the
+		// child's journal is read by people who may not be able to read it.
 		if err := s.journalScheduleChangeRowTx(tx, newID(), child.ID, "update", key, "", "", `{"no_longer_needed":true}`, actor,
-			"No longer needed: the occurrence it follows was cancelled", "system", "", ""); err != nil {
+			"No longer needed", "system", "", ""); err != nil {
 			return err
 		}
 	}

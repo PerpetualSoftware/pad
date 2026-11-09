@@ -73,8 +73,9 @@ func (*DeadlineApprovalRequiredError) Error() string {
 
 // LinkRefusedError is a pure-layer refusal with the node ids, paths and counts
 // removed. Code is one of link_cycle, link_self, link_duplicate_incoming,
-// link_limit, link_invalid; Detail is set only for link_invalid and is a fixed
-// text from the pure layer.
+// link_limit, link_invalid, or gate_duplicate (a gate write for a pair that is
+// already gated); Detail is set only for link_invalid and is a fixed text from
+// the pure layer.
 type LinkRefusedError struct{ Code, Detail string }
 
 func (e *LinkRefusedError) Error() string {
