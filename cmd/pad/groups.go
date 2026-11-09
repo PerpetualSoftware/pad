@@ -133,7 +133,7 @@ func itemCmd() *cobra.Command {
 		commentsCmd(),
 		commentEditCmd(),
 		commentDeleteCmd(),
-		remindCmd(),
+		itemRemindCmd(),
 		remindersCmd(),
 		setAsideCmd(),
 		ackCmd(),

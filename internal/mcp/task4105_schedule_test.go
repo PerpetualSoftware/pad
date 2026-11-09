@@ -99,7 +99,7 @@ func copyInput(in map[string]any) map[string]any {
 func TestTASK4105_ScheduleReadOnlyClassification(t *testing.T) {
 	for action, want := range map[string]bool{
 		"schedule": true, "agenda": true,
-		"schedule-edit": false, "schedule-delete": false, "schedule-resolve": false, "remind": false,
+		"schedule-edit": false, "schedule-delete": false, "schedule-resolve": false, "schedule-renegotiate": false, "remind": false,
 	} {
 		if got := isReadOnlyAction("pad_item", action); got != want {
 			t.Errorf("pad_item.%s read-only = %v, want %v", action, got, want)
@@ -735,14 +735,183 @@ func TestTASK4105_BlankRemindAtBesideAScheduleIsNotGiven(t *testing.T) {
 }
 
 func TestCommitmentResolveBodyHasOnlySupportedMembers(t *testing.T) {
-	_, _, raw, err := mapScheduleResolve("done")(map[string]any{"workspace": "w", "ref": "TASK-1", "occurrence": "2099-01-01T09:00:00Z", "comment": "done", "until": "2099-01-02T09:00:00Z", "actual_done_at": "2099-01-01T08:00:00Z"})
+	_, _, raw, err := mapScheduleResolve("done")(map[string]any{"workspace": "w", "ref": "TASK-1", "occurrence": "2099-01-01T09:00:00Z", "comment": "done", "until": "2099-01-02T09:00:00Z", "actual_done_at": "2099-01-01T08:00:00Z", "reason": "ignored"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	var got map[string]any
 	_ = json.Unmarshal(raw, &got)
-	want := map[string]any{"state": "done", "occurrence_at": "2099-01-01T09:00:00Z", "comment": "done", "until": "2099-01-02T09:00:00Z"}
+	want := map[string]any{"state": "done", "occurrence_at": "2099-01-01T09:00:00Z", "comment": "done", "until": "2099-01-02T09:00:00Z", "actual_done_at": "2099-01-01T08:00:00Z"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("body %s", raw)
+	}
+}
+
+// TASK-4356: schedule-resolve takes actual_done_at (done only), and
+// schedule-renegotiate previews or applies a deadline change.
+func TestTASK4356_ActualDoneAtParity(t *testing.T) {
+	base := func() map[string]any {
+		return map[string]any{"ref": "TASK-1", "state": "done", "occurrence_at": "2026-11-09T09:00:00Z"}
+	}
+	refusals := map[string]map[string]any{
+		"not a string":   {"actual_done_at": 7},
+		"not an instant": {"actual_done_at": "yesterday"},
+		"a bare date":    {"actual_done_at": "2026-11-08"},
+		"a fraction":     {"actual_done_at": "2026-11-08T09:00:00.5Z"},
+		"on skip":        {"state": "skip", "actual_done_at": "2026-11-08T09:00:00Z"},
+		"on snooze":      {"state": "snooze", "until": "2099-01-01T09:00:00Z", "actual_done_at": "2026-11-08T09:00:00Z"},
+		"on move":        {"state": "move", "until": "2099-01-01T09:00:00Z", "actual_done_at": "2026-11-08T09:00:00Z"},
+	}
+	for name, extra := range refusals {
+		t.Run(name, func(t *testing.T) {
+			in := base()
+			for k, v := range extra {
+				in[k] = v
+			}
+			sres, disp := stdioCall(t, "schedule-resolve", in)
+			rres, seen := remoteCall(t, "schedule-resolve", withWorkspace(in))
+			if !sres.IsError || !rres.IsError || len(disp.gotPath) != 0 || len(seen) != 0 {
+				t.Fatalf("both must refuse before dispatch: stdio=%v remote=%v %v %+v", sres.IsError, rres.IsError, disp.gotPath, seen)
+			}
+			if textOf(sres) != textOf(rres) || !strings.Contains(textOf(sres), "actual_done_at") {
+				t.Fatalf("stdio: %s\nremote: %s", textOf(sres), textOf(rres))
+			}
+		})
+	}
+	t.Run("given", func(t *testing.T) {
+		in := base()
+		in["actual_done_at"] = " 2026-11-08T09:00:00Z "
+		_, disp := stdioCall(t, "schedule-resolve", in)
+		if !hasFlagPair(disp.gotArgs, "--at", "2026-11-08T09:00:00Z") {
+			t.Fatalf("stdio args = %q", disp.gotArgs)
+		}
+		res, seen := remoteCall(t, "schedule-resolve", withWorkspace(in))
+		if res.IsError || len(seen) != 1 || seen[0].Body != `{"occurrence_at":"2026-11-09T09:00:00Z","state":"done","actual_done_at":"2026-11-08T09:00:00Z"}` {
+			t.Fatalf("remote: %s %+v", textOf(res), seen)
+		}
+	})
+	// Inert values are not given: no flag on stdio, no member on the route.
+	for name, v := range map[string]any{"blank": "  ", "null": nil} {
+		t.Run("inert "+name, func(t *testing.T) {
+			in := base()
+			in["actual_done_at"] = v
+			_, disp := stdioCall(t, "schedule-resolve", in)
+			for _, a := range disp.gotArgs {
+				if a == "--at" {
+					t.Fatalf("stdio sent --at: %q", disp.gotArgs)
+				}
+			}
+			_, seen := remoteCall(t, "schedule-resolve", withWorkspace(in))
+			if len(seen) != 1 || strings.Contains(seen[0].Body, "actual_done_at") {
+				t.Fatalf("remote body: %+v", seen)
+			}
+		})
+	}
+}
+
+func TestTASK4356_RenegotiateParity(t *testing.T) {
+	good := map[string]any{"ref": "TASK-1", "reason": "slipped", "deadline": "2099-01-01T09:00:00Z"}
+	refusals := map[string]map[string]any{
+		"no reason":              {"reason": nil},
+		"blank reason":           {"reason": "  "},
+		"reason not a string":    {"reason": 3},
+		"apply with no revision": {"preview": false},
+		"apply blank revision":   {"preview": false, "revision": " "},
+		"preview not a bool":     {"preview": "no"},
+		"deadline not instant":   {"deadline": "tomorrow"},
+		"deadline a bare date":   {"deadline": "2099-01-01"},
+		"deadline a fraction":    {"deadline": "2099-01-01T09:00:00.5Z"},
+		"days not whole":         {"scope": "series", "deadline": nil, "deadline_days": 1.5},
+		"secs not a number":      {"scope": "series", "deadline": nil, "deadline_secs": "abc"},
+		"remove not a bool":      {"scope": "series", "deadline": nil, "remove_deadline": "yes"},
+	}
+	for name, extra := range refusals {
+		t.Run(name, func(t *testing.T) {
+			in := copyInput(good)
+			for k, v := range extra {
+				if v == nil {
+					delete(in, k)
+				} else {
+					in[k] = v
+				}
+			}
+			sres, disp := stdioCall(t, "schedule-renegotiate", in)
+			rres, seen := remoteCall(t, "schedule-renegotiate", withWorkspace(in))
+			if !sres.IsError || !rres.IsError || len(disp.gotPath) != 0 || len(seen) != 0 {
+				t.Fatalf("both must refuse before dispatch: stdio=%v remote=%v %v %+v", sres.IsError, rres.IsError, disp.gotPath, seen)
+			}
+			if textOf(sres) != textOf(rres) {
+				t.Fatalf("stdio: %s\nremote: %s", textOf(sres), textOf(rres))
+			}
+		})
+	}
+	const route = "/api/v1/workspaces/docapp/items/TASK-1/commitment/renegotiate"
+	check := func(t *testing.T, in map[string]any, wantFlags [][2]string, wantBody map[string]any) {
+		t.Helper()
+		_, disp := stdioCall(t, "schedule-renegotiate", in)
+		if got := strings.Join(disp.gotPath, " "); got != "item remind renegotiate" {
+			t.Fatalf("cmdPath = %q", got)
+		}
+		for _, f := range wantFlags {
+			if !hasFlagPair(disp.gotArgs, f[0], f[1]) {
+				t.Errorf("args %q lack %s %s", disp.gotArgs, f[0], f[1])
+			}
+		}
+		res, seen := remoteCall(t, "schedule-renegotiate", withWorkspace(in))
+		if res.IsError || len(seen) != 1 || seen[0].Method != "POST" || seen[0].Path != route {
+			t.Fatalf("remote: %s %+v", textOf(res), seen)
+		}
+		var body map[string]any
+		if err := json.Unmarshal([]byte(seen[0].Body), &body); err != nil || !reflect.DeepEqual(body, wantBody) {
+			t.Fatalf("body = %s, want %v", seen[0].Body, wantBody)
+		}
+	}
+	t.Run("preview is the default", func(t *testing.T) {
+		check(t, copyInput(good), [][2]string{{"--reason", "slipped"}, {"--deadline", "2099-01-01T09:00:00Z"}},
+			map[string]any{"reason": "slipped", "scope": "occurrence", "deadline": "2099-01-01T09:00:00Z", "preview": true})
+	})
+	t.Run("blank members are inert", func(t *testing.T) {
+		in := copyInput(good)
+		in["preview"], in["revision"], in["scope"], in["deadline_behavior"] = true, "", "", " "
+		check(t, in, nil, map[string]any{"reason": "slipped", "scope": "occurrence", "deadline": "2099-01-01T09:00:00Z", "preview": true})
+	})
+	t.Run("apply", func(t *testing.T) {
+		in := copyInput(good)
+		in["preview"], in["revision"] = false, "rev-1"
+		_, disp := stdioCall(t, "schedule-renegotiate", in)
+		if !hasFlagPair(disp.gotArgs, "--revision", "rev-1") || !contains(disp.gotArgs, "--apply") {
+			t.Fatalf("stdio args = %q", disp.gotArgs)
+		}
+		check(t, in, nil, map[string]any{"reason": "slipped", "scope": "occurrence", "deadline": "2099-01-01T09:00:00Z", "preview": false, "revision": "rev-1"})
+	})
+	t.Run("series", func(t *testing.T) {
+		in := map[string]any{"ref": "TASK-1", "reason": "r", "scope": "series", "deadline_days": 2, "deadline_secs": float64(3600), "deadline_behavior": "lapses"}
+		check(t, in, [][2]string{{"--scope", "series"}, {"--deadline-offset-days", "2"}, {"--deadline-offset-secs", "3600"}, {"--behavior", "lapses"}},
+			map[string]any{"reason": "r", "scope": "series", "deadline_offset": map[string]any{"deadline_days": float64(2), "deadline_secs": float64(3600)}, "deadline_behavior": "lapses", "preview": true})
+		check(t, map[string]any{"ref": "TASK-1", "reason": "r", "scope": "series", "remove_deadline": true}, [][2]string{{"--scope", "series"}},
+			map[string]any{"reason": "r", "scope": "series", "remove_deadline": true, "preview": true})
+		// remove_deadline=false is not given.
+		check(t, map[string]any{"ref": "TASK-1", "reason": "r", "scope": "series", "remove_deadline": false, "deadline_behavior": "stays_owed"}, nil,
+			map[string]any{"reason": "r", "scope": "series", "deadline_behavior": "stays_owed", "preview": true})
+	})
+}
+
+func TestTASK4356_NewParamsAreDeclared(t *testing.T) {
+	declared := map[string]ParamDef{}
+	for _, p := range padItemSchemaParams {
+		declared[p.Name] = p
+	}
+	for name, typ := range map[string]string{"actual_done_at": "string", "reason": "string", "scope": "string", "deadline_days": "number", "deadline_secs": "number",
+		"deadline_behavior": "string", "remove_deadline": "bool", "revision": "string", "preview": "bool"} {
+		p, ok := declared[name]
+		if !ok || p.Type != typ {
+			t.Errorf("param %q: declared=%v type=%q want %q", name, ok, p.Type, typ)
+		}
+	}
+	if d := declared["deadline"].Description; !strings.Contains(d, "schedule-renegotiate") {
+		t.Errorf("deadline must say what schedule-renegotiate takes: %q", d)
+	}
+	if d := declared["actual_done_at"].Description; !strings.Contains(d, "schedule-resolve") || !strings.Contains(d, "done") {
+		t.Errorf("actual_done_at: %q", d)
 	}
 }

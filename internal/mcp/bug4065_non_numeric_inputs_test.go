@@ -662,6 +662,8 @@ func bug4065WalkBase(cmd string) map[string]any {
 		base["start"] = "2026-11-09T09:00"
 	case "item remind edit":
 		base["deadline"] = "hard"
+	case "item remind renegotiate":
+		base["reason"], base["scope"] = "slipped", "series"
 	}
 	return base
 }
@@ -689,6 +691,8 @@ var bug4065ReadSet = []string{
 	"item list limit",
 	"item list offset",
 	"item patch expected_seq",
+	"item remind renegotiate deadline_days",
+	"item remind renegotiate deadline_secs",
 	"item search limit",
 	"item search offset",
 	"item starred limit",
