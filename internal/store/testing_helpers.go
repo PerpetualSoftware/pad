@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"strings"
+	"time"
 )
 
 // SetBcryptCostForTesting overrides the bcrypt cost used by CreateUser
@@ -355,4 +356,12 @@ func (s *Store) SetBeforeCommitmentPinHookForTesting(hook func()) (restore func(
 	prev := s.beforeCommitmentPin
 	s.beforeCommitmentPin = hook
 	return func() { s.beforeCommitmentPin = prev }
+}
+
+// SetLinkClockForTesting sets the clock the linked-change time budget reads.
+// Production code must not call this. Set it only with no request in flight.
+func (s *Store) SetLinkClockForTesting(clock func() time.Time) (restore func()) {
+	prev := s.linkClock
+	s.linkClock = clock
+	return func() { s.linkClock = prev }
 }

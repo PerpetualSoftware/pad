@@ -46,6 +46,8 @@ type Store struct {
 	// before renegotiation and checked deletion acquire their transaction locks.
 	// Set it only while no other request is in flight against this Store.
 	beforeCommitmentPin func()
+	// linkClock is a TEST-ONLY clock for the linked-change time budget, nil in production.
+	linkClock func() time.Time
 
 	db      *sql.DB
 	dialect Dialect
