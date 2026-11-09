@@ -5,12 +5,36 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"strings"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/schedule"
 )
+
+// An import examines a bounded amount of links (the work is bounded because it
+// runs in the import's one transaction: the SQLite write lock, and on Postgres
+// the idle-in-transaction limit). Each link is checked against the links already
+// accepted in its component, at most maxLinkComponent of them, so a bundle can
+// make the import re-check one big component over and over. Two ceilings, which
+// leave a real workspace (many links, small components) untouched:
+//
+//   - maxImportedLinks bounds the links examined, and with them the drop entries,
+//     log lines and response body the rejects produce;
+//   - maxImportedLinkWork bounds the sum, over the links examined, of the size of
+//     the component each was checked against: about 2,000 checks of a full
+//     component, a few seconds measured.
+//
+// Past either, the links not examined are left out and reported once as
+// "links:bundle_limit". They are variables only so a test can make a ceiling
+// bite without a bundle that large.
+var (
+	maxImportedLinks    = 10_000
+	maxImportedLinkWork = 1_000_000
+)
+
+const reasonBundleLimit = "links:bundle_limit"
 
 // importedLinkEnd is what the checks read of one imported schedule, once.
 type importedLinkEnd struct {
@@ -20,18 +44,20 @@ type importedLinkEnd struct {
 	nodeRead bool
 }
 
-// date is the end's current date for a role, if it has one. A schedule with no
-// outstanding occurrence, or whose dates cannot be read, has none to check.
-func (e *importedLinkEnd) date(s *Store, tx *sql.Tx, role string) (time.Time, bool) {
+// outstanding is the end's dates for its outstanding occurrence. nil, with no
+// error, means it has none (it ended, or has no valid next date): there is then
+// no date to check an offset against, and the cascade skips such an edge too.
+// Anything else that goes wrong reading them is an error and fails the import:
+// on Postgres a failed statement has already poisoned the transaction.
+func (e *importedLinkEnd) outstanding(s *Store, tx *sql.Tx) (*linkNode, error) {
 	if !e.nodeRead {
-		e.nodeRead = true
-		e.node, _ = s.linkNodeTx(tx, e.sc)
+		n, err := s.linkNodeTx(tx, e.sc)
+		if err != nil {
+			return nil, err
+		}
+		e.node, e.nodeRead = n, true
 	}
-	if e.node == nil {
-		return time.Time{}, false
-	}
-	at, ok := e.node.dates[linkRole(role)]
-	return at, ok
+	return e.node, nil
 }
 
 // offsetCanApply reports whether any parent date the package supports could
@@ -44,6 +70,61 @@ func offsetCanApply(off schedule.Offset) bool {
 		}
 	}
 	return false
+}
+
+// importedOffset is the verdict on one stored offset.
+type importedOffset struct {
+	off schedule.Offset
+	ok  bool
+}
+
+// offsetMemo judges each distinct offset of an import once: a link and its
+// overrides repeat the same few, and each check loads a time zone.
+type offsetMemo map[models.ScheduleLinkOffset]importedOffset
+
+// check validates an offset as a live write does (offsetOf) and bounds what the
+// tables store: offset_days is a 32-bit INTEGER on Postgres, and a value past it
+// fails the statement there and rolls the whole import back, where SQLite would
+// store it silently. offset_elapsed is a BIGINT held to +-300 years of seconds
+// and offset_clock to a day by offsetOf and the table's CHECK. An offset no
+// supported date could take is refused too.
+func (m offsetMemo) check(o models.ScheduleLinkOffset) (schedule.Offset, bool) {
+	if v, hit := m[o]; hit {
+		return v.off, v.ok
+	}
+	var v importedOffset
+	if days := int64(o.Days); days >= math.MinInt32 && days <= math.MaxInt32 {
+		if off, err := offsetOf(o); err == nil && offsetCanApply(off) {
+			v = importedOffset{off, true}
+		}
+	}
+	m[o] = v
+	return v.off, v.ok
+}
+
+// derivedInRange reports whether off, applied to the parent's current date for
+// role, gives a date the cascade could write on the child: Apply must succeed,
+// and (as planLinkedTx's backstop requires) the child's own zone must read it as
+// a supported year, whatever zone the offset used. It is true when the parent
+// has no such date; the cascade drops an edge whose child has no outstanding
+// occurrence (child nil), so then only Apply is asked.
+func derivedInRange(off schedule.Offset, parent, child *linkNode, role string) bool {
+	if parent == nil {
+		return true
+	}
+	at, ok := parent.dates[linkRole(role)]
+	if !ok {
+		return true
+	}
+	to, err := off.Apply(at)
+	if err != nil {
+		return false
+	}
+	if child == nil {
+		return true
+	}
+	y := to.In(child.rec).Year()
+	return y >= 1970 && y <= 2200
 }
 
 func validLinkStamps(stamps ...string) bool {
@@ -67,13 +148,14 @@ func linkReason(err error) string {
 // prepareLinkOverrides canonicalises a link's overrides for the child's
 // floating policy and returns the rows to store, with one code per row it
 // refuses: a key that is not an occurrence key, an offset a link could not
-// carry, a row with neither an offset nor a "no longer needed" mark, or an
-// unparseable stamp. Two rows on one key (a floating child keys by wall alone)
+// carry (or that the parent's current date cannot take, applies), a row with
+// neither an offset nor a "no longer needed" mark, or an unparseable stamp. Two rows on one key (a floating child keys by wall alone)
 // keep the later edit.
-func prepareLinkOverrides(in []models.ScheduleLinkOverrideExport, floating bool) ([]models.ScheduleLinkOverrideExport, []string) {
+func prepareLinkOverrides(in []models.ScheduleLinkOverrideExport, floating bool, offsets offsetMemo, applies func(schedule.Offset) bool) ([]models.ScheduleLinkOverrideExport, []string) {
 	var out []models.ScheduleLinkOverrideExport
 	var drops []string
 	at := map[string]int{}
+	fits := map[models.ScheduleLinkOffset]bool{}
 	for _, o := range in {
 		key, err := canonicalCarriedKey(o.OccurrenceKey, floating)
 		stamps := []string{o.CreatedAt, o.UpdatedAt}
@@ -85,8 +167,16 @@ func prepareLinkOverrides(in []models.ScheduleLinkOverrideExport, floating bool)
 			continue
 		}
 		if o.Offset != nil {
-			off, err := offsetOf(*o.Offset)
-			if err != nil || !offsetCanApply(off) {
+			off, ok := offsets.check(*o.Offset)
+			if ok {
+				fit, known := fits[*o.Offset]
+				if !known {
+					fit = applies(off)
+					fits[*o.Offset] = fit
+				}
+				ok = fit
+			}
+			if !ok {
 				drops = append(drops, "link_overrides:invalid")
 				continue
 			}
@@ -154,19 +244,21 @@ func linkComponent(accepted []linkRow, touching map[string][]int, seeds ...strin
 //
 // Every link is checked BEFORE it is written (a failed statement poisons a
 // Postgres transaction) by the checks a live write gets: roles and policy from
-// the enums, no self link, offsets valid and not past 1970..2200 (against the
-// parent's date when it has one), both roles configured on their schedules
-// (and a deadline only on native roles), and CheckLink against the links
-// accepted so far in the same component, which is the one-incoming-edge rule,
-// the cycle rule and the 50/16 limits, with the live component cap. A link
-// that fails is dropped whole with its overrides and reported. Nothing here
-// moves a date: the bundle's dates are the truth, so there is no plan, no
-// cascade, no journal row and no reminder.
+// the enums, no self link, offsets valid and bounded to their columns and not
+// past 1970..2200 (against the parent's date when it has one, and in the
+// child's zone), both roles configured on their schedules (and a deadline only
+// on native roles), and CheckLink against the links accepted so far in the same
+// component, which is the one-incoming-edge rule, the cycle rule and the 50/16
+// limits, with the live component cap. A link that fails is dropped whole with
+// its overrides and reported. Nothing here moves a date: the bundle's dates are
+// the truth, so there is no plan, no cascade, no journal row and no reminder.
+//
+// At most maxImportedLinks links are examined; the rest are reported once.
 func (s *Store) importScheduleLinksTx(tx *sql.Tx, workspaceID string, links []models.ScheduleLinkExport, schedules map[string]string, sources map[string]models.ScheduleExport, itemRef func(sourceItemID string) string) ([]models.ImportScheduleDrop, error) {
 	var drops []models.ImportScheduleDrop
-	ends := map[string]*importedLinkEnd{}
-	end := func(id string) (*importedLinkEnd, error) {
-		if e, ok := ends[id]; ok {
+	st := &linkImport{s: s, tx: tx, ends: map[string]*importedLinkEnd{}, offsets: offsetMemo{}, touching: map[string][]int{}}
+	st.end = func(id string) (*importedLinkEnd, error) {
+		if e, ok := st.ends[id]; ok {
 			return e, nil
 		}
 		sc, err := s.getScheduleByIDQ(tx, id)
@@ -177,20 +269,29 @@ func (s *Store) importScheduleLinksTx(tx *sql.Tx, workspaceID string, links []mo
 		if err != nil {
 			return nil, err
 		}
-		ends[id] = &importedLinkEnd{sc: sc, roles: roles}
-		return ends[id], nil
+		st.ends[id] = &importedLinkEnd{sc: sc, roles: roles}
+		return st.ends[id], nil
 	}
-	var accepted []linkRow
-	touching := map[string][]int{}
-	for _, x := range links {
+	for i, x := range links {
+		var v linkVerdict
+		if i >= maxImportedLinks {
+			v.reason = reasonBundleLimit
+		} else {
+			var err error
+			if v, err = st.check(x, schedules, sources); err != nil {
+				return nil, err
+			}
+		}
+		if v.reason == reasonBundleLimit {
+			slog.Warn("workspace import: schedule links past the bundle limit were not examined",
+				"workspace_id", workspaceID, "examined", i, "left_out", len(links)-i)
+			drops = append(drops, models.ImportScheduleDrop{Reason: reasonBundleLimit})
+			break
+		}
 		child, childKnown := sources[x.ChildScheduleID]
 		item := ""
 		if childKnown {
 			item = itemRef(child.ItemID)
-		}
-		v, err := s.checkImportedLink(tx, x, schedules, sources, end, accepted, touching)
-		if err != nil {
-			return nil, err
 		}
 		if v.reason != "" {
 			slog.Warn("workspace import: dropped a schedule link", "workspace_id", workspaceID, "item", item, "reason", v.reason)
@@ -211,11 +312,27 @@ func (s *Store) importScheduleLinksTx(tx *sql.Tx, workspaceID string, links []mo
 			slog.Warn("workspace import: dropped a schedule link override", "workspace_id", workspaceID, "item", item, "reason", reason)
 			drops = append(drops, models.ImportScheduleDrop{Item: item, Reason: reason})
 		}
-		accepted = append(accepted, l)
-		touching[l.ParentSchedule] = append(touching[l.ParentSchedule], len(accepted)-1)
-		touching[l.ChildSchedule] = append(touching[l.ChildSchedule], len(accepted)-1)
+		st.accept(l)
 	}
 	return drops, nil
+}
+
+// linkImport is the state of one import's link checks.
+type linkImport struct {
+	s        *Store
+	tx       *sql.Tx
+	end      func(string) (*importedLinkEnd, error)
+	ends     map[string]*importedLinkEnd
+	offsets  offsetMemo
+	accepted []linkRow
+	touching map[string][]int // schedule id -> indexes into accepted
+	work     int              // sum of the component sizes checked so far
+}
+
+func (st *linkImport) accept(l linkRow) {
+	st.accepted = append(st.accepted, l)
+	st.touching[l.ParentSchedule] = append(st.touching[l.ParentSchedule], len(st.accepted)-1)
+	st.touching[l.ChildSchedule] = append(st.touching[l.ChildSchedule], len(st.accepted)-1)
 }
 
 // linkVerdict is the answer to one bundled link: a reason it is not imported,
@@ -228,9 +345,20 @@ type linkVerdict struct {
 	overrideDrops []string
 }
 
-// checkImportedLink judges one bundled link against the links accepted so far.
-// An error is a database failure; a refusal is a reason.
-func (s *Store) checkImportedLink(tx *sql.Tx, x models.ScheduleLinkExport, schedules map[string]string, sources map[string]models.ScheduleExport, end func(string) (*importedLinkEnd, error), accepted []linkRow, touching map[string][]int) (linkVerdict, error) {
+// structuralEdge is the link as the structure checks see it. Cycles, the
+// one-incoming-edge rule and the 50/16 footprints depend on the vertices only,
+// never on the offset, so the offset is a placeholder that validates without
+// loading a time zone: with real offsets every check rebuilt the whole component
+// and loaded one zone per edge each time. The offset of a link is checked once,
+// as it is examined.
+func structuralEdge(l linkRow) schedule.Edge {
+	return schedule.Edge{Parent: schedule.Node{Schedule: l.ParentSchedule}, ParentRole: linkRole(l.ParentRole),
+		Child: schedule.Node{Schedule: l.ChildSchedule}, ChildRole: linkRole(l.ChildRole), Offset: schedule.Offset{Mode: schedule.OffsetElapsed}}
+}
+
+// check judges one bundled link against the links accepted so far. An error is
+// a database failure; a refusal is a reason.
+func (st *linkImport) check(x models.ScheduleLinkExport, schedules map[string]string, sources map[string]models.ScheduleExport) (linkVerdict, error) {
 	refuse := func(reason string) (linkVerdict, error) { return linkVerdict{reason: reason}, nil }
 	_, parentKnown := sources[x.ParentScheduleID]
 	childSource, childKnown := sources[x.ChildScheduleID]
@@ -238,11 +366,11 @@ func (s *Store) checkImportedLink(tx *sql.Tx, x models.ScheduleLinkExport, sched
 	if !parentKnown || !childKnown || parentID == "" || childID == "" {
 		return refuse("links:orphan")
 	}
-	parent, err := end(parentID)
+	parent, err := st.end(parentID)
 	if err != nil {
 		return linkVerdict{}, err
 	}
-	child, err := end(childID)
+	child, err := st.end(childID)
 	if err != nil {
 		return linkVerdict{}, err
 	}
@@ -259,8 +387,8 @@ func (s *Store) checkImportedLink(tx *sql.Tx, x models.ScheduleLinkExport, sched
 	if parentID == childID {
 		return refuse("links:self")
 	}
-	off, err := offsetOf(x.Offset)
-	if err != nil || !offsetCanApply(off) {
+	off, ok := st.offsets.check(x.Offset)
+	if !ok {
 		return refuse("links:offset")
 	}
 	for _, e := range []struct {
@@ -271,31 +399,46 @@ func (s *Store) checkImportedLink(tx *sql.Tx, x models.ScheduleLinkExport, sched
 			return refuse("links:role")
 		}
 	}
-	if at, ok := parent.date(s, tx, x.ParentRole); ok {
-		if _, err := off.Apply(at); err != nil {
-			return refuse("links:offset")
+	parentNode, err := parent.outstanding(st.s, st.tx)
+	if err != nil {
+		return linkVerdict{}, err
+	}
+	// The cascade drops an edge whose parent has no outstanding occurrence, so
+	// the child's dates matter only when the parent has them.
+	var childNode *linkNode
+	if parentNode != nil {
+		if childNode, err = child.outstanding(st.s, st.tx); err != nil {
+			return linkVerdict{}, err
 		}
+	}
+	if !derivedInRange(off, parentNode, childNode, x.ParentRole) {
+		return refuse("links:offset")
 	}
 	if !validLinkStamps(x.CreatedAt, x.UpdatedAt) {
 		return refuse("links:invalid")
 	}
 	l := linkRow{ParentSchedule: parentID, ParentRole: x.ParentRole, ChildSchedule: childID, ChildRole: x.ChildRole,
 		Offset: storedOffset(off), CancelPolicy: policy}
-	component := linkComponent(accepted, touching, parentID, childID)
+	component := linkComponent(st.accepted, st.touching, parentID, childID)
+	if st.work += len(component) + 1; st.work > maxImportedLinkWork {
+		return refuse(reasonBundleLimit)
+	}
 	if len(component)+1 > maxLinkComponent {
 		return refuse("links:limit")
 	}
-	g, err := (&commitmentComponent{links: component}).structuralGraph("")
-	if err != nil {
-		return linkVerdict{}, err
+	edges := make([]schedule.Edge, len(component))
+	for i, c := range component {
+		edges[i] = structuralEdge(c)
 	}
-	edge, err := l.edge()
+	g, err := schedule.NewGraph(edges)
 	if err != nil {
-		return refuse(linkReason(err))
+		return linkVerdict{}, fmt.Errorf("accepted links no longer form a graph: %w", err)
 	}
-	if err := schedule.CheckLink(g, edge, schedule.LinkLimits{}); err != nil {
+	if err := schedule.CheckLink(g, structuralEdge(l), schedule.LinkLimits{}); err != nil {
 		return refuse(linkReason(redactLinkError(err)))
 	}
-	overrides, overrideDrops := prepareLinkOverrides(x.Overrides, childSource.Floating)
+	overrides, overrideDrops := prepareLinkOverrides(x.Overrides, childSource.Floating, st.offsets, func(o schedule.Offset) bool {
+		return derivedInRange(o, parentNode, childNode, x.ParentRole)
+	})
 	return linkVerdict{link: l, overrides: overrides, overrideDrops: overrideDrops}, nil
 }

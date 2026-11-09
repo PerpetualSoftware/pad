@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -164,9 +165,21 @@ func TestBundleLinks_ExportOmitsLinksWithAnEndOutsideTheBundle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, leak := range []string{deleted, "omitted", "2030-03-09T09:00:00"} {
+	// The count is the Go field OmittedScheduleLinks, which marshals under that
+	// exact name unless its tag says "-": neither the key nor its value (1, the
+	// one link left out) may be in the bundle.
+	for _, leak := range []string{deleted, "2030-03-09T09:00:00", "OmittedScheduleLinks", `"omitted`, `"Omitted`} {
 		if bytes.Contains(raw, []byte(leak)) {
-			t.Fatalf("the bundle names %q for a link left out", leak)
+			t.Fatalf("the bundle names %q for a link left out: %s", leak, raw)
+		}
+	}
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &members); err != nil {
+		t.Fatal(err)
+	}
+	for key := range members {
+		if strings.Contains(strings.ToLower(key), "omitted") {
+			t.Fatalf("the bundle has a member %q that counts the links left out", key)
 		}
 	}
 

@@ -1053,9 +1053,9 @@ func printMigrateDropSummary(w io.Writer, dropped []migrateDropped, fromPath str
 	if total == 0 {
 		return
 	}
-	fmt.Fprintf(w, "\n%d schedule record(s) (schedules, overrides or journal rows) were NOT carried to PostgreSQL. Their rows are still in %s, which is now marked\n", total, fromPath)
+	fmt.Fprintf(w, "\n%d schedule record(s) (schedules, overrides, journal rows or time links) were NOT carried to PostgreSQL. Their rows are still in %s, which is now marked\n", total, fromPath)
 	fmt.Fprintf(w, "as migrated, so pad will not open it: read them with sqlite3 %s (tables item_schedules,\n", shellQuote(fromPath))
-	fmt.Fprintln(w, "schedule_occurrences, schedule_occurrence_overrides and schedule_changes), or from a `pad db backup` copy taken before the migration. Per workspace:")
+	fmt.Fprintln(w, "schedule_occurrences, schedule_occurrence_overrides, schedule_changes, schedule_links and schedule_link_overrides), or from a `pad db backup` copy taken before the migration. Per workspace:")
 	for _, d := range dropped {
 		fmt.Fprintf(w, "  %s: %d\n", d.Workspace, len(d.Drops))
 	}

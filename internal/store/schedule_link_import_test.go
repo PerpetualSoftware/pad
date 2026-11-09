@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"reflect"
 	"sort"
 	"strings"
@@ -547,4 +548,219 @@ func TestBundleLinks_ImportKeysOverridesByTheChildsFloatingPolicy(t *testing.T) 
 	if len(tuples) != 2 || !strings.Contains(tuples[1], "override 2030-03-05T09:00:00 -/0/0/0/0/ gone=2030-03-06T12:00:00Z") {
 		t.Fatalf("want one override keyed by the wall holding the later edit, got %q", tuples)
 	}
+}
+
+// Every offset column an import stores fits the column and what a live write
+// accepts: offset_days is a 32-bit INTEGER on Postgres, and a value past it used
+// to fail the statement there and roll the whole import back (SQLite stored it
+// silently). Such a link, or such an override row, is dropped before any insert.
+func TestBundleLinks_ImportBoundsEveryStoredOffsetColumn(t *testing.T) {
+	const past = 3_000_000_000
+	f := newLinkBundleFix(t)
+	ids := bundleScheduleIDs(t, f.exportBundle(t))
+	bad := map[string]map[string]any{
+		"elapsed days past int32":      {"mode": "elapsed", "elapsed_secs": 60, "days": past},
+		"elapsed days below int32":     {"mode": "elapsed", "elapsed_secs": 60, "days": -past},
+		"civil days past int32":        {"mode": "civil", "days": past, "zone": "UTC"},
+		"civil days below int32":       {"mode": "civil", "days": -past, "zone": "UTC"},
+		"elapsed seconds past the cap": {"mode": "elapsed", "elapsed_secs": 400 * 366 * 86400},
+		"clock past the day":           {"mode": "civil", "days": 1, "zone": "UTC", "clock_secs": 86400},
+		"negative clock":               {"mode": "civil", "days": 1, "zone": "UTC", "clock_secs": -1},
+	}
+	const outOfColumn = `offset_days > 2147483647 OR offset_days < -2147483648 OR offset_clock < 0 OR offset_clock >= 86400`
+	for name, off := range bad {
+		t.Run("link/"+name, func(t *testing.T) {
+			ws, rep := importWithLinks(t, f, nil, linkObject(ids["P"], ids["C1"], "target", "target", off))
+			if len(rep.DroppedSchedules) != 1 || rep.DroppedSchedules[0].Reason != "links:offset" {
+				t.Fatalf("report=%+v, want one links:offset", rep.DroppedSchedules)
+			}
+			if n := f.count(t, `SELECT COUNT(*) FROM schedule_links WHERE workspace_id=?`, ws.ID); n != 0 {
+				t.Fatalf("%d links stored", n)
+			}
+			if n := f.count(t, `SELECT COUNT(*) FROM schedule_links WHERE workspace_id=? AND (`+outOfColumn+`)`, ws.ID); n != 0 {
+				t.Fatalf("%d stored links carry an offset the column cannot hold", n)
+			}
+		})
+		t.Run("override/"+name, func(t *testing.T) {
+			l := linkObject(ids["P"], ids["C1"], "target", "target", elapsedOffset(60))
+			o := goodOverride()
+			o["offset"] = off
+			l["overrides"] = []any{o}
+			ws, rep := importWithLinks(t, f, nil, l)
+			if len(rep.DroppedSchedules) != 1 || rep.DroppedSchedules[0].Reason != "link_overrides:invalid" {
+				t.Fatalf("report=%+v, want one link_overrides:invalid", rep.DroppedSchedules)
+			}
+			if f.count(t, `SELECT COUNT(*) FROM schedule_links WHERE workspace_id=?`, ws.ID) != 1 ||
+				f.count(t, `SELECT COUNT(*) FROM schedule_link_overrides o JOIN schedule_links l ON l.id=o.link_id WHERE l.workspace_id=?`, ws.ID) != 0 {
+				t.Fatal("want the link kept and its bad override not stored")
+			}
+			if n := f.count(t, `SELECT COUNT(*) FROM schedule_link_overrides WHERE link_id IN (SELECT id FROM schedule_links WHERE workspace_id=?) AND (`+outOfColumn+`)`, ws.ID); n != 0 {
+				t.Fatalf("%d stored overrides carry an offset the column cannot hold", n)
+			}
+		})
+	}
+	// The largest value the column holds still imports, in both tables.
+	t.Run("the column's limit is accepted", func(t *testing.T) {
+		edge := map[string]any{"mode": "elapsed", "elapsed_secs": 60, "days": math.MaxInt32}
+		l := linkObject(ids["P"], ids["C1"], "target", "target", edge)
+		o := goodOverride()
+		o["offset"] = map[string]any{"mode": "elapsed", "elapsed_secs": 60, "days": math.MinInt32}
+		l["overrides"] = []any{o}
+		ws, rep := importWithLinks(t, f, nil, l)
+		if len(rep.DroppedSchedules) != 0 {
+			t.Fatalf("report=%+v", rep.DroppedSchedules)
+		}
+		if f.count(t, `SELECT COUNT(*) FROM schedule_links WHERE workspace_id=? AND offset_days=2147483647`, ws.ID) != 1 ||
+			f.count(t, `SELECT COUNT(*) FROM schedule_link_overrides WHERE offset_days=-2147483648`) != 1 {
+			t.Fatal("the column limits were not stored")
+		}
+	})
+}
+
+// Only a version 1 bundle with NOTHING but schedule_links reaches the version 3
+// gate (any other v1 bundle with schedules is refused first as carrying version 2
+// members), so this is what pins that the gate covers version 1 as well as 2.
+func TestBundleLinks_AVersion1BundleWithOnlyLinksIsRefused(t *testing.T) {
+	f := newLinkBundleFix(t)
+	f.link(t, 0, 1, "target", "target", oneDay)
+	for name, member := range map[string]any{"a link": []any{linkObject("a", "b", "target", "target", elapsedOffset(60))}, "an empty member": []any{}, "null": nil} {
+		t.Run(name, func(t *testing.T) {
+			v1 := f.exportBundle(t)
+			v1.ScheduleLinks = nil
+			stripV2(v1)
+			m := bundleObject(t, v1)
+			m["schedule_links"] = member
+			data := bundleDecode(t, m)
+			if data.HasV2ScheduleMembers() {
+				t.Fatal("the premise failed: this bundle must carry no version 2 member")
+			}
+			n := f.count(t, `SELECT COUNT(*) FROM workspaces`)
+			_, _, err := f.s.ImportWorkspaceWithReport(data, "Refused", "", "api")
+			if err == nil || !strings.Contains(err.Error(), "export version 1 contains version 3 schedule members") {
+				t.Fatalf("err=%v", err)
+			}
+			if f.count(t, `SELECT COUNT(*) FROM workspaces`) != n {
+				t.Fatal("husk workspace")
+			}
+		})
+	}
+}
+
+// An override is checked against the parent's current date as the link is: a
+// later linked move would otherwise fail on the edge.
+func TestBundleLinks_ImportChecksOverrideOffsetsAgainstTheParentDate(t *testing.T) {
+	f := newLinkBundleFix(t)
+	ids := bundleScheduleIDs(t, f.exportBundle(t))
+	// P's outstanding target is the last second the package supports.
+	last := func(m map[string]any, ids map[string]string) {
+		for _, v := range m["schedules"].([]any) {
+			if x := v.(map[string]any); x["id"] == ids["P"] {
+				x["dtstart"], x["next_wall"], x["next_at"] = "2200-12-31T23:59:59", "2200-12-31T23:59:59", "2200-12-31T23:59:59Z"
+			}
+		}
+	}
+	l := linkObject(ids["P"], ids["C1"], "target", "target", elapsedOffset(0))
+	later, same := goodOverride(), goodOverride()
+	later["occurrence_key"], later["offset"] = "2030-03-10T09:00:00Z|2030-03-10T09:00:00", elapsedOffset(60)
+	same["occurrence_key"], same["offset"] = "2030-03-11T09:00:00Z|2030-03-11T09:00:00", elapsedOffset(0)
+	l["overrides"] = []any{later, same}
+	ws, rep := importWithLinks(t, f, last, l)
+	if len(rep.DroppedSchedules) != 1 || rep.DroppedSchedules[0].Reason != "link_overrides:invalid" {
+		t.Fatalf("report=%+v, want only the +60s override dropped", rep.DroppedSchedules)
+	}
+	if f.count(t, `SELECT COUNT(*) FROM schedule_links WHERE workspace_id=?`, ws.ID) != 1 ||
+		f.count(t, `SELECT COUNT(*) FROM schedule_link_overrides o JOIN schedule_links l ON l.id=o.link_id WHERE l.workspace_id=?`, ws.ID) != 1 {
+		t.Fatal("want the link and the one override that applies")
+	}
+}
+
+// The cascade also refuses a derived date that reads as a year past 2200 in the
+// CHILD's own zone (commitment_cascade.go planLinkedTx), whatever zone the
+// offset used. A link or override that would trip it on the next linked move is
+// dropped at import. 2200-12-31T20:00Z is still 2200 in UTC, 2201-01-01 05:00 in Tokyo.
+func TestBundleLinks_ImportMirrorsTheChildZoneYearBackstop(t *testing.T) {
+	f := newLinkBundleFix(t)
+	ids := bundleScheduleIDs(t, f.exportBundle(t))
+	edit := func(m map[string]any, ids map[string]string) {
+		for _, v := range m["schedules"].([]any) {
+			switch x := v.(map[string]any); x["id"] {
+			case ids["P"]:
+				x["dtstart"], x["next_wall"], x["next_at"] = "2200-12-31T20:00:00", "2200-12-31T20:00:00", "2200-12-31T20:00:00Z"
+			case ids["C1"]:
+				x["tz"] = "Asia/Tokyo"
+			}
+		}
+	}
+	t.Run("link", func(t *testing.T) {
+		ws, rep := importWithLinks(t, f, edit, linkObject(ids["P"], ids["C1"], "target", "target", elapsedOffset(0)))
+		if len(rep.DroppedSchedules) != 1 || rep.DroppedSchedules[0].Reason != "links:offset" {
+			t.Fatalf("report=%+v, want links:offset", rep.DroppedSchedules)
+		}
+		if f.count(t, `SELECT COUNT(*) FROM schedule_links WHERE workspace_id=?`, ws.ID) != 0 {
+			t.Fatal("the link was stored")
+		}
+	})
+	t.Run("override", func(t *testing.T) {
+		l := linkObject(ids["P"], ids["C1"], "target", "target", elapsedOffset(-86400))
+		o := goodOverride()
+		o["offset"] = elapsedOffset(0)
+		l["overrides"] = []any{o}
+		ws, rep := importWithLinks(t, f, edit, l)
+		if len(rep.DroppedSchedules) != 1 || rep.DroppedSchedules[0].Reason != "link_overrides:invalid" {
+			t.Fatalf("report=%+v, want link_overrides:invalid", rep.DroppedSchedules)
+		}
+		if f.count(t, `SELECT COUNT(*) FROM schedule_links WHERE workspace_id=?`, ws.ID) != 1 {
+			t.Fatal("the link was not kept")
+		}
+	})
+}
+
+// A parent with no outstanding occurrence is an expected non-error (there is no
+// date to check); a failure to read the parent's dates is a real error and the
+// import fails with it, instead of being swallowed (on Postgres a failed SELECT
+// poisons the transaction and the next statement would fail with 25P02).
+func TestBundleLinks_ImportSurfacesAFailureToReadTheParentsDates(t *testing.T) {
+	f := newLinkBundleFix(t)
+	if f.s.dialect.Driver() != DriverSQLite {
+		t.Skip("SQLite fault injection")
+	}
+	src := f.exportBundle(t)
+	ids := bundleScheduleIDs(t, src)
+	link := linkObject(ids["P"], ids["C1"], "target", "target", elapsedOffset(60))
+	ended := func(m map[string]any) {
+		for _, v := range m["schedules"].([]any) {
+			if x := v.(map[string]any); x["id"] == ids["P"] {
+				x["ended_at"] = "2030-03-05T00:00:00Z"
+				delete(x, "next_at")
+				delete(x, "next_wall")
+				delete(x, "reminder")
+			}
+		}
+	}
+	// Reading a parent's outstanding dates reads its occurrence overrides.
+	f.exec(t, `ALTER TABLE schedule_occurrence_overrides RENAME TO schedule_occurrence_overrides_hidden`)
+	try := func(mutate func(map[string]any)) (*models.Workspace, ImportReport, error) {
+		m := bundleObject(t, src)
+		m["schedule_links"] = []any{link}
+		if mutate != nil {
+			mutate(m)
+		}
+		return f.s.ImportWorkspaceWithReport(bundleDecode(t, m), "Reading", "", "api")
+	}
+	t.Run("no outstanding occurrence is not an error", func(t *testing.T) {
+		ws, rep, err := try(ended)
+		if err != nil || len(rep.DroppedSchedules) != 0 || f.count(t, `SELECT COUNT(*) FROM schedule_links WHERE workspace_id=?`, ws.ID) != 1 {
+			t.Fatalf("report=%+v err=%v", rep.DroppedSchedules, err)
+		}
+	})
+	t.Run("a failed read fails the import", func(t *testing.T) {
+		n := f.count(t, `SELECT COUNT(*) FROM workspaces`)
+		_, _, err := try(nil)
+		if err == nil || !strings.Contains(err.Error(), "schedule_occurrence_overrides") {
+			t.Fatalf("err=%v, want the failed read of the parent's overrides", err)
+		}
+		if f.count(t, `SELECT COUNT(*) FROM workspaces`) != n {
+			t.Fatal("husk workspace")
+		}
+	})
 }
