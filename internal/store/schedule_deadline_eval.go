@@ -16,6 +16,7 @@ import (
 const (
 	defaultDeadlineEvalLimit = 100
 	deadlineEvalPageSize     = 200
+	deadlineLapseLimit       = 64
 	// Covers zone differences and the end of a date-only local day.
 	deadlineEvalSlop = 2 * 24 * time.Hour
 )
@@ -31,6 +32,7 @@ type deadlineCandidate struct {
 	zone, override *string
 	approximate    float64
 	key, after     string
+	behavior       string
 	at             time.Time
 	dateOnly       bool
 }
@@ -118,12 +120,12 @@ const deadlineFromSQL = ` FROM item_schedules sc
  AND sc.next_at IS NOT NULL AND sc.next_wall IS NOT NULL AND i.deleted_at IS NULL AND w.deleted_at IS NULL`
 
 const deadlineColumnsSQL = `sc.id,sc.workspace_id,sc.item_id,sc.tz,sc.floating,sc.next_at,sc.next_wall,sc.next_override_at,
- CASE WHEN r.fired_at IS NOT NULL THEN 1 ELSE 0 END,sc.deadline_days,sc.deadline_secs,u.timezone,o.value_at`
+ CASE WHEN r.fired_at IS NOT NULL THEN 1 ELSE 0 END,sc.deadline_days,sc.deadline_secs,u.timezone,o.value_at,COALESCE(sc.deadline_behavior,'')`
 
 func scanDeadline(row interface{ Scan(...any) error }, approximate bool) (deadlineCandidate, error) {
 	var d deadlineCandidate
 	var fired int
-	args := []any{&d.sc.ID, &d.sc.WorkspaceID, &d.sc.ItemID, &d.sc.Tz, &d.sc.Floating, &d.sc.NextAt, &d.sc.NextWall, &d.sc.NextOverrideAt, &fired, &d.days, &d.secs, &d.zone, &d.override}
+	args := []any{&d.sc.ID, &d.sc.WorkspaceID, &d.sc.ItemID, &d.sc.Tz, &d.sc.Floating, &d.sc.NextAt, &d.sc.NextWall, &d.sc.NextOverrideAt, &fired, &d.days, &d.secs, &d.zone, &d.override, &d.behavior}
 	if approximate {
 		args = append(args, &d.approximate)
 	}
@@ -187,11 +189,10 @@ func (s *Store) deadlinePage(now time.Time, cursor *deadlineCandidate) ([]deadli
 // item never shows overdue work; a reopened one is evaluated again and records
 // its miss then. One query per workspace on the page.
 //
-// It runs on the scan page, never inside the per-row transaction: the terminal
-// options are read through the pool, and a read that waits for a second
-// connection while the transaction holds the first can hang a small pool. An
-// item that turns terminal between the page and the pin is the one case it can
-// miss, and recording a miss for it then is harmless.
+// Terminal options are read through the pool before each per-row transaction,
+// so a pool with one connection cannot hang waiting for a second. The window
+// between this page filter and the pin is closed by a terminal recheck under
+// the pin in evaluateDeadline.
 func (s *Store) openDeadlineCandidates(q Queryer, candidates []deadlineCandidate) ([]deadlineCandidate, error) {
 	byWorkspace := map[string][]string{}
 	for _, d := range candidates {
@@ -282,13 +283,18 @@ func (s *Store) deadlineJournal(q Queryer, candidates []deadlineCandidate) (map[
 }
 
 func (d deadlineCandidate) eligible(now time.Time, state deadlineJournalState) bool {
-	return d.due(now) && !state.recorded && (state.converted.IsZero() || d.at.After(state.converted))
+	return !state.recorded && d.dueAfterConversion(now, state)
+}
+
+func (d deadlineCandidate) dueAfterConversion(now time.Time, state deadlineJournalState) bool {
+	return d.due(now) && (state.converted.IsZero() || d.at.After(state.converted))
 }
 
 // EvaluateDeadlines scans without locks, then pins and rechecks each due row.
 // Overdue stays-owed rows are rescanned each tick: recorded rows cost reads,
-// but never consume a cap slot. Only a miss recorded by this pass counts toward
-// the cap, so a row that keeps failing cannot starve the rows behind it. No occurrence is closed by this pass.
+// but never consume a cap slot. Each schedule recording any new misses consumes
+// one slot, so a row that keeps failing cannot starve the rows behind it.
+// A lapsing schedule closes up to 64 due occurrences in the same transaction.
 func (s *Store) EvaluateDeadlines(nowTS string, limit int) (DeadlineEvalResult, error) {
 	var result DeadlineEvalResult
 	nowT, err := time.Parse(time.RFC3339, nowTS)
@@ -300,6 +306,7 @@ func (s *Store) EvaluateDeadlines(nowTS string, limit int) (DeadlineEvalResult, 
 	}
 	var errs []error
 	var cursor *deadlineCandidate
+	evaluated := map[string]bool{}
 	for {
 		page, err := s.deadlinePage(nowT, cursor)
 		if err != nil {
@@ -326,14 +333,19 @@ func (s *Store) EvaluateDeadlines(nowTS string, limit int) (DeadlineEvalResult, 
 			return result, errors.Join(append(errs, err)...)
 		}
 		for _, d := range resolved {
+			if evaluated[d.sc.ID] {
+				// Advancing can move a capped schedule onto a later scan page.
+				continue
+			}
 			state := states[d.sc.ID]
 			if state.err != nil {
 				errs = append(errs, state.err)
 				continue
 			}
-			if !d.eligible(nowT, state) {
+			if !d.dueAfterConversion(nowT, state) || (state.recorded && d.behavior != "lapses") {
 				continue
 			}
+			evaluated[d.sc.ID] = true
 			missed, err := s.evaluateDeadline(d, nowT)
 			if err != nil {
 				var busy interface{ Code() int }
@@ -357,6 +369,9 @@ func (s *Store) EvaluateDeadlines(nowTS string, limit int) (DeadlineEvalResult, 
 }
 
 func (s *Store) evaluateDeadline(candidate deadlineCandidate, nowT time.Time) (bool, error) {
+	// This reads terminal options through the pool, before the transaction
+	// holds a connection. The item itself is checked after taking the pin.
+	filter, args := s.nonTerminalFilter(candidate.sc.WorkspaceID, "i")
 	tx, err := s.db.Begin()
 	if err != nil {
 		return false, err
@@ -368,17 +383,49 @@ func (s *Store) evaluateDeadline(candidate deadlineCandidate, nowT time.Time) (b
 		}
 		return false, err
 	}
-	d, err := s.deadlineMissCandidateTx(tx, candidate.sc.ID, nowT)
+	var open bool
+	if err := tx.QueryRow(s.q(`SELECT `+filter+` FROM items i WHERE i.id=?`), append(args, candidate.sc.ItemID)...).Scan(&open); err != nil {
+		return false, err
+	}
+	if !open {
+		return false, nil
+	}
+	d, state, err := s.deadlineStateTx(tx, candidate.sc.ID)
 	if err != nil || d == nil {
 		return false, err
 	}
-	if err := s.recordDeadlineMissTx(tx, *d); err != nil {
-		return false, err
+	if !d.dueAfterConversion(nowT, state) || (state.recorded && d.behavior != "lapses") {
+		return false, nil
+	}
+	missed := false
+	for i := 0; i < deadlineLapseLimit; i++ {
+		if !state.recorded {
+			if err := s.recordDeadlineMissTx(tx, *d); err != nil {
+				return false, err
+			}
+			missed = true
+		}
+		lapse, err := s.lapseOccurrenceTx(tx, *d, nowT)
+		if err != nil {
+			return false, err
+		}
+		if lapse == nil {
+			// Stays owed, or expansion failed: keep the miss without closing.
+			break
+		}
+		d, state, err = s.deadlineStateTx(tx, candidate.sc.ID)
+		if err != nil {
+			return false, err
+		}
+		if d == nil || d.behavior != "lapses" || state.recorded || !d.dueAfterConversion(nowT, state) {
+			break
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return false, err
 	}
-	return true, nil
+	// A transaction with only already-recorded misses consumes no cap slot.
+	return missed, nil
 }
 
 // deadlineMissCandidateTx rechecks the current deadline and the evaluator's
@@ -386,8 +433,8 @@ func (s *Store) evaluateDeadline(candidate deadlineCandidate, nowT time.Time) (b
 // renegotiation preview uses the same decision as the evaluator and apply.
 // The caller has already checked the item's terminal status.
 func (s *Store) deadlineMissCandidateTx(tx *sql.Tx, scheduleID string, nowT time.Time) (*deadlineCandidate, error) {
-	d, eligible, err := s.deadlineStateTx(tx, scheduleID, nowT)
-	if err != nil || d == nil || !eligible {
+	d, state, err := s.deadlineStateTx(tx, scheduleID)
+	if err != nil || d == nil || !d.eligible(nowT, state) {
 		return nil, err
 	}
 	return d, nil
@@ -395,30 +442,29 @@ func (s *Store) deadlineMissCandidateTx(tx *sql.Tx, scheduleID string, nowT time
 
 // deadlineStateTx is the decision under deadlineMissCandidateTx with its two
 // "nil" answers told apart. d is nil when the schedule has no native deadline
-// to judge. Otherwise d.due(nowT) says whether the deadline has passed, and
-// eligible says whether the evaluator would record its miss now: false for a
-// deadline that is not due, one already recorded, or one that predates a legacy
-// conversion.
-func (s *Store) deadlineStateTx(tx *sql.Tx, scheduleID string, nowT time.Time) (d *deadlineCandidate, eligible bool, err error) {
+// to judge. Otherwise the journal state separates miss deduplication from the
+// legacy-conversion guard: an already-recorded miss can still close a lapsing
+// occurrence, but a deadline predating conversion must do neither.
+func (s *Store) deadlineStateTx(tx *sql.Tx, scheduleID string) (d *deadlineCandidate, state deadlineJournalState, err error) {
 	cand, err := scanDeadline(tx.QueryRow(s.q(`SELECT `+deadlineColumnsSQL+deadlineFromSQL+` AND sc.id=?`), scheduleID), false)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, false, nil
+		return nil, state, nil
 	}
 	if err != nil {
-		return nil, false, err
+		return nil, state, err
 	}
 	if err = cand.resolve(); err != nil {
-		return nil, false, err
+		return nil, state, err
 	}
 	states, err := s.deadlineJournal(tx, []deadlineCandidate{cand})
 	if err != nil {
-		return nil, false, err
+		return nil, state, err
 	}
-	state := states[cand.sc.ID]
+	state = states[cand.sc.ID]
 	if state.err != nil {
-		return nil, false, state.err
+		return nil, state, state.err
 	}
-	return &cand, cand.eligible(nowT, state), nil
+	return &cand, state, nil
 }
 
 // recordDeadlineMissTx is the evaluator's writer, also used before applying a
@@ -436,4 +482,41 @@ func (s *Store) recordDeadlineMissTx(tx *sql.Tx, d deadlineCandidate) error {
 		return err
 	}
 	return nil
+}
+
+// lapseOccurrenceTx closes a lapsing promise immediately after its miss is
+// recorded. All callers hold the schedule pin and commit both writes together.
+// The behavior is read under that pin, never from the scan page.
+func (s *Store) lapseOccurrenceTx(tx *sql.Tx, d deadlineCandidate, nowT time.Time) (*ResolveResult, error) {
+	var behavior sql.NullString
+	if err := tx.QueryRow(s.q(`SELECT deadline_behavior FROM item_schedules WHERE id=?`), d.sc.ID).Scan(&behavior); err != nil {
+		return nil, err
+	}
+	if behavior.String != "lapses" {
+		return nil, nil
+	}
+	sc, err := s.getScheduleQ(tx, d.sc.WorkspaceID, d.sc.ItemID, false)
+	if err != nil {
+		return nil, err
+	}
+	if sc.ErrorCode != nil {
+		return nil, nil
+	}
+	var rec *time.Location
+	if sc.Floating {
+		rec, err = s.scheduleRecipientZone(tx, sc.ItemID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	x, _, err := OutstandingInstant(sc, rec)
+	if err != nil {
+		return nil, err
+	}
+	before, err := s.scheduleSnapshotTx(tx, sc.ID)
+	if err != nil {
+		return nil, err
+	}
+	nowT = nowT.UTC().Truncate(time.Second)
+	return s.closeOccurrenceTx(tx, sc, ResolveInput{State: "lapsed", Actor: "system"}, rec, x, nowT, nowT, "", "", before)
 }
